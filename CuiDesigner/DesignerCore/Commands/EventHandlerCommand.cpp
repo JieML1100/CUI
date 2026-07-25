@@ -25,18 +25,18 @@ namespace
 
 	struct ResolvedEventTarget
 	{
-		std::map<std::wstring, std::wstring>* Handlers = nullptr;
+		DesignerModel::DesignEventHandlerMap* Handlers = nullptr;
 		const DesignerEventHandlerDelta* Delta = nullptr;
 	};
 
 	struct HandlerMapChange
 	{
-		std::map<std::wstring, std::wstring>* Target = nullptr;
-		std::map<std::wstring, std::wstring> Desired;
+		DesignerModel::DesignEventHandlerMap* Target = nullptr;
+		DesignerModel::DesignEventHandlerMap Desired;
 	};
 
 	DesignerEventHandlerValueSnapshot ReadValue(
-		const std::map<std::wstring, std::wstring>& handlers,
+		const DesignerModel::DesignEventHandlerMap& handlers,
 		const std::wstring& eventName)
 	{
 		DesignerEventHandlerValueSnapshot value;
@@ -50,7 +50,7 @@ namespace
 	}
 
 	void WriteValue(
-		std::map<std::wstring, std::wstring>& handlers,
+		DesignerModel::DesignEventHandlerMap& handlers,
 		const std::wstring& eventName,
 		const DesignerEventHandlerValueSnapshot& value)
 	{
@@ -198,18 +198,18 @@ DesignerDocumentTransactionResult EventHandlerCommand::Apply(bool undo) const
 				L"事件差量包含空事件名或空处理函数。", false);
 		}
 
-		std::map<std::wstring, std::wstring>* handlers = nullptr;
-		if (delta.IsForm)
+		DesignerModel::DesignEventHandlerMap* handlers = nullptr;
+		if (delta.IsWindow)
 		{
 			if (delta.StableId != 0
-				|| _canvas->GetDesignedFormName() != delta.SubjectName
-				|| !DesignerEventCatalog::FindFormEvent(delta.EventName))
+				|| _canvas->GetDesignedWindowName() != delta.SubjectName
+				|| !DesignerEventCatalog::FindWindowEvent(delta.EventName))
 			{
 				return DesignerDocumentTransactionResult::Failure(
 					DesignerDocumentTransactionState::Failed,
 					L"事件差量的窗体目标或事件契约已变化。", false);
 			}
-			handlers = &_canvas->_designedFormEventHandlers;
+			handlers = &_canvas->_designedWindowNode.Events;
 		}
 		else
 		{

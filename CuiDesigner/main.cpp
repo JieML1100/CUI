@@ -1,5 +1,4 @@
 #include "Designer.h"
-#include "DesignerControlCatalog.h"
 #include "DesignerSelfTest.h"
 
 #include <Shellapi.h>
@@ -90,8 +89,8 @@ int main()
 	// The product Designer consumes only framework/XAML-defined types. Native
 	// application code is represented by NativeSurface placeholders and is
 	// never loaded into this process.
-	Designer designer(DesignerControlCatalog::BuiltInDescriptors());
+	Designer designer;
 	designer.InitAndShow();
-	while (!Application::Forms.empty()) Form::DoEvent();
+	(void)Application::Run();
 	return 0;
 }

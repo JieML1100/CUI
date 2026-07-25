@@ -1,4 +1,5 @@
-﻿#include "DesignerTypes.h"
+#include "DesignerTypes.h"
+#include <cmath>
 
 DesignerControl::ResizeHandle DesignerControl::HitTestHandle(POINT pt, int handleSize)
 {
@@ -23,19 +24,23 @@ std::vector<RECT> DesignerControl::GetHandleRects(int handleSize)
 	std::vector<RECT> rects;
 	if (!ControlInstance) return rects;
 	
-	auto location = ControlInstance->ActualLocation;
-	auto size = ControlInstance->Size;
+	const auto location = ControlInstance->GetActualLocationDip();
+	const auto size = ControlInstance->GetActualSizeDip();
+	const LONG x = static_cast<LONG>(std::lround(location.x));
+	const LONG y = static_cast<LONG>(std::lround(location.y));
+	const LONG width = static_cast<LONG>(std::lround(size.width));
+	const LONG height = static_cast<LONG>(std::lround(size.height));
 	int half = handleSize / 2;
 	
 	// TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left
-	rects.push_back({location.x - half, location.y - half, location.x + half, location.y + half});
-	rects.push_back({location.x + size.cx / 2 - half, location.y - half, location.x + size.cx / 2 + half, location.y + half});
-	rects.push_back({location.x + size.cx - half, location.y - half, location.x + size.cx + half, location.y + half});
-	rects.push_back({location.x + size.cx - half, location.y + size.cy / 2 - half, location.x + size.cx + half, location.y + size.cy / 2 + half});
-	rects.push_back({location.x + size.cx - half, location.y + size.cy - half, location.x + size.cx + half, location.y + size.cy + half});
-	rects.push_back({location.x + size.cx / 2 - half, location.y + size.cy - half, location.x + size.cx / 2 + half, location.y + size.cy + half});
-	rects.push_back({location.x - half, location.y + size.cy - half, location.x + half, location.y + size.cy + half});
-	rects.push_back({location.x - half, location.y + size.cy / 2 - half, location.x + half, location.y + size.cy / 2 + half});
+	rects.push_back({x - half, y - half, x + half, y + half});
+	rects.push_back({x + width / 2 - half, y - half, x + width / 2 + half, y + half});
+	rects.push_back({x + width - half, y - half, x + width + half, y + half});
+	rects.push_back({x + width - half, y + height / 2 - half, x + width + half, y + height / 2 + half});
+	rects.push_back({x + width - half, y + height - half, x + width + half, y + height + half});
+	rects.push_back({x + width / 2 - half, y + height - half, x + width / 2 + half, y + height + half});
+	rects.push_back({x - half, y + height - half, x + half, y + height + half});
+	rects.push_back({x - half, y + height / 2 - half, x + half, y + height / 2 + half});
 	
 	return rects;
 }

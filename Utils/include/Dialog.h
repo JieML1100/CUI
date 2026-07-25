@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "defines.h"
 #include <string>
 #include <vector>
@@ -71,7 +71,7 @@ public:
 
 class FontDialog {
 public:
-    std::string FontName;
+    std::string FontFamily;
     int FontSize;
     COLORREF Color;
     bool Bold;

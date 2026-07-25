@@ -25,7 +25,7 @@ struct DesignerEventDescriptor
 	std::string ParameterList;
 	DesignerEventCategory Category = DesignerEventCategory::Other;
 	int Order = 0;
-	/** The WinForms-style event activated by double-clicking the subject. */
+	/** The designer action activated by double-clicking the subject. */
 	bool IsDefault = false;
 	/** Exact Event function type; parameter names are deliberately excluded. */
 	std::type_index Signature{ typeid(void) };
@@ -85,21 +85,21 @@ public:
 	static std::vector<DesignerEventDescriptor> GetControlEvents(
 		UIClass type,
 		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
-	static const std::vector<DesignerEventDescriptor>& GetFormEvents();
+	static const std::vector<DesignerEventDescriptor>& GetWindowEvents();
 	static std::optional<DesignerEventDescriptor> FindControlEvent(
 		UIClass type, const std::wstring& eventName);
 	static std::optional<DesignerEventDescriptor> FindControlEvent(
 		UIClass type,
 		const std::wstring& eventName,
 		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
-	static std::optional<DesignerEventDescriptor> FindFormEvent(
+	static std::optional<DesignerEventDescriptor> FindWindowEvent(
 		const std::wstring& eventName);
 	static std::optional<DesignerEventDescriptor> GetDefaultControlEvent(
 		UIClass type);
 	static std::optional<DesignerEventDescriptor> GetDefaultControlEvent(
 		UIClass type,
 		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
-	static std::optional<DesignerEventDescriptor> GetDefaultFormEvent();
+	static std::optional<DesignerEventDescriptor> GetDefaultWindowEvent();
 	static const wchar_t* GetCategoryDisplayName(
 		DesignerEventCategory category) noexcept;
 	static const char* GetCategoryName(
@@ -134,14 +134,11 @@ public:
 	static std::optional<DesignerEventDescriptor> FromComponentEvent(
 		const DesignerComponentEventDescriptor& event) noexcept;
 
-	/** Treats old boolean event values as “use the conventional name”. */
-	static bool IsLegacyEnabledValue(const std::wstring& storedValue);
 	static std::wstring MakeDefaultHandlerName(
 		const std::wstring& subjectName, const std::wstring& eventName);
-	static std::wstring ResolveHandlerName(
-		const std::wstring& storedValue,
-		const std::wstring& subjectName,
-		const std::wstring& eventName);
+	/** Canonicalizes an explicitly authored C++ handler identifier. */
+	static std::wstring NormalizeHandlerName(
+		const std::wstring& storedValue);
 
 	/** Empty is valid and means unbound. Non-empty values must be C++ identifiers. */
 	static bool ValidateHandlerName(const std::wstring& handlerName,

@@ -1,4 +1,5 @@
 #include "DataContextSchemaEditorDialog.h"
+#include "ProgrammaticControlFactory.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include <algorithm>
 
@@ -18,83 +19,98 @@ namespace
 DataContextSchemaEditorDialog::DataContextSchemaEditorDialog(
 	const DesignerDataContextSchema& schema,
 	const IBindingSource* runtimeSource)
-	: Form(L"编辑 DataContext Schema", POINT{ 350, 150 }, SIZE{ 760, 715 }),
+	: Window(),
 	  ResultSchema(schema),
 	  _runtimeSource(runtimeSource)
 {
+	this->Title = L"编辑 DataContext Schema";
+	this->Left = 350.0f;
+	this->Top = 150.0f;
+	this->Width = 760.0f;
+	this->Height = 715.0f;
 	DesignerDataContextSchemaUtils::Canonicalize(ResultSchema);
-	this->VisibleHead = true;
-	this->MinBox = false;
-	this->MaxBox = false;
-	this->AllowResize = false;
-	this->BackColor = Colors::WhiteSmoke;
+	this->ResizeMode = ::ResizeMode::NoResize;
+	this->Background = Colors::WhiteSmoke;
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	auto* contentRoot = static_cast<Panel*>(SetVisualContent(std::move(contentOwner)));
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 
-	auto tip = this->AddControl(new Label(
+	auto tip = addContent(cui::designer::NewControl<Label>(
 		L"声明绑定可用的点分源路径、值类型以及读写/通知能力。", 20, 16));
-	tip->Size = { 710, 24 };
+	tip->Width = 710.0f;
+	tip->Height = 24.0f;
 
-	auto existingLabel = this->AddControl(new Label(L"现有路径", 20, 62));
-	existingLabel->Size = { 110, 24 };
-	_existingPath = this->AddControl(new ComboBox(L"", 140, 56, 580, 30));
-	_existingPath->ExpandCount = 10;
+	auto existingLabel = addContent(cui::designer::NewControl<Label>(L"现有路径", 20, 62));
+	existingLabel->Width = 110.0f;
+	existingLabel->Height = 24.0f;
+	_existingPath = addContent(cui::designer::NewControl<ComboBox>(L"", 140, 56, 580, 30));
+	_existingPath->MaxDropDownHeight = 280.0f;
 
-	auto pathLabel = this->AddControl(new Label(L"属性路径", 20, 108));
-	pathLabel->Size = { 110, 24 };
-	_path = this->AddControl(new TextBox(L"", 140, 102, 580, 30));
+	auto pathLabel = addContent(cui::designer::NewControl<Label>(L"属性路径", 20, 108));
+	pathLabel->Width = 110.0f;
+	pathLabel->Height = 24.0f;
+	_path = addContent(cui::designer::NewControl<TextBox>(L"", 140, 102, 580, 30));
 
-	auto kindLabel = this->AddControl(new Label(L"值类型", 20, 154));
-	kindLabel->Size = { 110, 24 };
-	_kind = this->AddControl(new ComboBox(L"", 140, 148, 220, 30));
-	_kind->ExpandCount = 8;
+	auto kindLabel = addContent(cui::designer::NewControl<Label>(L"值类型", 20, 154));
+	kindLabel->Width = 110.0f;
+	kindLabel->Height = 24.0f;
+	_kind = addContent(cui::designer::NewControl<ComboBox>(L"", 140, 148, 220, 30));
+	_kind->MaxDropDownHeight = 224.0f;
 	auto kindNames = ValueKindNames();
-	_kind->Items = kindNames;
+	cui::designer::SetComboBoxItems(*_kind, std::move(kindNames));
 
-	_canRead = this->AddControl(new CheckBox(L"可读", 400, 151));
-	_canWrite = this->AddControl(new CheckBox(L"可写", 500, 151));
-	_canObserve = this->AddControl(new CheckBox(L"变更通知", 600, 151));
+	_canRead = addContent(cui::designer::NewControl<CheckBox>(L"可读", 400, 151));
+	_canWrite = addContent(cui::designer::NewControl<CheckBox>(L"可写", 500, 151));
+	_canObserve = addContent(cui::designer::NewControl<CheckBox>(L"变更通知", 600, 151));
 
-	auto objectKindLabel = this->AddControl(new Label(L"对象契约", 20, 200));
-	objectKindLabel->Size = { 110, 24 };
-	_objectKind = this->AddControl(new ComboBox(L"", 140, 194, 220, 30));
-	_objectKind->Items = { L"Opaque", L"BindingSource", L"BindingList" };
-	_objectKind->ExpandCount = 3;
-	auto itemTypeLabel = this->AddControl(new Label(L"关联类型", 390, 200));
-	itemTypeLabel->Size = { 90, 24 };
-	_itemType = this->AddControl(new TextBox(L"", 480, 194, 240, 30));
+	auto objectKindLabel = addContent(cui::designer::NewControl<Label>(L"对象契约", 20, 200));
+	objectKindLabel->Width = 110.0f;
+	objectKindLabel->Height = 24.0f;
+	_objectKind = addContent(cui::designer::NewControl<ComboBox>(L"", 140, 194, 220, 30));
+	cui::designer::SetComboBoxItems(
+		*_objectKind, { L"Opaque", L"BindingSource", L"BindingList" });
+	_objectKind->MaxDropDownHeight = 84.0f;
+	auto itemTypeLabel = addContent(cui::designer::NewControl<Label>(L"关联类型", 390, 200));
+	itemTypeLabel->Width = 90.0f;
+	itemTypeLabel->Height = 24.0f;
+	_itemType = addContent(cui::designer::NewControl<TextBox>(L"", 480, 194, 240, 30));
 
-	auto save = this->AddControl(new Button(L"保存属性", 20, 250, 125, 34));
-	auto remove = this->AddControl(new Button(L"删除属性", 158, 250, 125, 34));
-	auto importRuntime = this->AddControl(new Button(
+	auto save = addContent(cui::designer::NewControl<Button>(L"保存属性", 20, 250, 125, 34));
+	auto remove = addContent(cui::designer::NewControl<Button>(L"删除属性", 158, 250, 125, 34));
+	auto importRuntime = addContent(cui::designer::NewControl<Button>(
 		_runtimeSource ? L"从运行时源导入" : L"未连接运行时源",
 		296, 250, 150, 34));
-	importRuntime->Enable = _runtimeSource != nullptr;
-	_validation = this->AddControl(new Label(L"", 460, 256));
-	_validation->Size = { 260, 40 };
+	importRuntime->IsEnabled = _runtimeSource != nullptr;
+	_validation = addContent(cui::designer::NewControl<Label>(L"", 460, 256));
+	_validation->Width = 260.0f;
+	_validation->Height = 40.0f;
 
-	auto summaryLabel = this->AddControl(new Label(L"Schema 属性树（R=可读，W=可写，O=通知）", 20, 314));
-	summaryLabel->Size = { 700, 24 };
-	_summary = this->AddControl(new RichTextBox(L"", 20, 342, 700, 230));
-	_summary->ReadOnly = true;
-	_summary->AllowMultiLine = true;
-	_summary->BackColor = Colors::White;
-	_summary->FocusedColor = Colors::White;
+	auto summaryLabel = addContent(cui::designer::NewControl<Label>(L"Schema 属性树（R=可读，W=可写，O=通知）", 20, 314));
+	summaryLabel->Width = 700.0f;
+	summaryLabel->Height = 24.0f;
+	_summary = addContent(cui::designer::NewControl<RichTextBox>(L"", 20, 342, 700, 230));
+	_summary->IsReadOnly = true;
+	_summary->Background = Colors::White;
+	_summary->BorderBrush = Colors::White;
 
-	auto ok = this->AddControl(new Button(L"确定", 20, 594, 120, 36));
-	auto cancel = this->AddControl(new Button(L"取消", 152, 594, 120, 36));
+	auto ok = addContent(cui::designer::NewControl<Button>(L"确定", 20, 594, 120, 36));
+	auto cancel = addContent(cui::designer::NewControl<Button>(L"取消", 152, 594, 120, 36));
 
-	_existingPath->OnSelectionChanged += [this](Control*) {
+	_existingPath->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedProperty();
 	};
-	_kind->OnSelectionChanged += [this](Control*) {
+	_kind->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshObjectEditors();
 	};
-	_objectKind->OnSelectionChanged += [this](Control*) {
+	_objectKind->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshObjectEditors();
 	};
-	save->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveProperty(); };
-	remove->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveProperty(); };
-	importRuntime->OnMouseClick += [this](Control*, MouseEventArgs) { ImportRuntimeSchema(); };
-	ok->OnMouseClick += [this](Control*, MouseEventArgs) {
+	save->Click += [this](Control*, RoutedEventArgs&) { (void)SaveProperty(); };
+	remove->Click += [this](Control*, RoutedEventArgs&) { RemoveProperty(); };
+	importRuntime->Click += [this](Control*, RoutedEventArgs&) { ImportRuntimeSchema(); };
+	ok->Click += [this](Control*, RoutedEventArgs&) {
 		std::wstring error;
 		if (!DesignerDataContextSchemaUtils::Validate(ResultSchema, &error))
 		{
@@ -104,7 +120,7 @@ DataContextSchemaEditorDialog::DataContextSchemaEditorDialog(
 		Applied = true;
 		this->Close();
 	};
-	cancel->OnMouseClick += [this](Control*, MouseEventArgs) {
+	cancel->Click += [this](Control*, RoutedEventArgs&) {
 		Applied = false;
 		this->Close();
 	};
@@ -119,21 +135,21 @@ void DataContextSchemaEditorDialog::SelectComboValue(
 	const std::wstring& value)
 {
 	if (!combo) return;
-	auto& items = combo->Items;
-	auto it = std::find(items.begin(), items.end(), value);
-	const int index = it == items.end() ? 0 : static_cast<int>(it - items.begin());
+	const int found = cui::designer::FindComboBoxItem(*combo, value);
+	const int index = found < 0 ? 0 : found;
 	combo->SelectedIndex = index;
-	combo->Text = items.empty() ? L"" : items[static_cast<size_t>(index)];
+	combo->Text = combo->ItemCount() == 0
+		? L"" : cui::designer::ComboBoxItemText(
+			*combo, static_cast<size_t>(index));
 }
 
 void DataContextSchemaEditorDialog::RefreshPathOptions(const std::wstring& preferredPath)
 {
 	_loading = true;
-	auto& items = _existingPath->Items;
-	items.clear();
-	items.push_back(kNewProperty);
+	std::vector<std::wstring> items{ kNewProperty };
 	for (const auto& path : DesignerDataContextSchemaUtils::GetPaths(ResultSchema))
 		items.push_back(path);
+	cui::designer::SetComboBoxItems(*_existingPath, std::move(items));
 	SelectComboValue(_existingPath,
 		preferredPath.empty() ? kNewProperty
 			: DesignerDataContextSchemaUtils::NormalizePath(preferredPath));
@@ -157,9 +173,9 @@ void DataContextSchemaEditorDialog::LoadSelectedProperty()
 	_itemType->Text = property
 		? (property->ObjectKind == DesignerDataObjectKind::BindingSource
 			? property->DataType : property->ItemType) : L"";
-	_canRead->Checked = property ? property->CanRead : true;
-	_canWrite->Checked = property ? property->CanWrite : true;
-	_canObserve->Checked = property ? property->CanObserve : true;
+	_canRead->IsChecked = property ? property->CanRead : true;
+	_canWrite->IsChecked = property ? property->CanWrite : true;
+	_canObserve->IsChecked = property ? property->CanObserve : true;
 	_loading = false;
 	RefreshObjectEditors();
 	ShowValidation(property ? L"已加载属性。" : L"填写后点击“保存属性”。", false);
@@ -168,11 +184,11 @@ void DataContextSchemaEditorDialog::LoadSelectedProperty()
 void DataContextSchemaEditorDialog::RefreshObjectEditors()
 {
 	const bool isObject = _kind && _kind->Text == L"Object";
-	_objectKind->Enable = isObject;
+	_objectKind->IsEnabled = isObject;
 	const bool isTypedObject = isObject
 		&& (_objectKind->Text == L"BindingList"
 			|| _objectKind->Text == L"BindingSource");
-	_itemType->Enable = isTypedObject;
+	_itemType->IsEnabled = isTypedObject;
 	if (!isTypedObject && !_loading) _itemType->Text = L"";
 }
 
@@ -201,7 +217,7 @@ void DataContextSchemaEditorDialog::ShowValidation(
 	bool isError)
 {
 	_validation->Text = message;
-	_validation->ForeColor = isError ? Colors::Red : Colors::DimGrey;
+	_validation->Foreground = isError ? Colors::Red : Colors::DimGrey;
 	_validation->InvalidateVisual();
 }
 
@@ -219,9 +235,9 @@ bool DataContextSchemaEditorDialog::SaveProperty()
 		ShowValidation(L"请选择有效的值类型。", true);
 		return false;
 	}
-	property.CanRead = _canRead->Checked;
-	property.CanWrite = _canWrite->Checked;
-	property.CanObserve = _canObserve->Checked;
+	property.CanRead = _canRead->IsChecked;
+	property.CanWrite = _canWrite->IsChecked;
+	property.CanObserve = _canObserve->IsChecked;
 	if (property.ValueKind == BindingValueKind::Object)
 	{
 		if (!DesignerDataContextSchemaUtils::TryParseObjectKind(
@@ -241,13 +257,12 @@ bool DataContextSchemaEditorDialog::SaveProperty()
 	auto selectedProperty = std::find_if(candidate.begin(), candidate.end(),
 		[&](const DesignerDataContextProperty& item)
 		{
-			return selected != kNewProperty
-				&& _wcsicmp(item.Path.c_str(), selected.c_str()) == 0;
+			return selected != kNewProperty && item.Path == selected;
 		});
 	auto pathCollision = std::find_if(candidate.begin(), candidate.end(),
 		[&](const DesignerDataContextProperty& item)
 		{
-			return _wcsicmp(item.Path.c_str(), property.Path.c_str()) == 0;
+			return item.Path == property.Path;
 		});
 	if (pathCollision != candidate.end() && pathCollision != selectedProperty)
 	{
@@ -285,7 +300,7 @@ void DataContextSchemaEditorDialog::RemoveProperty()
 	std::erase_if(ResultSchema,
 		[&](const DesignerDataContextProperty& property)
 		{
-			return _wcsicmp(property.Path.c_str(), selected.c_str()) == 0;
+			return property.Path == selected;
 		});
 	RefreshPathOptions();
 	LoadSelectedProperty();
@@ -318,7 +333,7 @@ void DataContextSchemaEditorDialog::ImportRuntimeSchema()
 		auto existing = std::find_if(candidate.begin(), candidate.end(),
 			[&](const DesignerDataContextProperty& candidate)
 			{
-				return _wcsicmp(candidate.Path.c_str(), property.Path.c_str()) == 0;
+				return candidate.Path == property.Path;
 			});
 		if (existing == candidate.end()) candidate.push_back(property);
 		else *existing = property;

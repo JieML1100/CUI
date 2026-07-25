@@ -14,7 +14,7 @@ namespace DesignerBindingUtils
 		bool CanWrite = false;
 		bool CanObserve = false;
 		DesignerDataObjectKind ObjectKind = DesignerDataObjectKind::Opaque;
-		ControlPropertyFlags Flags = ControlPropertyFlags::None;
+		DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
 		DataSourceUpdateMode DefaultUpdateMode =
 			DataSourceUpdateMode::OnPropertyChanged;
 		bool IsReadOnly = false;
@@ -45,13 +45,11 @@ namespace DesignerBindingUtils
 		DesignerDataBinding& binding,
 		std::wstring* outError = nullptr);
 	bool VisitLeafBindingDefinitions(
-		const DesignerModel::DesignValue& value,
-		const std::function<bool(const DesignerModel::DesignValue&)>& visitor,
-		std::wstring* outError = nullptr);
+		const DesignerDataBinding& binding,
+		const std::function<bool(const DesignerDataBinding&)>& visitor);
 	bool VisitLeafBindingDefinitions(
-		DesignerModel::DesignValue& value,
-		const std::function<bool(DesignerModel::DesignValue&)>& visitor,
-		std::wstring* outError = nullptr);
+		DesignerDataBinding& binding,
+		const std::function<bool(DesignerDataBinding&)>& visitor);
 	struct ResolvedBindingSource
 	{
 		IBindingSource* Source = nullptr;
@@ -95,17 +93,17 @@ namespace DesignerBindingUtils
 	const wchar_t* ValueKindName(BindingValueKind kind) noexcept;
 
 	bool IsModeStructurallyCompatible(
-		const BindingPropertyMetadata& metadata,
+		const DependencyPropertyMetadata& metadata,
 		BindingMode mode) noexcept;
 	bool IsCompatible(
-		const BindingPropertyMetadata& metadata,
+		const DependencyPropertyMetadata& metadata,
 		const DesignerDataBinding& binding) noexcept;
 	bool IsModeStructurallyCompatible(
 		const TargetMetadata& metadata,
 		BindingMode mode) noexcept;
 	/** Projects runtime property metadata into the portable designer contract. */
 	TargetMetadata ProjectTargetMetadata(
-		const BindingPropertyMetadata& metadata);
+		const DependencyPropertyMetadata& metadata);
 
 	/** Validates a portable design-time target without requiring runtime registration. */
 	bool ValidateTarget(
@@ -118,7 +116,7 @@ namespace DesignerBindingUtils
 		Control& target,
 		const std::wstring& targetProperty,
 		const DesignerDataBinding& binding,
-		const BindingPropertyMetadata** outMetadata = nullptr,
+		const DependencyPropertyMetadata** outMetadata = nullptr,
 		std::wstring* outError = nullptr,
 		const DesignerDataContextSchema* sourceSchema = nullptr);
 

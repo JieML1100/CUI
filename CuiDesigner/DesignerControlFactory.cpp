@@ -1,6 +1,7 @@
 #include "DesignerControlFactory.h"
 
-#include "DesignerModel/DesignDocumentMaterializer.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
+#include "../CUI/include/Canvas.h"
 #include "FakeWebBrowser.h"
 
 namespace DesignerControlFactory
@@ -12,8 +13,17 @@ std::unique_ptr<Control> Create(UIClass type, int x, int y)
 	// behind the XAML runtime's public type surface.
 	std::unique_ptr<Control> control = type == UIClass::UI_WebBrowser
 		? std::make_unique<FakeWebBrowser>(0, 0, 500, 360)
-		: DesignerModel::DesignDocumentMaterializer::CreateRuntimeControl(type);
-	if (control) control->Location = { x, y };
+		: CuiRuntime::XamlRuntimeSchema::CreateNativeControl(type);
+	if (control)
+	{
+		// Designer-created XAML nodes start from metadata/theme defaults, not
+		// native constructor locals. Placement below is authored state.
+		(void)control->ClearPropertyValues();
+		Canvas::SetLeft(*(control), static_cast<float>(x));
+		Canvas::SetTop(*(control), static_cast<float>(y));
+		Canvas::SetRight(*(control), cui::layout::UnsetCanvasOffset);
+		Canvas::SetBottom(*(control), cui::layout::UnsetCanvasOffset);
+	}
 	return control;
 }
 }

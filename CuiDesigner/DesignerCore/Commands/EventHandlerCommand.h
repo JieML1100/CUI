@@ -24,10 +24,10 @@ struct DesignerEventHandlerValueSnapshot
 	size_t GetEstimatedMemoryUsage() const noexcept;
 };
 
-/** One Form/control event mapping delta addressed by stable design identity. */
+/** One Window/control event mapping delta addressed by stable design identity. */
 struct DesignerEventHandlerDelta
 {
-	bool IsForm = false;
+	bool IsWindow = false;
 	int StableId = 0;
 	UIClass ControlType = UIClass::UI_Base;
 	std::wstring SubjectName;

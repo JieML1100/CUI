@@ -13,10 +13,6 @@ inline constexpr std::wstring_view CollectionViewGroupDataTypeName =
 struct GroupStyle final
 {
 	ItemTemplateReference HeaderTemplate;
-	float HeaderIndent = 16.0f;
-	float HeaderSpacing = 4.0f;
-	/** Exact per-header extent used by grouped virtualizing panels. */
-	float HeaderHeight = 24.0f;
 };
 
 class GroupStyleReference final

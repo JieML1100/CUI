@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file ToolBox.h
@@ -6,7 +6,8 @@
  */
 #include "../CUI/include/Panel.h"
 #include "../CUI/include/Button.h"
-#include "../CUI/include/ScrollView.h"
+#include "../CUI/include/Canvas.h"
+#include "../CUI/include/ScrollViewer.h"
 #include "../CUI/include/TextBox.h"
 #include "DesignerTypes.h"
 #include <functional>
@@ -27,17 +28,22 @@ public:
 		int y,
 		int width = 120,
 		int height = 30)
-		: Button(descriptor.DisplayName, x, y, width, height),
+		: Button(),
 		Descriptor(std::move(descriptor)),
 		ControlType(Descriptor.Type),
 		TypeName(Descriptor.Name),
 		Category(Descriptor.Category),
 		BaseY(y)
 	{
-		this->Round = 0.15f;
+		SetContent(BindingValue(Descriptor.DisplayName));
+		Canvas::SetLeft(*this, static_cast<float>(x));
+		Canvas::SetTop(*this, static_cast<float>(y));
+		Width = static_cast<float>(width);
+		Height = static_cast<float>(height);
 	}
 
-	void Update() override;
+protected:
+	void OnRender() override;
 };
 
 class ToolBox : public Panel
@@ -56,7 +62,7 @@ private:
 	};
 	std::vector<CategoryHeading> _categoryHeadings;
 	std::wstring _filterText;
-	ScrollView* _scrollView = nullptr;
+	ScrollViewer* _scrollView = nullptr;
 	Panel* _itemsHost = nullptr;
 	int _contentTop = 76;
 	int _contentBottomPadding = 10;
@@ -66,12 +72,12 @@ private:
 	void ApplyFilterLayout();
 	
 public:
-	ToolBox(
-		int x, int y, int width, int height,
-		std::vector<DesignerControlDescriptor> descriptors = {});
+	ToolBox(int x, int y, int width, int height);
 	virtual ~ToolBox();
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+protected:
+	void PreparePresentation() override;
+	void OnRender() override;
+public:
 	void SetFilterText(const std::wstring& value);
 	/** Clears the pressed state when a cross-control drag consumes mouse-up. */
 	void CancelActiveItemPress();
@@ -82,7 +88,7 @@ public:
 	Event<void(const DesignerControlDescriptor&)> OnControlSelected;
 	/**
 	 * Raised on the initial left-button press of an item.  The point is in the
-	 * owning Form's logical client coordinates so the Designer can continue a
+	 * owning Window's logical client coordinates so the Designer can continue a
 	 * captured drag across the toolbox, canvas, and side panels.
 	 */
 	Event<void(const DesignerControlDescriptor&, POINT)> OnControlDragReady;

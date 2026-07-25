@@ -8,7 +8,7 @@
   `DesignerDocumentTransactionResult`；空历史为 `Unchanged`，失败或异常时保留错误、`DocumentRestored` 和原栈条目。
 - 增删快照必须在修改前成功构建设计文档；前置捕获失败时不得执行修改。
 - 后置文档捕获或命令入栈失败时，协调器恢复前置文档、完整选择集和主选控件。
-- 键盘移动、拖拽、缩放和分隔条预览只有在结果型交互事务成功 Begin 后才允许首次修改；MouseUp 单次提交，Escape/失焦/捕获丢失回滚。
+- 键盘移动、拖拽和缩放只有在结果型交互事务成功 Begin 后才允许首次修改；MouseUp 单次提交，Escape/失焦/捕获丢失回滚。
 - 八类模态结构编辑器都只在对话框内建立编辑模型；六类值集合提交 `ControlStructureCommand`，TabControl/ToolBar 提交 `ControlOwnedCollectionCommand`。取消/无变化不入栈，异常或提交失败保持或恢复原状态。
 - 文档事务以 `DesignerDocumentTransactionResult` 返回明确状态和恢复结果；PropertyGrid 不得复制完整文档快照，普通控件属性只能构造统一的逐属性差量命令。
 - Add/Delete/Undo/Redo 必须通过 `OnCommandCompleted` 发布 operation、历史 label、消息和完整结果；空删除、拒绝添加和失败恢复不得无条件显示成功。
@@ -39,12 +39,12 @@
   位置：DesignerCanvas.cpp
   当前命令：`BeginPlacementInteraction("MoveSelection")` 捕获起点，MouseUp 提交一条
   `ControlPlacementCommand`
-  差量内容：Location、Margin、显式尺寸、对齐、Anchor、Grid/Dock 字段、父级定位器、同级索引和选择
+  差量内容：Canvas 四边附加值、Margin、显式尺寸、对齐、Grid/Dock 字段、父级定位器、同级索引和选择
 
 - TryReparentSelectedAfterDrag
   位置：DesignerCanvas.cpp
   当前命令：并入同一条 `ControlPlacementCommand`
-  说明：支持 Root、普通控件、TabPage、Split panel1/panel2 的重建后解析，以及 Stack/Wrap 同级重排；
+  说明：支持 Root、普通控件、TabItem 的重建后解析，以及 Stack/Wrap 同级重排；
   无法标识的自定义父级安全回退完整文档事务
 
 - WM_KEYDOWN 中的方向键微调
@@ -59,18 +59,12 @@
   当前命令：`BeginPlacementInteraction("ResizeSelection")`，MouseUp 单次提交
   差量内容：起止矩形映射后的完整 placement/tree 状态；Undo/Redo 不重建控件实例
 
-- SplitContainer splitter 预览
-  位置：DesignerCanvas.cpp
-  当前命令：`BeginControlPropertyInteraction("UpdateProperty:SplitterDistance")` 捕获单目标属性状态，MouseUp 提交
-  禁止跨手势合并的 `ControlPropertyCommand`
-  说明：只允许通过属性元数据写入；setter 失败中止并回滚，不得裸调 `SetSplitterDistance`；Undo/Redo 不重建实例
-
 ### 1.4 属性编辑
 
 - UpdatePropertyFromTextBox
   位置：PropertyGrid.cpp
-  当前命令：普通控件属性使用 `ControlPropertyCommand`；Form/控件事件使用 `EventHandlerCommand`；其余窗体属性和不支持差量的入口回退完整文档事务
-  说明：Text、尺寸、位置、枚举、颜色、复合属性字符串和事件处理函数名都经过这里；事件名校验与同名签名冲突在提交前完成，Legacy 恢复基值，Metadata 恢复 Local/跟踪条目
+  当前命令：普通控件属性使用 `ControlPropertyCommand`；Window/控件事件使用 `EventHandlerCommand`；其余窗口属性和不支持差量的入口回退完整文档事务
+  说明：Text、尺寸、位置、枚举、颜色、复合属性字符串和事件处理函数名都经过这里；事件名校验与同名签名冲突在提交前完成，Native 恢复基值，Metadata 恢复 Local/跟踪条目
 
 - UpdatePropertyFromBool
   位置：PropertyGrid.cpp
@@ -82,11 +76,6 @@
   当前命令：普通浮点使用一次性属性差量；ProgressBar/ProgressRing 百分比捕获一次 before 并在 MouseUp 提交一个差量
   说明：预览或提交失败恢复拖动前属性状态与完整选择，不建立整份文档快照
 
-- UpdateAnchorFromChecks
-  位置：PropertyGrid.cpp
-  当前命令：`ControlPropertyCommand` 保存 Anchor 的包装器属性状态
-  说明：Anchor setter 仍通过画布保持视觉边界，Undo/Redo 走同一目录 setter 并验证精确终点
-
 - DataContextSchema / StyleSheet / DataBindings
   位置：PropertyGrid.cpp
   当前事务：`ExecutePropertyCommand` 转发到同一结果型文档事务
@@ -97,15 +86,11 @@
 - ComboBoxItemsEditorDialog
 - GridViewColumnsEditorDialog
 - TabControlPagesEditorDialog
-- ToolBarButtonsEditorDialog
-- TreeViewNodesEditorDialog
 - GridPanelDefinitionsEditorDialog
-- MenuItemsEditorDialog
-- StatusBarPartsEditorDialog
 
-当前命令：ComboBox/GridView/TreeView/GridPanel/Menu/StatusBar 使用单控件强类型 `ControlStructureCommand`；TabControl 页面和 ToolBar 按钮使用转移直接子树所有权及 DesignerControl 包装器的 `ControlOwnedCollectionCommand`（标签均为 `EditStructure:<kind>`）。
+当前命令：ComboBox/GridView/TreeView/GridPanel/Menu 使用单控件强类型 `ControlStructureCommand`；TabControl 页面使用转移直接子树所有权及 DesignerControl 包装器的 `ControlOwnedCollectionCommand`（标签为 `EditStructure:TabControlPages`）。ToolBar 项是普通 XAML 子节点，统一走文档子树命令。
 
-说明：对话框只返回带原实例指针的编辑模型，不直接修改目标树。拥有型命令在活跃状态由运行时父树唯一拥有子控件，在缺席状态由命令以 `unique_ptr` 持有；Undo/Redo 同时恢复包装器扁平位置、稳定 ID、选择、ToolBar 尺寸覆盖和 TabControl `SelectedIndex` 的 Local/Binding/metadata 状态。取消或关闭窗口不产生记录。
+说明：对话框只返回带原实例指针的编辑模型，不直接修改目标树。拥有型命令在活跃状态由运行时父树唯一拥有子控件，在缺席状态由命令以 `unique_ptr` 持有；Undo/Redo 同时恢复包装器扁平位置、稳定 ID、选择和 TabControl `SelectedIndex` 的 Local 表达式/metadata 状态。取消或关闭窗口不产生记录。
 
 ## 2. 推荐的提交时机
 
@@ -127,7 +112,7 @@
 
 ### 3.1 后续按收益替换专用命令
 
-普通控件属性、SplitterDistance 连续预览、键盘微调、鼠标 Move/Resize/Reparent/容器重排以及 Add/Delete 已经使用安全差量。
+普通控件属性、键盘微调、鼠标 Move/Resize/Reparent/容器重排以及 Add/Delete 已经使用安全差量。
 Add/Delete 的 `ControlSubtreeCommand` 在缺席期间拥有分离根，保存规范化子树、可重建父级定位器、同级顺序、ToolBar 覆盖和选择，并对 expected 起点做精确验证。
 ComboBox Items、TreeView 节点、递归 Menu Items、GridView 列、GridPanel 行列定义和 StatusBar 分段已经使用 `ControlStructureCommand`：
 历史只保存单控件强类型集合、目标身份与选择，原位 Undo/Redo 不重建控件。单事件编辑与批量处理函数重命名也已

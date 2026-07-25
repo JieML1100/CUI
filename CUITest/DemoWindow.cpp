@@ -2,50 +2,148 @@
 
 #include "imgs.h"
 
+#include <BindingList.h>
 #include <Button.h>
+#include <Canvas.h>
 #include <ChartView.h>
 #include <CheckBox.h>
 #include <ComboBox.h>
+#include <ComponentBehavior.h>
+#include <ContentPresenter.h>
+#include <Core/Threading.h>
 #include <ContextMenu.h>
 #include <Expander.h>
-#include <FilterBar.h>
-#include <GridView.h>
-#include <KpiCard.h>
+#include <Label.h>
 #include <ListView.h>
 #include <ListBox.h>
+#include <LoadingRing.h>
+#include <ItemsPresenter.h>
+#include <InputInfrastructure.h>
 #include <MediaPlayer.h>
 #include <Menu.h>
 #include <MessageDialog.h>
-#include <NavigationView.h>
+#include <NativeSurface.h>
+#include <NotifyIcon.h>
 #include <NumericUpDown.h>
-#include <PagedGridView.h>
-#include <PictureBox.h>
+#include <Image.h>
+#include <PresentationInfrastructure.h>
+#include <StyleInfrastructure.h>
+#include <WindowInfrastructure.h>
+#include <PasswordBox.h>
 #include <ProgressBar.h>
 #include <ProgressRing.h>
-#include <PropertyGrid.h>
-#include <RadioBox.h>
+#include <RadioButton.h>
 #include <Layout/RelativePanel.h>
-#include <ReportView.h>
+#include <Layout/StackPanel.h>
+#include <RichTextBox.h>
+#include <ScrollViewer.h>
 #include <Slider.h>
 #include <StatusBar.h>
+#include <Style.h>
 #include <Switch.h>
+#include <ToggleButton.h>
 #include <TabControl.h>
+#include <TemplateInfrastructure.h>
 #include <Taskbar.h>
-#include <Toast.h>
+#include <TextBox.h>
 #include <ToolBar.h>
 #include <TreeView.h>
 #include <WebBrowser.h>
+#include <Graphics.h>
 
 #include <Utils.h>
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <filesystem>
+#include <functional>
 #include <stdexcept>
+#include <typeindex>
 #include <utility>
 
 namespace
 {
+	InputReport PointerInput(
+		InputReportKind kind,
+		MouseButton changedButton,
+		int x,
+		int y,
+		MouseButton pressedButton = MouseButton::None)
+	{
+		InputReport input;
+		input.Kind = kind;
+		input.X = x;
+		input.Y = y;
+		input.ChangedButton = changedButton;
+		input.ButtonStates = MouseButtonStates::WithPressed(pressedButton);
+		input.ClickCount = kind == InputReportKind::PointerDoubleClick ? 2
+			: kind == InputReportKind::PointerDown ? 1 : 0;
+		return input;
+	}
+
+	InputReport KeyInput(InputReportKind kind, Key key)
+	{
+		InputReport input;
+		input.Kind = kind;
+		input.Key = key;
+		return input;
+	}
+
+	InputReport LifecycleInput(InputReportKind kind)
+	{
+		InputReport input;
+		input.Kind = kind;
+		return input;
+	}
+
+	std::wstring CompositionStageText(TextCompositionStage stage)
+	{
+		switch (stage)
+		{
+		case TextCompositionStage::Started: return L"Started";
+		case TextCompositionStage::Updated: return L"Updated";
+		case TextCompositionStage::Completed: return L"Completed";
+		case TextCompositionStage::Canceled: return L"Canceled";
+		default: return L"Idle";
+		}
+	}
+
+	std::wstring CompositionKindText(TextCompositionInputKind kind)
+	{
+		switch (kind)
+		{
+		case TextCompositionInputKind::Unicode: return L"Unicode";
+		case TextCompositionInputKind::Ime: return L"IME";
+		case TextCompositionInputKind::System: return L"System";
+		case TextCompositionInputKind::Programmatic: return L"Programmatic";
+		default: return L"Keyboard";
+		}
+	}
+
+	std::wstring CompositionCancelText(TextCompositionCancelReason reason)
+	{
+		switch (reason)
+		{
+		case TextCompositionCancelReason::Explicit: return L"explicit";
+		case TextCompositionCancelReason::FocusChanged: return L"focus-changed";
+		case TextCompositionCancelReason::WindowDeactivated: return L"window-deactivated";
+		case TextCompositionCancelReason::SourceDetached: return L"source-detached";
+		case TextCompositionCancelReason::NativeCanceled: return L"native-canceled";
+		case TextCompositionCancelReason::InvalidUnicode: return L"invalid-unicode";
+		default: return L"none";
+		}
+	}
+
+	std::wstring CompositionPayloadText(const TextCompositionEventArgs& e)
+	{
+		if (dynamic_cast<PasswordBox*>(e.OriginalSource))
+			return L"<secure:" + std::to_wstring(e.Text.size())
+				+ L" UTF-16 units>";
+		return e.Text;
+	}
+
 	std::wstring ExecutableDirectory()
 	{
 		std::wstring path(32768, L'\0');
@@ -79,10 +177,349 @@ namespace
 		return result;
 	}
 
+	std::wstring CommandParameterText(const std::any& parameter)
+	{
+		if (const auto* text = std::any_cast<std::wstring>(&parameter))
+			return *text;
+		if (const auto* text = std::any_cast<const wchar_t*>(&parameter))
+			return *text ? std::wstring(*text) : std::wstring{};
+		return {};
+	}
+
 	[[noreturn]] void ThrowRuntimeError(const std::wstring& message)
 	{
 		throw std::runtime_error(Convert::WStringToString(message));
 	}
+
+	class FeatureCardBehavior final : public IDeclarativeComponentBehavior
+	{
+	public:
+		bool Attach(
+			Control& host,
+			const DeclarativeComponentBehaviorContext& context,
+			std::wstring* outError) override
+		{
+			if (context.Type != RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" }
+				|| !host.FindDeclarativeTemplatePart(L"PART_State")
+				|| !host.FindDeclarativeContentPresenter(L"Content")
+				|| !host.FindDeclarativeContentPresenter(L"Actions"))
+			{
+				if (outError) *outError =
+					L"FeatureCard behavior 未找到 XAML 契约或模板部件。";
+				return false;
+			}
+			_attached = true;
+			if (!SetState(host, L"Behavior attached · QName resolved"))
+			{
+				if (outError) *outError =
+					L"FeatureCard behavior 无法更新 XAML 声明的只读 State。";
+				return false;
+			}
+			if (outError) outError->clear();
+			return true;
+		}
+
+		void Detach(Control&) noexcept override
+		{
+			_attached = false;
+		}
+
+		bool HandleInput(
+			Control& host,
+			const InputReport& input) override
+		{
+			if (input.Kind != InputReportKind::PointerDoubleClick
+				|| input.ChangedButton != MouseButton::Left) return false;
+			++_inputCount;
+			(void)SetState(host, StringHelper::Format(
+				L"Behavior input #%d @ %d,%d",
+				_inputCount, input.X, input.Y));
+			return true;
+		}
+
+		void RenderOverlay(Control& host, D2DGraphics& graphics) override
+		{
+			const auto size = host.GetActualSizeDip();
+			const float x = std::max(10.0f, size.width - 14.0f);
+			graphics.FillEllipse(x, 12.0f, 4.0f, 4.0f,
+				D2D1::ColorF(0.08f, 0.65f, 0.42f, 1.0f));
+		}
+
+		bool Attached() const noexcept { return _attached; }
+		int InputCount() const noexcept { return _inputCount; }
+		bool PublishState(Control& host, std::wstring value)
+		{
+			return SetState(host, std::move(value));
+		}
+
+	private:
+		bool SetState(Control& host, std::wstring value)
+		{
+			return SetReadOnlyProperty(host,
+				L"State", BindingValue(std::move(value)));
+		}
+
+		bool _attached = false;
+		int _inputCount = 0;
+	};
+
+	class DemoSceneBehavior final : public INativeSurfaceBehavior
+	{
+	public:
+		void Attach(NativeSurface&) override { _attached = true; }
+		void Detach(NativeSurface&) noexcept override { _attached = false; }
+
+		void Render(
+			NativeSurface&,
+			NativeSurfaceRenderContext& context) override
+		{
+			const auto width = std::max(1.0f, context.Bounds.width);
+			const auto height = std::max(1.0f, context.Bounds.height);
+			context.Graphics.FillRoundRect(
+				0.0f, 0.0f, width, height,
+				D2D1::ColorF(0.055f, 0.09f, 0.16f, 1.0f), 10.0f);
+			for (int i = 1; i < 5; ++i)
+			{
+				const auto y = height * static_cast<float>(i) / 5.0f;
+				context.Graphics.DrawLine(
+					10.0f, y, width - 10.0f, y,
+					D2D1::ColorF(0.18f, 0.31f, 0.48f, 0.65f), 1.0f);
+			}
+			const auto markerX = _hasPointer ? _pointerX : width * 0.66f;
+			const auto markerY = _hasPointer ? _pointerY : height * 0.58f;
+			context.Graphics.FillEllipse(
+				markerX, markerY, 8.0f, 8.0f,
+				D2D1::ColorF(0.12f, 0.68f, 0.54f, 1.0f));
+			context.Graphics.DrawEllipse(
+				markerX, markerY, 13.0f, 13.0f,
+				D2D1::ColorF(0.25f, 0.82f, 1.0f, 0.9f), 2.0f);
+			context.Graphics.DrawString(
+				L"NativeSurface", 12.0f, 10.0f,
+				D2D1::ColorF(0.88f, 0.94f, 1.0f, 1.0f));
+			context.Graphics.DrawString(
+				StringHelper::Format(L"C++ render · input %d", _inputCount),
+				12.0f, 34.0f,
+				D2D1::ColorF(0.52f, 0.72f, 0.94f, 1.0f));
+			if (!_lastTextInput.empty())
+				context.Graphics.DrawString(
+					L"TextInput: " + _lastTextInput, 12.0f, 56.0f,
+					D2D1::ColorF(0.72f, 0.90f, 0.82f, 1.0f));
+		}
+
+		bool HandleInput(
+			NativeSurface& host,
+			NativeSurfaceInputEvent& event) override
+		{
+			if (event.Kind == NativeSurfaceInputKind::TextInput)
+			{
+				_lastTextInput = event.Text;
+				++_inputCount;
+				host.InvalidateVisual();
+				return true;
+			}
+			if (event.Kind != NativeSurfaceInputKind::PointerDown
+				&& event.Kind != NativeSurfaceInputKind::PointerMove) return false;
+			_pointerX = event.X;
+			_pointerY = event.Y;
+			_hasPointer = true;
+			++_inputCount;
+			host.InvalidateVisual();
+			return true;
+		}
+
+		bool Attached() const noexcept { return _attached; }
+		int InputCount() const noexcept { return _inputCount; }
+		const std::wstring& LastTextInput() const noexcept
+		{
+			return _lastTextInput;
+		}
+
+	private:
+		bool _attached = false;
+		bool _hasPointer = false;
+		float _pointerX = 0.0f;
+		float _pointerY = 0.0f;
+		int _inputCount = 0;
+		std::wstring _lastTextInput;
+	};
+
+	class PresentationProbeBehavior final : public INativeSurfaceBehavior
+	{
+	public:
+		void Attach(NativeSurface&) override { _attached = true; }
+		void Detach(NativeSurface&) noexcept override { _attached = false; }
+
+		void Render(
+			NativeSurface& host,
+			NativeSurfaceRenderContext& context) override
+		{
+			++_frameCount;
+			_lastDpiScale = context.DpiScale;
+			const float width = std::max(1.0f, context.Bounds.width);
+			const float height = std::max(1.0f, context.Bounds.height);
+			auto& graphics = context.Graphics;
+			graphics.FillRoundRect(0.0f, 0.0f, width, height,
+				D2D1::ColorF(0.035f, 0.055f, 0.10f, 1.0f), 12.0f);
+			for (int column = 1; column < 8; ++column)
+			{
+				const float x = width * static_cast<float>(column) / 8.0f;
+				graphics.DrawLine(x, 0.0f, x, height,
+					D2D1::ColorF(0.12f, 0.22f, 0.36f, 0.55f), 1.0f);
+			}
+			for (int row = 1; row < 5; ++row)
+			{
+				const float y = height * static_cast<float>(row) / 5.0f;
+				graphics.DrawLine(0.0f, y, width, y,
+					D2D1::ColorF(0.12f, 0.22f, 0.36f, 0.55f), 1.0f);
+			}
+			const float markerX = _hasMarker ? _markerX : width * 0.70f;
+			const float markerY = _hasMarker ? _markerY : height * 0.62f;
+			graphics.FillEllipse(markerX, markerY, 10.0f, 10.0f,
+				D2D1::ColorF(0.06f, 0.78f, 0.58f, 1.0f));
+			graphics.DrawEllipse(markerX, markerY, 17.0f, 17.0f,
+				D2D1::ColorF(0.24f, 0.72f, 1.0f, 0.95f), 2.0f);
+			graphics.DrawString(L"PresentationRenderHost frame",
+				16.0f, 14.0f, D2D1::ColorF(0.88f, 0.94f, 1.0f, 1.0f));
+			graphics.DrawString(StringHelper::Format(
+				L"presented %d · region requests %d · full requests %d",
+				_frameCount, _regionRequests, _fullFrameRequests),
+				16.0f, 42.0f, D2D1::ColorF(0.48f, 0.76f, 0.96f, 1.0f));
+			if (host.GetPresentationWindow())
+			{
+				const auto stats =
+					cui::framework::WindowAccess::PresentationFrame(*host.GetPresentationWindow());
+				graphics.DrawString(StringHelper::Format(
+					L"DPI %.2fx · resource gen %llu · behavior resets %d",
+					_lastDpiScale,
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationResourceGeneration(*host.GetPresentationWindow())),
+					_deviceGeneration),
+					16.0f, 68.0f,
+					D2D1::ColorF(0.52f, 0.86f, 0.68f, 1.0f));
+				graphics.DrawString(StringHelper::Format(
+					L"scene r%llu · nodes %llu · drawing segments %llu",
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationSceneRevision(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationNodeCount(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationDrawingLayerCount(*host.GetPresentationWindow()))),
+					16.0f, 94.0f,
+					D2D1::ColorF(0.92f, 0.72f, 0.28f, 1.0f));
+				graphics.DrawString(StringHelper::Format(
+					L"lanes · content %llu · geometry %llu · composition %llu",
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationContentRevision(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationGeometryRevision(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationCompositionRevision(*host.GetPresentationWindow()))),
+					16.0f, 120.0f,
+					D2D1::ColorF(0.72f, 0.82f, 0.98f, 1.0f));
+				graphics.DrawString(StringHelper::Format(
+					L"frame %llu · dirty C/G/P %llu/%llu/%llu · geom %llu · replay %llu",
+					static_cast<unsigned long long>(stats.Frame),
+					static_cast<unsigned long long>(stats.ContentDirtyNodes),
+					static_cast<unsigned long long>(stats.GeometryDirtyNodes),
+					static_cast<unsigned long long>(stats.CompositionDirtyNodes),
+					static_cast<unsigned long long>(stats.GeometryRecomputedNodes),
+					static_cast<unsigned long long>(stats.DamageReplayNodes)),
+					16.0f, 146.0f,
+					D2D1::ColorF(0.62f, 0.90f, 0.70f, 1.0f));
+				graphics.DrawString(StringHelper::Format(
+					L"commands · record %llu · replay %llu · hits %llu · invalidated %llu",
+					static_cast<unsigned long long>(stats.CommandRecordedNodes),
+					static_cast<unsigned long long>(stats.CommandReplayedNodes),
+					static_cast<unsigned long long>(stats.CommandCacheHitNodes),
+					static_cast<unsigned long long>(
+						stats.CommandCacheInvalidatedNodes)),
+					16.0f, 172.0f,
+					D2D1::ColorF(0.96f, 0.74f, 0.38f, 1.0f));
+				graphics.DrawString(StringHelper::Format(
+					L"transaction %llu · committed %llu · aborted %llu · recovered %llu",
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationTransactionSequence(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationCommittedFrameCount(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationAbortedFrameCount(*host.GetPresentationWindow())),
+					static_cast<unsigned long long>(
+						cui::framework::WindowAccess::PresentationDeviceRecoveryCount(*host.GetPresentationWindow()))),
+					16.0f, 198.0f,
+					D2D1::ColorF(0.72f, 0.82f, 0.98f, 1.0f));
+			}
+		}
+
+		bool HandleInput(
+			NativeSurface& host,
+			NativeSurfaceInputEvent& event) override
+		{
+			if (event.Kind != NativeSurfaceInputKind::PointerDown
+				&& event.Kind != NativeSurfaceInputKind::PointerMove) return false;
+			MoveMarker(host, event.X, event.Y);
+			return true;
+		}
+
+		void DpiChanged(NativeSurface&, float dpiScale) override
+		{
+			_lastDpiScale = dpiScale;
+		}
+
+		void DeviceResourcesInvalidated(NativeSurface&) noexcept override
+		{
+			++_deviceGeneration;
+		}
+
+		void Pulse(NativeSurface& host)
+		{
+			const auto size = host.GetActualSizeDip();
+			const float width = std::max(80.0f, size.width);
+			const float height = std::max(80.0f, size.height);
+			const float x = 40.0f + std::fmod(
+				static_cast<float>((_regionRequests + 1) * 97),
+				std::max(1.0f, width - 80.0f));
+			const float y = 40.0f + std::fmod(
+				static_cast<float>((_regionRequests + 1) * 53),
+				std::max(1.0f, height - 80.0f));
+			MoveMarker(host, x, y);
+		}
+
+		void NoteFullFrameRequest() noexcept { ++_fullFrameRequests; }
+		bool Attached() const noexcept { return _attached; }
+		int RegionRequests() const noexcept { return _regionRequests; }
+		int FullFrameRequests() const noexcept { return _fullFrameRequests; }
+		int FrameCount() const noexcept { return _frameCount; }
+		int DeviceResourceInvalidations() const noexcept
+		{
+			return _deviceGeneration;
+		}
+
+	private:
+		void MoveMarker(NativeSurface& host, float x, float y)
+		{
+			const float oldX = _hasMarker ? _markerX : x;
+			const float oldY = _hasMarker ? _markerY : y;
+			_markerX = x;
+			_markerY = y;
+			_hasMarker = true;
+			++_regionRequests;
+			host.InvalidateRegion(D2D1_RECT_F{
+				std::min(oldX, x) - 22.0f,
+				std::min(oldY, y) - 22.0f,
+				std::max(oldX, x) + 22.0f,
+				std::max(oldY, y) + 22.0f });
+		}
+
+		bool _attached = false;
+		bool _hasMarker = false;
+		float _markerX = 0.0f;
+		float _markerY = 0.0f;
+		float _lastDpiScale = 1.0f;
+		int _frameCount = 0;
+		int _regionRequests = 0;
+		int _fullFrameRequests = 0;
+		int _deviceGeneration = 0;
+	};
 }
 
 std::wstring DemoWindow::XamlFilePath()
@@ -107,44 +544,3114 @@ T* DemoWindow::RequireControl(const wchar_t* name)
 	return control;
 }
 
-DemoWindow::DemoWindow(bool initializePlatformServices)
-	: Form(L"CUI XAML Component Gallery", { 0, 0 }, { 1400, 800 })
+DemoWindow::DemoWindow(InitializationMode mode)
+	: Window()
 {
-	RegisterXamlHandlers();
-	MountXaml();
+	DesignerModel::DesignDocument document;
+	std::wstring error;
+	if (!DesignerModel::XamlDocumentParser::LoadFromFile(
+		XamlFilePath(), document, &error))
+		ThrowRuntimeError(L"预解析 DemoWindow.cui.xaml 失败：" + error);
+	PrepareDeclarativeRuntime(document);
+	RegisterXamlHandlers(document);
+	RegisterClassCommandBindings();
+	MountXaml(document);
 	ResolveControls();
-	if (!initializePlatformServices) return;
+	auto* schemaBadge = RequireControl<Label>(L"runtimeBadge");
+	schemaBadge->Text = _schemaSummary;
+	schemaBadge->InvalidateVisual();
+	if (mode == InitializationMode::DeclarativeOnly) return;
 	LoadImages();
-	InitializeChrome();
 	InitializeBasicPage();
 	InitializeContainerPage();
 	InitializeDataPage();
 	InitializeAnalyticsPage();
-	InitializeLayoutPage();
-	InitializeSystemPage();
 	InitializeWebPage();
 	InitializeMediaPage();
-	(void)SetDefaultButton(_basicButton);
+	_runtimeDataInitialized = true;
+	if (mode == InitializationMode::Full) InitializeSystemPage();
 	UpdateProgress(0.25f);
 }
 
 DemoWindow::~DemoWindow()
 {
-	if (_notify) _notify->HideNotifyIcon();
+	if (_notify) (void)_notify->TryHide();
 }
 
-void DemoWindow::MountXaml()
+bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
+{
+	auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		return false;
+	};
+	try
+	{
+		if (!_xamlSession.IsMounted()
+			|| _xamlSession.MountedWindow() != this
+			|| _xamlSession.SourceFile() != XamlFilePath())
+			return fail(L"预解析 XAML 未通过 RuntimeDocumentSession 保持挂载语义。");
+		auto* schemaBadge = _xamlSession.Document().FindControlByName(
+			L"runtimeBadge");
+		if (_schemaSummary.empty() || !schemaBadge
+			|| schemaBadge->GetDisplayText() != _schemaSummary)
+			return fail(L"无实例 XAML Schema 预检未在 CUITest 中展示。");
+		auto* themeNormalButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"themeNormalButton"));
+		auto* themeDisabledButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"themeDisabledButton"));
+		auto* basicChrome = _basicButton
+			? _basicButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			: nullptr;
+		auto* basicPresenter = _basicButton
+			? dynamic_cast<ContentPresenter*>(
+				_basicButton->FindDeclarativeTemplatePart(
+					L"PART_ContentPresenter"))
+			: nullptr;
+		auto* normalChrome = themeNormalButton
+			? themeNormalButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			: nullptr;
+		auto* disabledChrome = themeDisabledButton
+			? themeDisabledButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			: nullptr;
+		if (!_basicButton || !themeNormalButton || !themeDisabledButton
+			|| !basicChrome || !basicPresenter
+			|| !normalChrome || !disabledChrome
+			|| cui::framework::TemplateAccess::GetTemplateRoot(*_basicButton)
+				!= basicChrome
+			|| basicChrome->GetVisualParent() != _basicButton
+			|| basicChrome->GetLogicalParent() != nullptr
+			|| basicChrome->GetTemplatedParent() != _basicButton
+			|| basicPresenter->GetVisualParent() != basicChrome
+			|| basicPresenter->GetTemplatedParent() != _basicButton
+			|| basicPresenter->GetPropertyValueSource(L"Content")
+				!= DependencyPropertyValueSource::Template
+			|| basicPresenter->GetPropertyExpressionKind(
+				L"Content", DependencyPropertyValueSource::Template)
+				!= DependencyPropertyExpressionKind::TemplateBinding
+			|| _basicButton->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Local
+			|| _basicButton->GetPropertyValueSource(L"BorderBrush")
+				!= DependencyPropertyValueSource::Theme
+			|| basicChrome->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Template
+			|| themeNormalButton->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Theme
+			|| themeNormalButton->GetCurrentVisualState(L"CommonStates")
+				!= L"Normal"
+			|| themeDisabledButton->GetCurrentVisualState(L"CommonStates")
+				!= L"Disabled"
+			|| disabledChrome->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::VisualState)
+			return fail(L"Generic.xaml Theme/ControlTemplate/TemplateBinding/"
+				L"VisualState 主链未完整物化。");
+
+		cui::framework::InputAccess::PublishPointerOverState(
+			*themeNormalButton, true, true);
+		const bool pointerOverState =
+			themeNormalButton->GetCurrentVisualState(L"CommonStates")
+				== L"PointerOver"
+			&& normalChrome->GetPropertyValueSource(L"Background")
+				== DependencyPropertyValueSource::VisualState;
+		const bool pointerDown = cui::framework::InputAccess::DispatchInput(
+			*themeNormalButton, PointerInput(
+				InputReportKind::PointerDown, MouseButton::Left,
+				5, 5, MouseButton::Left));
+		const bool pressedState = themeNormalButton->IsPressed
+			&& themeNormalButton->GetCurrentVisualState(L"CommonStates")
+				== L"Pressed";
+		const bool pointerUp = cui::framework::InputAccess::DispatchInput(
+			*themeNormalButton, PointerInput(
+				InputReportKind::PointerUp, MouseButton::Left, 5, 5));
+		cui::framework::InputAccess::PublishPointerOverState(
+			*themeNormalButton, false, false);
+		if (!pointerOverState || !pointerDown || !pressedState || !pointerUp
+			|| themeNormalButton->IsPressed
+			|| themeNormalButton->GetCurrentVisualState(L"CommonStates")
+				!= L"Normal"
+			|| normalChrome->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Template)
+			return fail(L"Generic.xaml Button CommonStates 未响应 "
+				L"PointerOver/Pressed/Normal 状态切换。");
+
+		if (!_basicButton || !_dialogCancelButton || !_radioA
+			|| !_basicButton->IsDefault || _basicButton->IsCancel
+			|| _dialogCancelButton->IsDefault
+			|| !_dialogCancelButton->IsCancel
+			|| _radioA->GroupName != L"Plan"
+			|| _radioB->GroupName != L"Plan"
+			|| !_radioA->IsChecked || _radioB->IsChecked
+			|| _basicButton->GetPropertyValueSource(L"IsDefault")
+				!= DependencyPropertyValueSource::Local
+			|| _dialogCancelButton->GetPropertyValueSource(L"IsCancel")
+				!= DependencyPropertyValueSource::Local)
+			return fail(L"Button IsDefault/IsCancel 未从 XAML 本地值物化。");
+
+		const auto previousFocus = GetKeyboardFocusedElement();
+		const auto defaultText = _basicButton->GetDisplayText();
+		const auto cancelText = _dialogCancelButton->GetDisplayText();
+		const auto defaultTag = _basicButton->Tag;
+		const auto cancelTag = _dialogCancelButton->Tag;
+		const auto statusText = _statusText ? _statusText->Text : std::wstring{};
+		const auto statusPart = GetStatusBarItemText(0);
+		int defaultInvocations = 0;
+		int cancelInvocations = 0;
+		int radioInvocations = 0;
+		auto defaultConnection = _basicButton->Click.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++defaultInvocations; });
+		auto cancelConnection = _dialogCancelButton->Click.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++cancelInvocations; });
+		auto radioConnection = _radioA->Click.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++radioInvocations; });
+		auto pressKey = [this](Key key)
+		{
+			(void)cui::framework::InputAccess::DispatchInput(
+				*this, KeyInput(InputReportKind::KeyDown, key));
+			(void)cui::framework::InputAccess::DispatchInput(
+				*this, KeyInput(InputReportKind::KeyUp, key));
+		};
+
+		SetKeyboardFocus(_radioA, false);
+		const bool genericFocused = GetKeyboardFocusedElement() == _radioA;
+		pressKey(Key::Return);
+		const bool enterUsesDefault = defaultInvocations == 1
+			&& cancelInvocations == 0 && radioInvocations == 0;
+		pressKey(Key::Escape);
+		const bool escapeUsesCancel = defaultInvocations == 1
+			&& cancelInvocations == 1 && radioInvocations == 0;
+		pressKey(Key::Space);
+		const bool genericSpaceIgnored = defaultInvocations == 1
+			&& cancelInvocations == 1 && radioInvocations == 0;
+		SetKeyboardFocus(_basicButton, false);
+		const bool buttonFocused = GetKeyboardFocusedElement() == _basicButton;
+		pressKey(Key::Space);
+		const bool buttonSpaceInvoked = defaultInvocations == 2
+			&& cancelInvocations == 1 && radioInvocations == 0;
+
+		cui::framework::WindowAccess::TextComposition(*this).Reset();
+		SetKeyboardFocus(previousFocus, false);
+		_basicButton->SetContent(BindingValue(defaultText));
+		_basicButton->Tag = defaultTag;
+		_basicButton->InvalidateVisual();
+		_dialogCancelButton->SetContent(BindingValue(cancelText));
+		_dialogCancelButton->Tag = cancelTag;
+		_dialogCancelButton->InvalidateVisual();
+		if (_statusText)
+		{
+			_statusText->Text = statusText;
+			_statusText->InvalidateVisual();
+		}
+		(void)SetStatusBarItemText(0, statusPart);
+		if (!genericFocused || !enterUsesDefault || !escapeUsesCancel
+			|| !genericSpaceIgnored || !buttonFocused || !buttonSpaceInvoked)
+			return fail(L"Window 未按 WPF Button 语义路由 Enter/Escape/Space。");
+
+		auto* card = _xamlSession.Document().FindControlByName(L"featureCard");
+		if (!card || card->GetDeclarativeTypeId()
+			!= RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" })
+			return fail(L"featureCard 未按 XAML QName 材质化。");
+		const auto& cardSchema = card->GetDeclarativeTypeDescriptor();
+		const auto* stateProperty = cardSchema
+			? cardSchema->FindProperty(L"State") : nullptr;
+		const auto* invokedEvent = cardSchema
+			? cardSchema->FindEvent(L"Invoked") : nullptr;
+		const auto* defaultContent = cardSchema
+			? cardSchema->DefaultContentProperty() : nullptr;
+		const auto* actionsContent = cardSchema
+			? cardSchema->FindContentProperty(L"Actions") : nullptr;
+		if (!cardSchema || cardSchema->PropertyCount() != 5
+			|| cardSchema->Events().size() != 3
+			|| cardSchema->ContentProperties().size() != 2
+			|| !stateProperty || !stateProperty->IsReadOnly()
+			|| stateProperty != card->FindPropertyMetadata(L"State")
+			|| !invokedEvent
+			|| invokedEvent->RoutingStrategy
+				!= DeclarativeEventRoutingStrategy::Bubble
+			|| !defaultContent || defaultContent->Name != L"Content"
+			|| !actionsContent || actionsContent->Cardinality
+				!= DeclarativeContentCardinality::Multiple)
+			return fail(L"FeatureCard 未使用共享的类型级 Schema 元数据。");
+		auto* cardBehavior = dynamic_cast<FeatureCardBehavior*>(
+			card->GetDeclarativeComponentBehavior());
+		if (!cardBehavior || !cardBehavior->Attached())
+			return fail(L"FeatureCard C++ behavior 未挂接。");
+		auto* statePart = dynamic_cast<Label*>(
+			card->FindDeclarativeTemplatePart(L"PART_State"));
+		auto* rootPart = card->FindDeclarativeTemplatePart(L"PART_Root");
+		auto* contentPresenter = card->FindDeclarativeContentPresenter(L"Content");
+		auto* actionsPresenter = card->FindDeclarativeContentPresenter(L"Actions");
+		auto* projectedContent = _xamlSession.Document().FindControlByName(
+			L"featureCardContent");
+		auto* projectedActionA = _xamlSession.Document().FindControlByName(
+			L"featureActionA");
+		auto* projectedActionB = _xamlSession.Document().FindControlByName(
+			L"featureActionB");
+		auto* templateLayout = statePart ? statePart->GetVisualParent() : nullptr;
+		if (!statePart || !rootPart
+			|| !contentPresenter || contentPresenter->VisualChildCount() != 1
+			|| !actionsPresenter || actionsPresenter->VisualChildCount() != 2
+			|| !projectedContent || !projectedActionA || !projectedActionB
+			|| !templateLayout || templateLayout == rootPart)
+			return fail(L"FeatureCard 默认/多值内容槽未实际投影。");
+		const auto cardLogicalChildren = card->GetLogicalChildrenView();
+		if (rootPart->GetVisualParent() != card
+			|| rootPart->GetLogicalParent() != nullptr
+			|| rootPart->GetTemplatedParent() != card
+			|| rootPart->GetInheritanceParent() != card
+			|| rootPart->GetRoutedParent() != card
+			|| templateLayout->GetVisualParent() != rootPart
+			|| templateLayout->GetLogicalParent() != rootPart
+			|| templateLayout->GetTemplatedParent() != card
+			|| statePart->GetVisualParent() != templateLayout
+			|| statePart->GetLogicalParent() != templateLayout
+			|| statePart->GetTemplatedParent() != card
+			|| contentPresenter->GetVisualParent() != templateLayout
+			|| contentPresenter->GetLogicalParent() != templateLayout
+			|| contentPresenter->GetTemplatedParent() != card
+			|| actionsPresenter->GetVisualParent() != templateLayout
+			|| actionsPresenter->GetLogicalParent() != templateLayout
+			|| actionsPresenter->GetTemplatedParent() != card
+			|| projectedContent->GetVisualParent() != contentPresenter
+			|| projectedContent->GetLogicalParent() != card
+			|| projectedContent->GetTemplatedParent() != nullptr
+			|| projectedActionA->GetVisualParent() != actionsPresenter
+			|| projectedActionA->GetLogicalParent() != card
+			|| projectedActionB->GetVisualParent() != actionsPresenter
+			|| projectedActionB->GetLogicalParent() != card
+			|| std::find(cardLogicalChildren.begin(), cardLogicalChildren.end(),
+				rootPart) != cardLogicalChildren.end()
+			|| std::find(cardLogicalChildren.begin(), cardLogicalChildren.end(),
+				projectedContent) == cardLogicalChildren.end()
+			|| std::find(cardLogicalChildren.begin(), cardLogicalChildren.end(),
+				projectedActionA) == cardLogicalChildren.end()
+			|| projectedContent->GetDisplayText()
+				!= L"Logical DataContext via FeatureCard: Ada")
+			return fail(L"FeatureCard 的 Visual/Logical/Template 三树关系未分离。");
+
+		auto* classCommandSource = dynamic_cast<Button*>(projectedActionB);
+		const auto classCommandInputs = classCommandSource
+			? classCommandSource->GetInputBindings()
+			: std::span<const InputBinding>{};
+		const auto* classCommandMouse = classCommandInputs.size() == 1
+			? std::get_if<MouseBinding>(&classCommandInputs.front()) : nullptr;
+		if (!classCommandSource || !classCommandMouse
+			|| classCommandMouse->Command.Name() != L"Demo.Component.ClassProbe"
+			|| CommandParameterText(classCommandMouse->CommandParameter)
+				!= L"feature-class-button"
+			|| classCommandMouse->CommandTarget != card)
+			return fail(L"FeatureCard class command source 未由 XAML 声明。");
+		_classCommandEnabled = true;
+		_classCommandTrace.clear();
+		_classCommandCanExecuteCount = 0;
+		_classCommandExecutedCount = 0;
+		_nativeClassCommandCanExecuteCount = 0;
+		_nativeClassCommandExecutedCount = 0;
+		_lastCommandParameter.clear();
+		const bool classCommandInvoked = cui::framework::InputAccess::ProcessCommandInput(
+			*classCommandSource,
+			MouseEventArgs(MouseButton::Left, MouseButtonState::Pressed, 1, 0, 0, 0));
+		if (!classCommandInvoked
+			|| _classCommandCanExecuteCount != 1
+			|| _classCommandExecutedCount != 1
+			|| _nativeClassCommandCanExecuteCount != 0
+			|| _nativeClassCommandExecutedCount != 0
+			|| _classCommandTrace != std::vector<std::wstring>{
+				L"QName.CanExecute", L"QName.Executed" }
+			|| _lastCommandParameter != L"feature-class-button")
+		{
+			std::wstring classTrace;
+			for (const auto& item : _classCommandTrace)
+			{
+				if (!classTrace.empty()) classTrace += L"|";
+				classTrace += item;
+			}
+			return fail(L"RoutedCommand exact XAML QName class binding 未先于 native fallback："
+				L"invoked=" + std::to_wstring(classCommandInvoked)
+				+ L", qname can/exec="
+				+ std::to_wstring(_classCommandCanExecuteCount) + L"/"
+				+ std::to_wstring(_classCommandExecutedCount)
+				+ L", native can/exec="
+				+ std::to_wstring(_nativeClassCommandCanExecuteCount) + L"/"
+				+ std::to_wstring(_nativeClassCommandExecutedCount)
+				+ L", parameter=" + _lastCommandParameter
+				+ L", trace=" + classTrace + L"。");
+		}
+
+		_classCommandEnabled = false;
+		_classCommandTrace.clear();
+		_classCommandCanExecuteCount = 0;
+		_classCommandExecutedCount = 0;
+		_nativeClassCommandCanExecuteCount = 0;
+		_nativeClassCommandExecutedCount = 0;
+		const bool disabledClassInputConsumed =
+			cui::framework::InputAccess::ProcessCommandInput(
+				*classCommandSource,
+				MouseEventArgs(MouseButton::Left, MouseButtonState::Pressed, 1, 0, 0, 0));
+		if (!disabledClassInputConsumed
+			|| _classCommandCanExecuteCount != 1
+			|| _classCommandExecutedCount != 0
+			|| _nativeClassCommandCanExecuteCount == 0
+			|| _nativeClassCommandExecutedCount != 0
+			|| _classCommandTrace.empty()
+			|| _classCommandTrace.front() != L"QName.CanExecute"
+			|| std::any_of(
+				_classCommandTrace.begin() + 1, _classCommandTrace.end(),
+				[](const std::wstring& item)
+				{ return item != L"NativeFrameworkElement.CanExecute"; }))
+			return fail(L"QName class binding 禁用路径未继续进入 native fallback。");
+
+		_classCommandEnabled = true;
+		int observerNotifications = 0;
+		bool observedCanExecute = false;
+		std::uint64_t observedGeneration = 0;
+		int requeryNotifications = 0;
+		std::uint64_t suggestedGeneration = 0;
+		auto observerConnection = RoutedCommandManager::ObserveCanExecute(
+			*classCommandSource,
+			RoutedCommandSourceQuery{
+				RoutedCommand(L"Demo.Component.ClassProbe"),
+				std::wstring(L"observer"), card },
+			[&](Control&, const RoutedCommandCanExecuteResult& result)
+			{
+				++observerNotifications;
+				observedCanExecute = result.CanExecute;
+				observedGeneration = result.RequeryGeneration;
+			});
+		auto classRequeryConnection =
+			RoutedCommandManager::SubscribeRequerySuggested(
+				*classCommandSource,
+				[&](const RoutedCommandRequeryEventArgs& args)
+				{
+					if (args.Scope == this)
+					{
+						++requeryNotifications;
+						suggestedGeneration = args.Generation;
+					}
+				});
+		const auto generationBefore =
+			RoutedCommandManager::GetRequeryGeneration(*classCommandSource);
+		_classCommandEnabled = false;
+		const bool invalidated =
+			RoutedCommandManager::InvalidateRequerySuggested(*classCommandSource);
+		cui::PumpUIThreadCallbacks();
+		const auto generationAfter =
+			RoutedCommandManager::GetRequeryGeneration(*classCommandSource);
+		if (!observerConnection.Connected() || !classRequeryConnection.Connected()
+			|| !invalidated || observerNotifications != 2
+			|| observedCanExecute || generationAfter <= generationBefore
+			|| observedGeneration != generationAfter
+			|| requeryNotifications != 1
+			|| suggestedGeneration != generationAfter)
+			return fail(L"Window scoped requery 未自动刷新统一 CanExecute observer。");
+		_classCommandEnabled = true;
+		(void)RoutedCommandManager::InvalidateRequerySuggested(*classCommandSource);
+		cui::PumpUIThreadCallbacks();
+		if (observerNotifications != 3 || !observedCanExecute)
+			return fail(L"CanExecute observer 未在下一代 requery 恢复 enabled。");
+
+		const auto templateInputBindings = rootPart->GetInputBindings();
+		const auto* templateKeyBinding = templateInputBindings.empty()
+			? nullptr : std::get_if<KeyBinding>(&templateInputBindings.front());
+		_classCommandTrace.clear();
+		_classCommandCanExecuteCount = 0;
+		_classCommandExecutedCount = 0;
+		_nativeClassCommandCanExecuteCount = 0;
+		_nativeClassCommandExecutedCount = 0;
+		_lastCommandParameter.clear();
+		const auto controlF10 = Key::F10;
+		if (templateInputBindings.size() != 1 || !templateKeyBinding
+			|| templateKeyBinding->CommandTarget != rootPart
+			|| !cui::framework::InputAccess::ProcessCommandInput(
+				*rootPart, KeyEventArgs(
+					controlF10, ModifierKeys::Control))
+			|| _classCommandCanExecuteCount != 0
+			|| _classCommandExecutedCount != 0
+			|| _nativeClassCommandCanExecuteCount != 1
+			|| _nativeClassCommandExecutedCount != 1
+			|| _lastCommandParameter != L"template-native-input"
+			|| _classCommandTrace != std::vector<std::wstring>{
+				L"NativeFrameworkElement.CanExecute",
+				L"NativeFrameworkElement.Executed" })
+			return fail(L"组件模板 InputBinding.CommandTarget 未按本地 namescope "
+				L"重写，或 native class binding fallback 未执行。");
+		BindingValue state;
+		if (!card->TryGetPropertyValue(L"State", state)
+			|| state.ToString().find(L"Behavior attached") == std::wstring::npos
+			|| statePart->Text != state.ToString()
+			|| statePart->GetPropertyValueSource(L"Text")
+				!= DependencyPropertyValueSource::Template
+			|| statePart->GetPropertyExpressionKind(
+				L"Text", DependencyPropertyValueSource::Template)
+				!= DependencyPropertyExpressionKind::TemplateBinding
+			|| rootPart->GetPropertyValueSource(L"Padding")
+				!= DependencyPropertyValueSource::Template
+			|| rootPart->GetPropertyExpressionKind(
+				L"Padding", DependencyPropertyValueSource::Template)
+				!= DependencyPropertyExpressionKind::TemplateBinding
+			|| rootPart->FindPropertyMetadata(L"CornerRadius") != nullptr)
+			return fail(L"FeatureCard 只读 State 或 TemplateBinding 未生效。");
+		if (card->TrySetPropertyValue(
+			L"State", BindingValue(std::wstring(L"illegal write"))))
+			return fail(L"FeatureCard State 未保持只读契约。");
+		if (card->GetCurrentVisualState(L"InteractionStates") != L"Active")
+			return fail(L"FeatureCard IsActive StateTrigger 未进入 Active。");
+		const bool deactivated = card->TrySetPropertyValue(
+			L"IsActive", BindingValue(false));
+		const auto inactiveState = card->GetCurrentVisualState(
+			L"InteractionStates");
+		const bool activated = card->TrySetPropertyValue(
+			L"IsActive", BindingValue(true));
+		const auto activeState = card->GetCurrentVisualState(
+			L"InteractionStates");
+		const bool hasTransition = card->HasActiveVisualStateAnimations();
+		const auto transitionSource = rootPart->GetPropertyValueSource(
+			L"Canvas.Left");
+		const auto transitionExpression = rootPart->GetPropertyExpressionKind(
+			L"Canvas.Left", DependencyPropertyValueSource::Animation);
+		if (!deactivated || inactiveState != L"Normal" || !activated
+			|| activeState != L"Active" || !hasTransition
+			|| transitionSource != DependencyPropertyValueSource::Animation
+			|| transitionExpression != DependencyPropertyExpressionKind::Animation)
+			return fail(L"FeatureCard VisualTransition 未从 Normal 过渡到 Active。"
+				L" [deactivated=" + std::to_wstring(deactivated)
+				+ L", inactive=" + inactiveState
+				+ L", activated=" + std::to_wstring(activated)
+				+ L", active=" + activeState
+				+ L", clock=" + std::to_wstring(hasTransition)
+				+ L", source=" + std::to_wstring(
+					static_cast<int>(transitionSource))
+				+ L", expression=" + std::to_wstring(
+					static_cast<int>(transitionExpression)) + L"]");
+		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, ::GetTickCount64() + 500)
+			|| card->HasActiveVisualStateAnimations()
+			|| std::abs(Canvas::GetLeft(*(rootPart)) - 12.0f) > 0.001f
+			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+				!= DependencyPropertyValueSource::VisualState)
+			return fail(L"FeatureCard VisualTransition 未收敛到 Active Setter。");
+		const D2D1_COLOR_F localBackColor{ 0.7f, 0.1f, 0.5f, 1.0f };
+		if (!rootPart->TrySetPropertyValue(L"Background", BindingValue(localBackColor))
+			|| rootPart->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Local
+			|| std::abs(rootPart->Background.Color.r - localBackColor.r) > 0.001f
+			|| !rootPart->ClearPropertyValue(L"Background")
+			|| rootPart->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::VisualState)
+			return fail(L"Local > VisualState > Template 的有效值优先级未闭环。");
+		if (!card->RaiseDeclarativeEvent(L"Pulse")
+			|| !card->HasActiveVisualStateAnimations()
+			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+				!= DependencyPropertyValueSource::Animation)
+			return fail(L"FeatureCard EventTrigger 未启动关键帧 Storyboard。");
+		const auto pulseTick = ::GetTickCount64();
+		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, pulseTick + 120)
+			|| Canvas::GetLeft(*(rootPart)) <= 12.0f
+			|| Canvas::GetLeft(*(rootPart)) >= 24.0f)
+			return fail(L"FeatureCard 关键帧 Storyboard 未实际推进。");
+		if (!card->RaiseDeclarativeEvent(L"StopPulse")
+			|| card->HasActiveVisualStateAnimations()
+			|| std::abs(Canvas::GetLeft(*(rootPart)) - 12.0f) > 0.001f
+			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+				!= DependencyPropertyValueSource::VisualState)
+			return fail(L"FeatureCard StopStoryboard 未恢复 VisualState 值源。");
+
+		const auto sourceBefore = _featureInvocations;
+		const auto bubbleBefore = _featureBubbleInvocations;
+		if (!card->RaiseDeclarativeEvent(L"Invoked")
+			|| _featureInvocations != sourceBefore + 1
+			|| _featureBubbleInvocations != bubbleBefore + 1)
+			return fail(L"FeatureCard Invoked 源处理或冒泡路由未闭环。");
+		if (card->GetCurrentVisualState(L"InteractionStates") != L"Invoked")
+			return fail(L"FeatureCard Invoked EventTrigger 未切换视觉状态。");
+		const auto inputsBefore = cardBehavior->InputCount();
+		if (!cui::framework::InputAccess::DispatchInput(*card, PointerInput(
+				InputReportKind::PointerDoubleClick, MouseButton::Left,
+				17, 29, MouseButton::Left))
+			|| cardBehavior->InputCount() != inputsBefore + 1)
+			return fail(L"FeatureCard behavior 未处理规范化宿主输入。");
+		if (!card->TryGetPropertyValue(L"State", state)
+			|| state.ToString().find(L"Behavior input") == std::wstring::npos)
+			return fail(L"FeatureCard behavior 未能更新只读 State。");
+
+		{
+			struct NativeSurfaceTabScope final
+			{
+				TabControl& Tabs;
+				int SelectedIndex;
+				~NativeSurfaceTabScope()
+				{
+					(void)Tabs.SelectItem(SelectedIndex);
+				}
+			};
+			if (!_tabs)
+				return fail(L"NativeSurface 可见输入验证缺少主 TabControl。");
+			NativeSurfaceTabScope restoreTab{ *_tabs, _tabs->SelectedIndex };
+			if (!_tabs->SelectItem(1))
+				return fail(L"无法切换到容器页验证 NativeSurface 输入。");
+
+			auto* scene = dynamic_cast<NativeSurface*>(
+				_xamlSession.Document().FindControlByName(L"demoScene"));
+			auto* sceneBehavior = scene ? dynamic_cast<DemoSceneBehavior*>(
+				scene->Behavior()) : nullptr;
+			if (!scene || scene->GetBehaviorKey() != L"DemoScene"
+				|| !sceneBehavior || !sceneBehavior->Attached())
+				return fail(L"NativeSurface DemoScene behavior 未实际挂接。");
+			const auto inputBefore = sceneBehavior->InputCount();
+			(void)cui::framework::InputAccess::DispatchInput(*scene, PointerInput(
+				InputReportKind::PointerDown, MouseButton::Left,
+				31, 47, MouseButton::Left));
+			if (sceneBehavior->InputCount() != inputBefore + 1)
+				return fail(L"NativeSurface 未将规范化输入交给 C++ behavior。");
+			const std::wstring surfaceText = L"\u03A9\U0001F680";
+			if (!cui::framework::WindowAccess::TextComposition(*this).CommitText(
+				surfaceText, scene, TextCompositionInputKind::Programmatic)
+				|| sceneBehavior->InputCount() != inputBefore + 2
+				|| sceneBehavior->LastTextInput() != surfaceText)
+				return fail(L"NativeSurface 未消费统一的 std::wstring TextInput。");
+
+			if (!_tabs->SelectItem(10))
+				return fail(L"无法切换到 Presentation 页验证 NativeSurface 输入。");
+			auto* presentationSurface = dynamic_cast<NativeSurface*>(
+				_xamlSession.Document().FindControlByName(
+					L"presentationProbeSurface"));
+			auto* presentationBehavior = presentationSurface
+				? dynamic_cast<PresentationProbeBehavior*>(
+					presentationSurface->Behavior()) : nullptr;
+			auto* presentationStatus = dynamic_cast<Label*>(
+				_xamlSession.Document().FindControlByName(L"presentationStatus"));
+			if (!presentationSurface || !presentationStatus
+				|| presentationSurface->GetBehaviorKey() != L"PresentationProbe"
+				|| !presentationBehavior || !presentationBehavior->Attached()
+				|| presentationSurface->GetPresentationWindow() != this
+				|| !Handle)
+				return fail(L"PresentationRenderHost 可见实验未挂接到真实 Window behavior。");
+			const int regionRequests = presentationBehavior->RegionRequests();
+			(void)cui::framework::InputAccess::DispatchInput(
+				*presentationSurface, PointerInput(
+					InputReportKind::PointerDown, MouseButton::Left,
+					73, 91, MouseButton::Left));
+			if (presentationBehavior->RegionRequests() != regionRequests + 1)
+				return fail(L"Presentation NativeSurface 未提交局部 DIP 脏区。");
+		}
+
+		{
+			struct DataTabScope final
+			{
+				TabControl& Tabs;
+				int SelectedIndex;
+				~DataTabScope()
+				{
+					(void)Tabs.SelectItem(SelectedIndex);
+				}
+			};
+			if (!_tabs)
+				return fail(L"数据控件可见验证缺少主 TabControl。");
+			DataTabScope restoreTab{ *_tabs, _tabs->SelectedIndex };
+			if (!_tabs->SelectItem(2))
+				return fail(L"无法切换到数据控件页执行层次容器验证。");
+
+		auto* synchronizedList = dynamic_cast<ListBox*>(
+			_xamlSession.Document().FindControlByName(L"demoListBox"));
+		const auto synchronizedSource = synchronizedList
+			? synchronizedList->GetItemsSource() : BindingListReference{};
+		auto* currentView = synchronizedSource
+			? dynamic_cast<IBindingListCurrentView*>(synchronizedSource.Get()) : nullptr;
+		if (!synchronizedList
+			|| !synchronizedList->GetIsSynchronizedWithCurrentItem()
+			|| !currentView
+			|| synchronizedList->GetSelectedIndex() != currentView->CurrentPosition())
+			return fail(L"ListBox IsSynchronizedWithCurrentItem 未保持初始双端一致：SelectedIndex="
+				+ std::to_wstring(synchronizedList
+					? synchronizedList->GetSelectedIndex() : -999)
+				+ L"，HasSource=" + std::to_wstring(
+					synchronizedSource ? 1 : 0)
+				+ L"，SourceCount=" + std::to_wstring(
+					synchronizedSource
+						? synchronizedSource.Get()->Count() : 0)
+				+ L"，CurrentPosition=" + std::to_wstring(currentView
+					? currentView->CurrentPosition() : -999)
+				+ L"，TemplateError=" + (synchronizedList
+					? synchronizedList->LastTemplateError() : L"<missing>")
+				+ L"。");
+		const int originalPosition = currentView->CurrentPosition();
+		const int targetPosition = synchronizedSource.Get()->Count() > 1
+			? (originalPosition == 0 ? 1 : 0) : -1;
+		if (!currentView->MoveCurrentToPosition(targetPosition)
+			|| synchronizedList->GetSelectedIndex() != targetPosition)
+			return fail(L"CollectionViewSource CurrentItem 未同步到 ListBox selection。");
+		if (!synchronizedList->SelectIndex(originalPosition)
+			|| currentView->CurrentPosition() != originalPosition)
+			return fail(L"ListBox selection 未同步回 CollectionViewSource currency。");
+		auto* tree = dynamic_cast<TreeView*>(
+			_xamlSession.Document().FindControlByName(L"demoTree"));
+		if (!tree || !tree->GetItemsSource()
+			|| tree->GetItemsSource().Get()->Count() != 2
+			|| tree->ItemCount() != 2)
+			return fail(L"TreeView ItemsSource 未从 DataContextSchema 材质化。");
+		auto* rootContainer = tree->ContainerFromIndex(0);
+		if (!rootContainer
+			|| !rootContainer->GetGeneratedHeaderContent()
+			|| !rootContainer->HasItems
+			|| rootContainer->ItemCount() != 3)
+			return fail(L"HierarchicalDataTemplate 根节点或 Children 绑定未材质化。");
+		rootContainer->SetIsExpanded(true);
+		if (rootContainer->ItemCount() != 3
+			|| !rootContainer->ContainerFromIndex(0)
+			|| tree->GeneratedItemCount() != tree->ItemCount())
+			return fail(L"HierarchicalDataTemplate 子节点未实际生成：items="
+				+ std::to_wstring(rootContainer->ItemCount())
+				+ L"，first=" + std::to_wstring(
+					rootContainer->ContainerFromIndex(0) ? 1 : 0)
+				+ L"，treeGenerated="
+				+ std::to_wstring(tree->GeneratedItemCount())
+				+ L"，rootItems=" + std::to_wstring(tree->ItemCount())
+				+ L"，templateError=" + rootContainer->LastTemplateError());
+		const auto selectionBefore = _treeSelectionChanges;
+		if (!tree->SelectItem(rootContainer, false)
+			|| _treeSelectionChanges != selectionBefore + 1
+			|| tree->GetSelectedValue().ToString() != L"Workspace")
+			return fail(L"TreeView SelectedItemChanged 命名处理未闭环。");
+
+		auto* authoredTree = dynamic_cast<TreeView*>(
+			_xamlSession.Document().FindControlByName(L"authoredStateTree"));
+		auto* authoredRoot = authoredTree
+			? authoredTree->ContainerFromIndex(0) : nullptr;
+		auto* authoredSelected = authoredRoot
+			? authoredRoot->ContainerFromIndex(0) : nullptr;
+		const auto* expandedMetadata = authoredRoot
+			? authoredRoot->FindPropertyMetadata(L"IsExpanded") : nullptr;
+		const auto* selectedMetadata = authoredSelected
+			? authoredSelected->FindPropertyMetadata(L"IsSelected") : nullptr;
+		if (!authoredTree || !authoredRoot || !authoredSelected
+			|| !authoredRoot->IsExpanded
+			|| !authoredSelected->IsSelected
+			|| authoredTree->GetSelectedContainer() != authoredSelected
+			|| authoredRoot->GetPropertyValueSource(L"IsExpanded")
+				!= DependencyPropertyValueSource::Local
+			|| authoredSelected->GetPropertyValueSource(L"IsSelected")
+				!= DependencyPropertyValueSource::Local
+			|| !expandedMetadata || expandedMetadata->IsReadOnly()
+			|| expandedMetadata->Design().Persistence
+				!= DependencyPropertyPersistence::Metadata
+			|| !selectedMetadata || selectedMetadata->IsReadOnly()
+			|| selectedMetadata->Design().Persistence
+				!= DependencyPropertyPersistence::Metadata)
+			return fail(L"作者态 TreeViewItem IsExpanded/IsSelected 未形成可写、可持久化的 WPF 容器状态。");
+
+		auto* density = dynamic_cast<ComboBox*>(
+			_xamlSession.Document().FindControlByName(
+				L"composedDensityEditor"));
+		auto* densitySelected = density ? density->GetItem(1) : nullptr;
+		if (!density || density->SelectedIndex != 1 || !densitySelected
+			|| !densitySelected->IsSelected
+			|| densitySelected->GetPropertyValueSource(L"IsSelected")
+				!= DependencyPropertyValueSource::Local)
+			return fail(L"ComboBoxItem.IsSelected 作者态未驱动所属 Selector。");
+		}
+		auto* fileMenu = _menu ? _menu->GetItem(0) : nullptr;
+		auto* helpMenu = _menu ? _menu->GetItem(1) : nullptr;
+		auto* openMenuItem = fileMenu ? fileMenu->GetSubItem(0) : nullptr;
+		auto* aboutMenuItem = helpMenu ? helpMenu->GetSubItem(0) : nullptr;
+		auto* systemSurface = _xamlSession.Document().FindControlByName(
+			L"systemSurface");
+		auto* commandTargetButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"commandTargetButton"));
+		auto* commandTargetTrace = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"commandTargetTrace"));
+		const auto& windowNode = _xamlSession.Document().WindowNode();
+		const auto runtimeInputBindings = GetInputBindings();
+		const auto* openKeyBinding = runtimeInputBindings.empty()
+			? nullptr : std::get_if<KeyBinding>(&runtimeInputBindings.front());
+		DesignerModel::DesignDocument authoredCommandDocument;
+		std::wstring authoredCommandError;
+		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
+			XamlFilePath(), authoredCommandDocument, &authoredCommandError))
+			return fail(L"CommandTarget 作者模型无法重载：" + authoredCommandError);
+		auto findAuthoredNode = [&](const wchar_t* name)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				authoredCommandDocument.Nodes.begin(),
+				authoredCommandDocument.Nodes.end(),
+				[name](const auto& node) { return node.Name == name; });
+			return found == authoredCommandDocument.Nodes.end()
+				? nullptr : &*found;
+		};
+		const auto* authoredButton = findAuthoredNode(L"commandTargetButton");
+		const auto* authoredContextMenu = findAuthoredNode(L"systemContextMenu");
+		auto findAuthoredChild = [&](const DesignerModel::DesignNode* parent,
+			int order, UIClass type) -> const DesignerModel::DesignNode*
+		{
+			if (!parent) return nullptr;
+			const auto found = std::find_if(
+				authoredCommandDocument.Nodes.begin(),
+				authoredCommandDocument.Nodes.end(),
+				[&](const auto& node)
+				{
+					return node.ParentId == parent->Id
+						&& node.Order == order && node.Type == type;
+				});
+			return found == authoredCommandDocument.Nodes.end()
+				? nullptr : &*found;
+		};
+		const auto* authoredRefresh = findAuthoredChild(
+			authoredContextMenu, 1, UIClass::UI_MenuItem);
+		const auto* authoredMore = findAuthoredChild(
+			authoredContextMenu, 3, UIClass::UI_MenuItem);
+		const auto* authoredNestedCopy = findAuthoredChild(
+			authoredMore, 0, UIClass::UI_MenuItem);
+		if (!authoredButton
+			|| authoredButton->Structure.CommandTarget != L"systemSurface"
+			|| !authoredRefresh
+			|| authoredRefresh->Structure.CommandTarget != L"mainMenu"
+			|| !authoredNestedCopy
+			|| authoredNestedCopy->Structure.CommandTarget != L"systemSurface"
+			|| !authoredCommandDocument.ValidateCommandTargetReferences(
+				&authoredCommandError))
+			return fail(L"Button/ContextMenu/嵌套 MenuItem 的 typed CommandTarget "
+				L"作者模型不完整：" + authoredCommandError);
+		if (!_menu || _menu->ItemCount() != 2 || !fileMenu || !helpMenu
+			|| windowNode.CommandBindings.size() != 8
+			|| windowNode.InputBindings.size() != 4
+			|| GetInputBindings().size() != 4
+			|| windowNode.InputBindings.front().CommandTarget != L"mainMenu"
+			|| !openKeyBinding || openKeyBinding->CommandTarget != _menu
+			|| fileMenu->GetDisplayText() != L"文件" || fileMenu->ItemCount() != 3
+			|| !openMenuItem
+			|| openMenuItem->Command != L"Demo.File.Open"
+			|| openMenuItem->CommandParameter != L"menu-open"
+			|| openMenuItem->InputGestureText != L"Ctrl+O"
+			|| dynamic_cast<Separator*>(fileMenu->GetGeneratedItem(1)) == nullptr
+			|| !aboutMenuItem
+			|| aboutMenuItem->Command != L"Demo.Help.About"
+			|| !systemSurface || !commandTargetButton || !commandTargetTrace
+			|| !commandTargetButton->HasAuthoredCommandTarget()
+			|| commandTargetButton->CommandTarget != systemSurface
+			|| commandTargetButton->GetPropertyValueSource(L"CommandTarget")
+				!= DependencyPropertyValueSource::Local)
+			return fail(L"XAML CommandBindings/InputBindings/MenuItem 命令模型未完整物化："
+				+ std::to_wstring(windowNode.CommandBindings.size()) + L" commands, "
+				+ std::to_wstring(windowNode.InputBindings.size()) + L" model inputs, "
+				+ std::to_wstring(GetInputBindings().size()) + L" runtime inputs, "
+				+ std::to_wstring(_menu ? _menu->ItemCount() : 0) + L" menu items。");
+
+		auto resetCommandProbe = [this]()
+		{
+			_commandRouteTrace.clear();
+			_commandPreviewCanExecuteCount = 0;
+			_commandCanExecuteCount = 0;
+			_commandPreviewExecutedCount = 0;
+			_commandExecutedCount = 0;
+			_localCommandCanExecuteCount = 0;
+			_localCommandExecutedCount = 0;
+			_lastCommandParameter.clear();
+			_lastCommandCanExecuteTarget.clear();
+			_lastCommandExecutedTarget.clear();
+			_lastCommandTargetCommand.clear();
+			_pendingCommandTargetCommand.clear();
+			_displayedCommandCanExecuteTarget.clear();
+			_pendingCommandTransactionId = 0;
+			_lastCommandExecutedTransactionId = 0;
+		};
+		auto* commandTargetFocusPeer = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"notifyToggle"));
+		TabItem* commandTargetPage = nullptr;
+		for (auto* ancestor = commandTargetButton
+			? commandTargetButton->GetVisualParent() : nullptr;
+			ancestor; ancestor = ancestor->GetVisualParent())
+			if ((commandTargetPage = dynamic_cast<TabItem*>(ancestor))) break;
+		const int commandTargetPageIndex = _tabs && commandTargetPage
+			? _tabs->IndexOfItem(commandTargetPage) : -1;
+		if (!_tabs || !commandTargetFocusPeer || commandTargetPageIndex < 0)
+			return fail(L"CommandTarget 可见实验缺少所属 TabItem 或焦点对照控件。");
+		const auto commandTargetFocusBefore = GetKeyboardFocusedElement();
+		const auto commandTargetPageBefore = _tabs->SelectedIndex;
+		const bool commandTargetPageActivated =
+			_tabs->SelectItem(commandTargetPageIndex)
+			&& _tabs->SelectedIndex == commandTargetPageIndex;
+		SetKeyboardFocus(commandTargetFocusPeer, false);
+		const bool commandTargetFocusIsElsewhere =
+			GetKeyboardFocusedElement() == commandTargetFocusPeer;
+		resetCommandProbe();
+		const bool explicitButtonInvoked = commandTargetButton->Invoke();
+		const bool explicitButtonIgnoredFocus =
+			GetKeyboardFocusedElement() == commandTargetFocusPeer;
+		const auto explicitButtonParameter = _lastCommandParameter;
+		const auto explicitButtonCanExecuteTarget =
+			_lastCommandCanExecuteTarget;
+		const auto explicitButtonExecutedTarget =
+			_lastCommandExecutedTarget;
+		const auto explicitButtonCommand = _lastCommandTargetCommand;
+		const auto explicitButtonTrace = commandTargetTrace->Text;
+		const bool commandTargetRequeryInvalidated =
+			RoutedCommandManager::InvalidateRequerySuggested(*commandTargetButton);
+		cui::PumpUIThreadCallbacks();
+		const auto explicitButtonTraceAfterRequery = commandTargetTrace->Text;
+		_tabs->SelectedIndex = commandTargetPageBefore;
+		const bool commandTargetPageRestored =
+			_tabs->SelectedIndex == commandTargetPageBefore;
+		SetKeyboardFocus(commandTargetFocusBefore, false);
+		const bool commandTargetFocusRestored =
+			GetKeyboardFocusedElement() == commandTargetFocusBefore;
+		const auto explicitButtonTraceAfterRestore = commandTargetTrace->Text;
+		if (!commandTargetPageActivated || !commandTargetFocusIsElsewhere
+			|| !explicitButtonInvoked
+			|| !explicitButtonIgnoredFocus
+			|| !commandTargetRequeryInvalidated
+			|| !commandTargetPageRestored
+			|| !commandTargetFocusRestored
+			|| explicitButtonParameter != L"target-button-system-surface"
+			|| explicitButtonCanExecuteTarget != L"systemSurface"
+			|| explicitButtonExecutedTarget != L"systemSurface"
+			|| explicitButtonCommand != L"Demo.System.Refresh"
+			|| explicitButtonTrace
+				!= L"CanExecute target=systemSurface · Executed target=systemSurface · "
+					L"Demo.System.Refresh"
+			|| explicitButtonTraceAfterRequery != explicitButtonTrace
+			|| explicitButtonTraceAfterRestore != explicitButtonTrace)
+			return fail(L"Button.CommandTarget 未脱离当前焦点并从 systemSurface "
+				L"完成 CanExecute/Executed 路由。trace="
+				+ explicitButtonTrace
+				+ L" [invoked=" + std::to_wstring(explicitButtonInvoked)
+				+ L", focusElsewhere="
+				+ std::to_wstring(commandTargetFocusIsElsewhere)
+				+ L", focusPreserved="
+				+ std::to_wstring(explicitButtonIgnoredFocus)
+				+ L", pageActivated="
+				+ std::to_wstring(commandTargetPageActivated)
+				+ L", requery="
+				+ std::to_wstring(commandTargetRequeryInvalidated)
+				+ L", page/focus restored="
+				+ std::to_wstring(commandTargetPageRestored) + L"/"
+				+ std::to_wstring(commandTargetFocusRestored)
+				+ L", parameter=" + explicitButtonParameter
+				+ L", canTarget=" + explicitButtonCanExecuteTarget
+				+ L", executedTarget=" + explicitButtonExecutedTarget
+				+ L", command=" + explicitButtonCommand
+				+ L", traceAfterRequery=" + explicitButtonTraceAfterRequery
+				+ L", traceAfterRestore=" + explicitButtonTraceAfterRestore
+				+ L"]");
+
+		resetCommandProbe();
+		if (!openMenuItem->Invoke()
+			|| _commandPreviewCanExecuteCount != 1
+			|| _commandCanExecuteCount != 1
+			|| _commandPreviewExecutedCount != 1
+			|| _commandExecutedCount != 1
+			|| _lastCommandParameter != L"menu-open"
+			|| _commandRouteTrace != std::vector<std::wstring>{
+				L"PreviewCanExecute:Demo.File.Open",
+				L"CanExecute:Demo.File.Open",
+				L"PreviewExecuted:Demo.File.Open",
+				L"Executed:Demo.File.Open" }
+			|| !_statusText
+			|| _statusText->Text != L"RoutedCommand: Open · menu-open")
+			return fail(L"Menu 命令未完成 PreviewCanExecute → CanExecute → PreviewExecuted → Executed。");
+
+		resetCommandProbe();
+		const auto controlO = Key::O;
+		if (!cui::framework::InputAccess::ProcessCommandInput(
+			*_basicButton, KeyEventArgs(
+				controlO, ModifierKeys::Control))
+			|| _lastCommandParameter != L"keyboard-open"
+			|| _commandPreviewCanExecuteCount != 1
+			|| _commandCanExecuteCount != 1
+			|| _commandPreviewExecutedCount != 1
+			|| _commandExecutedCount != 1)
+			return fail(L"Window.KeyBinding Ctrl+O 未从焦点源路由到 RoutedCommand。");
+
+		resetCommandProbe();
+		if (!cui::framework::InputAccess::ProcessCommandInput(
+			*_basicButton,
+			MouseEventArgs(MouseButton::Middle, MouseButtonState::Pressed, 1, 0, 0, 0),
+			ModifierKeys::Control)
+			|| _lastCommandParameter != L"mouse-refresh"
+			|| _commandCanExecuteCount != 1
+			|| _commandExecutedCount != 1)
+			return fail(L"Window.MouseBinding Ctrl+MiddleClick 未路由到 RoutedCommand。");
+
+		auto* localCommandScope = dynamic_cast<Panel*>(
+			_xamlSession.Document().FindControlByName(L"wpfHierarchyScope"));
+		auto* localCommandButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"wpfDispatcherProbe"));
+		resetCommandProbe();
+		const auto controlShiftP = Key::P;
+		const auto localInputCount = localCommandScope
+			? localCommandScope->GetInputBindings().size() : 0;
+		const auto localButtonCommand = localCommandButton
+			? static_cast<std::wstring>(localCommandButton->Command) : std::wstring{};
+		const bool localKeyProcessed = localCommandScope && localCommandButton
+			&& localInputCount == 2
+			&& localButtonCommand == L"Demo.Wpf.Probe"
+			&& localCommandButton->GetDisplayText()
+				== L"Run Dispatcher/命令探针"
+			&& localCommandButton->GetEffectiveAccessKey() == L'R'
+			&& localCommandButton->GetAccessibilitySnapshot().KeyboardShortcut
+				== L"Alt+R"
+			&& cui::framework::InputAccess::ProcessCommandInput(
+				*localCommandButton, KeyEventArgs(controlShiftP,
+					ModifierKeys::Control | ModifierKeys::Shift));
+		if (!localKeyProcessed
+			|| _localCommandCanExecuteCount != 1
+			|| _localCommandExecutedCount != 1
+			|| _commandPreviewExecutedCount != 1
+			|| _commandExecutedCount != 0
+			|| _lastCommandParameter != L"local-keybinding"
+			|| _commandRouteTrace != std::vector<std::wstring>{
+				L"LocalCanExecute:Demo.Wpf.Probe",
+				L"PreviewExecuted:Demo.Wpf.Probe",
+				L"LocalExecuted:Demo.Wpf.Probe" })
+		{
+			std::wstring routeTrace;
+			for (const auto& item : _commandRouteTrace)
+			{
+				if (!routeTrace.empty()) routeTrace += L"|";
+				routeTrace += item;
+			}
+			return fail(L"控件级 CommandBinding/InputBinding 未在局部 route 闭环："
+				L"scope=" + std::to_wstring(localCommandScope != nullptr)
+				+ L", button=" + std::to_wstring(localCommandButton != nullptr)
+				+ L", inputs=" + std::to_wstring(localInputCount)
+				+ L", command=" + localButtonCommand
+				+ L", processed=" + std::to_wstring(localKeyProcessed)
+				+ L", focused=" + std::to_wstring(
+					GetKeyboardFocusedElement() == localCommandButton)
+				+ L", enabled=" + std::to_wstring(localCommandButton
+					&& localCommandButton->IsEffectivelyEnabled())
+				+ L", can/exec=" + std::to_wstring(_localCommandCanExecuteCount)
+				+ L"/" + std::to_wstring(_localCommandExecutedCount)
+				+ L", parameter=" + _lastCommandParameter
+				+ L", trace=" + routeTrace + L"。");
+		}
+
+		resetCommandProbe();
+		if (!cui::framework::InputAccess::ProcessCommandInput(
+			*localCommandButton,
+			MouseEventArgs(MouseButton::Right, MouseButtonState::Pressed, 1, 0, 0, 0),
+			ModifierKeys::Alt)
+			|| _localCommandCanExecuteCount != 1
+			|| _localCommandExecutedCount != 1
+			|| _commandPreviewExecutedCount != 1
+			|| _commandExecutedCount != 0
+			|| _lastCommandParameter != L"local-mousebinding"
+			|| _commandRouteTrace != std::vector<std::wstring>{
+				L"LocalCanExecute:Demo.Wpf.Probe",
+				L"PreviewExecuted:Demo.Wpf.Probe",
+				L"LocalExecuted:Demo.Wpf.Probe" })
+			return fail(L"控件级 MouseBinding 未在局部 route 闭环。");
+
+		auto* contextMore = _systemContextMenu
+			? _systemContextMenu->GetItem(3) : nullptr;
+		auto* refreshContextItem = _systemContextMenu
+			? _systemContextMenu->GetItem(1) : nullptr;
+		auto* copyContextItem = contextMore
+			? contextMore->GetSubItem(0) : nullptr;
+		if (!_systemContextMenu || !_systemContextMenu->GetItem(0)
+			|| _systemContextMenu->GetItem(0)->Command
+				!= L"Demo.System.NewProject"
+			|| !refreshContextItem
+			|| refreshContextItem->Command != L"Demo.System.Refresh"
+			|| refreshContextItem->InputGestureText != L"F5"
+			|| !refreshContextItem->HasAuthoredCommandTarget()
+			|| refreshContextItem->CommandTarget != _menu
+			|| refreshContextItem->GetPropertyValueSource(L"CommandTarget")
+				!= DependencyPropertyValueSource::Local
+			|| dynamic_cast<Separator*>(
+				_systemContextMenu->GetGeneratedItem(2)) == nullptr
+			|| !contextMore || contextMore->ItemCount() != 2
+			|| !copyContextItem
+			|| !copyContextItem->HasAuthoredCommandTarget()
+			|| copyContextItem->CommandTarget != systemSurface
+			|| copyContextItem->GetPropertyValueSource(L"CommandTarget")
+				!= DependencyPropertyValueSource::Local
+			|| !contextMore->GetSubItem(1)
+			|| contextMore->GetSubItem(1)->Command != L"Demo.System.About"
+			|| _systemContextMenu->GetItem(4) != nullptr)
+			return fail(L"ContextMenu.Items 未从 XAML 完整物化层级与分隔符。");
+		resetCommandProbe();
+		_systemContextMenu->ShowAt(_basicButton, 0, 0);
+		const bool contextMenuOpened = _systemContextMenu->IsOpen;
+		const bool contextPlacementTargetShared =
+			_systemContextMenu->PlacementTarget == _basicButton;
+		const auto contextPlacementTrace = _commandRouteTrace;
+		const int contextPlacementCanExecuteCount = _commandCanExecuteCount;
+		resetCommandProbe();
+		const bool contextCommandInvoked = refreshContextItem->Invoke();
+		const int contextInvokePreviewCanExecuteCount =
+			_commandPreviewCanExecuteCount;
+		const int contextInvokeCanExecuteCount = _commandCanExecuteCount;
+		const int contextInvokePreviewExecutedCount =
+			_commandPreviewExecutedCount;
+		const int contextInvokeExecutedCount = _commandExecutedCount;
+		const auto contextInvokeParameter = _lastCommandParameter;
+		const auto contextInvokeTrace = _commandRouteTrace;
+		const auto contextInvokeStatus = _statusText
+			? _statusText->Text : std::wstring{};
+		const auto contextInvokeCanExecuteTarget =
+			_lastCommandCanExecuteTarget;
+		const auto contextInvokeExecutedTarget =
+			_lastCommandExecutedTarget;
+		const auto contextInvokeTargetText = commandTargetTrace->Text;
+		resetCommandProbe();
+		const bool nestedContextCommandInvoked = copyContextItem->Invoke();
+		const auto nestedContextCanExecuteTarget =
+			_lastCommandCanExecuteTarget;
+		const auto nestedContextExecutedTarget =
+			_lastCommandExecutedTarget;
+		const auto nestedContextParameter = _lastCommandParameter;
+		const auto nestedContextTargetText = commandTargetTrace->Text;
+		_systemContextMenu->Hide();
+		const auto nestedContextTargetTextAfterHide = commandTargetTrace->Text;
+		const bool contextTargetsSurvivedHide =
+			_systemContextMenu->PlacementTarget == nullptr
+			&& refreshContextItem->HasAuthoredCommandTarget()
+			&& refreshContextItem->CommandTarget == _menu
+			&& copyContextItem->HasAuthoredCommandTarget()
+			&& copyContextItem->CommandTarget == systemSurface;
+		if (!contextMenuOpened
+			|| !contextPlacementTargetShared
+			|| contextPlacementCanExecuteCount != 4
+			|| contextPlacementTrace != std::vector<std::wstring>{
+				L"CanExecute:Demo.System.NewProject",
+				L"CanExecute:Demo.System.Refresh",
+				L"CanExecute:Demo.System.CopyInfo",
+				L"CanExecute:Demo.System.About" }
+			|| !contextCommandInvoked
+			|| contextInvokeCanExecuteCount != 1
+			|| contextInvokeExecutedCount != 1
+			|| contextInvokePreviewCanExecuteCount != 0
+			|| contextInvokePreviewExecutedCount != 1
+			|| contextInvokeParameter != L"context-refresh"
+			|| contextInvokeCanExecuteTarget != L"mainMenu"
+			|| contextInvokeExecutedTarget != L"mainMenu"
+			|| contextInvokeTargetText
+				!= L"CanExecute target=mainMenu · Executed target=mainMenu · "
+					L"Demo.System.Refresh"
+			|| contextInvokeTrace != std::vector<std::wstring>{
+				L"CanExecute:Demo.System.Refresh",
+				L"PreviewExecuted:Demo.System.Refresh",
+				L"Executed:Demo.System.Refresh" }
+			|| contextInvokeStatus
+				!= L"ContextMenu RoutedCommand: Refresh · context-refresh"
+			|| !nestedContextCommandInvoked
+			|| nestedContextCanExecuteTarget != L"systemSurface"
+			|| nestedContextExecutedTarget != L"systemSurface"
+			|| nestedContextParameter != L"context-copy"
+			|| nestedContextTargetText
+				!= L"CanExecute target=systemSurface · Executed target=systemSurface · "
+					L"Demo.System.CopyInfo"
+			|| nestedContextTargetTextAfterHide != nestedContextTargetText
+			|| !contextTargetsSurvivedHide)
+		{
+			auto joinTrace = [](const std::vector<std::wstring>& trace)
+			{
+				std::wstring result;
+				for (const auto& item : trace)
+				{
+					if (!result.empty()) result += L"|";
+					result += item;
+				}
+				return result;
+			};
+			return fail(L"ContextMenu PlacementTarget 与显式/嵌套 CommandTarget "
+				L"未按 XAML 分离："
+				L"opened=" + std::to_wstring(contextMenuOpened)
+				+ L", invoked=" + std::to_wstring(contextCommandInvoked)
+				+ L", placement=" + std::to_wstring(contextPlacementTargetShared)
+				+ L", enabled=" + std::to_wstring(
+					refreshContextItem->IsEffectivelyEnabled())
+				+ L", placementCan="
+				+ std::to_wstring(contextPlacementCanExecuteCount)
+				+ L", placementTrace=" + joinTrace(contextPlacementTrace)
+				+ L", invoke previewCan/can/previewExec/exec="
+				+ std::to_wstring(contextInvokePreviewCanExecuteCount) + L"/"
+				+ std::to_wstring(contextInvokeCanExecuteCount) + L"/"
+				+ std::to_wstring(contextInvokePreviewExecutedCount) + L"/"
+				+ std::to_wstring(contextInvokeExecutedCount)
+				+ L", parameter=" + contextInvokeParameter
+				+ L", invokeTrace=" + joinTrace(contextInvokeTrace)
+				+ L", refreshTarget=" + contextInvokeCanExecuteTarget + L"/"
+				+ contextInvokeExecutedTarget
+				+ L", nestedTarget=" + nestedContextCanExecuteTarget + L"/"
+				+ nestedContextExecutedTarget
+				+ L", targetAfterHide=" + nestedContextTargetTextAfterHide
+				+ L", targetsSurvivedHide="
+				+ std::to_wstring(contextTargetsSurvivedHide)
+				+ L", status=" + contextInvokeStatus
+				+ L"。");
+		}
+		if (!copyContextItem || !copyContextItem->IsLocallyEnabled()
+			|| !copyContextItem->IsEffectivelyEnabled())
+			return fail(L"MenuItem 初始本地/有效 IsEnabled 状态无效。");
+		_copyInfoCommandEnabled = false;
+		(void)RoutedCommandManager::InvalidateRequerySuggested(
+			*_systemContextMenu);
+		cui::PumpUIThreadCallbacks();
+		if (!copyContextItem->IsLocallyEnabled()
+			|| copyContextItem->IsEffectivelyEnabled()
+			|| copyContextItem->Invoke())
+			return fail(L"MenuItem 未把 CanExecute=false 投影为只读有效禁用状态。");
+		copyContextItem->IsEnabled = false;
+		_copyInfoCommandEnabled = true;
+		(void)RoutedCommandManager::InvalidateRequerySuggested(
+			*_systemContextMenu);
+		cui::PumpUIThreadCallbacks();
+		if (copyContextItem->IsLocallyEnabled()
+			|| copyContextItem->IsEffectivelyEnabled()
+			|| copyContextItem->Invoke())
+			return fail(L"MenuItem requery 覆盖了作者声明的本地 IsEnabled=false。");
+		copyContextItem->IsEnabled = true;
+		(void)RoutedCommandManager::InvalidateRequerySuggested(
+			*_systemContextMenu);
+		cui::PumpUIThreadCallbacks();
+		if (!copyContextItem->IsLocallyEnabled()
+			|| !copyContextItem->IsEffectivelyEnabled())
+			return fail(L"MenuItem 本地 IsEnabled 恢复后未显露 CanExecute=true。");
+		resetCommandProbe();
+		int requeryCount = 0;
+		std::uint64_t lastRequeryGeneration = 0;
+		auto requeryConnection =
+			RoutedCommandManager::SubscribeRequerySuggested(*_menu,
+				[&](const RoutedCommandRequeryEventArgs& args)
+				{
+					++requeryCount;
+					lastRequeryGeneration = args.Generation;
+				});
+		const auto requeryBefore =
+			RoutedCommandManager::GetRequeryGeneration(*_menu);
+		const bool requeryInvalidated =
+			RoutedCommandManager::InvalidateRequerySuggested(*_menu);
+		cui::PumpUIThreadCallbacks();
+		if (!requeryConnection.Connected() || !requeryInvalidated
+			|| requeryCount != 1 || lastRequeryGeneration <= requeryBefore
+			|| lastRequeryGeneration
+				!= RoutedCommandManager::GetRequeryGeneration(*_menu))
+			return fail(L"RoutedCommand Window-scope requery 通知不可观察。");
+
+		auto* toolBasic = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolBasic"));
+		auto* toolData = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolData"));
+		auto* toolAnalytics = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolAnalytics"));
+		auto* toolSystem = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolSystem"));
+		auto* toolSeparator =
+			_xamlSession.Document().FindControlByName(L"toolSeparator");
+		auto* toolIcon1 = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolIcon1"));
+		auto* toolIcon2 = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolIcon2"));
+		auto* toolIcon3 = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"toolIcon3"));
+		auto* toolIconImage1 = dynamic_cast<Image*>(
+			_xamlSession.Document().FindControlByName(L"toolIconImage1"));
+		auto* toolIconImage2 = dynamic_cast<Image*>(
+			_xamlSession.Document().FindControlByName(L"toolIconImage2"));
+		auto* toolIconImage3 = dynamic_cast<Image*>(
+			_xamlSession.Document().FindControlByName(L"toolIconImage3"));
+		auto* toolItemsHost = _toolBar
+			? dynamic_cast<StackPanel*>(
+				cui::framework::TemplateAccess::GetItemsHost(*_toolBar)) : nullptr;
+		const std::array<Control*, 8> authoredToolItems{
+			toolBasic, toolData, toolAnalytics, toolSystem, toolSeparator,
+			toolIcon1, toolIcon2, toolIcon3 };
+		bool authoredToolOwnershipValid = _toolBar && toolItemsHost;
+		if (authoredToolOwnershipValid)
+		{
+			for (size_t index = 0; index < authoredToolItems.size(); ++index)
+			{
+				auto* item = authoredToolItems[index];
+				if (!item || _toolBar->GetAuthoredItem(index) != item
+					|| item->GetLogicalParent() != _toolBar
+					|| item->GetVisualParent() != toolItemsHost)
+				{
+					authoredToolOwnershipValid = false;
+					break;
+				}
+			}
+		}
+		if (!_toolBar || _toolBar->VisualChildCount() != 1
+			|| _toolBar->GetVisualChild(0) != toolItemsHost
+			|| _toolBar->AuthoredItemCount() != authoredToolItems.size()
+			|| !toolItemsHost
+			|| toolItemsHost->VisualChildCount()
+				!= static_cast<int>(authoredToolItems.size())
+			|| toolItemsHost->GetOrientation() != Orientation::Horizontal
+			|| !authoredToolOwnershipValid
+			|| !toolIcon1 || !toolIcon2 || !toolIcon3
+			|| !toolIconImage1 || !toolIconImage2 || !toolIconImage3
+			|| !toolIconImage1->Source || !toolIconImage2->Source
+			|| !toolIconImage3->Source
+			|| toolIconImage1->Stretch
+				!= cui::drawing::ImageBrushStretch::Uniform
+			|| toolIconImage2->Stretch
+				!= cui::drawing::ImageBrushStretch::Uniform
+			|| toolIconImage3->Stretch
+				!= cui::drawing::ImageBrushStretch::Uniform)
+			return fail(L"ToolBar authored Items/ItemsHost 所有权未按 WPF 语义物化。");
+		resetCommandProbe();
+		if (!toolIcon1->Invoke()
+			|| toolIcon1->Command != L"Demo.File.Open"
+			|| _lastCommandParameter != L"toolbar-open"
+			|| _commandPreviewCanExecuteCount != 1
+			|| _commandCanExecuteCount != 1
+			|| _commandPreviewExecutedCount != 1
+			|| _commandExecutedCount != 1)
+			return fail(L"Button.Command/CommandParameter 未进入 Window.CommandBinding。");
+		const auto previousPage = _tabs->SelectedIndex;
+		if (!toolData->Invoke() || _tabs->SelectedIndex != 2)
+			return fail(L"XAML ToolBar 按钮命名事件未驱动页面导航。");
+		(void)_tabs->SelectItem(previousPage);
+
+		if (!_statusBar || _statusBar->ItemCount() != 2
+			|| _statusBar->GeneratedItemCount() != 2
+			|| dynamic_cast<StatusBarItem*>(
+				_statusBar->GetGeneratedItem(0)) == nullptr
+			|| GetStatusBarItemText(1) != L"DemoWindow.cui.xaml")
+			return fail(L"StatusBar ItemsSource/StatusBarItem 未从 XAML 完整物化。");
+
+		auto* relativePanel = dynamic_cast<RelativePanel*>(
+			_xamlSession.Document().FindControlByName(L"demoRelative"));
+		auto* relativeCenter = _xamlSession.Document().FindControlByName(
+			L"relativeCenter");
+		auto* relativeConstraints = relativePanel && relativeCenter
+			? relativePanel->GetConstraints(relativeCenter) : nullptr;
+		if (!relativeConstraints || !relativeConstraints->CenterHorizontal
+			|| !relativeConstraints->CenterVertical)
+			return fail(L"RelativePanel attached constraints 未从 XAML 物化。");
+
+		auto* layoutSurface = dynamic_cast<Canvas*>(
+			_xamlSession.Document().FindControlByName(L"layoutSurface"));
+		auto* canvasProbe = dynamic_cast<Canvas*>(
+			_xamlSession.Document().FindControlByName(L"canvasSemanticsProbe"));
+		auto* canvasLeftWins = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"canvasLeftWins"));
+		auto* canvasRightBottom = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"canvasRightBottom"));
+		const auto canvasType = canvasProbe
+			? canvasProbe->GetDeclarativeTypeId() : RuntimeTypeId{};
+		std::wstring canvasTag;
+		if (!layoutSurface || !canvasProbe || !canvasLeftWins || !canvasRightBottom
+			|| canvasType.NamespaceUri != L"urn:cui"
+			|| canvasType.LocalName != L"Canvas"
+			|| canvasProbe->Cursor != CursorKind::Cross
+			|| canvasProbe->GetPropertyValueSource(L"Cursor")
+				!= DependencyPropertyValueSource::Local
+			|| canvasLeftWins->Cursor != CursorKind::Cross
+			|| canvasLeftWins->GetPropertyValueSource(L"Cursor")
+				!= DependencyPropertyValueSource::Inherited
+			|| canvasLeftWins->ResolvePointerCursor(1, 1) != CursorKind::Cross
+			|| !canvasProbe->Tag.TryGetString(canvasTag)
+			|| canvasTag != L"cursor-inheritance-root"
+			|| canvasProbe->GetPropertyValueSource(L"Tag")
+				!= DependencyPropertyValueSource::Local
+			|| std::abs(Canvas::GetRight(*(canvasProbe)) - 12.5f) > 0.001f
+			|| std::abs(Canvas::GetTop(*(canvasProbe)) - 4.5f) > 0.001f
+			|| std::abs(Canvas::GetLeft(*(canvasLeftWins)) - 0.25f) > 0.001f
+			|| std::abs(Canvas::GetRight(*(canvasLeftWins)) - 40.0f) > 0.001f
+			|| std::abs(Canvas::GetRight(*(canvasRightBottom)) - 0.75f) > 0.001f
+			|| std::abs(Canvas::GetBottom(*(canvasRightBottom)) - 0.5f) > 0.001f)
+			return fail(L"Canvas 附加属性、Cursor 继承或对象 Tag 未从 XAML 物化。");
+		layoutSurface->UpdateLayout();
+		canvasProbe->UpdateLayout();
+		const auto surfaceSize = layoutSurface->GetActualSizeDip();
+		const auto probeSize = canvasProbe->GetActualSizeDip();
+		const auto rightBottomSize = canvasRightBottom->GetActualSizeDip();
+		const auto expectedProbeX = surfaceSize.width
+			- Canvas::GetRight(*(canvasProbe)) - probeSize.width;
+		const auto expectedProbeY = Canvas::GetTop(*(canvasProbe));
+		const auto expectedRightBottomX = probeSize.width
+			- Canvas::GetRight(*(canvasRightBottom)) - rightBottomSize.width
+			- canvasRightBottom->Margin.Right;
+		const auto expectedRightBottomY = probeSize.height
+			- Canvas::GetBottom(*(canvasRightBottom)) - rightBottomSize.height
+			- canvasRightBottom->Margin.Bottom;
+		const auto probeLocation = canvasProbe->GetActualLocationDip();
+		const auto leftWinsLocation = canvasLeftWins->GetActualLocationDip();
+		const auto rightBottomLocation = canvasRightBottom->GetActualLocationDip();
+		if (std::abs(probeLocation.x - expectedProbeX) > 0.001f
+			|| std::abs(probeLocation.y - expectedProbeY) > 0.001f
+			|| std::abs(leftWinsLocation.x - 1.25f) > 0.001f
+			|| std::abs(leftWinsLocation.y - 2.5f) > 0.001f
+			|| std::abs(rightBottomLocation.x - expectedRightBottomX) > 0.001f
+			|| std::abs(rightBottomLocation.y - expectedRightBottomY) > 0.001f)
+			return fail(L"Canvas Left/Top 优先级、Right/Bottom 回退或 Margin 布局不正确。"
+				L" probe=" + std::to_wstring(probeLocation.x) + L","
+				+ std::to_wstring(probeLocation.y) + L" expected="
+				+ std::to_wstring(expectedProbeX) + L","
+				+ std::to_wstring(expectedProbeY) + L"; left="
+				+ std::to_wstring(leftWinsLocation.x) + L","
+				+ std::to_wstring(leftWinsLocation.y) + L" expected=1.25,2.5; right="
+				+ std::to_wstring(rightBottomLocation.x) + L","
+				+ std::to_wstring(rightBottomLocation.y) + L" expected="
+				+ std::to_wstring(expectedRightBottomX) + L","
+				+ std::to_wstring(expectedRightBottomY));
+
+		struct WpfTabScope final
+		{
+			TabControl& Tabs;
+			int SelectedIndex;
+			~WpfTabScope()
+			{
+				Tabs.SelectedIndex = SelectedIndex;
+			}
+		} restoreWpfTab{ *_tabs, _tabs->SelectedIndex };
+		if (!_tabs->SelectItem(8))
+			return fail(L"无法切换到 WPF 语义实验页执行可见输入验证。");
+
+		auto* wpfSurface = _xamlSession.Document().FindControlByName(
+			L"wpfLabSurface");
+		auto* typographyScope = _xamlSession.Document().FindControlByName(
+			L"wpfBindingScope");
+		auto* typographyOverride = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfTypographyOverride"));
+		auto* editor = dynamic_cast<TextBox*>(
+			_xamlSession.Document().FindControlByName(L"wpfTwoWayEditor"));
+		auto* elementMirror = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfElementMirror"));
+		auto* selfValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfSelfValue"));
+		auto* ancestorValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfAncestorValue"));
+		auto* fallbackValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfFallbackValue"));
+		auto* nullValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfNullValue"));
+		auto* indexerValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfIndexerValue"));
+		auto* keyedIndexerValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfKeyedIndexerValue"));
+		auto* convertedValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfConvertedValue"));
+		auto* multiValue = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfMultiValue"));
+		if (!wpfSurface || !typographyScope || !typographyOverride
+			|| !editor || !elementMirror || !selfValue
+			|| !ancestorValue || !fallbackValue || !nullValue || !indexerValue
+			|| !keyedIndexerValue || !convertedValue || !multiValue)
+			return fail(L"WPF 语义实验区的 XAML 控件树未完整物化。");
+		if (editor->SelectionBrush.Kind != cui::drawing::BrushKind::Solid
+			|| std::abs(editor->SelectionBrush.Color.r - 0.4862745f) > 0.001f
+			|| std::abs(editor->SelectionBrush.Color.g - 0.2274510f) > 0.001f
+			|| std::abs(editor->SelectionBrush.Color.b - 0.9294118f) > 0.001f
+			|| std::abs(editor->SelectionOpacity - 0.45) > 0.001
+			|| editor->SelectionTextBrush.Kind
+				!= cui::drawing::BrushKind::Solid
+			|| editor->SelectionTextBrush.Color.r < 0.999f
+			|| editor->CaretBrush.Kind != cui::drawing::BrushKind::Solid
+			|| std::abs(editor->CaretBrush.Color.r - 0.4862745f) > 0.001f)
+			return fail(L"TextBoxBase SelectionBrush/SelectionOpacity/"
+				L"SelectionTextBrush/CaretBrush 未按 XAML 物化：selectionKind="
+				+ std::to_wstring(static_cast<int>(editor->SelectionBrush.Kind))
+				+ L"，selection=" + std::to_wstring(
+					editor->SelectionBrush.Color.r) + L","
+				+ std::to_wstring(editor->SelectionBrush.Color.g) + L","
+				+ std::to_wstring(editor->SelectionBrush.Color.b)
+				+ L"，opacity=" + std::to_wstring(editor->SelectionOpacity)
+				+ L"，textKind=" + std::to_wstring(static_cast<int>(
+					editor->SelectionTextBrush.Kind))
+				+ L"，textR=" + std::to_wstring(
+					editor->SelectionTextBrush.Color.r)
+				+ L"，caretKind=" + std::to_wstring(static_cast<int>(
+					editor->CaretBrush.Kind))
+				+ L"，caretR=" + std::to_wstring(
+					editor->CaretBrush.Color.r));
+		if (GetPropertyValueSource(L"DataContext")
+				!= DependencyPropertyValueSource::Local
+			|| GetDataContext().Get() != _dataContext.get()
+			|| typographyScope->GetPropertyValueSource(L"DataContext")
+				!= DependencyPropertyValueSource::Inherited
+			|| typographyScope->GetDataContext().Get() != _dataContext.get()
+			|| nullValue->GetDataContext().Get() != _dataContext.get()
+			|| indexerValue->GetDataContext().Get() != _dataContext.get())
+			return fail(L"Window.DataContext 未作为真实 Content 继承边界传播。");
+		if (typographyScope->GetPropertyValueSource(L"FontFamily")
+				!= DependencyPropertyValueSource::Local
+			|| typographyScope->GetPropertyExpressionKind(
+				L"FontFamily", DependencyPropertyValueSource::Local)
+				!= DependencyPropertyExpressionKind::DynamicResource
+			|| typographyScope->GetPropertyExpressionKind(
+				L"FontSize", DependencyPropertyValueSource::Local)
+				!= DependencyPropertyExpressionKind::DynamicResource
+			|| elementMirror->GetPropertyValueSource(L"FontFamily")
+				!= DependencyPropertyValueSource::Inherited
+			|| elementMirror->GetPropertyValueSource(L"FontSize")
+				!= DependencyPropertyValueSource::Inherited
+			|| elementMirror->FontFamily != L"Consolas"
+			|| std::abs(elementMirror->FontSize - 15.0f) > 0.001f
+			|| typographyOverride->GetPropertyValueSource(L"FontSize")
+				!= DependencyPropertyValueSource::Local
+			|| std::abs(typographyOverride->FontSize - 14.0f) > 0.001f)
+			return fail(L"Typography 继承、Local 覆盖或 DynamicResource 表达式未闭环。");
+		auto* editorBinding = editor->DataBindings.Find(L"Text");
+		if (!editorBinding || editorBinding->Mode() != BindingMode::TwoWay
+			|| editorBinding->UpdateMode()
+				!= DataSourceUpdateMode::OnPropertyChanged
+			|| editor->GetPropertyValueSource(L"Text")
+				!= DependencyPropertyValueSource::Local
+			|| editor->GetPropertyExpressionKind(L"Text")
+				!= DependencyPropertyExpressionKind::Binding
+			|| editor->Text != L"Ada" || elementMirror->Text != L"Ada"
+			|| selfValue->AutomationName != L"RelativeSource Self"
+			|| ancestorValue->AutomationName != L"FindAncestor · StackPanel")
+			return fail(L"TwoWay / ElementName / RelativeSource 源解析语义未闭环。");
+		if (fallbackValue->Text != L"Fallback: unavailable"
+			|| nullValue->Text != L"TargetNull: (none)"
+			|| indexerValue->Text != L"Ada"
+			|| keyedIndexerValue->Text != L"settings[indexer]"
+			|| convertedValue->Text != L"trimmed: WPF runtime"
+			|| multiValue->Text != L"Ada / Lovelace / runtime data")
+			return fail(L"Fallback/TargetNull/索引器/Converter/StringFormat/MultiBinding 未按 XAML 求值。"
+				L" fallback='" + fallbackValue->Text + L"' null='"
+				+ nullValue->Text + L"' index='" + indexerValue->Text
+				+ L"' keyed='" + keyedIndexerValue->Text + L"' converted='"
+				+ convertedValue->Text + L"' multi='" + multiValue->Text + L"'");
+		if (!editor->TrySetCurrentPropertyValue(
+			L"Text", BindingValue(std::wstring(L"Augusta"))))
+			return fail(L"TwoWay TextBox 无法更新绑定源。");
+		BindingValue firstName;
+		if (!_dataContext->TryGetValue(L"WpfFirst", firstName)
+			|| firstName.ToString() != L"Augusta"
+			|| editor->GetPropertyExpressionKind(L"Text")
+				!= DependencyPropertyExpressionKind::Binding
+			|| elementMirror->Text != L"Augusta"
+			|| multiValue->Text != L"Augusta / Lovelace / runtime data")
+			return fail(L"TwoWay 更新未传播到数据源、ElementName 与 MultiBinding。");
+		if (!_dataContext->SetValue(L"WpfLast", std::wstring(L"Hopper"))
+			|| multiValue->Text != L"Augusta / Hopper / runtime data"
+			|| !_dataContext->SetValue(
+				L"WpfNullable", std::wstring(L"available"))
+			|| nullValue->Text != L"available"
+			|| !_dataContext->TrySetValue(L"WpfNullable", BindingValue{})
+			|| nullValue->Text != L"TargetNull: (none)")
+			return fail(L"源到目标更新或 TargetNull 动态恢复未生效。");
+
+		auto* templateButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"wpfTemplateButton"));
+		auto* templatedParentValue = templateButton
+			? dynamic_cast<Label*>(templateButton->FindDeclarativeTemplatePart(
+				L"wpfTemplatedParentValue")) : nullptr;
+		auto* buttonPresenter = templateButton
+			? dynamic_cast<ContentPresenter*>(
+				templateButton->FindDeclarativeTemplatePart(
+					L"wpfButtonContentPresenter")) : nullptr;
+		auto* buttonChrome = templateButton
+			? templateButton->FindDeclarativeTemplatePart(L"wpfButtonChrome")
+			: nullptr;
+		auto* treeRelationValue = templateButton
+			? dynamic_cast<Label*>(templateButton->FindDeclarativeTemplatePart(
+				L"wpfTreeRelationValue")) : nullptr;
+		auto* buttonTemplateLayout = templatedParentValue
+			? templatedParentValue->GetVisualParent() : nullptr;
+		if (!templateButton || !buttonChrome
+			|| !templatedParentValue || !treeRelationValue || !buttonPresenter
+			|| !buttonTemplateLayout || buttonTemplateLayout == buttonChrome
+			|| cui::framework::TemplateAccess::GetContentPresenter(*templateButton)
+				!= buttonPresenter
+			|| buttonChrome->GetVisualParent() != templateButton
+			|| buttonChrome->GetLogicalParent() != nullptr
+			|| buttonChrome->GetTemplatedParent() != templateButton
+			|| buttonChrome->GetRoutedParent() != templateButton
+			|| buttonTemplateLayout->GetVisualParent() != buttonChrome
+			|| buttonTemplateLayout->GetLogicalParent() != buttonChrome
+			|| buttonTemplateLayout->GetTemplatedParent() != templateButton
+			|| templatedParentValue->GetVisualParent() != buttonTemplateLayout
+			|| templatedParentValue->GetLogicalParent() != buttonTemplateLayout
+			|| templatedParentValue->GetTemplatedParent() != templateButton
+			|| treeRelationValue->GetVisualParent() != buttonTemplateLayout
+			|| treeRelationValue->GetLogicalParent() != buttonTemplateLayout
+			|| treeRelationValue->GetTemplatedParent() != templateButton
+			|| buttonPresenter->GetVisualParent() != buttonTemplateLayout
+			|| buttonPresenter->GetLogicalParent() != buttonTemplateLayout
+			|| buttonPresenter->GetTemplatedParent() != templateButton
+			|| templatedParentValue->Text != L"RelativeSource TemplatedParent"
+			|| buttonChrome->GetPropertyValueSource(L"Padding")
+				!= DependencyPropertyValueSource::Template
+			|| buttonChrome->GetPropertyExpressionKind(
+				L"Padding", DependencyPropertyValueSource::Template)
+				!= DependencyPropertyExpressionKind::None
+			|| templatedParentValue->GetPropertyExpressionKind(L"Text")
+				!= DependencyPropertyExpressionKind::Binding)
+			return fail(L"ControlTemplate / ContentPresenter / TemplatedParent 未实际接管 Button。");
+
+		auto* triggerButton = dynamic_cast<Button*>(
+			_xamlSession.Document().FindControlByName(L"wpfTriggerButton"));
+		auto* scopedResource = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfScopeResourceValue"));
+		auto* innerResource = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wpfInnerResourceValue"));
+		if (!triggerButton || !scopedResource || !innerResource
+			|| triggerButton->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Style
+			|| triggerButton->GetPropertyExpressionKind(
+				L"Background", DependencyPropertyValueSource::Style)
+				!= DependencyPropertyExpressionKind::DynamicResource
+			|| scopedResource->GetPropertyValueSource(L"Foreground")
+				!= DependencyPropertyValueSource::Local
+			|| scopedResource->GetPropertyExpressionKind(L"Foreground")
+				!= DependencyPropertyExpressionKind::DynamicResource
+			|| std::abs(triggerButton->FontSize - 13.0) > 0.001
+			|| triggerButton->IsDefault
+			|| std::abs(triggerButton->Background.Color.g - 0xA3 / 255.0f) > 0.001f
+			|| std::abs(scopedResource->Foreground.Color.g - 0xA3 / 255.0f) > 0.001f
+			|| std::abs(innerResource->Foreground.Color.r - 0xF0 / 255.0f) > 0.001f)
+			return fail(L"BasedOn / DynamicResource 局部遮蔽的初始值不正确。");
+		auto localResources = std::const_pointer_cast<ControlStyleSheet>(
+			cui::framework::StyleAccess::Resources(*wpfSurface));
+		const D2D1_COLOR_F replacementAccent{ 0.4f, 0.2f, 0.8f, 1.0f };
+		if (!localResources
+			|| !localResources->SetResource(
+				L"WpfLabAccent", BindingValue(replacementAccent))
+			|| !localResources->SetResource(
+				L"WpfLabFontFamily", BindingValue(std::wstring(L"Segoe UI")))
+			|| !localResources->SetResource(
+				L"WpfLabFontSize", BindingValue(17.0))
+			|| std::abs(triggerButton->Background.Color.r - replacementAccent.r) > 0.001f
+			|| std::abs(scopedResource->Foreground.Color.b - replacementAccent.b) > 0.001f
+			|| std::abs(innerResource->Foreground.Color.r - 0xF0 / 255.0f) > 0.001f
+			|| elementMirror->FontFamily != L"Segoe UI"
+			|| std::abs(elementMirror->FontSize - 17.0f) > 0.001f
+			|| std::abs(typographyOverride->FontSize - 14.0f) > 0.001f)
+			return fail(L"DynamicResource 未实时刷新 Typography/颜色或破坏局部覆盖与资源遮蔽。");
+		if (!_dataContext->SetValue(L"WpfStatus", std::wstring(L"Ready"))
+			|| !triggerButton->HasActiveVisualStateAnimations())
+			return fail(L"DataTrigger EnterActions 未启动 Storyboard。");
+		const auto stylePulseTick = ::GetTickCount64();
+		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*triggerButton, stylePulseTick + 120)
+			|| triggerButton->FontSize <= 14.0 || triggerButton->FontSize >= 18.0
+			|| !_dataContext->SetValue(L"WpfIsAdmin", true)
+			|| !triggerButton->IsDefault)
+			return fail(L"DataTrigger 动画或 MultiDataTrigger AND 条件未生效。");
+		cui::framework::InputAccess::PublishPointerOverState(
+			*triggerButton, true, true);
+		if (std::abs(
+			triggerButton->BorderThickness.MaxEdge() - 4.0f) > 0.001f)
+			return fail(L"MultiTrigger 属性/状态 AND 条件未生效。");
+		cui::framework::InputAccess::PublishPointerOverState(
+			*triggerButton, false, false);
+		if (!_dataContext->SetValue(L"WpfStatus", std::wstring(L"Idle"))
+			|| triggerButton->HasActiveVisualStateAnimations()
+			|| std::abs(triggerButton->FontSize - 13.0) > 0.001
+			|| triggerButton->IsDefault)
+			return fail(L"DataTrigger ExitActions StopStoryboard 或样式回退未生效。");
+		(void)_dataContext->SetValue(L"WpfIsAdmin", false);
+
+		auto* templateList = dynamic_cast<ListBox*>(
+			_xamlSession.Document().FindControlByName(L"wpfTemplateList"));
+		auto* itemsPresenter = templateList
+			? dynamic_cast<ItemsPresenter*>(
+				templateList->FindDeclarativeTemplatePart(L"wpfItemsPresenter"))
+			: nullptr;
+		auto* firstContainer = templateList
+			? dynamic_cast<ListBoxItem*>(templateList->GetGeneratedItem(0)) : nullptr;
+		auto* firstChrome = firstContainer
+			? firstContainer->FindDeclarativeTemplatePart(L"wpfItemChrome") : nullptr;
+		auto* firstPresenter = firstContainer
+			? dynamic_cast<ContentPresenter*>(
+				firstContainer->FindDeclarativeTemplatePart(
+					L"wpfItemContentPresenter")) : nullptr;
+		auto* listTemplateRoot = templateList
+			? cui::framework::TemplateAccess::GetTemplateRoot(*templateList)
+			: nullptr;
+		auto* listItemsHost = templateList
+			? cui::framework::TemplateAccess::GetItemsHost(*templateList) : nullptr;
+		if (!templateList || !itemsPresenter || !listTemplateRoot
+			|| cui::framework::TemplateAccess::GetItemsPresenter(*templateList)
+				!= itemsPresenter
+			|| !listItemsHost
+			|| cui::framework::TemplateAccess::GetItemsHost(*itemsPresenter)
+				!= listItemsHost
+			|| listTemplateRoot->GetVisualParent() != templateList
+			|| listTemplateRoot->GetLogicalParent() != nullptr
+			|| listTemplateRoot->GetTemplatedParent() != templateList
+			|| itemsPresenter->GetVisualParent() != listTemplateRoot
+			|| itemsPresenter->GetLogicalParent() != listTemplateRoot
+			|| itemsPresenter->GetTemplatedParent() != templateList
+			|| listItemsHost->GetVisualParent() != itemsPresenter
+			|| listItemsHost->GetLogicalParent() != nullptr
+			|| templateList->GeneratedItemCount() != 2
+			|| !templateList->GetItemContainerTemplate()
+			|| !firstContainer || !firstChrome || !firstPresenter
+			|| firstContainer->GetVisualParent() != listItemsHost
+			|| firstContainer->GetLogicalParent() != templateList
+			|| firstChrome->GetVisualParent() != firstContainer
+			|| firstChrome->GetLogicalParent() != nullptr
+			|| firstChrome->GetTemplatedParent() != firstContainer
+			|| cui::framework::TemplateAccess::GetContentPresenter(*firstContainer)
+				!= firstPresenter
+			|| !firstContainer->Content())
+			return fail(L"ItemsPresenter / ListBoxItem ControlTemplate / ContentPresenter 未闭环。");
+		if (!templateList->SelectIndex(1))
+			return fail(L"XAML ListBoxItem 容器无法进入选择状态。");
+		auto* selectedContainer = dynamic_cast<ListBoxItem*>(
+			templateList->GetGeneratedItem(1));
+		if (!selectedContainer
+			|| selectedContainer->GetCurrentVisualState(L"SelectionStates")
+				!= L"Selected")
+			return fail(L"ListBoxItem XAML VisualState 未响应选择。");
+
+		auto* routedSource = _xamlSession.Document().FindControlByName(
+			L"wpfRouteSource");
+		auto* focusOuter = _xamlSession.Document().FindControlByName(
+			L"wpfRouteOuter");
+		auto* focusScope = _xamlSession.Document().FindControlByName(
+			L"wpfRouteMiddle");
+		auto* focusPeerB = _xamlSession.Document().FindControlByName(
+			L"wpfFocusPeerB");
+		auto* focusPeerC = _xamlSession.Document().FindControlByName(
+			L"wpfFocusPeerC");
+		auto* noFocusPeer = _xamlSession.Document().FindControlByName(
+			L"wpfNoFocusPeer");
+		auto* routedButton = dynamic_cast<Button*>(routedSource);
+		auto* focusOuterBorder = dynamic_cast<Border*>(focusOuter);
+		_routedInputTrace.clear();
+		MouseEventArgs routedArgs(
+			MouseButton::Left, MouseButtonState::Pressed,
+			1, 8, 8, 0);
+		if (!routedSource || !focusOuter || !focusScope
+			|| !focusPeerB || !focusPeerC || !noFocusPeer
+			|| !routedButton || !focusOuterBorder)
+			return fail(L"XAML routed-input 演示源不存在。");
+		routedSource->OnMouseDown(routedSource, routedArgs);
+		const std::vector<std::wstring> expectedRoute{
+			L"T outer", L"T middle", L"T source",
+			L"B source(H)", L"B outer(too)" };
+		if (_routedInputTrace != expectedRoute
+			|| !routedArgs.Handled
+			|| routedArgs.OriginalSource != routedSource
+			|| routedArgs.Source != routedSource
+			|| routedArgs.CurrentTarget != nullptr)
+			return fail(L"内建输入事件未共享 tunnel/bubble、Handled 与 handledEventsToo 路由。");
+
+		_routedInputTrace.clear();
+		KeyEventArgs routedKey(
+			Key::F10, ModifierKeys::Control | ModifierKeys::Shift);
+		routedSource->OnKeyDown(routedSource, routedKey);
+		const std::vector<std::wstring> expectedKeyRoute{
+			L"K.T outer", L"K.T source", L"K.B source", L"K.B outer" };
+		if (_routedInputTrace != expectedKeyRoute
+			|| routedKey.Key != Key::F10
+			|| routedKey.SystemKey != Key::None
+			|| !routedKey.HasModifier(ModifierKeys::Control)
+			|| !routedKey.HasModifier(ModifierKeys::Shift)
+			|| routedKey.OriginalSource != routedSource
+			|| _routedInputDetail != L"Key=Ctrl+Shift+F10 · first")
+			return fail(L"Key/SystemKey/ModifierKeys 未作为独立 WPF 输入身份沿同一路由传播。");
+
+		_routedInputTrace.clear();
+		const bool captured = routedSource->CaptureMouse();
+		const bool ownedAfterCapture = GetMouseCaptured() == routedSource;
+		const auto captureTrace = _routedInputTrace;
+		const bool released = routedSource->ReleaseMouseCapture();
+		const bool clearAfterRelease = GetMouseCaptured() == nullptr;
+		if (!captured || !ownedAfterCapture
+			|| captureTrace != std::vector<std::wstring>{ L"capture+" }
+			|| !released || !clearAfterRelease
+			|| _routedInputTrace != std::vector<std::wstring>{
+				L"capture+", L"capture-" })
+			return fail(L"MouseCapture 未由 InputManager 原子获取、路由并释放：capture="
+				+ std::to_wstring(captured) + L", owned="
+				+ std::to_wstring(ownedAfterCapture) + L", release="
+				+ std::to_wstring(released) + L", clear="
+				+ std::to_wstring(clearAfterRelease) + L", trace="
+				+ std::to_wstring(_routedInputTrace.size()) + L", parent="
+				+ std::to_wstring(routedSource->GetPresentationWindow() == this) + L", visual="
+				+ std::to_wstring(routedSource->IsVisible) + L", hwnd="
+				+ std::to_wstring(Handle != nullptr) + L"。");
+
+		_routedInputTrace.clear();
+		const bool routeFocusAccepted = routedSource->Focus();
+		if (!routeFocusAccepted
+			|| GetKeyboardFocusedElement() != routedSource
+			|| _routedInputTrace != std::vector<std::wstring>{
+				L"keyboard.T+", L"focus+", L"keyboard.B+" }
+			|| _lastKeyboardFocusNew != routedSource
+			|| !focusOuter->IsFocusScope || !focusScope->IsFocusScope
+			|| focusScope->TabNavigation != KeyboardNavigationMode::Cycle
+			|| focusScope->DirectionalNavigation
+				!= KeyboardNavigationMode::Contained
+			|| GetFocusScope(routedSource) != focusScope
+			|| GetLogicalFocusedElement(focusScope) != routedSource
+			|| GetLogicalFocusedElement(focusOuter) != focusScope
+			|| !routedSource->Focusable || !routedSource->IsFocused
+			|| !routedSource->IsKeyboardFocused
+			|| !routedSource->IsKeyboardFocusWithin
+			|| !focusScope->IsFocused || !focusScope->IsKeyboardFocusWithin
+			|| !focusOuter->IsFocused || !focusOuter->IsKeyboardFocusWithin
+			|| !IsKeyboardFocusWithin
+			|| !focusPeerB->Focusable || focusPeerB->IsTabStop
+			|| noFocusPeer->Focusable
+			|| !routedSource->GetAccessibilitySnapshot().Focused
+			|| noFocusPeer->GetAccessibilitySnapshot().Focusable
+			|| routedButton->BorderThickness.MaxEdge() < 2.9f
+			|| focusOuterBorder->BorderThickness.MaxEdge() < 1.9f)
+		{
+			std::wstring trace;
+			for (const auto& item : _routedInputTrace)
+			{
+				if (!trace.empty()) trace += L"|";
+				trace += item;
+			}
+			return fail(L"键盘焦点统一切换校验失败：accepted="
+				+ std::to_wstring(routeFocusAccepted)
+				+ L", owner=" + std::to_wstring(
+					GetKeyboardFocusedElement() == routedSource)
+				+ L", trace=" + trace
+				+ L", logical=" + std::to_wstring(
+					routedSource->IsFocused) + L"/"
+				+ std::to_wstring(focusScope->IsFocused) + L"/"
+				+ std::to_wstring(focusOuter->IsFocused)
+				+ L", keyboard=" + std::to_wstring(
+					routedSource->IsKeyboardFocused)
+				+ L", within=" + std::to_wstring(
+					routedSource->IsKeyboardFocusWithin) + L"/"
+				+ std::to_wstring(focusScope->IsKeyboardFocusWithin) + L"/"
+				+ std::to_wstring(focusOuter->IsKeyboardFocusWithin) + L"/"
+				+ std::to_wstring(IsKeyboardFocusWithin)
+				+ L", focusable=" + std::to_wstring(routedSource->Focusable)
+				+ L"/" + std::to_wstring(focusPeerB->Focusable)
+				+ L"/" + std::to_wstring(noFocusPeer->Focusable)
+				+ L", border=" + std::to_wstring(
+					routedButton->BorderThickness.MaxEdge())
+				+ L"/" + std::to_wstring(
+					focusOuterBorder->BorderThickness.MaxEdge())
+				+ L"。");
+		}
+
+		auto* textSource = dynamic_cast<TextBox*>(
+			_xamlSession.Document().FindControlByName(L"wpfTextInputSource"));
+		if (!textSource)
+			return fail(L"XAML TextInput 演示源不存在。");
+		if (!MoveFocus(FocusNavigationDirection::Right)
+			|| GetKeyboardFocusedElement() != focusPeerB
+			|| !focusPeerB->IsKeyboardFocused || !focusPeerB->IsFocused
+			|| routedSource->IsKeyboardFocused || routedSource->IsFocused
+			|| !MoveFocus(FocusNavigationDirection::Right)
+			|| GetKeyboardFocusedElement() != focusPeerC
+			|| MoveFocus(FocusNavigationDirection::Right)
+			|| GetKeyboardFocusedElement() != focusPeerC)
+			return fail(L"DirectionalNavigation=Contained 未按几何邻接并阻止越界。");
+		SetKeyboardFocus(noFocusPeer, false);
+		if (GetKeyboardFocusedElement() != focusPeerC
+			|| noFocusPeer->IsKeyboardFocused)
+			return fail(L"Focusable=false 仍允许 FocusManager 提交键盘焦点。");
+		const auto tabOrder = GetTabOrder();
+		if (std::find(tabOrder.begin(), tabOrder.end(), focusPeerB)
+			!= tabOrder.end()
+			|| std::find(tabOrder.begin(), tabOrder.end(), noFocusPeer)
+				!= tabOrder.end())
+			return fail(L"IsTabStop/Focusable 未从 Tab 候选资格中正确分离。");
+		if (!MoveFocus(FocusNavigationDirection::Next)
+			|| GetKeyboardFocusedElement() != routedSource)
+			return fail(L"TabNavigation=Cycle 未在嵌套 focus scope 内首尾循环。");
+		SetKeyboardFocus(focusPeerB, false);
+		_routedInputTrace.clear();
+		_cancelNextKeyboardFocus = true;
+		if (routedSource->Focus()
+			|| GetKeyboardFocusedElement() != focusPeerB
+			|| GetLogicalFocusedElement(focusScope) != focusPeerB
+			|| _lastKeyboardFocusOld != focusPeerB
+			|| _lastKeyboardFocusNew != routedSource
+			|| _routedInputTrace != std::vector<std::wstring>{
+				L"keyboard.T+(cancel)" })
+			return fail(L"PreviewGotKeyboardFocus.Handled 未取消键盘焦点事务。");
+		SetKeyboardFocus(textSource, false);
+		if (GetLogicalFocusedElement(focusOuter) != textSource
+			|| GetLogicalFocusedElement(focusScope) != focusPeerB
+			|| !focusPeerB->IsFocused || focusPeerB->IsKeyboardFocused
+			|| focusScope->IsFocused || focusScope->IsKeyboardFocusWithin
+			|| !focusOuter->IsFocused || !focusOuter->IsKeyboardFocusWithin)
+			return fail(L"nested focus scope 未分别保留 logical focus。");
+		SetKeyboardFocus(focusPeerB, false);
+		(void)cui::framework::InputAccess::DispatchInput(
+			*this, LifecycleInput(InputReportKind::FocusLost));
+		if (GetKeyboardFocusedElement() != nullptr
+			|| GetLogicalFocusedElement(focusScope) != focusPeerB
+			|| !focusPeerB->IsFocused || focusPeerB->IsKeyboardFocused
+			|| focusPeerB->IsKeyboardFocusWithin || IsKeyboardFocusWithin)
+			return fail(L"Window 失活未分离 keyboard focus 与 logical focus。");
+		(void)cui::framework::InputAccess::DispatchInput(
+			*this, LifecycleInput(InputReportKind::FocusGained));
+		if (GetKeyboardFocusedElement() != focusPeerB)
+			return fail(L"Window 激活未恢复 focus scope 的 logical focus。");
+		SetKeyboardFocus(textSource, false);
+		(void)cui::framework::WindowAccess::OpenTransientPresentation(
+			*this, focusScope,
+			TransientPresentationOptions{ false, false, false }, nullptr);
+		SetKeyboardFocus(focusPeerC, false);
+		(void)cui::framework::WindowAccess::CloseTransientPresentation(
+			*this, focusScope);
+		if (GetKeyboardFocusedElement() != textSource)
+			return fail(L"弹出 focus scope 关闭后未恢复打开前焦点。");
+		const auto focusStats = cui::framework::WindowAccess::FocusStatistics(*this);
+		const auto inputStats = cui::framework::WindowAccess::InputStatistics(*this);
+		if (focusStats.LogicalFocusUpdates < 5
+			|| focusStats.NavigationSucceeded < 3
+			|| focusStats.ActivationRestores < 1
+			|| focusStats.PopupRestores < 1
+			|| focusStats.KeyboardTransitionsCanceled < 1
+			|| inputStats.KeyboardFocusCanceled < 1)
+			return fail(L"FocusManager 统计未覆盖 logical/navigation/restore 路径。");
+		_routedInputTrace.clear();
+		const auto textBefore = textSource->Text;
+		textSource->Select(static_cast<int>(textBefore.size()), 0);
+		if (!cui::framework::WindowAccess::TextComposition(*this).CommitText(
+			L"A", textSource, TextCompositionInputKind::Programmatic))
+			return fail(L"TextCompositionManager 未将确定性文本提交到输入客户端。");
+		const std::vector<std::wstring> expectedTextRoute{
+			L"text.T outer[A]", L"text.T source",
+			L"text.B source", L"text.B outer" };
+		const auto textSnapshot = cui::framework::WindowAccess::TextCompositionState(*this);
+		if (_routedInputTrace != expectedTextRoute
+			|| textSource->Text != textBefore + L"A"
+			|| textSnapshot.Stage != TextCompositionStage::Completed
+			|| textSnapshot.Text != L"A"
+			|| textSnapshot.InputKind
+				!= TextCompositionInputKind::Programmatic)
+			return fail(L"PreviewTextInput/TextInput 未共享组合文本与路由状态。");
+
+		std::wstring hierarchySummary;
+		if (!RunElementHierarchyProbe(&hierarchySummary))
+			return fail(L"WPF 元素职责层级探针失败：" + hierarchySummary);
+
+		if (outError) outError->clear();
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		return fail(L"声明式特性验证异常："
+			+ Convert::StringToWString(error.what()));
+	}
+}
+
+void DemoWindow::RegisterClassCommandBindings()
+{
+	CommandBinding exact;
+	exact.Command = RoutedCommand(L"Demo.Component.ClassProbe");
+	exact.CanExecute = [this](Control* sender, CanExecuteRoutedEventArgs& args)
+	{
+		HandleClassCommandCanExecute(sender, args);
+	};
+	exact.Executed = [this](Control* sender, ExecutedRoutedEventArgs& args)
+	{
+		HandleClassCommandExecuted(sender, args);
+	};
+	auto exactConnection =
+		RoutedCommandManager::RegisterClassCommandBinding(
+			RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" },
+			std::move(exact));
+	if (!exactConnection.Connected())
+		ThrowRuntimeError(L"无法注册 FeatureCard 精确 QName class command binding。");
+	_classCommandBindingConnections.push_back(std::move(exactConnection));
+
+	CommandBinding nativeFallback;
+	nativeFallback.Command = RoutedCommand(L"Demo.Component.ClassProbe");
+	nativeFallback.CanExecute = [this](
+		Control* sender, CanExecuteRoutedEventArgs& args)
+	{
+		HandleNativeClassCommandCanExecute(sender, args);
+	};
+	nativeFallback.Executed = [this](
+		Control* sender, ExecutedRoutedEventArgs& args)
+	{
+		HandleNativeClassCommandExecuted(sender, args);
+	};
+	auto nativeConnection =
+		RoutedCommandManager::RegisterClassCommandBinding(
+			UIClass::UI_FrameworkElement, std::move(nativeFallback));
+	if (!nativeConnection.Connected())
+		ThrowRuntimeError(
+			L"无法注册 FrameworkElement native class command fallback。");
+	_classCommandBindingConnections.push_back(std::move(nativeConnection));
+}
+
+bool DemoWindow::VerifyTextCompositionFeatures(std::wstring* outError)
+{
+	auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		return false;
+	};
+	try
+	{
+		auto* surface = _xamlSession.Document().FindControlByName(
+			L"textCompositionLabSurface");
+		auto* textBox = dynamic_cast<TextBox*>(
+			_xamlSession.Document().FindControlByName(L"compositionTextBox"));
+		auto* richTextBox = dynamic_cast<RichTextBox*>(
+			_xamlSession.Document().FindControlByName(L"compositionRichTextBox"));
+		auto* passwordBox = dynamic_cast<PasswordBox*>(
+			_xamlSession.Document().FindControlByName(L"compositionPasswordBox"));
+		if (!surface || !textBox || !richTextBox || !passwordBox
+			|| !_xamlSession.Document().FindControlByName(L"compositionState")
+			|| !_xamlSession.Document().FindControlByName(L"compositionStats")
+			|| !_xamlSession.Document().FindControlByName(L"compositionTrace"))
+			return fail(L"TextComposition/IME XAML 实验台未完整材质化。");
+		TabItem* compositionPage = nullptr;
+		for (auto* current = surface; current;
+			current = current->GetVisualParent())
+		{
+			if (auto* page = dynamic_cast<TabItem*>(current))
+			{
+				compositionPage = page;
+				break;
+			}
+		}
+		const int compositionPageIndex = _tabs && compositionPage
+			? _tabs->IndexOfItem(compositionPage) : -1;
+		if (!_tabs || compositionPageIndex < 0)
+			return fail(L"TextComposition/IME 实验台未挂载到 TabControl。");
+		const int originalTabIndex = _tabs->SelectedIndex;
+		struct TextCompositionTabScope final
+		{
+			TabControl& Tabs;
+			int SelectedIndex;
+
+			~TextCompositionTabScope()
+			{
+				Tabs.SelectedIndex = SelectedIndex;
+			}
+		} restoreTab{ *_tabs, originalTabIndex };
+		_tabs->SelectedIndex = compositionPageIndex;
+		RequestLayout();
+		UpdateLayout();
+
+		auto& manager = cui::framework::WindowAccess::TextComposition(*this);
+		const auto* previousFocus = GetKeyboardFocusedElement();
+		const auto originalText = textBox->Text;
+		const auto originalRichText = richTextBox->Text;
+		const auto originalPassword = passwordBox->Password;
+		const int originalTextSelectionStart = textBox->GetSelectionStart();
+		const int originalTextSelectionLength = textBox->SelectionLength;
+		const int originalRichSelectionStart = richTextBox->GetSelectionStart();
+		const int originalRichSelectionLength = richTextBox->SelectionLength;
+		const int originalPasswordSelectionStart = passwordBox->GetSelectionStart();
+		const int originalPasswordSelectionLength = passwordBox->SelectionLength;
+
+		manager.Reset();
+		_compositionPreviewHandled = false;
+		_textCompositionTrace.clear();
+		textBox->Text = L"";
+		textBox->Select(0, 0);
+		richTextBox->Text = L"";
+		richTextBox->Select(0, 0);
+		passwordBox->Password = L"";
+		passwordBox->Select(0, 0);
+		SetKeyboardFocus(textBox, false);
+
+		const auto statisticsBefore = cui::framework::WindowAccess::TextCompositionStatisticsOf(*this);
+		if (!manager.StartComposition(
+			textBox, TextCompositionInputKind::Programmatic))
+			return fail(L"TextComposition Start 事务未建立。");
+		const auto started = cui::framework::WindowAccess::TextCompositionState(*this);
+		if (!started.IsComposing || started.Source != textBox
+			|| started.Stage != TextCompositionStage::Started
+			|| started.CompositionId == 0 || started.CaretIndex != 0)
+			return fail(L"TextComposition Start 快照不完整。");
+		const std::vector<unsigned char> attributes{ 0, 1 };
+		const std::vector<std::uint32_t> clauses{ 0, 2 };
+		if (!manager.UpdateComposition(
+			L"ni", 1, attributes, clauses, L"system", L"control"))
+			return fail(L"TextComposition Update 事务未发布。");
+		const auto updated = cui::framework::WindowAccess::TextCompositionState(*this);
+		if (!updated.IsComposing || updated.Source != textBox
+			|| updated.CompositionId != started.CompositionId
+			|| updated.Stage != TextCompositionStage::Updated
+			|| updated.CompositionText != L"ni" || updated.CaretIndex != 1
+			|| updated.Attributes != attributes || updated.Clauses != clauses
+			|| updated.SystemText != L"system"
+			|| updated.ControlText != L"control" || !textBox->Text.empty())
+			return fail(L"TextComposition Update 未保持预编辑、caret 或 IMM 元数据。");
+
+		const std::wstring committedText = L"\u4F60\U0001F600";
+		if (!manager.CompleteComposition(
+			committedText, L"system-result", L"control-result"))
+			return fail(L"TextComposition Complete 未交给 TextBox text client。");
+		const auto completed = cui::framework::WindowAccess::TextCompositionState(*this);
+		const auto idText = std::to_wstring(started.CompositionId);
+		const std::vector<std::wstring> expectedLifecycle{
+			L"T.Start #" + idText,
+			L"B.Start #" + idText,
+			L"T.Update #" + idText + L" [ni] @1",
+			L"B.Update #" + idText + L" [ni] @1",
+			L"T.Commit #" + idText + L" [" + committedText + L"]",
+			L"B.Commit #" + idText + L" applied" };
+		if (textBox->Text != committedText
+			|| completed.IsComposing || completed.Source != nullptr
+			|| completed.CompositionId != started.CompositionId
+			|| completed.Stage != TextCompositionStage::Completed
+			|| completed.Text != committedText
+			|| completed.SystemText != L"system-result"
+			|| completed.ControlText != L"control-result"
+			|| _textCompositionTrace != expectedLifecycle)
+			return fail(L"六阶段 tunnel/behavior/bubble 顺序或完整 UTF-16 提交不正确。");
+		const auto normalStatistics = cui::framework::WindowAccess::TextCompositionStatisticsOf(*this);
+		if (normalStatistics.CompositionsStarted
+			!= statisticsBefore.CompositionsStarted + 1
+			|| normalStatistics.CompositionsUpdated
+				!= statisticsBefore.CompositionsUpdated + 1
+			|| normalStatistics.CompositionsCompleted
+				!= statisticsBefore.CompositionsCompleted + 1
+			|| normalStatistics.TextCommits
+				!= statisticsBefore.TextCommits + 1
+			|| normalStatistics.TextApplications
+				!= statisticsBefore.TextApplications + 1)
+			return fail(L"TextComposition 生命周期统计未形成单次事务闭环。");
+
+		_textCompositionTrace.clear();
+		_compositionPreviewHandled = true;
+		const auto beforeBlocked = textBox->Text;
+		if (manager.CommitText(
+			L"blocked", textBox, TextCompositionInputKind::Programmatic)
+			|| textBox->Text != beforeBlocked
+			|| _textCompositionTrace.size() != 1
+			|| _textCompositionTrace.front().find(L"handled")
+				== std::wstring::npos
+			|| cui::framework::WindowAccess::TextCompositionStatisticsOf(*this).PreviewApplicationsSuppressed
+				!= normalStatistics.PreviewApplicationsSuppressed + 1)
+			return fail(L"PreviewTextInput.Handled 未阻止默认编辑或仍发生 bubble。");
+		_compositionPreviewHandled = false;
+
+		_textCompositionTrace.clear();
+		(void)cui::framework::InputAccess::DispatchInput(
+			*this, LifecycleInput(InputReportKind::FocusGained));
+		SetKeyboardFocus(textBox, false);
+		if (GetKeyboardFocusedElement() != textBox)
+			return fail(L"WM_CHAR 代理对探针未能建立文本输入焦点。");
+		const auto beforeSurrogate = textBox->Text;
+		const auto high = manager.ProcessWindowMessage(
+			WM_CHAR, static_cast<WPARAM>(0xD83D), 0);
+		if (!high.Recognized || high.CallDefaultWindowProcedure
+			|| high.TextApplied || textBox->Text != beforeSurrogate)
+			return fail(L"WM_CHAR 高代理项被过早提交。");
+		const auto low = manager.ProcessWindowMessage(
+			WM_CHAR, static_cast<WPARAM>(0xDE00), 0);
+		if (!low.Recognized || low.CallDefaultWindowProcedure
+			|| !low.TextApplied
+			|| textBox->Text != beforeSurrogate + L"\U0001F600")
+			return fail(L"WM_CHAR 代理对未作为一个完整文本提交：recognized="
+				+ std::to_wstring(low.Recognized)
+				+ L", default=" + std::to_wstring(
+					low.CallDefaultWindowProcedure)
+				+ L", applied=" + std::to_wstring(low.TextApplied)
+				+ L", focus=" + std::to_wstring(
+					GetKeyboardFocusedElement() == textBox)
+				+ L", before=[" + beforeSurrogate
+				+ L"], actual=[" + textBox->Text
+				+ L"], expected=[" + beforeSurrogate + L"\U0001F600"
+				+ L"]。");
+
+		(void)cui::framework::InputAccess::DispatchInput(
+			*this, LifecycleInput(InputReportKind::FocusGained));
+		SetKeyboardFocus(textBox, false);
+		if (GetKeyboardFocusedElement() != textBox)
+			return fail(L"WM_UNICHAR 探针未能建立文本输入焦点。");
+		const auto beforeUnicode = textBox->Text;
+		const auto capability = manager.ProcessWindowMessage(
+			WM_UNICHAR, UNICODE_NOCHAR, 0);
+		const auto unicode = manager.ProcessWindowMessage(
+			WM_UNICHAR, static_cast<WPARAM>(0x1F642), 0);
+		if (!capability.Recognized || capability.CallDefaultWindowProcedure
+			|| capability.Result != TRUE || capability.TextApplied
+			|| !unicode.Recognized || unicode.CallDefaultWindowProcedure
+			|| !unicode.TextApplied
+			|| textBox->Text != beforeUnicode + L"\U0001F642")
+			return fail(L"WM_UNICHAR 能力探测或 Unicode scalar 提交不正确。");
+
+		_textCompositionTrace.clear();
+		if (!manager.StartComposition(
+			textBox, TextCompositionInputKind::Programmatic)
+			|| !manager.UpdateComposition(L"cancel-me", 4))
+			return fail(L"显式取消探针无法建立组合事务。");
+		const auto cancelTraceCount = _textCompositionTrace.size();
+		manager.CancelComposition(TextCompositionCancelReason::Explicit);
+		const auto canceled = cui::framework::WindowAccess::TextCompositionState(*this);
+		if (canceled.IsComposing
+			|| canceled.Stage != TextCompositionStage::Canceled
+			|| canceled.CancelReason != TextCompositionCancelReason::Explicit
+			|| _textCompositionTrace.size() != cancelTraceCount)
+			return fail(L"Cancel 应为 manager 生命周期，不应伪造公开 routed event。");
+
+		SetKeyboardFocus(textBox, false);
+		if (!manager.StartComposition(
+			textBox, TextCompositionInputKind::Programmatic)
+			|| !manager.UpdateComposition(L"focus", 5))
+			return fail(L"焦点取消探针无法建立组合事务。");
+		SetKeyboardFocus(richTextBox, false, FocusChangeReason::Programmatic);
+		const auto focusCanceled = cui::framework::WindowAccess::TextCompositionState(*this);
+		if (focusCanceled.IsComposing
+			|| focusCanceled.Stage != TextCompositionStage::Canceled
+			|| focusCanceled.CancelReason
+				!= TextCompositionCancelReason::FocusChanged
+			|| GetKeyboardFocusedElement() != richTextBox)
+			return fail(L"输入源焦点切换未先完成/取消 TextComposition 事务。");
+
+		// RichTextBox must format and scroll its new caret during the input
+		// transaction, when no presentation DrawingContext is active.
+		_textCompositionTrace.clear();
+		const std::wstring richCommit = L"Rich \u6587\U0001F642";
+		if (!manager.CommitText(
+			richCommit, richTextBox,
+			TextCompositionInputKind::Programmatic)
+			|| richTextBox->Text != richCommit
+			|| richTextBox->GetCaretIndex()
+				!= static_cast<int>(richCommit.size()))
+			return fail(L"RichTextBox 帧外文本格式化、插入或 caret 滚动失败。");
+
+		_textCompositionTrace.clear();
+		SetKeyboardFocus(passwordBox, false);
+		const std::wstring secret = L"\u5BC6\U0001F512";
+		if (!manager.CommitText(
+			secret, passwordBox, TextCompositionInputKind::Programmatic)
+			|| passwordBox->Password != secret)
+			return fail(L"PasswordBox 未接入统一 TextComposition client。");
+		for (const auto& token : _textCompositionTrace)
+		{
+			if (token.find(secret) != std::wstring::npos)
+				return fail(L"PasswordBox routed trace 泄漏了输入正文。");
+		}
+		if (_textCompositionTrace.size() != 2
+			|| _textCompositionTrace.front().find(L"<secure:")
+				== std::wstring::npos)
+			return fail(L"PasswordBox trace 未使用安全长度摘要。");
+
+		manager.Reset();
+		_compositionPreviewHandled = false;
+		textBox->Text = originalText;
+		textBox->Select(
+			originalTextSelectionStart, originalTextSelectionLength);
+		richTextBox->Text = originalRichText;
+		richTextBox->Select(
+			originalRichSelectionStart, originalRichSelectionLength);
+		passwordBox->Password = originalPassword;
+		passwordBox->Select(
+			originalPasswordSelectionStart, originalPasswordSelectionLength);
+		SetKeyboardFocus(const_cast<Control*>(previousFocus), false);
+		RefreshTextCompositionSummary();
+		if (outError) outError->clear();
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		return fail(L"TextComposition 特性验证异常："
+			+ Convert::StringToWString(error.what()));
+	}
+}
+
+bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
+{
+	auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		return false;
+	};
+	try
+	{
+		auto* surface = dynamic_cast<NativeSurface*>(
+			_xamlSession.Document().FindControlByName(
+				L"presentationProbeSurface"));
+		auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
+			surface->Behavior()) : nullptr;
+		auto* topologyTile = _xamlSession.Document().FindControlByName(
+			L"presentationTopologyTile");
+		auto* loadingRing = dynamic_cast<LoadingRing*>(
+			_xamlSession.Document().FindControlByName(L"loadingRing"));
+		auto* scroll = dynamic_cast<ScrollViewer*>(
+			_xamlSession.Document().FindControlByName(L"demoScroll"));
+		auto* scrollProbe =
+			_xamlSession.Document().FindControlByName(L"farButton");
+		if (!_tabs || !surface || !behavior || !behavior->Attached()
+			|| !topologyTile || !loadingRing || !scroll || !scrollProbe
+			|| !Handle)
+			return fail(L"Presentation smoke 缺少真实 Window 或 XAML behavior。");
+		auto findOwningTabIndex = [this](Control* descendant)
+		{
+			for (auto* current = descendant; current;
+				current = current->GetVisualParent())
+				for (size_t index = 0; index < _tabs->ItemCount(); ++index)
+					if (_tabs->GetItem(static_cast<int>(index)) == current)
+						return static_cast<int>(index);
+			return -1;
+		};
+		const int containerTabIndex = findOwningTabIndex(loadingRing);
+		const int layoutTabIndex = findOwningTabIndex(scroll);
+		const int browserTabIndex = findOwningTabIndex(_web);
+		const int presentationTabIndex = findOwningTabIndex(surface);
+		if (containerTabIndex < 0 || layoutTabIndex < 0
+			|| browserTabIndex < 0 || presentationTabIndex < 0)
+			return fail(L"Presentation smoke 无法解析 XAML TabItem 所有权。");
+		const int originalIndex = _tabs->SelectedIndex;
+		struct TabStateScope final
+		{
+			TabControl& Tabs;
+			int SelectedIndex;
+			ScrollViewer& Scroll;
+			double HorizontalOffset;
+			double VerticalOffset;
+
+			~TabStateScope()
+			{
+				Scroll.ScrollToHorizontalOffset(HorizontalOffset);
+				Scroll.ScrollToVerticalOffset(VerticalOffset);
+				Tabs.SelectedIndex = SelectedIndex;
+			}
+		} restoreTabs{
+			*_tabs, originalIndex, *scroll,
+			scroll->HorizontalOffset, scroll->VerticalOffset };
+
+		RECT client{};
+		::GetClientRect(Handle, &client);
+		auto drainPresentationWork = [&]()
+		{
+			for (int pass = 0; pass < 8; ++pass)
+			{
+				RECT pending{};
+				const bool osPending =
+					::GetUpdateRect(Handle, &pending, FALSE) != FALSE;
+				if (!osPending
+					&& !cui::framework::WindowAccess::
+						HasPendingRenderWork(*this))
+					return true;
+				(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+			}
+			RECT pending{};
+			return ::GetUpdateRect(Handle, &pending, FALSE) == FALSE
+				&& !cui::framework::WindowAccess::
+					HasPendingRenderWork(*this);
+		};
+
+		// A native animation tick is a retained content invalidation. It must
+		// schedule one local future frame and never synchronously re-enter paint
+		// while a pointer/caption/modal transaction is still unwinding.
+		_tabs->SelectedIndex = containerTabIndex;
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork() || !loadingRing->IsVisible
+			|| !loadingRing->IsAnimationRunning())
+			return fail(L"LoadingRing smoke 未进入稳定可见 retained 场景。");
+		const auto animationSceneRevision =
+			cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto animationGeometryRevision =
+			cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto animationContentRevision =
+			cui::framework::WindowAccess::PresentationContentRevision(*this);
+		const auto committedBeforeAnimation =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		cui::framework::WindowAccess::
+			TickPresentationAnimationsForTesting(*this);
+		RECT animationOsDamage{};
+		const bool animationOsDamageQueued =
+			::GetUpdateRect(Handle, &animationOsDamage, FALSE) != FALSE;
+		const bool animationFrameworkDamageQueued =
+			cui::framework::WindowAccess::HasPendingRenderWork(*this);
+		const bool animationRetainedDamageQueued =
+			cui::framework::WindowAccess::
+				HasPendingPresentationDamage(*this);
+		const auto committedAfterAnimationTick =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		const bool visibleWindowMissingOsDamage =
+			::IsWindowVisible(Handle) != FALSE && !animationOsDamageQueued;
+		if (!animationRetainedDamageQueued
+			|| !animationFrameworkDamageQueued
+			|| visibleWindowMissingOsDamage
+			|| committedAfterAnimationTick != committedBeforeAnimation)
+		{
+			const auto animationBounds = loadingRing->GetAbsoluteBoundsDip();
+			return fail(L"LoadingRing tick 未异步排队局部 damage，或同步重入了绘制："
+				L"os=" + std::to_wstring(animationOsDamageQueued)
+				+ L"，framework="
+				+ std::to_wstring(animationFrameworkDamageQueued)
+				+ L"，retained="
+				+ std::to_wstring(animationRetainedDamageQueued)
+				+ L"，visible="
+				+ std::to_wstring(::IsWindowVisible(Handle) != FALSE)
+				+ L"，committed="
+				+ std::to_wstring(committedBeforeAnimation) + L"→"
+				+ std::to_wstring(committedAfterAnimationTick)
+				+ L"，damage=("
+				+ std::to_wstring(animationOsDamage.left) + L","
+				+ std::to_wstring(animationOsDamage.top) + L","
+				+ std::to_wstring(animationOsDamage.right) + L","
+				+ std::to_wstring(animationOsDamage.bottom) + L")"
+				+ L"，bounds=("
+				+ std::to_wstring(animationBounds.left) + L","
+				+ std::to_wstring(animationBounds.top) + L","
+				+ std::to_wstring(animationBounds.right) + L","
+				+ std::to_wstring(animationBounds.bottom) + L")。");
+		}
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		RECT animationDirty{};
+		bool animationWasFull = true;
+		const auto animationFrame =
+			cui::framework::WindowAccess::PresentationFrame(*this);
+		PresentationNodeSnapshot animationNode{};
+		const bool hasAnimationNode =
+			cui::framework::WindowAccess::
+				TryGetPresentationNodeSnapshot(
+					*this, loadingRing, animationNode);
+		const size_t animationSubmittedNodes =
+			animationFrame.CommandRecordedNodes
+			+ animationFrame.ImmediateDrawNodes
+			+ animationFrame.NativeCommitNodes;
+		if (!cui::framework::WindowAccess::TryGetLastRenderDirtyRect(
+				*this, animationDirty, animationWasFull)
+			|| animationWasFull
+			|| cui::framework::WindowAccess::
+				PresentationSceneRevision(*this) != animationSceneRevision
+			|| cui::framework::WindowAccess::
+				PresentationGeometryRevision(*this)
+				!= animationGeometryRevision
+			|| cui::framework::WindowAccess::
+				PresentationContentRevision(*this)
+				<= animationContentRevision
+			|| cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this)
+				<= committedBeforeAnimation
+			|| animationFrame.ContentDirtyNodes == 0
+			|| animationSubmittedNodes == 0
+			|| !hasAnimationNode || animationNode.ContentDirty
+			|| !animationNode.HasPresented)
+		{
+			return fail(L"LoadingRing tick 未保持局部 retained content-only 帧："
+				L"full=" + std::to_wstring(animationWasFull)
+				+ L"，dirty=("
+				+ std::to_wstring(animationDirty.left) + L","
+				+ std::to_wstring(animationDirty.top) + L","
+				+ std::to_wstring(animationDirty.right) + L","
+				+ std::to_wstring(animationDirty.bottom) + L")"
+				+ L"，scene="
+				+ std::to_wstring(animationSceneRevision) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationSceneRevision(*this))
+				+ L"，geometry="
+				+ std::to_wstring(animationGeometryRevision) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationGeometryRevision(*this))
+				+ L"，content="
+				+ std::to_wstring(animationContentRevision) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationContentRevision(*this))
+				+ L"，committed="
+				+ std::to_wstring(committedBeforeAnimation) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this))
+				+ L"，contentDirty="
+				+ std::to_wstring(animationFrame.ContentDirtyNodes)
+				+ L"，recorded="
+				+ std::to_wstring(animationFrame.CommandRecordedNodes)
+				+ L"，replayed="
+				+ std::to_wstring(animationFrame.CommandReplayedNodes)
+				+ L"，culled="
+				+ std::to_wstring(animationFrame.CulledNodes)
+				+ L"，immediate="
+				+ std::to_wstring(animationFrame.ImmediateDrawNodes)
+				+ L"，native="
+				+ std::to_wstring(animationFrame.NativeCommitNodes)
+				+ L"，node="
+				+ std::to_wstring(hasAnimationNode)
+				+ L"/dirty="
+				+ std::to_wstring(animationNode.ContentDirty)
+				+ L"/commands="
+				+ std::to_wstring(animationNode.HasDrawingCommands)
+				+ L"/presented="
+				+ std::to_wstring(animationNode.HasPresented)
+				+ L"/native="
+				+ std::to_wstring(animationNode.NativeComposition)
+				+ L"/overlay="
+				+ std::to_wstring(animationNode.Overlay)
+				+ L"/bounds=("
+				+ std::to_wstring(animationNode.RenderedBounds.left) + L","
+				+ std::to_wstring(animationNode.RenderedBounds.top) + L","
+				+ std::to_wstring(animationNode.RenderedBounds.right) + L","
+				+ std::to_wstring(animationNode.RenderedBounds.bottom) + L")"
+				+ L"。");
+		}
+
+		// Exercise the real scrollbar gesture path, then prove that the
+		// ancestor scroll transform invalidates every retained descendant
+		// geometry/command transform before the next replay.
+		_tabs->SelectedIndex = layoutTabIndex;
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork() || !scroll->IsVisible
+			|| scroll->ExtentWidth <= scroll->ViewportWidth
+			|| scroll->ExtentHeight <= scroll->ViewportHeight)
+			return fail(L"ScrollViewer smoke 未形成双轴可滚动 viewport。");
+		scroll->ScrollToHome();
+		if (!drainPresentationWork())
+			return fail(L"ScrollViewer smoke 无法排空初始滚动 damage。");
+		const auto scrollProbeBefore = scrollProbe->GetAbsoluteLocationDip();
+		const auto scrollSceneRevision =
+			cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto scrollGeometryRevision =
+			cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto committedBeforeScroll =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		const auto scrollSize = scroll->GetActualSizeDip();
+		const float verticalThumbHeight = std::clamp(
+			static_cast<float>(scroll->ViewportHeight * scroll->ViewportHeight
+				/ scroll->ExtentHeight),
+			std::max(16.0f,
+				static_cast<float>(scroll->ViewportHeight * 0.1)),
+			static_cast<float>(scroll->ViewportHeight));
+		const int verticalBarX = static_cast<int>(std::floor(
+			(scroll->ViewportWidth + scrollSize.width) * 0.5));
+		const int verticalStartY = static_cast<int>(
+			std::floor(verticalThumbHeight * 0.5f));
+		const int verticalEndY = static_cast<int>(std::floor(
+			scroll->ViewportHeight - verticalThumbHeight * 0.5f));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, verticalBarX, verticalStartY,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, verticalBarX, verticalEndY,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, verticalBarX, verticalEndY));
+
+		const float horizontalThumbWidth = std::clamp(
+			static_cast<float>(scroll->ViewportWidth * scroll->ViewportWidth
+				/ scroll->ExtentWidth),
+			std::max(16.0f,
+				static_cast<float>(scroll->ViewportWidth * 0.1)),
+			static_cast<float>(scroll->ViewportWidth));
+		const int horizontalBarY = static_cast<int>(std::floor(
+			(scroll->ViewportHeight + scrollSize.height) * 0.5));
+		const int horizontalStartX = static_cast<int>(
+			std::floor(horizontalThumbWidth * 0.5f));
+		const int horizontalEndX = static_cast<int>(std::floor(
+			scroll->ViewportWidth - horizontalThumbWidth * 0.5f));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, horizontalStartX, horizontalBarY,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, horizontalEndX, horizontalBarY,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, horizontalEndX, horizontalBarY));
+		const auto scrollProbeAfter = scrollProbe->GetAbsoluteLocationDip();
+		RECT scrollOsDamage{};
+		const bool scrollOsDamageQueued =
+			::GetUpdateRect(Handle, &scrollOsDamage, FALSE) != FALSE;
+		const bool scrollFrameworkDamageQueued =
+			cui::framework::WindowAccess::HasPendingRenderWork(*this);
+		const bool scrollRetainedDamageQueued =
+			cui::framework::WindowAccess::
+				HasPendingPresentationDamage(*this);
+		const auto committedAfterScrollGesture =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		const bool visibleScrollWindowMissingOsDamage =
+			::IsWindowVisible(Handle) != FALSE && !scrollOsDamageQueued;
+		if (scroll->HorizontalOffset <= 0.0 || scroll->VerticalOffset <= 0.0
+			|| std::fabs(
+				(scrollProbeBefore.x - scrollProbeAfter.x)
+					- scroll->HorizontalOffset) > 1.0
+			|| std::fabs(
+				(scrollProbeBefore.y - scrollProbeAfter.y)
+					- scroll->VerticalOffset) > 1.0
+			|| !scrollRetainedDamageQueued
+			|| !scrollFrameworkDamageQueued
+			|| visibleScrollWindowMissingOsDamage
+			|| committedAfterScrollGesture != committedBeforeScroll)
+			return fail(L"ScrollViewer 滚动条手势未更新双轴 offset/后代坐标或未排队绘制："
+				L"offset=("
+				+ std::to_wstring(scroll->HorizontalOffset) + L","
+				+ std::to_wstring(scroll->VerticalOffset) + L")"
+				+ L"，probe=("
+				+ std::to_wstring(scrollProbeBefore.x) + L","
+				+ std::to_wstring(scrollProbeBefore.y) + L")→("
+				+ std::to_wstring(scrollProbeAfter.x) + L","
+				+ std::to_wstring(scrollProbeAfter.y) + L")"
+				+ L"，os=" + std::to_wstring(scrollOsDamageQueued)
+				+ L"，framework="
+				+ std::to_wstring(scrollFrameworkDamageQueued)
+				+ L"，retained="
+				+ std::to_wstring(scrollRetainedDamageQueued)
+				+ L"，visible="
+				+ std::to_wstring(::IsWindowVisible(Handle) != FALSE)
+				+ L"，committed="
+				+ std::to_wstring(committedBeforeScroll) + L"→"
+				+ std::to_wstring(committedAfterScrollGesture)
+				+ L"。");
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const auto scrollFrame =
+			cui::framework::WindowAccess::PresentationFrame(*this);
+		if (cui::framework::WindowAccess::
+				PresentationSceneRevision(*this) != scrollSceneRevision
+			|| cui::framework::WindowAccess::
+				PresentationGeometryRevision(*this)
+				<= scrollGeometryRevision
+			|| cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this)
+				<= committedBeforeScroll
+			|| scrollFrame.GeometryDirtyNodes < 2
+			|| scrollFrame.GeometryRecomputedNodes < 2
+			|| scrollFrame.CommandRecordedNodes
+				+ scrollFrame.ImmediateDrawNodes < 2)
+			return fail(L"ScrollViewer offset 未使 retained 后代几何与命令变换重录："
+				L"scene="
+				+ std::to_wstring(scrollSceneRevision) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationSceneRevision(*this))
+				+ L"，geometry="
+				+ std::to_wstring(scrollGeometryRevision) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationGeometryRevision(*this))
+				+ L"，committed="
+				+ std::to_wstring(committedBeforeScroll) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this))
+				+ L"，dirty="
+				+ std::to_wstring(scrollFrame.GeometryDirtyNodes)
+				+ L"，recomputed="
+				+ std::to_wstring(scrollFrame.GeometryRecomputedNodes)
+				+ L"，recorded="
+				+ std::to_wstring(scrollFrame.CommandRecordedNodes)
+				+ L"，immediate="
+				+ std::to_wstring(scrollFrame.ImmediateDrawNodes)
+				+ L"。");
+
+		// Entering the browser page replaces the HWND swap chain with the
+		// DirectComposition surface tree. Every newly created scene swap chain
+		// must submit one complete history-establishing frame before Present1
+		// dirty rectangles are legal. Leaving the page must remain renderable.
+		const auto abortedBeforeBrowser =
+			cui::framework::WindowAccess::
+				PresentationAbortedFrameCount(*this);
+		const auto committedBeforeBrowser =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		_tabs->SelectedIndex = browserTabIndex;
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork()
+			|| !_web->IsVisible
+			|| !GetDCompDevice()
+			|| cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this)
+				<= committedBeforeBrowser
+			|| cui::framework::WindowAccess::
+				PresentationAbortedFrameCount(*this)
+				!= abortedBeforeBrowser)
+			return fail(L"WebBrowser 页未建立可提交的 DirectComposition 首帧："
+				L"committed="
+				+ std::to_wstring(committedBeforeBrowser) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this))
+				+ L"，aborted="
+				+ std::to_wstring(abortedBeforeBrowser) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationAbortedFrameCount(*this))
+				+ L"，surfaceFailure="
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationLastSurfaceFailureSequence(*this))
+				+ L"/" + std::to_wstring(cui::framework::WindowAccess::
+					PresentationLastFailedSurfaceRole(*this))
+				+ L"，present=0x" + StringHelper::Format(
+					L"%08X", static_cast<unsigned int>(
+						cui::framework::WindowAccess::
+							PresentationLastFailedPresentHr(*this)))
+				+ L"。");
+
+		const auto committedOnBrowser =
+			cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this);
+		_tabs->SelectedIndex = layoutTabIndex;
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork()
+			|| !scroll->IsVisible
+			|| _web->IsVisible
+			|| cui::framework::WindowAccess::
+				PresentationCommittedFrameCount(*this)
+				<= committedOnBrowser
+			|| cui::framework::WindowAccess::
+				PresentationAbortedFrameCount(*this)
+				!= abortedBeforeBrowser)
+			return fail(L"离开 WebBrowser 页后合成宿主未继续刷新普通控件页："
+				L"committed="
+				+ std::to_wstring(committedOnBrowser) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this))
+				+ L"，aborted="
+				+ std::to_wstring(abortedBeforeBrowser) + L"→"
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationAbortedFrameCount(*this))
+				+ L"。");
+
+		_tabs->SelectedIndex = presentationTabIndex;
+		RequestLayout();
+		UpdateLayout();
+		if (!surface->IsVisible || !topologyTile->IsVisible)
+			return fail(L"Presentation smoke 激活页未进入有效可见树。");
+		if (GetDrawingContext())
+			return fail(L"Presentation smoke 在 frame transaction 外泄漏 DrawingContext。");
+		if (!GetDCompDevice())
+			return fail(L"Presentation smoke 无法建立 DirectComposition device。");
+
+		const int firstFrame = behavior->FrameCount();
+		Invalidate(false);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		RECT firstRenderDirty{};
+		bool firstWasFull = false;
+		const bool hasFirstFrame =
+			cui::framework::WindowAccess::TryGetLastRenderDirtyRect(
+				*this, firstRenderDirty, firstWasFull);
+		if (behavior->FrameCount() <= firstFrame
+			|| !hasFirstFrame
+			|| !firstWasFull)
+			return fail(L"Presentation host 未提交首个完整帧：behavior="
+				+ std::to_wstring(firstFrame) + L"→"
+				+ std::to_wstring(behavior->FrameCount())
+				+ L"，last=" + std::to_wstring(hasFirstFrame)
+				+ L"/" + std::to_wstring(firstWasFull)
+				+ L"，transaction=" + std::to_wstring(
+					cui::framework::WindowAccess::
+						PresentationTransactionSequence(*this))
+				+ L"，committed=" + std::to_wstring(
+					cui::framework::WindowAccess::
+						PresentationCommittedFrameCount(*this))
+				+ L"，aborted=" + std::to_wstring(
+					cui::framework::WindowAccess::
+						PresentationAbortedFrameCount(*this))
+				+ L"，surfaceFailure="
+				+ std::to_wstring(cui::framework::WindowAccess::
+					PresentationLastSurfaceFailureSequence(*this))
+				+ L"/" + std::to_wstring(cui::framework::WindowAccess::
+					PresentationLastFailedSurfaceRole(*this))
+				+ L"，endDraw=0x" + StringHelper::Format(
+					L"%08X", static_cast<unsigned int>(
+						cui::framework::WindowAccess::
+							PresentationLastFailedEndDrawHr(*this)))
+				+ L"，present=0x" + StringHelper::Format(
+					L"%08X", static_cast<unsigned int>(
+						cui::framework::WindowAccess::
+							PresentationLastFailedPresentHr(*this)))
+				+ L"，pending=" + std::to_wstring(
+					cui::framework::WindowAccess::
+						HasPendingRenderWork(*this)) + L"。");
+
+		// The first retained pass may discover additional presentation damage.
+		// Drain that work before proving that a later local invalidation remains local.
+		for (int pass = 0; pass < 4; ++pass)
+		{
+			RECT pending{};
+			const bool osPending =
+				::GetUpdateRect(Handle, &pending, FALSE) != FALSE;
+			if (!osPending && !cui::framework::WindowAccess::HasPendingRenderWork(*this)) break;
+			(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		}
+		RECT pendingAfterFullFrame{};
+		if (::GetUpdateRect(Handle, &pendingAfterFullFrame, FALSE)
+			|| cui::framework::WindowAccess::HasPendingRenderWork(*this))
+			return fail(L"Presentation 完整帧后仍遗留未消费的损伤。");
+		const auto stableRevision = cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto stableContentRevision = cui::framework::WindowAccess::PresentationContentRevision(*this);
+		const auto stableGeometryRevision = cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto stableCompositionRevision =
+			cui::framework::WindowAccess::PresentationCompositionRevision(*this);
+		const auto stableNodeCount = cui::framework::WindowAccess::PresentationNodeCount(*this);
+		const auto stableLayerCount = cui::framework::WindowAccess::PresentationDrawingLayerCount(*this);
+		if (stableRevision == 0 || stableNodeCount == 0
+			|| stableLayerCount == 0)
+			return fail(L"PresentationScene 未生成 retained node/segment 快照。");
+
+		const int regionBefore = behavior->RegionRequests();
+		const int frameBefore = behavior->FrameCount();
+		behavior->Pulse(*surface);
+		RECT pendingDirty{};
+		const bool osRegionPending =
+			::GetUpdateRect(Handle, &pendingDirty, FALSE) != FALSE;
+		const bool regionRequestRecorded =
+			behavior->RegionRequests() == regionBefore + 1;
+		const bool frameworkDamagePending = cui::framework::WindowAccess::HasPendingRenderWork(*this);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const bool regionFrameSubmitted = behavior->FrameCount() > frameBefore;
+		RECT regionRenderDirty{};
+		bool regionWasFull = true;
+		const bool hasRegionFrame = cui::framework::WindowAccess::TryGetLastRenderDirtyRect(*this,
+			regionRenderDirty, regionWasFull);
+		const long long dirtyArea = static_cast<long long>(
+			std::max<LONG>(0, regionRenderDirty.right - regionRenderDirty.left))
+			* std::max<LONG>(0, regionRenderDirty.bottom - regionRenderDirty.top);
+		const float dpiScale = std::max(0.001f, GetDpiScale());
+		const long long clientArea = static_cast<long long>(
+			std::ceil((client.right - client.left) / dpiScale))
+			* static_cast<long long>(
+				std::ceil((client.bottom - client.top) / dpiScale));
+		if (!regionRequestRecorded)
+			return fail(L"Presentation behavior 未记录局部失效请求。");
+		if (!frameworkDamagePending)
+			return fail(L"NativeSurface 局部失效未进入 presentation damage queue。");
+		if (!hasRegionFrame || regionWasFull
+			|| dirtyArea <= 0 || dirtyArea >= clientArea)
+			return fail(L"NativeSurface 局部失效被提升为空区域或整窗口：osRegion="
+				+ std::to_wstring(osRegionPending) + L", dirty=("
+				+ std::to_wstring(regionRenderDirty.left) + L"," + std::to_wstring(regionRenderDirty.top)
+				+ L"," + std::to_wstring(regionRenderDirty.right) + L"," + std::to_wstring(regionRenderDirty.bottom)
+				+ L"), client=(" + std::to_wstring(client.left) + L"," + std::to_wstring(client.top)
+				+ L"," + std::to_wstring(client.right) + L"," + std::to_wstring(client.bottom) + L")。");
+		if (!regionFrameSubmitted)
+			return fail(L"Presentation scene 未在 region-only 后续帧重绘 NativeSurface。");
+		if (cui::framework::WindowAccess::PresentationSceneRevision(*this) != stableRevision
+			|| cui::framework::WindowAccess::PresentationNodeCount(*this) != stableNodeCount
+			|| cui::framework::WindowAccess::PresentationDrawingLayerCount(*this) != stableLayerCount)
+			return fail(L"纯局部 damage 错误地重建了 retained scene topology。");
+		if (cui::framework::WindowAccess::PresentationContentRevision(*this) <= stableContentRevision
+			|| cui::framework::WindowAccess::PresentationGeometryRevision(*this) != stableGeometryRevision
+			|| cui::framework::WindowAccess::PresentationCompositionRevision(*this)
+				!= stableCompositionRevision)
+			return fail(L"内容局部失效没有单独推进 content revision。");
+		const auto contentFrame = cui::framework::WindowAccess::PresentationFrame(*this);
+		if (contentFrame.ContentDirtyNodes == 0
+			|| contentFrame.CommandRecordedNodes == 0)
+			return fail(L"内容局部帧没有记录 dirty node / draw 分类：contentDirty="
+				+ std::to_wstring(contentFrame.ContentDirtyNodes)
+				+ L"，commandRecorded="
+				+ std::to_wstring(contentFrame.CommandRecordedNodes)
+				+ L"，frame=" + std::to_wstring(contentFrame.Frame) + L"。");
+
+		const auto geometrySceneRevision = cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto contentBeforeGeometry = cui::framework::WindowAccess::PresentationContentRevision(*this);
+		const auto geometryBeforeMove = cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto compositionBeforeGeometry =
+			cui::framework::WindowAccess::PresentationCompositionRevision(*this);
+		const float originalCanvasLeft = Canvas::GetLeft(*(topologyTile));
+		Canvas::SetLeft(*(topologyTile), originalCanvasLeft + 24.0f);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const auto geometryFrame = cui::framework::WindowAccess::PresentationFrame(*this);
+		const auto sceneAfterGeometry =
+			cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto contentAfterGeometry =
+			cui::framework::WindowAccess::PresentationContentRevision(*this);
+		const auto geometryAfterMove =
+			cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto compositionAfterGeometry =
+			cui::framework::WindowAccess::PresentationCompositionRevision(*this);
+		if (sceneAfterGeometry != geometrySceneRevision
+			|| contentAfterGeometry != contentBeforeGeometry
+			|| geometryAfterMove <= geometryBeforeMove
+			|| compositionAfterGeometry != compositionBeforeGeometry
+			|| geometryFrame.GeometryDirtyNodes == 0
+			|| geometryFrame.GeometryRecomputedNodes == 0
+			|| geometryFrame.CommandRecordedNodes == 0)
+			return fail(L"布局移动没有独立命中 geometry revision/cache 分类："
+				L"scene=" + std::to_wstring(geometrySceneRevision)
+				+ L"→" + std::to_wstring(sceneAfterGeometry)
+				+ L"，content=" + std::to_wstring(contentBeforeGeometry)
+				+ L"→" + std::to_wstring(contentAfterGeometry)
+				+ L"，geometry=" + std::to_wstring(geometryBeforeMove)
+				+ L"→" + std::to_wstring(geometryAfterMove)
+				+ L"，composition=" + std::to_wstring(
+					compositionBeforeGeometry)
+				+ L"→" + std::to_wstring(compositionAfterGeometry)
+				+ L"，dirty/recomputed/recorded="
+				+ std::to_wstring(geometryFrame.GeometryDirtyNodes)
+				+ L"/" + std::to_wstring(
+					geometryFrame.GeometryRecomputedNodes)
+				+ L"/" + std::to_wstring(
+					geometryFrame.CommandRecordedNodes)
+				+ L"，frame=" + std::to_wstring(geometryFrame.Frame)
+				+ L"。");
+		Canvas::SetLeft(*(topologyTile), originalCanvasLeft);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+
+		const auto compositionSceneRevision = cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		const auto contentBeforeComposition = cui::framework::WindowAccess::PresentationContentRevision(*this);
+		const auto geometryBeforeComposition = cui::framework::WindowAccess::PresentationGeometryRevision(*this);
+		const auto compositionBeforeCommit =
+			cui::framework::WindowAccess::PresentationCompositionRevision(*this);
+		topologyTile->InvalidateComposition();
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const auto compositionFrame = cui::framework::WindowAccess::PresentationFrame(*this);
+		if (cui::framework::WindowAccess::PresentationSceneRevision(*this) != compositionSceneRevision
+			|| cui::framework::WindowAccess::PresentationContentRevision(*this) != contentBeforeComposition
+			|| cui::framework::WindowAccess::PresentationGeometryRevision(*this) != geometryBeforeComposition
+			|| cui::framework::WindowAccess::PresentationCompositionRevision(*this)
+				<= compositionBeforeCommit
+			|| compositionFrame.CompositionDirtyNodes == 0
+			|| compositionFrame.CommandCacheHitNodes == 0)
+			return fail(L"compositor-only 失效没有独立命中 composition revision。");
+
+		Invalidate(false);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const auto replayFrame = cui::framework::WindowAccess::PresentationFrame(*this);
+		if (replayFrame.DamageReplayNodes == 0
+			|| replayFrame.CommandReplayedNodes == 0
+			|| replayFrame.CommandCacheHitNodes == 0)
+			return fail(L"完整帧没有区分 unchanged damage replay 与 dirty node。");
+
+		const int originalZIndex = topologyTile->ZIndex;
+		topologyTile->ZIndex = originalZIndex + 17;
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		RECT zOrderDirty{};
+		bool zOrderWasFull = false;
+		const auto zOrderRevision = cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		if (zOrderRevision <= stableRevision
+			|| cui::framework::WindowAccess::PresentationNodeCount(*this) != stableNodeCount
+			|| !cui::framework::WindowAccess::TryGetLastRenderDirtyRect(*this, zOrderDirty, zOrderWasFull)
+			|| !zOrderWasFull)
+			return fail(L"ZIndex 变化未重建 retained order 或提升完整帧。");
+
+		topologyTile->Visibility = Visibility::Hidden;
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		RECT detachDirty{};
+		bool detachWasFull = false;
+		const auto detachRevision = cui::framework::WindowAccess::PresentationSceneRevision(*this);
+		if (detachRevision <= zOrderRevision
+			|| cui::framework::WindowAccess::PresentationNodeCount(*this) + 1 != stableNodeCount
+			|| !cui::framework::WindowAccess::TryGetLastRenderDirtyRect(*this, detachDirty, detachWasFull)
+			|| !detachWasFull)
+			return fail(L"Visibility=Hidden 未从 retained scene 移除节点或提升完整帧。");
+
+		topologyTile->ZIndex = originalZIndex;
+		topologyTile->Visibility = Visibility::Visible;
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		if (cui::framework::WindowAccess::PresentationSceneRevision(*this) <= detachRevision
+			|| cui::framework::WindowAccess::PresentationNodeCount(*this) != stableNodeCount
+			|| cui::framework::WindowAccess::PresentationDrawingLayerCount(*this) != stableLayerCount)
+			return fail(L"retained scene 节点恢复后快照未回到稳定结构。");
+
+		// Deterministic loss uses the production recovery path: the host rebuilds
+		// every surface, advances generation, notifies behaviors, invalidates old
+		// command lists and commits a complete replacement frame.
+		const auto generationBeforeRecovery =
+			cui::framework::WindowAccess::PresentationResourceGeneration(*this);
+		const auto recoveryBefore = cui::framework::WindowAccess::PresentationDeviceRecoveryCount(*this);
+		const auto committedBeforeRecovery =
+			cui::framework::WindowAccess::PresentationCommittedFrameCount(*this);
+		const auto behaviorInvalidationsBefore =
+			behavior->DeviceResourceInvalidations();
+		cui::framework::WindowAccess::InjectPresentationDeviceLossForTesting(
+			*this);
+		(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+		const auto recoveryFrame = cui::framework::WindowAccess::PresentationFrame(*this);
+		if (cui::framework::WindowAccess::PresentationResourceGeneration(*this)
+			<= generationBeforeRecovery
+			|| cui::framework::WindowAccess::PresentationDeviceRecoveryCount(*this) <= recoveryBefore
+			|| cui::framework::WindowAccess::PresentationCommittedFrameCount(*this)
+				<= committedBeforeRecovery
+			|| behavior->DeviceResourceInvalidations()
+				<= behaviorInvalidationsBefore
+			|| recoveryFrame.ResourceGeneration
+				!= cui::framework::WindowAccess::PresentationResourceGeneration(*this)
+			|| recoveryFrame.CommandCacheInvalidatedNodes == 0
+			|| recoveryFrame.CommandRecordedNodes == 0
+			|| recoveryFrame.CommandReplayedNodes == 0)
+			return fail(L"注入设备丢失未统一推进 generation、资源通知、命令重录与事务提交。");
+
+		if (outError) outError->clear();
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		return fail(L"Presentation 特性验证异常："
+			+ Convert::StringToWString(error.what()));
+	}
+}
+
+bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
+{
+	auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		return false;
+	};
+	try
+	{
+		auto* list = RequireControl<ListView>(L"demoList");
+		if (!_runtimeDataInitialized
+			|| list->ItemCount() != 40)
+			return fail(L"非平台运行时数据路径未完整填充 ListView。");
+		if (!_media || std::abs(_media->Volume - 0.8) > 0.001)
+			return fail(L"MediaPlayer 运行时数据初始化未执行。");
+		if (outError) outError->clear();
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		return fail(L"运行时数据验证异常："
+			+ Convert::StringToWString(error.what()));
+	}
+}
+
+void DemoWindow::MountXaml(
+	const DesignerModel::DesignDocument& document)
 {
 	DesignerModel::RuntimeDocumentSessionMountOptions options;
-	// CUITest deliberately uses an external file, but keeps watching disabled:
-	// the sample compares construction modes without introducing editor timing.
+	options.DataContext = _dataContext;
+	options.DeclarativeComponentBehaviors = _componentBehaviors;
+	options.NativeSurfaceBehaviors = _nativeSurfaceBehaviors;
 	options.WatchFile = false;
 	std::wstring error;
-	if (!_xamlSession.MountFile(XamlFilePath(), *this, options, &error))
+	// Reuse the pre-parsed XAML contract. Besides avoiding redundant catalog
+	// scans, this guarantees behavior/event registration and materialization
+	// consume the exact same ComponentDefinition descriptors.
+	if (!_xamlSession.MountDocument(
+		document, XamlFilePath(), *this, options, &error))
 		ThrowRuntimeError(L"加载 DemoWindow.cui.xaml 失败：" + error);
 }
 
-void DemoWindow::RegisterXamlHandlers()
+void DemoWindow::PrepareDeclarativeRuntime(
+	const DesignerModel::DesignDocument& document)
+{
+	auto makeFile = [](const wchar_t* name, const wchar_t* kind)
+	{
+		auto item = std::make_shared<ObservableObject>();
+		(void)item->DefineProperty(L"Name", std::wstring(name));
+		(void)item->DefineProperty(L"Kind", std::wstring(kind));
+		return item;
+	};
+	auto makeFolder = [&](const wchar_t* name,
+		std::initializer_list<std::pair<const wchar_t*, const wchar_t*>> files)
+	{
+		auto children = std::make_shared<ObservableBindingList>(L"DemoFile");
+		for (const auto& [fileName, kind] : files)
+			children->Items.push_back(BindingSourceReference(
+				makeFile(fileName, kind)));
+		auto folder = std::make_shared<ObservableObject>();
+		(void)folder->DefineProperty(L"Name", std::wstring(name));
+		(void)folder->DefineProperty(
+			L"Children", BindingListReference(children));
+		return folder;
+	};
+
+	_treeRoots = std::make_shared<ObservableBindingList>(L"DemoFolder");
+	_treeRoots->Items.push_back(BindingSourceReference(makeFolder(
+		L"Workspace", { { L"DemoWindow.cui.xaml", L"XAML" },
+			{ L"DemoWindow.cpp", L"C++" }, { L"DemoTheme.xaml", L"XAML" } })));
+	_treeRoots->Items.push_back(BindingSourceReference(makeFolder(
+		L"Runtime", { { L"ComponentDefinition", L"Type" },
+			{ L"NativeSurface", L"Render" }, { L"BindingList", L"Data" } })));
+	_listViewEntries = std::make_shared<ObservableBindingList>(L"DemoListEntry");
+	for (int index = 0; index < 40; ++index)
+	{
+		auto entry = std::make_shared<ObservableObject>();
+		(void)entry->DefineProperty(
+			L"Name", StringHelper::Format(L"List item %02d", index + 1));
+		(void)entry->DefineProperty(
+			L"State", std::wstring(index % 3 == 0 ? L"Ready" : L"Queued"));
+		_listViewEntries->Items.push_back(BindingSourceReference(entry));
+	}
+	auto makeWpfPerson = [](const wchar_t* first, const wchar_t* last,
+		const wchar_t* role)
+	{
+		auto person = std::make_shared<ObservableObject>();
+		(void)person->DefineProperty(L"First", std::wstring(first));
+		(void)person->DefineProperty(L"Last", std::wstring(last));
+		(void)person->DefineProperty(L"Role", std::wstring(role));
+		return person;
+	};
+	_wpfLabPeople = std::make_shared<ObservableBindingList>(L"WpfLabPerson");
+	_wpfLabPeople->Items.push_back(BindingSourceReference(
+		makeWpfPerson(L"Ada", L"Lovelace", L"Math")));
+	_wpfLabPeople->Items.push_back(BindingSourceReference(
+		makeWpfPerson(L"Grace", L"Hopper", L"Compiler")));
+	_wpfLabSettings = std::make_shared<ObservableObject>();
+	(void)_wpfLabSettings->DefineProperty(
+		L"accent.color", std::wstring(L"settings[indexer]"));
+	(void)_wpfLabSettings->DefineProperty(
+		L"title", std::wstring(L"runtime data"));
+	_dataContext = std::make_shared<ObservableObject>();
+	if (!_dataContext->DefineProperty(
+		L"TreeRoots", BindingListReference(_treeRoots), true, false, true))
+		ThrowRuntimeError(L"无法创建 TreeRoots DataContext。 ");
+	if (!_dataContext->DefineProperty(
+		L"DemoListEntries", BindingListReference(_listViewEntries),
+		true, false, true))
+		ThrowRuntimeError(L"无法创建 DemoListEntries DataContext。 ");
+	BindingSourcePropertyMetadata nullableMetadata;
+	nullableMetadata.Name = L"WpfNullable";
+	nullableMetadata.ValueKind = BindingValueKind::String;
+	nullableMetadata.ValueType = std::type_index(typeid(std::wstring));
+	if (!_dataContext->DefineProperty(
+		std::move(nullableMetadata), BindingValue{}))
+		ThrowRuntimeError(L"无法创建 WpfNullable DataContext。 ");
+	if (!_dataContext->DefineProperty(L"WpfFirst", std::wstring(L"Ada"))
+		|| !_dataContext->DefineProperty(L"WpfLast", std::wstring(L"Lovelace"))
+		|| !_dataContext->DefineProperty(
+			L"WpfPadded", std::wstring(L"  WPF runtime  "))
+		|| !_dataContext->DefineProperty(L"WpfStatus", std::wstring(L"Idle"))
+		|| !_dataContext->DefineProperty(L"WpfIsAdmin", false)
+		|| !_dataContext->DefineProperty(
+			L"WpfPeople", BindingListReference(_wpfLabPeople), true, false, true)
+		|| !_dataContext->DefineProperty(
+			L"WpfSettings", BindingSourceReference(_wpfLabSettings)))
+		ThrowRuntimeError(L"无法创建 WPF 语义实验 DataContext。 ");
+
+	const auto component = std::find_if(
+		document.Components.begin(), document.Components.end(), [](const auto& item)
+		{
+			return item.Type.XamlNamespace == L"urn:cui:test"
+				&& item.Type.XamlName == L"FeatureCard";
+		});
+	if (component == document.Components.end())
+		ThrowRuntimeError(L"XAML 缺少 test:FeatureCard ComponentDefinition。 ");
+	CuiRuntime::XamlTypePropertySchema componentSchema;
+	std::wstring schemaError;
+	if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+		component->BaseType, &*component, document,
+		componentSchema, &schemaError))
+		ThrowRuntimeError(L"FeatureCard XAML Schema 预检失败：" + schemaError);
+	const auto buttonProperties =
+		CuiRuntime::XamlRuntimeSchema::NativeProperties(UIClass::UI_Button);
+	const auto* caption = componentSchema.FindProperty(L"Caption");
+	const auto* background = componentSchema.FindProperty(L"Background");
+	const auto* isDefault = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+		UIClass::UI_Button, L"IsDefault");
+	if (!componentSchema.DeclarativeType
+		|| componentSchema.DeclarativeType->PropertyCount() != 5
+		|| !caption || !background || !isDefault || buttonProperties.empty())
+		ThrowRuntimeError(L"无实例 XAML Schema 属性合并不完整。");
+	_schemaSummary = L"Schema-first · Button "
+		+ std::to_wstring(buttonProperties.size())
+		+ L" DP · FeatureCard 5 properties";
+
+	_componentBehaviors = std::make_shared<
+		DesignerModel::DeclarativeComponentBehaviorRegistry>();
+	_nativeSurfaceBehaviors = std::make_shared<
+		DesignerModel::NativeSurfaceBehaviorRegistry>();
+	std::wstring error;
+	// The QName and every property/event/content contract come from the parsed
+	// ComponentDefinition. This registry only supplies behavior for that XAML
+	// contract; it is not a C++ control-type factory or schema registration.
+	if (!_componentBehaviors->Register(
+		{ component->Type.XamlNamespace, component->Type.XamlName },
+		[](const DeclarativeComponentBehaviorContext&)
+		{
+			return std::make_unique<FeatureCardBehavior>();
+		}, &error))
+		ThrowRuntimeError(L"注册 FeatureCard behavior 失败：" + error);
+	if (!_nativeSurfaceBehaviors->Register(L"DemoScene",
+		[](NativeSurface&)
+		{
+			return std::make_unique<DemoSceneBehavior>();
+		}, &error))
+		ThrowRuntimeError(L"注册 DemoScene behavior 失败：" + error);
+	if (!_nativeSurfaceBehaviors->Register(L"PresentationProbe",
+		[](NativeSurface&)
+		{
+			return std::make_unique<PresentationProbeBehavior>();
+		}, &error))
+		ThrowRuntimeError(L"注册 PresentationProbe behavior 失败：" + error);
+}
+
+void DemoWindow::RegisterXamlHandlers(
+	const DesignerModel::DesignDocument& document)
 {
 	auto& registry = _xamlSession.EventHandlers();
 	std::wstring error;
@@ -153,142 +3660,333 @@ void DemoWindow::RegisterXamlHandlers()
 		if (!result) ThrowRuntimeError(L"注册 XAML 事件失败：" + error);
 	};
 
-	require(registry.RegisterForm(L"HandleShown", L"OnShown", &Form::OnShown,
-		[this](Form* sender) { HandleShown(sender); }, &error));
-	require(registry.RegisterForm(L"HandleClosing", L"OnClose", &Form::OnClosing,
-		[this](Form* sender, bool& canceled) { HandleClosing(sender, canceled); }, &error));
-	require(registry.RegisterControl(L"HandleMenuCommand", UIClass::UI_Menu,
-		L"OnMenuCommand", &Menu::OnMenuCommand,
-		[this](Control* sender, int id) { HandleMenuCommand(sender, id); }, &error));
+	require(registry.RegisterWindow(L"HandleContentRendered", L"ContentRendered", &Window::ContentRendered,
+		[this](Window* sender) { HandleContentRendered(sender); }, &error));
+	require(registry.RegisterWindow(L"HandleClosing", L"Closing", &Window::OnClosing,
+		[this](Window* sender, CancelEventArgs& args) { HandleClosing(sender, args); }, &error));
+	require(registry.RegisterWindow(L"HandleCommandPreviewCanExecute",
+		L"PreviewCanExecute", &Control::OnPreviewCanExecute,
+		[this](Control* sender, CanExecuteRoutedEventArgs& args)
+		{ HandleCommandPreviewCanExecute(sender, args); }, &error));
+	require(registry.RegisterWindow(L"HandleCommandCanExecute",
+		L"CanExecute", &Control::OnCanExecute,
+		[this](Control* sender, CanExecuteRoutedEventArgs& args)
+		{ HandleCommandCanExecute(sender, args); }, &error));
+	require(registry.RegisterWindow(L"HandleCommandPreviewExecuted",
+		L"PreviewExecuted", &Control::OnPreviewExecuted,
+		[this](Control* sender, ExecutedRoutedEventArgs& args)
+		{ HandleCommandPreviewExecuted(sender, args); }, &error));
+	require(registry.RegisterWindow(L"HandleCommandExecuted",
+		L"Executed", &Control::OnExecuted,
+		[this](Control* sender, ExecutedRoutedEventArgs& args)
+		{ HandleCommandExecuted(sender, args); }, &error));
+	require(registry.RegisterControl(L"HandleLocalCommandCanExecute",
+		UIClass::UI_Canvas, L"CanExecute", &Control::OnCanExecute,
+		[this](Control* sender, CanExecuteRoutedEventArgs& args)
+		{ HandleLocalCommandCanExecute(sender, args); }, &error));
+	require(registry.RegisterControl(L"HandleLocalCommandExecuted",
+		UIClass::UI_Canvas, L"Executed", &Control::OnExecuted,
+		[this](Control* sender, ExecutedRoutedEventArgs& args)
+		{ HandleLocalCommandExecuted(sender, args); }, &error));
 	require(registry.RegisterControl(L"HandleGlobalProgress", UIClass::UI_Slider,
-		L"OnValueChanged", &Slider::OnValueChanged,
-		[this](Control* sender, float oldValue, float newValue)
-		{ HandleGlobalProgress(sender, oldValue, newValue); }, &error));
+		L"ValueChanged", &Slider::ValueChanged,
+		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
+		{ HandleGlobalProgress(sender, e.OldValue, e.NewValue); }, &error));
 	require(registry.RegisterControl(L"HandleMouseWheel", UIClass::UI_Label,
-		L"OnMouseWheel", &Control::OnMouseWheel,
-		[this](Control* sender, MouseEventArgs e) { HandleMouseWheel(sender, e); }, &error));
+		L"MouseWheel", &Control::OnMouseWheel,
+		[this](Control* sender, MouseEventArgs& e) { HandleMouseWheel(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteOuterPreview", UIClass::UI_Border,
+		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteOuterPreview(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteMiddlePreview", UIClass::UI_Canvas,
+		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteMiddlePreview(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteSourcePreview", UIClass::UI_Button,
+		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteSourcePreview(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteSourceBubble", UIClass::UI_Button,
+		L"MouseDown", &Control::OnMouseDown,
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteSourceBubble(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteMiddleBubble", UIClass::UI_Canvas,
+		L"MouseDown", &Control::OnMouseDown,
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteMiddleBubble(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteOuterBubble", UIClass::UI_Border,
+		L"MouseDown", &Control::OnMouseDown,
+		DesignerModel::RuntimeRoutedEventRegistrationOptions{ true },
+		[this](Control* sender, MouseEventArgs& e)
+		{ HandleRouteOuterBubble(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteKey", UIClass::UI_Base,
+		L"PreviewKeyDown", &Control::OnPreviewKeyDown,
+		[this](Control* sender, KeyEventArgs& e)
+		{ HandleRouteKey(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteKey", UIClass::UI_Base,
+		L"KeyDown", &Control::OnKeyDown,
+		[this](Control* sender, KeyEventArgs& e)
+		{ HandleRouteKey(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteCaptureChanged", UIClass::UI_Button,
+		L"GotMouseCapture", &Control::OnGotMouseCapture,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleRouteCaptureChanged(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteCaptureChanged", UIClass::UI_Button,
+		L"LostMouseCapture", &Control::OnLostMouseCapture,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleRouteCaptureChanged(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteFocus", UIClass::UI_Button,
+		L"GotFocus", &Control::OnGotFocus,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleRouteFocus(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRoutePreviewGotKeyboardFocus",
+		UIClass::UI_Button, L"PreviewGotKeyboardFocus",
+		&Control::OnPreviewGotKeyboardFocus,
+		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
+		{ HandleRoutePreviewGotKeyboardFocus(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteGotKeyboardFocus",
+		UIClass::UI_Button, L"GotKeyboardFocus",
+		&Control::OnGotKeyboardFocus,
+		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
+		{ HandleRouteGotKeyboardFocus(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRoutePreviewLostKeyboardFocus",
+		UIClass::UI_Button, L"PreviewLostKeyboardFocus",
+		&Control::OnPreviewLostKeyboardFocus,
+		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
+		{ HandleRoutePreviewLostKeyboardFocus(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleRouteLostKeyboardFocus",
+		UIClass::UI_Button, L"LostKeyboardFocus",
+		&Control::OnLostKeyboardFocus,
+		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
+		{ HandleRouteLostKeyboardFocus(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleTextOuterPreview", UIClass::UI_Border,
+		L"PreviewTextInput", &Control::OnPreviewTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleTextOuterPreview(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleTextSourcePreview", UIClass::UI_TextBox,
+		L"PreviewTextInput", &Control::OnPreviewTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleTextSourcePreview(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleTextSourceBubble", UIClass::UI_TextBox,
+		L"TextInput", &Control::OnTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleTextSourceBubble(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleTextOuterBubble", UIClass::UI_Border,
+		L"TextInput", &Control::OnTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleTextOuterBubble(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionPreviewStart",
+		UIClass::UI_Canvas, L"PreviewTextInputStart",
+		&Control::OnPreviewTextInputStart,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionPreviewStart(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionStart",
+		UIClass::UI_Canvas, L"TextInputStart", &Control::OnTextInputStart,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionStart(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionPreviewUpdate",
+		UIClass::UI_Canvas, L"PreviewTextInputUpdate",
+		&Control::OnPreviewTextInputUpdate,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionPreviewUpdate(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionUpdate",
+		UIClass::UI_Canvas, L"TextInputUpdate", &Control::OnTextInputUpdate,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionUpdate(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionPreviewCommit",
+		UIClass::UI_Canvas, L"PreviewTextInput", &Control::OnPreviewTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionPreviewCommit(sender, e); }, &error));
+	require(registry.RegisterControl(L"HandleCompositionCommit",
+		UIClass::UI_Canvas, L"TextInput", &Control::OnTextInput,
+		[this](Control* sender, TextCompositionEventArgs& e)
+		{ HandleCompositionCommit(sender, e); }, &error));
 
 	auto registerClick = [&](const wchar_t* name, UIClass type,
 		auto callback)
 	{
-		require(registry.RegisterControl(name, type, L"OnMouseClick",
-			&Control::OnMouseClick, std::move(callback), &error));
+		require(registry.RegisterControl(name, type, L"Click",
+			&ButtonBase::Click, std::move(callback), &error));
 	};
 	registerClick(L"HandleBasicClick", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleBasicClick(sender, e); });
-	registerClick(L"HandleDocsLink", UIClass::UI_LinkLabel,
-		[this](Control* sender, MouseEventArgs e) { HandleDocsLink(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleBasicClick(sender, e); });
+	registerClick(L"HandleCommandAvailabilityToggle", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleCommandAvailabilityToggle(sender, e); });
+	registerClick(L"HandleToolBarAction", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e) { HandleToolBarAction(sender, e); });
+	registerClick(L"HandleDocsLink", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e) { HandleDocsLink(sender, e); });
 	registerClick(L"HandleOpenImage", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleOpenImage(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleOpenImage(sender, e); });
+	registerClick(L"HandleAnalyticsAction", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e) { HandleAnalyticsAction(sender, e); });
 	registerClick(L"HandleChartKind", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleChartKind(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleChartKind(sender, e); });
 	registerClick(L"HandleFarButton", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleFarButton(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleFarButton(sender, e); });
 	registerClick(L"HandleSystemAction", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleSystemAction(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleSystemAction(sender, e); });
 	registerClick(L"HandleInvokeWeb", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleInvokeWeb(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleInvokeWeb(sender, e); });
 	registerClick(L"HandleMediaCommand", UIClass::UI_Button,
-		[this](Control* sender, MouseEventArgs e) { HandleMediaCommand(sender, e); });
+		[this](Control* sender, RoutedEventArgs& e) { HandleMediaCommand(sender, e); });
+	registerClick(L"HandleDispatcherProbe", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleDispatcherProbe(sender, e); });
+	registerClick(L"HandleTextCompositionProbe", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleTextCompositionProbe(sender, e); });
+	registerClick(L"HandlePresentationRegion", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationRegion(sender, e); });
+	registerClick(L"HandlePresentationGeometry", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationGeometry(sender, e); });
+	registerClick(L"HandlePresentationComposition", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationComposition(sender, e); });
+	registerClick(L"HandlePresentationFullFrame", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationFullFrame(sender, e); });
+	registerClick(L"HandlePresentationTopology", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationTopology(sender, e); });
+	registerClick(L"HandlePresentationDeviceLoss", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandlePresentationDeviceLoss(sender, e); });
 
-	auto registerChecked = [&](const wchar_t* name, UIClass type, auto callback)
+	auto registerToggleState = [&](const wchar_t* name, UIClass type, auto callback)
 	{
-		require(registry.RegisterControl(name, type, L"OnChecked",
-			&Control::OnChecked, std::move(callback), &error));
+		require(registry.RegisterControl(name, type, L"Checked",
+			&ToggleButton::Checked, callback, &error));
+		require(registry.RegisterControl(name, type, L"Unchecked",
+			&ToggleButton::Unchecked, std::move(callback), &error));
 	};
-	registerChecked(L"HandleEnableInput", UIClass::UI_CheckBox,
-		[this](Control* sender) { HandleEnableInput(sender); });
-	registerChecked(L"HandleRadio", UIClass::UI_RadioBox,
-		[this](Control* sender) { HandleRadio(sender); });
-	registerChecked(L"HandlePictureVisibility", UIClass::UI_Switch,
-		[this](Control* sender) { HandlePictureVisibility(sender); });
-	registerChecked(L"HandleGridEnabled", UIClass::UI_Switch,
-		[this](Control* sender) { HandleGridEnabled(sender); });
-	registerChecked(L"HandleGridVisible", UIClass::UI_Switch,
-		[this](Control* sender) { HandleGridVisible(sender); });
-	registerChecked(L"HandleMediaLoop", UIClass::UI_CheckBox,
-		[this](Control* sender) { HandleMediaLoop(sender); });
+	registerToggleState(L"HandleEnableInput", UIClass::UI_CheckBox,
+		[this](Control* sender, RoutedEventArgs&) { HandleEnableInput(sender); });
+	registerToggleState(L"HandleRadio", UIClass::UI_RadioButton,
+		[this](Control* sender, RoutedEventArgs&) { HandleRadio(sender); });
+	registerToggleState(L"HandleImageVisibility", UIClass::UI_Switch,
+		[this](Control* sender, RoutedEventArgs&)
+		{ HandleImageVisibility(sender); });
+	registerToggleState(L"HandleMediaLoop", UIClass::UI_CheckBox,
+		[this](Control* sender, RoutedEventArgs&) { HandleMediaLoop(sender); });
 
 	require(registry.RegisterControl(L"HandleComboSelection", UIClass::UI_ComboBox,
-		L"OnSelectionChanged", &ComboBox::OnSelectionChanged,
-		[this](Control* sender) { HandleComboSelection(static_cast<ComboBox*>(sender)); }, &error));
+		L"SelectionChanged", &ComboBox::SelectionChanged,
+		[this](Control* sender, SelectionChangedEventArgs&)
+		{ HandleComboSelection(static_cast<ComboBox*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleNumericValue", UIClass::UI_NumericUpDown,
-		L"OnValueChanged", &NumericUpDown::OnValueChanged,
-		[this](NumericUpDown* sender, double oldValue, double newValue)
-		{ HandleNumericValue(sender, oldValue, newValue); }, &error));
+		L"ValueChanged", &NumericUpDown::ValueChanged,
+		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
+		{ HandleNumericValue(sender, e.OldValue, e.NewValue); }, &error));
 	require(registry.RegisterControl(L"HandleExpander", UIClass::UI_Expander,
-		L"OnExpandedChanged", &Expander::OnExpandedChanged,
-		[this](Expander* sender, bool expanded) { HandleExpander(sender, expanded); }, &error));
-	require(registry.RegisterControl(L"HandleDropImage", UIClass::UI_PictureBox,
-		L"OnDropFile", &Control::OnDropFile,
-		[this](Control* sender, std::vector<std::wstring> files)
-		{ HandleDropImage(sender, std::move(files)); }, &error));
+		L"Expanded", &Expander::Expanded,
+		[this](Control* sender, RoutedEventArgs&)
+		{ HandleExpander(static_cast<Expander*>(sender), true); }, &error));
+	require(registry.RegisterControl(L"HandleExpander", UIClass::UI_Expander,
+		L"Collapsed", &Expander::Collapsed,
+		[this](Control* sender, RoutedEventArgs&)
+		{ HandleExpander(static_cast<Expander*>(sender), false); }, &error));
+	auto registerDragRoute = [&](const wchar_t* eventName, auto eventMember)
+	{
+		require(registry.RegisterControl(
+			L"HandleDragRoute", UIClass::UI_Base, eventName, eventMember,
+			DesignerModel::RuntimeRoutedEventRegistrationOptions{ true },
+			[this](Control* sender, DragEventArgs& e)
+			{ HandleDragRoute(sender, e); }, &error));
+	};
+	registerDragRoute(L"PreviewDragEnter", &Control::OnPreviewDragEnter);
+	registerDragRoute(L"DragEnter", &Control::OnDragEnter);
+	registerDragRoute(L"PreviewDragOver", &Control::OnPreviewDragOver);
+	registerDragRoute(L"DragOver", &Control::OnDragOver);
+	registerDragRoute(L"PreviewDragLeave", &Control::OnPreviewDragLeave);
+	registerDragRoute(L"DragLeave", &Control::OnDragLeave);
+	registerDragRoute(L"PreviewDrop", &Control::OnPreviewDrop);
+	registerDragRoute(L"Drop", &Control::OnDrop);
+	require(registry.RegisterControl(L"HandleDropImage", UIClass::UI_Image,
+		L"Drop", &Control::OnDrop,
+		[this](Control* sender, DragEventArgs& e)
+		{ HandleDropImage(sender, e); }, &error));
 
-	require(registry.RegisterControl(L"HandleListItem", UIClass::UI_ListView,
-		L"OnItemClick", &ListView::OnItemClick,
-		[this](ListView* sender, int index) { HandleListItem(sender, index); }, &error));
+	require(registry.RegisterControl(
+		L"HandleListViewSelection", UIClass::UI_ListView,
+		L"SelectionChanged", &Selector::SelectionChanged,
+		[this](Control* sender, SelectionChangedEventArgs&)
+		{ HandleListViewSelection(static_cast<Selector*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleListBoxSelection", UIClass::UI_ListBox,
-		L"OnSelectionChanged", &Selector::OnSelectionChanged,
-		[this](Control* sender)
+		L"SelectionChanged", &Selector::SelectionChanged,
+		[this](Control* sender, SelectionChangedEventArgs&)
 		{ HandleListBoxSelection(static_cast<Selector*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandlePropertyValue", UIClass::UI_PropertyGrid,
-		L"OnValueChanged", &PropertyGridView::OnValueChanged,
-		[this](PropertyGridView* sender, int index,
-			std::wstring oldValue, std::wstring newValue)
-		{ HandlePropertyValue(sender, index, std::move(oldValue), std::move(newValue)); }, &error));
-	require(registry.RegisterControl(L"HandleFilterApply", UIClass::UI_FilterBar,
-		L"OnApply", &FilterBar::OnApply,
-		[this](FilterBar* sender) { HandleFilterApply(sender); }, &error));
-	require(registry.RegisterControl(L"HandleFilterReset", UIClass::UI_FilterBar,
-		L"OnReset", &FilterBar::OnReset,
-		[this](FilterBar* sender) { HandleFilterReset(sender); }, &error));
-	require(registry.RegisterControl(L"HandleKpiClick", UIClass::UI_KpiCard,
-		L"OnCardClick", &KpiCard::OnCardClick,
-		[this](KpiCard* sender) { HandleKpiClick(sender); }, &error));
+	require(registry.RegisterControl(L"HandleTreeSelection", UIClass::UI_TreeView,
+		L"SelectedItemChanged", &TreeView::SelectedItemChanged,
+		[this](Control* sender, RoutedPropertyChangedEventArgs<BindingValue>&)
+		{ HandleTreeSelection(static_cast<TreeView*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleChartPoint", UIClass::UI_ChartView,
-		L"OnPointClick", &ChartView::OnPointClick,
+		L"PointClick", &ChartView::OnPointClick,
 		[this](ChartView* sender, int series, int point)
 		{ HandleChartPoint(sender, series, point); }, &error));
-	require(registry.RegisterControl(L"HandleReportRow", UIClass::UI_ReportView,
-		L"OnRowClick", &ReportView::OnRowClick,
-		[this](ReportView* sender, int row) { HandleReportRow(sender, row); }, &error));
-	require(registry.RegisterControl(L"HandleSystemSurfaceMouseUp", UIClass::UI_Panel,
-		L"OnMouseUp", &Control::OnMouseUp,
-		[this](Control* sender, MouseEventArgs e)
+	require(registry.RegisterControl(L"HandleSystemSurfaceMouseUp", UIClass::UI_Canvas,
+		L"MouseUp", &Control::OnMouseUp,
+		[this](Control* sender, MouseEventArgs& e)
 		{ HandleSystemSurfaceMouseUp(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleToastClick", UIClass::UI_ToastHost,
-		L"OnToastClick", &ToastHost::OnToastClick,
-		[this](ToastHost* sender, int index) { HandleToastClick(sender, index); }, &error));
-
 	auto registerSlider = [&](const wchar_t* name, auto callback)
 	{
 		require(registry.RegisterControl(name, UIClass::UI_Slider,
-			L"OnValueChanged", &Slider::OnValueChanged,
+			L"ValueChanged", &Slider::ValueChanged,
 			std::move(callback), &error));
 	};
 	registerSlider(L"HandleMediaVolume",
-		[this](Control* sender, float oldValue, float newValue)
-		{ HandleMediaVolume(sender, oldValue, newValue); });
+		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
+		{ HandleMediaVolume(sender, e.OldValue, e.NewValue); });
 	registerSlider(L"HandleMediaSpeed",
-		[this](Control* sender, float oldValue, float newValue)
-		{ HandleMediaSpeed(sender, oldValue, newValue); });
+		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
+		{ HandleMediaSpeed(sender, e.OldValue, e.NewValue); });
 	registerSlider(L"HandleMediaSeek",
-		[this](Control* sender, float oldValue, float newValue)
-		{ HandleMediaSeek(sender, oldValue, newValue); });
+		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
+		{ HandleMediaSeek(sender, e.OldValue, e.NewValue); });
 
 	require(registry.RegisterControl(L"HandleMediaOpened", UIClass::UI_MediaPlayer,
-		L"OnMediaOpened", &MediaPlayer::OnMediaOpened,
+		L"MediaOpened", &MediaPlayer::OnMediaOpened,
 		[this](Control* sender) { HandleMediaOpened(static_cast<MediaPlayer*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleMediaEnded", UIClass::UI_MediaPlayer,
-		L"OnMediaEnded", &MediaPlayer::OnMediaEnded,
+		L"MediaEnded", &MediaPlayer::OnMediaEnded,
 		[this](Control* sender) { HandleMediaEnded(static_cast<MediaPlayer*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleMediaFailed", UIClass::UI_MediaPlayer,
-		L"OnMediaFailed", &MediaPlayer::OnMediaFailed,
+		L"MediaFailed", &MediaPlayer::OnMediaFailed,
 		[this](Control* sender) { HandleMediaFailed(static_cast<MediaPlayer*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandleMediaPosition", UIClass::UI_MediaPlayer,
-		L"OnPositionChanged", &MediaPlayer::OnPositionChanged,
+		L"PositionChanged", &MediaPlayer::OnPositionChanged,
 		[this](Control* sender, double position)
 		{ HandleMediaPosition(static_cast<MediaPlayer*>(sender), position); }, &error));
+
+	const auto component = std::find_if(
+		document.Components.begin(), document.Components.end(), [](const auto& item)
+		{
+			return item.Type.XamlNamespace == L"urn:cui:test"
+				&& item.Type.XamlName == L"FeatureCard";
+		});
+	if (component == document.Components.end())
+		ThrowRuntimeError(L"XAML 缺少 FeatureCard 事件契约。");
+	const RuntimeTypeId componentType{
+		component->Type.XamlNamespace, component->Type.XamlName };
+	const auto invoked = std::find_if(
+		component->Events.begin(), component->Events.end(), [](const auto& item)
+		{
+			return item.Name == L"Invoked";
+		});
+	if (invoked == component->Events.end())
+		ThrowRuntimeError(L"FeatureCard 缺少 Invoked 事件契约。");
+	require(registry.RegisterComponent(
+		L"HandleFeatureInvoked", componentType, *invoked,
+		[this](Control* sender, DeclarativeEventArgs& args)
+		{ HandleFeatureInvoked(sender, args); }, &error));
+	require(registry.RegisterComponent(
+		L"HandleFeatureBubble", componentType, *invoked,
+		[this](Control* sender, DeclarativeEventArgs& args)
+		{ HandleFeatureBubble(sender, args); }, &error));
 }
 
 void DemoWindow::ResolveControls()
@@ -300,20 +3998,15 @@ void DemoWindow::ResolveControls()
 	_statusText = RequireControl<Label>(L"statusText");
 	_tabs = RequireControl<TabControl>(L"mainTabs");
 	_basicButton = RequireControl<Button>(L"basicButton");
-	_radioA = RequireControl<RadioBox>(L"radioA");
-	_radioB = RequireControl<RadioBox>(L"radioB");
-	_picture = RequireControl<PictureBox>(L"demoPicture");
+	_dialogCancelButton = RequireControl<Button>(L"dialogCancelButton");
+	_radioA = RequireControl<RadioButton>(L"radioA");
+	_radioB = RequireControl<RadioButton>(L"radioB");
+	_image = RequireControl<Image>(L"demoImage");
 	_progress = RequireControl<ProgressBar>(L"demoProgress");
 	_progressRing = RequireControl<ProgressRing>(L"progressRing");
-	_pagedGrid = RequireControl<PagedGridView>(L"pagedGrid");
-	_propertyGrid = RequireControl<PropertyGridView>(L"propertyGrid");
-	_filter = RequireControl<FilterBar>(L"analyticsFilter");
-	_kpiRevenue = RequireControl<KpiCard>(L"kpiRevenue");
-	_kpiDeals = RequireControl<KpiCard>(L"kpiDeals");
-	_kpiMargin = RequireControl<KpiCard>(L"kpiMargin");
 	_chart = RequireControl<ChartView>(L"salesChart");
-	_report = RequireControl<ReportView>(L"salesReport");
-	_toast = RequireControl<ToastHost>(L"toastHost");
+	_toastMessage = RequireControl<Label>(L"toastMessage");
+	_systemContextMenu = RequireControl<ContextMenu>(L"systemContextMenu");
 	_web = RequireControl<WebBrowser>(L"webBrowser");
 	_media = RequireControl<MediaPlayer>(L"mediaPlayer");
 	_mediaProgress = RequireControl<Slider>(L"mediaProgress");
@@ -327,46 +4020,6 @@ void DemoWindow::LoadImages()
 		_5_ico, _6_ico, _7_ico, _8_ico, _9_ico };
 	for (size_t i = 0; i < std::size(images); ++i)
 		_images[i] = D2DGraphics::ToBitmapFromSvg(images[i]);
-	const char* icons[] = { icon0, icon1, icon2, icon3, icon4 };
-	for (size_t i = 0; i < std::size(icons); ++i)
-		_icons[i] = D2DGraphics::ToBitmapFromSvg(icons[i]);
-}
-
-void DemoWindow::InitializeChrome()
-{
-	auto file = _menu->AddItem(L"文件");
-	file->AddSubItem(L"打开", 101);
-	file->AddSeparator();
-	file->AddSubItem(L"退出", 102);
-	auto help = _menu->AddItem(L"帮助");
-	help->AddSubItem(L"关于 XAML 模式", 201);
-
-	auto addPageButton = [&](const wchar_t* text, int page)
-	{
-		auto* button = _toolBar->AddTextButton(text, 88);
-		button->OnMouseClick += [this, page, text](Control*, MouseEventArgs)
-		{
-			_tabs->SelectPage(page);
-			UpdateStatus(std::wstring(L"ToolBar: ") + text);
-		};
-	};
-	addPageButton(L"基础", 0);
-	addPageButton(L"数据", 2);
-	addPageButton(L"可视化", 3);
-	addPageButton(L"系统", 5);
-	_toolBar->AddSeparator();
-	for (int i = 0; i < 3; ++i)
-	{
-		auto* button = _toolBar->AddIconButton(_icons[i], 30);
-		button->Tag = i;
-		button->OnMouseClick += [this](Control* sender, MouseEventArgs)
-		{
-			UpdateStatus(StringHelper::Format(
-				L"ToolBar icon %d", static_cast<int>(sender->Tag) + 1));
-		};
-	}
-	_statusBar->AddPart(L"XAML ready", -1);
-	_statusBar->AddPart(L"DemoWindow.cui.xaml", 250);
 }
 
 void DemoWindow::InitializeBasicPage()
@@ -376,111 +4029,66 @@ void DemoWindow::InitializeBasicPage()
 
 void DemoWindow::InitializeContainerPage()
 {
-	auto* sideBar = RequireControl<SideBar>(L"sideBar");
-	sideBar->OnItemClick += [this](NavigationView* sender, int index)
-	{
-		if (index >= 0 && index < static_cast<int>(sender->Items.size()))
-			UpdateStatus(L"SideBar: " + sender->Items[index].Text);
-	};
-	(void)RequireControl<BreadcrumbBar>(L"breadcrumb");
+	(void)RequireControl<ListBox>(L"sideNavigationList");
 }
 
 void DemoWindow::InitializeDataPage()
 {
 	auto* tree = RequireControl<TreeView>(L"demoTree");
-	for (int i = 0; i < 4; ++i)
-	{
-		auto* parent = new TreeNode(StringHelper::Format(L"node%d", i), _images[i]);
-		parent->Expand = true;
-		tree->Root->Children.push_back(parent);
-		for (int j = 0; j < 6; ++j)
-			parent->Children.push_back(new TreeNode(
-				StringHelper::Format(L"node%d-%d", i, j), _images[(i + j) % 10]));
-	}
+	if (!tree->GetItemsSource())
+		ThrowRuntimeError(L"demoTree 未绑定 XAML ItemsSource。");
 
 	(void)RequireControl<ListBox>(L"demoListBox");
 
-	auto* list = RequireControl<ListView>(L"demoList");
-	for (int i = 0; i < 40; ++i)
-	{
-		ListViewItem item(StringHelper::Format(L"List item %02d", i + 1),
-			i % 3 == 0 ? L"Ready" : L"Queued");
-		item.Image = _images[i % 10];
-		item.Checked = i % 5 == 0;
-		item.SubItems.push_back(item.SubText);
-		list->AddItem(item);
-	}
+	(void)RequireControl<ListView>(L"demoList");
 
-	for (int i = 0; i < 500; ++i)
-	{
-		GridViewRow row;
-		row.Cells = { _images[i % 10], L"Ready", i % 2 == 0,
-			std::to_wstring(Random::Next()), L"Open" };
-		_pagedGrid->AddRow(row);
-	}
-	_pagedGrid->RefreshPage();
-	_pagedGrid->OnPageChanged += [this](PagedGridView*, int, int page)
-	{
-		UpdateStatus(StringHelper::Format(L"PagedGridView: page %d", page + 1));
-	};
-
-	_propertyGrid->AddProperty(
-		L"Appearance", L"Title", L"XAML grid settings", PropertyGridValueType::Text);
-	_propertyGrid->AddProperty(
-		L"Appearance", L"Enabled", L"True", PropertyGridValueType::Bool);
-	PropertyGridItem density(
-		L"Behavior", L"Density", L"Comfortable", PropertyGridValueType::Enum);
-	density.Options = { L"Compact", L"Comfortable", L"Roomy" };
-	_propertyGrid->AddItem(density);
-	_propertyGrid->AddProperty(
-		L"Theme", L"Accent", L"#2F7DF0", PropertyGridValueType::Color);
 }
 
 void DemoWindow::InitializeAnalyticsPage()
 {
-	_filter->OnQueryChanged += [this](FilterBar*, const std::wstring& query)
-	{
-		UpdateStatus(query.empty() ? L"FilterBar: query cleared" : L"FilterBar: " + query);
-	};
-}
-
-void DemoWindow::InitializeLayoutPage()
-{
-	auto* panel = RequireControl<RelativePanel>(L"demoRelative");
-	auto* button = RequireControl<Button>(L"relativeCenter");
-	RelativeConstraints constraints;
-	constraints.CenterHorizontal = true;
-	constraints.CenterVertical = true;
-	panel->SetConstraints(button, constraints);
+	(void)RequireControl<ListView>(L"analyticsRows");
 }
 
 void DemoWindow::InitializeSystemPage()
 {
 	_taskbar = std::make_unique<Taskbar>(Handle);
 	_notify = std::make_unique<NotifyIcon>();
-	(void)_notify->TryInitialize(Handle, 1);
-	_notify->SetIcon(LoadIcon(nullptr, IDI_APPLICATION));
-	_notify->SetToolTip(L"CUI XAML Demo");
-	_notify->AddMenuItem(NotifyIconMenuItem(L"显示窗口", 1));
-	_notify->AddMenuSeparator();
-	_notify->AddMenuItem(NotifyIconMenuItem(L"退出", 3));
-	_notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int id)
-	{
-		if (id == 1) ShowWindow(sender->hWnd, SW_SHOWNORMAL);
-		else if (id == 3) PostMessage(sender->hWnd, WM_CLOSE, 0, 0);
-	};
-	(void)_notify->TryShow();
+	if (!_notify->TrySetIcon(LoadIcon(nullptr, IDI_APPLICATION))
+		|| !_notify->TrySetToolTip(L"CUI XAML Demo"))
+		ThrowRuntimeError(L"无法预配置 NotifyIcon 图标或提示。");
+	auto showWindow = NotifyIconMenuItem(
+		L"显示窗口",
+		RoutedCommand(L"Demo.System.ShowWindow"),
+		std::wstring(L"tray-show"));
+	showWindow.CommandTarget = this;
+	auto about = NotifyIconMenuItem(
+		L"关于命令模型",
+		RoutedCommand(L"Demo.System.About"),
+		std::wstring(L"tray-about"));
+	about.CommandTarget = this;
+	auto windowMenu = NotifyIconMenuItem::Submenu(L"窗口命令");
+	(void)windowMenu.AddItem(std::move(showWindow));
+	(void)windowMenu.AddItem(std::move(about));
+	if (!_notify->TryAddMenuItem(std::move(windowMenu))
+		|| !_notify->TryAddMenuSeparator())
+		ThrowRuntimeError(L"无法预配置 NotifyIcon 窗口命令菜单。");
+	auto exit = NotifyIconMenuItem(
+		L"退出",
+		RoutedCommand(L"Demo.File.Exit"),
+		std::wstring(L"tray-exit"));
+	exit.CommandTarget = this;
+	if (!_notify->TryAddMenuItem(std::move(exit)))
+		ThrowRuntimeError(L"无法预配置 NotifyIcon 退出命令。");
 
-	_systemContextMenu = Add<ContextMenu>();
-	_systemContextMenu->AddItem(L"新建项目", 1001);
-	_systemContextMenu->AddItem(L"刷新视图", 1002);
-	_systemContextMenu->AddSeparator();
-	auto more = _systemContextMenu->AddItem(L"更多", 0);
-	more->AddSubItem(L"复制信息", 1003);
-	more->AddSubItem(L"关于此页", 1004);
-	_systemContextMenu->OnMenuCommand += [this](Control* sender, int id)
-	{ HandleSystemContextMenu(sender, id); };
-	_toast->ShowToast(L"CUI XAML", L"ToastHost 控件由 XAML 创建。", ToastKind::Info, 5200);
+	_toastMessage->Text = L"通知视觉树由 XAML 创建；C++ 只更新消息内容。";
+}
+
+bool DemoWindow::EnsureNotifyIconInitialized(bool show)
+{
+	if (!_notify || !Handle || !::IsWindow(Handle)) return false;
+	if (!_notify->IsInitialized()
+		&& !_notify->TryInitialize(*this)) return false;
+	return !show || _notify->IsVisible() || _notify->TryShow();
 }
 
 void DemoWindow::InitializeWebPage()
@@ -520,76 +4128,335 @@ void DemoWindow::UpdateStatus(const std::wstring& text)
 		_statusText->Text = text;
 		_statusText->InvalidateVisual();
 	}
-	if (_statusBar)
+	(void)SetStatusBarItemText(0, text);
+}
+
+std::wstring DemoWindow::GetStatusBarItemText(size_t index) const
+{
+	if (!_statusBar || !_statusBar->GetItemsSource()) return {};
+	BindingSourceReference item;
+	if (!_statusBar->GetItemsSource().Get()->TryGetItem(index, item) || !item)
+		return {};
+	BindingValue value;
+	std::wstring text;
+	return item.Get()->TryGetValue(L"Text", value) && value.TryGetString(text)
+		? text : std::wstring{};
+}
+
+bool DemoWindow::SetStatusBarItemText(
+	size_t index, const std::wstring& text)
+{
+	if (!_statusBar || !_statusBar->GetItemsSource()) return false;
+	BindingSourceReference item;
+	if (!_statusBar->GetItemsSource().Get()->TryGetItem(index, item) || !item)
+		return false;
+	return item.Get()->TrySetValue(L"Text", BindingValue(text));
+}
+
+std::wstring DemoWindow::DescribeCommandTarget(const Control* target) const
+{
+	if (!target) return L"∅";
+	if (target == this)
 	{
-		_statusBar->SetPartText(0, text);
-		_statusBar->InvalidateVisual();
+		const auto& name = _xamlSession.Document().WindowNode().Name;
+		return name.empty() ? L"Window" : name;
 	}
+	static constexpr const wchar_t* namedTargets[] = {
+		L"systemSurface", L"mainMenu", L"basicButton",
+		L"wpfHierarchyScope", L"wpfDispatcherProbe", L"featureCard",
+		L"commandTargetButton"
+	};
+	for (const auto* name : namedTargets)
+	{
+		if (_xamlSession.Document().FindControlByName(name) == target) return name;
+	}
+	return L"(unnamed)";
+}
+
+void DemoWindow::RecordCommandTarget(
+	bool executed, const RoutedEventArgs& args, const RoutedCommand& command,
+	std::uint64_t transactionId)
+{
+	const auto targetName = DescribeCommandTarget(
+		args.OriginalSource ? args.OriginalSource : args.Source);
+	if (executed)
+	{
+		_lastCommandExecutedTarget = targetName;
+		_lastCommandTargetCommand = command.Name();
+		_lastCommandExecutedTransactionId = transactionId;
+		_displayedCommandCanExecuteTarget =
+			_pendingCommandTransactionId == transactionId
+			&& _pendingCommandTargetCommand == command.Name()
+			? _lastCommandCanExecuteTarget : std::wstring(L"∅");
+	}
+	else
+	{
+		_lastCommandCanExecuteTarget = targetName;
+		_pendingCommandTargetCommand = command.Name();
+		_pendingCommandTransactionId = transactionId;
+		// ObserveCanExecute/requery is synchronous and can run again while a
+		// ContextMenu closes. Once an execution has been displayed, a later
+		// query-only transaction must not replace it with a mixed-command trace.
+		if (_lastCommandExecutedTransactionId != 0) return;
+		_displayedCommandCanExecuteTarget = targetName;
+		_lastCommandTargetCommand = command.Name();
+	}
+	auto* trace = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"commandTargetTrace"));
+	if (!trace) return;
+	trace->Text = L"CanExecute target="
+		+ (_displayedCommandCanExecuteTarget.empty()
+			? std::wstring(L"∅") : _displayedCommandCanExecuteTarget)
+		+ L" · Executed target="
+		+ (_lastCommandExecutedTarget.empty()
+			? std::wstring(L"∅") : _lastCommandExecutedTarget)
+		+ L" · " + _lastCommandTargetCommand;
+	trace->InvalidateVisual();
 }
 
 void DemoWindow::UpdateProgress(float value01)
 {
 	value01 = std::clamp(value01, 0.0f, 1.0f);
-	_progress->PercentageValue = value01;
-	_progressRing->PercentageValue = value01;
+	_progress->Value = value01;
+	_progressRing->Value = static_cast<double>(value01) * 100.0;
 	if (_taskbar)
 		(void)_taskbar->TrySetValue(
 			static_cast<ULONGLONG>(value01 * 1000.0f), 1000);
 }
 
-void DemoWindow::LoadPicture(const std::wstring& path)
+void DemoWindow::LoadImage(const std::wstring& path)
 {
 	if (path.empty()) return;
 	const auto extension = StringHelper::ToLower(
 		Convert::WStringToString(std::filesystem::path(path).extension().wstring()));
-	_picture->Image = nullptr;
+	_image->Source = nullptr;
 	if (extension == ".svg")
 	{
 		const auto svg = File::ReadAllText(Convert::WStringToString(path));
-		_picture->SetImageEx(D2DGraphics::ToBitmapFromSvg(svg.c_str()));
+		_image->Source = D2DGraphics::ToBitmapFromSvg(svg.c_str());
 	}
 	else
-		_picture->SetImageEx(BitmapSource::FromFile(path));
-	UpdateStatus(L"PictureBox: " + FileNameFromPath(path));
+		_image->Source = BitmapSource::FromFile(path);
+	UpdateStatus(L"Image: " + FileNameFromPath(path));
 	Invalidate();
 }
 
-void DemoWindow::HandleShown(Form*)
+void DemoWindow::HandleContentRendered(Window*)
 {
-	UpdateStatus(L"XAML 已挂载：视觉树来自 DemoWindow.cui.xaml");
+	if (_taskbar)
+	{
+		(void)_taskbar->Initialize(Handle);
+		if (_progress)
+			(void)_taskbar->TrySetValue(static_cast<ULONGLONG>(
+				std::clamp(_progress->Value, 0.0, 1.0) * 1000.0),
+				1000);
+	}
+	const bool notifyReady = !_notify || EnsureNotifyIconInitialized(true);
+	UpdateStatus(notifyReady
+		? L"XAML 已挂载：视觉树来自 DemoWindow.cui.xaml"
+		: L"XAML 已挂载：NotifyIcon 等待有效 Window Handle");
 }
 
-void DemoWindow::HandleClosing(Form* sender, bool& canceled)
+void DemoWindow::HandleClosing(Window* sender, CancelEventArgs& args)
 {
 	const auto result = MessageDialog::Show(
 		L"确认", L"是否关闭 CUI XAML 示例？",
-		MessageDialogButtons::YesNo, MessageDialogIcon::Question, sender->Handle);
-	canceled = result != MessageDialogResult::Yes;
+		MessageDialogButtons::YesNo, MessageDialogIcon::Question, sender);
+	args.Cancel = result != MessageDialogResult::Yes;
 }
 
-void DemoWindow::HandleMenuCommand(Control*, int id)
+void DemoWindow::HandleCommandPreviewCanExecute(
+	Control*, CanExecuteRoutedEventArgs& args)
 {
-	if (id == 101) UpdateStatus(L"Menu: 文件 -> 打开");
-	else if (id == 102) Close();
-	else if (id == 201)
-		MessageDialog::Show(L"关于", L"这个窗口的控件树由 DemoWindow.cui.xaml 动态构造。",
-			MessageDialogButtons::OK, MessageDialogIcon::Info, Handle);
+	++_commandPreviewCanExecuteCount;
+	_commandRouteTrace.push_back(
+		L"PreviewCanExecute:" + args.Command.Name());
 }
 
-void DemoWindow::HandleGlobalProgress(Control*, float, float value)
+void DemoWindow::HandleCommandCanExecute(
+	Control*, CanExecuteRoutedEventArgs& args)
+{
+	++_commandCanExecuteCount;
+	RecordCommandTarget(
+		false, args, args.Command, args.CommandTransactionId);
+	_commandRouteTrace.push_back(L"CanExecute:" + args.Command.Name());
+	args.CanExecute = args.Command.Name() == L"Demo.System.CopyInfo"
+		? _copyInfoCommandEnabled : true;
+}
+
+void DemoWindow::HandleCommandPreviewExecuted(
+	Control*, ExecutedRoutedEventArgs& args)
+{
+	++_commandPreviewExecutedCount;
+	_commandRouteTrace.push_back(L"PreviewExecuted:" + args.Command.Name());
+}
+
+void DemoWindow::HandleCommandExecuted(
+	Control*, ExecutedRoutedEventArgs& args)
+{
+	++_commandExecutedCount;
+	RecordCommandTarget(
+		true, args, args.Command, args.CommandTransactionId);
+	_commandRouteTrace.push_back(L"Executed:" + args.Command.Name());
+	_lastCommandParameter = CommandParameterText(args.Parameter);
+	const auto& command = args.Command.Name();
+	if (command == L"Demo.File.Open")
+		UpdateStatus(L"RoutedCommand: Open · " + _lastCommandParameter);
+	else if (command == L"Demo.File.Exit")
+	{
+		args.Executed = true;
+		if (Handle) Close();
+		return;
+	}
+	else if (command == L"Demo.Help.About")
+	{
+		args.Executed = true;
+		if (Handle)
+			MessageDialog::Show(L"关于",
+				L"命令 identity、CommandBinding 和 InputBinding 均由 XAML 定义。",
+				MessageDialogButtons::OK, MessageDialogIcon::Info, this);
+		return;
+	}
+	else if (command == L"Demo.System.NewProject")
+		UpdateStatus(L"ContextMenu RoutedCommand: NewProject");
+	else if (command == L"Demo.System.Refresh")
+		UpdateStatus(L"ContextMenu RoutedCommand: Refresh · "
+			+ _lastCommandParameter);
+	else if (command == L"Demo.System.CopyInfo")
+		UpdateStatus(L"ContextMenu RoutedCommand: CopyInfo");
+	else if (command == L"Demo.System.About")
+		UpdateStatus(L"ContextMenu RoutedCommand: About");
+	else if (command == L"Demo.System.ShowWindow")
+	{
+		UpdateStatus(L"NotifyIcon RoutedCommand: ShowWindow · "
+			+ _lastCommandParameter);
+		if (Handle)
+		{
+			(void)::ShowWindow(Handle, SW_SHOWNORMAL);
+			(void)::SetForegroundWindow(Handle);
+		}
+	}
+	args.Executed = true;
+}
+
+void DemoWindow::HandleLocalCommandCanExecute(
+	Control*, CanExecuteRoutedEventArgs& args)
+{
+	++_localCommandCanExecuteCount;
+	_commandRouteTrace.push_back(L"LocalCanExecute:" + args.Command.Name());
+	args.CanExecute = true;
+}
+
+void DemoWindow::HandleLocalCommandExecuted(
+	Control*, ExecutedRoutedEventArgs& args)
+{
+	++_localCommandExecutedCount;
+	_lastCommandParameter = CommandParameterText(args.Parameter);
+	_commandRouteTrace.push_back(L"LocalExecuted:" + args.Command.Name());
+	UpdateStatus(L"Local CommandBinding: " + args.Command.Name()
+		+ L" · " + _lastCommandParameter);
+	args.Executed = true;
+}
+
+void DemoWindow::HandleClassCommandCanExecute(
+	Control*, CanExecuteRoutedEventArgs& args)
+{
+	++_classCommandCanExecuteCount;
+	_classCommandTrace.push_back(L"QName.CanExecute");
+	args.CanExecute = _classCommandEnabled;
+}
+
+void DemoWindow::HandleClassCommandExecuted(
+	Control*, ExecutedRoutedEventArgs& args)
+{
+	++_classCommandExecutedCount;
+	_classCommandTrace.push_back(L"QName.Executed");
+	_lastCommandParameter = CommandParameterText(args.Parameter);
+	UpdateStatus(L"FeatureCard class command · " + _lastCommandParameter);
+	args.Executed = true;
+}
+
+void DemoWindow::HandleNativeClassCommandCanExecute(
+	Control*, CanExecuteRoutedEventArgs& args)
+{
+	++_nativeClassCommandCanExecuteCount;
+	_classCommandTrace.push_back(L"NativeFrameworkElement.CanExecute");
+	if (CommandParameterText(args.Parameter) == L"template-native-input")
+		args.CanExecute = true;
+}
+
+void DemoWindow::HandleNativeClassCommandExecuted(
+	Control*, ExecutedRoutedEventArgs& args)
+{
+	++_nativeClassCommandExecutedCount;
+	_classCommandTrace.push_back(L"NativeFrameworkElement.Executed");
+	_lastCommandParameter = CommandParameterText(args.Parameter);
+	args.Executed = true;
+}
+
+void DemoWindow::HandleCommandAvailabilityToggle(
+	Control*, RoutedEventArgs&)
+{
+	_classCommandEnabled = !_classCommandEnabled;
+	if (auto* source = _xamlSession.Document().FindControlByName(
+		L"featureActionB"))
+		(void)RoutedCommandManager::InvalidateRequerySuggested(*source);
+	UpdateStatus(_classCommandEnabled
+		? L"FeatureCard class command: enabled (requery pending)"
+		: L"FeatureCard class command: disabled (requery pending)");
+}
+
+void DemoWindow::HandleToolBarAction(Control* sender, RoutedEventArgs&)
+{
+	struct NavigationTarget
+	{
+		const wchar_t* Name;
+		int Page;
+		const wchar_t* Label;
+	};
+	for (const auto& target : {
+		NavigationTarget{ L"toolBasic", 0, L"基础" },
+		NavigationTarget{ L"toolData", 2, L"数据" },
+		NavigationTarget{ L"toolAnalytics", 3, L"可视化" },
+		NavigationTarget{ L"toolSystem", 5, L"系统" } })
+	{
+		if (sender != RequireControl<Control>(target.Name)) continue;
+		(void)_tabs->SelectItem(target.Page);
+		UpdateStatus(std::wstring(L"ToolBar: ") + target.Label);
+		return;
+	}
+	const wchar_t* icons[] = { L"toolIcon1", L"toolIcon2", L"toolIcon3" };
+	for (size_t index = 0; index < std::size(icons); ++index)
+	{
+		if (sender != RequireControl<Control>(icons[index])) continue;
+		UpdateStatus(StringHelper::Format(
+			L"ToolBar icon %d", static_cast<int>(index) + 1));
+		return;
+	}
+}
+
+void DemoWindow::HandleGlobalProgress(Control*, double, double value)
 {
 	UpdateProgress(value / 1000.0f);
 	UpdateStatus(StringHelper::Format(L"XAML Slider Value=%.0f", value));
 }
 
-void DemoWindow::HandleMouseWheel(Control*, MouseEventArgs e)
+void DemoWindow::HandleMouseWheel(Control*, MouseEventArgs& e)
 {
-	UpdateStatus(StringHelper::Format(L"MouseWheel Delta=%d", e.Delta));
+	UpdateStatus(StringHelper::Format(
+		L"MouseWheel Delta=%d", e.WheelDelta));
 }
 
-void DemoWindow::HandleBasicClick(Control* sender, MouseEventArgs)
+void DemoWindow::HandleBasicClick(Control* sender, RoutedEventArgs&)
 {
-	sender->Text = StringHelper::Format(L"点击计数 [%d]", ++sender->Tag);
+	if (auto* button = dynamic_cast<Button*>(sender))
+	{
+		int invocationCount = 0;
+		(void)sender->Tag.TryGetInt(invocationCount);
+		sender->Tag = BindingValue(invocationCount + 1);
+		button->SetContent(BindingValue(StringHelper::Format(
+			L"点击计数 [%d]", invocationCount + 1)));
+	}
 	sender->InvalidateVisual();
 	UpdateStatus(L"Button.Click -> HandleBasicClick");
 }
@@ -597,14 +4464,12 @@ void DemoWindow::HandleBasicClick(Control* sender, MouseEventArgs)
 void DemoWindow::HandleEnableInput(Control* sender)
 {
 	auto* target = RequireControl<Control>(L"nameInput");
-	target->Enable = static_cast<CheckBox*>(sender)->Checked;
+	target->IsEnabled = static_cast<CheckBox*>(sender)->IsChecked;
 	target->InvalidateVisual();
 }
 
 void DemoWindow::HandleRadio(Control* sender)
 {
-	if (sender == _radioA && _radioA->Checked) _radioB->Checked = false;
-	if (sender == _radioB && _radioB->Checked) _radioA->Checked = false;
 	UpdateStatus(sender == _radioA ? L"Radio: A" : L"Radio: B");
 }
 
@@ -613,12 +4478,12 @@ void DemoWindow::HandleComboSelection(ComboBox* sender)
 	UpdateStatus(L"ComboBox: " + sender->Text);
 }
 
-void DemoWindow::HandleNumericValue(NumericUpDown*, double, double value)
+void DemoWindow::HandleNumericValue(Control*, double, double value)
 {
 	UpdateStatus(StringHelper::Format(L"NumericUpDown: %.0f", value));
 }
 
-void DemoWindow::HandleDocsLink(Control*, MouseEventArgs)
+void DemoWindow::HandleDocsLink(Control*, RoutedEventArgs&)
 {
 	UpdateStatus(L"CUI XAML = DesignDocument 前端 + RuntimeDocument 材质化");
 }
@@ -628,7 +4493,7 @@ void DemoWindow::HandleExpander(Expander*, bool expanded)
 	UpdateStatus(expanded ? L"Expander: Expanded" : L"Expander: Collapsed");
 }
 
-void DemoWindow::HandleOpenImage(Control*, MouseEventArgs)
+void DemoWindow::HandleOpenImage(Control*, RoutedEventArgs&)
 {
 	OpenFileDialog dialog;
 	dialog.Filter = MakeDialogFilterStrring(
@@ -636,24 +4501,45 @@ void DemoWindow::HandleOpenImage(Control*, MouseEventArgs)
 	dialog.SupportMultiDottedExtensions = true;
 	dialog.Title = "选择一个图片文件";
 	if (dialog.ShowDialog(Handle) == DialogResult::OK && !dialog.SelectedPaths.empty())
-		LoadPicture(Convert::StringToWString(dialog.SelectedPaths[0]));
+		LoadImage(Convert::StringToWString(dialog.SelectedPaths[0]));
 }
 
-void DemoWindow::HandleDropImage(Control*, std::vector<std::wstring> files)
+void DemoWindow::HandleDragRoute(Control*, DragEventArgs& e)
 {
-	if (!files.empty()) LoadPicture(files.front());
+	if (e.Data && (e.Data->HasFiles() || e.Data->HasText()))
+		e.Effects = DragDropEffects::Copy;
+	const auto& metadata = GetRoutedEventMetadata(e.EventId);
+	const wchar_t* stage = e.Stage == RoutedEventStage::Preview
+		? L"tunnel" : e.Stage == RoutedEventStage::Bubble
+			? L"bubble" : L"direct";
+	UpdateStatus(StringHelper::Format(
+		L"DragDrop.%s · %s · local=(%d,%d) · files=%d · text=%s",
+		metadata.Name, stage, e.X, e.Y,
+		e.Data ? static_cast<int>(e.Data->Files().size()) : 0,
+		e.Data && e.Data->HasText() ? L"yes" : L"no"));
 }
 
-void DemoWindow::HandlePictureVisibility(Control* sender)
+void DemoWindow::HandleDropImage(Control*, DragEventArgs& e)
 {
-	_picture->Visible = static_cast<Switch*>(sender)->Checked;
-	UpdateStatus(_picture->Visible ? L"PictureBox: Visible" : L"PictureBox: Hidden");
+	if (!e.Data || !e.Data->HasFiles()) return;
+	LoadImage(e.Data->Files().front());
+	e.Effects = DragDropEffects::Copy;
+	e.Handled = true;
+	UpdateStatus(L"Drop · routed DragEventArgs · image loaded · Handled=true");
 }
 
-void DemoWindow::HandleListItem(ListView* sender, int index)
+void DemoWindow::HandleImageVisibility(Control* sender)
 {
-	if (index >= 0 && index < static_cast<int>(sender->Items.size()))
-		UpdateStatus(L"List: " + sender->Items[index].Text);
+	_image->Visibility = static_cast<Switch*>(sender)->IsChecked
+		? Visibility::Visible : Visibility::Hidden;
+	UpdateStatus(_image->IsVisible
+		? L"Image: Visibility=Visible"
+		: L"Image: Visibility=Hidden (layout preserved)");
+}
+
+void DemoWindow::HandleListViewSelection(Selector* sender)
+{
+	UpdateStatus(L"ListView: " + sender->GetSelectedValue().ToString());
 }
 
 void DemoWindow::HandleListBoxSelection(Selector* sender)
@@ -661,108 +4547,783 @@ void DemoWindow::HandleListBoxSelection(Selector* sender)
 	UpdateStatus(L"ListBox: " + sender->GetSelectedValue().ToString());
 }
 
-void DemoWindow::HandleGridEnabled(Control* sender)
+void DemoWindow::HandleTreeSelection(TreeView* sender)
 {
-	_pagedGrid->Enable = static_cast<Switch*>(sender)->Checked;
-	UpdateStatus(_pagedGrid->Enable ? L"PagedGrid: Enable" : L"PagedGrid: Disable");
+	++_treeSelectionChanges;
+	UpdateStatus(L"TreeView data selection: "
+		+ sender->GetSelectedValue().ToString());
 }
 
-void DemoWindow::HandleGridVisible(Control* sender)
+void DemoWindow::HandleFeatureInvoked(
+	Control* sender, DeclarativeEventArgs& args)
 {
-	_pagedGrid->Visible = static_cast<Switch*>(sender)->Checked;
-	UpdateStatus(_pagedGrid->Visible ? L"PagedGrid: Visible" : L"PagedGrid: Hidden");
+	++_featureInvocations;
+	auto* card = args.OriginalSource ? args.OriginalSource : sender;
+	auto* behavior = dynamic_cast<FeatureCardBehavior*>(
+		card ? card->GetDeclarativeComponentBehavior() : nullptr);
+	if (behavior)
+		(void)behavior->PublishState(*card, StringHelper::Format(
+			L"Invoked #%d · source handler", _featureInvocations));
+	UpdateStatus(L"FeatureCard.Invoked: XAML event -> C++ source handler");
 }
 
-void DemoWindow::HandlePropertyValue(PropertyGridView* sender, int index,
-	std::wstring, std::wstring newValue)
+void DemoWindow::HandleFeatureBubble(
+	Control*, DeclarativeEventArgs& args)
 {
-	if (index >= 0 && index < static_cast<int>(sender->Items.size()))
-		UpdateStatus(L"PropertyGrid: " + sender->Items[index].Name + L" = " + newValue);
-}
-
-void DemoWindow::HandleFilterApply(FilterBar* sender)
-{
+	++_featureBubbleInvocations;
 	UpdateStatus(StringHelper::Format(
-		L"FilterBar: apply %d filters", static_cast<int>(sender->GetSelectedValues().size())));
+		L"FeatureCard.Invoked bubbled #%d (%s source)",
+		_featureBubbleInvocations,
+		args.OriginalSource ? L"original" : L"missing"));
 }
 
-void DemoWindow::HandleFilterReset(FilterBar*)
+bool DemoWindow::RunElementHierarchyProbe(std::wstring* outSummary)
 {
-	UpdateStatus(L"FilterBar: reset");
+	auto* target = _xamlSession.Document().FindControlByName(
+		L"wpfTemplateButton");
+	auto* result = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"wpfDispatcherResult"));
+	auto finish = [&](bool success, std::wstring summary)
+	{
+		if (result)
+		{
+			result->Text = summary;
+			result->Foreground = success
+				? D2D1_COLOR_F{ 0.08f, 0.62f, 0.40f, 1.0f }
+				: D2D1_COLOR_F{ 0.86f, 0.22f, 0.22f, 1.0f };
+		}
+		if (outSummary) *outSummary = std::move(summary);
+		return success;
+	};
+	if (!target || !result)
+		return finish(false, L"FAIL · hierarchy probe XAML missing");
+
+	DispatcherObject& dispatcher = *target;
+	DependencyObject& dependency = *target;
+	Visual& visual = *target;
+	UIElement& input = *target;
+	FrameworkElement& framework = *target;
+	const auto* backgroundProperty = DependencyPropertyRegistry::Find(
+		dependency, L"Background");
+	const bool layerIdentity = dispatcher.CheckAccess()
+		&& backgroundProperty && backgroundProperty->Matches(dependency)
+		&& backgroundProperty->OwnerType() == std::type_index(typeid(Control))
+		&& visual.GetVisualParent() != nullptr
+		&& framework.GetLogicalParent() == visual.GetVisualParent()
+		&& framework.GetInheritanceParent() == framework.GetLogicalParent()
+		&& input.GetActualSizeDip().width > 0.0f
+		&& input.GetActualSizeDip().height > 0.0f;
+
+	DependencyObject* changedSender = nullptr;
+	std::wstring changedProperty;
+	const auto versionBefore = dependency.PropertyChangeVersion();
+	auto propertyConnection = dependency.OnPropertyValueChanged.Subscribe(
+		[&](DependencyObject* sender,
+			const DependencyPropertyChangedEventArgs& args)
+		{
+			changedSender = sender;
+			changedProperty = args.PropertyName;
+		});
+	const bool propertyWritten = dependency.TrySetValue(
+		L"AutomationProperties.AutomationId",
+		BindingValue(std::wstring(L"wpf-hierarchy-probe")));
+	const bool propertyBoundary = propertyWritten
+		&& changedSender == &dependency
+		&& changedProperty == L"AutomationProperties.AutomationId"
+		&& dependency.PropertyChangeVersion() > versionBefore
+		&& target->GetPropertyValueSource(L"AutomationProperties.AutomationId")
+			== DependencyPropertyValueSource::Local;
+	(void)target->ClearPropertyValue(
+		L"AutomationProperties.AutomationId");
+
+	bool foreignCheckAccess = true;
+	bool verifyRejected = false;
+	bool propertyRejected = false;
+	bool renderRejected = false;
+	bool postAccepted = false;
+	bool postedOnOwner = false;
+	std::function<void()> workerBody = [&]
+	{
+		foreignCheckAccess = dispatcher.CheckAccess();
+		try { dispatcher.VerifyAccess(); }
+		catch (const std::logic_error&) { verifyRejected = true; }
+		try
+		{
+			(void)dependency.TrySetValue(
+				L"AutomationProperties.AutomationId", BindingValue(std::wstring(L"illegal")));
+		}
+		catch (const std::logic_error&) { propertyRejected = true; }
+		try { visual.InvalidateVisual(); }
+		catch (const std::logic_error&) { renderRejected = true; }
+		postAccepted = dispatcher.TryPost([&]
+		{
+			postedOnOwner = dispatcher.CheckAccess();
+		});
+	};
+	HANDLE worker = ::CreateThread(nullptr, 0,
+		[](LPVOID context) -> DWORD
+		{
+			(*static_cast<std::function<void()>*>(context))();
+			return 0;
+		},
+		&workerBody, 0, nullptr);
+	if (!worker)
+		return finish(false, L"FAIL · cannot create probe worker");
+	(void)::WaitForSingleObject(worker, INFINITE);
+	::CloseHandle(worker);
+	cui::PumpUIThreadCallbacks();
+
+	const bool dispatcherBoundary = !foreignCheckAccess
+		&& verifyRejected && propertyRejected && renderRejected
+		&& postAccepted && postedOnOwner;
+	const bool success = layerIdentity
+		&& propertyBoundary && dispatcherBoundary;
+	return finish(success, success
+		? L"PASS · 6 layers + DP + dispatch"
+		: L"FAIL · layer/DP/dispatch boundary [layer="
+			+ std::to_wstring(layerIdentity)
+			+ L", property=" + std::to_wstring(propertyBoundary)
+			+ L", dispatcher=" + std::to_wstring(dispatcherBoundary) + L"]");
 }
 
-void DemoWindow::HandleKpiClick(KpiCard* sender)
+void DemoWindow::HandleDispatcherProbe(Control*, RoutedEventArgs&)
 {
-	UpdateStatus(L"KpiCard: " + sender->Title);
+	std::wstring summary;
+	const bool success = RunElementHierarchyProbe(&summary);
+	UpdateStatus((success ? L"WPF hierarchy: " : L"WPF hierarchy failed: ")
+		+ summary);
 }
 
-void DemoWindow::HandleChartKind(Control* sender, MouseEventArgs)
+void DemoWindow::HandleRouteOuterPreview(
+	Control* sender, MouseEventArgs& e)
 {
-	if (sender == RequireControl<Control>(L"chartBar")) _chart->ChartKind = ChartViewKind::Bar;
-	else if (sender == RequireControl<Control>(L"chartPie")) _chart->ChartKind = ChartViewKind::Pie;
-	else _chart->ChartKind = ChartViewKind::Line;
+	_routedInputTrace.clear();
+	const wchar_t* changedButton = e.ChangedButton == MouseButton::Left
+		? L"Left" : e.ChangedButton == MouseButton::Right
+		? L"Right" : e.ChangedButton == MouseButton::Middle
+		? L"Middle" : L"Other";
+	_routedInputDetail = L"Changed=" + std::wstring(changedButton)
+		+ (e.ButtonState == MouseButtonState::Pressed
+			? L"/Pressed" : L"/Released")
+		+ L" · snapshot "
+		+ (e.IsButtonPressed(MouseButton::Left) ? L"L+" : L"L-")
+		+ (e.IsButtonPressed(MouseButton::Right) ? L" R+" : L" R-");
+	_routedInputTrace.push_back(
+		sender == e.CurrentTarget ? L"T outer" : L"T outer(!target)");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteMiddlePreview(
+	Control* sender, MouseEventArgs& e)
+{
+	_routedInputTrace.push_back(
+		sender == e.CurrentTarget ? L"T middle" : L"T middle(!target)");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteSourcePreview(
+	Control* sender, MouseEventArgs& e)
+{
+	auto* source = _xamlSession.Document().FindControlByName(L"wpfRouteSource");
+	_routedInputTrace.push_back(sender == source
+		&& e.OriginalSource == source && e.Source == source
+		? L"T source" : L"T source(!source)");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteSourceBubble(
+	Control* sender, MouseEventArgs& e)
+{
+	_routedInputTrace.push_back(sender == e.CurrentTarget
+		? L"B source(H)" : L"B source(!target)");
+	e.Handled = true;
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteMiddleBubble(
+	Control*, MouseEventArgs&)
+{
+	_routedInputTrace.push_back(L"B middle(!handled)");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteOuterBubble(
+	Control* sender, MouseEventArgs& e)
+{
+	_routedInputTrace.push_back(sender == e.CurrentTarget && e.Handled
+		? L"B outer(too)" : L"B outer(!handled)");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteKey(Control* sender, KeyEventArgs& e)
+{
+	auto* outer = _xamlSession.Document().FindControlByName(L"wpfRouteOuter");
+	auto* source = _xamlSession.Document().FindControlByName(L"wpfRouteSource");
+	if (e.Stage == RoutedEventStage::Preview && sender == outer)
+		_routedInputTrace.clear();
+	const wchar_t* stage = e.Stage == RoutedEventStage::Preview ? L"T" : L"B";
+	const wchar_t* target = sender == outer ? L"outer"
+		: sender == source ? L"source" : L"other";
+	_routedInputTrace.push_back(
+		L"K." + std::wstring(stage) + L" " + target);
+	const auto physicalKey = e.Key == Key::System ? e.SystemKey : e.Key;
+	_routedInputDetail = (e.Key == Key::System
+		? L"Key=System · SystemKey=" : L"Key=")
+		+ FormatKeyGesture(KeyGesture{ physicalKey, e.Modifiers })
+		+ (e.IsRepeat ? L" · repeat" : L" · first");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteCaptureChanged(
+	Control*, RoutedEventArgs& e)
+{
+	_routedInputTrace.push_back(e.EventId == RoutedEventId::GotMouseCapture
+		? L"capture+" : L"capture-");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteFocus(Control*, RoutedEventArgs&)
+{
+	_routedInputTrace.push_back(L"focus+");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRoutePreviewGotKeyboardFocus(
+	Control*, KeyboardFocusChangedEventArgs& e)
+{
+	_lastKeyboardFocusOld = e.OldFocus;
+	_lastKeyboardFocusNew = e.NewFocus;
+	const bool cancel = _cancelNextKeyboardFocus;
+	_cancelNextKeyboardFocus = false;
+	_routedInputTrace.push_back(cancel
+		? L"keyboard.T+(cancel)" : L"keyboard.T+");
+	if (cancel) e.Handled = true;
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteGotKeyboardFocus(
+	Control*, KeyboardFocusChangedEventArgs& e)
+{
+	_lastKeyboardFocusOld = e.OldFocus;
+	_lastKeyboardFocusNew = e.NewFocus;
+	_routedInputTrace.push_back(L"keyboard.B+");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRoutePreviewLostKeyboardFocus(
+	Control*, KeyboardFocusChangedEventArgs& e)
+{
+	_lastKeyboardFocusOld = e.OldFocus;
+	_lastKeyboardFocusNew = e.NewFocus;
+	_routedInputTrace.push_back(L"keyboard.T-");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleRouteLostKeyboardFocus(
+	Control*, KeyboardFocusChangedEventArgs& e)
+{
+	_lastKeyboardFocusOld = e.OldFocus;
+	_lastKeyboardFocusNew = e.NewFocus;
+	_routedInputTrace.push_back(L"keyboard.B-");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleTextOuterPreview(
+	Control*, TextCompositionEventArgs& e)
+{
+	_routedInputTrace.clear();
+	_routedInputTrace.push_back(L"text.T outer[" + e.Text + L"]");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleTextSourcePreview(
+	Control*, TextCompositionEventArgs&)
+{
+	_routedInputTrace.push_back(L"text.T source");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleTextSourceBubble(
+	Control*, TextCompositionEventArgs&)
+{
+	_routedInputTrace.push_back(L"text.B source");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleTextOuterBubble(
+	Control*, TextCompositionEventArgs&)
+{
+	_routedInputTrace.push_back(L"text.B outer");
+	RefreshRoutedInputSummary();
+}
+
+void DemoWindow::HandleCompositionPreviewStart(
+	Control*, TextCompositionEventArgs& e)
+{
+	_textCompositionTrace.clear();
+	_textCompositionTrace.push_back(
+		L"T.Start #" + std::to_wstring(e.CompositionId));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleCompositionStart(
+	Control*, TextCompositionEventArgs& e)
+{
+	_textCompositionTrace.push_back(
+		L"B.Start #" + std::to_wstring(e.CompositionId));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleCompositionPreviewUpdate(
+	Control*, TextCompositionEventArgs& e)
+{
+	_textCompositionTrace.push_back(
+		L"T.Update #" + std::to_wstring(e.CompositionId)
+		+ L" [" + e.CompositionText + L"] @"
+		+ std::to_wstring(e.CaretIndex));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleCompositionUpdate(
+	Control*, TextCompositionEventArgs& e)
+{
+	_textCompositionTrace.push_back(
+		L"B.Update #" + std::to_wstring(e.CompositionId)
+		+ L" [" + e.CompositionText + L"] @"
+		+ std::to_wstring(e.CaretIndex));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleCompositionPreviewCommit(
+	Control*, TextCompositionEventArgs& e)
+{
+	std::wstring token = L"T.Commit #" + std::to_wstring(e.CompositionId)
+		+ L" [" + CompositionPayloadText(e) + L"]";
+	if (_compositionPreviewHandled)
+	{
+		token += L" handled";
+		e.Handled = true;
+	}
+	_textCompositionTrace.push_back(std::move(token));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleCompositionCommit(
+	Control*, TextCompositionEventArgs& e)
+{
+	_textCompositionTrace.push_back(
+		L"B.Commit #" + std::to_wstring(e.CompositionId)
+		+ (e.TextApplied ? L" applied" : L" not-applied")
+		+ (dynamic_cast<PasswordBox*>(e.OriginalSource)
+			? L" <secure>" : L""));
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::HandleTextCompositionProbe(
+	Control* sender, RoutedEventArgs& e)
+{
+	auto* textBox = dynamic_cast<TextBox*>(
+		_xamlSession.Document().FindControlByName(L"compositionTextBox"));
+	auto* richTextBox = dynamic_cast<RichTextBox*>(
+		_xamlSession.Document().FindControlByName(L"compositionRichTextBox"));
+	auto* passwordBox = dynamic_cast<PasswordBox*>(
+		_xamlSession.Document().FindControlByName(L"compositionPasswordBox"));
+	if (!sender || !textBox || !richTextBox || !passwordBox) return;
+	auto& manager = cui::framework::WindowAccess::TextComposition(*this);
+	auto* start = _xamlSession.Document().FindControlByName(
+		L"compositionStartProbe");
+	auto* update = _xamlSession.Document().FindControlByName(
+		L"compositionUpdateProbe");
+	auto* commit = _xamlSession.Document().FindControlByName(
+		L"compositionCommitProbe");
+	auto* cancel = _xamlSession.Document().FindControlByName(
+		L"compositionCancelProbe");
+	auto* surrogate = _xamlSession.Document().FindControlByName(
+		L"compositionSurrogateProbe");
+	auto* unichar = _xamlSession.Document().FindControlByName(
+		L"compositionUnicharProbe");
+	auto* focus = _xamlSession.Document().FindControlByName(
+		L"compositionFocusProbe");
+	auto* preview = _xamlSession.Document().FindControlByName(
+		L"compositionPreviewHandledProbe");
+	auto* reset = _xamlSession.Document().FindControlByName(
+		L"compositionResetProbe");
+	auto startFresh = [&]()
+	{
+		if (manager.Snapshot().IsComposing)
+			manager.CancelComposition(TextCompositionCancelReason::Explicit);
+		_textCompositionTrace.clear();
+		SetKeyboardFocus(textBox, false);
+		return manager.StartComposition(
+			textBox, TextCompositionInputKind::Programmatic);
+	};
+	auto ensureUpdated = [&]()
+	{
+		const auto snapshot = manager.Snapshot();
+		if (!snapshot.IsComposing || snapshot.Source != textBox)
+		{
+			if (!startFresh()) return false;
+		}
+		return manager.UpdateComposition(
+			L"ni", 2, { 0, 0 }, { 0, 2 });
+	};
+
+	if (sender == start)
+	{
+		(void)startFresh();
+		UpdateStatus(L"TextComposition: deterministic Start");
+	}
+	else if (sender == update)
+	{
+		(void)ensureUpdated();
+		UpdateStatus(L"TextComposition: pre-edit Update(ni)");
+	}
+	else if (sender == commit)
+	{
+		if (!manager.Snapshot().IsComposing) (void)ensureUpdated();
+		(void)manager.CompleteComposition(L"\u4F60\U0001F600");
+		UpdateStatus(L"TextComposition: committed one UTF-16 payload");
+	}
+	else if (sender == cancel)
+	{
+		if (!manager.Snapshot().IsComposing) (void)ensureUpdated();
+		const auto id = manager.Snapshot().CompositionId;
+		manager.CancelComposition(TextCompositionCancelReason::Explicit);
+		_textCompositionTrace.push_back(
+			L"Manager.Cancel #" + std::to_wstring(id) + L" [explicit]");
+		UpdateStatus(L"TextComposition: canceled without a public routed event");
+	}
+	else if (sender == surrogate)
+	{
+		if (manager.Snapshot().IsComposing)
+			manager.CancelComposition(TextCompositionCancelReason::Explicit);
+		_textCompositionTrace.clear();
+		SetKeyboardFocus(textBox, false);
+		(void)manager.ProcessWindowMessage(
+			WM_CHAR, static_cast<WPARAM>(0xD83D), 0);
+		(void)manager.ProcessWindowMessage(
+			WM_CHAR, static_cast<WPARAM>(0xDE00), 0);
+		UpdateStatus(L"TextComposition: surrogate pair committed once");
+	}
+	else if (sender == unichar)
+	{
+		if (manager.Snapshot().IsComposing)
+			manager.CancelComposition(TextCompositionCancelReason::Explicit);
+		_textCompositionTrace.clear();
+		SetKeyboardFocus(textBox, false);
+		(void)manager.ProcessWindowMessage(WM_UNICHAR, UNICODE_NOCHAR, 0);
+		(void)manager.ProcessWindowMessage(
+			WM_UNICHAR, static_cast<WPARAM>(0x1F642), 0);
+		UpdateStatus(L"TextComposition: WM_UNICHAR scalar committed");
+	}
+	else if (sender == focus)
+	{
+		(void)startFresh();
+		(void)manager.UpdateComposition(L"focus", 5);
+		const auto id = manager.Snapshot().CompositionId;
+		SetKeyboardFocus(
+			richTextBox, false, FocusChangeReason::Programmatic);
+		const auto snapshot = manager.Snapshot();
+		_textCompositionTrace.push_back(
+			L"Manager.Cancel #" + std::to_wstring(id) + L" ["
+			+ CompositionCancelText(snapshot.CancelReason) + L"]");
+		UpdateStatus(L"TextComposition: focus transaction resolved before commit");
+	}
+	else if (sender == preview)
+	{
+		_compositionPreviewHandled = !_compositionPreviewHandled;
+		if (auto* button = dynamic_cast<Button*>(preview))
+			button->SetContent(BindingValue(_compositionPreviewHandled
+				? L"Preview Handled: on" : L"Preview Handled: off"));
+		UpdateStatus(_compositionPreviewHandled
+			? L"TextComposition: preview will suppress default edit"
+			: L"TextComposition: preview allows default edit");
+	}
+	else if (sender == reset)
+	{
+		manager.Reset();
+		_compositionPreviewHandled = false;
+		_textCompositionTrace.clear();
+		textBox->Text = L"TextBox: ";
+		textBox->Select(static_cast<int>(textBox->Text.size()), 0);
+		richTextBox->Text = L"RichTextBox:\r\n";
+		richTextBox->Select(static_cast<int>(richTextBox->Text.size()), 0);
+		passwordBox->Password = L"";
+		passwordBox->Select(0, 0);
+		if (auto* button = dynamic_cast<Button*>(preview))
+			button->SetContent(BindingValue(
+				std::wstring(L"Preview Handled: off")));
+		SetKeyboardFocus(textBox, false);
+		UpdateStatus(L"TextComposition experiment reset");
+	}
+
+	e.Handled = true;
+	RefreshTextCompositionSummary();
+}
+
+void DemoWindow::RefreshTextCompositionSummary()
+{
+	auto* state = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"compositionState"));
+	auto* statistics = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"compositionStats"));
+	auto* trace = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"compositionTrace"));
+	if (!state || !statistics || !trace) return;
+	const auto snapshot = cui::framework::WindowAccess::TextCompositionState(*this);
+	const auto stats = cui::framework::WindowAccess::TextCompositionStatisticsOf(*this);
+	std::wstring source = L"\u2205";
+	if (snapshot.Source == _xamlSession.Document().FindControlByName(
+		L"compositionTextBox")) source = L"TextBox";
+	else if (snapshot.Source == _xamlSession.Document().FindControlByName(
+		L"compositionRichTextBox")) source = L"RichTextBox";
+	else if (snapshot.Source == _xamlSession.Document().FindControlByName(
+		L"compositionPasswordBox")) source = L"PasswordBox";
+	else if (snapshot.Source) source = L"other-client";
+	state->Text = CompositionStageText(snapshot.Stage)
+		+ L" · " + CompositionKindText(snapshot.InputKind)
+		+ L" · id " + std::to_wstring(snapshot.CompositionId)
+		+ L" · caret " + std::to_wstring(snapshot.CaretIndex)
+		+ L" · source " + source;
+	if (snapshot.Stage == TextCompositionStage::Canceled)
+		state->Text += L" · " + CompositionCancelText(snapshot.CancelReason);
+	statistics->Text =
+		L"native " + std::to_wstring(stats.NativeReports)
+		+ L" · start/update/complete/cancel "
+		+ std::to_wstring(stats.CompositionsStarted) + L"/"
+		+ std::to_wstring(stats.CompositionsUpdated) + L"/"
+		+ std::to_wstring(stats.CompositionsCompleted) + L"/"
+		+ std::to_wstring(stats.CompositionsCanceled)
+		+ L" · commit/applied/blocked "
+		+ std::to_wstring(stats.TextCommits) + L"/"
+		+ std::to_wstring(stats.TextApplications) + L"/"
+		+ std::to_wstring(stats.PreviewApplicationsSuppressed)
+		+ L" · echo " + std::to_wstring(stats.ImeEchoesSuppressed);
+	std::wstring timeline;
+	for (const auto& token : _textCompositionTrace)
+	{
+		if (!timeline.empty()) timeline += L"  \u2192  ";
+		timeline += token;
+	}
+	trace->Text = timeline.empty()
+		? L"\u7B49\u5F85\u771F\u5B9E IME \u6216\u786E\u5B9A\u6027\u63A2\u9488\u2026" : timeline;
+}
+
+void DemoWindow::RefreshRoutedInputSummary()
+{
+	std::wstring trace;
+	for (const auto& token : _routedInputTrace)
+	{
+		if (!trace.empty()) trace += L" → ";
+		trace += token;
+	}
+	RequireControl<Label>(L"wpfRouteTrace")->Text = trace.empty()
+		? L"等待 routed input" : trace;
+	const auto stats = cui::framework::WindowAccess::InputStatistics(*this);
+	RequireControl<Label>(L"wpfInputStats")->Text =
+		L"raw " + std::to_wstring(stats.RawReports)
+		+ L" · capture " + std::to_wstring(stats.MouseCaptureAcquired)
+		+ L"/" + std::to_wstring(stats.MouseCaptureReleased)
+		+ L" · focus " + std::to_wstring(stats.KeyboardFocusTransitions)
+		+ L" · skip "
+		+ std::to_wstring(stats.HandlersSkippedAfterHandled)
+		+ (_routedInputDetail.empty()
+			? std::wstring{} : L" · " + _routedInputDetail);
+}
+
+void DemoWindow::HandlePresentationRegion(Control*, RoutedEventArgs&)
+{
+	auto* surface = dynamic_cast<NativeSurface*>(
+		_xamlSession.Document().FindControlByName(L"presentationProbeSurface"));
+	auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
+		surface->Behavior()) : nullptr;
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!surface || !behavior || !status) return;
+	behavior->Pulse(*surface);
+	status->Text = StringHelper::Format(
+		L"Region #%d · frame %d · scene r%llu / %llu nodes",
+		behavior->RegionRequests(), behavior->FrameCount(),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationSceneRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationNodeCount(*this)));
+	UpdateStatus(L"PresentationRenderHost: local dirty region queued");
+}
+
+void DemoWindow::HandlePresentationGeometry(Control*, RoutedEventArgs&)
+{
+	auto* tile = _xamlSession.Document().FindControlByName(
+		L"presentationTopologyTile");
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!tile || !status) return;
+	Canvas::SetLeft(*(tile), Canvas::GetLeft(*(tile)) > 580.0f ? 548.0f : 606.0f);
+	status->Text = StringHelper::Format(
+		L"Geometry move queued · lanes C/G/P %llu/%llu/%llu · topology r%llu stable",
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationContentRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationGeometryRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationCompositionRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationSceneRevision(*this)));
+	UpdateStatus(L"PresentationScene: geometry snapshot invalidated without topology rebuild");
+}
+
+void DemoWindow::HandlePresentationComposition(Control*, RoutedEventArgs&)
+{
+	auto* tile = _xamlSession.Document().FindControlByName(
+		L"presentationTopologyTile");
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!tile || !status) return;
+	tile->InvalidateComposition();
+	status->Text = StringHelper::Format(
+		L"Composition recommit queued · lanes C/G/P %llu/%llu/%llu · no content change",
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationContentRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationGeometryRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationCompositionRevision(*this)));
+	UpdateStatus(L"PresentationScene: compositor-only revision queued");
+}
+
+void DemoWindow::HandlePresentationFullFrame(Control*, RoutedEventArgs&)
+{
+	auto* surface = dynamic_cast<NativeSurface*>(
+		_xamlSession.Document().FindControlByName(L"presentationProbeSurface"));
+	auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
+		surface->Behavior()) : nullptr;
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!behavior || !status) return;
+	behavior->NoteFullFrameRequest();
+	status->Text = StringHelper::Format(
+		L"Full #%d · scene r%llu / %llu nodes / %llu segments",
+		behavior->FullFrameRequests(),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationSceneRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationNodeCount(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationDrawingLayerCount(*this)));
+	Invalidate(true);
+	UpdateStatus(L"PresentationRenderHost: full presentation frame requested");
+}
+
+void DemoWindow::HandlePresentationTopology(Control*, RoutedEventArgs&)
+{
+	auto* tile = _xamlSession.Document().FindControlByName(
+		L"presentationTopologyTile");
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!tile || !status) return;
+	tile->Visibility = tile->IsVisible
+		? Visibility::Hidden : Visibility::Visible;
+	Invalidate(true);
+	status->Text = StringHelper::Format(
+		L"Topology node %s · scene r%llu / %llu nodes / %llu segments",
+		tile->IsVisible ? L"attached" : L"hidden",
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationSceneRevision(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationNodeCount(*this)),
+		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationDrawingLayerCount(*this)));
+	status->InvalidateVisual();
+	UpdateStatus(L"PresentationScene: retained topology snapshot rebuilt");
+}
+
+void DemoWindow::HandlePresentationDeviceLoss(Control*, RoutedEventArgs&)
+{
+	auto* status = dynamic_cast<Label*>(
+		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+	if (!status) return;
+	const auto generation = cui::framework::WindowAccess::PresentationResourceGeneration(*this);
+	const auto recoveries = cui::framework::WindowAccess::PresentationDeviceRecoveryCount(*this);
+	cui::framework::WindowAccess::InjectPresentationDeviceLossForTesting(*this);
+	status->Text = StringHelper::Format(
+		L"Device loss injected · gen %llu → pending · recoveries %llu",
+		static_cast<unsigned long long>(generation),
+		static_cast<unsigned long long>(recoveries));
+	UpdateStatus(
+		L"PresentationRenderHost: deterministic device recovery queued");
+}
+
+void DemoWindow::HandleAnalyticsAction(Control* sender, RoutedEventArgs&)
+{
+	auto* query = RequireControl<TextBox>(L"analyticsQuery");
+	if (sender == RequireControl<Control>(L"analyticsReset"))
+	{
+		query->Clear();
+		UpdateStatus(L"XAML filter composition: reset");
+		return;
+	}
+	UpdateStatus(query->Text.empty()
+		? L"XAML filter composition: apply all"
+		: L"XAML filter composition: " + query->Text);
+}
+
+void DemoWindow::HandleChartKind(Control* sender, RoutedEventArgs&)
+{
+	if (sender == RequireControl<Control>(L"chartBar"))
+		_chart->ChartKind = ChartViewKind::Bar;
+	else if (sender == RequireControl<Control>(L"chartPie"))
+		_chart->ChartKind = ChartViewKind::Pie;
+	else
+		_chart->ChartKind = ChartViewKind::Line;
 	_chart->ResetView();
 	UpdateStatus(L"ChartView: kind changed from XAML button");
 }
 
 void DemoWindow::HandleChartPoint(ChartView* sender, int series, int point)
 {
-	if (series < 0 || series >= static_cast<int>(sender->Series.size())) return;
-	if (point < 0 || point >= static_cast<int>(sender->Series[series].Points.size())) return;
+	const auto& chartSeries = sender->GetSeries();
+	if (series < 0 || series >= static_cast<int>(chartSeries.size())) return;
+	if (point < 0 || point >= static_cast<int>(chartSeries[series].Points.size())) return;
 	UpdateStatus(StringHelper::Format(L"Chart: %s / %s = %.1f",
-		sender->Series[series].Name.c_str(),
-		sender->Series[series].Points[point].Label.c_str(),
-		sender->Series[series].Points[point].Value));
+		chartSeries[series].Name.c_str(),
+		chartSeries[series].Points[point].Label.c_str(),
+		chartSeries[series].Points[point].Value));
 }
 
-void DemoWindow::HandleReportRow(ReportView* sender, int row)
+void DemoWindow::HandleFarButton(Control*, RoutedEventArgs&)
 {
-	if (row >= 0 && row < static_cast<int>(sender->Rows.size())
-		&& !sender->Rows[row].Cells.empty())
-		UpdateStatus(L"ReportView: " + sender->Rows[row].Cells.front());
+	UpdateStatus(L"ScrollViewer: reached far XAML child");
 }
 
-void DemoWindow::HandleFarButton(Control*, MouseEventArgs)
-{
-	UpdateStatus(L"ScrollView: reached far XAML child");
-}
-
-void DemoWindow::HandleSystemAction(Control* sender, MouseEventArgs)
+void DemoWindow::HandleSystemAction(Control* sender, RoutedEventArgs&)
 {
 	if (sender == RequireControl<Control>(L"notifyToggle"))
 	{
-		if (_notify->IsVisible()) (void)_notify->TryHide();
-		else (void)_notify->TryShow();
-		UpdateStatus(_notify->IsVisible() ? L"NotifyIcon: Show" : L"NotifyIcon: Hide");
+		bool changed = false;
+		if (_notify && _notify->IsVisible()) changed = _notify->TryHide();
+		else changed = EnsureNotifyIconInitialized(true);
+		UpdateStatus(changed
+			? (_notify->IsVisible() ? L"NotifyIcon: Show" : L"NotifyIcon: Hide")
+			: L"NotifyIcon: Window Handle 尚未就绪");
 	}
 	else if (sender == RequireControl<Control>(L"notifyBalloon"))
 	{
-		(void)_notify->TryShowBalloonTip(
-			L"CUI XAML", L"按钮来自动态 XAML。", 3000, NIIF_INFO);
+		if (EnsureNotifyIconInitialized(true))
+			(void)_notify->TryShowBalloonTip(
+				L"CUI XAML", L"按钮来自动态 XAML。", 3000, NIIF_INFO);
+		else UpdateStatus(L"NotifyIcon: 无法在当前 Window Handle 上显示气泡");
 	}
 	else if (sender == RequireControl<Control>(L"showDialog"))
 	{
 		(void)MessageDialog::Show(L"CUI MessageDialog",
 			L"这个按钮及其布局来自 XAML，调用对话框是 C++ 业务行为。",
-			MessageDialogButtons::OK, MessageDialogIcon::Info, Handle);
+			MessageDialogButtons::OK, MessageDialogIcon::Info, this);
+	}
+	else if (sender == RequireControl<Control>(L"dismissToast"))
+	{
+		_toastMessage->Text = L"暂无通知。";
+		UpdateStatus(L"XAML notification composition: cleared");
 	}
 	else
-		_toast->ShowToast(L"CUI XAML", L"运行时业务向 XAML ToastHost 写入通知。", ToastKind::Success);
+	{
+		_toastMessage->Text = L"运行时业务已更新 XAML 通知内容。";
+		UpdateStatus(L"XAML notification composition: updated");
+	}
 }
 
-void DemoWindow::HandleSystemSurfaceMouseUp(Control* sender, MouseEventArgs e)
+void DemoWindow::HandleSystemSurfaceMouseUp(Control* sender, MouseEventArgs& e)
 {
-	if (e.Buttons != MouseButtons::Right || !_systemContextMenu) return;
+	if (e.ChangedButton != MouseButton::Right || !_systemContextMenu) return;
 	_systemContextMenu->ShowAt(sender, e.X, e.Y);
 	UpdateStatus(L"ContextMenu: shown from XAML Panel.OnMouseUp");
 }
 
-void DemoWindow::HandleToastClick(ToastHost*, int index)
-{
-	UpdateStatus(StringHelper::Format(L"ToastHost: click #%d", index));
-}
-
-void DemoWindow::HandleInvokeWeb(Control*, MouseEventArgs)
+void DemoWindow::HandleInvokeWeb(Control*, RoutedEventArgs&)
 {
 	SYSTEMTIME time{};
 	GetLocalTime(&time);
@@ -771,7 +5332,7 @@ void DemoWindow::HandleInvokeWeb(Control*, MouseEventArgs)
 	_web->ExecuteScriptAsync(L"window.setFromNative(" + ToJsStringLiteral(text) + L");");
 }
 
-void DemoWindow::HandleMediaCommand(Control* sender, MouseEventArgs)
+void DemoWindow::HandleMediaCommand(Control* sender, RoutedEventArgs&)
 {
 	if (sender == RequireControl<Control>(L"mediaOpen"))
 	{
@@ -791,12 +5352,12 @@ void DemoWindow::HandleMediaCommand(Control* sender, MouseEventArgs)
 	else _media->Stop();
 }
 
-void DemoWindow::HandleMediaVolume(Control*, float, float value)
+void DemoWindow::HandleMediaVolume(Control*, double, double value)
 {
 	if (_media) _media->Volume = value / 100.0;
 }
 
-void DemoWindow::HandleMediaSpeed(Control*, float, float value)
+void DemoWindow::HandleMediaSpeed(Control*, double, double value)
 {
 	if (!_media || !_mediaSpeedText) return;
 	_media->PlaybackRate = value / 100.0f;
@@ -806,10 +5367,10 @@ void DemoWindow::HandleMediaSpeed(Control*, float, float value)
 
 void DemoWindow::HandleMediaLoop(Control* sender)
 {
-	if (_media) _media->Loop = static_cast<CheckBox*>(sender)->Checked;
+	if (_media) _media->Loop = static_cast<CheckBox*>(sender)->IsChecked;
 }
 
-void DemoWindow::HandleMediaSeek(Control*, float, float value)
+void DemoWindow::HandleMediaSeek(Control*, double, double value)
 {
 	if (_updatingMediaProgress || !_media || _media->Duration <= 0) return;
 	_media->Position = value / 1000.0 * _media->Duration;
@@ -851,9 +5412,4 @@ void DemoWindow::HandleMediaPosition(MediaPlayer* sender, double position)
 		_mediaProgress->Value = static_cast<float>(position / sender->Duration * 1000.0);
 		_updatingMediaProgress = false;
 	}
-}
-
-void DemoWindow::HandleSystemContextMenu(Control*, int id)
-{
-	UpdateStatus(StringHelper::Format(L"ContextMenu command: %d", id));
 }

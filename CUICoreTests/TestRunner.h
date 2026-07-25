@@ -85,7 +85,10 @@ namespace cui::test
             std::string expression = expectedExpression;
             expression += " ~= ";
             expression += actualExpression;
-            Fail(expression.c_str(), file, line, "outside tolerance");
+            std::string detail = "expected=" + std::to_string(expected)
+                + ", actual=" + std::to_string(actual)
+                + ", tolerance=" + std::to_string(tolerance);
+            Fail(expression.c_str(), file, line, detail.c_str());
         }
     }
 
@@ -102,6 +105,7 @@ namespace cui::test
         int RunAll() const noexcept
         {
             std::size_t passed = 0;
+			std::size_t executed = 0;
             char* timingValue = nullptr;
             std::size_t timingValueSize = 0;
             (void)_dupenv_s(
@@ -109,23 +113,34 @@ namespace cui::test
             const bool reportTimings = timingValue && *timingValue
                 && !(timingValue[0] == '0' && timingValue[1] == '\0');
             std::free(timingValue);
+			char* filterValue = nullptr;
+			std::size_t filterValueSize = 0;
+			(void)_dupenv_s(
+				&filterValue, &filterValueSize, "CUI_TEST_FILTER");
+			const std::string filter = filterValue ? filterValue : "";
+			std::free(filterValue);
             for (const auto& test : _tests)
             {
-				std::cout << "[ RUN      ] " << test.Name << '\n';
+				if (!filter.empty()
+					&& test.Name.find(filter) == std::string::npos) continue;
+				++executed;
+				std::cout << "[ RUN      ] " << test.Name << '\n' << std::flush;
                 const auto started = std::chrono::steady_clock::now();
                 try
                 {
                     test.Body();
                     ++passed;
-                    std::cout << "[       OK ] " << test.Name << '\n';
+					std::cout << "[       OK ] " << test.Name << '\n' << std::flush;
                 }
                 catch (const std::exception& error)
                 {
-                    std::cerr << "[  FAILED  ] " << test.Name << ": " << error.what() << '\n';
+					std::cerr << "[  FAILED  ] " << test.Name << ": "
+						<< error.what() << '\n' << std::flush;
                 }
                 catch (...)
                 {
-                    std::cerr << "[  FAILED  ] " << test.Name << ": unknown exception\n";
+					std::cerr << "[  FAILED  ] " << test.Name
+						<< ": unknown exception\n" << std::flush;
                 }
                 if (reportTimings)
                 {
@@ -136,9 +151,10 @@ namespace cui::test
                 }
             }
 
-            const std::size_t failed = _tests.size() - passed;
-            std::cout << "[==========] " << _tests.size() << " test(s), "
-                      << passed << " passed, " << failed << " failed\n";
+			const std::size_t failed = executed - passed;
+			std::cout << "[==========] " << executed << " test(s), "
+					  << passed << " passed, " << failed << " failed\n"
+					  << std::flush;
             return failed == 0 ? 0 : 1;
         }
 

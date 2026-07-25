@@ -303,6 +303,8 @@ private:
 	void SetObservedPosition(
 		double value, bool notify = true, bool forceEvent = false);
 	void ReportMediaFailure(HRESULT error);
+	void DispatchToOwner(std::function<void()> callback);
+	void RequestVisualInvalidation();
 
 	// ---- 跨线程事件封送助手 ----
 	// 播放/解码工作线程上触发的事件统一经这些助手封送回 UI 线程 invoke，
@@ -323,7 +325,7 @@ public:
 	/// <param name="width">控件宽度</param>
 	/// <param name="height">控件高度</param>
 	/** @brief 创建媒体播放器控件。 */
-	MediaPlayer(int x, int y, int width = 640, int height = 360);
+	MediaPlayer();
 	virtual ~MediaPlayer();
 
 	// ========== 事件 ==========
@@ -342,10 +344,12 @@ public:
 
 	static void ConvertNV12ToBGRA(const uint8_t* nv12, size_t nv12Bytes, UINT32 nv12Stride, UINT32 srcW, UINT32 srcH, UINT32 cropX, UINT32 cropY, UINT32 w, UINT32 h, std::vector<uint8_t>& outBGRA);
 	virtual UIClass Type() override;
-	void EnsureBindingPropertiesRegistered() override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
 	// ========== 媒体控制方法 ==========
 	/// <summary>
 	/// 加载媒体文件
@@ -486,8 +490,8 @@ public:
 	GET(bool, HasAudio);
 
 	// 视频尺寸（只读）
-	READONLY_PROPERTY(SIZE, VideoSize);
-	GET(SIZE, VideoSize);
+	READONLY_PROPERTY(cui::core::Size, VideoSize);
+	GET(cui::core::Size, VideoSize);
 
 	// 播放进度 (0.0 - 1.0)（只读）
 	READONLY_PROPERTY(double, Progress);

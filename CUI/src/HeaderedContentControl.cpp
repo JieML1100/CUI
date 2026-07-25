@@ -1,58 +1,53 @@
 #include "HeaderedContentControl.h"
+#include "Layout/OverlayLayout.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cwctype>
 #include <stdexcept>
 #include <utility>
 
 namespace
 {
-	bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right)
+	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
 	{
-		if (left.size() != right.size()) return false;
-		for (size_t index = 0; index < left.size(); ++index)
-			if (std::towlower(left[index]) != std::towlower(right[index]))
-				return false;
-		return true;
+		return left == right;
 	}
 
 	template<typename TValue>
-	ControlPropertyOptions<HeaderedContentControl, TValue> HeaderOptions(
+	DependencyPropertyOptions<HeaderedContentControl, TValue> HeaderOptions(
 		TValue defaultValue,
 		int order,
-		ControlPropertyPersistence persistence =
-			ControlPropertyPersistence::Metadata)
+		DependencyPropertyPersistence persistence =
+			DependencyPropertyPersistence::Metadata)
 	{
-		ControlPropertyOptions<HeaderedContentControl, TValue> options;
+		DependencyPropertyOptions<HeaderedContentControl, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsArrange
-			| ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Auto;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
 		return options;
 	}
 }
 
-HeaderedContentControl::HeaderedContentControl(
-	int x, int y, int width, int height)
-	: ContentControl(x, y, width, height)
+HeaderedContentControl::HeaderedContentControl()
+	: ContentControl()
 {
-	ClearRows();
-	AddRow(GridLength::Auto());
-	AddRow(GridLength::Star(1.0f));
 }
 
-void HeaderedContentControl::EnsureBindingPropertiesRegistered()
+void HeaderedContentControl::RegisterDependencyProperties()
 {
-	ContentControl::EnsureBindingPropertiesRegistered();
+	ContentControl::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto headerOptions = HeaderOptions(
-			BindingValue{}, 40, ControlPropertyPersistence::Transient);
+			BindingValue{}, 40, DependencyPropertyPersistence::Native);
 		headerOptions.Design.Browsable = false;
 		headerOptions.Coerce = [](
 			HeaderedContentControl& target,
@@ -73,7 +68,7 @@ void HeaderedContentControl::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildHeaderPresenter();
 		};
-		BindingPropertyRegistry::Register<HeaderedContentControl, BindingValue>(
+		DependencyPropertyRegistry::Register<HeaderedContentControl, BindingValue>(
 			L"Header",
 			[](HeaderedContentControl& target) { return target.GetHeader(); },
 			[](HeaderedContentControl& target, const BindingValue& value)
@@ -81,7 +76,7 @@ void HeaderedContentControl::EnsureBindingPropertiesRegistered()
 
 		auto templateOptions = HeaderOptions(
 			ItemTemplateReference{}, 50,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		templateOptions.Design.Browsable = false;
 		templateOptions.Coerce = [](
 			HeaderedContentControl& target,
@@ -103,7 +98,7 @@ void HeaderedContentControl::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildHeaderPresenter();
 		};
-		BindingPropertyRegistry::Register<HeaderedContentControl,
+		DependencyPropertyRegistry::Register<HeaderedContentControl,
 			ItemTemplateReference>(L"HeaderTemplate",
 			[](HeaderedContentControl& target)
 			{ return target.GetHeaderTemplate(); },
@@ -113,14 +108,14 @@ void HeaderedContentControl::EnsureBindingPropertiesRegistered()
 			std::move(templateOptions));
 
 		auto pathOptions = HeaderOptions(std::wstring{}, 60);
-		pathOptions.Design.Editor = ControlPropertyEditorKind::Text;
+		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
 		pathOptions.Changed = [](
 			HeaderedContentControl& target,
 			const std::wstring&, const std::wstring&)
 		{
 			(void)target.RebuildHeaderPresenter();
 		};
-		BindingPropertyRegistry::Register<HeaderedContentControl, std::wstring>(
+		DependencyPropertyRegistry::Register<HeaderedContentControl, std::wstring>(
 			L"HeaderDisplayMemberPath",
 			[](HeaderedContentControl& target)
 			{ return target.GetHeaderDisplayMemberPath(); },
@@ -135,17 +130,131 @@ void HeaderedContentControl::EnsureBindingPropertiesRegistered()
 void HeaderedContentControl::ConfigureContentVisual(Control& child)
 {
 	ContentControl::ConfigureContentVisual(child);
-	child.GridRow = 1;
+}
+
+std::wstring HeaderedContentControl::GetSemanticText() const
+{
+	std::wstring value;
+	return _header.TryGetString(value) ? value : std::wstring{};
 }
 
 void HeaderedContentControl::ConfigureHeaderVisual(Control& child)
 {
-	child.GridRow = 0;
-	child.GridColumn = 0;
-	child.GridRowSpan = 1;
-	child.GridColumnSpan = 1;
-	child.HAlign = HorizontalAlignment::Stretch;
-	child.VAlign = VerticalAlignment::Stretch;
+	(void)child;
+}
+
+void HeaderedContentControl::ReleaseHeaderVisual(Control& child)
+{
+	(void)child;
+}
+
+cui::core::Insets
+HeaderedContentControl::GetHeaderPresentationInsets() const noexcept
+{
+	return {};
+}
+
+float HeaderedContentControl::GetHeaderSlotHeightDip(float availableWidth)
+{
+	auto* header = GetHeaderVisual();
+	if (!header || header->IsCollapsed()) return 0.0f;
+	const auto insets = GetHeaderPresentationInsets();
+	const auto margin = header->GetSpecifiedLayout().margin;
+	const auto desired = header->Measure(cui::core::Constraints{
+		cui::core::Size{ 0.0f, 0.0f },
+		cui::core::Size{
+			(std::max)(0.0f, availableWidth
+				- insets.Horizontal() - margin.Horizontal()),
+			cui::core::Infinity } });
+	return desired.height + margin.Vertical() + insets.Vertical();
+}
+
+cui::core::Size HeaderedContentControl::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	if (GetControlTemplateRoot())
+		return ContentControl::MeasureCore(available);
+
+	const auto padding = GetSpecifiedLayout().padding;
+	const auto inner = available.Deflate(padding).Normalized();
+	const float headerHeight = GetHeaderSlotHeightDip(inner.maximum.width);
+	float desiredWidth = 0.0f;
+	if (auto* header = GetHeaderVisual(); header && !header->IsCollapsed())
+	{
+		const auto insets = GetHeaderPresentationInsets();
+		const auto margin = header->GetSpecifiedLayout().margin;
+		desiredWidth = header->Measure(cui::core::Constraints{
+			cui::core::Size{ 0.0f, 0.0f },
+			cui::core::Size{
+				(std::max)(0.0f, inner.maximum.width
+					- insets.Horizontal() - margin.Horizontal()),
+				cui::core::Infinity } }).width + margin.Horizontal();
+		desiredWidth += insets.Horizontal();
+	}
+
+	float contentHeight = 0.0f;
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content && !content->IsCollapsed())
+	{
+		const auto margin = content->GetSpecifiedLayout().margin;
+		const float maximumHeight = inner.IsHeightBounded()
+			? (std::max)(0.0f,
+				inner.maximum.height - headerHeight - margin.Vertical())
+			: cui::core::Infinity;
+		const auto desired = content->Measure(cui::core::Constraints{
+			cui::core::Size{ 0.0f, 0.0f },
+			cui::core::Size{
+				(std::max)(0.0f, inner.maximum.width - margin.Horizontal()),
+				maximumHeight } });
+		desiredWidth = (std::max)(
+			desiredWidth, desired.width + margin.Horizontal());
+		contentHeight = desired.height + margin.Vertical();
+	}
+	return {
+		desiredWidth + padding.Horizontal(),
+		headerHeight + contentHeight + padding.Vertical()
+	};
+}
+
+void HeaderedContentControl::PerformPendingLayout()
+{
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	if (GetControlTemplateRoot())
+	{
+		ContentControl::PerformPendingLayout();
+		return;
+	}
+
+	const auto size = GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
+	const cui::core::Rect inner{
+		padding.left,
+		padding.top,
+		(std::max)(0.0f, size.width - padding.Horizontal()),
+		(std::max)(0.0f, size.height - padding.Vertical())
+	};
+	const float headerHeight = (std::clamp)(
+		GetHeaderSlotHeightDip(inner.width), 0.0f, inner.height);
+	if (auto* header = GetHeaderVisual())
+	{
+		const std::array<Control*, 1> children{ header };
+		cui::layout::ArrangeOverlayChildren(children,
+			cui::core::Rect{ inner.x, inner.y, inner.width, headerHeight }
+				.Inset(GetHeaderPresentationInsets()));
+	}
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content)
+	{
+		const std::array<Control*, 1> children{ content };
+		cui::layout::ArrangeOverlayChildren(children, cui::core::Rect{
+			inner.x,
+			inner.y + headerHeight,
+			inner.width,
+			(std::max)(0.0f, inner.height - headerHeight) });
+	}
+	_contentLayoutPending = false;
 }
 
 void HeaderedContentControl::SetHeader(BindingValue value)
@@ -204,7 +313,7 @@ bool HeaderedContentControl::ValidateHeaderCandidate(
 		}
 		return true;
 	}
-	ContentPresenter probe(0, 0, 0, 0);
+	ContentPresenter probe;
 	probe.SetContentTypeName(_headerTypeName);
 	probe.SetDisplayMemberPath(_headerDisplayMemberPath);
 	probe.SetContentTemplate(headerTemplate);
@@ -230,7 +339,7 @@ Control* HeaderedContentControl::SetVisualHeader(
 	auto previous = DetachVisualHeader();
 	if (!value)
 	{
-		InvalidateLayout();
+		RequestLayout();
 		InvalidateVisual();
 		return nullptr;
 	}
@@ -239,7 +348,8 @@ Control* HeaderedContentControl::SetVisualHeader(
 	_visualHeader = value.get();
 	try
 	{
-		AddInfrastructureChild(std::move(value));
+		AddInfrastructureChild(
+			std::move(value), InfrastructureChildRole::LogicalSlot);
 	}
 	catch (...)
 	{
@@ -248,11 +358,12 @@ Control* HeaderedContentControl::SetVisualHeader(
 		{
 			ConfigureHeaderVisual(*previous);
 			_visualHeader = previous.get();
-			AddInfrastructureChild(std::move(previous));
+			AddInfrastructureChild(
+				std::move(previous), InfrastructureChildRole::LogicalSlot);
 		}
 		throw;
 	}
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 	return _visualHeader;
 }
@@ -262,13 +373,16 @@ std::unique_ptr<Control> HeaderedContentControl::DetachVisualHeader()
 	if (!_visualHeader) return {};
 	auto* previous = _visualHeader;
 	_visualHeader = nullptr;
-	return DetachInfrastructureChild(previous);
+	auto result = DetachInfrastructureChild(previous);
+	if (result) ReleaseHeaderVisual(*result);
+	return result;
 }
 
 bool HeaderedContentControl::RegisterTemplateHeaderPresenter(
 	ContentPresenter* presenter)
 {
-	if (!presenter || (_templateHeaderPresenter
+	if (!presenter || presenter->GetTemplatedParent() != this
+		|| (_templateHeaderPresenter
 		&& _templateHeaderPresenter != presenter)) return false;
 	_templateHeaderPresenter = presenter;
 	return RebuildHeaderPresenter();
@@ -286,7 +400,7 @@ bool HeaderedContentControl::RebuildHeaderPresenter()
 	_lastHeaderError.clear();
 	if (_headerTemplate && !_headerTypeName.empty()
 		&& !_headerTemplate.Get()->DataTypeName().empty()
-		&& !EqualsIgnoreCase(
+		&& !EqualsTypeName(
 			_headerTypeName, _headerTemplate.Get()->DataTypeName()))
 	{
 		_lastHeaderError =
@@ -300,7 +414,7 @@ bool HeaderedContentControl::RebuildHeaderPresenter()
 			auto previous = DetachInfrastructureChild(_headerPresenter);
 			_headerPresenter = nullptr;
 		}
-		InvalidateLayout();
+		RequestLayout();
 		InvalidateVisual();
 		return true;
 	}
@@ -318,7 +432,7 @@ bool HeaderedContentControl::RebuildHeaderPresenter()
 	std::unique_ptr<ContentPresenter> replacement;
 	if (!_header.Empty())
 	{
-		replacement = std::make_unique<ContentPresenter>(0, 0, 0, 0);
+		replacement = std::make_unique<ContentPresenter>();
 		replacement->SetContentTypeName(_headerTypeName);
 		replacement->SetDisplayMemberPath(_headerDisplayMemberPath);
 		replacement->SetContentTemplate(_headerTemplate);
@@ -336,7 +450,7 @@ bool HeaderedContentControl::RebuildHeaderPresenter()
 		: std::unique_ptr<Control>{};
 	_headerPresenter = replacement.get();
 	if (replacement) AddInfrastructureChild(std::move(replacement));
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 	return true;
 }

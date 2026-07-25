@@ -1,6 +1,7 @@
 #include "DesignerStyleSheetUtils.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <Application.h>
 #include <Convert.h>
 #include <algorithm>
@@ -17,14 +18,6 @@ namespace DesignerStyleSheetUtils
 {
 namespace
 {
-	constexpr uint32_t KnownStateMask =
-		static_cast<uint32_t>(ControlStyleState::Hovered)
-		| static_cast<uint32_t>(ControlStyleState::Focused)
-		| static_cast<uint32_t>(ControlStyleState::Pressed)
-		| static_cast<uint32_t>(ControlStyleState::Disabled)
-		| static_cast<uint32_t>(ControlStyleState::Checked)
-		| static_cast<uint32_t>(ControlStyleState::Selected);
-
 	std::wstring Lower(std::wstring value)
 	{
 		std::transform(value.begin(), value.end(), value.begin(),
@@ -34,7 +27,7 @@ namespace
 
 	bool EqualsName(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::vector<std::wstring> Split(const std::wstring& value, wchar_t delimiter)
@@ -155,18 +148,6 @@ namespace
 		return true;
 	}
 
-	bool TryParseStateName(const std::wstring& value, ControlStyleState& out)
-	{
-		if (EqualsName(value, L"Hovered")) out = ControlStyleState::Hovered;
-		else if (EqualsName(value, L"Focused")) out = ControlStyleState::Focused;
-		else if (EqualsName(value, L"Pressed")) out = ControlStyleState::Pressed;
-		else if (EqualsName(value, L"Disabled")) out = ControlStyleState::Disabled;
-		else if (EqualsName(value, L"Checked")) out = ControlStyleState::Checked;
-		else if (EqualsName(value, L"Selected")) out = ControlStyleState::Selected;
-		else return false;
-		return true;
-	}
-
 	bool ContainsName(const std::vector<std::wstring>& values, const std::wstring& value)
 	{
 		return std::any_of(values.begin(), values.end(),
@@ -214,11 +195,13 @@ namespace
 		if (!value.is_object()) return Fail(L"画刷必须是对象。", outError);
 		output = cui::drawing::Brush{};
 		const auto type = value.value("type", std::string{});
-		if (type == "solid") output.Kind = cui::drawing::BrushKind::Solid;
+		if (type == "none") output.Kind = cui::drawing::BrushKind::None;
+		else if (type == "solid") output.Kind = cui::drawing::BrushKind::Solid;
 		else if (type == "linear") output.Kind = cui::drawing::BrushKind::LinearGradient;
 		else if (type == "radial") output.Kind = cui::drawing::BrushKind::RadialGradient;
 		else if (type == "image") output.Kind = cui::drawing::BrushKind::Image;
 		else return Fail(L"画刷类型无效。", outError);
+		if (output.Kind == cui::drawing::BrushKind::None) return true;
 
 		output.Opacity = static_cast<float>(value.value("opacity", 1.0));
 		if (!std::isfinite(output.Opacity)
@@ -602,178 +585,44 @@ std::vector<std::wstring> ValueKindNames()
 
 std::wstring UIClassName(UIClass type)
 {
-#define CUI_STYLE_WIDEN_INNER(value) L##value
-#define CUI_STYLE_WIDEN(value) CUI_STYLE_WIDEN_INNER(value)
-#define CUI_STYLE_UI_NAME(name) case UIClass::UI_##name: return CUI_STYLE_WIDEN(#name)
-	switch (type)
-	{
-	CUI_STYLE_UI_NAME(Base); CUI_STYLE_UI_NAME(Label); CUI_STYLE_UI_NAME(LinkLabel);
-	CUI_STYLE_UI_NAME(Button); CUI_STYLE_UI_NAME(PictureBox); CUI_STYLE_UI_NAME(TextBox);
-	CUI_STYLE_UI_NAME(RichTextBox); CUI_STYLE_UI_NAME(PasswordBox); CUI_STYLE_UI_NAME(ComboBox);
-	CUI_STYLE_UI_NAME(ListView); CUI_STYLE_UI_NAME(ListBox); CUI_STYLE_UI_NAME(GridView);
-	CUI_STYLE_UI_NAME(PropertyGrid); CUI_STYLE_UI_NAME(CheckBox); CUI_STYLE_UI_NAME(RadioBox);
-	CUI_STYLE_UI_NAME(ProgressBar); CUI_STYLE_UI_NAME(LoadingRing); CUI_STYLE_UI_NAME(ProgressRing);
-	CUI_STYLE_UI_NAME(TreeView); CUI_STYLE_UI_NAME(Panel); CUI_STYLE_UI_NAME(GroupBox);
-	CUI_STYLE_UI_NAME(ScrollView); CUI_STYLE_UI_NAME(TabPage); CUI_STYLE_UI_NAME(TabControl);
-	CUI_STYLE_UI_NAME(Switch); CUI_STYLE_UI_NAME(Menu); CUI_STYLE_UI_NAME(MenuItem);
-	CUI_STYLE_UI_NAME(ToolBar); CUI_STYLE_UI_NAME(StatusBar); CUI_STYLE_UI_NAME(Slider);
-	CUI_STYLE_UI_NAME(WebBrowser); CUI_STYLE_UI_NAME(MediaPlayer); CUI_STYLE_UI_NAME(StackPanel);
-	CUI_STYLE_UI_NAME(GridPanel); CUI_STYLE_UI_NAME(DockPanel); CUI_STYLE_UI_NAME(WrapPanel);
-	CUI_STYLE_UI_NAME(RelativePanel); CUI_STYLE_UI_NAME(SplitContainer); CUI_STYLE_UI_NAME(DateTimePicker);
-	CUI_STYLE_UI_NAME(ToolTip); CUI_STYLE_UI_NAME(ContextMenu); CUI_STYLE_UI_NAME(ToastHost);
-	CUI_STYLE_UI_NAME(ChartView); CUI_STYLE_UI_NAME(ReportView); CUI_STYLE_UI_NAME(KpiCard);
-	CUI_STYLE_UI_NAME(FilterBar); CUI_STYLE_UI_NAME(NavigationView); CUI_STYLE_UI_NAME(SideBar);
-	CUI_STYLE_UI_NAME(BreadcrumbBar); CUI_STYLE_UI_NAME(CalendarView); CUI_STYLE_UI_NAME(DateRangePicker);
-	CUI_STYLE_UI_NAME(ColorPicker); CUI_STYLE_UI_NAME(PagedGridView); CUI_STYLE_UI_NAME(NumericUpDown);
-	CUI_STYLE_UI_NAME(Expander); CUI_STYLE_UI_NAME(NativeSurface); CUI_STYLE_UI_NAME(ItemsControl);
-	case UIClass::UI_SelectorItem: return L"ListBoxItem";
-	case UIClass::UI_ComboBoxItem: return L"ComboBoxItem";
-	case UIClass::UI_TreeViewItem: return L"TreeViewItem";
-	CUI_STYLE_UI_NAME(ContentPresenter);
-	CUI_STYLE_UI_NAME(ItemsPresenter); CUI_STYLE_UI_NAME(ContentControl);
-	CUI_STYLE_UI_NAME(CUSTOM);
-	}
-#undef CUI_STYLE_UI_NAME
-#undef CUI_STYLE_WIDEN
-#undef CUI_STYLE_WIDEN_INNER
-	return L"Base";
+	if (type == UIClass::UI_Base) return L"Any";
+	if (type == UIClass::UI_CUSTOM) return L"CUSTOM";
+	const auto* descriptor =
+		CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(type);
+	return descriptor ? descriptor->TypeId.LocalName : std::wstring{};
 }
 
 bool TryParseUIClass(const std::wstring& value, UIClass& out)
 {
 	const auto name = Trim(value);
-	if (EqualsName(name, L"SelectorItem"))
+	if (EqualsName(name, L"Any"))
 	{
-		out = UIClass::UI_SelectorItem;
+		out = UIClass::UI_Base;
 		return true;
 	}
-	if (EqualsName(name, L"ComboBoxItem"))
+	if (EqualsName(name, L"CUSTOM"))
 	{
-		out = UIClass::UI_ComboBoxItem;
+		out = UIClass::UI_CUSTOM;
 		return true;
 	}
-	if (EqualsName(name, L"TreeViewItem"))
-	{
-		out = UIClass::UI_TreeViewItem;
-		return true;
-	}
-	for (int numeric = static_cast<int>(UIClass::UI_Base);
-		numeric <= static_cast<int>(UIClass::UI_CUSTOM); ++numeric)
-	{
-		const auto candidate = static_cast<UIClass>(numeric);
-		if (EqualsName(name, UIClassName(candidate)))
-		{
-			out = candidate;
-			return true;
-		}
-	}
-	return false;
+	const auto* descriptor = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+		CuiRuntime::XamlRuntimeSchema::CuiNamespace, name);
+	if (!descriptor) return false;
+	out = descriptor->NativeType;
+	return true;
 }
 
 std::vector<std::wstring> UIClassNames(bool includeAny)
 {
 	std::vector<std::wstring> result;
 	if (includeAny) result.push_back(L"Any");
-	for (int numeric = static_cast<int>(UIClass::UI_Base);
+	for (int numeric = static_cast<int>(UIClass::UI_FrameworkElement);
 		numeric <= static_cast<int>(UIClass::UI_CUSTOM); ++numeric)
-		result.push_back(UIClassName(static_cast<UIClass>(numeric)));
-	return result;
-}
-
-std::wstring FormatStates(ControlStyleState states)
-{
-	std::wstring result;
-	for (const auto& [state, name] : {
-		std::pair{ ControlStyleState::Hovered, L"Hovered" },
-		std::pair{ ControlStyleState::Focused, L"Focused" },
-		std::pair{ ControlStyleState::Pressed, L"Pressed" },
-		std::pair{ ControlStyleState::Disabled, L"Disabled" },
-		std::pair{ ControlStyleState::Checked, L"Checked" },
-		std::pair{ ControlStyleState::Selected, L"Selected" } })
 	{
-		if ((states & state) == ControlStyleState::None) continue;
-		if (!result.empty()) result += L", ";
-		result += name;
+		auto name = UIClassName(static_cast<UIClass>(numeric));
+		if (!name.empty()) result.push_back(std::move(name));
 	}
 	return result;
-}
-
-bool TryParseStates(const std::wstring& value, ControlStyleState& out)
-{
-	out = ControlStyleState::None;
-	std::wstring normalized = value;
-	std::replace(normalized.begin(), normalized.end(), L'|', L',');
-	for (const auto& part : Split(normalized, L','))
-	{
-		if (part.empty()) continue;
-		ControlStyleState state = ControlStyleState::None;
-		if (!TryParseStateName(part, state)) return false;
-		out |= state;
-	}
-	return true;
-}
-
-std::vector<std::wstring> SplitClasses(const std::wstring& value)
-{
-	std::vector<std::wstring> result;
-	for (const auto& item : Split(value, L','))
-	{
-		if (!item.empty() && !ContainsName(result, item)) result.push_back(item);
-	}
-	return result;
-}
-
-std::wstring JoinClasses(const std::vector<std::wstring>& classes)
-{
-	std::wstring result;
-	for (const auto& value : classes)
-	{
-		if (!result.empty()) result += L", ";
-		result += value;
-	}
-	return result;
-}
-
-std::wstring CanonicalTriggerProperty(const std::wstring& property)
-{
-	const auto value = Lower(Trim(property));
-	if (value == L"ismouseover" || value == L"hovered") return L"IsMouseOver";
-	if (value == L"iskeyboardfocused" || value == L"isfocused"
-		|| value == L"focused") return L"IsKeyboardFocused";
-	if (value == L"ispressed" || value == L"pressed") return L"IsPressed";
-	if (value == L"isenabled" || value == L"enable"
-		|| value == L"enabled") return L"IsEnabled";
-	if (value == L"ischecked" || value == L"checked") return L"IsChecked";
-	if (value == L"isselected" || value == L"selected") return L"IsSelected";
-	return {};
-}
-
-bool TryGetTriggerStates(
-	const std::wstring& property,
-	bool value,
-	ControlStyleState& required,
-	ControlStyleState& excluded)
-{
-	required = ControlStyleState::None;
-	excluded = ControlStyleState::None;
-	const auto canonical = CanonicalTriggerProperty(property);
-	ControlStyleState state = ControlStyleState::None;
-	bool inverted = false;
-	if (canonical == L"IsMouseOver") state = ControlStyleState::Hovered;
-	else if (canonical == L"IsKeyboardFocused") state = ControlStyleState::Focused;
-	else if (canonical == L"IsPressed") state = ControlStyleState::Pressed;
-	else if (canonical == L"IsEnabled")
-	{
-		state = ControlStyleState::Disabled;
-		inverted = true;
-	}
-	else if (canonical == L"IsChecked") state = ControlStyleState::Checked;
-	else if (canonical == L"IsSelected") state = ControlStyleState::Selected;
-	else return false;
-	const bool requireState = inverted ? !value : value;
-	if (requireState) required = state;
-	else excluded = state;
-	return true;
 }
 
 bool TryConvertValue(
@@ -939,7 +788,14 @@ bool TryConvertValue(
 	case DesignerStyleValueKind::Brush:
 	{
 		cui::drawing::Brush brush;
-		if (!TryConvertBrush(
+		if (value.ObjectValue.is_null())
+		{
+			D2D1_COLOR_F color{};
+			if (!TryParseColor(value.Text, color)) return invalid();
+			brush.Kind = cui::drawing::BrushKind::Solid;
+			brush.Color = color;
+		}
+		else if (!TryConvertBrush(
 			value.ObjectValue, brush, outError, resourceBasePath, resources)) return false;
 		out = BindingValue(std::move(brush));
 		return true;
@@ -982,20 +838,14 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 	}
 	for (auto& rule : styleSheet.Rules)
 	{
+		rule.XamlType.NamespaceUri = Trim(rule.XamlType.NamespaceUri);
+		rule.XamlType.LocalName = Trim(rule.XamlType.LocalName);
 		rule.ComponentType.XamlPrefix = Trim(rule.ComponentType.XamlPrefix);
 		rule.ComponentType.XamlName = Trim(rule.ComponentType.XamlName);
 		rule.ComponentType.XamlNamespace = Trim(rule.ComponentType.XamlNamespace);
 		rule.Id = Trim(rule.Id);
 		rule.BasedOn = Trim(rule.BasedOn);
 		rule.SourceDictionary = Trim(rule.SourceDictionary);
-		auto classes = rule.Classes;
-		rule.Classes.clear();
-		for (auto& value : classes)
-		{
-			value = Trim(value);
-			if (!value.empty() && !ContainsName(rule.Classes, value))
-				rule.Classes.push_back(std::move(value));
-		}
 		auto canonicalizeSetter = [](DesignerStyleSetter& setter)
 		{
 			setter.PropertyName = Trim(setter.PropertyName);
@@ -1067,12 +917,6 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 		canonicalizeActions(rule.ExitActions);
 		for (auto& trigger : rule.Triggers)
 		{
-			for (auto& condition : trigger.Conditions)
-			{
-				const auto property = CanonicalTriggerProperty(condition.Property);
-				condition.Property = property.empty()
-					? Trim(condition.Property) : property;
-			}
 			for (auto& condition : trigger.PropertyConditions)
 				canonicalizePropertyCondition(condition);
 			for (auto& condition : trigger.DataConditions)
@@ -1082,6 +926,23 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 			canonicalizeActions(trigger.ExitActions);
 		}
 	}
+}
+
+bool HasSameStyleResourceIdentity(
+	const DesignerStyleRule& left,
+	const DesignerStyleRule& right)
+{
+	if (!left.Id.empty() || !right.Id.empty())
+		return !left.Id.empty() && !right.Id.empty()
+			&& EqualsName(left.Id, right.Id);
+	if (!left.ComponentType.Empty() || !right.ComponentType.Empty())
+		return !left.ComponentType.Empty() && !right.ComponentType.Empty()
+			&& left.ComponentType.RegistryKey()
+				== right.ComponentType.RegistryKey();
+	if (left.XamlType.Valid() || right.XamlType.Valid())
+		return left.XamlType.Valid() && right.XamlType.Valid()
+			&& left.XamlType == right.XamlType;
+	return left.HasType && right.HasType && left.Type == right.Type;
 }
 
 void AppendLexicalScope(
@@ -1098,12 +959,18 @@ void AppendLexicalScope(
 		target.Resources.erase(std::remove_if(
 			target.Resources.begin(), target.Resources.end(),
 			[&](const auto& current)
-			{ return _wcsicmp(current.Key.c_str(), resource.Key.c_str()) == 0; }),
+			{ return current.Key == resource.Key; }),
 			target.Resources.end());
 		target.Resources.push_back(resource);
 	}
-	target.Rules.insert(
-		target.Rules.end(), source.Rules.begin(), source.Rules.end());
+	for (const auto& rule : source.Rules)
+	{
+		target.Rules.erase(std::remove_if(
+			target.Rules.begin(), target.Rules.end(), [&](const auto& current)
+			{ return HasSameStyleResourceIdentity(current, rule); }),
+			target.Rules.end());
+		target.Rules.push_back(rule);
+	}
 }
 
 void RemapRuleResourceKeys(
@@ -1115,7 +982,7 @@ void RemapRuleResourceKeys(
 	{
 		if (key.empty() || (shouldRemap && !shouldRemap(key))) return;
 		for (const auto& [source, destination] : renames)
-			if (_wcsicmp(key.c_str(), source.c_str()) == 0)
+			if (key == source)
 			{
 				key = destination;
 				return;
@@ -1181,10 +1048,7 @@ bool ResolveInheritance(
 	};
 	auto unqualified = [](const DesignerStyleRule& rule)
 	{
-		return rule.Classes.empty()
-			&& rule.RequiredStates == ControlStyleState::None
-			&& rule.ExcludedStates == ControlStyleState::None
-			&& rule.PropertyConditions.empty()
+		return rule.PropertyConditions.empty()
 			&& rule.DataConditions.empty();
 	};
 	auto findBase = [&](size_t owner, size_t& baseIndex)
@@ -1247,8 +1111,15 @@ bool ResolveInheritance(
 			{
 				derived.HasType = true;
 				derived.Type = base.Type;
+				derived.XamlType = base.XamlType;
 				derived.ComponentType = base.ComponentType;
 			}
+			else if (derived.XamlType.Empty() && base.XamlType.Valid()
+				&& derived.ComponentType.Empty() && derived.Type == base.Type)
+				derived.XamlType = base.XamlType;
+			else if (derived.XamlType.Valid() && base.XamlType.Valid()
+				&& derived.XamlType != base.XamlType)
+				return Fail(L"Style.BasedOn 的内置 XAML TargetType 不兼容。", outError);
 			else if (derived.ComponentType.Empty()
 				&& !base.ComponentType.Empty()
 				&& derived.Type == base.Type)
@@ -1306,7 +1177,7 @@ bool PrepareLocalRuntimeStyleSheet(
 	{
 		return std::any_of(out.Resources.begin(), out.Resources.end(),
 			[&](const auto& resource)
-			{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; });
+			{ return resource.Key == key; });
 	};
 	auto aliasStaticResource = [&](std::wstring& key) -> bool
 	{
@@ -1315,7 +1186,7 @@ bool PrepareLocalRuntimeStyleSheet(
 			visibleStyleSheet.Resources.rbegin(),
 			visibleStyleSheet.Resources.rend(),
 			[&](const auto& resource)
-			{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; });
+			{ return resource.Key == key; });
 		if (found == visibleStyleSheet.Resources.rend())
 		{
 			if (outError) *outError = L"局部 Style 引用了不可见资源：" + key;
@@ -1388,26 +1259,12 @@ bool ExpandRuntimeRules(
 		}
 		for (const auto& trigger : rule.Triggers)
 		{
-			ControlStyleState required = ControlStyleState::None;
-			ControlStyleState excluded = ControlStyleState::None;
 			if (!trigger.DataConditions.empty()
-				&& (!trigger.Conditions.empty()
-					|| !trigger.PropertyConditions.empty()))
+				&& !trigger.PropertyConditions.empty())
 				return Fail(L"DataTrigger 不能同时包含属性 Condition。", outError);
-			if (trigger.DataConditions.empty() && trigger.Conditions.empty()
+			if (trigger.DataConditions.empty()
 				&& trigger.PropertyConditions.empty())
 				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
-			for (const auto& condition : trigger.Conditions)
-			{
-				ControlStyleState conditionRequired = ControlStyleState::None;
-				ControlStyleState conditionExcluded = ControlStyleState::None;
-				if (!TryGetTriggerStates(condition.Property, condition.Value,
-					conditionRequired, conditionExcluded))
-					return Fail(L"Style Trigger 不支持条件属性："
-						+ condition.Property, outError);
-				required |= conditionRequired;
-				excluded |= conditionExcluded;
-			}
 			auto lowered = rule;
 			lowered.BasedOn.clear();
 			lowered.Triggers.clear();
@@ -1419,12 +1276,6 @@ bool ExpandRuntimeRules(
 			lowered.PropertyConditions.insert(lowered.PropertyConditions.end(),
 				trigger.PropertyConditions.begin(),
 				trigger.PropertyConditions.end());
-			lowered.RequiredStates |= required;
-			lowered.ExcludedStates |= excluded;
-			if ((lowered.RequiredStates & lowered.ExcludedStates)
-				!= ControlStyleState::None)
-				return Fail(L"Style Trigger 条件彼此冲突或与样式状态选择器冲突。",
-					outError);
 			out.Rules.push_back(std::move(lowered));
 		}
 	}
@@ -1470,19 +1321,32 @@ bool Validate(
 	for (size_t ruleIndex = 0; ruleIndex < styleSheet.Rules.size(); ++ruleIndex)
 	{
 		const auto& rule = styleSheet.Rules[ruleIndex];
+		for (size_t previous = 0; previous < ruleIndex; ++previous)
+			if (HasSameStyleResourceIdentity(
+				styleSheet.Rules[previous], rule))
+				return Fail(L"Style 资源键重复："
+					+ (rule.Id.empty()
+						? UIClassName(rule.Type) : rule.Id), outError);
+		if (rule.Id.empty() && !rule.HasType
+			&& rule.ComponentType.Empty() && !rule.XamlType.Valid())
+			return Fail(L"隐式 Style 必须声明 TargetType。", outError);
+		if (!rule.PropertyConditions.empty()
+			|| !rule.DataConditions.empty()
+			|| !rule.EnterActions.empty()
+			|| !rule.ExitActions.empty())
+			return Fail(L"Style 顶层只接受 Setter、BasedOn 和 Style.Triggers；"
+				L"运行时条件不得进入作者模型。", outError);
 		if (!validOrigin(rule.SourceDictionary))
 			return Fail(L"样式规则包含未知的来源字典："
 				+ rule.SourceDictionary, outError);
-		const auto required = static_cast<uint32_t>(rule.RequiredStates);
-		const auto excluded = static_cast<uint32_t>(rule.ExcludedStates);
-		if ((required & ~KnownStateMask) != 0 || (excluded & ~KnownStateMask) != 0)
-			return Fail(L"样式规则包含未知状态。", outError);
-		if ((required & excluded) != 0)
-			return Fail(L"同一状态不能同时出现在规则的必需和排除状态中。", outError);
 		if (!rule.ComponentType.Empty()
 			&& (!rule.HasType || rule.ComponentType.XamlName.empty()
 				|| rule.ComponentType.XamlNamespace.empty()))
 			return Fail(L"组件样式必须同时保存有效 QName 和 BaseType。", outError);
+		if (!rule.XamlType.Empty()
+			&& (!rule.HasType || !rule.XamlType.Valid()
+				|| !rule.ComponentType.Empty()))
+			return Fail(L"内置样式必须保存唯一有效的 XAML TargetType。", outError);
 		if (rule.Setters.empty() && rule.EnterActions.empty()
 			&& rule.ExitActions.empty() && rule.Triggers.empty()
 			&& Trim(rule.BasedOn).empty())
@@ -1492,9 +1356,7 @@ bool Validate(
 			rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
 			{ return EqualsName(setter.PropertyName, L"Template"); });
 		if (hasTemplateSetter
-			&& (rule.RequiredStates != ControlStyleState::None
-				|| rule.ExcludedStates != ControlStyleState::None
-				|| !rule.PropertyConditions.empty()
+			&& (!rule.PropertyConditions.empty()
 				|| !rule.DataConditions.empty()))
 			return Fail(L"Template Setter 目前不支持状态或数据条件；"
 				L"请使用普通 Style Setter。", outError);
@@ -1511,7 +1373,7 @@ bool Validate(
 				if (ContainsName(properties, property))
 					return Fail(context + L" 中的 Setter 属性重复：" + property, outError);
 				properties.push_back(property);
-				if (_wcsicmp(property.c_str(), L"Template") == 0)
+				if (property == L"Template")
 				{
 					if (!setter.UsesResource || setter.UsesDynamicResource
 						|| Trim(setter.ResourceKey).empty())
@@ -1695,51 +1557,16 @@ bool Validate(
 			triggerIndex < rule.Triggers.size(); ++triggerIndex)
 		{
 			const auto& trigger = rule.Triggers[triggerIndex];
-			ControlStyleState triggerRequired = ControlStyleState::None;
-			ControlStyleState triggerExcluded = ControlStyleState::None;
 			if (!trigger.DataConditions.empty()
-				&& (!trigger.Conditions.empty()
-					|| !trigger.PropertyConditions.empty()))
+				&& !trigger.PropertyConditions.empty())
 				return Fail(L"DataTrigger 不能同时包含属性 Condition。", outError);
-			if (trigger.DataConditions.empty() && trigger.Conditions.empty()
+			if (trigger.DataConditions.empty()
 				&& trigger.PropertyConditions.empty())
 				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
-			std::vector<std::wstring> conditionProperties;
-			for (const auto& condition : trigger.Conditions)
-			{
-				const auto property = CanonicalTriggerProperty(condition.Property);
-				if (property.empty())
-					return Fail(L"Style Trigger 不支持条件属性："
-						+ Trim(condition.Property), outError);
-				if (ContainsName(conditionProperties, property))
-					return Fail(L"Style MultiTrigger 的 Condition 属性重复："
-						+ property, outError);
-				conditionProperties.push_back(property);
-				ControlStyleState conditionRequired = ControlStyleState::None;
-				ControlStyleState conditionExcluded = ControlStyleState::None;
-				if (!TryGetTriggerStates(property, condition.Value,
-					conditionRequired, conditionExcluded))
-					return Fail(L"Style Trigger 不支持条件属性："
-						+ property, outError);
-				triggerRequired |= conditionRequired;
-				triggerExcluded |= conditionExcluded;
-			}
-			for (const auto& condition : trigger.PropertyConditions)
-			{
-				const auto property = Trim(condition.Property);
-				if (property.empty())
-					return Fail(L"Style Trigger 条件属性不能为空。", outError);
-				if (ContainsName(conditionProperties, property))
-					return Fail(L"Style MultiTrigger 的 Condition 属性重复："
-						+ property, outError);
-				conditionProperties.push_back(property);
-				BindingValue value;
-				if (!TryConvertValue(condition.Value, value, outError,
-					resourceBasePath, resources)) return false;
-				if (value.Empty())
-					return Fail(L"Style Trigger 条件值不能为空："
-						+ property, outError);
-			}
+			if (!validatePropertyConditions(
+				trigger.PropertyConditions,
+				trigger.PropertyConditions.size() > 1
+					? L"Style.MultiTrigger" : L"Style.Trigger")) return false;
 			if (trigger.Setters.empty() && trigger.EnterActions.empty()
 				&& trigger.ExitActions.empty())
 				return Fail(L"Style Trigger 没有 Setter 或 TriggerAction。", outError);
@@ -1751,11 +1578,6 @@ bool Validate(
 			if (!validateDataConditions(trigger.DataConditions,
 				trigger.DataConditions.size() > 1
 					? L"Style.MultiDataTrigger" : L"Style.DataTrigger")) return false;
-			if (((rule.RequiredStates | triggerRequired)
-				& (rule.ExcludedStates | triggerExcluded))
-				!= ControlStyleState::None)
-				return Fail(L"Style Trigger 条件彼此冲突或与样式状态选择器冲突。",
-					outError);
 			if (!validateSetters(trigger.Setters,
 				L"样式规则 " + std::to_wstring(ruleIndex + 1)
 					+ L" 的 Trigger " + std::to_wstring(triggerIndex + 1))) return false;
@@ -1780,13 +1602,13 @@ bool Validate(
 
 bool ValidateAgainstRulePropertyMetadata(
 	const DesignerStyleSheet& styleSheet,
-	const RuleControlFactory& controlFactory,
+	const RulePropertySchemaResolver& schemaResolver,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
 	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	if (!Validate(styleSheet, outError, resourceBasePath, resources)) return false;
-	if (!controlFactory)
+	if (!schemaResolver)
 	{
 		if (outError) outError->clear();
 		return true;
@@ -1797,16 +1619,23 @@ bool ValidateAgainstRulePropertyMetadata(
 	for (size_t ruleIndex = 0; ruleIndex < resolved.Rules.size(); ++ruleIndex)
 	{
 		const auto& rule = resolved.Rules[ruleIndex];
-		auto target = controlFactory(rule);
-		// Unknown/custom runtime types may not have a Designer probe. Keep their
-		// structurally valid declarations for forward compatibility.
-		if (!target) continue;
-		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*target);
+		CuiRuntime::XamlTypePropertySchema schema;
+		std::wstring schemaError;
+		if (!schemaResolver(rule, schema, &schemaError))
+			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 的 TargetType Schema 无法解析：" + schemaError, outError);
+		const auto properties =
+			DesignerPropertyCatalog::GetStyleProperties(schema.Properties);
 		for (const auto& condition : rule.PropertyConditions)
 		{
+			const auto* metadata = schema.FindProperty(condition.Property);
+			if (!metadata)
+				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L" 的目标类型没有可观察属性："
+					+ condition.Property, outError);
 			std::wstring validationError;
 			if (!DesignerPropertyCatalog::ValidateConditionValue(
-				*target, condition.Property, condition.Value, &validationError,
+				*metadata, condition.Value, &validationError,
 				resourceBasePath, resources))
 				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
 					+ L"：" + validationError, outError);
@@ -1841,8 +1670,9 @@ bool ValidateAgainstRulePropertyMetadata(
 			}
 
 			std::wstring validationError;
-			if (!DesignerPropertyCatalog::ValidateStyleValue(
-				*target, setter.PropertyName, *value, &validationError,
+			DesignerStyleValue canonical;
+			if (!property->Metadata || !DesignerPropertyCatalog::NormalizeStyleValue(
+				*property->Metadata, *value, canonical, &validationError,
 				resourceBasePath, resources))
 				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
 					+ L"：" + validationError, outError);
@@ -1854,20 +1684,25 @@ bool ValidateAgainstRulePropertyMetadata(
 
 bool ValidateAgainstPropertyMetadata(
 	const DesignerStyleSheet& styleSheet,
-	const ControlFactory& controlFactory,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
 	const std::shared_ptr<ResourceLoadContext>& resources)
 {
-	RuleControlFactory adapter;
-	if (controlFactory)
-		adapter = [&controlFactory](const DesignerStyleRule& rule)
+	RulePropertySchemaResolver adapter = [](
+		const DesignerStyleRule& rule,
+		CuiRuntime::XamlTypePropertySchema& schema,
+		std::wstring* error)
+	{
+		if (!rule.ComponentType.Empty())
 		{
-			// Component rules need an instance-level contract and are validated by
-			// document-aware callers through the rule-aware overload.
-			if (!rule.ComponentType.Empty()) return std::unique_ptr<Control>{};
-			return controlFactory(rule.HasType ? rule.Type : UIClass::UI_Base);
-		};
+			if (error) *error = L"组件样式需要文档级 Schema resolver。";
+			return false;
+		}
+		DesignerModel::DesignDocument emptyDocument;
+		return CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+			rule.HasType ? rule.Type : UIClass::UI_Base,
+			nullptr, emptyDocument, schema, error);
+	};
 	return ValidateAgainstRulePropertyMetadata(
 		styleSheet, adapter, outError, resourceBasePath, resources);
 }
@@ -2060,10 +1895,12 @@ bool BuildRuntimeStyleSheet(
 			selector.DeclarativeTypeNamespace = rule.ComponentType.XamlNamespace;
 			selector.DeclarativeTypeName = rule.ComponentType.XamlName;
 		}
-		selector.Id = rule.Id;
-		selector.Classes = rule.Classes;
-		selector.RequiredStates = rule.RequiredStates;
-		selector.ExcludedStates = rule.ExcludedStates;
+		else if (rule.XamlType.Valid())
+		{
+			selector.DeclarativeTypeNamespace = rule.XamlType.NamespaceUri;
+			selector.DeclarativeTypeName = rule.XamlType.LocalName;
+		}
+		selector.StyleResourceKey = rule.Id;
 		for (const auto& condition : rule.PropertyConditions)
 		{
 			BindingValue value;

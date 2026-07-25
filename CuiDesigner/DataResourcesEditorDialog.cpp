@@ -1,4 +1,5 @@
 #include "DataResourcesEditorDialog.h"
+#include "ProgrammaticControlFactory.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerModel/DesignDataResourceEditorModel.h"
 #include "DesignerModel/DesignDataResourceUtils.h"
@@ -17,7 +18,7 @@ namespace
 
 	bool Equals(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::vector<std::wstring> ValueKindNames()
@@ -34,130 +35,159 @@ namespace
 
 DataResourcesEditorDialog::DataResourcesEditorDialog(
 	const DesignerModel::DesignDocument& document)
-	: Form(L"编辑数据资源", POINT{ 260, 90 }, SIZE{ 940, 760 }),
+	: Window(),
 	  ResultDocument(document)
 {
-	this->VisibleHead = true;
-	this->MinBox = false;
-	this->MaxBox = false;
-	this->AllowResize = false;
-	this->BackColor = Colors::WhiteSmoke;
+	this->Title = L"编辑数据资源";
+	this->Left = 260.0f;
+	this->Top = 90.0f;
+	this->Width = 940.0f;
+	this->Height = 760.0f;
+	this->ResizeMode = ::ResizeMode::NoResize;
+	this->Background = Colors::WhiteSmoke;
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	auto* contentRoot = static_cast<Panel*>(SetVisualContent(std::move(contentOwner)));
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 
-	auto title = AddControl(new Label(
+	auto title = addContent(cui::designer::NewControl<Label>(
 		L"DataType 定义记录契约；DataList/DataRecord 是设计器与运行时共用的文件数据。", 20, 14));
-	title->Size = { 880, 24 };
+	title->Width = 880.0f;
+	title->Height = 24.0f;
 
-	auto typeTitle = AddControl(new Label(L"DataType 与字段", 20, 52));
-	typeTitle->Font = new ::Font(L"Microsoft YaHei", 17.0f);
-	typeTitle->Size = { 240, 28 };
-	AddControl(new Label(L"类型", 20, 92))->Size = { 80, 24 };
-	_typeList = AddControl(new ComboBox(L"", 100, 86, 410, 30));
-	_typeList->ExpandCount = 10;
-	AddControl(new Label(L"名称", 20, 132))->Size = { 80, 24 };
-	_typeName = AddControl(new TextBox(L"", 100, 126, 240, 30));
-	auto saveType = AddControl(new Button(L"保存/重命名类型", 350, 124, 160, 34));
+	auto typeTitle = addContent(cui::designer::NewControl<Label>(L"DataType 与字段", 20, 52));
+	cui::designer::ApplyProgrammaticTypography(
+		*typeTitle, L"Microsoft YaHei", 17.0);
+	typeTitle->Width = 240.0f;
+	typeTitle->Height = 28.0f;
+	addContent(cui::designer::NewControl<Label>(L"类型", 20, 92))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"类型", 20, 92))->Height = 24.0f;
+	_typeList = addContent(cui::designer::NewControl<ComboBox>(L"", 100, 86, 410, 30));
+	_typeList->MaxDropDownHeight = 280.0f;
+	addContent(cui::designer::NewControl<Label>(L"名称", 20, 132))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"名称", 20, 132))->Height = 24.0f;
+	_typeName = addContent(cui::designer::NewControl<TextBox>(L"", 100, 126, 240, 30));
+	auto saveType = addContent(cui::designer::NewControl<Button>(L"保存/重命名类型", 350, 124, 160, 34));
 
-	AddControl(new Label(L"字段", 20, 176))->Size = { 80, 24 };
-	_propertyList = AddControl(new ComboBox(L"", 100, 170, 410, 30));
-	_propertyList->ExpandCount = 10;
-	AddControl(new Label(L"路径", 20, 216))->Size = { 80, 24 };
-	_propertyPath = AddControl(new TextBox(L"", 100, 210, 240, 30));
-	_propertyKind = AddControl(new ComboBox(L"", 350, 210, 160, 30));
-	_propertyKind->Items = ValueKindNames();
-	_propertyKind->ExpandCount = 7;
-	AddControl(new Label(L"对象", 20, 256))->Size = { 80, 24 };
-	_propertyObjectKind = AddControl(new ComboBox(L"", 100, 250, 160, 30));
-	_propertyObjectKind->Items = { L"Opaque", L"BindingSource", L"BindingList" };
-	_propertyObjectKind->ExpandCount = 3;
-	_propertyItemType = AddControl(new ComboBox(L"", 270, 250, 240, 30));
-	_propertyItemType->ExpandCount = 10;
-	_propertyCanRead = AddControl(new CheckBox(L"可读", 20, 294));
-	_propertyCanWrite = AddControl(new CheckBox(L"可写", 105, 294));
-	_propertyCanObserve = AddControl(new CheckBox(L"通知", 190, 294));
-	auto saveProperty = AddControl(new Button(L"保存字段", 290, 290, 105, 34));
-	auto removeProperty = AddControl(new Button(L"删除字段", 405, 290, 105, 34));
-	auto removeType = AddControl(new Button(L"删除类型", 405, 330, 105, 32));
+	addContent(cui::designer::NewControl<Label>(L"字段", 20, 176))->Width = 80.0f;
 
-	auto listTitle = AddControl(new Label(L"DataList 与记录", 20, 376));
-	listTitle->Font = new ::Font(L"Microsoft YaHei", 17.0f);
-	listTitle->Size = { 240, 28 };
-	AddControl(new Label(L"列表", 20, 416))->Size = { 80, 24 };
-	_listList = AddControl(new ComboBox(L"", 100, 410, 410, 30));
-	_listList->ExpandCount = 10;
-	AddControl(new Label(L"键", 20, 456))->Size = { 80, 24 };
-	_listKey = AddControl(new TextBox(L"", 100, 450, 200, 30));
-	_listItemType = AddControl(new ComboBox(L"", 310, 450, 200, 30));
-	_listItemType->ExpandCount = 10;
-	auto saveList = AddControl(new Button(L"保存/重命名列表", 20, 492, 160, 34));
-	auto removeList = AddControl(new Button(L"删除列表", 190, 492, 105, 34));
+	addContent(cui::designer::NewControl<Label>(L"字段", 20, 176))->Height = 24.0f;
+	_propertyList = addContent(cui::designer::NewControl<ComboBox>(L"", 100, 170, 410, 30));
+	_propertyList->MaxDropDownHeight = 280.0f;
+	addContent(cui::designer::NewControl<Label>(L"路径", 20, 216))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"路径", 20, 216))->Height = 24.0f;
+	_propertyPath = addContent(cui::designer::NewControl<TextBox>(L"", 100, 210, 240, 30));
+	_propertyKind = addContent(cui::designer::NewControl<ComboBox>(L"", 350, 210, 160, 30));
+	cui::designer::SetComboBoxItems(*_propertyKind, ValueKindNames());
+	_propertyKind->MaxDropDownHeight = 196.0f;
+	addContent(cui::designer::NewControl<Label>(L"对象", 20, 256))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"对象", 20, 256))->Height = 24.0f;
+	_propertyObjectKind = addContent(cui::designer::NewControl<ComboBox>(L"", 100, 250, 160, 30));
+	cui::designer::SetComboBoxItems(
+		*_propertyObjectKind,
+		{ L"Opaque", L"BindingSource", L"BindingList" });
+	_propertyObjectKind->MaxDropDownHeight = 84.0f;
+	_propertyItemType = addContent(cui::designer::NewControl<ComboBox>(L"", 270, 250, 240, 30));
+	_propertyItemType->MaxDropDownHeight = 280.0f;
+	_propertyCanRead = addContent(cui::designer::NewControl<CheckBox>(L"可读", 20, 294));
+	_propertyCanWrite = addContent(cui::designer::NewControl<CheckBox>(L"可写", 105, 294));
+	_propertyCanObserve = addContent(cui::designer::NewControl<CheckBox>(L"通知", 190, 294));
+	auto saveProperty = addContent(cui::designer::NewControl<Button>(L"保存字段", 290, 290, 105, 34));
+	auto removeProperty = addContent(cui::designer::NewControl<Button>(L"删除字段", 405, 290, 105, 34));
+	auto removeType = addContent(cui::designer::NewControl<Button>(L"删除类型", 405, 330, 105, 32));
 
-	AddControl(new Label(L"记录", 20, 542))->Size = { 80, 24 };
-	_recordList = AddControl(new ComboBox(L"", 100, 536, 410, 30));
-	_recordList->ExpandCount = 10;
-	AddControl(new Label(L"字段（每行 Path=Value）", 20, 580))->Size = { 300, 24 };
-	_recordFields = AddControl(new RichTextBox(L"", 20, 608, 365, 70));
-	_recordFields->AllowMultiLine = true;
-	_recordFields->BackColor = Colors::White;
-	auto saveRecord = AddControl(new Button(L"保存记录", 395, 608, 115, 32));
-	auto removeRecord = AddControl(new Button(L"删除记录", 395, 646, 115, 32));
+	auto listTitle = addContent(cui::designer::NewControl<Label>(L"DataList 与记录", 20, 376));
+	cui::designer::ApplyProgrammaticTypography(
+		*listTitle, L"Microsoft YaHei", 17.0);
+	listTitle->Width = 240.0f;
+	listTitle->Height = 28.0f;
+	addContent(cui::designer::NewControl<Label>(L"列表", 20, 416))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"列表", 20, 416))->Height = 24.0f;
+	_listList = addContent(cui::designer::NewControl<ComboBox>(L"", 100, 410, 410, 30));
+	_listList->MaxDropDownHeight = 280.0f;
+	addContent(cui::designer::NewControl<Label>(L"键", 20, 456))->Width = 80.0f;
+	addContent(cui::designer::NewControl<Label>(L"键", 20, 456))->Height = 24.0f;
+	_listKey = addContent(cui::designer::NewControl<TextBox>(L"", 100, 450, 200, 30));
+	_listItemType = addContent(cui::designer::NewControl<ComboBox>(L"", 310, 450, 200, 30));
+	_listItemType->MaxDropDownHeight = 280.0f;
+	auto saveList = addContent(cui::designer::NewControl<Button>(L"保存/重命名列表", 20, 492, 160, 34));
+	auto removeList = addContent(cui::designer::NewControl<Button>(L"删除列表", 190, 492, 105, 34));
 
-	auto templateTitle = AddControl(new Label(L"DataTemplate", 540, 52));
-	templateTitle->Font = new ::Font(L"Microsoft YaHei", 17.0f);
-	templateTitle->Size = { 180, 28 };
-	_templateList = AddControl(new ComboBox(L"", 540, 86, 365, 30));
-	_templateList->ExpandCount = 10;
-	_templateKey = AddControl(new TextBox(L"", 540, 126, 175, 30));
-	_templateDataType = AddControl(new ComboBox(L"", 725, 126, 180, 30));
-	_templateDataType->ExpandCount = 10;
-	auto saveTemplate = AddControl(new Button(L"保存/创建模板", 540, 166, 145, 34));
-	auto removeTemplate = AddControl(new Button(L"删除模板", 695, 166, 105, 34));
-	auto editTemplateHint = AddControl(new Label(L"视觉树：画布/XAML 编辑", 540, 204));
-	editTemplateHint->Size = { 300, 24 };
+	addContent(cui::designer::NewControl<Label>(L"记录", 20, 542))->Width = 80.0f;
 
-	auto summaryTitle = AddControl(new Label(L"资源摘要", 540, 236));
-	summaryTitle->Font = new ::Font(L"Microsoft YaHei", 17.0f);
-	summaryTitle->Size = { 180, 28 };
-	_summary = AddControl(new RichTextBox(L"", 540, 270, 365, 326));
-	_summary->ReadOnly = true;
-	_summary->AllowMultiLine = true;
-	_summary->BackColor = Colors::White;
-	_validation = AddControl(new Label(L"", 540, 606));
-	_validation->Size = { 365, 56 };
-	auto ok = AddControl(new Button(L"确定", 650, 680, 120, 36));
-	auto cancel = AddControl(new Button(L"取消", 785, 680, 120, 36));
+	addContent(cui::designer::NewControl<Label>(L"记录", 20, 542))->Height = 24.0f;
+	_recordList = addContent(cui::designer::NewControl<ComboBox>(L"", 100, 536, 410, 30));
+	_recordList->MaxDropDownHeight = 280.0f;
+	addContent(cui::designer::NewControl<Label>(L"字段（每行 Path=Value）", 20, 580))->Width = 300.0f;
+	addContent(cui::designer::NewControl<Label>(L"字段（每行 Path=Value）", 20, 580))->Height = 24.0f;
+	_recordFields = addContent(cui::designer::NewControl<RichTextBox>(L"", 20, 608, 365, 70));
+	_recordFields->Background = Colors::White;
+	auto saveRecord = addContent(cui::designer::NewControl<Button>(L"保存记录", 395, 608, 115, 32));
+	auto removeRecord = addContent(cui::designer::NewControl<Button>(L"删除记录", 395, 646, 115, 32));
 
-	_typeList->OnSelectionChanged += [this](Control*) {
+	auto templateTitle = addContent(cui::designer::NewControl<Label>(L"DataTemplate", 540, 52));
+	cui::designer::ApplyProgrammaticTypography(
+		*templateTitle, L"Microsoft YaHei", 17.0);
+	templateTitle->Width = 180.0f;
+	templateTitle->Height = 28.0f;
+	_templateList = addContent(cui::designer::NewControl<ComboBox>(L"", 540, 86, 365, 30));
+	_templateList->MaxDropDownHeight = 280.0f;
+	_templateKey = addContent(cui::designer::NewControl<TextBox>(L"", 540, 126, 175, 30));
+	_templateDataType = addContent(cui::designer::NewControl<ComboBox>(L"", 725, 126, 180, 30));
+	_templateDataType->MaxDropDownHeight = 280.0f;
+	auto saveTemplate = addContent(cui::designer::NewControl<Button>(L"保存/创建模板", 540, 166, 145, 34));
+	auto removeTemplate = addContent(cui::designer::NewControl<Button>(L"删除模板", 695, 166, 105, 34));
+	auto editTemplateHint = addContent(cui::designer::NewControl<Label>(L"视觉树：画布/XAML 编辑", 540, 204));
+	editTemplateHint->Width = 300.0f;
+	editTemplateHint->Height = 24.0f;
+
+	auto summaryTitle = addContent(cui::designer::NewControl<Label>(L"资源摘要", 540, 236));
+	cui::designer::ApplyProgrammaticTypography(
+		*summaryTitle, L"Microsoft YaHei", 17.0);
+	summaryTitle->Width = 180.0f;
+	summaryTitle->Height = 28.0f;
+	_summary = addContent(cui::designer::NewControl<RichTextBox>(L"", 540, 270, 365, 326));
+	_summary->IsReadOnly = true;
+	_summary->Background = Colors::White;
+	_validation = addContent(cui::designer::NewControl<Label>(L"", 540, 606));
+	_validation->Width = 365.0f;
+	_validation->Height = 56.0f;
+	auto ok = addContent(cui::designer::NewControl<Button>(L"确定", 650, 680, 120, 36));
+	auto cancel = addContent(cui::designer::NewControl<Button>(L"取消", 785, 680, 120, 36));
+
+	_typeList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedType();
 	};
-	_propertyList->OnSelectionChanged += [this](Control*) {
+	_propertyList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedProperty();
 	};
-	_propertyKind->OnSelectionChanged += [this](Control*) {
+	_propertyKind->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshObjectEditors();
 	};
-	_propertyObjectKind->OnSelectionChanged += [this](Control*) {
+	_propertyObjectKind->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshObjectEditors();
 	};
-	_listList->OnSelectionChanged += [this](Control*) {
+	_listList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedList();
 	};
-	_recordList->OnSelectionChanged += [this](Control*) {
+	_recordList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedRecord();
 	};
-	_templateList->OnSelectionChanged += [this](Control*) {
+	_templateList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedTemplate();
 	};
-	saveType->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveType(); };
-	removeType->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveType(); };
-	saveProperty->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveProperty(); };
-	removeProperty->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveProperty(); };
-	saveList->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveList(); };
-	removeList->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveList(); };
-	saveRecord->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveRecord(); };
-	removeRecord->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveRecord(); };
-	saveTemplate->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveTemplate(); };
-	removeTemplate->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveTemplate(); };
-	ok->OnMouseClick += [this](Control*, MouseEventArgs) {
+	saveType->Click += [this](Control*, RoutedEventArgs&) { (void)SaveType(); };
+	removeType->Click += [this](Control*, RoutedEventArgs&) { RemoveType(); };
+	saveProperty->Click += [this](Control*, RoutedEventArgs&) { (void)SaveProperty(); };
+	removeProperty->Click += [this](Control*, RoutedEventArgs&) { RemoveProperty(); };
+	saveList->Click += [this](Control*, RoutedEventArgs&) { (void)SaveList(); };
+	removeList->Click += [this](Control*, RoutedEventArgs&) { RemoveList(); };
+	saveRecord->Click += [this](Control*, RoutedEventArgs&) { (void)SaveRecord(); };
+	removeRecord->Click += [this](Control*, RoutedEventArgs&) { RemoveRecord(); };
+	saveTemplate->Click += [this](Control*, RoutedEventArgs&) { (void)SaveTemplate(); };
+	removeTemplate->Click += [this](Control*, RoutedEventArgs&) { RemoveTemplate(); };
+	ok->Click += [this](Control*, RoutedEventArgs&) {
 		std::wstring error;
 		if (!DesignerModel::DesignDataResourceUtils::ValidateAndCanonicalize(
 			ResultDocument, &error))
@@ -168,7 +198,7 @@ DataResourcesEditorDialog::DataResourcesEditorDialog(
 		Applied = true;
 		Close();
 	};
-	cancel->OnMouseClick += [this](Control*, MouseEventArgs) {
+	cancel->Click += [this](Control*, RoutedEventArgs&) {
 		Applied = false;
 		Close();
 	};
@@ -187,29 +217,31 @@ void DataResourcesEditorDialog::SelectComboValue(
 	ComboBox* combo, const std::wstring& value)
 {
 	if (!combo) return;
-	const auto found = std::find_if(combo->Items.begin(), combo->Items.end(),
+	const auto items = cui::designer::ComboBoxItems(*combo);
+	const auto found = std::find_if(items.begin(), items.end(),
 		[&](const auto& item) { return Equals(item, value); });
-	const auto index = found == combo->Items.end() ? 0
-		: static_cast<int>(found - combo->Items.begin());
-	combo->SelectedIndex = combo->Items.empty() ? -1 : index;
-	combo->Text = combo->Items.empty() ? L"" : combo->Items[index];
+	const auto index = found == items.end() ? 0
+		: static_cast<int>(found - items.begin());
+	combo->SelectedIndex = items.empty() ? -1 : index;
+	combo->Text = items.empty() ? L"" : items[static_cast<size_t>(index)];
 }
 
 void DataResourcesEditorDialog::RefreshItemTypeChoices()
 {
 	std::vector<std::wstring> choices;
 	for (const auto& type : ResultDocument.DataTypes) choices.push_back(type.Name);
-	_propertyItemType->Items = choices;
-	_listItemType->Items = std::move(choices);
-	_templateDataType->Items = _propertyItemType->Items;
+	cui::designer::SetComboBoxItems(*_propertyItemType, choices);
+	cui::designer::SetComboBoxItems(*_listItemType, choices);
+	cui::designer::SetComboBoxItems(
+		*_templateDataType, std::move(choices));
 }
 
 void DataResourcesEditorDialog::RefreshTypeList(const std::wstring& preferred)
 {
 	_loading = true;
-	_typeList->Items = { kNewType };
+	cui::designer::SetComboBoxItems(*_typeList, { kNewType });
 	for (const auto& type : ResultDocument.DataTypes)
-		_typeList->Items.push_back(type.Name);
+		cui::designer::AddComboBoxItem(*_typeList, type.Name);
 	SelectComboValue(_typeList, preferred.empty() ? kNewType : preferred);
 	_loading = false;
 }
@@ -231,10 +263,10 @@ void DataResourcesEditorDialog::LoadSelectedType()
 void DataResourcesEditorDialog::RefreshPropertyList(const std::wstring& preferred)
 {
 	_loading = true;
-	_propertyList->Items = { kNewProperty };
+	cui::designer::SetComboBoxItems(*_propertyList, { kNewProperty });
 	if (const auto* type = ResultDocument.FindDataType(_typeList->Text))
 		for (const auto& property : type->Properties)
-			_propertyList->Items.push_back(property.Path);
+			cui::designer::AddComboBoxItem(*_propertyList, property.Path);
 	SelectComboValue(_propertyList,
 		preferred.empty() ? kNewProperty : preferred);
 	_loading = false;
@@ -257,9 +289,9 @@ void DataResourcesEditorDialog::LoadSelectedProperty()
 	SelectComboValue(_propertyItemType, property
 		? (property->ObjectKind == DesignerDataObjectKind::BindingSource
 			? property->DataType : property->ItemType) : L"");
-	_propertyCanRead->Checked = property ? property->CanRead : true;
-	_propertyCanWrite->Checked = property ? property->CanWrite : true;
-	_propertyCanObserve->Checked = property ? property->CanObserve : true;
+	_propertyCanRead->IsChecked = property ? property->CanRead : true;
+	_propertyCanWrite->IsChecked = property ? property->CanWrite : true;
+	_propertyCanObserve->IsChecked = property ? property->CanObserve : true;
 	_loading = false;
 	RefreshObjectEditors();
 }
@@ -267,11 +299,11 @@ void DataResourcesEditorDialog::LoadSelectedProperty()
 void DataResourcesEditorDialog::RefreshObjectEditors()
 {
 	const bool object = _propertyKind->Text == L"Object";
-	_propertyObjectKind->Enable = object;
-	_propertyItemType->Enable = object
+	_propertyObjectKind->IsEnabled = object;
+	_propertyItemType->IsEnabled = object
 		&& (_propertyObjectKind->Text == L"BindingList"
 			|| _propertyObjectKind->Text == L"BindingSource");
-	if (!_propertyItemType->Enable && !_loading) _propertyItemType->Text = L"";
+	if (!_propertyItemType->IsEnabled && !_loading) _propertyItemType->Text = L"";
 }
 
 bool DataResourcesEditorDialog::SaveType()
@@ -335,9 +367,9 @@ bool DataResourcesEditorDialog::SaveProperty()
 		ShowValidation(L"字段路径或类型无效。", true);
 		return false;
 	}
-	property.CanRead = _propertyCanRead->Checked;
-	property.CanWrite = _propertyCanWrite->Checked;
-	property.CanObserve = _propertyCanObserve->Checked;
+	property.CanRead = _propertyCanRead->IsChecked;
+	property.CanWrite = _propertyCanWrite->IsChecked;
+	property.CanObserve = _propertyCanObserve->IsChecked;
 	if (property.ValueKind == BindingValueKind::Object)
 	{
 		if (!DesignerDataContextSchemaUtils::TryParseObjectKind(
@@ -418,9 +450,9 @@ void DataResourcesEditorDialog::RemoveProperty()
 void DataResourcesEditorDialog::RefreshListList(const std::wstring& preferred)
 {
 	_loading = true;
-	_listList->Items = { kNewList };
+	cui::designer::SetComboBoxItems(*_listList, { kNewList });
 	for (const auto& list : ResultDocument.DataLists)
-		_listList->Items.push_back(list.Key);
+		cui::designer::AddComboBoxItem(*_listList, list.Key);
 	SelectComboValue(_listList, preferred.empty() ? kNewList : preferred);
 	_loading = false;
 }
@@ -443,10 +475,11 @@ void DataResourcesEditorDialog::LoadSelectedList()
 void DataResourcesEditorDialog::RefreshRecordList(int preferredIndex)
 {
 	_loading = true;
-	_recordList->Items = { kNewRecord };
+	cui::designer::SetComboBoxItems(*_recordList, { kNewRecord });
 	if (const auto* list = ResultDocument.FindDataList(_listList->Text))
 		for (size_t index = 0; index < list->Records.size(); ++index)
-			_recordList->Items.push_back(RecordName(index));
+			cui::designer::AddComboBoxItem(
+				*_recordList, RecordName(index));
 	const auto value = preferredIndex < 0 ? kNewRecord
 		: RecordName(static_cast<size_t>(preferredIndex));
 	SelectComboValue(_recordList, value);
@@ -596,9 +629,10 @@ void DataResourcesEditorDialog::RefreshTemplateList(
 	const std::wstring& preferred)
 {
 	_loading = true;
-	_templateList->Items = { kNewTemplate };
+	cui::designer::SetComboBoxItems(*_templateList, { kNewTemplate });
 	for (const auto& item : ResultDocument.DataTemplates)
-		if (!item.IsImplicit()) _templateList->Items.push_back(item.Key);
+		if (!item.IsImplicit())
+			cui::designer::AddComboBoxItem(*_templateList, item.Key);
 	SelectComboValue(_templateList,
 		preferred.empty() ? kNewTemplate : preferred);
 	_loading = false;
@@ -648,13 +682,11 @@ bool DataResourcesEditorDialog::SaveTemplate()
 				return found == type->Properties.end() ? nullptr : &*found;
 			}();
 		if (display)
-			root.Bindings["Text"] = DesignerModel::DesignValue{
-				{ "source", Convert::UnicodeToUtf8(display->Path) },
-				{ "mode", static_cast<int>(BindingMode::OneWay) },
-				{ "updateMode", static_cast<int>(
-					DataSourceUpdateMode::OnPropertyChanged) }
-			};
-		else root.Props["text"] = "Item";
+			root.Bindings[L"Text"] = DesignerDataBinding{
+				display->Path, BindingMode::OneWay,
+				DataSourceUpdateMode::OnPropertyChanged };
+		else root.Properties.Set(L"Text",
+			{ { DesignerStyleValueKind::String, L"Item" } });
 		definition.Template.push_back(std::move(root));
 	}
 	std::wstring error;
@@ -743,7 +775,6 @@ void DataResourcesEditorDialog::RefreshSummary()
 		text += L"  " + item.Key;
 		if (!item.HeaderTemplate.empty())
 			text += L" : " + item.HeaderTemplate;
-		text += L"  HeaderHeight=" + std::to_wstring(item.HeaderHeight);
 		if (!item.SourceDictionary.empty()) text += L"  [外部]";
 		text += L"\r\n";
 	}
@@ -754,6 +785,6 @@ void DataResourcesEditorDialog::ShowValidation(
 	const std::wstring& message, bool isError)
 {
 	_validation->Text = message;
-	_validation->ForeColor = isError ? Colors::Red : Colors::DimGrey;
+	_validation->Foreground = isError ? Colors::Red : Colors::DimGrey;
 	_validation->InvalidateVisual();
 }

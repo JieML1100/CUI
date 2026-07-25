@@ -1,13 +1,13 @@
 #include "DesignCodeGenerationService.h"
 
 #include "AtomicFile.h"
-#include "DesignDocumentCodeGenInputBuilder.h"
 #include "DesignDocumentFileFormat.h"
 #include "DesignDocumentSerializer.h"
 #include "CppUserCodeIndex.h"
 #include "XamlDocumentParser.h"
 #include "../CodeGenerator.h"
 #include "../DesignerEventCatalog.h"
+#include "../../CuiRuntime/include/XamlDocumentCompiler.h"
 
 #include <algorithm>
 #include <exception>
@@ -171,10 +171,16 @@ namespace
 			document, designFilePath, options, outputBase, outError))
 			return false;
 
-		CodeGenInput input;
 		std::wstring error;
-		if (!DesignDocumentCodeGenInputBuilder::Build(
-			document, input, &error))
+		CuiRuntime::XamlCompiledDocument compiled;
+		if (!CuiRuntime::XamlDocumentCompiler::Compile(
+			document, compiled, {}, &error))
+		{
+			SetError(outError, error.empty()
+				? L"无法编译静态 XAML 文档。" : std::move(error));
+			return false;
+		}
+		if (!CodeGenerator::ValidateDocument(compiled.Document, &error))
 		{
 			SetError(outError, error.empty()
 				? L"无法从设计文档构建代码生成输入。" : std::move(error));
@@ -182,7 +188,7 @@ namespace
 		}
 
 		PopulateResult(designFilePath, outputBase, className, result);
-		CodeGenerator generator(className, input);
+		CodeGenerator generator(className, compiled.Document);
 		if (!generator.BuildFilePlan(
 			result.UserHeaderPath, result.UserSourcePath, files))
 		{
@@ -605,9 +611,8 @@ bool DesignCodeGenerationService::InspectEventHandlers(
 			document, designFilePath, options, outputBase, outError))
 			return false;
 
-		CodeGenInput input;
 		std::wstring error;
-		if (!DesignDocumentCodeGenInputBuilder::Build(document, input, &error))
+		if (!CodeGenerator::ValidateDocument(document, &error))
 		{
 			SetError(outError, error.empty()
 				? L"无法从设计文档构建事件代码检查输入。"
@@ -642,7 +647,7 @@ bool DesignCodeGenerationService::InspectEventHandlers(
 		const auto& header = headerFile.Content;
 		const auto& source = sourceFile.Content;
 
-		CodeGenerator generator(className, input);
+		CodeGenerator generator(className, document);
 		std::vector<CodeGeneratorHandlerDefinitionInspection> handlers;
 		if (!generator.InspectUserHandlerDefinitions(
 			header, source, handlers))
@@ -743,7 +748,7 @@ bool DesignCodeGenerationService::InspectEventHandlers(
 				for (const auto& event : events)
 					parameterLists.insert(event.ParameterList);
 			};
-			collectParameters(DesignerEventCatalog::GetFormEvents());
+			collectParameters(DesignerEventCatalog::GetWindowEvents());
 			for (const auto& node : document.Nodes)
 			{
 				const auto* component = document.FindComponent(node.ComponentType);

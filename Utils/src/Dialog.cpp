@@ -1,4 +1,4 @@
-﻿#include "Dialog.h"
+#include "Dialog.h"
 
 HWND GetTopMostWindowInCurrentProcess()  {
 	struct EnumParams {
@@ -201,7 +201,7 @@ FontDialog::FontDialog()
  * @return DialogResult 返回对话框的结果，成功时返回 DialogResult::OK，失败时返回 DialogResult::Cancel。
  *
  * @details 此函数使用 Windows API 的 ChooseFontA 函数显示字体选择对话框。
- *          用户选择的字体信息将被存储在 FontName、FontSize、Color 等成员变量中。
+ *          用户选择的字体信息将被存储在 FontFamily、FontSize、Color 等成员变量中。
  *          函数还会根据用户选择的字体高度和屏幕 DPI 计算字体大小。
  */
 DialogResult FontDialog::ShowDialog(HWND owner) {
@@ -217,7 +217,7 @@ DialogResult FontDialog::ShowDialog(HWND owner) {
         int dpi = GetDeviceCaps(GetDC(cf.hwndOwner), LOGPIXELSY);
         int fontSize = MulDiv(fontSizeInPixels, 72, dpi);
 
-        FontName = lf.lfFaceName;
+        FontFamily = lf.lfFaceName;
         FontSize = fontSize;
         Color = cf.rgbColors;
         Bold = lf.lfWeight == FW_BOLD;

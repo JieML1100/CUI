@@ -1,10 +1,10 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file Designer.h
  * @brief Designer：CUI 可视化设计器主窗口。
  */
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "DesignerCanvas.h"
 #include "DesignerModel/DesignCodeGenerationService.h"
 #include "ToolBox.h"
@@ -15,9 +15,10 @@
 #include "../CUI/include/TreeView.h"
 #include <map>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
-class Designer : public Form
+class Designer : public Window
 {
 friend bool RunDesignerSelfTest(std::wstring& report);
 
@@ -26,15 +27,12 @@ private:
 	Button* _btnToolboxView = nullptr;
 	Button* _btnOutlineView = nullptr;
 	TreeView* _outlineTree = nullptr;
-	std::unordered_map<int, TreeNode*> _outlineNodesByStableId;
-	TreeNode* _outlineFormNode = nullptr;
+	ScrollViewer* _outlineScroll = nullptr;
+	std::unordered_map<int, TreeViewItem*> _outlineNodesByStableId;
+	TreeViewItem* _outlineWindowNode = nullptr;
 	bool _showDocumentOutline = false;
 	bool _syncingDocumentOutline = false;
 	bool _documentOutlineRebuildPending = false;
-	wchar_t _suppressedOutlineShortcutCharacter = L'\0';
-	bool _designerControlKeyDown = false;
-	bool _designerShiftKeyDown = false;
-	bool _designerAltKeyDown = false;
 	HWND _clipboardListenerWindow = nullptr;
 	unsigned int _clipboardRefreshRetriesRemaining = 0;
 	bool _outlinePointerDown = false;
@@ -129,10 +127,10 @@ private:
 	void OnPasteClick();
 	void OnXamlClick();
 	void OnArrangeClick();
-	void OnArrangeCommand(int commandId);
-	void OnCanvasMenuCommand(int commandId);
-	bool QueueOutlineShortcut(WPARAM key, bool controlDown, bool shiftDown);
-	bool ExecuteOutlineShortcut(WPARAM key, bool controlDown, bool shiftDown);
+	void OnArrangeCommand(std::wstring_view commandName);
+	void OnCanvasMenuCommand(std::wstring_view commandName);
+	bool QueueOutlineShortcut(Key key, bool controlDown, bool shiftDown);
+	bool ExecuteOutlineShortcut(Key key, bool controlDown, bool shiftDown);
 	void RefreshGridSettingsPresentation();
 	void RefreshTabOrderPresentation();
 	void RefreshLockPresentation();
@@ -204,17 +202,15 @@ private:
 	static constexpr unsigned int ClipboardRefreshRetryCount = 4;
 	
 public:
-	explicit Designer(
-		std::vector<DesignerControlDescriptor> controlDescriptors = {});
+	Designer();
 	virtual ~Designer();
 	
 	void InitializeComponents();
 	void InitAndShow(); // 初始化并显示窗口
 	void SetDesignDataContext(std::shared_ptr<IBindingSource> source);
-	bool ProcessMessage(
-		UINT message,
-		WPARAM wParam,
-		LPARAM lParam,
-		int localX,
-		int localY) override;
+
+protected:
+	bool OnPreviewInputReport(const InputReport& input) override;
+	std::optional<LRESULT> OnPlatformMessage(
+		UINT message, WPARAM wParam, LPARAM lParam) override;
 };

@@ -8,18 +8,18 @@
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
-	<ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp"><Filter>Runtime\Model</Filter></ClCompile>
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp"><Filter>Runtime\Model</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp"><Filter>Runtime\Model</Filter></ClCompile>
-    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentMaterializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+    <ClCompile Include="Runtime\XamlObjectMaterializer.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="Runtime\XamlFrameworkTheme.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="XamlRuntimeSchema.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocument.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.cpp"><Filter>Runtime\Model</Filter></ClCompile>
@@ -30,6 +30,10 @@
 	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="include\XamlObjectMaterializer.h"><Filter>Runtime</Filter></ClInclude>
+	<ClInclude Include="include\XamlDocumentCompiler.h"><Filter>Runtime</Filter></ClInclude>
+	<ClInclude Include="include\XamlFrameworkTheme.h"><Filter>Runtime</Filter></ClInclude>
+	<ClInclude Include="include\XamlRuntimeSchema.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="include\CuiRuntime.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h"><Filter>Runtime\Model</Filter></ClInclude>
@@ -42,5 +46,8 @@
 	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\StoryboardPropertyPath.h"><Filter>Runtime\Model</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="..\Themes\Generic.xaml"><Filter>Runtime</Filter></CustomBuild>
   </ItemGroup>
 </Project>

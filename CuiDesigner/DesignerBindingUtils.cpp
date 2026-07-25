@@ -2,8 +2,10 @@
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include <TreeInfrastructure.h>
 #include <Convert.h>
 #include <cwctype>
+#include <unordered_set>
 #include <utility>
 
 namespace DesignerBindingUtils
@@ -40,51 +42,6 @@ namespace
 			? token : token.substr(separator + 1);
 	}
 
-	UIClass BaseType(UIClass type) noexcept
-	{
-		switch (type)
-		{
-		case UIClass::UI_LinkLabel:
-			return UIClass::UI_Label;
-		case UIClass::UI_GroupBox:
-		case UIClass::UI_Expander:
-			return UIClass::UI_ContentControl;
-		case UIClass::UI_StackPanel:
-		case UIClass::UI_GridPanel:
-		case UIClass::UI_DockPanel:
-		case UIClass::UI_WrapPanel:
-		case UIClass::UI_RelativePanel:
-		case UIClass::UI_SplitContainer:
-		case UIClass::UI_TabPage:
-		case UIClass::UI_StatusBar:
-		case UIClass::UI_ToolBar:
-		case UIClass::UI_PagedGridView:
-			return UIClass::UI_Panel;
-		case UIClass::UI_ItemsControl:
-			return UIClass::UI_ScrollView;
-		case UIClass::UI_ListBox:
-			return UIClass::UI_ItemsControl;
-		case UIClass::UI_SelectorItem:
-		case UIClass::UI_ComboBoxItem:
-		case UIClass::UI_TreeViewItem:
-			return UIClass::UI_ContentControl;
-		case UIClass::UI_ContentPresenter:
-		case UIClass::UI_ItemsPresenter:
-		case UIClass::UI_ContentControl:
-			return UIClass::UI_GridPanel;
-		case UIClass::UI_Button:
-			return UIClass::UI_ContentControl;
-		case UIClass::UI_SideBar:
-			return UIClass::UI_NavigationView;
-		case UIClass::UI_ScrollView:
-			return UIClass::UI_Panel;
-		case UIClass::UI_Base:
-			return UIClass::UI_Base;
-		default:
-			return UIClass::UI_Base;
-		}
-	}
-
 	bool IsBuiltInTypeMatch(Control& candidate, const std::wstring& typeName)
 	{
 		UIClass requested = UIClass::UI_Base;
@@ -95,7 +52,7 @@ namespace
 		{
 			if (actual == requested) return true;
 			if (actual == UIClass::UI_Base) return false;
-			actual = BaseType(actual);
+			actual = GetUIClassBase(actual);
 		}
 	}
 
@@ -107,8 +64,8 @@ namespace
 			return IsBuiltInTypeMatch(candidate, binding.AncestorType);
 		return candidate.GetDeclarativeTypeNamespace()
 			== binding.AncestorTypeNamespace
-			&& EqualsIgnoreCase(candidate.GetDeclarativeTypeName(),
-				LocalTypeName(binding.AncestorType));
+			&& candidate.GetDeclarativeTypeName()
+				== LocalTypeName(binding.AncestorType);
 	}
 
 	class AncestorBindingSource final : public IBindingSource
@@ -182,10 +139,22 @@ namespace
 
 			if (_target)
 			{
-				for (auto* item = _target; item; item = item->Parent)
+				std::unordered_set<Control*> visited;
+				for (auto* item = _target;
+					item && visited.insert(item).second;
+					item = item->GetRoutedParent())
 				{
 					_parentConnections.push_back(
-						item->OnParentChanged.Subscribe(
+						cui::framework::TreeAccess::SubscribeVisualParentChanged(
+							*item,
+							[this](Control*, Control*, Control*) { Attach(); }));
+					_parentConnections.push_back(
+						cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+							*item,
+							[this](Control*, Control*, Control*) { Attach(); }));
+					_parentConnections.push_back(
+						cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+							*item,
 							[this](Control*, Control*, Control*) { Attach(); }));
 				}
 			}
@@ -489,59 +458,23 @@ bool TryReadBindingDefinition(
 }
 
 bool VisitLeafBindingDefinitions(
-	const DesignerModel::DesignValue& value,
-	const std::function<bool(const DesignerModel::DesignValue&)>& visitor,
-	std::wstring* outError)
+	const DesignerDataBinding& binding,
+	const std::function<bool(const DesignerDataBinding&)>& visitor)
 {
-	std::function<bool(const DesignerModel::DesignValue&, size_t)> visit;
-	visit = [&](const DesignerModel::DesignValue& item, size_t depth)
-	{
-		if (!item.is_object() || depth > 32)
-		{
-			if (outError) *outError = L"Binding 定义无效或嵌套过深。";
-			return false;
-		}
-		if (!item.contains("bindings")) return visitor(item);
-		if (!item["bindings"].is_array())
-		{
-			if (outError) *outError = L"MultiBinding 子项必须是数组。";
-			return false;
-		}
-		for (const auto& child : item["bindings"].ArrayItems())
-			if (!visit(child, depth + 1)) return false;
-		return true;
-	};
-	const bool result = visit(value, 0);
-	if (result && outError) outError->clear();
-	return result;
+	if (!binding.IsMultiBinding()) return visitor(binding);
+	for (const auto& child : binding.ChildBindings)
+		if (!VisitLeafBindingDefinitions(child, visitor)) return false;
+	return true;
 }
 
 bool VisitLeafBindingDefinitions(
-	DesignerModel::DesignValue& value,
-	const std::function<bool(DesignerModel::DesignValue&)>& visitor,
-	std::wstring* outError)
+	DesignerDataBinding& binding,
+	const std::function<bool(DesignerDataBinding&)>& visitor)
 {
-	std::function<bool(DesignerModel::DesignValue&, size_t)> visit;
-	visit = [&](DesignerModel::DesignValue& item, size_t depth)
-	{
-		if (!item.is_object() || depth > 32)
-		{
-			if (outError) *outError = L"Binding 定义无效或嵌套过深。";
-			return false;
-		}
-		if (!item.contains("bindings")) return visitor(item);
-		if (!item["bindings"].is_array())
-		{
-			if (outError) *outError = L"MultiBinding 子项必须是数组。";
-			return false;
-		}
-		for (auto& child : item["bindings"].ArrayItems())
-			if (!visit(child, depth + 1)) return false;
-		return true;
-	};
-	const bool result = visit(value, 0);
-	if (result && outError) outError->clear();
-	return result;
+	if (!binding.IsMultiBinding()) return visitor(binding);
+	for (auto& child : binding.ChildBindings)
+		if (!VisitLeafBindingDefinitions(child, visitor)) return false;
+	return true;
 }
 
 bool InstallBinding(
@@ -678,7 +611,10 @@ Control* FindAncestorSource(
 		|| binding.AncestorLevel < 1 || Trim(binding.AncestorType).empty())
 		return nullptr;
 	int remaining = binding.AncestorLevel;
-	for (auto* candidate = target.Parent; candidate; candidate = candidate->Parent)
+	std::unordered_set<Control*> visited;
+	for (auto* candidate = target.GetRoutedParent();
+		candidate && visited.insert(candidate).second;
+		candidate = candidate->GetRoutedParent())
 	{
 		if (!IsAncestorTypeMatch(*candidate, binding)) continue;
 		if (--remaining == 0) return candidate;
@@ -725,8 +661,8 @@ BindingMode ResolveBindingMode(
 	BindingMode requested) noexcept
 {
 	if (requested != BindingMode::Default) return requested;
-	return HasControlPropertyFlag(
-		target.Flags, ControlPropertyFlags::BindsTwoWayByDefault)
+	return HasDependencyPropertyFlag(
+		target.Flags, DependencyPropertyFlags::BindsTwoWayByDefault)
 		? BindingMode::TwoWay
 		: BindingMode::OneWay;
 }
@@ -813,7 +749,7 @@ const wchar_t* ValueKindName(BindingValueKind kind) noexcept
 }
 
 bool IsModeStructurallyCompatible(
-	const BindingPropertyMetadata& metadata,
+	const DependencyPropertyMetadata& metadata,
 	BindingMode mode) noexcept
 {
 	if (metadata.IsReadOnly()) return false;
@@ -823,7 +759,7 @@ bool IsModeStructurallyCompatible(
 }
 
 bool IsCompatible(
-	const BindingPropertyMetadata& metadata,
+	const DependencyPropertyMetadata& metadata,
 	const DesignerDataBinding& binding) noexcept
 {
 	const auto mode = ::ResolveBindingMode(metadata, binding.Mode);
@@ -846,7 +782,7 @@ bool IsModeStructurallyCompatible(
 }
 
 TargetMetadata ProjectTargetMetadata(
-	const BindingPropertyMetadata& metadata)
+	const DependencyPropertyMetadata& metadata)
 {
 	return {
 		metadata.Name(), metadata.ValueKind(),
@@ -1219,12 +1155,12 @@ bool Validate(
 	Control& target,
 	const std::wstring& targetProperty,
 	const DesignerDataBinding& binding,
-	const BindingPropertyMetadata** outMetadata,
+	const DependencyPropertyMetadata** outMetadata,
 	std::wstring* outError,
 	const DesignerDataContextSchema* sourceSchema)
 {
 	if (outMetadata) *outMetadata = nullptr;
-	const auto* metadata = BindingPropertyRegistry::Find(target, targetProperty);
+	const auto* metadata = DependencyPropertyRegistry::Find(target, targetProperty);
 	if (!metadata)
 	{
 		if (outError) *outError = targetProperty.empty()

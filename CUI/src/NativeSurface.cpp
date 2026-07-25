@@ -1,6 +1,6 @@
 #include "../include/NativeSurface.h"
 
-#include "../include/Form.h"
+#include "../include/Window.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,20 +9,19 @@
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<NativeSurface, TValue> NativeSurfaceOptions(
+	DependencyPropertyOptions<NativeSurface, TValue> NativeSurfaceOptions(
 		TValue defaultValue,
 		std::wstring category,
 		int order)
 	{
-		ControlPropertyOptions<NativeSurface, TValue> options;
+		DependencyPropertyOptions<NativeSurface, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = std::move(category);
 		options.Design.CategoryOrder = 300;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Text;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -30,14 +29,14 @@ namespace
 	{
 		return [name = std::wstring(propertyName)](
 			NativeSurface& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[name, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), name.c_str()) == 0)
+					if (args.PropertyName == name)
 						handler();
 				});
 		};
@@ -46,16 +45,8 @@ namespace
 
 NativeSurface::NativeSurface()
 {
-	this->Size = SIZE{ 320, 180 };
-	this->BackColor = D2D1_COLOR_F{ 0.08f, 0.10f, 0.14f, 1.0f };
-	this->BorderColor = D2D1_COLOR_F{ 0.28f, 0.48f, 0.78f, 1.0f };
-}
-
-NativeSurface::NativeSurface(int x, int y, int width, int height)
-	: NativeSurface()
-{
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0.08f, 0.10f, 0.14f, 1.0f };
+	this->RendererBorderColor = D2D1_COLOR_F{ 0.28f, 0.48f, 0.78f, 1.0f };
 }
 
 NativeSurface::~NativeSurface()
@@ -63,19 +54,19 @@ NativeSurface::~NativeSurface()
 	DetachBehavior();
 }
 
-void NativeSurface::EnsureBindingPropertiesRegistered()
+void NativeSurface::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		BindingPropertyRegistry::Register<NativeSurface, std::wstring>(
+		DependencyPropertyRegistry::Register<NativeSurface, std::wstring>(
 			L"BehaviorKey",
 			[](NativeSurface& target) { return target.GetBehaviorKey(); },
 			[](NativeSurface& target, const std::wstring& value)
 			{ target.SetBehaviorKey(value); },
 			NativeSurfaceSubscriber(L"BehaviorKey"),
 			NativeSurfaceOptions(std::wstring{}, L"Behavior", 10));
-		BindingPropertyRegistry::Register<NativeSurface, std::wstring>(
+		DependencyPropertyRegistry::Register<NativeSurface, std::wstring>(
 			L"PlaceholderText",
 			[](NativeSurface& target) { return target.GetPlaceholderText(); },
 			[](NativeSurface& target, const std::wstring& value)
@@ -115,7 +106,7 @@ void NativeSurface::SetBehavior(
 		try
 		{
 			_behavior->Attach(*this);
-			_lastDpiScale = ParentForm ? ParentForm->GetDpiScale() : 1.0f;
+			_lastDpiScale = GetPresentationWindow() ? GetPresentationWindow()->GetDpiScale() : 1.0f;
 			_behavior->DpiChanged(*this, _lastDpiScale);
 		}
 		catch (...)
@@ -127,6 +118,22 @@ void NativeSurface::SetBehavior(
 	}
 	RequestLayout();
 	InvalidateVisual();
+}
+
+void NativeSurface::InvalidateRegion(const D2D1_RECT_F& localRect)
+{
+	const auto size = GetActualSizeDip();
+	const float left = std::clamp(localRect.left, 0.0f, size.width);
+	const float top = std::clamp(localRect.top, 0.0f, size.height);
+	const float right = std::clamp(localRect.right, left, size.width);
+	const float bottom = std::clamp(localRect.bottom, top, size.height);
+	if (right <= left || bottom <= top) return;
+	const auto origin = GetAbsoluteLocationDip();
+	InvalidateVisualRect(D2D1_RECT_F{
+		origin.x + left,
+		origin.y + top,
+		origin.x + right,
+		origin.y + bottom });
 }
 
 void NativeSurface::DetachBehavior() noexcept
@@ -147,12 +154,12 @@ cui::core::Size NativeSurface::MeasureCore(
 	return Control::MeasureCore(available);
 }
 
-void NativeSurface::Update()
+void NativeSurface::OnRender()
 {
-	if (!IsVisual || !ParentForm || !ParentForm->Render) return;
-	auto& graphics = *ParentForm->Render;
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
+	auto& graphics = *GetDrawingContext();
 	const auto size = GetActualSizeDip();
-	const float dpiScale = ParentForm->GetDpiScale();
+	const float dpiScale = GetPresentationWindow()->GetDpiScale();
 	if (_behavior && std::fabs(dpiScale - _lastDpiScale) > 0.0001f)
 		NotifyDpiChanged(dpiScale);
 
@@ -164,85 +171,85 @@ void NativeSurface::Update()
 	}
 	else
 	{
-		graphics.FillRect(0.0f, 0.0f, size.width, size.height, BackColor);
+		graphics.FillRect(0.0f, 0.0f, size.width, size.height, RendererBackgroundColor);
 		graphics.DrawRect(0.5f, 0.5f,
 			(std::max)(0.0f, size.width - 1.0f),
-			(std::max)(0.0f, size.height - 1.0f), BorderColor, 1.0f);
-		if (!_placeholderText.empty() && Font)
+			(std::max)(0.0f, size.height - 1.0f), RendererBorderColor, 1.0f);
+		if (!_placeholderText.empty() && GetRenderFont())
 		{
-			const auto textSize = Font->GetTextSize(_placeholderText);
+			const auto textSize = GetRenderFont()->GetTextSize(_placeholderText);
 			graphics.DrawString(_placeholderText,
 				(std::max)(0.0f, (size.width - textSize.width) * 0.5f),
 				(std::max)(0.0f, (size.height - textSize.height) * 0.5f),
-				ForeColor, Font);
+				RendererForegroundColor, GetRenderFont());
 		}
 	}
 	EndRender();
 }
 
 bool NativeSurface::TryCreateInput(
-	UINT message,
-	WPARAM wParam,
-	int localX,
-	int localY,
+	const InputReport& input,
 	NativeSurfaceInputEvent& output) const
 {
-	output.X = static_cast<float>(localX);
-	output.Y = static_cast<float>(localY);
-	output.Alt = (::GetKeyState(VK_MENU) & 0x8000) != 0;
-	output.Control = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
-	output.Shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
-	switch (message)
+	output.X = static_cast<float>(input.X);
+	output.Y = static_cast<float>(input.Y);
+	output.ButtonStates = input.ButtonStates;
+	output.Modifiers = input.Modifiers;
+	output.Key = input.SystemKey == Key::None ? input.Key : Key::System;
+	output.SystemKey = input.SystemKey;
+	switch (input.Kind)
 	{
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerMove:
 		output.Kind = NativeSurfaceInputKind::PointerMove; return true;
-	case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+	case InputReportKind::PointerDown:
 		output.Kind = NativeSurfaceInputKind::PointerDown;
-		output.Button = FromParamToMouseButtons(message); return true;
-	case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
+		output.ChangedButton = input.ChangedButton; return true;
+	case InputReportKind::PointerUp:
 		output.Kind = NativeSurfaceInputKind::PointerUp;
-		output.Button = FromParamToMouseButtons(message); return true;
-	case WM_LBUTTONDBLCLK:
+		output.ChangedButton = input.ChangedButton; return true;
+	case InputReportKind::PointerDoubleClick:
 		output.Kind = NativeSurfaceInputKind::PointerDoubleClick;
-		output.Button = MouseButtons::Left; return true;
-	case WM_MOUSEWHEEL:
+		output.ChangedButton = input.ChangedButton; return true;
+	case InputReportKind::MouseWheel:
+	case InputReportKind::HorizontalMouseWheel:
 		output.Kind = NativeSurfaceInputKind::PointerWheel;
-		output.WheelDelta = GET_WHEEL_DELTA_WPARAM(wParam); return true;
-	case WM_KEYDOWN:
-		output.Kind = NativeSurfaceInputKind::KeyDown;
-		output.Key = static_cast<Keys>(wParam); return true;
-	case WM_KEYUP:
-		output.Kind = NativeSurfaceInputKind::KeyUp;
-		output.Key = static_cast<Keys>(wParam); return true;
-	case WM_CHAR:
-		output.Kind = NativeSurfaceInputKind::Character;
-		output.Character = static_cast<wchar_t>(wParam); return true;
-	case WM_SETFOCUS:
+		output.WheelDelta = input.WheelDelta; return true;
+	case InputReportKind::KeyDown:
+		output.Kind = NativeSurfaceInputKind::KeyDown; return true;
+	case InputReportKind::KeyUp:
+		output.Kind = NativeSurfaceInputKind::KeyUp; return true;
+	case InputReportKind::FocusGained:
 		output.Kind = NativeSurfaceInputKind::FocusGained; return true;
-	case WM_KILLFOCUS:
+	case InputReportKind::FocusLost:
 		output.Kind = NativeSurfaceInputKind::FocusLost; return true;
-	case WM_CANCELMODE: case WM_CAPTURECHANGED:
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
 		output.Kind = NativeSurfaceInputKind::Cancel; return true;
 	default:
 		return false;
 	}
 }
 
-bool NativeSurface::ProcessMessage(
-	UINT message,
-	WPARAM wParam,
-	LPARAM lParam,
-	int localX,
-	int localY)
+bool NativeSurface::ApplyTextInput(const TextCompositionEventArgs& input)
 {
-	if (!Enable || !Visible) return true;
+	if (!_behavior || input.Text.empty()) return false;
+	NativeSurfaceInputEvent event;
+	event.Kind = NativeSurfaceInputKind::TextInput;
+	event.Text = input.Text;
+	event.Modifiers = input.Modifiers;
+	return _behavior->HandleInput(*this, event);
+}
+
+bool NativeSurface::ProcessInput(const InputReport& input)
+{
+	if (!IsEnabled || !IsVisible) return true;
 	if (_behavior)
 	{
 		NativeSurfaceInputEvent event;
-		if (TryCreateInput(message, wParam, localX, localY, event)
+		if (TryCreateInput(input, event)
 			&& _behavior->HandleInput(*this, event)) return true;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+	return Control::ProcessInput(input);
 }
 
 void NativeSurface::NotifyDpiChanged(float dpiScale)

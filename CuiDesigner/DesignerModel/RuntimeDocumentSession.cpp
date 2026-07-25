@@ -1,7 +1,5 @@
 #include "RuntimeDocumentSession.h"
 
-#include "DesignDocumentFileFormat.h"
-
 #include <Windows.h>
 
 #include <utility>
@@ -61,7 +59,7 @@ bool RuntimeDocumentSession::CheckOwningThread(
 
 bool RuntimeDocumentSession::MountFile(
 	const std::wstring& filePath,
-	::Form& form,
+	::Window& window,
 	const RuntimeDocumentSessionMountOptions& options,
 	std::wstring* outError)
 {
@@ -79,7 +77,7 @@ bool RuntimeDocumentSession::MountFile(
 
 	RuntimeDocumentFileWatcher candidateWatcher(_watcher.Debounce());
 	RuntimeDocumentLoadOptions loadOptions;
-	RuntimeFormEventResolver formResolver;
+	RuntimeWindowEventResolver windowResolver;
 	std::wstring candidateSource;
 	try
 	{
@@ -89,25 +87,77 @@ bool RuntimeDocumentSession::MountFile(
 		loadOptions = MakeLoadOptions(
 			options.DataContext, options.NativeSurfaceBehaviors,
 			options.DeclarativeComponentBehaviors);
-		formResolver = _handlers.FormResolver();
+		windowResolver = _handlers.WindowResolver();
 	}
 	catch (...)
 	{
 		SetError(outError, L"准备运行时会话挂载时资源分配失败。");
 		return false;
 	}
-	const bool loaded = DetectDesignDocumentFileFormat(filePath)
-		== DesignDocumentFileFormat::Xaml
-		? RuntimeDocumentLoader::LoadXamlFileIntoForm(
-			filePath, form, _document, loadOptions, formResolver, outError)
-		: RuntimeDocumentLoader::LoadFileIntoForm(
-			filePath, form, _document, loadOptions, formResolver, outError);
+	const bool loaded = RuntimeDocumentLoader::LoadXamlFileIntoWindow(
+		filePath, window, _document, loadOptions, windowResolver, outError);
 	if (!loaded) return false;
 	if (options.WatchFile)
 		candidateWatcher.SetDependencies(_document.ResourceDependencies());
 
 	_sourceFile = std::move(candidateSource);
-	_mountedForm = &form;
+	_mountedWindow = &window;
+	_owningThreadId = GetCurrentThreadId();
+	if (options.WatchFile)
+		_watcher = std::move(candidateWatcher);
+	else
+		_watcher.Stop();
+	if (outError) outError->clear();
+	return true;
+}
+
+bool RuntimeDocumentSession::MountDocument(
+	const DesignDocument& document,
+	const std::wstring& sourceFile,
+	::Window& window,
+	const RuntimeDocumentSessionMountOptions& options,
+	std::wstring* outError)
+{
+	if (IsMounted())
+	{
+		SetError(outError,
+			L"RuntimeDocumentSession 已挂载；请通过 Poll 热重载现有文档。");
+		return false;
+	}
+	if (options.WatchFile && sourceFile.empty())
+	{
+		SetError(outError, L"监视已解析文档时源文件路径不能为空。");
+		return false;
+	}
+
+	RuntimeDocumentFileWatcher candidateWatcher(_watcher.Debounce());
+	RuntimeDocumentLoadOptions loadOptions;
+	RuntimeWindowEventResolver windowResolver;
+	std::wstring candidateSource;
+	try
+	{
+		candidateSource = sourceFile;
+		if (options.WatchFile
+			&& !candidateWatcher.Start(sourceFile, outError)) return false;
+		loadOptions = MakeLoadOptions(
+			options.DataContext, options.NativeSurfaceBehaviors,
+			options.DeclarativeComponentBehaviors);
+		windowResolver = _handlers.WindowResolver();
+	}
+	catch (...)
+	{
+		SetError(outError, L"准备已解析运行时文档挂载时资源分配失败。");
+		return false;
+	}
+
+	if (!RuntimeDocumentLoader::LoadIntoWindow(
+		document, window, _document, loadOptions, windowResolver, outError))
+		return false;
+	if (options.WatchFile)
+		candidateWatcher.SetDependencies(_document.ResourceDependencies());
+
+	_sourceFile = std::move(candidateSource);
+	_mountedWindow = &window;
 	_owningThreadId = GetCurrentThreadId();
 	if (options.WatchFile)
 		_watcher = std::move(candidateWatcher);

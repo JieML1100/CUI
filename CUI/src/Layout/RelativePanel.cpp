@@ -1,5 +1,5 @@
 ﻿#include "Layout/RelativePanel.h"
-#include "Form.h"
+#include "Window.h"
 #include <algorithm>
 #include <set>
 
@@ -45,7 +45,7 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(LayoutContext& conte
 	for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 	{
 		auto child = context.ChildAt(childIndex);
-		if (child && child->Visible)
+		if (child && !child->IsCollapsed())
 			visited[child] = 0;
 	}
 	
@@ -57,7 +57,7 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(LayoutContext& conte
 	for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 	{
 		auto child = context.ChildAt(childIndex);
-		if (!child || !child->Visible) continue;
+		if (!child || child->IsCollapsed()) continue;
 		
 		auto it = _constraints.find(child);
 		bool hasDependency = false;
@@ -89,16 +89,6 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(LayoutContext& conte
 	return result;
 }
 
-SIZE RelativeLayoutEngine::Measure(Control* container, SIZE availableSize)
-{
-	if (!container) return SIZE{ 0, 0 };
-	LayoutContext context(container);
-	const auto desired = Measure(context, cui::core::Constraints{ cui::core::Size{
-		static_cast<float>((std::max)(0L, availableSize.cx)),
-		static_cast<float>((std::max)(0L, availableSize.cy)) } });
-	return SIZE{ static_cast<LONG>(std::ceil(desired.width)), static_cast<LONG>(std::ceil(desired.height)) };
-}
-
 cui::core::Size RelativeLayoutEngine::Measure(LayoutContext& context, const cui::core::Constraints& available)
 {
 	
@@ -108,7 +98,7 @@ cui::core::Size RelativeLayoutEngine::Measure(LayoutContext& context, const cui:
 	for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 	{
 		auto child = context.ChildAt(childIndex);
-		if (!child || !child->Visible) continue;
+		if (!child || child->IsCollapsed()) continue;
 		
 		const auto childSize = child->Measure(available);
 		Thickness margin = child->Margin;
@@ -126,26 +116,19 @@ cui::core::Size RelativeLayoutEngine::Measure(LayoutContext& context, const cui:
 	return desiredSize;
 }
 
-void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
+void RelativeLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRect)
 {
-	if (!container) return;
-	LayoutContext context(container);
-	Arrange(context, finalRect);
-}
-
-void RelativeLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
-{
-	
-	const float originX = finalRect.left;
-	const float originY = finalRect.top;
-	float containerWidth = finalRect.right - finalRect.left;
-	float containerHeight = finalRect.bottom - finalRect.top;
+	finalRect = finalRect.Normalized();
+	const float originX = finalRect.x;
+	const float originY = finalRect.y;
+	const float containerWidth = finalRect.width;
+	const float containerHeight = finalRect.height;
 	
 	// 拓扑排序
 	std::vector<Control*> sorted = TopologicalSort(context);
 	
 	// 存储每个控件的计算位置
-	std::map<Control*, D2D1_RECT_F> positions;
+	std::map<Control*, cui::core::Rect> positions;
 	
 	// 遍历排序后的控件
 	for (auto child : sorted)
@@ -189,44 +172,44 @@ void RelativeLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect
 			// 相对于其他控件对齐
 			if (constraints.AlignLeftWith && positions.find(constraints.AlignLeftWith) != positions.end())
 			{
-				left = positions[constraints.AlignLeftWith].left + margin.Left;
+				left = positions[constraints.AlignLeftWith].x + margin.Left;
 				leftSet = true;
 			}
 			if (constraints.AlignRightWith && positions.find(constraints.AlignRightWith) != positions.end())
 			{
-				right = positions[constraints.AlignRightWith].right - margin.Right;
+				right = positions[constraints.AlignRightWith].Right() - margin.Right;
 				rightSet = true;
 			}
 			if (constraints.AlignTopWith && positions.find(constraints.AlignTopWith) != positions.end())
 			{
-				top = positions[constraints.AlignTopWith].top + margin.Top;
+				top = positions[constraints.AlignTopWith].y + margin.Top;
 				topSet = true;
 			}
 			if (constraints.AlignBottomWith && positions.find(constraints.AlignBottomWith) != positions.end())
 			{
-				bottom = positions[constraints.AlignBottomWith].bottom - margin.Bottom;
+				bottom = positions[constraints.AlignBottomWith].Bottom() - margin.Bottom;
 				bottomSet = true;
 			}
 			
 			// 相对位置关系
 			if (constraints.LeftOf && positions.find(constraints.LeftOf) != positions.end())
 			{
-				right = positions[constraints.LeftOf].left - margin.Right;
+				right = positions[constraints.LeftOf].x - margin.Right;
 				rightSet = true;
 			}
 			if (constraints.RightOf && positions.find(constraints.RightOf) != positions.end())
 			{
-				left = positions[constraints.RightOf].right + margin.Left;
+				left = positions[constraints.RightOf].Right() + margin.Left;
 				leftSet = true;
 			}
 			if (constraints.Above && positions.find(constraints.Above) != positions.end())
 			{
-				bottom = positions[constraints.Above].top - margin.Bottom;
+				bottom = positions[constraints.Above].y - margin.Bottom;
 				bottomSet = true;
 			}
 			if (constraints.Below && positions.find(constraints.Below) != positions.end())
 			{
-				top = positions[constraints.Below].bottom + margin.Top;
+				top = positions[constraints.Below].Bottom() + margin.Top;
 				topSet = true;
 			}
 			
@@ -287,15 +270,11 @@ void RelativeLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect
 		}
 		
 		// 保存位置
-		D2D1_RECT_F rect = {
-			finalLeft,
-			finalTop,
-			finalLeft + finalWidth,
-			finalTop + finalHeight
-		};
+		const cui::core::Rect rect{
+			finalLeft, finalTop, finalWidth, finalHeight };
 		positions[child] = rect;
 		
-		child->ApplyLayout(cui::core::Rect{
+		child->Arrange(cui::core::Rect{
 			finalLeft, finalTop, finalWidth, finalHeight });
 	}
 	
@@ -305,13 +284,6 @@ void RelativeLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect
 // RelativePanel 实现
 
 RelativePanel::RelativePanel()
-{
-	_relativeEngine = new RelativeLayoutEngine();
-	SetLayoutEngine(_relativeEngine);
-}
-
-RelativePanel::RelativePanel(int x, int y, int width, int height)
-	: Panel(x, y, width, height)
 {
 	_relativeEngine = new RelativeLayoutEngine();
 	SetLayoutEngine(_relativeEngine);

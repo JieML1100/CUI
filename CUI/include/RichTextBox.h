@@ -1,6 +1,5 @@
 #pragma once
 #include "Control.h"
-#pragma comment(lib, "Imm32.lib")
 
 struct RichTextBoxTextRange
 {
@@ -13,7 +12,7 @@ struct RichTextBoxTextStyleRange
 {
 	int Start = 0;
 	int Length = 0;
-	D2D1_COLOR_F ForeColor{};
+	D2D1_COLOR_F ForegroundColor{};
 };
 
 /**
@@ -27,9 +26,42 @@ struct RichTextBoxTextStyleRange
  */
 class RichTextBox : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<TextBoxAutomationPeer>(*this, L"RichTextBox");
+	}
 private:
+	bool _acceptsTab = false;
+	bool _isReadOnly = false;
+	int _maxLength = 0;
+	bool _enableVirtualization = true;
+	size_t _virtualizeThreshold = 20000;
+	size_t _blockCharCount = 4096;
+	D2D1_COLOR_F _fallbackHoverColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F _selectionBackColor = cui::theme::palette::SelectionBack;
+	D2D1_COLOR_F _selectionForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F _highlightBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F _fallbackFocusBorderColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F _scrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F _scrollForeColor = cui::theme::palette::ScrollThumb;
+	D2D1_COLOR_F _fallbackDisabledOverlayColor =
+		cui::theme::palette::DisabledOverlay;
+	float _fallbackCornerRadius = 7.0f;
+	float _fallbackFocusBorder = 1.6f;
+	float TextViewportWidth()
+	{
+		return (std::max)(0.0f,
+			ActualWidth - Padding.Left - Padding.Right);
+	}
+	float TextViewportHeight()
+	{
+		return (std::max)(0.0f,
+			ActualHeight - Padding.Top - Padding.Bottom);
+	}
 	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
+	bool _textLayoutDirty = true;
 	int _lastNotifiedSelectionStart = 0;
 	int _lastNotifiedSelectionEnd = 0;
 	void NotifySelectionChanged();
@@ -65,13 +97,12 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1DeviceContext> textStyleBrushDeviceContext;
 	bool isApplyingUndoRedo = false;
 
-	POINT selectedPos = { 0,0 };
 	bool isDraggingScroll = false;
 	float _verticalScrollThumbGrabOffset = 0.0f;
 	IDWriteTextLayout* _textLayoutCache = nullptr;
 	std::vector<DWRITE_HIT_TEST_METRICS> selRange;
 	bool selRangeDirty = true;
-	SIZE lastLayoutSize = { 0,0 };
+	cui::core::Size lastLayoutSize{};
 
 	struct TextBlock
 	{
@@ -88,64 +119,43 @@ private:
 	bool layoutWidthHasScrollBar = false;
 	float virtualTotalHeight = 0.0f;
 	float _cachedRenderWidth = 0.0f;
+	D2D1_SIZE_F _textSize = { 0,0 };
+	int _selectionStart = 0;
+	int _selectionEnd = 0;
+	float _verticalScrollOffset = 0.0f;
 public:
-	bool IsAccessibilityReadOnly() const override { return ReadOnly; }
+	using UIElement::OnTextChanged;
+	using UIElement::SelectionChanged;
+	PROPERTY(std::wstring, Text);
+	GET(std::wstring, Text);
+	SET(std::wstring, Text);
+	bool IsAccessibilityReadOnly() const override { return _isReadOnly; }
 	virtual UIClass Type();
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
-	bool HandlesNavigationKey(WPARAM key) const override;
+	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	/** @brief 当前文本测量尺寸缓存（供渲染/布局使用）。 */
-	D2D1_SIZE_F textSize = { 0,0 };
-	/** @brief 鼠标悬停时背景色（实现可能会用到）。 */
-	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::SurfaceSubtle;
-	/** @brief 选区背景色。 */
-	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::SelectionBack;
-	/** @brief 选区前景色。 */
-	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
-	/** Secondary non-editing highlights, for example paired markup names. */
-	D2D1_COLOR_F HighlightBackColor = cui::theme::palette::AccentSelected;
-	/** @brief 获得焦点时高亮色。 */
-	D2D1_COLOR_F FocusedColor = cui::theme::palette::Surface;
-	/** @brief 滚动条背景色。 */
-	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
-	/** @brief 滚动条前景色。 */
-	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
-	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
-	/** @brief 是否允许多行输入。 */
-	bool AllowMultiLine = false;
-	/** @brief 是否允许输入 Tab 字符。 */
-	bool AllowTabInput = false;
-	/** @brief 只读模式：允许选择/复制/滚动，但禁止用户修改文本。 */
-	bool ReadOnly = false;
-	/** @brief 最大文本长度（超出会被截断）。 */
-	size_t MaxTextLength = 0;
-	/** @brief 是否启用虚拟化（用于长文本）。 */
-	bool EnableVirtualization = true;
-	/** @brief 超过该字符数时进入虚拟化模式。 */
-	size_t VirtualizeThreshold = 20000;
-	/** @brief 每个虚拟化块的字符数。 */
-	size_t BlockCharCount = 4096;
-	/** @brief 选择起始索引（基于字符）。 */
-	int SelectionStart = 0;
-	/** @brief 选择结束索引（基于字符）。 */
-	int SelectionEnd = 0;
-	/** Raised once whenever the effective selection or caret changes. */
-	SelectionChangedEvent OnSelectionChanged;
-	/** @brief 边框宽度（像素）。 */
-	float BorderThickness = 1.5f;
-	/** @brief 圆角半径。 */
-	float CornerRadius = 7.0f;
-	/** @brief 聚焦时边框宽度。 */
-	float FocusBorder = 1.6f;
-	/** @brief 垂直滚动偏移（像素）。 */
-	float VerticalScrollOffset = 0.0f;
-	/** @brief 文本内边距（像素）。 */
-	float TextMargin = 5.0f;
-	/** @brief 创建富文本框。 */
-	RichTextBox(std::wstring text, int x, int y, int width = 120, int height = 24);
+	/** WPF-like tab input opt-in. */
+	PROPERTY(bool, AcceptsTab);
+	GET(bool, AcceptsTab);
+	SET(bool, AcceptsTab);
+	/** WPF-like read-only editing policy. */
+	PROPERTY(bool, IsReadOnly);
+	GET(bool, IsReadOnly);
+	SET(bool, IsReadOnly);
+	/** Maximum character count; zero means unlimited. */
+	PROPERTY(int, MaxLength);
+	GET(int, MaxLength);
+	SET(int, MaxLength);
+	RichTextBox();
+	~RichTextBox() override;
 private:
 	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
@@ -162,6 +172,7 @@ private:
 	bool GetDeleteEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const;
 	void TrimToMaxLength();
 	void RebuildBlocks();
+	void ReleaseTextLayout() noexcept;
 	void ReleaseBlocks();
 	void EnsureBlockLayout(int blockIndex, float renderWidth, float renderHeight);
 	void EnsureAllBlockMetrics(float renderWidth, float renderHeight);
@@ -192,8 +203,13 @@ public:
 	std::wstring GetSelectedString();
 
 	// ---- 公共选择/编辑 API（薄封装，复用内部编辑与 Undo 路径） ----
+	int GetSelectionStart();
 	int GetSelectionLength();
 	__declspec(property(get = GetSelectionLength)) int SelectionLength;
+	int GetCaretIndex();
+	void SetCaretIndex(int value);
+	__declspec(property(get = GetCaretIndex, put = SetCaretIndex)) int CaretIndex;
+	float GetVerticalOffset() const noexcept { return _verticalScrollOffset; }
 	bool HasSelection();
 	void Select(int start, int length);
 	void SelectAll();
@@ -210,8 +226,8 @@ public:
 	bool Copy();
 	bool Cut();
 	bool Paste();
-	bool CanUndo() const noexcept { return !ReadOnly && !undoStack.empty(); }
-	bool CanRedo() const noexcept { return !ReadOnly && !redoStack.empty(); }
+	bool CanUndo() const noexcept { return !_isReadOnly && !undoStack.empty(); }
+	bool CanRedo() const noexcept { return !_isReadOnly && !redoStack.empty(); }
 	bool CanPaste() const noexcept;
 	void Undo();
 	void Redo();
@@ -228,10 +244,15 @@ public:
 		return textStyleRanges;
 	}
 	/** Returns the current caret rectangle in top-level client DIPs. */
-	bool TryGetCaretViewportRect(D2D1_RECT_F& outRect);
+	bool TryGetTextInputCaretRect(D2D1_RECT_F& outRect) override;
+	bool ApplyTextInput(const TextCompositionEventArgs& input) override;
 
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+protected:
+	void NotifyDeviceResourcesInvalidated() noexcept override;
+	void PreparePresentation() override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
 	/** @brief 滚动到末尾。 */
 	void ScrollToEnd();
 };

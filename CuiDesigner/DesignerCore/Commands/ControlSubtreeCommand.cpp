@@ -1,8 +1,8 @@
 #include "ControlSubtreeCommand.h"
+#include "DesignNodeMemory.h"
 #include "../../DesignerCanvas.h"
-#include "../../../CUI/include/SplitContainer.h"
-#include "../../../CUI/include/TabControl.h"
-#include "../../../CUI/include/ToolBar.h"
+#include "../../../CUI/include/ItemsControl.h"
+#include "../../../CUI/include/TemplateInfrastructure.h"
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,16 +60,28 @@ namespace
 	void RefreshParent(Control* parent)
 	{
 		if (!parent) return;
-		if (auto* split = dynamic_cast<SplitContainer*>(parent))
-		{
-			split->RefreshSplitterLayout();
-			return;
-		}
 		if (auto* panel = dynamic_cast<Panel*>(parent))
 		{
 			panel->InvalidateLayout();
 			panel->UpdateLayout();
 		}
+	}
+
+	ItemsControl* FindAuthoredItemsOwner(
+		Control* control, size_t* outIndex = nullptr) noexcept
+	{
+		if (!control) return nullptr;
+		auto* owner = dynamic_cast<ItemsControl*>(control->GetLogicalParent());
+		if (!owner || control->GetVisualParent()
+			!= cui::framework::TemplateAccess::GetItemsHost(*owner))
+			return nullptr;
+		for (size_t index = 0; index < owner->AuthoredItemCount(); ++index)
+		{
+			if (owner->GetAuthoredItem(index) != control) continue;
+			if (outIndex) *outIndex = index;
+			return owner;
+		}
+		return nullptr;
 	}
 
 	size_t SelectionMemory(
@@ -87,8 +99,6 @@ struct ControlSubtreeCommand::DetachedPayload
 	{
 		std::wstring Name;
 		std::unique_ptr<Control> Owner;
-		bool HasToolBarSizeOverride = false;
-		SIZE ToolBarSizeOverride{ -1, -1 };
 	};
 	struct Wrapper
 	{
@@ -110,7 +120,6 @@ bool DesignerControlSubtreeSnapshot::EquivalentTo(
 {
 	return Identities == other.Identities
 		&& RootPlacements.EquivalentTo(other.RootPlacements)
-		&& RootAttachments == other.RootAttachments
 		&& Nodes == other.Nodes;
 }
 
@@ -119,8 +128,6 @@ size_t DesignerControlSubtreeSnapshot::GetEstimatedMemoryUsage() const noexcept
 	size_t result = sizeof(*this)
 		+ Identities.capacity() * sizeof(DesignerSubtreeIdentity)
 		+ RootPlacements.GetEstimatedMemoryUsage()
-		+ RootAttachments.capacity()
-			* sizeof(DesignerSubtreeRootAttachmentState)
 		+ Nodes.capacity() * sizeof(DesignerModel::DesignNode);
 	for (const auto& identity : Identities)
 		result += identity.GetEstimatedMemoryUsage();
@@ -128,10 +135,11 @@ size_t DesignerControlSubtreeSnapshot::GetEstimatedMemoryUsage() const noexcept
 	{
 		result += StringMemory(node.ParentRef)
 			+ StringMemory(node.Name)
-			+ DesignValueMemory(node.Props)
-			+ DesignValueMemory(node.Extra)
-			+ DesignValueMemory(node.Events)
-			+ DesignValueMemory(node.Bindings);
+			+ DesignValueMemory(EncodeDesignNodeProperties(node.Properties))
+			+ DesignerCommandMemory::StructureHeap(node.Structure)
+			+ DesignerCommandMemory::TemplateStateHeap(node.TemplateState)
+			+ DesignValueMemory(EncodeDesignNodeEvents(node.Events))
+			+ DesignValueMemory(EncodeDesignNodeBindings(node.Bindings));
 	}
 	return result;
 }
@@ -231,33 +239,17 @@ bool ControlSubtreeCommand::ResolveParent(
 		runtimeParent = parentInstance;
 		designerParent = parentInstance;
 		break;
-	case DesignerPlacementParentKind::TabPage:
+	case DesignerPlacementParentKind::ItemsControl:
 	{
-		auto* tab = dynamic_cast<TabControl*>(parentInstance);
-		if (!tab || state.ParentPageIndex < 0
-			|| state.ParentPageIndex >= tab->Count)
+		auto* items = dynamic_cast<ItemsControl*>(parentInstance);
+		if (!items || items->GetItemsSource()
+			|| !cui::framework::TemplateAccess::GetItemsHost(*items))
 		{
-			if (outError) *outError = L"子树 TabPage 父级已经变化。";
+			if (outError) *outError = L"子树 ItemsControl 父级已经变化。";
 			return false;
 		}
-		runtimeParent = tab->operator[](state.ParentPageIndex);
-		designerParent = runtimeParent;
-		break;
-	}
-	case DesignerPlacementParentKind::SplitFirst:
-	case DesignerPlacementParentKind::SplitSecond:
-	{
-		auto* split = dynamic_cast<SplitContainer*>(parentInstance);
-		if (!split)
-		{
-			if (outError) *outError = L"子树 Split 父级类型已经变化。";
-			return false;
-		}
-		runtimeParent = state.ParentKind
-			== DesignerPlacementParentKind::SplitFirst
-			? static_cast<Control*>(split->FirstPanel())
-			: static_cast<Control*>(split->SecondPanel());
-		designerParent = split;
+		runtimeParent = cui::framework::TemplateAccess::GetItemsHost(*items);
+		designerParent = items;
 		break;
 	}
 	default:
@@ -289,8 +281,7 @@ bool ControlSubtreeCommand::Capture(
 		std::vector<std::shared_ptr<DesignerControl>> filtered;
 		for (const auto& candidate : roots)
 		{
-			if (!candidate || !candidate->ControlInstance
-				|| candidate->Type == UIClass::UI_TabPage) continue;
+			if (!candidate || !candidate->ControlInstance) continue;
 			bool nested = false;
 			for (const auto& other : roots)
 			{
@@ -327,22 +318,6 @@ bool ControlSubtreeCommand::Capture(
 
 		if (!ControlPlacementCommand::Capture(
 			canvas, filtered, out.RootPlacements, outError)) return false;
-		out.RootAttachments.reserve(filtered.size());
-		for (const auto& root : filtered)
-		{
-			DesignerSubtreeRootAttachmentState attachment;
-			if (root && root->ControlInstance)
-			{
-				if (auto* toolBar = dynamic_cast<ToolBar*>(
-					root->ControlInstance->Parent))
-					attachment.HasToolBarSizeOverride =
-						toolBar->TryGetToolItemSizeOverride(
-							root->ControlInstance,
-							attachment.ToolBarSizeOverride);
-			}
-			out.RootAttachments.push_back(attachment);
-		}
-
 		std::unordered_set<Control*> rootInstances;
 		for (const auto& root : filtered)
 			rootInstances.insert(root->ControlInstance);
@@ -377,11 +352,7 @@ bool ControlSubtreeCommand::Capture(
 		for (const auto& node : document.Nodes)
 			if (names.contains(node.Name))
 				out.Nodes.push_back(NormalizeNode(node));
-		const size_t persistedIdentityCount = std::count_if(
-			out.Identities.begin(), out.Identities.end(),
-			[](const DesignerSubtreeIdentity& identity)
-			{ return identity.Type != UIClass::UI_TabPage; });
-		if (out.Nodes.size() != persistedIdentityCount)
+		if (out.Nodes.size() != out.Identities.size())
 		{
 			out = DesignerControlSubtreeSnapshot{};
 			if (outError) *outError = L"子树设计节点与运行时包装器不一致。";
@@ -521,10 +492,9 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 	{
 		std::wstring Name;
 		Control* Parent = nullptr;
+		ItemsControl* ItemsOwner = nullptr;
 		int Index = -1;
 		std::unique_ptr<Control> Owner;
-		bool HasToolBarSizeOverride = false;
-		SIZE ToolBarSizeOverride{ -1, -1 };
 	};
 	std::vector<Work> work;
 	work.reserve(_snapshot.RootPlacements.Targets.size());
@@ -533,24 +503,23 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 	{
 		const auto& state = _snapshot.RootPlacements.Targets[rootIndex];
 		auto root = FindControl(_canvas, state.TargetName, state.TargetType);
-		if (!root || !root->ControlInstance || !root->ControlInstance->Parent)
+		if (!root || !root->ControlInstance || !root->ControlInstance->GetVisualParent())
 		{
 			if (outError) *outError = L"子树根没有可分离的父级：" + state.TargetName;
 			return false;
 		}
+		size_t itemIndex = 0;
+		auto* itemsOwner = FindAuthoredItemsOwner(
+			root->ControlInstance, &itemIndex);
 		Work item{
 			state.TargetName,
-			root->ControlInstance->Parent,
-			root->ControlInstance->Parent->IndexOfControl(root->ControlInstance),
+			root->ControlInstance->GetVisualParent(),
+			itemsOwner,
+			itemsOwner ? static_cast<int>(itemIndex)
+				: root->ControlInstance->GetVisualParent()
+					->IndexOfVisualChild(root->ControlInstance),
 			{}
 		};
-		if (rootIndex < _snapshot.RootAttachments.size())
-		{
-			item.HasToolBarSizeOverride = _snapshot.RootAttachments[rootIndex]
-				.HasToolBarSizeOverride;
-			item.ToolBarSizeOverride = _snapshot.RootAttachments[rootIndex]
-				.ToolBarSizeOverride;
-		}
 		work.push_back(std::move(item));
 	}
 
@@ -572,18 +541,21 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 			if (!item.Owner) continue;
 			try
 			{
-				item.Parent->InsertControl(
-					(std::clamp)(item.Index, 0, item.Parent->Count),
-					item.Owner.get());
-				if (item.HasToolBarSizeOverride)
-					static_cast<ToolBar*>(item.Parent)
-						->SetToolItemSizeOverride(
-							item.Owner.get(), item.ToolBarSizeOverride);
+				if (item.ItemsOwner)
+					item.ItemsOwner->InsertItemControl(
+						(std::min)(
+							static_cast<size_t>((std::max)(0, item.Index)),
+							item.ItemsOwner->AuthoredItemCount()),
+						item.Owner.get());
+				else
+					item.Parent->InsertVisualChild(
+						(std::clamp)(item.Index, 0, item.Parent->VisualChildCount()),
+						item.Owner.get());
 				item.Owner.release();
 			}
 			catch (...)
 			{
-				if (item.Owner && item.Owner->Parent == item.Parent)
+				if (item.Owner && item.Owner->GetVisualParent() == item.Parent)
 					item.Owner.release();
 				restored = false;
 			}
@@ -603,8 +575,11 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 				_canvas,
 				_snapshot.RootPlacements.Targets[index].TargetName,
 				_snapshot.RootPlacements.Targets[index].TargetType);
-			work[index].Owner = work[index].Parent->DetachControl(
-				root ? root->ControlInstance : nullptr);
+			work[index].Owner = work[index].ItemsOwner
+				? work[index].ItemsOwner->DetachItemControl(
+					root ? root->ControlInstance : nullptr)
+				: work[index].Parent->DetachVisualChild(
+					root ? root->ControlInstance : nullptr);
 			if (!work[index].Owner)
 			{
 				const bool restored = rollback();
@@ -613,8 +588,6 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 					: L"无法从父级分离子树根，且回滚不完整。";
 				return false;
 			}
-			if (auto* toolBar = dynamic_cast<ToolBar*>(work[index].Parent))
-				toolBar->ClearToolItemSizeOverride(work[index].Owner.get());
 		}
 		for (const auto& record : payload->Wrappers)
 			if (record.Value) _canvas->DetachDesignBindingPreview(*record.Value);
@@ -645,9 +618,7 @@ bool ControlSubtreeCommand::DetachToStorage(std::wstring* outError)
 	for (auto& item : work)
 		payload->Roots.push_back({
 			item.Name,
-			std::move(item.Owner),
-			item.HasToolBarSizeOverride,
-			item.ToolBarSizeOverride
+			std::move(item.Owner)
 		});
 	for (const auto& item : work) RefreshParent(item.Parent);
 	_detached = std::move(payload);
@@ -665,6 +636,7 @@ bool ControlSubtreeCommand::AttachFromStorage(std::wstring* outError)
 		size_t RootIndex = 0;
 		Control* RuntimeParent = nullptr;
 		Control* DesignerParent = nullptr;
+		ItemsControl* ItemsOwner = nullptr;
 		int ChildIndex = -1;
 		bool Attached = false;
 	};
@@ -695,6 +667,8 @@ bool ControlSubtreeCommand::AttachFromStorage(std::wstring* outError)
 			static_cast<size_t>(root - payload->Roots.begin()),
 			runtimeParent,
 			designerParent,
+			state.ParentKind == DesignerPlacementParentKind::ItemsControl
+				? dynamic_cast<ItemsControl*>(designerParent) : nullptr,
 			state.ChildIndex,
 			false
 		});
@@ -777,10 +751,9 @@ bool ControlSubtreeCommand::AttachFromStorage(std::wstring* outError)
 			}
 			try
 			{
-				root.Owner = attachment.RuntimeParent->DetachControl(raw);
-				if (auto* toolBar =
-					dynamic_cast<ToolBar*>(attachment.RuntimeParent))
-					toolBar->ClearToolItemSizeOverride(raw);
+				root.Owner = attachment.ItemsOwner
+					? attachment.ItemsOwner->DetachItemControl(raw)
+					: attachment.RuntimeParent->DetachVisualChild(raw);
 				if (!root.Owner) restored = false;
 			}
 			catch (...)
@@ -808,8 +781,11 @@ bool ControlSubtreeCommand::AttachFromStorage(std::wstring* outError)
 	{
 		auto& attachment = attachments[orderIndex];
 		auto& root = payload->Roots[attachment.RootIndex];
+		const int childCount = attachment.ItemsOwner
+			? static_cast<int>(attachment.ItemsOwner->AuthoredItemCount())
+			: attachment.RuntimeParent->VisualChildCount();
 		if (attachment.ChildIndex < 0
-			|| attachment.ChildIndex > attachment.RuntimeParent->Count)
+			|| attachment.ChildIndex > childCount)
 		{
 			const bool restored = rollback();
 			if (outError) *outError = restored
@@ -820,18 +796,18 @@ bool ControlSubtreeCommand::AttachFromStorage(std::wstring* outError)
 		Control* raw = root.Owner.get();
 		try
 		{
-			attachment.RuntimeParent->InsertControl(
-				attachment.ChildIndex, raw);
-			if (root.HasToolBarSizeOverride)
-				static_cast<ToolBar*>(attachment.RuntimeParent)
-					->SetToolItemSizeOverride(
-						raw, root.ToolBarSizeOverride);
+			if (attachment.ItemsOwner)
+				attachment.ItemsOwner->InsertItemControl(
+					static_cast<size_t>(attachment.ChildIndex), raw);
+			else
+				attachment.RuntimeParent->InsertVisualChild(
+					attachment.ChildIndex, raw);
 			root.Owner.release();
 			attachment.Attached = true;
 		}
 		catch (...)
 		{
-			if (root.Owner && raw->Parent == attachment.RuntimeParent)
+			if (root.Owner && raw->GetVisualParent() == attachment.RuntimeParent)
 			{
 				root.Owner.release();
 				attachment.Attached = true;

@@ -1,28 +1,37 @@
 #pragma once
 #include "Menu.h"
 
-/* Popup context menu shown explicitly by app code via ShowAt(). */
-class ContextMenu : public Control
+class ContextMenu;
+using ContextMenuEvent = Event<void(ContextMenu*)>;
+
+/**
+ * WPF-style context menu. Placement is initiated by behavior through ShowAt;
+ * IsOpen/PlacementTarget are semantic state, while popup chrome is private to
+ * the current fallback presenter.
+ */
+class ContextMenu : public ItemsControl
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Menu, L"ContextMenu");
+	}
+
 private:
-	bool _popupVisible = false;
+	bool _isOpen = false;
+	bool _isPresented = false;
+	bool _staysOpen = false;
 	bool _ignoreNextMouseUp = false;
-	POINT _anchor = { 0, 0 };
+	ControlWeakReference _placementTarget;
+	cui::core::Point _anchor{};
 	std::vector<int> _hoverPath;
 	std::vector<int> _openPath;
-	std::vector<MenuItem*> _items;
-	float _popupProgress = 0.0f;
-	float _popupStartProgress = 0.0f;
-	float _popupTargetProgress = 0.0f;
-	ULONGLONG _popupAnimStartTick = 0;
-	bool _popupAnimating = false;
-
-	float ItemPaddingX = 12.0f;
-	float DropPaddingY = 6.0f;
+	std::vector<Control*> _items;
 
 	struct PopupPanel
 	{
-		const std::vector<MenuItem*>* Items = nullptr;
+		std::span<Control* const> Items;
 		float X = 0;
 		float Y = 0;
 		float W = 0;
@@ -30,65 +39,80 @@ private:
 		bool OpenedToLeft = false;
 	};
 
-	float CalcPanelWidth(const std::vector<MenuItem*>& items);
+	float CalcPanelWidth(std::span<Control* const> items);
 	std::vector<PopupPanel> BuildPanels();
+	void AttachItemTree(MenuItem* item);
+	void SynchronizeItemCommandHosts();
+	void OnPresentationWindowChanged(
+		Window* previousWindow, Window* currentWindow) override;
+	void OnItemInteractionStateChanged(MenuItem& source);
 	void ClearHoverState();
-	float CurrentPopupProgress();
-	void BeginPopupReveal(float startProgress = 0.08f);
+	void SynchronizeInteractionProjection();
+	void ApplyIsOpenChange(bool oldValue, bool newValue);
+	void PresentCore();
+	void DismissPresentationCore();
+	void ShowAtCore(
+		Control* placementTarget,
+		int x, int y,
+		bool ignoreNextMouseUp);
+	bool ValidateAuthoredItemControl(
+		const Control& item, std::string& error) const override;
+	void OnAuthoredItemsChanged() noexcept override;
+	void OnBeforeGeneratedItemsRebuilt() override;
+	void OnGeneratedItemsRebuilt() override;
+	std::unique_ptr<Control> WrapGeneratedItem(
+		std::unique_ptr<Control> visual,
+		const BindingSourceReference& item,
+		size_t index) override;
+	void SynchronizeItems();
+	void SuppressItemsPresentation();
+	void OnControlTemplatePresentationChanged() override;
 
 public:
 	ContextMenu();
 	~ContextMenu();
 
-	float Border = 1.0f;
-	int ItemHeight = 28;
-	D2D1_COLOR_F PopupBackColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F PopupBorderColor = cui::theme::palette::Border;
-	D2D1_COLOR_F PopupHoverColor = cui::theme::palette::AccentSelected;
-	D2D1_COLOR_F PopupTextColor = cui::theme::palette::TextPrimary;
-	D2D1_COLOR_F PopupSeparatorColor = cui::theme::palette::Border;
-	float PopupCornerRadius = 8.0f;
-	float ItemCornerRadius = 6.0f;
-	float ItemHorizontalInset = 6.0f;
-	UINT PopupAnimationDurationMs = 95;
-
-	MenuCommandEvent OnMenuCommand;
-
 	virtual UIClass Type() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+	bool GetIsOpen() const noexcept { return _isOpen; }
+	void SetIsOpen(bool value);
+	__declspec(property(get = GetIsOpen, put = SetIsOpen)) bool IsOpen;
+	bool GetStaysOpen() const noexcept { return _staysOpen; }
+	void SetStaysOpen(bool value);
+	__declspec(property(get = GetStaysOpen, put = SetStaysOpen)) bool StaysOpen;
+	READONLY_PROPERTY(class Control*, PlacementTarget);
+	GET(class Control*, PlacementTarget);
+	ContextMenuEvent Opened;
+	ContextMenuEvent Closed;
 	bool HitTestChildren() const override { return false; }
 	bool ContainsPoint(int localX, int localY) override;
-	bool AutoCloseOnOutsideClick() const override { return true; }
-	bool AutoCloseOnFormFocusLoss() const override { return true; }
-	void ClosePopup() override { Hide(); }
-	bool IsAnimationRunning() override;
-	UINT GetAnimationIntervalMs() override { return 16; }
-	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	SIZE ActualSize() override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-
-	MenuItem* AddItem(std::wstring text, int id = 0);
+	cui::core::Size GetRenderSizeDip() override;
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
 	MenuItem* AddItem(std::unique_ptr<MenuItem> item);
 	MenuItem* InsertItem(
 		int index, std::unique_ptr<MenuItem> item);
-	MenuItem* AddSeparator();
-	int ItemCount() const noexcept
-	{
-		return static_cast<int>(_items.size());
-	}
+	Separator* AddSeparator();
 	MenuItem* GetItem(int index) const noexcept;
 	int IndexOfItem(const MenuItem* item) const noexcept;
-	MenuItem* FindItemById(int id, bool recursive = true) const noexcept;
+	MenuItem* FindItemByCommand(
+		const std::wstring& command, bool recursive = true) const noexcept;
 	MenuItem* FindItemByText(
 		const std::wstring& text, bool recursive = true) const noexcept;
-	std::unique_ptr<MenuItem> DetachItemAt(int index);
+	std::unique_ptr<Control> DetachItemAt(int index);
 	std::unique_ptr<MenuItem> DetachItem(MenuItem* item);
 	bool RemoveItemAt(int index);
 	bool RemoveItem(MenuItem* item);
-	bool RemoveItemById(int id, bool recursive = true);
+	bool RemoveItemByCommand(
+		const std::wstring& command, bool recursive = true);
 	void ClearItems();
 	void ShowAt(int x, int y, bool ignoreNextMouseUp = false);
 	void ShowAt(class Control* relativeTo, int x, int y, bool ignoreNextMouseUp = false);
 	void Hide();
-	bool IsOpen() const { return _popupVisible; }
 };

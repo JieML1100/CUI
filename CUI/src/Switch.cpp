@@ -1,9 +1,8 @@
-﻿#pragma once
+#pragma once
 #include "Switch.h"
-#include "Form.h"
+#include "Window.h"
 #include <algorithm>
 #include <cmath>
-#pragma comment(lib, "Imm32.lib")
 UIClass Switch::Type() { return UIClass::UI_Switch; }
 
 static D2D1_COLOR_F LerpColor(const D2D1_COLOR_F& from, const D2D1_COLOR_F& to, float t)
@@ -23,20 +22,17 @@ static D2D1_COLOR_F WithAlpha(D2D1_COLOR_F color, float alpha)
 	return color;
 }
 
-Switch::Switch(int x, int y, int width, int height)
+Switch::Switch()
 {
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	auto bc = this->BackColor;
+	auto bc = this->RendererBackgroundColor;
 	bc.a = 0.0f;
-	this->BackColor = bc;
-	this->Cursor = CursorKind::Hand;
+	this->RendererBackgroundColor = bc;
 	SyncAnimationState();
 }
 
 void Switch::SyncAnimationState()
 {
-	_thumbProgress = this->Checked ? 1.0f : 0.0f;
+	_thumbProgress = this->IsChecked ? 1.0f : 0.0f;
 	_animStartProgress = _thumbProgress;
 	_animTargetProgress = _thumbProgress;
 	_animating = false;
@@ -46,7 +42,7 @@ void Switch::SyncAnimationState()
 void Switch::StartToggleAnimation(bool checked)
 {
 	CurrentThumbProgress();
-	this->Checked = checked;
+	this->IsChecked = checked;
 	_animStartProgress = _thumbProgress;
 	_animTargetProgress = checked ? 1.0f : 0.0f;
 	if (EffectiveAnimationDuration(_animDurationMs) == 0
@@ -64,7 +60,7 @@ float Switch::CurrentThumbProgress()
 {
 	if (!_animating)
 	{
-		_thumbProgress = this->Checked ? 1.0f : 0.0f;
+		_thumbProgress = this->IsChecked ? 1.0f : 0.0f;
 		return _thumbProgress;
 	}
 
@@ -92,13 +88,13 @@ bool Switch::IsAnimationRunning()
 bool Switch::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	if (!IsAnimationRunning()) return false;
-	outRect = this->AbsRect;
+	outRect = GetAbsoluteBoundsDip();
 	return true;
 }
-void Switch::Update()
+void Switch::OnRender()
 {
-	if (this->IsVisual == false)return;
-	auto d2d = this->ParentForm->Render;
+	if (this->IsVisible == false)return;
+	auto d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
@@ -106,7 +102,7 @@ void Switch::Update()
 	this->BeginRender(clipW, actualHeight);
 	{
 		const float progress = CurrentThumbProgress();
-		const bool hover = this->ParentForm && this->ParentForm->UnderMouse == this;
+		const bool hover = this->IsMouseOver;
 		const bool pressed = HasControlStyleState(
 			this->GetStyleState(), ControlStyleState::Pressed);
 		const float trackRadius = actualHeight * 0.5f;
@@ -125,14 +121,18 @@ void Switch::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, trackColor, trackRadius);
 		if (hover && UnderMouseColor.a > 0.0f)
 			d2d->FillRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, UnderMouseColor, (std::max)(0.0f, trackRadius - 1.0f));
-		if (BorderThickness > 0.0f && TrackBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(0.5f, 0.5f, actualWidth - 1.0f, actualHeight - 1.0f, TrackBorderColor, BorderThickness, trackRadius);
+		const float border = BorderThickness.MaxEdge() > 0.0f
+			? BorderThickness.MaxEdge() : 1.0f;
+		if (TrackBorderColor.a > 0.0f)
+			d2d->DrawRoundRect(0.5f, 0.5f,
+				actualWidth - 1.0f, actualHeight - 1.0f,
+				TrackBorderColor, border, trackRadius);
 
 		if (ThumbShadowColor.a > 0.0f)
 			d2d->FillRoundRect(thumbL, thumbT + 1.0f, thumbW, thumbDiameter, WithAlpha(ThumbShadowColor, pressed ? 0.34f : 0.22f), thumbRadius);
 		d2d->FillRoundRect(thumbL, thumbT, thumbW, thumbDiameter, ThumbColor, thumbRadius);
 	}
-	if (!this->Enable)
+	if (!this->IsEnabled)
 	{
 		d2d->FillRoundRect(0.0f, 0.0f, clipW, actualHeight, DisabledOverlayColor, actualHeight * 0.5f);
 	}
@@ -140,60 +140,31 @@ void Switch::Update()
 	lastMeasuredWidth = actualWidth;
 }
 
-bool Switch::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
-{
-	(void)message;
-	return wasSelected;
-}
-
-bool Switch::DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const
-{
-	(void)message;
-	return wasSelected;
-}
-
-void Switch::BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected)
+void Switch::BeforeDefaultMouseUp(MouseButton button, MouseEventArgs& e, bool hasMatchingPress)
 {
 	(void)e;
-	if (message == WM_LBUTTONUP && wasSelected)
-	{
-		StartToggleAnimation(!this->Checked);
-		this->OnChecked(this);
-	}
-}
-
-void Switch::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected)
-{
-	(void)e;
-	if (message == WM_LBUTTONDBLCLK && wasSelected)
-	{
-		StartToggleAnimation(!this->Checked);
-		this->OnChecked(this);
-	}
+	if (button == MouseButton::Left && hasMatchingPress)
+		StartToggleAnimation(!this->IsChecked);
 }
 
 void Switch::SetChecked(bool checked)
 {
-	if (!Enable || Checked == checked) return;
+	if (!IsEnabled || IsChecked == checked) return;
 	StartToggleAnimation(checked);
-	OnChecked(this);
 	InvalidateVisual();
 }
 
 void Switch::Toggle()
 {
-	SetChecked(!Checked);
+	SetChecked(!IsChecked);
 }
 
 bool Switch::Invoke()
 {
-	if (!Enable || !Visible) return false;
-	StartToggleAnimation(!Checked);
-	OnChecked(this);
-	const auto size = GetActualSizeDip();
-	OnMouseClick(this, MouseEventArgs(MouseButtons::None, 0,
-		static_cast<int>(size.width * 0.5f),
-		static_cast<int>(size.height * 0.5f), 0));
+	if (!IsEnabled || !IsVisible) return false;
+	StartToggleAnimation(!IsChecked);
+	RoutedEventArgs eventArgs;
+	Click(this, eventArgs);
 	InvalidateVisual();
 	return true;
 }

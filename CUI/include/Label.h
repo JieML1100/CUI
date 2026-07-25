@@ -1,6 +1,5 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
-#pragma comment(lib, "Imm32.lib")
 
 /**
  * @file Label.h
@@ -10,12 +9,25 @@
  */
 class Label : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Text, L"TextBlock");
+	}
 public:
-	/** @brief 上一次渲染/测量使用的宽度（用于缓存/重算）。 */
-	float lastMeasuredWidth = 0.0f;
+	PROPERTY(std::wstring, Text);
+	GET(std::wstring, Text);
+	SET(std::wstring, Text);
 	virtual UIClass Type();
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
 	/** @brief 创建 Label。 */
-	Label(std::wstring text, int x, int y);
+	Label();
 	cui::core::Size MeasureCore(const cui::core::Constraints& available) override;
-	void Update() override;
+protected:
+	void OnRender() override;
 };

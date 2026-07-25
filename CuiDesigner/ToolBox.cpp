@@ -1,6 +1,10 @@
 #include "ToolBox.h"
+#include "../CUI/include/EventInfrastructure.h"
+#include "DesignerControlCatalog.h"
+#include "ProgrammaticControlFactory.h"
+#include "../CUI/include/InputInfrastructure.h"
 #include "../CUI/include/Label.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,57 +13,6 @@
 
 namespace
 {
-	std::wstring ToolCategory(UIClass type)
-	{
-		switch (type)
-		{
-		case UIClass::UI_TextBox:
-		case UIClass::UI_PasswordBox:
-		case UIClass::UI_RichTextBox:
-		case UIClass::UI_DateTimePicker:
-		case UIClass::UI_NumericUpDown:
-		case UIClass::UI_ComboBox:
-		case UIClass::UI_Slider:
-		case UIClass::UI_FilterBar:
-			return L"输入";
-		case UIClass::UI_Panel:
-		case UIClass::UI_GroupBox:
-		case UIClass::UI_Expander:
-		case UIClass::UI_ScrollView:
-		case UIClass::UI_StackPanel:
-		case UIClass::UI_GridPanel:
-		case UIClass::UI_DockPanel:
-		case UIClass::UI_WrapPanel:
-		case UIClass::UI_RelativePanel:
-		case UIClass::UI_SplitContainer:
-			return L"布局";
-		case UIClass::UI_ListView:
-		case UIClass::UI_ListBox:
-		case UIClass::UI_GridView:
-		case UIClass::UI_PropertyGrid:
-		case UIClass::UI_ChartView:
-		case UIClass::UI_ReportView:
-		case UIClass::UI_KpiCard:
-		case UIClass::UI_TreeView:
-			return L"数据与列表";
-		case UIClass::UI_ProgressBar:
-		case UIClass::UI_LoadingRing:
-		case UIClass::UI_ProgressRing:
-		case UIClass::UI_ToastHost:
-			return L"状态与反馈";
-		case UIClass::UI_TabControl:
-		case UIClass::UI_ToolBar:
-		case UIClass::UI_Menu:
-		case UIClass::UI_StatusBar:
-			return L"导航与外壳";
-		case UIClass::UI_WebBrowser:
-		case UIClass::UI_MediaPlayer:
-			return L"媒体与 Web";
-		default:
-			return L"基础控件";
-		}
-	}
-
 	D2D1_COLOR_F CategoryAccent(const std::wstring& category)
 	{
 		if (category == L"输入") return D2D1::ColorF(0.38f, 0.36f, 0.88f, 1.0f);
@@ -123,11 +76,6 @@ namespace
 		case UIClass::UI_Label:
 			monogram(L"A");
 			break;
-		case UIClass::UI_LinkLabel:
-			d2d->DrawEllipse(cx - 4.0f, cy, 5.0f, 3.5f, color, 1.4f);
-			d2d->DrawEllipse(cx + 4.0f, cy, 5.0f, 3.5f, color, 1.4f);
-			d2d->DrawLine(cx - 2.0f, cy, cx + 2.0f, cy, color, 1.4f);
-			break;
 		case UIClass::UI_Button:
 			d2d->DrawRoundRect(frame, color, 1.5f, 4.0f);
 			d2d->FillEllipse(cx, cy, 1.7f, 1.7f, color);
@@ -147,13 +95,6 @@ namespace
 			DrawMiniLines(d2d, frame.left + 4.0f, frame.top + 5.0f,
 				frame.right - frame.left - 8.0f, 4, color);
 			break;
-		case UIClass::UI_DateTimePicker:
-			d2d->DrawRoundRect(frame, color, 1.3f, 2.0f);
-			d2d->DrawLine(frame.left, frame.top + 6.0f,
-				frame.right, frame.top + 6.0f, color, 1.3f);
-			d2d->FillRect(cx - 5.0f, cy, 3.0f, 3.0f, color);
-			d2d->FillRect(cx + 2.0f, cy, 3.0f, 3.0f, color);
-			break;
 		case UIClass::UI_NumericUpDown:
 			monogram(L"#");
 			d2d->DrawLine(frame.right - 4.0f, cy,
@@ -161,8 +102,11 @@ namespace
 			d2d->DrawLine(frame.right - 4.0f, cy,
 				frame.right, cy + 4.0f, color, 1.2f);
 			break;
-		case UIClass::UI_Panel:
+		case UIClass::UI_Canvas:
 			d2d->DrawRect(frame, color, 1.4f);
+			break;
+		case UIClass::UI_Border:
+			d2d->DrawRoundRect(frame, color, 1.4f, 2.0f);
 			break;
 		case UIClass::UI_GroupBox:
 			d2d->DrawRoundRect(frame, color, 1.3f, 2.0f);
@@ -176,17 +120,24 @@ namespace
 			d2d->DrawLine(frame.left + 8.0f, frame.top + 9.0f,
 				frame.left + 12.0f, frame.top + 5.0f, color, 1.4f);
 			break;
-		case UIClass::UI_ScrollView:
+		case UIClass::UI_ScrollViewer:
 			d2d->DrawRect(frame, color, 1.25f);
 			d2d->FillRoundRect(frame.right - 3.0f, frame.top + 3.0f,
 				2.0f, 8.0f, color, 1.0f);
+			break;
+		case UIClass::UI_Popup:
+			d2d->DrawRoundRect(frame.left + 2.0f, frame.top + 2.0f,
+				frame.right - frame.left - 2.0f,
+				frame.bottom - frame.top - 2.0f, color, 1.25f, 2.0f);
+			d2d->DrawLine(frame.left, frame.top + 5.0f,
+				frame.left + 5.0f, frame.top, color, 1.1f);
 			break;
 		case UIClass::UI_StackPanel:
 			for (int i = 0; i < 3; ++i)
 				d2d->DrawRoundRect(frame.left + 2.0f, frame.top + 1.0f + i * 6.0f,
 					frame.right - frame.left - 4.0f, 4.0f, color, 1.1f, 1.5f);
 			break;
-		case UIClass::UI_GridPanel:
+		case UIClass::UI_Grid:
 			d2d->DrawRect(frame, color, 1.25f);
 			d2d->DrawLine(cx, frame.top, cx, frame.bottom, color, 1.1f);
 			d2d->DrawLine(frame.left, cy, frame.right, cy, color, 1.1f);
@@ -210,17 +161,12 @@ namespace
 			d2d->DrawLine(frame.left + 6.0f, frame.top + 6.0f,
 				frame.right - 6.0f, frame.bottom - 6.0f, color, 1.25f);
 			break;
-		case UIClass::UI_SplitContainer:
-			d2d->DrawRect(frame, color, 1.25f);
-			d2d->DrawLine(cx, frame.top, cx, frame.bottom, color, 2.0f);
-			d2d->FillEllipse(cx, cy, 1.5f, 1.5f, color);
-			break;
 		case UIClass::UI_CheckBox:
 			d2d->DrawRoundRect(cx - 7.0f, cy - 7.0f, 14.0f, 14.0f, color, 1.4f, 2.0f);
 			d2d->DrawLine(cx - 4.0f, cy, cx - 1.0f, cy + 3.0f, color, 1.6f);
 			d2d->DrawLine(cx - 1.0f, cy + 3.0f, cx + 5.0f, cy - 4.0f, color, 1.6f);
 			break;
-		case UIClass::UI_RadioBox:
+		case UIClass::UI_RadioButton:
 			d2d->DrawEllipse(cx, cy, 7.0f, 7.0f, color, 1.4f);
 			d2d->FillEllipse(cx, cy, 3.0f, 3.0f, color);
 			break;
@@ -244,17 +190,6 @@ namespace
 				d2d->DrawLine(frame.right - 5.0f, frame.top,
 					frame.right - 5.0f, frame.bottom, color, 1.0f);
 			break;
-		case UIClass::UI_GridView:
-		case UIClass::UI_PropertyGrid:
-			d2d->DrawRect(frame, color, 1.2f);
-			d2d->DrawLine(frame.left, frame.top + 5.0f, frame.right, frame.top + 5.0f, color, 1.0f);
-			d2d->DrawLine(cx, frame.top, cx, frame.bottom, color, 1.0f);
-			if (type == UIClass::UI_GridView)
-				d2d->DrawLine(frame.left, cy + 3.0f, frame.right, cy + 3.0f, color, 1.0f);
-			else
-				d2d->FillRect(frame.left + 1.0f, frame.top + 6.0f,
-					frame.right - frame.left - 2.0f, 3.0f, WithAlpha(color, 0.35f));
-			break;
 		case UIClass::UI_ChartView:
 			d2d->DrawLine(frame.left, frame.bottom, frame.right, frame.bottom, color, 1.1f);
 			d2d->DrawLine(frame.left, frame.bottom, frame.left, frame.top, color, 1.1f);
@@ -262,25 +197,6 @@ namespace
 				cx - 1.0f, cy + 2.0f, color, 1.5f);
 			d2d->DrawLine(cx - 1.0f, cy + 2.0f,
 				frame.right - 2.0f, frame.top + 3.0f, color, 1.5f);
-			break;
-		case UIClass::UI_ReportView:
-			d2d->DrawRect(frame, color, 1.2f);
-			DrawMiniLines(d2d, frame.left + 4.0f, frame.top + 5.0f,
-				frame.right - frame.left - 8.0f, 3, color);
-			d2d->FillRect(frame.left + 4.0f, frame.bottom - 5.0f, 4.0f, 3.0f, color);
-			d2d->FillRect(frame.left + 10.0f, frame.bottom - 8.0f, 4.0f, 6.0f, color);
-			break;
-		case UIClass::UI_KpiCard:
-			d2d->DrawRoundRect(frame, color, 1.2f, 3.0f);
-			d2d->FillRect(frame.left + 4.0f, frame.bottom - 5.0f, 3.0f, 3.0f, color);
-			d2d->FillRect(frame.left + 9.0f, frame.bottom - 9.0f, 3.0f, 7.0f, color);
-			d2d->FillRect(frame.left + 14.0f, frame.bottom - 13.0f, 3.0f, 11.0f, color);
-			break;
-		case UIClass::UI_FilterBar:
-			d2d->DrawLine(frame.left, frame.top, cx - 2.0f, cy, color, 1.5f);
-			d2d->DrawLine(frame.right, frame.top, cx + 2.0f, cy, color, 1.5f);
-			d2d->DrawLine(cx - 2.0f, cy, cx - 2.0f, frame.bottom, color, 1.5f);
-			d2d->DrawLine(cx + 2.0f, cy, cx - 2.0f, frame.bottom, color, 1.5f);
 			break;
 		case UIClass::UI_TreeView:
 			d2d->DrawLine(frame.left + 4.0f, frame.top + 3.0f,
@@ -307,7 +223,7 @@ namespace
 			d2d->DrawLine(frame.left, cy, frame.right, cy, color, 2.0f);
 			d2d->FillEllipse(cx + 3.0f, cy, 4.0f, 4.0f, color);
 			break;
-		case UIClass::UI_PictureBox:
+		case UIClass::UI_Image:
 			d2d->DrawRect(frame, color, 1.2f);
 			d2d->FillEllipse(frame.right - 5.0f, frame.top + 5.0f, 2.0f, 2.0f, color);
 			d2d->DrawLine(frame.left + 2.0f, frame.bottom - 2.0f,
@@ -342,12 +258,6 @@ namespace
 			if (type == UIClass::UI_StatusBar)
 				d2d->DrawLine(frame.left, frame.top + 4.0f,
 					frame.right, frame.top + 4.0f, color, 1.0f);
-			break;
-		case UIClass::UI_ToastHost:
-			d2d->DrawRoundRect(frame, color, 1.2f, 4.0f);
-			d2d->FillEllipse(frame.left + 5.0f, cy, 2.0f, 2.0f, color);
-			DrawMiniLines(d2d, frame.left + 9.0f, cy - 3.0f,
-				frame.right - frame.left - 12.0f, 2, color);
 			break;
 		case UIClass::UI_WebBrowser:
 			d2d->DrawEllipse(cx, cy, 8.0f, 8.0f, color, 1.2f);
@@ -393,24 +303,39 @@ namespace
 	{
 		if (filter.empty()) return true;
 		const auto searchable = Lower(
-			item.Text + L" " + item.TypeName + L" " + item.Category);
+			item.Descriptor.DisplayName + L" " + item.TypeName + L" " + item.Category);
 		std::wistringstream tokens(Lower(filter));
 		std::wstring token;
 		while (tokens >> token)
 			if (searchable.find(token) == std::wstring::npos) return false;
 		return true;
 	}
+
+	void ArrangeCanvasChild(Control* child, float x, float y,
+		float width, float height)
+	{
+		if (!child) return;
+		width = (std::max)(0.0f, width);
+		height = (std::max)(0.0f, height);
+		Canvas::SetLeft(*(child), x);
+		Canvas::SetTop(*(child), y);
+		Canvas::SetRight(*(child), cui::layout::UnsetCanvasOffset);
+		Canvas::SetBottom(*(child), cui::layout::UnsetCanvasOffset);
+		child->Width = width;
+		child->Height = height;
+		child->Arrange({ x, y, width, height });
+	}
 }
 
-void ToolBoxItem::Update()
+void ToolBoxItem::OnRender()
 {
-	if (!this->IsVisual || !this->ParentForm || !this->ParentForm->Render) return;
-	const bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	const bool isSelected = this->ParentForm->Selected == this;
-	auto* d2d = this->ParentForm->Render;
-	const auto size = this->ActualSize();
-	const float width = static_cast<float>(size.cx);
-	const float height = static_cast<float>(size.cy);
+	if (!this->IsVisible || !this->GetPresentationWindow() || !this->GetDrawingContext()) return;
+	const bool isUnderMouse = this->IsMouseOver;
+	const bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+	auto* d2d = this->GetDrawingContext();
+	const auto size = this->GetActualSizeDip();
+	const float width = size.width;
+	const float height = size.height;
 	const auto accent = CategoryAccent(this->Category);
 	this->BeginRender();
 	{
@@ -427,80 +352,78 @@ void ToolBoxItem::Update()
 
 		const auto iconRect = D2D1::RectF(7.0f, 4.0f, 39.0f, height - 4.0f);
 		d2d->FillRoundRect(iconRect, WithAlpha(accent, 0.12f), 6.0f);
-		DrawControlGlyph(d2d, this->ControlType, iconRect, accent, this->Font);
+		DrawControlGlyph(d2d, this->ControlType, iconRect, accent, this->GetRenderFont());
 
 		const float textLeft = 48.0f;
 		const float textWidth = std::max(1.0f, width - textLeft - 8.0f);
-		const auto primaryColor = this->Enable
+		const auto primaryColor = this->IsEnabled
 			? D2D1::ColorF(0.12f, 0.14f, 0.18f, 1.0f)
 			: D2D1::ColorF(0.45f, 0.48f, 0.53f, 1.0f);
-		d2d->DrawString(FitSingleLine(this->Font, this->Text, textWidth), textLeft, 2.0f,
+		d2d->DrawString(FitSingleLine(this->GetRenderFont(), this->GetDisplayText(), textWidth), textLeft, 2.0f,
 			textWidth, height * 0.55f,
-			primaryColor, this->Font);
-		d2d->DrawString(FitSingleLine(this->Font, this->TypeName, textWidth), textLeft, height * 0.46f,
+			primaryColor, this->GetRenderFont());
+		d2d->DrawString(FitSingleLine(this->GetRenderFont(), this->TypeName, textWidth), textLeft, height * 0.46f,
 			textWidth, height * 0.5f,
-			D2D1::ColorF(0.38f, 0.42f, 0.49f, 0.88f), this->Font);
+			D2D1::ColorF(0.38f, 0.42f, 0.49f, 0.88f), this->GetRenderFont());
 	}
-	if (!this->Enable)
+	if (!this->IsEnabled)
 		d2d->FillRoundRect(1.0f, 1.0f, width - 2.0f, height - 2.0f,
 			D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.48f), 6.0f);
 	this->EndRender();
 }
 
-ToolBox::ToolBox(
-	int x, int y, int width, int height,
-	std::vector<DesignerControlDescriptor> descriptors)
-	: Panel(x, y, width, height)
+ToolBox::ToolBox(int x, int y, int width, int height)
+	: Panel()
 {
-	this->BackColor = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+	Canvas::SetLeft(*this, static_cast<float>(x));
+	Canvas::SetTop(*this, static_cast<float>(y));
+	Width = static_cast<float>(width);
+	Height = static_cast<float>(height);
+	this->Background = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
 	this->BorderThickness = 1.0f;
 
-	_titleLabel = new Label(L"工具箱", 10, 8);
-	_titleLabel->Size = { width - 20, 25 };
-	_titleLabel->Font = new ::Font(L"Microsoft YaHei", 16.0f);
-	this->AddControl(_titleLabel);
+	_titleLabel = cui::designer::NewControl<Label>(L"工具箱", 10, 8);
+	_titleLabel->Width = static_cast<float>(width - 20);
+	_titleLabel->Height = 25.0f;
+	cui::designer::ApplyProgrammaticTypography(
+		*_titleLabel, L"Microsoft YaHei", 16.0);
+	this->AdoptVisualChild(_titleLabel);
 
-	_filterLabel = new Label(L"搜索", 10, 42);
-	_filterLabel->Size = { 40, 22 };
-	_filterLabel->Font = new ::Font(L"Microsoft YaHei", 11.0f);
-	_filterLabel->AccessibleName = L"工具箱搜索标签";
-	this->AddControl(_filterLabel);
+	_filterLabel = cui::designer::NewControl<Label>(L"搜索", 10, 42);
+	_filterLabel->Width = 40.0f;
+	_filterLabel->Height = 22.0f;
+	cui::designer::ApplyProgrammaticTypography(
+		*_filterLabel, L"Microsoft YaHei", 11.0);
+	_filterLabel->AutomationName = L"工具箱搜索标签";
+	this->AdoptVisualChild(_filterLabel);
 
-	_filterBox = new TextBox(L"", 52, 39, std::max(0, width - 62), 25);
-	_filterBox->AccessibleName = L"搜索工具箱控件";
-	_filterBox->AccessibleDescription = L"按中文名称、控件类型或分类筛选。";
-	_filterBox->OnTextChanged += [this](Control*, std::wstring, std::wstring value)
+	_filterBox = cui::designer::NewControl<TextBox>(L"", 52.0f, 39.0f,
+		static_cast<float>((std::max)(0, width - 62)), 25.0f);
+	_filterBox->AutomationName = L"搜索工具箱控件";
+	_filterBox->AutomationFullDescription = L"按中文名称、控件类型或分类筛选。";
+	_filterBox->OnTextChanged += [this](Control*, TextChangedEventArgs& args)
 	{
-		_filterText = std::move(value);
+		_filterText = args.NewText;
 		ApplyFilterLayout();
 		InvalidateVisual();
 	};
-	this->AddControl(_filterBox);
+	this->AdoptVisualChild(_filterBox);
 
-	_scrollView = new ScrollView(
-		0, _contentTop, width, std::max(0, height - _contentTop));
-	_scrollView->BackColor = D2D1::ColorF(0, 0, 0, 0);
+	_scrollView = cui::designer::NewControl<ScrollViewer>(
+		0.0f, static_cast<float>(_contentTop), static_cast<float>(width),
+		static_cast<float>((std::max)(0, height - _contentTop)));
+	_scrollView->Background = D2D1::ColorF(0, 0, 0, 0);
 	_scrollView->BorderThickness = 0.0f;
-	_scrollView->MouseWheelStep = 42;
-	this->AddControl(_scrollView);
+	this->AdoptVisualChild(_scrollView);
 
-	_itemsHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
-	_itemsHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
+	_itemsHost = cui::designer::NewControl<Panel>(0.0f, 0.0f,
+		static_cast<float>(width),
+		static_cast<float>((std::max)(0, height - _contentTop)));
+	_itemsHost->Background = D2D1::ColorF(0, 0, 0, 0);
 	_itemsHost->BorderThickness = 0.0f;
-	_scrollView->AddControl(_itemsHost);
+	_scrollView->AdoptVisualChild(_itemsHost);
 
-	if (descriptors.empty())
-	{
-		for (const auto& metadata : ControlRegistry::GetAvailableControls())
-			descriptors.push_back(DesignerControlDescriptor::BuiltIn(
-				metadata, ToolCategory(metadata.Type)));
-	}
-	else
-	{
-		for (auto& descriptor : descriptors)
-			if (descriptor.Category.empty())
-				descriptor.Category = ToolCategory(descriptor.Type);
-	}
+	auto descriptors = DesignerControlCatalog::BuiltInDescriptors();
 
 	std::vector<std::wstring> categories = {
 		L"基础控件", L"输入", L"布局", L"数据与列表",
@@ -515,12 +438,14 @@ ToolBox::ToolBox(
 	}
 	for (const auto& category : categories)
 	{
-		auto* heading = new Label(category, 12, 0);
-		heading->Size = { width - 28, 24 };
-		heading->Font = new ::Font(L"Microsoft YaHei", 11.0f);
-		heading->ForeColor = CategoryAccent(category);
-		heading->AccessibleName = category + L" 分类";
-		_itemsHost->AddControl(heading);
+		auto* heading = cui::designer::NewControl<Label>(category, 12, 0);
+		heading->Width = static_cast<float>(width - 28);
+		heading->Height = 24.0f;
+		cui::designer::ApplyProgrammaticTypography(
+			*heading, L"Microsoft YaHei", 11.0);
+		heading->Foreground = CategoryAccent(category);
+		heading->AutomationName = category + L" 分类";
+		_itemsHost->AdoptVisualChild(heading);
 		_categoryHeadings.push_back({ category, heading, 0 });
 	}
 
@@ -529,35 +454,39 @@ ToolBox::ToolBox(
 		if (!descriptor.IsValid()) continue;
 		auto* item = new ToolBoxItem(
 			std::move(descriptor), 8, 0, width - 24, 40);
-		item->Font = new ::Font(L"Microsoft YaHei", 10.5f);
-		item->BackColor = Colors::White;
+		cui::designer::ApplyProgrammaticTypography(
+			*item, L"Microsoft YaHei", 10.5);
+		item->Background = Colors::White;
 		item->BorderThickness = 1.0f;
-		item->AccessibleName = item->Descriptor.DisplayName;
-		item->AccessibleDescription = item->Descriptor.Name
+		item->AutomationName = item->Descriptor.DisplayName;
+		item->AutomationFullDescription = item->Descriptor.Name
 			+ L"；分类：" + item->Descriptor.Category;
-		item->OnMouseClick += [this, item](Control*, MouseEventArgs)
+		item->Click += [this, item](Control*, RoutedEventArgs&)
 		{
-			OnControlSelected(item->Descriptor);
+			cui::framework::EventAccess::Raise(
+				OnControlSelected, item->Descriptor);
 		};
-		item->OnMouseDown += [this, item](Control*, MouseEventArgs args)
+		item->OnMouseDown += [this, item](Control*, MouseEventArgs& args)
 		{
-			if (args.Buttons != MouseButtons::Left) return;
+			if (args.ChangedButton != MouseButton::Left) return;
 			const auto origin = item->GetAbsoluteLocationDip();
 			POINT formPoint{
 				static_cast<LONG>(std::lround(origin.x)) + args.X,
 				static_cast<LONG>(std::lround(origin.y)) + args.Y };
-			OnControlDragReady(item->Descriptor, formPoint);
+			cui::framework::EventAccess::Raise(
+				OnControlDragReady, item->Descriptor, formPoint);
 		};
-		_itemsHost->AddControl(item);
+		_itemsHost->AdoptVisualChild(item);
 		_items.push_back(item);
 	}
 
-	_emptyLabel = new Label(L"没有匹配的控件", 12, 8);
-	_emptyLabel->Size = { width - 28, 24 };
-	_emptyLabel->ForeColor = Colors::DimGrey;
-	_emptyLabel->Visible = false;
-	_emptyLabel->AccessibleName = L"没有匹配的工具箱控件";
-	_itemsHost->AddControl(_emptyLabel);
+	_emptyLabel = cui::designer::NewControl<Label>(L"没有匹配的控件", 12, 8);
+	_emptyLabel->Width = static_cast<float>(width - 28);
+	_emptyLabel->Height = 24.0f;
+	_emptyLabel->Foreground = Colors::DimGrey;
+	_emptyLabel->Visibility = Visibility::Collapsed;
+	_emptyLabel->AutomationName = L"没有匹配的工具箱控件";
+	_itemsHost->AdoptVisualChild(_emptyLabel);
 
 	_titleLabel->Text = L"工具箱 · " + std::to_wstring(_items.size());
 	ApplyFilterLayout();
@@ -573,7 +502,7 @@ void ToolBox::ApplyFilterLayout()
 	int yOffset = 2;
 	size_t visibleCount = 0;
 	for (auto* item : _items)
-		if (item) item->Visible = false;
+		if (item) item->Visibility = Visibility::Collapsed;
 	for (auto& heading : _categoryHeadings)
 	{
 		bool hasVisibleItems = false;
@@ -586,18 +515,20 @@ void ToolBox::ApplyFilterLayout()
 				break;
 			}
 		}
-		heading.LabelPtr->Visible = hasVisibleItems;
+		heading.LabelPtr->Visibility = hasVisibleItems
+			? Visibility::Visible : Visibility::Collapsed;
 		if (!hasVisibleItems) continue;
 		heading.BaseY = yOffset;
-		heading.LabelPtr->Top = yOffset;
+		Canvas::SetTop(*heading.LabelPtr, static_cast<float>(yOffset));
 		yOffset += 25;
 		for (auto* item : _items)
 		{
 			if (!item || item->Category != heading.Name) continue;
-			item->Visible = MatchesFilter(*item, _filterText);
-			if (!item->Visible) continue;
+			item->Visibility = MatchesFilter(*item, _filterText)
+				? Visibility::Visible : Visibility::Collapsed;
+			if (item->IsCollapsed()) continue;
 			item->BaseY = yOffset;
-			item->Top = yOffset;
+			Canvas::SetTop(*(item), static_cast<float>(yOffset));
 			yOffset += 44;
 			++visibleCount;
 		}
@@ -606,8 +537,9 @@ void ToolBox::ApplyFilterLayout()
 
 	if (_emptyLabel)
 	{
-		_emptyLabel->Visible = visibleCount == 0;
-		_emptyLabel->Top = 8;
+		_emptyLabel->Visibility = visibleCount == 0
+			? Visibility::Visible : Visibility::Collapsed;
+		Canvas::SetTop(*(_emptyLabel), 8.0f);
 	}
 	_contentHeight = visibleCount == 0
 		? 44 : yOffset + _contentBottomPadding;
@@ -616,66 +548,48 @@ void ToolBox::ApplyFilterLayout()
 
 void ToolBox::UpdateScrollLayout()
 {
-	if (_titleLabel)
-		_titleLabel->Size = { std::max(0, this->Width - 20), 25 };
-	if (_filterLabel)
-	{
-		_filterLabel->Location = { 10, 42 };
-		_filterLabel->Size = { 40, 22 };
-	}
-	if (_filterBox)
-	{
-		_filterBox->Location = { 52, 39 };
-		_filterBox->Size = { std::max(0, this->Width - 62), 25 };
-	}
-	if (_scrollView)
-	{
-		_scrollView->Location = { 0, _contentTop };
-		_scrollView->Size = {
-			this->Width, std::max(0, this->Height - _contentTop) };
-	}
+	const float width = ActualWidth;
+	const float height = ActualHeight;
+	ArrangeCanvasChild(_titleLabel, 10.0f, 8.0f,
+		(std::max)(0.0f, width - 20.0f), 25.0f);
+	ArrangeCanvasChild(_filterLabel, 10.0f, 42.0f, 40.0f, 22.0f);
+	ArrangeCanvasChild(_filterBox, 52.0f, 39.0f,
+		(std::max)(0.0f, width - 62.0f), 25.0f);
+	const float scrollHeight = (std::max)(
+		0.0f, height - static_cast<float>(_contentTop));
+	ArrangeCanvasChild(_scrollView, 0.0f,
+		static_cast<float>(_contentTop), width, scrollHeight);
 
-	const int hostWidth = _scrollView
-		? std::max(0, _scrollView->Width - 12) : this->Width;
-	const int hostHeight = _scrollView
-		? std::max(_contentHeight, _scrollView->Height) : _contentHeight;
-	if (_itemsHost)
-	{
-		_itemsHost->Location = { 0, 0 };
-		_itemsHost->Size = { hostWidth, hostHeight };
-	}
+	const float hostWidth = (std::max)(0.0f, width - 12.0f);
+	const float hostHeight = (std::max)(
+		static_cast<float>(_contentHeight), scrollHeight);
+	ArrangeCanvasChild(_itemsHost, 0.0f, 0.0f, hostWidth, hostHeight);
 	for (auto& heading : _categoryHeadings)
 	{
 		if (!heading.LabelPtr) continue;
-		heading.LabelPtr->Left = 12;
-		heading.LabelPtr->Width = std::max(0, hostWidth - 24);
-		if (heading.LabelPtr->Visible) heading.LabelPtr->Top = heading.BaseY;
+		ArrangeCanvasChild(heading.LabelPtr, 12.0f,
+			static_cast<float>(heading.BaseY),
+			(std::max)(0.0f, hostWidth - 24.0f), 24.0f);
 	}
 	for (auto* item : _items)
 	{
 		if (!item) continue;
-		item->Left = 8;
-		item->Width = std::max(60, hostWidth - 16);
-		if (item->Visible) item->Top = item->BaseY;
+		ArrangeCanvasChild(item, 8.0f, static_cast<float>(item->BaseY),
+			(std::max)(60.0f, hostWidth - 16.0f), 40.0f);
 	}
-	if (_emptyLabel)
-		_emptyLabel->Width = std::max(0, hostWidth - 24);
+	ArrangeCanvasChild(_emptyLabel, 12.0f, 8.0f,
+		(std::max)(0.0f, hostWidth - 24.0f), 24.0f);
 }
 
-void ToolBox::Update()
+void ToolBox::PreparePresentation()
 {
+	Panel::PreparePresentation();
 	UpdateScrollLayout();
-	Panel::Update();
 }
 
-bool ToolBox::ProcessMessage(
-	UINT message,
-	WPARAM wParam,
-	LPARAM lParam,
-	int localX,
-	int localY)
+void ToolBox::OnRender()
 {
-	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
+	Panel::OnRender();
 }
 
 void ToolBox::SetFilterText(const std::wstring& value)
@@ -688,11 +602,13 @@ void ToolBox::SetFilterText(const std::wstring& value)
 
 void ToolBox::CancelActiveItemPress()
 {
-	if (!this->ParentForm) return;
+	if (!this->GetPresentationWindow()) return;
 	for (auto* item : _items)
 	{
-		if (!item || this->ParentForm->Selected != item) continue;
-		(void)item->ProcessMessage(WM_CANCELMODE, 0, 0, 0, 0);
+		if (!item || this->GetPresentationWindow()->GetKeyboardFocusedElement() != item) continue;
+		InputReport cancelInput;
+		cancelInput.Kind = InputReportKind::Cancel;
+		(void)cui::framework::InputAccess::DispatchInput(*item, cancelInput);
 		item->InvalidateVisual();
 		break;
 	}
@@ -702,7 +618,7 @@ size_t ToolBox::GetVisibleItemCount() const noexcept
 {
 	return static_cast<size_t>(std::count_if(
 		_items.begin(), _items.end(),
-		[](ToolBoxItem* item) { return item && item->Visible; }));
+		[](ToolBoxItem* item) { return item && !item->IsCollapsed(); }));
 }
 
 size_t ToolBox::GetVisibleCategoryCount() const noexcept
@@ -710,5 +626,5 @@ size_t ToolBox::GetVisibleCategoryCount() const noexcept
 	return static_cast<size_t>(std::count_if(
 		_categoryHeadings.begin(), _categoryHeadings.end(),
 		[](const CategoryHeading& heading)
-		{ return heading.LabelPtr && heading.LabelPtr->Visible; }));
+		{ return heading.LabelPtr && !heading.LabelPtr->IsCollapsed(); }));
 }

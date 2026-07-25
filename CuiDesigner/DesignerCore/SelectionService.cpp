@@ -34,8 +34,8 @@ bool SelectionService::Add(std::vector<std::shared_ptr<DesignerControl>>& select
 	{
 		if (!selectedControls.empty() && selectedControl && selectedControl->ControlInstance)
 		{
-			auto* p0 = selectedControl->ControlInstance->Parent;
-			auto* p1 = dc->ControlInstance->Parent;
+			auto* p0 = selectedControl->ControlInstance->GetVisualParent();
+			auto* p1 = dc->ControlInstance->GetVisualParent();
 			if (p0 != p1)
 			{
 				return false;

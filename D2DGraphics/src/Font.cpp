@@ -1,6 +1,7 @@
-﻿#include "Font.h"
+#include "Font.h"
 #include "Factory.h"
 #include <dwrite_3.h>
+#include <algorithm>
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
@@ -49,10 +50,10 @@ SET_CPP(Font, float, FontSize) {
 	this->_fontSize = value;
 	this->FontHeight = this->GetTextSize(L"I", FLT_MAX, FLT_MAX).height;
 }
-GET_CPP(Font, std::wstring, FontName) {
+GET_CPP(Font, std::wstring, FontFamily) {
 	return this->_fontName;
 }
-SET_CPP(Font, std::wstring, FontName) {
+SET_CPP(Font, std::wstring, FontFamily) {
 	if (value != this->_fontName && this->_fontObject) {
 		this->_fontObject->Release();
 		this->_fontObject = NULL;
@@ -158,30 +159,66 @@ int Font::HitTestTextPosition(IDWriteTextLayout* textLayout, float width, float 
 	}
 	return -1;
 }
-std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(std::wstring str, UINT32 start, UINT32 len) {
-	std::vector<DWRITE_HIT_TEST_METRICS> hitTestMetrics;
-	IDWriteTextLayout* textLayout = NULL;
-	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(), str.size(), this->_fontObject, FLT_MAX, FLT_MAX, &textLayout);
-	if SUCCEEDED(hr) {
-		UINT32 actualHitTestCount = 0;
-		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, NULL, 0, &actualHitTestCount);
-		hitTestMetrics.resize(actualHitTestCount);
-		UINT32 textLen = len;
-		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, hitTestMetrics.data(), hitTestMetrics.size(), &actualHitTestCount);
-		textLayout->Release();
-	}
-	return hitTestMetrics;
+std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(
+	std::wstring str, UINT32 start, UINT32 len)
+{
+	if (!this->_fontObject || start > str.size())
+		return {};
+	len = (std::min)(len,
+		static_cast<UINT32>(str.size() - start));
+	IDWriteTextLayout* textLayout = nullptr;
+	const HRESULT result = _DWriteFactory->CreateTextLayout(
+		str.c_str(), static_cast<UINT32>(str.size()), this->_fontObject,
+		FLT_MAX, FLT_MAX, &textLayout);
+	if (FAILED(result) || !textLayout)
+		return {};
+	auto metrics = HitTestTextRange(textLayout, start, len);
+	textLayout->Release();
+	return metrics;
 }
-std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(IDWriteTextLayout* textLayout, UINT32 start, UINT32 len) {
-	std::vector<DWRITE_HIT_TEST_METRICS> hitTestMetrics;
-	UINT32 actualHitTestCount = 0;
-	if (textLayout) {
-		HRESULT hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, NULL, 0, &actualHitTestCount);
-		hitTestMetrics.resize(actualHitTestCount);
-		UINT32 textLen = len;
-		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, hitTestMetrics.data(), hitTestMetrics.size(), &actualHitTestCount);
+
+std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(
+	IDWriteTextLayout* textLayout, UINT32 start, UINT32 len)
+{
+	if (!textLayout) return {};
+
+	if (len == 0)
+	{
+		FLOAT x = 0.0f;
+		FLOAT y = 0.0f;
+		DWRITE_HIT_TEST_METRICS caret{};
+		HRESULT result = textLayout->HitTestTextPosition(
+			start, FALSE, &x, &y, &caret);
+		if (FAILED(result) && start > 0)
+		{
+			result = textLayout->HitTestTextPosition(
+				start - 1, TRUE, &x, &y, &caret);
+		}
+		if (FAILED(result)) return {};
+		caret.textPosition = start;
+		caret.length = 0;
+		caret.left = x;
+		caret.top = y;
+		caret.width = 0.0f;
+		return { caret };
 	}
-	return hitTestMetrics;
+
+	UINT32 required = 0;
+	const HRESULT query = textLayout->HitTestTextRange(
+		start, len, 0.0f, 0.0f, nullptr, 0, &required);
+	if ((FAILED(query) && query != E_NOT_SUFFICIENT_BUFFER)
+		|| required == 0)
+		return {};
+
+	std::vector<DWRITE_HIT_TEST_METRICS> metrics(required);
+	UINT32 written = 0;
+	const HRESULT result = textLayout->HitTestTextRange(
+		start, len, 0.0f, 0.0f, metrics.data(),
+		static_cast<UINT32>(metrics.size()), &written);
+	if (FAILED(result)) return {};
+	metrics.resize((std::min)(written,
+		static_cast<UINT32>(metrics.size())));
+	return metrics;
 }
 std::vector<std::wstring> Font::GetSystemFonts() {
 	static std::vector<std::wstring> result = std::vector<std::wstring>();

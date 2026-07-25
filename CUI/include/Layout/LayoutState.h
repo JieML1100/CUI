@@ -26,6 +26,11 @@ struct Length final {
     Dip value = 0.0f;
 
     constexpr Length() noexcept = default;
+    constexpr Length(Dip valueValue) noexcept
+        : unit(LengthUnit::Dip),
+          value(valueValue < 0.0f || valueValue != valueValue ? 0.0f : valueValue)
+    {
+    }
     constexpr Length(LengthUnit unitValue, Dip valueValue) noexcept
         : unit(unitValue), value(valueValue)
     {
@@ -81,10 +86,6 @@ struct LayoutStyle final {
         return Constraints { minimumSize, maximumSize }.Normalized();
     }
 };
-
-// Alias that makes the specified/computed distinction explicit at call sites
-// where LayoutStyle would otherwise be ambiguous.
-using LayoutSpecifiedState = LayoutStyle;
 
 enum class DirtyFlags : std::uint8_t {
     None = 0,

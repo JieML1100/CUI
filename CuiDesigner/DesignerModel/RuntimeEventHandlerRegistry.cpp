@@ -24,23 +24,23 @@ struct RuntimeEventHandlerRegistry::State
 	{
 		std::uint64_t Token = 0;
 		UIClass ControlType = UIClass::UI_Base;
-		std::wstring ComponentTypeKey;
+		RuntimeTypeId DeclarativeOwnerType;
 		DesignerEventDescriptor Event;
 		ControlBinder Bind;
 	};
 
-	struct FormRoute
+	struct WindowRoute
 	{
 		std::uint64_t Token = 0;
 		DesignerEventDescriptor Event;
-		FormBinder Bind;
+		WindowBinder Bind;
 	};
 
 	struct HandlerEntry
 	{
 		std::type_index Signature{ typeid(void) };
 		std::vector<ControlRoute> ControlRoutes;
-		std::vector<FormRoute> FormRoutes;
+		std::vector<WindowRoute> WindowRoutes;
 	};
 
 	std::unordered_map<std::wstring, HandlerEntry> Handlers;
@@ -207,15 +207,15 @@ RuntimeControlEventResolver RuntimeEventHandlerRegistry::ControlResolver() const
 	};
 }
 
-RuntimeFormEventResolver RuntimeEventHandlerRegistry::FormResolver() const
+RuntimeWindowEventResolver RuntimeEventHandlerRegistry::WindowResolver() const
 {
 	auto state = _state;
 	return [state = std::move(state)](
-		const RuntimeFormEventRequest& request,
+		const RuntimeWindowEventRequest& request,
 		EventConnection& connection,
 		std::wstring& error)
 	{
-		return ResolveForm(*state, request, connection, error);
+		return ResolveWindow(*state, request, connection, error);
 	};
 }
 
@@ -252,13 +252,13 @@ void RuntimeEventHandlerRegistry::RemoveRoutes(
 			{
 				return route.Token >= firstToken && route.Token < endToken;
 			}), entry.ControlRoutes.end());
-		entry.FormRoutes.erase(std::remove_if(
-			entry.FormRoutes.begin(), entry.FormRoutes.end(),
-			[=](const State::FormRoute& route)
+		entry.WindowRoutes.erase(std::remove_if(
+			entry.WindowRoutes.begin(), entry.WindowRoutes.end(),
+			[=](const State::WindowRoute& route)
 			{
 				return route.Token >= firstToken && route.Token < endToken;
-			}), entry.FormRoutes.end());
-		if (entry.ControlRoutes.empty() && entry.FormRoutes.empty())
+			}), entry.WindowRoutes.end());
+		if (entry.ControlRoutes.empty() && entry.WindowRoutes.empty())
 			handler = state.Handlers.erase(handler);
 		else
 			++handler;
@@ -279,8 +279,8 @@ bool RuntimeEventHandlerRegistry::ContainsRoutes(
 				return route.Token >= firstToken && route.Token < endToken;
 			}))
 			return true;
-		if (std::any_of(entry.FormRoutes.begin(),
-			entry.FormRoutes.end(), [=](const State::FormRoute& route)
+		if (std::any_of(entry.WindowRoutes.begin(),
+			entry.WindowRoutes.end(), [=](const State::WindowRoute& route)
 			{
 				return route.Token >= firstToken && route.Token < endToken;
 			}))
@@ -289,10 +289,10 @@ bool RuntimeEventHandlerRegistry::ContainsRoutes(
 	return false;
 }
 
-bool RuntimeEventHandlerRegistry::AddControlRoute(
+bool RuntimeEventHandlerRegistry::AdoptVisualChildRoute(
 	std::wstring handlerName,
 	UIClass controlType,
-	std::wstring componentTypeKey,
+	RuntimeTypeId declarativeOwnerType,
 	DesignerEventDescriptor descriptor,
 	ControlBinder binder,
 	std::wstring* outError)
@@ -314,7 +314,7 @@ bool RuntimeEventHandlerRegistry::AddControlRoute(
 			[&](const State::ControlRoute& route)
 			{
 				return route.ControlType == controlType
-					&& route.ComponentTypeKey == componentTypeKey
+					&& route.DeclarativeOwnerType == declarativeOwnerType
 					&& SameEvent(route.Event, descriptor);
 			});
 		if (duplicate)
@@ -332,7 +332,7 @@ bool RuntimeEventHandlerRegistry::AddControlRoute(
 		}
 		const auto token = _state->NextRouteToken++;
 		entry.ControlRoutes.push_back(State::ControlRoute{
-			token, controlType, std::move(componentTypeKey),
+			token, controlType, std::move(declarativeOwnerType),
 			std::move(descriptor), std::move(binder) });
 		if (outError) outError->clear();
 		return true;
@@ -342,17 +342,17 @@ bool RuntimeEventHandlerRegistry::AddControlRoute(
 		auto found = _state->Handlers.find(handlerName);
 		if (found != _state->Handlers.end()
 			&& found->second.ControlRoutes.empty()
-			&& found->second.FormRoutes.empty())
+			&& found->second.WindowRoutes.empty())
 			_state->Handlers.erase(found);
 		SetError(outError, L"保存运行时控件事件路由时资源分配失败。");
 		return false;
 	}
 }
 
-bool RuntimeEventHandlerRegistry::AddFormRoute(
+bool RuntimeEventHandlerRegistry::AddWindowRoute(
 	std::wstring handlerName,
 	DesignerEventDescriptor descriptor,
-	FormBinder binder,
+	WindowBinder binder,
 	std::wstring* outError)
 {
 	try
@@ -368,8 +368,8 @@ bool RuntimeEventHandlerRegistry::AddFormRoute(
 			return false;
 		}
 		const auto duplicate = std::any_of(
-			entry.FormRoutes.begin(), entry.FormRoutes.end(),
-			[&](const State::FormRoute& route)
+			entry.WindowRoutes.begin(), entry.WindowRoutes.end(),
+			[&](const State::WindowRoute& route)
 			{
 				return SameEvent(route.Event, descriptor);
 			});
@@ -387,7 +387,7 @@ bool RuntimeEventHandlerRegistry::AddFormRoute(
 			return false;
 		}
 		const auto token = _state->NextRouteToken++;
-		entry.FormRoutes.push_back(State::FormRoute{
+		entry.WindowRoutes.push_back(State::WindowRoute{
 			token, std::move(descriptor), std::move(binder) });
 		if (outError) outError->clear();
 		return true;
@@ -397,7 +397,7 @@ bool RuntimeEventHandlerRegistry::AddFormRoute(
 		auto found = _state->Handlers.find(handlerName);
 		if (found != _state->Handlers.end()
 			&& found->second.ControlRoutes.empty()
-			&& found->second.FormRoutes.empty())
+			&& found->second.WindowRoutes.empty())
 			_state->Handlers.erase(found);
 		SetError(outError, L"保存运行时窗体事件路由时资源分配失败。");
 		return false;
@@ -426,14 +426,12 @@ bool RuntimeEventHandlerRegistry::ResolveControl(
 
 	const State::ControlRoute* wildcard = nullptr;
 	const State::ControlRoute* selected = nullptr;
-	const auto componentKey = request.ComponentType.Empty()
-		? std::wstring{} : request.ComponentType.RegistryKey();
 	for (const auto& route : entry.ControlRoutes)
 	{
 		if (!SameEvent(route.Event, request.Event)) continue;
-		if (!route.ComponentTypeKey.empty())
+		if (!route.DeclarativeOwnerType.Empty())
 		{
-			if (route.ComponentTypeKey == componentKey)
+			if (route.DeclarativeOwnerType == request.DeclarativeOwnerType)
 			{
 				selected = &route;
 				break;
@@ -466,9 +464,9 @@ bool RuntimeEventHandlerRegistry::ResolveControl(
 	}
 }
 
-bool RuntimeEventHandlerRegistry::ResolveForm(
+bool RuntimeEventHandlerRegistry::ResolveWindow(
 	State& state,
-	const RuntimeFormEventRequest& request,
+	const RuntimeWindowEventRequest& request,
 	EventConnection& connection,
 	std::wstring& error)
 {
@@ -486,12 +484,12 @@ bool RuntimeEventHandlerRegistry::ResolveForm(
 		return false;
 	}
 	const auto route = std::find_if(
-		entry.FormRoutes.begin(), entry.FormRoutes.end(),
-		[&](const State::FormRoute& value)
+		entry.WindowRoutes.begin(), entry.WindowRoutes.end(),
+		[&](const State::WindowRoute& value)
 		{
 			return SameEvent(value.Event, request.Event);
 		});
-	if (route == entry.FormRoutes.end())
+	if (route == entry.WindowRoutes.end())
 	{
 		error = L"处理函数没有匹配当前窗体事件的路由："
 			+ request.HandlerName + L" / " + request.Event.Name;

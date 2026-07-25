@@ -2,7 +2,7 @@
 
 #include "DesignerBindingUtils.h"
 #include "DesignerTypes.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/TextBox.h"
 #include "../CUI/include/RichTextBox.h"
@@ -21,7 +21,7 @@ struct DesignerBindingElementSource
 };
 
 /** Structured editor for the bindings attached to one design-time control. */
-class BindingEditorDialog : public Form
+class BindingEditorDialog : public Window
 {
 public:
 	bool Applied = false;

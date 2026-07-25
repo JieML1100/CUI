@@ -15,6 +15,8 @@ namespace cui::drawing
 {
 enum class BrushKind
 {
+	/** WPF null-brush value; paints nothing and reveals renderer/theme fallback. */
+	None,
 	Solid,
 	LinearGradient,
 	RadialGradient,
@@ -70,7 +72,11 @@ struct GradientStop
  */
 struct Brush
 {
-	BrushKind Kind = BrushKind::Solid;
+	Brush() = default;
+	Brush(D2D1_COLOR_F color) noexcept
+		: Kind(BrushKind::Solid), Color(color) {}
+
+	BrushKind Kind = BrushKind::None;
 	BrushMappingMode MappingMode = BrushMappingMode::RelativeToBoundingBox;
 	D2D1_COLOR_F Color{ 0.0f, 0.0f, 0.0f, 1.0f };
 	float Opacity = 1.0f;
@@ -90,9 +96,51 @@ struct Brush
 	ImageBrushAlignmentX AlignmentX = ImageBrushAlignmentX::Center;
 	ImageBrushAlignmentY AlignmentY = ImageBrushAlignmentY::Center;
 
+	bool operator==(const Brush& other) const noexcept
+	{
+		return Kind == other.Kind
+			&& MappingMode == other.MappingMode
+			&& Color.r == other.Color.r
+			&& Color.g == other.Color.g
+			&& Color.b == other.Color.b
+			&& Color.a == other.Color.a
+			&& Opacity == other.Opacity
+			&& StartPoint.x == other.StartPoint.x
+			&& StartPoint.y == other.StartPoint.y
+			&& EndPoint.x == other.EndPoint.x
+			&& EndPoint.y == other.EndPoint.y
+			&& Center.x == other.Center.x
+			&& Center.y == other.Center.y
+			&& GradientOrigin.x == other.GradientOrigin.x
+			&& GradientOrigin.y == other.GradientOrigin.y
+			&& RadiusX == other.RadiusX
+			&& RadiusY == other.RadiusY
+			&& GradientStops == other.GradientStops
+			&& Transform == other.Transform
+			&& RelativeTransform == other.RelativeTransform
+			&& ImageSource == other.ImageSource
+			&& Stretch == other.Stretch
+			&& AlignmentX == other.AlignmentX
+			&& AlignmentY == other.AlignmentY;
+	}
+
 	ID2D1Brush* CreateBrush(
 		D2DGraphics& graphics,
 		D2D1_SIZE_F bounds) const;
 	D2D1_MATRIX_3X2_F ToTransformMatrix(D2D1_SIZE_F bounds) const noexcept;
 };
+
+inline Brush MakeSolidColorBrush(D2D1_COLOR_F color, float opacity = 1.0f)
+{
+	Brush result;
+	result.Kind = BrushKind::Solid;
+	result.Color = color;
+	result.Opacity = opacity;
+	return result;
+}
+
+inline Brush NoBrush() noexcept
+{
+	return {};
+}
 }

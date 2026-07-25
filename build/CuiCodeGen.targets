@@ -5,7 +5,7 @@
     <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">CuiCodeGen.exe</CuiCodeGenExe>
     <!-- Bump whenever generator output semantics change. The versioned default
          stamp invalidates old outputs without depending on unstable linker times. -->
-    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">10</CuiCodeGenContractVersion>
+    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">32</CuiCodeGenContractVersion>
   </PropertyGroup>
 
   <ItemDefinitionGroup>
@@ -43,7 +43,7 @@
           BeforeTargets="ClCompile"
           DependsOnTargets="CuiPrepareCodeGeneration"
           Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiDesign)' != ''"
-          Inputs="%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);%(CuiDesign.OutputBase).h;%(CuiDesign.OutputBase).cpp;%(CuiDesign.OutputBase).g.h;%(CuiDesign.OutputBase).g.cpp;%(CuiDesign.OutputBase).handlers.g.inc"
+          Inputs="%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiDesign.OutputBase).h;%(CuiDesign.OutputBase).cpp;%(CuiDesign.OutputBase).g.h;%(CuiDesign.OutputBase).g.cpp;%(CuiDesign.OutputBase).handlers.g.inc"
           Outputs="%(CuiDesign.StampFile)">
     <Error Condition="'%(CuiDesign.OutputBase)' == ''"
            Text="CuiDesign '%(CuiDesign.Identity)' requires extensionless OutputBase metadata." />

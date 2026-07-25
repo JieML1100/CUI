@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/RichTextBox.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/Button.h"
@@ -18,7 +18,7 @@ class DesignerCanvas;
  * valid documents to the design surface.  A future Visual Studio host can
  * replace this shell without replacing the XAML frontend.
  */
-class XamlEditorDialog final : public Form
+class XamlEditorDialog final : public Window
 {
 	friend bool RunDesignerSelfTest(std::wstring& report);
 
@@ -28,12 +28,10 @@ public:
 	XamlEditorDialog(DesignerCanvas* canvas, std::wstring initialXaml);
 	~XamlEditorDialog();
 
-	bool ProcessMessage(
-		UINT message,
-		WPARAM wParam,
-		LPARAM lParam,
-		int localX,
-		int localY) override;
+protected:
+	bool OnPreviewInputReport(const InputReport& input) override;
+	std::optional<LRESULT> OnPlatformMessage(
+		UINT message, WPARAM wParam, LPARAM lParam) override;
 
 private:
 	DesignerCanvas* _canvas = nullptr;
@@ -42,7 +40,6 @@ private:
 	Button* _locateError = nullptr;
 	Button* _restorePreview = nullptr;
 	bool _loading = false;
-	wchar_t _suppressedCharacter = L'\0';
 	std::size_t _diagnosticOffset =
 		DesignerModel::XamlDocumentDiagnostic::UnknownOffset;
 	std::wstring _lastValidXaml;

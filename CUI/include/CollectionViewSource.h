@@ -81,7 +81,8 @@ struct CollectionAggregateDescription final
  */
 class CollectionViewSource final
 	: public IBindingList,
-	  public IBindingListGroupView
+	  public IBindingListGroupView,
+	  public IBindingListCurrentView
 {
 public:
 	using FilterPredicate = std::function<bool(
@@ -130,9 +131,14 @@ public:
 	void SetFilterPredicate(FilterPredicate value);
 	void Refresh();
 
-	int CurrentPosition() const noexcept { return _currentPosition; }
-	BindingSourceReference CurrentItem() const noexcept { return _currentItem; }
-	bool MoveCurrentToPosition(int position);
+	int CurrentPosition() const noexcept override { return _currentPosition; }
+	BindingSourceReference CurrentItem() const noexcept override
+	{
+		return _currentItem;
+	}
+	bool MoveCurrentToPosition(int position) override;
+	EventConnection SubscribeCurrentChanged(
+		CurrentChangedHandler handler) override;
 	bool MoveCurrentToFirst() { return MoveCurrentToPosition(0); }
 	bool MoveCurrentToLast()
 	{

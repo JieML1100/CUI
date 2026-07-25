@@ -1,22 +1,25 @@
 #pragma once
 
 #include "DesignDocument.h"
-#include "../CodeGenInput.h"
 #include "../DesignerEventCatalog.h"
 #include "../../CUI/include/Core/EventConnection.h"
+#include "../../CUI/include/ControlWeakReference.h"
 #include "../../CUI/include/NativeSurface.h"
+#include "../../CUI/include/RoutedCommand.h"
+#include "../../CUI/include/XamlSchema.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
 
-class Form;
+class Window;
+struct CommandBinding;
 
 namespace DesignerModel
 {
@@ -67,10 +70,10 @@ public:
 		const DeclarativeComponentBehaviorContext& context)>;
 
 	bool Register(
-		DesignerComponentType componentType,
+		RuntimeTypeId componentType,
 		Factory factory,
 		std::wstring* outError = nullptr);
-	bool Unregister(const DesignerComponentType& componentType) noexcept;
+	bool Unregister(const RuntimeTypeId& componentType) noexcept;
 	std::unique_ptr<IDeclarativeComponentBehavior> Create(
 		const DeclarativeComponentBehaviorContext& context) const;
 
@@ -80,7 +83,7 @@ private:
 };
 
 /**
- * One named control-event request produced by a dynamic design document.
+ * One named control-event request produced by a declarative runtime document.
  *
  * C++ member functions cannot be looked up safely from a string. Applications
  * therefore provide a resolver which subscribes the requested handler and
@@ -93,9 +96,17 @@ struct RuntimeControlEventRequest
 	int StableId = 0;
 	std::wstring ControlName;
 	UIClass ControlType = UIClass::UI_Base;
-	DesignerComponentType ComponentType;
+	RuntimeTypeId DeclarativeOwnerType;
 	DesignerEventDescriptor Event;
 	std::wstring HandlerName;
+	/** Non-empty only for a handler declared by XAML CommandBinding. */
+	std::wstring CommandName;
+	/**
+	 * Non-null only while resolving one XAML CommandBinding handler. The
+	 * resolver must assign the matching callback into this binding instead of
+	 * subscribing directly to a routed event.
+	 */
+	CommandBinding* CommandBindingSink = nullptr;
 };
 
 using RuntimeControlEventResolver = std::function<bool(
@@ -103,50 +114,52 @@ using RuntimeControlEventResolver = std::function<bool(
 	EventConnection& connection,
 	std::wstring& error)>;
 
-struct RuntimeFormEventRequest
+struct RuntimeWindowEventRequest
 {
-	Form& Target;
-	std::wstring FormName;
+	Window& Target;
+	std::wstring WindowName;
 	DesignerEventDescriptor Event;
 	std::wstring HandlerName;
+	std::wstring CommandName;
+	CommandBinding* CommandBindingSink = nullptr;
 };
 
-using RuntimeFormEventResolver = std::function<bool(
-	const RuntimeFormEventRequest& request,
+using RuntimeWindowEventResolver = std::function<bool(
+	const RuntimeWindowEventRequest& request,
 	EventConnection& connection,
 	std::wstring& error)>;
 
-enum class RuntimeRootHostAttachMode
+enum class RuntimeContentHostAttachMode
 {
-	/** First transfer; append using the host's normal root placement policy. */
+	/** First transfer into an empty content slot. */
 	Initial,
-	/** Commit replacement roots at the detached document forest's anchor. */
+	/** Commit replacement Content after a transactional detach. */
 	Replacement,
-	/** Restore the exact detached roots to their previously captured slots. */
+	/** Restore the exact detached Content after a failed replacement. */
 	Rollback,
 };
 
 /**
- * Ownership bridge for a host that stores RuntimeDocument roots externally.
+ * Ownership bridge for a host that stores RuntimeDocument Content externally.
  *
  * Every operation is atomic from the caller's perspective. On failure,
- * DetachRoots must leave the host unchanged and output empty; AttachRoots must
- * leave the host unchanged and preserve every unique_ptr in roots. A successful
+ * DetachContent must leave the host unchanged and output empty; AttachContent
+ * must leave the host unchanged and preserve the unique_ptr. A successful
  * detach opens one transaction which a successful Replacement or Rollback
  * attach closes. Implementations must report failures through the return value
  * and must not throw after mutating host ownership.
  */
-class RuntimeDocumentRootHost
+class RuntimeDocumentContentHost
 {
 public:
-	virtual ~RuntimeDocumentRootHost() = default;
-	virtual bool DetachRoots(
-		std::span<Control* const> roots,
-		std::vector<std::unique_ptr<Control>>& output,
+	virtual ~RuntimeDocumentContentHost() = default;
+	virtual bool DetachContent(
+		Control* content,
+		std::unique_ptr<Control>& output,
 		std::wstring* outError = nullptr) = 0;
-	virtual bool AttachRoots(
-		std::vector<std::unique_ptr<Control>>& roots,
-		RuntimeRootHostAttachMode mode,
+	virtual bool AttachContent(
+		std::unique_ptr<Control>& content,
+		RuntimeContentHostAttachMode mode,
 		std::wstring* outError = nullptr) = 0;
 };
 
@@ -183,14 +196,15 @@ enum class RuntimeDocumentReloadMode
 /**
  * Fully materialized, move-only runtime representation of one design document.
  *
- * Root controls are owned by this object until ReleaseRootControls() or
- * TransferRootControlsTo() is called. The latter retains an ownership adapter
- * so topology reload can still commit or roll back the host's root forest.
- * The DesignerControl records remain available so code generation, named event
- * resolution, bindings, and diagnostic tools all consume the same materialized
- * tree instead of reconstructing different partial models. Form targets passed
- * to ApplyFormProperties(), BindFormEvents(), or TransferRootControlsTo(Form)
- * are retained non-owning and must outlive this document.
+ * ContentRoot is owned by this object until ReleaseContentRoot() or
+ * TransferContentRootTo() is called. The latter retains an ownership adapter
+ * so topology reload can still commit or roll back the host's Content slot.
+ * The DesignerControl records are transient materialization projections used by
+ * runtime lookup, event wiring and transactional reload. They are never an
+ * authored declaration source; persistence and static lowering consume the
+ * retained DesignDocument. Window targets passed to ApplyWindowProperties(),
+ * BindWindowEvents(), or TransferContentRootTo(Window) are retained non-owning
+ * and must outlive this document.
  */
 class RuntimeDocument final
 {
@@ -203,7 +217,7 @@ public:
 	RuntimeDocument(RuntimeDocument&& other) noexcept;
 	RuntimeDocument& operator=(RuntimeDocument&& other) noexcept;
 
-	const DesignFormModel& FormModel() const noexcept { return _form; }
+	const DesignNode& WindowNode() const noexcept { return _window; }
 	const DesignerDataContextSchema& DataContextSchema() const noexcept
 	{
 		return _dataContextSchema;
@@ -219,14 +233,11 @@ public:
 	{
 		return _controls;
 	}
-	const std::vector<Control*>& RootControls() const noexcept
+	Control* ContentRoot() const noexcept { return _contentRoot.Get(); }
+	bool OwnsContentRoot() const noexcept { return !_contentReleased; }
+	bool HasContentHostAdapter() const noexcept
 	{
-		return _rootControls;
-	}
-	bool OwnsRootControls() const noexcept { return !_rootsReleased; }
-	bool HasRootHostAdapter() const noexcept
-	{
-		return static_cast<bool>(_rootHost);
+		return static_cast<bool>(_contentHost);
 	}
 
 	Control* FindControlByDesignId(int stableId) noexcept;
@@ -277,57 +288,54 @@ public:
 	void ClearControlEvents() noexcept;
 	size_t BoundControlEventCount() const noexcept
 	{
-		return _eventConnections.size();
+		return _eventConnections.size() + _boundControlCommandHandlerCount;
 	}
-	/** Applies persisted values and retains the Form for future reload refreshes. */
-	bool ApplyFormProperties(::Form& form, std::wstring* outError = nullptr) const;
-	/** Resolves handlers and retains the non-owning Form/resolver across reloads. */
-	bool BindFormEvents(
-		::Form& form,
-		const RuntimeFormEventResolver& resolver,
+	/** Applies persisted values and retains the Window for future reload refreshes. */
+	bool ApplyWindowProperties(::Window& form, std::wstring* outError = nullptr);
+	/** Resolves handlers and retains the non-owning Window/resolver across reloads. */
+	bool BindWindowEvents(
+		::Window& form,
+		const RuntimeWindowEventResolver& resolver,
 		std::wstring* outError = nullptr);
-	void ClearFormEvents() noexcept;
-	size_t BoundFormEventCount() const noexcept
+	void ClearWindowEvents() noexcept;
+	size_t BoundWindowEventCount() const noexcept
 	{
-		return _formEventConnections.size();
+		return _windowEventConnections.size() + _boundWindowCommandHandlerCount;
 	}
 	/**
-	 * Atomically applies Form presentation, resolves Form events, and transfers
-	 * the root forest to Form's built-in transactional host adapter.
+	 * Atomically applies Window presentation, resolves Window events, and transfers
+	 * ContentRoot to Window's built-in transactional host adapter.
 	 */
-	bool AttachToForm(
-		::Form& form,
-		const RuntimeFormEventResolver& resolver,
+	bool AttachToWindow(
+		::Window& form,
+		const RuntimeWindowEventResolver& resolver,
 		std::wstring* outError = nullptr);
-	/** Form-event-free convenience overload. */
-	bool AttachToForm(
-		::Form& form,
+	/** Window-event-free convenience overload. */
+	bool AttachToWindow(
+		::Window& form,
 		std::wstring* outError = nullptr);
-	/** Advanced overload for a custom root host associated with the Form. */
-	bool AttachToForm(
-		::Form& form,
-		std::shared_ptr<RuntimeDocumentRootHost> rootHost,
-		const RuntimeFormEventResolver& resolver,
+	/** Advanced overload for a custom Content host associated with the Window. */
+	bool AttachToWindow(
+		::Window& form,
+		std::shared_ptr<RuntimeDocumentContentHost> contentHost,
+		const RuntimeWindowEventResolver& resolver,
 		std::wstring* outError = nullptr);
 
 	/**
-	 * Transfers the complete root forest to the caller and disconnects runtime
+	 * Transfers ContentRoot to the caller and disconnects runtime
 	 * bindings/events while the controls are alive. Lookup metadata remains a
-	 * non-owning snapshot; use TransferRootControlsTo() when later reload,
+	 * non-owning snapshot; use TransferContentRootTo() when later reload,
 	 * rebinding, or event management is required.
 	 */
-	std::vector<std::unique_ptr<Control>> ReleaseRootControls();
-	/** Atomically transfers roots to an adapter retained for future reloads. */
-	bool TransferRootControlsTo(
-		std::shared_ptr<RuntimeDocumentRootHost> host,
+	std::unique_ptr<Control> ReleaseContentRoot();
+	/** Atomically transfers Content to an adapter retained for future reloads. */
+	bool TransferContentRootTo(
+		std::shared_ptr<RuntimeDocumentContentHost> host,
 		std::wstring* outError = nullptr);
-	/** Convenience overload using CUI Form's built-in transactional adapter. */
-	bool TransferRootControlsTo(
-		::Form& form,
+	/** Convenience overload using CUI Window's built-in transactional adapter. */
+	bool TransferContentRootTo(
+		::Window& form,
 		std::wstring* outError = nullptr);
-
-	/** Creates the exact input consumed by the existing static C++ generator. */
-	CodeGenInput BuildCodeGenInput() const;
 
 private:
 	friend class RuntimeDocumentLoader;
@@ -335,47 +343,93 @@ private:
 
 	struct InstalledBinding
 	{
-		Control* Target = nullptr;
+		ControlWeakReference Target;
 		std::wstring Property;
-		bool LocalValueWasSuspended = false;
-		std::optional<BindingValue> PreviousLocalValue;
 	};
 
-	DesignFormModel _form;
+	struct PendingCommandTargetReference
+	{
+		ControlWeakReference Source;
+		std::wstring SourceName;
+		std::vector<std::size_t> MenuItemPath;
+		std::wstring TargetName;
+		bool TargetsWindow = false;
+	};
+
+	struct CommandTargetSnapshot
+	{
+		ControlWeakReference Source;
+		ControlWeakReference Target;
+		bool Authored = false;
+		bool IsInputBindingCollection = false;
+		std::vector<InputBinding> InputBindings;
+	};
+
+	struct PendingInputBindingTargetReference
+	{
+		ControlWeakReference Source;
+		std::wstring SourceName;
+		std::size_t BindingIndex = 0;
+		std::wstring TargetName;
+		bool TargetsWindow = false;
+	};
+
+	DesignNode _window = DesignDocument{}.Window;
 	DesignerDataContextSchema _dataContextSchema;
 	DesignerStyleSheet _styleSheet;
 	std::shared_ptr<IBindingSource> _dataContext;
-	std::vector<std::unique_ptr<Control>> _ownedRoots;
-	std::vector<Control*> _rootControls;
+	std::unique_ptr<Control> _ownedContentRoot;
+	ControlWeakReference _contentRoot;
 	std::vector<std::shared_ptr<DesignerControl>> _controls;
 	std::vector<std::shared_ptr<CollectionViewSource>> _collectionViews;
+	std::vector<PendingCommandTargetReference> _commandTargetReferences;
+	std::vector<PendingInputBindingTargetReference>
+		_inputBindingTargetReferences;
 	std::unordered_map<int, Control*> _controlsByDesignId;
 	std::unordered_map<std::wstring, Control*> _controlsByName;
 	std::vector<InstalledBinding> _installedBindings;
 	std::vector<EventConnection> _eventConnections;
-	std::vector<EventConnection> _formEventConnections;
+	std::vector<EventConnection> _windowEventConnections;
+	std::vector<EventConnection> _commandBindingConnections;
+	std::vector<EventConnection> _windowCommandBindingConnections;
+	size_t _boundControlCommandHandlerCount = 0;
+	size_t _boundWindowCommandHandlerCount = 0;
 	RuntimeControlEventResolver _controlEventResolver;
-	RuntimeFormEventResolver _formEventResolver;
-	::Form* _formEventTarget = nullptr;
-	mutable ::Form* _appliedForm = nullptr;
-	std::shared_ptr<RuntimeDocumentRootHost> _rootHost;
+	RuntimeWindowEventResolver _windowEventResolver;
+	::Window* _windowEventTarget = nullptr;
+	mutable ::Window* _appliedWindow = nullptr;
+	/** Actual Window that supplies the mounted Content inheritance context. */
+	::Window* _dataContextWindow = nullptr;
+	/** Actual Window currently satisfying authored Window CommandTarget records. */
+	::Window* _commandTargetWindow = nullptr;
+	std::shared_ptr<RuntimeDocumentContentHost> _contentHost;
 	std::shared_ptr<const NativeSurfaceBehaviorRegistry> _nativeSurfaceBehaviors;
 	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
 		_declarativeComponentBehaviors;
 	bool _allowNativeSurfacePlaceholder = false;
 	std::optional<DesignDocument> _sourceDocument;
-	bool _rootsReleased = false;
+	bool _contentReleased = false;
 	std::shared_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
 
 	bool InstallDataBindings(
 		const std::shared_ptr<IBindingSource>& source,
 		std::vector<InstalledBinding>& installed,
-		std::wstring* outError);
+		std::wstring* outError,
+		::Window* windowTarget = nullptr,
+		const DesignNode* windowNode = nullptr,
+		bool includeControls = true);
 	static void RemoveDataBindings(
 		std::vector<InstalledBinding>& installed) noexcept;
-	void SetStyleDataContext(IBindingSource* source);
 	void RebuildControlIndex();
-	bool CommitInheritedFormAttachments(
+	bool ApplyCommandTargetReferences(
+		::Window* windowTarget,
+		bool allowPendingWindow,
+		std::vector<CommandTargetSnapshot>* rollback,
+		std::wstring* outError);
+	static void RestoreCommandTargetSnapshots(
+		const std::vector<CommandTargetSnapshot>& snapshots) noexcept;
+	bool HasWindowCommandTargetReferences() const noexcept;
+	bool CommitInheritedWindowAttachments(
 		RuntimeDocument& previous,
 		const std::function<bool(std::wstring*)>& finalCommit,
 		std::wstring* outError);
@@ -468,9 +522,9 @@ inline RuntimeDocumentRef RuntimeDocument::Reference() noexcept
 }
 
 /**
- * Transactional entry points for dynamic document and XML/XAML loading.
- * Load* replaces only a detached output document. Load*IntoForm additionally
- * commits Form presentation/events/roots as one transaction. Once attached,
+ * Transactional entry points for normalized documents and XAML loading.
+ * Load* replaces only a detached output document. Load*IntoWindow additionally
+ * commits Window presentation/events/Content as one transaction. Once attached,
  * callers must use Reload* so the retained host adapter can participate.
  */
 class RuntimeDocumentLoader final
@@ -480,77 +534,59 @@ public:
 		const DesignDocument& document,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		std::wstring* outError = nullptr);
-	static bool LoadXml(
-		const std::string& xml,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		std::wstring* outError = nullptr);
-	static bool LoadFile(
-		const std::wstring& filePath,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		std::wstring* outError = nullptr);
-	/** Loads CUI's readable XAML-style frontend through the same document path. */
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
+	/** Loads the public declarative frontend through the normalized document path. */
 	static bool LoadXaml(
 		const std::string& xaml,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	static bool LoadXamlFile(
 		const std::wstring& filePath,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 
 	/**
-	 * Loads a detached candidate, then atomically attaches its Form presentation,
-	 * Form events, and root forest before replacing output.
+	 * Loads a detached candidate, then atomically attaches its Window presentation,
+	 * Window events, and the sole Content before replacing output.
 	 */
-	static bool LoadIntoForm(
+	static bool LoadIntoWindow(
 		const DesignDocument& document,
-		::Form& form,
+		::Window& window,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		const RuntimeFormEventResolver& formResolver = {},
-		std::wstring* outError = nullptr);
-	static bool LoadXmlIntoForm(
-		const std::string& xml,
-		::Form& form,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		const RuntimeFormEventResolver& formResolver = {},
-		std::wstring* outError = nullptr);
-	static bool LoadFileIntoForm(
-		const std::wstring& filePath,
-		::Form& form,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		const RuntimeFormEventResolver& formResolver = {},
-		std::wstring* outError = nullptr);
-	static bool LoadXamlIntoForm(
+		const RuntimeWindowEventResolver& windowResolver = {},
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
+	static bool LoadXamlIntoWindow(
 		const std::string& xaml,
-		::Form& form,
+		::Window& window,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		const RuntimeFormEventResolver& formResolver = {},
-		std::wstring* outError = nullptr);
-	static bool LoadXamlFileIntoForm(
+		const RuntimeWindowEventResolver& windowResolver = {},
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
+	static bool LoadXamlFileIntoWindow(
 		const std::wstring& filePath,
-		::Form& form,
+		::Window& window,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
-		const RuntimeFormEventResolver& formResolver = {},
-		std::wstring* outError = nullptr);
+		const RuntimeWindowEventResolver& windowResolver = {},
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 
 	/**
 	 * Reloads transactionally. Common scalar/metadata properties, Binding and
-	 * DataContext schema, document styles, control events, and form presentation
+	 * DataContext schema, document styles, control events, and Window presentation
 	 * reuse every control instance by DesignId. Topology changes first recompose
 	 * a candidate tree with maximal unchanged DesignId subtrees; if none can be
-	 * retained, control-specific Extra data, font ownership, and unsupported
-	 * property bags fall back to full replacement while RuntimeDocument owns its
-	 * roots or has a transactional external-root host adapter.
+	 * retained, structural collection payloads and font ownership fall back to
+	 * full replacement while RuntimeDocument owns its Content or has a
+	 * transactional external-Content host adapter.
 	 *
 	 * Omitted DataContext and event resolver inherit the current document's
 	 * runtime attachments.
@@ -560,31 +596,22 @@ public:
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
 		RuntimeDocumentReloadMode* outMode = nullptr,
-		std::wstring* outError = nullptr);
-	static bool ReloadXml(
-		const std::string& xml,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		RuntimeDocumentReloadMode* outMode = nullptr,
-		std::wstring* outError = nullptr);
-	static bool ReloadFile(
-		const std::wstring& filePath,
-		RuntimeDocument& output,
-		const RuntimeDocumentLoadOptions& options = {},
-		RuntimeDocumentReloadMode* outMode = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	static bool ReloadXaml(
 		const std::string& xaml,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
 		RuntimeDocumentReloadMode* outMode = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	static bool ReloadXamlFile(
 		const std::wstring& filePath,
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options = {},
 		RuntimeDocumentReloadMode* outMode = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 
 private:
 	static bool ReloadHosted(
@@ -592,6 +619,7 @@ private:
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& effectiveOptions,
 		RuntimeDocumentReloadMode* outMode,
-		std::wstring* outError);
+		std::wstring* outError,
+		XamlDocumentDiagnostic* outDiagnostic);
 };
 }

@@ -59,7 +59,6 @@ public:
 	static int ToInt32(const std::string input);
 	static long long ToInt64(const std::string input);
 	static double ToFloat(const std::string input);
-#define ToDouble ToFloat
 
 private:
 	static std::wstring MultiByteToWide(const std::string& str, uint32_t codePage);

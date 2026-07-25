@@ -1,10 +1,18 @@
 #include <CuiRuntime.h>
+#include <EventInfrastructure.h>
+#include <StyleInfrastructure.h>
+#include <Convert.h>
 
 #include <Button.h>
+#include <Canvas.h>
+#include <ComboBox.h>
 #include <Binding.h>
 #include <BindingList.h>
-#include <Form.h>
+#include <Window.h>
 #include <ItemsControl.h>
+#include <InputInfrastructure.h>
+#include <ContentPresenter.h>
+#include <TemplateInfrastructure.h>
 #include <Label.h>
 #include <Layout/StackPanel.h>
 
@@ -18,11 +26,31 @@
 
 namespace
 {
+	void SetNodeProperty(
+		DesignerModel::DesignNode& node,
+		std::wstring name,
+		DesignerStyleValueKind kind,
+		std::wstring text)
+	{
+		node.Properties.Set(std::move(name),
+			{ { kind, std::move(text) } });
+	}
+
+	std::wstring NodePropertyText(
+		const DesignerModel::DesignNode& node,
+		const std::wstring& name,
+		std::wstring fallback = {})
+	{
+		const auto* assignment = node.Properties.Find(name);
+		return assignment ? assignment->Value.Text : std::move(fallback);
+	}
+
 	int Fail(const wchar_t* stage, const std::wstring& error = {})
 	{
-		std::wcerr << L"CuiRuntime sample failed at " << stage;
-		if (!error.empty()) std::wcerr << L": " << error;
-		std::wcerr << L'\n';
+		std::cerr << "CuiRuntime sample failed at "
+			<< Convert::UnicodeToUtf8(stage ? std::wstring(stage) : std::wstring{});
+		if (!error.empty()) std::cerr << ": " << Convert::UnicodeToUtf8(error);
+		std::cerr << '\n';
 		return 1;
 	}
 
@@ -38,16 +66,16 @@ namespace
 	struct ControlCounterHandler
 	{
 		int* Counter = nullptr;
-		void Handle(Control*, MouseEventArgs) const
+		void Handle(Control*, RoutedEventArgs&) const
 		{
 			if (Counter) ++*Counter;
 		}
 	};
 
-	struct FormCommandCounterHandler
+	struct WindowContentRenderedCounterHandler
 	{
 		int* Counter = nullptr;
-		void Handle(Form*, int, int) const
+		void Handle(Window*) const
 		{
 			if (Counter) ++*Counter;
 		}
@@ -93,103 +121,124 @@ namespace
 		return 0;
 	}
 
-	class RejectOnceFormRootHost final
-		: public DesignerModel::RuntimeDocumentRootHost
+	class RejectOnceWindowContentHost final
+		: public DesignerModel::RuntimeDocumentContentHost
 	{
 	public:
-		explicit RejectOnceFormRootHost(Form& form) : _form(&form) {}
+		explicit RejectOnceWindowContentHost(Window& form) : _form(&form) {}
 
 		bool RejectNextInitial = false;
 		bool RejectNextReplacement = false;
 
-		bool DetachRoots(
-			std::span<Control* const> roots,
-			std::vector<std::unique_ptr<Control>>& output,
+		bool DetachContent(
+			Control* content,
+			std::unique_ptr<Control>& output,
 			std::wstring* outError) override
 		{
-			if (_transactionOpen || roots.size() != 1 || !output.empty())
+			if (_transactionOpen || output)
 			{
 				if (outError) *outError = L"invalid rejecting-host detach";
 				return false;
 			}
-			const auto slot = _form->IndexOfControl(roots.front());
-			if (slot < 0)
+			if (_form->GetVisualContent() != content)
 			{
-				if (outError) *outError = L"rejecting host lost its root";
+				if (outError) *outError = L"rejecting host lost its Content";
 				return false;
 			}
-			output.reserve(1);
-			auto owner = _form->DetachControl(roots.front());
-			if (!owner)
+			if (content)
 			{
-				if (outError) *outError = L"rejecting host detach failed";
-				return false;
+				output = _form->DetachVisualContent();
+				if (!output)
+				{
+					if (outError) *outError = L"rejecting host detach failed";
+					return false;
+				}
 			}
-			output.push_back(std::move(owner));
-			_slot = slot;
 			_transactionOpen = true;
 			return true;
 		}
 
-		bool AttachRoots(
-			std::vector<std::unique_ptr<Control>>& roots,
-			DesignerModel::RuntimeRootHostAttachMode mode,
+		bool AttachContent(
+			std::unique_ptr<Control>& content,
+			DesignerModel::RuntimeContentHostAttachMode mode,
 			std::wstring* outError) override
 		{
 			const bool transaction = mode
-				!= DesignerModel::RuntimeRootHostAttachMode::Initial;
-			if (transaction != _transactionOpen || roots.size() != 1)
+				!= DesignerModel::RuntimeContentHostAttachMode::Initial;
+			if (transaction != _transactionOpen)
 			{
 				if (outError) *outError = L"invalid rejecting-host attach";
 				return false;
 			}
-			if (mode == DesignerModel::RuntimeRootHostAttachMode::Replacement
+			if (mode == DesignerModel::RuntimeContentHostAttachMode::Replacement
 				&& RejectNextReplacement)
 			{
 				RejectNextReplacement = false;
 				if (outError) *outError = L"intentional host commit rejection";
 				return false;
 			}
-			if (mode == DesignerModel::RuntimeRootHostAttachMode::Initial
+			if (mode == DesignerModel::RuntimeContentHostAttachMode::Initial
 				&& RejectNextInitial)
 			{
 				RejectNextInitial = false;
 				if (outError) *outError = L"intentional initial attach rejection";
 				return false;
 			}
-			const int slot = transaction
-				? _slot : static_cast<int>(_form->Controls.size());
-			if (!_form->TryInsertOwned(slot, roots.front()))
+			if (_form->GetVisualContent()
+				|| (content && !_form->TrySetVisualContent(content)))
 			{
 				if (outError) *outError = L"rejecting-host attach failed";
 				return false;
 			}
-			roots.clear();
 			if (transaction) _transactionOpen = false;
 			return true;
 		}
 
 	private:
-		Form* _form = nullptr;
-		int _slot = 0;
+		Window* _form = nullptr;
 		bool _transactionOpen = false;
 	};
+
+	void AppendStackPanelProbeChild(
+		DesignerModel::DesignDocument& document,
+		int parentId,
+		std::wstring name,
+		std::string text)
+	{
+		const auto parent = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[&](const auto& node) { return node.Id == parentId; });
+		if (parent == document.Nodes.end()) return;
+		int order = 0;
+		for (const auto& node : document.Nodes)
+			if (node.ParentId == parentId)
+				order = (std::max)(order, node.Order + 1);
+		DesignerModel::DesignNode child;
+		child.Id = document.AllocateNodeId();
+		child.ParentId = parentId;
+		child.ParentRef = parent->Name;
+		child.Name = std::move(name);
+		child.Type = UIClass::UI_Label;
+		child.Order = order;
+		SetNodeProperty(child, L"Text", DesignerStyleValueKind::String,
+			Convert::Utf8ToUnicode(std::move(text)));
+		document.Nodes.push_back(std::move(child));
+	}
 }
 
 int wmain()
 {
 	const std::string xaml = R"xaml(
-<Form xmlns="urn:cui"
+<Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      x:Name="RuntimeSampleForm"
-      Text="CUI dynamic XAML sample"
+      x:Name="RuntimeSampleWindow"
+      Title="CUI dynamic XAML sample"
 	  Width="480" Height="320"
-      Command="HandleCommand">
-  <Form.Resources>
+      ContentRendered="HandleContentRendered">
+  <Window.Resources>
     <Color x:Key="Accent">#FF0078D4</Color>
-    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary">
-      <Setter Property="Round" Value="8" />
-      <Setter Property="BackColor" Value="{StaticResource Accent}" />
+    <Style x:Key="PrimaryButton" TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource Accent}" />
     </Style>
 	<DataType x:Key="Person">
 	  <DataType.Properties>
@@ -198,41 +247,36 @@ int wmain()
 	  </DataType.Properties>
 	</DataType>
 	<DataTemplate x:Key="PersonRow" DataType="Person">
-	  <StackPanel Orientation="Horizontal" Spacing="8">
-		<Label Text="{Binding Name}" Width="120" />
-		<Label Text="{Binding Role}" Width="120" />
+	  <StackPanel Orientation="Horizontal">
+		<TextBlock Text="{Binding Name}" Width="120" />
+		<TextBlock Text="{Binding Role}" Width="120" />
 	  </StackPanel>
 	</DataTemplate>
-  </Form.Resources>
-	<Form.DataContextSchema>
+  </Window.Resources>
+	<Window.DataContextSchema>
 	  <Property Path="Caption" Kind="String" />
 	  <Property Path="People" Kind="Object" ObjectType="BindingList"
 			ItemType="Person" CanWrite="false" />
-	</Form.DataContextSchema>
+	</Window.DataContextSchema>
   <StackPanel x:Name="rootPanel" DesignId="10"
               Width="Auto" Height="Auto"
-              Orientation="Vertical" Spacing="8">
+              Orientation="Vertical">
     <Button x:Name="actionButton" DesignId="11"
-            Classes="primary" Style="{StaticResource PrimaryButton}"
+            Style="{StaticResource PrimaryButton}"
 			Width="180" Height="36"
-			Text="{Binding Caption, Mode=OneWay}"
+			Content="{Binding Caption, Mode=OneWay}"
 			Click="HandleAction" />
 	<ItemsControl x:Name="peopleList" DesignId="12"
 			Width="300" Height="120"
 			ItemsSource="{Binding People}"
 			ItemTemplate="{StaticResource PersonRow}" />
   </StackPanel>
-</Form>)xaml";
+</Window>)xaml";
 
 	DesignerModel::DesignDocument source;
 	std::wstring error;
 	if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, source, &error))
 		return Fail(L"FromXaml", error);
-	const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(source);
-	DesignerModel::DesignDocument roundTripped;
-	if (!DesignerModel::DesignDocumentSerializer::FromXml(
-		xml, roundTripped, &error) || !(roundTripped == source))
-		return Fail(L"XAML -> DesignDocument XML round-trip", error);
 	const auto canonicalXaml =
 		DesignerModel::XamlDocumentSerializer::ToXaml(source);
 	DesignerModel::DesignDocument xamlRoundTripped;
@@ -242,8 +286,8 @@ int wmain()
 		return Fail(L"canonical XAML round-trip", error);
 
 	const std::string dataResourceXaml = R"xaml(
-<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Form.Resources>
+<Window xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Window.Resources>
     <DataType x:Key="Person">
       <DataType.Properties>
         <Property Path="Id" Kind="Int" />
@@ -262,10 +306,10 @@ int wmain()
 		<SortDescription PropertyName="Id" Direction="Descending" />
 	  </CollectionViewSource.SortDescriptions>
 	</CollectionViewSource>
-  </Form.Resources>
+  </Window.Resources>
   <ComboBox x:Name="peopleSeed" ItemsSource="{StaticResource RankedPeople}"
             DisplayMemberPath="Name" SelectedValuePath="Id" />
-</Form>)xaml";
+</Window>)xaml";
 	DesignerModel::RuntimeDocument dataResourceRuntime;
 	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
 		dataResourceXaml, dataResourceRuntime, {}, &error))
@@ -281,12 +325,12 @@ int wmain()
 		return Fail(L"typed selector SelectedValue projection");
 
 	const std::string nativeSurfaceXaml = R"xaml(
-<Form xmlns="urn:cui"
+<Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      x:Name="NativeSurfaceForm">
+      x:Name="NativeSurfaceWindow">
   <NativeSurface x:Name="runtimeScene" DesignId="19"
       BehaviorKey="Scene3D" PlaceholderText="3D scene" Width="320" Height="180" />
-</Form>)xaml";
+</Window>)xaml";
 	auto sceneState = std::make_shared<RuntimeSceneState>();
 	auto surfaceBehaviors =
 		std::make_shared<DesignerModel::NativeSurfaceBehaviorRegistry>();
@@ -304,14 +348,22 @@ int wmain()
 	if (!runtimeScene || !runtimeScene->HasBehavior()
 		|| runtimeScene->GetBehaviorKey() != L"Scene3D")
 		return Fail(L"NativeSurface identity/behavior");
-	(void)runtimeScene->ProcessMessage(WM_LBUTTONDOWN, 0, 0, 8, 9);
+	InputReport pointerDown;
+	pointerDown.Kind = InputReportKind::PointerDown;
+	pointerDown.X = 8;
+	pointerDown.Y = 9;
+	pointerDown.ChangedButton = MouseButton::Left;
+	pointerDown.ButtonStates =
+		MouseButtonStates::WithPressed(MouseButton::Left);
+	pointerDown.ClickCount = 1;
+	(void)cui::framework::InputAccess::DispatchInput(*runtimeScene, pointerDown);
 	if (sceneState->Attached != 1 || sceneState->PointerDown != 1)
 		return Fail(L"NativeSurface lifecycle/input");
 
 	const std::string layoutXaml = R"xaml(
-<Form xmlns="urn:cui"
+<Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      x:Name="LayoutForm">
+      x:Name="LayoutWindow">
   <Grid x:Name="rootGrid" DesignId="20">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
@@ -322,24 +374,24 @@ int wmain()
       <ColumnDefinition Width="120" />
     </Grid.ColumnDefinitions>
     <TabControl x:Name="tabs" Grid.Row="1">
-      <TabPage Header="General">
-        <Label x:Name="insideTab">Nested tab content</Label>
-      </TabPage>
+      <TabItem Header="General">
+        <TextBlock x:Name="insideTab">Nested tab content</TextBlock>
+      </TabItem>
     </TabControl>
-    <SplitContainer x:Name="split" Grid.Row="0">
-      <SplitContainer.FirstPanel>
-        <Button x:Name="firstButton" Text="First" />
-      </SplitContainer.FirstPanel>
-      <SplitContainer.SecondPanel>
-        <Button x:Name="secondButton" Text="Second" />
-      </SplitContainer.SecondPanel>
-    </SplitContainer>
+    <Grid x:Name="split" Grid.Row="0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+      <Button x:Name="firstButton" Grid.Column="0" Content="First" />
+      <Button x:Name="secondButton" Grid.Column="1" Content="Second" />
+    </Grid>
     <CheckBox x:Name="boundCheck"
               Grid.Row="1" Grid.Column="1"
-              Checked="{Binding Flags.Enabled, Mode=TwoWay}"
-              Visibility="{Binding Flags.Visible}" />
+              IsChecked="{Binding Flags.Enabled, Mode=TwoWay}"
+              Visibility="{Binding Flags.Visibility}" />
   </Grid>
-</Form>)xaml";
+</Window>)xaml";
 	DesignerModel::RuntimeDocument layoutRuntime;
 	DesignerModel::DesignDocument layoutSource;
 	if (!DesignerModel::XamlDocumentParser::FromXaml(
@@ -359,19 +411,19 @@ int wmain()
 		|| !layoutRuntime.FindControlByName(L"firstButton")
 		|| !layoutRuntime.FindControlByName(L"secondButton")
 		|| !layoutRuntime.FindControlByName(L"boundCheck"))
-		return Fail(L"nested tab/split materialization");
+		return Fail(L"nested tab/grid materialization");
 	auto* layoutControlBeforeReload =
 		layoutRuntime.FindControlByName(L"insideTab");
 	for (auto& node : layoutSource.Nodes)
 	{
 		if (node.Name != L"insideTab") continue;
-		node.Props["metadata"]["Text"]["value"] = "Reloaded tab content";
+		SetNodeProperty(node, L"Text", DesignerStyleValueKind::String,
+			L"Reloaded tab content");
 	}
 	DesignerModel::RuntimeDocumentReloadMode layoutReloadMode =
 		DesignerModel::RuntimeDocumentReloadMode::Unchanged;
-	if (!DesignerModel::RuntimeDocumentLoader::ReloadXml(
-		DesignerModel::DesignDocumentSerializer::ToXml(layoutSource),
-		layoutRuntime, {}, &layoutReloadMode, &error))
+	if (!DesignerModel::RuntimeDocumentLoader::Reload(
+		layoutSource, layoutRuntime, {}, &layoutReloadMode, &error))
 		return Fail(L"structural/property reload", error);
 	auto* layoutControlAfterReload =
 		layoutRuntime.FindControlByName(L"insideTab");
@@ -379,7 +431,7 @@ int wmain()
 	std::wstring layoutLocalTextValue;
 	const bool hasLayoutLocalText = layoutControlAfterReload
 		&& layoutControlAfterReload->TryGetPropertyValue(
-			L"Text", ControlPropertyValueSource::Local, layoutLocalText)
+			L"Text", DependencyPropertyValueSource::Local, layoutLocalText)
 			&& layoutLocalText.TryGet(layoutLocalTextValue);
 	std::wstring trackedLayoutText = L"<none>";
 	for (const auto& control : layoutRuntime.Controls())
@@ -392,22 +444,21 @@ int wmain()
 	if (layoutReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| !layoutControlAfterReload
 		|| layoutControlAfterReload != layoutControlBeforeReload
-		|| layoutControlAfterReload->Text != L"Reloaded tab content")
+		|| layoutControlAfterReload->GetDisplayText() != L"Reloaded tab content")
 		return Fail(L"metadata property in-place reload mode",
 			L"mode=" + std::to_wstring(static_cast<int>(layoutReloadMode))
 			+ L", same=" + std::to_wstring(
 				layoutControlAfterReload == layoutControlBeforeReload)
 			+ L", text=" + (layoutControlAfterReload
-				? std::wstring(layoutControlAfterReload->Text) : L"<null>")
+				? layoutControlAfterReload->GetDisplayText() : L"<null>")
 			+ L", local=" + (hasLayoutLocalText
 				? layoutLocalTextValue : L"<none>")
 			+ L", tracked=" + trackedLayoutText);
 	auto removedMetadataLayoutSource = layoutSource;
 	for (auto& node : removedMetadataLayoutSource.Nodes)
 	{
-		if (node.Name == L"insideTab"
-			&& node.Props["metadata"].is_object())
-			node.Props["metadata"].ObjectItems().erase("Text");
+		if (node.Name == L"insideTab")
+			node.Properties.Remove(L"Text");
 	}
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		removedMetadataLayoutSource, layoutRuntime, {},
@@ -415,7 +466,7 @@ int wmain()
 		return Fail(L"metadata removal in-place reload", error);
 	if (layoutReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| layoutRuntime.FindControlByName(L"insideTab") != layoutControlAfterReload
-		|| layoutControlAfterReload->Text != L"标签")
+		|| !layoutControlAfterReload->GetDisplayText().empty())
 		return Fail(L"metadata removal default value");
 
 	auto structuralLayoutSource = removedMetadataLayoutSource;
@@ -424,9 +475,9 @@ int wmain()
 	for (auto& node : structuralLayoutSource.Nodes)
 	{
 		if (node.Name == L"rootGrid"
-			&& node.Extra["rows"].is_array()
-			&& node.Extra["rows"].size() > 1)
-			node.Extra["rows"][1]["min"] = 32.0;
+			&& node.Structure.GridRows
+			&& node.Structure.GridRows->size() > 1)
+			(*node.Structure.GridRows)[1].Minimum = 32.0;
 	}
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		structuralLayoutSource, layoutRuntime, {}, &layoutReloadMode, &error))
@@ -466,7 +517,8 @@ int wmain()
 	addedLabel.Name = L"addedLabel";
 	addedLabel.Type = UIClass::UI_Label;
 	addedLabel.Order = 500;
-	addedLabel.Props["text"] = "Added during reload";
+	SetNodeProperty(addedLabel, L"Text", DesignerStyleValueKind::String,
+		L"Added during reload");
 	const auto addedLabelId = addedLabel.Id;
 	addedLayoutSource.Nodes.push_back(std::move(addedLabel));
 	auto* rootGridBeforeAdd = layoutRuntime.FindControlByName(L"rootGrid");
@@ -505,17 +557,18 @@ int wmain()
 		|| addedLabelReference)
 		return Fail(L"child remove identity preservation");
 
-	// The legacy manual transfer intentionally has no host adapter, so topology
+	// A raw manual transfer intentionally has no host adapter, so topology
 	// replacement must still be rejected instead of guessing external ownership.
-	Form unmanagedLayoutHost(
-		L"unmanaged runtime roots", POINT{ 0, 0 }, SIZE{ 320, 180 });
-	auto unmanagedLayoutRoots = layoutRuntime.ReleaseRootControls();
-	for (auto& root : unmanagedLayoutRoots)
-		unmanagedLayoutHost.AddOwned(std::move(root));
+	Window unmanagedLayoutHost;
+	unmanagedLayoutHost.Title = L"unmanaged runtime Content";
+	unmanagedLayoutHost.Width = 320.0f;
+	unmanagedLayoutHost.Height = 180.0f;
+	auto unmanagedLayoutContent = layoutRuntime.ReleaseContentRoot();
+	unmanagedLayoutHost.SetVisualContent(std::move(unmanagedLayoutContent));
 	auto unmanagedStructuralReload = removedLayoutSource;
 	for (auto& node : unmanagedStructuralReload.Nodes)
 		if (node.Name == L"rootGrid")
-			node.Extra["unmanagedTopologyProbe"] = 1;
+			(*node.Structure.GridRows)[1].Minimum = 40.0;
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
 		unmanagedStructuralReload, layoutRuntime, {},
 		&layoutReloadMode, &error))
@@ -523,158 +576,6 @@ int wmain()
 	if (layoutRuntime.FindControlByName(L"insideTab")
 		!= layoutControlAfterReload)
 		return Fail(L"unadapted host rejection changed identity");
-
-	const std::string multiRootXaml = R"xaml(
-<Form xmlns="urn:cui"
-      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      x:Name="MultiRootForm">
-  <Button x:Name="multiFirst" DesignId="301" Text="First root" />
-  <Button x:Name="multiSecond" DesignId="302"
-          Text="Second root" Click="HandleMultiRoot" />
-</Form>)xaml";
-	DesignerModel::RuntimeDocument multiRootRuntime;
-	DesignerModel::DesignDocument multiRootSource;
-	if (!DesignerModel::XamlDocumentParser::FromXaml(
-		multiRootXaml, multiRootSource, &error))
-		return Fail(L"multi-root source parse", error);
-	DesignerModel::RuntimeDocumentLoadOptions multiRootOptions;
-	multiRootOptions.RequireControlEventResolver = true;
-	multiRootOptions.ControlEventResolver = [](
-		const DesignerModel::RuntimeControlEventRequest& request,
-		EventConnection& connection,
-		std::wstring& resolverError)
-	{
-		if (request.HandlerName != L"HandleMultiRoot")
-		{
-			resolverError = L"unexpected multi-root handler";
-			return false;
-		}
-		connection = request.Target.OnMouseClick.Subscribe(
-			[](Control*, MouseEventArgs) {});
-		return true;
-	};
-	Form multiRootHost(
-		L"multi-root host", POINT{ 0, 0 }, SIZE{ 320, 180 });
-	auto* multiPrefix =
-		multiRootHost.Add<Button>(L"prefix", 0, 0, 20, 20);
-	const std::string rejectedOneCallXaml = R"xaml(
-<Form xmlns="urn:cui" x:Name="RejectedAttachForm"
-	  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-	  Text="must roll back" Command="HandleMissingCommand">
-	  <Button x:Name="rejectedRoot" DesignId="399" />
-</Form>)xaml";
-	if (DesignerModel::RuntimeDocumentLoader::LoadXamlIntoForm(
-		rejectedOneCallXaml,
-		multiRootHost,
-		multiRootRuntime,
-		multiRootOptions,
-		DesignerModel::RuntimeFormEventResolver{},
-		&error))
-		return Fail(L"one-call Form resolver failure unexpectedly accepted");
-	if (error.find(L"未提供名称解析器") == std::wstring::npos
-		|| !multiRootRuntime.Controls().empty()
-		|| multiRootHost.Text != L"multi-root host"
-		|| multiRootHost.Controls.size() != 1
-		|| multiRootHost.Controls[0] != multiPrefix)
-		return Fail(L"one-call XAML attach rollback", error);
-	if (!DesignerModel::RuntimeDocumentLoader::LoadXamlIntoForm(
-		multiRootXaml,
-		multiRootHost,
-		multiRootRuntime,
-		multiRootOptions,
-		DesignerModel::RuntimeFormEventResolver{},
-		&error))
-		return Fail(L"one-call XAML Form load", error);
-	auto missingFormResolverReload = multiRootSource;
-	missingFormResolverReload.Form.EventHandlers[L"OnCommand"] =
-		L"HandleMissingCommand";
-	if (DesignerModel::RuntimeDocumentLoader::Reload(
-		missingFormResolverReload, multiRootRuntime, multiRootOptions,
-		&layoutReloadMode, &error))
-		return Fail(L"missing future Form resolver unexpectedly accepted");
-	if (error.find(L"没有保留名称解析器") == std::wstring::npos
-		|| multiRootHost.Controls.size() != 3
-		|| multiRootHost.Controls[0] != multiPrefix
-		|| multiRootHost.Controls[1]
-			!= multiRootRuntime.FindControlByDesignId(301)
-		|| multiRootHost.Controls[2]
-			!= multiRootRuntime.FindControlByDesignId(302))
-		return Fail(L"missing future Form resolver rollback", error);
-	auto* multiSuffix =
-		multiRootHost.Add<Button>(L"suffix", 0, 0, 20, 20);
-	auto* multiFirst = multiRootRuntime.FindControlByDesignId(301);
-	auto* multiSecond = multiRootRuntime.FindControlByDesignId(302);
-	auto multiSecondOwner = multiRootHost.DetachControl(multiSecond);
-	std::unique_ptr<Control> multiMiddleOwner =
-		std::make_unique<Button>(L"middle", 0, 0, 20, 20);
-	auto* multiMiddle = multiMiddleOwner.get();
-	if (!multiRootHost.TryInsertOwned(2, multiMiddleOwner)
-		|| !multiRootHost.TryInsertOwned(3, multiSecondOwner))
-		return Fail(L"multi-root host interleave setup");
-	auto rejectedMultiRoot = multiRootSource;
-	for (auto& node : rejectedMultiRoot.Nodes)
-		if (node.Id == 301) node.Extra["topologyProbe"] = 1;
-	DesignerModel::RuntimeDocumentLoadOptions rejectMultiRootOptions;
-	rejectMultiRootOptions.RequireControlEventResolver = true;
-	rejectMultiRootOptions.ControlEventResolver = [](
-		const DesignerModel::RuntimeControlEventRequest&,
-		EventConnection&,
-		std::wstring& resolverError)
-	{
-		resolverError = L"intentional multi-root rollback";
-		return false;
-	};
-	if (DesignerModel::RuntimeDocumentLoader::Reload(
-		rejectedMultiRoot, multiRootRuntime, rejectMultiRootOptions,
-		&layoutReloadMode, &error))
-		return Fail(L"multi-root rollback probe unexpectedly accepted");
-	if (multiRootHost.Controls.size() != 5
-		|| multiRootHost.Controls[0] != multiPrefix
-		|| multiRootHost.Controls[1] != multiFirst
-		|| multiRootHost.Controls[2] != multiMiddle
-		|| multiRootHost.Controls[3] != multiSecond
-		|| multiRootHost.Controls[4] != multiSuffix
-		|| multiRootRuntime.FindControlByDesignId(301) != multiFirst
-		|| multiRootRuntime.FindControlByDesignId(302) != multiSecond)
-		return Fail(L"multi-root exact-slot rollback");
-
-	DesignerModel::RuntimeDocument rejectedCommitRuntime;
-	if (!DesignerModel::RuntimeDocumentLoader::Load(
-		removedLayoutSource, rejectedCommitRuntime, {}, &error))
-		return Fail(L"host commit-rejection baseline load", error);
-	Form rejectedCommitHost(
-		L"commit rejection host", POINT{ 0, 0 }, SIZE{ 320, 180 });
-	auto* rejectedCommitPrefix =
-		rejectedCommitHost.Add<Button>(L"prefix", 0, 0, 20, 20);
-	auto rejectedCommitAdapter =
-		std::make_shared<RejectOnceFormRootHost>(rejectedCommitHost);
-	if (!rejectedCommitRuntime.TransferRootControlsTo(
-		rejectedCommitAdapter, &error))
-		return Fail(L"host commit-rejection transfer", error);
-	auto* rejectedCommitSuffix =
-		rejectedCommitHost.Add<Button>(L"suffix", 0, 0, 20, 20);
-	auto* rootBeforeRejectedCommit =
-		rejectedCommitRuntime.FindControlByName(L"rootGrid");
-	auto* childBeforeRejectedCommit =
-		rejectedCommitRuntime.FindControlByName(L"insideTab");
-	auto rejectedCommitSource = removedLayoutSource;
-	for (auto& node : rejectedCommitSource.Nodes)
-		if (node.Name == L"rootGrid")
-			node.Extra["rejectedHostCommitProbe"] = 1;
-	rejectedCommitAdapter->RejectNextReplacement = true;
-	if (DesignerModel::RuntimeDocumentLoader::Reload(
-		rejectedCommitSource, rejectedCommitRuntime, {},
-		&layoutReloadMode, &error))
-		return Fail(L"host commit rejection unexpectedly accepted");
-	if (rejectedCommitRuntime.FindControlByName(L"rootGrid")
-			!= rootBeforeRejectedCommit
-		|| rejectedCommitRuntime.FindControlByName(L"insideTab")
-			!= childBeforeRejectedCommit
-		|| rejectedCommitHost.Controls.size() != 3
-		|| rejectedCommitHost.Controls[0] != rejectedCommitPrefix
-		|| rejectedCommitHost.Controls[1] != rootBeforeRejectedCommit
-		|| rejectedCommitHost.Controls[2] != rejectedCommitSuffix)
-		return Fail(L"host commit rejection rollback");
 
 	auto viewModel = std::make_shared<ObservableObject>();
 	viewModel->SetValue(L"Caption", std::wstring(L"Loaded from DataContext"));
@@ -690,91 +591,55 @@ int wmain()
 	DesignerModel::RuntimeEventHandlerRegistry eventHandlers;
 	if (!eventHandlers.RegisterControl(
 		L"HandleAction",
-		UIClass::UI_Base,
-		L"OnMouseClick",
-		&Control::OnMouseClick,
+		UIClass::UI_Button,
+		L"Click",
+		&ButtonBase::Click,
 		std::bind_front(&ControlCounterHandler::Handle, &clickHandler),
 		&error))
 		return Fail(L"register initial named control handler", error);
-	if (!eventHandlers.RegisterForm(
-		L"HandleAction",
-		L"OnMouseEnter",
-		&Form::OnMouseEnter,
-		[](Control*, MouseEventArgs) {},
+	if (!eventHandlers.RegisterWindow(
+		L"HandlePointerEnter",
+		L"MouseEnter",
+		&Window::OnMouseEnter,
+		[](Control*, MouseEventArgs&) {},
 		&error))
-		return Fail(L"register inherited Form Event member", error);
-	if (eventHandlers.RegisterForm(
+		return Fail(L"register inherited Window Event member", error);
+	if (eventHandlers.RegisterWindow(
 		L"HandleAction",
-		L"OnCommand",
-		&Form::OnCommand,
-		[](Form*, int, int) {},
+		L"ContentRendered",
+		&Window::ContentRendered,
+		[](Window*) {},
 		&error)
-		|| eventHandlers.HandlerCount() != 1
+		|| eventHandlers.HandlerCount() != 2
 		|| error.find(L"另一种事件签名") == std::wstring::npos)
 		return Fail(L"reject cross-signature handler registration", error);
 	if (eventHandlers.RegisterControl(
 		L"HandleWrongMember",
-		UIClass::UI_Base,
-		L"OnMouseClick",
+		UIClass::UI_Button,
+		L"Click",
 		&Control::OnMouseMove,
-		[](Control*, MouseEventArgs) {},
+		[](Control*, MouseEventArgs&) {},
 		&error)
-		|| eventHandlers.HandlerCount() != 1
+		|| eventHandlers.HandlerCount() != 2
 		|| error.find(L"事件目录不一致") == std::wstring::npos)
 		return Fail(L"reject wrong same-signature Event member", error);
-	int validationChangeCount = 0;
-	if (!eventHandlers.RegisterControl(
-		L"HandleValidationChange",
-		UIClass::UI_Base,
-		L"OnValidationStateChanged",
-		&Control::OnValidationStateChanged,
-		[&validationChangeCount](const BindingValidationChangedEventArgs&)
-		{
-			++validationChangeCount;
-		},
-		&error))
-		return Fail(L"register custom validation Event wrapper", error);
-	Button validationProbe(L"validation probe", 0, 0, 20, 20);
-	const auto validationDescriptor = DesignerEventCatalog::FindControlEvent(
-		UIClass::UI_Button, L"OnValidationStateChanged");
-	EventConnection validationConnection;
-	if (!validationDescriptor)
-		return Fail(L"validation Event descriptor lookup");
-	DesignerModel::RuntimeControlEventRequest validationRequest{
-		validationProbe,
-		0,
-		L"validationProbe",
-		UIClass::UI_Button,
-		{},
-		*validationDescriptor,
-		L"HandleValidationChange"
-	};
-	if (!eventHandlers.ControlResolver()(
-		validationRequest, validationConnection, error))
-		return Fail(L"resolve custom validation Event wrapper", error);
-	validationProbe.OnValidationStateChanged.Notify(L"Text");
-	if (validationChangeCount != 1 || !validationConnection.Connected())
-		return Fail(L"custom validation Event wrapper invocation");
-	if (!eventHandlers.RegisterForm(
-		L"HandleFormStringPair",
-		L"OnTextChanged",
-		&Form::OnTextChanged,
-		[](Form*, std::wstring, std::wstring) {},
-		&error)
-		|| !eventHandlers.RegisterForm(
-			L"HandleFormStringPair",
-			L"OnThemeChanged",
-			&Form::OnThemeChanged,
-			[](Form*, std::wstring, std::wstring) {},
+	if (!eventHandlers.RegisterWindow(
+		L"HandleWindowDrop",
+		L"Drop",
+		&Window::OnDrop,
+		[](Control*, DragEventArgs&) {},
 			&error))
-		return Fail(L"reuse handler across same typed Form signature", error);
+		return Fail(L"register typed Window handlers", error);
 	DesignerModel::RuntimeDocumentLoadOptions options;
 	options.DataContext = viewModel;
 	options.RequireControlEventResolver = true;
 	options.ControlEventResolver = eventHandlers.ControlResolver();
 
 	// Keep the host alive longer than RuntimeDocument's RAII event connections.
-	Form host(L"runtime host", POINT{ 0, 0 }, SIZE{ 480, 240 });
+	Window host;
+	host.Title = L"runtime host";
+	host.Width = 480.0f;
+	host.Height = 240.0f;
 	DesignerModel::RuntimeDocument runtime;
 	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
 		xaml, runtime, options, &error)) return Fail(L"LoadXaml", error);
@@ -785,16 +650,38 @@ int wmain()
 	auto buttonReference = runtime.ReferenceByDesignId<Button>(11);
 	if (buttonReference.Get() != button)
 		return Fail(L"stable typed button reference");
-	if (button->Text != L"Loaded from DataContext" || !button->GetStyleSheet())
+	auto* buttonChrome = button
+		? button->FindDeclarativeTemplatePart(L"PART_Chrome")
+		: nullptr;
+	if (button->GetDisplayText() != L"Loaded from DataContext"
+		|| !cui::framework::StyleAccess::DocumentStyles(*button)
+		|| !cui::framework::StyleAccess::Theme(*button)
+		|| !buttonChrome
+		|| cui::framework::TemplateAccess::GetTemplateRoot(*button)
+			!= buttonChrome
+		|| buttonChrome->GetTemplatedParent() != button
+		|| button->GetCurrentVisualState(L"CommonStates") != L"Normal")
 		return Fail(L"binding/style materialization");
 	auto* peopleControl = runtime.FindControlByDesignId<ItemsControl>(12);
-	auto* firstPersonRow = peopleControl && peopleControl->GeneratedItemCount() == 1
-		? dynamic_cast<StackPanel*>(peopleControl->GetGeneratedItem(0)) : nullptr;
+	auto* firstPersonPresenter = peopleControl
+		&& peopleControl->GeneratedItemCount() == 1
+		? dynamic_cast<ContentPresenter*>(peopleControl->GetGeneratedItem(0))
+		: nullptr;
+	auto* firstPersonRow = firstPersonPresenter
+		? dynamic_cast<StackPanel*>(firstPersonPresenter->GetGeneratedContent())
+		: nullptr;
 	auto* firstPersonName = firstPersonRow
-		? dynamic_cast<Label*>(firstPersonRow->GetChild(0)) : nullptr;
+		? dynamic_cast<Label*>(firstPersonRow->GetVisualChild(0)) : nullptr;
 	if (!firstPersonName || firstPersonName->Text != L"Alice")
-		return Fail(L"typed ItemsControl DataTemplate materialization");
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+		return Fail(L"typed ItemsControl DataTemplate materialization",
+			L"generated=" + std::to_wstring(
+				peopleControl ? peopleControl->GeneratedItemCount() : 0)
+			+ L", row=" + (firstPersonRow ? L"StackPanel" : L"<null>")
+			+ L", children=" + std::to_wstring(
+				firstPersonRow ? firstPersonRow->VisualChildCount() : 0)
+			+ L", name=" + (firstPersonName
+				? std::wstring(firstPersonName->Text) : L"<null>"));
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (clickCount != 1) return Fail(L"control event resolver");
 	if (runtime.DataContextSchema().empty()
 		|| runtime.DataContextSchema().front().Path != L"Caption")
@@ -810,21 +697,21 @@ int wmain()
 	for (auto& node : bindingReloadSource.Nodes)
 		if (node.Id == 11)
 		{
-			node.Bindings["Text"]["source"] = "AlternateCaption";
-			node.Bindings["Text"]["mode"] = static_cast<int>(BindingMode::OneTime);
+			node.Bindings[L"Content"].SourceProperty = L"AlternateCaption";
+			node.Bindings[L"Content"].Mode = BindingMode::OneTime;
 		}
 	DesignerModel::RuntimeDocumentReloadMode bindingReloadMode =
 		DesignerModel::RuntimeDocumentReloadMode::Unchanged;
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		bindingReloadSource, runtime, {}, &bindingReloadMode, &error))
 		return Fail(L"in-place binding reload", error);
-	const auto* reloadedBinding = button->DataBindings.Find(L"Text");
+	const auto* reloadedBinding = button->DataBindings.Find(L"Content");
 	if (bindingReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| runtime.FindControlByDesignId(11) != button
 		|| !reloadedBinding
 		|| reloadedBinding->Mode() != BindingMode::OneTime
 		|| reloadedBinding->SourceProperty() != L"AlternateCaption"
-		|| button->Text != L"Reloaded binding source"
+		|| button->GetDisplayText() != L"Reloaded binding source"
 		|| runtime.DataContextSchema().size() != 2
 		|| std::none_of(runtime.DataContextSchema().begin(),
 			runtime.DataContextSchema().end(), [](const auto& property)
@@ -842,45 +729,54 @@ int wmain()
 		return Fail(L"in-place style reload", error);
 	if (styleReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| runtime.FindControlByDesignId(11) != button
-		|| button->BackColor.r < 0.9f
-		|| button->BackColor.g > 0.1f
-		|| button->BackColor.b > 0.1f)
-		return Fail(L"in-place style application");
+		|| button->Background.Color.r < 0.9f
+		|| button->Background.Color.g > 0.1f
+		|| button->Background.Color.b > 0.1f)
+		return Fail(L"in-place style application",
+			L"mode=" + std::to_wstring(static_cast<int>(styleReloadMode))
+			+ L", key="
+			+ cui::framework::StyleAccess::ResourceKey(*button)
+			+ L", resources=" + std::to_wstring(
+				styleReloadSource.StyleSheet.Resources.size())
+			+ L", rules=" + std::to_wstring(
+				styleReloadSource.StyleSheet.Rules.size())
+			+ L", rgba=" + std::to_wstring(button->Background.Color.r)
+			+ L"," + std::to_wstring(button->Background.Color.g)
+			+ L"," + std::to_wstring(button->Background.Color.b)
+			+ L"," + std::to_wstring(button->Background.Color.a));
 
-	auto boundPropertyReloadSource = styleReloadSource;
-	for (auto& node : boundPropertyReloadSource.Nodes)
+	auto conflictingExpressionSource = styleReloadSource;
+	for (auto& node : conflictingExpressionSource.Nodes)
 	{
 		if (node.Id != 11) continue;
-		node.Props["metadata"]["Text"] = {
-			{ "kind", "String" }, { "value", "suspended local value" }
-		};
+		SetNodeProperty(node, L"Content", DesignerStyleValueKind::String,
+			L"conflicting local value");
 	}
-	auto* buttonBeforeBoundPropertyReload = button;
-	DesignerModel::RuntimeDocumentReloadMode boundPropertyReloadMode =
+	DesignerModel::RuntimeDocumentReloadMode conflictingExpressionMode =
 		DesignerModel::RuntimeDocumentReloadMode::Unchanged;
-	if (!DesignerModel::RuntimeDocumentLoader::Reload(
-		boundPropertyReloadSource, runtime, {},
-		&boundPropertyReloadMode, &error))
-		return Fail(L"bound property conservative replacement", error);
-	button = runtime.FindControlByDesignId<Button>(11);
-	if (boundPropertyReloadMode != DesignerModel::RuntimeDocumentReloadMode::Replaced
-		|| !button || button == buttonBeforeBoundPropertyReload
+	if (DesignerModel::RuntimeDocumentLoader::Reload(
+		conflictingExpressionSource, runtime, {},
+		&conflictingExpressionMode, &error))
+		return Fail(L"duplicate local expression unexpectedly accepted");
+	if (error.find(L"多个本地值表达式") == std::wstring::npos
+		|| runtime.FindControlByDesignId<Button>(11) != button
 		|| buttonReference.Get() != button
-		|| button->Text != L"Reloaded binding source")
-		return Fail(L"bound property replacement boundary");
+		|| button->GetDisplayText() != L"Reloaded binding source")
+		return Fail(L"duplicate local expression transactional rejection", error);
 
-	auto eventReloadSource = boundPropertyReloadSource;
+	auto eventReloadSource = styleReloadSource;
 	for (auto& node : eventReloadSource.Nodes)
 		if (node.Id == 11)
-			node.Events["OnMouseClick"] = "HandleReloadedAction";
-	eventReloadSource.Form.Text = L"Reloaded in place";
+			node.Events[L"Click"] = L"HandleReloadedAction";
+	SetNodeProperty(eventReloadSource.Window, L"Title",
+		DesignerStyleValueKind::String, L"Reloaded in place");
 	int reloadedClickCount = 0;
 	ControlCounterHandler reloadedClickHandler{ &reloadedClickCount };
 	if (!eventHandlers.RegisterControl(
 		L"HandleReloadedAction",
-		UIClass::UI_Base,
-		L"OnMouseClick",
-		&Control::OnMouseClick,
+		UIClass::UI_Button,
+		L"Click",
+		&ButtonBase::Click,
 		std::bind_front(
 			&ControlCounterHandler::Handle, &reloadedClickHandler),
 		&error))
@@ -896,10 +792,11 @@ int wmain()
 		return Fail(L"in-place event reload", error);
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| runtime.FindControlByDesignId(11) != button
-		|| runtime.FormModel().Text != L"Reloaded in place"
+		|| NodePropertyText(runtime.WindowNode(), L"Title", L"Window")
+			!= L"Reloaded in place"
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"in-place reload identity or attachment preservation");
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (clickCount != 1 || reloadedClickCount != 1)
 		return Fail(L"in-place event connection replacement");
 
@@ -907,9 +804,10 @@ int wmain()
 	for (auto& node : rejectedEventReload.Nodes)
 		if (node.Id == 11)
 		{
-			node.Events["OnMouseClick"] = "HandleRejectedAction";
-			node.Props["visible"] = false;
-			node.Bindings["Text"]["mode"] = static_cast<int>(BindingMode::OneWay);
+			node.Events[L"Click"] = L"HandleRejectedAction";
+			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
+				L"Collapsed");
+			node.Bindings[L"Content"].Mode = BindingMode::OneWay;
 		}
 	for (auto& resource : rejectedEventReload.StyleSheet.Resources)
 		if (resource.Key == L"Accent") resource.Value.Text = L"#FF00FF00";
@@ -920,29 +818,29 @@ int wmain()
 		return Fail(L"unknown named control handler diagnostic", error);
 	if (runtime.FindControlByDesignId(11) != button)
 		return Fail(L"failed in-place reload replaced identity");
-	if (!button->Visible)
+	if (!button->IsVisible)
 		return Fail(L"failed in-place reload did not roll back properties");
-	const auto* bindingAfterRollback = button->DataBindings.Find(L"Text");
+	const auto* bindingAfterRollback = button->DataBindings.Find(L"Content");
 	if (!bindingAfterRollback
 		|| bindingAfterRollback->Mode() != BindingMode::OneTime
-		|| button->BackColor.r < 0.9f
-		|| button->BackColor.g > 0.1f)
+		|| button->Background.Color.r < 0.9f
+		|| button->Background.Color.g > 0.1f)
 		return Fail(L"failed in-place reload did not roll back binding/style state");
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (clickCount != 1 || reloadedClickCount != 2)
 		return Fail(L"failed in-place reload did not preserve old connection");
 
 	// A failed replacement must not disturb the already active document.
 	if (DesignerModel::RuntimeDocumentLoader::LoadXaml(
-		"<Form><Button x:Name=\"bad\" Unknown=\"1\" /></Form>",
+		"<Window><Button x:Name=\"bad\" Unknown=\"1\" /></Window>",
 		runtime, options, &error))
 		return Fail(L"invalid XAML unexpectedly accepted");
 	if (runtime.FindControlByName(L"actionButton") != button)
 		return Fail(L"transactional failed replacement");
 
 	auto topologyReloadSource = eventReloadSource;
-	for (auto& node : topologyReloadSource.Nodes)
-		if (node.Id == 10) node.Extra["runtimeTopologyProbe"] = 1;
+	AppendStackPanelProbeChild(
+		topologyReloadSource, 10, L"topologyProbe", "Topology probe");
 	auto* rootPanelBeforeTopologyReload =
 		runtime.FindControlByDesignId(10);
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
@@ -954,13 +852,14 @@ int wmain()
 		|| buttonReference.Get() != button
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"event/binding topology identity preservation");
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (reloadedClickCount != 3)
 		return Fail(L"event connection after topology recomposition");
 
 	auto rejectedTopologyReload = topologyReloadSource;
-	for (auto& node : rejectedTopologyReload.Nodes)
-		if (node.Id == 10) node.Extra["runtimeTopologyProbe"] = 2;
+	AppendStackPanelProbeChild(
+		rejectedTopologyReload, 10,
+		L"rejectedTopologyProbe", "Rejected topology probe");
 	DesignerModel::RuntimeDocumentLoadOptions rejectedTopologyOptions;
 	rejectedTopologyOptions.RequireControlEventResolver = true;
 	rejectedTopologyOptions.ControlEventResolver = [](
@@ -981,100 +880,115 @@ int wmain()
 		|| runtime.FindControlByDesignId(11) != button
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"failed topology recomposition did not roll back identity");
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (reloadedClickCount != 4)
 		return Fail(L"failed topology recomposition did not preserve old event");
 
-	int commandCount = 0;
-	FormCommandCounterHandler commandHandler{ &commandCount };
-	Font borrowedFormFont(L"Arial", 17.0f);
-	host.Text = L"pre-attach host state";
-	host.Size = SIZE{ 333, 177 };
-	host.SetFontEx(&borrowedFormFont, false);
-	auto* hostPrefix = host.Add<Button>(L"host prefix", 0, 0, 20, 20);
-	auto sharedFormResolver = eventHandlers.FormResolver();
-	if (runtime.AttachToForm(host, sharedFormResolver, &error))
-		return Fail(L"missing named Form handler unexpectedly attached");
+	int windowContentRenderedCount = 0;
+	WindowContentRenderedCounterHandler windowContentRenderedHandler{ &windowContentRenderedCount };
+	host.Title = L"pre-attach host state";
+	host.Width = 333.0f;
+	host.Height = 177.0f;
+	(void)host.TrySetPropertyValue(
+		L"FontFamily", BindingValue(std::wstring(L"Arial")));
+	(void)host.TrySetPropertyValue(L"FontSize", BindingValue(17.0));
+	auto hostPrefixOwner = std::make_unique<Button>();
+	hostPrefixOwner->SetContent(BindingValue(std::wstring(L"host prefix")));
+	Canvas::SetLeft(*hostPrefixOwner, 0.0f);
+	Canvas::SetTop(*hostPrefixOwner, 0.0f);
+	hostPrefixOwner->Width = 20.0f;
+	hostPrefixOwner->Height = 20.0f;
+	auto* hostPrefix = host.AddOwned(std::move(hostPrefixOwner));
+	auto sharedWindowResolver = eventHandlers.WindowResolver();
+	if (runtime.AttachToWindow(host, sharedWindowResolver, &error))
+		return Fail(L"missing named Window handler unexpectedly attached");
 	if (error.find(L"未注册运行时处理函数") == std::wstring::npos
-		|| !runtime.OwnsRootControls()
-		|| runtime.HasRootHostAdapter()
-		|| runtime.BoundFormEventCount() != 0
-		|| host.Text != L"pre-attach host state"
-		|| host.Size.cx != 333 || host.Size.cy != 177
-		|| host.GetConfiguredFont() != &borrowedFormFont
-		|| host.OwnsConfiguredFont()
-		|| host.Controls.size() != 1 || host.Controls[0] != hostPrefix)
-		return Fail(L"atomic Form event attach rollback", error);
+		|| !runtime.OwnsContentRoot()
+		|| runtime.HasContentHostAdapter()
+		|| runtime.BoundWindowEventCount() != 0
+		|| host.Title != L"pre-attach host state"
+		|| !host.Width.IsFixed() || host.Width.value != 333.0f
+		|| !host.Height.IsFixed() || host.Height.value != 177.0f
+		|| host.FontFamily != L"Arial" || host.FontSize != 17.0
+		|| host.GetPropertyValueSource(L"FontSize")
+			!= DependencyPropertyValueSource::Local
+		|| host.GetDataContext()
+		|| host.GetVisualContent() != hostPrefix)
+		return Fail(L"atomic Window event attach rollback", error);
 
-	if (!eventHandlers.RegisterForm(
-		L"HandleCommand",
-		L"OnCommand",
-		&Form::OnCommand,
+	if (!eventHandlers.RegisterWindow(
+		L"HandleContentRendered",
+		L"ContentRendered",
+		&Window::ContentRendered,
 		std::bind_front(
-			&FormCommandCounterHandler::Handle, &commandHandler),
+			&WindowContentRenderedCounterHandler::Handle, &windowContentRenderedHandler),
 		&error))
-		return Fail(L"register initial named Form handler", error);
+		return Fail(L"register initial named Window handler", error);
 	auto rejectingInitialHost =
-		std::make_shared<RejectOnceFormRootHost>(host);
+		std::make_shared<RejectOnceWindowContentHost>(host);
 	rejectingInitialHost->RejectNextInitial = true;
-	if (runtime.AttachToForm(
-		host, rejectingInitialHost, sharedFormResolver, &error))
-		return Fail(L"rejecting root host unexpectedly attached");
+	if (runtime.AttachToWindow(
+		host, rejectingInitialHost, sharedWindowResolver, &error))
+		return Fail(L"rejecting Content host unexpectedly attached");
 	if (error.find(L"intentional initial attach rejection")
 			== std::wstring::npos
-		|| !runtime.OwnsRootControls()
-		|| runtime.HasRootHostAdapter()
-		|| runtime.BoundFormEventCount() != 0
-		|| host.Text != L"pre-attach host state"
-		|| host.Size.cx != 333 || host.Size.cy != 177
-		|| host.GetConfiguredFont() != &borrowedFormFont
-		|| host.OwnsConfiguredFont()
-		|| host.Controls.size() != 1 || host.Controls[0] != hostPrefix)
-		return Fail(L"atomic root-host attach rollback", error);
-	host.OnCommand.Invoke(&host, 0, 0);
-	if (commandCount != 0)
-		return Fail(L"failed atomic attach leaked Form event connection");
+		|| !runtime.OwnsContentRoot()
+		|| runtime.HasContentHostAdapter()
+		|| runtime.BoundWindowEventCount() != 0
+		|| host.Title != L"pre-attach host state"
+		|| !host.Width.IsFixed() || host.Width.value != 333.0f
+		|| !host.Height.IsFixed() || host.Height.value != 177.0f
+		|| host.FontFamily != L"Arial" || host.FontSize != 17.0
+		|| host.GetPropertyValueSource(L"FontSize")
+			!= DependencyPropertyValueSource::Local
+		|| host.GetDataContext()
+		|| host.GetVisualContent() != hostPrefix)
+		return Fail(L"atomic Content-host attach rollback", error);
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != 0)
+		return Fail(L"failed atomic attach leaked Window event connection");
+	auto detachedPrefix = host.DetachVisualContent();
+	if (detachedPrefix.get() != hostPrefix)
+		return Fail(L"Window Content setup detach");
+	detachedPrefix.reset();
 
-	if (!runtime.AttachToForm(host, sharedFormResolver, &error))
-		return Fail(L"atomic Form attachment", error);
-	host.OnCommand.Invoke(&host, 1, 0);
-	if (commandCount != 1) return Fail(L"form event invocation");
+	if (!runtime.AttachToWindow(host, sharedWindowResolver, &error))
+		return Fail(L"atomic Window attachment", error);
+	if (host.GetDataContext().Get() != viewModel.get()
+		|| !runtime.ContentRoot()
+		|| runtime.ContentRoot()->GetDataContext().Get() != viewModel.get())
+		return Fail(L"Window DataContext inheritance after atomic attachment");
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != 1) return Fail(L"form event invocation");
 	auto* rootAfterAtomicAttach = runtime.FindControlByDesignId(10);
 	if (DesignerModel::RuntimeDocumentLoader::Load(
 		source, runtime, options, &error))
 		return Fail(L"direct Load replaced an attached RuntimeDocument");
 	if (error.find(L"请使用 Reload") == std::wstring::npos
 		|| runtime.FindControlByDesignId(10) != rootAfterAtomicAttach
-		|| host.Controls.size() != 2
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != rootAfterAtomicAttach)
+		|| host.GetVisualContent() != rootAfterAtomicAttach)
 		return Fail(L"attached RuntimeDocument direct-Load rejection", error);
-	const auto commandsBeforeRejectedDirectLoad = commandCount;
-	host.OnCommand.Invoke(&host, 1, 0);
-	if (commandCount != commandsBeforeRejectedDirectLoad + 1)
-		return Fail(L"direct-Load rejection lost Form event connection");
-	host.SetFontEx(&borrowedFormFont, false);
-	if (host.GetConfiguredFont() != &borrowedFormFont
-		|| host.OwnsConfiguredFont())
-		return Fail(L"borrowed Form font setup");
+	const auto shownBeforeRejectedDirectLoad = windowContentRenderedCount;
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != shownBeforeRejectedDirectLoad + 1)
+		return Fail(L"direct-Load rejection lost Window event connection");
+	(void)host.TrySetPropertyValue(L"FontSize", BindingValue(17.0));
+	if (host.FontFamily != L"Arial" || host.FontSize != 17.0)
+		return Fail(L"Window typography dependency-property setup");
 
-	auto* hostSuffix = host.Add<Button>(L"host suffix", 0, 0, 20, 20);
-	if (!runtime.HasRootHostAdapter()
-		|| host.Controls.size() != 3
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != runtime.FindControlByDesignId(10)
-		|| host.Controls[2] != hostSuffix)
-		return Fail(L"adapted root ownership placement");
+	if (!runtime.HasContentHostAdapter()
+		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
+		return Fail(L"Window Content ownership placement");
 
 	auto transferredReloadSource = topologyReloadSource;
 	for (auto& node : transferredReloadSource.Nodes)
 		if (node.Id == 11)
-			node.Events["OnMouseClick"] = "HandleAfterTransfer";
+			node.Events[L"Click"] = L"HandleAfterTransfer";
 	if (!eventHandlers.RegisterControl(
 		L"HandleAfterTransfer",
-		UIClass::UI_Base,
-		L"OnMouseClick",
-		&Control::OnMouseClick,
+		UIClass::UI_Button,
+		L"Click",
+		&ButtonBase::Click,
 		std::bind_front(
 			&ControlCounterHandler::Handle, &reloadedClickHandler),
 		&error))
@@ -1093,60 +1007,65 @@ int wmain()
 	auto transferredPropertyReload = transferredReloadSource;
 	for (auto& node : transferredPropertyReload.Nodes)
 		if (node.Id == 11)
-			node.Props["visible"] = false;
+			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
+				L"Collapsed");
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		transferredPropertyReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error)
 		|| eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| runtime.FindControlByDesignId(11) != button
-		|| button->Visible)
+		|| button->IsVisible)
 		return Fail(L"property reload after ownership transfer", error);
 
-	auto rejectedFormAttachmentReload = transferredPropertyReload;
-	rejectedFormAttachmentReload.Form.Text = L"Rejected Form presentation";
-	rejectedFormAttachmentReload.Form.EventHandlers[L"OnCommand"] =
-		L"HandleReloadedCommand";
-	for (auto& node : rejectedFormAttachmentReload.Nodes)
-		if (node.Id == 10) node.Extra["formAttachmentProbe"] = 1;
-	auto* rootBeforeRejectedFormAttachment =
+	auto rejectedWindowAttachmentReload = transferredPropertyReload;
+	SetNodeProperty(rejectedWindowAttachmentReload.Window, L"Title",
+		DesignerStyleValueKind::String, L"Rejected Window presentation");
+	rejectedWindowAttachmentReload.Window.Events[L"ContentRendered"] =
+		L"HandleReloadedContentRendered";
+	AppendStackPanelProbeChild(
+		rejectedWindowAttachmentReload, 10,
+		L"formAttachmentProbe", "Window attachment probe");
+	auto* rootBeforeRejectedWindowAttachment =
 		runtime.FindControlByDesignId(10);
-	const auto formTextBeforeRejectedAttachment = host.Text;
+	const auto formTextBeforeRejectedAttachment = host.Title;
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
-		rejectedFormAttachmentReload, runtime, transferredReloadOptions,
+		rejectedWindowAttachmentReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error))
-		return Fail(L"rejected Form attachment reload unexpectedly accepted");
+		return Fail(L"rejected Window attachment reload unexpectedly accepted");
 	if (error.find(L"未注册运行时处理函数") == std::wstring::npos)
-		return Fail(L"unknown named Form handler diagnostic", error);
-	if (host.Text != formTextBeforeRejectedAttachment
-		|| host.GetConfiguredFont() != &borrowedFormFont
-		|| host.OwnsConfiguredFont()
+		return Fail(L"unknown named Window handler diagnostic", error);
+	if (host.Title != formTextBeforeRejectedAttachment
+		|| host.FontFamily != L"Arial" || host.FontSize != 17.0
+		|| host.GetPropertyValueSource(L"FontSize")
+			!= DependencyPropertyValueSource::Local
 		|| runtime.FindControlByDesignId(10)
-			!= rootBeforeRejectedFormAttachment
+			!= rootBeforeRejectedWindowAttachment
 		|| runtime.FindControlByDesignId(11) != button
-		|| host.Controls[1] != rootBeforeRejectedFormAttachment)
-		return Fail(L"Form presentation/event rollback");
-	const auto commandsBeforeRejectedAttachment = commandCount;
-	host.OnCommand.Invoke(&host, 2, 0);
-	if (commandCount != commandsBeforeRejectedAttachment + 1)
-		return Fail(L"old Form event after attachment rollback");
+		|| host.GetVisualContent() != rootBeforeRejectedWindowAttachment)
+		return Fail(L"Window presentation/event rollback");
+	const auto shownBeforeRejectedAttachment = windowContentRenderedCount;
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != shownBeforeRejectedAttachment + 1)
+		return Fail(L"old Window event after attachment rollback");
 
-	if (!eventHandlers.RegisterForm(
-		L"HandleReloadedCommand",
-		L"OnCommand",
-		&Form::OnCommand,
+	if (!eventHandlers.RegisterWindow(
+		L"HandleReloadedContentRendered",
+		L"ContentRendered",
+		&Window::ContentRendered,
 		std::bind_front(
-			&FormCommandCounterHandler::Handle, &commandHandler),
+			&WindowContentRenderedCounterHandler::Handle, &windowContentRenderedHandler),
 		&error))
-		return Fail(L"register hot-reloaded named Form handler", error);
-	if (!runtime.BindFormEvents(
-		host, eventHandlers.FormResolver(), &error))
-		return Fail(L"install reload-capable Form resolver", error);
+		return Fail(L"register hot-reloaded named Window handler", error);
+	if (!runtime.BindWindowEvents(
+		host, eventHandlers.WindowResolver(), &error))
+		return Fail(L"install reload-capable Window resolver", error);
 	if (eventHandlers.HandlerCount() != 7)
 		return Fail(L"named event registry handler count");
 
 	auto rejectedHostedTopology = transferredPropertyReload;
-	for (auto& node : rejectedHostedTopology.Nodes)
-		if (node.Id == 10) node.Extra["hostedTopologyProbe"] = 1;
+	AppendStackPanelProbeChild(
+		rejectedHostedTopology, 10,
+		L"rejectedHostedProbe", "Rejected hosted probe");
 	DesignerModel::RuntimeDocumentLoadOptions rejectedHostedOptions;
 	rejectedHostedOptions.RequireControlEventResolver = true;
 	rejectedHostedOptions.ControlEventResolver = [](
@@ -1164,20 +1083,16 @@ int wmain()
 		return Fail(L"failed adapted-host topology unexpectedly accepted");
 	if (runtime.FindControlByDesignId(10) != rootBeforeHostedRollback
 		|| runtime.FindControlByDesignId(11) != button
-		|| host.Controls.size() != 3
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != rootBeforeHostedRollback
-		|| host.Controls[2] != hostSuffix)
+		|| host.GetVisualContent() != rootBeforeHostedRollback)
 		return Fail(L"adapted-host topology rollback placement");
 	const auto clicksBeforeHostedRollbackProbe = reloadedClickCount;
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (reloadedClickCount != clicksBeforeHostedRollbackProbe + 1)
 		return Fail(L"adapted-host topology rollback event preservation");
 
-	auto hostedTopologyReload = rejectedFormAttachmentReload;
-	hostedTopologyReload.Form.Text = L"Hosted recomposed Form";
-	for (auto& node : hostedTopologyReload.Nodes)
-		if (node.Id == 10) node.Extra["hostedTopologyProbe"] = 2;
+	auto hostedTopologyReload = rejectedWindowAttachmentReload;
+	SetNodeProperty(hostedTopologyReload.Window, L"Title",
+		DesignerStyleValueKind::String, L"Hosted recomposed Window");
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		hostedTopologyReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error)
@@ -1185,21 +1100,26 @@ int wmain()
 		|| runtime.FindControlByDesignId(10) == rootBeforeHostedRollback
 		|| runtime.FindControlByDesignId(11) != button
 		|| buttonReference.Get() != button
-		|| host.Text != L"Hosted recomposed Form"
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != runtime.FindControlByDesignId(10)
-		|| host.Controls[2] != hostSuffix)
+		|| host.Title != L"Hosted recomposed Window"
+		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
 		return Fail(L"adapted-host topology recomposition", error);
-	const auto commandsBeforeHostedRecomposition = commandCount;
-	host.OnCommand.Invoke(&host, 3, 0);
-	if (commandCount != commandsBeforeHostedRecomposition + 1)
-		return Fail(L"Form event after hosted recomposition");
+	const auto shownBeforeHostedRecomposition = windowContentRenderedCount;
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != shownBeforeHostedRecomposition + 1)
+		return Fail(L"Window event after hosted recomposition");
 
 	auto hostedReplacementReload = hostedTopologyReload;
-	hostedReplacementReload.Form.Text = L"Hosted replaced Form";
+	SetNodeProperty(hostedReplacementReload.Window, L"Title",
+		DesignerStyleValueKind::String, L"Hosted replaced Window");
+	DesignerModel::DesignItemsPanelTemplate replacementItemsPanel;
+	replacementItemsPanel.Key = L"RuntimeReplacementItemsPanel";
+	replacementItemsPanel.Value.Kind = ItemsPanelKind::Stack;
+	replacementItemsPanel.Value.Orientation = Orientation::Vertical;
+	hostedReplacementReload.ItemsPanelTemplates.push_back(
+		std::move(replacementItemsPanel));
 	for (auto& node : hostedReplacementReload.Nodes)
-		if (node.Id == 11 || node.Id == 12)
-			node.Extra["runtimeStructureProbe"] = 1;
+		if (node.Id == 12)
+			node.Structure.ItemsPanel = L"RuntimeReplacementItemsPanel";
 	auto* buttonBeforeHostedReplacement = button;
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		hostedReplacementReload, runtime, transferredReloadOptions,
@@ -1208,41 +1128,35 @@ int wmain()
 	button = runtime.FindControlByDesignId<Button>(11);
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::Replaced
 		|| !button || button == buttonBeforeHostedReplacement
-		|| !runtime.HasRootHostAdapter()
+		|| !runtime.HasContentHostAdapter()
 		|| buttonReference.Get() != button
-		|| button->Visible
-		|| host.Text != L"Hosted replaced Form"
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != runtime.FindControlByDesignId(10)
-		|| host.Controls[2] != hostSuffix)
+		|| button->IsVisible
+		|| host.Title != L"Hosted replaced Window"
+		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
 		return Fail(L"adapted-host replacement identity or placement",
 			L"mode=" + std::to_wstring(static_cast<int>(eventReloadMode))
 			+ L", button=" + std::to_wstring(button != nullptr)
 			+ L", replaced=" + std::to_wstring(button != buttonBeforeHostedReplacement)
-			+ L", adapter=" + std::to_wstring(runtime.HasRootHostAdapter())
+			+ L", adapter=" + std::to_wstring(runtime.HasContentHostAdapter())
 			+ L", reference=" + std::to_wstring(buttonReference.Get() == button)
-			+ L", visible=" + std::to_wstring(button ? button->Visible : true)
-			+ L", hostCount=" + std::to_wstring(host.Controls.size())
-			+ L", prefix=" + std::to_wstring(host.Controls.size() > 0
-				&& host.Controls[0] == hostPrefix)
-			+ L", root=" + std::to_wstring(host.Controls.size() > 1
-				&& host.Controls[1] == runtime.FindControlByDesignId(10))
-			+ L", suffix=" + std::to_wstring(host.Controls.size() > 2
-				&& host.Controls[2] == hostSuffix)
-			+ L", text=" + host.Text);
-	const auto commandsBeforeHostedReplacement = commandCount;
-	host.OnCommand.Invoke(&host, 4, 0);
-	if (commandCount != commandsBeforeHostedReplacement + 1)
-		return Fail(L"Form event after hosted replacement");
+			+ L", visible=" + std::to_wstring(button ? button->IsVisible : true)
+			+ L", content=" + std::to_wstring(
+				host.GetVisualContent() == runtime.FindControlByDesignId(10))
+			+ L", title=" + host.Title);
+	const auto shownBeforeHostedReplacement = windowContentRenderedCount;
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != shownBeforeHostedReplacement + 1)
+		return Fail(L"Window event after hosted replacement");
 
 	auto invalidHostedCandidate = hostedReplacementReload;
+	AppendStackPanelProbeChild(
+		invalidHostedCandidate, 10,
+		L"invalidHostedProbe", "Invalid hosted probe");
 	for (auto& node : invalidHostedCandidate.Nodes)
 		if (node.Id == 10)
 		{
-			node.Extra["invalidHostedTopologyProbe"] = 1;
-			node.Props["metadata"]["NoSuchRuntimeProperty"] = {
-				{ "kind", "String" }, { "value", "invalid" }
-			};
+			SetNodeProperty(node, L"NoSuchRuntimeProperty",
+				DesignerStyleValueKind::String, L"invalid");
 		}
 	auto* rootBeforeInvalidHostedCandidate =
 		runtime.FindControlByDesignId(10);
@@ -1252,23 +1166,11 @@ int wmain()
 		return Fail(L"invalid adapted-host candidate unexpectedly accepted");
 	if (runtime.FindControlByDesignId(10) != rootBeforeInvalidHostedCandidate
 		|| runtime.FindControlByDesignId(11) != button
-		|| host.Controls[0] != hostPrefix
-		|| host.Controls[1] != rootBeforeInvalidHostedCandidate
-		|| host.Controls[2] != hostSuffix)
+		|| host.GetVisualContent() != rootBeforeInvalidHostedCandidate)
 		return Fail(L"invalid adapted-host candidate rollback");
 
-	// File watching starts from a document that is actually representable by
-	// canonical XAML. The topology probes above are model-only test payloads,
-	// and a Binding intentionally does not serialize its suspended local value.
-	for (auto& node : hostedReplacementReload.Nodes)
-	{
-		if (!node.Extra.is_object()) continue;
-		auto& extra = node.Extra.ObjectItems();
-		extra.erase("runtimeTopologyProbe");
-		extra.erase("formAttachmentProbe");
-		extra.erase("hostedTopologyProbe");
-		extra.erase("runtimeStructureProbe");
-	}
+	// File watching starts from a document canonicalized through authored XAML;
+	// a Binding intentionally does not serialize its suspended local value.
 	DesignerModel::DesignDocument canonicalWatcherBaseline;
 	if (!DesignerModel::XamlDocumentParser::FromXaml(
 		DesignerModel::XamlDocumentSerializer::ToXaml(hostedReplacementReload),
@@ -1310,7 +1212,7 @@ int wmain()
 	auto rejectedWatchedDocument = hostedReplacementReload;
 	for (auto& node : rejectedWatchedDocument.Nodes)
 		if (node.Id == 11)
-			node.Events["OnMouseClick"] = "HandleWatcherRejected";
+			node.Events[L"Click"] = L"HandleWatcherRejected";
 	if (!DesignerModel::XamlDocumentSerializer::SaveToFile(
 		rejectedWatchedDocument, watchedFile.Path, &error))
 		return Fail(L"watcher rejected save", error);
@@ -1328,7 +1230,7 @@ int wmain()
 		|| !watchResult.ReloadAttempted
 		|| watchResult.Error.empty()
 		|| runtime.FindControlByDesignId(11) != button
-		|| button->Visible)
+		|| button->IsVisible)
 		return Fail(L"watcher failed reload rollback", watchResult.Error);
 	const auto repeatedFailure = watcher.PollAt(
 		runtime, {}, watchTime + std::chrono::milliseconds{ 60 });
@@ -1336,12 +1238,13 @@ int wmain()
 		|| repeatedFailure.ReloadAttempted)
 		return Fail(L"watcher failed signature suppression");
 	const auto clicksBeforeWatcherRollbackProbe = reloadedClickCount;
-	button->OnMouseClick.Invoke(button, MouseEventArgs{});
+	button->Click.Invoke(button, RoutedEventArgs{});
 	if (reloadedClickCount != clicksBeforeWatcherRollbackProbe + 1)
 		return Fail(L"watcher failure did not preserve old event connection");
 
 	auto acceptedWatchedDocument = hostedReplacementReload;
-	acceptedWatchedDocument.Form.Text = L"Watcher reloaded in place";
+	SetNodeProperty(acceptedWatchedDocument.Window, L"Title",
+		DesignerStyleValueKind::String, L"Watcher reloaded in place");
 	if (!DesignerModel::XamlDocumentSerializer::SaveToFile(
 		acceptedWatchedDocument, watchedFile.Path, &error))
 		return Fail(L"watcher accepted save", error);
@@ -1355,13 +1258,14 @@ int wmain()
 		|| watchResult.ReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| !watchResult.ReloadAttempted
 		|| runtime.FindControlByDesignId(11) != button
-		|| runtime.FormModel().Text != L"Watcher reloaded in place"
-		|| host.Text != L"Watcher reloaded in place")
+		|| NodePropertyText(runtime.WindowNode(), L"Title", L"Window")
+			!= L"Watcher reloaded in place"
+		|| host.Title != L"Watcher reloaded in place")
 		return Fail(L"watcher recovery reload", watchResult.Error);
-	const auto commandsBeforeWatcherFormReload = commandCount;
-	host.OnCommand.Invoke(&host, 5, 0);
-	if (commandCount != commandsBeforeWatcherFormReload + 1)
-		return Fail(L"Form event after watcher presentation reload");
+	const auto shownBeforeWatcherWindowReload = windowContentRenderedCount;
+	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
+	if (windowContentRenderedCount != shownBeforeWatcherWindowReload + 1)
+		return Fail(L"Window event after watcher presentation reload");
 	if (watcher.PollAt(
 		runtime, {}, watchTime + std::chrono::milliseconds{ 112 }).State
 		!= DesignerModel::RuntimeDocumentWatchState::Idle)
@@ -1376,9 +1280,11 @@ int wmain()
 		source, sessionFile.Path, &error))
 		return Fail(L"session baseline save", error);
 
-	// Keep the Form alive longer than the session's document and connections.
-	Form sessionHost(
-		L"session host before mount", POINT{ 0, 0 }, SIZE{ 320, 180 });
+	// Keep the Window alive longer than the session's document and connections.
+	Window sessionHost;
+	sessionHost.Title = L"session host before mount";
+	sessionHost.Width = 320.0f;
+	sessionHost.Height = 180.0f;
 	DesignerModel::RuntimeDocumentSession session(
 		std::chrono::milliseconds{ 25 });
 	DesignerModel::RuntimeDocumentSessionMountOptions sessionOptions;
@@ -1390,27 +1296,33 @@ int wmain()
 	if (error.find(L"未注册运行时处理函数") == std::wstring::npos
 		|| session.IsMounted() || session.IsWatching()
 		|| !session.SourceFile().empty()
-		|| !sessionHost.Controls.empty()
-		|| sessionHost.Text != L"session host before mount")
-		return Fail(L"session failed initial mount rollback", error);
+		|| sessionHost.GetVisualContent()
+		|| sessionHost.Title != L"session host before mount")
+		return Fail(L"session failed initial mount rollback",
+			error + L"; mounted=" + std::to_wstring(session.IsMounted())
+			+ L", watching=" + std::to_wstring(session.IsWatching())
+			+ L", source=" + session.SourceFile()
+			+ L", content=" + std::to_wstring(
+				sessionHost.GetVisualContent() != nullptr)
+			+ L", title=" + sessionHost.Title);
 
 	int sessionClickCount = 0;
 	int sessionReloadedClickCount = 0;
-	int sessionCommandCount = 0;
+	int sessionContentRenderedCount = 0;
 	ControlCounterHandler sessionClickHandler{ &sessionClickCount };
 	ControlCounterHandler sessionReloadedClickHandler{
 		&sessionReloadedClickCount };
-	FormCommandCounterHandler sessionCommandHandler{ &sessionCommandCount };
+	WindowContentRenderedCounterHandler sessionContentRenderedHandler{ &sessionContentRenderedCount };
 	if (!session.EventHandlers().RegisterControl(
-		L"HandleAction", UIClass::UI_Base, L"OnMouseClick",
-		&Control::OnMouseClick,
+		L"HandleAction", UIClass::UI_Button, L"Click",
+		&ButtonBase::Click,
 		std::bind_front(
 			&ControlCounterHandler::Handle, &sessionClickHandler),
-		&error)
-		|| !session.EventHandlers().RegisterForm(
-			L"HandleCommand", L"OnCommand", &Form::OnCommand,
+			&error)
+		|| !session.EventHandlers().RegisterWindow(
+			L"HandleContentRendered", L"ContentRendered", &Window::ContentRendered,
 			std::bind_front(
-				&FormCommandCounterHandler::Handle, &sessionCommandHandler),
+				&WindowContentRenderedCounterHandler::Handle, &sessionContentRenderedHandler),
 			&error))
 		return Fail(L"session handler registration", error);
 	if (!session.MountFile(
@@ -1419,19 +1331,18 @@ int wmain()
 	auto* sessionButton =
 		session.Document().FindControlByDesignId<Button>(11);
 	if (!session.IsMounted()
-		|| session.MountedForm() != &sessionHost
+		|| session.MountedWindow() != &sessionHost
 		|| session.SourceFile() != sessionFile.Path
 		|| session.OwningThreadId() != GetCurrentThreadId()
 		|| session.IsWatching()
 		|| !sessionButton
-		|| sessionButton->Text != L"Loaded from DataContext"
-		|| sessionHost.Controls.size() != 1
-		|| sessionHost.Controls[0]
+		|| sessionButton->GetDisplayText() != L"Loaded from DataContext"
+		|| sessionHost.GetVisualContent()
 			!= session.Document().FindControlByDesignId(10))
 		return Fail(L"session mounted state");
-	sessionButton->OnMouseClick.Invoke(sessionButton, MouseEventArgs{});
-	sessionHost.OnCommand.Invoke(&sessionHost, 1, 0);
-	if (sessionClickCount != 1 || sessionCommandCount != 1)
+	sessionButton->Click.Invoke(sessionButton, RoutedEventArgs{});
+	cui::framework::EventAccess::Raise(sessionHost.ContentRendered, &sessionHost);
+	if (sessionClickCount != 1 || sessionContentRenderedCount != 1)
 		return Fail(L"session initial event routing");
 
 	DesignerModel::RuntimeDocumentWatchResult crossThreadPoll;
@@ -1455,12 +1366,14 @@ int wmain()
 		return Fail(L"session delayed watcher start", error);
 
 	auto sessionReload = source;
-	sessionReload.Form.Text = L"Session reloaded transactionally";
+	SetNodeProperty(sessionReload.Window, L"Title",
+		DesignerStyleValueKind::String, L"Session reloaded transactionally");
 	for (auto& node : sessionReload.Nodes)
 		if (node.Id == 11)
 		{
-			node.Props["visible"] = false;
-			node.Events["OnMouseClick"] = "HandleSessionReload";
+			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
+				L"Collapsed");
+			node.Events[L"Click"] = L"HandleSessionReload";
 		}
 	if (!DesignerModel::XamlDocumentSerializer::SaveToFile(
 		sessionReload, sessionFile.Path, &error))
@@ -1477,16 +1390,16 @@ int wmain()
 			!= DesignerModel::RuntimeDocumentWatchState::Failed
 		|| !sessionWatchResult.ReloadAttempted
 		|| session.Document().FindControlByDesignId(11) != sessionButton
-		|| !sessionButton->Visible
-		|| sessionHost.Text != L"CUI dynamic XAML sample")
+		|| !sessionButton->IsVisible
+		|| sessionHost.Title != L"CUI dynamic XAML sample")
 		return Fail(L"session failed reload rollback", sessionWatchResult.Error);
-	sessionButton->OnMouseClick.Invoke(sessionButton, MouseEventArgs{});
+	sessionButton->Click.Invoke(sessionButton, RoutedEventArgs{});
 	if (sessionClickCount != 2 || sessionReloadedClickCount != 0)
 		return Fail(L"session rollback preserved event route");
 
 	if (!session.EventHandlers().RegisterControl(
-		L"HandleSessionReload", UIClass::UI_Base, L"OnMouseClick",
-		&Control::OnMouseClick,
+		L"HandleSessionReload", UIClass::UI_Button, L"Click",
+		&ButtonBase::Click,
 		std::bind_front(
 			&ControlCounterHandler::Handle, &sessionReloadedClickHandler),
 		&error))
@@ -1500,23 +1413,23 @@ int wmain()
 		|| sessionWatchResult.ReloadMode
 			!= DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| session.Document().FindControlByDesignId(11) != sessionButton
-		|| sessionButton->Visible
-		|| sessionHost.Text != L"Session reloaded transactionally")
+		|| sessionButton->IsVisible
+		|| sessionHost.Title != L"Session reloaded transactionally")
 		return Fail(L"session retry after late registration",
 			sessionWatchResult.Error);
-	sessionButton->OnMouseClick.Invoke(sessionButton, MouseEventArgs{});
-	sessionHost.OnCommand.Invoke(&sessionHost, 2, 0);
+	sessionButton->Click.Invoke(sessionButton, RoutedEventArgs{});
+	cui::framework::EventAccess::Raise(sessionHost.ContentRendered, &sessionHost);
 	if (sessionClickCount != 2
 		|| sessionReloadedClickCount != 1
-		|| sessionCommandCount != 2)
+		|| sessionContentRenderedCount != 2)
 		return Fail(L"session reloaded event routing");
 
-	std::wcout << L"CuiRuntime sample passed: canonical XAML/XML round-trip, typed ItemsControl DataTemplate, declarative DataList/CollectionViewSource, "
-		L"NativeSurface behavior registration, lookup, binding/schema, style, signature-safe named events, atomic initial Form "
+	std::wcout << L"CuiRuntime sample passed: canonical XAML round-trip, typed ItemsControl DataTemplate, declarative DataList/CollectionViewSource, "
+		L"NativeSurface behavior registration, lookup, binding/schema, style, signature-safe named events, atomic initial Window "
 		L"attachment/direct-Load guards, property/event in-place "
 		L"reload, compound rollback, "
 		L"topology subtree recomposition/rollback, adapted-host replacement/exact-slot "
-		L"rollback, Form presentation/event continuation, manual ownership boundaries, "
+		L"rollback, Window presentation/event continuation, manual ownership boundaries, "
 		L"debounced file watching, and the UI-thread runtime session are active.\n";
 	return 0;
 }

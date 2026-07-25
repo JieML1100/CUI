@@ -28,9 +28,6 @@ public:
 	Taskbar(Taskbar&&) = delete;
 	Taskbar& operator=(Taskbar&&) = delete;
 
-	/** Compatibility field. Prefer Initialize() when changing the target. */
-	HWND Handle = nullptr;
-
 	/** Initializes COM/taskbar services and attaches a target window. */
 	bool Initialize(HWND handle);
 	bool IsAvailable() const noexcept;
@@ -46,21 +43,12 @@ public:
 	bool TrySetError();
 	bool TrySetNormal();
 
-	/** Compatibility operations; failures remain available through GetLastError(). */
-	void SetValue(ULONGLONG value, ULONGLONG total);
-	void SetState(ProgressState state);
-	void SetState(TBPFLAG state);
-	void Clear();
-	void SetIndeterminate();
-	void SetPaused();
-	void SetError();
-	void SetNormal();
-
 	ULONGLONG GetValue() const noexcept;
 	ULONGLONG GetTotal() const noexcept;
 	ProgressState GetState() const noexcept;
 
 private:
 	struct Impl;
+	HWND _handle = nullptr;
 	std::unique_ptr<Impl> _impl;
 };

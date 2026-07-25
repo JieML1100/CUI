@@ -2,9 +2,8 @@
 
 #include "../DesignerEventCatalog.h"
 
-#include <Convert.h>
-
 #include <algorithm>
+#include <array>
 #include <cwctype>
 #include <map>
 #include <utility>
@@ -13,16 +12,6 @@ namespace DesignerModel
 {
 namespace
 {
-	std::wstring FromUtf8(const std::string& value)
-	{
-		return Convert::Utf8ToUnicode(value);
-	}
-
-	std::string ToUtf8(const std::wstring& value)
-	{
-		return Convert::UnicodeToUtf8(value);
-	}
-
 	std::wstring Trim(const std::wstring& value)
 	{
 		size_t begin = 0;
@@ -32,27 +21,6 @@ namespace
 		return value.substr(begin, end - begin);
 	}
 
-	bool ReadStoredHandler(
-		const DesignValue& value,
-		std::wstring& stored,
-		bool& enabled)
-	{
-		stored.clear();
-		enabled = false;
-		if (value.is_boolean())
-		{
-			enabled = value.get<bool>();
-			if (enabled) stored = L"1";
-			return true;
-		}
-		if (value.is_string())
-		{
-			stored = FromUtf8(value.get<std::string>());
-			enabled = !Trim(stored).empty();
-			return true;
-		}
-		return false;
-	}
 }
 
 bool DesignDocumentEventIndex::Build(
@@ -104,45 +72,48 @@ bool DesignDocumentEventIndex::Build(
 		return true;
 	};
 
-	for (const auto& [eventName, storedHandler] : document.Form.EventHandlers)
+	for (const auto& [eventName, storedHandler] : document.Window.Events)
 	{
 		if (Trim(storedHandler).empty()) continue;
-		const auto descriptor = DesignerEventCatalog::FindFormEvent(eventName);
+		const auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName);
 		if (!descriptor)
 			return fail(L"窗体包含未知事件：" + eventName);
-		const auto resolved = DesignerEventCatalog::ResolveHandlerName(
-			storedHandler, document.Form.Name, eventName);
+		const auto resolved = DesignerEventCatalog::NormalizeHandlerName(
+			storedHandler);
 		if (!add({
-			DesignEventOwnerKind::Form,
+			DesignEventOwnerKind::Window,
 			0,
-			document.Form.Name,
+			document.Window.Name,
 			UIClass::UI_Base,
 			eventName,
 			descriptor->EventField,
 			descriptor->ParameterList,
 			descriptor->Signature,
-			resolved,
-			DesignerEventCatalog::IsLegacyEnabledValue(storedHandler) }))
+			resolved }))
 			return false;
+	}
+	for (const auto& binding : document.Window.CommandBindings)
+	{
+		for (const auto& [eventName, stored] : binding.HandlerRoutes())
+		{
+			if (!stored || Trim(*stored).empty()) continue;
+			const auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName);
+			if (!descriptor) return fail(
+				L"Window 包含未知命令事件：" + std::wstring(eventName));
+			if (!add({ DesignEventOwnerKind::Window, 0,
+				document.Window.Name + L"[" + binding.Command + L"]",
+				UIClass::UI_Base, eventName, descriptor->EventField,
+				descriptor->ParameterList, descriptor->Signature,
+				DesignerEventCatalog::NormalizeHandlerName(*stored) })) return false;
+		}
 	}
 
 	for (const auto& node : document.Nodes)
 	{
-		if (!node.Events.is_object())
+		for (const auto& [eventKey, stored] : node.Events)
 		{
-			if (!node.Events.is_null())
-				return fail(L"控件 “" + node.Name + L"” 的事件集合不是对象。");
-			continue;
-		}
-		for (const auto& [eventKey, value] : node.Events.ObjectItems())
-		{
-			std::wstring stored;
-			bool enabled = false;
-			if (!ReadStoredHandler(value, stored, enabled))
-				return fail(L"控件 “" + node.Name + L"” 的事件值无效："
-					+ FromUtf8(eventKey));
-			if (!enabled) continue;
-			const auto storedEventName = FromUtf8(eventKey);
+			if (Trim(stored).empty()) continue;
+			const auto& storedEventName = eventKey;
 			auto eventName = storedEventName;
 			DesignerComponentType attachedOwnerType;
 			std::wstring attachedEventName;
@@ -172,8 +143,8 @@ bool DesignDocumentEventIndex::Build(
 			if (!descriptor)
 				return fail(L"控件 “" + node.Name + L"” 包含未知事件："
 					+ storedEventName);
-			const auto resolved = DesignerEventCatalog::ResolveHandlerName(
-				stored, node.Name, eventName);
+			const auto resolved = DesignerEventCatalog::NormalizeHandlerName(
+				stored);
 			if (!add({
 				DesignEventOwnerKind::Control,
 				node.Id,
@@ -183,9 +154,24 @@ bool DesignDocumentEventIndex::Build(
 				descriptor->EventField,
 				descriptor->ParameterList,
 				descriptor->Signature,
-				resolved,
-				DesignerEventCatalog::IsLegacyEnabledValue(stored) }))
+				resolved }))
 				return false;
+		}
+		for (const auto& binding : node.CommandBindings)
+		{
+			for (const auto& [eventName, stored] : binding.HandlerRoutes())
+			{
+				if (!stored || Trim(*stored).empty()) continue;
+				const auto descriptor = DesignerEventCatalog::FindControlEvent(
+					node.Type, eventName);
+				if (!descriptor) return fail(L"控件 “" + node.Name
+					+ L"” 包含未知命令事件：" + std::wstring(eventName));
+				if (!add({ DesignEventOwnerKind::Control, node.Id,
+					node.Name + L"[" + binding.Command + L"]", node.Type,
+					eventName, descriptor->EventField, descriptor->ParameterList,
+					descriptor->Signature,
+					DesignerEventCatalog::NormalizeHandlerName(*stored) })) return false;
+			}
 		}
 	}
 
@@ -251,31 +237,43 @@ bool DesignDocumentEventIndex::RenameHandler(
 
 	auto candidate = document;
 	size_t renamed = 0;
-	for (auto& [eventName, storedHandler] : candidate.Form.EventHandlers)
+	for (auto& [eventName, storedHandler] : candidate.Window.Events)
 	{
-		if (DesignerEventCatalog::ResolveHandlerName(
-			storedHandler, candidate.Form.Name, eventName) != from) continue;
+		if (DesignerEventCatalog::NormalizeHandlerName(storedHandler) != from)
+			continue;
 		storedHandler = to;
 		++renamed;
 	}
+	for (auto& binding : candidate.Window.CommandBindings)
+	{
+		for (auto* stored : { &binding.PreviewCanExecute, &binding.CanExecute,
+			&binding.PreviewExecuted, &binding.Executed })
+		{
+			if (!stored
+				|| DesignerEventCatalog::NormalizeHandlerName(*stored) != from) continue;
+			*stored = to;
+			++renamed;
+		}
+	}
 	for (auto& node : candidate.Nodes)
 	{
-		if (!node.Events.is_object()) continue;
-		for (auto& [eventKey, value] : node.Events.ObjectItems())
+		for (auto& [eventKey, stored] : node.Events)
 		{
-			std::wstring stored;
-			bool enabled = false;
-			if (!ReadStoredHandler(value, stored, enabled) || !enabled) continue;
-			auto eventName = FromUtf8(eventKey);
-			DesignerComponentType attachedOwner;
-			std::wstring attachedEvent;
-			if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-				eventName, attachedOwner, attachedEvent))
-				eventName = std::move(attachedEvent);
-			if (DesignerEventCatalog::ResolveHandlerName(
-				stored, node.Name, eventName) != from) continue;
-			value = ToUtf8(to);
+			if (DesignerEventCatalog::NormalizeHandlerName(stored) != from)
+				continue;
+			stored = to;
 			++renamed;
+		}
+		for (auto& binding : node.CommandBindings)
+		{
+			for (auto* stored : { &binding.PreviewCanExecute, &binding.CanExecute,
+				&binding.PreviewExecuted, &binding.Executed })
+			{
+				if (!stored
+					|| DesignerEventCatalog::NormalizeHandlerName(*stored) != from) continue;
+				*stored = to;
+				++renamed;
+			}
 		}
 	}
 	if (renamed != source->ReferenceIndices.size())

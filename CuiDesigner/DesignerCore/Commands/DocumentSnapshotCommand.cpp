@@ -1,4 +1,5 @@
 #include "DocumentSnapshotCommand.h"
+#include "DesignNodeMemory.h"
 #include "../../DesignerCanvas.h"
 
 namespace
@@ -54,12 +55,18 @@ namespace
 	{
 		size_t result = sizeof(document)
 			+ NarrowStringMemory(document.Schema)
-			+ WideStringMemory(document.Form.Name)
-			+ WideStringMemory(document.Form.Text)
-			+ WideStringMemory(document.Form.FontName);
-		for (const auto& [eventName, handler] : document.Form.EventHandlers)
-			result += sizeof(eventName) + 3 * sizeof(void*)
-				+ WideStringMemory(eventName) + WideStringMemory(handler);
+			+ WideStringMemory(document.Window.Name)
+			+ WideStringMemory(document.Window.ParentRef)
+			+ WideStringMemory(document.Window.XamlType.NamespaceUri)
+			+ WideStringMemory(document.Window.XamlType.LocalName)
+			+ DesignValueMemory(EncodeDesignNodeProperties(
+				document.Window.Properties))
+			+ DesignerCommandMemory::StructureHeap(document.Window.Structure)
+			+ DesignerCommandMemory::TemplateStateHeap(
+				document.Window.TemplateState)
+			+ DesignValueMemory(EncodeDesignNodeEvents(document.Window.Events))
+			+ DesignValueMemory(EncodeDesignNodeBindings(
+				document.Window.Bindings));
 
 		result += document.DataContextSchema.capacity()
 			* sizeof(DesignerDataContextProperty);
@@ -220,10 +227,11 @@ namespace
 					+ WideStringMemory(node.Name)
 					+ WideStringMemory(node.ComponentContentProperty)
 					+ WideStringMemory(node.PresentedComponentContent)
-					+ DesignValueMemory(node.Props)
-					+ DesignValueMemory(node.Extra)
-					+ DesignValueMemory(node.Events)
-					+ DesignValueMemory(node.Bindings);
+					+ DesignValueMemory(EncodeDesignNodeProperties(node.Properties))
+					+ DesignerCommandMemory::StructureHeap(node.Structure)
+					+ DesignerCommandMemory::TemplateStateHeap(node.TemplateState)
+					+ DesignValueMemory(EncodeDesignNodeEvents(node.Events))
+					+ DesignValueMemory(EncodeDesignNodeBindings(node.Bindings));
 				for (const auto& [target, source] : node.TemplateBindings)
 					result += WideStringMemory(target)
 						+ WideStringMemory(source) + 3 * sizeof(void*);
@@ -248,10 +256,11 @@ namespace
 			for (const auto& node : item.Template)
 				result += WideStringMemory(node.ParentRef)
 					+ WideStringMemory(node.Name)
-					+ DesignValueMemory(node.Props)
-					+ DesignValueMemory(node.Extra)
-					+ DesignValueMemory(node.Events)
-					+ DesignValueMemory(node.Bindings);
+					+ DesignValueMemory(EncodeDesignNodeProperties(node.Properties))
+					+ DesignerCommandMemory::StructureHeap(node.Structure)
+					+ DesignerCommandMemory::TemplateStateHeap(node.TemplateState)
+					+ DesignValueMemory(EncodeDesignNodeEvents(node.Events))
+					+ DesignValueMemory(EncodeDesignNodeBindings(node.Bindings));
 		}
 		result += document.DataTypes.capacity()
 			* sizeof(DesignerModel::DesignDataTypeDefinition);
@@ -366,7 +375,6 @@ namespace
 			result += WideStringMemory(rule.Id)
 				+ WideStringMemory(rule.BasedOn)
 				+ WideStringMemory(rule.SourceDictionary)
-				+ rule.Classes.capacity() * sizeof(std::wstring)
 				+ rule.Setters.capacity() * sizeof(DesignerStyleSetter)
 				+ rule.PropertyConditions.capacity()
 					* sizeof(DesignerStylePropertyCondition)
@@ -374,8 +382,6 @@ namespace
 				+ rule.Triggers.capacity() * sizeof(DesignerStyleTrigger)
 				+ actionsMemory(rule.EnterActions)
 				+ actionsMemory(rule.ExitActions);
-			for (const auto& className : rule.Classes)
-				result += WideStringMemory(className);
 			for (const auto& setter : rule.Setters)
 				result += WideStringMemory(setter.PropertyName)
 					+ WideStringMemory(setter.ResourceKey)
@@ -388,17 +394,13 @@ namespace
 					+ StyleValueMemory(condition.Value);
 			for (const auto& trigger : rule.Triggers)
 			{
-				result += trigger.Conditions.capacity()
-						* sizeof(DesignerStyleCondition)
-					+ trigger.PropertyConditions.capacity()
+				result += trigger.PropertyConditions.capacity()
 						* sizeof(DesignerStylePropertyCondition)
 					+ trigger.DataConditions.capacity()
 						* sizeof(DesignerStyleDataCondition)
 					+ trigger.Setters.capacity() * sizeof(DesignerStyleSetter)
 					+ actionsMemory(trigger.EnterActions)
 					+ actionsMemory(trigger.ExitActions);
-				for (const auto& condition : trigger.Conditions)
-					result += WideStringMemory(condition.Property);
 				for (const auto& condition : trigger.PropertyConditions)
 					result += WideStringMemory(condition.Property)
 						+ StyleValueMemory(condition.Value);
@@ -423,10 +425,11 @@ namespace
 				+ WideStringMemory(node.ComponentType.XamlNamespace)
 				+ WideStringMemory(node.ComponentContentProperty)
 				+ WideStringMemory(node.PresentedComponentContent)
-				+ DesignValueMemory(node.Props)
-				+ DesignValueMemory(node.Extra)
-				+ DesignValueMemory(node.Events)
-				+ DesignValueMemory(node.Bindings);
+				+ DesignValueMemory(EncodeDesignNodeProperties(node.Properties))
+				+ DesignerCommandMemory::StructureHeap(node.Structure)
+				+ DesignerCommandMemory::TemplateStateHeap(node.TemplateState)
+				+ DesignValueMemory(EncodeDesignNodeEvents(node.Events))
+				+ DesignValueMemory(EncodeDesignNodeBindings(node.Bindings));
 			for (const auto& [target, source] : node.TemplateBindings)
 				result += WideStringMemory(target) + WideStringMemory(source)
 					+ 3 * sizeof(void*);

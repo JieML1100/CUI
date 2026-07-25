@@ -31,7 +31,7 @@ bool DesignDocumentControlPool::Build(
 		auto owner = factory(node);
 		if (!owner)
 			return Fail(L"无法创建控件实例: " + node.Name, outError);
-		owner->DesignId = node.Id;
+		cui::framework::DesignIdentityAccess::Set(*owner, node.Id);
 		Entry entry;
 		entry.Id = node.Id;
 		entry.Name = node.Name;

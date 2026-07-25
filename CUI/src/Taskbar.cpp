@@ -41,15 +41,15 @@ namespace
 }
 
 Taskbar::Taskbar(HWND handle)
-	: Handle(handle), _impl(std::make_unique<Impl>())
+	: _handle(handle), _impl(std::make_unique<Impl>())
 {
 	(void)Initialize(handle);
 }
 
 Taskbar::~Taskbar()
 {
-	if (_impl->taskbar && Handle)
-		(void)_impl->taskbar->SetProgressState(Handle, TBPF_NOPROGRESS);
+	if (_impl->taskbar && _handle)
+		(void)_impl->taskbar->SetProgressState(_handle, TBPF_NOPROGRESS);
 	_impl->taskbar.Reset();
 	if (_impl->ownsComInitialization)
 		CoUninitialize();
@@ -57,9 +57,9 @@ Taskbar::~Taskbar()
 
 bool Taskbar::Initialize(HWND handle)
 {
-	if (_impl->taskbar && Handle && Handle != handle)
-		(void)_impl->taskbar->SetProgressState(Handle, TBPF_NOPROGRESS);
-	Handle = handle;
+	if (_impl->taskbar && _handle && _handle != handle)
+		(void)_impl->taskbar->SetProgressState(_handle, TBPF_NOPROGRESS);
+	_handle = handle;
 
 	if (!_impl->taskbar)
 	{
@@ -106,8 +106,8 @@ bool Taskbar::Initialize(HWND handle)
 	}
 
 	_impl->initializationError = S_OK;
-	_impl->lastError = Handle ? S_OK : E_HANDLE;
-	return Handle != nullptr;
+	_impl->lastError = _handle ? S_OK : E_HANDLE;
+	return _handle != nullptr;
 }
 
 bool Taskbar::IsAvailable() const noexcept
@@ -127,29 +127,28 @@ HRESULT Taskbar::GetLastError() const noexcept
 
 bool Taskbar::TrySetValue(ULONGLONG value, ULONGLONG total)
 {
+	if (total == 0)
+	{
+		_impl->lastError = E_INVALIDARG;
+		return false;
+	}
 	if (!_impl->taskbar)
 	{
 		_impl->lastError = FAILED(_impl->initializationError)
 			? _impl->initializationError : E_NOINTERFACE;
 		return false;
 	}
-	if (!Handle)
+	if (!_handle)
 	{
 		_impl->lastError = E_HANDLE;
 		return false;
 	}
-	if (total == 0)
-	{
-		_impl->lastError = E_INVALIDARG;
-		return false;
-	}
-
 	value = (std::min)(value, total);
 	if (_impl->state == ProgressState::NoProgress
 		|| _impl->state == ProgressState::Indeterminate)
 	{
 		const HRESULT stateHr =
-			_impl->taskbar->SetProgressState(Handle, TBPF_NORMAL);
+			_impl->taskbar->SetProgressState(_handle, TBPF_NORMAL);
 		if (FAILED(stateHr))
 		{
 			_impl->lastError = stateHr;
@@ -158,7 +157,7 @@ bool Taskbar::TrySetValue(ULONGLONG value, ULONGLONG total)
 		_impl->state = ProgressState::Normal;
 	}
 
-	const HRESULT hr = _impl->taskbar->SetProgressValue(Handle, value, total);
+	const HRESULT hr = _impl->taskbar->SetProgressValue(_handle, value, total);
 	_impl->lastError = hr;
 	if (FAILED(hr)) return false;
 	_impl->value = value;
@@ -184,13 +183,13 @@ bool Taskbar::TrySetState(TBPFLAG state)
 			? _impl->initializationError : E_NOINTERFACE;
 		return false;
 	}
-	if (!Handle)
+	if (!_handle)
 	{
 		_impl->lastError = E_HANDLE;
 		return false;
 	}
 
-	const HRESULT hr = _impl->taskbar->SetProgressState(Handle, state);
+	const HRESULT hr = _impl->taskbar->SetProgressState(_handle, state);
 	_impl->lastError = hr;
 	if (FAILED(hr)) return false;
 	_impl->state = static_cast<ProgressState>(state);
@@ -210,18 +209,6 @@ bool Taskbar::TrySetIndeterminate()
 bool Taskbar::TrySetPaused() { return TrySetState(ProgressState::Paused); }
 bool Taskbar::TrySetError() { return TrySetState(ProgressState::Error); }
 bool Taskbar::TrySetNormal() { return TrySetState(ProgressState::Normal); }
-
-void Taskbar::SetValue(ULONGLONG value, ULONGLONG total)
-{
-	(void)TrySetValue(value, total);
-}
-void Taskbar::SetState(ProgressState state) { (void)TrySetState(state); }
-void Taskbar::SetState(TBPFLAG state) { (void)TrySetState(state); }
-void Taskbar::Clear() { (void)TryClear(); }
-void Taskbar::SetIndeterminate() { (void)TrySetIndeterminate(); }
-void Taskbar::SetPaused() { (void)TrySetPaused(); }
-void Taskbar::SetError() { (void)TrySetError(); }
-void Taskbar::SetNormal() { (void)TrySetNormal(); }
 
 ULONGLONG Taskbar::GetValue() const noexcept { return _impl->value; }
 ULONGLONG Taskbar::GetTotal() const noexcept { return _impl->total; }

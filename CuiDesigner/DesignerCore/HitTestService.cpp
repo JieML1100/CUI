@@ -1,6 +1,7 @@
-﻿#include "HitTestService.h"
+#include "HitTestService.h"
 
 #include "../../CUI/include/Control.h"
+#include "../../CUI/include/ItemsControl.h"
 
 #include <algorithm>
 #include <climits>
@@ -9,11 +10,11 @@
 bool HitTestService::IsDescendantOf(Control* ancestor, Control* node)
 {
 	if (!ancestor || !node) return false;
-	auto* parent = node->Parent;
+	auto* parent = node->GetVisualParent();
 	while (parent)
 	{
 		if (parent == ancestor) return true;
-		parent = parent->Parent;
+		parent = parent->GetVisualParent();
 	}
 	return false;
 }
@@ -21,21 +22,21 @@ bool HitTestService::IsDescendantOf(Control* ancestor, Control* node)
 bool HitTestService::IsContainerControl(Control* control)
 {
 	if (!control) return false;
+	if (auto* items = dynamic_cast<ItemsControl*>(control))
+		return !items->GetItemsSource();
 	switch (control->Type())
 	{
-	case UIClass::UI_Panel:
+	case UIClass::UI_Canvas:
 	case UIClass::UI_GroupBox:
 	case UIClass::UI_Expander:
-	case UIClass::UI_ScrollView:
+	case UIClass::UI_ScrollViewer:
 	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
+	case UIClass::UI_Grid:
 	case UIClass::UI_DockPanel:
 	case UIClass::UI_WrapPanel:
 	case UIClass::UI_RelativePanel:
-	case UIClass::UI_SplitContainer:
 	case UIClass::UI_TabControl:
-	case UIClass::UI_ToolBar:
-	case UIClass::UI_TabPage:
+	case UIClass::UI_TabItem:
 		return true;
 	default:
 		return false;
@@ -50,10 +51,10 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 {
 	std::function<Control*(Control*)> hitDeepest = [&](Control* parent) -> Control* {
 		if (!parent) return nullptr;
-		auto children = parent->GetChildrenInReverseZOrder();
+		auto children = parent->GetVisualChildrenInReverseZOrder();
 		for (auto* child : children)
 		{
-			if (!child || !child->Visible) continue;
+			if (!child || !child->IsVisible) continue;
 			D2D1_POINT_2F local{};
 			if (!child->TryTransformRenderPointToLocal(
 				D2D1::Point2F(
@@ -64,7 +65,7 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 					static_cast<int>(std::floor(local.x)),
 					static_cast<int>(std::floor(local.y))))
 				continue;
-			if (child->HitTestChildren() && child->Count > 0)
+			if (child->HitTestChildren() && child->VisualChildCount() > 0)
 			{
 				auto* deeper = hitDeepest(child);
 				if (deeper) return deeper;
@@ -83,7 +84,7 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 				if (dc && dc->ControlInstance == control)
 					return dc;
 			}
-			control = control->Parent;
+			control = control->GetVisualParent();
 		}
 		return nullptr;
 	};
@@ -93,12 +94,12 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 
 	if (preferParentContainer)
 	{
-		Control* parent = hit->Parent;
+		Control* parent = hit->GetVisualParent();
 		while (parent && parent != root)
 		{
 			auto dc = findDesigner(parent);
 			if (dc) return dc;
-			parent = parent->Parent;
+			parent = parent->GetVisualParent();
 		}
 	}
 
@@ -119,7 +120,7 @@ Control* HitTestService::FindBestContainerAtPoint(
 	{
 		if (!dc || !dc->ControlInstance) continue;
 		auto* control = dc->ControlInstance;
-		if (!control->IsVisual || !control->Visible || !control->Enable) continue;
+		if (!control->IsVisible || !control->IsEnabled) continue;
 		if (!IsContainerControl(control)) continue;
 		if (ignore && (control == ignore || IsDescendantOf(ignore, control))) continue;
 

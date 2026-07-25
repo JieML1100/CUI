@@ -1,5 +1,7 @@
 #include "ContentControl.h"
-#include "Form.h"
+#include "Layout/OverlayLayout.h"
+#include "Window.h"
+#include "XamlInfrastructure.h"
 
 #include <cwctype>
 #include <algorithm>
@@ -9,70 +11,75 @@
 
 namespace
 {
-	bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right)
+	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
 	{
-		if (left.size() != right.size()) return false;
-		for (size_t index = 0; index < left.size(); ++index)
-			if (std::towlower(left[index]) != std::towlower(right[index]))
-				return false;
-		return true;
+		return left == right;
+	}
+
+	void ClearTemplateOwner(Control* root, Control* owner)
+	{
+		if (!root || !owner) return;
+		std::vector<Control*> stack{ root };
+		while (!stack.empty())
+		{
+			auto* current = stack.back();
+			stack.pop_back();
+			if (!current) continue;
+			for (auto* child : current->GetVisualChildrenView())
+				if (child) stack.push_back(child);
+			if (current->GetTemplatedParent() == owner)
+				cui::framework::XamlAccess::SetTemplatedParent(*current, nullptr);
+		}
 	}
 
 	template<typename TValue>
-	ControlPropertyOptions<ContentControl, TValue> ContentOptions(
+	DependencyPropertyOptions<ContentControl, TValue> ContentOptions(
 		TValue defaultValue,
 		int order,
-		ControlPropertyPersistence persistence =
-			ControlPropertyPersistence::Metadata)
+		DependencyPropertyPersistence persistence =
+			DependencyPropertyPersistence::Metadata)
 	{
-		ControlPropertyOptions<ContentControl, TValue> options;
+		DependencyPropertyOptions<ContentControl, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsArrange
-			| ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Auto;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
 		return options;
 	}
 }
 
-ContentControl::ContentControl(int x, int y, int width, int height)
-	: GridPanel(x, y, width, height)
+ContentControl::ContentControl()
+	: Control()
 {
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(0.0f),
-		ControlPropertyValueSource::Theme);
 }
 
-void ContentControl::Update()
+void ContentControl::OnRender()
 {
-	if (!_controlTemplateRoot)
-	{
-		GridPanel::Update();
-		return;
-	}
-	if (!IsVisual || !ParentForm || !ParentForm->Render) return;
-	PerformPendingLayout();
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
 	BeginRender();
-	if (!ParentForm->IsDCompSceneRenderActive())
+	const auto size = GetActualSizeDip();
+	if (auto* background = CreateBackgroundBrush(
+		*GetDrawingContext(), D2D1_SIZE_F{ size.width, size.height }))
 	{
-		for (auto* child : GetChildrenInZOrder())
-			if (child && child->Visible) child->Update();
+		GetDrawingContext()->FillRect(
+			0.0f, 0.0f, size.width, size.height, background);
+		background->Release();
 	}
 	EndRender();
 }
 
-void ContentControl::EnsureBindingPropertiesRegistered()
+void ContentControl::RegisterDependencyProperties()
 {
-	GridPanel::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto contentOptions = ContentOptions(
-			BindingValue{}, 10, ControlPropertyPersistence::Transient);
+			BindingValue{}, 10, DependencyPropertyPersistence::Native);
 		contentOptions.Design.Browsable = false;
 		contentOptions.Coerce = [](
 			ContentControl& target,
@@ -93,7 +100,7 @@ void ContentControl::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildPresenter();
 		};
-		BindingPropertyRegistry::Register<ContentControl, BindingValue>(
+		DependencyPropertyRegistry::Register<ContentControl, BindingValue>(
 			L"Content",
 			[](ContentControl& target) { return target.GetContent(); },
 			[](ContentControl& target, const BindingValue& value)
@@ -101,7 +108,7 @@ void ContentControl::EnsureBindingPropertiesRegistered()
 
 		auto templateOptions = ContentOptions(
 			ItemTemplateReference{}, 20,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		templateOptions.Design.Browsable = false;
 		templateOptions.Coerce = [](
 			ContentControl& target,
@@ -123,7 +130,7 @@ void ContentControl::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildPresenter();
 		};
-		BindingPropertyRegistry::Register<ContentControl,
+		DependencyPropertyRegistry::Register<ContentControl,
 			ItemTemplateReference>(L"ContentTemplate",
 			[](ContentControl& target) { return target.GetContentTemplate(); },
 			[](ContentControl& target, const ItemTemplateReference& value)
@@ -131,14 +138,14 @@ void ContentControl::EnsureBindingPropertiesRegistered()
 			std::move(templateOptions));
 
 		auto pathOptions = ContentOptions(std::wstring{}, 30);
-		pathOptions.Design.Editor = ControlPropertyEditorKind::Text;
+		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
 		pathOptions.Changed = [](
 			ContentControl& target,
 			const std::wstring&, const std::wstring&)
 		{
 			(void)target.RebuildPresenter();
 		};
-		BindingPropertyRegistry::Register<ContentControl, std::wstring>(
+		DependencyPropertyRegistry::Register<ContentControl, std::wstring>(
 			L"DisplayMemberPath",
 			[](ContentControl& target)
 			{ return target.GetDisplayMemberPath(); },
@@ -150,10 +157,61 @@ void ContentControl::EnsureBindingPropertiesRegistered()
 	(void)registered;
 }
 
+cui::core::Size ContentControl::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	return cui::layout::MeasureOverlayChildren(
+		GetLayoutChildrenView(), available,
+		GetSpecifiedLayout().padding);
+}
+
+void ContentControl::Arrange(cui::core::Rect finalRect)
+{
+	Control::Arrange(finalRect);
+	PerformPendingLayout();
+}
+
+void ContentControl::RequestLayout()
+{
+	_contentLayoutPending = true;
+	Control::RequestLayout();
+}
+
+void ContentControl::OnComputedLayoutSizeChanged()
+{
+	_contentLayoutPending = true;
+}
+
+void ContentControl::PerformPendingLayout()
+{
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	if (GetControlTemplateRoot())
+	{
+		// Control::Arrange already assigns the complete control slot to the
+		// template root. Padding belongs to the authored template (typically via
+		// TemplateBinding); consuming it again here double-insets every templated
+		// ContentControl and collapses small buttons and icon buttons.  The root
+		// must still commit layout invalidated by changes inside the template.
+		GetControlTemplateRoot()->UpdateLayout();
+		_contentLayoutPending = false;
+		return;
+	}
+	const auto size = GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
+	cui::layout::ArrangeOverlayChildren(
+		GetLayoutChildrenView(),
+		cui::core::Rect{
+			padding.left,
+			padding.top,
+			(std::max)(0.0f, size.width - padding.Horizontal()),
+			(std::max)(0.0f, size.height - padding.Vertical()) });
+	_contentLayoutPending = false;
+}
+
 Control* ContentControl::GetVisualContent() const noexcept
 {
 	Control* result = nullptr;
-	for (auto* child : Children)
+	for (auto* child : GetVisualChildrenView())
 	{
 		if (!child || IsInfrastructureChild(child)) continue;
 		if (result) return nullptr;
@@ -164,7 +222,51 @@ Control* ContentControl::GetVisualContent() const noexcept
 		? _templateContentPresenter->GetVisualContent() : nullptr;
 }
 
-bool ContentControl::ValidateChildCollection(
+Control* ContentControl::SetVisualContent(std::unique_ptr<Control> value)
+{
+	if (value.get() == GetVisualContent()) return value.release();
+	auto previous = DetachVisualContent();
+	if (!value) return nullptr;
+	try
+	{
+		return AddOwned(std::move(value));
+	}
+	catch (...)
+	{
+		if (previous) AddOwned(std::move(previous));
+		throw;
+	}
+}
+
+bool ContentControl::TrySetVisualContent(
+	std::unique_ptr<Control>& value) noexcept
+{
+	if (!value || GetVisualContent()) return false;
+	auto* raw = value.get();
+	try
+	{
+		InsertVisualChild(static_cast<int>(GetVisualChildrenView().size()), raw);
+		value.release();
+		return true;
+	}
+	catch (...)
+	{
+		if (raw->GetVisualParent() == this)
+		{
+			try { value = DetachVisualChild(raw); }
+			catch (...) {}
+		}
+		return false;
+	}
+}
+
+std::unique_ptr<Control> ContentControl::DetachVisualContent()
+{
+	auto* content = GetVisualContent();
+	return content ? DetachVisualChild(content) : std::unique_ptr<Control>{};
+}
+
+bool ContentControl::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
@@ -198,16 +300,19 @@ bool ContentControl::ValidateChildCollection(
 	return true;
 }
 
-void ContentControl::OnChildCollectionChanged(
+void ContentControl::OnVisualChildCollectionChanged(
 	const CollectionChangedEventArgs& change,
 	std::span<Control* const> previousChildren)
 {
 	(void)change;
 	(void)previousChildren;
+	_contentLayoutPending = true;
 	if (auto* content = GetVisualContent()) ConfigureContentVisual(*content);
 }
 
-Control* ContentControl::AddInfrastructureChild(std::unique_ptr<Control> child)
+Control* ContentControl::AddInfrastructureChild(
+	std::unique_ptr<Control> child,
+	InfrastructureChildRole role)
 {
 	if (!child) return nullptr;
 	auto* raw = child.get();
@@ -216,6 +321,14 @@ Control* ContentControl::AddInfrastructureChild(std::unique_ptr<Control> child)
 	try
 	{
 		AddOwned(std::move(child));
+		if (role == InfrastructureChildRole::TemplateImplementation)
+		{
+			if (!raw->GetTemplatedParent())
+				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
+			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+		}
+		else
+			cui::framework::XamlAccess::SetLogicalParent(*raw, this);
 		_changingInfrastructure = false;
 	}
 	catch (...)
@@ -237,7 +350,7 @@ std::unique_ptr<Control> ContentControl::DetachInfrastructureChild(Control* chil
 	std::unique_ptr<Control> result;
 	try
 	{
-		result = DetachControl(child);
+		result = DetachVisualChild(child);
 		_changingInfrastructure = false;
 	}
 	catch (...)
@@ -261,34 +374,23 @@ bool ContentControl::IsInfrastructureChild(const Control* child) const noexcept
 
 void ContentControl::ConfigureContentVisual(Control& child)
 {
-	child.GridRow = 0;
-	child.GridColumn = 0;
-	child.GridRowSpan = 1;
-	child.GridColumnSpan = 1;
-	child.HAlign = HorizontalAlignment::Stretch;
-	child.VAlign = VerticalAlignment::Stretch;
+	(void)child;
 }
 
 void ContentControl::ConfigureControlTemplateVisual(Control& child)
 {
-	child.GridRow = 0;
-	child.GridColumn = 0;
-	child.GridRowSpan = (std::numeric_limits<int>::max)();
-	child.GridColumnSpan = (std::numeric_limits<int>::max)();
-	child.HAlign = HorizontalAlignment::Stretch;
-	child.VAlign = VerticalAlignment::Stretch;
-	child.ZIndex = (std::numeric_limits<int>::min)() / 2;
+	Control::ConfigureControlTemplateVisual(child);
 }
 
 Control* ContentControl::SetControlTemplateRoot(
 	std::unique_ptr<Control> value)
 {
 	if (value.get() == _controlTemplateRoot) return _controlTemplateRoot;
-	auto previous = DetachControlTemplateRoot();
+	(void)DetachVisualChildTemplateRoot();
 	if (!value)
 	{
 		OnControlTemplatePresentationChanged();
-		InvalidateLayout();
+		RequestLayout();
 		InvalidateVisual();
 		return nullptr;
 	}
@@ -298,31 +400,28 @@ Control* ContentControl::SetControlTemplateRoot(
 	try
 	{
 		AddInfrastructureChild(std::move(value));
+		cui::framework::XamlAccess::SetLogicalParent(*_controlTemplateRoot, nullptr);
 	}
 	catch (...)
 	{
 		_controlTemplateRoot = nullptr;
 		OnControlTemplatePresentationChanged();
-		if (previous)
-		{
-			ConfigureControlTemplateVisual(*previous);
-			_controlTemplateRoot = previous.get();
-			AddInfrastructureChild(std::move(previous));
-		}
 		throw;
 	}
 	OnControlTemplatePresentationChanged();
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 	return _controlTemplateRoot;
 }
 
-std::unique_ptr<Control> ContentControl::DetachControlTemplateRoot()
+std::unique_ptr<Control> ContentControl::DetachVisualChildTemplateRoot()
 {
 	if (!_controlTemplateRoot) return {};
 	auto* previous = _controlTemplateRoot;
 	_controlTemplateRoot = nullptr;
 	auto result = DetachInfrastructureChild(previous);
+	ClearTemplateOwner(result.get(), this);
+	ClearDeclarativeTemplateScope();
 	OnControlTemplatePresentationChanged();
 	return result;
 }
@@ -330,7 +429,8 @@ std::unique_ptr<Control> ContentControl::DetachControlTemplateRoot()
 bool ContentControl::RegisterTemplateContentPresenter(
 	ContentPresenter* presenter)
 {
-	if (!presenter || (_templateContentPresenter
+	if (!presenter || presenter->GetTemplatedParent() != this
+		|| (_templateContentPresenter
 		&& _templateContentPresenter != presenter)) return false;
 	_templateContentPresenter = presenter;
 	return RebuildPresenter();
@@ -346,6 +446,12 @@ void ContentControl::SetContent(BindingValue value)
 {
 	_lastContentError.clear();
 	(void)SetPropertyField(L"Content", _content, std::move(value));
+}
+
+std::wstring ContentControl::GetSemanticText() const
+{
+	std::wstring value;
+	return _content.TryGetString(value) ? value : std::wstring{};
 }
 
 void ContentControl::SetContentTemplate(ItemTemplateReference value)
@@ -396,7 +502,7 @@ bool ContentControl::ValidateContentCandidate(
 		}
 		return true;
 	}
-	ContentPresenter probe(0, 0, 0, 0);
+	ContentPresenter probe;
 	probe.SetContentTypeName(_contentTypeName);
 	probe.SetDisplayMemberPath(_displayMemberPath);
 	probe.SetContentTemplate(contentTemplate);
@@ -416,7 +522,7 @@ bool ContentControl::RebuildPresenter()
 	_lastContentError.clear();
 	if (_contentTemplate && !_contentTypeName.empty()
 		&& !_contentTemplate.Get()->DataTypeName().empty()
-		&& !EqualsIgnoreCase(_contentTypeName,
+		&& !EqualsTypeName(_contentTypeName,
 			_contentTemplate.Get()->DataTypeName()))
 	{
 		_lastContentError =
@@ -430,7 +536,7 @@ bool ContentControl::RebuildPresenter()
 			auto previous = DetachInfrastructureChild(_presenter);
 			_presenter = nullptr;
 		}
-		InvalidateLayout();
+		RequestLayout();
 		InvalidateVisual();
 		return true;
 	}
@@ -448,9 +554,7 @@ bool ContentControl::RebuildPresenter()
 	std::unique_ptr<ContentPresenter> replacement;
 	if (!_content.Empty())
 	{
-		replacement = std::make_unique<ContentPresenter>(0, 0, 0, 0);
-		replacement->HAlign = HorizontalAlignment::Stretch;
-		replacement->VAlign = VerticalAlignment::Stretch;
+		replacement = std::make_unique<ContentPresenter>();
 		replacement->SetContentTypeName(_contentTypeName);
 		replacement->SetDisplayMemberPath(_displayMemberPath);
 		replacement->SetContentTemplate(_contentTemplate);
@@ -475,7 +579,7 @@ bool ContentControl::RebuildPresenter()
 		_presenter = nullptr;
 		throw;
 	}
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 	return true;
 }

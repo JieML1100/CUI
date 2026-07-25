@@ -83,6 +83,7 @@ ID2D1Brush* Brush::CreateBrush(
 	D2DGraphics& graphics,
 	D2D1_SIZE_F bounds) const
 {
+	if (Kind == BrushKind::None) return nullptr;
 	ID2D1Brush* result = nullptr;
 	if (Kind == BrushKind::Solid)
 	{
@@ -133,9 +134,17 @@ ID2D1Brush* Brush::CreateBrush(
 		// brush with CLAMP would smear its edge pixels into the unused band for
 		// None/Uniform; the intermediate surface preserves WPF-like transparency.
 		Microsoft::WRL::ComPtr<ID2D1BitmapRenderTarget> imageTarget;
+		const auto imageTargetSize = D2D1::SizeF(targetWidth, targetHeight);
+		const auto imageTargetFormat = D2D1::PixelFormat(
+			DXGI_FORMAT_B8G8R8A8_UNORM,
+			D2D1_ALPHA_MODE_PREMULTIPLIED);
 		if (!graphics.GetRenderTargetRaw()
 			|| FAILED(graphics.GetRenderTargetRaw()->CreateCompatibleRenderTarget(
-				D2D1::SizeF(targetWidth, targetHeight), &imageTarget))
+				&imageTargetSize,
+				nullptr,
+				&imageTargetFormat,
+				D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+				&imageTarget))
 			|| !imageTarget) return nullptr;
 		imageTarget->BeginDraw();
 		imageTarget->Clear(D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f });

@@ -3,6 +3,7 @@
 #include "../CommandManager.h"
 #include "../../DesignerTypes.h"
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -12,9 +13,31 @@ enum class DesignerPlacementParentKind : uint8_t
 {
 	Root,
 	Control,
-	TabPage,
-	SplitFirst,
-	SplitSecond
+	ItemsControl
+};
+
+/**
+ * Layout values participate in WPF dependency-property precedence. A placement
+ * undo must restore both the effective value and whether an authored Local
+ * contribution existed.
+ */
+enum class DesignerPlacementLocalValue : uint32_t
+{
+	Margin = 1u << 0,
+	Width = 1u << 1,
+	Height = 1u << 2,
+	CanvasLeft = 1u << 3,
+	CanvasTop = 1u << 4,
+	CanvasRight = 1u << 5,
+	CanvasBottom = 1u << 6,
+	HorizontalAlignment = 1u << 7,
+	VerticalAlignment = 1u << 8,
+	Dock = 1u << 9,
+	GridRow = 1u << 10,
+	GridColumn = 1u << 11,
+	GridRowSpan = 1u << 12,
+	GridColumnSpan = 1u << 13,
+	ZIndex = 1u << 14
 };
 
 struct DesignerControlPlacementState
@@ -26,23 +49,28 @@ struct DesignerControlPlacementState
 	std::wstring ParentName;
 	UIClass ParentType = UIClass::UI_Base;
 	std::wstring ComponentContentProperty;
-	int ParentPageIndex = -1;
 	int ChildIndex = -1;
-	POINT Location{ 0, 0 };
-	SIZE Size{ 0, 0 };
 	Thickness Margin{};
 	cui::layout::Length Width = cui::layout::Length::Auto();
 	cui::layout::Length Height = cui::layout::Length::Auto();
-	HorizontalAlignment HAlign = HorizontalAlignment::Left;
-	VerticalAlignment VAlign = VerticalAlignment::Top;
-	uint8_t AnchorStyles = ::AnchorStyles::None;
-	Dock DockPosition = Dock::Fill;
+	float CanvasLeft = cui::layout::UnsetCanvasOffset;
+	float CanvasTop = cui::layout::UnsetCanvasOffset;
+	float CanvasRight = cui::layout::UnsetCanvasOffset;
+	float CanvasBottom = cui::layout::UnsetCanvasOffset;
+	::HorizontalAlignment Horizontal = ::HorizontalAlignment::Left;
+	::VerticalAlignment Vertical = ::VerticalAlignment::Top;
+	Dock DockPosition = Dock::Left;
 	int GridRow = 0;
 	int GridColumn = 0;
 	int GridRowSpan = 1;
 	int GridColumnSpan = 1;
 	int ZIndex = 0;
+	uint32_t LocalValueMask = 0;
 
+	bool HasLocalValue(DesignerPlacementLocalValue value) const noexcept;
+	void SetLocalValue(
+		DesignerPlacementLocalValue value,
+		bool present = true) noexcept;
 	bool EquivalentTo(const DesignerControlPlacementState& other) const noexcept;
 	size_t GetEstimatedMemoryUsage() const noexcept;
 };

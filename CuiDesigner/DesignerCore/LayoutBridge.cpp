@@ -1,41 +1,102 @@
-﻿#include "LayoutBridge.h"
+#include "LayoutBridge.h"
 
 #include "../FakeWebBrowser.h"
 #include "../../CUI/include/Button.h"
+#include "../../CUI/include/Canvas.h"
 #include "../../CUI/include/Control.h"
+#include "../../CUI/include/ItemsControl.h"
 #include "../../CUI/include/Menu.h"
 #include "../../CUI/include/StatusBar.h"
 #include "../../CUI/include/TabControl.h"
-#include "../../CUI/include/ToolBar.h"
 #include "../../CUI/include/Layout/DockPanel.h"
-#include "../../CUI/include/Layout/GridPanel.h"
+#include "../../CUI/include/Layout/Grid.h"
 #include "../../CUI/include/Layout/RelativePanel.h"
 #include "../../CUI/include/Layout/StackPanel.h"
 #include "../../CUI/include/Layout/WrapPanel.h"
 #include "../../CUI/include/Panel.h"
 #include "../../CUI/include/ItemsPresenter.h"
+#include "../../CUI/include/TemplateInfrastructure.h"
 
 #include <algorithm>
 #include <cmath>
 
-Control* LayoutBridge::NormalizeContainerForDrop(Control* container)
+namespace
+{
+	void ClearCanvasPlacement(Control* child)
+	{
+		Canvas::SetLeft(*(child), cui::layout::UnsetCanvasOffset);
+		Canvas::SetTop(*(child), cui::layout::UnsetCanvasOffset);
+		Canvas::SetRight(*(child), cui::layout::UnsetCanvasOffset);
+		Canvas::SetBottom(*(child), cui::layout::UnsetCanvasOffset);
+	}
+
+	void SetCanvasPlacement(Control* child, POINT local)
+	{
+		Canvas::SetLeft(*(child), static_cast<float>(local.x));
+		Canvas::SetTop(*(child), static_cast<float>(local.y));
+		Canvas::SetRight(*(child), cui::layout::UnsetCanvasOffset);
+		Canvas::SetBottom(*(child), cui::layout::UnsetCanvasOffset);
+	}
+
+	void MoveAuthoredItemToDrop(
+		ItemsControl& owner, Control* child, POINT dropLocal)
+	{
+		auto* host = cui::framework::TemplateAccess::GetItemsHost(owner);
+		if (!host || !child) return;
+		size_t currentIndex = owner.AuthoredItemCount();
+		for (size_t index = 0; index < owner.AuthoredItemCount(); ++index)
+			if (owner.GetAuthoredItem(index) == child)
+			{
+				currentIndex = index;
+				break;
+			}
+		if (currentIndex >= owner.AuthoredItemCount()) return;
+		const auto hostLocation = host->GetActualLocationDip();
+		const cui::core::Point point{
+			static_cast<float>(dropLocal.x) - hostLocation.x,
+			static_cast<float>(dropLocal.y) - hostLocation.y };
+		size_t insertion = owner.AuthoredItemCount() - 1;
+		if (auto* stack = dynamic_cast<StackPanel*>(host))
+		{
+			const auto orientation = stack->GetOrientation();
+			for (size_t index = 0; index < owner.AuthoredItemCount(); ++index)
+			{
+				auto* candidate = owner.GetAuthoredItem(index);
+				if (!candidate || candidate == child || candidate->IsCollapsed()) continue;
+				const auto location = candidate->GetActualLocationDip();
+				const auto size = candidate->GetActualSizeDip();
+				const float midpoint = orientation == Orientation::Vertical
+					? location.y + size.height * 0.5f
+					: location.x + size.width * 0.5f;
+				const float coordinate = orientation == Orientation::Vertical
+					? point.y : point.x;
+				if (coordinate >= midpoint) continue;
+				insertion = index;
+				if (currentIndex < insertion) --insertion;
+				break;
+			}
+		}
+		(void)owner.MoveItemControl(currentIndex, insertion);
+		ClearCanvasPlacement(child);
+	}
+}
+
+Control* LayoutBridge::NormalizeContainerForDrop(
+	Control* container, UIClass childType)
 {
 	if (!container) return nullptr;
 	if (container->Type() == UIClass::UI_TabControl)
 	{
 		auto* tabControl = (TabControl*)container;
-		if (tabControl->Count <= 0)
-		{
-			tabControl->AddPage(L"Page 1");
-		}
-		if (tabControl->Count <= 0) return tabControl;
+		if (childType == UIClass::UI_TabItem) return tabControl;
+		if (static_cast<int>(tabControl->ItemCount()) <= 0) return nullptr;
 		if (tabControl->SelectedIndex < 0
-			|| tabControl->SelectedIndex >= tabControl->Count)
+			|| tabControl->SelectedIndex >= static_cast<int>(tabControl->ItemCount()))
 		{
-			tabControl->SelectPage((std::clamp)(
-				tabControl->SelectedIndex, 0, tabControl->Count - 1));
+			tabControl->SelectItem((std::clamp)(
+				tabControl->SelectedIndex, 0, static_cast<int>(tabControl->ItemCount()) - 1));
 		}
-		return tabControl->operator[](tabControl->SelectedIndex);
+		return tabControl->GetItem(tabControl->SelectedIndex);
 	}
 	return container;
 }
@@ -45,18 +106,20 @@ bool LayoutBridge::CanAcceptChild(Control* container, UIClass childType)
 	if (!container) return false;
 	if (dynamic_cast<ContentPresenter*>(container)) return false;
 	if (dynamic_cast<ItemsPresenter*>(container)) return false;
+	if (auto* tabs = dynamic_cast<TabControl*>(container))
+		return childType == UIClass::UI_TabItem && !tabs->GetItemsSource();
 	if (auto* content = dynamic_cast<ContentControl*>(container))
 	{
 		(void)childType;
 		return !content->GetVisualContent()
-			&& !content->GetGeneratedPresenter()
+			&& !cui::framework::TemplateAccess::GetGeneratedPresenter(*content)
 			&& content->GetContent().Empty()
 			&& !content->GetContentTemplate();
 	}
-	if (container->Type() == UIClass::UI_ToolBar)
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
 	{
 		(void)childType;
-		return true;
+		return !items->GetItemsSource();
 	}
 	return true;
 }
@@ -64,56 +127,69 @@ bool LayoutBridge::CanAcceptChild(Control* container, UIClass childType)
 void LayoutBridge::AttachChild(Control* container, Control* child)
 {
 	if (!container || !child) return;
-	if (container->Type() == UIClass::UI_ToolBar)
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
 	{
-		auto* toolBar = (ToolBar*)container;
-		toolBar->AddToolItem(child);
+		items->AdoptItemControl(child);
 		return;
 	}
-	container->AddControl(child);
+	container->AdoptVisualChild(child);
 }
 
 Control* LayoutBridge::AttachChild(Control* container, std::unique_ptr<Control> child)
 {
 	if (!container || !child)
 		return nullptr;
-	if (container->Type() == UIClass::UI_ToolBar)
-		return static_cast<ToolBar*>(container)->AddOwned(std::move(child));
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
+		return items->AddItemControl(std::move(child));
 	return container->AddOwned(std::move(child));
 }
 
 void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT local, POINT dropLocal)
 {
 	if (!container || !child) return;
-
-	if (container->Type() == UIClass::UI_GridPanel
-		|| dynamic_cast<ContentControl*>(container))
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
 	{
-		auto* gridPanel = (GridPanel*)container;
+		MoveAuthoredItemToDrop(*items, child, dropLocal);
+		return;
+	}
+
+	if (container->Type() == UIClass::UI_Grid)
+	{
+		auto* gridPanel = static_cast<Grid*>(container);
 		int row = 0;
 		int col = 0;
-		if (gridPanel->TryGetCellAtPoint(dropLocal, row, col))
+		if (gridPanel->TryGetCellAtPoint(cui::core::Point{
+			static_cast<float>(dropLocal.x),
+			static_cast<float>(dropLocal.y) }, row, col))
 		{
-			child->GridRow = row;
-			child->GridColumn = col;
+			Grid::SetRow(*(child), row);
+			Grid::SetColumn(*(child), col);
 		}
-		child->HAlign = HorizontalAlignment::Stretch;
-		child->VAlign = VerticalAlignment::Stretch;
-		child->Location = { 0, 0 };
+		child->HorizontalAlignment = HorizontalAlignment::Stretch;
+		child->VerticalAlignment = VerticalAlignment::Stretch;
+		ClearCanvasPlacement(child);
+		return;
+	}
+
+	if (dynamic_cast<ContentControl*>(container))
+	{
+		child->HorizontalAlignment = HorizontalAlignment::Stretch;
+		child->VerticalAlignment = VerticalAlignment::Stretch;
+		ClearCanvasPlacement(child);
 		return;
 	}
 
 	if (container->Type() == UIClass::UI_StackPanel)
 	{
-		child->Location = { 0, 0 };
+		ClearCanvasPlacement(child);
 		return;
 	}
 
 	if (container->Type() == UIClass::UI_DockPanel)
 	{
-		auto containerSize = container->Size;
-		float w = (float)containerSize.cx;
-		float h = (float)containerSize.cy;
+		const auto containerSize = container->GetActualSizeDip();
+		const float w = containerSize.width;
+		const float h = containerSize.height;
 		float x = (float)dropLocal.x;
 		float y = (float)dropLocal.y;
 		float left = x;
@@ -121,36 +197,32 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 		float top = y;
 		float bottom = h - y;
 
-		float minDim = (w < h) ? w : h;
-		float snap = (std::min)(40.0f, (std::max)(12.0f, minDim * 0.25f));
-		Dock dock = Dock::Fill;
+		Dock dock = Dock::Left;
 		float minDist = left;
-		dock = Dock::Left;
 		if (top < minDist) { minDist = top; dock = Dock::Top; }
 		if (right < minDist) { minDist = right; dock = Dock::Right; }
 		if (bottom < minDist) { minDist = bottom; dock = Dock::Bottom; }
-		if (minDist > snap) dock = Dock::Fill;
-		child->DockPosition = dock;
-		child->Location = { 0, 0 };
+		DockPanel::SetDock(*(child), dock);
+		ClearCanvasPlacement(child);
 		return;
 	}
 
 	if (container->Type() == UIClass::UI_WrapPanel)
 	{
 		auto* wrapPanel = (WrapPanel*)container;
-		int insertIndex = wrapPanel->Count - 1;
+		int insertIndex = wrapPanel->VisualChildCount() - 1;
 		Orientation orient = wrapPanel->GetOrientation();
 		const float lineTol = 10.0f;
-		for (int i = 0; i < wrapPanel->Count; i++)
+		for (int i = 0; i < wrapPanel->VisualChildCount(); i++)
 		{
-			auto* current = wrapPanel->operator[](i);
-			if (!current || current == child || !current->Visible) continue;
-			auto currentLocation = current->ActualLocation;
-			auto currentSize = current->ActualSize();
+			auto* current = wrapPanel->GetVisualChild(i);
+			if (!current || current == child || current->IsCollapsed()) continue;
+			auto currentLocation = current->GetActualLocationDip();
+			auto currentSize = current->GetActualSizeDip();
 			float childPrimary = (orient == Orientation::Horizontal) ? (float)currentLocation.y : (float)currentLocation.x;
 			float childSecondaryMid = (orient == Orientation::Horizontal)
-				? (currentLocation.x + currentSize.cx * 0.5f)
-				: (currentLocation.y + currentSize.cy * 0.5f);
+				? (currentLocation.x + currentSize.width * 0.5f)
+				: (currentLocation.y + currentSize.height * 0.5f);
 			float dropPrimary = (orient == Orientation::Horizontal) ? (float)dropLocal.y : (float)dropLocal.x;
 			float dropSecondary = (orient == Orientation::Horizontal) ? (float)dropLocal.x : (float)dropLocal.y;
 			if (childPrimary > dropPrimary + lineTol || (std::fabs(childPrimary - dropPrimary) <= lineTol && dropSecondary < childSecondaryMid))
@@ -159,16 +231,18 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 				break;
 			}
 		}
-		auto found = std::find(wrapPanel->Children.begin(), wrapPanel->Children.end(), child);
-		int curIndex = (found != wrapPanel->Children.end())
-			? static_cast<int>(std::distance(wrapPanel->Children.begin(), found)) : -1;
+		auto found = std::find(wrapPanel->GetVisualChildrenView().begin(),
+			wrapPanel->GetVisualChildrenView().end(), child);
+		int curIndex = (found != wrapPanel->GetVisualChildrenView().end())
+			? static_cast<int>(std::distance(
+				wrapPanel->GetVisualChildrenView().begin(), found)) : -1;
 		if (curIndex >= 0)
 		{
-			wrapPanel->Children.Move(
+			wrapPanel->MoveVisualChild(
 				static_cast<size_t>(curIndex),
 				static_cast<size_t>(insertIndex));
 		}
-		child->Location = { 0, 0 };
+		ClearCanvasPlacement(child);
 		return;
 	}
 
@@ -180,11 +254,11 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 		margin.Right = 0.0f;
 		margin.Bottom = 0.0f;
 		child->Margin = margin;
-		child->Location = { 0, 0 };
+		ClearCanvasPlacement(child);
 		return;
 	}
 
-	child->Location = local;
+	SetCanvasPlacement(child, local);
 }
 
 void LayoutBridge::ApplyExistingChildLayout(
@@ -197,37 +271,44 @@ void LayoutBridge::ApplyExistingChildLayout(
 	const std::function<void(const RECT&)>& applyRectToControl)
 {
 	if (!container || !child) return;
-
-	if (container->Type() == UIClass::UI_GridPanel)
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
 	{
-		auto* gridPanel = (GridPanel*)container;
+		MoveAuthoredItemToDrop(*items, child, dropLocalCenter);
+		return;
+	}
+
+	if (container->Type() == UIClass::UI_Grid)
+	{
+		auto* gridPanel = (Grid*)container;
 		int row = 0;
 		int col = 0;
-		if (gridPanel->TryGetCellAtPoint(dropLocalCenter, row, col))
+		if (gridPanel->TryGetCellAtPoint(cui::core::Point{
+			static_cast<float>(dropLocalCenter.x),
+			static_cast<float>(dropLocalCenter.y) }, row, col))
 		{
-			child->GridRow = row;
-			child->GridColumn = col;
+			Grid::SetRow(*(child), row);
+			Grid::SetColumn(*(child), col);
 		}
-		child->HAlign = HorizontalAlignment::Stretch;
-		child->VAlign = VerticalAlignment::Stretch;
-		child->Location = { 0, 0 };
+		child->HorizontalAlignment = HorizontalAlignment::Stretch;
+		child->VerticalAlignment = VerticalAlignment::Stretch;
+		ClearCanvasPlacement(child);
 		return;
 	}
 
 	if (container->Type() == UIClass::UI_StackPanel)
 	{
 		auto* stackPanel = (StackPanel*)container;
-		int insertIndex = stackPanel->Count - 1;
+		int insertIndex = stackPanel->VisualChildCount() - 1;
 		Orientation orient = stackPanel->GetOrientation();
-		for (int i = 0; i < stackPanel->Count; i++)
+		for (int i = 0; i < stackPanel->VisualChildCount(); i++)
 		{
-			auto* current = stackPanel->operator[](i);
-			if (!current || current == child || !current->Visible) continue;
-			auto currentLocation = current->ActualLocation;
-			auto currentSize = current->ActualSize();
+			auto* current = stackPanel->GetVisualChild(i);
+			if (!current || current == child || current->IsCollapsed()) continue;
+			auto currentLocation = current->GetActualLocationDip();
+			auto currentSize = current->GetActualSizeDip();
 			float mid = (orient == Orientation::Vertical)
-				? (currentLocation.y + currentSize.cy * 0.5f)
-				: (currentLocation.x + currentSize.cx * 0.5f);
+				? (currentLocation.y + currentSize.height * 0.5f)
+				: (currentLocation.x + currentSize.width * 0.5f);
 			float dropAxis = (orient == Orientation::Vertical) ? (float)dropLocalCenter.y : (float)dropLocalCenter.x;
 			if (dropAxis < mid)
 			{
@@ -235,16 +316,18 @@ void LayoutBridge::ApplyExistingChildLayout(
 				break;
 			}
 		}
-		auto found = std::find(stackPanel->Children.begin(), stackPanel->Children.end(), child);
-		int curIndex = (found != stackPanel->Children.end())
-			? static_cast<int>(std::distance(stackPanel->Children.begin(), found)) : -1;
+		auto found = std::find(stackPanel->GetVisualChildrenView().begin(),
+			stackPanel->GetVisualChildrenView().end(), child);
+		int curIndex = (found != stackPanel->GetVisualChildrenView().end())
+			? static_cast<int>(std::distance(
+				stackPanel->GetVisualChildrenView().begin(), found)) : -1;
 		if (curIndex >= 0)
 		{
-			stackPanel->Children.Move(
+			stackPanel->MoveVisualChild(
 				static_cast<size_t>(curIndex),
 				static_cast<size_t>(insertIndex));
 		}
-		child->Location = { 0, 0 };
+		ClearCanvasPlacement(child);
 		return;
 	}
 
@@ -274,6 +357,8 @@ void LayoutBridge::ApplyExistingChildLayout(
 
 void LayoutBridge::RefreshContainerLayout(Control* container)
 {
+	if (auto* items = dynamic_cast<ItemsControl*>(container))
+		container = cui::framework::TemplateAccess::GetItemsHost(*items);
 	if (auto* panel = dynamic_cast<Panel*>(container))
 	{
 		panel->InvalidateLayout();

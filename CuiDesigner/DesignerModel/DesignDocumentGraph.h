@@ -12,7 +12,7 @@ struct ResolvedDesignNode
 {
 	size_t SourceIndex = 0;
 	// Empty means form root. Ordinary parents are canonicalized from ParentId;
-	// synthetic parents such as TabPage retain their persisted ParentRef key.
+	// ParentRef is retained for named projected/component content.
 	std::wstring ParentKey;
 };
 

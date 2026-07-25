@@ -39,7 +39,7 @@ struct ControlStyleValue
 	bool IsResource() const noexcept { return !ResourceKey.empty(); }
 };
 
-/** Assigns one metadata property when its containing rule wins the cascade. */
+/** Assigns one metadata property when its containing Setter or Trigger is active. */
 struct ControlStyleSetter
 {
 	std::wstring PropertyName;
@@ -85,8 +85,9 @@ struct ControlStylePropertyCondition
 };
 
 /**
- * Matches a control by runtime type, style id, all listed classes, and states.
- * UIClass::UI_Base is a wildcard type selector; any other type is exact.
+ * One lowered WPF Style rule. The resource key and exact target type select a
+ * single effective Style; conditions only select Setter/Trigger entries inside
+ * that Style and never participate in cross-style cascading.
  */
 struct ControlStyleSelector
 {
@@ -94,17 +95,13 @@ struct ControlStyleSelector
 	/** Exact XAML component identity; empty means no component-type constraint. */
 	std::wstring DeclarativeTypeNamespace;
 	std::wstring DeclarativeTypeName;
-	std::wstring Id;
-	std::vector<std::wstring> Classes;
-	ControlStyleState RequiredStates = ControlStyleState::None;
-	ControlStyleState ExcludedStates = ControlStyleState::None;
+	std::wstring StyleResourceKey;
 	std::vector<ControlStylePropertyCondition> PropertyConditions;
 	std::vector<ControlStyleDataCondition> DataConditions;
 
-	/** Matches only type/id/class qualifiers that define the target scope. */
-	bool MatchesStatic(Control& target) const;
-	bool Matches(Control& target) const;
-	uint32_t Specificity() const noexcept;
+	bool MatchesTargetType(Control& target) const;
+	bool MatchesConditions(Control& target) const;
+	bool IsConditional() const noexcept;
 };
 
 struct ControlStyleRule
@@ -138,8 +135,10 @@ struct ResolvedControlStyleSetter
 {
 	std::wstring PropertyName;
 	BindingValue Value;
+	std::wstring ResourceKey;
+	bool IsDynamicResource = false;
 	size_t RuleId = 0;
-	uint32_t Specificity = 0;
+	bool IsConditional = false;
 };
 
 struct ResolvedControlStyleTrigger
@@ -152,6 +151,7 @@ struct ResolvedControlStyleTrigger
 
 struct ControlStyleResolution
 {
+	bool HasStyle = false;
 	std::vector<ResolvedControlStyleSetter> Setters;
 	/** Includes active and inactive action rules so targets can detect edges. */
 	std::vector<ResolvedControlStyleTrigger> Triggers;
@@ -161,8 +161,10 @@ struct ControlStyleResolution
 };
 
 /**
- * Observable control-level style sheet with CSS-like selector specificity.
+ * Observable control-level collection of lowered WPF Style resources.
  * Attached controls refresh automatically whenever rules or resources change.
+ * Data conditions always resolve through each target's effective DataContext;
+	 * the shared sheet never owns or supplies a context.
  */
 class ControlStyleSheet final
 {
@@ -186,18 +188,14 @@ public:
 	void ClearResources();
 	bool TryGetResource(const std::wstring& key, BindingValue& value) const;
 
-	ControlStyleResolution Resolve(Control& target) const;
+	ControlStyleResolution Resolve(
+		Control& target,
+		bool themeStyle = false) const;
 	bool UsesPropertyCondition(const std::wstring& propertyName) const;
 	/** Unique DataTrigger paths used to build target-local DataContext observers. */
 	std::vector<std::wstring> DataConditionPaths() const;
 	uint64_t Revision() const noexcept { return _revision; }
 	EventConnection SubscribeChanged(std::function<void()> handler) const;
-	/**
-	 * Compatibility fallback used only when a target has no effective DataContext.
-	 * Normal DataTrigger evaluation is target-local and follows inherited DataContext.
-	 */
-	void SetDataContext(IBindingSource* source) const;
-	IBindingSource* DataContext() const noexcept;
 
 private:
 	struct ResourceEntry
@@ -211,12 +209,9 @@ private:
 	size_t _nextRuleId = 1;
 	mutable uint64_t _revision = 0;
 	mutable Event<void()> _changed;
-	struct DataContextState;
-	mutable std::unique_ptr<DataContextState> _dataContextState;
 
 	bool MatchesDataConditions(
 		const ControlStyleSelector& selector,
 		Control& target) const;
-	void RebuildDataContextSubscriptions() const;
 	void NotifyChanged() const;
 };

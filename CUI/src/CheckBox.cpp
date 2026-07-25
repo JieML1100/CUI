@@ -1,7 +1,9 @@
 #pragma once
 #include "CheckBox.h"
-#include "Form.h"
+#include "Layout/OverlayLayout.h"
+#include "Window.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace
@@ -26,18 +28,20 @@ namespace
 
 UIClass CheckBox::Type() { return UIClass::UI_CheckBox; }
 
-CheckBox::CheckBox(std::wstring text, int x, int y)
+CheckBox::CheckBox()
 {
-	this->Text = text;
-	this->Location = POINT{ x,y };
-	this->BackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
-	this->Cursor = CursorKind::Hand;
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
+}
+
+void CheckBox::ConfigureContentVisual(Control& child)
+{
+	ContentControl::ConfigureContentVisual(child);
 }
 
 void CheckBox::StartCheckAnimation(bool checked)
 {
 	CurrentCheckProgress();
-	this->Checked = checked;
+	this->IsChecked = checked;
 	_animStartProgress = _checkProgress;
 	_animTargetProgress = checked ? 1.0f : 0.0f;
 	if (EffectiveAnimationDuration(_animDurationMs) == 0
@@ -55,7 +59,7 @@ float CheckBox::CurrentCheckProgress()
 {
 	if (!_animating)
 	{
-		_checkProgress = this->Checked ? 1.0f : 0.0f;
+		_checkProgress = this->IsChecked ? 1.0f : 0.0f;
 		return _checkProgress;
 	}
 
@@ -83,35 +87,81 @@ bool CheckBox::IsAnimationRunning()
 bool CheckBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	if (!IsAnimationRunning()) return false;
-	outRect = this->AbsRect;
+	outRect = GetAbsoluteBoundsDip();
 	return true;
 }
 
-SIZE CheckBox::ActualSize()
+cui::core::Size CheckBox::MeasureCore(
+	const cui::core::Constraints& available)
 {
-	auto font = this->Font;
-	const auto displayText = GetDisplayText();
-	auto textSize = font->GetTextSize(displayText);
-	const int box = (std::max)(14, (int)std::ceil(textSize.height * 0.82f));
-	const int height = (std::max)((int)std::ceil(textSize.height), box + 2);
-	const int width = box + (int)std::ceil(TextGap) + (int)std::ceil(textSize.width);
-	return SIZE{ width, height };
+	if (GetControlTemplateRoot())
+		return ContentControl::MeasureCore(available);
+	const auto padding = GetSpecifiedLayout().padding;
+	const auto inner = available.Deflate(padding).Normalized();
+	const float fontHeight = GetRenderFont() ? GetRenderFont()->FontHeight : 14.0f;
+	const float box = (std::max)(14.0f, fontHeight * 0.82f);
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	cui::core::Size desired{};
+	const float contentOffset = content ? box + TextGap : box;
+	if (content && !content->IsCollapsed())
+	{
+		const auto margin = content->GetSpecifiedLayout().margin;
+		desired = content->Measure(cui::core::Constraints{
+			cui::core::Size{},
+			cui::core::Size{
+				(std::max)(0.0f, inner.maximum.width
+					- contentOffset - margin.Horizontal()),
+				(std::max)(0.0f, inner.maximum.height
+					- margin.Vertical()) } });
+		desired.width += margin.Horizontal();
+		desired.height += margin.Vertical();
+	}
+	return {
+		contentOffset + desired.width + padding.Horizontal(),
+		(std::max)(desired.height, box + 2.0f) + padding.Vertical() };
 }
 
-void CheckBox::Update()
+void CheckBox::PerformPendingLayout()
 {
-	if (this->IsVisual == false)return;
-	const bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	auto d2d = this->ParentForm->Render;
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	if (GetControlTemplateRoot())
+	{
+		ContentControl::PerformPendingLayout();
+		return;
+	}
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content)
+	{
+		const auto size = GetActualSizeDip();
+		const auto padding = GetSpecifiedLayout().padding;
+		const float fontHeight = GetRenderFont() ? GetRenderFont()->FontHeight : 14.0f;
+		const float box = (std::max)(14.0f, fontHeight * 0.82f);
+		const float offset = box + TextGap;
+		const std::array<Control*, 1> children{ content };
+		cui::layout::ArrangeOverlayChildren(children, cui::core::Rect{
+			padding.left + offset,
+			padding.top,
+			(std::max)(0.0f,
+				size.width - padding.Horizontal() - offset),
+			(std::max)(0.0f, size.height - padding.Vertical()) });
+	}
+	_contentLayoutPending = false;
+}
+
+void CheckBox::OnRender()
+{
+	if (this->IsVisible == false)return;
+	const bool isUnderMouse = this->IsMouseOver;
+	auto d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
 	float clipW = lastMeasuredWidth > size.width ? lastMeasuredWidth : size.width;
 	this->BeginRender(clipW, size.height);
 	{
-		auto font = this->Font;
-		const auto displayText = GetDisplayText();
-		auto textSize = font->GetTextSize(displayText);
+		auto font = this->GetRenderFont();
 		const float progress = CurrentCheckProgress();
-		const float box = (std::max)(14.0f, textSize.height * 0.82f);
+		const float box = (std::max)(14.0f, font->FontHeight * 0.82f);
 		const float x = 0.5f;
 		const float y = (size.height - box) * 0.5f;
 		const float radius = (std::min)(BoxCornerRadius, box * 0.35f);
@@ -121,8 +171,11 @@ void CheckBox::Update()
 		d2d->FillRoundRect(x, y, box, box, boxColor, radius);
 		if (isUnderMouse && UnderMouseColor.a > 0.0f)
 			d2d->FillRoundRect(x, y, box, box, UnderMouseColor, radius);
-		if (Border > 0.0f && borderColor.a > 0.0f)
-			d2d->DrawRoundRect(x, y, box, box, borderColor, Border, radius);
+		const float border = BorderThickness.MaxEdge() > 0.0f
+			? BorderThickness.MaxEdge() : 1.5f;
+		if (borderColor.a > 0.0f)
+			d2d->DrawRoundRect(x, y, box, box,
+				borderColor, border, radius);
 
 		if (progress > 0.001f)
 		{
@@ -138,10 +191,8 @@ void CheckBox::Update()
 			d2d->DrawLine(x2, y2, x3, y3, markColor, stroke);
 		}
 
-		const float textY = (size.height - textSize.height) * 0.5f;
-		d2d->DrawString(displayText, box + TextGap, (std::max)(0.0f, textY), this->ForeColor, font);
 	}
-	if (!this->Enable)
+	if (!this->IsEnabled)
 	{
 		d2d->FillRoundRect(0.0f, 0.0f, clipW, size.height, DisabledOverlayColor, 4.0f);
 	}
@@ -149,60 +200,31 @@ void CheckBox::Update()
 	lastMeasuredWidth = size.width;
 }
 
-bool CheckBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
-{
-	(void)message;
-	return wasSelected;
-}
-
-bool CheckBox::DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const
-{
-	(void)message;
-	return wasSelected;
-}
-
-void CheckBox::BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected)
+void CheckBox::BeforeDefaultMouseUp(MouseButton button, MouseEventArgs& e, bool hasMatchingPress)
 {
 	(void)e;
-	if (message == WM_LBUTTONUP && wasSelected)
-	{
-		StartCheckAnimation(!this->Checked);
-		this->OnChecked(this);
-	}
-}
-
-void CheckBox::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected)
-{
-	(void)e;
-	if (message == WM_LBUTTONDBLCLK && wasSelected)
-	{
-		StartCheckAnimation(!this->Checked);
-		this->OnChecked(this);
-	}
+	if (button == MouseButton::Left && hasMatchingPress)
+		StartCheckAnimation(!this->IsChecked);
 }
 
 bool CheckBox::Invoke()
 {
-	if (!Enable || !Visible) return false;
-	StartCheckAnimation(!Checked);
-	OnChecked(this);
-	const auto size = GetActualSizeDip();
-	OnMouseClick(this, MouseEventArgs(MouseButtons::None, 0,
-		static_cast<int>(size.width * 0.5f),
-		static_cast<int>(size.height * 0.5f), 0));
+	if (!IsEnabled || !IsVisible) return false;
+	StartCheckAnimation(!IsChecked);
+	RoutedEventArgs eventArgs;
+	Click(this, eventArgs);
 	InvalidateVisual();
 	return true;
 }
 
 void CheckBox::SetChecked(bool checked)
 {
-	if (!Enable || Checked == checked) return;
+	if (!IsEnabled || IsChecked == checked) return;
 	StartCheckAnimation(checked);
-	OnChecked(this);
 	InvalidateVisual();
 }
 
 void CheckBox::Toggle()
 {
-	SetChecked(!Checked);
+	SetChecked(!IsChecked);
 }

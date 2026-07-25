@@ -4,7 +4,7 @@
 #include "AtomicFile.h"
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
-#include "DesignDocumentMaterializer.h"
+#include "../../CuiRuntime/include/XamlRuntimeSchema.h"
 #include "../../XmlLite/include/Xml.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
@@ -35,6 +35,8 @@ namespace
 {
 	using namespace System::Xml;
 	using Element = std::shared_ptr<XmlElement>;
+	constexpr const char* RelativePanelConstraintsKey =
+		"relativePanelConstraints";
 
 	std::string ToUtf8(const std::wstring& value)
 	{
@@ -46,33 +48,41 @@ namespace
 		return Convert::Utf8ToUnicode(value);
 	}
 
-	std::wstring Lower(std::wstring value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), towlower);
-		return value;
-	}
-
 	bool Equals(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
+	}
+
+	std::wstring BuiltInXamlTypeName(
+		UIClass nativeType,
+		const RuntimeTypeId& xamlType)
+	{
+		const CuiRuntime::BuiltInXamlTypeDescriptor* descriptor = nullptr;
+		if (xamlType.Valid())
+			descriptor = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				xamlType.NamespaceUri, xamlType.LocalName);
+		else
+			descriptor = CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(nativeType);
+		if (!descriptor || descriptor->NativeType != nativeType)
+			throw std::invalid_argument(
+				"Control has an invalid built-in XAML type identity");
+		return descriptor->TypeId.LocalName;
+	}
+
+	std::wstring BuiltInXamlTypeName(const DesignNode& node)
+	{
+		return BuiltInXamlTypeName(node.Type, node.XamlType);
+	}
+
+	std::wstring ControlXamlTypeName(const DesignNode& node)
+	{
+		return !node.ComponentType.Empty()
+			? node.ComponentType.XamlPrefix + L":" + node.ComponentType.XamlName
+			: BuiltInXamlTypeName(node);
 	}
 
 	std::wstring PublicPropertyName(const std::wstring& property)
 	{
-		if (Equals(property, L"Left")) return L"Canvas.Left";
-		if (Equals(property, L"Top")) return L"Canvas.Top";
-		if (Equals(property, L"LayoutWidth")) return L"Width";
-		if (Equals(property, L"LayoutHeight")) return L"Height";
-		if (Equals(property, L"HAlign")) return L"HorizontalAlignment";
-		if (Equals(property, L"VAlign")) return L"VerticalAlignment";
-		if (Equals(property, L"DockPosition")) return L"DockPanel.Dock";
-		if (Equals(property, L"GridRow")) return L"Grid.Row";
-		if (Equals(property, L"GridColumn")) return L"Grid.Column";
-		if (Equals(property, L"GridRowSpan")) return L"Grid.RowSpan";
-		if (Equals(property, L"GridColumnSpan")) return L"Grid.ColumnSpan";
-		if (Equals(property, L"Enable")) return L"IsEnabled";
-		if (Equals(property, L"Visible")) return L"Visibility";
-		if (Equals(property, L"Checked")) return L"IsChecked";
 		return property;
 	}
 
@@ -140,11 +150,8 @@ namespace
 		const std::wstring& property,
 		const std::wstring& value)
 	{
-		if (Equals(property, L"Visible"))
-			return Equals(value, L"true") ? L"Visible" : L"Collapsed";
-		auto probe = DesignDocumentMaterializer::CreateRuntimeControl(type);
-		if (!probe) return value;
-		const auto descriptors = DesignerPropertyCatalog::GetStyleProperties(*probe);
+		const auto metadata = CuiRuntime::XamlRuntimeSchema::NativeProperties(type);
+		const auto descriptors = DesignerPropertyCatalog::GetStyleProperties(metadata);
 		const auto* descriptor = DesignerPropertyCatalog::Find(descriptors, property);
 		if (!descriptor) return value;
 		for (const auto& choice : descriptor->Choices)
@@ -163,10 +170,10 @@ namespace
 			return std::nullopt;
 		};
 		if (const auto name = enumName(
-			L"HAlign", { L"Left", L"Center", L"Right", L"Stretch" })) return *name;
+			L"HorizontalAlignment", { L"Left", L"Center", L"Right", L"Stretch" })) return *name;
 		if (const auto name = enumName(
-			L"VAlign", { L"Top", L"Center", L"Bottom", L"Stretch" })) return *name;
-		if (const auto name = enumName(L"DockPosition",
+			L"VerticalAlignment", { L"Top", L"Center", L"Bottom", L"Stretch" })) return *name;
+		if (const auto name = enumName(L"DockPanel.Dock",
 			{ L"Left", L"Top", L"Right", L"Bottom", L"Fill" })) return *name;
 		return value;
 	}
@@ -199,21 +206,6 @@ namespace
 			+ NumberText(right) + L", " + NumberText(bottom);
 	}
 
-	std::wstring AnchorText(int anchors)
-	{
-		std::wstring result;
-		auto append = [&](const wchar_t* name)
-		{
-			if (!result.empty()) result += L", ";
-			result += name;
-		};
-		if ((anchors & AnchorStyles::Left) != 0) append(L"Left");
-		if ((anchors & AnchorStyles::Top) != 0) append(L"Top");
-		if ((anchors & AnchorStyles::Right) != 0) append(L"Right");
-		if ((anchors & AnchorStyles::Bottom) != 0) append(L"Bottom");
-		return result.empty() ? L"None" : result;
-	}
-
 	std::wstring EnumText(
 		int value,
 		std::initializer_list<const wchar_t*> names)
@@ -223,26 +215,14 @@ namespace
 		return std::to_wstring(value);
 	}
 
-	bool ContainsName(const DesignValue& object, const std::wstring& name)
-	{
-		if (!object.is_object()) return false;
-		for (const auto& [key, value] : object.ObjectItems())
-		{
-			(void)value;
-			if (Equals(FromUtf8(key), name)) return true;
-		}
-		return false;
-	}
-
 	bool HasBinding(const DesignNode& node, const std::wstring& property)
 	{
-		return ContainsName(node.Bindings, property);
+		return node.Bindings.contains(property);
 	}
 
 	bool HasMetadata(const DesignNode& node, const std::wstring& property)
 	{
-		return node.Props.is_object() && node.Props.contains("metadata")
-			&& ContainsName(node.Props["metadata"], property);
+		return node.Properties.Find(property) != nullptr;
 	}
 
 	std::wstring QuoteBindingLiteral(const std::wstring& value)
@@ -257,96 +237,57 @@ namespace
 		return result;
 	}
 
-	std::wstring BindingMarkup(const DesignValue& value)
+	std::wstring BindingMarkup(const DesignerDataBinding& binding)
 	{
-		if (!value.is_object())
-			throw std::invalid_argument("XAML binding value must be an object");
-		const auto source = FromUtf8(value.value("source", std::string{}));
-		const auto elementName = FromUtf8(
-			value.value("elementName", std::string{}));
-		const auto relativeSource = FromUtf8(
-			value.value("relativeSource", std::string{}));
-		const auto ancestorType = FromUtf8(
-			value.value("ancestorType", std::string{}));
-		const auto ancestorTypeNamespace = FromUtf8(
-			value.value("ancestorTypeNamespace", std::string{}));
-		const auto ancestorLevel = value.value("ancestorLevel", 1);
-		const auto modeValue = value.value(
-			"mode", static_cast<int>(BindingMode::OneWay));
-		const auto updateValue = value.value(
-			"updateMode", static_cast<int>(DataSourceUpdateMode::OnPropertyChanged));
-		std::optional<DesignerStyleValue> fallbackValue;
-		std::optional<DesignerStyleValue> targetNullValue;
-		std::optional<DesignerStyleValue> converterParameter;
-		std::wstring literalError;
-		if (!DesignerBindingUtils::TryReadOptionalLiteral(
-			value, "fallbackValue", "fallbackValueKind",
-			fallbackValue, &literalError)
-			|| !DesignerBindingUtils::TryReadOptionalLiteral(
-				value, "targetNullValue", "targetNullValueKind",
-				targetNullValue, &literalError)
-			|| !DesignerBindingUtils::TryReadOptionalLiteral(
-				value, "converterParameter", "converterParameterKind",
-				converterParameter, &literalError))
-			throw std::invalid_argument("XAML binding contains an invalid default value");
-		std::optional<std::wstring> stringFormat;
-		if (value.contains("stringFormat"))
-		{
-			if (!value["stringFormat"].is_string())
-				throw std::invalid_argument("XAML binding StringFormat is invalid");
-			stringFormat = FromUtf8(value["stringFormat"].get<std::string>());
-			if (!IsValidBindingStringFormat(*stringFormat))
-				throw std::invalid_argument("XAML binding StringFormat is invalid");
-		}
-		if (source.empty()
-			|| (!relativeSource.empty() && relativeSource != L"Self"
-				&& relativeSource != L"TemplatedParent"
-				&& relativeSource != L"FindAncestor")
-			|| (!relativeSource.empty() && !elementName.empty())
-			|| (relativeSource == L"FindAncestor"
-				&& (ancestorType.empty() || ancestorLevel < 1))
-			|| (relativeSource != L"FindAncestor"
-				&& (!ancestorType.empty() || !ancestorTypeNamespace.empty()
-					|| ancestorLevel != 1))
-			|| modeValue < static_cast<int>(BindingMode::OneWay)
-			|| modeValue > static_cast<int>(BindingMode::Default)
-			|| updateValue < static_cast<int>(DataSourceUpdateMode::OnPropertyChanged)
-			|| updateValue > static_cast<int>(DataSourceUpdateMode::Default))
+		if (binding.IsMultiBinding())
+			throw std::invalid_argument("MultiBinding cannot use markup syntax");
+		if (binding.SourceProperty.empty()
+			|| (binding.RelativeSource != DesignerBindingRelativeSource::None
+				&& !binding.ElementName.empty())
+			|| (binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor
+				&& (binding.AncestorType.empty() || binding.AncestorLevel < 1))
+			|| (binding.RelativeSource != DesignerBindingRelativeSource::FindAncestor
+				&& (!binding.AncestorType.empty()
+					|| !binding.AncestorTypeNamespace.empty()
+					|| binding.AncestorLevel != 1)))
 			throw std::invalid_argument("XAML binding contains an invalid path or mode");
-		const auto mode = static_cast<BindingMode>(modeValue);
-		std::wstring result = L"{Binding " + source;
-		if (mode != BindingMode::Default)
+		if (binding.StringFormat
+			&& !IsValidBindingStringFormat(*binding.StringFormat))
+			throw std::invalid_argument("XAML binding StringFormat is invalid");
+		std::wstring result = L"{Binding " + binding.SourceProperty;
+		if (binding.Mode != BindingMode::Default)
 			result += L", Mode="
-				+ std::wstring(DesignerBindingUtils::BindingModeName(mode));
-		const auto updateMode = static_cast<DataSourceUpdateMode>(updateValue);
-		if (updateMode != DataSourceUpdateMode::Default)
+				+ std::wstring(DesignerBindingUtils::BindingModeName(binding.Mode));
+		if (binding.UpdateMode != DataSourceUpdateMode::Default)
 			result += L", UpdateSourceTrigger=" + std::wstring(
-				DesignerBindingUtils::UpdateSourceTriggerName(updateMode));
-		const auto converter = FromUtf8(value.value("converter", std::string{}));
-		if (!converter.empty()) result += L", Converter=" + converter;
-		if (converterParameter)
+				DesignerBindingUtils::UpdateSourceTriggerName(binding.UpdateMode));
+		if (!binding.Converter.empty()) result += L", Converter=" + binding.Converter;
+		if (binding.ConverterParameter)
 			result += L", ConverterParameter="
-				+ QuoteBindingLiteral(converterParameter->Text);
-		if (stringFormat)
-			result += L", StringFormat=" + QuoteBindingLiteral(*stringFormat);
-		if (!elementName.empty()) result += L", ElementName=" + elementName;
-		if (fallbackValue)
+				+ QuoteBindingLiteral(binding.ConverterParameter->Text);
+		if (binding.StringFormat)
+			result += L", StringFormat=" + QuoteBindingLiteral(*binding.StringFormat);
+		if (!binding.ElementName.empty())
+			result += L", ElementName=" + binding.ElementName;
+		if (binding.FallbackValue)
 			result += L", FallbackValue="
-				+ QuoteBindingLiteral(fallbackValue->Text);
-		if (targetNullValue)
+				+ QuoteBindingLiteral(binding.FallbackValue->Text);
+		if (binding.TargetNullValue)
 			result += L", TargetNullValue="
-				+ QuoteBindingLiteral(targetNullValue->Text);
-		if (relativeSource == L"FindAncestor")
+				+ QuoteBindingLiteral(binding.TargetNullValue->Text);
+		if (binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor)
 		{
 			result += L", RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type "
-				+ ancestorType + L"}";
-			if (ancestorLevel != 1)
-				result += L", AncestorLevel=" + std::to_wstring(ancestorLevel);
+				+ binding.AncestorType + L"}";
+			if (binding.AncestorLevel != 1)
+				result += L", AncestorLevel=" + std::to_wstring(binding.AncestorLevel);
 			result += L"}";
 		}
-		else if (!relativeSource.empty())
+		else if (binding.RelativeSource != DesignerBindingRelativeSource::None)
 			result += L", RelativeSource={RelativeSource "
-				+ relativeSource + L"}";
+				+ std::wstring(binding.RelativeSource
+					== DesignerBindingRelativeSource::Self
+						? L"Self" : L"TemplatedParent") + L"}";
 		result += L"}";
 		return result;
 	}
@@ -361,7 +302,6 @@ namespace
 		if (unit == "Star")
 			return amount == 1.0 ? L"*" : NumberText(amount) + L"*";
 		if (unit == "Pixel") return NumberText(amount);
-		if (unit == "Percent") return NumberText(amount) + L"%";
 		throw std::invalid_argument("Grid length contains an unknown unit");
 	}
 
@@ -392,7 +332,7 @@ namespace
 
 		Element Write()
 		{
-			auto root = _xml.CreateElement("Form");
+			auto root = _xml.CreateElement("Window");
 			root->SetAttribute("xmlns", "urn:cui");
 			root->SetAttribute(
 				"xmlns:x", "http://schemas.microsoft.com/winfx/2006/xaml");
@@ -446,7 +386,7 @@ namespace
 			for (const auto& [prefix, uri] : customNamespaces)
 				root->SetAttribute(
 					"xmlns:" + ToUtf8(prefix), ToUtf8(uri));
-			WriteForm(root);
+			WriteWindow(root);
 			WriteSchema(root);
 			WriteResources(root);
 			for (const auto graphIndex : _graph.Roots())
@@ -477,62 +417,35 @@ namespace
 					"XAML writer could not represent the complete control forest");
 		}
 
-		void WriteForm(const Element& root)
+		void WriteWindow(const Element& root)
 		{
-			const DesignFormModel defaults;
-			Set(root, "x:Name", _document.Form.Name);
+			Set(root, "x:Name", _document.Window.Name);
 			if (!_document.CodeBehind.ClassName.empty())
 				Set(root, "x:Class", _document.CodeBehind.ClassName);
 			if (!_document.CodeBehind.RelativeBasePath.empty())
 				Set(root, "d:CodeBehind",
 					_document.CodeBehind.RelativeBasePath);
-			if (_document.Form.Text != defaults.Text)
-				Set(root, "Text", _document.Form.Text);
-			if (_document.Form.Location.x != defaults.Location.x)
-				Set(root, "X", std::to_wstring(_document.Form.Location.x));
-			if (_document.Form.Location.y != defaults.Location.y)
-				Set(root, "Y", std::to_wstring(_document.Form.Location.y));
-			if (_document.Form.Size.cx != defaults.Size.cx)
-				Set(root, "Width", std::to_wstring(_document.Form.Size.cx));
-			if (_document.Form.Size.cy != defaults.Size.cy)
-				Set(root, "Height", std::to_wstring(_document.Form.Size.cy));
-			if (!_document.Form.FontName.empty())
-				Set(root, "FontName", _document.Form.FontName);
-			if (_document.Form.FontSize != defaults.FontSize)
-				Set(root, "FontSize", NumberText(_document.Form.FontSize));
-			if (ColorText(_document.Form.BackColor) != ColorText(defaults.BackColor))
-				Set(root, "BackColor", ColorText(_document.Form.BackColor));
-			if (ColorText(_document.Form.ForeColor) != ColorText(defaults.ForeColor))
-				Set(root, "ForeColor", ColorText(_document.Form.ForeColor));
-			auto setBool = [&](const char* name, bool value, bool defaultValue)
-			{
-				if (value != defaultValue) root->SetAttribute(name, BoolText(value));
-			};
-			setBool("ShowInTaskBar", _document.Form.ShowInTaskBar, defaults.ShowInTaskBar);
-			setBool("TopMost", _document.Form.TopMost, defaults.TopMost);
-			setBool("Enable", _document.Form.Enable, defaults.Enable);
-			setBool("Visible", _document.Form.Visible, defaults.Visible);
-			setBool("VisibleHead", _document.Form.VisibleHead, defaults.VisibleHead);
-			if (_document.Form.HeadHeight != defaults.HeadHeight)
-				root->SetAttribute("HeadHeight", std::to_string(_document.Form.HeadHeight));
-			setBool("MinBox", _document.Form.MinBox, defaults.MinBox);
-			setBool("MaxBox", _document.Form.MaxBox, defaults.MaxBox);
-			setBool("CloseBox", _document.Form.CloseBox, defaults.CloseBox);
-			setBool("CenterTitle", _document.Form.CenterTitle, defaults.CenterTitle);
-			setBool("AllowResize", _document.Form.AllowResize, defaults.AllowResize);
-			for (const auto& [event, handler] : _document.Form.EventHandlers)
-			{
-				if (event.empty() || handler.empty()) continue;
-				Set(root, ToUtf8(event).c_str(),
-					DesignerEventCatalog::IsLegacyEnabledValue(handler)
-						? std::wstring(L"Auto") : handler);
-			}
+			DesignNodeProperties residualProperties = _document.Window.Properties;
+			DesignBindingMap residualBindings = _document.Window.Bindings;
+			WriteControlAttributes(
+				_document.Window, root, residualProperties, residualBindings);
+			WriteMultiBindingProperties(
+				_document.Window, root, residualBindings);
+			DesignValue residualStructure = DesignValue::object();
+			WriteStructuredProperties(
+				_document.Window, root, residualProperties, residualStructure);
+			WriteCommandAndInputBindings(
+				_document.Window, root, L"Window");
+			if (!residualProperties.Empty() || !residualBindings.empty()
+				|| !residualStructure.empty())
+				throw std::invalid_argument(
+					"Window contains members without a public XAML representation");
 		}
 
 		void WriteSchema(const Element& root)
 		{
 			if (_document.DataContextSchema.empty()) return;
-			auto schema = Append(_xml, root, "Form.DataContextSchema");
+			auto schema = Append(_xml, root, "Window.DataContextSchema");
 			auto properties = _document.DataContextSchema;
 			DesignerDataContextSchemaUtils::Canonicalize(properties);
 			for (const auto& property : properties)
@@ -1093,9 +1006,7 @@ namespace
 								{ return Equals(node.Name, animation.TargetName); });
 							if (target != component.Template.end()) targetType = target->Type;
 						}
-						if (Equals(animation.PropertyName, L"Visible"))
-							text = Equals(text, L"true") ? L"Visible" : L"Collapsed";
-						else text = PublicPropertyValue(
+						text = PublicPropertyValue(
 							targetType, animation.PropertyName, text);
 					}
 					Set(frame, "Value", text);
@@ -1336,63 +1247,17 @@ namespace
 			auto style = Append(_xml, resourceTarget, "Style");
 			if (rule.HasType)
 				Set(style, "TargetType", rule.ComponentType.Empty()
-					? DesignerStyleSheetUtils::UIClassName(rule.Type)
+					? BuiltInXamlTypeName(rule.Type, rule.XamlType)
 					: rule.ComponentType.XamlPrefix + L":"
 						+ rule.ComponentType.XamlName);
 			if (!rule.Id.empty()) Set(style, "x:Key", rule.Id);
 			if (!rule.BasedOn.empty())
 				Set(style, "BasedOn", L"{StaticResource "
 					+ rule.BasedOn + L"}");
-			if (!rule.Classes.empty())
-				Set(style, "Classes",
-					DesignerStyleSheetUtils::JoinClasses(rule.Classes));
-			if (rule.RequiredStates != ControlStyleState::None)
-				Set(style, "RequiredStates",
-					DesignerStyleSheetUtils::FormatStates(rule.RequiredStates));
-			if (rule.ExcludedStates != ControlStyleState::None)
-				Set(style, "ExcludedStates",
-					DesignerStyleSheetUtils::FormatStates(rule.ExcludedStates));
-			if (rule.DataConditions.empty() && rule.PropertyConditions.empty())
-				for (const auto& setter : rule.Setters)
-					WriteStyleSetter(style, setter);
-			if (rule.Triggers.empty() && rule.DataConditions.empty()
-				&& rule.PropertyConditions.empty()) return;
+			for (const auto& setter : rule.Setters)
+				WriteStyleSetter(style, setter);
+			if (rule.Triggers.empty()) return;
 			auto triggers = Append(_xml, style, "Style.Triggers");
-			if (!rule.DataConditions.empty())
-				WriteDataTrigger(triggers, rule.DataConditions, rule.Setters,
-					rule.EnterActions, rule.ExitActions, styleTarget);
-			if (!rule.PropertyConditions.empty())
-			{
-				const bool multi = rule.PropertyConditions.size() > 1;
-				auto triggerElement = Append(
-					_xml, triggers, multi ? "MultiTrigger" : "Trigger");
-				if (multi)
-				{
-					auto conditions = Append(
-						_xml, triggerElement, "MultiTrigger.Conditions");
-					for (const auto& condition : rule.PropertyConditions)
-					{
-						auto item = Append(_xml, conditions, "Condition");
-						Set(item, "Property", condition.Property);
-						Set(item, "Value", condition.Value.Text);
-					}
-				}
-				else
-				{
-					Set(triggerElement, "Property",
-						rule.PropertyConditions.front().Property);
-					Set(triggerElement, "Value",
-						rule.PropertyConditions.front().Value.Text);
-				}
-				WriteStyleTriggerActions(triggerElement,
-					multi ? "MultiTrigger" : "Trigger", "EnterActions",
-					rule.EnterActions, styleTarget);
-				WriteStyleTriggerActions(triggerElement,
-					multi ? "MultiTrigger" : "Trigger", "ExitActions",
-					rule.ExitActions, styleTarget);
-				for (const auto& setter : rule.Setters)
-					WriteStyleSetter(triggerElement, setter);
-			}
 			for (const auto& trigger : rule.Triggers)
 			{
 				if (!trigger.DataConditions.empty())
@@ -1402,8 +1267,7 @@ namespace
 						trigger.EnterActions, trigger.ExitActions, styleTarget);
 					continue;
 				}
-				const size_t conditionCount = trigger.Conditions.size()
-					+ trigger.PropertyConditions.size();
+				const size_t conditionCount = trigger.PropertyConditions.size();
 				const bool multi = conditionCount > 1;
 				auto triggerElement = Append(
 					_xml, triggers, multi ? "MultiTrigger" : "Trigger");
@@ -1411,25 +1275,12 @@ namespace
 				{
 					auto conditions = Append(
 						_xml, triggerElement, "MultiTrigger.Conditions");
-					for (const auto& condition : trigger.Conditions)
-					{
-						auto item = Append(_xml, conditions, "Condition");
-						Set(item, "Property", condition.Property);
-						Set(item, "Value", condition.Value ? L"true" : L"false");
-					}
 					for (const auto& condition : trigger.PropertyConditions)
 					{
 						auto item = Append(_xml, conditions, "Condition");
 						Set(item, "Property", condition.Property);
 						Set(item, "Value", condition.Value.Text);
 					}
-				}
-				else if (!trigger.Conditions.empty())
-				{
-					Set(triggerElement, "Property",
-						trigger.Conditions.front().Property);
-					Set(triggerElement, "Value",
-						trigger.Conditions.front().Value ? L"true" : L"false");
 				}
 				else if (!trigger.PropertyConditions.empty())
 				{
@@ -1458,7 +1309,7 @@ namespace
 				&& _document.GroupStyles.empty()
 				&& _document.DataLists.empty()
 				&& _document.CollectionViews.empty()) return;
-			auto resources = Append(_xml, root, "Form.Resources");
+			auto resources = Append(_xml, root, "Window.Resources");
 			auto styleSheet = _document.StyleSheet;
 			DesignerStyleSheetUtils::Canonicalize(styleSheet);
 			Element resourceTarget = resources;
@@ -1653,40 +1504,40 @@ namespace
 						const wchar_t* editor = nullptr;
 						switch (property.Editor)
 						{
-						case ControlPropertyEditorKind::Text: editor = L"Text"; break;
-						case ControlPropertyEditorKind::Boolean: editor = L"Boolean"; break;
-						case ControlPropertyEditorKind::Number: editor = L"Number"; break;
-						case ControlPropertyEditorKind::Choice: editor = L"Choice"; break;
-						case ControlPropertyEditorKind::Color: editor = L"Color"; break;
-						case ControlPropertyEditorKind::Thickness: editor = L"Thickness"; break;
-						case ControlPropertyEditorKind::Size: editor = L"Size"; break;
-						case ControlPropertyEditorKind::Length: editor = L"Length"; break;
-						case ControlPropertyEditorKind::Auto: break;
+						case DependencyPropertyEditorKind::Text: editor = L"Text"; break;
+						case DependencyPropertyEditorKind::Boolean: editor = L"Boolean"; break;
+						case DependencyPropertyEditorKind::Number: editor = L"Number"; break;
+						case DependencyPropertyEditorKind::Choice: editor = L"Choice"; break;
+						case DependencyPropertyEditorKind::Color: editor = L"Color"; break;
+						case DependencyPropertyEditorKind::Thickness: editor = L"Thickness"; break;
+						case DependencyPropertyEditorKind::Size: editor = L"Size"; break;
+						case DependencyPropertyEditorKind::Length: editor = L"Length"; break;
+						case DependencyPropertyEditorKind::Auto: break;
 						}
 						if (editor) Set(item, "Editor", editor);
 						if (property.Minimum) Set(item, "Minimum", NumberText(*property.Minimum));
 						if (property.Maximum) Set(item, "Maximum", NumberText(*property.Maximum));
 						if (property.Step) Set(item, "Step", NumberText(*property.Step));
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::AffectsMeasure))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::AffectsMeasure))
 							Set(item, "AffectsMeasure", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::AffectsArrange))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::AffectsArrange))
 							Set(item, "AffectsArrange", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::AffectsRender))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::AffectsRender))
 							Set(item, "AffectsRender", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::AffectsParentMeasure))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::AffectsParentMeasure))
 							Set(item, "AffectsParentMeasure", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::AffectsParentArrange))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::AffectsParentArrange))
 							Set(item, "AffectsParentArrange", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::Inherits))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::Inherits))
 							Set(item, "Inherits", L"true");
-						if (HasControlPropertyFlag(
-							property.Flags, ControlPropertyFlags::BindsTwoWayByDefault))
+						if (HasDependencyPropertyFlag(
+							property.Flags, DependencyPropertyFlags::BindsTwoWayByDefault))
 							Set(item, "BindsTwoWayByDefault", L"true");
 						if (property.IsReadOnly)
 							Set(item, "ReadOnly", L"true");
@@ -1773,7 +1624,7 @@ namespace
 						_xml, definition, "ComponentDefinition.Template");
 					DesignDocument templateDocument = _document;
 					templateDocument.Nodes = component.Template;
-					templateDocument.Form.EventHandlers.clear();
+					templateDocument.Window.Events.clear();
 					templateDocument.RecalculateNextStableId();
 					Writer templateWriter(templateDocument, _xml, &component);
 					templateWriter.WriteControlForest(templateElement);
@@ -1792,7 +1643,7 @@ namespace
 							+ item.TargetComponentType.XamlName);
 				DesignDocument templateDocument = _document;
 				templateDocument.Nodes = item.Template;
-				templateDocument.Form.EventHandlers.clear();
+				templateDocument.Window.Events.clear();
 				templateDocument.RecalculateNextStableId();
 				DesignComponentDefinition templateContext;
 				templateContext.BaseType = item.TargetType;
@@ -1820,8 +1671,6 @@ namespace
 					Set(panel, "Orientation",
 						item.Value.Orientation == Orientation::Vertical
 							? L"Vertical" : L"Horizontal");
-				if (item.Value.Spacing != 0.0f)
-					Set(panel, "Spacing", NumberText(item.Value.Spacing));
 				if (item.Value.ItemWidth != 0.0f)
 					Set(panel, "ItemWidth", NumberText(item.Value.ItemWidth));
 				if (item.Value.ItemHeight != 0.0f)
@@ -1839,14 +1688,13 @@ namespace
 				if (!item.IsImplicit()) Set(definition, "x:Key", item.Key);
 				Set(definition, "DataType", item.DataType);
 				if (item.ItemsSourceBinding)
-					Set(definition, "ItemsSource", BindingMarkup(
-						DesignerBindingUtils::WriteBindingDefinition(
-							*item.ItemsSourceBinding)));
+					Set(definition, "ItemsSource",
+						BindingMarkup(*item.ItemsSourceBinding));
 				DesignDocument templateDocument = _document;
 				templateDocument.Nodes = item.Template;
 				if (const auto* dataType = _document.FindDataType(item.DataType))
 					templateDocument.DataContextSchema = dataType->Properties;
-				templateDocument.Form.EventHandlers.clear();
+				templateDocument.Window.Events.clear();
 				templateDocument.RecalculateNextStableId();
 				Writer templateWriter(templateDocument, _xml);
 				templateWriter.WriteControlForest(definition);
@@ -1859,12 +1707,6 @@ namespace
 				if (!item.HeaderTemplate.empty())
 					Set(definition, "HeaderTemplate", L"{StaticResource "
 						+ item.HeaderTemplate + L"}");
-				if (item.HeaderIndent != 16.0f)
-					Set(definition, "HeaderIndent", NumberText(item.HeaderIndent));
-				if (item.HeaderSpacing != 4.0f)
-					Set(definition, "HeaderSpacing", NumberText(item.HeaderSpacing));
-				if (item.HeaderHeight != 24.0f)
-					Set(definition, "HeaderHeight", NumberText(item.HeaderHeight));
 			}
 			for (const auto& resource : styleSheet.Resources)
 			{
@@ -1910,22 +1752,13 @@ namespace
 				auto style = Append(_xml, resourceTarget, "Style");
 				if (rule.HasType)
 					Set(style, "TargetType", rule.ComponentType.Empty()
-						? DesignerStyleSheetUtils::UIClassName(rule.Type)
+						? BuiltInXamlTypeName(rule.Type, rule.XamlType)
 						: rule.ComponentType.XamlPrefix + L":"
 							+ rule.ComponentType.XamlName);
 				if (!rule.Id.empty()) Set(style, "x:Key", rule.Id);
 				if (!rule.BasedOn.empty())
 					Set(style, "BasedOn", L"{StaticResource "
 						+ rule.BasedOn + L"}");
-				if (!rule.Classes.empty())
-					Set(style, "Classes",
-						DesignerStyleSheetUtils::JoinClasses(rule.Classes));
-				if (rule.RequiredStates != ControlStyleState::None)
-					Set(style, "RequiredStates",
-						DesignerStyleSheetUtils::FormatStates(rule.RequiredStates));
-				if (rule.ExcludedStates != ControlStyleState::None)
-					Set(style, "ExcludedStates",
-						DesignerStyleSheetUtils::FormatStates(rule.ExcludedStates));
 				if (rule.DataConditions.empty() && rule.PropertyConditions.empty())
 					for (const auto& setter : rule.Setters)
 						WriteStyleSetter(style, setter);
@@ -1977,8 +1810,7 @@ namespace
 								trigger.EnterActions, trigger.ExitActions, styleTarget);
 							continue;
 						}
-						const size_t conditionCount = trigger.Conditions.size()
-							+ trigger.PropertyConditions.size();
+						const size_t conditionCount = trigger.PropertyConditions.size();
 						const bool multi = conditionCount > 1;
 						auto triggerElement = Append(
 							_xml, triggers, multi ? "MultiTrigger" : "Trigger");
@@ -1986,25 +1818,12 @@ namespace
 						{
 							auto conditions = Append(
 								_xml, triggerElement, "MultiTrigger.Conditions");
-							for (const auto& condition : trigger.Conditions)
-							{
-								auto conditionElement = Append(_xml, conditions, "Condition");
-								Set(conditionElement, "Property", condition.Property);
-								Set(conditionElement, "Value",
-									condition.Value ? L"true" : L"false");
-							}
 							for (const auto& condition : trigger.PropertyConditions)
 							{
 								auto conditionElement = Append(_xml, conditions, "Condition");
 								Set(conditionElement, "Property", condition.Property);
 								Set(conditionElement, "Value", condition.Value.Text);
 							}
-						}
-						else if (!trigger.Conditions.empty())
-						{
-							Set(triggerElement, "Property", trigger.Conditions.front().Property);
-							Set(triggerElement, "Value",
-								trigger.Conditions.front().Value ? L"true" : L"false");
 						}
 						else if (!trigger.PropertyConditions.empty())
 						{
@@ -2031,7 +1850,7 @@ namespace
 			const Element& element,
 			DesignValue& residual)
 		{
-			if (node.Type != UIClass::UI_GridPanel || !residual.is_object()) return;
+			if (node.Type != UIClass::UI_Grid || !residual.is_object()) return;
 			for (const auto& [key, containerName, itemName, lengthKey,
 				lengthName, minimumName, maximumName] : {
 				std::tuple{ "rows", "Grid.RowDefinitions", "RowDefinition",
@@ -2124,7 +1943,7 @@ namespace
 		{
 			if (node.LocalObjectResources.Empty()) return;
 			DesignDocument scoped;
-			scoped.Form.Name = L"LocalObjectResourceScope";
+			scoped.Window.Name = L"LocalObjectResourceScope";
 			scoped.ResourceBasePath = _document.ResourceBasePath;
 			scoped.Resources = _document.Resources;
 			scoped.DataContextSchema = _document.DataContextSchema;
@@ -2200,7 +2019,7 @@ namespace
 			for (const auto& child : root->ChildNodes())
 			{
 				auto element = std::dynamic_pointer_cast<XmlElement>(child);
-				if (element && element->Name() == "Form.Resources")
+				if (element && element->Name() == "Window.Resources")
 				{
 					resources = std::move(element);
 					break;
@@ -2226,9 +2045,7 @@ namespace
 		{
 			if (!_written.insert(node.Id).second)
 				throw std::invalid_argument("XAML control was written more than once");
-			const auto elementName = !node.ComponentType.Empty()
-				? node.ComponentType.XamlPrefix + L":" + node.ComponentType.XamlName
-				: DesignerStyleSheetUtils::UIClassName(node.Type);
+			const auto elementName = ControlXamlTypeName(node);
 			auto element = Append(_xml, parent, ToUtf8(elementName));
 			Set(element, "x:Name", node.Name);
 			element->SetAttribute("DesignId", std::to_string(node.Id));
@@ -2239,18 +2056,35 @@ namespace
 			if (!node.TemplateContentSource.empty())
 				Set(element, "ContentSource", node.TemplateContentSource);
 
-			DesignValue residualProps = node.Props.is_object()
-				? node.Props : DesignValue::object();
-			DesignValue residualExtra = node.Extra.is_object()
-				? node.Extra : DesignValue::object();
-			DesignValue residualBindings = node.Bindings.is_object()
-				? node.Bindings : DesignValue::object();
+			DesignNodeProperties residualProperties = node.Properties;
+			DesignValue residualExtra = EncodeDesignNodeStructure(
+				node.Type, node.Structure);
+			if (residualExtra.contains("commandTarget"))
+			{
+				if ((node.Type != UIClass::UI_Button
+						&& node.Type != UIClass::UI_MenuItem)
+					|| !residualExtra["commandTarget"].is_string())
+					throw std::invalid_argument(
+						"CommandTarget is only valid on Button or MenuItem");
+				const auto target = FromUtf8(
+					residualExtra["commandTarget"].get<std::string>());
+				if (target.empty())
+					throw std::invalid_argument(
+						"CommandTarget must name an element");
+				Set(element, "CommandTarget",
+					L"{x:Reference " + target + L"}");
+				residualExtra.ObjectItems().erase("commandTarget");
+			}
+			DesignBindingMap residualBindings = node.Bindings;
 			WriteControlAttributes(
-				node, element, residualProps, residualBindings);
+				node, element, residualProperties, residualBindings);
+			WriteRelativePanelConstraints(element, residualExtra);
 			WriteLocalResources(node, element, elementName);
 			WriteMultiBindingProperties(node, element, residualBindings);
 			WriteGridDefinitions(node, element, residualExtra);
-			WriteStructuredProperties(node, element, residualExtra);
+			WriteStructuredProperties(
+				node, element, residualProperties, residualExtra);
+			WriteCommandAndInputBindings(node, element, elementName);
 			if (_templateComponent && node.ParentId == 0
 				&& node.ParentRef.empty())
 			{
@@ -2260,30 +2094,41 @@ namespace
 			}
 			if (consumePlacementMarker && residualExtra.is_object())
 			{
-				residualExtra.ObjectItems().erase("splitRegion");
 				residualExtra.ObjectItems().erase("headeredRegion");
 			}
-			if (!residualProps.empty())
+			if (!residualProperties.Empty())
 				throw std::invalid_argument(
 					"Control contains properties without a public XAML representation");
 			if (!residualBindings.empty())
 				throw std::invalid_argument(
 					"Control contains bindings without a public XAML representation");
 
-			if (node.Type == UIClass::UI_TabControl
-				&& residualExtra.contains("pages"))
-			{
-				WriteTabPages(node, element, residualExtra);
-			}
 			if (!residualExtra.empty())
-				throw std::invalid_argument(
-					"Control contains structured data without a public XAML representation");
+			{
+				std::string message = "Control '"
+					+ ToUtf8(node.Name)
+					+ "' contains structured data without a public XAML representation";
+				if (residualExtra.is_object())
+				{
+					message += ": ";
+					bool first = true;
+					for (const auto& [key, ignored]
+						: residualExtra.ObjectItems())
+					{
+						(void)ignored;
+						if (!first) message += ", ";
+						message += key;
+						first = false;
+					}
+				}
+				throw std::invalid_argument(std::move(message));
+			}
 
-			if (node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander)
+			if (IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedContentControl, node.Type)
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedItemsControl, node.Type))
 				WriteHeaderedChildren(node, element);
-			else if (node.Type == UIClass::UI_SplitContainer)
-				WriteSplitChildren(node, element);
 			else if (!node.ComponentType.Empty())
 			{
 				const auto* component = _document.FindComponent(
@@ -2394,27 +2239,15 @@ namespace
 		void WriteMultiBindingProperties(
 			const DesignNode& node,
 			const Element& element,
-			DesignValue& residualBindings)
+			DesignBindingMap& residualBindings)
 		{
-			if (!residualBindings.is_object()) return;
-			std::vector<std::string> consumed;
-			for (const auto& [property, value] : residualBindings.ObjectItems())
+			std::vector<std::wstring> consumed;
+			for (const auto& [property, binding] : residualBindings)
 			{
-				if (!value.is_object()
-					|| (value.value("kind", std::string{}) != "MultiBinding"
-						&& !value.contains("bindings"))) continue;
-				DesignerDataBinding binding;
-				std::wstring bindingError;
-				if (!DesignerBindingUtils::TryReadBindingDefinition(
-					value, binding, &bindingError) || !binding.IsMultiBinding())
-					throw std::invalid_argument(ToUtf8(bindingError.empty()
-						? L"Invalid MultiBinding definition." : bindingError));
-				const auto owner = !node.ComponentType.Empty()
-					? node.ComponentType.XamlPrefix + L":"
-						+ node.ComponentType.XamlName
-					: DesignerStyleSheetUtils::UIClassName(node.Type);
+				if (!binding.IsMultiBinding()) continue;
+				const auto owner = ControlXamlTypeName(node);
 				auto propertyElement = Append(_xml, element,
-					ToUtf8(owner + L"." + PublicPropertyName(FromUtf8(property))));
+					ToUtf8(owner + L"." + PublicPropertyName(property)));
 				auto multi = Append(_xml, propertyElement, "MultiBinding");
 				WriteBindingElementAttributes(multi, binding, true);
 				for (const auto& child : binding.ChildBindings)
@@ -2425,226 +2258,123 @@ namespace
 				consumed.push_back(property);
 			}
 			for (const auto& property : consumed)
-				residualBindings.ObjectItems().erase(property);
+				residualBindings.erase(property);
+		}
+
+		void WriteRelativePanelConstraints(
+			const Element& element,
+			DesignValue& residualExtra)
+		{
+			if (!residualExtra.is_object()
+				|| !residualExtra.contains(RelativePanelConstraintsKey)) return;
+			const auto constraints = residualExtra[RelativePanelConstraintsKey];
+			if (!constraints.is_object())
+				throw std::invalid_argument("Invalid RelativePanel constraints");
+			const std::pair<const char*, const wchar_t*> booleans[] = {
+				{ "centerHorizontal", L"CenterHorizontal" },
+				{ "centerVertical", L"CenterVertical" },
+				{ "alignLeftWithPanel", L"AlignLeftWithPanel" },
+				{ "alignTopWithPanel", L"AlignTopWithPanel" },
+				{ "alignRightWithPanel", L"AlignRightWithPanel" },
+				{ "alignBottomWithPanel", L"AlignBottomWithPanel" }
+			};
+			const std::pair<const char*, const wchar_t*> references[] = {
+				{ "above", L"Above" }, { "below", L"Below" },
+				{ "leftOf", L"LeftOf" }, { "rightOf", L"RightOf" },
+				{ "alignLeftWith", L"AlignLeftWith" },
+				{ "alignRightWith", L"AlignRightWith" },
+				{ "alignTopWith", L"AlignTopWith" },
+				{ "alignBottomWith", L"AlignBottomWith" }
+			};
+			std::unordered_set<std::string> consumed;
+			for (const auto& [key, member] : booleans)
+			{
+				if (!constraints.contains(key)) continue;
+				if (!constraints[key].is_boolean())
+					throw std::invalid_argument(
+						"Invalid RelativePanel Boolean constraint");
+				Set(element, ToUtf8(L"RelativePanel." + std::wstring(member)).c_str(),
+					constraints[key].get<bool>() ? L"true" : L"false");
+				consumed.insert(key);
+			}
+			for (const auto& [key, member] : references)
+			{
+				if (!constraints.contains(key)) continue;
+				if (!constraints[key].is_string()
+					|| constraints[key].get<std::string>().empty())
+					throw std::invalid_argument(
+						"Invalid RelativePanel reference constraint");
+				Set(element, ToUtf8(L"RelativePanel." + std::wstring(member)).c_str(),
+					FromUtf8(constraints[key].get<std::string>()));
+				consumed.insert(key);
+			}
+			for (const auto& [key, ignored] : constraints.ObjectItems())
+			{
+				(void)ignored;
+				if (!consumed.contains(key))
+					throw std::invalid_argument(
+						"Unknown RelativePanel constraint");
+			}
+			residualExtra.ObjectItems().erase(RelativePanelConstraintsKey);
 		}
 
 		void WriteControlAttributes(
 			const DesignNode& node,
 			const Element& element,
-			DesignValue& residual,
-			DesignValue& residualBindings)
+			DesignNodeProperties& residual,
+			DesignBindingMap& residualBindings)
 		{
 			std::map<std::wstring, std::wstring> attributes;
-			auto defaultControl =
-				DesignDocumentMaterializer::CreateRuntimeControl(node.Type);
-			const auto defaultProperties = defaultControl
-				? DesignerPropertyCatalog::GetStyleProperties(*defaultControl)
-				: std::vector<DesignerPropertyDescriptor>{};
-			auto isDefault = [&](const std::wstring& property,
-				const std::wstring& value)
-			{
-				const auto* descriptor = DesignerPropertyCatalog::Find(
-					defaultProperties, property);
-				if (!descriptor) return false;
-				auto normalized = value;
-				for (const auto& choice : descriptor->Choices)
-					if (Equals(choice.DisplayName, normalized))
-					{
-						normalized = choice.ValueText;
-						break;
-					}
-				return normalized == descriptor->SampleValue;
-			};
-			auto canWriteLegacy = [&](const std::wstring& property)
-			{
-				return !HasBinding(node, property) && !HasMetadata(node, property);
-			};
-			auto consumeString = [&](const char* key, const wchar_t* attribute,
-				const wchar_t* property)
-			{
-				if (!residual.contains(key)) return;
-				if (!residual[key].is_string())
-					throw std::invalid_argument("Invalid string control property");
-				const auto value = FromUtf8(residual[key].get<std::string>());
-				if (canWriteLegacy(property) && !isDefault(property, value))
-					attributes[attribute] = value;
-				residual.ObjectItems().erase(key);
-			};
-			auto consumeBool = [&](const char* key, const wchar_t* attribute,
-				const wchar_t* property)
-			{
-				if (!residual.contains(key)) return;
-				if (!residual[key].is_boolean())
-					throw std::invalid_argument("Invalid Boolean control property");
-				const auto value = residual[key].get<bool>() ? L"true" : L"false";
-				if (canWriteLegacy(property) && !isDefault(property, value))
-					attributes[attribute] = value;
-				residual.ObjectItems().erase(key);
-			};
-			auto consumeNumber = [&](const char* key, const wchar_t* attribute,
-				const wchar_t* property)
-			{
-				if (!residual.contains(key)) return;
-				if (!residual[key].is_number())
-					throw std::invalid_argument("Invalid numeric control property");
-				const auto value = residual[key].is_number_float()
-						? NumberText(residual[key].get<double>(), 15)
-						: FromUtf8(residual[key].ToString());
-				if (canWriteLegacy(property) && !isDefault(property, value))
-					attributes[attribute] = value;
-				residual.ObjectItems().erase(key);
-			};
-
-			consumeString("text", L"Text", L"Text");
-			consumeBool("enable", L"Enable", L"Enable");
-			consumeBool("visible", L"Visible", L"Visible");
-			consumeBool("showValidationBorder", L"ShowValidationBorder", L"ShowValidationBorder");
-			consumeBool("showValidationToolTip", L"ShowValidationToolTip", L"ShowValidationToolTip");
-			consumeNumber("validationBorderThickness", L"ValidationBorderThickness", L"ValidationBorderThickness");
-			consumeNumber("validationCornerRadius", L"ValidationCornerRadius", L"ValidationCornerRadius");
-			consumeNumber("validationToolTipMaxWidth", L"ValidationToolTipMaxWidth", L"ValidationToolTipMaxWidth");
-			consumeString("accessibleDescription", L"AccessibleDescription", L"AccessibleDescription");
-			consumeNumber("zIndex", L"ZIndex", L"ZIndex");
-			consumeNumber("gridRow", L"Grid.Row", L"GridRow");
-			consumeNumber("gridColumn", L"Grid.Column", L"GridColumn");
-			consumeNumber("gridRowSpan", L"Grid.RowSpan", L"GridRowSpan");
-			consumeNumber("gridColumnSpan", L"Grid.ColumnSpan", L"GridColumnSpan");
-			if (node.Type == UIClass::UI_PictureBox)
-				consumeNumber("sizeMode", L"SizeMode", L"SizeMode");
-			else if (residual.contains("sizeMode"))
-				residual.ObjectItems().erase("sizeMode");
-			consumeString("hAlign", L"HorizontalAlignment", L"HAlign");
-			consumeString("vAlign", L"VerticalAlignment", L"VAlign");
-			consumeString("dock", L"DockPanel.Dock", L"DockPosition");
-
-			if (residual.contains("location"))
-			{
-				if (!residual["location"].is_object())
-					throw std::invalid_argument("Invalid control location");
-				if (canWriteLegacy(L"Left"))
-					attributes[L"Canvas.Left"] = std::to_wstring(
-						residual["location"].value("x", 0));
-				if (canWriteLegacy(L"Top"))
-					attributes[L"Canvas.Top"] = std::to_wstring(
-						residual["location"].value("y", 0));
-				residual.ObjectItems().erase("location");
-			}
-			if (residual.contains("size"))
-			{
-				if (!residual["size"].is_object())
-					throw std::invalid_argument("Invalid control size");
-				if (canWriteLegacy(L"Width")
-					&& canWriteLegacy(L"LayoutWidth"))
-					attributes[L"Width"] = std::to_wstring(
-						residual["size"].value("w", 0));
-				if (canWriteLegacy(L"Height")
-					&& canWriteLegacy(L"LayoutHeight"))
-					attributes[L"Height"] = std::to_wstring(
-						residual["size"].value("h", 0));
-				residual.ObjectItems().erase("size");
-			}
-			for (const auto& [key, attribute, property] : {
-				std::tuple{ "backColor", L"BackColor", L"BackColor" },
-				std::tuple{ "foreColor", L"ForeColor", L"ForeColor" },
-				std::tuple{ "borderColor", L"BorderColor", L"BorderColor" },
-				std::tuple{ "bolderColor", L"BorderColor", L"BorderColor" } })
-			{
-				if (!residual.contains(key)) continue;
-				const auto text = ColorText(residual[key]);
-				if (!text)
-					throw std::invalid_argument("Invalid color control property");
-				if (canWriteLegacy(property) && !isDefault(property, *text))
-					attributes[attribute] = *text;
-				residual.ObjectItems().erase(key);
-			}
-			for (const auto& [key, attribute, property] : {
-				std::tuple{ "margin", L"Margin", L"Margin" },
-				std::tuple{ "padding", L"Padding", L"Padding" } })
-			{
-				if (!residual.contains(key)) continue;
-				const auto text = ThicknessText(residual[key]);
-				if (!text)
-					throw std::invalid_argument("Invalid thickness control property");
-				if (canWriteLegacy(property) && !isDefault(property, *text))
-					attributes[attribute] = *text;
-				residual.ObjectItems().erase(key);
-			}
-			if (residual.contains("anchor") && residual["anchor"].is_number())
-			{
-				if (canWriteLegacy(L"Anchor") && (!defaultControl
-					|| residual["anchor"].get<int>()
-						!= static_cast<int>(defaultControl->AnchorStyles)))
-					attributes[L"Anchor"] = AnchorText(residual["anchor"].get<int>());
-				residual.ObjectItems().erase("anchor");
-			}
-			if (residual.contains("font") && residual["font"].is_object())
-			{
-				const auto& font = residual["font"];
-				if (font.contains("name") && font["name"].is_string()
-					&& canWriteLegacy(L"FontName"))
-					attributes[L"FontName"] = FromUtf8(font["name"].get<std::string>());
-				if (font.contains("size") && font["size"].is_number()
-					&& canWriteLegacy(L"FontSize"))
-					attributes[L"FontSize"] = font["size"].is_number_float()
-						? NumberText(font["size"].get<double>(), 15)
-						: FromUtf8(font["size"].ToString());
-				residual.ObjectItems().erase("font");
-			}
-			if (residual.contains("styleId") && residual["styleId"].is_string())
+			if (!residual.StyleResourceKey.empty())
 			{
 				attributes[L"Style"] = L"{StaticResource "
-					+ FromUtf8(residual["styleId"].get<std::string>()) + L"}";
-				residual.ObjectItems().erase("styleId");
+					+ residual.StyleResourceKey + L"}";
+				residual.StyleResourceKey.clear();
 			}
-			if (residual.contains("styleClasses") && residual["styleClasses"].is_array())
+			std::vector<std::wstring> consumedProperties;
+			for (const auto& [property, assignment] : residual.Values)
 			{
-				std::vector<std::wstring> classes;
-				for (const auto& item : residual["styleClasses"].ArrayItems())
-					if (item.is_string()) classes.push_back(FromUtf8(item.get<std::string>()));
-				attributes[L"Classes"] = DesignerStyleSheetUtils::JoinClasses(classes);
-				residual.ObjectItems().erase("styleClasses");
-			}
-
-			if (residual.contains("metadata") && residual["metadata"].is_object())
-			{
-				for (const auto& [property, stored] : residual["metadata"].ObjectItems())
+				const bool structuredObject =
+					!assignment.Value.ObjectValue.is_null()
+					&& assignment.ResourceKey.empty()
+					&& assignment.DynamicResourceKey.empty()
+					&& ((assignment.Value.Kind == DesignerStyleValueKind::Brush
+							&& (Equals(property, L"Background")
+								|| Equals(property, L"Foreground")
+								|| Equals(property, L"BorderBrush")))
+						|| (assignment.Value.Kind
+								== DesignerStyleValueKind::Transform
+							&& Equals(property, L"RenderTransform"))
+						|| (assignment.Value.Kind
+								== DesignerStyleValueKind::Geometry
+							&& Equals(property, L"Clip")));
+				if (structuredObject && !HasBinding(node, property)) continue;
+				if (!HasBinding(node, property))
 				{
-					const auto propertyName = FromUtf8(property);
-					if (!stored.is_object() || !stored.contains("value")
-						|| !stored["value"].is_string())
-						throw std::invalid_argument("Invalid metadata property in XAML writer");
-					if (!HasBinding(node, propertyName))
-					{
-						if (stored.contains("dynamicResourceKey")
-							&& stored["dynamicResourceKey"].is_string())
-							attributes[PublicPropertyName(propertyName)] =
-								L"{DynamicResource " + FromUtf8(
-									stored["dynamicResourceKey"].get<std::string>()) + L"}";
-						else if (stored.contains("resourceKey")
-							&& stored["resourceKey"].is_string())
-							attributes[PublicPropertyName(propertyName)] =
-								L"{StaticResource " + FromUtf8(
-									stored["resourceKey"].get<std::string>()) + L"}";
-						else
-							attributes[PublicPropertyName(propertyName)] =
-								PublicPropertyValue(
-									node.Type, propertyName, FromUtf8(
-										stored["value"].get<std::string>()));
-					}
+					if (!assignment.DynamicResourceKey.empty())
+						attributes[PublicPropertyName(property)] =
+							L"{DynamicResource "
+							+ assignment.DynamicResourceKey + L"}";
+					else if (!assignment.ResourceKey.empty())
+						attributes[PublicPropertyName(property)] =
+							L"{StaticResource " + assignment.ResourceKey + L"}";
+					else
+						attributes[PublicPropertyName(property)] =
+							PublicPropertyValue(
+								node.Type, property, assignment.Value.Text);
 				}
-				residual.ObjectItems().erase("metadata");
+				consumedProperties.push_back(property);
 			}
+			for (const auto& property : consumedProperties)
+				residual.Remove(property);
 
-			if (node.Events.is_object())
+			for (const auto& [event, storedHandler] : node.Events)
 			{
-				for (const auto& [event, handlerValue] : node.Events.ObjectItems())
-				{
-					if (!handlerValue.is_string() && !handlerValue.is_boolean()) continue;
-					const auto handler = handlerValue.is_boolean()
-						? (handlerValue.get<bool>() ? std::wstring(L"Auto") : std::wstring{})
-						: FromUtf8(handlerValue.get<std::string>());
-					if (handler.empty()) continue;
-					const auto storedName = FromUtf8(event);
+					const auto handler = DesignerEventCatalog::NormalizeHandlerName(storedHandler);
+					if (handler.empty())
+						throw std::invalid_argument(
+							"Control event handler cannot be empty");
+					const auto& storedName = event;
 					DesignerComponentType ownerType;
 					std::wstring routedEventName;
 					std::wstring attributeName = storedName;
@@ -2659,10 +2389,7 @@ namespace
 						attributeName = owner->Type.XamlPrefix + L":"
 							+ owner->Type.XamlName + L"." + routedEventName;
 					}
-					attributes[attributeName] =
-						DesignerEventCatalog::IsLegacyEnabledValue(handler)
-							? std::wstring(L"Auto") : handler;
-				}
+					attributes[attributeName] = handler;
 			}
 			for (const auto& [sourceEvent, componentEvent]
 				: node.TemplateEventBindings)
@@ -2672,21 +2399,15 @@ namespace
 						"RaiseEvent conflicts with another event value");
 				attributes[sourceEvent] = L"{RaiseEvent " + componentEvent + L"}";
 			}
-			if (residualBindings.is_object())
+			std::vector<std::wstring> consumedBindings;
+			for (const auto& [property, binding] : residualBindings)
 			{
-				std::vector<std::string> consumedBindings;
-				for (const auto& [property, value] : residualBindings.ObjectItems())
-				{
-					if (value.is_object()
-						&& (value.value("kind", std::string{}) == "MultiBinding"
-							|| value.contains("bindings"))) continue;
-					const auto propertyName = FromUtf8(property);
-					attributes[PublicPropertyName(propertyName)] = BindingMarkup(value);
-					consumedBindings.push_back(property);
-				}
-				for (const auto& property : consumedBindings)
-					residualBindings.ObjectItems().erase(property);
+				if (binding.IsMultiBinding()) continue;
+				attributes[PublicPropertyName(property)] = BindingMarkup(binding);
+				consumedBindings.push_back(property);
 			}
+			for (const auto& property : consumedBindings)
+				residualBindings.erase(property);
 			for (const auto& [property, source] : node.TemplateBindings)
 			{
 				const auto name = PublicPropertyName(property);
@@ -2700,107 +2421,45 @@ namespace
 				Set(element, ToUtf8(name).c_str(), value);
 		}
 
-		void WriteTabPages(
+		void WriteCommandAndInputBindings(
 			const DesignNode& node,
 			const Element& element,
-			DesignValue& residualExtra)
+			const std::wstring& owner)
 		{
-			const auto pages = residualExtra["pages"];
-			if (!pages.is_array())
-				throw std::invalid_argument("TabControl pages must be an array");
-			for (size_t index = 0; index < pages.size(); ++index)
+			if (!node.CommandBindings.empty())
 			{
-				const auto& page = pages[index];
-				if (!page.is_object())
-					throw std::invalid_argument("TabPage descriptor must be an object");
-				for (const auto& [key, ignored] : page.ObjectItems())
+				auto property = Append(_xml, element,
+					ToUtf8(owner + L".CommandBindings"));
+				for (const auto& binding : node.CommandBindings)
 				{
-					(void)ignored;
-					if (key != "id" && key != "text")
-						throw std::invalid_argument("TabPage contains unsupported persisted fields");
-				}
-				const auto generatedKey = node.Name + L"#page" + std::to_wstring(index);
-				const auto key = FromUtf8(page.value("id", ToUtf8(generatedKey)));
-				if (!key.starts_with(node.Name + L"#page"))
-					throw std::invalid_argument("TabPage design key is outside its TabControl");
-				auto pageElement = Append(_xml, element, "TabPage");
-				Set(pageElement, "Header", FromUtf8(page.value("text", std::string("Page"))));
-				if (key != generatedKey) Set(pageElement, "d:DesignKey", key);
-				for (const auto graphIndex : _graph.ChildrenOf(key))
-					WriteControl(
-						_document.Nodes[_graph.Nodes()[graphIndex].SourceIndex],
-						pageElement, false);
-			}
-			residualExtra.ObjectItems().erase("pages");
-		}
-
-		void WriteStringItems(
-			const Element& owner,
-			const char* propertyElement,
-			const DesignValue& values)
-		{
-			if (!values.is_array() || values.empty()) return;
-			auto property = Append(_xml, owner, propertyElement);
-			for (const auto& value : values.ArrayItems())
-			{
-				if (!value.is_string())
-					throw std::invalid_argument("String item collection contains a non-string value");
-				auto item = Append(_xml, property, "x:String");
-				item->SetInnerText(value.get<std::string>());
-			}
-		}
-
-		void WriteMenuItems(
-			const Element& property,
-			const DesignValue& values,
-			bool allowSeparator)
-		{
-			if (!values.is_array())
-				throw std::invalid_argument("Menu.Items must be an array");
-			for (const auto& value : values.ArrayItems())
-			{
-				if (!value.is_object())
-					throw std::invalid_argument("Menu item must be an object");
-				if (value.value("separator", false))
-				{
-					if (!allowSeparator)
-						throw std::invalid_argument(
-							"Menu top-level items cannot be separators");
-					Append(_xml, property, "Separator");
-					continue;
-				}
-				auto item = Append(_xml, property, "MenuItem");
-				Set(item, "Header", FromUtf8(value.value("text", std::string{})));
-				const auto id = value.value("id", 0);
-				if (id != 0) item->SetAttribute("CommandId", std::to_string(id));
-				const auto shortcut = value.value("shortcut", std::string{});
-				if (!shortcut.empty()) item->SetAttribute("Shortcut", shortcut);
-				if (!value.value("enable", true)) item->SetAttribute("IsEnabled", "false");
-				if (value.contains("subItems") && value["subItems"].is_array()
-					&& !value["subItems"].empty())
-				{
-					auto children = Append(_xml, item, "MenuItem.Items");
-					WriteMenuItems(children, value["subItems"], true);
+					auto item = Append(_xml, property, "CommandBinding");
+					Set(item, "Command", binding.Command);
+					if (!binding.PreviewCanExecute.empty())
+						Set(item, "PreviewCanExecute", binding.PreviewCanExecute);
+					if (!binding.CanExecute.empty())
+						Set(item, "CanExecute", binding.CanExecute);
+					if (!binding.PreviewExecuted.empty())
+						Set(item, "PreviewExecuted", binding.PreviewExecuted);
+					if (!binding.Executed.empty())
+						Set(item, "Executed", binding.Executed);
 				}
 			}
-		}
-
-		void WriteTreeItems(const Element& property, const DesignValue& values)
-		{
-			if (!values.is_array())
-				throw std::invalid_argument("TreeView.Items must be an array");
-			for (const auto& value : values.ArrayItems())
+			if (!node.InputBindings.empty())
 			{
-				if (!value.is_object())
-					throw std::invalid_argument("TreeView item must be an object");
-				auto item = Append(_xml, property, "TreeViewItem");
-				Set(item, "Header", FromUtf8(value.value("text", std::string{})));
-				if (value.value("expand", false)) item->SetAttribute("IsExpanded", "true");
-				if (value.contains("children") && value["children"].is_array()
-					&& !value["children"].empty())
+				auto property = Append(_xml, element,
+					ToUtf8(owner + L".InputBindings"));
+				for (const auto& binding : node.InputBindings)
 				{
-					auto children = Append(_xml, item, "TreeViewItem.Items");
-					WriteTreeItems(children, value["children"]);
+					auto item = Append(_xml, property,
+						binding.Kind == DesignInputBindingKind::Mouse
+							? "MouseBinding" : "KeyBinding");
+					Set(item, "Command", binding.Command);
+					Set(item, "Gesture", binding.Gesture);
+					if (!binding.CommandParameter.empty())
+						Set(item, "CommandParameter", binding.CommandParameter);
+					if (!binding.CommandTarget.empty())
+						Set(item, "CommandTarget",
+							L"{x:Reference " + binding.CommandTarget + L"}");
 				}
 			}
 		}
@@ -2808,10 +2467,34 @@ namespace
 		void WriteStructuredProperties(
 			const DesignNode& node,
 			const Element& element,
+			DesignNodeProperties& properties,
 			DesignValue& extra)
 		{
 			if (!extra.is_object())
 				throw std::invalid_argument("Control structured data must be an object");
+			auto moveObject = [&](const wchar_t* property, const char* key,
+				DesignerStyleValueKind expectedKind)
+			{
+				const auto* assignment = properties.Find(property);
+				if (!assignment) return;
+				if (assignment->Value.Kind != expectedKind
+					|| assignment->Value.ObjectValue.is_null()
+					|| !assignment->ResourceKey.empty()
+					|| !assignment->DynamicResourceKey.empty())
+					throw std::invalid_argument(
+						"Structured property assignment is malformed");
+				extra[key] = assignment->Value.ObjectValue;
+				properties.Remove(property);
+			};
+			moveObject(L"Background", "backgroundBrush",
+				DesignerStyleValueKind::Brush);
+			moveObject(L"Foreground", "foregroundBrush",
+				DesignerStyleValueKind::Brush);
+			moveObject(L"BorderBrush", "borderBrush",
+				DesignerStyleValueKind::Brush);
+			moveObject(L"RenderTransform", "renderTransform",
+				DesignerStyleValueKind::Transform);
+			moveObject(L"Clip", "clip", DesignerStyleValueKind::Geometry);
 			auto requireArray = [&](const char* key, const char* message)
 				-> const DesignValue&
 			{
@@ -3057,14 +2740,19 @@ namespace
 				writeTransform(property, values);
 				extra.ObjectItems().erase("renderTransform");
 			}
-			if (extra.contains("foregroundBrush"))
+			for (const auto& [key, propertyName] : {
+				std::pair{ "backgroundBrush", "Background" },
+				std::pair{ "foregroundBrush", "Foreground" },
+				std::pair{ "borderBrush", "BorderBrush" } })
 			{
-				const auto& value = extra["foregroundBrush"];
+				if (!extra.contains(key)) continue;
+				const auto& value = extra[key];
 				if (!value.is_object())
-					throw std::invalid_argument("Control.Foreground must be an object");
-				auto property = Append(_xml, element, "Control.Foreground");
+					throw std::invalid_argument("Control brush must be an object");
+				auto property = Append(_xml, element,
+					std::string("Control.") + propertyName);
 				WriteBrush(property, value);
-				extra.ObjectItems().erase("foregroundBrush");
+				extra.ObjectItems().erase(key);
 			}
 			if (node.Type == UIClass::UI_MediaPlayer && extra.contains("mediaFile"))
 			{
@@ -3073,9 +2761,8 @@ namespace
 				Set(element, "Source", FromUtf8(extra["mediaFile"].get<std::string>()));
 				extra.ObjectItems().erase("mediaFile");
 			}
-			if ((node.Type == UIClass::UI_ItemsControl
-				|| node.Type == UIClass::UI_ListBox
-				|| node.Type == UIClass::UI_ComboBox)
+			if (IsUIClassAssignableFrom(
+				UIClass::UI_ItemsControl, node.Type)
 				&& extra.contains("itemTemplate"))
 			{
 				if (!extra["itemTemplate"].is_string())
@@ -3084,12 +2771,7 @@ namespace
 					+ FromUtf8(extra["itemTemplate"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("itemTemplate");
 			}
-			if ((node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander
-				|| node.Type == UIClass::UI_ItemsControl
-				|| node.Type == UIClass::UI_ListBox
+			if ((IsControlTemplateHostClass(node.Type)
 				|| !node.ComponentType.Empty())
 				&& extra.contains("controlTemplate"))
 			{
@@ -3101,10 +2783,8 @@ namespace
 				extra.ObjectItems().erase("controlTemplate");
 			}
 			if ((node.Type == UIClass::UI_ContentPresenter
-				|| node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander)
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_ContentControl, node.Type))
 				&& extra.contains("contentTemplate"))
 			{
 				if (!extra["contentTemplate"].is_string())
@@ -3114,22 +2794,10 @@ namespace
 					+ FromUtf8(extra["contentTemplate"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("contentTemplate");
 			}
-			if ((node.Type == UIClass::UI_ContentPresenter
-				|| node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander)
-				&& extra.contains("contentText"))
-			{
-				if (!extra["contentText"].is_string())
-					throw std::invalid_argument(
-						"Content host Content must be a string");
-				Set(element, "Content",
-					FromUtf8(extra["contentText"].get<std::string>()));
-				extra.ObjectItems().erase("contentText");
-			}
-			if ((node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander)
+			if ((IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedContentControl, node.Type)
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedItemsControl, node.Type))
 				&& extra.contains("headerTemplate"))
 			{
 				if (!extra["headerTemplate"].is_string())
@@ -3139,19 +2807,8 @@ namespace
 					+ FromUtf8(extra["headerTemplate"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("headerTemplate");
 			}
-			if ((node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander)
-				&& extra.contains("headerText"))
-			{
-				if (!extra["headerText"].is_string())
-					throw std::invalid_argument(
-						"Headered content Header must be a string");
-				Set(element, "Header",
-					FromUtf8(extra["headerText"].get<std::string>()));
-				extra.ObjectItems().erase("headerText");
-			}
-			if ((node.Type == UIClass::UI_ItemsControl
-				|| node.Type == UIClass::UI_ListBox)
+			if (IsUIClassAssignableFrom(
+				UIClass::UI_ItemsControl, node.Type)
 				&& extra.contains("itemsPanel"))
 			{
 				if (!extra["itemsPanel"].is_string())
@@ -3161,8 +2818,8 @@ namespace
 					+ FromUtf8(extra["itemsPanel"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("itemsPanel");
 			}
-			if ((node.Type == UIClass::UI_ItemsControl
-				|| node.Type == UIClass::UI_ListBox)
+			if (IsUIClassAssignableFrom(
+				UIClass::UI_ItemsControl, node.Type)
 				&& extra.contains("groupStyle"))
 			{
 				if (!extra["groupStyle"].is_string())
@@ -3172,9 +2829,8 @@ namespace
 					+ FromUtf8(extra["groupStyle"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("groupStyle");
 			}
-			if ((node.Type == UIClass::UI_ListBox
-				|| node.Type == UIClass::UI_ComboBox
-				|| node.Type == UIClass::UI_TreeView)
+			if (IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type)
 				&& extra.contains("itemContainerStyle"))
 			{
 				if (!extra["itemContainerStyle"].is_string())
@@ -3191,94 +2847,6 @@ namespace
 				Set(element, "ItemsSource", L"{StaticResource "
 					+ FromUtf8(extra["itemsSourceResource"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("itemsSourceResource");
-			}
-			if ((node.Type == UIClass::UI_NavigationView
-				|| node.Type == UIClass::UI_SideBar)
-				&& extra.contains("navigationItems"))
-			{
-				const auto owner = node.Type == UIClass::UI_SideBar
-					? "SideBar.Items" : "NavigationView.Items";
-				auto items = Append(_xml, element, owner);
-				for (const auto& value : requireArray("navigationItems",
-					"NavigationView.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("NavigationView item must be an object");
-					const int kind = value.value("kind", 0);
-					auto item = Append(_xml, items, kind == 1
-						? "NavigationViewHeader" : kind == 2
-						? "NavigationViewSeparator" : "NavigationViewItem");
-					const auto text = value.value("text", std::string{});
-					if (!text.empty()) item->SetAttribute("Text", text);
-					const auto itemValue = value.value("value", std::string{});
-					if (!itemValue.empty()) item->SetAttribute("Value", itemValue);
-					const auto badge = value.value("badgeText", std::string{});
-					if (!badge.empty()) item->SetAttribute("BadgeText", badge);
-					const auto icon = value.value("icon", std::string{});
-					if (!icon.empty()) item->SetAttribute("Icon", icon);
-					const bool defaultEnabled = kind == 0;
-					const bool enabled = value.value("enabled", defaultEnabled);
-					if (enabled != defaultEnabled)
-						item->SetAttribute("IsEnabled", BoolText(enabled));
-					if (value.value("selected", false))
-						item->SetAttribute("IsSelected", "true");
-					if (value.value("tag", static_cast<unsigned long long>(0)) != 0)
-						item->SetAttribute("Tag", value["tag"].ToString());
-				}
-				extra.ObjectItems().erase("navigationItems");
-			}
-			if (node.Type == UIClass::UI_BreadcrumbBar
-				&& extra.contains("breadcrumbItems"))
-			{
-				auto items = Append(_xml, element, "BreadcrumbBar.Items");
-				for (const auto& value : requireArray("breadcrumbItems",
-					"BreadcrumbBar.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("BreadcrumbBar item must be an object");
-					auto item = Append(_xml, items, "BreadcrumbBarItem");
-					const auto text = value.value("text", std::string{});
-					if (!text.empty()) item->SetAttribute("Text", text);
-					const auto itemValue = value.value("value", std::string{});
-					if (!itemValue.empty()) item->SetAttribute("Value", itemValue);
-					if (!value.value("enabled", true)) item->SetAttribute("IsEnabled", "false");
-					if (value.value("tag", static_cast<unsigned long long>(0)) != 0)
-						item->SetAttribute("Tag", value["tag"].ToString());
-				}
-				extra.ObjectItems().erase("breadcrumbItems");
-			}
-			if (node.Type == UIClass::UI_FilterBar && extra.contains("filterItems"))
-			{
-				auto items = Append(_xml, element, "FilterBar.Items");
-				for (const auto& value : requireArray("filterItems",
-					"FilterBar.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("FilterBar item must be an object");
-					auto item = Append(_xml, items, "FilterBarItem");
-					const auto text = value.value("text", std::string{});
-					if (!text.empty()) item->SetAttribute("Text", text);
-					const auto itemValue = value.value("value", std::string{});
-					if (!itemValue.empty()) item->SetAttribute("Value", itemValue);
-					if (value.value("selected", false)) item->SetAttribute("IsSelected", "true");
-					if (!value.value("enabled", true)) item->SetAttribute("IsEnabled", "false");
-					if (value.value("tag", static_cast<unsigned long long>(0)) != 0)
-						item->SetAttribute("Tag", value["tag"].ToString());
-				}
-				extra.ObjectItems().erase("filterItems");
-			}
-			if (node.Type == UIClass::UI_KpiCard && extra.contains("sparkline"))
-			{
-				auto values = Append(_xml, element, "KpiCard.Sparkline");
-				for (const auto& value : requireArray("sparkline",
-					"KpiCard.Sparkline must be an array").ArrayItems())
-				{
-					if (!value.is_number())
-						throw std::invalid_argument("KpiCard sparkline value must be numeric");
-					auto item = Append(_xml, values, "x:Double");
-					item->SetInnerText(ToUtf8(NumberText(value.get<double>(), 15)));
-				}
-				extra.ObjectItems().erase("sparkline");
 			}
 			if (node.Type == UIClass::UI_ChartView && extra.contains("series"))
 			{
@@ -3324,259 +2892,6 @@ namespace
 				}
 				extra.ObjectItems().erase("series");
 			}
-			if (node.Type == UIClass::UI_ReportView && extra.contains("reportColumns"))
-			{
-				auto columns = Append(_xml, element, "ReportView.Columns");
-				for (const auto& value : requireArray("reportColumns",
-					"ReportView.Columns must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("Report column must be an object");
-					auto column = Append(_xml, columns, "ReportColumn");
-					const auto header = value.value("header", std::string{});
-					if (!header.empty()) column->SetAttribute("Header", header);
-					const auto width = value.value("width", 120.0);
-					if (width != 120.0) Set(column, "Width", NumberText(width));
-					const auto align = value.value("align", 0);
-					if (align != 0) Set(column, "Align",
-						EnumText(align, { L"Left", L"Center", L"Right" }));
-					if (!value.value("sortable", true)) column->SetAttribute("IsSortable", "false");
-				}
-				extra.ObjectItems().erase("reportColumns");
-			}
-			if (node.Type == UIClass::UI_ReportView && extra.contains("reportRows"))
-			{
-				auto rows = Append(_xml, element, "ReportView.Rows");
-				for (const auto& value : requireArray("reportRows",
-					"ReportView.Rows must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("Report row must be an object");
-					const int kind = value.value("kind", 0);
-					const auto rowName = kind == 1 ? "ReportGroup"
-						: kind == 2 ? "ReportSummary" : "ReportRow";
-					auto row = Append(_xml, rows, rowName);
-					const auto caption = value.value("caption", std::string{});
-					if (!caption.empty()) row->SetAttribute("Caption", caption);
-					if (kind == 1 && !value.value("expanded", true))
-						row->SetAttribute("IsExpanded", "false");
-					if (value.value("tag", static_cast<unsigned long long>(0)) != 0)
-						row->SetAttribute("Tag", value["tag"].ToString());
-					if (value.contains("cells") && value["cells"].is_array()
-						&& !value["cells"].empty())
-						WriteStringItems(row, (std::string(rowName) + ".Cells").c_str(),
-							value["cells"]);
-				}
-				extra.ObjectItems().erase("reportRows");
-			}
-			if (node.Type == UIClass::UI_ComboBox && extra.contains("items"))
-			{
-				for (const auto& value : requireArray(
-					"items", "ComboBox.Items must be an array").ArrayItems())
-				{
-					if (!value.is_string())
-						throw std::invalid_argument("ComboBox item must be a string");
-					auto item = Append(_xml, element, "ComboBoxItem");
-					item->SetAttribute("Content", value.get<std::string>());
-				}
-				extra.ObjectItems().erase("items");
-			}
-			if (node.Type == UIClass::UI_ListView
-				&& extra.contains("columns"))
-			{
-				auto columns = Append(_xml, element, "ListView.Columns");
-				for (const auto& value : requireArray(
-					"columns", "ListView.Columns must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("ListView column must be an object");
-					auto column = Append(_xml, columns, "ListViewColumn");
-					const auto header = value.value("header", std::string{});
-					if (!header.empty()) column->SetAttribute("Header", header);
-					const auto width = value.value("width", 120.0);
-					if (width != 120.0) Set(column, "Width", NumberText(width));
-					const auto align = value.value("align", 0);
-					if (align != 0) Set(column, "HorizontalAlignment",
-						EnumText(align, { L"Left", L"Center", L"Right" }));
-				}
-				extra.ObjectItems().erase("columns");
-			}
-			if (node.Type == UIClass::UI_ListView
-				&& extra.contains("items"))
-			{
-				for (const auto& value : requireArray(
-					"items", "ListView.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("ListView item must be an object");
-					auto item = Append(_xml, element, "ListViewItem");
-					const auto text = value.value("text", std::string{});
-					if (!text.empty()) item->SetAttribute("Content", text);
-					const auto subText = value.value("subText", std::string{});
-					if (!subText.empty()) item->SetAttribute("SubText", subText);
-					if (value.value("checked", false)) item->SetAttribute("IsChecked", "true");
-					if (value.value("selected", false)) item->SetAttribute("IsSelected", "true");
-					if (!value.value("enabled", true)) item->SetAttribute("IsEnabled", "false");
-					if (value.contains("subItems"))
-						WriteStringItems(
-							item, "ListViewItem.SubItems", value["subItems"]);
-				}
-				extra.ObjectItems().erase("items");
-			}
-			const bool dataGrid = node.Type == UIClass::UI_GridView
-				|| node.Type == UIClass::UI_PagedGridView;
-			if (dataGrid && extra.contains("columns"))
-			{
-				const auto owner = node.Type == UIClass::UI_PagedGridView
-					? "PagedGridView" : "GridView";
-				auto columns = Append(_xml, element, std::string(owner) + ".Columns");
-				for (const auto& value : requireArray(
-					"columns", "GridView.Columns must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("GridView column must be an object");
-					auto column = Append(_xml, columns, "GridViewColumn");
-					const auto header = value.value("name", std::string{});
-					if (!header.empty()) column->SetAttribute("Header", header);
-					const auto width = value.value("width", 120.0);
-					if (width != 120.0) Set(column, "Width", NumberText(width));
-					const auto columnType = value.value("type", 0);
-					if (columnType != 0) Set(column, "Type", EnumText(columnType,
-						{ L"Text", L"Image", L"Check", L"Button", L"ComboBox", L"LinkedText" }));
-					if (!value.value("canEdit", true)) column->SetAttribute("CanEdit", "false");
-					const auto buttonText = value.value("buttonText", std::string{});
-					if (!buttonText.empty()) column->SetAttribute("ButtonText", buttonText);
-					if (value.contains("comboBoxItems"))
-						WriteStringItems(column, "GridViewColumn.Items", value["comboBoxItems"]);
-				}
-				extra.ObjectItems().erase("columns");
-			}
-			if (dataGrid && extra.contains("rows"))
-			{
-				const auto owner = node.Type == UIClass::UI_PagedGridView
-					? "PagedGridView" : "GridView";
-				auto rows = Append(_xml, element, std::string(owner) + ".Rows");
-				for (const auto& rowValue : requireArray(
-					"rows", "GridView.Rows must be an array").ArrayItems())
-				{
-					if (!rowValue.is_object() || !rowValue.contains("cells")
-						|| !rowValue["cells"].is_array())
-						throw std::invalid_argument("GridView row must contain cells");
-					auto row = Append(_xml, rows, "GridViewRow");
-					for (const auto& cellValue : rowValue["cells"])
-					{
-						if (!cellValue.is_object())
-							throw std::invalid_argument("GridView cell must be an object");
-						auto cell = Append(_xml, row, "GridViewCell");
-						if (cellValue.contains("value"))
-						{
-							if (!cellValue["value"].is_string())
-								throw std::invalid_argument("GridView cell Value must be a string");
-							cell->SetAttribute("Value", cellValue["value"].get<std::string>());
-						}
-						if (cellValue.contains("checked"))
-							cell->SetAttribute("IsChecked",
-								BoolText(cellValue["checked"].get<bool>()));
-						if (cellValue.contains("tag"))
-							cell->SetAttribute("Tag", cellValue["tag"].ToString());
-						if (cellValue.contains("selectedIndex"))
-							cell->SetAttribute("SelectedIndex",
-								cellValue["selectedIndex"].ToString());
-					}
-				}
-				extra.ObjectItems().erase("rows");
-			}
-			if (node.Type == UIClass::UI_PropertyGrid && extra.contains("items"))
-			{
-				auto items = Append(_xml, element, "PropertyGrid.Items");
-				for (const auto& value : requireArray(
-					"items", "PropertyGrid.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("PropertyGrid item must be an object");
-					auto item = Append(_xml, items, "PropertyGridItem");
-					for (const auto& [key, attribute] : {
-						std::pair{ "category", "Category" }, std::pair{ "name", "Name" },
-						std::pair{ "value", "Value" }, std::pair{ "description", "Description" } })
-						if (value.contains(key) && value[key].is_string()
-							&& !value[key].get<std::string>().empty())
-							item->SetAttribute(attribute, value[key].get<std::string>());
-					const auto valueType = value.value("type", 0);
-					if (valueType != 0) Set(item, "Type", EnumText(valueType,
-						{ L"Text", L"Number", L"Bool", L"Enum", L"Color", L"ReadOnly",
-						  L"Action", L"Slider", L"Anchor", L"EditableEnum" }));
-					if (value.value("readOnly", false)) item->SetAttribute("IsReadOnly", "true");
-					if (value.value("isMixed", false)) item->SetAttribute("IsMixed", "true");
-					if (value.value("canReset", false)) item->SetAttribute("CanReset", "true");
-					if (value.value("minimum", 0.0) != 0.0)
-						Set(item, "Minimum", NumberText(value.value("minimum", 0.0), 15));
-					if (value.value("maximum", 1.0) != 1.0)
-						Set(item, "Maximum", NumberText(value.value("maximum", 1.0), 15));
-					if (value.value("step", 0.01) != 0.01)
-						Set(item, "Step", NumberText(value.value("step", 0.01), 15));
-					if (value.value("tag", static_cast<unsigned long long>(0)) != 0)
-						item->SetAttribute("Tag", value["tag"].ToString());
-					if (value.contains("options"))
-						WriteStringItems(item, "PropertyGridItem.Options", value["options"]);
-				}
-				extra.ObjectItems().erase("items");
-			}
-			if (node.Type == UIClass::UI_TreeView && extra.contains("nodes"))
-			{
-				auto items = Append(_xml, element, "TreeView.Items");
-				WriteTreeItems(items,
-					requireArray("nodes", "TreeView.Items must be an array"));
-				extra.ObjectItems().erase("nodes");
-			}
-			if (node.Type == UIClass::UI_StatusBar && extra.contains("parts"))
-			{
-				auto items = Append(_xml, element, "StatusBar.Items");
-				for (const auto& value : requireArray(
-					"parts", "StatusBar.Items must be an array").ArrayItems())
-				{
-					if (!value.is_object())
-						throw std::invalid_argument("StatusBar item must be an object");
-					auto item = Append(_xml, items, "StatusBarItem");
-					const auto text = value.value("text", std::string{});
-					if (!text.empty()) item->SetAttribute("Text", text);
-					const auto width = value.value("width", 0);
-					if (width != 0) item->SetAttribute("Width", std::to_string(width));
-				}
-				extra.ObjectItems().erase("parts");
-			}
-			if (node.Type == UIClass::UI_Menu && extra.contains("items"))
-			{
-				auto items = Append(_xml, element, "Menu.Items");
-				WriteMenuItems(items,
-					requireArray("items", "Menu.Items must be an array"), false);
-				extra.ObjectItems().erase("items");
-			}
-		}
-
-		void WriteSplitChildren(
-			const DesignNode& node,
-			const Element& element)
-		{
-			std::vector<const DesignNode*> first;
-			std::vector<const DesignNode*> second;
-			for (const auto graphIndex : _graph.ChildrenOf(node.Name))
-			{
-				const auto& child = _document.Nodes[
-					_graph.Nodes()[graphIndex].SourceIndex];
-				const auto region = child.Extra.is_object()
-					? child.Extra.value("splitRegion", std::string("panel1"))
-					: std::string("panel1");
-				(region == "panel2" ? second : first).push_back(&child);
-			}
-			auto writeRegion = [&](const char* name, const auto& controls)
-			{
-				if (controls.empty()) return;
-				auto region = Append(_xml, element, name);
-				for (const auto* child : controls)
-					WriteControl(*child, region, true);
-			};
-			writeRegion("SplitContainer.FirstPanel", first);
-			writeRegion("SplitContainer.SecondPanel", second);
 		}
 
 		void WriteHeaderedChildren(
@@ -3584,29 +2899,36 @@ namespace
 			const Element& element)
 		{
 			const DesignNode* header = nullptr;
-			const DesignNode* content = nullptr;
+			std::vector<const DesignNode*> content;
 			for (const auto graphIndex : _graph.ChildrenOf(node.Name))
 			{
 				const auto& child = _document.Nodes[
 					_graph.Nodes()[graphIndex].SourceIndex];
-				const bool isHeader = child.Extra.is_object()
-					&& child.Extra.value(
-						"headeredRegion", std::string{}) == "header";
-				auto*& slot = isHeader ? header : content;
-				if (slot)
-					throw std::invalid_argument(
-						isHeader ? "Header slot contains multiple visuals"
-							: "Content slot contains multiple visuals");
-				slot = &child;
+				const bool isHeader = child.Structure.ChildRole
+					== DesignNodeChildRole::Header;
+				if (isHeader)
+				{
+					if (header)
+						throw std::invalid_argument(
+							"Header slot contains multiple visuals");
+					header = &child;
+				}
+				else content.push_back(&child);
 			}
+			const bool headeredItems = IsUIClassAssignableFrom(
+				UIClass::UI_HeaderedItemsControl, node.Type);
+			if (!headeredItems && content.size() > 1)
+				throw std::invalid_argument(
+					"Content slot contains multiple visuals");
 			if (header)
 			{
-				const auto owner = DesignerStyleSheetUtils::UIClassName(node.Type);
+				const auto owner = ControlXamlTypeName(node);
 				auto property = Append(_xml, element,
 					ToUtf8(owner + L".Header"));
 				WriteControl(*header, property, true);
 			}
-			if (content) WriteControl(*content, element, false);
+			for (const auto* child : content)
+				WriteControl(*child, element, false);
 		}
 	};
 }
@@ -3615,6 +2937,8 @@ std::string XamlDocumentSerializer::ToXaml(const DesignDocument& input)
 {
 	auto canonical = input;
 	std::wstring validationError;
+	if (!canonical.ValidateCommandTargetReferences(&validationError))
+		throw std::invalid_argument(ToUtf8(validationError));
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(
 		canonical, &validationError))
 		throw std::invalid_argument(ToUtf8(validationError));

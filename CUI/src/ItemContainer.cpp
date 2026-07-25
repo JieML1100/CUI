@@ -1,20 +1,28 @@
 #include "ItemContainer.h"
+#include "EventInfrastructure.h"
 
 #include <utility>
 
 ItemContainerControl::ItemContainerControl()
-	: ContentControl(0, 0, 0, 0)
+	: ContentControl()
 {
-	SetAutoSize(true, true);
-	HAlign = HorizontalAlignment::Stretch;
-	VAlign = VerticalAlignment::Top;
 	EnsureBindingPropertiesRegistered();
 	(void)TrySetPropertyValue(
-		L"Padding", BindingValue(Thickness(8.0f, 4.0f, 8.0f, 4.0f)),
-		ControlPropertyValueSource::Theme);
+		L"VerticalAlignment", BindingValue(::VerticalAlignment::Top),
+		DependencyPropertyValueSource::Theme);
 	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(0.0f),
-		ControlPropertyValueSource::Theme);
+		L"Padding", BindingValue(Thickness(8.0f, 4.0f, 8.0f, 4.0f)),
+		DependencyPropertyValueSource::Theme);
+	(void)TrySetPropertyValue(
+		L"BorderThickness", BindingValue(Thickness(0.0f)),
+		DependencyPropertyValueSource::Theme);
+	RetainEventConnection(OnMouseDown.Subscribe(
+		[this](Control*, MouseEventArgs& args)
+		{
+			if (args.ChangedButton != MouseButton::Left) return;
+			ActivateItem();
+			FocusOwner();
+		}));
 	UpdateThemeBackground();
 }
 
@@ -42,62 +50,37 @@ bool ItemContainerControl::InitializeItem(
 		if (outError) *outError = LastContentError();
 		return false;
 	}
-	if (!_selectionGestureAttached)
-	{
-		AttachSelectionGesture(*this);
-		_selectionGestureAttached = true;
-	}
 	if (outError) outError->clear();
 	return true;
 }
 
-void ItemContainerControl::EnsureBindingPropertiesRegistered()
+void ItemContainerControl::RegisterDependencyProperties()
 {
-	ContentControl::EnsureBindingPropertiesRegistered();
+	ContentControl::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto options = []
 		{
-			ControlPropertyOptions<ItemContainerControl, bool> value;
+			DependencyPropertyOptions<ItemContainerControl, bool> value;
 			value.DefaultValue = false;
-			value.Flags = ControlPropertyFlags::AffectsRender;
-			value.Design.Browsable = false;
+			value.Flags = DependencyPropertyFlags::AffectsRender;
+			value.Design.Browsable = true;
 			value.Design.Category = L"State";
-			value.Design.Persistence = ControlPropertyPersistence::Transient;
-			value.IsReadOnly = true;
+			value.Design.Editor = DependencyPropertyEditorKind::Boolean;
+			value.Design.Persistence = DependencyPropertyPersistence::Metadata;
+			value.IsReadOnly = false;
 			return value;
 		};
-		BindingPropertyRegistry::Register<ItemContainerControl, bool>(
+		DependencyPropertyRegistry::Register<ItemContainerControl, bool>(
 			L"IsSelected",
-			[](ItemContainerControl& target) { return target.GetIsSelected(); }, {},
+			[](ItemContainerControl& target) { return target.GetIsSelected(); },
+			[](ItemContainerControl& target, const bool& value)
+			{ target.ApplyIsSelectedValue(value); },
 			[](ItemContainerControl& target,
-				BindingPropertyMetadata::ChangeHandler handler,
+				DependencyPropertyMetadata::ChangeHandler handler,
 				DataSourceUpdateMode)
 			{
 				return target._selectedChanged.Subscribe(
-					[handler = std::move(handler)](ItemContainerControl*)
-					{ handler(); });
-			}, options());
-		BindingPropertyRegistry::Register<ItemContainerControl, bool>(
-			L"IsMouseOver",
-			[](ItemContainerControl& target) { return target.GetIsMouseOver(); }, {},
-			[](ItemContainerControl& target,
-				BindingPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._mouseOverChanged.Subscribe(
-					[handler = std::move(handler)](ItemContainerControl*)
-					{ handler(); });
-			}, options());
-		BindingPropertyRegistry::Register<ItemContainerControl, bool>(
-			L"IsKeyboardFocusWithin",
-			[](ItemContainerControl& target)
-			{ return target.GetIsKeyboardFocusWithin(); }, {},
-			[](ItemContainerControl& target,
-				BindingPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._keyboardFocusWithinChanged.Subscribe(
 					[handler = std::move(handler)](ItemContainerControl*)
 					{ handler(); });
 			}, options());
@@ -106,51 +89,27 @@ void ItemContainerControl::EnsureBindingPropertiesRegistered()
 	(void)registered;
 }
 
-void ItemContainerControl::AttachSelectionGesture(Control& control)
+void ItemContainerControl::SetIsSelected(bool value)
 {
-	control.OnMouseDown += [this](Control*, MouseEventArgs args)
-	{
-		if (args.Buttons != MouseButtons::Left) return;
-		ActivateItem();
-		FocusOwner();
-	};
-	control.OnMouseEnter += [this](Control*, MouseEventArgs)
-	{
-		SetMouseOver(true);
-	};
-	control.OnMouseLeave += [this](Control*, MouseEventArgs)
-	{
-		SetMouseOver(false);
-	};
-	for (auto* child : control.Children)
-		if (child) AttachSelectionGesture(*child);
+	if (!SetPropertyField(L"IsSelected", _selected, value)) return;
+	OnIsSelectedRequested(_selected);
 }
 
-void ItemContainerControl::SetSelected(bool value)
+void ItemContainerControl::SetCurrentIsSelected(bool value)
+{
+	(void)SetCurrentPropertyField(L"IsSelected", _selected, value);
+}
+
+void ItemContainerControl::ApplyIsSelectedValue(bool value)
 {
 	if (_selected == value) return;
-	(void)SetPropertyField(L"IsSelected", _selected, value);
+	if (!SetPropertyField(L"IsSelected", _selected, value)) return;
 	SetStyleState(ControlStyleState::Selected, value);
 	UpdateThemeBackground();
-	_selectedChanged(this);
-}
-
-void ItemContainerControl::SetMouseOver(bool value)
-{
-	if (_mouseOver == value) return;
-	(void)SetPropertyField(L"IsMouseOver", _mouseOver, value);
-	SetStyleState(ControlStyleState::Hovered, value);
-	UpdateThemeBackground();
-	_mouseOverChanged(this);
-}
-
-void ItemContainerControl::SetKeyboardFocusWithin(bool value)
-{
-	if (_keyboardFocusWithin == value) return;
-	(void)SetPropertyField(
-		L"IsKeyboardFocusWithin", _keyboardFocusWithin, value);
-	SetStyleState(ControlStyleState::Focused, value);
-	_keyboardFocusWithinChanged(this);
+	cui::framework::EventAccess::Raise(_selectedChanged, this);
+	RoutedEventArgs args;
+	if (value) Selected(this, args);
+	else Unselected(this, args);
 }
 
 void ItemContainerControl::UpdateThemeBackground()
@@ -162,6 +121,6 @@ void ItemContainerControl::UpdateThemeBackground()
 			? cui::theme::palette::AccentSoft
 			: D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
 	(void)TrySetPropertyValue(
-		L"BackColor", BindingValue(color),
-		ControlPropertyValueSource::Theme);
+		L"Background", BindingValue(color),
+		DependencyPropertyValueSource::Theme);
 }

@@ -1,6 +1,8 @@
 #include "DesignerPropertyCatalog.h"
+#include "DesignerModel/DesignDocument.h"
 #include "DesignerStyleSheetUtils.h"
-#include "../CUI/include/DateTimePicker.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
+#include "../CUI/include/DependencyPropertyInfrastructure.h"
 #include "../D2DGraphics/include/BitmapSource.h"
 #include <Convert.h>
 #include <algorithm>
@@ -15,9 +17,18 @@ namespace DesignerPropertyCatalog
 {
 namespace
 {
+	bool IsCompatibleStyleValueKind(
+		DesignerStyleValueKind expected,
+		DesignerStyleValueKind actual) noexcept
+	{
+		return expected == actual
+			|| (expected == DesignerStyleValueKind::Brush
+				&& actual == DesignerStyleValueKind::Color);
+	}
+
 	bool EqualsName(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::wstring Lower(std::wstring value)
@@ -41,8 +52,7 @@ namespace
 
 	std::wstring FormatValue(
 		const BindingValue& value,
-		DesignerStyleValueKind kind,
-		const std::type_index& valueType)
+		DesignerStyleValueKind kind)
 	{
 		switch (kind)
 		{
@@ -54,45 +64,6 @@ namespace
 		case DesignerStyleValueKind::Int:
 		{
 			int typed = 0;
-			if (value.Kind() == BindingValueKind::Object)
-			{
-				if (valueType == std::type_index(typeid(HorizontalAlignment)))
-				{
-					HorizontalAlignment item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(VerticalAlignment)))
-				{
-					VerticalAlignment item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(Dock)))
-				{
-					Dock item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(ImageSizeMode)))
-				{
-					ImageSizeMode item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(Orientation)))
-				{
-					Orientation item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(DateTimePickerMode)))
-				{
-					DateTimePickerMode item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				else if (valueType == std::type_index(typeid(AccessibleRole)))
-				{
-					AccessibleRole item{};
-					if (value.TryGet(item)) typed = static_cast<int>(item);
-				}
-				return std::to_wstring(typed);
-			}
 			return value.TryGet(typed) ? std::to_wstring(typed) : L"0";
 		}
 		case DesignerStyleValueKind::Int64:
@@ -174,14 +145,11 @@ namespace
 		case DesignerStyleValueKind::Size:
 		{
 			cui::core::Size typed{};
-			if (value.TryGet(typed))
-				return NumberText(typed.width,
+			return value.TryGet(typed)
+				? NumberText(typed.width,
 					std::numeric_limits<float>::max_digits10) + L", "
 					+ NumberText(typed.height,
-						std::numeric_limits<float>::max_digits10);
-			SIZE legacy{};
-			return value.TryGet(legacy)
-				? std::to_wstring(legacy.cx) + L", " + std::to_wstring(legacy.cy)
+						std::numeric_limits<float>::max_digits10)
 				: L"0, 0";
 		}
 		case DesignerStyleValueKind::Matrix:
@@ -223,16 +191,80 @@ namespace
 			{ "b", color.b }, { "a", color.a } };
 	}
 
+	DesignerModel::DesignValue TransformToValue(
+		const cui::drawing::Transform& transform)
+	{
+		DesignerModel::DesignValue value = DesignerModel::DesignValue::array();
+		for (const auto& operation : transform.Operations)
+		{
+			DesignerModel::DesignValue item = DesignerModel::DesignValue::object();
+			switch (operation.Kind)
+			{
+			case cui::drawing::TransformKind::Matrix:
+				item = {
+					{ "type", "matrix" },
+					{ "m11", operation.Matrix._11 },
+					{ "m12", operation.Matrix._12 },
+					{ "m21", operation.Matrix._21 },
+					{ "m22", operation.Matrix._22 },
+					{ "dx", operation.Matrix._31 },
+					{ "dy", operation.Matrix._32 }
+				};
+				break;
+			case cui::drawing::TransformKind::Translate:
+				item = {
+					{ "type", "translate" },
+					{ "x", operation.X }, { "y", operation.Y }
+				};
+				break;
+			case cui::drawing::TransformKind::Scale:
+				item = {
+					{ "type", "scale" },
+					{ "scaleX", operation.ScaleX },
+					{ "scaleY", operation.ScaleY },
+					{ "centerX", operation.CenterX },
+					{ "centerY", operation.CenterY }
+				};
+				break;
+			case cui::drawing::TransformKind::Rotate:
+				item = {
+					{ "type", "rotate" },
+					{ "angle", operation.Angle },
+					{ "centerX", operation.CenterX },
+					{ "centerY", operation.CenterY }
+				};
+				break;
+			case cui::drawing::TransformKind::Skew:
+				item = {
+					{ "type", "skew" },
+					{ "angleX", operation.AngleX },
+					{ "angleY", operation.AngleY },
+					{ "centerX", operation.CenterX },
+					{ "centerY", operation.CenterY }
+				};
+				break;
+			}
+			value.push_back(std::move(item));
+		}
+		return value;
+	}
+
 	DesignerModel::DesignValue BrushToValue(const cui::drawing::Brush& brush)
 	{
 		DesignerModel::DesignValue value = DesignerModel::DesignValue::object();
-		value["type"] = brush.Kind == cui::drawing::BrushKind::Solid ? "solid"
+		value["type"] = brush.Kind == cui::drawing::BrushKind::None ? "none"
+			: brush.Kind == cui::drawing::BrushKind::Solid ? "solid"
 			: brush.Kind == cui::drawing::BrushKind::LinearGradient ? "linear"
 			: brush.Kind == cui::drawing::BrushKind::RadialGradient ? "radial"
 			: "image";
+		if (brush.Kind == cui::drawing::BrushKind::None) return value;
 		value["mapping"] = brush.MappingMode
 			== cui::drawing::BrushMappingMode::Absolute ? "absolute" : "relative";
 		value["opacity"] = brush.Opacity;
+		if (brush.Transform)
+			value["transform"] = TransformToValue(*brush.Transform);
+		if (brush.RelativeTransform)
+			value["relativeTransform"] = TransformToValue(*brush.RelativeTransform);
 		if (brush.Kind == cui::drawing::BrushKind::Solid)
 			value["color"] = ColorToValue(brush.Color);
 		else if (brush.Kind == cui::drawing::BrushKind::Image)
@@ -296,7 +328,7 @@ namespace
 
 	void SynchronizeTrackedValue(
 		TrackedPropertyValues& values,
-		const BindingPropertyMetadata& metadata,
+		const DependencyPropertyMetadata& metadata,
 		const std::wstring& canonicalName,
 		const DesignerStyleValue* effectiveValue)
 	{
@@ -306,42 +338,42 @@ namespace
 		values[canonicalName] = *effectiveValue;
 	}
 
-	ControlPropertyEditorKind ResolveEditor(
-		ControlPropertyEditorKind requested,
+	DependencyPropertyEditorKind ResolveEditor(
+		DependencyPropertyEditorKind requested,
 		DesignerStyleValueKind kind,
 		bool hasChoices)
 	{
-		if (hasChoices) return ControlPropertyEditorKind::Choice;
-		if (requested != ControlPropertyEditorKind::Auto) return requested;
+		if (hasChoices) return DependencyPropertyEditorKind::Choice;
+		if (requested != DependencyPropertyEditorKind::Auto) return requested;
 		switch (kind)
 		{
-		case DesignerStyleValueKind::Bool: return ControlPropertyEditorKind::Boolean;
+		case DesignerStyleValueKind::Bool: return DependencyPropertyEditorKind::Boolean;
 		case DesignerStyleValueKind::Int:
 		case DesignerStyleValueKind::Int64:
 		case DesignerStyleValueKind::Float:
 		case DesignerStyleValueKind::Double:
-			return ControlPropertyEditorKind::Number;
-		case DesignerStyleValueKind::Color: return ControlPropertyEditorKind::Color;
-		case DesignerStyleValueKind::Thickness: return ControlPropertyEditorKind::Thickness;
-		case DesignerStyleValueKind::Point: return ControlPropertyEditorKind::Text;
-		case DesignerStyleValueKind::Vector: return ControlPropertyEditorKind::Text;
-		case DesignerStyleValueKind::Rect: return ControlPropertyEditorKind::Text;
-		case DesignerStyleValueKind::Size: return ControlPropertyEditorKind::Size;
-		case DesignerStyleValueKind::Matrix: return ControlPropertyEditorKind::Text;
-		case DesignerStyleValueKind::Length: return ControlPropertyEditorKind::Length;
+			return DependencyPropertyEditorKind::Number;
+		case DesignerStyleValueKind::Color: return DependencyPropertyEditorKind::Color;
+		case DesignerStyleValueKind::Thickness: return DependencyPropertyEditorKind::Thickness;
+		case DesignerStyleValueKind::Point: return DependencyPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Vector: return DependencyPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Rect: return DependencyPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Size: return DependencyPropertyEditorKind::Size;
+		case DesignerStyleValueKind::Matrix: return DependencyPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Length: return DependencyPropertyEditorKind::Length;
 		case DesignerStyleValueKind::String:
 		case DesignerStyleValueKind::ImageSource:
 		case DesignerStyleValueKind::Brush:
 		case DesignerStyleValueKind::Geometry:
 		case DesignerStyleValueKind::Transform:
 		default:
-			return ControlPropertyEditorKind::Text;
+			return DependencyPropertyEditorKind::Text;
 		}
 	}
 
 	bool TryCreateDescriptor(
 		Control& target,
-		const BindingPropertyMetadata& metadata,
+		const DependencyPropertyMetadata& metadata,
 		DesignerPropertyDescriptor& out)
 	{
 		if (!metadata.CanRead()) return false;
@@ -359,7 +391,7 @@ namespace
 		out.CategoryOrder = design.CategoryOrder;
 		out.Order = design.Order;
 		out.ValueKind = kind;
-		out.SampleValue = FormatValue(sample, kind, metadata.ValueType());
+		out.SampleValue = FormatValue(sample, kind);
 		out.Minimum = design.Minimum;
 		out.Maximum = design.Maximum;
 		out.Step = design.Step;
@@ -373,7 +405,43 @@ namespace
 				|| !metadata.TryCoerce(target, converted, effective)) continue;
 			out.Choices.push_back({
 				choice.DisplayName,
-				FormatValue(effective, kind, metadata.ValueType()) });
+				FormatValue(effective, kind) });
+		}
+		out.Editor = ResolveEditor(design.Editor, kind, !out.Choices.empty());
+		return true;
+	}
+
+	bool TryCreateDescriptor(
+		const DependencyPropertyMetadata& metadata,
+		DesignerPropertyDescriptor& out)
+	{
+		if (!metadata.CanRead()) return false;
+		DesignerStyleValueKind kind;
+		if (!TryGetStyleValueKind(metadata, kind)) return false;
+
+		BindingValue sample;
+		(void)metadata.TryGetDefaultValue(sample);
+		const auto& design = metadata.Design();
+		out.Name = metadata.Name();
+		out.DisplayName = design.DisplayName.empty()
+			? metadata.Name() : design.DisplayName;
+		out.Category = design.Category.empty() ? L"Misc" : design.Category;
+		out.CategoryOrder = design.CategoryOrder;
+		out.Order = design.Order;
+		out.ValueKind = kind;
+		out.SampleValue = FormatValue(sample, kind);
+		out.Minimum = design.Minimum;
+		out.Maximum = design.Maximum;
+		out.Step = design.Step;
+		out.Persistence = design.Persistence;
+		out.Metadata = &metadata;
+		for (const auto& choice : design.Choices)
+		{
+			BindingValue converted;
+			if (!metadata.TryConvert(choice.Value, converted)) continue;
+			out.Choices.push_back({
+				choice.DisplayName,
+				FormatValue(converted, kind) });
 		}
 		out.Editor = ResolveEditor(design.Editor, kind, !out.Choices.empty());
 		return true;
@@ -398,7 +466,7 @@ namespace
 }
 
 bool TryGetStyleValueKind(
-	const BindingPropertyMetadata& metadata,
+	const DependencyPropertyMetadata& metadata,
 	DesignerStyleValueKind& out)
 {
 	switch (metadata.ValueKind())
@@ -427,8 +495,7 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Vector;
 	else if (type == std::type_index(typeid(cui::core::Rect)))
 		out = DesignerStyleValueKind::Rect;
-	else if (type == std::type_index(typeid(cui::core::Size))
-		|| type == std::type_index(typeid(SIZE)))
+	else if (type == std::type_index(typeid(cui::core::Size)))
 		out = DesignerStyleValueKind::Size;
 	else if (type == std::type_index(typeid(D2D1_MATRIX_3X2_F)))
 		out = DesignerStyleValueKind::Matrix;
@@ -442,14 +509,11 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Geometry;
 	else if (type == std::type_index(typeid(cui::drawing::Transform)))
 		out = DesignerStyleValueKind::Transform;
-	else if (type == std::type_index(typeid(HorizontalAlignment))
-		|| type == std::type_index(typeid(VerticalAlignment))
-		|| type == std::type_index(typeid(Dock))
-		|| type == std::type_index(typeid(ImageSizeMode))
-		|| type == std::type_index(typeid(Orientation))
-		|| type == std::type_index(typeid(DateTimePickerMode))
-		|| type == std::type_index(typeid(AccessibleRole)))
-		out = DesignerStyleValueKind::Int;
+	else if (type == std::type_index(typeid(BindingValue)))
+		// ContentControl.Content is object-typed at runtime, but an authored
+		// attribute literal is still canonical scalar text. Structured visual or
+		// data content travels through the content/template model, not this slot.
+		out = DesignerStyleValueKind::String;
 	else
 		return false;
 	return true;
@@ -458,7 +522,7 @@ bool TryGetStyleValueKind(
 std::vector<DesignerPropertyDescriptor> GetStyleProperties(Control& target)
 {
 	std::vector<DesignerPropertyDescriptor> result;
-	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+	for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
 	{
 		if (!metadata || !metadata->CanWrite()) continue;
 		DesignerPropertyDescriptor property;
@@ -472,14 +536,74 @@ std::vector<DesignerPropertyDescriptor> GetStyleProperties(Control& target)
 	return result;
 }
 
+std::vector<DesignerPropertyDescriptor> GetStyleProperties(
+	std::span<const DependencyPropertyMetadata* const> properties)
+{
+	std::vector<DesignerPropertyDescriptor> result;
+	for (const auto* metadata : properties)
+	{
+		if (!metadata || !metadata->CanWrite()) continue;
+		DesignerPropertyDescriptor property;
+		if (TryCreateDescriptor(*metadata, property))
+			result.push_back(std::move(property));
+	}
+	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	{
+		return Lower(left.Name) < Lower(right.Name);
+	});
+	return result;
+}
+
+bool TryGetStyleProperty(
+	Control& target,
+	const std::wstring& propertyName,
+	DesignerPropertyDescriptor& out)
+{
+	const auto* metadata = target.FindPropertyMetadata(propertyName);
+	return metadata && metadata->CanWrite()
+		&& TryCreateDescriptor(target, *metadata, out);
+}
+
+bool TryGetStyleProperty(
+	std::span<const DependencyPropertyMetadata* const> properties,
+	const std::wstring& propertyName,
+	DesignerPropertyDescriptor& out)
+{
+	const auto found = std::find_if(properties.begin(), properties.end(),
+		[&](const DependencyPropertyMetadata* metadata)
+		{
+			return metadata && EqualsName(metadata->Name(), propertyName);
+		});
+	return found != properties.end() && (*found)->CanWrite()
+		&& TryCreateDescriptor(**found, out);
+}
+
 std::vector<DesignerPropertyDescriptor> GetConditionProperties(Control& target)
 {
 	std::vector<DesignerPropertyDescriptor> result;
-	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+	for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
 	{
 		if (!metadata || !metadata->CanRead() || !metadata->CanObserve()) continue;
 		DesignerPropertyDescriptor property;
 		if (TryCreateDescriptor(target, *metadata, property))
+			result.push_back(std::move(property));
+	}
+	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	{
+		return Lower(left.Name) < Lower(right.Name);
+	});
+	return result;
+}
+
+std::vector<DesignerPropertyDescriptor> GetConditionProperties(
+	std::span<const DependencyPropertyMetadata* const> properties)
+{
+	std::vector<DesignerPropertyDescriptor> result;
+	for (const auto* metadata : properties)
+	{
+		if (!metadata || !metadata->CanRead() || !metadata->CanObserve()) continue;
+		DesignerPropertyDescriptor property;
+		if (TryCreateDescriptor(*metadata, property))
 			result.push_back(std::move(property));
 	}
 	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
@@ -495,8 +619,8 @@ std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target)
 	result.erase(std::remove_if(result.begin(), result.end(), [&](const auto& property)
 	{
 		if (!property.Metadata || !property.Metadata->IsDesignerBrowsable(target)) return true;
-		return property.Persistence == ControlPropertyPersistence::Legacy
-			|| property.Persistence == ControlPropertyPersistence::Transient;
+		return property.Persistence == DependencyPropertyPersistence::Native
+			|| property.Persistence == DependencyPropertyPersistence::Transient;
 	}), result.end());
 	SortBrowsableProperties(result);
 	return result;
@@ -505,7 +629,7 @@ std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target)
 std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target)
 {
 	std::vector<DesignerPropertyDescriptor> result;
-	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+	for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
 	{
 		if (!metadata) continue;
 		DesignerPropertyDescriptor property;
@@ -516,7 +640,7 @@ std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& targe
 	{
 		return !property.Metadata
 			|| !property.Metadata->IsDesignerBrowsable(target)
-			|| property.Persistence == ControlPropertyPersistence::Transient;
+			|| property.Persistence == DependencyPropertyPersistence::Transient;
 	}), result.end());
 	SortBrowsableProperties(result);
 	return result;
@@ -550,7 +674,7 @@ bool ValidateStyleValue(
 	DesignerStyleValueKind expected;
 	if (!TryGetStyleValueKind(*metadata, expected))
 		return Fail(L"Designer 尚不支持属性类型：" + propertyName, outError);
-	if (value.Kind != expected)
+	if (!IsCompatibleStyleValueKind(expected, value.Kind))
 		return Fail(L"属性 " + propertyName + L" 需要 "
 			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
 
@@ -562,6 +686,53 @@ bool ValidateStyleValue(
 	if (!metadata->TryConvert(parsed, converted)
 		|| !metadata->TryCoerce(target, converted, effective))
 		return Fail(L"属性值无法通过元数据转换或 Coerce：" + propertyName, outError);
+	if (outError) outError->clear();
+	return true;
+}
+
+bool NormalizeStyleValue(
+	const DependencyPropertyMetadata& metadata,
+	const DesignerStyleValue& value,
+	DesignerStyleValue& outCanonical,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	if (!metadata.CanWrite())
+		return Fail(L"目标属性不可写：" + metadata.Name(), outError);
+	DesignerStyleValueKind expected;
+	if (!TryGetStyleValueKind(metadata, expected))
+		return Fail(L"Designer 尚不支持属性类型：" + metadata.Name(), outError);
+	if (!IsCompatibleStyleValueKind(expected, value.Kind))
+		return Fail(L"属性 " + metadata.Name() + L" 需要 "
+			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
+	BindingValue parsed;
+	BindingValue converted;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, parsed, outError, resourceBasePath, resources)
+		|| !metadata.TryConvert(parsed, converted))
+		return Fail(L"属性值无法通过 Schema 转换：" + metadata.Name(), outError);
+	outCanonical = DesignerStyleValue{
+		expected, FormatValue(converted, expected) };
+	if (expected == DesignerStyleValueKind::Brush)
+	{
+		cui::drawing::Brush brush;
+		if (!converted.TryGet(brush))
+			return Fail(L"属性值无法转换为画刷：" + metadata.Name(), outError);
+		// Brush has one canonical authoring representation. Scalar color text is
+		// accepted as XAML shorthand, then lowered to the structured brush object;
+		// retaining both creates divergent values after canonical XAML round-trip.
+		outCanonical.Text.clear();
+		outCanonical.ObjectValue = BrushToValue(brush);
+	}
+	else if (!value.ObjectValue.is_null())
+	{
+		// Structured XAML values have no scalar text representation. Preserve the
+		// authored empty/text payload so XAML and the internal snapshot round-trip
+		// the same contract instead of inventing a "{Transform}"-style sentinel.
+		outCanonical.Text = value.Text;
+		outCanonical.ObjectValue = value.ObjectValue;
+	}
 	if (outError) outError->clear();
 	return true;
 }
@@ -583,7 +754,7 @@ bool ValidateConditionValue(
 	if (!TryGetStyleValueKind(*metadata, expected))
 		return Fail(L"Designer 尚不支持触发器属性类型："
 			+ propertyName, outError);
-	if (value.Kind != expected)
+	if (!IsCompatibleStyleValueKind(expected, value.Kind))
 		return Fail(L"触发器属性 " + propertyName + L" 需要 "
 			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
 
@@ -597,6 +768,34 @@ bool ValidateConditionValue(
 	return true;
 }
 
+bool ValidateConditionValue(
+	const DependencyPropertyMetadata& metadata,
+	const DesignerStyleValue& value,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	if (!metadata.CanRead() || !metadata.CanObserve())
+		return Fail(L"触发器属性必须可读且可观察："
+			+ metadata.Name(), outError);
+	DesignerStyleValueKind expected;
+	if (!TryGetStyleValueKind(metadata, expected))
+		return Fail(L"Designer 尚不支持触发器属性类型："
+			+ metadata.Name(), outError);
+	if (!IsCompatibleStyleValueKind(expected, value.Kind))
+		return Fail(L"触发器属性 " + metadata.Name() + L" 需要 "
+			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
+	BindingValue parsed;
+	BindingValue converted;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, parsed, outError, resourceBasePath, resources)
+		|| !metadata.TryConvert(parsed, converted))
+		return Fail(L"触发器值无法通过 Schema 转换："
+			+ metadata.Name(), outError);
+	if (outError) outError->clear();
+	return true;
+}
+
 bool CaptureValue(
 	Control& target,
 	const std::wstring& propertyName,
@@ -604,21 +803,44 @@ bool CaptureValue(
 	DesignerStyleValue& out,
 	std::wstring* outError)
 {
-	const auto properties = GetStyleProperties(target);
-	const auto* property = Find(properties, propertyName);
-	if (!property)
+	DesignerPropertyDescriptor property;
+	if (!TryGetStyleProperty(target, propertyName, property))
 		return Fail(L"目标类型没有可持久化的元数据属性：" + propertyName, outError);
-	out = DesignerStyleValue{ property->ValueKind, property->SampleValue };
-	if (property->ValueKind == DesignerStyleValueKind::Brush)
+	out = DesignerStyleValue{ property.ValueKind, property.SampleValue };
+	if (property.ValueKind == DesignerStyleValueKind::Brush)
 	{
 		BindingValue runtimeValue;
 		cui::drawing::Brush brush;
-		if (property->Metadata
-			&& property->Metadata->TryGet(target, runtimeValue)
+		if (property.Metadata
+			&& property.Metadata->TryGet(target, runtimeValue)
 			&& runtimeValue.TryGet(brush))
 			out.ObjectValue = BrushToValue(brush);
 	}
-	if (outCanonicalName) *outCanonicalName = property->Name;
+	if (outCanonicalName) *outCanonicalName = property.Name;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool CaptureDefaultValue(
+	const DependencyPropertyMetadata& metadata,
+	DesignerStyleValue& out,
+	std::wstring* outError)
+{
+	DesignerStyleValueKind kind;
+	if (!TryGetStyleValueKind(metadata, kind))
+		return Fail(L"Designer 尚不支持属性类型："
+			+ metadata.Name(), outError);
+	BindingValue value;
+	if (!metadata.TryGetDefaultValue(value))
+		return Fail(L"属性没有可用的 Schema 默认值："
+			+ metadata.Name(), outError);
+	out = DesignerStyleValue{
+		kind, FormatValue(value, kind) };
+	if (kind == DesignerStyleValueKind::Brush)
+	{
+		cui::drawing::Brush brush;
+		if (value.TryGet(brush)) out.ObjectValue = BrushToValue(brush);
+	}
 	if (outError) outError->clear();
 	return true;
 }
@@ -631,7 +853,8 @@ bool ApplyValue(
 	DesignerStyleValue* outEffective,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
-	const std::shared_ptr<ResourceLoadContext>& resources)
+	const std::shared_ptr<ResourceLoadContext>& resources,
+	DependencyPropertyValueSource source)
 {
 	if (!ValidateStyleValue(
 		target, propertyName, value, outError, resourceBasePath, resources)) return false;
@@ -639,9 +862,9 @@ bool ApplyValue(
 	if (!DesignerStyleSheetUtils::TryConvertValue(
 		value, parsed, outError, resourceBasePath, resources)) return false;
 	const auto* metadata = target.FindPropertyMetadata(propertyName);
-	if (!metadata || !target.TrySetPropertyValue(metadata->Name(), parsed))
-		return Fail(L"无法设置元数据属性；它可能正被 Binding 占用："
-			+ propertyName, outError);
+	if (!metadata || !cui::framework::DependencyPropertyAccess::SetValue(
+		target, metadata->Name(), parsed, source))
+		return Fail(L"无法设置元数据属性：" + propertyName, outError);
 
 	DesignerStyleValue effective;
 	std::wstring canonicalName;
@@ -653,11 +876,11 @@ bool ApplyValue(
 	return true;
 }
 
-bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept
+bool UsesMetadataPersistence(const DependencyPropertyMetadata& metadata) noexcept
 {
 	const auto persistence = metadata.Design().Persistence;
-	return persistence == ControlPropertyPersistence::Automatic
-		|| persistence == ControlPropertyPersistence::Metadata;
+	return persistence == DependencyPropertyPersistence::Automatic
+		|| persistence == DependencyPropertyPersistence::Metadata;
 }
 
 bool TrackCurrentValue(
@@ -692,13 +915,15 @@ bool ApplyAndTrackValue(
 	DesignerStyleValue* outEffective,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
-	const std::shared_ptr<ResourceLoadContext>& resources)
+	const std::shared_ptr<ResourceLoadContext>& resources,
+	DependencyPropertyValueSource source)
 {
 	std::wstring canonicalName;
 	DesignerStyleValue effective;
 	if (!ApplyValue(
 		target, propertyName, value,
-		&canonicalName, &effective, outError, resourceBasePath, resources)) return false;
+		&canonicalName, &effective, outError, resourceBasePath, resources,
+		source)) return false;
 	const auto* metadata = target.FindPropertyMetadata(canonicalName);
 	if (!metadata)
 		return Fail(L"属性应用后无法解析规范元数据：" + canonicalName, outError);
@@ -728,14 +953,14 @@ bool ResetAndUntrackValue(
 		return Fail(L"Designer 尚不支持属性类型：" + propertyName, outError);
 
 	const bool hadLocalValue = target.HasPropertyValue(
-		metadata->Name(), ControlPropertyValueSource::Local);
+		metadata->Name(), DependencyPropertyValueSource::Local);
 	if (!target.ResetPropertyValue(metadata->Name()) && hadLocalValue)
 		return Fail(L"无法重置元数据属性：" + metadata->Name(), outError);
-	// With no Local value, an Inherited/Style/Binding/Theme source already represents the
+	// With no Local value, an inherited/theme/style/template expression already represents the
 	// reset state even though Control::ResetPropertyValue has nothing to clear.
 	if (!hadLocalValue
 		&& target.GetPropertyValueSource(metadata->Name())
-			== ControlPropertyValueSource::Default
+			== DependencyPropertyValueSource::Default
 		&& !metadata->HasDefaultValue())
 		return Fail(L"属性没有可恢复的默认值：" + metadata->Name(), outError);
 
@@ -745,6 +970,121 @@ bool ResetAndUntrackValue(
 	if (!CaptureValue(
 		target, metadata->Name(), &canonicalName, effective, outError)) return false;
 	if (outCanonicalName) *outCanonicalName = canonicalName;
+	if (outEffective) *outEffective = effective;
+	if (outError) outError->clear();
+	return true;
+}
+
+std::vector<DesignerPropertyDescriptor> GetNodeProperties(UIClass nativeType)
+{
+	const auto properties = CuiRuntime::XamlRuntimeSchema::NativeProperties(nativeType);
+	return GetStyleProperties(properties);
+}
+
+bool CaptureNodeValue(
+	const DesignerModel::DesignNode& node,
+	const std::wstring& propertyName,
+	DesignerStyleValue& out,
+	std::wstring* outCanonicalName,
+	std::wstring* outError)
+{
+	const auto properties =
+		CuiRuntime::XamlRuntimeSchema::NativeProperties(node.Type);
+	DesignerPropertyDescriptor descriptor;
+	if (!TryGetStyleProperty(properties, propertyName, descriptor)
+		|| !descriptor.Metadata)
+		return Fail(L"XAML 节点类型没有可持久化属性：" + propertyName,
+			outError);
+	if (const auto* assignment = node.Properties.Find(descriptor.Name))
+		out = assignment->Value;
+	else if (!CaptureDefaultValue(*descriptor.Metadata, out, outError))
+		return false;
+	out.Kind = descriptor.ValueKind;
+	if (outCanonicalName) *outCanonicalName = descriptor.Name;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool ReadNodeValue(
+	const DesignerModel::DesignNode& node,
+	const std::wstring& propertyName,
+	BindingValue& out,
+	std::wstring* outCanonicalName,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	DesignerStyleValue value;
+	std::wstring canonicalName;
+	if (!CaptureNodeValue(
+		node, propertyName, value, &canonicalName, outError)) return false;
+	const auto* metadata = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+		node.Type, canonicalName);
+	if (!metadata)
+		return Fail(L"XAML 节点属性缺少运行时元数据：" + canonicalName,
+			outError);
+	BindingValue converted;
+	std::wstring conversionError;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, converted, &conversionError, resourceBasePath, resources)
+		|| !metadata->TryConvert(converted, out))
+		return Fail(L"XAML 节点属性无法转换到运行时类型：" + canonicalName
+			+ (conversionError.empty() ? std::wstring{}
+				: L"：" + conversionError), outError);
+	if (outCanonicalName) *outCanonicalName = canonicalName;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool ApplyNodeValue(
+	DesignerModel::DesignNode& node,
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	DesignerStyleValue* outEffective,
+	std::wstring* outCanonicalName,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	const auto properties =
+		CuiRuntime::XamlRuntimeSchema::NativeProperties(node.Type);
+	DesignerPropertyDescriptor descriptor;
+	if (!TryGetStyleProperty(properties, propertyName, descriptor)
+		|| !descriptor.Metadata)
+		return Fail(L"XAML 节点类型没有可写属性：" + propertyName,
+			outError);
+	DesignerStyleValue effective;
+	if (!NormalizeStyleValue(
+		*descriptor.Metadata, value, effective, outError,
+		resourceBasePath, resources)) return false;
+	node.Properties.Set(descriptor.Name, { effective, {}, {} });
+	node.Bindings.erase(descriptor.Name);
+	if (outCanonicalName) *outCanonicalName = descriptor.Name;
+	if (outEffective) *outEffective = effective;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool ResetNodeValue(
+	DesignerModel::DesignNode& node,
+	const std::wstring& propertyName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outCanonicalName,
+	std::wstring* outError)
+{
+	const auto properties =
+		CuiRuntime::XamlRuntimeSchema::NativeProperties(node.Type);
+	DesignerPropertyDescriptor descriptor;
+	if (!TryGetStyleProperty(properties, propertyName, descriptor)
+		|| !descriptor.Metadata)
+		return Fail(L"XAML 节点类型没有可重置属性：" + propertyName,
+			outError);
+	node.Properties.Remove(descriptor.Name);
+	node.Bindings.erase(descriptor.Name);
+	DesignerStyleValue effective;
+	if (!CaptureDefaultValue(*descriptor.Metadata, effective, outError))
+		return false;
+	if (outCanonicalName) *outCanonicalName = descriptor.Name;
 	if (outEffective) *outEffective = effective;
 	if (outError) outError->clear();
 	return true;

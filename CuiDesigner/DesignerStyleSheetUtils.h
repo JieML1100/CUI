@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+namespace CuiRuntime { struct XamlTypePropertySchema; }
+
 namespace DesignerStyleSheetUtils
 {
 	std::wstring Trim(const std::wstring& value);
@@ -19,16 +21,6 @@ namespace DesignerStyleSheetUtils
 	bool TryParseUIClass(const std::wstring& value, UIClass& out);
 	std::vector<std::wstring> UIClassNames(bool includeAny = true);
 
-	std::wstring FormatStates(ControlStyleState states);
-	bool TryParseStates(const std::wstring& value, ControlStyleState& out);
-	std::vector<std::wstring> SplitClasses(const std::wstring& value);
-	std::wstring JoinClasses(const std::vector<std::wstring>& classes);
-	std::wstring CanonicalTriggerProperty(const std::wstring& property);
-	bool TryGetTriggerStates(
-		const std::wstring& property,
-		bool value,
-		ControlStyleState& required,
-		ControlStyleState& excluded);
 
 	bool TryConvertValue(
 		const DesignerStyleValue& value,
@@ -37,6 +29,10 @@ namespace DesignerStyleSheetUtils
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});
 	void Canonicalize(DesignerStyleSheet& styleSheet);
+	/** WPF resource identity: x:Key for named Style, TargetType for implicit Style. */
+	bool HasSameStyleResourceIdentity(
+		const DesignerStyleRule& left,
+		const DesignerStyleRule& right);
 	/** Appends one lexical dictionary, with nearer values shadowing outer ones. */
 	void AppendLexicalScope(
 		DesignerStyleSheet& target,
@@ -75,20 +71,20 @@ namespace DesignerStyleSheetUtils
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});
-	using ControlFactory = std::function<std::unique_ptr<Control>(UIClass)>;
-	using RuleControlFactory = std::function<std::unique_ptr<Control>(
-		const DesignerStyleRule&)>;
-	/** Validates property existence, writability, type, conversion, and Coerce. */
+	using RulePropertySchemaResolver = std::function<bool(
+		const DesignerStyleRule&,
+		CuiRuntime::XamlTypePropertySchema&,
+		std::wstring*)>;
+	/** Validates built-in property existence, writability, type, and conversion. */
 	bool ValidateAgainstPropertyMetadata(
 		const DesignerStyleSheet& styleSheet,
-		const ControlFactory& controlFactory,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});
-	/** Rule-aware overload used when a component TargetType needs dynamic metadata. */
+	/** Rule-aware overload used when a component TargetType contributes metadata. */
 	bool ValidateAgainstRulePropertyMetadata(
 		const DesignerStyleSheet& styleSheet,
-		const RuleControlFactory& controlFactory,
+		const RulePropertySchemaResolver& schemaResolver,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});

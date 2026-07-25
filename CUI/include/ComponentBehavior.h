@@ -1,6 +1,9 @@
 #pragma once
 
-#include <Windows.h>
+#include "XamlSchema.h"
+#include "InputReport.h"
+
+#include <d2d1.h>
 
 #include <string>
 
@@ -18,8 +21,7 @@ struct DeclarativeComponentBehaviorContext final
 	Control& Host;
 	int StableId = 0;
 	std::wstring InstanceName;
-	std::wstring XamlNamespace;
-	std::wstring XamlTypeName;
+	RuntimeTypeId Type;
 };
 
 /**
@@ -53,23 +55,38 @@ public:
 	virtual void Detach(Control& host) noexcept { (void)host; }
 
 	/**
-	 * Runs before the host's normal ProcessMessage implementation. Returning
-	 * true consumes the message. Coordinates are host-local DIPs.
+	 * Runs before the host's normal input behavior. Returning true consumes the
+	 * normalized report. Coordinates are host-local DIPs.
 	 */
-	virtual bool HandleMessage(
+	virtual bool HandleInput(
 		Control& host,
-		UINT message,
-		WPARAM wParam,
-		LPARAM lParam,
-		int localX,
-		int localY)
+		const InputReport& input)
 	{
 		(void)host;
-		(void)message;
-		(void)wParam;
-		(void)lParam;
-		(void)localX;
-		(void)localY;
+		(void)input;
+		return false;
+	}
+
+	/**
+	 * Runs between PreviewTextInput and TextInput after native text has been
+	 * normalized. Returning true means the behavior applied the committed text.
+	 */
+	virtual bool HandleTextInput(
+		Control& host,
+		TextCompositionEventArgs& input)
+	{
+		(void)host;
+		(void)input;
+		return false;
+	}
+
+	/** Supplies a top-level client-DIP caret rectangle for IME UI placement. */
+	virtual bool TryGetTextInputCaretRect(
+		Control& host,
+		D2D1_RECT_F& outRect)
+	{
+		(void)host;
+		(void)outRect;
 		return false;
 	}
 
@@ -90,4 +107,18 @@ public:
 	{
 		(void)host;
 	}
+
+protected:
+	/**
+	 * Publishes state through a read-only property declared by the host's XAML
+	 * component contract. The operation is accepted only while this exact
+	 * behavior instance is attached to the supplied host.
+	 */
+	bool SetReadOnlyProperty(
+		Control& host,
+		const std::wstring& propertyName,
+		const BindingValue& value);
+	bool ClearReadOnlyProperty(
+		Control& host,
+		const std::wstring& propertyName);
 };

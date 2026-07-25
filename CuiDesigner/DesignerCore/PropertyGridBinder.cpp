@@ -1,6 +1,5 @@
 ﻿#include "PropertyGridBinder.h"
 #include "../DesignerCanvas.h"
-#include "../../CUI/include/SplitContainer.h"
 #include <Convert.h>
 #include <algorithm>
 #include <unordered_map>
@@ -9,7 +8,7 @@ namespace
 {
 	bool NamesEqual(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	bool IsMaterializedResourceProperty(const std::wstring& propertyName)
@@ -63,7 +62,7 @@ void PropertyGridBinder::BindControls(
 		_control = _controls.front();
 }
 
-bool PropertyGridBinder::IsFormBinding() const
+bool PropertyGridBinder::IsWindowBinding() const
 {
 	return !_control;
 }
@@ -84,50 +83,38 @@ Control* PropertyGridBinder::GetBoundRuntimeControl() const
 	return _control ? _control->ControlInstance : nullptr;
 }
 
-DesignerModel::DesignFormModel PropertyGridBinder::CaptureFormModel() const
+DesignerModel::DesignNode PropertyGridBinder::CaptureWindowNode() const
 {
 	return _canvas
-		? _canvas->CaptureDesignedFormModel()
-		: DesignerModel::DesignFormModel{};
+		? _canvas->CaptureDesignedWindowNode()
+		: DesignerModel::DesignDocument{}.Window;
 }
 
-bool PropertyGridBinder::ApplyFormProperty(
+bool PropertyGridBinder::ApplyWindowProperty(
 	const std::wstring& propertyName,
 	const DesignerStyleValue& value,
 	DesignerStyleValue* outEffective,
 	std::wstring* outError) const
 {
 	if (!_canvas) return false;
-	auto form = _canvas->CaptureDesignedFormModel();
-	if (!DesignerFormPropertyCatalog::ApplyValue(
-		form, propertyName, value, outEffective, outError)) return false;
-	_canvas->ApplyDesignedFormModel(form);
-	return true;
+	return _canvas->ApplyDesignedWindowProperty(
+		propertyName, value, outEffective, outError);
 }
 
-bool PropertyGridBinder::ResetFormProperty(
+bool PropertyGridBinder::ResetWindowProperty(
 	const std::wstring& propertyName,
 	DesignerStyleValue* outEffective,
 	std::wstring* outError) const
 {
 	if (!_canvas) return false;
-	auto form = _canvas->CaptureDesignedFormModel();
-	if (!DesignerFormPropertyCatalog::ResetValue(
-		form, propertyName, outEffective, outError)) return false;
-	_canvas->ApplyDesignedFormModel(form);
-	return true;
-}
-
-::Font* PropertyGridBinder::GetDesignedFormSharedFont() const
-{
-	return _canvas ? _canvas->GetDesignedFormSharedFont() : nullptr;
+	return _canvas->ResetDesignedWindowProperty(
+		propertyName, outEffective, outError);
 }
 
 DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
 	const std::shared_ptr<DesignerControl>& target) const
 {
 	DesignerControlPropertyContext context;
-	context.SharedFont = GetDesignedFormSharedFont();
 	context.MakeUniqueName = [this, target](DesignerControl&, const std::wstring& desired)
 	{
 		return MakeUniqueControlName(target, desired);
@@ -140,6 +127,8 @@ DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
 		const std::wstring& previousName, const std::wstring& nextName)
 	{
 		if (!_canvas) return;
+		_canvas->RewriteInputBindingCommandTargetReferences(
+			previousName, nextName);
 		std::function<void(DesignerDataBinding&)> rewrite;
 		rewrite = [&](DesignerDataBinding& binding)
 		{
@@ -160,10 +149,6 @@ DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
 				rewrite(binding);
 			}
 		}
-	};
-	context.ApplyAnchorStylesKeepingBounds = [this](Control* control, uint8_t anchorStyles)
-	{
-		ApplyAnchorStylesKeepingBounds(control, anchorStyles);
 	};
 	if (_canvas)
 	{
@@ -192,7 +177,7 @@ DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
 			{
 				targetItems.erase(std::remove_if(
 					targetItems.begin(), targetItems.end(), [&](const auto& current)
-					{ return _wcsicmp(current.Key.c_str(), item.Key.c_str()) == 0; }),
+					{ return current.Key == item.Key; }),
 					targetItems.end());
 				targetItems.push_back(item);
 			}
@@ -252,7 +237,7 @@ std::vector<DesignerPropertyRow> PropertyGridBinder::GetPropertyRows() const
 		return DesignerPropertyRowCatalog::GetCommonControlRows(controlRows);
 	}
 	return _canvas
-		? DesignerPropertyRowCatalog::GetFormRows(CaptureFormModel())
+		? DesignerPropertyRowCatalog::GetWindowRows(CaptureWindowNode())
 		: std::vector<DesignerPropertyRow>{};
 }
 
@@ -292,18 +277,24 @@ DesignerPropertyEditResult PropertyGridBinder::ApplyControlPropertyValue(
 		if (!_canvas->BuildDesignDocument(document, &error))
 			return DesignerPropertyEditResult::Failure(
 				L"无法建立数据资源编辑快照：" + error);
-		const auto extraKey = NamesEqual(propertyName, L"Template")
-			? "controlTemplate"
-			: NamesEqual(propertyName, L"ItemTemplate")
-			? "itemTemplate"
-			: NamesEqual(propertyName, L"ContentTemplate")
-				? "contentTemplate"
-			: NamesEqual(propertyName, L"HeaderTemplate")
-				? "headerTemplate"
-			: NamesEqual(propertyName, L"ItemsPanel")
-				? "itemsPanel"
-			: NamesEqual(propertyName, L"ItemContainerStyle")
-				? "itemContainerStyle" : "itemsSourceResource";
+		auto assignResource = [&](DesignerModel::DesignNode& node)
+		{
+			auto& structure = node.Structure;
+			if (NamesEqual(propertyName, L"Template"))
+				structure.ControlTemplate = valueText;
+			else if (NamesEqual(propertyName, L"ItemTemplate"))
+				structure.ItemTemplate = valueText;
+			else if (NamesEqual(propertyName, L"ContentTemplate"))
+				structure.ContentTemplate = valueText;
+			else if (NamesEqual(propertyName, L"HeaderTemplate"))
+				structure.HeaderTemplate = valueText;
+			else if (NamesEqual(propertyName, L"ItemsPanel"))
+				structure.ItemsPanel = valueText;
+			else if (NamesEqual(propertyName, L"ItemContainerStyle"))
+				structure.ItemContainerStyle = valueText;
+			else
+				structure.ItemsSourceResource = valueText;
+		};
 		size_t applied = 0;
 		std::vector<std::wstring> selectionNames;
 		selectionNames.reserve(_controls.size());
@@ -316,10 +307,7 @@ DesignerPropertyEditResult PropertyGridBinder::ApplyControlPropertyValue(
 			if (found == document.Nodes.end())
 				return DesignerPropertyEditResult::Failure(
 					L"文档中找不到控件：" + control->Name, applied);
-			if (!found->Extra.is_object())
-				found->Extra = DesignerModel::DesignValue::object();
-			if (valueText.empty()) found->Extra.ObjectItems().erase(extraKey);
-			else found->Extra[extraKey] = Convert::UnicodeToUtf8(valueText);
+			assignResource(*found);
 			++applied;
 		}
 		const auto primaryName = _control ? _control->Name : std::wstring{};
@@ -371,7 +359,7 @@ bool PropertyGridBinder::CaptureControlPropertySnapshot(
 	}
 	const auto rows = GetPropertyRows();
 	const auto* row = DesignerPropertyRowCatalog::Find(rows, propertyName);
-	if (!row || row->Source == DesignerPropertyRowSource::Form)
+	if (!row || row->Source == DesignerPropertyRowSource::Window)
 	{
 		if (outError)
 			*outError = L"当前选择没有可快照的控件属性 "
@@ -531,16 +519,12 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 		return;
 	}
 
-	if (auto* panel = dynamic_cast<Panel*>(control->Parent))
+	if (auto* panel = dynamic_cast<Panel*>(control->GetVisualParent()))
 	{
 		panel->InvalidateLayout();
 		panel->UpdateLayout();
 	}
-	if (auto* split = dynamic_cast<SplitContainer*>(control))
-	{
-		split->RefreshSplitterLayout();
-	}
-	else if (auto* panel = dynamic_cast<Panel*>(control))
+	if (auto* panel = dynamic_cast<Panel*>(control))
 	{
 		panel->InvalidateLayout();
 		panel->UpdateLayout();
@@ -550,22 +534,6 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 		_canvas->ClampControlToDesignSurface(control);
 	}
 	control->InvalidateVisual();
-}
-
-void PropertyGridBinder::ApplyAnchorStylesKeepingBounds(Control* control, uint8_t anchorStyles) const
-{
-	if (!control)
-	{
-		return;
-	}
-	if (_canvas)
-	{
-		_canvas->ApplyAnchorStylesKeepingBounds(control, anchorStyles);
-	}
-	else
-	{
-		control->AnchorStyles = anchorStyles;
-	}
 }
 
 std::wstring PropertyGridBinder::MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const

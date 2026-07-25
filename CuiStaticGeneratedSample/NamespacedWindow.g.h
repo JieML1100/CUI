@@ -1,8 +1,11 @@
 #pragma once
 #include "Binding.h"
+#include "Border.h"
 #include "Button.h"
+#include "ContentPresenter.h"
 #include "Control.h"
-#include "Form.h"
+#include "RoutedCommand.h"
+#include "Window.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -16,14 +19,14 @@ class MainWindowEventSink
 {
 public:
 	MainWindowEventSink() = default;
-	virtual ~MainWindowEventSink() { UnregisterDynamicEventHandlers(); }
+	virtual ~MainWindowEventSink() { UnregisterDeclarativeEventHandlers(); }
 	MainWindowEventSink(const MainWindowEventSink&) = delete;
 	MainWindowEventSink& operator=(const MainWindowEventSink&) = delete;
 	MainWindowEventSink(MainWindowEventSink&&) = delete;
 	MainWindowEventSink& operator=(MainWindowEventSink&&) = delete;
 
 	template<typename TRegistry>
-	bool RegisterDynamicEventHandlers(
+	bool RegisterDeclarativeEventHandlers(
 		TRegistry& registry, std::wstring* outError = nullptr)
 	{
 		try
@@ -33,76 +36,76 @@ public:
 			[this, lifetime = std::weak_ptr<void>(lifetime)](
 				auto& routes, std::wstring& error)
 			{
-				if (!routes.RegisterForm(
-					L"HandleWindowShown", L"OnShown", &Form::OnShown,
-					GuardDynamicEventHandler(
+				if (!routes.RegisterWindow(
+					L"HandleWindowContentRendered", L"ContentRendered", &Window::ContentRendered,
+					GuardDeclarativeEventHandler(
 						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(Form*)>(
-								&MainWindowEventSink::HandleWindowShown), this)), &error))
+							static_cast<void (MainWindowEventSink::*)(Window*)>(
+								&MainWindowEventSink::HandleWindowContentRendered), this)), &error))
+					return false;
+				if (!routes.RegisterWindow(
+					L"HandleStaticRefreshCanExecute", L"CanExecute", &UIElement::OnCanExecute,
+					GuardDeclarativeEventHandler(
+						lifetime, std::bind_front(
+							static_cast<void (MainWindowEventSink::*)(Control*,CanExecuteRoutedEventArgs&)>(
+								&MainWindowEventSink::HandleStaticRefreshCanExecute), this)), &error))
+					return false;
+				if (!routes.RegisterWindow(
+					L"HandleStaticRefreshExecuted", L"Executed", &UIElement::OnExecuted,
+					GuardDeclarativeEventHandler(
+						lifetime, std::bind_front(
+							static_cast<void (MainWindowEventSink::*)(Control*,ExecutedRoutedEventArgs&)>(
+								&MainWindowEventSink::HandleStaticRefreshExecuted), this)), &error))
 					return false;
 				if (!routes.RegisterControl(
-					L"HandleNamespacedDrop", UIClass::UI_Base, L"OnDropFile", &Control::OnDropFile,
-					GuardDynamicEventHandler(
+					L"HandleNamespacedClick", static_cast<UIClass>(7), L"Click", &ButtonBase::Click,
+					GuardDeclarativeEventHandler(
 						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(Control*,std::vector<std::wstring>)>(
-								&MainWindowEventSink::HandleNamespacedDrop), this)), &error))
-					return false;
-				if (!routes.RegisterControl(
-					L"HandleNamespacedClick", UIClass::UI_Base, L"OnMouseClick", &Control::OnMouseClick,
-					GuardDynamicEventHandler(
-						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(Control*,MouseEventArgs)>(
+							static_cast<void (MainWindowEventSink::*)(Control*,RoutedEventArgs&)>(
 								&MainWindowEventSink::HandleNamespacedClick), this)), &error))
 					return false;
 				if (!routes.RegisterControl(
-					L"HandleNamespacedPropertyChanged", UIClass::UI_Base, L"OnPropertyValueChanged", &Control::OnPropertyValueChanged,
-					GuardDynamicEventHandler(
+					L"HandleNamespacedDrop", static_cast<UIClass>(0), L"Drop", &UIElement::OnDrop,
+					GuardDeclarativeEventHandler(
 						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(Control*,const ControlPropertyChangedEventArgs&)>(
-								&MainWindowEventSink::HandleNamespacedPropertyChanged), this)), &error))
-					return false;
-				if (!routes.RegisterControl(
-					L"HandleNamespacedValidationChanged", UIClass::UI_Base, L"OnValidationStateChanged", &Control::OnValidationStateChanged,
-					GuardDynamicEventHandler(
-						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(const BindingValidationChangedEventArgs&)>(
-								&MainWindowEventSink::HandleNamespacedValidationChanged), this)), &error))
+							static_cast<void (MainWindowEventSink::*)(Control*,DragEventArgs&)>(
+								&MainWindowEventSink::HandleNamespacedDrop), this)), &error))
 					return false;
 				return true;
 			}, outError);
 			if (!registration) return false;
-			struct DynamicEventRegistration final
+			struct DeclarativeEventRegistration final
 			{
 				decltype(registration) Lease;
 				std::shared_ptr<void> Lifetime;
-				DynamicEventRegistration(
+				DeclarativeEventRegistration(
 					decltype(registration)&& lease,
 					std::shared_ptr<void> lifetime) noexcept
 					: Lease(std::move(lease)),
 					Lifetime(std::move(lifetime)) {}
 			};
-			auto owned = std::make_shared<DynamicEventRegistration>(
+			auto owned = std::make_shared<DeclarativeEventRegistration>(
 				std::move(registration), std::move(lifetime));
-			_dynamicEventRegistration = std::move(owned);
+			_declarativeEventRegistration = std::move(owned);
 			if (outError) outError->clear();
 			return true;
 		}
 		catch (...)
 		{
 			if (outError) *outError =
-				L"无法保存动态事件注册租约。";
+				L"无法保存声明事件注册租约。";
 			return false;
 		}
 	}
 
-	void UnregisterDynamicEventHandlers() noexcept
+	void UnregisterDeclarativeEventHandlers() noexcept
 	{
-		_dynamicEventRegistration.reset();
+		_declarativeEventRegistration.reset();
 	}
 
 private:
 	template<typename TCallback>
-	static auto GuardDynamicEventHandler(
+	static auto GuardDeclarativeEventHandler(
 		std::weak_ptr<void> lifetime, TCallback callback)
 	{
 		return [lifetime = std::move(lifetime),
@@ -115,27 +118,29 @@ private:
 		};
 	}
 
-	std::shared_ptr<void> _dynamicEventRegistration;
+	std::shared_ptr<void> _declarativeEventRegistration;
 
 protected:
-	virtual void HandleWindowShown(Form* sender) = 0;
-	virtual void HandleNamespacedDrop(Control* sender, std::vector<std::wstring> files) = 0;
-	virtual void HandleNamespacedClick(Control* sender, MouseEventArgs e) = 0;
-	virtual void HandleNamespacedPropertyChanged(Control* sender, const ControlPropertyChangedEventArgs& e) = 0;
-	virtual void HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e) = 0;
+	virtual void HandleWindowContentRendered(Window* sender) = 0;
+	virtual void HandleStaticRefreshCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) = 0;
+	virtual void HandleStaticRefreshExecuted(Control* sender, ExecutedRoutedEventArgs& e) = 0;
+	virtual void HandleNamespacedClick(Control* sender, RoutedEventArgs& e) = 0;
+	virtual void HandleNamespacedDrop(Control* sender, DragEventArgs& e) = 0;
 };
 
-class MainWindowGenerated : public Form, public MainWindowEventSink
+class MainWindowGenerated : public Window, public MainWindowEventSink
 {
 protected:
 	Button* namespaceButton = nullptr;
 	std::vector<EventConnection> _generatedEventConnections;
+	bool _componentInitialized = false;
+	void InitializeComponent();
 
-	void HandleWindowShown(Form* sender) override;
-	void HandleNamespacedDrop(Control* sender, std::vector<std::wstring> files) override;
-	void HandleNamespacedClick(Control* sender, MouseEventArgs e) override;
-	void HandleNamespacedPropertyChanged(Control* sender, const ControlPropertyChangedEventArgs& e) override;
-	void HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e) override;
+	void HandleWindowContentRendered(Window* sender) override;
+	void HandleStaticRefreshCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) override;
+	void HandleStaticRefreshExecuted(Control* sender, ExecutedRoutedEventArgs& e) override;
+	void HandleNamespacedClick(Control* sender, RoutedEventArgs& e) override;
+	void HandleNamespacedDrop(Control* sender, DragEventArgs& e) override;
 
 public:
 	// Stable identities shared by static and dynamic document paths.
@@ -144,12 +149,13 @@ public:
 		static constexpr int namespaceButton = 77;
 	};
 
-	// Type-safe x:Name accessors; ownership remains with the generated Form.
+	// Type-safe x:Name accessors; ownership remains with the generated Window.
 	[[nodiscard]] Button* GetNamespaceButton() noexcept { return namespaceButton; }
 	[[nodiscard]] const Button* GetNamespaceButton() const noexcept { return namespaceButton; }
 
 	MainWindowGenerated();
 	virtual ~MainWindowGenerated();
+	bool BindData(BindingSourceReference dataContext);
 };
 
 // Non-owning typed access for a dynamically loaded document.

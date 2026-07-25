@@ -168,7 +168,6 @@
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
-    <ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerCustomEditorCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerControlPropertyCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerPropertyRowCatalog.cpp" />

@@ -1,10 +1,10 @@
-﻿#include "DesignDocumentSerializer.h"
+#include "DesignDocumentSerializer.h"
 #include "AtomicFile.h"
 #include "XamlDocumentParser.h"
 #include "XamlDocumentSerializer.h"
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
-#include "DesignDocumentMaterializer.h"
+#include "../../CuiRuntime/include/XamlRuntimeSchema.h"
 #include "DesignDataResourceUtils.h"
 #include "StoryboardPropertyPath.h"
 #include "../../XmlLite/include/Xml.h"
@@ -16,11 +16,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cwchar>
+#include <cstring>
 #include <Convert.h>
 #include <type_traits>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -63,135 +66,53 @@ namespace
 
 	static std::string UIClassToString(UIClass t)
 	{
-		switch (t)
-		{
-		case UIClass::UI_Label: return "Label";
-		case UIClass::UI_LinkLabel: return "LinkLabel";
-		case UIClass::UI_Button: return "Button";
-		case UIClass::UI_TextBox: return "TextBox";
-		case UIClass::UI_RichTextBox: return "RichTextBox";
-		case UIClass::UI_PasswordBox: return "PasswordBox";
-		case UIClass::UI_DateTimePicker: return "DateTimePicker";
-		case UIClass::UI_NumericUpDown: return "NumericUpDown";
-		case UIClass::UI_Panel: return "Panel";
-		case UIClass::UI_GroupBox: return "GroupBox";
-		case UIClass::UI_Expander: return "Expander";
-		case UIClass::UI_ScrollView: return "ScrollView";
-		case UIClass::UI_StackPanel: return "StackPanel";
-		case UIClass::UI_GridPanel: return "GridPanel";
-		case UIClass::UI_DockPanel: return "DockPanel";
-		case UIClass::UI_WrapPanel: return "WrapPanel";
-		case UIClass::UI_RelativePanel: return "RelativePanel";
-		case UIClass::UI_SplitContainer: return "SplitContainer";
-		case UIClass::UI_CheckBox: return "CheckBox";
-		case UIClass::UI_RadioBox: return "RadioBox";
-		case UIClass::UI_ComboBox: return "ComboBox";
-		case UIClass::UI_ListView: return "ListView";
-		case UIClass::UI_ListBox: return "ListBox";
-		case UIClass::UI_GridView: return "GridView";
-		case UIClass::UI_PropertyGrid: return "PropertyGrid";
-		case UIClass::UI_ChartView: return "ChartView";
-		case UIClass::UI_ReportView: return "ReportView";
-		case UIClass::UI_KpiCard: return "KpiCard";
-		case UIClass::UI_FilterBar: return "FilterBar";
-		case UIClass::UI_TreeView: return "TreeView";
-		case UIClass::UI_ProgressBar: return "ProgressBar";
-		case UIClass::UI_LoadingRing: return "LoadingRing";
-		case UIClass::UI_ProgressRing: return "ProgressRing";
-		case UIClass::UI_Slider: return "Slider";
-		case UIClass::UI_PictureBox: return "PictureBox";
-		case UIClass::UI_Switch: return "Switch";
-		case UIClass::UI_TabControl: return "TabControl";
-		case UIClass::UI_ToolBar: return "ToolBar";
-		case UIClass::UI_Menu: return "Menu";
-		case UIClass::UI_StatusBar: return "StatusBar";
-		case UIClass::UI_ToastHost: return "ToastHost";
-		case UIClass::UI_WebBrowser: return "WebBrowser";
-		case UIClass::UI_MediaPlayer: return "MediaPlayer";
-		case UIClass::UI_NativeSurface: return "NativeSurface";
-		case UIClass::UI_ItemsControl: return "ItemsControl";
-		case UIClass::UI_SelectorItem: return "ListBoxItem";
-		case UIClass::UI_ComboBoxItem: return "ComboBoxItem";
-		case UIClass::UI_TreeViewItem: return "TreeViewItem";
-		case UIClass::UI_ContentPresenter: return "ContentPresenter";
-		case UIClass::UI_ItemsPresenter: return "ItemsPresenter";
-		case UIClass::UI_ContentControl: return "ContentControl";
-		case UIClass::UI_TabPage: return "TabPage";
-		default: return "Base";
-		}
+		if (t == UIClass::UI_Base) return "Any";
+		if (t == UIClass::UI_CUSTOM) return "CUSTOM";
+		const auto* descriptor =
+			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(t);
+		if (!descriptor)
+			throw std::invalid_argument(
+				"UIClass has no canonical built-in XAML type");
+		return ToUtf8(descriptor->TypeId.LocalName);
 	}
 
 	static bool TryParseUIClass(const std::string& s, UIClass& out)
 	{
-		if (s == "Base" || s == "Control") { out = UIClass::UI_Base; return true; }
-		if (s == "Label") { out = UIClass::UI_Label; return true; }
-		if (s == "LinkLabel") { out = UIClass::UI_LinkLabel; return true; }
-		if (s == "Button") { out = UIClass::UI_Button; return true; }
-		if (s == "TextBox") { out = UIClass::UI_TextBox; return true; }
-		if (s == "RichTextBox") { out = UIClass::UI_RichTextBox; return true; }
-		if (s == "PasswordBox") { out = UIClass::UI_PasswordBox; return true; }
-		if (s == "DateTimePicker") { out = UIClass::UI_DateTimePicker; return true; }
-		if (s == "NumericUpDown") { out = UIClass::UI_NumericUpDown; return true; }
-		if (s == "Panel") { out = UIClass::UI_Panel; return true; }
-		if (s == "GroupBox") { out = UIClass::UI_GroupBox; return true; }
-		if (s == "Expander") { out = UIClass::UI_Expander; return true; }
-		if (s == "ScrollView") { out = UIClass::UI_ScrollView; return true; }
-		if (s == "StackPanel") { out = UIClass::UI_StackPanel; return true; }
-		if (s == "GridPanel") { out = UIClass::UI_GridPanel; return true; }
-		if (s == "DockPanel") { out = UIClass::UI_DockPanel; return true; }
-		if (s == "WrapPanel") { out = UIClass::UI_WrapPanel; return true; }
-		if (s == "RelativePanel") { out = UIClass::UI_RelativePanel; return true; }
-		if (s == "SplitContainer") { out = UIClass::UI_SplitContainer; return true; }
-		if (s == "CheckBox") { out = UIClass::UI_CheckBox; return true; }
-		if (s == "RadioBox") { out = UIClass::UI_RadioBox; return true; }
-		if (s == "ComboBox") { out = UIClass::UI_ComboBox; return true; }
-		if (s == "ListView") { out = UIClass::UI_ListView; return true; }
-		if (s == "ListBox") { out = UIClass::UI_ListBox; return true; }
-		if (s == "GridView") { out = UIClass::UI_GridView; return true; }
-		if (s == "PropertyGrid") { out = UIClass::UI_PropertyGrid; return true; }
-		if (s == "ChartView") { out = UIClass::UI_ChartView; return true; }
-		if (s == "ReportView") { out = UIClass::UI_ReportView; return true; }
-		if (s == "KpiCard") { out = UIClass::UI_KpiCard; return true; }
-		if (s == "FilterBar") { out = UIClass::UI_FilterBar; return true; }
-		if (s == "TreeView") { out = UIClass::UI_TreeView; return true; }
-		if (s == "ProgressBar") { out = UIClass::UI_ProgressBar; return true; }
-		if (s == "LoadingRing") { out = UIClass::UI_LoadingRing; return true; }
-		if (s == "ProgressRing") { out = UIClass::UI_ProgressRing; return true; }
-		if (s == "Slider") { out = UIClass::UI_Slider; return true; }
-		if (s == "PictureBox") { out = UIClass::UI_PictureBox; return true; }
-		if (s == "Switch") { out = UIClass::UI_Switch; return true; }
-		if (s == "TabControl") { out = UIClass::UI_TabControl; return true; }
-		if (s == "ToolBar") { out = UIClass::UI_ToolBar; return true; }
-		if (s == "Menu") { out = UIClass::UI_Menu; return true; }
-		if (s == "StatusBar") { out = UIClass::UI_StatusBar; return true; }
-		if (s == "ToastHost") { out = UIClass::UI_ToastHost; return true; }
-		if (s == "WebBrowser") { out = UIClass::UI_WebBrowser; return true; }
-		if (s == "MediaPlayer") { out = UIClass::UI_MediaPlayer; return true; }
-		if (s == "NativeSurface") { out = UIClass::UI_NativeSurface; return true; }
-		if (s == "ItemsControl") { out = UIClass::UI_ItemsControl; return true; }
-		if (s == "ListBoxItem" || s == "SelectorItem")
-		{ out = UIClass::UI_SelectorItem; return true; }
-		if (s == "ComboBoxItem")
-		{ out = UIClass::UI_ComboBoxItem; return true; }
-		if (s == "TreeViewItem")
-		{ out = UIClass::UI_TreeViewItem; return true; }
-		if (s == "ContentPresenter") { out = UIClass::UI_ContentPresenter; return true; }
-		if (s == "ItemsPresenter") { out = UIClass::UI_ItemsPresenter; return true; }
-		if (s == "ContentControl") { out = UIClass::UI_ContentControl; return true; }
-		if (s == "TabPage") { out = UIClass::UI_TabPage; return true; }
-		return false;
+		if (s == "Any") { out = UIClass::UI_Base; return true; }
+		if (s == "CUSTOM") { out = UIClass::UI_CUSTOM; return true; }
+		const auto* descriptor = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+			CuiRuntime::XamlRuntimeSchema::CuiNamespace, FromUtf8(s));
+		if (!descriptor) return false;
+		out = descriptor->NativeType;
+		return true;
+	}
+
+	static bool TryParseConstructibleUIClass(
+		const std::string& value,
+		UIClass& out)
+	{
+		if (!TryParseUIClass(value, out)) return false;
+		// UI_Base is an internal wildcard for selectors and routed
+		// infrastructure, never an authorable visual node.
+		if (out == UIClass::UI_Base) return false;
+		if (out == UIClass::UI_CUSTOM) return true;
+		const auto* descriptor =
+			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(out);
+		return descriptor && descriptor->IsConstructible;
 	}
 
 	static bool IsComponentContentPresenterType(UIClass type) noexcept
 	{
 		switch (type)
 		{
-		case UIClass::UI_Panel:
+		case UIClass::UI_Canvas:
 		case UIClass::UI_StackPanel:
 		case UIClass::UI_WrapPanel:
 		case UIClass::UI_DockPanel:
-		case UIClass::UI_GridPanel:
+		case UIClass::UI_Grid:
 		case UIClass::UI_RelativePanel:
+		case UIClass::UI_Decorator:
+		case UIClass::UI_Border:
 			return true;
 		default:
 			return false;
@@ -226,7 +147,7 @@ namespace
 		const DesignNode& node)
 	{
 		DesignDocument snapshot;
-		snapshot.Form.Name = L"LocalObjectResourceScope";
+		snapshot.Window.Name = L"LocalObjectResourceScope";
 		snapshot.StyleSheet = VisibleStyleScope(document, nodes, node);
 		snapshot.DataContextSchema = document.DataContextSchema;
 		snapshot.DataTypes = document.DataTypes;
@@ -254,13 +175,13 @@ namespace
 			visible.ItemsPanelTemplates.erase(std::remove_if(
 				visible.ItemsPanelTemplates.begin(),
 				visible.ItemsPanelTemplates.end(), [&](const auto& current)
-				{ return _wcsicmp(current.Key.c_str(), local.Key.c_str()) == 0; }),
+				{ return std::wcscmp(current.Key.c_str(), local.Key.c_str()) == 0; }),
 				visible.ItemsPanelTemplates.end());
 		for (const auto& local : node.LocalObjectResources.GroupStyles)
 			visible.GroupStyles.erase(std::remove_if(
 				visible.GroupStyles.begin(), visible.GroupStyles.end(),
 				[&](const auto& current)
-				{ return _wcsicmp(current.Key.c_str(), local.Key.c_str()) == 0; }),
+				{ return std::wcscmp(current.Key.c_str(), local.Key.c_str()) == 0; }),
 				visible.GroupStyles.end());
 		for (auto& component : visible.Components)
 			SanitizeObjectContextNodes(component.Template);
@@ -409,7 +330,7 @@ namespace
 		if (!sheet.Rules.empty())
 		{
 			DesignDocument snapshot;
-			snapshot.Form.Name = L"TemplateLocalStyleScope";
+			snapshot.Window.Name = L"TemplateLocalStyleScope";
 			snapshot.StyleSheet = VisibleStyleScope(document, nodes, node);
 			snapshot.Components = SnapshotComponents(document);
 			value["rulesSnapshot"] = {
@@ -508,9 +429,13 @@ namespace
 			{ "id", node.Id }, { "parentId", node.ParentId },
 			{ "parent", ToUtf8(node.ParentRef) }, { "name", ToUtf8(node.Name) },
 			{ "type", UIClassToString(node.Type) }, { "order", node.Order },
-			{ "locked", node.Locked }, { "props", node.Props },
-			{ "extra", node.Extra }, { "events", node.Events },
-			{ "bindings", node.Bindings }
+			{ "locked", node.Locked },
+			{ "properties", EncodeDesignNodeProperties(node.Properties) },
+			{ "structure", EncodeDesignNodeStructure(node.Type, node.Structure) },
+			{ "events", EncodeDesignNodeEvents(node.Events) },
+			{ "bindings", EncodeDesignNodeBindings(node.Bindings) },
+			{ "commandBindings", EncodeDesignCommandBindings(node.CommandBindings) },
+			{ "inputBindings", EncodeDesignInputBindings(node.InputBindings) }
 		};
 		if (!node.ComponentType.Empty())
 		{
@@ -518,6 +443,11 @@ namespace
 			value["componentName"] = ToUtf8(node.ComponentType.XamlName);
 			value["componentNamespace"] = ToUtf8(
 				node.ComponentType.XamlNamespace);
+		}
+		if (node.XamlType.Valid())
+		{
+			value["xamlNamespace"] = ToUtf8(node.XamlType.NamespaceUri);
+			value["xamlName"] = ToUtf8(node.XamlType.LocalName);
 		}
 		if (!node.ComponentContentProperty.empty())
 			value["componentContentProperty"] = ToUtf8(
@@ -557,40 +487,123 @@ namespace
 			if (outError) *outError = L"Component template node is malformed.";
 			return false;
 		}
+		const std::initializer_list<std::string_view> allowedMembers{
+			"id", "parentId", "parent", "name", "type", "order", "locked",
+			"properties", "structure", "events", "bindings",
+			"commandBindings", "inputBindings",
+			"componentPrefix", "componentName", "componentNamespace",
+			"xamlNamespace", "xamlName", "componentContentProperty",
+			"presentedComponentContent", "templateBindings", "templateEvents",
+			"localResources", "localObjectResources"
+		};
+		for (const auto& [name, member] : value.ObjectItems())
+		{
+			(void)member;
+			if (std::find(
+				allowedMembers.begin(), allowedMembers.end(),
+				std::string_view(name)) != allowedMembers.end()) continue;
+			if (outError)
+				*outError = L"Current template node contains unsupported member: "
+					+ FromUtf8(name) + L".";
+			return false;
+		}
 		node.Id = value["id"].get<int>();
 		node.ParentId = value.value("parentId", 0);
 		node.ParentRef = FromUtf8(value.value("parent", std::string{}));
 		node.Name = FromUtf8(value["name"].get<std::string>());
 		if (node.Id < 1 || node.Name.empty()
-			|| !TryParseUIClass(value["type"].get<std::string>(), node.Type)
-			|| node.Type == UIClass::UI_TabPage)
+			|| !TryParseConstructibleUIClass(
+				value["type"].get<std::string>(), node.Type))
 		{
 			if (outError) *outError = L"Component template node identity is invalid.";
 			return false;
 		}
 		node.Order = value.value("order", -1);
 		node.Locked = value.value("locked", false);
-		auto readObjectMember = [&](const char* name, DesignValue& target)
+		if (value.contains("xamlNamespace") || value.contains("xamlName"))
 		{
-			if (!value.contains(name))
+			node.XamlType.NamespaceUri = FromUtf8(
+				value.value("xamlNamespace", std::string{}));
+			node.XamlType.LocalName = FromUtf8(
+				value.value("xamlName", std::string{}));
+			if (!node.XamlType.Valid())
 			{
-				target = DesignValue::object();
-				return true;
-			}
-			const auto& member = value[name];
-			if (!member.is_object())
-			{
-				if (outError) *outError = L"Component template node contains a malformed object member.";
+				if (outError) *outError = L"Template node has an invalid XAML type identity.";
 				return false;
 			}
-			target = member;
-			return true;
-		};
-		if (!readObjectMember("props", node.Props)
-			|| !readObjectMember("extra", node.Extra)
-			|| !readObjectMember("events", node.Events)
-			|| !readObjectMember("bindings", node.Bindings))
+		}
+		DesignValue encodedProperties = DesignValue::object();
+		if (value.contains("properties"))
+		{
+			if (!value["properties"].is_object())
+			{
+				if (outError) *outError = L"Template node properties are malformed.";
+				return false;
+			}
+			encodedProperties = value["properties"];
+		}
+		if (!DecodeDesignNodeProperties(
+			encodedProperties, node.Properties, outError)) return false;
+		DesignValue encodedEvents = DesignValue::object();
+		if (value.contains("events"))
+		{
+			if (!value["events"].is_object())
+			{
+				if (outError) *outError = L"Template node events are malformed.";
+				return false;
+			}
+			encodedEvents = value["events"];
+		}
+		if (!DecodeDesignNodeEvents(encodedEvents, node.Events, outError))
 			return false;
+		DesignValue encodedBindings = DesignValue::object();
+		if (value.contains("bindings"))
+		{
+			if (!value["bindings"].is_object())
+			{
+				if (outError) *outError = L"Template node bindings are malformed.";
+				return false;
+			}
+			encodedBindings = value["bindings"];
+		}
+		if (!DecodeDesignNodeBindings(encodedBindings, node.Bindings, outError))
+			return false;
+		DesignValue encodedCommandBindings = DesignValue::array();
+		if (value.contains("commandBindings"))
+		{
+			if (!value["commandBindings"].is_array())
+			{
+				if (outError) *outError = L"Template node command bindings are malformed.";
+				return false;
+			}
+			encodedCommandBindings = value["commandBindings"];
+		}
+		if (!DecodeDesignCommandBindings(
+			encodedCommandBindings, node.CommandBindings, outError)) return false;
+		DesignValue encodedInputBindings = DesignValue::array();
+		if (value.contains("inputBindings"))
+		{
+			if (!value["inputBindings"].is_array())
+			{
+				if (outError) *outError = L"Template node input bindings are malformed.";
+				return false;
+			}
+			encodedInputBindings = value["inputBindings"];
+		}
+		if (!DecodeDesignInputBindings(
+			encodedInputBindings, node.InputBindings, outError)) return false;
+		DesignValue encodedStructure = DesignValue::object();
+		if (value.contains("structure"))
+		{
+			if (!value["structure"].is_object())
+			{
+				if (outError) *outError = L"Template node structure is malformed.";
+				return false;
+			}
+			encodedStructure = value["structure"];
+		}
+		if (!DecodeDesignNodeStructure(
+			node.Type, encodedStructure, node.Structure, outError)) return false;
 		if (value.contains("localResources")
 			&& !LocalResourcesFromValue(
 				value["localResources"], node.LocalResources,
@@ -673,6 +686,58 @@ namespace
 			}
 		}
 		return elements;
+	}
+
+	static bool ValidateElementShape(
+		const std::shared_ptr<XmlElement>& element,
+		std::initializer_list<std::string_view> allowedAttributes,
+		std::initializer_list<std::string_view> allowedChildren,
+		std::wstring_view context,
+		std::wstring* outError,
+		bool allowRepeatedChildren = false)
+	{
+		if (!element) return false;
+		for (const auto& attribute : element->Attributes())
+		{
+			if (!attribute) continue;
+			const auto name = std::string_view(attribute->Name());
+			if (std::find(allowedAttributes.begin(), allowedAttributes.end(), name)
+				!= allowedAttributes.end()) continue;
+			if (outError)
+			{
+				*outError = std::wstring(context)
+					+ L" contains unsupported attribute: "
+					+ FromUtf8(attribute->Name()) + L".";
+			}
+			return false;
+		}
+		std::unordered_set<std::string> childNames;
+		for (const auto& child : element->ChildNodes())
+		{
+			if (!child || child->NodeType() != XmlNodeType::Element) continue;
+			const auto name = std::string_view(child->Name());
+			if (std::find(allowedChildren.begin(), allowedChildren.end(), name)
+				== allowedChildren.end())
+			{
+				if (outError)
+				{
+					*outError = std::wstring(context)
+						+ L" contains unsupported child element: "
+						+ FromUtf8(child->Name()) + L".";
+				}
+				return false;
+			}
+			if (allowRepeatedChildren
+				|| childNames.insert(child->Name()).second) continue;
+			if (outError)
+			{
+				*outError = std::wstring(context)
+					+ L" contains duplicate child element: "
+					+ FromUtf8(child->Name()) + L".";
+			}
+			return false;
+		}
+		return true;
 	}
 
 	static std::string BoolToString(bool value)
@@ -1187,23 +1252,23 @@ namespace
 			return false;
 		};
 		const auto type = element->GetAttribute("type");
-		if (_stricmp(type.c_str(), "Double") == 0)
+		if (std::strcmp(type.c_str(), "Double") == 0)
 			animation.Kind = DesignerAnimationKind::Double;
-		else if (_stricmp(type.c_str(), "Color") == 0)
+		else if (std::strcmp(type.c_str(), "Color") == 0)
 			animation.Kind = DesignerAnimationKind::Color;
-		else if (_stricmp(type.c_str(), "Object") == 0)
+		else if (std::strcmp(type.c_str(), "Object") == 0)
 			animation.Kind = DesignerAnimationKind::Object;
-		else if (_stricmp(type.c_str(), "Thickness") == 0)
+		else if (std::strcmp(type.c_str(), "Thickness") == 0)
 			animation.Kind = DesignerAnimationKind::Thickness;
-		else if (_stricmp(type.c_str(), "Point") == 0)
+		else if (std::strcmp(type.c_str(), "Point") == 0)
 			animation.Kind = DesignerAnimationKind::Point;
-		else if (_stricmp(type.c_str(), "Vector") == 0)
+		else if (std::strcmp(type.c_str(), "Vector") == 0)
 			animation.Kind = DesignerAnimationKind::Vector;
-		else if (_stricmp(type.c_str(), "Rect") == 0)
+		else if (std::strcmp(type.c_str(), "Rect") == 0)
 			animation.Kind = DesignerAnimationKind::Rect;
-		else if (_stricmp(type.c_str(), "Size") == 0)
+		else if (std::strcmp(type.c_str(), "Size") == 0)
 			animation.Kind = DesignerAnimationKind::Size;
-		else if (_stricmp(type.c_str(), "Matrix") == 0)
+		else if (std::strcmp(type.c_str(), "Matrix") == 0)
 			animation.Kind = DesignerAnimationKind::Matrix;
 		else return fail(L"Component visual-state animation type is invalid.");
 		animation.TargetName = FromUtf8(element->GetAttribute("target"));
@@ -1216,7 +1281,7 @@ namespace
 			return fail(L"Component visual-state animation timing or property is invalid.");
 		const auto repeatBehavior = element->GetAttribute("repeatBehavior");
 		if (repeatBehavior.empty()
-			|| _stricmp(repeatBehavior.c_str(), "Count") == 0)
+			|| std::strcmp(repeatBehavior.c_str(), "Count") == 0)
 		{
 			animation.RepeatBehavior = DesignerRepeatBehaviorKind::Count;
 			if (!repeatBehavior.empty()
@@ -1226,7 +1291,7 @@ namespace
 					|| animation.RepeatCount <= 0.0))
 				return fail(L"Component animation repeat count is invalid.");
 		}
-		else if (_stricmp(repeatBehavior.c_str(), "Duration") == 0)
+		else if (std::strcmp(repeatBehavior.c_str(), "Duration") == 0)
 		{
 			animation.RepeatBehavior = DesignerRepeatBehaviorKind::Duration;
 			if (!TryParseIntegral(element->GetAttribute("repeatDurationMs"),
@@ -1234,7 +1299,7 @@ namespace
 				|| animation.RepeatDurationMilliseconds == 0)
 				return fail(L"Component animation repeat duration is invalid.");
 		}
-		else if (_stricmp(repeatBehavior.c_str(), "Forever") == 0)
+		else if (std::strcmp(repeatBehavior.c_str(), "Forever") == 0)
 			animation.RepeatBehavior = DesignerRepeatBehaviorKind::Forever;
 		else return fail(L"Component animation repeat behavior is invalid.");
 		if (element->HasAttribute("autoReverse")
@@ -1251,9 +1316,9 @@ namespace
 			return fail(L"Component animation IsCumulative is invalid.");
 		const auto fillBehavior = element->GetAttribute("fillBehavior");
 		if (fillBehavior.empty()
-			|| _stricmp(fillBehavior.c_str(), "HoldEnd") == 0)
+			|| std::strcmp(fillBehavior.c_str(), "HoldEnd") == 0)
 			animation.FillBehavior = DesignerTimelineFillBehavior::HoldEnd;
-		else if (_stricmp(fillBehavior.c_str(), "Stop") == 0)
+		else if (std::strcmp(fillBehavior.c_str(), "Stop") == 0)
 			animation.FillBehavior = DesignerTimelineFillBehavior::Stop;
 		else return fail(L"Component animation FillBehavior is invalid.");
 		if (element->HasAttribute("speedRatio")
@@ -1405,34 +1470,34 @@ namespace
 				element->GetAttribute("byFallback"));
 		}
 		const auto easing = element->GetAttribute("easing");
-		if (_stricmp(easing.c_str(), "Linear") == 0)
+		if (std::strcmp(easing.c_str(), "Linear") == 0)
 			animation.Easing = DesignerEasingKind::Linear;
-		else if (_stricmp(easing.c_str(), "Quadratic") == 0)
+		else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
 			animation.Easing = DesignerEasingKind::Quadratic;
-		else if (_stricmp(easing.c_str(), "Cubic") == 0)
+		else if (std::strcmp(easing.c_str(), "Cubic") == 0)
 			animation.Easing = DesignerEasingKind::Cubic;
-		else if (_stricmp(easing.c_str(), "Sine") == 0)
+		else if (std::strcmp(easing.c_str(), "Sine") == 0)
 			animation.Easing = DesignerEasingKind::Sine;
 		else return fail(L"Component visual-state animation easing is invalid.");
 		const auto easingMode = element->GetAttribute("easingMode");
-		if (_stricmp(easingMode.c_str(), "EaseIn") == 0)
+		if (std::strcmp(easingMode.c_str(), "EaseIn") == 0)
 			animation.EasingMode = DesignerEasingMode::EaseIn;
-		else if (_stricmp(easingMode.c_str(), "EaseOut") == 0)
+		else if (std::strcmp(easingMode.c_str(), "EaseOut") == 0)
 			animation.EasingMode = DesignerEasingMode::EaseOut;
-		else if (_stricmp(easingMode.c_str(), "EaseInOut") == 0)
+		else if (std::strcmp(easingMode.c_str(), "EaseInOut") == 0)
 			animation.EasingMode = DesignerEasingMode::EaseInOut;
 		else return fail(L"Component visual-state animation easing mode is invalid.");
 		for (const auto& frameElement : keyFrameElements)
 		{
 			DesignerAnimationKeyFrame frame;
 			const auto kind = frameElement->GetAttribute("kind");
-			if (_stricmp(kind.c_str(), "Discrete") == 0)
+			if (std::strcmp(kind.c_str(), "Discrete") == 0)
 				frame.Kind = DesignerKeyFrameKind::Discrete;
-			else if (_stricmp(kind.c_str(), "Linear") == 0)
+			else if (std::strcmp(kind.c_str(), "Linear") == 0)
 				frame.Kind = DesignerKeyFrameKind::Linear;
-			else if (_stricmp(kind.c_str(), "Easing") == 0)
+			else if (std::strcmp(kind.c_str(), "Easing") == 0)
 				frame.Kind = DesignerKeyFrameKind::Easing;
-			else if (_stricmp(kind.c_str(), "Spline") == 0)
+			else if (std::strcmp(kind.c_str(), "Spline") == 0)
 				frame.Kind = DesignerKeyFrameKind::Spline;
 			else return fail(L"Component animation key-frame kind is invalid.");
 			if (!TryParseIntegral(frameElement->GetAttribute("keyTimeMs"),
@@ -1479,21 +1544,21 @@ namespace
 			if (frame.Kind == DesignerKeyFrameKind::Easing)
 			{
 				const auto frameEasing = frameElement->GetAttribute("easing");
-				if (_stricmp(frameEasing.c_str(), "Linear") == 0)
+				if (std::strcmp(frameEasing.c_str(), "Linear") == 0)
 					frame.Easing = DesignerEasingKind::Linear;
-				else if (_stricmp(frameEasing.c_str(), "Quadratic") == 0)
+				else if (std::strcmp(frameEasing.c_str(), "Quadratic") == 0)
 					frame.Easing = DesignerEasingKind::Quadratic;
-				else if (_stricmp(frameEasing.c_str(), "Cubic") == 0)
+				else if (std::strcmp(frameEasing.c_str(), "Cubic") == 0)
 					frame.Easing = DesignerEasingKind::Cubic;
-				else if (_stricmp(frameEasing.c_str(), "Sine") == 0)
+				else if (std::strcmp(frameEasing.c_str(), "Sine") == 0)
 					frame.Easing = DesignerEasingKind::Sine;
 				else return fail(L"Component animation key-frame easing is invalid.");
 				const auto frameMode = frameElement->GetAttribute("easingMode");
-				if (_stricmp(frameMode.c_str(), "EaseIn") == 0)
+				if (std::strcmp(frameMode.c_str(), "EaseIn") == 0)
 					frame.EasingMode = DesignerEasingMode::EaseIn;
-				else if (_stricmp(frameMode.c_str(), "EaseOut") == 0)
+				else if (std::strcmp(frameMode.c_str(), "EaseOut") == 0)
 					frame.EasingMode = DesignerEasingMode::EaseOut;
-				else if (_stricmp(frameMode.c_str(), "EaseInOut") == 0)
+				else if (std::strcmp(frameMode.c_str(), "EaseInOut") == 0)
 					frame.EasingMode = DesignerEasingMode::EaseInOut;
 				else return fail(L"Component animation key-frame easing mode is invalid.");
 			}
@@ -1567,7 +1632,7 @@ namespace
 			if (!child || child->NodeType() != XmlNodeType::Element) continue;
 			const auto element = std::static_pointer_cast<XmlElement>(child);
 			DesignerEventTriggerAction action;
-			if (_stricmp(element->Name().c_str(), "beginStoryboard") == 0)
+			if (std::strcmp(element->Name().c_str(), "beginStoryboard") == 0)
 			{
 				action.Kind = DesignerStoryboardActionKind::Begin;
 				action.StoryboardName = FromUtf8(element->GetAttribute("name"));
@@ -1588,11 +1653,11 @@ namespace
 			}
 			else
 			{
-				if (_stricmp(element->Name().c_str(), "pauseStoryboard") == 0)
+				if (std::strcmp(element->Name().c_str(), "pauseStoryboard") == 0)
 					action.Kind = DesignerStoryboardActionKind::Pause;
-				else if (_stricmp(element->Name().c_str(), "resumeStoryboard") == 0)
+				else if (std::strcmp(element->Name().c_str(), "resumeStoryboard") == 0)
 					action.Kind = DesignerStoryboardActionKind::Resume;
-				else if (_stricmp(element->Name().c_str(), "stopStoryboard") == 0)
+				else if (std::strcmp(element->Name().c_str(), "stopStoryboard") == 0)
 					action.Kind = DesignerStoryboardActionKind::Stop;
 				else
 				{
@@ -1713,23 +1778,7 @@ static void AppendStyleScope(
 	DesignerStyleSheet& target,
 	const DesignerStyleSheet& source)
 {
-	for (const auto& dictionary : source.MergedDictionaries)
-		if (std::none_of(target.MergedDictionaries.begin(),
-			target.MergedDictionaries.end(), [&](const auto& current)
-			{ return _wcsicmp(current.c_str(), dictionary.c_str()) == 0; }))
-			target.MergedDictionaries.push_back(dictionary);
-	for (const auto& resource : source.Resources)
-	{
-		target.Resources.erase(std::remove_if(
-			target.Resources.begin(), target.Resources.end(),
-			[&](const auto& current)
-			{
-				return _wcsicmp(current.Key.c_str(), resource.Key.c_str()) == 0;
-			}), target.Resources.end());
-		target.Resources.push_back(resource);
-	}
-	target.Rules.insert(
-		target.Rules.end(), source.Rules.begin(), source.Rules.end());
+	DesignerStyleSheetUtils::AppendLexicalScope(target, source);
 }
 
 static DesignerStyleSheet VisibleStyleScope(
@@ -1739,8 +1788,14 @@ static DesignerStyleSheet VisibleStyleScope(
 {
 	DesignerStyleSheet result = document.StyleSheet;
 	std::unordered_map<int, const DesignNode*> byId;
+	std::unordered_map<std::wstring, const DesignNode*> byName;
 	byId.reserve(nodes.size());
-	for (const auto& node : nodes) byId.emplace(node.Id, &node);
+	byName.reserve(nodes.size());
+	for (const auto& node : nodes)
+	{
+		byId.emplace(node.Id, &node);
+		byName.emplace(node.Name, &node);
+	}
 	std::vector<const DesignNode*> route;
 	std::unordered_set<int> visited;
 	for (const DesignNode* current = &origin;
@@ -1754,13 +1809,8 @@ static DesignerStyleSheet VisibleStyleScope(
 			continue;
 		}
 		if (current->ParentRef.empty()) break;
-		const auto page = current->ParentRef.find(L"#page");
-		if (page == std::wstring::npos) break;
-		const auto ownerName = current->ParentRef.substr(0, page);
-		const auto owner = std::find_if(
-			nodes.begin(), nodes.end(), [&](const auto& node)
-			{ return _wcsicmp(node.Name.c_str(), ownerName.c_str()) == 0; });
-		current = owner == nodes.end() ? nullptr : &*owner;
+		const auto owner = byName.find(current->ParentRef);
+		current = owner == byName.end() ? nullptr : owner->second;
 	}
 	for (auto current = route.rbegin(); current != route.rend(); ++current)
 		AppendStyleScope(result, (*current)->LocalResources);
@@ -1812,7 +1862,7 @@ static void WriteLocalResourcesSnapshot(
 	if (!sheet.Rules.empty())
 	{
 		DesignDocument snapshot;
-		snapshot.Form.Name = L"LocalStyleScope";
+		snapshot.Window.Name = L"LocalStyleScope";
 		snapshot.StyleSheet = VisibleStyleScope(document, node);
 		snapshot.Components = SnapshotComponents(document);
 		auto rules = AppendElement(xml, element, "rulesSnapshot");
@@ -1995,6 +2045,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 	DesignDocumentEventIndex eventIndex;
 	if (!DesignDocumentEventIndex::Build(document, eventIndex, &graphError))
 		throw std::invalid_argument(ToUtf8(graphError));
+	if (!document.ValidateCommandTargetReferences(&graphError))
+		throw std::invalid_argument(ToUtf8(graphError));
 	for (const auto& resolved : graph.Nodes())
 	{
 		const auto& node = document.Nodes[resolved.SourceIndex];
@@ -2005,45 +2057,23 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 	root->SetAttribute("nextId", std::to_string(document.NextStableId));
 	xml.AppendChild(root);
 
-	auto form = AppendElement(xml, root, "form");
-	form->SetAttribute("name", ToUtf8(document.Form.Name));
-	form->SetAttribute("text", ToUtf8(document.Form.Text));
-	form->SetAttribute("fontName", ToUtf8(document.Form.FontName));
-	form->SetAttribute("fontSize", std::to_string(document.Form.FontSize));
-	form->SetAttribute("showInTaskBar", BoolToString(document.Form.ShowInTaskBar));
-	form->SetAttribute("topMost", BoolToString(document.Form.TopMost));
-	form->SetAttribute("enable", BoolToString(document.Form.Enable));
-	form->SetAttribute("visible", BoolToString(document.Form.Visible));
-	form->SetAttribute("visibleHead", BoolToString(document.Form.VisibleHead));
-	form->SetAttribute("headHeight", std::to_string(document.Form.HeadHeight));
-	form->SetAttribute("minBox", BoolToString(document.Form.MinBox));
-	form->SetAttribute("maxBox", BoolToString(document.Form.MaxBox));
-	form->SetAttribute("closeBox", BoolToString(document.Form.CloseBox));
-	form->SetAttribute("centerTitle", BoolToString(document.Form.CenterTitle));
-	form->SetAttribute("allowResize", BoolToString(document.Form.AllowResize));
-
-	auto size = AppendElement(xml, form, "size");
-	size->SetAttribute("width", std::to_string(document.Form.Size.cx));
-	size->SetAttribute("height", std::to_string(document.Form.Size.cy));
-
-	auto location = AppendElement(xml, form, "location");
-	location->SetAttribute("x", std::to_string(document.Form.Location.x));
-	location->SetAttribute("y", std::to_string(document.Form.Location.y));
-
-	SetColorAttributes(AppendElement(xml, form, "backColor"), document.Form.BackColor);
-	SetColorAttributes(AppendElement(xml, form, "foreColor"), document.Form.ForeColor);
-
-	if (!document.Form.EventHandlers.empty())
-	{
-		auto events = AppendElement(xml, form, "events");
-		for (const auto& kv : document.Form.EventHandlers)
-		{
-			if (kv.first.empty() || kv.second.empty()) continue;
-			auto event = AppendElement(xml, events, "event");
-			event->SetAttribute("name", ToUtf8(kv.first));
-			event->SetAttribute("handler", ToUtf8(kv.second));
-		}
-	}
+	auto window = AppendElement(xml, root, "window");
+	window->SetAttribute("name", ToUtf8(document.Window.Name));
+	window->SetAttribute("type", UIClassToString(document.Window.Type));
+	window->SetAttribute("xamlNamespace",
+		ToUtf8(document.Window.XamlType.NamespaceUri));
+	window->SetAttribute("xamlName",
+		ToUtf8(document.Window.XamlType.LocalName));
+	WriteValue(xml, AppendElement(xml, window, "properties"),
+		EncodeDesignNodeProperties(document.Window.Properties));
+	WriteValue(xml, AppendElement(xml, window, "events"),
+		EncodeDesignNodeEvents(document.Window.Events));
+	WriteValue(xml, AppendElement(xml, window, "bindings"),
+		EncodeDesignNodeBindings(document.Window.Bindings));
+	WriteValue(xml, AppendElement(xml, window, "commandBindings"),
+		EncodeDesignCommandBindings(document.Window.CommandBindings));
+	WriteValue(xml, AppendElement(xml, window, "inputBindings"),
+		EncodeDesignInputBindings(document.Window.InputBindings));
 
 	if (!document.CodeBehind.Empty())
 	{
@@ -2199,7 +2229,6 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 			item->SetAttribute("orientation",
 				definition.Value.Orientation == Orientation::Horizontal
 					? "horizontal" : "vertical");
-			item->SetAttribute("spacing", FloatText(definition.Value.Spacing));
 			item->SetAttribute("itemWidth", FloatText(definition.Value.ItemWidth));
 			item->SetAttribute("itemHeight", FloatText(definition.Value.ItemHeight));
 			item->SetAttribute("cacheLength", FloatText(definition.Value.CacheLength));
@@ -2239,8 +2268,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 	if (!document.ControlTemplates.empty())
 	{
 		DesignDocument snapshot = document;
-		snapshot.Form.Name = L"ControlTemplateResourceScope";
-		snapshot.Form.EventHandlers.clear();
+		snapshot.Window.Name = L"ControlTemplateResourceScope";
+		snapshot.Window.Events.clear();
 		snapshot.CodeBehind = {};
 		snapshot.Nodes.clear();
 		snapshot.RecalculateNextStableId();
@@ -2257,9 +2286,6 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 			auto item = AppendElement(xml, styles, "groupStyle");
 			item->SetAttribute("key", ToUtf8(definition.Key));
 			item->SetAttribute("headerTemplate", ToUtf8(definition.HeaderTemplate));
-			item->SetAttribute("headerIndent", FloatText(definition.HeaderIndent));
-			item->SetAttribute("headerSpacing", FloatText(definition.HeaderSpacing));
-			item->SetAttribute("headerHeight", FloatText(definition.HeaderHeight));
 			if (!definition.SourceDictionary.empty())
 				item->SetAttribute("sourceDictionary",
 					ToUtf8(definition.SourceDictionary));
@@ -2309,6 +2335,13 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 				if (rule.HasType)
 					item->SetAttribute("type", ToUtf8(
 						DesignerStyleSheetUtils::UIClassName(rule.Type)));
+				if (rule.XamlType.Valid())
+				{
+					item->SetAttribute("xamlNamespace", ToUtf8(
+						rule.XamlType.NamespaceUri));
+					item->SetAttribute("xamlName", ToUtf8(
+						rule.XamlType.LocalName));
+				}
 				if (!rule.ComponentType.Empty())
 				{
 					item->SetAttribute("componentPrefix", ToUtf8(
@@ -2324,17 +2357,6 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 				if (!rule.SourceDictionary.empty())
 					item->SetAttribute("sourceDictionary", ToUtf8(
 						rule.SourceDictionary));
-				if (rule.RequiredStates != ControlStyleState::None)
-					item->SetAttribute("requiredStates", ToUtf8(
-						DesignerStyleSheetUtils::FormatStates(rule.RequiredStates)));
-				if (rule.ExcludedStates != ControlStyleState::None)
-					item->SetAttribute("excludedStates", ToUtf8(
-						DesignerStyleSheetUtils::FormatStates(rule.ExcludedStates)));
-				for (const auto& styleClass : rule.Classes)
-				{
-					auto classElement = AppendElement(xml, item, "class");
-					classElement->SetAttribute("name", ToUtf8(styleClass));
-				}
 				for (const auto& setter : rule.Setters)
 				{
 					auto setterElement = AppendElement(xml, item, "setter");
@@ -2356,46 +2378,6 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 								setter.Literal.ObjectValue);
 					}
 				}
-				if (!rule.PropertyConditions.empty())
-				{
-					auto conditionsElement = AppendElement(
-						xml, item, "propertyConditions");
-					for (const auto& condition : rule.PropertyConditions)
-					{
-						auto conditionElement = AppendElement(
-							xml, conditionsElement, "condition");
-						conditionElement->SetAttribute(
-							"property", ToUtf8(condition.Property));
-						conditionElement->SetAttribute("kind", ToUtf8(
-							DesignerStyleSheetUtils::ValueKindName(
-								condition.Value.Kind)));
-						conditionElement->SetInnerText(ToUtf8(condition.Value.Text));
-					}
-				}
-				if (!rule.DataConditions.empty())
-				{
-					auto conditionsElement = AppendElement(
-						xml, item, "dataConditions");
-					for (const auto& condition : rule.DataConditions)
-					{
-						auto conditionElement = AppendElement(
-							xml, conditionsElement, "condition");
-						conditionElement->SetAttribute(
-							"source", ToUtf8(condition.SourceProperty));
-						conditionElement->SetAttribute("kind", ToUtf8(
-							DesignerStyleSheetUtils::ValueKindName(condition.Value.Kind)));
-						if (condition.Value.ObjectValue.is_null())
-							conditionElement->SetInnerText(ToUtf8(condition.Value.Text));
-						else
-							WriteValue(xml, AppendElement(
-								xml, conditionElement, "objectValue"),
-								condition.Value.ObjectValue);
-					}
-				}
-				WriteStoryboardActionsSnapshot(
-					xml, item, "enterActions", rule.EnterActions);
-				WriteStoryboardActionsSnapshot(
-					xml, item, "exitActions", rule.ExitActions);
 				if (!rule.Triggers.empty())
 				{
 					auto triggersElement = AppendElement(xml, item, "triggers");
@@ -2423,28 +2405,6 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 									WriteValue(xml, AppendElement(xml,
 										conditionElement, "objectValue"),
 										condition.Value.ObjectValue);
-							}
-						}
-						else if (trigger.Conditions.size() == 1
-							&& trigger.PropertyConditions.empty())
-						{
-							triggerElement->SetAttribute("property", ToUtf8(
-								trigger.Conditions.front().Property));
-							triggerElement->SetAttribute("value", BoolToString(
-								trigger.Conditions.front().Value));
-						}
-						else if (!trigger.Conditions.empty())
-						{
-							auto conditionsElement = AppendElement(
-								xml, triggerElement, "conditions");
-							for (const auto& condition : trigger.Conditions)
-							{
-								auto conditionElement = AppendElement(
-									xml, conditionsElement, "condition");
-								conditionElement->SetAttribute(
-									"property", ToUtf8(condition.Property));
-								conditionElement->SetAttribute(
-									"value", BoolToString(condition.Value));
 							}
 						}
 						if (!trigger.PropertyConditions.empty())
@@ -2543,8 +2503,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 					static_cast<unsigned int>(property.Flags)));
 				item->SetAttribute("defaultUpdateMode", std::to_string(
 					static_cast<int>(property.DefaultUpdateMode)));
-				if (property.IsReadOnly)
-					item->SetAttribute("readOnly", "1");
+				item->SetAttribute("readOnly",
+					property.IsReadOnly ? "1" : "0");
 				if (property.Minimum)
 					item->SetAttribute("minimum", std::to_string(*property.Minimum));
 				if (property.Maximum)
@@ -2883,6 +2843,12 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 		control->SetAttribute("id", std::to_string(node.Id));
 		control->SetAttribute("name", ToUtf8(node.Name));
 		control->SetAttribute("type", UIClassToString(node.Type));
+		if (node.XamlType.Valid())
+		{
+			control->SetAttribute("xamlNamespace",
+				ToUtf8(node.XamlType.NamespaceUri));
+			control->SetAttribute("xamlName", ToUtf8(node.XamlType.LocalName));
+		}
 		if (!node.ComponentType.Empty())
 		{
 			control->SetAttribute("componentPrefix",
@@ -2909,19 +2875,18 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 			control->SetAttribute("parent", ToUtf8(node.ParentRef));
 		}
 
-		WriteValue(xml, AppendElement(xml, control, "props"), node.Props.is_object() ? node.Props : DesignValue::object());
-		if (!node.Extra.is_null())
-		{
-			WriteValue(xml, AppendElement(xml, control, "extra"), node.Extra);
-		}
-		if (!node.Events.is_null())
-		{
-			WriteValue(xml, AppendElement(xml, control, "events"), node.Events);
-		}
-		if (!node.Bindings.is_null())
-		{
-			WriteValue(xml, AppendElement(xml, control, "bindings"), node.Bindings);
-		}
+		WriteValue(xml, AppendElement(xml, control, "properties"),
+			EncodeDesignNodeProperties(node.Properties));
+		WriteValue(xml, AppendElement(xml, control, "structure"),
+			EncodeDesignNodeStructure(node.Type, node.Structure));
+		WriteValue(xml, AppendElement(xml, control, "events"),
+			EncodeDesignNodeEvents(node.Events));
+		WriteValue(xml, AppendElement(xml, control, "bindings"),
+			EncodeDesignNodeBindings(node.Bindings));
+		WriteValue(xml, AppendElement(xml, control, "commandBindings"),
+			EncodeDesignCommandBindings(node.CommandBindings));
+		WriteValue(xml, AppendElement(xml, control, "inputBindings"),
+			EncodeDesignInputBindings(node.InputBindings));
 		WriteLocalResourcesSnapshot(xml, control, document, node);
 	}
 
@@ -2946,6 +2911,17 @@ bool DesignDocumentSerializer::FromXml(
 		if (outError) *outError = L"Invalid CUI Designer XML file: missing root element.";
 		return false;
 	}
+	if (!ValidateElementShape(
+		root,
+		{ "schema", "version", "nextId" },
+		{ "window", "codeBehind", "dataContext", "dataTypes", "dataLists",
+			"collectionViews", "itemsPanelTemplates", "dataTemplates",
+			"controlTemplatesSnapshot", "groupStyles", "styleSheet",
+			"components", "controls" },
+		L"Current design snapshot", outError))
+	{
+		return false;
+	}
 
 	if (root->GetAttribute("schema") != "cui.designer")
 	{
@@ -2955,19 +2931,17 @@ bool DesignDocumentSerializer::FromXml(
 
 	int version = 0;
 	if (!TryReadIntegralAttribute(root, "version", version)
-		|| version < 1
-		|| version > DesignDocument::CurrentSchemaVersion)
+		|| version != DesignDocument::CurrentSchemaVersion)
 	{
-		if (outError) *outError = L"Unsupported design file version.";
+		if (outError) *outError = L"Only the current design snapshot schema is supported.";
 		return false;
 	}
 
 	int persistedNextId = 1;
-	if (version >= 4
-		&& (!TryReadIntegralAttribute(root, "nextId", persistedNextId)
-			|| persistedNextId < 1))
+	if (!TryReadIntegralAttribute(root, "nextId", persistedNextId)
+		|| persistedNextId < 1)
 	{
-		if (outError) *outError = L"Design file v4+ is missing a valid nextId.";
+		if (outError) *outError = L"Current design snapshot is missing a valid nextId.";
 		return false;
 	}
 
@@ -2975,6 +2949,12 @@ bool DesignDocumentSerializer::FromXml(
 	if (!controls)
 	{
 		if (outError) *outError = L"Design file is missing the controls element.";
+		return false;
+	}
+	if (!ValidateElementShape(
+		controls, {}, { "control" }, L"Current controls snapshot",
+		outError, true))
+	{
 		return false;
 	}
 
@@ -2988,11 +2968,16 @@ bool DesignDocumentSerializer::FromXml(
 		Application::GetResourceResolver());
 	document.Schema = "cui.designer";
 	document.SchemaVersion = DesignDocument::CurrentSchemaVersion;
-	if (version >= 4) document.NextStableId = persistedNextId;
-	if (version >= 5)
+	document.NextStableId = persistedNextId;
 	{
 		if (auto codeBehind = FindChildElement(root, "codeBehind"))
 		{
+			if (!ValidateElementShape(
+				codeBehind, { "class", "relativeBasePath" }, {},
+				L"Current code-behind snapshot", outError))
+			{
+				return false;
+			}
 			if (!DesignCodeBehindModel::TryNormalizeClassName(
 				FromUtf8(codeBehind->GetAttribute("class")),
 				document.CodeBehind.ClassName, outError)) return false;
@@ -3005,95 +2990,109 @@ bool DesignDocumentSerializer::FromXml(
 		}
 	}
 
-	if (auto form = FindChildElement(root, "form"))
+	auto window = FindChildElement(root, "window");
+	if (!window)
 	{
-		document.Form.Name = FromUtf8(form->GetAttribute("name"));
-		if (document.Form.Name.empty()) document.Form.Name = L"MainForm";
-		document.Form.Text = FromUtf8(form->GetAttribute("text"));
-		document.Form.FontName = FromUtf8(form->GetAttribute("fontName"));
-		TryReadFloatAttribute(form, "fontSize", document.Form.FontSize);
-		if (document.Form.FontSize < 1.0f) document.Form.FontSize = 1.0f;
-		if (document.Form.FontSize > 200.0f) document.Form.FontSize = 200.0f;
-		TryReadBoolAttribute(form, "showInTaskBar", document.Form.ShowInTaskBar);
-		TryReadBoolAttribute(form, "topMost", document.Form.TopMost);
-		TryReadBoolAttribute(form, "enable", document.Form.Enable);
-		TryReadBoolAttribute(form, "visible", document.Form.Visible);
-		TryReadBoolAttribute(form, "visibleHead", document.Form.VisibleHead);
-		TryReadIntegralAttribute(form, "headHeight", document.Form.HeadHeight);
-		if (document.Form.HeadHeight < 0) document.Form.HeadHeight = 0;
-		TryReadBoolAttribute(form, "minBox", document.Form.MinBox);
-		TryReadBoolAttribute(form, "maxBox", document.Form.MaxBox);
-		TryReadBoolAttribute(form, "closeBox", document.Form.CloseBox);
-		TryReadBoolAttribute(form, "centerTitle", document.Form.CenterTitle);
-		TryReadBoolAttribute(form, "allowResize", document.Form.AllowResize);
-
-		if (auto size = FindChildElement(form, "size"))
-		{
-			TryReadIntegralAttribute(size, "width", document.Form.Size.cx);
-			TryReadIntegralAttribute(size, "height", document.Form.Size.cy);
-		}
-		if (auto location = FindChildElement(form, "location"))
-		{
-			TryReadIntegralAttribute(location, "x", document.Form.Location.x);
-			TryReadIntegralAttribute(location, "y", document.Form.Location.y);
-		}
-
-		document.Form.BackColor = ColorFromXmlElement(FindChildElement(form, "backColor"), document.Form.BackColor);
-		document.Form.ForeColor = ColorFromXmlElement(FindChildElement(form, "foreColor"), document.Form.ForeColor);
-
-		if (auto events = FindChildElement(form, "events"))
-		{
-			for (const auto& event : FindChildElements(events, "event"))
-			{
-				std::wstring name = FromUtf8(event->GetAttribute("name"));
-				if (name.empty()) continue;
-				std::wstring handler = FromUtf8(event->GetAttribute("handler"));
-				document.Form.EventHandlers[name] = handler.empty() ? L"1" : handler;
-			}
-		}
+		if (outError) *outError =
+			L"Design file must contain the schema-owned Window node.";
+		return false;
 	}
-
-	if (version >= 2)
+	if (!ValidateElementShape(
+		window,
+		{ "name", "type", "xamlNamespace", "xamlName" },
+		{ "properties", "events", "bindings", "commandBindings",
+			"inputBindings" },
+		L"Current Window snapshot", outError))
 	{
-		if (auto dataContext = FindChildElement(root, "dataContext"))
+		return false;
+	}
+	document.Window.Name = FromUtf8(window->GetAttribute("name"));
+	if (document.Window.Name.empty())
+	{
+		if (outError) *outError = L"Window node name cannot be empty.";
+		return false;
+	}
+	if (window->GetAttribute("type") != UIClassToString(UIClass::UI_Window))
+	{
+		if (outError) *outError = L"Document root node must have Window native type.";
+		return false;
+	}
+	document.Window.Type = UIClass::UI_Window;
+	document.Window.XamlType.NamespaceUri = FromUtf8(
+		window->GetAttribute("xamlNamespace"));
+	document.Window.XamlType.LocalName = FromUtf8(
+		window->GetAttribute("xamlName"));
+	if (!document.Window.XamlType.Valid())
+	{
+		if (outError) *outError = L"Window node has an invalid XAML type identity.";
+		return false;
+	}
+	DesignValue encodedWindowProperties = DesignValue::object();
+	if (auto properties = FindChildElement(window, "properties");
+		properties && !ReadValue(properties, encodedWindowProperties, outError))
+		return false;
+	if (!DecodeDesignNodeProperties(
+		encodedWindowProperties, document.Window.Properties, outError)) return false;
+	DesignValue encodedWindowEvents = DesignValue::object();
+	if (auto events = FindChildElement(window, "events");
+		events && !ReadValue(events, encodedWindowEvents, outError)) return false;
+	if (!DecodeDesignNodeEvents(
+		encodedWindowEvents, document.Window.Events, outError)) return false;
+	DesignValue encodedWindowBindings = DesignValue::object();
+	if (auto bindings = FindChildElement(window, "bindings");
+		bindings && !ReadValue(bindings, encodedWindowBindings, outError))
+		return false;
+	if (!DecodeDesignNodeBindings(
+		encodedWindowBindings, document.Window.Bindings, outError)) return false;
+	DesignValue encodedWindowCommandBindings = DesignValue::array();
+	if (auto bindings = FindChildElement(window, "commandBindings");
+		bindings && !ReadValue(bindings, encodedWindowCommandBindings, outError))
+		return false;
+	if (!DecodeDesignCommandBindings(encodedWindowCommandBindings,
+		document.Window.CommandBindings, outError)) return false;
+	DesignValue encodedWindowInputBindings = DesignValue::array();
+	if (auto bindings = FindChildElement(window, "inputBindings");
+		bindings && !ReadValue(bindings, encodedWindowInputBindings, outError))
+		return false;
+	if (!DecodeDesignInputBindings(encodedWindowInputBindings,
+		document.Window.InputBindings, outError)) return false;
+
+	if (auto dataContext = FindChildElement(root, "dataContext"))
+	{
+		for (const auto& item : FindChildElements(dataContext, "property"))
 		{
-			for (const auto& item : FindChildElements(dataContext, "property"))
+			DesignerDataContextProperty property;
+			property.Path = DesignerDataContextSchemaUtils::NormalizePath(
+				FromUtf8(item->GetAttribute("path")));
+			if (!DesignerDataContextSchemaUtils::TryParseValueKind(
+				FromUtf8(item->GetAttribute("kind")), property.ValueKind))
 			{
-				DesignerDataContextProperty property;
-				property.Path = DesignerDataContextSchemaUtils::NormalizePath(
-					FromUtf8(item->GetAttribute("path")));
-				if (!DesignerDataContextSchemaUtils::TryParseValueKind(
-					FromUtf8(item->GetAttribute("kind")), property.ValueKind))
-				{
-					if (outError) *outError = L"DataContext Schema contains an invalid value kind.";
-					return false;
-				}
-				const auto objectType = FromUtf8(item->GetAttribute("objectType"));
-				if (!objectType.empty()
-					&& !DesignerDataContextSchemaUtils::TryParseObjectKind(
-						objectType, property.ObjectKind))
-				{
-					if (outError) *outError = L"DataContext Schema contains an invalid object type.";
-					return false;
-				}
-				property.ItemType = FromUtf8(item->GetAttribute("itemType"));
-				if (version >= 20)
-					property.DataType = FromUtf8(item->GetAttribute("dataType"));
-				TryReadBoolAttribute(item, "read", property.CanRead);
-				TryReadBoolAttribute(item, "write", property.CanWrite);
-				TryReadBoolAttribute(item, "observe", property.CanObserve);
-				document.DataContextSchema.push_back(std::move(property));
-			}
-			DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
-			if (!DesignerDataContextSchemaUtils::Validate(
-				document.DataContextSchema, outError))
-			{
+				if (outError) *outError = L"DataContext Schema contains an invalid value kind.";
 				return false;
 			}
+			const auto objectType = FromUtf8(item->GetAttribute("objectType"));
+			if (!objectType.empty()
+				&& !DesignerDataContextSchemaUtils::TryParseObjectKind(
+					objectType, property.ObjectKind))
+			{
+				if (outError) *outError = L"DataContext Schema contains an invalid object type.";
+				return false;
+			}
+			property.ItemType = FromUtf8(item->GetAttribute("itemType"));
+			property.DataType = FromUtf8(item->GetAttribute("dataType"));
+			TryReadBoolAttribute(item, "read", property.CanRead);
+			TryReadBoolAttribute(item, "write", property.CanWrite);
+			TryReadBoolAttribute(item, "observe", property.CanObserve);
+			document.DataContextSchema.push_back(std::move(property));
+		}
+		DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
+		if (!DesignerDataContextSchemaUtils::Validate(
+			document.DataContextSchema, outError))
+		{
+			return false;
 		}
 	}
 
-	if (version >= 9)
 	{
 		if (auto dataTypes = FindChildElement(root, "dataTypes"))
 		{
@@ -3132,9 +3131,8 @@ bool DesignDocumentSerializer::FromXml(
 					}
 					property.ItemType = FromUtf8(
 						propertyElement->GetAttribute("itemType"));
-					if (version >= 20)
-						property.DataType = FromUtf8(
-							propertyElement->GetAttribute("dataType"));
+					property.DataType = FromUtf8(
+						propertyElement->GetAttribute("dataType"));
 					TryReadBoolAttribute(propertyElement, "read", property.CanRead);
 					TryReadBoolAttribute(propertyElement, "write", property.CanWrite);
 					TryReadBoolAttribute(propertyElement, "observe", property.CanObserve);
@@ -3187,8 +3185,7 @@ bool DesignDocumentSerializer::FromXml(
 			if (!validateReferencedTypes(definition.Properties,
 				L"DataType " + definition.Name)) return false;
 
-		if (version >= 10)
-			if (auto dataLists = FindChildElement(root, "dataLists"))
+		if (auto dataLists = FindChildElement(root, "dataLists"))
 			{
 				for (const auto& item : FindChildElements(dataLists, "dataList"))
 				{
@@ -3217,8 +3214,7 @@ bool DesignDocumentSerializer::FromXml(
 				}
 			}
 
-		if (version >= 12)
-			if (auto views = FindChildElement(root, "collectionViews"))
+		if (auto views = FindChildElement(root, "collectionViews"))
 			{
 				for (const auto& item : FindChildElements(views, "collectionView"))
 				{
@@ -3230,8 +3226,7 @@ bool DesignDocumentSerializer::FromXml(
 						item->GetAttribute("sourceBindingPath"));
 					definition.SourceDictionary = FromUtf8(
 						item->GetAttribute("sourceDictionary"));
-					if (version >= 13)
-						for (const auto& source : FindChildElements(item, "group"))
+					for (const auto& source : FindChildElements(item, "group"))
 						{
 							DesignCollectionGroupDescription group;
 							group.PropertyName = FromUtf8(source->GetAttribute("property"));
@@ -3248,8 +3243,7 @@ bool DesignDocumentSerializer::FromXml(
 							TryReadBoolAttribute(source, "ignoreCase", group.IgnoreCase);
 							definition.GroupDescriptions.push_back(std::move(group));
 						}
-					if (version >= 14)
-						for (const auto& source : FindChildElements(item, "aggregate"))
+					for (const auto& source : FindChildElements(item, "aggregate"))
 						{
 							DesignCollectionAggregateDescription aggregate;
 							aggregate.Name = FromUtf8(source->GetAttribute("name"));
@@ -3317,8 +3311,7 @@ bool DesignDocumentSerializer::FromXml(
 				}
 			}
 
-		if (version >= 11)
-			if (auto templates = FindChildElement(root, "itemsPanelTemplates"))
+		if (auto templates = FindChildElement(root, "itemsPanelTemplates"))
 			{
 				for (const auto& item : FindChildElements(
 					templates, "itemsPanelTemplate"))
@@ -3348,8 +3341,7 @@ bool DesignDocumentSerializer::FromXml(
 						if (outError) *outError = L"ItemsPanelTemplate orientation is invalid.";
 						return false;
 					}
-					if (!TryReadFloatAttribute(item, "spacing", definition.Value.Spacing)
-						|| !TryReadFloatAttribute(item, "itemWidth", definition.Value.ItemWidth)
+					if (!TryReadFloatAttribute(item, "itemWidth", definition.Value.ItemWidth)
 						|| !TryReadFloatAttribute(item, "itemHeight", definition.Value.ItemHeight)
 						|| !TryReadFloatAttribute(item, "cacheLength", definition.Value.CacheLength))
 					{
@@ -3379,8 +3371,7 @@ bool DesignDocumentSerializer::FromXml(
 				if (const auto hierarchical = item->GetAttribute("hierarchical");
 					!hierarchical.empty())
 				{
-					if (version < 29 || !TryParseBool(
-						hierarchical, definition.Hierarchical))
+					if (!TryParseBool(hierarchical, definition.Hierarchical))
 					{
 						if (outError) *outError = L"DataTemplate hierarchical flag is invalid.";
 						return false;
@@ -3390,9 +3381,9 @@ bool DesignDocumentSerializer::FromXml(
 					item->GetAttribute("sourceDictionary"));
 				if (auto source = FindChildElement(item, "itemsSource"))
 				{
-					if (version < 29 || !definition.Hierarchical)
+					if (!definition.Hierarchical)
 					{
-						if (outError) *outError = L"DataTemplate ItemsSource requires XML v29 HierarchicalDataTemplate.";
+						if (outError) *outError = L"DataTemplate ItemsSource requires HierarchicalDataTemplate.";
 						return false;
 					}
 					DesignValue bindingValue;
@@ -3410,8 +3401,7 @@ bool DesignDocumentSerializer::FromXml(
 				const bool duplicate = definition.IsImplicit()
 					? document.FindImplicitDataTemplate(definition.DataType) != nullptr
 					: document.FindDataTemplate(definition.Key) != nullptr;
-				if ((definition.IsImplicit() && version < 19)
-					|| (!dataType && !groupType) || duplicate)
+				if ((!dataType && !groupType) || duplicate)
 				{
 					if (outError) *outError = L"DataTemplate identity, DataType, or key is invalid.";
 					return false;
@@ -3431,25 +3421,26 @@ bool DesignDocumentSerializer::FromXml(
 						if (outError) *outError = L"DataTemplate does not support code-behind events.";
 						return false;
 					}
-					if (node.Bindings.is_object())
-						for (const auto& [target, binding] : node.Bindings.ObjectItems())
-						{
-							(void)target;
-							if (!binding.is_object()) continue;
-							const auto path = DesignerBindingUtils::Trim(FromUtf8(
-								binding.value("source", std::string{})));
-							if (!path.empty()
-								&& !DesignerDataContextSchemaUtils::Find(
-									bindingSchema, path)
-								&& !(groupType
-									&& DesignerDataContextSchemaUtils::IsValidPath(path)
-									&& (_wcsnicmp(path.c_str(), L"FirstItem.", 10) == 0
-										|| _wcsnicmp(path.c_str(), L"Aggregates.", 11) == 0)))
+					for (const auto& [target, binding] : node.Bindings)
+					{
+						(void)target;
+						if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
+							binding, [&](const DesignerDataBinding& leaf)
 							{
+								const auto path = DesignerBindingUtils::Trim(
+									leaf.SourceProperty);
+								if (path.empty()
+									|| DesignerDataContextSchemaUtils::Find(
+										bindingSchema, path)
+									|| (groupType
+										&& DesignerDataContextSchemaUtils::IsValidPath(path)
+									&& (path.starts_with(L"FirstItem.")
+										|| path.starts_with(L"Aggregates."))))
+									return true;
 								if (outError) *outError = L"DataTemplate binding path is not declared by its DataType: " + path;
 								return false;
-							}
-						}
+							})) return false;
+					}
 					definition.Template.push_back(std::move(node));
 				}
 				DesignDocument templateDocument;
@@ -3467,8 +3458,7 @@ bool DesignDocumentSerializer::FromXml(
 				document.DataTemplates.push_back(std::move(definition));
 			}
 		}
-		if (version >= 22)
-			if (auto templates = FindChildElement(
+		if (auto templates = FindChildElement(
 				root, "controlTemplatesSnapshot"))
 			{
 				DesignDocument snapshot;
@@ -3486,8 +3476,7 @@ bool DesignDocumentSerializer::FromXml(
 				document.ControlTemplates =
 					std::move(snapshot.ControlTemplates);
 			}
-		if (version >= 13)
-			if (auto styles = FindChildElement(root, "groupStyles"))
+		if (auto styles = FindChildElement(root, "groupStyles"))
 			{
 				for (const auto& item : FindChildElements(styles, "groupStyle"))
 				{
@@ -3498,11 +3487,8 @@ bool DesignDocumentSerializer::FromXml(
 						FromUtf8(item->GetAttribute("headerTemplate")));
 					definition.SourceDictionary = FromUtf8(
 						item->GetAttribute("sourceDictionary"));
-					if (!TryReadFloatAttribute(item, "headerIndent", definition.HeaderIndent)
-						|| !TryReadFloatAttribute(item, "headerSpacing", definition.HeaderSpacing)
-						|| (version >= 14 && !TryReadFloatAttribute(
-							item, "headerHeight", definition.HeaderHeight))
-						|| definition.Key.empty() || document.FindGroupStyle(definition.Key))
+					if (definition.Key.empty()
+						|| document.FindGroupStyle(definition.Key))
 					{
 						if (outError) *outError = L"GroupStyle configuration is invalid.";
 						return false;
@@ -3512,7 +3498,6 @@ bool DesignDocumentSerializer::FromXml(
 			}
 	}
 
-	if (version >= 3)
 	{
 		if (auto styleSheet = FindChildElement(root, "styleSheet"))
 		{
@@ -3564,6 +3549,19 @@ bool DesignDocumentSerializer::FromXml(
 							return false;
 						}
 					}
+					if (item->HasAttribute("xamlNamespace")
+						|| item->HasAttribute("xamlName"))
+					{
+						rule.XamlType.NamespaceUri = FromUtf8(
+							item->GetAttribute("xamlNamespace"));
+						rule.XamlType.LocalName = FromUtf8(
+							item->GetAttribute("xamlName"));
+						if (!rule.HasType || !rule.XamlType.Valid())
+						{
+							if (outError) *outError = L"样式规则包含无效的内置 XAML TargetType。";
+							return false;
+						}
+					}
 					if (item->HasAttribute("componentName"))
 					{
 						rule.ComponentType.XamlPrefix = FromUtf8(
@@ -3582,16 +3580,6 @@ bool DesignDocumentSerializer::FromXml(
 					}
 					rule.Id = FromUtf8(item->GetAttribute("id"));
 					rule.BasedOn = FromUtf8(item->GetAttribute("basedOn"));
-					if (!DesignerStyleSheetUtils::TryParseStates(
-						FromUtf8(item->GetAttribute("requiredStates")), rule.RequiredStates)
-						|| !DesignerStyleSheetUtils::TryParseStates(
-							FromUtf8(item->GetAttribute("excludedStates")), rule.ExcludedStates))
-					{
-						if (outError) *outError = L"样式规则包含无效的状态名称。";
-						return false;
-					}
-					for (const auto& classElement : FindChildElements(item, "class"))
-						rule.Classes.push_back(FromUtf8(classElement->GetAttribute("name")));
 					for (const auto& setterElement : FindChildElements(item, "setter"))
 					{
 						DesignerStyleSetter setter;
@@ -3622,67 +3610,34 @@ bool DesignDocumentSerializer::FromXml(
 							else setter.Literal.Text = FromUtf8(
 								setterElement->InnerText());
 						}
-					rule.Setters.push_back(std::move(setter));
+						rule.Setters.push_back(std::move(setter));
 					}
-					if (const auto propertyConditionsElement = FindChildElement(
-						item, "propertyConditions"))
-					{
-						for (const auto& conditionElement : FindChildElements(
-							propertyConditionsElement, "condition"))
-						{
-							DesignerStylePropertyCondition condition;
-							condition.Property = FromUtf8(
-								conditionElement->GetAttribute("property"));
-							if (!DesignerStyleSheetUtils::TryParseValueKind(
-								FromUtf8(conditionElement->GetAttribute("kind")),
-								condition.Value.Kind))
-							{
-								if (outError) *outError =
-									L"样式 Trigger 包含无效的属性值类型。";
-								return false;
-							}
-							condition.Value.Text = FromUtf8(
-								conditionElement->InnerText());
-							rule.PropertyConditions.push_back(std::move(condition));
-						}
-					}
-					if (const auto dataConditionsElement = FindChildElement(
-						item, "dataConditions"))
-					{
-						for (const auto& conditionElement : FindChildElements(
-							dataConditionsElement, "condition"))
-						{
-							DesignerStyleDataCondition condition;
-							condition.SourceProperty = FromUtf8(
-								conditionElement->GetAttribute("source"));
-							if (!DesignerStyleSheetUtils::TryParseValueKind(
-								FromUtf8(conditionElement->GetAttribute("kind")),
-								condition.Value.Kind))
-							{
-								if (outError) *outError =
-									L"样式 DataTrigger 包含无效的值类型。";
-								return false;
-							}
-							if (const auto object = FindChildElement(
-								conditionElement, "objectValue"))
-							{
-								if (!ReadValue(object,
-									condition.Value.ObjectValue, outError)) return false;
-							}
-							else condition.Value.Text = FromUtf8(
-								conditionElement->InnerText());
-							rule.DataConditions.push_back(std::move(condition));
-						}
-					}
-					if (!ReadStoryboardActionsSnapshot(item, "enterActions",
-						rule.EnterActions, outError)
-						|| !ReadStoryboardActionsSnapshot(item, "exitActions",
-							rule.ExitActions, outError)) return false;
 					if (const auto triggersElement = FindChildElement(item, "triggers"))
 					{
 						for (const auto& triggerElement : FindChildElements(
 							triggersElement, "trigger"))
 						{
+							if (!ValidateElementShape(
+								triggerElement, {},
+								{ "dataConditions", "propertyConditions", "setter",
+									"enterActions", "exitActions" },
+								L"Current Style Trigger snapshot", outError, true))
+							{
+								return false;
+							}
+							const auto dataConditionContainers = FindChildElements(
+								triggerElement, "dataConditions");
+							const auto propertyConditionContainers = FindChildElements(
+								triggerElement, "propertyConditions");
+							if (dataConditionContainers.size() > 1
+								|| propertyConditionContainers.size() > 1
+								|| (!dataConditionContainers.empty()
+									&& !propertyConditionContainers.empty()))
+							{
+								if (outError) *outError =
+									L"Current Style Trigger snapshot must contain one condition family.";
+								return false;
+							}
 							DesignerStyleTrigger trigger;
 							auto readDataCondition = [&](const auto& dataConditionElement,
 								DesignerStyleDataCondition& condition)
@@ -3709,89 +3664,55 @@ bool DesignDocumentSerializer::FromXml(
 							};
 							const auto dataConditionsElement = FindChildElement(
 								triggerElement, "dataConditions");
-							const auto legacyDataConditionElement = FindChildElement(
-								triggerElement, "dataCondition");
-							if (dataConditionsElement && legacyDataConditionElement)
-							{
-								if (outError) *outError =
-									L"样式 Trigger 不能同时包含 dataCondition 和 dataConditions。";
-								return false;
-							}
 							if (dataConditionsElement)
 							{
+								if (!ValidateElementShape(
+									dataConditionsElement, {}, { "condition" },
+									L"Current DataTrigger conditions snapshot",
+									outError, true)) return false;
 								for (const auto& conditionElement : FindChildElements(
 									dataConditionsElement, "condition"))
 								{
+									if (!ValidateElementShape(
+										conditionElement, { "source", "kind" },
+										{ "objectValue" },
+										L"Current DataTrigger condition snapshot",
+										outError)) return false;
 									DesignerStyleDataCondition condition;
 									if (!readDataCondition(conditionElement, condition))
 										return false;
 									trigger.DataConditions.push_back(std::move(condition));
 								}
 							}
-							else if (legacyDataConditionElement)
+							else if (const auto propertyConditionsElement =
+								FindChildElement(triggerElement, "propertyConditions"))
 							{
-								DesignerStyleDataCondition condition;
-								if (!readDataCondition(legacyDataConditionElement, condition))
-									return false;
-								trigger.DataConditions.push_back(std::move(condition));
-							}
-							else
-							{
-								if (const auto conditionsElement = FindChildElement(
-									triggerElement, "conditions"))
+								if (!ValidateElementShape(
+									propertyConditionsElement, {}, { "condition" },
+									L"Current Trigger conditions snapshot",
+									outError, true)) return false;
+								for (const auto& conditionElement : FindChildElements(
+									propertyConditionsElement, "condition"))
 								{
-									for (const auto& conditionElement : FindChildElements(
-										conditionsElement, "condition"))
-									{
-										DesignerStyleCondition condition;
-										condition.Property = FromUtf8(
-											conditionElement->GetAttribute("property"));
-										if (!TryReadBoolAttribute(conditionElement,
-											"value", condition.Value))
-										{
-											if (outError) *outError =
-												L"样式 MultiTrigger 包含无效的布尔条件。";
-											return false;
-										}
-										trigger.Conditions.push_back(std::move(condition));
-									}
-								}
-								else if (triggerElement->HasAttribute("property"))
-								{
-									DesignerStyleCondition condition;
+									if (!ValidateElementShape(
+										conditionElement, { "property", "kind" }, {},
+										L"Current Trigger condition snapshot",
+										outError)) return false;
+									DesignerStylePropertyCondition condition;
 									condition.Property = FromUtf8(
-										triggerElement->GetAttribute("property"));
-									if (!TryReadBoolAttribute(
-										triggerElement, "value", condition.Value))
+										conditionElement->GetAttribute("property"));
+									if (!DesignerStyleSheetUtils::TryParseValueKind(
+										FromUtf8(conditionElement->GetAttribute("kind")),
+										condition.Value.Kind))
 									{
 										if (outError) *outError =
-											L"样式 Trigger 包含无效的布尔条件。";
+											L"样式 Trigger 包含无效的属性值类型。";
 										return false;
 									}
-									trigger.Conditions.push_back(std::move(condition));
-								}
-								if (const auto propertyConditionsElement = FindChildElement(
-									triggerElement, "propertyConditions"))
-								{
-									for (const auto& conditionElement : FindChildElements(
-										propertyConditionsElement, "condition"))
-									{
-										DesignerStylePropertyCondition condition;
-										condition.Property = FromUtf8(
-											conditionElement->GetAttribute("property"));
-										if (!DesignerStyleSheetUtils::TryParseValueKind(
-											FromUtf8(conditionElement->GetAttribute("kind")),
-											condition.Value.Kind))
-										{
-											if (outError) *outError =
-												L"样式 Trigger 包含无效的属性值类型。";
-											return false;
-										}
-										condition.Value.Text = FromUtf8(
-											conditionElement->InnerText());
-										trigger.PropertyConditions.push_back(
-											std::move(condition));
-									}
+									condition.Value.Text = FromUtf8(
+										conditionElement->InnerText());
+									trigger.PropertyConditions.push_back(
+										std::move(condition));
 								}
 							}
 							for (const auto& setterElement : FindChildElements(
@@ -3852,7 +3773,6 @@ bool DesignDocumentSerializer::FromXml(
 		}
 	}
 
-	if (version >= 6)
 	{
 		if (auto components = FindChildElement(root, "components"))
 		{
@@ -3876,7 +3796,7 @@ bool DesignDocumentSerializer::FromXml(
 					|| definition.Type.XamlNamespace.empty()
 					|| !TryParseUIClass(
 						component->GetAttribute("baseType"), definition.BaseType)
-					|| definition.BaseType == UIClass::UI_TabPage
+					|| definition.BaseType == UIClass::UI_TabItem
 					|| document.FindComponent(definition.Type))
 				{
 					if (outError) *outError = L"Component definition has invalid identity or baseType.";
@@ -3911,45 +3831,43 @@ bool DesignDocumentSerializer::FromXml(
 						item->GetAttribute("default"));
 					int editor = 0;
 					unsigned int flags = 0;
-					int defaultUpdateMode = static_cast<int>(
-						DataSourceUpdateMode::OnPropertyChanged);
+					int defaultUpdateMode = 0;
+					constexpr auto supportedPropertyFlags =
+						static_cast<unsigned int>(
+							DependencyPropertyFlags::AffectsMeasure
+							| DependencyPropertyFlags::AffectsArrange
+							| DependencyPropertyFlags::AffectsRender
+							| DependencyPropertyFlags::Inherits
+							| DependencyPropertyFlags::BindsTwoWayByDefault
+							| DependencyPropertyFlags::AffectsParentMeasure
+							| DependencyPropertyFlags::AffectsParentArrange);
 					if (!TryReadIntegralAttribute(item, "editor", editor)
-						|| editor < static_cast<int>(ControlPropertyEditorKind::Auto)
-						|| editor > static_cast<int>(ControlPropertyEditorKind::Length)
+						|| editor < static_cast<int>(DependencyPropertyEditorKind::Auto)
+						|| editor > static_cast<int>(DependencyPropertyEditorKind::Length)
 						|| !TryReadIntegralAttribute(item, "flags", flags)
-						|| flags > static_cast<unsigned int>(
-							ControlPropertyFlags::AffectsMeasure
-							| ControlPropertyFlags::AffectsArrange
-							| ControlPropertyFlags::AffectsRender
-							| ControlPropertyFlags::TracksLocalValue
-							| ControlPropertyFlags::Inherits
-							| ControlPropertyFlags::BindsTwoWayByDefault
-							| ControlPropertyFlags::AffectsParentMeasure
-							| ControlPropertyFlags::AffectsParentArrange)
-						|| (item->HasAttribute("defaultUpdateMode")
-							&& (!TryReadIntegralAttribute(
-								item, "defaultUpdateMode", defaultUpdateMode)
-								|| defaultUpdateMode < static_cast<int>(
-									DataSourceUpdateMode::OnPropertyChanged)
-								|| defaultUpdateMode > static_cast<int>(
-									DataSourceUpdateMode::Never))))
+						|| (flags & ~supportedPropertyFlags) != 0
+						|| !TryReadIntegralAttribute(
+							item, "defaultUpdateMode", defaultUpdateMode)
+						|| defaultUpdateMode < static_cast<int>(
+							DataSourceUpdateMode::OnPropertyChanged)
+						|| defaultUpdateMode > static_cast<int>(
+							DataSourceUpdateMode::Never))
 					{
 						if (outError) *outError = L"Component property metadata is invalid.";
 						return false;
 					}
-					property.Editor = static_cast<ControlPropertyEditorKind>(editor);
-					property.Flags = static_cast<ControlPropertyFlags>(flags);
+					property.Editor = static_cast<DependencyPropertyEditorKind>(editor);
+					property.Flags = static_cast<DependencyPropertyFlags>(flags);
 					property.DefaultUpdateMode =
 						static_cast<DataSourceUpdateMode>(defaultUpdateMode);
-					if (item->HasAttribute("readOnly")
-						&& !TryReadBoolAttribute(
-							item, "readOnly", property.IsReadOnly))
+					if (!TryReadBoolAttribute(
+						item, "readOnly", property.IsReadOnly))
 					{
 						if (outError) *outError = L"Component property readOnly metadata is invalid.";
 						return false;
 					}
-					if (property.IsReadOnly && HasControlPropertyFlag(
-						property.Flags, ControlPropertyFlags::BindsTwoWayByDefault))
+					if (property.IsReadOnly && HasDependencyPropertyFlag(
+						property.Flags, DependencyPropertyFlags::BindsTwoWayByDefault))
 					{
 						if (outError) *outError = L"Read-only component property cannot bind two-way by default.";
 						return false;
@@ -3985,7 +3903,7 @@ bool DesignDocumentSerializer::FromXml(
 							|| std::any_of(property.Choices.begin(), property.Choices.end(),
 								[&](const auto& existing)
 								{
-									return _wcsicmp(existing.Value.c_str(), choice.Value.c_str()) == 0;
+									return std::wcscmp(existing.Value.c_str(), choice.Value.c_str()) == 0;
 								}))
 						{
 							if (outError) *outError = L"Component enum choice is invalid or duplicated.";
@@ -3998,7 +3916,7 @@ bool DesignDocumentSerializer::FromXml(
 						&& property.DefaultResourceKey.empty())
 					{
 						if (property.DefaultValue.Kind != DesignerStyleValueKind::String
-							|| property.Editor != ControlPropertyEditorKind::Choice)
+							|| property.Editor != DependencyPropertyEditorKind::Choice)
 						{
 							if (outError) *outError = L"Component enum property metadata is invalid.";
 							return false;
@@ -4007,7 +3925,7 @@ bool DesignDocumentSerializer::FromXml(
 							property.Choices.begin(), property.Choices.end(),
 							[&](const auto& choice)
 							{
-								return _wcsicmp(choice.Value.c_str(),
+								return std::wcscmp(choice.Value.c_str(),
 									property.DefaultValue.Text.c_str()) == 0;
 							});
 						if (selected == property.Choices.end())
@@ -4025,7 +3943,7 @@ bool DesignDocumentSerializer::FromXml(
 							document.StyleSheet.Resources.end(),
 							[&](const auto& candidate)
 							{
-								return _wcsicmp(candidate.Key.c_str(),
+								return std::wcscmp(candidate.Key.c_str(),
 									property.DefaultResourceKey.c_str()) == 0;
 							});
 						if (resource == document.StyleSheet.Resources.end()
@@ -4068,12 +3986,12 @@ bool DesignDocumentSerializer::FromXml(
 						|| std::any_of(definition.ContentProperties.begin(),
 							definition.ContentProperties.end(), [&](const auto& existing)
 							{
-								return _wcsicmp(existing.Name.c_str(), property.Name.c_str()) == 0;
+								return std::wcscmp(existing.Name.c_str(), property.Name.c_str()) == 0;
 							})
 						|| std::any_of(definition.Properties.begin(), definition.Properties.end(),
 							[&](const auto& existing)
 							{
-								return _wcsicmp(existing.Name.c_str(), property.Name.c_str()) == 0;
+								return std::wcscmp(existing.Name.c_str(), property.Name.c_str()) == 0;
 							})
 						|| (property.IsDefault && std::any_of(
 							definition.ContentProperties.begin(),
@@ -4131,7 +4049,7 @@ bool DesignDocumentSerializer::FromXml(
 					if (group.Name.empty()
 						|| std::any_of(definition.VisualStateGroups.begin(),
 							definition.VisualStateGroups.end(), [&](const auto& existing)
-							{ return _wcsicmp(existing.Name.c_str(), group.Name.c_str()) == 0; }))
+							{ return std::wcscmp(existing.Name.c_str(), group.Name.c_str()) == 0; }))
 					{
 						if (outError) *outError = L"Component visual-state group name is invalid or duplicated.";
 						return false;
@@ -4146,7 +4064,7 @@ bool DesignDocumentSerializer::FromXml(
 						if (state.Name.empty()
 							|| std::any_of(group.States.begin(), group.States.end(),
 								[&](const auto& existing)
-								{ return _wcsicmp(existing.Name.c_str(), state.Name.c_str()) == 0; }))
+								{ return std::wcscmp(existing.Name.c_str(), state.Name.c_str()) == 0; }))
 						{
 							if (outError) *outError = L"Component visual-state name is invalid or duplicated.";
 							return false;
@@ -4163,7 +4081,7 @@ bool DesignDocumentSerializer::FromXml(
 									condition.Value.Kind)
 								|| std::any_of(state.Conditions.begin(),
 									state.Conditions.end(), [&](const auto& existing)
-									{ return _wcsicmp(existing.PropertyName.c_str(),
+									{ return std::wcscmp(existing.PropertyName.c_str(),
 										condition.PropertyName.c_str()) == 0; }))
 							{
 								if (outError) *outError = L"Component visual-state condition is invalid or duplicated.";
@@ -4187,11 +4105,11 @@ bool DesignDocumentSerializer::FromXml(
 							const auto event = std::find_if(
 								definition.Events.begin(), definition.Events.end(),
 								[&](const auto& candidate)
-								{ return _wcsicmp(candidate.Name.c_str(), eventName.c_str()) == 0; });
+								{ return std::wcscmp(candidate.Name.c_str(), eventName.c_str()) == 0; });
 							if (event == definition.Events.end()
 								|| std::any_of(groupEvents.begin(), groupEvents.end(),
 									[&](const auto& existing)
-									{ return _wcsicmp(existing.c_str(), eventName.c_str()) == 0; }))
+									{ return std::wcscmp(existing.c_str(), eventName.c_str()) == 0; }))
 							{
 								if (outError) *outError = L"Component visual-state event trigger is missing or duplicated.";
 								return false;
@@ -4221,9 +4139,9 @@ bool DesignDocumentSerializer::FromXml(
 								|| std::any_of(state.Setters.begin(), state.Setters.end(),
 									[&](const auto& existing)
 									{
-										return _wcsicmp(existing.TargetName.c_str(),
+										return std::wcscmp(existing.TargetName.c_str(),
 											setter.TargetName.c_str()) == 0
-											&& _wcsicmp(existing.PropertyName.c_str(),
+											&& std::wcscmp(existing.PropertyName.c_str(),
 												setter.PropertyName.c_str()) == 0;
 									}))
 							{
@@ -4265,9 +4183,9 @@ bool DesignDocumentSerializer::FromXml(
 								visualStateControlledProperties.begin(),
 								visualStateControlledProperties.end(),
 								[&](const auto& existing)
-								{ return _wcsicmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
+								{ return std::wcscmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
 							if (controlled != visualStateControlledProperties.end()
-								&& _wcsicmp(controlled->second.c_str(), group.Name.c_str()) != 0)
+								&& std::wcscmp(controlled->second.c_str(), group.Name.c_str()) != 0)
 							{
 								if (outError) *outError = L"Different visual-state groups control the same property.";
 								return false;
@@ -4282,26 +4200,26 @@ bool DesignDocumentSerializer::FromXml(
 						{
 							DesignerVisualStateAnimation animation;
 							const auto type = animationElement->GetAttribute("type");
-							if (_stricmp(type.c_str(), "Double") == 0
-								|| _stricmp(type.c_str(), "Color") == 0
-								|| _stricmp(type.c_str(), "Object") == 0
-								|| _stricmp(type.c_str(), "Thickness") == 0
-								|| _stricmp(type.c_str(), "Point") == 0
-								|| _stricmp(type.c_str(), "Vector") == 0
-								|| _stricmp(type.c_str(), "Rect") == 0
-								|| _stricmp(type.c_str(), "Size") == 0
-								|| _stricmp(type.c_str(), "Matrix") == 0)
+							if (std::strcmp(type.c_str(), "Double") == 0
+								|| std::strcmp(type.c_str(), "Color") == 0
+								|| std::strcmp(type.c_str(), "Object") == 0
+								|| std::strcmp(type.c_str(), "Thickness") == 0
+								|| std::strcmp(type.c_str(), "Point") == 0
+								|| std::strcmp(type.c_str(), "Vector") == 0
+								|| std::strcmp(type.c_str(), "Rect") == 0
+								|| std::strcmp(type.c_str(), "Size") == 0
+								|| std::strcmp(type.c_str(), "Matrix") == 0)
 							{
 								if (!ReadVisualStateAnimationSnapshot(
 									animationElement, animation, outError)) return false;
 								const bool duplicate = std::any_of(
 									state.Setters.begin(), state.Setters.end(), [&](const auto& existing)
-									{ return _wcsicmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
-										&& _wcsicmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0; })
+									{ return std::wcscmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
+										&& std::wcscmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0; })
 									|| std::any_of(state.Animations.begin(), state.Animations.end(),
 										[&](const auto& existing)
-										{ return _wcsicmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
-											&& _wcsicmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0; });
+										{ return std::wcscmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
+											&& std::wcscmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0; });
 								if (duplicate)
 								{
 									if (outError) *outError = L"Component visual-state Setter/animation target is duplicated.";
@@ -4312,9 +4230,9 @@ bool DesignDocumentSerializer::FromXml(
 								const auto controlled = std::find_if(
 									visualStateControlledProperties.begin(),
 									visualStateControlledProperties.end(), [&](const auto& existing)
-									{ return _wcsicmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
+									{ return std::wcscmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
 								if (controlled != visualStateControlledProperties.end()
-									&& _wcsicmp(controlled->second.c_str(), group.Name.c_str()) != 0)
+									&& std::wcscmp(controlled->second.c_str(), group.Name.c_str()) != 0)
 								{
 									if (outError) *outError = L"Different visual-state groups animate the same property.";
 									return false;
@@ -4325,9 +4243,9 @@ bool DesignDocumentSerializer::FromXml(
 								state.Animations.push_back(std::move(animation));
 								continue;
 							}
-							if (_stricmp(type.c_str(), "Double") == 0)
+							if (std::strcmp(type.c_str(), "Double") == 0)
 								animation.Kind = DesignerAnimationKind::Double;
-							else if (_stricmp(type.c_str(), "Color") == 0)
+							else if (std::strcmp(type.c_str(), "Color") == 0)
 								animation.Kind = DesignerAnimationKind::Color;
 							else
 							{
@@ -4352,7 +4270,7 @@ bool DesignDocumentSerializer::FromXml(
 							const auto repeatBehavior =
 								animationElement->GetAttribute("repeatBehavior");
 							if (repeatBehavior.empty()
-								|| _stricmp(repeatBehavior.c_str(), "Count") == 0)
+								|| std::strcmp(repeatBehavior.c_str(), "Count") == 0)
 							{
 								animation.RepeatBehavior =
 									DesignerRepeatBehaviorKind::Count;
@@ -4368,7 +4286,7 @@ bool DesignDocumentSerializer::FromXml(
 									return false;
 								}
 							}
-							else if (_stricmp(
+							else if (std::strcmp(
 								repeatBehavior.c_str(), "Duration") == 0)
 							{
 								animation.RepeatBehavior =
@@ -4383,7 +4301,7 @@ bool DesignDocumentSerializer::FromXml(
 									return false;
 								}
 							}
-							else if (_stricmp(
+							else if (std::strcmp(
 								repeatBehavior.c_str(), "Forever") == 0)
 								animation.RepeatBehavior =
 									DesignerRepeatBehaviorKind::Forever;
@@ -4420,10 +4338,10 @@ bool DesignDocumentSerializer::FromXml(
 							const auto fillBehavior =
 								animationElement->GetAttribute("fillBehavior");
 							if (fillBehavior.empty()
-								|| _stricmp(fillBehavior.c_str(), "HoldEnd") == 0)
+								|| std::strcmp(fillBehavior.c_str(), "HoldEnd") == 0)
 								animation.FillBehavior =
 									DesignerTimelineFillBehavior::HoldEnd;
-							else if (_stricmp(fillBehavior.c_str(), "Stop") == 0)
+							else if (std::strcmp(fillBehavior.c_str(), "Stop") == 0)
 								animation.FillBehavior =
 									DesignerTimelineFillBehavior::Stop;
 							else
@@ -4582,13 +4500,13 @@ bool DesignDocumentSerializer::FromXml(
 									animationElement->GetAttribute("by"));
 							}
 							const auto easing = animationElement->GetAttribute("easing");
-							if (_stricmp(easing.c_str(), "Linear") == 0)
+							if (std::strcmp(easing.c_str(), "Linear") == 0)
 								animation.Easing = DesignerEasingKind::Linear;
-							else if (_stricmp(easing.c_str(), "Quadratic") == 0)
+							else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
 								animation.Easing = DesignerEasingKind::Quadratic;
-							else if (_stricmp(easing.c_str(), "Cubic") == 0)
+							else if (std::strcmp(easing.c_str(), "Cubic") == 0)
 								animation.Easing = DesignerEasingKind::Cubic;
-							else if (_stricmp(easing.c_str(), "Sine") == 0)
+							else if (std::strcmp(easing.c_str(), "Sine") == 0)
 								animation.Easing = DesignerEasingKind::Sine;
 							else
 							{
@@ -4596,11 +4514,11 @@ bool DesignDocumentSerializer::FromXml(
 								return false;
 							}
 							const auto easingMode = animationElement->GetAttribute("easingMode");
-							if (_stricmp(easingMode.c_str(), "EaseIn") == 0)
+							if (std::strcmp(easingMode.c_str(), "EaseIn") == 0)
 								animation.EasingMode = DesignerEasingMode::EaseIn;
-							else if (_stricmp(easingMode.c_str(), "EaseOut") == 0)
+							else if (std::strcmp(easingMode.c_str(), "EaseOut") == 0)
 								animation.EasingMode = DesignerEasingMode::EaseOut;
-							else if (_stricmp(easingMode.c_str(), "EaseInOut") == 0)
+							else if (std::strcmp(easingMode.c_str(), "EaseInOut") == 0)
 								animation.EasingMode = DesignerEasingMode::EaseInOut;
 							else
 							{
@@ -4611,13 +4529,13 @@ bool DesignDocumentSerializer::FromXml(
 							{
 								DesignerAnimationKeyFrame keyFrame;
 								const auto frameKind = keyFrameElement->GetAttribute("kind");
-								if (_stricmp(frameKind.c_str(), "Discrete") == 0)
+								if (std::strcmp(frameKind.c_str(), "Discrete") == 0)
 									keyFrame.Kind = DesignerKeyFrameKind::Discrete;
-								else if (_stricmp(frameKind.c_str(), "Linear") == 0)
+								else if (std::strcmp(frameKind.c_str(), "Linear") == 0)
 									keyFrame.Kind = DesignerKeyFrameKind::Linear;
-								else if (_stricmp(frameKind.c_str(), "Easing") == 0)
+								else if (std::strcmp(frameKind.c_str(), "Easing") == 0)
 									keyFrame.Kind = DesignerKeyFrameKind::Easing;
-								else if (_stricmp(frameKind.c_str(), "Spline") == 0)
+								else if (std::strcmp(frameKind.c_str(), "Spline") == 0)
 									keyFrame.Kind = DesignerKeyFrameKind::Spline;
 								else
 								{
@@ -4655,13 +4573,13 @@ bool DesignDocumentSerializer::FromXml(
 								if (keyFrame.Kind == DesignerKeyFrameKind::Easing)
 								{
 									const auto frameEasing = keyFrameElement->GetAttribute("easing");
-									if (_stricmp(frameEasing.c_str(), "Linear") == 0)
+									if (std::strcmp(frameEasing.c_str(), "Linear") == 0)
 										keyFrame.Easing = DesignerEasingKind::Linear;
-									else if (_stricmp(frameEasing.c_str(), "Quadratic") == 0)
+									else if (std::strcmp(frameEasing.c_str(), "Quadratic") == 0)
 										keyFrame.Easing = DesignerEasingKind::Quadratic;
-									else if (_stricmp(frameEasing.c_str(), "Cubic") == 0)
+									else if (std::strcmp(frameEasing.c_str(), "Cubic") == 0)
 										keyFrame.Easing = DesignerEasingKind::Cubic;
-									else if (_stricmp(frameEasing.c_str(), "Sine") == 0)
+									else if (std::strcmp(frameEasing.c_str(), "Sine") == 0)
 										keyFrame.Easing = DesignerEasingKind::Sine;
 									else
 									{
@@ -4669,11 +4587,11 @@ bool DesignDocumentSerializer::FromXml(
 										return false;
 									}
 									const auto frameMode = keyFrameElement->GetAttribute("easingMode");
-									if (_stricmp(frameMode.c_str(), "EaseIn") == 0)
+									if (std::strcmp(frameMode.c_str(), "EaseIn") == 0)
 										keyFrame.EasingMode = DesignerEasingMode::EaseIn;
-									else if (_stricmp(frameMode.c_str(), "EaseOut") == 0)
+									else if (std::strcmp(frameMode.c_str(), "EaseOut") == 0)
 										keyFrame.EasingMode = DesignerEasingMode::EaseOut;
-									else if (_stricmp(frameMode.c_str(), "EaseInOut") == 0)
+									else if (std::strcmp(frameMode.c_str(), "EaseInOut") == 0)
 										keyFrame.EasingMode = DesignerEasingMode::EaseInOut;
 									else
 									{
@@ -4709,19 +4627,19 @@ bool DesignDocumentSerializer::FromXml(
 								animation.PropertyName);
 							const bool duplicate = std::any_of(
 								state.Setters.begin(), state.Setters.end(), [&](const auto& existing)
-								{ return _wcsicmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
-									&& _wcsicmp(existing.PropertyName.c_str(), rootProperty.c_str()) == 0; })
+								{ return std::wcscmp(existing.TargetName.c_str(), animation.TargetName.c_str()) == 0
+									&& std::wcscmp(existing.PropertyName.c_str(), rootProperty.c_str()) == 0; })
 								|| std::any_of(state.Animations.begin(), state.Animations.end(),
 									[&](const auto& existing)
 									{
-										if (_wcsicmp(existing.TargetName.c_str(), animation.TargetName.c_str()) != 0)
+										if (std::wcscmp(existing.TargetName.c_str(), animation.TargetName.c_str()) != 0)
 											return false;
 									const bool existingPath = ClassifyStoryboardObjectPath(
 										existing.PropertyName) != StoryboardObjectPathKind::None;
 									const auto existingRoot = StoryboardAnimationRootProperty(
 										existing.PropertyName);
-									return _wcsicmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0
-										|| (_wcsicmp(existingRoot.c_str(), rootProperty.c_str()) == 0
+									return std::wcscmp(existing.PropertyName.c_str(), animation.PropertyName.c_str()) == 0
+										|| (std::wcscmp(existingRoot.c_str(), rootProperty.c_str()) == 0
 											&& (!existingPath || !objectPath));
 									});
 							if (duplicate)
@@ -4735,9 +4653,9 @@ bool DesignDocumentSerializer::FromXml(
 								visualStateControlledProperties.begin(),
 								visualStateControlledProperties.end(),
 								[&](const auto& existing)
-								{ return _wcsicmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
+								{ return std::wcscmp(existing.first.c_str(), controlledKey.c_str()) == 0; });
 							if (controlled != visualStateControlledProperties.end()
-								&& _wcsicmp(controlled->second.c_str(), group.Name.c_str()) != 0)
+								&& std::wcscmp(controlled->second.c_str(), group.Name.c_str()) != 0)
 							{
 								if (outError) *outError = L"Different visual-state groups animate the same property.";
 								return false;
@@ -4762,16 +4680,16 @@ bool DesignDocumentSerializer::FromXml(
 							return name.empty() || std::any_of(
 								group.States.begin(), group.States.end(),
 								[&](const auto& state)
-								{ return _wcsicmp(state.Name.c_str(), name.c_str()) == 0; });
+								{ return std::wcscmp(state.Name.c_str(), name.c_str()) == 0; });
 						};
 						if (!stateExists(transition.FromState)
 							|| !stateExists(transition.ToState)
 							|| std::any_of(group.Transitions.begin(),
 								group.Transitions.end(), [&](const auto& existing)
 								{
-									return _wcsicmp(existing.FromState.c_str(),
+									return std::wcscmp(existing.FromState.c_str(),
 										transition.FromState.c_str()) == 0
-										&& _wcsicmp(existing.ToState.c_str(),
+										&& std::wcscmp(existing.ToState.c_str(),
 											transition.ToState.c_str()) == 0;
 								}))
 						{
@@ -4787,13 +4705,13 @@ bool DesignDocumentSerializer::FromXml(
 						}
 						const auto easing = transitionElement->GetAttribute(
 							"generatedEasing");
-						if (_stricmp(easing.c_str(), "Linear") == 0)
+						if (std::strcmp(easing.c_str(), "Linear") == 0)
 							transition.GeneratedEasing = DesignerEasingKind::Linear;
-						else if (_stricmp(easing.c_str(), "Quadratic") == 0)
+						else if (std::strcmp(easing.c_str(), "Quadratic") == 0)
 							transition.GeneratedEasing = DesignerEasingKind::Quadratic;
-						else if (_stricmp(easing.c_str(), "Cubic") == 0)
+						else if (std::strcmp(easing.c_str(), "Cubic") == 0)
 							transition.GeneratedEasing = DesignerEasingKind::Cubic;
-						else if (_stricmp(easing.c_str(), "Sine") == 0)
+						else if (std::strcmp(easing.c_str(), "Sine") == 0)
 							transition.GeneratedEasing = DesignerEasingKind::Sine;
 						else
 						{
@@ -4802,11 +4720,11 @@ bool DesignDocumentSerializer::FromXml(
 						}
 						const auto mode = transitionElement->GetAttribute(
 							"generatedEasingMode");
-						if (_stricmp(mode.c_str(), "EaseIn") == 0)
+						if (std::strcmp(mode.c_str(), "EaseIn") == 0)
 							transition.GeneratedEasingMode = DesignerEasingMode::EaseIn;
-						else if (_stricmp(mode.c_str(), "EaseOut") == 0)
+						else if (std::strcmp(mode.c_str(), "EaseOut") == 0)
 							transition.GeneratedEasingMode = DesignerEasingMode::EaseOut;
-						else if (_stricmp(mode.c_str(), "EaseInOut") == 0)
+						else if (std::strcmp(mode.c_str(), "EaseInOut") == 0)
 							transition.GeneratedEasingMode = DesignerEasingMode::EaseInOut;
 						else
 						{
@@ -4825,15 +4743,15 @@ bool DesignDocumentSerializer::FromXml(
 								animation.PropertyName);
 							for (const auto& existing : transition.Animations)
 							{
-								if (_wcsicmp(existing.TargetName.c_str(),
+								if (std::wcscmp(existing.TargetName.c_str(),
 									animation.TargetName.c_str()) != 0) continue;
 								const bool existingPath = ClassifyStoryboardObjectPath(
 									existing.PropertyName) != StoryboardObjectPathKind::None;
 								const auto existingRoot = StoryboardAnimationRootProperty(
 									existing.PropertyName);
-								if (_wcsicmp(existing.PropertyName.c_str(),
+								if (std::wcscmp(existing.PropertyName.c_str(),
 									animation.PropertyName.c_str()) == 0
-									|| (_wcsicmp(existingRoot.c_str(), rootProperty.c_str()) == 0
+									|| (std::wcscmp(existingRoot.c_str(), rootProperty.c_str()) == 0
 									&& (!existingPath || !objectPath)))
 								{
 									if (outError) *outError = L"Component visual transition animation target is duplicated.";
@@ -4846,10 +4764,10 @@ bool DesignDocumentSerializer::FromXml(
 								visualStateControlledProperties.begin(),
 								visualStateControlledProperties.end(),
 								[&](const auto& existing)
-								{ return _wcsicmp(existing.first.c_str(),
+								{ return std::wcscmp(existing.first.c_str(),
 									controlledKey.c_str()) == 0; });
 							if (controlled != visualStateControlledProperties.end()
-								&& _wcsicmp(controlled->second.c_str(),
+								&& std::wcscmp(controlled->second.c_str(),
 									group.Name.c_str()) != 0)
 							{
 								if (outError) *outError = L"Different visual-state groups animate the same transition property.";
@@ -4879,7 +4797,7 @@ bool DesignDocumentSerializer::FromXml(
 						triggerElement->GetAttribute("event"));
 					const auto event = std::find_if(definition.Events.begin(),
 						definition.Events.end(), [&](const auto& candidate)
-						{ return _wcsicmp(candidate.Name.c_str(),
+						{ return std::wcscmp(candidate.Name.c_str(),
 							trigger.EventName.c_str()) == 0; });
 					if (event == definition.Events.end())
 					{
@@ -4902,7 +4820,7 @@ bool DesignDocumentSerializer::FromXml(
 							{
 								if (std::any_of(beginStoryboardNames.begin(),
 									beginStoryboardNames.end(), [&](const auto& existing)
-									{ return _wcsicmp(existing.c_str(),
+									{ return std::wcscmp(existing.c_str(),
 										action.StoryboardName.c_str()) == 0; }))
 								{
 									if (outError) *outError = L"Component BeginStoryboard name is duplicated.";
@@ -4922,15 +4840,15 @@ bool DesignDocumentSerializer::FromXml(
 									animation.PropertyName);
 								for (const auto& existing : action.Animations)
 								{
-									if (_wcsicmp(existing.TargetName.c_str(),
+									if (std::wcscmp(existing.TargetName.c_str(),
 										animation.TargetName.c_str()) != 0) continue;
 									const bool existingPath = ClassifyStoryboardObjectPath(
 										existing.PropertyName) != StoryboardObjectPathKind::None;
 									const auto existingRoot = StoryboardAnimationRootProperty(
 										existing.PropertyName);
-									if (_wcsicmp(existing.PropertyName.c_str(),
+									if (std::wcscmp(existing.PropertyName.c_str(),
 										animation.PropertyName.c_str()) == 0
-										|| (_wcsicmp(existingRoot.c_str(), rootProperty.c_str()) == 0
+										|| (std::wcscmp(existingRoot.c_str(), rootProperty.c_str()) == 0
 											&& (!existingPath || !objectPath)))
 									{
 										if (outError) *outError = L"Component BeginStoryboard animation target is duplicated.";
@@ -4979,7 +4897,7 @@ bool DesignDocumentSerializer::FromXml(
 				for (const auto& name : referencedStoryboardNames)
 					if (std::none_of(beginStoryboardNames.begin(),
 						beginStoryboardNames.end(), [&](const auto& candidate)
-						{ return _wcsicmp(candidate.c_str(), name.c_str()) == 0; }))
+						{ return std::wcscmp(candidate.c_str(), name.c_str()) == 0; }))
 					{
 						if (outError) *outError = L"Component Storyboard control action references an unknown BeginStoryboard.";
 						return false;
@@ -4988,51 +4906,48 @@ bool DesignDocumentSerializer::FromXml(
 					if (std::any_of(definition.Events.begin(), definition.Events.end(),
 						[&](const auto& event)
 						{
-							return _wcsicmp(event.Name.c_str(), content.Name.c_str()) == 0;
+							return std::wcscmp(event.Name.c_str(), content.Name.c_str()) == 0;
 						}))
 					{
 						if (outError) *outError = L"Component content property conflicts with an event.";
 						return false;
 					}
-				if (version >= 7)
+				if (auto templateElement = FindChildElement(component, "template"))
 				{
-					if (auto templateElement = FindChildElement(component, "template"))
+					DesignValue templateValue;
+					if (!ReadValue(templateElement, templateValue, outError)
+						|| !templateValue.is_array()) return false;
+					for (const auto& value : templateValue.ArrayItems())
 					{
-						DesignValue templateValue;
-						if (!ReadValue(templateElement, templateValue, outError)
-							|| !templateValue.is_array()) return false;
-						for (const auto& value : templateValue.ArrayItems())
+						DesignNode node;
+						if (!TemplateNodeFromValue(
+							value, node, outError, resourceBasePath)) return false;
+						for (const auto& [target, source] : node.TemplateBindings)
 						{
-							DesignNode node;
-							if (!TemplateNodeFromValue(
-								value, node, outError, resourceBasePath)) return false;
-							for (const auto& [target, source] : node.TemplateBindings)
+							(void)target;
+							if (std::none_of(definition.Properties.begin(),
+								definition.Properties.end(), [&](const auto& property)
 							{
-								(void)target;
-								if (std::none_of(definition.Properties.begin(),
-									definition.Properties.end(), [&](const auto& property)
-									{
-										return _wcsicmp(property.Name.c_str(), source.c_str()) == 0;
-									}))
-								{
-									if (outError) *outError = L"Component template binding references an unknown property.";
-									return false;
-								}
+									return std::wcscmp(property.Name.c_str(), source.c_str()) == 0;
+								}))
+							{
+								if (outError) *outError = L"Component template binding references an unknown property.";
+								return false;
 							}
-							definition.Template.push_back(std::move(node));
 						}
-						DesignDocument templateDocument;
-						templateDocument.Nodes = definition.Template;
-						templateDocument.RecalculateNextStableId();
-						DesignDocumentGraph templateGraph;
-						if (!DesignDocumentGraph::Build(
-							templateDocument, templateGraph, outError)
-							|| templateGraph.Roots().size() != 1)
-						{
-							if (outError && outError->empty())
-								*outError = L"Component template must contain exactly one visual root.";
-							return false;
-						}
+						definition.Template.push_back(std::move(node));
+					}
+					DesignDocument templateDocument;
+					templateDocument.Nodes = definition.Template;
+					templateDocument.RecalculateNextStableId();
+					DesignDocumentGraph templateGraph;
+					if (!DesignDocumentGraph::Build(
+						templateDocument, templateGraph, outError)
+						|| templateGraph.Roots().size() != 1)
+					{
+						if (outError && outError->empty())
+							*outError = L"Component template must contain exactly one visual root.";
+						return false;
 					}
 				}
 				if (!definition.ContentProperties.empty() && definition.Template.empty())
@@ -5046,7 +4961,7 @@ bool DesignDocumentSerializer::FromXml(
 						definition.Template.begin(), definition.Template.end(),
 						[&](const auto& node)
 						{
-							return _wcsicmp(node.PresentedComponentContent.c_str(),
+							return std::wcscmp(node.PresentedComponentContent.c_str(),
 								content.Name.c_str()) == 0;
 						});
 					if (count != 1)
@@ -5062,7 +4977,7 @@ bool DesignDocumentSerializer::FromXml(
 						definition.ContentProperties.begin(),
 						definition.ContentProperties.end(), [&](const auto& property)
 						{
-							return _wcsicmp(property.Name.c_str(),
+							return std::wcscmp(property.Name.c_str(),
 								node.PresentedComponentContent.c_str()) == 0;
 						});
 					if (content == definition.ContentProperties.end()
@@ -5077,44 +4992,40 @@ bool DesignDocumentSerializer::FromXml(
 				if (!definition.VisualStateGroups.empty()
 					|| !definition.EventTriggers.empty())
 				{
-					auto hostProbe = DesignDocumentMaterializer::CreateRuntimeControl(
-						definition.BaseType);
 					std::wstring stateError;
-					if (!hostProbe || !DesignDocumentMaterializer::InstallComponentContract(
-						*hostProbe, definition, document, &stateError))
+					CuiRuntime::XamlTypePropertySchema hostSchema;
+					if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+						definition.BaseType, &definition, document,
+						hostSchema, &stateError))
 					{
 						if (outError) *outError = L"Component visual-state host contract is invalid: "
 							+ stateError;
 						return false;
 					}
-						auto resolveTarget = [&](const std::wstring& targetName)
-						-> std::unique_ptr<Control>
+					auto resolveTarget = [&](const std::wstring& targetName,
+						CuiRuntime::XamlTypePropertySchema& schema)
 					{
+						const DesignComponentDefinition* targetComponent = nullptr;
+						UIClass targetType = definition.BaseType;
 						if (targetName.empty())
+							targetComponent = &definition;
+						else
 						{
-							auto probe = DesignDocumentMaterializer::CreateRuntimeControl(
-								definition.BaseType);
-							std::wstring ignored;
-							if (!probe || !DesignDocumentMaterializer::InstallComponentContract(
-								*probe, definition, document, &ignored)) return nullptr;
-							return probe;
-						}
-						const auto node = std::find_if(
-							definition.Template.begin(), definition.Template.end(),
-							[&](const auto& candidate)
-							{ return _wcsicmp(candidate.Name.c_str(), targetName.c_str()) == 0; });
-						if (node == definition.Template.end()) return nullptr;
-						auto probe = DesignDocumentMaterializer::CreateRuntimeControl(node->Type);
-						if (!probe) return nullptr;
-						if (!node->ComponentType.Empty())
-						{
-							const auto* nested = document.FindComponent(node->ComponentType);
-							std::wstring ignored;
-							if (!nested || !DesignDocumentMaterializer::InstallComponentContract(
-								*probe, *nested, document, &ignored)) return nullptr;
+							const auto node = std::find_if(
+								definition.Template.begin(), definition.Template.end(),
+								[&](const auto& candidate)
+								{ return std::wcscmp(candidate.Name.c_str(), targetName.c_str()) == 0; });
+							if (node == definition.Template.end()) return false;
+							targetType = node->Type;
+							if (!node->ComponentType.Empty())
+							{
+								targetComponent = document.FindComponent(node->ComponentType);
+								if (!targetComponent) return false;
 							}
-							return probe;
-						};
+						}
+						return CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+							targetType, targetComponent, document, schema, &stateError);
+					};
 					auto validateTransitionAnimation = [&](const auto& animation)
 					{
 						const auto objectPathKind = ClassifyStoryboardObjectPath(
@@ -5122,9 +5033,11 @@ bool DesignDocumentSerializer::FromXml(
 						const bool objectPath = objectPathKind
 							!= StoryboardObjectPathKind::None;
 						ResolvedStoryboardObjectPath resolvedObjectPath;
-						auto target = resolveTarget(animation.TargetName);
-						const auto* metadata = !objectPath && target
-							? target->FindPropertyMetadata(animation.PropertyName) : nullptr;
+						CuiRuntime::XamlTypePropertySchema targetSchema;
+						const bool targetResolved = resolveTarget(
+							animation.TargetName, targetSchema);
+						const auto* metadata = !objectPath && targetResolved
+							? targetSchema.FindProperty(animation.PropertyName) : nullptr;
 						const bool compatible = objectPath
 							? TryResolveStoryboardObjectPath(definition,
 								animation.TargetName, animation.PropertyName,
@@ -5164,7 +5077,7 @@ bool DesignDocumentSerializer::FromXml(
 									: metadata->ValueKind() == BindingValueKind::Object
 										&& metadata->ValueType()
 											== std::type_index(typeid(D2D1_COLOR_F)));
-						if (!target || !compatible) return false;
+						if (!targetResolved || !compatible) return false;
 						auto validateEndpoint = [&](const DesignerStyleValue& literal,
 							bool usesResource, const std::wstring& resourceKey,
 							bool isDelta = false)
@@ -5176,7 +5089,7 @@ bool DesignDocumentSerializer::FromXml(
 									document.StyleSheet.Resources.begin(),
 									document.StyleSheet.Resources.end(),
 									[&](const auto& candidate)
-									{ return _wcsicmp(candidate.Key.c_str(),
+									{ return std::wcscmp(candidate.Key.c_str(),
 										resourceKey.c_str()) == 0; });
 								if (resource == document.StyleSheet.Resources.end())
 									return false;
@@ -5190,10 +5103,7 @@ bool DesignDocumentSerializer::FromXml(
 								return ValidateStoryboardObjectPathValue(
 									objectPathKind, source, isDelta);
 							BindingValue converted;
-							BindingValue coerced;
-							return metadata->TryConvert(source, converted)
-								&& (isDelta || metadata->TryCoerce(
-									*target, converted, coerced));
+							return metadata->TryConvert(source, converted);
 						};
 						return animation.KeyFrames.empty()
 							? (!animation.HasFrom || validateEndpoint(animation.From,
@@ -5222,17 +5132,15 @@ bool DesignDocumentSerializer::FromXml(
 						{
 							for (const auto& condition : state.Conditions)
 							{
-								const auto* metadata = hostProbe->FindPropertyMetadata(
+								const auto* metadata = hostSchema.FindProperty(
 									condition.PropertyName);
 								BindingValue source;
 								BindingValue converted;
-								BindingValue coerced;
 								if (!metadata || !metadata->CanRead()
 									|| !DesignerStyleSheetUtils::TryConvertValue(
 										condition.Value, source, &stateError,
 										document.ResourceBasePath, document.Resources)
-									|| !metadata->TryConvert(source, converted)
-									|| !metadata->TryCoerce(*hostProbe, converted, coerced))
+									|| !metadata->TryConvert(source, converted))
 								{
 									if (outError) *outError = L"Component visual-state condition property or value is invalid.";
 									return false;
@@ -5240,9 +5148,11 @@ bool DesignDocumentSerializer::FromXml(
 							}
 							for (const auto& setter : state.Setters)
 							{
-								auto target = resolveTarget(setter.TargetName);
-								const auto* metadata = target
-									? target->FindPropertyMetadata(setter.PropertyName) : nullptr;
+								CuiRuntime::XamlTypePropertySchema targetSchema;
+								const bool targetResolved = resolveTarget(
+									setter.TargetName, targetSchema);
+								const auto* metadata = targetResolved
+									? targetSchema.FindProperty(setter.PropertyName) : nullptr;
 								const DesignerStyleValue* authored = &setter.Literal;
 								if (setter.UsesResource)
 								{
@@ -5250,7 +5160,7 @@ bool DesignDocumentSerializer::FromXml(
 										document.StyleSheet.Resources.begin(),
 										document.StyleSheet.Resources.end(),
 										[&](const auto& candidate)
-										{ return _wcsicmp(candidate.Key.c_str(),
+										{ return std::wcscmp(candidate.Key.c_str(),
 											setter.ResourceKey.c_str()) == 0; });
 									if (resource == document.StyleSheet.Resources.end())
 									{
@@ -5261,13 +5171,11 @@ bool DesignDocumentSerializer::FromXml(
 								}
 								BindingValue source;
 								BindingValue converted;
-								BindingValue coerced;
-								if (!target || !metadata || !metadata->CanWrite()
+								if (!targetResolved || !metadata || !metadata->CanWrite()
 									|| !DesignerStyleSheetUtils::TryConvertValue(
 										*authored, source, &stateError,
 										document.ResourceBasePath, document.Resources)
-									|| !metadata->TryConvert(source, converted)
-									|| !metadata->TryCoerce(*target, converted, coerced))
+									|| !metadata->TryConvert(source, converted))
 								{
 									if (outError) *outError = L"Component visual-state setter target, property, or value is invalid.";
 									return false;
@@ -5280,9 +5188,11 @@ bool DesignDocumentSerializer::FromXml(
 								const bool objectPath = objectPathKind
 									!= StoryboardObjectPathKind::None;
 								ResolvedStoryboardObjectPath resolvedObjectPath;
-								auto target = resolveTarget(animation.TargetName);
-								const auto* metadata = !objectPath && target
-									? target->FindPropertyMetadata(animation.PropertyName) : nullptr;
+								CuiRuntime::XamlTypePropertySchema targetSchema;
+								const bool targetResolved = resolveTarget(
+									animation.TargetName, targetSchema);
+								const auto* metadata = !objectPath && targetResolved
+									? targetSchema.FindProperty(animation.PropertyName) : nullptr;
 								const bool compatible = objectPath
 									? TryResolveStoryboardObjectPath(definition,
 										animation.TargetName, animation.PropertyName,
@@ -5322,7 +5232,7 @@ bool DesignDocumentSerializer::FromXml(
 											: metadata->ValueKind() == BindingValueKind::Object
 												&& metadata->ValueType()
 													== std::type_index(typeid(D2D1_COLOR_F)));
-								if (!target || !compatible)
+								if (!targetResolved || !compatible)
 								{
 									if (outError) *outError = objectPath
 										&& !stateError.empty()
@@ -5341,7 +5251,7 @@ bool DesignDocumentSerializer::FromXml(
 											document.StyleSheet.Resources.begin(),
 											document.StyleSheet.Resources.end(),
 											[&](const auto& candidate)
-											{ return _wcsicmp(candidate.Key.c_str(),
+											{ return std::wcscmp(candidate.Key.c_str(),
 												resourceKey.c_str()) == 0; });
 										if (resource == document.StyleSheet.Resources.end())
 											return false;
@@ -5356,10 +5266,7 @@ bool DesignDocumentSerializer::FromXml(
 										return ValidateStoryboardObjectPathValue(
 											objectPathKind, source, isDelta);
 									BindingValue converted;
-									BindingValue coerced;
-									return metadata->TryConvert(source, converted)
-										&& (isDelta || metadata->TryCoerce(
-											*target, converted, coerced));
+									return metadata->TryConvert(source, converted);
 								};
 								const bool endpointsValid = animation.KeyFrames.empty()
 									? (!animation.HasFrom || validateEndpoint(
@@ -5413,10 +5320,23 @@ bool DesignDocumentSerializer::FromXml(
 	std::unordered_set<int> idSet;
 	for (const auto& control : FindChildElements(controls, "control"))
 	{
+		if (!ValidateElementShape(
+			control,
+			{ "id", "name", "type", "xamlNamespace", "xamlName",
+				"componentPrefix", "componentName", "componentNamespace",
+				"componentContentProperty", "presentedComponentContent",
+				"order", "locked", "parentId", "parent" },
+			{ "properties", "structure", "events", "bindings",
+				"commandBindings", "inputBindings", "localResources" },
+			L"Current control snapshot", outError))
+		{
+			return false;
+		}
 		DesignNode node;
 		node.Name = FromUtf8(control->GetAttribute("name"));
 		std::string type = control->GetAttribute("type");
-		if (node.Name.empty() || !TryParseUIClass(type, node.Type))
+		if (node.Name.empty()
+			|| !TryParseConstructibleUIClass(type, node.Type))
 		{
 			if (outError) *outError = L"Control entry is missing name/type or uses an unsupported type.";
 			return false;
@@ -5428,32 +5348,39 @@ bool DesignDocumentSerializer::FromXml(
 		}
 		nameSet.insert(node.Name);
 
-		if (version >= 4)
+		if (!TryReadIntegralAttribute(control, "id", node.Id)
+			|| node.Id < 1)
 		{
-			if (!TryReadIntegralAttribute(control, "id", node.Id)
-				|| node.Id < 1)
-			{
-				if (outError) *outError = L"Control entry is missing a valid stable id: " + node.Name;
-				return false;
-			}
-			if (!idSet.insert(node.Id).second)
-			{
-				if (outError) *outError = L"Duplicate control stable id: " + std::to_wstring(node.Id);
-				return false;
-			}
-			if (control->HasAttribute("parentId")
-				&& (!TryReadIntegralAttribute(control, "parentId", node.ParentId)
-					|| node.ParentId < 1))
-			{
-				if (outError) *outError = L"Control entry has an invalid parentId: " + node.Name;
-				return false;
-			}
+			if (outError) *outError = L"Control entry is missing a valid stable id: " + node.Name;
+			return false;
 		}
-		else
+		if (!idSet.insert(node.Id).second)
 		{
-			node.Id = document.AllocateNodeId();
+			if (outError) *outError = L"Duplicate control stable id: " + std::to_wstring(node.Id);
+			return false;
+		}
+		if (control->HasAttribute("parentId")
+			&& (!TryReadIntegralAttribute(control, "parentId", node.ParentId)
+				|| node.ParentId < 1))
+		{
+			if (outError) *outError = L"Control entry has an invalid parentId: " + node.Name;
+			return false;
 		}
 		node.ParentRef = FromUtf8(control->GetAttribute("parent"));
+		if (control->HasAttribute("xamlNamespace")
+			|| control->HasAttribute("xamlName"))
+		{
+			node.XamlType.NamespaceUri = FromUtf8(
+				control->GetAttribute("xamlNamespace"));
+			node.XamlType.LocalName = FromUtf8(
+				control->GetAttribute("xamlName"));
+			if (!node.XamlType.Valid())
+			{
+				if (outError) *outError = L"Control entry has an invalid XAML type identity: "
+					+ node.Name;
+				return false;
+			}
+		}
 		node.ComponentContentProperty = FromUtf8(
 			control->GetAttribute("componentContentProperty"));
 		node.PresentedComponentContent = FromUtf8(
@@ -5473,19 +5400,6 @@ bool DesignDocumentSerializer::FromXml(
 			node.ComponentType.XamlNamespace = FromUtf8(
 				control->GetAttribute("componentNamespace"));
 		}
-		if (control->HasAttribute("customName")
-			|| control->HasAttribute("customCppType")
-			|| control->HasAttribute("customPrefix")
-			|| control->HasAttribute("customNamespace")
-			|| control->HasAttribute("customHeader")
-			|| control->HasAttribute("customConstructor")
-			|| FindChildElement(control, "customEvents"))
-		{
-			if (outError) *outError =
-				L"Legacy C++ custom-control metadata is no longer supported: "
-				+ node.Name;
-			return false;
-		}
 		if (!TryReadIntegralAttribute(control, "order", node.Order))
 		{
 			node.Order = -1;
@@ -5498,46 +5412,74 @@ bool DesignDocumentSerializer::FromXml(
 			return false;
 		}
 
-		auto props = FindChildElement(control, "props");
-		if (props)
+		auto properties = FindChildElement(control, "properties");
+		DesignValue encodedProperties = DesignValue::object();
+		if (properties && !ReadValue(properties, encodedProperties, outError))
+			return false;
+		if (!DecodeDesignNodeProperties(
+			encodedProperties, node.Properties, outError))
 		{
-			if (!ReadValue(props, node.Props, outError)) return false;
-		}
-		else
-		{
-			node.Props = DesignValue::object();
-		}
-
-		auto extra = FindChildElement(control, "extra");
-		if (extra)
-		{
-			if (!ReadValue(extra, node.Extra, outError)) return false;
-		}
-		else
-		{
-			node.Extra = DesignValue::object();
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name + L" properties: " + *outError;
+			return false;
 		}
 
-		auto events = FindChildElement(control, "events");
-		if (events)
+		auto structure = FindChildElement(control, "structure");
+		DesignValue encodedStructure = DesignValue::object();
+		if (structure && !ReadValue(structure, encodedStructure, outError))
+			return false;
+		if (!DecodeDesignNodeStructure(
+			node.Type, encodedStructure, node.Structure, outError))
 		{
-			if (!ReadValue(events, node.Events, outError)) return false;
-		}
-		else
-		{
-			node.Events = DesignValue::object();
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name + L" structure: " + *outError;
+			return false;
 		}
 
-		auto bindings = FindChildElement(control, "bindings");
-		if (bindings)
+		DesignValue encodedEvents = DesignValue::object();
+		if (auto events = FindChildElement(control, "events");
+			events && !ReadValue(events, encodedEvents, outError)) return false;
+		if (!DecodeDesignNodeEvents(encodedEvents, node.Events, outError))
 		{
-			if (!ReadValue(bindings, node.Bindings, outError)) return false;
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name + L" events: " + *outError;
+			return false;
 		}
-		else
+
+		DesignValue encodedBindings = DesignValue::object();
+		if (auto bindings = FindChildElement(control, "bindings");
+			bindings && !ReadValue(bindings, encodedBindings, outError)) return false;
+		if (!DecodeDesignNodeBindings(encodedBindings, node.Bindings, outError))
 		{
-			node.Bindings = DesignValue::object();
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name + L" bindings: " + *outError;
+			return false;
 		}
-		if (version >= 15 && !ReadLocalResourcesSnapshot(
+		DesignValue encodedCommandBindings = DesignValue::array();
+		if (auto bindings = FindChildElement(control, "commandBindings");
+			bindings && !ReadValue(bindings, encodedCommandBindings, outError))
+			return false;
+		if (!DecodeDesignCommandBindings(
+			encodedCommandBindings, node.CommandBindings, outError))
+		{
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name
+					+ L" command bindings: " + *outError;
+			return false;
+		}
+		DesignValue encodedInputBindings = DesignValue::array();
+		if (auto bindings = FindChildElement(control, "inputBindings");
+			bindings && !ReadValue(bindings, encodedInputBindings, outError))
+			return false;
+		if (!DecodeDesignInputBindings(
+			encodedInputBindings, node.InputBindings, outError))
+		{
+			if (outError && !outError->empty())
+				*outError = L"Control " + node.Name
+					+ L" input bindings: " + *outError;
+			return false;
+		}
+		if (!ReadLocalResourcesSnapshot(
 			control, node.LocalResources, node.LocalObjectResources,
 			document.ResourceBasePath,
 			document.Resources, outError)) return false;
@@ -5546,25 +5488,14 @@ bool DesignDocumentSerializer::FromXml(
 	}
 
 	std::unordered_map<int, DesignNode*> nodeById;
-	std::unordered_map<std::wstring, int> idByName;
 	nodeById.reserve(document.Nodes.size());
-	idByName.reserve(document.Nodes.size());
 	for (auto& node : document.Nodes)
 	{
 		nodeById.emplace(node.Id, &node);
-		idByName.emplace(node.Name, node.Id);
 	}
 
 	for (auto& node : document.Nodes)
 	{
-		if (version < 4)
-		{
-			const auto legacyParent = idByName.find(node.ParentRef);
-			if (legacyParent != idByName.end())
-				node.ParentId = legacyParent->second;
-			continue;
-		}
-
 		if (node.ParentId > 0)
 		{
 			const auto parent = nodeById.find(node.ParentId);
@@ -5574,8 +5505,6 @@ bool DesignDocumentSerializer::FromXml(
 		}
 	}
 
-	if (version < 4)
-		document.RecalculateNextStableId();
 	DesignDocumentGraph graph;
 	if (!DesignDocumentGraph::Build(document, graph, outError)) return false;
 	for (const auto& node : document.Nodes)
@@ -5621,7 +5550,7 @@ bool DesignDocumentSerializer::FromXml(
 				definition->ContentProperties.begin(),
 				definition->ContentProperties.end(), [&](const auto& property)
 				{
-					return _wcsicmp(property.Name.c_str(),
+					return std::wcscmp(property.Name.c_str(),
 						node.ComponentContentProperty.c_str()) == 0;
 				});
 			if (node.ComponentContentProperty.empty()
@@ -5640,7 +5569,7 @@ bool DesignDocumentSerializer::FromXml(
 					[&](const auto& candidate)
 					{
 						return candidate.ParentId == parent->Id
-							&& _wcsicmp(
+							&& std::wcscmp(
 								candidate.ComponentContentProperty.c_str(),
 								content->Name.c_str()) == 0;
 					});
@@ -5662,6 +5591,8 @@ bool DesignDocumentSerializer::FromXml(
 		return false;
 	DesignDocumentEventIndex eventIndex;
 	if (!DesignDocumentEventIndex::Build(document, eventIndex, outError))
+		return false;
+	if (!document.ValidateCommandTargetReferences(outError))
 		return false;
 	output = std::move(document);
 	return true;

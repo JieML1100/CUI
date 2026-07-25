@@ -4,10 +4,12 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 class ResourceLoadContext;
+namespace DesignerModel { struct DesignNode; }
 
 /**
  * Designer-facing projection of one readable runtime property. The runtime
@@ -22,7 +24,7 @@ struct DesignerPropertyDescriptor
 	int CategoryOrder = 1000;
 	int Order = 0;
 	DesignerStyleValueKind ValueKind = DesignerStyleValueKind::String;
-	ControlPropertyEditorKind Editor = ControlPropertyEditorKind::Auto;
+	DependencyPropertyEditorKind Editor = DependencyPropertyEditorKind::Auto;
 	std::wstring SampleValue;
 	struct Choice
 	{
@@ -33,8 +35,8 @@ struct DesignerPropertyDescriptor
 	std::optional<double> Minimum;
 	std::optional<double> Maximum;
 	std::optional<double> Step;
-	ControlPropertyPersistence Persistence = ControlPropertyPersistence::Automatic;
-	const BindingPropertyMetadata* Metadata = nullptr;
+	DependencyPropertyPersistence Persistence = DependencyPropertyPersistence::Automatic;
+	const DependencyPropertyMetadata* Metadata = nullptr;
 };
 
 namespace DesignerPropertyCatalog
@@ -43,24 +45,75 @@ namespace DesignerPropertyCatalog
 
 	/** Maps runtime property metadata to a Designer-serializable literal kind. */
 	bool TryGetStyleValueKind(
-		const BindingPropertyMetadata& metadata,
+		const DependencyPropertyMetadata& metadata,
 		DesignerStyleValueKind& out);
 
 	/** Returns writable properties whose value types the Designer can persist. */
 	std::vector<DesignerPropertyDescriptor> GetStyleProperties(Control& target);
+	/** Schema-only equivalent; never constructs or reads a Control instance. */
+	std::vector<DesignerPropertyDescriptor> GetStyleProperties(
+		std::span<const DependencyPropertyMetadata* const> properties);
+
+	/** Resolves one writable persistable property without enumerating the catalog. */
+	bool TryGetStyleProperty(
+		Control& target,
+		const std::wstring& propertyName,
+		DesignerPropertyDescriptor& out);
+	bool TryGetStyleProperty(
+		std::span<const DependencyPropertyMetadata* const> properties,
+		const std::wstring& propertyName,
+		DesignerPropertyDescriptor& out);
 
 	/** Returns readable observable properties, including read-only transient state. */
 	std::vector<DesignerPropertyDescriptor> GetConditionProperties(Control& target);
+	std::vector<DesignerPropertyDescriptor> GetConditionProperties(
+		std::span<const DependencyPropertyMetadata* const> properties);
 
 	/** Returns generic PropertyGrid entries after design visibility/persistence filtering. */
 	std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target);
 
 	/**
 	 * Returns every Designer-browsable scalar property for the ordinary property
-	 * panel. Unlike GetBrowsableProperties, this includes legacy-serialized
+	 * panel. Unlike GetBrowsableProperties, this includes native-field
 	 * and read-only properties; transient runtime state remains excluded.
 	 */
 	std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target);
+	/** Schema-driven property rows for a normalized XAML element node. */
+	std::vector<DesignerPropertyDescriptor> GetNodeProperties(UIClass nativeType);
+
+	/** Reads an authored node value, falling back to dependency-property metadata. */
+	bool CaptureNodeValue(
+		const DesignerModel::DesignNode& node,
+		const std::wstring& propertyName,
+		DesignerStyleValue& out,
+		std::wstring* outCanonicalName = nullptr,
+		std::wstring* outError = nullptr);
+	/** Converts an authored/default node value into its runtime BindingValue. */
+	bool ReadNodeValue(
+		const DesignerModel::DesignNode& node,
+		const std::wstring& propertyName,
+		BindingValue& out,
+		std::wstring* outCanonicalName = nullptr,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
+	/** Installs one canonical local literal and removes a competing Binding. */
+	bool ApplyNodeValue(
+		DesignerModel::DesignNode& node,
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outCanonicalName = nullptr,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
+	/** Clears the node's local literal/expression and exposes metadata default. */
+	bool ResetNodeValue(
+		DesignerModel::DesignNode& node,
+		const std::wstring& propertyName,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outCanonicalName = nullptr,
+		std::wstring* outError = nullptr);
 
 	const DesignerPropertyDescriptor* Find(
 		const std::vector<DesignerPropertyDescriptor>& properties,
@@ -77,11 +130,28 @@ namespace DesignerPropertyCatalog
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});
+	/**
+	 * Schema-only conversion. CoerceValueCallback is intentionally deferred
+	 * until a real target receives the value, matching WPF property semantics.
+	 */
+	bool NormalizeStyleValue(
+		const DependencyPropertyMetadata& metadata,
+		const DesignerStyleValue& value,
+		DesignerStyleValue& outCanonical,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
 
 	/** Validates a readable/observable metadata value used by Style Trigger. */
 	bool ValidateConditionValue(
 		Control& target,
 		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
+	bool ValidateConditionValue(
+		const DependencyPropertyMetadata& metadata,
 		const DesignerStyleValue& value,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
@@ -94,8 +164,13 @@ namespace DesignerPropertyCatalog
 		std::wstring* outCanonicalName,
 		DesignerStyleValue& out,
 		std::wstring* outError = nullptr);
+	/** Captures the declared metadata default without constructing a target. */
+	bool CaptureDefaultValue(
+		const DependencyPropertyMetadata& metadata,
+		DesignerStyleValue& out,
+		std::wstring* outError = nullptr);
 
-	/** Applies a Local value and returns the post-Coerce canonical representation. */
+	/** Applies a value-source contribution and returns its effective representation. */
 	bool ApplyValue(
 		Control& target,
 		const std::wstring& propertyName,
@@ -104,14 +179,16 @@ namespace DesignerPropertyCatalog
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
-		const std::shared_ptr<ResourceLoadContext>& resources = {});
+		const std::shared_ptr<ResourceLoadContext>& resources = {},
+		DependencyPropertyValueSource source =
+			DependencyPropertyValueSource::Local);
 
 	/** True when a design edit belongs in the generic typed metadata bag. */
-	bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept;
+	bool UsesMetadataPersistence(const DependencyPropertyMetadata& metadata) noexcept;
 
 	/**
 	 * Captures the effective value and synchronizes the generic metadata bag
-	 * according to the property's persistence metadata. Legacy and transient
+	 * according to the property's persistence metadata. Native and transient
 	 * properties are deliberately removed from the bag.
 	 */
 	bool TrackCurrentValue(
@@ -122,7 +199,7 @@ namespace DesignerPropertyCatalog
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr);
 
-	/** Applies a Local value and synchronizes its Designer persistence. */
+	/** Applies a value-source contribution and synchronizes Designer persistence. */
 	bool ApplyAndTrackValue(
 		Control& target,
 		TrackedPropertyValues& trackedValues,
@@ -132,7 +209,9 @@ namespace DesignerPropertyCatalog
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
-		const std::shared_ptr<ResourceLoadContext>& resources = {});
+		const std::shared_ptr<ResourceLoadContext>& resources = {},
+		DependencyPropertyValueSource source =
+			DependencyPropertyValueSource::Local);
 
 	/** Clears the Local value, exposes the next value source, and untracks it. */
 	bool ResetAndUntrackValue(

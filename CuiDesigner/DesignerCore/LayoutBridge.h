@@ -9,7 +9,8 @@ class Control;
 class LayoutBridge
 {
 public:
-	static Control* NormalizeContainerForDrop(Control* container);
+	static Control* NormalizeContainerForDrop(
+		Control* container, UIClass childType);
 	static bool CanAcceptChild(Control* container, UIClass childType);
 	static void AttachChild(Control* container, Control* child);
 	static Control* AttachChild(Control* container, std::unique_ptr<Control> child);

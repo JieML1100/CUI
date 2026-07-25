@@ -1,4 +1,6 @@
-﻿#include "Designer.h"
+#include "Designer.h"
+#include "DesignerControlCatalog.h"
+#include "ProgrammaticControlFactory.h"
 #include "CodeBehindExportDialog.h"
 #include "XamlEditorDialog.h"
 #include "DesignerModel/DesignDocument.h"
@@ -7,6 +9,10 @@
 #include "DesignerModel/DesignRecoveryStore.h"
 #include "SourceCodeNavigator.h"
 #include "../CUI/include/Core/Threading.h"
+#include "../CUI/include/Canvas.h"
+#include "../CUI/include/NativeVisualStateInfrastructure.h"
+#include "../CUI/include/XamlInfrastructure.h"
+#include "../CUI/include/WindowInfrastructure.h"
 #include <Utils.h>
 #include <Windows.h>
 #include <commdlg.h>
@@ -22,107 +28,190 @@
 
 namespace
 {
+	inline constexpr int OutlineWindowIdentity = -1;
+
+	bool TryGetOutlineIdentity(TreeViewItem* item, int& value)
+	{
+		return item && item->Tag.TryGetInt(value);
+	}
+
 	bool IsControlWithin(Control* control, Control* ancestor)
 	{
-		for (auto* current = control; current; current = current->Parent)
+		for (auto* current = control; current; current = current->GetVisualParent())
 			if (current == ancestor) return true;
 		return false;
 	}
 
-	bool IsOutlineShortcutKey(WPARAM key, bool controlDown)
+	bool IsOutlineShortcutKey(Key key, bool controlDown)
 	{
-		if (!controlDown) return key == VK_DELETE;
+		if (!controlDown) return key == Key::Delete;
 		switch (key)
 		{
-		case 'C':
-		case 'X':
-		case 'V':
-		case 'D':
-		case 'L':
-		case 'Z':
-		case 'Y':
-		case 'A':
+		case Key::C:
+		case Key::X:
+		case Key::V:
+		case Key::D:
+		case Key::L:
+		case Key::Z:
+		case Key::Y:
+		case Key::A:
 			return true;
 		default:
 			return false;
 		}
 	}
 
-	wchar_t OutlineShortcutControlCharacter(WPARAM key)
+	wchar_t OutlineShortcutControlCharacter(Key key)
 	{
 		switch (key)
 		{
-		case 'A': return L'\x01';
-		case 'C': return L'\x03';
-		case 'D': return L'\x04';
-		case 'L': return L'\x0c';
-		case 'V': return L'\x16';
-		case 'X': return L'\x18';
-		case 'Y': return L'\x19';
-		case 'Z': return L'\x1a';
+		case Key::A: return L'\x01';
+		case Key::C: return L'\x03';
+		case Key::D: return L'\x04';
+		case Key::L: return L'\x0c';
+		case Key::V: return L'\x16';
+		case Key::X: return L'\x18';
+		case Key::Y: return L'\x19';
+		case Key::Z: return L'\x1a';
 		default: return L'\0';
 		}
 	}
 
-	WPARAM OutlineShortcutKeyFromControlCharacter(wchar_t character)
+	inline constexpr const wchar_t* CanvasUndo = L"Designer.Canvas.Undo";
+	inline constexpr const wchar_t* CanvasRedo = L"Designer.Canvas.Redo";
+	inline constexpr const wchar_t* CanvasCut = L"Designer.Canvas.Cut";
+	inline constexpr const wchar_t* CanvasCopy = L"Designer.Canvas.Copy";
+	inline constexpr const wchar_t* CanvasPaste = L"Designer.Canvas.Paste";
+	inline constexpr const wchar_t* CanvasPasteInPlace =
+		L"Designer.Canvas.PasteInPlace";
+	inline constexpr const wchar_t* CanvasPasteHere =
+		L"Designer.Canvas.PasteHere";
+	inline constexpr const wchar_t* CanvasDuplicate =
+		L"Designer.Canvas.Duplicate";
+	inline constexpr const wchar_t* CanvasDelete = L"Designer.Canvas.Delete";
+	inline constexpr const wchar_t* CanvasToggleLock =
+		L"Designer.Canvas.ToggleLock";
+	inline constexpr const wchar_t* CanvasSelectAll =
+		L"Designer.Canvas.SelectAll";
+	inline constexpr const wchar_t* CanvasEditXaml =
+		L"Designer.Canvas.EditXaml";
+	inline constexpr const wchar_t* CanvasViewFit = L"Designer.View.Fit";
+	inline constexpr const wchar_t* CanvasViewActualSize =
+		L"Designer.View.ActualSize";
+	inline constexpr const wchar_t* CanvasViewZoomIn =
+		L"Designer.View.ZoomIn";
+	inline constexpr const wchar_t* CanvasViewZoomOut =
+		L"Designer.View.ZoomOut";
+	inline constexpr const wchar_t* CanvasToggleGrid =
+		L"Designer.Grid.Toggle";
+	inline constexpr const wchar_t* CanvasToggleSnapGrid =
+		L"Designer.Grid.ToggleSnap";
+	inline constexpr const wchar_t* CanvasToggleSnapGuides =
+		L"Designer.Grid.ToggleGuides";
+	inline constexpr const wchar_t* CanvasGridSize5 = L"Designer.Grid.Size5";
+	inline constexpr const wchar_t* CanvasGridSize10 = L"Designer.Grid.Size10";
+	inline constexpr const wchar_t* CanvasGridSize20 = L"Designer.Grid.Size20";
+	inline constexpr const wchar_t* CanvasToggleTabOrder =
+		L"Designer.TabOrder.Toggle";
+	inline constexpr const wchar_t* CanvasAutoTabOrder =
+		L"Designer.TabOrder.Auto";
+	inline constexpr const wchar_t* ArrangeDuplicate =
+		L"Designer.Arrange.Duplicate";
+	inline constexpr const wchar_t* ArrangeAlignLeft =
+		L"Designer.Arrange.AlignLeft";
+	inline constexpr const wchar_t* ArrangeAlignHorizontalCenters =
+		L"Designer.Arrange.AlignHorizontalCenters";
+	inline constexpr const wchar_t* ArrangeAlignRight =
+		L"Designer.Arrange.AlignRight";
+	inline constexpr const wchar_t* ArrangeAlignTop =
+		L"Designer.Arrange.AlignTop";
+	inline constexpr const wchar_t* ArrangeAlignVerticalCenters =
+		L"Designer.Arrange.AlignVerticalCenters";
+	inline constexpr const wchar_t* ArrangeAlignBottom =
+		L"Designer.Arrange.AlignBottom";
+	inline constexpr const wchar_t* ArrangeDistributeHorizontally =
+		L"Designer.Arrange.DistributeHorizontally";
+	inline constexpr const wchar_t* ArrangeDistributeVertically =
+		L"Designer.Arrange.DistributeVertically";
+	inline constexpr const wchar_t* ArrangeMakeSameWidth =
+		L"Designer.Arrange.MakeSameWidth";
+	inline constexpr const wchar_t* ArrangeMakeSameHeight =
+		L"Designer.Arrange.MakeSameHeight";
+	inline constexpr const wchar_t* ArrangeMakeSameSize =
+		L"Designer.Arrange.MakeSameSize";
+	inline constexpr const wchar_t* ArrangeBringForward =
+		L"Designer.Arrange.BringForward";
+	inline constexpr const wchar_t* ArrangeSendBackward =
+		L"Designer.Arrange.SendBackward";
+	inline constexpr const wchar_t* ArrangeBringToFront =
+		L"Designer.Arrange.BringToFront";
+	inline constexpr const wchar_t* ArrangeSendToBack =
+		L"Designer.Arrange.SendToBack";
+
+	MenuItem* FindDesignerCommand(
+		ContextMenu* menu,
+		std::wstring_view commandName)
 	{
-		switch (character)
-		{
-		case L'\x01': return 'A';
-		case L'\x03': return 'C';
-		case L'\x04': return 'D';
-		case L'\x0c': return 'L';
-		case L'\x16': return 'V';
-		case L'\x18': return 'X';
-		case L'\x19': return 'Y';
-		case L'\x1a': return 'Z';
-		default: return 0;
-		}
+		return menu
+			? menu->FindItemByCommand(std::wstring(commandName)) : nullptr;
 	}
 
-	enum ArrangeMenuCommandId
+	void CollectDesignerCommandNames(
+		MenuItem& item,
+		std::set<std::wstring>& names)
 	{
-		CanvasUndo = 30901,
-		CanvasRedo,
-		CanvasCut,
-		CanvasCopy,
-		CanvasPaste,
-		CanvasPasteInPlace,
-		CanvasPasteHere,
-		CanvasDuplicate,
-		CanvasDelete,
-		CanvasToggleLock,
-		CanvasSelectAll,
-		CanvasEditXaml,
-		CanvasViewFit,
-		CanvasViewActualSize,
-		CanvasViewZoomIn,
-		CanvasViewZoomOut,
-		CanvasToggleGrid,
-		CanvasToggleSnapGrid,
-		CanvasToggleSnapGuides,
-		CanvasGridSize5,
-		CanvasGridSize10,
-		CanvasGridSize20,
-		CanvasToggleTabOrder,
-		CanvasAutoTabOrder,
-		ArrangeDuplicate = 31001,
-		ArrangeAlignLeft,
-		ArrangeAlignHorizontalCenters,
-		ArrangeAlignRight,
-		ArrangeAlignTop,
-		ArrangeAlignVerticalCenters,
-		ArrangeAlignBottom,
-		ArrangeDistributeHorizontally,
-		ArrangeDistributeVertically,
-		ArrangeMakeSameWidth,
-		ArrangeMakeSameHeight,
-		ArrangeMakeSameSize,
-		ArrangeBringForward,
-		ArrangeSendBackward,
-		ArrangeBringToFront,
-		ArrangeSendToBack,
-	};
+		const auto command = item.GetCommand();
+		if (!command.empty()) names.insert(command);
+		for (auto* entry : item.GetMenuItemsView())
+			if (auto* child = dynamic_cast<MenuItem*>(entry))
+				CollectDesignerCommandNames(*child, names);
+	}
+
+	template<typename THandler>
+	void BindDesignerMenuCommands(
+		Control& routeOwner,
+		std::initializer_list<ContextMenu*> menus,
+		THandler handler)
+	{
+		std::vector<ContextMenu*> menuList(menus);
+		std::set<std::wstring> commandNames;
+		for (auto* menu : menuList)
+		{
+			if (!menu) continue;
+			for (int index = 0; index < menu->ItemCount(); ++index)
+				if (auto* item = menu->GetItem(index))
+					CollectDesignerCommandNames(*item, commandNames);
+		}
+		for (const auto& commandName : commandNames)
+		{
+			CommandBinding binding;
+			binding.Command = RoutedCommand(commandName);
+			binding.CanExecute = [menuList](
+				Control*, CanExecuteRoutedEventArgs& args)
+			{
+				bool found = false;
+				bool enabled = false;
+				for (const auto* menu : menuList)
+				{
+					const auto* item = menu
+						? menu->FindItemByCommand(args.Command.Name()) : nullptr;
+					if (!item) continue;
+					found = true;
+					enabled = enabled || item->IsLocallyEnabled();
+				}
+				if (found) args.CanExecute = enabled;
+			};
+			binding.Executed = [handler](
+				Control*, ExecutedRoutedEventArgs& args) mutable
+			{
+				handler(std::wstring_view(args.Command.Name()));
+				args.Executed = true;
+			};
+			cui::framework::XamlAccess::RetainEventConnection(
+				routeOwner,
+				routeOwner.AddCommandBinding(std::move(binding)));
+		}
+	}
 
 	static std::string MakeDesignFilter()
 	{
@@ -144,39 +233,15 @@ namespace
 	}
 
 
-	static void ShowModalMessage(Form* ownerForm, const std::wstring& caption, const std::wstring& text)
+	static void ShowModalMessage(Window* ownerWindow, const std::wstring& caption, const std::wstring& text)
 	{
-		::MessageBoxW(ownerForm->Handle, text.c_str(), caption.c_str(), MB_OK | MB_SETFOREGROUND);
+		::MessageBoxW(ownerWindow->Handle, text.c_str(), caption.c_str(), MB_OK | MB_SETFOREGROUND);
 	}
 
-	static SIZE GetLogicalDesignerContentSize(Form* form)
+	static cui::core::Size GetLogicalDesignerContentSize(Window* window)
 	{
-		if (!form)
-			return SIZE{ 0, 0 };
-
-		float dpiScale = form->GetDpiScale();
-		if (dpiScale <= 0.0f)
-			dpiScale = 1.0f;
-
-		if (form->Handle && ::IsWindow(form->Handle))
-		{
-			RECT rc{};
-			::GetClientRect(form->Handle, &rc);
-			int contentWidth = (int)((float)(rc.right - rc.left) / dpiScale);
-			int topPhysical = (form->VisibleHead ? form->HeadHeight : 0);
-			int contentHeight = (int)((float)((rc.bottom - rc.top) - topPhysical) / dpiScale);
-			if (contentWidth < 0) contentWidth = 0;
-			if (contentHeight < 0) contentHeight = 0;
-			return SIZE{ contentWidth, contentHeight };
-		}
-
-		SIZE size = form->Size;
-		int topLogical = (int)((float)(form->VisibleHead ? form->HeadHeight : 0) / dpiScale);
-		size.cx = (int)((float)size.cx / dpiScale);
-		size.cy = (int)((float)size.cy / dpiScale) - topLogical;
-		if (size.cx < 0) size.cx = 0;
-		if (size.cy < 0) size.cy = 0;
-		return size;
+		return window ? window->GetContentViewportSizeDip()
+			: cui::core::Size{};
 	}
 
 	static std::wstring DescribeCanvasOperation(
@@ -193,10 +258,8 @@ namespace
 		if (operation == L"MoveSelection") return L"移动控件";
 		if (operation == L"NudgeSelection") return L"微调控件";
 		if (operation == L"ResizeSelection") return L"调整控件大小";
-		if (operation == L"UpdateProperty:SplitterDistance")
-			return L"调整分隔条";
 		if (operation == L"BoxSelection") return L"框选控件";
-		if (operation == L"AddControl") return L"添加控件";
+		if (operation == L"AdoptVisualChild") return L"添加控件";
 		if (operation == L"SetTabOrder") return L"设置 Tab 顺序";
 		if (operation == L"AutoTabOrder") return L"自动编排 Tab 顺序";
 		if (operation == L"SetLocked") return L"锁定控件";
@@ -243,17 +306,24 @@ namespace
 
 }
 
-Designer::Designer(std::vector<DesignerControlDescriptor> controlDescriptors)
-	: Form(L"CUI 窗口设计器", { 0,0 }, { 1400, 840 }),
-	_controlDescriptors(std::move(controlDescriptors))
+Designer::Designer()
+	: Window(),
+	_controlDescriptors(DesignerControlCatalog::BuiltInDescriptors())
 {
-	this->BackColor = D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f);
+	this->Title = L"CUI 窗口设计器";
+	this->Width = 1400.0f;
+	this->Height = 840.0f;
+	this->Background = D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f);
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	SetVisualContent(std::move(contentOwner));
 }
 
 Designer::~Designer()
 {
 	StopClipboardMonitoring();
-	// Form tears down its owned controls as the native window closes, before the
+	// Window tears down its owned controls as the native window closes, before the
 	// stack-allocated Designer itself is destroyed.  Do not publish shutdown
 	// state through raw child-control pointers after that ownership teardown.
 	_propertyGrid = nullptr;
@@ -274,6 +344,8 @@ void Designer::InitAndShow()
 
 void Designer::InitializeComponents()
 {
+	auto* contentRoot = static_cast<Panel*>(GetVisualContent());
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 	// 顶部工具栏
 	int toolbarHeight = 50;
 	int btnWidth = 80;
@@ -281,287 +353,310 @@ void Designer::InitializeComponents()
 	int btnY = 10;
 	int btnX = 10;
 	
-	_btnNew = new Button(L"新建", btnX, btnY, btnWidth, btnHeight);
-	_btnNew->Round = 0.5f;
-	_btnNew->OnMouseClick += [this](Control* sender, MouseEventArgs e) {
+	_btnNew = cui::designer::NewControl<Button>(L"新建", btnX, btnY, btnWidth, btnHeight);
+	_btnNew->Click += [this](Control* sender, RoutedEventArgs& e) {
 		OnNewClick();
 	};
-	this->AddControl(_btnNew);
+	addContent(_btnNew);
 	btnX += btnWidth + 10;
 
-	_btnOpen = new Button(L"打开", btnX, btnY, btnWidth, btnHeight);
-	_btnOpen->Round = 0.5f;
-	_btnOpen->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnOpen = cui::designer::NewControl<Button>(L"打开", btnX, btnY, btnWidth, btnHeight);
+	_btnOpen->Click += [this](Control*, RoutedEventArgs&) {
 		OnOpenClick();
 	};
-	this->AddControl(_btnOpen);
+	addContent(_btnOpen);
 	btnX += btnWidth + 10;
 
-	_btnSave = new Button(L"保存", btnX, btnY, btnWidth, btnHeight);
-	_btnSave->Round = 0.5f;
-	_btnSave->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnSave = cui::designer::NewControl<Button>(L"保存", btnX, btnY, btnWidth, btnHeight);
+	_btnSave->Click += [this](Control*, RoutedEventArgs&) {
 		OnSaveClick();
 	};
-	this->AddControl(_btnSave);
+	addContent(_btnSave);
 	btnX += btnWidth + 10;
 
-	_btnReload = new Button(L"重新加载", btnX, btnY, btnWidth + 10, btnHeight);
-	_btnReload->Round = 0.5f;
-	_btnReload->Enable = false;
-	_btnReload->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnReload = cui::designer::NewControl<Button>(L"重新加载", btnX, btnY, btnWidth + 10, btnHeight);
+	_btnReload->IsEnabled = false;
+	_btnReload->Click += [this](Control*, RoutedEventArgs&) {
 		OnReloadClick();
 	};
-	this->AddControl(_btnReload);
+	addContent(_btnReload);
 	btnX += btnWidth + 20;
 	
-	_btnExport = new Button(L"导出代码", btnX, btnY, btnWidth + 20, btnHeight);
-	_btnExport->Round = 0.5f;
-	_btnExport->OnMouseClick += [this](Control* sender, MouseEventArgs e) {
+	_btnExport = cui::designer::NewControl<Button>(L"导出代码", btnX, btnY, btnWidth + 20, btnHeight);
+	_btnExport->Click += [this](Control* sender, RoutedEventArgs& e) {
 		OnExportClick();
 	};
-	this->AddControl(_btnExport);
+	addContent(_btnExport);
 	btnX += btnWidth + 30;
 
-	_btnRegenerate = new Button(L"重新生成", btnX, btnY, btnWidth + 20, btnHeight);
-	_btnRegenerate->Round = 0.5f;
-	_btnRegenerate->Enable = false;
-	_btnRegenerate->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnRegenerate = cui::designer::NewControl<Button>(L"重新生成", btnX, btnY, btnWidth + 20, btnHeight);
+	_btnRegenerate->IsEnabled = false;
+	_btnRegenerate->Click += [this](Control*, RoutedEventArgs&) {
 		OnRegenerateCodeClick();
 	};
-	this->AddControl(_btnRegenerate);
+	addContent(_btnRegenerate);
 	btnX += btnWidth + 15;
 
 	const int historyButtonWidth = 58;
-	_btnUndo = new Button(L"撤销", btnX, btnY,
+	_btnUndo = cui::designer::NewControl<Button>(L"撤销", btnX, btnY,
 		historyButtonWidth, btnHeight);
-	_btnUndo->Round = 0.5f;
-	_btnUndo->Enable = false;
-	_btnUndo->AccessibleName = L"撤销";
-	_btnUndo->AccessibleDescription = L"没有可撤销的操作。快捷键 Ctrl+Z。";
-	_btnUndo->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnUndo->IsEnabled = false;
+	_btnUndo->AutomationName = L"撤销";
+	_btnUndo->AutomationFullDescription = L"没有可撤销的操作。快捷键 Ctrl+Z。";
+	_btnUndo->Click += [this](Control*, RoutedEventArgs&) {
 		OnUndoClick();
 	};
-	this->AddControl(_btnUndo);
+	addContent(_btnUndo);
 	btnX += historyButtonWidth + 6;
 
-	_btnRedo = new Button(L"重做", btnX, btnY,
+	_btnRedo = cui::designer::NewControl<Button>(L"重做", btnX, btnY,
 		historyButtonWidth, btnHeight);
-	_btnRedo->Round = 0.5f;
-	_btnRedo->Enable = false;
-	_btnRedo->AccessibleName = L"重做";
-	_btnRedo->AccessibleDescription = L"没有可重做的操作。快捷键 Ctrl+Y。";
-	_btnRedo->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnRedo->IsEnabled = false;
+	_btnRedo->AutomationName = L"重做";
+	_btnRedo->AutomationFullDescription = L"没有可重做的操作。快捷键 Ctrl+Y。";
+	_btnRedo->Click += [this](Control*, RoutedEventArgs&) {
 		OnRedoClick();
 	};
-	this->AddControl(_btnRedo);
+	addContent(_btnRedo);
 	btnX += historyButtonWidth + 10;
 
 	const int editButtonWidth = 64;
-	_btnCopy = new Button(L"复制", btnX, btnY, editButtonWidth, btnHeight);
-	_btnCopy->Round = 0.5f;
-	_btnCopy->Enable = false;
-	_btnCopy->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnCopy = cui::designer::NewControl<Button>(L"复制", btnX, btnY, editButtonWidth, btnHeight);
+	_btnCopy->IsEnabled = false;
+	_btnCopy->Click += [this](Control*, RoutedEventArgs&) {
 		OnCopyClick();
 	};
-	this->AddControl(_btnCopy);
+	addContent(_btnCopy);
 	btnX += editButtonWidth + 6;
 
-	_btnCut = new Button(L"剪切", btnX, btnY, editButtonWidth, btnHeight);
-	_btnCut->Round = 0.5f;
-	_btnCut->Enable = false;
-	_btnCut->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnCut = cui::designer::NewControl<Button>(L"剪切", btnX, btnY, editButtonWidth, btnHeight);
+	_btnCut->IsEnabled = false;
+	_btnCut->Click += [this](Control*, RoutedEventArgs&) {
 		OnCutClick();
 	};
-	this->AddControl(_btnCut);
+	addContent(_btnCut);
 	btnX += editButtonWidth + 6;
 
-	_btnPaste = new Button(L"粘贴", btnX, btnY, editButtonWidth, btnHeight);
-	_btnPaste->Round = 0.5f;
-	_btnPaste->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnPaste = cui::designer::NewControl<Button>(L"粘贴", btnX, btnY, editButtonWidth, btnHeight);
+	_btnPaste->Click += [this](Control*, RoutedEventArgs&) {
 		OnPasteClick();
 	};
-	this->AddControl(_btnPaste);
+	addContent(_btnPaste);
 	btnX += editButtonWidth + 6;
 
-	_btnXaml = new Button(L"XAML", btnX, btnY, editButtonWidth, btnHeight);
-	_btnXaml->Round = 0.5f;
-	_btnXaml->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnXaml = cui::designer::NewControl<Button>(L"XAML", btnX, btnY, editButtonWidth, btnHeight);
+	_btnXaml->Click += [this](Control*, RoutedEventArgs&) {
 		OnXamlClick();
 	};
-	this->AddControl(_btnXaml);
+	addContent(_btnXaml);
 	btnX += editButtonWidth + 6;
 
-	_btnArrange = new Button(L"排列", btnX, btnY, editButtonWidth, btnHeight);
-	_btnArrange->Round = 0.5f;
-	_btnArrange->Enable = false;
-	_btnArrange->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnArrange = cui::designer::NewControl<Button>(L"排列", btnX, btnY, editButtonWidth, btnHeight);
+	_btnArrange->IsEnabled = false;
+	_btnArrange->Click += [this](Control*, RoutedEventArgs&) {
 		OnArrangeClick();
 	};
-	this->AddControl(_btnArrange);
+	addContent(_btnArrange);
 	btnX += editButtonWidth + 15;
 	
-	_btnDelete = new Button(L"删除", btnX, btnY, btnWidth, btnHeight);
-	_btnDelete->Round = 0.5f;
-	_btnDelete->BackColor = Colors::IndianRed;
-	_btnDelete->OnMouseClick += [this](Control* sender, MouseEventArgs e) {
+	_btnDelete = cui::designer::NewControl<Button>(L"删除", btnX, btnY, btnWidth, btnHeight);
+	_btnDelete->Background = Colors::IndianRed;
+	_btnDelete->Click += [this](Control* sender, RoutedEventArgs& e) {
 		OnDeleteClick();
 	};
-	this->AddControl(_btnDelete);
+	addContent(_btnDelete);
 	btnX += btnWidth + 30;
 	
-	_lblInfo = new Label(L"就绪", btnX, btnY + 5);
-	_lblInfo->Size = {190, 25};
-	_lblInfo->Font = new ::Font(L"Microsoft YaHei", 14.0f);
-	this->AddControl(_lblInfo);
+	_lblInfo = cui::designer::NewControl<Label>(L"就绪", btnX, btnY + 5);
+	_lblInfo->Width = 190.0f;
+	_lblInfo->Height = 25.0f;
+	cui::designer::ApplyProgrammaticTypography(
+		*_lblInfo, L"Microsoft YaHei", 14.0);
+	addContent(_lblInfo);
 
 	_arrangeMenu = new ContextMenu();
-	auto* duplicate = _arrangeMenu->AddItem(L"重复", ArrangeDuplicate);
-	duplicate->Shortcut = L"Ctrl+D";
-	auto* lockItem = _arrangeMenu->AddItem(L"锁定控件", CanvasToggleLock);
-	lockItem->Shortcut = L"Ctrl+L";
+	auto* duplicate = cui::designer::AddMenuItem(*_arrangeMenu,
+		L"重复", ArrangeDuplicate);
+	duplicate->InputGestureText = L"Ctrl+D";
+	auto* lockItem = cui::designer::AddMenuItem(*_arrangeMenu,
+		L"锁定控件", CanvasToggleLock);
+	lockItem->InputGestureText = L"Ctrl+L";
 	_arrangeMenu->AddSeparator();
-	auto* align = _arrangeMenu->AddItem(L"对齐");
-	align->AddSubItem(L"左对齐", ArrangeAlignLeft);
-	align->AddSubItem(L"水平中心", ArrangeAlignHorizontalCenters);
-	align->AddSubItem(L"右对齐", ArrangeAlignRight);
+	auto* align = cui::designer::AddMenuItem(*_arrangeMenu, L"对齐");
+	cui::designer::AddMenuItem(*align, L"左对齐", ArrangeAlignLeft);
+	cui::designer::AddMenuItem(
+		*align, L"水平中心", ArrangeAlignHorizontalCenters);
+	cui::designer::AddMenuItem(*align, L"右对齐", ArrangeAlignRight);
 	align->AddSeparator();
-	align->AddSubItem(L"顶端对齐", ArrangeAlignTop);
-	align->AddSubItem(L"垂直中心", ArrangeAlignVerticalCenters);
-	align->AddSubItem(L"底端对齐", ArrangeAlignBottom);
-	auto* distribute = _arrangeMenu->AddItem(L"分布");
-	distribute->AddSubItem(L"水平分布", ArrangeDistributeHorizontally);
-	distribute->AddSubItem(L"垂直分布", ArrangeDistributeVertically);
-	auto* sameSize = _arrangeMenu->AddItem(L"相同尺寸");
-	sameSize->AddSubItem(L"宽度", ArrangeMakeSameWidth);
-	sameSize->AddSubItem(L"高度", ArrangeMakeSameHeight);
-	sameSize->AddSubItem(L"宽度和高度", ArrangeMakeSameSize);
-	auto* layer = _arrangeMenu->AddItem(L"层级");
-	auto* forward = layer->AddSubItem(L"上移一层", ArrangeBringForward);
-	forward->Shortcut = L"Ctrl+]";
-	auto* backward = layer->AddSubItem(L"下移一层", ArrangeSendBackward);
-	backward->Shortcut = L"Ctrl+[";
-	auto* front = layer->AddSubItem(L"置于顶层", ArrangeBringToFront);
-	front->Shortcut = L"Ctrl+Shift+]";
-	auto* back = layer->AddSubItem(L"置于底层", ArrangeSendToBack);
-	back->Shortcut = L"Ctrl+Shift+[";
-	_arrangeMenu->OnMenuCommand += [this](Control*, int commandId) {
-		OnArrangeCommand(commandId);
-	};
-	this->AddControl(_arrangeMenu);
+	cui::designer::AddMenuItem(*align, L"顶端对齐", ArrangeAlignTop);
+	cui::designer::AddMenuItem(
+		*align, L"垂直中心", ArrangeAlignVerticalCenters);
+	cui::designer::AddMenuItem(*align, L"底端对齐", ArrangeAlignBottom);
+	auto* distribute = cui::designer::AddMenuItem(*_arrangeMenu, L"分布");
+	cui::designer::AddMenuItem(
+		*distribute, L"水平分布", ArrangeDistributeHorizontally);
+	cui::designer::AddMenuItem(
+		*distribute, L"垂直分布", ArrangeDistributeVertically);
+	auto* sameSize = cui::designer::AddMenuItem(*_arrangeMenu, L"相同尺寸");
+	cui::designer::AddMenuItem(*sameSize, L"宽度", ArrangeMakeSameWidth);
+	cui::designer::AddMenuItem(*sameSize, L"高度", ArrangeMakeSameHeight);
+	cui::designer::AddMenuItem(
+		*sameSize, L"宽度和高度", ArrangeMakeSameSize);
+	auto* layer = cui::designer::AddMenuItem(*_arrangeMenu, L"层级");
+	auto* forward = cui::designer::AddMenuItem(*layer,
+		L"上移一层", ArrangeBringForward);
+	forward->InputGestureText = L"Ctrl+]";
+	auto* backward = cui::designer::AddMenuItem(*layer,
+		L"下移一层", ArrangeSendBackward);
+	backward->InputGestureText = L"Ctrl+[";
+	auto* front = cui::designer::AddMenuItem(*layer,
+		L"置于顶层", ArrangeBringToFront);
+	front->InputGestureText = L"Ctrl+Shift+]";
+	auto* back = cui::designer::AddMenuItem(*layer,
+		L"置于底层", ArrangeSendToBack);
+	back->InputGestureText = L"Ctrl+Shift+[";
+	addContent(_arrangeMenu);
 
 	_canvasMenu = new ContextMenu();
-	auto* undoItem = _canvasMenu->AddItem(L"撤销", CanvasUndo);
-	undoItem->Shortcut = L"Ctrl+Z";
-	auto* redoItem = _canvasMenu->AddItem(L"重做", CanvasRedo);
-	redoItem->Shortcut = L"Ctrl+Y";
+	auto* undoItem = cui::designer::AddMenuItem(*_canvasMenu,
+		L"撤销", CanvasUndo);
+	undoItem->InputGestureText = L"Ctrl+Z";
+	auto* redoItem = cui::designer::AddMenuItem(*_canvasMenu,
+		L"重做", CanvasRedo);
+	redoItem->InputGestureText = L"Ctrl+Y";
 	_canvasMenu->AddSeparator();
-	auto* cutItem = _canvasMenu->AddItem(L"剪切", CanvasCut);
-	cutItem->Shortcut = L"Ctrl+X";
-	auto* copyItem = _canvasMenu->AddItem(L"复制", CanvasCopy);
-	copyItem->Shortcut = L"Ctrl+C";
-	auto* pasteItem = _canvasMenu->AddItem(L"粘贴", CanvasPaste);
-	pasteItem->Shortcut = L"Ctrl+V";
-	auto* pasteInPlaceItem = _canvasMenu->AddItem(
+	auto* cutItem = cui::designer::AddMenuItem(
+		*_canvasMenu, L"剪切", CanvasCut);
+	cutItem->InputGestureText = L"Ctrl+X";
+	auto* copyItem = cui::designer::AddMenuItem(
+		*_canvasMenu, L"复制", CanvasCopy);
+	copyItem->InputGestureText = L"Ctrl+C";
+	auto* pasteItem = cui::designer::AddMenuItem(
+		*_canvasMenu, L"粘贴", CanvasPaste);
+	pasteItem->InputGestureText = L"Ctrl+V";
+	auto* pasteInPlaceItem = cui::designer::AddMenuItem(*_canvasMenu,
 		L"原位粘贴", CanvasPasteInPlace);
-	pasteInPlaceItem->Shortcut = L"Ctrl+Shift+V";
-	_canvasMenu->AddItem(L"粘贴到此处", CanvasPasteHere);
-	auto* duplicateItem = _canvasMenu->AddItem(L"重复", CanvasDuplicate);
-	duplicateItem->Shortcut = L"Ctrl+D";
-	_canvasMenu->AddItem(L"删除", CanvasDelete)->Shortcut = L"Delete";
-	auto* contextLockItem = _canvasMenu->AddItem(
+	pasteInPlaceItem->InputGestureText = L"Ctrl+Shift+V";
+	cui::designer::AddMenuItem(*_canvasMenu, L"粘贴到此处", CanvasPasteHere);
+	auto* duplicateItem = cui::designer::AddMenuItem(*_canvasMenu,
+		L"重复", CanvasDuplicate);
+	duplicateItem->InputGestureText = L"Ctrl+D";
+	cui::designer::AddMenuItem(*_canvasMenu, L"删除", CanvasDelete)
+		->InputGestureText = L"Delete";
+	auto* contextLockItem = cui::designer::AddMenuItem(*_canvasMenu,
 		L"锁定控件", CanvasToggleLock);
-	contextLockItem->Shortcut = L"Ctrl+L";
+	contextLockItem->InputGestureText = L"Ctrl+L";
 	_canvasMenu->AddSeparator();
-	auto* arrangeItem = _canvasMenu->AddItem(L"排列");
-	auto* contextAlign = arrangeItem->AddSubItem(L"对齐");
-	contextAlign->AddSubItem(L"左对齐", ArrangeAlignLeft);
-	contextAlign->AddSubItem(L"水平中心", ArrangeAlignHorizontalCenters);
-	contextAlign->AddSubItem(L"右对齐", ArrangeAlignRight);
+	auto* arrangeItem = cui::designer::AddMenuItem(*_canvasMenu, L"排列");
+	auto* contextAlign = cui::designer::AddMenuItem(*arrangeItem, L"对齐");
+	cui::designer::AddMenuItem(*contextAlign,
+		L"左对齐", ArrangeAlignLeft);
+	cui::designer::AddMenuItem(*contextAlign,
+		L"水平中心", ArrangeAlignHorizontalCenters);
+	cui::designer::AddMenuItem(*contextAlign,
+		L"右对齐", ArrangeAlignRight);
 	contextAlign->AddSeparator();
-	contextAlign->AddSubItem(L"顶端对齐", ArrangeAlignTop);
-	contextAlign->AddSubItem(L"垂直中心", ArrangeAlignVerticalCenters);
-	contextAlign->AddSubItem(L"底端对齐", ArrangeAlignBottom);
-	auto* contextDistribute = arrangeItem->AddSubItem(L"分布");
-	contextDistribute->AddSubItem(
+	cui::designer::AddMenuItem(*contextAlign,
+		L"顶端对齐", ArrangeAlignTop);
+	cui::designer::AddMenuItem(*contextAlign,
+		L"垂直中心", ArrangeAlignVerticalCenters);
+	cui::designer::AddMenuItem(*contextAlign,
+		L"底端对齐", ArrangeAlignBottom);
+	auto* contextDistribute = cui::designer::AddMenuItem(*arrangeItem, L"分布");
+	cui::designer::AddMenuItem(*contextDistribute,
 		L"水平分布", ArrangeDistributeHorizontally);
-	contextDistribute->AddSubItem(
+	cui::designer::AddMenuItem(*contextDistribute,
 		L"垂直分布", ArrangeDistributeVertically);
-	auto* contextSize = arrangeItem->AddSubItem(L"相同尺寸");
-	contextSize->AddSubItem(L"宽度", ArrangeMakeSameWidth);
-	contextSize->AddSubItem(L"高度", ArrangeMakeSameHeight);
-	contextSize->AddSubItem(L"宽度和高度", ArrangeMakeSameSize);
-	auto* contextLayer = arrangeItem->AddSubItem(L"层级");
-	contextLayer->AddSubItem(L"上移一层", ArrangeBringForward)
-		->Shortcut = L"Ctrl+]";
-	contextLayer->AddSubItem(L"下移一层", ArrangeSendBackward)
-		->Shortcut = L"Ctrl+[";
-	contextLayer->AddSubItem(L"置于顶层", ArrangeBringToFront)
-		->Shortcut = L"Ctrl+Shift+]";
-	contextLayer->AddSubItem(L"置于底层", ArrangeSendToBack)
-		->Shortcut = L"Ctrl+Shift+[";
-	_canvasMenu->AddItem(L"全选当前容器", CanvasSelectAll)
-		->Shortcut = L"Ctrl+A";
+	auto* contextSize = cui::designer::AddMenuItem(*arrangeItem, L"相同尺寸");
+	cui::designer::AddMenuItem(*contextSize,
+		L"宽度", ArrangeMakeSameWidth);
+	cui::designer::AddMenuItem(*contextSize,
+		L"高度", ArrangeMakeSameHeight);
+	cui::designer::AddMenuItem(*contextSize,
+		L"宽度和高度", ArrangeMakeSameSize);
+	auto* contextLayer = cui::designer::AddMenuItem(*arrangeItem, L"层级");
+	cui::designer::AddMenuItem(*contextLayer,
+		L"上移一层", ArrangeBringForward)
+		->InputGestureText = L"Ctrl+]";
+	cui::designer::AddMenuItem(*contextLayer,
+		L"下移一层", ArrangeSendBackward)
+		->InputGestureText = L"Ctrl+[";
+	cui::designer::AddMenuItem(*contextLayer,
+		L"置于顶层", ArrangeBringToFront)
+		->InputGestureText = L"Ctrl+Shift+]";
+	cui::designer::AddMenuItem(*contextLayer,
+		L"置于底层", ArrangeSendToBack)
+		->InputGestureText = L"Ctrl+Shift+[";
+	cui::designer::AddMenuItem(*_canvasMenu,
+		L"全选当前容器", CanvasSelectAll)
+		->InputGestureText = L"Ctrl+A";
 	_canvasMenu->AddSeparator();
-	_canvasMenu->AddItem(L"编辑 XAML", CanvasEditXaml);
+	cui::designer::AddMenuItem(*_canvasMenu,
+		L"编辑 XAML", CanvasEditXaml);
 	_canvasMenu->AddSeparator();
-	auto* viewItem = _canvasMenu->AddItem(L"视图");
-	viewItem->AddSubItem(L"适合窗口", CanvasViewFit)
-		->Shortcut = L"Ctrl+0";
-	viewItem->AddSubItem(L"实际大小 (100%)", CanvasViewActualSize)
-		->Shortcut = L"Ctrl+1";
+	auto* viewItem = cui::designer::AddMenuItem(*_canvasMenu, L"视图");
+	cui::designer::AddMenuItem(*viewItem,
+		L"适合窗口", CanvasViewFit)
+		->InputGestureText = L"Ctrl+0";
+	cui::designer::AddMenuItem(*viewItem,
+		L"实际大小 (100%)", CanvasViewActualSize)
+		->InputGestureText = L"Ctrl+1";
 	viewItem->AddSeparator();
-	viewItem->AddSubItem(L"放大", CanvasViewZoomIn)
-		->Shortcut = L"Ctrl++";
-	viewItem->AddSubItem(L"缩小", CanvasViewZoomOut)
-		->Shortcut = L"Ctrl+-";
+	cui::designer::AddMenuItem(*viewItem,
+		L"放大", CanvasViewZoomIn)
+		->InputGestureText = L"Ctrl++";
+	cui::designer::AddMenuItem(*viewItem,
+		L"缩小", CanvasViewZoomOut)
+		->InputGestureText = L"Ctrl+-";
 	viewItem->AddSeparator();
-	auto* gridViewItem = viewItem->AddSubItem(L"网格与吸附");
-	gridViewItem->AddSubItem(L"显示网格", CanvasToggleGrid);
-	gridViewItem->AddSubItem(L"吸附到网格", CanvasToggleSnapGrid);
-	gridViewItem->AddSubItem(L"吸附到参考线", CanvasToggleSnapGuides);
+	auto* gridViewItem = cui::designer::AddMenuItem(*viewItem, L"网格与吸附");
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"显示网格", CanvasToggleGrid);
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"吸附到网格", CanvasToggleSnapGrid);
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"吸附到参考线", CanvasToggleSnapGuides);
 	gridViewItem->AddSeparator();
-	gridViewItem->AddSubItem(L"网格间距 5 DIP", CanvasGridSize5);
-	gridViewItem->AddSubItem(L"网格间距 10 DIP", CanvasGridSize10);
-	gridViewItem->AddSubItem(L"网格间距 20 DIP", CanvasGridSize20);
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"网格间距 5 DIP", CanvasGridSize5);
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"网格间距 10 DIP", CanvasGridSize10);
+	cui::designer::AddMenuItem(*gridViewItem,
+		L"网格间距 20 DIP", CanvasGridSize20);
 	viewItem->AddSeparator();
-	viewItem->AddSubItem(L"Tab 顺序模式", CanvasToggleTabOrder);
-	viewItem->AddSubItem(L"按布局自动排序", CanvasAutoTabOrder);
-	_canvasMenu->OnMenuCommand += [this](Control*, int commandId) {
-		OnCanvasMenuCommand(commandId);
-	};
-	this->AddControl(_canvasMenu);
+	cui::designer::AddMenuItem(*viewItem,
+		L"Tab 顺序模式", CanvasToggleTabOrder);
+	cui::designer::AddMenuItem(*viewItem,
+		L"按布局自动排序", CanvasAutoTabOrder);
+	addContent(_canvasMenu);
 	
 	// 左侧工具箱 / 文档层级切换
 	int toolBoxWidth = 150;
-	SIZE contentSize = GetLogicalDesignerContentSize(this);
-	int formHeight = contentSize.cy;
+	const auto contentSize = GetLogicalDesignerContentSize(this);
+	int formHeight = static_cast<int>(std::lround(contentSize.height));
 	const int sidebarTabsHeight = 30;
-	_btnToolboxView = new Button(
+	_btnToolboxView = cui::designer::NewControl<Button>(
 		L"工具箱", 10, toolbarHeight + 10, 72, 26);
-	_btnOutlineView = new Button(
+	_btnOutlineView = cui::designer::NewControl<Button>(
 		L"层级", 86, toolbarHeight + 10, 74, 26);
 	for (auto* button : { _btnToolboxView, _btnOutlineView })
 	{
-		button->Raised = false;
-		button->Round = 4.0f;
 		button->BorderThickness = 1.0f;
-		button->BackColor = D2D1::ColorF(0.88f, 0.90f, 0.94f, 1.0f);
-		button->CheckedColor = D2D1::ColorF(0.20f, 0.46f, 0.90f, 0.30f);
-		this->AddControl(button);
+		button->Background = D2D1::ColorF(0.88f, 0.90f, 0.94f, 1.0f);
+		addContent(button);
 	}
-	_btnToolboxView->AccessibleName = L"显示设计器工具箱";
-	_btnOutlineView->AccessibleName = L"显示文档层级";
-	_btnToolboxView->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnToolboxView->AutomationName = L"显示设计器工具箱";
+	_btnOutlineView->AutomationName = L"显示文档层级";
+	_btnToolboxView->Click += [this](Control*, RoutedEventArgs&) {
 		SetSidebarView(false);
 	};
-	_btnOutlineView->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnOutlineView->Click += [this](Control*, RoutedEventArgs&) {
 		SetSidebarView(true);
 	};
 
 	_toolBox = new ToolBox(
 		10, toolbarHeight + 10 + sidebarTabsHeight, toolBoxWidth,
-		formHeight - toolbarHeight - 40 - sidebarTabsHeight,
-		_controlDescriptors);
+		formHeight - toolbarHeight - 40 - sidebarTabsHeight);
 	_toolBox->OnControlSelected += [this](const DesignerControlDescriptor& descriptor) {
 		OnToolBoxControlSelected(descriptor);
 	};
@@ -570,37 +665,40 @@ void Designer::InitializeComponents()
 		{
 			BeginToolBoxDrag(descriptor, formPoint);
 		};
-	this->AddControl(_toolBox);
+	addContent(_toolBox);
 
-	_outlineTree = new TreeView(
+	_outlineScroll = cui::designer::NewControl<ScrollViewer>(
 		10, toolbarHeight + 10 + sidebarTabsHeight, toolBoxWidth,
 		formHeight - toolbarHeight - 40 - sidebarTabsHeight);
-	_outlineTree->AccessibleName = L"文档层级";
-	_outlineTree->AccessibleDescription =
+	_outlineScroll->VerticalScrollBarVisibility = ScrollBarVisibility::Visible;
+	_outlineTree = cui::designer::NewControl<TreeView>(0, 0, toolBoxWidth, 0);
+	_outlineTree->Width = cui::layout::Length::Auto();
+	_outlineTree->Height = cui::layout::Length::Auto();
+	_outlineTree->HorizontalAlignment = HorizontalAlignment::Stretch;
+	_outlineTree->Focusable = true;
+	_outlineTree->AutomationName = L"文档层级";
+	_outlineTree->AutomationFullDescription =
 		L"显示窗体与控件父子关系；可选择被遮挡或不可见控件，拖拽可重排或更换父容器。";
-	_outlineTree->ItemHeight = 25.0f;
-	_outlineTree->IndentWidth = 13.0f;
-	_outlineTree->ItemHorizontalPadding = 4.0f;
-	_outlineTree->TextLeftSpacing = 4.0f;
-	_outlineTree->SelectionChanged += [this](Control*) {
+	_outlineTree->SelectedItemChanged += [this](
+		Control*, RoutedPropertyChangedEventArgs<BindingValue>&) {
 		OnDocumentOutlineSelectionChanged();
 	};
-	_outlineTree->OnMouseDown += [this](Control*, MouseEventArgs args) {
+	_outlineTree->OnMouseDown += [this](Control*, MouseEventArgs& args) {
 		BeginDocumentOutlineDrag(args);
 	};
-	_outlineTree->OnKeyDown += [this](Control*, KeyEventArgs args) {
-		if ((GetKeyState(VK_MENU) & 0x8000) != 0) return;
+	_outlineTree->OnKeyDown += [this](Control*, KeyEventArgs& args) {
+		if (args.HasModifier(ModifierKeys::Alt)) return;
 		(void)QueueOutlineShortcut(
-			static_cast<WPARAM>(args.KeyCode()),
-			(GetKeyState(VK_CONTROL) & 0x8000) != 0,
-			(GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			args.Key, args.HasModifier(ModifierKeys::Control), args.HasModifier(ModifierKeys::Shift));
 	};
-	this->AddControl(_outlineTree);
+	_outlineScroll->SetVisualContent(
+		std::unique_ptr<Control>(_outlineTree));
+	addContent(_outlineScroll);
 	SetSidebarView(false);
 	
 	// 属性面板（右侧）
 	int propertyGridWidth = 250;
-	int formWidth = contentSize.cx;
+	int formWidth = static_cast<int>(std::lround(contentSize.width));
 	_propertyGrid = new PropertyGrid(formWidth - propertyGridWidth - 15, toolbarHeight + 10, 
 		propertyGridWidth, formHeight - toolbarHeight - 40);
 	_propertyGrid->OnEventHandlerActivated +=
@@ -608,13 +706,12 @@ void Designer::InitializeComponents()
 		{
 			OnEventHandlerActivated(handlerName);
 		};
-	this->AddControl(_propertyGrid);
+	addContent(_propertyGrid);
 	
 	// 设计画布（中间）
 	int canvasX = toolBoxWidth + 20;
 	int canvasWidth = formWidth - toolBoxWidth - propertyGridWidth - 40;
 	_canvas = new DesignerCanvas(canvasX, toolbarHeight + 10, canvasWidth, formHeight - toolbarHeight - 40);
-	_canvas->SetControlDescriptors(_controlDescriptors);
 	_canvas->SetDesignDataContext(_designDataContext);
 	_canvas->OnControlSelected += [this](std::shared_ptr<DesignerControl> control) {
 		OnCanvasControlSelected(control);
@@ -649,91 +746,100 @@ void Designer::InitializeComponents()
 		[this](const DesignerCanvasTabOrderStateEventArgs& args) {
 			OnCanvasTabOrderStateChanged(args);
 		};
-	_canvas->AccessibleDescription =
+	_canvas->AutomationFullDescription =
 		L"设计画布。Ctrl+滚轮缩放；按住中键或空格拖动可平移；Ctrl+0 适合窗口；Ctrl+1 恢复 100%。";
-	this->AddControl(_canvas);
+	addContent(_canvas);
 
 	const int zoomStripY = formHeight - 26;
 	const int zoomStripRight = canvasX + canvasWidth;
-	_btnTabOrder = new Button(
+	_btnTabOrder = cui::designer::NewControl<Button>(
 		L"Tab 顺序", zoomStripRight - 352, zoomStripY, 84, 22);
-	_btnTabOrder->Round = 0.35f;
-	_btnTabOrder->AccessibleName = L"Tab 顺序模式";
-	_btnTabOrder->AccessibleDescription =
+	_btnTabOrder->AutomationName = L"Tab 顺序模式";
+	_btnTabOrder->AutomationFullDescription =
 		L"显示可接收键盘焦点控件的 TabIndex；进入后依次单击控件编号。";
-	_btnTabOrder->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnTabOrder->Click += [this](Control*, RoutedEventArgs&) {
 		ToggleTabOrderMode();
 	};
-	this->AddControl(_btnTabOrder);
+	addContent(_btnTabOrder);
 
-	_btnGridSettings = new Button(
+	_btnGridSettings = cui::designer::NewControl<Button>(
 		L"网格 10", zoomStripRight - 262, zoomStripY, 76, 22);
-	_btnGridSettings->Round = 0.35f;
-	_btnGridSettings->AccessibleName = L"网格与吸附设置";
-	_btnGridSettings->OnMouseDown += [this](Control*, MouseEventArgs args) {
-		if (args.Buttons != MouseButtons::Left) return;
+	_btnGridSettings->AutomationName = L"网格与吸附设置";
+	_btnGridSettings->OnMouseDown += [this](Control*, MouseEventArgs& args) {
+		if (args.ChangedButton != MouseButton::Left) return;
 		if (!_gridMenu || !_btnGridSettings) return;
 		RefreshGridSettingsPresentation();
+		const float buttonHeight = _btnGridSettings->ActualHeight > 0.0f
+			? _btnGridSettings->ActualHeight
+			: (_btnGridSettings->Height.IsFixed()
+				? _btnGridSettings->Height.value : 0.0f);
 		_gridMenu->ShowAt(
-			_btnGridSettings, 0, _btnGridSettings->Height, true);
+			_btnGridSettings, 0,
+			static_cast<int>(std::lround(buttonHeight)), true);
 	};
-	this->AddControl(_btnGridSettings);
+	addContent(_btnGridSettings);
 
 	_gridMenu = new ContextMenu();
-	_gridMenu->AddItem(L"显示网格", CanvasToggleGrid);
-	_gridMenu->AddItem(L"吸附到网格", CanvasToggleSnapGrid);
-	_gridMenu->AddItem(L"吸附到参考线", CanvasToggleSnapGuides);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"显示网格", CanvasToggleGrid);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"吸附到网格", CanvasToggleSnapGrid);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"吸附到参考线", CanvasToggleSnapGuides);
 	_gridMenu->AddSeparator();
-	_gridMenu->AddItem(L"网格间距 5 DIP", CanvasGridSize5);
-	_gridMenu->AddItem(L"网格间距 10 DIP", CanvasGridSize10);
-	_gridMenu->AddItem(L"网格间距 20 DIP", CanvasGridSize20);
-	_gridMenu->OnMenuCommand += [this](Control*, int commandId) {
-		OnCanvasMenuCommand(commandId);
-	};
-	this->AddControl(_gridMenu);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"网格间距 5 DIP", CanvasGridSize5);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"网格间距 10 DIP", CanvasGridSize10);
+	cui::designer::AddMenuItem(*_gridMenu,
+		L"网格间距 20 DIP", CanvasGridSize20);
+	addContent(_gridMenu);
+	BindDesignerMenuCommands(
+		*this, { _arrangeMenu, _canvasMenu, _gridMenu },
+		[this](std::wstring_view commandName) {
+			OnCanvasMenuCommand(commandName);
+		});
 	RefreshGridSettingsPresentation();
 	RefreshTabOrderPresentation();
 
-	_btnFitView = new Button(
+	_btnFitView = cui::designer::NewControl<Button>(
 		L"适配", zoomStripRight - 52, zoomStripY, 52, 22);
-	_btnFitView->Round = 0.35f;
-	_btnFitView->AccessibleDescription = L"使设计窗体适合当前画布。快捷键 Ctrl+0。";
-	_btnFitView->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnFitView->AutomationFullDescription = L"使设计窗体适合当前画布。快捷键 Ctrl+0。";
+	_btnFitView->Click += [this](Control*, RoutedEventArgs&) {
 		if (_canvas) _canvas->FitDesignSurfaceToViewport();
 	};
-	this->AddControl(_btnFitView);
+	addContent(_btnFitView);
 
-	_btnZoomIn = new Button(
+	_btnZoomIn = cui::designer::NewControl<Button>(
 		L"+", zoomStripRight - 86, zoomStripY, 28, 22);
-	_btnZoomIn->Round = 0.35f;
-	_btnZoomIn->AccessibleName = L"放大设计画布";
-	_btnZoomIn->AccessibleDescription = L"放大设计画布。快捷键 Ctrl+加号。";
-	_btnZoomIn->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnZoomIn->AutomationName = L"放大设计画布";
+	_btnZoomIn->AutomationFullDescription = L"放大设计画布。快捷键 Ctrl+加号。";
+	_btnZoomIn->Click += [this](Control*, RoutedEventArgs&) {
 		if (_canvas) _canvas->ZoomIn();
 	};
-	this->AddControl(_btnZoomIn);
+	addContent(_btnZoomIn);
 
-	_lblZoom = new Label(
+	_lblZoom = cui::designer::NewControl<Label>(
 		L"100%", zoomStripRight - 146, zoomStripY + 2);
-	_lblZoom->Size = { 54, 20 };
-	_lblZoom->AccessibleName = L"设计画布缩放比例";
-	this->AddControl(_lblZoom);
+	_lblZoom->Width = 54.0f;
+	_lblZoom->Height = 20.0f;
+	_lblZoom->AutomationName = L"设计画布缩放比例";
+	addContent(_lblZoom);
 
-	_btnZoomOut = new Button(
+	_btnZoomOut = cui::designer::NewControl<Button>(
 		L"-", zoomStripRight - 180, zoomStripY, 28, 22);
-	_btnZoomOut->Round = 0.35f;
-	_btnZoomOut->AccessibleName = L"缩小设计画布";
-	_btnZoomOut->AccessibleDescription = L"缩小设计画布。快捷键 Ctrl+减号。";
-	_btnZoomOut->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_btnZoomOut->AutomationName = L"缩小设计画布";
+	_btnZoomOut->AutomationFullDescription = L"缩小设计画布。快捷键 Ctrl+减号。";
+	_btnZoomOut->Click += [this](Control*, RoutedEventArgs&) {
 		if (_canvas) _canvas->ZoomOut();
 	};
-	this->AddControl(_btnZoomOut);
+	addContent(_btnZoomOut);
 
 	RebuildDocumentOutline();
 	_canvas->FitDesignSurfaceToViewport();
 	UpdateDocumentPresentation();
 
-	this->OnClosing += [this](Form*, bool& canceled) {
+	this->OnClosing += [this](Window*, CancelEventArgs& args) {
 		if (_closeApproved)
 		{
 			DiscardSessionRecoverySnapshot();
@@ -741,7 +847,7 @@ void Designer::InitializeComponents()
 		}
 		if (!ConfirmCanReplaceOrCloseDocument())
 		{
-			canceled = true;
+			args.Cancel = true;
 			return;
 		}
 		_closeApproved = true;
@@ -754,33 +860,59 @@ void Designer::InitializeComponents()
 	// 窗口大小变化时：自动调整内部控件布局
 	auto doLayout = [this, toolbarHeight, toolBoxWidth, propertyGridWidth,
 		sidebarTabsHeight]() {
-		SIZE contentSize = GetLogicalDesignerContentSize(this);
-		int w = contentSize.cx;
-		int h = contentSize.cy;
+		auto arrange = [](Control* control, float x, float y,
+			float width, float height)
+		{
+			if (!control) return;
+			width = (std::max)(0.0f, width);
+			height = (std::max)(0.0f, height);
+			Canvas::SetLeft(*(control), x);
+			Canvas::SetTop(*(control), y);
+			Canvas::SetRight(*(control), cui::layout::UnsetCanvasOffset);
+			Canvas::SetBottom(*(control), cui::layout::UnsetCanvasOffset);
+			control->Width = width;
+			control->Height = height;
+			control->Arrange({ x, y, width, height });
+		};
+		auto move = [&arrange](Control* control, float x, float y)
+		{
+			if (!control) return;
+			float width = control->ActualWidth;
+			float height = control->ActualHeight;
+			if (width <= 0.0f && control->Width.IsFixed())
+				width = control->Width.value;
+			if (height <= 0.0f && control->Height.IsFixed())
+				height = control->Height.value;
+			arrange(control, x, y, width, height);
+		};
+		const auto contentSize = GetLogicalDesignerContentSize(this);
+		int w = static_cast<int>(std::lround(contentSize.width));
+		int h = static_cast<int>(std::lround(contentSize.height));
 		int usableH = h - toolbarHeight - 40;
 		if (usableH < 50) usableH = 50;
 		if (_toolBox)
-		{
-			_toolBox->Location = {
-				10, toolbarHeight + 10 + sidebarTabsHeight };
-			_toolBox->Size = {
-				toolBoxWidth, (std::max)(50, usableH - sidebarTabsHeight) };
-		}
+			arrange(_toolBox, 10.0f,
+				static_cast<float>(toolbarHeight + 10 + sidebarTabsHeight),
+				static_cast<float>(toolBoxWidth),
+				static_cast<float>((std::max)(50, usableH - sidebarTabsHeight)));
 		if (_btnToolboxView)
-			_btnToolboxView->Location = { 10, toolbarHeight + 10 };
+			move(_btnToolboxView, 10.0f,
+				static_cast<float>(toolbarHeight + 10));
 		if (_btnOutlineView)
-			_btnOutlineView->Location = { 86, toolbarHeight + 10 };
-		if (_outlineTree)
-		{
-			_outlineTree->Location = {
-				10, toolbarHeight + 10 + sidebarTabsHeight };
-			_outlineTree->Size = {
-				toolBoxWidth, (std::max)(50, usableH - sidebarTabsHeight) };
-		}
+			move(_btnOutlineView, 86.0f,
+				static_cast<float>(toolbarHeight + 10));
+		if (_outlineScroll)
+			arrange(_outlineScroll, 10.0f,
+				static_cast<float>(toolbarHeight + 10 + sidebarTabsHeight),
+				static_cast<float>(toolBoxWidth),
+				static_cast<float>((std::max)(50, usableH - sidebarTabsHeight)));
 		if (_propertyGrid)
 		{
-			_propertyGrid->Location = { w - propertyGridWidth - 15, toolbarHeight + 10 };
-			_propertyGrid->Size = { propertyGridWidth, usableH };
+			arrange(_propertyGrid,
+				static_cast<float>(w - propertyGridWidth - 15),
+				static_cast<float>(toolbarHeight + 10),
+				static_cast<float>(propertyGridWidth),
+				static_cast<float>(usableH));
 			// 重新加载以适配宽度变化
 			if (_canvas)
 				_propertyGrid->LoadControls(
@@ -794,29 +926,31 @@ void Designer::InitializeComponents()
 			int canvasW = w - toolBoxWidth - propertyGridWidth - 40;
 			if (canvasW < 100) canvasW = 100;
 			const bool refitCanvas = _canvas->IsFitToViewport();
-			_canvas->Location = { canvasX, toolbarHeight + 10 };
-			_canvas->Size = { canvasW, usableH };
+			arrange(_canvas, static_cast<float>(canvasX),
+				static_cast<float>(toolbarHeight + 10),
+				static_cast<float>(canvasW), static_cast<float>(usableH));
 			if (refitCanvas) _canvas->FitDesignSurfaceToViewport();
 			else _canvas->InvalidateVisual();
 
 			const int zoomY = h - 26;
 			const int zoomRight = canvasX + canvasW;
 			if (_btnFitView)
-				_btnFitView->Location = { zoomRight - 52, zoomY };
+				move(_btnFitView, static_cast<float>(zoomRight - 52), static_cast<float>(zoomY));
 			if (_btnZoomIn)
-				_btnZoomIn->Location = { zoomRight - 86, zoomY };
+				move(_btnZoomIn, static_cast<float>(zoomRight - 86), static_cast<float>(zoomY));
 			if (_lblZoom)
-				_lblZoom->Location = { zoomRight - 146, zoomY + 2 };
+				move(_lblZoom, static_cast<float>(zoomRight - 146), static_cast<float>(zoomY + 2));
 			if (_btnZoomOut)
-				_btnZoomOut->Location = { zoomRight - 180, zoomY };
+				move(_btnZoomOut, static_cast<float>(zoomRight - 180), static_cast<float>(zoomY));
 			if (_btnGridSettings)
-				_btnGridSettings->Location = { zoomRight - 262, zoomY };
+				move(_btnGridSettings, static_cast<float>(zoomRight - 262), static_cast<float>(zoomY));
 			if (_btnTabOrder)
-				_btnTabOrder->Location = { zoomRight - 352, zoomY };
+				move(_btnTabOrder, static_cast<float>(zoomRight - 352), static_cast<float>(zoomY));
 		}
 	};
 
-	this->OnSizeChanged += [doLayout](Form*) { doLayout(); };
+	this->SizeChanged += [doLayout](Control*, SizeChangedEventArgs&)
+	{ doLayout(); };
 	doLayout();
 }
 
@@ -831,66 +965,75 @@ void Designer::SetSidebarView(bool showDocumentOutline)
 	if (!showDocumentOutline) CancelDocumentOutlineDrag();
 	if (showDocumentOutline && _toolBoxPointerDown) CancelToolBoxDrag();
 	_showDocumentOutline = showDocumentOutline;
-	if (_toolBox) _toolBox->Visible = !showDocumentOutline;
-	if (_outlineTree) _outlineTree->Visible = showDocumentOutline;
+	if (_toolBox) _toolBox->Visibility = showDocumentOutline
+		? Visibility::Collapsed : Visibility::Visible;
+	if (_outlineScroll) _outlineScroll->Visibility = showDocumentOutline
+		? Visibility::Visible : Visibility::Collapsed;
 	if (_btnToolboxView)
 	{
-		_btnToolboxView->Checked = !showDocumentOutline;
-		_btnToolboxView->AccessibleDescription = !showDocumentOutline
+		cui::framework::NativeVisualStateAccess::Set(
+			*_btnToolboxView, ControlStyleState::Checked, !showDocumentOutline);
+		_btnToolboxView->AutomationFullDescription = !showDocumentOutline
 			? L"当前正在显示工具箱。" : L"切换到工具箱。";
 		_btnToolboxView->InvalidateVisual();
 	}
 	if (_btnOutlineView)
 	{
-		_btnOutlineView->Checked = showDocumentOutline;
-		_btnOutlineView->AccessibleDescription = showDocumentOutline
+		cui::framework::NativeVisualStateAccess::Set(
+			*_btnOutlineView, ControlStyleState::Checked, showDocumentOutline);
+		_btnOutlineView->AutomationFullDescription = showDocumentOutline
 			? L"当前正在显示文档层级。" : L"切换到文档层级。";
 		_btnOutlineView->InvalidateVisual();
 	}
 	if (showDocumentOutline)
 	{
-		// The view-toggle click is still walking the Form/child input stack.
-		// Defer destructive TreeNode replacement through the same coalesced path
+		// The view-toggle click is still walking the Window/child input stack.
+		// Defer destructive TreeViewItem replacement through the same coalesced path
 		// used by structural document changes; RebuildDocumentOutline performs
 		// selection synchronization once the new tree is stable.
 		ScheduleDocumentOutlineRebuild();
 	}
-	if (_canvas) this->SetSelectedControl(_canvas, true);
+	if (_canvas) this->SetKeyboardFocus(_canvas, true);
 	if (_toolBox) _toolBox->InvalidateVisual();
 	if (_outlineTree) _outlineTree->InvalidateVisual();
 }
 
 void Designer::RebuildDocumentOutline()
 {
-	if (!_outlineTree || !_outlineTree->Root || !_canvas) return;
+	if (!_outlineTree || !_canvas) return;
 	if (_outlinePointerDown) CancelDocumentOutlineDrag();
 	else _outlineTree->ClearDropTarget();
 	std::set<int> expandedIds;
-	for (const auto& [stableId, node] : _outlineNodesByStableId)
-		if (node && node->Expand) expandedIds.insert(stableId);
-	const bool hadOutline = _outlineFormNode != nullptr;
-	const bool formExpanded = !hadOutline || _outlineFormNode->Expand;
-	const int oldScrollIndex = _outlineTree->ScrollIndex;
+	for (const auto& [stableId, item] : _outlineNodesByStableId)
+		if (item && item->GetIsExpanded()) expandedIds.insert(stableId);
+	const bool hadOutline = _outlineWindowNode != nullptr;
+	const bool formExpanded = !hadOutline
+		|| _outlineWindowNode->GetIsExpanded();
+	const double oldScrollOffset = _outlineScroll
+		? _outlineScroll->VerticalOffset : 0.0;
 
 	_syncingDocumentOutline = true;
-	_outlineTree->SelectedNode = nullptr;
-	_outlineTree->Root->ClearChildren();
+	(void)_outlineTree->SelectItem(nullptr, false);
+	_outlineTree->ClearItemControls();
 	_outlineNodesByStableId.clear();
-	_outlineFormNode = new TreeNode(
-		_canvas->GetDesignedFormName() + L"  (Form)");
-	_outlineFormNode->Tag = (std::numeric_limits<ULONG64>::max)();
-	_outlineTree->Root->AddChild(_outlineFormNode);
+	_outlineWindowNode = nullptr;
+	auto windowItem = std::make_unique<TreeViewItem>();
+	windowItem->SetHeader(BindingValue(
+		_canvas->GetDesignedWindowName() + L"  (Window)"));
+	_outlineWindowNode = windowItem.get();
+	_outlineWindowNode->Tag = BindingValue(OutlineWindowIdentity);
 
 	struct OutlineRecord
 	{
 		std::shared_ptr<DesignerControl> Control;
-		TreeNode* Node = nullptr;
-		TreeNode* ParentNode = nullptr;
+		std::unique_ptr<TreeViewItem> OwnedItem;
+		TreeViewItem* Item = nullptr;
+		TreeViewItem* ParentItem = nullptr;
 		int ChildOrder = 0;
 	};
 	std::vector<OutlineRecord> records;
 	records.reserve(_canvas->GetAllControls().size());
-	std::unordered_map<Control*, TreeNode*> nodesByRuntimeControl;
+	std::unordered_map<Control*, TreeViewItem*> itemsByRuntimeControl;
 	for (const auto& control : _canvas->GetAllControls())
 	{
 		if (!control || !control->ControlInstance) continue;
@@ -909,46 +1052,51 @@ void Designer::RebuildDocumentOutline()
 				typeName = descriptor->Name;
 		}
 		if (typeName.empty())
-			typeName = control->Type == UIClass::UI_TabPage
-				? L"TabPage" : L"Control";
+			typeName = control->Type == UIClass::UI_TabItem
+				? L"TabItem" : L"Control";
 
 		std::wstring flags;
-		if (!control->ControlInstance->Visible) flags += L"[隐藏]";
+		if (control->ControlInstance->Visibility != Visibility::Visible)
+			flags += control->ControlInstance->Visibility == Visibility::Hidden
+				? L"[Hidden]" : L"[Collapsed]";
 		if (control->IsLocked) flags += L"[锁定]";
 		std::wstring text = (flags.empty() ? L"" : flags + L" ")
 			+ control->Name + L"  (" + typeName + L")";
-		auto* node = new TreeNode(std::move(text));
-		node->Tag = static_cast<ULONG64>(control->StableId);
-		_outlineNodesByStableId[control->StableId] = node;
-		nodesByRuntimeControl[control->ControlInstance] = node;
-		records.push_back(OutlineRecord{ control, node });
+		auto item = std::make_unique<TreeViewItem>();
+		item->SetHeader(BindingValue(std::move(text)));
+		item->Tag = BindingValue(control->StableId);
+		auto* itemPointer = item.get();
+		_outlineNodesByStableId[control->StableId] = itemPointer;
+		itemsByRuntimeControl[control->ControlInstance] = itemPointer;
+		records.push_back(OutlineRecord{
+			control, std::move(item), itemPointer });
 	}
 
 	for (auto& record : records)
 	{
 		auto* parentControl = record.Control->DesignerParent;
 		if (!parentControl && record.Control->ControlInstance)
-			parentControl = record.Control->ControlInstance->Parent;
+			parentControl = record.Control->ControlInstance->GetVisualParent();
 		auto* runtimeParent = record.Control->ControlInstance
-			? record.Control->ControlInstance->Parent : nullptr;
-		TreeNode* parentNode = nullptr;
-		while (parentControl && !parentNode)
+			? record.Control->ControlInstance->GetVisualParent() : nullptr;
+		TreeViewItem* parentItem = nullptr;
+		while (parentControl && !parentItem)
 		{
-			const auto found = nodesByRuntimeControl.find(parentControl);
-			if (found != nodesByRuntimeControl.end()) parentNode = found->second;
-			else parentControl = parentControl->Parent;
+			const auto found = itemsByRuntimeControl.find(parentControl);
+			if (found != itemsByRuntimeControl.end()) parentItem = found->second;
+			else parentControl = parentControl->GetVisualParent();
 		}
-		record.ParentNode = !parentNode || parentNode == record.Node
-			? _outlineFormNode : parentNode;
+		record.ParentItem = !parentItem || parentItem == record.Item
+			? _outlineWindowNode : parentItem;
 		record.ChildOrder = runtimeParent
-			? runtimeParent->IndexOfControl(record.Control->ControlInstance)
+			? runtimeParent->IndexOfVisualChild(record.Control->ControlInstance)
 			: 0;
 		if (record.ChildOrder < 0) record.ChildOrder = 0;
 	}
-	std::unordered_map<TreeNode*, std::vector<OutlineRecord*>> childrenByParent;
+	std::unordered_map<TreeViewItem*, std::vector<OutlineRecord*>> childrenByParent;
 	for (auto& record : records)
-		childrenByParent[record.ParentNode].push_back(&record);
-	for (auto& [parentNode, children] : childrenByParent)
+		childrenByParent[record.ParentItem].push_back(&record);
+	for (auto& [parentItem, children] : childrenByParent)
 	{
 		std::stable_sort(children.begin(), children.end(),
 			[](const OutlineRecord* left, const OutlineRecord* right)
@@ -958,19 +1106,29 @@ void Designer::RebuildDocumentOutline()
 				return left->Control->StableId < right->Control->StableId;
 			});
 		for (auto* child : children)
-			if (!parentNode || !child || !parentNode->AddChild(child->Node))
-				_outlineFormNode->AddChild(child->Node);
+		{
+			if (!child || !child->OwnedItem) continue;
+			auto owned = std::move(child->OwnedItem);
+			if (!parentItem
+				|| !parentItem->AddItemControl(std::move(owned)))
+				(void)_outlineWindowNode->AddItemControl(std::move(owned));
+		}
 	}
+	for (auto& record : records)
+		if (record.OwnedItem)
+			(void)_outlineWindowNode->AddItemControl(
+				std::move(record.OwnedItem));
 
-	_outlineFormNode->SetExpanded(formExpanded, false);
+	_outlineWindowNode->SetIsExpanded(formExpanded);
 	for (const auto& record : records)
 	{
-		if (!record.Node->Children.empty())
-			record.Node->SetExpanded(
-				!hadOutline || expandedIds.contains(record.Control->StableId),
-				false);
+		if (record.Item && record.Item->AuthoredItemCount() != 0)
+			record.Item->SetIsExpanded(
+				!hadOutline || expandedIds.contains(record.Control->StableId));
 	}
-	_outlineTree->ScrollIndex = (std::max)(0, oldScrollIndex);
+	(void)_outlineTree->AddItemControl(std::move(windowItem));
+	if (_outlineScroll)
+		_outlineScroll->ScrollToVerticalOffset((std::max)(0.0, oldScrollOffset));
 	_syncingDocumentOutline = false;
 	SyncDocumentOutlineSelection();
 	_outlineTree->InvalidateVisual();
@@ -993,9 +1151,7 @@ void Designer::ScheduleDocumentOutlineRebuild()
 	if (cui::PostToUIThread(
 		[expectedHandle, expectedDesigner]()
 		{
-			const auto found = Application::Forms.find(expectedHandle);
-			if (found == Application::Forms.end()
-				|| found->second != expectedDesigner)
+			if (Application::FindWindow(expectedHandle) != expectedDesigner)
 				return;
 			expectedDesigner->_documentOutlineRebuildPending = false;
 			if (expectedDesigner->_showDocumentOutline)
@@ -1010,73 +1166,56 @@ void Designer::ScheduleDocumentOutlineRebuild()
 void Designer::SyncDocumentOutlineSelection()
 {
 	if (_syncingDocumentOutline || !_outlineTree || !_canvas) return;
-	TreeNode* selectedNode = _outlineFormNode;
+	TreeViewItem* selectedItem = _outlineWindowNode;
 	if (const auto selected = _canvas->GetSelectedControl())
 	{
 		const auto found = _outlineNodesByStableId.find(selected->StableId);
-		if (found != _outlineNodesByStableId.end()) selectedNode = found->second;
+		if (found != _outlineNodesByStableId.end()) selectedItem = found->second;
 	}
-	_outlineTree->SelectedNode = selectedNode;
+	(void)_outlineTree->SelectItem(selectedItem, false);
 
-	std::function<bool(TreeNode*)> expandPath =
-		[&](TreeNode* current) -> bool
+	std::function<bool(TreeViewItem*)> expandPath =
+		[&](TreeViewItem* current) -> bool
 		{
 			if (!current) return false;
-			if (current == selectedNode) return true;
-			for (auto* child : current->Children)
+			if (current == selectedItem) return true;
+			for (size_t index = 0;
+				index < current->AuthoredItemCount(); ++index)
 			{
+				auto* child = dynamic_cast<TreeViewItem*>(
+					current->GetAuthoredItem(index));
 				if (!expandPath(child)) continue;
-				current->SetExpanded(true, false);
+				current->SetIsExpanded(true);
 				return true;
 			}
 			return false;
 		};
-	(void)expandPath(_outlineTree->Root);
+	(void)expandPath(_outlineWindowNode);
 
-	int selectedIndex = -1;
-	int visibleIndex = 0;
-	std::function<void(const std::vector<TreeNode*>&)> findVisibleIndex =
-		[&](const std::vector<TreeNode*>& nodes)
-		{
-			for (auto* node : nodes)
-			{
-				if (selectedIndex >= 0 || !node) return;
-				if (node == selectedNode)
-				{
-					selectedIndex = visibleIndex;
-					return;
-				}
-				++visibleIndex;
-				if (node->Expand) findVisibleIndex(node->Children);
-			}
-		};
-	findVisibleIndex(_outlineTree->Root->Children);
-	if (selectedIndex >= 0)
-	{
-		const int pageSize = (std::max)(1, static_cast<int>(
-			static_cast<float>(_outlineTree->Height)
-			/ (std::max)(1.0f, _outlineTree->ItemHeight)));
-		if (selectedIndex < _outlineTree->ScrollIndex)
-			_outlineTree->ScrollIndex = selectedIndex;
-		else if (selectedIndex >= _outlineTree->ScrollIndex + pageSize)
-			_outlineTree->ScrollIndex = selectedIndex - pageSize + 1;
-	}
+	_outlineTree->UpdateLayout();
+	if (_outlineScroll && selectedItem)
+		(void)_outlineScroll->BringDescendantIntoView(selectedItem);
 	_outlineTree->InvalidateVisual();
 }
 
 void Designer::OnDocumentOutlineSelectionChanged()
 {
 	if (_syncingDocumentOutline || !_outlineTree || !_canvas
-		|| !_outlineTree->SelectedNode) return;
+		|| !_outlineTree->GetSelectedContainer()) return;
 	_syncingDocumentOutline = true;
-	const auto tag = _outlineTree->SelectedNode->Tag;
-	if (tag == (std::numeric_limits<ULONG64>::max)())
+	int stableId = 0;
+	if (!TryGetOutlineIdentity(
+		_outlineTree->GetSelectedContainer(), stableId))
+	{
+		_syncingDocumentOutline = false;
+		return;
+	}
+	if (stableId == OutlineWindowIdentity)
 	{
 		_canvas->RestoreSelectionByNames({}, {}, true);
 	}
 	else
 	{
-		const int stableId = static_cast<int>(tag);
 		const auto found = std::find_if(
 			_canvas->GetAllControls().begin(),
 			_canvas->GetAllControls().end(),
@@ -1092,20 +1231,21 @@ void Designer::OnDocumentOutlineSelectionChanged()
 		}
 	}
 	_syncingDocumentOutline = false;
-	this->SetSelectedControl(_showDocumentOutline
+	this->SetKeyboardFocus(_showDocumentOutline
 		? static_cast<Control*>(_outlineTree)
 		: static_cast<Control*>(_canvas), true);
 }
 
 void Designer::BeginDocumentOutlineDrag(const MouseEventArgs& args)
 {
-	if (args.Buttons != MouseButtons::Left || !_outlineTree || !_canvas
-		|| !_showDocumentOutline || args.X >= _outlineTree->Width - 8)
+	if (args.ChangedButton != MouseButton::Left || !_outlineTree || !_canvas
+		|| !_showDocumentOutline)
 		return;
-	auto* node = _outlineTree->HitTestNode(
+	auto* item = _outlineTree->HitTestItem(
 		static_cast<float>(args.X), static_cast<float>(args.Y));
-	if (!node || node->Tag == (std::numeric_limits<ULONG64>::max)()) return;
-	const int stableId = static_cast<int>(node->Tag);
+	int stableId = 0;
+	if (!TryGetOutlineIdentity(item, stableId)
+		|| stableId == OutlineWindowIdentity) return;
 	const auto found = std::find_if(
 		_canvas->GetAllControls().begin(), _canvas->GetAllControls().end(),
 		[stableId](const std::shared_ptr<DesignerControl>& candidate)
@@ -1120,14 +1260,17 @@ void Designer::BeginDocumentOutlineDrag(const MouseEventArgs& args)
 	_outlineDragSourceStableId = stableId;
 	_outlineDropTargetStableId.reset();
 	_outlineDropPosition = TreeViewDropPosition::None;
-	if (Handle) (void)::SetCapture(Handle);
+	(void)_outlineTree->CaptureMouse();
 }
 
 void Designer::UpdateDocumentOutlineDrag(int localX, int localY)
 {
 	if (!_outlinePointerDown || !_outlineTree || !_canvas) return;
-	const int treeX = localX - _outlineTree->Location.x;
-	const int treeY = localY - _outlineTree->Location.y;
+	const auto treeLocation = _outlineTree->GetActualLocationDip();
+	const int treeX = static_cast<int>(std::lround(
+		static_cast<float>(localX) - treeLocation.x));
+	const int treeY = static_cast<int>(std::lround(
+		static_cast<float>(localY) - treeLocation.y));
 	if (!_outlineDragging)
 	{
 		const int dx = treeX - _outlineDragStart.x;
@@ -1141,42 +1284,39 @@ void Designer::UpdateDocumentOutlineDrag(int localX, int localY)
 		}
 	}
 
-	const int pageSize = (std::max)(1, static_cast<int>(
-		static_cast<float>(_outlineTree->Height)
-		/ (std::max)(1.0f, _outlineTree->ItemHeight)));
-	const int maxScroll = (std::max)(0,
-		_outlineTree->MaxRenderItems - pageSize);
-	if (treeY < 10 && _outlineTree->ScrollIndex > 0)
-	{
-		--_outlineTree->ScrollIndex;
-		_outlineTree->InvalidateVisual();
-	}
-	else if (treeY > _outlineTree->Height - 10
-		&& _outlineTree->ScrollIndex < maxScroll)
-	{
-		++_outlineTree->ScrollIndex;
-		_outlineTree->InvalidateVisual();
-	}
+	if (_outlineScroll && treeY < _outlineScroll->VerticalOffset + 10)
+		_outlineScroll->ScrollToVerticalOffset(_outlineScroll->VerticalOffset - 24.0);
+	else if (_outlineScroll
+		&& treeY > _outlineScroll->VerticalOffset
+			+ _outlineScroll->ActualHeight - 10.0f)
+		_outlineScroll->ScrollToVerticalOffset(_outlineScroll->VerticalOffset + 24.0);
 
 	float rowPosition = 0.5f;
-	auto* targetNode = _outlineTree->HitTestNode(
+	auto* targetItem = _outlineTree->HitTestItem(
 		static_cast<float>(treeX), static_cast<float>(treeY), &rowPosition);
-	if (!targetNode)
+	if (!targetItem)
 	{
 		_outlineDropTargetStableId.reset();
 		_outlineDropPosition = TreeViewDropPosition::None;
 		_outlineTree->ClearDropTarget();
 		return;
 	}
-	if (targetNode->Tag == (std::numeric_limits<ULONG64>::max)())
+	int targetStableId = 0;
+	if (!TryGetOutlineIdentity(targetItem, targetStableId))
+	{
+		_outlineDropTargetStableId.reset();
+		_outlineDropPosition = TreeViewDropPosition::None;
+		_outlineTree->ClearDropTarget();
+		return;
+	}
+	if (targetStableId == OutlineWindowIdentity)
 	{
 		_outlineDropTargetStableId.reset();
 		_outlineDropPosition = TreeViewDropPosition::Inside;
-		_outlineTree->SetDropTarget(targetNode, _outlineDropPosition);
+		_outlineTree->SetDropTarget(targetItem, _outlineDropPosition);
 		return;
 	}
 
-	const int targetStableId = static_cast<int>(targetNode->Tag);
 	if (targetStableId == _outlineDragSourceStableId)
 	{
 		_outlineDropTargetStableId.reset();
@@ -1203,7 +1343,7 @@ void Designer::UpdateDocumentOutlineDrag(int localX, int localY)
 		return;
 	}
 	for (Control* ancestor = target->ControlInstance; ancestor;
-		ancestor = ancestor->Parent)
+		ancestor = ancestor->GetVisualParent())
 	{
 		if (ancestor != source->ControlInstance) continue;
 		_outlineDropTargetStableId.reset();
@@ -1214,27 +1354,28 @@ void Designer::UpdateDocumentOutlineDrag(int localX, int localY)
 
 	auto canContain = [](UIClass type)
 	{
+		if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
+			return true;
 		switch (type)
 		{
-		case UIClass::UI_Panel:
+		case UIClass::UI_Canvas:
 		case UIClass::UI_GroupBox:
 		case UIClass::UI_Expander:
-		case UIClass::UI_ScrollView:
+		case UIClass::UI_ScrollViewer:
 		case UIClass::UI_StackPanel:
-		case UIClass::UI_GridPanel:
+		case UIClass::UI_Grid:
 		case UIClass::UI_DockPanel:
 		case UIClass::UI_WrapPanel:
 		case UIClass::UI_RelativePanel:
 		case UIClass::UI_TabControl:
-		case UIClass::UI_TabPage:
-		case UIClass::UI_ToolBar:
+		case UIClass::UI_TabItem:
 			return true;
 		default:
 			return false;
 		}
 	};
 	TreeViewDropPosition dropPosition = TreeViewDropPosition::Inside;
-	if (target->Type == UIClass::UI_TabPage)
+	if (target->Type == UIClass::UI_TabItem)
 		dropPosition = TreeViewDropPosition::Inside;
 	else if (rowPosition < 0.25f)
 		dropPosition = TreeViewDropPosition::Before;
@@ -1246,7 +1387,7 @@ void Designer::UpdateDocumentOutlineDrag(int localX, int localY)
 
 	_outlineDropTargetStableId = targetStableId;
 	_outlineDropPosition = dropPosition;
-	_outlineTree->SetDropTarget(targetNode, dropPosition);
+	_outlineTree->SetDropTarget(targetItem, dropPosition);
 }
 
 void Designer::EndDocumentOutlineDrag()
@@ -1267,7 +1408,7 @@ void Designer::EndDocumentOutlineDrag()
 		hierarchyPosition = DesignerHierarchyDropPosition::After;
 	(void)_canvas->MoveControlInHierarchy(
 		sourceStableId, targetStableId, hierarchyPosition);
-	this->SetSelectedControl(_showDocumentOutline
+	this->SetKeyboardFocus(_showDocumentOutline
 		? static_cast<Control*>(_outlineTree)
 		: static_cast<Control*>(_canvas), true);
 }
@@ -1280,8 +1421,8 @@ void Designer::CancelDocumentOutlineDrag(bool releaseCapture)
 	_outlineDropTargetStableId.reset();
 	_outlineDropPosition = TreeViewDropPosition::None;
 	if (_outlineTree) _outlineTree->ClearDropTarget();
-	if (releaseCapture && Handle && ::GetCapture() == Handle)
-		(void)::ReleaseCapture();
+	if (releaseCapture && _outlineTree && _outlineTree->IsMouseCaptured())
+		(void)_outlineTree->ReleaseMouseCapture();
 }
 
 void Designer::BeginToolBoxDrag(
@@ -1329,7 +1470,7 @@ void Designer::UpdateToolBoxDrag(int localX, int localY)
 			? L"释放以将 " + _toolBoxDragDescriptor->DisplayName
 				+ L" 添加到 " + target + L"。"
 			: L"将控件拖到窗体设计区域内。";
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 	}
 	(void)::SetCursor(::LoadCursorW(nullptr,
@@ -1350,13 +1491,13 @@ void Designer::EndToolBoxDrag(int localX, int localY)
 		if (_lblInfo)
 		{
 			_lblInfo->Text = L"已取消工具箱拖放。";
-			_lblInfo->AccessibleDescription = _lblInfo->Text;
+			_lblInfo->AutomationFullDescription = _lblInfo->Text;
 			_lblInfo->InvalidateVisual();
 		}
 		return;
 	}
-	this->SetSelectedControl(_canvas, true);
-	(void)_canvas->AddControlToCanvas(*descriptor, canvasPoint);
+	this->SetKeyboardFocus(_canvas, true);
+	(void)_canvas->AdoptVisualChildToCanvas(*descriptor, canvasPoint);
 }
 
 void Designer::CancelToolBoxDrag(bool releaseCapture)
@@ -1369,8 +1510,8 @@ void Designer::CancelToolBoxDrag(bool releaseCapture)
 	if (consumedItemMouseUp && _toolBox)
 		_toolBox->CancelActiveItemPress();
 	if (_canvas) _canvas->ClearControlDropPreview();
-	if (releaseCapture && Handle && ::GetCapture() == Handle)
-		(void)::ReleaseCapture();
+	if (releaseCapture)
+		(void)this->ReleaseMouseCapture();
 }
 
 void Designer::OnToolBoxControlSelected(
@@ -1383,9 +1524,9 @@ void Designer::OnToolBoxControlSelected(
 void Designer::OnCanvasControlSelected(std::shared_ptr<DesignerControl> control)
 {
 	SyncDocumentOutlineSelection();
-	if (_btnCopy) _btnCopy->Enable = control != nullptr;
-	if (_btnCut) _btnCut->Enable = control != nullptr;
-	if (_btnArrange) _btnArrange->Enable = control != nullptr;
+	if (_btnCopy) _btnCopy->IsEnabled = control != nullptr;
+	if (_btnCut) _btnCut->IsEnabled = control != nullptr;
+	if (_btnArrange) _btnArrange->IsEnabled = control != nullptr;
 	if (_propertyGrid)
 	{
 		_propertyGrid->CommitPendingEdits();
@@ -1452,20 +1593,20 @@ void Designer::OnCanvasContextMenuRequested(
 	RefreshCommandAvailability();
 	const bool hasSelection = args.HasSelection
 		&& !_canvas->GetSelectedControls().empty();
-	for (const int id : {
+	for (const std::wstring_view commandName : {
 		CanvasCut, CanvasCopy, CanvasDuplicate, CanvasDelete,
 		CanvasToggleLock })
 	{
-		if (auto* item = _canvasMenu->FindItemById(id))
-			item->Enable = hasSelection;
+		if (auto* item = FindDesignerCommand(_canvasMenu, commandName))
+			item->IsEnabled = hasSelection;
 	}
 	if (auto* arrange = _canvasMenu->FindItemByText(L"排列", false))
-		arrange->Enable = hasSelection;
-	if (auto* selectAll = _canvasMenu->FindItemById(CanvasSelectAll))
-		selectAll->Enable = !_canvas->GetAllControls().empty();
+		arrange->IsEnabled = hasSelection;
+	if (auto* selectAll = FindDesignerCommand(_canvasMenu, CanvasSelectAll))
+		selectAll->IsEnabled = !_canvas->GetAllControls().empty();
 	const bool transactionActive = _canvas->HasActiveDocumentTransaction();
-	if (auto* xaml = _canvasMenu->FindItemById(CanvasEditXaml))
-		xaml->Enable = !transactionActive;
+	if (auto* xaml = FindDesignerCommand(_canvasMenu, CanvasEditXaml))
+		xaml->IsEnabled = !transactionActive;
 	RefreshGridSettingsPresentation();
 	RefreshTabOrderPresentation();
 	RefreshLockPresentation();
@@ -1480,7 +1621,7 @@ void Designer::OnCanvasViewChanged(
 	if (_lblZoom)
 	{
 		_lblZoom->Text = std::to_wstring(percent) + L"%";
-		_lblZoom->AccessibleDescription = args.FitToViewport
+		_lblZoom->AutomationFullDescription = args.FitToViewport
 			? L"当前缩放比例，已适合窗口。"
 			: L"当前缩放比例。";
 	}
@@ -1501,7 +1642,7 @@ void Designer::OnCanvasTabOrderStateChanged(
 		_lblInfo->Text = L"Tab 顺序：下一项 "
 			+ std::to_wstring(args.NextIndex) + L"（"
 			+ std::to_wstring(args.CandidateCount) + L" 项）";
-		_lblInfo->AccessibleDescription = L"Tab 顺序模式：下一项 "
+		_lblInfo->AutomationFullDescription = L"Tab 顺序模式：下一项 "
 			+ std::to_wstring(args.NextIndex) + L"；可编排 "
 			+ std::to_wstring(args.CandidateCount)
 			+ L" 个控件，Escape 退出。";
@@ -1509,7 +1650,7 @@ void Designer::OnCanvasTabOrderStateChanged(
 	else
 	{
 		_lblInfo->Text = L"已退出 Tab 顺序模式。";
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 	}
 	_lblInfo->InvalidateVisual();
 }
@@ -1522,11 +1663,12 @@ void Designer::RefreshTabOrderPresentation()
 	const auto candidateCount = _canvas->GetTabOrderCandidateCount();
 	if (_btnTabOrder)
 	{
-		_btnTabOrder->Checked = active;
-		_btnTabOrder->Text = active
+		cui::framework::NativeVisualStateAccess::Set(
+			*_btnTabOrder, ControlStyleState::Checked, active);
+		_btnTabOrder->SetContent(BindingValue(active
 			? L"Tab " + std::to_wstring(nextIndex)
-			: L"Tab 顺序";
-		_btnTabOrder->AccessibleDescription = active
+			: L"Tab 顺序"));
+		_btnTabOrder->AutomationFullDescription = active
 			? L"Tab 顺序模式已开启；下一项为 "
 				+ std::to_wstring(nextIndex)
 				+ L"。单击控件编号，Escape 退出。"
@@ -1535,10 +1677,10 @@ void Designer::RefreshTabOrderPresentation()
 	}
 	if (_canvasMenu)
 	{
-		if (auto* item = _canvasMenu->FindItemById(CanvasToggleTabOrder))
-			item->Checked = active;
-		if (auto* item = _canvasMenu->FindItemById(CanvasAutoTabOrder))
-			item->Enable = candidateCount > 0
+		if (auto* item = FindDesignerCommand(_canvasMenu, CanvasToggleTabOrder))
+			item->IsChecked = active;
+		if (auto* item = FindDesignerCommand(_canvasMenu, CanvasAutoTabOrder))
+			item->IsEnabled = candidateCount > 0
 				&& !_canvas->HasActiveDocumentTransaction();
 		_canvasMenu->InvalidateVisual();
 	}
@@ -1561,19 +1703,19 @@ void Designer::RefreshGridSettingsPresentation()
 	auto refreshMenu = [this](ContextMenu* menu)
 	{
 		if (!menu) return;
-		if (auto* item = menu->FindItemById(CanvasToggleGrid))
-			item->Checked = _canvas->IsGridVisible();
-		if (auto* item = menu->FindItemById(CanvasToggleSnapGrid))
-			item->Checked = _canvas->IsSnapToGridEnabled();
-		if (auto* item = menu->FindItemById(CanvasToggleSnapGuides))
-			item->Checked = _canvas->IsSnapToGuidesEnabled();
-		for (const auto [id, size] : {
-			std::pair{ CanvasGridSize5, 5 },
-			std::pair{ CanvasGridSize10, 10 },
-			std::pair{ CanvasGridSize20, 20 } })
+		if (auto* item = FindDesignerCommand(menu, CanvasToggleGrid))
+			item->IsChecked = _canvas->IsGridVisible();
+		if (auto* item = FindDesignerCommand(menu, CanvasToggleSnapGrid))
+			item->IsChecked = _canvas->IsSnapToGridEnabled();
+		if (auto* item = FindDesignerCommand(menu, CanvasToggleSnapGuides))
+			item->IsChecked = _canvas->IsSnapToGuidesEnabled();
+		for (const auto [commandName, size] : {
+			std::pair{ std::wstring_view(CanvasGridSize5), 5 },
+			std::pair{ std::wstring_view(CanvasGridSize10), 10 },
+			std::pair{ std::wstring_view(CanvasGridSize20), 20 } })
 		{
-			if (auto* item = menu->FindItemById(id))
-				item->Checked = _canvas->GetGridSize() == size;
+			if (auto* item = FindDesignerCommand(menu, commandName))
+				item->IsChecked = _canvas->GetGridSize() == size;
 		}
 		menu->InvalidateVisual();
 	};
@@ -1581,10 +1723,12 @@ void Designer::RefreshGridSettingsPresentation()
 	refreshMenu(_canvasMenu);
 	if (_btnGridSettings)
 	{
-		_btnGridSettings->Text = L"网格 "
-			+ std::to_wstring(_canvas->GetGridSize());
-		_btnGridSettings->Checked = _canvas->IsGridVisible();
-		_btnGridSettings->AccessibleDescription =
+		_btnGridSettings->SetContent(BindingValue(
+			L"网格 " + std::to_wstring(_canvas->GetGridSize())));
+		cui::framework::NativeVisualStateAccess::Set(
+			*_btnGridSettings, ControlStyleState::Checked,
+			_canvas->IsGridVisible());
+		_btnGridSettings->AutomationFullDescription =
 			(_canvas->IsGridVisible() ? L"显示网格；" : L"隐藏网格；")
 			+ std::wstring(_canvas->IsSnapToGridEnabled()
 				? L"启用网格吸附；" : L"禁用网格吸附；")
@@ -1613,25 +1757,25 @@ void Designer::RefreshCommandAvailability()
 		: std::wstring{};
 	if (_btnUndo)
 	{
-		_btnUndo->Enable = canUndo;
-		_btnUndo->AccessibleDescription = canUndo
+		_btnUndo->IsEnabled = canUndo;
+		_btnUndo->AutomationFullDescription = canUndo
 			? L"撤销“" + undoLabel + L"”。快捷键 Ctrl+Z。"
 			: L"没有可撤销的操作。快捷键 Ctrl+Z。";
 		_btnUndo->InvalidateVisual();
 	}
 	if (_btnRedo)
 	{
-		_btnRedo->Enable = canRedo;
-		_btnRedo->AccessibleDescription = canRedo
+		_btnRedo->IsEnabled = canRedo;
+		_btnRedo->AutomationFullDescription = canRedo
 			? L"重做“" + redoLabel + L"”。快捷键 Ctrl+Y。"
 			: L"没有可重做的操作。快捷键 Ctrl+Y。";
 		_btnRedo->InvalidateVisual();
 	}
 	if (_btnPaste)
 	{
-		_btnPaste->Enable = canPaste;
-		_btnPaste->AccessibleName = L"粘贴";
-		_btnPaste->AccessibleDescription = transactionActive
+		_btnPaste->IsEnabled = canPaste;
+		_btnPaste->AutomationName = L"粘贴";
+		_btnPaste->AutomationFullDescription = transactionActive
 			? L"画布事务进行中，暂时不能粘贴。快捷键 Ctrl+V。"
 			: clipboardHasText
 				? L"从剪贴板粘贴 CUI XAML；外部文本会在粘贴时验证。快捷键 Ctrl+V。"
@@ -1640,22 +1784,25 @@ void Designer::RefreshCommandAvailability()
 	}
 	if (_canvasMenu)
 	{
-		if (auto* undo = _canvasMenu->FindItemById(CanvasUndo))
+		if (auto* undo = FindDesignerCommand(_canvasMenu, CanvasUndo))
 		{
-			undo->Enable = canUndo;
-			undo->Text = canUndo ? L"撤销 " + undoLabel : L"撤销";
+			undo->IsEnabled = canUndo;
+			undo->SetHeader(BindingValue(
+				canUndo ? L"撤销 " + undoLabel : L"撤销"));
 		}
-		if (auto* redo = _canvasMenu->FindItemById(CanvasRedo))
+		if (auto* redo = FindDesignerCommand(_canvasMenu, CanvasRedo))
 		{
-			redo->Enable = canRedo;
-			redo->Text = canRedo ? L"重做 " + redoLabel : L"重做";
+			redo->IsEnabled = canRedo;
+			redo->SetHeader(BindingValue(
+				canRedo ? L"重做 " + redoLabel : L"重做"));
 		}
-		for (const int id : {
+		for (const std::wstring_view commandName : {
 			CanvasPaste, CanvasPasteInPlace, CanvasPasteHere })
 		{
-			if (auto* paste = _canvasMenu->FindItemById(id))
-				paste->Enable = canPaste
-					&& (id != CanvasPasteHere
+			if (auto* paste = FindDesignerCommand(
+				_canvasMenu, commandName))
+				paste->IsEnabled = canPaste
+					&& (commandName != CanvasPasteHere
 						|| _hasCanvasContextPastePoint);
 		}
 		_canvasMenu->InvalidateVisual();
@@ -1689,11 +1836,12 @@ void Designer::RefreshLockPresentation()
 	auto refresh = [hasSelection, allLocked](ContextMenu* menu)
 	{
 		if (!menu) return;
-		if (auto* item = menu->FindItemById(CanvasToggleLock))
+		if (auto* item = FindDesignerCommand(menu, CanvasToggleLock))
 		{
-			item->Enable = hasSelection;
-			item->Checked = allLocked;
-			item->Text = allLocked ? L"解除锁定" : L"锁定控件";
+			item->IsEnabled = hasSelection;
+			item->IsChecked = allLocked;
+			item->SetHeader(BindingValue(
+				allLocked ? L"解除锁定" : L"锁定控件"));
 		}
 		menu->InvalidateVisual();
 	};
@@ -1754,108 +1902,42 @@ void Designer::UpdateCanvasOperationStatus(
 		}
 	}
 	_lblInfo->Text = text;
-	_lblInfo->AccessibleDescription = text;
+	_lblInfo->AutomationFullDescription = text;
 	_lblInfo->InvalidateVisual();
 }
 
-bool Designer::ProcessMessage(
-	UINT message,
-	WPARAM wParam,
-	LPARAM lParam,
-	int localX,
-	int localY)
+bool Designer::OnPreviewInputReport(const InputReport& input)
 {
-	if (message == WM_CLIPBOARDUPDATE)
-	{
-		_clipboardRefreshRetriesRemaining = ClipboardRefreshRetryCount;
-		RefreshCommandAvailability();
-		if (Handle)
-			(void)::SetTimer(Handle, ClipboardRefreshTimerId,
-				ClipboardRefreshDelayMilliseconds, nullptr);
-		return true;
-	}
-	if (message == WM_DESTROY)
-		StopClipboardMonitoring();
-	// Form's native window procedure enters the virtual override with 0/0 and
-	// recomputes pointer coordinates inside Form::ProcessMessage for normal
-	// child routing.  Designer-level captured gestures run before that base call,
-	// so derive the same logical content coordinates here as well.
-	const bool pointerCoordinateMessage = message == WM_MOUSEMOVE
-		|| message == WM_LBUTTONDOWN || message == WM_LBUTTONUP
-		|| message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDOWN
-		|| message == WM_RBUTTONUP || message == WM_MBUTTONDOWN
-		|| message == WM_MBUTTONUP || message == WM_MOUSEWHEEL;
-	if (pointerCoordinateMessage && Handle)
-	{
-		POINT pointer{};
-		if (::GetCursorPos(&pointer) && ::ScreenToClient(Handle, &pointer))
-		{
-			const float dpiScale = (std::max)(0.01f, GetDpiScale());
-			localX = static_cast<int>(static_cast<float>(pointer.x) / dpiScale);
-			localY = static_cast<int>(
-				static_cast<float>(pointer.y - ClientTop()) / dpiScale);
-		}
-	}
-	const bool keyDownMessage = message == WM_KEYDOWN
-		|| message == WM_SYSKEYDOWN;
-	const bool keyUpMessage = message == WM_KEYUP
-		|| message == WM_SYSKEYUP;
-	if (keyDownMessage || keyUpMessage)
-	{
-		const bool down = keyDownMessage;
-		switch (wParam)
-		{
-		case VK_CONTROL:
-		case VK_LCONTROL:
-		case VK_RCONTROL:
-			_designerControlKeyDown = down;
-			break;
-		case VK_SHIFT:
-		case VK_LSHIFT:
-		case VK_RSHIFT:
-			_designerShiftKeyDown = down;
-			break;
-		case VK_MENU:
-		case VK_LMENU:
-		case VK_RMENU:
-			_designerAltKeyDown = down;
-			break;
-		default:
-			break;
-		}
-	}
-	const bool controlDown = _designerControlKeyDown
-		|| (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-	const bool shiftDown = _designerShiftKeyDown
-		|| (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-	const bool altDown = _designerAltKeyDown
-		|| (GetKeyState(VK_MENU) & 0x8000) != 0;
+	const Key key = input.Key;
+	const bool keyDown = input.Kind == InputReportKind::KeyDown;
+	const bool leftButtonUp = input.Kind == InputReportKind::PointerUp
+		&& input.ChangedButton == MouseButton::Left;
 	if (_toolBoxPointerDown)
 	{
-		if (message == WM_MOUSEMOVE)
+		if (input.Kind == InputReportKind::PointerMove)
 		{
-			UpdateToolBoxDrag(localX, localY);
+			UpdateToolBoxDrag(input.X, input.Y);
 			if (_toolBoxDragging) return true;
 		}
-		if (message == WM_LBUTTONUP)
+		if (leftButtonUp)
 		{
 			if (_toolBoxDragging)
 			{
-				EndToolBoxDrag(localX, localY);
+				EndToolBoxDrag(input.X, input.Y);
 				return true;
 			}
-			// Let Form deliver a normal mouse-up/click to the toolbox item.
+			// Let Window deliver a normal mouse-up/click to the toolbox item.
 			// Its click handler preserves the existing click-then-place workflow.
 			CancelToolBoxDrag(false);
 		}
-		if (message == WM_KEYDOWN && wParam == VK_ESCAPE)
+		if (keyDown && key == Key::Escape)
 		{
 			const bool wasDragging = _toolBoxDragging;
 			CancelToolBoxDrag();
 			if (wasDragging && _lblInfo)
 			{
 				_lblInfo->Text = L"已取消工具箱拖放。";
-				_lblInfo->AccessibleDescription = _lblInfo->Text;
+				_lblInfo->AutomationFullDescription = _lblInfo->Text;
 				_lblInfo->InvalidateVisual();
 			}
 			return true;
@@ -1863,18 +1945,18 @@ bool Designer::ProcessMessage(
 	}
 	if (_outlinePointerDown)
 	{
-		if (message == WM_MOUSEMOVE)
+		if (input.Kind == InputReportKind::PointerMove)
 		{
-			UpdateDocumentOutlineDrag(localX, localY);
+			UpdateDocumentOutlineDrag(input.X, input.Y);
 			return true;
 		}
-		if (message == WM_LBUTTONUP)
+		if (leftButtonUp)
 		{
-			UpdateDocumentOutlineDrag(localX, localY);
+			UpdateDocumentOutlineDrag(input.X, input.Y);
 			EndDocumentOutlineDrag();
 			return true;
 		}
-		if (message == WM_KEYDOWN && wParam == VK_ESCAPE)
+		if (keyDown && key == Key::Escape)
 		{
 			CancelDocumentOutlineDrag();
 			if (_lblInfo)
@@ -1886,70 +1968,83 @@ bool Designer::ProcessMessage(
 		}
 	}
 	const bool outlineShortcutTarget = _showDocumentOutline
-		&& (IsControlWithin(this->Selected, _outlineTree)
-			|| IsControlWithin(this->Selected, _canvas));
-	if (message == WM_CHAR)
-	{
-		const auto character = static_cast<wchar_t>(wParam);
-		if (_suppressedOutlineShortcutCharacter == character)
-		{
-			_suppressedOutlineShortcutCharacter = L'\0';
-			return true;
-		}
-		_suppressedOutlineShortcutCharacter = L'\0';
-		const WPARAM shortcutKey =
-			OutlineShortcutKeyFromControlCharacter(character);
-		if (outlineShortcutTarget && shortcutKey != 0
-			&& !altDown
-			&& QueueOutlineShortcut(shortcutKey, true, shiftDown))
-		{
-			return true;
-		}
-	}
-	if (message == WM_KEYDOWN
+		&& (IsControlWithin(this->GetKeyboardFocusedElement(), _outlineTree)
+			|| IsControlWithin(this->GetKeyboardFocusedElement(), _canvas));
+	if (keyDown
 		&& outlineShortcutTarget
-		&& !altDown
-		&& QueueOutlineShortcut(wParam, controlDown, shiftDown))
+		&& !input.HasModifier(ModifierKeys::Alt)
+		&& QueueOutlineShortcut(key, input.HasModifier(ModifierKeys::Control), input.HasModifier(ModifierKeys::Shift)))
 	{
-		if (controlDown)
-			_suppressedOutlineShortcutCharacter =
-				OutlineShortcutControlCharacter(wParam);
+		if (input.HasModifier(ModifierKeys::Control))
+			cui::framework::WindowAccess::TextComposition(
+				*this).SuppressNextCharacter(
+				OutlineShortcutControlCharacter(key));
 		return true;
 	}
-	if (message == WM_KEYDOWN
-		&& controlDown && !altDown)
+	if (keyDown && input.HasModifier(ModifierKeys::Control) && !input.HasModifier(ModifierKeys::Alt))
 	{
-		if (wParam == 'S')
+		if (key == Key::S)
 		{
 			OnSaveClick();
 			return true;
 		}
-		if (wParam == 'N')
+		if (key == Key::N)
 		{
 			OnNewClick();
 			return true;
 		}
-		if (wParam == 'O')
+		if (key == Key::O)
 		{
 			OnOpenClick();
 			return true;
 		}
 	}
+	const bool interactionCanceled = input.Kind == InputReportKind::Cancel
+		|| input.Kind == InputReportKind::CaptureLost
+		|| input.Kind == InputReportKind::FocusLost;
+	if (interactionCanceled && _outlinePointerDown)
+		CancelDocumentOutlineDrag(false);
+	if (interactionCanceled && _toolBoxPointerDown)
+		CancelToolBoxDrag(false);
+	if (interactionCanceled && _canvas)
+	{
+		(void)_canvas->CancelActivePointerInteraction(
+			input.Kind == InputReportKind::CaptureLost
+				? L"画布失去鼠标捕获，修改已回滚。"
+				: L"窗口交互被中断，画布修改已回滚。");
+	}
+	return false;
+}
+
+std::optional<LRESULT> Designer::OnPlatformMessage(
+	UINT message, WPARAM wParam, LPARAM lParam)
+{
+	if (message == WM_CLIPBOARDUPDATE)
+	{
+		_clipboardRefreshRetriesRemaining = ClipboardRefreshRetryCount;
+		RefreshCommandAvailability();
+		if (Handle)
+			(void)::SetTimer(Handle, ClipboardRefreshTimerId,
+				ClipboardRefreshDelayMilliseconds, nullptr);
+		return LRESULT{ 0 };
+	}
+	if (message == WM_DESTROY)
+		StopClipboardMonitoring();
 	if (message == WM_CLOSE && !_closeApproved)
 	{
-		if (!ConfirmCanReplaceOrCloseDocument()) return true;
+		if (!ConfirmCanReplaceOrCloseDocument()) return LRESULT{ 0 };
 		_closeApproved = true;
 	}
 	if (message == WM_TIMER && wParam == RecoveryTimerId)
 	{
 		(void)::KillTimer(this->Handle, RecoveryTimerId);
-		if (!_recoverySnapshotPending) return true;
+		if (!_recoverySnapshotPending) return LRESULT{ 0 };
 		std::wstring recoveryError;
 		if (!FlushRecoverySnapshot(&recoveryError)
 			&& _lblInfo && !recoveryError.empty())
 		{
 			_lblInfo->Text = L"自动恢复保存失败：" + recoveryError;
-			_lblInfo->AccessibleDescription = _lblInfo->Text;
+			_lblInfo->AutomationFullDescription = _lblInfo->Text;
 			_lblInfo->InvalidateVisual();
 			if (_canvas && _canvas->IsDocumentDirty())
 			{
@@ -1958,16 +2053,16 @@ bool Designer::ProcessMessage(
 					RecoveryRetryMilliseconds, nullptr);
 			}
 		}
-		return true;
+		return LRESULT{ 0 };
 	}
 	if (message == WM_TIMER && wParam == CodeFreshnessTimerId)
 	{
 		(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
-		if (!_codeFreshnessInspectionPending) return true;
+		if (!_codeFreshnessInspectionPending) return LRESULT{ 0 };
 		_codeFreshnessInspectionPending = false;
 		RefreshCodeFreshnessFromFiles();
 		UpdateDocumentPresentation();
-		return true;
+		return LRESULT{ 0 };
 	}
 	if (message == WM_TIMER && wParam == ClipboardRefreshTimerId)
 	{
@@ -1980,42 +2075,30 @@ bool Designer::ProcessMessage(
 				(void)::SetTimer(Handle, ClipboardRefreshTimerId,
 					ClipboardRefreshDelayMilliseconds, nullptr);
 		}
-		return true;
+		return LRESULT{ 0 };
 	}
 	if (message == WM_ACTIVATEAPP && wParam == TRUE)
 	{
 		RefreshCodeFreshnessFromFiles();
 		UpdateDocumentPresentation();
 	}
-	const bool captureLost = message == WM_CAPTURECHANGED
-		&& reinterpret_cast<HWND>(lParam) != this->Handle;
-	const bool interactionCanceled = message == WM_CANCELMODE
-		|| message == WM_KILLFOCUS
-		|| (message == WM_ACTIVATEAPP && wParam == FALSE)
-		|| captureLost;
-	if (interactionCanceled)
-	{
-		_designerControlKeyDown = false;
-		_designerShiftKeyDown = false;
-		_designerAltKeyDown = false;
-		_suppressedOutlineShortcutCharacter = L'\0';
-	}
-	if (interactionCanceled && _outlinePointerDown)
+	const bool applicationDeactivated = message == WM_ACTIVATEAPP
+		&& wParam == FALSE;
+	if (applicationDeactivated && _outlinePointerDown)
 		CancelDocumentOutlineDrag(false);
-	if (interactionCanceled && _toolBoxPointerDown)
+	if (applicationDeactivated && _toolBoxPointerDown)
 		CancelToolBoxDrag(false);
-	if (interactionCanceled && _canvas)
+	if (applicationDeactivated && _canvas)
 	{
 		(void)_canvas->CancelActivePointerInteraction(
-			captureLost
-				? L"画布失去鼠标捕获，修改已回滚。"
-				: L"窗口交互被中断，画布修改已回滚。");
+			L"应用失去激活状态，画布修改已回滚。");
 	}
-	return Form::ProcessMessage(message, wParam, lParam, localX, localY);
+	(void)lParam;
+	return std::nullopt;
 }
 
 bool Designer::QueueOutlineShortcut(
-	WPARAM key,
+	Key key,
 	bool controlDown,
 	bool shiftDown)
 {
@@ -2028,45 +2111,45 @@ bool Designer::QueueOutlineShortcut(
 }
 
 bool Designer::ExecuteOutlineShortcut(
-	WPARAM key,
+	Key key,
 	bool controlDown,
 	bool shiftDown)
 {
 	if (!_canvas) return false;
 	if (!controlDown)
 	{
-		if (key != VK_DELETE) return false;
+		if (key != Key::Delete) return false;
 		OnDeleteClick();
 		return true;
 	}
 
 	switch (key)
 	{
-	case 'C':
+	case Key::C:
 		OnCopyClick();
 		return true;
-	case 'X':
+	case Key::X:
 		OnCutClick();
 		return true;
-	case 'V':
+	case Key::V:
 		if (shiftDown)
 			(void)_canvas->PasteControlsFromClipboardInPlace();
 		else OnPasteClick();
 		return true;
-	case 'D':
+	case Key::D:
 		(void)_canvas->DuplicateSelectedControls();
 		return true;
-	case 'L':
+	case Key::L:
 		ToggleSelectedControlsLocked();
 		return true;
-	case 'Z':
+	case Key::Z:
 		if (shiftDown) OnRedoClick();
 		else OnUndoClick();
 		return true;
-	case 'Y':
+	case Key::Y:
 		OnRedoClick();
 		return true;
-	case 'A':
+	case Key::A:
 		(void)_canvas->SelectAllInCurrentContainer(true);
 		return true;
 	default:
@@ -2100,16 +2183,6 @@ void Designer::OnOpenClick()
 	ofd.Multiselect = false;
 	ofd.Title = "Open Designer File";
 	auto r = ofd.ShowDialog(this->Handle);
-
-	// 兜底恢复交互
-	if (this->Handle && ::IsWindow(this->Handle))
-	{
-		::EnableWindow(this->Handle, TRUE);
-		::ReleaseCapture();
-		::SetForegroundWindow(this->Handle);
-		::SetActiveWindow(this->Handle);
-		::SetFocus(this->Handle);
-	}
 
 	if (r != DialogResult::OK || ofd.SelectedPaths.empty())
 		return;
@@ -2185,14 +2258,6 @@ bool Designer::SaveDocumentInteractive()
 		sfd.Filter = MakeDesignFilter();
 		sfd.Title = "Save Designer File";
 		auto r = sfd.ShowDialog(this->Handle);
-		if (this->Handle && ::IsWindow(this->Handle))
-		{
-			::EnableWindow(this->Handle, TRUE);
-			::ReleaseCapture();
-			::SetForegroundWindow(this->Handle);
-			::SetActiveWindow(this->Handle);
-			::SetFocus(this->Handle);
-		}
 		if (r != DialogResult::OK)
 			return false;
 		path = Convert::StringToWString(sfd.SelectedPath);
@@ -2256,12 +2321,12 @@ void Designer::UpdateDocumentPresentation()
 		+ DisplayDocumentName(_currentFileName);
 	if (dirty) title += L" *";
 	this->Text = title;
-	if (_btnReload) _btnReload->Enable = !_currentFileName.empty();
+	if (_btnReload) _btnReload->IsEnabled = !_currentFileName.empty();
 	if (_btnRegenerate)
 	{
 		const bool available = !_lastExportBasePath.empty()
 			&& _canvas && !_canvas->GetCodeBehind().ClassName.empty();
-		_btnRegenerate->Enable = available;
+		_btnRegenerate->IsEnabled = available;
 		std::wstring caption = L"重新生成";
 		std::wstring description = available
 			? L"重新生成当前文档的 code-behind 文件。"
@@ -2295,9 +2360,9 @@ void Designer::UpdateDocumentPresentation()
 				break;
 			}
 		}
-		_btnRegenerate->Text = std::move(caption);
-		_btnRegenerate->AccessibleName = L"重新生成代码";
-		_btnRegenerate->AccessibleDescription = std::move(description);
+		_btnRegenerate->SetContent(BindingValue(std::move(caption)));
+		_btnRegenerate->AutomationName = L"重新生成代码";
+		_btnRegenerate->AutomationFullDescription = std::move(description);
 		_btnRegenerate->InvalidateVisual();
 	}
 	if (this->Handle && ::IsWindow(this->Handle))
@@ -2316,7 +2381,7 @@ void Designer::InitializeRecoverySession()
 		if (_lblInfo && !error.empty())
 		{
 			_lblInfo->Text = L"自动恢复不可用：" + error;
-			_lblInfo->AccessibleDescription = _lblInfo->Text;
+			_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		}
 		return;
 	}
@@ -2424,7 +2489,7 @@ void Designer::TryRestoreRecoveryOnStartup()
 				+ snapshotError);
 		}
 		_lblInfo->Text = L"已恢复未保存的设计: " + documentName;
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 		return;
 	}
@@ -2491,7 +2556,7 @@ void Designer::DiscardSessionRecoverySnapshot()
 		_sessionRecoveryPath, &error) && _lblInfo && !error.empty())
 	{
 		_lblInfo->Text = L"自动恢复清理失败：" + error;
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 	}
 }
@@ -2874,42 +2939,30 @@ void Designer::RecordGeneratedCodeState(
 void Designer::OnExportClick()
 {
 	PrepareDocumentLifecycle();
-	auto controls = _canvas->GetAllControlsForExport();
-
-	int exportCount = (int)controls.size();
-	int buttonCount = 0;
-	int gridPanelCount = 0;
-	for (const auto& dc : controls)
+	DesignerModel::DesignDocument exportDocument;
+	std::wstring exportSnapshotError;
+	if (!_canvas || !_canvas->BuildDesignDocument(
+		exportDocument, &exportSnapshotError))
 	{
-		if (!dc) continue;
-		if (dc->Type == UIClass::UI_Button) buttonCount++;
-		if (dc->Type == UIClass::UI_GridPanel) gridPanelCount++;
+		if (_lblInfo) _lblInfo->Text = L"导出失败：无法构建 XAML 文档。";
+		ShowModalMessage(this, L"错误", exportSnapshotError.empty()
+			? L"无法从当前 XAML 文档构建代码生成输入。"
+			: exportSnapshotError);
+		return;
 	}
+	const auto exportCount = static_cast<int>(exportDocument.Nodes.size());
+	const auto buttonCount = static_cast<int>(std::count_if(
+		exportDocument.Nodes.begin(), exportDocument.Nodes.end(),
+		[](const auto& node) { return node.Type == UIClass::UI_Button; }));
+	const auto gridCount = static_cast<int>(std::count_if(
+		exportDocument.Nodes.begin(), exportDocument.Nodes.end(),
+		[](const auto& node) { return node.Type == UIClass::UI_Grid; }));
 	
 	SaveFileDialog saveFileDialog;
 	saveFileDialog.Filter = std::string("C++ Files (*.h;*.cpp)\0*.h;*.cpp\0\0\0",35);
-	DialogResult dialogResult = saveFileDialog.ShowDialog(this->Handle);
-	
-	// 保险措施：某些自定义/封装的对话框实现可能会禁用 owner 窗口后未恢复，
-	// 导致主窗体“保存完毕后无法交互”。这里强制恢复交互与焦点。
-	if (this->Handle && ::IsWindow(this->Handle))
-	{
-		::EnableWindow(this->Handle, TRUE);
-		::ReleaseCapture();
-		::SetForegroundWindow(this->Handle);
-		::SetActiveWindow(this->Handle);
-		::SetFocus(this->Handle);
-	}
-	// 有些实现会选择“进程内最顶层窗口”作为 owner 并禁用它，这里也一并兜底恢复。
-	{
-		HWND topMost = GetTopMostWindowInCurrentProcess();
-		if (topMost && ::IsWindow(topMost))
-		{
-			::EnableWindow(topMost, TRUE);
-		}
-	}
+	::DialogResult dialogResult = saveFileDialog.ShowDialog(this->Handle);
 
-	if (dialogResult == DialogResult::OK)
+	if (dialogResult == ::DialogResult::OK)
 	{
 		std::wstring selectedPath = Convert::StringToWString(saveFileDialog.SelectedPath);
 		if (selectedPath.empty())
@@ -2946,7 +2999,8 @@ void Designer::OnExportClick()
 		CodeBehindExportDialog exportDialog(
 			existingAssociation, suggestedClassName,
 			basePath, _currentFileName);
-		exportDialog.ShowDialog(this->Handle);
+		exportDialog.Owner = this;
+		(void)exportDialog.ShowDialog();
 		if (!exportDialog.Applied) return;
 		const auto className = exportDialog.ClassName;
 		const bool exported = GenerateAndAssociateCodeFiles(
@@ -2958,7 +3012,7 @@ void Designer::OnExportClick()
 			const std::wstring handlerIncludePath = basePath + L".handlers.g.inc";
 			UpdateDocumentPresentation();
 			_lblInfo->Text = L"代码导出成功: " + className + L" (控件:" + std::to_wstring(exportCount)
-				+ L", GridPanel:" + std::to_wstring(gridPanelCount)
+				+ L", Grid:" + std::to_wstring(gridCount)
 				+ L", Button:" + std::to_wstring(buttonCount) + L")";
 			ShowModalMessage(this, L"导出成功", (L"代码已成功导出到:\n"
 				+ headerPath + L"\n" + cppPath + L"\n"
@@ -2966,7 +3020,7 @@ void Designer::OnExportClick()
 				+ handlerIncludePath
 				+ L"\n\n.h/.cpp 仅首次创建，.g.* 可安全重新生成。"
 				+ L"\n\n导出统计：控件=" + std::to_wstring(exportCount)
-				+ L"，GridPanel=" + std::to_wstring(gridPanelCount)
+				+ L"，Grid=" + std::to_wstring(gridCount)
 				+ L"，Button=" + std::to_wstring(buttonCount)));
 		}
 		else
@@ -2986,7 +3040,7 @@ void Designer::OnRegenerateCodeClick()
 		if (_lblInfo)
 		{
 			_lblInfo->Text = L"当前文档尚未建立可重新生成的 code-behind 目标。";
-			_lblInfo->AccessibleDescription = _lblInfo->Text;
+			_lblInfo->AutomationFullDescription = _lblInfo->Text;
 			_lblInfo->InvalidateVisual();
 		}
 		return;
@@ -2997,14 +3051,14 @@ void Designer::OnRegenerateCodeClick()
 	{
 		_lblInfo->Text = L"代码重新生成失败："
 			+ (error.empty() ? L"未知错误。" : error);
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 		return;
 	}
 
 	UpdateDocumentPresentation();
 	_lblInfo->Text = L"代码已重新生成：" + _lastExportBasePath;
-	_lblInfo->AccessibleDescription = _lblInfo->Text;
+	_lblInfo->AutomationFullDescription = _lblInfo->Text;
 	_lblInfo->InvalidateVisual();
 }
 
@@ -3015,7 +3069,7 @@ void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 	{
 		_lblInfo->Text = L"处理函数已就绪: " + handlerName
 			+ L"。首次“导出代码”后，再次激活会更新并打开用户源文件。";
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 		return;
 	}
@@ -3048,7 +3102,7 @@ void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 	{
 		_lblInfo->Text = L"处理函数代码更新失败: "
 			+ (error.empty() ? handlerName : error);
-		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->AutomationFullDescription = _lblInfo->Text;
 		_lblInfo->InvalidateVisual();
 		return;
 	}
@@ -3117,7 +3171,7 @@ void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 		if (navigation.UsedShellFallback)
 			_lblInfo->Text += L"（编辑器启动失败，已回退文件关联）";
 	}
-	_lblInfo->AccessibleDescription = _lblInfo->Text;
+	_lblInfo->AutomationFullDescription = _lblInfo->Text;
 	_lblInfo->InvalidateVisual();
 }
 
@@ -3176,7 +3230,8 @@ void Designer::OnXamlClick()
 	}
 
 	XamlEditorDialog dialog(_canvas, std::move(xaml));
-	dialog.ShowDialog(this->Handle);
+	dialog.Owner = this;
+	(void)dialog.ShowDialog();
 	auto result = !_canvas->HasActiveDocumentTransaction()
 		? DesignerDocumentTransactionResult::Success(
 			DesignerDocumentTransactionState::Unchanged)
@@ -3200,132 +3255,193 @@ void Designer::OnXamlClick()
 
 void Designer::OnArrangeClick()
 {
-	if (!_arrangeMenu || !_btnArrange || !_btnArrange->Enable) return;
+	if (!_arrangeMenu || !_btnArrange || !_btnArrange->IsEnabled) return;
 	RefreshLockPresentation();
-	_arrangeMenu->ShowAt(_btnArrange, 0, _btnArrange->Size.cy + 4);
+	const float buttonHeight = _btnArrange->ActualHeight > 0.0f
+		? _btnArrange->ActualHeight
+		: (_btnArrange->Height.IsFixed() ? _btnArrange->Height.value : 0.0f);
+	_arrangeMenu->ShowAt(_btnArrange, 0,
+		static_cast<int>(std::lround(buttonHeight)) + 4);
 }
 
-void Designer::OnArrangeCommand(int commandId)
+void Designer::OnArrangeCommand(std::wstring_view commandName)
 {
 	if (!_canvas) return;
-	if (commandId == ArrangeDuplicate)
+	if (commandName == ArrangeDuplicate)
 	{
 		(void)_canvas->DuplicateSelectedControls();
 		return;
 	}
-	if (commandId == CanvasToggleLock)
+	if (commandName == CanvasToggleLock)
 	{
 		ToggleSelectedControlsLocked();
 		return;
 	}
 	std::optional<DesignerSelectionArrangeAction> action;
-	switch (commandId)
-	{
-	case ArrangeAlignLeft: action = DesignerSelectionArrangeAction::AlignLeft; break;
-	case ArrangeAlignHorizontalCenters: action = DesignerSelectionArrangeAction::AlignHorizontalCenters; break;
-	case ArrangeAlignRight: action = DesignerSelectionArrangeAction::AlignRight; break;
-	case ArrangeAlignTop: action = DesignerSelectionArrangeAction::AlignTop; break;
-	case ArrangeAlignVerticalCenters: action = DesignerSelectionArrangeAction::AlignVerticalCenters; break;
-	case ArrangeAlignBottom: action = DesignerSelectionArrangeAction::AlignBottom; break;
-	case ArrangeDistributeHorizontally: action = DesignerSelectionArrangeAction::DistributeHorizontally; break;
-	case ArrangeDistributeVertically: action = DesignerSelectionArrangeAction::DistributeVertically; break;
-	case ArrangeMakeSameWidth: action = DesignerSelectionArrangeAction::MakeSameWidth; break;
-	case ArrangeMakeSameHeight: action = DesignerSelectionArrangeAction::MakeSameHeight; break;
-	case ArrangeMakeSameSize: action = DesignerSelectionArrangeAction::MakeSameSize; break;
-	case ArrangeBringForward: action = DesignerSelectionArrangeAction::BringForward; break;
-	case ArrangeSendBackward: action = DesignerSelectionArrangeAction::SendBackward; break;
-	case ArrangeBringToFront: action = DesignerSelectionArrangeAction::BringToFront; break;
-	case ArrangeSendToBack: action = DesignerSelectionArrangeAction::SendToBack; break;
-	default: break;
-	}
+	if (commandName == ArrangeAlignLeft)
+		action = DesignerSelectionArrangeAction::AlignLeft;
+	else if (commandName == ArrangeAlignHorizontalCenters)
+		action = DesignerSelectionArrangeAction::AlignHorizontalCenters;
+	else if (commandName == ArrangeAlignRight)
+		action = DesignerSelectionArrangeAction::AlignRight;
+	else if (commandName == ArrangeAlignTop)
+		action = DesignerSelectionArrangeAction::AlignTop;
+	else if (commandName == ArrangeAlignVerticalCenters)
+		action = DesignerSelectionArrangeAction::AlignVerticalCenters;
+	else if (commandName == ArrangeAlignBottom)
+		action = DesignerSelectionArrangeAction::AlignBottom;
+	else if (commandName == ArrangeDistributeHorizontally)
+		action = DesignerSelectionArrangeAction::DistributeHorizontally;
+	else if (commandName == ArrangeDistributeVertically)
+		action = DesignerSelectionArrangeAction::DistributeVertically;
+	else if (commandName == ArrangeMakeSameWidth)
+		action = DesignerSelectionArrangeAction::MakeSameWidth;
+	else if (commandName == ArrangeMakeSameHeight)
+		action = DesignerSelectionArrangeAction::MakeSameHeight;
+	else if (commandName == ArrangeMakeSameSize)
+		action = DesignerSelectionArrangeAction::MakeSameSize;
+	else if (commandName == ArrangeBringForward)
+		action = DesignerSelectionArrangeAction::BringForward;
+	else if (commandName == ArrangeSendBackward)
+		action = DesignerSelectionArrangeAction::SendBackward;
+	else if (commandName == ArrangeBringToFront)
+		action = DesignerSelectionArrangeAction::BringToFront;
+	else if (commandName == ArrangeSendToBack)
+		action = DesignerSelectionArrangeAction::SendToBack;
 	if (action) (void)_canvas->ArrangeSelection(*action);
 }
 
-void Designer::OnCanvasMenuCommand(int commandId)
+void Designer::OnCanvasMenuCommand(std::wstring_view commandName)
 {
 	if (!_canvas) return;
-	switch (commandId)
+	if (commandName == CanvasUndo)
 	{
-	case CanvasUndo:
 		OnUndoClick();
 		return;
-	case CanvasRedo:
+	}
+	if (commandName == CanvasRedo)
+	{
 		OnRedoClick();
 		return;
-	case CanvasCut:
+	}
+	if (commandName == CanvasCut)
+	{
 		OnCutClick();
 		return;
-	case CanvasCopy:
+	}
+	if (commandName == CanvasCopy)
+	{
 		OnCopyClick();
 		return;
-	case CanvasPaste:
+	}
+	if (commandName == CanvasPaste)
+	{
 		OnPasteClick();
 		return;
-	case CanvasPasteInPlace:
+	}
+	if (commandName == CanvasPasteInPlace)
+	{
 		(void)_canvas->PasteControlsFromClipboardInPlace();
 		return;
-	case CanvasPasteHere:
+	}
+	if (commandName == CanvasPasteHere)
+	{
 		if (_hasCanvasContextPastePoint)
 			(void)_canvas->PasteControlsFromClipboardAt(
 				_canvasContextPastePoint);
 		return;
-	case CanvasDuplicate:
+	}
+	if (commandName == CanvasDuplicate)
+	{
 		(void)_canvas->DuplicateSelectedControls();
 		return;
-	case CanvasDelete:
+	}
+	if (commandName == CanvasDelete)
+	{
 		OnDeleteClick();
 		return;
-	case CanvasToggleLock:
+	}
+	if (commandName == CanvasToggleLock)
+	{
 		ToggleSelectedControlsLocked();
 		return;
-	case CanvasSelectAll:
+	}
+	if (commandName == CanvasSelectAll)
+	{
 		(void)_canvas->SelectAllInCurrentContainer(true);
 		return;
-	case CanvasEditXaml:
+	}
+	if (commandName == CanvasEditXaml)
+	{
 		OnXamlClick();
 		return;
-	case CanvasViewFit:
+	}
+	if (commandName == CanvasViewFit)
+	{
 		_canvas->FitDesignSurfaceToViewport();
 		return;
-	case CanvasViewActualSize:
+	}
+	if (commandName == CanvasViewActualSize)
+	{
 		_canvas->ResetView();
 		return;
-	case CanvasViewZoomIn:
+	}
+	if (commandName == CanvasViewZoomIn)
+	{
 		_canvas->ZoomIn();
 		return;
-	case CanvasViewZoomOut:
+	}
+	if (commandName == CanvasViewZoomOut)
+	{
 		_canvas->ZoomOut();
 		return;
-	case CanvasToggleTabOrder:
+	}
+	if (commandName == CanvasToggleTabOrder)
+	{
 		ToggleTabOrderMode();
 		return;
-	case CanvasAutoTabOrder:
+	}
+	if (commandName == CanvasAutoTabOrder)
+	{
 		(void)_canvas->AutoArrangeTabOrder();
 		RefreshTabOrderPresentation();
 		return;
-	case CanvasToggleGrid:
+	}
+	if (commandName == CanvasToggleGrid)
+	{
 		_canvas->SetGridVisible(!_canvas->IsGridVisible());
 		RefreshGridSettingsPresentation();
-		break;
-	case CanvasToggleSnapGrid:
+	}
+	else if (commandName == CanvasToggleSnapGrid)
+	{
 		_canvas->SetSnapToGridEnabled(
 			!_canvas->IsSnapToGridEnabled());
 		RefreshGridSettingsPresentation();
-		break;
-	case CanvasToggleSnapGuides:
+	}
+	else if (commandName == CanvasToggleSnapGuides)
+	{
 		_canvas->SetSnapToGuidesEnabled(
 			!_canvas->IsSnapToGuidesEnabled());
 		RefreshGridSettingsPresentation();
-		break;
-	case CanvasGridSize5:
-	case CanvasGridSize10:
-	case CanvasGridSize20:
-		_canvas->SetGridSize(commandId == CanvasGridSize5 ? 5
-			: commandId == CanvasGridSize10 ? 10 : 20);
+	}
+	else if (commandName == CanvasGridSize5)
+	{
+		_canvas->SetGridSize(5);
 		RefreshGridSettingsPresentation();
-		break;
-	default:
-		OnArrangeCommand(commandId);
+	}
+	else if (commandName == CanvasGridSize10)
+	{
+		_canvas->SetGridSize(10);
+		RefreshGridSettingsPresentation();
+	}
+	else if (commandName == CanvasGridSize20)
+	{
+		_canvas->SetGridSize(20);
+		RefreshGridSettingsPresentation();
+	}
+	else
+	{
+		OnArrangeCommand(commandName);
 		return;
 	}
 	if (_lblInfo)

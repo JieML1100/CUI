@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file DesignerTypes.h
@@ -6,6 +6,7 @@
  */
 #include "../CUI/include/Control.h"
 #include "DesignerPropertyValue.h"
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -14,22 +15,66 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <string_view>
 
 struct DesignerStyleSheet;
 namespace DesignerModel
 {
 	struct DesignObjectResourceDictionary;
-}
 
-// 设计器中控件的元数据
-struct ControlMetadata
-{
-	UIClass Type;
-	std::wstring Name;
-	std::wstring DisplayName;
-	SIZE DefaultSize;
-	bool IsContainer;
-};
+	/** One XAML CommandBinding; handler names are resolved by native code. */
+	struct DesignCommandBinding
+	{
+		using HandlerRoute =
+			std::pair<std::wstring, const std::wstring*>;
+
+		std::wstring Command;
+		std::wstring PreviewCanExecute;
+		std::wstring CanExecute;
+		std::wstring PreviewExecuted;
+		std::wstring Executed;
+
+		std::array<HandlerRoute, 4> HandlerRoutes() const noexcept
+		{
+			return {{
+				{ L"PreviewCanExecute", &PreviewCanExecute },
+				{ L"CanExecute", &CanExecute },
+				{ L"PreviewExecuted", &PreviewExecuted },
+				{ L"Executed", &Executed }
+			}};
+		}
+		bool operator==(const DesignCommandBinding&) const = default;
+	};
+
+	enum class DesignInputBindingKind : unsigned char
+	{
+		Key,
+		Mouse
+	};
+
+	/** One XAML KeyBinding or MouseBinding with a canonical gesture. */
+	struct DesignInputBinding
+	{
+		DesignInputBindingKind Kind = DesignInputBindingKind::Key;
+		std::wstring Command;
+		std::wstring Gesture;
+		std::wstring CommandParameter;
+		/** Canonical x:Name resolved to Control* only during materialization. */
+		std::wstring CommandTarget;
+		bool operator==(const DesignInputBinding&) const = default;
+	};
+
+	/** Stable, exact ordering for case-sensitive canonical XAML member names. */
+	struct DesignPropertyNameLess
+	{
+		bool operator()(
+			const std::wstring& left,
+			const std::wstring& right) const noexcept;
+	};
+	/** Authored routed-event connections keyed by canonical Schema event name. */
+	using DesignEventHandlerMap = std::map<
+		std::wstring, std::wstring, DesignPropertyNameLess>;
+}
 
 enum class DesignerBindingRelativeSource : unsigned char
 {
@@ -175,12 +220,12 @@ struct DesignerComponentPropertyDescriptor
 	DesignerStyleValue DefaultValue;
 	/** Optional resource-backed default, resolved before the contract is installed. */
 	std::wstring DefaultResourceKey;
-	ControlPropertyEditorKind Editor = ControlPropertyEditorKind::Auto;
+	DependencyPropertyEditorKind Editor = DependencyPropertyEditorKind::Auto;
 	std::vector<DesignerComponentPropertyChoice> Choices;
 	std::optional<double> Minimum;
 	std::optional<double> Maximum;
 	std::optional<double> Step;
-	ControlPropertyFlags Flags = ControlPropertyFlags::None;
+	DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
 	DataSourceUpdateMode DefaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
 	bool IsReadOnly = false;
@@ -421,29 +466,15 @@ struct DesignerControlDescriptor
 	UIClass Type = UIClass::UI_Base;
 	std::wstring Name;
 	std::wstring DisplayName;
-	SIZE DefaultSize{ 100, 30 };
+	cui::core::Size DefaultSize{ 100.0f, 30.0f };
 	bool IsContainer = false;
 	std::wstring Category;
 	bool IsValid() const noexcept
 	{
-		if (Type == UIClass::UI_Base || Type == UIClass::UI_TabPage
-			|| Name.empty() || DisplayName.empty()
-			|| DefaultSize.cx <= 0 || DefaultSize.cy <= 0) return false;
+		if (Type == UIClass::UI_Base || Name.empty() || DisplayName.empty()
+			|| DefaultSize.width <= 0.0f || DefaultSize.height <= 0.0f)
+			return false;
 		return true;
-	}
-
-	static DesignerControlDescriptor BuiltIn(
-		const ControlMetadata& metadata,
-		std::wstring category = {})
-	{
-		DesignerControlDescriptor result;
-		result.Type = metadata.Type;
-		result.Name = metadata.Name;
-		result.DisplayName = metadata.DisplayName;
-		result.DefaultSize = metadata.DefaultSize;
-		result.IsContainer = metadata.IsContainer;
-		result.Category = std::move(category);
-		return result;
 	}
 };
 
@@ -455,10 +486,12 @@ public:
 	// 文档内稳定身份。重命名、重排和代码重新生成均不得改变该值。
 	int StableId = 0;
 	// 设计器层面的父容器：nullptr 表示直接属于窗体（画布根级）。
-	// 注意：不要与 ControlInstance->Parent 混淆；后者在设计器运行时可能指向 DesignerCanvas。
+	// 注意：不要与 ControlInstance->GetVisualParent() 混淆；后者在设计器运行时可能指向 DesignerCanvas。
 	Control* DesignerParent = nullptr;
 	std::wstring Name;
 	UIClass Type;
+	// Authoritative built-in XAML type identity (for example Canvas -> Panel).
+	RuntimeTypeId XamlType;
 	DesignerComponentType ComponentType;
 	// Visual content property used when this public control is parented by a
 	// declarative component. The runtime parent may instead be its presenter.
@@ -472,15 +505,19 @@ public:
 	// keeping the control selectable, editable, copyable and removable.
 	bool IsLocked = false;
 
-	// 事件绑定：key 为事件成员名（如 OnMouseClick/OnTextChanged），value 为类成员函数名
-	// 仅用于设计期保存/加载与导出代码生成；运行时不自动绑定。
-	std::map<std::wstring, std::wstring> EventHandlers;
+	// XAML 事件的瞬态物化投影。DesignDocument 是唯一作者态；Designer
+	// 预览和 RuntimeDocument 可据此挂接处理函数，静态 CodeGen 不读取本缓存。
+	DesignerModel::DesignEventHandlerMap EventHandlers;
+	std::vector<DesignerModel::DesignCommandBinding> CommandBindings;
+	std::vector<DesignerModel::DesignInputBinding> InputBindings;
+	// ICommandSource object references stay as authored x:Name identities. The
+	// native weak pointer is only a preview/runtime projection.
+	std::wstring AuthoredCommandTarget;
 	// 数据绑定：key 为目标属性名，value 描述统一数据上下文上的源路径与模式。
 	std::map<std::wstring, DesignerDataBinding> DataBindings;
 	// Transient preview state. It is deliberately excluded from persistence.
 	std::map<std::wstring, DesignerBindingPreviewState> BindingPreviewStates;
-	std::map<std::wstring, std::optional<BindingValue>> BindingPreviewLocalValues;
-	// Metadata-backed properties not represented by legacy Props/Extra fields.
+	// Metadata-backed authored properties projected from the shared Schema.
 	std::map<std::wstring, DesignerStyleValue> MetadataProperties;
 	// Canonical property name -> authored StaticResource key. The tracked value
 	// above remains the current effective value used by the preview, while this
@@ -500,7 +537,7 @@ public:
 	// 设计期附加数据（不一定映射到运行时属性）。
 	// 例如：MediaPlayer 的媒体源路径等。
 	std::unordered_map<std::wstring, std::wstring> DesignStrings;
-	
+
 	// 用于调整大小的句柄位置
 	enum class ResizeHandle
 	{
@@ -514,79 +551,14 @@ public:
 		BottomLeft,
 		Left
 	};
-	
+
 	DesignerControl(Control* control, std::wstring name, UIClass type,
 		Control* designerParent = nullptr, int stableId = 0)
 		: ControlInstance(control), StableId(stableId),
 		  DesignerParent(designerParent), Name(name), Type(type), IsSelected(false)
 	{
 	}
-	
+
 	ResizeHandle HitTestHandle(POINT pt, int handleSize = 6);
 	std::vector<RECT> GetHandleRects(int handleSize = 6);
-};
-
-// 可用控件类型列表
-class ControlRegistry
-{
-public:
-	static std::vector<ControlMetadata> GetAvailableControls()
-	{
-		return {
-			{ UIClass::UI_Label, L"Label", L"标签", {100, 20}, false },
-			{ UIClass::UI_LinkLabel, L"LinkLabel", L"链接标签", {120, 20}, false },
-			{ UIClass::UI_Button, L"Button", L"按钮", {120, 30}, true },
-			{ UIClass::UI_TextBox, L"TextBox", L"文本框", {200, 25}, false },
-			{ UIClass::UI_PasswordBox, L"PasswordBox", L"密码框", {200, 25}, false },
-			{ UIClass::UI_RichTextBox, L"RichTextBox", L"富文本框", {300, 160}, false },
-			{ UIClass::UI_DateTimePicker, L"DateTimePicker", L"日期时间选择器", {200, 28}, false },
-			{ UIClass::UI_NumericUpDown, L"NumericUpDown", L"数值步进框", {140, 30}, false },
-			{ UIClass::UI_Panel, L"Panel", L"面板", {200, 200}, true },
-			{ UIClass::UI_GroupBox, L"GroupBox", L"分组框", {240, 180}, true },
-			{ UIClass::UI_Expander, L"Expander", L"折叠面板", {260, 160}, true },
-			{ UIClass::UI_ScrollView, L"ScrollView", L"滚动视图", {240, 200}, true },
-			{ UIClass::UI_StackPanel, L"StackPanel", L"堆叠面板", {200, 200}, true },
-			{ UIClass::UI_GridPanel, L"GridPanel", L"网格面板", {200, 200}, true },
-			{ UIClass::UI_DockPanel, L"DockPanel", L"停靠面板", {200, 200}, true },
-			{ UIClass::UI_WrapPanel, L"WrapPanel", L"换行面板", {200, 200}, true },
-			{ UIClass::UI_RelativePanel, L"RelativePanel", L"相对面板", {200, 200}, true },
-			{ UIClass::UI_SplitContainer, L"SplitContainer", L"分割容器", {360, 220}, true },
-			{ UIClass::UI_CheckBox, L"CheckBox", L"复选框", {100, 20}, false },
-			{ UIClass::UI_RadioBox, L"RadioBox", L"单选框", {100, 20}, false },
-			{ UIClass::UI_ComboBox, L"ComboBox", L"下拉框", {150, 25}, false },
-			{ UIClass::UI_ListView, L"ListView", L"列表视图", {320, 220}, false },
-			{ UIClass::UI_ListBox, L"ListBox", L"列表框", {220, 180}, false },
-			{ UIClass::UI_ItemsControl, L"ItemsControl", L"模板化列表", {260, 220}, false },
-			{ UIClass::UI_ContentPresenter, L"ContentPresenter", L"内容呈现器", {260, 120}, false },
-			{ UIClass::UI_ContentControl, L"ContentControl", L"内容控件", {260, 140}, true },
-			{ UIClass::UI_GridView, L"GridView", L"表格", {360, 200}, false },
-			{ UIClass::UI_PropertyGrid, L"PropertyGrid", L"属性表", {300, 320}, false },
-			{ UIClass::UI_ChartView, L"ChartView", L"交互图表", {420, 260}, false },
-			{ UIClass::UI_ReportView, L"ReportView", L"报表视图", {480, 300}, false },
-			{ UIClass::UI_KpiCard, L"KpiCard", L"指标卡片", {220, 132}, false },
-			{ UIClass::UI_FilterBar, L"FilterBar", L"筛选条", {640, 48}, false },
-			{ UIClass::UI_TreeView, L"TreeView", L"树", {220, 220}, false },
-			{ UIClass::UI_ProgressBar, L"ProgressBar", L"进度条", {200, 20}, false },
-			{ UIClass::UI_LoadingRing, L"LoadingRing", L"环形加载器", {48, 48}, false },
-			{ UIClass::UI_ProgressRing, L"ProgressRing", L"环形进度环", {72, 72}, false },
-			{ UIClass::UI_Slider, L"Slider", L"滑块", {200, 30}, false },
-			{ UIClass::UI_PictureBox, L"PictureBox", L"图片框", {150, 150}, false },
-			{ UIClass::UI_Switch, L"Switch", L"开关", {60, 30}, false },
-			{ UIClass::UI_TabControl, L"TabControl", L"选项卡", {360, 240}, true },
-			{ UIClass::UI_ToolBar, L"ToolBar", L"工具栏", {360, 34}, false },
-			{ UIClass::UI_Menu, L"Menu", L"菜单", {600, 28}, false },
-			{ UIClass::UI_StatusBar, L"StatusBar", L"状态栏", {600, 26}, false },
-			{ UIClass::UI_ToastHost, L"ToastHost", L"通知宿主", {340, 260}, false },
-			{ UIClass::UI_WebBrowser, L"WebBrowser", L"浏览器", {500, 360}, false },
-			{ UIClass::UI_MediaPlayer, L"MediaPlayer", L"媒体播放器", {640, 360}, false },
-			{ UIClass::UI_NativeSurface, L"NativeSurface", L"原生表面", {320, 180}, false },
-			{ UIClass::UI_NavigationView, L"NavigationView", L"导航视图", {220, 360}, false },
-			{ UIClass::UI_SideBar, L"SideBar", L"侧边栏", {200, 360}, false },
-			{ UIClass::UI_BreadcrumbBar, L"BreadcrumbBar", L"面包屑", {320, 32}, false },
-			{ UIClass::UI_CalendarView, L"CalendarView", L"日历", {280, 300}, false },
-			{ UIClass::UI_DateRangePicker, L"DateRangePicker", L"日期范围", {240, 30}, false },
-			{ UIClass::UI_ColorPicker, L"ColorPicker", L"颜色选择器", {180, 30}, false },
-			{ UIClass::UI_PagedGridView, L"PagedGridView", L"分页表格", {520, 320}, false },
-		};
-	}
 };

@@ -4,6 +4,13 @@
 
 class LoadingRing : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::ProgressBar, L"LoadingRing");
+	}
+
 private:
 	bool _active = true;
 	ULONGLONG _animStartTick = 0;
@@ -13,16 +20,17 @@ private:
 
 public:
 	virtual UIClass Type();
-	void EnsureBindingPropertiesRegistered() override;
-	float BorderThickness = 0.0f;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
 
-	PROPERTY(bool, Active);
-	GET(bool, Active);
-	SET(bool, Active);
+	PROPERTY(bool, IsActive);
+	GET(bool, IsActive);
+	SET(bool, IsActive);
 
-	LoadingRing(int x, int y, int width = 48, int height = 48);
+	LoadingRing();
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	void Update() override;
+protected:
+	void OnRender() override;
 };

@@ -1,90 +1,78 @@
 #pragma once
+
 #include "HeaderedContentControl.h"
 
+/** WPF-compatible direction in which Expander content is placed. */
+enum class ExpandDirection : unsigned char
+{
+	Down,
+	Up,
+	Left,
+	Right,
+};
+
 /**
- * @file Expander.h
- * @brief Expander：带标题栏和展开动画的可折叠容器。
+ * WPF-style HeaderedContentControl whose content participates in measure only
+ * while expanded. Chrome and transition policy belong to its template; the
+ * native implementation contains only a private fallback presenter.
  */
-
-typedef Event<void(class Expander*, bool expanded)> ExpanderExpandedChangedEvent;
-
 class Expander : public HeaderedContentControl
 {
-protected:
-	void PerformPendingLayout() override;
-	void ConfigureHeaderVisual(Control& child) override;
-
 private:
 	bool _isExpanded = true;
-	float _headerHeight = 36.0f;
-	float _headerPaddingX = 12.0f;
-	float _chevronSize = 13.0f;
-	float _border = 1.0f;
-	int _animationDurationMs = 160;
-	D2D1_COLOR_F _surfaceColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F _headerBackColor = cui::theme::palette::SurfaceMuted;
-	D2D1_COLOR_F _headerHoverBackColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F _contentBackColor = cui::theme::palette::SurfaceSubtle;
-	D2D1_COLOR_F _accentColor = cui::theme::palette::Accent;
-	D2D1_COLOR_F _mutedTextColor = cui::theme::palette::TextMuted;
+	::ExpandDirection _expandDirection = ::ExpandDirection::Down;
 	bool _hoverHeader = false;
-	float _expandProgress = 1.0f;
-	float _animStartProgress = 1.0f;
-	float _animTargetProgress = 1.0f;
-	ULONGLONG _animStartTick = 0;
-	bool _animating = false;
+	bool _headerPressActive = false;
 
-	float CurrentExpandProgress();
-	void PerformExpanderLayoutIfNeeded();
-	bool HeaderHitTest(int localX, int localY) const;
 	void ApplyExpandedStateChange(bool oldValue, bool newValue);
 	void SetCurrentExpanded(bool value);
-	void UpdateHeaderLayout();
+	void SynchronizeContentPresentation();
+	bool HeaderHitTest(int localX, int localY) const;
+	cui::core::Rect HeaderRect() const noexcept;
+	cui::core::Rect ContentRect() const noexcept;
+
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<ExpanderAutomationPeer>(*this);
+	}
+	void ConfigureContentVisual(Control& child) override;
+	cui::core::Insets GetHeaderPresentationInsets() const noexcept override;
+	float GetHeaderSlotHeightDip(float availableWidth) override;
+	void PerformPendingLayout() override;
 
 public:
-	UIClass Type() override;
-	void EnsureBindingPropertiesRegistered() override;
-	Expander();
-	Expander(std::wstring text, int x, int y, int width, int height);
+	using UIElement::Expanded;
+	using UIElement::Collapsed;
 
-	ExpanderExpandedChangedEvent OnExpandedChanged;
+	UIClass Type() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+
+	Expander();
 
 	PROPERTY(bool, IsExpanded);
 	GET(bool, IsExpanded);
 	SET(bool, IsExpanded);
 
-#define CUI_EXPANDER_PROPERTY(type, name) \
-	PROPERTY(type, name); \
-	GET(type, name); \
-	SET(type, name)
-
-	CUI_EXPANDER_PROPERTY(float, HeaderHeight);
-	CUI_EXPANDER_PROPERTY(float, HeaderPaddingX);
-	CUI_EXPANDER_PROPERTY(float, ChevronSize);
-	CUI_EXPANDER_PROPERTY(float, Border);
-	CUI_EXPANDER_PROPERTY(float, CornerRadius);
-	CUI_EXPANDER_PROPERTY(UINT, AnimationDurationMs);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, SurfaceColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, HeaderBackColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, HeaderHoverBackColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, ContentBackColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, AccentColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, MutedTextColor);
-	CUI_EXPANDER_PROPERTY(D2D1_COLOR_F, DisabledOverlayColor);
-
-#undef CUI_EXPANDER_PROPERTY
+	PROPERTY(::ExpandDirection, ExpandDirection);
+	GET(::ExpandDirection, ExpandDirection);
+	SET(::ExpandDirection, ExpandDirection);
 
 	void SetExpanded(bool value);
 	void Toggle();
 
-	SIZE ActualSize() override;
+	cui::core::Size MeasureCore(
+		const cui::core::Constraints& available) override;
 	CursorKind QueryCursor(int localX, int localY) override;
+	bool ClipsChildren() override { return true; }
 	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
-	D2D1_RECT_F GetChildrenClipRect() override;
-	bool HandlesNavigationKey(WPARAM key) const override;
-	bool IsAnimationRunning() override;
-	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	cui::core::Point GetChildrenLayoutOriginDip() override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+	D2D1_RECT_F GetVisualChildrenClipRect() override;
+	bool HandlesNavigationKey(Key key) const override;
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
 };

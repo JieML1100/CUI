@@ -1,13 +1,13 @@
 #pragma once
 
 #include "DesignerModel/DesignCodeGenerationService.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/TextBox.h"
 #include "../CUI/include/Button.h"
 
 /** Confirms the C++ class identity for an already selected export base. */
-class CodeBehindExportDialog final : public Form
+class CodeBehindExportDialog final : public Window
 {
 public:
 	bool Applied = false;
@@ -22,7 +22,7 @@ public:
 	~CodeBehindExportDialog() = default;
 	[[nodiscard]] bool CanApply() const noexcept
 	{
-		return _ok && _ok->Enable;
+		return _ok && _ok->IsEnabled;
 	}
 	[[nodiscard]] std::wstring ValidationMessage() const
 	{

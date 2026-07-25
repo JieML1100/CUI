@@ -1,14 +1,24 @@
 #include "ItemsControl.h"
+#include "DependencyPropertyInfrastructure.h"
+#include "XamlInfrastructure.h"
+#include "StyleInfrastructure.h"
+#include "TreeInfrastructure.h"
 
-#include "Form.h"
+#include "Window.h"
 #include "Label.h"
+#include "ContentPresenter.h"
+#include "Layout/OverlayLayout.h"
 #include "Layout/StackPanel.h"
 #include "Layout/WrapPanel.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <exception>
+#include <iterator>
 #include <limits>
+#include <span>
+#include <stdexcept>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,30 +27,251 @@
 
 namespace
 {
-	bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right)
+	void ClearTemplateOwner(Control* root, Control* owner)
 	{
-		if (left.size() != right.size()) return false;
-		for (size_t index = 0; index < left.size(); ++index)
-			if (std::towlower(left[index]) != std::towlower(right[index]))
+		if (!root || !owner) return;
+		std::vector<Control*> stack{ root };
+		while (!stack.empty())
+		{
+			auto* current = stack.back();
+			stack.pop_back();
+			if (!current) continue;
+			for (auto* child : current->GetVisualChildrenView())
+				if (child) stack.push_back(child);
+			if (current->GetTemplatedParent() == owner)
+				cui::framework::XamlAccess::SetTemplatedParent(*current, nullptr);
+		}
+	}
+
+	class MaterializedItemsSourceSnapshot final
+		: public IBindingList,
+		  public IBindingListGroupView
+	{
+	public:
+		MaterializedItemsSourceSnapshot(
+			std::wstring itemTypeName,
+			std::vector<BindingSourceReference> items,
+			std::vector<BindingListGroup> groups)
+			: _itemTypeName(std::move(itemTypeName)),
+			  _items(std::move(items)),
+			  _groups(std::move(groups)) {}
+
+		size_t Count() const noexcept override { return _items.size(); }
+		bool TryGetItem(
+			size_t index,
+			BindingSourceReference& out) const override
+		{
+			if (index >= _items.size() || !_items[index]) return false;
+			out = _items[index];
+			return true;
+		}
+		EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+		const std::wstring& ItemTypeName() const noexcept override
+		{
+			return _itemTypeName;
+		}
+		const std::vector<BindingListGroup>& Groups() const noexcept override
+		{
+			return _groups;
+		}
+		EventConnection SubscribeGroupsChanged(
+			GroupsChangedHandler) override { return {}; }
+		bool CanApply(
+			const CollectionChangedEventArgs& change,
+			size_t actualNewCount,
+			const std::wstring& itemTypeName) const noexcept
+		{
+			if (change.Action == CollectionChangeAction::Reset
+				|| change.OldSize != _items.size()
+				|| change.NewSize != actualNewCount
+				|| itemTypeName != _itemTypeName) return false;
+			switch (change.Action)
+			{
+			case CollectionChangeAction::Add:
+				return change.NewIndex <= change.OldSize
+					&& change.OldCount == 0 && change.NewCount > 0
+					&& change.OldSize + change.NewCount == change.NewSize;
+			case CollectionChangeAction::Remove:
+				return change.OldIndex < change.OldSize
+					&& change.OldCount > 0
+					&& change.OldIndex + change.OldCount <= change.OldSize
+					&& change.NewCount == 0
+					&& change.OldSize - change.OldCount == change.NewSize;
+			case CollectionChangeAction::Replace:
+				return change.OldIndex == change.NewIndex
+					&& change.OldCount == change.NewCount
+					&& change.OldCount > 0
+					&& change.OldIndex + change.OldCount <= change.OldSize
+					&& change.OldSize == change.NewSize;
+			case CollectionChangeAction::Move:
+			case CollectionChangeAction::Swap:
+				return change.OldCount == 1 && change.NewCount == 1
+					&& change.OldSize == change.NewSize
+					&& change.OldIndex < change.OldSize
+					&& change.NewIndex < change.NewSize;
+			default:
 				return false;
+			}
+		}
+		void Reserve(size_t count) { _items.reserve(count); }
+		void Apply(
+			const CollectionChangedEventArgs& change,
+			std::vector<BindingSourceReference> changedItems,
+			std::vector<BindingListGroup> groups) noexcept
+		{
+			switch (change.Action)
+			{
+			case CollectionChangeAction::Add:
+				_items.insert(
+					_items.begin() + change.NewIndex,
+					std::make_move_iterator(changedItems.begin()),
+					std::make_move_iterator(changedItems.end()));
+				break;
+			case CollectionChangeAction::Remove:
+				_items.erase(
+					_items.begin() + change.OldIndex,
+					_items.begin() + change.OldIndex + change.OldCount);
+				break;
+			case CollectionChangeAction::Replace:
+				for (size_t offset = 0; offset < changedItems.size(); ++offset)
+					_items[change.NewIndex + offset] =
+						std::move(changedItems[offset]);
+				break;
+			case CollectionChangeAction::Move:
+				if (change.OldIndex < change.NewIndex)
+					std::rotate(
+						_items.begin() + change.OldIndex,
+						_items.begin() + change.OldIndex + 1,
+						_items.begin() + change.NewIndex + 1);
+				else
+					std::rotate(
+						_items.begin() + change.NewIndex,
+						_items.begin() + change.OldIndex,
+						_items.begin() + change.OldIndex + 1);
+				break;
+			case CollectionChangeAction::Swap:
+				std::swap(
+					_items[change.OldIndex], _items[change.NewIndex]);
+				break;
+			default:
+				break;
+			}
+			_groups.swap(groups);
+		}
+
+	private:
+		std::wstring _itemTypeName;
+		std::vector<BindingSourceReference> _items;
+		std::vector<BindingListGroup> _groups;
+	};
+
+	bool TryCaptureItemsSourceSnapshot(
+		const BindingListReference& source,
+		BindingListReference& output,
+		std::wstring& error)
+	{
+		output = {};
+		error.clear();
+		if (!source) return true;
+		std::vector<BindingSourceReference> items;
+		items.reserve(source.Get()->Count());
+		for (size_t index = 0; index < source.Get()->Count(); ++index)
+		{
+			BindingSourceReference item;
+			if (!source.Get()->TryGetItem(index, item) || !item)
+			{
+				error = L"ItemsSource 无法读取索引 "
+					+ std::to_wstring(index) + L"。";
+				return false;
+			}
+			items.push_back(std::move(item));
+		}
+		std::vector<BindingListGroup> groups;
+		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
+			source.Get()))
+			groups = grouped->Groups();
+		output = BindingListReference(
+			std::make_shared<MaterializedItemsSourceSnapshot>(
+				source.Get()->ItemTypeName(),
+				std::move(items), std::move(groups)));
 		return true;
 	}
 
+	struct PreparedMaterializedSnapshotChange final
+	{
+		BindingListReference Replacement;
+		std::vector<BindingSourceReference> ChangedItems;
+		std::vector<BindingListGroup> Groups;
+		bool Replace = false;
+	};
+
+	bool TryPrepareMaterializedSnapshotChange(
+		const BindingListReference& source,
+		const BindingListReference& materializedSnapshot,
+		const CollectionChangedEventArgs& change,
+		PreparedMaterializedSnapshotChange& output,
+		std::wstring& error)
+	{
+		output = {};
+		error.clear();
+		auto* snapshot = materializedSnapshot
+			? dynamic_cast<MaterializedItemsSourceSnapshot*>(
+				materializedSnapshot.Get()) : nullptr;
+		if (!source || !snapshot || !snapshot->CanApply(
+			change, source.Get()->Count(), source.Get()->ItemTypeName()))
+		{
+			output.Replace = true;
+			return TryCaptureItemsSourceSnapshot(
+				source, output.Replacement, error);
+		}
+
+		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
+			source.Get()))
+			output.Groups = grouped->Groups();
+		if (change.Action == CollectionChangeAction::Add
+			|| change.Action == CollectionChangeAction::Replace)
+		{
+			output.ChangedItems.reserve(change.NewCount);
+			for (size_t offset = 0; offset < change.NewCount; ++offset)
+			{
+				BindingSourceReference item;
+				const size_t index = change.NewIndex + offset;
+				if (!source.Get()->TryGetItem(index, item) || !item)
+				{
+					error = L"ItemsSource 无法读取索引 "
+						+ std::to_wstring(index) + L"。";
+					return false;
+				}
+				output.ChangedItems.push_back(std::move(item));
+			}
+		}
+		// All allocations happen before the visual tree commits. Apply() then
+		// consists solely of noexcept moves/erases/rotations and a groups swap.
+		if (change.Action == CollectionChangeAction::Add)
+			snapshot->Reserve(change.NewSize);
+		return true;
+	}
+
+	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
+	{
+		return left == right;
+	}
+
 	template<typename TValue>
-	ControlPropertyOptions<ItemsControl, TValue> DataOptions(
+	DependencyPropertyOptions<ItemsControl, TValue> DataOptions(
 		TValue defaultValue,
 		int order,
-		ControlPropertyPersistence persistence = ControlPropertyPersistence::Metadata)
+		DependencyPropertyPersistence persistence = DependencyPropertyPersistence::Metadata)
 	{
-		ControlPropertyOptions<ItemsControl, TValue> options;
+		DependencyPropertyOptions<ItemsControl, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsArrange
-			| ControlPropertyFlags::AffectsRender;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Auto;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
 		return options;
 	}
@@ -56,10 +287,13 @@ namespace
 		return std::isfinite(value) && value >= 0.0f;
 	}
 
+	// Internal estimate used only to seed virtualized grouped extents. It is not
+	// an authored GroupStyle member; realized headers measure from their template.
+	constexpr float VirtualizedGroupHeaderEstimate = 24.0f;
+
 	bool IsValidItemsPanel(const ItemsPanelTemplate& value) noexcept
 	{
-		if (!IsFiniteNonNegative(value.Spacing)
-			|| !IsFiniteNonNegative(value.ItemWidth)
+		if (!IsFiniteNonNegative(value.ItemWidth)
 			|| !IsFiniteNonNegative(value.ItemHeight)
 			|| !IsFiniteNonNegative(value.CacheLength)) return false;
 		if (value.Kind == ItemsPanelKind::VirtualizingStack)
@@ -78,7 +312,7 @@ namespace
 		cui::core::Size Measure(
 			LayoutContext& context,
 			const cui::core::Constraints& available) override;
-		void Arrange(LayoutContext& context, D2D1_RECT_F finalRect) override;
+		void Arrange(LayoutContext& context, cui::core::Rect finalRect) override;
 
 	private:
 		VirtualizingItemsHost& _owner;
@@ -90,40 +324,32 @@ namespace
 		VirtualizingItemsHost()
 		{
 			SetLayoutEngine(new VirtualizingStackLayoutEngine(*this));
-			SetAutoSize(true, true);
-			HAlign = HorizontalAlignment::Stretch;
-			VAlign = VerticalAlignment::Top;
-			BorderThickness = 0.0f;
+			(void)TrySetPropertyValue(
+				L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+				DependencyPropertyValueSource::Template);
 		}
 
 		void SetConfiguration(
 			size_t itemCount,
 			float itemHeight,
-			float spacing,
 			std::vector<size_t> headerCounts,
-			float headerHeight,
-			float headerSpacing)
+			float headerHeight)
 		{
 			if (_itemCount == itemCount && _itemHeight == itemHeight
-				&& _spacing == spacing && _headerCounts == headerCounts
-				&& _headerHeight == headerHeight
-				&& _headerSpacing == headerSpacing) return;
+				&& _headerCounts == headerCounts
+				&& _headerHeight == headerHeight) return;
 			_itemCount = itemCount;
 			_itemHeight = itemHeight;
-			_spacing = spacing;
 			_headerCounts = std::move(headerCounts);
 			_headerHeight = headerHeight;
-			_headerSpacing = headerSpacing;
 			_offsets.assign(_itemCount + 1, 0.0f);
 			for (size_t index = 0; index < _itemCount; ++index)
 			{
 				const size_t headerCount = index < _headerCounts.size()
 					? _headerCounts[index] : 0;
 				const float extent = _itemHeight
-					+ static_cast<float>(headerCount)
-						* (_headerHeight + _headerSpacing);
-				_offsets[index + 1] = _offsets[index] + extent
-					+ (index + 1 < _itemCount ? _spacing : 0.0f);
+					+ static_cast<float>(headerCount) * _headerHeight;
+				_offsets[index + 1] = _offsets[index] + extent;
 			}
 			InvalidateLayout();
 		}
@@ -138,6 +364,17 @@ namespace
 			_indices.erase(control);
 			InvalidateLayout();
 		}
+		void SynchronizeAuthoredItems(
+			std::span<Control* const> items)
+		{
+			std::unordered_map<Control*, size_t> next;
+			next.reserve(items.size());
+			for (size_t index = 0; index < items.size(); ++index)
+				if (items[index]) next.emplace(items[index], index);
+			if (_indices == next) return;
+			_indices = std::move(next);
+			InvalidateLayout();
+		}
 		size_t IndexOf(const Control* control) const noexcept
 		{
 			const auto found = _indices.find(const_cast<Control*>(control));
@@ -145,7 +382,6 @@ namespace
 				? (std::numeric_limits<size_t>::max)() : found->second;
 		}
 		float ItemHeight() const noexcept { return _itemHeight; }
-		float Spacing() const noexcept { return _spacing; }
 		float ItemTop(size_t index) const noexcept
 		{
 			return index < _offsets.size() ? _offsets[index] : ContentHeight();
@@ -153,8 +389,7 @@ namespace
 		float ItemExtent(size_t index) const noexcept
 		{
 			if (index >= _itemCount || index + 1 >= _offsets.size()) return 0.0f;
-			return _offsets[index + 1] - _offsets[index]
-				- (index + 1 < _itemCount ? _spacing : 0.0f);
+			return _offsets[index + 1] - _offsets[index];
 		}
 		size_t IndexAtOffset(float offset) const noexcept
 		{
@@ -176,81 +411,191 @@ namespace
 	private:
 		size_t _itemCount = 0;
 		float _itemHeight = 0.0f;
-		float _spacing = 0.0f;
 		float _headerHeight = 0.0f;
-		float _headerSpacing = 0.0f;
 		std::vector<size_t> _headerCounts;
 		std::vector<float> _offsets;
 		std::unordered_map<Control*, size_t> _indices;
 	};
 
-	class GroupedItemHost final : public StackPanel
+	class GroupedItemHost;
+
+	class GroupedItemsLayoutEngine final : public LayoutEngine
+	{
+	public:
+		explicit GroupedItemsLayoutEngine(GroupedItemHost& owner)
+			: _owner(owner) {}
+		cui::core::Size Measure(
+			LayoutContext& context,
+			const cui::core::Constraints& available) override;
+		void Arrange(
+			LayoutContext& context,
+			cui::core::Rect finalRect) override;
+
+	private:
+		GroupedItemHost& _owner;
+	};
+
+	class GroupedItemHost final : public Panel
 	{
 	public:
 		explicit GroupedItemHost(std::unique_ptr<Control> item)
-			: StackPanel(0, 0, 0, 0)
+			: Panel()
 		{
-			SetOrientation(Orientation::Vertical);
-			SetHorizontalContentAlignment(HorizontalAlignment::Stretch);
-			SetVerticalContentAlignment(VerticalAlignment::Top);
-			SetAutoSize(true, true);
-			BorderThickness = 0.0f;
+			SetLayoutEngine(new GroupedItemsLayoutEngine(*this));
 			_item = item.get();
-			if (_item) _originalItemHeight = _item->GetLayoutHeight();
 			AddOwned(std::move(item));
 		}
 
 		Control* Item() const noexcept { return _item; }
+		size_t HeaderCount() const noexcept { return _headerCount; }
+		float FixedHeaderHeight() const noexcept { return _fixedHeaderHeight; }
+		float FixedItemHeight() const noexcept { return _fixedItemHeight; }
 		std::unique_ptr<Control> TakeItem()
 		{
-			if (_item && _itemHeightOverridden)
-				_item->SetLayoutHeight(_originalItemHeight);
-			auto result = DetachControl(_item);
+			auto result = DetachVisualChild(_item);
 			_item = nullptr;
 			return result;
 		}
 		void SetHeaders(
 			std::vector<std::unique_ptr<Control>> headers,
 			std::vector<BindingSourceReference> contexts,
-			float spacing,
 			float fixedHeaderHeight = 0.0f,
 			float fixedItemHeight = 0.0f)
 		{
-			auto item = DetachControl(_item);
-			while (!Children.empty())
+			auto* itemLogicalParent = _item
+				? _item->GetLogicalParent() : nullptr;
+			auto item = DetachVisualChild(_item);
+			if (item && item->GetLogicalParent())
+				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
+			while (!GetVisualChildrenView().empty())
 			{
-				auto discarded = DetachControl(Children.front());
+				auto discarded = DetachVisualChild(GetVisualChildrenView().front());
 				(void)discarded;
 			}
-			SetSpacing(spacing);
+			_headerCount = headers.size();
+			_fixedHeaderHeight = (std::max)(0.0f, fixedHeaderHeight);
+			_fixedItemHeight = (std::max)(0.0f, fixedItemHeight);
 			_contexts = std::move(contexts);
 			for (auto& header : headers)
-			{
-				if (fixedHeaderHeight > 0.0f)
-					header->SetLayoutHeight(cui::layout::Length::Fixed(
-						fixedHeaderHeight));
 				AddOwned(std::move(header));
-			}
 			_item = item.get();
-			if (_item && fixedItemHeight > 0.0f)
-			{
-				_item->SetLayoutHeight(cui::layout::Length::Fixed(fixedItemHeight));
-				_itemHeightOverridden = true;
-			}
-			else if (_item && _itemHeightOverridden)
-			{
-				_item->SetLayoutHeight(_originalItemHeight);
-				_itemHeightOverridden = false;
-			}
-			AddOwned(std::move(item));
+			if (item) AddOwned(std::move(item));
+			if (_item && itemLogicalParent
+				&& _item->GetLogicalParent() != itemLogicalParent)
+				cui::framework::XamlAccess::SetLogicalParent(
+					*_item, itemLogicalParent);
+			InvalidateLayout();
 		}
 
 	private:
 		Control* _item = nullptr;
-		cui::layout::Length _originalItemHeight;
-		bool _itemHeightOverridden = false;
+		size_t _headerCount = 0;
+		float _fixedHeaderHeight = 0.0f;
+		float _fixedItemHeight = 0.0f;
 		std::vector<BindingSourceReference> _contexts;
 	};
+
+	struct GroupedLayoutItem final
+	{
+		Control* Child = nullptr;
+		Thickness Margin{};
+		cui::core::Size Desired{};
+		float OuterHeight = 0.0f;
+	};
+
+	float DeflateGroupedExtent(float extent, float before, float after)
+	{
+		return std::isfinite(extent)
+			? (std::max)(0.0f, extent - before - after)
+			: cui::core::Infinity;
+	}
+
+	std::vector<GroupedLayoutItem> MeasureGroupedItems(
+		GroupedItemHost& owner,
+		LayoutContext& context,
+		float availableWidth)
+	{
+		std::vector<GroupedLayoutItem> result;
+		result.reserve(static_cast<size_t>((std::max)(0, context.ChildCount())));
+		for (int childIndex = 0; childIndex < context.ChildCount(); ++childIndex)
+		{
+			auto* child = context.ChildAt(childIndex);
+			if (!child || child->IsCollapsed()) continue;
+			const bool isHeader = static_cast<size_t>(childIndex)
+				< owner.HeaderCount();
+			const auto margin = child->Margin;
+			const float fixedOuterHeight = isHeader
+				? owner.FixedHeaderHeight() : owner.FixedItemHeight();
+			const float childWidth = DeflateGroupedExtent(
+				availableWidth, margin.Left, margin.Right);
+			const float childHeight = fixedOuterHeight > 0.0f
+				? (std::max)(0.0f,
+					fixedOuterHeight - margin.Top - margin.Bottom)
+				: cui::core::Infinity;
+			const auto desired = child->Measure(cui::core::Constraints{
+				cui::core::Size{ childWidth, childHeight } });
+			result.push_back(GroupedLayoutItem{
+				child, margin, desired,
+				fixedOuterHeight > 0.0f ? fixedOuterHeight
+					: desired.height + margin.Top + margin.Bottom });
+		}
+		return result;
+	}
+
+	cui::core::Size GroupedItemsLayoutEngine::Measure(
+		LayoutContext& context,
+		const cui::core::Constraints& available)
+	{
+		const auto items = MeasureGroupedItems(
+			_owner, context, available.Normalized().maximum.width);
+		cui::core::Size desired{};
+		for (const auto& item : items)
+		{
+			desired.width = (std::max)(desired.width,
+				item.Margin.Left + item.Desired.width
+					+ item.Margin.Right);
+			desired.height += item.OuterHeight;
+		}
+		_needsLayout = false;
+		return desired;
+	}
+
+	void GroupedItemsLayoutEngine::Arrange(
+		LayoutContext& context,
+		cui::core::Rect finalRect)
+	{
+		finalRect = finalRect.Normalized();
+		const auto items = MeasureGroupedItems(
+			_owner, context, finalRect.width);
+		float currentY = finalRect.y;
+		for (size_t index = 0; index < items.size(); ++index)
+		{
+			const auto& item = items[index];
+			const float availableWidth = DeflateGroupedExtent(
+				finalRect.width, item.Margin.Left, item.Margin.Right);
+			const float availableHeight = (std::max)(0.0f,
+				item.OuterHeight - item.Margin.Top - item.Margin.Bottom);
+			float width = (std::min)(item.Desired.width, availableWidth);
+			float height = (std::min)(item.Desired.height, availableHeight);
+			if (item.Child->HorizontalAlignment == HorizontalAlignment::Stretch)
+				width = availableWidth;
+			if (item.Child->VerticalAlignment == VerticalAlignment::Stretch)
+				height = availableHeight;
+			float x = finalRect.x + item.Margin.Left;
+			if (item.Child->HorizontalAlignment == HorizontalAlignment::Center)
+				x += (availableWidth - width) * 0.5f;
+			else if (item.Child->HorizontalAlignment == HorizontalAlignment::Right)
+				x += availableWidth - width;
+			float y = currentY + item.Margin.Top;
+			if (item.Child->VerticalAlignment == VerticalAlignment::Center)
+				y += (availableHeight - height) * 0.5f;
+			else if (item.Child->VerticalAlignment == VerticalAlignment::Bottom)
+				y += availableHeight - height;
+			item.Child->Arrange(cui::core::Rect{ x, y, width, height });
+			currentY += item.OuterHeight;
+		}
+		_needsLayout = false;
+	}
 
 	cui::core::Size VirtualizingStackLayoutEngine::Measure(
 		LayoutContext& context,
@@ -261,7 +606,7 @@ namespace
 		for (int index = 0; index < context.ChildCount(); ++index)
 		{
 			auto* child = context.ChildAt(index);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			const auto margin = child->Margin;
 			const float width = std::isfinite(maximum.width)
 				? (std::max)(0.0f, maximum.width - margin.Left - margin.Right)
@@ -281,20 +626,21 @@ namespace
 
 	void VirtualizingStackLayoutEngine::Arrange(
 		LayoutContext& context,
-		D2D1_RECT_F finalRect)
+		cui::core::Rect finalRect)
 	{
-		const float width = (std::max)(0.0f, finalRect.right - finalRect.left);
+		finalRect = finalRect.Normalized();
+		const float width = finalRect.width;
 		for (int childIndex = 0; childIndex < context.ChildCount(); ++childIndex)
 		{
 			auto* child = context.ChildAt(childIndex);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			const auto itemIndex = _owner.IndexOf(child);
 			if (itemIndex == (std::numeric_limits<size_t>::max)()) continue;
 			const auto margin = child->Margin;
 			const float cellTop = _owner.ItemTop(itemIndex);
-			child->ApplyLayout(cui::core::Rect{
-				finalRect.left + margin.Left,
-				finalRect.top + cellTop + margin.Top,
+			child->Arrange(cui::core::Rect{
+				finalRect.x + margin.Left,
+				finalRect.y + cellTop + margin.Top,
 				(std::max)(0.0f, width - margin.Left - margin.Right),
 				(std::max)(0.0f,
 					_owner.ItemExtent(itemIndex) - margin.Top - margin.Bottom) });
@@ -303,19 +649,20 @@ namespace
 	}
 }
 
-ItemsControl::ItemsControl(int x, int y, int width, int height)
-	: ScrollView(x, y, width, height)
+ItemsControl::ItemsControl()
+	: Control()
 {
-	AlwaysShowHScroll = false;
 	auto itemsHost = CreateItemsHost();
 	_itemsHost = itemsHost.get();
 	_changingItemsHost = true;
 	AddOwned(std::move(itemsHost));
+	cui::framework::XamlAccess::SetTemplatedParent(*_itemsHost, this);
+	cui::framework::XamlAccess::SetLogicalParent(*_itemsHost, nullptr);
 	_changingItemsHost = false;
 	RefreshItemsScrollOwner();
 }
 
-bool ItemsControl::ValidateChildCollection(
+bool ItemsControl::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
@@ -330,16 +677,16 @@ bool ItemsControl::ValidateChildCollection(
 	return false;
 }
 
-void ItemsControl::EnsureBindingPropertiesRegistered()
+void ItemsControl::RegisterDependencyProperties()
 {
-	ScrollView::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto sourceOptions = DataOptions(
 			BindingListReference{}, 10,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		sourceOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<ItemsControl, BindingListReference>(
+		DependencyPropertyRegistry::Register<ItemsControl, BindingListReference>(
 			L"ItemsSource",
 			[](ItemsControl& target) { return target.GetItemsSource(); },
 			[](ItemsControl& target, const BindingListReference& value)
@@ -347,9 +694,9 @@ void ItemsControl::EnsureBindingPropertiesRegistered()
 
 		auto templateOptions = DataOptions(
 			ItemTemplateReference{}, 20,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		templateOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<ItemsControl, ItemTemplateReference>(
+		DependencyPropertyRegistry::Register<ItemsControl, ItemTemplateReference>(
 			L"ItemTemplate",
 			[](ItemsControl& target) { return target.GetItemTemplate(); },
 			[](ItemsControl& target, const ItemTemplateReference& value)
@@ -357,9 +704,9 @@ void ItemsControl::EnsureBindingPropertiesRegistered()
 
 		auto groupOptions = DataOptions(
 			GroupStyleReference{}, 25,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		groupOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<ItemsControl, GroupStyleReference>(
+		DependencyPropertyRegistry::Register<ItemsControl, GroupStyleReference>(
 			L"GroupStyle",
 			[](ItemsControl& target) { return target.GetGroupStyle(); },
 			[](ItemsControl& target, const GroupStyleReference& value)
@@ -367,21 +714,32 @@ void ItemsControl::EnsureBindingPropertiesRegistered()
 
 		auto panelOptions = DataOptions(
 			ItemsPanelTemplateReference{}, 30,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		panelOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<ItemsControl, ItemsPanelTemplateReference>(
+		DependencyPropertyRegistry::Register<ItemsControl, ItemsPanelTemplateReference>(
 			L"ItemsPanel",
 			[](ItemsControl& target) { return target.GetItemsPanel(); },
 			[](ItemsControl& target, const ItemsPanelTemplateReference& value)
 			{ target.SetItemsPanel(value); }, {}, std::move(panelOptions));
 
 		auto pathOptions = DataOptions(std::wstring{}, 40);
-		pathOptions.Design.Editor = ControlPropertyEditorKind::Text;
-		BindingPropertyRegistry::Register<ItemsControl, std::wstring>(
+		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
+		DependencyPropertyRegistry::Register<ItemsControl, std::wstring>(
 			L"DisplayMemberPath",
 			[](ItemsControl& target) { return target.GetDisplayMemberPath(); },
 			[](ItemsControl& target, const std::wstring& value)
 			{ target.SetDisplayMemberPath(value); }, {}, std::move(pathOptions));
+
+		auto containerStyleOptions = DataOptions(
+			std::wstring{}, 50,
+			DependencyPropertyPersistence::Native);
+		containerStyleOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<ItemsControl, std::wstring>(
+			L"ItemContainerStyle",
+			[](ItemsControl& target) { return target.GetItemContainerStyle(); },
+			[](ItemsControl& target, const std::wstring& value)
+			{ target.SetItemContainerStyle(value); }, {},
+			std::move(containerStyleOptions));
 		return true;
 	}();
 	(void)registered;
@@ -402,12 +760,8 @@ void ItemsControl::ConfigureVirtualHost()
 	auto* host = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
 	if (!host) return;
 	std::vector<size_t> headerCounts(ItemCount(), 0);
-	float headerHeight = 0.0f;
-	float headerSpacing = 0.0f;
 	if (IsGroupingActive() && _groupStyle)
 	{
-		headerHeight = _groupStyle.Get()->HeaderHeight;
-		headerSpacing = _groupStyle.Get()->HeaderSpacing;
 		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
 			_itemsSource.Get()))
 			for (const auto& group : grouped->Groups())
@@ -415,8 +769,11 @@ void ItemsControl::ConfigureVirtualHost()
 					++headerCounts[group.StartIndex];
 	}
 	const auto& panel = EffectiveItemsPanel();
-	host->SetConfiguration(ItemCount(), panel.ItemHeight, panel.Spacing,
-		std::move(headerCounts), headerHeight, headerSpacing);
+	host->SetConfiguration(ItemCount(), panel.ItemHeight,
+		std::move(headerCounts), IsGroupingActive()
+			? VirtualizedGroupHeaderEstimate : 0.0f);
+	if (!_itemsSource)
+		host->SynchronizeAuthoredItems(_authoredItems);
 }
 
 std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
@@ -425,10 +782,16 @@ std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
 	std::unique_ptr<Panel> result;
 	if (definition.Kind == ItemsPanelKind::Wrap)
 	{
-		auto panel = std::make_unique<WrapPanel>(0, 0, 0, 0);
-		panel->SetOrientation(definition.Orientation);
-		panel->SetItemWidth(definition.ItemWidth);
-		panel->SetItemHeight(definition.ItemHeight);
+		auto panel = std::make_unique<WrapPanel>();
+		(void)cui::framework::DependencyPropertyAccess::SetValue(
+			*panel, L"Orientation", BindingValue(definition.Orientation),
+			DependencyPropertyValueSource::Template);
+		(void)cui::framework::DependencyPropertyAccess::SetValue(
+			*panel, L"ItemWidth", BindingValue(definition.ItemWidth),
+			DependencyPropertyValueSource::Template);
+		(void)cui::framework::DependencyPropertyAccess::SetValue(
+			*panel, L"ItemHeight", BindingValue(definition.ItemHeight),
+			DependencyPropertyValueSource::Template);
 		result = std::move(panel);
 	}
 	else if (definition.Kind == ItemsPanelKind::VirtualizingStack)
@@ -437,17 +800,15 @@ std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
 	}
 	else
 	{
-		auto panel = std::make_unique<StackPanel>(0, 0, 0, 0);
-		panel->SetOrientation(definition.Orientation);
-		panel->SetSpacing(definition.Spacing);
-		panel->SetHorizontalContentAlignment(HorizontalAlignment::Stretch);
-		panel->SetVerticalContentAlignment(VerticalAlignment::Top);
+		auto panel = std::make_unique<StackPanel>();
+		(void)cui::framework::DependencyPropertyAccess::SetValue(
+			*panel, L"Orientation", BindingValue(definition.Orientation),
+			DependencyPropertyValueSource::Template);
 		result = std::move(panel);
 	}
-	result->SetAutoSize(true, true);
-	result->HAlign = HorizontalAlignment::Stretch;
-	result->VAlign = VerticalAlignment::Top;
-	result->BorderThickness = 0.0f;
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*result, L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+		DependencyPropertyValueSource::Template);
 	return result;
 }
 
@@ -459,12 +820,12 @@ std::unique_ptr<Panel> ItemsControl::TakeItemsHost()
 		return _templateItemsPresenter->DetachItemsHost();
 	if (_detachedItemsHost)
 		return std::move(_detachedItemsHost);
-	if (_itemsHost->Parent != this) return {};
+	if (_itemsHost->GetVisualParent() != this) return {};
 	_changingItemsHost = true;
 	std::unique_ptr<Control> detached;
 	try
 	{
-		detached = DetachControl(_itemsHost);
+		detached = DetachVisualChild(_itemsHost);
 		_changingItemsHost = false;
 	}
 	catch (...)
@@ -483,9 +844,13 @@ void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 	_itemsHost = raw;
 	if (_templateItemsPresenter)
 	{
+		cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+		if (!raw->GetTemplatedParent())
+			cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
 		try
 		{
 			_templateItemsPresenter->SetItemsHost(std::move(host));
+			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
 		}
 		catch (...)
 		{
@@ -496,6 +861,9 @@ void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 	}
 	else if (_controlTemplateRoot)
 	{
+		if (!raw->GetTemplatedParent())
+			cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
+		cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
 		_detachedItemsHost = std::move(host);
 	}
 	else
@@ -504,6 +872,9 @@ void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 		try
 		{
 			AddOwned(std::move(host));
+			if (!raw->GetTemplatedParent())
+				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
+			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
 			_changingItemsHost = false;
 		}
 		catch (...)
@@ -516,20 +887,39 @@ void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 	RefreshItemsScrollOwner();
 }
 
+void ItemsControl::ReplaceItemsHostCore(std::unique_ptr<Panel> host)
+{
+	if (!host) throw std::invalid_argument("ItemsControl ItemsHost is null");
+	if (_controlTemplateRoot || _templateItemsPresenter)
+		throw std::logic_error("cannot replace a templated ItemsHost");
+	if ((_itemsHost && !_itemsHost->GetVisualChildrenView().empty())
+		|| _generator.RealizedCount() != 0)
+		throw std::logic_error("cannot replace a non-empty ItemsHost");
+
+	auto previous = TakeItemsHost();
+	try
+	{
+		PlaceItemsHost(std::move(host));
+	}
+	catch (...)
+	{
+		if (previous) PlaceItemsHost(std::move(previous));
+		throw;
+	}
+	RequestLayout();
+}
+
 void ItemsControl::RefreshItemsScrollOwner()
 {
 	_scrollChanged.Disconnect();
 	_itemsScrollOwner = nullptr;
-	if (!_controlTemplateRoot)
+	if (_templateItemsPresenter)
 	{
-		_itemsScrollOwner = this;
-	}
-	else if (_templateItemsPresenter)
-	{
-		for (auto* current = _templateItemsPresenter->Parent;
-			current && current != this; current = current->Parent)
+		for (auto* current = _templateItemsPresenter->GetVisualParent();
+			current && current != this;
+			current = current->GetVisualParent())
 		{
-			if (auto* scroll = dynamic_cast<ScrollView*>(current))
+			if (auto* scroll = dynamic_cast<ScrollViewer*>(current))
 			{
 				_itemsScrollOwner = scroll;
 				break;
@@ -538,7 +928,7 @@ void ItemsControl::RefreshItemsScrollOwner()
 	}
 	if (_itemsScrollOwner)
 		_scrollChanged = _itemsScrollOwner->OnScrollChanged.Subscribe(
-			[this](Control*)
+			[this](Control*, ScrollChangedEventArgs&)
 			{
 				if (IsVirtualizing() && !_applyingCollectionChange)
 					(void)RealizeVirtualViewport();
@@ -548,13 +938,15 @@ void ItemsControl::RefreshItemsScrollOwner()
 bool ItemsControl::RegisterTemplateItemsPresenter(
 	ItemsPresenter* presenter)
 {
-	if (!presenter || (_templateItemsPresenter
+	if (!presenter || presenter->GetTemplatedParent() != this
+		|| (_templateItemsPresenter
 		&& _templateItemsPresenter != presenter)) return false;
 	if (_templateItemsPresenter == presenter) return true;
 	auto host = TakeItemsHost();
 	if (!host) return false;
 	_templateItemsPresenter = presenter;
-	_itemsPresenterParentChanged = presenter->OnParentChanged.Subscribe(
+	_itemsPresenterParentChanged =
+		cui::framework::TreeAccess::SubscribeVisualParentChanged(*presenter,
 		[this](Control*, Control*, Control*)
 		{
 			RefreshItemsScrollOwner();
@@ -583,7 +975,7 @@ Control* ItemsControl::SetControlTemplateRoot(
 {
 	if (!value)
 	{
-		(void)DetachControlTemplateRoot();
+		(void)DetachVisualChildTemplateRoot();
 		return nullptr;
 	}
 	if (_controlTemplateRoot)
@@ -594,13 +986,12 @@ Control* ItemsControl::SetControlTemplateRoot(
 		if (!host) throw std::logic_error("ItemsControl lost its ItemsHost");
 		_detachedItemsHost = std::move(host);
 	}
-	value->HAlign = HorizontalAlignment::Stretch;
-	value->VAlign = VerticalAlignment::Stretch;
 	_controlTemplateRoot = value.get();
 	_changingTemplateInfrastructure = true;
 	try
 	{
 		AddOwned(std::move(value));
+		cui::framework::XamlAccess::SetLogicalParent(*_controlTemplateRoot, nullptr);
 		_changingTemplateInfrastructure = false;
 	}
 	catch (...)
@@ -609,22 +1000,24 @@ Control* ItemsControl::SetControlTemplateRoot(
 		_controlTemplateRoot = nullptr;
 		if (_detachedItemsHost)
 			PlaceItemsHost(std::move(_detachedItemsHost));
+		OnControlTemplatePresentationChanged();
 		throw;
 	}
 	RefreshItemsScrollOwner();
-	InvalidateLayout();
+	OnControlTemplatePresentationChanged();
+	RequestLayout();
 	InvalidateVisual();
 	return _controlTemplateRoot;
 }
 
-std::unique_ptr<Control> ItemsControl::DetachControlTemplateRoot()
+std::unique_ptr<Control> ItemsControl::DetachVisualChildTemplateRoot()
 {
 	if (!_controlTemplateRoot) return {};
 	_changingTemplateInfrastructure = true;
 	std::unique_ptr<Control> root;
 	try
 	{
-		root = DetachControl(_controlTemplateRoot);
+		root = DetachVisualChild(_controlTemplateRoot);
 		_changingTemplateInfrastructure = false;
 	}
 	catch (...)
@@ -636,8 +1029,11 @@ std::unique_ptr<Control> ItemsControl::DetachControlTemplateRoot()
 	_itemsPresenterParentChanged.Disconnect();
 	_templateItemsPresenter = nullptr;
 	_controlTemplateRoot = nullptr;
+	ClearTemplateOwner(root.get(), this);
+	ClearDeclarativeTemplateScope();
 	if (host) PlaceItemsHost(std::move(host));
-	InvalidateLayout();
+	OnControlTemplatePresentationChanged();
+	RequestLayout();
 	InvalidateVisual();
 	return root;
 }
@@ -680,6 +1076,56 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 		return false;
 	}
 	PlaceItemsHost(std::move(replacement));
+	if (!_authoredItems.empty())
+	{
+		try
+		{
+			for (auto* item : _authoredItems)
+			{
+				auto owner = oldHost->DetachVisualChild(item);
+				if (!owner)
+					throw std::logic_error(
+						"ItemsControl authored item ownership is invalid");
+				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
+				_itemsHost->AddOwned(std::move(owner));
+				cui::framework::XamlAccess::SetLogicalParent(*item, this);
+			}
+			_lastTemplateError.clear();
+			RequestLayout();
+			InvalidateVisual();
+			return true;
+		}
+		catch (...)
+		{
+			// Reassemble the previous host in authored order before restoring it.
+			// Pointer storage is already reserved and remains the source of truth.
+			std::vector<std::unique_ptr<Control>> owners;
+			owners.reserve(_authoredItems.size());
+			for (auto* item : _authoredItems)
+			{
+				std::unique_ptr<Control> owner;
+				if (item->GetVisualParent() == _itemsHost)
+					owner = _itemsHost->DetachVisualChild(item);
+				else if (item->GetVisualParent() == oldHost.get())
+					owner = oldHost->DetachVisualChild(item);
+				if (!owner) continue;
+				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
+				owners.push_back(std::move(owner));
+			}
+			for (auto& owner : owners)
+			{
+				auto* item = owner.get();
+				oldHost->AddOwned(std::move(owner));
+				cui::framework::XamlAccess::SetLogicalParent(*item, this);
+			}
+			auto failedHost = TakeItemsHost();
+			_itemsPanel = previousPanel;
+			PlaceItemsHost(std::move(oldHost));
+			_generator = std::move(oldGenerator);
+			_lastTemplateError = L"ItemsPanelTemplate 无法迁移 authored Items。";
+			return false;
+		}
+	}
 
 	if (RebuildGeneratedItems()) return true;
 	const auto error = _lastTemplateError;
@@ -694,42 +1140,288 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 void ItemsControl::SetItemsSource(BindingListReference value)
 {
 	if (_itemsSource == value) return;
+	if (value && !_authoredItems.empty())
+		throw std::logic_error(
+			"ItemsControl Items and ItemsSource cannot both be populated");
+	if (IsItemsSourceUpdateInProgress())
+		throw std::logic_error(
+			"ItemsControl does not support reentrant ItemsSource changes");
+	BindingListReference candidateSnapshot;
+	std::wstring snapshotError;
+	if (!TryCaptureItemsSourceSnapshot(
+		value, candidateSnapshot, snapshotError))
+	{
+		_lastTemplateError = std::move(snapshotError);
+		return;
+	}
+	auto candidateHost = CreateItemsHost();
+	auto derivedState = CaptureItemsSourceTransactionState();
+	++_itemsSourceUpdateDepth;
 	const auto previous = _itemsSource;
-	_itemsSourceChanged.Disconnect();
-	_groupsChanged.Disconnect();
+	const auto previousSnapshot = _materializedItemsSourceSnapshot;
+	// Keep the old subscriptions alive until the candidate source and its
+	// complete generated tree commit. This makes a failed/throwing template
+	// rollback allocation-free and preserves the previous live view.
+	auto previousItemsSourceChanged = std::move(_itemsSourceChanged);
+	auto previousGroupsChanged = std::move(_groupsChanged);
 	_itemsSource = std::move(value);
-	if (_itemsSource)
+	auto restorePrevious = [&]() noexcept
 	{
-		_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
-			[this](const CollectionChangedEventArgs& change)
-			{
-				if (!ApplyCollectionChange(change))
-					(void)RebuildGeneratedItems();
-			});
-		if (auto* grouped = dynamic_cast<IBindingListGroupView*>(
-			_itemsSource.Get()))
-			_groupsChanged = grouped->SubscribeGroupsChanged(
-				[this] { RefreshGroupHeaders(); });
-	}
-	if (RebuildGeneratedItems()) return;
-	const auto error = _lastTemplateError;
-	_itemsSourceChanged.Disconnect();
-	_groupsChanged.Disconnect();
-	_itemsSource = previous;
-	if (_itemsSource)
+		_itemsSourceChanged.Disconnect();
+		_groupsChanged.Disconnect();
+		_itemsSource = previous;
+		_itemsSourceChanged = std::move(previousItemsSourceChanged);
+		_groupsChanged = std::move(previousGroupsChanged);
+	};
+	auto restoreDerivedState = [&]() noexcept
 	{
-		_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
-			[this](const CollectionChangedEventArgs& change)
-			{
-				if (!ApplyCollectionChange(change))
-					(void)RebuildGeneratedItems();
-			});
-		if (auto* grouped = dynamic_cast<IBindingListGroupView*>(
-			_itemsSource.Get()))
-			_groupsChanged = grouped->SubscribeGroupsChanged(
-				[this] { RefreshGroupHeaders(); });
+		if (!derivedState) return;
+		RestoreItemsSourceTransactionState(*derivedState);
+		derivedState.reset();
+	};
+	try
+	{
+		if (_itemsSource)
+		{
+			auto* sourceIdentity = _itemsSource.Get();
+			_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
+				[this, sourceIdentity](const CollectionChangedEventArgs& change)
+				{
+					if (_itemsSource.Get() == sourceIdentity
+						&& !IsItemsSourceUpdateInProgress())
+						HandleItemsSourceChange(change);
+				});
+			if (auto* grouped = dynamic_cast<IBindingListGroupView*>(
+				_itemsSource.Get()))
+				_groupsChanged = grouped->SubscribeGroupsChanged(
+					[this, sourceIdentity]
+					{
+						if (_itemsSource.Get() == sourceIdentity
+							&& !IsItemsSourceUpdateInProgress())
+							RefreshGroupHeaders();
+					});
+		}
 	}
-	_lastTemplateError = error;
+	catch (...)
+	{
+		restorePrevious();
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		throw;
+	}
+	// A non-standard IBindingList may publish synchronously from SubscribeChanged.
+	// Those notifications are suppressed above; recapture once after all
+	// subscriptions exist so the candidate tree observes their final state.
+	try
+	{
+		if (!TryCaptureItemsSourceSnapshot(
+			_itemsSource, candidateSnapshot, snapshotError))
+		{
+			restorePrevious();
+			restoreDerivedState();
+			--_itemsSourceUpdateDepth;
+			_lastTemplateError = std::move(snapshotError);
+			return;
+		}
+	}
+	catch (...)
+	{
+		restorePrevious();
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		throw;
+	}
+
+	// Materialize against an off-tree host. The currently committed host and
+	// generator stay alive until both generation and the derived source-change
+	// hook have committed, so a throwing hook cannot strand a new source above
+	// the old visual tree (or destroy the tree needed for rollback).
+	auto* previousHostRaw = _itemsHost;
+	auto previousGenerator = std::move(_generator);
+	_generator = ItemContainerGenerator{};
+	_itemsHost = candidateHost.get();
+	bool rebuilt = false;
+	try
+	{
+		rebuilt = RebuildGeneratedItems();
+	}
+	catch (...)
+	{
+		_itemsHost = previousHostRaw;
+		_generator = std::move(previousGenerator);
+		_materializedItemsSourceSnapshot = previousSnapshot;
+		restorePrevious();
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		throw;
+	}
+	if (!rebuilt)
+	{
+		const auto error = _lastTemplateError;
+		_itemsHost = previousHostRaw;
+		_generator = std::move(previousGenerator);
+		_materializedItemsSourceSnapshot = previousSnapshot;
+		restorePrevious();
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		_lastTemplateError = error;
+		return;
+	}
+
+	std::unique_ptr<Panel> previousHost;
+	try
+	{
+		_itemsHost = previousHostRaw;
+		previousHost = TakeItemsHost();
+		if (!previousHost)
+			throw std::logic_error("ItemsControl lost its committed ItemsHost");
+		PlaceItemsHost(std::move(candidateHost));
+	}
+	catch (...)
+	{
+		// A placement failure is rare (normally allocation failure), but the
+		// logical source and generator still have the same strong guarantee.
+		if (previousHost)
+		{
+			try
+			{
+				if (_itemsHost && _itemsHost != previousHost.get())
+				{
+					auto failedHost = TakeItemsHost();
+					(void)failedHost;
+				}
+				PlaceItemsHost(std::move(previousHost));
+			}
+			catch (...) {}
+		}
+		else _itemsHost = previousHostRaw;
+		_generator = std::move(previousGenerator);
+		_materializedItemsSourceSnapshot = previousSnapshot;
+		restorePrevious();
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		throw;
+	}
+
+	const auto candidate = _itemsSource;
+	try
+	{
+		OnItemsSourceChanged(previous, candidate);
+	}
+	catch (...)
+	{
+		const auto failure = std::current_exception();
+		try
+		{
+			auto failedHost = TakeItemsHost();
+			(void)failedHost;
+			PlaceItemsHost(std::move(previousHost));
+		}
+		catch (...) {}
+		_generator = std::move(previousGenerator);
+		_materializedItemsSourceSnapshot = previousSnapshot;
+		restorePrevious();
+		// Derived controls may have committed secondary state (for example a
+		// current-view subscription) before throwing. Give them the symmetric
+		// notification after the base state is restored; preserve the original
+		// exception if even this best-effort rollback hook fails.
+		try { OnItemsSourceChanged(candidate, previous); }
+		catch (...) {}
+		restoreDerivedState();
+		--_itemsSourceUpdateDepth;
+		std::rethrow_exception(failure);
+	}
+	_materializedItemsSourceSnapshot = std::move(candidateSnapshot);
+	--_itemsSourceUpdateDepth;
+}
+
+void ItemsControl::SetCustomProjectionItemsSource(BindingListReference value)
+{
+	if (value && !_authoredItems.empty())
+		throw std::logic_error(
+			"ItemsControl Items and ItemsSource cannot both be populated");
+	_itemsSource = std::move(value);
+}
+
+void ItemsControl::HandleItemsSourceChange(
+	const CollectionChangedEventArgs& change)
+{
+	const auto failedSource = _itemsSource;
+	PreparedMaterializedSnapshotChange preparedSnapshot;
+	std::wstring snapshotError;
+	std::unique_ptr<ItemsSourceTransactionState> derivedState;
+	++_itemsSourceUpdateDepth;
+	auto restoreDerivedState = [&]() noexcept
+	{
+		if (!derivedState) return;
+		RestoreItemsSourceTransactionState(*derivedState);
+		derivedState.reset();
+	};
+	auto rollbackToMaterializedSnapshot = [&]
+	{
+		_itemsSourceChanged.Disconnect();
+		_groupsChanged.Disconnect();
+		_itemsSource = _materializedItemsSourceSnapshot;
+		try { OnItemsSourceChanged(failedSource, _itemsSource); }
+		catch (...) {}
+	};
+	try
+	{
+		// A live collection has already mutated before publishing this callback.
+		// Capture inside the guarded region so even token allocation failure pins
+		// the control back to its last materialized snapshot.
+		derivedState = CaptureItemsSourceTransactionState();
+		const bool prepared = TryPrepareMaterializedSnapshotChange(
+			_itemsSource, _materializedItemsSourceSnapshot,
+			change, preparedSnapshot, snapshotError);
+		const bool rebuilt = prepared
+			&& (ApplyCollectionChange(change) || RebuildGeneratedItems());
+		if (rebuilt)
+		{
+			if (preparedSnapshot.Replace)
+				_materializedItemsSourceSnapshot =
+					std::move(preparedSnapshot.Replacement);
+			else
+			{
+				auto* snapshot =
+					dynamic_cast<MaterializedItemsSourceSnapshot*>(
+						_materializedItemsSourceSnapshot.Get());
+				if (!snapshot)
+					throw std::logic_error(
+						"ItemsControl materialized snapshot is unavailable");
+				snapshot->Apply(
+					change,
+					std::move(preparedSnapshot.ChangedItems),
+					std::move(preparedSnapshot.Groups));
+			}
+			derivedState.reset();
+		}
+		else
+		{
+			const auto error = prepared
+				? _lastTemplateError : snapshotError;
+			rollbackToMaterializedSnapshot();
+			restoreDerivedState();
+			_lastTemplateError = error;
+		}
+		--_itemsSourceUpdateDepth;
+	}
+	catch (...)
+	{
+		const auto failure = std::current_exception();
+		const auto error = _lastTemplateError;
+		rollbackToMaterializedSnapshot();
+		// ApplyCollectionChange prepares template visuals before touching the
+		// committed tree, but virtual/layout and derived rebuilt callbacks are
+		// extensible and may throw after commit. Re-materialize the immutable old
+		// snapshot so even that exceptional boundary converges source and visuals.
+		try { (void)RebuildGeneratedItems(); }
+		catch (...) {}
+		restoreDerivedState();
+		_lastTemplateError = error;
+		--_itemsSourceUpdateDepth;
+		std::rethrow_exception(failure);
+	}
 }
 
 void ItemsControl::SetItemTemplate(ItemTemplateReference value)
@@ -762,6 +1454,56 @@ void ItemsControl::SetDisplayMemberPath(std::wstring value)
 	if (_itemsSource && !_itemTemplate) (void)RebuildGeneratedItems();
 }
 
+void ItemsControl::SetItemContainerStyle(std::wstring value)
+{
+	if (_itemContainerStyle == value) return;
+	const auto previous = _itemContainerStyle;
+	_itemContainerStyle = std::move(value);
+	if (ApplyItemContainerStyle()) return;
+	const auto error = _lastTemplateError.empty()
+		? L"ItemContainerStyle 无法应用到项容器。" : _lastTemplateError;
+	_itemContainerStyle = previous;
+	(void)ApplyItemContainerStyle();
+	_lastTemplateError = error;
+}
+
+void ItemsControl::SetGeneratedContainerInitializer(
+	GeneratedContainerInitializer value)
+{
+	if (!_generatedContainerInitializer && !value)
+		return;
+	auto previous = std::move(_generatedContainerInitializer);
+	_generatedContainerInitializer = std::move(value);
+	if (RebuildGeneratedItems()) return;
+	const auto error = _lastTemplateError;
+	_generatedContainerInitializer = std::move(previous);
+	(void)RebuildGeneratedItems();
+	_lastTemplateError = error;
+}
+
+bool ItemsControl::InitializeGeneratedContainer(Control& container)
+{
+	if (!_generatedContainerInitializer) return true;
+	std::wstring error;
+	if (_generatedContainerInitializer(container, &error)) return true;
+	_lastTemplateError = error.empty()
+		? L"生成项容器的 XAML 类型身份初始化失败。" : std::move(error);
+	return false;
+}
+
+bool ItemsControl::ApplyItemContainerStyle()
+{
+	for (size_t index = 0; index < ItemCount(); ++index)
+	{
+		auto* container = GetGeneratedItem(index);
+		if (!container) continue;
+		cui::framework::StyleAccess::SetResourceKey(
+			*container, _itemContainerStyle);
+		if (!cui::framework::StyleAccess::Refresh(*container, true)) return false;
+	}
+	return true;
+}
+
 Control* ItemsControl::UnwrapGeneratedItem(Control* visual) noexcept
 {
 	if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
@@ -771,7 +1513,200 @@ Control* ItemsControl::UnwrapGeneratedItem(Control* visual) noexcept
 
 Control* ItemsControl::GetGeneratedItem(size_t index) const noexcept
 {
+	if (!_itemsSource)
+		return index < _authoredItems.size() ? _authoredItems[index] : nullptr;
 	return UnwrapGeneratedItem(_generator.GetRealized(index));
+}
+
+size_t ItemsControl::GeneratedItemCount() const noexcept
+{
+	return _itemsSource ? _generator.RealizedCount() : _authoredItems.size();
+}
+
+size_t ItemsControl::ItemCount() const noexcept
+{
+	return _itemsSource ? _itemsSource.Get()->Count() : _authoredItems.size();
+}
+
+ItemsControl::AuthoredItemsUpdateScope::AuthoredItemsUpdateScope(
+	ItemsControl& owner) noexcept
+	: _owner(&owner)
+{
+	_owner->BeginAuthoredItemsUpdate();
+}
+
+ItemsControl::AuthoredItemsUpdateScope::AuthoredItemsUpdateScope(
+	AuthoredItemsUpdateScope&& other) noexcept
+	: _owner(std::exchange(other._owner, nullptr))
+{
+}
+
+ItemsControl::AuthoredItemsUpdateScope&
+ItemsControl::AuthoredItemsUpdateScope::operator=(
+	AuthoredItemsUpdateScope&& other) noexcept
+{
+	if (this == &other) return *this;
+	if (_owner) _owner->EndAuthoredItemsUpdate();
+	_owner = std::exchange(other._owner, nullptr);
+	return *this;
+}
+
+ItemsControl::AuthoredItemsUpdateScope::~AuthoredItemsUpdateScope()
+{
+	if (_owner) _owner->EndAuthoredItemsUpdate();
+}
+
+ItemsControl::AuthoredItemsUpdateScope
+ItemsControl::DeferAuthoredItemsChanges() noexcept
+{
+	return AuthoredItemsUpdateScope(*this);
+}
+
+void ItemsControl::BeginAuthoredItemsUpdate() noexcept
+{
+	++_authoredItemsUpdateDepth;
+}
+
+void ItemsControl::EndAuthoredItemsUpdate() noexcept
+{
+	if (_authoredItemsUpdateDepth == 0) return;
+	--_authoredItemsUpdateDepth;
+	if (_authoredItemsUpdateDepth != 0 || !_authoredItemsChangedPending) return;
+	_authoredItemsChangedPending = false;
+	OnAuthoredItemsChanged();
+	ConfigureVirtualHost();
+	RequestLayout();
+	InvalidateVisual();
+}
+
+void ItemsControl::NotifyAuthoredItemsChanged()
+{
+	if (_authoredItemsUpdateDepth != 0)
+	{
+		_authoredItemsChangedPending = true;
+		return;
+	}
+	OnAuthoredItemsChanged();
+	ConfigureVirtualHost();
+	RequestLayout();
+	InvalidateVisual();
+}
+
+Control* ItemsControl::InsertItemControl(size_t index, Control* item)
+{
+	if (!item) throw std::invalid_argument("ItemsControl item is null");
+	if (_itemsSource)
+		throw std::logic_error(
+			"ItemsControl Items and ItemsSource cannot both be populated");
+	if (!_itemsHost) throw std::logic_error("ItemsControl has no ItemsHost");
+	if (index > _authoredItems.size())
+		throw std::out_of_range("ItemsControl item index is out of range");
+	std::string itemError;
+	if (!ValidateAuthoredItemControl(*item, itemError))
+		throw std::invalid_argument(itemError.empty()
+			? "ItemsControl rejected authored item" : itemError);
+	_authoredItems.reserve(_authoredItems.size() + 1);
+	_itemsHost->InsertVisualChild(static_cast<int>(index), item);
+	try
+	{
+		cui::framework::XamlAccess::SetLogicalParent(*item, this);
+	}
+	catch (...)
+	{
+		auto detached = _itemsHost->DetachVisualChild(item);
+		if (detached.get() == item) (void)detached.release();
+		throw;
+	}
+	_authoredItems.insert(_authoredItems.begin() + index, item);
+	NotifyAuthoredItemsChanged();
+	return item;
+}
+
+Control* ItemsControl::InsertItemControl(
+	size_t index, std::unique_ptr<Control> item)
+{
+	if (!item) throw std::invalid_argument("ItemsControl item is null");
+	auto* raw = item.get();
+	try
+	{
+		(void)InsertItemControl(index, raw);
+	}
+	catch (...)
+	{
+		if (raw->GetVisualParent() == _itemsHost) (void)item.release();
+		throw;
+	}
+	(void)item.release();
+	return raw;
+}
+
+Control* ItemsControl::AddItemControl(std::unique_ptr<Control> item)
+{
+	return InsertItemControl(_authoredItems.size(), std::move(item));
+}
+
+Control* ItemsControl::AdoptItemControl(Control* item)
+{
+	return InsertItemControl(_authoredItems.size(), item);
+}
+
+std::unique_ptr<Control> ItemsControl::DetachItemControlAt(size_t index)
+{
+	if (index >= _authoredItems.size() || !_itemsHost) return {};
+	auto* raw = _authoredItems[index];
+	auto result = _itemsHost->DetachVisualChild(raw);
+	if (!result) return {};
+	_authoredItems.erase(_authoredItems.begin() + index);
+	cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+	NotifyAuthoredItemsChanged();
+	return result;
+}
+
+std::unique_ptr<Control> ItemsControl::DetachItemControl(Control* item)
+{
+	const auto found = std::find(_authoredItems.begin(), _authoredItems.end(), item);
+	return found == _authoredItems.end() ? std::unique_ptr<Control>{}
+		: DetachItemControlAt(static_cast<size_t>(
+			std::distance(_authoredItems.begin(), found)));
+}
+
+bool ItemsControl::RemoveItemControlAt(size_t index)
+{
+	return static_cast<bool>(DetachItemControlAt(index));
+}
+
+bool ItemsControl::RemoveItemControl(Control* item)
+{
+	return static_cast<bool>(DetachItemControl(item));
+}
+
+bool ItemsControl::MoveItemControl(size_t oldIndex, size_t newIndex)
+{
+	if (oldIndex >= _authoredItems.size() || newIndex >= _authoredItems.size())
+		return false;
+	if (oldIndex == newIndex) return true;
+	if (!_itemsHost) return false;
+	_itemsHost->MoveVisualChild(
+		static_cast<int>(oldIndex), static_cast<int>(newIndex));
+	auto* item = _authoredItems[oldIndex];
+	_authoredItems.erase(_authoredItems.begin() + oldIndex);
+	_authoredItems.insert(_authoredItems.begin() + newIndex, item);
+	NotifyAuthoredItemsChanged();
+	return true;
+}
+
+void ItemsControl::ClearItemControls()
+{
+	std::vector<std::unique_ptr<Control>> removed;
+	removed.reserve(_authoredItems.size());
+	auto update = DeferAuthoredItemsChanges();
+	while (!_authoredItems.empty())
+		removed.push_back(DetachItemControlAt(_authoredItems.size() - 1));
+}
+
+Control* ItemsControl::GetAuthoredItem(size_t index) const noexcept
+{
+	return index < _authoredItems.size() ? _authoredItems[index] : nullptr;
 }
 
 bool ItemsControl::IsGroupingActive() const noexcept
@@ -837,17 +1772,17 @@ ItemsControl::PreparedGroupHeaders ItemsControl::BuildGroupHeaders(
 			header = _groupStyle.Get()->HeaderTemplate.Get()->Build(
 				contextReference, index, &_lastTemplateError);
 		else
-			header = std::make_unique<Label>(group.Key.ToString(), 0, 0);
+		{
+			auto label = std::make_unique<Label>();
+			label->Text = group.Key.ToString();
+			header = std::move(label);
+		}
 		if (!header)
 		{
 			if (_lastTemplateError.empty())
 				_lastTemplateError = L"GroupStyle HeaderTemplate 未生成视觉根。";
 			return {};
 		}
-		auto margin = header->Margin;
-		margin.Left += _groupStyle.Get()->HeaderIndent
-			* static_cast<float>(group.Level);
-		header->Margin = margin;
 		result.Visuals.push_back(std::move(header));
 		result.Contexts.push_back(std::move(contextReference));
 	}
@@ -902,12 +1837,11 @@ void ItemsControl::RefreshGroupHeaders()
 	for (auto& item : pending)
 		item.Host->SetHeaders(
 			std::move(item.Headers), std::move(item.Contexts),
-			_groupStyle.Get()->HeaderSpacing,
-			IsVirtualizing() ? _groupStyle.Get()->HeaderHeight : 0.0f,
+			IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
 			IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
 	ConfigureVirtualHost();
 	_itemsHost->InvalidateLayout();
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 }
 
@@ -943,8 +1877,7 @@ bool ItemsControl::PrepareGeneratedItem(
 		if (grouped)
 			grouped->SetHeaders(
 				std::move(headers.Visuals), std::move(headers.Contexts),
-				_groupStyle.Get()->HeaderSpacing,
-				IsVirtualizing() ? _groupStyle.Get()->HeaderHeight : 0.0f,
+				IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
 				IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
 		else
 		{
@@ -952,8 +1885,7 @@ bool ItemsControl::PrepareGeneratedItem(
 				std::move(output.Visual));
 			host->SetHeaders(
 				std::move(headers.Visuals), std::move(headers.Contexts),
-				_groupStyle.Get()->HeaderSpacing,
-				IsVirtualizing() ? _groupStyle.Get()->HeaderHeight : 0.0f,
+				IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
 				IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
 			output.Visual = std::move(host);
 		}
@@ -974,6 +1906,7 @@ bool ItemsControl::PrepareGeneratedItem(
 			_lastTemplateError = L"项容器未生成视觉根。";
 		return false;
 	}
+	if (!InitializeGeneratedContainer(*visual)) return false;
 	if (IsGroupingActive())
 	{
 		auto headers = BuildGroupHeaders(index, item);
@@ -981,8 +1914,7 @@ bool ItemsControl::PrepareGeneratedItem(
 		auto grouped = std::make_unique<GroupedItemHost>(std::move(visual));
 		grouped->SetHeaders(
 			std::move(headers.Visuals), std::move(headers.Contexts),
-			_groupStyle.Get()->HeaderSpacing,
-			IsVirtualizing() ? _groupStyle.Get()->HeaderHeight : 0.0f,
+			IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
 			IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
 		visual = std::move(grouped);
 	}
@@ -995,29 +1927,35 @@ std::unique_ptr<Control> ItemsControl::BuildGeneratedItem(
 	size_t index,
 	BindingPathObservation& observation)
 {
-	std::unique_ptr<Control> visual;
-	if (_itemTemplate)
+	observation = {};
+	auto presenter = std::make_unique<ContentPresenter>();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*presenter, L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+		DependencyPropertyValueSource::Theme);
+	cui::framework::StyleAccess::SetResourceKey(
+		*presenter, _itemContainerStyle);
+	presenter->SetContentTypeName(_itemTemplate
+		? _itemTemplate.Get()->DataTypeName()
+		: (_itemsSource ? _itemsSource.Get()->ItemTypeName() : std::wstring{}));
+	presenter->SetDisplayMemberPath(_displayMemberPath);
+	presenter->SetContentTemplate(_itemTemplate);
+	try
 	{
-		visual = _itemTemplate.Get()->Build(item, index, &_lastTemplateError);
-		if (!visual)
-		{
-			if (_lastTemplateError.empty())
-				_lastTemplateError = L"ItemTemplate 未生成视觉根。";
-			return {};
-		}
+		presenter->SetContent(BindingValue(item));
 	}
-	else
+	catch (...)
 	{
-		visual = std::make_unique<Label>(
-			GetBindingRecordText(item, _displayMemberPath,
-				{ L"Text", L"Content", L"Name" }), 0, 0);
-		std::weak_ptr<IBindingSource> itemIdentity = item.Shared();
-		observation = ObserveBindingPaths(
-			item, { _displayMemberPath },
-			[this, itemIdentity]
-			{ RefreshGeneratedItem(itemIdentity); });
+		// ContentPresenter owns the template diagnostic buffer.  Preserve it on
+		// the ItemsControl transaction before the temporary presenter unwinds.
+		_lastTemplateError = presenter->LastTemplateError();
+		throw;
 	}
-	return WrapGeneratedItem(std::move(visual), item, index);
+	if (!presenter->LastTemplateError().empty())
+	{
+		_lastTemplateError = presenter->LastTemplateError();
+		return {};
+	}
+	return WrapGeneratedItem(std::move(presenter), item, index);
 }
 
 void ItemsControl::AttachPreparedItem(PreparedItem&& item)
@@ -1025,7 +1963,33 @@ void ItemsControl::AttachPreparedItem(PreparedItem&& item)
 	if (!_itemsHost || !item.Visual) return;
 	const auto index = item.Index;
 	auto* visual = item.Visual.get();
+	cui::framework::XamlAccess::SetLogicalParent(*visual, nullptr);
 	_itemsHost->AddOwned(std::move(item.Visual));
+	if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
+	{
+		// GroupedItemHost is presentation infrastructure.  The item container
+		// remains the ItemsControl logical child just as it does without a
+		// GroupStyle; otherwise ListBoxItem cannot resolve its owning Selector.
+		cui::framework::XamlAccess::SetLogicalParent(*grouped, nullptr);
+		if (auto* logicalItem = grouped->Item())
+			cui::framework::XamlAccess::SetLogicalParent(*logicalItem, this);
+	}
+	else
+		cui::framework::XamlAccess::SetLogicalParent(*visual, this);
+	// Generated containers may be realized after the document-wide style pass.
+	// Re-resolve their keyed/implicit style only after the live inheritance
+	// route exists, so lazy virtualization has the same template semantics as
+	// containers materialized with the original XAML tree.
+	if (!cui::framework::StyleAccess::Theme(*visual))
+		if (const auto theme = cui::framework::StyleAccess::Theme(*this))
+		(void)cui::framework::StyleAccess::SetTheme(
+			*visual, std::move(theme), true);
+	if (!cui::framework::StyleAccess::DocumentStyles(*visual))
+		if (const auto styles =
+			cui::framework::StyleAccess::DocumentStyles(*this))
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			*visual, std::move(styles), true);
+	(void)cui::framework::StyleAccess::Refresh(*visual, true);
 	if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 		virtualHost->RegisterItem(visual, index);
 	_generator.StoreRealized(
@@ -1041,10 +2005,27 @@ void ItemsControl::ReorderRealizedChildren()
 	for (const auto& [index, item] : _generator.RealizedItems())
 	{
 		(void)index;
-		auto detached = _itemsHost->DetachControl(item.Visual);
-		if (detached) ordered.push_back(std::move(detached));
+		auto detached = _itemsHost->DetachVisualChild(item.Visual);
+		if (detached)
+		{
+			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
+			ordered.push_back(std::move(detached));
+		}
 	}
-	for (auto& item : ordered) _itemsHost->AddOwned(std::move(item));
+	for (auto& item : ordered)
+	{
+		auto* visual = item.get();
+		_itemsHost->AddOwned(std::move(item));
+		if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
+		{
+			cui::framework::XamlAccess::SetLogicalParent(*grouped, nullptr);
+			if (auto* logicalItem = grouped->Item())
+				cui::framework::XamlAccess::SetLogicalParent(
+					*logicalItem, this);
+		}
+		else
+			cui::framework::XamlAccess::SetLogicalParent(*visual, this);
+	}
 }
 
 void ItemsControl::ClearRealizedItems(bool keepForRecycle)
@@ -1067,7 +2048,15 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 		auto* visual = item.Visual;
 		if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 			virtualHost->UnregisterItem(visual);
-		auto detached = _itemsHost->DetachControl(visual);
+		auto detached = _itemsHost->DetachVisualChild(visual);
+		if (detached)
+		{
+			if (auto* logicalItem = UnwrapGeneratedItem(detached.get());
+				logicalItem && logicalItem != detached.get())
+				cui::framework::XamlAccess::SetLogicalParent(
+					*logicalItem, nullptr);
+			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
+		}
 		if (keepForRecycle && detached)
 			_generator.StoreRecycled(index, {
 				std::move(detached), std::move(item.Observation) });
@@ -1075,11 +2064,12 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 }
 
 std::pair<size_t, size_t> ItemsControl::VirtualRangeForViewport() const noexcept
-
 {
-	const auto* scroll = ItemsScrollOwner();
-	if (!scroll) return { 0, ItemCount() };
-	return VirtualRangeForOffset(static_cast<float>(scroll->ScrollYOffset));
+	auto* scroll = ItemsScrollOwner();
+	if (!scroll) return ShouldRealizeVirtualItemsWithoutViewport()
+		? std::pair<size_t, size_t>{ 0, ItemCount() }
+		: std::pair<size_t, size_t>{ 0, 0 };
+	return VirtualRangeForOffset(static_cast<float>(scroll->VerticalOffset));
 }
 
 std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
@@ -1092,9 +2082,11 @@ std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
 	self->ConfigureVirtualHost();
 	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
 	if (!host || host->ContentHeight() <= 0.0f) return { 0, count };
-	const auto* scroll = ItemsScrollOwner();
-	if (!scroll) return { 0, count };
-	const auto size = const_cast<ScrollView*>(scroll)->GetActualSizeDip();
+	auto* scroll = ItemsScrollOwner();
+	if (!scroll) return ShouldRealizeVirtualItemsWithoutViewport()
+		? std::pair<size_t, size_t>{ 0, count }
+		: std::pair<size_t, size_t>{ 0, 0 };
+	const auto size = const_cast<ScrollViewer*>(scroll)->GetActualSizeDip();
 	const float viewport = (std::max)(1.0f, size.height);
 	const float cache = panel.CacheLength * viewport;
 	const size_t first = host->IndexAtOffset(
@@ -1113,6 +2105,11 @@ bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
 	first = (std::min)(first, count);
 	last = (std::clamp)(last, first, count);
 	_realizingViewport = true;
+	struct RealizingViewportGuard final
+	{
+		bool& Value;
+		~RealizingViewportGuard() { Value = false; }
+	} realizingGuard{ _realizingViewport };
 	std::vector<PreparedItem> additions;
 	for (size_t index = first; index < last; ++index)
 	{
@@ -1137,13 +2134,30 @@ bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
 		(void)item;
 		if (index < first || index >= last) removals.push_back(index);
 	}
+	if (additions.empty() && removals.empty())
+	{
+		// PreparePresentation is evaluated for every retained frame.  A stable
+		// virtual range is not a tree mutation and must not invalidate measure;
+		// doing so creates a render -> realization -> layout -> render loop
+		// (closed ComboBox instances are the common trigger).
+		TrimRecyclePool(first, last);
+		return true;
+	}
 	for (const auto index : removals)
 	{
 		auto item = _generator.TakeRealized(index);
 		auto* visual = item.Visual;
 		if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 			virtualHost->UnregisterItem(visual);
-		auto detached = _itemsHost->DetachControl(visual);
+		auto detached = _itemsHost->DetachVisualChild(visual);
+		if (detached)
+		{
+			if (auto* logicalItem = UnwrapGeneratedItem(detached.get());
+				logicalItem && logicalItem != detached.get())
+				cui::framework::XamlAccess::SetLogicalParent(
+					*logicalItem, nullptr);
+			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
+		}
 		if (detached)
 			_generator.StoreRecycled(index, {
 				std::move(detached), std::move(item.Observation) });
@@ -1152,7 +2166,7 @@ bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
 		AttachPreparedItem(std::move(addition));
 	TrimRecyclePool(first, last);
 	_itemsHost->InvalidateLayout();
-	InvalidateLayout();
+	RequestLayout();
 	OnGeneratedItemsRealized();
 	_realizingViewport = false;
 	return true;
@@ -1192,7 +2206,7 @@ bool ItemsControl::ApplyCollectionChange(
 
 	auto* scrollOwner = ItemsScrollOwner();
 	float desiredScroll = scrollOwner
-		? static_cast<float>(scrollOwner->ScrollYOffset) : 0.0f;
+		? static_cast<float>(scrollOwner->VerticalOffset) : 0.0f;
 	if (IsVirtualizing() && change.OldSize != 0)
 	{
 		auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
@@ -1249,57 +2263,73 @@ bool ItemsControl::ApplyCollectionChange(
 	}
 
 	_applyingCollectionChange = true;
+	try
 	{
-		cui::layout::LayoutScope<ItemsControl> layout(*this);
-		OnBeforeGeneratedItemsRebuilt();
-		for (const auto index
-			: _generator.InvalidatedRealizedIndices(change))
 		{
-			auto item = _generator.TakeRealized(index);
-			if (!item.Visual) continue;
-			if (auto* virtualHost =
-				dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
-				virtualHost->UnregisterItem(item.Visual);
-			(void)_itemsHost->DetachControl(item.Visual);
+			ScopedLayoutUpdate layout(*this);
+			OnBeforeGeneratedItemsRebuilt();
+			for (const auto index
+				: _generator.InvalidatedRealizedIndices(change))
+			{
+				auto item = _generator.TakeRealized(index);
+				if (!item.Visual) continue;
+				if (auto* virtualHost =
+					dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
+					virtualHost->UnregisterItem(item.Visual);
+				auto detached = _itemsHost->DetachVisualChild(item.Visual);
+				if (detached)
+				{
+					if (auto* logicalItem =
+						UnwrapGeneratedItem(detached.get());
+						logicalItem && logicalItem != detached.get())
+						cui::framework::XamlAccess::SetLogicalParent(
+							*logicalItem, nullptr);
+					cui::framework::XamlAccess::SetLogicalParent(
+						*detached, nullptr);
+				}
+			}
+			for (const auto& indexChange : _generator.Apply(change))
+			{
+				if (!indexChange.Visual) continue;
+				if (auto* virtualHost =
+					dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
+					virtualHost->RegisterItem(
+						indexChange.Visual, indexChange.NewIndex);
+				OnGeneratedItemIndexChanged(
+					*indexChange.Visual,
+					indexChange.OldIndex,
+					indexChange.NewIndex);
+			}
+			ConfigureVirtualHost();
+			for (auto& addition : additions)
+			{
+				_generator.DiscardRecycled(addition.Index);
+				AttachPreparedItem(std::move(addition));
+			}
+			ReorderRealizedChildren();
+			_itemsHost->InvalidateLayout();
+			RequestLayout();
+			InvalidateVisual();
 		}
-		for (const auto& indexChange : _generator.Apply(change))
+		UpdateLayout();
+		if (IsVirtualizing() && scrollOwner)
+			scrollOwner->ScrollToVerticalOffset(desiredScroll);
+		OnGeneratedItemsRebuilt();
+		if (IsVirtualizing())
 		{
-			if (!indexChange.Visual) continue;
-			if (auto* virtualHost =
-				dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
-				virtualHost->RegisterItem(
-					indexChange.Visual, indexChange.NewIndex);
-			OnGeneratedItemIndexChanged(
-				*indexChange.Visual,
-				indexChange.OldIndex,
-				indexChange.NewIndex);
+			(void)RealizeVirtualViewport();
+			const auto range = VirtualRangeForViewport();
+			TrimRecyclePool(range.first, range.second);
 		}
-		ConfigureVirtualHost();
-		for (auto& addition : additions)
-		{
-			_generator.DiscardRecycled(addition.Index);
-			AttachPreparedItem(std::move(addition));
-		}
-		ReorderRealizedChildren();
-		_itemsHost->InvalidateLayout();
-		InvalidateLayout();
-		InvalidateVisual();
+		OnGeneratedItemsRealized();
+		_applyingCollectionChange = false;
+		return true;
 	}
-	UpdateLayout();
-	if (IsVirtualizing() && scrollOwner)
-		scrollOwner->SetScrollOffset(
-			scrollOwner->ScrollXOffset,
-			static_cast<int>(std::lround(desiredScroll)));
-	OnGeneratedItemsRebuilt();
-	if (IsVirtualizing())
+	catch (...)
 	{
-		(void)RealizeVirtualViewport();
-		const auto range = VirtualRangeForViewport();
-		TrimRecyclePool(range.first, range.second);
+		_applyingCollectionChange = false;
+		throw;
 	}
-	OnGeneratedItemsRealized();
-	_applyingCollectionChange = false;
-	return true;
 }
 
 void ItemsControl::RefreshGeneratedItem(
@@ -1337,7 +2367,7 @@ bool ItemsControl::RebuildGeneratedItems()
 	if (_itemsSource && _itemTemplate
 		&& !sourceItemType.empty()
 		&& !_itemTemplate.Get()->DataTypeName().empty()
-		&& !EqualsIgnoreCase(_itemTemplate.Get()->DataTypeName(),
+		&& !EqualsTypeName(_itemTemplate.Get()->DataTypeName(),
 			sourceItemType))
 	{
 		_lastTemplateError = L"ItemTemplate DataType 与 ItemsSource ItemType 不一致。";
@@ -1346,15 +2376,8 @@ bool ItemsControl::RebuildGeneratedItems()
 	if (_groupStyle)
 	{
 		const auto* style = _groupStyle.Get();
-		if (!std::isfinite(style->HeaderIndent) || style->HeaderIndent < 0.0f
-			|| !std::isfinite(style->HeaderSpacing) || style->HeaderSpacing < 0.0f
-			|| !std::isfinite(style->HeaderHeight) || style->HeaderHeight <= 0.0f)
-		{
-			_lastTemplateError = L"GroupStyle HeaderIndent/HeaderSpacing 必须为有限非负数，HeaderHeight 必须为有限正数。";
-			return false;
-		}
 		if (style->HeaderTemplate
-			&& !EqualsIgnoreCase(
+			&& !EqualsTypeName(
 				style->HeaderTemplate.Get()->DataTypeName(),
 				std::wstring(CollectionViewGroupDataTypeName)))
 		{
@@ -1382,16 +2405,34 @@ bool ItemsControl::RebuildGeneratedItems()
 		prepared.push_back(std::move(item));
 	}
 
-	cui::layout::LayoutScope<ItemsControl> layout(*this);
-	OnBeforeGeneratedItemsRebuilt();
-	ClearRealizedItems(false);
-	_generator.SetSourceCount(ItemCount());
-	ConfigureVirtualHost();
-	for (auto& item : prepared) AttachPreparedItem(std::move(item));
-	OnGeneratedItemsRebuilt();
-	_itemsHost->InvalidateLayout();
-	InvalidateLayout();
-	InvalidateVisual();
+	{
+		ScopedLayoutUpdate layout(*this);
+		OnBeforeGeneratedItemsRebuilt();
+		ClearRealizedItems(false);
+		_generator.SetSourceCount(ItemCount());
+		ConfigureVirtualHost();
+		for (auto& item : prepared) AttachPreparedItem(std::move(item));
+		OnGeneratedItemsRebuilt();
+		_itemsHost->InvalidateLayout();
+		RequestLayout();
+		InvalidateVisual();
+	}
+	if (auto* scrollOwner = ItemsScrollOwner())
+	{
+		UpdateLayout();
+		double verticalOffset = scrollOwner->VerticalOffset;
+		if (auto* virtualHost =
+			dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
+		{
+			const float viewport = (std::max)(
+				0.0f, scrollOwner->GetActualSizeDip().height);
+			verticalOffset = (std::min)(verticalOffset,
+				static_cast<double>(std::ceil((std::max)(
+					0.0f, virtualHost->ContentHeight() - viewport))));
+		}
+		scrollOwner->ScrollToVerticalOffset(verticalOffset);
+		if (IsVirtualizing()) (void)RealizeVirtualViewport();
+	}
 	return true;
 }
 
@@ -1413,13 +2454,13 @@ bool ItemsControl::BringItemIntoView(size_t index)
 		}
 		const float viewport = (std::max)(
 			1.0f, scrollOwner->GetActualSizeDip().height);
-		float target = static_cast<float>(scrollOwner->ScrollYOffset);
+		float target = static_cast<float>(scrollOwner->VerticalOffset);
 		if (top < target) target = top;
 		else if (bottom > target + viewport)
 			target = bottom - viewport;
 		UpdateLayout();
-		scrollOwner->SetScrollOffset(scrollOwner->ScrollXOffset,
-			static_cast<int>(std::ceil((std::max)(0.0f, target))));
+		scrollOwner->ScrollToVerticalOffset(
+			std::ceil((std::max)(0.0f, target)));
 		(void)RealizeVirtualViewport();
 		if (auto* item = GetGeneratedItem(index))
 		{
@@ -1434,67 +2475,66 @@ bool ItemsControl::BringItemIntoView(size_t index)
 	return false;
 }
 
-void ItemsControl::Update()
+void ItemsControl::PreparePresentation()
 {
+	Control::PreparePresentation();
 	if (IsVirtualizing()) (void)RealizeVirtualViewport();
-	if (!_controlTemplateRoot)
-	{
-		ScrollView::Update();
-		return;
-	}
-	if (!IsVisual || !ParentForm || !ParentForm->Render) return;
-	PerformPendingLayout();
+}
+
+void ItemsControl::OnRender()
+{
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
 	BeginRender();
-	if (!ParentForm->IsDCompSceneRenderActive())
-		for (auto* child : GetChildrenInZOrder())
-			if (child && child->Visible) child->Update();
 	EndRender();
+}
+
+cui::core::Size ItemsControl::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	return cui::layout::MeasureOverlayChildren(
+		GetLayoutChildrenView(), available,
+		GetSpecifiedLayout().padding);
+}
+
+void ItemsControl::Arrange(cui::core::Rect finalRect)
+{
+	Control::Arrange(finalRect);
+	PerformPendingLayout();
+}
+
+void ItemsControl::RequestLayout()
+{
+	_itemsLayoutPending = true;
+	Control::RequestLayout();
+}
+
+void ItemsControl::OnComputedLayoutSizeChanged()
+{
+	_itemsLayoutPending = true;
 }
 
 void ItemsControl::PerformPendingLayout()
 {
-	if (_controlTemplateRoot) Panel::PerformPendingLayout();
-	else ScrollView::PerformPendingLayout();
-}
-
-bool ItemsControl::ProcessMessage(
-	UINT message, WPARAM wParam, LPARAM lParam,
-	int localX, int localY)
-{
-	return _controlTemplateRoot
-		? Panel::ProcessMessage(message, wParam, lParam, localX, localY)
-		: ScrollView::ProcessMessage(message, wParam, lParam, localX, localY);
-}
-
-bool ItemsControl::HandlesNavigationKey(WPARAM key) const
-{
-	return !_controlTemplateRoot && ScrollView::HandlesNavigationKey(key);
-}
-
-CursorKind ItemsControl::QueryCursor(int localX, int localY)
-{
-	return _controlTemplateRoot
-		? Control::QueryCursor(localX, localY)
-		: ScrollView::QueryCursor(localX, localY);
-}
-
-bool ItemsControl::ShouldHitTestChildrenAt(int localX, int localY) const
-{
-	return _controlTemplateRoot
-		? Control::ShouldHitTestChildrenAt(localX, localY)
-		: ScrollView::ShouldHitTestChildrenAt(localX, localY);
-}
-
-POINT ItemsControl::GetChildrenRenderOffset() const
-{
-	return _controlTemplateRoot
-		? POINT{ 0, 0 } : ScrollView::GetChildrenRenderOffset();
-}
-
-D2D1_RECT_F ItemsControl::GetChildrenClipRect()
-{
-	return _controlTemplateRoot
-		? Control::GetChildrenClipRect() : ScrollView::GetChildrenClipRect();
+	if (IsLayoutSuspended() || !_itemsLayoutPending) return;
+	if (GetControlTemplateRoot())
+	{
+		// Control::Arrange owns the ControlTemplate root slot. ItemsPanel
+		// padding is expressed inside the template, not by shrinking its root.
+		// Commit descendant changes without assigning the root a second slot.
+		GetControlTemplateRoot()->UpdateLayout();
+		_itemsLayoutPending = false;
+		return;
+	}
+	const auto size = GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
+	cui::layout::ArrangeOverlayChildren(
+		GetLayoutChildrenView(),
+		cui::core::Rect{
+			padding.left,
+			padding.top,
+			(std::max)(0.0f, size.width - padding.Horizontal()),
+			(std::max)(0.0f, size.height - padding.Vertical()) });
+	_itemsLayoutPending = false;
 }
 
 std::unique_ptr<Control> ItemsControl::WrapGeneratedItem(

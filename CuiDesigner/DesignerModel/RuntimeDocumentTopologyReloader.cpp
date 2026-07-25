@@ -1,11 +1,13 @@
 #include "RuntimeDocumentTopologyReloader.h"
 
 #include "DesignDocumentGraph.h"
-#include "DesignDocumentMaterializer.h"
+#include "../../CuiRuntime/include/XamlObjectMaterializer.h"
 #include "../DesignerDataContextSchemaUtils.h"
 #include "../DesignerStyleSheetUtils.h"
-#include "../../CUI/include/SplitContainer.h"
-#include "../../CUI/include/ToolBar.h"
+#include "../../CUI/include/ItemsControl.h"
+#include "../../CUI/include/StyleInfrastructure.h"
+#include "../../CUI/include/TemplateInfrastructure.h"
+#include "../../CUI/include/XamlInfrastructure.h"
 
 #include <Convert.h>
 
@@ -33,10 +35,10 @@ namespace
 		}
 	};
 
-	DesignDocumentMaterializationOptions MaterializationOptionsFor(
+	CuiRuntime::XamlMaterializationOptions MaterializationOptionsFor(
 		const RuntimeDocumentLoadOptions& options)
 	{
-		DesignDocumentMaterializationOptions result;
+		CuiRuntime::XamlMaterializationOptions result;
 		result.AllowNativeSurfacePlaceholder =
 			options.AllowNativeSurfacePlaceholder;
 		if (options.NativeSurfaceBehaviors)
@@ -70,7 +72,7 @@ namespace
 		const DesignDocument* Document = nullptr;
 		DesignDocumentGraph Graph;
 		std::unordered_map<int, size_t> IndexById;
-		std::unordered_map<std::wstring, int> TabOwnerByPageId;
+		std::unordered_map<std::wstring, int> IdByName;
 
 		bool Build(const DesignDocument& document, std::wstring* outError)
 		{
@@ -81,14 +83,7 @@ namespace
 			{
 				const auto& node = document.Nodes[index];
 				IndexById.emplace(node.Id, index);
-				if (node.Type != UIClass::UI_TabControl
-					|| !node.Extra["pages"].is_array()) continue;
-				for (const auto& page : node.Extra["pages"])
-				{
-					if (!page.is_object() || !page["id"].is_string()) continue;
-					auto id = Convert::Utf8ToUnicode(page["id"].get<std::string>());
-					if (!id.empty()) TabOwnerByPageId.emplace(std::move(id), node.Id);
-				}
+				IdByName.emplace(node.Name, node.Id);
 			}
 			return true;
 		}
@@ -109,23 +104,14 @@ namespace
 					result.push_back(Document->Nodes[index].Id);
 			};
 			append(node.Name);
-			if (node.Type == UIClass::UI_TabControl
-				&& node.Extra["pages"].is_array())
-			{
-				for (const auto& page : node.Extra["pages"])
-				{
-					if (!page.is_object() || !page["id"].is_string()) continue;
-					append(Convert::Utf8ToUnicode(page["id"].get<std::string>()));
-				}
-			}
 			return result;
 		}
 
 		int OwningNodeId(const DesignNode& node) const noexcept
 		{
 			if (node.ParentId > 0) return node.ParentId;
-			const auto found = TabOwnerByPageId.find(node.ParentRef);
-			return found == TabOwnerByPageId.end() ? 0 : found->second;
+			const auto found = IdByName.find(node.ParentRef);
+			return found == IdByName.end() ? 0 : found->second;
 		}
 	};
 
@@ -139,8 +125,9 @@ namespace
 				== next.ComponentContentProperty
 			&& current.PresentedComponentContent
 				== next.PresentedComponentContent
-			&& current.Props == next.Props
-			&& current.Extra == next.Extra
+			&& current.Properties == next.Properties
+			&& current.Structure == next.Structure
+			&& current.TemplateState == next.TemplateState
 			&& current.LocalResources == next.LocalResources
 			&& current.LocalObjectResources == next.LocalObjectResources
 			&& current.Events == next.Events
@@ -223,59 +210,68 @@ namespace
 	struct Attachment
 	{
 		Control* Parent = nullptr;
+		Control* LogicalParent = nullptr;
+		Control* TemplatedParent = nullptr;
+		ItemsControl* ItemsOwner = nullptr;
 		int Index = -1;
 		bool IsRoot = false;
-		bool HasToolBarOverride = false;
-		SIZE ToolBarOverride{};
 	};
 
 	bool DetachFrom(
 		Control* control,
-		std::vector<std::unique_ptr<Control>>& roots,
+		std::unique_ptr<Control>& contentRoot,
 		Attachment& attachment,
 		std::unique_ptr<Control>& owner)
 	{
 		if (!control) return false;
 		attachment = {};
-		attachment.Parent = control->Parent;
+		attachment.Parent = control->GetVisualParent();
+		attachment.LogicalParent = control->GetLogicalParent();
+		attachment.TemplatedParent = control->GetTemplatedParent();
 		if (attachment.Parent)
 		{
-			attachment.Index = attachment.Parent->IndexOfControl(control);
+			attachment.Index = attachment.Parent->IndexOfVisualChild(control);
 			if (attachment.Index < 0) return false;
-			if (auto* toolBar = dynamic_cast<ToolBar*>(attachment.Parent))
+			if (auto* items = dynamic_cast<ItemsControl*>(
+				attachment.LogicalParent);
+				items && attachment.Parent
+					== cui::framework::TemplateAccess::GetItemsHost(*items))
 			{
-				attachment.HasToolBarOverride =
-					toolBar->TryGetToolItemSizeOverride(
-						control, attachment.ToolBarOverride);
-				toolBar->ClearToolItemSizeOverride(control);
+				for (size_t index = 0; index < items->AuthoredItemCount(); ++index)
+				{
+					if (items->GetAuthoredItem(index) != control) continue;
+					attachment.ItemsOwner = items;
+					attachment.Index = static_cast<int>(index);
+					owner = items->DetachItemControlAt(index);
+					return owner && owner.get() == control;
+				}
 			}
-			owner = attachment.Parent->DetachControl(control);
+			owner = attachment.Parent->DetachVisualChild(control);
 			return owner && owner.get() == control;
 		}
 
-		const auto found = std::find_if(
-			roots.begin(), roots.end(),
-			[control](const auto& value) { return value.get() == control; });
-		if (found == roots.end()) return false;
+		if (contentRoot.get() != control) return false;
 		attachment.IsRoot = true;
-		attachment.Index = static_cast<int>(found - roots.begin());
-		owner = std::move(*found);
-		roots.erase(found);
+		attachment.Index = 0;
+		owner = std::move(contentRoot);
 		return owner && owner.get() == control;
 	}
 
 	bool AttachTo(
 		std::unique_ptr<Control>& owner,
-		std::vector<std::unique_ptr<Control>>& roots,
+		std::unique_ptr<Control>& contentRoot,
 		const Attachment& attachment)
 	{
 		if (!owner) return false;
 		if (attachment.IsRoot)
 		{
-			const auto index = (std::min)(
-				static_cast<size_t>((std::max)(0, attachment.Index)),
-				roots.size());
-			roots.insert(roots.begin() + index, std::move(owner));
+			if (contentRoot) return false;
+			auto* raw = owner.get();
+			contentRoot = std::move(owner);
+			cui::framework::XamlAccess::SetTemplatedParent(
+				*raw, attachment.TemplatedParent);
+			cui::framework::XamlAccess::SetLogicalParent(
+				*raw, attachment.LogicalParent);
 			return true;
 		}
 		if (!attachment.Parent) return false;
@@ -283,21 +279,43 @@ namespace
 		auto* raw = owner.get();
 		try
 		{
-			const auto index = (std::clamp)(
-				attachment.Index, 0, attachment.Parent->Count);
-			attachment.Parent->InsertOwned(index, std::move(owner));
-			if (attachment.HasToolBarOverride)
-				if (auto* toolBar = dynamic_cast<ToolBar*>(attachment.Parent))
-					toolBar->SetToolItemSizeOverride(
-						raw, attachment.ToolBarOverride);
+			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+			cui::framework::XamlAccess::SetTemplatedParent(*raw, nullptr);
+			if (attachment.ItemsOwner)
+			{
+				const auto index = (std::min)(
+					static_cast<size_t>((std::max)(0, attachment.Index)),
+					attachment.ItemsOwner->AuthoredItemCount());
+				attachment.ItemsOwner->InsertItemControl(index, std::move(owner));
+			}
+			else
+			{
+				const auto index = (std::clamp)(
+					attachment.Index, 0, attachment.Parent->VisualChildCount());
+				attachment.Parent->InsertOwned(index, std::move(owner));
+			}
+			cui::framework::XamlAccess::SetTemplatedParent(
+				*raw, attachment.TemplatedParent);
+			cui::framework::XamlAccess::SetLogicalParent(
+				*raw, attachment.LogicalParent);
 			return true;
 		}
 		catch (...)
 		{
-			if (!owner && raw->Parent == attachment.Parent)
+			if (!owner && attachment.ItemsOwner)
 			{
-				try { owner = attachment.Parent->DetachControl(raw); }
+				try { owner = attachment.ItemsOwner->DetachItemControl(raw); }
 				catch (...) {}
+			}
+			if (!owner && raw->GetVisualParent() == attachment.Parent)
+			{
+				try { owner = attachment.Parent->DetachVisualChild(raw); }
+				catch (...) {}
+			}
+			if (owner)
+			{
+				cui::framework::XamlAccess::SetLogicalParent(*owner, nullptr);
+				cui::framework::XamlAccess::SetTemplatedParent(*owner, nullptr);
 			}
 			return false;
 		}
@@ -314,24 +332,16 @@ namespace
 
 	Control* ResolveDesignerParent(Control* control) noexcept
 	{
-		if (!control || !control->Parent) return nullptr;
-		auto* actual = control->Parent;
-		if (actual->Parent)
-			if (auto* split = dynamic_cast<SplitContainer*>(actual->Parent))
-				if (actual == split->FirstPanel()
-					|| actual == split->SecondPanel()) return split;
-		return actual;
+		if (!control || !control->GetVisualParent()) return nullptr;
+		return control->GetVisualParent();
 	}
 
-	void RefreshRecordsAndRoots(
-		std::vector<std::unique_ptr<Control>>& ownedRoots,
-		std::vector<Control*>& rootControls,
+	void RefreshRecordsAndContentRoot(
+		std::unique_ptr<Control>& ownedContentRoot,
+		ControlWeakReference& contentRoot,
 		std::vector<std::shared_ptr<DesignerControl>>& controls)
 	{
-		rootControls.clear();
-		rootControls.reserve(ownedRoots.size());
-		for (const auto& root : ownedRoots)
-			if (root) rootControls.push_back(root.get());
+		contentRoot = ownedContentRoot.get();
 		for (const auto& record : controls)
 			if (record && record->ControlInstance)
 			{
@@ -369,8 +379,7 @@ namespace
 				{
 					return std::any_of(
 						rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
-						{ return _wcsicmp(
-							setter.PropertyName.c_str(), L"Template") == 0; });
+						{ return setter.PropertyName == L"Template"; });
 				});
 		};
 		return hasTemplateSetter(document.StyleSheet)
@@ -391,7 +400,7 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 	outApplied = false;
 	outReusedControlCount = 0;
 	if (effectiveOptions.ForceBehaviorRefresh) return true;
-	if (!output._sourceDocument || output._rootsReleased) return true;
+	if (!output._sourceDocument || output._contentReleased) return true;
 	if (HasStructuralTemplateStyles(*output._sourceDocument)
 		|| HasStructuralTemplateStyles(document)) return true;
 	if ((output._sourceDocument->HasResourceBackedVisualStates()
@@ -448,7 +457,7 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 			});
 	};
 
-	MaterializedControlTree materialized;
+	CuiRuntime::XamlObjectTree materialized;
 	auto materializationOptions =
 		MaterializationOptionsFor(effectiveOptions);
 	if (materializationOptions.NativeSurfaceBehaviorFactory)
@@ -479,13 +488,13 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 					: factory(context);
 			};
 	}
-	if (!DesignDocumentMaterializer::Materialize(
+	if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 		document, materialized,
 		materializationOptions, outError)) return false;
 
 	RuntimeDocument candidate;
 	candidate._sourceDocument = document;
-	candidate._form = document.Form;
+	candidate._window = document.Window;
 	candidate._dataContextSchema = document.DataContextSchema;
 	DesignerDataContextSchemaUtils::Canonicalize(candidate._dataContextSchema);
 	candidate._styleSheet = document.StyleSheet;
@@ -496,9 +505,27 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		effectiveOptions.AllowNativeSurfacePlaceholder;
 	candidate._controls = std::move(materialized.Controls);
 	candidate._collectionViews = std::move(materialized.CollectionViews);
-	candidate._ownedRoots = std::move(materialized.Roots);
-	RefreshRecordsAndRoots(
-		candidate._ownedRoots, candidate._rootControls, candidate._controls);
+	candidate._commandTargetReferences.reserve(
+		materialized.CommandTargets.size());
+	for (auto& reference : materialized.CommandTargets)
+		candidate._commandTargetReferences.push_back({
+			reference.Source,
+			std::move(reference.SourceName),
+			std::move(reference.MenuItemPath),
+			std::move(reference.TargetName),
+			reference.TargetsWindow });
+	candidate._inputBindingTargetReferences.reserve(
+		materialized.InputBindingTargets.size());
+	for (auto& reference : materialized.InputBindingTargets)
+		candidate._inputBindingTargetReferences.push_back({
+			reference.Source,
+			std::move(reference.SourceName),
+			reference.BindingIndex,
+			std::move(reference.TargetName),
+			reference.TargetsWindow });
+	candidate._ownedContentRoot = std::move(materialized.ContentRoot);
+	RefreshRecordsAndContentRoot(
+		candidate._ownedContentRoot, candidate._contentRoot, candidate._controls);
 	candidate.RebuildControlIndex();
 
 	std::unordered_map<int, std::shared_ptr<DesignerControl>> oldRecords;
@@ -520,22 +547,23 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 			Attachment actualCandidateAttachment;
 			if (!DetachFrom(
 				position->Reused,
-				candidate._ownedRoots,
+				candidate._ownedContentRoot,
 				actualCandidateAttachment,
 				reusedOwner)) continue;
 			(void)AttachTo(
 				position->Placeholder,
-				candidate._ownedRoots,
+				candidate._ownedContentRoot,
 				position->CandidateAttachment);
 			(void)AttachTo(
 				reusedOwner,
-				output._ownedRoots,
+				output._ownedContentRoot,
 				position->PreviousAttachment);
 		}
-		RefreshRecordsAndRoots(
-			output._ownedRoots, output._rootControls, output._controls);
-		RefreshRecordsAndRoots(
-			candidate._ownedRoots, candidate._rootControls, candidate._controls);
+		RefreshRecordsAndContentRoot(
+			output._ownedContentRoot, output._contentRoot, output._controls);
+		RefreshRecordsAndContentRoot(
+			candidate._ownedContentRoot, candidate._contentRoot,
+			candidate._controls);
 	};
 
 	for (const auto stableId : reusableRoots)
@@ -559,7 +587,7 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		swap.Reused = oldFound->second->ControlInstance;
 		std::unique_ptr<Control> reusedOwner;
 		if (!DetachFrom(
-			swap.Reused, output._ownedRoots,
+			swap.Reused, output._ownedContentRoot,
 			swap.PreviousAttachment, reusedOwner))
 		{
 			rollbackTopology();
@@ -571,12 +599,12 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 
 		if (!DetachFrom(
 			candidateFound->second->ControlInstance,
-			candidate._ownedRoots,
+			candidate._ownedContentRoot,
 			swap.CandidateAttachment,
 			swap.Placeholder))
 		{
 			(void)AttachTo(
-				reusedOwner, output._ownedRoots, swap.PreviousAttachment);
+				reusedOwner, output._ownedContentRoot, swap.PreviousAttachment);
 			rollbackTopology();
 			SetError(outError,
 				L"拓扑重组无法从候选树分离控件："
@@ -585,14 +613,14 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		}
 
 		if (!AttachTo(
-			reusedOwner, candidate._ownedRoots, swap.CandidateAttachment))
+			reusedOwner, candidate._ownedContentRoot, swap.CandidateAttachment))
 		{
 			(void)AttachTo(
 				swap.Placeholder,
-				candidate._ownedRoots,
+				candidate._ownedContentRoot,
 				swap.CandidateAttachment);
 			(void)AttachTo(
-				reusedOwner, output._ownedRoots, swap.PreviousAttachment);
+				reusedOwner, output._ownedContentRoot, swap.PreviousAttachment);
 			rollbackTopology();
 			SetError(outError,
 				L"拓扑重组无法把旧控件挂载到候选树："
@@ -608,9 +636,17 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		const auto found = oldRecords.find(record->StableId);
 		if (found != oldRecords.end()) record = found->second;
 	}
-	RefreshRecordsAndRoots(
-		candidate._ownedRoots, candidate._rootControls, candidate._controls);
+	RefreshRecordsAndContentRoot(
+		candidate._ownedContentRoot, candidate._contentRoot, candidate._controls);
 	candidate.RebuildControlIndex();
+	std::vector<RuntimeDocument::CommandTargetSnapshot>
+		commandTargetSnapshots;
+	if (!candidate.ApplyCommandTargetReferences(
+		nullptr, true, &commandTargetSnapshots, outError))
+	{
+		rollbackTopology();
+		return false;
+	}
 
 	const auto previousDataContext = output._dataContext;
 	bool oldBindingsCleared = false;
@@ -625,8 +661,9 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 					? target._sourceDocument->ResourceBasePath : std::wstring{},
 				target._sourceDocument
 					? target._sourceDocument->Resources : nullptr)) return;
-			for (auto* root : target._rootControls)
-				if (root) (void)root->SetStyleSheet(styleSheet, true);
+			if (auto* contentRoot = target._contentRoot.Get())
+				(void)cui::framework::StyleAccess::SetDocumentStyles(
+					*contentRoot, styleSheet, true);
 		}
 		catch (...) {}
 	};
@@ -634,6 +671,8 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 	{
 		candidate.ClearControlEvents();
 		candidate.ClearDataBindings();
+		RuntimeDocument::RestoreCommandTargetSnapshots(
+			commandTargetSnapshots);
 		rollbackTopology();
 		restoreStyle(output);
 		if (oldBindingsCleared)
@@ -704,9 +743,11 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 			SetError(outError, error);
 			return false;
 		}
-		for (auto* root : candidate._rootControls)
+		if (auto* contentRoot = candidate._contentRoot.Get();
+			contentRoot
+			&& !cui::framework::StyleAccess::SetDocumentStyles(
+				*contentRoot, runtimeStyleSheet, true))
 		{
-			if (!root || root->SetStyleSheet(runtimeStyleSheet, true)) continue;
 			rollbackRuntime();
 			SetError(outError, L"文档样式表无法应用到重组后的完整控件树。");
 			return false;
@@ -734,14 +775,14 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		catch (...)
 		{
 			candidateCommitted = false;
-			SetError(outError, L"宿主提交重组后的根控件时抛出异常。");
+			SetError(outError, L"宿主提交重组后的 Content 时抛出异常。");
 		}
 	if (!candidateCommitted)
 	{
 		const auto error = outError ? *outError : std::wstring{};
 		rollbackRuntime();
 		SetError(outError, error.empty()
-			? std::wstring(L"宿主拒绝提交重组后的根控件。") : error);
+			? std::wstring(L"宿主拒绝提交重组后的 Content。") : error);
 		return false;
 	}
 

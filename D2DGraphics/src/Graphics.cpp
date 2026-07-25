@@ -226,7 +226,11 @@ D2DGraphics::D2DGraphics(const BitmapSource* bitmap) {
 }
 
 D2DGraphics::D2DGraphics(IDXGISwapChain* swapChain) {
-	HRESULT hr = InitializeWithSwapChain(swapChain);
+	(void)InitializeWithSwapChain(swapChain);
+}
+
+D2DGraphics::D2DGraphics(ID2D1Device* device) {
+	(void)InitializeCommandRecorder(device);
 }
 
 D2DGraphics::D2DGraphics(const InitOptions& options) {
@@ -270,6 +274,9 @@ HRESULT D2DGraphics::EnsureDeviceResources() {
 }
 
 void D2DGraphics::ResetTarget() {
+	if (_commandRecording) {
+		AbortCommandRecording();
+	}
 	_transformStack.clear();
 	_geometryClipLayerStack.clear();
 	_geometryClipGeometryStack.clear();
@@ -279,39 +286,19 @@ void D2DGraphics::ResetTarget() {
 	pD2DDevice.Reset();
 
 	pWicTargetBitmap.Reset();
-	Default_Brush.Reset();
-	Default_Brush_Back.Reset();
+	_solidBrushes.clear();
+	_recordingCommandList.Reset();
 
 	surfaceKind = SurfaceKind::None;
 	wicDirty = false;
+	_commandRecording = false;
+	_presentDirtyRect = {};
+	_hasPresentDirtyRect = false;
+	_swapChainHasPresentedFrame = false;
 }
 
 HRESULT D2DGraphics::ConfigDefaultObjects() {
-	if (!pDeviceContext) {
-		return E_FAIL;
-	}
-	D2D1_COLOR_F defaultColor{ 1.0f, 1.0f, 1.0f, 1.0f };
-	if (!Default_Brush) {
-		HRESULT hr = pDeviceContext->CreateSolidColorBrush(defaultColor, Default_Brush.ReleaseAndGetAddressOf());
-		if (FAILED(hr)) {
-			return hr;
-		}
-	}
-	else {
-		Default_Brush->SetColor(defaultColor);
-	}
-
-	if (!Default_Brush_Back) {
-		HRESULT hr = pDeviceContext->CreateSolidColorBrush(defaultColor, Default_Brush_Back.ReleaseAndGetAddressOf());
-		if (FAILED(hr)) {
-			return hr;
-		}
-	}
-	else {
-		Default_Brush_Back->SetColor(defaultColor);
-	}
-
-	return S_OK;
+	return pDeviceContext ? S_OK : E_FAIL;
 }
 
 HRESULT D2DGraphics::Initialize(const InitOptions& options) {
@@ -327,6 +314,7 @@ HRESULT D2DGraphics::Initialize(const InitOptions& options) {
 	case SurfaceKind::Compatible:
 	case SurfaceKind::Hwnd:
 	case SurfaceKind::DxgiSwapChain:
+	case SurfaceKind::CommandRecorder:
 	default:
 		hr = E_INVALIDARG;
 		break;
@@ -502,8 +490,25 @@ HRESULT D2DGraphics::InitializeWithSwapChain(IDXGISwapChain* swapChain) {
 	return hr;
 }
 
+HRESULT D2DGraphics::InitializeCommandRecorder(ID2D1Device* device) {
+	if (!device) return E_INVALIDARG;
+	ResetTarget();
+	pD2DDevice = device;
+	HRESULT hr = pD2DDevice->CreateDeviceContext(
+		D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &pDeviceContext);
+	if (FAILED(hr)) {
+		ResetTarget();
+		return hr;
+	}
+	surfaceKind = SurfaceKind::CommandRecorder;
+	return ConfigDefaultObjects();
+}
+
 void D2DGraphics::BeginRender() {
+	_lastEndDrawHr = S_OK;
+	_lastPresentHr = S_OK;
 	if (!pDeviceContext) {
+		_lastEndDrawHr = E_POINTER;
 		return;
 	}
 	pDeviceContext->BeginDraw();
@@ -559,25 +564,97 @@ HRESULT D2DGraphics::SyncTargetToWicIfNeeded() {
 
 void D2DGraphics::EndRender() {
 	if (!pDeviceContext) {
+		_lastEndDrawHr = E_POINTER;
 		return;
 	}
-	HRESULT hr = pDeviceContext->EndDraw();
+	_lastEndDrawHr = pDeviceContext->EndDraw();
+	_lastPresentHr = S_OK;
 
 	if (surfaceKind == SurfaceKind::Offscreen || surfaceKind == SurfaceKind::ExternalBitmap) {
 		wicDirty = true;
-		SyncTargetToWicIfNeeded();
+		if (SUCCEEDED(_lastEndDrawHr))
+			_lastEndDrawHr = SyncTargetToWicIfNeeded();
 	}
 
 	if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
-		pSwapChain->Present(1, 0);
+		_lastPresentHr = PresentSwapChain(1, 0);
 	}
 
-	if (hr == D2DERR_RECREATE_TARGET) {
-		if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
-			CreateTargetBitmapForSwapChain(pSwapChain.Get());
-			ConfigDefaultObjects();
-		}
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET
+		|| IsDeviceRemovedHr(_lastEndDrawHr)
+		|| IsDeviceRemovedHr(_lastPresentHr))
+		_deviceLost = true;
+}
+
+void D2DGraphics::SetPresentDirtyRect(const RECT& logicalDirty) {
+	_hasPresentDirtyRect = false;
+	_presentDirtyRect = {};
+	if (!pSwapChain || logicalDirty.right <= logicalDirty.left
+		|| logicalDirty.bottom <= logicalDirty.top
+		|| RequiresFullPresentFrame()) {
+		return;
 	}
+
+	FLOAT dpiX = 96.0f;
+	FLOAT dpiY = 96.0f;
+	if (pDeviceContext)
+		pDeviceContext->GetDpi(&dpiX, &dpiY);
+	const float scaleX = dpiX > 0.0f ? dpiX / 96.0f : 1.0f;
+	const float scaleY = dpiY > 0.0f ? dpiY / 96.0f : 1.0f;
+
+	DXGI_SWAP_CHAIN_DESC description{};
+	if (FAILED(pSwapChain->GetDesc(&description))) return;
+	const LONG width = static_cast<LONG>(description.BufferDesc.Width);
+	const LONG height = static_cast<LONG>(description.BufferDesc.Height);
+	RECT physical{
+		static_cast<LONG>(std::floor(logicalDirty.left * scaleX)),
+		static_cast<LONG>(std::floor(logicalDirty.top * scaleY)),
+		static_cast<LONG>(std::ceil(logicalDirty.right * scaleX)),
+		static_cast<LONG>(std::ceil(logicalDirty.bottom * scaleY)) };
+	RECT bounds{ 0, 0, width, height };
+	RECT clipped{};
+	if (!::IntersectRect(&clipped, &physical, &bounds)) return;
+	if (clipped.left == bounds.left && clipped.top == bounds.top
+		&& clipped.right == bounds.right
+		&& clipped.bottom == bounds.bottom) return;
+	_presentDirtyRect = clipped;
+	_hasPresentDirtyRect = true;
+}
+
+bool D2DGraphics::SupportsDirtyPresent() const noexcept {
+	if (!pSwapChain) return false;
+	DXGI_SWAP_CHAIN_DESC description{};
+	if (FAILED(pSwapChain->GetDesc(&description))) return false;
+	if (description.SwapEffect != DXGI_SWAP_EFFECT_SEQUENTIAL
+		&& description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
+		return false;
+	ComPtr<IDXGISwapChain1> swapChain1;
+	return SUCCEEDED(pSwapChain.As(&swapChain1)) && swapChain1;
+}
+
+bool D2DGraphics::RequiresFullPresentFrame() const noexcept {
+	return pSwapChain
+		&& (!_swapChainHasPresentedFrame || !SupportsDirtyPresent());
+}
+
+HRESULT D2DGraphics::PresentSwapChain(UINT syncInterval, UINT flags) {
+	if (!pSwapChain) return S_OK;
+	HRESULT result = E_FAIL;
+	ComPtr<IDXGISwapChain1> swapChain1;
+	if (_hasPresentDirtyRect
+		&& SUCCEEDED(pSwapChain.As(&swapChain1)) && swapChain1) {
+		DXGI_PRESENT_PARAMETERS parameters{};
+		parameters.DirtyRectsCount = 1;
+		parameters.pDirtyRects = &_presentDirtyRect;
+		result = swapChain1->Present1(syncInterval, flags, &parameters);
+	}
+	else {
+		result = pSwapChain->Present(syncInterval, flags);
+	}
+	if (result == S_OK) _swapChainHasPresentedFrame = true;
+	_presentDirtyRect = {};
+	_hasPresentDirtyRect = false;
+	return result;
 }
 
 void D2DGraphics::ReSize(UINT width, UINT height) {
@@ -598,9 +675,19 @@ void D2DGraphics::ReSize(UINT width, UINT height) {
 		pDeviceContext->SetTarget(nullptr);
 		pDeviceContext->Flush();
 
-		pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-		CreateTargetBitmapForSwapChain(pSwapChain.Get());
-		ConfigDefaultObjects();
+		_lastPresentHr = pSwapChain->ResizeBuffers(
+			0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+		if (FAILED(_lastPresentHr)) {
+			_deviceLost = true;
+			return;
+		}
+		_lastEndDrawHr = CreateTargetBitmapForSwapChain(pSwapChain.Get());
+		if (FAILED(_lastEndDrawHr)) {
+			_deviceLost = true;
+			return;
+		}
+		_swapChainHasPresentedFrame = false;
+		(void)ConfigDefaultObjects();
 		return;
 	}
 }
@@ -612,15 +699,26 @@ void D2DGraphics::Clear(D2D1_COLOR_F color) {
 	wicDirty = true;
 }
 
+ID2D1SolidColorBrush* D2DGraphics::GetImmutableSolidColorBrush(
+	D2D1_COLOR_F color) {
+	if (!pDeviceContext) return nullptr;
+	const SolidBrushKey key{
+		std::bit_cast<uint32_t>(color.r),
+		std::bit_cast<uint32_t>(color.g),
+		std::bit_cast<uint32_t>(color.b),
+		std::bit_cast<uint32_t>(color.a) };
+	if (const auto found = _solidBrushes.find(key);
+		found != _solidBrushes.end()) return found->second.Get();
+	ComPtr<ID2D1SolidColorBrush> brush;
+	if (FAILED(pDeviceContext->CreateSolidColorBrush(color, &brush)))
+		return nullptr;
+	auto* result = brush.Get();
+	_solidBrushes.emplace(key, std::move(brush));
+	return result;
+}
+
 ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(D2D1_COLOR_F newcolor) {
-	if (!Default_Brush && pDeviceContext) {
-		if (FAILED(pDeviceContext->CreateSolidColorBrush(newcolor, Default_Brush.ReleaseAndGetAddressOf()))) {
-			return nullptr;
-		}
-	}
-	if (!Default_Brush) return nullptr;
-	Default_Brush->SetColor(newcolor);
-	return Default_Brush.Get();
+	return GetImmutableSolidColorBrush(newcolor);
 }
 ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(COLORREF newcolor) {
 	return GetColorBrush(D2D1_COLOR_F{ GetRValue(newcolor) * INV_255_1,GetGValue(newcolor) * INV_255_1,GetBValue(newcolor) * INV_255_1,1.0f });
@@ -633,14 +731,7 @@ ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(float r, float g, float b, floa
 }
 
 ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(D2D1_COLOR_F newcolor) {
-	if (!Default_Brush_Back && pDeviceContext) {
-		if (FAILED(pDeviceContext->CreateSolidColorBrush(newcolor, Default_Brush_Back.ReleaseAndGetAddressOf()))) {
-			return nullptr;
-		}
-	}
-	if (!Default_Brush_Back) return nullptr;
-	Default_Brush_Back->SetColor(newcolor);
-	return Default_Brush_Back.Get();
+	return GetImmutableSolidColorBrush(newcolor);
 }
 ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(COLORREF newcolor) {
 	return GetBackColorBrush(D2D1_COLOR_F{ GetRValue(newcolor) * INV_255_1,GetGValue(newcolor) * INV_255_1,GetBValue(newcolor) * INV_255_1,1.0f });
@@ -1006,6 +1097,26 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 	if (!backBrush) return;
 	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
 	layout->SetDrawingEffect(backBrush, subRange);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font) {
+	if (!layout || !effectBrush) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto frontBrush = GetColorBrush(color);
+	if (!frontBrush) return;
+	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	layout->SetDrawingEffect(effectBrush, subRange);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, frontBrush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font) {
+	if (!layout || !brush || !effectBrush) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	layout->SetDrawingEffect(effectBrush, subRange);
 	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
 	wicDirty = true;
 }
@@ -1433,6 +1544,72 @@ ID2D1DeviceContext* D2DGraphics::GetDeviceContextRaw() const {
 ComPtr<ID2D1DeviceContext> D2DGraphics::GetDeviceContext() const {
 	return pDeviceContext;
 }
+
+bool D2DGraphics::BeginCommandRecording() {
+	if (!pDeviceContext || surfaceKind != SurfaceKind::CommandRecorder
+		|| _commandRecording) return false;
+	_transformStack.clear();
+	_geometryClipLayerStack.clear();
+	_geometryClipGeometryStack.clear();
+	_recordingCommandList.Reset();
+	HRESULT hr = pDeviceContext->CreateCommandList(&_recordingCommandList);
+	if (FAILED(hr) || !_recordingCommandList) {
+		_lastEndDrawHr = FAILED(hr) ? hr : E_FAIL;
+		return false;
+	}
+	pDeviceContext->SetTarget(_recordingCommandList.Get());
+	pDeviceContext->SetTransform(D2D1::Matrix3x2F::Identity());
+	_lastEndDrawHr = S_OK;
+	_lastPresentHr = S_OK;
+	pDeviceContext->BeginDraw();
+	_commandRecording = true;
+	return true;
+}
+
+HRESULT D2DGraphics::EndCommandRecording(
+	ID2D1CommandList** commandList) {
+	if (commandList) *commandList = nullptr;
+	if (!_commandRecording || !pDeviceContext || !_recordingCommandList)
+		return E_UNEXPECTED;
+	_lastEndDrawHr = pDeviceContext->EndDraw();
+	pDeviceContext->SetTarget(nullptr);
+	_commandRecording = false;
+	_transformStack.clear();
+	_geometryClipLayerStack.clear();
+	_geometryClipGeometryStack.clear();
+	if (SUCCEEDED(_lastEndDrawHr))
+		_lastEndDrawHr = _recordingCommandList->Close();
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET
+		|| IsDeviceRemovedHr(_lastEndDrawHr))
+		_deviceLost = true;
+	if (SUCCEEDED(_lastEndDrawHr) && commandList)
+		*commandList = _recordingCommandList.Detach();
+	else
+		_recordingCommandList.Reset();
+	return _lastEndDrawHr;
+}
+
+void D2DGraphics::AbortCommandRecording() noexcept {
+	if (!_commandRecording || !pDeviceContext) {
+		_recordingCommandList.Reset();
+		_commandRecording = false;
+		return;
+	}
+	_lastEndDrawHr = pDeviceContext->EndDraw();
+	pDeviceContext->SetTarget(nullptr);
+	_recordingCommandList.Reset();
+	_transformStack.clear();
+	_geometryClipLayerStack.clear();
+	_geometryClipGeometryStack.clear();
+	_commandRecording = false;
+}
+
+void D2DGraphics::DrawCommandList(ID2D1CommandList* commandList) {
+	if (!pDeviceContext || !commandList) return;
+	pDeviceContext->DrawImage(commandList);
+	wicDirty = true;
+}
+
 IWICBitmap* D2DGraphics::GetTargetWicBitmap() const {
 	return pWicTargetBitmap.Get();
 }
@@ -1819,7 +1996,7 @@ HRESULT HwndGraphics::InitDevice() {
 		legacyDesc.BufferCount = 2;
 		legacyDesc.OutputWindow = hwnd;
 		legacyDesc.Windowed = TRUE;
-		legacyDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+		legacyDesc.SwapEffect = DXGI_SWAP_EFFECT_SEQUENTIAL;
 
 		ComPtr<IDXGIFactory> legacyFactory;
 		hr = adapter->GetParent(IID_PPV_ARGS(&legacyFactory));
@@ -1856,17 +2033,18 @@ void HwndGraphics::ReSize(UINT width, UINT height) {
 	pDeviceContext->Flush();
 
 	HRESULT hr = pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-	if (FAILED(hr) && IsDeviceRemovedHr(hr)) {
+	_lastPresentHr = hr;
+	if (FAILED(hr)) {
 		_deviceLost = true;
-		ResetTarget();
-		if (SUCCEEDED(InitDevice())) {
-			_deviceLost = false;
-			::InvalidateRect(hwnd, nullptr, FALSE);
-		}
 		return;
 	}
-	CreateTargetBitmapForSwapChain(pSwapChain.Get());
-	ConfigDefaultObjects();
+	_lastEndDrawHr = CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	if (FAILED(_lastEndDrawHr)) {
+		_deviceLost = true;
+		return;
+	}
+	_swapChainHasPresentedFrame = false;
+	(void)ConfigDefaultObjects();
 }
 
 void HwndGraphics::BeginRender() {
@@ -1875,25 +2053,19 @@ void HwndGraphics::BeginRender() {
 
 void HwndGraphics::EndRender() {
 	// Hwnd：既需要 EndDraw，也需要 Present
-	if (!pDeviceContext) return;
+	if (!pDeviceContext) {
+		_lastEndDrawHr = E_POINTER;
+		return;
+	}
 	_lastEndDrawHr = pDeviceContext->EndDraw();
 	_lastPresentHr = S_OK;
 	if (pSwapChain) {
-		_lastPresentHr = pSwapChain->Present(1, 0);
+		_lastPresentHr = PresentSwapChain(1, 0);
 	}
-	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET && pSwapChain) {
-		CreateTargetBitmapForSwapChain(pSwapChain.Get());
-		ConfigDefaultObjects();
-		_deviceLost = false;
-		return;
-	}
-	if (IsDeviceRemovedHr(_lastEndDrawHr) || IsDeviceRemovedHr(_lastPresentHr)) {
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET
+		|| IsDeviceRemovedHr(_lastEndDrawHr)
+		|| IsDeviceRemovedHr(_lastPresentHr)) {
 		_deviceLost = true;
-		ResetTarget();
-		if (SUCCEEDED(InitDevice())) {
-			_deviceLost = false;
-			::InvalidateRect(hwnd, nullptr, FALSE);
-		}
 	}
 }
 
@@ -1914,13 +2086,18 @@ void CompositionSwapChainGraphics::ReSize(UINT width, UINT height) {
 	pDeviceContext->Flush();
 
 	HRESULT hr = pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-	if (FAILED(hr) && IsDeviceRemovedHr(hr)) {
-		// Composition swapchain 的生命周期由 DCompLayeredHost 管理：这里只标记，交由上层重建。
+	_lastPresentHr = hr;
+	if (FAILED(hr)) {
 		_deviceLost = true;
 		return;
 	}
-	CreateTargetBitmapForSwapChain(pSwapChain.Get());
-	ConfigDefaultObjects();
+	_lastEndDrawHr = CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	if (FAILED(_lastEndDrawHr)) {
+		_deviceLost = true;
+		return;
+	}
+	_swapChainHasPresentedFrame = false;
+	(void)ConfigDefaultObjects();
 }
 
 void CompositionSwapChainGraphics::BeginRender() {
@@ -1928,19 +2105,18 @@ void CompositionSwapChainGraphics::BeginRender() {
 }
 
 void CompositionSwapChainGraphics::EndRender() {
-	if (!pDeviceContext) return;
+	if (!pDeviceContext) {
+		_lastEndDrawHr = E_POINTER;
+		return;
+	}
 	_lastEndDrawHr = pDeviceContext->EndDraw();
 	_lastPresentHr = S_OK;
 	if (pSwapChain) {
-		_lastPresentHr = pSwapChain->Present(1, 0);
+		_lastPresentHr = PresentSwapChain(1, 0);
 	}
-	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET && pSwapChain) {
-		CreateTargetBitmapForSwapChain(pSwapChain.Get());
-		ConfigDefaultObjects();
-		_deviceLost = false;
-		return;
-	}
-	if (IsDeviceRemovedHr(_lastEndDrawHr) || IsDeviceRemovedHr(_lastPresentHr)) {
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET
+		|| IsDeviceRemovedHr(_lastEndDrawHr)
+		|| IsDeviceRemovedHr(_lastPresentHr)) {
 		_deviceLost = true;
 	}
 }

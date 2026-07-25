@@ -20,7 +20,7 @@ struct DesignerPropertyValueSnapshot
 	BindingValue LocalValue;
 	DesignerStyleValue LocalSerializedValue;
 	DesignerStyleValue EffectiveSerializedValue;
-	bool UsesLegacyPersistence = false;
+	bool UsesNativePersistence = false;
 	bool HasTrackedValue = false;
 	DesignerStyleValue TrackedValue;
 	std::wstring TrackedResourceKey;

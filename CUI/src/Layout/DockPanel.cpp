@@ -1,5 +1,5 @@
-﻿#include "Layout/DockPanel.h"
-#include "Form.h"
+#include "Layout/DockPanel.h"
+#include "Window.h"
 #include <algorithm>
 
 // DockLayoutEngine 实现
@@ -11,7 +11,7 @@ namespace
 		for (int index = context.ChildCount() - 1; index >= 0; --index)
 		{
 			auto* child = context.ChildAt(index);
-			if (child && child->Visible) return index;
+			if (child && !child->IsCollapsed()) return index;
 		}
 		return -1;
 	}
@@ -21,16 +21,6 @@ namespace
 		return cui::core::Constraints{ available }.Deflate(cui::core::Insets{
 			margin.Left, margin.Top, margin.Right, margin.Bottom }).maximum;
 	}
-}
-
-SIZE DockLayoutEngine::Measure(Control* container, SIZE availableSize)
-{
-	if (!container) return SIZE{ 0, 0 };
-	LayoutContext context(container);
-	const auto desired = Measure(context, cui::core::Constraints{ cui::core::Size{
-		static_cast<float>((std::max)(0L, availableSize.cx)),
-		static_cast<float>((std::max)(0L, availableSize.cy)) } });
-	return SIZE{ static_cast<LONG>(std::ceil(desired.width)), static_cast<LONG>(std::ceil(desired.height)) };
 }
 
 cui::core::Size DockLayoutEngine::Measure(LayoutContext& context, const cui::core::Constraints& available)
@@ -44,7 +34,7 @@ cui::core::Size DockLayoutEngine::Measure(LayoutContext& context, const cui::cor
 	for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 	{
 		auto* child = context.ChildAt(childIndex);
-		if (!child || !child->Visible) continue;
+		if (!child || child->IsCollapsed()) continue;
 
 		const Thickness margin = child->Margin;
 		const auto childSize = child->Measure(cui::core::Constraints{
@@ -53,9 +43,17 @@ cui::core::Size DockLayoutEngine::Measure(LayoutContext& context, const cui::cor
 			0.0f, childSize.width + margin.Left + margin.Right);
 		const float childHeight = (std::max)(
 			0.0f, childSize.height + margin.Top + margin.Bottom);
-		const Dock dock = _lastChildFill && childIndex == lastVisibleIndex
-			? Dock::Fill
-			: child->DockPosition;
+		const bool fillsRemaining =
+			_lastChildFill && childIndex == lastVisibleIndex;
+		const Dock dock = DockPanel::GetDock(*child);
+		if (fillsRemaining)
+		{
+			desiredSize.width = (std::max)(desiredSize.width,
+				accumulatedWidth + childWidth);
+			desiredSize.height = (std::max)(desiredSize.height,
+				accumulatedHeight + childHeight);
+			continue;
+		}
 		
 		switch (dock)
 		{
@@ -79,12 +77,6 @@ cui::core::Size DockLayoutEngine::Measure(LayoutContext& context, const cui::cor
 			remainingSize.height = (std::max)(0.0f, remainingSize.height - childHeight);
 			break;
 			
-		case Dock::Fill:
-			desiredSize.width = (std::max)(desiredSize.width,
-				accumulatedWidth + childWidth);
-			desiredSize.height = (std::max)(desiredSize.height,
-				accumulatedHeight + childHeight);
-			break;
 		}
 	}
 	
@@ -92,18 +84,10 @@ cui::core::Size DockLayoutEngine::Measure(LayoutContext& context, const cui::cor
 	return desiredSize;
 }
 
-void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
+void DockLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRect)
 {
-	if (!container) return;
-	LayoutContext context(container);
-	Arrange(context, finalRect);
-}
-
-void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
-{
-	
 	// 维护剩余可用空间
-	D2D1_RECT_F remaining = finalRect;
+	auto remaining = finalRect.Normalized();
 	
 	const int childCount = context.ChildCount();
 	const int lastVisibleIndex = LastVisibleChildIndex(context);
@@ -112,29 +96,51 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 	for (int childIndex = 0; childIndex < childCount; childIndex++)
 	{
 		auto* child = context.ChildAt(childIndex);
-		if (!child || !child->Visible) continue;
+		if (!child || child->IsCollapsed()) continue;
 		
-		Dock dock = child->DockPosition;
+		const Dock dock = DockPanel::GetDock(*child);
 		const Thickness margin = child->Margin;
-		const HorizontalAlignment horizontalAlignment = child->HAlign;
-		const VerticalAlignment verticalAlignment = child->VAlign;
-		const float remainingWidth = (std::max)(0.0f, remaining.right - remaining.left);
-		const float remainingHeight = (std::max)(0.0f, remaining.bottom - remaining.top);
+		const auto horizontalAlignment =
+			cui::layout::ResolveHorizontalArrangeAlignment(*child);
+		const auto verticalAlignment =
+			cui::layout::ResolveVerticalArrangeAlignment(*child);
+		const float remainingWidth = remaining.width;
+		const float remainingHeight = remaining.height;
 		const auto innerSize = DeflateDockSize(
 			cui::core::Size{ remainingWidth, remainingHeight }, margin);
 		const auto childSize = child->Measure(cui::core::Constraints{ innerSize });
 		
-		// 最后一个子控件如果启用 LastChildFill，则填充剩余空间
-		bool isLastAndFill = (childIndex == lastVisibleIndex && _lastChildFill);
-		if (isLastAndFill)
-		{
-			dock = Dock::Fill;
-		}
+		const bool fillsRemaining =
+			childIndex == lastVisibleIndex && _lastChildFill;
 		
 		float finalX = 0.0f;
 		float finalY = 0.0f;
 		float finalWidth = 0.0f;
 		float finalHeight = 0.0f;
+		if (fillsRemaining)
+		{
+			finalWidth = horizontalAlignment == HorizontalAlignment::Stretch
+				? innerSize.width
+				: (std::min)(childSize.width, innerSize.width);
+			finalHeight = verticalAlignment == VerticalAlignment::Stretch
+				? innerSize.height
+				: (std::min)(childSize.height, innerSize.height);
+			finalX = remaining.x + margin.Left;
+			finalY = remaining.y + margin.Top;
+			if (horizontalAlignment == HorizontalAlignment::Center)
+				finalX += (innerSize.width - finalWidth) * 0.5f;
+			else if (horizontalAlignment == HorizontalAlignment::Right)
+				finalX += innerSize.width - finalWidth;
+			if (verticalAlignment == VerticalAlignment::Center)
+				finalY += (innerSize.height - finalHeight) * 0.5f;
+			else if (verticalAlignment == VerticalAlignment::Bottom)
+				finalY += innerSize.height - finalHeight;
+			child->Arrange(cui::core::Rect{
+				finalX, finalY,
+				(std::max)(0.0f, finalWidth),
+				(std::max)(0.0f, finalHeight) });
+			continue;
+		}
 		
 		switch (dock)
 		{
@@ -146,18 +152,19 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			finalHeight = (verticalAlignment == VerticalAlignment::Stretch) ? availableHeight : childSize.height;
 			if (finalHeight > availableHeight) finalHeight = availableHeight;
 
-			finalX = remaining.left + margin.Left;
+			finalX = remaining.x + margin.Left;
 			if (verticalAlignment == VerticalAlignment::Bottom)
-				finalY = remaining.bottom - margin.Bottom - finalHeight;
+				finalY = remaining.Bottom() - margin.Bottom - finalHeight;
 			else if (verticalAlignment == VerticalAlignment::Center)
-				finalY = remaining.top + margin.Top + (availableHeight - finalHeight) / 2.0f;
+				finalY = remaining.y + margin.Top + (availableHeight - finalHeight) / 2.0f;
 			else
-				finalY = remaining.top + margin.Top;
+				finalY = remaining.y + margin.Top;
 
 			// 更新剩余空间
-			remaining.left = (std::clamp)(
-				remaining.left + finalWidth + margin.Left + margin.Right,
-				remaining.left, remaining.right);
+			const float consumed = (std::min)(remaining.width,
+				finalWidth + margin.Left + margin.Right);
+			remaining.x += consumed;
+			remaining.width -= consumed;
 		}
 			break;
 			
@@ -170,17 +177,18 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			finalHeight = (std::min)(childSize.height, availableHeight);
 
 			if (horizontalAlignment == HorizontalAlignment::Right)
-				finalX = remaining.right - margin.Right - finalWidth;
+				finalX = remaining.Right() - margin.Right - finalWidth;
 			else if (horizontalAlignment == HorizontalAlignment::Center)
-				finalX = remaining.left + margin.Left + (availableWidth - finalWidth) / 2.0f;
+				finalX = remaining.x + margin.Left + (availableWidth - finalWidth) / 2.0f;
 			else
-				finalX = remaining.left + margin.Left;
-			finalY = remaining.top + margin.Top;
+				finalX = remaining.x + margin.Left;
+			finalY = remaining.y + margin.Top;
 
 			// 更新剩余空间
-			remaining.top = (std::clamp)(
-				remaining.top + finalHeight + margin.Top + margin.Bottom,
-				remaining.top, remaining.bottom);
+			const float consumed = (std::min)(remaining.height,
+				finalHeight + margin.Top + margin.Bottom);
+			remaining.y += consumed;
+			remaining.height -= consumed;
 		}
 			break;
 			
@@ -192,18 +200,17 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			finalHeight = (verticalAlignment == VerticalAlignment::Stretch) ? availableHeight : childSize.height;
 			if (finalHeight > availableHeight) finalHeight = availableHeight;
 
-			finalX = remaining.right - finalWidth - margin.Right;
+			finalX = remaining.Right() - finalWidth - margin.Right;
 			if (verticalAlignment == VerticalAlignment::Bottom)
-				finalY = remaining.bottom - margin.Bottom - finalHeight;
+				finalY = remaining.Bottom() - margin.Bottom - finalHeight;
 			else if (verticalAlignment == VerticalAlignment::Center)
-				finalY = remaining.top + margin.Top + (availableHeight - finalHeight) / 2.0f;
+				finalY = remaining.y + margin.Top + (availableHeight - finalHeight) / 2.0f;
 			else
-				finalY = remaining.top + margin.Top;
+				finalY = remaining.y + margin.Top;
 			
 			// 更新剩余空间
-			remaining.right = (std::clamp)(
-				remaining.right - finalWidth - margin.Left - margin.Right,
-				remaining.left, remaining.right);
+			remaining.width -= (std::min)(remaining.width,
+				finalWidth + margin.Left + margin.Right);
 		}
 			break;
 			
@@ -216,37 +223,26 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			finalHeight = (std::min)(childSize.height, availableHeight);
 
 			if (horizontalAlignment == HorizontalAlignment::Right)
-				finalX = remaining.right - margin.Right - finalWidth;
+				finalX = remaining.Right() - margin.Right - finalWidth;
 			else if (horizontalAlignment == HorizontalAlignment::Center)
-				finalX = remaining.left + margin.Left + (availableWidth - finalWidth) / 2.0f;
+				finalX = remaining.x + margin.Left + (availableWidth - finalWidth) / 2.0f;
 			else
-				finalX = remaining.left + margin.Left;
-			finalY = remaining.bottom - finalHeight - margin.Bottom;
+				finalX = remaining.x + margin.Left;
+			finalY = remaining.Bottom() - finalHeight - margin.Bottom;
 			
 			// 更新剩余空间
-			remaining.bottom = (std::clamp)(
-				remaining.bottom - finalHeight - margin.Top - margin.Bottom,
-				remaining.top, remaining.bottom);
+			remaining.height -= (std::min)(remaining.height,
+				finalHeight + margin.Top + margin.Bottom);
 		}
 			break;
 			
-		case Dock::Fill:
-		{
-			const float availableWidth = innerSize.width;
-			const float availableHeight = innerSize.height;
-			finalX = remaining.left + margin.Left;
-			finalY = remaining.top + margin.Top;
-			finalWidth = availableWidth;
-			finalHeight = availableHeight;
-		}
-			break;
 		}
 		
 		// 确保尺寸非负
 		if (finalWidth < 0) finalWidth = 0;
 		if (finalHeight < 0) finalHeight = 0;
 		
-		child->ApplyLayout(cui::core::Rect{
+		child->Arrange(cui::core::Rect{
 			finalX, finalY, finalWidth, finalHeight });
 	}
 	
@@ -255,32 +251,31 @@ void DockLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 
 // DockPanel 实现
 
-void DockPanel::EnsureBindingPropertiesRegistered()
+void DockPanel::RegisterDependencyProperties()
 {
-	Panel::EnsureBindingPropertiesRegistered();
+	Panel::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		ControlPropertyOptions<DockPanel, bool> options{
+		DependencyPropertyOptions<DockPanel, bool> options{
 			true,
-			ControlPropertyFlags::AffectsMeasure
-				| ControlPropertyFlags::AffectsArrange
-				| ControlPropertyFlags::TracksLocalValue };
+			DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsArrange };
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = 10;
-		options.Design.Editor = ControlPropertyEditorKind::Boolean;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
-		BindingPropertyRegistry::Register<DockPanel, bool>(L"LastChildFill",
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		DependencyPropertyRegistry::Register<DockPanel, bool>(L"LastChildFill",
 			[](DockPanel& target) { return target.GetLastChildFill(); },
 			[](DockPanel& target, const bool& value) { target.SetLastChildFill(value); },
-			[](DockPanel& target, BindingPropertyMetadata::ChangeHandler handler,
+			[](DockPanel& target, DependencyPropertyMetadata::ChangeHandler handler,
 				DataSourceUpdateMode)
 			{
 				return target.OnPropertyValueChanged.Subscribe(
 					[handler = std::move(handler)](
-						Control*, const ControlPropertyChangedEventArgs& args)
+						DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 					{
-						if (_wcsicmp(args.PropertyName.c_str(), L"LastChildFill") == 0)
+						if (args.PropertyName == L"LastChildFill")
 							handler();
 					});
 			},
@@ -298,13 +293,6 @@ void DockPanel::SetLastChildFill(bool value)
 }
 
 DockPanel::DockPanel()
-{
-	_dockEngine = new DockLayoutEngine();
-	SetLayoutEngine(_dockEngine);
-}
-
-DockPanel::DockPanel(int x, int y, int width, int height)
-	: Panel(x, y, width, height)
 {
 	_dockEngine = new DockLayoutEngine();
 	SetLayoutEngine(_dockEngine);

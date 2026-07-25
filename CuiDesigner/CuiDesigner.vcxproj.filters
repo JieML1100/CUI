@@ -69,9 +69,6 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="ComboBoxItemsEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="Designer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -81,31 +78,22 @@
     <ClCompile Include="DesignerTypes.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="GridViewColumnsEditorDialog.cpp">
+    <ClCompile Include="GridDefinitionsEditorDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="PropertyGrid.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="TabControlPagesEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="ToolBarButtonsEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
+	<ClCompile Include="NativePropertyGridView.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerDropDownPopup.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerColorPickerPopup.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
     <ClCompile Include="ToolBox.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="TreeViewNodesEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="MenuItemsEditorDialog.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="StatusBarPartsEditorDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="StyleSheetEditorDialog.cpp">
@@ -142,9 +130,6 @@
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
     <ClCompile Include="DesignerCore\Commands\ControlStructureCommand.cpp">
-      <Filter>DesignerCore\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\ControlOwnedCollectionCommand.cpp">
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
     <ClCompile Include="DesignerCore\Commands\ControlPlacementCommand.cpp">
@@ -185,9 +170,6 @@
     <ClInclude Include="DesignerControlCatalog.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="DesignerFormPropertyCatalog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="DesignerCustomEditorCatalog.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -221,16 +203,10 @@
     <ClInclude Include="DesignerStyleSheetUtils.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="CodeGenInput.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="CodeGenerator.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="DesignerEventCatalog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="ComboBoxItemsEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="Designer.h">
@@ -245,31 +221,22 @@
     <ClInclude Include="DesignerTypes.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="GridPanelDefinitionsEditorDialog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="GridViewColumnsEditorDialog.h">
+    <ClInclude Include="GridDefinitionsEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="PropertyGrid.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="TabControlPagesEditorDialog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="ToolBarButtonsEditorDialog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
+	<ClInclude Include="NativePropertyGridView.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerDropDownPopup.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerColorPickerPopup.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
     <ClInclude Include="ToolBox.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="TreeViewNodesEditorDialog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="MenuItemsEditorDialog.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="StatusBarPartsEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="StyleSheetEditorDialog.h">
@@ -293,12 +260,12 @@
     <ClInclude Include="DesignerModel\DesignDocumentGraph.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
-    <ClInclude Include="DesignerModel\DesignDocumentMaterializer.h">
-      <Filter>DesignerModel</Filter>
-    </ClInclude>
-    <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h">
-      <Filter>DesignerModel</Filter>
-    </ClInclude>
+    <ClInclude Include="..\CuiRuntime\include\XamlObjectMaterializer.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="..\CuiRuntime\include\XamlRuntimeSchema.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
     <ClInclude Include="DesignerModel\DesignCodeGenerationService.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
@@ -347,6 +314,9 @@
     <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\DesignNodeMemory.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
     <ClInclude Include="DesignerCore\Commands\ControlPropertyCommand.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
@@ -357,9 +327,6 @@
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\Commands\ControlStructureCommand.h">
-      <Filter>DesignerCore\Commands</Filter>
-    </ClInclude>
-    <ClInclude Include="DesignerCore\Commands\ControlOwnedCollectionCommand.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\Commands\ControlPlacementCommand.h">

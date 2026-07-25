@@ -2,15 +2,15 @@
 
 #include "DesignerStyleSheet.h"
 #include "DesignerPropertyCatalog.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/TextBox.h"
 #include "../CUI/include/RichTextBox.h"
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/Button.h"
 
-/** Structured editor for document-level resources, selectors, and setters. */
-class StyleSheetEditorDialog : public Form
+/** Structured editor for document-level WPF Style resources and setters. */
+class StyleSheetEditorDialog : public Window
 {
 public:
 	bool Applied = false;
@@ -34,9 +34,6 @@ private:
 	ComboBox* _ruleType = nullptr;
 	TextBox* _ruleId = nullptr;
 	TextBox* _ruleBasedOn = nullptr;
-	TextBox* _ruleClasses = nullptr;
-	TextBox* _requiredStates = nullptr;
-	TextBox* _excludedStates = nullptr;
 
 	ComboBox* _setterList = nullptr;
 	ComboBox* _setterProperty = nullptr;
@@ -46,7 +43,6 @@ private:
 
 	Label* _validation = nullptr;
 	RichTextBox* _summary = nullptr;
-	std::unique_ptr<Control> _propertyProbe;
 	std::vector<DesignerPropertyDescriptor> _setterProperties;
 	std::wstring _resourceBasePath;
 	bool _loading = false;

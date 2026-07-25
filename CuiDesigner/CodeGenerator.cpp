@@ -1,13 +1,14 @@
-﻿#include "CodeGenerator.h"
-#include "CodeGenInput.h"
+#include "CodeGenerator.h"
 #include "DesignerEventCatalog.h"
 #include "DesignerModel/AtomicFile.h"
 #include "DesignerModel/CppUserCodeIndex.h"
+#include "DesignerModel/DesignDocumentGraph.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
-#include "../D2DGraphics/include/BitmapSource.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <algorithm>
+#include <array>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,136 +22,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
-
-// 生成时需要访问具体控件类型的公开字段/方法
-#include "../CUI/include/ComboBox.h"
-#include "../CUI/include/ListView.h"
-#include "../CUI/include/ListBox.h"
-#include "../CUI/include/GridView.h"
-#include "../CUI/include/PagedGridView.h"
-#include "../CUI/include/PropertyGrid.h"
-#include "../CUI/include/ChartView.h"
-#include "../CUI/include/ReportView.h"
-#include "../CUI/include/KpiCard.h"
-#include "../CUI/include/FilterBar.h"
-#include "../CUI/include/TabControl.h"
-#include "../CUI/include/ToolBar.h"
-#include "../CUI/include/Button.h"
-#include "../CUI/include/LoadingRing.h"
-#include "../CUI/include/ProgressBar.h"
-#include "../CUI/include/ProgressRing.h"
-#include "../CUI/include/Slider.h"
-#include "../CUI/include/NumericUpDown.h"
-#include "../CUI/include/PictureBox.h"
-#include "../CUI/include/DateTimePicker.h"
-#include "../CUI/include/ScrollView.h"
-#include "../CUI/include/TreeView.h"
-#include "../CUI/include/Menu.h"
-#include "../CUI/include/StatusBar.h"
-#include "../CUI/include/Toast.h"
-#include "../CUI/include/MediaPlayer.h"
-#include "../CUI/include/NavigationView.h"
-#include "../CUI/include/GroupBox.h"
-#include "../CUI/include/Expander.h"
-#include "../CUI/include/SplitContainer.h"
-#include "../CUI/include/NativeSurface.h"
-#include "../CUI/include/ItemsPresenter.h"
-
-#include "../CUI/include/Layout/GridPanel.h"
-#include "../CUI/include/Layout/StackPanel.h"
-#include "../CUI/include/Layout/DockPanel.h"
-#include "../CUI/include/Layout/WrapPanel.h"
-#include "../CUI/include/Layout/RelativePanel.h"
-
-static bool IsLayoutContainerType(UIClass t)
-{
-	switch (t)
-	{
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static bool IsContainerType(UIClass t)
-{
-	switch (t)
-	{
-	case UIClass::UI_Panel:
-	case UIClass::UI_GroupBox:
-	case UIClass::UI_Expander:
-	case UIClass::UI_SplitContainer:
-	case UIClass::UI_ScrollView:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-	case UIClass::UI_TabControl:
-	case UIClass::UI_TabPage:
-	case UIClass::UI_ToolBar:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static void SortSplitChildrenByRuntimeOrder(SplitContainer* split, std::vector<std::shared_ptr<DesignerControl>>& list)
-{
-	if (!split || list.size() <= 1) return;
-	std::unordered_map<Control*, int> runtimeOrder;
-	int order = 0;
-	Panel* first = split->FirstPanel();
-	Panel* second = split->SecondPanel();
-	if (first)
-	{
-		for (int i = 0; i < first->Count; i++)
-			runtimeOrder[first->operator[](i)] = order++;
-	}
-	if (second)
-	{
-		for (int i = 0; i < second->Count; i++)
-			runtimeOrder[second->operator[](i)] = order++;
-	}
-	std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b)
-		{
-			int leftOrder = INT_MAX;
-			int rightOrder = INT_MAX;
-			auto leftOrderIt = runtimeOrder.find(a->ControlInstance);
-			if (leftOrderIt != runtimeOrder.end()) leftOrder = leftOrderIt->second;
-			auto rightOrderIt = runtimeOrder.find(b->ControlInstance);
-			if (rightOrderIt != runtimeOrder.end()) rightOrder = rightOrderIt->second;
-			return leftOrder < rightOrder;
-		});
-}
-
-static std::string GetSplitChildHostExpr(SplitContainer* split, Control* runtimeParent, const std::string& parentExpr)
-{
-	if (split && runtimeParent == split->SecondPanel())
-		return parentExpr + "->SecondPanel()";
-	return parentExpr + "->FirstPanel()";
-}
-
-static std::string AnchorStylesToExpr(uint8_t a)
-{
-	if (a == AnchorStyles::None) return "AnchorStyles::None";
-	std::string out;
-	auto add = [&](const char* s) {
-		if (!out.empty()) out += " | ";
-		out += s;
-	};
-	if (a & AnchorStyles::Left) add("AnchorStyles::Left");
-	if (a & AnchorStyles::Top) add("AnchorStyles::Top");
-	if (a & AnchorStyles::Right) add("AnchorStyles::Right");
-	if (a & AnchorStyles::Bottom) add("AnchorStyles::Bottom");
-	if (out.empty()) return "AnchorStyles::None";
-	return out;
-}
 
 static bool IsCppKeyword(const std::string& s);
 
@@ -181,12 +52,82 @@ namespace
 		return "DataSourceUpdateMode::OnPropertyChanged";
 	}
 
+	static std::string KeyToExpr(Key key)
+	{
+		const auto value = static_cast<int>(key);
+		if (key >= Key::A && key <= Key::Z)
+			return "Key::" + std::string(1, static_cast<char>(
+				'A' + value - static_cast<int>(Key::A)));
+		if (key >= Key::D0 && key <= Key::D9)
+			return "Key::D" + std::to_string(
+				value - static_cast<int>(Key::D0));
+		if (key >= Key::F1 && key <= Key::F24)
+			return "Key::F" + std::to_string(
+				value - static_cast<int>(Key::F1) + 1);
+		switch (key)
+		{
+		case Key::Back: return "Key::Back";
+		case Key::Tab: return "Key::Tab";
+		case Key::Return: return "Key::Return";
+		case Key::Escape: return "Key::Escape";
+		case Key::Space: return "Key::Space";
+		case Key::PageUp: return "Key::PageUp";
+		case Key::PageDown: return "Key::PageDown";
+		case Key::Home: return "Key::Home";
+		case Key::End: return "Key::End";
+		case Key::Left: return "Key::Left";
+		case Key::Up: return "Key::Up";
+		case Key::Right: return "Key::Right";
+		case Key::Down: return "Key::Down";
+		case Key::Insert: return "Key::Insert";
+		case Key::Delete: return "Key::Delete";
+		case Key::OemPlus: return "Key::OemPlus";
+		case Key::OemMinus: return "Key::OemMinus";
+		case Key::OemComma: return "Key::OemComma";
+		case Key::OemPeriod: return "Key::OemPeriod";
+		default: return {};
+		}
+	}
+
+	static std::string ModifierKeysToExpr(ModifierKeys modifiers)
+	{
+		if (modifiers == ModifierKeys::None) return "ModifierKeys::None";
+		std::string result;
+		auto append = [&](ModifierKeys flag, const char* expression)
+		{
+			if (!HasModifier(modifiers, flag)) return;
+			if (!result.empty()) result += " | ";
+			result += expression;
+		};
+		append(ModifierKeys::Control, "ModifierKeys::Control");
+		append(ModifierKeys::Alt, "ModifierKeys::Alt");
+		append(ModifierKeys::Shift, "ModifierKeys::Shift");
+		append(ModifierKeys::Windows, "ModifierKeys::Windows");
+		return result;
+	}
+
+	static const char* MouseActionToExpr(MouseAction action)
+	{
+		switch (action)
+		{
+		case MouseAction::LeftClick: return "MouseAction::LeftClick";
+		case MouseAction::RightClick: return "MouseAction::RightClick";
+		case MouseAction::MiddleClick: return "MouseAction::MiddleClick";
+		case MouseAction::WheelClick: return "MouseAction::WheelClick";
+		case MouseAction::LeftDoubleClick: return "MouseAction::LeftDoubleClick";
+		case MouseAction::RightDoubleClick: return "MouseAction::RightDoubleClick";
+		case MouseAction::MiddleDoubleClick: return "MouseAction::MiddleDoubleClick";
+		default: return "MouseAction::None";
+		}
+	}
+
 	struct GeneratedEventBinding
 	{
 		std::string ControlVar;
 		std::string EventField;
 		std::string HandlerName;
 		std::string ParamList; // "Control* sender" ...
+		std::wstring CommandName;
 	};
 
 	struct GeneratedRuntimeEventRoute
@@ -196,7 +137,7 @@ namespace
 		std::wstring EventName;
 		std::string EventField;
 		std::string EventOwnerType;
-		bool IsForm = false;
+		bool IsWindow = false;
 		UIClass ControlType = UIClass::UI_Base;
 	};
 
@@ -227,10 +168,10 @@ namespace
 		return true;
 	}
 
-	static bool TryGetFormEventSignature(const std::wstring& eventName,
+	static bool TryGetWindowEventSignature(const std::wstring& eventName,
 		std::string& outEventField, std::string& outParamList)
 	{
-		auto descriptor = DesignerEventCatalog::FindFormEvent(eventName);
+		auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName);
 		if (!descriptor) return false;
 		outEventField = descriptor->EventField;
 		outParamList = descriptor->ParameterList;
@@ -238,14 +179,10 @@ namespace
 	}
 
 
-	static std::string ResolveHandlerName(
-		const std::wstring& storedValue,
-		const std::string& subjectName,
-		const std::wstring& eventName)
+	static std::string Utf8HandlerName(const std::wstring& storedValue)
 	{
-		const std::wstring subject(subjectName.begin(), subjectName.end());
-		const auto resolved = DesignerEventCatalog::ResolveHandlerName(
-			storedValue, subject, eventName);
+		const auto resolved = DesignerEventCatalog::NormalizeHandlerName(
+			storedValue);
 		if (resolved.empty()) return {};
 		const int size = WideCharToMultiByte(
 			CP_UTF8, 0, resolved.data(), static_cast<int>(resolved.size()),
@@ -394,66 +331,209 @@ namespace
 		if (end == std::string_view::npos) return std::string{};
 		return std::string(source.substr(valueBegin, end - valueBegin));
 	}
+
 }
 
-CodeGenerator::CodeGenerator(std::wstring className, const CodeGenInput& input)
-	: CodeGenerator(
-		std::move(className),
-		input.Controls,
-		input.FormText,
-		input.FormSize,
-		input.FormLocation,
-		input.FormName,
-		input.FormBackColor,
-		input.FormForeColor,
-		input.FormShowInTaskBar,
-		input.FormTopMost,
-		input.FormEnable,
-		input.FormVisible,
-		input.FormEventHandlers,
-		input.FormVisibleHead,
-		input.FormHeadHeight,
-		input.FormMinBox,
-		input.FormMaxBox,
-		input.FormCloseBox,
-		input.FormCenterTitle,
-		input.FormAllowResize,
-		input.FormFontName,
-		input.FormFontSize)
+CodeGenerator::CodeGenerator(
+	std::wstring className,
+	const DesignerModel::DesignDocument& document)
+	: _className(std::move(className)),
+	_sourceDocument(document),
+	_styleSheet(_sourceDocument.StyleSheet),
+	_resourceBasePath(_sourceDocument.ResourceBasePath)
 {
-	_styleSheet = input.StyleSheet;
-	_resourceBasePath = input.ResourceBasePath;
-}
-
-CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
-	std::wstring formText, SIZE formSize, POINT formLocation, std::wstring formName,
-	D2D1_COLOR_F formBackColor, D2D1_COLOR_F formForeColor,
-	bool formShowInTaskBar, bool formTopMost, bool formEnable, bool formVisible,
-	const std::map<std::wstring, std::wstring>& formEventHandlers,
-	bool formVisibleHead, int formHeadHeight,
-	bool formMinBox, bool formMaxBox, bool formCloseBox,
-	bool formCenterTitle, bool formAllowResize,
-	std::wstring formFontName, float formFontSize)
-	: _className(className), _controls(controls), _formText(formText), _formName(formName), _formSize(formSize), _formLocation(formLocation),
-	_formBackColor(formBackColor), _formForeColor(formForeColor),
-	_formShowInTaskBar(formShowInTaskBar), _formTopMost(formTopMost), _formEnable(formEnable), _formVisible(formVisible),
-	_formEventHandlers(formEventHandlers),
-	_formVisibleHead(formVisibleHead), _formHeadHeight(formHeadHeight),
-	_formMinBox(formMinBox), _formMaxBox(formMaxBox), _formCloseBox(formCloseBox),
-	_formCenterTitle(formCenterTitle), _formAllowResize(formAllowResize),
-	_formFontName(std::move(formFontName)), _formFontSize(formFontSize)
-{
-	if (_formSize.cx <= 0) _formSize.cx = 800;
-	if (_formSize.cy <= 0) _formSize.cy = 600;
-	if (_formHeadHeight < 0) _formHeadHeight = 0;
-	if (_formFontSize < 1.0f) _formFontSize = 1.0f;
-	if (_formFontSize > 200.0f) _formFontSize = 200.0f;
-	if (_formName.empty()) _formName = L"MainForm";
-	if (_formLocation.x < -10000) _formLocation.x = -10000;
-	if (_formLocation.y < -10000) _formLocation.y = -10000;
-	if (_formLocation.x > 10000) _formLocation.x = 10000;
-	if (_formLocation.y > 10000) _formLocation.y = 10000;
+	if (_sourceDocument.Window.Type != UIClass::UI_Window
+		|| !_sourceDocument.Window.XamlType.Valid())
+		throw std::invalid_argument(
+			"CodeGenerator requires an authored XAML Window document");
+	for (const auto& node : _sourceDocument.Nodes)
+		if (!node.XamlType.Valid())
+			throw std::invalid_argument(
+				"Every generated control must have an authored XAML type");
 	BuildVarNameMap();
+}
+
+bool CodeGenerator::ValidateDocument(
+	const DesignerModel::DesignDocument& document,
+	std::wstring* outError,
+	DesignerModel::XamlDocumentDiagnostic* outDiagnostic)
+{
+	using namespace DesignerModel;
+	if (outDiagnostic)
+	{
+		*outDiagnostic = {};
+		outDiagnostic->Stage = XamlDiagnosticStage::CodeGeneration;
+	}
+	auto fail = [&](std::wstring message,
+		const DesignNode* node = nullptr,
+		const std::wstring& member = std::wstring{})
+	{
+		if (outError) *outError = message;
+		if (outDiagnostic)
+		{
+			outDiagnostic->Message = message;
+			outDiagnostic->Member = member;
+			if (node)
+			{
+				outDiagnostic->QName = node->XamlType.Valid()
+					? node->XamlType.LocalName
+					: DesignerStyleSheetUtils::UIClassName(node->Type);
+				const auto* span = member.empty()
+					? nullptr : node->Source.FindMember(member);
+				outDiagnostic->Apply(span ? *span : node->Source.Element);
+			}
+			else
+			{
+				std::wstring symbol;
+				if (const auto* span = document.Sources.FindMentionedSymbol(
+					message, &symbol))
+				{
+					if (outDiagnostic->Member.empty())
+						outDiagnostic->Member = std::move(symbol);
+					outDiagnostic->Apply(*span);
+				}
+				else outDiagnostic->Apply(document.Sources.Root);
+			}
+		}
+		return false;
+	};
+
+	const bool hasLocalObjectResources = std::any_of(
+		document.Nodes.begin(), document.Nodes.end(), [](const auto& node)
+		{ return !node.LocalObjectResources.Empty(); });
+	if (!document.Components.empty()
+		|| !document.DataTypes.empty()
+		|| !document.DataTemplates.empty()
+		|| !document.ItemsPanelTemplates.empty()
+		|| !document.GroupStyles.empty()
+		|| !document.DataLists.empty()
+		|| !document.CollectionViews.empty()
+		|| hasLocalObjectResources)
+		return fail(
+			L"声明组件、局部对象资源、DataType、DataList、CollectionViewSource、DataTemplate、ItemsPanelTemplate 和 GroupStyle 属于动态 XAML 类型系统，"
+			L"完整 C++ UI 生成器不再尝试展开它们。");
+
+	DesignDocumentGraph graph;
+	std::wstring validationError;
+	if (!DesignDocumentGraph::Build(document, graph, &validationError))
+		return fail(std::move(validationError));
+	if (!document.ValidateCommandTargetReferences(&validationError))
+		return fail(std::move(validationError));
+	if (document.Window.Type != UIClass::UI_Window
+		|| !document.Window.XamlType.Valid())
+		return fail(
+			L"静态代码生成要求一个具有 XAML 类型标识的 Window 根节点。",
+			&document.Window);
+
+	auto validateNode = [&](const DesignNode& node)
+	{
+		if (!node.XamlType.Valid())
+			return fail(L"静态代码生成节点缺少 XAML 类型标识: "
+				+ node.Name, &node);
+		CuiRuntime::XamlTypePropertySchema schema;
+		std::wstring schemaError;
+		if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+			node.Type, nullptr, document, schema, &schemaError))
+			return fail(L"无法解析静态代码生成节点的属性 Schema: "
+				+ schemaError, &node);
+		for (const auto& [propertyName, assignment] : node.Properties.Values)
+		{
+			const auto* metadata = schema.FindProperty(propertyName);
+			if (!metadata || !metadata->CanWrite())
+				return fail(L"静态代码生成节点没有可写属性: "
+					+ propertyName, &node, propertyName);
+			if (!assignment.DynamicResourceKey.empty()) continue;
+			DesignerStyleValue canonical;
+			std::wstring propertyError;
+			if (!DesignerPropertyCatalog::NormalizeStyleValue(
+				*metadata, assignment.Value, canonical, &propertyError,
+				document.ResourceBasePath))
+				return fail(propertyError.empty()
+					? L"静态代码生成属性值无效: " + propertyName
+					: std::move(propertyError), &node, propertyName);
+			const auto& design = metadata->Design();
+			if (design.Minimum || design.Maximum)
+			{
+				BindingValue parsed;
+				BindingValue converted;
+				double number = 0.0;
+				if (!DesignerStyleSheetUtils::TryConvertValue(
+					canonical, parsed, &propertyError,
+					document.ResourceBasePath)
+					|| !metadata->TryConvert(parsed, converted)
+					|| !converted.TryGetDouble(number)
+					|| !std::isfinite(number)
+					|| (design.Minimum && number < *design.Minimum)
+					|| (design.Maximum && number > *design.Maximum))
+					return fail(L"属性值超出 Schema 允许范围: "
+						+ propertyName, &node, propertyName);
+			}
+		}
+		if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
+			node.LocalResources, &schemaError, document.ResourceBasePath))
+			return fail(L"局部 Resources 无法静态生成: " + schemaError,
+				&node, L"Resources");
+		return true;
+	};
+	if (!validateNode(document.Window)) return false;
+	for (const auto& node : document.Nodes)
+		if (!validateNode(node)) return false;
+	for (const auto& owner : document.Nodes)
+	{
+		if (owner.TemplateState.AppliedControlTemplate.empty()
+			|| owner.TemplateState.AppliedControlTemplateFromTheme)
+			continue;
+		const auto& key =
+			owner.TemplateState.AppliedControlTemplateResource;
+		const auto* definition = !key.empty()
+			? document.FindControlTemplate(document.Nodes, owner, key)
+			: owner.ComponentType.Empty()
+				? document.FindImplicitControlTemplate(
+					document.Nodes, owner, owner.Type)
+				: document.FindImplicitControlTemplate(
+					document.Nodes, owner, owner.ComponentType);
+		if (definition
+			&& (!definition->VisualStateGroups.empty()
+				|| !definition->EventTriggers.empty()))
+			return fail(
+				L"作者 ControlTemplate 的 VisualState/EventTrigger 尚未静态序列化；"
+				L"请使用框架 Generic.xaml 模板或动态 XAML 路径。",
+				&owner, L"Template");
+	}
+
+	if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
+		document.StyleSheet, &validationError, document.ResourceBasePath))
+		return fail(L"Window.Resources 无法静态生成: " + validationError,
+			&document.Window, L"Resources");
+	if (outError) outError->clear();
+	return true;
+}
+
+const std::vector<DesignerComponentEventDescriptor>&
+CodeGenerator::ComponentEvents(
+	const DesignerModel::DesignNode& node) const noexcept
+{
+	static const std::vector<DesignerComponentEventDescriptor> empty;
+	if (node.ComponentType.Empty()) return empty;
+	const auto found = std::find_if(
+		_sourceDocument.Components.begin(), _sourceDocument.Components.end(),
+		[&](const auto& component)
+		{ return component.Type == node.ComponentType; });
+	return found == _sourceDocument.Components.end() ? empty : found->Events;
+}
+
+std::string CodeGenerator::CommandTargetExpression(
+	const std::wstring& name) const
+{
+	if (name.empty()) return "nullptr";
+	if (name == _sourceDocument.Window.Name) return "this";
+	const auto found = std::find_if(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[&](const auto& node) { return node.Name == name; });
+	if (found == _sourceDocument.Nodes.end())
+		throw std::invalid_argument(
+			"Code generation encountered an unresolved CommandTarget");
+	return GetVarName(*found);
 }
 
 bool CodeGenerator::InspectUserHandlerDefinitions(
@@ -623,15 +703,15 @@ std::string CodeGenerator::SanitizeCppIdentifier(const std::string& raw)
 void CodeGenerator::BuildVarNameMap()
 {
 	_varNameOf.clear();
-	_varNameOf.reserve(_controls.size());
+	_varNameOf.reserve(_sourceDocument.Nodes.size());
 
 	std::unordered_set<std::string> used;
-	used.reserve(_controls.size());
+	used.reserve(_sourceDocument.Nodes.size());
 
-	for (const auto& dc : _controls)
+	for (const auto& node : _sourceDocument.Nodes)
 	{
-		if (!dc) continue;
-		std::string base = SanitizeCppIdentifier(WStringToString(dc->Name));
+		std::string base = SanitizeCppIdentifier(
+			WStringToString(node.Name));
 		// 保守：成员变量建议以小写开头，避免与类型名混淆（仅在安全情况下调整）
 		if (!base.empty() && base[0] >= 'A' && base[0] <= 'Z')
 			base[0] = (char)(base[0] - 'A' + 'a');
@@ -645,16 +725,16 @@ void CodeGenerator::BuildVarNameMap()
 		while (used.contains(finalName)) finalName += "_";
 
 		used.insert(finalName);
-		_varNameOf[dc.get()] = finalName;
+		_varNameOf[&node] = finalName;
 	}
 }
 
-std::string CodeGenerator::GetVarName(const std::shared_ptr<DesignerControl>& dc) const
+std::string CodeGenerator::GetVarName(
+	const DesignerModel::DesignNode& node) const
 {
-	if (!dc) return "";
-	auto it = _varNameOf.find(dc.get());
+	auto it = _varNameOf.find(&node);
 	if (it != _varNameOf.end()) return it->second;
-	return SanitizeCppIdentifier(WStringToString(dc->Name));
+	return SanitizeCppIdentifier(WStringToString(node.Name));
 }
 
 std::string CodeGenerator::WStringToString(const std::wstring& wstr) const
@@ -680,48 +760,47 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	switch (type)
 	{
 	case UIClass::UI_Label: return "Label";
-	case UIClass::UI_LinkLabel: return "LinkLabel";
 	case UIClass::UI_Button: return "Button";
 	case UIClass::UI_TextBox: return "TextBox";
 	case UIClass::UI_RichTextBox: return "RichTextBox";
 	case UIClass::UI_PasswordBox: return "PasswordBox";
-	case UIClass::UI_DateTimePicker: return "DateTimePicker";
 	case UIClass::UI_NumericUpDown: return "NumericUpDown";
 	case UIClass::UI_Panel: return "Panel";
+	case UIClass::UI_Decorator: return "Decorator";
+	case UIClass::UI_Border: return "Border";
+	case UIClass::UI_Canvas: return "Canvas";
 	case UIClass::UI_GroupBox: return "GroupBox";
 	case UIClass::UI_Expander: return "Expander";
-	case UIClass::UI_SplitContainer: return "SplitContainer";
-	case UIClass::UI_ScrollView: return "ScrollView";
+	case UIClass::UI_ScrollViewer: return "ScrollViewer";
+	case UIClass::UI_Popup: return "Popup";
 	case UIClass::UI_StackPanel: return "StackPanel";
-	case UIClass::UI_GridPanel: return "GridPanel";
+	case UIClass::UI_Grid: return "Grid";
 	case UIClass::UI_DockPanel: return "DockPanel";
 	case UIClass::UI_WrapPanel: return "WrapPanel";
 	case UIClass::UI_RelativePanel: return "RelativePanel";
 	case UIClass::UI_CheckBox: return "CheckBox";
-	case UIClass::UI_RadioBox: return "RadioBox";
+	case UIClass::UI_RadioButton: return "RadioButton";
 	case UIClass::UI_ComboBox: return "ComboBox";
+	case UIClass::UI_ComboBoxItem: return "ComboBoxItem";
 	case UIClass::UI_ListView: return "ListView";
 	case UIClass::UI_ListBox: return "ListBox";
-	case UIClass::UI_GridView: return "GridView";
-	case UIClass::UI_PagedGridView: return "PagedGridView";
-	case UIClass::UI_PropertyGrid: return "PropertyGridView";
+	case UIClass::UI_ListBoxItem: return "ListBoxItem";
 	case UIClass::UI_ChartView: return "ChartView";
-	case UIClass::UI_ReportView: return "ReportView";
-	case UIClass::UI_KpiCard: return "KpiCard";
-	case UIClass::UI_FilterBar: return "FilterBar";
 	case UIClass::UI_TreeView: return "TreeView";
+	case UIClass::UI_TreeViewItem: return "TreeViewItem";
 	case UIClass::UI_ProgressBar: return "ProgressBar";
 	case UIClass::UI_LoadingRing: return "LoadingRing";
 	case UIClass::UI_ProgressRing: return "ProgressRing";
 	case UIClass::UI_Slider: return "Slider";
-	case UIClass::UI_PictureBox: return "PictureBox";
+	case UIClass::UI_Image: return "Image";
 	case UIClass::UI_Switch: return "Switch";
 	case UIClass::UI_TabControl: return "TabControl";
-	case UIClass::UI_TabPage: return "TabPage";
+	case UIClass::UI_TabItem: return "TabItem";
 	case UIClass::UI_ToolBar: return "ToolBar";
 	case UIClass::UI_Menu: return "Menu";
+	case UIClass::UI_MenuItem: return "MenuItem";
+	case UIClass::UI_Separator: return "Separator";
 	case UIClass::UI_StatusBar: return "StatusBar";
-	case UIClass::UI_ToastHost: return "ToastHost";
 	case UIClass::UI_WebBrowser: return "WebBrowser";
 	case UIClass::UI_MediaPlayer: return "MediaPlayer";
 	case UIClass::UI_NativeSurface: return "NativeSurface";
@@ -738,41 +817,37 @@ std::string CodeGenerator::GetIncludeForType(UIClass type)
 	switch (type)
 	{
 	case UIClass::UI_TabControl:
-	case UIClass::UI_TabPage:
+	case UIClass::UI_TabItem:
 		return "TabControl.h";
-	case UIClass::UI_LinkLabel:
-		return "LinkLabel.h";
+	case UIClass::UI_ComboBox:
+	case UIClass::UI_ComboBoxItem:
+		return "ComboBox.h";
+	case UIClass::UI_ListBox:
+	case UIClass::UI_ListBoxItem:
+		return "ListBox.h";
+	case UIClass::UI_TreeView:
+	case UIClass::UI_TreeViewItem:
+		return "TreeView.h";
+	case UIClass::UI_Menu:
+	case UIClass::UI_MenuItem:
+		return "Menu.h";
+	case UIClass::UI_Separator:
+		return "Separator.h";
 	case UIClass::UI_ToolBar:
 		return "ToolBar.h";
 	case UIClass::UI_StackPanel:
 		return "Layout/StackPanel.h";
-	case UIClass::UI_GridPanel:
-		return "Layout/GridPanel.h";
+	case UIClass::UI_Grid:
+		return "Layout/Grid.h";
 	case UIClass::UI_DockPanel:
 		return "Layout/DockPanel.h";
 	case UIClass::UI_WrapPanel:
 		return "Layout/WrapPanel.h";
 	case UIClass::UI_RelativePanel:
 		return "Layout/RelativePanel.h";
-	case UIClass::UI_PropertyGrid:
-		return "PropertyGrid.h";
-	case UIClass::UI_ToastHost:
-		return "Toast.h";
 	default:
 		return GetControlTypeName(type) + ".h";
 	}
-}
-
-std::string CodeGenerator::GetControlTypeName(
-	const DesignerControl& control)
-{
-	return GetControlTypeName(control.Type);
-}
-
-std::string CodeGenerator::GetIncludeForType(
-	const DesignerControl& control)
-{
-	return GetIncludeForType(control.Type);
 }
 
 std::string CodeGenerator::EscapeWStringLiteral(const std::wstring& s)
@@ -900,845 +975,123 @@ std::string CodeGenerator::ThicknessToString(const Thickness& t)
 	return oss.str();
 }
 
-std::string CodeGenerator::HorizontalAlignmentToString(::HorizontalAlignment a)
+std::string CodeGenerator::GridLengthToCtorString(
+	const DesignerModel::DesignGridLength& length)
 {
-	switch (a)
-	{
-	case HorizontalAlignment::Left: return "HorizontalAlignment::Left";
-	case HorizontalAlignment::Center: return "HorizontalAlignment::Center";
-	case HorizontalAlignment::Right: return "HorizontalAlignment::Right";
-	case HorizontalAlignment::Stretch: return "HorizontalAlignment::Stretch";
-	default: return "HorizontalAlignment::Left";
-	}
-}
-
-std::string CodeGenerator::VerticalAlignmentToString(::VerticalAlignment a)
-{
-	switch (a)
-	{
-	case VerticalAlignment::Top: return "VerticalAlignment::Top";
-	case VerticalAlignment::Center: return "VerticalAlignment::Center";
-	case VerticalAlignment::Bottom: return "VerticalAlignment::Bottom";
-	case VerticalAlignment::Stretch: return "VerticalAlignment::Stretch";
-	default: return "VerticalAlignment::Top";
-	}
-}
-
-std::string CodeGenerator::DockToString(::Dock d)
-{
-	switch (d)
-	{
-	case Dock::Left: return "Dock::Left";
-	case Dock::Top: return "Dock::Top";
-	case Dock::Right: return "Dock::Right";
-	case Dock::Bottom: return "Dock::Bottom";
-	case Dock::Fill: return "Dock::Fill";
-	default: return "Dock::Fill";
-	}
-}
-
-std::string CodeGenerator::SizeUnitToString(SizeUnit u)
-{
-	switch (u)
-	{
-	case SizeUnit::Pixel: return "SizeUnit::Pixel";
-	case SizeUnit::Percent: return "SizeUnit::Percent";
-	case SizeUnit::Auto: return "SizeUnit::Auto";
-	case SizeUnit::Star: return "SizeUnit::Star";
-	default: return "SizeUnit::Pixel";
-	}
-}
-
-std::string CodeGenerator::GridLengthToCtorString(const GridLength& gl)
-{
-	// 优先用静态工厂，生成更可读
-	if (gl.Unit == SizeUnit::Auto)
+	if (length.Unit == DesignerModel::DesignGridLengthUnit::Auto)
 		return "GridLength::Auto()";
-	if (gl.Unit == SizeUnit::Star)
+	if (length.Unit == DesignerModel::DesignGridLengthUnit::Star)
 	{
 		std::ostringstream oss;
-		oss << "GridLength::Star(" << FloatLiteral(gl.Value) << ")";
+		oss << "GridLength::Star("
+			<< FloatLiteral(static_cast<float>(length.Value)) << ")";
 		return oss.str();
 	}
-	if (gl.Unit == SizeUnit::Percent)
-	{
-		std::ostringstream oss;
-		oss << "GridLength::Percent(" << FloatLiteral(gl.Value) << ")";
-		return oss.str();
-	}
-	// Pixel / fallback
-	{
-		std::ostringstream oss;
-		oss << "GridLength::Pixels(" << FloatLiteral(gl.Value) << ")";
-		return oss.str();
-	}
+	std::ostringstream oss;
+	oss << "GridLength::Pixels("
+		<< FloatLiteral(static_cast<float>(length.Value)) << ")";
+	return oss.str();
 }
 
-std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<DesignerControl>& dc, int indent)
+std::string CodeGenerator::GenerateControlInstantiation(
+	const DesignerModel::DesignNode& node, int indent)
 {
-	if (!dc || !dc->ControlInstance) return "";
-	if (dc->Type == UIClass::UI_TabPage) return ""; // TabPage 通过 TabControl::AddPage 创建
-
-	auto* control = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
-	std::string name = GetVarName(dc);
-	std::string typeName = GetControlTypeName(*dc);
-
+	std::string name = GetVarName(node);
+	std::string typeName = GetControlTypeName(node.Type);
 	code << indentStr << "// " << name << "\n";
-	code << indentStr << "auto __owned_" << name << " = std::make_unique<" << typeName << ">(";
-
-	switch (dc->Type)
+	code << indentStr << "auto __owned_" << name
+		<< " = std::make_unique<" << typeName << ">();\n";
+	if (node.TemplateState.Generated)
+		code << indentStr << "auto* " << name
+			<< " = __owned_" << name << ".get();\n";
+	else
+		code << indentStr << name << " = __owned_" << name << ".get();\n";
+	code << indentStr << "(void)" << name
+		<< "->ClearPropertyValues();\n";
+	if (node.XamlType.Valid())
 	{
-	case UIClass::UI_Label:
-	case UIClass::UI_LinkLabel:
-	case UIClass::UI_CheckBox:
-	case UIClass::UI_RadioBox:
-		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
-			<< control->Location.x << ", " << control->Location.y;
-		break;
-	case UIClass::UI_Button:
-		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
-			<< control->Location.x << ", " << control->Location.y << ", "
-			<< control->Size.cx << ", " << control->Size.cy;
-		break;
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox:
-	case UIClass::UI_PasswordBox:
-	case UIClass::UI_DateTimePicker:
-	case UIClass::UI_ComboBox:
-	case UIClass::UI_GroupBox:
-	case UIClass::UI_Expander:
-		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
-			<< control->Location.x << ", " << control->Location.y << ", "
-			<< control->Size.cx << ", " << control->Size.cy;
-		break;
-	case UIClass::UI_Panel:
-	case UIClass::UI_SplitContainer:
-	case UIClass::UI_ScrollView:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-	case UIClass::UI_ProgressBar:
-	case UIClass::UI_LoadingRing:
-	case UIClass::UI_ProgressRing:
-	case UIClass::UI_Slider:
-	case UIClass::UI_NumericUpDown:
-	case UIClass::UI_PictureBox:
-	case UIClass::UI_Switch:
-	case UIClass::UI_ListView:
-	case UIClass::UI_ListBox:
-	case UIClass::UI_GridView:
-	case UIClass::UI_PagedGridView:
-	case UIClass::UI_PropertyGrid:
-	case UIClass::UI_ChartView:
-	case UIClass::UI_ReportView:
-	case UIClass::UI_KpiCard:
-	case UIClass::UI_FilterBar:
-	case UIClass::UI_TreeView:
-	case UIClass::UI_TabControl:
-	case UIClass::UI_ToolBar:
-	case UIClass::UI_ToastHost:
-	case UIClass::UI_WebBrowser:
-	case UIClass::UI_NativeSurface:
-	case UIClass::UI_ItemsControl:
-	case UIClass::UI_ContentPresenter:
-	case UIClass::UI_ItemsPresenter:
-	case UIClass::UI_ContentControl:
-		code << control->Location.x << ", " << control->Location.y << ", "
-			<< control->Size.cx << ", " << control->Size.cy;
-		break;
-	default:
-		code << control->Location.x << ", " << control->Location.y << ", "
-			<< control->Size.cx << ", " << control->Size.cy;
-		break;
+		const auto descriptorName = "__xamlType_" + name;
+		code << indentStr << "static const auto " << descriptorName
+			<< " = DeclarativeTypeDescriptor::Create(\n";
+		code << indentStr << "\tRuntimeTypeId{ L\""
+			<< EscapeWStringLiteral(node.XamlType.NamespaceUri) << "\", L\""
+			<< EscapeWStringLiteral(node.XamlType.LocalName)
+			<< "\" }, {});\n";
+		code << indentStr << "if (!" << descriptorName << " || !" << name
+			<< " || !cui::framework::XamlAccess::SetTypeDescriptor(*" << name
+			<< ", " << descriptorName << "))\n";
+		code << indentStr << "\tthrow std::runtime_error("
+			<< "\"Generated XAML type attachment failed\");\n";
 	}
-
-	code << ");\n";
-	code << indentStr << name << " = __owned_" << name << ".get();\n";
-	if (dc->StableId > 0)
-		code << indentStr << name << "->DesignId = " << dc->StableId << ";\n";
+	const auto* xamlType =
+		CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(node.Type);
+	if (!xamlType)
+		throw std::invalid_argument(
+			"Code generation encountered an unregistered native XAML type");
+	code << indentStr
+		<< "(void)cui::framework::DependencyPropertyAccess::SetValue(*"
+		<< name << ", L\"Focusable\", BindingValue("
+		<< (xamlType->FocusableByDefault ? "true" : "false")
+		<< "), DependencyPropertyValueSource::Theme);\n";
+	if (node.Id > 0 && !node.TemplateState.Generated)
+		code << indentStr
+			<< "cui::framework::DesignIdentityAccess::Set(*" << name << ", "
+			<< node.Id << ");\n";
 
 	return code.str();
 }
 
-std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr<DesignerControl>& dc, int indent)
-{
-	if (!dc || !dc->ControlInstance) return "";
-	if (dc->Type == UIClass::UI_TabPage) return "";
-
-	auto* control = dc->ControlInstance;
-	std::ostringstream code;
-	std::string indentStr(indent, '\t');
-	std::string name = GetVarName(dc);
-
-	// 尺寸：Label/CheckBox/RadioBox 构造函数无 size
-	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_LinkLabel || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
-	{
-		code << indentStr << name << "->Size = {" << control->Size.cx << ", " << control->Size.cy << "};\n";
-	}
-
-	// 对于不在构造函数中写入 Text 的控件：补齐 Text
-	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
-		dc->Type != UIClass::UI_CheckBox && dc->Type != UIClass::UI_RadioBox &&
-		dc->Type != UIClass::UI_TextBox && dc->Type != UIClass::UI_RichTextBox &&
-		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_DateTimePicker &&
-		dc->Type != UIClass::UI_ComboBox && dc->Type != UIClass::UI_GroupBox &&
-		dc->Type != UIClass::UI_Expander)
-	{
-		if (!control->Text.empty())
-			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(control->Text) << "\";\n";
-	}
-
-
-	if (!control->Enable)
-		code << indentStr << name << "->Enable = false;\n";
-	if (!control->Visible)
-		code << indentStr << name << "->Visible = false;\n";
-	if (!control->GetStyleId().empty())
-		code << indentStr << name << "->SetStyleId(L\""
-			<< EscapeWStringLiteral(control->GetStyleId()) << "\");\n";
-	for (const auto& styleClass : control->GetStyleClasses())
-		code << indentStr << name << "->AddStyleClass(L\""
-			<< EscapeWStringLiteral(styleClass) << "\");\n";
-
-	// Font：默认字体不输出；若窗体 Font 与框架默认不同，则用共享 __formFont 绑定“默认控件”
-	{
-		auto* def = GetDefaultFontObject();
-		std::wstring defName = def ? def->FontName : L"Arial";
-		float defSize = def ? def->FontSize : 18.0f;
-		std::wstring formNameW = _formFontName.empty() ? defName : _formFontName;
-		float formSize = _formFontSize;
-		bool formHasShared = !(_formFontName.empty() && formNameW == defName && std::fabs(formSize - defSize) < 1e-6f);
-
-		std::wstring curNameW = control->Font ? control->Font->FontName : defName;
-		float curSize = control->Font ? control->Font->FontSize : defSize;
-		auto feq = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
-
-		if (formHasShared && curNameW == formNameW && feq(curSize, formSize))
-		{
-			code << indentStr << name << "->SetFontEx(__formFont, false);\n";
-		}
-		else
-		{
-			if (!(curNameW == defName && feq(curSize, defSize)))
-			{
-				code << indentStr << name << "->Font = new ::Font(L\"" << EscapeWStringLiteral(curNameW) << "\", "
-					<< FloatLiteral(curSize) << ");\n";
-			}
-		}
-	}
-
-	// 颜色
-	code << indentStr << name << "->BackColor = " << ColorToString(control->BackColor) << ";\n";
-	code << indentStr << name << "->ForeColor = " << ColorToString(control->ForeColor) << ";\n";
-	code << indentStr << name << "->BorderColor = " << ColorToString(control->BorderColor) << ";\n";
-	if (const auto& foreground = control->GetForegroundBrush(); foreground)
-	{
-		const std::string brushName = "__foregroundBrush_" + name;
-		code << indentStr << "cui::drawing::Brush " << brushName << ";\n";
-		const char* kind = foreground->Kind == cui::drawing::BrushKind::Solid
-			? "cui::drawing::BrushKind::Solid"
-			: foreground->Kind == cui::drawing::BrushKind::LinearGradient
-				? "cui::drawing::BrushKind::LinearGradient"
-				: foreground->Kind == cui::drawing::BrushKind::RadialGradient
-					? "cui::drawing::BrushKind::RadialGradient"
-					: "cui::drawing::BrushKind::Image";
-		code << indentStr << brushName << ".Kind = " << kind << ";\n";
-		if (foreground->MappingMode == cui::drawing::BrushMappingMode::Absolute)
-			code << indentStr << brushName
-				<< ".MappingMode = cui::drawing::BrushMappingMode::Absolute;\n";
-		if (foreground->Kind == cui::drawing::BrushKind::Solid)
-			code << indentStr << brushName << ".Color = "
-				<< ColorToString(foreground->Color) << ";\n";
-		else if (foreground->Kind == cui::drawing::BrushKind::LinearGradient)
-		{
-			code << indentStr << brushName << ".StartPoint = D2D1::Point2F("
-				<< FloatLiteral(foreground->StartPoint.x) << ", "
-				<< FloatLiteral(foreground->StartPoint.y) << ");\n";
-			code << indentStr << brushName << ".EndPoint = D2D1::Point2F("
-				<< FloatLiteral(foreground->EndPoint.x) << ", "
-				<< FloatLiteral(foreground->EndPoint.y) << ");\n";
-		}
-		else if (foreground->Kind == cui::drawing::BrushKind::RadialGradient)
-		{
-			code << indentStr << brushName << ".Center = D2D1::Point2F("
-				<< FloatLiteral(foreground->Center.x) << ", "
-				<< FloatLiteral(foreground->Center.y) << ");\n";
-			code << indentStr << brushName << ".GradientOrigin = D2D1::Point2F("
-				<< FloatLiteral(foreground->GradientOrigin.x) << ", "
-				<< FloatLiteral(foreground->GradientOrigin.y) << ");\n";
-			code << indentStr << brushName << ".RadiusX = "
-				<< FloatLiteral(foreground->RadiusX) << ";\n";
-			code << indentStr << brushName << ".RadiusY = "
-				<< FloatLiteral(foreground->RadiusY) << ";\n";
-		}
-		else
-		{
-			code << indentStr << brushName << ".ImageSource = cui::resources::LoadBitmapResource(L\""
-				<< EscapeWStringLiteral(foreground->ImageSource
-					? foreground->ImageSource->GetSourceUri() : L"") << "\");\n";
-			const char* stretch = foreground->Stretch == cui::drawing::ImageBrushStretch::None
-				? "cui::drawing::ImageBrushStretch::None"
-				: foreground->Stretch == cui::drawing::ImageBrushStretch::Uniform
-					? "cui::drawing::ImageBrushStretch::Uniform"
-					: foreground->Stretch == cui::drawing::ImageBrushStretch::UniformToFill
-						? "cui::drawing::ImageBrushStretch::UniformToFill"
-						: "cui::drawing::ImageBrushStretch::Fill";
-			const char* alignmentX = foreground->AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
-				? "cui::drawing::ImageBrushAlignmentX::Left"
-				: foreground->AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
-					? "cui::drawing::ImageBrushAlignmentX::Right"
-					: "cui::drawing::ImageBrushAlignmentX::Center";
-			const char* alignmentY = foreground->AlignmentY == cui::drawing::ImageBrushAlignmentY::Top
-				? "cui::drawing::ImageBrushAlignmentY::Top"
-				: foreground->AlignmentY == cui::drawing::ImageBrushAlignmentY::Bottom
-					? "cui::drawing::ImageBrushAlignmentY::Bottom"
-					: "cui::drawing::ImageBrushAlignmentY::Center";
-			code << indentStr << brushName << ".Stretch = " << stretch << ";\n";
-			code << indentStr << brushName << ".AlignmentX = " << alignmentX << ";\n";
-			code << indentStr << brushName << ".AlignmentY = " << alignmentY << ";\n";
-		}
-		if (std::fabs(foreground->Opacity - 1.0f) > 1e-6f)
-			code << indentStr << brushName << ".Opacity = "
-				<< FloatLiteral(foreground->Opacity) << ";\n";
-		if (foreground->Kind == cui::drawing::BrushKind::LinearGradient
-			|| foreground->Kind == cui::drawing::BrushKind::RadialGradient)
-			for (const auto& stop : foreground->GradientStops)
-				code << indentStr << brushName << ".GradientStops.push_back({ "
-					<< FloatLiteral(stop.Offset) << ", " << ColorToString(stop.Color)
-					<< " });\n";
-		if (foreground->Transform)
-			code << indentStr << brushName << ".Transform = "
-				<< GenerateTransformExpression(*foreground->Transform) << ";\n";
-		if (foreground->RelativeTransform)
-			code << indentStr << brushName << ".RelativeTransform = "
-				<< GenerateTransformExpression(*foreground->RelativeTransform) << ";\n";
-		code << indentStr << name << "->SetForegroundBrush(" << brushName << ");\n";
-	}
-	auto emitTransform = [&](const cui::drawing::Transform& transform,
-		const std::string& transformName)
-	{
-		code << indentStr << "cui::drawing::Transform " << transformName << ";\n";
-		for (size_t index = 0; index < transform.Operations.size(); ++index)
-		{
-			const auto& operation = transform.Operations[index];
-			const auto operationName = transformName + "_operation_"
-				+ std::to_string(index);
-			code << indentStr << "cui::drawing::TransformOperation "
-				<< operationName << ";\n";
-			const char* kind = operation.Kind == cui::drawing::TransformKind::Matrix
-				? "cui::drawing::TransformKind::Matrix"
-				: operation.Kind == cui::drawing::TransformKind::Translate
-					? "cui::drawing::TransformKind::Translate"
-					: operation.Kind == cui::drawing::TransformKind::Scale
-						? "cui::drawing::TransformKind::Scale"
-						: operation.Kind == cui::drawing::TransformKind::Rotate
-							? "cui::drawing::TransformKind::Rotate"
-							: "cui::drawing::TransformKind::Skew";
-			code << indentStr << operationName << ".Kind = " << kind << ";\n";
-			switch (operation.Kind)
-			{
-			case cui::drawing::TransformKind::Matrix:
-				code << indentStr << operationName << ".Matrix = D2D1::Matrix3x2F("
-					<< FloatLiteral(operation.Matrix._11) << ", "
-					<< FloatLiteral(operation.Matrix._12) << ", "
-					<< FloatLiteral(operation.Matrix._21) << ", "
-					<< FloatLiteral(operation.Matrix._22) << ", "
-					<< FloatLiteral(operation.Matrix._31) << ", "
-					<< FloatLiteral(operation.Matrix._32) << ");\n";
-				break;
-			case cui::drawing::TransformKind::Translate:
-				code << indentStr << operationName << ".X = "
-					<< FloatLiteral(operation.X) << ";\n";
-				code << indentStr << operationName << ".Y = "
-					<< FloatLiteral(operation.Y) << ";\n";
-				break;
-			case cui::drawing::TransformKind::Scale:
-				code << indentStr << operationName << ".ScaleX = "
-					<< FloatLiteral(operation.ScaleX) << ";\n";
-				code << indentStr << operationName << ".ScaleY = "
-					<< FloatLiteral(operation.ScaleY) << ";\n";
-				break;
-			case cui::drawing::TransformKind::Rotate:
-				code << indentStr << operationName << ".Angle = "
-					<< FloatLiteral(operation.Angle) << ";\n";
-				break;
-			case cui::drawing::TransformKind::Skew:
-				code << indentStr << operationName << ".AngleX = "
-					<< FloatLiteral(operation.AngleX) << ";\n";
-				code << indentStr << operationName << ".AngleY = "
-					<< FloatLiteral(operation.AngleY) << ";\n";
-				break;
-			}
-			if (operation.Kind == cui::drawing::TransformKind::Scale
-				|| operation.Kind == cui::drawing::TransformKind::Rotate
-				|| operation.Kind == cui::drawing::TransformKind::Skew)
-			{
-				code << indentStr << operationName << ".CenterX = "
-					<< FloatLiteral(operation.CenterX) << ";\n";
-				code << indentStr << operationName << ".CenterY = "
-					<< FloatLiteral(operation.CenterY) << ";\n";
-			}
-			code << indentStr << transformName << ".Operations.push_back("
-				<< operationName << ");\n";
-		}
-	};
-	if (const auto& clip = control->GetClip(); clip)
-	{
-		const std::string clipName = "__clip_" + name;
-		auto emitGeometry = [&](auto&& self,
-			const cui::drawing::Geometry& geometry,
-			const std::string& geometryName) -> void
-		{
-			code << indentStr << "cui::drawing::Geometry "
-				<< geometryName << ";\n";
-			const char* kind = geometry.Kind == cui::drawing::GeometryKind::Rectangle
-				? "cui::drawing::GeometryKind::Rectangle"
-				: geometry.Kind == cui::drawing::GeometryKind::Ellipse
-					? "cui::drawing::GeometryKind::Ellipse"
-					: geometry.Kind == cui::drawing::GeometryKind::Path
-						? "cui::drawing::GeometryKind::Path"
-						: "cui::drawing::GeometryKind::Group";
-			code << indentStr << geometryName << ".Kind = " << kind << ";\n";
-			if (geometry.Kind == cui::drawing::GeometryKind::Rectangle)
-			{
-				code << indentStr << geometryName << ".Rect = D2D1::RectF("
-					<< FloatLiteral(geometry.Rect.left) << ", "
-					<< FloatLiteral(geometry.Rect.top) << ", "
-					<< FloatLiteral(geometry.Rect.right) << ", "
-					<< FloatLiteral(geometry.Rect.bottom) << ");\n";
-				code << indentStr << geometryName << ".RadiusX = "
-					<< FloatLiteral(geometry.RadiusX) << ";\n";
-				code << indentStr << geometryName << ".RadiusY = "
-					<< FloatLiteral(geometry.RadiusY) << ";\n";
-			}
-			else if (geometry.Kind == cui::drawing::GeometryKind::Ellipse)
-			{
-				code << indentStr << geometryName << ".Center = D2D1::Point2F("
-					<< FloatLiteral(geometry.Center.x) << ", "
-					<< FloatLiteral(geometry.Center.y) << ");\n";
-				code << indentStr << geometryName << ".RadiusX = "
-					<< FloatLiteral(geometry.RadiusX) << ";\n";
-				code << indentStr << geometryName << ".RadiusY = "
-					<< FloatLiteral(geometry.RadiusY) << ";\n";
-			}
-			else if (geometry.Kind == cui::drawing::GeometryKind::Path)
-			{
-				if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
-					code << indentStr << geometryName
-						<< ".FillRule = cui::drawing::GeometryFillRule::Nonzero;\n";
-				for (size_t figureIndex = 0;
-					figureIndex < geometry.Figures.size(); ++figureIndex)
-				{
-					const auto& figure = geometry.Figures[figureIndex];
-					const auto figureName = geometryName + "_figure_"
-						+ std::to_string(figureIndex);
-					code << indentStr << "cui::drawing::PathFigure "
-						<< figureName << ";\n";
-					code << indentStr << figureName << ".StartPoint = D2D1::Point2F("
-						<< FloatLiteral(figure.StartPoint.x) << ", "
-						<< FloatLiteral(figure.StartPoint.y) << ");\n";
-					if (figure.IsClosed)
-						code << indentStr << figureName << ".IsClosed = true;\n";
-					if (!figure.IsFilled)
-						code << indentStr << figureName << ".IsFilled = false;\n";
-					for (size_t segmentIndex = 0;
-						segmentIndex < figure.Segments.size(); ++segmentIndex)
-					{
-						const auto& segment = figure.Segments[segmentIndex];
-						const auto segmentName = figureName + "_segment_"
-							+ std::to_string(segmentIndex);
-						code << indentStr << "cui::drawing::PathSegment "
-							<< segmentName << ";\n";
-						const char* segmentKind = segment.Kind
-							== cui::drawing::PathSegmentKind::Line
-							? "cui::drawing::PathSegmentKind::Line"
-							: segment.Kind == cui::drawing::PathSegmentKind::Bezier
-								? "cui::drawing::PathSegmentKind::Bezier"
-								: segment.Kind
-									== cui::drawing::PathSegmentKind::QuadraticBezier
-									? "cui::drawing::PathSegmentKind::QuadraticBezier"
-									: "cui::drawing::PathSegmentKind::Arc";
-						code << indentStr << segmentName << ".Kind = "
-							<< segmentKind << ";\n";
-						auto emitPoint = [&](const char* field, D2D1_POINT_2F point)
-						{
-							code << indentStr << segmentName << "." << field
-								<< " = D2D1::Point2F(" << FloatLiteral(point.x)
-								<< ", " << FloatLiteral(point.y) << ");\n";
-						};
-						if (segment.Kind == cui::drawing::PathSegmentKind::Line)
-							emitPoint("Point", segment.Point);
-						else if (segment.Kind == cui::drawing::PathSegmentKind::Bezier)
-						{
-							emitPoint("Point1", segment.Point1);
-							emitPoint("Point2", segment.Point2);
-							emitPoint("Point3", segment.Point3);
-						}
-						else if (segment.Kind
-							== cui::drawing::PathSegmentKind::QuadraticBezier)
-						{
-							emitPoint("Point1", segment.Point1);
-							emitPoint("Point2", segment.Point2);
-						}
-						else
-						{
-							emitPoint("Point", segment.Point);
-							code << indentStr << segmentName << ".Size = D2D1::SizeF("
-								<< FloatLiteral(segment.Size.width) << ", "
-								<< FloatLiteral(segment.Size.height) << ");\n";
-							code << indentStr << segmentName << ".RotationAngle = "
-								<< FloatLiteral(segment.RotationAngle) << ";\n";
-							if (segment.IsLargeArc)
-								code << indentStr << segmentName
-									<< ".IsLargeArc = true;\n";
-							if (segment.Sweep == cui::drawing::SweepDirection::Clockwise)
-								code << indentStr << segmentName
-									<< ".Sweep = cui::drawing::SweepDirection::Clockwise;\n";
-						}
-						code << indentStr << figureName << ".Segments.push_back("
-							<< segmentName << ");\n";
-					}
-					code << indentStr << geometryName << ".Figures.push_back("
-						<< figureName << ");\n";
-				}
-			}
-			else
-			{
-				if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
-					code << indentStr << geometryName
-						<< ".FillRule = cui::drawing::GeometryFillRule::Nonzero;\n";
-				for (size_t index = 0; index < geometry.Children.size(); ++index)
-				{
-					const auto childName = geometryName + "_child_"
-						+ std::to_string(index);
-					self(self, geometry.Children[index], childName);
-					code << indentStr << geometryName << ".Children.push_back("
-						<< childName << ");\n";
-				}
-			}
-			if (geometry.LocalTransform)
-			{
-				const auto transformName = geometryName + "_transform";
-				emitTransform(*geometry.LocalTransform, transformName);
-				code << indentStr << geometryName << ".LocalTransform = "
-					<< transformName << ";\n";
-			}
-		};
-		emitGeometry(emitGeometry, *clip, clipName);
-		code << indentStr << name << "->SetClip(" << clipName << ");\n";
-	}
-	if (const auto& transform = control->GetRenderTransform(); transform)
-	{
-		const std::string transformName = "__renderTransform_" + name;
-		emitTransform(*transform, transformName);
-		code << indentStr << name << "->SetRenderTransform("
-			<< transformName << ");\n";
-	}
-	const auto transformOrigin = control->GetRenderTransformOrigin();
-	const bool metadataOwnsTransformOrigin = std::any_of(
-		dc->MetadataProperties.begin(), dc->MetadataProperties.end(),
-		[](const auto& property)
-		{
-			return _wcsicmp(property.first.c_str(), L"RenderTransformOrigin") == 0;
-		});
-	if (!metadataOwnsTransformOrigin
-		&& (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f))
-		code << indentStr << name << "->SetRenderTransformOrigin(D2D1::Point2F("
-			<< FloatLiteral(transformOrigin.x) << ", "
-			<< FloatLiteral(transformOrigin.y) << "));\n";
-	if (!control->IsPropertyValueDefault(L"ShowValidationBorder"))
-		code << indentStr << name << "->ShowValidationBorder = "
-			<< (control->ShowValidationBorder ? "true" : "false") << ";\n";
-	if (!control->IsPropertyValueDefault(L"ShowValidationToolTip"))
-		code << indentStr << name << "->ShowValidationToolTip = "
-			<< (control->ShowValidationToolTip ? "true" : "false") << ";\n";
-	if (!control->IsPropertyValueDefault(L"ValidationBorderThickness"))
-		code << indentStr << name << "->ValidationBorderThickness = "
-			<< FloatLiteral(control->ValidationBorderThickness) << ";\n";
-	if (!control->IsPropertyValueDefault(L"ValidationCornerRadius"))
-		code << indentStr << name << "->ValidationCornerRadius = "
-			<< FloatLiteral(control->ValidationCornerRadius) << ";\n";
-	if (!control->IsPropertyValueDefault(L"ValidationToolTipMaxWidth"))
-		code << indentStr << name << "->ValidationToolTipMaxWidth = "
-			<< FloatLiteral(control->ValidationToolTipMaxWidth) << ";\n";
-	if (!control->IsPropertyValueDefault(L"AccessibleDescription"))
-		code << indentStr << name << "->AccessibleDescription = L\""
-			<< EscapeWStringLiteral(control->AccessibleDescription) << "\";\n";
-
-	// 布局通用属性
-	auto m = control->Margin;
-	if (m.Left != 0.0f || m.Top != 0.0f || m.Right != 0.0f || m.Bottom != 0.0f)
-		code << indentStr << name << "->Margin = " << ThicknessToString(m) << ";\n";
-	if (control->AnchorStyles != AnchorStyles::None)
-		code << indentStr << name << "->AnchorStyles = " << AnchorStylesToExpr(control->AnchorStyles) << ";\n";
-		if (control->ZIndex != 0)
-			code << indentStr << name << "->ZIndex = " << control->ZIndex << ";\n";
-	auto p = control->Padding;
-	if (p.Left != 0.0f || p.Top != 0.0f || p.Right != 0.0f || p.Bottom != 0.0f)
-		code << indentStr << name << "->Padding = " << ThicknessToString(p) << ";\n";
-
-	// Min/MaxSize（只在用户改过时输出；不精确比较，保守输出非默认）
-	if (control->MinSize.cx != 0 || control->MinSize.cy != 0)
-		code << indentStr << name << "->MinSize = {" << control->MinSize.cx << ", " << control->MinSize.cy << "};\n";
-	if (control->MaxSize.cx != INT_MAX || control->MaxSize.cy != INT_MAX)
-		code << indentStr << name << "->MaxSize = {" << control->MaxSize.cx << ", " << control->MaxSize.cy << "};\n";
-
-	// ComboBox items
-	if (dc->Type == UIClass::UI_ComboBox)
-	{
-		auto* comboBox = (ComboBox*)control;
-		if (comboBox->Items.size() > 0)
-		{
-			const std::string itemsName = "__comboItems_" + name;
-			code << indentStr << "std::vector<std::wstring> " << itemsName << "{\n";
-			for (size_t i = 0; i < comboBox->Items.size(); ++i)
-			{
-				code << indentStr << "\tL\""
-					<< EscapeWStringLiteral(comboBox->Items[i]) << "\"";
-				if (i + 1 < comboBox->Items.size()) code << ",";
-				code << "\n";
-			}
-			code << indentStr << "};\n";
-			code << indentStr << name << "->Items = " << itemsName << ";\n";
-		}
-	}
-
-	// ProgressBar
-	if (dc->Type == UIClass::UI_ProgressBar)
-	{
-		auto* progressBar = (ProgressBar*)control;
-		// 默认值 0.5f
-		if (std::fabs(progressBar->PercentageValue - 0.5f) > 1e-6f)
-			code << indentStr << name << "->PercentageValue = " << FloatLiteral(progressBar->PercentageValue) << ";\n";
-	}
-
-	if (dc->Type == UIClass::UI_LoadingRing)
-	{
-		auto* loadingRing = (LoadingRing*)control;
-		if (!loadingRing->Active)
-			code << indentStr << name << "->Active = false;\n";
-	}
-
-	if (dc->Type == UIClass::UI_ProgressRing)
-	{
-		auto* progressRing = (ProgressRing*)control;
-		if (std::fabs(progressRing->PercentageValue - 0.5f) > 1e-6f)
-			code << indentStr << name << "->PercentageValue = " << FloatLiteral(progressRing->PercentageValue) << ";\n";
-		if (!progressRing->ShowPercentage)
-			code << indentStr << name << "->ShowPercentage = false;\n";
-	}
-
-	// DateTimePicker
-	if (dc->Type == UIClass::UI_DateTimePicker)
-	{
-		auto* dateTimePicker = (DateTimePicker*)control;
-		code << indentStr << "{\n";
-		code << indentStr << "\tSYSTEMTIME __dateTimePickerValue{};\n";
-		code << indentStr << "\t__dateTimePickerValue.wYear = " << dateTimePicker->Value.wYear << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wMonth = " << dateTimePicker->Value.wMonth << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wDay = " << dateTimePicker->Value.wDay << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wHour = " << dateTimePicker->Value.wHour << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wMinute = " << dateTimePicker->Value.wMinute << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wSecond = " << dateTimePicker->Value.wSecond << ";\n";
-		code << indentStr << "\t__dateTimePickerValue.wMilliseconds = " << dateTimePicker->Value.wMilliseconds << ";\n";
-		code << indentStr << "\t" << name << "->Value = __dateTimePickerValue;\n";
-		code << indentStr << "}\n";
-		const char* mode = "DateTimePickerMode::DateTime";
-		switch (dateTimePicker->Mode)
-		{
-		case DateTimePickerMode::DateOnly: mode = "DateTimePickerMode::DateOnly"; break;
-		case DateTimePickerMode::TimeOnly: mode = "DateTimePickerMode::TimeOnly"; break;
-		case DateTimePickerMode::DateTime: default: mode = "DateTimePickerMode::DateTime"; break;
-		}
-		code << indentStr << name << "->Mode = " << mode << ";\n";
-		if (!dateTimePicker->AllowDateSelection) code << indentStr << name << "->AllowDateSelection = false;\n";
-		if (!dateTimePicker->AllowTimeSelection) code << indentStr << name << "->AllowTimeSelection = false;\n";
-		if (!dateTimePicker->AllowModeSwitch) code << indentStr << name << "->AllowModeSwitch = false;\n";
-		if (dateTimePicker->Expand) code << indentStr << name << "->SetExpanded(true);\n";
-	}
-
-	// PictureBox (SizeMode is on base Control)
-	if (dc->Type == UIClass::UI_PictureBox)
-	{
-		if (control->SizeMode != ImageSizeMode::Zoom)
-		{
-			switch (control->SizeMode)
-			{
-			case ImageSizeMode::Normal: code << indentStr << name << "->SizeMode = ImageSizeMode::Normal;\n"; break;
-			case ImageSizeMode::CenterImage: code << indentStr << name << "->SizeMode = ImageSizeMode::CenterImage;\n"; break;
-			case ImageSizeMode::StretchImage: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchImage;\n"; break;
-			case ImageSizeMode::Zoom: code << indentStr << name << "->SizeMode = ImageSizeMode::Zoom;\n"; break;
-			default: break;
-			}
-		}
-	}
-
-	// TreeView colors
-	if (dc->Type == UIClass::UI_TreeView)
-	{
-		auto* treeView = (TreeView*)control;
-		// 这些默认值在 TreeView.h 里有初始化，这里做“保守输出”：只要与默认不同就生成
-		const D2D1_COLOR_F defSelBack = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f };
-		const D2D1_COLOR_F defUnderBack = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f };
-		const D2D1_COLOR_F defSelFore = Colors::Black;
-		auto neq = [](const D2D1_COLOR_F& a, const D2D1_COLOR_F& b) {
-			return std::fabs(a.r - b.r) > 1e-6f || std::fabs(a.g - b.g) > 1e-6f || std::fabs(a.b - b.b) > 1e-6f || std::fabs(a.a - b.a) > 1e-6f;
-		};
-		if (neq(treeView->SelectedBackColor, defSelBack))
-			code << indentStr << name << "->SelectedBackColor = " << ColorToString(treeView->SelectedBackColor) << ";\n";
-		if (neq(treeView->UnderMouseItemBackColor, defUnderBack))
-			code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(treeView->UnderMouseItemBackColor) << ";\n";
-		if (neq(treeView->SelectedForeColor, defSelFore))
-			code << indentStr << name << "->SelectedForeColor = " << ColorToString(treeView->SelectedForeColor) << ";\n";
-
-		// TreeView nodes
-		if (treeView->Root && treeView->Root->Children.size() > 0)
-		{
-			code << indentStr << "// TreeView nodes\n";
-			code << indentStr << "for (auto node : " << name << "->Root->Children) delete node;\n";
-			code << indentStr << name << "->Root->Children.Clear();\n";
-
-			int nodeAutoId = 0;
-			auto emitTreeNodes = [&](auto&& self, std::vector<TreeNode*>& nodes, const std::string& parentExpr) -> void
-			{
-				for (auto* node : nodes)
-				{
-					if (!node) continue;
-					std::string nodeVar = name + "_node" + std::to_string(++nodeAutoId);
-					code << indentStr << "auto* " << nodeVar << " = new TreeNode(L\"" << EscapeWStringLiteral(node->Text) << "\");\n";
-					if (node->Expand)
-						code << indentStr << nodeVar << "->Expand = true;\n";
-					code << indentStr << parentExpr << "->Children.push_back(" << nodeVar << ");\n";
-					if (node->Children.size() > 0)
-						self(self, node->Children, nodeVar);
-				}
-			};
-			emitTreeNodes(emitTreeNodes, treeView->Root->Children, name + "->Root");
-		}
-	}
-
-	// StatusBar parts 仍是结构化集合；标量配置由通用元数据生成。
-	if (dc->Type == UIClass::UI_StatusBar)
-	{
-		auto* statusBar = (StatusBar*)control;
-		int partCount = statusBar->PartCount();
-		if (partCount > 0)
-		{
-			code << indentStr << name << "->ClearParts();\n";
-			for (int i = 0; i < partCount; i++)
-			{
-				code << indentStr << name << "->AddPart(L\"" << EscapeWStringLiteral(statusBar->GetPartText(i))
-					<< "\", " << statusBar->GetPartWidth(i) << ");\n";
-			}
-		}
-	}
-
-	// Menu 基本参数 + items
-	if (dc->Type == UIClass::UI_Menu)
-	{
-		auto* menu = (Menu*)control;
-		if (menu->BarHeight != 28)
-			code << indentStr << name << "->BarHeight = " << menu->BarHeight << ";\n";
-		if (menu->DropItemHeight != 26)
-			code << indentStr << name << "->DropItemHeight = " << menu->DropItemHeight << ";\n";
-		if (std::fabs(menu->BorderThickness - 1.0f) > 1e-6f)
-			code << indentStr << name << "->BorderThickness = " << FloatLiteral(menu->BorderThickness) << ";\n";
-
-		if (menu->Count > 0)
-		{
-			code << indentStr << "// Menu items\n";
-			code << indentStr << "while (" << name << "->Count > 0)\n";
-			code << indentStr << "{\n";
-			std::string innerIndentStr(indent + 1, '\t');
-			code << innerIndentStr << "auto* menuItem = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
-			code << innerIndentStr << name << "->DeleteControl(menuItem);\n";
-			code << indentStr << "}\n";
-
-			int menuAutoId = 0;
-			auto emitItemProps = [&](MenuItem* menuItem, const std::string& itemVar)
-			{
-				if (!menuItem) return;
-				if (menuItem->Id != 0)
-					code << indentStr << itemVar << "->Id = " << menuItem->Id << ";\n";
-				if (!menuItem->Enable)
-					code << indentStr << itemVar << "->Enable = false;\n";
-				if (!menuItem->Shortcut.empty())
-					code << indentStr << itemVar << "->Shortcut = L\"" << EscapeWStringLiteral(menuItem->Shortcut) << "\";\n";
-				if (menuItem->Separator)
-					code << indentStr << itemVar << "->Separator = true;\n";
-			};
-
-			std::function<void(MenuItem* parentItem, const std::string& parentVar)> emitSubItems;
-			emitSubItems = [&](MenuItem* parentItem, const std::string& parentVar)
-			{
-				if (!parentItem) return;
-				for (auto* subItem : parentItem->SubItems)
-				{
-					if (!subItem) continue;
-					if (subItem->Separator)
-					{
-						code << indentStr << parentVar << "->AddSeparator();\n";
-						continue;
-					}
-					std::string itemVar = name + "_item" + std::to_string(++menuAutoId);
-					code << indentStr << "auto* " << itemVar << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(subItem->Text)
-						<< "\", " << subItem->Id << ");\n";
-					emitItemProps(subItem, itemVar);
-					if (!subItem->SubItems.empty())
-						emitSubItems(subItem, itemVar);
-				}
-			};
-
-			for (int i = 0; i < menu->Count; i++)
-			{
-				auto* topItem = (MenuItem*)menu->operator[](i);
-				if (!topItem) continue;
-				std::string itemVar = name + "_item" + std::to_string(++menuAutoId);
-				code << indentStr << "auto* " << itemVar << " = " << name << "->AddItem(L\"" << EscapeWStringLiteral(topItem->Text) << "\");\n";
-				emitItemProps(topItem, itemVar);
-				if (!topItem->SubItems.empty())
-					emitSubItems(topItem, itemVar);
-			}
-		}
-	}
-
-	return code.str();
-}
-
-std::string CodeGenerator::GenerateMetadataProperties(
-	const std::shared_ptr<DesignerControl>& dc,
+std::string CodeGenerator::GenerateControlCommonProperties(
+	const DesignerModel::DesignNode& node,
 	int indent)
 {
-	if (!dc || !dc->ControlInstance || dc->Type == UIClass::UI_TabPage
-		|| (dc->MetadataProperties.empty()
-			&& dc->MetadataPropertyDynamicResourceKeys.empty())) return "";
+	std::ostringstream code;
+	const std::string indentStr(indent, '\t');
+	const std::string name = GetVarName(node);
+	if ((node.Type == UIClass::UI_Button
+		|| node.Type == UIClass::UI_MenuItem)
+		&& !node.Structure.CommandTarget.empty())
+	{
+		code << indentStr << name << "->CommandTarget = "
+			<< CommandTargetExpression(
+				node.Structure.CommandTarget) << ";\n";
+	}
+	if (!node.Properties.StyleResourceKey.empty())
+		code << indentStr
+			<< "cui::framework::StyleAccess::SetResourceKey(*"
+			<< name << ", L\""
+			<< EscapeWStringLiteral(node.Properties.StyleResourceKey)
+			<< "\");\n";
+	return code.str();
+}
+
+std::string CodeGenerator::GenerateAuthoredProperties(
+	const DesignerModel::DesignNode& node,
+	int indent)
+{
+	if (node.Properties.Values.empty()) return "";
 
 	std::ostringstream code;
 	const std::string indentStr(indent, '\t');
-	const std::string name = GetVarName(dc);
-	code << indentStr << "// 属性元数据扩展\n";
-	std::vector<std::pair<std::wstring, DesignerStyleValue>> orderedProperties(
-		dc->MetadataProperties.begin(), dc->MetadataProperties.end());
-	for (const auto& [propertyName, resourceKey]
-		: dc->MetadataPropertyDynamicResourceKeys)
-	{
-		(void)resourceKey;
-		if (std::none_of(orderedProperties.begin(), orderedProperties.end(),
-			[&](const auto& entry)
-			{
-				return _wcsicmp(entry.first.c_str(), propertyName.c_str()) == 0;
-			}))
-			orderedProperties.push_back({ propertyName, {} });
-	}
+	const std::string name = GetVarName(node);
+	code << indentStr << (node.TemplateState.Generated
+		? "// ControlTemplate-authored properties/resources\n"
+		: "// XAML authored Local properties/resources\n");
+	std::vector<std::pair<std::wstring,
+		const DesignerModel::DesignPropertyAssignment*>> orderedProperties;
+	orderedProperties.reserve(node.Properties.Values.size());
+	for (const auto& [propertyName, assignment]
+		: node.Properties.Values)
+		orderedProperties.emplace_back(propertyName, &assignment);
 	std::stable_sort(orderedProperties.begin(), orderedProperties.end(),
 		[&](const auto& left, const auto& right)
 		{
-			const auto* leftMetadata = dc->ControlInstance->FindPropertyMetadata(left.first);
-			const auto* rightMetadata = dc->ControlInstance->FindPropertyMetadata(right.first);
+			const auto* leftMetadata = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				node.Type, left.first);
+			const auto* rightMetadata = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				node.Type, right.first);
 			if (leftMetadata && rightMetadata)
 			{
 				const auto& leftDesign = leftMetadata->Design();
@@ -1749,42 +1102,39 @@ std::string CodeGenerator::GenerateMetadataProperties(
 					return leftDesign.Order < rightDesign.Order;
 			}
 			else if (leftMetadata != rightMetadata)
-			{
 				return leftMetadata != nullptr;
-			}
-			return _wcsicmp(left.first.c_str(), right.first.c_str()) < 0;
+			return left.first < right.first;
 		});
-	for (const auto& [storedName, storedValue] : orderedProperties)
+	for (const auto& [propertyName, assignment] : orderedProperties)
 	{
-		std::wstring canonicalName = storedName;
-		const auto dynamicResource = std::find_if(
-			dc->MetadataPropertyDynamicResourceKeys.begin(),
-			dc->MetadataPropertyDynamicResourceKeys.end(),
-			[&](const auto& entry)
-			{
-				return _wcsicmp(entry.first.c_str(), storedName.c_str()) == 0;
-			});
-		if (dynamicResource
-			!= dc->MetadataPropertyDynamicResourceKeys.end())
+		if (!assignment->DynamicResourceKey.empty())
 		{
-			if (const auto* metadata =
-				dc->ControlInstance->FindPropertyMetadata(storedName))
-				canonicalName = metadata->Name();
-			code << indentStr << "(void)" << name
-				<< "->SetDynamicResource(L\""
-				<< EscapeWStringLiteral(canonicalName) << "\", L\""
-				<< EscapeWStringLiteral(dynamicResource->second) << "\");\n";
+			if (node.TemplateState.Generated)
+				code << indentStr
+					<< "(void)cui::framework::DependencyPropertyAccess::"
+					<< "SetDynamicResource(*" << name << ", L\""
+					<< EscapeWStringLiteral(propertyName) << "\", L\""
+					<< EscapeWStringLiteral(assignment->DynamicResourceKey)
+					<< "\", DependencyPropertyValueSource::Template);\n";
+			else
+				code << indentStr << "(void)" << name
+					<< "->SetDynamicResource(L\""
+					<< EscapeWStringLiteral(propertyName) << "\", L\""
+					<< EscapeWStringLiteral(assignment->DynamicResourceKey)
+					<< "\");\n";
 			continue;
 		}
-		DesignerStyleValue effectiveValue = storedValue;
-		(void)DesignerPropertyCatalog::CaptureValue(
-			*dc->ControlInstance,
-			storedName,
-			&canonicalName,
-			effectiveValue);
-		code << indentStr << "(void)" << name
-			<< "->TrySetPropertyValue(L\"" << EscapeWStringLiteral(canonicalName)
-			<< "\", " << GenerateStyleValueExpression(effectiveValue) << ");\n";
+		if (node.TemplateState.Generated)
+			code << indentStr
+				<< "(void)cui::framework::DependencyPropertyAccess::SetValue(*"
+				<< name << ", L\"" << EscapeWStringLiteral(propertyName)
+				<< "\", " << GenerateStyleValueExpression(assignment->Value)
+				<< ", DependencyPropertyValueSource::Template);\n";
+		else
+			code << indentStr << "(void)" << name
+				<< "->TrySetPropertyValue(L\""
+				<< EscapeWStringLiteral(propertyName) << "\", "
+				<< GenerateStyleValueExpression(assignment->Value) << ");\n";
 	}
 	return code.str();
 }
@@ -2037,6 +1387,8 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 	{
 		cui::drawing::Brush parsed;
 		if (!runtimeValue.TryGet(parsed)) return "BindingValue()";
+		if (parsed.Kind == cui::drawing::BrushKind::None)
+			return "BindingValue(cui::drawing::NoBrush())";
 		std::ostringstream expression;
 		expression << "BindingValue([] { cui::drawing::Brush value; value.Kind = "
 			<< (parsed.Kind == cui::drawing::BrushKind::Solid
@@ -2166,18 +1518,28 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 			code << indentStr << selectorName << ".Type = UIClass::UI_"
 				<< WStringToString(DesignerStyleSheetUtils::UIClassName(rule.Type)) << ";\n";
 		}
+		if (!rule.ComponentType.Empty())
+		{
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeNamespace = L\""
+				<< EscapeWStringLiteral(rule.ComponentType.XamlNamespace)
+				<< "\";\n";
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeName = L\""
+				<< EscapeWStringLiteral(rule.ComponentType.XamlName) << "\";\n";
+		}
+		else if (rule.XamlType.Valid())
+		{
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeNamespace = L\""
+				<< EscapeWStringLiteral(rule.XamlType.NamespaceUri) << "\";\n";
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeName = L\""
+				<< EscapeWStringLiteral(rule.XamlType.LocalName) << "\";\n";
+		}
 		if (!rule.Id.empty())
-			code << indentStr << selectorName << ".Id = L\""
+			code << indentStr << selectorName << ".StyleResourceKey = L\""
 				<< EscapeWStringLiteral(rule.Id) << "\";\n";
-		for (const auto& styleClass : rule.Classes)
-			code << indentStr << selectorName << ".Classes.push_back(L\""
-				<< EscapeWStringLiteral(styleClass) << "\");\n";
-		if (rule.RequiredStates != ControlStyleState::None)
-			code << indentStr << selectorName << ".RequiredStates = static_cast<ControlStyleState>("
-				<< static_cast<uint32_t>(rule.RequiredStates) << "u);\n";
-		if (rule.ExcludedStates != ControlStyleState::None)
-			code << indentStr << selectorName << ".ExcludedStates = static_cast<ControlStyleState>("
-				<< static_cast<uint32_t>(rule.ExcludedStates) << "u);\n";
 		for (const auto& condition : rule.PropertyConditions)
 			code << indentStr << selectorName
 				<< ".PropertyConditions.push_back({ L\""
@@ -2207,30 +1569,22 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 		}
 		code << indentStr << "});\n";
 	}
-	bool appliedToRoot = false;
-	for (const auto& control : _controls)
-	{
-		if (!control || !control->ControlInstance
-			|| control->DesignerParent != nullptr
-			|| control->Type == UIClass::UI_TabPage) continue;
-		code << indentStr << GetVarName(control)
-			<< "->SetStyleSheet(__styleSheet, true);\n";
-		appliedToRoot = true;
-	}
-	if (!appliedToRoot)
-		code << indentStr << "(void)__styleSheet;\n";
+	// Window is the document root. One stylesheet attachment covers the root
+	// itself and the complete logical Content subtree.
+	code << indentStr
+		<< "cui::framework::StyleAccess::SetDocumentStyles("
+		"*this, __styleSheet, true);\n";
 	code << "\n";
 	return code.str();
 }
 
 std::string CodeGenerator::GenerateLocalResources(
-	const std::shared_ptr<DesignerControl>& dc,
+	const DesignerModel::DesignNode& node,
 	int indent)
 {
-	if (!dc || !dc->ControlInstance || !dc->LocalResources
-		|| dc->LocalResources->Empty()) return {};
+	if (node.LocalResources.Empty()) return {};
 	const std::string indentStr(indent, '\t');
-	const std::string controlName = GetVarName(dc);
+	const std::string controlName = GetVarName(node);
 	const std::string dictionaryName = "__resources_" + controlName;
 	auto appendScope = [](DesignerStyleSheet& target,
 		const DesignerStyleSheet& source)
@@ -2241,8 +1595,7 @@ std::string CodeGenerator::GenerateLocalResources(
 				target.Resources.begin(), target.Resources.end(),
 				[&](const auto& current)
 				{
-					return _wcsicmp(
-						current.Key.c_str(), resource.Key.c_str()) == 0;
+					return current.Key == resource.Key;
 				}), target.Resources.end());
 			target.Resources.push_back(resource);
 		}
@@ -2250,28 +1603,31 @@ std::string CodeGenerator::GenerateLocalResources(
 			target.Rules.end(), source.Rules.begin(), source.Rules.end());
 	};
 	DesignerStyleSheet visible = _styleSheet;
-	std::vector<std::shared_ptr<DesignerControl>> route;
-	for (auto scope = dc; scope;)
+	std::vector<const DesignerModel::DesignNode*> route;
+	for (auto* scope = &node; scope;)
 	{
 		route.push_back(scope);
-		const auto parent = scope->DesignerParent;
-		if (!parent) break;
-		const auto found = std::find_if(
-			_controls.begin(), _controls.end(), [&](const auto& candidate)
-			{
-				return candidate && candidate->ControlInstance == parent;
-			});
-		scope = found == _controls.end() ? nullptr : *found;
+		auto found = _sourceDocument.Nodes.end();
+		if (scope->ParentId > 0)
+			found = std::find_if(
+				_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+				[&](const auto& candidate)
+				{ return candidate.Id == scope->ParentId; });
+		else if (!scope->ParentRef.empty())
+			found = std::find_if(
+				_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+				[&](const auto& candidate)
+				{ return candidate.Name == scope->ParentRef; });
+		scope = found == _sourceDocument.Nodes.end() ? nullptr : &*found;
 	}
 	for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
-		if ((*scope)->LocalResources)
-			appendScope(visible, *(*scope)->LocalResources);
+		appendScope(visible, (*scope)->LocalResources);
 	DesignerStyleSheet inherited;
 	std::wstring styleError;
 	if (!DesignerStyleSheetUtils::ResolveInheritance(
 		visible, inherited, &styleError))
 		throw std::invalid_argument(WStringToString(styleError));
-	DesignerStyleSheet local = *dc->LocalResources;
+	DesignerStyleSheet local = node.LocalResources;
 	if (inherited.Rules.size() < local.Rules.size())
 		throw std::invalid_argument("Invalid lexical Style rule range");
 	local.Rules.assign(
@@ -2296,8 +1652,7 @@ std::string CodeGenerator::GenerateLocalResources(
 				visible.Resources.rbegin(), visible.Resources.rend(),
 				[&](const auto& resource)
 				{
-					return _wcsicmp(resource.Key.c_str(),
-						setter.ResourceKey.c_str()) == 0;
+					return resource.Key == setter.ResourceKey;
 				});
 			if (found == visible.Resources.rend())
 				throw std::invalid_argument("Local Style StaticResource is missing");
@@ -2324,20 +1679,28 @@ std::string CodeGenerator::GenerateLocalResources(
 			code << indentStr << selectorName << ".Type = UIClass::UI_"
 				<< WStringToString(DesignerStyleSheetUtils::UIClassName(rule.Type))
 				<< ";\n";
+		if (!rule.ComponentType.Empty())
+		{
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeNamespace = L\""
+				<< EscapeWStringLiteral(rule.ComponentType.XamlNamespace)
+				<< "\";\n";
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeName = L\""
+				<< EscapeWStringLiteral(rule.ComponentType.XamlName) << "\";\n";
+		}
+		else if (rule.XamlType.Valid())
+		{
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeNamespace = L\""
+				<< EscapeWStringLiteral(rule.XamlType.NamespaceUri) << "\";\n";
+			code << indentStr << selectorName
+				<< ".DeclarativeTypeName = L\""
+				<< EscapeWStringLiteral(rule.XamlType.LocalName) << "\";\n";
+		}
 		if (!rule.Id.empty())
-			code << indentStr << selectorName << ".Id = L\""
+			code << indentStr << selectorName << ".StyleResourceKey = L\""
 				<< EscapeWStringLiteral(rule.Id) << "\";\n";
-		for (const auto& value : rule.Classes)
-			code << indentStr << selectorName << ".Classes.push_back(L\""
-				<< EscapeWStringLiteral(value) << "\");\n";
-		if (rule.RequiredStates != ControlStyleState::None)
-			code << indentStr << selectorName
-				<< ".RequiredStates = static_cast<ControlStyleState>("
-				<< static_cast<uint32_t>(rule.RequiredStates) << "u);\n";
-		if (rule.ExcludedStates != ControlStyleState::None)
-			code << indentStr << selectorName
-				<< ".ExcludedStates = static_cast<ControlStyleState>("
-				<< static_cast<uint32_t>(rule.ExcludedStates) << "u);\n";
 		for (const auto& condition : rule.PropertyConditions)
 			code << indentStr << selectorName
 				<< ".PropertyConditions.push_back({ L\""
@@ -2370,440 +1733,93 @@ std::string CodeGenerator::GenerateLocalResources(
 		}
 		code << indentStr << "});\n";
 	}
-	code << indentStr << controlName << "->SetResourceDictionary("
-		<< dictionaryName << ");\n";
+	code << indentStr
+		<< "cui::framework::StyleAccess::SetResources(*"
+		<< controlName << ", " << dictionaryName << ");\n";
 	return code.str();
 }
 
-std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent)
+std::string CodeGenerator::GenerateContainerProperties(
+	const DesignerModel::DesignNode& node, int indent)
 {
-	if (!dc || !dc->ControlInstance) return "";
-	if (dc->Type == UIClass::UI_TabPage) return "";
-
-	auto* control = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
-	std::string name = GetVarName(dc);
-
-	if (dc->Type == UIClass::UI_ContentPresenter
-		|| dc->Type == UIClass::UI_ContentControl
-		|| dc->Type == UIClass::UI_Button
-		|| dc->Type == UIClass::UI_GroupBox
-		|| dc->Type == UIClass::UI_Expander)
-	{
-		const auto content = dc->DesignStrings.find(L"contentText");
-		if (content != dc->DesignStrings.end())
-			code << indentStr << name << "->SetContent(BindingValue(L\""
-				<< EscapeWStringLiteral(content->second) << "\"));\n";
-	}
-	if (dc->Type == UIClass::UI_GroupBox
-		|| dc->Type == UIClass::UI_Expander)
-	{
-		const auto header = dc->DesignStrings.find(L"headerText");
-		if (header != dc->DesignStrings.end())
-			code << indentStr << name << "->SetHeader(BindingValue(L\""
-				<< EscapeWStringLiteral(header->second) << "\"));\n";
-	}
+	std::string name = GetVarName(node);
 
 	// 元数据已先生成；最后 Load，确保 AutoPlay/Loop/解码策略在加载前生效。
-	if (dc->Type == UIClass::UI_MediaPlayer)
+	if (node.Type == UIClass::UI_MediaPlayer
+		&& !node.Structure.MediaFile.empty())
 	{
-		auto* mediaPlayer = (MediaPlayer*)control;
-		auto mediaFileIt = dc->DesignStrings.find(L"mediaFile");
-		const std::wstring mediaFile = mediaFileIt != dc->DesignStrings.end()
-			? mediaFileIt->second : mediaPlayer->MediaFile;
-		if (!mediaFile.empty())
-			code << indentStr << name << "->Load(L\""
-				<< EscapeWStringLiteral(mediaFile) << "\");\n";
+		code << indentStr << name << "->Load(L\""
+			<< EscapeWStringLiteral(node.Structure.MediaFile)
+			<< "\");\n";
 	}
 
-	if (dc->Type == UIClass::UI_GridPanel)
+	if (node.Type == UIClass::UI_Grid)
 	{
-		auto* gridPanel = (GridPanel*)control;
-		const auto& rows = gridPanel->GetRows();
-		const auto& columns = gridPanel->GetColumns();
-		if (!rows.empty() || !columns.empty())
+		const auto& rows = node.Structure.GridRows;
+		const auto& columns = node.Structure.GridColumns;
+		if (rows || columns)
 		{
 			code << indentStr << name << "->ClearRows();\n";
 			code << indentStr << name << "->ClearColumns();\n";
-			for (auto& row : rows)
-			{
-				code << indentStr << name << "->AddRow(" << GridLengthToCtorString(row.Height)
-					<< ", " << FloatLiteral(row.MinHeight) << ", " << FloatLiteral(row.MaxHeight) << ");\n";
-			}
-			for (auto& column : columns)
-			{
-				code << indentStr << name << "->AddColumn(" << GridLengthToCtorString(column.Width)
-					<< ", " << FloatLiteral(column.MinWidth) << ", " << FloatLiteral(column.MaxWidth) << ");\n";
-			}
+			if (rows)
+				for (const auto& row : *rows)
+					code << indentStr << name << "->AddRow("
+						<< GridLengthToCtorString(row.Length) << ", "
+						<< FloatLiteral(static_cast<float>(row.Minimum)) << ", "
+						<< FloatLiteral(static_cast<float>(row.Maximum))
+						<< ");\n";
+			if (columns)
+				for (const auto& column : *columns)
+					code << indentStr << name << "->AddColumn("
+						<< GridLengthToCtorString(column.Length) << ", "
+						<< FloatLiteral(static_cast<float>(column.Minimum)) << ", "
+						<< FloatLiteral(static_cast<float>(column.Maximum))
+						<< ");\n";
 		}
 	}
 
-	if (dc->Type == UIClass::UI_ListView)
+	if (node.Type == UIClass::UI_ChartView
+		&& node.Structure.ChartSeries)
 	{
-		auto* listView = (ListView*)control;
-		if (!listView->Columns.empty())
+		auto colorExpression = [&](const DesignerModel::DesignColor& color)
 		{
-			for (const auto& col : listView->Columns)
-			{
-				code << indentStr << name << "->AddColumn(ListViewColumn(L\""
-					<< EscapeWStringLiteral(col.Header) << "\", "
-					<< FloatLiteral(col.Width)
-					<< ", static_cast<ListViewCellAlign>(" << (int)col.Align << ")));\n";
-			}
-		}
-		if (!listView->Items.empty())
+			return ColorToString(D2D1_COLOR_F{
+				static_cast<float>(color.R), static_cast<float>(color.G),
+				static_cast<float>(color.B), static_cast<float>(color.A) });
+		};
+		const auto& chartSeries = *node.Structure.ChartSeries;
+		code << indentStr << name << "->Clear();\n";
+		for (size_t seriesIndex = 0; seriesIndex < chartSeries.size(); ++seriesIndex)
 		{
-			const std::string itemsName = "__listItems_" + name;
-			code << indentStr << "std::vector<ListViewItem> " << itemsName << ";\n";
-			code << indentStr << itemsName << ".reserve("
-				<< listView->Items.size() << ");\n";
-			for (int i = 0; i < (int)listView->Items.size(); ++i)
+			const auto& series = chartSeries[seriesIndex];
+			const auto seriesVar = "__chartSeries_" + name + "_"
+				+ std::to_string(seriesIndex + 1);
+			code << indentStr << "ChartSeries " << seriesVar << ";\n";
+			code << indentStr << seriesVar << ".Name = L\""
+				<< EscapeWStringLiteral(series.Name) << "\";\n";
+			if (series.Color)
+				code << indentStr << seriesVar << ".Color = "
+					<< colorExpression(*series.Color) << ";\n";
+			if (!series.Visible)
+				code << indentStr << seriesVar << ".Visible = false;\n";
+			for (size_t pointIndex = 0;
+				pointIndex < series.Points.size(); ++pointIndex)
 			{
-				const auto& item = listView->Items[static_cast<size_t>(i)];
-				const std::string itemVar = "__listItem_" + name
-					+ "_" + std::to_string(i + 1);
-				code << indentStr << "ListViewItem " << itemVar << "(L\""
-					<< EscapeWStringLiteral(item.Text) << "\", L\""
-					<< EscapeWStringLiteral(item.SubText) << "\");\n";
-				for (const auto& sub : item.SubItems)
-					code << indentStr << itemVar << ".SubItems.push_back(L\""
-						<< EscapeWStringLiteral(sub) << "\");\n";
-				if (item.Checked)
-					code << indentStr << itemVar << ".Checked = true;\n";
-				if (item.Selected)
-					code << indentStr << itemVar << ".Selected = true;\n";
-				if (!item.Enabled)
-					code << indentStr << itemVar << ".Enabled = false;\n";
-				code << indentStr << itemsName << ".push_back(std::move("
-					<< itemVar << "));\n";
+				const auto& point = series.Points[pointIndex];
+				code << indentStr << seriesVar << ".Points.emplace_back(L\""
+					<< EscapeWStringLiteral(point.Label) << "\", "
+					<< DoubleLiteral(point.Value);
+				if (point.Color) code << ", " << colorExpression(*point.Color);
+				code << ");\n";
+				if (point.Tag != 0) code << indentStr << seriesVar
+					<< ".Points.back().Tag = " << point.Tag << "ULL;\n";
 			}
-			code << indentStr << name << "->SetItems(std::move("
-				<< itemsName << "));\n";
+			code << indentStr << name << "->AddSeries(" << seriesVar << ");\n";
 		}
 	}
 
-	// Grid/PagedGrid 的列与行都是结构化集合，统一在一次更新作用域中生成。
-	if (dc->Type == UIClass::UI_GridView
-		|| dc->Type == UIClass::UI_PagedGridView)
-	{
-		const GridView::ColumnCollection* columns = nullptr;
-		const GridView::RowCollection* rows = nullptr;
-		if (dc->Type == UIClass::UI_GridView)
-		{
-			auto* gridView = static_cast<GridView*>(control);
-			columns = &gridView->Columns;
-			rows = &gridView->Rows;
-		}
-		else
-		{
-			auto* gridView = static_cast<PagedGridView*>(control);
-			columns = &gridView->GetColumns();
-			rows = &gridView->Rows;
-		}
-		if ((columns && !columns->empty()) || (rows && !rows->empty()))
-		{
-			code << indentStr << "{\n";
-			code << indentStr << "\tauto __gridUpdate = " << name << "->DeferUpdates();\n";
-			code << indentStr << "\t" << name << "->ClearColumns();\n";
-			code << indentStr << "\t" << name << "->ClearRows();\n";
-			for (size_t i = 0; columns && i < columns->size(); ++i)
-			{
-				const auto& column = (*columns)[i];
-				std::string columnTypeExpr = "ColumnType::Text";
-				switch (column.Type)
-				{
-				case ColumnType::Text: columnTypeExpr = "ColumnType::Text"; break;
-				case ColumnType::LinkedText: columnTypeExpr = "ColumnType::LinkedText"; break;
-				case ColumnType::Image: columnTypeExpr = "ColumnType::Image"; break;
-				case ColumnType::Check: columnTypeExpr = "ColumnType::Check"; break;
-				case ColumnType::Button: columnTypeExpr = "ColumnType::Button"; break;
-				case ColumnType::ComboBox: columnTypeExpr = "ColumnType::ComboBox"; break;
-				default: break;
-				}
-				const std::string columnVar = "__gridColumn" + std::to_string(i + 1);
-				code << indentStr << "\tGridViewColumn " << columnVar << "(L\""
-					<< EscapeWStringLiteral(column.Name) << "\", "
-					<< FloatLiteral(column.Width) << ", " << columnTypeExpr << ", "
-					<< (column.CanEdit ? "true" : "false") << ");\n";
-				if (!column.ButtonText.empty())
-					code << indentStr << "\t" << columnVar << ".ButtonText = L\""
-						<< EscapeWStringLiteral(column.ButtonText) << "\";\n";
-				if (!column.ComboBoxItems.empty())
-				{
-					code << indentStr << "\t" << columnVar << ".ComboBoxItems = { ";
-					for (size_t itemIndex = 0; itemIndex < column.ComboBoxItems.size(); ++itemIndex)
-					{
-						if (itemIndex > 0) code << ", ";
-						code << "L\"" << EscapeWStringLiteral(column.ComboBoxItems[itemIndex]) << "\"";
-					}
-					code << " };\n";
-				}
-				code << indentStr << "\t" << name << "->AddColumn(" << columnVar << ");\n";
-			}
-			for (size_t rowIndex = 0; rows && rowIndex < rows->size(); ++rowIndex)
-			{
-				const auto& row = (*rows)[rowIndex];
-				const std::string rowVar = "__gridRow" + std::to_string(rowIndex + 1);
-				code << indentStr << "\tGridViewRow " << rowVar << ";\n";
-				for (size_t cellIndex = 0; cellIndex < row.Cells.size(); ++cellIndex)
-				{
-					const auto& cell = row.Cells[cellIndex];
-					const auto type = columns && cellIndex < columns->size()
-						? (*columns)[cellIndex].Type : ColumnType::Text;
-					if (type == ColumnType::Check)
-						code << indentStr << "\t" << rowVar
-							<< ".Cells.emplace_back("
-							<< (cell.GetBool() ? "true" : "false") << ");\n";
-					else if (type == ColumnType::ComboBox)
-					{
-						const std::string cellVar = "__gridCell"
-							+ std::to_string(rowIndex + 1) + "_"
-							+ std::to_string(cellIndex + 1);
-						code << indentStr << "\tCellValue " << cellVar << ";\n";
-						code << indentStr << "\t" << cellVar << ".SetComboSelection("
-							<< cell.GetTag() << ", L\""
-							<< EscapeWStringLiteral(cell.GetText()) << "\");\n";
-						code << indentStr << "\t" << rowVar
-							<< ".Cells.push_back(std::move(" << cellVar << "));\n";
-					}
-					else if (type == ColumnType::Image && cell.Image)
-						code << indentStr << "\t" << rowVar
-							<< ".Cells.emplace_back(); // BitmapSource is runtime-owned\n";
-					else
-						code << indentStr << "\t" << rowVar
-							<< ".Cells.emplace_back(L\""
-							<< EscapeWStringLiteral(cell.GetText()) << "\");\n";
-				}
-				code << indentStr << "\t" << name << "->AddRow(" << rowVar << ");\n";
-			}
-			code << indentStr << "}\n";
-		}
-	}
-
-	// PropertyGrid 标量由元数据生成；Items 保持结构化并在标量之后原子替换。
-	if (dc->Type == UIClass::UI_PropertyGrid)
-	{
-		auto* propertyGrid = (PropertyGridView*)control;
-		if (!propertyGrid->Items.empty())
-		{
-			const std::string itemsName = "__propertyItems_" + name;
-			code << indentStr << "std::vector<PropertyGridItem> " << itemsName << ";\n";
-			code << indentStr << itemsName << ".reserve("
-				<< propertyGrid->Items.size() << ");\n";
-			for (int i = 0; i < (int)propertyGrid->Items.size(); ++i)
-			{
-				const auto& item = propertyGrid->Items[static_cast<size_t>(i)];
-				const std::string itemVar = "__propertyItem_" + name
-					+ "_" + std::to_string(i + 1);
-				code << indentStr << "PropertyGridItem " << itemVar << "(L\""
-					<< EscapeWStringLiteral(item.Category) << "\", L\""
-					<< EscapeWStringLiteral(item.Name) << "\", L\""
-					<< EscapeWStringLiteral(item.Value)
-					<< "\", static_cast<PropertyGridValueType>(" << (int)item.ValueType
-					<< "));\n";
-				if (!item.Description.empty())
-					code << indentStr << itemVar << ".Description = L\""
-						<< EscapeWStringLiteral(item.Description) << "\";\n";
-				if (item.ReadOnly)
-					code << indentStr << itemVar << ".ReadOnly = true;\n";
-				if (item.IsMixed)
-					code << indentStr << itemVar << ".IsMixed = true;\n";
-				if (item.CanReset)
-					code << indentStr << itemVar << ".CanReset = true;\n";
-				if (item.ValueType == PropertyGridValueType::Slider)
-				{
-					code << indentStr << itemVar << ".Minimum = "
-						<< item.Minimum << ";\n";
-					code << indentStr << itemVar << ".Maximum = "
-						<< item.Maximum << ";\n";
-					code << indentStr << itemVar << ".Step = "
-						<< item.Step << ";\n";
-				}
-				if (item.Tag != 0)
-					code << indentStr << itemVar << ".Tag = "
-						<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
-				for (const auto& option : item.Options)
-					code << indentStr << itemVar << ".Options.push_back(L\""
-						<< EscapeWStringLiteral(option) << "\");\n";
-				code << indentStr << itemsName << ".push_back(std::move("
-					<< itemVar << "));\n";
-			}
-			code << indentStr << name << "->SetItems(std::move("
-				<< itemsName << "));\n";
-		}
-	}
-
-	if (dc->Type == UIClass::UI_NavigationView
-		|| dc->Type == UIClass::UI_SideBar)
-	{
-		auto* navigation = static_cast<NavigationView*>(control);
-		if (!navigation->Items.empty())
-		{
-			code << indentStr << name << "->ClearItems();\n";
-			for (size_t index = 0; index < navigation->Items.size(); ++index)
-			{
-				const auto& item = navigation->Items[index];
-				const auto itemVar = "__navigationItem_" + name + "_"
-					+ std::to_string(index + 1);
-				code << indentStr << "NavigationViewItem " << itemVar << ";\n";
-				code << indentStr << itemVar << ".Text = L\""
-					<< EscapeWStringLiteral(item.Text) << "\";\n";
-				if (!item.Value.empty()) code << indentStr << itemVar << ".Value = L\""
-					<< EscapeWStringLiteral(item.Value) << "\";\n";
-				if (!item.BadgeText.empty()) code << indentStr << itemVar << ".BadgeText = L\""
-					<< EscapeWStringLiteral(item.BadgeText) << "\";\n";
-				if (item.Icon && !item.Icon->GetSourceUri().empty())
-					code << indentStr << itemVar << ".Icon = cui::resources::LoadBitmapResource(L\""
-						<< EscapeWStringLiteral(item.Icon->GetSourceUri()) << "\");\n";
-				code << indentStr << itemVar << ".Kind = static_cast<NavigationViewItemKind>("
-					<< static_cast<int>(item.Kind) << ");\n";
-				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
-				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
-					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
-				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
-			}
-			if (navigation->SelectedIndex >= 0)
-				code << indentStr << name << "->SelectItem("
-					<< navigation->SelectedIndex << ");\n";
-		}
-	}
-
-	if (dc->Type == UIClass::UI_BreadcrumbBar)
-	{
-		auto* breadcrumb = static_cast<BreadcrumbBar*>(control);
-		if (!breadcrumb->Items.empty())
-		{
-			code << indentStr << name << "->ClearItems();\n";
-			for (size_t index = 0; index < breadcrumb->Items.size(); ++index)
-			{
-				const auto& item = breadcrumb->Items[index];
-				const auto itemVar = "__breadcrumbItem_" + name + "_"
-					+ std::to_string(index + 1);
-				code << indentStr << "BreadcrumbBarItem " << itemVar << "(L\""
-					<< EscapeWStringLiteral(item.Text) << "\", L\""
-					<< EscapeWStringLiteral(item.Value) << "\");\n";
-				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
-				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
-					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
-				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
-			}
-			if (breadcrumb->SelectedIndex >= 0)
-				code << indentStr << name << "->SelectItem("
-					<< breadcrumb->SelectedIndex << ");\n";
-		}
-	}
-
-	if (dc->Type == UIClass::UI_FilterBar)
-	{
-		auto* filter = static_cast<FilterBar*>(control);
-		if (!filter->Items.empty())
-		{
-			code << indentStr << name << "->ClearItems();\n";
-			for (size_t index = 0; index < filter->Items.size(); ++index)
-			{
-				const auto& item = filter->Items[index];
-				const auto itemVar = "__filterItem_" + name + "_"
-					+ std::to_string(index + 1);
-				code << indentStr << "FilterBarItem " << itemVar << "(L\""
-					<< EscapeWStringLiteral(item.Text) << "\", L\""
-					<< EscapeWStringLiteral(item.Value) << "\", "
-					<< (item.Selected ? "true" : "false") << ");\n";
-				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
-				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
-					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
-				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
-			}
-		}
-	}
-
-	if (dc->Type == UIClass::UI_KpiCard)
-	{
-		auto* kpi = static_cast<KpiCard*>(control);
-		if (!kpi->SparklineValues.empty())
-		{
-			code << indentStr << name << "->SetSparkline({ ";
-			for (size_t index = 0; index < kpi->SparklineValues.size(); ++index)
-			{
-				if (index > 0) code << ", ";
-				code << DoubleLiteral(kpi->SparklineValues[index]);
-			}
-			code << " });\n";
-		}
-	}
-
-	if (dc->Type == UIClass::UI_ChartView)
-	{
-		auto* chart = static_cast<ChartView*>(control);
-		if (!chart->Series.empty())
-		{
-			code << indentStr << name << "->Clear();\n";
-			for (size_t seriesIndex = 0; seriesIndex < chart->Series.size(); ++seriesIndex)
-			{
-				const auto& series = chart->Series[seriesIndex];
-				const auto seriesVar = "__chartSeries_" + name + "_"
-					+ std::to_string(seriesIndex + 1);
-				code << indentStr << "ChartSeries " << seriesVar << "(L\""
-					<< EscapeWStringLiteral(series.Name) << "\", "
-					<< ColorToString(series.Color) << ");\n";
-				if (!series.Visible) code << indentStr << seriesVar << ".Visible = false;\n";
-				for (const auto& point : series.Points)
-				{
-					code << indentStr << seriesVar << ".Points.emplace_back(L\""
-						<< EscapeWStringLiteral(point.Label) << "\", "
-						<< DoubleLiteral(point.Value);
-					if (point.UseCustomColor) code << ", " << ColorToString(point.Color);
-					code << ");\n";
-					if (point.Tag != 0) code << indentStr << seriesVar
-						<< ".Points.back().Tag = "
-						<< static_cast<unsigned long long>(point.Tag) << "ULL;\n";
-				}
-				code << indentStr << name << "->AddSeries(" << seriesVar << ");\n";
-			}
-		}
-	}
-
-	if (dc->Type == UIClass::UI_ReportView)
-	{
-		auto* report = static_cast<ReportView*>(control);
-		if (!report->Columns.empty() || !report->Rows.empty())
-		{
-			code << indentStr << name << "->Clear();\n";
-			for (const auto& column : report->Columns)
-				code << indentStr << name << "->AddColumn(ReportColumn(L\""
-					<< EscapeWStringLiteral(column.Header) << "\", "
-					<< FloatLiteral(column.Width) << ", static_cast<ReportCellAlign>("
-					<< static_cast<int>(column.Align) << "), "
-					<< (column.Sortable ? "true" : "false") << "));\n";
-			for (size_t rowIndex = 0; rowIndex < report->Rows.size(); ++rowIndex)
-			{
-				const auto& row = report->Rows[rowIndex];
-				const auto rowVar = "__reportRow_" + name + "_"
-					+ std::to_string(rowIndex + 1);
-				code << indentStr << "ReportRow " << rowVar << ";\n";
-				code << indentStr << rowVar << ".Kind = static_cast<ReportRowKind>("
-					<< static_cast<int>(row.Kind) << ");\n";
-				if (!row.Caption.empty()) code << indentStr << rowVar << ".Caption = L\""
-					<< EscapeWStringLiteral(row.Caption) << "\";\n";
-				if (!row.Expanded)
-				{
-					code << indentStr << rowVar << ".Expanded = false;\n";
-					if (row.Kind == ReportRowKind::Group)
-					{
-						code << indentStr << rowVar << ".ExpandProgress = 0.0f;\n";
-						code << indentStr << rowVar << ".AnimStartProgress = 0.0f;\n";
-						code << indentStr << rowVar << ".AnimTargetProgress = 0.0f;\n";
-					}
-				}
-				for (const auto& cell : row.Cells)
-					code << indentStr << rowVar << ".Cells.push_back(L\""
-						<< EscapeWStringLiteral(cell) << "\");\n";
-				if (row.Tag != 0) code << indentStr << rowVar << ".Tag = "
-					<< static_cast<unsigned long long>(row.Tag) << "ULL;\n";
-				code << indentStr << name << "->AddRow(" << rowVar << ");\n";
-			}
-		}
-	}
 	return code.str();
 }
 
@@ -2816,7 +1832,6 @@ bool CodeGenerator::CollectEventHandlers(
 	std::unordered_map<std::string, std::type_index> signatures;
 	auto add = [&](const std::wstring& eventName,
 		const std::wstring& storedHandler,
-		const std::string& subjectName,
 		const std::optional<DesignerEventDescriptor>& descriptor) -> bool
 	{
 		if (storedHandler.empty()) return true;
@@ -2825,16 +1840,15 @@ bool CodeGenerator::CollectEventHandlers(
 			if (outError) *outError = L"无法生成未知事件 “" + eventName + L"”。";
 			return false;
 		}
-		const std::wstring subject(subjectName.begin(), subjectName.end());
-		const auto resolved = DesignerEventCatalog::ResolveHandlerName(
-			storedHandler, subject, eventName);
+		const auto resolved = DesignerEventCatalog::NormalizeHandlerName(
+			storedHandler);
 		std::wstring validationError;
 		if (!DesignerEventCatalog::ValidateHandlerName(resolved, &validationError))
 		{
 			if (outError) *outError = L"事件 “" + eventName + L"”：" + validationError;
 			return false;
 		}
-		const auto handler = ResolveHandlerName(storedHandler, subjectName, eventName);
+		const auto handler = Utf8HandlerName(storedHandler);
 		if (handler.empty()) return true;
 		auto existing = signatures.find(handler);
 		if (existing != signatures.end())
@@ -2849,18 +1863,31 @@ bool CodeGenerator::CollectEventHandlers(
 		return true;
 	};
 
-	const auto formSubject = SanitizeCppIdentifier(WStringToString(_formName));
-	for (const auto& [eventName, storedHandler] : _formEventHandlers)
-		if (!add(eventName, storedHandler, formSubject,
-			DesignerEventCatalog::FindFormEvent(eventName))) return false;
-	for (const auto& control : _controls)
+	for (const auto& [eventName, storedHandler]
+		: _sourceDocument.Window.Events)
+		if (!add(eventName, storedHandler,
+			DesignerEventCatalog::FindWindowEvent(eventName))) return false;
+	for (const auto& binding : _sourceDocument.Window.CommandBindings)
 	{
-		if (!control) continue;
-		const auto subject = GetVarName(control);
-		for (const auto& [eventName, storedHandler] : control->EventHandlers)
-			if (!add(eventName, storedHandler, subject,
+		for (const auto& [eventName, handler] : binding.HandlerRoutes())
+			if (handler && !add(eventName, *handler,
+				DesignerEventCatalog::FindWindowEvent(eventName))) return false;
+	}
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		for (const auto& [eventName, storedHandler] : node.Events)
+			if (!add(eventName, storedHandler,
 				DesignerEventCatalog::FindControlEvent(
-					control->Type, eventName, control->ComponentEvents))) return false;
+					node.Type, eventName,
+					ComponentEvents(node)))) return false;
+		for (const auto& binding : node.CommandBindings)
+		{
+			for (const auto& [eventName, handler] : binding.HandlerRoutes())
+				if (handler && !add(eventName, *handler,
+					DesignerEventCatalog::FindControlEvent(
+						node.Type, eventName,
+						ComponentEvents(node)))) return false;
+		}
 	}
 	return true;
 }
@@ -2878,20 +1905,25 @@ std::string CodeGenerator::GenerateHeader()
 
 	std::vector<GeneratedRuntimeEventRoute> runtimeRoutes;
 	std::set<std::string> runtimeRouteKeys;
-	auto appendBuiltInRoute = [&](bool isForm,
+	auto appendBuiltInRoute = [&](bool isWindow,
 		UIClass controlType,
 		const std::wstring& eventName,
 		const std::wstring& storedHandler,
-		const std::string& subject,
 		const DesignerEventDescriptor& descriptor)
 	{
-		const auto handler = ResolveHandlerName(
-			storedHandler, subject, eventName);
+		const auto handler = Utf8HandlerName(storedHandler);
 		if (handler.empty()) return;
-		const bool wildcard = !isForm
-			&& descriptor.EventOwnerTypeName == "Control";
+		const auto baseDescriptor = isWindow
+			? std::optional<DesignerEventDescriptor>{}
+			: DesignerEventCatalog::FindControlEvent(
+				UIClass::UI_Base, eventName);
+		const bool wildcard = baseDescriptor
+			&& baseDescriptor->EventField == descriptor.EventField
+			&& baseDescriptor->EventOwnerTypeName
+				== descriptor.EventOwnerTypeName
+			&& baseDescriptor->SameSignature(descriptor);
 		const auto effectiveType = wildcard ? UIClass::UI_Base : controlType;
-		const auto key = std::string(isForm ? "F|" : "B|") + handler
+		const auto key = std::string(isWindow ? "F|" : "B|") + handler
 			+ "|" + WStringToString(eventName)
 			+ "|" + descriptor.EventOwnerTypeName
 			+ "|" + descriptor.EventField
@@ -2903,34 +1935,62 @@ std::string CodeGenerator::GenerateHeader()
 		route.EventName = eventName;
 		route.EventField = descriptor.EventField;
 		route.EventOwnerType = descriptor.EventOwnerTypeName;
-		route.IsForm = isForm;
+		route.IsWindow = isWindow;
 		route.ControlType = effectiveType;
 		runtimeRoutes.push_back(std::move(route));
 	};
 
-	const auto formSubject = SanitizeCppIdentifier(WStringToString(_formName));
-	for (const auto& [eventName, storedHandler] : _formEventHandlers)
-		if (const auto descriptor = DesignerEventCatalog::FindFormEvent(eventName))
+	for (const auto& [eventName, storedHandler]
+		: _sourceDocument.Window.Events)
+		if (const auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName))
 			appendBuiltInRoute(true, UIClass::UI_Base, eventName,
-				storedHandler, formSubject, *descriptor);
-	for (const auto& control : _controls)
+				storedHandler, *descriptor);
+	for (const auto& binding : _sourceDocument.Window.CommandBindings)
 	{
-		if (!control) continue;
-		const auto subject = GetVarName(control);
-		for (const auto& [eventName, storedHandler] : control->EventHandlers)
+		for (const auto& [eventName, handler] : binding.HandlerRoutes())
+			if (handler && !handler->empty())
+				if (const auto descriptor =
+					DesignerEventCatalog::FindWindowEvent(eventName))
+					appendBuiltInRoute(true, UIClass::UI_Base,
+						eventName, *handler, *descriptor);
+	}
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		for (const auto& [eventName, storedHandler] : node.Events)
 		{
 			const auto descriptor = DesignerEventCatalog::FindControlEvent(
-				control->Type, eventName, control->ComponentEvents);
+				node.Type, eventName, ComponentEvents(node));
 			if (!descriptor) continue;
-			appendBuiltInRoute(false, control->Type, eventName,
-				storedHandler, subject, *descriptor);
+			appendBuiltInRoute(false, node.Type, eventName,
+				storedHandler, *descriptor);
+		}
+		for (const auto& binding : node.CommandBindings)
+		{
+			for (const auto& [eventName, handler] : binding.HandlerRoutes())
+			{
+				if (!handler || handler->empty()) continue;
+				const auto descriptor = DesignerEventCatalog::FindControlEvent(
+					node.Type, eventName, ComponentEvents(node));
+				if (descriptor) appendBuiltInRoute(false, node.Type,
+					eventName, *handler, *descriptor);
+			}
 		}
 	}
 	
 	// 收集需要的头文件
 	std::set<std::string> includes;
-	includes.insert("Form.h");
+	includes.insert("Window.h");
 	includes.insert("Control.h");
+	const bool hasCommands = !_sourceDocument.Window.CommandBindings.empty()
+		|| !_sourceDocument.Window.InputBindings.empty()
+		|| std::any_of(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node)
+			{
+				return !node.CommandBindings.empty()
+					|| !node.InputBindings.empty();
+			});
+	if (hasCommands) includes.insert("RoutedCommand.h");
 	const bool hasStyleDataTriggers = std::any_of(
 		_styleSheet.Rules.begin(), _styleSheet.Rules.end(),
 		[](const DesignerStyleRule& rule)
@@ -2942,26 +2002,21 @@ std::string CodeGenerator::GenerateHeader()
 						return !trigger.DataConditions.empty();
 					});
 		});
-	const bool hasDataBindings = hasStyleDataTriggers || std::any_of(
-		_controls.begin(), _controls.end(),
-		[](const std::shared_ptr<DesignerControl>& control)
-		{
-			return control && !control->DataBindings.empty();
-		});
-	const bool hasMetadataProperties = std::any_of(
-		_controls.begin(), _controls.end(),
-		[](const std::shared_ptr<DesignerControl>& control)
-		{
-			return control && (!control->MetadataProperties.empty()
-				|| !control->MetadataPropertyDynamicResourceKeys.empty());
-		});
-	if (hasDataBindings || hasMetadataProperties)
+	const bool hasDataBindings = !_sourceDocument.Window.Bindings.empty()
+		|| hasStyleDataTriggers || std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return !node.Bindings.empty(); });
+	const bool hasAuthoredProperties =
+		!_sourceDocument.Window.Properties.Values.empty()
+		|| std::any_of(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node)
+			{ return !node.Properties.Values.empty(); });
+	if (hasDataBindings || hasAuthoredProperties)
 		includes.insert("Binding.h");
 	
-	for (const auto& dc : _controls)
-	{
-		if (dc) includes.insert(GetIncludeForType(*dc));
-	}
+	for (const auto& node : _sourceDocument.Nodes)
+		includes.insert(GetIncludeForType(node.Type));
 	
 	// 生成头文件
 	header << "#pragma once\n";
@@ -2985,7 +2040,7 @@ std::string CodeGenerator::GenerateHeader()
 		header << "public:\n";
 		header << "\t" << eventSinkName << "() = default;\n";
 		header << "\tvirtual ~" << eventSinkName
-			<< "() { UnregisterDynamicEventHandlers(); }\n";
+			<< "() { UnregisterDeclarativeEventHandlers(); }\n";
 		header << "\t" << eventSinkName << "(const " << eventSinkName
 			<< "&) = delete;\n";
 		header << "\t" << eventSinkName << "& operator=(const "
@@ -2995,7 +2050,7 @@ std::string CodeGenerator::GenerateHeader()
 		header << "\t" << eventSinkName << "& operator=("
 			<< eventSinkName << "&&) = delete;\n\n";
 		header << "\ttemplate<typename TRegistry>\n";
-		header << "\tbool RegisterDynamicEventHandlers(\n";
+		header << "\tbool RegisterDeclarativeEventHandlers(\n";
 		header << "\t\tTRegistry& registry, std::wstring* outError = nullptr)\n";
 		header << "\t{\n";
 		header << "\t\ttry\n";
@@ -3010,9 +2065,9 @@ std::string CodeGenerator::GenerateHeader()
 			const auto parameterTypes = CanonicalGeneratedParameterTypes(
 				route.ParameterList);
 			header << "\t\t\t\tif (!routes.";
-			if (route.IsForm)
+			if (route.IsWindow)
 			{
-				header << "RegisterForm(\n";
+				header << "RegisterWindow(\n";
 				header << "\t\t\t\t\tL\""
 					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
 					<< "\", L\"" << EscapeWStringLiteral(route.EventName)
@@ -3024,14 +2079,13 @@ std::string CodeGenerator::GenerateHeader()
 				header << "RegisterControl(\n";
 				header << "\t\t\t\t\tL\""
 					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
-					<< "\", UIClass::UI_"
-					<< WStringToString(DesignerStyleSheetUtils::UIClassName(
-						route.ControlType))
+					<< "\", static_cast<UIClass>("
+					<< static_cast<int>(route.ControlType) << ")"
 					<< ", L\"" << EscapeWStringLiteral(route.EventName)
 					<< "\", &" << route.EventOwnerType << "::"
 					<< route.EventField << ",\n";
 			}
-			header << "\t\t\t\t\tGuardDynamicEventHandler(\n";
+			header << "\t\t\t\t\tGuardDeclarativeEventHandler(\n";
 			header << "\t\t\t\t\t\tlifetime, std::bind_front(\n";
 			header << "\t\t\t\t\t\t\tstatic_cast<void (" << eventSinkName
 				<< "::*)(" << parameterTypes << ")>(\n";
@@ -3042,36 +2096,36 @@ std::string CodeGenerator::GenerateHeader()
 		header << "\t\t\t\treturn true;\n";
 		header << "\t\t\t}, outError);\n";
 		header << "\t\t\tif (!registration) return false;\n";
-		header << "\t\t\tstruct DynamicEventRegistration final\n";
+		header << "\t\t\tstruct DeclarativeEventRegistration final\n";
 		header << "\t\t\t{\n";
 		header << "\t\t\t\tdecltype(registration) Lease;\n";
 		header << "\t\t\t\tstd::shared_ptr<void> Lifetime;\n";
-		header << "\t\t\t\tDynamicEventRegistration(\n";
+		header << "\t\t\t\tDeclarativeEventRegistration(\n";
 		header << "\t\t\t\t\tdecltype(registration)&& lease,\n";
 		header << "\t\t\t\t\tstd::shared_ptr<void> lifetime) noexcept\n";
 		header << "\t\t\t\t\t: Lease(std::move(lease)),\n";
 		header << "\t\t\t\t\tLifetime(std::move(lifetime)) {}\n";
 		header << "\t\t\t};\n";
-		header << "\t\t\tauto owned = std::make_shared<DynamicEventRegistration>(\n";
+		header << "\t\t\tauto owned = std::make_shared<DeclarativeEventRegistration>(\n";
 		header << "\t\t\t\tstd::move(registration), std::move(lifetime));\n";
-		header << "\t\t\t_dynamicEventRegistration = std::move(owned);\n";
+		header << "\t\t\t_declarativeEventRegistration = std::move(owned);\n";
 		header << "\t\t\tif (outError) outError->clear();\n";
 		header << "\t\t\treturn true;\n";
 		header << "\t\t}\n";
 		header << "\t\tcatch (...)\n";
 		header << "\t\t{\n";
 		header << "\t\t\tif (outError) *outError =\n";
-		header << "\t\t\t\tL\"无法保存动态事件注册租约。\";\n";
+		header << "\t\t\t\tL\"无法保存声明事件注册租约。\";\n";
 		header << "\t\t\treturn false;\n";
 		header << "\t\t}\n";
 		header << "\t}\n\n";
-		header << "\tvoid UnregisterDynamicEventHandlers() noexcept\n";
+		header << "\tvoid UnregisterDeclarativeEventHandlers() noexcept\n";
 		header << "\t{\n";
-		header << "\t\t_dynamicEventRegistration.reset();\n";
+		header << "\t\t_declarativeEventRegistration.reset();\n";
 		header << "\t}\n\n";
 		header << "private:\n";
 		header << "\ttemplate<typename TCallback>\n";
-		header << "\tstatic auto GuardDynamicEventHandler(\n";
+		header << "\tstatic auto GuardDeclarativeEventHandler(\n";
 		header << "\t\tstd::weak_ptr<void> lifetime, TCallback callback)\n";
 		header << "\t{\n";
 		header << "\t\treturn [lifetime = std::move(lifetime),\n";
@@ -3083,7 +2137,7 @@ std::string CodeGenerator::GenerateHeader()
 		header << "\t\t\t\tstd::forward<decltype(args)>(args)...);\n";
 		header << "\t\t};\n";
 		header << "\t}\n\n";
-		header << "\tstd::shared_ptr<void> _dynamicEventRegistration;\n\n";
+		header << "\tstd::shared_ptr<void> _declarativeEventRegistration;\n\n";
 		header << "protected:\n";
 		for (const auto& handler : eventHandlers)
 			header << "\tvirtual void " << handler.first << "("
@@ -3091,7 +2145,7 @@ std::string CodeGenerator::GenerateHeader()
 		header << "};\n\n";
 	}
 	
-	header << "class " << className << " : public Form";
+	header << "class " << className << " : public Window";
 	if (!eventHandlers.empty())
 		header << ", public " << identity.UserLeaf << "EventSink";
 	header << "\n";
@@ -3099,13 +2153,16 @@ std::string CodeGenerator::GenerateHeader()
 	header << "protected:\n";
 	
 	// 声明控件成员
-	for (const auto& dc : _controls)
+	for (const auto& node : _sourceDocument.Nodes)
 	{
-		std::string name = GetVarName(dc);
-		std::string typeName = GetControlTypeName(*dc);
+		if (node.TemplateState.Generated) continue;
+		std::string name = GetVarName(node);
+		std::string typeName = GetControlTypeName(node.Type);
 		header << "\t" << typeName << "* " << name << " = nullptr;\n";
 	}
 	header << "\tstd::vector<EventConnection> _generatedEventConnections;\n";
+	header << "\tbool _componentInitialized = false;\n";
+	header << "\tvoid InitializeComponent();\n";
 
 	// Generated virtual hooks are overridden by declarations in the user class.
 	if (!eventHandlers.empty())
@@ -3119,53 +2176,54 @@ std::string CodeGenerator::GenerateHeader()
 	header << "\n";
 	header << "public:\n";
 	const bool hasStableControlIds = std::any_of(
-		_controls.begin(), _controls.end(),
-		[](const std::shared_ptr<DesignerControl>& control)
-		{
-			return control && control->StableId > 0;
-		});
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node)
+		{ return node.Id > 0 && !node.TemplateState.Generated; });
 	if (hasStableControlIds)
 	{
 		header << "\t// Stable identities shared by static and dynamic document paths.\n";
 		header << "\tstruct ControlIds final\n\t{\n";
-		for (const auto& dc : _controls)
+		for (const auto& node : _sourceDocument.Nodes)
 		{
-			if (!dc || dc->StableId <= 0) continue;
-			header << "\t\tstatic constexpr int " << GetVarName(dc)
-				<< " = " << dc->StableId << ";\n";
+			if (node.Id <= 0 || node.TemplateState.Generated) continue;
+			header << "\t\tstatic constexpr int " << GetVarName(node)
+				<< " = " << node.Id << ";\n";
 		}
 		header << "\t};\n\n";
 	}
-	if (!_controls.empty())
+	const bool hasAuthoredNamedControls = std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return !node.TemplateState.Generated; });
+	if (hasAuthoredNamedControls)
 	{
-		header << "\t// Type-safe x:Name accessors; ownership remains with the generated Form.\n";
-		for (const auto& dc : _controls)
+		header << "\t// Type-safe x:Name accessors; ownership remains with the generated Window.\n";
+		for (const auto& node : _sourceDocument.Nodes)
 		{
-			if (!dc) continue;
-			auto accessorName = GetVarName(dc);
+			if (node.TemplateState.Generated) continue;
+			auto accessorName = GetVarName(node);
 			if (!accessorName.empty() && accessorName.front() >= 'a'
 				&& accessorName.front() <= 'z')
 				accessorName.front() = static_cast<char>(
 					accessorName.front() - 'a' + 'A');
-			const auto typeName = GetControlTypeName(*dc);
+			const auto typeName = GetControlTypeName(node.Type);
 			header << "\t[[nodiscard]] " << typeName << "* Get"
 				<< accessorName << "() noexcept { return "
-				<< GetVarName(dc) << "; }\n";
+				<< GetVarName(node) << "; }\n";
 			header << "\t[[nodiscard]] const " << typeName << "* Get"
 				<< accessorName << "() const noexcept { return "
-				<< GetVarName(dc) << "; }\n";
+				<< GetVarName(node) << "; }\n";
 		}
 		header << "\n";
 	}
 	header << "\t" << className << "();\n";
 	header << "\tvirtual ~" << className << "();\n";
 	if (hasDataBindings)
-		header << "\tbool BindData(IBindingSource& dataContext);\n";
+		header << "\tbool BindData(BindingSourceReference dataContext);\n";
 	header << "};\n";
 
 	// A zero-owning typed view over the dynamic RuntimeDocument contract. Keep
-	// this template independent of CuiRuntime headers so static-only consumers
-	// do not acquire a runtime link dependency merely by including the .g.h.
+	// this template independent of CuiRuntime headers; Generic.xaml support is
+	// consumed by the generated implementation, not leaked through the API.
 	header << "\n";
 	header << "// Non-owning typed access for a dynamically loaded document.\n";
 	header << "// GetXxx resolves the current instance; ReferenceXxx follows reloads.\n";
@@ -3185,27 +2243,27 @@ std::string CodeGenerator::GenerateHeader()
 	header << "\t// Precondition: the view is still alive; prefer TryDocument() when uncertain.\n";
 	header << "\t[[nodiscard]] TDocument& Document() const noexcept"
 		" { return *_document.Get(); }\n";
-	for (const auto& dc : _controls)
+	for (const auto& node : _sourceDocument.Nodes)
 	{
-		if (!dc || dc->StableId <= 0) continue;
-		auto accessorName = GetVarName(dc);
+		if (node.Id <= 0 || node.TemplateState.Generated) continue;
+		auto accessorName = GetVarName(node);
 		if (!accessorName.empty() && accessorName.front() >= 'a'
 			&& accessorName.front() <= 'z')
 			accessorName.front() = static_cast<char>(
 				accessorName.front() - 'a' + 'A');
-		const auto typeName = GetControlTypeName(*dc);
+		const auto typeName = GetControlTypeName(node.Type);
 		header << "\t[[nodiscard]] " << typeName << "* Get"
 			<< accessorName << "() const noexcept\n\t{\n";
 		header << "\t\treturn _document.template FindControlByDesignId<"
 			<< typeName << ">(\n";
 		header << "\t\t\t" << className << "::ControlIds::"
-			<< GetVarName(dc) << ");\n\t}\n";
+			<< GetVarName(node) << ");\n\t}\n";
 		header << "\t[[nodiscard]] auto Reference" << accessorName
 			<< "() const noexcept\n\t{\n";
 		header << "\t\treturn _document.template ReferenceByDesignId<"
 			<< typeName << ">(\n";
 		header << "\t\t\t" << className << "::ControlIds::"
-			<< GetVarName(dc) << ");\n\t}\n";
+			<< GetVarName(node) << ");\n\t}\n";
 	}
 	header << "\nprivate:\n";
 	header << "\tDocumentReference _document;\n";
@@ -3234,7 +2292,18 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	
 	// 包含头文件
 	cpp << "#include \"" << generatedHeaderBaseName << ".g.h\"\n";
-	if (!_styleSheet.Empty()) cpp << "#include \"Style.h\"\n";
+	cpp << "#include \"XamlInfrastructure.h\"\n";
+	cpp << "#include \"DependencyPropertyInfrastructure.h\"\n";
+	cpp << "#include \"StyleInfrastructure.h\"\n";
+	cpp << "#include \"TemplateInfrastructure.h\"\n";
+	cpp << "#include \"XamlFrameworkTheme.h\"\n";
+	cpp << "#include \"HeaderedContentControl.h\"\n";
+	cpp << "#include \"HeaderedItemsControl.h\"\n";
+	const bool hasLocalStyleSheets = std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return !node.LocalResources.Empty(); });
+	if (!_styleSheet.Empty() || hasLocalStyleSheets)
+		cpp << "#include \"Style.h\"\n";
 	auto usesImageValue = [](const DesignerStyleValue& value)
 	{
 		return value.Kind == DesignerStyleValueKind::ImageSource
@@ -3242,139 +2311,283 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				&& value.ObjectValue.is_object()
 				&& value.ObjectValue.value("type", std::string{}) == "image");
 	};
-	bool usesResources = std::any_of(
-		_styleSheet.Resources.begin(), _styleSheet.Resources.end(),
-		[&](const auto& resource) { return usesImageValue(resource.Value); });
-	for (const auto& rule : _styleSheet.Rules)
+	auto styleSheetUsesImage = [&](const DesignerStyleSheet& sheet)
 	{
-		for (const auto& setter : rule.Setters)
-			usesResources = usesResources
-				|| (!setter.UsesResource && usesImageValue(setter.Literal));
-		for (const auto& trigger : rule.Triggers)
-			for (const auto& setter : trigger.Setters)
-				usesResources = usesResources
-					|| (!setter.UsesResource && usesImageValue(setter.Literal));
-	}
-	for (const auto& control : _controls)
-	{
-		if (!control || !control->ControlInstance) continue;
-		usesResources = usesResources || std::any_of(
-			control->MetadataProperties.begin(),
-			control->MetadataProperties.end(),
-			[&](const auto& property) { return usesImageValue(property.second); });
-		const auto foreground = control->ControlInstance->GetForegroundBrush();
-		usesResources = usesResources || (foreground
-			&& foreground->Kind == cui::drawing::BrushKind::Image);
-		if (control->Type == UIClass::UI_NavigationView)
+		if (std::any_of(sheet.Resources.begin(), sheet.Resources.end(),
+			[&](const auto& resource)
+			{ return usesImageValue(resource.Value); })) return true;
+		for (const auto& rule : sheet.Rules)
 		{
-			const auto* navigation = static_cast<const NavigationView*>(
-				control->ControlInstance);
-			usesResources = usesResources || std::any_of(
-				navigation->Items.begin(), navigation->Items.end(),
-				[](const auto& item) { return static_cast<bool>(item.Icon); });
+			if (std::any_of(rule.Setters.begin(), rule.Setters.end(),
+				[&](const auto& setter)
+				{
+					return !setter.UsesResource
+						&& usesImageValue(setter.Literal);
+				})) return true;
+			for (const auto& trigger : rule.Triggers)
+				if (std::any_of(
+					trigger.Setters.begin(), trigger.Setters.end(),
+					[&](const auto& setter)
+					{
+						return !setter.UsesResource
+							&& usesImageValue(setter.Literal);
+					})) return true;
 		}
-	}
+		return false;
+	};
+	auto propertiesUseImage = [&](const auto& properties)
+	{
+		return std::any_of(
+			properties.Values.begin(), properties.Values.end(),
+			[&](const auto& property)
+			{ return usesImageValue(property.second.Value); });
+	};
+	bool usesResources = styleSheetUsesImage(_styleSheet)
+		|| propertiesUseImage(_sourceDocument.Window.Properties)
+		|| std::any_of(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[&](const auto& node)
+			{
+				return propertiesUseImage(node.Properties)
+					|| styleSheetUsesImage(node.LocalResources);
+			});
 	if (usesResources) cpp << "#include \"Resource.h\"\n";
 	cpp << "#include <functional>\n";
 	cpp << "#include <memory>\n";
+	cpp << "#include <stdexcept>\n";
 	cpp << "#include <utility>\n";
 	cpp << "#include <vector>\n\n";
 	
-	// 构造函数（注意：本框架的窗体初始化应走 Form 基类构造函数参数，
-	// 在构造函数体内直接写 this->Text/Size/Location 可能不会生效。）
+	// Do not lower XAML from the generated base constructor. InitializeComponent
+	// is called from the user class constructor body, after base construction,
+	// so virtual C++ event/command hooks dispatch to the authored overrides just
+	// as WPF initializes a completed code-behind instance.
 	cpp << className << "::" << classLeaf << "()\n";
-	std::wstring text = _formText.empty() ? _className : _formText;
-	cpp << "\t: Form(L\"" << EscapeWStringLiteral(text) << "\", POINT{ "
-		<< _formLocation.x << ", " << _formLocation.y << " }, SIZE{ "
-		<< _formSize.cx << ", " << _formSize.cy << " })\n";
+	cpp << "\t: Window()\n";
+	cpp << "{\n";
+	cpp << "}\n\n";
+	cpp << "void " << className << "::InitializeComponent()\n";
 	cpp << "{\n\n";
-	cpp << "\t[[maybe_unused]] auto __layoutScope_form = cui::layout::DeferLayout(*this);\n\n";
-
-	cpp << "\t// 窗体属性（标题栏/按钮/缩放）\n";
-	cpp << "\tthis->VisibleHead = " << (_formVisibleHead ? "true" : "false") << ";\n";
-	cpp << "\tthis->HeadHeight = " << _formHeadHeight << ";\n";
-	cpp << "\tthis->MinBox = " << (_formMinBox ? "true" : "false") << ";\n";
-	cpp << "\tthis->MaxBox = " << (_formMaxBox ? "true" : "false") << ";\n";
-	cpp << "\tthis->CloseBox = " << (_formCloseBox ? "true" : "false") << ";\n";
-	cpp << "\tthis->CenterTitle = " << (_formCenterTitle ? "true" : "false") << ";\n";
-	cpp << "\tthis->AllowResize = " << (_formAllowResize ? "true" : "false") << ";\n\n";
-
-	cpp << "\t// 窗体属性（通用）\n";
-	cpp << "\tthis->BackColor = " << ColorToString(_formBackColor) << ";\n";
-	cpp << "\tthis->ForeColor = " << ColorToString(_formForeColor) << ";\n";
-	cpp << "\tthis->ShowInTaskBar = " << (_formShowInTaskBar ? "true" : "false") << ";\n";
-	cpp << "\tthis->TopMost = " << (_formTopMost ? "true" : "false") << ";\n";
-	cpp << "\tthis->Enable = " << (_formEnable ? "true" : "false") << ";\n";
-	cpp << "\tthis->Visible = " << (_formVisible ? "true" : "false") << ";\n\n";
-
-	// Font（共享给默认控件）
-	{
-		auto* def = GetDefaultFontObject();
-		std::wstring defName = def ? def->FontName : L"Arial";
-		float defSize = def ? def->FontSize : 18.0f;
-		std::wstring formNameW = _formFontName.empty() ? defName : _formFontName;
-		float formSize = _formFontSize;
-		bool formHasShared = !(_formFontName.empty() && formNameW == defName && std::fabs(formSize - defSize) < 1e-6f);
-		if (formHasShared)
-		{
-			cpp << "\t// Font\n";
-			cpp << "\tauto* __formFont = new ::Font(L\"" << EscapeWStringLiteral(formNameW) << "\", "
-				<< FloatLiteral(formSize) << ");\n";
-			cpp << "\tthis->SetFontEx(__formFont, true);\n\n";
-		}
-	}
-	
+	cpp << "\tif (_componentInitialized) return;\n";
+	cpp << "\t_componentInitialized = true;\n\n";
+	cpp << "\t// Native constructors are behavior-host implementation details.\n";
+	cpp << "\t// Begin from the same empty Local-value surface as dynamic XAML.\n";
+	cpp << "\t(void)this->ClearPropertyValues();\n\n";
+	cpp << "\tstatic const auto __xamlType_this = "
+		"DeclarativeTypeDescriptor::Create(\n";
+	cpp << "\t\tRuntimeTypeId{ L\""
+		<< EscapeWStringLiteral(_sourceDocument.Window.XamlType.NamespaceUri)
+		<< "\", L\""
+		<< EscapeWStringLiteral(_sourceDocument.Window.XamlType.LocalName)
+		<< "\" }, {});\n";
+	cpp << "\tif (!__xamlType_this || "
+		"!cui::framework::XamlAccess::SetTypeDescriptor("
+		"*this, __xamlType_this))\n";
+	cpp << "\t\tthrow std::runtime_error("
+		"\"Generated XAML type attachment failed\");\n\n";
 	cpp << "\t// 创建控件\n";
 
-	std::vector<std::pair<int, std::string>> generatedLayoutScopes;
+	// 1) 先实例化所有可设计控件（不做 AdoptVisualChild）。x:Reference
+	// wiring is emitted only after every member pointer has been assigned.
+	for (const auto& node : _sourceDocument.Nodes)
+		cpp << GenerateControlInstantiation(node, 1);
+	if (!_sourceDocument.Nodes.empty()) cpp << "\n";
 
-	// 1) 先实例化所有可设计控件（不做 AddControl）
-	for (const auto& dc : _controls)
+	auto findSourceNodeByName = [&](const std::wstring& name)
+		-> const DesignerModel::DesignNode*
 	{
-		cpp << GenerateControlInstantiation(dc, 1);
-		cpp << GenerateControlCommonProperties(dc, 1);
-		cpp << GenerateLocalResources(dc, 1);
-		cpp << GenerateMetadataProperties(dc, 1);
-		cpp << GenerateContainerProperties(dc, 1);
-		if (dc && dc->ControlInstance && dc->Type != UIClass::UI_TabPage)
-			cpp << "\n";
+		const auto found = std::find_if(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[&](const auto& candidate) { return candidate.Name == name; });
+		return found == _sourceDocument.Nodes.end() ? nullptr : &*found;
+	};
+	const bool hasGeneratedTemplateNodes = std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return node.TemplateState.Generated; });
+	if (hasGeneratedTemplateNodes)
+		cpp << "\t// Establish the ControlTemplate namescope before properties/bindings.\n";
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		if (!node.TemplateState.Generated) continue;
+		const auto* owner = findSourceNodeByName(node.TemplateState.Owner);
+		if (!owner)
+			throw std::invalid_argument(
+				"Generated ControlTemplate node has no owner");
+		const auto nodeVar = GetVarName(node);
+		const auto ownerVar = GetVarName(*owner);
+		cpp << "\tcui::framework::XamlAccess::SetTemplatedParent(*"
+			<< nodeVar << ", " << ownerVar << ");\n";
+		if (!node.TemplateState.PartName.empty())
+		{
+			cpp << "\tif (!cui::framework::XamlAccess::RegisterTemplatePart(*"
+				<< ownerVar << ", L\""
+				<< EscapeWStringLiteral(node.TemplateState.PartName)
+				<< "\", " << nodeVar << "))\n";
+			cpp << "\t\tthrow std::runtime_error("
+				"\"Generated ControlTemplate part registration failed\");\n";
+		}
+		if (node.TemplateContentSource == L"Content")
+		{
+			cpp << "\t{\n";
+			cpp << "\t\tauto* __contentOwner_" << nodeVar
+				<< " = dynamic_cast<ContentControl*>(" << ownerVar << ");\n";
+			cpp << "\t\tauto* __contentPresenter_" << nodeVar
+				<< " = dynamic_cast<ContentPresenter*>(" << nodeVar << ");\n";
+			cpp << "\t\tif (!__contentOwner_" << nodeVar
+				<< " || !__contentPresenter_" << nodeVar
+				<< " || !cui::framework::TemplateAccess::"
+				"RegisterContentPresenter(*__contentOwner_" << nodeVar
+				<< ", __contentPresenter_" << nodeVar << "))\n";
+			cpp << "\t\t\tthrow std::runtime_error("
+				"\"Generated ContentPresenter registration failed\");\n";
+			cpp << "\t}\n";
+		}
+		else if (node.TemplateContentSource == L"Header")
+		{
+			cpp << "\t{\n";
+			cpp << "\t\tauto* __headerPresenter_" << nodeVar
+				<< " = dynamic_cast<ContentPresenter*>(" << nodeVar << ");\n";
+			cpp << "\t\tbool __headerRegistered_" << nodeVar
+				<< " = false;\n";
+			cpp << "\t\tif (auto* __owner = dynamic_cast<"
+				"HeaderedContentControl*>(" << ownerVar << "))\n";
+			cpp << "\t\t\t__headerRegistered_" << nodeVar
+				<< " = __owner->RegisterTemplateHeaderPresenter("
+				"__headerPresenter_" << nodeVar << ");\n";
+			cpp << "\t\telse if (auto* __owner = dynamic_cast<"
+				"HeaderedItemsControl*>(" << ownerVar << "))\n";
+			cpp << "\t\t\t__headerRegistered_" << nodeVar
+				<< " = __owner->RegisterTemplateHeaderPresenter("
+				"__headerPresenter_" << nodeVar << ");\n";
+			cpp << "\t\tif (!__headerRegistered_" << nodeVar << ")\n";
+			cpp << "\t\t\tthrow std::runtime_error("
+				"\"Generated header ContentPresenter registration failed\");\n";
+			cpp << "\t}\n";
+		}
+		if (node.Type == UIClass::UI_ItemsPresenter)
+		{
+			cpp << "\t{\n";
+			cpp << "\t\tauto* __itemsOwner_" << nodeVar
+				<< " = dynamic_cast<ItemsControl*>(" << ownerVar << ");\n";
+			cpp << "\t\tauto* __itemsPresenter_" << nodeVar
+				<< " = dynamic_cast<ItemsPresenter*>(" << nodeVar << ");\n";
+			cpp << "\t\tif (!__itemsOwner_" << nodeVar
+				<< " || !__itemsPresenter_" << nodeVar
+				<< " || !cui::framework::TemplateAccess::"
+				"RegisterItemsPresenter(*__itemsOwner_" << nodeVar
+				<< ", __itemsPresenter_" << nodeVar << "))\n";
+			cpp << "\t\t\tthrow std::runtime_error("
+				"\"Generated ItemsPresenter registration failed\");\n";
+			cpp << "\t}\n";
+		}
 	}
+	if (hasGeneratedTemplateNodes) cpp << "\n";
 
-	// 容器各自持有布局事务。构造函数末尾按父到子的顺序显式提交；
-	// 若初始化抛异常，RAII 析构仍会安全恢复而不强制同步布局。
-	for (const auto& dc : _controls)
+	// 2) Apply scalar/structured state after the complete namescope exists.
+	for (const auto& node : _sourceDocument.Nodes)
 	{
-		const bool supportsLayoutScope = dc &&
-			(IsContainerType(dc->Type) || dc->Type == UIClass::UI_StatusBar);
-		if (!dc || !dc->ControlInstance || dc->Type == UIClass::UI_TabPage || !supportsLayoutScope)
-			continue;
-		const std::string controlVar = GetVarName(dc);
-		const std::string scopeVar = "__layoutScope_" + controlVar;
-		int depth = 0;
-		for (Control* parent = dc->DesignerParent; parent; parent = parent->Parent)
-			++depth;
-		cpp << "\t[[maybe_unused]] auto " << scopeVar
-			<< " = cui::layout::DeferLayout(*" << controlVar << ");\n";
-		generatedLayoutScopes.push_back({ depth, scopeVar });
-	}
-	if (!generatedLayoutScopes.empty())
+		cpp << GenerateControlCommonProperties(node, 1);
+		cpp << GenerateLocalResources(node, 1);
+		cpp << GenerateAuthoredProperties(node, 1);
+		cpp << GenerateContainerProperties(node, 1);
 		cpp << "\n";
+	}
 
-	// Event subscriptions are owned by RAII connections and disconnect before Form teardown.
+	// TemplateBinding is an expression in the Template value slot. Install it
+	// after literal template properties so static lowering follows the same
+	// ordering as dynamic XAML materialization.
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		if (!node.TemplateState.Generated || node.TemplateBindings.empty())
+			continue;
+		const auto* owner = findSourceNodeByName(node.TemplateState.Owner);
+		if (!owner)
+			throw std::invalid_argument(
+				"Generated ControlTemplate node has no owner");
+		const auto nodeVar = GetVarName(node);
+		const auto ownerVar = GetVarName(*owner);
+		for (const auto& [targetProperty, sourceProperty]
+			: node.TemplateBindings)
+		{
+			cpp << "\tif (!" << nodeVar
+				<< "->DataBindings.AddTemplateBinding(L\""
+				<< EscapeWStringLiteral(targetProperty) << "\", *"
+				<< ownerVar << ", L\""
+				<< EscapeWStringLiteral(sourceProperty) << "\"))\n";
+			cpp << "\t\tthrow std::runtime_error("
+				"\"Generated TemplateBinding installation failed\");\n";
+		}
+	}
+	if (hasGeneratedTemplateNodes) cpp << "\n";
+
+	auto emitInputBindings = [&](const auto& bindings,
+		const std::string& target)
+	{
+		for (const auto& binding : bindings)
+		{
+			std::wstring gestureError;
+			if (binding.Kind == DesignerModel::DesignInputBindingKind::Key)
+			{
+				KeyGesture gesture;
+				if (!TryParseKeyGesture(binding.Gesture, gesture, &gestureError))
+					throw std::invalid_argument(
+						"Code generation encountered an invalid KeyBinding");
+				const auto keyExpression = KeyToExpr(gesture.Key);
+				if (keyExpression.empty())
+					throw std::invalid_argument(
+						"Code generation encountered an unsupported Key identity");
+				cpp << "\t(void)" << target << "->AddInputBinding(KeyBinding{ "
+					<< "RoutedCommand(L\"" << EscapeWStringLiteral(binding.Command)
+					<< "\"), KeyGesture{ " << keyExpression << ", "
+					<< ModifierKeysToExpr(gesture.Modifiers) << " }, ";
+			}
+			else
+			{
+				MouseGesture gesture;
+				if (!TryParseMouseGesture(binding.Gesture, gesture, &gestureError))
+					throw std::invalid_argument(
+						"Code generation encountered an invalid MouseBinding");
+				cpp << "\t(void)" << target << "->AddInputBinding(MouseBinding{ "
+					<< "RoutedCommand(L\"" << EscapeWStringLiteral(binding.Command)
+					<< "\"), MouseGesture{ " << MouseActionToExpr(gesture.Action)
+					<< ", " << ModifierKeysToExpr(gesture.Modifiers) << " }, ";
+			}
+			if (binding.CommandParameter.empty()) cpp << "{}";
+			else cpp << "std::wstring(L\""
+				<< EscapeWStringLiteral(binding.CommandParameter) << "\")";
+			cpp << ", " << CommandTargetExpression(binding.CommandTarget)
+				<< " });\n";
+		}
+	};
+	if (!_sourceDocument.Window.InputBindings.empty())
+	{
+		cpp << "\t// XAML InputBindings\n";
+		emitInputBindings(_sourceDocument.Window.InputBindings, "this");
+	}
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		if (node.InputBindings.empty()) continue;
+		emitInputBindings(node.InputBindings, GetVarName(node));
+	}
+	if (!_sourceDocument.Window.InputBindings.empty()
+		|| std::any_of(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node)
+			{ return !node.InputBindings.empty(); })) cpp << "\n";
+
+	// Event subscriptions are owned by RAII connections and disconnect before Window teardown.
 	{
 		std::unordered_map<std::string, std::type_index> sigOf;
 		std::vector<GeneratedEventBinding> binds;
-		binds.reserve(_controls.size());
-		std::string formPrefix = SanitizeCppIdentifier(WStringToString(_formName));
-
-		// Form 事件
-		for (const auto& kv : _formEventHandlers)
+		binds.reserve(_sourceDocument.Nodes.size());
+		// Window 事件
+		for (const auto& kv : _sourceDocument.Window.Events)
 		{
 			if (kv.first.empty()) continue;
 			if (kv.second.empty()) continue;
-			const auto descriptor = DesignerEventCatalog::FindFormEvent(kv.first);
+			const auto descriptor = DesignerEventCatalog::FindWindowEvent(kv.first);
 			if (!descriptor) continue;
-			std::string handlerName = ResolveHandlerName(kv.second, formPrefix, kv.first);
+			std::string handlerName = Utf8HandlerName(kv.second);
 			auto itSig = sigOf.find(handlerName);
 			if (itSig != sigOf.end()
 				&& itSig->second != descriptor->Signature) continue;
@@ -3384,18 +2597,17 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				descriptor->EventField, handlerName, descriptor->ParameterList });
 		}
 
-		for (const auto& dc : _controls)
+		for (const auto& node : _sourceDocument.Nodes)
 		{
-			if (!dc) continue;
-			std::string ctrlVar = GetVarName(dc);
-			for (const auto& kv : dc->EventHandlers)
+			std::string ctrlVar = GetVarName(node);
+			for (const auto& kv : node.Events)
 			{
 				const auto& evNameW = kv.first;
 				if (kv.second.empty()) continue;
 				const auto descriptor = DesignerEventCatalog::FindControlEvent(
-					dc->Type, evNameW, dc->ComponentEvents);
+					node.Type, evNameW, ComponentEvents(node));
 				if (!descriptor) continue;
-				std::string handlerName = ResolveHandlerName(kv.second, ctrlVar, evNameW);
+				std::string handlerName = Utf8HandlerName(kv.second);
 				auto itSig = sigOf.find(handlerName);
 				if (itSig != sigOf.end()
 					&& itSig->second != descriptor->Signature) continue;
@@ -3420,204 +2632,265 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		}
 	}
 
-	// 2) 按 DesignerParent 组装层级（容器内应为 container->AddControl）
+	// CommandBinding is a first-class command collection, not four unrelated
+	// routed-event subscriptions. Keeping this grouping is required for class
+	// bindings, command-source requery, and atomic replacement to share the same
+	// command identity and lifetime.
+	auto emitCommandBindings = [&](const auto& bindings,
+		const std::string& target)
+	{
+		for (const auto& binding : bindings)
+		{
+			cpp << "\t{\n";
+			cpp << "\t\tCommandBinding __commandBinding;\n";
+			cpp << "\t\t__commandBinding.Command = RoutedCommand(L\""
+				<< EscapeWStringLiteral(binding.Command) << "\");\n";
+			auto emitCanExecute = [&](const char* field,
+				const std::wstring& storedHandler)
+			{
+				if (storedHandler.empty()) return;
+				cpp << "\t\t__commandBinding." << field
+					<< " = [this](Control* sender, CanExecuteRoutedEventArgs& e) { "
+					<< Utf8HandlerName(storedHandler) << "(sender, e); };\n";
+			};
+			auto emitExecuted = [&](const char* field,
+				const std::wstring& storedHandler)
+			{
+				if (storedHandler.empty()) return;
+				cpp << "\t\t__commandBinding." << field
+					<< " = [this](Control* sender, ExecutedRoutedEventArgs& e) { "
+					<< Utf8HandlerName(storedHandler) << "(sender, e); };\n";
+			};
+			emitCanExecute("PreviewCanExecute", binding.PreviewCanExecute);
+			emitCanExecute("CanExecute", binding.CanExecute);
+			emitExecuted("PreviewExecuted", binding.PreviewExecuted);
+			emitExecuted("Executed", binding.Executed);
+			cpp << "\t\t_generatedEventConnections.emplace_back("
+				<< target
+				<< "->AddCommandBinding(std::move(__commandBinding)));\n";
+			cpp << "\t}\n";
+		}
+	};
+	if (!_sourceDocument.Window.CommandBindings.empty())
+	{
+		cpp << "\t// XAML CommandBindings\n";
+		emitCommandBindings(_sourceDocument.Window.CommandBindings, "this");
+	}
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		if (node.CommandBindings.empty()) continue;
+		emitCommandBindings(node.CommandBindings, GetVarName(node));
+	}
+	if (!_sourceDocument.Window.CommandBindings.empty()
+		|| std::any_of(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node)
+			{ return !node.CommandBindings.empty(); })) cpp << "\n";
+
+	// 2) Assemble the logical authored hierarchy. ItemsControl children enter
+	//    Items; ordinary container children enter the visual collection.
 	cpp << "\t// 组装控件层级（包含布局容器）\n";
 
-	// 建立 Control* -> 变量名 映射
-	std::unordered_map<Control*, std::string> varOf;
-	varOf.reserve(_controls.size());
-	for (const auto& dc : _controls)
+	std::unordered_map<const DesignerModel::DesignNode*,
+		std::vector<const DesignerModel::DesignNode*>> childrenOf;
+	childrenOf.reserve(_sourceDocument.Nodes.size());
+	auto findNodeById = [&](int id) -> const DesignerModel::DesignNode*
 	{
-		if (!dc || !dc->ControlInstance) continue;
-		varOf[dc->ControlInstance] = GetVarName(dc);
+		const auto found = std::find_if(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[&](const auto& node) { return node.Id == id; });
+		return found == _sourceDocument.Nodes.end() ? nullptr : &*found;
+	};
+	auto findNodeByName = [&](const std::wstring& name)
+		-> const DesignerModel::DesignNode*
+	{
+		const auto found = std::find_if(
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[&](const auto& node) { return node.Name == name; });
+		return found == _sourceDocument.Nodes.end() ? nullptr : &*found;
+	};
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		const auto* parent = node.ParentId > 0
+			? findNodeById(node.ParentId)
+			: !node.ParentRef.empty()
+				? findNodeByName(node.ParentRef) : nullptr;
+		childrenOf[parent].push_back(&node);
 	}
 
-	// parent -> children(designer) 映射
-	std::unordered_map<Control*, std::vector<std::shared_ptr<DesignerControl>>> childrenOf;
-	childrenOf.reserve(_controls.size());
-	for (const auto& dc : _controls)
+	auto sortAuthoredChildren = [&](auto& list)
 	{
-		if (!dc || !dc->ControlInstance) continue;
-		childrenOf[dc->DesignerParent].push_back(dc);
-	}
-
-	auto sortChildrenByRuntimeOrder = [&](Control* parent, std::vector<std::shared_ptr<DesignerControl>>& list)
-	{
-		if (!parent || list.size() <= 1) return;
-		if (parent->Type() == UIClass::UI_SplitContainer)
-		{
-			SortSplitChildrenByRuntimeOrder((SplitContainer*)parent, list);
-			return;
-		}
-		// 用 parent->Children 的顺序来稳定排序（用于 Stack/Warp 等需要顺序的容器）
-		std::unordered_map<Control*, int> childRuntimeOrder;
-		childRuntimeOrder.reserve((size_t)parent->Count);
-		for (int i = 0; i < parent->Count; i++)
-		{
-			childRuntimeOrder[parent->operator[](i)] = i;
-		}
-		std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b)
+		std::stable_sort(list.begin(), list.end(), [](const auto& left,
+			const auto& right)
 			{
-				int leftOrder = INT_MAX;
-				int rightOrder = INT_MAX;
-				auto leftOrderIt = childRuntimeOrder.find(a->ControlInstance);
-				if (leftOrderIt != childRuntimeOrder.end()) leftOrder = leftOrderIt->second;
-				auto rightOrderIt = childRuntimeOrder.find(b->ControlInstance);
-				if (rightOrderIt != childRuntimeOrder.end()) rightOrder = rightOrderIt->second;
+				const auto leftOrder = left->Order < 0
+					? (std::numeric_limits<int>::max)() : left->Order;
+				const auto rightOrder = right->Order < 0
+					? (std::numeric_limits<int>::max)() : right->Order;
 				return leftOrder < rightOrder;
 			});
 	};
 
-	// TabPage 可能没有 DesignerControl：需要在生成时为其分配变量名
-	std::unordered_map<Control*, std::string> tabPageVarOf;
-	int tabPageAutoId = 0;
+	std::function<void(const DesignerModel::DesignNode*,
+		const std::string&, int)> emitChildren;
+	std::function<void(const DesignerModel::DesignNode&,
+		const std::string&, int)> emitControl;
 
-	std::function<void(Control* parentCtrl, const std::string& parentExpr, int indent)> emitChildren;
-	std::function<void(const std::shared_ptr<DesignerControl>& dc, const std::string& parentExpr, int indent)> emitControl;
-
-	emitChildren = [&](Control* parentCtrl, const std::string& parentExpr, int indent)
+	emitChildren = [&](const DesignerModel::DesignNode* parent,
+		const std::string& parentExpr, int indent)
 	{
-		auto it = childrenOf.find(parentCtrl);
+		auto it = childrenOf.find(parent);
 		if (it == childrenOf.end()) return;
 		auto list = it->second;
-		sortChildrenByRuntimeOrder(parentCtrl, list);
-		for (auto& childDc : list)
-			emitControl(childDc, parentExpr, indent);
+		sortAuthoredChildren(list);
+		for (const auto* child : list)
+			emitControl(*child, parentExpr, indent);
 	};
 
-	auto emitLayoutPropsForParent = [&](Control* parentCtrl, const std::string& childVar, Control* childCtrl, int indent)
+	emitControl = [&](const DesignerModel::DesignNode& node,
+		const std::string& parentExpr, int indent)
 	{
-		if (!parentCtrl || !childCtrl) return;
-		std::string indentStr(indent, '\t');
-		UIClass pt = parentCtrl->Type();
-		if (pt == UIClass::UI_GridPanel)
-		{
-			cpp << indentStr << childVar << "->GridRow = " << childCtrl->GridRow << ";\n";
-			cpp << indentStr << childVar << "->GridColumn = " << childCtrl->GridColumn << ";\n";
-			cpp << indentStr << childVar << "->GridRowSpan = " << childCtrl->GridRowSpan << ";\n";
-			cpp << indentStr << childVar << "->GridColumnSpan = " << childCtrl->GridColumnSpan << ";\n";
-			cpp << indentStr << childVar << "->HAlign = " << HorizontalAlignmentToString(childCtrl->HAlign) << ";\n";
-			cpp << indentStr << childVar << "->VAlign = " << VerticalAlignmentToString(childCtrl->VAlign) << ";\n";
-		}
-		else if (pt == UIClass::UI_DockPanel)
-		{
-			cpp << indentStr << childVar << "->DockPosition = " << DockToString(childCtrl->DockPosition) << ";\n";
-		}
-		else if (pt == UIClass::UI_RelativePanel)
-		{
-			// 设计器中 RelativePanel 主要用 Margin.Left/Top 表示定位
-			auto m = childCtrl->Margin;
-			if (m.Left != 0.0f || m.Top != 0.0f || m.Right != 0.0f || m.Bottom != 0.0f)
-				cpp << indentStr << childVar << "->Margin = " << ThicknessToString(m) << ";\n";
-		}
-		else if (pt == UIClass::UI_StackPanel || pt == UIClass::UI_WrapPanel)
-		{
-			// 可选：输出对齐（设计器中经常用 Stretch）
-			cpp << indentStr << childVar << "->HAlign = " << HorizontalAlignmentToString(childCtrl->HAlign) << ";\n";
-			cpp << indentStr << childVar << "->VAlign = " << VerticalAlignmentToString(childCtrl->VAlign) << ";\n";
-		}
-	};
-
-	emitControl = [&](const std::shared_ptr<DesignerControl>& dc, const std::string& parentExpr, int indent)
-	{
-		if (!dc || !dc->ControlInstance) return;
-		// TabPage 由 TabControl::AddPage 创建，不走通用 AddControl 流程
-		if (dc->Type == UIClass::UI_TabPage) return;
-		auto* c = dc->ControlInstance;
-		std::string childVar = GetVarName(dc);
+		std::string childVar = GetVarName(node);
 		std::string indentStr(indent, '\t');
 
 		// 添加到父容器
 		UIClass parentType = UIClass::UI_CUSTOM;
-		if (dc->DesignerParent) parentType = dc->DesignerParent->Type();
-		const auto headerRegion = dc->DesignStrings.find(L"headeredRegion");
-		const bool isVisualHeader = headerRegion != dc->DesignStrings.end()
-			&& headerRegion->second == L"header";
-		if (isVisualHeader
-			&& (parentType == UIClass::UI_GroupBox
-				|| parentType == UIClass::UI_Expander))
+		const auto* parent = node.ParentId > 0
+			? findNodeById(node.ParentId)
+			: !node.ParentRef.empty()
+				? findNodeByName(node.ParentRef) : nullptr;
+		if (parent) parentType = parent->Type;
+		const bool isVisualHeader = node.Structure.ChildRole
+			== DesignerModel::DesignNodeChildRole::Header;
+		if (!parent)
+		{
+			cpp << indentStr << parentExpr
+				<< "->SetVisualContent(std::move(__owned_" << childVar << "));\n";
+		}
+		else if (node.TemplateState.ControlTemplateRoot)
+		{
+			cpp << indentStr
+				<< "cui::framework::TemplateAccess::SetTemplateRoot(*"
+				<< parentExpr << ", std::move(__owned_" << childVar << "));\n";
+		}
+		else if (isVisualHeader
+			&& (IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedContentControl, parentType)
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedItemsControl, parentType)))
 		{
 			cpp << indentStr << parentExpr
 				<< "->SetVisualHeader(std::move(__owned_" << childVar << "));\n";
 		}
-		else if (parentType == UIClass::UI_ToolBar)
+		else if (IsUIClassAssignableFrom(
+			UIClass::UI_ItemsControl, parentType))
 		{
-			cpp << indentStr << parentExpr << "->AddOwned(std::move(__owned_" << childVar << "));\n";
+			cpp << indentStr << parentExpr
+				<< "->AddItemControl(std::move(__owned_" << childVar << "));\n";
 		}
-		else if (parentType == UIClass::UI_SplitContainer)
+		else if (IsUIClassAssignableFrom(
+			UIClass::UI_ContentControl, parentType))
 		{
-			auto* split = (SplitContainer*)dc->DesignerParent;
-			std::string hostExpr = GetSplitChildHostExpr(split, c->Parent, parentExpr);
-			cpp << indentStr << hostExpr << "->AddOwned(std::move(__owned_" << childVar << "));\n";
+			cpp << indentStr << parentExpr
+				<< "->SetVisualContent(std::move(__owned_" << childVar << "));\n";
+		}
+		else if (parentType == UIClass::UI_Popup)
+		{
+			cpp << indentStr << parentExpr
+				<< "->SetChild(std::move(__owned_" << childVar << "));\n";
+		}
+		else if (IsUIClassAssignableFrom(
+			UIClass::UI_Decorator, parentType))
+		{
+			cpp << indentStr << parentExpr
+				<< "->SetChild(std::move(__owned_" << childVar << "));\n";
 		}
 		else
 		{
 			cpp << indentStr << parentExpr << "->AddOwned(std::move(__owned_" << childVar << "));\n";
 		}
 
-		emitLayoutPropsForParent(dc->DesignerParent, childVar, c, indent);
+		if (node.TemplateState.Generated
+			&& node.TemplateState.ControlTemplateRoot)
+			cpp << indentStr
+				<< "cui::framework::XamlAccess::SetLogicalParent(*"
+				<< childVar << ", nullptr);\n";
+		if (!node.TemplateState.ContentOwner.empty())
+		{
+			const auto* logicalOwner = findSourceNodeByName(
+				node.TemplateState.ContentOwner);
+			if (!logicalOwner)
+				throw std::invalid_argument(
+					"Projected template content has no logical owner");
+			cpp << indentStr
+				<< "cui::framework::XamlAccess::SetLogicalParent(*"
+				<< childVar << ", " << GetVarName(*logicalOwner) << ");\n";
+		}
 
-		// 如果是容器，递归添加子控件
-		if (dc->Type == UIClass::UI_TabControl)
-		{
-			// TabControl：先创建页，再向页内添加子控件
-			auto* tabControl = (TabControl*)c;
-			for (int i = 0; i < tabControl->Count; i++)
-			{
-				auto* page = tabControl->operator[](i);
-				if (!page) continue;
-				std::string pageVar;
-				// 如果页本身有 DesignerControl 包装，则用成员变量接收
-				auto itVar = varOf.find(page);
-				if (itVar != varOf.end())
-				{
-					pageVar = itVar->second;
-					cpp << indentStr << pageVar << " = " << childVar << "->AddPage(L\"" << EscapeWStringLiteral(page->Text) << "\");\n";
-				}
-				else
-				{
-					pageVar = childVar + "_page" + std::to_string(i + 1);
-					// 避免命名冲突
-					pageVar += "_" + std::to_string(++tabPageAutoId);
-					cpp << indentStr << "auto* " << pageVar << " = " << childVar << "->AddPage(L\"" << EscapeWStringLiteral(page->Text) << "\");\n";
-				}
-				tabPageVarOf[page] = pageVar;
-				// 页是容器：继续往里加
-				emitChildren(page, pageVar, indent);
-			}
-		}
-		else if (dc->Type == UIClass::UI_ToolBar)
-		{
-			// ToolBar：子控件统一走 AddToolItem，由工具栏负责横向排布
-			emitChildren(c, childVar, indent);
-		}
-		else if (IsContainerType(dc->Type))
-		{
-			emitChildren(c, childVar, indent);
-		}
+		emitChildren(&node, childVar, indent);
 
 		cpp << "\n";
 	};
 
-	// 根级控件：DesignerParent == nullptr
+	// 根级控件由文档 ParentId/ParentRef 唯一决定。
 	auto rootsIt = childrenOf.find(nullptr);
 	if (rootsIt != childrenOf.end())
 	{
 		auto roots = rootsIt->second;
-		sortChildrenByRuntimeOrder(nullptr, roots);
-		for (auto& rootDc : roots)
-			emitControl(rootDc, "this", 1);
+		sortAuthoredChildren(roots);
+		for (const auto* root : roots)
+			emitControl(*root, "this", 1);
 	}
 
-	cpp << GenerateStyleSheetCode(1);
+	cpp << "\tstd::wstring __frameworkThemeError;\n";
+	cpp << "\tif (!CuiRuntime::XamlFrameworkTheme::Apply("
+		"*this, true, &__frameworkThemeError))\n";
+	cpp << "\t\tthrow std::runtime_error("
+		"\"Generated Generic.xaml theme installation failed\");\n";
 
-	cpp << "\t// 父容器先确定子控件最终矩形，再由子容器完成内部布局。\n";
-	cpp << "\t__layoutScope_form.Commit();\n";
-	std::stable_sort(generatedLayoutScopes.begin(), generatedLayoutScopes.end(),
-		[](const auto& left, const auto& right) { return left.first < right.first; });
-	for (const auto& entry : generatedLayoutScopes)
-		cpp << "\t" << entry.second << ".Commit();\n";
-	
+	if (!_sourceDocument.Window.Properties.StyleResourceKey.empty())
+		cpp << "\tcui::framework::StyleAccess::SetResourceKey(*this, L\""
+			<< EscapeWStringLiteral(
+				_sourceDocument.Window.Properties.StyleResourceKey)
+			<< "\");\n";
+	cpp << GenerateStyleSheetCode(1);
+	if (!_sourceDocument.Window.Properties.Values.empty())
+		cpp << "\t// XAML Window Local 属性/资源表达式\n";
+	for (const auto& [propertyName, assignment]
+		: _sourceDocument.Window.Properties.Values)
+	{
+		if (!assignment.DynamicResourceKey.empty())
+			cpp << "\t(void)this->SetDynamicResource(L\""
+				<< EscapeWStringLiteral(propertyName) << "\", L\""
+				<< EscapeWStringLiteral(assignment.DynamicResourceKey) << "\");\n";
+		else
+			cpp << "\t(void)this->TrySetPropertyValue(L\""
+				<< EscapeWStringLiteral(propertyName) << "\", "
+				<< GenerateStyleValueExpression(assignment.Value) << ");\n";
+	}
+	if (!_sourceDocument.Window.Properties.Values.empty()) cpp << "\n";
+
+	for (const auto& owner : _sourceDocument.Nodes)
+	{
+		if (!owner.TemplateState.AppliedControlTemplateFromTheme) continue;
+		const auto& resourceKey =
+			owner.TemplateState.AppliedControlTemplateResource;
+		if (resourceKey.empty())
+			throw std::invalid_argument(
+				"Framework theme template requires a stable resource key");
+		cpp << "\tif (!CuiRuntime::XamlFrameworkTheme::"
+			"ApplyTemplateVisualStates(*" << GetVarName(owner)
+			<< ", L\"" << EscapeWStringLiteral(resourceKey)
+			<< "\", &__frameworkThemeError))\n";
+		cpp << "\t\tthrow std::runtime_error("
+			"\"Generated Generic.xaml visual-state installation failed\");\n";
+	}
+	if (std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node)
+		{ return node.TemplateState.AppliedControlTemplateFromTheme; }))
+		cpp << "\n";
+
 	cpp << "}\n\n";
 	
 	// 析构函数
@@ -3636,52 +2909,50 @@ std::string CodeGenerator::GenerateCppForBaseName(
 						return !trigger.DataConditions.empty();
 					});
 		});
-	const bool hasDataBindings = hasStyleDataTriggers || std::any_of(
-		_controls.begin(), _controls.end(),
-		[](const std::shared_ptr<DesignerControl>& control)
-		{
-			return control && !control->DataBindings.empty();
-		});
+	const bool hasDataBindings = !_sourceDocument.Window.Bindings.empty()
+		|| hasStyleDataTriggers || std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return !node.Bindings.empty(); });
 	if (hasDataBindings)
 	{
 		cpp << "\n";
-		cpp << "bool " << className << "::BindData(IBindingSource& dataContext)\n";
+		cpp << "bool " << className
+			<< "::BindData(BindingSourceReference dataContext)\n";
 		cpp << "{\n";
+		cpp << "\tif (!dataContext) return false;\n";
+		cpp << "\tauto __windowDataContext = dataContext;\n";
+		cpp << "\tif (!SetDataContext(std::move(dataContext))) return false;\n";
 		cpp << "\tbool success = true;\n";
-		if (hasStyleDataTriggers)
+		auto emitBindings = [&](const auto& bindings,
+			const std::string& controlVar, bool isWindow)
 		{
-			for (const auto& dc : _controls)
-			{
-				if (!dc || !dc->ControlInstance
-					|| dc->DesignerParent != nullptr
-					|| dc->Type == UIClass::UI_TabPage) continue;
-				const auto controlVar = GetVarName(dc);
-				cpp << "\tif (const auto __styles = " << controlVar
-					<< "->GetStyleSheet()) __styles->SetDataContext(&dataContext);\n";
-			}
-		}
-		for (const auto& dc : _controls)
-		{
-			if (!dc || dc->DataBindings.empty()) continue;
-			const std::string controlVar = GetVarName(dc);
+			if (bindings.empty()) return;
 			cpp << "\t" << controlVar << "->DataBindings.Clear();\n";
-			for (const auto& [targetProperty, binding] : dc->DataBindings)
+			for (const auto& [targetProperty, binding] : bindings)
 			{
 				if (binding.IsMultiBinding())
 					throw std::invalid_argument(
 						"MultiBinding requires dynamic XAML materialization");
-				std::string sourceExpression = "dataContext";
+				std::string sourceExpression = controlVar
+					+ "->DataContextSource()";
+				std::string sourceGuard;
 				if (!binding.ElementName.empty())
 				{
-					const auto sourceControl = std::find_if(
-						_controls.begin(), _controls.end(), [&](const auto& candidate)
-						{
-							return candidate && candidate->Name == binding.ElementName;
-						});
-					if (sourceControl == _controls.end())
-						throw std::invalid_argument(
-							"ElementName binding source is missing");
-					sourceExpression = "*" + GetVarName(*sourceControl);
+					if (binding.ElementName == _sourceDocument.Window.Name)
+						sourceExpression = "*this";
+					else
+					{
+						const auto sourceControl = std::find_if(
+							_sourceDocument.Nodes.begin(),
+							_sourceDocument.Nodes.end(), [&](const auto& candidate)
+							{
+								return candidate.Name == binding.ElementName;
+							});
+						if (sourceControl == _sourceDocument.Nodes.end())
+							throw std::invalid_argument(
+								"ElementName binding source is missing");
+						sourceExpression = "*" + GetVarName(*sourceControl);
+					}
 				}
 				else if (binding.RelativeSource
 					== DesignerBindingRelativeSource::Self)
@@ -3694,7 +2965,17 @@ std::string CodeGenerator::GenerateCppForBaseName(
 					== DesignerBindingRelativeSource::FindAncestor)
 					throw std::invalid_argument(
 						"FindAncestor requires dynamic XAML materialization");
-				const bool writesTarget = binding.Mode != BindingMode::OneWayToSource;
+				else if (targetProperty == L"DataContext")
+				{
+					if (isWindow)
+						sourceExpression = "__windowDataContext";
+					else
+					{
+						sourceGuard = controlVar + "->GetInheritanceParent() && ";
+						sourceExpression = controlVar
+							+ "->GetInheritanceParent()->DataContextSource()";
+					}
+				}
 				const auto converterName = DesignerBindingUtils::Trim(binding.Converter);
 				const auto fallbackExpression = binding.FallbackValue
 					? GenerateStyleValueExpression(*binding.FallbackValue) : "{}";
@@ -3711,28 +2992,12 @@ std::string CodeGenerator::GenerateCppForBaseName(
 					|| binding.ConverterParameter.has_value()
 					|| binding.StringFormat.has_value();
 				cpp << "\t{\n";
-				if (writesTarget)
-				{
-					cpp << "\t\tBindingValue __previousLocal;\n";
-					cpp << "\t\tconst bool __hadLocal = " << controlVar
-						<< "->TryGetPropertyValue(L\""
-						<< EscapeWStringLiteral(targetProperty)
-						<< "\", ControlPropertyValueSource::Local, __previousLocal);\n";
-					cpp << "\t\tconst bool __localReady = !__hadLocal || "
-						<< controlVar << "->ClearPropertyValue(L\""
-						<< EscapeWStringLiteral(targetProperty)
-						<< "\", ControlPropertyValueSource::Local);\n";
-					cpp << "\t\tbool __bound = false;\n";
-					cpp << "\t\tif (__localReady)\n\t\t{\n";
-				}
-				else
-				{
-					cpp << "\t\tbool __bound = false;\n";
-				}
-				const char* operationIndent = writesTarget ? "\t\t\t" : "\t\t";
+				cpp << "\t\tbool cuiBindingAttached = false;\n";
+				const char* operationIndent = "\t\t";
 				if (converterName.empty())
 				{
-					cpp << operationIndent << "__bound = " << controlVar
+					cpp << operationIndent << "cuiBindingAttached = " << sourceGuard
+						<< controlVar
 						<< "->DataBindings.Add(L\""
 						<< EscapeWStringLiteral(targetProperty) << "\", "
 						<< sourceExpression << ", L\""
@@ -3749,16 +3014,18 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				else
 				{
 					cpp << operationIndent
-						<< "auto __converter = BindingValueConverterRegistry::Create(L\""
+						<< "auto cuiConverter = BindingValueConverterRegistry::Create(L\""
 						<< EscapeWStringLiteral(converterName) << "\");\n";
-					cpp << operationIndent << "__bound = __converter && " << controlVar
+					cpp << operationIndent
+						<< "cuiBindingAttached = cuiConverter && "
+						<< sourceGuard << controlVar
 						<< "->DataBindings.Add(L\""
 						<< EscapeWStringLiteral(targetProperty) << "\", "
 						<< sourceExpression << ", L\""
 						<< EscapeWStringLiteral(binding.SourceProperty) << "\", "
 						<< BindingModeToExpr(binding.Mode) << ", "
 						<< DataSourceUpdateModeToExpr(binding.UpdateMode)
-						<< ", __converter";
+						<< ", cuiConverter";
 					if (hasExtendedOptions)
 						cpp << ", " << fallbackExpression << ", "
 							<< targetNullExpression << ", "
@@ -3766,21 +3033,17 @@ std::string CodeGenerator::GenerateCppForBaseName(
 							<< stringFormatExpression;
 					cpp << ") != nullptr;\n";
 				}
-				if (writesTarget)
-					cpp << "\t\t}\n";
-				cpp << "\t\tif (!__bound)\n\t\t{\n";
+				cpp << "\t\tif (!cuiBindingAttached)\n\t\t{\n";
 				cpp << "\t\t\tsuccess = false;\n";
-				if (writesTarget)
-				{
-					cpp << "\t\t\tif (__localReady && __hadLocal)\n";
-					cpp << "\t\t\t\t(void)" << controlVar
-						<< "->TrySetPropertyValue(L\""
-						<< EscapeWStringLiteral(targetProperty)
-						<< "\", __previousLocal, ControlPropertyValueSource::Local);\n";
-				}
 				cpp << "\t\t}\n";
 				cpp << "\t}\n";
 			}
+		};
+		emitBindings(_sourceDocument.Window.Bindings, "this", true);
+		for (const auto& node : _sourceDocument.Nodes)
+		{
+			if (node.Bindings.empty()) continue;
+			emitBindings(node.Bindings, GetVarName(node), false);
 		}
 		cpp << "\treturn success;\n";
 		cpp << "}\n";
@@ -4056,6 +3319,7 @@ bool CodeGenerator::BuildFilePlan(
 					<< identity.QualifiedUser << "::" << identity.UserLeaf << "()\n"
 					<< "\t: " << identity.QualifiedGenerated << "()\n"
 					<< "{\n"
+					<< "\tInitializeComponent();\n"
 					<< "\t// User initialization belongs here.\n"
 					<< "}\n";
 		}

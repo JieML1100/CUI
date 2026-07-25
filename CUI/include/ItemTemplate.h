@@ -21,7 +21,7 @@ public:
 	/** True when the template also supplies a child ItemsSource for a tree item. */
 	virtual bool IsHierarchical() const noexcept { return false; }
 	/** Evaluates HierarchicalDataTemplate.ItemsSource against one data item. */
-	virtual bool TryGetChildItemsSource(
+	virtual bool TryGetVisualChildItemsSource(
 		const BindingSourceReference& item,
 		BindingListReference& out,
 		std::wstring* outError = nullptr) const

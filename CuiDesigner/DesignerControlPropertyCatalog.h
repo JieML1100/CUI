@@ -7,13 +7,12 @@
 #include <string>
 #include <vector>
 
-enum class DesignerControlPropertyEditorKind : unsigned char
+enum class DesignerDependencyPropertyEditorKind : unsigned char
 {
 	Text,
 	Boolean,
-	FontName,
+	FontFamily,
 	FontSize,
-	Anchor,
 	Choice
 };
 
@@ -26,18 +25,16 @@ struct DesignerControlPropertyDescriptor
 	int CategoryOrder = 1000;
 	int Order = 0;
 	DesignerStyleValueKind ValueKind = DesignerStyleValueKind::String;
-	DesignerControlPropertyEditorKind Editor = DesignerControlPropertyEditorKind::Text;
+	DesignerDependencyPropertyEditorKind Editor = DesignerDependencyPropertyEditorKind::Text;
 	bool CanReset = false;
 };
 
 struct DesignerControlPropertyContext
 {
-	::Font* SharedFont = nullptr;
 	std::function<std::wstring(DesignerControl&, const std::wstring&)> MakeUniqueName;
 	std::function<void(UIClass, const std::wstring&)> SyncDefaultNameCounter;
 	std::function<void(const std::wstring&, const std::wstring&)>
 		RewriteElementNameReferences;
-	std::function<void(Control*, uint8_t)> ApplyAnchorStylesKeepingBounds;
 	const std::vector<DesignerModel::DesignControlTemplate>*
 		ControlTemplates = nullptr;
 	/** Document plus root-to-target local ControlTemplates after lexical shadowing. */

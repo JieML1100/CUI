@@ -21,9 +21,6 @@
     <ClInclude Include="include\Convert.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\DataPack.h">
-      <Filter>include</Filter>
-    </ClInclude>
     <ClInclude Include="include\DateTime.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -34,9 +31,6 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\Environment.h">
-      <Filter>include</Filter>
-    </ClInclude>
-    <ClInclude Include="include\Event.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\File.h">
@@ -107,9 +101,6 @@
     <ClCompile Include="src\Convert.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="src\DataPack.cpp">
-      <Filter>src</Filter>
-    </ClCompile>
     <ClCompile Include="src\DateTime.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -117,9 +108,6 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Environment.cpp">
-      <Filter>src</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Event.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\File.cpp">

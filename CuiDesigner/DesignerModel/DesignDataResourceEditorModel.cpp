@@ -2,7 +2,6 @@
 #include "DesignDataResourceUtils.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
-#include <Convert.h>
 #include <algorithm>
 #include <unordered_set>
 
@@ -12,7 +11,7 @@ namespace
 {
 	bool Equals(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	bool Fail(std::wstring message, std::wstring* outError)
@@ -44,38 +43,22 @@ namespace
 
 	std::wstring NodeDataListKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("itemsSourceResource")
-			|| !node.Extra["itemsSourceResource"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemsSourceResource"].get<std::string>());
+		return node.Structure.ItemsSourceResource;
 	}
 
 	std::wstring NodeDataTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("itemTemplate")
-			|| !node.Extra["itemTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemTemplate"].get<std::string>());
+		return node.Structure.ItemTemplate;
 	}
 
 	std::wstring NodeContentTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("contentTemplate")
-			|| !node.Extra["contentTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["contentTemplate"].get<std::string>());
+		return node.Structure.ContentTemplate;
 	}
 
 	std::wstring NodeHeaderTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("headerTemplate")
-			|| !node.Extra["headerTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["headerTemplate"].get<std::string>());
+		return node.Structure.HeaderTemplate;
 	}
 
 	void RewriteDataListReference(
@@ -85,8 +68,7 @@ namespace
 	{
 		for (auto& node : nodes)
 			if (Equals(NodeDataListKey(node), oldKey))
-				node.Extra["itemsSourceResource"] =
-					Convert::UnicodeToUtf8(newKey);
+				node.Structure.ItemsSourceResource = newKey;
 	}
 
 	void RewriteDataTemplateReference(
@@ -97,11 +79,11 @@ namespace
 		for (auto& node : nodes)
 		{
 			if (Equals(NodeDataTemplateKey(node), oldKey))
-				node.Extra["itemTemplate"] = Convert::UnicodeToUtf8(newKey);
+				node.Structure.ItemTemplate = newKey;
 			if (Equals(NodeContentTemplateKey(node), oldKey))
-				node.Extra["contentTemplate"] = Convert::UnicodeToUtf8(newKey);
+				node.Structure.ContentTemplate = newKey;
 			if (Equals(NodeHeaderTemplateKey(node), oldKey))
-				node.Extra["headerTemplate"] = Convert::UnicodeToUtf8(newKey);
+				node.Structure.HeaderTemplate = newKey;
 		}
 	}
 
@@ -128,7 +110,7 @@ namespace
 		return Equals(path, prefix)
 			|| (path.size() > prefix.size()
 				&& (path[prefix.size()] == L'.' || path[prefix.size()] == L'[')
-				&& _wcsnicmp(path.c_str(), prefix.c_str(), prefix.size()) == 0);
+				&& path.compare(0, prefix.size(), prefix) == 0);
 	}
 
 	std::wstring RewritePathPrefix(
@@ -146,19 +128,10 @@ namespace
 		const std::wstring& oldPath,
 		const std::wstring& newPath)
 	{
-		if (!node.Props.is_object() || !node.Props.contains("metadata")
-			|| !node.Props["metadata"].is_object()) return;
-		for (auto& [rawName, stored] : node.Props["metadata"].ObjectItems())
-		{
-			const auto name = Convert::Utf8ToUnicode(rawName);
-			if (_wcsicmp(name.c_str(), propertyName) != 0
-				|| !stored.is_object() || !stored.contains("value")
-				|| !stored["value"].is_string()) continue;
-			const auto path = Convert::Utf8ToUnicode(
-				stored["value"].get<std::string>());
-			stored["value"] = Convert::UnicodeToUtf8(
-				RewritePathPrefix(path, oldPath, newPath));
-		}
+		auto* assignment = node.Properties.Find(propertyName);
+		if (!assignment) return;
+		assignment->Value.Text = RewritePathPrefix(
+			assignment->Value.Text, oldPath, newPath);
 	}
 
 	void RewriteItemProjectionPaths(
@@ -178,23 +151,13 @@ namespace
 				if (const auto* list = document.FindDataList(listKey))
 					nodeItemType = list->ItemType;
 			}
-			if (nodeItemType.empty() && node.Bindings.is_object()
-				&& node.Bindings.contains("ItemsSource"))
+			if (nodeItemType.empty() && node.Bindings.contains(L"ItemsSource"))
 			{
-				const auto& binding = node.Bindings["ItemsSource"];
-				if (binding.is_object()
-					&& binding.contains("elementName")
-					&& binding["elementName"].is_string()
-					&& !binding["elementName"].get<std::string>().empty())
-					continue;
-				if (binding.is_object()
-					&& binding.contains("relativeSource")
-					&& binding["relativeSource"].is_string()
-					&& !binding["relativeSource"].get<std::string>().empty())
-					continue;
-				const auto sourcePath = binding.is_object()
-					? Convert::Utf8ToUnicode(
-						binding.value("source", std::string{})) : std::wstring{};
+				const auto& binding = node.Bindings.at(L"ItemsSource");
+				if (!binding.ElementName.empty()
+					|| binding.RelativeSource != DesignerBindingRelativeSource::None
+					|| binding.IsMultiBinding()) continue;
+				const auto& sourcePath = binding.SourceProperty;
 				if (const auto* source = DesignerDataContextSchemaUtils::Find(
 					sourceSchema, sourcePath);
 					source && source->ObjectKind
@@ -204,8 +167,6 @@ namespace
 			if (!Equals(nodeItemType, itemTypeName)) continue;
 			RewriteMetadataPath(
 				node, L"DisplayMemberPath", oldPath, newPath);
-			RewriteMetadataPath(
-				node, L"SecondaryMemberPath", oldPath, newPath);
 			RewriteMetadataPath(
 				node, L"SelectedValuePath", oldPath, newPath);
 		}
@@ -396,25 +357,17 @@ bool UpsertDataTypeProperty(
 			if (!Equals(itemTemplate.DataType, type->Name)) continue;
 			for (auto& node : itemTemplate.Template)
 			{
-				if (!node.Bindings.is_object()) continue;
-				for (auto& [target, binding] : node.Bindings.ObjectItems())
+				for (auto& [target, binding] : node.Bindings)
 				{
 					(void)target;
 					(void)DesignerBindingUtils::VisitLeafBindingDefinitions(
-						binding, [&](DesignerModel::DesignValue& child)
+						binding, [&](DesignerDataBinding& child)
 						{
-							if (!child.contains("source") || !child["source"].is_string())
-								return true;
-							if (child.contains("elementName")
-								&& child["elementName"].is_string()
-								&& !child["elementName"].get<std::string>().empty()) return true;
-							if (child.contains("relativeSource")
-								&& child["relativeSource"].is_string()
-								&& !child["relativeSource"].get<std::string>().empty()) return true;
-							const auto path = Convert::Utf8ToUnicode(
-								child["source"].get<std::string>());
-							child["source"] = Convert::UnicodeToUtf8(
-								RewritePathPrefix(path, oldPath, newPath));
+							if (!child.ElementName.empty()
+								|| child.RelativeSource
+									!= DesignerBindingRelativeSource::None) return true;
+							child.SourceProperty = RewritePathPrefix(
+								child.SourceProperty, oldPath, newPath);
 							return true;
 						});
 				}

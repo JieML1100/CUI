@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"
@@ -11,7 +11,7 @@
 /**
  * @brief DockPanel 布局引擎。
  *
- * 子控件通过 Control::DockPosition 指定停靠方向。
+ * 子控件通过 DockPanel.Dock attached property 指定停靠方向。
  * LastChildFill=true 时，最后一个子控件会占用剩余空间。
  */
 class DockLayoutEngine : public LayoutEngine {
@@ -29,10 +29,8 @@ public:
         return _lastChildFill; 
     }
     
-    SIZE Measure(Control* container, SIZE availableSize) override;
-    void Arrange(Control* container, D2D1_RECT_F finalRect) override;
     cui::core::Size Measure(LayoutContext& context, const cui::core::Constraints& available) override;
-    void Arrange(LayoutContext& context, D2D1_RECT_F finalRect) override;
+    void Arrange(LayoutContext& context, cui::core::Rect finalRect) override;
 };
 
 /**
@@ -44,12 +42,20 @@ private:
     bool _lastChildFill = true;
     
 public:
-    DockPanel();
-    DockPanel(int x, int y, int width, int height);
+	DockPanel();
     virtual ~DockPanel();
     
-    UIClass Type() override { return UIClass::UI_DockPanel; }
-    void EnsureBindingPropertiesRegistered() override;
+	UIClass Type() override { return UIClass::UI_DockPanel; }
+	static Dock GetDock(Control& element) noexcept
+	{
+		return element.GetDockPosition();
+	}
+	static void SetDock(Control& element, Dock value)
+	{
+		element.SetDockPosition(value);
+	}
+	static void RegisterDependencyProperties();
+    void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
     
     /** @brief 设置/获取 LastChildFill。 */
     void SetLastChildFill(bool value);

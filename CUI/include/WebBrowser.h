@@ -16,6 +16,13 @@
  */
 class WebBrowser : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Document, L"WebBrowser");
+	}
+
 public:
 	enum class InitializationState
 	{
@@ -122,18 +129,24 @@ public:
 	using JsInvokeHandler = std::function<std::wstring(
 		const std::wstring& payload)>;
 
-	WebBrowser(int x, int y, int width, int height);
+	WebBrowser();
 	~WebBrowser() override;
 	WebBrowser(const WebBrowser&) = delete;
 	WebBrowser& operator=(const WebBrowser&) = delete;
 
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
 	bool HandlesMouseWheel() const override { return true; }
-	void EnsureBindingPropertiesRegistered() override;
-	void Update() override;
-	bool ProcessMessage(
-		UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-	void SyncNativeSurface() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+protected:
+	PresentationSurfaceKind GetPresentationSurfaceKind() const noexcept override
+	{
+		return PresentationSurfaceKind::NativeComposition;
+	}
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
+	void Arrange(cui::core::Rect finalRect) override;
 	bool TryGetSystemCursorId(UINT32& outId) const override;
 
 	/** 请求初始化；异步请求已接受或已就绪时返回 true。 */
@@ -222,13 +235,19 @@ private:
 	struct Impl;
 	std::unique_ptr<Impl> _impl;
 
+	static int ResolvePresentationOrder(WebBrowser* browser);
 	void EnsureInitialized();
-	void EnsureInteropInstalled();
+	bool EnsureInteropInstalled();
 	void EnsureControllerBounds();
 	void ApplyWebViewSettings();
-	bool ForwardMouseMessageToWebView(
-		UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
+	bool ForwardMouseInputToWebView(const InputReport& input);
 
+protected:
+	void OnEffectiveIsVisibleChanged(
+		bool previousValue, bool currentValue) override;
+
+
+private:
 	static std::wstring JsStringLiteral(const std::wstring& value);
 	static std::wstring UrlEncodeUtf8(const std::wstring& value);
 	static std::wstring UrlDecodeUtf8(const std::wstring& value);

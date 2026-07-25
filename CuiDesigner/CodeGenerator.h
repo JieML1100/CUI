@@ -6,6 +6,7 @@
  */
 #include "DesignerTypes.h"
 #include "DesignerStyleSheet.h"
+#include "DesignerModel/DesignDocument.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -14,8 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <map>
-
-struct CodeGenInput;
+#include <limits>
 
 struct CodeGeneratorFileContent
 {
@@ -62,51 +62,29 @@ class CodeGenerator
 {
 private:
 	std::wstring _className;
-	std::vector<std::shared_ptr<DesignerControl>> _controls;
-	std::wstring _formText;
-	std::wstring _formName = L"MainForm";
-	SIZE _formSize = { 800, 600 };
-	POINT _formLocation = { 100, 100 };
-	D2D1_COLOR_F _formBackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F _formForeColor = Colors::Black;
-	bool _formShowInTaskBar = true;
-	bool _formTopMost = false;
-	bool _formEnable = true;
-	bool _formVisible = true;
-	std::map<std::wstring, std::wstring> _formEventHandlers;
-	bool _formVisibleHead = true;
-	int _formHeadHeight = 24;
-	bool _formMinBox = true;
-	bool _formMaxBox = true;
-	bool _formCloseBox = true;
-	bool _formCenterTitle = true;
-	bool _formAllowResize = true;
-	std::wstring _formFontName;
-	float _formFontSize = 18.0f;
+	DesignerModel::DesignDocument _sourceDocument;
 	DesignerStyleSheet _styleSheet;
 	std::wstring _resourceBasePath;
-	std::unordered_map<const DesignerControl*, std::string> _varNameOf;
+	std::unordered_map<const DesignerModel::DesignNode*, std::string> _varNameOf;
 	std::wstring _lastError;
 	
 	std::string WStringToString(const std::wstring& wstr) const;
 	std::wstring StringToWString(const std::string& str) const;
 	std::string GetControlTypeName(UIClass type);
 	std::string GetIncludeForType(UIClass type);
-	std::string GetControlTypeName(const DesignerControl& control);
-	std::string GetIncludeForType(const DesignerControl& control);
 	void BuildVarNameMap();
-	std::string GetVarName(const std::shared_ptr<DesignerControl>& dc) const;
+	std::string GetVarName(const DesignerModel::DesignNode& node) const;
+	const std::vector<DesignerComponentEventDescriptor>& ComponentEvents(
+		const DesignerModel::DesignNode& node) const noexcept;
+	std::string CommandTargetExpression(const std::wstring& name) const;
 	static std::string SanitizeCppIdentifier(const std::string& raw);
 	std::string EscapeWStringLiteral(const std::wstring& s);
 	std::string FloatLiteral(float v);
 	std::string DoubleLiteral(double v);
 	std::string ColorToString(D2D1_COLOR_F color);
 	std::string ThicknessToString(const Thickness& t);
-	std::string HorizontalAlignmentToString(::HorizontalAlignment a);
-	std::string VerticalAlignmentToString(::VerticalAlignment a);
-	std::string DockToString(::Dock d);
-	std::string SizeUnitToString(SizeUnit u);
-	std::string GridLengthToCtorString(const GridLength& gl);
+	std::string GridLengthToCtorString(
+		const DesignerModel::DesignGridLength& length);
 	std::string GenerateTransformExpression(const cui::drawing::Transform& value);
 	std::string GenerateGeometryExpression(const cui::drawing::Geometry& value);
 	std::string GenerateStyleValueExpression(const DesignerStyleValue& value);
@@ -115,25 +93,28 @@ private:
 		std::vector<std::pair<std::string, std::string>>& handlers,
 		std::wstring* outError = nullptr) const;
 
-	std::string GenerateControlInstantiation(const std::shared_ptr<DesignerControl>& dc, int indent);
-	std::string GenerateControlCommonProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
-	std::string GenerateMetadataProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
-	std::string GenerateLocalResources(const std::shared_ptr<DesignerControl>& dc, int indent);
-	std::string GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
+	std::string GenerateControlInstantiation(
+		const DesignerModel::DesignNode& node, int indent);
+	std::string GenerateControlCommonProperties(
+		const DesignerModel::DesignNode& node, int indent);
+	std::string GenerateAuthoredProperties(
+		const DesignerModel::DesignNode& node, int indent);
+	std::string GenerateLocalResources(
+		const DesignerModel::DesignNode& node, int indent);
+	std::string GenerateContainerProperties(
+		const DesignerModel::DesignNode& node, int indent);
 	std::string GenerateCppForBaseName(
 		const std::string& generatedHeaderBaseName);
 	
 public:
-	CodeGenerator(std::wstring className, const CodeGenInput& input);
-	CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
-		std::wstring formText = L"", SIZE formSize = SIZE{ 800, 600 }, POINT formLocation = POINT{ 100, 100 }, std::wstring formName = L"MainForm",
-		D2D1_COLOR_F formBackColor = Colors::WhiteSmoke, D2D1_COLOR_F formForeColor = Colors::Black,
-		bool formShowInTaskBar = true, bool formTopMost = false, bool formEnable = true, bool formVisible = true,
-		const std::map<std::wstring, std::wstring>& formEventHandlers = std::map<std::wstring, std::wstring>{},
-		bool formVisibleHead = true, int formHeadHeight = 24,
-		bool formMinBox = true, bool formMaxBox = true, bool formCloseBox = true,
-		bool formCenterTitle = true, bool formAllowResize = true,
-		std::wstring formFontName = L"", float formFontSize = 18.0f);
+	CodeGenerator(
+		std::wstring className,
+		const DesignerModel::DesignDocument& document);
+	/** Schema-only static-lowering validation; never materializes preview controls. */
+	static bool ValidateDocument(
+		const DesignerModel::DesignDocument& document,
+		std::wstring* outError = nullptr,
+		DesignerModel::XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	
 	bool GenerateFiles(std::wstring headerPath, std::wstring cppPath);
 	/** Builds the exact five-file result without creating or modifying files. */

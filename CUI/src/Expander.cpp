@@ -1,31 +1,44 @@
 #define NOMINMAX
 #include "Expander.h"
-#include "Form.h"
+
+#include "Layout/OverlayLayout.h"
+#include "Window.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <limits>
 #include <utility>
 
 namespace
 {
+	constexpr float HeaderExtent = 36.0f;
+	constexpr float HeaderPadding = 12.0f;
+	constexpr float ChevronSize = 13.0f;
+	constexpr float FallbackBorderThickness = 1.0f;
+	constexpr float FallbackCornerRadius = 7.0f;
+	constexpr D2D1_COLOR_F Surface = cui::theme::palette::Surface;
+	constexpr D2D1_COLOR_F HeaderBackground = cui::theme::palette::SurfaceMuted;
+	constexpr D2D1_COLOR_F HeaderHighlight = cui::theme::palette::AccentSoft;
+	constexpr D2D1_COLOR_F ContentBackground = cui::theme::palette::SurfaceSubtle;
+	constexpr D2D1_COLOR_F Accent = cui::theme::palette::Accent;
+	constexpr D2D1_COLOR_F MutedText = cui::theme::palette::TextMuted;
+	constexpr D2D1_COLOR_F DisabledOverlay = cui::theme::palette::DisabledOverlay;
+
 	template<typename TValue>
-	ControlPropertyOptions<Expander, TValue> ExpanderPropertyOptions(
+	DependencyPropertyOptions<Expander, TValue> ExpanderPropertyOptions(
 		TValue defaultValue,
-		const wchar_t* category,
-		int categoryOrder,
 		int order,
-		ControlPropertyEditorKind editor,
-		ControlPropertyFlags flags = ControlPropertyFlags::AffectsRender)
+		DependencyPropertyEditorKind editor,
+		DependencyPropertyFlags flags)
 	{
-		ControlPropertyOptions<Expander, TValue> options;
+		DependencyPropertyOptions<Expander, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = flags | ControlPropertyFlags::TracksLocalValue;
-		options.Design.Category = category;
-		options.Design.CategoryOrder = categoryOrder;
+		options.Flags = flags;
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 110;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -33,106 +46,76 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			Expander& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*,
+					const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
-						handler();
+					if (args.PropertyName == propertyName) handler();
 				});
 		};
 	}
 
-	ControlPropertyOptions<Expander, float> ExpanderMetricOptions(
-		float defaultValue,
-		const wchar_t* category,
-		int categoryOrder,
-		int order,
-		ControlPropertyFlags flags = ControlPropertyFlags::AffectsRender)
+	float RectWidth(const D2D1_RECT_F& rect) noexcept
 	{
-		auto options = ExpanderPropertyOptions(
-			defaultValue, category, categoryOrder, order,
-			ControlPropertyEditorKind::Number, flags);
-		options.Coerce = [](
-			Expander&, const float& proposed) -> std::optional<float>
-		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ (std::max)(0.0f, proposed) }
-				: std::nullopt;
-		};
-		options.Design.Minimum = 0.0;
-		options.Design.Step = 0.5;
-		return options;
+		return (std::max)(0.0f, rect.right - rect.left);
 	}
 
-	bool ExpanderColorsEqual(
-		const D2D1_COLOR_F& left,
-		const D2D1_COLOR_F& right)
+	float RectHeight(const D2D1_RECT_F& rect) noexcept
 	{
-		return left.r == right.r && left.g == right.g
-			&& left.b == right.b && left.a == right.a;
+		return (std::max)(0.0f, rect.bottom - rect.top);
 	}
 
-	ControlPropertyOptions<Expander, D2D1_COLOR_F> ExpanderColorOptions(
-		D2D1_COLOR_F defaultValue,
-		int order)
-	{
-		auto options = ExpanderPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Color);
-		options.Equals = ExpanderColorsEqual;
-		return options;
-	}
-
-	float RectWidth(const D2D1_RECT_F& rect)
-	{
-		return rect.right - rect.left;
-	}
-
-	float RectHeight(const D2D1_RECT_F& rect)
-	{
-		return rect.bottom - rect.top;
-	}
-
-	float TextTop(Font* font, const D2D1_RECT_F& rect)
-	{
-		const float fontHeight = font ? font->FontHeight : 16.0f;
-		return rect.top + (std::max)(0.0f, (RectHeight(rect) - fontHeight) * 0.5f);
-	}
-
-	D2D1_COLOR_F ScaleAlpha(D2D1_COLOR_F color, float scale)
-	{
-		color.a *= (std::clamp)(scale, 0.0f, 1.0f);
-		return color;
-	}
-
-	D2D1_POINT_2F RotateAround(const D2D1_POINT_2F& point, float cx, float cy, float angle)
+	D2D1_POINT_2F RotateAround(
+		D2D1_POINT_2F point, float cx, float cy, float angle) noexcept
 	{
 		const float dx = point.x - cx;
 		const float dy = point.y - cy;
-		const float s = std::sin(angle);
-		const float c = std::cos(angle);
-		return D2D1::Point2F(cx + dx * c - dy * s, cy + dx * s + dy * c);
+		const float sine = std::sin(angle);
+		const float cosine = std::cos(angle);
+		return D2D1::Point2F(
+			cx + dx * cosine - dy * sine,
+			cy + dx * sine + dy * cosine);
 	}
 
-	void DrawExpanderChevron(D2DGraphics* d2d, float cx, float cy, float size, float progress, D2D1_COLOR_F color)
+	void DrawChevron(
+		D2DGraphics* graphics,
+		float cx,
+		float cy,
+		::ExpandDirection direction,
+		bool expanded,
+		D2D1_COLOR_F color)
 	{
-		if (!d2d) return;
-		progress = (std::clamp)(progress, 0.0f, 1.0f);
-		const float angle = progress * 1.57079632679f;
-		const float halfW = size * 0.28f;
-		const float halfH = size * 0.46f;
-		D2D1_POINT_2F p1 = D2D1::Point2F(cx - halfW, cy - halfH);
-		D2D1_POINT_2F p2 = D2D1::Point2F(cx + halfW, cy);
-		D2D1_POINT_2F p3 = D2D1::Point2F(cx - halfW, cy + halfH);
-		p1 = RotateAround(p1, cx, cy, angle);
-		p2 = RotateAround(p2, cx, cy, angle);
-		p3 = RotateAround(p3, cx, cy, angle);
-		d2d->DrawLine(p1, p2, color, 1.8f);
-		d2d->DrawLine(p2, p3, color, 1.8f);
+		if (!graphics) return;
+		float angle = 0.0f;
+		if (expanded)
+		{
+			switch (direction)
+			{
+			case ::ExpandDirection::Down: angle = 1.57079632679f; break;
+			case ::ExpandDirection::Up: angle = -1.57079632679f; break;
+			case ::ExpandDirection::Left: angle = 3.14159265359f; break;
+			case ::ExpandDirection::Right: angle = 0.0f; break;
+			}
+		}
+		else if (direction == ::ExpandDirection::Left
+			|| direction == ::ExpandDirection::Right)
+		{
+			angle = 1.57079632679f;
+		}
+		const float halfWidth = ChevronSize * 0.28f;
+		const float halfHeight = ChevronSize * 0.46f;
+		auto first = RotateAround(
+			D2D1::Point2F(cx - halfWidth, cy - halfHeight), cx, cy, angle);
+		auto middle = RotateAround(
+			D2D1::Point2F(cx + halfWidth, cy), cx, cy, angle);
+		auto last = RotateAround(
+			D2D1::Point2F(cx - halfWidth, cy + halfHeight), cx, cy, angle);
+		graphics->DrawLine(first, middle, color, 1.8f);
+		graphics->DrawLine(middle, last, color, 1.8f);
 	}
 }
 
@@ -141,84 +124,52 @@ UIClass Expander::Type()
 	return UIClass::UI_Expander;
 }
 
-void Expander::EnsureBindingPropertiesRegistered()
+void Expander::RegisterDependencyProperties()
 {
-	HeaderedContentControl::EnsureBindingPropertiesRegistered();
+	HeaderedContentControl::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto expandedOptions = ExpanderPropertyOptions(
-			true, L"Behavior", 110, 20,
-			ControlPropertyEditorKind::Boolean,
-			ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsRender);
+			true, 10, DependencyPropertyEditorKind::Boolean,
+			DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsArrange
+				| DependencyPropertyFlags::AffectsRender);
 		expandedOptions.Changed = [](
 			Expander& target, const bool& oldValue, const bool& newValue)
 		{
 			target.ApplyExpandedStateChange(oldValue, newValue);
 		};
-		BindingPropertyRegistry::Register<Expander, bool>(L"IsExpanded",
+		DependencyPropertyRegistry::Register<Expander, bool>(L"IsExpanded",
 			[](Expander& target) { return target.IsExpanded; },
-			[](Expander& target, const bool& value) { target.IsExpanded = value; },
-			ExpanderPropertySubscriber(L"IsExpanded"), std::move(expandedOptions));
+			[](Expander& target, const bool& value)
+			{ target.IsExpanded = value; },
+			ExpanderPropertySubscriber(L"IsExpanded"),
+			std::move(expandedOptions));
 
-		auto animationOptions = ExpanderPropertyOptions(
-			160, L"Behavior", 110, 10,
-			ControlPropertyEditorKind::Number);
-		animationOptions.Coerce = [](
-			Expander&, const int& proposed) -> std::optional<int>
-		{
-			return (std::max)(0, proposed);
+		auto directionOptions = ExpanderPropertyOptions(
+			::ExpandDirection::Down, 20, DependencyPropertyEditorKind::Choice,
+			DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsArrange
+				| DependencyPropertyFlags::AffectsRender);
+		directionOptions.Design.Choices = {
+			{ L"Down", BindingValue(::ExpandDirection::Down) },
+			{ L"Up", BindingValue(::ExpandDirection::Up) },
+			{ L"Left", BindingValue(::ExpandDirection::Left) },
+			{ L"Right", BindingValue(::ExpandDirection::Right) },
 		};
-		animationOptions.Design.Minimum = 0.0;
-		animationOptions.Design.Step = 1.0;
-		BindingPropertyRegistry::Register<Expander, int>(L"AnimationDurationMs",
-			[](Expander& target) { return static_cast<int>(target.AnimationDurationMs); },
-			[](Expander& target, const int& value)
-			{
-				target.AnimationDurationMs = static_cast<UINT>(value);
-			},
-			ExpanderPropertySubscriber(L"AnimationDurationMs"),
-			std::move(animationOptions));
-
-		BindingPropertyRegistry::Register<Expander, float>(L"HeaderHeight",
-			[](Expander& target) { return target.HeaderHeight; },
-			[](Expander& target, const float& value) { target.HeaderHeight = value; },
-			ExpanderPropertySubscriber(L"HeaderHeight"),
-			ExpanderMetricOptions(36.0f, L"Layout", 100, 180,
-				ControlPropertyFlags::AffectsMeasure
-				| ControlPropertyFlags::AffectsRender));
-		BindingPropertyRegistry::Register<Expander, float>(L"HeaderPaddingX",
-			[](Expander& target) { return target.HeaderPaddingX; },
-			[](Expander& target, const float& value) { target.HeaderPaddingX = value; },
-			ExpanderPropertySubscriber(L"HeaderPaddingX"),
-			ExpanderMetricOptions(12.0f, L"Layout", 100, 190));
-		BindingPropertyRegistry::Register<Expander, float>(L"ChevronSize",
-			[](Expander& target) { return target.ChevronSize; },
-			[](Expander& target, const float& value) { target.ChevronSize = value; },
-			ExpanderPropertySubscriber(L"ChevronSize"),
-			ExpanderMetricOptions(13.0f, L"Layout", 100, 200));
-		BindingPropertyRegistry::Register<Expander, float>(L"Border",
-			[](Expander& target) { return target.Border; },
-			[](Expander& target, const float& value) { target.Border = value; },
-			ExpanderPropertySubscriber(L"Border"),
-			ExpanderMetricOptions(1.0f, L"Appearance", 200, 10));
-		RegisterPanelCornerRadiusMetadata<Expander>(7.0f);
-
-#define CUI_REGISTER_EXPANDER_COLOR(name, propertyName, defaultValue, order) \
-		BindingPropertyRegistry::Register<Expander, D2D1_COLOR_F>(propertyName, \
-			[](Expander& target) { return target.name; }, \
-			[](Expander& target, const D2D1_COLOR_F& value) { target.name = value; }, \
-			ExpanderPropertySubscriber(propertyName), ExpanderColorOptions(defaultValue, order))
-
-		CUI_REGISTER_EXPANDER_COLOR(SurfaceColor, L"SurfaceColor", cui::theme::palette::Surface, 30);
-		CUI_REGISTER_EXPANDER_COLOR(HeaderBackColor, L"HeaderBackColor", cui::theme::palette::SurfaceMuted, 40);
-		CUI_REGISTER_EXPANDER_COLOR(HeaderHoverBackColor, L"HeaderHoverBackColor", cui::theme::palette::AccentSoft, 50);
-		CUI_REGISTER_EXPANDER_COLOR(ContentBackColor, L"ContentBackColor", cui::theme::palette::SurfaceSubtle, 60);
-		CUI_REGISTER_EXPANDER_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 70);
-		CUI_REGISTER_EXPANDER_COLOR(MutedTextColor, L"MutedTextColor", cui::theme::palette::TextMuted, 80);
-		CUI_REGISTER_EXPANDER_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", cui::theme::palette::DisabledOverlay, 90);
-
-#undef CUI_REGISTER_EXPANDER_COLOR
+		directionOptions.Changed = [](
+			Expander& target, const ::ExpandDirection&, const ::ExpandDirection&)
+		{
+			target.RequestLayout();
+			target.InvalidateVisual();
+		};
+		DependencyPropertyRegistry::Register<Expander, ::ExpandDirection>(
+			L"ExpandDirection",
+			[](Expander& target) { return target.ExpandDirection; },
+			[](Expander& target, const ::ExpandDirection& value)
+			{ target.ExpandDirection = value; },
+			ExpanderPropertySubscriber(L"ExpandDirection"),
+			std::move(directionOptions));
 		return true;
 	}();
 	(void)registered;
@@ -227,32 +178,25 @@ void Expander::EnsureBindingPropertiesRegistered()
 Expander::Expander()
 	: HeaderedContentControl()
 {
-	ClearRows();
-	AddRow(GridLength::Pixels(_headerHeight));
-	AddRow(GridLength::Star(1.0f));
-	InitializePanelCornerRadiusDefault(7.0f);
-	InitializePanelDisabledOverlayColorDefault(
-		cui::theme::palette::DisabledOverlay);
-	this->Text = L"Expander";
-	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = cui::theme::palette::Border;
-	this->ForeColor = cui::theme::palette::TextPrimary;
-	this->Cursor = CursorKind::Arrow;
-	this->OnTextChanged += [this](Control* sender, std::wstring oldText, std::wstring newText)
+	RegisterDependencyProperties();
+	RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	RendererBorderColor = cui::theme::palette::Border;
+	RendererForegroundColor = cui::theme::palette::TextPrimary;
+	RetainEventConnection(OnMouseMove.Subscribe(
+		[this](Control*, MouseEventArgs& args)
 		{
-			(void)sender;
-			(void)oldText;
-			(void)newText;
+			const bool headerHit = HeaderHitTest(args.X, args.Y);
+			if (_hoverHeader == headerHit) return;
+			_hoverHeader = headerHit;
 			InvalidateVisual();
-		};
-}
-
-Expander::Expander(std::wstring text, int x, int y, int width, int height)
-	: Expander()
-{
-	this->Text = text;
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
+		}));
+	RetainEventConnection(OnMouseLeave.Subscribe(
+		[this](Control*, MouseEventArgs&)
+		{
+			if (!_hoverHeader) return;
+			_hoverHeader = false;
+			InvalidateVisual();
+		}));
 }
 
 GET_CPP(Expander, bool, IsExpanded)
@@ -265,155 +209,249 @@ SET_CPP(Expander, bool, IsExpanded)
 	(void)SetPropertyField(L"IsExpanded", _isExpanded, value);
 }
 
-#define CUI_EXPANDER_PROPERTY_IMPL(type, name, field, propertyName) \
-	GET_CPP(Expander, type, name) { return field; } \
-	SET_CPP(Expander, type, name) { (void)SetPropertyField(propertyName, field, value); }
-
-CUI_EXPANDER_PROPERTY_IMPL(float, HeaderHeight, _headerHeight, L"HeaderHeight")
-CUI_EXPANDER_PROPERTY_IMPL(float, HeaderPaddingX, _headerPaddingX, L"HeaderPaddingX")
-CUI_EXPANDER_PROPERTY_IMPL(float, ChevronSize, _chevronSize, L"ChevronSize")
-CUI_EXPANDER_PROPERTY_IMPL(float, Border, _border, L"Border")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, SurfaceColor, _surfaceColor, L"SurfaceColor")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, HeaderBackColor, _headerBackColor, L"HeaderBackColor")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, HeaderHoverBackColor, _headerHoverBackColor, L"HeaderHoverBackColor")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, ContentBackColor, _contentBackColor, L"ContentBackColor")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, AccentColor, _accentColor, L"AccentColor")
-CUI_EXPANDER_PROPERTY_IMPL(D2D1_COLOR_F, MutedTextColor, _mutedTextColor, L"MutedTextColor")
-
-GET_CPP(Expander, float, CornerRadius)
+GET_CPP(Expander, ::ExpandDirection, ExpandDirection)
 {
-	return Panel::GetCornerRadius();
+	return _expandDirection;
 }
 
-SET_CPP(Expander, float, CornerRadius)
+SET_CPP(Expander, ::ExpandDirection, ExpandDirection)
 {
-	Panel::SetCornerRadius(value);
+	(void)SetPropertyField(L"ExpandDirection", _expandDirection, value);
 }
 
-GET_CPP(Expander, D2D1_COLOR_F, DisabledOverlayColor)
+void Expander::ConfigureContentVisual(Control& child)
 {
-	return Panel::GetDisabledOverlayColor();
+	HeaderedContentControl::ConfigureContentVisual(child);
+	child.SetPresentationSuppressed(!_isExpanded);
 }
 
-SET_CPP(Expander, D2D1_COLOR_F, DisabledOverlayColor)
+cui::core::Insets
+Expander::GetHeaderPresentationInsets() const noexcept
 {
-	Panel::SetDisabledOverlayColor(value);
-}
-
-#undef CUI_EXPANDER_PROPERTY_IMPL
-
-GET_CPP(Expander, UINT, AnimationDurationMs)
-{
-	return static_cast<UINT>(_animationDurationMs);
-}
-
-SET_CPP(Expander, UINT, AnimationDurationMs)
-{
-	const auto maximum = static_cast<UINT>((std::numeric_limits<int>::max)());
-	const int proposed = static_cast<int>((std::min)(value, maximum));
-	(void)SetPropertyField(L"AnimationDurationMs", _animationDurationMs, proposed);
-}
-
-float Expander::CurrentExpandProgress()
-{
-	if (!_animating)
-	{
-		_expandProgress = _isExpanded ? 1.0f : 0.0f;
-		return _expandProgress;
-	}
-
-	ULONGLONG currentTick = ::GetTickCount64();
-	ULONGLONG elapsedMs = currentTick >= _animStartTick ? currentTick - _animStartTick : 0;
-	const UINT duration = EffectiveAnimationDuration(AnimationDurationMs);
-	float normalizedTime = duration > 0 ? (float)elapsedMs / (float)duration : 1.0f;
-	if (normalizedTime >= 1.0f)
-	{
-		_expandProgress = _animTargetProgress;
-		_animating = false;
-		return _expandProgress;
-	}
-
-	normalizedTime = 1.0f - std::pow(1.0f - (std::clamp)(normalizedTime, 0.0f, 1.0f), 3.0f);
-	_expandProgress = _animStartProgress + (_animTargetProgress - _animStartProgress) * normalizedTime;
-	return _expandProgress;
-}
-
-void Expander::PerformExpanderLayoutIfNeeded()
-{
-	UpdateHeaderLayout();
-	if (this->IsLayoutSuspended()) return;
-	if (!_needsLayout && !(_layoutEngine && _layoutEngine->NeedsLayout()))
-		return;
-	PerformLayout();
-}
-
-void Expander::ConfigureHeaderVisual(Control& child)
-{
-	HeaderedContentControl::ConfigureHeaderVisual(child);
-	child.HAlign = HorizontalAlignment::Stretch;
-	child.VAlign = VerticalAlignment::Center;
-	child.Margin = Thickness{
-		HeaderPaddingX + ChevronSize + 9.0f,
+	return cui::core::Insets{
+		HeaderPadding + ChevronSize + 9.0f,
 		0.0f,
-		HeaderPaddingX,
+		HeaderPadding,
 		0.0f };
 }
 
-void Expander::UpdateHeaderLayout()
+void Expander::SynchronizeContentPresentation()
 {
-	const float height = (std::max)(0.0f, HeaderHeight);
-	const auto& rows = GetRows();
-	if (rows.size() != 2 || !rows[0].Height.IsPixel()
-		|| std::fabs(rows[0].Height.Value - height) > 0.01f
-		|| !rows[1].Height.IsStar())
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content) content->SetPresentationSuppressed(!_isExpanded);
+}
+
+float Expander::GetHeaderSlotHeightDip(float)
+{
+	return HeaderExtent;
+}
+
+cui::core::Rect Expander::HeaderRect() const noexcept
+{
+	const auto size = GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
+	const cui::core::Rect inner{
+		padding.left,
+		padding.top,
+		(std::max)(0.0f, size.width - padding.Horizontal()),
+		(std::max)(0.0f, size.height - padding.Vertical()) };
+	const auto* header = GetHeaderVisual();
+	auto desired = header ? header->GetDesiredSizeDip() : cui::core::Size{};
+	if (header)
 	{
-		ClearRows();
-		AddRow(GridLength::Pixels(height));
-		AddRow(GridLength::Star(1.0f));
+		const auto insets = GetHeaderPresentationInsets();
+		desired.width += insets.Horizontal();
+		desired.height += insets.Vertical();
 	}
-	if (auto* header = GetHeaderVisual()) ConfigureHeaderVisual(*header);
+	if (_expandDirection == ::ExpandDirection::Down
+		|| _expandDirection == ::ExpandDirection::Up)
+	{
+		const float extent = (std::clamp)(
+			(std::max)(HeaderExtent, desired.height), 0.0f, inner.height);
+		return {
+			inner.x,
+			_expandDirection == ::ExpandDirection::Up
+				? inner.Bottom() - extent : inner.y,
+			inner.width,
+			extent };
+	}
+	const float extent = (std::clamp)(
+		(std::max)(HeaderExtent, desired.width), 0.0f, inner.width);
+	return {
+		_expandDirection == ::ExpandDirection::Left
+			? inner.Right() - extent : inner.x,
+		inner.y,
+		extent,
+		inner.height };
+}
+
+cui::core::Rect Expander::ContentRect() const noexcept
+{
+	const auto size = GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
+	const cui::core::Rect inner{
+		padding.left,
+		padding.top,
+		(std::max)(0.0f, size.width - padding.Horizontal()),
+		(std::max)(0.0f, size.height - padding.Vertical()) };
+	const auto header = HeaderRect();
+	switch (_expandDirection)
+	{
+	case ::ExpandDirection::Down:
+		return { inner.x, header.Bottom(), inner.width,
+			(std::max)(0.0f, inner.Bottom() - header.Bottom()) };
+	case ::ExpandDirection::Up:
+		return { inner.x, inner.y, inner.width,
+			(std::max)(0.0f, header.y - inner.y) };
+	case ::ExpandDirection::Left:
+		return { inner.x, inner.y,
+			(std::max)(0.0f, header.x - inner.x), inner.height };
+	case ::ExpandDirection::Right:
+		return { header.Right(), inner.y,
+			(std::max)(0.0f, inner.Right() - header.Right()), inner.height };
+	}
+	return {};
+}
+
+cui::core::Size Expander::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	if (GetControlTemplateRoot())
+		return HeaderedContentControl::MeasureCore(available);
+	SynchronizeContentPresentation();
+	const auto padding = GetSpecifiedLayout().padding;
+	const auto inner = available.Deflate(padding).Normalized();
+
+	cui::core::Size headerDesired{};
+	if (auto* header = GetHeaderVisual(); header && !header->IsCollapsed())
+	{
+		const auto insets = GetHeaderPresentationInsets();
+		const auto margin = header->GetSpecifiedLayout().margin;
+		headerDesired = header->Measure(cui::core::Constraints{
+			cui::core::Size{},
+			cui::core::Size{
+				(std::max)(0.0f, inner.maximum.width
+					- insets.Horizontal() - margin.Horizontal()),
+				(std::max)(0.0f, inner.maximum.height
+					- insets.Vertical() - margin.Vertical()) } });
+		headerDesired.width += margin.Horizontal() + insets.Horizontal();
+		headerDesired.height += margin.Vertical() + insets.Vertical();
+	}
+	if (_expandDirection == ::ExpandDirection::Down
+		|| _expandDirection == ::ExpandDirection::Up)
+		headerDesired.height = (std::max)(HeaderExtent, headerDesired.height);
+	else
+		headerDesired.width = (std::max)(HeaderExtent, headerDesired.width);
+
+	cui::core::Size contentDesired{};
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content && !content->IsCollapsed())
+	{
+		const auto margin = content->GetSpecifiedLayout().margin;
+		float maximumWidth = inner.maximum.width;
+		float maximumHeight = inner.maximum.height;
+		if ((_expandDirection == ::ExpandDirection::Left
+			|| _expandDirection == ::ExpandDirection::Right)
+			&& inner.IsWidthBounded())
+			maximumWidth = (std::max)(0.0f, maximumWidth - headerDesired.width);
+		if ((_expandDirection == ::ExpandDirection::Down
+			|| _expandDirection == ::ExpandDirection::Up)
+			&& inner.IsHeightBounded())
+			maximumHeight = (std::max)(0.0f, maximumHeight - headerDesired.height);
+		contentDesired = content->Measure(cui::core::Constraints{
+			cui::core::Size{},
+			cui::core::Size{
+				(std::max)(0.0f, maximumWidth - margin.Horizontal()),
+				(std::max)(0.0f, maximumHeight - margin.Vertical()) } });
+		contentDesired.width += margin.Horizontal();
+		contentDesired.height += margin.Vertical();
+	}
+
+	cui::core::Size desired{};
+	if (_expandDirection == ::ExpandDirection::Down
+		|| _expandDirection == ::ExpandDirection::Up)
+	{
+		desired.width = (std::max)(headerDesired.width, contentDesired.width);
+		desired.height = headerDesired.height + contentDesired.height;
+	}
+	else
+	{
+		desired.width = headerDesired.width + contentDesired.width;
+		desired.height = (std::max)(headerDesired.height, contentDesired.height);
+	}
+	desired.width += padding.Horizontal();
+	desired.height += padding.Vertical();
+	return desired;
 }
 
 void Expander::PerformPendingLayout()
 {
-	PerformExpanderLayoutIfNeeded();
-}
-
-cui::core::Point Expander::GetChildrenLayoutOriginDip()
-{
-	return { Padding.Left, Padding.Top + HeaderHeight };
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	SynchronizeContentPresentation();
+	if (GetControlTemplateRoot())
+	{
+		HeaderedContentControl::PerformPendingLayout();
+		return;
+	}
+	const auto headerRect = HeaderRect();
+	const auto contentRect = ContentRect();
+	if (auto* header = GetHeaderVisual())
+	{
+		const std::array<Control*, 1> children{ header };
+		cui::layout::ArrangeOverlayChildren(
+			children, headerRect.Inset(GetHeaderPresentationInsets()));
+	}
+	auto* content = GetVisualContent();
+	if (!content) content = GetGeneratedPresenter();
+	if (content)
+	{
+		if (!_isExpanded || content->IsCollapsed())
+		{
+			// A collapsed child must not retain its last expanded arrange slot.
+			// Presentation suppression removes it from measure/render, while this
+			// zero slot completes the WPF Visibility.Collapsed layout contract.
+			content->Arrange(cui::core::Rect{
+				contentRect.x, contentRect.y, 0.0f, 0.0f });
+		}
+		else
+		{
+			const std::array<Control*, 1> children{ content };
+			cui::layout::ArrangeOverlayChildren(children, contentRect);
+		}
+	}
+	_contentLayoutPending = false;
 }
 
 bool Expander::HeaderHitTest(int localX, int localY) const
 {
-	return localX >= 0 && localY >= 0 && localX <= _size.cx && localY <= _headerHeight;
+	return HeaderRect().Contains(cui::core::Point{
+		static_cast<float>(localX), static_cast<float>(localY) });
 }
 
 void Expander::ApplyExpandedStateChange(bool oldValue, bool newValue)
 {
-	if (_animating)
-		CurrentExpandProgress();
-	else
-		_expandProgress = oldValue ? 1.0f : 0.0f;
-	_animStartProgress = _expandProgress;
-	_animTargetProgress = newValue ? 1.0f : 0.0f;
-	if (EffectiveAnimationDuration(AnimationDurationMs) == 0
-		|| std::fabs(_animTargetProgress - _animStartProgress) <= 0.001f)
+	if (oldValue == newValue) return;
+	const ControlWeakReference lifetime(this);
+	SynchronizeContentPresentation();
+	if (!newValue && GetPresentationWindow())
 	{
-		_expandProgress = _animTargetProgress;
-		_animating = false;
+		auto* focused = GetPresentationWindow()->GetKeyboardFocusedElement();
+		for (auto* current = focused; current; current = current->GetVisualParent())
+		{
+			if (current != this) continue;
+			GetPresentationWindow()->SetKeyboardFocus(nullptr, false);
+			break;
+		}
 	}
-	else
-	{
-		_animStartTick = ::GetTickCount64();
-		_animating = true;
-	}
-	if (!newValue && ParentForm && ParentForm->Selected && ParentForm->Selected->Parent == this)
-		ParentForm->SetSelectedControl(nullptr, false);
-	if (ParentForm)
-		ParentForm->Invalidate(true);
-	InvalidateVisual();
-	OnExpandedChanged(this, newValue);
+	auto* source = dynamic_cast<Expander*>(lifetime.Get());
+	if (!source) return;
+	source->RequestLayout();
+	source->InvalidateVisual();
+	RoutedEventArgs args;
+	if (newValue) source->Expanded(source, args);
+	else source->Collapsed(source, args);
 }
 
 void Expander::SetCurrentExpanded(bool value)
@@ -431,207 +469,178 @@ void Expander::Toggle()
 	SetCurrentExpanded(!_isExpanded);
 }
 
-SIZE Expander::ActualSize()
-{
-	SIZE size = this->_size;
-	float headerHeight = (std::clamp)(HeaderHeight, 0.0f, (float)size.cy);
-	float contentHeight = (std::max)(0.0f, (float)size.cy - headerHeight);
-	size.cy = (LONG)std::ceil(headerHeight + contentHeight * CurrentExpandProgress());
-	return size;
-}
-
 CursorKind Expander::QueryCursor(int localX, int localY)
 {
-	if (!Enable) return CursorKind::Arrow;
-	if (HeaderHitTest(localX, localY))
-		return CursorKind::Hand;
-	return this->Cursor;
+	if (!IsEnabled) return CursorKind::Arrow;
+	return HeaderHitTest(localX, localY)
+		? CursorKind::Hand : Control::QueryCursor(localX, localY);
 }
 
 bool Expander::ShouldHitTestChildrenAt(int localX, int localY) const
 {
-	if (!HitTestChildren())
-		return false;
-	if (localX < 0 || localX > _size.cx)
-		return false;
-	const float progress = const_cast<Expander*>(this)->CurrentExpandProgress();
-	const float headerHeight = (std::clamp)(_headerHeight, 0.0f, (float)_size.cy);
-	const float visibleContentHeight = (std::max)(0.0f, ((float)_size.cy - headerHeight) * progress);
-	return localY >= (int)std::floor(headerHeight) && localY <= (int)std::ceil(headerHeight + visibleContentHeight);
+	if (!HitTestChildren() || !_isExpanded) return false;
+	return ContentRect().Contains(cui::core::Point{
+		static_cast<float>(localX), static_cast<float>(localY) });
 }
 
-D2D1_RECT_F Expander::GetChildrenClipRect()
+D2D1_RECT_F Expander::GetVisualChildrenClipRect()
 {
-	const float progress = CurrentExpandProgress();
-	const float headerHeight = (std::clamp)(HeaderHeight, 0.0f, (float)_size.cy);
-	const float visibleContentHeight = (std::max)(0.0f, ((float)_size.cy - headerHeight) * progress);
-	return D2D1::RectF(0.0f, headerHeight, (float)_size.cx, headerHeight + visibleContentHeight);
+	const auto content = ContentRect();
+	return D2D1::RectF(
+		content.Left(), content.Top(), content.Right(), content.Bottom());
 }
 
-bool Expander::HandlesNavigationKey(WPARAM key) const
+bool Expander::HandlesNavigationKey(Key key) const
 {
-	return key == VK_RETURN || key == VK_SPACE;
+	return key == Key::Return || key == Key::Space;
 }
 
-bool Expander::IsAnimationRunning()
+void Expander::OnRender()
 {
-	CurrentExpandProgress();
-	return _animating;
-}
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
+	auto* graphics = GetDrawingContext();
+	const auto size = GetActualSizeDip();
+	const auto header = HeaderRect();
+	const auto content = ContentRect();
+	const float radius = (std::clamp)(FallbackCornerRadius, 0.0f,
+		(std::min)(size.width, size.height) * 0.5f);
 
-bool Expander::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
-{
-	if (!_animating)
-		return false;
-	outRect = this->AbsRect;
-	outRect.bottom = outRect.top + (float)this->_size.cy;
-	return true;
-}
-
-void Expander::Update()
-{
-	if (this->IsVisual == false) return;
-	PerformExpanderLayoutIfNeeded();
-	auto d2d = this->ParentForm ? this->ParentForm->Render : nullptr;
-	if (!d2d) return;
-
-	const float progress = CurrentExpandProgress();
-	const auto size = this->GetActualSizeDip();
-	const float width = size.width;
-	const float height = size.height;
-	const float fullHeight = (float)this->_size.cy;
-	const float headerHeight = (std::clamp)(HeaderHeight, 0.0f, fullHeight);
-	const float border = (std::max)(0.0f, Border);
-	const float radius = (std::clamp)(CornerRadius, 0.0f, (std::min)(width, (std::max)(headerHeight, height)) * 0.5f);
-
-	this->BeginRender(width, height);
+	BeginRender(size.width, size.height);
 	if (GetControlTemplateRoot())
 	{
-		if (!this->ParentForm->IsDCompSceneRenderActive())
-		{
-			for (auto* child : this->GetChildrenInZOrder())
-				if (child && child->Visible) child->Update();
-		}
-		this->EndRender();
+		EndRender();
 		return;
 	}
+
+	if (_isExpanded)
+		graphics->FillRoundRect(0.0f, 0.0f,
+			size.width, size.height, Surface, radius);
+	if (_isExpanded && content.width > 0.0f && content.height > 0.0f)
+		graphics->FillRect(content.x, content.y,
+			content.width, content.height, ContentBackground);
+	graphics->FillRoundRect(header.x, header.y,
+		header.width, header.height, HeaderBackground, radius);
+	if (_hoverHeader)
+		graphics->FillRoundRect(
+			header.x + 1.0f, header.y + 1.0f,
+			(std::max)(0.0f, header.width - 2.0f),
+			(std::max)(0.0f, header.height - 2.0f),
+			HeaderHighlight, (std::max)(0.0f, radius - 1.0f));
+
+	auto headerTextColor = IsEnabled ? RendererForegroundColor : MutedText;
+	const float chevronX = header.x + HeaderPadding + ChevronSize * 0.5f;
+	const float chevronY = header.y + header.height * 0.5f;
+	DrawChevron(graphics, chevronX, chevronY,
+		_expandDirection, _isExpanded, headerTextColor);
+
+	if (!GetHeaderVisual())
 	{
-		D2D1_COLOR_F surface = SurfaceColor.a > 0.0f ? SurfaceColor : this->BackColor;
-		d2d->FillRoundRect(0.0f, 0.0f, width, height, surface, radius);
-		if (ContentBackColor.a > 0.0f && height > headerHeight)
-			d2d->FillRect(0.0f, headerHeight, width, height - headerHeight, ContentBackColor);
-		d2d->FillRoundRect(0.0f, 0.0f, width, (std::min)(headerHeight, height), HeaderBackColor, radius);
-		if (_hoverHeader)
-			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, width - 2.0f), (std::max)(0.0f, headerHeight - 2.0f),
-				HeaderHoverBackColor, (std::max)(0.0f, radius - 1.0f));
-
-		const D2D1_COLOR_F headerForeColor = Enable ? ForeColor : MutedTextColor;
-		const float chevronCenterX = HeaderPaddingX + ChevronSize * 0.5f;
-		const float chevronCenterY = headerHeight * 0.5f;
-		DrawExpanderChevron(d2d, chevronCenterX, chevronCenterY, ChevronSize, progress, headerForeColor);
-
-		auto* header = GetHeaderVisual();
-		if (header)
-		{
-			if ((!this->ParentForm
-				|| !this->ParentForm->IsDCompSceneRenderActive())
-				&& header->Visible)
-				header->Update();
-		}
-		else
-		{
-			D2D1_RECT_F textRect{
-				HeaderPaddingX + ChevronSize + 9.0f,
-				0.0f,
-				(std::max)(HeaderPaddingX + ChevronSize + 9.0f, width - HeaderPaddingX),
-				headerHeight
-			};
-			d2d->PushDrawRect(textRect.left, textRect.top,
-				(std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect));
-			d2d->DrawString(GetDisplayText(), textRect.left,
-				TextTop(Font, textRect), (std::max)(1.0f, RectWidth(textRect)),
-				RectHeight(textRect), headerForeColor, Font);
-			d2d->PopDrawRect();
-		}
-
-		if (progress > 0.001f && height > headerHeight)
-		{
-			D2D1_RECT_F clip = GetChildrenClipRect();
-			d2d->PushDrawRect(clip.left, clip.top, RectWidth(clip), RectHeight(clip));
-			if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
-			{
-				auto* content = GetVisualContent();
-				if (!content) content = GetGeneratedPresenter();
-				if (content && content->Visible) content->Update();
-			}
-			d2d->PopDrawRect();
-		}
-
-		if (headerHeight < height)
-			d2d->DrawLine(HeaderPaddingX, headerHeight, (std::max)(HeaderPaddingX, width - HeaderPaddingX), headerHeight, ScaleAlpha(BorderColor, 0.62f), 1.0f);
-		if (border > 0.0f && BorderColor.a > 0.0f)
-			d2d->DrawRoundRect(border * 0.5f, border * 0.5f,
-				(std::max)(0.0f, width - border), (std::max)(0.0f, height - border),
-				BorderColor, border, radius);
-		if (AccentColor.a > 0.0f)
-		{
-			float accentHeight = (std::max)(6.0f, headerHeight - 14.0f);
-			d2d->FillRoundRect(2.0f, (headerHeight - accentHeight) * 0.5f, 3.0f, accentHeight, AccentColor, 1.5f);
-		}
-		if (!Enable)
-			d2d->FillRoundRect(0.0f, 0.0f, width, height, DisabledOverlayColor, radius);
+		const D2D1_RECT_F textRect{
+			header.x + HeaderPadding + ChevronSize + 9.0f,
+			header.y,
+			header.Right() - HeaderPadding,
+			header.Bottom() };
+		graphics->PushDrawRect(
+			textRect.left, textRect.top,
+			(std::max)(1.0f, RectWidth(textRect)),
+			(std::max)(1.0f, RectHeight(textRect)));
+		graphics->DrawString(GetDisplayText(),
+			textRect.left,
+			textRect.top + (std::max)(0.0f,
+				(RectHeight(textRect) - GetRenderFont()->FontHeight) * 0.5f),
+			(std::max)(1.0f, RectWidth(textRect)),
+			(std::max)(1.0f, RectHeight(textRect)),
+			headerTextColor, GetRenderFont());
+		graphics->PopDrawRect();
 	}
-	this->EndRender();
+
+	if (RendererBorderColor.a > 0.0f)
+	{
+		const auto chrome = _isExpanded
+			? cui::core::Rect{ 0.0f, 0.0f, size.width, size.height }
+			: header;
+		graphics->DrawRoundRect(
+			chrome.x + FallbackBorderThickness * 0.5f,
+			chrome.y + FallbackBorderThickness * 0.5f,
+			(std::max)(0.0f, chrome.width - FallbackBorderThickness),
+			(std::max)(0.0f, chrome.height - FallbackBorderThickness),
+			RendererBorderColor, FallbackBorderThickness, radius);
+	}
+	if (Accent.a > 0.0f)
+	{
+		const float accentExtent = (std::max)(
+			6.0f, (std::min)(header.width, header.height) - 14.0f);
+		graphics->FillRoundRect(
+			header.x + 2.0f,
+			header.y + (header.height - accentExtent) * 0.5f,
+			3.0f, accentExtent, Accent, 1.5f);
+	}
+	if (!IsEnabled)
+	{
+		const auto chrome = _isExpanded
+			? cui::core::Rect{ 0.0f, 0.0f, size.width, size.height }
+			: header;
+		graphics->FillRoundRect(
+			chrome.x, chrome.y, chrome.width, chrome.height,
+			DisabledOverlay, radius);
+	}
+	EndRender();
 }
 
-bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool Expander::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-	PerformExpanderLayoutIfNeeded();
-
-	const bool isHeaderHit = HeaderHitTest(localX, localY);
-	switch (message)
+	if (!IsEnabled || !IsVisible) return true;
+	PerformPendingLayout();
+	const bool headerHit = HeaderHitTest(input.X, input.Y);
+	switch (input.Kind)
 	{
-	case WM_MOUSEMOVE:
-		if (ParentForm) ParentForm->UnderMouse = this;
-		if (_hoverHeader != isHeaderHit)
+	case InputReportKind::PointerDown:
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		if (GetPresentationWindow()) GetPresentationWindow()->SetKeyboardFocus(this, false);
+		if (headerHit)
 		{
-			_hoverHeader = isHeaderHit;
-			InvalidateVisual();
-		}
-		break;
-	case WM_LBUTTONDOWN:
-		if (ParentForm)
-			ParentForm->SetSelectedControl(this, false);
-		if (isHeaderHit)
-		{
-			OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
+			_headerPressActive = true;
+			(void)CaptureMouse();
+			auto args = input.CreateMouseEventArgs();
+			OnMouseDown(this, args);
 			InvalidateVisual();
 			return true;
 		}
 		break;
-	case WM_LBUTTONUP:
-		if (isHeaderHit)
+	case InputReportKind::PointerUp:
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
 		{
-			Toggle();
-			MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
-			OnMouseUp(this, eventArgs);
-			OnMouseClick(this, eventArgs);
+			const bool activate = _headerPressActive && headerHit;
+			_headerPressActive = false;
+			if (IsMouseCaptured()) (void)ReleaseMouseCapture();
+			if (activate) Toggle();
+			auto args = input.CreateMouseEventArgs();
+			OnMouseUp(this, args);
 			return true;
 		}
-		break;
-	case WM_KEYDOWN:
-		if (ParentForm && ParentForm->Selected == this && (wParam == VK_RETURN || wParam == VK_SPACE))
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		{
+			_headerPressActive = false;
+			if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+				(void)ReleaseMouseCapture();
+			return Control::ProcessInput(input);
+		}
+	case InputReportKind::KeyDown:
+		if (GetPresentationWindow() && GetPresentationWindow()->GetKeyboardFocusedElement() == this
+			&& (input.Key == Key::Return
+				|| input.Key == Key::Space))
 		{
 			Toggle();
-			OnKeyDown(this, KeyEventArgs((Keys)(wParam | 0)));
+			auto args = input.CreateKeyEventArgs();
+			OnKeyDown(this, args);
 			return true;
 		}
 		break;
 	default:
 		break;
 	}
-
-	return HeaderedContentControl::ProcessMessage(
-		message, wParam, lParam, localX, localY);
+	return Control::ProcessInput(input);
 }

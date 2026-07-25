@@ -8,9 +8,12 @@
 #include <dxgi.h>
 #include <dxgi1_2.h>
 #include <dxgiformat.h>
+#include <bit>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <wrl/client.h>
 
@@ -29,7 +32,8 @@ public:
 		Compatible,
 		Hwnd,
 		ExternalBitmap,
-		DxgiSwapChain
+		DxgiSwapChain,
+		CommandRecorder
 	};
 
 	struct InitOptions {
@@ -48,6 +52,8 @@ public:
 	explicit D2DGraphics(IWICBitmap* bitmap, bool takeOwnership = false);
 	explicit D2DGraphics(const BitmapSource* bitmap);
 	explicit D2DGraphics(IDXGISwapChain* swapChain);
+	/** Creates a targetless recorder in the same Direct2D resource domain. */
+	explicit D2DGraphics(ID2D1Device* device);
 	explicit D2DGraphics(const InitOptions& options);
 	virtual ~D2DGraphics();
 
@@ -55,11 +61,28 @@ public:
 	virtual void BeginRender();
 	virtual void EndRender();
 	virtual void ReSize(UINT width, UINT height);
+	/**
+	 * Declares the complete logical-DIP region updated by the current frame.
+	 *
+	 * Flip-model swap chains must present this as a dirty rectangle. Presenting
+	 * a partially redrawn back buffer as a complete frame lets stale pixels from
+	 * alternating buffers replace otherwise unchanged retained content.
+	 */
+	void SetPresentDirtyRect(const RECT& logicalDirty);
+	/**
+	 * Returns true when this swap chain must receive a complete redraw.
+	 *
+	 * A newly created/resized flip chain has no coherent presentation history,
+	 * and swap effects without Present1 dirty-region support can never accept a
+	 * partial retained redraw safely.
+	 */
+	bool RequiresFullPresentFrame() const noexcept;
 
 	// 设备/交换链丢失（远程桌面重连、显卡切换、驱动重启等）时，渲染对象可能需要上层重建。
 	bool IsDeviceLost() const { return _deviceLost; }
 	HRESULT GetLastEndDrawHr() const { return _lastEndDrawHr; }
 	HRESULT GetLastPresentHr() const { return _lastPresentHr; }
+	bool IsCommandRecording() const noexcept { return _commandRecording; }
 
 	HRESULT EnsureDeviceContext();
 
@@ -140,6 +163,8 @@ public:
 
 	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color, DWRITE_TEXT_RANGE subRange, D2D1_COLOR_F fontBack, Font* font = nullptr);
 	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush, DWRITE_TEXT_RANGE subRange, D2D1_COLOR_F fontBack, Font* font = nullptr);
+	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font = nullptr);
+	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font = nullptr);
 
 	void DrawString(const std::wstring& str, float x, float y, D2D1_COLOR_F color, Font* font = nullptr);
 	void DrawString(const std::wstring& str, float x, float y, ID2D1Brush* brush, Font* font = nullptr);
@@ -192,6 +217,13 @@ public:
 
 	ID2D1DeviceContext* GetDeviceContextRaw() const;
 	Microsoft::WRL::ComPtr<ID2D1DeviceContext> GetDeviceContext() const;
+	ID2D1Device* GetDeviceRaw() const { return pD2DDevice.Get(); }
+
+	/** Records an immutable command list without changing a presentation target. */
+	bool BeginCommandRecording();
+	HRESULT EndCommandRecording(ID2D1CommandList** commandList);
+	void AbortCommandRecording() noexcept;
+	void DrawCommandList(ID2D1CommandList* commandList);
 
 	ID2D1Bitmap1* CreateBitmapFromDxgiSurface(IDXGISurface* surface);
 	void DrawDxgiSurface(IDXGISurface* surface, float x, float y, float width, float height, float opacity = 1.0f);
@@ -219,6 +251,7 @@ protected:
 	HRESULT InitializeWithSize(UINT width, UINT height, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode);
 	HRESULT InitializeWithWicBitmap(IWICBitmap* bitmap, bool takeOwnership, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode);
 	HRESULT InitializeWithSwapChain(IDXGISwapChain* swapChain);
+	HRESULT InitializeCommandRecorder(ID2D1Device* device);
 
 	void ResetTarget();
 	HRESULT ConfigDefaultObjects();
@@ -233,9 +266,32 @@ protected:
 	Microsoft::WRL::ComPtr<ID2D1Bitmap1> pTargetBitmap;
 	Microsoft::WRL::ComPtr<IDXGISwapChain> pSwapChain;
 
-	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> Default_Brush;
-	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> Default_Brush_Back;
+	struct SolidBrushKey
+	{
+		uint32_t R = 0;
+		uint32_t G = 0;
+		uint32_t B = 0;
+		uint32_t A = 0;
+
+		bool operator==(const SolidBrushKey&) const noexcept = default;
+	};
+
+	struct SolidBrushKeyHash
+	{
+		size_t operator()(const SolidBrushKey& key) const noexcept
+		{
+			size_t value = key.R;
+			value = (value * 16777619u) ^ key.G;
+			value = (value * 16777619u) ^ key.B;
+			return (value * 16777619u) ^ key.A;
+		}
+	};
+
+	std::unordered_map<SolidBrushKey,
+		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>,
+		SolidBrushKeyHash> _solidBrushes;
 	Microsoft::WRL::ComPtr<IWICBitmap> pWicTargetBitmap;
+	Microsoft::WRL::ComPtr<ID2D1CommandList> _recordingCommandList;
 
 	SurfaceKind surfaceKind = SurfaceKind::None;
 	bool wicDirty = false;
@@ -243,10 +299,18 @@ protected:
 	HRESULT _lastEndDrawHr = S_OK;
 	HRESULT _lastPresentHr = S_OK;
 	bool _deviceLost = false;
+	bool _commandRecording = false;
+	RECT _presentDirtyRect{};
+	bool _hasPresentDirtyRect = false;
+	bool _swapChainHasPresentedFrame = false;
 
 	std::vector<D2D1_MATRIX_3X2_F> _transformStack;
 	std::vector<Microsoft::WRL::ComPtr<ID2D1Layer>> _geometryClipLayerStack;
 	std::vector<Microsoft::WRL::ComPtr<ID2D1Geometry>> _geometryClipGeometryStack;
+
+	ID2D1SolidColorBrush* GetImmutableSolidColorBrush(D2D1_COLOR_F color);
+	bool SupportsDirtyPresent() const noexcept;
+	HRESULT PresentSwapChain(UINT syncInterval, UINT flags);
 };
 
 class CompatibleGraphics : public D2DGraphics {

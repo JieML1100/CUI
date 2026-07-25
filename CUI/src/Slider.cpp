@@ -1,5 +1,5 @@
-﻿#include "Slider.h"
-#include "Form.h"
+#include "Slider.h"
+#include "Window.h"
 #include <cmath>
 #include <utility>
 
@@ -8,22 +8,22 @@ UIClass Slider::Type() { return UIClass::UI_Slider; }
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<Slider, TValue> SliderPropertyOptions(
+	DependencyPropertyOptions<Slider, TValue> SliderPropertyOptions(
 		TValue defaultValue,
 		const wchar_t* category,
 		int categoryOrder,
 		int order,
-		ControlPropertyEditorKind editor,
-		ControlPropertyFlags flags = ControlPropertyFlags::AffectsRender)
+		DependencyPropertyEditorKind editor,
+		DependencyPropertyFlags flags = DependencyPropertyFlags::AffectsRender)
 	{
-		ControlPropertyOptions<Slider, TValue> options;
+		DependencyPropertyOptions<Slider, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = flags | ControlPropertyFlags::TracksLocalValue;
+		options.Flags = flags;
 		options.Design.Category = category;
 		options.Design.CategoryOrder = categoryOrder;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -31,54 +31,17 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			Slider& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
+					if (args.PropertyName == propertyName)
 						handler();
 				});
 		};
-	}
-
-	bool SliderColorsEqual(
-		const D2D1_COLOR_F& left,
-		const D2D1_COLOR_F& right)
-	{
-		return left.r == right.r && left.g == right.g
-			&& left.b == right.b && left.a == right.a;
-	}
-
-	ControlPropertyOptions<Slider, D2D1_COLOR_F> SliderColorOptions(
-		D2D1_COLOR_F defaultValue,
-		int order)
-	{
-		auto options = SliderPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Color);
-		options.Equals = SliderColorsEqual;
-		return options;
-	}
-
-	ControlPropertyOptions<Slider, float> SliderMetricOptions(
-		float defaultValue,
-		int order)
-	{
-		auto options = SliderPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Number);
-		options.Coerce = [](Slider&, const float& proposed) -> std::optional<float>
-		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ (std::max)(0.0f, proposed) }
-				: std::nullopt;
-		};
-		options.Design.Minimum = 0.0;
-		options.Design.Step = 0.5;
-		return options;
 	}
 
 	D2D1_COLOR_F LerpColor(const D2D1_COLOR_F& from, const D2D1_COLOR_F& to, float t)
@@ -99,373 +62,258 @@ namespace
 	}
 }
 
-void Slider::EnsureBindingPropertiesRegistered()
+void Slider::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	RangeBase::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		auto minimumOptions = SliderPropertyOptions(
-			0.0f, L"Range", 100, 10, ControlPropertyEditorKind::Number);
-		minimumOptions.Coerce = [](
-			Slider&, const float& proposed) -> std::optional<float>
+		auto changeOptions = [](double defaultValue, int order)
 		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ proposed } : std::nullopt;
+			auto options = SliderPropertyOptions(
+				defaultValue, L"Range", 100, order,
+				DependencyPropertyEditorKind::Number);
+			options.Coerce = [](
+				Slider&, const double& proposed) -> std::optional<double>
+			{
+				return std::isfinite(proposed)
+					? std::optional<double>{ (std::max)(0.0, proposed) }
+					: std::nullopt;
+			};
+			options.Design.Minimum = 0.0;
+			options.Design.Step = 0.1;
+			return options;
 		};
-		minimumOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<Slider, float>(L"Min",
-			[](Slider& target) { return target.Min; },
-			[](Slider& target, const float& value) { target.Min = value; },
-			SliderPropertySubscriber(L"Min"), std::move(minimumOptions));
-
-		auto maximumOptions = SliderPropertyOptions(
-			100.0f, L"Range", 100, 20, ControlPropertyEditorKind::Number);
-		maximumOptions.Coerce = [](
-			Slider& target, const float& proposed) -> std::optional<float>
-		{
-			if (!std::isfinite(proposed)) return std::nullopt;
-			return (std::max)(target.Min, proposed);
-		};
-		maximumOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<Slider, float>(L"Max",
-			[](Slider& target) { return target.Max; },
-			[](Slider& target, const float& value) { target.Max = value; },
-			SliderPropertySubscriber(L"Max"), std::move(maximumOptions));
-
-		auto valueOptions = SliderPropertyOptions(
-			0.0f, L"Range", 100, 50, ControlPropertyEditorKind::Number);
-		valueOptions.Coerce = [](
-			Slider& target, const float& proposed) -> std::optional<float>
-		{
-			return target.CoerceValue(proposed);
-		};
-		valueOptions.Changed = [](
-			Slider& target, const float& oldValue, const float& newValue)
-		{
-			target.OnValueChanged(&target, oldValue, newValue);
-		};
-		valueOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<Slider, float>(L"Value",
-			[](Slider& target) { return target.Value; },
-			[](Slider& target, const float& value) { target.Value = value; },
-			SliderPropertySubscriber(L"Value"), std::move(valueOptions));
-
-		auto stepOptions = SliderPropertyOptions(
-			1.0f, L"Range", 100, 30, ControlPropertyEditorKind::Number);
-		stepOptions.Coerce = [](
-			Slider&, const float& proposed) -> std::optional<float>
-		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ (std::max)(0.0f, proposed) }
-				: std::nullopt;
-		};
-		stepOptions.Design.Minimum = 0.0;
-		stepOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<Slider, float>(L"Step",
-			[](Slider& target) { return target.Step; },
-			[](Slider& target, const float& value) { target.Step = value; },
-			SliderPropertySubscriber(L"Step"), std::move(stepOptions));
+		DependencyPropertyRegistry::Register<Slider, double>(L"SmallChange",
+			[](Slider& target) { return target.SmallChange; },
+			[](Slider& target, const double& value)
+			{ target.SmallChange = value; },
+			SliderPropertySubscriber(L"SmallChange"), changeOptions(1.0, 40));
+		DependencyPropertyRegistry::Register<Slider, double>(L"LargeChange",
+			[](Slider& target) { return target.LargeChange; },
+			[](Slider& target, const double& value)
+			{ target.LargeChange = value; },
+			SliderPropertySubscriber(L"LargeChange"), changeOptions(10.0, 50));
+		DependencyPropertyRegistry::Register<Slider, double>(L"TickFrequency",
+			[](Slider& target) { return target.TickFrequency; },
+			[](Slider& target, const double& value)
+			{ target.TickFrequency = value; },
+			SliderPropertySubscriber(L"TickFrequency"), changeOptions(1.0, 60));
 
 		auto snapOptions = SliderPropertyOptions(
-			false, L"Range", 100, 40, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<Slider, bool>(L"SnapToStep",
-			[](Slider& target) { return target.SnapToStep; },
-			[](Slider& target, const bool& value) { target.SnapToStep = value; },
-			SliderPropertySubscriber(L"SnapToStep"), std::move(snapOptions));
-
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackBackColor",
-			[](Slider& target) { return target.TrackBackColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackBackColor = value; },
-			SliderPropertySubscriber(L"TrackBackColor"),
-			SliderColorOptions(cui::theme::palette::ScrollTrack, 10));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackForeColor",
-			[](Slider& target) { return target.TrackForeColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackForeColor = value; },
-			SliderPropertySubscriber(L"TrackForeColor"),
-			SliderColorOptions(cui::theme::palette::Accent, 20));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackHoverColor",
-			[](Slider& target) { return target.TrackHoverColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackHoverColor = value; },
-			SliderPropertySubscriber(L"TrackHoverColor"),
-			SliderColorOptions(cui::theme::palette::AccentSoft, 30));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackBorderColor",
-			[](Slider& target) { return target.TrackBorderColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackBorderColor = value; },
-			SliderPropertySubscriber(L"TrackBorderColor"),
-			SliderColorOptions(cui::theme::palette::Border, 40));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbColor",
-			[](Slider& target) { return target.ThumbColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbColor = value; },
-			SliderPropertySubscriber(L"ThumbColor"),
-			SliderColorOptions(cui::theme::palette::Surface, 50));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbHoverColor",
-			[](Slider& target) { return target.ThumbHoverColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbHoverColor = value; },
-			SliderPropertySubscriber(L"ThumbHoverColor"),
-			SliderColorOptions(cui::theme::palette::Surface, 60));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbBorderColor",
-			[](Slider& target) { return target.ThumbBorderColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbBorderColor = value; },
-			SliderPropertySubscriber(L"ThumbBorderColor"),
-			SliderColorOptions(cui::theme::palette::BorderStrong, 70));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbShadowColor",
-			[](Slider& target) { return target.ThumbShadowColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbShadowColor = value; },
-			SliderPropertySubscriber(L"ThumbShadowColor"),
-			SliderColorOptions(cui::theme::palette::Shadow, 80));
-		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"DisabledOverlayColor",
-			[](Slider& target) { return target.DisabledOverlayColor; },
-			[](Slider& target, const D2D1_COLOR_F& value) { target.DisabledOverlayColor = value; },
-			SliderPropertySubscriber(L"DisabledOverlayColor"),
-			SliderColorOptions(cui::theme::palette::DisabledOverlay, 90));
-
-		BindingPropertyRegistry::Register<Slider, float>(L"TrackHeight",
-			[](Slider& target) { return target.TrackHeight; },
-			[](Slider& target, const float& value) { target.TrackHeight = value; },
-			SliderPropertySubscriber(L"TrackHeight"), SliderMetricOptions(5.0f, 100));
-		BindingPropertyRegistry::Register<Slider, float>(L"ThumbRadius",
-			[](Slider& target) { return target.ThumbRadius; },
-			[](Slider& target, const float& value) { target.ThumbRadius = value; },
-			SliderPropertySubscriber(L"ThumbRadius"), SliderMetricOptions(8.0f, 110));
-		BindingPropertyRegistry::Register<Slider, float>(L"ThumbHoverRadiusDelta",
-			[](Slider& target) { return target.ThumbHoverRadiusDelta; },
-			[](Slider& target, const float& value) { target.ThumbHoverRadiusDelta = value; },
-			SliderPropertySubscriber(L"ThumbHoverRadiusDelta"), SliderMetricOptions(1.0f, 120));
-		BindingPropertyRegistry::Register<Slider, float>(L"ThumbDragRadiusDelta",
-			[](Slider& target) { return target.ThumbDragRadiusDelta; },
-			[](Slider& target, const float& value) { target.ThumbDragRadiusDelta = value; },
-			SliderPropertySubscriber(L"ThumbDragRadiusDelta"), SliderMetricOptions(2.0f, 130));
+			false, L"Range", 100, 70,
+			DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<Slider, bool>(
+			L"IsSnapToTickEnabled",
+			[](Slider& target) { return target.IsSnapToTickEnabled; },
+			[](Slider& target, const bool& value)
+			{ target.IsSnapToTickEnabled = value; },
+			SliderPropertySubscriber(L"IsSnapToTickEnabled"),
+			std::move(snapOptions));
 		return true;
 	}();
 	(void)registered;
 }
 
-Slider::Slider(int x, int y, int width, int height)
+Slider::Slider()
 {
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->Cursor = CursorKind::SizeWE;
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->RendererBorderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	(void)TrySetPropertyValue(
+		L"Cursor", BindingValue(CursorKind::SizeWE),
+		DependencyPropertyValueSource::Theme);
 }
 
-GET_CPP(Slider, float, Min)
+GET_CPP(Slider, double, SmallChange) { return _smallChange; }
+SET_CPP(Slider, double, SmallChange)
 {
-	return this->_min;
-}
-SET_CPP(Slider, float, Min)
-{
-	if (!SetPropertyField(L"Min", _min, value)) return;
-	(void)ReevaluatePropertyValue(L"Max");
-	ReevaluateValue();
+	(void)SetPropertyField(L"SmallChange", _smallChange, value);
 }
 
-GET_CPP(Slider, float, Max)
+GET_CPP(Slider, double, LargeChange) { return _largeChange; }
+SET_CPP(Slider, double, LargeChange)
 {
-	return this->_max;
-}
-SET_CPP(Slider, float, Max)
-{
-	if (!SetPropertyField(L"Max", _max, value)) return;
-	ReevaluateValue();
+	(void)SetPropertyField(L"LargeChange", _largeChange, value);
 }
 
-GET_CPP(Slider, float, Value)
+GET_CPP(Slider, double, TickFrequency) { return _tickFrequency; }
+SET_CPP(Slider, double, TickFrequency)
 {
-	return this->_value;
-}
-SET_CPP(Slider, float, Value)
-{
-	(void)SetPropertyField(L"Value", _value, value);
+	if (!SetPropertyField(L"TickFrequency", _tickFrequency, value)) return;
+	ReevaluateRangeValue();
 }
 
-GET_CPP(Slider, float, Step) { return _step; }
-SET_CPP(Slider, float, Step)
+GET_CPP(Slider, bool, IsSnapToTickEnabled)
 {
-	if (!SetPropertyField(L"Step", _step, value)) return;
-	ReevaluateValue();
+	return _isSnapToTickEnabled;
+}
+SET_CPP(Slider, bool, IsSnapToTickEnabled)
+{
+	if (!SetPropertyField(
+		L"IsSnapToTickEnabled", _isSnapToTickEnabled, value)) return;
+	ReevaluateRangeValue();
 }
 
-GET_CPP(Slider, bool, SnapToStep) { return _snapToStep; }
-SET_CPP(Slider, bool, SnapToStep)
+double Slider::CoerceRangeValue(double value) const
 {
-	if (!SetPropertyField(L"SnapToStep", _snapToStep, value)) return;
-	ReevaluateValue();
-}
-
-float Slider::CoerceValue(float value) const
-{
-	if (!std::isfinite(value)) value = _min;
-	const float maximum = (std::max)(_min, _max);
-	float next = (std::clamp)(value, _min, maximum);
-	if (_snapToStep && _step > 0.0f && std::isfinite(_step))
+	double next = RangeBase::CoerceRangeValue(value);
+	if (_isSnapToTickEnabled && _tickFrequency > 0.0
+		&& std::isfinite(_tickFrequency))
 	{
-		const float steps = (next - _min) / _step;
-		next = _min + std::round(steps) * _step;
-		next = (std::clamp)(next, _min, maximum);
+		const double ticks = (next - MinimumCore()) / _tickFrequency;
+		next = MinimumCore() + std::round(ticks) * _tickFrequency;
+		next = RangeBase::CoerceRangeValue(next);
 	}
 	return next;
 }
 
-void Slider::SetCurrentValue(float value)
+void Slider::Increment(double delta)
 {
-	(void)SetCurrentPropertyField(L"Value", _value, value);
-}
-
-void Slider::ReevaluateValue()
-{
-	(void)ReevaluatePropertyValue(L"Value");
-}
-
-#define CUI_SLIDER_PROPERTY_IMPL(type, name, field, propertyName) \
-	GET_CPP(Slider, type, name) { return field; } \
-	SET_CPP(Slider, type, name) { (void)SetPropertyField(propertyName, field, value); }
-
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, TrackBackColor, _trackBackColor, L"TrackBackColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, TrackForeColor, _trackForeColor, L"TrackForeColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, TrackHoverColor, _trackHoverColor, L"TrackHoverColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, TrackBorderColor, _trackBorderColor, L"TrackBorderColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, ThumbColor, _thumbColor, L"ThumbColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, ThumbHoverColor, _thumbHoverColor, L"ThumbHoverColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, ThumbBorderColor, _thumbBorderColor, L"ThumbBorderColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, ThumbShadowColor, _thumbShadowColor, L"ThumbShadowColor")
-CUI_SLIDER_PROPERTY_IMPL(D2D1_COLOR_F, DisabledOverlayColor, _disabledOverlayColor, L"DisabledOverlayColor")
-CUI_SLIDER_PROPERTY_IMPL(float, TrackHeight, _trackHeight, L"TrackHeight")
-CUI_SLIDER_PROPERTY_IMPL(float, ThumbRadius, _thumbRadius, L"ThumbRadius")
-CUI_SLIDER_PROPERTY_IMPL(float, ThumbHoverRadiusDelta, _thumbHoverRadiusDelta, L"ThumbHoverRadiusDelta")
-CUI_SLIDER_PROPERTY_IMPL(float, ThumbDragRadiusDelta, _thumbDragRadiusDelta, L"ThumbDragRadiusDelta")
-
-#undef CUI_SLIDER_PROPERTY_IMPL
-
-void Slider::SetRange(float minValue, float maxValue)
-{
-	// 先设 Min 再设 Max；两个 setter 都会 ReevaluateValue 保证一致性。
-	this->Min = minValue;
-	this->Max = (std::max)(maxValue, minValue);
-}
-
-void Slider::Increment(float delta)
-{
-	this->Value = this->_value + delta;
+	SetCurrentRangeValue(Value + delta);
 }
 
 void Slider::Increment()
 {
-	Increment(_step > 0.0f ? _step : 1.0f);
+	Increment(_smallChange > 0.0 ? _smallChange : 1.0);
 }
 
-void Slider::Decrement(float delta)
+void Slider::Decrement(double delta)
 {
-	this->Value = this->_value - delta;
+	SetCurrentRangeValue(Value - delta);
 }
 
 void Slider::Decrement()
 {
-	Decrement(_step > 0.0f ? _step : 1.0f);
+	Decrement(_smallChange > 0.0 ? _smallChange : 1.0);
 }
 
 void Slider::Reset()
 {
-	this->Value = this->_min;
+	SetCurrentRangeValue(Minimum);
 }
 
 CursorKind Slider::QueryCursor(int localX, int localY)
 {
 	(void)localY;
-	if (!this->Enable) return CursorKind::Arrow;
+	if (!this->IsEnabled) return CursorKind::Arrow;
 	const float trackLeft = TrackLeftLocal();
 	const float trackRight = TrackRightLocal();
 	if ((float)localX >= trackLeft && (float)localX <= trackRight) return CursorKind::SizeWE;
-	return this->Cursor;
+	return Control::QueryCursor(localX, localY);
 }
 
-void Slider::Update()
+void Slider::OnRender()
 {
-	if (!this->IsVisual) return;
-	auto d2d = this->ParentForm->Render;
+	if (!this->IsVisible) return;
+	auto d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
 	this->BeginRender();
+	if (GetControlTemplateRoot())
 	{
-		const bool hover = this->ParentForm && this->ParentForm->UnderMouse == this;
-		const bool active = _dragging || (this->ParentForm && this->ParentForm->Selected == this);
+		this->EndRender();
+		return;
+	}
+	{
+		const bool hover = this->IsMouseOver;
+		const bool active = _dragging || (this->GetPresentationWindow() && this->GetPresentationWindow()->GetKeyboardFocusedElement() == this);
 		const float state = active ? 1.0f : (hover ? 0.55f : 0.0f);
 		float trackLeft = TrackLeftLocal();
 		float trackRight = TrackRightLocal();
 		if (trackRight < trackLeft) trackRight = trackLeft;
 		float trackCenterY = TrackYLocal();
-		float trackHeight = TrackHeight + (active ? 1.0f : 0.0f);
+		float trackHeight = _trackHeight + (active ? 1.0f : 0.0f);
 		float trackTop = trackCenterY - trackHeight * 0.5f;
 		float trackWidth = (trackRight - trackLeft);
 		if (trackWidth < 0) trackWidth = 0;
 
-		d2d->FillRoundRect(trackLeft, trackTop, trackWidth, trackHeight, TrackBackColor, trackHeight * 0.5f);
-		if (state > 0.0f && TrackHoverColor.a > 0.0f)
-			d2d->FillRoundRect(trackLeft, trackTop - 1.0f, trackWidth, trackHeight + 2.0f, WithAlpha(TrackHoverColor, state), (trackHeight + 2.0f) * 0.5f);
-		if (TrackBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(trackLeft, trackTop, trackWidth, trackHeight, TrackBorderColor, 1.0f, trackHeight * 0.5f);
+		d2d->FillRoundRect(trackLeft, trackTop, trackWidth, trackHeight,
+			_trackBackColor, trackHeight * 0.5f);
+		if (state > 0.0f && _trackHoverColor.a > 0.0f)
+			d2d->FillRoundRect(trackLeft, trackTop - 1.0f, trackWidth,
+				trackHeight + 2.0f, WithAlpha(_trackHoverColor, state),
+				(trackHeight + 2.0f) * 0.5f);
+		if (_trackBorderColor.a > 0.0f)
+			d2d->DrawRoundRect(trackLeft, trackTop, trackWidth, trackHeight,
+				_trackBorderColor, 1.0f, trackHeight * 0.5f);
 
 		float valueRatio = std::clamp(ValueToT(), 0.0f, 1.0f);
 		float filledWidth = trackWidth * valueRatio;
 		if (filledWidth > 0.0f)
-			d2d->FillRoundRect(trackLeft, trackTop, filledWidth, trackHeight, TrackForeColor, trackHeight * 0.5f);
+			d2d->FillRoundRect(trackLeft, trackTop, filledWidth, trackHeight,
+				_trackForeColor, trackHeight * 0.5f);
 
 		float thumbCenterX = trackLeft + trackWidth * valueRatio;
-		float thumbRadius = ThumbRadius + (active ? ThumbDragRadiusDelta : (hover ? ThumbHoverRadiusDelta : 0.0f));
-		if (ThumbShadowColor.a > 0.0f)
-			d2d->FillEllipse(thumbCenterX, trackCenterY + 1.5f, thumbRadius + 0.8f, thumbRadius + 0.8f, WithAlpha(ThumbShadowColor, active ? 0.38f : 0.22f));
-		d2d->FillEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius, LerpColor(ThumbColor, ThumbHoverColor, state));
-		d2d->DrawEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius, ThumbBorderColor, active ? 1.5f : 1.0f);
+		float thumbRadius = _thumbRadius + (active
+			? _thumbDragRadiusDelta : (hover ? _thumbHoverRadiusDelta : 0.0f));
+		if (_thumbShadowColor.a > 0.0f)
+			d2d->FillEllipse(thumbCenterX, trackCenterY + 1.5f,
+				thumbRadius + 0.8f, thumbRadius + 0.8f,
+				WithAlpha(_thumbShadowColor, active ? 0.38f : 0.22f));
+		d2d->FillEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius,
+			LerpColor(_thumbColor, _thumbHoverColor, state));
+		d2d->DrawEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius,
+			_thumbBorderColor, active ? 1.5f : 1.0f);
 
 		(void)size;
 	}
-	if (!this->Enable)
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, DisabledOverlayColor, 6.0f);
+	if (!this->IsEnabled)
+		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight,
+			_disabledOverlayColor, 6.0f);
 	this->EndRender();
 }
 
-bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool Slider::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
+	if (!this->IsEnabled || !this->IsVisible) return true;
+	switch (input.Kind)
 	{
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerMove:
 	{
-		this->ParentForm->UnderMouse = this;
 		if (_dragging)
 		{
-			SetCurrentValue(XToValue(localX));
+			SetCurrentRangeValue(XToValue(input.X));
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseMove(this, eventArgs);
 	}
 	break;
-	case WM_LBUTTONDOWN:
+	case InputReportKind::PointerDown:
 	{
-		this->ParentForm->Selected = this;
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		this->GetPresentationWindow()->SetKeyboardFocus(this, true);
 		_dragging = true;
-		SetCurrentValue(XToValue(localX));
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		(void)CaptureMouse();
+		SetCurrentRangeValue(XToValue(input.X));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
-	case WM_LBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
 		_dragging = false;
-		if (this->ParentForm->Selected == this)
+		if (this->GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+			auto eventArgs = input.CreateMouseEventArgs();
 			this->OnMouseUp(this, eventArgs);
 		}
-		this->ParentForm->Selected = nullptr;
+		if (IsMouseCaptured()) (void)ReleaseMouseCapture();
 		this->InvalidateVisual();
 	}
 	break;
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		_dragging = false;
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		InvalidateVisual();
+		return Control::ProcessInput(input);
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+		return Control::ProcessInput(input);
 	}
 	return true;
 }
-

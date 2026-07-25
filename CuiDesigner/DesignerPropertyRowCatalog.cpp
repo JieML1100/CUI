@@ -2,11 +2,13 @@
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "../CUI/include/Style.h"
+#include "../CUI/include/StyleInfrastructure.h"
 #include "../CUI/include/GroupStyle.h"
 #include <algorithm>
 #include <cwctype>
 #include <functional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace DesignerPropertyRowCatalog
@@ -15,7 +17,7 @@ namespace
 {
 	bool NamesEqual(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::wstring Lower(std::wstring value)
@@ -28,25 +30,25 @@ namespace
 	{
 		switch (source)
 		{
-		case DesignerPropertyRowSource::Form: return L"Form 窗体";
+		case DesignerPropertyRowSource::Window: return L"Window 窗体";
 		case DesignerPropertyRowSource::ControlDesign: return L"Designer 设计器";
 		case DesignerPropertyRowSource::RuntimeMetadata: return L"Runtime 运行时";
 		default: return L"";
 		}
 	}
 
-	const wchar_t* ValueSourceAliases(ControlPropertyValueSource source)
+	const wchar_t* ValueSourceAliases(DependencyPropertyValueSource source)
 	{
 	switch (source)
 	{
-	case ControlPropertyValueSource::Inherited: return L"Inherited 继承";
-	case ControlPropertyValueSource::Theme: return L"Theme 主题";
-		case ControlPropertyValueSource::Style: return L"Style 样式";
-	case ControlPropertyValueSource::Binding: return L"Binding 绑定";
-	case ControlPropertyValueSource::Local: return L"Local 本地";
-	case ControlPropertyValueSource::VisualState: return L"VisualState 视觉状态";
-	case ControlPropertyValueSource::Animation: return L"Animation 动画";
-	case ControlPropertyValueSource::Default:
+	case DependencyPropertyValueSource::Inherited: return L"Inherited 继承";
+	case DependencyPropertyValueSource::Theme: return L"Theme 主题";
+	case DependencyPropertyValueSource::Style: return L"Style 样式";
+	case DependencyPropertyValueSource::Template: return L"Template 模板";
+	case DependencyPropertyValueSource::VisualState: return L"VisualState 视觉状态";
+	case DependencyPropertyValueSource::Local: return L"Local 本地";
+	case DependencyPropertyValueSource::Animation: return L"Animation 动画";
+	case DependencyPropertyValueSource::Default:
 		default:
 			return L"Default 默认";
 		}
@@ -61,9 +63,8 @@ namespace
 		case DesignerPropertyRowEditorKind::Color: return L"Color 颜色";
 		case DesignerPropertyRowEditorKind::Thickness: return L"Thickness 边距";
 		case DesignerPropertyRowEditorKind::FloatSlider: return L"Float Slider 浮点 滑块";
-		case DesignerPropertyRowEditorKind::FontName: return L"Font Name 字体";
+		case DesignerPropertyRowEditorKind::FontFamily: return L"Font Name 字体";
 		case DesignerPropertyRowEditorKind::FontSize: return L"Font Size 字号";
-		case DesignerPropertyRowEditorKind::Anchor: return L"Anchor 锚点";
 		case DesignerPropertyRowEditorKind::Text:
 		default:
 			return L"Text 文本";
@@ -121,7 +122,7 @@ namespace
 		DesignerPropertyRow& row,
 		const ControlStyleResolution& resolution,
 		DesignerPropertyDiagnosticKind kind,
-		ControlPropertyValueSource source)
+		DependencyPropertyValueSource source)
 	{
 		const auto sourceName = kind == DesignerPropertyDiagnosticKind::Theme
 			? L"Theme" : L"Style";
@@ -132,12 +133,12 @@ namespace
 			diagnostic.Kind = kind;
 			diagnostic.Severity = BindingValidationSeverity::Info;
 			diagnostic.Summary = std::wstring(sourceName) + L" 规则 #"
-				+ std::to_wstring(setter.RuleId) + L"，特异性 "
-				+ std::to_wstring(setter.Specificity);
+				+ std::to_wstring(setter.RuleId)
+				+ (setter.IsConditional ? L"（Trigger）" : L"（Setter）");
 			if (row.EffectiveValueSource
 				&& *row.EffectiveValueSource != source)
 				diagnostic.Details = L"候选值被更高优先级的 "
-					+ std::wstring(ControlPropertyValueSourceName(
+					+ std::wstring(DependencyPropertyValueSourceName(
 						*row.EffectiveValueSource)) + L" 值遮蔽。";
 			else
 				diagnostic.Details = L"该规则提供当前有效值。";
@@ -163,12 +164,13 @@ namespace
 	{
 		auto* control = target.ControlInstance;
 		if (!control) return;
-		const auto style = control->GetStyleSheet();
-		const auto theme = control->GetThemeStyleSheet();
+		const auto style =
+			cui::framework::StyleAccess::DocumentStyles(*control);
+		const auto theme = cui::framework::StyleAccess::Theme(*control);
 		const auto styleResolution = style
 			? style->Resolve(*control) : ControlStyleResolution{};
 		const auto themeResolution = theme
-			? theme->Resolve(*control) : ControlStyleResolution{};
+			? theme->Resolve(*control, true) : ControlStyleResolution{};
 
 		for (auto& row : rows)
 		{
@@ -179,8 +181,8 @@ namespace
 				const auto* metadata = control->FindPropertyMetadata(row.Name);
 				row.IsReadOnly = row.IsReadOnly
 					|| (metadata && !metadata->CanWrite())
-					|| *row.EffectiveValueSource
-						== ControlPropertyValueSource::Binding;
+					|| control->GetPropertyExpressionKind(row.Name)
+						== DependencyPropertyExpressionKind::Binding;
 			}
 
 			const auto* configured = FindNamed(target.DataBindings, row.Name);
@@ -246,22 +248,36 @@ namespace
 			if (style)
 				AppendStyleDiagnostics(row, styleResolution,
 					DesignerPropertyDiagnosticKind::Style,
-					ControlPropertyValueSource::Style);
+					DependencyPropertyValueSource::Style);
 			if (theme)
 				AppendStyleDiagnostics(row, themeResolution,
 					DesignerPropertyDiagnosticKind::Theme,
-					ControlPropertyValueSource::Theme);
+					DependencyPropertyValueSource::Theme);
 		}
 	}
 
 	void SortRows(std::vector<DesignerPropertyRow>& rows)
 	{
-		std::sort(rows.begin(), rows.end(), [](const auto& left, const auto& right)
+		// Metadata may be owned by different WPF layers while sharing one display
+		// category.  A category is one property-grid group, so normalize its order
+		// before sorting instead of splitting it whenever owners chose different
+		// CategoryOrder values.
+		std::unordered_map<std::wstring, int> categoryOrders;
+		for (const auto& row : rows)
 		{
-			if (left.CategoryOrder != right.CategoryOrder)
-				return left.CategoryOrder < right.CategoryOrder;
+			const auto category = Lower(row.Category);
+			const auto [entry, inserted] = categoryOrders.emplace(
+				category, row.CategoryOrder);
+			if (!inserted) entry->second = (std::min)(entry->second, row.CategoryOrder);
+		}
+		std::sort(rows.begin(), rows.end(), [&](const auto& left, const auto& right)
+		{
 			const auto leftCategory = Lower(left.Category);
 			const auto rightCategory = Lower(right.Category);
+			const auto leftCategoryOrder = categoryOrders.at(leftCategory);
+			const auto rightCategoryOrder = categoryOrders.at(rightCategory);
+			if (leftCategoryOrder != rightCategoryOrder)
+				return leftCategoryOrder < rightCategoryOrder;
 			if (leftCategory != rightCategory) return leftCategory < rightCategory;
 			if (left.Order != right.Order) return left.Order < right.Order;
 			const auto leftDisplay = Lower(left.DisplayName);
@@ -312,44 +328,20 @@ namespace
 			&& ChoicesEqual(left.Choices, right.Choices);
 	}
 
-	DesignerPropertyRowEditorKind FormEditor(
-		const DesignerFormPropertyDescriptor& property)
-	{
-		if (NamesEqual(property.Name, L"FontName"))
-			return DesignerPropertyRowEditorKind::FontName;
-		if (NamesEqual(property.Name, L"FontSize"))
-			return DesignerPropertyRowEditorKind::FontSize;
-		switch (property.Editor)
-		{
-		case ControlPropertyEditorKind::Boolean:
-			return DesignerPropertyRowEditorKind::Boolean;
-		case ControlPropertyEditorKind::Color:
-			return DesignerPropertyRowEditorKind::Color;
-		case ControlPropertyEditorKind::Thickness:
-			return DesignerPropertyRowEditorKind::Thickness;
-		case ControlPropertyEditorKind::Choice:
-			return DesignerPropertyRowEditorKind::Choice;
-		default:
-			return DesignerPropertyRowEditorKind::Text;
-		}
-	}
-
 	DesignerPropertyRowEditorKind ControlDesignEditor(
-		DesignerControlPropertyEditorKind editor)
+		DesignerDependencyPropertyEditorKind editor)
 	{
 		switch (editor)
 		{
-		case DesignerControlPropertyEditorKind::Boolean:
+		case DesignerDependencyPropertyEditorKind::Boolean:
 			return DesignerPropertyRowEditorKind::Boolean;
-		case DesignerControlPropertyEditorKind::FontName:
-			return DesignerPropertyRowEditorKind::FontName;
-		case DesignerControlPropertyEditorKind::FontSize:
+		case DesignerDependencyPropertyEditorKind::FontFamily:
+			return DesignerPropertyRowEditorKind::FontFamily;
+		case DesignerDependencyPropertyEditorKind::FontSize:
 			return DesignerPropertyRowEditorKind::FontSize;
-		case DesignerControlPropertyEditorKind::Anchor:
-			return DesignerPropertyRowEditorKind::Anchor;
-		case DesignerControlPropertyEditorKind::Choice:
+		case DesignerDependencyPropertyEditorKind::Choice:
 			return DesignerPropertyRowEditorKind::Choice;
-		case DesignerControlPropertyEditorKind::Text:
+		case DesignerDependencyPropertyEditorKind::Text:
 		default:
 			return DesignerPropertyRowEditorKind::Text;
 		}
@@ -358,18 +350,22 @@ namespace
 	DesignerPropertyRowEditorKind RuntimeEditor(
 		const DesignerPropertyDescriptor& property)
 	{
-		if (property.Editor == ControlPropertyEditorKind::Choice
+		if (NamesEqual(property.Name, L"FontFamily"))
+			return DesignerPropertyRowEditorKind::FontFamily;
+		if (NamesEqual(property.Name, L"FontSize"))
+			return DesignerPropertyRowEditorKind::FontSize;
+		if (property.Editor == DependencyPropertyEditorKind::Choice
 			&& !property.Choices.empty())
 			return DesignerPropertyRowEditorKind::Choice;
 		switch (property.Editor)
 		{
-		case ControlPropertyEditorKind::Boolean:
+		case DependencyPropertyEditorKind::Boolean:
 			return DesignerPropertyRowEditorKind::Boolean;
-		case ControlPropertyEditorKind::Color:
+		case DependencyPropertyEditorKind::Color:
 			return DesignerPropertyRowEditorKind::Color;
-		case ControlPropertyEditorKind::Thickness:
+		case DependencyPropertyEditorKind::Thickness:
 			return DesignerPropertyRowEditorKind::Thickness;
-		case ControlPropertyEditorKind::Number:
+		case DependencyPropertyEditorKind::Number:
 			if (property.Minimum && property.Maximum
 				&& *property.Minimum < *property.Maximum
 				&& (property.ValueKind == DesignerStyleValueKind::Float
@@ -383,26 +379,30 @@ namespace
 
 }
 
-std::vector<DesignerPropertyRow> GetFormRows(
-	const DesignerModel::DesignFormModel& form)
+std::vector<DesignerPropertyRow> GetWindowRows(
+	const DesignerModel::DesignNode& window)
 {
 	std::vector<DesignerPropertyRow> rows;
-	for (const auto& property : DesignerFormPropertyCatalog::GetProperties())
+	for (const auto& property :
+		DesignerPropertyCatalog::GetNodeProperties(window.Type))
 	{
 		DesignerStyleValue current;
-		if (!DesignerFormPropertyCatalog::CaptureValue(
-			form, property.Name, current)) continue;
+		if (!DesignerPropertyCatalog::CaptureNodeValue(
+			window, property.Name, current)) continue;
 		DesignerPropertyRow row;
-		row.Source = DesignerPropertyRowSource::Form;
+		row.Source = DesignerPropertyRowSource::Window;
 		row.Name = property.Name;
 		row.DisplayName = property.DisplayName;
 		row.Category = property.Category;
 		row.CategoryOrder = property.CategoryOrder;
 		row.Order = property.Order;
 		row.Value = std::move(current);
-		row.Editor = FormEditor(property);
+		row.Editor = RuntimeEditor(property);
 		row.Minimum = property.Minimum;
 		row.Maximum = property.Maximum;
+		row.Step = property.Step;
+		for (const auto& choice : property.Choices)
+			row.Choices.push_back({ choice.DisplayName, choice.ValueText });
 		row.CanReset = true;
 		rows.push_back(std::move(row));
 	}
@@ -439,7 +439,7 @@ std::vector<DesignerPropertyRow> GetControlRows(
 		row.Value = std::move(current);
 		row.Editor = ControlDesignEditor(property.Editor);
 		row.CanReset = property.CanReset;
-		if (property.Editor == DesignerControlPropertyEditorKind::Choice)
+		if (property.Editor == DesignerDependencyPropertyEditorKind::Choice)
 		{
 			auto resourceItemType = [&](const std::wstring& key)
 			{
@@ -487,13 +487,8 @@ std::vector<DesignerPropertyRow> GetControlRows(
 							&& target.ComponentType.RegistryKey()
 								== item.TargetComponentType.RegistryKey();
 					if (!target.ComponentType.Empty()) return false;
-					return target.Type == item.TargetType
-						|| (item.TargetType == UIClass::UI_ContentControl
-							&& (target.Type == UIClass::UI_Button
-								|| target.Type == UIClass::UI_GroupBox
-								|| target.Type == UIClass::UI_Expander))
-						|| (item.TargetType == UIClass::UI_ItemsControl
-							&& target.Type == UIClass::UI_ListBox);
+					return IsUIClassAssignableFrom(
+						item.TargetType, target.Type);
 				};
 				for (const auto& item : *controlTemplates)
 					if (compatible(item))
@@ -576,10 +571,8 @@ std::vector<DesignerPropertyRow> GetControlRows(
 			else if (NamesEqual(property.Name, L"ItemContainerStyle")
 				&& context.StyleSheet)
 			{
-				const auto containerType = target.Type == UIClass::UI_ComboBox
-					? UIClass::UI_ComboBoxItem
-					: target.Type == UIClass::UI_TreeView
-						? UIClass::UI_TreeViewItem : UIClass::UI_SelectorItem;
+				const auto containerType =
+					GetDefaultItemContainerType(target.Type);
 				for (const auto& rule : context.StyleSheet->Rules)
 					if (!rule.Id.empty() && rule.ComponentType.Empty()
 						&& (!rule.HasType
@@ -737,7 +730,7 @@ std::vector<DesignerPropertyRow> FilterRows(
 			+ L" " + RowSourceName(row.Source)
 			+ L" " + EditorAliases(row.Editor);
 		if (row.EffectiveValueSource)
-			searchable += L" " + std::wstring(ControlPropertyValueSourceName(
+			searchable += L" " + std::wstring(DependencyPropertyValueSourceName(
 				*row.EffectiveValueSource)) + L" "
 				+ ValueSourceAliases(*row.EffectiveValueSource);
 		if (row.HasMixedValue)

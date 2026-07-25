@@ -1,7 +1,6 @@
 #pragma once
 
 #include "DesignerControlPropertyCatalog.h"
-#include "DesignerFormPropertyCatalog.h"
 #include "DesignerPropertyCatalog.h"
 #include <optional>
 #include <string>
@@ -9,7 +8,7 @@
 
 enum class DesignerPropertyRowSource : unsigned char
 {
-	Form,
+	Window,
 	ControlDesign,
 	RuntimeMetadata
 };
@@ -22,9 +21,8 @@ enum class DesignerPropertyRowEditorKind : unsigned char
 	Color,
 	Thickness,
 	FloatSlider,
-	FontName,
-	FontSize,
-	Anchor
+	FontFamily,
+	FontSize
 };
 
 enum class DesignerPropertyDiagnosticKind : unsigned char
@@ -66,7 +64,7 @@ struct DesignerPropertyRow
 	std::optional<double> Minimum;
 	std::optional<double> Maximum;
 	std::optional<double> Step;
-	std::optional<ControlPropertyValueSource> EffectiveValueSource;
+	std::optional<DependencyPropertyValueSource> EffectiveValueSource;
 	std::vector<DesignerPropertyDiagnostic> Diagnostics;
 	bool HasMixedValue = false;
 	bool HasMixedValueSource = false;
@@ -78,9 +76,9 @@ struct DesignerPropertyRow
 
 namespace DesignerPropertyRowCatalog
 {
-	/** Projects the canonical form model into presentation-ordered rows. */
-	std::vector<DesignerPropertyRow> GetFormRows(
-		const DesignerModel::DesignFormModel& form);
+	/** Projects the schema-owned Window node into presentation-ordered rows. */
+	std::vector<DesignerPropertyRow> GetWindowRows(
+		const DesignerModel::DesignNode& window);
 
 	/**
 	 * Merges wrapper-owned and runtime-metadata properties, removes duplicate

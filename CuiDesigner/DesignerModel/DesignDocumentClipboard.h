@@ -18,8 +18,8 @@ struct DesignClipboardPasteResult
 struct DesignClipboardRootTarget
 {
 	int FragmentRootId = 0;
-	// ParentId == 0 and an empty ParentRef means the form root.  A non-empty
-	// ParentRef identifies a synthetic parent such as TabControlName#page0.
+	// ParentId == 0 and an empty ParentRef means the form root. A non-empty
+	// ParentRef identifies an authored object by x:Name.
 	int ParentId = 0;
 	std::wstring ParentRef;
 	// nullopt preserves the fragment root's visual content property (used by
@@ -27,9 +27,6 @@ struct DesignClipboardRootTarget
 	// content property, or clears it for an ordinary container. A non-empty
 	// value selects a named component content property.
 	std::optional<std::wstring> ComponentContentProperty = std::wstring{};
-	// nullopt preserves the fragment root's region (used by Duplicate).
-	// "" clears it; "panel1"/"panel2" selects a SplitContainer region.
-	std::optional<std::string> SplitRegion = std::string{};
 	// Optional zero-based position among the destination's existing children.
 	// The index is evaluated before any roots in this paste are inserted.  When
 	// several roots use the same index their fragment order is preserved.

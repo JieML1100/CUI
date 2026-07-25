@@ -1,5 +1,6 @@
 #include "DesignerControlPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../CUI/include/StyleInfrastructure.h"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -26,7 +27,7 @@ namespace
 
 	bool NamesEqual(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::wstring Lower(std::wstring value)
@@ -40,33 +41,6 @@ namespace
 		const auto first = std::find_if_not(value.begin(), value.end(), iswspace);
 		const auto last = std::find_if_not(value.rbegin(), value.rend(), iswspace).base();
 		return first < last ? std::wstring(first, last) : std::wstring{};
-	}
-
-	std::vector<std::wstring> SplitClasses(const std::wstring& value)
-	{
-		std::vector<std::wstring> result;
-		size_t start = 0;
-		while (start <= value.size())
-		{
-			const auto end = value.find(L',', start);
-			auto item = Trim(value.substr(start,
-				end == std::wstring::npos ? std::wstring::npos : end - start));
-			if (!item.empty()) result.push_back(std::move(item));
-			if (end == std::wstring::npos) break;
-			start = end + 1;
-		}
-		return result;
-	}
-
-	std::wstring JoinClasses(const Control& target)
-	{
-		std::wstring result;
-		for (const auto& item : target.GetStyleClasses())
-		{
-			if (!result.empty()) result += L", ";
-			result += item;
-		}
-		return result;
 	}
 
 	bool Fail(std::wstring message, std::wstring* outError)
@@ -125,7 +99,7 @@ namespace
 		int categoryOrder,
 		int order,
 		DesignerStyleValueKind kind,
-		DesignerControlPropertyEditorKind editor,
+		DesignerDependencyPropertyEditorKind editor,
 		bool canReset)
 	{
 		return {
@@ -158,7 +132,7 @@ namespace
 
 			add(Property(L"Name", L"Common", 0, 10,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, false), always,
+				DesignerDependencyPropertyEditorKind::Text, false), always,
 				[](const DesignerControl& target, const DesignerControlPropertyContext&)
 				{
 					return BindingValue(target.Name);
@@ -182,7 +156,7 @@ namespace
 
 			add(Property(L"Locked", L"Common", 0, 20,
 				DesignerStyleValueKind::Bool,
-				DesignerControlPropertyEditorKind::Boolean, true), always,
+				DesignerDependencyPropertyEditorKind::Boolean, true), always,
 				[](const DesignerControl& target, const DesignerControlPropertyContext&)
 				{
 					return BindingValue(target.IsLocked);
@@ -200,139 +174,28 @@ namespace
 					return BindingValue(false);
 				});
 
-			add(Property(L"Anchor", L"Layout", 100, 10,
-				DesignerStyleValueKind::Int,
-				DesignerControlPropertyEditorKind::Anchor, true), always,
-				[](const DesignerControl& target, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(target.ControlInstance
-						? static_cast<int>(target.ControlInstance->AnchorStyles) : 0);
-				},
-				[](DesignerControl& target, DesignerControlPropertyContext& context,
-					const BindingValue& value)
-				{
-					int typed = 0;
-					if (!value.TryGet(typed) || !target.ControlInstance) return false;
-					constexpr int known = AnchorStyles::Left | AnchorStyles::Top
-						| AnchorStyles::Right | AnchorStyles::Bottom;
-					const auto effective = static_cast<uint8_t>(typed & known);
-					if (context.ApplyAnchorStylesKeepingBounds)
-						context.ApplyAnchorStylesKeepingBounds(
-							target.ControlInstance, effective);
-					else
-						target.ControlInstance->AnchorStyles = effective;
-					return true;
-				},
-				[](const DesignerControl&, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(0);
-				});
-
-			add(Property(L"StyleId", L"Appearance", 200, 10,
+			add(Property(L"Style", L"Appearance", 200, 10,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, true), always,
+				DesignerDependencyPropertyEditorKind::Text, true), always,
 				[](const DesignerControl& target, const DesignerControlPropertyContext&)
 				{
 					return BindingValue(target.ControlInstance
-						? target.ControlInstance->GetStyleId() : std::wstring{});
+						? cui::framework::StyleAccess::ResourceKey(
+							*target.ControlInstance)
+						: std::wstring{});
 				},
 				[](DesignerControl& target, DesignerControlPropertyContext&,
 					const BindingValue& value)
 				{
 					std::wstring typed;
 					if (!value.TryGet(typed) || !target.ControlInstance) return false;
-					target.ControlInstance->SetStyleId(Trim(std::move(typed)));
+					cui::framework::StyleAccess::SetResourceKey(
+						*target.ControlInstance, Trim(std::move(typed)));
 					return true;
 				},
 				[](const DesignerControl&, const DesignerControlPropertyContext&)
 				{
 					return BindingValue(std::wstring{});
-				});
-
-			add(Property(L"StyleClasses", L"Appearance", 200, 20,
-				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, true), always,
-				[](const DesignerControl& target, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(target.ControlInstance
-						? JoinClasses(*target.ControlInstance) : std::wstring{});
-				},
-				[](DesignerControl& target, DesignerControlPropertyContext&,
-					const BindingValue& value)
-				{
-					std::wstring typed;
-					if (!value.TryGet(typed) || !target.ControlInstance) return false;
-					target.ControlInstance->ClearStyleClasses();
-					for (auto& item : SplitClasses(typed))
-						target.ControlInstance->AddStyleClass(std::move(item));
-					return true;
-				},
-				[](const DesignerControl&, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(std::wstring{});
-				});
-
-			add(Property(L"FontName", L"Appearance", 200, 30,
-				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::FontName, true), always,
-				[](const DesignerControl& target, const DesignerControlPropertyContext& context)
-				{
-					if (!target.ControlInstance) return BindingValue(std::wstring{});
-					auto* font = target.ControlInstance->Font;
-					const bool inherited = context.SharedFont
-						? font == context.SharedFont : font == GetDefaultFontObject();
-					return BindingValue(inherited || !font
-						? std::wstring{} : font->FontName);
-				},
-				[](DesignerControl& target, DesignerControlPropertyContext& context,
-					const BindingValue& value)
-				{
-					std::wstring typed;
-					if (!value.TryGet(typed) || !target.ControlInstance) return false;
-					typed = Trim(std::move(typed));
-					if (typed.empty())
-					{
-						target.ControlInstance->SetFontEx(context.SharedFont, false);
-						return true;
-					}
-					auto* current = target.ControlInstance->Font;
-					const float size = current
-						? current->FontSize : GetDefaultFontObject()->FontSize;
-					target.ControlInstance->Font = new ::Font(typed, size);
-					return true;
-				},
-				[](const DesignerControl&, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(std::wstring{});
-				});
-
-			add(Property(L"FontSize", L"Appearance", 200, 40,
-				DesignerStyleValueKind::Float,
-				DesignerControlPropertyEditorKind::FontSize, true), always,
-				[](const DesignerControl& target, const DesignerControlPropertyContext&)
-				{
-					auto* font = target.ControlInstance
-						? target.ControlInstance->Font : GetDefaultFontObject();
-					return BindingValue(font ? font->FontSize : 18.0f);
-				},
-				[](DesignerControl& target, DesignerControlPropertyContext&,
-					const BindingValue& value)
-				{
-					float typed = 0.0f;
-					if (!value.TryGet(typed) || !std::isfinite(typed)
-						|| !target.ControlInstance) return false;
-					typed = (std::clamp)(typed, 1.0f, 200.0f);
-					auto* current = target.ControlInstance->Font;
-					const auto name = current
-						? current->FontName : GetDefaultFontObject()->FontName;
-					target.ControlInstance->Font = new ::Font(name, typed);
-					return true;
-				},
-				[](const DesignerControl&, const DesignerControlPropertyContext& context)
-				{
-					auto* font = context.SharedFont
-						? context.SharedFont : GetDefaultFontObject();
-					return BindingValue(font ? font->FontSize : 18.0f);
 				});
 
 			auto mediaOnly = [](const DesignerControl& target)
@@ -341,7 +204,7 @@ namespace
 			};
 			add(Property(L"MediaFile", L"Data", 600, 10,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, true), mediaOnly,
+				DesignerDependencyPropertyEditorKind::Text, true), mediaOnly,
 				[](const DesignerControl& target, const DesignerControlPropertyContext&)
 				{
 					const auto found = target.DesignStrings.find(L"mediaFile");
@@ -365,50 +228,36 @@ namespace
 
 			auto itemsControlOnly = [](const DesignerControl& target)
 			{
-				return target.Type == UIClass::UI_ItemsControl
-					|| target.Type == UIClass::UI_ListBox;
+				return IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, target.Type);
 			};
 			auto itemTemplateControl = [](const DesignerControl& target)
 			{
-				return target.Type == UIClass::UI_ItemsControl
-					|| target.Type == UIClass::UI_ListBox
-					|| target.Type == UIClass::UI_ComboBox
-					|| target.Type == UIClass::UI_TreeView;
+				return IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, target.Type);
 			};
 			auto dataListControl = [](const DesignerControl& target)
 			{
-				return target.Type == UIClass::UI_ItemsControl
-					|| target.Type == UIClass::UI_ComboBox
-					|| target.Type == UIClass::UI_ListView
-					|| target.Type == UIClass::UI_ListBox
-					|| target.Type == UIClass::UI_TreeView;
-			};
-			auto listBoxOnly = [](const DesignerControl& target)
-			{
-				return target.Type == UIClass::UI_ListBox;
+				return IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, target.Type);
 			};
 			auto contentHostOnly = [](const DesignerControl& target)
 			{
 				return target.Type == UIClass::UI_ContentPresenter
-					|| target.Type == UIClass::UI_ContentControl
-					|| target.Type == UIClass::UI_Button
-					|| target.Type == UIClass::UI_GroupBox
-					|| target.Type == UIClass::UI_Expander;
+					|| IsUIClassAssignableFrom(
+						UIClass::UI_ContentControl, target.Type);
 			};
 			auto controlTemplateHost = [](const DesignerControl& target)
 			{
 				return !target.ComponentType.Empty()
-					|| target.Type == UIClass::UI_ItemsControl
-					|| target.Type == UIClass::UI_ListBox
-					|| target.Type == UIClass::UI_ContentControl
-					|| target.Type == UIClass::UI_Button
-					|| target.Type == UIClass::UI_GroupBox
-					|| target.Type == UIClass::UI_Expander;
+					|| IsControlTemplateHostClass(target.Type);
 			};
 			auto headeredContentOnly = [](const DesignerControl& target)
 			{
-				return target.Type == UIClass::UI_GroupBox
-					|| target.Type == UIClass::UI_Expander;
+				return IsUIClassAssignableFrom(
+						UIClass::UI_HeaderedContentControl, target.Type)
+					|| IsUIClassAssignableFrom(
+						UIClass::UI_HeaderedItemsControl, target.Type);
 			};
 			auto designString = [](const wchar_t* key)
 			{
@@ -440,52 +289,42 @@ namespace
 			};
 			add(Property(L"Template", L"Appearance", 200, 5,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true),
+				DesignerDependencyPropertyEditorKind::Choice, true),
 				controlTemplateHost, designString(L"controlTemplate"),
 				setDesignString(L"controlTemplate"), emptyString);
 			add(Property(L"ItemsSourceResource", L"Data", 600, 20,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), dataListControl,
+				DesignerDependencyPropertyEditorKind::Choice, true), dataListControl,
 				designString(L"itemsSourceResource"),
 				setDesignString(L"itemsSourceResource"), emptyString);
 			add(Property(L"ItemTemplate", L"Data", 600, 30,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), itemTemplateControl,
+				DesignerDependencyPropertyEditorKind::Choice, true), itemTemplateControl,
 				designString(L"itemTemplate"),
 				setDesignString(L"itemTemplate"), emptyString);
-			add(Property(L"Content", L"Data", 80, 10,
-				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, true), contentHostOnly,
-				designString(L"contentText"),
-				setDesignString(L"contentText"), emptyString);
 			add(Property(L"ContentTemplate", L"Data", 80, 30,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), contentHostOnly,
+				DesignerDependencyPropertyEditorKind::Choice, true), contentHostOnly,
 				designString(L"contentTemplate"),
 				setDesignString(L"contentTemplate"), emptyString);
-			add(Property(L"Header", L"Data", 80, 40,
-				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Text, true), headeredContentOnly,
-				designString(L"headerText"),
-				setDesignString(L"headerText"), emptyString);
 			add(Property(L"HeaderTemplate", L"Data", 80, 50,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), headeredContentOnly,
+				DesignerDependencyPropertyEditorKind::Choice, true), headeredContentOnly,
 				designString(L"headerTemplate"),
 				setDesignString(L"headerTemplate"), emptyString);
 			add(Property(L"GroupStyle", L"Data", 600, 40,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), itemsControlOnly,
+				DesignerDependencyPropertyEditorKind::Choice, true), itemsControlOnly,
 				designString(L"groupStyle"),
 				setDesignString(L"groupStyle"), emptyString);
 			add(Property(L"ItemsPanel", L"Layout", 550, 20,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), itemsControlOnly,
+				DesignerDependencyPropertyEditorKind::Choice, true), itemsControlOnly,
 				designString(L"itemsPanel"),
 				setDesignString(L"itemsPanel"), emptyString);
 			add(Property(L"ItemContainerStyle", L"Appearance", 500, 35,
 				DesignerStyleValueKind::String,
-				DesignerControlPropertyEditorKind::Choice, true), listBoxOnly,
+				DesignerDependencyPropertyEditorKind::Choice, true), itemsControlOnly,
 				designString(L"itemContainerStyle"),
 				setDesignString(L"itemContainerStyle"), emptyString);
 

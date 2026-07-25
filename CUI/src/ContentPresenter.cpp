@@ -1,6 +1,8 @@
 #include "ContentPresenter.h"
 
 #include "Label.h"
+#include "Layout/OverlayLayout.h"
+#include "Window.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -8,46 +10,80 @@
 
 namespace
 {
-	bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right)
+	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
 	{
-		if (left.size() != right.size()) return false;
-		for (size_t index = 0; index < left.size(); ++index)
-			if (std::towlower(left[index]) != std::towlower(right[index]))
-				return false;
-		return true;
+		return left == right;
 	}
 
 	template<typename TValue>
-	ControlPropertyOptions<ContentPresenter, TValue> DataOptions(
+	DependencyPropertyOptions<ContentPresenter, TValue> DataOptions(
 		TValue defaultValue,
 		int order,
-		ControlPropertyPersistence persistence =
-			ControlPropertyPersistence::Metadata)
+		DependencyPropertyPersistence persistence =
+			DependencyPropertyPersistence::Metadata)
 	{
-		ControlPropertyOptions<ContentPresenter, TValue> options;
+		DependencyPropertyOptions<ContentPresenter, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsArrange
-			| ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Auto;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
 		return options;
 	}
 }
 
-ContentPresenter::ContentPresenter(
-	int x, int y, int width, int height)
-	: GridPanel(x, y, width, height)
+ContentPresenter::ContentPresenter()
+	: Control()
 {
-	BorderThickness = 0.0f;
-	BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 }
 
-bool ContentPresenter::ValidateChildCollection(
+void ContentPresenter::OnRender()
+{
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
+	BeginRender();
+	EndRender();
+}
+
+cui::core::Size ContentPresenter::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	return cui::layout::MeasureOverlayChildren(
+		GetLayoutChildrenView(), available);
+}
+
+void ContentPresenter::Arrange(cui::core::Rect finalRect)
+{
+	Control::Arrange(finalRect);
+	PerformPendingLayout();
+}
+
+void ContentPresenter::RequestLayout()
+{
+	_contentLayoutPending = true;
+	Control::RequestLayout();
+}
+
+void ContentPresenter::OnComputedLayoutSizeChanged()
+{
+	_contentLayoutPending = true;
+}
+
+void ContentPresenter::PerformPendingLayout()
+{
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	const auto size = GetActualSizeDip();
+	cui::layout::ArrangeOverlayChildren(
+		GetLayoutChildrenView(),
+		cui::core::Rect{ 0.0f, 0.0f, size.width, size.height });
+	_contentLayoutPending = false;
+}
+
+bool ContentPresenter::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
@@ -78,7 +114,7 @@ bool ContentPresenter::ValidateChildCollection(
 Control* ContentPresenter::GetVisualContent() const noexcept
 {
 	Control* result = nullptr;
-	for (auto* child : Children)
+	for (auto* child : GetVisualChildrenView())
 	{
 		if (!child || child == _generatedContent) continue;
 		if (result) return nullptr;
@@ -87,38 +123,42 @@ Control* ContentPresenter::GetVisualContent() const noexcept
 	return result;
 }
 
-void ContentPresenter::OnChildCollectionChanged(
+void ContentPresenter::OnVisualChildCollectionChanged(
 	const CollectionChangedEventArgs& change,
 	std::span<Control* const> previousChildren)
 {
 	(void)change;
 	(void)previousChildren;
-	if (auto* content = GetVisualContent())
-	{
-		content->HAlign = HorizontalAlignment::Stretch;
-		content->VAlign = VerticalAlignment::Stretch;
-	}
+	_contentLayoutPending = true;
 }
 
-void ContentPresenter::EnsureBindingPropertiesRegistered()
+void ContentPresenter::RegisterDependencyProperties()
 {
-	GridPanel::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto contentOptions = DataOptions(
 			BindingValue{}, 10,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		contentOptions.Design.Browsable = false;
 		contentOptions.Coerce = [](
 			ContentPresenter& target,
 			const BindingValue& proposed) -> std::optional<BindingValue>
 		{
 			std::wstring error;
-			if (!target.ValidateContentCandidate(
-				proposed, target._contentTemplate, error))
+			try
+			{
+				if (!target.ValidateContentCandidate(
+					proposed, target._contentTemplate, error))
+				{
+					target._lastTemplateError = std::move(error);
+					return std::nullopt;
+				}
+			}
+			catch (...)
 			{
 				target._lastTemplateError = std::move(error);
-				return std::nullopt;
+				throw;
 			}
 			return proposed;
 		};
@@ -128,7 +168,7 @@ void ContentPresenter::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildContent();
 		};
-		BindingPropertyRegistry::Register<ContentPresenter,
+		DependencyPropertyRegistry::Register<ContentPresenter,
 			BindingValue>(L"Content",
 			[](ContentPresenter& target) { return target.GetContent(); },
 			[](ContentPresenter& target, const BindingValue& value)
@@ -136,7 +176,7 @@ void ContentPresenter::EnsureBindingPropertiesRegistered()
 
 		auto templateOptions = DataOptions(
 			ItemTemplateReference{}, 20,
-			ControlPropertyPersistence::Transient);
+			DependencyPropertyPersistence::Native);
 		templateOptions.Design.Browsable = false;
 		templateOptions.Coerce = [](
 			ContentPresenter& target,
@@ -144,11 +184,19 @@ void ContentPresenter::EnsureBindingPropertiesRegistered()
 			-> std::optional<ItemTemplateReference>
 		{
 			std::wstring error;
-			if (!target.ValidateContentCandidate(
-				target._content, proposed, error))
+			try
+			{
+				if (!target.ValidateContentCandidate(
+					target._content, proposed, error))
+				{
+					target._lastTemplateError = std::move(error);
+					return std::nullopt;
+				}
+			}
+			catch (...)
 			{
 				target._lastTemplateError = std::move(error);
-				return std::nullopt;
+				throw;
 			}
 			return proposed;
 		};
@@ -158,21 +206,21 @@ void ContentPresenter::EnsureBindingPropertiesRegistered()
 		{
 			(void)target.RebuildContent();
 		};
-		BindingPropertyRegistry::Register<ContentPresenter,
+		DependencyPropertyRegistry::Register<ContentPresenter,
 			ItemTemplateReference>(L"ContentTemplate",
 			[](ContentPresenter& target) { return target.GetContentTemplate(); },
 			[](ContentPresenter& target, const ItemTemplateReference& value)
 			{ target.SetContentTemplate(value); }, {}, std::move(templateOptions));
 
 		auto pathOptions = DataOptions(std::wstring{}, 30);
-		pathOptions.Design.Editor = ControlPropertyEditorKind::Text;
+		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
 		pathOptions.Changed = [](
 			ContentPresenter& target,
 			const std::wstring&, const std::wstring&)
 		{
 			if (!target._contentTemplate) (void)target.RebuildContent();
 		};
-		BindingPropertyRegistry::Register<ContentPresenter, std::wstring>(
+		DependencyPropertyRegistry::Register<ContentPresenter, std::wstring>(
 			L"DisplayMemberPath",
 			[](ContentPresenter& target)
 			{ return target.GetDisplayMemberPath(); },
@@ -231,7 +279,7 @@ bool ContentPresenter::ValidateContentCandidate(
 	}
 	if (contentTemplate && !_contentTypeName.empty()
 		&& !contentTemplate.Get()->DataTypeName().empty()
-		&& !EqualsIgnoreCase(
+		&& !EqualsTypeName(
 			_contentTypeName, contentTemplate.Get()->DataTypeName()))
 	{
 		error = L"ContentTemplate DataType 与 Content DataType 不一致。";
@@ -265,7 +313,7 @@ bool ContentPresenter::RebuildContent()
 	}
 	if (_contentTemplate && !_contentTypeName.empty()
 		&& !_contentTemplate.Get()->DataTypeName().empty()
-		&& !EqualsIgnoreCase(_contentTypeName,
+		&& !EqualsTypeName(_contentTypeName,
 			_contentTemplate.Get()->DataTypeName()))
 	{
 		_lastTemplateError =
@@ -298,25 +346,23 @@ bool ContentPresenter::RebuildContent()
 		}
 		else
 		{
-			replacement = std::make_unique<Label>(
-				hasSource
-					? GetBindingRecordText(source, _displayMemberPath,
-						{ L"Text", L"Content", L"Name" })
-					: _content.ToString(), 0, 0);
+			auto label = std::make_unique<Label>();
+			label->Text = hasSource
+				? GetBindingRecordText(source, _displayMemberPath)
+				: _content.ToString();
+			replacement = std::move(label);
 			if (hasSource)
 				observation = ObserveBindingPaths(
 					source, { _displayMemberPath }, [this]
 					{ if (!_contentTemplate) (void)RebuildContent(); });
 		}
-		replacement->HAlign = HorizontalAlignment::Stretch;
-		replacement->VAlign = VerticalAlignment::Stretch;
 	}
 
 	_changingGeneratedContent = true;
 	try
 	{
 		auto previous = _generatedContent
-			? DetachControl(_generatedContent) : std::unique_ptr<Control>{};
+			? DetachVisualChild(_generatedContent) : std::unique_ptr<Control>{};
 		_generatedContent = replacement.get();
 		if (replacement) AddOwned(std::move(replacement));
 		_changingGeneratedContent = false;
@@ -328,7 +374,7 @@ bool ContentPresenter::RebuildContent()
 		throw;
 	}
 	_contentObservation = std::move(observation);
-	InvalidateLayout();
+	RequestLayout();
 	InvalidateVisual();
 	return true;
 }

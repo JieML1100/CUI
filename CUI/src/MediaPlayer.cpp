@@ -1,7 +1,8 @@
-﻿#include <initguid.h>
+#include <initguid.h>
 
 #include "MediaPlayer.h"
-#include "Form.h"
+#include "EventInfrastructure.h"
+#include "Window.h"
 #include "Core/Threading.h"
 #include <d3d11_1.h>
 #include <d2d1helper.h>
@@ -54,22 +55,22 @@ static float ClampRate(float rate)
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<MediaPlayer, TValue> MediaPlayerPropertyOptions(
+	DependencyPropertyOptions<MediaPlayer, TValue> MediaPlayerPropertyOptions(
 		TValue defaultValue,
 		const wchar_t* category,
 		int categoryOrder,
 		int order,
-		ControlPropertyEditorKind editor,
-		ControlPropertyFlags flags = ControlPropertyFlags::None)
+		DependencyPropertyEditorKind editor,
+		DependencyPropertyFlags flags = DependencyPropertyFlags::None)
 	{
-		ControlPropertyOptions<MediaPlayer, TValue> options;
+		DependencyPropertyOptions<MediaPlayer, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = flags | ControlPropertyFlags::TracksLocalValue;
+		options.Flags = flags;
 		options.Design.Category = category;
 		options.Design.CategoryOrder = categoryOrder;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -77,14 +78,14 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			MediaPlayer& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
+					if (args.PropertyName == propertyName)
 						handler();
 				});
 		};
@@ -1193,7 +1194,7 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 		// 播放结束
 		player->SetPlayState(MediaPlayer::PlayState::Stopped);
 		player->UpdatePositionFromClock(true);
-		player->OnMediaEnded(player);
+		player->FireMediaEnded();
 		if (player->_loop)
 		{
 			player->Seek(0.0);
@@ -1300,27 +1301,27 @@ private:
 
 UIClass MediaPlayer::Type() { return UIClass::UI_MediaPlayer; }
 
-void MediaPlayer::EnsureBindingPropertiesRegistered()
+void MediaPlayer::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto autoPlayOptions = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 10, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<MediaPlayer, bool>(L"AutoPlay",
+			true, L"Media", 160, 10, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"AutoPlay",
 			[](MediaPlayer& target) { return target.AutoPlay; },
 			[](MediaPlayer& target, const bool& value) { target.AutoPlay = value; },
 			MediaPlayerPropertySubscriber(L"AutoPlay"), std::move(autoPlayOptions));
 
 		auto loopOptions = MediaPlayerPropertyOptions(
-			false, L"Media", 160, 20, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<MediaPlayer, bool>(L"Loop",
+			false, L"Media", 160, 20, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"Loop",
 			[](MediaPlayer& target) { return target.Loop; },
 			[](MediaPlayer& target, const bool& value) { target.Loop = value; },
 			MediaPlayerPropertySubscriber(L"Loop"), std::move(loopOptions));
 
 		auto volumeOptions = MediaPlayerPropertyOptions(
-			1.0, L"Media", 160, 30, ControlPropertyEditorKind::Number);
+			1.0, L"Media", 160, 30, DependencyPropertyEditorKind::Number);
 		volumeOptions.Coerce = [](MediaPlayer&, const double& proposed)
 			-> std::optional<double>
 		{
@@ -1330,13 +1331,13 @@ void MediaPlayer::EnsureBindingPropertiesRegistered()
 		volumeOptions.Design.Minimum = 0.0;
 		volumeOptions.Design.Maximum = 1.0;
 		volumeOptions.Design.Step = 0.01;
-		BindingPropertyRegistry::Register<MediaPlayer, double>(L"Volume",
+		DependencyPropertyRegistry::Register<MediaPlayer, double>(L"Volume",
 			[](MediaPlayer& target) { return target.Volume; },
 			[](MediaPlayer& target, const double& value) { target.Volume = value; },
 			MediaPlayerPropertySubscriber(L"Volume"), std::move(volumeOptions));
 
 		auto playbackRateOptions = MediaPlayerPropertyOptions(
-			1.0f, L"Media", 160, 40, ControlPropertyEditorKind::Number);
+			1.0f, L"Media", 160, 40, DependencyPropertyEditorKind::Number);
 		playbackRateOptions.Coerce = [](MediaPlayer&, const float& proposed)
 			-> std::optional<float>
 		{
@@ -1347,23 +1348,23 @@ void MediaPlayer::EnsureBindingPropertiesRegistered()
 		playbackRateOptions.Design.Minimum = 0.10;
 		playbackRateOptions.Design.Maximum = 4.0;
 		playbackRateOptions.Design.Step = 0.10;
-		BindingPropertyRegistry::Register<MediaPlayer, float>(L"PlaybackRate",
+		DependencyPropertyRegistry::Register<MediaPlayer, float>(L"PlaybackRate",
 			[](MediaPlayer& target) { return target.PlaybackRate; },
 			[](MediaPlayer& target, const float& value) { target.PlaybackRate = value; },
 			MediaPlayerPropertySubscriber(L"PlaybackRate"),
 			std::move(playbackRateOptions));
 
 		auto hardwareOptions = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 50, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<MediaPlayer, bool>(L"EnableHardwareDecode",
+			true, L"Media", 160, 50, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"EnableHardwareDecode",
 			[](MediaPlayer& target) { return target.EnableHardwareDecode; },
 			[](MediaPlayer& target, const bool& value) { target.EnableHardwareDecode = value; },
 			MediaPlayerPropertySubscriber(L"EnableHardwareDecode"),
 			std::move(hardwareOptions));
 
 		auto nv12Options = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 60, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<MediaPlayer, bool>(L"PreferNv12VideoOutput",
+			true, L"Media", 160, 60, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"PreferNv12VideoOutput",
 			[](MediaPlayer& target) { return target.PreferNv12VideoOutput; },
 			[](MediaPlayer& target, const bool& value) { target.PreferNv12VideoOutput = value; },
 			MediaPlayerPropertySubscriber(L"PreferNv12VideoOutput"),
@@ -1371,7 +1372,7 @@ void MediaPlayer::EnsureBindingPropertiesRegistered()
 
 		auto renderModeOptions = MediaPlayerPropertyOptions(
 			static_cast<int>(VideoRenderMode::Fit), L"Media", 160, 70,
-			ControlPropertyEditorKind::Choice, ControlPropertyFlags::AffectsRender);
+			DependencyPropertyEditorKind::Choice, DependencyPropertyFlags::AffectsRender);
 		renderModeOptions.Coerce = [](MediaPlayer&, const int& proposed)
 			-> std::optional<int>
 		{
@@ -1394,7 +1395,7 @@ void MediaPlayer::EnsureBindingPropertiesRegistered()
 			{ L"Center", BindingValue(static_cast<int>(VideoRenderMode::Center)) },
 			{ L"UniformToFill", BindingValue(static_cast<int>(VideoRenderMode::UniformToFill)) }
 		};
-		BindingPropertyRegistry::Register<MediaPlayer, int>(L"RenderMode",
+		DependencyPropertyRegistry::Register<MediaPlayer, int>(L"RenderMode",
 			[](MediaPlayer& target) { return static_cast<int>(target.RenderMode); },
 			[](MediaPlayer& target, const int& value)
 			{ target.RenderMode = static_cast<VideoRenderMode>(value); },
@@ -1412,11 +1413,12 @@ void MediaPlayer::SetPlayState(PlayState value)
 	// 状态变更可能来自播放工作线程；事件必须在 UI 线程上 invoke，
 	// 避免用户处理器在错误线程触碰其他 UI 控件。
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, oldValue, value, weakLifetime]() {
+	DispatchToOwner([this, oldValue, value, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnStateChanged(this, oldValue, value);
-		InvalidateVisual();
+		cui::framework::EventAccess::Raise(
+			OnStateChanged, this, oldValue, value);
+		RequestVisualInvalidation();
 	});
 }
 
@@ -1431,10 +1433,11 @@ void MediaPlayer::SetObservedPosition(
 	if (notify && (changed || forceEvent))
 	{
 		std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-		cui::InvokeOnUIThread([this, value, weakLifetime]() {
+		DispatchToOwner([this, value, weakLifetime]() {
 			auto lifetime = weakLifetime.lock();
 			if (!lifetime || !*lifetime) return;
-			OnPositionChanged(this, value);
+			cui::framework::EventAccess::Raise(
+				OnPositionChanged, this, value);
 		});
 	}
 }
@@ -1445,12 +1448,39 @@ void MediaPlayer::ReportMediaFailure(HRESULT error)
 	_lastMfError.store(error);
 	SetPlayState(PlayState::Stopped);
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, error, weakLifetime]() {
+	DispatchToOwner([this, error, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnMediaFailed(this);
-		OnMediaError(this, error);
-		InvalidateVisual();
+		cui::framework::EventAccess::Raise(OnMediaFailed, this);
+		cui::framework::EventAccess::Raise(OnMediaError, this, error);
+		RequestVisualInvalidation();
+	});
+}
+
+void MediaPlayer::DispatchToOwner(std::function<void()> callback)
+{
+	if (!callback) return;
+	if (CheckAccess())
+	{
+		callback();
+		return;
+	}
+	(void)TryPost(std::move(callback));
+}
+
+void MediaPlayer::RequestVisualInvalidation()
+{
+	if (CheckAccess())
+	{
+		Control::InvalidateVisual();
+		return;
+	}
+	std::weak_ptr<bool> weakLifetime = LifetimeToken();
+	(void)TryPost([this, weakLifetime]
+	{
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		Control::InvalidateVisual();
 	});
 }
 
@@ -1458,49 +1488,47 @@ void MediaPlayer::ReportMediaFailure(HRESULT error)
 void MediaPlayer::FireMediaOpened()
 {
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, weakLifetime]() {
+	DispatchToOwner([this, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnMediaOpened(this);
+		cui::framework::EventAccess::Raise(OnMediaOpened, this);
 	});
 }
 
 void MediaPlayer::FireMediaEnded()
 {
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, weakLifetime]() {
+	DispatchToOwner([this, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnMediaEnded(this);
+		cui::framework::EventAccess::Raise(OnMediaEnded, this);
 	});
 }
 
 void MediaPlayer::FirePositionChanged(double value)
 {
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, value, weakLifetime]() {
+	DispatchToOwner([this, value, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnPositionChanged(this, value);
+		cui::framework::EventAccess::Raise(OnPositionChanged, this, value);
 	});
 }
 
 void MediaPlayer::FireMediaError(HRESULT error)
 {
 	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	cui::InvokeOnUIThread([this, error, weakLifetime]() {
+	DispatchToOwner([this, error, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
-		OnMediaError(this, error);
+		cui::framework::EventAccess::Raise(OnMediaError, this, error);
 	});
 }
 
-MediaPlayer::MediaPlayer(int x, int y, int width, int height)
+MediaPlayer::MediaPlayer()
 {
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
-	this->BackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f };
-	this->BorderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f };
+	this->RendererBorderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
 
 	HRESULT hr = InitializeMF();
 	if (FAILED(hr))
@@ -2363,12 +2391,12 @@ void MediaPlayer::PlaybackThreadMain()
 				_needSyncReset = true;
 				SetObservedPosition(0.0, true);
 				// 仍然触发 ended 事件，便于 UI 更新
-				OnMediaEnded(this);
+				FireMediaEnded();
 				continue;
 			}
 			_threadPlaying = false;
 			SetPlayState(PlayState::Stopped);
-			OnMediaEnded(this);
+			FireMediaEnded();
 			break;
 		}
 
@@ -2523,7 +2551,7 @@ void MediaPlayer::PlaybackThreadMain()
 						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-						this->InvalidateVisual();
+						this->RequestVisualInvalidation();
 					}
 					else
 					{
@@ -2585,7 +2613,7 @@ void MediaPlayer::PlaybackThreadMain()
 					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-					this->InvalidateVisual();
+					this->RequestVisualInvalidation();
 				}
 				else
 				{
@@ -3136,7 +3164,7 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 		_videoFrameReady = true;
 	}
 	// CUI 是完全自渲染框架：需要主动 Invalidate 才会刷新画面。
-	this->InvalidateVisual();
+	this->RequestVisualInvalidation();
 }
 
 void MediaPlayer::RefreshVideoFormatFromSource()
@@ -3187,7 +3215,7 @@ void MediaPlayer::RefreshVideoFormatFromSource()
 bool MediaPlayer::Load(const std::wstring& mediaFile)
 {
 	if (!_initialized) { ReportMediaFailure(MF_E_NOT_INITIALIZED); return false; }
-	if (!this->ParentForm) { ReportMediaFailure(E_HANDLE); return false; }
+	if (!this->GetPresentationWindow()) { ReportMediaFailure(E_HANDLE); return false; }
 	if (mediaFile.empty()) { ReportMediaFailure(E_INVALIDARG); return false; }
 	ClearMediaError();
 	const bool preferSourceReader = _preferSourceReader;
@@ -3275,7 +3303,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			_mediaLoaded = true;
 			SetPlayState(PlayState::Stopped);
 			FireMediaOpened();
-			this->InvalidateVisual();
+			this->RequestVisualInvalidation();
 
 			if (_autoPlay)
 				Play();
@@ -3286,7 +3314,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		_mediaLoaded = true;
 			SetPlayState(PlayState::Stopped);
 		FireMediaOpened();
-		this->InvalidateVisual();
+		this->RequestVisualInvalidation();
 
 		// AutoPlay
 		if (_autoPlay)
@@ -3374,7 +3402,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		{
 			_pendingStart = true;
 			SetPlayState(PlayState::Playing);
-			this->InvalidateVisual();
+			this->RequestVisualInvalidation();
 		}
 		else
 		{
@@ -3382,7 +3410,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			if (SUCCEEDED(startHr))
 			{
 				SetPlayState(PlayState::Playing);
-				this->InvalidateVisual();
+				this->RequestVisualInvalidation();
 			}
 			else
 			{
@@ -3398,7 +3426,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHint)
 {
 	if (!_initialized) { ReportMediaFailure(MF_E_NOT_INITIALIZED); return false; }
-	if (!this->ParentForm) { ReportMediaFailure(E_HANDLE); return false; }
+	if (!this->GetPresentationWindow()) { ReportMediaFailure(E_HANDLE); return false; }
 	if (!data || size == 0) { ReportMediaFailure(E_INVALIDARG); return false; }
 	ClearMediaError();
 
@@ -3490,7 +3518,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	_mediaLoaded = true;
 	SetPlayState(PlayState::Stopped);
 	FireMediaOpened();
-	this->InvalidateVisual();
+	this->RequestVisualInvalidation();
 
 	if (_autoPlay)
 		Play();
@@ -3613,7 +3641,7 @@ bool MediaPlayer::TryStop()
 				return false;
 			}
 		}
-		InvalidateVisual();
+		RequestVisualInvalidation();
 		return true;
 	}
 
@@ -3675,7 +3703,7 @@ bool MediaPlayer::TrySeek(double seconds)
 		}
 		SetObservedPosition(seconds);
 		_needSyncReset = true;
-		InvalidateVisual();
+		RequestVisualInvalidation();
 		return true;
 	}
 	if (!_topologyReady)
@@ -3696,7 +3724,7 @@ bool MediaPlayer::TrySeek(double seconds)
 		return false;
 	}
 	SetObservedPosition(seconds);
-	InvalidateVisual();
+	RequestVisualInvalidation();
 	return true;
 }
 
@@ -3726,7 +3754,7 @@ void MediaPlayer::Close()
 	SetPlayState(PlayState::Stopped);
 	SetObservedPosition(0.0);
 	ClearMediaError();
-	InvalidateVisual();
+	RequestVisualInvalidation();
 }
 
 HRESULT MediaPlayer::StartPlayback()
@@ -3870,13 +3898,13 @@ void MediaPlayer::UpdateVideoBitmap()
 	// 旧 EVR 路径已移除（完全自渲染）
 }
 
-void MediaPlayer::Update()
+void MediaPlayer::OnRender()
 {
-	if (!this->IsVisual) return;
+	if (!this->IsVisible) return;
 	_statRenderUpdates.fetch_add(1, std::memory_order_relaxed);
 
 	const auto size = this->GetActualSizeDip();
-	auto d2d = this->ParentForm->Render;
+	auto d2d = this->GetDrawingContext();
 	this->BeginRender();
 
 	// 更新播放位置（用于进度条）
@@ -3887,7 +3915,7 @@ void MediaPlayer::Update()
 	}
 
 	// 背景
-	d2d->FillRect(0, 0, size.width, size.height, this->BackColor);
+	d2d->FillRect(0, 0, size.width, size.height, this->RendererBackgroundColor);
 
 	// 有视频：尝试更新并绘制最新帧
 	if (_hasVideo && _mediaLoaded)
@@ -4069,35 +4097,20 @@ void MediaPlayer::ReportPerfStatsIfDue()
 	return;
 }
 
-bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool MediaPlayer::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
+	if (!this->IsEnabled || !this->IsVisible) return true;
 
-	switch (message)
+	switch (input.Kind)
 	{
-	case WM_DROPFILES:
+	case InputReportKind::PointerDoubleClick:
 	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
-		if (fileCount > 0)
-		{
-			TCHAR fileName[MAX_PATH];
-			DragQueryFile(hDropInfo, 0, fileName, MAX_PATH);
-			DragFinish(hDropInfo);
-
-			// 加载第一个文件
-			Load(fileName);
-		}
-	}
-	return true;
-	case WM_LBUTTONDBLCLK:
-	{
-		// 双击切换播放/暂停
-		if (_mediaLoaded) (void)TogglePlayback();
+		if (input.ChangedButton == MouseButton::Left && _mediaLoaded)
+			(void)TogglePlayback();
 	}
 	break;
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+		return Control::ProcessInput(input);
 	}
 
 	return true;
@@ -4260,9 +4273,11 @@ GET_CPP(MediaPlayer, bool, HasAudio)
 	return _hasAudio;
 }
 
-GET_CPP(MediaPlayer, SIZE, VideoSize)
+GET_CPP(MediaPlayer, cui::core::Size, VideoSize)
 {
-	return _videoSize;
+	return cui::core::Size{
+		static_cast<float>(_videoSize.cx),
+		static_cast<float>(_videoSize.cy) };
 }
 
 GET_CPP(MediaPlayer, double, Progress)

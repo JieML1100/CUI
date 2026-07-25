@@ -1,10 +1,14 @@
-﻿#include "Control.h"
+#include "Control.h"
+#include "EventInfrastructure.h"
 #include "Binding.h"
-#include "Form.h"
+#include "Window.h"
+#include "WindowInfrastructure.h"
 #include "Panel.h"
 #include "PropertyPath.h"
 #include "Style.h"
 #include "Core/Threading.h"
+#include "InputManager.h"
+#include "XamlInfrastructure.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -23,6 +27,10 @@ namespace
 {
 	std::atomic<uint32_t> NextAccessibilityRuntimeId{ 1 };
 	std::atomic<uint32_t> NextAccessibilityVirtualRuntimeId{ 1 };
+	std::vector<std::pair<ControlWeakReference, bool>>
+		CaptureEffectiveIsEnabledSubtree(Control& root);
+	std::vector<std::pair<ControlWeakReference, bool>>
+		CaptureEffectiveIsVisibleSubtree(Control& root);
 
 	uint32_t AllocateAccessibilityRuntimeId() noexcept
 	{
@@ -48,12 +56,12 @@ namespace
 			&& std::isfinite(value._31) && std::isfinite(value._32);
 	}
 
-	int StoredPropertySourceIndex(ControlPropertyValueSource source) noexcept
+	int StoredPropertySourceIndex(DependencyPropertyValueSource source) noexcept
 	{
 		const int value = static_cast<int>(source);
-		return value >= static_cast<int>(ControlPropertyValueSource::Inherited)
-			&& value <= static_cast<int>(ControlPropertyValueSource::Animation)
-			? value - static_cast<int>(ControlPropertyValueSource::Inherited)
+		return value >= static_cast<int>(DependencyPropertyValueSource::Inherited)
+			&& value <= static_cast<int>(DependencyPropertyValueSource::Animation)
+			? value - static_cast<int>(DependencyPropertyValueSource::Inherited)
 			: -1;
 	}
 
@@ -88,15 +96,6 @@ namespace
 			: (std::max)(0.0f, (float)value);
 	}
 
-	cui::core::Constraints ToMeasureConstraints(SIZE availableSize)
-	{
-		return cui::core::Constraints{
-			cui::core::Size{
-				ToMaximumDip(availableSize.cx),
-				ToMaximumDip(availableSize.cy) }
-		}.Normalized();
-	}
-
 	LONG ToLayoutLong(cui::core::Dip value)
 	{
 		if (!(value > 0.0f)) return 0;
@@ -121,6 +120,40 @@ namespace
 		if (value >= maximum) return (std::numeric_limits<LONG>::max)();
 		if (value <= minimum) return (std::numeric_limits<LONG>::min)();
 		return (LONG)value;
+	}
+
+	std::optional<cui::layout::Length> ConvertLayoutLength(
+		const BindingValue& value)
+	{
+		cui::layout::Length exact;
+		if (value.TryGet(exact))
+		{
+			if (exact.IsAuto()) return cui::layout::Length::Auto();
+			if (!exact.IsFixed() || !std::isfinite(exact.value)
+				|| exact.value < 0.0f) return std::nullopt;
+			return cui::layout::Length::Fixed(exact.value);
+		}
+
+		BindingValue numericValue = value;
+		std::wstring text;
+		if (value.Kind() == BindingValueKind::String
+			&& value.TryGetString(text))
+		{
+			const auto first = std::find_if_not(
+				text.begin(), text.end(), [](wchar_t ch) { return std::iswspace(ch); });
+			const auto last = std::find_if_not(
+				text.rbegin(), text.rend(), [](wchar_t ch) { return std::iswspace(ch); }).base();
+			text = first < last ? std::wstring(first, last) : std::wstring{};
+			if (_wcsicmp(text.c_str(), L"Auto") == 0)
+				return cui::layout::Length::Auto();
+			numericValue = BindingValue(std::move(text));
+		}
+
+		float numeric = 0.0f;
+		if (!numericValue.TryGetFloat(numeric)
+			|| !std::isfinite(numeric) || numeric < 0.0f)
+			return std::nullopt;
+		return cui::layout::Length::Fixed(numeric);
 	}
 
 	cui::core::Rect ToCoreRect(D2D1_RECT_F value)
@@ -161,15 +194,15 @@ namespace
 		}
 	}
 
-	ControlPropertyDesignMetadata PropertyDesign(
+	DependencyPropertyDesignMetadata PropertyDesign(
 		std::wstring category,
 		int categoryOrder,
 		int order,
-		ControlPropertyPersistence persistence,
-		ControlPropertyEditorKind editor = ControlPropertyEditorKind::Auto,
+		DependencyPropertyPersistence persistence,
+		DependencyPropertyEditorKind editor = DependencyPropertyEditorKind::Auto,
 		std::wstring displayName = {})
 	{
-		ControlPropertyDesignMetadata design;
+		DependencyPropertyDesignMetadata design;
 		design.DisplayName = std::move(displayName);
 		design.Category = std::move(category);
 		design.CategoryOrder = categoryOrder;
@@ -180,16 +213,16 @@ namespace
 	}
 
 	template<typename TOwner, typename TValue>
-	ControlPropertyOptions<TOwner, TValue> WithPropertyDesign(
-		ControlPropertyOptions<TOwner, TValue> options,
-		ControlPropertyDesignMetadata design)
+	DependencyPropertyOptions<TOwner, TValue> WithPropertyDesign(
+		DependencyPropertyOptions<TOwner, TValue> options,
+		DependencyPropertyDesignMetadata design)
 	{
 		options.Design = std::move(design);
 		return options;
 	}
 
 	template<typename TValue>
-	ControlPropertyChoice PropertyChoice(std::wstring displayName, TValue value)
+	DependencyPropertyChoice PropertyChoice(std::wstring displayName, TValue value)
 	{
 		return { std::move(displayName), BindingValue(std::move(value)) };
 	}
@@ -200,14 +233,19 @@ namespace
 		result.reserve(text.size());
 		for (size_t index = 0; index < text.size(); ++index)
 		{
-			if (text[index] != L'&')
+			if (text[index] != L'_')
 			{
 				result.push_back(text[index]);
 				continue;
 			}
-			if (index + 1 < text.size() && text[index + 1] == L'&')
+			if (index + 1 >= text.size())
 			{
-				result.push_back(L'&');
+				result.push_back(L'_');
+				continue;
+			}
+			if (text[index + 1] == L'_')
+			{
+				result.push_back(L'_');
 				++index;
 			}
 		}
@@ -218,8 +256,8 @@ namespace
 	{
 		for (size_t index = 0; index + 1 < text.size(); ++index)
 		{
-			if (text[index] != L'&') continue;
-			if (text[index + 1] == L'&')
+			if (text[index] != L'_') continue;
+			if (text[index + 1] == L'_')
 			{
 				++index;
 				continue;
@@ -242,195 +280,863 @@ uint32_t AllocateAccessibilityVirtualId() noexcept
 }
 
 Control::Control()
-	:
-	Enable(true),
-	Checked(false),
-	ParentForm(nullptr),
-	Parent(nullptr),
-	Tag(0),
-	SizeMode(ImageSizeMode::Zoom),
-	_text(L"")
+	: _text(L"")
 {
-	Children.SetOwnerSynchronizationDuringUpdates(true);
-	Children.SetOwnerChangedHandler(
+	_visualChildren.SetOwnerSynchronizationDuringUpdates(true);
+	_visualChildren.SetOwnerChangedHandler(
 		[this](const CollectionChangedEventArgs& change)
-		{ SynchronizeChildCollection(change); });
+		{ SynchronizeVisualChildCollection(change); });
 	this->_accessibilityRuntimeId = AllocateAccessibilityRuntimeId();
-	this->_location = POINT{ 0, 0 };
-	this->_runtimeLocation = POINT{ 0, 0 };
-	this->_layoutStyle.horizontalAlignment = cui::layout::Alignment::Start;
-	this->_layoutStyle.verticalAlignment = cui::layout::Alignment::Start;
-	this->_layoutState.CommitArrange(cui::core::Rect{
-		0.0f, 0.0f, (float)this->_size.cx, (float)this->_size.cy });
-	_styleStateConnections.reserve(7);
-	_styleStateConnections.push_back(OnMouseEnter.Subscribe(
-		[this](Control*, MouseEventArgs)
-		{
-			SetStyleState(ControlStyleState::Hovered, true);
-		}));
-	_styleStateConnections.push_back(OnMouseLeave.Subscribe(
-		[this](Control*, MouseEventArgs)
-		{
-			SetStyleState(ControlStyleState::Hovered, false);
-		}));
-	_styleStateConnections.push_back(OnGotFocus.Subscribe(
-		[this](Control*)
-		{
-			SetStyleState(ControlStyleState::Focused, true);
-		}));
-	_styleStateConnections.push_back(OnLostFocus.Subscribe(
-		[this](Control*)
-		{
-			_defaultLeftButtonPressActive = false;
-			SetStyleState(ControlStyleState::Focused, false);
-			SetStyleState(ControlStyleState::Pressed, false);
-		}));
+	this->_layoutStyle.horizontalAlignment = cui::layout::Alignment::Stretch;
+	this->_layoutStyle.verticalAlignment = cui::layout::Alignment::Stretch;
+	_styleStateConnections.reserve(2);
 	_styleStateConnections.push_back(OnMouseDown.Subscribe(
-		[this](Control*, MouseEventArgs)
+		[this](Control*, MouseEventArgs& args)
 		{
-			SetStyleState(ControlStyleState::Pressed, true);
+			if (args.OriginalSource == this
+				&& (DefaultRaiseClickOnLeftButtonUp() || Focusable))
+				SetStyleState(ControlStyleState::Pressed, true);
 		}));
 	_styleStateConnections.push_back(OnMouseUp.Subscribe(
-		[this](Control*, MouseEventArgs)
+		[this](Control*, MouseEventArgs& args)
 		{
-			SetStyleState(ControlStyleState::Pressed, false);
-		}));
-	_styleStateConnections.push_back(OnChecked.Subscribe(
-		[this](Control*)
-		{
-			RefreshStyleValues(false);
-			if (ParentForm)
-				ParentForm->NotifyAccessibilityEvent(
-					this, AccessibilityChange::State);
+			if (args.OriginalSource == this)
+				SetStyleState(ControlStyleState::Pressed, false);
 		}));
 }
+
+bool IDeclarativeComponentBehavior::SetReadOnlyProperty(
+	Control& host,
+	const std::wstring& propertyName,
+	const BindingValue& value)
+{
+	if (host.GetDeclarativeComponentBehavior() != this) return false;
+	return host.TrySetReadOnlyPropertyValue(propertyName, value);
+}
+
+bool IDeclarativeComponentBehavior::ClearReadOnlyProperty(
+	Control& host,
+	const std::wstring& propertyName)
+{
+	if (host.GetDeclarativeComponentBehavior() != this) return false;
+	return host.ClearReadOnlyPropertyValue(propertyName);
+}
+
+std::unique_ptr<AutomationPeer> Control::OnCreateAutomationPeer()
+{
+	return std::make_unique<AutomationPeer>(
+		*this, AutomationControlType::Custom, L"Control");
+}
+
+AutomationPeer& Control::GetAutomationPeer() const
+{
+	if (!_automationPeer)
+	{
+		auto peer = const_cast<Control*>(this)->OnCreateAutomationPeer();
+		if (!peer)
+			peer = std::make_unique<AutomationPeer>(
+				*const_cast<Control*>(this),
+				AutomationControlType::Custom, L"Control");
+		_automationPeer = std::move(peer);
+	}
+	return *_automationPeer;
+}
+
 Control::~Control()
 {
+	// A routed callback may delete this control. Publish death before Control's
+	// teardown mutates any tree/event storage so frozen routes cannot re-enter a
+	// partially destroyed base object.
+	InvalidateLifetimeToken();
+	InvalidateCommandInfrastructureForDestruction();
 	_isDestroying = true;
 	ClearDeclarativeComponentBehavior();
 	_declarativeVisualStates.reset();
-	// 使任何已封送但尚未执行的跨线程回调失效。
-	if (_lifetimeToken) *_lifetimeToken = false;
-	Children.SetOwnerChangedHandler({});
-	_dataBindings.reset();
-	this->_imageCache.Reset();
-	this->_imageCacheTarget = nullptr;
-	this->_imageSource.reset();
-	if (this->_font && this->_ownsFont)
+	_visualChildren.SetOwnerChangedHandler({});
+	if (auto* inheritanceParent = GetInheritanceParent())
+		inheritanceParent->UnregisterInheritanceChild(this);
+	if (_logicalParent)
 	{
-		delete this->_font;
+		auto& siblings = _logicalParent->_logicalChildren;
+		siblings.erase(std::remove(siblings.begin(), siblings.end(), this),
+			siblings.end());
+		_logicalParent = nullptr;
 	}
-	this->_font = nullptr;
-	this->_ownsFont = false;
-	for (auto child : this->Children)
+	const auto logicalChildren = _logicalChildren;
+	for (auto* child : logicalChildren)
+		if (child && child->_logicalParent == this)
+			child->SetLogicalParentCore(nullptr);
+	const auto inheritanceChildren = _inheritanceChildren;
+	for (auto* child : inheritanceChildren)
+		if (child && child->_templatedParent == this)
+			child->SetTemplatedParentCore(nullptr);
+	_logicalChildren.clear();
+	_inheritanceChildren.clear();
+	_templateNameScope.clear();
+	_dataBindings.reset();
+	for (auto child : this->_visualChildren)
 	{
+		if (child && child->_visualParent == this)
+			child->_visualParent = nullptr;
 		delete child;
 	}
-	static_cast<ChildCollection::Base&>(Children).clear();
-	_observedChildren.clear();
+	_observedVisualChildren.clear();
 }
-UIClass Control::Type() { return UIClass::UI_Base; }
-
-void Control::SetLogicalParent(Control* value)
+UIClass GetUIClassBase(UIClass type) noexcept
 {
-	if (Parent == value) return;
-	auto* previous = Parent;
-	Parent = value;
-	RefreshInheritedPropertiesRecursive();
-	// ResourceDictionary is a lexical scope rather than a copied inherited
-	// property. Re-evaluate this whole subtree whenever its logical route moves.
-	RebuildStyleSubscriptions(true);
-	(void)RefreshDynamicResourceValues(true);
-	(void)RefreshStyleValues(true);
-	OnParentChanged.Invoke(this, previous, value);
+	switch (type)
+	{
+	case UIClass::UI_FrameworkElement:
+		return UIClass::UI_Base;
+	case UIClass::UI_Control:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_Button:
+		return UIClass::UI_ButtonBase;
+	case UIClass::UI_CheckBox:
+	case UIClass::UI_RadioButton:
+	case UIClass::UI_Switch:
+		return UIClass::UI_ToggleButton;
+	case UIClass::UI_ToggleButton:
+		return UIClass::UI_ButtonBase;
+	case UIClass::UI_ButtonBase:
+		return UIClass::UI_ContentControl;
+	case UIClass::UI_Slider:
+	case UIClass::UI_ProgressBar:
+	case UIClass::UI_ProgressRing:
+	case UIClass::UI_NumericUpDown:
+		return UIClass::UI_RangeBase;
+	case UIClass::UI_RangeBase:
+		return UIClass::UI_Control;
+	case UIClass::UI_ListViewItem:
+		return UIClass::UI_ListBoxItem;
+	case UIClass::UI_ListBoxItem:
+	case UIClass::UI_StatusBarItem:
+	case UIClass::UI_Window:
+		return UIClass::UI_ContentControl;
+	case UIClass::UI_ComboBoxItem:
+		return UIClass::UI_ListBoxItem;
+	case UIClass::UI_GroupBox:
+	case UIClass::UI_Expander:
+	case UIClass::UI_TabItem:
+		return UIClass::UI_HeaderedContentControl;
+	case UIClass::UI_HeaderedContentControl:
+		return UIClass::UI_ContentControl;
+	case UIClass::UI_ScrollViewer:
+		return UIClass::UI_ContentControl;
+	case UIClass::UI_Popup:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_ContentControl:
+		return UIClass::UI_Control;
+	case UIClass::UI_ContentPresenter:
+	case UIClass::UI_ItemsPresenter:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_Border:
+		return UIClass::UI_Decorator;
+	case UIClass::UI_Decorator:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_Grid:
+	case UIClass::UI_StackPanel:
+	case UIClass::UI_DockPanel:
+	case UIClass::UI_WrapPanel:
+	case UIClass::UI_RelativePanel:
+	case UIClass::UI_Canvas:
+		return UIClass::UI_Panel;
+	case UIClass::UI_Panel:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_ItemsControl:
+		return UIClass::UI_Control;
+	case UIClass::UI_HeaderedItemsControl:
+		return UIClass::UI_ItemsControl;
+	case UIClass::UI_StatusBar:
+	case UIClass::UI_Menu:
+	case UIClass::UI_ContextMenu:
+	case UIClass::UI_TreeView:
+		return UIClass::UI_ItemsControl;
+	case UIClass::UI_ToolBar:
+		return UIClass::UI_HeaderedItemsControl;
+	case UIClass::UI_MenuItem:
+	case UIClass::UI_TreeViewItem:
+		return UIClass::UI_HeaderedItemsControl;
+	case UIClass::UI_Separator:
+		return UIClass::UI_Control;
+	case UIClass::UI_Selector:
+		return UIClass::UI_ItemsControl;
+	case UIClass::UI_ListBox:
+	case UIClass::UI_ComboBox:
+	case UIClass::UI_TabControl:
+		return UIClass::UI_Selector;
+	case UIClass::UI_ListView:
+		return UIClass::UI_ListBox;
+	case UIClass::UI_Label:
+	case UIClass::UI_Image:
+	case UIClass::UI_WebBrowser:
+	case UIClass::UI_NativeSurface:
+		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_Base:
+		return UIClass::UI_Base;
+	case UIClass::UI_CUSTOM:
+		return UIClass::UI_Control;
+	default:
+		return UIClass::UI_Control;
+	}
 }
 
-void Control::SynchronizeChildCollection(
+int GetUIClassInheritanceDistance(
+	UIClass baseType,
+	UIClass type) noexcept
+{
+	int distance = 0;
+	for (;;)
+	{
+		if (type == baseType) return distance;
+		if (type == UIClass::UI_Base) return -1;
+		const auto next = GetUIClassBase(type);
+		if (next == type) return -1;
+		type = next;
+		++distance;
+	}
+}
+
+bool IsUIClassAssignableFrom(UIClass baseType, UIClass type) noexcept
+{
+	return GetUIClassInheritanceDistance(baseType, type) >= 0;
+}
+
+namespace
+{
+	bool IsFrameworkElementNativeProperty(std::wstring_view name) noexcept
+	{
+		static constexpr std::wstring_view properties[] = {
+			L"DataContext",
+			L"Visibility",
+			L"IsVisible",
+			L"IsEnabled",
+			L"AllowDrop",
+			L"Canvas.Left",
+			L"Canvas.Top",
+			L"Canvas.Right",
+			L"Canvas.Bottom",
+			L"Width",
+			L"Height",
+			L"ActualWidth",
+			L"ActualHeight",
+			L"Margin",
+			L"HorizontalAlignment",
+			L"VerticalAlignment",
+			L"ZIndex",
+			L"Grid.Row",
+			L"Grid.Column",
+			L"Grid.RowSpan",
+			L"Grid.ColumnSpan",
+			L"DockPanel.Dock",
+			L"MinWidth",
+			L"MinHeight",
+			L"MaxWidth",
+			L"MaxHeight",
+			L"Clip",
+			L"RenderTransform",
+			L"RenderTransformOrigin",
+			L"Validation.HasError",
+			L"Validation.Errors",
+			L"Tag",
+			L"Cursor",
+			L"Focusable",
+			L"IsTabStop",
+			L"TabIndex",
+			L"IsFocused",
+			L"IsKeyboardFocused",
+			L"IsKeyboardFocusWithin",
+			L"IsMouseOver",
+			L"IsMouseDirectlyOver",
+			L"FocusManager.IsFocusScope",
+			L"KeyboardNavigation.TabNavigation",
+			L"KeyboardNavigation.DirectionalNavigation",
+			L"AutomationProperties.Name",
+			L"AutomationProperties.FullDescription",
+			L"AutomationProperties.HelpText",
+			L"AutomationProperties.AutomationId",
+		};
+		return std::find(
+			std::begin(properties), std::end(properties), name)
+			!= std::end(properties);
+	}
+
+	bool IsTextBlockNativeProperty(std::wstring_view name) noexcept
+	{
+		return name == L"Background"
+			|| name == L"Foreground"
+			|| name == L"FontFamily"
+			|| name == L"FontSize"
+			|| name == L"Padding";
+	}
+
+	bool IsBorderNativeProperty(std::wstring_view name) noexcept
+	{
+		return name == L"Background"
+			|| name == L"BorderBrush"
+			|| name == L"BorderThickness"
+			|| name == L"Padding";
+	}
+}
+
+bool IsNativePropertySupportedByUIClass(
+	UIClass type,
+	const DependencyPropertyMetadata& metadata) noexcept
+{
+	if (type == UIClass::UI_Base) return false;
+
+	// Metadata registered by a concrete behavior host is an explicit member of
+	// that type. Shared base-host metadata is projected through the
+	// authoritative WPF/XAML type hierarchy.
+	if (metadata.OwnerType() != std::type_index(typeid(Control)))
+		return true;
+
+	if (IsUIClassAssignableFrom(UIClass::UI_Control, type))
+		return true;
+	if (IsFrameworkElementNativeProperty(metadata.Name()))
+		return true;
+	if (type == UIClass::UI_Label
+		&& IsTextBlockNativeProperty(metadata.Name()))
+		return true;
+	if (IsUIClassAssignableFrom(UIClass::UI_Panel, type)
+		&& metadata.Name() == L"Background")
+		return true;
+	if (type == UIClass::UI_Border
+		&& IsBorderNativeProperty(metadata.Name()))
+		return true;
+	return false;
+}
+
+bool IsControlTemplateHostClass(UIClass type) noexcept
+{
+	return type != UIClass::UI_Window
+		&& IsUIClassAssignableFrom(UIClass::UI_Control, type);
+}
+
+UIClass GetDefaultItemContainerType(UIClass itemsControlType) noexcept
+{
+	switch (itemsControlType)
+	{
+	case UIClass::UI_ListView:
+		return UIClass::UI_ListViewItem;
+	case UIClass::UI_ComboBox:
+		return UIClass::UI_ComboBoxItem;
+	case UIClass::UI_TreeView:
+	case UIClass::UI_TreeViewItem:
+		return UIClass::UI_TreeViewItem;
+	case UIClass::UI_Menu:
+	case UIClass::UI_MenuItem:
+	case UIClass::UI_ContextMenu:
+		return UIClass::UI_MenuItem;
+	case UIClass::UI_TabControl:
+		return UIClass::UI_TabItem;
+	case UIClass::UI_StatusBar:
+		return UIClass::UI_StatusBarItem;
+	case UIClass::UI_ListBox:
+	case UIClass::UI_Selector:
+		return UIClass::UI_ListBoxItem;
+	default:
+		return IsUIClassAssignableFrom(
+			UIClass::UI_ItemsControl, itemsControlType)
+			? UIClass::UI_ContentPresenter : UIClass::UI_Base;
+	}
+}
+
+UIClass Control::Type() { return UIClass::UI_Control; }
+
+namespace
+{
+	void ClearGenericTemplateOwner(Control* root, Control* owner)
+	{
+		if (!root || !owner) return;
+		std::vector<Control*> stack{ root };
+		while (!stack.empty())
+		{
+			auto* current = stack.back();
+			stack.pop_back();
+			if (!current) continue;
+			for (auto* child : current->GetVisualChildrenView())
+				if (child) stack.push_back(child);
+			if (current->GetTemplatedParent() == owner)
+				cui::framework::XamlAccess::SetTemplatedParent(*current, nullptr);
+		}
+	}
+}
+
+void Control::ConfigureControlTemplateVisual(Control& child)
+{
+	(void)child;
+}
+
+Control* Control::SetControlTemplateRoot(std::unique_ptr<Control> value)
+{
+	if (value.get() == _controlTemplateRoot) return _controlTemplateRoot;
+	(void)DetachVisualChildTemplateRoot();
+	if (!value)
+	{
+		OnControlTemplatePresentationChanged();
+		RequestLayout();
+		InvalidateVisual();
+		return nullptr;
+	}
+
+	ConfigureControlTemplateVisual(*value);
+	_controlTemplateRoot = value.get();
+	try
+	{
+		AddOwned(std::move(value));
+		_controlTemplateRoot->SetLogicalParent(nullptr);
+	}
+	catch (...)
+	{
+		_controlTemplateRoot = nullptr;
+		OnControlTemplatePresentationChanged();
+		throw;
+	}
+	OnControlTemplatePresentationChanged();
+	RequestLayout();
+	InvalidateVisual();
+	return _controlTemplateRoot;
+}
+
+std::unique_ptr<Control> Control::DetachVisualChildTemplateRoot()
+{
+	if (!_controlTemplateRoot) return {};
+	auto* previous = _controlTemplateRoot;
+	_controlTemplateRoot = nullptr;
+	auto result = DetachVisualChild(previous);
+	ClearGenericTemplateOwner(result.get(), this);
+	ClearDeclarativeTemplateScope();
+	OnControlTemplatePresentationChanged();
+	RequestLayout();
+	InvalidateVisual();
+	return result;
+}
+
+void Control::RegisterInheritanceChild(Control* child)
+{
+	if (!child || std::find(_inheritanceChildren.begin(),
+		_inheritanceChildren.end(), child) != _inheritanceChildren.end()) return;
+	_inheritanceChildren.push_back(child);
+}
+
+void Control::UnregisterInheritanceChild(Control* child)
+{
+	_inheritanceChildren.erase(std::remove(
+		_inheritanceChildren.begin(), _inheritanceChildren.end(), child),
+		_inheritanceChildren.end());
+}
+
+void Control::RefreshInheritanceContext(bool recursive)
+{
+	RefreshInheritedPropertiesRecursive();
+	RebuildStyleSubscriptions(recursive);
+	(void)RefreshDynamicResourceValues(recursive);
+	(void)RefreshStyleValues(recursive);
+}
+
+namespace
+{
+	bool WouldCreateRoutedParentCycle(
+		const Control& child,
+		Control* candidateParent) noexcept
+	{
+		std::unordered_set<const Control*> visited;
+		std::vector<const Control*> pending;
+		if (candidateParent) pending.push_back(candidateParent);
+		while (!pending.empty())
+		{
+			const auto* current = pending.back();
+			pending.pop_back();
+			if (current == &child) return true;
+			if (!visited.insert(current).second) continue;
+			// Inspect the union of all structural parent edges, not only today's
+			// precedence-selected GetRoutedParent().  Otherwise a logical/template
+			// edge hidden by VisualParent could become a cycle on a later detach.
+			if (auto* parent = current->GetVisualParent())
+				pending.push_back(parent);
+			if (auto* parent = current->GetLogicalParent())
+				pending.push_back(parent);
+			if (auto* parent = current->GetTemplatedParent())
+				pending.push_back(parent);
+		}
+		return false;
+	}
+}
+
+void Control::SetVisualParentCore(Control* value)
+{
+	if (_visualParent == value) return;
+	if (WouldCreateRoutedParentCycle(*this, value))
+		throw std::logic_error("可视/逻辑/模板路由树不能形成循环");
+	const ControlWeakReference selfReference(this);
+	const ControlWeakReference previousReference(_visualParent);
+	const ControlWeakReference valueReference(value);
+	auto enabledSnapshot = CaptureEffectiveIsEnabledSubtree(*this);
+	auto visibleSnapshot = CaptureEffectiveIsVisibleSubtree(*this);
+	_visualParent = value;
+	PublishEffectiveIsEnabledChanges(std::move(enabledSnapshot));
+	PublishEffectiveIsVisibleChanges(std::move(visibleSnapshot));
+	auto* live = selfReference.Get();
+	if (!live || (value && !valueReference)
+		|| live->_visualParent != valueReference.Get()) return;
+	cui::framework::EventAccess::Raise(
+		live->OnVisualParentChanged,
+		live, previousReference.Get(), valueReference.Get());
+}
+
+ControlWeakReference::ControlWeakReference(Control* target) noexcept
+	: _target(target),
+	_lifetime(target ? target->WeakLifetimeToken()
+		: std::weak_ptr<const bool>{})
+{
+}
+
+ControlWeakReference& ControlWeakReference::operator=(Control* target) noexcept
+{
+	_target = target;
+	_lifetime = target ? target->WeakLifetimeToken()
+		: std::weak_ptr<const bool>{};
+	return *this;
+}
+
+Control* ControlWeakReference::Get() const noexcept
+{
+	if (!_target) return nullptr;
+	const auto lifetime = _lifetime.lock();
+	return lifetime && *lifetime ? _target : nullptr;
+}
+
+void Control::PropagatePresentationWindow(
+	Control* control,
+	Window* form)
+{
+	if (!control) return;
+	const ControlWeakReference requestedWindowReference(form);
+	std::unordered_set<Control*> activePath;
+	struct ActivePathEntry final
+	{
+		std::unordered_set<Control*>& Path;
+		Control* Value = nullptr;
+		~ActivePathEntry() { Path.erase(Value); }
+	};
+	auto propagate = [&](auto&& self, ControlWeakReference controlReference) -> void
+	{
+		auto* live = controlReference.Get();
+		if (!live || !activePath.insert(live).second) return;
+		const ActivePathEntry active{ activePath, live };
+		auto* requestedWindow = dynamic_cast<Window*>(
+			requestedWindowReference.Get());
+		if (form && !requestedWindow) return;
+
+		const ControlWeakReference previousWindowReference(live->GetPresentationWindow());
+		const bool windowChanged = live->GetPresentationWindow() != requestedWindow;
+		if (windowChanged)
+		{
+			live->_hasLastInvalidatedClientRect = false;
+			if (live->GetPresentationWindow())
+				(void)RoutedCommandManager::InvalidateRequerySuggested(*live);
+			live = controlReference.Get();
+			requestedWindow = dynamic_cast<Window*>(
+				requestedWindowReference.Get());
+			if (!live || (form && !requestedWindow)
+				|| live->GetPresentationWindow()
+					!= dynamic_cast<Window*>(previousWindowReference.Get())) return;
+		}
+		live->SetPresentationWindowCore(requestedWindow);
+		RoutedCommandManager::NotifySourceScopeChanged(*live);
+
+		live = controlReference.Get();
+		requestedWindow = dynamic_cast<Window*>(
+			requestedWindowReference.Get());
+		if (!live || (form && !requestedWindow)
+			|| live->GetPresentationWindow() != requestedWindow) return;
+		live->_layoutState.InvalidateMeasure();
+
+		std::vector<ControlWeakReference> children;
+		children.reserve(live->_visualChildren.size());
+		for (auto* child : live->_visualChildren)
+			if (child) children.emplace_back(child);
+		for (const auto& childReference : children)
+		{
+			live = controlReference.Get();
+			requestedWindow = dynamic_cast<Window*>(
+				requestedWindowReference.Get());
+			auto* child = childReference.Get();
+			if (!live || (form && !requestedWindow)
+				|| live->GetPresentationWindow() != requestedWindow) return;
+			if (!child || child->GetVisualParent() != live) continue;
+			self(self, childReference);
+		}
+
+		live = controlReference.Get();
+		requestedWindow = dynamic_cast<Window*>(
+			requestedWindowReference.Get());
+		if (!live || (form && !requestedWindow)
+			|| live->GetPresentationWindow() != requestedWindow) return;
+		if (windowChanged)
+			live->OnPresentationWindowChanged(
+					dynamic_cast<Window*>(previousWindowReference.Get()),
+					requestedWindow);
+	};
+	propagate(propagate, ControlWeakReference(control));
+}
+
+void Control::SetLogicalParentCore(Control* value)
+{
+	if (_logicalParent == value) return;
+	if (WouldCreateRoutedParentCycle(*this, value))
+		throw std::logic_error("可视/逻辑/模板路由树不能形成循环");
+	const ControlWeakReference selfReference(this);
+	const ControlWeakReference previousReference(_logicalParent);
+	const ControlWeakReference valueReference(value);
+	const bool routedThroughLogicalParent = _visualParent == nullptr;
+	auto snapshot = routedThroughLogicalParent
+		? CaptureEffectiveIsEnabledSubtree(*this)
+		: std::vector<std::pair<ControlWeakReference, bool>>{};
+	auto* previousInheritanceParent = GetInheritanceParent();
+	if (_logicalParent)
+	{
+		auto& siblings = _logicalParent->_logicalChildren;
+		siblings.erase(std::remove(siblings.begin(), siblings.end(), this),
+			siblings.end());
+	}
+	_logicalParent = value;
+	if (value && std::find(value->_logicalChildren.begin(),
+		value->_logicalChildren.end(), this) == value->_logicalChildren.end())
+		value->_logicalChildren.push_back(this);
+	auto* currentInheritanceParent = GetInheritanceParent();
+	if (previousInheritanceParent != currentInheritanceParent)
+	{
+		if (previousInheritanceParent)
+			previousInheritanceParent->UnregisterInheritanceChild(this);
+		if (currentInheritanceParent)
+			currentInheritanceParent->RegisterInheritanceChild(this);
+		RefreshInheritanceContext(true);
+	}
+	auto* live = selfReference.Get();
+	if (!live || (value && !valueReference)
+		|| live->_logicalParent != valueReference.Get()) return;
+	if (routedThroughLogicalParent)
+		live->PublishEffectiveIsEnabledChanges(std::move(snapshot));
+	live = selfReference.Get();
+	if (!live || (value && !valueReference)
+		|| live->_logicalParent != valueReference.Get()) return;
+	cui::framework::EventAccess::Raise(
+		live->OnLogicalParentChanged,
+		live, previousReference.Get(), valueReference.Get());
+}
+
+void Control::SetTemplatedParentCore(Control* value)
+{
+	if (_templatedParent == value) return;
+	if (WouldCreateRoutedParentCycle(*this, value))
+		throw std::logic_error("可视/逻辑/模板路由树不能形成循环");
+	const ControlWeakReference selfReference(this);
+	const ControlWeakReference previousReference(_templatedParent);
+	const ControlWeakReference valueReference(value);
+	const bool routedThroughTemplatedParent = _visualParent == nullptr
+		&& _logicalParent == nullptr;
+	auto snapshot = routedThroughTemplatedParent
+		? CaptureEffectiveIsEnabledSubtree(*this)
+		: std::vector<std::pair<ControlWeakReference, bool>>{};
+	auto* previousInheritanceParent = GetInheritanceParent();
+	_templatedParent = value;
+	auto* currentInheritanceParent = GetInheritanceParent();
+	if (previousInheritanceParent != currentInheritanceParent)
+	{
+		if (previousInheritanceParent)
+			previousInheritanceParent->UnregisterInheritanceChild(this);
+		if (currentInheritanceParent)
+			currentInheritanceParent->RegisterInheritanceChild(this);
+		RefreshInheritanceContext(true);
+	}
+	auto* live = selfReference.Get();
+	if (!live || (value && !valueReference)
+		|| live->_templatedParent != valueReference.Get()) return;
+	if (routedThroughTemplatedParent)
+		live->PublishEffectiveIsEnabledChanges(std::move(snapshot));
+	live = selfReference.Get();
+	if (!live || (value && !valueReference)
+		|| live->_templatedParent != valueReference.Get()) return;
+	cui::framework::EventAccess::Raise(
+		live->OnTemplatedParentChanged,
+		live, previousReference.Get(), valueReference.Get());
+}
+
+void Control::SynchronizeVisualChildCollection(
 	const CollectionChangedEventArgs& change)
 {
-	const std::vector<Control*> previous = _observedChildren;
+	VerifyAccess();
+	const ControlWeakReference selfReference(this);
+	const std::vector<Control*> previous = _observedVisualChildren;
+	std::vector<ControlWeakReference> previousReferences;
+	previousReferences.reserve(previous.size());
+	for (auto* child : previous)
+		previousReferences.emplace_back(child);
 	const std::unordered_set<Control*> previousSet(
 		previous.begin(), previous.end());
 	std::unordered_set<Control*> currentSet;
-	currentSet.reserve(Children.size());
+	currentSet.reserve(_visualChildren.size());
 	auto reject = [&](const char* message, bool invalidArgument = false)
 		{
-			static_cast<ChildCollection::Base&>(Children) = previous;
+			_visualChildren.RestoreRejectedMutation(previous);
 			if (invalidArgument) throw std::invalid_argument(message);
 			throw std::logic_error(message);
 		};
 
-	for (auto* child : Children)
+	for (auto* child : _visualChildren)
 	{
 		if (!child)
 			reject("不能添加空控件", true);
 		if (!currentSet.insert(child).second)
 			reject("不能重复添加同一控件");
-		for (Control* ancestor = this; ancestor; ancestor = ancestor->Parent)
-		{
-			if (ancestor == child)
-				reject("不能将控件添加到自身或其后代");
-		}
+		if (WouldCreateRoutedParentCycle(*child, this))
+			reject("不能将控件添加到自身或其结构后代");
 		const bool alreadyObserved = previousSet.contains(child);
 		if (alreadyObserved)
 		{
-			if (child->Parent != this)
-				reject("子控件 Parent 已在集合外被修改");
+			if (child->_visualParent != this)
+				reject("子控件 VisualParent 已在集合外被修改");
 		}
-		else if (child->_isFormRoot || child->Parent
-			|| (child->ParentForm && child->ParentForm != this->ParentForm))
+		else if (child->_isWindowRoot || child->_visualParent
+			|| child->_logicalParent
+			|| (child->GetPresentationWindow() && child->GetPresentationWindow() != this->GetPresentationWindow()))
 		{
 			reject("该控件已属于其他容器");
 		}
 	}
 
 	std::string validationError;
-	if (!ValidateChildCollection(
-			std::span<Control* const>{ Children.data(), Children.size() },
+	if (!ValidateVisualChildCollection(
+			std::span<Control* const>{
+				_visualChildren.data(), _visualChildren.size() },
 			validationError))
 	{
-		static_cast<ChildCollection::Base&>(Children) = previous;
+		_visualChildren.RestoreRejectedMutation(previous);
 		throw std::logic_error(validationError.empty()
 			? "Specialized container rejected the child collection"
 			: validationError);
 	}
 
-	Form* form = this->ParentForm;
-	for (auto* child : previous)
+	// Publish the structural snapshot before invoking parent-change callbacks.
+	// A callback may perform a nested detach/reparent; the nested synchronizer
+	// must observe the collection that actually triggered this pass.
+	_observedVisualChildren.assign(
+		_visualChildren.begin(), _visualChildren.end());
+
+	auto stillContains = [](const Control& owner, const Control* child)
 	{
-		if (!child || currentSet.contains(child)) continue;
-		if (form) form->ClearDetachedControlReferences(child);
-		if (child->Parent == this) child->SetLogicalParent(nullptr);
-		child->_isFormRoot = false;
-		child->SetInheritedDataContext({});
-		SetChildrenParentForm(child, nullptr);
-	}
-	for (auto* child : Children)
+		return child && std::find(owner._visualChildren.begin(),
+			owner._visualChildren.end(), child) != owner._visualChildren.end();
+	};
+	for (const auto& childReference : previousReferences)
 	{
-		if (previousSet.contains(child)) continue;
-		child->SetLogicalParent(this);
-		child->_isFormRoot = false;
-		child->SetInheritedDataContext(_effectiveDataContext);
-		SetChildrenParentForm(child, this->ParentForm);
-		if (this->_themeStyleSheet)
-			child->SetThemeStyleSheet(this->_themeStyleSheet, true);
-		if (this->_styleSheet)
-			child->SetStyleSheet(this->_styleSheet, true);
+		auto* owner = selfReference.Get();
+		auto* child = childReference.Get();
+		if (!owner) return;
+		if (!child || currentSet.contains(child)
+			|| stillContains(*owner, child)) continue;
+		const ControlWeakReference windowReference(owner->GetPresentationWindow());
+		if (auto* window = dynamic_cast<Window*>(windowReference.Get()))
+			window->ClearDetachedControlReferences(child);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || stillContains(*owner, child)) continue;
+		if (child->_visualParent == owner)
+			child->SetVisualParentCore(nullptr);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || stillContains(*owner, child)) continue;
+		if (child->_logicalParent == owner)
+			child->SetLogicalParentCore(nullptr);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || stillContains(*owner, child)) continue;
+		child->_isWindowRoot = false;
+		if (!child->_visualParent)
+			PropagatePresentationWindow(child, nullptr);
 	}
 
-	_observedChildren.assign(Children.begin(), Children.end());
-	OnChildCollectionChanged(
+	std::vector<ControlWeakReference> currentReferences;
+	if (auto* owner = selfReference.Get())
+	{
+		currentReferences.reserve(owner->_visualChildren.size());
+		for (auto* child : owner->_visualChildren)
+			if (child) currentReferences.emplace_back(child);
+	}
+	else return;
+	for (const auto& childReference : currentReferences)
+	{
+		auto* owner = selfReference.Get();
+		auto* child = childReference.Get();
+		if (!owner) return;
+		if (!child || previousSet.contains(child)
+			|| !stillContains(*owner, child)) continue;
+		if (child->_visualParent && child->_visualParent != owner) continue;
+		if (child->_visualParent != owner)
+			child->SetVisualParentCore(owner);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || !stillContains(*owner, child)
+			|| child->_visualParent != owner) continue;
+		if (child->_logicalParent && child->_logicalParent != owner) continue;
+		if (child->_logicalParent != owner)
+			child->SetLogicalParentCore(owner);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || !stillContains(*owner, child)
+			|| child->_visualParent != owner
+			|| child->_logicalParent != owner) continue;
+		child->_isWindowRoot = false;
+		PropagatePresentationWindow(child, owner->GetPresentationWindow());
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || !stillContains(*owner, child)
+			|| child->_visualParent != owner) continue;
+		if (owner->_themeStyleSheet)
+			child->SetThemeStyleSheet(owner->_themeStyleSheet, true);
+		owner = selfReference.Get();
+		child = childReference.Get();
+		if (!owner) return;
+		if (!child || !stillContains(*owner, child)
+			|| child->_visualParent != owner) continue;
+		if (owner->_styleSheet)
+			child->SetStyleSheet(owner->_styleSheet, true);
+	}
+
+	auto* owner = selfReference.Get();
+	if (!owner) return;
+	owner->_observedVisualChildren.assign(
+		owner->_visualChildren.begin(), owner->_visualChildren.end());
+	std::vector<Control*> callbackPrevious;
+	callbackPrevious.reserve(previousReferences.size());
+	for (const auto& childReference : previousReferences)
+		callbackPrevious.push_back(childReference.Get());
+	owner->OnVisualChildCollectionChanged(
 		change,
-		std::span<Control* const>{ previous.data(), previous.size() });
-	this->RequestLayout();
-	this->NotifyAccessibilityStructureChanged();
+		std::span<Control* const>{
+			callbackPrevious.data(), callbackPrevious.size() });
+	owner = selfReference.Get();
+	if (!owner) return;
+	if (const ControlWeakReference windowReference(owner->GetPresentationWindow());
+		auto* window = dynamic_cast<Window*>(windowReference.Get()))
+		window->InvalidatePresentationStructure();
+	owner = selfReference.Get();
+	if (!owner) return;
+	owner->RequestLayout();
+	owner = selfReference.Get();
+	if (!owner) return;
+	owner->NotifyAccessibilityStructureChanged();
 }
 
-void Control::SetTextInternal(std::wstring text)
-{
-	this->_text = std::move(text);
-}
-void Control::Update() {}
+void Control::OnRender() {}
 
 void Control::RequestLayout()
 {
@@ -440,9 +1146,9 @@ void Control::RequestLayout()
 		this->_layoutDeferral.QueueLayout();
 		return;
 	}
-	if (this->Parent)
+	if (this->_visualParent)
 	{
-		auto* panelParent = dynamic_cast<Panel*>(this->Parent);
+		auto* panelParent = dynamic_cast<Panel*>(this->_visualParent);
 		if (panelParent)
 		{
 			panelParent->InvalidateLayout();
@@ -451,14 +1157,14 @@ void Control::RequestLayout()
 		{
 			// Some composite controls are not Panel-derived but still participate in
 			// the visual tree. Keep walking until a real layout boundary is found.
-			this->Parent->RequestLayout();
+			this->_visualParent->RequestLayout();
 		}
 		return;
 	}
 
-	if (this->ParentForm)
+	if (this->GetPresentationWindow())
 	{
-		this->ParentForm->InvalidateLayout();
+		this->GetPresentationWindow()->RequestLayout();
 	}
 }
 
@@ -470,46 +1176,40 @@ void Control::RequestArrange()
 		this->_layoutDeferral.QueueLayout();
 		return;
 	}
-	if (this->Parent)
+	if (this->_visualParent)
 	{
-		if (auto* panelParent = dynamic_cast<Panel*>(this->Parent))
-			panelParent->InvalidateLayout();
+		if (auto* panelParent = dynamic_cast<Panel*>(this->_visualParent))
+			panelParent->InvalidateArrangeLayout();
 		else
-			this->Parent->RequestLayout();
+			this->_visualParent->RequestArrange();
 		return;
 	}
-	if (this->ParentForm)
-		this->ParentForm->InvalidateLayout();
+	if (this->GetPresentationWindow())
+		this->GetPresentationWindow()->RequestArrangeLayout();
 }
 
-void Control::SuspendLayout()
+void Control::BeginLayoutUpdateDeferral() noexcept
 {
 	_layoutDeferral.Suspend();
 }
 
-void Control::ResumeLayout(bool performLayout)
+void Control::EndLayoutUpdateDeferral(bool performLayout)
 {
 	const auto work = _layoutDeferral.Resume();
-	if (!work.ready)
-		return;
-
+	if (!work.ready) return;
 	if (work.layoutRequested)
 	{
 		RequestLayout();
-		if (performLayout)
-			PerformPendingLayout();
+		if (performLayout) PerformPendingLayout();
 	}
-
 	if (work.visualRequested && !work.visualBounds.IsEmpty())
-	{
 		DispatchInvalidatedClientRect(ToD2DRect(work.visualBounds));
-	}
 }
 
 void Control::InvalidateMeasureSubtree()
 {
 	_layoutState.InvalidateMeasure();
-	for (auto* child : Children)
+	for (auto* child : _visualChildren)
 	{
 		if (child)
 			child->InvalidateMeasureSubtree();
@@ -519,30 +1219,78 @@ void Control::InvalidateMeasureSubtree()
 void Control::InvalidateVisualSubtree()
 {
 	InvalidateVisual();
-	for (auto* child : Children)
+	for (auto* child : _visualChildren)
 		if (child) child->InvalidateVisualSubtree();
+}
+
+void Control::InvalidateVisualBoundsSubtree()
+{
+	const auto bounds = GetAbsoluteRectDip();
+	InvalidateVisualRectCore(D2D1::RectF(
+		bounds.Left(), bounds.Top(), bounds.Right(), bounds.Bottom()), false);
+	for (auto* child : _visualChildren)
+		if (child) child->InvalidateVisualBoundsSubtree();
+}
+
+void Control::MarkPresentationInvalidation(
+	PresentationInvalidationKind kind) noexcept
+{
+	auto advance = [](uint64_t& revision) noexcept
+	{
+		++revision;
+		if (revision == 0) ++revision;
+	};
+	if (HasPresentationInvalidation(
+		kind, PresentationInvalidationKind::Content))
+		advance(_presentationRevisions.Content);
+	if (HasPresentationInvalidation(
+		kind, PresentationInvalidationKind::Geometry))
+		advance(_presentationRevisions.Geometry);
+	if (HasPresentationInvalidation(
+		kind, PresentationInvalidationKind::Composition))
+		advance(_presentationRevisions.Composition);
+	if (GetPresentationWindow())
+		GetPresentationWindow()->InvalidatePresentationNode(this, kind);
+}
+
+void Control::InvalidatePresentationGeometrySubtree() noexcept
+{
+	MarkPresentationInvalidation(PresentationInvalidationKind::Geometry);
+}
+
+void Control::InvalidateDescendantRenderGeometry() noexcept
+{
+	InvalidatePresentationGeometrySubtree();
+}
+
+D2DGraphics* Control::GetDrawingContext() const noexcept
+{
+	auto* window = GetPresentationWindow();
+	return window ? window->GetCurrentDrawingContext() : nullptr;
 }
 
 void Control::BeginRender()
 {
-	auto actualSize = this->GetActualSizeDip();
-	BeginRender(actualSize.width, actualSize.height);
+	auto renderSize = GetRenderSizeDip();
+	BeginRender(renderSize.width, renderSize.height);
 }
 void Control::BeginRender(float clipW, float clipH)
 {
 	_activeGeometryClipCount = 0;
-	if (!this->ParentForm || !this->ParentForm->Render) return;
-	// HeadHeight is physical; divide by dpiScale to match the logical DIP transform.
-	const float dpiScale = this->ParentForm->GetDpiScale();
-	const float titleBarOffset = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiScale : 0.0f);
+	if (!this->GetPresentationWindow() || !this->GetDrawingContext()) return;
+	const float titleBarOffset = static_cast<float>(
+		this->GetPresentationWindow()->GetTitleBarHeightDip());
 	// Layout coordinates are relative to the form content. The control-local
 	// transform is followed by ancestor transforms and finally the title bar.
 	const auto transform = AsMatrix(GetLocalToRenderTransform())
 		* D2D1::Matrix3x2F::Translation(0.0f, titleBarOffset);
-	this->ParentForm->Render->PushLocalTransform(transform, clipW, clipH);
+	this->GetDrawingContext()->PushLocalTransform(transform, clipW, clipH);
 
 	std::vector<const Control*> clipOwners;
-	for (auto* current = this; current; current = current->Parent)
+	std::unordered_set<const Control*> visited;
+	for (auto* current = this;
+		current && visited.insert(current).second;
+		current = current->_visualParent)
 		if (current->_clip) clipOwners.push_back(current);
 	if (clipOwners.empty()) return;
 	std::reverse(clipOwners.begin(), clipOwners.end());
@@ -554,17 +1302,10 @@ void Control::BeginRender(float clipW, float clipH)
 			* renderToLocal;
 		Microsoft::WRL::ComPtr<ID2D1Geometry> native;
 		native.Attach(owner->_clip->CreateD2DGeometry(&ownerToLocal));
-		if (native && this->ParentForm->Render->PushGeometryClip(native.Get()))
+		if (native && this->GetDrawingContext()->PushGeometryClip(native.Get()))
 			++_activeGeometryClipCount;
 	}
 }
-void Control::SetRenderDecorator(
-	std::function<void(Control&, D2DGraphics&)> decorator)
-{
-	_renderDecorator = std::move(decorator);
-	InvalidateVisual();
-}
-
 bool Control::SetDeclarativeComponentBehavior(
 	std::unique_ptr<IDeclarativeComponentBehavior> behavior,
 	const DeclarativeComponentBehaviorContext& context,
@@ -605,7 +1346,7 @@ bool Control::SetDeclarativeComponentBehavior(
 	try
 	{
 		_declarativeComponentBehavior->DpiChanged(
-			*this, ParentForm ? ParentForm->GetDpiScale() : 1.0f);
+			*this, GetPresentationWindow() ? GetPresentationWindow()->GetDpiScale() : 1.0f);
 	}
 	catch (...)
 	{
@@ -646,10 +1387,59 @@ void Control::NotifyDeviceResourcesInvalidated() noexcept
 	{
 	}
 }
-void Control::SetForegroundBrush(const cui::drawing::Brush& brush)
+void Control::ApplyBackgroundBrush(const cui::drawing::Brush& brush)
 {
-	_foregroundBrush = brush;
+	if (brush.Kind == cui::drawing::BrushKind::None)
+		_backgroundBrush.reset();
+	else
+		_backgroundBrush = brush;
 	InvalidateVisual();
+}
+GET_CPP(Control, cui::drawing::Brush, Background)
+{
+	return GetComputedBackgroundBrush();
+}
+SET_CPP(Control, cui::drawing::Brush, Background)
+{
+	(void)TrySetPropertyValue(
+		L"Background", BindingValue(std::move(value)),
+		DependencyPropertyValueSource::Local);
+}
+void Control::ClearBackgroundBrush()
+{
+	if (!_backgroundBrush) return;
+	_backgroundBrush.reset();
+	InvalidateVisual();
+}
+ID2D1Brush* Control::CreateBackgroundBrush(
+	D2DGraphics& graphics,
+	D2D1_SIZE_F bounds) const
+{
+	return _backgroundBrush
+		? _backgroundBrush->CreateBrush(graphics, bounds)
+		: nullptr;
+}
+cui::drawing::Brush Control::GetComputedBackgroundBrush() const
+{
+	return _backgroundBrush.value_or(cui::drawing::NoBrush());
+}
+void Control::ApplyForegroundBrush(const cui::drawing::Brush& brush)
+{
+	if (brush.Kind == cui::drawing::BrushKind::None)
+		_foregroundBrush.reset();
+	else
+		_foregroundBrush = brush;
+	InvalidateVisual();
+}
+GET_CPP(Control, cui::drawing::Brush, Foreground)
+{
+	return GetComputedForegroundBrush();
+}
+SET_CPP(Control, cui::drawing::Brush, Foreground)
+{
+	(void)TrySetPropertyValue(
+		L"Foreground", BindingValue(std::move(value)),
+		DependencyPropertyValueSource::Local);
 }
 void Control::ClearForegroundBrush()
 {
@@ -665,19 +1455,61 @@ ID2D1Brush* Control::CreateForegroundBrush(
 		? _foregroundBrush->CreateBrush(graphics, bounds)
 		: nullptr;
 }
+cui::drawing::Brush Control::GetComputedForegroundBrush() const
+{
+	return _foregroundBrush.value_or(cui::drawing::NoBrush());
+}
+void Control::ApplyBorderBrush(const cui::drawing::Brush& brush)
+{
+	if (brush.Kind == cui::drawing::BrushKind::None)
+		_borderBrush.reset();
+	else
+		_borderBrush = brush;
+	InvalidateVisual();
+}
+GET_CPP(Control, cui::drawing::Brush, BorderBrush)
+{
+	return GetComputedBorderBrush();
+}
+SET_CPP(Control, cui::drawing::Brush, BorderBrush)
+{
+	(void)TrySetPropertyValue(
+		L"BorderBrush", BindingValue(std::move(value)),
+		DependencyPropertyValueSource::Local);
+}
+void Control::ClearBorderBrush()
+{
+	if (!_borderBrush) return;
+	_borderBrush.reset();
+	InvalidateVisual();
+}
+ID2D1Brush* Control::CreateBorderBrush(
+	D2DGraphics& graphics,
+	D2D1_SIZE_F bounds) const
+{
+	return _borderBrush
+		? _borderBrush->CreateBrush(graphics, bounds)
+		: nullptr;
+}
+cui::drawing::Brush Control::GetComputedBorderBrush() const
+{
+	return _borderBrush.value_or(cui::drawing::NoBrush());
+}
 void Control::SetClip(const cui::drawing::Geometry& geometry)
 {
 	if (_clip && *_clip == geometry) return;
-	InvalidateVisualSubtree();
+	InvalidateVisualBoundsSubtree();
 	_clip = geometry;
-	InvalidateVisualSubtree();
+	InvalidatePresentationGeometrySubtree();
+	InvalidateVisualBoundsSubtree();
 }
 void Control::ClearClip()
 {
 	if (!_clip) return;
-	InvalidateVisualSubtree();
+	InvalidateVisualBoundsSubtree();
 	_clip.reset();
-	InvalidateVisualSubtree();
+	InvalidatePresentationGeometrySubtree();
+	InvalidateVisualBoundsSubtree();
 }
 void Control::SetRenderTransform(const cui::drawing::Transform& transform)
 {
@@ -687,16 +1519,18 @@ void Control::SetRenderTransform(const cui::drawing::Transform& transform)
 		return;
 	}
 	if (_renderTransform && *_renderTransform == transform) return;
-	InvalidateVisualSubtree();
+	InvalidateVisualBoundsSubtree();
 	_renderTransform = transform;
-	InvalidateVisualSubtree();
+	InvalidatePresentationGeometrySubtree();
+	InvalidateVisualBoundsSubtree();
 }
 void Control::ClearRenderTransform()
 {
 	if (!_renderTransform) return;
-	InvalidateVisualSubtree();
+	InvalidateVisualBoundsSubtree();
 	_renderTransform.reset();
-	InvalidateVisualSubtree();
+	InvalidatePresentationGeometrySubtree();
+	InvalidateVisualBoundsSubtree();
 }
 void Control::SetRenderTransformOrigin(D2D1_POINT_2F origin)
 {
@@ -707,74 +1541,68 @@ void Control::SetRenderTransformOriginDip(cui::core::Point origin)
 	if (!std::isfinite(origin.x) || !std::isfinite(origin.y)) return;
 	if (_renderTransformOrigin.x == origin.x
 		&& _renderTransformOrigin.y == origin.y) return;
-	InvalidateVisualSubtree();
+	InvalidateVisualBoundsSubtree();
 	_renderTransformOrigin = D2D1::Point2F(origin.x, origin.y);
-	InvalidateVisualSubtree();
+	InvalidatePresentationGeometrySubtree();
+	InvalidateVisualBoundsSubtree();
 }
 void Control::EndRender()
 {
-	if (!this->ParentForm || !this->ParentForm->Render) return;
-	if (_renderDecorator)
-	{
-		// Rendering extensions are optional. Never allow one to unbalance the
-		// transform stack or abort the framework paint pass.
-		try
-		{
-			_renderDecorator(*this, *this->ParentForm->Render);
-		}
-		catch (...)
-		{
-		}
-	}
+	if (!this->GetPresentationWindow() || !this->GetDrawingContext()) return;
 	if (_declarativeComponentBehavior)
 	{
 		try
 		{
 			_declarativeComponentBehavior->RenderOverlay(
-				*this, *this->ParentForm->Render);
+				*this, *this->GetDrawingContext());
 		}
 		catch (...)
 		{
 		}
 	}
-	RenderFocusAdorner();
-	RenderValidationAdorner();
 	while (_activeGeometryClipCount > 0)
 	{
-		this->ParentForm->Render->PopGeometryClip();
+		this->GetDrawingContext()->PopGeometryClip();
 		--_activeGeometryClipCount;
 	}
-	this->ParentForm->Render->PopLocalTransform();
+	this->GetDrawingContext()->PopLocalTransform();
 	this->_layoutState.CommitPaint();
+	// The previous invalidation is only a coalescing aid while a visual is
+	// waiting to be painted.  Keeping it after a successful paint causes every
+	// later region-only request to be unioned with stale (often full-control)
+	// damage and eventually promotes local rendering back to a full frame.
+	_hasLastInvalidatedClientRect = false;
 }
 
 void Control::InvalidateVisual()
 {
-	this->InvalidateVisualRect(this->AbsRect);
+	this->InvalidateVisualRect(ToD2DRect(GetAbsoluteRectDip()));
 }
 
 void Control::InvalidateVisualRect(const D2D1_RECT_F& contentRect)
+
 {
-	// 线程亲和防护：失效会读写 _layoutState/ParentForm/_lastInvalidatedClientRect
-	// 等 UI 线程私有状态。工作线程（如 MediaPlayer 播放线程）直接调用会造成
-	// 数据竞争，因此封送回 UI 线程再真正执行。控件可能在工作线程回调时已被
-	// 部分销毁，这里通过 PostToUIThread 的异步性避免在工作线程上触碰任何状态。
-	if (!cui::IsUIThread())
-	{
-		D2D1_RECT_F rectCopy = contentRect;
-		// 以弱引用捕获生命周期令牌：控件若在回调执行前销毁，令牌失效，跳过。
-		std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-		cui::PostToUIThread([this, rectCopy, weakLifetime]() {
-			auto lifetime = weakLifetime.lock();
-			if (!lifetime || !*lifetime) return; // 控件已销毁
-			this->InvalidateVisualRect(rectCopy);
-		});
-		return;
-	}
+	InvalidateVisualRectCore(contentRect, true);
+}
+
+void Control::InvalidateComposition()
+{
+	VerifyAccess();
+	MarkPresentationInvalidation(PresentationInvalidationKind::Composition);
+	InvalidateVisualRectCore(ToD2DRect(GetAbsoluteRectDip()), false);
+}
+
+void Control::InvalidateVisualRectCore(
+	const D2D1_RECT_F& contentRect,
+	bool contentChanged)
+{
+	VerifyAccess();
+	if (contentChanged)
+		MarkPresentationInvalidation(PresentationInvalidationKind::Content);
 	this->_layoutState.InvalidatePaint();
-	if (!this->IsVisual || !this->ParentForm) return;
+	if (!this->IsVisible || !this->GetPresentationWindow()) return;
 	const auto renderedRect = TransformAbsoluteRectToRenderSpace(contentRect);
-	const RECT currentClientPixels = this->ParentForm->ContentDipRectToClientPixels(renderedRect);
+	const RECT currentClientPixels = this->GetPresentationWindow()->ContentDipRectToClientPixels(renderedRect);
 	const D2D1_RECT_F currentRect{
 		(float)currentClientPixels.left,
 		(float)currentClientPixels.top,
@@ -798,7 +1626,10 @@ void Control::InvalidateVisualRect(const D2D1_RECT_F& contentRect)
 
 void Control::DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect)
 {
-	for (Control* current = this; current; current = current->Parent)
+	std::unordered_set<Control*> visited;
+	for (Control* current = this;
+		current && visited.insert(current).second;
+		current = current->_visualParent)
 	{
 		if (current->_layoutDeferral.IsSuspended())
 		{
@@ -806,8 +1637,8 @@ void Control::DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect)
 			return;
 		}
 	}
-	if (this->ParentForm)
-		this->ParentForm->Invalidate(clientRect, false);
+	if (this->GetPresentationWindow())
+		this->GetPresentationWindow()->Invalidate(clientRect, false);
 }
 
 void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect)
@@ -878,56 +1709,50 @@ bool Control::GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const
 	return true;
 }
 
-GET_CPP(Control, class Font*, Font)
+Font* Control::GetRenderFont()
 {
-	if (!this->_font)
-		return this->ParentForm
-			? this->ParentForm->GetFont() : GetDefaultFontObject();
-	const float factor = this->ParentForm
-		? this->ParentForm->GetTextScaleFactor() : 1.0f;
-	if (!(factor > 1.0001f)) return this->_font;
-	const float sourceSize = this->_font->FontSize;
-	if (!this->_systemScaledFont || this->_systemScaledFontSource != this->_font
+	if (!this->_renderFont)
+		this->ApplyTypographyFont();
+	if (!this->_renderFont) return nullptr;
+	const float factor = this->GetPresentationWindow()
+		? this->GetPresentationWindow()->GetTextScaleFactor() : 1.0f;
+	if (!(factor > 1.0001f)) return this->_renderFont.get();
+	const float sourceSize = this->_renderFont->FontSize;
+	if (!this->_systemScaledFont
 		|| std::fabs(this->_systemScaledFontSourceSize - sourceSize) > 0.001f
 		|| std::fabs(this->_systemScaledFontFactor - factor) > 0.001f)
 	{
 		this->_systemScaledFont = std::make_unique<::Font>(
-			this->_font->FontName, sourceSize * factor);
-		this->_systemScaledFontSource = this->_font;
+			this->_renderFont->FontFamily, sourceSize * factor);
 		this->_systemScaledFontSourceSize = sourceSize;
 		this->_systemScaledFontFactor = factor;
 	}
 	return this->_systemScaledFont.get();
 }
-SET_CPP(Control, class Font*, Font)
+
+GET_CPP(Control, const std::wstring&, FontFamily)
 {
-	this->SetFontEx(value, true);
+	return _fontName;
 }
 
-void Control::SetFontEx(class Font* value, bool takeOwnership)
+GET_CPP(Control, double, FontSize)
 {
-	if (value == GetDefaultFontObject())
-	{
-		value = nullptr;
-		takeOwnership = false;
-	}
+	return _fontSize;
+}
 
-	if (value == this->_font)
+void Control::ApplyTypographyFont()
+{
+	_systemScaledFont.reset();
+	if (_renderFont)
 	{
-		this->_ownsFont = takeOwnership;
-		return;
+		_renderFont->FontFamily = _fontName;
+		_renderFont->FontSize = static_cast<float>(_fontSize);
 	}
-
-	this->_systemScaledFont.reset();
-	this->_systemScaledFontSource = nullptr;
-	if (this->_font && this->_ownsFont)
+	else
 	{
-		delete this->_font;
+		_renderFont = std::make_unique<::Font>(
+			_fontName, static_cast<float>(_fontSize));
 	}
-	this->_font = value;
-	this->_ownsFont = takeOwnership;
-	this->RequestLayout();
-	this->InvalidateVisual();
 }
 
 GET_CPP(Control, BindingCollection&, DataBindings)
@@ -937,344 +1762,108 @@ GET_CPP(Control, BindingCollection&, DataBindings)
 	return *this->_dataBindings;
 }
 
-namespace
-{
-	std::wstring DynamicPropertyKey(const std::wstring& value)
-	{
-		std::wstring result;
-		result.reserve(value.size());
-		for (const auto ch : value)
-			result.push_back(static_cast<wchar_t>(std::towlower(ch)));
-		return result;
-	}
-
-	bool IsDynamicPropertyName(const std::wstring& value)
-	{
-		if (value.empty()
-			|| !(std::iswalpha(value.front()) || value.front() == L'_'))
-			return false;
-		return std::all_of(value.begin() + 1, value.end(), [](wchar_t ch)
-		{
-			return std::iswalnum(ch) || ch == L'_';
-		});
-	}
-
-	std::type_index DynamicPropertyValueType(
-		BindingValueKind kind,
-		const BindingValue& defaultValue)
-	{
-		switch (kind)
-		{
-		case BindingValueKind::Bool: return std::type_index(typeid(bool));
-		case BindingValueKind::Int: return std::type_index(typeid(int));
-		case BindingValueKind::Int64: return std::type_index(typeid(long long));
-		case BindingValueKind::Float: return std::type_index(typeid(float));
-		case BindingValueKind::Double: return std::type_index(typeid(double));
-		case BindingValueKind::String: return std::type_index(typeid(std::wstring));
-		case BindingValueKind::Object:
-			return std::type_index(defaultValue.Type());
-		default: return std::type_index(typeid(void));
-		}
-	}
-
-	bool DynamicPropertyValuesEqual(
-		const BindingValue& left,
-		const BindingValue& right)
-	{
-		if (left.Kind() != BindingValueKind::Object
-			|| right.Kind() != BindingValueKind::Object)
-			return BindingValuesEqual(left, right);
-		if (std::type_index(left.Type()) != std::type_index(right.Type()))
-			return false;
-
-		if (left.Type() == typeid(D2D1_COLOR_F))
-		{
-			D2D1_COLOR_F a{}, b{};
-			return left.TryGet(a) && right.TryGet(b)
-				&& a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
-		}
-		if (left.Type() == typeid(Thickness))
-		{
-			Thickness a, b;
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(SIZE))
-		{
-			SIZE a{}, b{};
-			return left.TryGet(a) && right.TryGet(b)
-				&& a.cx == b.cx && a.cy == b.cy;
-		}
-		if (left.Type() == typeid(cui::core::Size))
-		{
-			cui::core::Size a{}, b{};
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(D2D1_MATRIX_3X2_F))
-		{
-			D2D1_MATRIX_3X2_F a{}, b{};
-			return left.TryGet(a) && right.TryGet(b)
-				&& a._11 == b._11 && a._12 == b._12
-				&& a._21 == b._21 && a._22 == b._22
-				&& a._31 == b._31 && a._32 == b._32;
-		}
-		if (left.Type() == typeid(cui::core::Point))
-		{
-			cui::core::Point a{}, b{};
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::core::Vector))
-		{
-			cui::core::Vector a{}, b{};
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::core::Rect))
-		{
-			cui::core::Rect a{}, b{};
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::layout::Length))
-		{
-			cui::layout::Length a, b;
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::drawing::Transform))
-		{
-			cui::drawing::Transform a, b;
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::drawing::Geometry))
-		{
-			cui::drawing::Geometry a, b;
-			return left.TryGet(a) && right.TryGet(b) && a == b;
-		}
-		if (left.Type() == typeid(cui::drawing::Brush))
-		{
-			cui::drawing::Brush a, b;
-			if (!left.TryGet(a) || !right.TryGet(b)) return false;
-			return a.Kind == b.Kind
-				&& a.MappingMode == b.MappingMode
-				&& a.Color.r == b.Color.r && a.Color.g == b.Color.g
-				&& a.Color.b == b.Color.b && a.Color.a == b.Color.a
-				&& a.Opacity == b.Opacity
-				&& a.StartPoint.x == b.StartPoint.x && a.StartPoint.y == b.StartPoint.y
-				&& a.EndPoint.x == b.EndPoint.x && a.EndPoint.y == b.EndPoint.y
-				&& a.Center.x == b.Center.x && a.Center.y == b.Center.y
-				&& a.GradientOrigin.x == b.GradientOrigin.x
-				&& a.GradientOrigin.y == b.GradientOrigin.y
-				&& a.RadiusX == b.RadiusX && a.RadiusY == b.RadiusY
-				&& a.GradientStops == b.GradientStops
-				&& a.Transform == b.Transform
-				&& a.RelativeTransform == b.RelativeTransform
-				&& a.ImageSource == b.ImageSource
-				&& a.Stretch == b.Stretch
-				&& a.AlignmentX == b.AlignmentX
-				&& a.AlignmentY == b.AlignmentY;
-		}
-		return false;
-	}
-}
-
-bool Control::DefineDynamicProperty(
-	DynamicControlPropertyDefinition definition,
+bool Control::SetDeclarativeTypeDescriptor(
+	std::shared_ptr<const DeclarativeTypeDescriptor> descriptor,
 	std::wstring* outError)
 {
-	auto fail = [&](const wchar_t* message)
+	auto fail = [&](std::wstring message)
 	{
-		if (outError) *outError = message;
+		if (outError) *outError = std::move(message);
 		return false;
 	};
-	if (!IsDynamicPropertyName(definition.Name))
-		return fail(L"动态属性名称必须是有效的 XAML 标识符。");
-	if (definition.ValueKind == BindingValueKind::Empty)
-		return fail(L"动态属性必须声明非空值类型。");
-	if (definition.ValueKind == BindingValueKind::Object
-		&& (definition.DefaultValue.Kind() != BindingValueKind::Object
-			|| definition.DefaultValue.Type() == typeid(void)))
-		return fail(L"对象动态属性必须提供具体类型的默认值。");
-	if (HasControlPropertyFlag(definition.Flags, ControlPropertyFlags::Inherits)
-		&& definition.InheritanceKey.empty())
-		return fail(L"可继承动态属性必须提供稳定的 InheritanceKey。");
-	if (definition.DefaultUpdateMode == DataSourceUpdateMode::Default)
-		return fail(L"动态属性的默认更新触发器必须是具体值。");
-	if (definition.IsReadOnly && HasControlPropertyFlag(
-		definition.Flags, ControlPropertyFlags::BindsTwoWayByDefault))
-		return fail(L"只读动态属性不能声明 BindsTwoWayByDefault。");
-	if (definition.IsReadOnly && definition.DefaultUpdateMode
-		!= DataSourceUpdateMode::OnPropertyChanged)
-		return fail(L"只读动态属性不能声明默认源更新触发器。");
-
-	const auto key = DynamicPropertyKey(definition.Name);
-	if (_dynamicProperties.find(key) != _dynamicProperties.end())
-		return fail(L"动态属性名称重复。");
-	// Registry::Find cannot see the new entry yet, so this safely checks native
-	// metadata without allowing a declarative component to change its meaning.
-	if (BindingPropertyRegistry::Find(*this, definition.Name))
-		return fail(L"动态属性不能覆盖控件已有属性。");
-
-	BindingValue normalizedDefault;
-	if (definition.ValueKind == BindingValueKind::Object)
-		normalizedDefault = definition.DefaultValue;
-	else if (!TryConvertBindingValue(
-		definition.DefaultValue, definition.ValueKind, normalizedDefault))
-		return fail(L"动态属性默认值无法转换为声明类型。");
-	std::vector<BindingValue> normalizedAllowedValues;
-	normalizedAllowedValues.reserve(definition.AllowedValues.size());
-	for (const auto& candidate : definition.AllowedValues)
+	if (!descriptor)
+		return fail(L"声明类型描述符不能为空。");
+	if (_declarativeTypeDescriptor)
 	{
-		BindingValue normalized;
-		const bool converted = definition.ValueKind == BindingValueKind::Object
-			? TryConvertBindingValue(candidate, normalizedDefault, normalized)
-			: TryConvertBindingValue(candidate, definition.ValueKind, normalized);
-		if (!converted)
-			return fail(L"动态属性候选值无法转换为声明类型。");
-		if (std::any_of(normalizedAllowedValues.begin(), normalizedAllowedValues.end(),
-			[&](const auto& existing)
-			{
-				return DynamicPropertyValuesEqual(existing, normalized);
-			}))
-			return fail(L"动态属性候选值重复。");
-		normalizedAllowedValues.push_back(std::move(normalized));
+		if (_declarativeTypeDescriptor == descriptor)
+		{
+			if (outError) outError->clear();
+			return true;
+		}
+		return fail(L"控件实例已经绑定到另一个声明类型；类型身份不可变。");
 	}
-	if (!normalizedAllowedValues.empty()
-		&& std::none_of(normalizedAllowedValues.begin(), normalizedAllowedValues.end(),
-			[&](const auto& candidate)
-			{
-				return DynamicPropertyValuesEqual(candidate, normalizedDefault);
-			}))
-		return fail(L"动态属性默认值不在允许的候选集合中。");
-	if (definition.Design.Persistence == ControlPropertyPersistence::Automatic)
-		definition.Design.Persistence = ControlPropertyPersistence::Metadata;
 
-	const auto canonicalName = definition.Name;
-	auto metadata = std::unique_ptr<BindingPropertyMetadata>(
-		new BindingPropertyMetadata(
-			canonicalName,
-			definition.ValueKind,
-			DynamicPropertyValueType(definition.ValueKind, normalizedDefault),
-			std::type_index(typeid(Control)),
-			[this](const Control& target) { return &target == this; },
-			[kind = definition.ValueKind, objectDefault = normalizedDefault,
-				allowedValues = std::move(normalizedAllowedValues)](
-				const BindingValue& value, BindingValue& converted)
-			{
-				bool success = false;
-				if (kind == BindingValueKind::Object)
-					success = TryConvertBindingValue(value, objectDefault, converted);
-				else
-					success = TryConvertBindingValue(value, kind, converted);
-				if (!success) return false;
-				if (allowedValues.empty()) return true;
-				if (kind == BindingValueKind::String)
-				{
-					std::wstring actual;
-					if (!converted.TryGet(actual)) return false;
-					for (const auto& candidate : allowedValues)
-					{
-						std::wstring expected;
-						if (candidate.TryGet(expected)
-							&& _wcsicmp(actual.c_str(), expected.c_str()) == 0)
-						{
-							converted = candidate;
-							return true;
-						}
-					}
-					return false;
-				}
-				return std::any_of(allowedValues.begin(), allowedValues.end(),
-					[&](const auto& candidate)
-					{
-						return DynamicPropertyValuesEqual(candidate, converted);
-					});
-			},
-			{},
-			[](const BindingValue& left, const BindingValue& right)
-			{
-				return DynamicPropertyValuesEqual(left, right);
-			},
-			[canonicalName](Control& target, BindingValue& value)
-			{
-				return target.TryGetDynamicPropertyBacking(canonicalName, value);
-			},
-			[canonicalName](Control& target, const BindingValue& value)
-			{
-				return target.TrySetDynamicPropertyBacking(canonicalName, value);
-			},
-			[canonicalName](
-				Control& target,
-				BindingPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode updateMode)
-			{
-				if (updateMode == DataSourceUpdateMode::OnValidation)
-					return target.OnLostFocus.Subscribe(
-						[handler = std::move(handler)](Control*) { handler(); });
-				return target.OnPropertyValueChanged.Subscribe(
-					[canonicalName, handler = std::move(handler)](
-						Control*, const ControlPropertyChangedEventArgs& args)
-					{
-						if (_wcsicmp(args.PropertyName.c_str(), canonicalName.c_str()) == 0)
-							handler();
-					});
-			},
-			{},
-			normalizedDefault,
-			true,
-			definition.Flags,
-			definition.IsReadOnly,
-			definition.DefaultUpdateMode,
-			std::move(definition.InheritanceKey),
-			std::move(definition.Design)));
+	auto rejectNativeCollision = [&](const std::wstring& name)
+	{
+		if (!DependencyPropertyRegistry::FindNative(*this, name)) return false;
+		if (outError) *outError = L"声明类型成员不能覆盖控件已有属性："
+			+ name;
+		return true;
+	};
+	for (const auto* property : descriptor->Properties())
+		if (property && rejectNativeCollision(property->Name())) return false;
+	for (const auto& event : descriptor->Events())
+		if (rejectNativeCollision(event.Name)) return false;
+	for (const auto& content : descriptor->ContentProperties())
+		if (rejectNativeCollision(content.Name)) return false;
 
-	DynamicPropertyEntry entry;
-	entry.Metadata = std::move(metadata);
-	entry.Value = std::move(normalizedDefault);
-	_dynamicProperties.emplace(key, std::move(entry));
-	if (HasControlPropertyFlag(
-		definition.Flags, ControlPropertyFlags::Inherits))
+	std::vector<BindingValue> values;
+	values.reserve(descriptor->PropertyCount());
+	for (std::size_t slot = 0; slot < descriptor->PropertyCount(); ++slot)
+	{
+		BindingValue value;
+		if (!descriptor->TryGetPropertyDefault(slot, value))
+			return fail(L"声明类型描述符包含无效的属性值槽。");
+		values.push_back(std::move(value));
+	}
+	_declarativePropertyValues = std::move(values);
+	_declarativeTypeDescriptor = std::move(descriptor);
+	RefreshStyleValues(false);
+	if (_declarativeTypeDescriptor->HasInheritedProperties())
 		RefreshInheritedPropertiesRecursive();
 	if (outError) outError->clear();
 	return true;
 }
 
-const BindingPropertyMetadata* Control::FindDynamicPropertyMetadata(
+const DependencyPropertyMetadata* Control::FindDeclarativePropertyMetadata(
 	const std::wstring& propertyName) const
 {
-	const auto entry = _dynamicProperties.find(DynamicPropertyKey(propertyName));
-	return entry == _dynamicProperties.end() ? nullptr : entry->second.Metadata.get();
+	return _declarativeTypeDescriptor
+		? _declarativeTypeDescriptor->FindProperty(propertyName) : nullptr;
 }
 
-std::vector<const BindingPropertyMetadata*> Control::GetDynamicPropertyMetadata() const
+std::vector<const DependencyPropertyMetadata*>
+Control::GetDeclarativePropertyMetadata() const
 {
-	std::vector<const BindingPropertyMetadata*> result;
-	result.reserve(_dynamicProperties.size());
-	for (const auto& [_, entry] : _dynamicProperties)
-		result.push_back(entry.Metadata.get());
-	return result;
+	if (!_declarativeTypeDescriptor) return {};
+	const auto properties = _declarativeTypeDescriptor->Properties();
+	return std::vector<const DependencyPropertyMetadata*>(
+		properties.begin(), properties.end());
 }
 
-bool Control::TryGetDynamicPropertyBacking(
-	const std::wstring& propertyName,
+bool Control::SupportsNativeProperty(
+	const DependencyPropertyMetadata& metadata) const
+{
+	return IsNativePropertySupportedByUIClass(
+		const_cast<Control*>(this)->Type(), metadata);
+}
+
+bool Control::TryGetDeclarativePropertyBacking(
+	const DeclarativeTypeDescriptor& owner,
+	std::size_t slot,
 	BindingValue& out) const
 {
-	const auto entry = _dynamicProperties.find(DynamicPropertyKey(propertyName));
-	if (entry == _dynamicProperties.end()) return false;
-	out = entry->second.Value;
+	if (_declarativeTypeDescriptor.get() != &owner
+		|| slot >= _declarativePropertyValues.size()) return false;
+	out = _declarativePropertyValues[slot];
 	return true;
 }
 
-bool Control::TrySetDynamicPropertyBacking(
-	const std::wstring& propertyName,
+bool Control::TrySetDeclarativePropertyBacking(
+	const DeclarativeTypeDescriptor& owner,
+	std::size_t slot,
 	const BindingValue& value)
 {
-	const auto entry = _dynamicProperties.find(DynamicPropertyKey(propertyName));
-	if (entry == _dynamicProperties.end()) return false;
-	entry->second.Value = value;
+	if (_declarativeTypeDescriptor.get() != &owner
+		|| slot >= _declarativePropertyValues.size()) return false;
+	_declarativePropertyValues[slot] = value;
 	return true;
 }
 
-const BindingPropertyMetadata* Control::FindPropertyMetadata(
+const DependencyPropertyMetadata* Control::FindPropertyMetadata(
 	const std::wstring& propertyName)
 {
-	return BindingPropertyRegistry::Find(*this, propertyName);
+	return DependencyPropertyRegistry::Find(*this, propertyName);
 }
 
 bool Control::TryGetPropertyValue(
@@ -1287,20 +1876,20 @@ bool Control::TryGetPropertyValue(
 
 bool Control::TryGetPropertyValue(
 	const std::wstring& propertyName,
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	BindingValue& out)
 {
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata) return false;
-	if (source == ControlPropertyValueSource::Default)
+	if (source == DependencyPropertyValueSource::Default)
 		return metadata->TryGetDefaultValue(out);
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0) return false;
 	const auto entry = _propertyValues.find(metadata);
 	if (entry == _propertyValues.end()
-		|| !entry->second.Values[(size_t)index].has_value())
+		|| !entry->second.Slots[(size_t)index].ProposedValue.has_value())
 		return false;
-	out = *entry->second.Values[(size_t)index];
+	out = *entry->second.Slots[(size_t)index].ProposedValue;
 	return true;
 }
 
@@ -1309,13 +1898,13 @@ bool Control::TrySetPropertyValue(
 	const BindingValue& value)
 {
 	return TrySetPropertyValue(
-		propertyName, value, ControlPropertyValueSource::Local);
+		propertyName, value, DependencyPropertyValueSource::Local);
 }
 
 bool Control::TrySetPropertyValue(
 	const std::wstring& propertyName,
 	const BindingValue& value,
-	ControlPropertyValueSource source)
+	DependencyPropertyValueSource source)
 {
 	return TrySetPropertyValueOwned(propertyName, value, source, nullptr);
 }
@@ -1323,7 +1912,7 @@ bool Control::TrySetPropertyValue(
 bool Control::TrySetPropertyValueOwned(
 	const std::wstring& propertyName,
 	const BindingValue& value,
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	const Binding* owner,
 	bool allowReadOnly)
 {
@@ -1334,125 +1923,228 @@ bool Control::TrySetPropertyValueOwned(
 			&& !(allowReadOnly && metadata->IsReadOnly()
 				&& metadata->CanWriteInternally()))) return false;
 
+	if (owner) return false;
 	BindingValue converted;
-	BindingValue effective;
-	if (!metadata->TryConvert(value, converted)
-		|| !metadata->TryCoerce(*this, converted, effective))
-		return false;
-	std::optional<std::wstring> replacedDynamicResource;
-	if (source == ControlPropertyValueSource::Local
-		&& !_applyingDynamicResource)
-	{
-		const auto expression = _dynamicResourceExpressions.find(metadata);
-		if (expression != _dynamicResourceExpressions.end())
-		{
-			replacedDynamicResource = std::move(expression->second);
-			_dynamicResourceExpressions.erase(expression);
-		}
-	}
+	if (!metadata->TryConvert(value, converted)) return false;
+	return TrySetEffectiveValueEntry(
+		*metadata, std::move(converted), source,
+		source == DependencyPropertyValueSource::Animation
+			? DependencyPropertyExpressionKind::Animation
+			: DependencyPropertyExpressionKind::None,
+		nullptr, {}, allowReadOnly);
+}
 
-	auto [entryIt, inserted] = _propertyValues.try_emplace(metadata);
+bool Control::TrySetEffectiveValueEntry(
+	const DependencyPropertyMetadata& metadata,
+	std::optional<BindingValue> proposedValue,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind,
+	const Binding* owner,
+	std::wstring resourceKey,
+	bool allowReadOnly)
+{
+	VerifyAccess();
+	const int index = StoredPropertySourceIndex(source);
+	if (index < 0
+		|| (!metadata.CanWrite()
+			&& !(allowReadOnly && metadata.IsReadOnly()
+				&& metadata.CanWriteInternally()))) return false;
+
+	const bool bindingExpression =
+		expressionKind == DependencyPropertyExpressionKind::Binding
+		|| expressionKind == DependencyPropertyExpressionKind::TemplateBinding;
+	const bool validExpression =
+		(expressionKind == DependencyPropertyExpressionKind::None
+			&& proposedValue.has_value() && !owner && resourceKey.empty())
+		|| (expressionKind == DependencyPropertyExpressionKind::Binding
+			&& source == DependencyPropertyValueSource::Local
+			&& owner && resourceKey.empty())
+		|| (expressionKind == DependencyPropertyExpressionKind::TemplateBinding
+			&& source == DependencyPropertyValueSource::Template
+			&& owner && resourceKey.empty())
+		|| (expressionKind == DependencyPropertyExpressionKind::DynamicResource
+			&& source != DependencyPropertyValueSource::Animation
+			&& !owner && !resourceKey.empty())
+		|| (expressionKind == DependencyPropertyExpressionKind::Animation
+			&& source == DependencyPropertyValueSource::Animation
+			&& proposedValue.has_value() && !owner && resourceKey.empty());
+	if (!validExpression) return false;
+
+	auto [entryIt, inserted] = _propertyValues.try_emplace(&metadata);
 	auto& entry = entryIt->second;
-	const size_t sourceIndex = (size_t)index;
-	const Binding* previousOwner = entry.BindingOwners[sourceIndex];
-	if (source == ControlPropertyValueSource::Binding
-		&& previousOwner && previousOwner != owner)
-	{
-		if (replacedDynamicResource)
-			_dynamicResourceExpressions[metadata]
-				= std::move(*replacedDynamicResource);
-		if (inserted) _propertyValues.erase(entryIt);
-		return false;
-	}
 	if (inserted)
 	{
-		entry.HasBaseValue = metadata->TryGet(*this, entry.BaseValue);
+		// A Local value/expression replaces the previous local state. Its
+		// fallback is metadata default, never a hidden copy resurrected later.
+		entry.HasBaseValue = source == DependencyPropertyValueSource::Local
+			&& metadata.TryGetDefaultValue(entry.BaseValue);
 		if (!entry.HasBaseValue)
-			entry.HasBaseValue = metadata->TryGetDefaultValue(entry.BaseValue);
+			entry.HasBaseValue = metadata.TryGet(*this, entry.BaseValue);
+		if (!entry.HasBaseValue)
+			entry.HasBaseValue = metadata.TryGetDefaultValue(entry.BaseValue);
+	}
+
+	const size_t sourceIndex = static_cast<size_t>(index);
+	auto& slot = entry.Slots[sourceIndex];
+	const bool previousWasBinding =
+		slot.Expression == DependencyPropertyExpressionKind::Binding
+		|| slot.Expression == DependencyPropertyExpressionKind::TemplateBinding;
+	if (bindingExpression && previousWasBinding
+		&& slot.BindingOwner && slot.BindingOwner != owner)
+	{
+		if (inserted) _propertyValues.erase(entryIt);
+		return false;
 	}
 
 	BindingValue oldEffective;
-	ControlPropertyValueSource oldSource = ControlPropertyValueSource::Default;
-	const bool hadOldEffective = TryResolveEffectivePropertyValue(
-		*metadata, entry, oldEffective, oldSource);
-	auto previous = entry.Values[sourceIndex];
-	entry.Values[sourceIndex] = effective;
-	if (source == ControlPropertyValueSource::Binding)
-		entry.BindingOwners[sourceIndex] = owner;
+	DependencyPropertyValueSource oldSource = DependencyPropertyValueSource::Default;
+	const bool hadOldEffective = TryEvaluateEffectivePropertyValue(
+		metadata, entry, oldEffective, oldSource);
+	const auto previousSlot = slot;
+	const Binding* retiredBinding = previousWasBinding
+		&& (slot.BindingOwner != owner || slot.Expression != expressionKind)
+		? slot.BindingOwner : nullptr;
+
+	slot.ProposedValue = std::move(proposedValue);
+	slot.Expression = expressionKind;
+	slot.BindingOwner = bindingExpression ? owner : nullptr;
+	slot.ResourceKey = expressionKind == DependencyPropertyExpressionKind::DynamicResource
+		? std::move(resourceKey) : std::wstring{};
 
 	BindingValue newEffective;
-	ControlPropertyValueSource newSource = ControlPropertyValueSource::Default;
-	if (!TryResolveEffectivePropertyValue(
-		*metadata, entry, newEffective, newSource))
+	DependencyPropertyValueSource newSource = DependencyPropertyValueSource::Default;
+	if (!TryEvaluateEffectivePropertyValue(
+		metadata, entry, newEffective, newSource))
 	{
-		entry.Values[sourceIndex] = std::move(previous);
-		entry.BindingOwners[sourceIndex] = previousOwner;
-		if (replacedDynamicResource)
-			_dynamicResourceExpressions[metadata]
-				= std::move(*replacedDynamicResource);
+		slot = previousSlot;
 		if (inserted) _propertyValues.erase(entryIt);
 		return false;
 	}
 
+	BindingValue currentEffective;
+	const bool backingStorageMatches = metadata.TryGet(*this, currentEffective)
+		&& metadata.ValuesEqual(currentEffective, newEffective);
 	const bool effectiveUnchanged = hadOldEffective
 		&& oldSource == newSource
-		&& (newSource != source
-			|| metadata->ValuesEqual(oldEffective, newEffective));
-	if (effectiveUnchanged) return true;
-	if (ApplyEffectivePropertyValue(
-		*metadata, newEffective, newSource, allowReadOnly))
-		return true;
+		&& metadata.ValuesEqual(oldEffective, newEffective)
+		&& backingStorageMatches;
+	if (!effectiveUnchanged
+		&& !ApplyEffectivePropertyValue(
+			metadata, newEffective, newSource, allowReadOnly))
+	{
+		slot = previousSlot;
+		if (inserted) _propertyValues.erase(entryIt);
+		return false;
+	}
 
-	entry.Values[sourceIndex] = std::move(previous);
-	entry.BindingOwners[sourceIndex] = previousOwner;
-	if (replacedDynamicResource)
-		_dynamicResourceExpressions[metadata]
-			= std::move(*replacedDynamicResource);
-	if (inserted) _propertyValues.erase(entryIt);
-	return false;
+	if (retiredBinding)
+		RetireBindingExpression(metadata.Name(), retiredBinding);
+	return true;
 }
 
 bool Control::CanAcquireBindingPropertyValue(
 	const std::wstring& propertyName,
-	const Binding* owner)
+	const Binding* owner,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind)
 {
 	if (!owner) return false;
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata || !metadata->CanWrite()) return false;
-	const int index = StoredPropertySourceIndex(
-		ControlPropertyValueSource::Binding);
+	const int index = StoredPropertySourceIndex(source);
+	if (index < 0
+		|| (expressionKind == DependencyPropertyExpressionKind::Binding
+			&& source != DependencyPropertyValueSource::Local)
+		|| (expressionKind == DependencyPropertyExpressionKind::TemplateBinding
+			&& source != DependencyPropertyValueSource::Template))
+		return false;
 	const auto entry = _propertyValues.find(metadata);
 	if (entry == _propertyValues.end()) return true;
-	const Binding* currentOwner = entry->second.BindingOwners[(size_t)index];
-	return !currentOwner || currentOwner == owner;
+	const auto& slot = entry->second.Slots[(size_t)index];
+	const bool isBindingExpression =
+		slot.Expression == DependencyPropertyExpressionKind::Binding
+		|| slot.Expression == DependencyPropertyExpressionKind::TemplateBinding;
+	return !isBindingExpression || !slot.BindingOwner
+		|| slot.BindingOwner == owner;
+}
+
+bool Control::TryAttachBindingPropertyExpression(
+	const std::wstring& propertyName,
+	const Binding* owner,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind)
+{
+	if (!CanAcquireBindingPropertyValue(
+		propertyName, owner, source, expressionKind)) return false;
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	return metadata && TrySetEffectiveValueEntry(
+		*metadata, std::nullopt, source, expressionKind, owner, {}, false);
 }
 
 bool Control::TrySetBindingPropertyValue(
 	const std::wstring& propertyName,
 	const BindingValue& value,
-	const Binding* owner)
+	const Binding* owner,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind)
 {
 	if (!owner) return false;
-	return TrySetPropertyValueOwned(
-		propertyName, value, ControlPropertyValueSource::Binding, owner);
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	if (!metadata || !IsBindingExpressionOwner(
+		propertyName, owner, source, expressionKind)) return false;
+	BindingValue converted;
+	if (!metadata->TryConvert(value, converted)) return false;
+	return TrySetEffectiveValueEntry(
+		*metadata, std::move(converted), source,
+		expressionKind, owner, {}, false);
 }
 
 bool Control::TrySetCurrentPropertyValue(
 	const std::wstring& propertyName,
 	const BindingValue& value)
 {
-	const auto source = GetPropertyValueSource(propertyName);
-	if (source != ControlPropertyValueSource::Binding)
-		return TrySetPropertyValue(
-			propertyName, value, ControlPropertyValueSource::Local);
-
 	const auto* metadata = FindPropertyMetadata(propertyName);
-	const int index = StoredPropertySourceIndex(source);
-	const auto entry = metadata ? _propertyValues.find(metadata) : _propertyValues.end();
-	const Binding* owner = entry != _propertyValues.end()
-		? entry->second.BindingOwners[(size_t)index]
-		: nullptr;
-	return TrySetPropertyValueOwned(propertyName, value, source, owner);
+	if (!metadata || !metadata->CanWrite()) return false;
+
+	BindingValue converted;
+	BindingValue coerced;
+	if (!metadata->TryConvert(value, converted)
+		|| !metadata->TryCoerce(*this, converted, coerced)) return false;
+	BindingValue current;
+	if (metadata->TryGet(*this, current)
+		&& metadata->ValuesEqual(current, coerced)) return true;
+
+	DependencyPropertyValueSource source =
+		DependencyPropertyValueSource::Default;
+	const auto entry = _propertyValues.find(metadata);
+	if (entry != _propertyValues.end())
+	{
+		BindingValue ignored;
+		(void)TryResolveEffectivePropertyValue(
+			*metadata, entry->second, ignored, source);
+		const int sourceIndex = StoredPropertySourceIndex(source);
+		const auto* slot = sourceIndex < 0 ? nullptr
+			: &entry->second.Slots[static_cast<size_t>(sourceIndex)];
+		if (slot
+			&& (slot->Expression == DependencyPropertyExpressionKind::Binding
+				|| slot->Expression
+					== DependencyPropertyExpressionKind::DynamicResource
+				|| slot->Expression
+					== DependencyPropertyExpressionKind::TemplateBinding))
+		{
+			return TrySetEffectiveValueEntry(
+				*metadata, std::move(converted),
+				source, slot->Expression, slot->BindingOwner,
+				slot->ResourceKey, false);
+		}
+	}
+
+	// WPF SetCurrentValue changes the value carried by the existing source;
+	// it never promotes a Default/Style/Template/Inherited value to Local.
+	// A later update from that source therefore remains authoritative.
+	return source == DependencyPropertyValueSource::Default
+		? TrySetPropertyBaseValue(propertyName, converted)
+		: TrySetPropertyValue(propertyName, converted, source);
 }
 
 bool Control::TrySetReadOnlyPropertyValue(
@@ -1462,7 +2154,7 @@ bool Control::TrySetReadOnlyPropertyValue(
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata || !metadata->IsReadOnly()) return false;
 	return TrySetPropertyValueOwned(
-		metadata->Name(), value, ControlPropertyValueSource::Local, nullptr, true);
+		metadata->Name(), value, DependencyPropertyValueSource::Local, nullptr, true);
 }
 
 bool Control::ClearReadOnlyPropertyValue(const std::wstring& propertyName)
@@ -1470,7 +2162,7 @@ bool Control::ClearReadOnlyPropertyValue(const std::wstring& propertyName)
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata || !metadata->IsReadOnly()) return false;
 	return ClearPropertyValueOwned(
-		metadata->Name(), ControlPropertyValueSource::Local, nullptr, true);
+		metadata->Name(), DependencyPropertyValueSource::Local, nullptr, true);
 }
 
 bool Control::ReevaluatePropertyValue(const std::wstring& propertyName)
@@ -1481,19 +2173,14 @@ bool Control::ReevaluatePropertyValue(const std::wstring& propertyName)
 	const auto entry = _propertyValues.find(metadata);
 	if (entry != _propertyValues.end())
 	{
-		BindingValue proposed;
-		ControlPropertyValueSource source = ControlPropertyValueSource::Default;
-		if (!TryResolveEffectivePropertyValue(
-			*metadata, entry->second, proposed, source)) return false;
-
-		if (source != ControlPropertyValueSource::Default)
-		{
-			const int index = StoredPropertySourceIndex(source);
-			const Binding* owner = index >= 0
-				? entry->second.BindingOwners[(size_t)index] : nullptr;
-			return TrySetPropertyValueOwned(
-				propertyName, proposed, source, owner);
-		}
+		BindingValue effective;
+		DependencyPropertyValueSource source = DependencyPropertyValueSource::Default;
+		if (!TryEvaluateEffectivePropertyValue(
+			*metadata, entry->second, effective, source)) return false;
+		BindingValue current;
+		if (metadata->TryGet(*this, current)
+			&& metadata->ValuesEqual(current, effective)) return true;
+		return ApplyEffectivePropertyValue(*metadata, effective, source);
 	}
 
 	BindingValue proposed;
@@ -1508,19 +2195,26 @@ bool Control::ReevaluatePropertyValue(const std::wstring& propertyName)
 	if (metadata->TryGet(*this, current)
 		&& metadata->ValuesEqual(current, effective)) return true;
 	return ApplyEffectivePropertyValue(
-		*metadata, effective, ControlPropertyValueSource::Default);
+		*metadata, effective, DependencyPropertyValueSource::Default);
+}
+
+bool Control::ClearPropertyValue(
+	const std::wstring& propertyName)
+{
+	return ClearPropertyValue(
+		propertyName, DependencyPropertyValueSource::Local);
 }
 
 bool Control::ClearPropertyValue(
 	const std::wstring& propertyName,
-	ControlPropertyValueSource source)
+	DependencyPropertyValueSource source)
 {
 	return ClearPropertyValueOwned(propertyName, source, nullptr);
 }
 
 bool Control::ClearPropertyValueOwned(
 	const std::wstring& propertyName,
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	const Binding* owner,
 	bool allowReadOnly)
 {
@@ -1530,80 +2224,96 @@ bool Control::ClearPropertyValueOwned(
 		|| (!metadata->CanWrite()
 			&& !(allowReadOnly && metadata->IsReadOnly()
 				&& metadata->CanWriteInternally()))) return false;
-	std::optional<std::wstring> removedDynamicResource;
-	if (source == ControlPropertyValueSource::Local
-		&& !_applyingDynamicResource)
-	{
-		const auto expression = _dynamicResourceExpressions.find(metadata);
-		if (expression != _dynamicResourceExpressions.end())
-		{
-			removedDynamicResource = std::move(expression->second);
-			_dynamicResourceExpressions.erase(expression);
-		}
-	}
 	auto entryIt = _propertyValues.find(metadata);
-	if (entryIt == _propertyValues.end()) return removedDynamicResource.has_value();
+	if (entryIt == _propertyValues.end()) return false;
 	auto& entry = entryIt->second;
 	const size_t sourceIndex = (size_t)index;
-	if (!entry.Values[sourceIndex].has_value()) return removedDynamicResource.has_value();
-	if (source == ControlPropertyValueSource::Binding)
-	{
-		const Binding* currentOwner = entry.BindingOwners[sourceIndex];
-		if (owner ? currentOwner != owner : currentOwner != nullptr)
-			return false;
-	}
+	auto& slot = entry.Slots[sourceIndex];
+	if (!slot.IsOccupied()) return false;
+	const bool bindingExpression =
+		slot.Expression == DependencyPropertyExpressionKind::Binding
+		|| slot.Expression == DependencyPropertyExpressionKind::TemplateBinding;
+	if (owner && (!bindingExpression || slot.BindingOwner != owner)) return false;
 
 	BindingValue oldEffective;
-	ControlPropertyValueSource oldSource = ControlPropertyValueSource::Default;
-	const bool hadOldEffective = TryResolveEffectivePropertyValue(
+	DependencyPropertyValueSource oldSource = DependencyPropertyValueSource::Default;
+	const bool hadOldEffective = TryEvaluateEffectivePropertyValue(
 		*metadata, entry, oldEffective, oldSource);
-	auto previous = std::move(entry.Values[sourceIndex]);
-	const Binding* previousOwner = entry.BindingOwners[sourceIndex];
-	entry.Values[sourceIndex].reset();
-	entry.BindingOwners[sourceIndex] = nullptr;
+	const auto previous = slot;
+	const Binding* retiredBinding = bindingExpression && !owner
+		? slot.BindingOwner : nullptr;
+	slot.Reset();
 
 	BindingValue newEffective;
-	ControlPropertyValueSource newSource = ControlPropertyValueSource::Default;
-	const bool hasNewEffective = TryResolveEffectivePropertyValue(
+	DependencyPropertyValueSource newSource = DependencyPropertyValueSource::Default;
+	const bool hasNewEffective = TryEvaluateEffectivePropertyValue(
 		*metadata, entry, newEffective, newSource);
+	BindingValue currentEffective;
+	const bool backingStorageMatches = hasNewEffective
+		&& metadata->TryGet(*this, currentEffective)
+		&& metadata->ValuesEqual(currentEffective, newEffective);
 	const bool effectiveUnchanged = hadOldEffective && hasNewEffective
-		&& oldSource == newSource;
+		&& oldSource == newSource
+		&& metadata->ValuesEqual(oldEffective, newEffective)
+		&& backingStorageMatches;
 	const bool applied = effectiveUnchanged || !hasNewEffective
-		|| metadata->ValuesEqual(oldEffective, newEffective)
 		|| ApplyEffectivePropertyValue(
 			*metadata, newEffective, newSource, allowReadOnly);
 	if (!applied)
 	{
-		entry.Values[sourceIndex] = std::move(previous);
-		entry.BindingOwners[sourceIndex] = previousOwner;
-		if (removedDynamicResource)
-			_dynamicResourceExpressions[metadata]
-				= std::move(*removedDynamicResource);
+		slot = previous;
 		return false;
 	}
 	if (!entry.HasSources()) _propertyValues.erase(entryIt);
+	if (retiredBinding)
+		RetireBindingExpression(metadata->Name(), retiredBinding);
 	return true;
 
 }
 
 bool Control::ClearBindingPropertyValue(
 	const std::wstring& propertyName,
-	const Binding* owner)
+	const Binding* owner,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind)
 {
 	if (!owner) return false;
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata) return false;
-	const int index = StoredPropertySourceIndex(
-		ControlPropertyValueSource::Binding);
-	const auto entry = _propertyValues.find(metadata);
-	if (entry == _propertyValues.end()
-		|| entry->second.BindingOwners[(size_t)index] != owner)
-		return false;
-	return ClearPropertyValueOwned(
-		propertyName, ControlPropertyValueSource::Binding, owner);
+	if (!IsBindingExpressionOwner(
+		propertyName, owner, source, expressionKind)) return false;
+	return ClearPropertyValueOwned(propertyName, source, owner);
 }
 
-size_t Control::ClearPropertyValues(ControlPropertyValueSource source)
+bool Control::IsBindingExpressionOwner(
+	const std::wstring& propertyName,
+	const Binding* owner,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind) const
+{
+	if (!owner) return false;
+	auto* mutableThis = const_cast<Control*>(this);
+	const auto* metadata = mutableThis->FindPropertyMetadata(propertyName);
+	const int index = StoredPropertySourceIndex(source);
+	if (!metadata || index < 0) return false;
+	const auto entry = _propertyValues.find(metadata);
+	if (entry == _propertyValues.end()) return false;
+	const auto& slot = entry->second.Slots[(size_t)index];
+	return slot.Expression == expressionKind && slot.BindingOwner == owner;
+}
+
+void Control::RetireBindingExpression(
+	const std::wstring& propertyName,
+	const Binding* owner)
+{
+	if (!owner) return;
+	if (_dataBindings && _dataBindings->Find(propertyName) == owner)
+	{
+		(void)_dataBindings->Remove(propertyName);
+		return;
+	}
+	const_cast<Binding*>(owner)->DetachReplacedTargetExpression();
+}
+
+size_t Control::ClearPropertyValues(DependencyPropertyValueSource source)
 {
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0) return 0;
@@ -1611,18 +2321,8 @@ size_t Control::ClearPropertyValues(ControlPropertyValueSource source)
 	properties.reserve(_propertyValues.size());
 	for (const auto& [metadata, entry] : _propertyValues)
 	{
-		if (metadata && entry.Values[(size_t)index].has_value())
+		if (metadata && entry.Slots[(size_t)index].IsOccupied())
 			properties.push_back(metadata->Name());
-	}
-	if (source == ControlPropertyValueSource::Local)
-	{
-		for (const auto& [metadata, resourceKey] : _dynamicResourceExpressions)
-		{
-			(void)resourceKey;
-			if (metadata && std::find(properties.begin(), properties.end(),
-				metadata->Name()) == properties.end())
-				properties.push_back(metadata->Name());
-		}
 	}
 	size_t cleared = 0;
 	for (const auto& property : properties)
@@ -1632,41 +2332,71 @@ size_t Control::ClearPropertyValues(ControlPropertyValueSource source)
 	return cleared;
 }
 
-bool Control::HasPropertyValue(
-	const std::wstring& propertyName,
-	ControlPropertyValueSource source)
+size_t Control::ClearPropertyValues()
 {
-	BindingValue ignored;
-	return TryGetPropertyValue(propertyName, source, ignored);
+	return ClearPropertyValues(DependencyPropertyValueSource::Local);
 }
 
-ControlPropertyValueSource Control::GetPropertyValueSource(
+bool Control::HasPropertyValue(
+	const std::wstring& propertyName,
+	DependencyPropertyValueSource source)
+{
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	if (!metadata) return false;
+	if (source == DependencyPropertyValueSource::Default)
+	{
+		BindingValue ignored;
+		return metadata->TryGetDefaultValue(ignored);
+	}
+	const int index = StoredPropertySourceIndex(source);
+	if (index < 0) return false;
+	const auto entry = _propertyValues.find(metadata);
+	return entry != _propertyValues.end()
+		&& entry->second.Slots[(size_t)index].IsOccupied();
+}
+
+DependencyPropertyValueSource Control::GetPropertyValueSource(
 	const std::wstring& propertyName)
 {
 	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata) return ControlPropertyValueSource::Default;
+	if (!metadata) return DependencyPropertyValueSource::Default;
 	const auto entry = _propertyValues.find(metadata);
 	if (entry == _propertyValues.end())
-		return ControlPropertyValueSource::Default;
+		return DependencyPropertyValueSource::Default;
 	BindingValue value;
-	ControlPropertyValueSource source = ControlPropertyValueSource::Default;
+	DependencyPropertyValueSource source = DependencyPropertyValueSource::Default;
 	TryResolveEffectivePropertyValue(*metadata, entry->second, value, source);
 	return source;
+}
+
+DependencyPropertyExpressionKind Control::GetPropertyExpressionKind(
+	const std::wstring& propertyName,
+	DependencyPropertyValueSource source)
+{
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	const int index = StoredPropertySourceIndex(source);
+	if (!metadata || index < 0) return DependencyPropertyExpressionKind::None;
+	const auto entry = _propertyValues.find(metadata);
+	return entry == _propertyValues.end()
+		? DependencyPropertyExpressionKind::None
+		: entry->second.Slots[(size_t)index].Expression;
 }
 
 bool Control::ResetPropertyValue(const std::wstring& propertyName)
 {
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata || !metadata->CanWrite()) return false;
-	if (ClearPropertyValue(propertyName, ControlPropertyValueSource::Local))
+	if (ClearPropertyValue(propertyName, DependencyPropertyValueSource::Local))
 		return true;
 	const auto entry = _propertyValues.find(metadata);
 	if (entry != _propertyValues.end() && entry->second.HasSources())
 		return false;
 	BindingValue defaultValue;
+	BindingValue effective;
 	return metadata->TryGetDefaultValue(defaultValue)
+		&& metadata->TryCoerce(*this, defaultValue, effective)
 		&& ApplyEffectivePropertyValue(
-			*metadata, defaultValue, ControlPropertyValueSource::Default);
+			*metadata, effective, DependencyPropertyValueSource::Default);
 }
 
 bool Control::TrySetPropertyBaseValue(
@@ -1676,37 +2406,38 @@ bool Control::TrySetPropertyBaseValue(
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata || !metadata->CanWrite()) return false;
 	BindingValue converted;
-	BindingValue effective;
-	if (!metadata->TryConvert(value, converted)
-		|| !metadata->TryCoerce(*this, converted, effective))
-		return false;
+	if (!metadata->TryConvert(value, converted)) return false;
 
 	auto entryIt = _propertyValues.find(metadata);
 	if (entryIt == _propertyValues.end())
+	{
+		BindingValue effective;
+		if (!metadata->TryCoerce(*this, converted, effective)) return false;
 		return ApplyEffectivePropertyValue(
-			*metadata, effective, ControlPropertyValueSource::Default);
+			*metadata, effective, DependencyPropertyValueSource::Default);
+	}
 
 	auto& entry = entryIt->second;
 	const auto previousBase = entry.BaseValue;
 	const bool previouslyHadBase = entry.HasBaseValue;
 	BindingValue previousEffective;
-	ControlPropertyValueSource previousSource =
-		ControlPropertyValueSource::Default;
-	const bool hadPreviousEffective = TryResolveEffectivePropertyValue(
+	DependencyPropertyValueSource previousSource =
+		DependencyPropertyValueSource::Default;
+	const bool hadPreviousEffective = TryEvaluateEffectivePropertyValue(
 		*metadata, entry, previousEffective, previousSource);
-	entry.BaseValue = effective;
+	entry.BaseValue = converted;
 	entry.HasBaseValue = true;
 
 	BindingValue nextEffective;
-	ControlPropertyValueSource nextSource = ControlPropertyValueSource::Default;
-	if (!TryResolveEffectivePropertyValue(
+	DependencyPropertyValueSource nextSource = DependencyPropertyValueSource::Default;
+	if (!TryEvaluateEffectivePropertyValue(
 		*metadata, entry, nextEffective, nextSource))
 	{
 		entry.BaseValue = previousBase;
 		entry.HasBaseValue = previouslyHadBase;
 		return false;
 	}
-	if (nextSource != ControlPropertyValueSource::Default
+	if (nextSource != DependencyPropertyValueSource::Default
 		|| (hadPreviousEffective
 			&& previousSource == nextSource
 			&& metadata->ValuesEqual(previousEffective, nextEffective)))
@@ -1730,35 +2461,50 @@ bool Control::IsPropertyValueDefault(const std::wstring& propertyName)
 }
 
 bool Control::TryResolveEffectivePropertyValue(
-	const BindingPropertyMetadata& metadata,
-	const PropertyValueEntry& entry,
+	const DependencyPropertyMetadata& metadata,
+	const EffectiveValueEntry& entry,
 	BindingValue& value,
-	ControlPropertyValueSource& source) const
+	DependencyPropertyValueSource& source) const
 {
-	for (int index = (int)entry.Values.size() - 1; index >= 0; --index)
+	for (int index = (int)entry.Slots.size() - 1; index >= 0; --index)
 	{
-		if (!entry.Values[(size_t)index].has_value()) continue;
-		value = *entry.Values[(size_t)index];
-		source = static_cast<ControlPropertyValueSource>(
-			index + static_cast<int>(ControlPropertyValueSource::Inherited));
+		const auto& slot = entry.Slots[(size_t)index];
+		if (!slot.ProposedValue.has_value()) continue;
+		value = *slot.ProposedValue;
+		source = static_cast<DependencyPropertyValueSource>(
+			index + static_cast<int>(DependencyPropertyValueSource::Inherited));
 		return true;
 	}
 	if (entry.HasBaseValue)
 	{
 		value = entry.BaseValue;
-		source = ControlPropertyValueSource::Default;
+		source = DependencyPropertyValueSource::Default;
 		return true;
 	}
-	source = ControlPropertyValueSource::Default;
+	source = DependencyPropertyValueSource::Default;
 	return metadata.TryGetDefaultValue(value);
 }
 
+bool Control::TryEvaluateEffectivePropertyValue(
+	const DependencyPropertyMetadata& metadata,
+	const EffectiveValueEntry& entry,
+	BindingValue& value,
+	DependencyPropertyValueSource& source) const
+{
+	BindingValue proposed;
+	if (!TryResolveEffectivePropertyValue(
+		metadata, entry, proposed, source)) return false;
+	return metadata.TryCoerce(
+		*const_cast<Control*>(this), proposed, value);
+}
+
 bool Control::ApplyEffectivePropertyValue(
-	const BindingPropertyMetadata& metadata,
+	const DependencyPropertyMetadata& metadata,
 	const BindingValue& value,
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	bool allowReadOnly)
 {
+	const ControlWeakReference selfReference(this);
 	const auto* previousMetadata = _applyingPropertyMetadata;
 	const auto previousSource = _applyingPropertySource;
 	_applyingPropertyMetadata = &metadata;
@@ -1766,26 +2512,24 @@ bool Control::ApplyEffectivePropertyValue(
 	bool result = false;
 	try
 	{
-		result = allowReadOnly
-			? metadata.TrySetInternal(*this, value)
-			: metadata.TrySet(*this, value);
+		if (!allowReadOnly && metadata.IsReadOnly()) result = false;
+		else result = metadata.TrySetEffective(*this, value);
 	}
 	catch (...)
 	{
-		_applyingPropertyMetadata = previousMetadata;
-		_applyingPropertySource = previousSource;
+		if (auto* live = selfReference.Get())
+		{
+			live->_applyingPropertyMetadata = previousMetadata;
+			live->_applyingPropertySource = previousSource;
+		}
 		throw;
 	}
-	_applyingPropertyMetadata = previousMetadata;
-	_applyingPropertySource = previousSource;
+	if (auto* live = selfReference.Get())
+	{
+		live->_applyingPropertyMetadata = previousMetadata;
+		live->_applyingPropertySource = previousSource;
+	}
 	return result;
-}
-
-bool Control::HasStoredPropertyValues(
-	const BindingPropertyMetadata& metadata) const
-{
-	const auto entry = _propertyValues.find(&metadata);
-	return entry != _propertyValues.end() && entry->second.HasSources();
 }
 
 Control* Control::FindDeclarativeTemplatePart(
@@ -1798,10 +2542,8 @@ Control* Control::FindDeclarativeTemplatePart(
 const Control* Control::FindDeclarativeTemplatePart(
 	const std::wstring& localName) const noexcept
 {
-	const auto found = std::find_if(
-		_declarativeTemplateParts.begin(), _declarativeTemplateParts.end(),
-		[&](const auto& item) { return item.first == localName; });
-	return found == _declarativeTemplateParts.end() ? nullptr : found->second;
+	const auto found = _templateNameScope.find(localName);
+	return found == _templateNameScope.end() ? nullptr : found->second;
 }
 
 Control* Control::FindDeclarativeContentPresenter(
@@ -1826,10 +2568,9 @@ bool Control::RegisterDeclarativeTemplatePart(
 	Control* instance)
 {
 	if (localName.empty() || !instance
-		|| FindDeclarativeTemplatePart(localName)) return false;
-	_declarativeTemplateParts.emplace_back(
-		std::move(localName), instance);
-	return true;
+		|| instance->GetTemplatedParent() != this) return false;
+	return _templateNameScope.emplace(
+		std::move(localName), instance).second;
 }
 
 bool Control::RegisterDeclarativeContentPresenter(
@@ -1837,29 +2578,39 @@ bool Control::RegisterDeclarativeContentPresenter(
 	Control* instance)
 {
 	if (propertyName.empty() || !instance
+		|| instance->GetTemplatedParent() != this
 		|| FindDeclarativeContentPresenter(propertyName)) return false;
 	_declarativeContentPresenters.emplace_back(
 		std::move(propertyName), instance);
 	return true;
 }
 
+void Control::ClearDeclarativeTemplateScope()
+{
+	_templateNameScope.clear();
+	_declarativeContentPresenters.clear();
+}
+
 void Control::RefreshInheritedPropertyValues()
 {
-	const auto properties = BindingPropertyRegistry::GetProperties(*this);
+	const auto properties = DependencyPropertyRegistry::GetProperties(*this);
 	for (const auto* metadata : properties)
 	{
-		if (!metadata || !HasControlPropertyFlag(
-			metadata->Flags(), ControlPropertyFlags::Inherits)) continue;
+		if (!metadata || !HasDependencyPropertyFlag(
+			metadata->Flags(), DependencyPropertyFlags::Inherits)) continue;
 
 		BindingValue inheritedValue;
 		bool found = false;
-		for (auto* ancestor = Parent; ancestor; ancestor = ancestor->Parent)
+		std::unordered_set<Control*> visited;
+		for (auto* ancestor = GetInheritanceParent();
+			ancestor && visited.insert(ancestor).second;
+			ancestor = ancestor->GetInheritanceParent())
 		{
-			const auto* candidate = BindingPropertyRegistry::Find(
+			const auto* candidate = DependencyPropertyRegistry::Find(
 				*ancestor, metadata->Name());
 			if (!candidate
-				|| !HasControlPropertyFlag(
-					candidate->Flags(), ControlPropertyFlags::Inherits)
+				|| !HasDependencyPropertyFlag(
+					candidate->Flags(), DependencyPropertyFlags::Inherits)
 				|| !metadata->HasSameInheritanceIdentity(*candidate))
 				continue;
 			if (candidate->TryGet(*ancestor, inheritedValue))
@@ -1872,98 +2623,117 @@ void Control::RefreshInheritedPropertyValues()
 		if (found)
 			(void)TrySetPropertyValueOwned(
 				metadata->Name(), inheritedValue,
-				ControlPropertyValueSource::Inherited, nullptr, true);
+				DependencyPropertyValueSource::Inherited, nullptr, true);
 		else
 			(void)ClearPropertyValueOwned(
-				metadata->Name(), ControlPropertyValueSource::Inherited, nullptr, true);
+				metadata->Name(), DependencyPropertyValueSource::Inherited, nullptr, true);
 	}
 }
 
 void Control::RefreshInheritedPropertiesRecursive()
 {
+	const ControlWeakReference selfReference(this);
 	const bool previous = _refreshingInheritedProperties;
 	_refreshingInheritedProperties = true;
 	RefreshInheritedPropertyValues();
-	for (auto* child : Children)
-		if (child) child->RefreshInheritedPropertiesRecursive();
-	_refreshingInheritedProperties = previous;
+	auto* live = selfReference.Get();
+	if (!live) return;
+	std::vector<ControlWeakReference> children;
+	children.reserve(live->_inheritanceChildren.size());
+	for (auto* child : live->_inheritanceChildren)
+		if (child) children.emplace_back(child);
+	for (const auto& childReference : children)
+	{
+		live = selfReference.Get();
+		if (!live) return;
+		auto* child = childReference.Get();
+		if (!child || std::find(live->_inheritanceChildren.begin(),
+			live->_inheritanceChildren.end(), child)
+			== live->_inheritanceChildren.end()) continue;
+		child->RefreshInheritedPropertiesRecursive();
+	}
+	live = selfReference.Get();
+	if (live) live->_refreshingInheritedProperties = previous;
 }
 
 void Control::ApplyPropertyMetadataChange(
-	const BindingPropertyMetadata& metadata,
+	const DependencyPropertyMetadata& metadata,
 	const BindingValue& oldValue,
 	const BindingValue& newValue)
 {
+	const ControlWeakReference selfReference(this);
+	const auto flags = metadata.Flags();
+	const auto propertyName = metadata.Name();
 	++_propertyChangeVersion;
 	metadata.NotifyChanged(*this, oldValue, newValue);
-	const auto flags = metadata.Flags();
-	if (HasControlPropertyFlag(flags, ControlPropertyFlags::AffectsMeasure))
-		RequestLayout();
-	else if (HasControlPropertyFlag(flags, ControlPropertyFlags::AffectsArrange))
-		RequestArrange();
-	if (HasControlPropertyFlag(flags, ControlPropertyFlags::AffectsRender))
-		InvalidateVisual();
-	if (Parent && HasControlPropertyFlag(
-		flags, ControlPropertyFlags::AffectsParentMeasure))
-		Parent->RequestLayout();
-	else if (Parent && HasControlPropertyFlag(
-		flags, ControlPropertyFlags::AffectsParentArrange))
-		Parent->RequestArrange();
-	if (!_refreshingInheritedProperties
-		&& HasControlPropertyFlag(flags, ControlPropertyFlags::Inherits))
+	auto* live = selfReference.Get();
+	if (!live) return;
+	if (HasDependencyPropertyFlag(flags, DependencyPropertyFlags::AffectsMeasure))
+		live->RequestLayout();
+	else if (HasDependencyPropertyFlag(flags, DependencyPropertyFlags::AffectsArrange))
+		live->RequestArrange();
+	live = selfReference.Get();
+	if (!live) return;
+	if (HasDependencyPropertyFlag(flags, DependencyPropertyFlags::AffectsRender))
+		live->InvalidateVisual();
+	live = selfReference.Get();
+	if (!live) return;
+	const ControlWeakReference visualParentReference(live->_visualParent);
+	if (auto* visualParent = visualParentReference.Get())
 	{
-		for (auto* child : Children)
-			if (child) child->RefreshInheritedPropertiesRecursive();
+		if (HasDependencyPropertyFlag(
+			flags, DependencyPropertyFlags::AffectsParentMeasure))
+			visualParent->RequestLayout();
+		else if (HasDependencyPropertyFlag(
+			flags, DependencyPropertyFlags::AffectsParentArrange))
+		{
+			// Attached layout properties such as Canvas.Left invalidate the
+			// parent's child-arrangement policy.  A Panel must mark that policy
+			// dirty; invalidating only its own arrange slot does not rerun the
+			// panel engine when the slot itself is unchanged.
+			if (auto* panelParent = dynamic_cast<Panel*>(visualParent))
+				panelParent->InvalidateArrangeLayout();
+			else
+				visualParent->RequestArrange();
+		}
+	}
+	live = selfReference.Get();
+	if (!live) return;
+	if (!live->_refreshingInheritedProperties
+		&& HasDependencyPropertyFlag(flags, DependencyPropertyFlags::Inherits))
+	{
+		std::vector<ControlWeakReference> children;
+		children.reserve(live->_inheritanceChildren.size());
+		for (auto* child : live->_inheritanceChildren)
+			if (child) children.emplace_back(child);
+		for (const auto& childReference : children)
+		{
+			live = selfReference.Get();
+			if (!live) return;
+			auto* child = childReference.Get();
+			if (!child || std::find(live->_inheritanceChildren.begin(),
+				live->_inheritanceChildren.end(), child)
+				== live->_inheritanceChildren.end()) continue;
+			child->RefreshInheritedPropertiesRecursive();
+		}
 	}
 
-	ControlPropertyChangedEventArgs args{
-		metadata.Name(), oldValue, newValue };
-	OnPropertyValueChanged(this, args);
-	_bindingSourcePropertyChanged.Notify(metadata.Name());
+	DependencyPropertyChangedEventArgs args{
+		propertyName, oldValue, newValue };
+	live = selfReference.Get();
+	if (!live) return;
+	cui::framework::EventAccess::Raise(
+		live->OnPropertyValueChanged, live, args);
+	live = selfReference.Get();
+	if (!live) return;
+	live->_bindingSourcePropertyChanged.Notify(propertyName);
 }
 
-bool Control::TryGetValue(
-	const std::wstring& propertyName,
-	BindingValue& out) const
-{
-	return const_cast<Control*>(this)->TryGetPropertyValue(propertyName, out);
-}
-
-bool Control::DefineDynamicEvent(
-	DynamicControlEventDefinition definition,
-	std::wstring* outError)
-{
-	if (definition.Name.empty())
-	{
-		if (outError) *outError = L"动态事件名称不能为空。";
-		return false;
-	}
-	if (definition.PayloadKind == BindingValueKind::Object)
-	{
-		if (outError) *outError = L"动态事件暂不支持 Object payload。";
-		return false;
-	}
-	if (definition.OwnerNamespace.empty()
-		!= definition.OwnerTypeName.empty())
-	{
-		if (outError) *outError = L"动态事件所有者必须同时包含命名空间和类型名。";
-		return false;
-	}
-	auto name = definition.Name;
-	if (!_dynamicEvents.emplace(std::move(name), std::move(definition)).second)
-	{
-		if (outError) *outError = L"动态事件名称重复。";
-		return false;
-	}
-	if (outError) outError->clear();
-	return true;
-}
-
-const DynamicControlEventDefinition* Control::FindDynamicEvent(
+const DeclarativeEventDefinition* Control::FindDeclarativeEvent(
 	const std::wstring& eventName) const noexcept
 {
-	const auto found = _dynamicEvents.find(eventName);
-	return found == _dynamicEvents.end() ? nullptr : &found->second;
+	return _declarativeTypeDescriptor
+		? _declarativeTypeDescriptor->FindEvent(eventName) : nullptr;
 }
 
 bool Control::RaiseDeclarativeEvent(
@@ -1978,32 +2748,31 @@ bool Control::RaiseDeclarativeEvent(
 
 bool Control::RaiseDeclarativeEvent(DeclarativeEventArgs& args)
 {
-	const auto* definition = FindDynamicEvent(args.Name);
+	const auto* definition = FindDeclarativeEvent(args.Name);
 	if (!definition || definition->PayloadKind != args.Value.Kind()) return false;
-	args.OwnerNamespace = definition->OwnerNamespace;
-	args.OwnerTypeName = definition->OwnerTypeName;
+	args.OwnerType = _declarativeTypeDescriptor->TypeId();
 	args.RoutingStrategy = definition->RoutingStrategy;
 	args.OriginalSource = this;
 	args.Source = this;
 
-	std::vector<Control*> route;
-	route.push_back(this);
-	if (definition->RoutingStrategy
-		!= DeclarativeEventRoutingStrategy::Direct)
+	const auto route = BuildRoutedEventRoute(
+		this, definition->RoutingStrategy);
+	const ControlWeakReference sourceLifetime(this);
+	for (const auto& currentReference : route)
 	{
-		for (auto* current = Parent; current; current = current->Parent)
-			route.push_back(current);
-		if (definition->RoutingStrategy
-			== DeclarativeEventRoutingStrategy::Tunnel)
-			std::reverse(route.begin(), route.end());
-	}
-	for (auto* current : route)
-	{
+		if (!sourceLifetime) break;
+		auto* current = currentReference.Get();
 		if (!current) continue;
 		args.CurrentTarget = current;
-		current->OnDeclarativeEvent(current, args);
+		cui::framework::EventAccess::Raise(
+			current->OnDeclarativeEvent, current, args);
 	}
 	args.CurrentTarget = nullptr;
+	if (!sourceLifetime)
+	{
+		args.OriginalSource = nullptr;
+		args.Source = nullptr;
+	}
 	return true;
 }
 
@@ -2011,7 +2780,7 @@ struct Control::DeclarativeVisualStateRuntime
 {
 	struct RuntimeCondition
 	{
-		const BindingPropertyMetadata* Metadata = nullptr;
+		const DependencyPropertyMetadata* Metadata = nullptr;
 		BindingValue Value;
 	};
 
@@ -2144,7 +2913,7 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
 		Control* Target = nullptr;
-		const BindingPropertyMetadata* Metadata = nullptr;
+		const DependencyPropertyMetadata* Metadata = nullptr;
 		std::wstring PropertyName;
 		std::optional<ObjectPathAccessor> ObjectPath;
 		std::optional<BindingValue> From;
@@ -2165,8 +2934,6 @@ struct Control::DeclarativeVisualStateRuntime
 		double SpeedRatio = 1.0;
 		double AccelerationRatio = 0.0;
 		double DecelerationRatio = 0.0;
-		/** Transitions share the VisualState layer with the source state. */
-		bool RestoreBaseOnStop = false;
 		DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
 		DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
 	};
@@ -2214,7 +2981,7 @@ struct Control::DeclarativeVisualStateRuntime
 
 	struct RuntimeStyleTriggerScope
 	{
-		ControlPropertyValueSource Source = ControlPropertyValueSource::Style;
+		DependencyPropertyValueSource Source = DependencyPropertyValueSource::Style;
 		const ControlStyleSheet* Sheet = nullptr;
 		size_t RuleId = 0;
 		bool Active = false;
@@ -2251,15 +3018,15 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		PropertyKey Key;
 		std::optional<BindingValue> Value;
-		ControlPropertyValueSource Source =
-			ControlPropertyValueSource::VisualState;
+		DependencyPropertyValueSource Source =
+			DependencyPropertyValueSource::VisualState;
 	};
 
 	struct ActiveAnimation
 	{
 		size_t GroupIndex = 0;
 		Control* Target = nullptr;
-		const BindingPropertyMetadata* Metadata = nullptr;
+		const DependencyPropertyMetadata* Metadata = nullptr;
 		std::wstring PropertyName;
 		DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
 		BindingValue Base;
@@ -2282,7 +3049,6 @@ struct Control::DeclarativeVisualStateRuntime
 		double SpeedRatio = 1.0;
 		double AccelerationRatio = 0.0;
 		double DecelerationRatio = 0.0;
-		bool RestoreBaseOnStop = false;
 		DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
 		DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
 		bool IsEventStoryboard = false;
@@ -2388,6 +3154,13 @@ struct Control::DeclarativeVisualStateRuntime
 		std::wstring_view left,
 		std::wstring_view right) noexcept
 	{
+		return left == right;
+	}
+
+	static bool EqualValueToken(
+		std::wstring_view left,
+		std::wstring_view right) noexcept
+	{
 		return left.size() == right.size()
 			&& std::equal(left.begin(), left.end(), right.begin(),
 				[](wchar_t l, wchar_t r)
@@ -2420,7 +3193,7 @@ struct Control::DeclarativeVisualStateRuntime
 
 	static bool AnimationMatchesMetadata(
 		DeclarativeAnimationKind kind,
-		const BindingPropertyMetadata& metadata) noexcept
+		const DependencyPropertyMetadata& metadata) noexcept
 	{
 		if (kind == DeclarativeAnimationKind::Object) return true;
 		if (kind == DeclarativeAnimationKind::Double)
@@ -2446,6 +3219,31 @@ struct Control::DeclarativeVisualStateRuntime
 					== std::type_index(typeid(D2D1_MATRIX_3X2_F));
 		return metadata.ValueKind() == BindingValueKind::Object
 			&& metadata.ValueType() == std::type_index(typeid(D2D1_COLOR_F));
+	}
+
+	static std::optional<DeclarativeAnimationKind> GeneratedAnimationKind(
+		const DependencyPropertyMetadata& metadata) noexcept
+	{
+		if (IsNumericKind(metadata.ValueKind()))
+			return DeclarativeAnimationKind::Double;
+		if (metadata.ValueKind() != BindingValueKind::Object)
+			return std::nullopt;
+		const auto type = metadata.ValueType();
+		if (type == std::type_index(typeid(D2D1_COLOR_F)))
+			return DeclarativeAnimationKind::Color;
+		if (type == std::type_index(typeid(Thickness)))
+			return DeclarativeAnimationKind::Thickness;
+		if (type == std::type_index(typeid(cui::core::Point)))
+			return DeclarativeAnimationKind::Point;
+		if (type == std::type_index(typeid(cui::core::Vector)))
+			return DeclarativeAnimationKind::Vector;
+		if (type == std::type_index(typeid(cui::core::Rect)))
+			return DeclarativeAnimationKind::Rect;
+		if (type == std::type_index(typeid(cui::core::Size)))
+			return DeclarativeAnimationKind::Size;
+		if (type == std::type_index(typeid(D2D1_MATRIX_3X2_F)))
+			return DeclarativeAnimationKind::Matrix;
+		return std::nullopt;
 	}
 
 	static std::wstring_view LocalTypeName(std::wstring_view value) noexcept
@@ -2545,7 +3343,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveTransformPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		TransformAccessor& output,
 		std::wstring* outError)
 	{
@@ -2632,7 +3430,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveGeometryTreeTarget(
 		Control& target,
 		const cui::xaml::PropertyPath& path,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		const cui::drawing::Geometry*& outGeometry,
 		std::vector<size_t>& outChildIndices,
 		size_t& outLeafStart,
@@ -2697,7 +3495,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveGeometryPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		GeometryAccessor& output,
 		std::wstring* outError)
 	{
@@ -2710,7 +3508,7 @@ struct Control::DeclarativeVisualStateRuntime
 		std::wstring parseError;
 		if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 			return fail(L"Storyboard.TargetProperty 路径无效：" + parseError);
-		const BindingPropertyMetadata* metadata = nullptr;
+		const DependencyPropertyMetadata* metadata = nullptr;
 		const cui::drawing::Geometry* resolvedGeometry = nullptr;
 		std::vector<size_t> childIndices;
 		size_t leafStart = 0;
@@ -2798,7 +3596,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolvePathGeometryPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		PathGeometryAccessor& output,
 		std::wstring* outError)
 	{
@@ -2811,7 +3609,7 @@ struct Control::DeclarativeVisualStateRuntime
 		std::wstring parseError;
 		if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 			return fail(L"Storyboard.TargetProperty 路径无效：" + parseError);
-		const BindingPropertyMetadata* metadata = nullptr;
+		const DependencyPropertyMetadata* metadata = nullptr;
 		const cui::drawing::Geometry* resolvedGeometry = nullptr;
 		std::vector<size_t> childIndices;
 		size_t leafStart = 0;
@@ -2990,7 +3788,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveGeometryTransformPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		GeometryTransformAccessor& output,
 		std::wstring* outError)
 	{
@@ -3003,7 +3801,7 @@ struct Control::DeclarativeVisualStateRuntime
 		std::wstring parseError;
 		if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 			return fail(L"Storyboard.TargetProperty 路径无效：" + parseError);
-		const BindingPropertyMetadata* metadata = nullptr;
+		const DependencyPropertyMetadata* metadata = nullptr;
 		const cui::drawing::Geometry* resolvedGeometry = nullptr;
 		std::vector<size_t> childIndices;
 		size_t leafStart = 0;
@@ -3076,7 +3874,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveBrushPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		BrushAccessor& output,
 		std::wstring* outError)
 	{
@@ -3091,21 +3889,34 @@ struct Control::DeclarativeVisualStateRuntime
 			return fail(L"Storyboard.TargetProperty 路径无效：" + parseError);
 		const auto brushOwner = path.Segments.size() > 1
 			? LocalTypeName(path.Segments[1].OwnerType) : std::wstring_view{};
-		const auto* metadata = target.FindPropertyMetadata(L"Foreground");
-		const auto& currentBrush = target.GetForegroundBrush();
-		if (!metadata || !metadata->CanWrite()
-			|| metadata->ValueType()
-				!= std::type_index(typeid(cui::drawing::Brush))
-			|| !currentBrush)
-			return fail(L"动画目标必须显式持有 Control.Foreground 画刷。");
 		if (path.Segments.size() < 2
 			|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
 			|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| !EqualName(path.Segments[0].Name, L"Foreground")
 			|| (!EqualName(LocalTypeName(path.Segments[0].OwnerType), L"Control")
 				&& !EqualName(LocalTypeName(path.Segments[0].OwnerType), L"UIElement")))
 			return fail(L"Brush 复合动画路径必须以 "
-				L"(Control.Foreground).(BrushProperty) 开始。");
+				L"(Control.BrushProperty).(BrushProperty) 开始。");
+		const auto& rootProperty = path.Segments[0].Name;
+		const auto* metadata = target.FindPropertyMetadata(rootProperty);
+		BindingValue currentValue;
+		cui::drawing::Brush currentBrushValue;
+		if (!metadata || !metadata->CanWrite()
+			|| metadata->ValueType()
+				!= std::type_index(typeid(cui::drawing::Brush))
+			|| !metadata->TryGet(target, currentValue)
+			|| !currentValue.TryGet(currentBrushValue))
+			return fail(L"动画目标必须持有 Control." + rootProperty + L" 画刷。");
+		if (currentBrushValue.Kind == cui::drawing::BrushKind::None
+			&& EqualName(rootProperty, L"Foreground"))
+		{
+			// Foreground has a WPF-style effective theme brush even when no
+			// local/inherited Brush object is stored. Resolve the object path
+			// against that effective value without manufacturing a Local or
+			// Inherited dependency-property source.
+			currentBrushValue = cui::drawing::MakeSolidColorBrush(
+				target.RendererForegroundColor);
+		}
+		const auto* currentBrush = &currentBrushValue;
 
 		auto ownerMatches = [&](std::wstring_view owner)
 		{
@@ -3138,7 +3949,7 @@ struct Control::DeclarativeVisualStateRuntime
 				std::wstring_view canonicalProperty)
 			{
 				output.Member = member;
-				output.CanonicalPath = L"(Control.Foreground).("
+				output.CanonicalPath = L"(Control." + rootProperty + L").("
 					+ std::wstring(owner) + L"."
 					+ std::wstring(canonicalProperty) + L")";
 				outMetadata = metadata;
@@ -3230,7 +4041,7 @@ struct Control::DeclarativeVisualStateRuntime
 				&& currentBrush->Kind != cui::drawing::BrushKind::RadialGradient)
 			|| path.Segments[2].Index >= currentBrush->GradientStops.size())
 			return fail(L"GradientStop 复合动画路径必须是 "
-				L"(Control.Foreground).(GradientBrush.GradientStops)[n]."
+				L"(Control.BrushProperty).(GradientBrush.GradientStops)[n]."
 				L"(GradientStop.Color|Offset)。");
 		const auto& stop = currentBrush->GradientStops[path.Segments[2].Index];
 		if (!std::isfinite(stop.Offset) || stop.Offset < 0.0f || stop.Offset > 1.0f
@@ -3241,7 +4052,7 @@ struct Control::DeclarativeVisualStateRuntime
 		output.StopIndex = path.Segments[2].Index;
 		output.Member = EqualName(path.Segments[3].Name, L"Color")
 			? BrushMember::GradientStopColor : BrushMember::GradientStopOffset;
-		output.CanonicalPath = L"(Control.Foreground)."
+		output.CanonicalPath = L"(Control." + rootProperty + L")."
 			L"(GradientBrush.GradientStops)["
 			+ std::to_wstring(output.StopIndex) + L"].(GradientStop."
 			+ (output.Member == BrushMember::GradientStopColor
@@ -3254,7 +4065,7 @@ struct Control::DeclarativeVisualStateRuntime
 	static bool TryResolveBrushTransformPath(
 		Control& target,
 		const std::wstring& text,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		BrushTransformAccessor& output,
 		std::wstring* outError)
 	{
@@ -3275,7 +4086,6 @@ struct Control::DeclarativeVisualStateRuntime
 			|| path.Segments[2].Kind != cui::xaml::PropertyPathSegmentKind::Property
 			|| path.Segments[3].Kind != cui::xaml::PropertyPathSegmentKind::Index
 			|| path.Segments[4].Kind != cui::xaml::PropertyPathSegmentKind::Property
-			|| !EqualName(path.Segments[0].Name, L"Foreground")
 			|| (!EqualName(LocalTypeName(path.Segments[0].OwnerType), L"Control")
 				&& !EqualName(LocalTypeName(path.Segments[0].OwnerType), L"UIElement"))
 			|| (!EqualName(brushOwner, L"Brush")
@@ -3289,15 +4099,20 @@ struct Control::DeclarativeVisualStateRuntime
 			|| !EqualName(LocalTypeName(path.Segments[2].OwnerType), L"TransformGroup")
 			|| !EqualName(path.Segments[2].Name, L"Children"))
 			return fail(L"Brush Transform 动画路径必须是 "
-				L"(Control.Foreground).(Brush.Transform|RelativeTransform)."
+				L"(Control.BrushProperty).(Brush.Transform|RelativeTransform)."
 				L"(TransformGroup.Children)[n].(TransformType.Property)。");
 
-		const auto* metadata = target.FindPropertyMetadata(L"Foreground");
-		const auto& currentBrush = target.GetForegroundBrush();
+		const auto& rootProperty = path.Segments[0].Name;
+		const auto* metadata = target.FindPropertyMetadata(rootProperty);
+		BindingValue currentValue;
+		cui::drawing::Brush currentBrushValue;
 		if (!metadata || !metadata->CanWrite()
 			|| metadata->ValueType() != std::type_index(typeid(cui::drawing::Brush))
-			|| !currentBrush)
-			return fail(L"动画目标必须显式持有包含变换的 Control.Foreground。");
+			|| !metadata->TryGet(target, currentValue)
+			|| !currentValue.TryGet(currentBrushValue))
+			return fail(L"动画目标必须持有包含变换的 Control."
+				+ rootProperty + L"。");
+		const auto* currentBrush = &currentBrushValue;
 		auto ownerMatches = [&]()
 		{
 			if (EqualName(brushOwner, L"Brush")) return true;
@@ -3327,7 +4142,7 @@ struct Control::DeclarativeVisualStateRuntime
 			return fail(L"动画目标没有路径所需的 Brush Transform。");
 
 		TransformAccessor transformAccessor;
-		const auto canonicalPrefix = L"(Control.Foreground).(Brush."
+		const auto canonicalPrefix = L"(Control." + rootProperty + L").(Brush."
 			+ std::wstring(relative ? L"RelativeTransform" : L"Transform")
 			+ L").(TransformGroup.Children)";
 		if (!TryResolveTransformOperationAccessor(
@@ -3347,7 +4162,7 @@ struct Control::DeclarativeVisualStateRuntime
 		Control& target,
 		const std::wstring& text,
 		DeclarativeAnimationKind animationKind,
-		const BindingPropertyMetadata*& outMetadata,
+		const DependencyPropertyMetadata*& outMetadata,
 		ObjectPathAccessor& output,
 		std::wstring* outError)
 	{
@@ -3454,7 +4269,10 @@ struct Control::DeclarativeVisualStateRuntime
 			output = std::move(accessor);
 			return true;
 		}
-		if (EqualName(root, L"Foreground"))
+		const auto* rootMetadata = target.FindPropertyMetadata(root);
+		if (path.Segments.size() > 1 && rootMetadata
+			&& rootMetadata->ValueType()
+				== std::type_index(typeid(cui::drawing::Brush)))
 		{
 			if (path.Segments.size() > 1
 				&& (EqualName(path.Segments[1].Name, L"Transform")
@@ -3669,9 +4487,9 @@ struct Control::DeclarativeVisualStateRuntime
 			if ((geometry.Kind != cui::drawing::GeometryKind::Path
 					&& geometry.Kind != cui::drawing::GeometryKind::Group)
 				|| !value.TryGet(converted)) return false;
-			if (EqualName(converted, L"Nonzero"))
+			if (EqualValueToken(converted, L"Nonzero"))
 				geometry.FillRule = cui::drawing::GeometryFillRule::Nonzero;
-			else if (EqualName(converted, L"EvenOdd"))
+			else if (EqualValueToken(converted, L"EvenOdd"))
 				geometry.FillRule = cui::drawing::GeometryFillRule::EvenOdd;
 			else return false;
 			return true;
@@ -3845,9 +4663,9 @@ struct Control::DeclarativeVisualStateRuntime
 			std::wstring converted;
 			if (segment.Kind != cui::drawing::PathSegmentKind::Arc
 				|| !value.TryGet(converted)) return false;
-			if (EqualName(converted, L"Clockwise"))
+			if (EqualValueToken(converted, L"Clockwise"))
 				segment.Sweep = cui::drawing::SweepDirection::Clockwise;
-			else if (EqualName(converted, L"Counterclockwise"))
+			else if (EqualValueToken(converted, L"Counterclockwise"))
 				segment.Sweep = cui::drawing::SweepDirection::Counterclockwise;
 			else return false;
 			return true;
@@ -4272,7 +5090,7 @@ struct Control::DeclarativeVisualStateRuntime
 
 	static bool InterpolateValues(
 		DeclarativeAnimationKind kind,
-		const BindingPropertyMetadata* metadata,
+		const DependencyPropertyMetadata* metadata,
 		bool transformPath,
 		const BindingValue& fromValue,
 		const BindingValue& toValue,
@@ -4948,39 +5766,22 @@ struct Control::DeclarativeVisualStateRuntime
 		BindingValue Value;
 	};
 
-	static ControlPropertyValueSource AnimationValueSource(
-		const ActiveAnimation& animation) noexcept
+	static DependencyPropertyValueSource AnimationValueSource(
+		const ActiveAnimation&) noexcept
 	{
-		return animation.IsEventStoryboard
-			? ControlPropertyValueSource::Animation
-			: ControlPropertyValueSource::VisualState;
+		return DependencyPropertyValueSource::Animation;
 	}
 
 	bool TryReadAnimationFrameRoot(
 		Control* target,
-		const BindingPropertyMetadata* metadata,
+		const DependencyPropertyMetadata* metadata,
 		const std::wstring& propertyName,
-		ControlPropertyValueSource source,
+		DependencyPropertyValueSource source,
 		BindingValue& output)
 	{
 		if (!target || !metadata) return false;
-		if (target->TryGetPropertyValue(propertyName, source, output))
-			return true;
-		if (source != ControlPropertyValueSource::VisualState)
-			return metadata->TryGet(*target, output);
-
-		// A VisualState object value must be composed from the layer below it.
-		// Temporarily hide the higher animation layer so an event clock cannot
-		// leak its snapshot into the state value that it is masking.
-		BindingValue animationValue;
-		const bool hadAnimation = target->TryGetPropertyValue(
-			propertyName, ControlPropertyValueSource::Animation, animationValue);
-		if (hadAnimation && !target->ClearPropertyValue(
-			propertyName, ControlPropertyValueSource::Animation)) return false;
-		const bool read = metadata->TryGet(*target, output);
-		const bool restored = !hadAnimation || target->TrySetPropertyValue(
-			propertyName, animationValue, ControlPropertyValueSource::Animation);
-		return read && restored;
+		return target->TryGetPropertyValue(propertyName, source, output)
+			|| metadata->TryGet(*target, output);
 	}
 
 	bool ApplyAnimationFrame(
@@ -4989,10 +5790,10 @@ struct Control::DeclarativeVisualStateRuntime
 		struct ObjectFrame
 		{
 			Control* Target = nullptr;
-			const BindingPropertyMetadata* Metadata = nullptr;
+			const DependencyPropertyMetadata* Metadata = nullptr;
 			std::wstring PropertyName;
-			ControlPropertyValueSource Source =
-				ControlPropertyValueSource::VisualState;
+			DependencyPropertyValueSource Source =
+				DependencyPropertyValueSource::Animation;
 			BindingValue Value;
 		};
 		std::vector<ObjectFrame> objects;
@@ -5020,7 +5821,8 @@ struct Control::DeclarativeVisualStateRuntime
 			{
 				BindingValue current;
 				if (!TryReadAnimationFrameRoot(animation->Target,
-					animation->Metadata, animation->PropertyName, source, current))
+					animation->Metadata, animation->PropertyName, source, current)
+					|| !NormalizeObjectPathRoot(*animation, current))
 					return false;
 				objects.push_back({ animation->Target, animation->Metadata,
 					animation->PropertyName, source, std::move(current) });
@@ -5069,17 +5871,12 @@ struct Control::DeclarativeVisualStateRuntime
 				});
 			if (!stopping->ObjectPath)
 			{
-				if (stopping->RestoreBaseOnStop
-					&& source == ControlPropertyValueSource::VisualState)
-					(void)stopping->Target->TrySetPropertyValue(
-						stopping->PropertyName, stopping->Base, source);
-				else if (!siblingAffectsRoot)
+				if (!siblingAffectsRoot)
 					(void)stopping->Target->ClearPropertyValue(
 						stopping->PropertyName, source);
 				continue;
 			}
-			if (!siblingAffectsRoot && (!stopping->RestoreBaseOnStop
-				|| source == ControlPropertyValueSource::Animation))
+			if (!siblingAffectsRoot)
 			{
 				(void)stopping->Target->ClearPropertyValue(
 					stopping->PropertyName, source);
@@ -5089,6 +5886,7 @@ struct Control::DeclarativeVisualStateRuntime
 			if (!(stopping->Target->TryGetPropertyValue(
 				stopping->PropertyName, source, root)
 					|| stopping->Metadata->TryGet(*stopping->Target, root))) continue;
+			if (!NormalizeObjectPathRoot(*stopping, root)) continue;
 			if (TryWriteObjectPathMember(
 				root, *stopping->ObjectPath, stopping->Base))
 				(void)stopping->Target->TrySetPropertyValue(
@@ -5185,57 +5983,39 @@ struct Control::DeclarativeVisualStateRuntime
 	{
 		if (!Owner) return;
 		Applying = true;
-		std::vector<PropertyKey> cleared;
+		std::vector<PropertyKey> stateValuesCleared;
+		std::vector<PropertyKey> animationValuesCleared;
+		auto clearOnce = [](std::vector<PropertyKey>& cleared,
+			const PropertyKey& key, DependencyPropertyValueSource source)
+		{
+			if (!key.Target || std::any_of(cleared.begin(), cleared.end(),
+				[&](const auto& existing) { return SameProperty(existing, key); }))
+				return;
+			cleared.push_back(key);
+			(void)key.Target->ClearPropertyValue(key.PropertyName, source);
+		};
 		for (const auto& group : Groups)
 		{
 			if (group.Pending)
 				for (const auto& key : group.Pending->Properties)
-				{
-					if (!key.Target || std::any_of(cleared.begin(), cleared.end(),
-						[&](const auto& existing)
-						{ return SameProperty(existing, key); })) continue;
-					cleared.push_back(key);
-					(void)key.Target->ClearPropertyValue(
-						key.PropertyName, ControlPropertyValueSource::VisualState);
-				}
+					clearOnce(animationValuesCleared, key,
+						DependencyPropertyValueSource::Animation);
 			if (!group.CurrentState || *group.CurrentState >= group.States.size())
 				continue;
 			for (const auto& setter : group.States[*group.CurrentState].Setters)
-			{
-				PropertyKey key{ setter.Target, setter.PropertyName };
-				if (std::any_of(cleared.begin(), cleared.end(),
-					[&](const auto& existing) { return SameProperty(existing, key); }))
-					continue;
-				cleared.push_back(key);
-				if (key.Target)
-					(void)key.Target->ClearPropertyValue(
-						key.PropertyName, ControlPropertyValueSource::VisualState);
-			}
+				clearOnce(stateValuesCleared,
+					{ setter.Target, setter.PropertyName },
+					DependencyPropertyValueSource::VisualState);
 			for (const auto& animation : group.States[*group.CurrentState].Animations)
-			{
-				PropertyKey key{ animation.Target, animation.PropertyName };
-				if (std::any_of(cleared.begin(), cleared.end(),
-					[&](const auto& existing) { return SameProperty(existing, key); }))
-					continue;
-				cleared.push_back(key);
-				if (key.Target)
-					(void)key.Target->ClearPropertyValue(
-						key.PropertyName, ControlPropertyValueSource::VisualState);
-			}
+				clearOnce(animationValuesCleared,
+					{ animation.Target, animation.PropertyName },
+					DependencyPropertyValueSource::Animation);
 		}
-		std::vector<PropertyKey> animationCleared;
 		for (const auto& storyboard : EventStoryboards)
 			for (const auto& animation : storyboard.Animations)
-			{
-				PropertyKey key{ animation.Target, animation.PropertyName };
-				if (!key.Target || std::any_of(
-					animationCleared.begin(), animationCleared.end(),
-					[&](const auto& existing)
-					{ return SameProperty(existing, key); })) continue;
-				animationCleared.push_back(key);
-				(void)key.Target->ClearPropertyValue(
-					key.PropertyName, ControlPropertyValueSource::Animation);
-			}
+				clearOnce(animationValuesCleared,
+					{ animation.Target, animation.PropertyName },
+					DependencyPropertyValueSource::Animation);
 		Applying = false;
 	}
 
@@ -5323,16 +6103,22 @@ struct Control::DeclarativeVisualStateRuntime
 			addAffected(animation.Target, animation.PropertyName);
 
 		std::vector<PropertySnapshot> snapshots;
-		snapshots.reserve(affected.size());
+		snapshots.reserve(affected.size() * 2);
 		for (const auto& key : affected)
 		{
-			PropertySnapshot snapshot;
-			snapshot.Key = key;
-			BindingValue value;
-			if (key.Target && key.Target->TryGetPropertyValue(
-				key.PropertyName, ControlPropertyValueSource::VisualState, value))
-				snapshot.Value = std::move(value);
-			snapshots.push_back(std::move(snapshot));
+			for (const auto source : {
+				DependencyPropertyValueSource::VisualState,
+				DependencyPropertyValueSource::Animation })
+			{
+				PropertySnapshot snapshot;
+				snapshot.Key = key;
+				snapshot.Source = source;
+				BindingValue value;
+				if (key.Target && key.Target->TryGetPropertyValue(
+					key.PropertyName, source, value))
+					snapshot.Value = std::move(value);
+				snapshots.push_back(std::move(snapshot));
+			}
 		}
 
 		unsigned long long startTick = requestedStartTick.value_or(0);
@@ -5379,18 +6165,23 @@ struct Control::DeclarativeVisualStateRuntime
 				animation.AutoReverse, animation.FillBehavior,
 				animation.SpeedRatio, animation.AccelerationRatio,
 				animation.DecelerationRatio,
-				animation.RestoreBaseOnStop,
 				animation.Easing, animation.EasingMode });
 		}
 
-		auto nextControls = [&](Control* target, const std::wstring& propertyName)
+		auto stateHasSetter = [](const RuntimeState& state,
+			Control* target, const std::wstring& propertyName)
 		{
-			return std::any_of(next.Setters.begin(), next.Setters.end(),
+			return std::any_of(state.Setters.begin(), state.Setters.end(),
 				[&](const auto& candidate)
 				{
 					return candidate.Target == target
 						&& EqualName(candidate.PropertyName, propertyName);
-				}) || std::any_of(next.Animations.begin(), next.Animations.end(),
+				});
+		};
+		auto stateHasAnimation = [](const RuntimeState& state,
+			Control* target, const std::wstring& propertyName)
+		{
+			return std::any_of(state.Animations.begin(), state.Animations.end(),
 				[&](const auto& candidate)
 				{
 					return candidate.Target == target
@@ -5404,12 +6195,23 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			for (const auto& key : affected)
 			{
-				if (!nextControls(key.Target, key.PropertyName) && key.Target
+				if (!key.Target) continue;
+				if (stateHasSetter(*previous, key.Target, key.PropertyName)
+					&& !stateHasSetter(next, key.Target, key.PropertyName)
 					&& key.Target->HasPropertyValue(
-						key.PropertyName, ControlPropertyValueSource::VisualState)
+						key.PropertyName, DependencyPropertyValueSource::VisualState)
 					&& !key.Target->ClearPropertyValue(
 						key.PropertyName,
-						ControlPropertyValueSource::VisualState))
+						DependencyPropertyValueSource::VisualState))
+				{
+					success = false;
+					break;
+				}
+				if (stateHasAnimation(*previous, key.Target, key.PropertyName)
+					&& key.Target->HasPropertyValue(
+						key.PropertyName, DependencyPropertyValueSource::Animation)
+					&& !key.Target->ClearPropertyValue(
+						key.PropertyName, DependencyPropertyValueSource::Animation))
 				{
 					success = false;
 					break;
@@ -5422,7 +6224,7 @@ struct Control::DeclarativeVisualStateRuntime
 			for (const auto& setter : next.Setters)
 				if (!setter.Target || !setter.Target->TrySetPropertyValue(
 					setter.PropertyName, setter.Value,
-					ControlPropertyValueSource::VisualState))
+					DependencyPropertyValueSource::VisualState))
 				{
 					success = false;
 					break;
@@ -5491,6 +6293,26 @@ struct Control::DeclarativeVisualStateRuntime
 				if (animation.BeginTimeMilliseconds > 0
 					|| TimelineActiveDurationMilliseconds(animation) > 0)
 					ActiveAnimations.push_back(std::move(animation));
+		if (!ApplyRetainedAnimationFrame(startTick))
+		{
+			(void)RestoreSnapshots(snapshots);
+			Applying = false;
+			if (outError) *outError = L"视觉状态动画时钟无法重组。";
+			return false;
+		}
+		// The implicit clock begins when the state transaction is committed,
+		// after initial frame composition. Otherwise materialization work between
+		// capturing GetTickCount64 and returning from GoToVisualState leaks into
+		// the first externally advanced frame. Transition completion supplies an
+		// explicit tick and intentionally keeps that shared timeline origin.
+		if (!requestedStartTick)
+		{
+			startTick = ::GetTickCount64();
+			for (auto& animation : ActiveAnimations)
+				if (!animation.IsEventStoryboard
+					&& animation.GroupIndex == groupIndex)
+					animation.StartTick = startTick;
+		}
 		Applying = false;
 		if (std::any_of(ActiveAnimations.begin(), ActiveAnimations.end(),
 			[&](const auto& animation) { return !animation.IsEventStoryboard
@@ -5498,7 +6320,8 @@ struct Control::DeclarativeVisualStateRuntime
 			Owner->InvalidateVisual();
 		DeclarativeVisualStateChangedEventArgs args{
 			group.Name, oldState, next.Name };
-		Owner->OnVisualStateChanged(Owner, args);
+		cui::framework::EventAccess::Raise(
+			Owner->OnVisualStateChanged, Owner, args);
 		if (outError) outError->clear();
 		return true;
 	}
@@ -5524,21 +6347,35 @@ struct Control::DeclarativeVisualStateRuntime
 			: EqualName(leftPath, rightPath);
 	}
 
-	static bool StateControlsProperty(
+	static bool StateAnimatesProperty(
 		const RuntimeState& state,
 		const PropertyKey& key) noexcept
 	{
-		return std::any_of(state.Setters.begin(), state.Setters.end(),
-			[&](const auto& setter)
-			{
-				return setter.Target == key.Target
-					&& EqualName(setter.PropertyName, key.PropertyName);
-			}) || std::any_of(state.Animations.begin(), state.Animations.end(),
+		return std::any_of(state.Animations.begin(), state.Animations.end(),
 			[&](const auto& animation)
 			{
 				return animation.Target == key.Target
 					&& EqualName(animation.PropertyName, key.PropertyName);
 			});
+	}
+
+	template<typename TAnimation>
+	bool NormalizeObjectPathRoot(
+		const TAnimation& animation,
+		BindingValue& root) const
+	{
+		if (!AsBrushPath(animation.ObjectPath)
+			&& !AsBrushTransformPath(animation.ObjectPath)) return true;
+		cui::drawing::Brush brush;
+		if (!root.TryGet(brush)) return false;
+		if (brush.Kind == cui::drawing::BrushKind::None
+			&& EqualName(animation.PropertyName, L"Foreground"))
+		{
+			if (!animation.Target) return false;
+			root = BindingValue(cui::drawing::MakeSolidColorBrush(
+				animation.Target->RendererForegroundColor));
+		}
+		return true;
 	}
 
 	bool TryReadAnimationValue(
@@ -5553,6 +6390,7 @@ struct Control::DeclarativeVisualStateRuntime
 			output = std::move(root);
 			return true;
 		}
+		if (!NormalizeObjectPathRoot(animation, root)) return false;
 		return TryReadObjectPathMember(
 			root, *animation.ObjectPath, output);
 	}
@@ -5566,49 +6404,57 @@ struct Control::DeclarativeVisualStateRuntime
 		Applying = true;
 		BindingValue animationValue;
 		const bool hadAnimation = animation.Target->TryGetPropertyValue(
-			animation.PropertyName, ControlPropertyValueSource::Animation,
+			animation.PropertyName, DependencyPropertyValueSource::Animation,
 			animationValue);
 		if (hadAnimation && !animation.Target->ClearPropertyValue(
 			animation.PropertyName,
-			ControlPropertyValueSource::Animation))
+			DependencyPropertyValueSource::Animation))
 		{
-			Applying = previousApplying;
-			return false;
-		}
-		BindingValue visualStateValue;
-		const bool hadVisualState = animation.Target->TryGetPropertyValue(
-			animation.PropertyName, ControlPropertyValueSource::VisualState,
-			visualStateValue);
-		if (hadVisualState && !animation.Target->ClearPropertyValue(
-			animation.PropertyName,
-			ControlPropertyValueSource::VisualState))
-		{
-			if (hadAnimation)
-				(void)animation.Target->TrySetPropertyValue(
-					animation.PropertyName, animationValue,
-					ControlPropertyValueSource::Animation);
 			Applying = previousApplying;
 			return false;
 		}
 		BindingValue root;
 		const bool read = animation.Metadata->TryGet(*animation.Target, root);
-		const bool restoredVisualState = !hadVisualState
-			|| animation.Target->TrySetPropertyValue(
-			animation.PropertyName, visualStateValue,
-			ControlPropertyValueSource::VisualState);
 		const bool restoredAnimation = !hadAnimation
 			|| animation.Target->TrySetPropertyValue(
 				animation.PropertyName, animationValue,
-				ControlPropertyValueSource::Animation);
+				DependencyPropertyValueSource::Animation);
 		Applying = previousApplying;
-		if (!read || !restoredVisualState || !restoredAnimation) return false;
+		if (!read || !restoredAnimation) return false;
 		if (!animation.ObjectPath)
 		{
 			output = std::move(root);
 			return true;
 		}
+		if (!NormalizeObjectPathRoot(animation, root)) return false;
 		return TryReadObjectPathMember(
 			root, *animation.ObjectPath, output);
+	}
+
+	bool TryReadValueBelowVisualState(
+		const RuntimeSetter& setter,
+		BindingValue& output)
+	{
+		if (!setter.Target) return false;
+		const auto* metadata = setter.Target->FindPropertyMetadata(
+			setter.PropertyName);
+		if (!metadata) return false;
+		Control::EffectiveValueEntry candidate;
+		const auto stored = setter.Target->_propertyValues.find(metadata);
+		if (stored != setter.Target->_propertyValues.end())
+			candidate = stored->second;
+		const int visualStateIndex = StoredPropertySourceIndex(
+			DependencyPropertyValueSource::VisualState);
+		const int animationIndex = StoredPropertySourceIndex(
+			DependencyPropertyValueSource::Animation);
+		if (visualStateIndex >= 0)
+			candidate.Slots[static_cast<size_t>(visualStateIndex)].Reset();
+		if (animationIndex >= 0)
+			candidate.Slots[static_cast<size_t>(animationIndex)].Reset();
+		DependencyPropertyValueSource ignoredSource =
+			DependencyPropertyValueSource::Default;
+		return setter.Target->TryEvaluateEffectivePropertyValue(
+			*metadata, candidate, output, ignoredSource);
 	}
 
 	static bool EnteringAnimationValue(
@@ -5663,7 +6509,6 @@ struct Control::DeclarativeVisualStateRuntime
 			animation.AutoReverse, animation.FillBehavior,
 			animation.SpeedRatio, animation.AccelerationRatio,
 			animation.DecelerationRatio,
-			animation.RestoreBaseOnStop,
 			animation.Easing, animation.EasingMode };
 	}
 
@@ -5701,9 +6546,9 @@ struct Control::DeclarativeVisualStateRuntime
 		const RuntimeState& state) noexcept
 	{
 		for (const auto& key : properties)
-			if (key.Target && !StateControlsProperty(state, key))
+			if (key.Target && !StateAnimatesProperty(state, key))
 				(void)key.Target->ClearPropertyValue(
-					key.PropertyName, ControlPropertyValueSource::VisualState);
+					key.PropertyName, DependencyPropertyValueSource::Animation);
 	}
 
 	bool GoTo(
@@ -5777,9 +6622,101 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			return std::any_of(transition->Animations.begin(),
 				transition->Animations.end(), [&](const auto& explicitAnimation)
-				{ return SameAnimationTarget(candidate, explicitAnimation); });
+					{ return SameAnimationTarget(candidate, explicitAnimation); });
+		};
+		auto explicitlyControlsProperty = [&](Control* target,
+			const std::wstring& propertyName)
+		{
+			return std::any_of(transition->Animations.begin(),
+				transition->Animations.end(), [&](const auto& explicitAnimation)
+				{
+					return explicitAnimation.Target == target
+						&& EqualName(explicitAnimation.PropertyName, propertyName);
+				});
+		};
+		auto stateControlsProperty = [](const RuntimeState& state,
+			Control* target, const std::wstring& propertyName)
+		{
+			return std::any_of(state.Setters.begin(), state.Setters.end(),
+				[&](const auto& setter)
+				{
+					return setter.Target == target
+						&& EqualName(setter.PropertyName, propertyName);
+				}) || std::any_of(state.Animations.begin(), state.Animations.end(),
+				[&](const auto& animation)
+				{
+					return animation.Target == target
+						&& EqualName(animation.PropertyName, propertyName);
+				});
+		};
+		auto addGeneratedSetterAnimation = [&](const RuntimeSetter& setter,
+			BindingValue destination, const std::wstring& context)
+		{
+			if (!setter.Target) return false;
+			const auto* metadata = setter.Target->FindPropertyMetadata(
+				setter.PropertyName);
+			if (!metadata) return false;
+			const auto kind = GeneratedAnimationKind(*metadata);
+			if (!kind) return true;
+			RuntimeAnimation generated;
+			generated.Kind = *kind;
+			generated.Target = setter.Target;
+			generated.Metadata = metadata;
+			generated.PropertyName = metadata->Name();
+			generated.DurationMilliseconds =
+				transition->GeneratedDurationMilliseconds;
+			generated.Easing = transition->GeneratedEasing;
+			generated.EasingMode = transition->GeneratedEasingMode;
+			BindingValue current;
+			if (!TryReadAnimationValue(generated, current))
+			{
+				if (outError) *outError = L"VisualTransition 无法读取"
+					+ context + L" Setter 起始值：" + setter.PropertyName;
+				return false;
+			}
+			generated.From = current;
+			generated.To = destination;
+			BindingValue foundation = ZeroAnimationValue(generated);
+			pendingAnimations.push_back(MakeActiveAnimation(
+				groupIndex, generated, current, std::move(foundation),
+				std::move(current), std::move(destination), now));
+			addProperty(generated);
+			return true;
 		};
 		Applying = true;
+		if (transition->GeneratedDurationMilliseconds > 0)
+		{
+			for (const auto& setter : toState.Setters)
+			{
+				if (explicitlyControlsProperty(
+					setter.Target, setter.PropertyName)) continue;
+				if (!addGeneratedSetterAnimation(
+					setter, setter.Value, L"进入"))
+				{
+					Applying = false;
+					return false;
+				}
+			}
+			if (fromState)
+				for (const auto& setter : fromState->Setters)
+				{
+					if (stateControlsProperty(toState,
+						setter.Target, setter.PropertyName)
+						|| explicitlyControlsProperty(
+							setter.Target, setter.PropertyName)) continue;
+					BindingValue destination;
+					if (!TryReadValueBelowVisualState(setter, destination)
+						|| !addGeneratedSetterAnimation(
+							setter, std::move(destination), L"退出"))
+					{
+						Applying = false;
+						if (outError && outError->empty())
+							*outError = L"VisualTransition 无法读取退出 Setter 基础值："
+								+ setter.PropertyName;
+						return false;
+					}
+				}
+		}
 		auto addObjectBaseHold = [&](const RuntimeAnimation& animation)
 		{
 			BindingValue current;
@@ -5804,7 +6741,6 @@ struct Control::DeclarativeVisualStateRuntime
 			generated.SpeedRatio = 1.0;
 			generated.AccelerationRatio = 0.0;
 			generated.DecelerationRatio = 0.0;
-			generated.RestoreBaseOnStop = true;
 			generated.Easing = DeclarativeEasingKind::Linear;
 			generated.EasingMode = DeclarativeEasingMode::EaseOut;
 			pendingAnimations.push_back(MakeActiveAnimation(
@@ -5882,7 +6818,6 @@ struct Control::DeclarativeVisualStateRuntime
 				generated.SpeedRatio = 1.0;
 				generated.AccelerationRatio = 0.0;
 				generated.DecelerationRatio = 0.0;
-				generated.RestoreBaseOnStop = true;
 				generated.Easing = transition->GeneratedEasing;
 				generated.EasingMode = transition->GeneratedEasingMode;
 				BindingValue base = from;
@@ -5932,7 +6867,6 @@ struct Control::DeclarativeVisualStateRuntime
 					generated.SpeedRatio = 1.0;
 					generated.AccelerationRatio = 0.0;
 					generated.DecelerationRatio = 0.0;
-					generated.RestoreBaseOnStop = true;
 					generated.Easing = transition->GeneratedEasing;
 					generated.EasingMode = transition->GeneratedEasingMode;
 					BindingValue base = from;
@@ -5981,22 +6915,28 @@ struct Control::DeclarativeVisualStateRuntime
 				[&](const auto& existing) { return SameProperty(existing, key); }))
 				changedProperties.push_back(key);
 		std::vector<PropertySnapshot> snapshots;
-		snapshots.reserve(changedProperties.size());
+		snapshots.reserve(changedProperties.size() * 2);
 		for (const auto& key : changedProperties)
 		{
-			PropertySnapshot snapshot;
-			snapshot.Key = key;
-			BindingValue value;
-			if (key.Target && key.Target->TryGetPropertyValue(
-				key.PropertyName, ControlPropertyValueSource::VisualState, value))
-				snapshot.Value = std::move(value);
-			snapshots.push_back(std::move(snapshot));
+			for (const auto source : {
+				DependencyPropertyValueSource::VisualState,
+				DependencyPropertyValueSource::Animation })
+			{
+				PropertySnapshot snapshot;
+				snapshot.Key = key;
+				snapshot.Source = source;
+				BindingValue value;
+				if (key.Target && key.Target->TryGetPropertyValue(
+					key.PropertyName, source, value))
+					snapshot.Value = std::move(value);
+				snapshots.push_back(std::move(snapshot));
+			}
 		}
 		for (const auto& key : oldTransitionProperties)
 			if (key.Target && key.Target->HasPropertyValue(
-				key.PropertyName, ControlPropertyValueSource::VisualState))
+				key.PropertyName, DependencyPropertyValueSource::Animation))
 				(void)key.Target->ClearPropertyValue(
-					key.PropertyName, ControlPropertyValueSource::VisualState);
+					key.PropertyName, DependencyPropertyValueSource::Animation);
 		std::vector<AnimationFrameValue> initialValues;
 		initialValues.reserve(pendingAnimations.size());
 		for (const auto& animation : pendingAnimations)
@@ -6058,7 +6998,7 @@ struct Control::DeclarativeVisualStateRuntime
 		return GoTo(groupIndex, EvaluateState(Groups[groupIndex]), true, outError);
 	}
 
-	void OnHostPropertyChanged(const ControlPropertyChangedEventArgs& args)
+	void OnHostPropertyChanged(const DependencyPropertyChangedEventArgs& args)
 	{
 		if (Applying) return;
 		for (size_t index = 0; index < Groups.size(); ++index)
@@ -6105,10 +7045,10 @@ struct Control::DeclarativeVisualStateRuntime
 				{ return SameProperty(existing.Key, key); })) continue;
 			PropertySnapshot snapshot;
 			snapshot.Key = key;
-			snapshot.Source = ControlPropertyValueSource::Animation;
+			snapshot.Source = DependencyPropertyValueSource::Animation;
 			BindingValue value;
 			if (key.Target && key.Target->TryGetPropertyValue(
-				key.PropertyName, ControlPropertyValueSource::Animation, value))
+				key.PropertyName, DependencyPropertyValueSource::Animation, value))
 				snapshot.Value = std::move(value);
 			snapshots.push_back(std::move(snapshot));
 		}
@@ -6405,7 +7345,6 @@ struct Control::DeclarativeVisualStateRuntime
 						RuntimeAnimation animation;
 						if (!TryBuildAnimation(sourceAnimation, animation,
 							L"Style BeginStoryboard", outError)) return false;
-						animation.RestoreBaseOnStop = true;
 						PropertyKey key{ animation.Target, animation.PropertyName };
 						const auto path = std::wstring(
 							ObjectPathCanonical(animation.ObjectPath));
@@ -6501,7 +7440,7 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	bool SynchronizeStyleTriggerActions(
-		ControlPropertyValueSource source,
+		DependencyPropertyValueSource source,
 		const ControlStyleSheet* sheet,
 		const std::vector<ResolvedControlStyleTrigger>& triggers,
 		std::wstring* outError)
@@ -6558,7 +7497,7 @@ struct Control::DeclarativeVisualStateRuntime
 	}
 
 	void PruneStyleTriggerActions(
-		ControlPropertyValueSource source,
+		DependencyPropertyValueSource source,
 		const std::vector<const ControlStyleSheet*>& visibleSheets)
 	{
 		for (size_t index = StyleTriggerScopes.size(); index-- > 0;)
@@ -6590,10 +7529,7 @@ struct Control::DeclarativeVisualStateRuntime
 	void OnHostDeclarativeEvent(DeclarativeEventArgs& args)
 	{
 		if (Applying || args.OriginalSource != Owner
-			|| !EqualName(args.OwnerNamespace,
-				Owner->GetDeclarativeTypeNamespace())
-			|| !EqualName(args.OwnerTypeName,
-				Owner->GetDeclarativeTypeName())) return;
+			|| args.OwnerType != Owner->GetDeclarativeTypeId()) return;
 		for (size_t groupIndex = 0; groupIndex < Groups.size(); ++groupIndex)
 		{
 			auto& group = Groups[groupIndex];
@@ -6712,8 +7648,9 @@ struct Control::DeclarativeVisualStateRuntime
 					{
 						std::wstring sweep;
 						if (!source.TryGet(sweep)
-							|| (!EqualName(sweep, L"Clockwise")
-								&& !EqualName(sweep, L"Counterclockwise")))
+							|| (!EqualValueToken(sweep, L"Clockwise")
+								&& !EqualValueToken(
+									sweep, L"Counterclockwise")))
 							return false;
 					}
 					else
@@ -6728,8 +7665,9 @@ struct Control::DeclarativeVisualStateRuntime
 				{
 					std::wstring fillRule;
 					if (!source.TryGet(fillRule)
-						|| (!EqualName(fillRule, L"EvenOdd")
-							&& !EqualName(fillRule, L"Nonzero"))) return false;
+						|| (!EqualValueToken(fillRule, L"EvenOdd")
+							&& !EqualValueToken(
+								fillRule, L"Nonzero"))) return false;
 				}
 				output = source;
 				return true;
@@ -6982,7 +7920,7 @@ struct Control::DeclarativeVisualStateRuntime
 				}
 				for (auto& eventName : sourceState.EventNames)
 				{
-					const auto* event = Owner->FindDynamicEvent(eventName);
+					const auto* event = Owner->FindDeclarativeEvent(eventName);
 					if (eventName.empty() || !event
 						|| ContainsName(groupEvents, eventName))
 						return fail(L"视觉状态事件不存在或在组内重复：" + eventName);
@@ -7117,7 +8055,6 @@ struct Control::DeclarativeVisualStateRuntime
 					RuntimeAnimation animation;
 					if (!TryBuildAnimation(sourceAnimation, animation,
 						L"VisualTransition Storyboard", outError)) return false;
-					animation.RestoreBaseOnStop = true;
 					PropertyKey key{ animation.Target, animation.PropertyName };
 					const auto path = std::wstring(
 						ObjectPathCanonical(animation.ObjectPath));
@@ -7158,7 +8095,7 @@ struct Control::DeclarativeVisualStateRuntime
 
 		for (auto& sourceTrigger : eventTriggerDefinitions)
 		{
-			const auto* sourceEvent = Owner->FindDynamicEvent(
+			const auto* sourceEvent = Owner->FindDeclarativeEvent(
 				sourceTrigger.EventName);
 			if (sourceTrigger.EventName.empty() || !sourceEvent)
 				return fail(L"EventTrigger 事件不存在："
@@ -7199,7 +8136,6 @@ struct Control::DeclarativeVisualStateRuntime
 						RuntimeAnimation animation;
 						if (!TryBuildAnimation(sourceAnimation, animation,
 							L"BeginStoryboard", outError)) return false;
-						animation.RestoreBaseOnStop = true;
 						PropertyKey key{ animation.Target,
 							animation.PropertyName };
 						const auto path = std::wstring(
@@ -7258,7 +8194,7 @@ struct Control::DeclarativeVisualStateRuntime
 			}
 
 		Connections.push_back(Owner->OnPropertyValueChanged.Subscribe(
-			[this](Control*, const ControlPropertyChangedEventArgs& args)
+			[this](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{ OnHostPropertyChanged(args); }));
 		Connections.push_back(Owner->OnDeclarativeEvent.Subscribe(
 			[this](Control*, DeclarativeEventArgs& args)
@@ -7307,7 +8243,7 @@ bool Control::DefineDeclarativeInteractions(
 }
 
 bool Control::SynchronizeStyleTriggerActions(
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	const std::shared_ptr<const ControlStyleSheet>& sheet,
 	const ControlStyleResolution& resolution)
 {
@@ -7324,7 +8260,7 @@ bool Control::SynchronizeStyleTriggerActions(
 }
 
 void Control::PruneStyleTriggerActions(
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets)
 {
 	if (!_declarativeVisualStates) return;
@@ -7445,70 +8381,17 @@ bool Control::AdvanceVisualStateAnimations(
 		&& _declarativeVisualStates->AdvanceAnimations(nowMilliseconds);
 }
 
-bool Control::TrySetValue(
-	const std::wstring& propertyName,
-	const BindingValue& value)
-{
-	return TrySetCurrentPropertyValue(propertyName, value);
-}
-
-bool Control::TryGetPropertyMetadata(
-	const std::wstring& propertyName,
-	BindingSourcePropertyMetadata& out) const
-{
-	auto& target = *const_cast<Control*>(this);
-	const auto* metadata = BindingPropertyRegistry::Find(target, propertyName);
-	if (!metadata) return false;
-	out.Name = metadata->Name();
-	out.ValueKind = metadata->ValueKind();
-	out.ValueType = metadata->ValueType();
-	out.CanRead = metadata->CanRead();
-	out.CanWrite = metadata->CanWrite();
-	// Every metadata-backed Control write is published by
-	// ApplyPropertyMetadataChange through PropertyChanged(). Individual metadata
-	// subscribers remain useful for legacy interaction events, but are not the
-	// boundary of the Control's IBindingSource observability.
-	out.CanObserve = true;
-	return true;
-}
-
-PropertyChangedEvent& Control::PropertyChanged()
-{
-	if (!_bindingSourceMetadataConnectionsInitialized)
-	{
-		_bindingSourceMetadataConnectionsInitialized = true;
-		for (const auto* metadata : BindingPropertyRegistry::GetProperties(*this))
-		{
-			if (!metadata || !metadata->CanObserve()) continue;
-			auto connection = metadata->Subscribe(
-				*this,
-				[this, metadata]
-				{
-					// A metadata write publishes once from ApplyPropertyMetadataChange.
-					// This bridge is for legacy/user-interaction events that otherwise
-					// bypass the property system's IBindingSource notification.
-					if (_applyingPropertyMetadata == metadata) return;
-					_bindingSourcePropertyChanged.Notify(metadata->Name());
-				},
-				DataSourceUpdateMode::OnPropertyChanged);
-			if (connection.Connected())
-				_bindingSourceMetadataConnections.push_back(std::move(connection));
-		}
-	}
-	return _bindingSourcePropertyChanged;
-}
-
 bool Control::SetDataContext(BindingSourceReference value)
 {
 	return TrySetPropertyValue(
 		L"DataContext", BindingValue(std::move(value)),
-		ControlPropertyValueSource::Local);
+		DependencyPropertyValueSource::Local);
 }
 
 bool Control::ClearDataContext()
 {
 	return ClearPropertyValue(
-		L"DataContext", ControlPropertyValueSource::Local);
+		L"DataContext", DependencyPropertyValueSource::Local);
 }
 
 IBindingSource& Control::DataContextSource()
@@ -7521,11 +8404,13 @@ IBindingSource& Control::DataContextSource()
 
 void Control::SetInheritedDataContext(BindingSourceReference value)
 {
-	if (_inheritedDataContext == value) return;
-	_inheritedDataContext = std::move(value);
-	if (GetPropertyValueSource(L"DataContext")
-		== ControlPropertyValueSource::Default)
-		UpdateEffectiveDataContext(_inheritedDataContext);
+	if (value)
+		(void)TrySetPropertyValue(
+			L"DataContext", BindingValue(std::move(value)),
+			DependencyPropertyValueSource::Inherited);
+	else
+		(void)ClearPropertyValue(
+			L"DataContext", DependencyPropertyValueSource::Inherited);
 }
 
 void Control::UpdateEffectiveDataContext(BindingSourceReference value)
@@ -7539,74 +8424,52 @@ void Control::UpdateEffectiveDataContext(BindingSourceReference value)
 	_dataContextChanged.Notify(L"DataContext");
 	if (!_applyingPropertyMetadata)
 		_bindingSourcePropertyChanged.Notify(L"DataContext");
-	for (auto* child : Children)
-		if (child) child->SetInheritedDataContext(_effectiveDataContext);
 }
 
-std::vector<BindingSourcePropertyMetadata> Control::GetProperties() const
+GET_CPP(Control, BindingValue, Tag)
 {
-	auto& target = *const_cast<Control*>(this);
-	std::vector<BindingSourcePropertyMetadata> result;
-	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
-	{
-		if (!metadata) continue;
-		result.push_back({
-			metadata->Name(), metadata->ValueKind(), metadata->ValueType(),
-			metadata->CanRead(), metadata->CanWrite(), true });
-	}
-	return result;
+	return _tag;
 }
 
-GET_CPP(Control, bool, ShowValidationBorder)
+SET_CPP(Control, BindingValue, Tag)
 {
-	return _showValidationBorder;
+	(void)SetPropertyField(L"Tag", _tag, std::move(value));
 }
 
-SET_CPP(Control, bool, ShowValidationBorder)
+GET_CPP(Control, CursorKind, Cursor)
 {
-	SetPropertyField(L"ShowValidationBorder", _showValidationBorder, value);
+	return _cursor;
 }
 
-GET_CPP(Control, bool, ShowValidationToolTip)
+SET_CPP(Control, CursorKind, Cursor)
 {
-	return _showValidationToolTip;
+	(void)SetPropertyField(L"Cursor", _cursor, value);
 }
 
-SET_CPP(Control, bool, ShowValidationToolTip)
+CursorKind Control::ResolvePointerCursor(int localX, int localY)
 {
-	SetPropertyField(L"ShowValidationToolTip", _showValidationToolTip, value);
+	// Auto is the native projection of WPF's null/default Cursor. It remains
+	// inheritable without suppressing a behavior host's region-sensitive cursor.
+	// Every concrete shape is authoritative regardless of its value source.
+	return Cursor == CursorKind::Auto
+		? QueryCursor(localX, localY) : Cursor;
 }
 
-GET_CPP(Control, float, ValidationBorderThickness)
+GET_CPP(Control, bool, Focusable)
 {
-	return _validationBorderThickness;
+	return _focusable;
 }
 
-SET_CPP(Control, float, ValidationBorderThickness)
+SET_CPP(Control, bool, Focusable)
 {
-	SetPropertyField(
-		L"ValidationBorderThickness", _validationBorderThickness, value);
-}
-
-GET_CPP(Control, float, ValidationCornerRadius)
-{
-	return _validationCornerRadius;
-}
-
-SET_CPP(Control, float, ValidationCornerRadius)
-{
-	SetPropertyField(L"ValidationCornerRadius", _validationCornerRadius, value);
-}
-
-GET_CPP(Control, float, ValidationToolTipMaxWidth)
-{
-	return _validationToolTipMaxWidth;
-}
-
-SET_CPP(Control, float, ValidationToolTipMaxWidth)
-{
-	SetPropertyField(
-		L"ValidationToolTipMaxWidth", _validationToolTipMaxWidth, value);
+	if (!SetPropertyField(L"Focusable", _focusable, value)) return;
+	if (!_focusable && GetPresentationWindow()
+		&& GetPresentationWindow()->GetKeyboardFocusedElement() == this)
+		GetPresentationWindow()->SetKeyboardFocus(
+			nullptr, true, FocusChangeReason::EligibilityChanged);
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(
+			this, AccessibilityChange::State);
 }
 
 GET_CPP(Control, bool, IsTabStop)
@@ -7616,8 +8479,8 @@ GET_CPP(Control, bool, IsTabStop)
 
 SET_CPP(Control, bool, IsTabStop)
 {
-	if (SetPropertyField(L"IsTabStop", _isTabStop, value) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::State);
+	if (SetPropertyField(L"IsTabStop", _isTabStop, value) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::State);
 }
 
 GET_CPP(Control, int, TabIndex)
@@ -7627,55 +8490,158 @@ GET_CPP(Control, int, TabIndex)
 
 SET_CPP(Control, int, TabIndex)
 {
-	if (SetPropertyField(L"TabIndex", _tabIndex, (std::max)(0, value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
+	if (SetPropertyField(L"TabIndex", _tabIndex, (std::max)(0, value)) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
 }
 
-GET_CPP(Control, std::wstring, AccessKey)
+GET_CPP(Control, bool, IsFocused)
 {
-	return _accessKey;
+	return _isFocused;
 }
 
-SET_CPP(Control, std::wstring, AccessKey)
+GET_CPP(Control, bool, IsKeyboardFocused)
 {
-	if (value.size() > 1) value.resize(1);
-	if (!value.empty()) value[0] = static_cast<wchar_t>(std::towupper(value[0]));
-	if (SetPropertyField(L"AccessKey", _accessKey, std::move(value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::State);
+	return _isKeyboardFocused;
 }
 
-GET_CPP(Control, std::wstring, AccessibleName)
+GET_CPP(Control, bool, IsKeyboardFocusWithin)
 {
-	return _accessibleName;
+	return _isKeyboardFocusWithin;
 }
 
-SET_CPP(Control, std::wstring, AccessibleName)
+GET_CPP(Control, bool, IsMouseOver)
 {
-	if (SetPropertyField(L"AccessibleName", _accessibleName, std::move(value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Name);
+	return _isMouseOver;
 }
 
-GET_CPP(Control, std::wstring, AccessibleDescription)
+GET_CPP(Control, bool, IsMouseDirectlyOver)
 {
-	return _accessibleDescription;
+	return _isMouseDirectlyOver;
 }
 
-SET_CPP(Control, std::wstring, AccessibleDescription)
+void Control::SetIsFocusedCore(bool value)
+{
+	if (_isFocused == value) return;
+	if (!SetReadOnlyPropertyField(L"IsFocused", _isFocused, value)) return;
+	SetStyleState(ControlStyleState::LogicalFocused, value);
+}
+
+void Control::SetIsKeyboardFocusedCore(bool value)
+{
+	if (_isKeyboardFocused == value) return;
+	if (!SetReadOnlyPropertyField(
+		L"IsKeyboardFocused", _isKeyboardFocused, value)) return;
+	if (!value)
+	{
+		// Caret animation is presentation state owned by the focused element.
+		// Do not wait for a later OnRender to retire it: focus can move while the
+		// old editor is culled or while input capture keeps producing frames.
+		_caretBlinkFocused = false;
+		_caretBlinkRectValid = false;
+		_caretBlinkRect = { 0, 0, 0, 0 };
+	}
+	_defaultLeftButtonPressActive = value
+		? _defaultLeftButtonPressActive : false;
+	SetStyleState(ControlStyleState::Focused, value);
+	if (!value) SetStyleState(ControlStyleState::Pressed, false);
+}
+
+void Control::SetIsKeyboardFocusWithinCore(bool value)
+{
+	if (_isKeyboardFocusWithin == value) return;
+	if (!SetReadOnlyPropertyField(
+		L"IsKeyboardFocusWithin", _isKeyboardFocusWithin, value)) return;
+	SetStyleState(ControlStyleState::KeyboardFocusWithin, value);
+}
+
+void Control::SetMouseOverCore(
+	bool isMouseOver, bool isMouseDirectlyOver)
+{
+	isMouseDirectlyOver = isMouseOver && isMouseDirectlyOver;
+	const bool previous = _isMouseOver;
+	if (_isMouseDirectlyOver != isMouseDirectlyOver)
+		(void)SetReadOnlyPropertyField(
+			L"IsMouseDirectlyOver", _isMouseDirectlyOver,
+			isMouseDirectlyOver);
+	if (_isMouseOver == isMouseOver) return;
+	(void)SetReadOnlyPropertyField(L"IsMouseOver", _isMouseOver, isMouseOver);
+	SetStyleState(ControlStyleState::Hovered, isMouseOver);
+	OnIsMouseOverChanged(previous, isMouseOver);
+}
+
+GET_CPP(Control, bool, IsFocusScope)
+{
+	return _isFocusScope;
+}
+
+SET_CPP(Control, bool, IsFocusScope)
 {
 	if (SetPropertyField(
-		L"AccessibleDescription", _accessibleDescription, std::move(value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Description);
+		L"FocusManager.IsFocusScope", _isFocusScope, value) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
 }
 
-GET_CPP(Control, std::wstring, AccessibleHelpText)
+GET_CPP(Control, KeyboardNavigationMode, TabNavigation)
 {
-	return _accessibleHelpText;
+	return _tabNavigation;
 }
 
-SET_CPP(Control, std::wstring, AccessibleHelpText)
+SET_CPP(Control, KeyboardNavigationMode, TabNavigation)
 {
-	if (SetPropertyField(L"AccessibleHelpText", _accessibleHelpText, std::move(value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Help);
+	if (SetPropertyField(
+		L"KeyboardNavigation.TabNavigation", _tabNavigation, value)
+		&& GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
+}
+
+GET_CPP(Control, KeyboardNavigationMode, DirectionalNavigation)
+{
+	return _directionalNavigation;
+}
+
+SET_CPP(Control, KeyboardNavigationMode, DirectionalNavigation)
+{
+	if (SetPropertyField(
+		L"KeyboardNavigation.DirectionalNavigation",
+		_directionalNavigation, value) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
+}
+
+GET_CPP(Control, std::wstring, AutomationName)
+{
+	return _automationName;
+}
+
+SET_CPP(Control, std::wstring, AutomationName)
+{
+	if (SetPropertyField(
+		L"AutomationProperties.Name", _automationName, std::move(value))
+		&& GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Name);
+}
+
+GET_CPP(Control, std::wstring, AutomationFullDescription)
+{
+	return _automationFullDescription;
+}
+
+SET_CPP(Control, std::wstring, AutomationFullDescription)
+{
+	if (SetPropertyField(L"AutomationProperties.FullDescription",
+		_automationFullDescription, std::move(value)) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Description);
+}
+
+GET_CPP(Control, std::wstring, AutomationHelpText)
+{
+	return _automationHelpText;
+}
+
+SET_CPP(Control, std::wstring, AutomationHelpText)
+{
+	if (SetPropertyField(L"AutomationProperties.HelpText",
+		_automationHelpText, std::move(value)) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Help);
 }
 
 GET_CPP(Control, std::wstring, AutomationId)
@@ -7685,54 +8651,9 @@ GET_CPP(Control, std::wstring, AutomationId)
 
 SET_CPP(Control, std::wstring, AutomationId)
 {
-	if (SetPropertyField(L"AutomationId", _automationId, std::move(value)) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Structure);
-}
-
-GET_CPP(Control, ::AccessibleRole, AccessibleRole)
-{
-	return _accessibleRole;
-}
-
-SET_CPP(Control, ::AccessibleRole, AccessibleRole)
-{
-	if (SetPropertyField(L"AccessibleRole", _accessibleRole, value) && ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::State);
-}
-
-GET_CPP(Control, bool, ShowFocusVisual)
-{
-	return _showFocusVisual;
-}
-
-SET_CPP(Control, bool, ShowFocusVisual)
-{
-	SetPropertyField(L"ShowFocusVisual", _showFocusVisual, value);
-}
-
-GET_CPP(Control, D2D1_COLOR_F, FocusVisualColor)
-{
-	return ParentForm
-		? ParentForm->GetEffectiveFocusColor(_focusVisualColor)
-		: _focusVisualColor;
-}
-
-SET_CPP(Control, D2D1_COLOR_F, FocusVisualColor)
-{
-	SetPropertyField(L"FocusVisualColor", _focusVisualColor, value);
-}
-
-GET_CPP(Control, float, FocusVisualThickness)
-{
-	return _focusVisualThickness;
-}
-
-SET_CPP(Control, float, FocusVisualThickness)
-{
-	const float normalized = std::isfinite(value)
-		? (std::clamp)(value, 0.0f, 8.0f)
-		: 1.5f;
-	SetPropertyField(L"FocusVisualThickness", _focusVisualThickness, normalized);
+	if (SetPropertyField(L"AutomationProperties.AutomationId",
+		_automationId, std::move(value)) && GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Structure);
 }
 
 std::vector<BindingValidationResult> Control::GetValidationResults() const
@@ -7799,24 +8720,22 @@ std::wstring Control::GetValidationSummary(size_t maxIssues) const
 	return summary;
 }
 
-std::wstring Control::GetEffectiveAccessibleDescription() const
+std::wstring Control::GetEffectiveAutomationFullDescription() const
 {
 	const auto validation = GetValidationSummary();
-	if (_accessibleDescription.empty()) return validation;
-	if (validation.empty()) return _accessibleDescription;
-	return _accessibleDescription + L"\r\n" + validation;
+	if (_automationFullDescription.empty()) return validation;
+	if (validation.empty()) return _automationFullDescription;
+	return _automationFullDescription + L"\r\n" + validation;
 }
 
-std::wstring Control::GetEffectiveAccessibleName() const
+std::wstring Control::GetEffectiveAutomationName() const
 {
-	if (!_accessibleName.empty()) return _accessibleName;
+	if (!_automationName.empty()) return _automationName;
 	// Editable content is a value, not a label. Password content must never leak.
-	switch (const_cast<Control*>(this)->Type())
+	switch (GetAutomationPeer().GetAutomationControlType())
 	{
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox:
-	case UIClass::UI_PasswordBox:
-	case UIClass::UI_ComboBox:
+	case AutomationControlType::Edit:
+	case AutomationControlType::ComboBox:
 		return {};
 	default:
 		break;
@@ -7826,37 +8745,39 @@ std::wstring Control::GetEffectiveAccessibleName() const
 
 std::wstring Control::GetDisplayText() const
 {
-	switch (GetEffectiveAccessibleRole())
+	const auto semanticText = GetSemanticText();
+	switch (GetAutomationPeer().GetAutomationControlType())
 	{
-	case ::AccessibleRole::Button:
-	case ::AccessibleRole::Link:
-	case ::AccessibleRole::CheckBox:
-	case ::AccessibleRole::RadioButton:
-	case ::AccessibleRole::Switch:
-	case ::AccessibleRole::Group:
-	case ::AccessibleRole::MenuItem:
-	case ::AccessibleRole::TabItem:
-		return StripAccessKeyMarkers(_text);
+	case AutomationControlType::Button:
+	case AutomationControlType::Hyperlink:
+	case AutomationControlType::CheckBox:
+	case AutomationControlType::RadioButton:
+	case AutomationControlType::Group:
+	case AutomationControlType::MenuItem:
+	case AutomationControlType::TabItem:
+		return StripAccessKeyMarkers(semanticText);
 	default:
-		return _text;
+		return semanticText;
 	}
+}
+
+std::wstring Control::GetSemanticText() const
+{
+	return _text;
 }
 
 wchar_t Control::GetEffectiveAccessKey() const
 {
-	if (!_accessKey.empty())
-		return static_cast<wchar_t>(std::towupper(_accessKey.front()));
-	switch (GetEffectiveAccessibleRole())
+	switch (GetAutomationPeer().GetAutomationControlType())
 	{
-	case ::AccessibleRole::Button:
-	case ::AccessibleRole::Link:
-	case ::AccessibleRole::CheckBox:
-	case ::AccessibleRole::RadioButton:
-	case ::AccessibleRole::Switch:
-	case ::AccessibleRole::Group:
-	case ::AccessibleRole::MenuItem:
-	case ::AccessibleRole::TabItem:
-		return FindAccessKeyMarker(_text);
+	case AutomationControlType::Button:
+	case AutomationControlType::Hyperlink:
+	case AutomationControlType::CheckBox:
+	case AutomationControlType::RadioButton:
+	case AutomationControlType::Group:
+	case AutomationControlType::MenuItem:
+	case AutomationControlType::TabItem:
+		return FindAccessKeyMarker(GetSemanticText());
 	default:
 		return L'\0';
 	}
@@ -7868,131 +8789,301 @@ std::wstring Control::GetEffectiveKeyboardShortcut() const
 	return key == L'\0' ? std::wstring{} : std::wstring(L"Alt+") + key;
 }
 
-::AccessibleRole Control::GetEffectiveAccessibleRole() const
-{
-	if (_accessibleRole != ::AccessibleRole::Default)
-		return _accessibleRole;
-
-	switch (const_cast<Control*>(this)->Type())
-	{
-	case UIClass::UI_Label: return ::AccessibleRole::Text;
-	case UIClass::UI_LinkLabel: return ::AccessibleRole::Link;
-	case UIClass::UI_Button: return ::AccessibleRole::Button;
-	case UIClass::UI_CheckBox: return ::AccessibleRole::CheckBox;
-	case UIClass::UI_RadioBox: return ::AccessibleRole::RadioButton;
-	case UIClass::UI_Switch: return ::AccessibleRole::Switch;
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox: return ::AccessibleRole::TextBox;
-	case UIClass::UI_PasswordBox: return ::AccessibleRole::PasswordBox;
-	case UIClass::UI_ComboBox:
-	case UIClass::UI_DateTimePicker:
-	case UIClass::UI_ColorPicker:
-	case UIClass::UI_NumericUpDown: return ::AccessibleRole::ComboBox;
-	case UIClass::UI_ListView:
-	case UIClass::UI_ListBox:
-	case UIClass::UI_ItemsControl:
-	case UIClass::UI_NavigationView:
-	case UIClass::UI_SideBar: return ::AccessibleRole::List;
-	case UIClass::UI_SelectorItem:
-	case UIClass::UI_ComboBoxItem:
-	case UIClass::UI_TreeViewItem: return ::AccessibleRole::ListItem;
-	case UIClass::UI_GridView:
-	case UIClass::UI_PropertyGrid:
-	case UIClass::UI_PagedGridView:
-	case UIClass::UI_ReportView: return ::AccessibleRole::Table;
-	case UIClass::UI_TreeView: return ::AccessibleRole::Tree;
-	case UIClass::UI_TabControl: return ::AccessibleRole::Tab;
-	case UIClass::UI_TabPage: return ::AccessibleRole::TabItem;
-	case UIClass::UI_Menu:
-	case UIClass::UI_ContextMenu: return ::AccessibleRole::Menu;
-	case UIClass::UI_MenuItem: return ::AccessibleRole::MenuItem;
-	case UIClass::UI_ToolBar: return ::AccessibleRole::ToolBar;
-	case UIClass::UI_StatusBar: return ::AccessibleRole::StatusBar;
-	case UIClass::UI_Slider: return ::AccessibleRole::Slider;
-	case UIClass::UI_ProgressBar:
-	case UIClass::UI_ProgressRing:
-	case UIClass::UI_LoadingRing: return ::AccessibleRole::ProgressBar;
-	case UIClass::UI_PictureBox:
-	case UIClass::UI_ChartView: return ::AccessibleRole::Image;
-	case UIClass::UI_WebBrowser: return ::AccessibleRole::Document;
-	case UIClass::UI_GroupBox:
-	case UIClass::UI_Expander: return ::AccessibleRole::Group;
-	case UIClass::UI_Panel:
-	case UIClass::UI_NativeSurface:
-	case UIClass::UI_ScrollView:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-	case UIClass::UI_SplitContainer:
-	case UIClass::UI_ContentPresenter: return ::AccessibleRole::Pane;
-	case UIClass::UI_ItemsPresenter: return ::AccessibleRole::Pane;
-	case UIClass::UI_ContentControl: return ::AccessibleRole::Group;
-	default: return ::AccessibleRole::Custom;
-	}
-}
-
-bool Control::IsKeyboardFocusable() const
-{
-	switch (const_cast<Control*>(this)->Type())
-	{
-	case UIClass::UI_LinkLabel:
-	case UIClass::UI_Button:
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox:
-	case UIClass::UI_PasswordBox:
-	case UIClass::UI_ComboBox:
-	case UIClass::UI_ListView:
-	case UIClass::UI_ListBox:
-	case UIClass::UI_GridView:
-	case UIClass::UI_PropertyGrid:
-	case UIClass::UI_CheckBox:
-	case UIClass::UI_RadioBox:
-	case UIClass::UI_TreeView:
-	case UIClass::UI_TabControl:
-	case UIClass::UI_Switch:
-	case UIClass::UI_Slider:
-	case UIClass::UI_WebBrowser:
-	case UIClass::UI_MediaPlayer:
-	case UIClass::UI_SplitContainer:
-	case UIClass::UI_DateTimePicker:
-	case UIClass::UI_FilterBar:
-	case UIClass::UI_NavigationView:
-	case UIClass::UI_SideBar:
-	case UIClass::UI_BreadcrumbBar:
-	case UIClass::UI_CalendarView:
-	case UIClass::UI_DateRangePicker:
-	case UIClass::UI_ColorPicker:
-	case UIClass::UI_PagedGridView:
-	case UIClass::UI_NumericUpDown:
-	case UIClass::UI_Expander:
-	case UIClass::UI_NativeSurface:
-		return true;
-	default:
-		return false;
-	}
-}
-
 bool Control::CanReceiveKeyboardFocus() const
 {
-	if (!_isTabStop || !IsKeyboardFocusable() || !Enable || !_visible)
-		return false;
-	for (auto* ancestor = Parent; ancestor; ancestor = ancestor->Parent)
+	return _focusable && IsEffectivelyEnabled() && GetIsVisible();
+}
+
+bool Control::GetIsVisible() const
+{
+	const Control* current = this;
+	const Control* fast = this;
+	while (current)
 	{
-		if (!ancestor->Enable || !ancestor->_visible)
-			return false;
+		if (current->_presentationSuppressed
+			|| current->_visibility != ::Visibility::Visible) return false;
+		current = current->_visualParent;
+		if (fast) fast = fast->_visualParent;
+		if (fast) fast = fast->_visualParent;
+		if (current && current == fast) return false;
 	}
 	return true;
 }
 
+bool Control::IsEffectivelyEnabled() const noexcept
+{
+	const Control* current = this;
+	const Control* fast = this;
+	while (current)
+	{
+		if (!current->_localEnabled
+			|| (current->_hasCommandCanExecute
+				&& !current->_commandCanExecute))
+			return false;
+		current = current->GetRoutedParent();
+		if (fast) fast = fast->GetRoutedParent();
+		if (fast) fast = fast->GetRoutedParent();
+		if (current && current == fast) return false;
+	}
+	return true;
+}
+
+namespace
+{
+	void CaptureEffectiveIsEnabledSubtree(
+		Control& root,
+		std::vector<std::pair<ControlWeakReference, bool>>& snapshot,
+		std::unordered_set<Control*>& visited)
+	{
+		if (!visited.insert(&root).second) return;
+		snapshot.emplace_back(
+			ControlWeakReference(&root), root.IsEffectivelyEnabled());
+		for (auto* child : root.GetLayoutChildrenView())
+			if (child && child->GetRoutedParent() == &root)
+				CaptureEffectiveIsEnabledSubtree(*child, snapshot, visited);
+		for (auto* child : root.GetLogicalChildrenView())
+			if (child && child->GetRoutedParent() == &root)
+				CaptureEffectiveIsEnabledSubtree(*child, snapshot, visited);
+	}
+
+	std::vector<std::pair<ControlWeakReference, bool>>
+		CaptureEffectiveIsEnabledSubtree(
+		Control& root)
+	{
+		std::vector<std::pair<ControlWeakReference, bool>> snapshot;
+		std::unordered_set<Control*> visited;
+		CaptureEffectiveIsEnabledSubtree(root, snapshot, visited);
+		return snapshot;
+	}
+
+	void CaptureEffectiveIsVisibleSubtree(
+		Control& root,
+		std::vector<std::pair<ControlWeakReference, bool>>& snapshot,
+		std::unordered_set<Control*>& visited)
+	{
+		if (!visited.insert(&root).second) return;
+		snapshot.emplace_back(
+			ControlWeakReference(&root), root.GetIsVisible());
+		for (auto* child : root.GetLayoutChildrenView())
+			if (child && child->GetVisualParent() == &root)
+				CaptureEffectiveIsVisibleSubtree(*child, snapshot, visited);
+	}
+
+	std::vector<std::pair<ControlWeakReference, bool>>
+		CaptureEffectiveIsVisibleSubtree(Control& root)
+	{
+		std::vector<std::pair<ControlWeakReference, bool>> snapshot;
+		std::unordered_set<Control*> visited;
+		CaptureEffectiveIsVisibleSubtree(root, snapshot, visited);
+		return snapshot;
+	}
+}
+
+void Control::PublishEffectiveIsEnabledChanges(
+	std::vector<std::pair<ControlWeakReference, bool>> snapshot)
+{
+	std::vector<ControlWeakReference> cursorRefreshWindows;
+	for (const auto& [elementReference, previousValue] : snapshot)
+	{
+		auto* element = elementReference.Get();
+		if (!element || element->IsDestroying()) continue;
+		const bool current = element->IsEffectivelyEnabled();
+		if (current == previousValue) continue;
+		if (const auto* metadata = element->FindPropertyMetadata(L"IsEnabled"))
+		{
+			// Command availability is an effective-value coercion, not a new
+			// local value. Publish it through the dependency-property channel so
+			// bindings, triggers and accessibility stay coherent.
+			element->ApplyPropertyMetadataChange(
+				*metadata, BindingValue(previousValue), BindingValue(current));
+		}
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->IsEffectivelyEnabled() != current) continue;
+		element->OnEffectiveIsEnabledChanged(previousValue, current);
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->IsEffectivelyEnabled() != current) continue;
+		element->RefreshStyleValues(false);
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->IsEffectivelyEnabled() != current) continue;
+		element->InvalidateVisual();
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->IsEffectivelyEnabled() != current) continue;
+		if (element->GetPresentationWindow())
+		{
+			ControlWeakReference windowReference(element->GetPresentationWindow());
+			auto resolveWindow = [&]() -> Window*
+			{
+				auto* liveElement = elementReference.Get();
+				auto* liveWindow = dynamic_cast<Window*>(windowReference.Get());
+				return liveElement && !liveElement->IsDestroying()
+					&& liveElement->IsEffectivelyEnabled() == current
+					&& liveWindow
+					&& liveElement->GetPresentationWindow() == liveWindow
+					? liveWindow : nullptr;
+			};
+			auto* window = resolveWindow();
+			if (!window) continue;
+			if (!current)
+			{
+				if (window->GetKeyboardFocusedElement() == element)
+					window->SetKeyboardFocus(
+						nullptr, true, FocusChangeReason::EligibilityChanged);
+				element = elementReference.Get();
+				window = resolveWindow();
+				if (!element || !window) continue;
+				if (window->GetMouseCaptured() == element)
+					(void)window->ReleaseMouseCapture(element);
+				element = elementReference.Get();
+				window = resolveWindow();
+				if (!element || !window) continue;
+				if (element->IsMouseOver)
+					cursorRefreshWindows.emplace_back(window);
+			}
+			element = elementReference.Get();
+			window = resolveWindow();
+			if (!element || !window) continue;
+			window->NotifyAccessibilityEvent(
+				element, AccessibilityChange::State);
+		}
+	}
+	for (const auto& windowReference : cursorRefreshWindows)
+		if (auto* window = dynamic_cast<Window*>(windowReference.Get()))
+			cui::framework::WindowAccess::UpdateCursorFromCurrentMouse(*window);
+}
+
+void Control::PublishEffectiveIsVisibleChanges(
+	std::vector<std::pair<ControlWeakReference, bool>> snapshot)
+{
+	std::vector<ControlWeakReference> cursorRefreshWindows;
+	for (const auto& [elementReference, previousValue] : snapshot)
+	{
+		auto* element = elementReference.Get();
+		if (!element || element->IsDestroying()) continue;
+		const bool current = element->GetIsVisible();
+		if (current == previousValue) continue;
+		if (const auto* metadata = element->FindPropertyMetadata(L"IsVisible"))
+			element->ApplyPropertyMetadataChange(
+				*metadata, BindingValue(previousValue), BindingValue(current));
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->GetIsVisible() != current) continue;
+		element->OnEffectiveIsVisibleChanged(previousValue, current);
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->GetIsVisible() != current) continue;
+		DependencyPropertyChangedEventArgs visibleChanged{
+			L"IsVisible", BindingValue(previousValue), BindingValue(current) };
+		cui::framework::EventAccess::Raise(
+			element->IsVisibleChanged, element, visibleChanged);
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->GetIsVisible() != current) continue;
+		element->RefreshStyleValues(false);
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->GetIsVisible() != current) continue;
+		element->InvalidateVisual();
+		element = elementReference.Get();
+		if (!element || element->IsDestroying()
+			|| element->GetIsVisible() != current || !element->GetPresentationWindow()) continue;
+		ControlWeakReference windowReference(element->GetPresentationWindow());
+		auto* window = dynamic_cast<Window*>(windowReference.Get());
+		if (!window || element->GetPresentationWindow() != window) continue;
+		if (!current)
+		{
+			auto* focused = window->GetKeyboardFocusedElement();
+			std::unordered_set<Control*> visited;
+			for (auto* candidate = focused;
+				candidate && visited.insert(candidate).second;
+				candidate = candidate->GetVisualParent())
+				if (candidate == element)
+				{
+					window->SetKeyboardFocus(
+						nullptr, true, FocusChangeReason::EligibilityChanged);
+					break;
+				}
+			element = elementReference.Get();
+			window = dynamic_cast<Window*>(windowReference.Get());
+			if (!element || !window || element->GetPresentationWindow() != window) continue;
+			if (window->GetMouseCaptured() == element)
+				(void)window->ReleaseMouseCapture(element);
+			element = elementReference.Get();
+			window = dynamic_cast<Window*>(windowReference.Get());
+			if (!element || !window || element->GetPresentationWindow() != window) continue;
+			if (element->IsMouseOver)
+				cursorRefreshWindows.emplace_back(window);
+		}
+		element = elementReference.Get();
+		window = dynamic_cast<Window*>(windowReference.Get());
+		if (element && window && element->GetPresentationWindow() == window)
+			window->NotifyAccessibilityEvent(
+				element, AccessibilityChange::State);
+	}
+	for (const auto& windowReference : cursorRefreshWindows)
+		if (auto* window = dynamic_cast<Window*>(windowReference.Get()))
+			cui::framework::WindowAccess::UpdateCursorFromCurrentMouse(*window);
+}
+
+void Control::SetLocalEnabled(bool value)
+{
+	VerifyAccess();
+	if (_localEnabled == value) return;
+	auto snapshot = CaptureEffectiveIsEnabledSubtree(*this);
+	_localEnabled = value;
+	PublishEffectiveIsEnabledChanges(std::move(snapshot));
+}
+
+void Control::SetCommandCanExecuteState(bool value)
+{
+	VerifyAccess();
+	if (_hasCommandCanExecute && _commandCanExecute == value) return;
+	auto snapshot = CaptureEffectiveIsEnabledSubtree(*this);
+	_hasCommandCanExecute = true;
+	_commandCanExecute = value;
+	PublishEffectiveIsEnabledChanges(std::move(snapshot));
+}
+
+void Control::ClearCommandCanExecuteState()
+{
+	VerifyAccess();
+	if (!_hasCommandCanExecute) return;
+	auto snapshot = CaptureEffectiveIsEnabledSubtree(*this);
+	_hasCommandCanExecute = false;
+	_commandCanExecute = true;
+	PublishEffectiveIsEnabledChanges(std::move(snapshot));
+}
+
+bool Control::CanParticipateInTabNavigation() const
+{
+	return _isTabStop && CanReceiveKeyboardFocus();
+}
+
 bool Control::Focus()
 {
-	if (!ParentForm || !CanReceiveKeyboardFocus()) return false;
-	if (ParentForm->Handle && ::GetFocus() != ParentForm->Handle)
-		::SetFocus(ParentForm->Handle);
-	ParentForm->SetSelectedControl(this, true);
-	return ParentForm->Selected == this;
+	if (!GetPresentationWindow() || !CanReceiveKeyboardFocus()) return false;
+	if (GetPresentationWindow()->Handle && ::GetFocus() != GetPresentationWindow()->Handle)
+		::SetFocus(GetPresentationWindow()->Handle);
+	GetPresentationWindow()->SetKeyboardFocus(this, true);
+	return GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+}
+
+bool Control::CaptureMouse()
+{
+	return GetPresentationWindow() && GetPresentationWindow()->CaptureMouse(this);
+}
+
+bool Control::ReleaseMouseCapture()
+{
+	return GetPresentationWindow() && GetPresentationWindow()->ReleaseMouseCapture(this);
+}
+
+bool Control::IsMouseCaptured() const
+{
+	return GetPresentationWindow() && GetPresentationWindow()->GetMouseCaptured() == this;
 }
 
 bool Control::Invoke()
@@ -8002,7 +9093,7 @@ bool Control::Invoke()
 
 bool Control::AreSystemAnimationsEnabled() const
 {
-	return !ParentForm || ParentForm->AreSystemAnimationsEnabled();
+	return !GetPresentationWindow() || GetPresentationWindow()->AreSystemAnimationsEnabled();
 }
 
 UINT Control::EffectiveAnimationDuration(UINT configuredDurationMs) const
@@ -8013,35 +9104,29 @@ UINT Control::EffectiveAnimationDuration(UINT configuredDurationMs) const
 AccessibilitySnapshot Control::GetAccessibilitySnapshot() const
 {
 	AccessibilitySnapshot snapshot;
-	snapshot.Role = GetEffectiveAccessibleRole();
-	snapshot.Name = GetEffectiveAccessibleName();
-	snapshot.Description = GetEffectiveAccessibleDescription();
-	snapshot.HelpText = _accessibleHelpText;
+	auto& peer = GetAutomationPeer();
+	snapshot.ControlType = peer.GetAutomationControlType();
+	snapshot.Name = GetEffectiveAutomationName();
+	snapshot.Description = GetEffectiveAutomationFullDescription();
+	snapshot.HelpText = _automationHelpText;
 	snapshot.AutomationId = _automationId;
 	snapshot.KeyboardShortcut = GetEffectiveKeyboardShortcut();
-	snapshot.Enabled = Enable;
-	snapshot.Visible = _visible;
-	for (auto* ancestor = Parent; ancestor; ancestor = ancestor->Parent)
-	{
-		snapshot.Enabled = snapshot.Enabled && ancestor->Enable;
-		snapshot.Visible = snapshot.Visible && ancestor->_visible;
-	}
+	snapshot.Enabled = IsEffectivelyEnabled();
+	snapshot.Visible = GetIsVisible();
 	snapshot.Focusable = CanReceiveKeyboardFocus();
-	snapshot.Focused = IsSelected();
-	snapshot.Selected = snapshot.Focused;
-	snapshot.Checked = Checked;
-	snapshot.Password = const_cast<Control*>(this)->Type() == UIClass::UI_PasswordBox;
-	snapshot.ReadOnly = IsAccessibilityReadOnly();
-	switch (const_cast<Control*>(this)->Type())
+	snapshot.Focused = _isKeyboardFocused;
+	if (!peer.TryGetSelectionItemSelected(snapshot.Selected))
 	{
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox:
-	case UIClass::UI_ComboBox:
-		snapshot.Value = _text;
-		break;
-	default:
-		break;
+		BindingValue selectedValue;
+		if (const_cast<Control*>(this)->TryGetPropertyValue(
+			L"IsSelected", selectedValue))
+			(void)selectedValue.TryGet(snapshot.Selected);
 	}
+	if (!peer.TryGetToggleState(snapshot.Checked))
+		snapshot.Checked = IsCheckedForAccessibility();
+	snapshot.Password = peer.IsPassword();
+	snapshot.ReadOnly = peer.IsReadOnly();
+	snapshot.Value = peer.GetValue();
 	if (snapshot.Value.empty() && !snapshot.Password)
 	{
 		BindingValue value;
@@ -8051,110 +9136,81 @@ AccessibilitySnapshot Control::GetAccessibilitySnapshot() const
 	return snapshot;
 }
 
-bool Control::ShouldShowValidationToolTip() const
-{
-	return _showValidationToolTip && HasValidationIssues();
-}
-
 void Control::OnBindingValidationChanged(
 	const std::wstring& targetProperty)
 {
+	auto nextErrors = GetValidationResults();
+	const bool nextHasError = std::any_of(
+		nextErrors.begin(), nextErrors.end(),
+		[](const BindingValidationResult& result)
+		{
+			return result.Issue.Severity == BindingValidationSeverity::Error;
+		});
+	if (_validationErrors != nextErrors)
+		(void)SetReadOnlyPropertyField(
+			L"Validation.Errors", _validationErrors, std::move(nextErrors));
+	if (_validationHasError != nextHasError)
+		(void)SetReadOnlyPropertyField(
+			L"Validation.HasError", _validationHasError, nextHasError);
 	InvalidateVisual();
-	if (ParentForm && ParentForm->UnderMouse == this)
-		ParentForm->Invalidate(false);
-	if (ParentForm)
-		ParentForm->NotifyAccessibilityEvent(
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(
 			this, AccessibilityChange::Description);
 	OnValidationStateChanged.Notify(targetProperty);
 }
 
 void Control::NotifyAccessibilityStructureChanged()
 {
-	if (ParentForm)
-		ParentForm->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
+}
+
+void Control::NotifyAccessibilityStateChanged()
+{
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::State);
+}
+
+void Control::NotifyAccessibilityValueChanged()
+{
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Value);
 }
 
 void Control::NotifyAccessibilityScrollChanged()
 {
-	if (ParentForm)
-		ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Scroll);
+	if (GetPresentationWindow())
+		GetPresentationWindow()->NotifyAccessibilityEvent(this, AccessibilityChange::Scroll);
 }
 
 void Control::NotifyAccessibilityVirtualChanged(
 	uint32_t virtualId, AccessibilityChange change)
 {
-	if (ParentForm && virtualId != 0)
-		ParentForm->NotifyAccessibilityVirtualEvent(this, virtualId, change);
+	if (GetPresentationWindow() && virtualId != 0)
+		GetPresentationWindow()->NotifyAccessibilityVirtualEvent(this, virtualId, change);
 }
 
-void Control::RenderFocusAdorner()
-{
-	if (!_showFocusVisual || _focusVisualThickness <= 0.0f
-		|| FocusVisualColor.a <= 0.0f || !IsSelected()
-		|| !ParentForm || !ParentForm->Render)
-		return;
-	if (!ParentForm->ShouldShowKeyboardFocusVisual()) return;
-	const auto size = GetActualSizeDip();
-	if (!(size.width > 0.0f) || !(size.height > 0.0f)) return;
-	const float thickness = (std::min)(_focusVisualThickness,
-		(std::min)(size.width, size.height));
-	const float inset = thickness * 0.5f + 1.0f;
-	const float width = (std::max)(0.0f, size.width - inset * 2.0f);
-	const float height = (std::max)(0.0f, size.height - inset * 2.0f);
-	const float radius = (std::min)(4.0f, (std::min)(width, height) * 0.5f);
-	ParentForm->Render->DrawRoundRect(
-		inset, inset, width, height, FocusVisualColor, thickness, radius);
-}
-
-void Control::RenderValidationAdorner()
-{
-	if (!_showValidationBorder || _validationBorderThickness <= 0.0f
-		|| !ParentForm || !ParentForm->Render)
-		return;
-	BindingValidationSeverity severity;
-	if (!TryGetValidationSeverity(severity)) return;
-
-	const auto size = GetActualSizeDip();
-	if (!(size.width > 0.0f) || !(size.height > 0.0f)) return;
-	const float thickness = (std::min)(_validationBorderThickness,
-		(std::min)(size.width, size.height));
-	const float inset = thickness * 0.5f;
-	const float width = (std::max)(0.0f, size.width - thickness);
-	const float height = (std::max)(0.0f, size.height - thickness);
-	const float radius = (std::min)(_validationCornerRadius,
-		(std::min)(width, height) * 0.5f);
-	const auto color = ParentForm
-		? ParentForm->GetValidationColor(severity)
-		: DefaultValidationColor(severity);
-	if (color.a <= 0.0f) return;
-	ParentForm->Render->DrawRoundRect(
-		inset, inset, width, height, color, thickness, radius);
-}
-
-void Control::EnsureBindingPropertiesRegistered()
+void Control::RegisterDependencyProperties()
 {
 	static std::once_flag once;
 	std::call_once(once, []
 	{
-		using Handler = BindingPropertyMetadata::ChangeHandler;
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
 		auto dataContextDesign = PropertyDesign(
-			L"Data", 250, 0, ControlPropertyPersistence::Transient);
+			L"Data", 250, 0, DependencyPropertyPersistence::Native);
 		dataContextDesign.Browsable = false;
-		ControlPropertyOptions<Control, BindingSourceReference> dataContextOptions;
+		DependencyPropertyOptions<Control, BindingSourceReference> dataContextOptions;
 		dataContextOptions.DefaultValue = BindingSourceReference{};
+		dataContextOptions.Flags = DependencyPropertyFlags::Inherits;
 		dataContextOptions.Equals = [](const BindingSourceReference& left,
 			const BindingSourceReference& right) { return left == right; };
 		dataContextOptions.Design = std::move(dataContextDesign);
-		BindingPropertyRegistry::Register<Control, BindingSourceReference>(
+		DependencyPropertyRegistry::Register<Control, BindingSourceReference>(
 			L"DataContext",
 			[](Control& target) { return target.GetDataContext(); },
 			[](Control& target, const BindingSourceReference& value)
 			{
-				target.UpdateEffectiveDataContext(
-					target._applyingPropertySource
-						== ControlPropertyValueSource::Default
-						? target._inheritedDataContext
-						: value);
+				target.UpdateEffectiveDataContext(value);
 			},
 			[](Control& target, Handler handler, DataSourceUpdateMode)
 			{
@@ -8163,335 +9219,420 @@ void Control::EnsureBindingPropertiesRegistered()
 					{ handler(); });
 			},
 			std::move(dataContextOptions));
-		auto checkedDesign = PropertyDesign(
-			L"Behavior", 300, 10, ControlPropertyPersistence::Metadata,
-			ControlPropertyEditorKind::Boolean);
-		checkedDesign.BrowsableWhen = [](Control& target)
-		{
-			switch (target.Type())
-			{
-			case UIClass::UI_Button:
-			case UIClass::UI_CheckBox:
-			case UIClass::UI_RadioBox:
-			case UIClass::UI_Switch:
-				return true;
-			default:
-				return false;
-			}
+		auto visibilityDesign = PropertyDesign(L"Common", 0, 30,
+			DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
+		visibilityDesign.Choices = {
+			PropertyChoice(L"Visible", std::wstring(L"Visible")),
+			PropertyChoice(L"Hidden", std::wstring(L"Hidden")),
+			PropertyChoice(L"Collapsed", std::wstring(L"Collapsed"))
 		};
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"Text",
-			[](Control& target) { return target.Text; },
-			[](Control& target, const std::wstring& value) { target.Text = value; },
-			[](Control& target, Handler handler, DataSourceUpdateMode mode)
+		DependencyPropertyOptions<Control, std::wstring> visibilityOptions;
+		visibilityOptions.DefaultValue = L"Visible";
+		visibilityOptions.Flags = DependencyPropertyFlags::AffectsMeasure;
+		visibilityOptions.Design = std::move(visibilityDesign);
+		visibilityOptions.Coerce = [](Control&, const std::wstring& value)
+			-> std::optional<std::wstring>
+		{
+			if (_wcsicmp(value.c_str(), L"Visible") == 0) return L"Visible";
+			if (_wcsicmp(value.c_str(), L"Hidden") == 0) return L"Hidden";
+			if (_wcsicmp(value.c_str(), L"Collapsed") == 0) return L"Collapsed";
+			return std::nullopt;
+		};
+		DependencyPropertyRegistry::Register<Control, std::wstring>(L"Visibility",
+			[](Control& target)
 			{
-				if (mode == DataSourceUpdateMode::OnValidation)
-					return target.OnLostFocus.Subscribe(
-						[handler = std::move(handler)](Control*) { handler(); });
-				return target.OnTextChanged.Subscribe(
-					[handler = std::move(handler)](Control*, std::wstring, std::wstring) { handler(); });
+				return std::wstring(VisibilityName(target.Visibility));
 			},
-			WithPropertyDesign(ControlPropertyOptions<Control, std::wstring>{
-				std::wstring{},
-				ControlPropertyFlags::AffectsMeasure
-					| ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Common", 0, 10, ControlPropertyPersistence::Legacy)));
+			[](Control& target, const std::wstring& value)
+			{
+				target.Visibility = _wcsicmp(value.c_str(), L"Hidden") == 0
+					? ::Visibility::Hidden
+					: _wcsicmp(value.c_str(), L"Collapsed") == 0
+						? ::Visibility::Collapsed : ::Visibility::Visible;
+			}, {}, std::move(visibilityOptions));
 
-		BindingPropertyRegistry::Register<Control, bool>(L"Checked",
-			[](Control& target) { return target.Checked; },
-			[](Control& target, const bool& value)
-			{
-				if (target.Checked == value) return;
-				target.Checked = value;
-				target.RefreshStyleValues(false);
-				target.InvalidateVisual();
-			},
+		auto isVisibleDesign = PropertyDesign(L"Common", 0, 31,
+			DependencyPropertyPersistence::Transient,
+			DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyOptions<Control, bool> isVisibleOptions;
+		isVisibleOptions.DefaultValue = true;
+		isVisibleOptions.IsReadOnly = true;
+		isVisibleOptions.Design = std::move(isVisibleDesign);
+		DependencyPropertyRegistry::Register<Control, bool>(L"IsVisible",
+			[](Control& target) { return target.GetIsVisible(); },
+			{},
 			[](Control& target, Handler handler, DataSourceUpdateMode)
 			{
-				return target.OnChecked.Subscribe(
-					[handler = std::move(handler)](Control*) { handler(); });
-			},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-				false, ControlPropertyFlags::AffectsRender }, std::move(checkedDesign)));
+				return target.IsVisibleChanged.Subscribe(
+					[handler = std::move(handler)](
+						DependencyObject*,
+						const DependencyPropertyChangedEventArgs&)
+					{ handler(); });
+			}, std::move(isVisibleOptions));
 
-		BindingPropertyRegistry::Register<Control, bool>(L"Visible",
-			[](Control& target) { return target.Visible; },
-			[](Control& target, const bool& value) { target.Visible = value; },
+		auto enabledDesign = PropertyDesign(L"Common", 0, 20,
+			DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Boolean, L"Is enabled");
+		DependencyPropertyRegistry::Register<Control, bool>(L"IsEnabled",
+			[](Control& target) { return target.IsEffectivelyEnabled(); },
+			[](Control& target, const bool& value)
+			{ target.SetLocalEnabled(value); },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-				true,
-				ControlPropertyFlags::AffectsMeasure
-					| ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Common", 0, 30, ControlPropertyPersistence::Legacy)));
+			WithPropertyDesign(DependencyPropertyOptions<Control, bool>{
+				true, DependencyPropertyFlags::AffectsRender },
+				std::move(enabledDesign)));
 
-		auto registerEnabled = [](const wchar_t* name, bool browsable)
-		{
-			auto design = PropertyDesign(L"Common", 0, 20,
-				ControlPropertyPersistence::Legacy,
-				ControlPropertyEditorKind::Boolean, L"Enabled");
-			design.Browsable = browsable;
-			BindingPropertyRegistry::Register<Control, bool>(name,
-				[](Control& target) { return target.Enable; },
-				[](Control& target, const bool& value)
-				{
-					if (target.Enable == value) return;
-					target.Enable = value;
-					target.RefreshStyleValues(false);
-					target.InvalidateVisual();
-				},
-				{},
-				WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-					true, ControlPropertyFlags::AffectsRender },
-					std::move(design)));
-		};
-		registerEnabled(L"Enable", true);
-		registerEnabled(L"Enabled", false);
+		auto allowDropDesign = PropertyDesign(L"Behavior", 300, 0,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Boolean, L"Allow drop");
+		DependencyPropertyRegistry::Register<Control, bool>(L"AllowDrop",
+			[](Control& target) { return target.AllowDrop; },
+			[](Control& target, const bool& value) { target.AllowDrop = value; },
+			{},
+			WithPropertyDesign(DependencyPropertyOptions<Control, bool>{
+				false, DependencyPropertyFlags::Inherits },
+				std::move(allowDropDesign)));
 
-		auto movedSubscriber = [](Control& target, Handler handler, DataSourceUpdateMode)
-		{
-			return target.OnMoved.Subscribe(
-				[handler = std::move(handler)](Control*) { handler(); });
-		};
 		auto sizedSubscriber = [](Control& target, Handler handler, DataSourceUpdateMode)
 		{
-			return target.OnSizeChanged.Subscribe(
-				[handler = std::move(handler)](Control*) { handler(); });
+			return target.SizeChanged.Subscribe(
+				[handler = std::move(handler)](
+					Control*, SizeChangedEventArgs&) { handler(); });
 		};
 
-		BindingPropertyRegistry::Register<Control, int>(L"Left",
-			[](Control& target) { return target.Left; },
-			[](Control& target, const int& value) { target.Left = value; }, movedSubscriber,
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				0, ControlPropertyFlags::AffectsArrange | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 10, ControlPropertyPersistence::Legacy,
-					ControlPropertyEditorKind::Number, L"X")));
-		BindingPropertyRegistry::Register<Control, int>(L"Top",
-			[](Control& target) { return target.Top; },
-			[](Control& target, const int& value) { target.Top = value; }, movedSubscriber,
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				0, ControlPropertyFlags::AffectsArrange | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 20, ControlPropertyPersistence::Legacy,
-					ControlPropertyEditorKind::Number, L"Y")));
-		BindingPropertyRegistry::Register<Control, int>(L"Width",
+		auto canvasOffsetOptions = [](int order, const wchar_t* displayName)
+		{
+			DependencyPropertyOptions<Control, float> options;
+			options.DefaultValue = cui::layout::UnsetCanvasOffset;
+			options.Flags = DependencyPropertyFlags::AffectsParentArrange;
+			options.Coerce = [](Control&, const float& value)
+				-> std::optional<float>
+			{
+				return std::isfinite(value) || std::isnan(value)
+					? std::optional<float>{ value }
+					: std::nullopt;
+			};
+			options.Equals = [](const float& left, const float& right)
+			{
+				return left == right
+					|| (std::isnan(left) && std::isnan(right));
+			};
+			options.Design = PropertyDesign(
+				L"Layout", 100, order,
+				DependencyPropertyPersistence::Metadata,
+				DependencyPropertyEditorKind::Number,
+				displayName);
+			options.Design.Step = 0.5;
+			return options;
+		};
+		DependencyPropertyRegistry::Register<Control, float>(L"Canvas.Left",
+			[](Control& target) { return target.CanvasLeft; },
+			[](Control& target, const float& value) { target.CanvasLeft = value; },
+			{}, canvasOffsetOptions(10, L"Canvas.Left"));
+		DependencyPropertyRegistry::Register<Control, float>(L"Canvas.Top",
+			[](Control& target) { return target.CanvasTop; },
+			[](Control& target, const float& value) { target.CanvasTop = value; },
+			{}, canvasOffsetOptions(20, L"Canvas.Top"));
+		DependencyPropertyRegistry::Register<Control, float>(L"Canvas.Right",
+			[](Control& target) { return target.CanvasRight; },
+			[](Control& target, const float& value) { target.CanvasRight = value; },
+			{}, canvasOffsetOptions(30, L"Canvas.Right"));
+		DependencyPropertyRegistry::Register<Control, float>(L"Canvas.Bottom",
+			[](Control& target) { return target.CanvasBottom; },
+			[](Control& target, const float& value) { target.CanvasBottom = value; },
+			{}, canvasOffsetOptions(40, L"Canvas.Bottom"));
+		auto lengthOptions = [](int order)
+		{
+			DependencyPropertyOptions<Control, cui::layout::Length> options;
+			options.DefaultValue = cui::layout::Length::Auto();
+			options.Flags = DependencyPropertyFlags::AffectsMeasure;
+			options.Convert = ConvertLayoutLength;
+			options.Design = PropertyDesign(
+				L"Layout", 100, order,
+				DependencyPropertyPersistence::Metadata,
+				DependencyPropertyEditorKind::Length);
+			return options;
+		};
+		DependencyPropertyRegistry::Register<Control, cui::layout::Length>(L"Width",
 			[](Control& target) { return target.Width; },
-			[](Control& target, const int& value) { target.Width = value; }, sizedSubscriber,
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				120, ControlPropertyFlags::AffectsMeasure | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 30, ControlPropertyPersistence::Legacy)));
-		BindingPropertyRegistry::Register<Control, int>(L"Height",
+			[](Control& target, const cui::layout::Length& value) { target.Width = value; },
+			{}, lengthOptions(30));
+		DependencyPropertyRegistry::Register<Control, cui::layout::Length>(L"Height",
 			[](Control& target) { return target.Height; },
-			[](Control& target, const int& value) { target.Height = value; }, sizedSubscriber,
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				20, ControlPropertyFlags::AffectsMeasure | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 40, ControlPropertyPersistence::Legacy)));
-
-		BindingPropertyRegistry::Register<Control, cui::layout::Length>(L"LayoutWidth",
-			[](Control& target) { return target.GetLayoutWidth(); },
-			[](Control& target, const cui::layout::Length& value) { target.SetLayoutWidth(value); },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, cui::layout::Length>{
-				cui::layout::Length::Auto(), ControlPropertyFlags::AffectsMeasure },
-				PropertyDesign(L"Layout", 100, 50, ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Length, L"Width (Auto)")));
-		BindingPropertyRegistry::Register<Control, cui::layout::Length>(L"LayoutHeight",
-			[](Control& target) { return target.GetLayoutHeight(); },
-			[](Control& target, const cui::layout::Length& value) { target.SetLayoutHeight(value); },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, cui::layout::Length>{
-				cui::layout::Length::Auto(), ControlPropertyFlags::AffectsMeasure },
-				PropertyDesign(L"Layout", 100, 60, ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Length, L"Height (Auto)")));
-		BindingPropertyRegistry::Register<Control, Thickness>(L"Margin",
+			[](Control& target, const cui::layout::Length& value) { target.Height = value; },
+			{}, lengthOptions(40));
+		auto actualSizeOptions = [](int order)
+		{
+			DependencyPropertyOptions<Control, float> options;
+			options.DefaultValue = 0.0f;
+			options.IsReadOnly = true;
+			options.Design = PropertyDesign(L"Layout", 100, order,
+				DependencyPropertyPersistence::Transient,
+				DependencyPropertyEditorKind::Number);
+			options.Design.Browsable = false;
+			return options;
+		};
+		DependencyPropertyRegistry::Register<Control, float>(L"ActualWidth",
+			[](Control& target) { return target.ActualWidth; }, {}, sizedSubscriber,
+			actualSizeOptions(50));
+		DependencyPropertyRegistry::Register<Control, float>(L"ActualHeight",
+			[](Control& target) { return target.ActualHeight; }, {}, sizedSubscriber,
+			actualSizeOptions(60));
+		DependencyPropertyRegistry::Register<Control, Thickness>(L"Margin",
 			[](Control& target) { return target.Margin; },
 			[](Control& target, const Thickness& value) { target.Margin = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, Thickness>{
-				Thickness{}, ControlPropertyFlags::AffectsMeasure },
-				PropertyDesign(L"Layout", 100, 70, ControlPropertyPersistence::Legacy)));
-		BindingPropertyRegistry::Register<Control, Thickness>(L"Padding",
+			WithPropertyDesign(DependencyPropertyOptions<Control, Thickness>{
+				Thickness{}, DependencyPropertyFlags::AffectsMeasure },
+				PropertyDesign(L"Layout", 100, 70, DependencyPropertyPersistence::Native)));
+		DependencyPropertyRegistry::Register<Control, Thickness>(L"Padding",
 			[](Control& target) { return target.Padding; },
 			[](Control& target, const Thickness& value) { target.Padding = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, Thickness>{
-				Thickness{}, ControlPropertyFlags::AffectsMeasure },
-				PropertyDesign(L"Layout", 100, 80, ControlPropertyPersistence::Legacy)));
+			WithPropertyDesign(DependencyPropertyOptions<Control, Thickness>{
+				Thickness{}, DependencyPropertyFlags::AffectsMeasure },
+				PropertyDesign(L"Layout", 100, 80, DependencyPropertyPersistence::Native)));
 		auto horizontalAlignmentDesign = PropertyDesign(
-			L"Layout", 100, 90, ControlPropertyPersistence::Legacy,
-			ControlPropertyEditorKind::Choice);
+			L"Layout", 100, 90, DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
 		horizontalAlignmentDesign.Choices = {
-			PropertyChoice(L"Left", HorizontalAlignment::Left),
-			PropertyChoice(L"Center", HorizontalAlignment::Center),
-			PropertyChoice(L"Right", HorizontalAlignment::Right),
-			PropertyChoice(L"Stretch", HorizontalAlignment::Stretch)
+			PropertyChoice(L"Left", ::HorizontalAlignment::Left),
+			PropertyChoice(L"Center", ::HorizontalAlignment::Center),
+			PropertyChoice(L"Right", ::HorizontalAlignment::Right),
+			PropertyChoice(L"Stretch", ::HorizontalAlignment::Stretch)
 		};
-		BindingPropertyRegistry::Register<Control, HorizontalAlignment>(L"HAlign",
-			[](Control& target) { return target.HAlign; },
-			[](Control& target, const HorizontalAlignment& value) { target.HAlign = value; },
+		DependencyPropertyRegistry::Register<Control, ::HorizontalAlignment>(
+			L"HorizontalAlignment",
+			[](Control& target) { return target.HorizontalAlignment; },
+			[](Control& target, const ::HorizontalAlignment& value)
+			{ target.HorizontalAlignment = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, HorizontalAlignment>{
-				HorizontalAlignment::Left, ControlPropertyFlags::AffectsArrange },
+			WithPropertyDesign(DependencyPropertyOptions<Control, ::HorizontalAlignment>{
+				::HorizontalAlignment::Stretch, DependencyPropertyFlags::AffectsArrange },
 				std::move(horizontalAlignmentDesign)));
 		auto verticalAlignmentDesign = PropertyDesign(
-			L"Layout", 100, 100, ControlPropertyPersistence::Legacy,
-			ControlPropertyEditorKind::Choice);
+			L"Layout", 100, 100, DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
 		verticalAlignmentDesign.Choices = {
-			PropertyChoice(L"Top", VerticalAlignment::Top),
-			PropertyChoice(L"Center", VerticalAlignment::Center),
-			PropertyChoice(L"Bottom", VerticalAlignment::Bottom),
-			PropertyChoice(L"Stretch", VerticalAlignment::Stretch)
+			PropertyChoice(L"Top", ::VerticalAlignment::Top),
+			PropertyChoice(L"Center", ::VerticalAlignment::Center),
+			PropertyChoice(L"Bottom", ::VerticalAlignment::Bottom),
+			PropertyChoice(L"Stretch", ::VerticalAlignment::Stretch)
 		};
-		BindingPropertyRegistry::Register<Control, VerticalAlignment>(L"VAlign",
-			[](Control& target) { return target.VAlign; },
-			[](Control& target, const VerticalAlignment& value) { target.VAlign = value; },
+		DependencyPropertyRegistry::Register<Control, ::VerticalAlignment>(
+			L"VerticalAlignment",
+			[](Control& target) { return target.VerticalAlignment; },
+			[](Control& target, const ::VerticalAlignment& value)
+			{ target.VerticalAlignment = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, VerticalAlignment>{
-				VerticalAlignment::Top, ControlPropertyFlags::AffectsArrange },
+			WithPropertyDesign(DependencyPropertyOptions<Control, ::VerticalAlignment>{
+				::VerticalAlignment::Stretch, DependencyPropertyFlags::AffectsArrange },
 				std::move(verticalAlignmentDesign)));
-		BindingPropertyRegistry::Register<Control, int>(L"ZIndex",
+		DependencyPropertyRegistry::Register<Control, int>(L"ZIndex",
 			[](Control& target) { return target.ZIndex; },
 			[](Control& target, const int& value) { target.ZIndex = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				0, ControlPropertyFlags::AffectsRender },
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
+				0, DependencyPropertyFlags::None },
 				PropertyDesign(L"Layout", 100, 105,
-					ControlPropertyPersistence::Legacy,
-					ControlPropertyEditorKind::Number)));
+					DependencyPropertyPersistence::Native,
+					DependencyPropertyEditorKind::Number)));
 		auto gridPlacementDesign = [](int order)
 		{
 			auto design = PropertyDesign(L"Layout", 100, order,
-				ControlPropertyPersistence::Legacy,
-				ControlPropertyEditorKind::Number);
-			design.BrowsableWhen = [](Control& target)
+				DependencyPropertyPersistence::Native,
+				DependencyPropertyEditorKind::Number);
+			design.BrowsableWhen = [](DependencyObject& object)
 			{
-				return target.Parent
-					&& target.Parent->Type() == UIClass::UI_GridPanel;
+				auto* target = dynamic_cast<Control*>(&object);
+				return target && target->GetLogicalParent()
+					&& target->GetLogicalParent()->Type() == UIClass::UI_Grid;
 			};
 			return design;
 		};
-		BindingPropertyRegistry::Register<Control, int>(L"GridRow",
+		DependencyPropertyRegistry::Register<Control, int>(L"Grid.Row",
 			[](Control& target) { return target.GridRow; },
 			[](Control& target, const int& value) { target.GridRow = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
 				0,
-				ControlPropertyFlags::AffectsMeasure,
+				DependencyPropertyFlags::AffectsMeasure,
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(0, proposed);
 				} }, gridPlacementDesign(110)));
-		BindingPropertyRegistry::Register<Control, int>(L"GridColumn",
+		DependencyPropertyRegistry::Register<Control, int>(L"Grid.Column",
 			[](Control& target) { return target.GridColumn; },
 			[](Control& target, const int& value) { target.GridColumn = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
 				0,
-				ControlPropertyFlags::AffectsMeasure,
+				DependencyPropertyFlags::AffectsMeasure,
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(0, proposed);
 				} }, gridPlacementDesign(120)));
-		BindingPropertyRegistry::Register<Control, int>(L"GridRowSpan",
+		DependencyPropertyRegistry::Register<Control, int>(L"Grid.RowSpan",
 			[](Control& target) { return target.GridRowSpan; },
 			[](Control& target, const int& value) { target.GridRowSpan = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
 				1,
-				ControlPropertyFlags::AffectsMeasure,
+				DependencyPropertyFlags::AffectsMeasure,
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(1, proposed);
 				} }, gridPlacementDesign(130)));
-		BindingPropertyRegistry::Register<Control, int>(L"GridColumnSpan",
+		DependencyPropertyRegistry::Register<Control, int>(L"Grid.ColumnSpan",
 			[](Control& target) { return target.GridColumnSpan; },
 			[](Control& target, const int& value) { target.GridColumnSpan = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
 				1,
-				ControlPropertyFlags::AffectsMeasure,
+				DependencyPropertyFlags::AffectsMeasure,
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(1, proposed);
 				} }, gridPlacementDesign(140)));
 		auto dockDesign = PropertyDesign(
-			L"Layout", 100, 150, ControlPropertyPersistence::Legacy,
-			ControlPropertyEditorKind::Choice);
+			L"Layout", 100, 150, DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
 		dockDesign.Choices = {
 			PropertyChoice(L"Left", Dock::Left),
 			PropertyChoice(L"Top", Dock::Top),
 			PropertyChoice(L"Right", Dock::Right),
-			PropertyChoice(L"Bottom", Dock::Bottom),
-			PropertyChoice(L"Fill", Dock::Fill)
+			PropertyChoice(L"Bottom", Dock::Bottom)
 		};
 		dockDesign.DisplayName = L"Dock";
-		dockDesign.BrowsableWhen = [](Control& target)
+		dockDesign.BrowsableWhen = [](DependencyObject& object)
 		{
-			return target.Parent
-				&& target.Parent->Type() == UIClass::UI_DockPanel;
+			auto* target = dynamic_cast<Control*>(&object);
+			return target && target->GetLogicalParent()
+				&& target->GetLogicalParent()->Type() == UIClass::UI_DockPanel;
 		};
-		BindingPropertyRegistry::Register<Control, Dock>(L"DockPosition",
+		DependencyPropertyOptions<Control, Dock> dockOptions{
+			Dock::Left, DependencyPropertyFlags::AffectsMeasure };
+		dockOptions.Coerce = [](Control&, const Dock& value)
+			-> std::optional<Dock>
+		{
+			switch (value)
+			{
+			case Dock::Left:
+			case Dock::Top:
+			case Dock::Right:
+			case Dock::Bottom:
+				return value;
+			default:
+				return std::nullopt;
+			}
+		};
+		DependencyPropertyRegistry::Register<Control, Dock>(L"DockPanel.Dock",
 			[](Control& target) { return target.DockPosition; },
 			[](Control& target, const Dock& value) { target.DockPosition = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, Dock>{
-				Dock::Fill, ControlPropertyFlags::AffectsMeasure }, std::move(dockDesign)));
-		BindingPropertyRegistry::Register<Control, cui::core::Size>(L"MinSize",
-			[](Control& target) { return target.GetMinSizeDip(); },
-			[](Control& target, const cui::core::Size& value)
-			{ target.SetMinSizeDip(value); },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, cui::core::Size>{
-				cui::core::Size{ 0.0f, 0.0f },
-				ControlPropertyFlags::AffectsMeasure,
-				{}, {},
-				[](const cui::core::Size& left, const cui::core::Size& right)
-				{
-					return left == right;
-				} }, PropertyDesign(L"Layout", 100, 160,
-					ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Size)));
-		BindingPropertyRegistry::Register<Control, cui::core::Size>(L"MaxSize",
-			[](Control& target) { return target.GetMaxSizeDip(); },
-			[](Control& target, const cui::core::Size& value)
-			{ target.SetMaxSizeDip(value); },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, cui::core::Size>{
-				cui::core::Size{ cui::core::Infinity, cui::core::Infinity },
-				ControlPropertyFlags::AffectsMeasure,
-				{}, {},
-				[](const cui::core::Size& left, const cui::core::Size& right)
-				{
-					return left == right;
-				} }, PropertyDesign(L"Layout", 100, 170,
-					ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Size)));
-		BindingPropertyRegistry::Register<Control, D2D1_COLOR_F>(L"BackColor",
-			[](Control& target) { return target.BackColor; },
-			[](Control& target, const D2D1_COLOR_F& value) { target.BackColor = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				cui::theme::palette::Surface,
-				ControlPropertyFlags::AffectsRender,
-				{}, {},
-				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
-				{
-					return left.r == right.r && left.g == right.g
-						&& left.b == right.b && left.a == right.a;
-				} }, PropertyDesign(L"Appearance", 200, 10,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Color)));
-		BindingPropertyRegistry::Register<Control, D2D1_COLOR_F>(L"ForeColor",
-			[](Control& target) { return target.ForeColor; },
-			[](Control& target, const D2D1_COLOR_F& value) { target.ForeColor = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				cui::theme::palette::TextPrimary,
-				ControlPropertyFlags::AffectsRender,
-				{}, {},
-				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
-				{
-					return left.r == right.r && left.g == right.g
-						&& left.b == right.b && left.a == right.a;
-				} }, PropertyDesign(L"Appearance", 200, 20,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Color)));
-		ControlPropertyOptions<Control, cui::drawing::Brush> foregroundOptions;
-		foregroundOptions.Flags = ControlPropertyFlags::AffectsRender;
-		foregroundOptions.Equals = [](const cui::drawing::Brush& left,
+			WithPropertyDesign(std::move(dockOptions), std::move(dockDesign)));
+		auto minimumOptions = [](int order)
+		{
+			DependencyPropertyOptions<Control, float> options;
+			options.DefaultValue = 0.0f;
+			options.Flags = DependencyPropertyFlags::AffectsMeasure;
+			options.Coerce = [](Control&, const float& value)
+				-> std::optional<float>
+			{
+				return std::isfinite(value) && value >= 0.0f
+					? std::optional<float>{ value } : std::nullopt;
+			};
+			options.Design = PropertyDesign(L"Layout", 100, order,
+				DependencyPropertyPersistence::Metadata,
+				DependencyPropertyEditorKind::Number);
+			return options;
+		};
+		auto maximumOptions = [](int order)
+		{
+			DependencyPropertyOptions<Control, float> options;
+			options.DefaultValue = cui::core::Infinity;
+			options.Flags = DependencyPropertyFlags::AffectsMeasure;
+			options.Coerce = [](Control&, const float& value)
+				-> std::optional<float>
+			{
+				return !std::isnan(value) && value >= 0.0f
+					? std::optional<float>{ value } : std::nullopt;
+			};
+			options.Design = PropertyDesign(L"Layout", 100, order,
+				DependencyPropertyPersistence::Metadata,
+				DependencyPropertyEditorKind::Number);
+			return options;
+		};
+		DependencyPropertyRegistry::Register<Control, float>(L"MinWidth",
+			[](Control& target) { return target.MinWidth; },
+			[](Control& target, const float& value) { target.MinWidth = value; },
+			{}, minimumOptions(160));
+		DependencyPropertyRegistry::Register<Control, float>(L"MinHeight",
+			[](Control& target) { return target.MinHeight; },
+			[](Control& target, const float& value) { target.MinHeight = value; },
+			{}, minimumOptions(170));
+		DependencyPropertyRegistry::Register<Control, float>(L"MaxWidth",
+			[](Control& target) { return target.MaxWidth; },
+			[](Control& target, const float& value) { target.MaxWidth = value; },
+			{}, maximumOptions(180));
+		DependencyPropertyRegistry::Register<Control, float>(L"MaxHeight",
+			[](Control& target) { return target.MaxHeight; },
+			[](Control& target, const float& value) { target.MaxHeight = value; },
+			{}, maximumOptions(190));
+		DependencyPropertyOptions<Control, std::wstring> fontNameOptions;
+		fontNameOptions.DefaultValue = std::wstring(L"Arial");
+		fontNameOptions.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		fontNameOptions.Coerce = [](Control&, const std::wstring& proposed)
+			-> std::optional<std::wstring>
+		{
+			auto first = std::find_if_not(
+				proposed.begin(), proposed.end(), iswspace);
+			auto last = std::find_if_not(
+				proposed.rbegin(), proposed.rend(), iswspace).base();
+			if (first >= last) return std::nullopt;
+			return std::wstring(first, last);
+		};
+		fontNameOptions.Design = PropertyDesign(
+			L"Appearance", 200, 30,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Font name");
+		DependencyPropertyRegistry::Register<Control, std::wstring>(L"FontFamily",
+			[](Control& target) { return target._fontName; },
+			[](Control& target, const std::wstring& value)
+			{
+				target._fontName = value;
+				target.ApplyTypographyFont();
+			}, {}, std::move(fontNameOptions));
+
+		DependencyPropertyOptions<Control, double> fontSizeOptions;
+		fontSizeOptions.DefaultValue = 14.0;
+		fontSizeOptions.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		fontSizeOptions.Coerce = [](Control&, const double& proposed)
+			-> std::optional<double>
+		{
+			return std::isfinite(proposed) && proposed >= 1.0 && proposed <= 200.0
+				? std::optional<double>{ proposed } : std::nullopt;
+		};
+		fontSizeOptions.Design = PropertyDesign(
+			L"Appearance", 200, 40,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Number, L"Font size");
+		fontSizeOptions.Design.Minimum = 1.0;
+		fontSizeOptions.Design.Maximum = 200.0;
+		fontSizeOptions.Design.Step = 0.5;
+		DependencyPropertyRegistry::Register<Control, double>(L"FontSize",
+			[](Control& target) { return target._fontSize; },
+			[](Control& target, const double& value)
+			{
+				target._fontSize = value;
+				target.ApplyTypographyFont();
+			}, {}, std::move(fontSizeOptions));
+		auto brushEquals = [](const cui::drawing::Brush& left,
 			const cui::drawing::Brush& right)
 		{
 			return left.Kind == right.Kind
@@ -8519,57 +9660,68 @@ void Control::EnsureBindingPropertiesRegistered()
 				&& left.Transform == right.Transform
 				&& left.RelativeTransform == right.RelativeTransform;
 		};
-		foregroundOptions.Design = PropertyDesign(
-			L"Appearance", 200, 21, ControlPropertyPersistence::Metadata,
-			ControlPropertyEditorKind::Text, L"Foreground");
-		// Object editors are handled by XAML/Style resources in this batch.
-		foregroundOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<Control, cui::drawing::Brush>(L"Foreground",
+		auto solidBrush = [](D2D1_COLOR_F color)
+		{
+			return cui::drawing::MakeSolidColorBrush(color);
+		};
+		auto convertBrush = [solidBrush](const BindingValue& value)
+			-> std::optional<cui::drawing::Brush>
+		{
+			cui::drawing::Brush brush;
+			if (value.TryGet(brush)) return brush;
+			D2D1_COLOR_F color{};
+			if (value.TryGet(color)) return solidBrush(color);
+			return std::nullopt;
+		};
+		DependencyPropertyOptions<Control, cui::drawing::Brush> backgroundOptions;
+		backgroundOptions.DefaultValue = cui::drawing::NoBrush();
+		backgroundOptions.Flags = DependencyPropertyFlags::AffectsRender;
+		backgroundOptions.Equals = brushEquals;
+		backgroundOptions.Convert = convertBrush;
+		backgroundOptions.Design = PropertyDesign(
+			L"Appearance", 200, 10, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Background");
+		backgroundOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<Control, cui::drawing::Brush>(
+			L"Background",
 			[](Control& target)
 			{
-				if (const auto& brush = target.GetForegroundBrush(); brush)
-					return *brush;
-				cui::drawing::Brush fallback;
-				fallback.Color = target.ForeColor;
-				return fallback;
+				return target.GetComputedBackgroundBrush();
+			},
+			[](Control& target, const cui::drawing::Brush& value)
+			{ target.ApplyBackgroundBrush(value); }, {}, std::move(backgroundOptions));
+
+		DependencyPropertyOptions<Control, cui::drawing::Brush> foregroundOptions;
+		foregroundOptions.DefaultValue = cui::drawing::NoBrush();
+		foregroundOptions.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsRender;
+		foregroundOptions.Equals = brushEquals;
+		foregroundOptions.Convert = convertBrush;
+		foregroundOptions.Design = PropertyDesign(
+			L"Appearance", 200, 21, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Foreground");
+		// Object editors are handled by XAML/Style resources in this batch.
+		foregroundOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<Control, cui::drawing::Brush>(L"Foreground",
+			[](Control& target)
+			{
+				return target.GetComputedForegroundBrush();
 			},
 			[](Control& target, const cui::drawing::Brush& value)
 			{
-				target.SetForegroundBrush(value);
+				target.ApplyForegroundBrush(value);
 			}, {}, std::move(foregroundOptions));
 
-		ControlPropertyOptions<Control, std::shared_ptr<BitmapSource>> imageOptions;
-		imageOptions.Flags = ControlPropertyFlags::AffectsRender;
-		imageOptions.Equals = [](const std::shared_ptr<BitmapSource>& left,
-			const std::shared_ptr<BitmapSource>& right)
-		{
-			return left == right;
-		};
-		imageOptions.Design = PropertyDesign(
-			L"Appearance", 200, 25, ControlPropertyPersistence::Metadata,
-			ControlPropertyEditorKind::Text, L"Image source");
-		imageOptions.Design.BrowsableWhen = [](Control& target)
-		{
-			return target.Type() == UIClass::UI_PictureBox;
-		};
-		BindingPropertyRegistry::Register<Control, std::shared_ptr<BitmapSource>>(
-			L"ImageSource",
-			[](Control& target) { return target.Image; },
-			[](Control& target, const std::shared_ptr<BitmapSource>& value)
-			{
-				target.SetImageEx(value);
-			}, {}, std::move(imageOptions));
-
-		ControlPropertyOptions<Control, cui::drawing::Geometry> clipOptions;
+		DependencyPropertyOptions<Control, cui::drawing::Geometry> clipOptions;
 		clipOptions.DefaultValue = cui::drawing::Geometry{};
-		clipOptions.Flags = ControlPropertyFlags::AffectsRender;
+		clipOptions.Flags = DependencyPropertyFlags::None;
 		clipOptions.Equals = [](const cui::drawing::Geometry& left,
 			const cui::drawing::Geometry& right) { return left == right; };
 		clipOptions.Design = PropertyDesign(
-			L"Appearance", 200, 26, ControlPropertyPersistence::Metadata,
-			ControlPropertyEditorKind::Text, L"Clip geometry");
+			L"Appearance", 200, 27, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Clip geometry");
 		clipOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<Control, cui::drawing::Geometry>(L"Clip",
+		DependencyPropertyRegistry::Register<Control, cui::drawing::Geometry>(L"Clip",
 			[](Control& target)
 			{
 				return target.GetClip().value_or(cui::drawing::Geometry{});
@@ -8580,16 +9732,16 @@ void Control::EnsureBindingPropertiesRegistered()
 				else target.SetClip(value);
 			}, {}, std::move(clipOptions));
 
-		ControlPropertyOptions<Control, cui::drawing::Transform> transformOptions;
+		DependencyPropertyOptions<Control, cui::drawing::Transform> transformOptions;
 		transformOptions.DefaultValue = cui::drawing::Transform{};
-		transformOptions.Flags = ControlPropertyFlags::AffectsRender;
+		transformOptions.Flags = DependencyPropertyFlags::None;
 		transformOptions.Equals = [](const cui::drawing::Transform& left,
 			const cui::drawing::Transform& right) { return left == right; };
 		transformOptions.Design = PropertyDesign(
-			L"Appearance", 200, 27, ControlPropertyPersistence::Metadata,
-			ControlPropertyEditorKind::Text, L"Render transform");
+			L"Appearance", 200, 27, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Render transform");
 		transformOptions.Design.Browsable = false;
-		BindingPropertyRegistry::Register<Control, cui::drawing::Transform>(
+		DependencyPropertyRegistry::Register<Control, cui::drawing::Transform>(
 			L"RenderTransform",
 			[](Control& target)
 			{
@@ -8599,15 +9751,15 @@ void Control::EnsureBindingPropertiesRegistered()
 			{
 				target.SetRenderTransform(value);
 			}, {}, std::move(transformOptions));
-		BindingPropertyRegistry::Register<Control, cui::core::Point>(
+		DependencyPropertyRegistry::Register<Control, cui::core::Point>(
 			L"RenderTransformOrigin",
 			[](Control& target) { return target.GetRenderTransformOriginDip(); },
 			[](Control& target, const cui::core::Point& value)
 			{ target.SetRenderTransformOriginDip(value); },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, cui::core::Point>{
+			WithPropertyDesign(DependencyPropertyOptions<Control, cui::core::Point>{
 				cui::core::Point{},
-				ControlPropertyFlags::AffectsRender,
+				DependencyPropertyFlags::None,
 				[](Control&, const cui::core::Point& value)
 					-> std::optional<cui::core::Point>
 				{
@@ -8618,234 +9770,344 @@ void Control::EnsureBindingPropertiesRegistered()
 				{
 					return left == right;
 				} }, PropertyDesign(L"Appearance", 200, 28,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Text, L"Transform origin")));
-		BindingPropertyRegistry::Register<Control, D2D1_COLOR_F>(L"BorderColor",
-			[](Control& target) { return target.BorderColor; },
-			[](Control& target, const D2D1_COLOR_F& value) { target.BorderColor = value; },
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Text, L"Transform origin")));
+		DependencyPropertyOptions<Control, cui::drawing::Brush> borderBrushOptions;
+		borderBrushOptions.DefaultValue = cui::drawing::NoBrush();
+		borderBrushOptions.Flags = DependencyPropertyFlags::AffectsRender;
+		borderBrushOptions.Equals = brushEquals;
+		borderBrushOptions.Convert = convertBrush;
+		borderBrushOptions.Design = PropertyDesign(
+			L"Appearance", 200, 30, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"BorderBrush");
+		borderBrushOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<Control, cui::drawing::Brush>(
+			L"BorderBrush",
+			[](Control& target)
+			{
+				return target.GetComputedBorderBrush();
+			},
+			[](Control& target, const cui::drawing::Brush& value)
+			{ target.ApplyBorderBrush(value); }, {}, std::move(borderBrushOptions));
+		DependencyPropertyRegistry::Register<Control, Thickness>(L"BorderThickness",
+			[](Control& target) { return target.BorderThickness; },
+			[](Control& target, const Thickness& value)
+			{ target.BorderThickness = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				cui::theme::palette::Border,
-				ControlPropertyFlags::AffectsRender,
-				{}, {},
-				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
+			WithPropertyDesign(DependencyPropertyOptions<Control, Thickness>{
+				Thickness{},
+				DependencyPropertyFlags::AffectsMeasure
+					| DependencyPropertyFlags::AffectsArrange
+					| DependencyPropertyFlags::AffectsRender,
+				[](Control&, const Thickness& proposed)
+					-> std::optional<Thickness>
 				{
-					return left.r == right.r && left.g == right.g
-						&& left.b == right.b && left.a == right.a;
-				} }, PropertyDesign(L"Appearance", 200, 30,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Color)));
-		BindingPropertyRegistry::Register<Control, bool>(L"ShowValidationBorder",
-			[](Control& target) { return target.ShowValidationBorder; },
-			[](Control& target, const bool& value) { target.ShowValidationBorder = value; },
+					const bool valid = std::isfinite(proposed.Left)
+						&& proposed.Left >= 0.0f
+						&& std::isfinite(proposed.Top)
+						&& proposed.Top >= 0.0f
+						&& std::isfinite(proposed.Right)
+						&& proposed.Right >= 0.0f
+						&& std::isfinite(proposed.Bottom)
+						&& proposed.Bottom >= 0.0f;
+					return valid
+						? std::optional<Thickness>{ proposed } : std::nullopt;
+				} }, PropertyDesign(L"Appearance", 200, 40,
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Thickness)));
+		auto validationSubscriber = [](
+			Control& target, Handler handler, DataSourceUpdateMode)
+		{
+			return target.OnValidationStateChanged.Subscribe(
+				[handler = std::move(handler)](
+					const BindingValidationChangedEventArgs&)
+				{ handler(); });
+		};
+		DependencyPropertyOptions<Control, bool> hasErrorOptions;
+		hasErrorOptions.DefaultValue = false;
+		hasErrorOptions.IsReadOnly = true;
+		hasErrorOptions.Design = PropertyDesign(L"Validation", 400, 10,
+			DependencyPropertyPersistence::Transient,
+			DependencyPropertyEditorKind::Boolean, L"Has validation error");
+		hasErrorOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"Validation.HasError",
+			[](Control& target) { return target._validationHasError; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"Validation.HasError",
+					target._validationHasError, value);
+			},
+			validationSubscriber, std::move(hasErrorOptions));
+
+		DependencyPropertyOptions<Control,
+			std::vector<BindingValidationResult>> errorsOptions;
+		errorsOptions.DefaultValue = std::vector<BindingValidationResult>{};
+		errorsOptions.IsReadOnly = true;
+		errorsOptions.Equals = [](
+			const std::vector<BindingValidationResult>& left,
+			const std::vector<BindingValidationResult>& right)
+		{
+			return left == right;
+		};
+		errorsOptions.Design = PropertyDesign(L"Validation", 400, 20,
+			DependencyPropertyPersistence::Transient,
+			DependencyPropertyEditorKind::Text, L"Validation errors");
+		errorsOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<Control,
+			std::vector<BindingValidationResult>>(L"Validation.Errors",
+			[](Control& target) { return target._validationErrors; },
+			[](Control& target,
+				const std::vector<BindingValidationResult>& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"Validation.Errors", target._validationErrors, value);
+			},
+			validationSubscriber, std::move(errorsOptions));
+		DependencyPropertyOptions<Control, BindingValue> tagOptions;
+		tagOptions.DefaultValue = BindingValue{};
+		tagOptions.Flags = DependencyPropertyFlags::None;
+		tagOptions.Design = PropertyDesign(
+			L"Data", 250, 20,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text);
+		DependencyPropertyRegistry::Register<Control, BindingValue>(L"Tag",
+			[](Control& target) { return target.Tag; },
+			[](Control& target, const BindingValue& value) { target.Tag = value; },
+			{}, std::move(tagOptions));
+		DependencyPropertyOptions<Control, CursorKind> cursorOptions;
+		cursorOptions.DefaultValue = CursorKind::Auto;
+		cursorOptions.Flags = DependencyPropertyFlags::Inherits;
+		cursorOptions.Coerce = [](
+			Control&, const CursorKind& proposed) -> std::optional<CursorKind>
+		{
+			switch (proposed)
+			{
+			case CursorKind::Auto:
+			case CursorKind::Arrow:
+			case CursorKind::Cross:
+			case CursorKind::Hand:
+			case CursorKind::IBeam:
+			case CursorKind::SizeWE:
+			case CursorKind::SizeNS:
+			case CursorKind::SizeNWSE:
+			case CursorKind::SizeNESW:
+			case CursorKind::SizeAll:
+			case CursorKind::No:
+				return proposed;
+			}
+			return std::nullopt;
+		};
+		cursorOptions.Design = PropertyDesign(
+			L"Behavior", 300, 10,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Choice);
+		cursorOptions.Design.Choices = {
+			PropertyChoice(L"Auto", CursorKind::Auto),
+			PropertyChoice(L"Arrow", CursorKind::Arrow),
+			PropertyChoice(L"Cross", CursorKind::Cross),
+			PropertyChoice(L"Hand", CursorKind::Hand),
+			PropertyChoice(L"IBeam", CursorKind::IBeam),
+			PropertyChoice(L"SizeWE", CursorKind::SizeWE),
+			PropertyChoice(L"SizeNS", CursorKind::SizeNS),
+			PropertyChoice(L"SizeNWSE", CursorKind::SizeNWSE),
+			PropertyChoice(L"SizeNESW", CursorKind::SizeNESW),
+			PropertyChoice(L"SizeAll", CursorKind::SizeAll),
+			PropertyChoice(L"No", CursorKind::No)
+		};
+		DependencyPropertyRegistry::Register<Control, CursorKind>(L"Cursor",
+			[](Control& target) { return target.Cursor; },
+			[](Control& target, const CursorKind& value) { target.Cursor = value; },
+			{}, std::move(cursorOptions));
+		DependencyPropertyRegistry::Register<Control, bool>(L"Focusable",
+			[](Control& target) { return target.Focusable; },
+			[](Control& target, const bool& value) { target.Focusable = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-				true, ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Validation", 400, 10, ControlPropertyPersistence::Legacy)));
-		BindingPropertyRegistry::Register<Control, bool>(L"ShowValidationToolTip",
-			[](Control& target) { return target.ShowValidationToolTip; },
-			[](Control& target, const bool& value) { target.ShowValidationToolTip = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-				true,
-				ControlPropertyFlags::None,
-				{},
-				[](Control& target, const bool&, const bool&)
-				{
-					if (target.ParentForm && target.ParentForm->UnderMouse == &target)
-						target.ParentForm->Invalidate(false);
-				} }, PropertyDesign(L"Validation", 400, 20,
-					ControlPropertyPersistence::Legacy)));
-		BindingPropertyRegistry::Register<Control, float>(L"ValidationBorderThickness",
-			[](Control& target) { return target.ValidationBorderThickness; },
-			[](Control& target, const float& value) { target.ValidationBorderThickness = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, float>{
-				2.0f,
-				ControlPropertyFlags::AffectsRender,
-				[](Control&, const float& proposed) -> std::optional<float>
-				{
-					const float value = std::isfinite(proposed) ? proposed : 2.0f;
-					return (std::clamp)(value, 0.0f, 16.0f);
-				} }, PropertyDesign(L"Validation", 400, 30,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Number)));
-		BindingPropertyRegistry::Register<Control, float>(L"ValidationCornerRadius",
-			[](Control& target) { return target.ValidationCornerRadius; },
-			[](Control& target, const float& value) { target.ValidationCornerRadius = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, float>{
-				4.0f,
-				ControlPropertyFlags::AffectsRender,
-				[](Control&, const float& proposed) -> std::optional<float>
-				{
-					const float value = std::isfinite(proposed) ? proposed : 4.0f;
-					return (std::clamp)(value, 0.0f, 1000.0f);
-				} }, PropertyDesign(L"Validation", 400, 40,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Number)));
-		BindingPropertyRegistry::Register<Control, float>(L"ValidationToolTipMaxWidth",
-			[](Control& target) { return target.ValidationToolTipMaxWidth; },
-			[](Control& target, const float& value) { target.ValidationToolTipMaxWidth = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, float>{
-				320.0f,
-				ControlPropertyFlags::None,
-				[](Control&, const float& proposed) -> std::optional<float>
-				{
-					const float value = std::isfinite(proposed) ? proposed : 320.0f;
-					return (std::clamp)(value, 120.0f, 1000.0f);
-				},
-				[](Control& target, const float&, const float&)
-				{
-					if (target.ParentForm && target.ParentForm->UnderMouse == &target)
-						target.ParentForm->Invalidate(false);
-				} }, PropertyDesign(L"Validation", 400, 50,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Number)));
-		BindingPropertyRegistry::Register<Control, bool>(L"IsTabStop",
+			WithPropertyDesign(DependencyPropertyOptions<Control, bool>{ false },
+				PropertyDesign(L"Focus", 310, 0,
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Boolean)));
+		DependencyPropertyRegistry::Register<Control, bool>(L"IsTabStop",
 			[](Control& target) { return target.IsTabStop; },
 			[](Control& target, const bool& value) { target.IsTabStop = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{ true },
+			WithPropertyDesign(DependencyPropertyOptions<Control, bool>{ true },
 				PropertyDesign(L"Behavior", 300, 20,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Boolean)));
-		BindingPropertyRegistry::Register<Control, int>(L"TabIndex",
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Boolean)));
+		DependencyPropertyRegistry::Register<Control, int>(L"TabIndex",
 			[](Control& target) { return target.TabIndex; },
 			[](Control& target, const int& value) { target.TabIndex = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, int>{
-				0, ControlPropertyFlags::None,
+			WithPropertyDesign(DependencyPropertyOptions<Control, int>{
+				0, DependencyPropertyFlags::None,
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(0, proposed);
 				} }, PropertyDesign(L"Behavior", 300, 30,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Number)));
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"AccessKey",
-			[](Control& target) { return target.AccessKey; },
-			[](Control& target, const std::wstring& value) { target.AccessKey = value; },
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Number)));
+		auto focusStateOptions = [](int order)
+		{
+			DependencyPropertyOptions<Control, bool> options;
+			options.DefaultValue = false;
+			options.Flags = DependencyPropertyFlags::AffectsRender;
+			options.IsReadOnly = true;
+			options.Design = PropertyDesign(L"State", 70, order,
+				DependencyPropertyPersistence::Transient,
+				DependencyPropertyEditorKind::Boolean);
+			options.Design.Browsable = false;
+			return options;
+		};
+		auto focusStateSubscriber = [](std::wstring propertyName)
+		{
+			return [propertyName = std::move(propertyName)](
+				Control& target, Handler handler, DataSourceUpdateMode)
+			{
+				return target.OnPropertyValueChanged.Subscribe(
+					[propertyName, handler = std::move(handler)](
+						DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
+					{
+						if (args.PropertyName == propertyName) handler();
+					});
+			};
+		};
+		DependencyPropertyRegistry::Register<Control, bool>(L"IsFocused",
+			[](Control& target) { return target.IsFocused; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsFocused", target._isFocused, value);
+			},
+			focusStateSubscriber(L"IsFocused"),
+			focusStateOptions(10));
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"IsKeyboardFocused",
+			[](Control& target) { return target.IsKeyboardFocused; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsKeyboardFocused", target._isKeyboardFocused, value);
+			},
+			focusStateSubscriber(L"IsKeyboardFocused"),
+			focusStateOptions(20));
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"IsKeyboardFocusWithin",
+			[](Control& target) { return target.IsKeyboardFocusWithin; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsKeyboardFocusWithin",
+					target._isKeyboardFocusWithin, value);
+			},
+			focusStateSubscriber(L"IsKeyboardFocusWithin"),
+			focusStateOptions(30));
+		DependencyPropertyRegistry::Register<Control, bool>(L"IsMouseOver",
+			[](Control& target) { return target.IsMouseOver; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsMouseOver", target._isMouseOver, value);
+			},
+			focusStateSubscriber(L"IsMouseOver"),
+			focusStateOptions(40));
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"IsMouseDirectlyOver",
+			[](Control& target) { return target.IsMouseDirectlyOver; },
+			[](Control& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsMouseDirectlyOver",
+					target._isMouseDirectlyOver, value);
+			},
+			focusStateSubscriber(L"IsMouseDirectlyOver"),
+			focusStateOptions(50));
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"FocusManager.IsFocusScope",
+			[](Control& target) { return target.IsFocusScope; },
+			[](Control& target, const bool& value) { target.IsFocusScope = value; },
 			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, std::wstring>{
-				std::wstring{}, ControlPropertyFlags::None,
-				[](Control&, const std::wstring& proposed) -> std::optional<std::wstring>
-				{
-					if (proposed.empty()) return std::wstring{};
-					return std::wstring(1, static_cast<wchar_t>(std::towupper(proposed.front())));
-				} }, PropertyDesign(L"Accessibility", 500, 10,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Text)));
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"AccessibleName",
-			[](Control& target) { return target.AccessibleName; },
-			[](Control& target, const std::wstring& value) { target.AccessibleName = value; },
+			WithPropertyDesign(DependencyPropertyOptions<Control, bool>{ false },
+				PropertyDesign(L"Focus", 310, 10,
+					DependencyPropertyPersistence::Metadata,
+					DependencyPropertyEditorKind::Boolean,
+					L"IsFocusScope")));
+		auto navigationOptions = [](int order, std::wstring displayName)
+		{
+			DependencyPropertyOptions<Control, KeyboardNavigationMode> options;
+			options.DefaultValue = KeyboardNavigationMode::Continue;
+			options.Design = PropertyDesign(L"Focus", 310, order,
+				DependencyPropertyPersistence::Metadata,
+				DependencyPropertyEditorKind::Choice,
+				std::move(displayName));
+			options.Design.Choices = {
+				{ L"Continue", BindingValue(KeyboardNavigationMode::Continue) },
+				{ L"Once", BindingValue(KeyboardNavigationMode::Once) },
+				{ L"Cycle", BindingValue(KeyboardNavigationMode::Cycle) },
+				{ L"None", BindingValue(KeyboardNavigationMode::None) },
+				{ L"Contained", BindingValue(KeyboardNavigationMode::Contained) },
+				{ L"Local", BindingValue(KeyboardNavigationMode::Local) },
+			};
+			return options;
+		};
+		DependencyPropertyRegistry::Register<Control, KeyboardNavigationMode>(
+			L"KeyboardNavigation.TabNavigation",
+			[](Control& target) { return target.TabNavigation; },
+			[](Control& target, const KeyboardNavigationMode& value)
+			{ target.TabNavigation = value; }, {},
+			navigationOptions(20, L"TabNavigation"));
+		DependencyPropertyRegistry::Register<Control, KeyboardNavigationMode>(
+			L"KeyboardNavigation.DirectionalNavigation",
+			[](Control& target) { return target.DirectionalNavigation; },
+			[](Control& target, const KeyboardNavigationMode& value)
+			{ target.DirectionalNavigation = value; }, {},
+			navigationOptions(30, L"DirectionalNavigation"));
+		DependencyPropertyRegistry::Register<Control, std::wstring>(
+			L"AutomationProperties.Name",
+			[](Control& target) { return target.AutomationName; },
+			[](Control& target, const std::wstring& value) { target.AutomationName = value; },
 			{},
 			WithPropertyDesign(
-				ControlPropertyOptions<Control, std::wstring>{ std::wstring{} },
-				PropertyDesign(L"Accessibility", 500, 20,
-					ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Text)));
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"AccessibleDescription",
-			[](Control& target) { return target.AccessibleDescription; },
-			[](Control& target, const std::wstring& value) { target.AccessibleDescription = value; },
+				DependencyPropertyOptions<Control, std::wstring>{ std::wstring{} },
+				PropertyDesign(L"Automation", 500, 20,
+					DependencyPropertyPersistence::Metadata, DependencyPropertyEditorKind::Text)));
+		DependencyPropertyRegistry::Register<Control, std::wstring>(
+			L"AutomationProperties.FullDescription",
+			[](Control& target) { return target.AutomationFullDescription; },
+			[](Control& target, const std::wstring& value) { target.AutomationFullDescription = value; },
 			{},
 			WithPropertyDesign(
-				ControlPropertyOptions<Control, std::wstring>{ std::wstring{} },
-				PropertyDesign(L"Accessibility", 500, 30,
-					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Text)));
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"AccessibleHelpText",
-			[](Control& target) { return target.AccessibleHelpText; },
-			[](Control& target, const std::wstring& value) { target.AccessibleHelpText = value; },
+				DependencyPropertyOptions<Control, std::wstring>{ std::wstring{} },
+				PropertyDesign(L"Automation", 500, 30,
+					DependencyPropertyPersistence::Metadata, DependencyPropertyEditorKind::Text)));
+		DependencyPropertyRegistry::Register<Control, std::wstring>(
+			L"AutomationProperties.HelpText",
+			[](Control& target) { return target.AutomationHelpText; },
+			[](Control& target, const std::wstring& value) { target.AutomationHelpText = value; },
 			{},
 			WithPropertyDesign(
-				ControlPropertyOptions<Control, std::wstring>{ std::wstring{} },
-				PropertyDesign(L"Accessibility", 500, 40,
-					ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Text)));
-		BindingPropertyRegistry::Register<Control, std::wstring>(L"AutomationId",
+				DependencyPropertyOptions<Control, std::wstring>{ std::wstring{} },
+				PropertyDesign(L"Automation", 500, 40,
+					DependencyPropertyPersistence::Metadata, DependencyPropertyEditorKind::Text)));
+		DependencyPropertyRegistry::Register<Control, std::wstring>(
+			L"AutomationProperties.AutomationId",
 			[](Control& target) { return target.AutomationId; },
 			[](Control& target, const std::wstring& value) { target.AutomationId = value; },
 			{},
 			WithPropertyDesign(
-				ControlPropertyOptions<Control, std::wstring>{ std::wstring{} },
-				PropertyDesign(L"Accessibility", 500, 50,
-					ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Text)));
-		auto roleDesign = PropertyDesign(L"Accessibility", 500, 60,
-			ControlPropertyPersistence::Metadata, ControlPropertyEditorKind::Choice);
-		roleDesign.Choices = {
-			PropertyChoice(L"Default", ::AccessibleRole::Default),
-			PropertyChoice(L"Pane", ::AccessibleRole::Pane),
-			PropertyChoice(L"Group", ::AccessibleRole::Group),
-			PropertyChoice(L"Text", ::AccessibleRole::Text),
-			PropertyChoice(L"Link", ::AccessibleRole::Link),
-			PropertyChoice(L"Button", ::AccessibleRole::Button),
-			PropertyChoice(L"Check box", ::AccessibleRole::CheckBox),
-			PropertyChoice(L"Radio button", ::AccessibleRole::RadioButton),
-			PropertyChoice(L"Switch", ::AccessibleRole::Switch),
-			PropertyChoice(L"Text box", ::AccessibleRole::TextBox),
-			PropertyChoice(L"Password box", ::AccessibleRole::PasswordBox),
-			PropertyChoice(L"Combo box", ::AccessibleRole::ComboBox),
-			PropertyChoice(L"List", ::AccessibleRole::List),
-			PropertyChoice(L"Table", ::AccessibleRole::Table),
-			PropertyChoice(L"Tree", ::AccessibleRole::Tree),
-			PropertyChoice(L"Tab", ::AccessibleRole::Tab),
-			PropertyChoice(L"Menu", ::AccessibleRole::Menu),
-			PropertyChoice(L"Slider", ::AccessibleRole::Slider),
-			PropertyChoice(L"Progress bar", ::AccessibleRole::ProgressBar),
-			PropertyChoice(L"Image", ::AccessibleRole::Image),
-			PropertyChoice(L"Document", ::AccessibleRole::Document),
-			PropertyChoice(L"Custom", ::AccessibleRole::Custom)
-		};
-		BindingPropertyRegistry::Register<Control, ::AccessibleRole>(L"AccessibleRole",
-			[](Control& target) { return target.AccessibleRole; },
-			[](Control& target, const ::AccessibleRole& value) { target.AccessibleRole = value; },
-			{}, WithPropertyDesign(ControlPropertyOptions<Control, ::AccessibleRole>{
-				::AccessibleRole::Default }, std::move(roleDesign)));
-		BindingPropertyRegistry::Register<Control, bool>(L"ShowFocusVisual",
-			[](Control& target) { return target.ShowFocusVisual; },
-			[](Control& target, const bool& value) { target.ShowFocusVisual = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, bool>{
-				true, ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Accessibility", 500, 70,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Boolean)));
-		BindingPropertyRegistry::Register<Control, D2D1_COLOR_F>(L"FocusVisualColor",
-			[](Control& target) { return target.FocusVisualColor; },
-			[](Control& target, const D2D1_COLOR_F& value) { target.FocusVisualColor = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.95f },
-				ControlPropertyFlags::AffectsRender, {}, {},
-				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
-				{
-					return left.r == right.r && left.g == right.g
-						&& left.b == right.b && left.a == right.a;
-				} }, PropertyDesign(L"Accessibility", 500, 80,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Color)));
-		BindingPropertyRegistry::Register<Control, float>(L"FocusVisualThickness",
-			[](Control& target) { return target.FocusVisualThickness; },
-			[](Control& target, const float& value) { target.FocusVisualThickness = value; },
-			{},
-			WithPropertyDesign(ControlPropertyOptions<Control, float>{
-				1.5f, ControlPropertyFlags::AffectsRender,
-				[](Control&, const float& proposed) -> std::optional<float>
-				{
-					return (std::clamp)(std::isfinite(proposed) ? proposed : 1.5f, 0.0f, 8.0f);
-				} }, PropertyDesign(L"Accessibility", 500, 90,
-					ControlPropertyPersistence::Metadata,
-					ControlPropertyEditorKind::Number)));
+				DependencyPropertyOptions<Control, std::wstring>{ std::wstring{} },
+				PropertyDesign(L"Automation", 500, 50,
+					DependencyPropertyPersistence::Metadata, DependencyPropertyEditorKind::Text)));
 	});
 }
 
-GET_CPP(Control, int, Count)
+Control* Control::GetVisualChild(int index) const noexcept
 {
-	return this->Children.size();
-}
-Control* Control::operator[](int index)
-{
-	return this->Children[index];
-}
-Control* Control::GetChild(int index)
-{
-	if (this->Children.size() <= index)
+	if (index < 0 || static_cast<size_t>(index) >= _visualChildren.size())
 		return nullptr;
-	return this->Children[index];
+	return _visualChildren[static_cast<size_t>(index)];
 }
 
 Control* Control::FindControlByDesignId(int designId) noexcept
@@ -8857,8 +10119,8 @@ Control* Control::FindControlByDesignId(int designId) noexcept
 const Control* Control::FindControlByDesignId(int designId) const noexcept
 {
 	if (designId <= 0) return nullptr;
-	if (DesignId == designId) return this;
-	for (const auto* child : Children)
+	if (GetDesignId() == designId) return this;
+	for (const auto* child : _visualChildren)
 	{
 		if (!child) continue;
 		if (const auto* match = child->FindControlByDesignId(designId))
@@ -8867,9 +10129,10 @@ const Control* Control::FindControlByDesignId(int designId) const noexcept
 	return nullptr;
 }
 
-std::vector<Control*> Control::GetChildrenInZOrder() const
+std::vector<Control*> Control::GetVisualChildrenInZOrder() const
 {
-	std::vector<Control*> result = this->Children;
+	std::vector<Control*> result(
+		this->_visualChildren.begin(), this->_visualChildren.end());
 	std::stable_sort(result.begin(), result.end(), [](Control* left, Control* right)
 		{
 			if (!left || !right) return left != nullptr;
@@ -8878,224 +10141,287 @@ std::vector<Control*> Control::GetChildrenInZOrder() const
 	return result;
 }
 
-std::vector<Control*> Control::GetChildrenInReverseZOrder() const
+std::vector<Control*> Control::GetVisualChildrenInReverseZOrder() const
 {
-	auto result = GetChildrenInZOrder();
+	auto result = GetVisualChildrenInZOrder();
 	std::reverse(result.begin(), result.end());
 	return result;
 }
-std::unique_ptr<Control> Control::DetachControl(Control* child)
+
+bool Control::MoveVisualChild(int oldIndex, int newIndex)
+{
+	if (oldIndex < 0 || newIndex < 0)
+		return false;
+	const auto oldPosition = static_cast<size_t>(oldIndex);
+	const auto newPosition = static_cast<size_t>(newIndex);
+	if (oldPosition >= _visualChildren.size()
+		|| newPosition >= _visualChildren.size())
+		return false;
+	return _visualChildren.Move(oldPosition, newPosition);
+}
+
+std::unique_ptr<Control> Control::DetachVisualChild(Control* child)
 {
 	if (!child)
 		return {};
-	auto position = std::find(this->Children.begin(), this->Children.end(), child);
-	if (position == this->Children.end())
+	auto position = std::find(
+		this->_visualChildren.begin(), this->_visualChildren.end(), child);
+	if (position == this->_visualChildren.end())
 		return {};
 
-	this->Children.erase(position);
+	this->_visualChildren.erase(position);
 	return std::unique_ptr<Control>(child);
 }
 
-std::unique_ptr<Control> Control::DetachControlAt(int index)
+std::unique_ptr<Control> Control::DetachVisualChildAt(int index)
 {
-	if (index < 0 || static_cast<size_t>(index) >= Children.size())
+	if (index < 0 || static_cast<size_t>(index) >= _visualChildren.size())
 		return {};
-	return DetachControl(Children[static_cast<size_t>(index)]);
+	return DetachVisualChild(_visualChildren[static_cast<size_t>(index)]);
 }
 
-bool Control::DeleteControl(Control* child)
+bool Control::DeleteVisualChild(Control* child)
 {
-	auto detached = DetachControl(child);
+	auto detached = DetachVisualChild(child);
 	return detached != nullptr;
 }
 
-bool Control::DeleteControlAt(int index)
+bool Control::DeleteVisualChildAt(int index)
 {
-	auto detached = DetachControlAt(index);
+	auto detached = DetachVisualChildAt(index);
 	return detached != nullptr;
 }
 
-void Control::ClearControls()
+void Control::ClearVisualChildren()
 {
-	if (Children.empty()) return;
-	std::vector<Control*> removed(Children.begin(), Children.end());
-	Children.clear();
+	if (_visualChildren.empty()) return;
+	std::vector<Control*> removed(
+		_visualChildren.begin(), _visualChildren.end());
+	_visualChildren.clear();
 	for (auto* child : removed) delete child;
 }
 
-int Control::IndexOfControl(const Control* child) const noexcept
+int Control::IndexOfVisualChild(const Control* child) const noexcept
 {
 	if (!child) return -1;
-	auto found = std::find(Children.begin(), Children.end(), child);
-	return found == Children.end()
-		? -1 : static_cast<int>(found - Children.begin());
+	auto found = std::find(
+		_visualChildren.begin(), _visualChildren.end(), child);
+	return found == _visualChildren.end()
+		? -1 : static_cast<int>(found - _visualChildren.begin());
 }
-
-void Control::RemoveControl(Control* child)
+GET_CPP(Control, bool, IsEnabled)
 {
-	auto detached = DetachControl(child);
-	detached.release();
+	return IsEffectivelyEnabled();
 }
-GET_CPP(Control, POINT, AbsLocation)
+SET_CPP(Control, bool, IsEnabled)
 {
-	const auto absoluteLocation = GetAbsoluteLocationDip();
-	return POINT{
-		ToCoordinateLong(absoluteLocation.x),
-		ToCoordinateLong(absoluteLocation.y) };
+	// The CLR-shaped wrapper is SetValue(IsEnabledProperty), not a second
+	// native state mutation path. Command and ancestor constraints are folded
+	// into the effective projection separately.
+	(void)TrySetPropertyValue(
+		L"IsEnabled", BindingValue(value),
+		DependencyPropertyValueSource::Local);
 }
-GET_CPP(Control, POINT, ActualLocation)
+GET_CPP(Control, bool, AllowDrop)
 {
-	return _runtimeLocation;
+	return _allowDrop;
 }
-GET_CPP(Control, D2D1_RECT_F, AbsRect)
+SET_CPP(Control, bool, AllowDrop)
 {
-	const auto rect = GetAbsoluteRectDip();
-	return D2D1_RECT_F{
-		rect.Left(), rect.Top(), rect.Right(), rect.Bottom()
-	};
+	(void)SetPropertyField(L"AllowDrop", _allowDrop, value);
 }
-GET_CPP(Control, bool, IsVisual)
+GET_CPP(Control, ::Visibility, Visibility)
 {
-	if (!this->_visible) return false;
-	Control* ancestor = this;
-	while (ancestor->Parent)
+	return _visibility;
+}
+SET_CPP(Control, ::Visibility, Visibility)
+{
+	VerifyAccess();
+	if (value != ::Visibility::Visible
+		&& value != ::Visibility::Hidden
+		&& value != ::Visibility::Collapsed)
+		throw std::invalid_argument("Visibility value is invalid");
+	auto* metadata = DependencyPropertyRegistry::Find(*this, L"Visibility");
+	if (!metadata) return;
+	if (_applyingPropertyMetadata != metadata)
 	{
-		ancestor = ancestor->Parent;
-		if (!ancestor->Visible) return false;
-	}
-	return true;
-}
-GET_CPP(Control, bool, Visible)
-{
-	return this->_visible;
-}
-SET_CPP(Control, bool, Visible)
-{
-	if (this->_visible == value)
+		(void)TrySetPropertyValue(
+			L"Visibility",
+			BindingValue(std::wstring(VisibilityName(value))),
+			DependencyPropertyValueSource::Local);
 		return;
+	}
+	if (_visibility == value) return;
+	auto snapshot = CaptureEffectiveIsVisibleSubtree(*this);
+	const bool collapsedChanged = (_visibility == ::Visibility::Collapsed)
+		!= (value == ::Visibility::Collapsed);
+	_visibility = value;
+	if (collapsedChanged) RequestLayout();
+	else InvalidateVisual();
+	PublishEffectiveIsVisibleChanges(std::move(snapshot));
 
-	this->_visible = value;
-	this->RequestLayout();
-
-	if (this->ParentForm)
+	if (this->GetPresentationWindow())
 	{
-		this->ParentForm->Invalidate(false);
-		this->ParentForm->NotifyAccessibilityEvent(
+		this->GetPresentationWindow()->InvalidatePresentationStructure();
+		this->GetPresentationWindow()->Invalidate(false);
+		this->GetPresentationWindow()->NotifyAccessibilityEvent(
 			this, AccessibilityChange::State);
 	}
 }
-GET_CPP(Control, POINT, Location)
+
+void Control::SetPresentationSuppressed(bool value)
 {
-	return _location;
-}
-SET_CPP(Control, POINT, Location)
-{
-	// 收敛几何写路径：_location 是用户配置，_runtimeLocation/_layoutState 是
-	// 运行时投影。过去这里同时直写两份，与 ApplyLayout 的布局回写并存，是
-	// 漂移源。现在统一经由 SetRuntimeLocation->ApplyLayout 更新运行时投影，
-	// 让 _layoutState 成为运行时几何的唯一权威，兼容字段仅作为其投影。
-	const POINT oldConfiguredLocation = this->_location;
-	const bool configuredChanged =
-		oldConfiguredLocation.x != value.x || oldConfiguredLocation.y != value.y;
-	const POINT oldRuntimeLocation = this->_runtimeLocation;
-	_location = value;
-	this->SetRuntimeLocation(value);
-	this->RequestLayout();
-	// 仅当配置变化但运行时坐标未变（布局被锁定/覆盖）时补发 OnMoved，
-	// 避免与 ApplyLayout 内部的事件重复。
-	const bool runtimeChanged =
-		oldRuntimeLocation.x != _runtimeLocation.x || oldRuntimeLocation.y != _runtimeLocation.y;
-	if (configuredChanged && !runtimeChanged)
+	VerifyAccess();
+	if (_presentationSuppressed == value) return;
+	auto snapshot = CaptureEffectiveIsVisibleSubtree(*this);
+	_presentationSuppressed = value;
+	RequestLayout();
+	PublishEffectiveIsVisibleChanges(std::move(snapshot));
+	if (GetPresentationWindow())
 	{
-		this->OnMoved(this);
+		GetPresentationWindow()->InvalidatePresentationStructure();
+		GetPresentationWindow()->Invalidate(false);
+		GetPresentationWindow()->NotifyAccessibilityEvent(
+			this, AccessibilityChange::State);
 	}
-	this->InvalidateVisual();
 }
-GET_CPP(Control, SIZE, Size)
-{
-	return _size;
-}
-SET_CPP(Control, SIZE, Size)
-{
-	const bool specifiedChanged = !_layoutStyle.width.IsFixed()
-		|| !_layoutStyle.height.IsFixed()
-		|| _layoutStyle.width.value != (float)(std::max)(0L, value.cx)
-		|| _layoutStyle.height.value != (float)(std::max)(0L, value.cy);
-	const bool actualChanged = _size.cx != value.cx || _size.cy != value.cy;
-	if (!specifiedChanged && !actualChanged)
-		return;
 
-	_size = value;
-	this->UpdateLayoutBaseSize(value);
-	this->SyncComputedLayoutFromCompatibilityGeometry();
-	this->RequestLayout();
-	if (actualChanged)
-		this->OnSizeChanged(this);
-	this->InvalidateVisual();
-}
-GET_CPP(Control, int, Left)
+void Control::SetParticipatesInPresentationScene(bool value)
 {
-	return this->_location.x;
+	VerifyAccess();
+	if (_participatesInPresentationScene == value) return;
+	_participatesInPresentationScene = value;
+	if (GetPresentationWindow())
+	{
+		GetPresentationWindow()->InvalidatePresentationStructure();
+		GetPresentationWindow()->Invalidate(false);
+	}
 }
-SET_CPP(Control, int, Left)
-{
-	this->Location = POINT{ value, this->_location.y };
-}
-GET_CPP(Control, int, Top)
-{
-	return this->_location.y;
-}
-SET_CPP(Control, int, Top)
-{
-	this->Location = POINT{ this->_location.x, value };
-}
-GET_CPP(Control, int, Width)
-{
-	return this->_size.cx;
-}
-SET_CPP(Control, int, Width)
-{
-	const auto specifiedWidth = cui::layout::Length::Fixed((float)value);
-	const bool specifiedChanged = _layoutStyle.width != specifiedWidth;
-	const bool actualChanged = this->_size.cx != value;
-	if (!specifiedChanged && !actualChanged)
-		return;
 
-	this->_size.cx = value;
-	this->_layoutStyle.width = specifiedWidth;
-	this->SyncComputedLayoutFromCompatibilityGeometry();
-	this->RequestLayout();
-	if (actualChanged)
-		this->OnSizeChanged(this);
-	this->InvalidateVisual();
-}
-GET_CPP(Control, int, Height)
+GET_CPP(Visual, int, ZIndex)
 {
-	return this->_size.cy;
+	return _zIndex;
 }
-SET_CPP(Control, int, Height)
+SET_CPP(Visual, int, ZIndex)
 {
-	const auto specifiedHeight = cui::layout::Length::Fixed((float)value);
-	const bool specifiedChanged = _layoutStyle.height != specifiedHeight;
-	const bool actualChanged = this->_size.cy != value;
-	if (!specifiedChanged && !actualChanged)
+	if (auto* control = dynamic_cast<Control*>(this);
+		control && control->RouteVisualZIndexSet(value))
 		return;
+	if (_zIndex == value) return;
+	_zIndex = value;
+	if (GetPresentationWindow())
+	{
+		GetPresentationWindow()->InvalidatePresentationStructure();
+		GetPresentationWindow()->Invalidate(false);
+	}
+}
 
-	_size.cy = value;
-	this->_layoutStyle.height = specifiedHeight;
-	this->SyncComputedLayoutFromCompatibilityGeometry();
-	this->RequestLayout();
-	if (actualChanged)
-		this->OnSizeChanged(this);
-	this->InvalidateVisual();
-}
-GET_CPP(Control, float, Right)
+bool Control::RouteVisualZIndexSet(int value)
 {
-	return this->Left + this->Width;
+	auto* metadata = DependencyPropertyRegistry::Find(*this, L"ZIndex");
+	if (!metadata || _applyingPropertyMetadata == metadata) return false;
+	// The Visual backing field is written only by the metadata application
+	// re-entry above. A failed conversion/coercion must not fall through and
+	// mutate it outside the dependency-property store.
+	(void)TrySetPropertyValue(
+		L"ZIndex", BindingValue(value),
+		DependencyPropertyValueSource::Local);
+	return true;
 }
-GET_CPP(Control, float, Bottom)
+
+GET_CPP(Control, float, CanvasLeft)
 {
-	return this->Top + this->Height;
+	return _canvasLeft;
+}
+SET_CPP(Control, float, CanvasLeft)
+{
+	(void)SetPropertyField(L"Canvas.Left", _canvasLeft, value);
+}
+GET_CPP(Control, float, CanvasTop)
+{
+	return _canvasTop;
+}
+SET_CPP(Control, float, CanvasTop)
+{
+	(void)SetPropertyField(L"Canvas.Top", _canvasTop, value);
+}
+GET_CPP(Control, float, CanvasRight)
+{
+	return _canvasRight;
+}
+SET_CPP(Control, float, CanvasRight)
+{
+	(void)SetPropertyField(L"Canvas.Right", _canvasRight, value);
+}
+GET_CPP(Control, float, CanvasBottom)
+{
+	return _canvasBottom;
+}
+SET_CPP(Control, float, CanvasBottom)
+{
+	(void)SetPropertyField(L"Canvas.Bottom", _canvasBottom, value);
+}
+GET_CPP(Control, cui::layout::Length, Width)
+{
+	return _layoutStyle.width;
+}
+SET_CPP(Control, cui::layout::Length, Width)
+{
+	value = value.IsFixed()
+		? cui::layout::Length::Fixed(value.value)
+		: cui::layout::Length::Auto();
+	(void)SetPropertyField(L"Width", _layoutStyle.width, value);
+}
+GET_CPP(Control, cui::layout::Length, Height)
+{
+	return _layoutStyle.height;
+}
+SET_CPP(Control, cui::layout::Length, Height)
+{
+	value = value.IsFixed()
+		? cui::layout::Length::Fixed(value.value)
+		: cui::layout::Length::Auto();
+	(void)SetPropertyField(L"Height", _layoutStyle.height, value);
+}
+GET_CPP(Control, float, MinWidth)
+{
+	return _layoutStyle.minimumSize.width;
+}
+SET_CPP(Control, float, MinWidth)
+{
+	(void)SetPropertyField(L"MinWidth", _layoutStyle.minimumSize.width, value);
+}
+GET_CPP(Control, float, MinHeight)
+{
+	return _layoutStyle.minimumSize.height;
+}
+SET_CPP(Control, float, MinHeight)
+{
+	(void)SetPropertyField(L"MinHeight", _layoutStyle.minimumSize.height, value);
+}
+GET_CPP(Control, float, MaxWidth)
+{
+	return _layoutStyle.maximumSize.width;
+}
+SET_CPP(Control, float, MaxWidth)
+{
+	(void)SetPropertyField(L"MaxWidth", _layoutStyle.maximumSize.width, value);
+}
+GET_CPP(Control, float, MaxHeight)
+{
+	return _layoutStyle.maximumSize.height;
+}
+SET_CPP(Control, float, MaxHeight)
+{
+	(void)SetPropertyField(L"MaxHeight", _layoutStyle.maximumSize.height, value);
+}
+GET_CPP(Control, float, ActualWidth)
+{
+	return GetActualSizeDip().width;
+}
+GET_CPP(Control, float, ActualHeight)
+{
+	return GetActualSizeDip().height;
 }
 GET_CPP(Control, std::wstring, Text)
 {
@@ -9103,299 +10429,339 @@ GET_CPP(Control, std::wstring, Text)
 }
 SET_CPP(Control, std::wstring, Text)
 {
-	if (value != _text)
+	const auto previous = _text;
+	const auto* metadata = DependencyPropertyRegistry::Find(*this, L"Text");
+	// Text is owned only by the concrete WPF text-bearing types which register
+	// it.  Control's private behavior backing must not revive the old universal
+	// WinForms-style Text property on structural or content controls.
+	if (!metadata) return;
+	const bool applyingMetadata = metadata && _applyingPropertyMetadata == metadata;
+	(void)SetPropertyField(L"Text", _text, std::move(value));
+	// A public wrapper re-enters through the registered metadata setter.  Only
+	// that guarded application frame publishes native accessibility effects;
+	// the outer SetValue frame must not report the same change twice.
+	if (!applyingMetadata) return;
+
+	const ControlWeakReference selfReference(this);
+	auto* live = selfReference.Get();
+	if (!live || previous == live->_text) return;
+	if (auto* window = live->GetPresentationWindow())
 	{
-		this->TextChanged = true;
-		std::wstring oldValue = _text;
-		_text = std::move(value);
-		this->OnTextChanged(this, std::move(oldValue), _text);
-		if (ParentForm)
-		{
-			ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Name);
-			ParentForm->NotifyAccessibilityEvent(this, AccessibilityChange::Value);
-		}
-		this->RequestLayout();
-		this->InvalidateVisual();
-		return;
+		window->NotifyAccessibilityEvent(live, AccessibilityChange::Name);
+		window->NotifyAccessibilityEvent(live, AccessibilityChange::Value);
 	}
-	_text = value;
 }
-GET_CPP(Control, D2D1_COLOR_F, BorderColor)
+GET_CPP(Control, D2D1_COLOR_F, RendererBorderColor)
 {
+	if (_borderBrush
+		&& _borderBrush->Kind == cui::drawing::BrushKind::Solid)
+	{
+		auto color = _borderBrush->Color;
+		color.a *= (std::clamp)(_borderBrush->Opacity, 0.0f, 1.0f);
+		return color;
+	}
 	return _bordercolor;
 }
-SET_CPP(Control, D2D1_COLOR_F, BorderColor)
+SET_CPP(Control, D2D1_COLOR_F, RendererBorderColor)
 {
-	SetPropertyField(L"BorderColor", _bordercolor, value);
+	if (_bordercolor.r == value.r && _bordercolor.g == value.g
+		&& _bordercolor.b == value.b && _bordercolor.a == value.a) return;
+	_bordercolor = value;
+	InvalidateVisual();
 }
-GET_CPP(Control, D2D1_COLOR_F, BackColor)
+GET_CPP(Control, Thickness, BorderThickness)
 {
-	return ParentForm
-		? ParentForm->GetEffectiveControlBackColor(_backcolor) : _backcolor;
+	return _borderThickness;
 }
-SET_CPP(Control, D2D1_COLOR_F, BackColor)
+SET_CPP(Control, Thickness, BorderThickness)
 {
-	SetPropertyField(L"BackColor", _backcolor, value);
+	(void)SetPropertyField(L"BorderThickness", _borderThickness, value);
 }
-GET_CPP(Control, D2D1_COLOR_F, ForeColor)
+GET_CPP(Control, D2D1_COLOR_F, RendererBackgroundColor)
 {
-	return ParentForm
-		? ParentForm->GetEffectiveControlForeColor(_forecolor) : _forecolor;
-}
-SET_CPP(Control, D2D1_COLOR_F, ForeColor)
-{
-	SetPropertyField(L"ForeColor", _forecolor, value);
-}
-GET_CPP(Control, std::shared_ptr<BitmapSource>, Image)
-{
-	return _imageSource;
-}
-SET_CPP(Control, std::shared_ptr<BitmapSource>, Image)
-{
-	this->SetImageEx(std::move(value));
-}
-
-void Control::SetImageEx(std::shared_ptr<BitmapSource> value)
-{
-	if (value == this->_imageSource)
-		return;
-	this->_imageSource = std::move(value);
-	this->_imageCache.Reset();
-	this->_imageCacheTarget = nullptr;
-	this->InvalidateVisual();
-}
-
-ID2D1Bitmap* Control::EnsureImageCache()
-{
-	if (!this->_imageSource || !this->ParentForm || !this->ParentForm->Render)
-		return nullptr;
-	auto* target = this->ParentForm->Render->GetRenderTargetRaw();
-	if (!target)
-		return nullptr;
-	if (this->_imageCache && this->_imageCacheTarget == target)
-		return this->_imageCache.Get();
-	this->_imageCache.Reset();
-	this->_imageCacheTarget = target;
-	auto* bmp = this->ParentForm->Render->CreateBitmap(this->_imageSource);
-	if (!bmp)
-		return nullptr;
-	this->_imageCache.Attach(bmp);
-	return this->_imageCache.Get();
-}
-void Control::RenderImage(float cornerRadius)
-{
-	auto* bitmap = this->EnsureImageCache();
-	if (bitmap)
+	if (_backgroundBrush
+		&& _backgroundBrush->Kind == cui::drawing::BrushKind::Solid)
 	{
-		auto imageSize = bitmap->GetSize();
-		if (imageSize.width > 0 && imageSize.height > 0)
-		{
-			auto actualSize = this->GetActualSizeDip();
-			const float clipRadius = (std::clamp)(cornerRadius, 0.0f, (std::min)(actualSize.width, actualSize.height) * 0.5f);
-			const bool clipPushed = clipRadius > 0.0f && this->ParentForm && this->ParentForm->Render &&
-				this->ParentForm->Render->PushRoundClip(0.0f, 0.0f, actualSize.width, actualSize.height, clipRadius);
-			switch (this->SizeMode)
-			{
-			case ImageSizeMode::Normal:
-			{
-				this->ParentForm->Render->DrawBitmap(bitmap, 0.0f, 0.0f, imageSize.width, imageSize.height);
-			}
-			break;
-			case ImageSizeMode::CenterImage:
-			{
-				this->ParentForm->Render->DrawBitmap(bitmap, (actualSize.width - imageSize.width) / 2.0f, (actualSize.height - imageSize.height) / 2.0f, imageSize.width, imageSize.height);
-			}
-			break;
-			case ImageSizeMode::StretchImage:
-			{
-				this->ParentForm->Render->DrawBitmap(bitmap, 0.0f, 0.0f, actualSize.width, actualSize.height);
-			}
-			break;
-			case ImageSizeMode::Zoom:
-			{
-				float scaleX = actualSize.width / imageSize.width;
-				float scaleY = actualSize.height / imageSize.height;
-				float scale = scaleX < scaleY ? scaleX : scaleY;
-				float renderWidth = imageSize.width * scale;
-				float renderHeight = imageSize.height * scale;
-				float renderX = (actualSize.width - renderWidth) / 2.0f;
-				float renderY = (actualSize.height - renderHeight) / 2.0f;
-				this->ParentForm->Render->DrawBitmap(bitmap, renderX, renderY, renderWidth, renderHeight);
-			}
-			break;
-			default:
-				break;
-			}
-			if (clipPushed)
-				this->ParentForm->Render->PopRoundClip();
-		}
+		auto color = _backgroundBrush->Color;
+		color.a *= (std::clamp)(_backgroundBrush->Opacity, 0.0f, 1.0f);
+		return color;
 	}
+	return GetPresentationWindow()
+		? cui::framework::WindowAccess::EffectiveControlBackColor(
+			*GetPresentationWindow(), _backcolor) : _backcolor;
 }
-SIZE Control::ActualSize()
+SET_CPP(Control, D2D1_COLOR_F, RendererBackgroundColor)
 {
-	return this->_size;
+	if (_backcolor.r == value.r && _backcolor.g == value.g
+		&& _backcolor.b == value.b && _backcolor.a == value.a) return;
+	_backcolor = value;
+	InvalidateVisual();
 }
-
-bool Control::IsSelected() const
+GET_CPP(Control, D2D1_COLOR_F, RendererForegroundColor)
 {
-	return this->ParentForm && this->ParentForm->Selected == this;
+	if (_foregroundBrush
+		&& _foregroundBrush->Kind == cui::drawing::BrushKind::Solid)
+	{
+		auto color = _foregroundBrush->Color;
+		color.a *= (std::clamp)(_foregroundBrush->Opacity, 0.0f, 1.0f);
+		return color;
+	}
+	return GetPresentationWindow()
+		? cui::framework::WindowAccess::EffectiveControlForeColor(
+			*GetPresentationWindow(), _forecolor) : _forecolor;
 }
-
-bool Control::DispatchMessage(
-	UINT message,
-	WPARAM wParam,
-	LPARAM lParam,
-	int localX,
-	int localY)
+SET_CPP(Control, D2D1_COLOR_F, RendererForegroundColor)
 {
-	const bool previousDispatch = _dispatchingComponentBehaviorMessage;
-	_dispatchingComponentBehaviorMessage = true;
+	if (_forecolor.r == value.r && _forecolor.g == value.g
+		&& _forecolor.b == value.b && _forecolor.a == value.a) return;
+	_forecolor = value;
+	InvalidateVisual();
+}
+bool Control::DispatchInput(const InputReport& input)
+{
+	const ControlWeakReference selfReference(this);
+	const bool previousDispatch = _dispatchingComponentBehaviorInput;
+	_dispatchingComponentBehaviorInput = true;
 	if (!previousDispatch && _declarativeComponentBehavior)
 	{
 		bool handled = false;
 		try
 		{
-			handled = _declarativeComponentBehavior->HandleMessage(
-				*this, message, wParam, lParam, localX, localY);
+			handled = _declarativeComponentBehavior->HandleInput(*this, input);
 		}
 		catch (...)
 		{
 		}
+		auto* live = selfReference.Get();
+		if (!live) return true;
 		if (handled)
 		{
-			_dispatchingComponentBehaviorMessage = previousDispatch;
+			live->_dispatchingComponentBehaviorInput = previousDispatch;
 			return true;
 		}
 	}
 	try
 	{
-		const bool result = ProcessMessage(
-			message, wParam, lParam, localX, localY);
-		_dispatchingComponentBehaviorMessage = previousDispatch;
+		auto* live = selfReference.Get();
+		if (!live) return true;
+		const bool result = live->ProcessInput(input);
+		live = selfReference.Get();
+		if (live)
+			live->_dispatchingComponentBehaviorInput = previousDispatch;
 		return result;
 	}
 	catch (...)
 	{
-		_dispatchingComponentBehaviorMessage = previousDispatch;
+		if (auto* live = selfReference.Get())
+			live->_dispatchingComponentBehaviorInput = previousDispatch;
 		throw;
 	}
 }
 
-bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool Control::DispatchTextInput(TextCompositionEventArgs& input)
 {
-	if (!_dispatchingComponentBehaviorMessage
+	const ControlWeakReference selfReference(this);
+	if (!IsEffectivelyEnabled() || !this->IsVisible || input.Text.empty()) return false;
+	if (_declarativeComponentBehavior)
+	{
+		try
+		{
+			if (_declarativeComponentBehavior->HandleTextInput(*this, input))
+				return true;
+		}
+		catch (...)
+		{
+		}
+	}
+	auto* live = selfReference.Get();
+	return live ? live->ApplyTextInput(input) : true;
+}
+
+bool Control::ResolveTextInputCaretRect(D2D1_RECT_F& outRect)
+{
+	const ControlWeakReference selfReference(this);
+	if (_declarativeComponentBehavior)
+	{
+		try
+		{
+			if (_declarativeComponentBehavior->TryGetTextInputCaretRect(
+				*this, outRect)) return true;
+		}
+		catch (...)
+		{
+		}
+	}
+	auto* live = selfReference.Get();
+	return live && live->TryGetTextInputCaretRect(outRect);
+}
+
+bool Control::ProcessInput(const InputReport& input)
+{
+	const ControlWeakReference sourceReference(this);
+	if (!_dispatchingComponentBehaviorInput
 		&& _declarativeComponentBehavior)
-		return DispatchMessage(message, wParam, lParam, localX, localY);
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
+		return DispatchInput(input);
+	if (!IsEffectivelyEnabled() || !this->IsVisible) return true;
+	auto resolve = [&]() noexcept { return sourceReference.Get(); };
+	switch (input.Kind)
 	{
-	case WM_DROPFILES:
+	case InputReportKind::MouseWheel:
+	case InputReportKind::HorizontalMouseWheel:
 	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
-		TCHAR fileName[MAX_PATH];
-		std::vector<std::wstring> files;
-		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
-		{
-			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
-			files.push_back(fileName);
-		}
-		DragFinish(hDropInfo);
-		if (files.size() > 0)
-		{
-			this->OnDropFile(this, files);
-		}
+		auto eventArgs = input.CreateMouseEventArgs();
+		if (auto* source = resolve())
+			source->OnMouseWheel(source, eventArgs);
 	}
 	break;
-	case WM_MOUSEWHEEL:
+	case InputReportKind::PointerMove:
 	{
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, eventArgs);
+		auto eventArgs = input.CreateMouseEventArgs();
+		auto* source = resolve();
+		if (!source) return true;
+		source->BeforeDefaultMouseMove(eventArgs);
+		source = resolve();
+		if (!source) return true;
+		source->OnMouseMove(source, eventArgs);
 	}
 	break;
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerDown:
 	{
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
-		if (this->ParentForm && this->DefaultTrackUnderMouse())
-			this->ParentForm->UnderMouse = this;
-		this->BeforeDefaultMouseMove(eventArgs);
-		this->OnMouseMove(this, eventArgs);
-	}
-	break;
-	case WM_LBUTTONDOWN:
-	case WM_RBUTTONDOWN:
-	case WM_MBUTTONDOWN:
-	{
-		if (WM_LBUTTONDOWN == message)
-			_defaultLeftButtonPressActive = true;
-		if (WM_LBUTTONDOWN == message && this->ParentForm && this->DefaultSelectOnLeftButtonDown())
+		auto* source = resolve();
+		if (!source) return true;
+		if (input.ChangedButton == MouseButton::Left
+			&& source->DefaultRaiseClickOnLeftButtonUp())
 		{
-			this->ParentForm->SetSelectedControl(this, false);
+			source->_defaultLeftButtonPressActive = true;
+			(void)source->CaptureMouse();
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->BeforeDefaultMouseDown(message, eventArgs);
-		this->OnMouseDown(this, eventArgs);
-		if (this->DefaultInvalidateVisualOnMouseDown(message))
-			this->InvalidateVisual();
+		source = resolve();
+		if (!source) return true;
+		const bool selectOnDown = input.ChangedButton == MouseButton::Left
+			&& source->DefaultSelectOnLeftButtonDown();
+		source = resolve();
+		if (!source) return true;
+		if (selectOnDown && source->GetPresentationWindow())
+		{
+			const ControlWeakReference windowReference(source->GetPresentationWindow());
+			if (auto* window = dynamic_cast<Window*>(windowReference.Get()))
+				window->SetKeyboardFocus(source, false);
+		}
+		auto eventArgs = input.CreateMouseEventArgs();
+		source = resolve();
+		if (!source) return true;
+		source->BeforeDefaultMouseDown(input.ChangedButton, eventArgs);
+		source = resolve();
+		if (!source) return true;
+		source->OnMouseDown(source, eventArgs);
+		source = resolve();
+		if (!source) return true;
+		const bool invalidate = source->DefaultInvalidateVisualOnMouseDown(
+			input.ChangedButton);
+		source = resolve();
+		if (source && invalidate) source->InvalidateVisual();
 	}
 	break;
-	case WM_LBUTTONUP:
-	case WM_RBUTTONUP:
-	case WM_MBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
-		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
-		const bool hasMatchingPress = message != WM_LBUTTONUP
-			|| _defaultLeftButtonPressActive;
-		if (message == WM_LBUTTONUP)
-			_defaultLeftButtonPressActive = false;
-		const bool selectedForDefaultAction = wasSelected && hasMatchingPress;
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->BeforeDefaultMouseUp(message, eventArgs, selectedForDefaultAction);
-		if (WM_LBUTTONUP == message && selectedForDefaultAction && this->DefaultRaiseClickOnLeftButtonUp())
+		auto* source = resolve();
+		if (!source) return true;
+		const bool hasMatchingPress = input.ChangedButton != MouseButton::Left
+			|| source->_defaultLeftButtonPressActive;
+		if (input.ChangedButton == MouseButton::Left)
+			source->_defaultLeftButtonPressActive = false;
+		auto eventArgs = input.CreateMouseEventArgs();
+		source->BeforeDefaultMouseUp(
+			input.ChangedButton, eventArgs, hasMatchingPress);
+		source = resolve();
+		if (!source) return true;
+		const bool raiseClick = input.ChangedButton == MouseButton::Left
+			&& hasMatchingPress
+			&& source->DefaultRaiseClickOnLeftButtonUp();
+		source = resolve();
+		if (!source) return true;
+		if (raiseClick)
 		{
-			this->BeforeDefaultClick(message, eventArgs);
-			this->OnMouseClick(this, eventArgs);
+			source->BeforeDefaultClick(input.ChangedButton, eventArgs);
+			source = resolve();
+			if (!source) return true;
+			RoutedEventArgs clickArgs;
+			source->Click(source, clickArgs);
+			source = resolve();
+			if (!source) return true;
+			source->AfterDefaultClick(input.ChangedButton, eventArgs);
+			source = resolve();
+			if (!source) return true;
 		}
-		if (selectedForDefaultAction && this->DefaultClearSelectionOnMouseUp() && this->ParentForm && this->ParentForm->Selected == this)
-		{
-			this->ParentForm->SetSelectedControl(nullptr, false);
-		}
-		this->OnMouseUp(this, eventArgs);
-		if (this->DefaultInvalidateVisualOnMouseUp(message))
-			this->InvalidateVisual();
+		source->OnMouseUp(source, eventArgs);
+		source = resolve();
+		if (!source) return true;
+		const bool invalidate = source->DefaultInvalidateVisualOnMouseUp(
+			input.ChangedButton);
+		source = resolve();
+		if (source && invalidate) source->InvalidateVisual();
+		source = resolve();
+		if (source && input.ChangedButton == MouseButton::Left
+			&& source->IsMouseCaptured())
+			(void)source->ReleaseMouseCapture();
 	}
 	break;
-	case WM_LBUTTONDBLCLK:
+	case InputReportKind::PointerDoubleClick:
 	{
-		_defaultLeftButtonPressActive = true;
-		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
-		if (this->ParentForm && this->DefaultSelectOnLeftButtonDoubleClick())
+		auto* source = resolve();
+		if (!source) return true;
+		if (input.ChangedButton == MouseButton::Left
+			&& source->DefaultRaiseClickOnLeftButtonUp())
 		{
-			this->ParentForm->SetSelectedControl(this, false);
+			source->_defaultLeftButtonPressActive = true;
+			(void)source->CaptureMouse();
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->BeforeDefaultMouseDoubleClick(message, eventArgs, wasSelected);
-		if (this->DefaultRaiseMouseDoubleClick(message, wasSelected))
-			this->OnMouseDoubleClick(this, eventArgs);
-		if (this->DefaultInvalidateVisualOnMouseDoubleClick(message, wasSelected))
-			this->InvalidateVisual();
+		source = resolve();
+		if (!source) return true;
+		const bool selectOnDoubleClick = input.ChangedButton == MouseButton::Left
+			&& source->DefaultSelectOnLeftButtonDown();
+		source = resolve();
+		if (!source) return true;
+		if (selectOnDoubleClick && source->GetPresentationWindow())
+		{
+			const ControlWeakReference windowReference(source->GetPresentationWindow());
+			if (auto* window = dynamic_cast<Window*>(windowReference.Get()))
+				window->SetKeyboardFocus(source, false);
+		}
+		auto eventArgs = input.CreateMouseEventArgs();
+		source = resolve();
+		if (!source) return true;
+		source->BeforeDefaultMouseDown(input.ChangedButton, eventArgs);
+		source = resolve();
+		if (!source) return true;
+		source->OnMouseDoubleClick(source, eventArgs);
+		source = resolve();
+		if (source && source->DefaultInvalidateVisualOnMouseDown(
+			input.ChangedButton)) source->InvalidateVisual();
 	}
 	break;
-	case WM_CANCELMODE:
-	case WM_CAPTURECHANGED:
-		_defaultLeftButtonPressActive = false;
-		SetStyleState(ControlStyleState::Pressed, false);
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		if (auto* source = resolve())
+		{
+			source->_defaultLeftButtonPressActive = false;
+			source->SetStyleState(ControlStyleState::Pressed, false);
+			if (input.Kind == InputReportKind::Cancel
+				&& source->IsMouseCaptured())
+				(void)source->ReleaseMouseCapture();
+		}
 		break;
-	case WM_KEYDOWN:
+	case InputReportKind::KeyDown:
 	{
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, eventArgs);
+		auto eventArgs = input.CreateKeyEventArgs();
+		if (auto* source = resolve())
+			source->OnKeyDown(source, eventArgs);
 	}
 	break;
-	case WM_KEYUP:
+	case InputReportKind::KeyUp:
 	{
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, eventArgs);
+		auto eventArgs = input.CreateKeyEventArgs();
+		if (auto* source = resolve())
+			source->OnKeyUp(source, eventArgs);
 	}
 	break;
 	}
@@ -9409,14 +10775,15 @@ GET_CPP(Control, Thickness, Margin)
 }
 SET_CPP(Control, Thickness, Margin)
 {
-	if (_margin != value)
-	{
-		_margin = value;
-		_layoutStyle.margin = cui::core::Insets{
-			value.Left, value.Top, value.Right, value.Bottom };
-		this->RequestLayout();
-		this->InvalidateVisual();
-	}
+	auto* metadata = DependencyPropertyRegistry::Find(*this, L"Margin");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(L"Margin", _margin, value)
+		|| (metadata && !applyingMetadata)) return;
+	_layoutStyle.margin = cui::core::Insets{
+		_margin.Left, _margin.Top, _margin.Right, _margin.Bottom };
+	this->RequestLayout();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, Thickness, Padding)
@@ -9425,93 +10792,51 @@ GET_CPP(Control, Thickness, Padding)
 }
 SET_CPP(Control, Thickness, Padding)
 {
-	if (_padding != value)
-	{
-		_padding = value;
-		_layoutStyle.padding = cui::core::Insets{
-			value.Left, value.Top, value.Right, value.Bottom };
-		this->RequestLayout();
-		this->InvalidateVisual();
-	}
+	auto* metadata = DependencyPropertyRegistry::Find(*this, L"Padding");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(L"Padding", _padding, value)
+		|| (metadata && !applyingMetadata)) return;
+	_layoutStyle.padding = cui::core::Insets{
+		_padding.Left, _padding.Top, _padding.Right, _padding.Bottom };
+	this->RequestLayout();
+	this->InvalidateVisual();
 }
 
-GET_CPP(Control, HorizontalAlignment, HAlign)
+GET_CPP(Control, ::HorizontalAlignment, HorizontalAlignment)
 {
 	return _horizontalAlignment;
 }
-SET_CPP(Control, HorizontalAlignment, HAlign)
+SET_CPP(Control, ::HorizontalAlignment, HorizontalAlignment)
 {
-	if (_horizontalAlignment == value)
-		return;
-	_horizontalAlignment = value;
-	_layoutStyle.horizontalAlignment = ToLayoutAlignment(value);
+	auto* metadata = DependencyPropertyRegistry::Find(
+		*this, L"HorizontalAlignment");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(
+		L"HorizontalAlignment", _horizontalAlignment, value)
+		|| (metadata && !applyingMetadata)) return;
+	_layoutStyle.horizontalAlignment =
+		ToLayoutAlignment(_horizontalAlignment);
 	this->RequestLayout();
 	this->InvalidateVisual();
 }
 
-void Control::SetLayoutWidth(cui::layout::Length value)
-{
-	if (value.IsFixed())
-		value = cui::layout::Length::Fixed(value.value);
-	else
-		value = cui::layout::Length::Auto();
-	if (_layoutStyle.width == value) return;
-	_layoutStyle.width = value;
-	this->RequestLayout();
-	this->InvalidateVisual();
-}
-
-void Control::SetLayoutHeight(cui::layout::Length value)
-{
-	if (value.IsFixed())
-		value = cui::layout::Length::Fixed(value.value);
-	else
-		value = cui::layout::Length::Auto();
-	if (_layoutStyle.height == value) return;
-	_layoutStyle.height = value;
-	this->RequestLayout();
-	this->InvalidateVisual();
-}
-
-void Control::SetAutoSize(bool width, bool height)
-{
-	bool changed = false;
-	if (width && !_layoutStyle.width.IsAuto())
-	{
-		_layoutStyle.width = cui::layout::Length::Auto();
-		changed = true;
-	}
-	if (height && !_layoutStyle.height.IsAuto())
-	{
-		_layoutStyle.height = cui::layout::Length::Auto();
-		changed = true;
-	}
-	if (!changed) return;
-	this->RequestLayout();
-	this->InvalidateVisual();
-}
-
-GET_CPP(Control, VerticalAlignment, VAlign)
+GET_CPP(Control, ::VerticalAlignment, VerticalAlignment)
 {
 	return _verticalAlignment;
 }
-SET_CPP(Control, VerticalAlignment, VAlign)
+SET_CPP(Control, ::VerticalAlignment, VerticalAlignment)
 {
-	if (_verticalAlignment == value)
-		return;
-	_verticalAlignment = value;
-	_layoutStyle.verticalAlignment = ToLayoutAlignment(value);
-	this->RequestLayout();
-	this->InvalidateVisual();
-}
-
-GET_CPP(Control, uint8_t, AnchorStyles)
-{
-	return _anchorStyles;
-}
-SET_CPP(Control, uint8_t, AnchorStyles)
-{
-	_anchorStyles = value;
+	auto* metadata = DependencyPropertyRegistry::Find(
+		*this, L"VerticalAlignment");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(
+		L"VerticalAlignment", _verticalAlignment, value)
+		|| (metadata && !applyingMetadata)) return;
+	_layoutStyle.verticalAlignment =
+		ToLayoutAlignment(_verticalAlignment);
 	this->RequestLayout();
 	this->InvalidateVisual();
 }
@@ -9522,7 +10847,7 @@ GET_CPP(Control, int, GridRow)
 }
 SET_CPP(Control, int, GridRow)
 {
-	SetPropertyField(L"GridRow", _gridRow, value);
+	SetPropertyField(L"Grid.Row", _gridRow, value);
 }
 
 GET_CPP(Control, int, GridColumn)
@@ -9531,7 +10856,7 @@ GET_CPP(Control, int, GridColumn)
 }
 SET_CPP(Control, int, GridColumn)
 {
-	SetPropertyField(L"GridColumn", _gridColumn, value);
+	SetPropertyField(L"Grid.Column", _gridColumn, value);
 }
 
 GET_CPP(Control, int, GridRowSpan)
@@ -9540,7 +10865,7 @@ GET_CPP(Control, int, GridRowSpan)
 }
 SET_CPP(Control, int, GridRowSpan)
 {
-	SetPropertyField(L"GridRowSpan", _gridRowSpan, value);
+	SetPropertyField(L"Grid.RowSpan", _gridRowSpan, value);
 }
 
 GET_CPP(Control, int, GridColumnSpan)
@@ -9549,7 +10874,7 @@ GET_CPP(Control, int, GridColumnSpan)
 }
 SET_CPP(Control, int, GridColumnSpan)
 {
-	SetPropertyField(L"GridColumnSpan", _gridColumnSpan, value);
+	SetPropertyField(L"Grid.ColumnSpan", _gridColumnSpan, value);
 }
 
 GET_CPP(Control, Dock, DockPosition)
@@ -9558,17 +10883,7 @@ GET_CPP(Control, Dock, DockPosition)
 }
 SET_CPP(Control, Dock, DockPosition)
 {
-	SetPropertyField(L"DockPosition", _dock, value);
-}
-
-GET_CPP(Control, SIZE, MinSize)
-{
-	return _minSize;
-}
-SET_CPP(Control, SIZE, MinSize)
-{
-	SetMinSizeDip(cui::core::Size{
-		static_cast<float>(value.cx), static_cast<float>(value.cy) });
+	SetPropertyField(L"DockPanel.Dock", _dock, value);
 }
 
 cui::core::Size Control::GetMinSizeDip() const noexcept
@@ -9578,22 +10893,8 @@ cui::core::Size Control::GetMinSizeDip() const noexcept
 
 void Control::SetMinSizeDip(cui::core::Size value)
 {
-	value.width = std::isfinite(value.width)
-		? (std::max)(0.0f, value.width) : 0.0f;
-	value.height = std::isfinite(value.height)
-		? (std::max)(0.0f, value.height) : 0.0f;
-	if (!SetPropertyField(L"MinSize", _layoutStyle.minimumSize, value)) return;
-	_minSize = SIZE{ ToMeasureLong(value.width), ToMeasureLong(value.height) };
-}
-
-GET_CPP(Control, SIZE, MaxSize)
-{
-	return _maxSize;
-}
-SET_CPP(Control, SIZE, MaxSize)
-{
-	SetMaxSizeDip(cui::core::Size{
-		ToMaximumDip(value.cx), ToMaximumDip(value.cy) });
+	MinWidth = value.width;
+	MinHeight = value.height;
 }
 
 cui::core::Size Control::GetMaxSizeDip() const noexcept
@@ -9603,36 +10904,14 @@ cui::core::Size Control::GetMaxSizeDip() const noexcept
 
 void Control::SetMaxSizeDip(cui::core::Size value)
 {
-	auto normalize = [](float item)
-	{
-		if (std::isnan(item) || item < 0.0f) return 0.0f;
-		return item;
-	};
-	value.width = normalize(value.width);
-	value.height = normalize(value.height);
-	if (!SetPropertyField(L"MaxSize", _layoutStyle.maximumSize, value)) return;
-	_maxSize = SIZE{ ToMeasureLong(value.width), ToMeasureLong(value.height) };
+	MaxWidth = value.width;
+	MaxHeight = value.height;
 }
 
-// 测量控件期望尺寸。浮点入口是主路径；默认实现转发到旧扩展点，
-// 因而现有自定义控件仍可逐步迁移。
 cui::core::Size Control::MeasureCore(const cui::core::Constraints& available)
 {
-	const auto maximum = available.Normalized().maximum;
-	const SIZE legacyDesired = MeasureCore(SIZE{
-		ToMeasureLong(maximum.width),
-		ToMeasureLong(maximum.height) });
-	return cui::core::Size{
-		static_cast<float>((std::max)(0L, legacyDesired.cx)),
-		static_cast<float>((std::max)(0L, legacyDesired.cy)) };
-}
-
-SIZE Control::MeasureCore(SIZE availableSize)
-{
-	(void)availableSize;
-	return SIZE{
-		(std::max)(0L, _size.cx),
-		(std::max)(0L, _size.cy) };
+	(void)available;
+	return _naturalSize.NonNegative();
 }
 
 cui::core::Size Control::ResolveDesiredSize(
@@ -9659,76 +10938,85 @@ cui::core::Size Control::ResolveDesiredSize(
 cui::core::Size Control::Measure(const cui::core::Constraints& available)
 {
 	const cui::core::Constraints constraints = available.Normalized();
+	if (IsCollapsed())
+	{
+		if (_layoutState.NeedsMeasure()
+			|| _layoutState.lastMeasureConstraints != constraints
+			|| _layoutState.desiredSize != cui::core::Size{})
+			_layoutState.CommitMeasure({}, constraints);
+		return {};
+	}
 	if (_layoutState.NeedsMeasure() ||
 		_layoutState.lastMeasureConstraints != constraints)
 	{
-		const auto intrinsic = MeasureCore(constraints);
+		const auto intrinsic = GetControlTemplateRoot()
+			? GetControlTemplateRoot()->Measure(constraints)
+			: MeasureCore(constraints);
 		_layoutState.CommitMeasure(ResolveDesiredSize(intrinsic, constraints), constraints);
 	}
 	return _layoutState.desiredSize;
 }
 
 
-SIZE Control::Measure(SIZE availableSize)
-{
-	const auto desired = Measure(ToMeasureConstraints(availableSize));
-	return SIZE{
-		ToMeasureLong(desired.width),
-		ToMeasureLong(desired.height)
-	};
-}
-
 cui::core::Point Control::GetActualLocationDip() const
 {
 	if (_layoutState.hasArranged)
 		return _layoutState.arrangedRect.Origin();
-	return cui::core::Point{
-		(float)_runtimeLocation.x, (float)_runtimeLocation.y };
+	return {};
 }
 
-cui::core::Size Control::GetActualSizeDip()
+cui::core::Size Control::GetActualSizeDip() const
 {
-	const SIZE compatibilitySize = ActualSize();
-	if (_layoutState.hasArranged)
-	{
-		const auto arrangedSize = _layoutState.arrangedRect.Extent();
-		return cui::core::Size{
-			arrangedSize.width + (float)(compatibilitySize.cx - _size.cx),
-			arrangedSize.height + (float)(compatibilitySize.cy - _size.cy)
-		}.NonNegative();
-	}
-	return cui::core::Size{
-		(float)compatibilitySize.cx, (float)compatibilitySize.cy
-	}.NonNegative();
+	return _layoutState.hasArranged
+		? _layoutState.arrangedRect.Extent().NonNegative()
+		: cui::core::Size{};
+}
+
+cui::core::Size Control::GetRenderSizeDip()
+{
+	return GetActualSizeDip();
 }
 
 cui::core::Point Control::GetAbsoluteLocationDip() const
 {
 	const Control* ancestor = this;
 	cui::core::Point absoluteLocation = ancestor->GetActualLocationDip();
-	while (ancestor->Parent)
+	std::unordered_set<const Control*> visited;
+	while (ancestor->_visualParent)
 	{
-		ancestor = ancestor->Parent;
+		if (!visited.insert(ancestor).second) break;
+		ancestor = ancestor->_visualParent;
 		const auto ancestorLocation = ancestor->GetActualLocationDip();
 		absoluteLocation += cui::core::Vector{
 			ancestorLocation.x, ancestorLocation.y };
-		const auto childOffset = ancestor->GetChildrenRenderOffset();
+		const auto childOffset = ancestor->GetVisualChildrenRenderOffset();
 		absoluteLocation += cui::core::Vector{
 			(float)childOffset.x, (float)childOffset.y };
 	}
 	return absoluteLocation;
 }
 
-cui::core::Rect Control::GetAbsoluteRectDip()
+cui::core::Rect Control::GetAbsoluteRectDip() const
 {
 	return cui::core::Rect{
 		GetAbsoluteLocationDip(), GetActualSizeDip() };
 }
 
+D2D1_RECT_F Control::GetAbsoluteBoundsDip() const
+{
+	const auto rect = GetAbsoluteRectDip();
+	return D2D1::RectF(
+		rect.Left(), rect.Top(), rect.Right(), rect.Bottom());
+}
+
 D2D1_MATRIX_3X2_F Control::GetInheritedRenderTransform() const
 {
 	auto result = D2D1::Matrix3x2F::Identity();
-	for (auto* ancestor = this->Parent; ancestor; ancestor = ancestor->Parent)
+	std::unordered_set<const Control*> visited;
+	visited.insert(this);
+	for (auto* ancestor = this->_visualParent;
+		ancestor && visited.insert(ancestor).second;
+		ancestor = ancestor->_visualParent)
 		result = result * AsMatrix(
 			ancestor->GetEffectiveDescendantRenderTransform());
 	return result;
@@ -9778,7 +11066,10 @@ bool Control::TryTransformRenderPointToLocal(
 
 bool Control::IsRenderPointInsideClip(D2D1_POINT_2F renderPoint) const
 {
-	for (auto* current = this; current; current = current->Parent)
+	std::unordered_set<const Control*> visited;
+	for (auto* current = this;
+		current && visited.insert(current).second;
+		current = current->_visualParent)
 	{
 		if (!current->_clip) continue;
 		D2D1_POINT_2F local{};
@@ -9815,67 +11106,48 @@ D2D1_RECT_F Control::TransformAbsoluteRectToRenderSpace(
 
 D2D1_RECT_F Control::GetRenderedAbsoluteRectDip()
 {
-	const auto rect = GetAbsoluteRectDip();
+	const cui::core::Rect rect{
+		GetAbsoluteLocationDip(), GetRenderSizeDip() };
 	return TransformAbsoluteRectToRenderSpace(D2D1_RECT_F{
 		rect.Left(), rect.Top(), rect.Right(), rect.Bottom() });
 }
 
-// 应用浮点 DIP 布局结果；POINT/SIZE 仅作为兼容投影保留。
-void Control::ApplyLayout(cui::core::Rect finalRect)
+void Control::Arrange(cui::core::Rect finalRect)
 {
 	finalRect = finalRect.Normalized();
 	const cui::core::Rect previousRect = _layoutState.hasArranged
 		? _layoutState.arrangedRect
-		: cui::core::Rect{
-			(float)_runtimeLocation.x, (float)_runtimeLocation.y,
-			(float)_size.cx, (float)_size.cy };
+		: cui::core::Rect{};
 	const bool geometryChanged = previousRect != finalRect;
-	const bool layoutSizeChanged = previousRect.width != finalRect.width
+	const bool sizeChanged = previousRect.width != finalRect.width
 		|| previousRect.height != finalRect.height;
 
-	const POINT projectedLocation{
-		ToCoordinateLong(finalRect.x), ToCoordinateLong(finalRect.y) };
-	const SIZE projectedSize{
-		ToLayoutLong(finalRect.width), ToLayoutLong(finalRect.height) };
-	const bool locationChanged = _runtimeLocation.x != projectedLocation.x
-		|| _runtimeLocation.y != projectedLocation.y;
-	const bool sizeChanged = _size.cx != projectedSize.cx
-		|| _size.cy != projectedSize.cy;
-
+	if (geometryChanged)
+		InvalidateVisualBoundsSubtree();
 	_layoutState.CommitArrange(finalRect);
-	_runtimeLocation = projectedLocation;
-	_size = projectedSize;
-
-	if (locationChanged)
-		this->OnMoved(this);
-	if (sizeChanged)
-		this->OnSizeChanged(this);
-	if (layoutSizeChanged)
-		this->OnComputedLayoutSizeChanged();
-
+	if (auto* templateRoot = GetControlTemplateRoot())
+	{
+		templateRoot->Arrange(cui::core::Rect{
+			0.0f, 0.0f, finalRect.width, finalRect.height });
+	}
 	if (geometryChanged)
 	{
-		this->InvalidateVisual();
+		InvalidatePresentationGeometrySubtree();
+		InvalidateVisualBoundsSubtree();
 	}
-}
 
-void Control::ApplyLayout(POINT location, SIZE size)
-{
-	ApplyLayout(cui::core::Rect{
-		(float)location.x, (float)location.y,
-		(float)size.cx, (float)size.cy });
-}
-
-void Control::SetRuntimeLocation(cui::core::Point value)
-{
-	const auto currentSize = _layoutState.hasArranged
-		? _layoutState.arrangedRect.Extent()
-		: cui::core::Size{ (float)_size.cx, (float)_size.cy };
-	ApplyLayout(cui::core::Rect{ value, currentSize });
-}
-
-void Control::SetRuntimeLocation(POINT value)
-{
-	SetRuntimeLocation(cui::core::Point{
-		(float)value.x, (float)value.y });
+	if (sizeChanged)
+	{
+		if (const auto* metadata = FindPropertyMetadata(L"ActualWidth"))
+			ApplyPropertyMetadataChange(*metadata,
+				BindingValue(previousRect.width), BindingValue(finalRect.width));
+		if (const auto* metadata = FindPropertyMetadata(L"ActualHeight"))
+			ApplyPropertyMetadataChange(*metadata,
+				BindingValue(previousRect.height), BindingValue(finalRect.height));
+		SizeChangedEventArgs args(
+			previousRect.Extent(), finalRect.Extent());
+		this->SizeChanged(this, args);
+	}
+	if (sizeChanged)
+		this->OnComputedLayoutSizeChanged();
 }

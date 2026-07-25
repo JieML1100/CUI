@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file Layout.h
@@ -6,16 +6,16 @@
  *
  * 直接包含该文件可获得所有布局相关类型与容器控件：
  * - LayoutTypes / LayoutState / LayoutDeferral / LayoutEngine
- * - StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel
+ * - StackPanel / Grid / DockPanel / WrapPanel / RelativePanel
  */
 
 #include "LayoutTypes.h"
 #include "LayoutState.h"
 #include "LayoutDeferral.h"
 #include "LayoutEngine.h"
-#include "LegacyCanvasLayout.h"
+#include "CanvasLayout.h"
 #include "StackPanel.h"
-#include "GridPanel.h"
+#include "Grid.h"
 #include "DockPanel.h"
 #include "WrapPanel.h"
 #include "RelativePanel.h"

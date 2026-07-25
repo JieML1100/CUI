@@ -1,7 +1,8 @@
 ﻿#include "Application.h"
-#include <shlobj_core.h>
+#include "Window.h"
 #include <algorithm>
 #include "Resource.h"
+#include "Core/Threading.h"
 #include <filesystem>
 #include <mutex>
 namespace
@@ -115,36 +116,33 @@ namespace
 	}
 }
 
-std::unordered_map<HWND, class Form*>  Application::Forms = std::unordered_map<HWND, class Form*>();
+std::unordered_map<HWND, class Window*> Application::_windows;
 
-std::string Application::ExecutablePath()
+void Application::RegisterWindow(Window& window)
 {
-	char path[MAX_PATH];
-	GetModuleFileNameA(nullptr, path, MAX_PATH);
-	return std::string(path);
+	if (window.Handle) _windows[window.Handle] = &window;
 }
-std::string Application::StartupPath()
+
+void Application::UnregisterWindow(Window& window) noexcept
 {
-	std::string path = ExecutablePath();
-	return path.substr(0, path.find_last_of("\\"));
+	const auto found = _windows.find(window.Handle);
+	if (found != _windows.end() && found->second == &window)
+		_windows.erase(found);
 }
-std::string Application::ApplicationName()
+
+std::vector<Window*> Application::GetWindows()
 {
-	std::string path = ExecutablePath();
-	std::string exe = path.substr(path.find_last_of("\\") + 1);
-	return exe.substr(0, exe.find_last_of("."));
+	std::vector<Window*> result;
+	result.reserve(_windows.size());
+	for (const auto& [handle, window] : _windows)
+		if (handle && window) result.push_back(window);
+	return result;
 }
-std::string Application::LocalUserAppDataPath()
+
+Window* Application::FindWindow(HWND handle) noexcept
 {
-	char path[MAX_PATH];
-	SHGetSpecialFolderPathA(nullptr, path, CSIDL_LOCAL_APPDATA, FALSE);
-	return std::string(path);
-}
-std::string Application::UserAppDataPath()
-{
-	char path[MAX_PATH];
-	SHGetSpecialFolderPathA(nullptr, path, CSIDL_APPDATA, FALSE);
-	return std::string(path);
+	const auto found = _windows.find(handle);
+	return found == _windows.end() ? nullptr : found->second;
 }
 
 std::shared_ptr<const ResourceResolver> Application::GetResourceResolver()
@@ -244,4 +242,19 @@ SystemVisualPreferences Application::QuerySystemVisualPreferences()
 		result.TextScalePercent = static_cast<UINT>(textScale);
 	}
 	return NormalizeSystemVisualPreferences(result);
+}
+
+int Application::Run()
+{
+	MSG message{};
+	while (!_windows.empty())
+	{
+		const BOOL result = ::GetMessageW(&message, nullptr, 0, 0);
+		if (result <= 0)
+			return result == 0 ? static_cast<int>(message.wParam) : -1;
+		::TranslateMessage(&message);
+		::DispatchMessageW(&message);
+		cui::PumpUIThreadCallbacks();
+	}
+	return 0;
 }

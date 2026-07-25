@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LoadingRing.h"
-#include "Form.h"
+#include "Window.h"
 #include <algorithm>
 #include <cmath>
 
@@ -20,49 +20,50 @@ namespace
 
 UIClass LoadingRing::Type() { return UIClass::UI_LoadingRing; }
 
-void LoadingRing::EnsureBindingPropertiesRegistered()
+void LoadingRing::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		ControlPropertyOptions<LoadingRing, bool> options;
+		DependencyPropertyOptions<LoadingRing, bool> options;
 		options.DefaultValue = true;
-		options.Flags = ControlPropertyFlags::AffectsRender;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
 		options.Design.Category = L"Behavior";
 		options.Design.CategoryOrder = 300;
 		options.Design.Order = 10;
-		options.Design.Editor = ControlPropertyEditorKind::Boolean;
-		options.Design.Persistence = ControlPropertyPersistence::Legacy;
-		BindingPropertyRegistry::Register<LoadingRing, bool>(L"Active",
-			[](LoadingRing& target) { return target.Active; },
-			[](LoadingRing& target, const bool& value) { target.Active = value; },
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		DependencyPropertyRegistry::Register<LoadingRing, bool>(L"IsActive",
+			[](LoadingRing& target) { return target.IsActive; },
+			[](LoadingRing& target, const bool& value) { target.IsActive = value; },
 			{}, std::move(options));
 		return true;
 	}();
 	(void)registered;
 }
 
-GET_CPP(LoadingRing, bool, Active)
+GET_CPP(LoadingRing, bool, IsActive)
 {
 	return this->_active;
 }
 
-SET_CPP(LoadingRing, bool, Active)
+SET_CPP(LoadingRing, bool, IsActive)
 {
-	if (this->_active == value)
-		return;
-	this->_active = value;
+	auto* metadata =
+		DependencyPropertyRegistry::Find(*this, L"IsActive");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(L"IsActive", _active, value)) return;
+	if (metadata && !applyingMetadata) return;
 	this->_animStartTick = ::GetTickCount64();
 	this->InvalidateVisual();
 }
 
-LoadingRing::LoadingRing(int x, int y, int width, int height)
+LoadingRing::LoadingRing()
 {
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
-	this->BackColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.12f);
-	this->ForeColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 1.0f);
-	this->BorderColor = D2D1::ColorF(0, 0, 0, 0);
+	this->RendererBackgroundColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.12f);
+	this->RendererForegroundColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 1.0f);
+	this->RendererBorderColor = D2D1::ColorF(0, 0, 0, 0);
 	this->_animStartTick = ::GetTickCount64();
 }
 
@@ -79,21 +80,21 @@ float LoadingRing::GetAnimationPhase() const
 
 bool LoadingRing::IsAnimationRunning()
 {
-	return this->_active && this->IsVisual && AreSystemAnimationsEnabled();
+	return this->_active && this->IsVisible && AreSystemAnimationsEnabled();
 }
 
 bool LoadingRing::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	if (!IsAnimationRunning()) return false;
-	outRect = this->AbsRect;
+	outRect = GetAbsoluteBoundsDip();
 	return true;
 }
 
-void LoadingRing::Update()
+void LoadingRing::OnRender()
 {
-	if (this->IsVisual == false) return;
+	if (this->IsVisible == false) return;
 
-	auto d2d = this->ParentForm->Render;
+	auto d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
@@ -108,9 +109,9 @@ void LoadingRing::Update()
 		const int dotCount = 5;
 		const float spreadDeg = 22.0f;
 
-		if (this->BackColor.a > 0.001f)
+		if (this->RendererBackgroundColor.a > 0.001f)
 		{
-			d2d->DrawArc(center, orbitRadius, 0.0f, 359.9f, this->BackColor, trackWidth);
+			d2d->DrawArc(center, orbitRadius, 0.0f, 359.9f, this->RendererBackgroundColor, trackWidth);
 		}
 
 		for (int index = 0; index < dotCount; ++index)
@@ -118,14 +119,14 @@ void LoadingRing::Update()
 			const float trail = 1.0f - ((float)index / (float)dotCount);
 			const float angle = baseAngle - spreadDeg * index - 90.0f;
 			auto dotCenter = PointOnCircle(center, orbitRadius, angle);
-			auto dotColor = this->ForeColor;
+			auto dotColor = this->RendererForegroundColor;
 			dotColor.a *= 0.22f + trail * 0.78f;
 			const float dotRadius = (std::max)(2.0f, diameter * (0.055f + trail * 0.02f));
 			d2d->FillEllipse(dotCenter, dotRadius, dotRadius, dotColor);
 		}
 	}
 
-	if (!this->Enable)
+	if (!this->IsEnabled)
 	{
 		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f, 1.0f, 1.0f, 0.5f });
 	}

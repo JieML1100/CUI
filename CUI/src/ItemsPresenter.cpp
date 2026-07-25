@@ -1,24 +1,67 @@
 #include "ItemsPresenter.h"
+#include "Layout/OverlayLayout.h"
+#include "Window.h"
 
 #include <stdexcept>
 #include <utility>
 
-ItemsPresenter::ItemsPresenter(int x, int y, int width, int height)
-	: GridPanel(x, y, width, height)
+ItemsPresenter::ItemsPresenter()
+	: Control()
 {
-	BorderThickness = 0.0f;
-	BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	SetAutoSize(true, true);
-	HAlign = HorizontalAlignment::Stretch;
-	VAlign = VerticalAlignment::Top;
+	RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	(void)TrySetPropertyValue(
+		L"VerticalAlignment",
+		BindingValue(::VerticalAlignment::Top),
+		DependencyPropertyValueSource::Theme);
 }
 
-void ItemsPresenter::EnsureBindingPropertiesRegistered()
+void ItemsPresenter::OnRender()
 {
-	GridPanel::EnsureBindingPropertiesRegistered();
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
+	BeginRender();
+	EndRender();
 }
 
-bool ItemsPresenter::ValidateChildCollection(
+cui::core::Size ItemsPresenter::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	return cui::layout::MeasureOverlayChildren(
+		GetLayoutChildrenView(), available);
+}
+
+void ItemsPresenter::Arrange(cui::core::Rect finalRect)
+{
+	Control::Arrange(finalRect);
+	PerformPendingLayout();
+}
+
+void ItemsPresenter::RequestLayout()
+{
+	_contentLayoutPending = true;
+	Control::RequestLayout();
+}
+
+void ItemsPresenter::OnComputedLayoutSizeChanged()
+{
+	_contentLayoutPending = true;
+}
+
+void ItemsPresenter::PerformPendingLayout()
+{
+	if (IsLayoutSuspended() || !_contentLayoutPending) return;
+	const auto size = GetActualSizeDip();
+	cui::layout::ArrangeOverlayChildren(
+		GetLayoutChildrenView(),
+		cui::core::Rect{ 0.0f, 0.0f, size.width, size.height });
+	_contentLayoutPending = false;
+}
+
+void ItemsPresenter::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+}
+
+bool ItemsPresenter::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
@@ -30,22 +73,11 @@ bool ItemsPresenter::ValidateChildCollection(
 	return false;
 }
 
-void ItemsPresenter::ConfigureItemsHost(Panel& host)
-{
-	host.GridRow = 0;
-	host.GridColumn = 0;
-	host.GridRowSpan = 1;
-	host.GridColumnSpan = 1;
-	host.HAlign = HorizontalAlignment::Stretch;
-	host.VAlign = VerticalAlignment::Top;
-}
-
 Panel* ItemsPresenter::SetItemsHost(std::unique_ptr<Panel> value)
 {
 	if (!value) throw std::invalid_argument("ItemsPresenter ItemsHost is null");
 	if (_itemsHost)
 		throw std::logic_error("ItemsPresenter already owns an ItemsHost");
-	ConfigureItemsHost(*value);
 	_itemsHost = value.get();
 	_changingItemsHost = true;
 	try
@@ -59,7 +91,7 @@ Panel* ItemsPresenter::SetItemsHost(std::unique_ptr<Panel> value)
 		_itemsHost = nullptr;
 		throw;
 	}
-	InvalidateLayout();
+	RequestLayout();
 	return _itemsHost;
 }
 
@@ -72,7 +104,7 @@ std::unique_ptr<Panel> ItemsPresenter::DetachItemsHost()
 	std::unique_ptr<Control> detached;
 	try
 	{
-		detached = DetachControl(previous);
+		detached = DetachVisualChild(previous);
 		_changingItemsHost = false;
 	}
 	catch (...)

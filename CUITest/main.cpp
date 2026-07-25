@@ -48,23 +48,42 @@ int main(int argc, char** argv)
 {
 	if (argc == 2 && std::string_view(argv[1]) == "--validate-xaml")
 	{
-		std::wstring error;
-		if (DemoWindow::ValidateXaml(&error))
+		try
 		{
+			std::wstring error;
+			Application::EnsureDpiAwareness();
+			DemoWindow window(DemoWindow::InitializationMode::DeclarativeOnly);
+			if (!window.VerifyDeclarativeFeatures(&error)
+				|| !window.VerifyTextCompositionFeatures(&error))
+			{
+				WriteDiagnostic(error);
+				return 2;
+			}
 			ClearDiagnostic();
 			return 0;
 		}
-		WriteDiagnostic(error);
-		return 2;
+		catch (const std::exception& error)
+		{
+			WriteDiagnostic(Convert::StringToWString(error.what()));
+			return 2;
+		}
 	}
 	if (argc == 2 && std::string_view(argv[1]) == "--smoke-xaml")
 	{
 		try
 		{
 			Application::EnsureDpiAwareness();
-			// Exercise the complete XAML tree, including generated data-template
-			// visuals, without starting native host data or platform services.
-			DemoWindow window(false);
+			// Exercise the complete XAML tree plus ordinary runtime data, while
+			// keeping taskbar/tray/toast platform side effects disabled.
+			DemoWindow window(DemoWindow::InitializationMode::RuntimeData);
+			std::wstring error;
+			if (!window.VerifyDeclarativeFeatures(&error)
+				|| !window.VerifyTextCompositionFeatures(&error)
+				|| !window.VerifyRuntimeDataFeatures(&error))
+			{
+				WriteDiagnostic(error);
+				return 3;
+			}
 			ClearDiagnostic();
 			return 0;
 		}
@@ -74,13 +93,36 @@ int main(int argc, char** argv)
 			return 3;
 		}
 	}
+	if (argc == 2 && std::string_view(argv[1]) == "--render-smoke")
+	{
+		try
+		{
+			Application::EnsureDpiAwareness();
+			{
+				DemoWindow window(DemoWindow::InitializationMode::DeclarativeOnly);
+				std::wstring error;
+				if (!window.VerifyPresentationFeatures(&error))
+				{
+					WriteDiagnostic(error);
+					return 4;
+				}
+			}
+			ClearDiagnostic();
+			return 0;
+		}
+		catch (const std::exception& error)
+		{
+			WriteDiagnostic(Convert::StringToWString(error.what()));
+			return 4;
+		}
+	}
 
 	try
 	{
 		Application::EnsureDpiAwareness();
 		DemoWindow window;
 		window.Show();
-		while (!Application::Forms.empty()) Form::DoEvent();
+		(void)Application::Run();
 		return 0;
 	}
 	catch (const std::exception& error)

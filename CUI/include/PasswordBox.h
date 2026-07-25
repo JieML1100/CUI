@@ -1,6 +1,5 @@
 #pragma once
 #include "Control.h"
-#pragma comment(lib, "Imm32.lib")
 
 /**
  * @file PasswordBox.h
@@ -12,53 +11,44 @@
  */
 class PasswordBox : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<TextBoxAutomationPeer>(
+			*this, L"PasswordBox", true);
+	}
+private:
+	D2D1_COLOR_F _selectedBackColor = cui::theme::palette::SelectionBack;
+	D2D1_COLOR_F _selectedForeColor = cui::theme::palette::TextPrimary;
+	wchar_t _passwordChar = L'\x25CF';
+	D2D1_SIZE_F _textSize = { 0,0 };
+	int _selectionStart = 0;
+	int _selectionEnd = 0;
+	float _horizontalScrollOffset = 0.0f;
 public:
+	using UIElement::PasswordChanged;
 	virtual UIClass Type();
-	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+	PROPERTY(std::wstring, Password);
+	GET(std::wstring, Password);
+	SET(std::wstring, Password);
+	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->IsEnabled ? CursorKind::IBeam : CursorKind::Arrow; }
 	bool HandlesMouseWheel() const override { return true; }
-	bool HandlesNavigationKey(WPARAM key) const override;
+	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	/** @brief 鼠标悬停时背景色（实现可能会用到）。 */
-	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::SurfaceSubtle;
-	/** @brief 选区背景色。 */
-	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::SelectionBack;
-	/** @brief 选区前景色。 */
-	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
-	/** @brief 获得焦点时高亮色。 */
-	D2D1_COLOR_F FocusedColor = cui::theme::palette::Surface;
-	/** @brief 滚动条背景色（如实现启用）。 */
-	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
-	/** @brief 滚动条前景色（如实现启用）。 */
-	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
-	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
-	/** @brief 当前文本测量尺寸缓存。 */
-	D2D1_SIZE_F textSize = { 0,0 };
-	/** @brief 选择起始索引（基于字符）。 */
-	int SelectionStart = 0;
-	/** @brief 选择结束索引（基于字符）。 */
-	int SelectionEnd = 0;
-	/** @brief 边框宽度（像素）。 */
-	float BorderThickness = 1.5f;
-	/** @brief 圆角半径。 */
-	float CornerRadius = 6.0f;
-	/** @brief 聚焦时边框宽度。 */
-	float FocusBorder = 1.6f;
-	/** @brief 水平滚动偏移（像素）。 */
-	float HorizontalScrollOffset = 0.0f;
-	/** @brief 文本内边距（像素）。 */
-	float TextMargin = 5.0f;
-	/** @brief 掩码字符（默认 '*'）。 */
-	wchar_t PasswordChar = L'*';
-	/** @brief 为 true 时显示明文（临时查看密码）。 */
-	bool RevealPassword = false;
 protected:
 	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
 public:
-	/** @brief 创建密码输入框。 */
-	PasswordBox(std::wstring text, int x, int y, int width = 120, int height = 24);
+	PasswordBox();
 private:
+	void CommitPasswordEdit(std::wstring value);
+	void PublishPasswordChanged();
 	void InputText(std::wstring input);
 	void InputBack();
 	void InputDelete();
@@ -71,8 +61,12 @@ public:
 
 	// ---- 公共选择/编辑 API（不暴露 Copy/Cut，避免密码进入剪贴板） ----
 	// 注：框架的 PROPERTY/GET 宏生成的 getter 均非常量，故这些方法也不加 const。
+	int GetSelectionStart();
 	int GetSelectionLength();
 	__declspec(property(get = GetSelectionLength)) int SelectionLength;
+	int GetCaretIndex();
+	void SetCaretIndex(int value);
+	__declspec(property(get = GetCaretIndex, put = SetCaretIndex)) int CaretIndex;
 	bool HasSelection();
 	void Select(int start, int length);
 	void SelectAll();
@@ -81,6 +75,9 @@ public:
 	void InsertText(const std::wstring& text);
 	bool Paste();
 
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+protected:
+	bool ApplyTextInput(const TextCompositionEventArgs& input) override;
+	bool TryGetTextInputCaretRect(D2D1_RECT_F& outRect) override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
 };

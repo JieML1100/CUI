@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "defines.h"
 #include <unordered_map>
 #include <vector>
@@ -44,7 +44,7 @@ public:
         return this->size();
     }
 
-    std::vector<_Kty> Keys() const {
+    std::vector<_Kty> Key() const {
         std::vector<_Kty> keys;
         for (const auto& pair : *this) {
             keys.push_back(pair.first);

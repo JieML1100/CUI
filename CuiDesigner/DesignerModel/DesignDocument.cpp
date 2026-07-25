@@ -1,7 +1,12 @@
 #include "DesignDocument.h"
+#include "../DesignerBindingUtils.h"
 #include "../DesignerEventCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
 #include "../../CUI/include/GroupStyle.h"
+#include <Convert.h>
+#include <algorithm>
+#include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -10,36 +15,74 @@
 
 namespace DesignerModel
 {
-bool DesignFormModel::operator==(const DesignFormModel& other) const
+DesignDocument::DesignDocument()
 {
-	return Name == other.Name
-		&& Text == other.Text
-		&& FontName == other.FontName
-		&& FontSize == other.FontSize
-		&& Size.cx == other.Size.cx
-		&& Size.cy == other.Size.cy
-		&& Location.x == other.Location.x
-		&& Location.y == other.Location.y
-		&& BackColor.r == other.BackColor.r
-		&& BackColor.g == other.BackColor.g
-		&& BackColor.b == other.BackColor.b
-		&& BackColor.a == other.BackColor.a
-		&& ForeColor.r == other.ForeColor.r
-		&& ForeColor.g == other.ForeColor.g
-		&& ForeColor.b == other.ForeColor.b
-		&& ForeColor.a == other.ForeColor.a
-		&& ShowInTaskBar == other.ShowInTaskBar
-		&& TopMost == other.TopMost
-		&& Enable == other.Enable
-		&& Visible == other.Visible
-		&& VisibleHead == other.VisibleHead
-		&& HeadHeight == other.HeadHeight
-		&& MinBox == other.MinBox
-		&& MaxBox == other.MaxBox
-		&& CloseBox == other.CloseBox
-		&& CenterTitle == other.CenterTitle
-		&& AllowResize == other.AllowResize
-		&& EventHandlers == other.EventHandlers;
+	Window.Name = L"MainWindow";
+	Window.Type = UIClass::UI_Window;
+	Window.XamlType = { L"urn:cui", L"Window" };
+}
+
+void XamlDocumentDiagnostic::Apply(const XamlSourceSpan& span) noexcept
+{
+	if (!span.Valid()) return;
+	Line = span.Line;
+	Column = span.Column;
+	EndLine = span.EndLine;
+	EndColumn = span.EndColumn;
+	Utf16Offset = span.Utf16Offset;
+	Utf16Length = span.Utf16Length;
+}
+
+void DesignNodeSourceInfo::RecordMember(
+	std::wstring name, XamlSourceSpan span)
+{
+	if (name.empty() || !span.Valid()) return;
+	Members.insert_or_assign(std::move(name), std::move(span));
+}
+
+const XamlSourceSpan* DesignNodeSourceInfo::FindMember(
+	const std::wstring& name) const noexcept
+{
+	const auto found = Members.find(name);
+	return found == Members.end() ? nullptr : &found->second;
+}
+
+void XamlDocumentSourceMap::RecordSymbol(
+	std::wstring symbol, XamlSourceSpan span)
+{
+	if (symbol.empty() || !span.Valid()) return;
+	Symbols.try_emplace(std::move(symbol), std::move(span));
+}
+
+const XamlSourceSpan* XamlDocumentSourceMap::FindSymbol(
+	const std::wstring& symbol) const noexcept
+{
+	const auto found = Symbols.find(symbol);
+	return found == Symbols.end() ? nullptr : &found->second;
+}
+
+const XamlSourceSpan* XamlDocumentSourceMap::FindMentionedSymbol(
+	const std::wstring& message,
+	std::wstring* matchedSymbol) const noexcept
+{
+	const XamlSourceSpan* best = nullptr;
+	std::wstring bestName;
+	auto lower = [](std::wstring value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(),
+			[](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+		return value;
+	};
+	const auto normalizedMessage = lower(message);
+	for (const auto& [symbol, span] : Symbols)
+	{
+		if (symbol.size() <= bestName.size()
+			|| normalizedMessage.find(lower(symbol)) == std::wstring::npos) continue;
+		best = &span;
+		bestName = symbol;
+	}
+	if (matchedSymbol) *matchedSymbol = std::move(bestName);
+	return best;
 }
 
 bool DesignCodeBehindModel::TryNormalizeRelativeBasePath(
@@ -183,6 +226,893 @@ bool DesignObjectResourceDictionary::operator==(
 		&& GroupStyles == other.GroupStyles;
 }
 
+bool DesignRelativePanelConstraints::Empty() const noexcept
+{
+	return !CenterHorizontal && !CenterVertical
+		&& !AlignLeftWithPanel && !AlignTopWithPanel
+		&& !AlignRightWithPanel && !AlignBottomWithPanel
+		&& !Above && !Below && !LeftOf && !RightOf
+		&& !AlignLeftWith && !AlignRightWith
+		&& !AlignTopWith && !AlignBottomWith;
+}
+
+bool DesignNodeStructure::Empty() const noexcept
+{
+	return CommandTarget.empty()
+		&& ItemsSourceResource.empty() && ItemTemplate.empty()
+		&& ContentTemplate.empty() && HeaderTemplate.empty()
+		&& ControlTemplate.empty() && GroupStyle.empty()
+		&& ItemsPanel.empty() && ItemContainerStyle.empty()
+		&& MediaFile.empty()
+		&& ChildRole == DesignNodeChildRole::Default
+		&& (!RelativePanel || RelativePanel->Empty())
+		&& !GridRows && !GridColumns
+		&& !ChartSeries;
+}
+
+namespace
+{
+	std::string StructuralUtf8(const std::wstring& value)
+	{
+		return Convert::UnicodeToUtf8(value);
+	}
+
+	std::wstring StructuralWide(const DesignValue& value)
+	{
+		return value.is_string()
+			? Convert::Utf8ToUnicode(value.get<std::string>()) : std::wstring{};
+	}
+
+	bool StructuralError(std::wstring* outError, const std::wstring& message)
+	{
+		if (outError) *outError = message;
+		return false;
+	}
+
+	DesignValue EncodeColor(const DesignColor& color)
+	{
+		return DesignValue{
+			{ "r", color.R }, { "g", color.G },
+			{ "b", color.B }, { "a", color.A } };
+	}
+
+	bool DecodeColor(
+		const DesignValue& value,
+		DesignColor& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return StructuralError(outError, L"结构颜色必须是对象。");
+		for (const auto* key : { "r", "g", "b", "a" })
+			if (value.contains(key) && !value[key].is_number())
+				return StructuralError(outError, L"结构颜色通道必须是数值。");
+		output.R = value.value("r", 0.0);
+		output.G = value.value("g", 0.0);
+		output.B = value.value("b", 0.0);
+		output.A = value.value("a", 1.0);
+		if (!std::isfinite(output.R) || !std::isfinite(output.G)
+			|| !std::isfinite(output.B) || !std::isfinite(output.A))
+			return StructuralError(outError, L"结构颜色包含非有限数值。");
+		return true;
+	}
+
+	DesignValue EncodeGridLength(const DesignGridLength& length)
+	{
+		const char* unit = "Auto";
+		switch (length.Unit)
+		{
+		case DesignGridLengthUnit::Pixel: unit = "Pixel"; break;
+		case DesignGridLengthUnit::Star: unit = "Star"; break;
+		default: break;
+		}
+		return DesignValue{ { "value", length.Value }, { "unit", unit } };
+	}
+
+	bool DecodeGridLength(
+		const DesignValue& value,
+		DesignGridLength& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object() || !value.contains("value")
+			|| !value["value"].is_number() || !value.contains("unit")
+			|| !value["unit"].is_string())
+			return StructuralError(outError, L"GridLength 结构无效。");
+		output.Value = value["value"].get<double>();
+		const auto unit = value["unit"].get<std::string>();
+		if (unit == "Auto") output.Unit = DesignGridLengthUnit::Auto;
+		else if (unit == "Pixel") output.Unit = DesignGridLengthUnit::Pixel;
+		else if (unit == "Star") output.Unit = DesignGridLengthUnit::Star;
+		else return StructuralError(outError, L"GridLength Unit 无效。");
+		if (!std::isfinite(output.Value) || output.Value < 0.0)
+			return StructuralError(outError, L"GridLength Value 无效。");
+		return true;
+	}
+
+	DesignValue EncodeGridTracks(
+		const std::vector<DesignGridTrack>& tracks,
+		const char* lengthKey)
+	{
+		auto result = DesignValue::array();
+		for (const auto& track : tracks)
+		{
+			DesignValue value{ { lengthKey, EncodeGridLength(track.Length) } };
+			if (track.Minimum != 0.0) value["min"] = track.Minimum;
+			if (track.Maximum != (std::numeric_limits<float>::max)())
+				value["max"] = track.Maximum;
+			result.push_back(std::move(value));
+		}
+		return result;
+	}
+
+	bool DecodeGridTracks(
+		const DesignValue& value,
+		const char* lengthKey,
+		std::vector<DesignGridTrack>& output,
+		std::wstring* outError)
+	{
+		if (!value.is_array())
+			return StructuralError(outError, L"Grid 定义必须是数组。");
+		output.clear();
+		for (const auto& item : value.ArrayItems())
+		{
+			if (!item.is_object() || !item.contains(lengthKey))
+				return StructuralError(outError, L"Grid 定义缺少长度。");
+			DesignGridTrack track;
+			if (!DecodeGridLength(item[lengthKey], track.Length, outError)) return false;
+			if ((item.contains("min") && !item["min"].is_number())
+				|| (item.contains("max") && !item["max"].is_number()))
+				return StructuralError(outError, L"Grid Min/Max 必须是数值。");
+			track.Minimum = item.value("min", 0.0);
+			track.Maximum = item.value(
+				"max", static_cast<double>((std::numeric_limits<float>::max)()));
+			if (!std::isfinite(track.Minimum) || !std::isfinite(track.Maximum)
+				|| track.Minimum < 0.0 || track.Maximum < track.Minimum)
+				return StructuralError(outError, L"Grid Min/Max 范围无效。");
+			output.push_back(std::move(track));
+		}
+		return true;
+	}
+
+	template<typename T, typename Encode>
+	DesignValue EncodeArray(const std::vector<T>& values, Encode&& encode)
+	{
+		auto result = DesignValue::array();
+		for (const auto& value : values) result.push_back(encode(value));
+		return result;
+	}
+
+	template<typename T, typename Decode>
+	bool DecodeArray(
+		const DesignValue& value,
+		std::vector<T>& output,
+		Decode&& decode,
+		std::wstring* outError)
+	{
+		if (!value.is_array())
+			return StructuralError(outError, L"结构集合必须是数组。");
+		output.clear();
+		output.reserve(value.size());
+		for (const auto& item : value.ArrayItems())
+		{
+			T decoded;
+			if (!decode(item, decoded, outError)) return false;
+			output.push_back(std::move(decoded));
+		}
+		return true;
+	}
+
+}
+
+DesignValue EncodeDesignNodeStructure(
+	UIClass type,
+	const DesignNodeStructure& structure)
+{
+	DesignValue result = DesignValue::object();
+	auto stringField = [&](const char* key, const std::wstring& value)
+	{
+		if (!value.empty()) result[key] = StructuralUtf8(value);
+	};
+	stringField("commandTarget", structure.CommandTarget);
+	stringField("itemsSourceResource", structure.ItemsSourceResource);
+	stringField("itemTemplate", structure.ItemTemplate);
+	stringField("contentTemplate", structure.ContentTemplate);
+	stringField("headerTemplate", structure.HeaderTemplate);
+	stringField("controlTemplate", structure.ControlTemplate);
+	stringField("groupStyle", structure.GroupStyle);
+	stringField("itemsPanel", structure.ItemsPanel);
+	stringField("itemContainerStyle", structure.ItemContainerStyle);
+	stringField("mediaFile", structure.MediaFile);
+	if (structure.ChildRole == DesignNodeChildRole::Header)
+		result["headeredRegion"] = "header";
+	if (structure.RelativePanel && !structure.RelativePanel->Empty())
+	{
+		DesignValue constraints = DesignValue::object();
+		auto boolean = [&](const char* key, const std::optional<bool>& value)
+		{
+			if (value) constraints[key] = *value;
+		};
+		auto reference = [&](const char* key,
+			const std::optional<std::wstring>& value)
+		{
+			if (value) constraints[key] = StructuralUtf8(*value);
+		};
+		boolean("centerHorizontal", structure.RelativePanel->CenterHorizontal);
+		boolean("centerVertical", structure.RelativePanel->CenterVertical);
+		boolean("alignLeftWithPanel", structure.RelativePanel->AlignLeftWithPanel);
+		boolean("alignTopWithPanel", structure.RelativePanel->AlignTopWithPanel);
+		boolean("alignRightWithPanel", structure.RelativePanel->AlignRightWithPanel);
+		boolean("alignBottomWithPanel", structure.RelativePanel->AlignBottomWithPanel);
+		reference("above", structure.RelativePanel->Above);
+		reference("below", structure.RelativePanel->Below);
+		reference("leftOf", structure.RelativePanel->LeftOf);
+		reference("rightOf", structure.RelativePanel->RightOf);
+		reference("alignLeftWith", structure.RelativePanel->AlignLeftWith);
+		reference("alignRightWith", structure.RelativePanel->AlignRightWith);
+		reference("alignTopWith", structure.RelativePanel->AlignTopWith);
+		reference("alignBottomWith", structure.RelativePanel->AlignBottomWith);
+		result["relativePanelConstraints"] = std::move(constraints);
+	}
+
+	if (structure.GridRows)
+		result["rows"] = EncodeGridTracks(*structure.GridRows, "height");
+	if (structure.GridColumns)
+		result["columns"] = EncodeGridTracks(*structure.GridColumns, "width");
+	if (structure.ChartSeries)
+		result["series"] = EncodeArray(*structure.ChartSeries,
+			[](const DesignChartSeries& series)
+			{
+				DesignValue value{ { "name", StructuralUtf8(series.Name) },
+					{ "visible", series.Visible } };
+				if (series.Color) value["color"] = EncodeColor(*series.Color);
+				value["points"] = EncodeArray(series.Points,
+					[](const DesignChartPoint& point)
+					{
+						DesignValue result{ { "label", StructuralUtf8(point.Label) },
+							{ "value", point.Value }, { "tag", point.Tag } };
+						if (point.Color)
+						{
+							result["color"] = EncodeColor(*point.Color);
+							result["useCustomColor"] = true;
+						}
+						return result;
+					});
+				return value;
+			});
+	(void)type;
+	return result;
+}
+
+bool DecodeDesignNodeStructure(
+	UIClass type,
+	const DesignValue& value,
+	DesignNodeStructure& structure,
+	std::wstring* outError)
+{
+	if (!value.is_object())
+		return StructuralError(outError, L"控件结构必须是对象。");
+	DesignNodeStructure decoded;
+	auto readString = [&](const std::string& key, std::wstring& output)
+	{
+		if (!value[key].is_string())
+			return StructuralError(outError,
+				L"控件结构字段必须是字符串："
+				+ Convert::Utf8ToUnicode(key));
+		output = StructuralWide(value[key]);
+		return true;
+	};
+	for (const auto& [key, item] : value.ObjectItems())
+	{
+		if (key == "commandTarget")
+		{
+			if (type != UIClass::UI_Button && type != UIClass::UI_MenuItem)
+				return StructuralError(outError,
+					L"CommandTarget 仅适用于 Button 或 MenuItem。");
+			if (!readString(key, decoded.CommandTarget)) return false;
+			std::wstring targetError;
+			if (decoded.CommandTarget.empty()
+				|| !DesignerEventCatalog::ValidateHandlerName(
+					decoded.CommandTarget, &targetError))
+				return StructuralError(outError,
+					L"CommandTarget 必须是直接 x:Name：" + targetError);
+			continue;
+		}
+		if (key == "itemsSourceResource")
+		{
+			if (!readString(key, decoded.ItemsSourceResource)) return false;
+			continue;
+		}
+		if (key == "itemTemplate")
+		{
+			if (!readString(key, decoded.ItemTemplate)) return false;
+			continue;
+		}
+		if (key == "contentTemplate")
+		{
+			if (!readString(key, decoded.ContentTemplate)) return false;
+			continue;
+		}
+		if (key == "headerTemplate")
+		{
+			if (!readString(key, decoded.HeaderTemplate)) return false;
+			continue;
+		}
+		if (key == "controlTemplate")
+		{
+			if (!readString(key, decoded.ControlTemplate)) return false;
+			continue;
+		}
+		if (key == "groupStyle")
+		{
+			if (!readString(key, decoded.GroupStyle)) return false;
+			continue;
+		}
+		if (key == "itemsPanel")
+		{
+			if (!readString(key, decoded.ItemsPanel)) return false;
+			continue;
+		}
+		if (key == "itemContainerStyle")
+		{
+			if (!readString(key, decoded.ItemContainerStyle)) return false;
+			continue;
+		}
+		if (key == "mediaFile")
+		{
+			if (!readString(key, decoded.MediaFile)) return false;
+			continue;
+		}
+		if (key == "headeredRegion")
+		{
+			if (!item.is_string() || item.get<std::string>() != "header")
+				return StructuralError(outError, L"HeaderedContent 区域无效。");
+			decoded.ChildRole = DesignNodeChildRole::Header;
+			continue;
+		}
+		if (key == "relativePanelConstraints")
+		{
+			if (!item.is_object())
+				return StructuralError(outError, L"RelativePanel 约束必须是对象。");
+			DesignRelativePanelConstraints constraints;
+			for (const auto& [constraintKey, constraintValue] : item.ObjectItems())
+			{
+				auto boolean = [&](std::optional<bool>& output)
+				{
+					if (!constraintValue.is_boolean()) return false;
+					output = constraintValue.get<bool>();
+					return true;
+				};
+				auto reference = [&](std::optional<std::wstring>& output)
+				{
+					if (!constraintValue.is_string()) return false;
+					output = StructuralWide(constraintValue);
+					return !output->empty();
+				};
+				bool valid = false;
+				if (constraintKey == "centerHorizontal")
+					valid = boolean(constraints.CenterHorizontal);
+				else if (constraintKey == "centerVertical")
+					valid = boolean(constraints.CenterVertical);
+				else if (constraintKey == "alignLeftWithPanel")
+					valid = boolean(constraints.AlignLeftWithPanel);
+				else if (constraintKey == "alignTopWithPanel")
+					valid = boolean(constraints.AlignTopWithPanel);
+				else if (constraintKey == "alignRightWithPanel")
+					valid = boolean(constraints.AlignRightWithPanel);
+				else if (constraintKey == "alignBottomWithPanel")
+					valid = boolean(constraints.AlignBottomWithPanel);
+				else if (constraintKey == "above") valid = reference(constraints.Above);
+				else if (constraintKey == "below") valid = reference(constraints.Below);
+				else if (constraintKey == "leftOf") valid = reference(constraints.LeftOf);
+				else if (constraintKey == "rightOf") valid = reference(constraints.RightOf);
+				else if (constraintKey == "alignLeftWith")
+					valid = reference(constraints.AlignLeftWith);
+				else if (constraintKey == "alignRightWith")
+					valid = reference(constraints.AlignRightWith);
+				else if (constraintKey == "alignTopWith")
+					valid = reference(constraints.AlignTopWith);
+				else if (constraintKey == "alignBottomWith")
+					valid = reference(constraints.AlignBottomWith);
+				else return StructuralError(outError,
+					L"未知 RelativePanel 约束："
+					+ Convert::Utf8ToUnicode(constraintKey));
+				if (!valid) return StructuralError(outError,
+					L"RelativePanel 约束值类型无效："
+					+ Convert::Utf8ToUnicode(constraintKey));
+			}
+			decoded.RelativePanel = std::move(constraints);
+			continue;
+		}
+		if (key == "rows" && type == UIClass::UI_Grid)
+		{
+			std::vector<DesignGridTrack> tracks;
+			if (!DecodeGridTracks(item, "height", tracks, outError)) return false;
+			decoded.GridRows = std::move(tracks);
+			continue;
+		}
+		if (key == "columns" && type == UIClass::UI_Grid)
+		{
+			std::vector<DesignGridTrack> tracks;
+			if (!DecodeGridTracks(item, "width", tracks, outError)) return false;
+			decoded.GridColumns = std::move(tracks);
+			continue;
+		}
+		if (key == "series" && type == UIClass::UI_ChartView)
+		{
+			std::vector<DesignChartSeries> series;
+			if (!DecodeArray(item, series,
+				[](const DesignValue& source, DesignChartSeries& result,
+					std::wstring* error)
+				{
+					if (!source.is_object())
+						return StructuralError(error, L"ChartSeries 结构无效。");
+					result.Name = Convert::Utf8ToUnicode(
+						source.value("name", std::string{}));
+					result.Visible = source.value("visible", true);
+					if (source.contains("color"))
+					{
+						DesignColor color;
+						if (!DecodeColor(source["color"], color, error)) return false;
+						result.Color = color;
+					}
+					if (!source.contains("points")) return true;
+					return DecodeArray(source["points"], result.Points,
+						[](const DesignValue& pointValue, DesignChartPoint& point,
+							std::wstring* pointError)
+						{
+							if (!pointValue.is_object())
+								return StructuralError(pointError, L"ChartPoint 结构无效。");
+							point.Label = Convert::Utf8ToUnicode(
+								pointValue.value("label", std::string{}));
+							point.Value = pointValue.value("value", 0.0);
+							point.Tag = pointValue.value("tag", 0ULL);
+							if (pointValue.contains("color")
+								&& pointValue.value("useCustomColor", true))
+							{
+								DesignColor color;
+								if (!DecodeColor(pointValue["color"], color,
+									pointError)) return false;
+								point.Color = color;
+							}
+							return true;
+						}, error);
+				}, outError)) return false;
+			decoded.ChartSeries = std::move(series);
+			continue;
+		}
+		return StructuralError(outError,
+			L"未知或不适用于当前控件的结构字段："
+			+ Convert::Utf8ToUnicode(key));
+	}
+	structure = std::move(decoded);
+	return true;
+}
+
+bool DesignPropertyNameLess::operator()(
+	const std::wstring& left,
+	const std::wstring& right) const noexcept
+{
+	return left < right;
+}
+
+bool DesignNodeProperties::Empty() const noexcept
+{
+	return StyleResourceKey.empty() && Values.empty();
+}
+
+const DesignPropertyAssignment* DesignNodeProperties::Find(
+	const std::wstring& name) const noexcept
+{
+	const auto found = Values.find(name);
+	return found == Values.end() ? nullptr : &found->second;
+}
+
+DesignPropertyAssignment* DesignNodeProperties::Find(
+	const std::wstring& name) noexcept
+{
+	const auto found = Values.find(name);
+	return found == Values.end() ? nullptr : &found->second;
+}
+
+void DesignNodeProperties::Set(
+	std::wstring name,
+	DesignPropertyAssignment assignment)
+{
+	if (name.empty())
+		throw std::invalid_argument("Design property name cannot be empty");
+	const auto found = Values.find(name);
+	if (found != Values.end())
+	{
+		if (found->first == name)
+		{
+			found->second = std::move(assignment);
+			return;
+		}
+		Values.erase(found);
+	}
+	Values.emplace(std::move(name), std::move(assignment));
+}
+
+bool DesignNodeProperties::Remove(const std::wstring& name) noexcept
+{
+	const auto found = Values.find(name);
+	if (found == Values.end()) return false;
+	Values.erase(found);
+	return true;
+}
+
+DesignValue EncodeDesignNodeProperties(const DesignNodeProperties& properties)
+{
+	DesignValue result = DesignValue::object();
+	if (!properties.StyleResourceKey.empty())
+		result["styleResourceKey"] = StructuralUtf8(
+			properties.StyleResourceKey);
+	if (!properties.Values.empty())
+	{
+		DesignValue values = DesignValue::object();
+		for (const auto& [name, assignment] : properties.Values)
+		{
+			DesignValue stored{
+				{ "kind", static_cast<int>(assignment.Value.Kind) },
+				{ "text", StructuralUtf8(assignment.Value.Text) }
+			};
+			if (!assignment.Value.ObjectValue.is_null())
+				stored["object"] = assignment.Value.ObjectValue;
+			if (!assignment.ResourceKey.empty())
+				stored["resourceKey"] = StructuralUtf8(
+					assignment.ResourceKey);
+			if (!assignment.DynamicResourceKey.empty())
+				stored["dynamicResourceKey"] = StructuralUtf8(
+					assignment.DynamicResourceKey);
+			values[StructuralUtf8(name)] = std::move(stored);
+		}
+		result["values"] = std::move(values);
+	}
+	return result;
+}
+
+bool DecodeDesignNodeProperties(
+	const DesignValue& value,
+	DesignNodeProperties& properties,
+	std::wstring* outError)
+{
+	if (!value.is_object())
+		return StructuralError(outError, L"节点 Properties 必须是对象。");
+	for (const auto& [key, ignored] : value.ObjectItems())
+	{
+		(void)ignored;
+		if (key != "styleResourceKey" && key != "values")
+			return StructuralError(outError,
+				L"节点 Properties 包含未知字段：" + Convert::Utf8ToUnicode(key));
+	}
+
+	DesignNodeProperties decoded;
+	if (value.contains("styleResourceKey"))
+	{
+		if (!value["styleResourceKey"].is_string())
+			return StructuralError(outError, L"StyleResourceKey 必须是字符串。");
+		decoded.StyleResourceKey = StructuralWide(value["styleResourceKey"]);
+		if (decoded.StyleResourceKey.empty())
+			return StructuralError(outError, L"StyleResourceKey 不能为空。");
+	}
+	if (value.contains("values"))
+	{
+		const auto& values = value["values"];
+		if (!values.is_object())
+			return StructuralError(outError, L"Properties.Values 必须是对象。");
+		for (const auto& [rawName, stored] : values.ObjectItems())
+		{
+			if (rawName.empty() || !stored.is_object())
+				return StructuralError(outError, L"属性赋值结构无效。");
+			for (const auto& [key, ignored] : stored.ObjectItems())
+			{
+				(void)ignored;
+				if (key != "kind" && key != "text" && key != "object"
+					&& key != "resourceKey" && key != "dynamicResourceKey")
+					return StructuralError(outError,
+						L"属性赋值包含未知字段：" + Convert::Utf8ToUnicode(key));
+			}
+			if (!stored.contains("kind")
+				|| !stored["kind"].is_number_integer()
+				|| !stored.contains("text") || !stored["text"].is_string())
+				return StructuralError(outError, L"属性赋值缺少 Kind 或 Text。");
+			const auto kind = stored["kind"].get<int>();
+			if (kind < static_cast<int>(DesignerStyleValueKind::Bool)
+				|| kind > static_cast<int>(DesignerStyleValueKind::Transform))
+				return StructuralError(outError, L"属性赋值 Kind 无效。");
+			if ((stored.contains("resourceKey")
+					&& !stored["resourceKey"].is_string())
+				|| (stored.contains("dynamicResourceKey")
+					&& !stored["dynamicResourceKey"].is_string())
+				|| (stored.contains("resourceKey")
+					&& stored.contains("dynamicResourceKey")))
+				return StructuralError(outError, L"属性资源表达式无效。");
+
+			DesignPropertyAssignment assignment;
+			assignment.Value.Kind = static_cast<DesignerStyleValueKind>(kind);
+			assignment.Value.Text = StructuralWide(stored["text"]);
+			if (stored.contains("object"))
+				assignment.Value.ObjectValue = stored["object"];
+			if (stored.contains("resourceKey"))
+				assignment.ResourceKey = StructuralWide(stored["resourceKey"]);
+			if (stored.contains("dynamicResourceKey"))
+				assignment.DynamicResourceKey = StructuralWide(
+					stored["dynamicResourceKey"]);
+			if ((stored.contains("resourceKey") && assignment.ResourceKey.empty())
+				|| (stored.contains("dynamicResourceKey")
+					&& assignment.DynamicResourceKey.empty()))
+				return StructuralError(outError, L"属性资源键不能为空。");
+			const auto name = Convert::Utf8ToUnicode(rawName);
+			if (decoded.Find(name))
+				return StructuralError(outError, L"属性名不能仅大小写不同。");
+			decoded.Set(name, std::move(assignment));
+		}
+	}
+	properties = std::move(decoded);
+	return true;
+}
+
+DesignValue EncodeDesignNodeBindings(const DesignBindingMap& bindings)
+{
+	DesignValue result = DesignValue::object();
+	if (bindings.empty()) return result;
+	DesignValue values = DesignValue::object();
+	for (const auto& [target, binding] : bindings)
+		values[StructuralUtf8(target)] =
+			DesignerBindingUtils::WriteBindingDefinition(binding);
+	result["values"] = std::move(values);
+	return result;
+}
+
+bool DecodeDesignNodeBindings(
+	const DesignValue& value,
+	DesignBindingMap& bindings,
+	std::wstring* outError)
+{
+	if (!value.is_object())
+		return StructuralError(outError, L"节点 Bindings 必须是对象。");
+	for (const auto& [key, ignored] : value.ObjectItems())
+	{
+		(void)ignored;
+		if (key != "values")
+			return StructuralError(outError,
+				L"节点 Bindings 包含未知字段：" + Convert::Utf8ToUnicode(key));
+	}
+	DesignBindingMap decoded;
+	if (value.contains("values"))
+	{
+		const auto& values = value["values"];
+		if (!values.is_object())
+			return StructuralError(outError, L"Bindings.Values 必须是对象。");
+		for (const auto& [rawTarget, stored] : values.ObjectItems())
+		{
+			const auto target = Convert::Utf8ToUnicode(rawTarget);
+			if (target.empty() || decoded.contains(target))
+				return StructuralError(outError,
+					L"Binding 目标名为空或仅大小写不同。");
+			DesignerDataBinding binding;
+			std::wstring bindingError;
+			if (!DesignerBindingUtils::TryReadBindingDefinition(
+				stored, binding, &bindingError))
+				return StructuralError(outError,
+					L"Binding " + target + L" 无效：" + bindingError);
+			if (DesignerBindingUtils::WriteBindingDefinition(binding) != stored)
+				return StructuralError(outError,
+					L"Binding " + target + L" 不是规范快照表达式。");
+			decoded.emplace(target, std::move(binding));
+		}
+	}
+	bindings = std::move(decoded);
+	return true;
+}
+
+DesignValue EncodeDesignNodeEvents(const DesignEventHandlerMap& events)
+{
+	DesignValue result = DesignValue::object();
+	if (events.empty()) return result;
+	DesignValue handlers = DesignValue::object();
+	for (const auto& [eventName, handler] : events)
+		handlers[StructuralUtf8(eventName)] = StructuralUtf8(handler);
+	result["handlers"] = std::move(handlers);
+	return result;
+}
+
+bool DecodeDesignNodeEvents(
+	const DesignValue& value,
+	DesignEventHandlerMap& events,
+	std::wstring* outError)
+{
+	if (!value.is_object())
+		return StructuralError(outError, L"节点 Events 必须是对象。");
+	for (const auto& [key, ignored] : value.ObjectItems())
+	{
+		(void)ignored;
+		if (key != "handlers")
+			return StructuralError(outError,
+				L"节点 Events 包含未知字段：" + Convert::Utf8ToUnicode(key));
+	}
+	DesignEventHandlerMap decoded;
+	if (value.contains("handlers"))
+	{
+		const auto& handlers = value["handlers"];
+		if (!handlers.is_object())
+			return StructuralError(outError, L"Events.Handlers 必须是对象。");
+		for (const auto& [rawEvent, stored] : handlers.ObjectItems())
+		{
+			const auto eventName = Convert::Utf8ToUnicode(rawEvent);
+			if (eventName.empty() || decoded.contains(eventName)
+				|| !stored.is_string())
+				return StructuralError(outError,
+					L"事件名为空、重复或处理函数不是字符串。");
+			const auto handler = StructuralWide(stored);
+			if (handler.empty())
+				return StructuralError(outError, L"事件处理函数不能为空。");
+			decoded.emplace(eventName, handler);
+		}
+	}
+	events = std::move(decoded);
+	return true;
+}
+
+DesignValue EncodeDesignCommandBindings(
+	const std::vector<DesignCommandBinding>& bindings)
+{
+	DesignValue result = DesignValue::array();
+	for (const auto& binding : bindings)
+	{
+		DesignValue value{
+			{ "command", StructuralUtf8(binding.Command) } };
+		if (!binding.PreviewCanExecute.empty())
+			value["previewCanExecute"] = StructuralUtf8(binding.PreviewCanExecute);
+		if (!binding.CanExecute.empty())
+			value["canExecute"] = StructuralUtf8(binding.CanExecute);
+		if (!binding.PreviewExecuted.empty())
+			value["previewExecuted"] = StructuralUtf8(binding.PreviewExecuted);
+		if (!binding.Executed.empty())
+			value["executed"] = StructuralUtf8(binding.Executed);
+		result.push_back(std::move(value));
+	}
+	return result;
+}
+
+bool DecodeDesignCommandBindings(
+	const DesignValue& value,
+	std::vector<DesignCommandBinding>& bindings,
+	std::wstring* outError)
+{
+	if (!value.is_array())
+		return StructuralError(outError, L"CommandBindings 必须是数组。");
+	std::vector<DesignCommandBinding> decoded;
+	for (const auto& stored : value.ArrayItems())
+	{
+		if (!stored.is_object())
+			return StructuralError(outError, L"CommandBinding 必须是对象。");
+		for (const auto& [key, field] : stored.ObjectItems())
+		{
+			(void)field;
+			if (key != "command" && key != "previewCanExecute"
+				&& key != "canExecute" && key != "previewExecuted"
+				&& key != "executed")
+				return StructuralError(outError,
+					L"CommandBinding 包含未知字段："
+					+ Convert::Utf8ToUnicode(key));
+		}
+		DesignCommandBinding binding;
+		binding.Command = Convert::Utf8ToUnicode(
+			stored.value("command", std::string{}));
+		binding.PreviewCanExecute = Convert::Utf8ToUnicode(
+			stored.value("previewCanExecute", std::string{}));
+		binding.CanExecute = Convert::Utf8ToUnicode(
+			stored.value("canExecute", std::string{}));
+		binding.PreviewExecuted = Convert::Utf8ToUnicode(
+			stored.value("previewExecuted", std::string{}));
+		binding.Executed = Convert::Utf8ToUnicode(
+			stored.value("executed", std::string{}));
+		if (binding.Command.empty())
+			return StructuralError(outError, L"CommandBinding.Command 不能为空。");
+		if (binding.PreviewCanExecute.empty() && binding.CanExecute.empty()
+			&& binding.PreviewExecuted.empty() && binding.Executed.empty())
+			return StructuralError(outError, L"CommandBinding 至少需要一个处理器。");
+		decoded.push_back(std::move(binding));
+	}
+	bindings = std::move(decoded);
+	return true;
+}
+
+DesignValue EncodeDesignInputBindings(
+	const std::vector<DesignInputBinding>& bindings)
+{
+	DesignValue result = DesignValue::array();
+	for (const auto& binding : bindings)
+	{
+		DesignValue value{
+			{ "kind", binding.Kind == DesignInputBindingKind::Mouse
+				? "mouse" : "key" },
+			{ "command", StructuralUtf8(binding.Command) },
+			{ "gesture", StructuralUtf8(binding.Gesture) } };
+		if (!binding.CommandParameter.empty())
+			value["commandParameter"] = StructuralUtf8(binding.CommandParameter);
+		if (!binding.CommandTarget.empty())
+			value["commandTarget"] = StructuralUtf8(binding.CommandTarget);
+		result.push_back(std::move(value));
+	}
+	return result;
+}
+
+bool DecodeDesignInputBindings(
+	const DesignValue& value,
+	std::vector<DesignInputBinding>& bindings,
+	std::wstring* outError)
+{
+	if (!value.is_array())
+		return StructuralError(outError, L"InputBindings 必须是数组。");
+	std::vector<DesignInputBinding> decoded;
+	std::unordered_set<std::wstring> gestureIdentities;
+	for (const auto& stored : value.ArrayItems())
+	{
+		if (!stored.is_object())
+			return StructuralError(outError, L"InputBinding 必须是对象。");
+		for (const auto& [key, field] : stored.ObjectItems())
+		{
+			(void)field;
+			if (key != "kind" && key != "command" && key != "gesture"
+				&& key != "commandParameter" && key != "commandTarget")
+				return StructuralError(outError,
+					L"InputBinding 包含未知字段："
+					+ Convert::Utf8ToUnicode(key));
+		}
+		DesignInputBinding binding;
+		const auto kind = stored.value("kind", std::string{});
+		if (kind == "key") binding.Kind = DesignInputBindingKind::Key;
+		else if (kind == "mouse") binding.Kind = DesignInputBindingKind::Mouse;
+		else return StructuralError(outError,
+			L"InputBinding.kind 必须是 key 或 mouse。");
+		binding.Command = Convert::Utf8ToUnicode(
+			stored.value("command", std::string{}));
+		binding.Gesture = Convert::Utf8ToUnicode(
+			stored.value("gesture", std::string{}));
+		binding.CommandParameter = Convert::Utf8ToUnicode(
+			stored.value("commandParameter", std::string{}));
+		binding.CommandTarget = Convert::Utf8ToUnicode(
+			stored.value("commandTarget", std::string{}));
+		if (!binding.CommandTarget.empty())
+		{
+			std::wstring targetError;
+			if (!DesignerEventCatalog::ValidateHandlerName(
+				binding.CommandTarget, &targetError))
+				return StructuralError(outError,
+					L"InputBinding.CommandTarget 必须是直接 x:Name："
+					+ targetError);
+		}
+		std::wstring gestureError;
+		if (binding.Command.empty())
+			return StructuralError(outError,
+				L"InputBinding.Command 不能为空。");
+		if (binding.Kind == DesignInputBindingKind::Key)
+		{
+			KeyGesture gesture;
+			if (!TryParseKeyGesture(binding.Gesture, gesture, &gestureError))
+				return StructuralError(outError, gestureError);
+			binding.Gesture = FormatKeyGesture(gesture);
+		}
+		else
+		{
+			MouseGesture gesture;
+			if (!TryParseMouseGesture(binding.Gesture, gesture, &gestureError))
+				return StructuralError(outError, gestureError);
+			binding.Gesture = FormatMouseGesture(gesture);
+		}
+		const auto gestureIdentity =
+			(binding.Kind == DesignInputBindingKind::Mouse ? L"mouse:" : L"key:")
+			+ binding.Gesture;
+		if (!gestureIdentities.insert(gestureIdentity).second)
+			return StructuralError(outError,
+				L"InputBindings 包含重复手势：" + binding.Gesture);
+		decoded.push_back(std::move(binding));
+	}
+	bindings = std::move(decoded);
+	return true;
+}
+
 bool DesignNode::operator==(const DesignNode& other) const
 {
 	return Id == other.Id
@@ -190,16 +1120,20 @@ bool DesignNode::operator==(const DesignNode& other) const
 		&& ParentRef == other.ParentRef
 		&& Name == other.Name
 		&& Type == other.Type
+		&& XamlType == other.XamlType
 		&& ComponentType == other.ComponentType
 		&& ComponentContentProperty == other.ComponentContentProperty
 		&& PresentedComponentContent == other.PresentedComponentContent
 		&& TemplateContentSource == other.TemplateContentSource
 		&& Order == other.Order
 		&& Locked == other.Locked
-		&& Props == other.Props
-		&& Extra == other.Extra
+		&& Properties == other.Properties
+		&& Structure == other.Structure
+		&& TemplateState == other.TemplateState
 		&& Events == other.Events
 		&& Bindings == other.Bindings
+		&& CommandBindings == other.CommandBindings
+		&& InputBindings == other.InputBindings
 		&& LocalResources == other.LocalResources
 		&& LocalObjectResources == other.LocalObjectResources
 		&& TemplateBindings == other.TemplateBindings
@@ -212,7 +1146,7 @@ bool DesignDataTemplate::HasSameResourceIdentity(
 	if (IsImplicit() != other.IsImplicit()) return false;
 	const auto& left = IsImplicit() ? DataType : Key;
 	const auto& right = other.IsImplicit() ? other.DataType : other.Key;
-	return _wcsicmp(left.c_str(), right.c_str()) == 0;
+	return left == right;
 }
 
 std::wstring DesignDataTemplate::DisplayName() const
@@ -233,7 +1167,7 @@ bool DesignControlTemplate::HasSameResourceIdentity(
 			: TargetComponentType.RegistryKey()
 				== other.TargetComponentType.RegistryKey();
 	}
-	return _wcsicmp(Key.c_str(), other.Key.c_str()) == 0;
+	return Key == other.Key;
 }
 
 std::wstring DesignControlTemplate::DisplayName() const
@@ -271,10 +1205,9 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 				result.Components.begin(), result.Components.end(),
 				[&](const auto& current)
 				{
-					return _wcsicmp(current.Type.XamlNamespace.c_str(),
-						component.Type.XamlNamespace.c_str()) == 0
-						&& _wcsicmp(current.Type.XamlName.c_str(),
-							component.Type.XamlName.c_str()) == 0;
+					return current.Type.XamlNamespace
+							== component.Type.XamlNamespace
+						&& current.Type.XamlName == component.Type.XamlName;
 				}), result.Components.end());
 			result.Components.push_back(component);
 		}
@@ -301,7 +1234,7 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 			result.ItemsPanelTemplates.erase(std::remove_if(
 				result.ItemsPanelTemplates.begin(),
 				result.ItemsPanelTemplates.end(), [&](const auto& current)
-				{ return _wcsicmp(current.Key.c_str(), itemsPanel.Key.c_str()) == 0; }),
+				{ return current.Key == itemsPanel.Key; }),
 				result.ItemsPanelTemplates.end());
 			result.ItemsPanelTemplates.push_back(itemsPanel);
 		}
@@ -310,7 +1243,7 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 			result.GroupStyles.erase(std::remove_if(
 				result.GroupStyles.begin(), result.GroupStyles.end(),
 				[&](const auto& current)
-				{ return _wcsicmp(current.Key.c_str(), groupStyle.Key.c_str()) == 0; }),
+				{ return current.Key == groupStyle.Key; }),
 				result.GroupStyles.end());
 			result.GroupStyles.push_back(groupStyle);
 		}
@@ -343,10 +1276,7 @@ DesignObjectResourceDictionary DesignDocument::VisibleObjectResources(
 			continue;
 		}
 		if (node->ParentRef.empty()) break;
-		auto parentName = node->ParentRef;
-		if (const auto page = parentName.find(L"#page");
-			page != std::wstring::npos) parentName.resize(page);
-		const auto parent = byName.find(parentName);
+		const auto parent = byName.find(node->ParentRef);
 		node = parent == byName.end() ? nullptr : parent->second;
 	}
 	for (auto node = route.rbegin(); node != route.rend(); ++node)
@@ -375,12 +1305,9 @@ const DesignComponentDefinition* DesignDocument::FindComponent(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope;)
@@ -389,10 +1316,8 @@ const DesignComponentDefinition* DesignDocument::FindComponent(
 			scope->LocalObjectResources.Components.rbegin(),
 			scope->LocalObjectResources.Components.rend(), [&](const auto& component)
 			{
-				return _wcsicmp(component.Type.XamlNamespace.c_str(),
-					type.XamlNamespace.c_str()) == 0
-					&& _wcsicmp(component.Type.XamlName.c_str(),
-						type.XamlName.c_str()) == 0;
+				return component.Type.XamlNamespace == type.XamlNamespace
+					&& component.Type.XamlName == type.XamlName;
 			});
 		if (local != scope->LocalObjectResources.Components.rend()) return &*local;
 		scope = parentOf(*scope);
@@ -407,10 +1332,8 @@ const DesignComponentDefinition* DesignDocument::FindComponent(
 	const auto found = std::find_if(Components.begin(), Components.end(),
 		[&](const DesignComponentDefinition& component)
 		{
-			return _wcsicmp(component.Type.XamlNamespace.c_str(),
-				xamlNamespace.c_str()) == 0
-				&& _wcsicmp(component.Type.XamlName.c_str(),
-					xamlName.c_str()) == 0;
+			return component.Type.XamlNamespace == xamlNamespace
+				&& component.Type.XamlName == xamlName;
 		});
 	return found == Components.end() ? nullptr : &*found;
 }
@@ -494,7 +1417,7 @@ const DesignDataTypeDefinition* DesignDocument::FindDataType(
 	const auto found = std::find_if(DataTypes.begin(), DataTypes.end(),
 		[&](const DesignDataTypeDefinition& type)
 		{
-			return _wcsicmp(type.Name.c_str(), name.c_str()) == 0;
+			return type.Name == name;
 		});
 	return found == DataTypes.end() ? nullptr : &*found;
 }
@@ -506,7 +1429,7 @@ const DesignDataTemplate* DesignDocument::FindDataTemplate(
 	const auto found = std::find_if(DataTemplates.begin(), DataTemplates.end(),
 		[&](const DesignDataTemplate& item)
 		{
-			return _wcsicmp(item.Key.c_str(), key.c_str()) == 0;
+			return item.Key == key;
 		});
 	return found == DataTemplates.end() ? nullptr : &*found;
 }
@@ -532,12 +1455,9 @@ const DesignDataTemplate* DesignDocument::FindDataTemplate(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope;)
@@ -546,7 +1466,7 @@ const DesignDataTemplate* DesignDocument::FindDataTemplate(
 			scope->LocalObjectResources.DataTemplates.rbegin(),
 			scope->LocalObjectResources.DataTemplates.rend(),
 			[&](const auto& item)
-			{ return _wcsicmp(item.Key.c_str(), key.c_str()) == 0; });
+			{ return item.Key == key; });
 		if (found != scope->LocalObjectResources.DataTemplates.rend()) return &*found;
 		scope = parentOf(*scope);
 	}
@@ -560,8 +1480,7 @@ const DesignDataTemplate* DesignDocument::FindImplicitDataTemplate(
 	const auto found = std::find_if(DataTemplates.rbegin(), DataTemplates.rend(),
 		[&](const DesignDataTemplate& item)
 		{
-			return item.IsImplicit()
-				&& _wcsicmp(item.DataType.c_str(), dataType.c_str()) == 0;
+			return item.IsImplicit() && item.DataType == dataType;
 		});
 	return found == DataTemplates.rend() ? nullptr : &*found;
 }
@@ -586,12 +1505,9 @@ const DesignDataTemplate* DesignDocument::FindImplicitDataTemplate(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
@@ -601,8 +1517,7 @@ const DesignDataTemplate* DesignDocument::FindImplicitDataTemplate(
 			scope->LocalObjectResources.DataTemplates.rend(),
 			[&](const auto& item)
 			{
-				return item.IsImplicit()
-					&& _wcsicmp(item.DataType.c_str(), dataType.c_str()) == 0;
+				return item.IsImplicit() && item.DataType == dataType;
 			});
 		if (found != scope->LocalObjectResources.DataTemplates.rend()) return &*found;
 	}
@@ -616,8 +1531,7 @@ const DesignControlTemplate* DesignDocument::FindControlTemplate(
 	const auto found = std::find_if(
 		ControlTemplates.rbegin(), ControlTemplates.rend(),
 		[&](const DesignControlTemplate& item)
-		{ return !item.IsImplicit()
-			&& _wcsicmp(item.Key.c_str(), key.c_str()) == 0; });
+		{ return !item.IsImplicit() && item.Key == key; });
 	return found == ControlTemplates.rend() ? nullptr : &*found;
 }
 
@@ -641,12 +1555,9 @@ const DesignControlTemplate* DesignDocument::FindControlTemplate(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
@@ -655,8 +1566,7 @@ const DesignControlTemplate* DesignDocument::FindControlTemplate(
 			scope->LocalObjectResources.ControlTemplates.rbegin(),
 			scope->LocalObjectResources.ControlTemplates.rend(),
 			[&](const auto& item)
-			{ return !item.IsImplicit()
-				&& _wcsicmp(item.Key.c_str(), key.c_str()) == 0; });
+			{ return !item.IsImplicit() && item.Key == key; });
 		if (found != scope->LocalObjectResources.ControlTemplates.rend())
 			return &*found;
 	}
@@ -713,12 +1623,9 @@ const DesignControlTemplate* DesignDocument::FindImplicitControlTemplate(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
@@ -754,7 +1661,7 @@ const DesignControlTemplate* DesignDocument::FindImplicitControlTemplate(
 		{
 			const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 				[&](const auto& candidate)
-				{ return _wcsicmp(candidate.Name.c_str(), node.ParentRef.c_str()) == 0; });
+				{ return candidate.Name == node.ParentRef; });
 			if (found != scopeNodes.end()) return &*found;
 		}
 		return nullptr;
@@ -782,7 +1689,7 @@ const DesignItemsPanelTemplate* DesignDocument::FindItemsPanelTemplate(
 		ItemsPanelTemplates.begin(), ItemsPanelTemplates.end(),
 		[&](const auto& item)
 		{
-			return _wcsicmp(item.Key.c_str(), key.c_str()) == 0;
+			return item.Key == key;
 		});
 	return found == ItemsPanelTemplates.end() ? nullptr : &*found;
 }
@@ -806,12 +1713,9 @@ const DesignItemsPanelTemplate* DesignDocument::FindItemsPanelTemplate(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
@@ -820,7 +1724,7 @@ const DesignItemsPanelTemplate* DesignDocument::FindItemsPanelTemplate(
 			scope->LocalObjectResources.ItemsPanelTemplates.rbegin(),
 			scope->LocalObjectResources.ItemsPanelTemplates.rend(),
 			[&](const auto& item)
-			{ return _wcsicmp(item.Key.c_str(), key.c_str()) == 0; });
+			{ return item.Key == key; });
 		if (found != scope->LocalObjectResources.ItemsPanelTemplates.rend())
 			return &*found;
 	}
@@ -833,7 +1737,7 @@ const DesignGroupStyle* DesignDocument::FindGroupStyle(
 	const auto found = std::find_if(GroupStyles.begin(), GroupStyles.end(),
 		[&](const DesignGroupStyle& item)
 		{
-			return _wcsicmp(item.Key.c_str(), key.c_str()) == 0;
+			return item.Key == key;
 		});
 	return found == GroupStyles.end() ? nullptr : &*found;
 }
@@ -857,12 +1761,9 @@ const DesignGroupStyle* DesignDocument::FindGroupStyle(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
@@ -871,7 +1772,7 @@ const DesignGroupStyle* DesignDocument::FindGroupStyle(
 			scope->LocalObjectResources.GroupStyles.rbegin(),
 			scope->LocalObjectResources.GroupStyles.rend(),
 			[&](const auto& item)
-			{ return _wcsicmp(item.Key.c_str(), key.c_str()) == 0; });
+			{ return item.Key == key; });
 		if (found != scope->LocalObjectResources.GroupStyles.rend()) return &*found;
 	}
 	return FindGroupStyle(key);
@@ -887,7 +1788,7 @@ const DesignDataTemplate* DesignDocument::FindGroupStyleHeaderTemplate(
 		const auto style = std::find_if(
 			scope->LocalObjectResources.GroupStyles.rbegin(),
 			scope->LocalObjectResources.GroupStyles.rend(), [&](const auto& item)
-			{ return _wcsicmp(item.Key.c_str(), groupStyleKey.c_str()) == 0; });
+			{ return item.Key == groupStyleKey; });
 		if (style == scope->LocalObjectResources.GroupStyles.rend()) return nullptr;
 		return style->HeaderTemplate.empty()
 			? FindImplicitDataTemplate(scopeNodes, *scope,
@@ -914,19 +1815,16 @@ const DesignNode* DesignDocument::FindLocalGroupStyleOwner(
 			return found == scopeNodes.end() ? nullptr : &*found;
 		}
 		if (node.ParentRef.empty()) return nullptr;
-		auto name = node.ParentRef;
-		if (const auto page = name.find(L"#page"); page != std::wstring::npos)
-			name.resize(page);
 		const auto found = std::find_if(scopeNodes.begin(), scopeNodes.end(),
 			[&](const auto& candidate)
-			{ return _wcsicmp(candidate.Name.c_str(), name.c_str()) == 0; });
+			{ return candidate.Name == node.ParentRef; });
 		return found == scopeNodes.end() ? nullptr : &*found;
 	};
 	for (const DesignNode* scope = &origin; scope; scope = parentOf(*scope))
 		if (std::any_of(
 			scope->LocalObjectResources.GroupStyles.rbegin(),
 			scope->LocalObjectResources.GroupStyles.rend(), [&](const auto& item)
-			{ return _wcsicmp(item.Key.c_str(), key.c_str()) == 0; })) return scope;
+			{ return item.Key == key; })) return scope;
 	return nullptr;
 }
 
@@ -936,7 +1834,7 @@ const DesignDataList* DesignDocument::FindDataList(
 	const auto found = std::find_if(DataLists.begin(), DataLists.end(),
 		[&](const DesignDataList& item)
 		{
-			return _wcsicmp(item.Key.c_str(), key.c_str()) == 0;
+			return item.Key == key;
 		});
 	return found == DataLists.end() ? nullptr : &*found;
 }
@@ -948,7 +1846,7 @@ const DesignCollectionViewSource* DesignDocument::FindCollectionView(
 		CollectionViews.begin(), CollectionViews.end(),
 		[&](const DesignCollectionViewSource& item)
 		{
-			return _wcsicmp(item.Key.c_str(), key.c_str()) == 0;
+			return item.Key == key;
 		});
 	return found == CollectionViews.end() ? nullptr : &*found;
 }
@@ -973,6 +1871,96 @@ void DesignDocument::RecalculateNextStableId()
 	NextStableId = (std::max)(1, maxId + 1);
 }
 
+bool DesignDocument::ValidateCommandTargetReferences(
+	std::wstring* outError) const
+{
+	auto validateScope = [&](auto&& self,
+		const std::vector<DesignNode>& nodes,
+		const std::wstring& owner,
+		const std::vector<DesignInputBinding>* ownerBindings,
+		const std::wstring& ownerName) -> bool
+	{
+		std::unordered_set<std::wstring> names;
+		for (const auto& node : nodes) names.insert(node.Name);
+		if (!ownerName.empty()) names.insert(ownerName);
+		auto validateTarget = [&](const std::wstring& target,
+			const std::wstring& sourceName,
+			const std::wstring& propertyName)
+		{
+			if (target.empty() || names.contains(target)) return true;
+			if (outError) *outError = owner + L" / " + sourceName + L" "
+				+ propertyName + L" 引用了当前 namescope 中不存在的 x:Name："
+				+ target;
+			return false;
+		};
+		auto validateInputBindings = [&](const std::vector<DesignInputBinding>& bindings,
+			const std::wstring& sourceName)
+		{
+			for (const auto& binding : bindings)
+			{
+				if (!validateTarget(binding.CommandTarget, sourceName,
+					L"InputBinding.CommandTarget")) return false;
+			}
+			return true;
+		};
+		if (ownerBindings && !validateInputBindings(*ownerBindings,
+			ownerName.empty() ? L"owner" : ownerName)) return false;
+		for (const auto& node : nodes)
+		{
+			if (!validateInputBindings(node.InputBindings, node.Name)) return false;
+			if (!node.Structure.CommandTarget.empty()
+				&& node.Type != UIClass::UI_Button
+				&& node.Type != UIClass::UI_MenuItem)
+			{
+				if (outError) *outError = owner + L" / " + node.Name
+					+ L" CommandTarget 仅适用于 Button 或 MenuItem。";
+				return false;
+			}
+			if (!validateTarget(node.Structure.CommandTarget, node.Name,
+				L"CommandTarget")) return false;
+		}
+		for (const auto& node : nodes)
+		{
+			const auto resourceOwner = owner + L" / " + node.Name
+				+ L".Resources";
+			for (const auto& component
+				: node.LocalObjectResources.Components)
+				if (!self(self, component.Template,
+					resourceOwner + L" / 组件 " + component.Type.XamlName,
+					nullptr, {})) return false;
+			for (const auto& dataTemplate
+				: node.LocalObjectResources.DataTemplates)
+				if (!self(self, dataTemplate.Template,
+					resourceOwner + L" / DataTemplate "
+						+ dataTemplate.DisplayName(),
+					nullptr, {})) return false;
+			for (const auto& controlTemplate
+				: node.LocalObjectResources.ControlTemplates)
+				if (!self(self, controlTemplate.Template,
+					resourceOwner + L" / ControlTemplate "
+						+ controlTemplate.DisplayName(),
+					nullptr, {})) return false;
+		}
+		return true;
+	};
+
+	if (!validateScope(validateScope, Nodes, L"文档",
+		&Window.InputBindings, Window.Name)) return false;
+	for (const auto& component : Components)
+		if (!validateScope(validateScope, component.Template,
+			L"组件 " + component.Type.XamlName, nullptr, {})) return false;
+	for (const auto& dataTemplate : DataTemplates)
+		if (!validateScope(validateScope, dataTemplate.Template,
+			L"DataTemplate " + dataTemplate.DisplayName(), nullptr, {}))
+			return false;
+	for (const auto& controlTemplate : ControlTemplates)
+		if (!validateScope(validateScope, controlTemplate.Template,
+			L"ControlTemplate " + controlTemplate.DisplayName(), nullptr, {}))
+			return false;
+	if (outError) outError->clear();
+	return true;
+}
+
 void DesignDocument::Clear()
 {
 	*this = DesignDocument();
@@ -983,7 +1971,7 @@ bool DesignDocument::operator==(const DesignDocument& other) const
 	return Schema == other.Schema
 		&& SchemaVersion == other.SchemaVersion
 		&& NextStableId == other.NextStableId
-		&& Form == other.Form
+		&& Window == other.Window
 		&& CodeBehind == other.CodeBehind
 		&& DataContextSchema == other.DataContextSchema
 		&& StyleSheet == other.StyleSheet

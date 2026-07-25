@@ -1,6 +1,6 @@
 #define NOMINMAX
 #include "NumericUpDown.h"
-#include "Form.h"
+#include "Window.h"
 #include "TextEditCore.h"
 
 #include <algorithm>
@@ -11,27 +11,26 @@
 #include <sstream>
 #include <utility>
 
-#pragma comment(lib, "Imm32.lib")
 
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<NumericUpDown, TValue> NumericPropertyOptions(
+	DependencyPropertyOptions<NumericUpDown, TValue> NumericPropertyOptions(
 		TValue defaultValue,
 		const wchar_t* category,
 		int categoryOrder,
 		int order,
-		ControlPropertyEditorKind editor,
-		ControlPropertyFlags flags = ControlPropertyFlags::AffectsRender)
+		DependencyPropertyEditorKind editor,
+		DependencyPropertyFlags flags = DependencyPropertyFlags::AffectsRender)
 	{
-		ControlPropertyOptions<NumericUpDown, TValue> options;
+		DependencyPropertyOptions<NumericUpDown, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = flags | ControlPropertyFlags::TracksLocalValue;
+		options.Flags = flags;
 		options.Design.Category = category;
 		options.Design.CategoryOrder = categoryOrder;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -39,55 +38,17 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			NumericUpDown& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
+					if (args.PropertyName == propertyName)
 						handler();
 				});
 		};
-	}
-
-	bool NumericColorsEqual(
-		const D2D1_COLOR_F& left,
-		const D2D1_COLOR_F& right)
-	{
-		return left.r == right.r && left.g == right.g
-			&& left.b == right.b && left.a == right.a;
-	}
-
-	ControlPropertyOptions<NumericUpDown, D2D1_COLOR_F> NumericColorOptions(
-		D2D1_COLOR_F defaultValue,
-		int order)
-	{
-		auto options = NumericPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Color);
-		options.Equals = NumericColorsEqual;
-		return options;
-	}
-
-	ControlPropertyOptions<NumericUpDown, float> NumericMetricOptions(
-		float defaultValue,
-		int order)
-	{
-		auto options = NumericPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Number);
-		options.Coerce = [](
-			NumericUpDown&, const float& proposed) -> std::optional<float>
-		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ (std::max)(0.0f, proposed) }
-				: std::nullopt;
-		};
-		options.Design.Minimum = 0.0;
-		options.Design.Step = 0.5;
-		return options;
 	}
 
 	float RectWidth(const D2D1_RECT_F& rect)
@@ -116,15 +77,6 @@ namespace
 		CuiTextEdit::EditOptions options;
 		options.allowMultiLine = false;
 		return options;
-	}
-
-	void CommitTextChange(Control* control, const std::wstring& oldText, const std::wstring& newText)
-	{
-		if (!control || oldText == newText)
-			return;
-		control->SetTextInternal(newText);
-		control->TextChanged = true;
-		control->OnTextChanged(control, oldText, newText);
 	}
 
 	bool IsNumericEditCandidate(const std::wstring& text)
@@ -255,65 +207,13 @@ UIClass NumericUpDown::Type()
 	return UIClass::UI_NumericUpDown;
 }
 
-void NumericUpDown::EnsureBindingPropertiesRegistered()
+void NumericUpDown::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	RangeBase::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		auto minimumOptions = NumericPropertyOptions(
-			0.0, L"Range", 100, 10, ControlPropertyEditorKind::Number);
-		minimumOptions.Coerce = [](
-			NumericUpDown&, const double& proposed) -> std::optional<double>
-		{
-			return std::isfinite(proposed)
-				? std::optional<double>{ proposed } : std::nullopt;
-		};
-		minimumOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<NumericUpDown, double>(L"Min",
-			[](NumericUpDown& target) { return target.Min; },
-			[](NumericUpDown& target, const double& value) { target.Min = value; },
-			NumericPropertySubscriber(L"Min"), std::move(minimumOptions));
-
-		auto maximumOptions = NumericPropertyOptions(
-			100.0, L"Range", 100, 20, ControlPropertyEditorKind::Number);
-		maximumOptions.Coerce = [](
-			NumericUpDown& target, const double& proposed) -> std::optional<double>
-		{
-			if (!std::isfinite(proposed)) return std::nullopt;
-			return (std::max)(target.Min, proposed);
-		};
-		maximumOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<NumericUpDown, double>(L"Max",
-			[](NumericUpDown& target) { return target.Max; },
-			[](NumericUpDown& target, const double& value) { target.Max = value; },
-			NumericPropertySubscriber(L"Max"), std::move(maximumOptions));
-
-		auto valueOptions = NumericPropertyOptions(
-			0.0, L"Range", 100, 60, ControlPropertyEditorKind::Number);
-		valueOptions.Coerce = [](
-			NumericUpDown& target, const double& proposed) -> std::optional<double>
-		{
-			return target.SnapValue(proposed);
-		};
-		valueOptions.Equals = [](
-			const double& left, const double& right)
-		{
-			return std::fabs(left - right) <= 0.0000001;
-		};
-		valueOptions.Changed = [](
-			NumericUpDown& target, const double& oldValue, const double& newValue)
-		{
-			if (!target._editing) target.SyncTextFromValue();
-			target.OnValueChanged(&target, oldValue, newValue);
-		};
-		valueOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<NumericUpDown, double>(L"Value",
-			[](NumericUpDown& target) { return target.Value; },
-			[](NumericUpDown& target, const double& value) { target.Value = value; },
-			NumericPropertySubscriber(L"Value"), std::move(valueOptions));
-
 		auto stepOptions = NumericPropertyOptions(
-			1.0, L"Range", 100, 30, ControlPropertyEditorKind::Number);
+			1.0, L"Range", 100, 30, DependencyPropertyEditorKind::Number);
 		stepOptions.Coerce = [](
 			NumericUpDown&, const double& proposed) -> std::optional<double>
 		{
@@ -323,13 +223,14 @@ void NumericUpDown::EnsureBindingPropertiesRegistered()
 		};
 		stepOptions.Design.Minimum = 0.0;
 		stepOptions.Design.Step = 0.1;
-		BindingPropertyRegistry::Register<NumericUpDown, double>(L"Step",
-			[](NumericUpDown& target) { return target.Step; },
-			[](NumericUpDown& target, const double& value) { target.Step = value; },
-			NumericPropertySubscriber(L"Step"), std::move(stepOptions));
+		DependencyPropertyRegistry::Register<NumericUpDown, double>(L"Increment",
+			[](NumericUpDown& target) { return target.Increment; },
+			[](NumericUpDown& target, const double& value)
+			{ target.Increment = value; },
+			NumericPropertySubscriber(L"Increment"), std::move(stepOptions));
 
 		auto decimalOptions = NumericPropertyOptions(
-			0, L"Range", 100, 40, ControlPropertyEditorKind::Number);
+			0, L"Range", 100, 40, DependencyPropertyEditorKind::Number);
 		decimalOptions.Coerce = [](
 			NumericUpDown&, const int& proposed) -> std::optional<int>
 		{
@@ -338,84 +239,51 @@ void NumericUpDown::EnsureBindingPropertiesRegistered()
 		decimalOptions.Design.Minimum = 0.0;
 		decimalOptions.Design.Maximum = 15.0;
 		decimalOptions.Design.Step = 1.0;
-		BindingPropertyRegistry::Register<NumericUpDown, int>(L"DecimalPlaces",
+		DependencyPropertyRegistry::Register<NumericUpDown, int>(L"DecimalPlaces",
 			[](NumericUpDown& target) { return target.DecimalPlaces; },
 			[](NumericUpDown& target, const int& value) { target.DecimalPlaces = value; },
 			NumericPropertySubscriber(L"DecimalPlaces"), std::move(decimalOptions));
 
 		auto snapOptions = NumericPropertyOptions(
-			true, L"Range", 100, 50, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<NumericUpDown, bool>(L"SnapToStep",
-			[](NumericUpDown& target) { return target.SnapToStep; },
-			[](NumericUpDown& target, const bool& value) { target.SnapToStep = value; },
-			NumericPropertySubscriber(L"SnapToStep"), std::move(snapOptions));
+			true, L"Range", 100, 50, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<NumericUpDown, bool>(
+			L"IsSnapToIncrementEnabled",
+			[](NumericUpDown& target)
+			{ return target.IsSnapToIncrementEnabled; },
+			[](NumericUpDown& target, const bool& value)
+			{ target.IsSnapToIncrementEnabled = value; },
+			NumericPropertySubscriber(L"IsSnapToIncrementEnabled"),
+			std::move(snapOptions));
 
 		auto selectAllOptions = NumericPropertyOptions(
-			true, L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<NumericUpDown, bool>(L"SelectAllOnFocus",
+			true, L"Behavior", 110, 20, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<NumericUpDown, bool>(L"SelectAllOnFocus",
 			[](NumericUpDown& target) { return target.SelectAllOnFocus; },
 			[](NumericUpDown& target, const bool& value) { target.SelectAllOnFocus = value; },
 			NumericPropertySubscriber(L"SelectAllOnFocus"), std::move(selectAllOptions));
 
 		auto wheelOptions = NumericPropertyOptions(
-			true, L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<NumericUpDown, bool>(L"UseMouseWheel",
+			true, L"Behavior", 110, 30, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<NumericUpDown, bool>(L"UseMouseWheel",
 			[](NumericUpDown& target) { return target.UseMouseWheel; },
 			[](NumericUpDown& target, const bool& value) { target.UseMouseWheel = value; },
 			NumericPropertySubscriber(L"UseMouseWheel"), std::move(wheelOptions));
-
-		BindingPropertyRegistry::Register<NumericUpDown, float>(L"Border",
-			[](NumericUpDown& target) { return target.Border; },
-			[](NumericUpDown& target, const float& value) { target.Border = value; },
-			NumericPropertySubscriber(L"Border"), NumericMetricOptions(1.0f, 10));
-		BindingPropertyRegistry::Register<NumericUpDown, float>(L"CornerRadius",
-			[](NumericUpDown& target) { return target.CornerRadius; },
-			[](NumericUpDown& target, const float& value) { target.CornerRadius = value; },
-			NumericPropertySubscriber(L"CornerRadius"), NumericMetricOptions(6.0f, 20));
-		BindingPropertyRegistry::Register<NumericUpDown, float>(L"ButtonWidth",
-			[](NumericUpDown& target) { return target.ButtonWidth; },
-			[](NumericUpDown& target, const float& value) { target.ButtonWidth = value; },
-			NumericPropertySubscriber(L"ButtonWidth"), NumericMetricOptions(28.0f, 30));
-		BindingPropertyRegistry::Register<NumericUpDown, float>(L"TextPaddingX",
-			[](NumericUpDown& target) { return target.TextPaddingX; },
-			[](NumericUpDown& target, const float& value) { target.TextPaddingX = value; },
-			NumericPropertySubscriber(L"TextPaddingX"), NumericMetricOptions(8.0f, 40));
-		BindingPropertyRegistry::Register<NumericUpDown, float>(L"FocusBorder",
-			[](NumericUpDown& target) { return target.FocusBorder; },
-			[](NumericUpDown& target, const float& value) { target.FocusBorder = value; },
-			NumericPropertySubscriber(L"FocusBorder"), NumericMetricOptions(1.6f, 50));
-
-#define CUI_REGISTER_NUMERIC_COLOR(name, propertyName, defaultValue, order) \
-		BindingPropertyRegistry::Register<NumericUpDown, D2D1_COLOR_F>(propertyName, \
-			[](NumericUpDown& target) { return target.name; }, \
-			[](NumericUpDown& target, const D2D1_COLOR_F& value) { target.name = value; }, \
-			NumericPropertySubscriber(propertyName), NumericColorOptions(defaultValue, order))
-
-		CUI_REGISTER_NUMERIC_COLOR(PanelBackColor, L"PanelBackColor", cui::theme::palette::Surface, 60);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonBackColor, L"ButtonBackColor", cui::theme::palette::SurfaceMuted, 70);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonHoverColor, L"ButtonHoverColor", cui::theme::palette::AccentSoft, 80);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonPressedColor, L"ButtonPressedColor", cui::theme::palette::AccentSelected, 90);
-		CUI_REGISTER_NUMERIC_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 100);
-		CUI_REGISTER_NUMERIC_COLOR(FocusBorderColor, L"FocusBorderColor", cui::theme::palette::Accent, 110);
-		CUI_REGISTER_NUMERIC_COLOR(SelectedBackColor, L"SelectedBackColor", cui::theme::palette::SelectionBack, 120);
-		CUI_REGISTER_NUMERIC_COLOR(SelectedForeColor, L"SelectedForeColor", cui::theme::palette::TextPrimary, 130);
-		CUI_REGISTER_NUMERIC_COLOR(MutedTextColor, L"MutedTextColor", cui::theme::palette::TextMuted, 140);
-		CUI_REGISTER_NUMERIC_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", cui::theme::palette::DisabledOverlay, 150);
-
-#undef CUI_REGISTER_NUMERIC_COLOR
+		RegisterControlBorderThicknessMetadata<NumericUpDown>(1.0f, 60);
 		return true;
 	}();
 	(void)registered;
 }
 
-NumericUpDown::NumericUpDown(int x, int y, int width, int height)
+NumericUpDown::NumericUpDown()
 {
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
-	this->BackColor = cui::theme::palette::Surface;
-	this->BorderColor = cui::theme::palette::BorderStrong;
-	this->ForeColor = cui::theme::palette::TextPrimary;
-	this->Cursor = CursorKind::IBeam;
+	RegisterDependencyProperties();
+	InitializeControlBorderThicknessDefault(1.0f);
+	this->RendererBackgroundColor = cui::theme::palette::Surface;
+	this->RendererBorderColor = cui::theme::palette::BorderStrong;
+	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
+	(void)TrySetPropertyValue(
+		L"Padding", BindingValue(Thickness{ 8.0f, 0.0f, 8.0f, 0.0f }),
+		DependencyPropertyValueSource::Theme);
 	SyncTextFromValue();
 
 	this->OnGotFocus += [this](class Control* sender)
@@ -438,70 +306,27 @@ NumericUpDown::NumericUpDown(int x, int y, int width, int height)
 		};
 }
 
-GET_CPP(NumericUpDown, double, Min)
+double NumericUpDown::CoerceRangeValue(double value) const
 {
-	return _min;
-}
-
-SET_CPP(NumericUpDown, double, Min)
-{
-	if (!SetPropertyField(L"Min", _min, value)) return;
-	(void)ReevaluatePropertyValue(L"Max");
-	ReevaluateValue();
-}
-
-GET_CPP(NumericUpDown, double, Max)
-{
-	return _max;
-}
-
-SET_CPP(NumericUpDown, double, Max)
-{
-	if (!SetPropertyField(L"Max", _max, value)) return;
-	ReevaluateValue();
-}
-
-GET_CPP(NumericUpDown, double, Value)
-{
-	return _value;
-}
-
-SET_CPP(NumericUpDown, double, Value)
-{
-	(void)SetPropertyField(L"Value", _value, value);
-}
-
-double NumericUpDown::ClampValue(double value) const
-{
-	if (!std::isfinite(value)) value = _min;
-	return (std::clamp)(value, _min, (std::max)(_min, _max));
-}
-
-double NumericUpDown::SnapValue(double value) const
-{
-	double v = ClampValue(value);
-	if (!_snapToStep || _step <= 0.0 || !std::isfinite(_step))
+	double v = RangeBase::CoerceRangeValue(value);
+	if (!_isSnapToIncrementEnabled || _increment <= 0.0
+		|| !std::isfinite(_increment))
 		return v;
-	double steps = (v - _min) / _step;
-	double snapped = _min + std::round(steps) * _step;
-	return ClampValue(snapped);
+	double steps = (v - MinimumCore()) / _increment;
+	double snapped = MinimumCore() + std::round(steps) * _increment;
+	return RangeBase::CoerceRangeValue(snapped);
 }
 
-void NumericUpDown::SetCurrentValue(double value)
+void NumericUpDown::OnRangeValueChanged(double, double)
 {
-	(void)SetCurrentPropertyField(L"Value", _value, value);
+	if (!_editing) SyncTextFromValue();
 }
 
-void NumericUpDown::ReevaluateValue()
+GET_CPP(NumericUpDown, double, Increment) { return _increment; }
+SET_CPP(NumericUpDown, double, Increment)
 {
-	(void)ReevaluatePropertyValue(L"Value");
-}
-
-GET_CPP(NumericUpDown, double, Step) { return _step; }
-SET_CPP(NumericUpDown, double, Step)
-{
-	if (!SetPropertyField(L"Step", _step, value)) return;
-	ReevaluateValue();
+	if (!SetPropertyField(L"Increment", _increment, value)) return;
+	ReevaluateRangeValue();
 }
 
 GET_CPP(NumericUpDown, int, DecimalPlaces) { return _decimalPlaces; }
@@ -511,11 +336,15 @@ SET_CPP(NumericUpDown, int, DecimalPlaces)
 	if (!_editing) SyncTextFromValue();
 }
 
-GET_CPP(NumericUpDown, bool, SnapToStep) { return _snapToStep; }
-SET_CPP(NumericUpDown, bool, SnapToStep)
+GET_CPP(NumericUpDown, bool, IsSnapToIncrementEnabled)
 {
-	if (!SetPropertyField(L"SnapToStep", _snapToStep, value)) return;
-	ReevaluateValue();
+	return _isSnapToIncrementEnabled;
+}
+SET_CPP(NumericUpDown, bool, IsSnapToIncrementEnabled)
+{
+	if (!SetPropertyField(L"IsSnapToIncrementEnabled",
+		_isSnapToIncrementEnabled, value)) return;
+	ReevaluateRangeValue();
 }
 
 GET_CPP(NumericUpDown, bool, SelectAllOnFocus) { return _selectAllOnFocus; }
@@ -530,33 +359,11 @@ SET_CPP(NumericUpDown, bool, UseMouseWheel)
 	(void)SetPropertyField(L"UseMouseWheel", _useMouseWheel, value);
 }
 
-#define CUI_NUMERIC_PROPERTY_IMPL(type, name, field, propertyName) \
-	GET_CPP(NumericUpDown, type, name) { return field; } \
-	SET_CPP(NumericUpDown, type, name) { (void)SetPropertyField(propertyName, field, value); }
-
-CUI_NUMERIC_PROPERTY_IMPL(float, Border, _border, L"Border")
-CUI_NUMERIC_PROPERTY_IMPL(float, CornerRadius, _cornerRadius, L"CornerRadius")
-CUI_NUMERIC_PROPERTY_IMPL(float, ButtonWidth, _buttonWidth, L"ButtonWidth")
-CUI_NUMERIC_PROPERTY_IMPL(float, TextPaddingX, _textPaddingX, L"TextPaddingX")
-CUI_NUMERIC_PROPERTY_IMPL(float, FocusBorder, _focusBorder, L"FocusBorder")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, PanelBackColor, _panelBackColor, L"PanelBackColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, ButtonBackColor, _buttonBackColor, L"ButtonBackColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, ButtonHoverColor, _buttonHoverColor, L"ButtonHoverColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, ButtonPressedColor, _buttonPressedColor, L"ButtonPressedColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, AccentColor, _accentColor, L"AccentColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, FocusBorderColor, _focusBorderColor, L"FocusBorderColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, SelectedBackColor, _selectedBackColor, L"SelectedBackColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, SelectedForeColor, _selectedForeColor, L"SelectedForeColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, MutedTextColor, _mutedTextColor, L"MutedTextColor")
-CUI_NUMERIC_PROPERTY_IMPL(D2D1_COLOR_F, DisabledOverlayColor, _disabledOverlayColor, L"DisabledOverlayColor")
-
-#undef CUI_NUMERIC_PROPERTY_IMPL
-
 void NumericUpDown::SyncTextFromValue()
 {
-	this->Text = FormatValue();
-	SelectionStart = SelectionEnd = (std::clamp)(SelectionEnd, 0, static_cast<int>(this->Text.size()));
-	HorizontalScrollOffset = 0.0f;
+	_editText = FormatValue();
+	_selectionStart = _selectionEnd = (std::clamp)(_selectionEnd, 0, static_cast<int>(_editText.size()));
+	_horizontalScrollOffset = 0.0f;
 	undoStack.clear();
 	redoStack.clear();
 }
@@ -565,7 +372,7 @@ std::wstring NumericUpDown::FormatValue() const
 {
 	std::wstringstream stream;
 	stream.setf(std::ios::fixed, std::ios::floatfield);
-	stream << std::setprecision((std::max)(0, _decimalPlaces)) << _value;
+	stream << std::setprecision((std::max)(0, _decimalPlaces)) << ValueCore();
 	return stream.str();
 }
 
@@ -600,17 +407,17 @@ bool NumericUpDown::IsEditTextAllowed(const std::wstring& text) const
 
 	const bool hasDecimalPoint = text.find(L'.') != std::wstring::npos;
 	const bool isNegative = !text.empty() && text[0] == L'-';
-	if (parsed > _max)
+	if (parsed > MaximumCore())
 	{
 		// In an all-negative range, "-1" is still a useful prefix for "-10".
-		if (isNegative && _max < 0.0 && !hasDecimalPoint)
+		if (isNegative && MaximumCore() < 0.0 && !hasDecimalPoint)
 			return true;
 		return false;
 	}
-	if (parsed < _min)
+	if (parsed < MinimumCore())
 	{
 		// In a positive range, "1" is still a useful prefix for "10".
-		if (!isNegative && _min > 0.0 && !hasDecimalPoint)
+		if (!isNegative && MinimumCore() > 0.0 && !hasDecimalPoint)
 			return true;
 		return false;
 	}
@@ -623,19 +430,18 @@ void NumericUpDown::BeginEdit(bool selectAll)
 	if (!_editing)
 	{
 		_editing = true;
-		SelectionStart = SelectionEnd = (std::clamp)(SelectionEnd, 0, static_cast<int>(this->Text.size()));
+		_selectionStart = _selectionEnd = (std::clamp)(_selectionEnd, 0, static_cast<int>(_editText.size()));
 	}
 
 	if (selectAll)
 		SelectAllText();
 	else
 	{
-		SelectionStart = (std::clamp)(SelectionStart, 0, static_cast<int>(this->Text.size()));
-		SelectionEnd = (std::clamp)(SelectionEnd, 0, static_cast<int>(this->Text.size()));
+		_selectionStart = (std::clamp)(_selectionStart, 0, static_cast<int>(_editText.size()));
+		_selectionEnd = (std::clamp)(_selectionEnd, 0, static_cast<int>(_editText.size()));
 	}
 
 	UpdateScroll(selectAll);
-	UpdateImeCompositionWindow();
 	InvalidateVisual();
 }
 
@@ -645,19 +451,19 @@ bool NumericUpDown::CommitEdit()
 		return true;
 
 	double parsed = 0.0;
-	if (!TryParseEditText(this->Text, parsed))
+	if (!TryParseEditText(_editText, parsed))
 	{
 		_editing = false;
 		SyncTextFromValue();
-		SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
+		_selectionStart = _selectionEnd = static_cast<int>(_editText.size());
 		InvalidateVisual();
 		return false;
 	}
 
 	_editing = false;
-	SetCurrentValue(parsed);
+	SetCurrentRangeValue(parsed);
 	SyncTextFromValue();
-	SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
+	_selectionStart = _selectionEnd = static_cast<int>(_editText.size());
 	InvalidateVisual();
 	return true;
 }
@@ -666,32 +472,32 @@ void NumericUpDown::CancelEdit()
 {
 	_editing = false;
 	SyncTextFromValue();
-	SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
+	_selectionStart = _selectionEnd = static_cast<int>(_editText.size());
 	InvalidateVisual();
 }
 
 void NumericUpDown::SelectAllText()
 {
-	SelectionStart = 0;
-	SelectionEnd = static_cast<int>(this->Text.size());
-	HorizontalScrollOffset = 0.0f;
+	_selectionStart = 0;
+	_selectionEnd = static_cast<int>(_editText.size());
+	_horizontalScrollOffset = 0.0f;
 }
 
 void NumericUpDown::InputText(std::wstring input)
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	int newSelectionStart = SelectionStart;
-	int newSelectionEnd = SelectionEnd;
-	const int selStartBefore = SelectionStart;
-	const int selEndBefore = SelectionEnd;
+	std::wstring oldText = _editText;
+	std::wstring newText = _editText;
+	int newSelectionStart = _selectionStart;
+	int newSelectionEnd = _selectionEnd;
+	const int selStartBefore = _selectionStart;
+	const int selEndBefore = _selectionEnd;
 
 	auto result = CuiTextEdit::ReplaceSelection(newText, newSelectionStart, newSelectionEnd, input, NumericEditOptions());
 	if (!result.applied || !IsEditTextAllowed(newText))
 		return;
 
-	SelectionStart = newSelectionStart;
-	SelectionEnd = newSelectionEnd;
+	_selectionStart = newSelectionStart;
+	_selectionEnd = newSelectionEnd;
 	if (result.textChanged && !isApplyingUndoRedo)
 	{
 		UndoRecord rec;
@@ -700,29 +506,29 @@ void NumericUpDown::InputText(std::wstring input)
 		rec.insertedText = result.insertedText;
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = SelectionStart;
-		rec.selEndAfter = SelectionEnd;
+		rec.selStartAfter = _selectionStart;
+		rec.selEndAfter = _selectionEnd;
 		undoStack.push_back(rec);
 		redoStack.clear();
 	}
-	CommitTextChange(this, oldText, newText);
+	if (oldText != newText) _editText = std::move(newText);
 }
 
 void NumericUpDown::InputBack()
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	int newSelectionStart = SelectionStart;
-	int newSelectionEnd = SelectionEnd;
-	const int selStartBefore = SelectionStart;
-	const int selEndBefore = SelectionEnd;
+	std::wstring oldText = _editText;
+	std::wstring newText = _editText;
+	int newSelectionStart = _selectionStart;
+	int newSelectionEnd = _selectionEnd;
+	const int selStartBefore = _selectionStart;
+	const int selEndBefore = _selectionEnd;
 
 	auto result = CuiTextEdit::Backspace(newText, newSelectionStart, newSelectionEnd, NumericEditOptions());
 	if (!result.applied || !IsEditTextAllowed(newText))
 		return;
 
-	SelectionStart = newSelectionStart;
-	SelectionEnd = newSelectionEnd;
+	_selectionStart = newSelectionStart;
+	_selectionEnd = newSelectionEnd;
 	if (result.textChanged && !isApplyingUndoRedo)
 	{
 		UndoRecord rec;
@@ -731,29 +537,29 @@ void NumericUpDown::InputBack()
 		rec.insertedText = L"";
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = SelectionStart;
-		rec.selEndAfter = SelectionEnd;
+		rec.selStartAfter = _selectionStart;
+		rec.selEndAfter = _selectionEnd;
 		undoStack.push_back(rec);
 		redoStack.clear();
 	}
-	CommitTextChange(this, oldText, newText);
+	if (oldText != newText) _editText = std::move(newText);
 }
 
 void NumericUpDown::InputDelete()
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	int newSelectionStart = SelectionStart;
-	int newSelectionEnd = SelectionEnd;
-	const int selStartBefore = SelectionStart;
-	const int selEndBefore = SelectionEnd;
+	std::wstring oldText = _editText;
+	std::wstring newText = _editText;
+	int newSelectionStart = _selectionStart;
+	int newSelectionEnd = _selectionEnd;
+	const int selStartBefore = _selectionStart;
+	const int selEndBefore = _selectionEnd;
 
 	auto result = CuiTextEdit::DeleteForward(newText, newSelectionStart, newSelectionEnd, NumericEditOptions());
 	if (!result.applied || !IsEditTextAllowed(newText))
 		return;
 
-	SelectionStart = newSelectionStart;
-	SelectionEnd = newSelectionEnd;
+	_selectionStart = newSelectionStart;
+	_selectionEnd = newSelectionEnd;
 	if (result.textChanged && !isApplyingUndoRedo)
 	{
 		UndoRecord rec;
@@ -762,18 +568,18 @@ void NumericUpDown::InputDelete()
 		rec.insertedText = L"";
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = SelectionStart;
-		rec.selEndAfter = SelectionEnd;
+		rec.selStartAfter = _selectionStart;
+		rec.selEndAfter = _selectionEnd;
 		undoStack.push_back(rec);
 		redoStack.clear();
 	}
-	CommitTextChange(this, oldText, newText);
+	if (oldText != newText) _editText = std::move(newText);
 }
 
 void NumericUpDown::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
+	std::wstring oldText = _editText;
+	std::wstring newText = _editText;
 	isApplyingUndoRedo = true;
 
 	int pos = (std::clamp)(rec.pos, 0, static_cast<int>(newText.size()));
@@ -796,19 +602,19 @@ void NumericUpDown::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 
 	if (isUndo)
 	{
-		SelectionStart = rec.selStartBefore;
-		SelectionEnd = rec.selEndBefore;
+		_selectionStart = rec.selStartBefore;
+		_selectionEnd = rec.selEndBefore;
 	}
 	else
 	{
-		SelectionStart = rec.selStartAfter;
-		SelectionEnd = rec.selEndAfter;
+		_selectionStart = rec.selStartAfter;
+		_selectionEnd = rec.selEndAfter;
 	}
-	SelectionStart = (std::clamp)(SelectionStart, 0, static_cast<int>(newText.size()));
-	SelectionEnd = (std::clamp)(SelectionEnd, 0, static_cast<int>(newText.size()));
+	_selectionStart = (std::clamp)(_selectionStart, 0, static_cast<int>(newText.size()));
+	_selectionEnd = (std::clamp)(_selectionEnd, 0, static_cast<int>(newText.size()));
 
 	isApplyingUndoRedo = false;
-	CommitTextChange(this, oldText, newText);
+	if (oldText != newText) _editText = std::move(newText);
 }
 
 void NumericUpDown::Undo()
@@ -831,29 +637,29 @@ void NumericUpDown::Redo()
 
 std::wstring NumericUpDown::GetSelectedString()
 {
-	auto span = CuiTextEdit::NormalizeSelection(SelectionStart, SelectionEnd, this->Text.size());
+	auto span = CuiTextEdit::NormalizeSelection(_selectionStart, _selectionEnd, _editText.size());
 	if (!span.HasSelection())
 		return L"";
-	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
+	return _editText.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 
 void NumericUpDown::UpdateScroll(bool arrival)
 {
 	(void)arrival;
-	auto font = this->Font;
+	auto font = this->GetRenderFont();
 	if (!font)
 		return;
 
 	auto textRect = TextRect();
 	const float renderWidth = (std::max)(1.0f, RectWidth(textRect));
-	SelectionStart = (std::clamp)(SelectionStart, 0, static_cast<int>(this->Text.size()));
-	SelectionEnd = (std::clamp)(SelectionEnd, 0, static_cast<int>(this->Text.size()));
+	_selectionStart = (std::clamp)(_selectionStart, 0, static_cast<int>(_editText.size()));
+	_selectionEnd = (std::clamp)(_selectionEnd, 0, static_cast<int>(_editText.size()));
 
 	float caretLeft = 0.0f;
 	float caretRight = 0.0f;
-	if (!this->Text.empty())
+	if (!_editText.empty())
 	{
-		auto hit = font->HitTestTextRange(this->Text, static_cast<UINT32>(SelectionEnd), 0);
+		auto hit = font->HitTestTextRange(_editText, static_cast<UINT32>(_selectionEnd), 0);
 		if (!hit.empty())
 		{
 			caretLeft = hit[0].left;
@@ -861,45 +667,56 @@ void NumericUpDown::UpdateScroll(bool arrival)
 		}
 		else
 		{
-			caretLeft = font->GetTextSize(this->Text).width;
+			caretLeft = font->GetTextSize(_editText).width;
 			caretRight = caretLeft;
 		}
 	}
 
-	if (caretRight - HorizontalScrollOffset > renderWidth - 2.0f)
-		HorizontalScrollOffset = caretRight - renderWidth + 2.0f;
-	if (caretLeft - HorizontalScrollOffset < 0.0f)
-		HorizontalScrollOffset = caretLeft;
-	if (HorizontalScrollOffset < 0.0f)
-		HorizontalScrollOffset = 0.0f;
+	if (caretRight - _horizontalScrollOffset > renderWidth - 2.0f)
+		_horizontalScrollOffset = caretRight - renderWidth + 2.0f;
+	if (caretLeft - _horizontalScrollOffset < 0.0f)
+		_horizontalScrollOffset = caretLeft;
+	if (_horizontalScrollOffset < 0.0f)
+		_horizontalScrollOffset = 0.0f;
 }
 
-void NumericUpDown::UpdateImeCompositionWindow()
+bool NumericUpDown::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
 {
-	if (!ParentForm)
-		return;
+	if (!GetPresentationWindow())
+		return false;
 
-	D2D1_RECT_F imeRect{};
 	if (_caretRectCacheValid)
 	{
-		imeRect = _caretRectCache;
+		outRect = _caretRectCache;
 	}
 	else
 	{
 		const auto absoluteLocation = this->GetAbsoluteLocationDip();
 		auto textRect = TextRect();
-		float caretX = static_cast<float>(absoluteLocation.x) + textRect.left - HorizontalScrollOffset;
-		float caretY = static_cast<float>(absoluteLocation.y) + TextTop(this->Font, textRect);
-		float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
-		imeRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
+		float caretX = static_cast<float>(absoluteLocation.x) + textRect.left - _horizontalScrollOffset;
+		float caretY = static_cast<float>(absoluteLocation.y) + TextTop(this->GetRenderFont(), textRect);
+		float caretH = (this->GetRenderFont() && this->GetRenderFont()->FontHeight > 0.0f) ? this->GetRenderFont()->FontHeight : 16.0f;
+		outRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
 	}
-	ParentForm->SetImeCompositionWindowFromLogicalRect(imeRect);
+	return true;
+}
+
+bool NumericUpDown::ApplyTextInput(const TextCompositionEventArgs& input)
+{
+	if (input.Text.empty()) return false;
+	if (!_editing) BeginEdit(SelectAllOnFocus);
+	const std::wstring previous = _editText;
+	InputText(input.Text);
+	UpdateScroll();
+	InvalidateVisual();
+	return _editText != previous;
 }
 
 D2D1_RECT_F NumericUpDown::ButtonPanelRect() const
 {
-	const float w = (float)_size.cx;
-	const float h = (float)_size.cy;
+	const auto actualSize = GetActualSizeDip();
+	const float w = actualSize.width;
+	const float h = actualSize.height;
 	const float bw = (std::clamp)(_buttonWidth, 18.0f, (std::max)(18.0f, w * 0.45f));
 	return D2D1::RectF((std::max)(0.0f, w - bw), 0.0f, w, h);
 }
@@ -918,13 +735,14 @@ D2D1_RECT_F NumericUpDown::DownButtonRect() const
 	return D2D1::RectF(panel.left, mid, panel.right, panel.bottom);
 }
 
-D2D1_RECT_F NumericUpDown::TextRect() const
+D2D1_RECT_F NumericUpDown::TextRect()
 {
-	const float h = (float)_size.cy;
+	const float h = GetActualSizeDip().height;
 	auto buttons = ButtonPanelRect();
 	return D2D1::RectF(
-		_textPaddingX, 0.0f,
-		(std::max)(_textPaddingX, buttons.left - _textPaddingX), h);
+		Padding.Left, Padding.Top,
+		(std::max)(Padding.Left, buttons.left - Padding.Right),
+		(std::max)(Padding.Top, h - Padding.Bottom));
 }
 
 int NumericUpDown::HitTestButton(int localX, int localY) const
@@ -938,36 +756,36 @@ int NumericUpDown::HitTestButton(int localX, int localY) const
 
 int NumericUpDown::HitTestTextPosition(int localX, int localY)
 {
-	auto font = this->Font;
+	auto font = this->GetRenderFont();
 	if (!font)
-		return static_cast<int>(this->Text.size());
+		return static_cast<int>(_editText.size());
 
 	auto textRect = TextRect();
-	const float x = ((float)localX - textRect.left) + HorizontalScrollOffset;
+	const float x = ((float)localX - textRect.left) + _horizontalScrollOffset;
 	const float y = (float)localY - TextTop(font, textRect);
-	return font->HitTestTextPosition(this->Text, FLT_MAX, (std::max)(1.0f, RectHeight(textRect)), x, y);
+	return font->HitTestTextPosition(_editText, FLT_MAX, (std::max)(1.0f, RectHeight(textRect)), x, y);
 }
 
-void NumericUpDown::StepBy(int direction)
+void NumericUpDown::StepBy(int direction, bool accelerated)
 {
 	if (direction == 0)
 		return;
 
-	const bool keepEditing = ParentForm && ParentForm->Selected == this;
+	const bool keepEditing = GetPresentationWindow() && GetPresentationWindow()->GetKeyboardFocusedElement() == this;
 	if (_editing)
 		CommitEdit();
 
-	double delta = Step > 0.0 && std::isfinite(Step) ? Step : 1.0;
-	if (GetKeyState(VK_SHIFT) & 0x8000)
+	double delta = Increment > 0.0 && std::isfinite(Increment)
+		? Increment : 1.0;
+	if (accelerated)
 		delta *= 10.0;
-	SetCurrentValue(_value + delta * (double)direction);
+	SetCurrentRangeValue(Value + delta * (double)direction);
 
 	if (keepEditing)
 	{
 		_editing = true;
-		SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
+		_selectionStart = _selectionEnd = static_cast<int>(_editText.size());
 		UpdateScroll(true);
-		UpdateImeCompositionWindow();
 	}
 }
 
@@ -1011,8 +829,10 @@ float NumericUpDown::CurrentHoverProgress()
 
 CursorKind NumericUpDown::QueryCursor(int localX, int localY)
 {
-	if (!Enable)
+	if (!IsEnabled)
 		return CursorKind::Arrow;
+	if (_dragUp || _dragDown)
+		return CursorKind::Hand;
 	return HitTestButton(localX, localY) == 0 ? CursorKind::IBeam : CursorKind::Hand;
 }
 
@@ -1020,14 +840,17 @@ bool NumericUpDown::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	(void)localX;
 	(void)localY;
-	if (!UseMouseWheel || delta == 0 || !Enable)
+	if (!UseMouseWheel || delta == 0 || !IsEnabled)
 		return false;
 	return true;
 }
 
-bool NumericUpDown::HandlesNavigationKey(WPARAM key) const
+bool NumericUpDown::HandlesNavigationKey(Key key) const
 {
-	return key == VK_UP || key == VK_DOWN || key == VK_HOME || key == VK_END || key == VK_PRIOR || key == VK_NEXT;
+	return key == Key::Left || key == Key::Right
+		|| key == Key::Up || key == Key::Down
+		|| key == Key::Home || key == Key::End
+		|| key == Key::PageUp || key == Key::PageDown;
 }
 
 bool NumericUpDown::IsAnimationRunning()
@@ -1042,19 +865,19 @@ bool NumericUpDown::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 		return true;
 	if (!_animating)
 		return false;
-	outRect = this->AbsRect;
+	outRect = GetAbsoluteBoundsDip();
 	return true;
 }
 
-void NumericUpDown::Update()
+void NumericUpDown::OnRender()
 {
-	if (!this->IsVisual) return;
-	auto d2d = this->ParentForm ? this->ParentForm->Render : nullptr;
+	if (!this->IsVisible) return;
+	auto d2d = this->GetDrawingContext();
 	if (!d2d) return;
 
 	const float hoverProgress = CurrentHoverProgress();
-	const bool isSelected = ParentForm && ParentForm->Selected == this;
-	const bool isUnderMouse = ParentForm && ParentForm->UnderMouse == this;
+	const bool isSelected = GetPresentationWindow() && GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+	const bool isUnderMouse = IsMouseOver;
 	if (!isUnderMouse && !_dragUp && !_dragDown && _hoverButton != 0)
 	{
 		_hoverButton = 0;
@@ -1064,16 +887,17 @@ void NumericUpDown::Update()
 	const auto size = this->GetActualSizeDip();
 	const float width = size.width;
 	const float height = size.height;
-	const float radius = (std::clamp)(CornerRadius, 0.0f, (std::min)(width, height) * 0.5f);
-	const float border = (std::max)(0.0f, Border);
+	const float radius = (std::clamp)(_cornerRadius, 0.0f,
+		(std::min)(width, height) * 0.5f);
+	const float border = BorderThickness.MaxEdge();
 	auto panelRect = ButtonPanelRect();
 	auto upRect = UpButtonRect();
 	auto downRect = DownButtonRect();
 	auto textRect = TextRect();
-	class Font* fontObj = this->Font;
-	std::wstring text = this->Text;
+	class Font* fontObj = this->GetRenderFont();
+	std::wstring text = _editText;
 	const float renderHeight = (std::max)(1.0f, RectHeight(textRect));
-	textSize = fontObj ? fontObj->GetTextSize(text, FLT_MAX, renderHeight) : D2D1_SIZE_F{ 0,0 };
+	_textSize = fontObj ? fontObj->GetTextSize(text, FLT_MAX, renderHeight) : D2D1_SIZE_F{ 0,0 };
 	const float textY = TextTop(fontObj, textRect);
 
 	this->_caretRectCacheValid = false;
@@ -1082,18 +906,22 @@ void NumericUpDown::Update()
 	D2D1_POINT_2F caretEnd{};
 
 	this->BeginRender();
+	if (GetControlTemplateRoot())
 	{
-		D2D1_COLOR_F base = PanelBackColor.a > 0.0f ? PanelBackColor : this->BackColor;
-		d2d->FillRoundRect(0.0f, 0.0f, width, height, base, radius);
+		this->EndRender();
+		return;
+	}
+	{
+		d2d->FillRoundRect(0.0f, 0.0f, width, height, RendererBackgroundColor, radius);
 		if (isUnderMouse && !_editing)
 			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, width - 2.0f), (std::max)(0.0f, height - 2.0f),
-				ScaleAlpha(ButtonHoverColor, 0.45f), (std::max)(0.0f, radius - 1.0f));
+				ScaleAlpha(_buttonHoverColor, 0.45f), (std::max)(0.0f, radius - 1.0f));
 
 		if (fontObj)
 		{
 			d2d->PushDrawRect(textRect.left, textRect.top, (std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect));
-			const int sels = (std::min)(SelectionStart, SelectionEnd);
-			const int sele = (std::max)(SelectionStart, SelectionEnd);
+			const int sels = (std::min)(_selectionStart, _selectionEnd);
+			const int sele = (std::max)(_selectionStart, _selectionEnd);
 			const int selLen = sele - sels;
 
 			if (isSelected && selLen > 0 && !text.empty())
@@ -1102,11 +930,11 @@ void NumericUpDown::Update()
 				for (auto sr : selRange)
 				{
 					d2d->FillRect(
-						textRect.left + sr.left - HorizontalScrollOffset,
+						textRect.left + sr.left - _horizontalScrollOffset,
 						textY + sr.top,
 						sr.width,
 						sr.height,
-						this->SelectedBackColor);
+						_selectedBackColor);
 				}
 			}
 
@@ -1118,19 +946,19 @@ void NumericUpDown::Update()
 					if (isSelected && selLen > 0)
 					{
 						d2d->DrawStringLayoutEffect(textLayout,
-							textRect.left - HorizontalScrollOffset,
+							textRect.left - _horizontalScrollOffset,
 							textY,
-							this->ForeColor,
+							this->RendererForegroundColor,
 							DWRITE_TEXT_RANGE{ static_cast<UINT32>(sels), static_cast<UINT32>(selLen) },
-							this->SelectedForeColor,
+							_selectedForeColor,
 							fontObj);
 					}
 					else
 					{
 						d2d->DrawStringLayout(textLayout,
-							textRect.left - HorizontalScrollOffset,
+							textRect.left - _horizontalScrollOffset,
 							textY,
-							this->ForeColor);
+							this->RendererForegroundColor);
 					}
 					textLayout->Release();
 				}
@@ -1138,21 +966,21 @@ void NumericUpDown::Update()
 
 			if (isSelected && selLen == 0)
 			{
-				float caretX = textRect.left - HorizontalScrollOffset;
+				float caretX = textRect.left - _horizontalScrollOffset;
 				float caretTop = textY + 1.0f;
 				float caretBottom = textY + (fontObj ? fontObj->FontHeight : 16.0f) - 1.0f;
 				if (!text.empty())
 				{
-					auto caretRange = fontObj->HitTestTextRange(text, static_cast<UINT32>(SelectionEnd), 0);
+					auto caretRange = fontObj->HitTestTextRange(text, static_cast<UINT32>(_selectionEnd), 0);
 					if (!caretRange.empty())
 					{
-						caretX = textRect.left + caretRange[0].left - HorizontalScrollOffset;
+						caretX = textRect.left + caretRange[0].left - _horizontalScrollOffset;
 						caretTop = textY + caretRange[0].top + 1.0f;
 						caretBottom = textY + caretRange[0].top + (caretRange[0].height > 0.0f ? caretRange[0].height : fontObj->FontHeight) - 1.0f;
 					}
 					else
 					{
-						caretX = textRect.left + fontObj->GetTextSize(text).width - HorizontalScrollOffset;
+						caretX = textRect.left + fontObj->GetTextSize(text).width - _horizontalScrollOffset;
 					}
 				}
 
@@ -1169,9 +997,10 @@ void NumericUpDown::Update()
 				caretEnd = { caretX, caretBottom };
 			}
 
-			UpdateCaretBlinkState(isSelected, SelectionStart, SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+			UpdateCaretBlinkState(isSelected, _selectionStart, _selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 			if (shouldDrawCaret && IsCaretBlinkVisible())
-				d2d->DrawLine(caretStart, caretEnd, AccentColor, 1.2f);
+				d2d->DrawLine(caretStart, caretEnd,
+					cui::theme::palette::Accent, 1.2f);
 			d2d->PopDrawRect();
 		}
 		else
@@ -1180,73 +1009,87 @@ void NumericUpDown::Update()
 		}
 
 		d2d->FillRoundRect(panelRect.left, panelRect.top + 3.0f,
-			RectWidth(panelRect) - 3.0f, (std::max)(0.0f, RectHeight(panelRect) - 6.0f), ButtonBackColor, 4.0f);
+			RectWidth(panelRect) - 3.0f,
+			(std::max)(0.0f, RectHeight(panelRect) - 6.0f),
+			_buttonBackColor, 4.0f);
 		if (_hoverButton != 0 && hoverProgress > 0.001f)
 		{
 			auto rect = _hoverButton > 0 ? upRect : downRect;
 			auto color = (_dragUp && _hoverButton > 0) || (_dragDown && _hoverButton < 0)
-				? ButtonPressedColor
-				: ScaleAlpha(ButtonHoverColor, hoverProgress);
+				? _buttonPressedColor
+				: ScaleAlpha(_buttonHoverColor, hoverProgress);
 			d2d->FillRoundRect(rect.left + 2.0f, rect.top + 2.0f,
 				(std::max)(0.0f, RectWidth(rect) - 4.0f), (std::max)(0.0f, RectHeight(rect) - 4.0f), color, 3.5f);
 		}
-		d2d->DrawLine(panelRect.left, 5.0f, panelRect.left, (std::max)(5.0f, height - 5.0f), ScaleAlpha(BorderColor, 0.65f), 1.0f);
-		d2d->DrawLine(panelRect.left + 3.0f, height * 0.5f, width - 4.0f, height * 0.5f, ScaleAlpha(BorderColor, 0.52f), 1.0f);
-		DrawSpinArrow(d2d, upRect, true, _hoverButton > 0 ? ForeColor : MutedTextColor);
-		DrawSpinArrow(d2d, downRect, false, _hoverButton < 0 ? ForeColor : MutedTextColor);
+		d2d->DrawLine(panelRect.left, 5.0f, panelRect.left, (std::max)(5.0f, height - 5.0f), ScaleAlpha(RendererBorderColor, 0.65f), 1.0f);
+		d2d->DrawLine(panelRect.left + 3.0f, height * 0.5f, width - 4.0f, height * 0.5f, ScaleAlpha(RendererBorderColor, 0.52f), 1.0f);
+		DrawSpinArrow(d2d, upRect, true,
+			_hoverButton > 0 ? RendererForegroundColor : _mutedTextColor);
+		DrawSpinArrow(d2d, downRect, false,
+			_hoverButton < 0 ? RendererForegroundColor : _mutedTextColor);
 
-		D2D1_COLOR_F borderColor = isSelected ? FocusBorderColor : BorderColor;
-		float borderWidth = isSelected ? (std::max)(border, FocusBorder) : border;
+		D2D1_COLOR_F borderColor = isSelected
+			? cui::theme::palette::Accent : RendererBorderColor;
+		float borderWidth = isSelected
+			? (std::max)(border, _focusBorder) : border;
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, width - borderWidth), (std::max)(0.0f, height - borderWidth),
 				borderColor, borderWidth, radius);
 
-		if (this->Image)
-			this->RenderImage(radius);
 
-		if (!Enable)
-			d2d->FillRoundRect(0.0f, 0.0f, width, height, DisabledOverlayColor, radius);
+
+		if (!IsEnabled)
+			d2d->FillRoundRect(0.0f, 0.0f, width, height,
+				_disabledOverlayColor, radius);
 	}
 	this->EndRender();
 }
 
-bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool NumericUpDown::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
+	if (!this->IsEnabled || !this->IsVisible) return true;
 
-	switch (message)
+	switch (input.Kind)
 	{
-	case WM_MOUSEWHEEL:
+	case InputReportKind::MouseWheel:
 		if (UseMouseWheel)
-			StepBy(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1);
-		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam)));
-		return true;
-	case WM_MOUSEMOVE:
-	{
-		if (ParentForm) ParentForm->UnderMouse = this;
-		if (_dragText && ParentForm && ParentForm->Selected == this)
+			StepBy(input.WheelDelta > 0 ? 1 : -1, input.HasModifier(ModifierKeys::Shift));
 		{
-			SelectionEnd = HitTestTextPosition(localX, localY);
+			auto args = input.CreateMouseEventArgs();
+			OnMouseWheel(this, args);
+		}
+		return true;
+	case InputReportKind::PointerMove:
+	{
+		if (_dragText && GetPresentationWindow() && GetPresentationWindow()->GetKeyboardFocusedElement() == this)
+		{
+			_selectionEnd = HitTestTextPosition(input.X, input.Y);
 			UpdateScroll();
 			InvalidateVisual();
 		}
 		else
 		{
-			int hit = HitTestButton(localX, localY);
+			int hit = HitTestButton(input.X, input.Y);
 			if (hit != _hoverButton)
 			{
 				_hoverButton = hit;
 				StartHoverAnimation(hit == 0 ? 0.0f : 1.0f);
 			}
 		}
-		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam)));
+		{
+			auto args = input.CreateMouseEventArgs();
+			OnMouseMove(this, args);
+		}
 		return true;
 	}
-	case WM_LBUTTONDOWN:
+	case InputReportKind::PointerDown:
 	{
-		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		int hit = HitTestButton(localX, localY);
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		(void)CaptureMouse();
+		if (GetPresentationWindow()) GetPresentationWindow()->SetKeyboardFocus(this, false);
+		int hit = HitTestButton(input.X, input.Y);
 		if (hit != 0)
 		{
 			_dragText = false;
@@ -1254,46 +1097,62 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			_dragDown = hit < 0;
 			_hoverButton = hit;
 			StartHoverAnimation(1.0f);
-			StepBy(hit);
+			StepBy(hit, input.HasModifier(ModifierKeys::Shift));
 		}
 		else
 		{
 			BeginEdit(false);
 			_dragText = true;
-			SelectionStart = SelectionEnd = HitTestTextPosition(localX, localY);
+			_selectionStart = _selectionEnd = HitTestTextPosition(input.X, input.Y);
 			UpdateScroll();
-			UpdateImeCompositionWindow();
 		}
-		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
+		{
+			auto args = input.CreateMouseEventArgs();
+			OnMouseDown(this, args);
+		}
 		InvalidateVisual();
 		return true;
 	}
-	case WM_LBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
-		if (_dragText && ParentForm && ParentForm->Selected == this)
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		if (_dragText && GetPresentationWindow() && GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			SelectionEnd = HitTestTextPosition(localX, localY);
+			_selectionEnd = HitTestTextPosition(input.X, input.Y);
 			UpdateScroll();
 		}
 		_dragText = false;
 		_dragUp = false;
 		_dragDown = false;
-		int hit = HitTestButton(localX, localY);
+		int hit = HitTestButton(input.X, input.Y);
 		if (hit != _hoverButton)
 		{
 			_hoverButton = hit;
 			StartHoverAnimation(hit == 0 ? 0.0f : 1.0f);
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		auto e = input.CreateMouseEventArgs();
 		OnMouseUp(this, e);
-		OnMouseClick(this, e);
+		if (IsMouseCaptured()) (void)ReleaseMouseCapture();
 		InvalidateVisual();
 		return true;
 	}
-	case WM_LBUTTONDBLCLK:
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		_dragText = false;
+		_dragUp = false;
+		_dragDown = false;
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		InvalidateVisual();
+		return Control::ProcessInput(input);
+	case InputReportKind::PointerDoubleClick:
 	{
-		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		int hit = HitTestButton(localX, localY);
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		(void)CaptureMouse();
+		if (GetPresentationWindow()) GetPresentationWindow()->SetKeyboardFocus(this, false);
+		int hit = HitTestButton(input.X, input.Y);
 		if (hit != 0)
 		{
 			_dragText = false;
@@ -1301,33 +1160,65 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			_dragDown = hit < 0;
 			_hoverButton = hit;
 			StartHoverAnimation(1.0f);
-			StepBy(hit);
+			StepBy(hit, input.HasModifier(ModifierKeys::Shift));
 		}
 		else
 		{
 			BeginEdit(false);
 			SelectAllText();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		auto e = input.CreateMouseEventArgs();
 		OnMouseDoubleClick(this, e);
 		InvalidateVisual();
 		return true;
 	}
-	case WM_KEYDOWN:
+	case InputReportKind::KeyDown:
 	{
 		if (!_editing)
 			BeginEdit(false);
+		bool handled = false;
 
-		if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+		if (input.HasModifier(ModifierKeys::Control))
 		{
-			if (wParam == 'Z')
+			if (input.Key == Key::A)
+			{
+				SelectAllText();
+				UpdateScroll(true);
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::C)
+			{
+				WriteClipboardText(GetPresentationWindow() ? GetPresentationWindow()->Handle : nullptr,
+					GetSelectedString());
+				return true;
+			}
+			if (input.Key == Key::V)
+			{
+				std::wstring clipboardText;
+				if (TryReadClipboardText(GetPresentationWindow() ? GetPresentationWindow()->Handle : nullptr,
+					clipboardText)) InputText(clipboardText);
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::X)
+			{
+				WriteClipboardText(GetPresentationWindow() ? GetPresentationWindow()->Handle : nullptr,
+					GetSelectedString());
+				InputBack();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::Z)
 			{
 				Undo();
 				UpdateScroll();
 				InvalidateVisual();
 				return true;
 			}
-			if (wParam == 'Y')
+			if (input.Key == Key::Y)
 			{
 				Redo();
 				UpdateScroll();
@@ -1336,158 +1227,118 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			}
 		}
 
-		UpdateImeCompositionWindow();
-		const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-		switch (wParam)
+		const bool extendSelection = input.HasModifier(ModifierKeys::Shift);
+		switch (input.Key)
 		{
-		case VK_UP:
-			StepBy(1);
+		case Key::Up:
+			StepBy(1, input.HasModifier(ModifierKeys::Shift));
+			handled = true;
 			break;
-		case VK_DOWN:
-			StepBy(-1);
+		case Key::Down:
+			StepBy(-1, input.HasModifier(ModifierKeys::Shift));
+			handled = true;
 			break;
-		case VK_PRIOR:
-			StepBy(10);
+		case Key::PageUp:
+			StepBy(10, input.HasModifier(ModifierKeys::Shift));
+			handled = true;
 			break;
-		case VK_NEXT:
-			StepBy(-10);
+		case Key::PageDown:
+			StepBy(-10, input.HasModifier(ModifierKeys::Shift));
+			handled = true;
 			break;
-		case VK_RETURN:
+		case Key::Return:
 			CommitEdit();
 			BeginEdit(false);
-			SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
+			_selectionStart = _selectionEnd = static_cast<int>(_editText.size());
 			UpdateScroll(true);
+			handled = true;
 			break;
-		case VK_ESCAPE:
+		case Key::Escape:
 			CancelEdit();
 			BeginEdit(true);
+			handled = true;
 			break;
-		case VK_DELETE:
+		case Key::Delete:
 			InputDelete();
 			UpdateScroll();
+			handled = true;
 			break;
-		case VK_RIGHT:
+		case Key::Back:
+			InputBack();
+			UpdateScroll();
+			handled = true;
+			break;
+		case Key::Right:
 		{
-			int textLength = static_cast<int>(this->Text.size());
-			auto span = CuiTextEdit::NormalizeSelection(SelectionStart, SelectionEnd, this->Text.size());
+			handled = true;
+			int textLength = static_cast<int>(_editText.size());
+			auto span = CuiTextEdit::NormalizeSelection(_selectionStart, _selectionEnd, _editText.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				SelectionStart = SelectionEnd = span.end;
+				_selectionStart = _selectionEnd = span.end;
 				UpdateScroll();
 			}
-			else if (SelectionEnd < textLength)
+			else if (_selectionEnd < textLength)
 			{
-				SelectionEnd = CuiTextEdit::GetNextCaretIndex(this->Text, SelectionEnd, false);
+				_selectionEnd = CuiTextEdit::GetNextCaretIndex(_editText, _selectionEnd, false);
 				if (!extendSelection)
-					SelectionStart = SelectionEnd;
+					_selectionStart = _selectionEnd;
 				UpdateScroll();
 			}
 			break;
 		}
-		case VK_LEFT:
+		case Key::Left:
 		{
-			auto span = CuiTextEdit::NormalizeSelection(SelectionStart, SelectionEnd, this->Text.size());
+			handled = true;
+			auto span = CuiTextEdit::NormalizeSelection(_selectionStart, _selectionEnd, _editText.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				SelectionStart = SelectionEnd = span.start;
+				_selectionStart = _selectionEnd = span.start;
 				UpdateScroll();
 			}
-			else if (SelectionEnd > 0)
+			else if (_selectionEnd > 0)
 			{
-				SelectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Text, SelectionEnd, false);
+				_selectionEnd = CuiTextEdit::GetPreviousCaretIndex(_editText, _selectionEnd, false);
 				if (!extendSelection)
-					SelectionStart = SelectionEnd;
+					_selectionStart = _selectionEnd;
 				UpdateScroll();
 			}
 			break;
 		}
-		case VK_HOME:
-			SelectionEnd = 0;
+		case Key::Home:
+			handled = true;
+			_selectionEnd = 0;
 			if (!extendSelection)
-				SelectionStart = SelectionEnd;
+				_selectionStart = _selectionEnd;
 			UpdateScroll(true);
 			break;
-		case VK_END:
-			SelectionEnd = static_cast<int>(this->Text.size());
+		case Key::End:
+			handled = true;
+			_selectionEnd = static_cast<int>(_editText.size());
 			if (!extendSelection)
-				SelectionStart = SelectionEnd;
+				_selectionStart = _selectionEnd;
 			UpdateScroll(true);
 			break;
 		default:
 			break;
 		}
-		OnKeyDown(this, KeyEventArgs((Keys)(wParam | 0)));
-		InvalidateVisual();
-		return true;
-	}
-	case WM_CHAR:
-	{
-		if (!_editing)
-			BeginEdit(SelectAllOnFocus);
-
-		wchar_t ch = (wchar_t)wParam;
-		if (ch == L'\r')
 		{
-			CommitEdit();
-			BeginEdit(false);
-			SelectionStart = SelectionEnd = static_cast<int>(this->Text.size());
-			UpdateScroll(true);
-		}
-		else if (ch == 1)
-		{
-			SelectAllText();
-			UpdateScroll(true);
-		}
-		else if (ch == 8)
-		{
-			InputBack();
-			UpdateScroll();
-		}
-		else if (ch == 22)
-		{
-			std::wstring clipboardText;
-			if (TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
-			{
-				InputText(clipboardText);
-				UpdateScroll();
-			}
-		}
-		else if (ch == 3)
-		{
-			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, GetSelectedString());
-		}
-		else if (ch == 24)
-		{
-			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, GetSelectedString());
-			InputBack();
-			UpdateScroll();
-		}
-		else if (CuiTextEdit::IsTextInputChar(ch))
-		{
-			const wchar_t text[] = { ch, L'\0' };
-			InputText(text);
-			UpdateScroll();
+			auto args = input.CreateKeyEventArgs();
+			OnKeyDown(this, args);
 		}
 		InvalidateVisual();
-		return true;
+		return handled;
 	}
-	case WM_IME_COMPOSITION:
-	{
-		if (lParam & GCS_RESULTSTR)
+	case InputReportKind::KeyUp:
 		{
-			// Unicode windows receive committed IME text through WM_CHAR as well.
-			// Keep the edit mutation in one path to avoid duplicate characters.
-			InvalidateVisual();
+			auto args = input.CreateKeyEventArgs();
+			OnKeyUp(this, args);
 		}
-		return true;
-	}
-	case WM_KEYUP:
-		OnKeyUp(this, KeyEventArgs((Keys)(wParam | 0)));
 		InvalidateVisual();
 		return true;
 	default:
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+	return Control::ProcessInput(input);
 }

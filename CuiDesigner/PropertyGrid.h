@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file PropertyGrid.h
@@ -8,7 +8,7 @@
 #include "../CUI/include/Button.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/TextBox.h"
-#include "../CUI/include/PropertyGrid.h"
+#include "NativePropertyGridView.h"
 #include "DesignerTypes.h"
 #include "DesignerEventCatalog.h"
 #include "DesignerModel/DesignCodeGenerationService.h"
@@ -118,7 +118,7 @@ private:
 	void PopulateNativeEventRows(
 		const std::vector<DesignerEventDescriptor>& events,
 		const std::wstring& subjectName,
-		const std::map<std::wstring, std::wstring>& handlers,
+		const DesignerModel::DesignEventHandlerMap& handlers,
 		const std::wstring& scopeCaption);
 	void PopulateNativeMultiSelectionEventRows(
 		const std::vector<std::shared_ptr<DesignerControl>>& controls,
@@ -157,7 +157,6 @@ private:
 		const std::wstring& propertyName);
 	void AddNativeCustomEditorRows(UIClass targetType);
 	void OpenCustomEditor(DesignerCustomEditorKind kind);
-	bool ShouldGroupFloatSliderProperty(const std::wstring& propertyName) const;
 	bool BeginGroupedFloatSliderEdit(const std::wstring& propertyName);
 	void CommitGroupedFloatSliderEdit();
 	void RollbackGroupedFloatSliderEdit(const std::wstring& error);
@@ -183,9 +182,11 @@ public:
 
 	PropertyGrid(int x, int y, int width, int height);
 	virtual ~PropertyGrid();
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-	
+protected:
+	void PreparePresentation() override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
 	void SetDesignerCanvas(DesignerCanvas* canvas) { _binding.SetCanvas(canvas); }
 	void SetViewMode(DesignerPropertyGridViewMode mode);
 	/** Updates per-handler source diagnostics without changing selection. */
@@ -219,7 +220,7 @@ public:
 		const std::wstring& propertyName,
 		const std::wstring& valueText);
 	/**
-	 * WinForms-style event activation. An unbound event receives its conventional
+	 * Designer event activation. An unbound event receives its conventional
 	 * default handler name through the normal undoable edit path; an existing
 	 * handler is reused. Success raises OnEventHandlerActivated.
 	 */

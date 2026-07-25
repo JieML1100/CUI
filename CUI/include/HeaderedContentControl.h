@@ -9,9 +9,12 @@
 class HeaderedContentControl : public ContentControl
 {
 public:
-	HeaderedContentControl(
-		int x = 0, int y = 0, int width = 200, int height = 120);
-	void EnsureBindingPropertiesRegistered() override;
+	HeaderedContentControl();
+	UIClass Type() override { return UIClass::UI_HeaderedContentControl; }
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+	cui::core::Size MeasureCore(
+		const cui::core::Constraints& available) override;
 
 	BindingValue GetHeader() const { return _header; }
 	void SetHeader(BindingValue value);
@@ -68,8 +71,14 @@ public:
 	}
 
 protected:
+	std::wstring GetSemanticText() const override;
 	void ConfigureContentVisual(Control& child) override;
 	virtual void ConfigureHeaderVisual(Control& child);
+	virtual void ReleaseHeaderVisual(Control& child);
+	virtual cui::core::Insets GetHeaderPresentationInsets() const noexcept;
+	/** Fallback presentation slot; a ControlTemplate may replace it entirely. */
+	virtual float GetHeaderSlotHeightDip(float availableWidth);
+	void PerformPendingLayout() override;
 	void OnControlTemplatePresentationChanged() override;
 
 private:

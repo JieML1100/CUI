@@ -1,218 +1,348 @@
 #pragma once
+#include "Binding.h"
+#include "ControlWeakReference.h"
 #include "Core/EventConnection.h"
-#include <Windows.h>
+#include "Core/Geometry.h"
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
-enum class MouseButtons {
-	None = 0x00000000,
-	Left = 0x00100000,
-	Right = 0x00200000,
-	Middle = 0x00400000,
-	XButton1 = 0x00800000,
-	XButton2 = 0x01000000
+class Control;
+class UIElement;
+enum class UIClass : int;
+template<typename Func>
+class Event;
+template<typename T>
+class ObservableCollection;
+
+namespace cui::framework
+{
+	struct EventAccess;
+	struct RoutedEventAccess;
+}
+
+/** WPF-style identity of the button whose state changed. */
+enum class MouseButton : std::uint8_t
+{
+	None,
+	Left,
+	Right,
+	Middle,
+	XButton1,
+	XButton2,
 };
-enum class Keys {
-	None = 0x00000000,
-	LButton = 0x00000001,
-	RButton = 0x00000002,
-	Cancel = 0x00000003,
-	MButton = 0x00000004,
-	XButton1 = 0x00000005,
-	XButton2 = 0x00000006,
-	Back = 0x00000008,
-	Tab = 0x00000009,
-	LineFeed = 0x0000000A,
-	Clear = 0x0000000C,
-	Return = 0x0000000D,
-	Enter = 0x0000000D,
-	ShiftKey = 0x00000010,
-	ControlKey = 0x00000011,
-	Menu = 0x00000012,
-	Pause = 0x00000013,
-	CapsLock = 0x00000014,
-	Capital = 0x00000014,
-	KanaMode = 0x00000015,
-	HanguelMode = 0x00000015,
-	HangulMode = 0x00000015,
-	JunjaMode = 0x00000017,
-	FinalMode = 0x00000018,
-	KanjiMode = 0x00000019,
-	HanjaMode = 0x00000019,
-	Escape = 0x0000001B,
-	IMEConvert = 0x0000001C,
-	IMENonconvert = 0x0000001D,
-	IMEAceept = 0x0000001E,
-	IMEModeChange = 0x0000001F,
-	Space = 0x00000020,
-	PageUp = 0x00000021,
-	Prior = 0x00000021,
-	PageDown = 0x00000022,
-	Next = 0x00000022,
-	End = 0x00000023,
-	Home = 0x00000024,
-	Left = 0x00000025,
-	Up = 0x00000026,
-	Right = 0x00000027,
-	Down = 0x00000028,
-	Select = 0x00000029,
-	Print = 0x0000002A,
-	Execute = 0x0000002B,
-	PrintScreen = 0x0000002C,
-	Snapshot = 0x0000002C,
-	Insert = 0x0000002D,
-	Delete = 0x0000002E,
-	Help = 0x0000002F,
-	D0 = 0x00000030,
-	D1 = 0x00000031,
-	D2 = 0x00000032,
-	D3 = 0x00000033,
-	D4 = 0x00000034,
-	D5 = 0x00000035,
-	D6 = 0x00000036,
-	D7 = 0x00000037,
-	D8 = 0x00000038,
-	D9 = 0x00000039,
-	A = 0x00000041,
-	B = 0x00000042,
-	C = 0x00000043,
-	D = 0x00000044,
-	E = 0x00000045,
-	F = 0x00000046,
-	G = 0x00000047,
-	H = 0x00000048,
-	I = 0x00000049,
-	J = 0x0000004A,
-	K = 0x0000004B,
-	L = 0x0000004C,
-	M = 0x0000004D,
-	N = 0x0000004E,
-	O = 0x0000004F,
-	P = 0x00000050,
-	Q = 0x00000051,
-	R = 0x00000052,
-	S = 0x00000053,
-	T = 0x00000054,
-	U = 0x00000055,
-	V = 0x00000056,
-	W = 0x00000057,
-	X = 0x00000058,
-	Y = 0x00000059,
-	Z = 0x0000005A,
-	LWin = 0x0000005B,
-	RWin = 0x0000005C,
-	Apps = 0x0000005D,
-	NumPad0 = 0x00000060,
-	NumPad1 = 0x00000061,
-	NumPad2 = 0x00000062,
-	NumPad3 = 0x00000063,
-	NumPad4 = 0x00000064,
-	NumPad5 = 0x00000065,
-	NumPad6 = 0x00000066,
-	NumPad7 = 0x00000067,
-	NumPad8 = 0x00000068,
-	NumPad9 = 0x00000069,
-	Multiply = 0x0000006A,
-	Add = 0x0000006B,
-	Separator = 0x0000006C,
-	Subtract = 0x0000006D,
-	Decimal = 0x0000006E,
-	Divide = 0x0000006F,
-	F1 = 0x00000070,
-	F2 = 0x00000071,
-	F3 = 0x00000072,
-	F4 = 0x00000073,
-	F5 = 0x00000074,
-	F6 = 0x00000075,
-	F7 = 0x00000076,
-	F8 = 0x00000077,
-	F9 = 0x00000078,
-	F10 = 0x00000079,
-	F11 = 0x0000007A,
-	F12 = 0x0000007B,
-	F13 = 0x0000007C,
-	F14 = 0x0000007D,
-	F15 = 0x0000007E,
-	F16 = 0x0000007F,
-	F17 = 0x00000080,
-	F18 = 0x00000081,
-	F19 = 0x00000082,
-	F20 = 0x00000083,
-	F21 = 0x00000084,
-	F22 = 0x00000085,
-	F23 = 0x00000086,
-	F24 = 0x00000087,
-	NumLock = 0x00000090,
-	Scroll = 0x00000091,
-	LShiftKey = 0x000000A0,
-	RShiftKey = 0x000000A1,
-	LControlKey = 0x000000A2,
-	RControlKey = 0x000000A3,
-	LMenu = 0x000000A4,
-	RMenu = 0x000000A5,
-	BrowserBack = 0x000000A6,
-	BrowserForward = 0x000000A7,
-	BrowserRefresh = 0x000000A8,
-	BrowserStop = 0x000000A9,
-	BrowserSearch = 0x000000AA,
-	BrowserFavorites = 0x000000AB,
-	BrowserHome = 0x000000AC,
-	VolumeMute = 0x000000AD,
-	VolumeDown = 0x000000AE,
-	VolumeUp = 0x000000AF,
-	MediaNextTrack = 0x000000B0,
-	MediaPreviousTrack = 0x000000B1,
-	MediaStop = 0x000000B2,
-	MediaPlayPause = 0x000000B3,
-	LaunchMail = 0x000000B4,
-	SelectMedia = 0x000000B5,
-	LaunchApplication1 = 0x000000B6,
-	LaunchApplication2 = 0x000000B7,
-	OemSemicolon = 0x000000BA,
-	Oemplus = 0x000000BB,
-	Oemcomma = 0x000000BC,
-	OemMinus = 0x000000BD,
-	OemPeriod = 0x000000BE,
-	OemQuestion = 0x000000BF,
-	Oemtilde = 0x000000C0,
-	OemOpenBrackets = 0x000000DB,
-	OemPipe = 0x000000DC,
-	OemCloseBrackets = 0x000000DD,
-	OemQuotes = 0x000000DE,
-	Oem8 = 0x000000DF,
-	OemBackslash = 0x000000E2,
-	ProcessKey = 0x000000E5,
-	Attn = 0x000000F6,
-	Crsel = 0x000000F7,
-	Exsel = 0x000000F8,
-	EraseEof = 0x000000F9,
-	Play = 0x000000FA,
-	Zoom = 0x000000FB,
-	NoName = 0x000000FC,
-	Pa1 = 0x000000FD,
-	OemClear = 0x000000FE,
-	KeyCode = 0x0000FFFF,
-	Shift = 0x00010000,
-	Control = 0x00020000,
-	Alt = 0x00040000,
-	Modifiers = ((int)0xFFFF0000),
-	IMEAccept = 0x0000001E,
-	Oem1 = 0x000000BA,
-	Oem102 = 0x000000E2,
-	Oem2 = 0x000000BF,
-	Oem3 = 0x000000C0,
-	Oem4 = 0x000000DB,
-	Oem5 = 0x000000DC,
-	Oem6 = 0x000000DD,
-	Oem7 = 0x000000DE,
-	Packet = 0x000000E7,
-	Sleep = 0x0000005F
+
+enum class MouseButtonState : std::uint8_t
+{
+	Released,
+	Pressed,
 };
+
+/** Independent WPF button-state snapshot. */
+struct MouseButtonStates final
+{
+	MouseButtonState LeftButton = MouseButtonState::Released;
+	MouseButtonState RightButton = MouseButtonState::Released;
+	MouseButtonState MiddleButton = MouseButtonState::Released;
+	MouseButtonState XButton1 = MouseButtonState::Released;
+	MouseButtonState XButton2 = MouseButtonState::Released;
+
+	[[nodiscard]] MouseButtonState Get(MouseButton button) const noexcept
+	{
+		switch (button)
+		{
+		case MouseButton::Left: return LeftButton;
+		case MouseButton::Right: return RightButton;
+		case MouseButton::Middle: return MiddleButton;
+		case MouseButton::XButton1: return XButton1;
+		case MouseButton::XButton2: return XButton2;
+		default: return MouseButtonState::Released;
+		}
+	}
+
+	[[nodiscard]] bool IsPressed(MouseButton button) const noexcept
+	{
+		return Get(button) == MouseButtonState::Pressed;
+	}
+
+	void Set(MouseButton button, MouseButtonState state) noexcept
+	{
+		switch (button)
+		{
+		case MouseButton::Left: LeftButton = state; break;
+		case MouseButton::Right: RightButton = state; break;
+		case MouseButton::Middle: MiddleButton = state; break;
+		case MouseButton::XButton1: XButton1 = state; break;
+		case MouseButton::XButton2: XButton2 = state; break;
+		default: break;
+		}
+	}
+
+	[[nodiscard]] static MouseButtonStates WithPressed(
+		MouseButton button) noexcept
+	{
+		MouseButtonStates result;
+		result.Set(button, MouseButtonState::Pressed);
+		return result;
+	}
+};
+
+/**
+ * WPF keyboard identity. Values intentionally follow the semantic Key enum,
+ * not Win32 virtual-key numbers; the platform host performs explicit mapping.
+ */
+enum class Key : std::uint16_t
+{
+	None,
+	Cancel,
+	Back,
+	Tab,
+	LineFeed,
+	Clear,
+	Return,
+	Enter = Return,
+	Pause,
+	Capital,
+	CapsLock = Capital,
+	KanaMode,
+	HangulMode = KanaMode,
+	JunjaMode,
+	FinalMode,
+	HanjaMode,
+	KanjiMode = HanjaMode,
+	Escape,
+	ImeConvert,
+	ImeNonConvert,
+	ImeAccept,
+	ImeModeChange,
+	Space,
+	Prior,
+	PageUp = Prior,
+	Next,
+	PageDown = Next,
+	End,
+	Home,
+	Left,
+	Up,
+	Right,
+	Down,
+	Select,
+	Print,
+	Execute,
+	Snapshot,
+	PrintScreen = Snapshot,
+	Insert,
+	Delete,
+	Help,
+	D0,
+	D1,
+	D2,
+	D3,
+	D4,
+	D5,
+	D6,
+	D7,
+	D8,
+	D9,
+	A,
+	B,
+	C,
+	D,
+	E,
+	F,
+	G,
+	H,
+	I,
+	J,
+	K,
+	L,
+	M,
+	N,
+	O,
+	P,
+	Q,
+	R,
+	S,
+	T,
+	U,
+	V,
+	W,
+	X,
+	Y,
+	Z,
+	LWin,
+	RWin,
+	Apps,
+	Sleep,
+	NumPad0,
+	NumPad1,
+	NumPad2,
+	NumPad3,
+	NumPad4,
+	NumPad5,
+	NumPad6,
+	NumPad7,
+	NumPad8,
+	NumPad9,
+	Multiply,
+	Add,
+	Separator,
+	Subtract,
+	Decimal,
+	Divide,
+	F1,
+	F2,
+	F3,
+	F4,
+	F5,
+	F6,
+	F7,
+	F8,
+	F9,
+	F10,
+	F11,
+	F12,
+	F13,
+	F14,
+	F15,
+	F16,
+	F17,
+	F18,
+	F19,
+	F20,
+	F21,
+	F22,
+	F23,
+	F24,
+	NumLock,
+	Scroll,
+	LeftShift,
+	RightShift,
+	LeftCtrl,
+	RightCtrl,
+	LeftAlt,
+	RightAlt,
+	BrowserBack,
+	BrowserForward,
+	BrowserRefresh,
+	BrowserStop,
+	BrowserSearch,
+	BrowserFavorites,
+	BrowserHome,
+	VolumeMute,
+	VolumeDown,
+	VolumeUp,
+	MediaNextTrack,
+	MediaPreviousTrack,
+	MediaStop,
+	MediaPlayPause,
+	LaunchMail,
+	SelectMedia,
+	LaunchApplication1,
+	LaunchApplication2,
+	Oem1,
+	OemSemicolon = Oem1,
+	OemPlus,
+	OemComma,
+	OemMinus,
+	OemPeriod,
+	Oem2,
+	OemQuestion = Oem2,
+	Oem3,
+	OemTilde = Oem3,
+	AbntC1,
+	AbntC2,
+	Oem4,
+	OemOpenBrackets = Oem4,
+	Oem5,
+	OemPipe = Oem5,
+	Oem6,
+	OemCloseBrackets = Oem6,
+	Oem7,
+	OemQuotes = Oem7,
+	Oem8,
+	Oem102,
+	OemBackslash = Oem102,
+	ImeProcessed,
+	/** WPF sentinel; inspect KeyEventArgs::SystemKey for the physical key. */
+	System,
+	OemAttn,
+	DbeAlphanumeric = OemAttn,
+	OemFinish,
+	DbeKatakana = OemFinish,
+	OemCopy,
+	DbeHiragana = OemCopy,
+	OemAuto,
+	DbeSbcsChar = OemAuto,
+	OemEnlw,
+	DbeDbcsChar = OemEnlw,
+	OemBackTab,
+	DbeRoman = OemBackTab,
+	Attn,
+	DbeNoRoman = Attn,
+	CrSel,
+	DbeEnterWordRegisterMode = CrSel,
+	ExSel,
+	DbeEnterImeConfigureMode = ExSel,
+	EraseEof,
+	DbeFlushString = EraseEof,
+	Play,
+	DbeCodeInput = Play,
+	Zoom,
+	DbeNoCodeInput = Zoom,
+	NoName,
+	DbeDetermineString = NoName,
+	Pa1,
+	DbeEnterDialogConversionMode = Pa1,
+	OemClear,
+	DeadCharProcessed,
+};
+
+/** WPF-style keyboard modifier snapshot, never combined with Key. */
+enum class ModifierKeys : std::uint8_t
+{
+	None = 0,
+	Alt = 1,
+	Control = 2,
+	Shift = 4,
+	Windows = 8,
+};
+
+inline constexpr ModifierKeys operator|(
+	ModifierKeys left, ModifierKeys right) noexcept
+{
+	return static_cast<ModifierKeys>(
+		static_cast<std::uint8_t>(left)
+		| static_cast<std::uint8_t>(right));
+}
+
+inline constexpr ModifierKeys operator&(
+	ModifierKeys left, ModifierKeys right) noexcept
+{
+	return static_cast<ModifierKeys>(
+		static_cast<std::uint8_t>(left)
+		& static_cast<std::uint8_t>(right));
+}
+
+inline constexpr ModifierKeys& operator|=(
+	ModifierKeys& left, ModifierKeys right) noexcept
+{
+	left = left | right;
+	return left;
+}
+
+inline constexpr bool HasModifier(
+	ModifierKeys value, ModifierKeys modifier) noexcept
+{
+	return (value & modifier) == modifier;
+}
 template<typename Func>
 class Event {
 public:
@@ -231,6 +361,9 @@ private:
 	};
 
 	std::shared_ptr<State> _state;
+	friend struct cui::framework::EventAccess;
+	template<typename>
+	friend class ObservableCollection;
 
 	size_t Add(std_function_type handler) {
 		if (!handler) return 0;
@@ -248,6 +381,19 @@ private:
 			state.Entries.end());
 	}
 
+	template <typename... Args>
+	void InvokeCore(Args&&... args) {
+		if (!_state || _state->Entries.empty()) return;
+		const auto snapshot = _state->Entries;
+		for (const auto& entry : snapshot) {
+			if (entry.Handler) entry.Handler(std::forward<Args>(args)...);
+		}
+	}
+
+	void ClearCore() noexcept {
+		if (_state) _state->Entries.clear();
+	}
+
 public:
 	Event() = default;
 	~Event() = default;
@@ -256,15 +402,6 @@ public:
 	Event& operator=(const Event&) = delete;
 	Event(Event&&) = default;
 	Event& operator=(Event&&) = default;
-
-	template <typename... Args>
-	void Invoke(Args&&... args) {
-		if (!_state || _state->Entries.empty()) return;
-		const auto snapshot = _state->Entries;
-		for (const auto& entry : snapshot) {
-			if (entry.Handler) entry.Handler(std::forward<Args>(args)...);
-		}
-	}
 
 	template<typename F>
 	EventConnection Subscribe(F&& fn) {
@@ -344,11 +481,6 @@ public:
 		}
 	}
 
-	template <typename... Args>
-	void operator()(Args&&... args) {
-		Invoke(std::forward<Args>(args)...);
-	}
-
 	size_t Count() const {
 		return _state ? _state->Entries.size() : 0;
 	}
@@ -357,72 +489,662 @@ public:
 		return !_state || _state->Entries.empty();
 	}
 
-	void Clear() {
-		if (_state) _state->Entries.clear();
-	}
 };
+
 class EventArgs {
 public:
-	EventArgs() {}
+	EventArgs() = default;
+	virtual ~EventArgs() = default;
 };
-class MouseEventArgs : public EventArgs {
+
+/** Cancelable lifecycle payload shared by Closing-style events. */
+class CancelEventArgs : public EventArgs {
 public:
-	MouseButtons	Buttons;
-	int		Clicks;
-	int		Delta;
-	int		X;
-	int		Y;
-	MouseEventArgs() {}
-	MouseEventArgs(MouseButtons button, int clicks, int x, int y, int delta) {
-		this->Buttons = button;
-		this->Clicks = clicks;
-		this->Delta = delta;
-		this->X = x;
-		this->Y = y;
-	}
+	bool Cancel = false;
 };
-class KeyEventArgs : public EventArgs {
-public:
-	Keys	KeyData;
-	bool	EventHandled;
-	bool	SupressKeyPress;
-	KeyEventArgs() {}
-	KeyEventArgs(Keys keyData) {
-		this->KeyData = keyData;
-		this->EventHandled = false;
-	}
-	bool Alt() {
-		return (((int)this->KeyData & (int)Keys::Alt) != 0);
-	}
-	bool Control() {
-		return (((int)this->KeyData & (int)Keys::Control) != 0);
-	}
-	bool Shift() {
-		return (((int)this->KeyData & (int)Keys::Shift) != 0);
-	}
-	Keys Modifiers() {
-		return (Keys)((int)this->KeyData & (int)Keys::Modifiers);
-	}
-	Keys KeyCode() {
-		return (Keys)((int)this->KeyData & (int)Keys::KeyCode);
-	}
-	int KeyValue() {
-		return (int)this->KeyData;
-	}
-	KeyEventArgs ProcessKeyEventArgs(MSG m) {
-		return KeyEventArgs((Keys)(m.wParam | 0));
-	}
+
+/** WPF-compatible route direction shared by built-in and XAML-defined events. */
+enum class RoutedEventRoutingStrategy : unsigned char
+{
+	Direct,
+	Bubble,
+	Tunnel,
 };
-static MouseButtons FromParamToMouseButtons(UINT message) {
-	switch (message) {
-	case WM_MOUSEWHEEL: return MouseButtons::Middle;
-	case WM_LBUTTONDOWN:return MouseButtons::Left;
-	case WM_RBUTTONDOWN:return MouseButtons::Right;
-	case WM_MBUTTONDOWN:return MouseButtons::Middle;
-	case WM_LBUTTONUP:return MouseButtons::Left;
-	case WM_RBUTTONUP:return MouseButtons::Right;
-	case WM_MBUTTONUP:return MouseButtons::Middle;
-	case WM_LBUTTONDBLCLK:return MouseButtons::Left;
-	}
-	return MouseButtons::None;
+
+/** WPF-compatible drag/drop result flags, independent from OLE constants. */
+enum class DragDropEffects : std::uint32_t
+{
+	None = 0,
+	Copy = 1,
+	Move = 2,
+	Link = 4,
+	Scroll = 0x80000000u,
+};
+
+inline constexpr DragDropEffects operator|(
+	DragDropEffects left, DragDropEffects right) noexcept
+{
+	return static_cast<DragDropEffects>(
+		static_cast<std::uint32_t>(left)
+		| static_cast<std::uint32_t>(right));
 }
+
+inline constexpr DragDropEffects operator&(
+	DragDropEffects left, DragDropEffects right) noexcept
+{
+	return static_cast<DragDropEffects>(
+		static_cast<std::uint32_t>(left)
+		& static_cast<std::uint32_t>(right));
+}
+
+/** Modifier/button snapshot carried by WPF DragEventArgs. */
+enum class DragDropKeyStates : std::uint32_t
+{
+	None = 0,
+	LeftMouseButton = 1,
+	RightMouseButton = 2,
+	ShiftKey = 4,
+	ControlKey = 8,
+	MiddleMouseButton = 16,
+	AltKey = 32,
+};
+
+/** Platform-neutral data projection for one external drag transaction. */
+class DragDataObject final
+{
+public:
+	DragDataObject() = default;
+	DragDataObject(
+		std::vector<std::wstring> files,
+		std::optional<std::wstring> text = {})
+		: _files(std::move(files)), _text(std::move(text)) {}
+
+	[[nodiscard]] bool HasFiles() const noexcept { return !_files.empty(); }
+	[[nodiscard]] bool HasText() const noexcept
+	{
+		return _text.has_value();
+	}
+	[[nodiscard]] const std::vector<std::wstring>& Files() const noexcept
+	{
+		return _files;
+	}
+	[[nodiscard]] const std::optional<std::wstring>& Text() const noexcept
+	{
+		return _text;
+	}
+
+private:
+	std::vector<std::wstring> _files;
+	std::optional<std::wstring> _text;
+};
+
+/** Stable framework identity for every built-in routed input event. */
+enum class RoutedEventId : unsigned char
+{
+	None,
+	PreviewMouseWheel,
+	MouseWheel,
+	PreviewMouseMove,
+	MouseMove,
+	PreviewMouseDown,
+	MouseDown,
+	PreviewMouseUp,
+	MouseUp,
+	PreviewMouseDoubleClick,
+	MouseDoubleClick,
+	Click,
+	SizeChanged,
+	TextChanged,
+	PasswordChanged,
+	ScrollChanged,
+	SelectionChanged,
+	SelectedDatesChanged,
+	SelectedItemChanged,
+	ValueChanged,
+	Selected,
+	Unselected,
+	Checked,
+	Unchecked,
+	Expanded,
+	Collapsed,
+	SubmenuOpened,
+	SubmenuClosed,
+	MouseEnter,
+	MouseLeave,
+	GotMouseCapture,
+	LostMouseCapture,
+	PreviewKeyDown,
+	KeyDown,
+	PreviewKeyUp,
+	KeyUp,
+	PreviewTextInputStart,
+	TextInputStart,
+	PreviewTextInputUpdate,
+	TextInputUpdate,
+	PreviewTextInput,
+	TextInput,
+	PreviewGotKeyboardFocus,
+	GotKeyboardFocus,
+	PreviewLostKeyboardFocus,
+	LostKeyboardFocus,
+	GotFocus,
+	LostFocus,
+	PreviewCanExecute,
+	CanExecute,
+	PreviewExecuted,
+	Executed,
+	PreviewDragEnter,
+	DragEnter,
+	PreviewDragOver,
+	DragOver,
+	PreviewDragLeave,
+	DragLeave,
+	PreviewDrop,
+	Drop,
+	Count,
+};
+
+enum class RoutedInputDeviceKind : unsigned char
+{
+	None,
+	Mouse,
+	MouseCapture,
+	Keyboard,
+	Text,
+	KeyboardFocus,
+	Focus,
+	Command,
+	DragDrop,
+};
+
+enum class RoutedEventStage : unsigned char
+{
+	None,
+	Preview,
+	Bubble,
+	Direct,
+};
+
+struct RoutedEventMetadata final
+{
+	RoutedEventId Id = RoutedEventId::None;
+	const wchar_t* Name = L"";
+	RoutedEventRoutingStrategy RoutingStrategy =
+		RoutedEventRoutingStrategy::Direct;
+	RoutedEventId PairedEvent = RoutedEventId::None;
+	RoutedInputDeviceKind Device = RoutedInputDeviceKind::None;
+	RoutedEventStage Stage = RoutedEventStage::None;
+};
+
+const RoutedEventMetadata& GetRoutedEventMetadata(
+	RoutedEventId eventId) noexcept;
+
+/** Shared mutable state carried through one immutable route snapshot. */
+class RoutedEventArgs : public EventArgs
+{
+public:
+	RoutedEventArgs() = default;
+	RoutedEventArgs(const RoutedEventArgs&) = delete;
+	RoutedEventArgs& operator=(const RoutedEventArgs&) = delete;
+	RoutedEventArgs(RoutedEventArgs&&) noexcept = default;
+	RoutedEventArgs& operator=(RoutedEventArgs&&) noexcept = default;
+
+	RoutedEventId EventId = RoutedEventId::None;
+	RoutedEventRoutingStrategy RoutingStrategy =
+		RoutedEventRoutingStrategy::Direct;
+	RoutedEventStage Stage = RoutedEventStage::None;
+	Control* OriginalSource = nullptr;
+	Control* Source = nullptr;
+	Control* CurrentTarget = nullptr;
+	bool Handled = false;
+	std::uint64_t Sequence = 0;
+};
+
+/** WPF FrameworkElement.SizeChanged payload for its direct routed event. */
+class SizeChangedEventArgs : public RoutedEventArgs
+{
+public:
+	cui::core::Size PreviousSize;
+	cui::core::Size NewSize;
+	bool WidthChanged = false;
+	bool HeightChanged = false;
+
+	SizeChangedEventArgs() = default;
+	SizeChangedEventArgs(
+		cui::core::Size previousSize,
+		cui::core::Size newSize) noexcept
+		: PreviousSize(previousSize),
+		NewSize(newSize),
+		WidthChanged(previousSize.width != newSize.width),
+		HeightChanged(previousSize.height != newSize.height) {}
+};
+
+/** WPF-style old/new payload used by range and selected-item events. */
+template<typename TValue>
+class RoutedPropertyChangedEventArgs : public RoutedEventArgs
+{
+public:
+	TValue OldValue{};
+	TValue NewValue{};
+
+	RoutedPropertyChangedEventArgs() = default;
+	RoutedPropertyChangedEventArgs(TValue oldValue, TValue newValue)
+		: OldValue(std::move(oldValue)), NewValue(std::move(newValue)) {}
+};
+
+/** Item deltas for Selector and Calendar selection routes. */
+class SelectionChangedEventArgs : public RoutedEventArgs
+{
+public:
+	int OldIndex = -1;
+	int NewIndex = -1;
+	std::vector<BindingValue> RemovedItems;
+	std::vector<BindingValue> AddedItems;
+
+	SelectionChangedEventArgs() = default;
+	SelectionChangedEventArgs(
+		int oldIndex,
+		int newIndex,
+		std::vector<BindingValue> removedItems = {},
+		std::vector<BindingValue> addedItems = {})
+		: OldIndex(oldIndex),
+		NewIndex(newIndex),
+		RemovedItems(std::move(removedItems)),
+		AddedItems(std::move(addedItems)) {}
+};
+
+/** WPF-style payload for TextBoxBase.TextChanged. */
+class TextChangedEventArgs : public RoutedEventArgs
+{
+public:
+	std::wstring OldText;
+	std::wstring NewText;
+
+	TextChangedEventArgs() = default;
+	TextChangedEventArgs(std::wstring oldText, std::wstring newText)
+		: OldText(std::move(oldText)), NewText(std::move(newText)) {}
+};
+
+/** WPF ScrollViewer.ScrollChanged snapshot and per-raise deltas. */
+class ScrollChangedEventArgs : public RoutedEventArgs
+{
+public:
+	double HorizontalOffset = 0.0;
+	double HorizontalChange = 0.0;
+	double VerticalOffset = 0.0;
+	double VerticalChange = 0.0;
+	double ExtentWidth = 0.0;
+	double ExtentWidthChange = 0.0;
+	double ExtentHeight = 0.0;
+	double ExtentHeightChange = 0.0;
+	double ViewportWidth = 0.0;
+	double ViewportWidthChange = 0.0;
+	double ViewportHeight = 0.0;
+	double ViewportHeightChange = 0.0;
+};
+
+/** Old/new element pair shared by one keyboard-focus routed transition. */
+class KeyboardFocusChangedEventArgs : public RoutedEventArgs
+{
+public:
+	Control* OldFocus = nullptr;
+	Control* NewFocus = nullptr;
+
+	KeyboardFocusChangedEventArgs() = default;
+	KeyboardFocusChangedEventArgs(Control* oldFocus, Control* newFocus)
+		: OldFocus(oldFocus), NewFocus(newFocus) {}
+};
+
+class MouseEventArgs : public RoutedEventArgs {
+public:
+	MouseButton ChangedButton = MouseButton::None;
+	MouseButtonState ButtonState = MouseButtonState::Released;
+	MouseButtonStates ButtonStates;
+	int ClickCount = 0;
+	int WheelDelta = 0;
+	int X = 0;
+	int Y = 0;
+	float RootX = 0.0f;
+	float RootY = 0.0f;
+	bool HasRootPosition = false;
+
+	MouseEventArgs() = default;
+	MouseEventArgs(
+		MouseButton changedButton,
+		MouseButtonState buttonState,
+		int clickCount,
+		int x,
+		int y,
+		int wheelDelta)
+		: ChangedButton(changedButton), ButtonState(buttonState),
+		ButtonStates(buttonState == MouseButtonState::Pressed
+			? MouseButtonStates::WithPressed(changedButton)
+			: MouseButtonStates{}),
+		ClickCount(clickCount), WheelDelta(wheelDelta), X(x), Y(y) {}
+	MouseEventArgs(
+		MouseButton changedButton,
+		MouseButtonState buttonState,
+		MouseButtonStates buttonStates,
+		int clickCount,
+		int x,
+		int y,
+		int wheelDelta)
+		: ChangedButton(changedButton), ButtonState(buttonState),
+		ButtonStates(buttonStates), ClickCount(clickCount),
+		WheelDelta(wheelDelta), X(x), Y(y) {}
+
+	[[nodiscard]] bool IsButtonPressed(MouseButton button) const noexcept
+	{
+		return ButtonStates.IsPressed(button);
+	}
+};
+
+/** One mutable WPF-style drag payload shared by preview and bubble handlers. */
+class DragEventArgs : public RoutedEventArgs
+{
+public:
+	std::shared_ptr<const DragDataObject> Data;
+	DragDropKeyStates KeyStates = DragDropKeyStates::None;
+	DragDropEffects AllowedEffects = DragDropEffects::None;
+	DragDropEffects Effects = DragDropEffects::None;
+	int X = 0;
+	int Y = 0;
+	float RootX = 0.0f;
+	float RootY = 0.0f;
+	bool HasRootPosition = false;
+
+	DragEventArgs() = default;
+	DragEventArgs(
+		std::shared_ptr<const DragDataObject> data,
+		DragDropKeyStates keyStates,
+		DragDropEffects allowedEffects,
+		float rootX,
+		float rootY)
+		: Data(std::move(data)),
+		KeyStates(keyStates),
+		AllowedEffects(allowedEffects),
+		RootX(rootX), RootY(rootY), HasRootPosition(true) {}
+};
+
+class KeyEventArgs : public RoutedEventArgs {
+public:
+	::Key Key = ::Key::None;
+	::Key SystemKey = ::Key::None;
+	ModifierKeys Modifiers = ModifierKeys::None;
+	bool IsRepeat = false;
+
+	KeyEventArgs() = default;
+	explicit KeyEventArgs(
+		::Key key,
+		ModifierKeys modifiers = ModifierKeys::None,
+		::Key systemKey = ::Key::None)
+		: Key(systemKey == ::Key::None ? key : ::Key::System),
+		SystemKey(systemKey), Modifiers(modifiers) {}
+
+	[[nodiscard]] bool HasModifier(ModifierKeys modifier) const noexcept
+	{
+		return ::HasModifier(Modifiers, modifier);
+	}
+};
+
+/** Lifecycle state shared by one WPF-style text-composition transaction. */
+enum class TextCompositionStage : unsigned char
+{
+	None,
+	Started,
+	Updated,
+	Completed,
+	Canceled,
+};
+
+/** Native source normalized by TextCompositionManager. */
+enum class TextCompositionInputKind : unsigned char
+{
+	Keyboard,
+	Unicode,
+	Ime,
+	System,
+	Programmatic,
+};
+
+/** Reason why a composition ended without committed text. */
+enum class TextCompositionCancelReason : unsigned char
+{
+	None,
+	Explicit,
+	FocusChanged,
+	WindowDeactivated,
+	SourceDetached,
+	NativeCanceled,
+	InvalidUnicode,
+};
+
+/**
+ * WPF-style text-composition payload. Text is populated for committed input;
+ * CompositionText carries the current pre-edit string during start/update.
+ */
+class TextCompositionEventArgs : public RoutedEventArgs {
+public:
+	std::wstring Text;
+	std::wstring CompositionText;
+	std::wstring SystemText;
+	std::wstring ControlText;
+	std::vector<unsigned char> CompositionAttributes;
+	std::vector<std::uint32_t> CompositionClauses;
+	TextCompositionStage CompositionStage = TextCompositionStage::None;
+	TextCompositionInputKind InputKind = TextCompositionInputKind::Keyboard;
+	TextCompositionCancelReason CancelReason =
+		TextCompositionCancelReason::None;
+	/** Platform-neutral modifier snapshot captured with this text report. */
+	ModifierKeys Modifiers = ModifierKeys::None;
+	std::uint64_t CompositionId = 0;
+	int CaretIndex = -1;
+	bool TextApplied = false;
+
+	[[nodiscard]] bool HasModifier(ModifierKeys modifier) const noexcept
+	{
+		return ::HasModifier(Modifiers, modifier);
+	}
+
+	TextCompositionEventArgs() = default;
+	explicit TextCompositionEventArgs(std::wstring text)
+		: Text(std::move(text)),
+		CompositionStage(TextCompositionStage::Completed) {}
+	TextCompositionEventArgs(
+		TextCompositionStage stage,
+		std::wstring text,
+		std::wstring compositionText,
+		TextCompositionInputKind inputKind,
+		std::uint64_t compositionId,
+		int caretIndex = -1,
+		TextCompositionCancelReason cancelReason =
+			TextCompositionCancelReason::None)
+		: Text(std::move(text)),
+		CompositionText(std::move(compositionText)),
+		CompositionStage(stage),
+		InputKind(inputKind),
+		CancelReason(cancelReason),
+		CompositionId(compositionId),
+		CaretIndex(caretIndex) {}
+};
+
+/** Counts instance handlers invoked/skipped while preserving Handled semantics. */
+struct RoutedHandlerInvocationCount final
+{
+	std::size_t Invoked = 0;
+	std::size_t Skipped = 0;
+};
+
+/** Implemented by InputManager; direct calls outside native input still route. */
+bool RaiseRoutedEvent(
+	UIElement& owner,
+	RoutedEventId eventId,
+	RoutedEventArgs& args);
+
+/**
+ * CLR-event-shaped facade over a WPF-style routed event.
+ *
+ * Existing `OnX.Subscribe(...)` syntax remains the authoring wrapper, while
+ * invocation always enters the central route. Handlers receive one shared
+ * args object by reference; handledEventsToo is per registration.
+ */
+template<typename TArgs>
+class RoutedEvent final
+{
+	static_assert(std::is_base_of_v<RoutedEventArgs, TArgs>);
+
+public:
+	using function_type = void(Control*, TArgs&);
+	using std_function_type = std::function<function_type>;
+
+private:
+	struct Entry final
+	{
+		std::size_t Token = 0;
+		bool HandledEventsToo = false;
+		std_function_type Handler;
+	};
+
+	struct State final
+	{
+		std::size_t NextToken = 1;
+		std::vector<Entry> Entries;
+	};
+
+	UIElement* _owner = nullptr;
+	RoutedEventId _eventId = RoutedEventId::None;
+	std::shared_ptr<State> _state;
+
+	template<typename>
+	static constexpr bool AlwaysFalse = false;
+
+	template<typename F>
+	static std_function_type AdaptHandler(F&& fn)
+	{
+		using Callable = std::decay_t<F>;
+		if constexpr (std::is_invocable_r_v<void, Callable&, Control*, TArgs&>)
+		{
+			return std_function_type(std::forward<F>(fn));
+		}
+		else if constexpr (std::is_same_v<TArgs, RoutedEventArgs>
+			&& std::is_invocable_r_v<void, Callable&, Control*>)
+		{
+			return [callback = Callable(std::forward<F>(fn))](
+				Control* sender, TArgs&) mutable { callback(sender); };
+		}
+		else
+		{
+			static_assert(AlwaysFalse<Callable>,
+				"RoutedEvent handler has an incompatible signature");
+		}
+	}
+
+	static void RemoveToken(State& state, std::size_t token)
+	{
+		if (token == 0) return;
+		state.Entries.erase(std::remove_if(
+			state.Entries.begin(), state.Entries.end(),
+			[token](const Entry& entry) { return entry.Token == token; }),
+			state.Entries.end());
+	}
+
+public:
+	RoutedEvent() = default;
+	RoutedEvent(UIElement* owner, RoutedEventId eventId) noexcept
+		: _owner(owner), _eventId(eventId) {}
+
+	RoutedEvent(const RoutedEvent&) = delete;
+	RoutedEvent& operator=(const RoutedEvent&) = delete;
+	RoutedEvent(RoutedEvent&&) = delete;
+	RoutedEvent& operator=(RoutedEvent&&) = delete;
+
+	RoutedEventId Id() const noexcept { return _eventId; }
+
+	template<typename F>
+	EventConnection Subscribe(F&& fn, bool handledEventsToo = false)
+	{
+		auto handler = AdaptHandler(std::forward<F>(fn));
+		if (!handler) return {};
+		if (!_state) _state = std::make_shared<State>();
+		const auto token = _state->NextToken++;
+		_state->Entries.push_back(Entry{
+			token, handledEventsToo, std::move(handler) });
+		std::weak_ptr<State> weakState = _state;
+		return EventConnection([weakState, token]()
+		{
+			if (auto state = weakState.lock()) RemoveToken(*state, token);
+		});
+	}
+
+	template<typename F>
+	EventConnection SubscribeHandledEventsToo(F&& fn)
+	{
+		return Subscribe(std::forward<F>(fn), true);
+	}
+
+	template<typename F>
+	void operator+=(F&& fn)
+	{
+		auto handler = AdaptHandler(std::forward<F>(fn));
+		if (!handler) return;
+		if (!_state) _state = std::make_shared<State>();
+		const auto token = _state->NextToken++;
+		_state->Entries.push_back(Entry{ token, false, std::move(handler) });
+	}
+
+	void operator()(Control*, TArgs& args)
+	{
+		if (_owner) (void)RaiseRoutedEvent(*_owner, _eventId, args);
+	}
+
+	void operator()(Control*, TArgs&& args)
+	{
+		if (_owner) (void)RaiseRoutedEvent(*_owner, _eventId, args);
+	}
+
+	void Invoke(Control* sender, TArgs& args) { (*this)(sender, args); }
+	void Invoke(Control* sender, TArgs&& args) { (*this)(sender, std::move(args)); }
+
+	template<typename U = TArgs>
+	std::enable_if_t<std::is_default_constructible_v<U>, void>
+	operator()(Control* sender)
+	{
+		U args;
+		(*this)(sender, args);
+	}
+
+
+private:
+    friend class UIElement;
+    friend struct cui::framework::RoutedEventAccess;
+	RoutedHandlerInvocationCount InvokeHandlers(
+		Control* sender, TArgs& args)
+	{
+		RoutedHandlerInvocationCount result;
+		if (!_state || _state->Entries.empty()) return result;
+		const ControlWeakReference senderLifetime(sender);
+		const auto snapshot = _state->Entries;
+		for (const auto& entry : snapshot)
+		{
+			if (sender && !senderLifetime) break;
+			if (args.Handled && !entry.HandledEventsToo)
+			{
+				++result.Skipped;
+				continue;
+			}
+			if (!entry.Handler) continue;
+			entry.Handler(sender, args);
+			++result.Invoked;
+		}
+		return result;
+	}
+
+public:
+	std::size_t Count() const noexcept
+	{
+		return _state ? _state->Entries.size() : 0;
+	}
+
+	bool Empty() const noexcept { return Count() == 0; }
+
+};

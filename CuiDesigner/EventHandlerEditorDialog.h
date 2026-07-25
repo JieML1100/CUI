@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DesignerModel/DesignDocumentEventIndex.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/TextBox.h"
@@ -12,7 +12,7 @@
 #include <vector>
 
 /** Document-wide, signature-aware event handler rename dialog. */
-class EventHandlerEditorDialog final : public Form
+class EventHandlerEditorDialog final : public Window
 {
 public:
 	bool Applied = false;

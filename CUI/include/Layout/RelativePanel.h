@@ -66,10 +66,8 @@ public:
         return nullptr;
     }
     
-    SIZE Measure(Control* container, SIZE availableSize) override;
-    void Arrange(Control* container, D2D1_RECT_F finalRect) override;
     cui::core::Size Measure(LayoutContext& context, const cui::core::Constraints& available) override;
-    void Arrange(LayoutContext& context, D2D1_RECT_F finalRect) override;
+    void Arrange(LayoutContext& context, cui::core::Rect finalRect) override;
 };
 
 /**
@@ -80,8 +78,7 @@ private:
     RelativeLayoutEngine* _relativeEngine;
     
 public:
-    RelativePanel();
-    RelativePanel(int x, int y, int width, int height);
+	RelativePanel();
     virtual ~RelativePanel();
     
     UIClass Type() override { return UIClass::UI_RelativePanel; }

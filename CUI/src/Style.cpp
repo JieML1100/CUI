@@ -1,16 +1,26 @@
 #include "Style.h"
+#include "EventInfrastructure.h"
+#include "StyleInfrastructure.h"
 #include <algorithm>
-#include <bit>
 #include <cwchar>
 #include <cwctype>
 
 namespace
 {
+	int EffectiveSlotIndex(DependencyPropertyValueSource source) noexcept
+	{
+		const int value = static_cast<int>(source);
+		return value >= static_cast<int>(DependencyPropertyValueSource::Inherited)
+			&& value <= static_cast<int>(DependencyPropertyValueSource::Animation)
+			? value - static_cast<int>(DependencyPropertyValueSource::Inherited)
+			: -1;
+	}
+
 	bool StyleNameEquals(
 		const std::wstring& left,
 		const std::wstring& right) noexcept
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	bool ContainsStyleName(
@@ -22,12 +32,6 @@ namespace
 			{
 				return StyleNameEquals(current, value);
 			});
-	}
-
-	uint32_t StyleStateCount(ControlStyleState value) noexcept
-	{
-		return static_cast<uint32_t>(
-			std::popcount(static_cast<uint32_t>(value)));
 	}
 
 	bool TryParseDataPath(
@@ -80,25 +84,10 @@ namespace
 	}
 }
 
-struct ControlStyleSheet::DataContextState
-{
-	struct ObservedPath
-	{
-		std::wstring Path;
-		std::vector<std::wstring> Segments;
-		std::vector<EventConnection> Connections;
-		std::vector<std::shared_ptr<IBindingSource>> Owners;
-	};
-
-	IBindingSource* Source = nullptr;
-	std::weak_ptr<const void> Lifetime;
-	std::vector<ObservedPath> Paths;
-};
-
 ControlStyleSheet::ControlStyleSheet() = default;
 ControlStyleSheet::~ControlStyleSheet() = default;
 
-bool ControlStyleSelector::MatchesStatic(Control& target) const
+bool ControlStyleSelector::MatchesTargetType(Control& target) const
 {
 	if (Type.has_value()
 		&& *Type != UIClass::UI_Base
@@ -110,21 +99,11 @@ bool ControlStyleSelector::MatchesStatic(Control& target) const
 			|| !StyleNameEquals(
 				DeclarativeTypeName, target.GetDeclarativeTypeName())))
 		return false;
-	if (!Id.empty() && !StyleNameEquals(Id, target.GetStyleId()))
-		return false;
-	for (const auto& styleClass : Classes)
-	{
-		if (!target.HasStyleClass(styleClass)) return false;
-	}
 	return true;
 }
 
-bool ControlStyleSelector::Matches(Control& target) const
+bool ControlStyleSelector::MatchesConditions(Control& target) const
 {
-	if (!MatchesStatic(target)) return false;
-	const auto state = target.GetEffectiveStyleState();
-	if (!HasControlStyleState(state, RequiredStates)) return false;
-	if ((state & ExcludedStates) != ControlStyleState::None) return false;
 	for (const auto& condition : PropertyConditions)
 	{
 		const auto* metadata = target.FindPropertyMetadata(
@@ -139,19 +118,10 @@ bool ControlStyleSelector::Matches(Control& target) const
 	return true;
 }
 
-uint32_t ControlStyleSelector::Specificity() const noexcept
+bool ControlStyleSelector::IsConditional() const noexcept
 {
-	const uint32_t id = Id.empty() ? 0u : 1u;
-	const uint32_t qualifiers = static_cast<uint32_t>(Classes.size())
-		+ StyleStateCount(RequiredStates)
-		+ StyleStateCount(ExcludedStates)
-		+ static_cast<uint32_t>(PropertyConditions.size())
-		+ static_cast<uint32_t>(DataConditions.size());
-	const uint32_t exactType = (!DeclarativeTypeName.empty()
-		|| (Type.has_value() && *Type != UIClass::UI_Base))
-		? 1u
-		: 0u;
-	return id * 1'000'000u + qualifiers * 1'000u + exactType;
+	return !PropertyConditions.empty()
+		|| !DataConditions.empty();
 }
 
 size_t ControlStyleSheet::AddRule(
@@ -181,7 +151,6 @@ size_t ControlStyleSheet::AddRule(
 	_rules.push_back(ControlStyleRule{
 		id, std::move(selector), std::move(normalized),
 		std::move(enterActions), std::move(exitActions) });
-	RebuildDataContextSubscriptions();
 	NotifyChanged();
 	return id;
 }
@@ -192,7 +161,6 @@ bool ControlStyleSheet::RemoveRule(size_t ruleId)
 		[ruleId](const auto& rule) { return rule.Id == ruleId; });
 	if (position == _rules.end()) return false;
 	_rules.erase(position);
-	RebuildDataContextSubscriptions();
 	NotifyChanged();
 	return true;
 }
@@ -201,7 +169,6 @@ void ControlStyleSheet::ClearRules()
 {
 	if (_rules.empty()) return;
 	_rules.clear();
-	RebuildDataContextSubscriptions();
 	NotifyChanged();
 }
 
@@ -246,7 +213,9 @@ bool ControlStyleSheet::TryGetResource(
 	return true;
 }
 
-ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
+ControlStyleResolution ControlStyleSheet::Resolve(
+	Control& target,
+	bool themeStyle) const
 {
 	ControlStyleResolution result;
 	struct Winner
@@ -256,35 +225,60 @@ ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
 	};
 	std::vector<Winner> winners;
 
+	const auto& requestedKey =
+		cui::framework::StyleAccess::ResourceKey(target);
+	auto matchesStyleIdentity = [&](const ControlStyleSelector& selector)
+	{
+		if (!selector.MatchesTargetType(target)) return false;
+		if (themeStyle || requestedKey.empty())
+		{
+			if (!selector.StyleResourceKey.empty()) return false;
+			return selector.Type.has_value()
+				|| !selector.DeclarativeTypeName.empty();
+		}
+		return StyleNameEquals(selector.StyleResourceKey, requestedKey);
+	};
+
+	for (const auto& rule : _rules)
+		if (matchesStyleIdentity(rule.Selector))
+		{
+			result.HasStyle = true;
+			break;
+		}
+	if (!result.HasStyle) return result;
+
 	for (size_t ruleOrder = 0; ruleOrder < _rules.size(); ++ruleOrder)
 	{
 		const auto& rule = _rules[ruleOrder];
-		const bool staticMatched = rule.Selector.MatchesStatic(target);
-		const bool selectorMatched = staticMatched
-			&& rule.Selector.Matches(target);
-		const bool matched = selectorMatched
+		const bool identityMatched = matchesStyleIdentity(rule.Selector);
+		const bool conditionMatched = identityMatched
+			&& rule.Selector.MatchesConditions(target);
+		const bool matched = conditionMatched
 			&& MatchesDataConditions(rule.Selector, target);
-		if (staticMatched
+		if (identityMatched
 			&& (!rule.EnterActions.empty() || !rule.ExitActions.empty()))
 			result.Triggers.push_back({ rule.Id, matched,
 				rule.EnterActions, rule.ExitActions });
 		if (!matched) continue;
-		const uint32_t specificity = rule.Selector.Specificity();
+		const bool conditional = rule.Selector.IsConditional();
 		for (const auto& setter : rule.Setters)
 		{
 			BindingValue value = setter.Value.Literal;
-			const bool foundResource = setter.Value.IsDynamicResource
-				? target.TryFindResource(setter.Value.ResourceKey, value)
-				: TryGetResource(setter.Value.ResourceKey, value);
+			const bool foundResource = !setter.Value.IsResource()
+				|| (setter.Value.IsDynamicResource
+					? target.TryFindResource(setter.Value.ResourceKey, value)
+					: TryGetResource(setter.Value.ResourceKey, value));
 			if (setter.Value.IsResource() && !foundResource)
 			{
-				if (setter.Value.IsDynamicResource) continue;
-				result.Issues.push_back(ControlStyleResolutionIssue{
-					ControlStyleResolutionIssueCode::MissingResource,
-					rule.Id,
-					setter.PropertyName,
-					setter.Value.ResourceKey });
-				continue;
+				if (!setter.Value.IsDynamicResource)
+				{
+					result.Issues.push_back(ControlStyleResolutionIssue{
+						ControlStyleResolutionIssueCode::MissingResource,
+						rule.Id,
+						setter.PropertyName,
+						setter.Value.ResourceKey });
+					continue;
+				}
 			}
 			const auto* metadata = target.FindPropertyMetadata(
 				setter.PropertyName);
@@ -307,9 +301,8 @@ ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
 				continue;
 			}
 			BindingValue converted;
-			BindingValue effective;
-			if (!metadata->TryConvert(value, converted)
-				|| !metadata->TryCoerce(target, converted, effective))
+			if ((!setter.Value.IsDynamicResource || foundResource)
+				&& !metadata->TryConvert(value, converted))
 			{
 				result.Issues.push_back(ControlStyleResolutionIssue{
 					ControlStyleResolutionIssueCode::InvalidValue,
@@ -325,14 +318,20 @@ ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
 					return StyleNameEquals(
 						current.Setter.PropertyName, setter.PropertyName);
 				});
-			ResolvedControlStyleSetter candidate{
-				setter.PropertyName, std::move(effective), rule.Id, specificity };
+			ResolvedControlStyleSetter candidate;
+			candidate.PropertyName = setter.PropertyName;
+			if (!setter.Value.IsDynamicResource || foundResource)
+				candidate.Value = std::move(converted);
+			candidate.ResourceKey = setter.Value.ResourceKey;
+			candidate.IsDynamicResource = setter.Value.IsDynamicResource;
+			candidate.RuleId = rule.Id;
+			candidate.IsConditional = conditional;
 			if (winner == winners.end())
 			{
 				winners.push_back(Winner{ std::move(candidate), ruleOrder });
 			}
-			else if (specificity > winner->Setter.Specificity
-				|| (specificity == winner->Setter.Specificity
+			else if (conditional > winner->Setter.IsConditional
+				|| (conditional == winner->Setter.IsConditional
 					&& ruleOrder >= winner->RuleOrder))
 			{
 				winner->Setter = std::move(candidate);
@@ -344,9 +343,7 @@ ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
 	std::sort(winners.begin(), winners.end(),
 		[](const auto& left, const auto& right)
 		{
-			return _wcsicmp(
-				left.Setter.PropertyName.c_str(),
-				right.Setter.PropertyName.c_str()) < 0;
+			return left.Setter.PropertyName < right.Setter.PropertyName;
 		});
 	result.Setters.reserve(winners.size());
 	for (auto& winner : winners)
@@ -382,39 +379,12 @@ EventConnection ControlStyleSheet::SubscribeChanged(
 	return _changed.Subscribe(std::move(handler));
 }
 
-void ControlStyleSheet::SetDataContext(IBindingSource* source) const
-{
-	if (source && _dataContextState
-		&& _dataContextState->Source == source
-		&& !_dataContextState->Lifetime.expired()) return;
-	if (!source)
-	{
-		if (!_dataContextState) return;
-		_dataContextState.reset();
-		NotifyChanged();
-		return;
-	}
-	if (!_dataContextState)
-		_dataContextState = std::make_unique<DataContextState>();
-	_dataContextState->Source = source;
-	_dataContextState->Lifetime = source->BindingLifetime();
-	RebuildDataContextSubscriptions();
-	NotifyChanged();
-}
-
-IBindingSource* ControlStyleSheet::DataContext() const noexcept
-{
-	if (!_dataContextState || _dataContextState->Lifetime.expired()) return nullptr;
-	return _dataContextState->Source;
-}
-
 bool ControlStyleSheet::MatchesDataConditions(
 	const ControlStyleSelector& selector,
 	Control& target) const
 {
 	if (selector.DataConditions.empty()) return true;
 	auto* source = target.GetDataContext().Get();
-	if (!source) source = DataContext();
 	if (!source) return false;
 	for (const auto& condition : selector.DataConditions)
 	{
@@ -430,109 +400,23 @@ bool ControlStyleSheet::MatchesDataConditions(
 	return true;
 }
 
-void ControlStyleSheet::RebuildDataContextSubscriptions() const
-{
-	if (!_dataContextState) return;
-	_dataContextState->Paths.clear();
-	auto* source = DataContext();
-	if (!source) return;
-	std::vector<std::wstring> uniquePaths;
-	for (const auto& rule : _rules)
-		for (const auto& condition : rule.Selector.DataConditions)
-			if (!condition.SourceProperty.empty()
-				&& !ContainsStyleName(uniquePaths, condition.SourceProperty))
-				uniquePaths.push_back(condition.SourceProperty);
-
-	for (const auto& pathText : uniquePaths)
-	{
-		DataContextState::ObservedPath observed;
-		observed.Path = pathText;
-		if (!TryParseDataPath(pathText, observed.Segments)) continue;
-		IBindingSource* current = source;
-		for (size_t index = 0; index < observed.Segments.size(); ++index)
-		{
-			const auto expectedProperty = observed.Segments[index];
-			auto connection = current->PropertyChanged().Subscribe(
-				[this, expectedProperty](const PropertyChangedEventArgs& args)
-				{
-					if (!args.PropertyName.empty()
-						&& !StyleNameEquals(args.PropertyName, expectedProperty)) return;
-					RebuildDataContextSubscriptions();
-					NotifyChanged();
-				});
-			if (connection.Connected())
-				observed.Connections.push_back(std::move(connection));
-			if (index + 1 == observed.Segments.size()) break;
-			BindingValue intermediate;
-			BindingSourceReference reference;
-			if (!current->TryGetValue(expectedProperty, intermediate)
-				|| !intermediate.TryGet(reference) || !reference) break;
-			observed.Owners.push_back(reference.Shared());
-			current = reference.Get();
-		}
-		_dataContextState->Paths.push_back(std::move(observed));
-	}
-}
-
 void ControlStyleSheet::NotifyChanged() const
 {
 	++_revision;
-	_changed();
+	cui::framework::EventAccess::Raise(_changed);
 }
 
-void Control::SetDeclarativeTypeIdentity(
-	std::wstring xamlNamespace,
-	std::wstring xamlName)
+void Control::SetStyleResourceKey(std::wstring value)
 {
-	if (_declarativeTypeNamespace == xamlNamespace
-		&& _declarativeTypeName == xamlName) return;
-	_declarativeTypeNamespace = std::move(xamlNamespace);
-	_declarativeTypeName = std::move(xamlName);
-	RefreshStyleValues(false);
-}
-
-void Control::SetStyleId(std::wstring value)
-{
-	if (StyleNameEquals(_styleId, value)) return;
-	_styleId = std::move(value);
-	RefreshStyleValues(false);
-}
-
-bool Control::HasStyleClass(const std::wstring& value) const
-{
-	return !value.empty() && ContainsStyleName(_styleClasses, value);
-}
-
-bool Control::AddStyleClass(std::wstring value)
-{
-	if (value.empty() || ContainsStyleName(_styleClasses, value)) return false;
-	_styleClasses.push_back(std::move(value));
-	RefreshStyleValues(false);
-	return true;
-}
-
-bool Control::RemoveStyleClass(const std::wstring& value)
-{
-	const auto position = std::find_if(_styleClasses.begin(), _styleClasses.end(),
-		[&value](const auto& current) { return StyleNameEquals(current, value); });
-	if (position == _styleClasses.end()) return false;
-	_styleClasses.erase(position);
-	RefreshStyleValues(false);
-	return true;
-}
-
-void Control::ClearStyleClasses()
-{
-	if (_styleClasses.empty()) return;
-	_styleClasses.clear();
+	if (StyleNameEquals(_styleResourceKey, value)) return;
+	_styleResourceKey = std::move(value);
 	RefreshStyleValues(false);
 }
 
 ControlStyleState Control::GetEffectiveStyleState() const noexcept
 {
 	auto result = _styleState;
-	if (!Enable) result |= ControlStyleState::Disabled;
-	if (Checked) result |= ControlStyleState::Checked;
+	if (!IsEffectivelyEnabled()) result |= ControlStyleState::Disabled;
 	return result;
 }
 
@@ -540,8 +424,13 @@ void Control::SetStyleState(ControlStyleState state, bool enabled)
 {
 	const auto next = enabled ? (_styleState | state) : (_styleState & ~state);
 	if (next == _styleState) return;
+	const bool wasPressed = HasControlStyleState(
+		_styleState, ControlStyleState::Pressed);
+	const bool isPressed = HasControlStyleState(
+		next, ControlStyleState::Pressed);
 	_styleState = next;
-	RefreshStyleValues(false);
+	if (wasPressed != isPressed)
+		OnPressedVisualStateChanged(isPressed);
 }
 
 bool Control::SetThemeStyleSheet(
@@ -566,7 +455,7 @@ bool Control::SetThemeStyleSheet(
 	if (!RefreshStyleValues(false)) result = false;
 	if (recursive)
 	{
-		for (auto* child : Children)
+		for (auto* child : _inheritanceChildren)
 		{
 			if (child && !child->SetThemeStyleSheet(_themeStyleSheet, true))
 				result = false;
@@ -597,7 +486,7 @@ bool Control::SetStyleSheet(
 	if (!RefreshStyleValues(false)) result = false;
 	if (recursive)
 	{
-		for (auto* child : Children)
+		for (auto* child : _inheritanceChildren)
 		{
 			if (child && !child->SetStyleSheet(_styleSheet, true))
 				result = false;
@@ -644,7 +533,8 @@ bool Control::TryFindResource(
 	BindingValue& value) const
 {
 	if (resourceKey.empty()) return false;
-	for (const Control* scope = this; scope; scope = scope->Parent)
+	for (const Control* scope = this; scope;
+		scope = scope->GetInheritanceParent())
 		if (scope->_resourceDictionary
 			&& scope->_resourceDictionary->TryGetResource(resourceKey, value))
 			return true;
@@ -664,73 +554,82 @@ bool Control::SetDynamicResource(
 	const std::wstring& propertyName,
 	std::wstring resourceKey)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !metadata->CanWrite() || resourceKey.empty()) return false;
-
-	const auto previousExpression = _dynamicResourceExpressions.find(metadata);
-	const bool hadExpression = previousExpression != _dynamicResourceExpressions.end();
-	const std::wstring previousKey = hadExpression
-		? previousExpression->second : std::wstring{};
-	BindingValue previousLocal;
-	const bool hadLocal = TryGetPropertyValue(
-		metadata->Name(), ControlPropertyValueSource::Local, previousLocal);
-	_dynamicResourceExpressions[metadata] = std::move(resourceKey);
-
-	BindingValue value;
-	const bool found = TryResolveDynamicResource(
-		_dynamicResourceExpressions[metadata], value);
-	_applyingDynamicResource = true;
-	const bool applied = found
-		? TrySetPropertyValueOwned(metadata->Name(), value,
-			ControlPropertyValueSource::Local, nullptr)
-		: (!HasPropertyValue(metadata->Name(), ControlPropertyValueSource::Local)
-			|| ClearPropertyValueOwned(metadata->Name(),
-				ControlPropertyValueSource::Local, nullptr));
-	_applyingDynamicResource = false;
-	if (applied) return true;
-
-	if (hadExpression)
-		_dynamicResourceExpressions[metadata] = previousKey;
-	else
-		_dynamicResourceExpressions.erase(metadata);
-	_applyingDynamicResource = true;
-	if (hadLocal)
-		(void)TrySetPropertyValueOwned(metadata->Name(), previousLocal,
-			ControlPropertyValueSource::Local, nullptr);
-	else
-		(void)ClearPropertyValueOwned(metadata->Name(),
-			ControlPropertyValueSource::Local, nullptr);
-	_applyingDynamicResource = false;
-	return false;
+	return SetDynamicResource(
+		propertyName, std::move(resourceKey),
+		DependencyPropertyValueSource::Local);
 }
 
-bool Control::ClearDynamicResource(const std::wstring& propertyName)
+bool Control::SetDynamicResource(
+	const std::wstring& propertyName,
+	std::wstring resourceKey,
+	DependencyPropertyValueSource source)
+{
+	return TrySetDynamicResourceExpressionOwned(
+		propertyName, std::move(resourceKey), source);
+}
+
+bool Control::TrySetDynamicResourceExpressionOwned(
+	const std::wstring& propertyName,
+	std::wstring resourceKey,
+	DependencyPropertyValueSource source)
+{
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	if (!metadata || !metadata->CanWrite() || resourceKey.empty()
+		|| EffectiveSlotIndex(source) < 0
+		|| source == DependencyPropertyValueSource::Animation) return false;
+
+	std::optional<BindingValue> proposed;
+	BindingValue value;
+	if (TryResolveDynamicResource(resourceKey, value))
+	{
+		BindingValue converted;
+		if (!metadata->TryConvert(value, converted)) return false;
+		proposed = std::move(converted);
+	}
+	return TrySetEffectiveValueEntry(
+		*metadata, std::move(proposed), source,
+		DependencyPropertyExpressionKind::DynamicResource,
+		nullptr, std::move(resourceKey), false);
+}
+
+bool Control::ClearDynamicResource(
+	const std::wstring& propertyName)
+{
+	return ClearDynamicResource(
+		propertyName, DependencyPropertyValueSource::Local);
+}
+
+bool Control::ClearDynamicResource(
+	const std::wstring& propertyName,
+	DependencyPropertyValueSource source)
 {
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata) return false;
-	const auto expression = _dynamicResourceExpressions.find(metadata);
-	if (expression == _dynamicResourceExpressions.end()) return false;
-	const auto resourceKey = expression->second;
-	_dynamicResourceExpressions.erase(expression);
-	_applyingDynamicResource = true;
-	const bool cleared = !HasPropertyValue(
-		metadata->Name(), ControlPropertyValueSource::Local)
-		|| ClearPropertyValueOwned(metadata->Name(),
-			ControlPropertyValueSource::Local, nullptr);
-	_applyingDynamicResource = false;
-	if (!cleared) _dynamicResourceExpressions[metadata] = resourceKey;
-	return cleared;
+	const int index = EffectiveSlotIndex(source);
+	if (index < 0) return false;
+	const auto entry = _propertyValues.find(metadata);
+	if (entry == _propertyValues.end()
+		|| entry->second.Slots[(size_t)index].Expression
+			!= DependencyPropertyExpressionKind::DynamicResource) return false;
+	return ClearPropertyValueOwned(
+		metadata->Name(), source, nullptr);
 }
 
 bool Control::TryGetDynamicResourceKey(
 	const std::wstring& propertyName,
-	std::wstring& resourceKey)
+	std::wstring& resourceKey,
+	DependencyPropertyValueSource source)
 {
 	const auto* metadata = FindPropertyMetadata(propertyName);
 	if (!metadata) return false;
-	const auto expression = _dynamicResourceExpressions.find(metadata);
-	if (expression == _dynamicResourceExpressions.end()) return false;
-	resourceKey = expression->second;
+	const int index = EffectiveSlotIndex(source);
+	if (index < 0) return false;
+	const auto entry = _propertyValues.find(metadata);
+	if (entry == _propertyValues.end()) return false;
+	const auto& slot = entry->second.Slots[(size_t)index];
+	if (slot.Expression != DependencyPropertyExpressionKind::DynamicResource)
+		return false;
+	resourceKey = slot.ResourceKey;
 	return true;
 }
 
@@ -739,30 +638,35 @@ bool Control::RefreshDynamicResourceValues(bool recursive)
 	if (_refreshingDynamicResources) return true;
 	_refreshingDynamicResources = true;
 	bool result = true;
-	std::vector<std::pair<const BindingPropertyMetadata*, std::wstring>> expressions{
-		_dynamicResourceExpressions.begin(), _dynamicResourceExpressions.end() };
-	for (const auto& [metadata, resourceKey] : expressions)
+	struct Expression
+	{
+		std::wstring PropertyName;
+		std::wstring ResourceKey;
+		DependencyPropertyValueSource Source = DependencyPropertyValueSource::Local;
+	};
+	std::vector<Expression> expressions;
+	for (const auto& [metadata, entry] : _propertyValues)
 	{
 		if (!metadata) continue;
-		BindingValue value;
-		const bool found = TryResolveDynamicResource(resourceKey, value);
-		_applyingDynamicResource = true;
-		const bool applied = found
-			? TrySetPropertyValueOwned(metadata->Name(), value,
-				ControlPropertyValueSource::Local, nullptr)
-			: (!HasPropertyValue(metadata->Name(), ControlPropertyValueSource::Local)
-				|| ClearPropertyValueOwned(metadata->Name(),
-					ControlPropertyValueSource::Local, nullptr));
-		if (!applied && found)
-			(void)ClearPropertyValueOwned(metadata->Name(),
-				ControlPropertyValueSource::Local, nullptr);
-		_applyingDynamicResource = false;
-		if (!applied) result = false;
+		for (size_t index = 0; index < entry.Slots.size(); ++index)
+		{
+			const auto& slot = entry.Slots[index];
+			if (slot.Expression != DependencyPropertyExpressionKind::DynamicResource)
+				continue;
+			expressions.push_back({ metadata->Name(), slot.ResourceKey,
+				static_cast<DependencyPropertyValueSource>(
+					index + static_cast<size_t>(
+						DependencyPropertyValueSource::Inherited)) });
+		}
 	}
+	for (auto& expression : expressions)
+		if (!TrySetDynamicResourceExpressionOwned(
+			expression.PropertyName, std::move(expression.ResourceKey),
+			expression.Source)) result = false;
 	_refreshingDynamicResources = false;
 	if (recursive)
 	{
-		for (auto* child : Children)
+		for (auto* child : _inheritanceChildren)
 			if (child && !child->RefreshDynamicResourceValues(true)) result = false;
 	}
 	return result;
@@ -844,7 +748,7 @@ void Control::RebuildStyleSubscriptions(bool recursive)
 	RebuildStylePropertyConditionSubscription();
 	RebuildStyleDataContextSubscriptions();
 	if (!recursive) return;
-	for (auto* child : Children)
+	for (auto* child : _inheritanceChildren)
 		if (child) child->RebuildStyleSubscriptions(true);
 }
 
@@ -854,7 +758,8 @@ Control::VisibleAuthorStyleSheets() const
 	std::vector<std::shared_ptr<const ControlStyleSheet>> result;
 	if (_styleSheet) result.push_back(_styleSheet);
 	std::vector<std::shared_ptr<const ControlStyleSheet>> lexical;
-	for (const Control* scope = this; scope; scope = scope->Parent)
+	for (const Control* scope = this; scope;
+		scope = scope->GetInheritanceParent())
 		if (scope->_resourceDictionary
 			&& !scope->_resourceDictionary->Rules().empty())
 			lexical.push_back(scope->_resourceDictionary);
@@ -866,59 +771,39 @@ Control::VisibleAuthorStyleSheets() const
 }
 
 bool Control::RefreshStyleValuesForSource(
-	ControlPropertyValueSource source,
+	DependencyPropertyValueSource source,
 	const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets,
 	std::vector<std::wstring>& appliedProperties)
 {
-	struct Winner
-	{
-		ResolvedControlStyleSetter Setter;
-		size_t SheetOrder = 0;
-	};
-	std::vector<Winner> winners;
+	ControlStyleResolution resolution;
+	std::shared_ptr<const ControlStyleSheet> selectedSheet;
 	bool result = true;
-	for (size_t sheetOrder = 0; sheetOrder < sheets.size(); ++sheetOrder)
+	const bool themeStyle = source == DependencyPropertyValueSource::Theme;
+	for (auto item = sheets.rbegin(); item != sheets.rend(); ++item)
 	{
-		const auto& sheet = sheets[sheetOrder];
+		const auto& sheet = *item;
 		if (!sheet) continue;
-		const auto resolution = sheet->Resolve(*this);
-		if (!resolution.Success()) result = false;
-		for (const auto& setter : resolution.Setters)
-		{
-			auto winner = std::find_if(
-				winners.begin(), winners.end(), [&](const auto& current)
-				{
-					return StyleNameEquals(
-						current.Setter.PropertyName, setter.PropertyName);
-				});
-			if (winner == winners.end())
-				winners.push_back({ setter, sheetOrder });
-			else if (setter.Specificity > winner->Setter.Specificity
-				|| (setter.Specificity == winner->Setter.Specificity
-					&& sheetOrder >= winner->SheetOrder))
-			{
-				winner->Setter = setter;
-				winner->SheetOrder = sheetOrder;
-			}
-		}
-		if (!SynchronizeStyleTriggerActions(source, sheet, resolution))
-			result = false;
+		auto candidate = sheet->Resolve(*this, themeStyle);
+		if (!candidate.HasStyle) continue;
+		resolution = std::move(candidate);
+		selectedSheet = sheet;
+		break;
 	}
-	PruneStyleTriggerActions(source, sheets);
-	std::sort(winners.begin(), winners.end(), [](const auto& left, const auto& right)
-		{
-			return _wcsicmp(left.Setter.PropertyName.c_str(),
-				right.Setter.PropertyName.c_str()) < 0;
-		});
+	if (!resolution.Success()) result = false;
+	std::vector<std::shared_ptr<const ControlStyleSheet>> activeSheets;
+	if (selectedSheet) activeSheets.push_back(selectedSheet);
 	std::vector<std::wstring> nextProperties;
-	nextProperties.reserve(winners.size());
+	nextProperties.reserve(resolution.Setters.size());
 
-	for (const auto& winner : winners)
+	for (const auto& setter : resolution.Setters)
 	{
-		const auto& setter = winner.Setter;
 		const bool wasApplied = ContainsStyleName(
 			appliedProperties, setter.PropertyName);
-		if (TrySetPropertyValue(setter.PropertyName, setter.Value, source))
+		const bool applied = setter.IsDynamicResource
+			? TrySetDynamicResourceExpressionOwned(
+				setter.PropertyName, setter.ResourceKey, source)
+			: TrySetPropertyValue(setter.PropertyName, setter.Value, source);
+		if (applied)
 		{
 			nextProperties.push_back(setter.PropertyName);
 		}
@@ -940,6 +825,16 @@ bool Control::RefreshStyleValuesForSource(
 		}
 	}
 	appliedProperties = std::move(nextProperties);
+
+	// WPF establishes the Style's base values before its Trigger clocks are
+	// materialized.  Object-path animations such as
+	// (Control.Background).(SolidColorBrush.Color) must therefore resolve
+	// against the brush supplied by a Setter, not against a fabricated native
+	// fallback value.
+	if (selectedSheet
+		&& !SynchronizeStyleTriggerActions(source, selectedSheet, resolution))
+		result = false;
+	PruneStyleTriggerActions(source, activeSheets);
 	return result;
 }
 
@@ -960,12 +855,12 @@ bool Control::RefreshStyleValues(bool recursive)
 		std::vector<std::shared_ptr<const ControlStyleSheet>> themeSheets;
 		if (_themeStyleSheet) themeSheets.push_back(_themeStyleSheet);
 		if (!RefreshStyleValuesForSource(
-			ControlPropertyValueSource::Theme,
+			DependencyPropertyValueSource::Theme,
 			themeSheets,
 			_styleSheetProperties[0]))
 			result = false;
 		if (!RefreshStyleValuesForSource(
-			ControlPropertyValueSource::Style,
+			DependencyPropertyValueSource::Style,
 			VisibleAuthorStyleSheets(),
 			_styleSheetProperties[1]))
 			result = false;
@@ -976,7 +871,7 @@ bool Control::RefreshStyleValues(bool recursive)
 
 	if (recursive)
 	{
-		for (auto* child : Children)
+		for (auto* child : _inheritanceChildren)
 		{
 			if (child && !child->RefreshStyleValues(true)) result = false;
 		}

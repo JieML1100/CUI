@@ -24,16 +24,17 @@ struct RuntimeDocumentSessionMountOptions
 };
 
 /**
- * Opinionated UI-thread host for one file-backed dynamic Form.
+ * Opinionated UI-thread host for one file-backed dynamic Window.
  *
  * The session owns the RuntimeDocument, named-event registry, and threadless
- * file watcher while the caller owns the Form. Register handlers first, then
- * call MountFile(). The initial load, Form presentation/events, and root
+ * file watcher while the caller owns the Window. Register handlers first, then
+ * call MountFile(), or pre-parse and inspect a document before calling
+ * MountDocument(). The initial load, Window presentation/events, and Content
  * transfer remain atomic; later Poll() calls expose the watcher's transactional
  * reload result instead of hiding reload failures behind a background thread.
  *
- * The Form and every object captured by registered callbacks must outlive this
- * session. Advanced custom-root-host scenarios should use RuntimeDocument and
+ * The Window and every object captured by registered callbacks must outlive this
+ * session. Advanced custom-Content-host scenarios should use RuntimeDocument and
  * RuntimeDocumentFileWatcher directly.
  */
 class RuntimeDocumentSession final
@@ -55,14 +56,26 @@ public:
 	RuntimeDocument& Document() noexcept { return _document; }
 	const RuntimeDocument& Document() const noexcept { return _document; }
 
-	bool IsMounted() const noexcept { return _mountedForm != nullptr; }
-	::Form* MountedForm() const noexcept { return _mountedForm; }
+	bool IsMounted() const noexcept { return _mountedWindow != nullptr; }
+	::Window* MountedWindow() const noexcept { return _mountedWindow; }
 	const std::wstring& SourceFile() const noexcept { return _sourceFile; }
 	uint32_t OwningThreadId() const noexcept { return _owningThreadId; }
 
 	bool MountFile(
 		const std::wstring& filePath,
-		::Form& form,
+		::Window& window,
+		const RuntimeDocumentSessionMountOptions& options = {},
+		std::wstring* outError = nullptr);
+
+	/**
+	 * Atomically mounts an already parsed document while retaining its source
+	 * path for watching/retry. This lets hosts inspect XAML-declared contracts
+	 * before registering handlers or behaviors without parsing the file twice.
+	 */
+	bool MountDocument(
+		const DesignDocument& document,
+		const std::wstring& sourceFile,
+		::Window& window,
 		const RuntimeDocumentSessionMountOptions& options = {},
 		std::wstring* outError = nullptr);
 
@@ -93,7 +106,7 @@ private:
 	RuntimeEventHandlerRegistry _handlers;
 	RuntimeDocument _document;
 	RuntimeDocumentFileWatcher _watcher;
-	::Form* _mountedForm = nullptr;
+	::Window* _mountedWindow = nullptr;
 	std::wstring _sourceFile;
 	uint32_t _owningThreadId = 0;
 

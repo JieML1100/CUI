@@ -1,19 +1,26 @@
 #pragma once
 
 #include "ItemTemplate.h"
-#include "Layout/GridPanel.h"
+#include "Control.h"
 
 /**
  * Presents either one authored visual or one data value. ControlTemplate
  * ContentSource slots use the visual path, while scalar/object Content uses
  * the existing DataTemplate path; the two ownership modes are exclusive.
  */
-class ContentPresenter : public GridPanel
+class ContentPresenter : public Control
 {
 public:
-	ContentPresenter(int x = 0, int y = 0, int width = 200, int height = 80);
+	ContentPresenter();
 	UIClass Type() override { return UIClass::UI_ContentPresenter; }
-	void EnsureBindingPropertiesRegistered() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+protected:
+	void OnRender() override;
+public:
+	cui::core::Size MeasureCore(
+		const cui::core::Constraints& available) override;
+	void Arrange(cui::core::Rect finalRect) override;
 
 	BindingValue GetContent() const { return _content; }
 	void SetContent(BindingValue value);
@@ -41,10 +48,18 @@ public:
 	}
 
 protected:
-	bool ValidateChildCollection(
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Pane, L"ContentPresenter");
+	}
+	void RequestLayout() override;
+	void OnComputedLayoutSizeChanged() override;
+	void PerformPendingLayout() override;
+	bool ValidateVisualChildCollection(
 		std::span<Control* const> children,
 		std::string& error) const override;
-	void OnChildCollectionChanged(
+	void OnVisualChildCollectionChanged(
 		const CollectionChangedEventArgs& change,
 		std::span<Control* const> previousChildren) override;
 
@@ -57,6 +72,7 @@ private:
 	std::wstring _lastTemplateError;
 	Control* _generatedContent = nullptr;
 	bool _changingGeneratedContent = false;
+	bool _contentLayoutPending = true;
 
 	bool ValidateContentCandidate(
 		const BindingValue& content,

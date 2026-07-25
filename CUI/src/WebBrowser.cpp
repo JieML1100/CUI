@@ -1,7 +1,10 @@
-﻿#ifdef CUI_ENABLE_WEBVIEW2
+#ifdef CUI_ENABLE_WEBVIEW2
 
 #include "WebBrowser.h"
-#include "Form.h"
+#include "EventInfrastructure.h"
+#include "PresentationScene.h"
+#include "Window.h"
+#include "WindowInfrastructure.h"
 
 #include <algorithm>
 #include <atomic>
@@ -55,6 +58,7 @@ struct WebBrowser::Impl
 	ComPtr<ICoreWebView2Controller> controller;
 	ComPtr<ICoreWebView2CompositionController> compositionController;
 	ComPtr<ICoreWebView2> webview;
+	ComPtr<ICoreWebView2_2> webview2;
 	ComPtr<IDCompositionVisual> dcompVisual;
 	ComPtr<IDCompositionRectangleClip> dcompClip;
 	bool rootAttached = false;
@@ -65,6 +69,7 @@ struct WebBrowser::Impl
 	EventRegistrationToken navStartingToken{};
 	EventRegistrationToken navCompletedToken{};
 	EventRegistrationToken contentLoadingToken{};
+	EventRegistrationToken domContentLoadedToken{};
 	EventRegistrationToken sourceChangedToken{};
 	EventRegistrationToken historyChangedToken{};
 	EventRegistrationToken documentTitleChangedToken{};
@@ -101,6 +106,7 @@ struct WebBrowser::Impl
 #define _controller (_impl->controller)
 #define _compositionController (_impl->compositionController)
 #define _webview (_impl->webview)
+#define _webview2 (_impl->webview2)
 #define _dcompVisual (_impl->dcompVisual)
 #define _dcompClip (_impl->dcompClip)
 #define _rootAttached (_impl->rootAttached)
@@ -111,6 +117,7 @@ struct WebBrowser::Impl
 #define _navStartingToken (_impl->navStartingToken)
 #define _navCompletedToken (_impl->navCompletedToken)
 #define _contentLoadingToken (_impl->contentLoadingToken)
+#define _domContentLoadedToken (_impl->domContentLoadedToken)
 #define _sourceChangedToken (_impl->sourceChangedToken)
 #define _historyChangedToken (_impl->historyChangedToken)
 #define _documentTitleChangedToken (_impl->documentTitleChangedToken)
@@ -121,17 +128,17 @@ struct WebBrowser::Impl
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<WebBrowser, TValue> WebBrowserPropertyOptions(
-		TValue defaultValue, int order, ControlPropertyEditorKind editor)
+	DependencyPropertyOptions<WebBrowser, TValue> WebBrowserPropertyOptions(
+		TValue defaultValue, int order, DependencyPropertyEditorKind editor)
 	{
-		ControlPropertyOptions<WebBrowser, TValue> options;
+		DependencyPropertyOptions<WebBrowser, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::None;
 		options.Design.Category = L"Web";
 		options.Design.CategoryOrder = 170;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -139,30 +146,28 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			WebBrowser& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
+					if (args.PropertyName == propertyName)
 						handler();
 				});
 		};
 	}
 }
 
-static constexpr int WebBrowserDCompSceneLayerBand = 1000;
-
-static int ResolveDCompSceneOrder(WebBrowser* browser)
+int WebBrowser::ResolvePresentationOrder(WebBrowser* browser)
 {
-	if (!browser || !browser->ParentForm)
+	if (!browser || !browser->GetPresentationWindow())
 		return 0;
 	int order = 0;
-	if (browser->TryGetDCompSceneOrderOverride(order))
+	if (browser->TryGetPresentationOrderOverride(order))
 		return order;
-	return browser->ParentForm->GetDCompVisualOrder(browser);
+	return browser->GetPresentationWindow()->GetPresentationOrder(browser);
 }
 
 static int HexVal(wchar_t c);
@@ -203,24 +208,14 @@ static std::string ToU8(const std::wstring& s)
 	return result;
 }
 
-WebBrowser::WebBrowser(int x, int y, int width, int height)
+WebBrowser::WebBrowser()
 	: _impl(std::make_unique<Impl>())
 {
-	this->Location = { x, y };
-	this->Size = { width, height };
-	this->BackColor = Colors::White;
+	this->RendererBackgroundColor = Colors::White;
 	_lastInitHr = E_PENDING;
 	_lastControllerHr = E_PENDING;
 	_lastGetWebViewHr = E_PENDING;
 
-	this->OnSizeChanged += [&](class Control* s) { 
-		(void)s; 
-		EnsureControllerBounds(); 
-	};
-	this->OnMoved += [&](class Control* s) { 
-		(void)s; 
-		EnsureControllerBounds(); 
-	};
 }
 
 WebBrowser::~WebBrowser()
@@ -237,11 +232,17 @@ WebBrowser::~WebBrowser()
 		if (_newWindowRequestedToken.value != 0) { _webview->remove_NewWindowRequested(_newWindowRequestedToken); _newWindowRequestedToken.value = 0; }
 		if (_processFailedToken.value != 0) { _webview->remove_ProcessFailed(_processFailedToken); _processFailedToken.value = 0; }
 	}
+	if (_webview2 && _domContentLoadedToken.value != 0)
+	{
+		_webview2->remove_DOMContentLoaded(_domContentLoadedToken);
+		_domContentLoadedToken.value = 0;
+	}
 	if (_webview && _webMessageToken.value != 0)
 	{
 		_webview->remove_WebMessageReceived(_webMessageToken);
 		_webMessageToken.value = 0;
 	}
+	_webview2.Reset();
 	_webview.Reset();
 	if (_compositionController && _cursorChangedToken.value != 0)
 	{
@@ -252,23 +253,23 @@ WebBrowser::~WebBrowser()
 	_controller.Reset();
 	_env.Reset();
 
-		if (this->ParentForm && _dcompVisual)
+		if (this->GetPresentationWindow() && _dcompVisual)
 		{
-			this->ParentForm->UnregisterDCompVisual(_dcompVisual.Get());
-			this->ParentForm->CommitComposition();
+			this->GetPresentationWindow()->UnregisterDCompVisual(_dcompVisual.Get());
+			this->GetPresentationWindow()->CommitComposition();
 		}
 	_dcompClip.Reset();
 	_dcompVisual.Reset();
 }
 
-void WebBrowser::EnsureBindingPropertiesRegistered()
+void WebBrowser::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto initialUrlOptions = WebBrowserPropertyOptions(
-			std::wstring{}, 10, ControlPropertyEditorKind::Text);
-		BindingPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
+			std::wstring{}, 10, DependencyPropertyEditorKind::Text);
+		DependencyPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
 			[](WebBrowser& target) { return target.GetInitialUrl(); },
 			[](WebBrowser& target, const std::wstring& value)
 			{ target.SetInitialUrl(value); },
@@ -276,7 +277,7 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(initialUrlOptions));
 
 		auto zoomOptions = WebBrowserPropertyOptions(
-			1.0, 20, ControlPropertyEditorKind::Number);
+			1.0, 20, DependencyPropertyEditorKind::Number);
 		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
@@ -286,7 +287,7 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 		zoomOptions.Design.Minimum = 0.25;
 		zoomOptions.Design.Maximum = 5.0;
 		zoomOptions.Design.Step = 0.05;
-		BindingPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
+		DependencyPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
 			[](WebBrowser& target) { return target.GetZoomFactor(); },
 			[](WebBrowser& target, const double& value)
 			{ target.SetZoomFactor(value); },
@@ -294,8 +295,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(zoomOptions));
 
 		auto contextMenuOptions = WebBrowserPropertyOptions(
-			true, 30, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(
+			true, 30, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(
 			L"AreDefaultContextMenusEnabled",
 			[](WebBrowser& target)
 			{ return target.GetAreDefaultContextMenusEnabled(); },
@@ -305,8 +306,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(contextMenuOptions));
 
 		auto statusBarOptions = WebBrowserPropertyOptions(
-			false, 40, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
+			false, 40, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
 			[](WebBrowser& target) { return target.GetIsStatusBarEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsStatusBarEnabled(value); },
@@ -314,8 +315,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(statusBarOptions));
 
 		auto zoomControlOptions = WebBrowserPropertyOptions(
-			true, 50, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
+			true, 50, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
 			[](WebBrowser& target) { return target.GetIsZoomControlEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsZoomControlEnabled(value); },
@@ -330,7 +331,7 @@ bool WebBrowser::TryInitialize()
 {
 	if (_initializationState == InitializationState::Ready) return true;
 	if (_initializationState == InitializationState::Failed) return false;
-	if (!ParentForm || !ParentForm->Handle) return false;
+	if (!GetPresentationWindow() || !GetPresentationWindow()->Handle) return false;
 	EnsureInitialized();
 	return _initializationState == InitializationState::Initializing
 		|| _initializationState == InitializationState::Ready;
@@ -351,7 +352,7 @@ bool WebBrowser::IsNavigating() const { return _isNavigating; }
 bool WebBrowser::IsWebViewVisible() const
 {
 	auto* self = const_cast<WebBrowser*>(this);
-	return _webviewReady && _controller && self->Visible && self->IsVisual;
+	return _webviewReady && _controller && self->IsVisible;
 }
 
 bool WebBrowser::HasPendingNavigation() const
@@ -613,7 +614,7 @@ static std::wstring JsonUnquote(const std::wstring& json)
 void WebBrowser::EnsureInitialized()
 {
 	if (_initialized) return;
-	if (!this->ParentForm || !this->ParentForm->Handle) return;
+	if (!this->GetPresentationWindow() || !this->GetPresentationWindow()->Handle) return;
 
 	_initialized = true;
 	_initializationState = InitializationState::Initializing;
@@ -637,8 +638,8 @@ void WebBrowser::EnsureInitialized()
 		return;
 	}
 
-		// DirectComposition：为每个 WebBrowser 创建一个独立的 Visual，并交给 Form 的 DComp 层栈排序
-	IDCompositionDevice* dcompDevice = this->ParentForm->GetDCompDevice();
+		// DirectComposition：为每个 WebBrowser 创建一个独立的 Visual，并交给 Window 的 DComp 层栈排序
+	IDCompositionDevice* dcompDevice = this->GetPresentationWindow()->GetDCompDevice();
 		if (!dcompDevice)
 	{
 		_lastInitHr = E_NOINTERFACE;
@@ -662,8 +663,10 @@ void WebBrowser::EnsureInitialized()
 		{
 			_dcompVisual->SetClip(_dcompClip.Get());
 		}
-			this->ParentForm->RegisterDCompVisual(_dcompVisual.Get(), WebBrowserDCompSceneLayerBand, ResolveDCompSceneOrder(this));
-		this->ParentForm->CommitComposition();
+			this->GetPresentationWindow()->RegisterDCompVisual(
+				_dcompVisual.Get(), PresentationSceneContentLayer,
+				ResolvePresentationOrder(this));
+		this->GetPresentationWindow()->CommitComposition();
 	}
 
 	auto lifetime = _lifetime;
@@ -679,7 +682,7 @@ void WebBrowser::EnsureInitialized()
 				this->InvalidateVisual();
 				return S_OK;
 			}
-			if (!this->ParentForm || !this->ParentForm->Handle)
+			if (!this->GetPresentationWindow() || !this->GetPresentationWindow()->Handle)
 			{
 				_lastControllerHr = E_ABORT;
 				_lastInitHr = E_ABORT;
@@ -693,7 +696,7 @@ void WebBrowser::EnsureInitialized()
 				[this, lifetime](HRESULT result2, ICoreWebView2CompositionController* compositionController) -> HRESULT
 				{
 					if (!lifetime->load(std::memory_order_acquire)) return S_OK;
-					if (!this->ParentForm || !this->ParentForm->Handle)
+					if (!this->GetPresentationWindow() || !this->GetPresentationWindow()->Handle)
 					{
 						_lastControllerHr = E_ABORT;
 						_lastInitHr = E_ABORT;
@@ -734,16 +737,26 @@ void WebBrowser::EnsureInitialized()
 						this->InvalidateVisual();
 						return S_OK;
 					}
+					const HRESULT webView2InterfaceHr = _webview.As(&_webview2);
+					if (FAILED(webView2InterfaceHr) || !_webview2)
+					{
+						_lastWebViewHr = FAILED(webView2InterfaceHr)
+							? webView2InterfaceHr : E_NOINTERFACE;
+						_lastInitHr = _lastWebViewHr;
+						_initializationState = InitializationState::Failed;
+						this->InvalidateVisual();
+						return S_OK;
+					}
 
 					// 将 WebView2 视觉树挂到我们的 DComp Visual
 					if (_compositionController && _dcompVisual)
 					{
 						_compositionController->put_RootVisualTarget(_dcompVisual.Get());
 						_rootAttached = true;
-						this->ParentForm->CommitComposition();
+						this->GetPresentationWindow()->CommitComposition();
 					}
 
-					// CursorChanged：缓存 system cursor id，交给 Form::UpdateCursor 使用
+					// CursorChanged：缓存 system cursor id，交给 Window::UpdateCursor 使用
 					if (_compositionController)
 					{
 						_cursorChangedToken.value = 0;
@@ -764,19 +777,26 @@ void WebBrowser::EnsureInitialized()
 										_hasSystemCursorId = false;
 									}
 									// 如果当前鼠标在 WebBrowser 上，立刻刷新一次光标
-									if (this->ParentForm && this->ParentForm->UnderMouse == this)
-										this->ParentForm->UpdateCursorFromCurrentMouse();
+									if (this->GetPresentationWindow() && this->IsMouseOver)
+										cui::framework::WindowAccess::UpdateCursorFromCurrentMouse(
+											*this->GetPresentationWindow());
 									return S_OK;
 								}).Get(),
 							&_cursorChangedToken);
 					}
 
 					_webviewReady = (SUCCEEDED(_lastGetWebViewHr) && _webview != nullptr);
-					_initializationState = InitializationState::Ready;
-					_lastInitHr = S_OK;
 					ApplyWebViewSettings();
 					EnsureControllerBounds();
-					EnsureInteropInstalled();
+					if (!EnsureInteropInstalled())
+					{
+						_lastInitHr = FAILED(_lastWebViewHr)
+							? _lastWebViewHr : E_FAIL;
+						_webviewReady = false;
+						_initializationState = InitializationState::Failed;
+						this->InvalidateVisual();
+						return S_OK;
+					}
 
 					// WebView2 事件注册
 					if (_webview)
@@ -805,7 +825,8 @@ void WebBrowser::EnsureInitialized()
 									ev.IsUserInitiated = (isUser != FALSE);
 									ev.IsRedirected = (isRedirected != FALSE);
 									_isNavigating = true;
-									OnNavigationStarting(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnNavigationStarting, this, ev);
 									if (args && ev.Cancel)
 										args->put_Cancel(TRUE);
 									return S_OK;
@@ -839,15 +860,21 @@ void WebBrowser::EnsureInitialized()
 										_cachedSource = ev.Uri;
 										CoTaskMemFree(raw);
 									}
-#if defined(__ICoreWebView2NavigationCompletedEventArgs2_INTERFACE_DEFINED__)
-									// HttpStatusCode 需要较新的 WebView2 SDK，旧版本保持默认值
-#endif
+									if (args)
+									{
+										ComPtr<ICoreWebView2NavigationCompletedEventArgs2> args2;
+										if (SUCCEEDED(args->QueryInterface(IID_PPV_ARGS(&args2))) && args2)
+											args2->get_HttpStatusCode(&ev.HttpStatusCode);
+									}
+									ev.IsHttpErrorStatus = ev.HttpStatusCode >= 400;
 
 									_isNavigating = false;
-									OnNavigationCompleted(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnNavigationCompleted, this, ev);
 									if (!lifetime->load(std::memory_order_acquire)) return S_OK;
 									if (!ev.IsSuccess)
-										OnNavigationFailed(this, ev);
+										cui::framework::EventAccess::Raise(
+											OnNavigationFailed, this, ev);
 									if (!lifetime->load(std::memory_order_acquire)) return S_OK;
 									_navCompletedCount++;
 									this->InvalidateVisual();
@@ -872,14 +899,38 @@ void WebBrowser::EnsureInitialized()
 									}
 									ev.IsErrorPage = (isError != FALSE);
 									ev.NavigationId = navId;
-									OnContentLoading(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnContentLoading, this, ev);
 									if (!lifetime->load(std::memory_order_acquire)) return S_OK;
 									this->InvalidateVisual();
 									return S_OK;
 								}).Get(),
 							&_contentLoadingToken);
 
-							// DOMContentLoaded 事件改为 JS 注入触发（兼容旧 WebView2 SDK）
+						_domContentLoadedToken.value = 0;
+						const HRESULT domContentLoadedHr = _webview2->add_DOMContentLoaded(
+							Callback<ICoreWebView2DOMContentLoadedEventHandler>(
+								[this, lifetime](ICoreWebView2* sender, ICoreWebView2DOMContentLoadedEventArgs* args) -> HRESULT
+								{
+									if (!lifetime->load(std::memory_order_acquire)) return S_OK;
+									(void)sender;
+									WebBrowser::DomContentLoadedArgs ev;
+									if (args)
+										args->get_NavigationId(&ev.NavigationId);
+									cui::framework::EventAccess::Raise(
+										OnDOMContentLoaded, this, ev);
+									return S_OK;
+								}).Get(),
+							&_domContentLoadedToken);
+						if (FAILED(domContentLoadedHr))
+						{
+							_lastWebViewHr = domContentLoadedHr;
+							_lastInitHr = domContentLoadedHr;
+							_webviewReady = false;
+							_initializationState = InitializationState::Failed;
+							this->InvalidateVisual();
+							return S_OK;
+						}
 
 						_sourceChangedToken.value = 0;
 						_webview->add_SourceChanged(
@@ -900,7 +951,8 @@ void WebBrowser::EnsureInitialized()
 										_cachedSource = ev.Uri;
 										CoTaskMemFree(raw);
 									}
-									OnSourceChanged(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnSourceChanged, this, ev);
 									return S_OK;
 								}).Get(),
 							&_sourceChangedToken);
@@ -923,7 +975,8 @@ void WebBrowser::EnsureInitialized()
 									}
 									ev.CanGoBack = (canBack != FALSE);
 									ev.CanGoForward = (canForward != FALSE);
-									OnHistoryChanged(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnHistoryChanged, this, ev);
 									return S_OK;
 								}).Get(),
 							&_historyChangedToken);
@@ -944,7 +997,8 @@ void WebBrowser::EnsureInitialized()
 										_cachedTitle = ev.Title;
 										CoTaskMemFree(raw);
 									}
-									OnDocumentTitleChanged(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnDocumentTitleChanged, this, ev);
 									return S_OK;
 								}).Get(),
 							&_documentTitleChangedToken);
@@ -967,7 +1021,8 @@ void WebBrowser::EnsureInitialized()
 									if (args)
 										args->get_IsUserInitiated(&isUser);
 									ev.IsUserInitiated = (isUser != FALSE);
-									OnNewWindowRequested(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnNewWindowRequested, this, ev);
 									if (args && ev.Handled)
 										args->put_Handled(TRUE);
 									return S_OK;
@@ -986,11 +1041,15 @@ void WebBrowser::EnsureInitialized()
 									if (args)
 										args->get_ProcessFailedKind(&kind);
 									ev.Kind = static_cast<int>(kind);
-									OnProcessFailed(this, ev);
+									cui::framework::EventAccess::Raise(
+										OnProcessFailed, this, ev);
 									return S_OK;
 								}).Get(),
 							&_processFailedToken);
 					}
+
+					_initializationState = InitializationState::Ready;
+					_lastInitHr = S_OK;
 
 					// URL 与 HTML 共用一个“最后写入获胜”的延迟导航槽。
 					const auto pendingKind = _pendingKind;
@@ -1018,7 +1077,7 @@ void WebBrowser::EnsureInitialized()
 			}
 			const HRESULT createControllerHr =
 				env3->CreateCoreWebView2CompositionController(
-					this->ParentForm->Handle, ctlCompleted.Get());
+					this->GetPresentationWindow()->Handle, ctlCompleted.Get());
 			if (FAILED(createControllerHr))
 			{
 				_lastControllerHr = createControllerHr;
@@ -1065,10 +1124,10 @@ void WebBrowser::ApplyWebViewSettings()
 	_lastWebViewHr = firstFailure;
 }
 
-void WebBrowser::EnsureInteropInstalled()
+bool WebBrowser::EnsureInteropInstalled()
 {
-	if (_interopInstalled) return;
-	if (!_webviewReady || !_webview) return;
+	if (_interopInstalled) return true;
+	if (!_webviewReady || !_webview) return false;
 
 	// 1) 注入 JS 桥：window.CUI.invoke(name, payload) -> postMessage("cui://invoke?..."), 并监听回包
 	// 2) C++ 侧回包：postMessage("cui://resp?...&result=...")
@@ -1080,9 +1139,6 @@ void WebBrowser::EnsureInteropInstalled()
 		L" let seq = 0;"
 		L" function enc(s){ return encodeURIComponent(s==null?'':String(s)); }"
 		L" function post(url){ chrome.webview.postMessage(url); }"
-		L" function notifyDom(){ try{ post('cui://domcontentloaded'); }catch(e){} }"
-		L" if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', notifyDom, {once:true}); }"
-		L" else { setTimeout(notifyDom,0); }"
 		L" chrome.webview.addEventListener('message', function(ev){"
 		L"   try{"
 		L"     const messageText = String(ev.data||'');"
@@ -1116,22 +1172,19 @@ void WebBrowser::EnsureInteropInstalled()
 		L" };"
 		L"})();";
 
-	// 让桥在每次文档创建时都存在（Navigate / NavigateToString 都覆盖）
-	ComPtr<ICoreWebView2_4> web4;
-	if (SUCCEEDED(_webview.As(&web4)) && web4)
+	// 让桥在每次文档创建时都存在（Navigate / NavigateToString 都覆盖）。
+	const HRESULT bridgeInstallHr =
+		_webview->AddScriptToExecuteOnDocumentCreated(bridgeJs.c_str(), nullptr);
+	if (FAILED(bridgeInstallHr))
 	{
-		web4->AddScriptToExecuteOnDocumentCreated(bridgeJs.c_str(), nullptr);
-	}
-	else
-	{
-		// 退化：直接执行一次（对当前页有效）
-		ExecuteScriptAsync(bridgeJs);
+		_lastWebViewHr = bridgeInstallHr;
+		return false;
 	}
 
 	// WebMessageReceived：接收 JS -> C++
 	_webMessageToken.value = 0;
 	auto lifetime = _lifetime;
-	_webview->add_WebMessageReceived(
+	const HRESULT webMessageHr = _webview->add_WebMessageReceived(
 		Callback<ICoreWebView2WebMessageReceivedEventHandler>(
 			[this, lifetime](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT
 			{
@@ -1149,7 +1202,8 @@ void WebBrowser::EnsureInteropInstalled()
 				if (!TryParseCuiUrl(messageText, action, q))
 				{
 					WebBrowser::WebMessageReceivedArgs ev{ messageText };
-					OnWebMessageReceived(this, ev);
+					cui::framework::EventAccess::Raise(
+						OnWebMessageReceived, this, ev);
 					return S_OK;
 				}
 
@@ -1199,30 +1253,31 @@ void WebBrowser::EnsureInteropInstalled()
 				{
 					// 预留：如需可在这里扩展 OnNotify 事件
 				}
-				else if (action == L"domcontentloaded")
-				{
-					WebBrowser::DomContentLoadedArgs ev;
-					ev.NavigationId = 0;
-					OnDOMContentLoaded(this, ev);
-				}
 				else
 				{
 					WebBrowser::WebMessageReceivedArgs ev{ messageText };
-					OnWebMessageReceived(this, ev);
+					cui::framework::EventAccess::Raise(
+						OnWebMessageReceived, this, ev);
 				}
 				return S_OK;
 			}).Get(),
 		&_webMessageToken);
+	if (FAILED(webMessageHr))
+	{
+		_lastWebViewHr = webMessageHr;
+		return false;
+	}
 
 	_interopInstalled = true;
+	return true;
 }
 
 void WebBrowser::EnsureControllerBounds()
 {
-	if (!this->ParentForm || !this->ParentForm->Handle) return;
+	if (!this->GetPresentationWindow() || !this->GetPresentationWindow()->Handle) return;
 
 	// All Win32/DComp coordinates must be in physical pixels
-	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
+	const float dpiSc = (this->GetPresentationWindow() ? this->GetPresentationWindow()->GetDpiScale() : 1.0f);
 	const auto abs = this->GetAbsoluteLocationDip();
 	const auto size = this->GetActualSizeDip();
 	D2D1_RECT_F webRect{
@@ -1233,22 +1288,23 @@ void WebBrowser::EnsureControllerBounds()
 	};
 	D2D1_RECT_F visibleRect = webRect;
 
-	Control* current = this->Parent;
+	Control* current = this->GetVisualParent();
 	while (current)
 	{
 		if (current->ClipsChildren())
 		{
-			auto clip = current->GetChildrenClipRect();
+			auto clip = current->GetVisualChildrenClipRect();
 			const auto parentAbs = current->GetAbsoluteLocationDip();
 			clip = OffsetRectF(clip, parentAbs.x, parentAbs.y);
 			if (!IntersectRectF(visibleRect, clip))
 				break;
 		}
-		current = current->Parent;
+		current = current->GetVisualParent();
 	}
 
 	const bool hasVisibleArea = visibleRect.right > visibleRect.left && visibleRect.bottom > visibleRect.top;
-	int top = (this->ParentForm && this->ParentForm->VisibleHead) ? this->ParentForm->HeadHeight : 0;
+	const int top = this->GetPresentationWindow()
+		? this->GetPresentationWindow()->GetTitleBarHeightPixels() : 0;
 	int x = (int)std::floor(webRect.left * dpiSc);
 	int y = (int)std::floor(webRect.top * dpiSc) + top;
 	int w = (std::max)(1, (int)std::ceil((webRect.right - webRect.left) * dpiSc));
@@ -1258,8 +1314,8 @@ void WebBrowser::EnsureControllerBounds()
 	float clipRight = (visibleRect.right - webRect.left) * dpiSc;
 	float clipBottom = (visibleRect.bottom - webRect.top) * dpiSc;
 
-	const bool parentEnabled = ::IsWindowEnabled(this->ParentForm->Handle) != FALSE;
-	const bool visible = (parentEnabled && this->IsVisual && _webviewReady && hasVisibleArea);
+	const bool parentEnabled = ::IsWindowEnabled(this->GetPresentationWindow()->Handle) != FALSE;
+	const bool visible = (parentEnabled && this->IsVisible && _webviewReady && hasVisibleArea);
 
 	if (_controller)
 	{
@@ -1271,7 +1327,9 @@ void WebBrowser::EnsureControllerBounds()
 
 	if (_dcompVisual)
 	{
-			this->ParentForm->UpdateDCompVisualOrder(_dcompVisual.Get(), WebBrowserDCompSceneLayerBand, ResolveDCompSceneOrder(this));
+			this->GetPresentationWindow()->UpdateDCompVisualOrder(
+				_dcompVisual.Get(), PresentationSceneContentLayer,
+				ResolvePresentationOrder(this));
 		_dcompVisual->SetOffsetX((float)x);
 		_dcompVisual->SetOffsetY((float)y);
 		if (_dcompClip)
@@ -1308,18 +1366,20 @@ void WebBrowser::EnsureControllerBounds()
 		}
 
 		// 位置/裁剪/挂载更新需要 Commit
-		if (this->ParentForm) this->ParentForm->CommitComposition();
+		if (this->GetPresentationWindow()) this->GetPresentationWindow()->CommitComposition();
 	}
 }
 
-void WebBrowser::SyncNativeSurface()
+void WebBrowser::OnEffectiveIsVisibleChanged(
+	bool previousValue, bool currentValue)
 {
+	Control::OnEffectiveIsVisibleChanged(previousValue, currentValue);
 	if (!_initialized && !_controller && !_dcompVisual)
 		return;
 	EnsureControllerBounds();
 }
 
-void WebBrowser::Update()
+void WebBrowser::OnRender()
 {
 	EnsureInitialized();
 	EnsureControllerBounds();
@@ -1327,11 +1387,10 @@ void WebBrowser::Update()
 }
 
 
-bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool WebBrowser::ProcessInput(const InputReport& input)
 {
-	// Composition 模式下需要显式转发鼠标输入
-	ForwardMouseMessageToWebView(message, wParam, lParam, localX, localY);
-	Control::ProcessMessage(message, wParam, lParam, localX, localY);
+	ForwardMouseInputToWebView(input);
+	Control::ProcessInput(input);
 	return true;
 }
 
@@ -1343,52 +1402,72 @@ bool WebBrowser::TryGetSystemCursorId(UINT32& outId) const
 	return true;
 }
 
-bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool WebBrowser::ForwardMouseInputToWebView(const InputReport& input)
 {
-	(void)lParam;
 	if (!_webviewReady || !_compositionController) return false;
-	if (!this->Visible || !this->IsVisual) return false;
+	if (!this->IsVisible) return false;
 
 	COREWEBVIEW2_MOUSE_EVENT_KIND kind{};
 	UINT32 mouseData = 0;
 
-	switch (message)
+	switch (input.Kind)
 	{
-	case WM_MOUSEMOVE: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE; break;
-	case WM_LBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN; break;
-	case WM_LBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP; break;
-	case WM_RBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN; break;
-	case WM_RBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP; break;
-	case WM_MBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN; break;
-	case WM_MBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP; break;
-	case WM_MOUSEWHEEL:
-		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL;
-		mouseData = (UINT32)GET_WHEEL_DELTA_WPARAM(wParam);
+	case InputReportKind::PointerMove:
+		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
 		break;
-	case WM_MOUSEHWHEEL:
+	case InputReportKind::PointerDown:
+		switch (input.ChangedButton)
+		{
+		case MouseButton::Left:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN; break;
+		case MouseButton::Right:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN; break;
+		case MouseButton::Middle:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN; break;
+		default: return false;
+		}
+		break;
+	case InputReportKind::PointerUp:
+		switch (input.ChangedButton)
+		{
+		case MouseButton::Left:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP; break;
+		case MouseButton::Right:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP; break;
+		case MouseButton::Middle:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP; break;
+		default: return false;
+		}
+		break;
+	case InputReportKind::MouseWheel:
+		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL;
+		mouseData = static_cast<UINT32>(input.WheelDelta);
+		break;
+	case InputReportKind::HorizontalMouseWheel:
 		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL;
-		mouseData = (UINT32)GET_WHEEL_DELTA_WPARAM(wParam);
+		mouseData = static_cast<UINT32>(input.WheelDelta);
 		break;
 	default:
 		return false;
 	}
 
 	COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)0;
-	if (wParam & MK_LBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON);
-	if (wParam & MK_RBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON);
-	if (wParam & MK_MBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON);
-	if (wParam & MK_XBUTTON1) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON1);
-	if (wParam & MK_XBUTTON2) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON2);
-	if (GetKeyState(VK_CONTROL) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
-	if (GetKeyState(VK_SHIFT) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
+	if (input.IsButtonPressed(MouseButton::Left)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON);
+	if (input.IsButtonPressed(MouseButton::Right)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON);
+	if (input.IsButtonPressed(MouseButton::Middle)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON);
+	if (input.IsButtonPressed(MouseButton::XButton1)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON1);
+	if (input.IsButtonPressed(MouseButton::XButton2)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON2);
+	if (input.HasModifier(ModifierKeys::Control)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
+	if (input.HasModifier(ModifierKeys::Shift)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
 
 	// localX/localY are in logical (96-DPI) units; SendMouseInput expects physical pixels within the DComp visual
-	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
-	POINT pt{ (LONG)(localX * dpiSc), (LONG)(localY * dpiSc) };
+	const float dpiSc = (this->GetPresentationWindow() ? this->GetPresentationWindow()->GetDpiScale() : 1.0f);
+	POINT pt{ (LONG)(input.X * dpiSc), (LONG)(input.Y * dpiSc) };
 	_compositionController->SendMouseInput(kind, vkeys, mouseData, pt);
 
-	// 尽量同步光标（Form 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）
-	if (message == WM_MOUSEMOVE && this->ParentForm && this->ParentForm->UnderMouse == this)
+	// 尽量同步光标（Window 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）
+	if (input.Kind == InputReportKind::PointerMove
+		&& this->GetPresentationWindow() && this->IsMouseOver)
 	{
 		UINT32 id = 0;
 		if (SUCCEEDED(_compositionController->get_SystemCursorId(&id)) && id != 0)
@@ -1401,7 +1480,7 @@ bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARA
 	}
 
 	// 点入时尝试把焦点交给 WebView
-	if (_controller && (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN))
+	if (_controller && input.Kind == InputReportKind::PointerDown)
 	{
 		_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 	}
@@ -1630,17 +1709,17 @@ struct WebBrowser::Impl
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<WebBrowser, TValue> UnsupportedWebPropertyOptions(
-		TValue defaultValue, int order, ControlPropertyEditorKind editor)
+	DependencyPropertyOptions<WebBrowser, TValue> UnsupportedWebPropertyOptions(
+		TValue defaultValue, int order, DependencyPropertyEditorKind editor)
 	{
-		ControlPropertyOptions<WebBrowser, TValue> options;
+		DependencyPropertyOptions<WebBrowser, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = ControlPropertyFlags::TracksLocalValue;
+		options.Flags = DependencyPropertyFlags::None;
 		options.Design.Category = L"Web";
 		options.Design.CategoryOrder = 170;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
@@ -1648,26 +1727,24 @@ namespace
 	{
 		return [propertyName = std::wstring(propertyName)](
 			WebBrowser& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
+					if (args.PropertyName == propertyName)
 						handler();
 				});
 		};
 	}
 }
 
-WebBrowser::WebBrowser(int x, int y, int width, int height)
+WebBrowser::WebBrowser()
 	: _impl(std::make_unique<Impl>())
 {
-	this->Location = { x, y };
-	this->Size = { width, height };
-	this->BackColor = Colors::White;
+	this->RendererBackgroundColor = Colors::White;
 }
 
 WebBrowser::~WebBrowser()
@@ -1675,14 +1752,14 @@ WebBrowser::~WebBrowser()
 	_impl->lifetime->store(false, std::memory_order_release);
 }
 
-void WebBrowser::EnsureBindingPropertiesRegistered()
+void WebBrowser::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto initialUrlOptions = UnsupportedWebPropertyOptions(
-			std::wstring{}, 10, ControlPropertyEditorKind::Text);
-		BindingPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
+			std::wstring{}, 10, DependencyPropertyEditorKind::Text);
+		DependencyPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
 			[](WebBrowser& target) { return target.GetInitialUrl(); },
 			[](WebBrowser& target, const std::wstring& value)
 			{ target.SetInitialUrl(value); },
@@ -1690,7 +1767,7 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(initialUrlOptions));
 
 		auto zoomOptions = UnsupportedWebPropertyOptions(
-			1.0, 20, ControlPropertyEditorKind::Number);
+			1.0, 20, DependencyPropertyEditorKind::Number);
 		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
@@ -1700,7 +1777,7 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 		zoomOptions.Design.Minimum = 0.25;
 		zoomOptions.Design.Maximum = 5.0;
 		zoomOptions.Design.Step = 0.05;
-		BindingPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
+		DependencyPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
 			[](WebBrowser& target) { return target.GetZoomFactor(); },
 			[](WebBrowser& target, const double& value)
 			{ target.SetZoomFactor(value); },
@@ -1708,8 +1785,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(zoomOptions));
 
 		auto contextMenuOptions = UnsupportedWebPropertyOptions(
-			true, 30, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(
+			true, 30, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(
 			L"AreDefaultContextMenusEnabled",
 			[](WebBrowser& target)
 			{ return target.GetAreDefaultContextMenusEnabled(); },
@@ -1719,8 +1796,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(contextMenuOptions));
 
 		auto statusBarOptions = UnsupportedWebPropertyOptions(
-			false, 40, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
+			false, 40, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
 			[](WebBrowser& target) { return target.GetIsStatusBarEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsStatusBarEnabled(value); },
@@ -1728,8 +1805,8 @@ void WebBrowser::EnsureBindingPropertiesRegistered()
 			std::move(statusBarOptions));
 
 		auto zoomControlOptions = UnsupportedWebPropertyOptions(
-			true, 50, ControlPropertyEditorKind::Boolean);
-		BindingPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
+			true, 50, DependencyPropertyEditorKind::Boolean);
+		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
 			[](WebBrowser& target) { return target.GetIsZoomControlEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsZoomControlEnabled(value); },
@@ -1849,32 +1926,33 @@ void WebBrowser::QuerySelectorAllOuterHtmlAsync(
 	if (callback) callback(E_NOTIMPL, L"");
 }
 
-void WebBrowser::Update()
+void WebBrowser::OnRender()
 {
 }
 
-void WebBrowser::SyncNativeSurface() {}
+void WebBrowser::OnEffectiveIsVisibleChanged(bool, bool) {}
 
 bool WebBrowser::TryGetSystemCursorId(UINT32&) const { return false; }
 
-bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool WebBrowser::ProcessInput(const InputReport& input)
 {
-	(void)message;
-	(void)wParam;
-	(void)lParam;
-	(void)localX;
-	(void)localY;
+	(void)input;
 	return true;
 }
 
 void WebBrowser::EnsureInitialized() {}
-void WebBrowser::EnsureInteropInstalled() {}
+bool WebBrowser::EnsureInteropInstalled() { return false; }
 void WebBrowser::EnsureControllerBounds() {}
 void WebBrowser::ApplyWebViewSettings() {}
-bool WebBrowser::ForwardMouseMessageToWebView(
-	UINT, WPARAM, LPARAM, int, int)
+bool WebBrowser::ForwardMouseInputToWebView(const InputReport&)
 {
 	return false;
 }
 
 #endif
+
+void WebBrowser::Arrange(cui::core::Rect finalRect)
+{
+	Control::Arrange(finalRect);
+	EnsureControllerBounds();
+}

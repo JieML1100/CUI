@@ -2,6 +2,8 @@
 
 #include "ContentControl.h"
 
+class Selector;
+
 /**
  * Shared runtime contract for generated selector item containers.
  *
@@ -12,8 +14,11 @@
 class ItemContainerControl : public ContentControl
 {
 public:
+	using UIElement::Selected;
+	using UIElement::Unselected;
 	ItemContainerControl();
-	void EnsureBindingPropertiesRegistered() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
 
 	bool InitializeItem(
 		const BindingSourceReference& item,
@@ -23,38 +28,35 @@ public:
 		const std::wstring& publicTypeName,
 		std::wstring* outError = nullptr);
 
-	void SetSelected(bool value);
+	void SetIsSelected(bool value);
 	bool GetIsSelected() const noexcept { return _selected; }
-	__declspec(property(get = GetIsSelected)) bool IsSelected;
-	void SetMouseOver(bool value);
-	bool GetIsMouseOver() const noexcept { return _mouseOver; }
-	__declspec(property(get = GetIsMouseOver)) bool IsMouseOver;
-	void SetKeyboardFocusWithin(bool value);
-	bool GetIsKeyboardFocusWithin() const noexcept
-	{
-		return _keyboardFocusWithin;
-	}
-	__declspec(property(get = GetIsKeyboardFocusWithin))
-		bool IsKeyboardFocusWithin;
-
+	__declspec(property(get = GetIsSelected, put = SetIsSelected))
+		bool IsSelected;
 	size_t ItemIndex() const noexcept { return _index; }
 	void SetItemIndex(size_t value) noexcept { _index = value; }
 	Control* Content() const noexcept { return GetGeneratedContent(); }
 
 protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::ListItem, L"ListItem");
+	}
 	virtual void ActivateItem() {}
 	virtual void FocusOwner() {}
+	virtual void OnIsSelectedRequested(bool) {}
+	void OnIsMouseOverChanged(bool, bool) override
+	{
+		UpdateThemeBackground();
+	}
 
 private:
+	friend class Selector;
 	size_t _index = 0;
 	bool _selected = false;
-	bool _mouseOver = false;
-	bool _keyboardFocusWithin = false;
-	bool _selectionGestureAttached = false;
 	Event<void(ItemContainerControl*)> _selectedChanged;
-	Event<void(ItemContainerControl*)> _mouseOverChanged;
-	Event<void(ItemContainerControl*)> _keyboardFocusWithinChanged;
 
-	void AttachSelectionGesture(Control& control);
+	void ApplyIsSelectedValue(bool value);
+	void SetCurrentIsSelected(bool value);
 	void UpdateThemeBackground();
 };

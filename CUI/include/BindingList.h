@@ -54,6 +54,20 @@ public:
 		GroupsChangedHandler handler) = 0;
 };
 
+/** Optional current-item contract exposed by collection views. */
+class IBindingListCurrentView
+{
+public:
+	using CurrentChangedHandler = std::function<void()>;
+
+	virtual ~IBindingListCurrentView() = default;
+	virtual int CurrentPosition() const noexcept = 0;
+	virtual BindingSourceReference CurrentItem() const noexcept = 0;
+	virtual bool MoveCurrentToPosition(int position) = 0;
+	virtual EventConnection SubscribeCurrentChanged(
+		CurrentChangedHandler handler) = 0;
+};
+
 /** Strong BindingValue payload used by ItemsSource properties. */
 class BindingListReference final
 {
@@ -242,21 +256,12 @@ inline BindingPathObservation ObserveBindingPaths(
 
 inline std::wstring GetBindingRecordText(
 	const BindingSourceReference& item,
-	const std::wstring& path,
-	std::initializer_list<const wchar_t*> fallbacks)
+	const std::wstring& path)
 {
-	if (!item) return {};
+	if (!item || path.empty()) return {};
 	BindingValue value;
-	bool found = !path.empty()
-		&& TryGetBindingPathValue(*item.Get(), path, value);
-	if (!found)
-		for (const auto* fallback : fallbacks)
-			if (item.Get()->TryGetValue(fallback, value))
-			{
-				found = true;
-				break;
-			}
-	return found ? value.ToString() : std::wstring{};
+	return TryGetBindingPathValue(*item.Get(), path, value)
+		? value.ToString() : std::wstring{};
 }
 
 /** Reads one ItemsSource value. An empty path denotes the item record itself. */

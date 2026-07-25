@@ -8,35 +8,63 @@
 #include "../../CUI/include/Resource.h"
 #include <map>
 #include <memory>
+#include <limits>
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace DesignerModel
 {
-struct DesignFormModel
+/** UTF-16 source range retained by the normalized document frontend. */
+struct XamlSourceSpan
 {
-	std::wstring Name = L"MainForm";
-	std::wstring Text = L"Form";
-	std::wstring FontName;
-	float FontSize = 18.0f;
-	SIZE Size{ 800, 600 };
-	POINT Location{ 100, 100 };
-	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F ForeColor = Colors::Black;
-	bool ShowInTaskBar = true;
-	bool TopMost = false;
-	bool Enable = true;
-	bool Visible = true;
-	bool VisibleHead = true;
-	int HeadHeight = 24;
-	bool MinBox = true;
-	bool MaxBox = true;
-	bool CloseBox = true;
-	bool CenterTitle = true;
-	bool AllowResize = true;
-	std::map<std::wstring, std::wstring> EventHandlers;
+	static constexpr std::size_t UnknownOffset = static_cast<std::size_t>(-1);
 
-	bool operator==(const DesignFormModel& other) const;
+	std::size_t Utf16Offset = UnknownOffset;
+	std::size_t Utf16Length = 0;
+	/** 1-based Unicode-scalar line/column coordinates. */
+	std::size_t Line = 0;
+	std::size_t Column = 0;
+	std::size_t EndLine = 0;
+	std::size_t EndColumn = 0;
+
+	bool Valid() const noexcept
+	{
+		return Utf16Offset != UnknownOffset && Line != 0 && Column != 0;
+	}
+	bool operator==(const XamlSourceSpan&) const = default;
+};
+
+enum class XamlDiagnosticStage : unsigned char
+{
+	Unknown,
+	Parse,
+	Normalize,
+	Materialize,
+	Reload,
+	CodeGeneration
+};
+
+/** Shared syntax/semantic diagnostic used by every normalized XAML consumer. */
+struct XamlDocumentDiagnostic
+{
+	static constexpr std::size_t UnknownOffset = XamlSourceSpan::UnknownOffset;
+
+	std::wstring Message;
+	std::wstring QName;
+	std::wstring Member;
+	XamlDiagnosticStage Stage = XamlDiagnosticStage::Unknown;
+	std::size_t Line = 0;
+	std::size_t Column = 0;
+	std::size_t EndLine = 0;
+	std::size_t EndColumn = 0;
+	std::size_t Utf16Offset = UnknownOffset;
+	std::size_t Utf16Length = 0;
+
+	bool HasLocation() const noexcept { return Line != 0 && Column != 0; }
+	bool HasSourceOffset() const noexcept { return Utf16Offset != UnknownOffset; }
+	void Apply(const XamlSourceSpan& span) noexcept;
 };
 
 /**
@@ -92,6 +120,221 @@ struct DesignObjectResourceDictionary
 	bool operator==(const DesignObjectResourceDictionary& other) const;
 };
 
+enum class DesignGridLengthUnit
+{
+	Auto,
+	Pixel,
+	Star
+};
+
+struct DesignGridLength
+{
+	double Value = 1.0;
+	DesignGridLengthUnit Unit = DesignGridLengthUnit::Auto;
+	bool operator==(const DesignGridLength&) const = default;
+};
+
+struct DesignGridTrack
+{
+	DesignGridLength Length;
+	double Minimum = 0.0;
+	double Maximum = (std::numeric_limits<float>::max)();
+	bool operator==(const DesignGridTrack&) const = default;
+};
+
+struct DesignColor
+{
+	double R = 0.0;
+	double G = 0.0;
+	double B = 0.0;
+	double A = 1.0;
+	bool operator==(const DesignColor&) const = default;
+};
+
+struct DesignChartPoint
+{
+	std::wstring Label;
+	double Value = 0.0;
+	unsigned long long Tag = 0;
+	std::optional<DesignColor> Color;
+	bool operator==(const DesignChartPoint&) const = default;
+};
+
+struct DesignChartSeries
+{
+	std::wstring Name;
+	bool Visible = true;
+	std::optional<DesignColor> Color;
+	std::vector<DesignChartPoint> Points;
+	bool operator==(const DesignChartSeries&) const = default;
+};
+
+struct DesignRelativePanelConstraints
+{
+	std::optional<bool> CenterHorizontal;
+	std::optional<bool> CenterVertical;
+	std::optional<bool> AlignLeftWithPanel;
+	std::optional<bool> AlignTopWithPanel;
+	std::optional<bool> AlignRightWithPanel;
+	std::optional<bool> AlignBottomWithPanel;
+	std::optional<std::wstring> Above;
+	std::optional<std::wstring> Below;
+	std::optional<std::wstring> LeftOf;
+	std::optional<std::wstring> RightOf;
+	std::optional<std::wstring> AlignLeftWith;
+	std::optional<std::wstring> AlignRightWith;
+	std::optional<std::wstring> AlignTopWith;
+	std::optional<std::wstring> AlignBottomWith;
+	bool Empty() const noexcept;
+	bool operator==(const DesignRelativePanelConstraints&) const = default;
+};
+
+enum class DesignNodeChildRole
+{
+	Default,
+	Header
+};
+
+/** Authored, strongly typed structural content of one XAML element. */
+struct DesignNodeStructure
+{
+	/** Authored Button/MenuItem ICommandSource target x:Name. */
+	std::wstring CommandTarget;
+	std::wstring ItemsSourceResource;
+	std::wstring ItemTemplate;
+	std::wstring ContentTemplate;
+	std::wstring HeaderTemplate;
+	std::wstring ControlTemplate;
+	std::wstring GroupStyle;
+	std::wstring ItemsPanel;
+	std::wstring ItemContainerStyle;
+	std::wstring MediaFile;
+	DesignNodeChildRole ChildRole = DesignNodeChildRole::Default;
+	std::optional<DesignRelativePanelConstraints> RelativePanel;
+
+	std::optional<std::vector<DesignGridTrack>> GridRows;
+	std::optional<std::vector<DesignGridTrack>> GridColumns;
+	std::optional<std::vector<DesignChartSeries>> ChartSeries;
+
+	bool Empty() const noexcept;
+	bool operator==(const DesignNodeStructure&) const = default;
+};
+
+/** Ephemeral state created only while expanding component/control templates. */
+struct DesignNodeTemplateState
+{
+	bool ComponentExpanded = false;
+	bool ControlTemplateExpanded = false;
+	bool Generated = false;
+	bool ControlTemplateRoot = false;
+	std::wstring Owner;
+	std::wstring ContentOwner;
+	std::wstring PartName;
+	std::wstring AppliedControlTemplate;
+	std::wstring AppliedControlTemplateResource;
+	bool AppliedControlTemplateFromTheme = false;
+	std::wstring ControlTemplateChain;
+	bool operator==(const DesignNodeTemplateState&) const = default;
+};
+
+/** One authored XAML member value, before styles and bindings are resolved. */
+struct DesignPropertyAssignment
+{
+	DesignerStyleValue Value;
+	std::wstring ResourceKey;
+	std::wstring DynamicResourceKey;
+
+	bool operator==(const DesignPropertyAssignment&) const = default;
+};
+
+/** Transient spans attached to one normalized element and its authored members. */
+struct DesignNodeSourceInfo
+{
+	XamlSourceSpan Element;
+	std::map<std::wstring, XamlSourceSpan, DesignPropertyNameLess> Members;
+
+	void RecordMember(std::wstring name, XamlSourceSpan span);
+	const XamlSourceSpan* FindMember(const std::wstring& name) const noexcept;
+};
+
+/** Transient document-level spans for resources, styles and templates. */
+struct XamlDocumentSourceMap
+{
+	XamlSourceSpan Root;
+	std::map<std::wstring, XamlSourceSpan, DesignPropertyNameLess> Symbols;
+
+	void RecordSymbol(std::wstring symbol, XamlSourceSpan span);
+	const XamlSourceSpan* FindSymbol(const std::wstring& symbol) const noexcept;
+	const XamlSourceSpan* FindMentionedSymbol(
+		const std::wstring& message,
+		std::wstring* matchedSymbol = nullptr) const noexcept;
+};
+
+/** Authored target-member expressions, keyed by canonical Schema member name. */
+using DesignBindingMap = std::map<
+	std::wstring, DesignerDataBinding, DesignPropertyNameLess>;
+
+/**
+ * Schema-facing authored properties of one XAML element. Property names remain
+ * data because XAML may define new component members; values and resource
+ * expressions are nevertheless strongly typed and cannot carry unrelated
+ * designer state.
+ */
+struct DesignNodeProperties
+{
+	std::wstring StyleResourceKey;
+	std::map<std::wstring, DesignPropertyAssignment, DesignPropertyNameLess>
+		Values;
+
+	bool Empty() const noexcept;
+	const DesignPropertyAssignment* Find(const std::wstring& name) const noexcept;
+	DesignPropertyAssignment* Find(const std::wstring& name) noexcept;
+	void Set(std::wstring name, DesignPropertyAssignment assignment);
+	bool Remove(const std::wstring& name) noexcept;
+	bool operator==(const DesignNodeProperties&) const = default;
+};
+
+/** Canonical serialization adapter; the document itself never stores this bag. */
+DesignValue EncodeDesignNodeStructure(
+	UIClass type,
+	const DesignNodeStructure& structure);
+bool DecodeDesignNodeStructure(
+	UIClass type,
+	const DesignValue& value,
+	DesignNodeStructure& structure,
+	std::wstring* outError = nullptr);
+
+/** Versioned snapshot adapter; the document itself never stores a value bag. */
+DesignValue EncodeDesignNodeProperties(const DesignNodeProperties& properties);
+bool DecodeDesignNodeProperties(
+	const DesignValue& value,
+	DesignNodeProperties& properties,
+	std::wstring* outError = nullptr);
+
+/** Versioned snapshot adapters; the document stores only the typed maps. */
+DesignValue EncodeDesignNodeBindings(const DesignBindingMap& bindings);
+bool DecodeDesignNodeBindings(
+	const DesignValue& value,
+	DesignBindingMap& bindings,
+	std::wstring* outError = nullptr);
+DesignValue EncodeDesignNodeEvents(const DesignEventHandlerMap& events);
+bool DecodeDesignNodeEvents(
+	const DesignValue& value,
+	DesignEventHandlerMap& events,
+	std::wstring* outError = nullptr);
+DesignValue EncodeDesignCommandBindings(
+	const std::vector<DesignCommandBinding>& bindings);
+bool DecodeDesignCommandBindings(
+	const DesignValue& value,
+	std::vector<DesignCommandBinding>& bindings,
+	std::wstring* outError = nullptr);
+DesignValue EncodeDesignInputBindings(
+	const std::vector<DesignInputBinding>& bindings);
+bool DecodeDesignInputBindings(
+	const DesignValue& value,
+	std::vector<DesignInputBinding>& bindings,
+	std::wstring* outError = nullptr);
+
 struct DesignNode
 {
 	int Id = 0;
@@ -99,6 +342,8 @@ struct DesignNode
 	std::wstring ParentRef;
 	std::wstring Name;
 	UIClass Type = UIClass::UI_Base;
+	/** Authoritative built-in XAML identity; Native Type selects behavior only. */
+	RuntimeTypeId XamlType;
 	/** Non-empty when the element type comes from ComponentDefinition. */
 	DesignerComponentType ComponentType;
 	/** Component content property used by this public visual child. */
@@ -110,10 +355,15 @@ struct DesignNode
 	int Order = -1;
 	// Pure design-time placement protection; it is never projected to runtime.
 	bool Locked = false;
-	DesignValue Props = DesignValue::object();
-	DesignValue Extra = DesignValue::object();
-	DesignValue Events = DesignValue::object();
-	DesignValue Bindings = DesignValue::object();
+	DesignNodeProperties Properties;
+	DesignNodeStructure Structure;
+	DesignNodeTemplateState TemplateState;
+	DesignEventHandlerMap Events;
+	DesignBindingMap Bindings;
+	std::vector<DesignCommandBinding> CommandBindings;
+	std::vector<DesignInputBinding> InputBindings;
+	/** Frontend-only spans; excluded from snapshots and semantic equality. */
+	DesignNodeSourceInfo Source;
 	/** Resources declared by <Control.Resources>; values are lexically scoped. */
 	DesignerStyleSheet LocalResources;
 	/** Structural resources owned by this lexical Resources scope. */
@@ -134,7 +384,7 @@ struct DesignNode
 struct DesignComponentDefinition
 {
 	DesignerComponentType Type;
-	UIClass BaseType = UIClass::UI_Panel;
+	UIClass BaseType = UIClass::UI_Canvas;
 	std::wstring DisplayName;
 	std::wstring Category = L"Components";
 	std::vector<DesignerComponentPropertyDescriptor> Properties;
@@ -297,9 +547,6 @@ struct DesignGroupStyle
 {
 	std::wstring Key;
 	std::wstring HeaderTemplate;
-	float HeaderIndent = 16.0f;
-	float HeaderSpacing = 4.0f;
-	float HeaderHeight = 24.0f;
 	std::wstring SourceDictionary;
 
 	bool operator==(const DesignGroupStyle&) const = default;
@@ -307,11 +554,13 @@ struct DesignGroupStyle
 
 struct DesignDocument
 {
-	static constexpr int CurrentSchemaVersion = 29;
+	static constexpr int CurrentSchemaVersion = 43;
+	DesignDocument();
 	std::string Schema = "cui.designer";
 	int SchemaVersion = CurrentSchemaVersion;
 	int NextStableId = 1;
-	DesignFormModel Form;
+	/** The XAML root is an ordinary schema node; Content remains in Nodes. */
+	DesignNode Window;
 	DesignCodeBehindModel CodeBehind;
 	DesignerDataContextSchema DataContextSchema;
 	DesignerStyleSheet StyleSheet;
@@ -324,6 +573,8 @@ struct DesignDocument
 	std::vector<DesignDataList> DataLists;
 	std::vector<DesignCollectionViewSource> CollectionViews;
 	std::vector<DesignNode> Nodes;
+	/** Frontend-only source map; excluded from snapshots and semantic equality. */
+	XamlDocumentSourceMap Sources;
 	const DesignComponentDefinition* FindComponent(
 		const DesignerComponentType& type) const;
 	const DesignComponentDefinition* FindComponent(
@@ -427,6 +678,9 @@ struct DesignDocument
 
 	int AllocateNodeId();
 	void RecalculateNextStableId();
+	/** Validates every authored CommandTarget in every independent namescope. */
+	bool ValidateCommandTargetReferences(
+		std::wstring* outError = nullptr) const;
 	void Clear();
 	bool operator==(const DesignDocument& other) const;
 };

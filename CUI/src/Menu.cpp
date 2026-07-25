@@ -1,15 +1,46 @@
-﻿#include "Menu.h"
-#include "Form.h"
+#include "Menu.h"
+#include "DependencyPropertyInfrastructure.h"
+#include "StyleInfrastructure.h"
+#include "TemplateInfrastructure.h"
+#include "Window.h"
+#include "WindowInfrastructure.h"
+#include "XamlInfrastructure.h"
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <unordered_set>
 
 namespace
 {
+	// Private fallback-presenter metrics. They are deliberately not dependency
+	// properties: a ControlTemplate/ItemsPanel owns authored menu chrome.
+	constexpr float MenuItemHorizontalPadding = 10.0f;
+	constexpr float PopupVerticalPadding = 6.0f;
+	constexpr float PopupItemExtent = 26.0f;
+	constexpr float MenuItemCornerRadius = 6.0f;
+	constexpr float PopupCornerRadius = 8.0f;
+	constexpr float PopupItemCornerRadius = 6.0f;
+	constexpr float PopupItemHorizontalInset = 6.0f;
+	constexpr D2D1_COLOR_F MenuBarBackground = cui::theme::palette::Surface;
+	constexpr D2D1_COLOR_F MenuBarBorder = cui::theme::palette::Border;
+	constexpr D2D1_COLOR_F MenuItemHighlight = cui::theme::palette::AccentSoft;
+	constexpr D2D1_COLOR_F MenuItemActive = cui::theme::palette::AccentSelected;
+	constexpr D2D1_COLOR_F PopupBackground = cui::theme::palette::Surface;
+	constexpr D2D1_COLOR_F PopupBorder = cui::theme::palette::Border;
+	constexpr D2D1_COLOR_F PopupHighlight = cui::theme::palette::AccentSelected;
+	constexpr D2D1_COLOR_F PopupText = cui::theme::palette::TextPrimary;
+	constexpr D2D1_COLOR_F PopupSeparator = cui::theme::palette::Border;
+
+	struct ScopeExit
+	{
+		std::function<void()> Action;
+		~ScopeExit() { if (Action) Action(); }
+	};
+
 	struct MenuPanel
 	{
-		MenuItem* Owner = nullptr;                 // 该层面板对应的 owner（其 SubItems 为该面板内容）
-		const std::vector<MenuItem*>* Items = nullptr;
+		MenuItem* Owner = nullptr;
+		std::span<Control* const> Items;
 		float X = 0;
 		float Y = 0;
 		float W = 0;
@@ -17,162 +48,653 @@ namespace
 		bool OpenedToLeft = false;               // 相对上一层面板是否向左展开
 	};
 
-	float EaseOutCubic(float t)
-	{
-		t = (std::clamp)(t, 0.0f, 1.0f);
-		const float inv = 1.0f - t;
-		return 1.0f - inv * inv * inv;
-	}
-
-	D2D1_COLOR_F FadeColor(D2D1_COLOR_F color, float alpha)
-	{
-		color.a *= (std::clamp)(alpha, 0.0f, 1.0f);
-		return color;
-	}
-
 	D2D1_COLOR_F BoostAlpha(D2D1_COLOR_F color, float factor)
 	{
 		color.a = (std::clamp)(color.a * factor, 0.0f, 1.0f);
 		return color;
 	}
+
+	bool IsSeparator(const Control* item)
+	{
+		return dynamic_cast<const Separator*>(item) != nullptr;
+	}
+
+	MenuItem* AsMenuItem(Control* item)
+	{
+		return dynamic_cast<MenuItem*>(item);
+	}
+
+	bool IsInteractive(Control* item)
+	{
+		auto* menuItem = AsMenuItem(item);
+		return menuItem && menuItem->IsVisible
+			&& menuItem->IsEffectivelyEnabled();
+	}
+
+	bool FindMenuItemPath(
+		std::span<Control* const> items,
+		const MenuItem* target,
+		std::vector<int>& path)
+	{
+		for (int index = 0; index < static_cast<int>(items.size()); ++index)
+		{
+			auto* item = AsMenuItem(items[static_cast<size_t>(index)]);
+			if (!item) continue;
+			path.push_back(index);
+			if (item == target
+				|| FindMenuItemPath(item->GetMenuItemsView(), target, path))
+				return true;
+			path.pop_back();
+		}
+		return false;
+	}
 }
 
 UIClass MenuItem::Type() { return UIClass::UI_MenuItem; }
 
-MenuItem::MenuItem(std::wstring text, int id)
+void MenuItem::RegisterDependencyProperties()
 {
-	this->Text = text;
-	this->Id = id;
+	HeaderedItemsControl::RegisterDependencyProperties();
+	static const bool registered = []
+	{
+		auto options = DependencyPropertyOptions<MenuItem, std::wstring>{
+			std::wstring{}, DependencyPropertyFlags::None };
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		options.Changed = [](
+			MenuItem& target, const std::wstring&, const std::wstring&)
+		{
+			target.RefreshCommandSource();
+		};
+		DependencyPropertyRegistry::Register<MenuItem, std::wstring>(
+			L"Command",
+			[](MenuItem& target) { return target.Command; },
+			[](MenuItem& target, const std::wstring& value)
+			{ target.Command = value; },
+			{}, options);
+		options.Design.Order = 20;
+		DependencyPropertyRegistry::Register<MenuItem, std::wstring>(
+			L"CommandParameter",
+			[](MenuItem& target) { return target.CommandParameter; },
+			[](MenuItem& target, const std::wstring& value)
+			{ target.CommandParameter = value; },
+			{}, options);
+		DependencyPropertyOptions<MenuItem, std::wstring> gestureOptions{
+			std::wstring{}, DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsRender };
+		gestureOptions.Design.Category = L"Behavior";
+		gestureOptions.Design.CategoryOrder = 300;
+		gestureOptions.Design.Order = 25;
+		gestureOptions.Design.Editor = DependencyPropertyEditorKind::Text;
+		gestureOptions.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		gestureOptions.Changed = [](
+			MenuItem& target, const std::wstring&, const std::wstring&)
+		{
+			if (target._structureChanged) target._structureChanged();
+		};
+		DependencyPropertyRegistry::Register<MenuItem, std::wstring>(
+			L"InputGestureText",
+			[](MenuItem& target) { return target.InputGestureText; },
+			[](MenuItem& target, const std::wstring& value)
+			{ target.InputGestureText = value; },
+			{}, std::move(gestureOptions));
+
+		auto booleanOptions = [](bool defaultValue, int order,
+			DependencyPropertyFlags flags = DependencyPropertyFlags::None)
+		{
+			DependencyPropertyOptions<MenuItem, bool> result;
+			result.DefaultValue = defaultValue;
+			result.Flags = flags;
+			result.Design.Category = L"Behavior";
+			result.Design.CategoryOrder = 300;
+			result.Design.Order = order;
+			result.Design.Editor = DependencyPropertyEditorKind::Boolean;
+			result.Design.Persistence = DependencyPropertyPersistence::Metadata;
+			return result;
+		};
+		auto checkableOptions = booleanOptions(false, 30);
+		DependencyPropertyRegistry::Register<MenuItem, bool>(L"IsCheckable",
+			[](MenuItem& target) { return target.IsCheckable; },
+			[](MenuItem& target, const bool& value)
+			{ target.IsCheckable = value; },
+			{}, std::move(checkableOptions));
+
+		auto checkedOptions = booleanOptions(
+			false, 35, DependencyPropertyFlags::AffectsRender);
+		checkedOptions.Changed = [](
+			MenuItem& target, const bool&, const bool& value)
+		{
+			const ControlWeakReference lifetime(&target);
+			target.SetStyleState(ControlStyleState::Checked, value);
+			RoutedEventArgs args;
+			if (value) target.Checked(&target, args);
+			else target.Unchecked(&target, args);
+			if (auto* source = dynamic_cast<MenuItem*>(lifetime.Get()))
+				source->NotifyAccessibilityStateChanged();
+		};
+		DependencyPropertyRegistry::Register<MenuItem, bool>(L"IsChecked",
+			[](MenuItem& target) { return target.IsChecked; },
+			[](MenuItem& target, const bool& value)
+			{ target.IsChecked = value; },
+			{}, std::move(checkedOptions));
+
+		auto staysOpenOptions = booleanOptions(false, 40);
+		DependencyPropertyRegistry::Register<MenuItem, bool>(L"StaysOpenOnClick",
+			[](MenuItem& target) { return target.StaysOpenOnClick; },
+			[](MenuItem& target, const bool& value)
+			{ target.StaysOpenOnClick = value; },
+			{}, std::move(staysOpenOptions));
+
+		auto highlightedOptions = booleanOptions(
+			false, 45, DependencyPropertyFlags::AffectsRender);
+		highlightedOptions.IsReadOnly = true;
+		highlightedOptions.Flags = DependencyPropertyFlags::AffectsRender;
+		highlightedOptions.Design.Category = L"State";
+		highlightedOptions.Design.CategoryOrder = 70;
+		highlightedOptions.Design.Persistence =
+			DependencyPropertyPersistence::Transient;
+		highlightedOptions.Design.Browsable = false;
+		DependencyPropertyRegistry::Register<MenuItem, bool>(L"IsHighlighted",
+			[](MenuItem& target) { return target.IsHighlighted; },
+			[](MenuItem& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					L"IsHighlighted", target._isHighlighted, value);
+			},
+			{}, std::move(highlightedOptions));
+
+		auto submenuOptions = booleanOptions(
+			false, 50, DependencyPropertyFlags::AffectsRender);
+		submenuOptions.Changed = [](
+			MenuItem& target, const bool&, const bool& value)
+		{
+			const ControlWeakReference lifetime(&target);
+			RoutedEventArgs args;
+			if (value) target.SubmenuOpened(&target, args);
+			else target.SubmenuClosed(&target, args);
+			auto* source = dynamic_cast<MenuItem*>(lifetime.Get());
+			if (source && !source->_projectingInteractionState
+				&& source->_interactionStateChanged)
+				source->_interactionStateChanged(*source);
+		};
+		DependencyPropertyRegistry::Register<MenuItem, bool>(L"IsSubmenuOpen",
+			[](MenuItem& target) { return target.IsSubmenuOpen; },
+			[](MenuItem& target, const bool& value)
+			{ target.IsSubmenuOpen = value; },
+			{}, std::move(submenuOptions));
+		auto targetOptions =
+			DependencyPropertyOptions<MenuItem, ControlWeakReference>{
+			ControlWeakReference{},
+			DependencyPropertyFlags::None };
+		targetOptions.Design.Category = L"Behavior";
+		targetOptions.Design.CategoryOrder = 300;
+		targetOptions.Design.Order = 60;
+		targetOptions.Design.Editor = DependencyPropertyEditorKind::Auto;
+		targetOptions.Design.Persistence =
+			DependencyPropertyPersistence::Native;
+		DependencyPropertyRegistry::Register<
+			MenuItem, ControlWeakReference>(
+			L"CommandTarget",
+			[](MenuItem& target) { return target._commandTarget; },
+			[](MenuItem& target, const ControlWeakReference& value)
+			{ target.ApplyCommandTarget(value); },
+			{}, std::move(targetOptions));
+		return true;
+	}();
+	(void)registered;
+}
+
+GET_CPP(MenuItem, std::wstring, Command) { return _command; }
+SET_CPP(MenuItem, std::wstring, Command)
+{
+	SetPropertyField(L"Command", _command, value);
+}
+GET_CPP(MenuItem, std::wstring, CommandParameter)
+{
+	return _commandParameter;
+}
+SET_CPP(MenuItem, std::wstring, CommandParameter)
+{
+	SetPropertyField(L"CommandParameter", _commandParameter, value);
+}
+GET_CPP(MenuItem, std::wstring, InputGestureText)
+{
+	return _inputGestureText;
+}
+SET_CPP(MenuItem, std::wstring, InputGestureText)
+{
+	(void)SetPropertyField(
+		L"InputGestureText", _inputGestureText, std::move(value));
+}
+GET_CPP(MenuItem, bool, IsCheckable) { return _isCheckable; }
+SET_CPP(MenuItem, bool, IsCheckable)
+{
+	(void)SetPropertyField(L"IsCheckable", _isCheckable, value);
+}
+GET_CPP(MenuItem, bool, IsChecked) { return _isChecked; }
+SET_CPP(MenuItem, bool, IsChecked)
+{
+	(void)SetPropertyField(L"IsChecked", _isChecked, value);
+}
+GET_CPP(MenuItem, bool, StaysOpenOnClick) { return _staysOpenOnClick; }
+SET_CPP(MenuItem, bool, StaysOpenOnClick)
+{
+	(void)SetPropertyField(L"StaysOpenOnClick", _staysOpenOnClick, value);
+}
+GET_CPP(MenuItem, bool, IsHighlighted) { return _isHighlighted; }
+GET_CPP(MenuItem, bool, IsSubmenuOpen) { return _isSubmenuOpen; }
+SET_CPP(MenuItem, bool, IsSubmenuOpen)
+{
+	(void)SetPropertyField(L"IsSubmenuOpen", _isSubmenuOpen, value);
+}
+
+void MenuItem::SetIsHighlightedCore(bool value)
+{
+	if (_isHighlighted == value) return;
+	if (!SetReadOnlyPropertyField(
+		L"IsHighlighted", _isHighlighted, value)) return;
+	SetStyleState(ControlStyleState::Hovered, value);
+}
+
+void MenuItem::SetIsSubmenuOpenCore(bool value)
+{
+	if (_isSubmenuOpen == value) return;
+	_projectingInteractionState = true;
+	(void)SetCurrentPropertyField(L"IsSubmenuOpen", _isSubmenuOpen, value);
+	_projectingInteractionState = false;
+}
+
+void MenuItem::SetHeader(BindingValue value)
+{
+	HeaderedItemsControl::SetHeader(value);
+	if (_structureChanged) _structureChanged();
+}
+
+GET_CPP(MenuItem, Control*, CommandTarget) { return _commandTarget.Get(); }
+SET_CPP(MenuItem, Control*, CommandTarget)
+{
+	const ControlWeakReference sourceLifetime(this);
+	if (value)
+	{
+		(void)TrySetPropertyValue(
+			L"CommandTarget",
+			BindingValue(ControlWeakReference(value)),
+			DependencyPropertyValueSource::Local);
+		return;
+	}
+	if (ClearPropertyValue(
+		L"CommandTarget", DependencyPropertyValueSource::Local))
+		return;
+	if (auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get()))
+		source->ApplyCommandTarget({});
+}
+
+void MenuItem::ClearCommandTarget()
+{
+	SetCommandTarget(nullptr);
+}
+
+void MenuItem::ApplyCommandTarget(const ControlWeakReference& value)
+{
+	const ControlWeakReference sourceLifetime(this);
+	if (_commandTarget == value) return;
+	_commandTarget = value;
+	if (auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get()))
+		source->RefreshCommandSource();
+}
+
+MenuItem::MenuItem()
+	: HeaderedItemsControl()
+{
+	RegisterDependencyProperties();
+	RetainEventConnection(OnPropertyValueChanged.Subscribe(
+		[this](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
+		{
+			if ((args.PropertyName == L"IsEnabled"
+				|| args.PropertyName == L"Visibility"
+				|| args.PropertyName == L"IsVisible")
+				&& _interactionStateChanged)
+				_interactionStateChanged(*this);
+		}));
 	this->_backcolor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->_bordercolor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->_forecolor = Colors::WhiteSmoke;
-	this->Cursor = CursorKind::Hand;
-	SubItems.SetOwnerChangedHandler(
-		[this](const CollectionChangedEventArgs& change)
-		{ OnSubItemsChanged(change); });
+	this->_forecolor = cui::theme::palette::TextPrimary;
+	(void)TrySetPropertyValue(
+		L"Cursor", BindingValue(CursorKind::Hand),
+		DependencyPropertyValueSource::Theme);
+	SuppressItemsPresentation();
 }
 
 MenuItem::~MenuItem()
 {
-	SubItems.SetOwnerChangedHandler({});
 	_structureChanged = {};
-	std::unordered_set<MenuItem*> deleted;
-	for (auto* item : SubItems)
+	_interactionStateChanged = {};
+	_commandCanExecuteConnection.Disconnect();
+	for (auto* entry : _items)
 	{
-		if (!item || !deleted.insert(item).second) continue;
-		item->_parentItem = nullptr;
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
 		item->SetStructureChangedHandler({});
-		delete item;
+		item->SetInteractionStateChangedHandler({});
+		item->DetachCommandHost(*this);
+		item->_parentItem = nullptr;
 	}
-	static_cast<SubItemCollection::Base&>(SubItems).clear();
-	_observedSubItems.clear();
-}
-
-bool MenuItem::CanAdopt(const MenuItem* item) const noexcept
-{
-	if (!item || item == this || item->Parent)
-		return false;
-	for (auto* ancestor = this; ancestor; ancestor = ancestor->_parentItem)
-	{
-		if (ancestor == item) return false;
-	}
-	if (item->_parentItem && item->_parentItem != this)
-		return false;
-	return std::find(SubItems.begin(), SubItems.end(), item)
-		== SubItems.end();
+	_items.clear();
 }
 
 void MenuItem::SetStructureChangedHandler(std::function<void()> handler)
 {
 	_structureChanged = std::move(handler);
-	for (auto* child : SubItems)
+	for (auto* entry : _items)
 	{
+		auto* child = AsMenuItem(entry);
 		if (!child) continue;
 		child->_parentItem = this;
 		child->SetStructureChangedHandler(_structureChanged);
 	}
-	_observedSubItems.assign(SubItems.begin(), SubItems.end());
 }
 
-void MenuItem::OnSubItemsChanged(const CollectionChangedEventArgs& change)
+void MenuItem::SetInteractionStateChangedHandler(
+	std::function<void(MenuItem&)> handler)
 {
-	(void)change;
-	for (auto* child : _observedSubItems)
+	_interactionStateChanged = std::move(handler);
+	for (auto* entry : _items)
 	{
-		if (!child || std::find(SubItems.begin(), SubItems.end(), child)
-			!= SubItems.end()) continue;
-		if (child->_parentItem == this) child->_parentItem = nullptr;
-		child->SetStructureChangedHandler({});
+		auto* child = AsMenuItem(entry);
+		if (!child) continue;
+		child->SetInteractionStateChangedHandler(
+			_interactionStateChanged);
 	}
-	for (auto* child : SubItems)
+}
+
+void MenuItem::RefreshCommandSource()
+{
+	const auto refreshVersion = ++_commandSourceRefreshVersion;
+	_commandCanExecuteConnection.Disconnect();
+	if (_command.empty())
 	{
+		ClearCommandCanExecuteState();
+		return;
+	}
+	const ControlWeakReference sourceLifetime(this);
+	auto connection = RoutedCommandManager::ObserveCanExecute(
+		*this,
+		RoutedCommandSourceQuery{
+			RoutedCommand(_command), _commandParameter,
+			EffectiveCommandTarget() },
+		[sourceLifetime, refreshVersion](
+			Control& source, const RoutedCommandCanExecuteResult& result)
+		{
+			auto* current = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+			if (current != &source
+				|| current->_commandSourceRefreshVersion != refreshVersion)
+				return;
+			current->SetCommandCanExecuteState(result.CanExecute);
+		});
+	// Initial CanExecute is synchronous and may re-enter authored properties or
+	// destroy the MenuItem.  Only the still-current source owns the connection.
+	auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	if (!source || source->_commandSourceRefreshVersion != refreshVersion)
+		return;
+	source->_commandCanExecuteConnection = std::move(connection);
+}
+
+void MenuItem::SynchronizeCommandContext(
+	Window* window, ControlWeakReference defaultCommandTarget)
+{
+	const ControlWeakReference sourceLifetime(this);
+	const ControlWeakReference windowLifetime(window);
+	const bool hostChanged = GetPresentationWindow() != window;
+	_defaultCommandTarget = defaultCommandTarget;
+	Control::PropagatePresentationWindow(this, window);
+	auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	if (!source || hostChanged) return;
+	source->RefreshCommandSource();
+	source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	if (!source) return;
+	std::vector<ControlWeakReference> children;
+	children.reserve(source->_items.size());
+	for (auto* entry : source->_items)
+		if (auto* child = AsMenuItem(entry)) children.emplace_back(child);
+	for (const auto& childLifetime : children)
+	{
+		source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+		auto* child = dynamic_cast<MenuItem*>(childLifetime.Get());
+		if (!source || !child || source->IndexOfSubItem(child) < 0)
+			continue;
+		child->_parentItem = source;
+		if (child->GetLogicalParent() != source)
+			cui::framework::XamlAccess::SetLogicalParent(*child, source);
+		source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+		child = dynamic_cast<MenuItem*>(childLifetime.Get());
+		if (!source || !child || source->IndexOfSubItem(child) < 0)
+			continue;
+		auto* currentWindow = window
+			? dynamic_cast<Window*>(windowLifetime.Get()) : nullptr;
+		if (window && !currentWindow) return;
+		child->SynchronizeCommandContext(
+			currentWindow, defaultCommandTarget);
+	}
+}
+
+void MenuItem::OnPresentationWindowChanged(
+	Window* previousWindow, Window* currentWindow)
+{
+	(void)previousWindow;
+	const ControlWeakReference sourceLifetime(this);
+	const ControlWeakReference windowLifetime(currentWindow);
+	RefreshCommandSource();
+	auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	if (!source) return;
+	std::vector<ControlWeakReference> children;
+	children.reserve(source->_items.size());
+	for (auto* entry : source->_items)
+		if (auto* child = AsMenuItem(entry)) children.emplace_back(child);
+	for (const auto& childLifetime : children)
+	{
+		source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+		auto* child = dynamic_cast<MenuItem*>(childLifetime.Get());
+		if (!source || !child || source->IndexOfSubItem(child) < 0)
+			continue;
+		child->_parentItem = source;
+		if (child->GetLogicalParent() != source)
+			cui::framework::XamlAccess::SetLogicalParent(*child, source);
+		source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+		child = dynamic_cast<MenuItem*>(childLifetime.Get());
+		if (!source || !child || source->IndexOfSubItem(child) < 0)
+			continue;
+		auto* liveWindow = currentWindow
+			? dynamic_cast<Window*>(windowLifetime.Get()) : nullptr;
+		if (currentWindow && !liveWindow) return;
+		child->SynchronizeCommandContext(
+			liveWindow, source->_defaultCommandTarget);
+	}
+}
+
+void MenuItem::AttachCommandHost(
+	Control& routedOwner, ControlWeakReference defaultCommandTarget)
+{
+	const ControlWeakReference sourceLifetime(this);
+	const ControlWeakReference ownerLifetime(&routedOwner);
+	if (GetLogicalParent() != &routedOwner)
+		SetLogicalParent(&routedOwner);
+	auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	auto* owner = ownerLifetime.Get();
+	if (!source || !owner) return;
+	auto* window = owner->GetPresentationWindow();
+	for (auto* current = owner; !window && current;
+		current = current->GetRoutedParent())
+		window = current->GetPresentationWindow();
+	source->SynchronizeCommandContext(window, defaultCommandTarget);
+}
+
+void MenuItem::DetachCommandHost(Control& routedOwner)
+{
+	const ControlWeakReference sourceLifetime(this);
+	if (GetLogicalParent() == &routedOwner)
+		SetLogicalParent(nullptr);
+	if (auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get()))
+		source->SynchronizeCommandContext(nullptr, nullptr);
+}
+
+bool MenuItem::ValidateAuthoredItemControl(
+	const Control& item, std::string& error) const
+{
+	if (dynamic_cast<const MenuItem*>(&item)
+		|| dynamic_cast<const Separator*>(&item)) return true;
+	error = "MenuItem Items can contain MenuItem or Separator controls only";
+	return false;
+}
+
+void MenuItem::OnBeforeGeneratedItemsRebuilt()
+
+{
+	for (auto* entry : _items)
+	{
+		auto* child = AsMenuItem(entry);
+		if (!child) continue;
+		child->SetStructureChangedHandler({});
+		child->SetInteractionStateChangedHandler({});
+		child->DetachCommandHost(*this);
+		if (child->_parentItem == this) child->_parentItem = nullptr;
+	}
+	_items.clear();
+}
+
+void MenuItem::SynchronizeItems()
+
+{
+	std::vector<Control*> current;
+	current.reserve(ItemCount());
+	for (size_t index = 0; index < ItemCount(); ++index)
+	{
+		auto* child = GetGeneratedItem(index);
+		if (child) current.push_back(child);
+	}
+
+	for (auto* entry : _items)
+	{
+		if (std::find(current.begin(), current.end(), entry)
+			!= current.end()) continue;
+		auto* child = AsMenuItem(entry);
+		if (!child) continue;
+		child->SetStructureChangedHandler({});
+		child->SetInteractionStateChangedHandler({});
+		child->DetachCommandHost(*this);
+		if (child->_parentItem == this) child->_parentItem = nullptr;
+	}
+	_items = std::move(current);
+	for (auto* entry : _items)
+	{
+		auto* child = AsMenuItem(entry);
 		if (!child) continue;
 		child->_parentItem = this;
 		child->SetStructureChangedHandler(_structureChanged);
+		child->SetInteractionStateChangedHandler(
+			_interactionStateChanged);
+		child->AttachCommandHost(*this, _defaultCommandTarget);
 	}
-	_observedSubItems.assign(SubItems.begin(), SubItems.end());
+	SuppressItemsPresentation();
 	if (_structureChanged) _structureChanged();
 }
 
-MenuItem* MenuItem::AddSubItem(std::wstring text, int id)
+void MenuItem::OnAuthoredItemsChanged() noexcept
 {
-	return AddSubItem(std::make_unique<MenuItem>(std::move(text), id));
+	try { SynchronizeItems(); }
+	catch (...) { _items.clear(); }
+}
+
+void MenuItem::OnGeneratedItemsRebuilt()
+{
+	SynchronizeItems();
+}
+
+void MenuItem::SuppressItemsPresentation()
+{
+	// Submenu rows are projected by the owning Menu/ContextMenu popup surface.
+	// Their ItemsHost remains the WPF logical/generator owner, but must not also
+	// enter the flattened retained scene at its unarranged content location.
+	if (auto* host = GetItemsHost())
+		cui::framework::TemplateAccess::SetParticipatesInPresentationScene(
+			*host, false);
+}
+
+void MenuItem::OnControlTemplatePresentationChanged()
+{
+	HeaderedItemsControl::OnControlTemplatePresentationChanged();
+	SuppressItemsPresentation();
+}
+
+void MenuItem::ConfigureHeaderVisual(Control& child)
+{
+	HeaderedItemsControl::ConfigureHeaderVisual(child);
+	// The fallback MenuItem renderer owns its compact header chrome. The
+	// Header slot remains materialized for WPF logical/template semantics and
+	// measurement, but must not paint a second copy of the text.
+	cui::framework::TemplateAccess::SetParticipatesInPresentationScene(
+		child, false);
+}
+
+void MenuItem::ReleaseHeaderVisual(Control& child)
+{
+	cui::framework::TemplateAccess::SetParticipatesInPresentationScene(
+		child, true);
+	HeaderedItemsControl::ReleaseHeaderVisual(child);
+}
+
+std::unique_ptr<Control> MenuItem::WrapGeneratedItem(
+	std::unique_ptr<Control> visual,
+	const BindingSourceReference& item,
+	size_t)
+{
+	auto container = std::make_unique<MenuItem>();
+	cui::framework::StyleAccess::SetResourceKey(
+		*container, GetItemContainerStyle());
+	if (visual) container->SetVisualHeader(std::move(visual));
+	else container->SetHeader(BindingValue(GetBindingRecordText(
+		item, GetDisplayMemberPath())));
+	return container;
 }
 
 MenuItem* MenuItem::AddSubItem(std::unique_ptr<MenuItem> item)
 {
-	return InsertSubItem(static_cast<int>(SubItems.size()), std::move(item));
+	return InsertSubItem(static_cast<int>(AuthoredItemCount()), std::move(item));
 }
 
 MenuItem* MenuItem::InsertSubItem(
 	int index, std::unique_ptr<MenuItem> item)
 {
-	if (index < 0 || index > static_cast<int>(SubItems.size())
-		|| !item || !CanAdopt(item.get()))
+	if (index < 0 || index > static_cast<int>(AuthoredItemCount()) || !item)
 		return nullptr;
-	auto* result = item.get();
-	result->_parentItem = this;
-	result->SetStructureChangedHandler(_structureChanged);
-	try
-	{
-		SubItems.insert(SubItems.begin() + index, result);
-	}
-	catch (...)
-	{
-		result->_parentItem = nullptr;
-		result->SetStructureChangedHandler({});
-		throw;
-	}
-	if (SubItems.IsUpdating())
-		_observedSubItems.assign(SubItems.begin(), SubItems.end());
-	item.release();
-	return result;
+	return static_cast<MenuItem*>(InsertItemControl(
+		static_cast<size_t>(index), std::move(item)));
 }
 
-MenuItem* MenuItem::AddSeparator()
+Separator* MenuItem::AddSeparator()
 {
-	return AddSubItem(std::unique_ptr<MenuItem>(MenuItem::CreateSeparator()));
+	return static_cast<Separator*>(AddItemControl(
+		std::make_unique<Separator>()));
 }
 
-std::unique_ptr<MenuItem> MenuItem::DetachSubItemAt(int index)
+std::unique_ptr<Control> MenuItem::DetachSubItemAt(int index)
 {
-	if (index < 0 || index >= static_cast<int>(SubItems.size()))
+	if (index < 0 || index >= static_cast<int>(AuthoredItemCount()))
 		return {};
-	auto* item = SubItems[static_cast<size_t>(index)];
-	SubItems.erase(SubItems.begin() + index);
-	if (item)
-	{
-		if (item->_parentItem == this) item->_parentItem = nullptr;
-		item->SetStructureChangedHandler({});
-	}
-	if (SubItems.IsUpdating())
-		_observedSubItems.assign(SubItems.begin(), SubItems.end());
-	return std::unique_ptr<MenuItem>(item);
+	return DetachItemControlAt(static_cast<size_t>(index));
 }
 
 std::unique_ptr<MenuItem> MenuItem::DetachSubItem(MenuItem* item)
 {
-	return DetachSubItemAt(IndexOfSubItem(item));
+	const auto index = IndexOfSubItem(item);
+	if (index < 0) return {};
+	auto detached = DetachItemControlAt(static_cast<size_t>(index));
+	return std::unique_ptr<MenuItem>(
+		static_cast<MenuItem*>(detached.release()));
 }
 
 bool MenuItem::RemoveSubItemAt(int index)
@@ -188,58 +710,63 @@ bool MenuItem::RemoveSubItem(MenuItem* item)
 
 void MenuItem::ClearSubItems()
 {
-	if (SubItems.empty()) return;
-	std::vector<MenuItem*> removed(SubItems.begin(), SubItems.end());
-	SubItems.clear();
-	for (auto* item : removed)
-	{
-		if (!item) continue;
-		if (item->_parentItem == this) item->_parentItem = nullptr;
-		item->SetStructureChangedHandler({});
-	}
-	if (SubItems.IsUpdating())
-		_observedSubItems.assign(SubItems.begin(), SubItems.end());
-	std::unordered_set<MenuItem*> deleted;
-	for (auto* item : removed)
-	{
-		if (item && deleted.insert(item).second) delete item;
-	}
+	ClearItemControls();
 }
 
 MenuItem* MenuItem::GetSubItem(int index) const noexcept
 {
-	if (index < 0 || static_cast<size_t>(index) >= SubItems.size())
+	if (index < 0 || static_cast<size_t>(index) >= _items.size())
 		return nullptr;
-	return SubItems[static_cast<size_t>(index)];
+	return AsMenuItem(_items[static_cast<size_t>(index)]);
 }
 
 int MenuItem::IndexOfSubItem(const MenuItem* item) const noexcept
 {
 	if (!item) return -1;
-	auto found = std::find(SubItems.begin(), SubItems.end(), item);
-	return found == SubItems.end()
-		? -1 : static_cast<int>(found - SubItems.begin());
+	auto found = std::find(_items.begin(), _items.end(), item);
+	return found == _items.end()
+		? -1 : static_cast<int>(found - _items.begin());
 }
 
-MenuItem* MenuItem::CreateSeparator()
+bool MenuItem::Invoke()
 {
-	auto* it = new MenuItem(L"", 0);
-	it->Separator = true;
-	it->Enable = false;
-	return it;
+	const ControlWeakReference sourceLifetime(this);
+	const auto snapshot = GetAccessibilitySnapshot();
+	if (!_items.empty()
+		|| !snapshot.Enabled || !snapshot.Visible)
+		return false;
+	RoutedEventArgs args;
+	Click(this, args);
+	auto* source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+	if (!source) return true;
+	if (source->_isCheckable)
+	{
+		(void)source->SetCurrentPropertyField(
+			L"IsChecked", source->_isChecked, !source->_isChecked);
+		source = dynamic_cast<MenuItem*>(sourceLifetime.Get());
+		if (!source) return true;
+	}
+	if (source->_command.empty()) return true;
+	return RoutedCommandManager::ExecuteCommandSource(
+		*source,
+		RoutedCommandSourceQuery{
+			RoutedCommand(source->_command), source->_commandParameter,
+			source->EffectiveCommandTarget() }).Executed;
 }
 
-void MenuItem::Update()
+void MenuItem::OnRender()
 {
-	if (!this->IsVisual) return;
-	auto d2d = this->ParentForm->Render;
+	if (!this->IsVisible) return;
+	auto d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
 	this->BeginRender();
 	{
-		bool hover = (this->ParentForm->UnderMouse == this);
-		bool active = this->Checked;
+		const bool enabled = IsEffectivelyEnabled();
+		const bool hover = enabled && IsHighlighted;
+		const bool active = IsChecked || IsSubmenuOpen || HasControlStyleState(
+			GetStyleState(), ControlStyleState::Checked);
 		if (active || hover)
 		{
 			const float insetX = 3.0f;
@@ -247,58 +774,130 @@ void MenuItem::Update()
 			auto itemRect = D2D1::RectF(insetX, insetY,
 				(std::max)(insetX, actualWidth - insetX),
 				(std::max)(insetY, actualHeight - insetY));
-			const auto stateColor = active ? ActiveBackColor : HoverBackColor;
-			d2d->FillRoundRect(itemRect, stateColor, CornerRadius);
-			d2d->DrawRoundRect(itemRect, BoostAlpha(stateColor, 1.9f), 1.0f, CornerRadius);
+			const auto stateColor = active ? MenuItemActive : MenuItemHighlight;
+			d2d->FillRoundRect(itemRect, stateColor, MenuItemCornerRadius);
+			d2d->DrawRoundRect(itemRect, BoostAlpha(stateColor, 1.9f),
+				1.0f, MenuItemCornerRadius);
 			const float stripeH = (std::max)(0.0f, itemRect.bottom - itemRect.top - 8.0f);
 			if (stripeH > 0.0f)
 				d2d->FillRoundRect(itemRect.left + 3.0f, itemRect.top + 4.0f, 3.0f, stripeH, BoostAlpha(stateColor, 3.0f), 1.5f);
 		}
 
-		auto font = this->Font;
-		auto ts = font->GetTextSize(this->Text);
+		auto font = this->GetRenderFont();
+		const auto displayText = GetDisplayText();
+		auto ts = font->GetTextSize(displayText);
 		float tx = 10.0f;
-		float ty = ((float)this->Height - ts.height) * 0.5f;
+		float ty = (actualHeight - ts.height) * 0.5f;
 		if (ty < 0) ty = 0;
-		d2d->DrawString(this->Text, tx, ty, this->ForeColor, font);
+		auto textColor = this->RendererForegroundColor;
+		if (!enabled) textColor.a *= 0.45f;
+		d2d->DrawString(displayText, tx, ty, textColor, font);
 	}
 	this->EndRender();
 }
 
-bool MenuItem::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool MenuItem::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
-	{
-	case WM_MOUSEMOVE:
-		this->ParentForm->UnderMouse = this;
-		break;
-	}
-	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+	if (!this->IsEffectivelyEnabled() || !this->IsVisible) return true;
+	return Control::ProcessInput(input);
 }
 
 UIClass Menu::Type() { return UIClass::UI_Menu; }
 
-Menu::Menu(int x, int y, int width, int height)
+Menu::Menu()
+	: ItemsControl()
 {
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	this->BarHeight = height;
-	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->Cursor = CursorKind::Arrow;
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->RendererBorderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	auto panel = std::make_shared<ItemsPanelTemplate>();
+	panel->Kind = ItemsPanelKind::Stack;
+	panel->Orientation = Orientation::Horizontal;
+	(void)TrySetPropertyValue(
+		L"ItemsPanel",
+		BindingValue(ItemsPanelTemplateReference(std::move(panel))),
+		DependencyPropertyValueSource::Theme);
 }
 
-MenuItem* Menu::AddItem(std::wstring text)
+Menu::~Menu()
 {
-	return AddItem(std::make_unique<MenuItem>(std::move(text), 0));
+	if (GetPresentationWindow())
+		(void)cui::framework::WindowAccess::CloseTransientPresentation(
+			*GetPresentationWindow(), this);
+	for (auto* entry : _items)
+	{
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
+		item->SetStructureChangedHandler({});
+		item->SetInteractionStateChangedHandler({});
+		item->DetachCommandHost(*this);
+	}
+	_items.clear();
 }
 
 void Menu::OnItemTreeChanged()
 {
+	const ControlWeakReference hostLifetime(this);
 	ClosePopup();
-	this->RequestLayout();
-	this->NotifyAccessibilityStructureChanged();
+	auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+	if (!host) return;
+	host->RequestLayout();
+	host = dynamic_cast<Menu*>(hostLifetime.Get());
+	if (!host) return;
+	host->NotifyAccessibilityStructureChanged();
+	host = dynamic_cast<Menu*>(hostLifetime.Get());
+	if (host) host->InvalidateVisual();
+}
+
+void Menu::OnItemInteractionStateChanged(MenuItem& source)
+{
+	std::vector<int> path;
+	if (!FindMenuItemPath(_items, &source, path) || path.empty()) return;
+	if (!IsInteractive(&source))
+	{
+		if (_expandIndex == path.front()) ClosePopup();
+		else
+		{
+			_hoverPath.clear();
+			_openPath.clear();
+			SynchronizeInteractionProjection();
+			InvalidateVisual();
+		}
+		return;
+	}
+
+	if (source.IsSubmenuOpen && !source.GetMenuItemsView().empty())
+	{
+		_expand = true;
+		_expandIndex = path.front();
+		_hoverTopIndex = path.front();
+		_openPath.assign(path.begin() + 1, path.end());
+		_hoverPath = _openPath;
+		if (GetPresentationWindow())
+		{
+			(void)cui::framework::WindowAccess::OpenTransientPresentation(
+				*GetPresentationWindow(), this,
+				TransientPresentationOptions{},
+				[](Control& root)
+				{ static_cast<Menu&>(root).ClosePopup(); });
+		}
+	}
+	else if (_expandIndex == path.front())
+	{
+		if (path.size() == 1)
+		{
+			ClosePopup();
+			return;
+		}
+		const auto openDepth = path.size() - 1;
+		if (_openPath.size() >= openDepth
+			&& std::equal(path.begin() + 1, path.end(), _openPath.begin()))
+		{
+			_openPath.resize(openDepth - 1);
+			if (_hoverPath.size() > openDepth - 1)
+				_hoverPath.resize(openDepth - 1);
+		}
+	}
+	SynchronizeInteractionProjection();
 	this->InvalidateVisual();
 }
 
@@ -308,102 +907,149 @@ void Menu::AttachItemTree(MenuItem* item)
 	item->_parentItem = nullptr;
 	item->SetStructureChangedHandler(
 		[this]() { OnItemTreeChanged(); });
+	item->SetInteractionStateChangedHandler(
+		[this](MenuItem& source) { OnItemInteractionStateChanged(source); });
+	item->AttachCommandHost(*this, nullptr);
 }
 
-bool Menu::ValidateChildCollection(
-	std::span<Control* const> children, std::string& error) const
+void Menu::OnPresentationWindowChanged(
+	Window* previousWindow, Window* currentWindow)
 {
-	for (auto* child : children)
-	{
-		if (dynamic_cast<MenuItem*>(child)) continue;
-		error = "Menu can contain MenuItem children only";
-		return false;
-	}
-	return true;
+	if (previousWindow)
+		(void)cui::framework::WindowAccess::CloseTransientPresentation(
+			*previousWindow, this);
+	if (previousWindow != currentWindow && _expand)
+		ClosePopup();
 }
 
-void Menu::OnChildCollectionChanged(
-	const CollectionChangedEventArgs& change,
-	std::span<Control* const> previousChildren)
+bool Menu::ValidateAuthoredItemControl(
+	const Control& item, std::string& error) const
 {
-	(void)change;
-	for (auto* previous : previousChildren)
+	if (dynamic_cast<const MenuItem*>(&item)
+		|| dynamic_cast<const Separator*>(&item)) return true;
+	error = "Menu Items can contain MenuItem or Separator controls only";
+	return false;
+}
+
+void Menu::OnBeforeGeneratedItemsRebuilt()
+{
+	for (auto* entry : _items)
 	{
-		if (!previous || std::find(
-			this->Children.begin(), this->Children.end(), previous)
-			!= this->Children.end()) continue;
-		static_cast<MenuItem*>(previous)->SetStructureChangedHandler({});
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
+		item->SetStructureChangedHandler({});
+		item->SetInteractionStateChangedHandler({});
+		item->DetachCommandHost(*this);
 	}
-	for (auto* child : this->Children)
+	_items.clear();
+}
+
+void Menu::SynchronizeItems()
+{
+	std::vector<Control*> current;
+	current.reserve(ItemCount());
+	for (size_t index = 0; index < ItemCount(); ++index)
 	{
-		auto* item = static_cast<MenuItem*>(child);
-		item->Height = this->BarHeight;
+		auto* item = GetGeneratedItem(index);
+		if (item) current.push_back(item);
+	}
+	for (auto* entry : _items)
+	{
+		if (std::find(current.begin(), current.end(), entry)
+			!= current.end()) continue;
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
+		item->SetStructureChangedHandler({});
+		item->SetInteractionStateChangedHandler({});
+		item->DetachCommandHost(*this);
+	}
+	_items = std::move(current);
+	for (auto* entry : _items)
+	{
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
 		AttachItemTree(item);
 	}
-	ClosePopup();
-	this->InvalidateVisual();
+	OnItemTreeChanged();
+}
+
+void Menu::OnAuthoredItemsChanged() noexcept
+{
+	try { SynchronizeItems(); }
+	catch (...) { _items.clear(); }
+}
+
+void Menu::OnGeneratedItemsRebuilt()
+{
+	SynchronizeItems();
+}
+
+std::unique_ptr<Control> Menu::WrapGeneratedItem(
+	std::unique_ptr<Control> visual,
+	const BindingSourceReference& item,
+	size_t)
+{
+	auto container = std::make_unique<MenuItem>();
+	cui::framework::StyleAccess::SetResourceKey(
+		*container, GetItemContainerStyle());
+	if (visual) container->SetVisualHeader(std::move(visual));
+	else container->SetHeader(BindingValue(GetBindingRecordText(
+		item, GetDisplayMemberPath())));
+	return container;
 }
 
 MenuItem* Menu::AddItem(std::unique_ptr<MenuItem> item)
 {
-	return InsertItem(this->Count, std::move(item));
-}
-
-MenuItem* Menu::InsertItem(int index, std::wstring text)
-{
-	if (index < 0 || index > this->Count)
-		return nullptr;
-	return InsertItem(
-		index, std::make_unique<MenuItem>(std::move(text), 0));
+	return InsertItem(static_cast<int>(AuthoredItemCount()), std::move(item));
 }
 
 MenuItem* Menu::InsertItem(
 	int index, std::unique_ptr<MenuItem> item)
 {
-	if (index < 0 || index > this->Count || !item)
+	if (index < 0 || index > static_cast<int>(AuthoredItemCount()) || !item)
 		return nullptr;
 	ClosePopup();
-	return this->InsertOwned(index, std::move(item));
+	return static_cast<MenuItem*>(InsertItemControl(
+		static_cast<size_t>(index), std::move(item)));
 }
 
-MenuItem* Menu::AddSeparator()
+Separator* Menu::AddSeparator()
 {
-	return AddItem(
-		std::unique_ptr<MenuItem>(MenuItem::CreateSeparator()));
+	return static_cast<Separator*>(AddItemControl(
+		std::make_unique<Separator>()));
 }
 
 MenuItem* Menu::GetItem(int index) const noexcept
 {
-	if (index < 0 || static_cast<size_t>(index) >= this->Children.size())
+	if (index < 0 || static_cast<size_t>(index) >= _items.size())
 		return nullptr;
-	return static_cast<MenuItem*>(
-		this->Children[static_cast<size_t>(index)]);
+	return AsMenuItem(_items[static_cast<size_t>(index)]);
 }
 
 int Menu::IndexOfItem(const MenuItem* item) const noexcept
 {
 	if (!item) return -1;
-	auto found = std::find(
-		this->Children.begin(), this->Children.end(), item);
-	return found == this->Children.end()
-		? -1 : static_cast<int>(found - this->Children.begin());
+	auto found = std::find(_items.begin(), _items.end(), item);
+	return found == _items.end()
+		? -1 : static_cast<int>(found - _items.begin());
 }
 
-std::unique_ptr<MenuItem> Menu::DetachItemAt(int index)
+std::unique_ptr<Control> Menu::DetachItemAt(int index)
 {
-	if (index < 0 || index >= this->Count)
+	if (index < 0 || index >= static_cast<int>(AuthoredItemCount()))
 		return {};
 	ClosePopup();
-	auto* item = static_cast<MenuItem*>(
-		this->Children[static_cast<size_t>(index)]);
-	auto detached = this->DetachControl(item);
-	return std::unique_ptr<MenuItem>(
-		static_cast<MenuItem*>(detached.release()));
+	return DetachItemControlAt(static_cast<size_t>(index));
 }
 
 std::unique_ptr<MenuItem> Menu::DetachItem(MenuItem* item)
 {
-	return DetachItemAt(IndexOfItem(item));
+	const auto index = IndexOfItem(item);
+	if (index < 0) return {};
+	ClosePopup();
+	auto detached = DetachItemControlAt(static_cast<size_t>(index));
+	return std::unique_ptr<MenuItem>(
+		static_cast<MenuItem*>(detached.release()));
 }
 
 bool Menu::RemoveItemAt(int index)
@@ -419,40 +1065,42 @@ bool Menu::RemoveItem(MenuItem* item)
 
 void Menu::ClearItems()
 {
-	if (this->Children.empty()) return;
+	if (AuthoredItemCount() == 0) return;
 	ClosePopup();
-	this->ClearControls();
+	ClearItemControls();
 }
 
 bool Menu::ContainsPoint(int localX, int localY)
 {
-	if (localX >= 0 && localX <= this->Width && localY >= 0 && localY < BarHeight)
+	if (localX >= 0 && localX <= GetActualSizeDip().width
+		&& localY >= 0 && localY < MenuBarExtent())
 		return true;
 
 	if (!_expand || DropCount() <= 0)
 		return false;
-	if (_expandIndex < 0 || _expandIndex >= this->Count)
+	if (_expandIndex < 0 || _expandIndex >= static_cast<int>(_items.size()))
 		return false;
 
-	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	auto* top = GetItem(_expandIndex);
 	if (!top)
 		return false;
 
-	auto calcPanelWidth = [&](const std::vector<MenuItem*>& items) -> float
+	auto calcPanelWidth = [&](std::span<Control* const> items) -> float
 		{
 			float w = 120.0f;
-			auto font = this->Font;
-			for (auto* it : items)
+			auto font = this->GetRenderFont();
+			for (auto* entry : items)
 			{
-				if (!it || it->Separator) continue;
-				auto ts = font->GetTextSize(it->Text);
+				auto* it = AsMenuItem(entry);
+				if (!it) continue;
+				auto ts = font->GetTextSize(it->GetDisplayText());
 				float tw = ts.width + 24.0f;
-				if (!it->Shortcut.empty())
+				if (!it->InputGestureText.empty())
 				{
-					auto ss = font->GetTextSize(it->Shortcut);
+					auto ss = font->GetTextSize(it->InputGestureText);
 					tw += ss.width + 20.0f;
 				}
-				if (!it->SubItems.empty())
+				if (!it->GetMenuItemsView().empty())
 					tw += 18.0f;
 				if (tw > w) w = tw;
 			}
@@ -462,9 +1110,10 @@ bool Menu::ContainsPoint(int localX, int localY)
 
 	auto clampPanelXY = [&](float& x, float& y, float w, float h)
 		{
-			if (!this->ParentForm) return;
-			float maxX = (float)this->ParentForm->ClientSize.cx;
-			float maxY = (float)this->ParentForm->ClientSize.cy;
+			if (!this->GetPresentationWindow()) return;
+			const auto viewport = this->GetPresentationWindow()->GetContentViewportSizeDip();
+			float maxX = viewport.width;
+			float maxY = viewport.height;
 			if (x < 0.0f) x = 0.0f;
 			if (y < 0.0f) y = 0.0f;
 			if (x + w > maxX) x = std::max(0.0f, maxX - w);
@@ -475,11 +1124,12 @@ bool Menu::ContainsPoint(int localX, int localY)
 	panels.reserve(8);
 	MenuPanel root;
 	root.Owner = top;
-	root.Items = &top->SubItems;
+	root.Items = top->GetMenuItemsView();
 	root.X = DropLeftLocal();
 	root.Y = DropTopLocal();
 	root.W = DropWidthLocal();
-	root.H = DropPaddingY * 2.0f + (float)root.Items->size() * (float)DropItemHeight;
+	root.H = PopupVerticalPadding * 2.0f
+		+ static_cast<float>(root.Items.size()) * PopupItemExtent;
 	clampPanelXY(root.X, root.Y, root.W, root.H);
 	panels.push_back(root);
 
@@ -488,22 +1138,24 @@ bool Menu::ContainsPoint(int localX, int localY)
 		int openIdx = _openPath[level];
 		if (openIdx < 0) break;
 		const auto& prev = panels.back();
-		if (!prev.Items) break;
-		if (openIdx >= (int)prev.Items->size()) break;
-		auto* owner = (*prev.Items)[openIdx];
-		if (!owner || owner->Separator || owner->SubItems.empty()) break;
+		if (prev.Items.empty()) break;
+		if (openIdx >= (int)prev.Items.size()) break;
+		auto* owner = AsMenuItem(prev.Items[openIdx]);
+		if (!IsInteractive(owner) || owner->GetMenuItemsView().empty()) break;
 
 		MenuPanel panel;
 		panel.Owner = owner;
-		panel.Items = &owner->SubItems;
-		panel.W = calcPanelWidth(*panel.Items);
-		panel.H = DropPaddingY * 2.0f + (float)panel.Items->size() * (float)DropItemHeight;
+		panel.Items = owner->GetMenuItemsView();
+		panel.W = calcPanelWidth(panel.Items);
+		panel.H = PopupVerticalPadding * 2.0f
+			+ static_cast<float>(panel.Items.size()) * PopupItemExtent;
 		panel.X = prev.X + prev.W - 1.0f;
-		panel.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+		panel.Y = prev.Y + PopupVerticalPadding
+			+ static_cast<float>(openIdx) * PopupItemExtent;
 
-		if (this->ParentForm)
+		if (this->GetPresentationWindow())
 		{
-			float maxX = (float)this->ParentForm->ClientSize.cx;
+			float maxX = this->GetPresentationWindow()->GetContentViewportSizeDip().width;
 			if (panel.X + panel.W > maxX)
 			{
 				panel.X = prev.X - panel.W - 4.0f;
@@ -527,45 +1179,53 @@ bool Menu::ContainsPoint(int localX, int localY)
 
 void Menu::ClosePopup()
 {
-	if (!_expand)
-		return;
+	const ControlWeakReference hostLifetime(this);
+	auto* window = GetPresentationWindow();
+	const bool wasExpanded = _expand;
 
 	_expand = false;
 	_expandIndex = -1;
-	_popupAnimating = false;
-	_popupProgress = 0.0f;
 	_hoverPath.clear();
 	_openPath.clear();
-	if (this->ParentForm && this->ParentForm->Selected)
+	SynchronizeInteractionProjection();
+	if (window)
+		(void)cui::framework::WindowAccess::CloseTransientPresentation(
+			*window, this);
+	if (!wasExpanded) return;
+	auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+	if (!host) return;
+	if (host->GetPresentationWindow() && host->GetPresentationWindow()->GetKeyboardFocusedElement())
 	{
-		for (Control* selected = this->ParentForm->Selected; selected; selected = selected->Parent)
+		for (Control* selected = host->GetPresentationWindow()->GetKeyboardFocusedElement(); selected;
+			selected = selected->GetRoutedParent())
 		{
-			if (selected == this)
+			if (selected == host)
 			{
-				this->ParentForm->SetSelectedControl(nullptr, false);
+				host->GetPresentationWindow()->SetKeyboardFocus(nullptr, false);
+				host = dynamic_cast<Menu*>(hostLifetime.Get());
+				if (!host) return;
 				break;
 			}
 		}
 	}
-	if (this->ParentForm)
-		this->ParentForm->Invalidate(true);
-	else
-		this->InvalidateVisual();
+	host = dynamic_cast<Menu*>(hostLifetime.Get());
+	if (!host) return;
+	host->InvalidateVisual();
 }
 
 int Menu::DropCount()
 {
 	if (!_expand) return 0;
-	if (_expandIndex < 0 || _expandIndex >= this->Count) return 0;
-	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	if (_expandIndex < 0 || _expandIndex >= static_cast<int>(_items.size())) return 0;
+	auto* top = GetItem(_expandIndex);
 	if (!top) return 0;
-	return (int)top->SubItems.size();
+	return static_cast<int>(top->GetMenuItemsView().size());
 }
 
 float Menu::DropLeftLocal()
 {
-	if (_expandIndex < 0 || _expandIndex >= this->Count) return 0.0f;
-	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	if (_expandIndex < 0 || _expandIndex >= static_cast<int>(_items.size())) return 0.0f;
+	auto* top = GetItem(_expandIndex);
 	if (!top) return 0.0f;
 	return top->GetActualLocationDip().x;
 }
@@ -573,25 +1233,25 @@ float Menu::DropLeftLocal()
 float Menu::DropWidthLocal()
 {
 	if (!_expand) return 0.0f;
-	if (_expandIndex < 0 || _expandIndex >= this->Count) return 0.0f;
-	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	if (_expandIndex < 0 || _expandIndex >= static_cast<int>(_items.size())) return 0.0f;
+	auto* top = GetItem(_expandIndex);
 	if (!top) return 0.0f;
 	float w = 120.0f;
-	auto font = this->Font;
-	for (auto* it : top->SubItems)
+	auto font = this->GetRenderFont();
+	for (auto* entry : top->GetMenuItemsView())
 	{
+		auto* it = AsMenuItem(entry);
 		if (!it) continue;
-		if (it->Separator) continue;
-		auto ts = font->GetTextSize(it->Text);
+		auto ts = font->GetTextSize(it->GetDisplayText());
 		float tw = ts.width + 24.0f;
-		if (!it->Shortcut.empty())
+		if (!it->InputGestureText.empty())
 		{
-			auto ss = font->GetTextSize(it->Shortcut);
+			auto ss = font->GetTextSize(it->InputGestureText);
 			tw += ss.width + 20.0f;
 		}
 		if (tw > w) w = tw;
 	}
-	float maxw = (float)this->Width - DropLeftLocal();
+	float maxw = GetActualSizeDip().width - DropLeftLocal();
 	if (w > maxw) w = maxw;
 	if (w < 80.0f) w = 80.0f;
 	return w;
@@ -601,158 +1261,170 @@ float Menu::DropHeightLocal()
 {
 	int c = DropCount();
 	if (c <= 0) return 0.0f;
-	return DropPaddingY * 2.0f + (float)c * (float)DropItemHeight;
+	return PopupVerticalPadding * 2.0f
+		+ static_cast<float>(c) * PopupItemExtent;
 }
 
 bool Menu::HasSubMenu(int dropIndex)
 {
-	if (_expandIndex < 0 || _expandIndex >= this->Count) return false;
-	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	if (_expandIndex < 0 || _expandIndex >= static_cast<int>(_items.size())) return false;
+	auto* top = GetItem(_expandIndex);
 	if (!top) return false;
-	if (dropIndex < 0 || dropIndex >= (int)top->SubItems.size()) return false;
-	auto* it = top->SubItems[dropIndex];
-	return it && !it->Separator && !it->SubItems.empty();
-}
-
-float Menu::CurrentPopupProgress()
-{
-	if (!_expand)
-	{
-		_popupAnimating = false;
-		_popupProgress = 0.0f;
-		return _popupProgress;
-	}
-
-	if (!_popupAnimating)
-	{
-		_popupProgress = 1.0f;
-		return _popupProgress;
-	}
-
-	const ULONGLONG now = ::GetTickCount64();
-	const ULONGLONG elapsed = now >= _popupAnimStartTick ? (now - _popupAnimStartTick) : 0;
-	const UINT duration = EffectiveAnimationDuration(PopupAnimationDurationMs);
-	float t = duration > 0 ? (float)elapsed / (float)duration : 1.0f;
-	if (t >= 1.0f)
-	{
-		_popupProgress = _popupTargetProgress;
-		_popupAnimating = false;
-		return _popupProgress;
-	}
-
-	t = EaseOutCubic(t);
-	_popupProgress = _popupStartProgress + (_popupTargetProgress - _popupStartProgress) * t;
-	return _popupProgress;
-}
-
-void Menu::BeginPopupReveal(float startProgress)
-{
-	_popupStartProgress = (std::clamp)(startProgress, 0.0f, 1.0f);
-	_popupTargetProgress = 1.0f;
-	_popupProgress = _popupStartProgress;
-	_popupAnimStartTick = ::GetTickCount64();
-	_popupAnimating = EffectiveAnimationDuration(PopupAnimationDurationMs) > 0
-		&& _popupStartProgress < _popupTargetProgress;
-	if (!_popupAnimating)
-		_popupProgress = _popupTargetProgress;
-}
-
-bool Menu::IsAnimationRunning()
-{
-	CurrentPopupProgress();
-	return _popupAnimating;
-}
-
-bool Menu::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
-{
-	if (!_popupAnimating)
+	if (dropIndex < 0
+		|| dropIndex >= static_cast<int>(top->GetMenuItemsView().size()))
 		return false;
-	outRect = this->AbsRect;
-	return true;
+	auto* item = AsMenuItem(
+		top->GetMenuItemsView()[static_cast<size_t>(dropIndex)]);
+	return IsInteractive(item) && !item->GetMenuItemsView().empty();
 }
 
-SIZE Menu::ActualSize()
+float Menu::MenuBarExtent() const noexcept
 {
-	auto s = this->Size;
+	return (std::max)(0.0f, GetActualSizeDip().height);
+}
+
+void Menu::SynchronizeInteractionProjection()
+{
+	std::unordered_set<MenuItem*> highlightedItems;
+	std::unordered_set<MenuItem*> openedItems;
+	if (_hoverTopIndex >= 0)
+		if (auto* item = GetItem(_hoverTopIndex))
+			highlightedItems.insert(item);
 	if (_expand)
 	{
-		if (this->ParentForm)
+		auto* current = GetItem(_expandIndex);
+		if (current) openedItems.insert(current);
+		for (size_t level = 0; current; ++level)
 		{
-			int contentH = this->ParentForm->ClientSize.cy;
-			if (contentH < BarHeight) contentH = BarHeight;
-			s.cy = contentH;
+			const auto items = current->GetMenuItemsView();
+			if (level < _hoverPath.size())
+			{
+				const int highlighted = _hoverPath[level];
+				if (highlighted >= 0
+					&& highlighted < static_cast<int>(items.size()))
+					if (auto* item = AsMenuItem(items[highlighted]))
+						highlightedItems.insert(item);
+			}
+			if (level >= _openPath.size()) break;
+			const int opened = _openPath[level];
+			if (opened < 0 || opened >= static_cast<int>(items.size())) break;
+			current = AsMenuItem(items[opened]);
+			if (!current) break;
+			openedItems.insert(current);
+		}
+	}
+	auto apply = [&](auto&& self, MenuItem& item) -> void
+	{
+		item.SetIsHighlightedCore(highlightedItems.contains(&item));
+		item.SetIsSubmenuOpenCore(openedItems.contains(&item));
+		for (auto* child : item.GetMenuItemsView())
+			if (auto* menuItem = AsMenuItem(child)) self(self, *menuItem);
+	};
+	for (auto* entry : _items)
+		if (auto* item = AsMenuItem(entry)) apply(apply, *item);
+}
+
+cui::core::Size Menu::GetRenderSizeDip()
+{
+	auto size = Control::GetRenderSizeDip();
+	if (_expand)
+	{
+		const float menuExtent = MenuBarExtent();
+		if (this->GetPresentationWindow())
+		{
+			float contentH = this->GetPresentationWindow()->GetContentViewportSizeDip().height;
+			if (contentH < menuExtent) contentH = menuExtent;
+			size.height = contentH;
 		}
 		else
 		{
-			s.cy = (int)((float)BarHeight + DropHeightLocal());
+			size.height = menuExtent + DropHeightLocal();
 		}
 	}
 	else
 	{
-		s.cy = BarHeight;
+		size.height = MenuBarExtent();
 	}
-	return s;
+	return size;
 }
 
-void Menu::Update()
+void Menu::PreparePresentation()
 {
-	if (!this->IsVisual) return;
-	if (this->ParentForm)
+	Control::PreparePresentation();
+	SynchronizeInteractionProjection();
+	float x = 6.0f;
+	auto font = GetRenderFont();
+	const float menuExtent = MenuBarExtent();
+	for (int index = 0; index < static_cast<int>(_items.size()); ++index)
 	{
-		this->ParentForm->MainMenu = this;
+		auto* entry = _items[static_cast<size_t>(index)];
+		if (auto* separator = dynamic_cast<Separator*>(entry))
+		{
+			separator->Arrange(cui::core::Rect{
+				x, 4.0f, 8.0f,
+				(std::max)(0.0f, menuExtent - 8.0f) });
+			(void)cui::framework::DependencyPropertyAccess::SetValue(
+				*separator, L"BorderBrush",
+				BindingValue(cui::drawing::MakeSolidColorBrush(MenuBarBorder)),
+				DependencyPropertyValueSource::Theme);
+			x += 8.0f;
+			continue;
+		}
+		auto* item = AsMenuItem(entry);
+		if (!item) continue;
+		auto textSize = font->GetTextSize(item->GetDisplayText());
+		int width = static_cast<int>(
+			textSize.width + MenuItemHorizontalPadding * 2.0f);
+		if (width < 50) width = 50;
+		item->Arrange(cui::core::Rect{
+			x, 0.0f, static_cast<float>(width), menuExtent });
+		x += static_cast<float>(width);
+		(void)item->TrySetPropertyValue(
+			L"Foreground", BindingValue(GetComputedForegroundBrush()),
+			DependencyPropertyValueSource::Theme);
+		item->SetStyleState(
+			ControlStyleState::Checked, _expand && index == _expandIndex);
 	}
-	auto d2d = this->ParentForm->Render;
-	const auto size = this->GetActualSizeDip();
+}
+
+void Menu::OnRender()
+{
+	if (!this->IsVisible) return;
+	auto d2d = this->GetDrawingContext();
+	const auto size = GetRenderSizeDip();
+	const float menuExtent = MenuBarExtent();
 	this->BeginRender(size.width, size.height);
 	{
-		d2d->FillRect(0, 0, (float)this->Width, (float)BarHeight, BarBackColor);
-		if (BorderThickness > 0.0f && BarBorderColor.a > 0.0f)
-			d2d->DrawLine(0.0f, (float)BarHeight - 0.5f, (float)this->Width, (float)BarHeight - 0.5f, BarBorderColor, BorderThickness);
+		d2d->FillRect(0, 0, GetActualSizeDip().width,
+			menuExtent, MenuBarBackground);
+		const float border = BorderThickness.MaxEdge();
+		if (border > 0.0f && MenuBarBorder.a > 0.0f)
+			d2d->DrawLine(0.0f, menuExtent - 0.5f,
+				GetActualSizeDip().width, menuExtent - 0.5f,
+				MenuBarBorder, border);
 
-		float x = 6.0f;
-		auto font = this->Font;
-		for (int i = 0; i < this->Count; i++)
-		{
-			auto* it = (MenuItem*)this->operator[](i);
-			if (!it) continue;
-			// Menu 是复合控件：顶层 MenuItem 始终跟随当前 Menu 字体，避免保留旧字体指针。
-			it->SetFontEx(font, false);
-			auto ts = font->GetTextSize(it->Text);
-			int w = (int)(ts.width + ItemPaddingX * 2.0f);
-			if (w < 50) w = 50;
-			it->SetRuntimeLocation(POINT{ (int)x, 0 });
-			it->Size = SIZE{ w, BarHeight };
-			x += (float)w;
-			it->ForeColor = this->_forecolor;
-			it->HoverBackColor = this->BarItemHoverColor;
-			it->ActiveBackColor = this->BarItemActiveColor;
-			it->CornerRadius = this->BarItemCornerRadius;
-			it->Checked = (_expand && i == _expandIndex);
-			it->Update();
-		}
-
+		auto font = this->GetRenderFont();
 		if (_expand && DropCount() > 0)
 		{
-			auto* top = (MenuItem*)this->operator[](_expandIndex);
+			auto* top = GetItem(_expandIndex);
 			if (top)
 			{
-				const float popupProgress = CurrentPopupProgress();
-				auto calcPanelWidth = [&](const std::vector<MenuItem*>& items, float maxW) -> float
+				auto calcPanelWidth = [&](std::span<Control* const> items, float maxW) -> float
 					{
 						float w = 120.0f;
-						for (auto* it : items)
+						for (auto* entry : items)
 						{
+							auto* it = AsMenuItem(entry);
 							if (!it) continue;
-							if (it->Separator) continue;
-							auto ts = font->GetTextSize(it->Text);
+							auto ts = font->GetTextSize(it->GetDisplayText());
 							float tw = ts.width + 24.0f;
-							if (!it->Shortcut.empty())
+							if (!it->InputGestureText.empty())
 							{
-								auto ss = font->GetTextSize(it->Shortcut);
+								auto ss = font->GetTextSize(it->InputGestureText);
 								tw += ss.width + 20.0f;
 							}
 							// 预留子菜单指示符空间
-							if (!it->SubItems.empty())
+							if (!it->GetMenuItemsView().empty())
 								tw += 18.0f;
 							if (tw > w) w = tw;
 						}
@@ -763,9 +1435,10 @@ void Menu::Update()
 
 				auto clampPanelXY = [&](float& x, float& y, float w, float h)
 					{
-						if (!this->ParentForm) return;
-						float maxX = (float)this->ParentForm->ClientSize.cx;
-						float maxY = (float)this->ParentForm->ClientSize.cy;
+						if (!this->GetPresentationWindow()) return;
+						const auto viewport = this->GetPresentationWindow()->GetContentViewportSizeDip();
+						float maxX = viewport.width;
+						float maxY = viewport.height;
 						if (x < 0.0f) x = 0.0f;
 						if (y < 0.0f) y = 0.0f;
 						if (x + w > maxX) x = std::max(0.0f, maxX - w);
@@ -778,13 +1451,14 @@ void Menu::Update()
 
 				MenuPanel p0;
 				p0.Owner = top;
-				p0.Items = &top->SubItems;
+				p0.Items = top->GetMenuItemsView();
 				p0.X = DropLeftLocal();
 				p0.Y = DropTopLocal();
 				{
-					float maxw = (float)this->Width - DropLeftLocal();
-					p0.W = calcPanelWidth(*p0.Items, maxw);
-					p0.H = DropPaddingY * 2.0f + (float)p0.Items->size() * (float)DropItemHeight;
+					float maxw = GetActualSizeDip().width - DropLeftLocal();
+					p0.W = calcPanelWidth(p0.Items, maxw);
+					p0.H = PopupVerticalPadding * 2.0f
+						+ static_cast<float>(p0.Items.size()) * PopupItemExtent;
 					clampPanelXY(p0.X, p0.Y, p0.W, p0.H);
 				}
 				panels.push_back(p0);
@@ -794,22 +1468,25 @@ void Menu::Update()
 					int openIdx = _openPath[level];
 					if (openIdx < 0) break;
 					const auto& prev = panels.back();
-					if (!prev.Items) break;
-					if (openIdx >= (int)prev.Items->size()) break;
-					auto* owner = (*prev.Items)[openIdx];
-					if (!owner || owner->Separator || owner->SubItems.empty()) break;
+					if (prev.Items.empty()) break;
+					if (openIdx >= (int)prev.Items.size()) break;
+					auto* owner = AsMenuItem(prev.Items[openIdx]);
+					if (!IsInteractive(owner)
+						|| owner->GetMenuItemsView().empty()) break;
 
 					MenuPanel p;
 					p.Owner = owner;
-					p.Items = &owner->SubItems;
-					p.W = calcPanelWidth(*p.Items, 0.0f);
-					p.H = DropPaddingY * 2.0f + (float)p.Items->size() * (float)DropItemHeight;
+					p.Items = owner->GetMenuItemsView();
+					p.W = calcPanelWidth(p.Items, 0.0f);
+					p.H = PopupVerticalPadding * 2.0f
+						+ static_cast<float>(p.Items.size()) * PopupItemExtent;
 					p.X = prev.X + prev.W - 1.0f;
-					p.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+					p.Y = prev.Y + PopupVerticalPadding
+						+ static_cast<float>(openIdx) * PopupItemExtent;
 
-					if (this->ParentForm)
+					if (this->GetPresentationWindow())
 					{
-						float maxX = (float)this->ParentForm->ClientSize.cx;
+						float maxX = this->GetPresentationWindow()->GetContentViewportSizeDip().width;
 						if (p.X + p.W > maxX)
 						{
 							p.X = prev.X - p.W - 4.0f;
@@ -825,60 +1502,76 @@ void Menu::Update()
 				for (size_t level = 0; level < panels.size(); level++)
 				{
 					const auto& pn = panels[level];
-					if (!pn.Items) continue;
-					const float panelProgress = level == 0 ? popupProgress : 1.0f;
-					if (panelProgress <= 0.001f) continue;
-					const float revealH = (std::max)(1.0f, pn.H * panelProgress);
-					const float alpha = level == 0 ? (0.28f + 0.72f * panelProgress) : 1.0f;
-					d2d->PushDrawRect(pn.X, pn.Y, pn.W, revealH);
-					d2d->FillRoundRect(pn.X, pn.Y, pn.W, pn.H, FadeColor(DropBackColor, alpha), DropCornerRadius);
-					d2d->DrawRoundRect(pn.X, pn.Y, pn.W, pn.H, FadeColor(DropBorderColor, alpha), 1.0f, DropCornerRadius);
+					if (pn.Items.empty()) continue;
+					d2d->PushDrawRect(pn.X, pn.Y, pn.W, pn.H);
+					d2d->FillRoundRect(
+						pn.X, pn.Y, pn.W, pn.H,
+						PopupBackground, PopupCornerRadius);
+					d2d->DrawRoundRect(
+						pn.X, pn.Y, pn.W, pn.H,
+						PopupBorder, 1.0f, PopupCornerRadius);
 
 					int hoverIdx = (level < _hoverPath.size() ? _hoverPath[level] : -1);
 					int openIdx = (level < _openPath.size() ? _openPath[level] : -1);
-					for (int i = 0; i < (int)pn.Items->size(); i++)
+					for (int i = 0; i < (int)pn.Items.size(); i++)
 					{
-						auto* it = (*pn.Items)[i];
-						float iy = pn.Y + DropPaddingY + (float)i * (float)DropItemHeight;
-						if (it && it->Separator)
+						auto* entry = pn.Items[i];
+						float iy = pn.Y + PopupVerticalPadding
+							+ static_cast<float>(i) * PopupItemExtent;
+						if (IsSeparator(entry))
 						{
-							float y = iy + (float)DropItemHeight * 0.5f;
-							d2d->DrawLine(pn.X + 12.0f, y, pn.X + pn.W - 12.0f, y, FadeColor(DropSeparatorColor, alpha), 1.0f);
+							float y = iy + PopupItemExtent * 0.5f;
+							d2d->DrawLine(pn.X + 12.0f, y,
+								pn.X + pn.W - 12.0f, y, PopupSeparator, 1.0f);
 							continue;
 						}
-						if (i == hoverIdx || i == openIdx)
+						auto* it = AsMenuItem(entry);
+						const bool itemEnabled = IsInteractive(it);
+						if (itemEnabled && (i == hoverIdx || i == openIdx))
 						{
-							const float inset = (std::max)(0.0f, this->DropItemHorizontalInset);
-							auto itemRect = D2D1::RectF(pn.X + inset, iy + 2.0f, pn.X + pn.W - inset, iy + (float)DropItemHeight - 2.0f);
-							const auto hoverColor = FadeColor(DropHoverColor, alpha);
-							d2d->FillRoundRect(itemRect, hoverColor, DropItemCornerRadius);
-							d2d->DrawRoundRect(itemRect, BoostAlpha(hoverColor, i == openIdx ? 2.1f : 1.7f), 1.0f, DropItemCornerRadius);
+							const float inset = PopupItemHorizontalInset;
+							auto itemRect = D2D1::RectF(pn.X + inset,
+								iy + 2.0f, pn.X + pn.W - inset,
+								iy + PopupItemExtent - 2.0f);
+							const auto hoverColor = PopupHighlight;
+							d2d->FillRoundRect(
+								itemRect, hoverColor, PopupItemCornerRadius);
+							d2d->DrawRoundRect(itemRect,
+								BoostAlpha(hoverColor,
+									i == openIdx ? 2.1f : 1.7f),
+								1.0f, PopupItemCornerRadius);
 							const float stripeH = (std::max)(0.0f, itemRect.bottom - itemRect.top - 8.0f);
 							if (stripeH > 0.0f)
 								d2d->FillRoundRect(itemRect.left + 4.0f, itemRect.top + 4.0f, 3.0f, stripeH, BoostAlpha(hoverColor, 3.0f), 1.5f);
 						}
 
-						if (!it) continue;
-						auto ts = font->GetTextSize(it->Text);
-						float ty = iy + ((float)DropItemHeight - ts.height) * 0.5f;
+						if (!it || !it->IsVisible) continue;
+						auto textColor = PopupText;
+						if (!itemEnabled) textColor.a *= 0.45f;
+						auto ts = font->GetTextSize(it->GetDisplayText());
+						float ty = iy + (PopupItemExtent - ts.height) * 0.5f;
 						if (ty < iy) ty = iy;
-						d2d->DrawString(it->Text, pn.X + 14.0f, ty, FadeColor(DropTextColor, alpha), font);
-						const float arrowReserve = !it->SubItems.empty() ? 18.0f : 0.0f;
-						if (!it->Shortcut.empty())
+						d2d->DrawString(it->GetDisplayText(), pn.X + 14.0f, ty,
+							textColor, font);
+						const float arrowReserve =
+							!it->GetMenuItemsView().empty() ? 18.0f : 0.0f;
+						if (!it->InputGestureText.empty())
 						{
-							auto ss = font->GetTextSize(it->Shortcut);
+							auto ss = font->GetTextSize(it->InputGestureText);
 							float sx = pn.X + pn.W - 14.0f - arrowReserve - ss.width;
-							d2d->DrawString(it->Shortcut, sx, ty, FadeColor(DropTextColor, alpha), font);
+							d2d->DrawString(it->InputGestureText, sx, ty,
+								textColor, font);
 						}
 
-						if (!it->SubItems.empty())
+						if (!it->GetMenuItemsView().empty())
 						{
 							std::wstring arrow = L"\u203A";
 							if (i == openIdx && (level + 1) < panels.size() && panels[level + 1].OpenedToLeft)
 								arrow = L"\u2039";
 							auto as = font->GetTextSize(arrow);
 							float ax = pn.X + pn.W - 14.0f - as.width;
-							d2d->DrawString(arrow, ax, ty, FadeColor(DropTextColor, alpha), font);
+							d2d->DrawString(arrow, ax, ty,
+								textColor, font);
 						}
 					}
 					d2d->PopDrawRect();
@@ -889,96 +1582,141 @@ void Menu::Update()
 	this->EndRender();
 }
 
-bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool Menu::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-
-	// 主菜单单独管理：记录到 Form::MainMenu
-	if (this->ParentForm)
-	{
-		this->ParentForm->MainMenu = this;
-	}
+	const ControlWeakReference hostLifetime(this);
+	ScopeExit projectOnExit{ [hostLifetime]
+		{
+			if (auto* host = dynamic_cast<Menu*>(hostLifetime.Get()))
+				host->SynchronizeInteractionProjection();
+		} };
+	if (!this->IsEffectivelyEnabled() || !this->IsVisible) return true;
+	const int localX = input.X;
+	const int localY = input.Y;
 
 	// route to top items (bar area only)
-	if (localY >= 0 && localY < BarHeight)
+	if (localY >= 0 && localY < MenuBarExtent())
 	{
 		_hoverTopIndex = -1;
-		for (int i = 0; i < this->Count; i++)
+		MenuItem* hoveredTop = nullptr;
+		for (int i = 0; i < static_cast<int>(_items.size()); i++)
 		{
-			auto* it = (MenuItem*)this->operator[](i);
+			auto* it = GetItem(i);
 			if (!it) continue;
 			const auto loc = it->GetActualLocationDip();
 			const cui::core::Rect itemRect{ loc, it->GetActualSizeDip() };
 			if (itemRect.Contains(cui::core::Point{ (float)localX, (float)localY }))
 			{
-				_hoverTopIndex = i;
-				it->DispatchMessage(
-					message, wParam, lParam,
-					static_cast<int>(std::floor((float)localX - loc.x)),
-					static_cast<int>(std::floor((float)localY - loc.y)));
+				if (IsInteractive(it))
+				{
+					_hoverTopIndex = i;
+					hoveredTop = it;
+				}
 				break;
 			}
 		}
 
-		if (message == WM_MOUSEMOVE)
+		if (input.Kind == InputReportKind::PointerMove)
 		{
-			this->ParentForm->UnderMouse = this;
+			if (!hostLifetime) return true;
 			// hover切换展开的一级菜单
 			if (_expand && _hoverTopIndex >= 0 && _hoverTopIndex != _expandIndex)
 			{
 				_expandIndex = _hoverTopIndex;
 				_hoverPath.clear();
 				_openPath.clear();
-				BeginPopupReveal(0.42f);
 				this->InvalidateVisual();
 			}
 		}
-		else if (message == WM_LBUTTONUP)
+		else if (input.Kind == InputReportKind::PointerUp
+			&& input.ChangedButton == MouseButton::Left)
 		{
 			if (_hoverTopIndex >= 0)
 			{
-				if (_expand && _expandIndex == _hoverTopIndex)
+				auto* item = GetItem(_hoverTopIndex);
+				if (!item)
+					return Control::ProcessInput(input);
+				const ControlWeakReference itemLifetime(item);
+				if (!item->GetMenuItemsView().empty()
+					&& _expand && _expandIndex == _hoverTopIndex)
 				{
 					ClosePopup();
+					if (!hostLifetime) return true;
+				}
+				else if (!item->GetMenuItemsView().empty())
+				{
+					auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+					auto* expandedItem = dynamic_cast<MenuItem*>(
+						itemLifetime.Get());
+					if (!host || !expandedItem
+						|| expandedItem->GetMenuItemsView().empty()) return true;
+					const int expandedIndex = host->IndexOfItem(expandedItem);
+					if (expandedIndex < 0) return true;
+					host->_expand = true;
+					host->_hoverTopIndex = expandedIndex;
+					host->_expandIndex = expandedIndex;
+					host->_hoverPath.clear();
+					host->_openPath.clear();
+					if (host->GetPresentationWindow()
+						&& !cui::framework::WindowAccess::OpenTransientPresentation(
+							*host->GetPresentationWindow(), host,
+							TransientPresentationOptions{},
+							[](Control& root)
+							{
+								static_cast<Menu&>(root).ClosePopup();
+							}))
+					{
+						host->ClosePopup();
+						return true;
+					}
+					host = dynamic_cast<Menu*>(hostLifetime.Get());
+					if (!host) return true;
 				}
 				else
 				{
-					_expand = true;
-					_expandIndex = _hoverTopIndex;
-					_hoverPath.clear();
-					_openPath.clear();
-					BeginPopupReveal(0.08f);
+					const bool staysOpen = item->StaysOpenOnClick;
+					const bool invoked = item->Invoke();
+					auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+					if (!host) return true;
+					if (invoked && !staysOpen && host->_expand)
+					{
+						host->ClosePopup();
+						host = dynamic_cast<Menu*>(hostLifetime.Get());
+						if (!host) return true;
+					}
 				}
-				if (this->ParentForm) this->ParentForm->Invalidate(true);
-				else this->InvalidateVisual();
+				auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+				if (!host) return true;
+				host->InvalidateVisual();
 			}
 		}
 
-		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+		auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+		return host ? host->Control::ProcessInput(input) : true;
 	}
 
 	// dropdown interactions (支持任意层级)
 	if (_expand && DropCount() > 0)
 	{
-		auto* top = (MenuItem*)this->operator[](_expandIndex);
+			auto* top = GetItem(_expandIndex);
 		if (top)
 		{
-			auto calcPanelWidth = [&](const std::vector<MenuItem*>& items) -> float
+			auto calcPanelWidth = [&](std::span<Control* const> items) -> float
 				{
 					float w = 120.0f;
-					auto font = this->Font;
-					for (auto* it : items)
+					auto font = this->GetRenderFont();
+					for (auto* entry : items)
 					{
+						auto* it = AsMenuItem(entry);
 						if (!it) continue;
-						if (it->Separator) continue;
-						auto ts = font->GetTextSize(it->Text);
+						auto ts = font->GetTextSize(it->GetDisplayText());
 						float tw = ts.width + 24.0f;
-						if (!it->Shortcut.empty())
+						if (!it->InputGestureText.empty())
 						{
-							auto ss = font->GetTextSize(it->Shortcut);
+							auto ss = font->GetTextSize(it->InputGestureText);
 							tw += ss.width + 20.0f;
 						}
-						if (!it->SubItems.empty())
+						if (!it->GetMenuItemsView().empty())
 							tw += 18.0f;
 						if (tw > w) w = tw;
 					}
@@ -988,9 +1726,10 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 
 			auto clampPanelXY = [&](float& x, float& y, float w, float h)
 				{
-					if (!this->ParentForm) return;
-					float maxX = (float)this->ParentForm->ClientSize.cx;
-					float maxY = (float)this->ParentForm->ClientSize.cy;
+					if (!this->GetPresentationWindow()) return;
+					const auto viewport = this->GetPresentationWindow()->GetContentViewportSizeDip();
+					float maxX = viewport.width;
+					float maxY = viewport.height;
 					if (x < 0.0f) x = 0.0f;
 					if (y < 0.0f) y = 0.0f;
 					if (x + w > maxX) x = std::max(0.0f, maxX - w);
@@ -1002,11 +1741,12 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			panels.reserve(8);
 			MenuPanel p0;
 			p0.Owner = top;
-			p0.Items = &top->SubItems;
+			p0.Items = top->GetMenuItemsView();
 			p0.X = DropLeftLocal();
 			p0.Y = DropTopLocal();
 			p0.W = DropWidthLocal();
-			p0.H = DropPaddingY * 2.0f + (float)p0.Items->size() * (float)DropItemHeight;
+			p0.H = PopupVerticalPadding * 2.0f
+				+ static_cast<float>(p0.Items.size()) * PopupItemExtent;
 			clampPanelXY(p0.X, p0.Y, p0.W, p0.H);
 			panels.push_back(p0);
 
@@ -1015,21 +1755,24 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				int openIdx = _openPath[level];
 				if (openIdx < 0) break;
 				const auto& prev = panels.back();
-				if (!prev.Items) break;
-				if (openIdx >= (int)prev.Items->size()) break;
-				auto* owner = (*prev.Items)[openIdx];
-				if (!owner || owner->Separator || owner->SubItems.empty()) break;
+				if (prev.Items.empty()) break;
+				if (openIdx >= (int)prev.Items.size()) break;
+				auto* owner = AsMenuItem(prev.Items[openIdx]);
+				if (!IsInteractive(owner)
+					|| owner->GetMenuItemsView().empty()) break;
 				MenuPanel p;
 				p.Owner = owner;
-				p.Items = &owner->SubItems;
-				p.W = calcPanelWidth(*p.Items);
-				p.H = DropPaddingY * 2.0f + (float)p.Items->size() * (float)DropItemHeight;
+				p.Items = owner->GetMenuItemsView();
+				p.W = calcPanelWidth(p.Items);
+				p.H = PopupVerticalPadding * 2.0f
+					+ static_cast<float>(p.Items.size()) * PopupItemExtent;
 				p.X = prev.X + prev.W - 1.0f;
-				p.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+				p.Y = prev.Y + PopupVerticalPadding
+					+ static_cast<float>(openIdx) * PopupItemExtent;
 
-				if (this->ParentForm)
+				if (this->GetPresentationWindow())
 				{
-					float maxX = (float)this->ParentForm->ClientSize.cx;
+					float maxX = this->GetPresentationWindow()->GetContentViewportSizeDip().width;
 					if (p.X + p.W > maxX)
 					{
 						p.X = prev.X - p.W - 4.0f;
@@ -1080,17 +1823,27 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 
 			auto itemHasSubMenu = [](MenuItem* it) -> bool
 				{
-					return it && !it->Separator && !it->SubItems.empty();
+					return IsInteractive(it)
+						&& !it->GetMenuItemsView().empty();
 				};
 
-			if (message == WM_MOUSEMOVE)
+			if (input.Kind == InputReportKind::PointerMove)
 			{
 				if (hitLevel >= 0)
 				{
 					const auto& pn = panels[hitLevel];
-					int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
-					int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+					int itemIndex = static_cast<int>(((float)localY
+						- (pn.Y + PopupVerticalPadding)) / PopupItemExtent);
+					int itemCount = static_cast<int>(pn.Items.size());
 					if (itemIndex < 0 || itemIndex >= itemCount) itemIndex = -1;
+					MenuItem* hovered = nullptr;
+					if (itemIndex >= 0)
+						hovered = AsMenuItem(pn.Items[itemIndex]);
+					if (!IsInteractive(hovered))
+					{
+						hovered = nullptr;
+						itemIndex = -1;
+					}
 					bool needsUpdate = false;
 
 					ensureSize(_hoverPath, (size_t)hitLevel + 1);
@@ -1108,9 +1861,6 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 					}
 
 					int newOpen = -1;
-					MenuItem* hovered = nullptr;
-					if (itemIndex >= 0 && pn.Items && itemIndex < (int)pn.Items->size())
-						hovered = (*pn.Items)[itemIndex];
 					if (itemHasSubMenu(hovered))
 						newOpen = itemIndex;
 
@@ -1136,20 +1886,22 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 					}
 				}
 			}
-			else if (message == WM_LBUTTONUP)
+			else if (input.Kind == InputReportKind::PointerUp
+				&& input.ChangedButton == MouseButton::Left)
 			{
 				if (hitLevel >= 0)
 				{
 					const auto& pn = panels[hitLevel];
-					int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
-					int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+					int itemIndex = static_cast<int>(((float)localY
+						- (pn.Y + PopupVerticalPadding)) / PopupItemExtent);
+					int itemCount = static_cast<int>(pn.Items.size());
 					if (itemIndex >= 0 && itemIndex < itemCount)
 					{
-						auto* item = (*pn.Items)[itemIndex];
-						if (item && !item->Separator)
+						auto* item = AsMenuItem(pn.Items[itemIndex]);
+						if (IsInteractive(item))
 						{
 							// 点击有子菜单项：展开下一层但不触发命令
-							if (!item->SubItems.empty())
+							if (!item->GetMenuItemsView().empty())
 							{
 								ensureSize(_hoverPath, (size_t)hitLevel + 1);
 								ensureSize(_openPath, (size_t)hitLevel + 1);
@@ -1158,13 +1910,25 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 								_hoverPath[hitLevel] = itemIndex;
 								_openPath[hitLevel] = itemIndex;
 								this->InvalidateVisual();
-								return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+								auto* host = dynamic_cast<Menu*>(
+									hostLifetime.Get());
+								return host
+									? host->Control::ProcessInput(input)
+									: true;
 							}
-							// 叶子项：触发命令并收起
-							if (item->Id != 0)
-								this->OnMenuCommand(this, item->Id);
-							ClosePopup();
-							return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+							// 叶子项自己发布 Click 并执行统一命令路由。
+							const bool staysOpen = item->StaysOpenOnClick;
+							const bool invoked = item->Invoke();
+							auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+							if (!host) return true;
+							if (invoked && !staysOpen)
+							{
+								host->ClosePopup();
+								host = dynamic_cast<Menu*>(
+									hostLifetime.Get());
+								if (!host) return true;
+							}
+							return host->Control::ProcessInput(input);
 						}
 					}
 					// 点击分隔符：不处理
@@ -1173,17 +1937,21 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				{
 					// 点击到下拉外区域：只收起
 					ClosePopup();
-					return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+					auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+					return host
+						? host->Control::ProcessInput(input) : true;
 				}
 			}
 		}
 	}
 	// 展开时点击菜单栏/下拉之外：收起（配合 ActualSize 覆盖内容区）
-	else if (_expand && message == WM_LBUTTONUP)
+	else if (_expand && input.Kind == InputReportKind::PointerUp
+		&& input.ChangedButton == MouseButton::Left)
 	{
 		ClosePopup();
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+	auto* host = dynamic_cast<Menu*>(hostLifetime.Get());
+	return host ? host->Control::ProcessInput(input) : true;
 }
 

@@ -1,10 +1,12 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file DesignerCanvas.h
  * @brief DesignerCanvas：设计器画布与控件选中/拖拽交互实现。
  */
 #include "../CUI/include/Panel.h"
+#include "../CUI/include/ContentControl.h"
+#include "../CUI/include/Window.h"
 #include "DesignerTypes.h"
 #include "DesignerStyleSheet.h"
 #include "DesignerModel/DesignDocument.h"
@@ -18,15 +20,12 @@
 
 namespace DesignerModel { struct XamlDocumentDiagnostic; }
 
-struct CodeGenInput;
 struct DesignerEventDescriptor;
 class IDesignerCommand;
 class DesignerCommandCoordinator;
 class SelectionService;
-class SplitContainer;
 class ControlPlacementCommand;
 class ControlSubtreeCommand;
-class ControlOwnedCollectionCommand;
 class EventHandlerCommand;
 struct DesignerCanvasPlacementInteraction;
 struct DesignerCanvasPropertyInteraction;
@@ -62,7 +61,6 @@ namespace DesignerModel
 {
 	struct DesignDocument;
 	class DesignDocumentEventIndex;
-	struct DesignFormModel;
 }
 
 struct DesignerCanvasInteractionTransactionEventArgs
@@ -112,30 +110,31 @@ class DesignerCanvas : public Panel
 friend class DesignerCommandCoordinator;
 friend class ControlPlacementCommand;
 friend class ControlSubtreeCommand;
-friend class ControlOwnedCollectionCommand;
 friend class EventHandlerCommand;
 
 private:
 	Panel* _designSurface = nullptr;
-	Panel* _clientSurface = nullptr;
-	std::wstring _designedFormName = L"MainForm";
-	std::wstring _designedFormText = L"Form";
-	SIZE _designedFormSize = { 800, 600 };
-	POINT _designedFormLocation = { 100, 100 };
-	D2D1_COLOR_F _designedFormBackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F _designedFormForeColor = Colors::Black;
-	// 窗体默认字体：空表示使用框架默认字体名（GetDefaultFontObject）
-	std::wstring _designedFormFontName;
-	float _designedFormFontSize = 18.0f;
-	// 共享字体对象：用于让“默认字体”的控件跟随窗体字体（控件 SetFontEx(..., false)）。
-	::Font* _designedFormSharedFont = nullptr;
-	// 已被替换但暂未释放的共享字体（避免 UAF：某些复合控件/缓存可能短时间仍引用旧指针）
-	std::vector<::Font*> _retiredDesignedFormSharedFonts;
-	bool _designedFormShowInTaskBar = true;
-	bool _designedFormTopMost = false;
-	bool _designedFormEnable = true;
-	bool _designedFormVisible = true;
-	std::map<std::wstring, std::wstring> _designedFormEventHandlers;
+	ContentControl* _clientSurface = nullptr;
+	// The design chrome hosts exactly one authored Window.Content element.
+	// New documents start with a real XAML Canvas behavior host; this is never
+	// a second, designer-only root collection.
+	Control* _defaultContentRoot = nullptr;
+	DesignerModel::DesignNode _designedWindowNode =
+		DesignerModel::DesignDocument{}.Window;
+	bool _applyingDesignedWindowNode = false;
+	std::wstring _designedWindowName = L"MainWindow";
+	std::wstring _designedWindowTitle = L"Window";
+	cui::core::Size _designedWindowSize{ 800.0f, 600.0f };
+	D2D1_COLOR_F _designedWindowBackgroundColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F _designedWindowForegroundColor = Colors::Black;
+	std::wstring _designedWindowFontFamily;
+	float _designedWindowFontSize = 18.0f;
+	// Designer-only chrome projection. Runtime controls inherit the Window
+	// typography through the dependency-property tree instead of sharing it.
+	std::unique_ptr<::Font> _designedWindowChromeFont;
+	bool _designedWindowShowInTaskbar = true;
+	bool _designedWindowTopmost = false;
+	bool _designedWindowEnable = true;
 	std::wstring _lastPastedClipboardText;
 	std::vector<std::wstring> _lastPastedRootNames;
 	unsigned int _clipboardPasteSequence = 0;
@@ -154,22 +153,19 @@ private:
 	std::shared_ptr<ResourceLoadContext> _documentResources;
 	std::shared_ptr<ControlStyleSheet> _previewStyleSheet;
 	std::shared_ptr<IBindingSource> _designDataContext;
-	bool _designedFormVisibleHead = true;
-	int _designedFormHeadHeight = 24;
-	bool _designedFormMinBox = true;
-	bool _designedFormMaxBox = true;
-	bool _designedFormCloseBox = true;
-	bool _designedFormCenterTitle = true;
-	bool _designedFormAllowResize = true;
+	::WindowStyle _designedWindowStyle = ::WindowStyle::SingleBorderWindow;
+	::ResizeMode _designedWindowResizeMode = ::ResizeMode::CanResize;
 	POINT _designSurfaceOrigin = { 20, 20 };
 
 	// 仅影响设计器视图，不进入 XAML/文档历史。逻辑画布坐标始终保持 1 DIP。
 	float _viewZoom = 1.0f;
 	D2D1_POINT_2F _viewOffset{ 0.0f, 0.0f };
 	bool _fitToViewport = false;
-	SIZE _lastFitViewportSize{ 0, 0 };
+	cui::core::Size _lastFitViewportSize{};
 	bool _isPanning = false;
 	bool _panStartedWithLeftButton = false;
+	// View-only pointer feedback; never enters the document dependency-property state.
+	CursorKind _interactionCursor = CursorKind::Arrow;
 	POINT _panStartViewPoint{ 0, 0 };
 	D2D1_POINT_2F _panStartViewOffset{ 0.0f, 0.0f };
 
@@ -186,9 +182,9 @@ private:
 	bool _tabOrderMode = false;
 	int _nextTabOrderIndex = 0;
 	int _lastTabOrderStableId = 0;
-	DWORD _lastTabOrderClickTime = 0;
-	::Font* _tabOrderBadgeFont = nullptr;
+	std::unique_ptr<::Font> _tabOrderBadgeFont;
 	float _tabOrderBadgeFontZoom = 0.0f;
+	bool _spacePanModifierDown = false;
 
 	std::vector<std::shared_ptr<DesignerControl>> _designerControls;
 	std::vector<std::shared_ptr<DesignerControl>> _selectedControls;
@@ -215,7 +211,6 @@ private:
 		Control* ControlInstance = nullptr;
 		Control* Parent = nullptr;
 		RECT StartRectInCanvas{ 0,0,0,0 };
-		POINT StartLocation{ 0,0 };
 		Thickness StartMargin{};
 		bool UsesRelativeMargin = false;
 	};
@@ -226,16 +221,10 @@ private:
 	DesignerControl::ResizeHandle _resizeHandle = DesignerControl::ResizeHandle::None;
 	RECT _resizeStartRect = {0, 0, 0, 0};
 
-	// SplitContainer 分隔条拖拽状态
-	bool _isSplitterDragging = false;
-	POINT _splitterDragStartPoint = { 0, 0 };
-	int _splitterDragStartDistance = 0;
-	SplitContainer* _splitterDragTarget = nullptr;
-	
 	// 待添加的完整控件描述；自定义控件不能退化为单一 UIClass。
 	std::optional<DesignerControlDescriptor> _controlToAdd;
 	// Toolbox drag preview is view-only state.  The actual drop still enters
-	// AddControlToCanvas as one undoable subtree command.
+	// AdoptVisualChildToCanvas as one undoable subtree command.
 	bool _controlDropPreviewVisible = false;
 	RECT _controlDropPreviewRect{ 0, 0, 0, 0 };
 	RECT _controlDropTargetRect{ 0, 0, 0, 0 };
@@ -266,6 +255,9 @@ private:
 	std::wstring GenerateDefaultControlName(UIClass type, const std::wstring& typeName);
 	void UpdateDefaultNameCounterFromName(UIClass type, const std::wstring& name);
 	int AllocateStableControlId();
+	void CreateDefaultContentRoot();
+	std::shared_ptr<DesignerControl> GetDocumentContentRootRecord() const;
+	Control* GetDocumentContentRoot() const;
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
@@ -280,23 +272,37 @@ private:
 	RECT GetDesignSurfaceRectInCanvas() const;
 	RECT GetClientSurfaceRectInCanvas() const;
 	RECT GetViewportRectInCanvas() const;
+	bool IsPointInDesignedWindow(POINT ptCanvas) const;
 	bool IsPointInDesignSurface(POINT ptCanvas) const;
 	RECT ClampRectToBounds(RECT r, const RECT& bounds, bool keepSize) const;
 	bool TryHandleTabHeaderClick(POINT ptCanvas);
-	int DesignedClientTop() const { return (_designedFormVisibleHead && _designedFormHeadHeight > 0) ? _designedFormHeadHeight : 0; }
+	bool DesignedWindowHasChrome() const noexcept
+	{
+		return _designedWindowStyle != ::WindowStyle::None;
+	}
+	bool DesignedWindowHasMinimizeBox() const noexcept
+	{
+		return DesignedWindowHasChrome()
+			&& _designedWindowStyle != ::WindowStyle::ToolWindow
+			&& _designedWindowResizeMode != ::ResizeMode::NoResize;
+	}
+	bool DesignedWindowHasMaximizeBox() const noexcept
+	{
+		return DesignedWindowHasChrome()
+			&& _designedWindowStyle != ::WindowStyle::ToolWindow
+			&& (_designedWindowResizeMode == ::ResizeMode::CanResize
+				|| _designedWindowResizeMode == ::ResizeMode::CanResizeWithGrip);
+	}
+	int DesignedClientTop() const
+	{
+		return DesignedWindowHasChrome() ? 24 : 0;
+	}
 	void UpdateClientSurfaceLayout();
-	void UpdateRootChromePreviewLayout();
+	void UpdateContentPreviewLayout();
 	
-	std::shared_ptr<DesignerControl> HitTestControl(POINT pt);
-	std::shared_ptr<DesignerControl> HitTestSplitContainerSplitter(POINT pt) const;
+	std::shared_ptr<DesignerControl> HitTestControl(
+		POINT pt, bool preferParentContainer = false);
 	CursorKind GetResizeCursor(DesignerControl::ResizeHandle handle);
-	CursorKind GetSplitContainerSplitterCursor(SplitContainer* split) const;
-	RECT GetSplitContainerSplitterRectInCanvas(SplitContainer* split) const;
-	int ClampSplitContainerDistance(SplitContainer* split, int value) const;
-	bool UpdateSplitContainerPreview(
-		SplitContainer* split,
-		int splitterDistance,
-		std::wstring* outError = nullptr);
 	bool HasActiveDeltaInteraction() const noexcept;
 	bool HasVisibleDesignerAncestors(Control* control) const noexcept;
 	bool BeginCanvasInteractionTransaction(const std::wstring& operation);
@@ -361,44 +367,61 @@ private:
 			assignments,
 		const std::wstring& operation,
 		std::wstring successMessage);
-	static Thickness GetPaddingOfContainer(Control* container);
-	void RebuildDesignedFormSharedFont();
+	void RefreshDesignedWindowTypography();
 	void DetachDesignBindingPreview(DesignerControl& control);
 	
 public:
 	DesignerCanvas(int x, int y, int width, int height);
 	virtual ~DesignerCanvas();
+	CursorKind QueryCursor(int localX, int localY) override
+	{
+		(void)localX;
+		(void)localY;
+		return _interactionCursor;
+	}
 	bool HitTestChildren() const override { return false; }
 	bool TryGetDescendantRenderTransform(
 		D2D1_MATRIX_3X2_F& transform) const override;
-	DesignerModel::DesignFormModel CaptureDesignedFormModel() const;
-	void ApplyDesignedFormModel(const DesignerModel::DesignFormModel& form);
+	DesignerModel::DesignNode CaptureDesignedWindowNode() const;
+	/** Atomically rewrites every document-namescope object reference on rename. */
+	void RewriteInputBindingCommandTargetReferences(
+		const std::wstring& previousName,
+		const std::wstring& nextName);
+	bool ApplyDesignedWindowNode(
+		const DesignerModel::DesignNode& window,
+		std::wstring* outError = nullptr);
+	bool ApplyDesignedWindowProperty(
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr);
+	bool ResetDesignedWindowProperty(
+		const std::wstring& propertyName,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr);
 
 	// 当外部（属性面板）修改 Name 后，同步默认命名计数器（按类型）。
 	void SyncDefaultNameCounter(UIClass type, const std::wstring& name) { UpdateDefaultNameCounterFromName(type, name); }
 
-	std::wstring GetDesignedFormName() const { return _designedFormName; }
-	void SetDesignedFormName(const std::wstring& n) { _designedFormName = n; }
-	std::wstring GetDesignedFormText() const { return _designedFormText; }
-	void SetDesignedFormText(const std::wstring& t) { _designedFormText = t; this->InvalidateVisual(); }
-	D2D1_COLOR_F GetDesignedFormBackColor() const { return _designedFormBackColor; }
-	void SetDesignedFormBackColor(D2D1_COLOR_F c) { _designedFormBackColor = c; if (_clientSurface) _clientSurface->BackColor = c; this->InvalidateVisual(); }
-	D2D1_COLOR_F GetDesignedFormForeColor() const { return _designedFormForeColor; }
-	void SetDesignedFormForeColor(D2D1_COLOR_F c) { _designedFormForeColor = c; this->InvalidateVisual(); }
-	std::wstring GetDesignedFormFontName() const { return _designedFormFontName; }
-	float GetDesignedFormFontSize() const { return _designedFormFontSize; }
-	::Font* GetDesignedFormSharedFont() const { return _designedFormSharedFont; }
-	void SetDesignedFormFontName(const std::wstring& name);
-	void SetDesignedFormFontSize(float size);
-	bool GetDesignedFormShowInTaskBar() const { return _designedFormShowInTaskBar; }
-	void SetDesignedFormShowInTaskBar(bool v) { _designedFormShowInTaskBar = v; }
-	bool GetDesignedFormTopMost() const { return _designedFormTopMost; }
-	void SetDesignedFormTopMost(bool v) { _designedFormTopMost = v; }
-	bool GetDesignedFormEnable() const { return _designedFormEnable; }
-	void SetDesignedFormEnable(bool v) { _designedFormEnable = v; }
-	bool GetDesignedFormVisible() const { return _designedFormVisible; }
-	void SetDesignedFormVisible(bool v) { _designedFormVisible = v; }
-	const std::map<std::wstring, std::wstring>& GetDesignedFormEventHandlers() const { return _designedFormEventHandlers; }
+	std::wstring GetDesignedWindowName() const { return _designedWindowNode.Name; }
+	std::wstring GetDesignedWindowTitle() const { return _designedWindowTitle; }
+	D2D1_COLOR_F GetDesignedWindowBackgroundColor() const
+	{
+		return _designedWindowBackgroundColor;
+	}
+	D2D1_COLOR_F GetDesignedWindowForegroundColor() const
+	{
+		return _designedWindowForegroundColor;
+	}
+	std::wstring GetDesignedWindowFontFamily() const { return _designedWindowFontFamily; }
+	float GetDesignedWindowFontSize() const { return _designedWindowFontSize; }
+	bool GetDesignedWindowShowInTaskbar() const { return _designedWindowShowInTaskbar; }
+	bool GetDesignedWindowTopmost() const { return _designedWindowTopmost; }
+	bool GetDesignedWindowEnable() const { return _designedWindowEnable; }
+	const DesignerModel::DesignEventHandlerMap& GetDesignedWindowEventHandlers() const
+	{
+		return _designedWindowNode.Events;
+	}
 	const DesignerDataContextSchema& GetDataContextSchema() const { return _dataContextSchema; }
 	DesignerDataContextSchema GetEffectiveDataContextSchema(
 		const DesignerControl& control) const;
@@ -447,30 +470,22 @@ public:
 	{
 		return _designDataContext;
 	}
-	void SetDesignedFormEventHandler(
+	void SetDesignedWindowEventHandler(
 		const std::wstring& eventName, const std::wstring& handlerName)
 	{
-		if (handlerName.empty()) _designedFormEventHandlers.erase(eventName);
-		else _designedFormEventHandlers[eventName] = handlerName;
+		if (handlerName.empty()) _designedWindowNode.Events.erase(eventName);
+		else _designedWindowNode.Events[eventName] = handlerName;
 	}
-	SIZE GetDesignedFormSize() const { return _designedFormSize; }
-	void SetDesignedFormSize(SIZE s);
-	POINT GetDesignedFormLocation() const { return _designedFormLocation; }
-	void SetDesignedFormLocation(POINT p) { _designedFormLocation = p; }
-	bool GetDesignedFormVisibleHead() const { return _designedFormVisibleHead; }
-	void SetDesignedFormVisibleHead(bool v) { _designedFormVisibleHead = v; UpdateClientSurfaceLayout(); this->InvalidateVisual(); }
-	int GetDesignedFormHeadHeight() const { return _designedFormHeadHeight; }
-	void SetDesignedFormHeadHeight(int h) { _designedFormHeadHeight = h; if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0; UpdateClientSurfaceLayout(); this->InvalidateVisual(); }
-	bool GetDesignedFormMinBox() const { return _designedFormMinBox; }
-	void SetDesignedFormMinBox(bool v) { _designedFormMinBox = v; this->InvalidateVisual(); }
-	bool GetDesignedFormMaxBox() const { return _designedFormMaxBox; }
-	void SetDesignedFormMaxBox(bool v) { _designedFormMaxBox = v; this->InvalidateVisual(); }
-	bool GetDesignedFormCloseBox() const { return _designedFormCloseBox; }
-	void SetDesignedFormCloseBox(bool v) { _designedFormCloseBox = v; this->InvalidateVisual(); }
-	bool GetDesignedFormCenterTitle() const { return _designedFormCenterTitle; }
-	void SetDesignedFormCenterTitle(bool v) { _designedFormCenterTitle = v; this->InvalidateVisual(); }
-	bool GetDesignedFormAllowResize() const { return _designedFormAllowResize; }
-	void SetDesignedFormAllowResize(bool v) { _designedFormAllowResize = v; this->InvalidateVisual(); }
+	cui::core::Size GetDesignedWindowSize() const { return _designedWindowSize; }
+	void SetDesignedWindowSize(cui::core::Size value);
+	::WindowStyle GetDesignedWindowStyle() const
+	{
+		return _designedWindowStyle;
+	}
+	::ResizeMode GetDesignedWindowResizeMode() const
+	{
+		return _designedWindowResizeMode;
+	}
 
 	// 视图导航（非文档状态）：Ctrl+滚轮/加减号缩放，Ctrl+0 适配，Ctrl+1 还原。
 	float GetViewZoom() const noexcept { return _viewZoom; }
@@ -505,15 +520,15 @@ public:
 		int tabIndex);
 	/** Assigns every focusable design control in visual reading order as one Undo. */
 	DesignerDocumentTransactionResult AutoArrangeTabOrder();
-	/** Activates any owning TabPage chain so an outline-selected control is visible. */
+	/** Activates any owning TabItem chain so an outline-selected control is visible. */
 	bool RevealControlInDesigner(Control* control);
 	void ClampControlToDesignSurface(Control* c);
-	// 设计器专用：切换 Anchor 时保持控件当前视觉矩形不变，并同步换算 Margin
-	void ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles);
-
 	// 设计文件（用于保存/加载设计进度）
 	bool BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError = nullptr) const;
-	bool ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError = nullptr);
+	bool ApplyDesignDocument(
+		const DesignerModel::DesignDocument& document,
+		std::wstring* outError = nullptr,
+		DesignerModel::XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	bool BuildXamlDocumentText(
 		std::wstring& xamlText,
 		std::wstring* outError = nullptr) const;
@@ -532,7 +547,7 @@ public:
 	bool BuildEventHandlerIndex(
 		DesignerModel::DesignDocumentEventIndex& index,
 		std::wstring* outError = nullptr) const;
-	/** Applies one Form/control event mapping through a stable-ID delta command. */
+	/** Applies one Window/control event mapping through a stable-ID delta command. */
 	DesignerDocumentTransactionResult UpdateEventHandler(
 		const std::shared_ptr<DesignerControl>& control,
 		const std::wstring& eventName,
@@ -561,13 +576,15 @@ public:
 	DesignerDocumentTransactionResult RestoreRecoveredDocument(
 		const DesignerModel::DesignDocument& document);
 	
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-	
+protected:
+	void PreparePresentation() override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+public:
 	// 控件管理
-	DesignerDocumentTransactionResult AddControlToCanvas(
+	DesignerDocumentTransactionResult AdoptVisualChildToCanvas(
 		UIClass type, POINT canvasPos);
-	DesignerDocumentTransactionResult AddControlToCanvas(
+	DesignerDocumentTransactionResult AdoptVisualChildToCanvas(
 		const DesignerControlDescriptor& descriptor, POINT canvasPos);
 	/** Updates the view-only toolbox ghost and resolves the actual drop host. */
 	bool UpdateControlDropPreview(
@@ -616,7 +633,7 @@ public:
 	DesignerDocumentTransactionResult PasteControlsFromXamlTextAt(
 		const std::wstring& xamlText,
 		POINT canvasPosition);
-	/** Applies one WinForms-style multi-selection arrangement command. */
+	/** Applies one designer multi-selection arrangement command. */
 	DesignerDocumentTransactionResult ArrangeSelection(
 		DesignerSelectionArrangeAction action);
 	bool HasLockedSelectedControls() const noexcept;
@@ -628,8 +645,8 @@ public:
 		int sourceStableId,
 		std::optional<int> targetStableId,
 		DesignerHierarchyDropPosition position);
-	void AddControlToCanvasCore(UIClass type, POINT canvasPos);
-	void AddControlToCanvasCore(
+	void AdoptVisualChildToCanvasCore(UIClass type, POINT canvasPos);
+	void AdoptVisualChildToCanvasCore(
 		const DesignerControlDescriptor& descriptor, POINT canvasPos);
 	DesignerDocumentTransactionResult DeleteSelectedControl(
 		bool publishResult = true);
@@ -705,19 +722,13 @@ public:
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }
-	CodeGenInput BuildCodeGenInput() const;
-	std::vector<std::shared_ptr<DesignerControl>> GetAllControlsForExport() const;
 	
 	// 准备添加控件（鼠标模式）
-	void SetControlDescriptors(
-		const std::vector<DesignerControlDescriptor>& descriptors);
-	void RegisterControlDescriptor(
-		const DesignerControlDescriptor& descriptor);
 	void SetControlToAdd(UIClass type);
 	void SetControlToAdd(const DesignerControlDescriptor& descriptor);
 	
 	Event<void(std::shared_ptr<DesignerControl>)> OnControlSelected;
-	/** WinForms-style request raised when a control or the form is double-clicked. */
+	/** Designer request raised when an element or the Window is double-clicked. */
 	Event<void(std::shared_ptr<DesignerControl>)> OnDefaultEventRequested;
 	Event<void(const DesignerCanvasInteractionTransactionEventArgs&)>
 		OnInteractionTransactionCompleted;
@@ -763,9 +774,10 @@ private:
 	Control* FindBestContainerAtPoint(POINT ptCanvas, Control* ignore);
 	bool IsContainerControl(Control* c);
 	bool IsDescendantOf(Control* ancestor, Control* node);
-	Control* NormalizeContainerForDrop(Control* container);
+	Control* NormalizeContainerForDrop(
+		Control* container, UIClass childType);
 	POINT CanvasToContainerPoint(POINT ptCanvas, Control* container);
 	POINT CanvasToChildLayoutPoint(POINT ptCanvas, Control* container);
 	void TryReparentSelectedAfterDrag();
-	void DeleteControlRecursive(Control* c);
+	void DeleteVisualChildRecursive(Control* c);
 };

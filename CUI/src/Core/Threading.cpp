@@ -6,7 +6,6 @@
 #include <Windows.h>
 
 #include <atomic>
-#include <cassert>
 #include <deque>
 #include <mutex>
 
@@ -131,28 +130,6 @@ bool HasUIThreadDispatcher() noexcept
 	return g_dispatcherHwnd.load(std::memory_order_acquire) != nullptr;
 }
 
-void AssertUIThread(const char* reason) noexcept
-{
-#if defined(_DEBUG)
-	if (!IsUIThread())
-	{
-		// 输出诊断后触发断言；仅在 UI 线程已登记时才强制。
-		if (g_uiThreadId.load(std::memory_order_acquire) != 0)
-		{
-			char buffer[160]{};
-			_snprintf_s(buffer, _TRUNCATE,
-				"CUI: cross-thread UI access detected (%s)",
-				reason ? reason : "no reason given");
-			OutputDebugStringA(buffer);
-			OutputDebugStringA("\n");
-			assert(false && "CUI UI-thread affinity violated");
-		}
-	}
-#else
-	(void)reason;
-#endif
-}
-
 bool PostToUIThread(std::function<void()> fn)
 {
 	if (!fn) return false;
@@ -181,17 +158,6 @@ bool PostToUIThread(std::function<void()> fn)
 		}
 	}
 	return true;
-}
-
-void InvokeOnUIThread(std::function<void()> fn)
-{
-	if (!fn) return;
-	if (IsUIThread())
-	{
-		fn();
-		return;
-	}
-	PostToUIThread(std::move(fn));
 }
 
 void PumpUIThreadCallbacks()

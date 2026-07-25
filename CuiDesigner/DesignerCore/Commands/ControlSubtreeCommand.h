@@ -17,26 +17,11 @@ struct DesignerSubtreeIdentity
 	size_t GetEstimatedMemoryUsage() const noexcept;
 };
 
-struct DesignerSubtreeRootAttachmentState
-{
-	bool HasToolBarSizeOverride = false;
-	SIZE ToolBarSizeOverride{ -1, -1 };
-
-	bool operator==(
-		const DesignerSubtreeRootAttachmentState& other) const noexcept
-	{
-		return HasToolBarSizeOverride == other.HasToolBarSizeOverride
-			&& ToolBarSizeOverride.cx == other.ToolBarSizeOverride.cx
-			&& ToolBarSizeOverride.cy == other.ToolBarSizeOverride.cy;
-	}
-};
-
 /** Persisted, normalized identity and state for one or more top-level subtrees. */
 struct DesignerControlSubtreeSnapshot
 {
 	std::vector<DesignerSubtreeIdentity> Identities;
 	DesignerControlPlacementSnapshot RootPlacements;
-	std::vector<DesignerSubtreeRootAttachmentState> RootAttachments;
 	std::vector<DesignerModel::DesignNode> Nodes;
 
 	bool EquivalentTo(

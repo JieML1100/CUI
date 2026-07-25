@@ -27,7 +27,7 @@ namespace
 		return result;
 	}
 
-	bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right)
+	bool EqualsToken(const std::wstring& left, const std::wstring& right)
 	{
 		return Lower(left) == Lower(right);
 	}
@@ -93,13 +93,13 @@ bool TryParseValueKind(const std::wstring& text, BindingValueKind& kind)
 		BindingValueKind::String,
 		BindingValueKind::Object })
 	{
-		if (EqualsIgnoreCase(value, ValueKindName(candidate)))
+		if (EqualsToken(value, ValueKindName(candidate)))
 		{
 			kind = candidate;
 			return true;
 		}
 	}
-	if (EqualsIgnoreCase(value, L"Empty"))
+	if (EqualsToken(value, L"Empty"))
 	{
 		kind = BindingValueKind::Empty;
 		return true;
@@ -127,7 +127,7 @@ bool TryParseObjectKind(
 		DesignerDataObjectKind::BindingSource,
 		DesignerDataObjectKind::BindingList })
 	{
-		if (EqualsIgnoreCase(value, ObjectKindName(candidate)))
+		if (EqualsToken(value, ObjectKindName(candidate)))
 		{
 			kind = candidate;
 			return true;
@@ -154,7 +154,7 @@ const DesignerDataContextProperty* Find(
 	const auto it = std::find_if(schema.begin(), schema.end(),
 		[&](const DesignerDataContextProperty& property)
 		{
-			return EqualsIgnoreCase(NormalizePath(property.Path), normalized);
+			return NormalizePath(property.Path) == normalized;
 		});
 	return it == schema.end() ? nullptr : &*it;
 }
@@ -165,8 +165,7 @@ std::vector<std::wstring> GetPaths(const DesignerDataContextSchema& schema)
 	result.reserve(schema.size());
 	for (const auto& property : schema)
 		result.push_back(NormalizePath(property.Path));
-	std::sort(result.begin(), result.end(),
-		[](const auto& left, const auto& right) { return Lower(left) < Lower(right); });
+	std::sort(result.begin(), result.end());
 	return result;
 }
 
@@ -196,18 +195,18 @@ void Canonicalize(DesignerDataContextSchema& schema)
 		if (property.ValueKind != BindingValueKind::Object
 			|| property.ObjectKind != DesignerDataObjectKind::Opaque)
 			continue;
-		const auto prefix = Lower(property.Path + L".");
+		const auto prefix = property.Path + L".";
 		if (std::any_of(schema.begin(), schema.end(),
 			[&](const DesignerDataContextProperty& candidate)
 			{
-				return Lower(candidate.Path).starts_with(prefix);
+				return candidate.Path.starts_with(prefix);
 			}))
 			property.ObjectKind = DesignerDataObjectKind::BindingSource;
 	}
 	std::sort(schema.begin(), schema.end(),
 		[](const auto& left, const auto& right)
 		{
-			return Lower(left.Path) < Lower(right.Path);
+			return left.Path < right.Path;
 		});
 }
 
@@ -259,7 +258,7 @@ bool Validate(const DesignerDataContextSchema& schema, std::wstring* outError)
 		for (size_t j = 0; j < i; ++j)
 		{
 			const auto otherPath = NormalizePath(schema[j].Path);
-			if (EqualsIgnoreCase(path, otherPath))
+			if (path == otherPath)
 			{
 				if (outError) *outError = L"DataContext 属性路径重复：" + path;
 				return false;
@@ -270,11 +269,11 @@ bool Validate(const DesignerDataContextSchema& schema, std::wstring* outError)
 	for (const auto& parent : schema)
 	{
 		const auto parentPath = NormalizePath(parent.Path);
-		const auto prefix = Lower(parentPath + L".");
+		const auto prefix = parentPath + L".";
 		const bool hasChildren = std::any_of(schema.begin(), schema.end(),
 			[&](const DesignerDataContextProperty& candidate)
 			{
-				const auto candidatePath = Lower(NormalizePath(candidate.Path));
+				const auto candidatePath = NormalizePath(candidate.Path);
 				return candidatePath.starts_with(prefix);
 			});
 		if (hasChildren

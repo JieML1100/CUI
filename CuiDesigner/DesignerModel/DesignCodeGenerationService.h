@@ -11,7 +11,7 @@
 namespace DesignerModel
 {
 /** Bump together with CuiCodeGen.targets when generated output semantics change. */
-inline constexpr unsigned int DesignCodeGenerationContractVersion = 10;
+inline constexpr unsigned int DesignCodeGenerationContractVersion = 32;
 
 struct DesignCodeGenerationOptions
 {
@@ -103,7 +103,7 @@ struct DesignEventHandlerCodeInspection
  * Headless orchestration shared by the Designer and CuiCodeGen.exe.
  *
  * Parsing, code-behind path resolution, document materialization, and the
- * generator's atomic multi-file commit all run without creating a Form/HWND.
+ * generator's atomic multi-file commit all run without creating a Window/HWND.
  */
 class DesignCodeGenerationService final
 {

@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <typeindex>
@@ -17,7 +18,9 @@
 #include <vector>
 
 class Control;
+class DependencyObject;
 class IBindingList;
+class DeclarativeTypeDescriptor;
 
 enum class BindingMode
 {
@@ -265,8 +268,9 @@ struct BindingPathStep final
 };
 
 /**
- * Parses paths such as Profile.Name, People[0].Name and
- * Settings['accent.color']. Quoted keys escape their quote by doubling it.
+ * Parses paths such as Profile.Name, People[0].Name,
+ * (AutomationProperties.Name) and Settings['accent.color']. Quoted keys
+ * escape their quote by doubling it.
  */
 bool TryParseBindingPropertyPath(
 	const std::wstring& value,
@@ -293,7 +297,7 @@ bool TryFormatBindingValues(
 	const std::wstring& format,
 	std::wstring& out);
 
-/** Extensible converter call context; existing converters may ignore it. */
+/** Extensible converter call context. */
 struct BindingValueConverterContext final
 {
 	const BindingValue* Parameter = nullptr;
@@ -309,33 +313,25 @@ class IBindingValueConverter
 {
 public:
 	virtual ~IBindingValueConverter() = default;
-	virtual bool Convert(const BindingValue& value, BindingValue& out) const
-	{
-		(void)value;
-		(void)out;
-		return false;
-	}
-	virtual bool ConvertBack(const BindingValue& value, BindingValue& out) const
-	{
-		(void)value;
-		(void)out;
-		return false;
-	}
 	virtual bool Convert(
 		const BindingValue& value,
 		const BindingValueConverterContext& context,
 		BindingValue& out) const
 	{
+		(void)value;
 		(void)context;
-		return Convert(value, out);
+		(void)out;
+		return false;
 	}
 	virtual bool ConvertBack(
 		const BindingValue& value,
 		const BindingValueConverterContext& context,
 		BindingValue& out) const
 	{
+		(void)value;
 		(void)context;
-		return ConvertBack(value, out);
+		(void)out;
+		return false;
 	}
 };
 
@@ -343,18 +339,14 @@ public:
 class DelegateBindingValueConverter final : public IBindingValueConverter
 {
 public:
-	using Function = std::function<bool(const BindingValue&, BindingValue&)>;
 	using ContextFunction = std::function<bool(
 		const BindingValue&,
 		const BindingValueConverterContext&,
 		BindingValue&)>;
 
-	DelegateBindingValueConverter(Function convert, Function convertBack = {});
 	DelegateBindingValueConverter(
 		ContextFunction convert,
 		ContextFunction convertBack = {});
-	bool Convert(const BindingValue& value, BindingValue& out) const override;
-	bool ConvertBack(const BindingValue& value, BindingValue& out) const override;
 	bool Convert(
 		const BindingValue& value,
 		const BindingValueConverterContext& context,
@@ -365,8 +357,6 @@ public:
 		BindingValue& out) const override;
 
 private:
-	Function _convert;
-	Function _convertBack;
 	ContextFunction _contextConvert;
 	ContextFunction _contextConvertBack;
 };
@@ -807,32 +797,45 @@ private:
 };
 
 /** Ordered sources contributing to a Control property's effective value. */
-enum class ControlPropertyValueSource : unsigned char
+enum class DependencyPropertyValueSource : unsigned char
 {
 	Default = 0,
 	Inherited = 1,
 	Theme = 2,
 	Style = 3,
-	Binding = 4,
-	Local = 5,
-	/** Values supplied by the active VisualState. */
-	VisualState = 6,
+	/** Values supplied by a ControlTemplate, including TemplateBinding. */
+	Template = 4,
+	/** Setter values supplied by the active template visual state. */
+	VisualState = 5,
+	/** Literal values and local expressions such as Binding/DynamicResource. */
+	Local = 6,
 	/** Values supplied by active animation clocks. */
 	Animation = 7
 };
 
-const wchar_t* ControlPropertyValueSourceName(
-	ControlPropertyValueSource source) noexcept;
+const wchar_t* DependencyPropertyValueSourceName(
+	DependencyPropertyValueSource source) noexcept;
+
+/** Expression identity stored inside one effective-value source slot. */
+enum class DependencyPropertyExpressionKind : unsigned char
+{
+	None = 0,
+	Binding,
+	DynamicResource,
+	TemplateBinding,
+	Animation
+};
+
+const wchar_t* DependencyPropertyExpressionKindName(
+	DependencyPropertyExpressionKind kind) noexcept;
 
 /** Runtime work automatically requested after an effective control property changes. */
-enum class ControlPropertyFlags : unsigned char
+enum class DependencyPropertyFlags : unsigned char
 {
 	None = 0,
 	AffectsMeasure = 1u << 0,
 	AffectsArrange = 1u << 1,
 	AffectsRender = 1u << 2,
-	/** Direct property-wrapper assignment creates a Local value immediately. */
-	TracksLocalValue = 1u << 3,
 	/** The effective value flows through the logical tree to matching properties. */
 	Inherits = 1u << 4,
 	/** BindingMode::Default resolves to TwoWay instead of OneWay. */
@@ -843,32 +846,32 @@ enum class ControlPropertyFlags : unsigned char
 	AffectsParentArrange = 1u << 7
 };
 
-constexpr ControlPropertyFlags operator|(
-	ControlPropertyFlags left,
-	ControlPropertyFlags right) noexcept
+constexpr DependencyPropertyFlags operator|(
+	DependencyPropertyFlags left,
+	DependencyPropertyFlags right) noexcept
 {
-	return static_cast<ControlPropertyFlags>(
+	return static_cast<DependencyPropertyFlags>(
 		static_cast<unsigned char>(left) | static_cast<unsigned char>(right));
 }
 
-constexpr ControlPropertyFlags& operator|=(
-	ControlPropertyFlags& left,
-	ControlPropertyFlags right) noexcept
+constexpr DependencyPropertyFlags& operator|=(
+	DependencyPropertyFlags& left,
+	DependencyPropertyFlags right) noexcept
 {
 	left = left | right;
 	return left;
 }
 
-constexpr bool HasControlPropertyFlag(
-	ControlPropertyFlags value,
-	ControlPropertyFlags flag) noexcept
+constexpr bool HasDependencyPropertyFlag(
+	DependencyPropertyFlags value,
+	DependencyPropertyFlags flag) noexcept
 {
 	return (static_cast<unsigned char>(value)
 		& static_cast<unsigned char>(flag)) != 0;
 }
 
 /** Preferred editor used by metadata-driven design tools. */
-enum class ControlPropertyEditorKind : unsigned char
+enum class DependencyPropertyEditorKind : unsigned char
 {
 	Auto,
 	Text,
@@ -882,12 +885,12 @@ enum class ControlPropertyEditorKind : unsigned char
 };
 
 /** Where a design tool should persist an edited property value. */
-enum class ControlPropertyPersistence : unsigned char
+enum class DependencyPropertyPersistence : unsigned char
 {
 	/** Let the design tool choose its native metadata representation. */
 	Automatic,
-	/** A compatibility field already owns persistence for this property. */
-	Legacy,
+	/** A native XAML member owns persistence for this property. */
+	Native,
 	/** Persist through the generic typed metadata-property bag. */
 	Metadata,
 	/** Runtime-only state that should not be persisted by a design tool. */
@@ -895,7 +898,7 @@ enum class ControlPropertyPersistence : unsigned char
 };
 
 /** One strongly typed item for a Choice editor. */
-struct ControlPropertyChoice
+struct DependencyPropertyChoice
 {
 	std::wstring DisplayName;
 	BindingValue Value;
@@ -905,49 +908,49 @@ struct ControlPropertyChoice
  * Optional presentation contract consumed by metadata-driven design tools.
  * Empty/default values preserve the historical discoverable-property behavior.
  */
-struct ControlPropertyDesignMetadata
+struct DependencyPropertyDesignMetadata
 {
 	bool Browsable = true;
 	std::wstring DisplayName;
 	std::wstring Category = L"Misc";
 	int CategoryOrder = 1000;
 	int Order = 0;
-	ControlPropertyEditorKind Editor = ControlPropertyEditorKind::Auto;
-	std::vector<ControlPropertyChoice> Choices;
+	DependencyPropertyEditorKind Editor = DependencyPropertyEditorKind::Auto;
+	std::vector<DependencyPropertyChoice> Choices;
 	std::optional<double> Minimum;
 	std::optional<double> Maximum;
 	std::optional<double> Step;
-	ControlPropertyPersistence Persistence = ControlPropertyPersistence::Automatic;
+	DependencyPropertyPersistence Persistence = DependencyPropertyPersistence::Automatic;
 	/** Optional target-sensitive visibility, evaluated after Browsable. */
-	std::function<bool(Control&)> BrowsableWhen;
+	std::function<bool(DependencyObject&)> BrowsableWhen;
 };
 
 /**
- * Instance-owned property contract used by declarative component types.
+ * Property contract owned by an immutable declarative type descriptor.
  *
- * Unlike BindingPropertyRegistry entries this definition does not require a
- * C++ owner type or getter/setter pair. Control supplies the storage and turns
- * the definition into normal BindingPropertyMetadata, so styles, bindings and
- * design tools observe exactly the same property system.
+ * Unlike DependencyPropertyRegistry entries this definition does not require a
+ * C++ owner type or getter/setter pair. DeclarativeTypeDescriptor creates one
+ * shared DependencyPropertyMetadata object for the XAML type; Control instances
+ * keep only their value slots.
  *
  * Object-valued definitions must provide a non-empty, concrete DefaultValue.
  * The default's runtime type becomes part of the property contract, so values
  * of unrelated object types cannot be assigned through Binding or styles.
  */
-struct DynamicControlPropertyDefinition
+struct DeclarativePropertyDefinition
 {
 	std::wstring Name;
 	BindingValueKind ValueKind = BindingValueKind::String;
 	BindingValue DefaultValue = BindingValue(std::wstring{});
 	/** Optional closed set accepted after conversion; used by declarative enums. */
 	std::vector<BindingValue> AllowedValues;
-	ControlPropertyFlags Flags = ControlPropertyFlags::None;
+	DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
 	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
 	DataSourceUpdateMode DefaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
 	/** Stable identity shared by instances when Flags contains Inherits. */
 	std::wstring InheritanceKey;
-	ControlPropertyDesignMetadata Design;
+	DependencyPropertyDesignMetadata Design;
 	/** Public XAML/style/Binding writes are rejected; component behavior may update it. */
 	bool IsReadOnly = false;
 };
@@ -957,19 +960,21 @@ struct DynamicControlPropertyDefinition
  * Coerce returns nullopt to reject a value, or the effective value to apply.
  */
 template<typename TOwner, typename TValue>
-struct ControlPropertyOptions
+struct DependencyPropertyOptions
 {
 	std::optional<TValue> DefaultValue;
-	ControlPropertyFlags Flags = ControlPropertyFlags::None;
+	DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
 	std::function<std::optional<TValue>(TOwner&, const TValue&)> Coerce;
 	std::function<void(TOwner&, const TValue&, const TValue&)> Changed;
 	std::function<bool(const TValue&, const TValue&)> Equals;
-	ControlPropertyDesignMetadata Design;
+	DependencyPropertyDesignMetadata Design;
 	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
 	DataSourceUpdateMode DefaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
 	/** Exposes a readable/observable property without a public property-system setter. */
 	bool IsReadOnly = false;
+	/** Optional WPF-style type conversion used before coercion and assignment. */
+	std::function<std::optional<TValue>(const BindingValue&)> Convert;
 };
 
 /**
@@ -977,7 +982,7 @@ struct ControlPropertyOptions
  * coercion and invalidation are supplied by the owner, so Binding, Designer
  * and styles can share one property contract.
  */
-class BindingPropertyMetadata final
+class DependencyPropertyMetadata final
 {
 public:
 	using ChangeHandler = std::function<void()>;
@@ -994,35 +999,35 @@ public:
 	bool IsReadOnly() const noexcept { return _isReadOnly; }
 	bool CanObserve() const noexcept { return static_cast<bool>(_subscriber); }
 	bool HasDefaultValue() const noexcept { return _hasDefaultValue; }
-	ControlPropertyFlags Flags() const noexcept { return _flags; }
+	DependencyPropertyFlags Flags() const noexcept { return _flags; }
 	DataSourceUpdateMode DefaultUpdateMode() const noexcept
 	{
 		return _defaultUpdateMode;
 	}
 	const std::wstring& InheritanceKey() const noexcept { return _inheritanceKey; }
-	const ControlPropertyDesignMetadata& Design() const noexcept { return _design; }
-	bool IsDesignerBrowsable(Control& target) const;
+	const DependencyPropertyDesignMetadata& Design() const noexcept { return _design; }
+	bool IsDesignerBrowsable(DependencyObject& target) const;
 	bool HasSameInheritanceIdentity(
-		const BindingPropertyMetadata& other) const noexcept;
+		const DependencyPropertyMetadata& other) const noexcept;
 
-	bool Matches(const Control& target) const;
+	bool Matches(const DependencyObject& target) const;
 	bool TryConvert(const BindingValue& value, BindingValue& out) const;
-	bool TryCoerce(Control& target, const BindingValue& value, BindingValue& out) const;
+	bool TryCoerce(DependencyObject& target, const BindingValue& value, BindingValue& out) const;
 	bool ValuesEqual(const BindingValue& left, const BindingValue& right) const;
 	bool TryGetDefaultValue(BindingValue& out) const;
-	bool TryGet(Control& target, BindingValue& out) const;
-	bool TrySet(Control& target, const BindingValue& value) const;
-	EventConnection Subscribe(Control& target, ChangeHandler handler, DataSourceUpdateMode updateMode) const;
+	bool TryGet(DependencyObject& target, BindingValue& out) const;
+	bool TrySet(DependencyObject& target, const BindingValue& value) const;
+	EventConnection Subscribe(DependencyObject& target, ChangeHandler handler, DataSourceUpdateMode updateMode) const;
 
 private:
-	using Matcher = std::function<bool(const Control&)>;
+	using Matcher = std::function<bool(const DependencyObject&)>;
 	using ValueConverter = std::function<bool(const BindingValue&, BindingValue&)>;
-	using Coercer = std::function<bool(Control&, const BindingValue&, BindingValue&)>;
+	using Coercer = std::function<bool(DependencyObject&, const BindingValue&, BindingValue&)>;
 	using Comparer = std::function<bool(const BindingValue&, const BindingValue&)>;
-	using Getter = std::function<bool(Control&, BindingValue&)>;
-	using Setter = std::function<bool(Control&, const BindingValue&)>;
-	using Subscriber = std::function<EventConnection(Control&, ChangeHandler, DataSourceUpdateMode)>;
-	using Changed = std::function<void(Control&, const BindingValue&, const BindingValue&)>;
+	using Getter = std::function<bool(DependencyObject&, BindingValue&)>;
+	using Setter = std::function<bool(DependencyObject&, const BindingValue&)>;
+	using Subscriber = std::function<EventConnection(DependencyObject&, ChangeHandler, DataSourceUpdateMode)>;
+	using Changed = std::function<void(DependencyObject&, const BindingValue&, const BindingValue&)>;
 
 	std::wstring _name;
 	BindingValueKind _valueKind = BindingValueKind::Empty;
@@ -1038,14 +1043,14 @@ private:
 	Changed _changed;
 	BindingValue _defaultValue;
 	bool _hasDefaultValue = false;
-	ControlPropertyFlags _flags = ControlPropertyFlags::None;
+	DependencyPropertyFlags _flags = DependencyPropertyFlags::None;
 	bool _isReadOnly = false;
 	DataSourceUpdateMode _defaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
 	std::wstring _inheritanceKey;
-	ControlPropertyDesignMetadata _design;
+	DependencyPropertyDesignMetadata _design;
 
-	BindingPropertyMetadata(std::wstring name,
+	DependencyPropertyMetadata(std::wstring name,
 		BindingValueKind valueKind,
 		std::type_index valueType,
 		std::type_index ownerType,
@@ -1059,63 +1064,78 @@ private:
 		Changed changed,
 		BindingValue defaultValue,
 		bool hasDefaultValue,
-		ControlPropertyFlags flags,
+		DependencyPropertyFlags flags,
 		bool isReadOnly,
 		DataSourceUpdateMode defaultUpdateMode,
 		std::wstring inheritanceKey,
-		ControlPropertyDesignMetadata design);
+		DependencyPropertyDesignMetadata design);
 
 	void NotifyChanged(
-		Control& target,
+		DependencyObject& target,
 		const BindingValue& oldValue,
 		const BindingValue& newValue) const;
 	bool CanWriteInternally() const noexcept
 	{
 		return static_cast<bool>(_setter);
 	}
-	bool TrySetInternal(Control& target, const BindingValue& value) const;
+	bool TrySetInternal(DependencyObject& target, const BindingValue& value) const;
+	/** Applies a value already converted and coerced by the effective-value pipeline. */
+	bool TrySetEffective(DependencyObject& target, const BindingValue& value) const;
 
-	friend class BindingPropertyRegistry;
+	friend class DependencyPropertyRegistry;
+	friend class DependencyObject;
 	friend class Control;
+	friend class DeclarativeTypeDescriptor;
 };
 
-class BindingPropertyRegistry final
+class DependencyPropertyRegistry final
 {
 public:
 	template<typename TOwner, typename TValue>
-	static const BindingPropertyMetadata* Register(
+	static const DependencyPropertyMetadata* Register(
 		std::wstring name,
 		std::function<TValue(TOwner&)> getter,
 		std::function<void(TOwner&, const TValue&)> setter,
-		std::function<EventConnection(TOwner&, BindingPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
-		ControlPropertyOptions<TOwner, TValue> options = {});
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
 
-	static const BindingPropertyMetadata* Find(Control& target, const std::wstring& propertyName);
+	static const DependencyPropertyMetadata* Find(DependencyObject& target, const std::wstring& propertyName);
+	/** Finds only C++ framework metadata; declarative schema members are excluded. */
+	static const DependencyPropertyMetadata* FindNative(
+		DependencyObject& target,
+		const std::wstring& propertyName);
 	/** Returns the effective metadata set for target, with derived overrides applied. */
-	static std::vector<const BindingPropertyMetadata*> GetProperties(Control& target);
+	static std::vector<const DependencyPropertyMetadata*> GetProperties(DependencyObject& target);
+	/**
+	 * Schema-only native lookup. Callers supply the concrete C++ owner's base
+	 * type closure after invoking its static dependency-property registrar.
+	 * No DependencyObject instance is constructed or consulted.
+	 */
+	static const DependencyPropertyMetadata* FindRegistered(
+		std::span<const std::type_index> ownerTypes,
+		const std::wstring& propertyName);
+	/** Schema-only effective native metadata with derived overrides applied. */
+	static std::vector<const DependencyPropertyMetadata*> GetRegisteredProperties(
+		std::span<const std::type_index> ownerTypes);
 
 private:
-	static const BindingPropertyMetadata* Register(BindingPropertyMetadata metadata);
+	static const DependencyPropertyMetadata* Register(DependencyPropertyMetadata metadata);
 };
-
-// Preferred general names. The Binding-prefixed names remain source-compatible.
-using ControlPropertyMetadata = BindingPropertyMetadata;
-using ControlPropertyRegistry = BindingPropertyRegistry;
 
 /** Resolves BindingMode::Default using the target property's behavior flags. */
 BindingMode ResolveBindingMode(
-	const BindingPropertyMetadata& target,
+	const DependencyPropertyMetadata& target,
 	BindingMode requested) noexcept;
 
 /** Resolves DataSourceUpdateMode::Default using the target property's metadata. */
 DataSourceUpdateMode ResolveDataSourceUpdateMode(
-	const BindingPropertyMetadata& target,
+	const DependencyPropertyMetadata& target,
 	DataSourceUpdateMode requested) noexcept;
 
 class Binding
 {
 public:
-	Binding(Control* target,
+	Binding(DependencyObject* target,
 		std::wstring targetProperty,
 		IBindingSource* source,
 		std::wstring sourceProperty,
@@ -1126,7 +1146,7 @@ public:
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
-	Binding(Control* target,
+	Binding(DependencyObject* target,
 		std::wstring targetProperty,
 		BindingSourceReference source,
 		std::wstring sourceProperty,
@@ -1188,7 +1208,7 @@ private:
 		Binding* Owner = nullptr;
 	};
 
-	Control* _target = nullptr;
+	DependencyObject* _target = nullptr;
 	BindingSourceReference _ownedSource;
 	IBindingSource* _source = nullptr;
 	std::wstring _targetProperty;
@@ -1202,6 +1222,7 @@ private:
 	std::optional<BindingValue> _converterParameter;
 	std::optional<std::wstring> _stringFormat;
 	std::shared_ptr<State> _state;
+	std::weak_ptr<const void> _targetLifetime;
 	std::weak_ptr<const void> _sourceLifetime;
 	std::vector<EventConnection> _sourceConnections;
 	std::vector<std::shared_ptr<IBindingSource>> _sourcePathOwners;
@@ -1218,7 +1239,38 @@ private:
 	bool _ownsTargetValue = false;
 	bool _isValid = false;
 	BindingError _lastError = BindingError::None;
-	const BindingPropertyMetadata* _targetMetadata = nullptr;
+	const DependencyPropertyMetadata* _targetMetadata = nullptr;
+	DependencyPropertyValueSource _targetValueSource =
+		DependencyPropertyValueSource::Local;
+	DependencyPropertyExpressionKind _expressionKind =
+		DependencyPropertyExpressionKind::Binding;
+
+	Binding(DependencyObject* target,
+		std::wstring targetProperty,
+		IBindingSource* source,
+		std::wstring sourceProperty,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
+	Binding(DependencyObject* target,
+		std::wstring targetProperty,
+		BindingSourceReference source,
+		std::wstring sourceProperty,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
 
 	void Attach();
 	bool Validate();
@@ -1241,7 +1293,13 @@ private:
 		_lastError = error;
 		return false;
 	}
+	bool IsTargetAlive() const noexcept;
 	bool IsSourceAlive() const noexcept { return _source && !_sourceLifetime.expired(); }
+	void DetachReplacedTargetExpression() noexcept;
+
+	friend class Control;
+	friend class DependencyObject;
+	friend class BindingCollection;
 };
 
 /** One child expression consumed by MultiBinding. */
@@ -1286,7 +1344,7 @@ class MultiBinding final
 {
 public:
 	MultiBinding(
-		Control* target,
+		DependencyObject* target,
 		std::wstring targetProperty,
 		std::vector<MultiBindingSource> sources,
 		BindingMode mode = BindingMode::Default,
@@ -1321,13 +1379,14 @@ public:
 
 private:
 	struct State;
-	std::unique_ptr<State> _state;
+	std::shared_ptr<State> _state;
 };
 
 class BindingCollection
 {
 public:
-	explicit BindingCollection(Control* owner);
+	explicit BindingCollection(DependencyObject* owner);
+	~BindingCollection();
 
 	Binding* Add(const std::wstring& targetProperty,
 		IBindingSource* source,
@@ -1366,6 +1425,11 @@ public:
 			std::move(targetNullValue), std::move(converterParameter),
 			std::move(stringFormat));
 	}
+	/** Installs a one-way TemplateBinding in the Template precedence slot. */
+	Binding* AddTemplateBinding(
+		const std::wstring& targetProperty,
+		IBindingSource& templatedParent,
+		const std::wstring& sourceProperty);
 	MultiBinding* AddMulti(
 		const std::wstring& targetProperty,
 		std::vector<MultiBindingSource> sources,
@@ -1378,7 +1442,7 @@ public:
 		std::optional<std::wstring> stringFormat = {});
 
 	void Clear();
-	/** Finds a binding by target property using the same case-insensitive identity as Add. */
+	/** Finds a binding by its exact canonical target-property identity. */
 	Binding* Find(const std::wstring& targetProperty);
 	const Binding* Find(const std::wstring& targetProperty) const;
 	MultiBinding* FindMulti(const std::wstring& targetProperty);
@@ -1403,7 +1467,12 @@ public:
 	const Binding* operator[](size_t index) const;
 
 private:
-	Control* _owner = nullptr;
+	struct CallbackState
+	{
+		BindingCollection* Owner = nullptr;
+	};
+	DependencyObject* _owner = nullptr;
+	std::shared_ptr<CallbackState> _callbackState;
 	std::vector<std::unique_ptr<Binding>> _items;
 	std::vector<std::unique_ptr<MultiBinding>> _multiItems;
 	std::vector<EventConnection> _validationConnections;

@@ -17,7 +17,7 @@ enum class NativeSurfaceInputKind : unsigned char
 	PointerWheel,
 	KeyDown,
 	KeyUp,
-	Character,
+	TextInput,
 	FocusGained,
 	FocusLost,
 	Cancel,
@@ -29,13 +29,13 @@ struct NativeSurfaceInputEvent
 	NativeSurfaceInputKind Kind = NativeSurfaceInputKind::PointerMove;
 	float X = 0.0f;
 	float Y = 0.0f;
-	MouseButtons Button = MouseButtons::None;
+	MouseButton ChangedButton = MouseButton::None;
+	MouseButtonStates ButtonStates;
 	int WheelDelta = 0;
-	Keys Key = Keys::None;
-	wchar_t Character = L'\0';
-	bool Alt = false;
-	bool Control = false;
-	bool Shift = false;
+	::Key Key = ::Key::None;
+	::Key SystemKey = ::Key::None;
+	ModifierKeys Modifiers = ModifierKeys::None;
+	std::wstring Text;
 };
 
 struct NativeSurfaceRenderContext
@@ -88,22 +88,26 @@ public:
 
 class NativeSurface final : public Control
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Pane, L"NativeSurface");
+	}
+
 public:
 	NativeSurface();
-	NativeSurface(int x, int y, int width, int height);
 	~NativeSurface() override;
 
 	UIClass Type() override { return UIClass::UI_NativeSurface; }
-	void EnsureBindingPropertiesRegistered() override;
-	void Update() override;
-	bool ProcessMessage(
-		UINT message,
-		WPARAM wParam,
-		LPARAM lParam,
-		int localX,
-		int localY) override;
-	bool IsKeyboardFocusable() const override { return true; }
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+protected:
+	void OnRender() override;
+	bool ApplyTextInput(const TextCompositionEventArgs& input) override;
+	bool ProcessInput(const InputReport& input) override;
 
+public:
 	const std::wstring& GetBehaviorKey() const noexcept { return _behaviorKey; }
 	void SetBehaviorKey(std::wstring value);
 	const std::wstring& GetPlaceholderText() const noexcept
@@ -113,16 +117,18 @@ public:
 	void SetPlaceholderText(std::wstring value);
 
 	void SetBehavior(std::unique_ptr<INativeSurfaceBehavior> behavior);
+	/** Invalidates a local-DIP subregion without promoting it to a full surface. */
+	void InvalidateRegion(const D2D1_RECT_F& localRect);
 	INativeSurfaceBehavior* Behavior() noexcept { return _behavior.get(); }
 	const INativeSurfaceBehavior* Behavior() const noexcept
 	{
 		return _behavior.get();
 	}
 	bool HasBehavior() const noexcept { return static_cast<bool>(_behavior); }
-	void NotifyDpiChanged(float dpiScale) override;
-	void NotifyDeviceResourcesInvalidated() noexcept override;
 
 protected:
+	void NotifyDpiChanged(float dpiScale) override;
+	void NotifyDeviceResourcesInvalidated() noexcept override;
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
 
@@ -133,10 +139,7 @@ private:
 	float _lastDpiScale = 1.0f;
 
 	bool TryCreateInput(
-		UINT message,
-		WPARAM wParam,
-		int localX,
-		int localY,
+		const InputReport& input,
 		NativeSurfaceInputEvent& output) const;
 	void DetachBehavior() noexcept;
 };

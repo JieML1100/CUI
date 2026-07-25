@@ -11,7 +11,7 @@ namespace DesignerModel
 {
 enum class DesignEventOwnerKind
 {
-	Form,
+	Window,
 	Control,
 };
 
@@ -27,7 +27,6 @@ struct DesignEventReference
 	std::string ParameterList;
 	std::type_index Signature{ typeid(void) };
 	std::wstring HandlerName;
-	bool UsedConventionalName = false;
 };
 
 /** All references sharing one C++ member-function name and signature. */

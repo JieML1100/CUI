@@ -1,283 +1,200 @@
 #pragma once
-#include "Control.h"
-#include "BindingList.h"
-#include "ControlTemplate.h"
-#include "ItemContainer.h"
-#include "ObservableCollection.h"
+
+#include "ControlWeakReference.h"
+#include "Selector.h"
+
 #include <unordered_map>
-#pragma comment(lib, "Imm32.lib")
 
 class ComboBox;
+class Popup;
+class ScrollViewer;
 
 /** WPF-style content container generated for one ComboBox item. */
-class ComboBoxItem final : public ItemContainerControl
+class ComboBoxItem final : public ListBoxItem
 {
 public:
 	ComboBoxItem();
-	bool Initialize(
-		ComboBox& owner,
-		const BindingSourceReference& item,
-		const ItemTemplateReference& contentTemplate,
-		const std::wstring& displayMemberPath,
-		size_t index,
-		std::wstring* outError = nullptr);
 	UIClass Type() override { return UIClass::UI_ComboBoxItem; }
-	void EnsureBindingPropertiesRegistered() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
 
 private:
-	ComboBox* _owner = nullptr;
 	void ActivateItem() override;
 	void FocusOwner() override;
+	void OnIsSelectedRequested(bool value) override;
 };
 
 /**
- * @file ComboBox.h
- * @brief ComboBox：下拉选择控件（支持滚动、展开/收起）。
+ * Single-selection ItemsControl whose drop-down presentation is supplied by a
+ * Popup + ItemsPresenter in its ControlTemplate.
  *
- * 说明：
- * - Items 为下拉项列表（std::wstring）
- * - SelectedIndex 为当前选中项索引
- * - Expand=true 表示展开下拉面板
- * - 展开后的高度与 ExpandCount/ExpandScroll 相关（见实现）
+ * The native fallback creates exactly the same standard primitive tree on
+ * first open. There is no string-side collection, per-row immediate drawing,
+ * item-count scrolling model, or ComboBox-owned foreground renderer.
  */
-class ComboBox : public Control, public IAccessibilityVirtualizedControl
+class ComboBox : public Selector
 {
-#define COMBO_MIN_SCROLL_BLOCK 16
-private:
-	int _underMouseIndex = -1;
-	bool isDraggingScroll = false;
-	float _scrollThumbGrabOffsetY = 0.0f;
-	float _dropProgress = 0.0f;
-	float _animStartProgress = 0.0f;
-	float _animTargetProgress = 0.0f;
-	ULONGLONG _animStartTick = 0;
-	int _animationDurationMs = 180;
-	bool _animating = false;
-	bool _collapseCleanupPending = false;
-	int _expandCount = 4;
-	int _expandScroll = 0;
-	bool _expand = false;
-	int _selectedIndex = -1;
-	float _cornerRadius = 6.0f;
-	float _dropCornerRadius = 7.0f;
-	float _dropGap = 4.0f;
-	float _itemHorizontalPadding = 10.0f;
-	float _itemVerticalPadding = 3.0f;
-	float _chevronSize = 10.0f;
-	float _scrollBarWidth = 6.0f;
-	float _borderThickness = 1.5f;
-	D2D1_COLOR_F _accentColor = cui::theme::palette::Accent;
-	D2D1_COLOR_F _headerHoverBackColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F _dropBackColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F _dropBorderColor = cui::theme::palette::Border;
-	D2D1_COLOR_F _selectedItemBackColor = cui::theme::palette::AccentSelected;
-	D2D1_COLOR_F _underMouseBackColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F _selectedItemForeColor = cui::theme::palette::TextPrimary;
-	D2D1_COLOR_F _underMouseForeColor = cui::theme::palette::TextPrimary;
-	D2D1_COLOR_F _scrollBackColor = cui::theme::palette::ScrollTrack;
-	D2D1_COLOR_F _scrollForeColor = cui::theme::palette::ScrollThumb;
-	D2D1_COLOR_F _buttonBackColor = cui::theme::palette::SurfaceMuted;
-	void UpdateScrollDrag(float posY);
-	int VisibleItemCount();
-	float FullDropdownHeight();
-	float CurrentDropProgress();
-	float CurrentDropdownHeight();
-	bool IsDropDownVisible();
-	bool IsDropDownInteractive();
-	bool IsHeaderHit(int localX, int localY);
-	bool IsDropdownHit(int localX, int localY, float dropdownHeight);
-	float DropdownTop();
-	void EnsureSelectionInRange();
-	void EnsureScrollInRange();
-	void EnsureSelectedItemVisible();
-	void SyncTextWithSelection();
-	void ApplySelectedIndexChange(int oldValue, int newValue);
-	void ApplyExpandedStateChange(bool oldValue, bool newValue);
-	void SetCurrentSelectedIndex(int value);
-	void SetCurrentExpandScroll(int value);
-	void SetCurrentExpanded(bool value);
-	ObservableCollection<std::wstring> values;
-	std::vector<uint32_t> _accessibilityItemIds;
-	std::vector<std::wstring> _accessibilityItemTexts;
-	std::unordered_map<uint32_t, size_t> _accessibilityItemIndexById;
-	uint32_t _selectedAccessibilityItemId = 0;
-	void OnItemsCollectionChanged(const CollectionChangedEventArgs& change);
-	void ReconcileAccessibilityItemIds();
-	void RebuildAccessibilityItemIndex();
-	int FindAccessibilityItem(uint32_t id);
-	BindingListReference _itemsSource;
-	EventConnection _itemsSourceChanged;
-	std::vector<BindingPathObservation> _itemSourceObservations;
-	std::wstring _displayMemberPath;
-	std::wstring _selectedValuePath;
-	Event<void(ComboBox*)> _selectedValueChanged;
-	bool _refreshingItemsSource = false;
-	ItemTemplateReference _itemTemplate;
-	std::wstring _itemContainerStyle;
-	ControlTemplateReference _itemContainerTemplate;
-	std::vector<std::unique_ptr<ComboBoxItem>> _generatedItems;
-	std::wstring _lastTemplateError;
-	bool _useGeneratedItemContainers = false;
-	void RefreshItemsSource();
-	void RefreshItemSource(size_t index);
-	void NotifySelectedValueChanged();
-	bool RebuildGeneratedItems();
-	void LayoutGeneratedItems(float dropTop, float itemRight);
-	void UpdateGeneratedItemStates();
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<ComboBoxAutomationPeer>(*this);
+	}
+
 public:
-	virtual UIClass Type();
-	void EnsureBindingPropertiesRegistered() override;
-	CursorKind QueryCursor(int localX, int localY) override;
-	bool AutoCloseOnOutsideClick() const override { return true; }
-	bool AutoCloseOnFormFocusLoss() const override { return true; }
-	void ClosePopup() override { SetExpanded(false); }
-	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
-	bool HandlesNavigationKey(WPARAM key) const override;
-	bool IsAnimationRunning() override;
-	UINT GetAnimationIntervalMs() override { return 16; }
-	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	bool ContainsForegroundPoint(int localX, int localY) override;
-	bool RenderNormalWhenForeground() const override { return true; }
-	void InvalidateVisual() override;
-	PROPERTY(float, CornerRadius); GET(float, CornerRadius); SET(float, CornerRadius);
-	PROPERTY(float, DropCornerRadius); GET(float, DropCornerRadius); SET(float, DropCornerRadius);
-	PROPERTY(float, DropGap); GET(float, DropGap); SET(float, DropGap);
-	PROPERTY(float, ItemHorizontalPadding); GET(float, ItemHorizontalPadding); SET(float, ItemHorizontalPadding);
-	PROPERTY(float, ItemVerticalPadding); GET(float, ItemVerticalPadding); SET(float, ItemVerticalPadding);
-	PROPERTY(float, ChevronSize); GET(float, ChevronSize); SET(float, ChevronSize);
-	PROPERTY(float, ScrollBarWidth); GET(float, ScrollBarWidth); SET(float, ScrollBarWidth);
-	PROPERTY(D2D1_COLOR_F, AccentColor); GET(D2D1_COLOR_F, AccentColor); SET(D2D1_COLOR_F, AccentColor);
-	PROPERTY(D2D1_COLOR_F, HeaderHoverBackColor); GET(D2D1_COLOR_F, HeaderHoverBackColor); SET(D2D1_COLOR_F, HeaderHoverBackColor);
-	PROPERTY(D2D1_COLOR_F, DropBackColor); GET(D2D1_COLOR_F, DropBackColor); SET(D2D1_COLOR_F, DropBackColor);
-	PROPERTY(D2D1_COLOR_F, DropBorderColor); GET(D2D1_COLOR_F, DropBorderColor); SET(D2D1_COLOR_F, DropBorderColor);
-	PROPERTY(D2D1_COLOR_F, SelectedItemBackColor); GET(D2D1_COLOR_F, SelectedItemBackColor); SET(D2D1_COLOR_F, SelectedItemBackColor);
-	PROPERTY(D2D1_COLOR_F, UnderMouseBackColor); GET(D2D1_COLOR_F, UnderMouseBackColor); SET(D2D1_COLOR_F, UnderMouseBackColor);
-	PROPERTY(D2D1_COLOR_F, SelectedItemForeColor); GET(D2D1_COLOR_F, SelectedItemForeColor); SET(D2D1_COLOR_F, SelectedItemForeColor);
-	PROPERTY(D2D1_COLOR_F, UnderMouseForeColor); GET(D2D1_COLOR_F, UnderMouseForeColor); SET(D2D1_COLOR_F, UnderMouseForeColor);
-	PROPERTY(D2D1_COLOR_F, ScrollBackColor); GET(D2D1_COLOR_F, ScrollBackColor); SET(D2D1_COLOR_F, ScrollBackColor);
-	PROPERTY(D2D1_COLOR_F, ScrollForeColor); GET(D2D1_COLOR_F, ScrollForeColor); SET(D2D1_COLOR_F, ScrollForeColor);
-	PROPERTY(D2D1_COLOR_F, ButtonBackColor); GET(D2D1_COLOR_F, ButtonBackColor); SET(D2D1_COLOR_F, ButtonBackColor);
-	/** @brief 选择变化事件。 */
-	SelectionChangedEvent OnSelectionChanged;
-	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.Count 截断。 */
-	PROPERTY(int, ExpandCount); GET(int, ExpandCount); SET(int, ExpandCount);
-	/** @brief 展开状态下的滚动偏移（按条目计）。 */
-	PROPERTY(int, ExpandScroll); GET(int, ExpandScroll); SET(int, ExpandScroll);
-	/** @brief 是否展开下拉面板。 */
-	PROPERTY(bool, Expand); GET(bool, Expand); SET(bool, Expand);
-	/** @brief 当前选中索引（0-based）。 */
-	PROPERTY(int, SelectedIndex); GET(int, SelectedIndex); SET(int, SelectedIndex);
-	/** @brief 展开/收起动画时长（毫秒，0 表示禁用动画）。 */
-	PROPERTY(UINT, AnimationDurationMs); GET(UINT, AnimationDurationMs); SET(UINT, AnimationDurationMs);
-	using ItemCollection = ObservableCollection<std::wstring>;
-	__declspec(property(put = SetItems, get = GetItems)) ItemCollection& Items;
-	ItemCollection& GetItems();
-	void SetItems(const std::vector<std::wstring>& value);
-	BindingListReference GetItemsSource() const noexcept { return _itemsSource; }
-	void SetItemsSource(BindingListReference value);
-	ItemTemplateReference GetItemTemplate() const noexcept
+	PROPERTY(std::wstring, Text);
+	GET(std::wstring, Text);
+	SET(std::wstring, Text);
+	ComboBox();
+	~ComboBox() override;
+	UIClass Type() override { return UIClass::UI_ComboBox; }
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
 	{
-		return _itemTemplate;
+		RegisterDependencyProperties();
 	}
-	void SetItemTemplate(ItemTemplateReference value);
-	const std::wstring& GetDisplayMemberPath() const noexcept
-	{
-		return _displayMemberPath;
-	}
-	void SetDisplayMemberPath(std::wstring value);
-	const std::wstring& GetSelectedValuePath() const noexcept
-	{
-		return _selectedValuePath;
-	}
-	void SetSelectedValuePath(std::wstring value);
-	BindingValue GetSelectedValue() const;
-	void SetSelectedValue(const BindingValue& value);
-	const std::wstring& GetItemContainerStyle() const noexcept
-	{
-		return _itemContainerStyle;
-	}
-	void SetItemContainerStyle(std::wstring value);
-	ControlTemplateReference GetItemContainerTemplate() const noexcept
-	{
-		return _itemContainerTemplate;
-	}
-	void SetItemContainerTemplate(ControlTemplateReference value);
-	void SetUseGeneratedItemContainers(bool value);
-	bool UsesGeneratedItemContainers() const noexcept
-	{
-		return _useGeneratedItemContainers;
-	}
-	const std::wstring& LastTemplateError() const noexcept
-	{
-		return _lastTemplateError;
-	}
+
+	bool GetIsDropDownOpen() const noexcept { return _isDropDownOpen; }
+	void SetIsDropDownOpen(bool value);
+	__declspec(property(get = GetIsDropDownOpen, put = SetIsDropDownOpen))
+		bool IsDropDownOpen;
+
+	float GetMaxDropDownHeight() const noexcept { return _maxDropDownHeight; }
+	void SetMaxDropDownHeight(float value);
+	__declspec(property(get = GetMaxDropDownHeight,
+		put = SetMaxDropDownHeight)) float MaxDropDownHeight;
+
 	size_t GeneratedItemCount() const noexcept
 	{
-		return _generatedItems.size();
+		return ItemsControl::GeneratedItemCount();
 	}
 	ComboBoxItem* GetGeneratedItem(size_t index) const noexcept
 	{
-		return index < _generatedItems.size()
-			? _generatedItems[index].get() : nullptr;
+		return dynamic_cast<ComboBoxItem*>(
+			ItemsControl::GetGeneratedItem(index));
 	}
-	PROPERTY(float, BorderThickness); GET(float, BorderThickness); SET(float, BorderThickness);
-	/** @brief 创建 ComboBox。 */
-	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
-	void SetExpanded(bool expanded);
-	/** @brief 通过交互语义选择条目，并保留现有 Binding 值来源。 */
-	bool SelectItem(int index);
-	/** @brief 通过交互语义滚动指定条目数，并保留现有 Binding 值来源。 */
-	void ScrollBy(int itemDelta);
 
-	// ---- 项操作便捷方法（对 Items 可观察集合的薄封装） ----
-	// 注： ComboBox 的 SelectedIndex getter（SET/GET 宏生成）非常量，
-	// 为与该类现有风格一致（GetItems()/SelectItem() 均非常量），这些便捷
-	// 方法也不加 const 限定。
-	/** @brief 项数。 */
-	int GetItemCount();
-	__declspec(property(get = GetItemCount)) int ItemCount;
-	/** @brief 当前选中项文本；无选中或越界时返回空串。 */
-	std::wstring GetSelectedItem();
-	// 注：SetSelectedIndex(int) 由 SelectedIndex 属性的 SET 宏提供。
-	/** @brief 查找首个匹配项索引，未找到返回 -1。 */
-	int FindItem(const std::wstring& text);
-	/** @brief 追加一项。 */
-	void AddItem(const std::wstring& text);
-	/** @brief 在指定位置插入一项。 */
-	void InsertItem(int index, const std::wstring& text);
-	/** @brief 移除指定位置项。 */
-	void RemoveItemAt(int index);
-	/** @brief 清空所有项。 */
+	/** Selects through Selector's SetCurrentValue-preserving interaction path. */
+	bool SelectItem(int index);
+
+	// Typed ownership surface corresponding to WPF's Items object model.
+	ComboBoxItem* AddItem(std::unique_ptr<ComboBoxItem> item);
+	ComboBoxItem* InsertItem(
+		int index, std::unique_ptr<ComboBoxItem> item);
+	ComboBoxItem* GetItem(int index) const noexcept;
+	int IndexOfItem(const ComboBoxItem* item) const noexcept;
+	std::unique_ptr<ComboBoxItem> DetachItemAt(int index);
+	std::unique_ptr<ComboBoxItem> DetachItem(ComboBoxItem* item);
+	bool RemoveItemAt(int index);
+	bool RemoveItem(ComboBoxItem* item);
 	void ClearItems();
-	void GetAccessibilityVirtualChildren(
-		uint32_t parentId, std::vector<uint32_t>& result) override;
+
+	CursorKind QueryCursor(int localX, int localY) override;
+	bool HandlesNavigationKey(Key key) const override;
+	/** The closed selector face is one interaction surface; Popup is a separate root. */
+	bool HitTestChildren() const override { return false; }
+	cui::core::Size MeasureCore(
+		const cui::core::Constraints& available) override;
+	void Arrange(cui::core::Rect finalRect) override;
+protected:
+	void PreparePresentation() override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+private:
+	friend class ComboBoxAutomationPeer;
+
 	bool TryGetAccessibilityVirtualNode(
-		uint32_t id, AccessibilityVirtualNode& result) override;
-	size_t GetAccessibilityVirtualChildCount(uint32_t parentId) override;
+		uint32_t id, AccessibilityVirtualNode& result);
+	size_t GetAccessibilityVirtualChildCount(uint32_t parentId);
 	bool TryGetAccessibilityVirtualChildAt(
-		uint32_t parentId, size_t index, uint32_t& result) override;
+		uint32_t parentId, size_t index, uint32_t& result);
 	bool TryGetAccessibilityVirtualSibling(
-		uint32_t parentId, uint32_t id, bool next, uint32_t& result) override;
+		uint32_t parentId, uint32_t id, bool next, uint32_t& result);
 	bool TryHitTestAccessibilityVirtualNode(
-		float localX, float localY, uint32_t& result) override;
+		float localX, float localY, uint32_t& result);
 	AccessibilityVirtualContainerInfo
-		GetAccessibilityVirtualContainerInfo() const noexcept override;
+		GetAccessibilityVirtualContainerInfo() const noexcept;
 	void GetAccessibilityVirtualSelection(
-		std::vector<uint32_t>& result) override;
+		std::vector<uint32_t>& result);
 	bool SelectAccessibilityVirtualNode(
-		uint32_t id, AccessibilitySelectionAction action) override;
-	bool ScrollAccessibilityVirtualNodeIntoView(uint32_t id) override;
+		uint32_t id, AccessibilitySelectionAction action);
+	bool ScrollAccessibilityVirtualNodeIntoView(uint32_t id);
 	bool GetAccessibilityScrollInfo(
-		AccessibilityScrollInfo& result) const noexcept override;
+		AccessibilityScrollInfo& result) const noexcept;
 	bool ScrollAccessibility(
 		AccessibilityScrollAmount horizontal,
-		AccessibilityScrollAmount vertical) override;
+		AccessibilityScrollAmount vertical);
 	bool SetAccessibilityScrollPercent(
-		double horizontalPercent, double verticalPercent) override;
-	SIZE ActualSize() override;
-	void DrawScroll();
-	void Update() override;
-	void UpdateForeground() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+		double horizontalPercent, double verticalPercent);
+
+protected:
+	std::unique_ptr<Control> BuildGeneratedItem(
+		const BindingSourceReference& item,
+		size_t index,
+		BindingPathObservation& observation) override;
+	void OnGeneratedItemsRebuilt() override;
+	void OnGeneratedItemsRealized() override;
+	void OnGeneratedItemIndexChanged(
+		Control& visual, size_t oldIndex, size_t newIndex) override;
+	bool ValidateAuthoredItemControl(
+		const Control& item, std::string& error) const override;
+	void OnAuthoredItemsChanged() noexcept override;
+	void OnItemsSourceChanged(
+		const BindingListReference& oldValue,
+		const BindingListReference& newValue) override;
+	bool ShouldRealizeVirtualItemsWithoutViewport() const noexcept override
+	{
+		return false;
+	}
+	void OnSelectedIndexChanged(int oldValue, int newValue) override;
+	void OnControlTemplatePresentationChanged() override;
+	void OnPresentationWindowChanged(
+		Window* previousWindow, Window* currentWindow) override;
+
+private:
+	bool _isDropDownOpen = false;
+	bool _pointerPressActive = false;
+	float _maxDropDownHeight = 320.0f;
+	Popup* _popup = nullptr;
+	Popup* _defaultPopup = nullptr;
+	ScrollViewer* _dropDownScroll = nullptr;
+	bool _buildingDropDownInfrastructure = false;
+	EventConnection _popupOpened;
+	EventConnection _popupClosed;
+	std::vector<BindingPathObservation> _itemSourceObservations;
+	std::vector<EventConnection> _authoredItemChanges;
+
+	std::vector<uint32_t> _accessibilityItemIds;
+	std::vector<BindingSourceReference> _accessibilitySourceIdentities;
+	std::vector<ControlWeakReference> _accessibilityAuthoredIdentities;
+	std::unordered_map<uint32_t, size_t> _accessibilityItemIndexById;
+	uint32_t _selectedAccessibilityItemId = 0;
+
+	void ApplyIsDropDownOpenChange(bool oldValue, bool newValue);
+	void SetCurrentIsDropDownOpen(bool value)
+	{
+		(void)TrySetCurrentPropertyValue(
+			L"IsDropDownOpen", BindingValue(value));
+	}
+	void ApplyMaxDropDownHeight();
+	bool EnsureDropDownInfrastructure();
+	void ConfigurePopupPart(Popup* popup);
+	Popup* ResolvePopupPart() const noexcept;
+	ScrollViewer* ResolveScrollOwner() const noexcept;
+	void UpdateItemsHostPresentation();
+	void SyncTextWithSelection();
+	void RefreshItems();
+	void RefreshDataItem(size_t index);
+	std::wstring GetAuthoredItemText(size_t index) const;
+	std::wstring GetItemDisplayText(size_t index) const;
+	void UpdateGeneratedItemStates();
+	void ReconcileAccessibilityItemIds();
+	void RebuildAccessibilityItemIndex();
+	int FindAccessibilityItem(uint32_t id);
+	bool TryGetItemBounds(
+		size_t index, D2D1_RECT_F& bounds, bool& visible) const noexcept;
+	bool GetScrollMetrics(
+		float& extent, float& viewport, float& offset) const noexcept;
 };

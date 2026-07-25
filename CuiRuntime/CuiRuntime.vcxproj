@@ -80,7 +80,7 @@
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</EnableParallelCodeGeneration>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</EnableParallelCodeGeneration>
     </ClCompile>
@@ -98,7 +98,7 @@
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</EnableParallelCodeGeneration>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</EnableParallelCodeGeneration>
     </ClCompile>
@@ -110,7 +110,6 @@
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
-    <ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
@@ -118,10 +117,14 @@
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp" />
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
-    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
-    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentMaterializer.cpp" />
+    <ClCompile Include="Runtime\XamlObjectMaterializer.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="Runtime\XamlFrameworkTheme.cpp" />
+    <ClCompile Include="XamlRuntimeSchema.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocument.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.cpp" />
@@ -133,6 +136,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\CuiRuntime.h" />
+    <ClInclude Include="include\XamlDocumentCompiler.h" />
+    <ClInclude Include="include\XamlFrameworkTheme.h" />
+    <ClInclude Include="include\XamlObjectMaterializer.h" />
+    <ClInclude Include="include\XamlRuntimeSchema.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h" />
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h" />
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.h" />
@@ -144,6 +151,14 @@
     <ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\StoryboardPropertyPath.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="..\Themes\Generic.xaml">
+      <FileType>Document</FileType>
+      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\build\EmbedBinary.ps1" -InputPath "%(FullPath)" -OutputPath "$(IntDir)CuiFrameworkTheme.g.h" -Namespace "CuiRuntime::Generated" -Symbol "GenericXaml"</Command>
+      <Outputs>$(IntDir)CuiFrameworkTheme.g.h</Outputs>
+      <AdditionalInputs>$(ProjectDir)..\build\EmbedBinary.ps1;%(AdditionalInputs)</AdditionalInputs>
+    </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CUI\CUI.vcxproj">

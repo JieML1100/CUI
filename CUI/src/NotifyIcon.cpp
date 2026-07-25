@@ -1,34 +1,18 @@
 #include "NotifyIcon.h"
+#include "EventInfrastructure.h"
+
+#include "Window.h"
+#include "WindowInfrastructure.h"
 
 #include <algorithm>
+#include <functional>
 #include <mutex>
-#include <unordered_set>
 #include <utility>
 
 #include <shellapi.h>
 
-NotifyIcon* NotifyIcon::Instance = nullptr;
-
 namespace
 {
-	std::wstring NarrowToWide(const char* text)
-	{
-		if (!text || !*text) return L"";
-		auto convert = [text](UINT codePage, DWORD flags) -> std::wstring
-		{
-			const int length = MultiByteToWideChar(
-				codePage, flags, text, -1, nullptr, 0);
-			if (length <= 1) return L"";
-			std::wstring result(static_cast<size_t>(length), L'\0');
-			(void)MultiByteToWideChar(
-				codePage, flags, text, -1, result.data(), length);
-			result.pop_back();
-			return result;
-		};
-		auto result = convert(CP_UTF8, MB_ERR_INVALID_CHARS);
-		return result.empty() ? convert(CP_ACP, 0) : result;
-	}
-
 	HRESULT LastWin32Failure()
 	{
 		const DWORD error = ::GetLastError();
@@ -47,13 +31,25 @@ namespace
 		return *icons;
 	}
 
+	UINT NotifyIconCallbackMessage()
+	{
+		static const UINT message =
+			RegisterWindowMessageW(L"CUI.NotifyIcon.Callback");
+		return message;
+	}
+
+	UINT& NextIconIdentity()
+	{
+		static UINT next = 1;
+		return next;
+	}
+
 	void RegisterIcon(NotifyIcon* icon)
 	{
 		std::scoped_lock lock(IconRegistryMutex());
 		auto& icons = IconRegistry();
 		if (std::find(icons.begin(), icons.end(), icon) == icons.end())
 			icons.push_back(icon);
-		NotifyIcon::Instance = icon;
 	}
 
 	void UnregisterIcon(NotifyIcon* icon)
@@ -61,367 +57,359 @@ namespace
 		std::scoped_lock lock(IconRegistryMutex());
 		auto& icons = IconRegistry();
 		icons.erase(std::remove(icons.begin(), icons.end(), icon), icons.end());
-		if (NotifyIcon::Instance == icon)
-			NotifyIcon::Instance = icons.empty() ? nullptr : icons.back();
 	}
 
-	bool TreeHasDuplicateOrInvalidIds(
-		const NotifyIconMenuItem& item,
-		std::unordered_set<int>& ids)
+	bool IsValidMenuTree(const NotifyIconMenuItem& item)
 	{
-		if (item.Separator) return false;
-		const bool hasChildren = item.HasSubMenu || !item.SubItems.empty();
-		if (!hasChildren && item.ID <= 0) return true;
-		if (item.ID > 0 && !ids.insert(item.ID).second) return true;
-		for (const auto& child : item.SubItems)
+		if (item.IsSeparator)
+			return item.Text.empty() && item.Command.Empty() && item.Items.empty();
+		if (item.Text.empty()) return false;
+		if (!item.Items.empty())
 		{
-			if (TreeHasDuplicateOrInvalidIds(child, ids)) return true;
+			if (!item.Command.Empty()) return false;
+			return std::all_of(
+				item.Items.begin(), item.Items.end(), IsValidMenuTree);
 		}
-		return false;
+		return !item.Command.Empty();
 	}
 
-	size_t CountMenuTree(const NotifyIconMenuItem& item)
+	std::size_t CountMenuTree(const NotifyIconMenuItem& item)
 	{
-		size_t count = 1;
-		for (const auto& child : item.SubItems)
+		std::size_t count = 1;
+		for (const auto& child : item.Items)
 			count += CountMenuTree(child);
 		return count;
 	}
 
-	bool RemoveMenuTree(std::vector<NotifyIconMenuItem>& items, int id)
+	struct PopupCommandMap final
 	{
-		for (auto it = items.begin(); it != items.end(); ++it)
-		{
-			if (!it->Separator && it->ID == id)
-			{
-				items.erase(it);
-				return true;
-			}
-			if (RemoveMenuTree(it->SubItems, id)) return true;
-		}
-		return false;
-	}
+		std::vector<NotifyIconMenuItem*> Items;
 
-	void ClearTransientHandles(std::vector<NotifyIconMenuItem>& items)
-	{
-		for (auto& item : items)
+		UINT Add(NotifyIconMenuItem& item)
 		{
-			item.SubMenu = nullptr;
-			ClearTransientHandles(item.SubItems);
+			Items.push_back(&item);
+			return static_cast<UINT>(Items.size());
 		}
-	}
 
-	bool AppendMenuTree(HMENU menu, NotifyIconMenuItem& item)
+		NotifyIconMenuItem* Resolve(UINT transientId) const noexcept
+		{
+			return transientId > 0 && transientId <= Items.size()
+				? Items[transientId - 1] : nullptr;
+		}
+	};
+
+	bool AppendMenuTree(
+		HMENU menu,
+		NotifyIconMenuItem& item,
+		Window& owner,
+		PopupCommandMap& commands,
+		const std::function<bool()>& operationValid)
 	{
-		if (item.Separator)
+		if (!operationValid()) return false;
+		if (item.IsSeparator)
 			return AppendMenuW(menu, MF_SEPARATOR, 0, nullptr) != FALSE;
 
-		UINT flags = MF_STRING | (item.Enabled ? MF_ENABLED : MF_GRAYED);
-		if (item.HasSubMenu || !item.SubItems.empty())
+		bool enabled = item.IsEnabled;
+		if (!item.Items.empty())
 		{
-			HMENU subMenu = CreatePopupMenu();
-			if (!subMenu) return false;
-			item.SubMenu = subMenu;
-			for (auto& child : item.SubItems)
+			HMENU submenu = CreatePopupMenu();
+			if (!submenu) return false;
+			for (auto& child : item.Items)
 			{
-				if (!AppendMenuTree(subMenu, child))
+				if (!AppendMenuTree(
+					submenu, child, owner, commands, operationValid))
 				{
-					DestroyMenu(subMenu);
-					item.SubMenu = nullptr;
+					DestroyMenu(submenu);
 					return false;
 				}
 			}
+			const UINT flags = MF_STRING | MF_POPUP
+				| (enabled ? MF_ENABLED : MF_GRAYED);
 			if (!AppendMenuW(
-				menu, flags | MF_POPUP,
-				reinterpret_cast<UINT_PTR>(subMenu), item.Text.c_str()))
+				menu, flags, reinterpret_cast<UINT_PTR>(submenu),
+				item.Text.c_str()))
 			{
-				DestroyMenu(subMenu);
-				item.SubMenu = nullptr;
+				DestroyMenu(submenu);
 				return false;
 			}
 			return true;
 		}
+
+		RoutedCommandSourceQuery query{
+			item.Command, item.CommandParameter, item.CommandTarget };
+		if (enabled)
+		{
+			enabled = cui::framework::WindowAccess::Commands(owner)
+				.QueryCommandSource(owner, query).CanExecute;
+			if (!operationValid()) return false;
+		}
+		const UINT transientId = commands.Add(item);
+		const UINT flags = MF_STRING | (enabled ? MF_ENABLED : MF_GRAYED);
 		return AppendMenuW(
-			menu, flags, static_cast<UINT_PTR>(item.ID), item.Text.c_str()) != FALSE;
+			menu, flags, static_cast<UINT_PTR>(transientId),
+			item.Text.c_str()) != FALSE;
 	}
 }
 
 NotifyIconMenuItem::NotifyIconMenuItem(
-	std::wstring text, int id, bool enabled)
-	: Text(std::move(text)), ID(id), Enabled(enabled)
+	std::wstring text,
+	RoutedCommand command,
+	std::any commandParameter,
+	bool isEnabled)
+	: Text(std::move(text)),
+	Command(std::move(command)),
+	CommandParameter(std::move(commandParameter)),
+	IsEnabled(isEnabled)
 {
 }
 
-NotifyIconMenuItem::NotifyIconMenuItem(
-	const wchar_t* text, int id, bool enabled)
-	: NotifyIconMenuItem(text ? std::wstring(text) : std::wstring{}, id, enabled)
+NotifyIconMenuItem NotifyIconMenuItem::Separator()
 {
+	NotifyIconMenuItem result;
+	result.IsSeparator = true;
+	return result;
 }
 
-NotifyIconMenuItem::NotifyIconMenuItem(
-	const std::string& text, int id, bool enabled)
-	: NotifyIconMenuItem(NarrowToWide(text.c_str()), id, enabled)
+NotifyIconMenuItem NotifyIconMenuItem::Submenu(
+	std::wstring text,
+	std::vector<NotifyIconMenuItem> items)
 {
+	NotifyIconMenuItem result;
+	result.Text = std::move(text);
+	result.Items = std::move(items);
+	return result;
 }
 
-NotifyIconMenuItem::NotifyIconMenuItem(
-	const char* text, int id, bool enabled)
-	: NotifyIconMenuItem(NarrowToWide(text), id, enabled)
+bool NotifyIconMenuItem::AddItem(NotifyIconMenuItem item)
 {
-}
-
-NotifyIconMenuItem::NotifyIconMenuItem(const NotifyIconMenuItem& other)
-	: Text(other.Text), ID(other.ID), Enabled(other.Enabled),
-	Separator(other.Separator),
-	HasSubMenu(other.HasSubMenu || !other.SubItems.empty()),
-	SubMenu(nullptr), SubItems(other.SubItems)
-{
-}
-
-NotifyIconMenuItem& NotifyIconMenuItem::operator=(const NotifyIconMenuItem& other)
-{
-	if (this == &other) return *this;
-	Text = other.Text;
-	ID = other.ID;
-	Enabled = other.Enabled;
-	Separator = other.Separator;
-	HasSubMenu = other.HasSubMenu || !other.SubItems.empty();
-	SubMenu = nullptr;
-	SubItems = other.SubItems;
-	return *this;
-}
-
-NotifyIconMenuItem::NotifyIconMenuItem(NotifyIconMenuItem&& other) noexcept
-	: Text(std::move(other.Text)), ID(other.ID), Enabled(other.Enabled),
-	Separator(other.Separator),
-	HasSubMenu(other.HasSubMenu || !other.SubItems.empty()),
-	SubMenu(nullptr), SubItems(std::move(other.SubItems))
-{
-	other.SubMenu = nullptr;
-}
-
-NotifyIconMenuItem& NotifyIconMenuItem::operator=(NotifyIconMenuItem&& other) noexcept
-{
-	if (this == &other) return *this;
-	Text = std::move(other.Text);
-	ID = other.ID;
-	Enabled = other.Enabled;
-	Separator = other.Separator;
-	HasSubMenu = other.HasSubMenu || !other.SubItems.empty();
-	SubMenu = nullptr;
-	SubItems = std::move(other.SubItems);
-	other.SubMenu = nullptr;
-	return *this;
-}
-
-NotifyIconMenuItem NotifyIconMenuItem::CreateSeparator()
-{
-	NotifyIconMenuItem item(L"", -1);
-	item.Separator = true;
-	return item;
-}
-
-bool NotifyIconMenuItem::TryAddSubItem(const NotifyIconMenuItem& item)
-{
-	std::unordered_set<int> ids;
-	for (const auto& existing : SubItems)
-	{
-		if (TreeHasDuplicateOrInvalidIds(existing, ids)) return false;
-	}
-	if (TreeHasDuplicateOrInvalidIds(item, ids)) return false;
-	HasSubMenu = true;
-	SubItems.push_back(item);
+	if (IsSeparator || !Command.Empty() || !IsValidMenuTree(item)) return false;
+	Items.push_back(std::move(item));
 	return true;
 }
 
-void NotifyIconMenuItem::AddSubItem(const NotifyIconMenuItem& item)
+struct NotifyIcon::Impl final
 {
-	(void)TryAddSubItem(item);
-}
-
-struct NotifyIcon::Impl
-{
-	NOTIFYICONDATAW data{};
-	UINT iconId = 0;
-	UINT callbackMessage = WM_USER + 1;
-	bool initialized = false;
-	bool visible = false;
-	bool desiredVisible = false;
-	HRESULT lastError = E_PENDING;
-	std::wstring toolTip;
-	std::vector<NotifyIconMenuItem> menuItems;
-	std::vector<std::unique_ptr<NotifyIconMenuItem>> detachedMenus;
-	HMENU activePopup = nullptr;
+	NOTIFYICONDATAW Data{};
+	Window* Owner = nullptr;
+	bool Initialized = false;
+	bool Visible = false;
+	bool DesiredVisible = false;
+	HRESULT LastError = E_PENDING;
+	std::wstring ToolTip;
+	std::vector<NotifyIconMenuItem> MenuItems;
+	EventConnection OwnerClosedConnection;
+	bool PopupActive = false;
 };
 
 NotifyIcon::NotifyIcon()
-	: _impl(std::make_unique<Impl>())
+	: _impl(std::make_shared<Impl>())
 {
-	_impl->data.cbSize = sizeof(NOTIFYICONDATAW);
-	_impl->data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-	_impl->data.uCallbackMessage = _impl->callbackMessage;
+	_impl->Data.cbSize = sizeof(NOTIFYICONDATAW);
+	_impl->Data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
 NotifyIcon::~NotifyIcon()
 {
-	(void)TryHide();
-	UnregisterIcon(this);
-	if (_impl->activePopup)
-	{
-		DestroyMenu(_impl->activePopup);
-		_impl->activePopup = nullptr;
-	}
+	DetachOwner(true);
 }
 
-bool NotifyIcon::TryInitialize(HWND window, UINT iconId, UINT callbackMessage)
+void NotifyIcon::DetachOwner(bool removeNativeIcon) noexcept
 {
-	if (iconId == 0 || callbackMessage < WM_USER)
+	if (removeNativeIcon && _impl->Visible && _impl->Data.hWnd)
+		(void)Shell_NotifyIconW(NIM_DELETE, &_impl->Data);
+	_impl->DesiredVisible = false;
+	_impl->Visible = false;
+	_impl->Initialized = false;
+	_impl->Owner = nullptr;
+	_impl->Data.hWnd = nullptr;
+	_impl->OwnerClosedConnection = {};
+	UnregisterIcon(this);
+}
+
+bool NotifyIcon::TryInitialize(Window& owner)
+{
+	const HWND window = owner.GetHandle();
+	if (_impl->PopupActive)
 	{
-		_impl->lastError = E_INVALIDARG;
+		_impl->LastError = HRESULT_FROM_WIN32(ERROR_BUSY);
+		return false;
+	}
+	const UINT callbackMessage = NotifyIconCallbackMessage();
+	if (callbackMessage == 0)
+	{
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
 	if (!window || !IsWindow(window))
 	{
-		_impl->lastError = E_HANDLE;
+		_impl->LastError = E_HANDLE;
 		return false;
 	}
-	if (_impl->visible && !TryHide()) return false;
+	if (_impl->Visible && !TryHide()) return false;
+	DetachOwner(false);
 
-	hWnd = window;
-	_impl->iconId = iconId;
-	_impl->callbackMessage = callbackMessage;
-	_impl->data.hWnd = window;
-	_impl->data.uID = iconId;
-	_impl->data.uCallbackMessage = callbackMessage;
-	_impl->initialized = true;
-	_impl->lastError = S_OK;
+	_impl->Owner = &owner;
+	_impl->Data.hWnd = window;
+	_impl->Data.uCallbackMessage = callbackMessage;
+	std::weak_ptr<Impl> weakOwner = _impl;
+	_impl->OwnerClosedConnection = owner.OnWindowClosed.Subscribe(
+		[weakOwner, identity = this, expectedOwner = &owner](Window* closedOwner)
+		{
+			auto state = weakOwner.lock();
+			if (!state || closedOwner != expectedOwner
+				|| state->Owner != expectedOwner) return;
+			if (state->Visible && state->Data.hWnd)
+				(void)Shell_NotifyIconW(NIM_DELETE, &state->Data);
+			state->DesiredVisible = false;
+			state->Visible = false;
+			state->Initialized = false;
+			state->Owner = nullptr;
+			state->Data.hWnd = nullptr;
+			state->OwnerClosedConnection = {};
+			UnregisterIcon(identity);
+		});
+	{
+		std::scoped_lock lock(IconRegistryMutex());
+		auto& next = NextIconIdentity();
+		for (;;)
+		{
+			const UINT candidate = next++;
+			if (next == 0) next = 1;
+			if (candidate == 0) continue;
+			const bool occupied = std::any_of(
+				IconRegistry().begin(), IconRegistry().end(),
+				[&](const NotifyIcon* icon)
+				{
+					return icon && icon != this && icon->_impl->Initialized
+						&& icon->_impl->Data.hWnd == window
+						&& icon->_impl->Data.uID == candidate;
+				});
+			if (!occupied)
+			{
+				_impl->Data.uID = candidate;
+				break;
+			}
+		}
+		_impl->Initialized = true;
+		auto& icons = IconRegistry();
+		if (std::find(icons.begin(), icons.end(), this) == icons.end())
+			icons.push_back(this);
+	}
+	_impl->LastError = S_OK;
+	// Attachment registration lets a failed NIM_ADD be retried when Explorer
+	// broadcasts TaskbarCreated; the native id never leaves this implementation.
 	return true;
 }
 
-void NotifyIcon::InitNotifyIcon(HWND window, int iconId)
-{
-	(void)TryInitialize(
-		window, iconId > 0 ? static_cast<UINT>(iconId) : 0U);
-}
-
-bool NotifyIcon::IsInitialized() const noexcept { return _impl->initialized; }
-bool NotifyIcon::IsVisible() const noexcept { return _impl->visible; }
-UINT NotifyIcon::GetIconId() const noexcept { return _impl->iconId; }
-UINT NotifyIcon::GetCallbackMessage() const noexcept
-{
-	return _impl->callbackMessage;
-}
-HRESULT NotifyIcon::GetLastError() const noexcept { return _impl->lastError; }
+bool NotifyIcon::IsInitialized() const noexcept { return _impl->Initialized; }
+bool NotifyIcon::IsVisible() const noexcept { return _impl->Visible; }
+Window* NotifyIcon::GetOwner() const noexcept { return _impl->Owner; }
+HRESULT NotifyIcon::GetLastError() const noexcept { return _impl->LastError; }
 
 bool NotifyIcon::TrySetIcon(HICON icon)
 {
 	if (!icon)
 	{
-		_impl->lastError = E_POINTER;
+		_impl->LastError = E_POINTER;
 		return false;
 	}
-	_impl->data.hIcon = icon;
-	if (!_impl->visible)
+	_impl->Data.hIcon = icon;
+	if (!_impl->Visible)
 	{
-		_impl->lastError = S_OK;
+		_impl->LastError = S_OK;
 		return true;
 	}
-	if (!Shell_NotifyIconW(NIM_MODIFY, &_impl->data))
+	if (!Shell_NotifyIconW(NIM_MODIFY, &_impl->Data))
 	{
-		_impl->lastError = LastWin32Failure();
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
-	_impl->lastError = S_OK;
+	_impl->LastError = S_OK;
 	return true;
 }
 
-void NotifyIcon::SetIcon(HICON icon) { (void)TrySetIcon(icon); }
-HICON NotifyIcon::GetIcon() const noexcept { return _impl->data.hIcon; }
+HICON NotifyIcon::GetIcon() const noexcept { return _impl->Data.hIcon; }
 
 bool NotifyIcon::TryShow()
 {
-	_impl->desiredVisible = true;
-	if (!_impl->initialized || !hWnd)
+	_impl->DesiredVisible = true;
+	if (!_impl->Initialized || !_impl->Owner
+		|| !_impl->Data.hWnd || !IsWindow(_impl->Data.hWnd))
 	{
-		_impl->lastError = E_HANDLE;
+		_impl->LastError = E_HANDLE;
 		return false;
 	}
-	if (!_impl->data.hIcon)
+	if (!_impl->Data.hIcon)
 	{
-		_impl->lastError = E_POINTER;
+		_impl->LastError = E_POINTER;
 		return false;
 	}
 
-	const DWORD operation = _impl->visible ? NIM_MODIFY : NIM_ADD;
-	if (!Shell_NotifyIconW(operation, &_impl->data))
+	bool added = !_impl->Visible;
+	if (_impl->Visible
+		&& !Shell_NotifyIconW(NIM_MODIFY, &_impl->Data))
 	{
-		_impl->lastError = LastWin32Failure();
+		// Explorer may have discarded the icon before TaskbarCreated reached us.
+		// Fall back to a fresh add instead of pinning the service in stale state.
+		_impl->Visible = false;
+		added = true;
+	}
+	if (added && !Shell_NotifyIconW(NIM_ADD, &_impl->Data))
+	{
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
-	if (!_impl->visible)
+	if (added)
 	{
-		NOTIFYICONDATAW versionData = _impl->data;
+		NOTIFYICONDATAW versionData = _impl->Data;
 		versionData.uVersion = NOTIFYICON_VERSION;
 		(void)Shell_NotifyIconW(NIM_SETVERSION, &versionData);
 	}
-	_impl->visible = true;
-	_impl->lastError = S_OK;
+	_impl->Visible = true;
+	_impl->LastError = S_OK;
 	RegisterIcon(this);
 	return true;
 }
 
 bool NotifyIcon::TryHide()
 {
-	_impl->desiredVisible = false;
-	if (!_impl->visible)
+	_impl->DesiredVisible = false;
+	if (!_impl->Visible)
 	{
-		_impl->lastError = S_OK;
-		UnregisterIcon(this);
+		_impl->LastError = S_OK;
 		return true;
 	}
-	if (!Shell_NotifyIconW(NIM_DELETE, &_impl->data))
+	if (!Shell_NotifyIconW(NIM_DELETE, &_impl->Data))
 	{
-		_impl->lastError = LastWin32Failure();
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
-	_impl->visible = false;
-	_impl->lastError = S_OK;
-	UnregisterIcon(this);
+	_impl->Visible = false;
+	_impl->LastError = S_OK;
 	return true;
 }
-
-void NotifyIcon::ShowNotifyIcon() { (void)TryShow(); }
-void NotifyIcon::HideNotifyIcon() { (void)TryHide(); }
 
 bool NotifyIcon::TrySetToolTip(const std::wstring& text)
 {
-	_impl->toolTip = text;
+	_impl->ToolTip = text;
 	wcsncpy_s(
-		_impl->data.szTip, _countof(_impl->data.szTip),
+		_impl->Data.szTip, _countof(_impl->Data.szTip),
 		text.c_str(), _TRUNCATE);
-	if (!_impl->visible)
+	if (!_impl->Visible)
 	{
-		_impl->lastError = S_OK;
+		_impl->LastError = S_OK;
 		return true;
 	}
-	if (!Shell_NotifyIconW(NIM_MODIFY, &_impl->data))
+	if (!Shell_NotifyIconW(NIM_MODIFY, &_impl->Data))
 	{
-		_impl->lastError = LastWin32Failure();
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
-	_impl->lastError = S_OK;
+	_impl->LastError = S_OK;
 	return true;
 }
 
-void NotifyIcon::SetToolTip(const wchar_t* text)
-{
-	(void)TrySetToolTip(text ? text : L"");
-}
-void NotifyIcon::SetToolTip(const char* text)
-{
-	(void)TrySetToolTip(NarrowToWide(text));
-}
-std::wstring NotifyIcon::GetToolTip() const { return _impl->toolTip; }
+std::wstring NotifyIcon::GetToolTip() const { return _impl->ToolTip; }
 
 bool NotifyIcon::TryShowBalloonTip(
 	const std::wstring& title,
@@ -429,12 +417,12 @@ bool NotifyIcon::TryShowBalloonTip(
 	DWORD timeout,
 	DWORD type)
 {
-	if (!_impl->visible)
+	if (!_impl->Visible)
 	{
-		_impl->lastError = E_UNEXPECTED;
+		_impl->LastError = E_UNEXPECTED;
 		return false;
 	}
-	NOTIFYICONDATAW balloon = _impl->data;
+	NOTIFYICONDATAW balloon = _impl->Data;
 	balloon.uFlags |= NIF_INFO;
 	balloon.dwInfoFlags = type;
 	balloon.uTimeout = timeout;
@@ -446,269 +434,157 @@ bool NotifyIcon::TryShowBalloonTip(
 		text.c_str(), _TRUNCATE);
 	if (!Shell_NotifyIconW(NIM_MODIFY, &balloon))
 	{
-		_impl->lastError = LastWin32Failure();
+		_impl->LastError = LastWin32Failure();
 		return false;
 	}
-	_impl->lastError = S_OK;
+	_impl->LastError = S_OK;
 	return true;
 }
 
-void NotifyIcon::ShowBalloonTip(
-	const wchar_t* title, const wchar_t* text, int timeout, int type)
+bool NotifyIcon::TryAddMenuItem(NotifyIconMenuItem item)
 {
-	(void)TryShowBalloonTip(
-		title ? title : L"", text ? text : L"",
-		static_cast<DWORD>((std::max)(0, timeout)), static_cast<DWORD>(type));
-}
-
-void NotifyIcon::ShowBalloonTip(
-	const char* title, const char* text, int timeout, int type)
-{
-	(void)TryShowBalloonTip(
-		NarrowToWide(title), NarrowToWide(text),
-		static_cast<DWORD>((std::max)(0, timeout)), static_cast<DWORD>(type));
-}
-
-bool NotifyIcon::TryAddMenuItem(const NotifyIconMenuItem& item)
-{
-	std::unordered_set<int> ids;
-	for (const auto& existing : _impl->menuItems)
+	if (!IsValidMenuTree(item))
 	{
-		if (TreeHasDuplicateOrInvalidIds(existing, ids))
-		{
-			_impl->lastError = E_UNEXPECTED;
-			return false;
-		}
-	}
-	if (TreeHasDuplicateOrInvalidIds(item, ids))
-	{
-		_impl->lastError = E_INVALIDARG;
+		_impl->LastError = E_INVALIDARG;
 		return false;
 	}
-	_impl->menuItems.push_back(item);
-	_impl->lastError = S_OK;
+	_impl->MenuItems.push_back(std::move(item));
+	_impl->LastError = S_OK;
 	return true;
 }
 
-void NotifyIcon::AddMenuItem(const NotifyIconMenuItem& item)
-{
-	(void)TryAddMenuItem(item);
-}
 bool NotifyIcon::TryAddMenuSeparator()
 {
-	return TryAddMenuItem(NotifyIconMenuItem::CreateSeparator());
-}
-void NotifyIcon::AddMenuSeparator() { (void)TryAddMenuSeparator(); }
-
-void NotifyIcon::ClearMenu()
-{
-	_impl->menuItems.clear();
-	_impl->detachedMenus.clear();
-	_impl->lastError = S_OK;
+	return TryAddMenuItem(NotifyIconMenuItem::Separator());
 }
 
-size_t NotifyIcon::MenuItemCount(bool recursive) const noexcept
+bool NotifyIcon::TryRemoveMenuItemAt(std::size_t index)
 {
-	if (!recursive) return _impl->menuItems.size();
-	size_t count = 0;
-	for (const auto& item : _impl->menuItems)
+	if (index >= _impl->MenuItems.size())
+	{
+		_impl->LastError = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+		return false;
+	}
+	_impl->MenuItems.erase(_impl->MenuItems.begin()
+		+ static_cast<std::ptrdiff_t>(index));
+	_impl->LastError = S_OK;
+	return true;
+}
+
+void NotifyIcon::ClearMenu() noexcept
+{
+	_impl->MenuItems.clear();
+	_impl->LastError = S_OK;
+}
+
+std::size_t NotifyIcon::MenuItemCount(bool recursive) const noexcept
+{
+	if (!recursive) return _impl->MenuItems.size();
+	std::size_t count = 0;
+	for (const auto& item : _impl->MenuItems)
 		count += CountMenuTree(item);
 	return count;
 }
 
-bool NotifyIcon::RemoveMenuItem(int id)
+std::span<const NotifyIconMenuItem> NotifyIcon::GetMenuItems() const noexcept
 {
-	const bool removed = RemoveMenuTree(_impl->menuItems, id);
-	_impl->lastError = removed ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
-	return removed;
+	return std::span<const NotifyIconMenuItem>{ _impl->MenuItems };
 }
 
-bool NotifyIcon::TryEnableMenuItem(int id, bool enable)
+bool NotifyIcon::TryShowContextMenu(int screenX, int screenY)
 {
-	auto* item = FindMenuItem(id);
-	if (!item)
+	auto operation = _impl;
+	if (operation->PopupActive)
 	{
-		_impl->lastError = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+		operation->LastError = HRESULT_FROM_WIN32(ERROR_BUSY);
 		return false;
 	}
-	item->Enabled = enable;
-	_impl->lastError = S_OK;
-	return true;
-}
-void NotifyIcon::EnableMenuItem(int id, bool enable)
-{
-	(void)TryEnableMenuItem(id, enable);
-}
-
-bool NotifyIcon::TrySetMenuItemText(int id, const std::wstring& text)
-{
-	auto* item = FindMenuItem(id);
-	if (!item || item->Separator)
+	if (!operation->Owner || !operation->Initialized
+		|| !operation->Data.hWnd || !IsWindow(operation->Data.hWnd))
 	{
-		_impl->lastError = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+		operation->LastError = E_HANDLE;
 		return false;
 	}
-	item->Text = text;
-	_impl->lastError = S_OK;
-	return true;
-}
-void NotifyIcon::SetMenuItemText(int id, const std::wstring& text)
-{
-	(void)TrySetMenuItemText(id, text);
-}
-void NotifyIcon::SetMenuItemText(int id, const std::string& text)
-{
-	(void)TrySetMenuItemText(id, NarrowToWide(text.c_str()));
-}
-
-NotifyIconMenuItem* NotifyIcon::CreateSubMenu(
-	const std::wstring& text, int id)
-{
-	auto menu = std::make_unique<NotifyIconMenuItem>(text, id);
-	menu->HasSubMenu = true;
-	auto* result = menu.get();
-	_impl->detachedMenus.push_back(std::move(menu));
-	return result;
-}
-
-NotifyIconMenuItem* NotifyIcon::CreateSubMenu(const std::string& text)
-{
-	return CreateSubMenu(NarrowToWide(text.c_str()), 0);
-}
-
-bool NotifyIcon::TryAddSubMenuItem(
-	int parentId, const NotifyIconMenuItem& item)
-{
-	auto* parent = FindMenuItem(parentId);
-	if (!parent)
+	if (operation->MenuItems.empty())
 	{
-		_impl->lastError = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+		operation->LastError = E_INVALIDARG;
 		return false;
 	}
-
-	std::unordered_set<int> ids;
-	for (const auto& existing : _impl->menuItems)
+	operation->PopupActive = true;
+	struct PopupActivity final
 	{
-		if (TreeHasDuplicateOrInvalidIds(existing, ids))
-		{
-			_impl->lastError = E_UNEXPECTED;
-			return false;
-		}
-	}
-	if (TreeHasDuplicateOrInvalidIds(item, ids))
+		std::shared_ptr<Impl> Operation;
+		~PopupActivity() { Operation->PopupActive = false; }
+	} popupActivity{ operation };
+	Window* const owner = operation->Owner;
+	const HWND window = operation->Data.hWnd;
+	const auto operationValid = [operation, owner, window]
 	{
-		_impl->lastError = E_INVALIDARG;
-		return false;
-	}
-	parent->HasSubMenu = true;
-	parent->SubItems.push_back(item);
-	_impl->lastError = S_OK;
-	return true;
-}
-
-void NotifyIcon::AddSubMenuItem(
-	int parentId, const NotifyIconMenuItem& item)
-{
-	(void)TryAddSubMenuItem(parentId, item);
-}
-
-NotifyIconMenuItem* NotifyIcon::FindMenuItem(
-	int id, std::vector<NotifyIconMenuItem>& items)
-{
-	for (auto& item : items)
-	{
-		if (!item.Separator && item.ID == id) return &item;
-		if (auto* found = FindMenuItem(id, item.SubItems)) return found;
-	}
-	return nullptr;
-}
-
-const NotifyIconMenuItem* NotifyIcon::FindMenuItem(
-	int id, const std::vector<NotifyIconMenuItem>& items) const
-{
-	for (const auto& item : items)
-	{
-		if (!item.Separator && item.ID == id) return &item;
-		if (auto* found = FindMenuItem(id, item.SubItems)) return found;
-	}
-	return nullptr;
-}
-
-NotifyIconMenuItem* NotifyIcon::FindMenuItem(int id)
-{
-	return FindMenuItem(id, _impl->menuItems);
-}
-const NotifyIconMenuItem* NotifyIcon::FindMenuItem(int id) const
-{
-	return FindMenuItem(id, _impl->menuItems);
-}
-
-bool NotifyIcon::TryShowContextMenu(int x, int y)
-{
-	if (!hWnd || !_impl->initialized)
-	{
-		_impl->lastError = E_HANDLE;
-		return false;
-	}
-	if (_impl->menuItems.empty())
-	{
-		_impl->lastError = E_INVALIDARG;
-		return false;
-	}
-	if (_impl->activePopup)
-	{
-		DestroyMenu(_impl->activePopup);
-		_impl->activePopup = nullptr;
-		ClearTransientHandles(_impl->menuItems);
-	}
+		return operation->Initialized && operation->Owner == owner
+			&& operation->Data.hWnd == window && IsWindow(window);
+	};
 
 	HMENU menu = CreatePopupMenu();
 	if (!menu)
 	{
-		_impl->lastError = LastWin32Failure();
+		operation->LastError = LastWin32Failure();
 		return false;
 	}
-	_impl->activePopup = menu;
-	for (auto& item : _impl->menuItems)
+	// Freeze one value snapshot before CanExecute starts routing. Handlers may
+	// mutate the service's future menu without invalidating this native popup
+	// or the transient-id map used by the current transaction.
+	auto popupItems = operation->MenuItems;
+	PopupCommandMap commands;
+	for (auto& item : popupItems)
 	{
-		if (!AppendMenuTree(menu, item))
+		if (!AppendMenuTree(
+			menu, item, *owner, commands, operationValid))
 		{
-			_impl->lastError = LastWin32Failure();
+			operation->LastError = operationValid()
+				? LastWin32Failure() : E_HANDLE;
 			DestroyMenu(menu);
-			_impl->activePopup = nullptr;
-			ClearTransientHandles(_impl->menuItems);
 			return false;
 		}
 	}
-
-	(void)SetForegroundWindow(hWnd);
-	::SetLastError(ERROR_SUCCESS);
-	const UINT command = TrackPopupMenu(
-		menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
-		x, y, 0, hWnd, nullptr);
-	const DWORD trackError = ::GetLastError();
-	DestroyMenu(menu);
-	_impl->activePopup = nullptr;
-	ClearTransientHandles(_impl->menuItems);
-	(void)PostMessageW(hWnd, WM_NULL, 0, 0);
-
-	if (command == 0 && trackError != ERROR_SUCCESS)
+	if (!operationValid())
 	{
-		_impl->lastError = HRESULT_FROM_WIN32(trackError);
+		DestroyMenu(menu);
+		operation->LastError = E_HANDLE;
 		return false;
 	}
-	_impl->lastError = S_OK;
-	if (command != 0)
-		OnNotifyIconMenuClick(this, static_cast<int>(command));
+
+	(void)SetForegroundWindow(window);
+	::SetLastError(ERROR_SUCCESS);
+	const UINT transientId = TrackPopupMenu(
+		menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
+		screenX, screenY, 0, window, nullptr);
+	const DWORD trackError = ::GetLastError();
+	DestroyMenu(menu);
+	if (IsWindow(window)) (void)PostMessageW(window, WM_NULL, 0, 0);
+
+	if (transientId == 0 && trackError != ERROR_SUCCESS)
+	{
+		operation->LastError = HRESULT_FROM_WIN32(trackError);
+		return false;
+	}
+	if (!operationValid())
+	{
+		operation->LastError = E_HANDLE;
+		return false;
+	}
+	operation->LastError = S_OK;
+	if (const auto* item = commands.Resolve(transientId);
+		item && operationValid())
+	{
+		RoutedCommandSourceQuery query{
+			item->Command, item->CommandParameter, item->CommandTarget };
+		(void)cui::framework::WindowAccess::Commands(
+			*owner).ExecuteCommandSource(*owner, query);
+	}
 	return true;
 }
 
-void NotifyIcon::ShowContextMenu(int x, int y)
-{
-	(void)TryShowContextMenu(x, y);
-}
-
-bool NotifyIcon::DispatchWindowMessage(
+bool NotifyIcon::HandlePlatformWindowMessage(
 	HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	if (message < WM_USER) return false;
@@ -725,11 +601,11 @@ bool NotifyIcon::DispatchWindowMessage(
 	{
 		for (auto* icon : icons)
 		{
-			if (!icon || icon->hWnd != window
-				|| !icon->_impl->desiredVisible)
-				continue;
-			icon->_impl->visible = false;
-			(void)icon->TryShow();
+			if (!icon || !icon->_impl->Initialized
+				|| icon->_impl->Data.hWnd != window) continue;
+			const bool restore = icon->_impl->DesiredVisible;
+			icon->_impl->Visible = false;
+			if (restore) (void)icon->TryShow();
 		}
 		return false;
 	}
@@ -737,9 +613,11 @@ bool NotifyIcon::DispatchWindowMessage(
 	NotifyIcon* target = nullptr;
 	for (auto* icon : icons)
 	{
-		if (icon && icon->hWnd == window
-			&& icon->_impl->callbackMessage == message
-			&& icon->_impl->iconId == static_cast<UINT>(wParam))
+		if (icon && icon->_impl->Initialized && icon->_impl->Visible
+			&& icon->_impl->DesiredVisible
+			&& icon->_impl->Data.hWnd == window
+			&& icon->_impl->Data.uCallbackMessage == message
+			&& icon->_impl->Data.uID == static_cast<UINT>(wParam))
 		{
 			target = icon;
 			break;
@@ -747,16 +625,18 @@ bool NotifyIcon::DispatchWindowMessage(
 	}
 	if (!target) return false;
 
-	MouseButtons button = MouseButtons::None;
-	if (lParam == WM_LBUTTONDOWN) button = MouseButtons::Left;
-	else if (lParam == WM_RBUTTONDOWN) button = MouseButtons::Right;
-	else if (lParam == WM_MBUTTONDOWN) button = MouseButtons::Middle;
-	if (button != MouseButtons::None)
+	MouseButton button = MouseButton::None;
+	if (lParam == WM_LBUTTONDOWN) button = MouseButton::Left;
+	else if (lParam == WM_RBUTTONDOWN) button = MouseButton::Right;
+	else if (lParam == WM_MBUTTONDOWN) button = MouseButton::Middle;
+	if (button != MouseButton::None)
 	{
 		POINT location{};
 		(void)GetCursorPos(&location);
-		target->OnNotifyIconMouseDown(
-			target, MouseEventArgs(button, 1, location.x, location.y, 0));
+		cui::framework::EventAccess::Raise(
+			target->OnMouseDown, target,
+			MouseEventArgs(button, MouseButtonState::Pressed,
+				1, location.x, location.y, 0));
 		return true;
 	}
 	if (lParam == WM_RBUTTONUP && target->MenuItemCount() > 0)

@@ -2,7 +2,7 @@
 
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
-#include "DesignDocumentMaterializer.h"
+#include "../../CuiRuntime/include/XamlRuntimeSchema.h"
 #include "DesignDataResourceUtils.h"
 #include "StoryboardPropertyPath.h"
 #include "XamlSourceScanner.h"
@@ -10,7 +10,6 @@
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
 #include "../DesignerEventCatalog.h"
-#include "../DesignerFormPropertyCatalog.h"
 #include "../DesignerPropertyCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
 
@@ -53,7 +52,11 @@ namespace
 
 	void ResetDiagnostic(XamlDocumentDiagnostic* diagnostic)
 	{
-		if (diagnostic) *diagnostic = {};
+		if (diagnostic)
+		{
+			*diagnostic = {};
+			diagnostic->Stage = XamlDiagnosticStage::Parse;
+		}
 	}
 
 	void ReportFailure(
@@ -144,64 +147,49 @@ namespace
 
 	bool Equals(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	bool Equals(const std::string& left, const char* right)
 	{
-		return _stricmp(left.c_str(), right) == 0;
+		return right && left == right;
 	}
 
 	bool IsContentHostType(UIClass type) noexcept
 	{
 		return type == UIClass::UI_ContentPresenter
-			|| type == UIClass::UI_ContentControl
-			|| type == UIClass::UI_SelectorItem
-			|| type == UIClass::UI_ComboBoxItem
-			|| type == UIClass::UI_TreeViewItem
-			|| type == UIClass::UI_Button
-			|| type == UIClass::UI_GroupBox
-			|| type == UIClass::UI_Expander;
+			|| IsUIClassAssignableFrom(UIClass::UI_ContentControl, type);
 	}
 
 	bool IsVisualContentControlType(UIClass type) noexcept
 	{
-		return type == UIClass::UI_ContentControl
-			|| type == UIClass::UI_SelectorItem
-			|| type == UIClass::UI_ComboBoxItem
-			|| type == UIClass::UI_TreeViewItem
-			|| type == UIClass::UI_Button
-			|| type == UIClass::UI_GroupBox
-			|| type == UIClass::UI_Expander;
+		return IsUIClassAssignableFrom(UIClass::UI_ContentControl, type);
+	}
+
+	bool IsSingleVisualChildHostType(UIClass type) noexcept
+	{
+		return type == UIClass::UI_Popup
+			|| IsUIClassAssignableFrom(UIClass::UI_Decorator, type)
+			|| IsVisualContentControlType(type);
 	}
 
 	bool IsControlTemplateHostType(UIClass type) noexcept
 	{
-		return IsVisualContentControlType(type)
-			|| type == UIClass::UI_ItemsControl
-			|| type == UIClass::UI_ListBox;
+		return IsControlTemplateHostClass(type);
 	}
 
 	bool IsHeaderedContentControlType(UIClass type) noexcept
 	{
-		return type == UIClass::UI_GroupBox
-			|| type == UIClass::UI_Expander
-			|| type == UIClass::UI_TreeViewItem;
+		return IsUIClassAssignableFrom(
+			UIClass::UI_HeaderedContentControl, type)
+			|| IsUIClassAssignableFrom(
+				UIClass::UI_HeaderedItemsControl, type);
 	}
 
 	bool IsControlTemplateTargetCompatible(
 		UIClass actual, UIClass target) noexcept
 	{
-		return actual == target
-			|| (target == UIClass::UI_ContentControl
-				&& (actual == UIClass::UI_SelectorItem
-					|| actual == UIClass::UI_ComboBoxItem
-					|| actual == UIClass::UI_TreeViewItem
-					|| actual == UIClass::UI_Button
-					|| actual == UIClass::UI_GroupBox
-					|| actual == UIClass::UI_Expander))
-			|| (target == UIClass::UI_ItemsControl
-				&& actual == UIClass::UI_ListBox);
+		return IsUIClassAssignableFrom(target, actual);
 	}
 
 	bool IsControlTemplateTargetCompatible(
@@ -303,18 +291,42 @@ namespace
 			const XmlAttribute* attribute,
 			XamlDocumentDiagnostic* diagnostic) const
 		{
-			if (!element || !diagnostic) return;
+			if (!diagnostic) return;
+			diagnostic->Apply(Span(element, attribute));
+		}
+
+		XamlSourceSpan Span(
+			const XmlElement* element,
+			const XmlAttribute* attribute = nullptr) const
+		{
+			XamlSourceSpan result;
+			if (!element) return result;
 			const auto found = _tags.find(element);
-			if (found == _tags.end()) return;
+			if (found == _tags.end()) return result;
 
 			size_t offset = found->second.NameStart;
+			size_t length = found->second.NameLength;
 			if (attribute)
 			{
-				const auto attributeOffset = FindAttributeOffset(
+				const auto attributeRange = FindAttributeRange(
 					found->second, FromUtf8(attribute->Name()));
-				if (attributeOffset) offset = *attributeOffset;
+				if (attributeRange)
+				{
+					offset = attributeRange->first;
+					length = attributeRange->second;
+				}
 			}
-			PopulatePosition(offset, *diagnostic);
+			XamlDocumentDiagnostic start;
+			XamlDocumentDiagnostic end;
+			PopulatePosition(offset, start);
+			PopulatePosition(offset + length, end);
+			result.Utf16Offset = offset;
+			result.Utf16Length = length;
+			result.Line = start.Line;
+			result.Column = start.Column;
+			result.EndLine = end.Line;
+			result.EndColumn = end.Column;
+			return result;
 		}
 
 	private:
@@ -331,7 +343,7 @@ namespace
 				CollectElements(child, output);
 		}
 
-		std::optional<size_t> FindAttributeOffset(
+		std::optional<std::pair<size_t, size_t>> FindAttributeRange(
 			const XamlSourceScanner::TagToken& tag,
 			const std::wstring& rawName) const
 		{
@@ -352,18 +364,26 @@ namespace
 					continue;
 				}
 				const auto name = _source.substr(nameStart, cursor - nameStart);
-				if (name == rawName) return nameStart;
+				const bool matches = name == rawName;
 
 				while (cursor < end && std::iswspace(_source[cursor])) cursor++;
-				if (cursor >= end || _source[cursor] != L'=') continue;
+				if (cursor >= end || _source[cursor] != L'=')
+				{
+					if (matches) return std::pair{ nameStart, cursor - nameStart };
+					continue;
+				}
 				cursor++;
 				while (cursor < end && std::iswspace(_source[cursor])) cursor++;
 				if (cursor >= end
 					|| (_source[cursor] != L'\'' && _source[cursor] != L'"'))
+				{
+					if (matches) return std::pair{ nameStart, cursor - nameStart };
 					continue;
+				}
 				const wchar_t quote = _source[cursor++];
 				while (cursor < end && _source[cursor] != quote) cursor++;
 				if (cursor < end) cursor++;
+				if (matches) return std::pair{ nameStart, cursor - nameStart };
 			}
 			return std::nullopt;
 		}
@@ -407,14 +427,12 @@ namespace
 	bool TryParseBool(const std::wstring& value, bool& output)
 	{
 		const auto normalized = Lower(Trim(value));
-		if (normalized == L"true" || normalized == L"1"
-			|| normalized == L"yes" || normalized == L"on")
+		if (normalized == L"true")
 		{
 			output = true;
 			return true;
 		}
-		if (normalized == L"false" || normalized == L"0"
-			|| normalized == L"no" || normalized == L"off")
+		if (normalized == L"false")
 		{
 			output = false;
 			return true;
@@ -647,7 +665,7 @@ namespace
 		if (value.size() >= 2 && value.front() == L'{' && value.back() == L'}')
 		{
 			value = Trim(value.substr(1, value.size() - 2));
-			if (Lower(value).starts_with(L"x:type"))
+			if (value.starts_with(L"x:Type"))
 				value = Trim(value.substr(6));
 		}
 		return Trim(value);
@@ -661,37 +679,95 @@ namespace
 		return Trim(value);
 	}
 
+	bool TryParseCommandTargetReference(
+		std::wstring value,
+		std::wstring& targetName,
+		std::wstring& error)
+	{
+		value = Trim(std::move(value));
+		targetName.clear();
+		if (value.empty()) return true;
+		if (value.front() == L'{' || value.back() == L'}')
+		{
+			if (value.size() < 3 || value.front() != L'{' || value.back() != L'}')
+			{
+				error = L"CommandTarget 标记扩展缺少配对的大括号。";
+				return false;
+			}
+			auto inner = Trim(value.substr(1, value.size() - 2));
+			constexpr std::wstring_view prefix = L"x:Reference";
+			if (!inner.starts_with(prefix)
+				|| (inner.size() > prefix.size()
+					&& !std::iswspace(inner[prefix.size()])))
+			{
+				error = L"CommandTarget 仅支持直接 x:Name 或 {x:Reference ...}。";
+				return false;
+			}
+			inner = Trim(inner.substr(prefix.size()));
+			if (const auto assignment = inner.find(L'=');
+				assignment != std::wstring::npos)
+			{
+				if (Trim(inner.substr(0, assignment)) != L"Name")
+				{
+					error = L"CommandTarget x:Reference 只接受 Name 参数。";
+					return false;
+				}
+				inner = Trim(inner.substr(assignment + 1));
+			}
+			if (!TryUnquoteMarkupArgument(std::move(inner), targetName))
+			{
+				error = L"CommandTarget x:Reference 引号无效。";
+				return false;
+			}
+		}
+		else targetName = std::move(value);
+		targetName = Trim(std::move(targetName));
+		if (targetName.empty()
+			|| targetName.find_first_of(L".,={} \t\r\n") != std::wstring::npos)
+		{
+			error = L"CommandTarget 必须引用当前 namescope 中的直接 x:Name。";
+			targetName.clear();
+			return false;
+		}
+		return true;
+	}
+
 	std::wstring NormalizePropertyName(
 		const std::wstring& rawName,
 		const std::wstring& rawValue,
 		bool formProperty = false)
 	{
-		const auto name = Lower(Trim(rawName));
-		if (formProperty)
+		(void)rawValue;
+		(void)formProperty;
+		return Trim(rawName);
+	}
+
+	bool TryNormalizeDirectStoryboardProperty(
+		const std::wstring& rawProperty,
+		const CuiRuntime::XamlTypePropertySchema& targetSchema,
+		std::wstring& propertyName)
+	{
+		if (rawProperty.empty()) return false;
+		if (rawProperty.front() != L'(')
 		{
-			if (name == L"left") return L"X";
-			if (name == L"top") return L"Y";
-			if (name == L"isenabled" || name == L"enabled") return L"Enable";
-			if (name == L"visibility" || name == L"isvisible") return L"Visible";
-			return Trim(rawName);
+			propertyName = NormalizePropertyName(rawProperty, L"");
+			return true;
 		}
 
-		if (name == L"x" || name == L"canvas.left") return L"Left";
-		if (name == L"y" || name == L"canvas.top") return L"Top";
-		if (name == L"width") return L"LayoutWidth";
-		if (name == L"height") return L"LayoutHeight";
-		if (name == L"isenabled" || name == L"enabled") return L"Enable";
-		if (name == L"visibility" || name == L"isvisible") return L"Visible";
-		if (name == L"ischecked") return L"Checked";
-		if (name == L"horizontalalignment") return L"HAlign";
-		if (name == L"verticalalignment") return L"VAlign";
-		if (name == L"dock" || name == L"dockpanel.dock") return L"DockPosition";
-		if (name == L"grid.row") return L"GridRow";
-		if (name == L"grid.column") return L"GridColumn";
-		if (name == L"grid.rowspan") return L"GridRowSpan";
-		if (name == L"grid.columnspan") return L"GridColumnSpan";
-		(void)rawValue;
-		return Trim(rawName);
+		cui::xaml::PropertyPath path;
+		if (!cui::xaml::TryParsePropertyPath(rawProperty, path, nullptr)
+			|| path.Segments.size() != 1
+			|| path.Segments.front().Kind
+				!= cui::xaml::PropertyPathSegmentKind::Property
+			|| path.Segments.front().OwnerType.empty()) return false;
+
+		const auto& segment = path.Segments.front();
+		const auto candidate = StoryboardPathLocalType(segment.OwnerType)
+			+ L"." + segment.Name;
+		const auto normalized = NormalizePropertyName(candidate, L"");
+		if (!targetSchema.FindProperty(normalized)) return false;
+		propertyName = normalized;
+		return true;
 	}
 
 	std::wstring NormalizeVisibility(const std::wstring& value, bool& recognized)
@@ -700,12 +776,17 @@ namespace
 		if (normalized == L"visible")
 		{
 			recognized = true;
-			return L"true";
+			return L"Visible";
 		}
-		if (normalized == L"hidden" || normalized == L"collapsed")
+		if (normalized == L"hidden")
 		{
 			recognized = true;
-			return L"false";
+			return L"Hidden";
+		}
+		if (normalized == L"collapsed")
+		{
+			recognized = true;
+			return L"Collapsed";
 		}
 		recognized = false;
 		return value;
@@ -719,8 +800,8 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		const auto lower = Lower(text);
-		if (!lower.starts_with(L"staticresource")) return false;
+		if (!text.starts_with(L"StaticResource")
+			|| (text.size() > 14 && !std::iswspace(text[14]))) return false;
 		resourceKey = Trim(text.substr(14));
 		return !resourceKey.empty();
 	}
@@ -733,8 +814,8 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		const auto lower = Lower(text);
-		if (!lower.starts_with(L"dynamicresource")) return false;
+		if (!text.starts_with(L"DynamicResource")
+			|| (text.size() > 15 && !std::iswspace(text[15]))) return false;
 		resourceKey = Trim(text.substr(15));
 		return !resourceKey.empty();
 	}
@@ -748,7 +829,7 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		if (!Lower(text).starts_with(L"binding")
+		if (!text.starts_with(L"Binding")
 			|| (text.size() > 7 && std::iswspace(text[7]) == 0
 				&& text[7] != L',')) return false;
 		text = Trim(text.substr(7));
@@ -772,10 +853,10 @@ namespace
 				continue;
 			}
 
-			const auto key = Lower(Trim(part.substr(0, equals)));
+			const auto key = Trim(part.substr(0, equals));
 			const auto itemValue = Trim(part.substr(equals + 1));
-			if (key == L"path") binding.SourceProperty = itemValue;
-			else if (key == L"mode")
+			if (key == L"Path") binding.SourceProperty = itemValue;
+			else if (key == L"Mode")
 			{
 				if (!DesignerBindingUtils::TryParseBindingMode(itemValue, binding.Mode))
 				{
@@ -783,11 +864,11 @@ namespace
 					return false;
 				}
 			}
-			else if (key == L"updatesourcetrigger" || key == L"updatemode")
+			else if (key == L"UpdateSourceTrigger")
 			{
 				if (updateSourceTriggerSeen)
 				{
-					error = L"Binding 不能重复声明 UpdateSourceTrigger/UpdateMode。";
+					error = L"Binding 不能重复声明 UpdateSourceTrigger。";
 					return false;
 				}
 				updateSourceTriggerSeen = true;
@@ -802,8 +883,8 @@ namespace
 					return false;
 				}
 			}
-			else if (key == L"converter") binding.Converter = itemValue;
-			else if (key == L"converterparameter")
+			else if (key == L"Converter") binding.Converter = itemValue;
+			else if (key == L"ConverterParameter")
 			{
 				std::wstring literal;
 				if (!TryUnquoteMarkupArgument(itemValue, literal))
@@ -814,7 +895,7 @@ namespace
 				binding.ConverterParameter = DesignerStyleValue{
 					DesignerStyleValueKind::String, std::move(literal) };
 			}
-			else if (key == L"stringformat")
+			else if (key == L"StringFormat")
 			{
 				std::wstring format;
 				if (!TryUnquoteMarkupArgument(itemValue, format))
@@ -829,8 +910,8 @@ namespace
 				}
 				binding.StringFormat = std::move(format);
 			}
-			else if (key == L"elementname") binding.ElementName = itemValue;
-			else if (key == L"fallbackvalue")
+			else if (key == L"ElementName") binding.ElementName = itemValue;
+			else if (key == L"FallbackValue")
 			{
 				std::wstring literal;
 				if (!TryUnquoteMarkupArgument(itemValue, literal))
@@ -841,7 +922,7 @@ namespace
 				binding.FallbackValue = DesignerStyleValue{
 					DesignerStyleValueKind::String, std::move(literal) };
 			}
-			else if (key == L"targetnullvalue")
+			else if (key == L"TargetNullValue")
 			{
 				std::wstring literal;
 				if (!TryUnquoteMarkupArgument(itemValue, literal))
@@ -852,14 +933,14 @@ namespace
 				binding.TargetNullValue = DesignerStyleValue{
 					DesignerStyleValueKind::String, std::move(literal) };
 			}
-			else if (key == L"relativesource")
+			else if (key == L"RelativeSource")
 			{
 				auto source = Trim(itemValue);
 				if (source.size() >= 2 && source.front() == L'{'
 					&& source.back() == L'}')
 				{
 					source = Trim(source.substr(1, source.size() - 2));
-					if (!Lower(source).starts_with(L"relativesource"))
+					if (!source.starts_with(L"RelativeSource"))
 					{
 						error = L"Binding RelativeSource 标记扩展无效。";
 						return false;
@@ -882,19 +963,18 @@ namespace
 						mode = Trim(sourcePart);
 						continue;
 					}
-					const auto sourceKey = Lower(Trim(
-						sourcePart.substr(0, sourceEquals)));
+					const auto sourceKey = Trim(
+						sourcePart.substr(0, sourceEquals));
 					auto sourceValue = Trim(sourcePart.substr(sourceEquals + 1));
-					if (sourceKey == L"mode") mode = sourceValue;
-					else if (sourceKey == L"ancestortype")
+					if (sourceKey == L"Mode") mode = sourceValue;
+					else if (sourceKey == L"AncestorType")
 					{
 						if (sourceValue.size() >= 2 && sourceValue.front() == L'{'
 							&& sourceValue.back() == L'}')
 						{
 							sourceValue = Trim(sourceValue.substr(
 								1, sourceValue.size() - 2));
-							const auto lowerType = Lower(sourceValue);
-							if (!lowerType.starts_with(L"x:type")
+							if (!sourceValue.starts_with(L"x:Type")
 								|| (sourceValue.size() > 6
 									&& std::iswspace(sourceValue[6]) == 0))
 							{
@@ -905,7 +985,7 @@ namespace
 						}
 						binding.AncestorType = sourceValue;
 					}
-					else if (sourceKey == L"ancestorlevel")
+					else if (sourceKey == L"AncestorLevel")
 					{
 						try
 						{
@@ -996,7 +1076,7 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		if (!Lower(text).starts_with(L"templatebinding")) return false;
+		if (!text.starts_with(L"TemplateBinding")) return false;
 		if (text.size() > 15 && std::iswspace(text[15]) == 0)
 		{
 			error = L"TemplateBinding 后必须是组件属性名。";
@@ -1023,7 +1103,7 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		if (!Lower(text).starts_with(L"raiseevent")) return false;
+		if (!text.starts_with(L"RaiseEvent")) return false;
 		if (text.size() > 10 && std::iswspace(text[10]) == 0)
 		{
 			error = L"RaiseEvent 标记扩展格式无效。";
@@ -1044,16 +1124,34 @@ namespace
 		DesignerComponentEventPayload payload)
 	{
 		if (payload == DesignerComponentEventPayload::String)
-			return Equals(sourceEvent, L"OnTextChanged")
-				|| Equals(sourceEvent, L"OnDropText");
+			return Equals(sourceEvent, L"TextChanged")
+				|| Equals(sourceEvent, L"PreviewTextInputStart")
+				|| Equals(sourceEvent, L"TextInputStart")
+				|| Equals(sourceEvent, L"PreviewTextInputUpdate")
+				|| Equals(sourceEvent, L"TextInputUpdate")
+				|| Equals(sourceEvent, L"PreviewTextInput")
+				|| Equals(sourceEvent, L"TextInput");
 		if (payload == DesignerComponentEventPayload::Bool)
-			return Equals(sourceEvent, L"OnChecked");
+			return Equals(sourceEvent, L"Checked")
+				|| Equals(sourceEvent, L"Unchecked");
 		if (payload != DesignerComponentEventPayload::None) return false;
 		for (const auto* supported : {
-			L"OnMouseClick", L"OnMouseDoubleClick", L"OnMouseEnter",
-			L"OnMouseLeave", L"OnGotFocus", L"OnLostFocus", L"OnPaint",
-			L"OnClose", L"OnMoved", L"OnSizeChanged", L"OnSelectedChanged",
-			L"OnScrollChanged" })
+			L"Click", L"PreviewMouseDown", L"MouseDown",
+			L"PreviewMouseUp", L"MouseUp", L"MouseDoubleClick",
+			L"MouseEnter", L"MouseLeave", L"PreviewGotKeyboardFocus",
+			L"GotKeyboardFocus", L"PreviewLostKeyboardFocus",
+			L"LostKeyboardFocus", L"GotFocus", L"LostFocus",
+			L"SizeChanged", L"IsVisibleChanged", L"SelectionChanged",
+			L"Selected", L"Unselected",
+			L"Checked", L"Unchecked", L"Expanded", L"Collapsed",
+			L"SubmenuOpened", L"SubmenuClosed", L"Opened", L"Closed",
+			L"ScrollChanged", L"PreviewTextInputStart", L"TextInputStart",
+			L"PreviewTextInputUpdate", L"TextInputUpdate",
+			L"PreviewTextInput", L"TextInput",
+			L"PreviewDragEnter", L"DragEnter",
+			L"PreviewDragOver", L"DragOver",
+			L"PreviewDragLeave", L"DragLeave",
+			L"PreviewDrop", L"Drop" })
 			if (Equals(sourceEvent, supported)) return true;
 		return false;
 	}
@@ -1064,14 +1162,14 @@ namespace
 		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
 			return false;
 		text = Trim(text.substr(1, text.size() - 2));
-		if (!Lower(text).starts_with(L"binding")
+		if (!text.starts_with(L"Binding")
 			|| (text.size() > 7 && std::iswspace(text[7]) == 0
 				&& text[7] != L',')) return false;
 		text = Trim(text.substr(7));
 		if (text.empty() || text.find(L',') != std::wstring::npos) return false;
 		const auto equals = text.find(L'=');
 		return equals == std::wstring::npos
-			|| Lower(Trim(text.substr(0, equals))) == L"path";
+			|| Trim(text.substr(0, equals)) == L"Path";
 	}
 
 	std::optional<DesignerEventDescriptor> FindEvent(
@@ -1080,68 +1178,31 @@ namespace
 		const std::wstring& rawName,
 		const std::wstring& rawValue)
 	{
-		const auto trimmedValue = Lower(Trim(rawValue));
-		if (trimmedValue.starts_with(L"{binding")
-			|| trimmedValue.starts_with(L"{templatebinding"))
+		const auto trimmedValue = Trim(rawValue);
+		if (trimmedValue.starts_with(L"{Binding")
+			|| trimmedValue.starts_with(L"{TemplateBinding"))
 			return std::nullopt;
 		const auto events = DesignerEventCatalog::GetControlEvents(
 			type, componentEvents);
 		for (const auto& event : events)
 		{
-			if (Equals(event.Name, rawName) || Equals(FromUtf8(event.EventField), rawName))
+			if (Equals(event.Name, rawName))
 				return event;
 		}
 
 		bool booleanValue = false;
-		if (Equals(rawName, L"Checked") && TryParseBool(rawValue, booleanValue))
+		if (Equals(rawName, L"IsChecked") && TryParseBool(rawValue, booleanValue))
 			return std::nullopt;
-		const std::map<std::wstring, std::wstring> aliases = {
-			{ L"Click", L"OnMouseClick" },
-			{ L"DoubleClick", L"OnMouseDoubleClick" },
-			{ L"TextChanged", L"OnTextChanged" },
-			{ L"Checked", L"OnChecked" },
-			{ L"ValueChanged", L"OnValueChanged" },
-			{ L"ExpandedChanged", L"OnExpandedChanged" },
-			{ L"ItemClick", L"OnItemClick" },
-			{ L"ItemDoubleClick", L"OnItemDoubleClick" },
-		};
-		for (const auto& [alias, canonical] : aliases)
-		{
-			if (!Equals(alias, rawName)) continue;
-			for (const auto& event : events)
-				if (Equals(event.Name, canonical)) return event;
-		}
-		if (Equals(rawName, L"SelectionChanged"))
-		{
-			for (const auto& event : events)
-				if (Equals(event.Name, L"OnSelectionChanged")
-					|| Equals(event.Name, L"SelectionChanged")) return event;
-		}
 		return std::nullopt;
 	}
 
-	std::optional<DesignerEventDescriptor> FindFormEvent(
+	std::optional<DesignerEventDescriptor> FindWindowEvent(
 		const std::wstring& rawName)
 	{
-		for (const auto& event : DesignerEventCatalog::GetFormEvents())
+		for (const auto& event : DesignerEventCatalog::GetWindowEvents())
 		{
-			if (Equals(event.Name, rawName) || Equals(FromUtf8(event.EventField), rawName))
+			if (Equals(event.Name, rawName))
 				return event;
-		}
-		const std::map<std::wstring, std::wstring> aliases = {
-			{ L"Click", L"OnMouseClick" },
-			{ L"DoubleClick", L"OnMouseDoubleClick" },
-			{ L"TextChanged", L"OnTextChanged" },
-			{ L"Closing", L"OnClose" },
-			{ L"Closed", L"OnFormClosed" },
-			{ L"Command", L"OnCommand" },
-			{ L"ThemeChanged", L"OnThemeChanged" },
-			{ L"Shown", L"OnShown" },
-		};
-		for (const auto& [alias, canonical] : aliases)
-		{
-			if (!Equals(alias, rawName)) continue;
-			return DesignerEventCatalog::FindFormEvent(canonical);
 		}
 		return std::nullopt;
 	}
@@ -1152,32 +1213,12 @@ namespace
 		std::wstring& error)
 	{
 		stored = Trim(raw);
-		if (Equals(stored, L"Auto") || DesignerEventCatalog::IsLegacyEnabledValue(stored))
-		{
-			stored = L"1";
-			return true;
-		}
 		if (stored.empty())
 		{
-			error = L"事件处理函数名不能为空；需要默认名称时请使用 Auto。";
+			error = L"事件处理函数名不能为空，必须显式填写 C++ 成员函数名。";
 			return false;
 		}
 		return DesignerEventCatalog::ValidateHandlerName(stored, &error);
-	}
-
-	bool ParseAnchor(const std::wstring& value, int& output)
-	{
-		output = AnchorStyles::None;
-		for (const auto& part : Split(Lower(value), L','))
-		{
-			if (part == L"none" || part.empty()) continue;
-			if (part == L"left") output |= AnchorStyles::Left;
-			else if (part == L"top") output |= AnchorStyles::Top;
-			else if (part == L"right") output |= AnchorStyles::Right;
-			else if (part == L"bottom") output |= AnchorStyles::Bottom;
-			else return false;
-		}
-		return true;
 	}
 
 	DesignValue GridLengthValue(const std::wstring& raw, bool& valid)
@@ -1204,27 +1245,6 @@ namespace
 				{
 					result["value"] = parsed;
 					result["unit"] = "Star";
-				}
-				return result;
-			}
-			catch (...)
-			{
-				valid = false;
-				return result;
-			}
-		}
-		if (!value.empty() && value.back() == L'%')
-		{
-			auto factor = Trim(value.substr(0, value.size() - 1));
-			try
-			{
-				size_t consumed = 0;
-				const double parsed = std::stod(factor, &consumed);
-				valid = consumed == factor.size() && parsed >= 0.0;
-				if (valid)
-				{
-					result["value"] = parsed;
-					result["unit"] = "Percent";
 				}
 				return result;
 			}
@@ -1279,9 +1299,11 @@ namespace
 			DiagnosticContext context(*this, root);
 			if (!root)
 				return Fail(L"XAML 没有根元素。", error);
+			IndexSourceSymbols(root);
+			IndexExplicitDesignIds(root);
 			const auto rootName = FromUtf8(root->LocalName());
-			if (!Equals(rootName, L"Form") && !Equals(rootName, L"Window"))
-				return Fail(L"XAML 根元素必须是 Form 或 Window。", error);
+			if (!Equals(rootName, L"Window"))
+				return Fail(L"XAML 根元素必须是 Window。", error);
 
 			// Property elements are order-independent: schema/resources first.
 			for (const auto& child : ChildElements(root))
@@ -1299,7 +1321,10 @@ namespace
 				}
 			}
 
-			if (!ParseFormAttributes(root, error)) return false;
+			if (!ParseWindowAttributes(root, error)) return false;
+			bool hasContent = false;
+			bool hasCommandBindings = false;
+			bool hasInputBindings = false;
 			for (const auto& child : ChildElements(root))
 			{
 				DiagnosticContext childContext(*this, child);
@@ -1307,44 +1332,112 @@ namespace
 				if (IsRootPropertyElement(name, L"Resources")
 					|| IsRootPropertyElement(name, L"Styles")
 					|| IsRootPropertyElement(name, L"DataContextSchema")) continue;
+				if (IsRootPropertyElement(name, L"CommandBindings"))
+				{
+					if (hasCommandBindings)
+						return Fail(L"Window.CommandBindings 不能重复。", error);
+					hasCommandBindings = true;
+					if (!ParseCommandBindings(
+						child, _document.Window.CommandBindings, error)) return false;
+					continue;
+				}
+				if (IsRootPropertyElement(name, L"InputBindings"))
+				{
+					if (hasInputBindings)
+						return Fail(L"Window.InputBindings 不能重复。", error);
+					hasInputBindings = true;
+					if (!ParseInputBindings(
+						child, _document.Window.InputBindings, error)) return false;
+					continue;
+				}
+				if (IsRootPropertyElement(name, L"Content"))
+				{
+					if (hasContent)
+						return Fail(L"Window 只能声明一个 Content。", error);
+					const auto content = ChildElements(child);
+					if (content.size() != 1)
+						return Fail(L"Window.Content 必须包含且只包含一个元素。", error);
+					DiagnosticContext contentContext(*this, content.front());
+					if (!ParseControl(content.front(), Parent{}, error)) return false;
+					hasContent = true;
+					continue;
+				}
 				if (name.find(L'.') != std::wstring::npos)
-					return Fail(L"不支持的 Form 属性元素：" + name, error);
+					return Fail(L"不支持的 Window 属性元素：" + name, error);
+				if (hasContent)
+					return Fail(L"Window 只能声明一个 Content；请使用 Panel、Grid 或其他布局容器组织子元素。", error);
 				if (!ParseControl(child, Parent{}, error)) return false;
+				hasContent = true;
 			}
 
+			return FinalizeDocument(error);
+		}
+
+		bool ParseResourceDictionaryRoot(
+			const Element& root,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, root);
+			if (!root)
+				return Fail(L"XAML 没有根元素。", error);
+			IndexSourceSymbols(root);
+			IndexExplicitDesignIds(root);
+			if (!Equals(FromUtf8(root->LocalName()), L"ResourceDictionary"))
+				return Fail(L"资源文件根元素必须是 ResourceDictionary。", error);
+			if (!ParseResourceDictionary(root, error)) return false;
+			return FinalizeDocument(error);
+		}
+
+	private:
+		bool FinalizeDocument(std::wstring& error)
+		{
+			if (!ValidateRelativePanelConstraints(
+				_document.Nodes, L"文档", error)) return false;
 			MergeBindingSchema();
 			if (!ValidateBindingSources(
 				_document.Nodes, L"文档", false, error)) return false;
 			for (const auto& component : _document.Components)
+			{
+				const auto owner = L"组件 " + component.Type.XamlName;
 				if (!ValidateBindingSources(
-					component.Template,
-					L"组件 " + component.Type.XamlName, true, error)) return false;
+					component.Template, owner, true, error)) return false;
+			}
 			for (const auto& dataTemplate : _document.DataTemplates)
+			{
+				const auto owner = L"DataTemplate " + dataTemplate.DisplayName();
 				if (!ValidateBindingSources(
-					dataTemplate.Template,
-					L"DataTemplate " + dataTemplate.DisplayName(), false, error))
-					return false;
+					dataTemplate.Template, owner, false, error)) return false;
+			}
 			for (const auto& controlTemplate : _document.ControlTemplates)
+			{
+				const auto owner = L"ControlTemplate "
+					+ controlTemplate.DisplayName();
 				if (!ValidateBindingSources(
-					controlTemplate.Template,
-					L"ControlTemplate " + controlTemplate.DisplayName(), true, error))
-					return false;
+					controlTemplate.Template, owner, true, error)) return false;
+			}
+			if (!_document.ValidateCommandTargetReferences(&error))
+				return Fail(error, error);
 			DesignerDataContextSchemaUtils::Canonicalize(_document.DataContextSchema);
 			DesignerStyleSheetUtils::Canonicalize(_document.StyleSheet);
 			if (!DesignDataResourceUtils::ValidateAndCanonicalize(
 				_document, &error)) return Fail(error, error);
 			if (!DesignerStyleSheetUtils::ValidateAgainstRulePropertyMetadata(
 				_document.StyleSheet,
-				[&](const DesignerStyleRule& rule) -> std::unique_ptr<Control>
+				[&](const DesignerStyleRule& rule,
+					CuiRuntime::XamlTypePropertySchema& schema,
+					std::wstring* schemaError) -> bool
 				{
-					auto probe = DesignDocumentMaterializer::CreateRuntimeControl(
-						rule.HasType ? rule.Type : UIClass::UI_Base);
-					if (!probe || rule.ComponentType.Empty()) return probe;
-					const auto* component = FindVisibleComponent(rule.ComponentType);
-					std::wstring ignored;
-					if (!component || !DesignDocumentMaterializer::InstallComponentContract(
-						*probe, *component, _document, &ignored)) return nullptr;
-					return probe;
+					const auto* component = rule.ComponentType.Empty()
+						? nullptr : FindVisibleComponent(rule.ComponentType);
+					if (!rule.ComponentType.Empty() && !component)
+					{
+						if (schemaError) *schemaError =
+							L"样式 TargetType 组件不存在。";
+						return false;
+					}
+					return CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+						rule.HasType ? rule.Type : UIClass::UI_Base,
+						component, _document, schema, schemaError);
 				},
 				&error, _document.ResourceBasePath,
 				_document.Resources)) return Fail(error, error);
@@ -1357,6 +1450,8 @@ namespace
 				_document, eventIndex, &error)) return Fail(error, error);
 			return true;
 		}
+
+	public:
 
 		void FinalizeFailure(
 			const Element& root,
@@ -1393,11 +1488,14 @@ namespace
 		std::vector<DesignObjectResourceDictionary> _objectResourceScopes;
 		bool _parsingLocalResources = false;
 		std::unordered_set<int> _usedIds;
+		// Auto-generated IDs must not consume an explicit DesignId/x:Uid that
+		// appears later in document order.
+		std::unordered_set<int> _reservedExplicitIds;
 		std::unordered_set<std::wstring> _usedNames;
 		std::unordered_map<std::wstring, int> _nameCounters;
 		std::vector<std::wstring> _bindingPaths;
 		DesignComponentDefinition* _activeTemplateComponent = nullptr;
-		Control* _activeControlTemplateProbe = nullptr;
+		const CuiRuntime::XamlTypePropertySchema* _activeControlTemplateSchema = nullptr;
 		// True only while parsing the visual tree of a ControlTemplate itself.
 		// Nested DataTemplate/ComponentDefinition resources must not inherit the
 		// outer template's TemplateBinding/ItemsPresenter privileges.
@@ -1603,28 +1701,28 @@ namespace
 			DesignerStyleSheet result = _document.StyleSheet;
 			auto append = [&](const DesignerStyleSheet& source)
 			{
-				for (const auto& dictionary : source.MergedDictionaries)
-					if (std::none_of(result.MergedDictionaries.begin(),
-						result.MergedDictionaries.end(), [&](const auto& current)
-						{ return Equals(current, dictionary); }))
-						result.MergedDictionaries.push_back(dictionary);
-				for (const auto& resource : source.Resources)
-				{
-					result.Resources.erase(std::remove_if(
-						result.Resources.begin(), result.Resources.end(),
-						[&](const auto& current)
-						{ return Equals(current.Key, resource.Key); }),
-						result.Resources.end());
-					result.Resources.push_back(resource);
-				}
-				result.Rules.insert(
-					result.Rules.end(), source.Rules.begin(), source.Rules.end());
+				DesignerStyleSheetUtils::AppendLexicalScope(result, source);
 			};
 			for (const auto& scope : _resourceScopes) append(scope);
 			if (_resourceTarget && _resourceTarget != &_document.StyleSheet)
 				append(*_resourceTarget);
 			if (extra && extra != _resourceTarget) append(*extra);
 			return result;
+		}
+
+		bool BuildVisiblePropertySchema(
+			UIClass nativeType,
+			const DesignComponentDefinition* component,
+			CuiRuntime::XamlTypePropertySchema& schema,
+			std::wstring& error)
+		{
+			auto schemaDocument = _document;
+			schemaDocument.StyleSheet = VisibleStyleSheet();
+			std::wstring schemaError;
+			if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+				nativeType, component, schemaDocument, schema, &schemaError))
+				return Fail(L"XAML 类型 Schema 无法构造：" + schemaError, error);
+			return true;
 		}
 
 		bool Fail(std::wstring message, std::wstring& error)
@@ -1640,12 +1738,34 @@ namespace
 			return false;
 		}
 
+		void IndexSourceSymbols(const Element& root)
+		{
+			if (!root) return;
+			if (!_document.Sources.Root.Valid())
+				_document.Sources.Root = _sourceLocations.Span(root.get());
+			for (const auto& attribute : root->Attributes())
+			{
+				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+				const auto name = FromUtf8(attribute->LocalName());
+				if (!Equals(name, L"Key") && !Equals(name, L"Name")
+					&& !Equals(name, L"TargetType")
+					&& !Equals(name, L"DataType")
+					&& !Equals(name, L"Property")
+					&& !Equals(name, L"Event")
+					&& !Equals(name, L"Source")) continue;
+				_document.Sources.RecordSymbol(
+					Trim(FromUtf8(attribute->Value())),
+					_sourceLocations.Span(root.get(), attribute.get()));
+			}
+			for (const auto& child : ChildElements(root))
+				IndexSourceSymbols(child);
+		}
+
 		static bool IsRootPropertyElement(
 			const std::wstring& name,
 			const std::wstring& property)
 		{
 			return Equals(name, property)
-				|| Equals(name, L"Form." + property)
 				|| Equals(name, L"Window." + property);
 		}
 
@@ -1661,14 +1781,15 @@ namespace
 			return true;
 		}
 
-		bool ParseFormAttributes(const Element& root, std::wstring& error)
+		bool ParseWindowAttributes(const Element& root, std::wstring& error)
 		{
 			DiagnosticContext context(*this, root);
+			_document.Window.Source.Element = _sourceLocations.Span(root.get());
 			if (const auto name = Attribute(root, L"Name"))
-				_document.Form.Name = Trim(*name);
+				_document.Window.Name = Trim(*name);
 			if (const auto xName = Attribute(root, L"Name", L"x"))
-				_document.Form.Name = Trim(*xName);
-			if (!ValidateIdentifier(_document.Form.Name, L"窗体名称", error)) return false;
+				_document.Window.Name = Trim(*xName);
+			if (!ValidateIdentifier(_document.Window.Name, L"窗体名称", error)) return false;
 
 			if (const auto className = Attribute(root, L"Class", L"x"))
 				if (!DesignCodeBehindModel::TryNormalizeClassName(
@@ -1682,7 +1803,11 @@ namespace
 					return Fail(error, error);
 			}
 			if (!_document.CodeBehind.Validate(&error)) return Fail(error, error);
+			CuiRuntime::XamlTypePropertySchema schema;
+			if (!BuildVisiblePropertySchema(
+				UIClass::UI_Window, nullptr, schema, error)) return false;
 
+			std::unordered_set<std::wstring> assignedProperties;
 			for (const auto& attribute : root->Attributes())
 			{
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
@@ -1690,38 +1815,109 @@ namespace
 				const auto prefix = FromUtf8(attribute->Prefix());
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto value = FromUtf8(attribute->Value());
+				const auto sourceSpan = _sourceLocations.Span(
+					root.get(), attribute.get());
+				_document.Window.Source.RecordMember(name, sourceSpan);
 				if (Equals(name, L"Name")
 					|| (Equals(prefix, L"x") && Equals(name, L"Class"))
 					|| (Equals(prefix, L"d") && Equals(name, L"CodeBehind")))
 					continue;
 
-				if (const auto event = FindFormEvent(name))
+				if (const auto event = FindWindowEvent(name))
 				{
 					std::wstring handler;
 					if (!NormalizeHandler(value, handler, error))
 						return Fail(L"窗体事件 " + event->Name + L"：" + error, error);
-					if (_document.Form.EventHandlers.contains(event->Name))
+					if (_document.Window.Events.contains(event->Name))
 						return Fail(L"窗体事件重复：" + event->Name, error);
-					_document.Form.EventHandlers[event->Name] = std::move(handler);
+					_document.Window.Events[event->Name] = std::move(handler);
 					continue;
 				}
 
+				if (Equals(name, L"Style"))
+				{
+					std::wstring styleKey;
+					if (!TryParseStaticResource(value, styleKey))
+						return Fail(L"Window.Style 必须使用 {StaticResource key}。", error);
+					_document.Window.Properties.StyleResourceKey = std::move(styleKey);
+					continue;
+				}
 				auto propertyName = NormalizePropertyName(name, value, true);
 				auto propertyValue = value;
+				DesignerDataBinding binding;
+				std::wstring bindingError;
+				if (TryParseBinding(propertyValue, binding, bindingError))
+				{
+					if (!ResolveBindingAncestorType(root, binding, error)) return false;
+					const auto* metadata = schema.FindProperty(propertyName);
+					if (!metadata || !metadata->CanWrite())
+						return Fail(L"Window 绑定目标属性不存在或不可写：" + name,
+							error);
+					if (binding.StringFormat
+						&& metadata->ValueKind() != BindingValueKind::String)
+						return Fail(L"Binding StringFormat 只能用于字符串目标属性："
+							+ metadata->Name(), error);
+					if (!DesignerBindingUtils::ValidateTarget(
+						DesignerBindingUtils::ProjectTargetMetadata(*metadata),
+						binding, &bindingError))
+						return Fail(L"Window 属性 " + metadata->Name()
+							+ L" 绑定无效：" + bindingError, error);
+					if (!assignedProperties.insert(metadata->Name()).second)
+						return Fail(L"Window 属性重复：" + metadata->Name(), error);
+					_document.Window.Bindings[metadata->Name()] = std::move(binding);
+					continue;
+				}
+				if (!bindingError.empty())
+					return Fail(L"Window 属性 " + name + L"：" + bindingError, error);
 				if (Equals(name, L"Visibility"))
 				{
 					bool recognized = false;
 					propertyValue = NormalizeVisibility(value, recognized);
 					if (!recognized) return Fail(L"Visibility 必须为 Visible、Hidden 或 Collapsed。", error);
 				}
-				const auto* descriptor = DesignerFormPropertyCatalog::Find(propertyName);
-				if (!descriptor)
-					return Fail(L"窗体不包含可持久化属性：" + name, error);
-				DesignerStyleValue typed{ descriptor->ValueKind, propertyValue };
+				DesignerPropertyDescriptor descriptor;
+				if (!DesignerPropertyCatalog::TryGetStyleProperty(
+					schema.Properties, propertyName, descriptor)
+					|| !descriptor.Metadata)
+					return Fail(L"Window 不包含可持久化属性：" + name, error);
+				if (!assignedProperties.insert(descriptor.Name).second)
+					return Fail(L"Window 属性重复：" + descriptor.Name, error);
+				std::wstring resourceKey;
+				std::wstring dynamicResourceKey;
+				const DesignerStyleValue* resourceValue = nullptr;
+				if (TryParseStaticResource(propertyValue, resourceKey))
+				{
+					const auto* resource = FindVisibleResource(resourceKey);
+					if (!resource) return Fail(L"Window 属性 " + name
+						+ L" 引用了不存在的资源：" + resourceKey, error);
+					resourceValue = &resource->Value;
+				}
+				else if (TryParseDynamicResource(
+					propertyValue, dynamicResourceKey))
+				{
+					if (const auto* resource = FindVisibleResource(dynamicResourceKey))
+						resourceValue = &resource->Value;
+				}
+				if (!dynamicResourceKey.empty() && !resourceValue)
+				{
+					DesignerStyleValue effective;
+					if (!DesignerPropertyCatalog::CaptureDefaultValue(
+						*descriptor.Metadata, effective, &error)) return false;
+					StoreMetadata(_document.Window, descriptor.Name,
+						effective, {}, dynamicResourceKey);
+					continue;
+				}
+				DesignerStyleValue typed = resourceValue ? *resourceValue
+					: DesignerStyleValue{ descriptor.ValueKind,
+						NormalizePropertyText(name, propertyValue, descriptor) };
+				DesignerStyleValue effective;
 				std::wstring applyError;
-				if (!DesignerFormPropertyCatalog::ApplyValue(
-					_document.Form, descriptor->Name, typed, nullptr, &applyError))
+				if (!DesignerPropertyCatalog::NormalizeStyleValue(
+					*descriptor.Metadata, typed, effective, &applyError,
+					_options.ResourceBasePath, _document.Resources))
 					return Fail(L"窗体属性 " + name + L"：" + applyError, error);
+				StoreMetadata(_document.Window, descriptor.Name, effective,
+					resourceKey, dynamicResourceKey);
 			}
 			return true;
 		}
@@ -1800,7 +1996,7 @@ namespace
 					return Fail(L"控件级 ResourceDictionary 当前只接受值、画刷、"
 						L"图形、变换、图像、Style、ControlTemplate、DataTemplate、HierarchicalDataTemplate、ItemsPanelTemplate、"
 						L"GroupStyle 和 ComponentDefinition；"
-						L"其他结构型资源仍应放在 Form.Resources。",
+						L"其他结构型资源仍应放在 Window.Resources。",
 						error);
 				if (Equals(name, L"ResourceDictionary.MergedDictionaries")
 					|| Equals(name, L"ResourceDictionary")
@@ -1923,10 +2119,15 @@ namespace
 
 		void AddStyleRule(DesignerStyleRule rule)
 		{
-			// CUI styles may intentionally share an Id while targeting different
-			// states. Source order already gives local dictionary rules precedence.
-			(_resourceTarget ? *_resourceTarget : _document.StyleSheet)
-				.Rules.push_back(std::move(rule));
+			auto& rules = (_resourceTarget
+				? *_resourceTarget : _document.StyleSheet).Rules;
+			rules.erase(std::remove_if(rules.begin(), rules.end(),
+				[&](const auto& current)
+				{
+					return DesignerStyleSheetUtils::HasSameStyleResourceIdentity(
+						current, rule);
+				}), rules.end());
+			rules.push_back(std::move(rule));
 		}
 
 		bool LoadMergedDictionary(
@@ -1941,7 +2142,7 @@ namespace
 				source, _currentResourceBasePath, resource, &error))
 				return Fail(error.empty()
 					? L"无法加载合并资源字典：" + source : error, error);
-			const auto identity = Lower(resource.Identity);
+			const auto identity = resource.Identity;
 			if (std::find(_resourceDictionaryStack.begin(),
 				_resourceDictionaryStack.end(), identity)
 				!= _resourceDictionaryStack.end())
@@ -2174,19 +2375,19 @@ namespace
 
 		bool ParseComponentPropertyEditor(
 			const std::wstring& value,
-			ControlPropertyEditorKind& editor,
+			DependencyPropertyEditorKind& editor,
 			std::wstring& error)
 		{
 			for (const auto& [name, kind] : {
-				std::pair{ L"Auto", ControlPropertyEditorKind::Auto },
-				std::pair{ L"Text", ControlPropertyEditorKind::Text },
-				std::pair{ L"Boolean", ControlPropertyEditorKind::Boolean },
-				std::pair{ L"Number", ControlPropertyEditorKind::Number },
-				std::pair{ L"Choice", ControlPropertyEditorKind::Choice },
-				std::pair{ L"Color", ControlPropertyEditorKind::Color },
-				std::pair{ L"Thickness", ControlPropertyEditorKind::Thickness },
-				std::pair{ L"Size", ControlPropertyEditorKind::Size },
-				std::pair{ L"Length", ControlPropertyEditorKind::Length } })
+				std::pair{ L"Auto", DependencyPropertyEditorKind::Auto },
+				std::pair{ L"Text", DependencyPropertyEditorKind::Text },
+				std::pair{ L"Boolean", DependencyPropertyEditorKind::Boolean },
+				std::pair{ L"Number", DependencyPropertyEditorKind::Number },
+				std::pair{ L"Choice", DependencyPropertyEditorKind::Choice },
+				std::pair{ L"Color", DependencyPropertyEditorKind::Color },
+				std::pair{ L"Thickness", DependencyPropertyEditorKind::Thickness },
+				std::pair{ L"Size", DependencyPropertyEditorKind::Size },
+				std::pair{ L"Length", DependencyPropertyEditorKind::Length } })
 			{
 				if (Equals(value, name))
 				{
@@ -2533,23 +2734,16 @@ namespace
 			}
 			else if (!TryParseType(StripMarkupType(typeToken), definition.TargetType)
 				|| !IsControlTemplateHostType(definition.TargetType))
-				return Fail(L"ControlTemplate TargetType 必须是 ContentControl、"
-					L"Button、GroupBox、Expander、ItemsControl、ListBox "
+				return Fail(L"ControlTemplate TargetType 必须是可模板化 Control "
 					L"或已声明的组件 QName："
 					+ targetType, error);
 			const auto roots = ChildElements(element);
 			if (roots.size() != 1)
 				return Fail(L"ControlTemplate 必须且只能包含一个视觉根。", error);
 
-			auto targetProbe = DesignDocumentMaterializer::CreateRuntimeControl(
-				definition.TargetType);
-			if (!targetProbe)
-				return Fail(L"ControlTemplate TargetType 尚无运行时工厂："
-					+ targetType, error);
-			if (targetComponent
-				&& !DefineComponentProbeProperties(
-					*targetProbe, *targetComponent, error)) return false;
-			targetProbe->EnsureBindingPropertiesRegistered();
+			CuiRuntime::XamlTypePropertySchema targetSchema;
+			if (!BuildVisiblePropertySchema(
+				definition.TargetType, targetComponent, targetSchema, error)) return false;
 
 			DesignComponentDefinition templateContext;
 			if (targetComponent)
@@ -2578,7 +2772,7 @@ namespace
 			_usedNames.clear();
 			_nameCounters.clear();
 			auto* previousTemplate = _activeTemplateComponent;
-			auto* previousControlTemplateProbe = _activeControlTemplateProbe;
+			auto* previousControlTemplateSchema = _activeControlTemplateSchema;
 			const bool previousControlTemplateVisual =
 				_parsingControlTemplateVisual;
 			const bool previousComponentTemplateVisual =
@@ -2588,10 +2782,12 @@ namespace
 			_pendingVisualStateGroups.reset();
 			_pendingEventTriggers.reset();
 			_activeTemplateComponent = &templateContext;
-			_activeControlTemplateProbe = targetProbe.get();
+			_activeControlTemplateSchema = &targetSchema;
 			_parsingControlTemplateVisual = true;
 			_parsingComponentTemplateVisual = false;
 			bool parsed = ParseControl(roots.front(), Parent{}, error);
+			if (parsed) parsed = ValidateRelativePanelConstraints(
+				_document.Nodes, L"ControlTemplate " + definition.DisplayName(), error);
 			if (parsed && (_pendingVisualStateGroups || _pendingEventTriggers))
 				templateContext.Template = _document.Nodes;
 			if (parsed && _pendingVisualStateGroups)
@@ -2601,7 +2797,7 @@ namespace
 				parsed = ParseEventTriggers(
 					_pendingEventTriggers, templateContext, error);
 			_activeTemplateComponent = previousTemplate;
-			_activeControlTemplateProbe = previousControlTemplateProbe;
+			_activeControlTemplateSchema = previousControlTemplateSchema;
 			_parsingControlTemplateVisual = previousControlTemplateVisual;
 			_parsingComponentTemplateVisual = previousComponentTemplateVisual;
 			_pendingVisualStateGroups = previousVisualStateGroups;
@@ -2689,7 +2885,9 @@ namespace
 			_bindingPaths.clear();
 			_parsingControlTemplateVisual = false;
 			_parsingComponentTemplateVisual = false;
-			const bool parsed = ParseControl(roots.front(), Parent{}, error);
+			bool parsed = ParseControl(roots.front(), Parent{}, error);
+			if (parsed) parsed = ValidateRelativePanelConstraints(
+				_document.Nodes, L"DataTemplate " + definition.DisplayName(), error);
 			const auto templateBindingPaths = std::move(_bindingPaths);
 			if (parsed) definition.Template = std::move(_document.Nodes);
 			_document.Nodes = std::move(pageNodes);
@@ -2735,7 +2933,7 @@ namespace
 			{
 				definition.Value.Kind = ItemsPanelKind::Stack;
 				if (!ValidateAttributes(panel,
-					{ L"Orientation", L"Spacing" }, error)) return false;
+					{ L"Orientation" }, error)) return false;
 			}
 			else if (Equals(panelName, L"WrapPanel"))
 			{
@@ -2748,7 +2946,7 @@ namespace
 			{
 				definition.Value.Kind = ItemsPanelKind::VirtualizingStack;
 				if (!ValidateAttributes(panel,
-					{ L"Orientation", L"Spacing", L"ItemHeight", L"CacheLength" },
+					{ L"Orientation", L"ItemHeight", L"CacheLength" },
 					error)) return false;
 			}
 			else
@@ -2776,8 +2974,7 @@ namespace
 				output = static_cast<float>(parsed);
 				return true;
 			};
-			if (!parseNonNegative(L"Spacing", definition.Value.Spacing)
-				|| !parseNonNegative(L"ItemWidth", definition.Value.ItemWidth)
+			if (!parseNonNegative(L"ItemWidth", definition.Value.ItemWidth)
 				|| !parseNonNegative(L"ItemHeight", definition.Value.ItemHeight)
 				|| !parseNonNegative(L"CacheLength", definition.Value.CacheLength))
 				return false;
@@ -2803,8 +3000,7 @@ namespace
 		{
 			DiagnosticContext context(*this, element);
 			if (!ValidateAttributes(element,
-				{ L"Key", L"HeaderTemplate", L"HeaderIndent", L"HeaderSpacing",
-					L"HeaderHeight" },
+				{ L"Key", L"HeaderTemplate" },
 				error)) return false;
 			DesignGroupStyle definition;
 			definition.Key = Trim(Attribute(element, L"Key", L"x").value_or(
@@ -2819,24 +3015,6 @@ namespace
 					definition.HeaderTemplate = dataTemplate->Key;
 				else return Fail(L"GroupStyle.HeaderTemplate 引用了未声明的 DataTemplate："
 					+ definition.HeaderTemplate, error);
-			auto parseNonNegative = [&](const wchar_t* name, float& output)
-			{
-				const auto text = Attribute(element, name);
-				if (!text) return true;
-				double parsed = 0.0;
-				if (!TryParseDouble(*text, parsed) || parsed < 0.0
-					|| parsed > static_cast<double>((std::numeric_limits<float>::max)()))
-					return Fail(L"GroupStyle " + std::wstring(name)
-						+ L" 必须为有限非负数。", error);
-				output = static_cast<float>(parsed);
-				return true;
-			};
-			if (!parseNonNegative(L"HeaderIndent", definition.HeaderIndent)
-				|| !parseNonNegative(L"HeaderSpacing", definition.HeaderSpacing)
-				|| !parseNonNegative(L"HeaderHeight", definition.HeaderHeight))
-				return false;
-			if (definition.HeaderHeight <= 0.0f)
-				return Fail(L"GroupStyle HeaderHeight 必须为有限正数。", error);
 			if (!ChildElements(element).empty())
 				return Fail(L"GroupStyle 当前只支持属性声明。", error);
 			definition.SourceDictionary = _currentDictionaryOrigin;
@@ -2884,8 +3062,8 @@ namespace
 			const auto baseType = Trim(Attribute(
 				item, L"BaseType").value_or(L"Panel"));
 			if (!TryParseType(baseType, definition.BaseType)
-				|| definition.BaseType == UIClass::UI_TabPage
-				|| definition.BaseType == UIClass::UI_SelectorItem
+				|| definition.BaseType == UIClass::UI_TabItem
+				|| definition.BaseType == UIClass::UI_ListBoxItem
 				|| definition.BaseType == UIClass::UI_ComboBoxItem
 				|| definition.BaseType == UIClass::UI_TreeViewItem)
 				return Fail(L"组件 " + definition.Type.XamlName
@@ -2977,10 +3155,6 @@ namespace
 					return Fail(validationError, error);
 			}
 
-			auto baseProbe = DesignDocumentMaterializer::CreateRuntimeControl(
-				definition.BaseType);
-			if (!baseProbe)
-				return Fail(L"组件 BaseType 尚无运行时工厂：" + baseType, error);
 			if (contentPropertiesElement)
 			{
 				if (!ValidateAttributes(contentPropertiesElement, {}, error)) return false;
@@ -2998,7 +3172,8 @@ namespace
 					DesignerComponentContentPropertyDescriptor content;
 					content.Name = Trim(Attribute(contentElement, L"Name").value_or(L""));
 					if (!ValidateIdentifier(content.Name, L"组件内容属性名称", error)) return false;
-					if (baseProbe->FindPropertyMetadata(content.Name))
+					if (CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+						definition.BaseType, content.Name))
 						return Fail(L"组件内容属性不能覆盖 BaseType 属性：" + content.Name, error);
 					if (std::any_of(definition.Events.begin(), definition.Events.end(),
 						[&](const auto& event) { return Equals(event.Name, content.Name); }))
@@ -3052,7 +3227,8 @@ namespace
 						propertyElement, L"Name").value_or(L""));
 					if (!ValidateIdentifier(
 						property.Name, L"组件属性名称", error)) return false;
-					if (baseProbe->FindPropertyMetadata(property.Name))
+					if (CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+						definition.BaseType, property.Name))
 						return Fail(L"组件属性不能覆盖 BaseType 属性：" + property.Name, error);
 					if (std::any_of(definition.ContentProperties.begin(),
 						definition.ContentProperties.end(), [&](const auto& content)
@@ -3203,10 +3379,10 @@ namespace
 						if (!ParseComponentPropertyEditor(*value, property.Editor, error)) return false;
 					if (isEnum)
 					{
-						if (property.Editor != ControlPropertyEditorKind::Auto
-							&& property.Editor != ControlPropertyEditorKind::Choice)
+						if (property.Editor != DependencyPropertyEditorKind::Auto
+							&& property.Editor != DependencyPropertyEditorKind::Choice)
 							return Fail(L"Enum 组件属性只能使用 Auto 或 Choice 编辑器。", error);
-						property.Editor = ControlPropertyEditorKind::Choice;
+						property.Editor = DependencyPropertyEditorKind::Choice;
 					}
 					for (const auto& [name, target] : {
 						std::pair{ L"Minimum", &property.Minimum },
@@ -3226,13 +3402,13 @@ namespace
 						}
 					}
 					for (const auto& [name, flag] : {
-						std::pair{ L"AffectsMeasure", ControlPropertyFlags::AffectsMeasure },
-						std::pair{ L"AffectsArrange", ControlPropertyFlags::AffectsArrange },
-						std::pair{ L"AffectsRender", ControlPropertyFlags::AffectsRender },
-						std::pair{ L"AffectsParentMeasure", ControlPropertyFlags::AffectsParentMeasure },
-						std::pair{ L"AffectsParentArrange", ControlPropertyFlags::AffectsParentArrange },
-						std::pair{ L"Inherits", ControlPropertyFlags::Inherits },
-						std::pair{ L"BindsTwoWayByDefault", ControlPropertyFlags::BindsTwoWayByDefault } })
+						std::pair{ L"AffectsMeasure", DependencyPropertyFlags::AffectsMeasure },
+						std::pair{ L"AffectsArrange", DependencyPropertyFlags::AffectsArrange },
+						std::pair{ L"AffectsRender", DependencyPropertyFlags::AffectsRender },
+						std::pair{ L"AffectsParentMeasure", DependencyPropertyFlags::AffectsParentMeasure },
+						std::pair{ L"AffectsParentArrange", DependencyPropertyFlags::AffectsParentArrange },
+						std::pair{ L"Inherits", DependencyPropertyFlags::Inherits },
+						std::pair{ L"BindsTwoWayByDefault", DependencyPropertyFlags::BindsTwoWayByDefault } })
 					{
 						if (const auto value = Attribute(propertyElement, name))
 						{
@@ -3257,8 +3433,8 @@ namespace
 								== DataSourceUpdateMode::Default)
 							return Fail(L"组件属性 DefaultUpdateSourceTrigger 必须为 PropertyChanged、LostFocus 或 Explicit。", error);
 					}
-					if (property.IsReadOnly && HasControlPropertyFlag(
-						property.Flags, ControlPropertyFlags::BindsTwoWayByDefault))
+					if (property.IsReadOnly && HasDependencyPropertyFlag(
+						property.Flags, DependencyPropertyFlags::BindsTwoWayByDefault))
 						return Fail(L"只读组件属性不能声明 BindsTwoWayByDefault。", error);
 					if (property.IsReadOnly && property.DefaultUpdateMode
 						!= DataSourceUpdateMode::OnPropertyChanged)
@@ -3297,6 +3473,8 @@ namespace
 				_parsingControlTemplateVisual = false;
 				_parsingComponentTemplateVisual = true;
 				bool parsed = ParseControl(roots.front(), Parent{}, error);
+				if (parsed) parsed = ValidateRelativePanelConstraints(
+					_document.Nodes, L"组件 " + definition.Type.XamlName, error);
 				if (parsed && (_pendingVisualStateGroups || _pendingEventTriggers))
 					definition.Template = _document.Nodes;
 				if (parsed && _pendingVisualStateGroups)
@@ -3350,99 +3528,9 @@ namespace
 			return true;
 		}
 
-		bool DefineComponentProbeProperties(
-			Control& probe,
-			const DesignComponentDefinition& component,
-			std::wstring& error)
-		{
-			for (const auto& property : component.Properties)
-			{
-				const DesignerStyleValue* source = &property.DefaultValue;
-				if (!property.DefaultResourceKey.empty())
-				{
-					const auto* resource = FindVisibleResource(
-						property.DefaultResourceKey);
-					if (!resource)
-						return Fail(L"组件属性引用了不存在的默认资源："
-							+ property.DefaultResourceKey, error);
-					source = &resource->Value;
-				}
-				BindingValue defaultValue;
-				std::wstring conversionError;
-				if (!DesignerStyleSheetUtils::TryConvertValue(
-					*source, defaultValue, &conversionError,
-					_currentResourceBasePath, _document.Resources))
-					return Fail(L"组件属性 " + property.Name
-						+ L" 的默认值无效：" + conversionError, error);
-				DynamicControlPropertyDefinition definition;
-				definition.Name = property.Name;
-				switch (property.DefaultValue.Kind)
-				{
-				case DesignerStyleValueKind::Bool:
-					definition.ValueKind = BindingValueKind::Bool; break;
-				case DesignerStyleValueKind::Int:
-					definition.ValueKind = BindingValueKind::Int; break;
-				case DesignerStyleValueKind::Int64:
-					definition.ValueKind = BindingValueKind::Int64; break;
-				case DesignerStyleValueKind::Float:
-					definition.ValueKind = BindingValueKind::Float; break;
-				case DesignerStyleValueKind::Double:
-					definition.ValueKind = BindingValueKind::Double; break;
-				case DesignerStyleValueKind::String:
-					definition.ValueKind = BindingValueKind::String; break;
-				case DesignerStyleValueKind::Color:
-				case DesignerStyleValueKind::Thickness:
-				case DesignerStyleValueKind::Point:
-				case DesignerStyleValueKind::Vector:
-				case DesignerStyleValueKind::Rect:
-				case DesignerStyleValueKind::Size:
-				case DesignerStyleValueKind::Matrix:
-				case DesignerStyleValueKind::Length:
-				case DesignerStyleValueKind::Brush:
-				case DesignerStyleValueKind::Geometry:
-				case DesignerStyleValueKind::Transform:
-					definition.ValueKind = BindingValueKind::Object; break;
-				default:
-					return Fail(L"组件属性类型尚未进入动态属性契约：" + property.Name, error);
-				}
-				definition.DefaultValue = std::move(defaultValue);
-				definition.Flags = property.Flags;
-				definition.DefaultUpdateMode = property.DefaultUpdateMode;
-				definition.IsReadOnly = property.IsReadOnly;
-				if (HasControlPropertyFlag(
-					property.Flags, ControlPropertyFlags::Inherits))
-					definition.InheritanceKey = component.Type.RegistryKey()
-						+ L"|" + property.Name;
-				definition.Design.DisplayName = property.DisplayName;
-				definition.Design.Category = property.Category;
-				definition.Design.CategoryOrder = property.CategoryOrder;
-				definition.Design.Order = property.Order;
-				definition.Design.Editor = property.Editor;
-				for (const auto& choice : property.Choices)
-				{
-					BindingValue value(std::wstring(choice.Value));
-					definition.AllowedValues.push_back(value);
-					definition.Design.Choices.push_back({
-						choice.DisplayName.empty() ? choice.Value : choice.DisplayName,
-						std::move(value)
-					});
-				}
-				definition.Design.Minimum = property.Minimum;
-				definition.Design.Maximum = property.Maximum;
-				definition.Design.Step = property.Step;
-				definition.Design.Persistence = ControlPropertyPersistence::Metadata;
-				std::wstring definitionError;
-				if (!probe.DefineDynamicProperty(
-					std::move(definition), &definitionError))
-					return Fail(L"组件属性 " + property.Name
-						+ L" 无法安装：" + definitionError, error);
-			}
-			return true;
-		}
-
 		bool ParseStyleSetter(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			DesignerStyleSetter& setter,
 			std::wstring& error,
 			bool allowTargetName = false,
@@ -3481,12 +3569,13 @@ namespace
 				setter.UsesDynamicResource = false;
 				return true;
 			}
-			const auto properties = DesignerPropertyCatalog::GetStyleProperties(probe);
+			const auto properties = DesignerPropertyCatalog::GetStyleProperties(
+				schema.Properties);
 			const auto* descriptor = DesignerPropertyCatalog::Find(
 				properties, propertyName);
 			if (!descriptor)
 			{
-				if (const auto* metadata = probe.FindPropertyMetadata(propertyName);
+				if (const auto* metadata = schema.FindProperty(propertyName);
 					metadata && metadata->IsReadOnly())
 					return Fail(L"Style Setter 不能写入只读属性：" + rawProperty, error);
 				return Fail(L"Style 目标类型不包含属性：" + rawProperty, error);
@@ -3551,45 +3640,46 @@ namespace
 					*kindName, setter.Literal.Kind))
 					return Fail(L"Setter Kind 无效：" + *kindName, error);
 			}
-			if (!objectValue)
+			if (!objectValue || setterChildren.empty())
 				setter.Literal.Text = NormalizePropertyText(
 					rawProperty, rawValue, *descriptor);
 			std::wstring validationError;
-			if (!DesignerPropertyCatalog::ValidateStyleValue(
-				probe, setter.PropertyName, setter.Literal, &validationError,
+			DesignerStyleValue canonical;
+			if (!descriptor->Metadata
+				|| !DesignerPropertyCatalog::NormalizeStyleValue(
+					*descriptor->Metadata, setter.Literal, canonical, &validationError,
 				_currentResourceBasePath, _document.Resources))
 				return Fail(L"Setter " + rawProperty + L"：" + validationError, error);
+			setter.Literal = std::move(canonical);
 			return true;
 		}
 
-		std::unique_ptr<Control> CreateVisualStateTargetProbe(
+		bool BuildVisualStateTargetSchema(
 			const DesignComponentDefinition& component,
-			const std::wstring& targetName)
+			const std::wstring& targetName,
+			CuiRuntime::XamlTypePropertySchema& schema,
+			std::wstring& error)
 		{
 			if (targetName.empty())
-			{
-				auto probe = DesignDocumentMaterializer::CreateRuntimeControl(
-					component.BaseType);
-				std::wstring ignored;
-				if (!probe || !DefineComponentProbeProperties(
-					*probe, component, ignored)) return nullptr;
-				return probe;
-			}
+				return BuildVisiblePropertySchema(
+					component.BaseType,
+					component.Type.Empty() ? nullptr : &component,
+					schema, error);
 			const auto node = std::find_if(
 				component.Template.begin(), component.Template.end(),
 				[&](const auto& candidate)
 				{ return Equals(candidate.Name, targetName); });
-			if (node == component.Template.end()) return nullptr;
-			auto probe = DesignDocumentMaterializer::CreateRuntimeControl(node->Type);
-			if (!probe) return nullptr;
+			if (node == component.Template.end())
+				return Fail(L"Storyboard 找不到模板部件：" + targetName, error);
+			const DesignComponentDefinition* nested = nullptr;
 			if (!node->ComponentType.Empty())
 			{
-				const auto* nested = FindVisibleComponent(node->ComponentType);
-				std::wstring ignored;
-				if (!nested || !DefineComponentProbeProperties(
-					*probe, *nested, ignored)) return nullptr;
+				nested = FindVisibleComponent(node->ComponentType);
+				if (!nested)
+					return Fail(L"Storyboard 目标组件 Schema 不存在："
+						+ node->ComponentType.XamlName, error);
 			}
-			return probe;
+			return BuildVisiblePropertySchema(node->Type, nested, schema, error);
 		}
 
 		bool ParseTimelineBehavior(
@@ -3772,23 +3862,22 @@ namespace
 				L"Storyboard.TargetProperty").value_or(L""));
 			if (rawProperty.empty())
 				return Fail(L"动画缺少 Storyboard.TargetProperty。", error);
-			auto targetProbe = CreateVisualStateTargetProbe(
-				component, animation.TargetName);
-			if (!targetProbe)
-				return Fail(L"Storyboard 找不到模板部件："
-					+ animation.TargetName, error);
+			CuiRuntime::XamlTypePropertySchema targetSchema;
+			if (!BuildVisualStateTargetSchema(
+				component, animation.TargetName, targetSchema, error)) return false;
 			const DesignerPropertyDescriptor* descriptor = nullptr;
-			const BindingPropertyMetadata* targetMetadata = nullptr;
+			const DependencyPropertyMetadata* targetMetadata = nullptr;
 			std::vector<DesignerPropertyDescriptor> targetProperties;
 			DesignerStyleValueKind endpointKind = DesignerStyleValueKind::Float;
 			objectPathKind = StoryboardObjectPathKind::None;
-			if (rawProperty.front() != L'(')
+			std::wstring directPropertyName;
+			if (TryNormalizeDirectStoryboardProperty(
+				rawProperty, targetSchema, directPropertyName))
 			{
-				const auto propertyName = NormalizePropertyName(rawProperty, L"");
 				targetProperties = DesignerPropertyCatalog::GetStyleProperties(
-					*targetProbe);
+					targetSchema.Properties);
 				descriptor = DesignerPropertyCatalog::Find(
-					targetProperties, propertyName);
+					targetProperties, directPropertyName);
 				if (!descriptor)
 					return Fail(L"Storyboard 目标属性不存在或不可写："
 						+ rawProperty, error);
@@ -3817,7 +3906,7 @@ namespace
 						+ descriptor->Name, error);
 				animation.PropertyName = descriptor->Name;
 				endpointKind = descriptor->ValueKind;
-				targetMetadata = targetProbe->FindPropertyMetadata(descriptor->Name);
+				targetMetadata = targetSchema.FindProperty(descriptor->Name);
 			}
 			else
 			{
@@ -3858,7 +3947,6 @@ namespace
 				}
 				BindingValue parsed;
 				BindingValue converted;
-				BindingValue coerced;
 				std::wstring validationError;
 				if (!DesignerStyleSheetUtils::TryConvertValue(
 					*value, parsed, &validationError,
@@ -3873,11 +3961,9 @@ namespace
 							+ L" 与对象路径末端类型或取值范围不兼容。", error);
 				}
 				else if (!targetMetadata || !targetMetadata->CanWrite()
-					|| !targetMetadata->TryConvert(parsed, converted)
-					|| (!isDelta && !targetMetadata->TryCoerce(
-						*targetProbe, converted, coerced)))
+					|| !targetMetadata->TryConvert(parsed, converted))
 					return Fail(L"动画 " + label
-						+ L" 无法通过目标属性元数据转换或 Coerce。", error);
+						+ L" 无法通过目标属性 Schema 转换。", error);
 				return true;
 			};
 			const auto animationChildren = ChildElements(animationElement);
@@ -4049,16 +4135,13 @@ namespace
 						}
 						BindingValue parsed;
 						BindingValue converted;
-						BindingValue coerced;
 						std::wstring validationError;
 						if (!DesignerStyleSheetUtils::TryConvertValue(
 							keyFrame.Value, parsed, &validationError,
 							_currentResourceBasePath, _document.Resources)
 							|| !targetMetadata || !targetMetadata->CanWrite()
-							|| !targetMetadata->TryConvert(parsed, converted)
-							|| !targetMetadata->TryCoerce(
-								*targetProbe, converted, coerced))
-							return Fail(L"动画 KeyFrame 无法通过目标属性元数据转换或 Coerce。",
+							|| !targetMetadata->TryConvert(parsed, converted))
+							return Fail(L"动画 KeyFrame 无法通过目标属性 Schema 转换。",
 								error);
 					}
 					else return Fail(L"关键帧必须声明 Value。", error);
@@ -4118,39 +4201,9 @@ namespace
 				|| !Trim(FromUtf8(element->InnerText())).empty())
 				return Fail(L"VisualStateManager.VisualStateGroups 不允许属性或文本内容。",
 					error);
-			auto hostProbe = DesignDocumentMaterializer::CreateRuntimeControl(
-				component.BaseType);
-			if (!hostProbe || !DefineComponentProbeProperties(
-				*hostProbe, component, error)) return false;
-
-			auto createTargetProbe = [&](const std::wstring& targetName)
-				-> std::unique_ptr<Control>
-			{
-				if (targetName.empty())
-				{
-					auto probe = DesignDocumentMaterializer::CreateRuntimeControl(
-						component.BaseType);
-					std::wstring ignored;
-					if (!probe || !DefineComponentProbeProperties(
-						*probe, component, ignored)) return nullptr;
-					return probe;
-				}
-				const auto node = std::find_if(
-					component.Template.begin(), component.Template.end(),
-					[&](const auto& candidate)
-					{ return Equals(candidate.Name, targetName); });
-				if (node == component.Template.end()) return nullptr;
-				auto probe = DesignDocumentMaterializer::CreateRuntimeControl(node->Type);
-				if (!probe) return nullptr;
-				if (!node->ComponentType.Empty())
-				{
-					const auto* nested = FindVisibleComponent(node->ComponentType);
-					std::wstring ignored;
-					if (!nested || !DefineComponentProbeProperties(
-						*probe, *nested, ignored)) return nullptr;
-				}
-				return probe;
-			};
+			CuiRuntime::XamlTypePropertySchema hostSchema;
+			if (!BuildVisiblePropertySchema(
+				component.BaseType, &component, hostSchema, error)) return false;
 
 			std::vector<std::pair<std::wstring, std::wstring>> controlledProperties;
 			for (const auto& groupElement : ChildElements(element))
@@ -4235,7 +4288,7 @@ namespace
 									const auto propertyName = NormalizePropertyName(
 										rawProperty, *rawValue);
 									const auto properties = DesignerPropertyCatalog::GetConditionProperties(
-										*hostProbe);
+										hostSchema.Properties);
 									const auto* descriptor = DesignerPropertyCatalog::Find(
 										properties, propertyName);
 									if (!descriptor)
@@ -4249,8 +4302,9 @@ namespace
 									condition.Value = { descriptor->ValueKind,
 										NormalizePropertyText(rawProperty, *rawValue, *descriptor) };
 									std::wstring validationError;
-									if (!DesignerPropertyCatalog::ValidateConditionValue(
-										*hostProbe, descriptor->Name, condition.Value,
+									if (!descriptor->Metadata
+										|| !DesignerPropertyCatalog::ValidateConditionValue(
+											*descriptor->Metadata, condition.Value,
 										&validationError, _currentResourceBasePath,
 										_document.Resources))
 										return Fail(L"StateTrigger " + rawProperty + L"："
@@ -4360,8 +4414,8 @@ namespace
 									if (duplicate)
 										return Fail(L"同一 VisualState 的 Setter/Storyboard 目标重复："
 											+ animation.TargetName + L"." + animation.PropertyName, error);
-									const auto controlledKey = Lower(animation.TargetName) + L"|"
-										+ Lower(rootProperty);
+									const auto controlledKey = animation.TargetName + L"|"
+										+ rootProperty;
 									const auto controlled = std::find_if(
 										controlledProperties.begin(), controlledProperties.end(),
 										[&](const auto& existing)
@@ -4423,23 +4477,24 @@ namespace
 									L"Storyboard.TargetProperty").value_or(L""));
 								if (rawProperty.empty())
 									return Fail(L"动画缺少 Storyboard.TargetProperty。", error);
-								auto targetProbe = createTargetProbe(animation.TargetName);
-								if (!targetProbe)
-									return Fail(L"Storyboard 找不到模板部件："
-										+ animation.TargetName, error);
+								CuiRuntime::XamlTypePropertySchema targetSchema;
+								if (!BuildVisualStateTargetSchema(
+									component, animation.TargetName,
+									targetSchema, error)) return false;
 								const DesignerPropertyDescriptor* descriptor = nullptr;
-								const BindingPropertyMetadata* targetMetadata = nullptr;
+								const DependencyPropertyMetadata* targetMetadata = nullptr;
 								std::vector<DesignerPropertyDescriptor> targetProperties;
 								DesignerStyleValueKind endpointKind =
 									DesignerStyleValueKind::Float;
 								bool transformPath = false;
-								if (rawProperty.front() != L'(')
+								std::wstring directPropertyName;
+								if (TryNormalizeDirectStoryboardProperty(
+									rawProperty, targetSchema, directPropertyName))
 								{
-									const auto propertyName = NormalizePropertyName(rawProperty, L"");
 									targetProperties = DesignerPropertyCatalog::GetStyleProperties(
-										*targetProbe);
+										targetSchema.Properties);
 									descriptor = DesignerPropertyCatalog::Find(
-										targetProperties, propertyName);
+										targetProperties, directPropertyName);
 									if (!descriptor)
 										return Fail(L"Storyboard 目标属性不存在或不可写："
 											+ rawProperty, error);
@@ -4455,7 +4510,7 @@ namespace
 											+ descriptor->Name, error);
 									animation.PropertyName = descriptor->Name;
 									endpointKind = descriptor->ValueKind;
-									targetMetadata = targetProbe->FindPropertyMetadata(
+									targetMetadata = targetSchema.FindProperty(
 										descriptor->Name);
 								}
 								else
@@ -4497,7 +4552,6 @@ namespace
 									// Double resource is a valid endpoint for a Float property.
 									BindingValue parsed;
 									BindingValue converted;
-									BindingValue coerced;
 									std::wstring validationError;
 									if (!DesignerStyleSheetUtils::TryConvertValue(
 											*value, parsed, &validationError,
@@ -4514,12 +4568,10 @@ namespace
 												error);
 									}
 									else if (!targetMetadata || !targetMetadata->CanWrite()
-										|| !targetMetadata->TryConvert(parsed, converted)
-										|| (!isDelta && !targetMetadata->TryCoerce(
-											*targetProbe, converted, coerced)))
+										|| !targetMetadata->TryConvert(parsed, converted))
 										return Fail(L"动画 " + label + L" 无效："
 											+ (validationError.empty()
-												? L"无法通过目标属性元数据转换或 Coerce。"
+												? L"无法通过目标属性 Schema 转换。"
 												: validationError), error);
 									return true;
 								};
@@ -4707,8 +4759,8 @@ namespace
 								if (duplicate)
 									return Fail(L"同一 VisualState 的 Setter/Storyboard 目标重复："
 										+ animation.TargetName + L"." + animation.PropertyName, error);
-								const auto controlledKey = Lower(animation.TargetName) + L"|"
-									+ Lower(transformPath ? L"RenderTransform"
+								const auto controlledKey = animation.TargetName + L"|"
+									+ (transformPath ? L"RenderTransform"
 										: animation.PropertyName);
 								const auto controlled = std::find_if(
 									controlledProperties.begin(), controlledProperties.end(),
@@ -4742,13 +4794,13 @@ namespace
 								&& !ValidateIdentifier(
 									setter.TargetName, L"视觉状态 TargetName", error))
 								return false;
-							auto targetProbe = createTargetProbe(setter.TargetName);
-							if (!targetProbe)
-								return Fail(L"VisualState Setter 找不到模板部件："
-									+ setter.TargetName, error);
+							CuiRuntime::XamlTypePropertySchema targetSchema;
+							if (!BuildVisualStateTargetSchema(
+								component, setter.TargetName,
+								targetSchema, error)) return false;
 							DesignerStyleSetter value;
 							if (!ParseStyleSetter(
-								setterElement, *targetProbe, value, error, true)) return false;
+								setterElement, targetSchema, value, error, true)) return false;
 							setter.PropertyName = value.PropertyName;
 							setter.UsesResource = value.UsesResource;
 							setter.ResourceKey = std::move(value.ResourceKey);
@@ -4758,15 +4810,18 @@ namespace
 								const auto* resource = FindVisibleResource(
 									setter.ResourceKey);
 								std::wstring validationError;
-								if (!resource
-									|| !DesignerPropertyCatalog::ValidateStyleValue(
-										*targetProbe, setter.PropertyName, resource->Value,
+								const auto* metadata = targetSchema.FindProperty(
+									setter.PropertyName);
+								DesignerStyleValue canonical;
+								if (!resource || !metadata
+									|| !DesignerPropertyCatalog::NormalizeStyleValue(
+										*metadata, resource->Value, canonical,
 										&validationError, _currentResourceBasePath,
 										_document.Resources))
 									return Fail(L"VisualState Setter 资源不存在或类型不兼容："
 										+ setter.ResourceKey, error);
 								if (_objectResourceTarget)
-									setter.Literal = resource->Value;
+									setter.Literal = std::move(canonical);
 							}
 							if (std::any_of(state.Setters.begin(), state.Setters.end(),
 								[&](const auto& existing)
@@ -4794,8 +4849,8 @@ namespace
 					}
 					for (const auto& setter : state.Setters)
 					{
-						const auto key = Lower(setter.TargetName) + L"|"
-							+ Lower(setter.PropertyName);
+						const auto key = setter.TargetName + L"|"
+							+ setter.PropertyName;
 						const auto controlled = std::find_if(
 							controlledProperties.begin(), controlledProperties.end(),
 							[&](const auto& existing) { return existing.first == key; });
@@ -4951,8 +5006,8 @@ namespace
 										return Fail(L"VisualTransition Storyboard 目标重复："
 											+ animation.PropertyName, error);
 								}
-								const auto controlledKey = Lower(animation.TargetName) + L"|"
-									+ Lower(rootProperty);
+								const auto controlledKey = animation.TargetName + L"|"
+									+ rootProperty;
 								const auto controlled = std::find_if(
 									controlledProperties.begin(), controlledProperties.end(),
 									[&](const auto& existing)
@@ -4981,7 +5036,7 @@ namespace
 
 		bool ParseStyleCondition(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			DesignerStyleTrigger& trigger,
 			bool requireLeaf,
 			std::wstring& error)
@@ -4994,41 +5049,28 @@ namespace
 			const auto value = Attribute(element, L"Value");
 			if (rawProperty.empty() || !value)
 				return Fail(L"Condition 必须声明 Property 和 Value。", error);
-			const auto stateProperty =
-				DesignerStyleSheetUtils::CanonicalTriggerProperty(rawProperty);
-			if (!stateProperty.empty())
-			{
-				DesignerStyleCondition condition;
-				condition.Property = stateProperty;
-				if (!TryParseBool(*value, condition.Value))
-					return Fail(L"状态 Condition Value 必须是布尔值。", error);
-				trigger.Conditions.push_back(std::move(condition));
-			}
-			else
-			{
-				const auto propertyName = NormalizePropertyName(rawProperty, *value);
-				const auto properties =
-					DesignerPropertyCatalog::GetPropertyGridProperties(probe);
-				const auto* descriptor = DesignerPropertyCatalog::Find(
-					properties, propertyName);
-				if (!descriptor || !descriptor->Metadata
-					|| !descriptor->Metadata->CanRead()
-					|| !descriptor->Metadata->CanObserve())
-					return Fail(L"Condition Property 必须是目标类型中可读、可观察的元数据属性："
-						+ rawProperty, error);
-				DesignerStylePropertyCondition condition;
-				condition.Property = descriptor->Name;
-				condition.Value = DesignerStyleValue{
-					descriptor->ValueKind,
-					NormalizePropertyText(rawProperty, *value, *descriptor) };
-				std::wstring validationError;
-				if (!DesignerPropertyCatalog::ValidateConditionValue(
-					probe, condition.Property, condition.Value, &validationError,
-					_currentResourceBasePath, _document.Resources))
-					return Fail(L"Condition " + rawProperty + L"："
-						+ validationError, error);
-				trigger.PropertyConditions.push_back(std::move(condition));
-			}
+			const auto propertyName = NormalizePropertyName(rawProperty, *value);
+			const auto properties =
+				DesignerPropertyCatalog::GetConditionProperties(schema.Properties);
+			const auto* descriptor = DesignerPropertyCatalog::Find(
+				properties, propertyName);
+			if (!descriptor || !descriptor->Metadata
+				|| !descriptor->Metadata->CanRead()
+				|| !descriptor->Metadata->CanObserve())
+				return Fail(L"Condition Property 必须是目标类型中可读、可观察的元数据属性："
+					+ rawProperty, error);
+			DesignerStylePropertyCondition condition;
+			condition.Property = descriptor->Name;
+			condition.Value = DesignerStyleValue{
+				descriptor->ValueKind,
+				NormalizePropertyText(rawProperty, *value, *descriptor) };
+			std::wstring validationError;
+			if (!DesignerPropertyCatalog::ValidateConditionValue(
+				*descriptor->Metadata, condition.Value, &validationError,
+				_currentResourceBasePath, _document.Resources))
+				return Fail(L"Condition " + rawProperty + L"："
+					+ validationError, error);
+			trigger.PropertyConditions.push_back(std::move(condition));
 			if (requireLeaf && !ChildElements(element).empty())
 				return Fail(L"Condition 不能包含子元素。", error);
 			return true;
@@ -5161,13 +5203,13 @@ namespace
 
 		bool ParseStyleTrigger(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			const DesignComponentDefinition& target,
 			DesignerStyleTrigger& trigger,
 			std::wstring& error)
 		{
 			if (!ParseStyleCondition(
-				element, probe, trigger, false, error)) return false;
+				element, schema, trigger, false, error)) return false;
 			bool foundEnterActions = false;
 			bool foundExitActions = false;
 			std::vector<std::wstring> beginNames;
@@ -5178,7 +5220,7 @@ namespace
 				if (Equals(childName, L"Setter"))
 				{
 					DesignerStyleSetter setter;
-					if (!ParseStyleSetter(child, probe, setter, error)) return false;
+					if (!ParseStyleSetter(child, schema, setter, error)) return false;
 					trigger.Setters.push_back(std::move(setter));
 				}
 				else if (Equals(childName, L"Trigger.EnterActions"))
@@ -5215,7 +5257,7 @@ namespace
 
 		bool ParseStyleMultiTrigger(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			const DesignComponentDefinition& target,
 			DesignerStyleTrigger& trigger,
 			std::wstring& error)
@@ -5233,7 +5275,7 @@ namespace
 				if (Equals(childName, L"Setter"))
 				{
 					DesignerStyleSetter setter;
-					if (!ParseStyleSetter(child, probe, setter, error)) return false;
+					if (!ParseStyleSetter(child, schema, setter, error)) return false;
 					trigger.Setters.push_back(std::move(setter));
 					continue;
 				}
@@ -5262,10 +5304,10 @@ namespace
 					if (!Equals(FromUtf8(conditionElement->LocalName()), L"Condition"))
 						return Fail(L"MultiTrigger.Conditions 仅支持 Condition。", error);
 					if (!ParseStyleCondition(
-						conditionElement, probe, trigger, true, error)) return false;
+						conditionElement, schema, trigger, true, error)) return false;
 				}
 			}
-			if (trigger.Conditions.size() + trigger.PropertyConditions.size() < 2)
+			if (trigger.PropertyConditions.size() < 2)
 				return Fail(L"MultiTrigger 至少需要两个 Condition。", error);
 			if (trigger.Setters.empty() && trigger.EnterActions.empty()
 				&& trigger.ExitActions.empty())
@@ -5304,7 +5346,7 @@ namespace
 				|| !binding.Converter.empty()
 				|| !binding.ElementName.empty()
 				|| binding.RelativeSource != DesignerBindingRelativeSource::None)
-				return Fail(L"DataTrigger Binding 首批只支持 Path，不支持 Mode、UpdateMode 或 Converter。",
+				return Fail(L"DataTrigger Binding 首批只支持 Path，不支持 Mode、UpdateSourceTrigger 或 Converter。",
 					error);
 			if (!expected)
 				return Fail(L"DataTrigger 必须声明 Value。", error);
@@ -5322,7 +5364,7 @@ namespace
 
 		bool ParseStyleDataTrigger(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			const DesignComponentDefinition& target,
 			DesignerStyleTrigger& trigger,
 			std::wstring& error)
@@ -5341,7 +5383,7 @@ namespace
 				if (Equals(childName, L"Setter"))
 				{
 					DesignerStyleSetter setter;
-					if (!ParseStyleSetter(child, probe, setter, error)) return false;
+					if (!ParseStyleSetter(child, schema, setter, error)) return false;
 					trigger.Setters.push_back(std::move(setter));
 				}
 				else if (Equals(childName, L"DataTrigger.EnterActions"))
@@ -5379,7 +5421,7 @@ namespace
 
 		bool ParseStyleMultiDataTrigger(
 			const Element& element,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			const DesignComponentDefinition& target,
 			DesignerStyleTrigger& trigger,
 			std::wstring& error)
@@ -5397,7 +5439,7 @@ namespace
 				if (Equals(childName, L"Setter"))
 				{
 					DesignerStyleSetter setter;
-					if (!ParseStyleSetter(child, probe, setter, error)) return false;
+					if (!ParseStyleSetter(child, schema, setter, error)) return false;
 					trigger.Setters.push_back(std::move(setter));
 					continue;
 				}
@@ -5456,8 +5498,7 @@ namespace
 		{
 			DiagnosticContext context(*this, element);
 			if (!ValidateAttributes(element,
-				{ L"TargetType", L"Id", L"BasedOn", L"Classes", L"Class",
-				  L"RequiredStates", L"ExcludedStates" }, error, true)) return false;
+				{ L"TargetType", L"BasedOn" }, error, true)) return false;
 			DesignerStyleRule rule;
 			if (const auto target = Attribute(element, L"TargetType"))
 			{
@@ -5466,41 +5507,44 @@ namespace
 				if (!Equals(typeName, L"Any"))
 				{
 					const auto separator = typeToken.find(L':');
+					const auto prefix = separator == std::wstring::npos
+						? std::wstring{} : Trim(typeToken.substr(0, separator));
+					const auto localName = separator == std::wstring::npos
+						? typeName : Trim(typeToken.substr(separator + 1));
+					const auto namespaceUri = prefix.empty()
+						? std::wstring(CuiRuntime::XamlRuntimeSchema::CuiNamespace)
+						: LookupNamespaceUri(element, prefix);
 					const DesignComponentDefinition* component = nullptr;
 					if (separator != std::wstring::npos && separator > 0
 						&& separator + 1 < typeToken.size())
 					{
-						const auto prefix = Trim(typeToken.substr(0, separator));
-						const auto localName = Trim(typeToken.substr(separator + 1));
 						component = FindVisibleComponent(
-							LookupNamespaceUri(element, prefix), localName);
+							namespaceUri, localName);
 					}
 					if (component)
 					{
 						rule.Type = component->BaseType;
 						rule.ComponentType = component->Type;
 					}
-					else if (!TryParseType(typeName, rule.Type))
-						return Fail(L"Style TargetType 无效：" + typeToken, error);
+					else
+					{
+						const auto* descriptor =
+							CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+								namespaceUri, localName);
+						if (!descriptor)
+							return Fail(L"Style TargetType 无效：" + typeToken, error);
+						rule.Type = descriptor->NativeType;
+						rule.XamlType = descriptor->TypeId;
+					}
 					rule.HasType = true;
 				}
 			}
-			rule.Id = Trim(Attribute(element, L"Id").value_or(
-				Attribute(element, L"Key", L"x").value_or(L"")));
+			rule.Id = Trim(Attribute(element, L"Key", L"x").value_or(L""));
 			if (const auto basedOn = Attribute(element, L"BasedOn"))
 			{
 				if (!TryParseStaticResource(*basedOn, rule.BasedOn))
 					return Fail(L"Style BasedOn 必须使用 {StaticResource key}。", error);
 			}
-			rule.Classes = DesignerStyleSheetUtils::SplitClasses(
-				Attribute(element, L"Classes").value_or(
-					Attribute(element, L"Class").value_or(L"")));
-			if (!DesignerStyleSheetUtils::TryParseStates(
-				Attribute(element, L"RequiredStates").value_or(L""), rule.RequiredStates)
-				|| !DesignerStyleSheetUtils::TryParseStates(
-					Attribute(element, L"ExcludedStates").value_or(L""), rule.ExcludedStates))
-				return Fail(L"Style 状态选择器无效。", error);
-
 			auto effectiveRule = rule;
 			if (!rule.BasedOn.empty())
 			{
@@ -5513,20 +5557,21 @@ namespace
 					return Fail(inheritanceError, error);
 				effectiveRule = resolved.Rules.back();
 			}
-			auto probe = DesignDocumentMaterializer::CreateRuntimeControl(
-				effectiveRule.HasType ? effectiveRule.Type : UIClass::UI_Base);
-			if (!probe) return Fail(L"Style TargetType 尚无运行时控件工厂。", error);
 			DesignComponentDefinition styleTarget;
 			styleTarget.BaseType = effectiveRule.HasType
 				? effectiveRule.Type : UIClass::UI_Base;
+			const DesignComponentDefinition* component = nullptr;
 			if (!effectiveRule.ComponentType.Empty())
 			{
-				const auto* component = FindVisibleComponent(
+				component = FindVisibleComponent(
 					effectiveRule.ComponentType);
-				if (!component || !DefineComponentProbeProperties(
-					*probe, *component, error)) return false;
+				if (!component)
+					return Fail(L"Style TargetType 组件不存在。", error);
 				styleTarget = *component;
 			}
+			CuiRuntime::XamlTypePropertySchema targetSchema;
+			if (!BuildVisiblePropertySchema(
+				styleTarget.BaseType, component, targetSchema, error)) return false;
 			bool foundTriggers = false;
 			for (const auto& child : ChildElements(element))
 			{
@@ -5536,7 +5581,7 @@ namespace
 				{
 					DesignerStyleSetter setter;
 					if (!ParseStyleSetter(
-						child, *probe, setter, error, false, true)) return false;
+						child, targetSchema, setter, error, false, true)) return false;
 					rule.Setters.push_back(std::move(setter));
 					continue;
 				}
@@ -5558,43 +5603,26 @@ namespace
 					if (Equals(triggerName, L"Trigger"))
 					{
 						if (!ParseStyleTrigger(
-							triggerElement, *probe, styleTarget,
+							triggerElement, targetSchema, styleTarget,
 							trigger, error)) return false;
 					}
 					else if (Equals(triggerName, L"MultiTrigger"))
 					{
 						if (!ParseStyleMultiTrigger(
-							triggerElement, *probe, styleTarget,
+							triggerElement, targetSchema, styleTarget,
 							trigger, error)) return false;
 					}
 					else if (Equals(triggerName, L"DataTrigger"))
 					{
 						if (!ParseStyleDataTrigger(
-							triggerElement, *probe, styleTarget,
+							triggerElement, targetSchema, styleTarget,
 							trigger, error)) return false;
 					}
 					else if (!ParseStyleMultiDataTrigger(
-						triggerElement, *probe, styleTarget,
+						triggerElement, targetSchema, styleTarget,
 						trigger, error)) return false;
 					rule.Triggers.push_back(std::move(trigger));
 				}
-			}
-			if (rule.Setters.empty() && rule.BasedOn.empty()
-				&& rule.Triggers.size() == 1
-				&& rule.Triggers.front().Conditions.empty()
-				&& (!rule.Triggers.front().DataConditions.empty()
-					|| !rule.Triggers.front().PropertyConditions.empty()))
-			{
-				rule.DataConditions = std::move(
-					rule.Triggers.front().DataConditions);
-				rule.PropertyConditions = std::move(
-					rule.Triggers.front().PropertyConditions);
-				rule.Setters = std::move(rule.Triggers.front().Setters);
-				rule.EnterActions = std::move(
-					rule.Triggers.front().EnterActions);
-				rule.ExitActions = std::move(
-					rule.Triggers.front().ExitActions);
-				rule.Triggers.clear();
 			}
 			rule.SourceDictionary = _currentDictionaryOrigin;
 			if (!_currentDictionaryOrigin.empty())
@@ -5612,12 +5640,11 @@ namespace
 		bool TryParseType(std::wstring typeName, UIClass& type) const
 		{
 			typeName = StripMarkupType(std::move(typeName));
-			if (Equals(typeName, L"Grid")) typeName = L"GridPanel";
-			else if (Equals(typeName, L"TextBlock")) typeName = L"Label";
-			else if (Equals(typeName, L"RadioButton")) typeName = L"RadioBox";
-			else if (Equals(typeName, L"Image")) typeName = L"PictureBox";
-			else if (Equals(typeName, L"ListBoxItem")) typeName = L"SelectorItem";
-			return DesignerStyleSheetUtils::TryParseUIClass(typeName, type);
+			const auto* descriptor =
+				CuiRuntime::XamlRuntimeSchema::FindBuiltInType({}, typeName);
+			if (!descriptor) return false;
+			type = descriptor->NativeType;
+			return true;
 		}
 
 		bool ResolveBindingAncestorType(
@@ -5638,14 +5665,17 @@ namespace
 				return Fail(L"RelativeSource AncestorType 不是有效的 XAML 类型名："
 					+ token, error);
 
-			UIClass builtIn = UIClass::UI_Base;
 			const auto namespaceUri = prefix.empty()
 				? std::wstring{} : LookupNamespaceUri(element, prefix);
-			if ((prefix.empty() || Equals(namespaceUri, L"urn:cui"))
-				&& TryParseType(localName, builtIn))
+			if (const auto* builtIn =
+				CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+					namespaceUri, localName))
 			{
-				binding.AncestorType = DesignerStyleSheetUtils::UIClassName(builtIn);
-				binding.AncestorTypeNamespace.clear();
+				binding.AncestorType = builtIn->IsDefaultForNativeType
+					? DesignerStyleSheetUtils::UIClassName(builtIn->NativeType)
+					: builtIn->TypeId.LocalName;
+				binding.AncestorTypeNamespace = builtIn->IsDefaultForNativeType
+					? std::wstring{} : builtIn->TypeId.NamespaceUri;
 				return true;
 			}
 			if (prefix.empty() || namespaceUri.empty())
@@ -5669,12 +5699,24 @@ namespace
 		{
 			auto stem = DesignerStyleSheetUtils::UIClassName(type);
 			if (!stem.empty()) stem.front() = static_cast<wchar_t>(std::towlower(stem.front()));
-			auto& next = _nameCounters[Lower(stem)];
+			auto& next = _nameCounters[stem];
 			for (;;)
 			{
 				const auto candidate = stem + std::to_wstring(++next);
-				if (!_usedNames.contains(Lower(candidate))) return candidate;
+				if (!_usedNames.contains(candidate)) return candidate;
 			}
+		}
+
+		void IndexExplicitDesignIds(const Element& element)
+		{
+			if (!element) return;
+			const auto idText = Attribute(element, L"DesignId").value_or(
+				Attribute(element, L"Uid", L"x").value_or(L""));
+			int id = 0;
+			if (!idText.empty() && TryParseInteger(idText, id) && id > 0)
+				_reservedExplicitIds.insert(id);
+			for (const auto& child : ChildElements(element))
+				IndexExplicitDesignIds(child);
 		}
 
 		bool ReadControlIdentity(
@@ -5689,7 +5731,7 @@ namespace
 				Attribute(element, L"Name").value_or(L"")));
 			if (name.empty()) name = MakeControlName(type);
 			if (!ValidateIdentifier(name, L"控件名称", error)) return false;
-			if (!_usedNames.insert(Lower(name)).second)
+			if (!_usedNames.insert(name).second)
 				return Fail(L"控件名称重复：" + name, error);
 
 			const auto idText = Attribute(element, L"DesignId").value_or(
@@ -5702,7 +5744,8 @@ namespace
 			else
 			{
 				do { id = _document.AllocateNodeId(); }
-				while (_usedIds.contains(id));
+				while (_usedIds.contains(id)
+					|| _reservedExplicitIds.contains(id));
 			}
 			if (!_usedIds.insert(id).second)
 				return Fail(L"控件稳定 ID 重复：" + std::to_wstring(id), error);
@@ -5722,15 +5765,12 @@ namespace
 		{
 			DiagnosticContext context(*this, element);
 			if (!ValidateAttributes(element,
-				{ L"Path", L"Mode", L"UpdateMode", L"UpdateSourceTrigger",
+				{ L"Path", L"Mode", L"UpdateSourceTrigger",
 				  L"Converter", L"ConverterParameter", L"StringFormat",
 				  L"ElementName", L"FallbackValue", L"TargetNullValue",
 				  L"RelativeSource" }, error)) return false;
 			if (!ChildElements(element).empty())
 				return Fail(L"Binding 子项不能包含子元素。", error);
-			if (Attribute(element, L"UpdateMode")
-				&& Attribute(element, L"UpdateSourceTrigger"))
-				return Fail(L"Binding 子项不能同时声明 UpdateMode 与 UpdateSourceTrigger。", error);
 			std::wstring markup = L"{Binding Path="
 				+ Attribute(element, L"Path").value_or(L"");
 			auto appendRaw = [&](const wchar_t* name)
@@ -5755,8 +5795,7 @@ namespace
 				}
 			};
 			appendRaw(L"Mode");
-			appendRaw(Attribute(element, L"UpdateSourceTrigger")
-				? L"UpdateSourceTrigger" : L"UpdateMode");
+			appendRaw(L"UpdateSourceTrigger");
 			appendRaw(L"Converter");
 			appendRaw(L"ElementName");
 			appendRaw(L"RelativeSource");
@@ -5775,7 +5814,7 @@ namespace
 		bool TryParseMultiBindingProperty(
 			const Element& propertyElement,
 			size_t nodeIndex,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			bool& handled,
 			std::wstring& error)
 		{
@@ -5793,32 +5832,27 @@ namespace
 			if (!ValidateAttributes(propertyElement, {}, error)) return false;
 			const auto propertyName = NormalizePropertyName(
 				propertyElementName.substr(separator + 1), L"");
-			const auto* metadata = probe.FindPropertyMetadata(propertyName);
+			const auto* metadata = schema.FindProperty(propertyName);
 			if (!metadata)
 				return Fail(L"MultiBinding 目标属性不存在：" + propertyName, error);
 			auto& node = _document.Nodes[nodeIndex];
-			const auto propertyKey = ToUtf8(metadata->Name());
+			const auto propertyKey = metadata->Name();
 			if (node.Bindings.contains(propertyKey)
-				|| (node.Props.contains("metadata")
-					&& node.Props["metadata"].contains(propertyKey)))
+				|| node.Properties.Find(metadata->Name()))
 				return Fail(L"属性重复：" + metadata->Name(), error);
 
 			const auto& multiElement = children.front();
 			DiagnosticContext multiContext(*this, multiElement);
 			if (!ValidateAttributes(multiElement,
-				{ L"Mode", L"UpdateMode", L"UpdateSourceTrigger", L"Converter",
+				{ L"Mode", L"UpdateSourceTrigger", L"Converter",
 				  L"ConverterParameter", L"StringFormat", L"FallbackValue",
 				  L"TargetNullValue" }, error)) return false;
-			if (Attribute(multiElement, L"UpdateMode")
-				&& Attribute(multiElement, L"UpdateSourceTrigger"))
-				return Fail(L"MultiBinding 不能同时声明 UpdateMode 与 UpdateSourceTrigger。", error);
 			DesignerDataBinding binding;
 			if (const auto mode = Attribute(multiElement, L"Mode"); mode
 				&& !DesignerBindingUtils::TryParseBindingMode(*mode, binding.Mode))
 				return Fail(L"MultiBinding Mode 无效：" + *mode, error);
-			if (const auto update = Attribute(multiElement,
-				Attribute(multiElement, L"UpdateSourceTrigger")
-					? L"UpdateSourceTrigger" : L"UpdateMode"))
+			if (const auto update = Attribute(
+				multiElement, L"UpdateSourceTrigger"))
 			{
 				auto normalized = *update;
 				if (Equals(normalized, L"PropertyChanged")) normalized = L"OnPropertyChanged";
@@ -5849,12 +5883,13 @@ namespace
 				if (!Equals(FromUtf8(child->LocalName()), L"Binding"))
 					return Fail(L"MultiBinding 只能包含 Binding 子项。", error);
 				const bool hasMode = Attribute(child, L"Mode").has_value();
-				const bool hasUpdateMode = Attribute(child, L"UpdateMode").has_value()
-					|| Attribute(child, L"UpdateSourceTrigger").has_value();
+				const bool hasUpdateSourceTrigger =
+					Attribute(child, L"UpdateSourceTrigger").has_value();
 				DesignerDataBinding childBinding;
 				if (!ParseBindingObjectElement(child, childBinding, error)) return false;
 				if (!hasMode) childBinding.Mode = binding.Mode;
-				if (!hasUpdateMode) childBinding.UpdateMode = binding.UpdateMode;
+				if (!hasUpdateSourceTrigger)
+					childBinding.UpdateMode = binding.UpdateMode;
 				if (!DesignerBindingUtils::IsValidSourcePath(
 					childBinding.SourceProperty))
 					return Fail(L"MultiBinding 子项 Path 无效："
@@ -5896,9 +5931,14 @@ namespace
 				if (!literal) return true;
 				literal->Kind = targetValueKind;
 				std::wstring literalError;
-				if (DesignerPropertyCatalog::ValidateStyleValue(
-					probe, metadata->Name(), *literal, &literalError,
-					_currentResourceBasePath, _document.Resources)) return true;
+				DesignerStyleValue canonical;
+				if (DesignerPropertyCatalog::NormalizeStyleValue(
+					*metadata, *literal, canonical, &literalError,
+					_currentResourceBasePath, _document.Resources))
+				{
+					*literal = std::move(canonical);
+					return true;
+				}
 				return Fail(L"MultiBinding " + std::wstring(option)
 					+ L" 无法转换到属性 " + metadata->Name()
 					+ L"：" + literalError, error);
@@ -5912,8 +5952,7 @@ namespace
 				binding, &targetError))
 				return Fail(L"属性 " + metadata->Name()
 					+ L" 的 MultiBinding 无效：" + targetError, error);
-			node.Bindings[propertyKey] =
-				DesignerBindingUtils::WriteBindingDefinition(binding);
+			node.Bindings[propertyKey] = std::move(binding);
 			return true;
 		}
 
@@ -6073,7 +6112,6 @@ namespace
 			const Element& element,
 			const Parent& parent,
 			std::wstring& error,
-			const std::string& forcedSplitRegion = {},
 			bool forcedHeader = false)
 		{
 			DiagnosticContext context(*this, element);
@@ -6081,12 +6119,13 @@ namespace
 			UIClass type = UIClass::UI_Base;
 			DesignerComponentType componentType;
 			const auto elementNamespace = FromUtf8(element->NamespaceURI());
-			const bool builtInType = TryParseType(elementName, type)
-				&& type != UIClass::UI_SelectorItem
-				&& type != UIClass::UI_ComboBoxItem
-				&& type != UIClass::UI_TreeViewItem
-				&& (elementNamespace.empty()
-					|| Equals(elementNamespace, L"urn:cui"));
+			const auto* builtInDescriptor =
+				CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+					elementNamespace, elementName);
+			const bool builtInType = builtInDescriptor != nullptr;
+			if (builtInType && !builtInDescriptor->IsConstructible)
+				return Fail(L"XAML 类型不可直接实例化：" + elementName, error);
+			if (builtInType) type = builtInDescriptor->NativeType;
 			if (!builtInType)
 			{
 				if (const auto* component = FindVisibleComponent(
@@ -6101,15 +6140,13 @@ namespace
 						+ L"。请先在资源中定义 ComponentDefinition。", error);
 				}
 			}
-			else if (type == UIClass::UI_TabPage)
-				return Fail(L"不支持的控件元素：" + elementName, error);
 			if (type == UIClass::UI_ItemsPresenter)
 			{
-				const auto targetType = _activeControlTemplateProbe
-					? _activeControlTemplateProbe->Type() : UIClass::UI_Base;
+				const auto targetType = _activeControlTemplateSchema
+					? _activeControlTemplateSchema->NativeType : UIClass::UI_Base;
 				if (!_parsingControlTemplateVisual
-					|| (targetType != UIClass::UI_ItemsControl
-						&& targetType != UIClass::UI_ListBox))
+					|| !IsUIClassAssignableFrom(
+						UIClass::UI_ItemsControl, targetType))
 					return Fail(L"ItemsPresenter 只能出现在 ItemsControl 或 ListBox "
 						L"的 ControlTemplate 中。", error);
 				if (std::any_of(_document.Nodes.begin(), _document.Nodes.end(),
@@ -6121,22 +6158,13 @@ namespace
 			DesignNode node;
 			if (!ReadControlIdentity(element, type, node.Name, node.Id, error)) return false;
 			node.Type = type;
+			if (builtInType) node.XamlType = builtInDescriptor->TypeId;
 			node.ComponentType = std::move(componentType);
 			node.ParentId = parent.Id;
 			node.ParentRef = parent.Ref;
 			node.Order = SiblingCount(parent);
-			if (!forcedSplitRegion.empty()) node.Extra["splitRegion"] = forcedSplitRegion;
-			if (forcedHeader) node.Extra["headeredRegion"] = "header";
-			std::unique_ptr<Control> probe;
-			probe = DesignDocumentMaterializer::CreateRuntimeControl(type);
-			if (!probe)
-				return Fail(L"控件类型尚无运行时工厂：" + elementName, error);
-			if (!node.ComponentType.Empty())
-			{
-				const auto* component = FindVisibleComponent(node.ComponentType);
-				if (!component || !DefineComponentProbeProperties(
-					*probe, *component, error)) return false;
-			}
+			if (forcedHeader) node.Structure.ChildRole = DesignNodeChildRole::Header;
+			node.Source.Element = _sourceLocations.Span(element.get());
 			_document.Nodes.push_back(std::move(node));
 			const size_t nodeIndex = _document.Nodes.size() - 1;
 			const auto elementChildren = ChildElements(element);
@@ -6153,14 +6181,42 @@ namespace
 					|| Equals(owner, L"FrameworkElement")
 					|| Equals(owner, L"UIElement");
 			};
+			auto isOwnedCollectionProperty = [&](const std::wstring& name,
+				const std::wstring& property)
+			{
+				if (Equals(name, property)) return true;
+				const auto separator = name.rfind(L'.');
+				if (separator == std::wstring::npos
+					|| !Equals(name.substr(separator + 1), property)) return false;
+				const auto owner = name.substr(0, separator);
+				return Equals(owner, elementName) || Equals(owner, L"Control")
+					|| Equals(owner, L"FrameworkElement")
+					|| Equals(owner, L"UIElement");
+			};
 			Element resourcesElement;
+			Element commandBindingsElement;
+			Element inputBindingsElement;
 			for (const auto& child : elementChildren)
 			{
 				const auto childName = FromUtf8(child->LocalName());
-				if (!isResourcesProperty(childName)) continue;
-				if (resourcesElement)
-					return Fail(L"控件 Resources 属性元素不能重复。", error);
-				resourcesElement = child;
+				if (isResourcesProperty(childName))
+				{
+					if (resourcesElement)
+						return Fail(L"控件 Resources 属性元素不能重复。", error);
+					resourcesElement = child;
+				}
+				else if (isOwnedCollectionProperty(childName, L"CommandBindings"))
+				{
+					if (commandBindingsElement)
+						return Fail(L"控件 CommandBindings 属性元素不能重复。", error);
+					commandBindingsElement = child;
+				}
+				else if (isOwnedCollectionProperty(childName, L"InputBindings"))
+				{
+					if (inputBindingsElement)
+						return Fail(L"控件 InputBindings 属性元素不能重复。", error);
+					inputBindingsElement = child;
+				}
 			}
 			if (resourcesElement)
 			{
@@ -6187,6 +6243,8 @@ namespace
 				}
 				DesignerStyleSheetUtils::Canonicalize(localResources);
 				auto visibleLocalStyles = VisibleStyleSheet(&localResources);
+				auto localSchemaDocument = _document;
+				localSchemaDocument.StyleSheet = visibleLocalStyles;
 				if (!DesignerStyleSheetUtils::Validate(
 					visibleLocalStyles, &error, _document.ResourceBasePath,
 					_document.Resources))
@@ -6196,18 +6254,21 @@ namespace
 				}
 				if (!DesignerStyleSheetUtils::ValidateAgainstRulePropertyMetadata(
 					visibleLocalStyles,
-					[&](const DesignerStyleRule& rule) -> std::unique_ptr<Control>
+					[&](const DesignerStyleRule& rule,
+						CuiRuntime::XamlTypePropertySchema& schema,
+						std::wstring* schemaError) -> bool
 					{
-						auto control = DesignDocumentMaterializer::CreateRuntimeControl(
-							rule.HasType ? rule.Type : UIClass::UI_Base);
-						if (!control || rule.ComponentType.Empty()) return control;
-						const auto* component = FindVisibleComponent(
-							rule.ComponentType);
-						std::wstring ignored;
-						if (!component || !DesignDocumentMaterializer::
-							InstallComponentContract(
-								*control, *component, _document, &ignored)) return nullptr;
-						return control;
+						const auto* component = rule.ComponentType.Empty()
+							? nullptr : FindVisibleComponent(rule.ComponentType);
+						if (!rule.ComponentType.Empty() && !component)
+						{
+							if (schemaError) *schemaError =
+								L"样式 TargetType 组件不存在。";
+							return false;
+						}
+						return CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+							rule.HasType ? rule.Type : UIClass::UI_Base,
+							component, localSchemaDocument, schema, schemaError);
 					}, &error, _document.ResourceBasePath,
 					_document.Resources))
 				{
@@ -6225,14 +6286,29 @@ namespace
 			LexicalObjectResourceScope objectResourceScope(
 				*this, _document.Nodes[nodeIndex].LocalObjectResources);
 
-			if (!ParseControlAttributes(element, nodeIndex, *probe, error)) return false;
-			if (!ApplyDirectText(element, nodeIndex, *probe, error)) return false;
+			const auto* instanceComponent = _document.Nodes[nodeIndex].ComponentType.Empty()
+				? nullptr : FindVisibleComponent(_document.Nodes[nodeIndex].ComponentType);
+			if (!_document.Nodes[nodeIndex].ComponentType.Empty() && !instanceComponent)
+				return Fail(L"组件实例的 XAML Schema 不存在："
+					+ _document.Nodes[nodeIndex].ComponentType.XamlName, error);
+			CuiRuntime::XamlTypePropertySchema nodeSchema;
+			if (!BuildVisiblePropertySchema(
+				type, instanceComponent, nodeSchema, error)) return false;
+			if (!ParseControlAttributes(
+				element, nodeIndex, nodeSchema, error)) return false;
+			if (commandBindingsElement && !ParseCommandBindings(
+				commandBindingsElement,
+				_document.Nodes[nodeIndex].CommandBindings, error)) return false;
+			if (inputBindingsElement && !ParseInputBindings(
+				inputBindingsElement,
+				_document.Nodes[nodeIndex].InputBindings, error)) return false;
+			if (!ApplyDirectText(element, nodeIndex, nodeSchema, error)) return false;
 
 			const Parent childParent{
 				_document.Nodes[nodeIndex].Id,
 				_document.Nodes[nodeIndex].Name };
-			const auto* instanceComponent = _document.Nodes[nodeIndex].ComponentType.Empty()
-				? nullptr : FindVisibleComponent(_document.Nodes[nodeIndex].ComponentType);
+			bool usedItemsProperty = false;
+			bool usedDirectItems = false;
 			auto contentCount = [&](const std::wstring& contentName)
 			{
 				return std::count_if(_document.Nodes.begin(), _document.Nodes.end(),
@@ -6258,7 +6334,9 @@ namespace
 			{
 				DiagnosticContext childContext(*this, child);
 				const auto childName = FromUtf8(child->LocalName());
-				if (isResourcesProperty(childName)) continue;
+				if (isResourcesProperty(childName)
+					|| isOwnedCollectionProperty(childName, L"CommandBindings")
+					|| isOwnedCollectionProperty(childName, L"InputBindings")) continue;
 				if (_activeTemplateComponent
 					&& parent.Id == 0 && parent.Ref.empty()
 					&& Equals(childName,
@@ -6314,56 +6392,50 @@ namespace
 						continue;
 					}
 				}
-				if (type == UIClass::UI_GridPanel
-					&& (Equals(childName, L"GridPanel.RowDefinitions")
-						|| Equals(childName, L"Grid.RowDefinitions")
-						|| Equals(childName, L"RowDefinitions")))
+				if (type == UIClass::UI_Grid
+					&& Equals(childName, L"Grid.RowDefinitions"))
 				{
 					if (!ParseGridDefinitions(child, nodeIndex, true, error)) return false;
 					continue;
 				}
-				if (type == UIClass::UI_GridPanel
-					&& (Equals(childName, L"GridPanel.ColumnDefinitions")
-						|| Equals(childName, L"Grid.ColumnDefinitions")
-						|| Equals(childName, L"ColumnDefinitions")))
+				if (type == UIClass::UI_Grid
+					&& Equals(childName, L"Grid.ColumnDefinitions"))
 				{
 					if (!ParseGridDefinitions(child, nodeIndex, false, error)) return false;
 					continue;
 				}
-				if (type == UIClass::UI_TabControl && Equals(childName, L"TabPage"))
+				if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type)
+					&& (Equals(childName,
+						DesignerStyleSheetUtils::UIClassName(type) + L".Items")
+						|| Equals(childName, L"ItemsControl.Items")))
 				{
-					if (!ParseTabPage(child, nodeIndex, error)) return false;
-					continue;
-				}
-				if (type == UIClass::UI_SplitContainer
-					&& (Equals(childName, L"SplitContainer.FirstPanel")
-						|| Equals(childName, L"SplitContainer.SecondPanel")))
-				{
-					const auto region = Equals(childName, L"SplitContainer.SecondPanel")
-						? std::string("panel2") : std::string("panel1");
-					for (const auto& grandChild : ChildElements(child))
-						if (!ParseControl(grandChild, childParent, error, region)) return false;
+					if (usedItemsProperty || usedDirectItems)
+						return Fail(L"ItemsControl.Items 属性元素不能重复，"
+							L"也不能与隐式 Items 混用。", error);
+					if (!ValidateAttributes(child, {}, error)) return false;
+					usedItemsProperty = true;
+					for (const auto& item : ChildElements(child))
+						if (!ParseControl(item, childParent, error)) return false;
 					continue;
 				}
 				if (IsHeaderedContentControlType(type)
 					&& (Equals(childName,
 						DesignerStyleSheetUtils::UIClassName(type) + L".Header")
-						|| Equals(childName, L"HeaderedContentControl.Header")))
+						|| Equals(childName, L"HeaderedContentControl.Header")
+						|| Equals(childName, L"HeaderedItemsControl.Header")))
 				{
 					if (!ValidateAttributes(child, {}, error)) return false;
 					auto& current = _document.Nodes[nodeIndex];
-					const bool alreadyAssigned = current.Bindings.contains("Header")
-						|| (current.Extra.is_object()
-							&& (current.Extra.contains("headerText")
-								|| current.Extra.contains("headerTemplate")))
+					const bool alreadyAssigned = current.Bindings.contains(L"Header")
+						|| current.Properties.Find(L"Header")
+						|| !current.Structure.HeaderTemplate.empty()
 						|| std::any_of(_document.Nodes.begin(), _document.Nodes.end(),
 							[&](const auto& candidate)
 							{
 								return candidate.ParentId == childParent.Id
 									&& candidate.ParentRef == childParent.Ref
-									&& candidate.Extra.is_object()
-									&& candidate.Extra.value(
-										"headeredRegion", std::string{}) == "header";
+									&& candidate.Structure.ChildRole
+										== DesignNodeChildRole::Header;
 							});
 					if (alreadyAssigned)
 						return Fail(L"属性重复：Header", error);
@@ -6373,10 +6445,59 @@ namespace
 						return Fail(L"Header 属性元素只能包含一个视觉根或一个文本值。", error);
 					if (!roots.empty())
 					{
-						if (!ParseControl(roots.front(), childParent, error, {}, true))
+						if (!ParseControl(roots.front(), childParent, error, true))
 							return false;
 					}
-					else current.Extra["headerText"] = ToUtf8(text);
+					else if (!StoreLiteralProperty(
+						nodeIndex, nodeSchema, L"Header", text, error)) return false;
+					continue;
+				}
+				if (type == UIClass::UI_Popup
+					&& childName == L"Popup.Child")
+				{
+					if (!ValidateAttributes(child, {}, error)) return false;
+					const bool alreadyAssigned = std::any_of(
+						_document.Nodes.begin(), _document.Nodes.end(),
+						[&](const auto& candidate)
+						{
+							return candidate.ParentId == childParent.Id
+								&& candidate.ParentRef == childParent.Ref;
+						});
+					if (alreadyAssigned)
+						return Fail(L"属性重复：Child", error);
+					const auto roots = ChildElements(child);
+					if (roots.size() > 1 || !DirectText(child).empty())
+						return Fail(
+							L"Popup.Child 只能包含一个视觉根，不能包含文本值。",
+							error);
+					if (!roots.empty()
+						&& !ParseControl(roots.front(), childParent, error))
+						return false;
+					continue;
+				}
+				if (IsUIClassAssignableFrom(
+						UIClass::UI_Decorator, type)
+					&& (childName == L"Decorator.Child"
+						|| childName == L"Border.Child"))
+				{
+					if (!ValidateAttributes(child, {}, error)) return false;
+					const bool alreadyAssigned = std::any_of(
+						_document.Nodes.begin(), _document.Nodes.end(),
+						[&](const auto& candidate)
+						{
+							return candidate.ParentId == childParent.Id
+								&& candidate.ParentRef == childParent.Ref;
+						});
+					if (alreadyAssigned)
+						return Fail(L"属性重复：Child", error);
+					const auto roots = ChildElements(child);
+					if (roots.size() > 1 || !DirectText(child).empty())
+						return Fail(
+							L"Decorator.Child 只能包含一个视觉根，不能包含文本值。",
+							error);
+					if (!roots.empty()
+						&& !ParseControl(roots.front(), childParent, error))
+						return false;
 					continue;
 				}
 				if (IsContentHostType(type))
@@ -6386,6 +6507,20 @@ namespace
 						|| Equals(childName, L"ContentControl.Content"))
 					{
 						if (!ValidateAttributes(child, {}, error)) return false;
+						auto& current = _document.Nodes[nodeIndex];
+						const bool alreadyAssigned = current.Bindings.contains(L"Content")
+							|| current.Properties.Find(L"Content")
+							|| !current.Structure.ContentTemplate.empty()
+							|| std::any_of(_document.Nodes.begin(), _document.Nodes.end(),
+								[&](const auto& candidate)
+								{
+									return candidate.ParentId == childParent.Id
+										&& candidate.ParentRef == childParent.Ref
+										&& candidate.Structure.ChildRole
+											!= DesignNodeChildRole::Header;
+								});
+						if (alreadyAssigned)
+							return Fail(L"属性重复：Content", error);
 						const auto roots = ChildElements(child);
 						const auto text = DirectText(child);
 						if (roots.size() > 1 || (!roots.empty() && !text.empty()))
@@ -6396,27 +6531,19 @@ namespace
 								return Fail(L"ContentPresenter 不接受视觉 Content。", error);
 							if (!ParseControl(roots.front(), childParent, error)) return false;
 						}
-						else
-						{
-							auto& current = _document.Nodes[nodeIndex];
-							if (current.Bindings.contains("Content")
-								|| current.Extra.contains("contentText"))
-								return Fail(L"属性重复：Content", error);
-							current.Extra["contentText"] = ToUtf8(text);
-						}
+						else if (!StoreLiteralProperty(
+							nodeIndex, nodeSchema, L"Content", text, error)) return false;
 						continue;
 					}
 				}
 				bool bindingProperty = false;
 				if (!TryParseMultiBindingProperty(
-					child, nodeIndex, *probe, bindingProperty, error)) return false;
+					child, nodeIndex, nodeSchema, bindingProperty, error)) return false;
 				if (bindingProperty) continue;
 				bool structuredProperty = false;
-				if (!TryParseContentItem(
-					child, nodeIndex, type, structuredProperty, error)) return false;
-				if (structuredProperty) continue;
 				if (!TryParseStructuredProperty(
-					child, nodeIndex, type, structuredProperty, error)) return false;
+					child, nodeIndex, type, nodeSchema,
+					structuredProperty, error)) return false;
 				if (structuredProperty) continue;
 				if (childName.find(L'.') != std::wstring::npos)
 					return Fail(L"不支持的控件属性元素：" + childName, error);
@@ -6437,9 +6564,16 @@ namespace
 					if (!appendContent(child, *contract)) return false;
 					continue;
 				}
+				if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
+				{
+					if (usedItemsProperty)
+						return Fail(L"ItemsControl.Items 属性元素不能与隐式 Items 混用。",
+							error);
+					usedDirectItems = true;
+				}
 				if (!ParseControl(child, childParent, error)) return false;
 			}
-			if (IsVisualContentControlType(type))
+			if (IsSingleVisualChildHostType(type))
 			{
 				const auto childCount = std::count_if(
 					_document.Nodes.begin(), _document.Nodes.end(),
@@ -6447,25 +6581,39 @@ namespace
 					{
 						return candidate.ParentId == childParent.Id
 							&& candidate.ParentRef == childParent.Ref
-							&& (!candidate.Extra.is_object()
-								|| candidate.Extra.value(
-									"headeredRegion", std::string{}) != "header");
+							&& candidate.Structure.ChildRole
+								!= DesignNodeChildRole::Header;
 					});
 				if (childCount > 1)
-					return Fail(L"内容控件最多接受一个直接视觉子节点。", error);
-				const auto& current = _document.Nodes[nodeIndex];
-				const bool hasDataContent = current.Bindings.is_object()
-					&& current.Bindings.contains("Content");
-				const bool hasTextContent = current.Extra.is_object()
-					&& current.Extra.contains("contentText");
-				const bool hasTemplate = current.Extra.is_object()
-					&& current.Extra.contains("contentTemplate");
-				if (childCount != 0
-					&& (hasDataContent || hasTextContent || hasTemplate))
-					return Fail(L"内容控件的直接视觉内容不能与 Content 或 ContentTemplate 同时使用。",
+					return Fail(type == UIClass::UI_Popup
+						? L"Popup 最多接受一个 Child。"
+						: IsUIClassAssignableFrom(
+							UIClass::UI_Decorator, type)
+							? L"Decorator 最多接受一个 Child。"
+							: L"内容控件最多接受一个直接视觉子节点。",
 						error);
-				if (hasTextContent && hasTemplate)
-					return Fail(L"文本 Content 当前不能使用 DataTemplate。", error);
+				if (type != UIClass::UI_Popup
+					&& !IsUIClassAssignableFrom(
+						UIClass::UI_Decorator, type))
+				{
+					const auto& current = _document.Nodes[nodeIndex];
+					const bool hasContentBinding =
+						current.Bindings.contains(L"Content");
+					const bool hasContentValue =
+						current.Properties.Find(L"Content");
+					const bool hasTemplate =
+						!current.Structure.ContentTemplate.empty();
+					if (childCount != 0
+						&& (hasContentBinding || hasContentValue || hasTemplate))
+						return Fail(
+							L"内容控件的直接视觉内容不能与 Content 或 "
+							L"ContentTemplate 同时使用。",
+							error);
+					if (hasContentValue && hasTemplate)
+						return Fail(
+							L"标量 Content 当前不能使用 DataTemplate。",
+							error);
+				}
 			}
 			if (IsHeaderedContentControlType(type))
 			{
@@ -6475,23 +6623,36 @@ namespace
 					{
 						return candidate.ParentId == childParent.Id
 							&& candidate.ParentRef == childParent.Ref
-							&& candidate.Extra.is_object()
-							&& candidate.Extra.value(
-								"headeredRegion", std::string{}) == "header";
+							&& candidate.Structure.ChildRole
+								== DesignNodeChildRole::Header;
 					});
 				const auto& current = _document.Nodes[nodeIndex];
-				const bool hasHeaderBinding = current.Bindings.is_object()
-					&& current.Bindings.contains("Header");
-				const bool hasHeaderText = current.Extra.is_object()
-					&& current.Extra.contains("headerText");
-				const bool hasHeaderTemplate = current.Extra.is_object()
-					&& current.Extra.contains("headerTemplate");
+				const bool hasHeaderBinding = current.Bindings.contains(L"Header");
+				const bool hasHeaderValue = current.Properties.Find(L"Header");
+				const bool hasHeaderTemplate = !current.Structure.HeaderTemplate.empty();
 				if (headerCount > 1 || (headerCount != 0
-					&& (hasHeaderBinding || hasHeaderText || hasHeaderTemplate)))
+					&& (hasHeaderBinding || hasHeaderValue || hasHeaderTemplate)))
 					return Fail(L"HeaderedContentControl 最多接受一个视觉 Header，"
 						L"且不能与 Header 或 HeaderTemplate 同时使用。", error);
-				if (hasHeaderText && hasHeaderTemplate)
-					return Fail(L"文本 Header 当前不能使用 DataTemplate。", error);
+				if (hasHeaderValue && hasHeaderTemplate)
+					return Fail(L"标量 Header 当前不能使用 DataTemplate。", error);
+			}
+			if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
+			{
+				const auto& current = _document.Nodes[nodeIndex];
+				const bool hasItemsSource =
+					!current.Structure.ItemsSourceResource.empty()
+					|| current.Bindings.contains(L"ItemsSource");
+				const bool hasAuthoredItems = std::any_of(
+					_document.Nodes.begin(), _document.Nodes.end(),
+					[&](const auto& candidate)
+					{
+						return candidate.ParentId == childParent.Id
+							&& candidate.ParentRef == childParent.Ref;
+					});
+				if (hasItemsSource && hasAuthoredItems)
+					return Fail(L"ItemsControl.Items 与 ItemsSource 不能同时赋值。",
+						error);
 			}
 			return true;
 		}
@@ -6508,7 +6669,7 @@ namespace
 		bool ParseControlAttributes(
 			const Element& element,
 			size_t nodeIndex,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			std::wstring& error)
 		{
 			DiagnosticContext context(*this, element);
@@ -6522,6 +6683,10 @@ namespace
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto rawName = FromUtf8(attribute->Name());
 				const auto value = FromUtf8(attribute->Value());
+				const auto sourceSpan = _sourceLocations.Span(
+					element.get(), attribute.get());
+				_document.Nodes[nodeIndex].Source.RecordMember(rawName, sourceSpan);
+				_document.Nodes[nodeIndex].Source.RecordMember(name, sourceSpan);
 				if (Equals(prefix, L"d") && Equals(name, L"Locked"))
 				{
 					bool locked = false;
@@ -6532,12 +6697,138 @@ namespace
 				}
 				if (Equals(name, L"Name") || Equals(name, L"DesignId")
 					|| (Equals(prefix, L"x") && Equals(name, L"Uid"))) continue;
+				const auto commandSourceType = _document.Nodes[nodeIndex].Type;
+				if (prefix.empty() && Equals(name, L"CommandTarget")
+					&& (commandSourceType == UIClass::UI_Button
+						|| commandSourceType == UIClass::UI_MenuItem))
+				{
+					if (!assignedProperties.insert(L"commandtarget").second)
+						return Fail(L"属性重复：CommandTarget", error);
+					std::wstring targetName;
+					std::wstring targetError;
+					if (!TryParseCommandTargetReference(
+						value, targetName, targetError) || targetName.empty())
+						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+							+ L" 的 CommandTarget："
+							+ (targetError.empty()
+								? L"CommandTarget 必须引用直接 x:Name。"
+								: targetError), error);
+					_document.Nodes[nodeIndex].Structure.CommandTarget =
+						std::move(targetName);
+					continue;
+				}
+
+				const auto attributeNamespace = FromUtf8(attribute->NamespaceURI());
+				const bool builtInAttachedNamespace = attributeNamespace.empty()
+					|| Equals(attributeNamespace, L"urn:cui");
+				const std::pair<const wchar_t*, const char*> relativeBooleans[] = {
+					{ L"CenterHorizontal", "centerHorizontal" },
+					{ L"CenterVertical", "centerVertical" },
+					{ L"AlignLeftWithPanel", "alignLeftWithPanel" },
+					{ L"AlignTopWithPanel", "alignTopWithPanel" },
+					{ L"AlignRightWithPanel", "alignRightWithPanel" },
+					{ L"AlignBottomWithPanel", "alignBottomWithPanel" }
+				};
+				const std::pair<const wchar_t*, const char*> relativeReferences[] = {
+					{ L"Above", "above" }, { L"Below", "below" },
+					{ L"LeftOf", "leftOf" }, { L"RightOf", "rightOf" },
+					{ L"AlignLeftWith", "alignLeftWith" },
+					{ L"AlignRightWith", "alignRightWith" },
+					{ L"AlignTopWith", "alignTopWith" },
+					{ L"AlignBottomWith", "alignBottomWith" }
+				};
+				auto relativeMember = [&](const wchar_t* member)
+				{
+					return Equals(name, L"RelativePanel." + std::wstring(member));
+				};
+				auto requireRelativeParent = [&]()
+				{
+					const auto& node = _document.Nodes[nodeIndex];
+					const auto parent = std::find_if(
+						_document.Nodes.begin(), _document.Nodes.end(),
+						[&](const DesignNode& candidate)
+						{
+							return (node.ParentId > 0 && candidate.Id == node.ParentId)
+								|| (node.ParentId == 0 && !node.ParentRef.empty()
+									&& candidate.Name == node.ParentRef);
+						});
+					return parent != _document.Nodes.end()
+						&& parent->Type == UIClass::UI_RelativePanel;
+				};
+				bool handledRelativeConstraint = false;
+				if (builtInAttachedNamespace)
+				{
+					for (const auto& [member, key] : relativeBooleans)
+					{
+						if (!relativeMember(member)) continue;
+						if (!requireRelativeParent())
+							return Fail(L"RelativePanel." + std::wstring(member)
+								+ L" 只能设置在 RelativePanel 的直接子控件上。",
+								error);
+						bool typed = false;
+						if (!TryParseBool(value, typed))
+							return Fail(L"RelativePanel." + std::wstring(member)
+								+ L" 必须是布尔值。", error);
+						if (!assignedProperties.insert(
+							L"RelativePanel." + std::wstring(member)).second)
+							return Fail(L"属性重复：RelativePanel."
+								+ std::wstring(member), error);
+						auto& relativePanel = _document.Nodes[nodeIndex]
+							.Structure.RelativePanel;
+						if (!relativePanel) relativePanel.emplace();
+						auto& constraints = *relativePanel;
+						if (std::string_view(key) == "centerHorizontal")
+							constraints.CenterHorizontal = typed;
+						else if (std::string_view(key) == "centerVertical")
+							constraints.CenterVertical = typed;
+						else if (std::string_view(key) == "alignLeftWithPanel")
+							constraints.AlignLeftWithPanel = typed;
+						else if (std::string_view(key) == "alignTopWithPanel")
+							constraints.AlignTopWithPanel = typed;
+						else if (std::string_view(key) == "alignRightWithPanel")
+							constraints.AlignRightWithPanel = typed;
+						else constraints.AlignBottomWithPanel = typed;
+						handledRelativeConstraint = true;
+						break;
+					}
+					if (!handledRelativeConstraint)
+					{
+						for (const auto& [member, key] : relativeReferences)
+						{
+							if (!relativeMember(member)) continue;
+							if (!requireRelativeParent())
+								return Fail(L"RelativePanel." + std::wstring(member)
+									+ L" 只能设置在 RelativePanel 的直接子控件上。",
+									error);
+							auto targetName = Trim(value);
+							if (!ValidateIdentifier(targetName,
+								L"RelativePanel." + std::wstring(member)
+									+ L" 目标 x:Name", error)) return false;
+							if (!assignedProperties.insert(
+								L"RelativePanel." + std::wstring(member)).second)
+								return Fail(L"属性重复：RelativePanel."
+									+ std::wstring(member), error);
+							auto& relativePanel = _document.Nodes[nodeIndex]
+								.Structure.RelativePanel;
+							if (!relativePanel) relativePanel.emplace();
+							auto& constraints = *relativePanel;
+							if (std::string_view(key) == "above") constraints.Above = targetName;
+							else if (std::string_view(key) == "below") constraints.Below = targetName;
+							else if (std::string_view(key) == "leftOf") constraints.LeftOf = targetName;
+							else if (std::string_view(key) == "rightOf") constraints.RightOf = targetName;
+							else if (std::string_view(key) == "alignLeftWith") constraints.AlignLeftWith = targetName;
+							else if (std::string_view(key) == "alignRightWith") constraints.AlignRightWith = targetName;
+							else if (std::string_view(key) == "alignTopWith") constraints.AlignTopWith = targetName;
+							else constraints.AlignBottomWith = targetName;
+							handledRelativeConstraint = true;
+							break;
+						}
+					}
+				}
+				if (handledRelativeConstraint) continue;
 				const bool supportsItemsSource =
-					_document.Nodes[nodeIndex].Type == UIClass::UI_ItemsControl
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ComboBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ListView
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ListBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_TreeView;
+					IsUIClassAssignableFrom(UIClass::UI_ItemsControl,
+						_document.Nodes[nodeIndex].Type);
 				if (supportsItemsSource && Equals(name, L"ItemsSource"))
 				{
 					std::wstring resourceKey;
@@ -6545,15 +6836,13 @@ namespace
 					{
 						if (!assignedProperties.insert(L"itemssource").second)
 							return Fail(L"属性重复：ItemsSource", error);
-						_document.Nodes[nodeIndex].Extra["itemsSourceResource"] =
-							ToUtf8(resourceKey);
+						_document.Nodes[nodeIndex].Structure.ItemsSourceResource =
+							resourceKey;
 						continue;
 					}
 				}
-				if ((_document.Nodes[nodeIndex].Type == UIClass::UI_ItemsControl
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ListBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ComboBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_TreeView)
+				if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl,
+					_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"ItemTemplate"))
 				{
 					std::wstring resourceKey;
@@ -6566,8 +6855,7 @@ namespace
 							+ resourceKey, error);
 					if (!assignedProperties.insert(L"itemtemplate").second)
 						return Fail(L"属性重复：ItemTemplate", error);
-					_document.Nodes[nodeIndex].Extra["itemTemplate"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.ItemTemplate = definition->Key;
 					continue;
 				}
 				if ((IsControlTemplateHostType(_document.Nodes[nodeIndex].Type)
@@ -6588,8 +6876,7 @@ namespace
 							+ definition->DisplayName(), error);
 					if (!assignedProperties.insert(L"template").second)
 						return Fail(L"属性重复：Template", error);
-					_document.Nodes[nodeIndex].Extra["controlTemplate"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.ControlTemplate = definition->Key;
 					continue;
 				}
 				if (IsContentHostType(_document.Nodes[nodeIndex].Type)
@@ -6605,8 +6892,7 @@ namespace
 							+ resourceKey, error);
 					if (!assignedProperties.insert(L"contenttemplate").second)
 						return Fail(L"属性重复：ContentTemplate", error);
-					_document.Nodes[nodeIndex].Extra["contentTemplate"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.ContentTemplate = definition->Key;
 					continue;
 				}
 				if (IsHeaderedContentControlType(_document.Nodes[nodeIndex].Type)
@@ -6622,12 +6908,11 @@ namespace
 							+ resourceKey, error);
 					if (!assignedProperties.insert(L"headertemplate").second)
 						return Fail(L"属性重复：HeaderTemplate", error);
-					_document.Nodes[nodeIndex].Extra["headerTemplate"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.HeaderTemplate = definition->Key;
 					continue;
 				}
-				if ((_document.Nodes[nodeIndex].Type == UIClass::UI_ItemsControl
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ListBox)
+				if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl,
+					_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"GroupStyle"))
 				{
 					std::wstring resourceKey;
@@ -6640,12 +6925,11 @@ namespace
 							+ resourceKey, error);
 					if (!assignedProperties.insert(L"groupstyle").second)
 						return Fail(L"属性重复：GroupStyle", error);
-					_document.Nodes[nodeIndex].Extra["groupStyle"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.GroupStyle = definition->Key;
 					continue;
 				}
-				if ((_document.Nodes[nodeIndex].Type == UIClass::UI_ItemsControl
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ListBox)
+				if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl,
+					_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"ItemsPanel"))
 				{
 					std::wstring resourceKey;
@@ -6658,13 +6942,10 @@ namespace
 							+ resourceKey, error);
 					if (!assignedProperties.insert(L"itemspanel").second)
 						return Fail(L"属性重复：ItemsPanel", error);
-					_document.Nodes[nodeIndex].Extra["itemsPanel"] =
-						ToUtf8(definition->Key);
+					_document.Nodes[nodeIndex].Structure.ItemsPanel = definition->Key;
 					continue;
 				}
-				if ((_document.Nodes[nodeIndex].Type == UIClass::UI_ListBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_ComboBox
-					|| _document.Nodes[nodeIndex].Type == UIClass::UI_TreeView)
+				if (schema.FindProperty(L"ItemContainerStyle")
 					&& Equals(name, L"ItemContainerStyle"))
 				{
 					std::wstring resourceKey;
@@ -6673,15 +6954,14 @@ namespace
 							+ value, error);
 					if (!assignedProperties.insert(L"itemcontainerstyle").second)
 						return Fail(L"属性重复：ItemContainerStyle", error);
-					_document.Nodes[nodeIndex].Extra["itemContainerStyle"] =
-						ToUtf8(resourceKey);
+					_document.Nodes[nodeIndex].Structure.ItemContainerStyle = resourceKey;
 					continue;
 				}
 				if (_document.Nodes[nodeIndex].Type == UIClass::UI_ContentPresenter
 					&& Equals(name, L"ContentSource"))
 				{
 					if (!_parsingControlTemplateVisual
-						|| !_activeControlTemplateProbe)
+						|| !_activeControlTemplateSchema)
 						return Fail(L"ContentPresenter.ContentSource 只能出现在 ControlTemplate 中。",
 							error);
 					const auto requested = Trim(value);
@@ -6698,7 +6978,7 @@ namespace
 					}
 					else if (Equals(requested, L"Header")
 						&& IsHeaderedContentControlType(
-							_activeControlTemplateProbe->Type()))
+							_activeControlTemplateSchema->NativeType))
 					{
 						canonical = L"Header";
 						aliases = { {
@@ -6712,20 +6992,18 @@ namespace
 
 					for (const auto& [targetName, sourceName] : aliases)
 					{
-						const auto* target = probe.FindPropertyMetadata(targetName);
-						const auto* source = _activeControlTemplateProbe
-							->FindPropertyMetadata(sourceName);
+						const auto* target = schema.FindProperty(targetName);
+						const auto* source = _activeControlTemplateSchema
+							->FindProperty(sourceName);
 						BindingValue sourceDefault;
 						BindingValue compatible;
 						if (!target || !target->CanWrite() || !source || !source->CanRead()
-							|| (!source->TryGetDefaultValue(sourceDefault)
-								&& !source->TryGet(*_activeControlTemplateProbe,
-									sourceDefault))
+							|| !source->TryGetDefaultValue(sourceDefault)
 							|| !target->TryConvert(sourceDefault, compatible))
 							return Fail(L"ContentSource 无法建立模板别名："
 								+ std::wstring(sourceName) + L" -> " + targetName,
 								error);
-						if (!assignedProperties.insert(Lower(target->Name())).second)
+						if (!assignedProperties.insert(target->Name()).second)
 							return Fail(L"ContentSource 与显式属性重复："
 								+ target->Name(), error);
 					}
@@ -6756,11 +7034,11 @@ namespace
 					const auto hostType = hostNode.Type;
 					if (!hostNode.ComponentType.Empty())
 						return Fail(L"ComponentSlot.Presents 不能标记另一个声明组件实例。", error);
-					if (hostType != UIClass::UI_Panel
+					if (hostType != UIClass::UI_Canvas
 						&& hostType != UIClass::UI_StackPanel
 						&& hostType != UIClass::UI_WrapPanel
 						&& hostType != UIClass::UI_DockPanel
-						&& hostType != UIClass::UI_GridPanel
+						&& hostType != UIClass::UI_Grid
 						&& hostType != UIClass::UI_RelativePanel)
 						return Fail(L"ComponentSlot.Presents 只能标记布局容器。", error);
 					if (std::any_of(_document.Nodes.begin(), _document.Nodes.end(),
@@ -6782,23 +7060,22 @@ namespace
 						&& !_parsingControlTemplateVisual)
 						return Fail(L"TemplateBinding 只能出现在组件或控件模板中。", error);
 					const auto propertyName = NormalizePropertyName(name, value);
-					const auto* target = probe.FindPropertyMetadata(propertyName);
+					const auto* target = schema.FindProperty(propertyName);
 					if (!target || !target->CanWrite())
 						return Fail(L"TemplateBinding 目标属性不可写或不存在：" + name, error);
 
 					std::wstring canonicalSource = templateSource;
 					BindingValue sourceDefault;
 					if (_parsingControlTemplateVisual
-						&& _activeControlTemplateProbe)
+						&& _activeControlTemplateSchema)
 					{
-						const auto* source = _activeControlTemplateProbe
-							->FindPropertyMetadata(templateSource);
+						const auto* source = _activeControlTemplateSchema
+							->FindProperty(templateSource);
 						if (!source || !source->CanRead())
 							return Fail(L"TemplateBinding 引用了 TargetType 不存在或不可读的属性："
 								+ templateSource, error);
 						canonicalSource = source->Name();
-						if (!source->TryGetDefaultValue(sourceDefault)
-							&& !source->TryGet(*_activeControlTemplateProbe, sourceDefault))
+						if (!source->TryGetDefaultValue(sourceDefault))
 							return Fail(L"TemplateBinding 无法读取 TargetType 属性默认值："
 								+ canonicalSource, error);
 					}
@@ -6834,7 +7111,7 @@ namespace
 					if (!target->TryConvert(sourceDefault, compatible))
 						return Fail(L"TemplateBinding 类型不兼容：" + canonicalSource
 							+ L" -> " + target->Name(), error);
-					if (!assignedProperties.insert(Lower(target->Name())).second)
+					if (!assignedProperties.insert(target->Name()).second)
 						return Fail(L"属性重复：" + target->Name(), error);
 					_document.Nodes[nodeIndex].TemplateBindings[
 						target->Name()] = canonicalSource;
@@ -6846,7 +7123,7 @@ namespace
 				if (_document.Nodes[nodeIndex].Type == UIClass::UI_MediaPlayer
 					&& Equals(name, L"Source"))
 				{
-					_document.Nodes[nodeIndex].Extra["mediaFile"] = ToUtf8(value);
+					_document.Nodes[nodeIndex].Structure.MediaFile = value;
 					continue;
 				}
 				const auto* component = FindVisibleComponent(
@@ -6878,12 +7155,12 @@ namespace
 							const auto stableName =
 								DesignerEventCatalog::MakeAttachedComponentEventKey(
 									owner->Type, contract->Name);
-							const auto key = ToUtf8(stableName);
+							const auto& key = stableName;
 							if (events.contains(key)
 								|| (owner->Type == _document.Nodes[nodeIndex].ComponentType
-									&& events.contains(ToUtf8(contract->Name))))
+									&& events.contains(contract->Name)))
 								return Fail(L"事件重复：" + rawName, error);
-							events[key] = ToUtf8(handler);
+							events[key] = handler;
 							continue;
 						}
 					}
@@ -6925,75 +7202,29 @@ namespace
 						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 							+ L" 的事件 " + event->Name + L"：" + error, error);
 					auto& events = _document.Nodes[nodeIndex].Events;
-					const auto key = ToUtf8(event->Name);
+					const auto& key = event->Name;
 					const auto attachedKey = component
-						? ToUtf8(DesignerEventCatalog::MakeAttachedComponentEventKey(
-							component->Type, event->Name)) : std::string{};
+						? DesignerEventCatalog::MakeAttachedComponentEventKey(
+							component->Type, event->Name) : std::wstring{};
 					if (events.contains(key)
 						|| (!attachedKey.empty() && events.contains(attachedKey)))
 						return Fail(L"事件重复：" + event->Name, error);
-					events[key] = ToUtf8(handler);
+					events[key] = handler;
 					continue;
 				}
 
-				if (Equals(name, L"StyleId"))
-				{
-					_document.Nodes[nodeIndex].Props["styleId"] = ToUtf8(Trim(value));
-					continue;
-				}
 				if (Equals(name, L"Style"))
 				{
 					std::wstring styleKey;
 					if (!TryParseStaticResource(value, styleKey))
 						return Fail(L"Style 属性必须使用 {StaticResource key}。", error);
-					_document.Nodes[nodeIndex].Props["styleId"] = ToUtf8(styleKey);
+					_document.Nodes[nodeIndex].Properties.StyleResourceKey =
+						std::move(styleKey);
 					continue;
 				}
-				if ((Equals(name, L"Class") && !Equals(prefix, L"x")) || Equals(name, L"Classes"))
-				{
-					DesignValue classes = DesignValue::array();
-					for (const auto& item : DesignerStyleSheetUtils::SplitClasses(value))
-						classes.push_back(ToUtf8(item));
-					_document.Nodes[nodeIndex].Props["styleClasses"] = std::move(classes);
-					continue;
-				}
-				if (Equals(rawName, L"SplitContainer.Region") || Equals(name, L"SplitContainer.Region"))
-				{
-					if (Equals(value, L"First") || Equals(value, L"FirstPanel") || Equals(value, L"Panel1"))
-						_document.Nodes[nodeIndex].Extra["splitRegion"] = "panel1";
-					else if (Equals(value, L"Second") || Equals(value, L"SecondPanel") || Equals(value, L"Panel2"))
-						_document.Nodes[nodeIndex].Extra["splitRegion"] = "panel2";
-					else return Fail(L"SplitContainer.Region 必须为 First 或 Second。", error);
-					continue;
-				}
-				if (Equals(name, L"Anchor"))
-				{
-					int anchors = 0;
-					if (!ParseAnchor(value, anchors)) return Fail(L"Anchor 值无效：" + value, error);
-					_document.Nodes[nodeIndex].Props["anchor"] = anchors;
-					continue;
-				}
-				if (Equals(name, L"FontName") || Equals(name, L"FontSize"))
-				{
-					auto& font = _document.Nodes[nodeIndex].Props["font"];
-					if (!font.is_object()) font = DesignValue::object();
-					if (Equals(name, L"FontName")) font["name"] = ToUtf8(value);
-					else
-					{
-						try
-						{
-							size_t consumed = 0;
-							const auto size = std::stod(Trim(value), &consumed);
-							if (consumed != Trim(value).size() || size < 1.0 || size > 200.0)
-								return Fail(L"FontSize 必须介于 1 与 200 之间。", error);
-							font["size"] = size;
-						}
-						catch (...) { return Fail(L"FontSize 必须是数值。", error); }
-					}
-					continue;
-				}
-
 				auto propertyName = NormalizePropertyName(name, value);
+				_document.Nodes[nodeIndex].Source.RecordMember(
+					propertyName, sourceSpan);
 				auto propertyValue = value;
 
 				DesignerDataBinding binding;
@@ -7002,9 +7233,11 @@ namespace
 				{
 					if (!ResolveBindingAncestorType(element, binding, error))
 						return false;
-					const auto* metadata = probe.FindPropertyMetadata(propertyName);
+					const auto* metadata = schema.FindProperty(propertyName);
 					if (!metadata)
-						return Fail(L"绑定目标属性不存在：" + name, error);
+						return Fail(L"绑定目标属性不存在："
+							+ _document.Nodes[nodeIndex].XamlType.LocalName
+							+ L"." + name, error);
 					if (binding.StringFormat
 						&& metadata->ValueKind() != BindingValueKind::String)
 						return Fail(L"Binding StringFormat 只能用于字符串目标属性："
@@ -7015,16 +7248,20 @@ namespace
 							*metadata, targetValueKind))
 						return Fail(L"属性 " + metadata->Name()
 							+ L" 的类型暂不支持 Binding 缺省值。", error);
-					auto normalizeBindingLiteral = [&](auto& literal,
+						auto normalizeBindingLiteral = [&](auto& literal,
 						const wchar_t* optionName)
 					{
 						if (!literal) return true;
 						literal->Kind = targetValueKind;
 						std::wstring literalError;
-						if (DesignerPropertyCatalog::ValidateStyleValue(
-							probe, metadata->Name(), *literal, &literalError,
+						DesignerStyleValue canonical;
+						if (DesignerPropertyCatalog::NormalizeStyleValue(
+							*metadata, *literal, canonical, &literalError,
 							_currentResourceBasePath, _document.Resources))
+						{
+							*literal = std::move(canonical);
 							return true;
+						}
 						return Fail(L"Binding " + std::wstring(optionName)
 							+ L" 无法转换到属性 " + metadata->Name()
 							+ L"：" + literalError, error);
@@ -7038,35 +7275,15 @@ namespace
 						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 							+ L" 的属性 " + metadata->Name()
 							+ L" 绑定无效：" + bindingError, error);
-					if (!assignedProperties.insert(Lower(metadata->Name())).second)
+					if (!assignedProperties.insert(metadata->Name()).second)
 						return Fail(L"属性重复：" + metadata->Name(), error);
-					_document.Nodes[nodeIndex].Bindings[ToUtf8(metadata->Name())] =
-						DesignerBindingUtils::WriteBindingDefinition(binding);
+					_document.Nodes[nodeIndex].Bindings[metadata->Name()] =
+						std::move(binding);
 					continue;
 				}
 				if (!bindingError.empty())
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 的属性 " + name + L"：" + bindingError, error);
-				if (IsContentHostType(_document.Nodes[nodeIndex].Type)
-					&& Equals(name, L"Content"))
-				{
-					if (!value.empty() && value.front() == L'{')
-						return Fail(L"Content 当前只支持文本字面量或 Binding。", error);
-					if (!assignedProperties.insert(L"content").second)
-						return Fail(L"属性重复：Content", error);
-					_document.Nodes[nodeIndex].Extra["contentText"] = ToUtf8(value);
-					continue;
-				}
-				if (IsHeaderedContentControlType(_document.Nodes[nodeIndex].Type)
-					&& Equals(name, L"Header"))
-				{
-					if (!value.empty() && value.front() == L'{')
-						return Fail(L"Header 当前只支持文本字面量或 Binding。", error);
-					if (!assignedProperties.insert(L"header").second)
-						return Fail(L"属性重复：Header", error);
-					_document.Nodes[nodeIndex].Extra["headerText"] = ToUtf8(value);
-					continue;
-				}
 				if (Equals(name, L"Visibility"))
 				{
 					bool recognized = false;
@@ -7074,19 +7291,19 @@ namespace
 					if (!recognized) return Fail(L"Visibility 必须为 Visible、Hidden 或 Collapsed。", error);
 				}
 
-				const auto properties = DesignerPropertyCatalog::GetStyleProperties(probe);
-				const auto* descriptor = DesignerPropertyCatalog::Find(properties, propertyName);
-				if (!descriptor)
+				DesignerPropertyDescriptor descriptor;
+				if (!DesignerPropertyCatalog::TryGetStyleProperty(
+					schema.Properties, propertyName, descriptor))
 				{
-					if (const auto* metadata = probe.FindPropertyMetadata(propertyName);
+					if (const auto* metadata = schema.FindProperty(propertyName);
 						metadata && metadata->IsReadOnly())
 						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 							+ L" 的属性只读：" + name, error);
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 不包含可持久化属性：" + name, error);
 				}
-				if (!assignedProperties.insert(Lower(descriptor->Name)).second)
-					return Fail(L"属性重复：" + descriptor->Name, error);
+				if (!assignedProperties.insert(descriptor.Name).second)
+					return Fail(L"属性重复：" + descriptor.Name, error);
 				std::wstring resourceKey;
 				std::wstring dynamicResourceKey;
 				const DesignerStyleValue* resourceValue = nullptr;
@@ -7107,33 +7324,32 @@ namespace
 				}
 				if (!dynamicResourceKey.empty() && !resourceValue)
 				{
-					std::wstring canonical;
 					DesignerStyleValue effective;
 					std::wstring captureError;
-					if (!DesignerPropertyCatalog::CaptureValue(
-						probe, descriptor->Name, &canonical, effective,
-						&captureError))
+					if (!descriptor.Metadata
+						|| !DesignerPropertyCatalog::CaptureDefaultValue(
+							*descriptor.Metadata, effective, &captureError))
 						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 							+ L" 的属性 " + name + L"：" + captureError, error);
-					StoreMetadata(_document.Nodes[nodeIndex], canonical,
+					StoreMetadata(_document.Nodes[nodeIndex], descriptor.Name,
 						effective, {}, dynamicResourceKey);
 					continue;
 				}
 				DesignerStyleValue typed = resourceValue
 					? *resourceValue
 					: DesignerStyleValue{
-						descriptor->ValueKind,
-						NormalizePropertyText(name, propertyValue, *descriptor) };
-				std::wstring canonical;
+						descriptor.ValueKind,
+						NormalizePropertyText(name, propertyValue, descriptor) };
 				DesignerStyleValue effective;
 				std::wstring applyError;
-				if (!DesignerPropertyCatalog::ApplyValue(
-					probe, descriptor->Name, typed, &canonical, &effective, &applyError,
+				if (!descriptor.Metadata
+					|| !DesignerPropertyCatalog::NormalizeStyleValue(
+						*descriptor.Metadata, typed, effective, &applyError,
 					_options.ResourceBasePath, _document.Resources))
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 的属性 " + name + L"：" + applyError, error);
 				StoreMetadata(
-					_document.Nodes[nodeIndex], canonical, effective,
+					_document.Nodes[nodeIndex], descriptor.Name, effective,
 					resourceKey, dynamicResourceKey);
 			}
 			return true;
@@ -7169,13 +7385,13 @@ namespace
 				return std::nullopt;
 			};
 			if (const auto value = enumValue(
-				L"HAlign", { L"Left", L"Center", L"Right", L"Stretch" }))
+				L"HorizontalAlignment", { L"Left", L"Center", L"Right", L"Stretch" }))
 				return *value;
 			if (const auto value = enumValue(
-				L"VAlign", { L"Top", L"Center", L"Bottom", L"Stretch" }))
+				L"VerticalAlignment", { L"Top", L"Center", L"Bottom", L"Stretch" }))
 				return *value;
 			if (const auto value = enumValue(
-				L"DockPosition", { L"Left", L"Top", L"Right", L"Bottom", L"Fill" }))
+				L"DockPanel.Dock", { L"Left", L"Top", L"Right", L"Bottom" }))
 				return *value;
 			return rawValue;
 		}
@@ -7187,25 +7403,40 @@ namespace
 			const std::wstring& resourceKey = {},
 			const std::wstring& dynamicResourceKey = {})
 		{
-			auto& metadata = node.Props["metadata"];
-			if (!metadata.is_object()) metadata = DesignValue::object();
-			auto stored = DesignValue{
-				{ "kind", ToUtf8(DesignerStyleSheetUtils::ValueKindName(value.Kind)) },
-				{ "value", ToUtf8(value.Text) }
-			};
-			if (!value.ObjectValue.is_null())
-				stored["object"] = value.ObjectValue;
-			if (!resourceKey.empty())
-				stored["resourceKey"] = ToUtf8(resourceKey);
-			if (!dynamicResourceKey.empty())
-				stored["dynamicResourceKey"] = ToUtf8(dynamicResourceKey);
-			metadata[ToUtf8(propertyName)] = std::move(stored);
+			node.Properties.Set(propertyName,
+				{ value, resourceKey, dynamicResourceKey });
+		}
+
+		bool StoreLiteralProperty(
+			size_t nodeIndex,
+			const CuiRuntime::XamlTypePropertySchema& schema,
+			const std::wstring& propertyName,
+			const std::wstring& text,
+			std::wstring& error)
+		{
+			DesignerPropertyDescriptor descriptor;
+			if (!DesignerPropertyCatalog::TryGetStyleProperty(
+				schema.Properties, propertyName, descriptor)
+				|| !descriptor.Metadata)
+				return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+					+ L" 不包含可持久化属性：" + propertyName, error);
+			DesignerStyleValue canonical;
+			std::wstring conversionError;
+			if (!DesignerPropertyCatalog::NormalizeStyleValue(
+				*descriptor.Metadata,
+				{ descriptor.ValueKind, text }, canonical, &conversionError,
+				_currentResourceBasePath, _document.Resources))
+				return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+					+ L" 的属性 " + propertyName + L"：" + conversionError, error);
+			StoreMetadata(
+				_document.Nodes[nodeIndex], descriptor.Name, canonical);
+			return true;
 		}
 
 		bool ApplyDirectText(
 			const Element& element,
 			size_t nodeIndex,
-			Control& probe,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			std::wstring& error)
 		{
 			DiagnosticContext context(*this, element);
@@ -7221,29 +7452,28 @@ namespace
 			if (text.empty()) return true;
 			if (IsContentHostType(_document.Nodes[nodeIndex].Type))
 			{
-				if (_document.Nodes[nodeIndex].Bindings.contains("Content")
-					|| (_document.Nodes[nodeIndex].Extra.is_object()
-						&& _document.Nodes[nodeIndex].Extra.contains("contentText")))
+				if (_document.Nodes[nodeIndex].Bindings.contains(L"Content")
+					|| _document.Nodes[nodeIndex].Properties.Find(L"Content"))
 					return Fail(L"属性重复：Content", error);
-				_document.Nodes[nodeIndex].Extra["contentText"] = ToUtf8(text);
-				return true;
+				return StoreLiteralProperty(
+					nodeIndex, schema, L"Content", text, error);
 			}
-			if (_document.Nodes[nodeIndex].Bindings.contains("Text")) return true;
-			if (_document.Nodes[nodeIndex].Props.contains("metadata")
-				&& _document.Nodes[nodeIndex].Props["metadata"].contains("Text")) return true;
+			if (_document.Nodes[nodeIndex].Bindings.contains(L"Text")) return true;
+			if (_document.Nodes[nodeIndex].Properties.Find(L"Text")) return true;
 
-			const auto properties = DesignerPropertyCatalog::GetStyleProperties(probe);
+			const auto properties = DesignerPropertyCatalog::GetStyleProperties(
+				schema.Properties);
 			const auto* descriptor = DesignerPropertyCatalog::Find(properties, L"Text");
 			if (!descriptor) return Fail(L"该控件不支持文本内容。", error);
 			DesignerStyleValue effective;
-			std::wstring canonical;
 			std::wstring applyError;
-			if (!DesignerPropertyCatalog::ApplyValue(
-				probe, descriptor->Name,
-				{ descriptor->ValueKind, text }, &canonical, &effective, &applyError,
+			if (!descriptor->Metadata
+				|| !DesignerPropertyCatalog::NormalizeStyleValue(
+					*descriptor->Metadata,
+					{ descriptor->ValueKind, text }, effective, &applyError,
 				_options.ResourceBasePath))
 				return Fail(applyError, error);
-			StoreMetadata(_document.Nodes[nodeIndex], canonical, effective);
+			StoreMetadata(_document.Nodes[nodeIndex], descriptor->Name, effective);
 			return true;
 		}
 
@@ -7305,131 +7535,24 @@ namespace
 			return Fail(std::wstring(name) + L" 必须是有限数值。", error);
 		}
 
-		bool ParseStringItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				if (!Equals(FromUtf8(item->LocalName()), L"String")
-					|| (!Equals(FromUtf8(item->Prefix()), L"x")
-						&& !Equals(FromUtf8(item->NamespaceURI()),
-							L"http://schemas.microsoft.com/winfx/2006/xaml")))
-					return Fail(L"字符串集合仅允许 x:String。", error);
-				if (!ValidateAttributes(item, {}, error)) return false;
-				if (!ChildElements(item).empty())
-					return Fail(L"x:String 不允许包含子元素。", error);
-				output.push_back(item->InnerText());
-			}
-			return true;
-		}
-
-		bool ParseComboBoxItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				const auto name = FromUtf8(item->LocalName());
-				if (Equals(name, L"ComboBoxItem"))
-				{
-					if (!ValidateAttributes(item, { L"Content" }, error)
-						|| !ChildElements(item).empty())
-						return Fail(L"ComboBoxItem 仅支持 Content 属性。", error);
-					output.push_back(ToUtf8(
-						Attribute(item, L"Content").value_or(L"")));
-					continue;
-				}
-				if (!Equals(name, L"String")
-					|| (!Equals(FromUtf8(item->Prefix()), L"x")
-						&& !Equals(FromUtf8(item->NamespaceURI()),
-							L"http://schemas.microsoft.com/winfx/2006/xaml")))
-					return Fail(L"ComboBox.Items 仅允许 ComboBoxItem 或 x:String。", error);
-				if (!ValidateAttributes(item, {}, error) || !ChildElements(item).empty())
-					return Fail(L"x:String 不允许属性或子元素。", error);
-				output.push_back(item->InnerText());
-			}
-			return true;
-		}
-
-		bool ParseListItem(
-			const Element& item,
-			DesignValue& value,
-			std::wstring& error)
-		{
-			const auto itemName = FromUtf8(item->LocalName());
-			if (!Equals(itemName, L"ListViewItem"))
-				return Fail(L"列表项必须是 ListViewItem。", error);
-			if (!ValidateAttributes(item,
-				{ L"Content", L"Text", L"SubText", L"IsChecked", L"IsSelected", L"IsEnabled" }, error))
-				return false;
-			value = DesignValue::object();
-			value["text"] = ToUtf8(Attribute(item, L"Content").value_or(
-				Attribute(item, L"Text").value_or(L"")));
-			value["subText"] = ToUtf8(Attribute(item, L"SubText").value_or(L""));
-			for (const auto& [attributeName, key, defaultValue] : {
-				std::tuple{ L"IsChecked", "checked", false },
-				std::tuple{ L"IsSelected", "selected", false },
-				std::tuple{ L"IsEnabled", "enabled", true } })
-			{
-				bool parsed = defaultValue;
-				if (!ReadBoolAttribute(item, attributeName, defaultValue, parsed, error))
-					return false;
-				value[key] = parsed;
-			}
-			for (const auto& child : ChildElements(item))
-			{
-				DiagnosticContext childContext(*this, child);
-				const auto childName = FromUtf8(child->LocalName());
-				if (!Equals(childName, L"ListViewItem.SubItems")
-					|| value.contains("subItems"))
-					return Fail(L"列表项仅允许一个 SubItems 属性元素。", error);
-				DesignValue subItems;
-				if (!ParseStringItems(child, subItems, error)) return false;
-				if (!subItems.empty()) value["subItems"] = std::move(subItems);
-			}
-			return true;
-		}
-
-		bool TryParseContentItem(
-			const Element& item,
+		bool StoreStructureValue(
 			size_t nodeIndex,
-			UIClass type,
-			bool& handled,
+			const char* key,
+			DesignValue value,
 			std::wstring& error)
 		{
-			handled = false;
-			const auto name = FromUtf8(item->LocalName());
-			auto& extra = _document.Nodes[nodeIndex].Extra;
-			auto append = [&](DesignValue value)
-			{
-				if (!extra.contains("items")) extra["items"] = DesignValue::array();
-				if (!extra["items"].is_array()) return false;
-				extra["items"].push_back(std::move(value));
-				return true;
-			};
-			if (type == UIClass::UI_ComboBox && Equals(name, L"ComboBoxItem"))
-			{
-				handled = true;
-				if (!ValidateAttributes(item, { L"Content" }, error)
-					|| !ChildElements(item).empty())
-					return Fail(L"ComboBoxItem 仅支持 Content 属性。", error);
-				return append(ToUtf8(Attribute(item, L"Content").value_or(L"")));
-			}
-			if (type == UIClass::UI_ListView && Equals(name, L"ListViewItem"))
-			{
-				handled = true;
-				DesignValue value;
-				return ParseListItem(item, value, error) && append(std::move(value));
-			}
+			if (nodeIndex >= _document.Nodes.size())
+				return Fail(L"结构属性目标不存在。", error);
+			auto& node = _document.Nodes[nodeIndex];
+			auto encoded = EncodeDesignNodeStructure(node.Type, node.Structure);
+			encoded[key] = std::move(value);
+			DesignNodeStructure decoded;
+			std::wstring structuralError;
+			if (!DecodeDesignNodeStructure(
+				node.Type, encoded, decoded, &structuralError))
+				return Fail(L"结构属性 " + FromUtf8(key) + L" 无效："
+					+ structuralError, error);
+			node.Structure = std::move(decoded);
 			return true;
 		}
 
@@ -7648,7 +7771,7 @@ namespace
 				if (!ParseGradientStops(
 					contentChildren, output["stops"], error)) return false;
 			}
-			else return Fail(L"Control.Foreground 仅支持 SolidColorBrush、"
+			else return Fail(L"Brush 属性仅支持 SolidColorBrush、"
 				L"LinearGradientBrush、RadialGradientBrush 和 ImageBrush。", error);
 
 			double opacity = 1.0;
@@ -7667,7 +7790,7 @@ namespace
 			if (!ValidateAttributes(property, {}, error)) return false;
 			const auto brushes = ChildElements(property);
 			if (brushes.size() != 1)
-				return Fail(L"Control.Foreground 必须且只能包含一个画刷。", error);
+				return Fail(L"Brush 属性必须且只能包含一个画刷。", error);
 			return ParseBrushElement(brushes.front(), output, error);
 		}
 
@@ -8173,145 +8296,6 @@ namespace
 			return true;
 		}
 
-		bool ParseDoubleItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				if (!Equals(FromUtf8(item->LocalName()), L"Double")
-					|| (!Equals(FromUtf8(item->Prefix()), L"x")
-						&& !Equals(FromUtf8(item->NamespaceURI()),
-							L"http://schemas.microsoft.com/winfx/2006/xaml")))
-					return Fail(L"数值集合仅允许 x:Double。", error);
-				if (!ValidateAttributes(item, {}, error) || !ChildElements(item).empty())
-					return Fail(L"x:Double 不允许属性或子元素。", error);
-				double value = 0.0;
-				if (!TryParseDouble(Trim(FromUtf8(item->InnerText())), value))
-					return Fail(L"x:Double 必须是有限数值。", error);
-				output.push_back(value);
-			}
-			return true;
-		}
-
-		bool ParseNavigationItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				const auto itemName = FromUtf8(item->LocalName());
-				const bool headerElement = Equals(itemName, L"NavigationViewHeader");
-				const bool separatorElement = Equals(itemName, L"NavigationViewSeparator");
-				if (!Equals(itemName, L"NavigationViewItem")
-					&& !headerElement && !separatorElement)
-					return Fail(L"NavigationView.Items 仅允许 NavigationViewItem、"
-						L"NavigationViewHeader 或 NavigationViewSeparator。", error);
-				if (!ValidateAttributes(item,
-					{ L"Text", L"Header", L"Value", L"BadgeText", L"Kind",
-					  L"Icon", L"IsEnabled", L"IsSelected", L"Tag" }, error)
-					|| !ChildElements(item).empty())
-					return Fail(L"导航项不允许包含子元素。", error);
-
-				int kind = headerElement ? 1 : separatorElement ? 2 : 0;
-				if (const auto text = Attribute(item, L"Kind"); text
-					&& !TryParseEnum(*text, { L"Item", L"Header", L"Separator" }, kind))
-					return Fail(L"NavigationViewItem Kind 无效。", error);
-				const bool enabledDefault = kind == 0;
-				bool enabled = enabledDefault;
-				bool selected = false;
-				if (!ReadBoolAttribute(item, L"IsEnabled", enabledDefault, enabled, error)
-					|| !ReadBoolAttribute(item, L"IsSelected", false, selected, error))
-					return false;
-				unsigned long long tag = 0;
-				if (const auto text = Attribute(item, L"Tag");
-					text && !TryParseUnsignedInteger(*text, tag))
-					return Fail(L"NavigationViewItem Tag 必须是非负整数。", error);
-				output.push_back(DesignValue{
-					{ "text", ToUtf8(Attribute(item, L"Text").value_or(
-						Attribute(item, L"Header").value_or(L""))) },
-					{ "value", ToUtf8(Attribute(item, L"Value").value_or(L"")) },
-					{ "badgeText", ToUtf8(Attribute(item, L"BadgeText").value_or(L"")) },
-					{ "icon", ToUtf8(Attribute(item, L"Icon").value_or(L"")) },
-					{ "kind", kind }, { "enabled", enabled },
-					{ "selected", selected }, { "tag", tag } });
-			}
-			return true;
-		}
-
-		bool ParseBreadcrumbItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				if (!Equals(FromUtf8(item->LocalName()), L"BreadcrumbBarItem"))
-					return Fail(L"BreadcrumbBar.Items 仅允许 BreadcrumbBarItem。", error);
-				if (!ValidateAttributes(item,
-					{ L"Text", L"Header", L"Value", L"IsEnabled", L"Tag" }, error)
-					|| !ChildElements(item).empty())
-					return Fail(L"BreadcrumbBarItem 不允许包含子元素。", error);
-				bool enabled = true;
-				if (!ReadBoolAttribute(item, L"IsEnabled", true, enabled, error))
-					return false;
-				unsigned long long tag = 0;
-				if (const auto text = Attribute(item, L"Tag");
-					text && !TryParseUnsignedInteger(*text, tag))
-					return Fail(L"BreadcrumbBarItem Tag 必须是非负整数。", error);
-				output.push_back(DesignValue{
-					{ "text", ToUtf8(Attribute(item, L"Text").value_or(
-						Attribute(item, L"Header").value_or(L""))) },
-					{ "value", ToUtf8(Attribute(item, L"Value").value_or(L"")) },
-					{ "enabled", enabled }, { "tag", tag } });
-			}
-			return true;
-		}
-
-		bool ParseFilterBarItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				if (!Equals(FromUtf8(item->LocalName()), L"FilterBarItem"))
-					return Fail(L"FilterBar.Items 仅允许 FilterBarItem。", error);
-				if (!ValidateAttributes(item,
-					{ L"Text", L"Value", L"IsSelected", L"IsEnabled", L"Tag" }, error)
-					|| !ChildElements(item).empty())
-					return Fail(L"FilterBarItem 不允许包含子元素。", error);
-				bool selected = false;
-				bool enabled = true;
-				if (!ReadBoolAttribute(item, L"IsSelected", false, selected, error)
-					|| !ReadBoolAttribute(item, L"IsEnabled", true, enabled, error))
-					return false;
-				unsigned long long tag = 0;
-				if (const auto text = Attribute(item, L"Tag");
-					text && !TryParseUnsignedInteger(*text, tag))
-					return Fail(L"FilterBarItem Tag 必须是非负整数。", error);
-				output.push_back(DesignValue{
-					{ "text", ToUtf8(Attribute(item, L"Text").value_or(L"")) },
-					{ "value", ToUtf8(Attribute(item, L"Value").value_or(L"")) },
-					{ "selected", selected }, { "enabled", enabled }, { "tag", tag } });
-			}
-			return true;
-		}
-
 		bool ParseChartSeries(
 			const Element& property,
 			DesignValue& output,
@@ -8388,201 +8372,131 @@ namespace
 			return true;
 		}
 
-		bool ParseReportColumns(
+		bool ParseCommandBindings(
 			const Element& property,
-			DesignValue& output,
+			std::vector<DesignCommandBinding>& output,
 			std::wstring& error)
 		{
 			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
 			for (const auto& item : ChildElements(property))
 			{
 				DiagnosticContext itemContext(*this, item);
-				if (!Equals(FromUtf8(item->LocalName()), L"ReportColumn"))
-					return Fail(L"ReportView.Columns 仅允许 ReportColumn。", error);
+				if (!Equals(FromUtf8(item->LocalName()), L"CommandBinding"))
+					return Fail(L"CommandBindings 仅允许 CommandBinding。", error);
 				if (!ValidateAttributes(item,
-					{ L"Header", L"Width", L"HorizontalAlignment", L"Align", L"IsSortable" }, error)
-					|| !ChildElements(item).empty())
-					return Fail(L"ReportColumn 不允许包含子元素。", error);
-				double width = 120.0;
-				if (!ReadDoubleAttribute(item, L"Width", 120.0, width, error)
-					|| width < 0.0) return Fail(L"ReportColumn Width 必须是非负数。", error);
-				int align = 0;
-				const auto alignText = Attribute(item, L"HorizontalAlignment").value_or(
-					Attribute(item, L"Align").value_or(L"Left"));
-				if (!TryParseEnum(alignText, { L"Left", L"Center", L"Right" }, align))
-					return Fail(L"ReportColumn Align 无效。", error);
-				bool sortable = true;
-				if (!ReadBoolAttribute(item, L"IsSortable", true, sortable, error)) return false;
-				output.push_back(DesignValue{
-					{ "header", ToUtf8(Attribute(item, L"Header").value_or(L"")) },
-					{ "width", width }, { "align", align }, { "sortable", sortable } });
+					{ L"Command", L"PreviewCanExecute", L"CanExecute",
+					  L"PreviewExecuted", L"Executed" }, error)) return false;
+				if (!ChildElements(item).empty()
+					|| !Trim(FromUtf8(item->InnerText())).empty())
+					return Fail(L"CommandBinding 不允许子元素或文本。", error);
+				DesignCommandBinding binding;
+				binding.Command = Trim(Attribute(item, L"Command").value_or(L""));
+				if (binding.Command.empty())
+					return Fail(L"CommandBinding.Command 不能为空。", error);
+				auto readHandler = [&](const wchar_t* name,
+					std::wstring& target) -> bool
+				{
+					const auto value = Attribute(item, name);
+					if (!value) return true;
+					std::wstring handlerError;
+					if (!NormalizeHandler(*value, target, handlerError))
+						return Fail(L"CommandBinding." + std::wstring(name)
+							+ L"：" + handlerError, error);
+					return true;
+				};
+				if (!readHandler(L"PreviewCanExecute", binding.PreviewCanExecute)
+					|| !readHandler(L"CanExecute", binding.CanExecute)
+					|| !readHandler(L"PreviewExecuted", binding.PreviewExecuted)
+					|| !readHandler(L"Executed", binding.Executed)) return false;
+				if (binding.PreviewCanExecute.empty() && binding.CanExecute.empty()
+					&& binding.PreviewExecuted.empty() && binding.Executed.empty())
+					return Fail(L"CommandBinding 至少需要一个处理器。", error);
+				output.push_back(std::move(binding));
 			}
 			return true;
 		}
 
-		bool ParseReportRows(
+		bool ParseInputBindings(
 			const Element& property,
-			DesignValue& output,
+			std::vector<DesignInputBinding>& output,
 			std::wstring& error)
 		{
 			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
+			std::unordered_set<std::wstring> gestures;
+			for (const auto& existing : output)
+				gestures.insert((existing.Kind == DesignInputBindingKind::Mouse
+					? L"mouse:" : L"key:") + Lower(existing.Gesture));
 			for (const auto& item : ChildElements(property))
 			{
 				DiagnosticContext itemContext(*this, item);
 				const auto itemName = FromUtf8(item->LocalName());
-				int kind = Equals(itemName, L"ReportGroup") ? 1
-					: Equals(itemName, L"ReportSummary") ? 2 : 0;
-				if (!Equals(itemName, L"ReportRow")
-					&& !Equals(itemName, L"ReportGroup")
-					&& !Equals(itemName, L"ReportSummary"))
-					return Fail(L"ReportView.Rows 仅允许 ReportRow、ReportGroup 或 ReportSummary。", error);
-				if (!ValidateAttributes(item, { L"Caption", L"IsExpanded", L"Tag" }, error))
-					return false;
-				bool expanded = true;
-				if (!ReadBoolAttribute(item, L"IsExpanded", true, expanded, error)) return false;
-				unsigned long long tag = 0;
-				if (const auto text = Attribute(item, L"Tag");
-					text && !TryParseUnsignedInteger(*text, tag))
-					return Fail(L"ReportRow Tag 必须是非负整数。", error);
-				DesignValue row{
-					{ "kind", kind },
-					{ "caption", ToUtf8(Attribute(item, L"Caption").value_or(L"")) },
-					{ "expanded", expanded }, { "tag", tag } };
-				for (const auto& child : ChildElements(item))
-				{
-					DiagnosticContext childContext(*this, child);
-					const auto expected = itemName + L".Cells";
-					if (!Equals(FromUtf8(child->LocalName()), expected)
-						|| row.contains("cells"))
-						return Fail(itemName + L" 仅允许一个 Cells 属性元素。", error);
-					DesignValue cells;
-					if (!ParseStringItems(child, cells, error)) return false;
-					row["cells"] = std::move(cells);
-				}
-				if (!row.contains("cells")) row["cells"] = DesignValue::array();
-				output.push_back(std::move(row));
-			}
-			return true;
-		}
-
-		bool ParseTreeItem(
-			const Element& item,
-			DesignValue& value,
-			std::wstring& error)
-		{
-			if (!Equals(FromUtf8(item->LocalName()), L"TreeViewItem"))
-				return Fail(L"TreeView.Items 仅允许 TreeViewItem。", error);
-			if (!ValidateAttributes(item, { L"Header", L"IsExpanded" }, error))
-				return false;
-			value = DesignValue::object();
-			value["text"] = ToUtf8(Attribute(item, L"Header").value_or(L""));
-			bool expanded = false;
-			if (!ReadBoolAttribute(item, L"IsExpanded", false, expanded, error))
-				return false;
-			value["expand"] = expanded;
-			bool hasExplicitItems = false;
-			bool hasImplicitItems = false;
-			for (const auto& child : ChildElements(item))
-			{
-				DiagnosticContext childContext(*this, child);
-				const auto childName = FromUtf8(child->LocalName());
-				if (Equals(childName, L"TreeViewItem.Items"))
-				{
-					if (hasExplicitItems || hasImplicitItems)
-						return Fail(L"TreeViewItem 仅允许一个 TreeViewItem.Items。", error);
-					hasExplicitItems = true;
-					DesignValue children;
-					if (!ParseTreeItems(child, children, error)) return false;
-					if (!children.empty()) value["children"] = std::move(children);
-					continue;
-				}
-				if (!Equals(childName, L"TreeViewItem"))
+				const bool isKey = Equals(itemName, L"KeyBinding");
+				const bool isMouse = Equals(itemName, L"MouseBinding");
+				if (!isKey && !isMouse)
 					return Fail(
-						L"TreeViewItem 仅允许 TreeViewItem 或 TreeViewItem.Items。",
-						error);
-				if (hasExplicitItems)
-					return Fail(
-						L"TreeViewItem 不能混用隐式子项和 TreeViewItem.Items。",
-						error);
-				hasImplicitItems = true;
-				if (!value.contains("children"))
-					value["children"] = DesignValue::array();
-				DesignValue nested;
-				if (!ParseTreeItem(child, nested, error)) return false;
-				value["children"].push_back(std::move(nested));
-			}
-			return true;
-		}
-
-		bool ParseTreeItems(
-			const Element& property,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				DesignValue value;
-				if (!ParseTreeItem(item, value, error)) return false;
-				output.push_back(std::move(value));
-			}
-			return true;
-		}
-
-		bool ParseMenuItems(
-			const Element& property,
-			bool allowSeparator,
-			DesignValue& output,
-			std::wstring& error)
-		{
-			if (!ValidateAttributes(property, {}, error)) return false;
-			output = DesignValue::array();
-			for (const auto& item : ChildElements(property))
-			{
-				DiagnosticContext itemContext(*this, item);
-				const auto itemName = FromUtf8(item->LocalName());
-				if (Equals(itemName, L"Separator"))
+						L"InputBindings 仅允许 KeyBinding 或 MouseBinding。", error);
+				if (isKey)
 				{
-					if (!allowSeparator)
-						return Fail(L"Menu 顶层不支持 Separator。", error);
-					if (!ValidateAttributes(item, {}, error)) return false;
-					if (!ChildElements(item).empty())
-						return Fail(L"Separator 不允许属性或子元素。", error);
-					output.push_back(DesignValue{ { "separator", true } });
-					continue;
+					if (!ValidateAttributes(item,
+						{ L"Command", L"Gesture", L"Key", L"Modifiers",
+						  L"CommandParameter", L"CommandTarget" }, error)) return false;
 				}
-				if (!Equals(itemName, L"MenuItem"))
-					return Fail(L"Menu.Items 仅允许 MenuItem。", error);
-				if (!ValidateAttributes(item,
-					{ L"Header", L"CommandId", L"Shortcut", L"IsEnabled" }, error))
-					return false;
-				DesignValue value = DesignValue::object();
-				value["text"] = ToUtf8(Attribute(item, L"Header").value_or(L""));
-				int commandId = 0;
-				if (const auto text = Attribute(item, L"CommandId");
-					text && !TryParseInteger(*text, commandId))
-					return Fail(L"CommandId 必须是整数。", error);
-				value["id"] = commandId;
-				value["shortcut"] = ToUtf8(Attribute(item, L"Shortcut").value_or(L""));
-				bool enabled = true;
-				if (!ReadBoolAttribute(item, L"IsEnabled", true, enabled, error))
-					return false;
-				value["enable"] = enabled;
-				for (const auto& child : ChildElements(item))
+				else if (!ValidateAttributes(item,
+					{ L"Command", L"Gesture", L"MouseAction", L"Modifiers",
+					  L"CommandParameter", L"CommandTarget" }, error)) return false;
+				if (!ChildElements(item).empty()
+					|| !Trim(FromUtf8(item->InnerText())).empty())
+					return Fail(itemName + L" 不允许子元素或文本。", error);
+				DesignInputBinding binding;
+				binding.Kind = isMouse
+					? DesignInputBindingKind::Mouse : DesignInputBindingKind::Key;
+				binding.Command = Trim(Attribute(item, L"Command").value_or(L""));
+				binding.CommandParameter =
+					Attribute(item, L"CommandParameter").value_or(L"");
+				if (!TryParseCommandTargetReference(
+					Attribute(item, L"CommandTarget").value_or(L""),
+					binding.CommandTarget, error)) return false;
+				if (binding.Command.empty())
+					return Fail(itemName + L".Command 不能为空。", error);
+				const auto explicitGesture = Attribute(item, L"Gesture");
+				const auto action = Attribute(item,
+					isKey ? L"Key" : L"MouseAction");
+				const auto modifiers = Attribute(item, L"Modifiers");
+				if (explicitGesture && (action || modifiers))
+					return Fail(itemName
+						+ L".Gesture 不能与动作/Modifiers 同时使用。", error);
+				if (explicitGesture) binding.Gesture = Trim(*explicitGesture);
+				else
 				{
-					DiagnosticContext childContext(*this, child);
-					if (!Equals(FromUtf8(child->LocalName()), L"MenuItem.Items")
-						|| value.contains("subItems"))
-						return Fail(L"MenuItem 仅允许一个 MenuItem.Items。", error);
-					DesignValue children;
-					if (!ParseMenuItems(child, true, children, error)) return false;
-					if (!children.empty()) value["subItems"] = std::move(children);
+					if (!action || Trim(*action).empty())
+						return Fail(itemName
+							+ L" 必须声明 Gesture 或动作。", error);
+					auto modifierText = Trim(modifiers.value_or(L""));
+					std::replace(modifierText.begin(), modifierText.end(), L',', L'+');
+					binding.Gesture = modifierText.empty()
+						? Trim(*action) : modifierText + L"+" + Trim(*action);
 				}
-				output.push_back(std::move(value));
+				std::wstring gestureError;
+				if (isKey)
+				{
+					KeyGesture gesture;
+					if (!TryParseKeyGesture(binding.Gesture, gesture, &gestureError))
+						return Fail(L"KeyBinding.Gesture：" + gestureError, error);
+					binding.Gesture = FormatKeyGesture(gesture);
+				}
+				else
+				{
+					MouseGesture gesture;
+					if (!TryParseMouseGesture(binding.Gesture, gesture, &gestureError))
+						return Fail(L"MouseBinding.Gesture：" + gestureError, error);
+					binding.Gesture = FormatMouseGesture(gesture);
+				}
+				const auto gestureIdentity = (isMouse ? L"mouse:" : L"key:")
+					+ Lower(binding.Gesture);
+				if (!gestures.insert(gestureIdentity).second)
+					return Fail(L"InputBindings 包含重复手势："
+						+ binding.Gesture, error);
+				output.push_back(std::move(binding));
 			}
 			return true;
 		}
@@ -8591,30 +8505,61 @@ namespace
 			const Element& property,
 			size_t nodeIndex,
 			UIClass type,
+			const CuiRuntime::XamlTypePropertySchema& schema,
 			bool& handled,
 			std::wstring& error)
 		{
 			handled = false;
 			const auto name = FromUtf8(property->LocalName());
-			auto& extra = _document.Nodes[nodeIndex].Extra;
+			auto storeCanonical = [&](const std::wstring& propertyName,
+				DesignerStyleValue value) -> bool
+			{
+				const auto* metadata = schema.FindProperty(propertyName);
+				DesignerStyleValue canonical;
+				std::wstring conversionError;
+				if (!metadata || !DesignerPropertyCatalog::NormalizeStyleValue(
+					*metadata, value, canonical, &conversionError,
+					_currentResourceBasePath, _document.Resources))
+					return Fail(L"属性元素 " + propertyName
+						+ L" 无法通过 Schema 规范化：" + conversionError, error);
+				StoreMetadata(
+					_document.Nodes[nodeIndex], propertyName, canonical);
+				return true;
+			};
+			const auto encodedStructure = EncodeDesignNodeStructure(
+				_document.Nodes[nodeIndex].Type,
+				_document.Nodes[nodeIndex].Structure);
 			auto beginCollection = [&](const char* key) -> bool
 			{
 				handled = true;
-				if (extra.contains(key))
+				if (encodedStructure.contains(key))
 					return Fail(L"属性元素重复：" + name, error);
 				return true;
 			};
 
-			const auto foregroundOwner =
-				DesignerStyleSheetUtils::UIClassName(type) + L".Foreground";
-			if (Equals(name, L"Control.Foreground")
-				|| Equals(name, foregroundOwner))
+			const auto ownerName = DesignerStyleSheetUtils::UIClassName(type);
+			std::wstring brushProperty;
+			for (const auto* candidate : { L"Background", L"Foreground", L"BorderBrush" })
 			{
-				if (!beginCollection("foregroundBrush")) return false;
+				if (Equals(name, L"Control." + std::wstring(candidate))
+					|| Equals(name, ownerName + L"." + candidate))
+				{
+					brushProperty = candidate;
+					break;
+				}
+			}
+			if (!brushProperty.empty())
+			{
+				handled = true;
+				auto& node = _document.Nodes[nodeIndex];
+				if (node.Properties.Find(brushProperty))
+					return Fail(L"属性元素重复：" + name, error);
 				DesignValue brush;
 				if (!ParseBrush(property, brush, error)) return false;
-				extra["foregroundBrush"] = std::move(brush);
-				return true;
+				DesignerStyleValue value;
+				value.Kind = DesignerStyleValueKind::Brush;
+				value.ObjectValue = std::move(brush);
+				return storeCanonical(brushProperty, std::move(value));
 			}
 
 			const auto transformOwner =
@@ -8622,365 +8567,41 @@ namespace
 			if (Equals(name, L"Control.RenderTransform")
 				|| Equals(name, transformOwner))
 			{
-				if (!beginCollection("renderTransform")) return false;
+				handled = true;
+				auto& node = _document.Nodes[nodeIndex];
+				if (node.Properties.Find(L"RenderTransform"))
+					return Fail(L"属性元素重复：" + name, error);
 				DesignValue transform;
 				if (!ParseTransform(property, transform, error)) return false;
-				extra["renderTransform"] = std::move(transform);
-				return true;
+				DesignerStyleValue value;
+				value.Kind = DesignerStyleValueKind::Transform;
+				value.ObjectValue = std::move(transform);
+				return storeCanonical(L"RenderTransform", std::move(value));
 			}
 
 			const auto clipOwner =
 				DesignerStyleSheetUtils::UIClassName(type) + L".Clip";
 			if (Equals(name, L"Control.Clip") || Equals(name, clipOwner))
 			{
-				if (!beginCollection("clip")) return false;
+				handled = true;
+				auto& node = _document.Nodes[nodeIndex];
+				if (node.Properties.Find(L"Clip"))
+					return Fail(L"属性元素重复：" + name, error);
 				DesignValue clip;
 				if (!ParseClip(property, clip, error)) return false;
-				extra["clip"] = std::move(clip);
-				return true;
+				DesignerStyleValue value;
+				value.Kind = DesignerStyleValueKind::Geometry;
+				value.ObjectValue = std::move(clip);
+				return storeCanonical(L"Clip", std::move(value));
 			}
 
-			const bool navigation = type == UIClass::UI_NavigationView
-				|| type == UIClass::UI_SideBar;
-			if (navigation && (Equals(name, L"NavigationView.Items")
-				|| Equals(name, L"SideBar.Items")))
-			{
-				if (!beginCollection("navigationItems")) return false;
-				DesignValue values;
-				if (!ParseNavigationItems(property, values, error)) return false;
-				extra["navigationItems"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_BreadcrumbBar
-				&& Equals(name, L"BreadcrumbBar.Items"))
-			{
-				if (!beginCollection("breadcrumbItems")) return false;
-				DesignValue values;
-				if (!ParseBreadcrumbItems(property, values, error)) return false;
-				extra["breadcrumbItems"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_FilterBar && Equals(name, L"FilterBar.Items"))
-			{
-				if (!beginCollection("filterItems")) return false;
-				DesignValue values;
-				if (!ParseFilterBarItems(property, values, error)) return false;
-				extra["filterItems"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_KpiCard && Equals(name, L"KpiCard.Sparkline"))
-			{
-				if (!beginCollection("sparkline")) return false;
-				DesignValue values;
-				if (!ParseDoubleItems(property, values, error)) return false;
-				extra["sparkline"] = std::move(values);
-				return true;
-			}
 			if (type == UIClass::UI_ChartView && Equals(name, L"ChartView.Series"))
 			{
 				if (!beginCollection("series")) return false;
 				DesignValue values;
 				if (!ParseChartSeries(property, values, error)) return false;
-				extra["series"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_ReportView && Equals(name, L"ReportView.Columns"))
-			{
-				if (!beginCollection("reportColumns")) return false;
-				DesignValue values;
-				if (!ParseReportColumns(property, values, error)) return false;
-				extra["reportColumns"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_ReportView && Equals(name, L"ReportView.Rows"))
-			{
-				if (!beginCollection("reportRows")) return false;
-				DesignValue values;
-				if (!ParseReportRows(property, values, error)) return false;
-				extra["reportRows"] = std::move(values);
-				return true;
-			}
-
-			if (type == UIClass::UI_ComboBox && Equals(name, L"ComboBox.Items"))
-			{
-				if (!beginCollection("items")) return false;
-				DesignValue values;
-				if (!ParseComboBoxItems(property, values, error)) return false;
-				extra["items"] = std::move(values);
-				return true;
-			}
-			const bool list = type == UIClass::UI_ListView;
-			const bool listColumns = list && Equals(name, L"ListView.Columns");
-			if (listColumns)
-			{
-				if (!beginCollection("columns") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue values = DesignValue::array();
-				for (const auto& item : ChildElements(property))
-				{
-					DiagnosticContext itemContext(*this, item);
-					if (!Equals(FromUtf8(item->LocalName()), L"ListViewColumn"))
-						return Fail(L"列表列集合仅允许 ListViewColumn。", error);
-					if (!ValidateAttributes(item,
-						{ L"Header", L"Width", L"HorizontalAlignment" }, error)) return false;
-					if (!ChildElements(item).empty())
-						return Fail(L"ListViewColumn 不允许子元素。", error);
-					DesignValue value = DesignValue::object();
-					value["header"] = ToUtf8(Attribute(item, L"Header").value_or(L""));
-					double width = 120.0;
-					if (!ReadDoubleAttribute(item, L"Width", 120.0, width, error)
-						|| width < 0.0) return Fail(L"Width 必须是非负数。", error);
-					value["width"] = width;
-					int alignment = 0;
-					if (const auto text = Attribute(item, L"HorizontalAlignment");
-						text && !TryParseEnum(*text, { L"Left", L"Center", L"Right" }, alignment))
-						return Fail(L"HorizontalAlignment 必须为 Left、Center 或 Right。", error);
-					value["align"] = alignment;
-					values.push_back(std::move(value));
-				}
-				extra["columns"] = std::move(values);
-				return true;
-			}
-			const bool listItems = list && Equals(name, L"ListView.Items");
-			if (listItems)
-			{
-				if (!beginCollection("items") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue values = DesignValue::array();
-				for (const auto& item : ChildElements(property))
-				{
-					DiagnosticContext itemContext(*this, item);
-					DesignValue value;
-					if (!ParseListItem(item, value, error)) return false;
-					values.push_back(std::move(value));
-				}
-				extra["items"] = std::move(values);
-				return true;
-			}
-			const bool dataGrid = type == UIClass::UI_GridView
-				|| type == UIClass::UI_PagedGridView;
-			const bool dataGridColumns = dataGrid
-				&& (Equals(name, L"GridView.Columns")
-					|| Equals(name, L"PagedGridView.Columns"));
-			if (dataGridColumns)
-			{
-				if (!beginCollection("columns") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue values = DesignValue::array();
-				for (const auto& item : ChildElements(property))
-				{
-					DiagnosticContext itemContext(*this, item);
-					if (!Equals(FromUtf8(item->LocalName()), L"GridViewColumn"))
-						return Fail(L"GridView.Columns 仅允许 GridViewColumn。", error);
-					if (!ValidateAttributes(item,
-						{ L"Header", L"Width", L"Type", L"CanEdit", L"ButtonText" }, error))
-						return false;
-					DesignValue value = DesignValue::object();
-					value["name"] = ToUtf8(Attribute(item, L"Header").value_or(L""));
-					double width = 120.0;
-					if (!ReadDoubleAttribute(item, L"Width", 120.0, width, error)
-						|| width < 0.0) return Fail(L"Width 必须是非负数。", error);
-					value["width"] = width;
-					int columnType = 0;
-					if (const auto text = Attribute(item, L"Type"); text && !TryParseEnum(*text,
-						{ L"Text", L"Image", L"Check", L"Button", L"ComboBox", L"LinkedText" },
-						columnType)) return Fail(L"GridViewColumn Type 无效。", error);
-					value["type"] = columnType;
-					bool canEdit = true;
-					if (!ReadBoolAttribute(item, L"CanEdit", true, canEdit, error)) return false;
-					value["canEdit"] = canEdit;
-					value["buttonText"] = ToUtf8(Attribute(item, L"ButtonText").value_or(L""));
-					for (const auto& child : ChildElements(item))
-					{
-						DiagnosticContext childContext(*this, child);
-						if (!Equals(FromUtf8(child->LocalName()), L"GridViewColumn.Items")
-							|| value.contains("comboBoxItems"))
-							return Fail(L"GridViewColumn 仅允许一个 GridViewColumn.Items。", error);
-						DesignValue items;
-						if (!ParseStringItems(child, items, error)) return false;
-						if (!items.empty()) value["comboBoxItems"] = std::move(items);
-					}
-					values.push_back(std::move(value));
-				}
-				extra["columns"] = std::move(values);
-				return true;
-			}
-			const bool dataGridRows = dataGrid
-				&& (Equals(name, L"GridView.Rows")
-					|| Equals(name, L"PagedGridView.Rows"));
-			if (dataGridRows)
-			{
-				if (!beginCollection("rows") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue rows = DesignValue::array();
-				for (const auto& rowElement : ChildElements(property))
-				{
-					DiagnosticContext rowContext(*this, rowElement);
-					if (!Equals(FromUtf8(rowElement->LocalName()), L"GridViewRow"))
-						return Fail(L"表格行集合仅允许 GridViewRow。", error);
-					if (!ValidateAttributes(rowElement, {}, error)) return false;
-					DesignValue cells = DesignValue::array();
-					for (const auto& cellElement : ChildElements(rowElement))
-					{
-						DiagnosticContext cellContext(*this, cellElement);
-						const auto cellName = FromUtf8(cellElement->LocalName());
-						if (Equals(cellName, L"String")
-							&& (Equals(FromUtf8(cellElement->Prefix()), L"x")
-								|| Equals(FromUtf8(cellElement->NamespaceURI()),
-									L"http://schemas.microsoft.com/winfx/2006/xaml")))
-						{
-							if (!ValidateAttributes(cellElement, {}, error)
-								|| !ChildElements(cellElement).empty())
-								return Fail(L"x:String 表格单元格不允许属性或子元素。", error);
-							cells.push_back(DesignValue{
-								{ "value", cellElement->InnerText() } });
-							continue;
-						}
-						if (!Equals(cellName, L"GridViewCell"))
-							return Fail(L"GridViewRow 仅允许 GridViewCell 或 x:String。", error);
-						if (!ValidateAttributes(cellElement,
-							{ L"Value", L"IsChecked", L"Tag", L"SelectedIndex" }, error)
-							|| !ChildElements(cellElement).empty())
-							return Fail(L"GridViewCell 不允许包含子元素。", error);
-						const bool hasChecked = Attribute(cellElement, L"IsChecked").has_value();
-						const bool hasTag = Attribute(cellElement, L"Tag").has_value();
-						const bool hasSelected = Attribute(cellElement, L"SelectedIndex").has_value();
-						if (static_cast<int>(hasChecked) + static_cast<int>(hasTag)
-							+ static_cast<int>(hasSelected) > 1)
-							return Fail(L"GridViewCell 的 IsChecked、Tag、SelectedIndex 互斥。", error);
-						DesignValue cell = DesignValue::object();
-						if (const auto value = Attribute(cellElement, L"Value"))
-							cell["value"] = ToUtf8(*value);
-						if (hasChecked)
-						{
-							bool checked = false;
-							if (!ReadBoolAttribute(
-								cellElement, L"IsChecked", false, checked, error)) return false;
-							cell["checked"] = checked;
-						}
-						if (const auto text = Attribute(cellElement, L"Tag"))
-						{
-							long long tag = 0;
-							if (!TryParseInteger(*text, tag))
-								return Fail(L"GridViewCell Tag 必须是整数。", error);
-							cell["tag"] = tag;
-						}
-						if (const auto text = Attribute(cellElement, L"SelectedIndex"))
-						{
-							int selectedIndex = -1;
-							if (!TryParseInteger(*text, selectedIndex) || selectedIndex < -1)
-								return Fail(L"SelectedIndex 必须是 -1 或非负整数。", error);
-							cell["selectedIndex"] = selectedIndex;
-						}
-						cells.push_back(std::move(cell));
-					}
-					rows.push_back(DesignValue{ { "cells", std::move(cells) } });
-				}
-				extra["rows"] = std::move(rows);
-				return true;
-			}
-			if (type == UIClass::UI_PropertyGrid && Equals(name, L"PropertyGrid.Items"))
-			{
-				if (!beginCollection("items") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue values = DesignValue::array();
-				for (const auto& item : ChildElements(property))
-				{
-					DiagnosticContext itemContext(*this, item);
-					if (!Equals(FromUtf8(item->LocalName()), L"PropertyGridItem"))
-						return Fail(L"PropertyGrid.Items 仅允许 PropertyGridItem。", error);
-					if (!ValidateAttributes(item, { L"Category", L"Name", L"Value", L"Description",
-						L"Type", L"IsReadOnly", L"IsMixed", L"CanReset", L"Minimum",
-						L"Maximum", L"Step", L"Tag" }, error)) return false;
-					DesignValue value = DesignValue::object();
-					for (const auto& [attributeName, key] : {
-						std::pair{ L"Category", "category" }, std::pair{ L"Name", "name" },
-						std::pair{ L"Value", "value" }, std::pair{ L"Description", "description" } })
-						value[key] = ToUtf8(Attribute(item, attributeName).value_or(L""));
-					int valueType = 0;
-					if (const auto text = Attribute(item, L"Type"); text && !TryParseEnum(*text,
-						{ L"Text", L"Number", L"Bool", L"Enum", L"Color", L"ReadOnly",
-						  L"Action", L"Slider", L"Anchor", L"EditableEnum" }, valueType))
-						return Fail(L"PropertyGridItem Type 无效。", error);
-					value["type"] = valueType;
-					for (const auto& [attributeName, key] : {
-						std::pair{ L"IsReadOnly", "readOnly" },
-						std::pair{ L"IsMixed", "isMixed" },
-						std::pair{ L"CanReset", "canReset" } })
-					{
-						bool parsed = false;
-						if (!ReadBoolAttribute(item, attributeName, false, parsed, error)) return false;
-						value[key] = parsed;
-					}
-					for (const auto& [attributeName, key, defaultValue] : {
-						std::tuple{ L"Minimum", "minimum", 0.0 },
-						std::tuple{ L"Maximum", "maximum", 1.0 },
-						std::tuple{ L"Step", "step", 0.01 } })
-					{
-						double parsed = defaultValue;
-						if (!ReadDoubleAttribute(item, attributeName, defaultValue, parsed, error)) return false;
-						value[key] = parsed;
-					}
-					unsigned long long tag = 0;
-					if (const auto text = Attribute(item, L"Tag");
-						text && !TryParseUnsignedInteger(*text, tag))
-						return Fail(L"Tag 必须是非负整数。", error);
-					value["tag"] = tag;
-					for (const auto& child : ChildElements(item))
-					{
-						DiagnosticContext childContext(*this, child);
-						if (!Equals(FromUtf8(child->LocalName()), L"PropertyGridItem.Options")
-							|| value.contains("options"))
-							return Fail(L"PropertyGridItem 仅允许一个 PropertyGridItem.Options。", error);
-						DesignValue options;
-						if (!ParseStringItems(child, options, error)) return false;
-						if (!options.empty()) value["options"] = std::move(options);
-					}
-					values.push_back(std::move(value));
-				}
-				extra["items"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_TreeView && Equals(name, L"TreeView.Items"))
-			{
-				if (!beginCollection("nodes")) return false;
-				DesignValue values;
-				if (!ParseTreeItems(property, values, error)) return false;
-				extra["nodes"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_StatusBar && Equals(name, L"StatusBar.Items"))
-			{
-				if (!beginCollection("parts") || !ValidateAttributes(property, {}, error))
-					return false;
-				DesignValue values = DesignValue::array();
-				for (const auto& item : ChildElements(property))
-				{
-					DiagnosticContext itemContext(*this, item);
-					if (!Equals(FromUtf8(item->LocalName()), L"StatusBarItem"))
-						return Fail(L"StatusBar.Items 仅允许 StatusBarItem。", error);
-					if (!ValidateAttributes(item, { L"Text", L"Width" }, error))
-						return false;
-					if (!ChildElements(item).empty())
-						return Fail(L"StatusBarItem 不允许子元素。", error);
-					int width = 0;
-					if (const auto text = Attribute(item, L"Width");
-						text && !TryParseInteger(*text, width))
-						return Fail(L"StatusBarItem Width 必须是整数。", error);
-					values.push_back(DesignValue{
-						{ "text", ToUtf8(Attribute(item, L"Text").value_or(L"")) },
-						{ "width", width } });
-				}
-				extra["parts"] = std::move(values);
-				return true;
-			}
-			if (type == UIClass::UI_Menu && Equals(name, L"Menu.Items"))
-			{
-				if (!beginCollection("items")) return false;
-				DesignValue values;
-				if (!ParseMenuItems(property, false, values, error)) return false;
-				extra["items"] = std::move(values);
-				return true;
+				return StoreStructureValue(nodeIndex,
+					"series", std::move(values), error);
 			}
 			return true;
 		}
@@ -9025,46 +8646,76 @@ namespace
 				}
 				definitions.push_back(std::move(definition));
 			}
-			_document.Nodes[gridIndex].Extra[rows ? "rows" : "columns"] = std::move(definitions);
-			return true;
+			return StoreStructureValue(gridIndex,
+				rows ? "rows" : "columns", std::move(definitions), error);
 		}
 
-		bool ParseTabPage(
-			const Element& page,
-			size_t tabIndex,
+		bool ValidateRelativePanelConstraints(
+			const std::vector<DesignNode>& nodes,
+			const std::wstring& owner,
 			std::wstring& error)
 		{
-			DiagnosticContext context(*this, page);
-			auto& extra = _document.Nodes[tabIndex].Extra;
-			auto& pages = extra["pages"];
-			if (!pages.is_array()) pages = DesignValue::array();
-			const auto pageIndex = pages.size();
-			const auto generatedPageId = _document.Nodes[tabIndex].Name
-				+ L"#page" + std::to_wstring(pageIndex);
-			const auto pageId = Trim(Attribute(page, L"DesignKey", L"d")
-				.value_or(generatedPageId));
-			if (!pageId.starts_with(_document.Nodes[tabIndex].Name + L"#page"))
-				return Fail(L"TabPage DesignKey 必须属于当前 TabControl。", error);
-			const auto text = Attribute(page, L"Header").value_or(
-				Attribute(page, L"Text").value_or(L"Page"));
-			pages.push_back(DesignValue{
-				{ "id", ToUtf8(pageId) }, { "text", ToUtf8(text) } });
-
-			for (const auto& attribute : page->Attributes())
+			std::unordered_map<int, const DesignNode*> byId;
+			std::unordered_map<std::wstring, const DesignNode*> byName;
+			byId.reserve(nodes.size());
+			byName.reserve(nodes.size());
+			for (const auto& node : nodes)
 			{
-				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
-				DiagnosticContext attributeContext(*this, page, attribute.get());
-				const auto name = FromUtf8(attribute->LocalName());
-				const auto prefix = FromUtf8(attribute->Prefix());
-				if (!Equals(name, L"Name") && !Equals(name, L"Header")
-					&& !Equals(name, L"Text")
-					&& !(Equals(name, L"DesignKey") && Equals(prefix, L"d")))
-					return Fail(L"TabPage 尚不支持属性：" + name, error);
+				byId.emplace(node.Id, &node);
+				byName.emplace(node.Name, &node);
 			}
-			for (const auto& child : ChildElements(page))
+			auto parentOf = [&](const DesignNode& node) -> const DesignNode*
 			{
-				DiagnosticContext childContext(*this, child);
-				if (!ParseControl(child, Parent{ 0, pageId }, error)) return false;
+				if (node.ParentId > 0)
+				{
+					const auto found = byId.find(node.ParentId);
+					if (found != byId.end()) return found->second;
+				}
+				if (!node.ParentRef.empty())
+				{
+					const auto found = byName.find(node.ParentRef);
+					if (found != byName.end()) return found->second;
+				}
+				return nullptr;
+			};
+			for (const auto& node : nodes)
+			{
+				if (!node.Structure.RelativePanel
+					|| node.Structure.RelativePanel->Empty()) continue;
+				const auto* parent = parentOf(node);
+				if (!parent || parent->Type != UIClass::UI_RelativePanel)
+					return Fail(owner + L" 中控件 " + node.Name
+						+ L" 的 RelativePanel 约束只能应用于 "
+							L"RelativePanel 的直接子控件。", error);
+				const auto& constraints = *node.Structure.RelativePanel;
+				const std::pair<const wchar_t*, const std::optional<std::wstring>*> references[] = {
+					{ L"Above", &constraints.Above },
+					{ L"Below", &constraints.Below },
+					{ L"LeftOf", &constraints.LeftOf },
+					{ L"RightOf", &constraints.RightOf },
+					{ L"AlignLeftWith", &constraints.AlignLeftWith },
+					{ L"AlignRightWith", &constraints.AlignRightWith },
+					{ L"AlignTopWith", &constraints.AlignTopWith },
+					{ L"AlignBottomWith", &constraints.AlignBottomWith }
+				};
+				for (const auto& [member, reference] : references)
+				{
+					if (!*reference) continue;
+					const auto& targetName = **reference;
+					const auto target = byName.find(targetName);
+					if (target == byName.end())
+						return Fail(owner + L" 中控件 " + node.Name
+							+ L" 的 RelativePanel 约束引用了不存在的 "
+								L"x:Name：" + targetName + L"（" + member + L"）", error);
+					if (target->second == &node)
+						return Fail(owner + L" 中控件 " + node.Name
+							+ L" 的 RelativePanel 约束不能引用自身。",
+							error);
+					if (parentOf(*target->second) != parent)
+						return Fail(owner + L" 中控件 " + node.Name
+							+ L" 的 RelativePanel 约束目标必须是同一面板的"
+								L"直接兄弟：" + targetName, error);
+				}
 			}
 			return true;
 		}
@@ -9077,7 +8728,7 @@ namespace
 			for (size_t index = 0; index < _document.Nodes.size(); ++index)
 			{
 				byId.emplace(_document.Nodes[index].Id, index);
-				byName.emplace(Lower(_document.Nodes[index].Name), index);
+				byName.emplace(_document.Nodes[index].Name, index);
 			}
 			std::vector<std::optional<std::wstring>> prefixes(_document.Nodes.size());
 			std::vector<unsigned char> state(_document.Nodes.size());
@@ -9101,54 +8752,49 @@ namespace
 				}
 				else if (!node.ParentRef.empty())
 				{
-					const auto found = byName.find(Lower(node.ParentRef));
+					const auto found = byName.find(node.ParentRef);
 					if (found != byName.end()) parentIndex = found->second;
 				}
 				if (parentIndex) inherited = resolve(*parentIndex);
 
 				auto effective = inherited;
-				if (node.Bindings.is_object())
+				for (const auto& [target, binding] : node.Bindings)
 				{
-					for (const auto& [target, binding] : node.Bindings.ObjectItems())
+					if (Equals(target, L"DataContext")
+						&& binding.IsMultiBinding())
 					{
-						if (!binding.is_object()) continue;
-						if (Equals(FromUtf8(target), L"DataContext")
-							&& binding.contains("bindings"))
-						{
-							effective.reset();
-							continue;
-						}
-						const auto source = DesignerBindingUtils::Trim(FromUtf8(
-							binding.value("source", std::string{})));
-						const bool explicitSource = !binding.value(
-							"elementName", std::string{}).empty()
-							|| !binding.value("relativeSource", std::string{}).empty();
-						if (Equals(FromUtf8(target), L"DataContext"))
-						{
-							if (!explicitSource && inherited)
-							{
-								paths.push_back(join(*inherited, source));
-								effective = join(*inherited, source);
-							}
-							else effective.reset();
-						}
+						effective.reset();
+						continue;
 					}
-					for (const auto& [target, binding] : node.Bindings.ObjectItems())
+					const auto source = DesignerBindingUtils::Trim(
+						binding.SourceProperty);
+					const bool explicitSource = !binding.ElementName.empty()
+						|| binding.RelativeSource
+							!= DesignerBindingRelativeSource::None;
+					if (Equals(target, L"DataContext"))
 					{
-						if (Equals(FromUtf8(target), L"DataContext")
-							|| !binding.is_object() || !effective) continue;
-						(void)DesignerBindingUtils::VisitLeafBindingDefinitions(
-							binding, [&](const DesignerModel::DesignValue& child)
-							{
-								if (!child.value("elementName", std::string{}).empty()
-									|| !child.value("relativeSource", std::string{}).empty())
-									return true;
-								paths.push_back(join(*effective,
-									DesignerBindingUtils::Trim(FromUtf8(
-										child.value("source", std::string{})))));
+						if (!explicitSource && inherited)
+						{
+							paths.push_back(join(*inherited, source));
+							effective = join(*inherited, source);
+						}
+						else effective.reset();
+					}
+				}
+				for (const auto& [target, binding] : node.Bindings)
+				{
+					if (Equals(target, L"DataContext") || !effective) continue;
+					(void)DesignerBindingUtils::VisitLeafBindingDefinitions(
+						binding, [&](const DesignerDataBinding& child)
+						{
+							if (!child.ElementName.empty()
+								|| child.RelativeSource
+									!= DesignerBindingRelativeSource::None)
 								return true;
-							});
-					}
+							paths.push_back(join(*effective,
+								DesignerBindingUtils::Trim(child.SourceProperty)));
+							return true;
+						});
 				}
 				prefixes[index] = effective;
 				state[index] = 2;
@@ -9195,33 +8841,31 @@ namespace
 			for (const auto& node : nodes) names.insert(node.Name);
 			for (const auto& node : nodes)
 			{
-				if (!node.Bindings.is_object()) continue;
 				for (const auto& [targetProperty, binding]
-					: node.Bindings.ObjectItems())
+					: node.Bindings)
 				{
 					std::wstring leafError;
 					if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
-						binding, [&](const DesignerModel::DesignValue& child)
+						binding, [&](const DesignerDataBinding& child)
 						{
-							if (child.value("relativeSource", std::string{})
-								== "TemplatedParent" && !allowTemplatedParent)
+							if (child.RelativeSource
+								== DesignerBindingRelativeSource::TemplatedParent
+								&& !allowTemplatedParent)
 							{
 								leafError = owner + L" 中控件 " + node.Name
-									+ L" 的绑定 " + FromUtf8(targetProperty)
+									+ L" 的绑定 " + targetProperty
 									+ L" 只能在组件模板内使用 TemplatedParent。";
 								return false;
 							}
-							if (!child.contains("elementName")
-								|| !child["elementName"].is_string()) return true;
-							const auto sourceName = FromUtf8(
-								child["elementName"].get<std::string>());
+							const auto& sourceName = child.ElementName;
+							if (sourceName.empty()) return true;
 							if (sourceName.empty() || names.contains(sourceName)) return true;
 							leafError = owner + L" 中控件 " + node.Name
-								+ L" 的绑定 " + FromUtf8(targetProperty)
+								+ L" 的绑定 " + targetProperty
 								+ L" 引用了当前 namescope 中不存在的 ElementName："
 								+ sourceName;
 							return false;
-						}, &leafError))
+						}))
 						return Fail(leafError, error);
 				}
 			}
@@ -9230,21 +8874,11 @@ namespace
 	};
 }
 
-bool XamlDocumentParser::FromXaml(
-	const std::string& xaml,
-	DesignDocument& output,
-	std::wstring* outError,
-	XamlDocumentDiagnostic* outDiagnostic)
-
-{
-	return FromXaml(
-		xaml, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
-}
-
-bool XamlDocumentParser::FromXaml(
+static bool ParseXamlDocumentCore(
 	const std::string& xaml,
 	DesignDocument& output,
 	const XamlDocumentParseOptions& options,
+	bool resourceDictionary,
 	std::wstring* outError,
 	XamlDocumentDiagnostic* outDiagnostic)
 {
@@ -9264,7 +8898,10 @@ bool XamlDocumentParser::FromXaml(
 		candidate.Resources = effectiveOptions.Resources;
 		Parser parser(candidate, effectiveOptions, sourceLocations, outDiagnostic);
 		std::wstring error;
-		if (!parser.Parse(root, error))
+		const bool parsed = resourceDictionary
+			? parser.ParseResourceDictionaryRoot(root, error)
+			: parser.Parse(root, error);
+		if (!parsed)
 		{
 			parser.FinalizeFailure(root, error);
 			ReportFailure(error, outError, outDiagnostic);
@@ -9298,21 +8935,11 @@ bool XamlDocumentParser::FromXaml(
 	}
 }
 
-bool XamlDocumentParser::LoadFromFile(
-	const std::wstring& filePath,
-	DesignDocument& output,
-	std::wstring* outError,
-	XamlDocumentDiagnostic* outDiagnostic)
-
-{
-	return LoadFromFile(
-		filePath, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
-}
-
-bool XamlDocumentParser::LoadFromFile(
+static bool LoadXamlDocumentCore(
 	const std::wstring& filePath,
 	DesignDocument& output,
 	const XamlDocumentParseOptions& options,
+	bool resourceDictionary,
 	std::wstring* outError,
 	XamlDocumentDiagnostic* outDiagnostic)
 {
@@ -9339,8 +8966,9 @@ bool XamlDocumentParser::LoadFromFile(
 		const std::string content(
 			reinterpret_cast<const char*>(resource.Bytes.data()),
 			resource.Bytes.size());
-		return FromXaml(
-			content, output, effectiveOptions, outError, outDiagnostic);
+		return ParseXamlDocumentCore(
+			content, output, effectiveOptions, resourceDictionary,
+			outError, outDiagnostic);
 	}
 	catch (const std::exception&)
 	{
@@ -9356,5 +8984,91 @@ bool XamlDocumentParser::LoadFromFile(
 			outError, outDiagnostic);
 		return false;
 	}
+}
+
+bool XamlDocumentParser::FromXaml(
+	const std::string& xaml,
+	DesignDocument& output,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+
+{
+	return FromXaml(
+		xaml, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::FromXaml(
+	const std::string& xaml,
+	DesignDocument& output,
+	const XamlDocumentParseOptions& options,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return ParseXamlDocumentCore(
+		xaml, output, options, false, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::FromResourceDictionary(
+	const std::string& xaml,
+	DesignDocument& output,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return FromResourceDictionary(
+		xaml, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::FromResourceDictionary(
+	const std::string& xaml,
+	DesignDocument& output,
+	const XamlDocumentParseOptions& options,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return ParseXamlDocumentCore(
+		xaml, output, options, true, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::LoadFromFile(
+	const std::wstring& filePath,
+	DesignDocument& output,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+
+{
+	return LoadFromFile(
+		filePath, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::LoadFromFile(
+	const std::wstring& filePath,
+	DesignDocument& output,
+	const XamlDocumentParseOptions& options,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return LoadXamlDocumentCore(
+		filePath, output, options, false, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::LoadResourceDictionary(
+	const std::wstring& filePath,
+	DesignDocument& output,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return LoadResourceDictionary(
+		filePath, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
+}
+
+bool XamlDocumentParser::LoadResourceDictionary(
+	const std::wstring& filePath,
+	DesignDocument& output,
+	const XamlDocumentParseOptions& options,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
+	return LoadXamlDocumentCore(
+		filePath, output, options, true, outError, outDiagnostic);
 }
 }

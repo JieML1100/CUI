@@ -1,1412 +1,1005 @@
-﻿#pragma once
 #include "ComboBox.h"
-#include "Form.h"
+#include "DependencyPropertyInfrastructure.h"
+#include "StyleInfrastructure.h"
+
+#include "ItemsPresenter.h"
+#include "Popup.h"
+#include "ScrollViewer.h"
+#include "TemplateInfrastructure.h"
+#include "Window.h"
+#include "XamlInfrastructure.h"
+
 #include <algorithm>
 #include <cmath>
-#include <limits>
+#include <stdexcept>
 #include <utility>
-#pragma comment(lib, "Imm32.lib")
-#define COMBO_MIN_SCROLL_BLOCK 16
-UIClass ComboBox::Type() { return UIClass::UI_ComboBox; }
 
 namespace
 {
+	const ItemsPanelTemplateReference& DefaultComboBoxItemsPanel()
+	{
+		static const auto definition = []
+		{
+			auto value = std::make_shared<ItemsPanelTemplate>();
+			value->Kind = ItemsPanelKind::VirtualizingStack;
+			value->Orientation = Orientation::Vertical;
+			value->ItemHeight = 28.0f;
+			value->CacheLength = 1.0f;
+			return ItemsPanelTemplateReference(std::move(value));
+		}();
+		return definition;
+	}
+
 	template<typename TValue>
-	ControlPropertyOptions<ComboBox, TValue> ComboBoxPropertyOptions(
+	DependencyPropertyOptions<ComboBox, TValue> ComboBoxOptions(
 		TValue defaultValue,
 		const wchar_t* category,
 		int categoryOrder,
 		int order,
-		ControlPropertyEditorKind editor,
-		ControlPropertyFlags flags = ControlPropertyFlags::AffectsRender)
+		DependencyPropertyEditorKind editor,
+		DependencyPropertyFlags flags)
 	{
-		ControlPropertyOptions<ComboBox, TValue> options;
+		DependencyPropertyOptions<ComboBox, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
-		options.Flags = flags | ControlPropertyFlags::TracksLocalValue;
+		options.Flags = flags;
 		options.Design.Category = category;
 		options.Design.CategoryOrder = categoryOrder;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
-	auto ComboBoxPropertySubscriber(const wchar_t* propertyName)
+	auto ComboBoxSubscriber(const wchar_t* propertyName)
 	{
 		return [propertyName = std::wstring(propertyName)](
 			ComboBox& target,
-			BindingPropertyMetadata::ChangeHandler handler,
+			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
 				[propertyName, handler = std::move(handler)](
-					Control*, const ControlPropertyChangedEventArgs& args)
+					DependencyObject*,
+					const DependencyPropertyChangedEventArgs& args)
 				{
-					if (_wcsicmp(args.PropertyName.c_str(), propertyName.c_str()) == 0)
-						handler();
+					if (args.PropertyName == propertyName) handler();
 				});
 		};
 	}
 
-	bool ComboBoxColorsEqual(
-		const D2D1_COLOR_F& left,
-		const D2D1_COLOR_F& right)
+	bool Intersects(const D2D1_RECT_F& left, const D2D1_RECT_F& right) noexcept
 	{
-		return left.r == right.r && left.g == right.g
-			&& left.b == right.b && left.a == right.a;
+		return left.left < right.right && left.right > right.left
+			&& left.top < right.bottom && left.bottom > right.top;
 	}
+}
 
-	ControlPropertyOptions<ComboBox, D2D1_COLOR_F> ComboBoxColorOptions(
-		D2D1_COLOR_F defaultValue,
-		int order)
-	{
-		auto options = ComboBoxPropertyOptions(
-			defaultValue, L"Appearance", 200, order,
-			ControlPropertyEditorKind::Color);
-		options.Equals = ComboBoxColorsEqual;
-		return options;
-	}
+ComboBoxItem::ComboBoxItem() = default;
 
-	ControlPropertyOptions<ComboBox, float> ComboBoxNonNegativeFloatOptions(
-		float defaultValue,
-		const wchar_t* category,
-		int categoryOrder,
-		int order)
+void ComboBoxItem::RegisterDependencyProperties()
+{
+	ListBoxItem::RegisterDependencyProperties();
+}
+
+void ComboBoxItem::ActivateItem()
+{
+	auto* owner = dynamic_cast<ComboBox*>(GetLogicalParent());
+	if (!owner) return;
+	(void)owner->SelectItem(static_cast<int>(ItemIndex()));
+	(void)owner->TrySetCurrentPropertyValue(
+		L"IsDropDownOpen", BindingValue(false));
+}
+
+void ComboBoxItem::FocusOwner()
+{
+	auto* owner = dynamic_cast<ComboBox*>(GetLogicalParent());
+	if (owner && owner->GetPresentationWindow())
+		owner->GetPresentationWindow()->SetKeyboardFocus(owner, true);
+}
+
+void ComboBoxItem::OnIsSelectedRequested(bool value)
+{
+	auto* owner = dynamic_cast<ComboBox*>(GetLogicalParent());
+	if (!owner) return;
+	const int index = static_cast<int>(ItemIndex());
+	if (value) (void)owner->SelectIndex(index);
+	else if (owner->GetSelectedIndex() == index)
+		(void)owner->SelectIndex(-1);
+}
+
+void ComboBox::RegisterDependencyProperties()
+{
+	Selector::RegisterDependencyProperties();
+	static const bool registered = []
 	{
-		auto options = ComboBoxPropertyOptions(
-			defaultValue, category, categoryOrder, order,
-			ControlPropertyEditorKind::Number);
-		options.Coerce = [](
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyOptions<ComboBox, std::wstring> textOptions;
+		textOptions.DefaultValue = std::wstring{};
+		textOptions.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		textOptions.Design.Category = L"Common";
+		textOptions.Design.CategoryOrder = 0;
+		textOptions.Design.Order = 10;
+		textOptions.Design.Editor = DependencyPropertyEditorKind::Text;
+		textOptions.Design.Persistence =
+			DependencyPropertyPersistence::Native;
+		DependencyPropertyRegistry::Register<ComboBox, std::wstring>(L"Text",
+			[](ComboBox& target) { return target.Text; },
+			[](ComboBox& target, const std::wstring& value)
+			{ target.Text = value; },
+			[](ComboBox& target, Handler handler, DataSourceUpdateMode mode)
+			{
+				if (mode == DataSourceUpdateMode::OnValidation)
+					return target.OnLostFocus.Subscribe(
+						[handler = std::move(handler)](Control*) { handler(); });
+				return target.OnPropertyValueChanged.Subscribe(
+					[handler = std::move(handler)](
+						DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
+					{
+						if (args.PropertyName == L"Text")
+							handler();
+					});
+			}, std::move(textOptions));
+
+		auto openOptions = ComboBoxOptions(
+			false, L"Behavior", 110, 10,
+			DependencyPropertyEditorKind::Boolean,
+			DependencyPropertyFlags::AffectsArrange
+				| DependencyPropertyFlags::AffectsRender);
+		openOptions.Changed = [](
+			ComboBox& target, const bool& oldValue, const bool& newValue)
+		{
+			target.ApplyIsDropDownOpenChange(oldValue, newValue);
+		};
+		DependencyPropertyRegistry::Register<ComboBox, bool>(L"IsDropDownOpen",
+			[](ComboBox& target) { return target.GetIsDropDownOpen(); },
+			[](ComboBox& target, const bool& value)
+			{ target.SetIsDropDownOpen(value); },
+			ComboBoxSubscriber(L"IsDropDownOpen"), std::move(openOptions));
+
+		auto heightOptions = ComboBoxOptions(
+			320.0f, L"Layout", 100, 10,
+			DependencyPropertyEditorKind::Number,
+			DependencyPropertyFlags::AffectsArrange);
+		heightOptions.Coerce = [](
 			ComboBox&, const float& proposed) -> std::optional<float>
 		{
 			return std::isfinite(proposed)
 				? std::optional<float>{ (std::max)(0.0f, proposed) }
 				: std::nullopt;
 		};
-		options.Design.Minimum = 0.0;
-		options.Design.Step = 0.5;
-		return options;
-	}
-}
-
-ComboBoxItem::ComboBoxItem() = default;
-
-bool ComboBoxItem::Initialize(
-	ComboBox& owner,
-	const BindingSourceReference& item,
-	const ItemTemplateReference& contentTemplate,
-	const std::wstring& displayMemberPath,
-	size_t index,
-	std::wstring* outError)
-{
-	_owner = &owner;
-	if (InitializeItem(item, contentTemplate, displayMemberPath,
-		index, L"ComboBoxItem", outError)) return true;
-	_owner = nullptr;
-	return false;
-}
-
-void ComboBoxItem::EnsureBindingPropertiesRegistered()
-{
-	ItemContainerControl::EnsureBindingPropertiesRegistered();
-}
-
-void ComboBoxItem::ActivateItem()
-{
-	if (!_owner) return;
-	(void)_owner->SelectItem(static_cast<int>(ItemIndex()));
-	_owner->SetExpanded(false);
-}
-
-void ComboBoxItem::FocusOwner()
-{
-	if (_owner && _owner->ParentForm)
-		_owner->ParentForm->SetSelectedControl(_owner, true);
-}
-
-void ComboBox::EnsureBindingPropertiesRegistered()
-{
-	Control::EnsureBindingPropertiesRegistered();
-	static const bool registered = []
-	{
-		auto selectedIndexOptions = ComboBoxPropertyOptions(
-			-1, L"Behavior", 110, 10,
-			ControlPropertyEditorKind::Number);
-		selectedIndexOptions.Coerce = [](
-			ComboBox& target, const int& proposed) -> std::optional<int>
+		heightOptions.Changed = [](
+			ComboBox& target, const float&, const float&)
 		{
-			if (proposed < 0) return -1;
-			return target.GetItems().empty()
-				? proposed
-				: (std::min)(proposed,
-					static_cast<int>(target.GetItems().size()) - 1);
+			target.ApplyMaxDropDownHeight();
 		};
-		selectedIndexOptions.Changed = [](
-			ComboBox& target, const int& oldValue, const int& newValue)
-		{
-			target.ApplySelectedIndexChange(oldValue, newValue);
-		};
-		selectedIndexOptions.Design.Minimum = 0.0;
-		selectedIndexOptions.Design.Step = 1.0;
-		BindingPropertyRegistry::Register<ComboBox, int>(L"SelectedIndex",
-			[](ComboBox& target) { return target.SelectedIndex; },
-			[](ComboBox& target, const int& value) { target.SelectedIndex = value; },
-			ComboBoxPropertySubscriber(L"SelectedIndex"),
-			std::move(selectedIndexOptions));
+		heightOptions.Design.Minimum = 0.0;
+		heightOptions.Design.Step = 1.0;
+		DependencyPropertyRegistry::Register<ComboBox, float>(
+			L"MaxDropDownHeight",
+			[](ComboBox& target) { return target.GetMaxDropDownHeight(); },
+			[](ComboBox& target, const float& value)
+			{ target.SetMaxDropDownHeight(value); },
+			ComboBoxSubscriber(L"MaxDropDownHeight"),
+			std::move(heightOptions));
 
-		auto expandCountOptions = ComboBoxPropertyOptions(
-			4, L"Behavior", 110, 20,
-			ControlPropertyEditorKind::Number);
-		expandCountOptions.Coerce = [](
-			ComboBox&, const int& proposed) -> std::optional<int>
-		{
-			return (std::max)(1, proposed);
-		};
-		expandCountOptions.Changed = [](
-			ComboBox& target, const int&, const int&)
-		{
-			target.EnsureScrollInRange();
-			target.EnsureSelectedItemVisible();
-			target.NotifyAccessibilityScrollChanged();
-		};
-		expandCountOptions.Design.Minimum = 1.0;
-		expandCountOptions.Design.Step = 1.0;
-		BindingPropertyRegistry::Register<ComboBox, int>(L"ExpandCount",
-			[](ComboBox& target) { return target.ExpandCount; },
-			[](ComboBox& target, const int& value) { target.ExpandCount = value; },
-			ComboBoxPropertySubscriber(L"ExpandCount"),
-			std::move(expandCountOptions));
-
-		auto animationOptions = ComboBoxPropertyOptions(
-			180, L"Behavior", 110, 30,
-			ControlPropertyEditorKind::Number,
-			ControlPropertyFlags::None);
-		animationOptions.Coerce = [](
-			ComboBox&, const int& proposed) -> std::optional<int>
-		{
-			return (std::max)(0, proposed);
-		};
-		animationOptions.Design.Minimum = 0.0;
-		animationOptions.Design.Step = 1.0;
-		BindingPropertyRegistry::Register<ComboBox, int>(L"AnimationDurationMs",
-			[](ComboBox& target) { return static_cast<int>(target.AnimationDurationMs); },
-			[](ComboBox& target, const int& value)
-			{ target.AnimationDurationMs = static_cast<UINT>(value); },
-			ComboBoxPropertySubscriber(L"AnimationDurationMs"),
-			std::move(animationOptions));
-
-		auto expandOptions = ComboBoxPropertyOptions(
-			false, L"Behavior", 110, 40,
-			ControlPropertyEditorKind::Boolean);
-		expandOptions.Changed = [](
-			ComboBox& target, const bool& oldValue, const bool& newValue)
-		{
-			target.ApplyExpandedStateChange(oldValue, newValue);
-		};
-		expandOptions.Design.Browsable = false;
-		expandOptions.Design.Persistence = ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, bool>(L"Expand",
-			[](ComboBox& target) { return target.Expand; },
-			[](ComboBox& target, const bool& value) { target.Expand = value; },
-			ComboBoxPropertySubscriber(L"Expand"), std::move(expandOptions));
-
-		auto expandScrollOptions = ComboBoxPropertyOptions(
-			0, L"Behavior", 110, 50,
-			ControlPropertyEditorKind::Number);
-		expandScrollOptions.Coerce = [](
-			ComboBox& target, const int& proposed) -> std::optional<int>
-		{
-			const int visibleCount = target.VisibleItemCount();
-			const int maximum = (std::max)(
-				0, static_cast<int>(target.GetItems().size()) - visibleCount);
-			return (std::clamp)(proposed, 0, maximum);
-		};
-		expandScrollOptions.Changed = [](
-			ComboBox& target, const int&, const int&)
-		{
-			target.OnScrollChanged(&target);
-			target.NotifyAccessibilityScrollChanged();
-		};
-		expandScrollOptions.Design.Browsable = false;
-		expandScrollOptions.Design.Persistence = ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, int>(L"ExpandScroll",
-			[](ComboBox& target) { return target.ExpandScroll; },
-			[](ComboBox& target, const int& value) { target.ExpandScroll = value; },
-			ComboBoxPropertySubscriber(L"ExpandScroll"),
-			std::move(expandScrollOptions));
-
-		BindingPropertyRegistry::Register<ComboBox, float>(L"CornerRadius",
-			[](ComboBox& target) { return target.CornerRadius; },
-			[](ComboBox& target, const float& value) { target.CornerRadius = value; },
-			ComboBoxPropertySubscriber(L"CornerRadius"),
-			ComboBoxNonNegativeFloatOptions(6.0f, L"Appearance", 200, 10));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"DropCornerRadius",
-			[](ComboBox& target) { return target.DropCornerRadius; },
-			[](ComboBox& target, const float& value) { target.DropCornerRadius = value; },
-			ComboBoxPropertySubscriber(L"DropCornerRadius"),
-			ComboBoxNonNegativeFloatOptions(7.0f, L"Appearance", 200, 20));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"DropGap",
-			[](ComboBox& target) { return target.DropGap; },
-			[](ComboBox& target, const float& value) { target.DropGap = value; },
-			ComboBoxPropertySubscriber(L"DropGap"),
-			ComboBoxNonNegativeFloatOptions(4.0f, L"Layout", 100, 10));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"ItemHorizontalPadding",
-			[](ComboBox& target) { return target.ItemHorizontalPadding; },
-			[](ComboBox& target, const float& value) { target.ItemHorizontalPadding = value; },
-			ComboBoxPropertySubscriber(L"ItemHorizontalPadding"),
-			ComboBoxNonNegativeFloatOptions(10.0f, L"Layout", 100, 20));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"ItemVerticalPadding",
-			[](ComboBox& target) { return target.ItemVerticalPadding; },
-			[](ComboBox& target, const float& value) { target.ItemVerticalPadding = value; },
-			ComboBoxPropertySubscriber(L"ItemVerticalPadding"),
-			ComboBoxNonNegativeFloatOptions(3.0f, L"Layout", 100, 30));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"ChevronSize",
-			[](ComboBox& target) { return target.ChevronSize; },
-			[](ComboBox& target, const float& value) { target.ChevronSize = value; },
-			ComboBoxPropertySubscriber(L"ChevronSize"),
-			ComboBoxNonNegativeFloatOptions(10.0f, L"Layout", 100, 40));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"ScrollBarWidth",
-			[](ComboBox& target) { return target.ScrollBarWidth; },
-			[](ComboBox& target, const float& value) { target.ScrollBarWidth = value; },
-			ComboBoxPropertySubscriber(L"ScrollBarWidth"),
-			ComboBoxNonNegativeFloatOptions(6.0f, L"Layout", 100, 50));
-		BindingPropertyRegistry::Register<ComboBox, float>(L"BorderThickness",
-			[](ComboBox& target) { return target.BorderThickness; },
-			[](ComboBox& target, const float& value) { target.BorderThickness = value; },
-			ComboBoxPropertySubscriber(L"BorderThickness"),
-			ComboBoxNonNegativeFloatOptions(1.5f, L"Appearance", 200, 30));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"AccentColor",
-			[](ComboBox& target) { return target.AccentColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.AccentColor = value; },
-			ComboBoxPropertySubscriber(L"AccentColor"),
-			ComboBoxColorOptions(cui::theme::palette::Accent, 40));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"HeaderHoverBackColor",
-			[](ComboBox& target) { return target.HeaderHoverBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.HeaderHoverBackColor = value; },
-			ComboBoxPropertySubscriber(L"HeaderHoverBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::AccentSoft, 50));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"DropBackColor",
-			[](ComboBox& target) { return target.DropBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.DropBackColor = value; },
-			ComboBoxPropertySubscriber(L"DropBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::Surface, 60));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"DropBorderColor",
-			[](ComboBox& target) { return target.DropBorderColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.DropBorderColor = value; },
-			ComboBoxPropertySubscriber(L"DropBorderColor"),
-			ComboBoxColorOptions(cui::theme::palette::Border, 70));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"SelectedItemBackColor",
-			[](ComboBox& target) { return target.SelectedItemBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.SelectedItemBackColor = value; },
-			ComboBoxPropertySubscriber(L"SelectedItemBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::AccentSelected, 80));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"UnderMouseBackColor",
-			[](ComboBox& target) { return target.UnderMouseBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.UnderMouseBackColor = value; },
-			ComboBoxPropertySubscriber(L"UnderMouseBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::AccentSoft, 90));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"SelectedItemForeColor",
-			[](ComboBox& target) { return target.SelectedItemForeColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.SelectedItemForeColor = value; },
-			ComboBoxPropertySubscriber(L"SelectedItemForeColor"),
-			ComboBoxColorOptions(cui::theme::palette::TextPrimary, 100));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"UnderMouseForeColor",
-			[](ComboBox& target) { return target.UnderMouseForeColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.UnderMouseForeColor = value; },
-			ComboBoxPropertySubscriber(L"UnderMouseForeColor"),
-			ComboBoxColorOptions(cui::theme::palette::TextPrimary, 110));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ScrollBackColor",
-			[](ComboBox& target) { return target.ScrollBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ScrollBackColor = value; },
-			ComboBoxPropertySubscriber(L"ScrollBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::ScrollTrack, 120));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ScrollForeColor",
-			[](ComboBox& target) { return target.ScrollForeColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ScrollForeColor = value; },
-			ComboBoxPropertySubscriber(L"ScrollForeColor"),
-			ComboBoxColorOptions(cui::theme::palette::ScrollThumb, 130));
-		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ButtonBackColor",
-			[](ComboBox& target) { return target.ButtonBackColor; },
-			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ButtonBackColor = value; },
-			ComboBoxPropertySubscriber(L"ButtonBackColor"),
-			ComboBoxColorOptions(cui::theme::palette::SurfaceMuted, 140));
-
-		ControlPropertyOptions<ComboBox, BindingListReference> itemsSourceOptions;
-		itemsSourceOptions.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsRender;
-		itemsSourceOptions.Design.DisplayName = L"Items source";
-		itemsSourceOptions.Design.Category = L"Data";
-		itemsSourceOptions.Design.CategoryOrder = 80;
-		itemsSourceOptions.Design.Order = 10;
-		itemsSourceOptions.Design.Editor = ControlPropertyEditorKind::Auto;
-		itemsSourceOptions.Design.Browsable = false;
-		itemsSourceOptions.Design.Persistence = ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, BindingListReference>(L"ItemsSource",
-			[](ComboBox& target) { return target.GetItemsSource(); },
-			[](ComboBox& target, const BindingListReference& value)
-			{ target.SetItemsSource(value); }, {}, std::move(itemsSourceOptions));
-
-		ControlPropertyOptions<ComboBox, ItemTemplateReference> itemTemplateOptions;
-		itemTemplateOptions.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsRender;
-		itemTemplateOptions.Design.DisplayName = L"Item template";
-		itemTemplateOptions.Design.Category = L"Data";
-		itemTemplateOptions.Design.CategoryOrder = 80;
-		itemTemplateOptions.Design.Order = 15;
-		itemTemplateOptions.Design.Editor = ControlPropertyEditorKind::Auto;
-		itemTemplateOptions.Design.Browsable = false;
-		itemTemplateOptions.Design.Persistence =
-			ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, ItemTemplateReference>(
-			L"ItemTemplate",
-			[](ComboBox& target) { return target.GetItemTemplate(); },
-			[](ComboBox& target, const ItemTemplateReference& value)
-			{ target.SetItemTemplate(value); }, {},
-			std::move(itemTemplateOptions));
-
-		auto displayPathOptions = ComboBoxPropertyOptions(
-			std::wstring{}, L"Data", 80, 20,
-			ControlPropertyEditorKind::Text,
-			ControlPropertyFlags::AffectsMeasure
-				| ControlPropertyFlags::AffectsRender);
-		BindingPropertyRegistry::Register<ComboBox, std::wstring>(L"DisplayMemberPath",
-			[](ComboBox& target) { return target.GetDisplayMemberPath(); },
-			[](ComboBox& target, const std::wstring& value)
-			{ target.SetDisplayMemberPath(value); }, {}, std::move(displayPathOptions));
-
-		auto selectedValuePathOptions = ComboBoxPropertyOptions(
-			std::wstring{}, L"Data", 80, 30,
-			ControlPropertyEditorKind::Text,
-			ControlPropertyFlags::AffectsRender);
-		BindingPropertyRegistry::Register<ComboBox, std::wstring>(L"SelectedValuePath",
-			[](ComboBox& target) { return target.GetSelectedValuePath(); },
-			[](ComboBox& target, const std::wstring& value)
-			{ target.SetSelectedValuePath(value); }, {},
-			std::move(selectedValuePathOptions));
-
-		auto containerStyleOptions = ComboBoxPropertyOptions(
-			std::wstring{}, L"Data", 80, 35,
-			ControlPropertyEditorKind::Text,
-			ControlPropertyFlags::AffectsRender);
-		containerStyleOptions.Design.Browsable = false;
-		containerStyleOptions.Design.Persistence =
-			ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, std::wstring>(
-			L"ItemContainerStyle",
-			[](ComboBox& target) { return target.GetItemContainerStyle(); },
-			[](ComboBox& target, const std::wstring& value)
-			{ target.SetItemContainerStyle(value); }, {},
-			std::move(containerStyleOptions));
-
-		ControlPropertyOptions<ComboBox, BindingValue> selectedValueOptions;
-		selectedValueOptions.Flags = ControlPropertyFlags::TracksLocalValue;
-		selectedValueOptions.Design.DisplayName = L"Selected value";
-		selectedValueOptions.Design.Category = L"Data";
-		selectedValueOptions.Design.CategoryOrder = 80;
-		selectedValueOptions.Design.Order = 40;
-		selectedValueOptions.Design.Browsable = false;
-		selectedValueOptions.Design.Persistence =
-			ControlPropertyPersistence::Transient;
-		BindingPropertyRegistry::Register<ComboBox, BindingValue>(L"SelectedValue",
-			[](ComboBox& target) { return target.GetSelectedValue(); },
-			[](ComboBox& target, const BindingValue& value)
-			{ target.SetSelectedValue(value); },
-			[](ComboBox& target,
-				BindingPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._selectedValueChanged.Subscribe(
-					[handler = std::move(handler)](ComboBox*) { handler(); });
-			}, std::move(selectedValueOptions));
+		RegisterControlBorderThicknessMetadata<ComboBox>(1.0f, 30);
 		return true;
 	}();
 	(void)registered;
 }
 
-GET_CPP(ComboBox, float, CornerRadius) { return _cornerRadius; }
-SET_CPP(ComboBox, float, CornerRadius) { SetPropertyField(L"CornerRadius", _cornerRadius, value); }
-GET_CPP(ComboBox, float, DropCornerRadius) { return _dropCornerRadius; }
-SET_CPP(ComboBox, float, DropCornerRadius) { SetPropertyField(L"DropCornerRadius", _dropCornerRadius, value); }
-GET_CPP(ComboBox, float, DropGap) { return _dropGap; }
-SET_CPP(ComboBox, float, DropGap) { SetPropertyField(L"DropGap", _dropGap, value); }
-GET_CPP(ComboBox, float, ItemHorizontalPadding) { return _itemHorizontalPadding; }
-SET_CPP(ComboBox, float, ItemHorizontalPadding) { SetPropertyField(L"ItemHorizontalPadding", _itemHorizontalPadding, value); }
-GET_CPP(ComboBox, float, ItemVerticalPadding) { return _itemVerticalPadding; }
-SET_CPP(ComboBox, float, ItemVerticalPadding) { SetPropertyField(L"ItemVerticalPadding", _itemVerticalPadding, value); }
-GET_CPP(ComboBox, float, ChevronSize) { return _chevronSize; }
-SET_CPP(ComboBox, float, ChevronSize) { SetPropertyField(L"ChevronSize", _chevronSize, value); }
-GET_CPP(ComboBox, float, ScrollBarWidth) { return _scrollBarWidth; }
-SET_CPP(ComboBox, float, ScrollBarWidth) { SetPropertyField(L"ScrollBarWidth", _scrollBarWidth, value); }
-GET_CPP(ComboBox, float, BorderThickness) { return _borderThickness; }
-SET_CPP(ComboBox, float, BorderThickness) { SetPropertyField(L"BorderThickness", _borderThickness, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, AccentColor) { return _accentColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, AccentColor) { SetPropertyField(L"AccentColor", _accentColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, HeaderHoverBackColor) { return _headerHoverBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, HeaderHoverBackColor) { SetPropertyField(L"HeaderHoverBackColor", _headerHoverBackColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, DropBackColor) { return _dropBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, DropBackColor) { SetPropertyField(L"DropBackColor", _dropBackColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, DropBorderColor) { return _dropBorderColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, DropBorderColor) { SetPropertyField(L"DropBorderColor", _dropBorderColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, SelectedItemBackColor) { return _selectedItemBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, SelectedItemBackColor) { SetPropertyField(L"SelectedItemBackColor", _selectedItemBackColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, UnderMouseBackColor) { return _underMouseBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, UnderMouseBackColor) { SetPropertyField(L"UnderMouseBackColor", _underMouseBackColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, SelectedItemForeColor) { return _selectedItemForeColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, SelectedItemForeColor) { SetPropertyField(L"SelectedItemForeColor", _selectedItemForeColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, UnderMouseForeColor) { return _underMouseForeColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, UnderMouseForeColor) { SetPropertyField(L"UnderMouseForeColor", _underMouseForeColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, ScrollBackColor) { return _scrollBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, ScrollBackColor) { SetPropertyField(L"ScrollBackColor", _scrollBackColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, ScrollForeColor) { return _scrollForeColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, ScrollForeColor) { SetPropertyField(L"ScrollForeColor", _scrollForeColor, value); }
-GET_CPP(ComboBox, D2D1_COLOR_F, ButtonBackColor) { return _buttonBackColor; }
-SET_CPP(ComboBox, D2D1_COLOR_F, ButtonBackColor) { SetPropertyField(L"ButtonBackColor", _buttonBackColor, value); }
-
-GET_CPP(ComboBox, int, ExpandCount) { return _expandCount; }
-SET_CPP(ComboBox, int, ExpandCount) { (void)SetPropertyField(L"ExpandCount", _expandCount, value); }
-GET_CPP(ComboBox, int, ExpandScroll) { return _expandScroll; }
-SET_CPP(ComboBox, int, ExpandScroll) { (void)SetPropertyField(L"ExpandScroll", _expandScroll, value); }
-GET_CPP(ComboBox, bool, Expand) { return _expand; }
-SET_CPP(ComboBox, bool, Expand) { (void)SetPropertyField(L"Expand", _expand, value); }
-GET_CPP(ComboBox, int, SelectedIndex) { return _selectedIndex; }
-SET_CPP(ComboBox, int, SelectedIndex) { (void)SetPropertyField(L"SelectedIndex", _selectedIndex, value); }
-GET_CPP(ComboBox, UINT, AnimationDurationMs)
+GET_CPP(ComboBox, std::wstring, Text) { return Control::GetText(); }
+SET_CPP(ComboBox, std::wstring, Text)
 {
-	return static_cast<UINT>(_animationDurationMs);
-}
-SET_CPP(ComboBox, UINT, AnimationDurationMs)
-{
-	const auto maximum = static_cast<UINT>((std::numeric_limits<int>::max)());
-	const int proposed = static_cast<int>((std::min)(value, maximum));
-	(void)SetPropertyField(L"AnimationDurationMs", _animationDurationMs, proposed);
+	Control::SetText(std::move(value));
 }
 
-static D2D1_POINT_2F RotatePoint(const D2D1_POINT_2F& point, float cx, float cy, float angle)
+ComboBox::ComboBox()
+	: Selector()
 {
-	const float dx = point.x - cx;
-	const float dy = point.y - cy;
-	const float s = std::sin(angle);
-	const float c = std::cos(angle);
-	return D2D1::Point2F(cx + dx * c - dy * s, cy + dx * s + dy * c);
+	RegisterDependencyProperties();
+	InitializeControlBorderThicknessDefault(1.0f);
+	RendererBackgroundColor = cui::theme::palette::Surface;
+	RendererBorderColor = cui::theme::palette::BorderStrong;
+	RendererForegroundColor = cui::theme::palette::TextPrimary;
+	(void)TrySetPropertyValue(
+		L"Cursor", BindingValue(CursorKind::Hand),
+		DependencyPropertyValueSource::Theme);
+	(void)TrySetPropertyValue(
+		L"ItemsPanel", BindingValue(DefaultComboBoxItemsPanel()),
+		DependencyPropertyValueSource::Theme);
+	if (auto* host = GetItemsHost())
+		cui::framework::TemplateAccess::SetPresentationSuppressed(*host, true);
+	RefreshItems();
 }
 
-static void DrawComboChevron(D2DGraphics* d2d, float cx, float cy, float size, float progress, D2D1_COLOR_F color)
+ComboBox::~ComboBox()
 {
-	if (!d2d) return;
-	progress = (std::clamp)(progress, 0.0f, 1.0f);
-	const float halfW = size * 0.42f;
-	const float halfH = size * 0.26f;
-	const float angle = progress * 3.14159265359f;
-	D2D1_POINT_2F p1 = D2D1::Point2F(cx - halfW, cy - halfH);
-	D2D1_POINT_2F p2 = D2D1::Point2F(cx, cy + halfH);
-	D2D1_POINT_2F p3 = D2D1::Point2F(cx + halfW, cy - halfH);
-	p1 = RotatePoint(p1, cx, cy, angle);
-	p2 = RotatePoint(p2, cx, cy, angle);
-	p3 = RotatePoint(p3, cx, cy, angle);
-	d2d->DrawLine(p1, p2, color, 1.8f);
-	d2d->DrawLine(p2, p3, color, 1.8f);
+	_popupOpened.Disconnect();
+	_popupClosed.Disconnect();
+	if (_popup)
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(false));
 }
 
-bool ComboBox::CanHandleMouseWheel(int delta, int localX, int localY)
+void ComboBox::SetIsDropDownOpen(bool value)
 {
-	(void)localX;
-	(void)localY;
-	if (delta == 0 || !this->Expand) return false;
-	const int visibleCount = VisibleItemCount();
-	const int maxScroll = std::max(0, static_cast<int>(this->values.size()) - visibleCount);
-	if (maxScroll <= 0) return false;
-	EnsureScrollInRange();
-	return delta > 0
-		? this->ExpandScroll > 0
-		: this->ExpandScroll < maxScroll;
+	(void)SetPropertyField(L"IsDropDownOpen", _isDropDownOpen, value);
 }
 
-bool ComboBox::HandlesNavigationKey(WPARAM key) const
+void ComboBox::SetMaxDropDownHeight(float value)
 {
-	switch (key)
+	(void)SetPropertyField(
+		L"MaxDropDownHeight", _maxDropDownHeight, value);
+}
+
+void ComboBox::ApplyIsDropDownOpenChange(bool oldValue, bool newValue)
+{
+	if (oldValue == newValue) return;
+	if (newValue)
 	{
-	case VK_UP:
-	case VK_DOWN:
-	case VK_HOME:
-	case VK_END:
-	case VK_RETURN:
-	case VK_SPACE:
-	case VK_ESCAPE:
-	case VK_F4:
+		if (EnsureDropDownInfrastructure() && _popup)
+		{
+			UpdateItemsHostPresentation();
+			ApplyMaxDropDownHeight();
+			(void)_popup->TrySetCurrentPropertyValue(
+				L"IsOpen", BindingValue(true));
+			_popup->UpdatePlacement();
+			if (SelectedIndex >= 0)
+				(void)BringItemIntoView(static_cast<size_t>(SelectedIndex));
+		}
+	}
+	else if (_popup)
+	{
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(false));
+	}
+	NotifyAccessibilityStateChanged();
+	InvalidateVisual();
+}
+
+void ComboBox::ApplyMaxDropDownHeight()
+{
+	if (!_popup) return;
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*_popup, L"MaxHeight", BindingValue(_maxDropDownHeight),
+		DependencyPropertyValueSource::Template);
+	// Popup constrains the transient surface, while ScrollViewer owns the
+	// viewport/extent contract. Constrain both so layout and automation observe
+	// the same drop-down viewport.
+	if (_dropDownScroll)
+		(void)cui::framework::DependencyPropertyAccess::SetValue(
+			*_dropDownScroll, L"MaxHeight", BindingValue(_maxDropDownHeight),
+			DependencyPropertyValueSource::Template);
+	if (_popup->GetIsOpen()) _popup->UpdatePlacement();
+}
+
+Popup* ComboBox::ResolvePopupPart() const noexcept
+{
+	auto* presenter = GetTemplateItemsPresenter();
+	for (auto* current = presenter ? presenter->GetVisualParent() : nullptr;
+		current && current != this; current = current->GetVisualParent())
+		if (auto* popup = dynamic_cast<Popup*>(current)) return popup;
+	return dynamic_cast<Popup*>(GetControlTemplateRoot());
+}
+
+ScrollViewer* ComboBox::ResolveScrollOwner() const noexcept
+{
+	auto* presenter = GetTemplateItemsPresenter();
+	for (auto* current = presenter ? presenter->GetVisualParent() : nullptr;
+		current && current != this; current = current->GetVisualParent())
+	{
+		if (current == _popup) break;
+		if (auto* scroll = dynamic_cast<ScrollViewer*>(current)) return scroll;
+	}
+	return nullptr;
+}
+
+void ComboBox::ConfigurePopupPart(Popup* popup)
+{
+	if (_popup == popup)
+	{
+		_dropDownScroll = ResolveScrollOwner();
+		ApplyMaxDropDownHeight();
+		return;
+	}
+	_popupOpened.Disconnect();
+	_popupClosed.Disconnect();
+	if (_popup && _popup != popup)
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(false));
+	_popup = popup;
+	_dropDownScroll = nullptr;
+	if (!_popup) return;
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*_popup, L"PlacementTarget", BindingValue(ControlWeakReference(this)),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*_popup, L"Placement", BindingValue(PlacementMode::Bottom),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*_popup, L"StaysOpen", BindingValue(false),
+		DependencyPropertyValueSource::Template);
+	_popupOpened = _popup->Opened.Subscribe([this](Popup*)
+	{
+		if (!_isDropDownOpen)
+			(void)SetCurrentPropertyField(
+				L"IsDropDownOpen", _isDropDownOpen, true);
+	});
+	_popupClosed = _popup->Closed.Subscribe([this](Popup*)
+	{
+		if (_isDropDownOpen)
+			(void)SetCurrentPropertyField(
+				L"IsDropDownOpen", _isDropDownOpen, false);
+	});
+	_dropDownScroll = ResolveScrollOwner();
+	ApplyMaxDropDownHeight();
+}
+
+bool ComboBox::EnsureDropDownInfrastructure()
+{
+	if (auto* resolved = ResolvePopupPart())
+	{
+		ConfigurePopupPart(resolved);
+		_dropDownScroll = ResolveScrollOwner();
+		UpdateItemsHostPresentation();
 		return true;
-	default:
+	}
+	if (GetControlTemplateRoot())
+	{
+		SetLastTemplateError(
+			L"ComboBox ControlTemplate 必须包含承载 ItemsPresenter 的 Popup。");
+		UpdateItemsHostPresentation();
 		return false;
 	}
-}
+	if (!GetPresentationWindow()) return false;
 
-ComboBox::ItemCollection& ComboBox::GetItems()
-{
-	return this->values;
-}
-void ComboBox::SetItems(const std::vector<std::wstring>& value)
-{
-	if (!_refreshingItemsSource && _itemsSource)
-		SetItemsSource({});
-	this->values = value;
-}
+	auto popup = std::make_unique<Popup>();
+	auto* popupRaw = popup.get();
+	cui::framework::XamlAccess::SetTemplatedParent(*popupRaw, this);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*popupRaw, L"PlacementTarget", BindingValue(ControlWeakReference(this)),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*popupRaw, L"Placement", BindingValue(PlacementMode::Bottom),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*popupRaw, L"StaysOpen", BindingValue(false),
+		DependencyPropertyValueSource::Template);
 
-void ComboBox::SetItemsSource(BindingListReference value)
-{
-	if (_itemsSource == value) return;
-	_itemsSourceChanged.Disconnect();
-	_itemSourceObservations.clear();
-	_itemsSource = std::move(value);
-	if (_itemsSource)
+	auto scroll = std::make_unique<ScrollViewer>();
+	auto* scrollRaw = scroll.get();
+	cui::framework::XamlAccess::SetTemplatedParent(*scrollRaw, this);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*scrollRaw, L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*scrollRaw, L"Background",
+		BindingValue(cui::drawing::MakeSolidColorBrush(
+			cui::theme::palette::Surface)),
+		DependencyPropertyValueSource::Theme);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*scrollRaw, L"BorderBrush",
+		BindingValue(cui::drawing::MakeSolidColorBrush(
+			cui::theme::palette::Border)),
+		DependencyPropertyValueSource::Theme);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*scrollRaw, L"BorderThickness", BindingValue(Thickness(1.0f)),
+		DependencyPropertyValueSource::Template);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(
+		*scrollRaw, L"HorizontalScrollBarVisibility",
+		BindingValue(ScrollBarVisibility::Disabled),
+		DependencyPropertyValueSource::Template);
+
+	auto presenter = std::make_unique<ItemsPresenter>();
+	auto* presenterRaw = presenter.get();
+	cui::framework::XamlAccess::SetTemplatedParent(*presenterRaw, this);
+	scrollRaw->SetVisualContent(std::move(presenter));
+	popupRaw->SetChild(std::move(scroll));
+
+	_defaultPopup = popupRaw;
+	_buildingDropDownInfrastructure = true;
+	try
 	{
-		_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
-			[this](const CollectionChangedEventArgs&)
-			{
-				RefreshItemsSource();
-			});
+		cui::framework::TemplateAccess::SetTemplateRoot(*this, std::move(popup));
+		_buildingDropDownInfrastructure = false;
 	}
-	RefreshItemsSource();
-}
-
-void ComboBox::SetItemTemplate(ItemTemplateReference value)
-{
-	if (_itemTemplate == value) return;
-	const auto previous = _itemTemplate;
-	const bool previousUse = _useGeneratedItemContainers;
-	_itemTemplate = std::move(value);
-	if (_itemTemplate) _useGeneratedItemContainers = true;
-	if (RebuildGeneratedItems()) return;
-	const auto error = _lastTemplateError;
-	_itemTemplate = previous;
-	_useGeneratedItemContainers = previousUse;
-	(void)RebuildGeneratedItems();
-	_lastTemplateError = error;
-}
-
-void ComboBox::SetDisplayMemberPath(std::wstring value)
-{
-	if (_displayMemberPath == value) return;
-	_displayMemberPath = std::move(value);
-	if (_itemsSource) RefreshItemsSource();
-	else (void)RebuildGeneratedItems();
-}
-
-void ComboBox::SetSelectedValuePath(std::wstring value)
-{
-	if (_selectedValuePath == value) return;
-	_selectedValuePath = std::move(value);
-	if (_itemsSource) RefreshItemsSource();
-	else
+	catch (...)
 	{
-		const auto source = GetPropertyValueSource(L"SelectedValue");
-		BindingValue configured;
-		if (source != ControlPropertyValueSource::Default
-			&& TryGetPropertyValue(L"SelectedValue", source, configured))
-			SetSelectedValue(configured);
-		else
-			NotifySelectedValueChanged();
+		_buildingDropDownInfrastructure = false;
+		throw;
 	}
-}
-
-BindingValue ComboBox::GetSelectedValue() const
-{
-	if (_selectedIndex < 0) return {};
-	if (_itemsSource)
-	{
-		BindingValue value;
-		return TryGetBindingListItemValue(_itemsSource,
-			static_cast<size_t>(_selectedIndex), _selectedValuePath, value)
-			? value : BindingValue{};
-	}
-	if (_selectedValuePath.empty()
-		&& static_cast<size_t>(_selectedIndex) < values.size())
-		return BindingValue(values[static_cast<size_t>(_selectedIndex)]);
-	return {};
-}
-
-void ComboBox::SetSelectedValue(const BindingValue& value)
-{
-	int index = -1;
-	if (!value.Empty())
-	{
-		if (_itemsSource)
-			index = FindBindingListItemByValue(
-				_itemsSource, _selectedValuePath, value);
-		else if (_selectedValuePath.empty())
-		{
-			for (size_t candidate = 0; candidate < values.size(); ++candidate)
-				if (BindingItemValuesEqual(
-					BindingValue(values[candidate]), value))
-				{
-					index = static_cast<int>(candidate);
-					break;
-				}
-		}
-	}
-	SetCurrentSelectedIndex(index);
-}
-
-void ComboBox::SetItemContainerStyle(std::wstring value)
-{
-	if (_itemContainerStyle == value) return;
-	const auto previous = _itemContainerStyle;
-	const bool previousUse = _useGeneratedItemContainers;
-	_itemContainerStyle = std::move(value);
-	if (!_itemContainerStyle.empty()) _useGeneratedItemContainers = true;
-	if (RebuildGeneratedItems()) return;
-	const auto error = _lastTemplateError;
-	_itemContainerStyle = previous;
-	_useGeneratedItemContainers = previousUse;
-	(void)RebuildGeneratedItems();
-	_lastTemplateError = error;
-}
-
-void ComboBox::SetItemContainerTemplate(ControlTemplateReference value)
-{
-	if (_itemContainerTemplate == value) return;
-	const auto previous = _itemContainerTemplate;
-	const bool previousUse = _useGeneratedItemContainers;
-	_itemContainerTemplate = std::move(value);
-	if (_itemContainerTemplate) _useGeneratedItemContainers = true;
-	if (RebuildGeneratedItems()) return;
-	const auto error = _lastTemplateError;
-	_itemContainerTemplate = previous;
-	_useGeneratedItemContainers = previousUse;
-	(void)RebuildGeneratedItems();
-	_lastTemplateError = error;
-}
-
-void ComboBox::SetUseGeneratedItemContainers(bool value)
-{
-	if (_useGeneratedItemContainers == value) return;
-	const bool previous = _useGeneratedItemContainers;
-	_useGeneratedItemContainers = value;
-	if (RebuildGeneratedItems()) return;
-	const auto error = _lastTemplateError;
-	_useGeneratedItemContainers = previous;
-	(void)RebuildGeneratedItems();
-	_lastTemplateError = error;
-}
-
-bool ComboBox::RebuildGeneratedItems()
-{
-	if (!_useGeneratedItemContainers)
-	{
-		for (auto& item : _generatedItems)
-			if (item) item->Parent = nullptr;
-		_generatedItems.clear();
-		_lastTemplateError.clear();
-		return true;
-	}
-	std::vector<std::unique_ptr<ComboBoxItem>> replacement;
-	replacement.reserve(values.size());
-	for (size_t index = 0; index < values.size(); ++index)
-	{
-		BindingSourceReference item;
-		if (_itemsSource)
-		{
-			if (!_itemsSource.Get()->TryGetItem(index, item) || !item)
-			{
-				_lastTemplateError = L"ComboBox ItemsSource 无法读取索引 "
-					+ std::to_wstring(index) + L"。";
-				return false;
-			}
-		}
-		else
-		{
-			auto source = std::make_shared<ObservableObject>();
-			(void)source->DefineProperty(
-				L"Text", values[index], true, false, true);
-			(void)source->DefineProperty(
-				L"Content", values[index], true, false, true);
-			(void)source->DefineProperty(
-				L"Value", values[index], true, false, true);
-			item = BindingSourceReference(std::move(source));
-		}
-
-		std::unique_ptr<ComboBoxItem> container;
-		if (_itemContainerTemplate)
-		{
-			if (_itemContainerTemplate.Get()->TargetType()
-				!= UIClass::UI_ComboBoxItem)
-			{
-				_lastTemplateError =
-					L"ItemContainerTemplate TargetType 必须是 ComboBoxItem。";
-				return false;
-			}
-			std::wstring error;
-			auto built = _itemContainerTemplate.Get()->Build(&error);
-			auto* itemContainer = dynamic_cast<ComboBoxItem*>(built.get());
-			if (!itemContainer)
-			{
-				_lastTemplateError = error.empty()
-					? L"ItemContainerTemplate 未生成 ComboBoxItem。"
-					: std::move(error);
-				return false;
-			}
-			container.reset(static_cast<ComboBoxItem*>(built.release()));
-		}
-		else container = std::make_unique<ComboBoxItem>();
-
-		container->SetStyleId(_itemContainerStyle);
-		std::wstring error;
-		if (!container->Initialize(
-			*this, item, _itemTemplate, _displayMemberPath, index, &error))
-		{
-			_lastTemplateError = error.empty()
-				? L"ComboBoxItem 内容初始化失败。" : std::move(error);
-			return false;
-		}
-		container->Parent = this;
-		Control::SetChildrenParentForm(container.get(), ParentForm);
-		(void)container->RefreshStyleValues(true);
-		replacement.push_back(std::move(container));
-	}
-
-	for (auto& item : _generatedItems)
-		if (item) item->Parent = nullptr;
-	_generatedItems = std::move(replacement);
-	_lastTemplateError.clear();
-	UpdateGeneratedItemStates();
-	InvalidateVisual();
+	if (!cui::framework::TemplateAccess::RegisterItemsPresenter(
+		*this, presenterRaw))
+		throw std::logic_error(
+			"ComboBox fallback ItemsPresenter registration failed");
+	ConfigurePopupPart(popupRaw);
+	_dropDownScroll = scrollRaw;
+	SetLastTemplateError({});
+	UpdateItemsHostPresentation();
 	return true;
 }
 
-void ComboBox::LayoutGeneratedItems(float dropTop, float itemRight)
+void ComboBox::UpdateItemsHostPresentation()
 {
-	const float rowHeight = static_cast<float>(Height);
-	const float left = 6.0f;
-	const float topInset = (std::max)(0.0f, ItemVerticalPadding);
-	const float width = (std::max)(1.0f, itemRight - left - 6.0f);
-	const float height = (std::max)(1.0f, rowHeight - topInset * 2.0f);
-	for (size_t index = 0; index < _generatedItems.size(); ++index)
+	auto* host = GetItemsHost();
+	if (!host) return;
+	bool inPopup = false;
+	if (_popup)
 	{
-		auto* item = _generatedItems[index].get();
-		if (!item) continue;
-		item->Parent = this;
-		Control::SetChildrenParentForm(item, ParentForm);
-		const float viewIndex = static_cast<float>(
-			static_cast<long long>(index) - ExpandScroll);
-		item->ApplyLayout(cui::core::Rect{
-			left, dropTop + viewIndex * rowHeight + topInset,
-			width, height });
+		for (auto* current = host->GetVisualParent(); current;
+			current = current->GetVisualParent())
+		{
+			if (current == _popup)
+			{
+				inPopup = true;
+				break;
+			}
+			if (current == this) break;
+		}
 	}
+	cui::framework::TemplateAccess::SetPresentationSuppressed(
+		*host, !inPopup);
 }
 
-void ComboBox::UpdateGeneratedItemStates()
+void ComboBox::OnControlTemplatePresentationChanged()
 {
-	const bool ownerFocused = HasControlStyleState(
-		GetEffectiveStyleState(), ControlStyleState::Focused);
-	for (size_t index = 0; index < _generatedItems.size(); ++index)
-	{
-		auto* item = _generatedItems[index].get();
-		if (!item) continue;
-		item->SetItemIndex(index);
-		item->SetSelected(static_cast<int>(index) == SelectedIndex);
-		item->SetMouseOver(static_cast<int>(index) == _underMouseIndex);
-		item->SetKeyboardFocusWithin(
-			ownerFocused && static_cast<int>(index) == SelectedIndex);
-	}
+	_popupOpened.Disconnect();
+	_popupClosed.Disconnect();
+	if (_popup)
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(false));
+	_popup = nullptr;
+	_dropDownScroll = nullptr;
+	if (GetControlTemplateRoot() != _defaultPopup)
+		_defaultPopup = nullptr;
+	ConfigurePopupPart(ResolvePopupPart());
+	UpdateItemsHostPresentation();
+	if (_popup && !_buildingDropDownInfrastructure)
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(_isDropDownOpen));
 }
 
-void ComboBox::RefreshItemsSource()
+void ComboBox::OnPresentationWindowChanged(
+	Window* previousWindow, Window* currentWindow)
+{
+	Selector::OnPresentationWindowChanged(previousWindow, currentWindow);
+	if (_isDropDownOpen && currentWindow
+		&& EnsureDropDownInfrastructure() && _popup)
+		(void)_popup->TrySetCurrentPropertyValue(
+			L"IsOpen", BindingValue(true));
+}
+
+std::unique_ptr<Control> ComboBox::BuildGeneratedItem(
+	const BindingSourceReference& item,
+	size_t index,
+	BindingPathObservation& observation)
+{
+	observation = {};
+	std::unique_ptr<ComboBoxItem> container;
+	const auto containerTemplate = GetItemContainerTemplate();
+	if (containerTemplate)
+	{
+		if (containerTemplate.Get()->TargetType()
+			!= UIClass::UI_ComboBoxItem)
+		{
+			SetLastTemplateError(
+				L"ItemContainerTemplate TargetType 必须是 ComboBoxItem。");
+			return {};
+		}
+		std::wstring error;
+		auto built = containerTemplate.Get()->Build(&error);
+		auto* itemContainer = dynamic_cast<ComboBoxItem*>(built.get());
+		if (!itemContainer)
+		{
+			SetLastTemplateError(error.empty()
+				? L"ItemContainerTemplate 未生成 ComboBoxItem。"
+				: std::move(error));
+			return {};
+		}
+		container.reset(static_cast<ComboBoxItem*>(built.release()));
+	}
+	else container = std::make_unique<ComboBoxItem>();
+
+	cui::framework::StyleAccess::SetResourceKey(
+		*container, GetItemContainerStyle());
+	std::wstring error;
+	if (!container->InitializeItem(
+		item, GetItemTemplate(), GetDisplayMemberPath(),
+		index, L"ComboBoxItem", &error))
+	{
+		SetLastTemplateError(error.empty()
+			? L"ComboBoxItem 内容初始化失败。" : std::move(error));
+		return {};
+	}
+	return container;
+}
+
+void ComboBox::OnGeneratedItemsRebuilt()
+{
+	Selector::OnGeneratedItemsRebuilt();
+	RefreshItems();
+}
+
+void ComboBox::OnGeneratedItemsRealized()
+{
+	Selector::OnGeneratedItemsRealized();
+	UpdateGeneratedItemStates();
+}
+
+void ComboBox::OnGeneratedItemIndexChanged(
+	Control& visual, size_t oldIndex, size_t newIndex)
+{
+	Selector::OnGeneratedItemIndexChanged(visual, oldIndex, newIndex);
+	if (auto* item = dynamic_cast<ComboBoxItem*>(&visual))
+		item->SetItemIndex(newIndex);
+}
+
+bool ComboBox::ValidateAuthoredItemControl(
+	const Control& item, std::string& error) const
+{
+	if (dynamic_cast<const ComboBoxItem*>(&item)) return true;
+	error = "ComboBox authored Items must be ComboBoxItem controls";
+	return false;
+}
+
+void ComboBox::OnAuthoredItemsChanged() noexcept
+{
+	Selector::OnAuthoredItemsChanged();
+	try { RefreshItems(); }
+	catch (...) {}
+}
+
+void ComboBox::OnItemsSourceChanged(
+	const BindingListReference& oldValue,
+	const BindingListReference& newValue)
+{
+	Selector::OnItemsSourceChanged(oldValue, newValue);
+	RefreshItems();
+}
+
+std::wstring ComboBox::GetAuthoredItemText(size_t index) const
+{
+	auto* item = dynamic_cast<ComboBoxItem*>(GetAuthoredItem(index));
+	if (!item) return {};
+	std::wstring text;
+	if (item->GetContent().TryGet(text)) return text;
+	if (auto* content = item->GetVisualContent())
+	{
+		const auto displayText = content->GetDisplayText();
+		if (!displayText.empty()) return displayText;
+	}
+	const auto displayText = item->GetDisplayText();
+	if (!displayText.empty()) return displayText;
+	return item->GetContent().ToString();
+}
+
+std::wstring ComboBox::GetItemDisplayText(size_t index) const
+{
+	const auto source = GetItemsView();
+	if (!source) return index < AuthoredItemCount()
+		? GetAuthoredItemText(index) : std::wstring{};
+	if (index >= source.Get()->Count()) return {};
+	BindingSourceReference item;
+	if (!source.Get()->TryGetItem(index, item) || !item) return {};
+	return GetBindingRecordText(
+		item, GetDisplayMemberPath());
+}
+
+void ComboBox::RefreshItems()
 {
 	_itemSourceObservations.clear();
-	std::vector<std::wstring> projected;
-	if (_itemsSource)
+	_authoredItemChanges.clear();
+	const auto source = GetItemsView();
+	if (source)
 	{
-		projected.reserve(_itemsSource.Get()->Count());
-		_itemSourceObservations.reserve(_itemsSource.Get()->Count());
-		for (size_t index = 0; index < _itemsSource.Get()->Count(); ++index)
+		_itemSourceObservations.reserve(source.Get()->Count());
+		for (size_t index = 0; index < source.Get()->Count(); ++index)
 		{
 			BindingSourceReference item;
-			if (!_itemsSource.Get()->TryGetItem(index, item) || !item)
-			{
-				projected.emplace_back();
-				_itemSourceObservations.emplace_back();
-				continue;
-			}
-			projected.push_back(GetBindingRecordText(
-				item, _displayMemberPath, { L"Text", L"Content", L"Name" }));
+			(void)source.Get()->TryGetItem(index, item);
 			_itemSourceObservations.push_back(ObserveBindingPaths(
-				item, { _displayMemberPath, _selectedValuePath },
-				[this, index] { RefreshItemSource(index); }));
+				item, { GetDisplayMemberPath(), GetSelectedValuePath() },
+				[this, index] { RefreshDataItem(index); }));
 		}
 	}
-	_refreshingItemsSource = true;
-	values = std::move(projected);
-	_refreshingItemsSource = false;
-	const auto selectedValueSource = GetPropertyValueSource(L"SelectedValue");
-	BindingValue configuredSelectedValue;
-	if (selectedValueSource != ControlPropertyValueSource::Default
-		&& TryGetPropertyValue(L"SelectedValue", selectedValueSource,
-			configuredSelectedValue))
-		SetSelectedValue(configuredSelectedValue);
 	else
-		NotifySelectedValueChanged();
-}
-
-void ComboBox::RefreshItemSource(size_t index)
-{
-	if (!_itemsSource || index >= _itemsSource.Get()->Count()
-		|| index >= values.size() || index >= _itemSourceObservations.size())
 	{
-		RefreshItemsSource();
-		return;
-	}
-	BindingSourceReference item;
-	if (!_itemsSource.Get()->TryGetItem(index, item)) item = {};
-	_itemSourceObservations[index] = ObserveBindingPaths(
-		item, { _displayMemberPath, _selectedValuePath },
-		[this, index] { RefreshItemSource(index); });
-	_refreshingItemsSource = true;
-	values.Replace(index, GetBindingRecordText(
-		item, _displayMemberPath, { L"Text", L"Content", L"Name" }));
-	_refreshingItemsSource = false;
-	if (static_cast<int>(index) == SelectedIndex)
-		NotifySelectedValueChanged();
-}
-
-void ComboBox::OnItemsCollectionChanged(
-	const CollectionChangedEventArgs& change)
-{
-	if (!_refreshingItemsSource && _itemsSource)
-	{
-		_itemsSourceChanged.Disconnect();
-		_itemSourceObservations.clear();
-		_itemsSource = {};
-	}
-	auto remapIndex = [&](int current, bool keepNearest)
-	{
-		if (current < 0) return -1;
-		const size_t index = static_cast<size_t>(current);
-		switch (change.Action)
+		_authoredItemChanges.reserve(AuthoredItemCount());
+		for (size_t index = 0; index < AuthoredItemCount(); ++index)
 		{
-		case CollectionChangeAction::Add:
-			if (change.NewIndex != CollectionChangedEventArgs::Npos
-				&& index >= change.NewIndex)
-				return static_cast<int>(index + change.NewCount);
-			break;
-		case CollectionChangeAction::Remove:
-			if (change.OldIndex != CollectionChangedEventArgs::Npos)
-			{
-				if (index >= change.OldIndex
-					&& index < change.OldIndex + change.OldCount)
-					return keepNearest && !values.empty()
-						? (std::min)(current,
-							static_cast<int>(values.size()) - 1)
-						: -1;
-				if (index >= change.OldIndex + change.OldCount)
-					return static_cast<int>(index - change.OldCount);
-			}
-			break;
-		case CollectionChangeAction::Move:
-			if (change.OldIndex != CollectionChangedEventArgs::Npos
-				&& change.NewIndex != CollectionChangedEventArgs::Npos)
-			{
-				if (index == change.OldIndex)
-					return static_cast<int>(change.NewIndex);
-				if (change.OldIndex < change.NewIndex
-					&& index > change.OldIndex && index <= change.NewIndex)
-					return current - 1;
-				if (change.NewIndex < change.OldIndex
-					&& index >= change.NewIndex && index < change.OldIndex)
-					return current + 1;
-			}
-			break;
-		case CollectionChangeAction::Swap:
-			if (index == change.OldIndex)
-				return static_cast<int>(change.NewIndex);
-			if (index == change.NewIndex)
-				return static_cast<int>(change.OldIndex);
-			break;
-		default:
-			break;
-		}
-		return index < values.size() ? current : -1;
-	};
-
-	bool preciseIds = _accessibilityItemIds.size() == change.OldSize
-		&& _accessibilityItemTexts.size() == change.OldSize;
-	if (preciseIds)
-	{
-		switch (change.Action)
-		{
-		case CollectionChangeAction::Add:
-			preciseIds = change.NewIndex != CollectionChangedEventArgs::Npos
-				&& change.NewIndex <= _accessibilityItemIds.size()
-				&& change.NewIndex + change.NewCount <= values.size();
-			if (preciseIds)
-				_accessibilityItemIds.insert(
-					_accessibilityItemIds.begin() + change.NewIndex,
-					change.NewCount, 0);
-			break;
-		case CollectionChangeAction::Remove:
-			preciseIds = change.OldIndex != CollectionChangedEventArgs::Npos
-				&& change.OldIndex + change.OldCount
-				<= _accessibilityItemIds.size();
-			if (preciseIds)
-				_accessibilityItemIds.erase(
-					_accessibilityItemIds.begin() + change.OldIndex,
-					_accessibilityItemIds.begin()
-						+ change.OldIndex + change.OldCount);
-			break;
-		case CollectionChangeAction::Replace:
-			preciseIds = change.NewIndex != CollectionChangedEventArgs::Npos
-				&& change.NewIndex + change.NewCount
-				<= _accessibilityItemIds.size();
-			if (preciseIds)
-				std::fill_n(_accessibilityItemIds.begin() + change.NewIndex,
-					change.NewCount, 0);
-			break;
-		case CollectionChangeAction::Move:
-			preciseIds = change.OldIndex < _accessibilityItemIds.size()
-				&& change.NewIndex < _accessibilityItemIds.size();
-			if (preciseIds && change.OldIndex < change.NewIndex)
-				std::rotate(_accessibilityItemIds.begin() + change.OldIndex,
-					_accessibilityItemIds.begin() + change.OldIndex + 1,
-					_accessibilityItemIds.begin() + change.NewIndex + 1);
-			else if (preciseIds && change.NewIndex < change.OldIndex)
-				std::rotate(_accessibilityItemIds.begin() + change.NewIndex,
-					_accessibilityItemIds.begin() + change.OldIndex,
-					_accessibilityItemIds.begin() + change.OldIndex + 1);
-			break;
-		case CollectionChangeAction::Swap:
-			preciseIds = change.OldIndex < _accessibilityItemIds.size()
-				&& change.NewIndex < _accessibilityItemIds.size();
-			if (preciseIds)
-				std::swap(_accessibilityItemIds[change.OldIndex],
-					_accessibilityItemIds[change.NewIndex]);
-			break;
-		case CollectionChangeAction::Reset:
-			preciseIds = false;
-			break;
+			auto* item = dynamic_cast<ComboBoxItem*>(GetAuthoredItem(index));
+			if (!item) continue;
+			item->SetItemIndex(index);
+			if (cui::framework::StyleAccess::ResourceKey(*item).empty()
+				&& !GetItemContainerStyle().empty())
+				cui::framework::StyleAccess::SetResourceKey(
+					*item, GetItemContainerStyle());
+			_authoredItemChanges.push_back(
+				item->OnPropertyValueChanged.Subscribe(
+					[this, index](DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
+					{
+						if (args.PropertyName == L"Content"
+							|| args.PropertyName == L"Text")
+							RefreshDataItem(index);
+					}));
 		}
 	}
-	if (preciseIds)
-	{
-		_accessibilityItemTexts.assign(values.begin(), values.end());
-		for (auto& id : _accessibilityItemIds)
-		{
-			if (id == 0) id = AllocateAccessibilityVirtualId();
-		}
-		RebuildAccessibilityItemIndex();
-	}
-	else
-	{
-		ReconcileAccessibilityItemIds();
-	}
-
-	// SelectedIndex/ExpandScroll coercion depends on the collection.
-	// Re-evaluate declarative Local/Binding values when Items becomes available
-	// or changes its range, instead of losing a value that arrived first.
-	int selectedByIdentity = -1;
-	if (_selectedAccessibilityItemId != 0)
-	{
-		const auto selected = std::find(_accessibilityItemIds.begin(),
-			_accessibilityItemIds.end(), _selectedAccessibilityItemId);
-		if (selected != _accessibilityItemIds.end())
-			selectedByIdentity = static_cast<int>(
-				selected - _accessibilityItemIds.begin());
-	}
-	if (selectedByIdentity >= 0)
-		SetCurrentSelectedIndex(selectedByIdentity);
-	else if (_selectedAccessibilityItemId != 0)
-		SetCurrentSelectedIndex(remapIndex(SelectedIndex, true));
-	else if (GetPropertyValueSource(L"SelectedIndex")
-		!= ControlPropertyValueSource::Default)
-		(void)ReevaluatePropertyValue(L"SelectedIndex");
-	else
-		SetCurrentSelectedIndex(remapIndex(SelectedIndex, true));
-	EnsureSelectionInRange();
-	if (GetPropertyValueSource(L"ExpandScroll")
-		== ControlPropertyValueSource::Default)
-		SetCurrentExpandScroll(remapIndex(ExpandScroll, true));
-	else
-		(void)ReevaluatePropertyValue(L"ExpandScroll");
-	_underMouseIndex = change.Action == CollectionChangeAction::Reset
-		? -1 : remapIndex(_underMouseIndex, false);
-	EnsureScrollInRange();
-	EnsureSelectedItemVisible();
+	ReconcileAccessibilityItemIds();
+	SyncTextWithSelection();
+	UpdateGeneratedItemStates();
 	_selectedAccessibilityItemId = SelectedIndex >= 0
 		&& static_cast<size_t>(SelectedIndex) < _accessibilityItemIds.size()
 		? _accessibilityItemIds[static_cast<size_t>(SelectedIndex)] : 0;
-	if (this->values.empty() && this->Expand)
-		SetExpanded(false);
-	else if (this->Expand && this->ParentForm)
-		this->ParentForm->ForegroundControl = this;
-	(void)RebuildGeneratedItems();
+	UpdateItemsHostPresentation();
 	NotifyAccessibilityStructureChanged();
 	NotifyAccessibilityScrollChanged();
 	InvalidateVisual();
 }
 
-int ComboBox::VisibleItemCount()
+void ComboBox::RefreshDataItem(size_t index)
 {
-	if (this->values.size() <= 0) return 0;
-	int maxVisible = this->ExpandCount;
-	if (maxVisible < 1) maxVisible = 1;
-	return std::min(maxVisible, (int)this->values.size());
-}
-
-float ComboBox::FullDropdownHeight()
-{
-	return (float)(this->Height * VisibleItemCount());
-}
-
-float ComboBox::CurrentDropProgress()
-{
-	if (!_animating)
-		return _dropProgress;
-
-	const ULONGLONG now = ::GetTickCount64();
-	const ULONGLONG elapsed = now >= _animStartTick ? (now - _animStartTick) : 0;
-	const UINT duration = EffectiveAnimationDuration(
-		static_cast<UINT>((std::max)(0, _animationDurationMs)));
-	float t = duration > 0
-		? (float)elapsed / (float)duration
-		: 1.0f;
-	if (t >= 1.0f)
+	const auto source = GetItemsView();
+	if (source)
 	{
-		const bool wasCollapsing = (_animTargetProgress <= 0.001f && _dropProgress > 0.001f);
-		_dropProgress = _animTargetProgress;
-		_animating = false;
-		if (wasCollapsing)
-			_collapseCleanupPending = true;
-		if (_dropProgress <= 0.0f && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = nullptr;
-		return _dropProgress;
+		if (index >= source.Get()->Count()
+			|| index >= _itemSourceObservations.size())
+		{
+			RefreshItems();
+			return;
+		}
+		BindingSourceReference item;
+		(void)source.Get()->TryGetItem(index, item);
+		_itemSourceObservations[index] = ObserveBindingPaths(
+			item, { GetDisplayMemberPath(), GetSelectedValuePath() },
+			[this, index] { RefreshDataItem(index); });
 	}
-	t = 1.0f - std::pow(1.0f - (std::clamp)(t, 0.0f, 1.0f), 3.0f);
-	_dropProgress = _animStartProgress + (_animTargetProgress - _animStartProgress) * t;
-	return _dropProgress;
-}
-
-float ComboBox::CurrentDropdownHeight()
-{
-	return FullDropdownHeight() * CurrentDropProgress();
-}
-
-float ComboBox::DropdownTop()
-{
-	return (float)this->Height + (std::max)(0.0f, this->DropGap);
-}
-
-bool ComboBox::IsDropDownVisible()
-{
-	return this->Expand || _animating || _dropProgress > 0.001f;
-}
-
-bool ComboBox::IsDropDownInteractive()
-{
-	return this->Expand && CurrentDropdownHeight() > 0.5f;
-}
-
-bool ComboBox::IsHeaderHit(int localX, int localY)
-{
-	return localX >= 0 && localX <= this->Width && localY >= 0 && localY < this->Height;
-}
-
-bool ComboBox::IsDropdownHit(int localX, int localY, float dropdownHeight)
-{
-	const float top = DropdownTop();
-	return localX >= 0 && localX <= this->Width &&
-		(float)localY >= top &&
-		(float)localY < (top + dropdownHeight);
-}
-
-void ComboBox::EnsureSelectionInRange()
-{
-	if (this->values.empty())
-	{
+	if (static_cast<int>(index) == SelectedIndex)
 		SyncTextWithSelection();
-		return;
-	}
-	const int lastIndex = static_cast<int>(this->values.size()) - 1;
-	const int clamped = this->SelectedIndex < 0
-		? -1 : (std::min)(this->SelectedIndex, lastIndex);
-	if (clamped != this->SelectedIndex)
-		SetCurrentSelectedIndex(clamped);
-	else
-		SyncTextWithSelection();
-}
-
-void ComboBox::EnsureScrollInRange()
-{
-	const int visibleCount = VisibleItemCount();
-	const int maxScroll = std::max(0, (int)this->values.size() - visibleCount);
-	const int clamped = (std::clamp)(this->ExpandScroll, 0, maxScroll);
-	if (clamped != this->ExpandScroll)
-		SetCurrentExpandScroll(clamped);
-	if (_underMouseIndex >= static_cast<int>(this->values.size())) _underMouseIndex = -1;
-}
-
-void ComboBox::EnsureSelectedItemVisible()
-{
-	if (this->values.empty() || this->SelectedIndex < 0) return;
-	const int visibleCount = VisibleItemCount();
-	if (visibleCount <= 0) return;
-	int offset = this->ExpandScroll;
-	if (this->SelectedIndex < offset)
-		offset = this->SelectedIndex;
-	else if (this->SelectedIndex >= offset + visibleCount)
-		offset = this->SelectedIndex - visibleCount + 1;
-	if (offset != this->ExpandScroll)
-		SetCurrentExpandScroll(offset);
+	if (index < _accessibilityItemIds.size())
+		NotifyAccessibilityVirtualChanged(
+			_accessibilityItemIds[index], AccessibilityChange::Name);
+	InvalidateVisual();
 }
 
 void ComboBox::SyncTextWithSelection()
 {
-	if (this->values.empty()
-		|| this->SelectedIndex < 0
-		|| static_cast<size_t>(this->SelectedIndex) >= this->values.size())
-	{
-		this->Text = L"";
-		return;
-	}
-	this->Text = this->values[static_cast<size_t>(this->SelectedIndex)];
+	Text = SelectedIndex >= 0
+		&& static_cast<size_t>(SelectedIndex) < ItemCount()
+		? GetItemDisplayText(static_cast<size_t>(SelectedIndex)) : std::wstring{};
 }
 
-void ComboBox::SetCurrentSelectedIndex(int value)
+void ComboBox::UpdateGeneratedItemStates()
 {
-	if (_selectedIndex == value) return;
-	(void)SetCurrentPropertyField(L"SelectedIndex", _selectedIndex, value);
+	UpdateContainerSelection();
 }
 
-void ComboBox::SetCurrentExpandScroll(int value)
-{
-	if (_expandScroll == value) return;
-	(void)SetCurrentPropertyField(L"ExpandScroll", _expandScroll, value);
-}
-
-void ComboBox::SetCurrentExpanded(bool value)
-{
-	if (_expand == value) return;
-	(void)SetCurrentPropertyField(L"Expand", _expand, value);
-}
-
-void ComboBox::ApplySelectedIndexChange(int oldValue, int newValue)
+void ComboBox::OnSelectedIndexChanged(int oldValue, int newValue)
 {
 	if (oldValue == newValue) return;
 	SyncTextWithSelection();
-	EnsureSelectedItemVisible();
-	if (_accessibilityItemIds.size() != values.size()
-		|| _accessibilityItemTexts.size() != values.size())
+	if (_accessibilityItemIds.size() != ItemCount())
 		ReconcileAccessibilityItemIds();
 	_selectedAccessibilityItemId = newValue >= 0
 		&& static_cast<size_t>(newValue) < _accessibilityItemIds.size()
 		? _accessibilityItemIds[static_cast<size_t>(newValue)] : 0;
 	UpdateGeneratedItemStates();
-	this->OnSelectionChanged(this);
-	NotifySelectedValueChanged();
-}
-
-void ComboBox::NotifySelectedValueChanged()
-{
-	const auto source = GetPropertyValueSource(L"SelectedValue");
-	if (source != ControlPropertyValueSource::Default)
-	{
-		BindingValue stored;
-		const auto current = GetSelectedValue();
-		if (!TryGetPropertyValue(L"SelectedValue", source, stored)
-			|| !BindingItemValuesEqual(stored, current))
-			(void)TrySetCurrentPropertyValue(L"SelectedValue", current);
-	}
-	_selectedValueChanged(this);
-}
-
-void ComboBox::ApplyExpandedStateChange(bool oldValue, bool newValue)
-{
-	if (oldValue == newValue) return;
-	CurrentDropProgress();
-	if (newValue)
-	{
-		EnsureSelectionInRange();
-		EnsureScrollInRange();
-		EnsureSelectedItemVisible();
-		if (VisibleItemCount() > 0 && this->ParentForm)
-			this->ParentForm->ForegroundControl = this;
-	}
-	else
-	{
-		_underMouseIndex = -1;
-		isDraggingScroll = false;
-		UpdateGeneratedItemStates();
-	}
-
-	_animStartProgress = _dropProgress;
-	_animTargetProgress = newValue ? 1.0f : 0.0f;
-	_collapseCleanupPending = false;
-	if (EffectiveAnimationDuration(
-		static_cast<UINT>((std::max)(0, _animationDurationMs))) == 0
-		|| std::fabs(_animTargetProgress - _animStartProgress) < 0.001f)
-	{
-		_dropProgress = _animTargetProgress;
-		_animating = false;
-		if (!newValue && this->ParentForm
-			&& this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = nullptr;
-	}
-	else
-	{
-		_animStartTick = ::GetTickCount64();
-		_animating = true;
-	}
-	if (this->ParentForm)
-		this->ParentForm->Invalidate(false);
-}
-CursorKind ComboBox::QueryCursor(int localX, int localY)
-{
-	if (!this->Enable) return CursorKind::Arrow;
-
-	const bool hasVScroll = (IsDropDownVisible() && static_cast<int>(this->values.size()) > VisibleItemCount());
-	const float dropHeight = CurrentDropdownHeight();
-	const float dropTop = DropdownTop();
-	if (hasVScroll && localX >= (this->Width - 12) && localY >= dropTop && (float)localY <= (dropTop + dropHeight))
-		return CursorKind::SizeNS;
-
-	return this->Cursor;
-}
-ComboBox::ComboBox(std::wstring text, int x, int y, int width, int height)
-{
-	values.SetOwnerChangedHandler(
-		[this](const CollectionChangedEventArgs& change)
-		{ OnItemsCollectionChanged(change); });
-	this->Text = text;
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	this->BackColor = cui::theme::palette::Surface;
-	this->BorderColor = cui::theme::palette::BorderStrong;
-	this->ForeColor = cui::theme::palette::TextPrimary;
-	this->Cursor = CursorKind::Hand;
-}
-
-bool ComboBox::IsAnimationRunning()
-{
-	CurrentDropProgress();
-	return _animating || _collapseCleanupPending;
-}
-
-bool ComboBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
-{
-	if (!IsDropDownVisible() && !_collapseCleanupPending) return false;
-	auto abs = this->AbsRect;
-	outRect = abs;
-	outRect.bottom += (LONG)std::ceil((std::max)(0.0f, this->DropGap) + FullDropdownHeight());
-	return true;
-}
-
-void ComboBox::SetExpanded(bool expanded)
-{
-	const bool wantExpand = expanded && VisibleItemCount() > 0;
-	if (this->Expand == wantExpand) return;
-	SetCurrentExpanded(wantExpand);
+	if (_isDropDownOpen && newValue >= 0)
+		(void)BringItemIntoView(static_cast<size_t>(newValue));
 }
 
 bool ComboBox::SelectItem(int index)
 {
-	if (index < 0 || static_cast<size_t>(index) >= this->values.size())
-		return false;
-	if (this->SelectedIndex == index)
+	if (index < 0 || static_cast<size_t>(index) >= ItemCount()) return false;
+	if (SelectedIndex == index)
 	{
-		EnsureSelectedItemVisible();
+		if (_isDropDownOpen)
+			(void)BringItemIntoView(static_cast<size_t>(index));
 		return true;
 	}
-	SetCurrentSelectedIndex(index);
-	return true;
+	return SelectIndex(index);
 }
 
-void ComboBox::ScrollBy(int itemDelta)
+ComboBoxItem* ComboBox::AddItem(std::unique_ptr<ComboBoxItem> item)
 {
-	if (itemDelta == 0) return;
-	const int visibleCount = VisibleItemCount();
-	const int maximum = (std::max)(
-		0, static_cast<int>(this->values.size()) - visibleCount);
-	const int target = (std::clamp)(
-		this->ExpandScroll + itemDelta, 0, maximum);
-	if (target != this->ExpandScroll)
-		SetCurrentExpandScroll(target);
+	return static_cast<ComboBoxItem*>(AddItemControl(std::move(item)));
 }
 
-// ---- 项操作便捷方法 ----
-int ComboBox::GetItemCount()
+ComboBoxItem* ComboBox::InsertItem(
+	int index, std::unique_ptr<ComboBoxItem> item)
 {
-	return static_cast<int>(this->values.size());
+	if (index < 0 || static_cast<size_t>(index) > AuthoredItemCount())
+		throw std::out_of_range("ComboBox item index is out of range");
+	return static_cast<ComboBoxItem*>(InsertItemControl(
+		static_cast<size_t>(index), std::move(item)));
 }
 
-std::wstring ComboBox::GetSelectedItem()
+ComboBoxItem* ComboBox::GetItem(int index) const noexcept
 {
-	const int index = this->GetSelectedIndex();
-	if (index < 0 || static_cast<size_t>(index) >= this->values.size())
-		return L"";
-	return this->values[static_cast<size_t>(index)];
+	return index < 0 ? nullptr : dynamic_cast<ComboBoxItem*>(
+		GetAuthoredItem(static_cast<size_t>(index)));
 }
 
-int ComboBox::FindItem(const std::wstring& text)
+int ComboBox::IndexOfItem(const ComboBoxItem* item) const noexcept
 {
-	for (size_t i = 0; i < this->values.size(); ++i)
-	{
-		if (this->values[i] == text)
-			return static_cast<int>(i);
-	}
+	if (!item) return -1;
+	for (size_t index = 0; index < AuthoredItemCount(); ++index)
+		if (GetAuthoredItem(index) == item) return static_cast<int>(index);
 	return -1;
 }
 
-void ComboBox::AddItem(const std::wstring& text)
+std::unique_ptr<ComboBoxItem> ComboBox::DetachItemAt(int index)
 {
-	this->values.push_back(text);
+	if (index < 0) return {};
+	auto owner = DetachItemControlAt(static_cast<size_t>(index));
+	if (!owner) return {};
+	auto* item = static_cast<ComboBoxItem*>(owner.release());
+	return std::unique_ptr<ComboBoxItem>(item);
 }
 
-void ComboBox::InsertItem(int index, const std::wstring& text)
+std::unique_ptr<ComboBoxItem> ComboBox::DetachItem(ComboBoxItem* item)
 {
-	index = (std::clamp)(index, 0, static_cast<int>(this->values.size()));
-	this->values.insert(this->values.begin() + index, text);
+	return DetachItemAt(IndexOfItem(item));
 }
 
-void ComboBox::RemoveItemAt(int index)
+bool ComboBox::RemoveItemAt(int index)
 {
-	if (index < 0 || static_cast<size_t>(index) >= this->values.size())
-		return;
-	this->values.erase(this->values.begin() + index);
+	return static_cast<bool>(DetachItemAt(index));
+}
+
+bool ComboBox::RemoveItem(ComboBoxItem* item)
+{
+	return static_cast<bool>(DetachItem(item));
 }
 
 void ComboBox::ClearItems()
 {
-	this->values.clear();
+	ClearItemControls();
+}
+
+CursorKind ComboBox::QueryCursor(int, int)
+{
+	return IsEffectivelyEnabled() ? CursorKind::Hand : CursorKind::Arrow;
+}
+
+bool ComboBox::HandlesNavigationKey(Key key) const
+{
+	switch (key)
+	{
+	case Key::Return:
+	case Key::Space:
+	case Key::Escape:
+	case Key::F4:
+		return true;
+	default:
+		return Selector::HandlesNavigationKey(key);
+	}
+}
+
+cui::core::Size ComboBox::MeasureCore(
+	const cui::core::Constraints& available)
+{
+	if (GetControlTemplateRoot()
+		&& GetControlTemplateRoot() != _defaultPopup)
+		return ItemsControl::MeasureCore(available);
+	const auto padding = GetSpecifiedLayout().padding;
+	cui::core::Size textSize{};
+	if (GetRenderFont())
+	{
+		const auto measured = GetRenderFont()->GetTextSize(Text);
+		textSize = { measured.width, measured.height };
+	}
+	return available.Constrain({
+		textSize.width + padding.Horizontal() + 28.0f,
+		(std::max)(24.0f, textSize.height + padding.Vertical()) });
+}
+
+void ComboBox::Arrange(cui::core::Rect finalRect)
+{
+	if (GetControlTemplateRoot()
+		&& GetControlTemplateRoot() != _defaultPopup)
+		ItemsControl::Arrange(finalRect);
+	else
+		Control::Arrange(finalRect);
+	if (_isDropDownOpen && EnsureDropDownInfrastructure() && _popup)
+		_popup->UpdatePlacement();
+}
+
+void ComboBox::PreparePresentation()
+{
+	Selector::PreparePresentation();
+	if (_isDropDownOpen) (void)EnsureDropDownInfrastructure();
+	else ConfigurePopupPart(ResolvePopupPart());
+	_dropDownScroll = ResolveScrollOwner();
+	UpdateItemsHostPresentation();
+	if (_popup && _popup->GetIsOpen()) _popup->UpdatePlacement();
+}
+
+void ComboBox::OnRender()
+{
+	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
+	if (GetControlTemplateRoot()
+		&& GetControlTemplateRoot() != _defaultPopup)
+		return;
+
+	auto* d2d = GetDrawingContext();
+	const auto size = GetActualSizeDip();
+	const float border = BorderThickness.MaxEdge();
+	BeginRender();
+	{
+		d2d->FillRect(0.0f, 0.0f, size.width, size.height, RendererBackgroundColor);
+		if (border > 0.0f && RendererBorderColor.a > 0.0f)
+			d2d->DrawRect(border * 0.5f, border * 0.5f,
+				(std::max)(0.0f, size.width - border),
+				(std::max)(0.0f, size.height - border),
+				RendererBorderColor, border);
+		if (GetRenderFont())
+		{
+			const auto textSize = GetRenderFont()->GetTextSize(Text);
+			const float left = Padding.Left;
+			const float top = (std::max)(Padding.Top,
+				(size.height - textSize.height) * 0.5f);
+			d2d->DrawString(Text, left, top,
+				(std::max)(1.0f, size.width - left - Padding.Right - 24.0f),
+				textSize.height + 2.0f, RendererForegroundColor, GetRenderFont());
+		}
+		const float cx = size.width - 13.0f;
+		const float cy = size.height * 0.5f;
+		const float direction = _isDropDownOpen ? -1.0f : 1.0f;
+		d2d->DrawLine(
+			D2D1::Point2F(cx - 4.0f, cy - 2.0f * direction),
+			D2D1::Point2F(cx, cy + 2.0f * direction), RendererForegroundColor, 1.5f);
+		d2d->DrawLine(
+			D2D1::Point2F(cx, cy + 2.0f * direction),
+			D2D1::Point2F(cx + 4.0f, cy - 2.0f * direction), RendererForegroundColor, 1.5f);
+		if (!IsEffectivelyEnabled())
+			d2d->FillRect(0.0f, 0.0f, size.width, size.height,
+				cui::theme::palette::DisabledOverlay);
+	}
+	EndRender();
+}
+
+bool ComboBox::ProcessInput(const InputReport& input)
+{
+	if (!IsEffectivelyEnabled() || !IsVisible) return true;
+	if (input.Kind == InputReportKind::PointerDown
+		&& input.ChangedButton == MouseButton::Left)
+	{
+		_pointerPressActive = true;
+		(void)CaptureMouse();
+		if (GetPresentationWindow())
+			GetPresentationWindow()->SetKeyboardFocus(this, true);
+	}
+
+	if (input.Kind == InputReportKind::PointerUp
+		&& input.ChangedButton == MouseButton::Left)
+	{
+		const bool activate = _pointerPressActive
+			&& ContainsPoint(input.X, input.Y);
+		_pointerPressActive = false;
+		if (IsMouseCaptured()) (void)ReleaseMouseCapture();
+		if (activate) SetCurrentIsDropDownOpen(!_isDropDownOpen);
+		return Selector::ProcessInput(input);
+	}
+	if (input.Kind == InputReportKind::Cancel
+		|| input.Kind == InputReportKind::CaptureLost)
+	{
+		_pointerPressActive = false;
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		return Selector::ProcessInput(input);
+	}
+
+	if (input.Kind == InputReportKind::KeyDown)
+	{
+		bool handled = true;
+		switch (input.Key)
+		{
+		case Key::F4:
+		case Key::Return:
+		case Key::Space:
+			SetCurrentIsDropDownOpen(!_isDropDownOpen);
+			break;
+		case Key::Escape:
+			if (_isDropDownOpen) SetCurrentIsDropDownOpen(false);
+			else handled = false;
+			break;
+		case Key::Down:
+			if (input.HasModifier(ModifierKeys::Alt))
+				SetCurrentIsDropDownOpen(true);
+			else handled = false;
+			break;
+		case Key::Up:
+			if (input.HasModifier(ModifierKeys::Alt))
+				SetCurrentIsDropDownOpen(false);
+			else handled = false;
+			break;
+		default:
+			handled = false;
+			break;
+		}
+		if (handled)
+		{
+			auto args = input.CreateKeyEventArgs();
+			OnKeyDown(this, args);
+			return true;
+		}
+	}
+	return Selector::ProcessInput(input);
 }
 
 void ComboBox::ReconcileAccessibilityItemIds()
 {
-	std::unordered_map<std::wstring, std::vector<uint32_t>> reusableIds;
-	reusableIds.reserve(_accessibilityItemTexts.size());
-	for (size_t old = _accessibilityItemTexts.size(); old > 0; --old)
+	const size_t count = ItemCount();
+	std::vector<uint32_t> nextIds(count, 0);
+	std::vector<BindingSourceReference> nextSources(count);
+	std::vector<ControlWeakReference> nextAuthored(count);
+	const auto source = GetItemsView();
+	struct ReusableSourceIds final
 	{
-		const size_t index = old - 1;
-		if (index < _accessibilityItemIds.size()
-			&& _accessibilityItemIds[index] != 0)
-			reusableIds[_accessibilityItemTexts[index]].push_back(
-				_accessibilityItemIds[index]);
-	}
-	std::vector<uint32_t> nextIds(values.size(), 0);
-	for (size_t next = 0; next < values.size(); ++next)
+		std::vector<size_t> Indices;
+		size_t Next = 0;
+	};
+	std::unordered_map<IBindingSource*, ReusableSourceIds> reusableSourceIds;
+	std::vector<bool> usedAuthoredIds;
+	if (source)
 	{
-		auto reusable = reusableIds.find(values[next]);
-		if (reusable != reusableIds.end() && !reusable->second.empty())
+		reusableSourceIds.reserve(_accessibilitySourceIdentities.size());
+		for (size_t old = 0;
+			old < _accessibilityItemIds.size()
+				&& old < _accessibilitySourceIdentities.size(); ++old)
 		{
-			nextIds[next] = reusable->second.back();
-			reusable->second.pop_back();
+			reusableSourceIds[_accessibilitySourceIdentities[old].Get()]
+				.Indices.push_back(old);
 		}
-		if (nextIds[next] == 0)
-			nextIds[next] = AllocateAccessibilityVirtualId();
+	}
+	else
+	{
+		usedAuthoredIds.resize(_accessibilityItemIds.size(), false);
+	}
+	for (size_t index = 0; index < count; ++index)
+	{
+		if (source)
+		{
+			(void)source.Get()->TryGetItem(index, nextSources[index]);
+			const auto reusable = reusableSourceIds.find(
+				nextSources[index].Get());
+			if (reusable != reusableSourceIds.end()
+				&& reusable->second.Next < reusable->second.Indices.size())
+			{
+				nextIds[index] = _accessibilityItemIds[
+					reusable->second.Indices[reusable->second.Next++]];
+			}
+		}
+		else
+		{
+			nextAuthored[index] = GetAuthoredItem(index);
+			for (size_t old = 0; old < _accessibilityItemIds.size(); ++old)
+			{
+				if (usedAuthoredIds[old]
+					|| old >= _accessibilityAuthoredIdentities.size()
+					|| _accessibilityAuthoredIdentities[old]
+						!= nextAuthored[index]) continue;
+				nextIds[index] = _accessibilityItemIds[old];
+				usedAuthoredIds[old] = true;
+				break;
+			}
+		}
+		if (nextIds[index] == 0)
+			nextIds[index] = AllocateAccessibilityVirtualId();
 	}
 	_accessibilityItemIds = std::move(nextIds);
-	_accessibilityItemTexts = values;
+	_accessibilitySourceIdentities = std::move(nextSources);
+	_accessibilityAuthoredIdentities = std::move(nextAuthored);
 	RebuildAccessibilityItemIndex();
 }
 
 void ComboBox::RebuildAccessibilityItemIndex()
 {
 	_accessibilityItemIndexById.clear();
-	_accessibilityItemIndexById.reserve(_accessibilityItemIds.size());
 	for (size_t index = 0; index < _accessibilityItemIds.size(); ++index)
 	{
 		auto& id = _accessibilityItemIds[index];
@@ -1419,37 +1012,52 @@ void ComboBox::RebuildAccessibilityItemIndex()
 int ComboBox::FindAccessibilityItem(uint32_t id)
 {
 	if (id == 0) return -1;
-	if (_accessibilityItemIds.size() != values.size()
-		|| _accessibilityItemTexts.size() != values.size()
+	if (_accessibilityItemIds.size() != ItemCount()
 		|| _accessibilityItemIndexById.size() != _accessibilityItemIds.size())
 		ReconcileAccessibilityItemIds();
-	const auto position = _accessibilityItemIndexById.find(id);
-	return position == _accessibilityItemIndexById.end()
-		? -1 : static_cast<int>(position->second);
+	const auto found = _accessibilityItemIndexById.find(id);
+	return found == _accessibilityItemIndexById.end()
+		? -1 : static_cast<int>(found->second);
 }
 
-void ComboBox::GetAccessibilityVirtualChildren(
-	uint32_t parentId, std::vector<uint32_t>& result)
+bool ComboBox::TryGetItemBounds(
+	size_t index, D2D1_RECT_F& bounds, bool& visible) const noexcept
 {
-	result.clear();
-	if (parentId != 0) return;
-	if (_accessibilityItemIndexById.size() != _accessibilityItemIds.size())
-		RebuildAccessibilityItemIndex();
-	result = _accessibilityItemIds;
+	bounds = D2D1::RectF();
+	visible = false;
+	if (!_popup || !_popup->GetIsOpen()) return false;
+	auto* item = GetGeneratedItem(index);
+	if (!item) return true;
+	const auto itemRect = item->GetAbsoluteRectDip();
+	const auto owner = GetAbsoluteLocationDip();
+	bounds = D2D1::RectF(
+		itemRect.x - owner.x,
+		itemRect.y - owner.y,
+		itemRect.x - owner.x + itemRect.width,
+		itemRect.y - owner.y + itemRect.height);
+	const auto popupRect = _popup->GetAbsoluteRectDip();
+	const D2D1_RECT_F itemAbsolute = D2D1::RectF(
+		itemRect.x, itemRect.y,
+		itemRect.x + itemRect.width, itemRect.y + itemRect.height);
+	const D2D1_RECT_F popupAbsolute = D2D1::RectF(
+		popupRect.x, popupRect.y,
+		popupRect.x + popupRect.width, popupRect.y + popupRect.height);
+	visible = item->IsVisible && Intersects(itemAbsolute, popupAbsolute);
+	if (!visible) bounds = D2D1::RectF();
+	return true;
 }
 
 size_t ComboBox::GetAccessibilityVirtualChildCount(uint32_t parentId)
 {
-	return parentId == 0 ? values.size() : 0;
+	return parentId == 0 ? ItemCount() : 0;
 }
 
 bool ComboBox::TryGetAccessibilityVirtualChildAt(
 	uint32_t parentId, size_t index, uint32_t& result)
 {
 	result = 0;
-	if (parentId != 0 || index >= values.size()) return false;
-	if (_accessibilityItemIds.size() != values.size()
-		|| _accessibilityItemTexts.size() != values.size())
+	if (parentId != 0 || index >= ItemCount()) return false;
+	if (_accessibilityItemIds.size() != ItemCount())
 		ReconcileAccessibilityItemIds();
 	result = _accessibilityItemIds[index];
 	return result != 0;
@@ -1463,7 +1071,8 @@ bool ComboBox::TryGetAccessibilityVirtualSibling(
 	const int index = FindAccessibilityItem(id);
 	if (index < 0) return false;
 	const int sibling = next ? index + 1 : index - 1;
-	if (sibling < 0 || sibling >= static_cast<int>(_accessibilityItemIds.size()))
+	if (sibling < 0
+		|| sibling >= static_cast<int>(_accessibilityItemIds.size()))
 		return false;
 	result = _accessibilityItemIds[static_cast<size_t>(sibling)];
 	return result != 0;
@@ -1473,17 +1082,18 @@ bool ComboBox::TryHitTestAccessibilityVirtualNode(
 	float localX, float localY, uint32_t& result)
 {
 	result = 0;
-	if (!IsDropDownVisible() || localX < 0.0f
-		|| localX >= static_cast<float>(Width)) return false;
-	const float itemHeight = static_cast<float>(Height);
-	const float top = DropdownTop();
-	const float bottom = top + CurrentDropdownHeight();
-	if (itemHeight <= 0.0f || localY < top || localY >= bottom) return false;
-	const int index = ExpandScroll
-		+ static_cast<int>(std::floor((localY - top) / itemHeight));
-	if (index < 0 || index >= static_cast<int>(values.size())) return false;
-	return TryGetAccessibilityVirtualChildAt(
-		0, static_cast<size_t>(index), result);
+	if (!_popup || !_popup->GetIsOpen()) return false;
+	const size_t count = ItemCount();
+	for (size_t index = 0; index < count; ++index)
+	{
+		D2D1_RECT_F bounds{};
+		bool visible = false;
+		if (!TryGetItemBounds(index, bounds, visible) || !visible) continue;
+		if (localX < bounds.left || localX > bounds.right
+			|| localY < bounds.top || localY > bounds.bottom) continue;
+		return TryGetAccessibilityVirtualChildAt(0, index, result);
+	}
+	return false;
 }
 
 bool ComboBox::TryGetAccessibilityVirtualNode(
@@ -1491,31 +1101,24 @@ bool ComboBox::TryGetAccessibilityVirtualNode(
 {
 	const int index = FindAccessibilityItem(id);
 	if (index < 0) return false;
-	const float itemHeight = static_cast<float>(Height);
-	const float top = DropdownTop()
-		+ static_cast<float>(index - ExpandScroll) * itemHeight;
-	const float currentBottom = DropdownTop() + CurrentDropdownHeight();
-	const bool inRealizedRange = IsDropDownVisible()
-		&& index >= ExpandScroll
-		&& index < ExpandScroll + VisibleItemCount()
-		&& top < currentBottom && top + itemHeight > DropdownTop();
+	D2D1_RECT_F bounds{};
+	bool visible = false;
+	(void)TryGetItemBounds(static_cast<size_t>(index), bounds, visible);
 	result = {};
 	result.Id = id;
-	result.Role = AccessibleRole::ListItem;
-	result.Patterns = AccessibilityVirtualPattern::SelectionItem
-		| AccessibilityVirtualPattern::ScrollItem
-		| AccessibilityVirtualPattern::VirtualizedItem;
-	result.Name = values[static_cast<size_t>(index)];
+	result.ControlType = AutomationControlType::ListItem;
+	result.Patterns = AutomationPattern::SelectionItem
+		| AutomationPattern::ScrollItem
+		| AutomationPattern::VirtualizedItem;
+	result.Name = GetItemDisplayText(static_cast<size_t>(index));
 	result.Value = result.Name;
 	const auto ownerId = GetAccessibilitySnapshot().AutomationId;
 	result.AutomationId = ownerId.empty()
 		? L"item-" + std::to_wstring(id)
 		: ownerId + L".item-" + std::to_wstring(id);
-	result.BoundsDip = inRealizedRange
-		? D2D1::RectF(0.0f, top, static_cast<float>(Width), top + itemHeight)
-		: D2D1::RectF(0, 0, 0, 0);
-	result.Enabled = Enable;
-	result.Visible = Visible && inRealizedRange;
+	result.BoundsDip = bounds;
+	result.Enabled = IsEffectivelyEnabled();
+	result.Visible = IsVisible && visible;
 	result.Selected = index == SelectedIndex;
 	result.Row = index;
 	result.Column = 0;
@@ -1526,11 +1129,11 @@ AccessibilityVirtualContainerInfo
 ComboBox::GetAccessibilityVirtualContainerInfo() const noexcept
 {
 	AccessibilityVirtualContainerInfo result;
-	result.Patterns = AccessibilityVirtualPattern::Selection
-		| AccessibilityVirtualPattern::Scroll;
+	result.Patterns = AutomationPattern::Selection
+		| AutomationPattern::Scroll;
 	result.CanSelectMultiple = false;
-	result.IsSelectionRequired = !values.empty();
-	result.RowCount = static_cast<int>(values.size());
+	result.IsSelectionRequired = ItemCount() != 0;
+	result.RowCount = static_cast<int>(ItemCount());
 	result.ColumnCount = 1;
 	return result;
 }
@@ -1539,12 +1142,12 @@ void ComboBox::GetAccessibilityVirtualSelection(
 	std::vector<uint32_t>& result)
 {
 	result.clear();
-	if (_accessibilityItemIds.size() != values.size()
-		|| _accessibilityItemTexts.size() != values.size())
+	if (_accessibilityItemIds.size() != ItemCount())
 		ReconcileAccessibilityItemIds();
 	if (SelectedIndex >= 0
 		&& static_cast<size_t>(SelectedIndex) < _accessibilityItemIds.size())
-		result.push_back(_accessibilityItemIds[static_cast<size_t>(SelectedIndex)]);
+		result.push_back(
+			_accessibilityItemIds[static_cast<size_t>(SelectedIndex)]);
 }
 
 bool ComboBox::SelectAccessibilityVirtualNode(
@@ -1552,7 +1155,8 @@ bool ComboBox::SelectAccessibilityVirtualNode(
 {
 	if (action == AccessibilitySelectionAction::Remove) return false;
 	const int index = FindAccessibilityItem(id);
-	const bool selected = Enable && index >= 0 && SelectItem(index);
+	const bool selected = IsEffectivelyEnabled()
+		&& index >= 0 && SelectItem(index);
 	if (selected)
 		NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Selection);
 	return selected;
@@ -1561,31 +1165,49 @@ bool ComboBox::SelectAccessibilityVirtualNode(
 bool ComboBox::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
 {
 	const int index = FindAccessibilityItem(id);
-	if (index < 0 || !Enable) return false;
-	SetExpanded(true);
-	const int visibleCount = VisibleItemCount();
-	if (index < ExpandScroll)
-		SetCurrentExpandScroll(index);
-	else if (visibleCount > 0 && index >= ExpandScroll + visibleCount)
-		SetCurrentExpandScroll(index - visibleCount + 1);
-	return true;
+	if (index < 0 || !IsEffectivelyEnabled()) return false;
+	SetCurrentIsDropDownOpen(true);
+	if (!EnsureDropDownInfrastructure()) return false;
+	if (_popup) _popup->UpdatePlacement();
+	return BringItemIntoView(static_cast<size_t>(index));
+}
+
+bool ComboBox::GetScrollMetrics(
+	float& extent, float& viewport, float& offset) const noexcept
+{
+	extent = viewport = offset = 0.0f;
+	if (!_dropDownScroll) return false;
+	try
+	{
+		auto* scroll = const_cast<ScrollViewer*>(_dropDownScroll);
+		scroll->UpdateLayout();
+		extent = static_cast<float>(scroll->ExtentHeight);
+		viewport = static_cast<float>(scroll->ViewportHeight);
+		offset = static_cast<float>(scroll->VerticalOffset);
+		return extent > viewport && viewport > 0.0f;
+	}
+	catch (...)
+	{
+		return false;
+	}
 }
 
 bool ComboBox::GetAccessibilityScrollInfo(
 	AccessibilityScrollInfo& result) const noexcept
 {
 	result = {};
-	const int count = static_cast<int>(values.size());
-	const int visible = count <= 0 ? 0
-		: (std::min)((std::max)(1, _expandCount), count);
-	const int maximum = (std::max)(0, count - visible);
-	result.VerticallyScrollable = maximum > 0;
+	float extent = 0.0f;
+	float viewport = 0.0f;
+	float offset = 0.0f;
+	if (!GetScrollMetrics(extent, viewport, offset)) return true;
+	const float maximum = (std::max)(0.0f, extent - viewport);
+	result.VerticallyScrollable = maximum > 0.0f;
 	if (result.VerticallyScrollable)
 	{
 		result.VerticalScrollPercent = (std::clamp)(
-			static_cast<double>(_expandScroll) / maximum * 100.0, 0.0, 100.0);
+			static_cast<double>(offset / maximum * 100.0f), 0.0, 100.0);
 		result.VerticalViewSize = (std::clamp)(
-			static_cast<double>(visible) / count * 100.0, 0.0, 100.0);
+			static_cast<double>(viewport / extent * 100.0f), 0.0, 100.0);
 	}
 	return true;
 }
@@ -1596,21 +1218,26 @@ bool ComboBox::ScrollAccessibility(
 {
 	if (horizontal != AccessibilityScrollAmount::NoAmount) return false;
 	if (vertical == AccessibilityScrollAmount::NoAmount) return true;
-	AccessibilityScrollInfo info;
-	GetAccessibilityScrollInfo(info);
-	if (!info.VerticallyScrollable) return false;
-	SetExpanded(true);
-	const int visible = (std::max)(1, VisibleItemCount());
+	SetCurrentIsDropDownOpen(true);
+	if (!EnsureDropDownInfrastructure() || !_dropDownScroll) return false;
+	float extent = 0.0f;
+	float viewport = 0.0f;
+	float offset = 0.0f;
+	if (!GetScrollMetrics(extent, viewport, offset)) return false;
+	const int line = 48;
+	const int page = (std::max)(line,
+		static_cast<int>(std::floor(viewport)) - line);
 	int delta = 0;
 	switch (vertical)
 	{
-	case AccessibilityScrollAmount::LargeDecrement: delta = -visible; break;
-	case AccessibilityScrollAmount::SmallDecrement: delta = -1; break;
-	case AccessibilityScrollAmount::LargeIncrement: delta = visible; break;
-	case AccessibilityScrollAmount::SmallIncrement: delta = 1; break;
+	case AccessibilityScrollAmount::LargeDecrement: delta = -page; break;
+	case AccessibilityScrollAmount::SmallDecrement: delta = -line; break;
+	case AccessibilityScrollAmount::LargeIncrement: delta = page; break;
+	case AccessibilityScrollAmount::SmallIncrement: delta = line; break;
 	case AccessibilityScrollAmount::NoAmount: return true;
 	}
-	ScrollBy(delta);
+	_dropDownScroll->ScrollToVerticalOffset(
+		_dropDownScroll->VerticalOffset + static_cast<double>(delta));
 	return true;
 }
 
@@ -1621,455 +1248,14 @@ bool ComboBox::SetAccessibilityScrollPercent(
 	if (verticalPercent == AccessibilityScrollNoChange) return true;
 	if (!std::isfinite(verticalPercent)
 		|| verticalPercent < 0.0 || verticalPercent > 100.0) return false;
-	const int maximum = (std::max)(0,
-		static_cast<int>(values.size()) - VisibleItemCount());
-	if (maximum <= 0) return false;
-	SetExpanded(true);
-	SetCurrentExpandScroll((std::clamp)(
-		static_cast<int>(std::lround(maximum * verticalPercent / 100.0)),
-		0, maximum));
-	return true;
-}
-SIZE ComboBox::ActualSize()
-{
-	return this->Size;
-}
-
-bool ComboBox::ContainsForegroundPoint(int localX, int localY)
-{
-	return IsDropDownVisible() && IsDropdownHit(localX, localY, CurrentDropdownHeight());
-}
-
-void ComboBox::InvalidateVisual()
-{
-	if (!this->IsVisual || !this->ParentForm)
-	{
-		Control::InvalidateVisual();
-		return;
-	}
-	auto currentRect = this->AbsRect;
-	if (IsDropDownVisible() || _collapseCleanupPending)
-	{
-		currentRect.bottom += (LONG)std::ceil((std::max)(0.0f, this->DropGap) + FullDropdownHeight());
-	}
-	this->InvalidateVisualRect(currentRect);
-}
-
-void ComboBox::DrawScroll()
-{
-	auto d2d = this->ParentForm->Render;
-	const int visibleItemCount = VisibleItemCount();
-	const float renderHeight = CurrentDropdownHeight();
-	if (this->values.size() > 0 && visibleItemCount > 0 && renderHeight > 0.0f)
-	{
-		const int itemCount = static_cast<int>(this->values.size());
-		if (visibleItemCount < itemCount)
-		{
-			int maxScroll = itemCount - visibleItemCount;
-			float scrollThumbHeight = ((float)visibleItemCount / (float)this->values.size()) * renderHeight;
-			if (scrollThumbHeight < COMBO_MIN_SCROLL_BLOCK)scrollThumbHeight = COMBO_MIN_SCROLL_BLOCK;
-			if (scrollThumbHeight > renderHeight) scrollThumbHeight = renderHeight;
-			float scrollThumbMoveSpace = renderHeight - scrollThumbHeight;
-			float scrollRatio = (float)this->ExpandScroll / (float)maxScroll;
-			float scrollThumbTop = scrollRatio * scrollThumbMoveSpace;
-			const float barW = (std::max)(4.0f, this->ScrollBarWidth);
-			const float barX = (float)this->Width - barW - 5.0f;
-			const float barY = DropdownTop() + 5.0f;
-			const float barH = (std::max)(0.0f, renderHeight - 10.0f);
-			if (barH <= 0.0f) return;
-			if (scrollThumbHeight > barH) scrollThumbHeight = barH;
-			const float moveSpace = (std::max)(0.0f, barH - scrollThumbHeight);
-			scrollThumbTop = scrollRatio * moveSpace;
-			d2d->FillRoundRect(barX, barY, barW, barH, this->ScrollBackColor, barW * 0.5f);
-			d2d->FillRoundRect(barX, barY + scrollThumbTop, barW, scrollThumbHeight, this->ScrollForeColor, barW * 0.5f);
-		}
-	}
-}
-void ComboBox::UpdateScrollDrag(float posY) {
-	if (!isDraggingScroll) return;
-	int visibleItemCount = VisibleItemCount();
-	float renderHeight = CurrentDropdownHeight();
-	if (visibleItemCount <= 0 || renderHeight <= 0.0f) return;
-	int maxScroll = static_cast<int>(this->values.size()) - visibleItemCount;
-	const float barInset = 5.0f;
-	const float barHeight = (std::max)(0.0f, renderHeight - barInset * 2.0f);
-	if (barHeight <= 0.0f) return;
-	float scrollBlockHeight = ((float)visibleItemCount / (float)this->values.size()) * barHeight;
-	if (scrollBlockHeight < COMBO_MIN_SCROLL_BLOCK)scrollBlockHeight = COMBO_MIN_SCROLL_BLOCK;
-	if (scrollBlockHeight > barHeight) scrollBlockHeight = barHeight;
-	float scrollHeight = barHeight - scrollBlockHeight;
-	if (scrollHeight <= 0.0f) return;
-	float grab = std::clamp(_scrollThumbGrabOffsetY, 0.0f, scrollBlockHeight);
-	float targetTop = posY - barInset - grab;
-	float per = targetTop / scrollHeight;
-	per = std::clamp(per, 0.0f, 1.0f);
-	int newScroll = static_cast<int>(per * maxScroll);
-	SetCurrentExpandScroll((std::clamp)(newScroll, 0, maxScroll));
-}
-void ComboBox::Update()
-{
-	if (this->IsVisual == false)return;
-	auto d2d = this->ParentForm->Render;
-	EnsureSelectionInRange();
-	EnsureScrollInRange();
-	const float actualWidth = static_cast<float>(this->Width);
-	const float actualHeight = static_cast<float>(this->Height);
-	const float controlWidth = static_cast<float>(this->Width);
-	const float controlHeight = static_cast<float>(this->Height);
-	CurrentDropProgress();
-	this->BeginRender(actualWidth, actualHeight);
-	{
-		d2d->FillRect(0, 0, actualWidth, actualHeight, D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f });
-		const float border = (std::max)(1.0f, this->BorderThickness);
-		const D2D1_RECT_F headerRect = D2D1::RectF(border * 0.5f, border * 0.5f, controlWidth - border * 0.5f, controlHeight - border * 0.5f);
-		d2d->FillRoundRect(headerRect, this->BackColor, this->CornerRadius);
-		if ((this->ParentForm && this->ParentForm->UnderMouse == this) || IsDropDownVisible())
-			d2d->FillRoundRect(headerRect, this->HeaderHoverBackColor, this->CornerRadius);
-		if (this->Image)
-		{
-			this->RenderImage(this->CornerRadius);
-		}
-		auto font = this->Font;
-		auto textSize = font->GetTextSize(this->Text);
-		const float drawLeft = (std::max)(4.0f, this->ItemHorizontalPadding);
-		const float drawTop = (std::max)(0.0f, (controlHeight - textSize.height) * 0.5f);
-		const float textRightPad = 30.0f;
-		d2d->DrawString(this->Text, drawLeft, drawTop, (std::max)(1.0f, controlWidth - drawLeft - textRightPad), textSize.height + 2.0f, this->ForeColor, font);
-		{
-			float iconSize = (std::max)(6.0f, this->ChevronSize);
-			if (iconSize < 8.0f) iconSize = 8.0f;
-			if (iconSize > 14.0f) iconSize = 14.0f;
-			const float cx = controlWidth - 16.0f;
-			const float cy = controlHeight * 0.5f;
-			DrawComboChevron(d2d, cx, cy, iconSize, _dropProgress, this->ForeColor);
-		}
-		const auto borderColor = IsDropDownVisible() ? this->AccentColor : this->BorderColor;
-		d2d->DrawRoundRect(headerRect.left, headerRect.top, headerRect.right - headerRect.left,
-			headerRect.bottom - headerRect.top, borderColor, border, this->CornerRadius);
-	}
-	if (!this->Enable)
-	{
-		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
-	}
-	this->EndRender();
-	if (!_animating && _dropProgress <= 0.001f)
-		_collapseCleanupPending = false;
-}
-
-void ComboBox::UpdateForeground()
-{
-	if (this->IsVisual == false)return;
-	auto d2d = this->ParentForm->Render;
-	EnsureSelectionInRange();
-	EnsureScrollInRange();
-
-	const float controlWidth = static_cast<float>(this->Width);
-	const float controlHeight = static_cast<float>(this->Height);
-	const float dropHeight = CurrentDropdownHeight();
-	const int visibleCount = VisibleItemCount();
-	if (dropHeight <= 0.0f || visibleCount <= 0)
-	{
-		if (!_animating && _dropProgress <= 0.001f)
-			_collapseCleanupPending = false;
-		return;
-	}
-
-	const float dropTop = DropdownTop();
-	this->BeginRender(controlWidth, dropTop + dropHeight);
-	{
-		const float border = (std::max)(1.0f, this->BorderThickness);
-		const bool hasScroll = static_cast<int>(this->values.size()) > visibleCount;
-		const float itemRight = hasScroll ? controlWidth - (std::max)(4.0f, this->ScrollBarWidth) - 11.0f : controlWidth;
-		const D2D1_RECT_F dropRect = D2D1::RectF(0.0f, dropTop, controlWidth, dropTop + dropHeight);
-
-		d2d->PushDrawRect(0.0f, dropTop, controlWidth, dropHeight);
-		d2d->FillRoundRect(dropRect, this->DropBackColor, this->DropCornerRadius);
-		d2d->DrawRoundRect(dropRect.left + border * 0.5f, dropRect.top + border * 0.5f,
-			(dropRect.right - dropRect.left) - border, (dropRect.bottom - dropRect.top) - border,
-			this->DropBorderColor, border, this->DropCornerRadius);
-		const int itemCount = static_cast<int>(this->values.size());
-		const bool renderContainers = _generatedItems.size() == values.size()
-			&& _lastTemplateError.empty();
-		if (renderContainers)
-		{
-			LayoutGeneratedItems(dropTop, itemRight);
-			UpdateGeneratedItemStates();
-			for (int i = ExpandScroll;
-				i < ExpandScroll + visibleCount && i < itemCount; ++i)
-			{
-				auto* item = _generatedItems[static_cast<size_t>(i)].get();
-				if (item) item->Update();
-			}
-		}
-		else
-		{
-			const float drawLeft = (std::max)(
-				4.0f, this->ItemHorizontalPadding);
-			auto font = this->Font;
-			for (int i = this->ExpandScroll;
-				i < this->ExpandScroll + visibleCount && i < itemCount; i++)
-			{
-				const int viewIndex = i - this->ExpandScroll;
-				const float itemTop = dropTop
-					+ static_cast<float>(viewIndex) * controlHeight;
-				const float itemBottom = itemTop + controlHeight;
-				const D2D1_RECT_F itemRect = D2D1::RectF(
-					6.0f, itemTop + this->ItemVerticalPadding,
-					(std::max)(7.0f, itemRight - 6.0f),
-					itemBottom - this->ItemVerticalPadding);
-				const bool isSelected = i == this->SelectedIndex;
-				const bool isHovered = i == this->_underMouseIndex;
-				if (isSelected)
-				{
-					d2d->FillRoundRect(itemRect,
-						this->SelectedItemBackColor, this->CornerRadius);
-					const float accentW = 3.0f;
-					const float accentTop = itemRect.top + 5.0f;
-					const float accentH = (std::max)(5.0f,
-						(itemRect.bottom - itemRect.top) - 10.0f);
-					d2d->FillRoundRect(itemRect.left, accentTop,
-						accentW, accentH, this->AccentColor,
-						accentW * 0.5f);
-				}
-				if (isHovered)
-					d2d->FillRoundRect(itemRect,
-						this->UnderMouseBackColor, this->CornerRadius);
-				auto itemTextSize = font->GetTextSize(
-					this->values[static_cast<size_t>(i)]);
-				const float itemTextY = itemTop + (std::max)(0.0f,
-					(controlHeight - itemTextSize.height) * 0.5f);
-				const auto itemTextColor = isHovered
-					? this->UnderMouseForeColor
-					: (isSelected
-						? this->SelectedItemForeColor : this->ForeColor);
-				d2d->DrawString(this->values[static_cast<size_t>(i)],
-					drawLeft, itemTextY,
-					(std::max)(1.0f, itemRight - drawLeft - 8.0f),
-					itemTextSize.height + 2.0f, itemTextColor, font);
-			}
-		}
-		d2d->PopDrawRect();
-		this->DrawScroll();
-	}
-	this->EndRender();
-}
-
-bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
-{
-	if (!this->Enable || !this->Visible) return true;
-	EnsureSelectionInRange();
-	EnsureScrollInRange();
-	const int visibleCount = VisibleItemCount();
-	const float dropdownHeight = CurrentDropdownHeight();
-	if (WM_LBUTTONDOWN == message)
-	{
-		if (this->ParentForm->Selected && this->ParentForm->Selected != this)
-		{
-			auto se = this->ParentForm->Selected;
-			this->ParentForm->Selected = this;
-			se->InvalidateVisual();
-		}
-	}
-	switch (message)
-	{
-	case WM_DROPFILES:
-	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
-		TCHAR fileName[MAX_PATH];
-		std::vector<std::wstring> files;
-		for (UINT i = 0; i < fileCount; i++)
-		{
-			DragQueryFile(hDropInfo, i, fileName, MAX_PATH);
-			files.push_back(fileName);
-		}
-		DragFinish(hDropInfo);
-		if (files.size() > 0)
-		{
-			this->OnDropFile(this, files);
-		}
-	}
-	break;
-	case WM_MOUSEWHEEL:
-	{
-		if (this->Expand)
-			ScrollBy(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, eventArgs);
-	}
-	break;
-	case WM_MOUSEMOVE:
-	{
-		this->ParentForm->UnderMouse = this;
-		if (IsDropDownVisible())
-		{
-			bool needsUpdate = false;
-			if (isDraggingScroll)
-			{
-				UpdateScrollDrag(static_cast<float>(localY) - DropdownTop());
-				needsUpdate = true;
-			}
-			else
-			{
-				if (IsDropdownHit(localX, localY, dropdownHeight))
-				{
-					int visibleItemIndex = int(((float)localY - DropdownTop()) / (float)this->Height);
-					if (visibleItemIndex < visibleCount)
-					{
-						int itemIndex = visibleItemIndex + this->ExpandScroll;
-						if (itemIndex < static_cast<int>(this->values.size()))
-						{
-							if (itemIndex != this->_underMouseIndex)
-							{
-								needsUpdate = true;
-							}
-							this->_underMouseIndex = itemIndex;
-						}
-					}
-				}
-				else if (this->_underMouseIndex != -1)
-				{
-					this->_underMouseIndex = -1;
-					needsUpdate = true;
-				}
-			}
-			if (needsUpdate)this->InvalidateVisual();
-		}
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
-		this->OnMouseMove(this, eventArgs);
-	}
-	break;
-	case WM_LBUTTONDOWN:
-	case WM_RBUTTONDOWN:
-	case WM_MBUTTONDOWN:
-	{
-		if (WM_LBUTTONDOWN == message)
-		{
-			const float dropTop = DropdownTop();
-			if (this->Expand && localX >= (Width - 12) && localX <= Width && (float)localY >= dropTop && (float)localY <= (dropTop + dropdownHeight))
-			{
-				const int visibleItemCount = visibleCount;
-				if (visibleItemCount > 0 && static_cast<int>(this->values.size()) > visibleItemCount)
-				{
-					const int maxScroll = static_cast<int>(this->values.size()) - visibleItemCount;
-					const float barInset = 5.0f;
-					const float renderH = (std::max)(0.0f, dropdownHeight - barInset * 2.0f);
-					float thumbH = ((float)visibleItemCount / (float)this->values.size()) * renderH;
-					if (thumbH < COMBO_MIN_SCROLL_BLOCK) thumbH = COMBO_MIN_SCROLL_BLOCK;
-					if (thumbH > renderH) thumbH = renderH;
-					const float moveSpace = std::max(0.0f, renderH - thumbH);
-					float per = 0.0f;
-					if (maxScroll > 0) per = std::clamp((float)this->ExpandScroll / (float)maxScroll, 0.0f, 1.0f);
-					const float thumbTop = per * moveSpace;
-					const float dropdownLocalY = (float)localY - dropTop;
-					const float barLocalY = dropdownLocalY - barInset;
-					const bool hitThumb = (barLocalY >= thumbTop && barLocalY <= (thumbTop + thumbH));
-					_scrollThumbGrabOffsetY = hitThumb ? (barLocalY - thumbTop) : (thumbH * 0.5f);
-					isDraggingScroll = true;
-					UpdateScrollDrag(dropdownLocalY);
-				}
-			}
-			this->ParentForm->Selected = this;
-		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->OnMouseDown(this, eventArgs);
-	}
-	break;
-	case WM_LBUTTONUP:
-	case WM_RBUTTONUP:
-	case WM_MBUTTONUP:
-	{
-		if (WM_LBUTTONUP == message && this->ParentForm->Selected == this)
-		{
-			if (isDraggingScroll) {
-				isDraggingScroll = false;
-			}
-			else
-			{
-				if (IsHeaderHit(localX, localY))
-				{
-					SetExpanded(!this->Expand);
-					if (this->ParentForm)
-						this->ParentForm->Invalidate(true);
-					this->InvalidateVisual();
-					this->ParentForm->Selected = nullptr;
-					MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-					this->OnMouseUp(this, eventArgs);
-					break;
-				}
-				else if (this->Expand && IsDropdownHit(localX, localY, dropdownHeight))
-				{
-					int visibleItemIndex = int(((float)localY - DropdownTop()) / (float)this->Height);
-					if (visibleItemIndex < visibleCount)
-					{
-						int itemIndex = visibleItemIndex + this->ExpandScroll;
-						if (itemIndex < static_cast<int>(this->values.size()))
-						{
-							this->_underMouseIndex = itemIndex;
-							(void)SelectItem(this->_underMouseIndex);
-							SetExpanded(false);
-							if (this->ParentForm)
-								this->ParentForm->Invalidate(true);
-							this->InvalidateVisual();
-						}
-					}
-				}
-			}
-		}
-		this->ParentForm->Selected = nullptr;
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->OnMouseUp(this, eventArgs);
-		this->InvalidateVisual();
-	}
-	break;
-	case WM_LBUTTONDBLCLK:
-	{
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, eventArgs);
-	}
-	break;
-	case WM_KEYDOWN:
-	{
-		switch (wParam)
-		{
-		case VK_UP:
-			if (!this->values.empty())
-				(void)SelectItem((std::max)(0, this->SelectedIndex - 1));
-			break;
-		case VK_DOWN:
-			if (!this->values.empty())
-				(void)SelectItem((std::min)(
-					static_cast<int>(this->values.size()) - 1,
-					this->SelectedIndex + 1));
-			break;
-		case VK_HOME:
-			if (!this->values.empty()) (void)SelectItem(0);
-			break;
-		case VK_END:
-			if (!this->values.empty())
-				(void)SelectItem(static_cast<int>(this->values.size()) - 1);
-			break;
-		case VK_RETURN:
-		case VK_SPACE:
-		case VK_F4:
-			SetExpanded(!this->Expand);
-			break;
-		case VK_ESCAPE:
-			SetExpanded(false);
-			break;
-		default:
-			break;
-		}
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, eventArgs);
-	}
-	break;
-	case WM_KEYUP:
-	{
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, eventArgs);
-	}
-	break;
-	}
+	SetCurrentIsDropDownOpen(true);
+	if (!EnsureDropDownInfrastructure() || !_dropDownScroll) return false;
+	float extent = 0.0f;
+	float viewport = 0.0f;
+	float offset = 0.0f;
+	if (!GetScrollMetrics(extent, viewport, offset)) return false;
+	const float maximum = (std::max)(0.0f, extent - viewport);
+	_dropDownScroll->ScrollToVerticalOffset(maximum
+		* static_cast<float>(verticalPercent / 100.0));
 	return true;
 }

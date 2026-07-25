@@ -211,7 +211,7 @@ RuntimeDocumentWatchResult RuntimeDocumentFileWatcher::PollAt(
 	auto reloadOptions = options;
 	reloadOptions.ForceResourceRefresh =
 		reloadOptions.ForceResourceRefresh || _resourceChangePending;
-	if (!RuntimeDocumentLoader::ReloadFile(
+	if (!RuntimeDocumentLoader::ReloadXamlFile(
 		_filePath, document, reloadOptions, &result.ReloadMode, &error))
 	{
 		_failed = true;

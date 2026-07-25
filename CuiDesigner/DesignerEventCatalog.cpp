@@ -1,22 +1,26 @@
 #include "DesignerEventCatalog.h"
 
 #include "../CUI/include/ChartView.h"
+#include "../CUI/include/CalendarView.h"
+#include "../CUI/include/ToggleButton.h"
+#include "../CUI/include/ButtonBase.h"
 #include "../CUI/include/ComboBox.h"
-#include "../CUI/include/DateTimePicker.h"
 #include "../CUI/include/Expander.h"
-#include "../CUI/include/FilterBar.h"
-#include "../CUI/include/Form.h"
-#include "../CUI/include/GridView.h"
-#include "../CUI/include/KpiCard.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/ListView.h"
 #include "../CUI/include/ListBox.h"
 #include "../CUI/include/MediaPlayer.h"
 #include "../CUI/include/Menu.h"
+#include "../CUI/include/ContextMenu.h"
 #include "../CUI/include/NumericUpDown.h"
-#include "../CUI/include/PropertyGrid.h"
-#include "../CUI/include/ReportView.h"
+#include "../CUI/include/PasswordBox.h"
+#include "../CUI/include/TextBox.h"
+#include "../CUI/include/RichTextBox.h"
+#include "../CUI/include/RangeBase.h"
 #include "../CUI/include/Slider.h"
-#include "../CUI/include/Toast.h"
+#include "../CUI/include/ScrollViewer.h"
+#include "../CUI/include/Popup.h"
+#include "../CUI/include/TabControl.h"
 #include "../CUI/include/TreeView.h"
 #include "../CUI/include/WebBrowser.h"
 
@@ -50,29 +54,52 @@ namespace
 	template<> struct CppBaseTypeName<std::vector<std::wstring>>
 	{ static constexpr std::string_view Value = "std::vector<std::wstring>"; };
 	CUI_CPP_EVENT_TYPE(Control, "Control");
-	CUI_CPP_EVENT_TYPE(Form, "Form");
+	CUI_CPP_EVENT_TYPE(RangeBase, "RangeBase");
+	CUI_CPP_EVENT_TYPE(ToggleButton, "ToggleButton");
+	CUI_CPP_EVENT_TYPE(ButtonBase, "ButtonBase");
+	CUI_CPP_EVENT_TYPE(MenuItem, "MenuItem");
+	CUI_CPP_EVENT_TYPE(DependencyObject, "DependencyObject");
+	CUI_CPP_EVENT_TYPE(UIElement, "UIElement");
+	CUI_CPP_EVENT_TYPE(Window, "Window");
 	CUI_CPP_EVENT_TYPE(ComboBox, "ComboBox");
-	CUI_CPP_EVENT_TYPE(DateTimePicker, "DateTimePicker");
-	CUI_CPP_EVENT_TYPE(GridView, "GridView");
 	CUI_CPP_EVENT_TYPE(ListView, "ListView");
 	CUI_CPP_EVENT_TYPE(Selector, "Selector");
+	CUI_CPP_EVENT_TYPE(ItemContainerControl, "ItemContainerControl");
 	CUI_CPP_EVENT_TYPE(Menu, "Menu");
-	CUI_CPP_EVENT_TYPE(PropertyGridView, "PropertyGridView");
+	CUI_CPP_EVENT_TYPE(ContextMenu, "ContextMenu");
 	CUI_CPP_EVENT_TYPE(ChartView, "ChartView");
-	CUI_CPP_EVENT_TYPE(ReportView, "ReportView");
-	CUI_CPP_EVENT_TYPE(KpiCard, "KpiCard");
-	CUI_CPP_EVENT_TYPE(FilterBar, "FilterBar");
-	CUI_CPP_EVENT_TYPE(ToastHost, "ToastHost");
+	CUI_CPP_EVENT_TYPE(CalendarView, "CalendarView");
 	CUI_CPP_EVENT_TYPE(NumericUpDown, "NumericUpDown");
+	CUI_CPP_EVENT_TYPE(PasswordBox, "PasswordBox");
 	CUI_CPP_EVENT_TYPE(Expander, "Expander");
 	CUI_CPP_EVENT_TYPE(Slider, "Slider");
+	CUI_CPP_EVENT_TYPE(ScrollViewer, "ScrollViewer");
+	CUI_CPP_EVENT_TYPE(Popup, "Popup");
+	CUI_CPP_EVENT_TYPE(TabControl, "TabControl");
+	CUI_CPP_EVENT_TYPE(TabItem, "TabItem");
 	CUI_CPP_EVENT_TYPE(TreeView, "TreeView");
 	CUI_CPP_EVENT_TYPE(WebBrowser, "WebBrowser");
 	CUI_CPP_EVENT_TYPE(MediaPlayer, "MediaPlayer");
 	CUI_CPP_EVENT_TYPE(MouseEventArgs, "MouseEventArgs");
+	CUI_CPP_EVENT_TYPE(DragEventArgs, "DragEventArgs");
+	CUI_CPP_EVENT_TYPE(SizeChangedEventArgs, "SizeChangedEventArgs");
 	CUI_CPP_EVENT_TYPE(KeyEventArgs, "KeyEventArgs");
-	CUI_CPP_EVENT_TYPE(ControlPropertyChangedEventArgs,
-		"ControlPropertyChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(TextCompositionEventArgs, "TextCompositionEventArgs");
+	CUI_CPP_EVENT_TYPE(TextChangedEventArgs, "TextChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(ScrollChangedEventArgs, "ScrollChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(SelectionChangedEventArgs, "SelectionChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(RoutedPropertyChangedEventArgs<double>,
+		"RoutedPropertyChangedEventArgs<double>");
+	CUI_CPP_EVENT_TYPE(RoutedPropertyChangedEventArgs<BindingValue>,
+		"RoutedPropertyChangedEventArgs<BindingValue>");
+	CUI_CPP_EVENT_TYPE(KeyboardFocusChangedEventArgs,
+		"KeyboardFocusChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(RoutedEventArgs, "RoutedEventArgs");
+	CUI_CPP_EVENT_TYPE(CancelEventArgs, "CancelEventArgs");
+	CUI_CPP_EVENT_TYPE(CanExecuteRoutedEventArgs, "CanExecuteRoutedEventArgs");
+	CUI_CPP_EVENT_TYPE(ExecutedRoutedEventArgs, "ExecutedRoutedEventArgs");
+	CUI_CPP_EVENT_TYPE(DependencyPropertyChangedEventArgs,
+		"DependencyPropertyChangedEventArgs");
 	CUI_CPP_EVENT_TYPE(BindingValidationChangedEventArgs,
 		"BindingValidationChangedEventArgs");
 	CUI_CPP_EVENT_TYPE(WebBrowser::NavigationStartingArgs,
@@ -170,18 +197,19 @@ namespace
 		if (Contains(name, L"Property") || Contains(name, L"Validation")
 			|| Contains(name, L"Error") || Contains(name, L"Failed"))
 			return DesignerEventCategory::Diagnostics;
-		if (Contains(name, L"Media") || name == L"OnPositionChanged"
-			|| name == L"OnStateChanged")
+		if (Contains(name, L"Media") || name == L"PositionChanged"
+			|| name == L"StateChanged")
 			return DesignerEventCategory::Media;
 		if (Contains(name, L"Mouse") || Contains(name, L"Hover"))
 			return DesignerEventCategory::Mouse;
-		if (Contains(name, L"Key") || Contains(name, L"CharInput"))
-			return DesignerEventCategory::Keyboard;
 		if (Contains(name, L"Focus"))
 			return DesignerEventCategory::Focus;
-		if (Contains(name, L"Drop"))
+		if (Contains(name, L"Key") || Contains(name, L"CharInput")
+			|| Contains(name, L"TextInput"))
+			return DesignerEventCategory::Keyboard;
+		if (Contains(name, L"Drag") || Contains(name, L"Drop"))
 			return DesignerEventCategory::DragDrop;
-		if (Contains(name, L"Close") || Contains(name, L"Shown")
+		if (Contains(name, L"Close") || Contains(name, L"ContentRendered")
 			|| Contains(name, L"Dismissed"))
 			return DesignerEventCategory::Lifecycle;
 		if (Contains(name, L"Paint") || Contains(name, L"Moved")
@@ -195,6 +223,8 @@ namespace
 			|| Contains(name, L"Apply") || Contains(name, L"Reset"))
 			return DesignerEventCategory::Action;
 		if (Contains(name, L"Changed") || Contains(name, L"Checked")
+			|| Contains(name, L"Unchecked") || Contains(name, L"Collapsed")
+			|| Contains(name, L"Submenu")
 			|| Contains(name, L"Selection") || Contains(name, L"Toggled")
 			|| Contains(name, L"Expanded"))
 			return DesignerEventCategory::Value;
@@ -207,47 +237,40 @@ namespace
 		{
 		case UIClass::UI_TextBox:
 		case UIClass::UI_RichTextBox:
+			return L"TextChanged";
 		case UIClass::UI_PasswordBox:
-			return L"OnTextChanged";
+			return L"PasswordChanged";
 		case UIClass::UI_CheckBox:
-		case UIClass::UI_RadioBox:
+		case UIClass::UI_RadioButton:
 		case UIClass::UI_Switch:
-			return L"OnChecked";
+			return L"Checked";
 		case UIClass::UI_ComboBox:
-		case UIClass::UI_DateTimePicker:
-			return L"OnSelectionChanged";
 		case UIClass::UI_ListView:
-			return L"OnItemDoubleClick";
 		case UIClass::UI_ListBox:
-			return L"OnSelectionChanged";
-		case UIClass::UI_GridView:
-		case UIClass::UI_PropertyGrid:
 			return L"SelectionChanged";
 		case UIClass::UI_TreeView:
 			return L"SelectedItemChanged";
+		case UIClass::UI_CalendarView:
+			return L"SelectedDatesChanged";
 		case UIClass::UI_ChartView:
-			return L"OnPointClick";
-		case UIClass::UI_ReportView:
-			return L"OnRowClick";
-		case UIClass::UI_KpiCard:
-			return L"OnCardClick";
-		case UIClass::UI_FilterBar:
-			return L"OnApply";
-		case UIClass::UI_ToastHost:
-			return L"OnToastClick";
+			return L"PointClick";
 		case UIClass::UI_Slider:
 		case UIClass::UI_NumericUpDown:
-			return L"OnValueChanged";
+			return L"ValueChanged";
 		case UIClass::UI_Expander:
-			return L"OnExpandedChanged";
+			return L"Expanded";
 		case UIClass::UI_Menu:
-			return L"OnMenuCommand";
+		case UIClass::UI_ContextMenu:
+			return L"Executed";
+		case UIClass::UI_Button:
+		case UIClass::UI_MenuItem:
+			return L"Click";
 		case UIClass::UI_WebBrowser:
-			return L"OnNavigationCompleted";
+			return L"NavigationCompleted";
 		case UIClass::UI_MediaPlayer:
-			return L"OnMediaOpened";
+			return L"MediaOpened";
 		default:
-			return L"OnMouseClick";
+			return L"MouseDown";
 		}
 	}
 
@@ -291,6 +314,12 @@ namespace
 		std::initializer_list<std::string_view> parameterNames)
 	{
 		using Function = typename RuntimeEvent::function_type;
+		// Native C++ event fields may use an internal `On` prefix; XAML names do not.
+		// That implementation spelling is not part of the XAML contract: WPF
+		// routed-event names are MouseDown, PreviewKeyDown, Executed, and so on.
+		if (name.size() > 2 && name[0] == L'O' && name[1] == L'n'
+			&& std::iswupper(name[2]))
+			name.erase(0, 2);
 		auto result = D::FromEventMember(
 			std::move(name), std::move(eventField),
 			EventParameterList<Function>::Build(parameterNames), eventMember);
@@ -299,40 +328,84 @@ namespace
 		return result;
 	}
 
+	template<typename ExposedOwner, typename Owner, typename RuntimeEvent>
+	D MakeExposedEventDescriptor(
+		std::wstring name,
+		std::string eventField,
+		RuntimeEvent Owner::* eventMember,
+		std::initializer_list<std::string_view> parameterNames)
+	{
+		auto result = MakeEventDescriptor(
+			std::move(name), std::move(eventField),
+			eventMember, parameterNames);
+		result.EventOwnerTypeName = CppTypeName<ExposedOwner>();
+		return result;
+	}
+
 #define CUI_WIDEN_IMPL(text) L##text
 #define CUI_WIDEN(text) CUI_WIDEN_IMPL(text)
 #define CUI_EVENT(owner, name, member, ...) \
 	MakeEventDescriptor(CUI_WIDEN(#name), #member, \
 		&owner::member, { __VA_ARGS__ })
+#define CUI_EXPOSED_EVENT(exposedOwner, owner, name, member, ...) \
+	MakeExposedEventDescriptor<exposedOwner>(CUI_WIDEN(#name), #member, \
+		&owner::member, { __VA_ARGS__ })
 
 	const std::vector<D>& CommonControlEvents()
 	{
 		static const std::vector<D> events = {
+			CUI_EVENT(Control, OnPreviewMouseWheel, OnPreviewMouseWheel, "sender", "e"),
 			CUI_EVENT(Control, OnMouseWheel, OnMouseWheel, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseMove, OnPreviewMouseMove, "sender", "e"),
 			CUI_EVENT(Control, OnMouseMove, OnMouseMove, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseDown, OnPreviewMouseDown, "sender", "e"),
 			CUI_EVENT(Control, OnMouseDown, OnMouseDown, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseUp, OnPreviewMouseUp, "sender", "e"),
 			CUI_EVENT(Control, OnMouseUp, OnMouseUp, "sender", "e"),
-			CUI_EVENT(Control, OnMouseClick, OnMouseClick, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseDoubleClick, OnPreviewMouseDoubleClick, "sender", "e"),
 			CUI_EVENT(Control, OnMouseDoubleClick, OnMouseDoubleClick, "sender", "e"),
 			CUI_EVENT(Control, OnMouseEnter, OnMouseEnter, "sender", "e"),
 			CUI_EVENT(Control, OnMouseLeave, OnMouseLeave, "sender", "e"),
+			CUI_EVENT(Control, OnGotMouseCapture, OnGotMouseCapture, "sender", "e"),
+			CUI_EVENT(Control, OnLostMouseCapture, OnLostMouseCapture, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewKeyDown, OnPreviewKeyDown, "sender", "e"),
 			CUI_EVENT(Control, OnKeyDown, OnKeyDown, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewKeyUp, OnPreviewKeyUp, "sender", "e"),
 			CUI_EVENT(Control, OnKeyUp, OnKeyUp, "sender", "e"),
-			CUI_EVENT(Control, OnCharInput, OnCharInput, "sender", "ch"),
-			CUI_EVENT(Control, OnGotFocus, OnGotFocus, "sender"),
-			CUI_EVENT(Control, OnLostFocus, OnLostFocus, "sender"),
-			CUI_EVENT(Control, OnDropText, OnDropText, "sender", "text"),
-			CUI_EVENT(Control, OnDropFile, OnDropFile, "sender", "files"),
-			CUI_EVENT(Control, OnPaint, OnPaint, "sender"),
-			CUI_EVENT(Control, OnClose, OnClose, "sender"),
-			CUI_EVENT(Control, OnMoved, OnMoved, "sender"),
-			CUI_EVENT(Control, OnSizeChanged, OnSizeChanged, "sender"),
-			CUI_EVENT(Control, OnSelectedChanged, OnSelectedChanged, "sender"),
-			CUI_EVENT(Control, OnScrollChanged, OnScrollChanged, "sender"),
-			CUI_EVENT(Control, OnPropertyValueChanged,
-				OnPropertyValueChanged, "sender", "e"),
-			CUI_EVENT(Control, OnValidationStateChanged,
-				OnValidationStateChanged, "e"),
+			CUI_EVENT(Control, OnPreviewTextInputStart,
+				OnPreviewTextInputStart, "sender", "e"),
+			CUI_EVENT(Control, OnTextInputStart,
+				OnTextInputStart, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewTextInputUpdate,
+				OnPreviewTextInputUpdate, "sender", "e"),
+			CUI_EVENT(Control, OnTextInputUpdate,
+				OnTextInputUpdate, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewTextInput, OnPreviewTextInput, "sender", "e"),
+			CUI_EVENT(Control, OnTextInput, OnTextInput, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewGotKeyboardFocus,
+				OnPreviewGotKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnGotKeyboardFocus,
+				OnGotKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewLostKeyboardFocus,
+				OnPreviewLostKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnLostKeyboardFocus,
+				OnLostKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnGotFocus, OnGotFocus, "sender", "e"),
+			CUI_EVENT(Control, OnLostFocus, OnLostFocus, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewCanExecute, OnPreviewCanExecute, "sender", "e"),
+			CUI_EVENT(Control, OnCanExecute, OnCanExecute, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewExecuted, OnPreviewExecuted, "sender", "e"),
+			CUI_EVENT(Control, OnExecuted, OnExecuted, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragEnter, OnPreviewDragEnter, "sender", "e"),
+			CUI_EVENT(Control, OnDragEnter, OnDragEnter, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragOver, OnPreviewDragOver, "sender", "e"),
+			CUI_EVENT(Control, OnDragOver, OnDragOver, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragLeave, OnPreviewDragLeave, "sender", "e"),
+			CUI_EVENT(Control, OnDragLeave, OnDragLeave, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDrop, OnPreviewDrop, "sender", "e"),
+			CUI_EVENT(Control, OnDrop, OnDrop, "sender", "e"),
+			CUI_EVENT(Control, SizeChanged, SizeChanged, "sender", "e"),
+			CUI_EVENT(Control, IsVisibleChanged, IsVisibleChanged, "sender", "e"),
 		};
 		return events;
 	}
@@ -385,86 +458,106 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 	std::vector<D> out = CommonControlEvents();
 	switch (type)
 	{
+	case UIClass::UI_Button:
+		Append(out, { CUI_EXPOSED_EVENT(
+			ButtonBase, ButtonBase, Click, Click, "sender", "e") });
+		break;
+	case UIClass::UI_MenuItem:
+		Append(out, {
+			CUI_EXPOSED_EVENT(
+				MenuItem, MenuItem, Click, Click, "sender", "e"),
+			CUI_EVENT(MenuItem, Checked, Checked, "sender", "e"),
+			CUI_EVENT(MenuItem, Unchecked, Unchecked, "sender", "e"),
+			CUI_EVENT(MenuItem, SubmenuOpened, SubmenuOpened, "sender", "e"),
+			CUI_EVENT(MenuItem, SubmenuClosed, SubmenuClosed, "sender", "e"),
+		});
+		break;
 	case UIClass::UI_TextBox:
+		Append(out, { CUI_EVENT(TextBox,
+			TextChanged, OnTextChanged, "sender", "e") });
+		break;
 	case UIClass::UI_RichTextBox:
+		Append(out, {
+			CUI_EVENT(TextBox, TextChanged, OnTextChanged, "sender", "e"),
+			CUI_EVENT(RichTextBox, SelectionChanged,
+				SelectionChanged, "sender", "e"),
+		});
+		break;
 	case UIClass::UI_PasswordBox:
-		Append(out, { CUI_EVENT(Control, OnTextChanged, OnTextChanged,
-			"sender", "oldText", "newText") });
+		Append(out, { CUI_EVENT(PasswordBox,
+			PasswordChanged, PasswordChanged, "sender", "e") });
 		break;
 	case UIClass::UI_CheckBox:
-	case UIClass::UI_RadioBox:
+	case UIClass::UI_RadioButton:
 	case UIClass::UI_Switch:
-		Append(out, { CUI_EVENT(Control, OnChecked, OnChecked, "sender") });
+		Append(out, {
+			CUI_EXPOSED_EVENT(
+				ButtonBase, ButtonBase, Click, Click, "sender", "e"),
+			CUI_EVENT(ToggleButton, Checked, Checked, "sender", "e"),
+			CUI_EVENT(ToggleButton, Unchecked, Unchecked, "sender", "e"),
+		});
+		break;
+	case UIClass::UI_ContextMenu:
+		Append(out, {
+			CUI_EVENT(ContextMenu, Opened, Opened, "sender"),
+			CUI_EVENT(ContextMenu, Closed, Closed, "sender"),
+		});
 		break;
 	case UIClass::UI_ComboBox:
-		Append(out, { CUI_EVENT(ComboBox, OnSelectionChanged,
-			OnSelectionChanged, "sender") });
+		Append(out, { CUI_EVENT(ComboBox, SelectionChanged,
+			SelectionChanged, "sender", "e") });
 		break;
-	case UIClass::UI_DateTimePicker:
-		Append(out, { CUI_EVENT(DateTimePicker, OnSelectionChanged,
-			OnSelectionChanged, "sender") });
-		break;
-	case UIClass::UI_GridView:
+	case UIClass::UI_ListBoxItem:
+	case UIClass::UI_ListViewItem:
+	case UIClass::UI_ComboBoxItem:
 		Append(out, {
-			CUI_EVENT(GridView, ScrollChanged, ScrollChanged, "sender"),
-			CUI_EVENT(GridView, SelectionChanged, SelectionChanged, "sender"),
-			CUI_EVENT(GridView, OnGridViewCheckStateChanged,
-				OnGridViewCheckStateChanged, "sender", "c", "r", "v"),
-			CUI_EVENT(GridView, OnGridViewButtonClick,
-				OnGridViewButtonClick, "sender", "c", "r"),
-			CUI_EVENT(GridView, OnGridViewLinkedTextClick,
-				OnGridViewLinkedTextClick, "sender", "c", "r", "text"),
-			CUI_EVENT(GridView, OnGridViewComboBoxSelectionChanged,
-				OnGridViewComboBoxSelectionChanged, "sender", "c", "r",
-				"selectedIndex", "selectedText"),
-			CUI_EVENT(GridView, OnUserAddingRow,
-				OnUserAddingRow, "sender", "cancel"),
-			CUI_EVENT(GridView, OnUserAddedRow,
-				OnUserAddedRow, "sender", "newRowIndex"),
+			CUI_EVENT(ItemContainerControl, Selected,
+				Selected, "sender", "e"),
+			CUI_EVENT(ItemContainerControl, Unselected,
+				Unselected, "sender", "e"),
 		});
 		break;
 	case UIClass::UI_TreeView:
+		Append(out, { CUI_EVENT(TreeView, SelectedItemChanged,
+			SelectedItemChanged, "sender", "e") });
+		break;
+	case UIClass::UI_TreeViewItem:
 		Append(out, {
-			CUI_EVENT(TreeView, ScrollChanged, ScrollChanged, "sender"),
-			CUI_EVENT(TreeView, SelectedItemChanged,
-				SelectedItemChanged, "sender"),
-			CUI_EVENT(TreeView, SelectionChanged, SelectionChanged, "sender"),
+			CUI_EVENT(TreeViewItem, Selected, Selected, "sender", "e"),
+			CUI_EVENT(TreeViewItem, Unselected, Unselected, "sender", "e"),
+			CUI_EVENT(TreeViewItem, Expanded, Expanded, "sender", "e"),
+			CUI_EVENT(TreeViewItem, Collapsed, Collapsed, "sender", "e"),
 		});
+		break;
+	case UIClass::UI_CalendarView:
+		Append(out, { CUI_EVENT(CalendarView, SelectedDatesChanged,
+			SelectedDatesChanged, "sender", "e") });
 		break;
 	case UIClass::UI_ListView:
-		Append(out, {
-			CUI_EVENT(ListView, ScrollChanged, ScrollChanged, "sender"),
-			CUI_EVENT(ListView, SelectionChanged, SelectionChanged, "sender"),
-			CUI_EVENT(ListView, OnItemClick, OnItemClick, "sender", "index"),
-			CUI_EVENT(ListView, OnItemDoubleClick,
-				OnItemDoubleClick, "sender", "index"),
-			CUI_EVENT(ListView, OnItemCheckChanged,
-				OnItemCheckChanged, "sender", "index", "checked"),
-		});
-		break;
 	case UIClass::UI_ListBox:
 		Append(out, {
-			CUI_EVENT(Selector, OnSelectionChanged,
-				OnSelectionChanged, "sender"),
+			CUI_EVENT(Selector, SelectionChanged,
+				SelectionChanged, "sender", "e"),
 		});
 		break;
-	case UIClass::UI_PropertyGrid:
+	case UIClass::UI_ScrollViewer:
+		Append(out, { CUI_EVENT(ScrollViewer, OnScrollChanged,
+			OnScrollChanged, "sender", "e") });
+		break;
+	case UIClass::UI_Popup:
 		Append(out, {
-			CUI_EVENT(PropertyGridView, ScrollChanged, ScrollChanged, "sender"),
-			CUI_EVENT(PropertyGridView, SelectionChanged,
-				SelectionChanged, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnItemClick,
-				OnItemClick, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnResetRequested,
-				OnResetRequested, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnEditStarted,
-				OnEditStarted, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnEditCompleted,
-				OnEditCompleted, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnEditCanceled,
-				OnEditCanceled, "sender", "index"),
-			CUI_EVENT(PropertyGridView, OnValueChanged,
-				OnValueChanged, "sender", "index", "oldValue", "newValue"),
+			CUI_EVENT(Popup, Opened, Opened, "sender"),
+			CUI_EVENT(Popup, Closed, Closed, "sender"),
+		});
+		break;
+	case UIClass::UI_TabControl:
+		Append(out, { CUI_EVENT(TabControl, SelectionChanged,
+			SelectionChanged, "sender", "e") });
+		break;
+	case UIClass::UI_TabItem:
+		Append(out, {
+			CUI_EVENT(TabItem, Selected, Selected, "sender", "e"),
+			CUI_EVENT(TabItem, Unselected, Unselected, "sender", "e"),
 		});
 		break;
 	case UIClass::UI_ChartView:
@@ -473,58 +566,26 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 				OnPointClick, "sender", "seriesIndex", "pointIndex"),
 			CUI_EVENT(ChartView, OnPointHover,
 				OnPointHover, "sender", "seriesIndex", "pointIndex"),
-			CUI_EVENT(ChartView, SelectionChanged, SelectionChanged, "sender"),
+			CUI_EVENT(ChartView, SelectionChanged,
+				SelectionChanged, "sender", "e"),
 			CUI_EVENT(ChartView, OnViewportChanged, OnViewportChanged, "sender"),
 		});
 		break;
-	case UIClass::UI_ReportView:
-		Append(out, {
-			CUI_EVENT(ReportView, OnRowClick,
-				OnRowClick, "sender", "rowIndex"),
-			CUI_EVENT(ReportView, OnGroupToggled,
-				OnGroupToggled, "sender", "groupRowIndex", "expanded"),
-			CUI_EVENT(ReportView, SelectionChanged, SelectionChanged, "sender"),
-			CUI_EVENT(ReportView, ScrollChanged, ScrollChanged, "sender"),
-		});
-		break;
-	case UIClass::UI_KpiCard:
-		Append(out, {
-			CUI_EVENT(KpiCard, OnCardClick, OnCardClick, "sender"),
-		});
-		break;
-	case UIClass::UI_FilterBar:
-		Append(out, {
-			CUI_EVENT(FilterBar, OnQueryChanged,
-				OnQueryChanged, "sender", "query"),
-			CUI_EVENT(FilterBar, OnFilterChanged,
-				OnFilterChanged, "sender", "index", "selected"),
-			CUI_EVENT(FilterBar, OnApply, OnApply, "sender"),
-			CUI_EVENT(FilterBar, OnReset, OnReset, "sender"),
-		});
-		break;
-	case UIClass::UI_ToastHost:
-		Append(out, {
-			CUI_EVENT(ToastHost, OnToastClick,
-				OnToastClick, "sender", "index"),
-			CUI_EVENT(ToastHost, OnToastDismissed,
-				OnToastDismissed, "sender", "index"),
-		});
-		break;
 	case UIClass::UI_Slider:
-		Append(out, { CUI_EVENT(Slider, OnValueChanged,
-			OnValueChanged, "sender", "oldValue", "newValue") });
+	case UIClass::UI_ProgressBar:
+	case UIClass::UI_ProgressRing:
+		Append(out, { CUI_EVENT(Slider, ValueChanged,
+			ValueChanged, "sender", "e") });
 		break;
 	case UIClass::UI_NumericUpDown:
-		Append(out, { CUI_EVENT(NumericUpDown, OnValueChanged,
-			OnValueChanged, "sender", "oldValue", "newValue") });
+		Append(out, { CUI_EVENT(NumericUpDown, ValueChanged,
+			ValueChanged, "sender", "e") });
 		break;
 	case UIClass::UI_Expander:
-		Append(out, { CUI_EVENT(Expander, OnExpandedChanged,
-			OnExpandedChanged, "sender", "expanded") });
-		break;
-	case UIClass::UI_Menu:
-		Append(out, { CUI_EVENT(Menu, OnMenuCommand,
-			OnMenuCommand, "sender", "id") });
+		Append(out, {
+			CUI_EVENT(Expander, Expanded, Expanded, "sender", "e"),
+			CUI_EVENT(Expander, Collapsed, Collapsed, "sender", "e"),
+		});
 		break;
 	case UIClass::UI_WebBrowser:
 		Append(out, {
@@ -618,46 +679,76 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(
 	return result;
 }
 
-const std::vector<DesignerEventDescriptor>& DesignerEventCatalog::GetFormEvents()
+const std::vector<DesignerEventDescriptor>& DesignerEventCatalog::GetWindowEvents()
 {
 	static const std::vector<D> events = []
 	{
 		std::vector<D> result = {
-			CUI_EVENT(Form, OnMouseWheel, OnMouseWheel, "sender", "e"),
-			CUI_EVENT(Form, OnMouseMove, OnMouseMove, "sender", "e"),
-			CUI_EVENT(Form, OnMouseDown, OnMouseDown, "sender", "e"),
-			CUI_EVENT(Form, OnMouseUp, OnMouseUp, "sender", "e"),
-			CUI_EVENT(Form, OnMouseClick, OnMouseClick, "sender", "e"),
-			CUI_EVENT(Form, OnMouseDoubleClick, OnMouseDoubleClick, "sender", "e"),
-			CUI_EVENT(Form, OnMouseEnter, OnMouseEnter, "sender", "e"),
-			CUI_EVENT(Form, OnMouseLeave, OnMouseLeave, "sender", "e"),
-			CUI_EVENT(Form, OnKeyDown, OnKeyDown, "sender", "e"),
-			CUI_EVENT(Form, OnKeyUp, OnKeyUp, "sender", "e"),
-			CUI_EVENT(Form, OnCharInput, OnCharInput, "sender", "ch"),
-			CUI_EVENT(Form, OnGotFocus, OnGotFocus, "sender"),
-			CUI_EVENT(Form, OnLostFocus, OnLostFocus, "sender"),
-			CUI_EVENT(Form, OnDropText, OnDropText, "sender", "text"),
-			CUI_EVENT(Form, OnDropFile, OnDropFile, "sender", "files"),
-			CUI_EVENT(Form, OnPaint, OnPaint, "sender"),
-			CUI_EVENT(Form, OnClose, OnClosing, "sender", "cancel"),
-			CUI_EVENT(Form, OnMoved, OnMoved, "sender"),
-			CUI_EVENT(Form, OnSizeChanged, OnSizeChanged, "sender"),
-			CUI_EVENT(Form, OnTextChanged, OnTextChanged,
-				"sender", "oldText", "newText"),
-			CUI_EVENT(Form, OnThemeChanged, OnThemeChanged,
-				"sender", "oldTheme", "newTheme"),
-			CUI_EVENT(Form, OnShown, OnShown, "sender"),
-			CUI_EVENT(Form, OnFormClosing, OnFormClosing, "sender"),
-			CUI_EVENT(Form, OnFormClosed, OnFormClosed, "sender"),
-			CUI_EVENT(Form, OnCommand, OnCommand, "sender", "Id", "info"),
+			CUI_EVENT(Control, OnPreviewMouseWheel, OnPreviewMouseWheel, "sender", "e"),
+			CUI_EVENT(Control, OnMouseWheel, OnMouseWheel, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseMove, OnPreviewMouseMove, "sender", "e"),
+			CUI_EVENT(Control, OnMouseMove, OnMouseMove, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseDown, OnPreviewMouseDown, "sender", "e"),
+			CUI_EVENT(Control, OnMouseDown, OnMouseDown, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseUp, OnPreviewMouseUp, "sender", "e"),
+			CUI_EVENT(Control, OnMouseUp, OnMouseUp, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewMouseDoubleClick, OnPreviewMouseDoubleClick, "sender", "e"),
+			CUI_EVENT(Control, OnMouseDoubleClick, OnMouseDoubleClick, "sender", "e"),
+			CUI_EVENT(Control, OnMouseEnter, OnMouseEnter, "sender", "e"),
+			CUI_EVENT(Control, OnMouseLeave, OnMouseLeave, "sender", "e"),
+			CUI_EVENT(Control, OnGotMouseCapture, OnGotMouseCapture, "sender", "e"),
+			CUI_EVENT(Control, OnLostMouseCapture, OnLostMouseCapture, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewKeyDown, OnPreviewKeyDown, "sender", "e"),
+			CUI_EVENT(Control, OnKeyDown, OnKeyDown, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewKeyUp, OnPreviewKeyUp, "sender", "e"),
+			CUI_EVENT(Control, OnKeyUp, OnKeyUp, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewTextInputStart,
+				OnPreviewTextInputStart, "sender", "e"),
+			CUI_EVENT(Control, OnTextInputStart,
+				OnTextInputStart, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewTextInputUpdate,
+				OnPreviewTextInputUpdate, "sender", "e"),
+			CUI_EVENT(Control, OnTextInputUpdate,
+				OnTextInputUpdate, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewTextInput, OnPreviewTextInput, "sender", "e"),
+			CUI_EVENT(Control, OnTextInput, OnTextInput, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewGotKeyboardFocus,
+				OnPreviewGotKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnGotKeyboardFocus,
+				OnGotKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewLostKeyboardFocus,
+				OnPreviewLostKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnLostKeyboardFocus,
+				OnLostKeyboardFocus, "sender", "e"),
+			CUI_EVENT(Control, OnGotFocus, OnGotFocus, "sender", "e"),
+			CUI_EVENT(Control, OnLostFocus, OnLostFocus, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewCanExecute, OnPreviewCanExecute, "sender", "e"),
+			CUI_EVENT(Control, OnCanExecute, OnCanExecute, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewExecuted, OnPreviewExecuted, "sender", "e"),
+			CUI_EVENT(Control, OnExecuted, OnExecuted, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragEnter, OnPreviewDragEnter, "sender", "e"),
+			CUI_EVENT(Control, OnDragEnter, OnDragEnter, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragOver, OnPreviewDragOver, "sender", "e"),
+			CUI_EVENT(Control, OnDragOver, OnDragOver, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDragLeave, OnPreviewDragLeave, "sender", "e"),
+			CUI_EVENT(Control, OnDragLeave, OnDragLeave, "sender", "e"),
+			CUI_EVENT(Control, OnPreviewDrop, OnPreviewDrop, "sender", "e"),
+			CUI_EVENT(Control, OnDrop, OnDrop, "sender", "e"),
+			CUI_EVENT(Window, Closing, OnClosing, "sender", "e"),
+			CUI_EVENT(Window, OnLocationChanged, OnLocationChanged, "sender"),
+			CUI_EVENT(Control, SizeChanged, SizeChanged, "sender", "e"),
+			CUI_EVENT(Control, IsVisibleChanged, IsVisibleChanged, "sender", "e"),
+			CUI_EVENT(Window, ContentRendered, ContentRendered, "sender"),
+			CUI_EVENT(Window, Closed, OnWindowClosed, "sender"),
 		};
-		ApplyPresentationMetadata(result, L"OnShown");
+		ApplyPresentationMetadata(result, L"ContentRendered");
 		return result;
 	}();
 	return events;
 }
 
 #undef CUI_EVENT
+#undef CUI_EXPOSED_EVENT
 #undef CUI_WIDEN
 #undef CUI_WIDEN_IMPL
 
@@ -683,10 +774,10 @@ std::optional<DesignerEventDescriptor> DesignerEventCatalog::FindControlEvent(
 		: std::optional<D>(*found);
 }
 
-std::optional<DesignerEventDescriptor> DesignerEventCatalog::FindFormEvent(
+std::optional<DesignerEventDescriptor> DesignerEventCatalog::FindWindowEvent(
 	const std::wstring& eventName)
 {
-	const auto& events = GetFormEvents();
+	const auto& events = GetWindowEvents();
 	auto it = std::find_if(events.begin(), events.end(), [&](const D& event) {
 		return event.Name == eventName;
 	});
@@ -716,9 +807,9 @@ DesignerEventCatalog::GetDefaultControlEvent(
 		: std::optional<D>(*found);
 }
 
-std::optional<DesignerEventDescriptor> DesignerEventCatalog::GetDefaultFormEvent()
+std::optional<DesignerEventDescriptor> DesignerEventCatalog::GetDefaultWindowEvent()
 {
-	const auto& events = GetFormEvents();
+	const auto& events = GetWindowEvents();
 	auto it = std::find_if(events.begin(), events.end(), [](const D& event)
 	{
 		return event.IsDefault;
@@ -917,7 +1008,7 @@ bool DesignerEventCatalog::ValidateComponentEvents(
 				+ (validationError.empty() ? L"。" : L"：" + validationError);
 			return false;
 		}
-		const auto name = LowerAscii(event.Name);
+		const auto& name = event.Name;
 		if (!names.insert(name).second)
 		{
 			if (outError) *outError = L"组件事件名称重复：" + event.Name;
@@ -930,7 +1021,7 @@ bool DesignerEventCatalog::ValidateComponentEvents(
 		}
 		hasDefault = hasDefault || event.IsDefault;
 		if (std::any_of(baseEvents.begin(), baseEvents.end(),
-			[&](const auto& base) { return LowerAscii(base.Name) == name; }))
+			[&](const auto& base) { return base.Name == name; }))
 		{
 			if (outError) *outError = L"组件事件与 BaseType 事件重名：" + event.Name;
 			return false;
@@ -942,7 +1033,7 @@ bool DesignerEventCatalog::ValidateComponentEvents(
 
 bool DesignerEventCatalog::IsKnownEventName(const std::wstring& eventName)
 {
-	if (FindFormEvent(eventName)) return true;
+	if (FindWindowEvent(eventName)) return true;
 	for (int value = static_cast<int>(UIClass::UI_Base);
 		value <= static_cast<int>(UIClass::UI_CUSTOM); ++value)
 	{
@@ -951,30 +1042,18 @@ bool DesignerEventCatalog::IsKnownEventName(const std::wstring& eventName)
 	return false;
 }
 
-bool DesignerEventCatalog::IsLegacyEnabledValue(const std::wstring& storedValue)
-{
-	const auto value = LowerAscii(Trim(storedValue));
-	return value == L"1" || value == L"true" || value == L"yes" || value == L"on";
-}
-
 std::wstring DesignerEventCatalog::MakeDefaultHandlerName(
 	const std::wstring& subjectName, const std::wstring& eventName)
 {
 	auto subject = SanitizeIdentifier(subjectName, L"control");
 	auto event = SanitizeIdentifier(eventName, L"Event");
-	if (event.rfind(L"On", 0) != 0) event.insert(0, L"On");
 	return subject + L"_" + event;
 }
 
-std::wstring DesignerEventCatalog::ResolveHandlerName(
-	const std::wstring& storedValue,
-	const std::wstring& subjectName,
-	const std::wstring& eventName)
+std::wstring DesignerEventCatalog::NormalizeHandlerName(
+	const std::wstring& storedValue)
 {
-	auto value = Trim(storedValue);
-	return IsLegacyEnabledValue(value)
-		? MakeDefaultHandlerName(subjectName, eventName)
-		: value;
+	return Trim(storedValue);
 }
 
 bool DesignerEventCatalog::ValidateHandlerName(

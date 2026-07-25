@@ -1,13 +1,21 @@
 #pragma once
 #define NOMINMAX
 #include "TextBox.h"
-#include "Form.h"
+#include "Window.h"
 #include "TextEditCore.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
-#pragma comment(lib, "Imm32.lib")
 
 namespace
 {
+	constexpr float FallbackCornerRadius = 6.0f;
+	constexpr float FallbackFocusBorderThickness = 1.6f;
+	constexpr auto FallbackHoverColor = cui::theme::palette::SurfaceSubtle;
+	constexpr auto FallbackFocusBorderColor = cui::theme::palette::Accent;
+	constexpr auto FallbackDisabledOverlayColor =
+		cui::theme::palette::DisabledOverlay;
+
 	CuiTextEdit::EditOptions SingleLineEditOptions()
 	{
 		CuiTextEdit::EditOptions options;
@@ -15,13 +23,11 @@ namespace
 		return options;
 	}
 
-	void CommitTextChange(Control* control, const std::wstring& oldText, const std::wstring& newText)
+	void CommitTextChange(TextBox* control, const std::wstring& oldText, const std::wstring& newText)
 	{
 		if (!control || oldText == newText)
 			return;
-		control->SetTextInternal(newText);
-		control->TextChanged = true;
-		control->OnTextChanged(control, oldText, newText);
+		control->Text = newText;
 	}
 
 	bool TryReadClipboardText(HWND owner, std::wstring& text)
@@ -101,76 +107,87 @@ UIClass TextBox::Type() { return UIClass::UI_TextBox; }
 
 namespace
 {
-	bool TextBoxColorsEqual(
-		const D2D1_COLOR_F& left,
-		const D2D1_COLOR_F& right)
+	DependencyPropertyOptions<TextBox, std::wstring> TextBoxTextOptions()
 	{
-		return left.r == right.r && left.g == right.g
-			&& left.b == right.b && left.a == right.a;
-	}
-
-	ControlPropertyOptions<TextBox, std::wstring> TextBoxTextOptions()
-	{
-		ControlPropertyOptions<TextBox, std::wstring> options;
+		DependencyPropertyOptions<TextBox, std::wstring> options;
 		options.DefaultValue = std::wstring{};
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::BindsTwoWayByDefault;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender
+			| DependencyPropertyFlags::BindsTwoWayByDefault;
 		options.Design.Category = L"Common";
 		options.Design.CategoryOrder = 0;
 		options.Design.Order = 10;
-		options.Design.Persistence = ControlPropertyPersistence::Legacy;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
 		options.DefaultUpdateMode = DataSourceUpdateMode::OnValidation;
+		options.Changed = [](TextBox& target,
+			const std::wstring& oldValue, const std::wstring& newValue)
+		{
+			TextChangedEventArgs args(oldValue, newValue);
+			target.OnTextChanged(&target, args);
+		};
 		return options;
 	}
 
-	ControlPropertyOptions<TextBox, D2D1_COLOR_F> TextBoxColorOptions(
-		D2D1_COLOR_F defaultValue,
+	DependencyPropertyOptions<TextBox, cui::drawing::Brush> TextBoxBrushOptions(
+		cui::drawing::Brush defaultValue,
 		int order)
 	{
-		auto options = ControlPropertyOptions<TextBox, D2D1_COLOR_F>{
-			defaultValue,
-			ControlPropertyFlags::AffectsRender
-				| ControlPropertyFlags::TracksLocalValue,
-			{}, {}, TextBoxColorsEqual };
+		DependencyPropertyOptions<TextBox, cui::drawing::Brush> options;
+		options.DefaultValue = std::move(defaultValue);
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Equals = [](const cui::drawing::Brush& left,
+			const cui::drawing::Brush& right) { return left == right; };
+		options.Convert = [](const BindingValue& value)
+			-> std::optional<cui::drawing::Brush>
+		{
+			cui::drawing::Brush brush;
+			if (value.TryGet(brush)) return brush;
+			D2D1_COLOR_F color{};
+			if (value.TryGet(color))
+				return cui::drawing::MakeSolidColorBrush(color);
+			return std::nullopt;
+		};
 		options.Design.Category = L"Appearance";
 		options.Design.CategoryOrder = 200;
 		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Color;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Browsable = false;
 		return options;
 	}
 
-	ControlPropertyOptions<TextBox, float> TextBoxNonNegativeFloatOptions(
-		float defaultValue,
-		int order)
+	DependencyPropertyOptions<TextBox, double> SelectionOpacityOptions()
 	{
-		auto options = ControlPropertyOptions<TextBox, float>{
-			defaultValue,
-			ControlPropertyFlags::AffectsRender
-				| ControlPropertyFlags::TracksLocalValue,
-			[](TextBox&, const float& proposed) -> std::optional<float>
-			{
-				return (std::max)(0.0f, proposed);
-			} };
+		DependencyPropertyOptions<TextBox, double> options;
+		options.DefaultValue = 0.4;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Coerce = [](TextBox&, const double& proposed)
+			-> std::optional<double>
+		{
+			return std::isfinite(proposed)
+				? std::optional<double>{ (std::clamp)(proposed, 0.0, 1.0) }
+				: std::nullopt;
+		};
 		options.Design.Category = L"Appearance";
 		options.Design.CategoryOrder = 200;
-		options.Design.Order = order;
-		options.Design.Editor = ControlPropertyEditorKind::Number;
+		options.Design.Order = 30;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		options.Design.Minimum = 0.0;
-		options.Design.Step = 0.5;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Maximum = 1.0;
+		options.Design.Step = 0.05;
 		return options;
 	}
+
 }
 
-void TextBox::EnsureBindingPropertiesRegistered()
+void TextBox::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
-		using Handler = BindingPropertyMetadata::ChangeHandler;
-		BindingPropertyRegistry::Register<TextBox, std::wstring>(L"Text",
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyRegistry::Register<TextBox, std::wstring>(L"Text",
 			[](TextBox& target) { return target.Text; },
 			[](TextBox& target, const std::wstring& value) { target.Text = value; },
 			[](TextBox& target, Handler handler, DataSourceUpdateMode mode)
@@ -180,98 +197,114 @@ void TextBox::EnsureBindingPropertiesRegistered()
 						[handler = std::move(handler)](Control*) { handler(); });
 				return target.OnTextChanged.Subscribe(
 					[handler = std::move(handler)](
-						Control*, std::wstring, std::wstring) { handler(); });
+						Control*, TextChangedEventArgs&) { handler(); });
 			},
 			TextBoxTextOptions());
-		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"UnderMouseColor",
-			[](TextBox& target) { return target.UnderMouseColor; },
-			[](TextBox& target, const D2D1_COLOR_F& value) { target.UnderMouseColor = value; },
-			{}, TextBoxColorOptions(cui::theme::palette::SurfaceSubtle, 10));
-		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"SelectedBackColor",
-			[](TextBox& target) { return target.SelectedBackColor; },
-			[](TextBox& target, const D2D1_COLOR_F& value) { target.SelectedBackColor = value; },
-			{}, TextBoxColorOptions(cui::theme::palette::SelectionBack, 20));
-		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"SelectedForeColor",
-			[](TextBox& target) { return target.SelectedForeColor; },
-			[](TextBox& target, const D2D1_COLOR_F& value) { target.SelectedForeColor = value; },
-			{}, TextBoxColorOptions(cui::theme::palette::TextPrimary, 30));
-		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"FocusedColor",
-			[](TextBox& target) { return target.FocusedColor; },
-			[](TextBox& target, const D2D1_COLOR_F& value) { target.FocusedColor = value; },
-			{}, TextBoxColorOptions(cui::theme::palette::Surface, 40));
-		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"DisabledOverlayColor",
-			[](TextBox& target) { return target.DisabledOverlayColor; },
-			[](TextBox& target, const D2D1_COLOR_F& value) { target.DisabledOverlayColor = value; },
-			{}, TextBoxColorOptions(cui::theme::palette::DisabledOverlay, 50));
-		BindingPropertyRegistry::Register<TextBox, float>(L"BorderThickness",
-			[](TextBox& target) { return target.BorderThickness; },
-			[](TextBox& target, const float& value) { target.BorderThickness = value; },
-			{}, TextBoxNonNegativeFloatOptions(1.0f, 60));
-		BindingPropertyRegistry::Register<TextBox, float>(L"CornerRadius",
-			[](TextBox& target) { return target.CornerRadius; },
-			[](TextBox& target, const float& value) { target.CornerRadius = value; },
-			{}, TextBoxNonNegativeFloatOptions(6.0f, 70));
-		BindingPropertyRegistry::Register<TextBox, float>(L"FocusBorder",
-			[](TextBox& target) { return target.FocusBorder; },
-			[](TextBox& target, const float& value) { target.FocusBorder = value; },
-			{}, TextBoxNonNegativeFloatOptions(1.6f, 80));
-		BindingPropertyRegistry::Register<TextBox, float>(L"TextMargin",
-			[](TextBox& target) { return target.TextMargin; },
-			[](TextBox& target, const float& value) { target.TextMargin = value; },
-			{}, TextBoxNonNegativeFloatOptions(5.0f, 90));
+		DependencyPropertyRegistry::Register<TextBox, cui::drawing::Brush>(
+			L"SelectionBrush",
+			[](TextBox& target) { return target.SelectionBrush; },
+			[](TextBox& target, const cui::drawing::Brush& value)
+			{ target.SelectionBrush = value; }, {},
+			TextBoxBrushOptions(cui::drawing::MakeSolidColorBrush(
+				cui::theme::palette::Accent), 20));
+		DependencyPropertyRegistry::Register<TextBox, double>(
+			L"SelectionOpacity",
+			[](TextBox& target) { return target.SelectionOpacity; },
+			[](TextBox& target, const double& value)
+			{ target.SelectionOpacity = value; }, {}, SelectionOpacityOptions());
+		DependencyPropertyRegistry::Register<TextBox, cui::drawing::Brush>(
+			L"SelectionTextBrush",
+			[](TextBox& target) { return target.SelectionTextBrush; },
+			[](TextBox& target, const cui::drawing::Brush& value)
+			{ target.SelectionTextBrush = value; }, {},
+			TextBoxBrushOptions(cui::drawing::MakeSolidColorBrush(
+				cui::theme::palette::OnAccent), 40));
+		DependencyPropertyRegistry::Register<TextBox, cui::drawing::Brush>(
+			L"CaretBrush",
+			[](TextBox& target) { return target.CaretBrush; },
+			[](TextBox& target, const cui::drawing::Brush& value)
+			{ target.CaretBrush = value; }, {},
+			TextBoxBrushOptions(cui::drawing::MakeSolidColorBrush(
+				cui::theme::palette::TextPrimary), 50));
+		RegisterControlBorderThicknessMetadata<TextBox>(1.0f, 60);
 		return true;
 	}();
 	(void)registered;
 }
 
-GET_CPP(TextBox, D2D1_COLOR_F, UnderMouseColor) { return _underMouseColor; }
-SET_CPP(TextBox, D2D1_COLOR_F, UnderMouseColor) { SetPropertyField(L"UnderMouseColor", _underMouseColor, value); }
-GET_CPP(TextBox, D2D1_COLOR_F, SelectedBackColor) { return _selectedBackColor; }
-SET_CPP(TextBox, D2D1_COLOR_F, SelectedBackColor) { SetPropertyField(L"SelectedBackColor", _selectedBackColor, value); }
-GET_CPP(TextBox, D2D1_COLOR_F, SelectedForeColor) { return _selectedForeColor; }
-SET_CPP(TextBox, D2D1_COLOR_F, SelectedForeColor) { SetPropertyField(L"SelectedForeColor", _selectedForeColor, value); }
-GET_CPP(TextBox, D2D1_COLOR_F, FocusedColor) { return _focusedColor; }
-SET_CPP(TextBox, D2D1_COLOR_F, FocusedColor) { SetPropertyField(L"FocusedColor", _focusedColor, value); }
-GET_CPP(TextBox, D2D1_COLOR_F, DisabledOverlayColor) { return _disabledOverlayColor; }
-SET_CPP(TextBox, D2D1_COLOR_F, DisabledOverlayColor) { SetPropertyField(L"DisabledOverlayColor", _disabledOverlayColor, value); }
-GET_CPP(TextBox, float, BorderThickness) { return _borderThickness; }
-SET_CPP(TextBox, float, BorderThickness) { SetPropertyField(L"BorderThickness", _borderThickness, value); }
-GET_CPP(TextBox, float, CornerRadius) { return _cornerRadius; }
-SET_CPP(TextBox, float, CornerRadius) { SetPropertyField(L"CornerRadius", _cornerRadius, value); }
-GET_CPP(TextBox, float, FocusBorder) { return _focusBorder; }
-SET_CPP(TextBox, float, FocusBorder) { SetPropertyField(L"FocusBorder", _focusBorder, value); }
-GET_CPP(TextBox, float, TextMargin) { return _textMargin; }
-SET_CPP(TextBox, float, TextMargin) { SetPropertyField(L"TextMargin", _textMargin, value); }
+GET_CPP(TextBox, std::wstring, Text) { return Control::GetText(); }
+SET_CPP(TextBox, std::wstring, Text)
+{
+	Control::SetText(std::move(value));
+}
 
-bool TextBox::HandlesNavigationKey(WPARAM key) const
+GET_CPP(TextBox, cui::drawing::Brush, SelectionBrush)
+{
+	return _selectionBrush;
+}
+SET_CPP(TextBox, cui::drawing::Brush, SelectionBrush)
+{
+	(void)SetPropertyField(L"SelectionBrush", _selectionBrush, std::move(value));
+}
+GET_CPP(TextBox, double, SelectionOpacity)
+{
+	return _selectionOpacity;
+}
+SET_CPP(TextBox, double, SelectionOpacity)
+{
+	(void)SetPropertyField(L"SelectionOpacity", _selectionOpacity, value);
+}
+GET_CPP(TextBox, cui::drawing::Brush, SelectionTextBrush)
+{
+	return _selectionTextBrush;
+}
+SET_CPP(TextBox, cui::drawing::Brush, SelectionTextBrush)
+{
+	(void)SetPropertyField(
+		L"SelectionTextBrush", _selectionTextBrush, std::move(value));
+}
+GET_CPP(TextBox, cui::drawing::Brush, CaretBrush)
+{
+	return _caretBrush;
+}
+SET_CPP(TextBox, cui::drawing::Brush, CaretBrush)
+{
+	(void)SetPropertyField(L"CaretBrush", _caretBrush, std::move(value));
+}
+bool TextBox::HandlesNavigationKey(Key key) const
 {
 	switch (key)
 	{
-	case VK_HOME:
-	case VK_END:
-	case VK_PRIOR:
-	case VK_NEXT:
+	case Key::Left:
+	case Key::Right:
+	case Key::Up:
+	case Key::Down:
+	case Key::Home:
+	case Key::End:
+	case Key::PageUp:
+	case Key::PageDown:
 		return true;
 	default:
 		return false;
 	}
 }
-TextBox::TextBox(std::wstring text, int x, int y, int width, int height)
+TextBox::TextBox()
 {
-	this->Text = text;
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	this->BackColor = cui::theme::palette::Surface;
-	this->BorderColor = cui::theme::palette::BorderStrong;
-	this->ForeColor = cui::theme::palette::TextPrimary;
+	InitializeControlBorderThicknessDefault(1.0f);
+	(void)TrySetPropertyValue(
+		L"Padding", BindingValue(Thickness{ 5.0f }),
+		DependencyPropertyValueSource::Theme);
+	this->RendererBackgroundColor = cui::theme::palette::Surface;
+	this->RendererBorderColor = cui::theme::palette::BorderStrong;
+	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 }
 void TextBox::InputText(std::wstring input)
 {
 	std::wstring oldStr = this->Text;
 	std::wstring newText = this->Text;
-	const int selStartBefore = this->SelectionStart;
-	const int selEndBefore = this->SelectionEnd;
-	auto result = CuiTextEdit::ReplaceSelection(newText, this->SelectionStart, this->SelectionEnd, input, SingleLineEditOptions());
+	const int selStartBefore = this->_selectionStart;
+	const int selEndBefore = this->_selectionEnd;
+	auto result = CuiTextEdit::ReplaceSelection(newText, this->_selectionStart, this->_selectionEnd, input, SingleLineEditOptions());
 	UndoRecord rec;
 	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
@@ -280,8 +313,8 @@ void TextBox::InputText(std::wstring input)
 		rec.insertedText = result.insertedText;
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = this->SelectionStart;
-		rec.selEndAfter = this->SelectionEnd;
+		rec.selStartAfter = this->_selectionStart;
+		rec.selEndAfter = this->_selectionEnd;
 		this->undoStack.push_back(rec);
 		this->redoStack.clear();
 	}
@@ -291,9 +324,9 @@ void TextBox::InputBack()
 {
 	std::wstring oldStr = this->Text;
 	std::wstring newText = this->Text;
-	const int selStartBefore = this->SelectionStart;
-	const int selEndBefore = this->SelectionEnd;
-	auto result = CuiTextEdit::Backspace(newText, this->SelectionStart, this->SelectionEnd, SingleLineEditOptions());
+	const int selStartBefore = this->_selectionStart;
+	const int selEndBefore = this->_selectionEnd;
+	auto result = CuiTextEdit::Backspace(newText, this->_selectionStart, this->_selectionEnd, SingleLineEditOptions());
 	UndoRecord rec;
 	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
@@ -302,8 +335,8 @@ void TextBox::InputBack()
 		rec.insertedText = L"";
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = this->SelectionStart;
-		rec.selEndAfter = this->SelectionEnd;
+		rec.selStartAfter = this->_selectionStart;
+		rec.selEndAfter = this->_selectionEnd;
 		this->undoStack.push_back(rec);
 		this->redoStack.clear();
 	}
@@ -313,9 +346,9 @@ void TextBox::InputDelete()
 {
 	std::wstring oldStr = this->Text;
 	std::wstring newText = this->Text;
-	const int selStartBefore = this->SelectionStart;
-	const int selEndBefore = this->SelectionEnd;
-	auto result = CuiTextEdit::DeleteForward(newText, this->SelectionStart, this->SelectionEnd, SingleLineEditOptions());
+	const int selStartBefore = this->_selectionStart;
+	const int selEndBefore = this->_selectionEnd;
+	auto result = CuiTextEdit::DeleteForward(newText, this->_selectionStart, this->_selectionEnd, SingleLineEditOptions());
 	UndoRecord rec;
 	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
@@ -324,8 +357,8 @@ void TextBox::InputDelete()
 		rec.insertedText = L"";
 		rec.selStartBefore = selStartBefore;
 		rec.selEndBefore = selEndBefore;
-		rec.selStartAfter = this->SelectionStart;
-		rec.selEndAfter = this->SelectionEnd;
+		rec.selStartAfter = this->_selectionStart;
+		rec.selEndAfter = this->_selectionEnd;
 		this->undoStack.push_back(rec);
 		this->redoStack.clear();
 	}
@@ -356,16 +389,16 @@ void TextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 	}
 	if (isUndo)
 	{
-		this->SelectionStart = rec.selStartBefore;
-		this->SelectionEnd = rec.selEndBefore;
+		this->_selectionStart = rec.selStartBefore;
+		this->_selectionEnd = rec.selEndBefore;
 	}
 	else
 	{
-		this->SelectionStart = rec.selStartAfter;
-		this->SelectionEnd = rec.selEndAfter;
+		this->_selectionStart = rec.selStartAfter;
+		this->_selectionEnd = rec.selEndAfter;
 	}
-	this->SelectionStart = std::clamp(this->SelectionStart, 0, (int)newText.size());
-	this->SelectionEnd = std::clamp(this->SelectionEnd, 0, (int)newText.size());
+	this->_selectionStart = std::clamp(this->_selectionStart, 0, (int)newText.size());
+	this->_selectionEnd = std::clamp(this->_selectionEnd, 0, (int)newText.size());
 
 	this->isApplyingUndoRedo = false;
 	CommitTextChange(this, oldStr, newText);
@@ -388,31 +421,54 @@ void TextBox::Redo()
 }
 void TextBox::UpdateScroll(bool arrival)
 {
-	float renderWidth = this->Width - (TextMargin * 2.0f);
-	auto font = this->Font;
-	auto lastSelect = font->HitTestTextRange(this->Text, (UINT32)SelectionEnd, (UINT32)0)[0];
-	if ((lastSelect.left + lastSelect.width) - HorizontalScrollOffset > renderWidth)
+	float renderWidth = this->ActualWidth - Padding.Left - Padding.Right;
+	auto font = this->GetRenderFont();
+	if (!font) return;
+	auto hit = font->HitTestTextRange(
+		this->Text, static_cast<UINT32>((std::clamp)(
+			_selectionEnd, 0, static_cast<int>(this->Text.size()))), 0);
+	if (hit.empty()) return;
+	const auto& lastSelect = hit.front();
+	if ((lastSelect.left + lastSelect.width) - _horizontalScrollOffset > renderWidth)
 	{
-		HorizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
+		_horizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
 	}
-	if (lastSelect.left - HorizontalScrollOffset < 0.0f)
+	if (lastSelect.left - _horizontalScrollOffset < 0.0f)
 	{
-		HorizontalScrollOffset = lastSelect.left;
+		_horizontalScrollOffset = lastSelect.left;
 	}
 }
 std::wstring TextBox::GetSelectedString()
 {
-	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Text.size());
 	if (!span.HasSelection())
 		return L"";
 	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 
 // ---- 公共选择/编辑 API ----
+int TextBox::GetSelectionStart()
+{
+	auto span = CuiTextEdit::NormalizeSelection(
+		_selectionStart, _selectionEnd, Text.size());
+	return span.start;
+}
+
 int TextBox::GetSelectionLength()
 {
-	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Text.size());
 	return span.HasSelection() ? static_cast<int>(span.Length()) : 0;
+}
+
+int TextBox::GetCaretIndex()
+{
+	return (std::clamp)(
+		_selectionEnd, 0, static_cast<int>(Text.size()));
+}
+
+void TextBox::SetCaretIndex(int value)
+{
+	Select(value, 0);
 }
 
 bool TextBox::HasSelection()
@@ -425,21 +481,21 @@ void TextBox::Select(int start, int length)
 	const int textLen = static_cast<int>(this->Text.size());
 	start = (std::clamp)(start, 0, textLen);
 	length = (std::clamp)(length, 0, textLen - start);
-	this->SelectionStart = start;
-	this->SelectionEnd = start + length;
+	this->_selectionStart = start;
+	this->_selectionEnd = start + length;
 	this->InvalidateVisual();
 }
 
 void TextBox::SelectAll()
 {
-	this->SelectionStart = 0;
-	this->SelectionEnd = static_cast<int>(this->Text.size());
+	this->_selectionStart = 0;
+	this->_selectionEnd = static_cast<int>(this->Text.size());
 	this->InvalidateVisual();
 }
 
 void TextBox::ClearSelection()
 {
-	this->SelectionEnd = this->SelectionStart;
+	this->_selectionEnd = this->_selectionStart;
 	this->InvalidateVisual();
 }
 
@@ -459,14 +515,14 @@ bool TextBox::Copy()
 {
 	const std::wstring selected = this->GetSelectedString();
 	if (selected.empty()) return false;
-	return WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected);
+	return WriteClipboardText(this->GetPresentationWindow() ? this->GetPresentationWindow()->Handle : nullptr, selected);
 }
 
 bool TextBox::Cut()
 {
 	const std::wstring selected = this->GetSelectedString();
 	if (selected.empty()) return false;
-	if (!WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected))
+	if (!WriteClipboardText(this->GetPresentationWindow() ? this->GetPresentationWindow()->Handle : nullptr, selected))
 		return false;
 	this->InputBack();
 	return true;
@@ -475,97 +531,122 @@ bool TextBox::Cut()
 bool TextBox::Paste()
 {
 	std::wstring clipboardText;
-	if (!TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
+	if (!TryReadClipboardText(this->GetPresentationWindow() ? this->GetPresentationWindow()->Handle : nullptr, clipboardText))
 		return false;
 	if (clipboardText.empty()) return false;
 	this->InputText(clipboardText);
 	return true;
 }
 
-void TextBox::Update()
+void TextBox::OnRender()
 {
-	if (this->IsVisual == false)return;
-	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	auto d2d = this->ParentForm->Render;
-	auto font = this->Font;
-	float renderHeight = this->Height - (TextMargin * 2.0f);
-	textSize = font->GetTextSize(this->Text, FLT_MAX, renderHeight);
-	float textOffsetY = (this->Height - textSize.height) * 0.5f;
-	if (textOffsetY < 0.0f) textOffsetY = 0.0f;
+	if (this->IsVisible == false)return;
+	bool isUnderMouse = this->IsMouseOver;
+	auto d2d = this->GetDrawingContext();
+	auto font = this->GetRenderFont();
+	float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
+	_textSize = font->GetTextSize(this->Text, FLT_MAX, renderHeight);
+	float textOffsetY = Padding.Top
+		+ (std::max)(0.0f, (renderHeight - _textSize.height) * 0.5f);
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
 	Microsoft::WRL::ComPtr<ID2D1Brush> foreground;
 	foreground.Attach(CreateForegroundBrush(
 		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
-	bool isSelected = this->ParentForm->Selected == this;
+	auto selectionDefinition = this->SelectionBrush;
+	selectionDefinition.Opacity *= static_cast<float>(
+		(std::clamp)(this->SelectionOpacity, 0.0, 1.0));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionBrush;
+	selectionBrush.Attach(selectionDefinition.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionTextBrush;
+	selectionTextBrush.Attach(this->SelectionTextBrush.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	Microsoft::WRL::ComPtr<ID2D1Brush> caretBrush;
+	caretBrush.Attach(this->CaretBrush.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
 	D2D1_POINT_2F caretStart{};
 	D2D1_POINT_2F caretEnd{};
 	this->BeginRender();
+	if (GetControlTemplateRoot())
 	{
-		auto backColor = this->BackColor;
-		const float radius = (std::min)(CornerRadius, actualHeight * 0.5f);
+		this->EndRender();
+		return;
+	}
+	{
+		auto backColor = this->RendererBackgroundColor;
+		const float radius = (std::min)(FallbackCornerRadius,
+			actualHeight * 0.5f);
 		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, backColor, radius);
-		if ((isUnderMouse || isSelected) && this->UnderMouseColor.a > 0.0f)
-			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, actualWidth - 2.0f), (std::max)(0.0f, actualHeight - 2.0f), this->UnderMouseColor, (std::max)(0.0f, radius - 1.0f));
-		if (this->Image)
-		{
-			this->RenderImage(radius);
-		}
+		if ((isUnderMouse || isSelected) && FallbackHoverColor.a > 0.0f)
+			d2d->FillRoundRect(1.0f, 1.0f,
+				(std::max)(0.0f, actualWidth - 2.0f),
+				(std::max)(0.0f, actualHeight - 2.0f),
+				FallbackHoverColor, (std::max)(0.0f, radius - 1.0f));
 		if (this->Text.size() > 0)
 		{
-			auto font = this->Font;
+			auto font = this->GetRenderFont();
 			if (isSelected)
 			{
-				int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-				int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
+				int sels = _selectionStart <= _selectionEnd ? _selectionStart : _selectionEnd;
+				int sele = _selectionEnd >= _selectionStart ? _selectionEnd : _selectionStart;
 				int selLen = sele - sels;
 				auto selRange = font->HitTestTextRange(this->Text, (UINT32)sels, (UINT32)selLen);
-				if (selLen != 0)
+				if (selLen != 0 && selectionBrush)
 				{
 					for (auto sr : selRange)
 					{
 						d2d->FillRect(
-							sr.left + TextMargin - HorizontalScrollOffset,
+							sr.left + Padding.Left - _horizontalScrollOffset,
 							sr.top + textOffsetY,
 							sr.width, sr.height,
-							this->SelectedBackColor);
+							selectionBrush.Get());
 					}
 				}
-				else
+				else if (selLen == 0)
 				{
 					if (!selRange.empty())
 					{
 						const auto caret = selRange[0];
-						const float cx = caret.left + TextMargin - HorizontalScrollOffset;
+						const float cx = caret.left + Padding.Left - _horizontalScrollOffset;
 						const float cy = caret.top + textOffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
 						const auto absoluteLocation = this->GetAbsoluteLocationDip();
 						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						shouldDrawCaret = true;
-						caretStart = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + textOffsetY };
-						caretEnd = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
+						caretStart = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + textOffsetY };
+						caretEnd = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
 					}
 				}
 				auto textLayout = Factory::CreateStringLayout(this->Text, FLT_MAX, renderHeight, font->FontObject);
 				if (textLayout) {
-					if (foreground)
+					if (selectionTextBrush && foreground)
 						d2d->DrawStringLayoutEffect(textLayout,
-							TextMargin - HorizontalScrollOffset, textOffsetY,
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
 							foreground.Get(),
 							DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-							this->SelectedForeColor,
+							selectionTextBrush.Get(),
 							font);
-					else
+					else if (selectionTextBrush)
 						d2d->DrawStringLayoutEffect(textLayout,
-							TextMargin - HorizontalScrollOffset, textOffsetY,
-							this->ForeColor,
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
+							this->RendererForegroundColor,
 							DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-							this->SelectedForeColor,
+							selectionTextBrush.Get(),
 							font);
+					else if (foreground)
+						d2d->DrawStringLayout(textLayout,
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
+							foreground.Get());
+					else
+						d2d->DrawStringLayout(textLayout,
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
+							this->RendererForegroundColor);
 					textLayout->Release();
 				}
 			}
@@ -575,12 +656,12 @@ void TextBox::Update()
 				if (textLayout) {
 					if (foreground)
 						d2d->DrawStringLayout(textLayout,
-							TextMargin - HorizontalScrollOffset, textOffsetY,
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
 							foreground.Get());
 					else
 						d2d->DrawStringLayout(textLayout,
-							TextMargin - HorizontalScrollOffset, textOffsetY,
-							this->ForeColor);
+							Padding.Left - _horizontalScrollOffset, textOffsetY,
+							this->RendererForegroundColor);
 					textLayout->Release();
 				}
 			}
@@ -589,36 +670,37 @@ void TextBox::Update()
 		{
 			if (isSelected)
 			{
-				const float cx = (float)TextMargin - HorizontalScrollOffset;
+				const float cx = Padding.Left - _horizontalScrollOffset;
 				const float cy = textOffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				const auto absoluteLocation = this->GetAbsoluteLocationDip();
 				this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
-				caretStart = { (float)TextMargin - HorizontalScrollOffset, textOffsetY };
-				caretEnd = { (float)TextMargin - HorizontalScrollOffset, textOffsetY + 16.0f };
+				caretStart = { Padding.Left - _horizontalScrollOffset, textOffsetY };
+				caretEnd = { Padding.Left - _horizontalScrollOffset, textOffsetY + 16.0f };
 			}
 		}
-		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
-		if (shouldDrawCaret && IsCaretBlinkVisible())
+		UpdateCaretBlinkState(isSelected, this->_selectionStart, this->_selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		if (shouldDrawCaret && IsCaretBlinkVisible() && caretBrush)
 		{
-			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
+			d2d->DrawLine(caretStart, caretEnd, caretBrush.Get());
 		}
-		const auto borderColor = isSelected ? this->FocusedColor : this->BorderColor;
-		const float borderWidth = isSelected ? (std::max)(this->BorderThickness, this->FocusBorder) : this->BorderThickness;
+		const auto borderColor = isSelected
+			? FallbackFocusBorderColor : this->RendererBorderColor;
+		const float borderWidth = isSelected
+			? (std::max)(this->BorderThickness.MaxEdge(),
+				FallbackFocusBorderThickness)
+			: this->BorderThickness.MaxEdge();
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
 				borderColor, borderWidth, radius);
-		if (!this->Enable)
+		if (!this->IsEnabled)
 		{
-			d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, DisabledOverlayColor, radius);
+			d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight,
+				FallbackDisabledOverlayColor, radius);
 		}
-	}
-	if (!this->Enable)
-	{
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, DisabledOverlayColor, (std::min)(CornerRadius, actualHeight * 0.5f));
 	}
 	this->EndRender();
 }
@@ -627,109 +709,158 @@ bool TextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	return GetCaretBlinkInvalidRect(outRect);
 }
-bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+
+bool TextBox::ApplyTextInput(const TextCompositionEventArgs& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
+	if (input.Text.empty()) return false;
+	InputText(input.Text);
+	UpdateScroll();
+	InvalidateVisual();
+	return true;
+}
+
+bool TextBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
+{
+	if (_caretRectCacheValid)
 	{
-	case WM_DROPFILES:
-	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
-		TCHAR fileName[MAX_PATH];
-		std::vector<std::wstring> files;
-		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
-		{
-			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
-			files.push_back(fileName);
-		}
-		DragFinish(hDropInfo);
-		if (!files.empty())
-		{
-			this->OnDropFile(this, files);
-		}
+		outRect = _caretRectCache;
+		return true;
 	}
-	break;
-	case WM_MOUSEWHEEL:
+	const auto absolute = GetAbsoluteLocationDip();
+	const float x = static_cast<float>(absolute.x)
+		+ Padding.Left - _horizontalScrollOffset;
+	const float y = static_cast<float>(absolute.y) + Padding.Top;
+	const float height = GetRenderFont() && GetRenderFont()->FontHeight > 0.0f
+		? GetRenderFont()->FontHeight : 16.0f;
+	outRect = D2D1::RectF(x, y, x + 1.0f, y + height);
+	return true;
+}
+
+bool TextBox::ProcessInput(const InputReport& input)
+{
+	if (!this->IsEnabled || !this->IsVisible) return true;
+	switch (input.Kind)
 	{
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+	case InputReportKind::MouseWheel:
+	{
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerMove:
 	{
-		this->ParentForm->UnderMouse = this;
-		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this)
+		if (input.IsButtonPressed(MouseButton::Left)
+			&& this->GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			auto font = this->Font;
-			float renderHeight = this->Height - (TextMargin * 2.0f);
-			SelectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			auto font = this->GetRenderFont();
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
+			_selectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX,
+				renderHeight, (input.X - Padding.Left)
+					+ this->_horizontalScrollOffset, input.Y - Padding.Top);
 			UpdateScroll();
 			this->InvalidateVisual();
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseMove(this, eventArgs);
 	}
 	break;
-	case WM_LBUTTONDOWN:
-	case WM_RBUTTONDOWN:
-	case WM_MBUTTONDOWN:
+	case InputReportKind::PointerDown:
 	{
-		if (WM_LBUTTONDOWN == message)
+		if (input.ChangedButton == MouseButton::Left)
 		{
-			if (this->ParentForm->Selected != this)
+			(void)CaptureMouse();
+			if (this->GetPresentationWindow()->GetKeyboardFocusedElement() != this)
 			{
-				auto previousSelection = this->ParentForm->Selected;
-				this->ParentForm->SetSelectedControl(this, false);
+				auto previousSelection = this->GetPresentationWindow()->GetKeyboardFocusedElement();
+				this->GetPresentationWindow()->SetKeyboardFocus(this, false);
 				if (previousSelection) previousSelection->InvalidateVisual();
 			}
-			auto font = this->Font;
-			float renderHeight = this->Height - (TextMargin * 2.0f);
-			this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			auto font = this->GetRenderFont();
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
+			this->_selectionStart = this->_selectionEnd =
+				font->HitTestTextPosition(this->Text, FLT_MAX, renderHeight,
+					(input.X - Padding.Left) + this->_horizontalScrollOffset,
+					input.Y - Padding.Top);
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
-	case WM_LBUTTONUP:
-	case WM_RBUTTONUP:
-	case WM_MBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
-		if (this->ParentForm->Selected == this)
+		if (this->GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			float renderHeight = this->Height - (TextMargin * 2.0f);
-			auto font = this->Font;
-			SelectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
+			auto font = this->GetRenderFont();
+			_selectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX,
+				renderHeight, (input.X - Padding.Left)
+					+ this->_horizontalScrollOffset, input.Y - Padding.Top);
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
+		if (input.ChangedButton == MouseButton::Left && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
 	}
 	break;
-	case WM_LBUTTONDBLCLK:
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		return Control::ProcessInput(input);
+	case InputReportKind::PointerDoubleClick:
 	{
-		this->ParentForm->SetSelectedControl(this, false);
-		this->SelectionStart = 0;
-		this->SelectionEnd = static_cast<int>(this->Text.size());
-		this->HorizontalScrollOffset = 0.0f;
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		this->GetPresentationWindow()->SetKeyboardFocus(this, false);
+		this->_selectionStart = 0;
+		this->_selectionEnd = static_cast<int>(this->Text.size());
+		this->_horizontalScrollOffset = 0.0f;
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
-	case WM_KEYDOWN:
+	case InputReportKind::KeyDown:
 	{
-		if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+		bool handled = false;
+		if (input.HasModifier(ModifierKeys::Control))
 		{
-			if (wParam == 'Z')
+			if (input.Key == Key::A)
+			{
+				SelectAll();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::C)
+			{
+				(void)Copy();
+				return true;
+			}
+			if (input.Key == Key::V)
+			{
+				(void)Paste();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::X)
+			{
+				(void)Cut();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
+			}
+			if (input.Key == Key::Z)
 			{
 				this->Undo();
 				UpdateScroll();
 				this->InvalidateVisual();
 				return true;
 			}
-			if (wParam == 'Y')
+			if (input.Key == Key::Y)
 			{
 				this->Redo();
 				UpdateScroll();
@@ -737,156 +868,103 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 				return true;
 			}
 		}
-		if (this->ParentForm)
+		if (input.Key == Key::Back)
 		{
-			D2D1_RECT_F imeRect{};
-			if (this->_caretRectCacheValid)
-			{
-				imeRect = this->_caretRectCache;
-			}
-			else
-			{
-				const auto absoluteLocation = this->GetAbsoluteLocationDip();
-				float caretX = (float)absoluteLocation.x + this->TextMargin - this->HorizontalScrollOffset;
-				float caretY = (float)absoluteLocation.y;
-				float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
-				imeRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
-			}
-			this->ParentForm->SetImeCompositionWindowFromLogicalRect(imeRect);
+			handled = true;
+			InputBack();
+			UpdateScroll();
 		}
-		if (wParam == VK_DELETE)
+		else if (input.Key == Key::Delete)
 		{
+			handled = true;
 			this->InputDelete();
 			UpdateScroll();
 		}
-		else if (wParam == VK_RIGHT)
+		else if (input.Key == Key::Right)
 		{
+			handled = true;
 			int textLength = static_cast<int>(this->Text.size());
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			const bool extendSelection = input.HasModifier(ModifierKeys::Shift);
+			auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Text.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionStart = this->SelectionEnd = span.end;
+				this->_selectionStart = this->_selectionEnd = span.end;
 				UpdateScroll();
 			}
-			else if (this->SelectionEnd < textLength)
+			else if (this->_selectionEnd < textLength)
 			{
-				this->SelectionEnd = CuiTextEdit::GetNextCaretIndex(this->Text, this->SelectionEnd, false);
+				this->_selectionEnd = CuiTextEdit::GetNextCaretIndex(this->Text, this->_selectionEnd, false);
 				if (!extendSelection)
-					this->SelectionStart = this->SelectionEnd;
+					this->_selectionStart = this->_selectionEnd;
 				UpdateScroll();
 			}
 		}
-		else if (wParam == VK_LEFT)
+		else if (input.Key == Key::Left)
 		{
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			handled = true;
+			const bool extendSelection = input.HasModifier(ModifierKeys::Shift);
+			auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Text.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionStart = this->SelectionEnd = span.start;
+				this->_selectionStart = this->_selectionEnd = span.start;
 				UpdateScroll();
 			}
-			else if (this->SelectionEnd > 0)
+			else if (this->_selectionEnd > 0)
 			{
-				this->SelectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Text, this->SelectionEnd, false);
+				this->_selectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Text, this->_selectionEnd, false);
 				if (!extendSelection)
-					this->SelectionStart = this->SelectionEnd;
+					this->_selectionStart = this->_selectionEnd;
 				UpdateScroll();
 			}
 		}
-		else if (wParam == VK_HOME)
+		else if (input.Key == Key::Home)
 		{
-			this->SelectionEnd = 0;
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = 0;
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll();
 		}
-		else if (wParam == VK_END)
+		else if (input.Key == Key::End)
 		{
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = static_cast<int>(this->Text.size());
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll();
 		}
-		else if (wParam == VK_PRIOR)
+		else if (input.Key == Key::PageUp)
 		{
-			this->SelectionEnd = 0;
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = 0;
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll(true);
 		}
-		else if (wParam == VK_NEXT)
+		else if (input.Key == Key::PageDown)
 		{
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = static_cast<int>(this->Text.size());
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll(true);
 		}
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		else if (input.Key == Key::Up || input.Key == Key::Down
+			|| input.Key == Key::Return || input.Key == Key::Escape)
+		{
+			// Single-line editors own directional navigation and reject
+			// line-break/control characters without consuming text-producing
+			// keys such as Space.
+			handled = true;
+		}
+		auto eventArgs = input.CreateKeyEventArgs();
 		this->OnKeyDown(this, eventArgs);
 		this->InvalidateVisual();
+		return handled;
 	}
-	break;
-	case WM_CHAR:
+	case InputReportKind::KeyUp:
 	{
-		wchar_t ch = (wchar_t)(wParam);
-		if (CuiTextEdit::IsTextInputChar(ch))
-		{
-			const wchar_t c[] = { ch,L'\0' };
-			this->InputText(c);
-			UpdateScroll();
-		}
-		else if (ch == 1)
-		{
-			this->SelectionStart = 0;
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			UpdateScroll();
-		}
-		else if (ch == 8)
-		{
-			if (this->Text.size() > 0)
-			{
-				this->InputBack();
-				UpdateScroll();
-			}
-		}
-		else if (ch == 22)
-		{
-			std::wstring clipboardText;
-			if (TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
-			{
-				this->InputText(clipboardText);
-				UpdateScroll();
-			}
-		}
-		else if (ch == 3)
-		{
-			std::wstring s = this->GetSelectedString();
-			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
-		}
-		else if (ch == 24)
-		{
-			std::wstring s = this->GetSelectedString();
-			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
-			this->InputBack();
-			UpdateScroll();
-		}
-		this->InvalidateVisual();
-	}
-	break;
-	case WM_IME_COMPOSITION:
-	{
-		if (lParam & GCS_RESULTSTR)
-		{
-			// Unicode windows receive committed IME text through WM_CHAR as well.
-			// Keep the edit mutation in one path to avoid duplicate characters.
-			this->InvalidateVisual();
-		}
-	}
-	break;
-	case WM_KEYUP:
-	{
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		auto eventArgs = input.CreateKeyEventArgs();
 		this->OnKeyUp(this, eventArgs);
 		this->InvalidateVisual();
 	}

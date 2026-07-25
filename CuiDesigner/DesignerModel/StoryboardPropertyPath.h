@@ -68,11 +68,20 @@ struct ResolvedStoryboardObjectPath
 	std::wstring LeafProperty;
 };
 
+inline const DesignValue* StoryboardMetadataObject(
+	const DesignNode& node,
+	const wchar_t* propertyName) noexcept
+{
+	const auto* assignment = node.Properties.Find(propertyName);
+	return assignment && !assignment->Value.ObjectValue.is_null()
+		? &assignment->Value.ObjectValue : nullptr;
+}
+
 inline bool StoryboardPathEquals(
 	const std::wstring& left,
 	const std::wstring& right) noexcept
 {
-	return _wcsicmp(left.c_str(), right.c_str()) == 0;
+	return left == right;
 }
 
 inline std::wstring StoryboardPathLocalType(const std::wstring& value)
@@ -208,16 +217,15 @@ inline bool TryResolveTransformAnimationPath(
 		component.Template.begin(), component.Template.end(),
 		[&](const auto& node)
 		{ return StoryboardPathEquals(node.Name, targetName); });
-	if (target == component.Template.end()
-		|| !target->Extra.contains("renderTransform")
-		|| !target->Extra["renderTransform"].is_array()
-		|| path.Segments[2].Index
-			>= target->Extra["renderTransform"].size())
+	const auto* renderTransform = target == component.Template.end()
+		? nullptr : StoryboardMetadataObject(*target, L"RenderTransform");
+	if (!renderTransform || !renderTransform->is_array()
+		|| path.Segments[2].Index >= renderTransform->size())
 		return fail(L"动画目标未声明路径所需的 RenderTransform 操作。");
 	const auto leafOwner = StoryboardPathLocalType(path.Segments[3].OwnerType);
 	const auto& leaf = path.Segments[3].Name;
 	if (!TryResolveTransformOperationLeaf(
-		target->Extra["renderTransform"], path.Segments[2].Index,
+		*renderTransform, path.Segments[2].Index,
 		leafOwner, leaf, output, outError)) return false;
 	output.CanonicalPath = L"(Control.RenderTransform)."
 		L"(TransformGroup.Children)[" + std::to_wstring(output.OperationIndex)
@@ -230,12 +238,8 @@ inline bool IsTransformAnimationPath(const std::wstring& value) noexcept
 {
 	constexpr std::wstring_view controlPrefix = L"(Control.RenderTransform)";
 	constexpr std::wstring_view elementPrefix = L"(UIElement.RenderTransform)";
-	return (value.size() >= controlPrefix.size()
-			&& _wcsnicmp(value.c_str(), controlPrefix.data(),
-				controlPrefix.size()) == 0)
-		|| (value.size() >= elementPrefix.size()
-			&& _wcsnicmp(value.c_str(), elementPrefix.data(),
-				elementPrefix.size()) == 0);
+	return value.starts_with(controlPrefix)
+		|| value.starts_with(elementPrefix);
 }
 
 /** Resolves zero or more GeometryGroup.Children[index] hops after Clip. */
@@ -269,14 +273,14 @@ inline bool TryResolveDesignGeometryTreeTarget(
 		component.Template.begin(), component.Template.end(),
 		[&](const auto& node)
 		{ return StoryboardPathEquals(node.Name, targetName); });
-	if (target == component.Template.end()
-		|| !target->Extra.contains("clip")
-		|| !target->Extra["clip"].is_object())
+	const auto* clip = target == component.Template.end()
+		? nullptr : StoryboardMetadataObject(*target, L"Clip");
+	if (!clip || !clip->is_object())
 		return fail(L"动画目标必须显式声明 Control.Clip Geometry。");
 
 	outChildIndices.clear();
 	outCanonicalPrefix = L"(Control.Clip)";
-	const DesignValue* geometry = &target->Extra["clip"];
+	const DesignValue* geometry = clip;
 	size_t cursor = 1;
 	while (cursor < path.Segments.size()
 		&& path.Segments[cursor].Kind
@@ -742,24 +746,41 @@ inline bool IsGeometryAnimationPath(const std::wstring& value) noexcept
 {
 	constexpr std::wstring_view controlPrefix = L"(Control.Clip)";
 	constexpr std::wstring_view elementPrefix = L"(UIElement.Clip)";
-	return (value.size() >= controlPrefix.size()
-			&& _wcsnicmp(value.c_str(), controlPrefix.data(),
-				controlPrefix.size()) == 0)
-		|| (value.size() >= elementPrefix.size()
-			&& _wcsnicmp(value.c_str(), elementPrefix.data(),
-				 elementPrefix.size()) == 0);
+	return value.starts_with(controlPrefix)
+		|| value.starts_with(elementPrefix);
 }
 
-inline bool IsBrushAnimationPath(const std::wstring& value) noexcept
+inline bool TryGetBrushAnimationRoot(
+	const cui::xaml::PropertyPath& path,
+	std::wstring& rootProperty)
 {
-	constexpr std::wstring_view controlPrefix = L"(Control.Foreground)";
-	constexpr std::wstring_view elementPrefix = L"(UIElement.Foreground)";
-	return (value.size() >= controlPrefix.size()
-			&& _wcsnicmp(value.c_str(), controlPrefix.data(),
-				controlPrefix.size()) == 0)
-		|| (value.size() >= elementPrefix.size()
-			&& _wcsnicmp(value.c_str(), elementPrefix.data(),
-				 elementPrefix.size()) == 0);
+	if (path.Segments.size() < 2
+		|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
+		|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
+		|| (!StoryboardPathEquals(
+			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
+			&& !StoryboardPathEquals(
+				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement")))
+		return false;
+	const auto owner = StoryboardPathLocalType(path.Segments[1].OwnerType);
+	if (!StoryboardPathEquals(owner, L"Brush")
+		&& !StoryboardPathEquals(owner, L"SolidColorBrush")
+		&& !StoryboardPathEquals(owner, L"GradientBrush")
+		&& !StoryboardPathEquals(owner, L"LinearGradientBrush")
+		&& !StoryboardPathEquals(owner, L"RadialGradientBrush")
+		&& !StoryboardPathEquals(owner, L"ImageBrush"))
+		return false;
+	rootProperty = path.Segments[0].Name;
+	return !rootProperty.empty();
+}
+
+inline bool IsBrushAnimationPath(const std::wstring& value)
+{
+	cui::xaml::PropertyPath path;
+	std::wstring ignored;
+	std::wstring rootProperty;
+	return cui::xaml::TryParsePropertyPath(value, path, &ignored)
+		&& TryGetBrushAnimationRoot(path, rootProperty);
 }
 
 inline bool TryResolveBrushPropertyAnimationPath(
@@ -775,47 +796,63 @@ inline bool TryResolveBrushPropertyAnimationPath(
 		if (outError) *outError = std::move(message);
 		return false;
 	};
-	if (targetName.empty())
-		return fail(L"Brush 复合属性路径只能定位模板具名控件。");
 	cui::xaml::PropertyPath path;
 	std::wstring parseError;
 	if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 		return fail(L"Storyboard.TargetProperty：" + parseError);
+	std::wstring rootProperty;
 	if (path.Segments.size() != 2
-		|| path.Segments[0].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[1].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| !StoryboardPathEquals(path.Segments[0].Name, L"Foreground")
-		|| (!StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
-			&& !StoryboardPathEquals(
-				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement")))
+		|| !TryGetBrushAnimationRoot(path, rootProperty))
 		return fail(L"Brush 复合属性路径必须是 "
-			L"(Control.Foreground).(BrushType.Property)。");
-	const auto target = std::find_if(
-		component.Template.begin(), component.Template.end(),
-		[&](const auto& node)
-		{ return StoryboardPathEquals(node.Name, targetName); });
-	if (target == component.Template.end()
-		|| !target->Extra.contains("foregroundBrush")
-		|| !target->Extra["foregroundBrush"].is_object())
-		return fail(L"动画目标必须显式声明 Control.Foreground 画刷。");
-	const auto& brush = target->Extra["foregroundBrush"];
-	const auto type = brush.value("type", std::string{});
+			L"(Control.BrushProperty).(BrushType.Property)。");
 	const auto owner = StoryboardPathLocalType(path.Segments[1].OwnerType);
-	const bool validOwner = StoryboardPathEquals(owner, L"Brush")
-		|| (type == "solid" && StoryboardPathEquals(owner, L"SolidColorBrush"))
-		|| ((type == "linear" || type == "radial")
-			&& StoryboardPathEquals(owner, L"GradientBrush"))
-		|| (type == "linear" && StoryboardPathEquals(owner, L"LinearGradientBrush"))
-		|| (type == "radial" && StoryboardPathEquals(owner, L"RadialGradientBrush"))
-		|| (type == "image" && StoryboardPathEquals(owner, L"ImageBrush"));
-	if (!validOwner)
-		return fail(L"Brush 动画路径所有者与实际画刷类型不匹配。");
+	const DesignValue* brush = nullptr;
+	std::string type;
+	if (targetName.empty())
+	{
+		if (StoryboardPathEquals(owner, L"SolidColorBrush")) type = "solid";
+		else if (StoryboardPathEquals(owner, L"LinearGradientBrush")) type = "linear";
+		else if (StoryboardPathEquals(owner, L"RadialGradientBrush")) type = "radial";
+		else if (StoryboardPathEquals(owner, L"ImageBrush")) type = "image";
+	}
+	else
+	{
+		const auto target = std::find_if(
+			component.Template.begin(), component.Template.end(),
+			[&](const auto& node)
+			{ return StoryboardPathEquals(node.Name, targetName); });
+		brush = target == component.Template.end()
+			? nullptr : StoryboardMetadataObject(*target, rootProperty.c_str());
+		if (!brush || !brush->is_object())
+		{
+			// Foreground has an effective system text brush even when XAML does
+			// not contribute a local value. WPF therefore permits animating its
+			// SolidColorBrush.Color without redundantly authoring Foreground.
+			if (StoryboardPathEquals(rootProperty, L"Foreground")
+				&& (StoryboardPathEquals(owner, L"Brush")
+					|| StoryboardPathEquals(owner, L"SolidColorBrush")))
+				type = "solid";
+			else
+				return fail(L"动画目标必须显式声明 Control."
+					+ rootProperty + L" 画刷。");
+		}
+		else
+			type = brush->value("type", std::string{});
+		const bool validOwner = StoryboardPathEquals(owner, L"Brush")
+			|| (type == "solid" && StoryboardPathEquals(owner, L"SolidColorBrush"))
+			|| ((type == "linear" || type == "radial")
+				&& StoryboardPathEquals(owner, L"GradientBrush"))
+			|| (type == "linear" && StoryboardPathEquals(owner, L"LinearGradientBrush"))
+			|| (type == "radial" && StoryboardPathEquals(owner, L"RadialGradientBrush"))
+			|| (type == "image" && StoryboardPathEquals(owner, L"ImageBrush"));
+		if (!validOwner)
+			return fail(L"Brush 动画路径所有者与实际画刷类型不匹配。");
+	}
 
 	auto finiteNumber = [&](const char* key)
 	{
-		return brush.contains(key) && brush[key].is_number()
-			&& std::isfinite(brush[key].get<double>());
+		return brush && brush->contains(key) && (*brush)[key].is_number()
+			&& std::isfinite((*brush)[key].get<double>());
 	};
 	auto finitePoint = [&](const char* x, const char* y)
 	{
@@ -831,13 +868,14 @@ inline bool TryResolveBrushPropertyAnimationPath(
 	};
 	const auto& property = path.Segments[1].Name;
 	output = {};
-	output.RootProperty = L"Foreground";
+	output.RootProperty = rootProperty;
 	if (StoryboardPathEquals(property, L"Opacity"))
 	{
 		if (animationKind != DesignerAnimationKind::Double)
 			return fail(L"Brush.Opacity 只接受 DoubleAnimation。");
-		if (!finiteNumber("opacity") || brush["opacity"].get<double>() < 0.0
-			|| brush["opacity"].get<double>() > 1.0)
+		if (brush && (!finiteNumber("opacity")
+			|| (*brush)["opacity"].get<double>() < 0.0
+			|| (*brush)["opacity"].get<double>() > 1.0))
 			return fail(L"动画目标的 Brush.Opacity 无效。");
 		output.Kind = StoryboardObjectPathKind::BrushOpacity;
 		output.ObjectType = L"Brush";
@@ -848,7 +886,8 @@ inline bool TryResolveBrushPropertyAnimationPath(
 	{
 		if (animationKind != DesignerAnimationKind::Color)
 			return fail(L"SolidColorBrush.Color 只接受 ColorAnimation。");
-		if (!brush.contains("color") || !finiteColor(brush["color"]))
+		if (brush && (!brush->contains("color")
+			|| !finiteColor((*brush)["color"])))
 			return fail(L"动画目标的 SolidColorBrush.Color 无效。");
 		output.Kind = StoryboardObjectPathKind::SolidColorBrushColor;
 		output.ObjectType = L"SolidColorBrush";
@@ -861,7 +900,8 @@ inline bool TryResolveBrushPropertyAnimationPath(
 		if (animationKind != DesignerAnimationKind::Point)
 			return fail(L"LinearGradientBrush 点属性只接受 PointAnimation。");
 		const bool start = StoryboardPathEquals(property, L"StartPoint");
-		if (!finitePoint(start ? "startX" : "endX", start ? "startY" : "endY"))
+		if (brush && !finitePoint(
+			start ? "startX" : "endX", start ? "startY" : "endY"))
 			return fail(L"动画目标的 LinearGradientBrush 点属性无效。");
 		output.Kind = StoryboardObjectPathKind::GradientBrushPoint;
 		output.ObjectType = L"LinearGradientBrush";
@@ -874,7 +914,7 @@ inline bool TryResolveBrushPropertyAnimationPath(
 		if (animationKind != DesignerAnimationKind::Point)
 			return fail(L"RadialGradientBrush 点属性只接受 PointAnimation。");
 		const bool center = StoryboardPathEquals(property, L"Center");
-		if (!finitePoint(center ? "centerX" : "originX",
+		if (brush && !finitePoint(center ? "centerX" : "originX",
 			center ? "centerY" : "originY"))
 			return fail(L"动画目标的 RadialGradientBrush 点属性无效。");
 		output.Kind = StoryboardObjectPathKind::GradientBrushPoint;
@@ -889,7 +929,7 @@ inline bool TryResolveBrushPropertyAnimationPath(
 			return fail(L"RadialGradientBrush 半径只接受 DoubleAnimation。");
 		const bool x = StoryboardPathEquals(property, L"RadiusX");
 		const char* key = x ? "radiusX" : "radiusY";
-		if (!finiteNumber(key) || brush[key].get<double>() < 0.0)
+		if (brush && (!finiteNumber(key) || (*brush)[key].get<double>() < 0.0))
 			return fail(L"动画目标的 RadialGradientBrush 半径无效。");
 		output.Kind = StoryboardObjectPathKind::RadialGradientBrushRadius;
 		output.ObjectType = L"RadialGradientBrush";
@@ -897,7 +937,7 @@ inline bool TryResolveBrushPropertyAnimationPath(
 	}
 	else return fail(L"Brush 动画路径末端属性与实际画刷类型不匹配。");
 
-	output.CanonicalPath = L"(Control.Foreground).("
+	output.CanonicalPath = L"(Control." + rootProperty + L").("
 		+ output.ObjectType + L"." + output.LeafProperty + L")";
 	if (outError) outError->clear();
 	return true;
@@ -916,12 +956,11 @@ inline bool TryResolveGradientStopAnimationPath(
 		if (outError) *outError = std::move(message);
 		return false;
 	};
-	if (targetName.empty())
-		return fail(L"GradientStop 复合属性路径只能定位模板具名控件。");
 	cui::xaml::PropertyPath path;
 	std::wstring parseError;
 	if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 		return fail(L"Storyboard.TargetProperty：" + parseError);
+	std::wstring rootProperty;
 	const auto gradientOwner = path.Segments.size() > 1
 		? StoryboardPathLocalType(path.Segments[1].OwnerType) : std::wstring{};
 	if (path.Segments.size() != 4
@@ -933,11 +972,7 @@ inline bool TryResolveGradientStopAnimationPath(
 			!= cui::xaml::PropertyPathSegmentKind::Index
 		|| path.Segments[3].Kind
 			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| !StoryboardPathEquals(path.Segments[0].Name, L"Foreground")
-		|| (!StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
-			&& !StoryboardPathEquals(
-				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement"))
+		|| !TryGetBrushAnimationRoot(path, rootProperty)
 		|| (!StoryboardPathEquals(gradientOwner, L"GradientBrush")
 			&& !StoryboardPathEquals(gradientOwner, L"LinearGradientBrush")
 			&& !StoryboardPathEquals(gradientOwner, L"RadialGradientBrush"))
@@ -947,7 +982,7 @@ inline bool TryResolveGradientStopAnimationPath(
 		|| (!StoryboardPathEquals(path.Segments[3].Name, L"Color")
 			&& !StoryboardPathEquals(path.Segments[3].Name, L"Offset")))
 		return fail(L"GradientStop 复合动画路径必须是 "
-			L"(Control.Foreground).(GradientBrush.GradientStops)[n]."
+			L"(Control.BrushProperty).(GradientBrush.GradientStops)[n]."
 			L"(GradientStop.Color|Offset)。");
 
 	const bool color = StoryboardPathEquals(path.Segments[3].Name, L"Color");
@@ -955,50 +990,54 @@ inline bool TryResolveGradientStopAnimationPath(
 		|| (!color && animationKind != DesignerAnimationKind::Double))
 		return fail(L"GradientStop.Color 需要 ColorAnimation，"
 			L"GradientStop.Offset 需要 DoubleAnimation。");
-	const auto target = std::find_if(
-		component.Template.begin(), component.Template.end(),
-		[&](const auto& node)
-		{ return StoryboardPathEquals(node.Name, targetName); });
-	if (target == component.Template.end()
-		|| !target->Extra.contains("foregroundBrush")
-		|| !target->Extra["foregroundBrush"].is_object())
-		return fail(L"动画目标必须显式声明渐变 Control.Foreground。");
-	const auto& brush = target->Extra["foregroundBrush"];
-	const auto type = brush.value("type", std::string{});
-	const bool validOwner = StoryboardPathEquals(gradientOwner, L"GradientBrush")
-		|| (type == "linear"
-			&& StoryboardPathEquals(gradientOwner, L"LinearGradientBrush"))
-		|| (type == "radial"
-			&& StoryboardPathEquals(gradientOwner, L"RadialGradientBrush"));
-	if (!validOwner || (type != "linear" && type != "radial")
-		|| !brush.contains("stops") || !brush["stops"].is_array()
-		|| path.Segments[2].Index >= brush["stops"].size())
-		return fail(L"动画目标没有路径所需的渐变 GradientStop。");
-	const auto& stop = brush["stops"][path.Segments[2].Index];
-	if (!stop.is_object() || !stop.contains("offset")
-		|| !stop["offset"].is_number() || !stop.contains("color")
-		|| !stop["color"].is_object())
-		return fail(L"动画目标的 GradientStop 格式无效。");
-	const auto offset = stop["offset"].get<double>();
-	const auto& stopColor = stop["color"];
-	auto finiteColorPart = [&](const char* name)
+	if (!targetName.empty())
 	{
-		return stopColor.contains(name) && stopColor[name].is_number()
-			&& std::isfinite(stopColor[name].get<double>());
-	};
-	if (!std::isfinite(offset) || offset < 0.0 || offset > 1.0
-		|| !finiteColorPart("r") || !finiteColorPart("g")
-		|| !finiteColorPart("b") || !finiteColorPart("a"))
-		return fail(L"动画目标的 GradientStop 值无效。");
+		const auto target = std::find_if(
+			component.Template.begin(), component.Template.end(),
+			[&](const auto& node)
+			{ return StoryboardPathEquals(node.Name, targetName); });
+		const auto* brushValue = target == component.Template.end()
+			? nullptr : StoryboardMetadataObject(*target, rootProperty.c_str());
+		if (!brushValue || !brushValue->is_object())
+			return fail(L"动画目标必须显式声明渐变 Control."
+				+ rootProperty + L"。");
+		const auto& brush = *brushValue;
+		const auto type = brush.value("type", std::string{});
+		const bool validOwner = StoryboardPathEquals(gradientOwner, L"GradientBrush")
+			|| (type == "linear"
+				&& StoryboardPathEquals(gradientOwner, L"LinearGradientBrush"))
+			|| (type == "radial"
+				&& StoryboardPathEquals(gradientOwner, L"RadialGradientBrush"));
+		if (!validOwner || (type != "linear" && type != "radial")
+			|| !brush.contains("stops") || !brush["stops"].is_array()
+			|| path.Segments[2].Index >= brush["stops"].size())
+			return fail(L"动画目标没有路径所需的渐变 GradientStop。");
+		const auto& stop = brush["stops"][path.Segments[2].Index];
+		if (!stop.is_object() || !stop.contains("offset")
+			|| !stop["offset"].is_number() || !stop.contains("color")
+			|| !stop["color"].is_object())
+			return fail(L"动画目标的 GradientStop 格式无效。");
+		const auto offset = stop["offset"].get<double>();
+		const auto& stopColor = stop["color"];
+		auto finiteColorPart = [&](const char* name)
+		{
+			return stopColor.contains(name) && stopColor[name].is_number()
+				&& std::isfinite(stopColor[name].get<double>());
+		};
+		if (!std::isfinite(offset) || offset < 0.0 || offset > 1.0
+			|| !finiteColorPart("r") || !finiteColorPart("g")
+			|| !finiteColorPart("b") || !finiteColorPart("a"))
+			return fail(L"动画目标的 GradientStop 值无效。");
+	}
 
 	output = {};
 	output.Kind = color ? StoryboardObjectPathKind::GradientStopColor
 		: StoryboardObjectPathKind::GradientStopOffset;
-	output.RootProperty = L"Foreground";
+	output.RootProperty = rootProperty;
 	output.CollectionIndex = path.Segments[2].Index;
 	output.ObjectType = L"GradientStop";
 	output.LeafProperty = color ? L"Color" : L"Offset";
-	output.CanonicalPath = L"(Control.Foreground)."
+	output.CanonicalPath = L"(Control." + rootProperty + L")."
 		L"(GradientBrush.GradientStops)["
 		+ std::to_wstring(output.CollectionIndex) + L"].(GradientStop."
 		+ output.LeafProperty + L")";
@@ -1025,6 +1064,7 @@ inline bool TryResolveBrushTransformAnimationPath(
 	std::wstring parseError;
 	if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 		return fail(L"Storyboard.TargetProperty：" + parseError);
+	std::wstring rootProperty;
 	const auto brushOwner = path.Segments.size() > 1
 		? StoryboardPathLocalType(path.Segments[1].OwnerType) : std::wstring{};
 	if (path.Segments.size() != 5
@@ -1033,11 +1073,7 @@ inline bool TryResolveBrushTransformAnimationPath(
 		|| path.Segments[2].Kind != cui::xaml::PropertyPathSegmentKind::Property
 		|| path.Segments[3].Kind != cui::xaml::PropertyPathSegmentKind::Index
 		|| path.Segments[4].Kind != cui::xaml::PropertyPathSegmentKind::Property
-		|| !StoryboardPathEquals(path.Segments[0].Name, L"Foreground")
-		|| (!StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
-			&& !StoryboardPathEquals(
-				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement"))
+		|| !TryGetBrushAnimationRoot(path, rootProperty)
 		|| (!StoryboardPathEquals(brushOwner, L"Brush")
 			&& !StoryboardPathEquals(brushOwner, L"SolidColorBrush")
 			&& !StoryboardPathEquals(brushOwner, L"GradientBrush")
@@ -1050,18 +1086,19 @@ inline bool TryResolveBrushTransformAnimationPath(
 			StoryboardPathLocalType(path.Segments[2].OwnerType), L"TransformGroup")
 		|| !StoryboardPathEquals(path.Segments[2].Name, L"Children"))
 		return fail(L"Brush Transform 动画路径必须是 "
-			L"(Control.Foreground).(Brush.Transform|RelativeTransform)."
+			L"(Control.BrushProperty).(Brush.Transform|RelativeTransform)."
 			L"(TransformGroup.Children)[n].(TransformType.Property)。");
 
 	const auto target = std::find_if(
 		component.Template.begin(), component.Template.end(),
 		[&](const auto& node)
 		{ return StoryboardPathEquals(node.Name, targetName); });
-	if (target == component.Template.end()
-		|| !target->Extra.contains("foregroundBrush")
-		|| !target->Extra["foregroundBrush"].is_object())
-		return fail(L"动画目标必须显式声明包含变换的 Control.Foreground。");
-	const auto& brush = target->Extra["foregroundBrush"];
+	const auto* brushValue = target == component.Template.end()
+		? nullptr : StoryboardMetadataObject(*target, rootProperty.c_str());
+	if (!brushValue || !brushValue->is_object())
+		return fail(L"动画目标必须显式声明包含变换的 Control."
+			+ rootProperty + L"。");
+	const auto& brush = *brushValue;
 	const auto type = brush.value("type", std::string{});
 	const bool validOwner = StoryboardPathEquals(brushOwner, L"Brush")
 		|| (type == "solid" && StoryboardPathEquals(brushOwner, L"SolidColorBrush"))
@@ -1095,11 +1132,11 @@ inline bool TryResolveBrushTransformAnimationPath(
 			: StoryboardObjectPathKind::BrushRelativeTransform)
 		: (matrix ? StoryboardObjectPathKind::BrushTransformMatrix
 			: StoryboardObjectPathKind::BrushTransform);
-	output.RootProperty = L"Foreground";
+	output.RootProperty = rootProperty;
 	output.OperationIndex = leaf.OperationIndex;
 	output.ObjectType = std::move(leaf.TransformType);
 	output.LeafProperty = std::move(leaf.PropertyName);
-	output.CanonicalPath = L"(Control.Foreground).(Brush."
+	output.CanonicalPath = L"(Control." + rootProperty + L").(Brush."
 		+ std::wstring(relative ? L"RelativeTransform" : L"Transform")
 		+ L").(TransformGroup.Children)["
 		+ std::to_wstring(output.OperationIndex) + L"].("
@@ -1247,13 +1284,9 @@ inline StoryboardObjectPathKind ClassifyStoryboardObjectPath(
 		}
 		constexpr std::wstring_view colorSuffix = L"(GradientStop.Color)";
 		constexpr std::wstring_view offsetSuffix = L"(GradientStop.Offset)";
-		if (value.size() >= colorSuffix.size()
-			&& _wcsicmp(value.c_str() + value.size() - colorSuffix.size(),
-				colorSuffix.data()) == 0)
+		if (value.ends_with(colorSuffix))
 			return StoryboardObjectPathKind::GradientStopColor;
-		if (value.size() >= offsetSuffix.size()
-			&& _wcsicmp(value.c_str() + value.size() - offsetSuffix.size(),
-				offsetSuffix.data()) == 0)
+		if (value.ends_with(offsetSuffix))
 			return StoryboardObjectPathKind::GradientStopOffset;
 	}
 	return StoryboardObjectPathKind::None;
@@ -1290,7 +1323,14 @@ inline std::wstring StoryboardAnimationRootProperty(
 	case StoryboardObjectPathKind::BrushTransformMatrix:
 	case StoryboardObjectPathKind::BrushRelativeTransform:
 	case StoryboardObjectPathKind::BrushRelativeTransformMatrix:
-		return L"Foreground";
+	{
+		cui::xaml::PropertyPath path;
+		std::wstring ignored;
+		std::wstring rootProperty;
+		return cui::xaml::TryParsePropertyPath(value, path, &ignored)
+			&& TryGetBrushAnimationRoot(path, rootProperty)
+			? rootProperty : value;
+	}
 	case StoryboardObjectPathKind::None:
 	default:
 		return value;

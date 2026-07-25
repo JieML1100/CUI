@@ -8,6 +8,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -35,26 +36,29 @@ struct CollectionChangedEventArgs
 	size_t NewSize = 0;
 };
 
-/**
- * A vector-compatible collection that publishes structural mutations.
- *
- * The public inheritance intentionally preserves the existing CUI source API:
- * an ObservableCollection can still be passed to code that reads a std::vector.
- * Mutations made through this concrete type are observed. Code that explicitly
- * casts it to std::vector and mutates the base, or reorders through raw iterators,
- * must call NotifyReset() after the operation.
- */
+/** A structurally observable collection with a private contiguous store. */
 template<typename T>
-class ObservableCollection : public std::vector<T>
+class ObservableCollection : private std::vector<T>
 {
 public:
 	using Base = std::vector<T>;
 	using typename Base::const_iterator;
-	using typename Base::iterator;
+	using typename Base::const_reverse_iterator;
+	using typename Base::size_type;
+	using typename Base::value_type;
+	using Base::capacity;
+	using Base::empty;
+	using Base::get_allocator;
+	using Base::max_size;
+	using Base::reserve;
+	using Base::shrink_to_fit;
+	using Base::size;
 	using OwnerChangedHandler =
 		std::function<void(const CollectionChangedEventArgs&)>;
+	using OwnerChangingHandler = std::function<void()>;
 	using CollectionChangedEvent = Event<void(
 		ObservableCollection<T>*, const CollectionChangedEventArgs&)>;
+	using ReadOnlyView = std::span<const T>;
 
 	class UpdateScope final
 	{
@@ -95,6 +99,41 @@ public:
 
 	CollectionChangedEvent Changed;
 
+	[[nodiscard]] const T& at(size_type index) const { return Base::at(index); }
+	[[nodiscard]] const T& operator[](size_type index) const noexcept
+	{
+		return Base::operator[](index);
+	}
+	[[nodiscard]] const T& front() const noexcept { return Base::front(); }
+	[[nodiscard]] const T& back() const noexcept { return Base::back(); }
+	[[nodiscard]] const T* data() const noexcept { return Base::data(); }
+	[[nodiscard]] const_iterator begin() const noexcept { return Base::cbegin(); }
+	[[nodiscard]] const_iterator end() const noexcept { return Base::cend(); }
+	[[nodiscard]] const_iterator cbegin() const noexcept { return Base::cbegin(); }
+	[[nodiscard]] const_iterator cend() const noexcept { return Base::cend(); }
+	[[nodiscard]] const_reverse_iterator rbegin() const noexcept
+	{
+		return Base::crbegin();
+	}
+	[[nodiscard]] const_reverse_iterator rend() const noexcept
+	{
+		return Base::crend();
+	}
+	[[nodiscard]] const_reverse_iterator crbegin() const noexcept
+	{
+		return Base::crbegin();
+	}
+	[[nodiscard]] const_reverse_iterator crend() const noexcept
+	{
+		return Base::crend();
+	}
+
+	/** Exposes a non-owning read-only view without leaking the vector base. */
+	[[nodiscard]] ReadOnlyView View() const noexcept
+	{
+		return ReadOnlyView(Base::data(), Base::size());
+	}
+
 	ObservableCollection() = default;
 	ObservableCollection(std::initializer_list<T> values) : Base(values) {}
 	ObservableCollection(const Base& values) : Base(values) {}
@@ -104,9 +143,28 @@ public:
 	ObservableCollection(ObservableCollection&& other) noexcept
 		: Base(std::move(static_cast<Base&>(other))) {}
 
+	friend bool operator==(
+		const ObservableCollection& left,
+		const ObservableCollection& right)
+	{
+		return static_cast<const Base&>(left)
+			== static_cast<const Base&>(right);
+	}
+	friend bool operator==(
+		const ObservableCollection& left, const Base& right)
+	{
+		return static_cast<const Base&>(left) == right;
+	}
+	friend bool operator==(
+		const Base& left, const ObservableCollection& right)
+	{
+		return left == static_cast<const Base&>(right);
+	}
+
 	ObservableCollection& operator=(const ObservableCollection& other)
 	{
 		if (this == &other) return *this;
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(static_cast<const Base&>(other));
 		PublishReset(oldSize);
@@ -115,6 +173,7 @@ public:
 	ObservableCollection& operator=(ObservableCollection&& other)
 	{
 		if (this == &other) return *this;
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(std::move(static_cast<Base&>(other)));
 		PublishReset(oldSize);
@@ -122,6 +181,7 @@ public:
 	}
 	ObservableCollection& operator=(const Base& values)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(values);
 		PublishReset(oldSize);
@@ -129,6 +189,7 @@ public:
 	}
 	ObservableCollection& operator=(Base&& values)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(std::move(values));
 		PublishReset(oldSize);
@@ -136,6 +197,7 @@ public:
 	}
 	ObservableCollection& operator=(std::initializer_list<T> values)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(values);
 		PublishReset(oldSize);
@@ -145,6 +207,11 @@ public:
 	void SetOwnerChangedHandler(OwnerChangedHandler handler)
 	{
 		_ownerChanged = std::move(handler);
+	}
+	/** Validates a mutation before the contiguous store is modified. */
+	void SetOwnerChangingHandler(OwnerChangingHandler handler)
+	{
+		_ownerChanging = std::move(handler);
 	}
 	/** Keep the owner internally coherent for every mutation in a public batch. */
 	void SetOwnerSynchronizationDuringUpdates(bool value) noexcept
@@ -186,7 +253,7 @@ public:
 		if (!_keepOwnerSynchronized && _ownerChanged)
 			_ownerChanged(change);
 		_keepOwnerSynchronized = false;
-		Changed(this, change);
+		Changed.InvokeCore(this, change);
 	}
 	bool IsUpdating() const noexcept { return _updateDepth != 0; }
 	[[nodiscard]] UpdateScope DeferNotifications() noexcept
@@ -196,19 +263,22 @@ public:
 
 	void push_back(const T& value)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::push_back(value);
 		PublishAdd(oldSize, 1, oldSize);
 	}
 	void push_back(T&& value)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::push_back(std::move(value));
 		PublishAdd(oldSize, 1, oldSize);
 	}
 	template<typename... Args>
-	T& emplace_back(Args&&... args)
+	const T& emplace_back(Args&&... args)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::emplace_back(std::forward<Args>(args)...);
 		PublishAdd(oldSize, 1, oldSize);
@@ -217,29 +287,33 @@ public:
 	void pop_back()
 	{
 		if (Base::empty()) return;
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::pop_back();
 		PublishRemove(oldSize - 1, 1, oldSize);
 	}
 
-	iterator insert(const_iterator position, const T& value)
+	const_iterator insert(const_iterator position, const T& value)
 	{
+		VerifyMutationAllowed();
 		const size_t index = IndexOf(position);
 		const size_t oldSize = Base::size();
 		auto result = Base::insert(position, value);
 		PublishAdd(index, 1, oldSize);
 		return result;
 	}
-	iterator insert(const_iterator position, T&& value)
+	const_iterator insert(const_iterator position, T&& value)
 	{
+		VerifyMutationAllowed();
 		const size_t index = IndexOf(position);
 		const size_t oldSize = Base::size();
 		auto result = Base::insert(position, std::move(value));
 		PublishAdd(index, 1, oldSize);
 		return result;
 	}
-	iterator insert(const_iterator position, size_t count, const T& value)
+	const_iterator insert(const_iterator position, size_t count, const T& value)
 	{
+		if (count != 0) VerifyMutationAllowed();
 		const size_t index = IndexOf(position);
 		const size_t oldSize = Base::size();
 		auto result = Base::insert(position, count, value);
@@ -248,22 +322,24 @@ public:
 	}
 	template<typename InputIt,
 		std::enable_if_t<!std::is_integral_v<InputIt>, int> = 0>
-	iterator insert(const_iterator position, InputIt first, InputIt last)
+	const_iterator insert(const_iterator position, InputIt first, InputIt last)
 	{
 		const size_t index = IndexOf(position);
+		if (first != last) VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		auto result = Base::insert(position, first, last);
 		const size_t count = Base::size() - oldSize;
 		if (count != 0) PublishAdd(index, count, oldSize);
 		return result;
 	}
-	iterator insert(const_iterator position, std::initializer_list<T> values)
+	const_iterator insert(const_iterator position, std::initializer_list<T> values)
 	{
 		return insert(position, values.begin(), values.end());
 	}
 	template<typename... Args>
-	iterator emplace(const_iterator position, Args&&... args)
+	const_iterator emplace(const_iterator position, Args&&... args)
 	{
+		VerifyMutationAllowed();
 		const size_t index = IndexOf(position);
 		const size_t oldSize = Base::size();
 		auto result = Base::emplace(position, std::forward<Args>(args)...);
@@ -271,19 +347,21 @@ public:
 		return result;
 	}
 
-	iterator erase(const_iterator position)
+	const_iterator erase(const_iterator position)
 	{
-		if (position == Base::cend()) return Base::end();
+		if (position == Base::cend()) return Base::cend();
+		VerifyMutationAllowed();
 		const size_t index = IndexOf(position);
 		const size_t oldSize = Base::size();
 		auto result = Base::erase(position);
 		PublishRemove(index, 1, oldSize);
 		return result;
 	}
-	iterator erase(const_iterator first, const_iterator last)
+	const_iterator erase(const_iterator first, const_iterator last)
 	{
 		const size_t index = IndexOf(first);
 		const size_t count = static_cast<size_t>(std::distance(first, last));
+		if (count != 0) VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		auto result = Base::erase(first, last);
 		if (count != 0) PublishRemove(index, count, oldSize);
@@ -292,6 +370,7 @@ public:
 	void clear()
 	{
 		if (Base::empty()) return;
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::clear();
 		PublishRemove(0, oldSize, oldSize);
@@ -301,6 +380,7 @@ public:
 	{
 		const size_t oldSize = Base::size();
 		if (count == oldSize) return;
+		VerifyMutationAllowed();
 		Base::resize(count);
 		if (count > oldSize) PublishAdd(oldSize, count - oldSize, oldSize);
 		else PublishRemove(count, oldSize - count, oldSize);
@@ -309,6 +389,7 @@ public:
 	{
 		const size_t oldSize = Base::size();
 		if (count == oldSize) return;
+		VerifyMutationAllowed();
 		Base::resize(count, value);
 		if (count > oldSize) PublishAdd(oldSize, count - oldSize, oldSize);
 		else PublishRemove(count, oldSize - count, oldSize);
@@ -317,12 +398,14 @@ public:
 		std::enable_if_t<!std::is_integral_v<InputIt>, int> = 0>
 	void assign(InputIt first, InputIt last)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::assign(first, last);
 		PublishReset(oldSize);
 	}
 	void assign(size_t count, const T& value)
 	{
+		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::assign(count, value);
 		PublishReset(oldSize);
@@ -335,6 +418,7 @@ public:
 	bool Replace(size_t index, const T& value)
 	{
 		if (index >= Base::size()) return false;
+		VerifyMutationAllowed();
 		Base::operator[](index) = value;
 		PublishReplace(index);
 		return true;
@@ -342,6 +426,7 @@ public:
 	bool Replace(size_t index, T&& value)
 	{
 		if (index >= Base::size()) return false;
+		VerifyMutationAllowed();
 		Base::operator[](index) = std::move(value);
 		PublishReplace(index);
 		return true;
@@ -350,6 +435,7 @@ public:
 	{
 		if (oldIndex >= Base::size() || newIndex >= Base::size()) return false;
 		if (oldIndex == newIndex) return true;
+		VerifyMutationAllowed();
 		if (oldIndex < newIndex)
 			std::rotate(Base::begin() + oldIndex,
 				Base::begin() + oldIndex + 1,
@@ -373,6 +459,7 @@ public:
 	{
 		if (first >= Base::size() || second >= Base::size()) return false;
 		if (first == second) return true;
+		VerifyMutationAllowed();
 		std::swap(Base::operator[](first), Base::operator[](second));
 		Publish(CollectionChangedEventArgs{
 			CollectionChangeAction::Swap,
@@ -389,17 +476,51 @@ public:
 	template<typename Compare>
 	void Sort(Compare compare)
 	{
+		if (Base::size() > 1) VerifyMutationAllowed();
 		std::stable_sort(Base::begin(), Base::end(), std::move(compare));
 		PublishReset(Base::size());
 	}
 
-	/** Publish after a mutation performed through iterators or a base-vector API. */
-	void NotifyReset()
+	/**
+	 * Explicitly edits one item and publishes a Replace notification.
+	 *
+	 * Mutable iterators and writable indexing are intentionally not exposed:
+	 * callers that change item data must make that write visible at the
+	 * collection boundary.  Owners that implement a separate item-property
+	 * notification contract use OwnedObservableCollection instead.
+	 */
+	template<typename Editor>
+	bool Modify(size_type index, Editor&& editor)
 	{
-		PublishReset(Base::size());
+		if (index >= Base::size()) return false;
+		VerifyMutationAllowed();
+		std::invoke(
+			std::forward<Editor>(editor), Base::operator[](index));
+		PublishReplace(index);
+		return true;
+	}
+
+protected:
+	/** Restores an owner-validated mutation that was rejected mid-notification. */
+	void RestoreOwnerSnapshot(ReadOnlyView values)
+	{
+		Base::assign(values.begin(), values.end());
+	}
+	/**
+	 * Lets a collection owner update an item's own state without pretending the
+	 * collection structure changed.  Only an OwnedObservableCollection can
+	 * surface this operation, and only to its declared owner type.
+	 */
+	T& MutableItemForOwner(size_type index)
+	{
+		return Base::at(index);
 	}
 
 private:
+	void VerifyMutationAllowed()
+	{
+		if (_ownerChanging) _ownerChanging();
+	}
 	size_t IndexOf(const_iterator position) const
 	{
 		return static_cast<size_t>(std::distance(Base::cbegin(), position));
@@ -466,13 +587,34 @@ private:
 	void PublishNow(const CollectionChangedEventArgs& args)
 	{
 		if (_ownerChanged) _ownerChanged(args);
-		Changed(this, args);
+		Changed.InvokeCore(this, args);
 	}
 
 	OwnerChangedHandler _ownerChanged;
+	OwnerChangingHandler _ownerChanging;
 	unsigned int _updateDepth = 0;
 	bool _batchChanged = false;
 	bool _keepOwnerSynchronized = false;
 	bool _synchronizeOwnerDuringUpdates = false;
 	size_t _batchOldSize = 0;
+};
+
+/**
+ * ObservableCollection with a private item-state channel for its owning type.
+ * Structural changes remain observable; item property changes are coordinated
+ * by the owner and therefore do not generate fake collection Replace events.
+ */
+template<typename T, typename TOwner>
+class OwnedObservableCollection : public ObservableCollection<T>
+{
+public:
+	using ObservableCollection<T>::ObservableCollection;
+	using ObservableCollection<T>::operator=;
+
+private:
+	friend TOwner;
+	T& MutableAt(typename ObservableCollection<T>::size_type index)
+	{
+		return this->MutableItemForOwner(index);
+	}
 };

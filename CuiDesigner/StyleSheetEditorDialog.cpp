@@ -1,7 +1,9 @@
 #include "StyleSheetEditorDialog.h"
-#include "DesignerControlFactory.h"
+#include "DesignerControlCatalog.h"
+#include "ProgrammaticControlFactory.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <algorithm>
 #include <iterator>
 
@@ -13,7 +15,7 @@ namespace
 
 	bool EqualsName(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::wstring RuleCaption(const DesignerStyleRule& rule, size_t index)
@@ -29,14 +31,6 @@ namespace
 			selector += rule.Id;
 		}
 		if (!rule.BasedOn.empty()) selector += L" <- @" + rule.BasedOn;
-		for (const auto& styleClass : rule.Classes)
-		{
-			if (!selector.empty()) selector += L" ";
-			selector += L".";
-			selector += styleClass;
-		}
-		if (!DesignerStyleSheetUtils::FormatStates(rule.RequiredStates).empty())
-			selector += L" :" + DesignerStyleSheetUtils::FormatStates(rule.RequiredStates);
 		if (selector.empty()) selector = L"*";
 		return L"规则 " + std::to_wstring(index + 1) + L"  " + selector;
 	}
@@ -45,142 +39,155 @@ namespace
 StyleSheetEditorDialog::StyleSheetEditorDialog(
 	const DesignerStyleSheet& styleSheet,
 	std::wstring resourceBasePath)
-	: Form(L"编辑文档样式表", POINT{ 250, 100 }, SIZE{ 1020, 760 }),
+	: Window(),
 	  ResultStyleSheet(styleSheet),
 	  _resourceBasePath(std::move(resourceBasePath))
 {
+	this->Title = L"编辑文档样式表";
+	this->Left = 250.0f;
+	this->Top = 100.0f;
+	this->Width = 1020.0f;
+	this->Height = 760.0f;
 	DesignerStyleSheetUtils::Canonicalize(ResultStyleSheet);
-	this->VisibleHead = true;
-	this->MinBox = false;
-	this->MaxBox = false;
-	this->AllowResize = false;
-	this->BackColor = Colors::WhiteSmoke;
+	this->ResizeMode = ::ResizeMode::NoResize;
+	this->Background = Colors::WhiteSmoke;
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	auto* contentRoot = static_cast<Panel*>(SetVisualContent(std::move(contentOwner)));
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 
-	auto tip = this->AddControl(new Label(
+	auto tip = addContent(cui::designer::NewControl<Label>(
 		L"资源与 Setter 使用强类型值；Trigger/MultiTrigger/DataTrigger/MultiDataTrigger 由 XAML 编辑器维护并在摘要中展示。",
 		20, 12));
-	tip->Size = { 970, 24 };
+	tip->Width = 970.0f;
+	tip->Height = 24.0f;
 
 	// Resources
-	auto resourcesTitle = this->AddControl(new Label(L"资源", 20, 48));
-	resourcesTitle->Size = { 450, 24 };
-	_resourceList = this->AddControl(new ComboBox(L"", 20, 76, 450, 30));
-	_resourceList->ExpandCount = 10;
-	auto resourceKeyLabel = this->AddControl(new Label(L"Key", 20, 118));
-	resourceKeyLabel->Size = { 80, 24 };
-	_resourceKey = this->AddControl(new TextBox(L"", 105, 112, 365, 30));
-	auto resourceKindLabel = this->AddControl(new Label(L"类型", 20, 158));
-	resourceKindLabel->Size = { 80, 24 };
-	_resourceKind = this->AddControl(new ComboBox(L"", 105, 152, 150, 30));
+	auto resourcesTitle = addContent(cui::designer::NewControl<Label>(L"资源", 20, 48));
+	resourcesTitle->Width = 450.0f;
+	resourcesTitle->Height = 24.0f;
+	_resourceList = addContent(cui::designer::NewControl<ComboBox>(L"", 20, 76, 450, 30));
+	_resourceList->MaxDropDownHeight = 280.0f;
+	auto resourceKeyLabel = addContent(cui::designer::NewControl<Label>(L"Key", 20, 118));
+	resourceKeyLabel->Width = 80.0f;
+	resourceKeyLabel->Height = 24.0f;
+	_resourceKey = addContent(cui::designer::NewControl<TextBox>(L"", 105, 112, 365, 30));
+	auto resourceKindLabel = addContent(cui::designer::NewControl<Label>(L"类型", 20, 158));
+	resourceKindLabel->Width = 80.0f;
+	resourceKindLabel->Height = 24.0f;
+	_resourceKind = addContent(cui::designer::NewControl<ComboBox>(L"", 105, 152, 150, 30));
 	auto resourceKinds = DesignerStyleSheetUtils::ValueKindNames();
-	_resourceKind->Items = resourceKinds;
-	_resourceKind->ExpandCount = 10;
-	auto resourceValueLabel = this->AddControl(new Label(L"值", 270, 158));
-	resourceValueLabel->Size = { 40, 24 };
-	_resourceValue = this->AddControl(new TextBox(L"", 310, 152, 160, 30));
-	auto saveResource = this->AddControl(new Button(L"保存资源", 20, 196, 120, 32));
-	auto removeResource = this->AddControl(new Button(L"删除资源", 152, 196, 120, 32));
+	cui::designer::SetComboBoxItems(
+		*_resourceKind, std::move(resourceKinds));
+	_resourceKind->MaxDropDownHeight = 280.0f;
+	auto resourceValueLabel = addContent(cui::designer::NewControl<Label>(L"值", 270, 158));
+	resourceValueLabel->Width = 40.0f;
+	resourceValueLabel->Height = 24.0f;
+	_resourceValue = addContent(cui::designer::NewControl<TextBox>(L"", 310, 152, 160, 30));
+	auto saveResource = addContent(cui::designer::NewControl<Button>(L"保存资源", 20, 196, 120, 32));
+	auto removeResource = addContent(cui::designer::NewControl<Button>(L"删除资源", 152, 196, 120, 32));
 
 	// Rule selector
-	auto rulesTitle = this->AddControl(new Label(L"规则选择器", 500, 48));
-	rulesTitle->Size = { 480, 24 };
-	_ruleList = this->AddControl(new ComboBox(L"", 500, 76, 480, 30));
-	_ruleList->ExpandCount = 10;
-	auto typeLabel = this->AddControl(new Label(L"类型", 500, 118));
-	typeLabel->Size = { 70, 24 };
-	_ruleType = this->AddControl(new ComboBox(L"", 575, 112, 160, 30));
+	auto rulesTitle = addContent(cui::designer::NewControl<Label>(L"规则选择器", 500, 48));
+	rulesTitle->Width = 480.0f;
+	rulesTitle->Height = 24.0f;
+	_ruleList = addContent(cui::designer::NewControl<ComboBox>(L"", 500, 76, 480, 30));
+	_ruleList->MaxDropDownHeight = 280.0f;
+	auto typeLabel = addContent(cui::designer::NewControl<Label>(L"类型", 500, 118));
+	typeLabel->Width = 70.0f;
+	typeLabel->Height = 24.0f;
+	_ruleType = addContent(cui::designer::NewControl<ComboBox>(L"", 575, 112, 160, 30));
 	std::vector<std::wstring> ruleTypes{ L"Any", L"Base" };
-	for (const auto& control : ControlRegistry::GetAvailableControls())
+	for (const auto& control : DesignerControlCatalog::BuiltInDescriptors())
 		ruleTypes.push_back(control.Name);
-	_ruleType->Items = ruleTypes;
-	_ruleType->ExpandCount = 12;
-	auto idLabel = this->AddControl(new Label(L"StyleId", 748, 118));
-	idLabel->Size = { 70, 24 };
-	_ruleId = this->AddControl(new TextBox(L"", 820, 112, 160, 30));
-	auto basedOnLabel = this->AddControl(new Label(L"BasedOn", 500, 158));
-	basedOnLabel->Size = { 70, 24 };
-	_ruleBasedOn = this->AddControl(new TextBox(L"", 575, 152, 160, 30));
-	auto classesLabel = this->AddControl(new Label(L"Classes", 748, 158));
-	classesLabel->Size = { 70, 24 };
-	_ruleClasses = this->AddControl(new TextBox(L"", 820, 152, 160, 30));
-	auto requiredLabel = this->AddControl(new Label(L"必需状态", 500, 198));
-	requiredLabel->Size = { 85, 24 };
-	_requiredStates = this->AddControl(new TextBox(L"", 590, 192, 175, 30));
-	auto excludedLabel = this->AddControl(new Label(L"排除状态", 775, 198));
-	excludedLabel->Size = { 85, 24 };
-	_excludedStates = this->AddControl(new TextBox(L"", 865, 192, 115, 30));
-	auto saveRule = this->AddControl(new Button(L"保存规则", 500, 236, 120, 32));
-	auto removeRule = this->AddControl(new Button(L"删除规则", 632, 236, 120, 32));
+	cui::designer::SetComboBoxItems(*_ruleType, std::move(ruleTypes));
+	_ruleType->MaxDropDownHeight = 336.0f;
+	auto idLabel = addContent(cui::designer::NewControl<Label>(L"x:Key", 748, 118));
+	idLabel->Width = 70.0f;
+	idLabel->Height = 24.0f;
+	_ruleId = addContent(cui::designer::NewControl<TextBox>(L"", 820, 112, 160, 30));
+	auto basedOnLabel = addContent(cui::designer::NewControl<Label>(L"BasedOn", 500, 158));
+	basedOnLabel->Width = 70.0f;
+	basedOnLabel->Height = 24.0f;
+	_ruleBasedOn = addContent(cui::designer::NewControl<TextBox>(L"", 575, 152, 160, 30));
+	auto saveRule = addContent(cui::designer::NewControl<Button>(L"保存规则", 500, 192, 120, 32));
+	auto removeRule = addContent(cui::designer::NewControl<Button>(L"删除规则", 632, 192, 120, 32));
 
 	// Setter editor
-	auto setterTitle = this->AddControl(new Label(L"当前规则的 Setter", 20, 286));
-	setterTitle->Size = { 960, 24 };
-	_setterList = this->AddControl(new ComboBox(L"", 20, 314, 960, 30));
-	_setterList->ExpandCount = 10;
-	auto propertyLabel = this->AddControl(new Label(L"属性", 20, 356));
-	propertyLabel->Size = { 70, 24 };
-	_setterProperty = this->AddControl(new ComboBox(L"", 95, 350, 240, 30));
-	_setterProperty->ExpandCount = 12;
-	auto modeLabel = this->AddControl(new Label(L"来源", 350, 356));
-	modeLabel->Size = { 55, 24 };
-	_setterMode = this->AddControl(new ComboBox(L"", 410, 350, 125, 30));
+	auto setterTitle = addContent(cui::designer::NewControl<Label>(L"当前规则的 Setter", 20, 286));
+	setterTitle->Width = 960.0f;
+	setterTitle->Height = 24.0f;
+	_setterList = addContent(cui::designer::NewControl<ComboBox>(L"", 20, 314, 960, 30));
+	_setterList->MaxDropDownHeight = 280.0f;
+	auto propertyLabel = addContent(cui::designer::NewControl<Label>(L"属性", 20, 356));
+	propertyLabel->Width = 70.0f;
+	propertyLabel->Height = 24.0f;
+	_setterProperty = addContent(cui::designer::NewControl<ComboBox>(L"", 95, 350, 240, 30));
+	_setterProperty->MaxDropDownHeight = 336.0f;
+	auto modeLabel = addContent(cui::designer::NewControl<Label>(L"来源", 350, 356));
+	modeLabel->Width = 55.0f;
+	modeLabel->Height = 24.0f;
+	_setterMode = addContent(cui::designer::NewControl<ComboBox>(L"", 410, 350, 125, 30));
 	std::vector<std::wstring> setterModes{ L"Literal", L"Resource" };
-	_setterMode->Items = setterModes;
-	auto kindLabel = this->AddControl(new Label(L"类型", 550, 356));
-	kindLabel->Size = { 55, 24 };
-	_setterKind = this->AddControl(new ComboBox(L"", 610, 350, 130, 30));
+	cui::designer::SetComboBoxItems(*_setterMode, std::move(setterModes));
+	auto kindLabel = addContent(cui::designer::NewControl<Label>(L"类型", 550, 356));
+	kindLabel->Width = 55.0f;
+	kindLabel->Height = 24.0f;
+	_setterKind = addContent(cui::designer::NewControl<ComboBox>(L"", 610, 350, 130, 30));
 	auto setterKinds = DesignerStyleSheetUtils::ValueKindNames();
-	_setterKind->Items = setterKinds;
-	_setterKind->ExpandCount = 10;
-	auto valueLabel = this->AddControl(new Label(L"值/资源键", 750, 356));
-	valueLabel->Size = { 90, 24 };
-	_setterValue = this->AddControl(new TextBox(L"", 840, 350, 140, 30));
-	auto saveSetter = this->AddControl(new Button(L"保存 Setter", 20, 394, 130, 32));
-	auto removeSetter = this->AddControl(new Button(L"删除 Setter", 162, 394, 130, 32));
+	cui::designer::SetComboBoxItems(*_setterKind, std::move(setterKinds));
+	_setterKind->MaxDropDownHeight = 280.0f;
+	auto valueLabel = addContent(cui::designer::NewControl<Label>(L"值/资源键", 750, 356));
+	valueLabel->Width = 90.0f;
+	valueLabel->Height = 24.0f;
+	_setterValue = addContent(cui::designer::NewControl<TextBox>(L"", 840, 350, 140, 30));
+	auto saveSetter = addContent(cui::designer::NewControl<Button>(L"保存 Setter", 20, 394, 130, 32));
+	auto removeSetter = addContent(cui::designer::NewControl<Button>(L"删除 Setter", 162, 394, 130, 32));
 
-	_validation = this->AddControl(new Label(L"", 315, 400));
-	_validation->Size = { 665, 40 };
-	auto summaryLabel = this->AddControl(new Label(L"样式表摘要", 20, 448));
-	summaryLabel->Size = { 960, 24 };
-	_summary = this->AddControl(new RichTextBox(L"", 20, 476, 960, 150));
-	_summary->ReadOnly = true;
-	_summary->AllowMultiLine = true;
-	_summary->BackColor = Colors::White;
-	_summary->FocusedColor = Colors::White;
+	_validation = addContent(cui::designer::NewControl<Label>(L"", 315, 400));
+	_validation->Width = 665.0f;
+	_validation->Height = 40.0f;
+	auto summaryLabel = addContent(cui::designer::NewControl<Label>(L"样式表摘要", 20, 448));
+	summaryLabel->Width = 960.0f;
+	summaryLabel->Height = 24.0f;
+	_summary = addContent(cui::designer::NewControl<RichTextBox>(L"", 20, 476, 960, 150));
+	_summary->IsReadOnly = true;
+	_summary->Background = Colors::White;
+	_summary->BorderBrush = Colors::White;
 
-	auto ok = this->AddControl(new Button(L"确定", 20, 646, 120, 36));
-	auto cancel = this->AddControl(new Button(L"取消", 152, 646, 120, 36));
+	auto ok = addContent(cui::designer::NewControl<Button>(L"确定", 20, 646, 120, 36));
+	auto cancel = addContent(cui::designer::NewControl<Button>(L"取消", 152, 646, 120, 36));
 
-	_resourceList->OnSelectionChanged += [this](Control*) {
+	_resourceList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedResource();
 	};
-	_ruleList->OnSelectionChanged += [this](Control*) {
+	_ruleList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedRule();
 	};
-	_ruleType->OnSelectionChanged += [this](Control*) {
+	_ruleType->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshSetterPropertyCatalog(_setterProperty->Text);
 	};
-	_setterList->OnSelectionChanged += [this](Control*) {
+	_setterList->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) LoadSelectedSetter();
 	};
-	_setterProperty->OnSelectionChanged += [this](Control*) {
+	_setterProperty->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) ApplySelectedPropertyMetadata(true);
 	};
-	_setterMode->OnSelectionChanged += [this](Control*) {
+	_setterMode->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loading) RefreshSetterMode(true);
 	};
-	saveResource->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveResource(); };
-	removeResource->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveResource(); };
-	saveRule->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveRule(); };
-	removeRule->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveRule(); };
-	saveSetter->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveSetter(); };
-	removeSetter->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveSetter(); };
-	ok->OnMouseClick += [this](Control*, MouseEventArgs) {
+	saveResource->Click += [this](Control*, RoutedEventArgs&) { (void)SaveResource(); };
+	removeResource->Click += [this](Control*, RoutedEventArgs&) { RemoveResource(); };
+	saveRule->Click += [this](Control*, RoutedEventArgs&) { (void)SaveRule(); };
+	removeRule->Click += [this](Control*, RoutedEventArgs&) { RemoveRule(); };
+	saveSetter->Click += [this](Control*, RoutedEventArgs&) { (void)SaveSetter(); };
+	removeSetter->Click += [this](Control*, RoutedEventArgs&) { RemoveSetter(); };
+	ok->Click += [this](Control*, RoutedEventArgs&) {
 		DesignerStyleSheetUtils::Canonicalize(ResultStyleSheet);
 		std::wstring error;
 		if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 			ResultStyleSheet,
-			[](UIClass type) { return DesignerControlFactory::Create(type); },
 			&error,
 			_resourceBasePath))
 		{
@@ -190,7 +197,7 @@ StyleSheetEditorDialog::StyleSheetEditorDialog(
 		Applied = true;
 		this->Close();
 	};
-	cancel->OnMouseClick += [this](Control*, MouseEventArgs) {
+	cancel->Click += [this](Control*, RoutedEventArgs&) {
 		Applied = false;
 		this->Close();
 	};
@@ -206,15 +213,17 @@ StyleSheetEditorDialog::StyleSheetEditorDialog(
 void StyleSheetEditorDialog::SelectComboIndex(ComboBox* combo, int index)
 {
 	if (!combo) return;
-	if (combo->Items.empty())
+	if (combo->ItemCount() == 0)
 	{
 		combo->SelectedIndex = -1;
 		combo->Text.clear();
 		return;
 	}
-	index = (std::max)(0, (std::min)(index, static_cast<int>(combo->Items.size()) - 1));
+	index = (std::max)(0,
+		(std::min)(index, static_cast<int>(combo->ItemCount()) - 1));
 	combo->SelectedIndex = index;
-	combo->Text = combo->Items[static_cast<size_t>(index)];
+	combo->Text = cui::designer::ComboBoxItemText(
+		*combo, static_cast<size_t>(index));
 }
 
 int StyleSheetEditorDialog::SelectedResourceIndex() const
@@ -235,11 +244,12 @@ int StyleSheetEditorDialog::SelectedSetterIndex() const
 void StyleSheetEditorDialog::RefreshResourceList(int preferredIndex)
 {
 	_loading = true;
-	_resourceList->Items.clear();
-	_resourceList->Items.push_back(kNewResource);
+	std::vector<std::wstring> items{ kNewResource };
+	items.reserve(ResultStyleSheet.Resources.size() + 1);
 	for (const auto& resource : ResultStyleSheet.Resources)
-		_resourceList->Items.push_back(resource.SourceDictionary.empty()
+		items.push_back(resource.SourceDictionary.empty()
 			? resource.Key : L"[外部] " + resource.Key);
+	cui::designer::SetComboBoxItems(*_resourceList, std::move(items));
 	SelectComboIndex(_resourceList, preferredIndex >= 0 ? preferredIndex + 1 : 0);
 	_loading = false;
 }
@@ -253,9 +263,9 @@ void StyleSheetEditorDialog::LoadSelectedResource()
 	_resourceKey->Text = resource ? resource->Key : L"";
 	auto kind = resource ? resource->Value.Kind : DesignerStyleValueKind::Color;
 	auto kindName = DesignerStyleSheetUtils::ValueKindName(kind);
-	auto kindIt = std::find(_resourceKind->Items.begin(), _resourceKind->Items.end(), kindName);
-	SelectComboIndex(_resourceKind, kindIt == _resourceKind->Items.end()
-		? 0 : static_cast<int>(kindIt - _resourceKind->Items.begin()));
+	const int kindIndex = cui::designer::FindComboBoxItem(
+		*_resourceKind, kindName);
+	SelectComboIndex(_resourceKind, kindIndex < 0 ? 0 : kindIndex);
 	_resourceValue->Text = resource ? resource->Value.Text : L"#FF0078D4";
 	_loading = false;
 }
@@ -263,15 +273,16 @@ void StyleSheetEditorDialog::LoadSelectedResource()
 void StyleSheetEditorDialog::RefreshRuleList(int preferredIndex)
 {
 	_loading = true;
-	_ruleList->Items.clear();
-	_ruleList->Items.push_back(kNewRule);
+	std::vector<std::wstring> items{ kNewRule };
+	items.reserve(ResultStyleSheet.Rules.size() + 1);
 	for (size_t index = 0; index < ResultStyleSheet.Rules.size(); ++index)
 	{
 		const auto& rule = ResultStyleSheet.Rules[index];
 		auto caption = RuleCaption(rule, index);
 		if (!rule.SourceDictionary.empty()) caption = L"[外部] " + caption;
-		_ruleList->Items.push_back(std::move(caption));
+		items.push_back(std::move(caption));
 	}
+	cui::designer::SetComboBoxItems(*_ruleList, std::move(items));
 	SelectComboIndex(_ruleList, preferredIndex >= 0 ? preferredIndex + 1 : 0);
 	_loading = false;
 }
@@ -288,19 +299,15 @@ void StyleSheetEditorDialog::LoadSelectedRule()
 			: rule->ComponentType.XamlPrefix + L":"
 				+ rule->ComponentType.XamlName)
 		: L"Any";
-	auto typeIt = std::find(_ruleType->Items.begin(), _ruleType->Items.end(), typeName);
-	if (typeIt == _ruleType->Items.end() && rule && !rule->ComponentType.Empty())
+	int typeIndex = cui::designer::FindComboBoxItem(*_ruleType, typeName);
+	if (typeIndex < 0 && rule && !rule->ComponentType.Empty())
 	{
-		_ruleType->Items.push_back(typeName);
-		typeIt = std::prev(_ruleType->Items.end());
+		cui::designer::AddComboBoxItem(*_ruleType, typeName);
+		typeIndex = static_cast<int>(_ruleType->ItemCount()) - 1;
 	}
-	SelectComboIndex(_ruleType, typeIt == _ruleType->Items.end()
-		? 0 : static_cast<int>(typeIt - _ruleType->Items.begin()));
+	SelectComboIndex(_ruleType, typeIndex < 0 ? 0 : typeIndex);
 	_ruleId->Text = rule ? rule->Id : L"";
 	_ruleBasedOn->Text = rule ? rule->BasedOn : L"";
-	_ruleClasses->Text = rule ? DesignerStyleSheetUtils::JoinClasses(rule->Classes) : L"";
-	_requiredStates->Text = rule ? DesignerStyleSheetUtils::FormatStates(rule->RequiredStates) : L"";
-	_excludedStates->Text = rule ? DesignerStyleSheetUtils::FormatStates(rule->ExcludedStates) : L"";
 	_loading = false;
 	RefreshSetterPropertyCatalog();
 	RefreshSetterList();
@@ -310,14 +317,17 @@ void StyleSheetEditorDialog::LoadSelectedRule()
 void StyleSheetEditorDialog::RefreshSetterList(int preferredIndex)
 {
 	_loading = true;
-	_setterList->Items.clear();
-	_setterList->Items.push_back(kNewSetter);
+	std::vector<std::wstring> items{ kNewSetter };
 	const int ruleIndex = SelectedRuleIndex();
 	if (ruleIndex >= 0 && ruleIndex < static_cast<int>(ResultStyleSheet.Rules.size()))
 	{
-		for (const auto& setter : ResultStyleSheet.Rules[static_cast<size_t>(ruleIndex)].Setters)
-			_setterList->Items.push_back(setter.PropertyName);
+		const auto& setters = ResultStyleSheet.Rules[
+			static_cast<size_t>(ruleIndex)].Setters;
+		items.reserve(setters.size() + 1);
+		for (const auto& setter : setters)
+			items.push_back(setter.PropertyName);
 	}
+	cui::designer::SetComboBoxItems(*_setterList, std::move(items));
 	SelectComboIndex(_setterList, preferredIndex >= 0 ? preferredIndex + 1 : 0);
 	_loading = false;
 }
@@ -336,16 +346,18 @@ void StyleSheetEditorDialog::LoadSelectedSetter()
 	}
 	const auto propertyName = setter ? setter->PropertyName
 		: (_setterProperties.empty() ? std::wstring() : _setterProperties.front().Name);
-	auto propertyIt = std::find_if(_setterProperty->Items.begin(), _setterProperty->Items.end(),
+	auto propertyItems = cui::designer::ComboBoxItems(*_setterProperty);
+	auto propertyIt = std::find_if(propertyItems.begin(), propertyItems.end(),
 		[&](const std::wstring& item) { return EqualsName(item, propertyName); });
-	if (!propertyName.empty() && propertyIt == _setterProperty->Items.end())
+	int propertyIndex = propertyIt == propertyItems.end() ? -1
+		: static_cast<int>(propertyIt - propertyItems.begin());
+	if (!propertyName.empty() && propertyIndex < 0)
 	{
-		_setterProperty->Items.push_back(propertyName);
-		propertyIt = _setterProperty->Items.end() - 1;
+		cui::designer::AddComboBoxItem(*_setterProperty, propertyName);
+		propertyIndex = static_cast<int>(_setterProperty->ItemCount()) - 1;
 	}
-	if (propertyIt != _setterProperty->Items.end())
-		SelectComboIndex(_setterProperty,
-			static_cast<int>(propertyIt - _setterProperty->Items.begin()));
+	if (propertyIndex >= 0)
+		SelectComboIndex(_setterProperty, propertyIndex);
 	else
 	{
 		_setterProperty->SelectedIndex = -1;
@@ -358,13 +370,13 @@ void StyleSheetEditorDialog::LoadSelectedSetter()
 		: (setter && !setter->UsesResource
 			? setter->Literal.Kind : DesignerStyleValueKind::String);
 	const auto kindName = DesignerStyleSheetUtils::ValueKindName(kind);
-	auto kindIt = std::find(_setterKind->Items.begin(), _setterKind->Items.end(), kindName);
-	SelectComboIndex(_setterKind, kindIt == _setterKind->Items.end()
-		? 0 : static_cast<int>(kindIt - _setterKind->Items.begin()));
+	const int kindIndex = cui::designer::FindComboBoxItem(
+		*_setterKind, kindName);
+	SelectComboIndex(_setterKind, kindIndex < 0 ? 0 : kindIndex);
 	_setterValue->Text = setter
 		? (setter->UsesResource ? setter->ResourceKey : setter->Literal.Text)
 		: (property ? property->SampleValue : L"");
-	_setterKind->Enable = !property && !(setter && setter->UsesResource);
+	_setterKind->IsEnabled = !property && !(setter && setter->UsesResource);
 	_loading = false;
 }
 
@@ -390,27 +402,29 @@ void StyleSheetEditorDialog::RefreshSetterPropertyCatalog(
 			type = resolved.Rules[static_cast<size_t>(ruleIndex)].Type;
 	}
 
-	_propertyProbe = DesignerControlFactory::Create(type);
-	_setterProperties = _propertyProbe
-		? DesignerPropertyCatalog::GetStyleProperties(*_propertyProbe)
-		: std::vector<DesignerPropertyDescriptor>{};
+	const auto metadata = CuiRuntime::XamlRuntimeSchema::NativeProperties(type);
+	_setterProperties = DesignerPropertyCatalog::GetStyleProperties(metadata);
 
 	_loading = true;
-	_setterProperty->Items.clear();
+	std::vector<std::wstring> items;
+	items.reserve(_setterProperties.size() + 1);
 	for (const auto& property : _setterProperties)
-		_setterProperty->Items.push_back(property.Name);
+		items.push_back(property.Name);
 	auto selected = std::find_if(
-		_setterProperty->Items.begin(), _setterProperty->Items.end(),
+		items.begin(), items.end(),
 		[&](const std::wstring& item) { return EqualsName(item, preserved); });
-	if (!preserved.empty() && selected == _setterProperty->Items.end())
+	int selectedIndex = selected == items.end() ? -1
+		: static_cast<int>(selected - items.begin());
+	if (!preserved.empty() && selectedIndex < 0)
 	{
-		_setterProperty->Items.push_back(preserved);
-		selected = _setterProperty->Items.end() - 1;
+		items.push_back(preserved);
+		selectedIndex = static_cast<int>(items.size()) - 1;
 	}
-	if (selected != _setterProperty->Items.end())
-		SelectComboIndex(_setterProperty,
-			static_cast<int>(selected - _setterProperty->Items.begin()));
-	else if (!_setterProperty->Items.empty())
+	cui::designer::SetComboBoxItems(
+		*_setterProperty, std::move(items));
+	if (selectedIndex >= 0)
+		SelectComboIndex(_setterProperty, selectedIndex);
+	else if (_setterProperty->ItemCount() != 0)
 		SelectComboIndex(_setterProperty, 0);
 	else
 	{
@@ -427,16 +441,16 @@ void StyleSheetEditorDialog::ApplySelectedPropertyMetadata(bool replaceValue)
 		_setterProperties, _setterProperty->Text);
 	const bool resourceMode = EqualsName(
 		DesignerStyleSheetUtils::Trim(_setterMode->Text), L"Resource");
-	_setterKind->Enable = !property && !resourceMode;
+	_setterKind->IsEnabled = !property && !resourceMode;
 	if (!property) return;
 
 	const auto kindName = DesignerStyleSheetUtils::ValueKindName(property->ValueKind);
-	const auto kind = std::find(_setterKind->Items.begin(), _setterKind->Items.end(), kindName);
-	if (kind != _setterKind->Items.end())
+	const int kindIndex = cui::designer::FindComboBoxItem(
+		*_setterKind, kindName);
+	if (kindIndex >= 0)
 	{
 		_loading = true;
-		SelectComboIndex(_setterKind,
-			static_cast<int>(kind - _setterKind->Items.begin()));
+		SelectComboIndex(_setterKind, kindIndex);
 		_loading = false;
 	}
 	if (replaceValue && !resourceMode)
@@ -474,34 +488,8 @@ void StyleSheetEditorDialog::RefreshSummary()
 		const auto& rule = ResultStyleSheet.Rules[index];
 		text += L"\r\n  " + RuleCaption(rule, index)
 			+ L"  (" + std::to_wstring(rule.Setters.size()) + L" setters, "
-			+ std::to_wstring(rule.Triggers.size()
-				+ (rule.DataConditions.empty() ? 0u : 1u)
-				+ (rule.PropertyConditions.empty() ? 0u : 1u))
+			+ std::to_wstring(rule.Triggers.size())
 			+ L" triggers)";
-		if (!rule.PropertyConditions.empty())
-		{
-			text += rule.PropertyConditions.size() > 1
-				? L"\r\n    MultiTrigger " : L"\r\n    Trigger ";
-			for (size_t conditionIndex = 0;
-				conditionIndex < rule.PropertyConditions.size(); ++conditionIndex)
-			{
-				if (conditionIndex != 0) text += L" AND ";
-				const auto& condition = rule.PropertyConditions[conditionIndex];
-				text += condition.Property + L" = " + condition.Value.Text;
-			}
-		}
-		if (!rule.DataConditions.empty())
-		{
-			text += rule.DataConditions.size() > 1
-				? L"\r\n    MultiDataTrigger " : L"\r\n    DataTrigger ";
-			for (size_t conditionIndex = 0;
-				conditionIndex < rule.DataConditions.size(); ++conditionIndex)
-			{
-				if (conditionIndex != 0) text += L" AND ";
-				const auto& condition = rule.DataConditions[conditionIndex];
-				text += condition.SourceProperty + L" = " + condition.Value.Text;
-			}
-		}
 		for (const auto& setter : rule.Setters)
 			text += L"\r\n    " + setter.PropertyName + L" = "
 				+ (setter.UsesResource ? L"@" + setter.ResourceKey
@@ -523,19 +511,9 @@ void StyleSheetEditorDialog::RefreshSummary()
 			}
 			else
 			{
-				text += trigger.Conditions.size()
-					+ trigger.PropertyConditions.size() > 1
+				text += trigger.PropertyConditions.size() > 1
 					? L"\r\n    MultiTrigger " : L"\r\n    Trigger ";
 				bool wroteCondition = false;
-				for (size_t conditionIndex = 0;
-					conditionIndex < trigger.Conditions.size(); ++conditionIndex)
-				{
-					if (wroteCondition) text += L" AND ";
-					const auto& condition = trigger.Conditions[conditionIndex];
-					text += condition.Property + L" = "
-						+ (condition.Value ? L"true" : L"false");
-					wroteCondition = true;
-				}
 				for (const auto& condition : trigger.PropertyConditions)
 				{
 					if (wroteCondition) text += L" AND ";
@@ -556,7 +534,7 @@ void StyleSheetEditorDialog::RefreshSummary()
 void StyleSheetEditorDialog::ShowValidation(const std::wstring& message, bool isError)
 {
 	_validation->Text = message;
-	_validation->ForeColor = isError ? Colors::Red : Colors::DimGrey;
+	_validation->Foreground = isError ? Colors::Red : Colors::DimGrey;
 	_validation->InvalidateVisual();
 }
 
@@ -688,7 +666,6 @@ bool StyleSheetEditorDialog::SaveRule()
 	{
 		const auto& previous = ResultStyleSheet.Rules[static_cast<size_t>(selected)];
 		rule.Setters = previous.Setters;
-		rule.DataConditions = previous.DataConditions;
 		rule.Triggers = previous.Triggers;
 		previousId = previous.Id;
 	}
@@ -715,18 +692,6 @@ bool StyleSheetEditorDialog::SaveRule()
 	}
 	rule.Id = DesignerStyleSheetUtils::Trim(_ruleId->Text);
 	rule.BasedOn = DesignerStyleSheetUtils::Trim(_ruleBasedOn->Text);
-	rule.Classes = DesignerStyleSheetUtils::SplitClasses(_ruleClasses->Text);
-	if (!DesignerStyleSheetUtils::TryParseStates(_requiredStates->Text, rule.RequiredStates)
-		|| !DesignerStyleSheetUtils::TryParseStates(_excludedStates->Text, rule.ExcludedStates))
-	{
-		ShowValidation(L"状态名称无效；可用 Hovered、Focused、Pressed、Disabled、Checked、Selected。", true);
-		return false;
-	}
-	if ((rule.RequiredStates & rule.ExcludedStates) != ControlStyleState::None)
-	{
-		ShowValidation(L"同一状态不能同时为必需和排除。", true);
-		return false;
-	}
 
 	int savedIndex = selected;
 	if (selected < 0 || selected >= static_cast<int>(ResultStyleSheet.Rules.size()))
@@ -749,7 +714,7 @@ bool StyleSheetEditorDialog::SaveRule()
 			if (referenced)
 			{
 				ResultStyleSheet.Rules[static_cast<size_t>(savedIndex)].Id = previousId;
-				ShowValidation(L"该样式仍被 BasedOn 引用，不能移除其 StyleId。", true);
+				ShowValidation(L"该样式仍被 BasedOn 引用，不能移除其 x:Key。", true);
 				return false;
 			}
 		}
@@ -820,7 +785,7 @@ bool StyleSheetEditorDialog::SaveSetter()
 	}
 	const auto* property = DesignerPropertyCatalog::Find(
 		_setterProperties, setter.PropertyName);
-	if (!property || !_propertyProbe)
+	if (!property || !property->Metadata)
 	{
 		ShowValidation(L"请选择目标类型元数据中可写且受支持的属性。", true);
 		return false;
@@ -843,10 +808,11 @@ bool StyleSheetEditorDialog::SaveSetter()
 				return EqualsName(item.Key, setter.ResourceKey);
 			});
 		std::wstring error;
+		DesignerStyleValue canonicalResource;
 		if (resource == ResultStyleSheet.Resources.end()
-			|| !DesignerPropertyCatalog::ValidateStyleValue(
-				*_propertyProbe, setter.PropertyName, resource->Value, &error,
-				_resourceBasePath))
+			|| !DesignerPropertyCatalog::NormalizeStyleValue(
+				*property->Metadata, resource->Value, canonicalResource,
+				&error, _resourceBasePath))
 		{
 			ShowValidation(error.empty() ? L"资源与属性类型不兼容。" : error, true);
 			return false;
@@ -857,13 +823,15 @@ bool StyleSheetEditorDialog::SaveSetter()
 		setter.Literal.Kind = property->ValueKind;
 		setter.Literal.Text = _setterValue->Text;
 		std::wstring error;
-		if (!DesignerPropertyCatalog::ValidateStyleValue(
-			*_propertyProbe, setter.PropertyName, setter.Literal, &error,
+		DesignerStyleValue canonical;
+		if (!DesignerPropertyCatalog::NormalizeStyleValue(
+			*property->Metadata, setter.Literal, canonical, &error,
 			_resourceBasePath))
 		{
 			ShowValidation(error, true);
 			return false;
 		}
+		setter.Literal = std::move(canonical);
 	}
 
 	auto& setters = ResultStyleSheet.Rules[static_cast<size_t>(ruleIndex)].Setters;

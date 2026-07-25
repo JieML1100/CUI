@@ -13,7 +13,7 @@ public:
 	~MainWindow() override = default;
 
 private:
-	void HandleWindowShown(Form* sender) noexcept
+	void HandleWindowContentRendered(Window* sender) noexcept
 	{
 		(void)sender;
 	}

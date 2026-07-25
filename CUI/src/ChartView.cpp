@@ -1,5 +1,6 @@
-﻿#include "ChartView.h"
-#include "Form.h"
+#include "ChartView.h"
+#include "EventInfrastructure.h"
+#include "Window.h"
 #include "AdvancedControlPropertyRegistration.h"
 #include <algorithm>
 #include <cmath>
@@ -95,83 +96,102 @@ UIClass ChartView::Type()
 	return UIClass::UI_ChartView;
 }
 
-void ChartView::EnsureBindingPropertiesRegistered()
+void ChartView::RegisterDependencyProperties()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		using namespace cui::advanced_properties;
-		RegisterField(L"Title", &ChartView::Title, std::wstring(L"Chart"),
-			L"Data", 600, 10, ControlPropertyEditorKind::Text);
-		RegisterField(L"Subtitle", &ChartView::Subtitle, std::wstring{},
-			L"Data", 600, 20, ControlPropertyEditorKind::Text);
-		RegisterEnumField(L"ChartKind", &ChartView::ChartKind,
+		RegisterField(L"Title", &ChartView::_title, std::wstring(L"Chart"),
+			L"Data", 600, 10, DependencyPropertyEditorKind::Text);
+		RegisterField(L"Subtitle", &ChartView::_subtitle, std::wstring{},
+			L"Data", 600, 20, DependencyPropertyEditorKind::Text);
+		RegisterEnumField(L"ChartKind", &ChartView::_chartKind,
 			ChartViewKind::Bar, L"Data", 600, 30,
 			{ { L"Bar", ChartViewKind::Bar },
 			  { L"Pie", ChartViewKind::Pie },
 			  { L"Line", ChartViewKind::Line } });
-		RegisterIntMetric(L"ValuePrecision", &ChartView::ValuePrecision, 0,
+		RegisterIntMetric(L"ValuePrecision", &ChartView::_valuePrecision, 0,
 			L"Data", 600, 40, 0, 8);
-		RegisterField(L"ShowLegend", &ChartView::ShowLegend, true,
-			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
-		RegisterField(L"ShowTooltip", &ChartView::ShowTooltip, true,
-			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
-		RegisterField(L"ShowValueLabels", &ChartView::ShowValueLabels, false,
-			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
-		RegisterField(L"ShowGridLines", &ChartView::ShowGridLines, true,
-			L"Behavior", 110, 40, ControlPropertyEditorKind::Boolean);
-		RegisterField(L"ShowMarkers", &ChartView::ShowMarkers, true,
-			L"Behavior", 110, 50, ControlPropertyEditorKind::Boolean);
-		RegisterField(L"EnablePanZoom", &ChartView::EnablePanZoom, true,
-			L"Behavior", 110, 60, ControlPropertyEditorKind::Boolean);
-		RegisterMetric(L"Border", &ChartView::Border, 1.0f,
-			L"Appearance", 200, 10);
-		RegisterMetric(L"CornerRadius", &ChartView::CornerRadius, 8.0f,
-			L"Appearance", 200, 20);
-		RegisterMetric(L"ScrollBarSize", &ChartView::ScrollBarSize, 8.0f,
-			L"Layout", 100, 10);
-		RegisterColor(L"PlotBackColor", &ChartView::PlotBackColor,
-			cui::theme::palette::SurfaceSubtle, 100);
-		RegisterColor(L"GridLineColor", &ChartView::GridLineColor,
-			cui::theme::palette::Border, 110);
-		RegisterColor(L"AxisColor", &ChartView::AxisColor,
-			cui::theme::palette::BorderStrong, 120);
-		RegisterColor(L"AccentColor", &ChartView::AccentColor,
-			cui::theme::palette::Accent, 130);
-		RegisterColor(L"HoverColor", &ChartView::HoverColor,
-			cui::theme::palette::AccentSoft, 140);
-		RegisterColor(L"SelectedColor", &ChartView::SelectedColor,
-			cui::theme::palette::AccentSelected, 150);
-		RegisterColor(L"TooltipBackColor", &ChartView::TooltipBackColor,
-			cui::theme::palette::TooltipSurface, 160);
-		RegisterColor(L"TooltipBorderColor", &ChartView::TooltipBorderColor,
-			cui::theme::palette::BorderStrong, 170);
-		RegisterColor(L"TooltipTextColor", &ChartView::TooltipTextColor,
-			cui::theme::palette::OnAccent, 180);
-		RegisterColor(L"LegendTextColor", &ChartView::LegendTextColor,
-			cui::theme::palette::TextSecondary, 190);
-		RegisterColor(L"ScrollBackColor", &ChartView::ScrollBackColor,
-			cui::theme::palette::ScrollTrack, 200);
-		RegisterColor(L"ScrollForeColor", &ChartView::ScrollForeColor,
-			cui::theme::palette::ScrollThumb, 210);
+		RegisterField(L"ShowLegend", &ChartView::_showLegend, true,
+			L"Behavior", 110, 10, DependencyPropertyEditorKind::Boolean);
+		RegisterField(L"ShowTooltip", &ChartView::_showTooltip, true,
+			L"Behavior", 110, 20, DependencyPropertyEditorKind::Boolean);
+		RegisterField(L"ShowValueLabels", &ChartView::_showValueLabels, false,
+			L"Behavior", 110, 30, DependencyPropertyEditorKind::Boolean);
+		RegisterField(L"ShowGridLines", &ChartView::_showGridLines, true,
+			L"Behavior", 110, 40, DependencyPropertyEditorKind::Boolean);
+		RegisterField(L"ShowMarkers", &ChartView::_showMarkers, true,
+			L"Behavior", 110, 50, DependencyPropertyEditorKind::Boolean);
+		RegisterField(L"EnablePanZoom", &ChartView::_enablePanZoom, true,
+			L"Behavior", 110, 60, DependencyPropertyEditorKind::Boolean);
 		return true;
 	}();
 	(void)registered;
 }
 
-ChartView::ChartView(int x, int y, int width, int height)
+GET_CPP(ChartView, ChartViewKind, ChartKind) { return _chartKind; }
+SET_CPP(ChartView, ChartViewKind, ChartKind)
 {
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
-	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = cui::theme::palette::Border;
-	this->ForeColor = cui::theme::palette::TextPrimary;
-	this->Cursor = CursorKind::Arrow;
+	(void)TrySetPropertyValue(
+		L"ChartKind", BindingValue(static_cast<int>(value)));
+}
+GET_CPP(ChartView, std::wstring, Title) { return _title; }
+SET_CPP(ChartView, std::wstring, Title)
+{
+	(void)SetPropertyField(L"Title", _title, std::move(value));
+}
+GET_CPP(ChartView, std::wstring, Subtitle) { return _subtitle; }
+SET_CPP(ChartView, std::wstring, Subtitle)
+{
+	(void)SetPropertyField(L"Subtitle", _subtitle, std::move(value));
+}
+GET_CPP(ChartView, int, ValuePrecision) { return _valuePrecision; }
+SET_CPP(ChartView, int, ValuePrecision)
+{
+	(void)SetPropertyField(L"ValuePrecision", _valuePrecision, value);
+}
+GET_CPP(ChartView, bool, ShowLegend) { return _showLegend; }
+SET_CPP(ChartView, bool, ShowLegend)
+{
+	(void)SetPropertyField(L"ShowLegend", _showLegend, value);
+}
+GET_CPP(ChartView, bool, ShowTooltip) { return _showTooltip; }
+SET_CPP(ChartView, bool, ShowTooltip)
+{
+	(void)SetPropertyField(L"ShowTooltip", _showTooltip, value);
+}
+GET_CPP(ChartView, bool, ShowValueLabels) { return _showValueLabels; }
+SET_CPP(ChartView, bool, ShowValueLabels)
+{
+	(void)SetPropertyField(L"ShowValueLabels", _showValueLabels, value);
+}
+GET_CPP(ChartView, bool, ShowGridLines) { return _showGridLines; }
+SET_CPP(ChartView, bool, ShowGridLines)
+{
+	(void)SetPropertyField(L"ShowGridLines", _showGridLines, value);
+}
+GET_CPP(ChartView, bool, ShowMarkers) { return _showMarkers; }
+SET_CPP(ChartView, bool, ShowMarkers)
+{
+	(void)SetPropertyField(L"ShowMarkers", _showMarkers, value);
+}
+GET_CPP(ChartView, bool, EnablePanZoom) { return _enablePanZoom; }
+SET_CPP(ChartView, bool, EnablePanZoom)
+{
+	(void)SetPropertyField(L"EnablePanZoom", _enablePanZoom, value);
+}
+
+ChartView::ChartView()
+{
+	this->RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->RendererBorderColor = cui::theme::palette::Border;
+	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 }
 
 void ChartView::Clear()
 {
-	Series.clear();
+	_series.clear();
 	HoveredSeriesIndex = -1;
 	HoveredPointIndex = -1;
 	SelectedSeriesIndex = -1;
@@ -181,18 +201,18 @@ void ChartView::Clear()
 
 int ChartView::AddSeries(const ChartSeries& series)
 {
-	Series.push_back(series);
+	_series.push_back(series);
 	ClampViewport();
 	InvalidateVisual();
-	return static_cast<int>(Series.size()) - 1;
+	return static_cast<int>(_series.size()) - 1;
 }
 
 void ChartView::SetSingleSeries(const std::vector<ChartPoint>& points, const std::wstring& name)
 {
-	Series.clear();
+	_series.clear();
 	ChartSeries series(name, AccentColor);
 	series.Points = points;
-	Series.push_back(series);
+	_series.push_back(series);
 	ResetView();
 }
 
@@ -203,22 +223,24 @@ void ChartView::ResetView()
 	PanX = 0.0f;
 	ClampViewport();
 	InvalidateVisual();
-	OnViewportChanged(this);
+	cui::framework::EventAccess::Raise(OnViewportChanged, this);
 }
 
 bool ChartView::SelectPoint(int seriesIndex, int pointIndex)
 {
-	if (seriesIndex < 0 || pointIndex < 0 || seriesIndex >= static_cast<int>(Series.size()))
+	if (seriesIndex < 0 || pointIndex < 0 || seriesIndex >= static_cast<int>(_series.size()))
 		return false;
-	if (pointIndex >= static_cast<int>(Series[seriesIndex].Points.size()))
+	if (pointIndex >= static_cast<int>(_series[seriesIndex].Points.size()))
 		return false;
 
 	if (SelectedSeriesIndex == seriesIndex && SelectedPointIndex == pointIndex)
 		return true;
 
+	const int previousPointIndex = SelectedPointIndex;
 	SelectedSeriesIndex = seriesIndex;
 	SelectedPointIndex = pointIndex;
-	SelectionChanged(this);
+	SelectionChangedEventArgs args(previousPointIndex, pointIndex);
+	SelectionChanged(this, args);
 	InvalidateVisual();
 	return true;
 }
@@ -231,7 +253,7 @@ bool ChartView::HitTestPoint(int localX, int localY, int& seriesIndex, int& poin
 
 CursorKind ChartView::QueryCursor(int localX, int localY)
 {
-	if (!Enable) return CursorKind::Arrow;
+	if (!IsEnabled) return CursorKind::Arrow;
 	if (_scrolling) return CursorKind::SizeWE;
 
 	int s = -1;
@@ -244,7 +266,7 @@ CursorKind ChartView::QueryCursor(int localX, int localY)
 		if (PointInRect((float)localX, (float)localY, GetHorizontalScrollTrackRect(size.width, size.height)))
 			return CursorKind::SizeWE;
 	}
-	return Cursor;
+	return Control::QueryCursor(localX, localY);
 }
 
 bool ChartView::CanHandleMouseWheel(int delta, int localX, int localY)
@@ -256,10 +278,10 @@ bool ChartView::CanHandleMouseWheel(int delta, int localX, int localY)
 	return PointInRect((float)localX, (float)localY, GetPlotRect(size.width, size.height));
 }
 
-void ChartView::Update()
+void ChartView::OnRender()
 {
-	if (!IsVisual) return;
-	auto d2d = ParentForm->Render;
+	if (!IsVisible) return;
+	auto d2d = GetDrawingContext();
 	const auto size = GetActualSizeDip();
 	const float width = size.width;
 	const float height = size.height;
@@ -272,7 +294,7 @@ void ChartView::Update()
 	auto content = GetContentRect(width, height);
 	if (GetPointCount() <= 0 || GetVisibleSeriesCount() <= 0)
 	{
-		d2d->DrawStringCentered(L"No data", width * 0.5f, height * 0.5f, LegendTextColor, Font);
+		d2d->DrawStringCentered(L"No data", width * 0.5f, height * 0.5f, LegendTextColor, GetRenderFont());
 	}
 	else
 	{
@@ -294,43 +316,41 @@ void ChartView::Update()
 		DrawTooltip(d2d, width, height);
 	}
 
-	if (!Enable)
+	if (!IsEnabled)
 		d2d->FillRoundRect(0, 0, width, height, D2D1_COLOR_F{ 1,1,1,0.45f }, CornerRadius);
 	EndRender();
 }
 
-bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool ChartView::ProcessInput(const InputReport& input)
 {
-	if (!Enable || !Visible) return true;
-	(void)lParam;
-	_lastMouseX = localX;
-	_lastMouseY = localY;
+	if (!IsEnabled || !IsVisible) return true;
+	_lastMouseX = input.X;
+	_lastMouseY = input.Y;
 
-	switch (message)
+	switch (input.Kind)
 	{
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerMove:
 	{
-		if (ParentForm) ParentForm->UnderMouse = this;
 		if (_scrolling)
 		{
 			const auto size = GetActualSizeDip();
-			UpdateHorizontalScrollDrag((float)localX, size.width, size.height);
+			UpdateHorizontalScrollDrag((float)input.X, size.width, size.height);
 		}
-		UpdateHover(localX, localY);
-		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		UpdateHover(input.X, input.Y);
+		auto eventObj = input.CreateMouseEventArgs();
 		OnMouseMove(this, eventObj);
 		break;
 	}
-	case WM_MOUSEWHEEL:
+	case InputReportKind::MouseWheel:
 	{
-		int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-		if (CanHandleMouseWheel(delta, localX, localY))
+		int delta = input.WheelDelta;
+		if (CanHandleMouseWheel(delta, input.X, input.Y))
 		{
 			const auto size = GetActualSizeDip();
 			auto plot = GetPlotRect(size.width, size.height);
 			int count = GetPointCount();
 			float oldZoom = (std::max)(1.0f, ZoomX);
-			float rel = ((float)localX - plot.left) / (std::max)(1.0f, RectWidth(plot));
+			float rel = ((float)input.X - plot.left) / (std::max)(1.0f, RectWidth(plot));
 			rel = std::clamp(rel, 0.0f, 1.0f);
 			float oldVirtualWidth = RectWidth(plot) * oldZoom;
 			float anchorRatio = (PanX + RectWidth(plot) * rel) / (std::max)(1.0f, oldVirtualWidth);
@@ -339,77 +359,90 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int l
 			float newVirtualWidth = RectWidth(plot) * (std::max)(1.0f, ZoomX);
 			PanX = anchorRatio * newVirtualWidth - RectWidth(plot) * rel;
 			ClampViewport();
-			OnViewportChanged(this);
+			cui::framework::EventAccess::Raise(OnViewportChanged, this);
 			InvalidateVisual();
 		}
-		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, delta);
+		auto eventObj = input.CreateMouseEventArgs();
 		OnMouseWheel(this, eventObj);
 		break;
 	}
-	case WM_LBUTTONDOWN:
+	case InputReportKind::PointerDown:
 	{
-		if (ParentForm) ParentForm->SetSelectedControl(this, false);
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		if (GetPresentationWindow()) GetPresentationWindow()->SetKeyboardFocus(this, false);
 		const auto size = GetActualSizeDip();
 		float width = size.width;
 		float height = size.height;
 		int s = -1;
 		int p = -1;
-		if (HasHorizontalScrollBar() && PointInRect((float)localX, (float)localY, GetHorizontalScrollTrackRect(width, height)))
+		if (HasHorizontalScrollBar() && PointInRect((float)input.X, (float)input.Y, GetHorizontalScrollTrackRect(width, height)))
 		{
 			auto thumb = GetHorizontalScrollThumbRect(width, height);
-			if (PointInRect((float)localX, (float)localY, thumb))
-				_scrollGrabOffsetX = (float)localX - thumb.left;
+			if (PointInRect((float)input.X, (float)input.Y, thumb))
+				_scrollGrabOffsetX = (float)input.X - thumb.left;
 			else
 				_scrollGrabOffsetX = RectWidth(thumb) * 0.5f;
 			_scrolling = true;
-			UpdateHorizontalScrollDrag((float)localX, width, height);
+			(void)CaptureMouse();
+			UpdateHorizontalScrollDrag((float)input.X, width, height);
 		}
-		else if (HitTestPoint(localX, localY, s, p))
+		else if (HitTestPoint(input.X, input.Y, s, p))
 		{
 			SelectPoint(s, p);
-			OnPointClick(this, s, p);
+			cui::framework::EventAccess::Raise(OnPointClick, this, s, p);
 		}
-		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		auto eventObj = input.CreateMouseEventArgs();
 		OnMouseDown(this, eventObj);
 		InvalidateVisual();
 		break;
 	}
-	case WM_LBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
 		_scrolling = false;
-		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		if (IsMouseCaptured()) (void)ReleaseMouseCapture();
+		auto eventObj = input.CreateMouseEventArgs();
 		OnMouseUp(this, eventObj);
-		if (ParentForm && ParentForm->Selected == this)
-			ParentForm->SetSelectedControl(nullptr, false);
 		InvalidateVisual();
 		break;
 	}
-	case WM_LBUTTONDBLCLK:
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		_scrolling = false;
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		InvalidateVisual();
+		return Control::ProcessInput(input);
+	case InputReportKind::PointerDoubleClick:
 	{
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
 		ResetView();
-		MouseEventArgs eventObj(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
+		auto eventObj = input.CreateMouseEventArgs();
 		OnMouseDoubleClick(this, eventObj);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+		return Control::ProcessInput(input);
 	}
 	return true;
 }
 
 void ChartView::DrawFrame(D2DGraphics* d2d, float width, float height)
 {
-	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BackColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BorderColor, Border, CornerRadius);
+	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, RendererBackgroundColor, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, RendererBorderColor, Border, CornerRadius);
 
 	if (!Title.empty())
 	{
-		d2d->DrawString(Title, 14.0f, 10.0f, ForeColor, Font);
+		d2d->DrawString(Title, 14.0f, 10.0f, RendererForegroundColor, GetRenderFont());
 	}
 	if (!Subtitle.empty())
 	{
 		auto titleHeight = Title.empty() ? 8.0f : 30.0f;
-		d2d->DrawString(Subtitle, 14.0f, titleHeight, LegendTextColor, Font);
+		d2d->DrawString(Subtitle, 14.0f, titleHeight, LegendTextColor, GetRenderFont());
 	}
 }
 
@@ -426,7 +459,7 @@ void ChartView::DrawAxes(D2DGraphics* d2d, const D2D1_RECT_F& plotRect, double m
 
 		double value = maxValue - (maxValue - minValue) * t;
 		std::wstring text = FormatValue(value);
-		d2d->DrawString(text, 8.0f, y - 9.0f, LegendTextColor, Font);
+		d2d->DrawString(text, 8.0f, y - 9.0f, LegendTextColor, GetRenderFont());
 	}
 	d2d->DrawLine(plotRect.left, plotRect.top, plotRect.left, plotRect.bottom, AxisColor, 1.0f);
 	d2d->DrawLine(plotRect.left, plotRect.bottom, plotRect.right, plotRect.bottom, AxisColor, 1.0f);
@@ -456,15 +489,15 @@ void ChartView::DrawBarChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 	{
 		float categoryLeft = plotRect.left + (float)i * categoryWidth - PanX;
 		int visibleSeriesIndex = 0;
-		for (int s = 0; s < (int)Series.size(); ++s)
+		for (int s = 0; s < (int)_series.size(); ++s)
 		{
-			if (!Series[s].Visible) continue;
-			if (i >= (int)Series[s].Points.size())
+			if (!_series[s].Visible) continue;
+			if (i >= (int)_series[s].Points.size())
 			{
 				++visibleSeriesIndex;
 				continue;
 			}
-			auto& point = Series[s].Points[i];
+			auto& point = _series[s].Points[i];
 			float slotWidth = categoryWidth * 0.72f / (float)visibleSeriesCount;
 			float barWidth = (std::min)(34.0f, (std::max)(3.0f, slotWidth - 3.0f));
 			float x = categoryLeft + categoryWidth * 0.14f + slotWidth * (float)visibleSeriesIndex + (slotWidth - barWidth) * 0.5f;
@@ -479,7 +512,7 @@ void ChartView::DrawBarChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 			if (hot || selected)
 				d2d->FillRoundRect(x - 2.0f, top - 2.0f, barWidth + 4.0f, barHeight + 4.0f, selected ? SelectedColor : HoverColor, 5.0f);
 			if (ShowValueLabels && barHeight > 18.0f)
-				d2d->DrawStringCentered(FormatValue(point.Value), x + barWidth * 0.5f, top - 10.0f, LegendTextColor, Font);
+				d2d->DrawStringCentered(FormatValue(point.Value), x + barWidth * 0.5f, top - 10.0f, LegendTextColor, GetRenderFont());
 
 			++visibleSeriesIndex;
 		}
@@ -487,7 +520,7 @@ void ChartView::DrawBarChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 		if (i % labelStep == 0)
 		{
 			std::wstring label;
-			for (const auto& series : Series)
+			for (const auto& series : _series)
 			{
 				if (series.Visible && i < (int)series.Points.size())
 				{
@@ -496,7 +529,7 @@ void ChartView::DrawBarChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 				}
 			}
 			if (!label.empty())
-				d2d->DrawStringCentered(label, categoryLeft + categoryWidth * 0.5f, plotRect.bottom + 16.0f, LegendTextColor, Font);
+				d2d->DrawStringCentered(label, categoryLeft + categoryWidth * 0.5f, plotRect.bottom + 16.0f, LegendTextColor, GetRenderFont());
 		}
 	}
 	d2d->PopDrawRect();
@@ -520,17 +553,17 @@ void ChartView::DrawLineChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 	int labelStep = (std::max)(1, (int)std::ceil((double)visibleCount / 10.0));
 
 	d2d->PushDrawRect(plotRect.left, (std::max)(0.0f, plotRect.top - 18.0f), RectWidth(plotRect), RectHeight(plotRect) + 42.0f);
-	for (int s = 0; s < (int)Series.size(); ++s)
+	for (int s = 0; s < (int)_series.size(); ++s)
 	{
-		if (!Series[s].Visible) continue;
+		if (!_series[s].Visible) continue;
 		D2D1_POINT_2F previous{ 0, 0 };
 		bool hasPrevious = false;
 		D2D1_COLOR_F color = GetSeriesColor(s);
 
-		for (int i = start; i < end && i < (int)Series[s].Points.size(); ++i)
+		for (int i = start; i < end && i < (int)_series[s].Points.size(); ++i)
 		{
 			float x = plotRect.left + ((float)i + 0.5f) * stepX - PanX;
-			float y = ValueToY(Series[s].Points[i].Value, plotRect, minValue, maxValue);
+			float y = ValueToY(_series[s].Points[i].Value, plotRect, minValue, maxValue);
 			D2D1_POINT_2F current{ x, y };
 			if (hasPrevious)
 				d2d->DrawLine(previous, current, color, 2.4f);
@@ -540,10 +573,10 @@ void ChartView::DrawLineChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 
 		if (ShowMarkers)
 		{
-			for (int i = start; i < end && i < (int)Series[s].Points.size(); ++i)
+			for (int i = start; i < end && i < (int)_series[s].Points.size(); ++i)
 			{
 				float x = plotRect.left + ((float)i + 0.5f) * stepX - PanX;
-				float y = ValueToY(Series[s].Points[i].Value, plotRect, minValue, maxValue);
+				float y = ValueToY(_series[s].Points[i].Value, plotRect, minValue, maxValue);
 				bool hot = HoveredSeriesIndex == s && HoveredPointIndex == i;
 				bool selected = SelectedSeriesIndex == s && SelectedPointIndex == i;
 				float r = selected ? 6.0f : (hot ? 5.5f : 4.0f);
@@ -557,7 +590,7 @@ void ChartView::DrawLineChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 	{
 		if (i % labelStep != 0) continue;
 		std::wstring label;
-		for (const auto& series : Series)
+		for (const auto& series : _series)
 		{
 			if (series.Visible && i < (int)series.Points.size())
 			{
@@ -566,7 +599,7 @@ void ChartView::DrawLineChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 			}
 		}
 		if (!label.empty())
-			d2d->DrawStringCentered(label, plotRect.left + ((float)i + 0.5f) * stepX - PanX, plotRect.bottom + 16.0f, LegendTextColor, Font);
+			d2d->DrawStringCentered(label, plotRect.left + ((float)i + 0.5f) * stepX - PanX, plotRect.bottom + 16.0f, LegendTextColor, GetRenderFont());
 	}
 	d2d->PopDrawRect();
 }
@@ -574,9 +607,9 @@ void ChartView::DrawLineChart(D2DGraphics* d2d, const D2D1_RECT_F& plotRect)
 void ChartView::DrawPieChart(D2DGraphics* d2d, const D2D1_RECT_F& contentRect)
 {
 	int seriesIndex = -1;
-	for (int s = 0; s < (int)Series.size(); ++s)
+	for (int s = 0; s < (int)_series.size(); ++s)
 	{
-		if (Series[s].Visible)
+		if (_series[s].Visible)
 		{
 			seriesIndex = s;
 			break;
@@ -594,14 +627,14 @@ void ChartView::DrawPieChart(D2DGraphics* d2d, const D2D1_RECT_F& contentRect)
 	if (radius <= 4.0f) return;
 	D2D1_POINT_2F center{ pieRect.left + RectWidth(pieRect) * 0.5f, pieRect.top + RectHeight(pieRect) * 0.5f };
 	double total = 0.0;
-	for (const auto& point : Series[seriesIndex].Points)
+	for (const auto& point : _series[seriesIndex].Points)
 		total += (std::max)(0.0, point.Value);
 	if (total <= 0.0) return;
 
 	float startAngle = 90.0f;
-	for (int i = 0; i < (int)Series[seriesIndex].Points.size(); ++i)
+	for (int i = 0; i < (int)_series[seriesIndex].Points.size(); ++i)
 	{
-		auto& point = Series[seriesIndex].Points[i];
+		auto& point = _series[seriesIndex].Points[i];
 		double value = (std::max)(0.0, point.Value);
 		if (value <= 0.0) continue;
 		float sweep = (float)(value / total * 360.0);
@@ -624,12 +657,12 @@ void ChartView::DrawPieChart(D2DGraphics* d2d, const D2D1_RECT_F& contentRect)
 			float labelRadius = radius * 0.62f;
 			float tx = drawCenter.x + std::cos(rad) * labelRadius;
 			float ty = drawCenter.y - std::sin(rad) * labelRadius;
-			d2d->DrawStringCentered(FormatValue(point.Value), tx, ty, Colors::White, Font);
+			d2d->DrawStringCentered(FormatValue(point.Value), tx, ty, Colors::White, GetRenderFont());
 		}
 
 		startAngle += sweep;
 	}
-	d2d->FillEllipse(center.x, center.y, radius * 0.48f, radius * 0.48f, BackColor);
+	d2d->FillEllipse(center.x, center.y, radius * 0.48f, radius * 0.48f, RendererBackgroundColor);
 	d2d->DrawEllipse(center.x, center.y, radius, radius, AxisColor, 1.0f);
 }
 
@@ -644,29 +677,29 @@ void ChartView::DrawLegend(D2DGraphics* d2d, const D2D1_RECT_F& contentRect)
 	if (ChartKind == ChartViewKind::Pie)
 	{
 		int seriesIndex = -1;
-		for (int s = 0; s < (int)Series.size(); ++s)
+		for (int s = 0; s < (int)_series.size(); ++s)
 		{
-			if (Series[s].Visible)
+			if (_series[s].Visible)
 			{
 				seriesIndex = s;
 				break;
 			}
 		}
 		if (seriesIndex < 0) return;
-		for (int i = 0; i < (int)Series[seriesIndex].Points.size() && y < maxY; ++i)
+		for (int i = 0; i < (int)_series[seriesIndex].Points.size() && y < maxY; ++i)
 		{
 			d2d->FillRoundRect(x, y + 4.0f, 10.0f, 10.0f, GetSeriesColor(seriesIndex, i), 2.0f);
-			d2d->DrawString(Series[seriesIndex].Points[i].Label, x + 16.0f, y, LegendTextColor, Font);
+			d2d->DrawString(_series[seriesIndex].Points[i].Label, x + 16.0f, y, LegendTextColor, GetRenderFont());
 			y += 22.0f;
 		}
 		return;
 	}
 
-	for (int s = 0; s < (int)Series.size() && y < maxY; ++s)
+	for (int s = 0; s < (int)_series.size() && y < maxY; ++s)
 	{
-		if (!Series[s].Visible) continue;
+		if (!_series[s].Visible) continue;
 		d2d->FillRoundRect(x, y + 4.0f, 10.0f, 10.0f, GetSeriesColor(s), 2.0f);
-		d2d->DrawString(Series[s].Name.empty() ? L"Series" : Series[s].Name, x + 16.0f, y, LegendTextColor, Font);
+		d2d->DrawString(_series[s].Name.empty() ? L"Series" : _series[s].Name, x + 16.0f, y, LegendTextColor, GetRenderFont());
 		y += 22.0f;
 	}
 }
@@ -677,7 +710,7 @@ void ChartView::DrawTooltip(D2DGraphics* d2d, float width, float height)
 		return;
 	std::wstring text = GetPointText(HoveredSeriesIndex, HoveredPointIndex);
 	if (text.empty()) return;
-	auto textSize = Font->GetTextSize(text);
+	auto textSize = GetRenderFont()->GetTextSize(text);
 	float w = (std::min)(width - 16.0f, textSize.width + 16.0f);
 	float h = textSize.height + 10.0f;
 	float x = (float)_lastMouseX + 14.0f;
@@ -688,7 +721,7 @@ void ChartView::DrawTooltip(D2DGraphics* d2d, float width, float height)
 	y = (std::max)(6.0f, y);
 	d2d->FillRoundRect(x, y, w, h, TooltipBackColor, 5.0f);
 	d2d->DrawRoundRect(x, y, w, h, TooltipBorderColor, 1.0f, 5.0f);
-	d2d->DrawString(text, x + 8.0f, y + 5.0f, TooltipTextColor, Font);
+	d2d->DrawString(text, x + 8.0f, y + 5.0f, TooltipTextColor, GetRenderFont());
 }
 
 void ChartView::DrawHorizontalScrollBar(D2DGraphics* d2d, float width, float height)
@@ -715,9 +748,9 @@ void ChartView::RebuildHitRegions()
 	{
 		auto content = GetContentRect(width, height);
 		int seriesIndex = -1;
-		for (int s = 0; s < (int)Series.size(); ++s)
+		for (int s = 0; s < (int)_series.size(); ++s)
 		{
-			if (Series[s].Visible)
+			if (_series[s].Visible)
 			{
 				seriesIndex = s;
 				break;
@@ -734,13 +767,13 @@ void ChartView::RebuildHitRegions()
 		if (radius <= 4.0f) return;
 		D2D1_POINT_2F center{ pieRect.left + RectWidth(pieRect) * 0.5f, pieRect.top + RectHeight(pieRect) * 0.5f };
 		double total = 0.0;
-		for (const auto& point : Series[seriesIndex].Points)
+		for (const auto& point : _series[seriesIndex].Points)
 			total += (std::max)(0.0, point.Value);
 		if (total <= 0.0) return;
 		float startAngle = 90.0f;
-		for (int i = 0; i < (int)Series[seriesIndex].Points.size(); ++i)
+		for (int i = 0; i < (int)_series[seriesIndex].Points.size(); ++i)
 		{
-			double value = (std::max)(0.0, Series[seriesIndex].Points[i].Value);
+			double value = (std::max)(0.0, _series[seriesIndex].Points[i].Value);
 			if (value <= 0.0) continue;
 			float sweep = (float)(value / total * 360.0);
 			HitRegion r;
@@ -770,13 +803,13 @@ void ChartView::RebuildHitRegions()
 
 	if (ChartKind == ChartViewKind::Line)
 	{
-		for (int s = 0; s < (int)Series.size(); ++s)
+		for (int s = 0; s < (int)_series.size(); ++s)
 		{
-			if (!Series[s].Visible) continue;
-			for (int i = start; i < end && i < (int)Series[s].Points.size(); ++i)
+			if (!_series[s].Visible) continue;
+			for (int i = start; i < end && i < (int)_series[s].Points.size(); ++i)
 			{
 				float x = plot.left + ((float)i + 0.5f) * stepX - PanX;
-				float y = ValueToY(Series[s].Points[i].Value, plot, minValue, maxValue);
+				float y = ValueToY(_series[s].Points[i].Value, plot, minValue, maxValue);
 				HitRegion r;
 				r.SeriesIndex = s;
 				r.PointIndex = i;
@@ -796,15 +829,15 @@ void ChartView::RebuildHitRegions()
 	{
 		float categoryLeft = plot.left + (float)i * stepX - PanX;
 		int visibleSeriesIndex = 0;
-		for (int s = 0; s < (int)Series.size(); ++s)
+		for (int s = 0; s < (int)_series.size(); ++s)
 		{
-			if (!Series[s].Visible) continue;
-			if (i < (int)Series[s].Points.size())
+			if (!_series[s].Visible) continue;
+			if (i < (int)_series[s].Points.size())
 			{
 				float slotWidth = stepX * 0.72f / (float)visibleSeriesCount;
 				float barWidth = (std::min)(34.0f, (std::max)(3.0f, slotWidth - 3.0f));
 				float x = categoryLeft + stepX * 0.14f + slotWidth * (float)visibleSeriesIndex + (slotWidth - barWidth) * 0.5f;
-				float y = ValueToY(Series[s].Points[i].Value, plot, minValue, maxValue);
+				float y = ValueToY(_series[s].Points[i].Value, plot, minValue, maxValue);
 				float top = (std::min)(y, baseline);
 				float bottom = (std::max)(y, baseline);
 				HitRegion r;
@@ -864,7 +897,7 @@ void ChartView::UpdateHover(int localX, int localY)
 	HoveredSeriesIndex = s;
 	HoveredPointIndex = p;
 	if (s >= 0 && p >= 0)
-		OnPointHover(this, s, p);
+		cui::framework::EventAccess::Raise(OnPointHover, this, s, p);
 	InvalidateVisual();
 }
 
@@ -903,7 +936,7 @@ void ChartView::UpdateHorizontalScrollDrag(float localX, float width, float heig
 	ClampViewport();
 	if (std::fabs(oldPan - PanX) > 0.01f)
 	{
-		OnViewportChanged(this);
+		cui::framework::EventAccess::Raise(OnViewportChanged, this);
 		InvalidateVisual();
 	}
 }
@@ -916,9 +949,9 @@ D2D1_RECT_F ChartView::GetContentRect(float width, float height) const
 D2D1_RECT_F ChartView::GetPlotRect(float width, float height) const
 {
 	auto content = GetContentRect(width, height);
-	float top = content.top + (Title.empty() ? 16.0f : 48.0f);
-	if (!Subtitle.empty()) top += 18.0f;
-	float right = content.right - (ShowLegend ? 126.0f : 14.0f);
+	float top = content.top + (_title.empty() ? 16.0f : 48.0f);
+	if (!_subtitle.empty()) top += 18.0f;
+	float right = content.right - (_showLegend ? 126.0f : 14.0f);
 	float bottomReserve = HasHorizontalScrollBar() ? 50.0f : 34.0f;
 	D2D1_RECT_F rect{
 		content.left + 52.0f,
@@ -957,28 +990,29 @@ D2D1_RECT_F ChartView::GetHorizontalScrollThumbRect(float width, float height) c
 
 D2D1_COLOR_F ChartView::GetSeriesColor(int seriesIndex, int pointIndex) const
 {
-	if (seriesIndex >= 0 && seriesIndex < (int)Series.size())
+	if (seriesIndex >= 0 && seriesIndex < (int)_series.size())
 	{
-		if (pointIndex >= 0 && pointIndex < (int)Series[seriesIndex].Points.size())
+		if (pointIndex >= 0 && pointIndex < (int)_series[seriesIndex].Points.size())
 		{
-			const auto& point = Series[seriesIndex].Points[pointIndex];
+			const auto& point = _series[seriesIndex].Points[pointIndex];
 			if (point.UseCustomColor) return point.Color;
 		}
-		if (!IsTransparent(Series[seriesIndex].Color)) return Series[seriesIndex].Color;
+		if (!IsTransparent(_series[seriesIndex].Color)) return _series[seriesIndex].Color;
 	}
-	return PaletteColor(pointIndex >= 0 && ChartKind == ChartViewKind::Pie ? pointIndex : seriesIndex);
+	return PaletteColor(pointIndex >= 0 && _chartKind == ChartViewKind::Pie
+		? pointIndex : seriesIndex);
 }
 
 std::wstring ChartView::GetPointText(int seriesIndex, int pointIndex) const
 {
-	if (seriesIndex < 0 || pointIndex < 0 || seriesIndex >= (int)Series.size())
+	if (seriesIndex < 0 || pointIndex < 0 || seriesIndex >= (int)_series.size())
 		return L"";
-	const auto& series = Series[seriesIndex];
+	const auto& series = _series[seriesIndex];
 	if (pointIndex >= (int)series.Points.size())
 		return L"";
 	const auto& point = series.Points[pointIndex];
 	std::wstring text;
-	if (!series.Name.empty() && ChartKind != ChartViewKind::Pie)
+	if (!series.Name.empty() && _chartKind != ChartViewKind::Pie)
 	{
 		text += series.Name;
 		text += L" - ";
@@ -992,15 +1026,16 @@ std::wstring ChartView::GetPointText(int seriesIndex, int pointIndex) const
 std::wstring ChartView::FormatValue(double value) const
 {
 	std::wstringstream ss;
-	if (ValuePrecision >= 0)
-		ss << std::fixed << std::setprecision(ValuePrecision);
+	if (_valuePrecision >= 0)
+		ss << std::fixed << std::setprecision(_valuePrecision);
 	ss << value;
 	return ss.str();
 }
 
 bool ChartView::HasHorizontalScrollBar() const
 {
-	return EnablePanZoom && ChartKind != ChartViewKind::Pie && ZoomX > 1.001f && GetPointCount() > 1;
+	return _enablePanZoom && _chartKind != ChartViewKind::Pie
+		&& ZoomX > 1.001f && GetPointCount() > 1;
 }
 
 float ChartView::GetVirtualPlotWidth(const D2D1_RECT_F& plotRect) const
@@ -1043,7 +1078,7 @@ void ChartView::GetVisibleIndexRange(int& start, int& end)
 int ChartView::GetPointCount() const
 {
 	int count = 0;
-	for (const auto& series : Series)
+	for (const auto& series : _series)
 	{
 		if (!series.Visible) continue;
 		count = (std::max)(count, (int)series.Points.size());
@@ -1054,7 +1089,7 @@ int ChartView::GetPointCount() const
 int ChartView::GetVisibleSeriesCount() const
 {
 	int count = 0;
-	for (const auto& series : Series)
+	for (const auto& series : _series)
 	{
 		if (series.Visible) ++count;
 	}
@@ -1064,7 +1099,7 @@ int ChartView::GetVisibleSeriesCount() const
 bool ChartView::GetValueRange(double& minValue, double& maxValue) const
 {
 	bool hasValue = false;
-	for (const auto& series : Series)
+	for (const auto& series : _series)
 	{
 		if (!series.Visible) continue;
 		for (const auto& point : series.Points)
@@ -1083,7 +1118,7 @@ bool ChartView::GetValueRange(double& minValue, double& maxValue) const
 		}
 	}
 	if (!hasValue) return false;
-	if (ChartKind != ChartViewKind::Line)
+	if (_chartKind != ChartViewKind::Line)
 	{
 		minValue = (std::min)(minValue, 0.0);
 		maxValue = (std::max)(maxValue, 0.0);

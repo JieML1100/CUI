@@ -1,23 +1,35 @@
 #include "RuntimeDocument.h"
 #include "DesignDocumentEventIndex.h"
-#include "DesignDocumentFileFormat.h"
 
-#include "DesignDocumentMaterializer.h"
-#include "DesignDocumentSerializer.h"
+#include "../../CuiRuntime/include/XamlObjectMaterializer.h"
+#include "../../CuiRuntime/include/XamlRuntimeSchema.h"
 #include "RuntimeDocumentTopologyReloader.h"
 #include "XamlDocumentParser.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
+#include "../DesignerPropertyCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
-#include "../../CUI/include/Form.h"
+#include "../../CUI/include/Button.h"
+#include "../../CUI/include/Canvas.h"
+#include "../../CUI/include/ContextMenu.h"
+#include "../../CUI/include/Layout/DockPanel.h"
+#include "../../CUI/include/Layout/Grid.h"
+#include "../../CUI/include/Menu.h"
+#include "../../CUI/include/StyleInfrastructure.h"
+#include "../../CUI/include/Window.h"
+#include "../../CUI/include/XamlInfrastructure.h"
 
 #include <Convert.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <unordered_set>
 #include <unordered_map>
 #include <utility>
@@ -63,12 +75,11 @@ std::unique_ptr<INativeSurfaceBehavior> NativeSurfaceBehaviorRegistry::Create(
 }
 
 bool DeclarativeComponentBehaviorRegistry::Register(
-	DesignerComponentType componentType,
+	RuntimeTypeId componentType,
 	Factory factory,
 	std::wstring* outError)
 {
-	if (componentType.XamlNamespace.empty()
-		|| componentType.XamlName.empty() || !factory)
+	if (!componentType.Valid() || !factory)
 	{
 		if (outError) *outError =
 			L"声明组件 Behavior 注册需要完整 QName 和工厂。";
@@ -82,7 +93,7 @@ bool DeclarativeComponentBehaviorRegistry::Register(
 }
 
 bool DeclarativeComponentBehaviorRegistry::Unregister(
-	const DesignerComponentType& componentType) noexcept
+	const RuntimeTypeId& componentType) noexcept
 {
 	std::scoped_lock lock(_mutex);
 	return _factories.erase(componentType.RegistryKey()) != 0;
@@ -95,8 +106,7 @@ DeclarativeComponentBehaviorRegistry::Create(
 	Factory factory;
 	{
 		std::scoped_lock lock(_mutex);
-		const auto found = _factories.find(
-			context.XamlNamespace + L"|" + context.XamlTypeName);
+		const auto found = _factories.find(context.Type.RegistryKey());
 		if (found == _factories.end()) return {};
 		factory = found->second;
 	}
@@ -110,10 +120,10 @@ namespace
 		if (output) *output = std::move(value);
 	}
 
-	DesignDocumentMaterializationOptions MaterializationOptionsFor(
+	CuiRuntime::XamlMaterializationOptions MaterializationOptionsFor(
 		const RuntimeDocumentLoadOptions& options)
 	{
-		DesignDocumentMaterializationOptions result;
+		CuiRuntime::XamlMaterializationOptions result;
 		result.AllowNativeSurfacePlaceholder =
 			options.AllowNativeSurfacePlaceholder;
 		if (options.NativeSurfaceBehaviors)
@@ -137,231 +147,253 @@ namespace
 		return result;
 	}
 
-	class FormRuntimeDocumentRootHost final
-		: public RuntimeDocumentRootHost
+	class WindowRuntimeDocumentContentHost final
+		: public RuntimeDocumentContentHost
 	{
 	public:
-		explicit FormRuntimeDocumentRootHost(::Form& form) noexcept
-			: _form(&form)
+		explicit WindowRuntimeDocumentContentHost(::Window& window) noexcept
+			: _window(&window)
 		{
 		}
 
-		bool DetachRoots(
-			std::span<Control* const> roots,
-			std::vector<std::unique_ptr<Control>>& output,
+		bool DetachContent(
+			Control* content,
+			std::unique_ptr<Control>& output,
 			std::wstring* outError) override
 		{
 			if (_transactionOpen)
 			{
-				SetError(outError, L"根宿主已经存在未完成的替换事务。");
+				SetError(outError, L"Window.Content 已存在未完成的替换事务。");
 				return false;
 			}
-			if (!output.empty())
+			if (output)
 			{
-				SetError(outError, L"根宿主分离输出必须为空。");
+				SetError(outError, L"Window 事务只接受一个 Content。");
 				return false;
 			}
-
-			try
+			auto* current = _window->GetVisualContent();
+			if (content != current)
 			{
-				std::unordered_set<Control*> unique;
-				std::vector<size_t> order;
-				std::vector<int> slots;
-				std::vector<std::unique_ptr<Control>> detached(roots.size());
-				unique.reserve(roots.size());
-				order.reserve(roots.size());
-				slots.reserve(roots.size());
-				for (size_t index = 0; index < roots.size(); ++index)
+				SetError(outError, L"运行时文档 Content 不再属于指定 Window。");
+				return false;
+			}
+			if (current)
+			{
+				auto detached = _window->DetachVisualContent();
+				if (!detached)
 				{
-					auto* root = roots[index];
-					const auto slot = _form->IndexOfControl(root);
-					if (!root || slot < 0 || !unique.insert(root).second)
-					{
-						SetError(outError,
-							L"运行时文档根不再完整属于指定 Form 宿主。");
-						return false;
-					}
-					order.push_back(index);
-					slots.push_back(slot);
-				}
-				std::sort(order.begin(), order.end(), [&](size_t left, size_t right)
-				{
-					return slots[left] > slots[right];
-				});
-
-				for (const auto index : order)
-				{
-					detached[index] = _form->DetachControl(roots[index]);
-					if (detached[index]) continue;
-					std::sort(order.begin(), order.end(), [&](size_t left, size_t right)
-					{
-						return slots[left] < slots[right];
-					});
-					for (const auto restore : order)
-					{
-						if (!detached[restore]) continue;
-						(void)_form->TryInsertOwned(
-							slots[restore], detached[restore]);
-					}
-					SetError(outError, L"Form 无法原子分离运行时文档根。");
+					SetError(outError, L"Window 无法分离当前 Content。");
 					return false;
 				}
-
-				_slots = std::move(slots);
-				_transactionOpen = true;
 				output = std::move(detached);
-				if (outError) outError->clear();
-				return true;
 			}
-			catch (...)
-			{
-				SetError(outError, L"Form 准备根控件事务时资源分配失败。");
-				return false;
-			}
+			_transactionOpen = true;
+			if (outError) outError->clear();
+			return true;
 		}
 
-		bool AttachRoots(
-			std::vector<std::unique_ptr<Control>>& roots,
-			RuntimeRootHostAttachMode mode,
+		bool AttachContent(
+			std::unique_ptr<Control>& content,
+			RuntimeContentHostAttachMode mode,
 			std::wstring* outError) override
 		{
 			const bool transactionAttach =
-				mode != RuntimeRootHostAttachMode::Initial;
+				mode != RuntimeContentHostAttachMode::Initial;
 			if (transactionAttach != _transactionOpen)
 			{
-				SetError(outError, transactionAttach
-					? L"根宿主没有可提交的分离事务。"
-					: L"根宿主事务未完成，不能执行初始挂载。");
+			SetError(outError, transactionAttach
+					? L"Content 宿主没有可提交的分离事务。"
+					: L"Content 宿主事务未完成，不能执行初始挂载。");
 				return false;
 			}
-			if (mode == RuntimeRootHostAttachMode::Rollback
-				&& roots.size() != _slots.size())
+			if (_window->GetVisualContent())
 			{
-				SetError(outError, L"回滚根数量与分离快照不一致。");
+				SetError(outError, L"Window.Content 必须为空才能提交事务。");
 				return false;
 			}
-			if (std::any_of(roots.begin(), roots.end(),
-				[](const auto& root) { return !root; }))
+			if (content && !_window->TrySetVisualContent(content))
 			{
-				SetError(outError, L"根宿主不能挂载空控件所有者。");
+				SetError(outError, L"Window 无法挂载运行时文档 Content。");
 				return false;
 			}
-
-			try
-			{
-				_form->Controls.reserve(_form->Controls.size() + roots.size());
-				const int anchor = _transactionOpen && !_slots.empty()
-					? *std::min_element(_slots.begin(), _slots.end())
-					: static_cast<int>(_form->Controls.size());
-				std::vector<Control*> attached(roots.size(), nullptr);
-				std::vector<size_t> attachOrder(roots.size());
-				for (size_t index = 0; index < attachOrder.size(); ++index)
-					attachOrder[index] = index;
-				if (mode == RuntimeRootHostAttachMode::Rollback)
-					std::sort(
-						attachOrder.begin(), attachOrder.end(),
-						[&](size_t left, size_t right)
-						{ return _slots[left] < _slots[right]; });
-				for (const auto index : attachOrder)
-				{
-					const int slot = mode == RuntimeRootHostAttachMode::Rollback
-						? _slots[index] : anchor + static_cast<int>(index);
-					auto* raw = roots[index].get();
-					if (_form->TryInsertOwned(
-						(std::clamp)(slot, 0,
-							static_cast<int>(_form->Controls.size())),
-						roots[index]))
-					{
-						attached[index] = raw;
-						continue;
-					}
-
-					for (auto rollback = attachOrder.rbegin();
-						rollback != attachOrder.rend(); ++rollback)
-					{
-						if (!attached[*rollback]) continue;
-						roots[*rollback] =
-							_form->DetachControl(attached[*rollback]);
-					}
-					SetError(outError, L"Form 无法原子挂载运行时文档根。");
-					return false;
-				}
-
-				roots.clear();
-				if (transactionAttach)
-				{
-					_slots.clear();
-					_transactionOpen = false;
-				}
-				if (outError) outError->clear();
-				return true;
-			}
-			catch (...)
-			{
-				SetError(outError, L"Form 挂载根控件时资源分配失败。");
-				return false;
-			}
+			if (transactionAttach) _transactionOpen = false;
+			if (outError) outError->clear();
+			return true;
 		}
 
 	private:
-		::Form* _form = nullptr;
-		std::vector<int> _slots;
+		::Window* _window = nullptr;
 		bool _transactionOpen = false;
 	};
 
-	struct FormPresentationSnapshot
+	/**
+	 * Transactional snapshot for the real Window.DataContext dependency value.
+	 * RuntimeDocument may project an explicitly supplied runtime source onto the
+	 * Window, but it never destroys an existing Binding/DynamicResource
+	 * expression to do so.
+	 */
+	struct WindowDataContextSnapshot
 	{
-		::Form* Target = nullptr;
-		std::wstring Text;
-		POINT Location{};
-		SIZE Size{};
-		D2D1_COLOR_F BackColor{};
-		D2D1_COLOR_F ForeColor{};
-		bool ShowInTaskBar = true;
-		bool TopMost = false;
-		bool Enable = true;
-		bool Visible = true;
-		bool VisibleHead = true;
-		int HeadHeight = 24;
-		bool MinBox = true;
-		bool MaxBox = true;
-		bool CloseBox = true;
-		bool CenterTitle = true;
-		bool AllowResize = true;
-		bool UsesDefaultFont = true;
-		bool OwnsConfiguredFont = false;
-		::Font* ConfiguredFont = nullptr;
-		std::unique_ptr<::Font> OwnedFontBackup;
+		::Window* Target = nullptr;
+		BindingSourceReference LocalValue;
+		bool HadLocalValue = false;
+		DependencyPropertyExpressionKind Expression =
+			DependencyPropertyExpressionKind::None;
+		bool Changed = false;
 
-		static FormPresentationSnapshot Capture(::Form& form)
+		static WindowDataContextSnapshot Capture(::Window& form)
 		{
-			FormPresentationSnapshot snapshot;
+			WindowDataContextSnapshot snapshot;
 			snapshot.Target = &form;
-			snapshot.Text = form.Text;
-			snapshot.Location = form.Location;
-			snapshot.Size = form.Size;
-			snapshot.BackColor = form.BackColor;
-			snapshot.ForeColor = form.ForeColor;
-			snapshot.ShowInTaskBar = form.ShowInTaskBar;
-			snapshot.TopMost = form.TopMost;
-			snapshot.Enable = form.Enable;
-			snapshot.Visible = form.Visible;
-			snapshot.VisibleHead = form.VisibleHead;
-			snapshot.HeadHeight = form.HeadHeight;
-			snapshot.MinBox = form.MinBox;
-			snapshot.MaxBox = form.MaxBox;
-			snapshot.CloseBox = form.CloseBox;
-			snapshot.CenterTitle = form.CenterTitle;
-			snapshot.AllowResize = form.AllowResize;
-			snapshot.UsesDefaultFont = form.UsesDefaultFont();
-			if (auto* font = form.GetConfiguredFont())
+			snapshot.Expression = form.GetPropertyExpressionKind(
+				L"DataContext", DependencyPropertyValueSource::Local);
+			snapshot.HadLocalValue = form.HasPropertyValue(
+				L"DataContext", DependencyPropertyValueSource::Local);
+			if (snapshot.HadLocalValue)
 			{
-				snapshot.ConfiguredFont = font;
-				snapshot.OwnsConfiguredFont = form.OwnsConfiguredFont();
-				if (snapshot.OwnsConfiguredFont)
-					snapshot.OwnedFontBackup =
-						std::make_unique<::Font>(font->FontName, font->FontSize);
+				BindingValue value;
+				if (!form.TryGetPropertyValue(
+					L"DataContext", DependencyPropertyValueSource::Local, value)
+					|| !value.TryGet(snapshot.LocalValue))
+					throw std::logic_error(
+						"Window.DataContext local value is not a BindingSourceReference");
 			}
+			return snapshot;
+		}
+
+		bool Apply(
+			const BindingSourceReference& value,
+			std::wstring* outError)
+		{
+			if (!Target || !value || Target->GetDataContext() == value)
+			{
+				if (outError) outError->clear();
+				return true;
+			}
+			if (Expression != DependencyPropertyExpressionKind::None)
+			{
+				SetError(outError,
+					L"Window.DataContext 已由 Binding 或 DynamicResource 表达式占用；"
+					L"运行时数据源不能隐式替换该表达式。");
+				return false;
+			}
+			try
+			{
+				if (!Target->SetDataContext(value))
+				{
+					SetError(outError, L"无法把运行时 DataContext 应用到 Window。");
+					return false;
+				}
+			}
+			catch (...)
+			{
+				SetError(outError, L"应用 Window.DataContext 时抛出异常。");
+				return false;
+			}
+			Changed = true;
+			if (outError) outError->clear();
+			return true;
+		}
+
+		void Restore() noexcept
+		{
+			if (!Target || !Changed) return;
+			try
+			{
+				if (HadLocalValue) (void)Target->SetDataContext(LocalValue);
+				else (void)Target->ClearDataContext();
+			}
+			catch (...) {}
+			Changed = false;
+		}
+	};
+
+	struct WindowPresentationSnapshot
+	{
+		struct LocalPropertyValue
+		{
+			bool Present = false;
+			BindingValue Value;
+			std::wstring DynamicResourceKey;
+
+			static LocalPropertyValue Capture(
+				::Control& target, const std::wstring& propertyName)
+			{
+				LocalPropertyValue snapshot;
+				snapshot.Present = target.TryGetPropertyValue(
+					propertyName, DependencyPropertyValueSource::Local,
+					snapshot.Value);
+				(void)target.TryGetDynamicResourceKey(
+					propertyName, snapshot.DynamicResourceKey,
+					DependencyPropertyValueSource::Local);
+				return snapshot;
+			}
+
+			void Restore(
+				::Control& target, const std::wstring& propertyName) const
+			{
+				(void)target.ClearDynamicResource(propertyName);
+				(void)target.ClearPropertyValue(propertyName);
+				if (!DynamicResourceKey.empty())
+				{
+					(void)target.SetDynamicResource(
+						propertyName, DynamicResourceKey);
+				}
+				else if (Present)
+				{
+					(void)target.TrySetPropertyValue(propertyName, Value);
+				}
+			}
+		};
+
+		::Window* Target = nullptr;
+		std::wstring Title;
+		float Left = std::numeric_limits<float>::quiet_NaN();
+		float Top = std::numeric_limits<float>::quiet_NaN();
+		cui::layout::Length Width = cui::layout::Length::Auto();
+		cui::layout::Length Height = cui::layout::Length::Auto();
+		cui::drawing::Brush Background;
+		cui::drawing::Brush Foreground;
+		bool ShowInTaskbar = true;
+		bool Topmost = false;
+		bool IsEnabled = true;
+		::Visibility Visibility = ::Visibility::Visible;
+		::WindowStyle Style = ::WindowStyle::SingleBorderWindow;
+		::ResizeMode Resize = ::ResizeMode::CanResize;
+		std::wstring StyleResourceKey;
+		LocalPropertyValue FontFamily;
+		LocalPropertyValue FontSize;
+		std::vector<InputBinding> InputBindings;
+
+		static WindowPresentationSnapshot Capture(::Window& form)
+		{
+			WindowPresentationSnapshot snapshot;
+			snapshot.Target = &form;
+			snapshot.Title = form.Title;
+			snapshot.Left = form.Left;
+			snapshot.Top = form.Top;
+			snapshot.Width = form.Width;
+			snapshot.Height = form.Height;
+			BindingValue brushValue;
+			(void)(form.TryGetPropertyValue(L"Background", brushValue)
+				&& brushValue.TryGet(snapshot.Background));
+			brushValue = {};
+			(void)(form.TryGetPropertyValue(L"Foreground", brushValue)
+				&& brushValue.TryGet(snapshot.Foreground));
+			snapshot.ShowInTaskbar = form.ShowInTaskbar;
+			snapshot.Topmost = form.Topmost;
+			snapshot.IsEnabled = form.IsLocallyEnabled();
+			snapshot.Visibility = form.Visibility;
+			snapshot.Style = form.WindowStyle;
+			snapshot.Resize = form.ResizeMode;
+			snapshot.StyleResourceKey =
+				cui::framework::StyleAccess::ResourceKey(form);
+			snapshot.InputBindings.assign(
+				form.GetInputBindings().begin(), form.GetInputBindings().end());
+			snapshot.FontFamily = LocalPropertyValue::Capture(
+				form, L"FontFamily");
+			snapshot.FontSize = LocalPropertyValue::Capture(
+				form, L"FontSize");
 			return snapshot;
 		}
 
@@ -370,104 +402,140 @@ namespace
 			if (!Target) return;
 			try
 			{
-				Target->Text = Text;
-				Target->Location = Location;
-				Target->Size = Size;
-				Target->BackColor = BackColor;
-				Target->ForeColor = ForeColor;
-				Target->ShowInTaskBar = ShowInTaskBar;
-				Target->TopMost = TopMost;
-				Target->Enable = Enable;
-				Target->VisibleHead = VisibleHead;
-				Target->HeadHeight = HeadHeight;
-				Target->MinBox = MinBox;
-				Target->MaxBox = MaxBox;
-				Target->CloseBox = CloseBox;
-				Target->CenterTitle = CenterTitle;
-				Target->AllowResize = AllowResize;
-				Target->Visible = Visible;
-				if (UsesDefaultFont)
-					Target->SetFontEx(nullptr, false);
-				else if (Target->GetConfiguredFont() == ConfiguredFont)
-					Target->SetFontEx(ConfiguredFont, OwnsConfiguredFont);
-				else if (OwnsConfiguredFont && OwnedFontBackup)
-					Target->SetFontEx(OwnedFontBackup.release(), true);
-				else
-					Target->SetFontEx(ConfiguredFont, false);
+				Target->Title = Title;
+				Target->Left = Left;
+				Target->Top = Top;
+				Target->Width = Width;
+				Target->Height = Height;
+				(void)Target->TrySetPropertyValue(
+					L"Background", BindingValue(Background));
+				(void)Target->TrySetPropertyValue(
+					L"Foreground", BindingValue(Foreground));
+				Target->ShowInTaskbar = ShowInTaskbar;
+				Target->Topmost = Topmost;
+				Target->IsEnabled = IsEnabled;
+				Target->WindowStyle = Style;
+				Target->ResizeMode = Resize;
+				cui::framework::StyleAccess::SetResourceKey(
+					*Target, StyleResourceKey);
+				(void)Target->SetInputBindings(InputBindings);
+				Target->Visibility = Visibility;
+				FontFamily.Restore(*Target, L"FontFamily");
+				FontSize.Restore(*Target, L"FontSize");
 			}
 			catch (...) {}
 		}
 	};
 
-	bool HasSameFormPresentation(
-		const DesignFormModel& left,
-		const DesignFormModel& right) noexcept
+	bool HasSameWindowPresentation(
+		const DesignNode& left,
+		const DesignNode& right) noexcept
 	{
-		return left.Text == right.Text
-			&& left.FontName == right.FontName
-			&& left.FontSize == right.FontSize
-			&& left.Size.cx == right.Size.cx
-			&& left.Size.cy == right.Size.cy
-			&& left.Location.x == right.Location.x
-			&& left.Location.y == right.Location.y
-			&& left.BackColor.r == right.BackColor.r
-			&& left.BackColor.g == right.BackColor.g
-			&& left.BackColor.b == right.BackColor.b
-			&& left.BackColor.a == right.BackColor.a
-			&& left.ForeColor.r == right.ForeColor.r
-			&& left.ForeColor.g == right.ForeColor.g
-			&& left.ForeColor.b == right.ForeColor.b
-			&& left.ForeColor.a == right.ForeColor.a
-			&& left.ShowInTaskBar == right.ShowInTaskBar
-			&& left.TopMost == right.TopMost
-			&& left.Enable == right.Enable
-			&& left.Visible == right.Visible
-			&& left.VisibleHead == right.VisibleHead
-			&& left.HeadHeight == right.HeadHeight
-			&& left.MinBox == right.MinBox
-			&& left.MaxBox == right.MaxBox
-			&& left.CloseBox == right.CloseBox
-			&& left.CenterTitle == right.CenterTitle
-			&& left.AllowResize == right.AllowResize;
+		return left.Properties == right.Properties
+			&& left.Bindings == right.Bindings;
 	}
 
-	bool ApplyFormModel(
-		const DesignFormModel& model,
-		::Form& form,
-		std::wstring* outError)
+	bool ApplyWindowNode(
+		const DesignNode& model,
+		::Window& form,
+		std::wstring* outError,
+		const DesignNode* previous = nullptr)
 	{
 		try
 		{
-			form.Text = model.Text;
-			form.Location = model.Location;
-			form.Size = model.Size;
-			form.BackColor = model.BackColor;
-			form.ForeColor = model.ForeColor;
-			form.ShowInTaskBar = model.ShowInTaskBar;
-			form.TopMost = model.TopMost;
-			form.Enable = model.Enable;
-			form.VisibleHead = model.VisibleHead;
-			form.HeadHeight = model.HeadHeight;
-			form.MinBox = model.MinBox;
-			form.MaxBox = model.MaxBox;
-			form.CloseBox = model.CloseBox;
-			form.CenterTitle = model.CenterTitle;
-			form.AllowResize = model.AllowResize;
+			if (model.Type != UIClass::UI_Window || !model.XamlType.Valid())
+			{
+				SetError(outError, L"运行时根节点不是有效的 XAML Window。");
+				return false;
+			}
+			const auto& currentType = form.GetDeclarativeTypeId();
+			if (currentType.Valid() && currentType != model.XamlType)
+			{
+				SetError(outError,
+					L"Window 宿主已经绑定到另一个 XAML 类型身份。");
+				return false;
+			}
+			if (!currentType.Valid())
+			{
+				const auto* builtIn = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+					model.XamlType.NamespaceUri, model.XamlType.LocalName);
+				if (!builtIn || builtIn->NativeType != UIClass::UI_Window)
+				{
+					SetError(outError,
+						L"运行时根节点的 XAML 类型不是 Window behavior host。");
+					return false;
+				}
+				XamlSchemaContext schemaContext;
+				std::wstring schemaError;
+				if (!CuiRuntime::XamlRuntimeSchema::AttachBuiltInType(
+					form, *builtIn, schemaContext, &schemaError))
+				{
+					SetError(outError,
+						L"Window XAML 类型身份无法附加：" + schemaError);
+					return false;
+				}
+			}
+			cui::framework::StyleAccess::SetResourceKey(
+				form, model.Properties.StyleResourceKey);
 
-			auto* defaultFont = GetDefaultFontObject();
-			const auto defaultName = defaultFont
-				? defaultFont->FontName : std::wstring(L"Arial");
-			const float defaultSize = defaultFont
-				? defaultFont->FontSize : 18.0f;
-			const auto fontName = model.FontName.empty()
-				? defaultName : model.FontName;
-			if (model.FontName.empty()
-				&& fontName == defaultName
-				&& std::fabs(model.FontSize - defaultSize) < 1e-6f)
-				form.SetFontEx(nullptr, false);
-			else
-				form.SetFontEx(new ::Font(fontName, model.FontSize), true);
-			form.Visible = model.Visible;
+			if (previous)
+			{
+				for (const auto& [propertyName, assignment]
+					: previous->Properties.Values)
+				{
+					(void)assignment;
+					if (model.Properties.Find(propertyName)) continue;
+					(void)form.ClearDynamicResource(propertyName);
+					(void)form.ResetPropertyValue(propertyName);
+				}
+			}
+
+			const std::array<const wchar_t*, 15> windowProperties = {
+				L"Title", L"Left", L"Top", L"Width", L"Height",
+				L"Background", L"Foreground", L"FontFamily", L"FontSize",
+				L"ShowInTaskbar", L"Topmost", L"IsEnabled", L"Visibility",
+				L"WindowStyle", L"ResizeMode"
+			};
+			// Missing XAML members are not Local values. Clear the host's native
+			// constructor state so Default/Style can win, then install only the
+			// properties actually authored by the Window node.
+			for (const auto* propertyName : windowProperties)
+			{
+				if (model.Properties.Find(propertyName)) continue;
+				(void)form.ClearDynamicResource(propertyName);
+				(void)form.ResetPropertyValue(propertyName);
+			}
+			auto applyValue = [&](const std::wstring& propertyName,
+				const DesignerStyleValue& value)
+			{
+				std::wstring canonicalName;
+				std::wstring propertyError;
+				if (!DesignerPropertyCatalog::ApplyValue(
+					form, propertyName, value, &canonicalName, nullptr,
+					&propertyError))
+				{
+					SetError(outError, L"应用 Window 属性 " + propertyName
+						+ L" 失败：" + propertyError);
+					return false;
+				}
+				return true;
+			};
+			for (const auto& [propertyName, assignment] : model.Properties.Values)
+			{
+				if (!applyValue(propertyName, assignment.Value)) return false;
+			}
+			for (const auto& [propertyName, assignment] : model.Properties.Values)
+			{
+				(void)form.ClearDynamicResource(propertyName);
+				if (!assignment.DynamicResourceKey.empty()
+					&& !form.SetDynamicResource(
+						propertyName, assignment.DynamicResourceKey))
+				{
+					SetError(outError, L"Window 无法安装动态资源表达式："
+						+ propertyName);
+					return false;
+				}
+			}
 			if (outError) outError->clear();
 			return true;
 		}
@@ -483,13 +551,84 @@ namespace
 		}
 	}
 
+	bool ApplyWindowInputBindings(
+		const DesignNode& model,
+		::Window& form,
+		const std::function<Control*(const std::wstring&)>& resolveTarget,
+		std::wstring* outError)
+	{
+		try
+		{
+			std::vector<InputBinding> bindings;
+			bindings.reserve(model.InputBindings.size());
+			for (const auto& binding : model.InputBindings)
+			{
+				std::wstring gestureError;
+				Control* commandTarget = nullptr;
+				if (!binding.CommandTarget.empty())
+				{
+					commandTarget = resolveTarget
+						? resolveTarget(binding.CommandTarget) : nullptr;
+					if (!commandTarget)
+					{
+						SetError(outError,
+							L"Window InputBinding.CommandTarget 无法解析："
+							+ binding.CommandTarget);
+						return false;
+					}
+				}
+				if (binding.Kind == DesignInputBindingKind::Key)
+				{
+					KeyGesture gesture;
+					if (!TryParseKeyGesture(
+						binding.Gesture, gesture, &gestureError))
+					{
+						SetError(outError,
+							L"Window KeyBinding 无效：" + gestureError);
+						return false;
+					}
+					bindings.emplace_back(KeyBinding{
+						RoutedCommand(binding.Command), gesture,
+						binding.CommandParameter, commandTarget });
+				}
+				else
+				{
+					MouseGesture gesture;
+					if (!TryParseMouseGesture(
+						binding.Gesture, gesture, &gestureError))
+					{
+						SetError(outError,
+							L"Window MouseBinding 无效：" + gestureError);
+						return false;
+					}
+					bindings.emplace_back(MouseBinding{
+						RoutedCommand(binding.Command), gesture,
+						binding.CommandParameter, commandTarget });
+				}
+			}
+			if (!form.SetInputBindings(std::move(bindings)))
+			{
+				SetError(outError, L"Window 拒绝了无效的 InputBindings。");
+				return false;
+			}
+			if (outError) outError->clear();
+			return true;
+		}
+		catch (...)
+		{
+			SetError(outError, L"应用 Window InputBindings 时资源分配失败。");
+			return false;
+		}
+	}
+
 	bool HasConfiguredControlEvents(const RuntimeDocument& document)
 	{
 		return std::any_of(
 			document.Controls().begin(), document.Controls().end(),
 			[](const auto& control)
 			{
-				return control && !control->EventHandlers.empty();
+				return control && (!control->EventHandlers.empty()
+					|| !control->CommandBindings.empty());
 			});
 	}
 
@@ -498,54 +637,17 @@ namespace
 		return Convert::Utf8ToUnicode(value);
 	}
 
-	bool IsSupportedInPlacePropertyKey(const std::string& key)
-	{
-		static const std::unordered_set<std::string> supported{
-			"text", "styleId", "styleClasses", "location", "size",
-			"enable", "visible", "backColor", "foreColor", "borderColor",
-			"bolderColor", "showValidationBorder", "showValidationToolTip",
-			"validationBorderThickness", "validationCornerRadius",
-			"validationToolTipMaxWidth", "accessibleDescription", "margin",
-			"padding", "anchor", "hAlign", "vAlign", "dock", "zIndex",
-			"gridRow", "gridColumn", "gridRowSpan", "gridColumnSpan",
-			"sizeMode", "metadata"
-		};
-		return supported.contains(key);
-	}
-
-	bool HasOnlySupportedInPlacePropertyChanges(
-		const DesignValue& current,
-		const DesignValue& next)
-	{
-		if (current == next) return true;
-		if (!current.is_object() || !next.is_object()) return false;
-		std::set<std::string> keys;
-		for (const auto& [key, value] : current.ObjectItems())
-		{
-			(void)value;
-			keys.insert(key);
-		}
-		for (const auto& [key, value] : next.ObjectItems())
-		{
-			(void)value;
-			keys.insert(key);
-		}
-		for (const auto& key : keys)
-		{
-			if (current[key] != next[key]
-				&& !IsSupportedInPlacePropertyKey(key)) return false;
-		}
-		return true;
-	}
-
 	bool SameNodeShapeForInPlaceReload(
 		const DesignNode& left,
 		const DesignNode& right)
 	{
-		if (left.Type == UIClass::UI_NativeSurface
-			&& left.Props["metadata"]["BehaviorKey"]
-				!= right.Props["metadata"]["BehaviorKey"])
-			return false;
+		if (left.Type == UIClass::UI_NativeSurface)
+		{
+			const auto* leftBehavior = left.Properties.Find(L"BehaviorKey");
+			const auto* rightBehavior = right.Properties.Find(L"BehaviorKey");
+			if ((!leftBehavior) != (!rightBehavior)
+				|| (leftBehavior && *leftBehavior != *rightBehavior)) return false;
+		}
 		return left.Id == right.Id
 			&& left.ParentId == right.ParentId
 			&& left.ParentRef == right.ParentRef
@@ -557,10 +659,12 @@ namespace
 			&& left.PresentedComponentContent
 				== right.PresentedComponentContent
 			&& left.Order == right.Order
-			&& left.Extra == right.Extra
+			&& left.Structure == right.Structure
+			&& left.TemplateState == right.TemplateState
+			&& left.CommandBindings == right.CommandBindings
+			&& left.InputBindings == right.InputBindings
 			&& left.LocalResources == right.LocalResources
-			&& left.LocalObjectResources == right.LocalObjectResources
-			&& HasOnlySupportedInPlacePropertyChanges(left.Props, right.Props);
+			&& left.LocalObjectResources == right.LocalObjectResources;
 	}
 
 	bool HasLocalStyleRules(const DesignDocument& document)
@@ -579,8 +683,7 @@ namespace
 				{
 					return std::any_of(
 						rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
-						{ return _wcsicmp(
-							setter.PropertyName.c_str(), L"Template") == 0; });
+						{ return setter.PropertyName == L"Template"; });
 				});
 		};
 		return hasTemplateSetter(document.StyleSheet)
@@ -594,28 +697,37 @@ namespace
 	{
 		// Template is a structural value. Until runtime tree replacement is a
 		// first-class property operation, any document carrying Style.Template
-		// must be rebuilt so StyleId/Class and BasedOn changes cannot leave stale
+		// must be rebuilt so Style resource and BasedOn changes cannot leave stale
 		// visual children behind.
 		if (HasStructuralTemplateStyles(current)
-			|| HasStructuralTemplateStyles(next)) return false;
-		if (current.Schema != next.Schema
-			|| current.Form.Name != next.Form.Name
-			|| current.Form.EventHandlers != next.Form.EventHandlers
-			|| ((current.HasResourceBackedVisualStates()
+			|| HasStructuralTemplateStyles(next))
+			return false;
+		if (current.Schema != next.Schema) return false;
+		if (current.Window.Name != next.Window.Name) return false;
+		if (current.Window.Events != next.Window.Events) return false;
+		if (current.Window.CommandBindings != next.Window.CommandBindings)
+			return false;
+		if (current.Window.InputBindings != next.Window.InputBindings)
+			return false;
+		if ((current.HasResourceBackedVisualStates()
 					|| next.HasResourceBackedVisualStates()
 					|| HasLocalStyleRules(current)
 					|| HasLocalStyleRules(next))
 				&& current.StyleSheet != next.StyleSheet)
-			|| current.Components != next.Components
-			|| current.ControlTemplates != next.ControlTemplates
-			|| current.DataTypes != next.DataTypes
-			|| current.DataTemplates != next.DataTemplates
-			|| current.ItemsPanelTemplates != next.ItemsPanelTemplates
-			|| current.GroupStyles != next.GroupStyles
-			|| current.DataLists != next.DataLists
-			|| current.CollectionViews != next.CollectionViews
-			|| current.Nodes.size() != next.Nodes.size())
 			return false;
+		if (current.Components != next.Components) return false;
+		if (current.ControlTemplates != next.ControlTemplates)
+			return false;
+		if (current.DataTypes != next.DataTypes) return false;
+		if (current.DataTemplates != next.DataTemplates)
+			return false;
+		if (current.ItemsPanelTemplates != next.ItemsPanelTemplates)
+			return false;
+		if (current.GroupStyles != next.GroupStyles) return false;
+		if (current.DataLists != next.DataLists) return false;
+		if (current.CollectionViews != next.CollectionViews)
+			return false;
+		if (current.Nodes.size() != next.Nodes.size()) return false;
 		std::unordered_map<int, const DesignNode*> currentById;
 		currentById.reserve(current.Nodes.size());
 		for (const auto& node : current.Nodes)
@@ -624,65 +736,39 @@ namespace
 		{
 			const auto found = currentById.find(node.Id);
 			if (found == currentById.end()
-				|| !SameNodeShapeForInPlaceReload(*found->second, node)) return false;
+				|| !SameNodeShapeForInPlaceReload(*found->second, node))
+				return false;
 		}
 		return true;
-	}
-
-	bool PropertyChanged(
-		const DesignNode& current,
-		const DesignNode& next,
-		const char* key)
-	{
-		return current.Props[key] != next.Props[key];
-	}
-
-	std::vector<std::wstring> CopyStyleClasses(Control& target)
-	{
-		const auto classes = target.GetStyleClasses();
-		return { classes.begin(), classes.end() };
-	}
-
-	void SetStyleClasses(
-		Control& target,
-		const std::vector<std::wstring>& classes)
-	{
-		target.ClearStyleClasses();
-		for (const auto& value : classes) (void)target.AddStyleClass(value);
 	}
 
 	struct InPlaceControlSnapshot
 	{
 		DesignerControl* Record = nullptr;
 		Control* Target = nullptr;
-		std::wstring Text;
-		std::wstring StyleId;
-		std::vector<std::wstring> StyleClasses;
-		POINT Location{};
-		SIZE Size{};
-		bool Enable = true;
-		bool Visible = true;
-		D2D1_COLOR_F BackColor{};
-		D2D1_COLOR_F ForeColor{};
-		D2D1_COLOR_F BorderColor{};
-		bool ShowValidationBorder = true;
-		bool ShowValidationToolTip = true;
-		float ValidationBorderThickness = 0.0f;
-		float ValidationCornerRadius = 0.0f;
-		float ValidationToolTipMaxWidth = 0.0f;
-		std::wstring AccessibleDescription;
+		std::wstring StyleResourceKey;
+		cui::layout::Length Width = cui::layout::Length::Auto();
+		cui::layout::Length Height = cui::layout::Length::Auto();
+		float CanvasLeft = cui::layout::UnsetCanvasOffset;
+		float CanvasTop = cui::layout::UnsetCanvasOffset;
+		float CanvasRight = cui::layout::UnsetCanvasOffset;
+		float CanvasBottom = cui::layout::UnsetCanvasOffset;
+		bool IsEnabled = true;
+		::Visibility Visibility = ::Visibility::Visible;
+		cui::drawing::Brush Background;
+		cui::drawing::Brush Foreground;
+		cui::drawing::Brush BorderBrush;
+		std::wstring AutomationFullDescription;
 		Thickness Margin{};
 		Thickness Padding{};
-		uint8_t AnchorStyles = 0;
-		HorizontalAlignment HAlign = HorizontalAlignment::Left;
-		VerticalAlignment VAlign = VerticalAlignment::Top;
+		::HorizontalAlignment Horizontal = ::HorizontalAlignment::Left;
+		::VerticalAlignment Vertical = ::VerticalAlignment::Top;
 		Dock DockPosition = Dock::Left;
 		int ZIndex = 0;
 		int GridRow = 0;
 		int GridColumn = 0;
 		int GridRowSpan = 1;
 		int GridColumnSpan = 1;
-		ImageSizeMode SizeMode = ImageSizeMode::Zoom;
 		std::map<std::wstring, DesignerStyleValue> MetadataProperties;
 		std::map<std::wstring, BindingValue> LocalValues;
 		std::map<std::wstring, std::wstring> StaticResources;
@@ -695,44 +781,49 @@ namespace
 			result.Target = record.ControlInstance;
 			if (!result.Target) return result;
 			auto& target = *result.Target;
-			result.Text = target.Text;
-			result.StyleId = target.GetStyleId();
-			result.StyleClasses = CopyStyleClasses(target);
-			result.Location = target.Location;
-			result.Size = target.Size;
-			result.Enable = target.Enable;
-			result.Visible = target.Visible;
-			result.BackColor = target.BackColor;
-			result.ForeColor = target.ForeColor;
-			result.BorderColor = target.BorderColor;
-			result.ShowValidationBorder = target.ShowValidationBorder;
-			result.ShowValidationToolTip = target.ShowValidationToolTip;
-			result.ValidationBorderThickness = target.ValidationBorderThickness;
-			result.ValidationCornerRadius = target.ValidationCornerRadius;
-			result.ValidationToolTipMaxWidth = target.ValidationToolTipMaxWidth;
-			result.AccessibleDescription = target.AccessibleDescription;
+			result.StyleResourceKey =
+				cui::framework::StyleAccess::ResourceKey(target);
+			result.Width = target.Width;
+			result.Height = target.Height;
+			result.CanvasLeft = Canvas::GetLeft(target);
+			result.CanvasTop = Canvas::GetTop(target);
+			result.CanvasRight = Canvas::GetRight(target);
+			result.CanvasBottom = Canvas::GetBottom(target);
+			result.IsEnabled = target.IsLocallyEnabled();
+			result.Visibility = target.Visibility;
+			BindingValue brushValue;
+			(void)(target.TryGetPropertyValue(L"Background", brushValue)
+				&& brushValue.TryGet(result.Background));
+			brushValue = {};
+			(void)(target.TryGetPropertyValue(L"Foreground", brushValue)
+				&& brushValue.TryGet(result.Foreground));
+			brushValue = {};
+			(void)(target.TryGetPropertyValue(L"BorderBrush", brushValue)
+				&& brushValue.TryGet(result.BorderBrush));
+			result.AutomationFullDescription = target.AutomationFullDescription;
 			result.Margin = target.Margin;
 			result.Padding = target.Padding;
-			result.AnchorStyles = target.AnchorStyles;
-			result.HAlign = target.HAlign;
-			result.VAlign = target.VAlign;
-			result.DockPosition = target.DockPosition;
+			result.Horizontal = target.HorizontalAlignment;
+			result.Vertical = target.VerticalAlignment;
+			result.DockPosition = DockPanel::GetDock(target);
 			result.ZIndex = target.ZIndex;
-			result.GridRow = target.GridRow;
-			result.GridColumn = target.GridColumn;
-			result.GridRowSpan = target.GridRowSpan;
-			result.GridColumnSpan = target.GridColumnSpan;
-			result.SizeMode = target.SizeMode;
+			result.GridRow = Grid::GetRow(target);
+			result.GridColumn = Grid::GetColumn(target);
+			result.GridRowSpan = Grid::GetRowSpan(target);
+			result.GridColumnSpan = Grid::GetColumnSpan(target);
 			result.MetadataProperties = record.MetadataProperties;
 			result.StaticResources = record.MetadataPropertyResourceKeys;
 			result.DynamicResources =
 				record.MetadataPropertyDynamicResourceKeys;
-			for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+			for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
 			{
 				if (!metadata) continue;
+				if (target.GetPropertyExpressionKind(
+					metadata->Name(), DependencyPropertyValueSource::Local)
+					!= DependencyPropertyExpressionKind::None) continue;
 				BindingValue value;
 				if (target.TryGetPropertyValue(
-					metadata->Name(), ControlPropertyValueSource::Local, value))
+					metadata->Name(), DependencyPropertyValueSource::Local, value))
 					result.LocalValues.emplace(metadata->Name(), std::move(value));
 			}
 			return result;
@@ -744,42 +835,65 @@ namespace
 			auto& target = *Target;
 			try
 			{
-				target.Text = Text;
-				target.SetStyleId(StyleId);
-				SetStyleClasses(target, StyleClasses);
-				target.Location = Location;
-				target.Size = Size;
-				target.Enable = Enable;
-				target.Visible = Visible;
-				target.BackColor = BackColor;
-				target.ForeColor = ForeColor;
-				target.BorderColor = BorderColor;
-				target.ShowValidationBorder = ShowValidationBorder;
-				target.ShowValidationToolTip = ShowValidationToolTip;
-				target.ValidationBorderThickness = ValidationBorderThickness;
-				target.ValidationCornerRadius = ValidationCornerRadius;
-				target.ValidationToolTipMaxWidth = ValidationToolTipMaxWidth;
-				target.AccessibleDescription = AccessibleDescription;
-				target.Margin = Margin;
-				target.Padding = Padding;
-				target.AnchorStyles = AnchorStyles;
-				target.HAlign = HAlign;
-				target.VAlign = VAlign;
-				target.DockPosition = DockPosition;
-				target.ZIndex = ZIndex;
-				target.GridRow = GridRow;
-				target.GridColumn = GridColumn;
-				target.GridRowSpan = GridRowSpan;
-				target.GridColumnSpan = GridColumnSpan;
-				target.SizeMode = SizeMode;
-				for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+				cui::framework::StyleAccess::SetResourceKey(
+					target, StyleResourceKey);
+				auto canRestoreBacking = [&](const wchar_t* property)
 				{
-					if (metadata) (void)target.ClearPropertyValue(
-						metadata->Name(), ControlPropertyValueSource::Local);
+					return target.FindPropertyMetadata(property)
+						&& target.GetPropertyExpressionKind(
+						property, DependencyPropertyValueSource::Local)
+						!= DependencyPropertyExpressionKind::Binding;
+				};
+				if (canRestoreBacking(L"Canvas.Left"))
+					Canvas::SetLeft(target, CanvasLeft);
+				if (canRestoreBacking(L"Canvas.Top"))
+					Canvas::SetTop(target, CanvasTop);
+				if (canRestoreBacking(L"Canvas.Right"))
+					Canvas::SetRight(target, CanvasRight);
+				if (canRestoreBacking(L"Canvas.Bottom"))
+					Canvas::SetBottom(target, CanvasBottom);
+				if (canRestoreBacking(L"Width")) target.Width = Width;
+				if (canRestoreBacking(L"Height")) target.Height = Height;
+				if (canRestoreBacking(L"IsEnabled")) target.IsEnabled = IsEnabled;
+				if (canRestoreBacking(L"Visibility"))
+					target.Visibility = Visibility;
+				if (canRestoreBacking(L"Background"))
+					(void)target.TrySetPropertyValue(
+						L"Background", BindingValue(Background));
+				if (canRestoreBacking(L"Foreground"))
+					(void)target.TrySetPropertyValue(
+						L"Foreground", BindingValue(Foreground));
+				if (canRestoreBacking(L"BorderBrush"))
+					(void)target.TrySetPropertyValue(
+						L"BorderBrush", BindingValue(BorderBrush));
+				if (canRestoreBacking(L"AutomationProperties.FullDescription"))
+					target.AutomationFullDescription = AutomationFullDescription;
+				if (canRestoreBacking(L"Margin")) target.Margin = Margin;
+				if (canRestoreBacking(L"Padding")) target.Padding = Padding;
+				if (canRestoreBacking(L"HorizontalAlignment"))
+					target.HorizontalAlignment = Horizontal;
+				if (canRestoreBacking(L"VerticalAlignment"))
+					target.VerticalAlignment = Vertical;
+				if (canRestoreBacking(L"DockPanel.Dock"))
+					DockPanel::SetDock(target, DockPosition);
+				if (canRestoreBacking(L"ZIndex")) target.ZIndex = ZIndex;
+				if (canRestoreBacking(L"Grid.Row"))
+					Grid::SetRow(target, GridRow);
+				if (canRestoreBacking(L"Grid.Column"))
+					Grid::SetColumn(target, GridColumn);
+				if (canRestoreBacking(L"Grid.RowSpan"))
+					Grid::SetRowSpan(target, GridRowSpan);
+				if (canRestoreBacking(L"Grid.ColumnSpan"))
+					Grid::SetColumnSpan(target, GridColumnSpan);
+				for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
+				{
+					if (metadata && target.GetPropertyExpressionKind(
+						metadata->Name(), DependencyPropertyValueSource::Local)
+						!= DependencyPropertyExpressionKind::Binding)
+						(void)target.ClearPropertyValue(metadata->Name());
 				}
 				for (const auto& [name, value] : LocalValues)
-					(void)target.TrySetPropertyValue(
-						name, value, ControlPropertyValueSource::Local);
+					(void)target.TrySetPropertyValue(name, value);
 				for (const auto& [name, resourceKey] : DynamicResources)
 					(void)target.SetDynamicResource(name, resourceKey);
 				Record->MetadataProperties = MetadataProperties;
@@ -795,12 +909,14 @@ namespace
 
 	bool IsRuntimeBound(Control& target, const wchar_t* property)
 	{
-		return property && target.DataBindings.Find(property) != nullptr;
+		return property && target.GetPropertyExpressionKind(
+			property, DependencyPropertyValueSource::Local)
+			== DependencyPropertyExpressionKind::Binding;
 	}
 
 	bool ApplyMetadataPropertyChanges(
-		const DesignValue& currentMetadata,
-		const DesignValue& nextMetadata,
+		const DesignNodeProperties& currentProperties,
+		const DesignNodeProperties& nextProperties,
 		DesignerControl& targetRecord,
 		const DesignerControl& candidateRecord,
 		std::wstring* outError)
@@ -813,18 +929,16 @@ namespace
 			return false;
 		}
 		std::map<std::wstring, bool> changedNames;
-		for (const auto& [key, value] : currentMetadata.ObjectItems())
+		for (const auto& [name, value] : currentProperties.Values)
 		{
-			const auto found = nextMetadata.ObjectItems().find(key);
-			if (found == nextMetadata.ObjectItems().end()
-				|| found->second != value)
-				changedNames[FromUtf8(key)] = found != nextMetadata.ObjectItems().end();
+			const auto* found = nextProperties.Find(name);
+			if (!found || *found != value)
+				changedNames[name] = found != nullptr;
 		}
-		for (const auto& [key, value] : nextMetadata.ObjectItems())
+		for (const auto& [name, value] : nextProperties.Values)
 		{
-			const auto found = currentMetadata.ObjectItems().find(key);
-			if (found == currentMetadata.ObjectItems().end()
-				|| found->second != value) changedNames[FromUtf8(key)] = true;
+			const auto* found = currentProperties.Find(name);
+			if (!found || *found != value) changedNames[name] = true;
 		}
 		std::vector<std::wstring> ordered;
 		ordered.reserve(changedNames.size());
@@ -849,7 +963,7 @@ namespace
 			}
 			else if (leftMetadata != rightMetadata)
 				return leftMetadata != nullptr;
-			return _wcsicmp(left.c_str(), right.c_str()) < 0;
+			return left < right;
 		});
 
 		for (const auto& name : ordered)
@@ -867,20 +981,18 @@ namespace
 				(void)target->ClearDynamicResource(canonical);
 				BindingValue candidateValue;
 				if (candidate->TryGetPropertyValue(
-					canonical, ControlPropertyValueSource::Local, candidateValue))
+					canonical, DependencyPropertyValueSource::Local, candidateValue))
 				{
-					if (!target->TrySetPropertyValue(
-						canonical, candidateValue, ControlPropertyValueSource::Local))
+					if (!target->TrySetPropertyValue(canonical, candidateValue))
 					{
 						SetError(outError, L"控件 “" + targetRecord.Name
-							+ L"” 无法恢复属性 “" + canonical + L"” 的兼容值。");
+							+ L"” 无法恢复属性 “" + canonical + L"” 的候选值。");
 						return false;
 					}
 				}
 				else if (target->HasPropertyValue(
-					canonical, ControlPropertyValueSource::Local)
-					&& !target->ClearPropertyValue(
-						canonical, ControlPropertyValueSource::Local))
+					canonical, DependencyPropertyValueSource::Local)
+					&& !target->ClearPropertyValue(canonical))
 				{
 					SetError(outError, L"控件 “" + targetRecord.Name
 						+ L"” 无法清除属性 “" + canonical + L"” 的本地值。");
@@ -905,9 +1017,8 @@ namespace
 			}
 			BindingValue value;
 			if (!candidate->TryGetPropertyValue(
-				canonical, ControlPropertyValueSource::Local, value)
-				|| !target->TrySetPropertyValue(
-					canonical, value, ControlPropertyValueSource::Local))
+				canonical, DependencyPropertyValueSource::Local, value)
+				|| !target->TrySetPropertyValue(canonical, value))
 			{
 				SetError(outError, L"控件 “" + targetRecord.Name
 					+ L"” 无法原位应用属性 “" + canonical + L"”。");
@@ -936,107 +1047,25 @@ namespace
 			SetError(outError, L"增量重载遇到无效控件实例。");
 			return false;
 		}
-		const std::pair<const char*, const wchar_t*> bindableKeys[]{
-			{ "text", L"Text" }, { "enable", L"Enable" },
-			{ "visible", L"Visible" }, { "backColor", L"BackColor" },
-			{ "foreColor", L"ForeColor" }, { "borderColor", L"BorderColor" },
-			{ "bolderColor", L"BorderColor" },
-			{ "showValidationBorder", L"ShowValidationBorder" },
-			{ "showValidationToolTip", L"ShowValidationToolTip" },
-			{ "validationBorderThickness", L"ValidationBorderThickness" },
-			{ "validationCornerRadius", L"ValidationCornerRadius" },
-			{ "validationToolTipMaxWidth", L"ValidationToolTipMaxWidth" },
-			{ "accessibleDescription", L"AccessibleDescription" },
-			{ "margin", L"Margin" }, { "padding", L"Padding" },
-			{ "anchor", L"AnchorStyles" }, { "hAlign", L"HAlign" },
-			{ "vAlign", L"VAlign" }, { "dock", L"DockPosition" },
-			{ "zIndex", L"ZIndex" }, { "gridRow", L"GridRow" },
-			{ "gridColumn", L"GridColumn" }, { "gridRowSpan", L"GridRowSpan" },
-			{ "gridColumnSpan", L"GridColumnSpan" }, { "sizeMode", L"SizeMode" }
-		};
-		for (const auto& [key, property] : bindableKeys)
-		{
-			if (PropertyChanged(currentNode, nextNode, key)
-				&& IsRuntimeBound(*target, property))
-			{
-				SetError(outError, L"控件 “" + targetRecord.Name + L"” 的属性 “"
-					+ property + L"” 正在绑定，当前不能原位覆盖其持久化值。");
-				return false;
-			}
-		}
+		if (currentNode.Properties.StyleResourceKey
+			!= nextNode.Properties.StyleResourceKey)
+			cui::framework::StyleAccess::SetResourceKey(
+				*target,
+				cui::framework::StyleAccess::ResourceKey(*candidate));
 
-		if (PropertyChanged(currentNode, nextNode, "text")) target->Text = candidate->Text;
-		if (PropertyChanged(currentNode, nextNode, "styleId"))
-			target->SetStyleId(candidate->GetStyleId());
-		if (PropertyChanged(currentNode, nextNode, "styleClasses"))
-			SetStyleClasses(*target, CopyStyleClasses(*candidate));
-		if (PropertyChanged(currentNode, nextNode, "location")) target->Location = candidate->Location;
-		if (PropertyChanged(currentNode, nextNode, "size")) target->Size = candidate->Size;
-		if (PropertyChanged(currentNode, nextNode, "enable")) target->Enable = candidate->Enable;
-		if (PropertyChanged(currentNode, nextNode, "visible")) target->Visible = candidate->Visible;
-		if (PropertyChanged(currentNode, nextNode, "backColor")) target->BackColor = candidate->BackColor;
-		if (PropertyChanged(currentNode, nextNode, "foreColor")) target->ForeColor = candidate->ForeColor;
-		if (PropertyChanged(currentNode, nextNode, "borderColor")
-			|| PropertyChanged(currentNode, nextNode, "bolderColor"))
-			target->BorderColor = candidate->BorderColor;
-		if (PropertyChanged(currentNode, nextNode, "showValidationBorder"))
-			target->ShowValidationBorder = candidate->ShowValidationBorder;
-		if (PropertyChanged(currentNode, nextNode, "showValidationToolTip"))
-			target->ShowValidationToolTip = candidate->ShowValidationToolTip;
-		if (PropertyChanged(currentNode, nextNode, "validationBorderThickness"))
-			target->ValidationBorderThickness = candidate->ValidationBorderThickness;
-		if (PropertyChanged(currentNode, nextNode, "validationCornerRadius"))
-			target->ValidationCornerRadius = candidate->ValidationCornerRadius;
-		if (PropertyChanged(currentNode, nextNode, "validationToolTipMaxWidth"))
-			target->ValidationToolTipMaxWidth = candidate->ValidationToolTipMaxWidth;
-		if (PropertyChanged(currentNode, nextNode, "accessibleDescription"))
-			target->AccessibleDescription = candidate->AccessibleDescription;
-		if (PropertyChanged(currentNode, nextNode, "margin")) target->Margin = candidate->Margin;
-		if (PropertyChanged(currentNode, nextNode, "padding")) target->Padding = candidate->Padding;
-		if (PropertyChanged(currentNode, nextNode, "anchor")) target->AnchorStyles = candidate->AnchorStyles;
-		if (PropertyChanged(currentNode, nextNode, "hAlign")) target->HAlign = candidate->HAlign;
-		if (PropertyChanged(currentNode, nextNode, "vAlign")) target->VAlign = candidate->VAlign;
-		if (PropertyChanged(currentNode, nextNode, "dock")) target->DockPosition = candidate->DockPosition;
-		if (PropertyChanged(currentNode, nextNode, "zIndex")) target->ZIndex = candidate->ZIndex;
-		if (PropertyChanged(currentNode, nextNode, "gridRow")) target->GridRow = candidate->GridRow;
-		if (PropertyChanged(currentNode, nextNode, "gridColumn")) target->GridColumn = candidate->GridColumn;
-		if (PropertyChanged(currentNode, nextNode, "gridRowSpan")) target->GridRowSpan = candidate->GridRowSpan;
-		if (PropertyChanged(currentNode, nextNode, "gridColumnSpan")) target->GridColumnSpan = candidate->GridColumnSpan;
-		if (PropertyChanged(currentNode, nextNode, "sizeMode")) target->SizeMode = candidate->SizeMode;
-		if (PropertyChanged(currentNode, nextNode, "metadata")
-			&& !ApplyMetadataPropertyChanges(
-				currentNode.Props["metadata"],
-				nextNode.Props["metadata"],
-				targetRecord, candidateRecord, outError)) return false;
-		return true;
+		return ApplyMetadataPropertyChanges(
+			currentNode.Properties, nextNode.Properties,
+			targetRecord, candidateRecord, outError);
 	}
-
 	bool ReadControlEventHandlers(
 		const DesignNode& node,
-		std::map<std::wstring, std::wstring>& handlers,
+		DesignEventHandlerMap& handlers,
 		std::wstring* outError)
 	{
 		handlers.clear();
-		if (!node.Events.is_object())
+		for (const auto& [eventName, storedHandler] : node.Events)
 		{
-			SetError(outError, L"控件 “" + node.Name + L"” 的事件集合无效。");
-			return false;
-		}
-		for (const auto& [eventName, value] : node.Events.ObjectItems())
-		{
-			if (value.is_boolean())
-			{
-				if (value.get<bool>()) handlers.emplace(FromUtf8(eventName), L"1");
-				continue;
-			}
-			if (!value.is_string())
-			{
-				SetError(outError, L"控件 “" + node.Name + L"” 的事件值无效："
-					+ FromUtf8(eventName));
-				return false;
-			}
-			auto handler = FromUtf8(value.get<std::string>());
-			if (!handler.empty()) handlers.emplace(FromUtf8(eventName), std::move(handler));
+			if (!storedHandler.empty()) handlers.emplace(eventName, storedHandler);
 		}
 		return true;
 	}
@@ -1058,7 +1087,7 @@ RuntimeDocument::RuntimeDocument(RuntimeDocument&& other) noexcept
 RuntimeDocument::~RuntimeDocument()
 {
 	if (_referenceState) _referenceState->Document = nullptr;
-	ClearFormEvents();
+	ClearWindowEvents();
 	ClearControlEvents();
 	ClearDataBindings();
 }
@@ -1072,35 +1101,53 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	else if (other._referenceState)
 		other._referenceState->Document = nullptr;
 
-	ClearFormEvents();
+	ClearWindowEvents();
 	ClearControlEvents();
 	ClearDataBindings();
 
-	_form = std::move(other._form);
+	_window = std::move(other._window);
 	_dataContextSchema = std::move(other._dataContextSchema);
 	_styleSheet = std::move(other._styleSheet);
 	_dataContext = std::move(other._dataContext);
-	_ownedRoots = std::move(other._ownedRoots);
-	_rootControls = std::move(other._rootControls);
+	_ownedContentRoot = std::move(other._ownedContentRoot);
+	_contentRoot = other._contentRoot;
 	_controls = std::move(other._controls);
 	_collectionViews = std::move(other._collectionViews);
+	_commandTargetReferences = std::move(other._commandTargetReferences);
+	_inputBindingTargetReferences =
+		std::move(other._inputBindingTargetReferences);
 	_controlsByDesignId = std::move(other._controlsByDesignId);
 	_controlsByName = std::move(other._controlsByName);
 	_installedBindings = std::move(other._installedBindings);
 	_eventConnections = std::move(other._eventConnections);
-	_formEventConnections = std::move(other._formEventConnections);
+	_windowEventConnections = std::move(other._windowEventConnections);
+	_commandBindingConnections =
+		std::move(other._commandBindingConnections);
+	_windowCommandBindingConnections =
+		std::move(other._windowCommandBindingConnections);
+	_boundControlCommandHandlerCount =
+		other._boundControlCommandHandlerCount;
+	_boundWindowCommandHandlerCount =
+		other._boundWindowCommandHandlerCount;
 	_controlEventResolver = std::move(other._controlEventResolver);
-	_formEventResolver = std::move(other._formEventResolver);
-	_formEventTarget = other._formEventTarget;
-	_appliedForm = other._appliedForm;
-	_rootHost = std::move(other._rootHost);
+	_windowEventResolver = std::move(other._windowEventResolver);
+	_windowEventTarget = other._windowEventTarget;
+	_appliedWindow = other._appliedWindow;
+	_dataContextWindow = other._dataContextWindow;
+	_commandTargetWindow = other._commandTargetWindow;
+	_contentHost = std::move(other._contentHost);
 	_nativeSurfaceBehaviors = std::move(other._nativeSurfaceBehaviors);
 	_declarativeComponentBehaviors =
 		std::move(other._declarativeComponentBehaviors);
 	_allowNativeSurfacePlaceholder = other._allowNativeSurfacePlaceholder;
 	_sourceDocument = std::move(other._sourceDocument);
-	_rootsReleased = other._rootsReleased;
+	_contentReleased = other._contentReleased;
 	_referenceState = std::move(referenceState);
+	other._boundControlCommandHandlerCount = 0;
+	other._boundWindowCommandHandlerCount = 0;
+	other._windowEventTarget = nullptr;
+	other._dataContextWindow = nullptr;
+	other._commandTargetWindow = nullptr;
 	if (_referenceState) _referenceState->Document = this;
 	return *this;
 }
@@ -1145,27 +1192,261 @@ void RuntimeDocument::RebuildControlIndex()
 	_controlsByName = std::move(byName);
 }
 
+bool RuntimeDocument::HasWindowCommandTargetReferences() const noexcept
+{
+	return std::any_of(
+		_commandTargetReferences.begin(), _commandTargetReferences.end(),
+		[](const PendingCommandTargetReference& reference)
+		{
+			return reference.TargetsWindow;
+		}) || std::any_of(
+			_inputBindingTargetReferences.begin(),
+			_inputBindingTargetReferences.end(),
+			[](const PendingInputBindingTargetReference& reference)
+			{
+				return reference.TargetsWindow;
+			});
+}
+
+bool RuntimeDocument::ApplyCommandTargetReferences(
+	::Window* windowTarget,
+	bool allowPendingWindow,
+	std::vector<CommandTargetSnapshot>* rollback,
+	std::wstring* outError)
+{
+	auto resolveRuntimeName = [&](const std::wstring& name) -> Control*
+	{
+		if (auto* direct = FindControlByName(name)) return direct;
+		const auto firstSeparator = name.find(L'@');
+		if (firstSeparator == std::wstring::npos) return nullptr;
+		auto* current = FindControlByName(name.substr(0, firstSeparator));
+		std::size_t partStart = firstSeparator + 1;
+		while (current && partStart < name.size())
+		{
+			const auto separator = name.find(L'@', partStart);
+			current = current->FindDeclarativeTemplatePart(name.substr(
+				partStart, separator == std::wstring::npos
+					? std::wstring::npos : separator - partStart));
+			if (separator == std::wstring::npos) break;
+			partStart = separator + 1;
+		}
+		return current;
+	};
+	auto resolveSource = [&](PendingCommandTargetReference& reference)
+		-> Control*
+	{
+		auto* owner = resolveRuntimeName(reference.SourceName);
+		if (reference.MenuItemPath.empty()) return owner;
+		if (!owner) return nullptr;
+		const auto topIndex = reference.MenuItemPath.front();
+		if (topIndex > static_cast<std::size_t>(
+			(std::numeric_limits<int>::max)())) return nullptr;
+		MenuItem* item = nullptr;
+		if (auto* menu = dynamic_cast<Menu*>(owner))
+			item = menu->GetItem(static_cast<int>(topIndex));
+		else if (auto* menu = dynamic_cast<ContextMenu*>(owner))
+			item = menu->GetItem(static_cast<int>(topIndex));
+		if (!item) return nullptr;
+		for (std::size_t depth = 1;
+			depth < reference.MenuItemPath.size(); ++depth)
+		{
+			const auto index = reference.MenuItemPath[depth];
+			if (index > static_cast<std::size_t>(
+				(std::numeric_limits<int>::max)())) return nullptr;
+			item = item->GetSubItem(static_cast<int>(index));
+			if (!item) return nullptr;
+		}
+		return item;
+	};
+	auto capture = [](Control* source) -> CommandTargetSnapshot
+	{
+		CommandTargetSnapshot snapshot;
+		snapshot.Source = source;
+		if (auto* button = dynamic_cast<Button*>(source))
+		{
+			snapshot.Authored = button->HasAuthoredCommandTarget();
+			snapshot.Target = button->CommandTarget;
+		}
+		else if (auto* item = dynamic_cast<MenuItem*>(source))
+		{
+			snapshot.Authored = item->HasAuthoredCommandTarget();
+			snapshot.Target = item->CommandTarget;
+		}
+		return snapshot;
+	};
+	auto setTarget = [](Control* source, Control* target) -> bool
+	{
+		if (auto* button = dynamic_cast<Button*>(source))
+		{
+			button->SetCommandTarget(target);
+			return true;
+		}
+		if (auto* item = dynamic_cast<MenuItem*>(source))
+		{
+			item->SetCommandTarget(target);
+			return true;
+		}
+		return false;
+	};
+
+	std::vector<CommandTargetSnapshot> snapshots;
+	snapshots.reserve(_commandTargetReferences.size()
+		+ _inputBindingTargetReferences.size());
+	Control pendingWindowTarget;
+	for (auto& reference : _commandTargetReferences)
+	{
+		auto* source = resolveSource(reference);
+		if (!source)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"CommandTarget source 无法解析："
+				+ reference.SourceName);
+			return false;
+		}
+		reference.Source = source;
+		Control* target = nullptr;
+		if (reference.TargetsWindow)
+		{
+			target = windowTarget;
+			if (!target && allowPendingWindow) target = &pendingWindowTarget;
+		}
+		else target = resolveRuntimeName(reference.TargetName);
+		if (!target)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"CommandTarget 无法解析："
+				+ reference.SourceName + L" -> " + reference.TargetName);
+			return false;
+		}
+		snapshots.push_back(capture(source));
+		try
+		{
+			if (!setTarget(source, target))
+			{
+				RestoreCommandTargetSnapshots(snapshots);
+				SetError(outError,
+					L"CommandTarget source 不是 Button 或 MenuItem："
+					+ reference.SourceName);
+				return false;
+			}
+		}
+		catch (...)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"应用 CommandTarget 时抛出异常："
+				+ reference.SourceName);
+			return false;
+		}
+	}
+	for (auto& reference : _inputBindingTargetReferences)
+	{
+		auto* source = resolveRuntimeName(reference.SourceName);
+		if (!source)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"InputBinding.CommandTarget source 无法解析："
+				+ reference.SourceName);
+			return false;
+		}
+		reference.Source = source;
+		Control* target = nullptr;
+		if (reference.TargetsWindow)
+		{
+			target = windowTarget;
+			if (!target && allowPendingWindow) target = &pendingWindowTarget;
+		}
+		else target = resolveRuntimeName(reference.TargetName);
+		if (!target)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"InputBinding.CommandTarget 无法解析："
+				+ reference.SourceName + L" -> " + reference.TargetName);
+			return false;
+		}
+		const auto current = source->GetInputBindings();
+		if (reference.BindingIndex >= current.size())
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"InputBinding.CommandTarget source 索引失效："
+				+ reference.SourceName);
+			return false;
+		}
+		CommandTargetSnapshot snapshot;
+		snapshot.Source = source;
+		snapshot.IsInputBindingCollection = true;
+		snapshot.InputBindings.assign(current.begin(), current.end());
+		auto next = snapshot.InputBindings;
+		std::visit([target](auto& binding)
+		{
+			binding.CommandTarget = target;
+		}, next[reference.BindingIndex]);
+		snapshots.push_back(std::move(snapshot));
+		try
+		{
+			if (!source->SetInputBindings(std::move(next)))
+			{
+				RestoreCommandTargetSnapshots(snapshots);
+				SetError(outError,
+					L"控件拒绝已解析的 InputBinding.CommandTarget："
+					+ reference.SourceName);
+				return false;
+			}
+		}
+		catch (...)
+		{
+			RestoreCommandTargetSnapshots(snapshots);
+			SetError(outError, L"应用 InputBinding.CommandTarget 时抛出异常："
+				+ reference.SourceName);
+			return false;
+		}
+	}
+	if (rollback)
+		rollback->insert(
+			rollback->end(), snapshots.begin(), snapshots.end());
+	if (outError) outError->clear();
+	return true;
+}
+
+void RuntimeDocument::RestoreCommandTargetSnapshots(
+	const std::vector<CommandTargetSnapshot>& snapshots) noexcept
+{
+	Control expiredTargetPlaceholder;
+	for (auto it = snapshots.rbegin(); it != snapshots.rend(); ++it)
+	{
+		auto* source = it->Source.Get();
+		if (!source) continue;
+		try
+		{
+			if (it->IsInputBindingCollection)
+			{
+				(void)source->SetInputBindings(it->InputBindings);
+				continue;
+			}
+			if (auto* button = dynamic_cast<Button*>(source))
+			{
+				if (!it->Authored) button->ClearCommandTarget();
+				else button->SetCommandTarget(
+					it->Target.Get() ? it->Target.Get() : &expiredTargetPlaceholder);
+			}
+			else if (auto* item = dynamic_cast<MenuItem*>(source))
+			{
+				if (!it->Authored) item->ClearCommandTarget();
+				else item->SetCommandTarget(
+					it->Target.Get() ? it->Target.Get() : &expiredTargetPlaceholder);
+			}
+		}
+		catch (...) {}
+	}
+}
+
 void RuntimeDocument::RemoveDataBindings(
 	std::vector<InstalledBinding>& installed) noexcept
 {
 	for (auto it = installed.rbegin(); it != installed.rend(); ++it)
 	{
-		if (!it->Target) continue;
-		(void)it->Target->DataBindings.Remove(it->Property);
-		if (!it->LocalValueWasSuspended) continue;
-		if (it->PreviousLocalValue)
-		{
-			(void)it->Target->TrySetPropertyValue(
-				it->Property,
-				*it->PreviousLocalValue,
-				ControlPropertyValueSource::Local);
-		}
-		else
-		{
-			(void)it->Target->ClearPropertyValue(
-				it->Property,
-				ControlPropertyValueSource::Local);
-		}
+		auto* target = it->Target.Get();
+		if (!target) continue;
+		(void)target->DataBindings.Remove(it->Property);
 	}
 	installed.clear();
 }
@@ -1173,53 +1454,104 @@ void RuntimeDocument::RemoveDataBindings(
 bool RuntimeDocument::InstallDataBindings(
 	const std::shared_ptr<IBindingSource>& source,
 	std::vector<InstalledBinding>& installed,
-	std::wstring* outError)
+	std::wstring* outError,
+	::Window* windowTarget,
+	const DesignNode* windowNode,
+	bool includeControls)
 {
 	const BindingSourceReference rootContext(source);
-	for (auto* root : _rootControls)
-		if (root) root->SetInheritedDataContext(rootContext);
-	for (const auto& control : _controls)
+	const auto& rootNode = windowNode ? *windowNode : _window;
+	auto namesEqual = [](const std::wstring& left, const std::wstring& right)
 	{
-		if (!control || !control->ControlInstance) continue;
-		auto& target = *control->ControlInstance;
-		for (const auto& [targetProperty, configuration] : control->DataBindings)
+		return left == right;
+	};
+	auto findElement = [&](const std::wstring& name) -> Control*
+	{
+		if (windowTarget && namesEqual(name, rootNode.Name)) return windowTarget;
+		return FindControlByName(name);
+	};
+	auto requiresWindowTarget = [&](const DesignerDataBinding& binding)
+	{
+		if (!binding.ElementName.empty()
+			&& namesEqual(binding.ElementName, rootNode.Name)) return true;
+		return std::any_of(
+			binding.ChildBindings.begin(), binding.ChildBindings.end(),
+			[&](const DesignerDataBinding& child)
+			{
+				return !child.ElementName.empty()
+					&& namesEqual(child.ElementName, rootNode.Name);
+			});
+	};
+	// A detached Content tree has no Window inheritance parent yet. Seed only
+	// that temporary boundary; after mounting, the real Window owns the
+	// inheritance context and must never be bypassed by a synthetic root value.
+	if (auto* contentRoot = _contentRoot.Get();
+		contentRoot && !contentRoot->GetInheritanceParent())
+		cui::framework::XamlAccess::SetInheritedDataContext(
+			*contentRoot, rootContext);
+	struct BindingTarget final
+	{
+		Control* Instance = nullptr;
+		DesignBindingMap Bindings;
+		std::wstring Name;
+		bool IsWindow = false;
+	};
+	std::vector<BindingTarget> targets;
+	if (windowTarget)
+		targets.push_back({ windowTarget, rootNode.Bindings,
+			rootNode.Name.empty() ? std::wstring(L"Window") : rootNode.Name, true });
+	if (includeControls)
+	{
+		targets.reserve(targets.size() + _controls.size());
+		for (const auto& control : _controls)
+			if (control && control->ControlInstance)
+			{
+				BindingTarget target;
+				target.Instance = control->ControlInstance;
+				target.Bindings.insert(
+					control->DataBindings.begin(), control->DataBindings.end());
+				target.Name = control->Name;
+				targets.push_back(std::move(target));
+			}
+	}
+	for (const auto& bindingTarget : targets)
+	{
+		if (!bindingTarget.Instance) continue;
+		auto& target = *bindingTarget.Instance;
+		const auto& targetName = bindingTarget.Name;
+		for (const auto& [targetProperty, configuration] : bindingTarget.Bindings)
 		{
+			// A document is materialized before the native Window exists. Keep
+			// self-root ElementName expressions authored and install them when the
+			// complete XAML namescope is attached to its Window.
+			if (!windowTarget && requiresWindowTarget(configuration)) continue;
+			// A detached Content root cannot resolve a Binding on its own
+			// DataContext until either an explicit runtime source or the real
+			// Window inheritance parent exists. Keep that one expression authored;
+			// every ordinary target still binds to its stable DataContext proxy.
+			if (targetProperty == L"DataContext"
+				&& !target.GetInheritanceParent() && !source)
+				continue;
 			if (configuration.IsMultiBinding())
 			{
 				std::wstring validationError;
 				if (!DesignerBindingUtils::Validate(target, targetProperty,
 					configuration, nullptr, &validationError, nullptr))
 				{
-					SetError(outError, L"控件 " + control->Name + L"：" + validationError);
+					SetError(outError, L"控件 " + targetName + L"：" + validationError);
 					RemoveDataBindings(installed);
 					return false;
 				}
 				InstalledBinding state;
 				state.Target = &target;
 				state.Property = targetProperty;
-				if (configuration.Mode != BindingMode::OneWayToSource)
-				{
-					state.LocalValueWasSuspended = true;
-					BindingValue localValue;
-					const bool hadLocal = target.TryGetPropertyValue(targetProperty,
-						ControlPropertyValueSource::Local, localValue);
-					if (hadLocal) state.PreviousLocalValue = std::move(localValue);
-					if (hadLocal && !target.ClearPropertyValue(targetProperty,
-						ControlPropertyValueSource::Local))
-					{
-						SetError(outError, L"控件 " + control->Name
-							+ L"：无法暂存目标属性 " + targetProperty + L" 的 Local 值。");
-						RemoveDataBindings(installed);
-						return false;
-					}
-				}
 				auto resolveSource = [&](const DesignerDataBinding& child,
 					DesignerBindingUtils::ResolvedBindingSource& resolved,
 					std::wstring* error)
 				{
 					if (!child.ElementName.empty())
 					{
-						resolved.Source = FindControlByName(child.ElementName);
+						resolved.Source = findElement(child.ElementName);
 						if (!resolved.Source)
 						{
 							if (error) *error = L"ElementName 引用了不存在的控件："
@@ -1243,25 +1575,19 @@ bool RuntimeDocument::InstallDataBindings(
 						resolved.Source = resolved.OwnedSource.Get();
 					}
 					else if (targetProperty == L"DataContext")
-						resolved.Source = target.Parent
-							? &target.Parent->DataContextSource() : source.get();
-					else if (source)
-						resolved.Source = &target.DataContextSource();
+						resolved.Source = !bindingTarget.IsWindow
+							&& target.GetInheritanceParent()
+							? &target.GetInheritanceParent()->DataContextSource()
+							: source.get();
 					else
-					{
-						if (error) *error = L"尚未提供 DataContext。";
-						return false;
-					}
+						resolved.Source = &target.DataContextSource();
 					return true;
 				};
 				std::wstring installError;
 				if (!DesignerBindingUtils::InstallBinding(target, targetProperty,
 					configuration, resolveSource, &installError))
 				{
-					if (state.PreviousLocalValue)
-						(void)target.TrySetPropertyValue(targetProperty,
-							*state.PreviousLocalValue, ControlPropertyValueSource::Local);
-					SetError(outError, L"控件 " + control->Name + L"：" + installError);
+					SetError(outError, L"控件 " + targetName + L"：" + installError);
 					RemoveDataBindings(installed);
 					return false;
 				}
@@ -1275,10 +1601,10 @@ bool RuntimeDocument::InstallDataBindings(
 				_dataContextSchema.empty() ? nullptr : &_dataContextSchema;
 			if (!configuration.ElementName.empty())
 			{
-				bindingSource = FindControlByName(configuration.ElementName);
+				bindingSource = findElement(configuration.ElementName);
 				if (!bindingSource)
 				{
-					SetError(outError, L"控件 " + control->Name
+					SetError(outError, L"控件 " + targetName
 						+ L" 的 ElementName 引用了不存在的控件："
 						+ configuration.ElementName);
 					RemoveDataBindings(installed);
@@ -1298,7 +1624,7 @@ bool RuntimeDocument::InstallDataBindings(
 			else if (configuration.RelativeSource
 				== DesignerBindingRelativeSource::TemplatedParent)
 			{
-				SetError(outError, L"控件 " + control->Name
+				SetError(outError, L"控件 " + targetName
 					+ L" 位于公开文档树，不能解析 TemplatedParent。");
 				RemoveDataBindings(installed);
 				return false;
@@ -1319,13 +1645,14 @@ bool RuntimeDocument::InstallDataBindings(
 			}
 			else if (targetProperty == L"DataContext")
 			{
-				bindingSource = target.Parent
-					? &target.Parent->DataContextSource()
+				bindingSource = !bindingTarget.IsWindow
+					&& target.GetInheritanceParent()
+					? &target.GetInheritanceParent()->DataContextSource()
 					: source.get();
 			}
-			else if (source)
+			else
 				bindingSource = &target.DataContextSource();
-			else if (!bindingSource)
+			if (!bindingSource)
 			{
 				// DataContext bindings remain authored but detached until the host
 				// supplies a source. ElementName bindings do not depend on that step.
@@ -1338,8 +1665,6 @@ bool RuntimeDocument::InstallDataBindings(
 				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
 					*bindingSource);
 				if (!elementSourceSchema.empty()) sourceSchema = &elementSourceSchema;
-				else if (target.Parent && targetProperty != L"DataContext")
-					sourceSchema = nullptr;
 			}
 			std::wstring validationError;
 			if (!DesignerBindingUtils::Validate(
@@ -1350,7 +1675,7 @@ bool RuntimeDocument::InstallDataBindings(
 				&validationError,
 				sourceSchema))
 			{
-				SetError(outError, L"控件 " + control->Name + L"：" + validationError);
+				SetError(outError, L"控件 " + targetName + L"：" + validationError);
 				RemoveDataBindings(installed);
 				return false;
 			}
@@ -1363,7 +1688,7 @@ bool RuntimeDocument::InstallDataBindings(
 				converter = BindingValueConverterRegistry::Create(converterName);
 				if (!converter)
 				{
-					SetError(outError, L"控件 " + control->Name
+					SetError(outError, L"控件 " + targetName
 						+ L"：无法创建 Converter：" + converterName);
 					RemoveDataBindings(installed);
 					return false;
@@ -1380,7 +1705,7 @@ bool RuntimeDocument::InstallDataBindings(
 				|| !DesignerBindingUtils::TryConvertOptionalLiteral(
 					configuration.ConverterParameter, converterParameter, &literalError))
 			{
-				SetError(outError, L"控件 " + control->Name + L"：" + literalError);
+				SetError(outError, L"控件 " + targetName + L"：" + literalError);
 				RemoveDataBindings(installed);
 				return false;
 			}
@@ -1388,28 +1713,6 @@ bool RuntimeDocument::InstallDataBindings(
 			InstalledBinding state;
 			state.Target = &target;
 			state.Property = targetProperty;
-			const bool writesTarget =
-				configuration.Mode != BindingMode::OneWayToSource;
-			if (writesTarget)
-			{
-				state.LocalValueWasSuspended = true;
-				BindingValue localValue;
-				const bool hadLocal = target.TryGetPropertyValue(
-					targetProperty,
-					ControlPropertyValueSource::Local,
-					localValue);
-				if (hadLocal)
-					state.PreviousLocalValue = std::move(localValue);
-				if (hadLocal && !target.ClearPropertyValue(
-					targetProperty,
-					ControlPropertyValueSource::Local))
-				{
-					SetError(outError, L"控件 " + control->Name
-						+ L"：无法暂存目标属性 " + targetProperty + L" 的 Local 值。");
-					RemoveDataBindings(installed);
-					return false;
-				}
-			}
 
 			auto* binding = ownedBindingSource
 				? target.DataBindings.Add(
@@ -1426,14 +1729,7 @@ bool RuntimeDocument::InstallDataBindings(
 					configuration.StringFormat);
 			if (!binding)
 			{
-				if (state.PreviousLocalValue)
-				{
-					(void)target.TrySetPropertyValue(
-						targetProperty,
-						*state.PreviousLocalValue,
-						ControlPropertyValueSource::Local);
-				}
-				SetError(outError, L"控件 " + control->Name + L"：绑定 "
+				SetError(outError, L"控件 " + targetName + L"：绑定 "
 					+ targetProperty + L" 失败："
 					+ target.DataBindings.LastErrorMessage());
 				RemoveDataBindings(installed);
@@ -1457,25 +1753,48 @@ bool RuntimeDocument::BindDataContext(
 	}
 
 	auto previousSource = _dataContext;
+	auto* bindingWindow = _dataContextWindow
+		? _dataContextWindow : _appliedWindow;
+	std::optional<WindowDataContextSnapshot> windowContext;
+	if (bindingWindow)
+	{
+		try
+		{
+			windowContext = WindowDataContextSnapshot::Capture(
+				*bindingWindow);
+		}
+		catch (...)
+		{
+			SetError(outError,
+				L"无法保存重新绑定前的 Window.DataContext 状态。");
+			return false;
+		}
+		if (!windowContext->Apply(BindingSourceReference(source), outError))
+			return false;
+	}
 	RemoveDataBindings(_installedBindings);
-	for (auto* root : _rootControls)
-		if (root) root->SetInheritedDataContext({});
+	if (auto* contentRoot = _contentRoot.Get();
+		contentRoot && !contentRoot->GetInheritanceParent())
+		cui::framework::XamlAccess::SetInheritedDataContext(*contentRoot, {});
 	for (const auto& view : _collectionViews)
 		if (view) view->BindDataContext(BindingSourceReference(source));
 	std::vector<InstalledBinding> next;
-	if (!InstallDataBindings(source, next, outError))
+	if (!InstallDataBindings(
+		source, next, outError, bindingWindow, &_window))
 	{
+		if (windowContext) windowContext->Restore();
 		for (const auto& view : _collectionViews)
 			if (view) view->BindDataContext(
 				BindingSourceReference(previousSource));
 		std::vector<InstalledBinding> restored;
-		(void)InstallDataBindings(previousSource, restored, nullptr);
+		(void)InstallDataBindings(
+			previousSource, restored, nullptr, bindingWindow, &_window);
 		_installedBindings = std::move(restored);
 		return false;
 	}
-	SetStyleDataContext(source.get());
 	_dataContext = std::move(source);
 	_installedBindings = std::move(next);
+	if (bindingWindow) _dataContextWindow = bindingWindow;
 	if (outError) outError->clear();
 	return true;
 }
@@ -1484,26 +1803,14 @@ void RuntimeDocument::ClearDataBindings()
 {
 	if (_installedBindings.empty() && !_dataContext) return;
 	RemoveDataBindings(_installedBindings);
-	for (auto* root : _rootControls)
-		if (root) root->SetInheritedDataContext({});
+	// Once mounted, Window.DataContext is a real Window property with its own
+	// lifetime. Clearing document bindings must not erase that host state.
+	if (auto* contentRoot = _contentRoot.Get();
+		contentRoot && !contentRoot->GetInheritanceParent())
+		cui::framework::XamlAccess::SetInheritedDataContext(*contentRoot, {});
 	for (const auto& view : _collectionViews)
 		if (view) view->BindDataContext({});
-	SetStyleDataContext(nullptr);
 	_dataContext.reset();
-}
-
-void RuntimeDocument::SetStyleDataContext(IBindingSource* source)
-{
-	std::vector<const ControlStyleSheet*> updated;
-	for (auto* root : _rootControls)
-	{
-		if (!root) continue;
-		const auto& sheet = root->GetStyleSheet();
-		if (!sheet || std::find(updated.begin(), updated.end(), sheet.get())
-			!= updated.end()) continue;
-		sheet->SetDataContext(source);
-		updated.push_back(sheet.get());
-	}
 }
 
 bool RuntimeDocument::BindControlEvents(
@@ -1517,13 +1824,18 @@ bool RuntimeDocument::BindControlEvents(
 	}
 
 	std::vector<EventConnection> next;
+	std::vector<std::pair<Control*, std::vector<CommandBinding>>>
+		nextCommandBindings;
+	size_t nextCommandHandlerCount = 0;
 	for (const auto& control : _controls)
 	{
 		if (!control || !control->ControlInstance) continue;
+		std::vector<CommandBinding> resolvedCommandBindings;
 		for (const auto& [eventName, storedHandler] : control->EventHandlers)
 		{
 			auto publicEventName = eventName;
-			auto eventOwnerType = control->ComponentType;
+			auto eventOwnerType =
+				control->ControlInstance->GetDeclarativeTypeId();
 			DesignerComponentType attachedOwnerType;
 			std::wstring attachedEventName;
 			std::optional<DesignerEventDescriptor> descriptor;
@@ -1542,7 +1854,9 @@ bool RuntimeDocument::BindControlEvents(
 						descriptor = DesignerEventCatalog::FromComponentEvent(*contract);
 				}
 				publicEventName = attachedEventName;
-				eventOwnerType = attachedOwnerType;
+				eventOwnerType = RuntimeTypeId{
+					attachedOwnerType.XamlNamespace,
+					attachedOwnerType.XamlName };
 			}
 			else
 				descriptor = DesignerEventCatalog::FindControlEvent(
@@ -1553,8 +1867,8 @@ bool RuntimeDocument::BindControlEvents(
 					+ L" 包含未知事件：" + eventName);
 				return false;
 			}
-			const auto handlerName = DesignerEventCatalog::ResolveHandlerName(
-				storedHandler, control->Name, publicEventName);
+			const auto handlerName = DesignerEventCatalog::NormalizeHandlerName(
+				storedHandler);
 			std::wstring validationError;
 			if (handlerName.empty()
 				|| !DesignerEventCatalog::ValidateHandlerName(
@@ -1586,9 +1900,91 @@ bool RuntimeDocument::BindControlEvents(
 			}
 			next.push_back(std::move(connection));
 		}
+		for (const auto& binding : control->CommandBindings)
+		{
+			CommandBinding resolvedBinding;
+			resolvedBinding.Command = RoutedCommand(binding.Command);
+			for (const auto& [eventName, storedHandler] : binding.HandlerRoutes())
+			{
+				if (!storedHandler || storedHandler->empty()) continue;
+				const auto descriptor = DesignerEventCatalog::FindControlEvent(
+					control->Type, eventName, control->ComponentEvents);
+				if (!descriptor)
+				{
+					SetError(outError, L"控件 " + control->Name
+						+ L" 不公开命令事件：" + std::wstring(eventName));
+					return false;
+				}
+				const auto handlerName =
+					DesignerEventCatalog::NormalizeHandlerName(*storedHandler);
+				std::wstring validationError;
+				if (handlerName.empty()
+					|| !DesignerEventCatalog::ValidateHandlerName(
+						handlerName, &validationError))
+				{
+					SetError(outError, L"控件 " + control->Name
+						+ L" 的 CommandBinding 处理器无效：" + validationError);
+					return false;
+				}
+				RuntimeControlEventRequest request{
+					*control->ControlInstance, control->StableId, control->Name,
+					control->Type,
+					control->ControlInstance->GetDeclarativeTypeId(),
+					*descriptor, handlerName, binding.Command, &resolvedBinding };
+				EventConnection connection;
+				std::wstring resolverError;
+				if (!resolver(request, connection, resolverError))
+				{
+					SetError(outError, L"控件 " + control->Name
+						+ L" 的命令 " + binding.Command + L" 无法绑定到 "
+						+ handlerName + (resolverError.empty()
+							? std::wstring{} : L"：" + resolverError));
+					return false;
+				}
+				const bool callbackResolved =
+					eventName == L"PreviewCanExecute"
+						? static_cast<bool>(resolvedBinding.PreviewCanExecute)
+					: eventName == L"CanExecute"
+						? static_cast<bool>(resolvedBinding.CanExecute)
+					: eventName == L"PreviewExecuted"
+						? static_cast<bool>(resolvedBinding.PreviewExecuted)
+					: eventName == L"Executed"
+						? static_cast<bool>(resolvedBinding.Executed)
+					: false;
+				if (!callbackResolved)
+				{
+					SetError(outError, L"控件 " + control->Name
+						+ L" 的命令处理器没有进入 CommandBinding 集合："
+						+ std::wstring(eventName));
+					return false;
+				}
+				++nextCommandHandlerCount;
+			}
+			resolvedCommandBindings.push_back(std::move(resolvedBinding));
+		}
+		nextCommandBindings.emplace_back(
+			control->ControlInstance, std::move(resolvedCommandBindings));
 	}
 
+	std::vector<EventConnection> nextCommandConnections;
+	for (auto& [target, bindings] : nextCommandBindings)
+	{
+		if (!target) continue;
+		for (auto& binding : bindings)
+		{
+			auto connection = target->AddCommandBinding(std::move(binding));
+			if (!connection.Connected())
+			{
+				SetError(outError,
+					L"控件拒绝了已解析的 XAML CommandBinding 集合。");
+				return false;
+			}
+			nextCommandConnections.push_back(std::move(connection));
+		}
+	}
 	_eventConnections = std::move(next);
+	_commandBindingConnections = std::move(nextCommandConnections);
+	_boundControlCommandHandlerCount = nextCommandHandlerCount;
 	_controlEventResolver = resolver;
 	if (outError) outError->clear();
 	return true;
@@ -1597,21 +1993,118 @@ bool RuntimeDocument::BindControlEvents(
 void RuntimeDocument::ClearControlEvents() noexcept
 {
 	_eventConnections.clear();
+	_commandBindingConnections.clear();
+	_boundControlCommandHandlerCount = 0;
 	_controlEventResolver = {};
 }
 
-bool RuntimeDocument::ApplyFormProperties(
-	::Form& form,
-	std::wstring* outError) const
+bool RuntimeDocument::ApplyWindowProperties(
+	::Window& form,
+	std::wstring* outError)
 {
-	if (!ApplyFormModel(_form, form, outError)) return false;
-	_appliedForm = &form;
+	if (_appliedWindow && _appliedWindow != &form)
+	{
+		SetError(outError, L"运行时文档已经应用到另一个 Window。");
+		return false;
+	}
+	std::optional<WindowPresentationSnapshot> presentation;
+	try { presentation = WindowPresentationSnapshot::Capture(form); }
+	catch (...)
+	{
+		SetError(outError, L"无法保存应用 XAML Window 前的显示状态。");
+		return false;
+	}
+	const auto previousStyleSheet =
+		cui::framework::StyleAccess::DocumentStyles(form);
+	std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
+	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+		_styleSheet, runtimeStyleSheet, outError,
+		_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
+		_sourceDocument ? _sourceDocument->Resources : nullptr)
+		|| !cui::framework::StyleAccess::SetDocumentStyles(
+			form, runtimeStyleSheet, false)
+		|| !ApplyWindowNode(_window, form, outError))
+	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		if (outError && outError->empty())
+			*outError = L"无法将文档样式应用到 XAML Window。";
+		return false;
+	}
+	if (!ApplyWindowInputBindings(_window, form,
+		[&](const std::wstring& name) -> Control*
+		{
+			if (name == _window.Name) return &form;
+			return FindControlByName(name);
+		}, outError))
+	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		return false;
+	}
+	std::vector<CommandTargetSnapshot> commandTargetSnapshots;
+	if (!ApplyCommandTargetReferences(
+		&form, false, &commandTargetSnapshots, outError))
+	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		return false;
+	}
+
+	std::optional<WindowDataContextSnapshot> dataContextSnapshot;
+	if (_dataContext)
+	{
+		try { dataContextSnapshot = WindowDataContextSnapshot::Capture(form); }
+		catch (...)
+		{
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				form, previousStyleSheet, false);
+			presentation->Restore();
+			SetError(outError,
+				L"无法保存应用 XAML Window 前的 DataContext 状态。");
+			return false;
+		}
+		if (!dataContextSnapshot->Apply(
+			BindingSourceReference(_dataContext), outError))
+		{
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				form, previousStyleSheet, false);
+			presentation->Restore();
+			return false;
+		}
+	}
+
+	RemoveDataBindings(_installedBindings);
+	std::vector<InstalledBinding> next;
+	if (!InstallDataBindings(
+		_dataContext, next, outError, &form, &_window))
+	{
+		RestoreCommandTargetSnapshots(commandTargetSnapshots);
+		if (dataContextSnapshot) dataContextSnapshot->Restore();
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		std::vector<InstalledBinding> restored;
+		(void)InstallDataBindings(_dataContext, restored, nullptr);
+		_installedBindings = std::move(restored);
+		return false;
+	}
+	_installedBindings = std::move(next);
+	_appliedWindow = &form;
+	if (HasWindowCommandTargetReferences()) _commandTargetWindow = &form;
+	if (_dataContext) _dataContextWindow = &form;
+	if (outError) outError->clear();
 	return true;
 }
 
-bool RuntimeDocument::BindFormEvents(
-	::Form& form,
-	const RuntimeFormEventResolver& resolver,
+bool RuntimeDocument::BindWindowEvents(
+	::Window& form,
+	const RuntimeWindowEventResolver& resolver,
 	std::wstring* outError)
 {
 	if (!resolver)
@@ -1621,16 +2114,18 @@ bool RuntimeDocument::BindFormEvents(
 	}
 
 	std::vector<EventConnection> next;
-	for (const auto& [eventName, storedHandler] : _form.EventHandlers)
+	std::vector<CommandBinding> nextCommandBindings;
+	size_t nextCommandHandlerCount = 0;
+	for (const auto& [eventName, storedHandler] : _window.Events)
 	{
-		const auto descriptor = DesignerEventCatalog::FindFormEvent(eventName);
+		const auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName);
 		if (!descriptor)
 		{
 			SetError(outError, L"窗体包含未知事件：" + eventName);
 			return false;
 		}
-		const auto handlerName = DesignerEventCatalog::ResolveHandlerName(
-			storedHandler, _form.Name, eventName);
+		const auto handlerName = DesignerEventCatalog::NormalizeHandlerName(
+			storedHandler);
 		std::wstring validationError;
 		if (handlerName.empty()
 			|| !DesignerEventCatalog::ValidateHandlerName(
@@ -1642,8 +2137,8 @@ bool RuntimeDocument::BindFormEvents(
 			return false;
 		}
 
-		RuntimeFormEventRequest request{
-			form, _form.Name, *descriptor, handlerName };
+		RuntimeWindowEventRequest request{
+			form, _window.Name, *descriptor, handlerName };
 		EventConnection connection;
 		std::wstring resolverError;
 		if (!resolver(request, connection, resolverError)
@@ -1656,158 +2151,451 @@ bool RuntimeDocument::BindFormEvents(
 		}
 		next.push_back(std::move(connection));
 	}
+	for (const auto& binding : _window.CommandBindings)
+	{
+		CommandBinding resolvedBinding;
+		resolvedBinding.Command = RoutedCommand(binding.Command);
+		for (const auto& [eventName, storedHandler] : binding.HandlerRoutes())
+		{
+			if (!storedHandler || storedHandler->empty()) continue;
+			const auto descriptor = DesignerEventCatalog::FindWindowEvent(eventName);
+			if (!descriptor)
+			{
+				SetError(outError,
+					L"Window 不公开命令事件：" + std::wstring(eventName));
+				return false;
+			}
+			const auto handlerName =
+				DesignerEventCatalog::NormalizeHandlerName(*storedHandler);
+			std::wstring validationError;
+			if (handlerName.empty()
+				|| !DesignerEventCatalog::ValidateHandlerName(
+					handlerName, &validationError))
+			{
+				SetError(outError, L"Window CommandBinding 处理器无效："
+					+ validationError);
+				return false;
+			}
+			RuntimeWindowEventRequest request{
+				form, _window.Name, *descriptor, handlerName, binding.Command,
+				&resolvedBinding };
+			EventConnection connection;
+			std::wstring resolverError;
+			if (!resolver(request, connection, resolverError))
+			{
+				SetError(outError, L"Window 命令 " + binding.Command
+					+ L" 无法绑定到 " + handlerName + (resolverError.empty()
+						? std::wstring{} : L"：" + resolverError));
+				return false;
+			}
+			const bool callbackResolved =
+				eventName == L"PreviewCanExecute"
+					? static_cast<bool>(resolvedBinding.PreviewCanExecute)
+				: eventName == L"CanExecute"
+					? static_cast<bool>(resolvedBinding.CanExecute)
+				: eventName == L"PreviewExecuted"
+					? static_cast<bool>(resolvedBinding.PreviewExecuted)
+				: eventName == L"Executed"
+					? static_cast<bool>(resolvedBinding.Executed)
+				: false;
+			if (!callbackResolved)
+			{
+				SetError(outError,
+					L"Window 命令处理器没有进入 CommandBinding 集合："
+					+ std::wstring(eventName));
+				return false;
+			}
+			++nextCommandHandlerCount;
+		}
+		nextCommandBindings.push_back(std::move(resolvedBinding));
+	}
 
-	_formEventConnections = std::move(next);
-	_formEventTarget = &form;
-	_formEventResolver = resolver;
+	std::vector<EventConnection> nextCommandConnections;
+	for (auto& binding : nextCommandBindings)
+	{
+		auto connection = form.AddCommandBinding(std::move(binding));
+		if (!connection.Connected())
+		{
+			SetError(outError,
+				L"Window 拒绝了已解析的 XAML CommandBinding 集合。");
+			return false;
+		}
+		nextCommandConnections.push_back(std::move(connection));
+	}
+	_windowEventConnections = std::move(next);
+	_windowCommandBindingConnections = std::move(nextCommandConnections);
+	_boundWindowCommandHandlerCount = nextCommandHandlerCount;
+	_windowEventTarget = &form;
+	_windowEventResolver = resolver;
 	if (outError) outError->clear();
 	return true;
 }
 
-void RuntimeDocument::ClearFormEvents() noexcept
+void RuntimeDocument::ClearWindowEvents() noexcept
 {
-	_formEventConnections.clear();
-	_formEventResolver = {};
-	_formEventTarget = nullptr;
+	_windowEventConnections.clear();
+	_windowCommandBindingConnections.clear();
+	_boundWindowCommandHandlerCount = 0;
+	_windowEventResolver = {};
+	_windowEventTarget = nullptr;
 }
 
-bool RuntimeDocument::AttachToForm(
-	::Form& form,
-	const RuntimeFormEventResolver& resolver,
+bool RuntimeDocument::AttachToWindow(
+	::Window& form,
+	const RuntimeWindowEventResolver& resolver,
 	std::wstring* outError)
 {
 	try
 	{
-		return AttachToForm(
+		return AttachToWindow(
 			form,
-			std::make_shared<FormRuntimeDocumentRootHost>(form),
+			std::make_shared<WindowRuntimeDocumentContentHost>(form),
 			resolver,
 			outError);
 	}
 	catch (...)
 	{
-		SetError(outError, L"无法创建 Form 原子挂载适配器。");
+		SetError(outError, L"无法创建 Window 原子挂载适配器。");
 		return false;
 	}
 }
 
-bool RuntimeDocument::AttachToForm(
-	::Form& form,
+bool RuntimeDocument::AttachToWindow(
+	::Window& form,
 	std::wstring* outError)
 {
-	return AttachToForm(form, RuntimeFormEventResolver{}, outError);
+	return AttachToWindow(form, RuntimeWindowEventResolver{}, outError);
 }
 
-bool RuntimeDocument::AttachToForm(
-	::Form& form,
-	std::shared_ptr<RuntimeDocumentRootHost> rootHost,
-	const RuntimeFormEventResolver& resolver,
+bool RuntimeDocument::AttachToWindow(
+	::Window& form,
+	std::shared_ptr<RuntimeDocumentContentHost> contentHost,
+	const RuntimeWindowEventResolver& resolver,
 	std::wstring* outError)
 {
-	if (!rootHost)
+	if (!contentHost)
 	{
-		SetError(outError, L"未提供 Form 原子挂载的根宿主适配器。");
+		SetError(outError, L"未提供 Window 原子挂载的 Content 宿主适配器。");
 		return false;
 	}
-	if (_rootsReleased || _rootHost)
+	if (_contentReleased || _contentHost)
 	{
-		SetError(outError, L"运行时文档根已经挂载或转移，不能重复挂载到 Form。");
+		SetError(outError, L"运行时文档 Content 已经挂载或转移，不能重复挂载到 Window。");
 		return false;
 	}
-	if (_appliedForm || _formEventTarget || _formEventResolver
-		|| !_formEventConnections.empty())
+	if (_appliedWindow || _windowEventTarget || _windowEventResolver
+		|| !_windowEventConnections.empty())
 	{
 		SetError(outError,
-			L"运行时文档已经存在独立 Form 附件；原子挂载只接受未挂载文档。");
+			L"运行时文档已经存在独立 Window 附件；原子挂载只接受未挂载文档。");
 		return false;
 	}
-	if (!resolver && !_form.EventHandlers.empty())
+	if (!resolver && (!_window.Events.empty()
+		|| !_window.CommandBindings.empty()))
 	{
-		SetError(outError, L"动态文档包含 Form 事件，但原子挂载未提供名称解析器。");
+		SetError(outError, L"动态文档包含 Window 事件，但原子挂载未提供名称解析器。");
 		return false;
 	}
 
-	std::optional<FormPresentationSnapshot> presentation;
+	std::optional<WindowPresentationSnapshot> presentation;
 	try
 	{
-		presentation = FormPresentationSnapshot::Capture(form);
+		presentation = WindowPresentationSnapshot::Capture(form);
 	}
 	catch (...)
 	{
-		SetError(outError, L"无法保存 Form 原子挂载前的显示状态。");
+		SetError(outError, L"无法保存 Window 原子挂载前的显示状态。");
 		return false;
 	}
 
-	if (!ApplyFormModel(_form, form, outError))
+	const auto previousStyleSheet =
+		cui::framework::StyleAccess::DocumentStyles(form);
+	std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
+	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+		_styleSheet, runtimeStyleSheet, outError,
+		_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
+		_sourceDocument ? _sourceDocument->Resources : nullptr)
+		|| !cui::framework::StyleAccess::SetDocumentStyles(
+			form, runtimeStyleSheet, false))
 	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		if (outError && outError->empty())
+			*outError = L"文档样式表无法应用到 XAML Window。";
+		return false;
+	}
+	if (!ApplyWindowNode(_window, form, outError))
+	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
 		presentation->Restore();
 		return false;
 	}
-	if (resolver && !BindFormEvents(form, resolver, outError))
+	if (!ApplyWindowInputBindings(_window, form,
+		[&](const std::wstring& name) -> Control*
+		{
+			if (name == _window.Name) return &form;
+			return FindControlByName(name);
+		}, outError))
 	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		return false;
+	}
+	std::vector<CommandTargetSnapshot> commandTargetSnapshots;
+	if (!ApplyCommandTargetReferences(
+		&form, false, &commandTargetSnapshots, outError))
+	{
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		return false;
+	}
+	const auto previousCommandTargetWindow = _commandTargetWindow;
+	if (HasWindowCommandTargetReferences()) _commandTargetWindow = &form;
+	auto rollbackCommandTargets = [&]() noexcept
+	{
+		RestoreCommandTargetSnapshots(commandTargetSnapshots);
+		_commandTargetWindow = previousCommandTargetWindow;
+	};
+	if (resolver && !BindWindowEvents(form, resolver, outError))
+	{
+		rollbackCommandTargets();
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
 		presentation->Restore();
 		return false;
 	}
 
-	if (!TransferRootControlsTo(std::move(rootHost), outError))
+	std::optional<WindowDataContextSnapshot> dataContextSnapshot;
+	if (_dataContext)
+	{
+		try
+		{
+			dataContextSnapshot = WindowDataContextSnapshot::Capture(form);
+		}
+		catch (...)
+		{
+			rollbackCommandTargets();
+			ClearWindowEvents();
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				form, previousStyleSheet, false);
+			presentation->Restore();
+			SetError(outError,
+				L"无法保存 Window 原子挂载前的 DataContext 状态。");
+			return false;
+		}
+		if (!dataContextSnapshot->Apply(
+			BindingSourceReference(_dataContext), outError))
+		{
+			rollbackCommandTargets();
+			ClearWindowEvents();
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				form, previousStyleSheet, false);
+			presentation->Restore();
+			return false;
+		}
+	}
+
+	RemoveDataBindings(_installedBindings);
+	std::vector<InstalledBinding> mountedBindings;
+	if (!InstallDataBindings(
+		_dataContext, mountedBindings, outError, &form, &_window))
 	{
 		const auto failure = outError ? *outError : std::wstring{};
-		ClearFormEvents();
+		rollbackCommandTargets();
+		if (dataContextSnapshot) dataContextSnapshot->Restore();
+		ClearWindowEvents();
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
 		presentation->Restore();
-		_appliedForm = nullptr;
+		std::vector<InstalledBinding> detachedBindings;
+		(void)InstallDataBindings(
+			_dataContext, detachedBindings, nullptr);
+		_installedBindings = std::move(detachedBindings);
+		SetError(outError, failure);
+		return false;
+	}
+	_installedBindings = std::move(mountedBindings);
+
+	if (!TransferContentRootTo(std::move(contentHost), outError))
+	{
+		const auto failure = outError ? *outError : std::wstring{};
+		rollbackCommandTargets();
+		RemoveDataBindings(_installedBindings);
+		if (dataContextSnapshot) dataContextSnapshot->Restore();
+		ClearWindowEvents();
+		(void)cui::framework::StyleAccess::SetDocumentStyles(
+			form, previousStyleSheet, false);
+		presentation->Restore();
+		std::vector<InstalledBinding> detachedBindings;
+		(void)InstallDataBindings(
+			_dataContext, detachedBindings, nullptr);
+		_installedBindings = std::move(detachedBindings);
+		_appliedWindow = nullptr;
 		SetError(outError, failure.empty()
-			? std::wstring(L"Form 根宿主拒绝原子挂载。") : failure);
+			? std::wstring(L"Window Content 宿主拒绝原子挂载。") : failure);
 		return false;
 	}
 
-	_appliedForm = &form;
+	_appliedWindow = &form;
+	_dataContextWindow = &form;
 	if (outError) outError->clear();
 	return true;
 }
 
-bool RuntimeDocument::CommitInheritedFormAttachments(
+bool RuntimeDocument::CommitInheritedWindowAttachments(
 	RuntimeDocument& previous,
 	const std::function<bool(std::wstring*)>& finalCommit,
 	std::wstring* outError)
 {
-	std::optional<FormPresentationSnapshot> presentation;
-	if (previous._appliedForm)
+	std::optional<WindowPresentationSnapshot> presentation;
+	std::optional<WindowDataContextSnapshot> dataContextSnapshot;
+	std::shared_ptr<const ControlStyleSheet> previousWindowStyleSheet;
+	bool previousWindowBindingsDetached = false;
+	auto* appliedWindow = previous._appliedWindow;
+	auto* dataContextWindow = previous._dataContextWindow
+		? previous._dataContextWindow : appliedWindow;
+	auto* commandTargetWindow = previous._commandTargetWindow
+		? previous._commandTargetWindow : appliedWindow;
+	std::vector<CommandTargetSnapshot> commandTargetSnapshots;
+	if (!ApplyCommandTargetReferences(
+		commandTargetWindow,
+		commandTargetWindow == nullptr,
+		&commandTargetSnapshots,
+		outError)) return false;
+
+	auto detachPreviousWindowBindings = [&]() noexcept
+	{
+		if (!appliedWindow) return;
+		for (auto it = previous._installedBindings.begin();
+			it != previous._installedBindings.end();)
+		{
+			if (it->Target != appliedWindow)
+			{
+				++it;
+				continue;
+			}
+			(void)appliedWindow->DataBindings.Remove(it->Property);
+			it = previous._installedBindings.erase(it);
+		}
+		previousWindowBindingsDetached = true;
+	};
+	auto restorePreviousWindowBindings = [&]() noexcept
+	{
+		if (!previousWindowBindingsDetached || !appliedWindow) return;
+		try
+		{
+			std::vector<RuntimeDocument::InstalledBinding> restored;
+			if (previous.InstallDataBindings(
+				previous._dataContext, restored, nullptr,
+				appliedWindow, &previous._window, false))
+				previous._installedBindings.insert(
+					previous._installedBindings.end(),
+					std::make_move_iterator(restored.begin()),
+					std::make_move_iterator(restored.end()));
+		}
+		catch (...) {}
+		previousWindowBindingsDetached = false;
+	};
+	auto rollback = [&]() noexcept
+	{
+		RestoreCommandTargetSnapshots(commandTargetSnapshots);
+		ClearWindowEvents();
+		RemoveDataBindings(_installedBindings);
+		if (dataContextSnapshot) dataContextSnapshot->Restore();
+		if (appliedWindow)
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				*appliedWindow, previousWindowStyleSheet, false);
+		if (presentation) presentation->Restore();
+		restorePreviousWindowBindings();
+	};
+
+	if (appliedWindow)
 	{
 		try
 		{
 			presentation =
-				FormPresentationSnapshot::Capture(*previous._appliedForm);
+				WindowPresentationSnapshot::Capture(*appliedWindow);
+			previousWindowStyleSheet =
+				cui::framework::StyleAccess::DocumentStyles(*appliedWindow);
+			if (_dataContext && dataContextWindow)
+				dataContextSnapshot =
+					WindowDataContextSnapshot::Capture(*dataContextWindow);
 		}
 		catch (...)
 		{
-			SetError(outError, L"无法保存热重载前的 Form 显示状态。");
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			SetError(outError, L"无法保存热重载前的 Window 显示状态。");
 			return false;
 		}
-		if (!HasSameFormPresentation(previous._form, _form)
-			&& !ApplyFormModel(_form, *previous._appliedForm, outError))
+		detachPreviousWindowBindings();
+		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
+		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			_styleSheet, runtimeStyleSheet, outError,
+			_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
+			_sourceDocument ? _sourceDocument->Resources : nullptr)
+			|| !cui::framework::StyleAccess::SetDocumentStyles(
+				*appliedWindow, runtimeStyleSheet, false)
+			|| (!HasSameWindowPresentation(previous._window, _window)
+				&& !ApplyWindowNode(
+					_window, *appliedWindow, outError, &previous._window))
+			|| !ApplyWindowInputBindings(_window, *appliedWindow,
+				[&](const std::wstring& name) -> Control*
+				{
+					if (name == _window.Name) return appliedWindow;
+					return FindControlByName(name);
+				}, outError))
 		{
-			presentation->Restore();
+			rollback();
+			if (outError && outError->empty())
+				*outError = L"无法将重载样式应用到 XAML Window。";
 			return false;
 		}
-		_appliedForm = previous._appliedForm;
+		_appliedWindow = appliedWindow;
+	}
+	if (_dataContext && dataContextWindow)
+	{
+		if (!dataContextSnapshot->Apply(
+			BindingSourceReference(_dataContext), outError))
+		{
+			rollback();
+			return false;
+		}
+	}
+	if (appliedWindow)
+	{
+		RemoveDataBindings(_installedBindings);
+		std::vector<InstalledBinding> mountedBindings;
+		if (!InstallDataBindings(
+			_dataContext, mountedBindings, outError,
+			appliedWindow, &_window))
+		{
+			rollback();
+			return false;
+		}
+		_installedBindings = std::move(mountedBindings);
 	}
 
-	if (previous._formEventTarget && previous._formEventResolver)
+	if (previous._windowEventTarget && previous._windowEventResolver)
 	{
-		if (!BindFormEvents(
-			*previous._formEventTarget,
-			previous._formEventResolver,
+		if (!BindWindowEvents(
+			*previous._windowEventTarget,
+			previous._windowEventResolver,
 			outError))
 		{
-			if (presentation) presentation->Restore();
+			rollback();
 			return false;
 		}
 	}
-	else if (previous._appliedForm && !_form.EventHandlers.empty())
+	else if (previous._appliedWindow && (!_window.Events.empty()
+		|| !_window.CommandBindings.empty()))
 	{
-		if (presentation) presentation->Restore();
+		rollback();
 		SetError(outError,
-			L"热重载后的动态文档包含 Form 事件，但宿主没有保留名称解析器。");
+			L"热重载后的动态文档包含 Window 事件，但宿主没有保留名称解析器。");
 		return false;
 	}
 
@@ -1816,132 +2604,147 @@ bool RuntimeDocument::CommitInheritedFormAttachments(
 	catch (...)
 	{
 		committed = false;
-		SetError(outError, L"提交 Form 运行时附件时抛出异常。");
+		SetError(outError, L"提交 Window 运行时附件时抛出异常。");
 	}
-	if (committed) return true;
+	if (committed)
+	{
+		_dataContextWindow = dataContextWindow;
+		_commandTargetWindow = HasWindowCommandTargetReferences()
+			? commandTargetWindow : nullptr;
+		previousWindowBindingsDetached = false;
+		return true;
+	}
 
-	ClearFormEvents();
-	if (presentation) presentation->Restore();
+	rollback();
 	return false;
 }
 
-std::vector<std::unique_ptr<Control>> RuntimeDocument::ReleaseRootControls()
+std::unique_ptr<Control> RuntimeDocument::ReleaseContentRoot()
 {
-	if (_rootsReleased) return {};
+	if (_contentReleased) return {};
 	// A raw ownership transfer has no lifetime adapter. Detach every runtime
-	// attachment while the controls are still guaranteed to be alive so the
-	// document can later be destroyed without dereferencing external roots.
-	ClearFormEvents();
+	// attachment while Content is still guaranteed to be alive so the document
+	// can later be destroyed without dereferencing an external tree.
+	ClearWindowEvents();
 	ClearControlEvents();
 	ClearDataBindings();
-	_rootsReleased = true;
-	_rootHost.reset();
-	return std::move(_ownedRoots);
+	(void)ApplyCommandTargetReferences(nullptr, true, nullptr, nullptr);
+	_contentReleased = true;
+	_contentHost.reset();
+	_dataContextWindow = nullptr;
+	_commandTargetWindow = nullptr;
+	return std::move(_ownedContentRoot);
 }
 
-bool RuntimeDocument::TransferRootControlsTo(
-	std::shared_ptr<RuntimeDocumentRootHost> host,
+bool RuntimeDocument::TransferContentRootTo(
+	std::shared_ptr<RuntimeDocumentContentHost> host,
 	std::wstring* outError)
 {
 	if (!host)
 	{
-		SetError(outError, L"未提供运行时根宿主适配器。");
+		SetError(outError, L"未提供运行时 Content 宿主适配器。");
 		return false;
 	}
-	if (_rootsReleased)
+	if (_contentReleased)
 	{
-		SetError(outError, L"运行时文档根所有权已经转移。");
+		SetError(outError, L"运行时文档 Content 所有权已经转移。");
 		return false;
 	}
+	std::vector<CommandTargetSnapshot> commandTargetSnapshots;
+	if (!ApplyCommandTargetReferences(
+		_commandTargetWindow,
+		!HasWindowCommandTargetReferences(),
+		&commandTargetSnapshots,
+		outError)) return false;
 	try
 	{
-		if (!host->AttachRoots(
-			_ownedRoots, RuntimeRootHostAttachMode::Initial, outError)) return false;
+		if (!host->AttachContent(
+			_ownedContentRoot, RuntimeContentHostAttachMode::Initial, outError))
+		{
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			return false;
+		}
 	}
 	catch (...)
 	{
-		SetError(outError, L"根宿主初始挂载抛出异常。");
+		RestoreCommandTargetSnapshots(commandTargetSnapshots);
+		SetError(outError, L"Content 宿主初始挂载抛出异常。");
 		return false;
 	}
-	_rootsReleased = true;
-	_rootHost = std::move(host);
+	_contentReleased = true;
+	_contentHost = std::move(host);
 	if (outError) outError->clear();
 	return true;
 }
 
-bool RuntimeDocument::TransferRootControlsTo(
-	::Form& form,
+bool RuntimeDocument::TransferContentRootTo(
+	::Window& form,
 	std::wstring* outError)
 {
+	std::vector<CommandTargetSnapshot> commandTargetSnapshots;
+	const auto previousCommandTargetWindow = _commandTargetWindow;
 	try
 	{
-		return TransferRootControlsTo(
-			std::make_shared<FormRuntimeDocumentRootHost>(form), outError);
+		if (!ApplyCommandTargetReferences(
+			&form, false, &commandTargetSnapshots, outError)) return false;
+		if (HasWindowCommandTargetReferences()) _commandTargetWindow = &form;
+		auto dataContextSnapshot = WindowDataContextSnapshot::Capture(form);
+		if (_dataContext && !dataContextSnapshot.Apply(
+			BindingSourceReference(_dataContext), outError))
+		{
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			_commandTargetWindow = previousCommandTargetWindow;
+			return false;
+		}
+		if (!TransferContentRootTo(
+			std::make_shared<WindowRuntimeDocumentContentHost>(form), outError))
+		{
+			dataContextSnapshot.Restore();
+			RestoreCommandTargetSnapshots(commandTargetSnapshots);
+			_commandTargetWindow = previousCommandTargetWindow;
+			return false;
+		}
+		_dataContextWindow = &form;
+		return true;
 	}
 	catch (...)
 	{
-		SetError(outError, L"无法创建 Form 根宿主适配器。");
+		RestoreCommandTargetSnapshots(commandTargetSnapshots);
+		_commandTargetWindow = previousCommandTargetWindow;
+		SetError(outError, L"无法创建 Window Content 宿主适配器。");
 		return false;
 	}
-}
-
-CodeGenInput RuntimeDocument::BuildCodeGenInput() const
-{
-	CodeGenInput input;
-	input.Controls = _controls;
-	input.FormText = _form.Text;
-	input.FormName = _form.Name;
-	input.FormSize = _form.Size;
-	input.FormLocation = _form.Location;
-	input.FormBackColor = _form.BackColor;
-	input.FormForeColor = _form.ForeColor;
-	input.FormShowInTaskBar = _form.ShowInTaskBar;
-	input.FormTopMost = _form.TopMost;
-	input.FormEnable = _form.Enable;
-	input.FormVisible = _form.Visible;
-	input.FormEventHandlers = _form.EventHandlers;
-	input.FormVisibleHead = _form.VisibleHead;
-	input.FormHeadHeight = _form.HeadHeight;
-	input.FormMinBox = _form.MinBox;
-	input.FormMaxBox = _form.MaxBox;
-	input.FormCloseBox = _form.CloseBox;
-	input.FormCenterTitle = _form.CenterTitle;
-	input.FormAllowResize = _form.AllowResize;
-	input.FormFontName = _form.FontName;
-	input.FormFontSize = _form.FontSize;
-	input.ResourceBasePath = _sourceDocument
-		? _sourceDocument->ResourceBasePath : std::wstring{};
-	input.StyleSheet = _styleSheet;
-	return input;
 }
 
 bool RuntimeDocumentLoader::Load(
 	const DesignDocument& document,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
-		if (output._rootsReleased
-			|| output._appliedForm
-			|| output._formEventTarget)
+		if (output._contentReleased
+			|| output._appliedWindow
+			|| output._windowEventTarget)
 		{
 			SetError(outError,
-				L"运行时文档已经附加到外部 Form 或根宿主；请使用 Reload 保持宿主事务。");
+				L"运行时文档已经附加到外部 Window 或 Content 宿主；"
+				L"请使用 Reload 保持宿主事务。");
 			return false;
 		}
 		DesignDocumentEventIndex eventIndex;
 		if (!DesignDocumentEventIndex::Build(
 			document, eventIndex, outError)) return false;
-		MaterializedControlTree materialized;
-		if (!DesignDocumentMaterializer::Materialize(
+		CuiRuntime::XamlObjectTree materialized;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 			document, materialized,
-			MaterializationOptionsFor(options), outError)) return false;
+			MaterializationOptionsFor(options), outError, outDiagnostic)) return false;
 
 		RuntimeDocument candidate;
 		candidate._sourceDocument = document;
-		candidate._form = document.Form;
+		candidate._window = document.Window;
 		candidate._dataContextSchema = document.DataContextSchema;
 		DesignerDataContextSchemaUtils::Canonicalize(
 			candidate._dataContextSchema);
@@ -1953,11 +2756,29 @@ bool RuntimeDocumentLoader::Load(
 			options.AllowNativeSurfacePlaceholder;
 		candidate._controls = std::move(materialized.Controls);
 		candidate._collectionViews = std::move(materialized.CollectionViews);
-		candidate._ownedRoots = std::move(materialized.Roots);
+		candidate._commandTargetReferences.reserve(
+			materialized.CommandTargets.size());
+		for (auto& reference : materialized.CommandTargets)
+			candidate._commandTargetReferences.push_back({
+				reference.Source,
+				std::move(reference.SourceName),
+				std::move(reference.MenuItemPath),
+				std::move(reference.TargetName),
+				reference.TargetsWindow });
+		candidate._inputBindingTargetReferences.reserve(
+			materialized.InputBindingTargets.size());
+		for (auto& reference : materialized.InputBindingTargets)
+			candidate._inputBindingTargetReferences.push_back({
+				reference.Source,
+				std::move(reference.SourceName),
+				reference.BindingIndex,
+				std::move(reference.TargetName),
+				reference.TargetsWindow });
+		candidate._ownedContentRoot = std::move(materialized.ContentRoot);
+		candidate._contentRoot = candidate._ownedContentRoot.get();
 		candidate.RebuildControlIndex();
-		candidate._rootControls.reserve(candidate._ownedRoots.size());
-		for (const auto& root : candidate._ownedRoots)
-			if (root) candidate._rootControls.push_back(root.get());
+		if (!candidate.ApplyCommandTargetReferences(
+			nullptr, true, nullptr, outError)) return false;
 
 		if (options.DataContext
 			&& !candidate.BindDataContext(options.DataContext, outError))
@@ -1997,68 +2818,19 @@ bool RuntimeDocumentLoader::Load(
 	}
 }
 
-bool RuntimeDocumentLoader::LoadXml(
-	const std::string& xml,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	std::wstring* outError)
-{
-	try
-	{
-		DesignDocument document;
-		if (!DesignDocumentSerializer::FromXml(
-			xml, document, outError)) return false;
-		return Load(document, output, options, outError);
-	}
-	catch (const std::exception&)
-	{
-		SetError(outError, L"动态 XML 加载失败：文档格式无效。");
-		return false;
-	}
-	catch (...)
-	{
-		SetError(outError, L"动态 XML 加载失败：发生未知解析异常。");
-		return false;
-	}
-}
-
-bool RuntimeDocumentLoader::LoadFile(
-	const std::wstring& filePath,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	std::wstring* outError)
-{
-	try
-	{
-		DesignDocument document;
-		if (!DesignDocumentSerializer::LoadFromFile(
-			filePath, document, outError)) return false;
-		return Load(document, output, options, outError);
-	}
-	catch (const std::exception&)
-	{
-		SetError(outError, L"动态文档文件加载失败：文件内容无效。");
-		return false;
-	}
-	catch (...)
-	{
-		SetError(outError, L"动态文档文件加载失败：发生未知读取异常。");
-		return false;
-	}
-}
-
 bool RuntimeDocumentLoader::LoadXaml(
 	const std::string& xaml,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, outError)) return false;
-		return Load(document, output, options, outError);
+			xaml, document, outError, outDiagnostic)) return false;
+		return Load(document, output, options, outError, outDiagnostic);
 	}
 	catch (const std::exception&)
 	{
@@ -2076,14 +2848,15 @@ bool RuntimeDocumentLoader::LoadXamlFile(
 	const std::wstring& filePath,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, outError)) return false;
-		return Load(document, output, options, outError);
+			filePath, document, outError, outDiagnostic)) return false;
+		return Load(document, output, options, outError, outDiagnostic);
 	}
 	catch (const std::exception&)
 	{
@@ -2097,92 +2870,49 @@ bool RuntimeDocumentLoader::LoadXamlFile(
 	}
 }
 
-bool RuntimeDocumentLoader::LoadIntoForm(
+bool RuntimeDocumentLoader::LoadIntoWindow(
 	const DesignDocument& document,
-	::Form& form,
+	::Window& form,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	const RuntimeFormEventResolver& formResolver,
-	std::wstring* outError)
+	const RuntimeWindowEventResolver& formResolver,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
-	if (output._rootsReleased
-		|| output._appliedForm
-		|| output._formEventTarget)
+	if (output._contentReleased
+		|| output._appliedWindow
+		|| output._windowEventTarget)
 	{
 		SetError(outError,
-			L"输出运行时文档已经附加到外部 Form 或根宿主；请使用 Reload。");
+			L"输出运行时文档已经附加到外部 Window 或 Content 宿主；"
+			L"请使用 Reload。");
 		return false;
 	}
 
 	RuntimeDocument candidate;
-	if (!Load(document, candidate, options, outError)) return false;
-	if (!candidate.AttachToForm(form, formResolver, outError)) return false;
+	if (!Load(document, candidate, options, outError, outDiagnostic)) return false;
+	if (!candidate.AttachToWindow(form, formResolver, outError)) return false;
 	output = std::move(candidate);
 	if (outError) outError->clear();
 	return true;
 }
 
-bool RuntimeDocumentLoader::LoadXmlIntoForm(
-	const std::string& xml,
-	::Form& form,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	const RuntimeFormEventResolver& formResolver,
-	std::wstring* outError)
-{
-	try
-	{
-		DesignDocument document;
-		if (!DesignDocumentSerializer::FromXml(
-			xml, document, outError)) return false;
-		return LoadIntoForm(
-			document, form, output, options, formResolver, outError);
-	}
-	catch (...)
-	{
-		SetError(outError, L"动态 XML 原子挂载失败：文档格式无效。");
-		return false;
-	}
-}
-
-bool RuntimeDocumentLoader::LoadFileIntoForm(
-	const std::wstring& filePath,
-	::Form& form,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	const RuntimeFormEventResolver& formResolver,
-	std::wstring* outError)
-{
-	try
-	{
-		DesignDocument document;
-		if (!DesignDocumentSerializer::LoadFromFile(
-			filePath, document, outError)) return false;
-		return LoadIntoForm(
-			document, form, output, options, formResolver, outError);
-	}
-	catch (...)
-	{
-		SetError(outError, L"动态文档文件原子挂载失败：文件内容无效。");
-		return false;
-	}
-}
-
-bool RuntimeDocumentLoader::LoadXamlIntoForm(
+bool RuntimeDocumentLoader::LoadXamlIntoWindow(
 	const std::string& xaml,
-	::Form& form,
+	::Window& form,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	const RuntimeFormEventResolver& formResolver,
-	std::wstring* outError)
+	const RuntimeWindowEventResolver& formResolver,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, outError)) return false;
-		return LoadIntoForm(
-			document, form, output, options, formResolver, outError);
+			xaml, document, outError, outDiagnostic)) return false;
+		return LoadIntoWindow(
+			document, form, output, options, formResolver, outError, outDiagnostic);
 	}
 	catch (...)
 	{
@@ -2191,21 +2921,22 @@ bool RuntimeDocumentLoader::LoadXamlIntoForm(
 	}
 }
 
-bool RuntimeDocumentLoader::LoadXamlFileIntoForm(
+bool RuntimeDocumentLoader::LoadXamlFileIntoWindow(
 	const std::wstring& filePath,
-	::Form& form,
+	::Window& form,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
-	const RuntimeFormEventResolver& formResolver,
-	std::wstring* outError)
+	const RuntimeWindowEventResolver& formResolver,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, outError)) return false;
-		return LoadIntoForm(
-			document, form, output, options, formResolver, outError);
+			filePath, document, outError, outDiagnostic)) return false;
+		return LoadIntoWindow(
+			document, form, output, options, formResolver, outError, outDiagnostic);
 	}
 	catch (...)
 	{
@@ -2219,100 +2950,105 @@ bool RuntimeDocumentLoader::ReloadHosted(
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& effectiveOptions,
 	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
-	auto host = output._rootHost;
-	if (!host || !output._rootsReleased)
+	auto host = output._contentHost;
+	if (!host || !output._contentReleased)
 	{
 		SetError(outError, L"运行时文档没有处于外部宿主管理状态。");
 		return false;
 	}
 
-	std::vector<std::unique_ptr<Control>> previousRoots;
+	std::unique_ptr<Control> previousContent;
 	try
 	{
-		if (!host->DetachRoots(
-			output._rootControls, previousRoots, outError)) return false;
+		if (!host->DetachContent(
+			output._contentRoot.Get(), previousContent, outError)) return false;
 	}
 	catch (...)
 	{
-		if (!previousRoots.empty())
+		if (previousContent)
 		{
-			output._ownedRoots = std::move(previousRoots);
-			output._rootsReleased = false;
-			output._rootHost.reset();
+			output._ownedContentRoot = std::move(previousContent);
+			output._contentRoot = output._ownedContentRoot.get();
+			output._contentReleased = false;
+			output._contentHost.reset();
 		}
-		SetError(outError, L"根宿主分离旧根时抛出异常。");
+		SetError(outError, L"Content 宿主分离旧 Content 时抛出异常。");
 		return false;
 	}
-	output._ownedRoots = std::move(previousRoots);
-	output._rootsReleased = false;
+	output._ownedContentRoot = std::move(previousContent);
+	output._contentRoot = output._ownedContentRoot.get();
+	output._contentReleased = false;
 
-	auto restorePreviousRoots = [&](std::wstring failure) -> bool
+	auto restorePreviousContent = [&](std::wstring failure) -> bool
 	{
-		auto roots = std::move(output._ownedRoots);
+		auto content = std::move(output._ownedContentRoot);
 		std::wstring restoreError;
 		bool restored = false;
 		try
 		{
-			restored = host->AttachRoots(
-				roots, RuntimeRootHostAttachMode::Rollback, &restoreError);
+			restored = host->AttachContent(
+				content, RuntimeContentHostAttachMode::Rollback, &restoreError);
 		}
 		catch (...)
 		{
-			restoreError = L"根宿主回滚抛出异常。";
+			restoreError = L"Content 宿主回滚抛出异常。";
 		}
 		if (restored)
 		{
-			output._rootsReleased = true;
-			output._ownedRoots.clear();
+			output._contentReleased = true;
+			output._ownedContentRoot.reset();
 			SetError(outError, std::move(failure));
 			return false;
 		}
 
-		output._ownedRoots = std::move(roots);
-		output._rootsReleased = false;
-		output._rootHost.reset();
+		output._ownedContentRoot = std::move(content);
+		output._contentRoot = output._ownedContentRoot.get();
+		output._contentReleased = false;
+		output._contentHost.reset();
 		if (!restoreError.empty())
-			failure += L"；旧根恢复也失败：" + restoreError;
+			failure += L"；旧 Content 恢复也失败：" + restoreError;
 		SetError(outError, std::move(failure));
 		return false;
 	};
 
-	auto attachCandidateRoots = [host](
+	auto attachCandidateContent = [host](
 		RuntimeDocument& candidate,
 		std::wstring* commitError) -> bool
 	{
-		auto roots = std::move(candidate._ownedRoots);
+		auto content = std::move(candidate._ownedContentRoot);
 		bool committed = false;
 		try
 		{
-			committed = host->AttachRoots(
-				roots, RuntimeRootHostAttachMode::Replacement, commitError);
+			committed = host->AttachContent(
+				content, RuntimeContentHostAttachMode::Replacement, commitError);
 		}
 		catch (...)
 		{
-			SetError(commitError, L"根宿主提交候选根时抛出异常。");
+			SetError(commitError, L"Content 宿主提交候选 Content 时抛出异常。");
 		}
 		if (!committed)
 		{
-			candidate._ownedRoots = std::move(roots);
+			candidate._ownedContentRoot = std::move(content);
+			candidate._contentRoot = candidate._ownedContentRoot.get();
 			return false;
 		}
-		candidate._rootsReleased = true;
-		candidate._rootHost = host;
-		candidate._ownedRoots.clear();
+		candidate._contentReleased = true;
+		candidate._contentHost = host;
+		candidate._ownedContentRoot.reset();
 		return true;
 	};
-	auto commitCandidate = [&output, &attachCandidateRoots](
+	auto commitCandidate = [&output, &attachCandidateContent](
 		RuntimeDocument& candidate,
 		std::wstring* commitError) -> bool
 	{
-		return candidate.CommitInheritedFormAttachments(
+		return candidate.CommitInheritedWindowAttachments(
 			output,
 			[&](std::wstring* finalError)
 			{
-				return attachCandidateRoots(candidate, finalError);
+				return attachCandidateContent(candidate, finalError);
 			},
 			commitError);
 	};
@@ -2330,7 +3066,7 @@ bool RuntimeDocumentLoader::ReloadHosted(
 	{
 		const auto failure = outError ? *outError
 			: std::wstring(L"宿主拓扑重组失败。");
-		return restorePreviousRoots(failure);
+		return restorePreviousContent(failure);
 	}
 	if (recomposed)
 	{
@@ -2341,23 +3077,23 @@ bool RuntimeDocumentLoader::ReloadHosted(
 	}
 
 	RuntimeDocument candidate;
-	if (!Load(document, candidate, effectiveOptions, outError))
+	if (!Load(document, candidate, effectiveOptions, outError, outDiagnostic))
 	{
 		const auto failure = outError ? *outError
 			: std::wstring(L"宿主替换候选加载失败。");
-		return restorePreviousRoots(failure);
+		return restorePreviousContent(failure);
 	}
 	bool candidateCommitted = false;
 	try { candidateCommitted = commitCandidate(candidate, outError); }
 	catch (...)
 	{
-		SetError(outError, L"宿主提交替换根时抛出异常。");
+		SetError(outError, L"宿主提交替换 Content 时抛出异常。");
 	}
 	if (!candidateCommitted)
 	{
 		const auto failure = outError ? *outError
-			: std::wstring(L"宿主拒绝提交替换根。");
-		return restorePreviousRoots(failure);
+			: std::wstring(L"宿主拒绝提交替换 Content。");
+		return restorePreviousContent(failure);
 	}
 
 	output = std::move(candidate);
@@ -2371,7 +3107,8 @@ bool RuntimeDocumentLoader::Reload(
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
 	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	try
 	{
@@ -2432,9 +3169,9 @@ bool RuntimeDocumentLoader::Reload(
 				{
 					const auto found = currentById.find(node.Id);
 					return found == currentById.end()
-						|| found->second->Props != node.Props;
+						|| found->second->Properties != node.Properties;
 				});
-			const bool hasBindingChanges = std::any_of(
+			const bool hasControlBindingChanges = std::any_of(
 				document.Nodes.begin(), document.Nodes.end(),
 				[&](const DesignNode& node)
 				{
@@ -2442,13 +3179,17 @@ bool RuntimeDocumentLoader::Reload(
 					return found == currentById.end()
 						|| found->second->Bindings != node.Bindings;
 				});
+			const bool hasWindowBindingChanges =
+				output._window.Bindings != document.Window.Bindings;
+			const bool hasBindingChanges =
+				hasControlBindingChanges || hasWindowBindingChanges;
 			const bool hasStyleChanges =
 				!(output._sourceDocument->StyleSheet == document.StyleSheet);
 			const bool hasSchemaChanges =
 				output._sourceDocument->DataContextSchema != document.DataContextSchema;
 			const bool needsCandidate = hasPropertyChanges
 				|| hasBindingChanges || hasStyleChanges || hasSchemaChanges;
-			MaterializedControlTree reloadCandidate;
+			CuiRuntime::XamlObjectTree reloadCandidate;
 			std::unordered_map<int, const DesignerControl*> candidateById;
 			if (needsCandidate)
 			{
@@ -2460,16 +3201,16 @@ bool RuntimeDocumentLoader::Reload(
 				candidateOptions.NativeSurfaceBehaviorFactory = {};
 				candidateOptions.DeclarativeComponentBehaviorFactory = {};
 				candidateOptions.AllowNativeSurfacePlaceholder = true;
-				if (!DesignDocumentMaterializer::Materialize(
+				if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 					document, reloadCandidate,
-					candidateOptions, outError)) return false;
+					candidateOptions, outError, outDiagnostic)) return false;
 				candidateById.reserve(reloadCandidate.Controls.size());
 				for (const auto& control : reloadCandidate.Controls)
 					if (control) candidateById.emplace(control->StableId, control.get());
 			}
 
-			std::vector<std::map<std::wstring, std::wstring>> nextHandlers;
-			std::vector<std::map<std::wstring, std::wstring>> previousHandlers;
+			std::vector<DesignEventHandlerMap> nextHandlers;
+			std::vector<DesignEventHandlerMap> previousHandlers;
 			std::vector<std::map<std::wstring, DesignerDataBinding>> nextBindings;
 			std::vector<std::map<std::wstring, DesignerDataBinding>> previousBindings;
 			std::vector<InPlaceControlSnapshot> propertySnapshots;
@@ -2508,7 +3249,8 @@ bool RuntimeDocumentLoader::Reload(
 					rollbackProperties();
 					return false;
 				}
-				if (currentFound->second->Props != found->second->Props)
+				if (currentFound->second->Properties
+					!= found->second->Properties)
 				{
 					const auto candidateFound = candidateById.find(control->StableId);
 					if (candidateFound == candidateById.end()
@@ -2530,7 +3272,7 @@ bool RuntimeDocumentLoader::Reload(
 					{
 						const auto inPlaceError = outError ? *outError : std::wstring{};
 						rollbackProperties();
-						if (!output._rootsReleased)
+						if (!output._contentReleased)
 						{
 							RuntimeDocumentLoadOptions effectiveOptions = inheritedOptions;
 							if (!effectiveOptions.DataContext)
@@ -2540,14 +3282,15 @@ bool RuntimeDocumentLoader::Reload(
 									output._controlEventResolver;
 							RuntimeDocument replacement;
 							if (!Load(
-								document, replacement, effectiveOptions, outError)) return false;
-							if (!replacement.CommitInheritedFormAttachments(
+									document, replacement, effectiveOptions, outError, outDiagnostic)) return false;
+							if (!replacement.CommitInheritedWindowAttachments(
 								output, {}, outError)) return false;
 							output = std::move(replacement);
 							if (outMode) *outMode = RuntimeDocumentReloadMode::Replaced;
+							if (outError) outError->clear();
 							return true;
 						}
-						if (output._rootHost)
+						if (output._contentHost)
 						{
 							RuntimeDocumentLoadOptions effectiveOptions = inheritedOptions;
 							if (!effectiveOptions.DataContext)
@@ -2556,7 +3299,8 @@ bool RuntimeDocumentLoader::Reload(
 								effectiveOptions.ControlEventResolver =
 									output._controlEventResolver;
 							return ReloadHosted(
-								document, output, effectiveOptions, outMode, outError);
+								document, output, effectiveOptions, outMode, outError,
+								outDiagnostic);
 						}
 						SetError(outError, inPlaceError);
 						return false;
@@ -2576,7 +3320,7 @@ bool RuntimeDocumentLoader::Reload(
 					nextBindings.push_back(candidateFound->second->DataBindings);
 					previousBindings.push_back(control->DataBindings);
 				}
-				std::map<std::wstring, std::wstring> handlers;
+				DesignEventHandlerMap handlers;
 				if (!ReadControlEventHandlers(
 					*found->second, handlers, outError))
 				{
@@ -2589,7 +3333,41 @@ bool RuntimeDocumentLoader::Reload(
 			}
 
 			auto nextSourceDocument = document;
-			auto nextForm = document.Form;
+			auto nextWindow = document.Window;
+			const auto previousWindow = output._window;
+			const bool windowPresentationChanged =
+				!HasSameWindowPresentation(previousWindow, nextWindow);
+			std::optional<WindowPresentationSnapshot> previousWindowPresentation;
+			auto rollbackWindowPresentation = [&]() noexcept
+			{
+				if (previousWindowPresentation)
+					previousWindowPresentation->Restore();
+			};
+			if (output._appliedWindow && windowPresentationChanged)
+			{
+				try
+				{
+					previousWindowPresentation =
+						WindowPresentationSnapshot::Capture(*output._appliedWindow);
+				}
+				catch (...)
+				{
+					rollbackProperties();
+					SetError(outError,
+						L"无法保存原位重载前的 Window 显示状态。");
+					return false;
+				}
+				if (!ApplyWindowNode(
+					nextWindow, *output._appliedWindow, outError, &previousWindow))
+				{
+					const auto reloadError = outError ? *outError : std::wstring{};
+					rollbackWindowPresentation();
+					rollbackProperties();
+					SetError(outError, reloadError);
+					return false;
+				}
+			}
+			output._window = nextWindow;
 			const auto previousDataContext = output._dataContext;
 			const auto previousDataContextSchema = output._dataContextSchema;
 			auto nextDataContextSchema = document.DataContextSchema;
@@ -2606,14 +3384,17 @@ bool RuntimeDocumentLoader::Reload(
 					output._controls[index]->DataBindings = nextBindings[index];
 			}
 			const bool reboundDataContext =
-				hasBindingChanges || hasSchemaChanges || changeDataContext;
+				hasBindingChanges || hasSchemaChanges || changeDataContext
+				|| (windowPresentationChanged && !nextWindow.Bindings.empty());
 			auto bindConfigured = [&](const std::shared_ptr<IBindingSource>& source,
 				std::wstring* error) -> bool
 			{
 				if (source) return output.BindDataContext(source, error);
 				output.RemoveDataBindings(output._installedBindings);
 				std::vector<RuntimeDocument::InstalledBinding> installed;
-				if (!output.InstallDataBindings({}, installed, error)) return false;
+				if (!output.InstallDataBindings(
+					{}, installed, error, output._appliedWindow,
+					&output._window)) return false;
 				output._installedBindings = std::move(installed);
 				return true;
 			};
@@ -2621,6 +3402,7 @@ bool RuntimeDocumentLoader::Reload(
 			{
 				try
 				{
+					output._window = previousWindow;
 					if (hasSchemaChanges)
 						output._dataContextSchema = previousDataContextSchema;
 					if (hasBindingChanges)
@@ -2640,6 +3422,7 @@ bool RuntimeDocumentLoader::Reload(
 				&& !bindConfigured(nextDataContext, outError))
 			{
 				const auto reloadError = outError ? *outError : std::wstring{};
+				rollbackWindowPresentation();
 				rollbackBindings();
 				rollbackProperties();
 				SetError(outError, reloadError);
@@ -2647,20 +3430,20 @@ bool RuntimeDocumentLoader::Reload(
 			}
 
 			std::shared_ptr<ControlStyleSheet> nextRuntimeStyleSheet;
-			std::vector<std::shared_ptr<const ControlStyleSheet>> previousStyleSheets;
-			previousStyleSheets.reserve(output._rootControls.size());
+			std::shared_ptr<const ControlStyleSheet> previousContentStyleSheet;
+			std::shared_ptr<const ControlStyleSheet> previousWindowStyleSheet;
 			bool styleApplied = false;
 			auto rollbackStyles = [&]() noexcept
 			{
 				if (!styleApplied) return;
-				for (size_t index = 0;
-					index < output._rootControls.size()
-						&& index < previousStyleSheets.size(); ++index)
-				{
-					if (output._rootControls[index])
-						(void)output._rootControls[index]->SetStyleSheet(
-							previousStyleSheets[index], true);
-				}
+				if (output._appliedWindow)
+					(void)cui::framework::StyleAccess::SetDocumentStyles(
+						*output._appliedWindow,
+						previousWindowStyleSheet, false);
+				if (auto* contentRoot = output._contentRoot.Get())
+					(void)cui::framework::StyleAccess::SetDocumentStyles(
+						*contentRoot,
+						previousContentStyleSheet, true);
 				styleApplied = false;
 			};
 			if (hasStyleChanges)
@@ -2669,25 +3452,45 @@ bool RuntimeDocumentLoader::Reload(
 					document.StyleSheet, nextRuntimeStyleSheet, outError,
 					document.ResourceBasePath, document.Resources))
 				{
+					rollbackWindowPresentation();
 					rollbackBindings();
 					rollbackProperties();
 					return false;
 				}
-				if (nextDataContext)
-					nextRuntimeStyleSheet->SetDataContext(nextDataContext.get());
+				if (output._appliedWindow)
+					previousWindowStyleSheet =
+						cui::framework::StyleAccess::DocumentStyles(
+							*output._appliedWindow);
+				if (auto* contentRoot = output._contentRoot.Get())
+					previousContentStyleSheet =
+						cui::framework::StyleAccess::DocumentStyles(
+							*contentRoot);
 				styleApplied = true;
-				for (auto* root : output._rootControls)
+				if (output._appliedWindow)
 				{
-					if (!root)
+					if (!cui::framework::StyleAccess::SetDocumentStyles(
+						*output._appliedWindow,
+						nextRuntimeStyleSheet, false))
 					{
-						previousStyleSheets.push_back({});
-						continue;
+						const auto reloadError =
+							L"文档样式表无法原位应用到 XAML Window。";
+						rollbackStyles();
+						rollbackWindowPresentation();
+						rollbackBindings();
+						rollbackProperties();
+						SetError(outError, reloadError);
+						return false;
 					}
-					previousStyleSheets.push_back(root->GetStyleSheet());
-					if (!root->SetStyleSheet(nextRuntimeStyleSheet, true))
+				}
+				if (auto* contentRoot = output._contentRoot.Get())
+				{
+					if (!cui::framework::StyleAccess::SetDocumentStyles(
+						*contentRoot,
+						nextRuntimeStyleSheet, true))
 					{
 						const auto reloadError = L"文档样式表无法原位应用到完整控件树。";
 						rollbackStyles();
+						rollbackWindowPresentation();
 						rollbackBindings();
 						rollbackProperties();
 						SetError(outError, reloadError);
@@ -2695,42 +3498,6 @@ bool RuntimeDocumentLoader::Reload(
 					}
 				}
 			}
-
-			std::optional<FormPresentationSnapshot> previousFormPresentation;
-			auto rollbackFormPresentation = [&]() noexcept
-			{
-				if (previousFormPresentation)
-					previousFormPresentation->Restore();
-			};
-			if (output._appliedForm
-				&& !HasSameFormPresentation(output._form, nextForm))
-			{
-				try
-				{
-					previousFormPresentation =
-						FormPresentationSnapshot::Capture(*output._appliedForm);
-				}
-				catch (...)
-				{
-					rollbackStyles();
-					rollbackBindings();
-					rollbackProperties();
-					SetError(outError,
-						L"无法保存原位重载前的 Form 显示状态。");
-					return false;
-				}
-				if (!ApplyFormModel(nextForm, *output._appliedForm, outError))
-				{
-					const auto reloadError = outError ? *outError : std::wstring{};
-					rollbackFormPresentation();
-					rollbackStyles();
-					rollbackBindings();
-					rollbackProperties();
-					SetError(outError, reloadError);
-					return false;
-				}
-			}
-
 			for (size_t index = 0; index < output._controls.size(); ++index)
 				output._controls[index]->EventHandlers = std::move(nextHandlers[index]);
 
@@ -2754,7 +3521,7 @@ bool RuntimeDocumentLoader::Reload(
 				for (size_t index = 0; index < output._controls.size(); ++index)
 					output._controls[index]->EventHandlers =
 						std::move(previousHandlers[index]);
-				rollbackFormPresentation();
+				rollbackWindowPresentation();
 				rollbackStyles();
 				rollbackBindings();
 				rollbackProperties();
@@ -2762,7 +3529,7 @@ bool RuntimeDocumentLoader::Reload(
 				return false;
 			}
 
-			output._form = std::move(nextForm);
+			output._window = std::move(nextWindow);
 			output._styleSheet = document.StyleSheet;
 			output._nativeSurfaceBehaviors = inheritedOptions.NativeSurfaceBehaviors;
 			output._declarativeComponentBehaviors =
@@ -2781,13 +3548,14 @@ bool RuntimeDocumentLoader::Reload(
 		if (!effectiveOptions.ControlEventResolver)
 			effectiveOptions.ControlEventResolver = output._controlEventResolver;
 
-		if (output._rootsReleased)
+		if (output._contentReleased)
 		{
-			if (output._rootHost)
+			if (output._contentHost)
 				return ReloadHosted(
-					document, output, effectiveOptions, outMode, outError);
+					document, output, effectiveOptions, outMode, outError,
+					outDiagnostic);
 			SetError(outError,
-				L"控件根所有权已经转移；拓扑、Extra、字体或不支持的属性变化"
+				L"Content 所有权已经转移；拓扑、结构内容、字体或不支持的属性变化"
 				L"不能自动替换宿主树。通用属性、Binding、样式、事件和窗体显示"
 				L"属性仍可原位重载。");
 			return false;
@@ -2795,11 +3563,11 @@ bool RuntimeDocumentLoader::Reload(
 
 		bool recomposed = false;
 		size_t reusedControlCount = 0;
-		auto commitFormAttachments = [&output](
+		auto commitWindowAttachments = [&output](
 			RuntimeDocument& candidate,
 			std::wstring* commitError)
 		{
-			return candidate.CommitInheritedFormAttachments(
+			return candidate.CommitInheritedWindowAttachments(
 				output, {}, commitError);
 		};
 		if (!RuntimeDocumentTopologyReloader::TryReload(
@@ -2809,7 +3577,7 @@ bool RuntimeDocumentLoader::Reload(
 			recomposed,
 			reusedControlCount,
 			outError,
-			commitFormAttachments)) return false;
+			commitWindowAttachments)) return false;
 		if (recomposed)
 		{
 			(void)reusedControlCount;
@@ -2817,11 +3585,13 @@ bool RuntimeDocumentLoader::Reload(
 			return true;
 		}
 		RuntimeDocument replacement;
-		if (!Load(document, replacement, effectiveOptions, outError)) return false;
-		if (!replacement.CommitInheritedFormAttachments(
+		if (!Load(document, replacement, effectiveOptions, outError,
+			outDiagnostic)) return false;
+		if (!replacement.CommitInheritedWindowAttachments(
 			output, {}, outError)) return false;
 		output = std::move(replacement);
 		if (outMode) *outMode = RuntimeDocumentReloadMode::Replaced;
+		if (outError) outError->clear();
 		return true;
 	}
 	catch (const std::exception&)
@@ -2836,46 +3606,18 @@ bool RuntimeDocumentLoader::Reload(
 	}
 }
 
-bool RuntimeDocumentLoader::ReloadXml(
-	const std::string& xml,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
-{
-	DesignDocument document;
-	if (!DesignDocumentSerializer::FromXml(xml, document, outError)) return false;
-	return Reload(document, output, options, outMode, outError);
-}
-
-bool RuntimeDocumentLoader::ReloadFile(
-	const std::wstring& filePath,
-	RuntimeDocument& output,
-	const RuntimeDocumentLoadOptions& options,
-	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
-{
-	DesignDocument document;
-	const bool loaded = DetectDesignDocumentFileFormat(filePath)
-		== DesignDocumentFileFormat::Xaml
-		? XamlDocumentParser::LoadFromFile(
-			filePath, document, outError)
-		: DesignDocumentSerializer::LoadFromFile(filePath, document, outError);
-	if (!loaded) return false;
-	return Reload(document, output, options, outMode, outError);
-}
-
 bool RuntimeDocumentLoader::ReloadXaml(
 	const std::string& xaml,
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
 	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::FromXaml(
-		xaml, document, outError)) return false;
-	return Reload(document, output, options, outMode, outError);
+		xaml, document, outError, outDiagnostic)) return false;
+	return Reload(document, output, options, outMode, outError, outDiagnostic);
 }
 
 bool RuntimeDocumentLoader::ReloadXamlFile(
@@ -2883,11 +3625,12 @@ bool RuntimeDocumentLoader::ReloadXamlFile(
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
 	RuntimeDocumentReloadMode* outMode,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::LoadFromFile(
-		filePath, document, outError)) return false;
-	return Reload(document, output, options, outMode, outError);
+		filePath, document, outError, outDiagnostic)) return false;
+	return Reload(document, output, options, outMode, outError, outDiagnostic);
 }
 }

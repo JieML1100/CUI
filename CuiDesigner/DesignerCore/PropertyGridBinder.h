@@ -2,9 +2,9 @@
 
 #include "../DesignerTypes.h"
 #include "../DesignerControlPropertyCatalog.h"
-#include "../DesignerFormPropertyCatalog.h"
 #include "../DesignerPropertyRowCatalog.h"
 #include "../DesignerPropertyEdit.h"
+#include "../DesignerModel/DesignDocument.h"
 #include <map>
 #include <memory>
 #include <string>
@@ -22,22 +22,21 @@ public:
 	void BindControls(
 		const std::vector<std::shared_ptr<DesignerControl>>& controls,
 		const std::shared_ptr<DesignerControl>& primaryControl = nullptr);
-	bool IsFormBinding() const;
+	bool IsWindowBinding() const;
 	std::shared_ptr<DesignerControl> GetBoundControl() const;
 	const std::vector<std::shared_ptr<DesignerControl>>& GetBoundControls() const;
 	Control* GetBoundRuntimeControl() const;
 
-	DesignerModel::DesignFormModel CaptureFormModel() const;
-	bool ApplyFormProperty(
+	DesignerModel::DesignNode CaptureWindowNode() const;
+	bool ApplyWindowProperty(
 		const std::wstring& propertyName,
 		const DesignerStyleValue& value,
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr) const;
-	bool ResetFormProperty(
+	bool ResetWindowProperty(
 		const std::wstring& propertyName,
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr) const;
-	::Font* GetDesignedFormSharedFont() const;
 	std::vector<DesignerPropertyRow> GetPropertyRows() const;
 	DesignerPropertyEditResult ApplyControlPropertyValue(
 		const std::wstring& propertyName,
@@ -81,7 +80,6 @@ public:
 		std::wstring* outError = nullptr) const;
 
 	void NotifyControlChanged(Control* control) const;
-	void ApplyAnchorStylesKeepingBounds(Control* control, uint8_t anchorStyles) const;
 	std::wstring MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const;
 	void SyncDefaultNameCounter(UIClass type, const std::wstring& name) const;
 	void RemoveDesignerControlsInSubtree(Control* root) const;

@@ -1,13 +1,15 @@
 #include "ListBox.h"
 
-ListBox::ListBox(int x, int y, int width, int height)
-	: Selector(x, y, width, height)
+ListBox::ListBox()
+	: Selector()
 {
-	BackColor = cui::theme::palette::Surface;
-	BorderThickness = 1.0f;
+	RendererBackgroundColor = cui::theme::palette::Surface;
+	(void)TrySetPropertyValue(
+		L"BorderThickness", BindingValue(Thickness(1.0f)),
+		DependencyPropertyValueSource::Theme);
 }
 
-void ListBox::EnsureBindingPropertiesRegistered()
+void ListBox::RegisterDependencyProperties()
 {
-	Selector::EnsureBindingPropertiesRegistered();
+	Selector::RegisterDependencyProperties();
 }

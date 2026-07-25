@@ -3,7 +3,6 @@
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
 #include "../DesignerStyleSheetUtils.h"
-#include <Convert.h>
 #include <GroupStyle.h>
 #include <algorithm>
 #include <cmath>
@@ -16,12 +15,6 @@ namespace DesignerModel::DesignDataResourceUtils
 {
 namespace
 {
-	std::wstring Lower(std::wstring value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), towlower);
-		return value;
-	}
-
 	bool Fail(std::wstring message, std::wstring* outError)
 	{
 		if (outError) *outError = std::move(message);
@@ -40,30 +33,13 @@ namespace
 
 	bool IsControlTemplateHostType(UIClass type) noexcept
 	{
-		return type == UIClass::UI_ContentControl
-			|| type == UIClass::UI_SelectorItem
-			|| type == UIClass::UI_ComboBoxItem
-			|| type == UIClass::UI_TreeViewItem
-			|| type == UIClass::UI_Button
-			|| type == UIClass::UI_GroupBox
-			|| type == UIClass::UI_Expander
-			|| type == UIClass::UI_ItemsControl
-			|| type == UIClass::UI_ListBox;
+		return IsControlTemplateHostClass(type);
 	}
 
 	bool IsControlTemplateTargetCompatible(
 		UIClass actual, UIClass target) noexcept
 	{
-		return actual == target
-			|| (target == UIClass::UI_ContentControl
-				&& (actual == UIClass::UI_SelectorItem
-					|| actual == UIClass::UI_ComboBoxItem
-					|| actual == UIClass::UI_TreeViewItem
-					|| actual == UIClass::UI_Button
-					|| actual == UIClass::UI_GroupBox
-					|| actual == UIClass::UI_Expander))
-			|| (target == UIClass::UI_ItemsControl
-				&& actual == UIClass::UI_ListBox);
+		return IsUIClassAssignableFrom(target, actual);
 	}
 
 	bool IsControlTemplateTargetCompatible(
@@ -123,8 +99,8 @@ namespace
 
 bool IsCollectionViewGroupDataType(const std::wstring& name)
 {
-	return _wcsicmp(DesignerBindingUtils::Trim(name).c_str(),
-		std::wstring(CollectionViewGroupDataTypeName).c_str()) == 0;
+	return DesignerBindingUtils::Trim(name)
+		== CollectionViewGroupDataTypeName;
 }
 
 DesignerDataContextSchema BuildCollectionViewGroupSchema(
@@ -189,7 +165,7 @@ bool ValidateAndCanonicalize(
 		type.Name = DesignerBindingUtils::Trim(type.Name);
 		if (IsCollectionViewGroupDataType(type.Name))
 			return Fail(L"DataType 名称 CollectionViewGroup 由运行时保留。", outError);
-		if (!IsIdentifier(type.Name) || !typeNames.insert(Lower(type.Name)).second)
+		if (!IsIdentifier(type.Name) || !typeNames.insert(type.Name).second)
 			return Fail(L"DataType 名称无效或重复：" + type.Name, outError);
 		DesignerDataContextSchemaUtils::Canonicalize(type.Properties);
 		std::wstring schemaError;
@@ -234,20 +210,20 @@ bool ValidateAndCanonicalize(
 
 	std::unordered_set<std::wstring> resourceKeys;
 	for (const auto& type : document.DataTypes)
-		resourceKeys.insert(Lower(type.Name));
+		resourceKeys.insert(type.Name);
 	for (const auto& resource : document.StyleSheet.Resources)
 		if (!resource.Key.empty()
-			&& !resourceKeys.insert(Lower(resource.Key)).second)
+			&& !resourceKeys.insert(resource.Key).second)
 			return Fail(L"资源键重复：" + resource.Key, outError);
 	std::unordered_set<std::wstring> panelTemplateKeys;
 	for (auto& item : document.ItemsPanelTemplates)
 	{
 		item.Key = DesignerBindingUtils::Trim(item.Key);
 		if (!IsIdentifier(item.Key)
-			|| !panelTemplateKeys.insert(Lower(item.Key)).second)
+			|| !panelTemplateKeys.insert(item.Key).second)
 			return Fail(L"ItemsPanelTemplate 键无效或重复：" + item.Key,
 				outError);
-		if (!resourceKeys.insert(Lower(item.Key)).second)
+		if (!resourceKeys.insert(item.Key).second)
 			return Fail(L"资源键重复：" + item.Key, outError);
 		auto& value = item.Value;
 		if (value.Kind != ItemsPanelKind::Stack
@@ -259,8 +235,7 @@ bool ValidateAndCanonicalize(
 			&& value.Orientation != Orientation::Vertical)
 			return Fail(L"ItemsPanelTemplate Orientation 无效：" + item.Key,
 				outError);
-		if (!std::isfinite(value.Spacing) || value.Spacing < 0.0f
-			|| !std::isfinite(value.ItemWidth) || value.ItemWidth < 0.0f
+		if (!std::isfinite(value.ItemWidth) || value.ItemWidth < 0.0f
 			|| !std::isfinite(value.ItemHeight) || value.ItemHeight < 0.0f
 			|| !std::isfinite(value.CacheLength) || value.CacheLength < 0.0f)
 			return Fail(L"ItemsPanelTemplate 数值配置无效：" + item.Key,
@@ -278,7 +253,6 @@ bool ValidateAndCanonicalize(
 		}
 		else if (value.Kind == ItemsPanelKind::Wrap)
 		{
-			value.Spacing = 0.0f;
 			value.CacheLength = 1.0f;
 		}
 		else value.ItemWidth = 0.0f;
@@ -342,16 +316,16 @@ bool ValidateAndCanonicalize(
 		item.DataType = DesignerBindingUtils::Trim(item.DataType);
 		if (item.IsImplicit())
 		{
-			if (!implicitTemplateTypes.insert(Lower(item.DataType)).second)
+			if (!implicitTemplateTypes.insert(item.DataType).second)
 				return Fail(L"隐式 DataTemplate DataType 重复："
 					+ item.DataType, outError);
 		}
 		else
 		{
 			if (!IsIdentifier(item.Key)
-				|| !templateKeys.insert(Lower(item.Key)).second)
+				|| !templateKeys.insert(item.Key).second)
 				return Fail(L"DataTemplate 键无效或重复：" + item.Key, outError);
-			if (!resourceKeys.insert(Lower(item.Key)).second)
+			if (!resourceKeys.insert(item.Key).second)
 				return Fail(L"资源键重复：" + item.Key, outError);
 		}
 		const auto* dataType = document.FindDataType(item.DataType);
@@ -382,12 +356,12 @@ bool ValidateAndCanonicalize(
 			if (prefix.empty()) return bindingSchema;
 			DesignerDataContextSchema result;
 			const auto normalized = DesignerDataContextSchemaUtils::NormalizePath(prefix);
-			const auto childPrefix = Lower(normalized + L".");
+			const auto childPrefix = normalized + L".";
 			for (const auto& property : bindingSchema)
 			{
 				const auto path = DesignerDataContextSchemaUtils::NormalizePath(
 					property.Path);
-				if (!Lower(path).starts_with(childPrefix)) continue;
+				if (!path.starts_with(childPrefix)) continue;
 				auto projected = property;
 				projected.Path = path.substr(normalized.size() + 1);
 				result.push_back(std::move(projected));
@@ -405,29 +379,25 @@ bool ValidateAndCanonicalize(
 				: templateContexts[resolved.ParentKey];
 			templateInherited[node.Name] = inherited;
 			auto effective = inherited;
-			if (node.Bindings.is_object())
-				for (const auto& [target, binding] : node.Bindings.ObjectItems())
+			for (const auto& [target, binding] : node.Bindings)
+			{
+				if (target != L"DataContext") continue;
+				if (binding.IsMultiBinding())
 				{
-					if (_wcsicmp(Convert::Utf8ToUnicode(target).c_str(),
-						L"DataContext") != 0 || !binding.is_object()) continue;
-					if (binding.contains("bindings"))
-					{
-						effective.reset();
-						break;
-					}
-					if (inherited
-						&& binding.value("elementName", std::string{}).empty()
-						&& binding.value("relativeSource", std::string{}).empty())
-					{
-						const auto path = DesignerBindingUtils::Trim(
-							Convert::Utf8ToUnicode(binding.value(
-								"source", std::string{})));
-						effective = inherited->empty() ? path
-							: *inherited + L"." + path;
-					}
-					else effective.reset();
+					effective.reset();
 					break;
 				}
+				if (inherited && binding.ElementName.empty()
+					&& binding.RelativeSource == DesignerBindingRelativeSource::None)
+				{
+					const auto path = DesignerBindingUtils::Trim(
+						binding.SourceProperty);
+					effective = inherited->empty() ? path
+						: *inherited + L"." + path;
+				}
+				else effective.reset();
+				break;
+			}
 			templateContexts[node.Name] = effective;
 		}
 		for (const auto& node : item.Template)
@@ -435,34 +405,32 @@ bool ValidateAndCanonicalize(
 			if (!node.Events.empty())
 				return Fail(L"DataTemplate " + item.DisplayName()
 					+ L" 不允许代码后置事件。", outError);
-			if (!node.Bindings.is_object()) continue;
-			for (const auto& [target, binding] : node.Bindings.ObjectItems())
+			for (const auto& [target, binding] : node.Bindings)
 			{
-				if (!binding.is_object()) continue;
-				const bool dataContextTarget = _wcsicmp(
-					Convert::Utf8ToUnicode(target).c_str(), L"DataContext") == 0;
+				const bool dataContextTarget = target == L"DataContext";
 				const auto& prefix = dataContextTarget
 					? templateInherited[node.Name] : templateContexts[node.Name];
 				const auto scopedSchema = prefix
 					? projectTemplateSchema(*prefix) : DesignerDataContextSchema{};
 				std::wstring bindingError;
 				if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
-					binding, [&](const DesignerModel::DesignValue& child)
+					binding, [&](const DesignerDataBinding& child)
 					{
-						if (!child.value("elementName", std::string{}).empty()
-							|| !child.value("relativeSource", std::string{}).empty())
+						if (!child.ElementName.empty()
+							|| child.RelativeSource
+								!= DesignerBindingRelativeSource::None)
 							return true;
 						const auto path = DesignerBindingUtils::Trim(
-							Convert::Utf8ToUnicode(child.value("source", std::string{})));
+							child.SourceProperty);
 						if (path.empty()
 							|| DesignerDataContextSchemaUtils::Find(scopedSchema, path)
-							|| (groupType && (Lower(path).starts_with(L"firstitem.")
-								|| Lower(path).starts_with(L"aggregates."))
+							|| (groupType && (path.starts_with(L"FirstItem.")
+								|| path.starts_with(L"Aggregates."))
 								&& DesignerDataContextSchemaUtils::IsValidPath(path))) return true;
 						bindingError = L"DataTemplate " + item.DisplayName()
 							+ L" 的绑定路径未在 DataType 中声明：" + path;
 						return false;
-					}, &bindingError))
+					}))
 					return Fail(bindingError, outError);
 			}
 		}
@@ -491,7 +459,7 @@ bool ValidateAndCanonicalize(
 		{
 			const auto identity = item.TargetComponentType.Empty()
 				? L"builtin:" + std::to_wstring(static_cast<int>(item.TargetType))
-				: L"component:" + Lower(item.TargetComponentType.RegistryKey());
+				: L"component:" + item.TargetComponentType.RegistryKey();
 			if (!implicitControlTemplateTypes.insert(identity).second)
 				return Fail(L"隐式 ControlTemplate TargetType 重复："
 					+ item.DisplayName(), outError);
@@ -499,10 +467,10 @@ bool ValidateAndCanonicalize(
 		else
 		{
 			if (!IsIdentifier(item.Key)
-				|| !controlTemplateKeys.insert(Lower(item.Key)).second)
+				|| !controlTemplateKeys.insert(item.Key).second)
 				return Fail(L"ControlTemplate 键无效或重复："
 					+ item.Key, outError);
-			if (!resourceKeys.insert(Lower(item.Key)).second)
+			if (!resourceKeys.insert(item.Key).second)
 				return Fail(L"资源键重复：" + item.Key, outError);
 		}
 		DesignDocument templateDocument;
@@ -525,7 +493,7 @@ bool ValidateAndCanonicalize(
 		for (const auto& rule : sheet.Rules)
 			for (const auto& setter : rule.Setters)
 			{
-				if (_wcsicmp(setter.PropertyName.c_str(), L"Template") != 0)
+				if (setter.PropertyName != L"Template")
 					continue;
 				if (!setter.UsesResource || setter.UsesDynamicResource
 					|| DesignerBindingUtils::Trim(setter.ResourceKey).empty())
@@ -557,14 +525,10 @@ bool ValidateAndCanonicalize(
 		item.Key = DesignerBindingUtils::Trim(item.Key);
 		item.HeaderTemplate = DesignerBindingUtils::Trim(item.HeaderTemplate);
 		if (!IsIdentifier(item.Key)
-			|| !groupStyleKeys.insert(Lower(item.Key)).second)
+			|| !groupStyleKeys.insert(item.Key).second)
 			return Fail(L"GroupStyle 键无效或重复：" + item.Key, outError);
-		if (!resourceKeys.insert(Lower(item.Key)).second)
+		if (!resourceKeys.insert(item.Key).second)
 			return Fail(L"资源键重复：" + item.Key, outError);
-		if (!std::isfinite(item.HeaderIndent) || item.HeaderIndent < 0.0f
-			|| !std::isfinite(item.HeaderSpacing) || item.HeaderSpacing < 0.0f
-			|| !std::isfinite(item.HeaderHeight) || item.HeaderHeight <= 0.0f)
-			return Fail(L"GroupStyle 数值配置无效：" + item.Key, outError);
 		if (!item.HeaderTemplate.empty())
 		{
 			const auto* header = document.FindDataTemplate(item.HeaderTemplate);
@@ -585,9 +549,9 @@ bool ValidateAndCanonicalize(
 		list.Key = DesignerBindingUtils::Trim(list.Key);
 		list.ItemType = DesignerBindingUtils::Trim(list.ItemType);
 		if (!IsIdentifier(list.Key)
-			|| !listKeys.insert(Lower(list.Key)).second)
+			|| !listKeys.insert(list.Key).second)
 			return Fail(L"DataList 键无效或重复：" + list.Key, outError);
-		if (!resourceKeys.insert(Lower(list.Key)).second)
+		if (!resourceKeys.insert(list.Key).second)
 			return Fail(L"资源键重复：" + list.Key, outError);
 		const auto* dataType = document.FindDataType(list.ItemType);
 		if (!dataType)
@@ -607,7 +571,7 @@ bool ValidateAndCanonicalize(
 					return Fail(L"DataList " + list.Key
 						+ L" 包含未知或非标量字段：" + path, outError);
 				if (std::any_of(canonical.begin(), canonical.end(), [&](const auto& value)
-					{ return Lower(value.first) == Lower(property->Path); }))
+					{ return value.first == property->Path; }))
 					return Fail(L"DataList " + list.Key
 						+ L" 包含重复字段：" + property->Path, outError);
 				BindingValue converted;
@@ -631,10 +595,10 @@ bool ValidateAndCanonicalize(
 		view.SourceBindingPath = DesignerDataContextSchemaUtils::NormalizePath(
 			view.SourceBindingPath);
 		if (!IsIdentifier(view.Key)
-			|| !viewKeys.insert(Lower(view.Key)).second)
+			|| !viewKeys.insert(view.Key).second)
 			return Fail(L"CollectionViewSource 键无效或重复：" + view.Key,
 				outError);
-		if (!resourceKeys.insert(Lower(view.Key)).second)
+		if (!resourceKeys.insert(view.Key).second)
 			return Fail(L"资源键重复：" + view.Key, outError);
 		if (view.SourceResource.empty() == view.SourceBindingPath.empty())
 			return Fail(L"CollectionViewSource " + view.Key
@@ -647,7 +611,7 @@ bool ValidateAndCanonicalize(
 	resolveViewType = [&](DesignCollectionViewSource& view)
 		-> const DesignDataTypeDefinition*
 	{
-		const auto identity = Lower(view.Key);
+		const auto identity = view.Key;
 		if (const auto cached = viewItemTypes.find(identity);
 			cached != viewItemTypes.end()) return document.FindDataType(cached->second);
 		if (!resolvingViews.insert(identity).second)
@@ -713,7 +677,7 @@ bool ValidateAndCanonicalize(
 				return Fail(L"CollectionViewSource " + view.Key
 					+ L" 的分组路径不是可读标量：" + group.PropertyName,
 					outError);
-			if (!groupPaths.insert(Lower(property->Path)).second)
+			if (!groupPaths.insert(property->Path).second)
 				return Fail(L"CollectionViewSource " + view.Key
 					+ L" 包含重复分组路径：" + property->Path, outError);
 			group.PropertyName = property->Path;
@@ -734,7 +698,7 @@ bool ValidateAndCanonicalize(
 			aggregate.PropertyName = DesignerDataContextSchemaUtils::NormalizePath(
 				aggregate.PropertyName);
 			if (!IsIdentifier(aggregate.Name)
-				|| !aggregateNames.insert(Lower(aggregate.Name)).second)
+				|| !aggregateNames.insert(aggregate.Name).second)
 				return Fail(L"CollectionViewSource " + view.Key
 					+ L" 的聚合名称无效或重复：" + aggregate.Name, outError);
 			if (aggregate.Function == CollectionAggregateFunction::Count)
@@ -776,7 +740,7 @@ bool ValidateAndCanonicalize(
 				return Fail(L"CollectionViewSource " + view.Key
 					+ L" 的排序路径不是可读标量：" + sort.PropertyName,
 					outError);
-			if (!sortPaths.insert(Lower(property->Path)).second)
+			if (!sortPaths.insert(property->Path).second)
 				return Fail(L"CollectionViewSource " + view.Key
 					+ L" 包含重复排序路径：" + property->Path, outError);
 			sort.PropertyName = property->Path;
@@ -820,6 +784,27 @@ bool ValidateAndCanonicalize(
 		}
 	}
 
+	auto validateMemberExpressions = [&](const DesignNode& node,
+		const std::wstring& owner)
+	{
+		for (const auto& [propertyName, assignment] : node.Properties.Values)
+		{
+			(void)assignment;
+			if (node.Bindings.contains(propertyName)
+				|| node.TemplateBindings.contains(propertyName))
+				return Fail(owner + L" 的属性 " + propertyName
+					+ L" 同时包含多个本地值表达式。", outError);
+		}
+		for (const auto& [propertyName, binding] : node.Bindings)
+		{
+			(void)binding;
+			if (node.TemplateBindings.contains(propertyName))
+				return Fail(owner + L" 的属性 " + propertyName
+					+ L" 同时包含 Binding 和 TemplateBinding。", outError);
+		}
+		return true;
+	};
+
 	std::function<bool(std::vector<DesignNode>&,
 		const DesignerDataContextSchema&, const std::wstring&,
 		std::optional<UIClass>)>
@@ -833,60 +818,64 @@ bool ValidateAndCanonicalize(
 			nodes.begin(), nodes.end(), [](const auto& candidate)
 			{
 				return candidate.Type == UIClass::UI_ItemsPresenter
-					&& (!candidate.Extra.is_object()
-						|| !candidate.Extra.value(
-							"$componentTemplateGenerated", false));
+					&& !candidate.TemplateState.Generated;
 			});
 		if (itemsPresenterCount > 1)
 			return Fail(owner + L" 最多只能包含一个 ItemsPresenter。", outError);
 		if (itemsPresenterCount != 0
 			&& (!itemsPresenterTarget
-				|| (*itemsPresenterTarget != UIClass::UI_ItemsControl
-					&& *itemsPresenterTarget != UIClass::UI_ListBox)))
-			return Fail(owner + L" 的 ItemsPresenter 只能用于 ItemsControl 或 "
-				L"ListBox ControlTemplate。", outError);
+				|| !IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, *itemsPresenterTarget)))
+			return Fail(owner + L" 的 ItemsPresenter 只能用于 ItemsControl "
+				L"派生类型的 ControlTemplate。", outError);
 		for (auto& node : nodes)
 		{
+			if (!validateMemberExpressions(node,
+				owner + L"/" + (node.Name.empty()
+					? DesignerStyleSheetUtils::UIClassName(node.Type)
+					: node.Name))) return false;
 			if (!validateTemplateSetters(
 				node.LocalResources, &nodes, &node,
 				owner + L"/" + node.Name)) return false;
-			if (node.Extra.is_object()
-				&& node.Extra.contains("headeredRegion"))
+			if (node.Structure.ChildRole == DesignNodeChildRole::Header)
 			{
-				if (!node.Extra["headeredRegion"].is_string()
-					|| node.Extra["headeredRegion"].get<std::string>() != "header")
-					return Fail(owner + L" 的 Header 槽位标记无效。", outError);
 				const auto parent = std::find_if(
 					nodes.begin(), nodes.end(), [&](const auto& candidate)
 					{
 						return (node.ParentId > 0 && candidate.Id == node.ParentId)
 							|| (!node.ParentRef.empty()
-								&& _wcsicmp(candidate.Name.c_str(),
-									node.ParentRef.c_str()) == 0);
+								&& candidate.Name == node.ParentRef);
 					});
 				if (parent == nodes.end()
-					|| (parent->Type != UIClass::UI_GroupBox
-						&& parent->Type != UIClass::UI_Expander))
+					|| (!IsUIClassAssignableFrom(
+							UIClass::UI_HeaderedContentControl, parent->Type)
+						&& !IsUIClassAssignableFrom(
+							UIClass::UI_HeaderedItemsControl, parent->Type)))
 					return Fail(owner
-						+ L" 的视觉 Header 必须直属于 GroupBox 或 Expander。",
+						+ L" 的视觉 Header 必须直属于 HeaderedContentControl "
+							L"或 HeaderedItemsControl。",
 						outError);
 			}
 			const bool headeredContentControl =
-				node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander;
+				IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedContentControl, node.Type);
+			const bool headeredItemsControl =
+				IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedItemsControl, node.Type);
+			const bool headeredControl =
+				headeredContentControl || headeredItemsControl;
 			auto isDirectChild = [&](const auto& candidate)
 			{
-				return (node.Id > 0 && candidate.ParentId == node.Id)
+				return !candidate.TemplateState.Generated
+					&& ((node.Id > 0 && candidate.ParentId == node.Id)
 					|| (!node.Name.empty() && !candidate.ParentRef.empty()
-						&& _wcsicmp(candidate.ParentRef.c_str(),
-							node.Name.c_str()) == 0);
+						&& candidate.ParentRef == node.Name));
 			};
 			auto isHeaderChild = [&](const auto& candidate)
 			{
 				return isDirectChild(candidate)
-					&& candidate.Extra.is_object()
-					&& candidate.Extra.value(
-						"headeredRegion", std::string{}) == "header";
+					&& candidate.Structure.ChildRole
+						== DesignNodeChildRole::Header;
 			};
 			const auto visualChildCount = std::count_if(
 				nodes.begin(), nodes.end(), [&](const auto& candidate)
@@ -900,35 +889,24 @@ bool ValidateAndCanonicalize(
 				return Fail(owner + L" 的 ItemsPresenter 不接受手工视觉子节点。",
 					outError);
 			const bool contentHost = node.Type == UIClass::UI_ContentPresenter
-				|| node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| headeredContentControl;
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_ContentControl, node.Type);
 			const bool visualContentControl =
-				node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| headeredContentControl;
-			const bool hasContentBinding = node.Bindings.is_object()
-				&& node.Bindings.contains("Content");
-			const bool hasContentTemplate = node.Extra.is_object()
-				&& node.Extra.contains("contentTemplate");
-			const bool hasContentText = node.Extra.is_object()
-				&& node.Extra.contains("contentText");
-			const bool hasHeaderBinding = node.Bindings.is_object()
-				&& node.Bindings.contains("Header");
-			const bool hasHeaderTemplate = node.Extra.is_object()
-				&& node.Extra.contains("headerTemplate");
-			const bool hasHeaderText = node.Extra.is_object()
-				&& node.Extra.contains("headerText");
-			if (node.Extra.is_object()
-				&& node.Extra.contains("controlTemplate"))
+				IsUIClassAssignableFrom(
+					UIClass::UI_ContentControl, node.Type);
+			const bool hasContentBinding = node.Bindings.contains(L"Content");
+			const bool hasContentTemplate = !node.Structure.ContentTemplate.empty();
+			const bool hasContentValue = node.Properties.Find(L"Content");
+			const bool hasHeaderBinding = node.Bindings.contains(L"Header");
+			const bool hasHeaderTemplate = !node.Structure.HeaderTemplate.empty();
+			const bool hasHeaderValue = node.Properties.Find(L"Header");
+			if (!node.Structure.ControlTemplate.empty())
 			{
-				if ((!IsControlTemplateHostType(node.Type)
-						&& node.ComponentType.Empty())
-					|| !node.Extra["controlTemplate"].is_string())
+				if (!IsControlTemplateHostType(node.Type)
+					&& node.ComponentType.Empty())
 					return Fail(owner + L" 的 Control.Template 格式无效。",
 						outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["controlTemplate"].get<std::string>());
+				const auto& key = node.Structure.ControlTemplate;
 				const auto* controlTemplate = document.FindControlTemplate(
 					nodes, node, key);
 				if (!controlTemplate)
@@ -938,42 +916,64 @@ bool ValidateAndCanonicalize(
 					return Fail(owner
 						+ L" 的 Control.Template TargetType 与控件类型不兼容："
 						+ controlTemplate->DisplayName(), outError);
-				node.Extra["controlTemplate"] =
-					Convert::UnicodeToUtf8(controlTemplate->Key);
+				node.Structure.ControlTemplate = controlTemplate->Key;
 			}
 			if (node.Type == UIClass::UI_ContentPresenter
-				&& visualChildCount != 0)
+				&& visualChildCount != 0
+				&& node.TemplateContentSource.empty())
 				return Fail(owner
 					+ L" 的 ContentPresenter 不接受直接视觉子节点。", outError);
 			if (visualContentControl
 				&& (visualChildCount > 1 || (visualChildCount != 0
 					&& (hasContentBinding || hasContentTemplate
-						|| hasContentText))))
+						|| hasContentValue))))
 				return Fail(owner
 					+ L" 的 ContentControl 最多接受一个直接视觉子节点，且不能与数据内容同时使用。",
 					outError);
-			if (hasContentText)
+			if (node.Type == UIClass::UI_Popup
+				&& (visualChildCount > 1 || hasContentBinding
+					|| hasContentTemplate || hasContentValue))
+				return Fail(owner
+					+ L" 的 Popup 只接受一个视觉 Child，不拥有 Content 或 "
+						L"ContentTemplate。",
+					outError);
+			if (IsUIClassAssignableFrom(
+					UIClass::UI_Decorator, node.Type)
+				&& (visualChildCount > 1 || hasContentBinding
+					|| hasContentTemplate || hasContentValue))
+				return Fail(owner
+					+ L" 的 Decorator 只接受一个视觉 Child，不拥有 Content 或 "
+						L"ContentTemplate。",
+					outError);
+			if (hasContentValue)
 			{
-				if (!contentHost || !node.Extra["contentText"].is_string())
-					return Fail(owner + L" 的 Content 文本格式无效。", outError);
-				if (hasContentBinding || hasContentTemplate)
+				if (!contentHost)
+					return Fail(owner + L" 的 Content 属性格式无效。", outError);
+				if (hasContentBinding)
 					return Fail(owner
-						+ L" 不能同时声明文本 Content、Binding 或 ContentTemplate。",
+						+ L" 不能同时声明 Content 值和 Binding。",
+						outError);
+				if (hasContentTemplate)
+					return Fail(owner
+						+ L" 的标量 Content 当前不能使用 DataTemplate。",
 						outError);
 			}
 			if (visualHeaderCount > 1 || (visualHeaderCount != 0
-				&& (hasHeaderBinding || hasHeaderTemplate || hasHeaderText)))
+				&& (hasHeaderBinding || hasHeaderTemplate || hasHeaderValue)))
 				return Fail(owner
 					+ L" 的 HeaderedContentControl 最多接受一个视觉 Header，且不能与数据 Header 同时使用。",
 					outError);
-			if (hasHeaderText)
+			if (hasHeaderValue)
 			{
-				if (!headeredContentControl
-					|| !node.Extra["headerText"].is_string())
-					return Fail(owner + L" 的 Header 文本格式无效。", outError);
-				if (hasHeaderBinding || hasHeaderTemplate)
+				if (!headeredControl)
+					return Fail(owner + L" 的 Header 属性格式无效。", outError);
+				if (hasHeaderBinding)
 					return Fail(owner
-						+ L" 不能同时声明文本 Header、Binding 或 HeaderTemplate。",
+						+ L" 不能同时声明 Header 值和 Binding。",
+						outError);
+				if (hasHeaderTemplate)
+					return Fail(owner
+						+ L" 的标量 Header 当前不能使用 DataTemplate。",
 						outError);
 			}
 			const DesignDataList* dataList = nullptr;
@@ -983,227 +983,163 @@ bool ValidateAndCanonicalize(
 			const DesignDataTemplate* headerTemplate = nullptr;
 			const DesignGroupStyle* groupStyle = nullptr;
 			const DesignItemsPanelTemplate* itemsPanel = nullptr;
-			const bool hasStaticTreeItems = node.Type == UIClass::UI_TreeView
-				&& node.Extra.is_object() && node.Extra.contains("nodes");
-			if (hasStaticTreeItems && node.Bindings.is_object()
-				&& node.Bindings.contains("ItemsSource"))
-				return Fail(owner
-					+ L" 的 TreeView.Items 不能与 ItemsSource Binding 同时声明。",
-					outError);
-			if (node.Extra.is_object()
-				&& node.Extra.contains("itemsSourceResource"))
+			if (!node.Structure.ItemsSourceResource.empty())
 			{
-				if (!node.Extra["itemsSourceResource"].is_string())
-					return Fail(owner + L" 的 ItemsSource 资源格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["itemsSourceResource"].get<std::string>());
+				const auto& key = node.Structure.ItemsSourceResource;
 				dataList = document.FindDataList(key);
 				collectionView = document.FindCollectionView(key);
 				if (!dataList && !collectionView)
 					return Fail(owner + L" 引用了未声明的列表资源：" + key,
 						outError);
-				if (node.Type != UIClass::UI_ItemsControl
-					&& node.Type != UIClass::UI_ComboBox
-					&& node.Type != UIClass::UI_ListView
-					&& node.Type != UIClass::UI_ListBox
-					&& node.Type != UIClass::UI_TreeView)
+				if (!IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type))
 					return Fail(owner + L" 的控件类型不支持列表资源 ItemsSource。",
 						outError);
-				if (hasStaticTreeItems)
-					return Fail(owner
-						+ L" 的 TreeView.Items 不能与 StaticResource ItemsSource 同时声明。",
-						outError);
-				if (node.Bindings.is_object()
-					&& node.Bindings.contains("ItemsSource"))
+				if (node.Bindings.contains(L"ItemsSource"))
 					return Fail(owner
 						+ L" 不能同时声明 Binding 与 StaticResource ItemsSource。",
 						outError);
-				node.Extra["itemsSourceResource"] = Convert::UnicodeToUtf8(
-					dataList ? dataList->Key : collectionView->Key);
+				node.Structure.ItemsSourceResource =
+					dataList ? dataList->Key : collectionView->Key;
 			}
-			if (node.Extra.is_object() && node.Extra.contains("itemTemplate"))
+			if (!node.Structure.ItemTemplate.empty())
 			{
-				if ((node.Type != UIClass::UI_ItemsControl
-					&& node.Type != UIClass::UI_ListBox
-					&& node.Type != UIClass::UI_ComboBox
-					&& node.Type != UIClass::UI_TreeView)
-					|| !node.Extra["itemTemplate"].is_string())
+				if (!IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type))
 					return Fail(owner + L" 的 ItemTemplate 格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["itemTemplate"].get<std::string>());
+				const auto& key = node.Structure.ItemTemplate;
 				dataTemplate = document.FindDataTemplate(nodes, node, key);
 				if (!dataTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
 			}
-			if (node.Extra.is_object() && node.Extra.contains("contentTemplate"))
+			if (!node.Structure.ContentTemplate.empty())
 			{
-				if (!contentHost
-					|| !node.Extra["contentTemplate"].is_string())
+				if (!contentHost)
 					return Fail(owner + L" 的 ContentTemplate 格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["contentTemplate"].get<std::string>());
+				const auto& key = node.Structure.ContentTemplate;
 				contentTemplate = document.FindDataTemplate(nodes, node, key);
 				if (!contentTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
-				node.Extra["contentTemplate"] =
-					Convert::UnicodeToUtf8(contentTemplate->Key);
+				node.Structure.ContentTemplate = contentTemplate->Key;
 			}
-			if (node.Extra.is_object() && node.Extra.contains("headerTemplate"))
+			if (!node.Structure.HeaderTemplate.empty())
 			{
-				if (!headeredContentControl
-					|| !node.Extra["headerTemplate"].is_string())
+				if (!headeredControl)
 					return Fail(owner + L" 的 HeaderTemplate 格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["headerTemplate"].get<std::string>());
+				const auto& key = node.Structure.HeaderTemplate;
 				headerTemplate = document.FindDataTemplate(nodes, node, key);
 				if (!headerTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
-				node.Extra["headerTemplate"] =
-					Convert::UnicodeToUtf8(headerTemplate->Key);
+				node.Structure.HeaderTemplate = headerTemplate->Key;
 			}
-			if (node.Extra.is_object() && node.Extra.contains("itemsPanel"))
+			if (!node.Structure.ItemsPanel.empty())
 			{
-				if ((node.Type != UIClass::UI_ItemsControl
-					&& node.Type != UIClass::UI_ListBox)
-					|| !node.Extra["itemsPanel"].is_string())
+				if (!IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type))
 					return Fail(owner + L" 的 ItemsPanel 格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["itemsPanel"].get<std::string>());
+				const auto& key = node.Structure.ItemsPanel;
 				itemsPanel = document.FindItemsPanelTemplate(nodes, node, key);
 				if (!itemsPanel)
 					return Fail(owner + L" 引用了未声明的 ItemsPanelTemplate："
 						+ key, outError);
-				node.Extra["itemsPanel"] = Convert::UnicodeToUtf8(itemsPanel->Key);
+				node.Structure.ItemsPanel = itemsPanel->Key;
 			}
-			if (node.Extra.is_object() && node.Extra.contains("groupStyle"))
+			if (!node.Structure.GroupStyle.empty())
 			{
-				if ((node.Type != UIClass::UI_ItemsControl
-					&& node.Type != UIClass::UI_ListBox)
-					|| !node.Extra["groupStyle"].is_string())
+				if (!IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type))
 					return Fail(owner + L" 的 GroupStyle 格式无效。", outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["groupStyle"].get<std::string>());
+				const auto& key = node.Structure.GroupStyle;
 				groupStyle = document.FindGroupStyle(nodes, node, key);
 				if (!groupStyle)
 					return Fail(owner + L" 引用了未声明的 GroupStyle：" + key,
 						outError);
-				node.Extra["groupStyle"] = Convert::UnicodeToUtf8(groupStyle->Key);
+				node.Structure.GroupStyle = groupStyle->Key;
 			}
-			if (node.Extra.is_object()
-				&& node.Extra.contains("itemContainerStyle"))
+			if (!node.Structure.ItemContainerStyle.empty())
 			{
-				if ((node.Type != UIClass::UI_ListBox
-					&& node.Type != UIClass::UI_ComboBox
-					&& node.Type != UIClass::UI_TreeView)
-					|| !node.Extra["itemContainerStyle"].is_string())
+				if (!IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, node.Type))
 					return Fail(owner + L" 的 ItemContainerStyle 格式无效。",
 						outError);
-				const auto key = Convert::Utf8ToUnicode(
-					node.Extra["itemContainerStyle"].get<std::string>());
+				const auto& key = node.Structure.ItemContainerStyle;
 				const auto style = std::find_if(
 					document.StyleSheet.Rules.begin(),
 					document.StyleSheet.Rules.end(),
 					[&](const auto& rule)
 					{
-						return !rule.Id.empty()
-							&& _wcsicmp(rule.Id.c_str(), key.c_str()) == 0;
+						return !rule.Id.empty() && rule.Id == key;
 					});
 				if (style == document.StyleSheet.Rules.end())
 					return Fail(owner + L" 引用了未声明的 Style：" + key,
 						outError);
-				const auto expectedContainer = node.Type == UIClass::UI_ComboBox
-					? UIClass::UI_ComboBoxItem
-					: node.Type == UIClass::UI_TreeView
-						? UIClass::UI_TreeViewItem : UIClass::UI_SelectorItem;
+				const auto expectedContainer =
+					GetDefaultItemContainerType(node.Type);
 				if (!style->ComponentType.Empty()
 					|| (style->HasType
 						&& style->Type != UIClass::UI_Base
 						&& style->Type != expectedContainer))
-					return Fail(owner + L" 的 ItemContainerStyle 必须面向 "
-						+ (node.Type == UIClass::UI_ComboBox
-							? L"ComboBoxItem。"
-							: node.Type == UIClass::UI_TreeView
-								? L"TreeViewItem。" : L"ListBoxItem。"),
+					return Fail(owner
+						+ L" 的 ItemContainerStyle TargetType 与默认项容器不匹配。",
 						outError);
-				node.Extra["itemContainerStyle"] =
-					Convert::UnicodeToUtf8(style->Id);
+				node.Structure.ItemContainerStyle = style->Id;
 			}
 			const std::wstring resourceItemType = dataList ? dataList->ItemType
-				: collectionView ? viewItemTypes[Lower(collectionView->Key)] : L"";
+				: collectionView ? viewItemTypes[collectionView->Key] : L"";
 			if (!resourceItemType.empty() && dataTemplate
-				&& _wcsicmp(resourceItemType.c_str(),
-					dataTemplate->DataType.c_str()) != 0)
+				&& resourceItemType != dataTemplate->DataType)
 				return Fail(owner
 					+ L" 的列表资源 ItemType 与 DataTemplate.DataType 不一致。",
 					outError);
-			if (dataTemplate && node.Bindings.is_object()
-				&& node.Bindings.contains("ItemsSource"))
+			if (dataTemplate && node.Bindings.contains(L"ItemsSource"))
 			{
-				const auto& binding = node.Bindings["ItemsSource"];
-				const bool elementSource = binding.is_object()
-					&& binding.contains("elementName")
-					&& binding["elementName"].is_string()
-					&& !binding["elementName"].get<std::string>().empty();
-				const bool relativeSource = binding.is_object()
-					&& binding.contains("relativeSource")
-					&& binding["relativeSource"].is_string()
-					&& !binding["relativeSource"].get<std::string>().empty();
-				const auto path = binding.is_object()
-					? Convert::Utf8ToUnicode(
-						binding.value("source", std::string{})) : std::wstring{};
-				const auto* property = elementSource || relativeSource ? nullptr
-					: DesignerDataContextSchemaUtils::Find(schema, path);
+				const auto& binding = node.Bindings.at(L"ItemsSource");
+				const bool explicitSource = !binding.ElementName.empty()
+					|| binding.RelativeSource != DesignerBindingRelativeSource::None
+					|| binding.IsMultiBinding();
+				const auto* property = explicitSource ? nullptr
+					: DesignerDataContextSchemaUtils::Find(
+						schema, binding.SourceProperty);
 				if (property && (property->ObjectKind
 						!= DesignerDataObjectKind::BindingList
-					|| _wcsicmp(property->ItemType.c_str(),
-						dataTemplate->DataType.c_str()) != 0))
+					|| property->ItemType != dataTemplate->DataType))
 					return Fail(owner
 						+ L" 的 ItemsSource 与 DataTemplate 类型不一致。",
 						outError);
 			}
-			if (contentTemplate && node.Bindings.is_object()
-				&& node.Bindings.contains("Content"))
+			if (contentTemplate && node.Bindings.contains(L"Content"))
 			{
-				const auto& binding = node.Bindings["Content"];
-				const bool explicitSource = binding.is_object()
-					&& (!binding.value("elementName", std::string{}).empty()
-						|| !binding.value("relativeSource", std::string{}).empty()
-						|| binding.contains("bindings"));
-				const auto path = binding.is_object()
-					? Convert::Utf8ToUnicode(
-						binding.value("source", std::string{})) : std::wstring{};
+				const auto& binding = node.Bindings.at(L"Content");
+				const bool explicitSource = !binding.ElementName.empty()
+					|| binding.RelativeSource != DesignerBindingRelativeSource::None
+					|| binding.IsMultiBinding();
 				const auto* property = explicitSource ? nullptr
-					: DesignerDataContextSchemaUtils::Find(schema, path);
+					: DesignerDataContextSchemaUtils::Find(
+						schema, binding.SourceProperty);
 				if (property && (property->ObjectKind
 						!= DesignerDataObjectKind::BindingSource
 					|| property->DataType.empty()
-					|| _wcsicmp(property->DataType.c_str(),
-						contentTemplate->DataType.c_str()) != 0))
+					|| property->DataType != contentTemplate->DataType))
 					return Fail(owner
 						+ L" 的 Content 与 ContentTemplate 类型不一致。",
 						outError);
 			}
-			if (headerTemplate && node.Bindings.is_object()
-				&& node.Bindings.contains("Header"))
+			if (headerTemplate && node.Bindings.contains(L"Header"))
 			{
-				const auto& binding = node.Bindings["Header"];
-				const bool explicitSource = binding.is_object()
-					&& (!binding.value("elementName", std::string{}).empty()
-						|| !binding.value("relativeSource", std::string{}).empty()
-						|| binding.contains("bindings"));
-				const auto path = binding.is_object()
-					? Convert::Utf8ToUnicode(
-						binding.value("source", std::string{})) : std::wstring{};
+				const auto& binding = node.Bindings.at(L"Header");
+				const bool explicitSource = !binding.ElementName.empty()
+					|| binding.RelativeSource != DesignerBindingRelativeSource::None
+					|| binding.IsMultiBinding();
 				const auto* property = explicitSource ? nullptr
-					: DesignerDataContextSchemaUtils::Find(schema, path);
+					: DesignerDataContextSchemaUtils::Find(
+						schema, binding.SourceProperty);
 				if (property && (property->ObjectKind
 						!= DesignerDataObjectKind::BindingSource
 					|| property->DataType.empty()
-					|| _wcsicmp(property->DataType.c_str(),
-						headerTemplate->DataType.c_str()) != 0))
+					|| property->DataType != headerTemplate->DataType))
 					return Fail(owner
 						+ L" 的 Header 与 HeaderTemplate 类型不一致。",
 						outError);
@@ -1212,24 +1148,16 @@ bool ValidateAndCanonicalize(
 			const DesignDataTypeDefinition* itemType = nullptr;
 			if (dataList) itemType = document.FindDataType(dataList->ItemType);
 			if (collectionView) itemType = document.FindDataType(
-				viewItemTypes[Lower(collectionView->Key)]);
-			if (!itemType && node.Bindings.is_object()
-				&& node.Bindings.contains("ItemsSource"))
+				viewItemTypes[collectionView->Key]);
+			if (!itemType && node.Bindings.contains(L"ItemsSource"))
 			{
-				const auto& binding = node.Bindings["ItemsSource"];
-				const bool elementSource = binding.is_object()
-					&& binding.contains("elementName")
-					&& binding["elementName"].is_string()
-					&& !binding["elementName"].get<std::string>().empty();
-				const bool relativeSource = binding.is_object()
-					&& binding.contains("relativeSource")
-					&& binding["relativeSource"].is_string()
-					&& !binding["relativeSource"].get<std::string>().empty();
-				const auto path = binding.is_object()
-					? Convert::Utf8ToUnicode(
-						binding.value("source", std::string{})) : std::wstring{};
-				const auto* sourceProperty = elementSource || relativeSource ? nullptr :
-					DesignerDataContextSchemaUtils::Find(schema, path);
+				const auto& binding = node.Bindings.at(L"ItemsSource");
+				const bool explicitSource = !binding.ElementName.empty()
+					|| binding.RelativeSource != DesignerBindingRelativeSource::None
+					|| binding.IsMultiBinding();
+				const auto* sourceProperty = explicitSource ? nullptr :
+					DesignerDataContextSchemaUtils::Find(
+						schema, binding.SourceProperty);
 				if (sourceProperty
 					&& sourceProperty->ObjectKind
 						== DesignerDataObjectKind::BindingList)
@@ -1239,8 +1167,7 @@ bool ValidateAndCanonicalize(
 				itemType = document.FindDataType(dataTemplate->DataType);
 			if (itemType && groupStyle)
 			{
-				const auto groupStyleKey = Convert::Utf8ToUnicode(
-					node.Extra["groupStyle"].get<std::string>());
+				const auto& groupStyleKey = node.Structure.GroupStyle;
 				const auto* header = document.FindGroupStyleHeaderTemplate(
 					nodes, node, groupStyleKey);
 				if (!header && !groupStyle->HeaderTemplate.empty())
@@ -1253,28 +1180,27 @@ bool ValidateAndCanonicalize(
 						collectionView ? &collectionView->AggregateDescriptions : nullptr);
 					for (const auto& templateNode : header->Template)
 					{
-						if (!templateNode.Bindings.is_object()) continue;
 						for (const auto& [target, binding]
-							: templateNode.Bindings.ObjectItems())
+							: templateNode.Bindings)
 						{
 							(void)target;
-							if (!binding.is_object()) continue;
 							std::wstring bindingError;
 							if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
-								binding, [&](const DesignerModel::DesignValue& child)
+								binding, [&](const DesignerDataBinding& child)
 								{
-									if (!child.value("elementName", std::string{}).empty()
-										|| !child.value("relativeSource", std::string{}).empty())
+									if (!child.ElementName.empty()
+										|| child.RelativeSource
+											!= DesignerBindingRelativeSource::None)
 										return true;
 									const auto path = DesignerBindingUtils::Trim(
-										Convert::Utf8ToUnicode(child.value("source", std::string{})));
+										child.SourceProperty);
 									if (path.empty() || DesignerDataContextSchemaUtils::Find(
 										groupSchema, path)) return true;
 									bindingError = owner
 										+ L" 的 GroupStyle.HeaderTemplate 绑定路径未在 CollectionViewGroup 或其 FirstItem 中声明："
 										+ path;
 									return false;
-								}, &bindingError))
+								}))
 								return Fail(bindingError, outError);
 						}
 					}
@@ -1311,15 +1237,15 @@ bool ValidateAndCanonicalize(
 					const auto identity = localTemplate.TargetComponentType.Empty()
 						? L"builtin:" + std::to_wstring(
 							static_cast<int>(localTemplate.TargetType))
-						: L"component:" + Lower(
-							localTemplate.TargetComponentType.RegistryKey());
+						: L"component:"
+							+ localTemplate.TargetComponentType.RegistryKey();
 					if (!localImplicitControlTemplateTypes.insert(identity).second)
 						return Fail(owner
 							+ L" 的局部隐式 ControlTemplate TargetType 重复："
 							+ localTemplate.DisplayName(), outError);
 				}
 				else if (!IsIdentifier(localTemplate.Key)
-					|| !localObjectKeys.insert(Lower(localTemplate.Key)).second)
+					|| !localObjectKeys.insert(localTemplate.Key).second)
 					return Fail(owner
 						+ L" 的局部 ControlTemplate 键无效或重复："
 						+ localTemplate.Key, outError);
@@ -1349,13 +1275,13 @@ bool ValidateAndCanonicalize(
 				if (localTemplate.IsImplicit())
 				{
 					if (!localImplicitTemplateTypes.insert(
-						Lower(localTemplate.DataType)).second)
+						localTemplate.DataType).second)
 						return Fail(owner
 							+ L" 的局部隐式 DataTemplate DataType 重复："
 							+ localTemplate.DataType, outError);
 				}
 				else if (!IsIdentifier(localTemplate.Key)
-					|| !localObjectKeys.insert(Lower(localTemplate.Key)).second)
+					|| !localObjectKeys.insert(localTemplate.Key).second)
 					return Fail(owner + L" 的局部 DataTemplate 键无效或重复："
 						+ localTemplate.Key, outError);
 				const auto* localType = document.FindDataType(localTemplate.DataType);
@@ -1381,7 +1307,7 @@ bool ValidateAndCanonicalize(
 			{
 				localPanel.Key = DesignerBindingUtils::Trim(localPanel.Key);
 				if (!IsIdentifier(localPanel.Key)
-					|| !localObjectKeys.insert(Lower(localPanel.Key)).second)
+					|| !localObjectKeys.insert(localPanel.Key).second)
 					return Fail(owner
 						+ L" 的局部 ItemsPanelTemplate 键无效或重复："
 						+ localPanel.Key, outError);
@@ -1391,7 +1317,6 @@ bool ValidateAndCanonicalize(
 						&& value.Kind != ItemsPanelKind::VirtualizingStack)
 					|| (value.Orientation != Orientation::Horizontal
 						&& value.Orientation != Orientation::Vertical)
-					|| !std::isfinite(value.Spacing) || value.Spacing < 0.0f
 					|| !std::isfinite(value.ItemWidth) || value.ItemWidth < 0.0f
 					|| !std::isfinite(value.ItemHeight) || value.ItemHeight < 0.0f
 					|| !std::isfinite(value.CacheLength) || value.CacheLength < 0.0f)
@@ -1412,7 +1337,6 @@ bool ValidateAndCanonicalize(
 				}
 				else if (value.Kind == ItemsPanelKind::Wrap)
 				{
-					value.Spacing = 0.0f;
 					value.CacheLength = 1.0f;
 				}
 				else value.ItemWidth = 0.0f;
@@ -1423,16 +1347,8 @@ bool ValidateAndCanonicalize(
 				localGroup.HeaderTemplate = DesignerBindingUtils::Trim(
 					localGroup.HeaderTemplate);
 				if (!IsIdentifier(localGroup.Key)
-					|| !localObjectKeys.insert(Lower(localGroup.Key)).second)
+					|| !localObjectKeys.insert(localGroup.Key).second)
 					return Fail(owner + L" 的局部 GroupStyle 键无效或重复："
-						+ localGroup.Key, outError);
-				if (!std::isfinite(localGroup.HeaderIndent)
-					|| localGroup.HeaderIndent < 0.0f
-					|| !std::isfinite(localGroup.HeaderSpacing)
-					|| localGroup.HeaderSpacing < 0.0f
-					|| !std::isfinite(localGroup.HeaderHeight)
-					|| localGroup.HeaderHeight <= 0.0f)
-					return Fail(owner + L" 的局部 GroupStyle 数值配置无效："
 						+ localGroup.Key, outError);
 				if (!localGroup.HeaderTemplate.empty())
 				{
@@ -1457,18 +1373,15 @@ bool ValidateAndCanonicalize(
 					std::nullopt))
 					return false;
 			const DesignDataTypeDefinition* contentType = nullptr;
-			if (contentHost && node.Bindings.is_object()
-				&& node.Bindings.contains("Content")
-				&& node.Bindings["Content"].is_object())
+			if (contentHost && node.Bindings.contains(L"Content"))
 			{
-				const auto& binding = node.Bindings["Content"];
-				if (binding.value("elementName", std::string{}).empty()
-					&& binding.value("relativeSource", std::string{}).empty()
-					&& !binding.contains("bindings"))
+				const auto& binding = node.Bindings.at(L"Content");
+				if (binding.ElementName.empty()
+					&& binding.RelativeSource == DesignerBindingRelativeSource::None
+					&& !binding.IsMultiBinding())
 				{
 					const auto* property = DesignerDataContextSchemaUtils::Find(
-						schema, Convert::Utf8ToUnicode(
-							binding.value("source", std::string{})));
+						schema, binding.SourceProperty);
 					if (property && property->ObjectKind
 						== DesignerDataObjectKind::BindingSource)
 						contentType = document.FindDataType(property->DataType);
@@ -1477,18 +1390,15 @@ bool ValidateAndCanonicalize(
 			if (!contentType && contentTemplate)
 				contentType = document.FindDataType(contentTemplate->DataType);
 			const DesignDataTypeDefinition* headerType = nullptr;
-			if (headeredContentControl && node.Bindings.is_object()
-				&& node.Bindings.contains("Header")
-				&& node.Bindings["Header"].is_object())
+			if (headeredControl && node.Bindings.contains(L"Header"))
 			{
-				const auto& binding = node.Bindings["Header"];
-				if (binding.value("elementName", std::string{}).empty()
-					&& binding.value("relativeSource", std::string{}).empty()
-					&& !binding.contains("bindings"))
+				const auto& binding = node.Bindings.at(L"Header");
+				if (binding.ElementName.empty()
+					&& binding.RelativeSource == DesignerBindingRelativeSource::None
+					&& !binding.IsMultiBinding())
 				{
 					const auto* property = DesignerDataContextSchemaUtils::Find(
-						schema, Convert::Utf8ToUnicode(
-							binding.value("source", std::string{})));
+						schema, binding.SourceProperty);
 					if (property && property->ObjectKind
 						== DesignerDataObjectKind::BindingSource)
 						headerType = document.FindDataType(property->DataType);
@@ -1496,26 +1406,17 @@ bool ValidateAndCanonicalize(
 			}
 			if (!headerType && headerTemplate)
 				headerType = document.FindDataType(headerTemplate->DataType);
-			if ((!itemType && !contentType && !headerType) || !node.Props.is_object()
-				|| !node.Props.contains("metadata")
-				|| !node.Props["metadata"].is_object()) continue;
+			if (!itemType && !contentType && !headerType) continue;
 
 			auto validatePath = [&](const wchar_t* propertyName,
 				const DesignDataTypeDefinition* sourceType)
 			{
 				if (!sourceType) return true;
-				for (auto& [rawName, stored]
-					: node.Props["metadata"].ObjectItems())
+				auto* assignment = node.Properties.Find(propertyName);
+				if (assignment)
 				{
-					const auto name = Convert::Utf8ToUnicode(rawName);
-					if (_wcsicmp(name.c_str(), propertyName) != 0) continue;
-					if (!stored.is_object() || !stored.contains("value")
-						|| !stored["value"].is_string())
-						return Fail(owner + L" 的 " + propertyName
-							+ L" 格式无效。", outError);
 					const auto path = DesignerDataContextSchemaUtils::NormalizePath(
-						Convert::Utf8ToUnicode(
-							stored["value"].get<std::string>()));
+						assignment->Value.Text);
 					if (path.empty()) return true;
 					const auto* property = DesignerDataContextSchemaUtils::Find(
 						sourceType->Properties, path);
@@ -1523,7 +1424,7 @@ bool ValidateAndCanonicalize(
 						return Fail(owner + L" 的 " + propertyName
 							+ L" 未在 DataType " + sourceType->Name
 							+ L" 中声明为可读路径：" + path, outError);
-					stored["value"] = Convert::UnicodeToUtf8(property->Path);
+					assignment->Value.Text = property->Path;
 					return true;
 				}
 				return true;
@@ -1532,11 +1433,10 @@ bool ValidateAndCanonicalize(
 				contentHost ? contentType : itemType)
 				|| !validatePath(L"HeaderDisplayMemberPath", headerType)
 				|| !validatePath(L"SelectedValuePath", itemType)) return false;
-			if (node.Type == UIClass::UI_ListView
-				&& !validatePath(L"SecondaryMemberPath", itemType)) return false;
 		}
 		return true;
 	};
+	if (!validateMemberExpressions(document.Window, L"Window")) return false;
 	if (!validateNodeResources(document.Nodes, document.DataContextSchema,
 		L"文档控件", std::nullopt)) return false;
 	for (auto& item : document.DataTemplates)

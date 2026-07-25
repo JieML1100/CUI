@@ -1,4 +1,5 @@
 #include "CollectionViewSource.h"
+#include "EventInfrastructure.h"
 
 #include <algorithm>
 #include <cmath>
@@ -99,6 +100,14 @@ EventConnection CollectionViewSource::SubscribeChanged(ChangedHandler handler)
 		[handler = std::move(handler)](
 			CollectionViewSource*, const CollectionChangedEventArgs& change)
 		{ handler(change); });
+}
+
+EventConnection CollectionViewSource::SubscribeCurrentChanged(
+	CurrentChangedHandler handler)
+{
+	if (!handler) return {};
+	return CurrentChanged.Subscribe(
+		[handler = std::move(handler)](CollectionViewSource*) { handler(); });
 }
 
 const std::wstring& CollectionViewSource::ItemTypeName() const noexcept
@@ -279,11 +288,24 @@ void CollectionViewSource::Refresh()
 		return;
 	}
 	_refreshing = true;
-	do
+	try
 	{
+		do
+		{
+			_refreshPending = false;
+			RebuildProjection();
+		} while (_refreshPending);
+	}
+	catch (...)
+	{
+		// Projection and currency notifications are user-extensible. Never let
+		// one throwing handler permanently leave Refresh() in its re-entrancy
+		// guard; a later explicit or source-driven refresh must be able to
+		// converge the partially published projection.
+		_refreshing = false;
 		_refreshPending = false;
-		RebuildProjection();
-	} while (_refreshPending);
+		throw;
+	}
 	_refreshing = false;
 }
 
@@ -342,7 +364,8 @@ void CollectionViewSource::RebuildProjection()
 	PublishProjection(std::move(target));
 	RebuildItemObservations();
 	RestoreCurrentItem();
-	if (groupsChanged) _groupsChanged(this);
+	if (groupsChanged)
+		cui::framework::EventAccess::Raise(_groupsChanged, this);
 }
 
 std::vector<BindingListGroup> CollectionViewSource::BuildGroups(
@@ -447,7 +470,7 @@ void CollectionViewSource::PublishProjection(
 			CollectionChangeAction::Remove,
 			index, CollectionChangedEventArgs::Npos,
 			1, 0, oldSize, _items.size() };
-		_changed(this, change);
+		cui::framework::EventAccess::Raise(_changed, this, change);
 	}
 	for (size_t index = 0; index < target.size(); ++index)
 	{
@@ -467,7 +490,7 @@ void CollectionViewSource::PublishProjection(
 				CollectionChangeAction::Move,
 				oldIndex, index, 1, 1,
 				_items.size(), _items.size() };
-			_changed(this, change);
+			cui::framework::EventAccess::Raise(_changed, this, change);
 		}
 		else
 		{
@@ -477,7 +500,7 @@ void CollectionViewSource::PublishProjection(
 				CollectionChangeAction::Add,
 				CollectionChangedEventArgs::Npos, index,
 				0, 1, oldSize, _items.size() };
-			_changed(this, change);
+			cui::framework::EventAccess::Raise(_changed, this, change);
 		}
 	}
 	while (_items.size() > target.size())
@@ -489,7 +512,7 @@ void CollectionViewSource::PublishProjection(
 			CollectionChangeAction::Remove,
 			index, CollectionChangedEventArgs::Npos,
 			1, 0, oldSize, _items.size() };
-		_changed(this, change);
+		cui::framework::EventAccess::Raise(_changed, this, change);
 	}
 }
 
@@ -569,7 +592,8 @@ void CollectionViewSource::RestoreCurrentItem()
 	_currentItem = next >= 0 ? _items[static_cast<size_t>(next)]
 		: BindingSourceReference{};
 	if (previousPosition != _currentPosition
-		|| !SameItem(previousItem, _currentItem)) CurrentChanged(this);
+		|| !SameItem(previousItem, _currentItem))
+		cui::framework::EventAccess::Raise(CurrentChanged, this);
 }
 
 bool CollectionViewSource::MoveCurrentToPosition(int position)
@@ -582,6 +606,7 @@ bool CollectionViewSource::MoveCurrentToPosition(int position)
 	_currentItem = position >= 0
 		? _items[static_cast<size_t>(position)] : BindingSourceReference{};
 	if (previousPosition != _currentPosition
-		|| !SameItem(previous, _currentItem)) CurrentChanged(this);
+		|| !SameItem(previous, _currentItem))
+		cui::framework::EventAccess::Raise(CurrentChanged, this);
 	return true;
 }

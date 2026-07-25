@@ -1,4 +1,5 @@
 #include "BindingEditorDialog.h"
+#include "ProgrammaticControlFactory.h"
 #include "../CUI/include/BindingList.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
@@ -67,115 +68,139 @@ BindingEditorDialog::BindingEditorDialog(
 	const DesignerDataContextSchema& sourceSchema,
 	IBindingSource* runtimeSource,
 	std::vector<DesignerBindingElementSource> elementSources)
-	: Form(L"编辑数据绑定", POINT{ 320, 100 }, SIZE{ 820, 850 }),
+	: Window(),
 	  ResultBindings(bindings),
 	  _target(target),
 	  _runtimeSource(runtimeSource),
 	  _sourceSchema(sourceSchema),
 	  _elementSources(std::move(elementSources))
 {
+	this->Title = L"编辑数据绑定";
+	this->Left = 320.0f;
+	this->Top = 100.0f;
+	this->Width = 820.0f;
+	this->Height = 850.0f;
 	DesignerDataContextSchemaUtils::Canonicalize(_sourceSchema);
-	this->VisibleHead = true;
-	this->MinBox = false;
-	this->MaxBox = false;
-	this->AllowResize = false;
-	this->BackColor = Colors::WhiteSmoke;
+	this->ResizeMode = ::ResizeMode::NoResize;
+	this->Background = Colors::WhiteSmoke;
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	auto* contentRoot = static_cast<Panel*>(SetVisualContent(std::move(contentOwner)));
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 
-	auto tip = this->AddControl(new Label(
+	auto tip = addContent(cui::designer::NewControl<Label>(
 		L"选择目标属性，填写数据上下文中的源路径；修改后点击“保存绑定”。", 20, 16));
-	tip->Size = { 770, 22 };
+	tip->Width = 770.0f;
+	tip->Height = 22.0f;
 
-	auto targetLabel = this->AddControl(new Label(L"目标属性", 20, 60));
-	targetLabel->Size = { 120, 24 };
-	_targetProperty = this->AddControl(new ComboBox(L"", 150, 54, 630, 30));
-	_targetProperty->ExpandCount = 10;
+	auto targetLabel = addContent(cui::designer::NewControl<Label>(L"目标属性", 20, 60));
+	targetLabel->Width = 120.0f;
+	targetLabel->Height = 24.0f;
+	_targetProperty = addContent(cui::designer::NewControl<ComboBox>(L"", 150, 54, 630, 30));
+	_targetProperty->MaxDropDownHeight = 280.0f;
 
-	auto sourceLabel = this->AddControl(new Label(L"源对象 / 路径", 20, 106));
-	sourceLabel->Size = { 120, 24 };
-	_sourceObject = this->AddControl(new ComboBox(L"", 150, 100, 190, 30));
-	_sourceObject->ExpandCount = 10;
-	_sourceObject->Items.push_back(kDataContextSource);
-	_sourceObject->Items.push_back(kSelfSource);
-	_sourceObject->Items.push_back(kFindAncestorSource);
+	auto sourceLabel = addContent(cui::designer::NewControl<Label>(L"源对象 / 路径", 20, 106));
+	sourceLabel->Width = 120.0f;
+	sourceLabel->Height = 24.0f;
+	_sourceObject = addContent(cui::designer::NewControl<ComboBox>(L"", 150, 100, 190, 30));
+	_sourceObject->MaxDropDownHeight = 280.0f;
+	cui::designer::AddComboBoxItem(*_sourceObject, kDataContextSource);
+	cui::designer::AddComboBoxItem(*_sourceObject, kSelfSource);
+	cui::designer::AddComboBoxItem(*_sourceObject, kFindAncestorSource);
 	for (const auto& source : _elementSources)
-		if (!source.Name.empty()) _sourceObject->Items.push_back(source.Name);
+		if (!source.Name.empty())
+			cui::designer::AddComboBoxItem(*_sourceObject, source.Name);
 	_sourceObject->SelectedIndex = 0;
 	_sourceObject->Text = kDataContextSource;
-	_sourcePath = this->AddControl(new TextBox(L"", 350, 100, 200, 30));
-	_knownSourcePath = this->AddControl(new ComboBox(L"", 560, 100, 220, 30));
-	_knownSourcePath->ExpandCount = 10;
+	_sourcePath = addContent(cui::designer::NewControl<TextBox>(L"", 350, 100, 200, 30));
+	_knownSourcePath = addContent(cui::designer::NewControl<ComboBox>(L"", 560, 100, 220, 30));
+	_knownSourcePath->MaxDropDownHeight = 280.0f;
 	RefreshKnownSourcePaths();
 
-	auto modeLabel = this->AddControl(new Label(L"绑定模式", 20, 152));
-	modeLabel->Size = { 120, 24 };
-	_mode = this->AddControl(new ComboBox(L"", 150, 146, 250, 30));
-	_mode->ExpandCount = 5;
+	auto modeLabel = addContent(cui::designer::NewControl<Label>(L"绑定模式", 20, 152));
+	modeLabel->Width = 120.0f;
+	modeLabel->Height = 24.0f;
+	_mode = addContent(cui::designer::NewControl<ComboBox>(L"", 150, 146, 250, 30));
+	_mode->MaxDropDownHeight = 140.0f;
 
-	auto updateLabel = this->AddControl(new Label(L"更新策略", 430, 152));
-	updateLabel->Size = { 100, 24 };
-	_updateMode = this->AddControl(new ComboBox(L"", 530, 146, 250, 30));
-	_updateMode->ExpandCount = 3;
+	auto updateLabel = addContent(cui::designer::NewControl<Label>(L"更新策略", 430, 152));
+	updateLabel->Width = 100.0f;
+	updateLabel->Height = 24.0f;
+	_updateMode = addContent(cui::designer::NewControl<ComboBox>(L"", 530, 146, 250, 30));
+	_updateMode->MaxDropDownHeight = 84.0f;
 
-	auto converterLabel = this->AddControl(new Label(L"Converter", 20, 198));
-	converterLabel->Size = { 120, 24 };
-	_converter = this->AddControl(new ComboBox(L"", 150, 192, 250, 30));
-	_converter->ExpandCount = 8;
-	auto customConverterLabel = this->AddControl(new Label(L"自定义 ID", 430, 198));
-	customConverterLabel->Size = { 100, 24 };
-	_customConverter = this->AddControl(new TextBox(L"", 530, 192, 250, 30));
+	auto converterLabel = addContent(cui::designer::NewControl<Label>(L"Converter", 20, 198));
+	converterLabel->Width = 120.0f;
+	converterLabel->Height = 24.0f;
+	_converter = addContent(cui::designer::NewControl<ComboBox>(L"", 150, 192, 250, 30));
+	_converter->MaxDropDownHeight = 224.0f;
+	auto customConverterLabel = addContent(cui::designer::NewControl<Label>(L"自定义 ID", 430, 198));
+	customConverterLabel->Width = 100.0f;
+	customConverterLabel->Height = 24.0f;
+	_customConverter = addContent(cui::designer::NewControl<TextBox>(L"", 530, 192, 250, 30));
 
-	_useFallbackValue = this->AddControl(new CheckBox(
+	_useFallbackValue = addContent(cui::designer::NewControl<CheckBox>(
 		L"FallbackValue", 20, 238));
-	_useFallbackValue->Size = { 120, 30 };
-	_fallbackValue = this->AddControl(new TextBox(L"", 150, 238, 250, 30));
-	_useTargetNullValue = this->AddControl(new CheckBox(
+	_useFallbackValue->Width = 120.0f;
+	_useFallbackValue->Height = 30.0f;
+	_fallbackValue = addContent(cui::designer::NewControl<TextBox>(L"", 150, 238, 250, 30));
+	_useTargetNullValue = addContent(cui::designer::NewControl<CheckBox>(
 		L"TargetNullValue", 430, 238));
-	_useTargetNullValue->Size = { 120, 30 };
-	_targetNullValue = this->AddControl(new TextBox(L"", 560, 238, 220, 30));
+	_useTargetNullValue->Width = 120.0f;
+	_useTargetNullValue->Height = 30.0f;
+	_targetNullValue = addContent(cui::designer::NewControl<TextBox>(L"", 560, 238, 220, 30));
 
-	_useConverterParameter = this->AddControl(new CheckBox(
+	_useConverterParameter = addContent(cui::designer::NewControl<CheckBox>(
 		L"ConverterParameter", 20, 284));
-	_useConverterParameter->Size = { 130, 30 };
-	_converterParameter = this->AddControl(new TextBox(L"", 160, 284, 240, 30));
-	_useStringFormat = this->AddControl(new CheckBox(
+	_useConverterParameter->Width = 130.0f;
+	_useConverterParameter->Height = 30.0f;
+	_converterParameter = addContent(cui::designer::NewControl<TextBox>(L"", 160, 284, 240, 30));
+	_useStringFormat = addContent(cui::designer::NewControl<CheckBox>(
 		L"StringFormat", 430, 284));
-	_useStringFormat->Size = { 120, 30 };
-	_stringFormat = this->AddControl(new TextBox(L"", 560, 284, 220, 30));
+	_useStringFormat->Width = 120.0f;
+	_useStringFormat->Height = 30.0f;
+	_stringFormat = addContent(cui::designer::NewControl<TextBox>(L"", 560, 284, 220, 30));
 
-	auto ancestorTypeLabel = this->AddControl(new Label(L"AncestorType", 20, 336));
-	ancestorTypeLabel->Size = { 120, 24 };
-	_ancestorType = this->AddControl(new TextBox(L"", 150, 330, 360, 30));
-	auto ancestorLevelLabel = this->AddControl(new Label(L"AncestorLevel", 530, 336));
-	ancestorLevelLabel->Size = { 110, 24 };
-	_ancestorLevel = this->AddControl(new NumericUpDown(650, 330, 130, 30));
-	_ancestorLevel->Min = 1;
-	_ancestorLevel->Max = 100;
+	auto ancestorTypeLabel = addContent(cui::designer::NewControl<Label>(L"AncestorType", 20, 336));
+	ancestorTypeLabel->Width = 120.0f;
+	ancestorTypeLabel->Height = 24.0f;
+	_ancestorType = addContent(cui::designer::NewControl<TextBox>(L"", 150, 330, 360, 30));
+	auto ancestorLevelLabel = addContent(cui::designer::NewControl<Label>(L"AncestorLevel", 530, 336));
+	ancestorLevelLabel->Width = 110.0f;
+	ancestorLevelLabel->Height = 24.0f;
+	_ancestorLevel = addContent(cui::designer::NewControl<NumericUpDown>(650, 330, 130, 30));
+	_ancestorLevel->Minimum = 1;
+	_ancestorLevel->Maximum = 100;
 	_ancestorLevel->Value = 1;
 
-	_capabilities = this->AddControl(new Label(L"", 20, 376));
-	_capabilities->Size = { 760, 24 };
-	_runtimeValidation = this->AddControl(new Label(L"", 20, 406));
-	_runtimeValidation->Size = { 760, 40 };
-	_validation = this->AddControl(new Label(L"", 20, 450));
-	_validation->Size = { 760, 40 };
+	_capabilities = addContent(cui::designer::NewControl<Label>(L"", 20, 376));
+	_capabilities->Width = 760.0f;
+	_capabilities->Height = 24.0f;
+	_runtimeValidation = addContent(cui::designer::NewControl<Label>(L"", 20, 406));
+	_runtimeValidation->Width = 760.0f;
+	_runtimeValidation->Height = 40.0f;
+	_validation = addContent(cui::designer::NewControl<Label>(L"", 20, 450));
+	_validation->Width = 760.0f;
+	_validation->Height = 40.0f;
 
-	_saveBinding = this->AddControl(new Button(L"保存绑定", 20, 494, 130, 34));
-	_removeBinding = this->AddControl(new Button(L"删除绑定", 162, 494, 130, 34));
+	_saveBinding = addContent(cui::designer::NewControl<Button>(L"保存绑定", 20, 494, 130, 34));
+	_removeBinding = addContent(cui::designer::NewControl<Button>(L"删除绑定", 162, 494, 130, 34));
 
-	auto summaryLabel = this->AddControl(new Label(L"当前绑定", 20, 550));
-	summaryLabel->Size = { 120, 24 };
-	_summary = this->AddControl(new RichTextBox(L"", 20, 578, 760, 160));
-	_summary->ReadOnly = true;
-	_summary->AllowMultiLine = true;
-	_summary->BackColor = Colors::White;
-	_summary->FocusedColor = Colors::White;
+	auto summaryLabel = addContent(cui::designer::NewControl<Label>(L"当前绑定", 20, 550));
+	summaryLabel->Width = 120.0f;
+	summaryLabel->Height = 24.0f;
+	_summary = addContent(cui::designer::NewControl<RichTextBox>(L"", 20, 578, 760, 160));
+	_summary->IsReadOnly = true;
+	_summary->Background = Colors::White;
+	_summary->BorderBrush = Colors::White;
 
-	_ok = this->AddControl(new Button(L"确定", 20, 756, 120, 36));
-	_cancel = this->AddControl(new Button(L"取消", 152, 756, 120, 36));
+	_ok = addContent(cui::designer::NewControl<Button>(L"确定", 20, 756, 120, 36));
+	_cancel = addContent(cui::designer::NewControl<Button>(L"取消", 152, 756, 120, 36));
 
 	if (_target)
 	{
-		for (const auto* metadata : BindingPropertyRegistry::GetProperties(*_target))
+		for (const auto* metadata : DependencyPropertyRegistry::GetProperties(*_target))
 		{
 			if (!metadata || metadata->IsReadOnly()) continue;
 			_properties.push_back({
@@ -190,12 +215,13 @@ BindingEditorDialog::BindingEditorDialog(
 	propertyNames.reserve(_properties.size());
 	for (const auto& metadata : _properties)
 		propertyNames.push_back(metadata.Name);
-	_targetProperty->Items = propertyNames;
+	cui::designer::SetComboBoxItems(
+		*_targetProperty, std::move(propertyNames));
 
-	_targetProperty->OnSelectionChanged += [this](Control*) {
+	_targetProperty->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loadingEditor) LoadSelectedBinding();
 	};
-	_sourceObject->OnSelectionChanged += [this](Control*) {
+	_sourceObject->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (_loadingEditor) return;
 		RefreshAncestorState();
 		RefreshKnownSourcePaths();
@@ -203,76 +229,70 @@ BindingEditorDialog::BindingEditorDialog(
 		RefreshConverterOptions(CurrentConverterName());
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_ancestorType->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_ancestorType->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (_loadingEditor) return;
 		RefreshKnownSourcePaths();
 		RefreshCapabilities();
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_ancestorLevel->OnValueChanged += [this](NumericUpDown*, double, double) {
+	_ancestorLevel->ValueChanged += [this](
+		Control*, RoutedPropertyChangedEventArgs<double>&) {
 		if (_loadingEditor) return;
 		RefreshKnownSourcePaths();
 		RefreshCapabilities();
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_useFallbackValue->OnChecked += [this](Control*) {
+	auto optionalValueStateChanged = [this](Control*, RoutedEventArgs&) {
 		if (_loadingEditor) return;
 		RefreshOptionalValueState();
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_useTargetNullValue->OnChecked += [this](Control*) {
-		if (_loadingEditor) return;
-		RefreshOptionalValueState();
-		ShowValidation(L"修改后请点击“保存绑定”。", false);
-	};
-	_fallbackValue->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_useFallbackValue->Checked += optionalValueStateChanged;
+	_useFallbackValue->Unchecked += optionalValueStateChanged;
+	_useTargetNullValue->Checked += optionalValueStateChanged;
+	_useTargetNullValue->Unchecked += optionalValueStateChanged;
+	_fallbackValue->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_targetNullValue->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_targetNullValue->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_useConverterParameter->OnChecked += [this](Control*) {
-		if (_loadingEditor) return;
-		RefreshOptionalValueState();
-		ShowValidation(L"修改后请点击“保存绑定”。", false);
-	};
-	_useStringFormat->OnChecked += [this](Control*) {
-		if (_loadingEditor) return;
-		RefreshOptionalValueState();
-		ShowValidation(L"修改后请点击“保存绑定”。", false);
-	};
-	_converterParameter->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_useConverterParameter->Checked += optionalValueStateChanged;
+	_useConverterParameter->Unchecked += optionalValueStateChanged;
+	_useStringFormat->Checked += optionalValueStateChanged;
+	_useStringFormat->Unchecked += optionalValueStateChanged;
+	_converterParameter->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_stringFormat->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_stringFormat->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_knownSourcePath->OnSelectionChanged += [this](Control*) {
+	_knownSourcePath->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (_loadingEditor || _knownSourcePath->Text == kManualSourcePath) return;
 		_sourcePath->Text = _knownSourcePath->Text;
 		RefreshCapabilities();
 		RefreshConverterOptions(CurrentConverterName());
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_mode->OnSelectionChanged += [this](Control*) {
+	_mode->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (_loadingEditor) return;
 		BindingMode mode = BindingMode::OneWay;
 		if (DesignerBindingUtils::TryParseBindingMode(_mode->Text, mode))
 			RefreshUpdateModeOptions(DataSourceUpdateMode::Default);
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_updateMode->OnSelectionChanged += [this](Control*) {
+	_updateMode->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_converter->OnSelectionChanged += [this](Control*) {
+	_converter->SelectionChanged += [this](Control*, SelectionChangedEventArgs&) {
 		if (_loadingEditor) return;
 		RefreshCustomConverterState();
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_customConverter->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_customConverter->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
-	_sourcePath->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+	_sourcePath->OnTextChanged += [this](Control*, TextChangedEventArgs&) {
 		if (_loadingEditor) return;
 		SelectKnownSourcePath(_sourcePath->Text);
 		RefreshCapabilities();
@@ -280,13 +300,13 @@ BindingEditorDialog::BindingEditorDialog(
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
 
-	_saveBinding->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_saveBinding->Click += [this](Control*, RoutedEventArgs&) {
 		(void)SaveCurrentBinding();
 	};
-	_removeBinding->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_removeBinding->Click += [this](Control*, RoutedEventArgs&) {
 		RemoveCurrentBinding();
 	};
-	_ok->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_ok->Click += [this](Control*, RoutedEventArgs&) {
 		const auto* metadata = SelectedMetadata();
 		if (metadata && !_loadedMultiBinding)
 		{
@@ -303,7 +323,7 @@ BindingEditorDialog::BindingEditorDialog(
 		Applied = true;
 		this->Close();
 	};
-	_cancel->OnMouseClick += [this](Control*, MouseEventArgs) {
+	_cancel->Click += [this](Control*, RoutedEventArgs&) {
 		Applied = false;
 		this->Close();
 	};
@@ -316,26 +336,26 @@ BindingEditorDialog::BindingEditorDialog(
 	}
 	else
 	{
-		_targetProperty->Enable = false;
-		_sourceObject->Enable = false;
-		_sourcePath->Enable = false;
-		_knownSourcePath->Enable = false;
-		_mode->Enable = false;
-		_updateMode->Enable = false;
-		_converter->Enable = false;
-		_customConverter->Enable = false;
-		_ancestorType->Enable = false;
-		_ancestorLevel->Enable = false;
-		_useFallbackValue->Enable = false;
-		_useTargetNullValue->Enable = false;
-		_useConverterParameter->Enable = false;
-		_useStringFormat->Enable = false;
-		_fallbackValue->Enable = false;
-		_targetNullValue->Enable = false;
-		_converterParameter->Enable = false;
-		_stringFormat->Enable = false;
-		_saveBinding->Enable = false;
-		_removeBinding->Enable = false;
+		_targetProperty->IsEnabled = false;
+		_sourceObject->IsEnabled = false;
+		_sourcePath->IsEnabled = false;
+		_knownSourcePath->IsEnabled = false;
+		_mode->IsEnabled = false;
+		_updateMode->IsEnabled = false;
+		_converter->IsEnabled = false;
+		_customConverter->IsEnabled = false;
+		_ancestorType->IsEnabled = false;
+		_ancestorLevel->IsEnabled = false;
+		_useFallbackValue->IsEnabled = false;
+		_useTargetNullValue->IsEnabled = false;
+		_useConverterParameter->IsEnabled = false;
+		_useStringFormat->IsEnabled = false;
+		_fallbackValue->IsEnabled = false;
+		_targetNullValue->IsEnabled = false;
+		_converterParameter->IsEnabled = false;
+		_stringFormat->IsEnabled = false;
+		_saveBinding->IsEnabled = false;
+		_removeBinding->IsEnabled = false;
 		ShowValidation(L"该控件没有公开可绑定属性。", true);
 	}
 	RefreshAncestorState();
@@ -355,11 +375,12 @@ BindingEditorDialog::SelectedMetadata() const
 void BindingEditorDialog::SelectComboValue(ComboBox* combo, const std::wstring& value)
 {
 	if (!combo) return;
-	auto& items = combo->Items;
-	auto it = std::find(items.begin(), items.end(), value);
-	const int index = it == items.end() ? 0 : static_cast<int>(it - items.begin());
+	const int found = cui::designer::FindComboBoxItem(*combo, value);
+	const int index = found < 0 ? 0 : found;
 	combo->SelectedIndex = index;
-	combo->Text = items.empty() ? L"" : items[static_cast<size_t>(index)];
+	combo->Text = combo->ItemCount() == 0
+		? L"" : cui::designer::ComboBoxItemText(
+			*combo, static_cast<size_t>(index));
 }
 
 IBindingSource* BindingEditorDialog::CurrentRuntimeSource() const
@@ -378,11 +399,11 @@ IBindingSource* BindingEditorDialog::CurrentRuntimeSource() const
 		const auto localName = separator == std::wstring::npos
 			? binding.AncestorType
 			: binding.AncestorType.substr(separator + 1);
-		for (auto* ancestor = _target->Parent; ancestor; ancestor = ancestor->Parent)
+		for (auto* ancestor = _target->GetRoutedParent(); ancestor;
+			ancestor = ancestor->GetRoutedParent())
 		{
 			if (!ancestor->GetDeclarativeTypeNamespace().empty()
-				&& _wcsicmp(ancestor->GetDeclarativeTypeName().c_str(),
-					localName.c_str()) == 0)
+				&& ancestor->GetDeclarativeTypeName() == localName)
 			{
 				binding.AncestorTypeNamespace =
 					ancestor->GetDeclarativeTypeNamespace();
@@ -396,7 +417,7 @@ IBindingSource* BindingEditorDialog::CurrentRuntimeSource() const
 	const auto found = std::find_if(
 		_elementSources.begin(), _elementSources.end(), [&](const auto& source)
 		{
-			return _wcsicmp(source.Name.c_str(), elementName.c_str()) == 0;
+			return source.Name == elementName;
 		});
 	return found == _elementSources.end() ? nullptr : found->Source;
 }
@@ -440,24 +461,24 @@ void BindingEditorDialog::RefreshAncestorState()
 {
 	const bool enabled = CurrentRelativeSource()
 		== DesignerBindingRelativeSource::FindAncestor;
-	if (_ancestorType) _ancestorType->Enable = enabled;
-	if (_ancestorLevel) _ancestorLevel->Enable = enabled;
+	if (_ancestorType) _ancestorType->IsEnabled = enabled;
+	if (_ancestorLevel) _ancestorLevel->IsEnabled = enabled;
 }
 
 void BindingEditorDialog::RefreshOptionalValueState()
 {
 	if (_fallbackValue)
-		_fallbackValue->Enable = _useFallbackValue
-			&& _useFallbackValue->Checked;
+		_fallbackValue->IsEnabled = _useFallbackValue
+			&& _useFallbackValue->IsChecked;
 	if (_targetNullValue)
-		_targetNullValue->Enable = _useTargetNullValue
-			&& _useTargetNullValue->Checked;
+		_targetNullValue->IsEnabled = _useTargetNullValue
+			&& _useTargetNullValue->IsChecked;
 	if (_converterParameter)
-		_converterParameter->Enable = _useConverterParameter
-			&& _useConverterParameter->Checked;
+		_converterParameter->IsEnabled = _useConverterParameter
+			&& _useConverterParameter->IsChecked;
 	if (_stringFormat)
-		_stringFormat->Enable = _useStringFormat
-			&& _useStringFormat->Checked;
+		_stringFormat->IsEnabled = _useStringFormat
+			&& _useStringFormat->IsChecked;
 }
 
 void BindingEditorDialog::RefreshKnownSourcePaths()
@@ -465,9 +486,7 @@ void BindingEditorDialog::RefreshKnownSourcePaths()
 	if (!_knownSourcePath) return;
 	const auto currentPath = _sourcePath ? _sourcePath->Text : std::wstring{};
 	const auto schema = CurrentSourceSchema();
-	auto& items = _knownSourcePath->Items;
-	items.clear();
-	items.push_back(kManualSourcePath);
+	std::vector<std::wstring> items{ kManualSourcePath };
 	for (const auto& property : schema)
 	{
 		const auto path = DesignerDataContextSchemaUtils::NormalizePath(
@@ -476,7 +495,9 @@ void BindingEditorDialog::RefreshKnownSourcePaths()
 		if (property.ObjectKind == DesignerDataObjectKind::BindingList)
 			items.push_back(path + L"[0]");
 	}
-	_knownSourcePath->Enable = !schema.empty();
+	cui::designer::SetComboBoxItems(
+		*_knownSourcePath, std::move(items));
+	_knownSourcePath->IsEnabled = !schema.empty();
 	SelectKnownSourcePath(currentPath);
 }
 
@@ -487,18 +508,18 @@ void BindingEditorDialog::LoadSelectedBinding()
 
 	_loadingEditor = true;
 	_loadedMultiBinding = false;
-	_sourceObject->Enable = true;
-	_sourcePath->Enable = true;
-	_knownSourcePath->Enable = true;
-	_ancestorType->Enable = true;
-	_ancestorLevel->Enable = true;
-	_useFallbackValue->Enable = true;
-	_useTargetNullValue->Enable = true;
-	_useConverterParameter->Enable = true;
-	_useStringFormat->Enable = true;
-	_mode->Enable = true;
-	_converter->Enable = true;
-	_saveBinding->Enable = true;
+	_sourceObject->IsEnabled = true;
+	_sourcePath->IsEnabled = true;
+	_knownSourcePath->IsEnabled = true;
+	_ancestorType->IsEnabled = true;
+	_ancestorLevel->IsEnabled = true;
+	_useFallbackValue->IsEnabled = true;
+	_useTargetNullValue->IsEnabled = true;
+	_useConverterParameter->IsEnabled = true;
+	_useStringFormat->IsEnabled = true;
+	_mode->IsEnabled = true;
+	_converter->IsEnabled = true;
+	_saveBinding->IsEnabled = true;
 	DesignerDataBinding binding;
 	auto it = ResultBindings.find(metadata->Name);
 	if (it != ResultBindings.end()) binding = it->second;
@@ -513,8 +534,8 @@ void BindingEditorDialog::LoadSelectedBinding()
 			_useTargetNullValue, _targetNullValue, _useConverterParameter,
 			_converterParameter, _useStringFormat, _stringFormat, _mode,
 			_updateMode, _converter, _customConverter, _saveBinding })
-			editor->Enable = false;
-		_removeBinding->Enable = true;
+			editor->IsEnabled = false;
+		_removeBinding->IsEnabled = true;
 		_loadingEditor = false;
 		ShowValidation(L"MultiBinding 已保留；当前请在 XAML 编辑器中修改，或先删除后改为普通 Binding。", false);
 		return;
@@ -527,16 +548,16 @@ void BindingEditorDialog::LoadSelectedBinding()
 			: binding.ElementName.empty() ? kDataContextSource : binding.ElementName);
 	_ancestorType->Text = binding.AncestorType;
 	_ancestorLevel->Value = binding.AncestorLevel;
-	_useFallbackValue->Checked = binding.FallbackValue.has_value();
+	_useFallbackValue->IsChecked = binding.FallbackValue.has_value();
 	_fallbackValue->Text = binding.FallbackValue
 		? binding.FallbackValue->Text : L"";
-	_useTargetNullValue->Checked = binding.TargetNullValue.has_value();
+	_useTargetNullValue->IsChecked = binding.TargetNullValue.has_value();
 	_targetNullValue->Text = binding.TargetNullValue
 		? binding.TargetNullValue->Text : L"";
-	_useConverterParameter->Checked = binding.ConverterParameter.has_value();
+	_useConverterParameter->IsChecked = binding.ConverterParameter.has_value();
 	_converterParameter->Text = binding.ConverterParameter
 		? binding.ConverterParameter->Text : L"";
-	_useStringFormat->Checked = binding.StringFormat.has_value();
+	_useStringFormat->IsChecked = binding.StringFormat.has_value();
 	_stringFormat->Text = binding.StringFormat.value_or(L"");
 	RefreshAncestorState();
 	RefreshOptionalValueState();
@@ -567,7 +588,7 @@ void BindingEditorDialog::RefreshModeOptions(BindingMode preferredMode)
 				names.push_back(name);
 		}
 	}
-	_mode->Items = names;
+	cui::designer::SetComboBoxItems(*_mode, std::move(names));
 	SelectComboValue(_mode, DesignerBindingUtils::BindingModeName(preferredMode));
 }
 
@@ -584,7 +605,7 @@ void BindingEditorDialog::RefreshUpdateModeOptions(DataSourceUpdateMode preferre
 	{
 		names.push_back(L"Default");
 		preferredMode = DataSourceUpdateMode::Default;
-		_updateMode->Enable = false;
+		_updateMode->IsEnabled = false;
 	}
 	else if (metadata && !metadata->CanObserve)
 	{
@@ -595,14 +616,14 @@ void BindingEditorDialog::RefreshUpdateModeOptions(DataSourceUpdateMode preferre
 			names.push_back(L"Explicit");
 			preferredMode = DataSourceUpdateMode::Never;
 		}
-		_updateMode->Enable = names.size() > 1;
+		_updateMode->IsEnabled = names.size() > 1;
 	}
 	else
 	{
 		names = AllUpdateModeNames();
-		_updateMode->Enable = true;
+		_updateMode->IsEnabled = true;
 	}
-	_updateMode->Items = names;
+	cui::designer::SetComboBoxItems(*_updateMode, std::move(names));
 	SelectComboValue(_updateMode,
 		DesignerBindingUtils::UpdateSourceTriggerName(preferredMode));
 }
@@ -627,7 +648,7 @@ void BindingEditorDialog::RefreshConverterOptions(const std::wstring& preferredC
 			names.push_back(converter.Name);
 	}
 	names.push_back(kCustomConverter);
-	_converter->Items = names;
+	cui::designer::SetComboBoxItems(*_converter, std::move(names));
 
 	const auto normalized = DesignerBindingUtils::Trim(preferredConverter);
 	if (normalized.empty())
@@ -639,8 +660,8 @@ void BindingEditorDialog::RefreshConverterOptions(const std::wstring& preferredC
 	{
 		const auto registered = BindingValueConverterRegistry::Find(normalized);
 		const auto registeredName = registered ? registered->Name : normalized;
-		auto& items = _converter->Items;
-		if (std::find(items.begin(), items.end(), registeredName) != items.end())
+		if (cui::designer::FindComboBoxItem(
+			*_converter, registeredName) >= 0)
 		{
 			SelectComboValue(_converter, registeredName);
 			_customConverter->Text = L"";
@@ -666,12 +687,11 @@ void BindingEditorDialog::SelectKnownSourcePath(const std::wstring& path)
 {
 	if (!_knownSourcePath) return;
 	const auto normalized = DesignerDataContextSchemaUtils::NormalizePath(path);
-	auto& items = _knownSourcePath->Items;
+	const auto items = cui::designer::ComboBoxItems(*_knownSourcePath);
 	auto it = std::find_if(items.begin(), items.end(),
 		[&](const std::wstring& candidate)
 		{
-			return candidate != kManualSourcePath
-				&& _wcsicmp(candidate.c_str(), normalized.c_str()) == 0;
+			return candidate != kManualSourcePath && candidate == normalized;
 		});
 	const int index = it == items.end() ? 0 : static_cast<int>(it - items.begin());
 	_knownSourcePath->SelectedIndex = index;
@@ -681,7 +701,7 @@ void BindingEditorDialog::SelectKnownSourcePath(const std::wstring& path)
 void BindingEditorDialog::RefreshCustomConverterState()
 {
 	const bool custom = _converter && _converter->Text == kCustomConverter;
-	if (_customConverter) _customConverter->Enable = custom;
+	if (_customConverter) _customConverter->IsEnabled = custom;
 }
 
 void BindingEditorDialog::RefreshCapabilities()
@@ -743,7 +763,7 @@ void BindingEditorDialog::AttachRuntimeValidation()
 					[this, expectedProperty](const BindingValidationChangedEventArgs& e)
 					{
 						if (!e.PropertyName.empty()
-							&& _wcsicmp(e.PropertyName.c_str(), expectedProperty.c_str()) != 0)
+							&& e.PropertyName != expectedProperty)
 							return;
 						RefreshRuntimeValidation();
 					});
@@ -759,7 +779,7 @@ void BindingEditorDialog::AttachRuntimeValidation()
 				[this, expectedProperty](const PropertyChangedEventArgs& e)
 				{
 					if (!e.PropertyName.empty()
-						&& _wcsicmp(e.PropertyName.c_str(), expectedProperty.c_str()) != 0)
+						&& e.PropertyName != expectedProperty)
 						return;
 					AttachRuntimeValidation();
 					RefreshRuntimeValidation();
@@ -824,14 +844,14 @@ void BindingEditorDialog::RefreshRuntimeValidation()
 		_runtimeValidation->Text = runtimeSource
 			? L"运行时校验：填写源路径后显示活动问题。"
 			: L"运行时校验：未连接设计时数据源。";
-		_runtimeValidation->ForeColor = Colors::DimGrey;
+		_runtimeValidation->Foreground = Colors::DimGrey;
 		_runtimeValidation->InvalidateVisual();
 		return;
 	}
 	if (!DesignerBindingUtils::IsValidSourcePath(sourcePath))
 	{
 		_runtimeValidation->Text = L"运行时校验：源路径无效，无法查询。";
-		_runtimeValidation->ForeColor = Colors::DimGrey;
+		_runtimeValidation->Foreground = Colors::DimGrey;
 		_runtimeValidation->InvalidateVisual();
 		return;
 	}
@@ -841,7 +861,7 @@ void BindingEditorDialog::RefreshRuntimeValidation()
 	if (issues.empty())
 	{
 		_runtimeValidation->Text = L"运行时校验：当前没有活动问题。";
-		_runtimeValidation->ForeColor = Colors::DimGrey;
+		_runtimeValidation->Foreground = Colors::DimGrey;
 		_runtimeValidation->InvalidateVisual();
 		return;
 	}
@@ -862,7 +882,7 @@ void BindingEditorDialog::RefreshRuntimeValidation()
 	if (issues.size() > visibleCount)
 		text += L"；另有 " + std::to_wstring(issues.size() - visibleCount) + L" 项";
 	_runtimeValidation->Text = std::move(text);
-	_runtimeValidation->ForeColor = hasError ? Colors::Red : Colors::DimGrey;
+	_runtimeValidation->Foreground = hasError ? Colors::Red : Colors::DimGrey;
 	_runtimeValidation->InvalidateVisual();
 }
 
@@ -888,7 +908,7 @@ void BindingEditorDialog::ShowValidation(const std::wstring& message, bool isErr
 {
 	if (!_validation) return;
 	_validation->Text = message;
-	_validation->ForeColor = isError ? Colors::Red : Colors::DimGrey;
+	_validation->Foreground = isError ? Colors::Red : Colors::DimGrey;
 	_validation->InvalidateVisual();
 }
 
@@ -919,8 +939,7 @@ bool BindingEditorDialog::TryReadEditor(
 		}
 		const auto existing = ResultBindings.find(targetProperty);
 		if (existing != ResultBindings.end()
-			&& _wcsicmp(existing->second.AncestorType.c_str(),
-				binding.AncestorType.c_str()) == 0)
+			&& existing->second.AncestorType == binding.AncestorType)
 			binding.AncestorTypeNamespace =
 				existing->second.AncestorTypeNamespace;
 		if (binding.AncestorTypeNamespace.empty())
@@ -929,11 +948,11 @@ bool BindingEditorDialog::TryReadEditor(
 			const auto localName = separator == std::wstring::npos
 				? binding.AncestorType
 				: binding.AncestorType.substr(separator + 1);
-			for (auto* ancestor = _target->Parent; ancestor; ancestor = ancestor->Parent)
+			for (auto* ancestor = _target->GetRoutedParent(); ancestor;
+				ancestor = ancestor->GetRoutedParent())
 			{
 				if (!ancestor->GetDeclarativeTypeNamespace().empty()
-					&& _wcsicmp(ancestor->GetDeclarativeTypeName().c_str(),
-						localName.c_str()) == 0)
+					&& ancestor->GetDeclarativeTypeName() == localName)
 				{
 					binding.AncestorTypeNamespace =
 						ancestor->GetDeclarativeTypeNamespace();
@@ -945,7 +964,7 @@ bool BindingEditorDialog::TryReadEditor(
 	DesignerStyleValueKind targetLiteralKind{};
 	const auto* targetRuntimeMetadata = _target->FindPropertyMetadata(
 		targetProperty);
-	if ((_useFallbackValue->Checked || _useTargetNullValue->Checked)
+	if ((_useFallbackValue->IsChecked || _useTargetNullValue->IsChecked)
 		&& (!targetRuntimeMetadata
 			|| !DesignerPropertyCatalog::TryGetStyleValueKind(
 				*targetRuntimeMetadata, targetLiteralKind)))
@@ -953,16 +972,16 @@ bool BindingEditorDialog::TryReadEditor(
 		error = L"该目标属性类型暂不支持 Binding 缺省值。";
 		return false;
 	}
-	if (_useFallbackValue->Checked)
+	if (_useFallbackValue->IsChecked)
 		binding.FallbackValue = DesignerStyleValue{
 			targetLiteralKind, _fallbackValue->Text };
-	if (_useTargetNullValue->Checked)
+	if (_useTargetNullValue->IsChecked)
 		binding.TargetNullValue = DesignerStyleValue{
 			targetLiteralKind, _targetNullValue->Text };
-	if (_useConverterParameter->Checked)
+	if (_useConverterParameter->IsChecked)
 		binding.ConverterParameter = DesignerStyleValue{
 			DesignerStyleValueKind::String, _converterParameter->Text };
-	if (_useStringFormat->Checked)
+	if (_useStringFormat->IsChecked)
 		binding.StringFormat = _stringFormat->Text;
 	if (!DesignerBindingUtils::TryParseBindingMode(_mode->Text, binding.Mode))
 	{

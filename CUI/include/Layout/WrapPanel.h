@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"
@@ -59,10 +59,8 @@ public:
         return _itemHeight;
     }
     
-    SIZE Measure(Control* container, SIZE availableSize) override;
-    void Arrange(Control* container, D2D1_RECT_F finalRect) override;
     cui::core::Size Measure(LayoutContext& context, const cui::core::Constraints& available) override;
-    void Arrange(LayoutContext& context, D2D1_RECT_F finalRect) override;
+    void Arrange(LayoutContext& context, cui::core::Rect finalRect) override;
 };
 
 /**
@@ -73,12 +71,12 @@ private:
     WrapLayoutEngine* _wrapEngine;
     
 public:
-    WrapPanel();
-    WrapPanel(int x, int y, int width, int height);
+	WrapPanel();
     virtual ~WrapPanel();
     
     UIClass Type() override { return UIClass::UI_WrapPanel; }
-    void EnsureBindingPropertiesRegistered() override;
+    static void RegisterDependencyProperties();
+    void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
     
     void SetOrientation(Orientation value) {
         _wrapEngine->SetOrientation(value);

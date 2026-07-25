@@ -39,25 +39,28 @@ typedef Event<void(class ChartView*)> ChartViewportChangedEvent;
 
 class ChartView : public Control
 {
-public:
-	UIClass Type() override;
-	void EnsureBindingPropertiesRegistered() override;
-	ChartView(int x = 0, int y = 0, int width = 360, int height = 240);
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Image, L"ChartView");
+	}
 
-	std::vector<ChartSeries> Series;
-	ChartViewKind ChartKind = ChartViewKind::Bar;
+private:
+	std::vector<ChartSeries> _series;
+	ChartViewKind _chartKind = ChartViewKind::Bar;
+	std::wstring _title = L"Chart";
+	std::wstring _subtitle;
+	int _valuePrecision = 0;
+	bool _showLegend = true;
+	bool _showTooltip = true;
+	bool _showValueLabels = false;
+	bool _showGridLines = true;
+	bool _showMarkers = true;
+	bool _enablePanZoom = true;
 
-	std::wstring Title = L"Chart";
-	std::wstring Subtitle = L"";
-	int ValuePrecision = 0;
-
-	bool ShowLegend = true;
-	bool ShowTooltip = true;
-	bool ShowValueLabels = false;
-	bool ShowGridLines = true;
-	bool ShowMarkers = true;
-	bool EnablePanZoom = true;
-
+	// Private native presenter defaults. Public appearance belongs to XAML
+	// templates/styles rather than to ChartView's semantic property surface.
 	float Border = 1.0f;
 	float CornerRadius = 8.0f;
 	float ZoomX = 1.0f;
@@ -82,9 +85,52 @@ public:
 	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 	float ScrollBarSize = 8.0f;
 
+public:
+	using UIElement::SelectionChanged;
+	UIClass Type() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+	ChartView();
+
+	PROPERTY(ChartViewKind, ChartKind);
+	GET(ChartViewKind, ChartKind);
+	SET(ChartViewKind, ChartKind);
+	PROPERTY(std::wstring, Title);
+	GET(std::wstring, Title);
+	SET(std::wstring, Title);
+	PROPERTY(std::wstring, Subtitle);
+	GET(std::wstring, Subtitle);
+	SET(std::wstring, Subtitle);
+	PROPERTY(int, ValuePrecision);
+	GET(int, ValuePrecision);
+	SET(int, ValuePrecision);
+	PROPERTY(bool, ShowLegend);
+	GET(bool, ShowLegend);
+	SET(bool, ShowLegend);
+	PROPERTY(bool, ShowTooltip);
+	GET(bool, ShowTooltip);
+	SET(bool, ShowTooltip);
+	PROPERTY(bool, ShowValueLabels);
+	GET(bool, ShowValueLabels);
+	SET(bool, ShowValueLabels);
+	PROPERTY(bool, ShowGridLines);
+	GET(bool, ShowGridLines);
+	SET(bool, ShowGridLines);
+	PROPERTY(bool, ShowMarkers);
+	GET(bool, ShowMarkers);
+	SET(bool, ShowMarkers);
+	PROPERTY(bool, EnablePanZoom);
+	GET(bool, EnablePanZoom);
+	SET(bool, EnablePanZoom);
+
+	const std::vector<ChartSeries>& GetSeries() const noexcept { return _series; }
+	float GetZoomX() const noexcept { return ZoomX; }
+	float GetPanX() const noexcept { return PanX; }
+	int GetSelectedSeriesIndex() const noexcept { return SelectedSeriesIndex; }
+	int GetSelectedPointIndex() const noexcept { return SelectedPointIndex; }
+
 	ChartPointEvent OnPointClick;
 	ChartPointEvent OnPointHover;
-	SelectionChangedEvent SelectionChanged;
 	ChartViewportChangedEvent OnViewportChanged;
 
 	void Clear();
@@ -97,9 +143,9 @@ public:
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
 private:
 	struct HitRegion
 	{

@@ -3,11 +3,13 @@
 #include "DesignDocumentGraph.h"
 #include "../DesignerDataContextSchemaUtils.h"
 #include "../DesignerEventCatalog.h"
+#include "../DesignerPropertyCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
 #include "../../CUI/include/GroupStyle.h"
 #include <Convert.h>
 #include <algorithm>
-#include <bit>
+#include <charconv>
+#include <cmath>
 #include <cwctype>
 #include <functional>
 #include <limits>
@@ -27,10 +29,8 @@ namespace
 		return false;
 	}
 
-	std::wstring Lower(std::wstring value)
+	std::wstring IdentityKey(std::wstring value)
 	{
-		std::transform(value.begin(), value.end(), value.begin(),
-			[](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
 		return value;
 	}
 
@@ -57,13 +57,11 @@ namespace
 			}
 			if (node.ParentRef.empty()) continue;
 			for (const auto& candidate : nodes)
-			{
-				if (candidate.Type != UIClass::UI_TabControl) continue;
-				const auto prefix = candidate.Name + L"#page";
-				if (!node.ParentRef.starts_with(prefix)) continue;
-				result.OwnerById.emplace(node.Id, candidate.Id);
-				break;
-			}
+				if (candidate.Name == node.ParentRef)
+				{
+					result.OwnerById.emplace(node.Id, candidate.Id);
+					break;
+				}
 		}
 		return result;
 	}
@@ -138,7 +136,7 @@ namespace
 				[&](const auto& definition)
 				{
 					return !definition.IsImplicit()
-						&& Lower(definition.Key) == Lower(key);
+						&& IdentityKey(definition.Key) == IdentityKey(key);
 				});
 			if (found != resources.rend()) return { &*found, current };
 			const auto parent = ownership.OwnerById.find(current);
@@ -197,7 +195,7 @@ namespace
 			const auto& resources = foundNode->second->LocalObjectResources.DataTemplates;
 			const auto found = std::find_if(resources.rbegin(), resources.rend(),
 				[&](const auto& definition)
-				{ return Lower(definition.Key) == Lower(key); });
+				{ return IdentityKey(definition.Key) == IdentityKey(key); });
 			if (found != resources.rend()) return { &*found, current };
 			const auto parent = ownership.OwnerById.find(current);
 			if (parent == ownership.OwnerById.end()) break;
@@ -223,7 +221,7 @@ namespace
 				[&](const auto& definition)
 				{
 					return definition.IsImplicit()
-						&& Lower(definition.DataType) == Lower(dataType);
+						&& IdentityKey(definition.DataType) == IdentityKey(dataType);
 				});
 			if (found != resources.rend()) return { &*found, current };
 			const auto parent = ownership.OwnerById.find(current);
@@ -255,7 +253,7 @@ namespace
 				ItemsPanelTemplates;
 			const auto found = std::find_if(resources.rbegin(), resources.rend(),
 				[&](const auto& definition)
-				{ return Lower(definition.Key) == Lower(key); });
+				{ return IdentityKey(definition.Key) == IdentityKey(key); });
 			if (found != resources.rend()) return { &*found, current };
 			const auto parent = ownership.OwnerById.find(current);
 			if (parent == ownership.OwnerById.end()) break;
@@ -286,7 +284,7 @@ namespace
 				foundNode->second->LocalObjectResources.GroupStyles;
 			const auto found = std::find_if(resources.rbegin(), resources.rend(),
 				[&](const auto& definition)
-				{ return Lower(definition.Key) == Lower(key); });
+				{ return IdentityKey(definition.Key) == IdentityKey(key); });
 			if (found != resources.rend()) return { &*found, current };
 			const auto parent = ownership.OwnerById.find(current);
 			if (parent == ownership.OwnerById.end()) break;
@@ -311,7 +309,7 @@ namespace
 				resources.rbegin(), resources.rend(),
 				[&](const DesignerStyleResource& resource)
 				{
-					return Lower(resource.Key) == Lower(key);
+					return IdentityKey(resource.Key) == IdentityKey(key);
 				});
 			if (foundResource != resources.rend())
 				return { &*foundResource, current };
@@ -326,18 +324,7 @@ namespace
 		DesignerStyleSheet& target,
 		const DesignerStyleSheet& source)
 	{
-		for (const auto& resource : source.Resources)
-		{
-			target.Resources.erase(std::remove_if(
-				target.Resources.begin(), target.Resources.end(),
-				[&](const auto& current)
-				{
-					return Lower(current.Key) == Lower(resource.Key);
-				}), target.Resources.end());
-			target.Resources.push_back(resource);
-		}
-		target.Rules.insert(
-			target.Rules.end(), source.Rules.begin(), source.Rules.end());
+		DesignerStyleSheetUtils::AppendLexicalScope(target, source);
 	}
 
 	bool MakeLocalStylesPortable(
@@ -376,7 +363,7 @@ namespace
 			inherited.Rules.end());
 		std::unordered_set<std::wstring> usedKeys;
 		for (const auto& resource : output.LocalResources.Resources)
-			usedKeys.insert(Lower(resource.Key));
+			usedKeys.insert(IdentityKey(resource.Key));
 		size_t aliasIndex = 1;
 		auto isolateStatic = [&](std::wstring& key) -> bool
 		{
@@ -385,12 +372,12 @@ namespace
 			const auto found = std::find_if(
 				visible.Resources.rbegin(), visible.Resources.rend(),
 				[&](const auto& resource)
-				{ return Lower(resource.Key) == Lower(key); });
+				{ return IdentityKey(resource.Key) == IdentityKey(key); });
 			if (found == visible.Resources.rend())
 				return Fail(L"局部 Style 引用了不可见资源：" + key, outError);
 			std::wstring alias;
 			do alias = L"CuiClipboardStatic_" + std::to_wstring(aliasIndex++);
-			while (!usedKeys.insert(Lower(alias)).second);
+			while (!usedKeys.insert(IdentityKey(alias)).second);
 			auto resource = *found;
 			resource.Key = alias;
 			resource.SourceDictionary.clear();
@@ -421,7 +408,7 @@ namespace
 		auto rewriteSetters = [&](auto& setters)
 		{
 			for (auto& setter : setters)
-				if (_wcsicmp(setter.PropertyName.c_str(), L"Template") != 0
+				if (setter.PropertyName != L"Template"
 					&& setter.UsesResource && !setter.UsesDynamicResource
 					&& !isolateStatic(setter.ResourceKey)) return false;
 			return true;
@@ -460,7 +447,7 @@ namespace
 		const std::wstring& desired,
 		std::unordered_set<std::wstring>& used)
 	{
-		if (used.insert(Lower(desired)).second) return desired;
+		if (used.insert(IdentityKey(desired)).second) return desired;
 
 		auto digit = desired.size();
 		while (digit > 0 && std::iswdigit(desired[digit - 1])) --digit;
@@ -478,31 +465,9 @@ namespace
 		for (;; ++suffix)
 		{
 			const auto candidate = stem + std::to_wstring(suffix);
-			if (used.insert(Lower(candidate)).second) return candidate;
+			if (used.insert(IdentityKey(candidate)).second) return candidate;
 			if (suffix == (std::numeric_limits<unsigned long long>::max)())
 				throw std::overflow_error("Designer clipboard name space exhausted");
-		}
-	}
-
-	void RemapTabPageKeys(
-		DesignNode& node,
-		const std::wstring& oldName,
-		const std::wstring& newName)
-	{
-		if (node.Type != UIClass::UI_TabControl
-			|| !node.Extra.is_object()
-			|| !node.Extra.contains("pages")
-			|| !node.Extra["pages"].is_array()) return;
-		const auto prefix = oldName + L"#page";
-		for (auto& page : node.Extra["pages"].ArrayItems())
-		{
-			if (!page.is_object() || !page.contains("id")
-				|| !page["id"].is_string()) continue;
-			const auto oldKey = Convert::Utf8ToUnicode(
-				page["id"].get<std::string>());
-			if (!oldKey.starts_with(prefix)) continue;
-			const auto newKey = newName + oldKey.substr(oldName.size());
-			page["id"] = Convert::UnicodeToUtf8(newKey);
 		}
 	}
 
@@ -512,62 +477,44 @@ namespace
 		int offsetY,
 		std::wstring* outError)
 	{
-		if (!node.Props.is_object()) return true;
-		auto shift = [&](long long original, int delta,
-			long long& shifted) -> bool
+		for (const auto& [name, delta] : {
+			std::pair{ L"Canvas.Left", offsetX },
+			std::pair{ L"Canvas.Top", offsetY } })
 		{
-			shifted = original + static_cast<long long>(delta);
-			if (shifted < (std::numeric_limits<int>::min)()
-				|| shifted > (std::numeric_limits<int>::max)())
-				return Fail(L"粘贴偏移超出控件坐标范围。", outError);
-			return true;
-		};
-
-		if (node.Props.contains("location")
-			&& node.Props["location"].is_object())
-		{
-			auto& location = node.Props["location"];
-			for (const auto& [key, delta] : {
-				std::pair{ "x", offsetX }, std::pair{ "y", offsetY } })
+			auto* assignment = node.Properties.Find(name);
+			if (!assignment) continue;
+			try
 			{
-				if (!location.contains(key)
-					|| !location[key].is_number()) continue;
-				long long shifted = 0;
-				if (!shift(location[key].get<long long>(), delta, shifted))
-					return false;
-				location[key] = static_cast<int>(shifted);
+				size_t consumed = 0;
+				const auto original = std::stof(
+					assignment->Value.Text, &consumed);
+				if (consumed != assignment->Value.Text.size()
+					|| !std::isfinite(original))
+					return Fail(L"Canvas 坐标不是有限数字。", outError);
+				const auto shiftedValue = static_cast<double>(original)
+					+ static_cast<double>(delta);
+				if (!std::isfinite(shiftedValue)
+					|| shiftedValue < -(std::numeric_limits<float>::max)()
+					|| shiftedValue > (std::numeric_limits<float>::max)())
+					return Fail(L"粘贴偏移超出 Canvas 坐标范围。", outError);
+				const auto shifted = static_cast<float>(shiftedValue);
+				char buffer[64]{};
+				const auto converted = std::to_chars(
+					std::begin(buffer), std::end(buffer), shifted,
+					std::chars_format::general,
+					std::numeric_limits<float>::max_digits10);
+				if (converted.ec != std::errc{})
+					return Fail(L"Canvas 坐标无法序列化。", outError);
+				assignment->Value.Text = Convert::Utf8ToUnicode(
+					std::string(buffer, converted.ptr));
 			}
-		}
-
-		// Human-authored XAML stores Canvas.Left/Canvas.Top as generic
-		// property metadata. Canonical clipboard XAML may instead carry the
-		// exact legacy location object. Keep both representations aligned so
-		// materialization cannot overwrite the requested paste placement.
-		if (node.Props.contains("metadata")
-			&& node.Props["metadata"].is_object())
-		{
-			auto& metadata = node.Props["metadata"];
-			for (const auto& [name, delta] : {
-				std::pair{ "Left", offsetX }, std::pair{ "Top", offsetY } })
+			catch (const std::invalid_argument&)
 			{
-				if (!metadata.contains(name) || !metadata[name].is_object()
-					|| !metadata[name].contains("value")
-					|| !metadata[name]["value"].is_string()) continue;
-				const auto text = metadata[name]["value"].get<std::string>();
-				try
-				{
-					size_t consumed = 0;
-					const auto original = std::stoll(text, &consumed);
-					if (consumed != text.size()) continue;
-					long long shifted = 0;
-					if (!shift(original, delta, shifted)) return false;
-					metadata[name]["value"] = std::to_string(shifted);
-				}
-				catch (const std::invalid_argument&) { continue; }
-				catch (const std::out_of_range&)
-				{
-					return Fail(L"粘贴坐标元数据超出整数范围。", outError);
-				}
+				return Fail(L"Canvas 坐标不是数字。", outError);
+			}
+			catch (const std::out_of_range&)
+			{
+				return Fail(L"Canvas 坐标超出浮点范围。", outError);
 			}
 		}
 		return true;
@@ -582,37 +529,7 @@ namespace
 
 	std::wstring ParentOrderKey(const DesignNode& node)
 	{
-		auto key = ParentOrderKey(node.ParentId, node.ParentRef);
-		if (node.Extra.is_object())
-		{
-			const auto region = node.Extra.value(
-				"splitRegion", std::string{});
-			if (!region.empty())
-				key += L"|split:" + Convert::Utf8ToUnicode(region);
-		}
-		return key;
-	}
-
-	bool HasSyntheticParent(
-		const DesignDocument& document,
-		const std::wstring& parentRef)
-	{
-		if (parentRef.empty()) return false;
-		for (const auto& node : document.Nodes)
-		{
-			if (node.Type != UIClass::UI_TabControl
-				|| !node.Extra.is_object()
-				|| !node.Extra.contains("pages")
-				|| !node.Extra["pages"].is_array()) continue;
-			for (const auto& page : node.Extra["pages"].ArrayItems())
-			{
-				if (!page.is_object() || !page.contains("id")
-					|| !page["id"].is_string()) continue;
-				if (Convert::Utf8ToUnicode(page["id"].get<std::string>())
-					== parentRef) return true;
-			}
-		}
-		return false;
+		return ParentOrderKey(node.ParentId, node.ParentRef);
 	}
 
 	bool CollectBindingSchema(
@@ -658,52 +575,34 @@ namespace
 		};
 		std::queue<std::wstring> pendingViews;
 		std::unordered_set<std::wstring> viewKeys;
-		std::function<bool(const DesignValue&, const std::wstring&)> includeBinding;
-		includeBinding = [&](const DesignValue& binding, const std::wstring& nodeName)
+		std::function<bool(const DesignerDataBinding&, const std::wstring&)> includeBinding;
+		includeBinding = [&](const DesignerDataBinding& binding,
+			const std::wstring& nodeName)
 		{
-			if (!binding.is_object())
-				return Fail(L"控件 " + nodeName + L" 的绑定源路径格式无效。", outError);
-			if (binding.contains("bindings"))
+			if (binding.IsMultiBinding())
 			{
-				if (!binding["bindings"].is_array())
-					return Fail(L"控件 " + nodeName + L" 的 MultiBinding 子项格式无效。", outError);
-				for (const auto& child : binding["bindings"].ArrayItems())
+				for (const auto& child : binding.ChildBindings)
 					if (!includeBinding(child, nodeName)) return false;
 				return true;
 			}
-			if (!binding.contains("source") || !binding["source"].is_string())
-				return Fail(L"控件 " + nodeName + L" 的绑定源路径格式无效。", outError);
-			if (binding.contains("elementName")
-				&& binding["elementName"].is_string()
-				&& !binding["elementName"].get<std::string>().empty()) return true;
-			if (binding.contains("relativeSource")
-				&& binding["relativeSource"].is_string()
-				&& !binding["relativeSource"].get<std::string>().empty()) return true;
-			if (!includePath(Convert::Utf8ToUnicode(
-				binding["source"].get<std::string>())))
+			if (!binding.ElementName.empty()
+				|| binding.RelativeSource != DesignerBindingRelativeSource::None)
+				return true;
+			if (!includePath(binding.SourceProperty))
 				return Fail(L"控件 " + nodeName + L" 的绑定源路径无效。", outError);
 			return true;
 		};
 		for (const auto& node : document.Nodes)
 		{
 			if (includedNodeIds && !includedNodeIds->contains(node.Id)) continue;
-			if (node.Bindings.is_null()) continue;
-			if (!node.Bindings.is_object())
-				return Fail(L"控件 " + node.Name + L" 的绑定集合格式无效。", outError);
-
-			for (const auto& [targetProperty, binding] : node.Bindings.ObjectItems())
+			for (const auto& [targetProperty, binding] : node.Bindings)
 			{
 				(void)targetProperty;
 				if (!includeBinding(binding, node.Name)) return false;
 			}
-			const auto resourceKey = node.Extra.is_object()
-				&& node.Extra.contains("itemsSourceResource")
-				&& node.Extra["itemsSourceResource"].is_string()
-				? Convert::Utf8ToUnicode(
-					node.Extra["itemsSourceResource"].get<std::string>())
-				: std::wstring{};
+			const auto& resourceKey = node.Structure.ItemsSourceResource;
 			if (const auto* view = document.FindCollectionView(resourceKey);
-				view && viewKeys.insert(Lower(view->Key)).second)
+				view && viewKeys.insert(IdentityKey(view->Key)).second)
 				pendingViews.push(view->Key);
 		}
 		while (!pendingViews.empty())
@@ -716,7 +615,7 @@ namespace
 				return Fail(L"CollectionViewSource Binding 路径无效。", outError);
 			if (const auto* dependency = document.FindCollectionView(
 				view->SourceResource);
-				dependency && viewKeys.insert(Lower(dependency->Key)).second)
+				dependency && viewKeys.insert(IdentityKey(dependency->Key)).second)
 				pendingViews.push(dependency->Key);
 		}
 
@@ -796,7 +695,7 @@ namespace
 			const DesignNode& scopeNode)
 		{
 			if (type.Empty()) return;
-			const auto key = Lower(type.RegistryKey());
+			const auto key = IdentityKey(type.RegistryKey());
 			if (keys.insert(key).second)
 				pending.push({ type, subjectName, &scopeNodes, &scopeNode });
 		};
@@ -804,14 +703,13 @@ namespace
 		{
 			if (!includedNodeIds.contains(node.Id)) continue;
 			include(node.ComponentType, node.Name, source.Nodes, node);
-			if (!node.Events.is_object()) continue;
-			for (const auto& [storedName, value] : node.Events.ObjectItems())
+			for (const auto& [storedName, value] : node.Events)
 			{
 				(void)value;
 				DesignerComponentType ownerType;
 				std::wstring eventName;
 				if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-					Convert::Utf8ToUnicode(storedName), ownerType, eventName))
+					storedName, ownerType, eventName))
 					include(ownerType, node.Name, source.Nodes, node);
 			}
 		}
@@ -833,15 +731,14 @@ namespace
 			{
 				include(templateNode.ComponentType, definition->Type.XamlName,
 					definition->Template, templateNode);
-				if (!templateNode.Events.is_object()) continue;
 				for (const auto& [storedName, value]
-					: templateNode.Events.ObjectItems())
+					: templateNode.Events)
 				{
 					(void)value;
 					DesignerComponentType ownerType;
 					std::wstring eventName;
 					if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-						Convert::Utf8ToUnicode(storedName), ownerType, eventName))
+						storedName, ownerType, eventName))
 						include(ownerType, definition->Type.XamlName,
 							definition->Template, templateNode);
 				}
@@ -873,10 +770,10 @@ namespace
 				target.Components.begin(), target.Components.end(),
 				[&](const DesignComponentDefinition& current)
 				{
-					return Lower(current.Type.XamlPrefix)
-						== Lower(definition.Type.XamlPrefix)
-						&& Lower(current.Type.XamlNamespace)
-							!= Lower(definition.Type.XamlNamespace);
+					return IdentityKey(current.Type.XamlPrefix)
+						== IdentityKey(definition.Type.XamlPrefix)
+						&& IdentityKey(current.Type.XamlNamespace)
+							!= IdentityKey(definition.Type.XamlNamespace);
 				});
 			if (prefixConflict != target.Components.end())
 				return Fail(L"组件命名空间前缀冲突："
@@ -888,78 +785,42 @@ namespace
 
 	std::wstring NodeItemTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("itemTemplate")
-			|| !node.Extra["itemTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemTemplate"].get<std::string>());
+		return node.Structure.ItemTemplate;
 	}
 
 	std::wstring NodeContentTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("contentTemplate")
-			|| !node.Extra["contentTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["contentTemplate"].get<std::string>());
+		return node.Structure.ContentTemplate;
 	}
 
 	std::wstring NodeHeaderTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("headerTemplate")
-			|| !node.Extra["headerTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["headerTemplate"].get<std::string>());
+		return node.Structure.HeaderTemplate;
 	}
 
 	std::wstring NodeControlTemplateKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("controlTemplate")
-			|| !node.Extra["controlTemplate"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["controlTemplate"].get<std::string>());
+		return node.Structure.ControlTemplate;
 	}
 
 	bool IsControlTemplateHostType(UIClass type) noexcept
 	{
-		return type == UIClass::UI_ContentControl
-			|| type == UIClass::UI_SelectorItem
-			|| type == UIClass::UI_ComboBoxItem
-			|| type == UIClass::UI_TreeViewItem
-			|| type == UIClass::UI_Button
-			|| type == UIClass::UI_GroupBox
-			|| type == UIClass::UI_Expander
-			|| type == UIClass::UI_ItemsControl
-			|| type == UIClass::UI_ListBox;
+		return IsControlTemplateHostClass(type);
 	}
 
 	std::wstring NodeDataListKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("itemsSourceResource")
-			|| !node.Extra["itemsSourceResource"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemsSourceResource"].get<std::string>());
+		return node.Structure.ItemsSourceResource;
 	}
 
 	std::wstring NodeItemsPanelKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("itemsPanel")
-			|| !node.Extra["itemsPanel"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemsPanel"].get<std::string>());
+		return node.Structure.ItemsPanel;
 	}
 
 	std::wstring NodeGroupStyleKey(const DesignNode& node)
 	{
-		if (!node.Extra.is_object()
-			|| !node.Extra.contains("groupStyle")
-			|| !node.Extra["groupStyle"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["groupStyle"].get<std::string>());
+		return node.Structure.GroupStyle;
 	}
 
 	std::wstring ResourceItemType(
@@ -969,7 +830,7 @@ namespace
 	{
 		std::unordered_set<std::wstring> visited;
 		auto key = resourceKey;
-		while (!key.empty() && visited.insert(Lower(key)).second)
+		while (!key.empty() && visited.insert(IdentityKey(key)).second)
 		{
 			if (const auto* list = document.FindDataList(key)) return list->ItemType;
 			const auto* view = document.FindCollectionView(key);
@@ -995,16 +856,14 @@ namespace
 	{
 		if (const auto key = NodeDataListKey(node); !key.empty())
 			return ResourceItemType(document, key, bindingSchema);
-		if (!node.Bindings.is_object()
-			|| !node.Bindings.contains("ItemsSource")
-			|| !node.Bindings["ItemsSource"].is_object()) return {};
-		const auto& binding = node.Bindings["ItemsSource"];
-		if (!binding.value("elementName", std::string{}).empty()
-			|| !binding.value("relativeSource", std::string{}).empty()
-			|| binding.contains("bindings")) return {};
+		const auto found = node.Bindings.find(L"ItemsSource");
+		if (found == node.Bindings.end()) return {};
+		const auto& binding = found->second;
+		if (!binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| binding.IsMultiBinding()) return {};
 		const auto* property = DesignerDataContextSchemaUtils::Find(
-			bindingSchema, Convert::Utf8ToUnicode(
-				binding.value("source", std::string{})));
+			bindingSchema, binding.SourceProperty);
 		return property
 			&& property->ObjectKind == DesignerDataObjectKind::BindingList
 			? property->ItemType : std::wstring{};
@@ -1014,16 +873,14 @@ namespace
 		const DesignNode& node,
 		const DesignerDataContextSchema& bindingSchema)
 	{
-		if (!node.Bindings.is_object()
-			|| !node.Bindings.contains("Content")
-			|| !node.Bindings["Content"].is_object()) return {};
-		const auto& binding = node.Bindings["Content"];
-		if (!binding.value("elementName", std::string{}).empty()
-			|| !binding.value("relativeSource", std::string{}).empty()
-			|| binding.contains("bindings")) return {};
+		const auto found = node.Bindings.find(L"Content");
+		if (found == node.Bindings.end()) return {};
+		const auto& binding = found->second;
+		if (!binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| binding.IsMultiBinding()) return {};
 		const auto* property = DesignerDataContextSchemaUtils::Find(
-			bindingSchema, Convert::Utf8ToUnicode(
-				binding.value("source", std::string{})));
+			bindingSchema, binding.SourceProperty);
 		return property
 			&& property->ObjectKind == DesignerDataObjectKind::BindingSource
 			? property->DataType : std::wstring{};
@@ -1033,16 +890,14 @@ namespace
 		const DesignNode& node,
 		const DesignerDataContextSchema& bindingSchema)
 	{
-		if (!node.Bindings.is_object()
-			|| !node.Bindings.contains("Header")
-			|| !node.Bindings["Header"].is_object()) return {};
-		const auto& binding = node.Bindings["Header"];
-		if (!binding.value("elementName", std::string{}).empty()
-			|| !binding.value("relativeSource", std::string{}).empty()
-			|| binding.contains("bindings")) return {};
+		const auto found = node.Bindings.find(L"Header");
+		if (found == node.Bindings.end()) return {};
+		const auto& binding = found->second;
+		if (!binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| binding.IsMultiBinding()) return {};
 		const auto* property = DesignerDataContextSchemaUtils::Find(
-			bindingSchema, Convert::Utf8ToUnicode(
-				binding.value("source", std::string{})));
+			bindingSchema, binding.SourceProperty);
 		return property
 			&& property->ObjectKind == DesignerDataObjectKind::BindingSource
 			? property->DataType : std::wstring{};
@@ -1055,26 +910,23 @@ namespace
 		const auto key = NodeItemTemplateKey(node);
 		if (!key.empty())
 		{
-			const auto found = keyMap.find(Lower(key));
+			const auto found = keyMap.find(IdentityKey(key));
 			if (found != keyMap.end())
-				node.Extra["itemTemplate"] =
-					Convert::UnicodeToUtf8(found->second);
+				node.Structure.ItemTemplate = found->second;
 		}
 		const auto contentKey = NodeContentTemplateKey(node);
 		if (!contentKey.empty())
 		{
-			const auto contentFound = keyMap.find(Lower(contentKey));
+			const auto contentFound = keyMap.find(IdentityKey(contentKey));
 			if (contentFound != keyMap.end())
-				node.Extra["contentTemplate"] =
-					Convert::UnicodeToUtf8(contentFound->second);
+				node.Structure.ContentTemplate = contentFound->second;
 		}
 		const auto headerKey = NodeHeaderTemplateKey(node);
 		if (!headerKey.empty())
 		{
-			const auto headerFound = keyMap.find(Lower(headerKey));
+			const auto headerFound = keyMap.find(IdentityKey(headerKey));
 			if (headerFound != keyMap.end())
-				node.Extra["headerTemplate"] =
-					Convert::UnicodeToUtf8(headerFound->second);
+				node.Structure.HeaderTemplate = headerFound->second;
 		}
 	}
 
@@ -1084,10 +936,9 @@ namespace
 	{
 		const auto key = NodeDataListKey(node);
 		if (key.empty()) return;
-		const auto found = keyMap.find(Lower(key));
+		const auto found = keyMap.find(IdentityKey(key));
 		if (found != keyMap.end())
-			node.Extra["itemsSourceResource"] =
-				Convert::UnicodeToUtf8(found->second);
+			node.Structure.ItemsSourceResource = found->second;
 	}
 
 	void RewriteNodeItemsPanel(
@@ -1096,9 +947,9 @@ namespace
 	{
 		const auto key = NodeItemsPanelKey(node);
 		if (key.empty()) return;
-		const auto found = keyMap.find(Lower(key));
+		const auto found = keyMap.find(IdentityKey(key));
 		if (found != keyMap.end())
-			node.Extra["itemsPanel"] = Convert::UnicodeToUtf8(found->second);
+			node.Structure.ItemsPanel = found->second;
 	}
 
 	void RewriteNodeGroupStyle(
@@ -1107,29 +958,22 @@ namespace
 	{
 		const auto key = NodeGroupStyleKey(node);
 		if (key.empty()) return;
-		const auto found = keyMap.find(Lower(key));
+		const auto found = keyMap.find(IdentityKey(key));
 		if (found != keyMap.end())
-			node.Extra["groupStyle"] = Convert::UnicodeToUtf8(found->second);
+			node.Structure.GroupStyle = found->second;
 	}
 
 	void ForEachNodePropertyResource(
 		const DesignNode& node,
 		const std::function<void(const std::wstring&, bool)>& callback)
 	{
-		if (!node.Props.is_object() || !node.Props.contains("metadata")
-			|| !node.Props["metadata"].is_object()) return;
-		for (const auto& [property, stored]
-			: node.Props["metadata"].ObjectItems())
+		for (const auto& [property, assignment] : node.Properties.Values)
 		{
 			(void)property;
-			if (!stored.is_object()) continue;
-			for (const auto* field : { "resourceKey", "dynamicResourceKey" })
-				if (stored.contains(field) && stored[field].is_string())
-				{
-					callback(Convert::Utf8ToUnicode(
-						stored[field].get<std::string>()),
-						std::string_view(field) == "dynamicResourceKey");
-				}
+			if (!assignment.ResourceKey.empty())
+				callback(assignment.ResourceKey, false);
+			if (!assignment.DynamicResourceKey.empty())
+				callback(assignment.DynamicResourceKey, true);
 		}
 	}
 
@@ -1139,45 +983,35 @@ namespace
 		const DesignNode* scopeNode = nullptr,
 		const Ownership* ownership = nullptr)
 	{
-		if (!node.Props.is_object() || !node.Props.contains("metadata")
-			|| !node.Props["metadata"].is_object()) return;
-		for (auto& [property, stored] : node.Props["metadata"].ObjectItems())
+		for (auto& [property, assignment] : node.Properties.Values)
 		{
 			(void)property;
-			if (!stored.is_object()) continue;
-			for (const auto* field : { "resourceKey", "dynamicResourceKey" })
+			for (auto* key : {
+				&assignment.ResourceKey, &assignment.DynamicResourceKey })
 			{
-				if (!stored.contains(field) || !stored[field].is_string()) continue;
-				const auto key = Convert::Utf8ToUnicode(
-					stored[field].get<std::string>());
+				if (key->empty()) continue;
 				if (scopeNode && ownership
-					&& FindLexicalResource(*scopeNode, *ownership, key).Resource)
+					&& FindLexicalResource(*scopeNode, *ownership, *key).Resource)
 					continue;
-				const auto found = keyMap.find(Lower(key));
+				const auto found = keyMap.find(IdentityKey(*key));
 				if (found != keyMap.end())
-					stored[field] = Convert::UnicodeToUtf8(found->second);
+					*key = found->second;
 			}
 		}
 	}
 
-	std::wstring NodeElementBindingName(const DesignValue& binding)
+	std::wstring NodeElementBindingName(const DesignerDataBinding& binding)
 	{
-		return binding.is_object()
-			&& binding.contains("elementName")
-			&& binding["elementName"].is_string()
-			? Convert::Utf8ToUnicode(
-				binding["elementName"].get<std::string>())
-			: std::wstring{};
+		return binding.ElementName;
 	}
 
 	void CollectNodeElementBindingNames(
-		const DesignValue& binding,
+		const DesignerDataBinding& binding,
 		std::vector<std::wstring>& output)
 	{
-		if (!binding.is_object()) return;
-		if (binding.contains("bindings") && binding["bindings"].is_array())
+		if (binding.IsMultiBinding())
 		{
-			for (const auto& child : binding["bindings"].ArrayItems())
+			for (const auto& child : binding.ChildBindings)
 				CollectNodeElementBindingNames(child, output);
 			return;
 		}
@@ -1186,13 +1020,12 @@ namespace
 	}
 
 	void RewriteBindingElementNames(
-		DesignValue& binding,
+		DesignerDataBinding& binding,
 		const std::unordered_map<std::wstring, std::wstring>& nameMap)
 	{
-		if (!binding.is_object()) return;
-		if (binding.contains("bindings") && binding["bindings"].is_array())
+		if (binding.IsMultiBinding())
 		{
-			for (auto& child : binding["bindings"].ArrayItems())
+			for (auto& child : binding.ChildBindings)
 				RewriteBindingElementNames(child, nameMap);
 			return;
 		}
@@ -1200,19 +1033,30 @@ namespace
 		if (sourceName.empty()) return;
 		const auto found = nameMap.find(sourceName);
 		if (found != nameMap.end())
-			binding["elementName"] = Convert::UnicodeToUtf8(found->second);
+			binding.ElementName = found->second;
 	}
 
-	void RewriteNodeElementBindings(
+	void RewriteCommandTarget(
+		std::wstring& target,
+		const std::unordered_map<std::wstring, std::wstring>& nameMap)
+	{
+		if (target.empty()) return;
+		const auto found = nameMap.find(target);
+		if (found != nameMap.end()) target = found->second;
+	}
+
+	void RewriteNodeElementReferences(
 		DesignNode& node,
 		const std::unordered_map<std::wstring, std::wstring>& nameMap)
 	{
-		if (!node.Bindings.is_object()) return;
-		for (auto& [targetProperty, binding] : node.Bindings.ObjectItems())
+		for (auto& [targetProperty, binding] : node.Bindings)
 		{
 			(void)targetProperty;
 			RewriteBindingElementNames(binding, nameMap);
 		}
+		for (auto& binding : node.InputBindings)
+			RewriteCommandTarget(binding.CommandTarget, nameMap);
+		RewriteCommandTarget(node.Structure.CommandTarget, nameMap);
 	}
 
 	bool CollectDataDependencies(
@@ -1253,31 +1097,30 @@ namespace
 			auto enqueueExplicit = [&](const std::wstring& key)
 			{
 				if (key.empty()) return;
-				if (templateIdentities.insert(L"key:" + Lower(key)).second)
+				if (templateIdentities.insert(L"key:" + IdentityKey(key)).second)
 					pendingTemplates.push({ key, {}, false, &scopeNodes, &node });
 			};
 			enqueueExplicit(itemKey);
 			enqueueExplicit(contentKey);
 			enqueueExplicit(headerKey);
-			const bool itemsPresenter = node.Type == UIClass::UI_ItemsControl
-				|| node.Type == UIClass::UI_ListBox
-				|| node.Type == UIClass::UI_ComboBox
-				|| node.Type == UIClass::UI_TreeView;
+			const bool itemsPresenter = IsUIClassAssignableFrom(
+				UIClass::UI_ItemsControl, node.Type);
 			const bool contentPresenter =
 				node.Type == UIClass::UI_ContentPresenter
-				|| node.Type == UIClass::UI_ContentControl
-				|| node.Type == UIClass::UI_Button
-				|| node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander;
-			const bool headerPresenter = node.Type == UIClass::UI_GroupBox
-				|| node.Type == UIClass::UI_Expander;
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_ContentControl, node.Type);
+			const bool headerPresenter =
+				IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedContentControl, node.Type)
+				|| IsUIClassAssignableFrom(
+					UIClass::UI_HeaderedItemsControl, node.Type);
 			auto enqueueImplicit = [&](const std::wstring& dataType)
 			{
 				if (dataType.empty()) return;
 				const auto* definition = source.FindImplicitDataTemplate(
 					scopeNodes, node, dataType);
 				if (!definition) return;
-				const auto identity = L"type:" + Lower(definition->DataType);
+				const auto identity = L"type:" + IdentityKey(definition->DataType);
 				if (templateIdentities.insert(identity).second)
 					pendingTemplates.push({ {}, definition->DataType, true,
 						&scopeNodes, &node });
@@ -1295,7 +1138,7 @@ namespace
 		{
 			const auto groupKey = NodeGroupStyleKey(node);
 			if (groupKey.empty()
-				|| !groupStyleKeys.insert(Lower(groupKey)).second) return true;
+				|| !groupStyleKeys.insert(IdentityKey(groupKey)).second) return true;
 			const auto* style = source.FindGroupStyle(
 				scopeNodes, node, groupKey);
 			if (!style) return Fail(
@@ -1311,8 +1154,8 @@ namespace
 			if (header)
 			{
 				const auto identity = header->IsImplicit()
-					? L"type:" + Lower(header->DataType)
-					: L"key:" + Lower(header->Key);
+					? L"type:" + IdentityKey(header->DataType)
+					: L"key:" + IdentityKey(header->Key);
 				if (templateIdentities.insert(identity).second)
 				{
 					const auto* owner = source.FindLocalGroupStyleOwner(
@@ -1374,7 +1217,7 @@ namespace
 					if (childTemplate)
 					{
 						const auto identity = L"type:"
-							+ Lower(childTemplate->DataType);
+							+ IdentityKey(childTemplate->DataType);
 						if (templateIdentities.insert(identity).second)
 							pendingTemplates.push({ {}, childTemplate->DataType,
 								true, request.ScopeNodes, request.ScopeNode });
@@ -1393,7 +1236,7 @@ namespace
 			const std::vector<DesignNode>& scopeNodes)
 		{
 			const auto key = NodeItemsPanelKey(node);
-			if (key.empty() || !panelKeys.insert(Lower(key)).second) return true;
+			if (key.empty() || !panelKeys.insert(IdentityKey(key)).second) return true;
 			const auto* definition = source.FindItemsPanelTemplate(
 				scopeNodes, node, key);
 			if (!definition) return false;
@@ -1418,7 +1261,7 @@ namespace
 			if (key.empty()) return true;
 			if (const auto* definition = source.FindDataList(key))
 			{
-				if (!listKeys.insert(Lower(definition->Key)).second) return true;
+				if (!listKeys.insert(IdentityKey(definition->Key)).second) return true;
 				auto portable = *definition;
 				portable.SourceDictionary.clear();
 				outputLists.push_back(std::move(portable));
@@ -1426,7 +1269,7 @@ namespace
 			}
 			const auto* definition = source.FindCollectionView(key);
 			if (!definition) return false;
-			if (!viewKeys.insert(Lower(definition->Key)).second) return true;
+			if (!viewKeys.insert(IdentityKey(definition->Key)).second) return true;
 			auto portable = *definition;
 			portable.SourceDictionary.clear();
 			outputViews.push_back(std::move(portable));
@@ -1448,7 +1291,7 @@ namespace
 		{
 			if (!name.empty()
 				&& !DesignDataResourceUtils::IsCollectionViewGroupDataType(name)
-				&& typeNames.insert(Lower(name)).second)
+				&& typeNames.insert(IdentityKey(name)).second)
 				pendingTypes.push(name);
 		};
 		for (const auto& property : bindingSchema)
@@ -1512,7 +1355,7 @@ namespace
 
 		std::unordered_set<std::wstring> usedPanelKeys;
 		for (const auto& item : target.ItemsPanelTemplates)
-			usedPanelKeys.insert(Lower(item.Key));
+			usedPanelKeys.insert(IdentityKey(item.Key));
 		for (const auto& definition : fragment.ItemsPanelTemplates)
 		{
 			std::wstring destinationKey = definition.Key;
@@ -1524,21 +1367,21 @@ namespace
 				right.SourceDictionary.clear();
 				if (left == right)
 				{
-					panelKeyMap.emplace(Lower(definition.Key), existing->Key);
+					panelKeyMap.emplace(IdentityKey(definition.Key), existing->Key);
 					continue;
 				}
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedPanelKeys.contains(Lower(destinationKey)))
+				while (usedPanelKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
-			usedPanelKeys.insert(Lower(destinationKey));
-			panelKeyMap.emplace(Lower(definition.Key), destinationKey);
+			usedPanelKeys.insert(IdentityKey(destinationKey));
+			panelKeyMap.emplace(IdentityKey(definition.Key), destinationKey);
 		}
 		for (const auto& definition : fragment.ItemsPanelTemplates)
 		{
-			const auto mapped = panelKeyMap.find(Lower(definition.Key));
+			const auto mapped = panelKeyMap.find(IdentityKey(definition.Key));
 			if (mapped == panelKeyMap.end()) continue;
 			if (target.FindItemsPanelTemplate(mapped->second)) continue;
 			auto imported = definition;
@@ -1549,7 +1392,7 @@ namespace
 
 		std::unordered_set<std::wstring> usedKeys;
 		for (const auto& item : target.DataTemplates)
-			if (!item.IsImplicit()) usedKeys.insert(Lower(item.Key));
+			if (!item.IsImplicit()) usedKeys.insert(IdentityKey(item.Key));
 		for (const auto& definition : fragment.DataTemplates)
 		{
 			if (definition.IsImplicit())
@@ -1576,21 +1419,21 @@ namespace
 				right.SourceDictionary.clear();
 				if (left == right)
 				{
-					templateKeyMap.emplace(Lower(definition.Key), existing->Key);
+					templateKeyMap.emplace(IdentityKey(definition.Key), existing->Key);
 					continue;
 				}
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedKeys.contains(Lower(destinationKey)))
+				while (usedKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
-			usedKeys.insert(Lower(destinationKey));
-			templateKeyMap.emplace(Lower(definition.Key), destinationKey);
+			usedKeys.insert(IdentityKey(destinationKey));
+			templateKeyMap.emplace(IdentityKey(definition.Key), destinationKey);
 		}
 		std::unordered_set<std::wstring> usedGroupStyleKeys;
 		for (const auto& item : target.GroupStyles)
-			usedGroupStyleKeys.insert(Lower(item.Key));
+			usedGroupStyleKeys.insert(IdentityKey(item.Key));
 		for (const auto& definition : fragment.GroupStyles)
 		{
 			std::wstring destinationKey = definition.Key;
@@ -1598,41 +1441,41 @@ namespace
 			{
 				auto left = *existing;
 				auto right = definition;
-				if (const auto mapped = templateKeyMap.find(Lower(right.HeaderTemplate));
+				if (const auto mapped = templateKeyMap.find(IdentityKey(right.HeaderTemplate));
 					mapped != templateKeyMap.end()) right.HeaderTemplate = mapped->second;
 				left.SourceDictionary.clear();
 				right.SourceDictionary.clear();
 				if (left == right)
 				{
-					groupStyleKeyMap.emplace(Lower(definition.Key), existing->Key);
+					groupStyleKeyMap.emplace(IdentityKey(definition.Key), existing->Key);
 					continue;
 				}
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedGroupStyleKeys.contains(Lower(destinationKey)))
+				while (usedGroupStyleKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
-			usedGroupStyleKeys.insert(Lower(destinationKey));
-			groupStyleKeyMap.emplace(Lower(definition.Key), destinationKey);
+			usedGroupStyleKeys.insert(IdentityKey(destinationKey));
+			groupStyleKeyMap.emplace(IdentityKey(definition.Key), destinationKey);
 		}
 		for (const auto& definition : fragment.GroupStyles)
 		{
-			const auto mapped = groupStyleKeyMap.find(Lower(definition.Key));
+			const auto mapped = groupStyleKeyMap.find(IdentityKey(definition.Key));
 			if (mapped == groupStyleKeyMap.end()
 				|| target.FindGroupStyle(mapped->second)) continue;
 			auto imported = definition;
 			imported.Key = mapped->second;
 			imported.SourceDictionary.clear();
-			if (const auto header = templateKeyMap.find(Lower(imported.HeaderTemplate));
+			if (const auto header = templateKeyMap.find(IdentityKey(imported.HeaderTemplate));
 				header != templateKeyMap.end()) imported.HeaderTemplate = header->second;
 			candidate.GroupStyles.push_back(std::move(imported));
 		}
 		std::unordered_set<std::wstring> usedListKeys;
 		for (const auto& item : target.DataLists)
-			usedListKeys.insert(Lower(item.Key));
+			usedListKeys.insert(IdentityKey(item.Key));
 		for (const auto& item : target.CollectionViews)
-			usedListKeys.insert(Lower(item.Key));
+			usedListKeys.insert(IdentityKey(item.Key));
 		for (const auto& definition : fragment.DataLists)
 		{
 			std::wstring destinationKey = definition.Key;
@@ -1644,13 +1487,13 @@ namespace
 				right.SourceDictionary.clear();
 				if (left == right)
 				{
-					dataListKeyMap.emplace(Lower(definition.Key), existing->Key);
+					dataListKeyMap.emplace(IdentityKey(definition.Key), existing->Key);
 					continue;
 				}
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedListKeys.contains(Lower(destinationKey)))
+				while (usedListKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
 			else if (target.FindCollectionView(definition.Key))
@@ -1658,11 +1501,11 @@ namespace
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedListKeys.contains(Lower(destinationKey)))
+				while (usedListKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
-			usedListKeys.insert(Lower(destinationKey));
-			dataListKeyMap.emplace(Lower(definition.Key), destinationKey);
+			usedListKeys.insert(IdentityKey(destinationKey));
+			dataListKeyMap.emplace(IdentityKey(definition.Key), destinationKey);
 		}
 		for (const auto& definition : fragment.CollectionViews)
 		{
@@ -1673,19 +1516,19 @@ namespace
 				auto right = definition;
 				if (!right.SourceResource.empty())
 					if (const auto source = dataListKeyMap.find(
-						Lower(right.SourceResource)); source != dataListKeyMap.end())
+						IdentityKey(right.SourceResource)); source != dataListKeyMap.end())
 						right.SourceResource = source->second;
 				left.SourceDictionary.clear();
 				right.SourceDictionary.clear();
 				if (left == right)
 				{
-					dataListKeyMap.emplace(Lower(definition.Key), existing->Key);
+					dataListKeyMap.emplace(IdentityKey(definition.Key), existing->Key);
 					continue;
 				}
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedListKeys.contains(Lower(destinationKey)))
+				while (usedListKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
 			else if (target.FindDataList(definition.Key))
@@ -1693,15 +1536,15 @@ namespace
 				const auto base = definition.Key + L"_Copy";
 				destinationKey = base;
 				int suffix = 2;
-				while (usedListKeys.contains(Lower(destinationKey)))
+				while (usedListKeys.contains(IdentityKey(destinationKey)))
 					destinationKey = base + std::to_wstring(suffix++);
 			}
-			usedListKeys.insert(Lower(destinationKey));
-			dataListKeyMap.emplace(Lower(definition.Key), destinationKey);
+			usedListKeys.insert(IdentityKey(destinationKey));
+			dataListKeyMap.emplace(IdentityKey(definition.Key), destinationKey);
 		}
 		for (const auto& definition : fragment.DataLists)
 		{
-			const auto mapped = dataListKeyMap.find(Lower(definition.Key));
+			const auto mapped = dataListKeyMap.find(IdentityKey(definition.Key));
 			if (mapped == dataListKeyMap.end()) continue;
 			if (target.FindDataList(mapped->second)) continue;
 			auto imported = definition;
@@ -1711,7 +1554,7 @@ namespace
 		}
 		for (const auto& definition : fragment.CollectionViews)
 		{
-			const auto mapped = dataListKeyMap.find(Lower(definition.Key));
+			const auto mapped = dataListKeyMap.find(IdentityKey(definition.Key));
 			if (mapped == dataListKeyMap.end()) continue;
 			if (target.FindCollectionView(mapped->second)) continue;
 			auto imported = definition;
@@ -1720,7 +1563,7 @@ namespace
 			if (!imported.SourceResource.empty())
 			{
 				const auto source = dataListKeyMap.find(
-					Lower(imported.SourceResource));
+					IdentityKey(imported.SourceResource));
 				if (source != dataListKeyMap.end())
 					imported.SourceResource = source->second;
 			}
@@ -1728,7 +1571,7 @@ namespace
 		}
 		for (const auto& definition : fragment.DataTemplates)
 		{
-			const auto mapped = templateKeyMap.find(Lower(definition.Key));
+			const auto mapped = templateKeyMap.find(IdentityKey(definition.Key));
 			if (definition.IsImplicit())
 			{
 				if (target.FindImplicitDataTemplate(definition.DataType)) continue;
@@ -1757,52 +1600,20 @@ namespace
 		const std::wstring& left,
 		const std::wstring& right)
 	{
-		return Lower(left) == Lower(right);
+		return IdentityKey(left) == IdentityKey(right);
 	}
 
 	std::wstring NodeStyleId(const DesignNode& node)
 	{
-		if (!node.Props.is_object()
-			|| !node.Props.contains("styleId")
-			|| !node.Props["styleId"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Props["styleId"].get<std::string>());
+		return node.Properties.StyleResourceKey;
 	}
 
 	std::wstring NodeItemContainerStyleId(const DesignNode& node)
 	{
 		if ((node.Type != UIClass::UI_ListBox
 			&& node.Type != UIClass::UI_ComboBox
-			&& node.Type != UIClass::UI_TreeView)
-			|| !node.Extra.is_object()
-			|| !node.Extra.contains("itemContainerStyle")
-			|| !node.Extra["itemContainerStyle"].is_string()) return {};
-		return Convert::Utf8ToUnicode(
-			node.Extra["itemContainerStyle"].get<std::string>());
-	}
-
-	std::vector<std::wstring> NodeStyleClasses(const DesignNode& node)
-	{
-		std::vector<std::wstring> result;
-		if (!node.Props.is_object()
-			|| !node.Props.contains("styleClasses")
-			|| !node.Props["styleClasses"].is_array()) return result;
-		for (const auto& value : node.Props["styleClasses"].ArrayItems())
-			if (value.is_string())
-				result.push_back(Convert::Utf8ToUnicode(
-					value.get<std::string>()));
-		return result;
-	}
-
-	bool ContainsStyleName(
-		const std::vector<std::wstring>& values,
-		const std::wstring& value)
-	{
-		return std::any_of(values.begin(), values.end(),
-			[&](const auto& candidate)
-			{
-				return EqualsStyleName(candidate, value);
-			});
+			&& node.Type != UIClass::UI_TreeView)) return {};
+		return node.Structure.ItemContainerStyle;
 	}
 
 	bool StyleRuleMatchesNode(
@@ -1813,12 +1624,11 @@ namespace
 			&& rule.Type != node.Type) return false;
 		if (!rule.ComponentType.Empty()
 			&& rule.ComponentType != node.ComponentType) return false;
-		if (!rule.Id.empty()
-			&& !EqualsStyleName(rule.Id, NodeStyleId(node))) return false;
-		const auto classes = NodeStyleClasses(node);
-		for (const auto& required : rule.Classes)
-			if (!ContainsStyleName(classes, required)) return false;
-		return true;
+		if (rule.XamlType.Valid() && rule.XamlType != node.XamlType) return false;
+		const auto styleKey = NodeStyleId(node);
+		return styleKey.empty()
+			? rule.Id.empty()
+			: !rule.Id.empty() && EqualsStyleName(rule.Id, styleKey);
 	}
 
 	bool StyleRuleMatchesGeneratedContainer(
@@ -1828,17 +1638,17 @@ namespace
 		if ((node.Type != UIClass::UI_ListBox
 			&& node.Type != UIClass::UI_ComboBox
 			&& node.Type != UIClass::UI_TreeView)
-			|| !rule.ComponentType.Empty()
-			|| !rule.Classes.empty()) return false;
+			|| !rule.ComponentType.Empty()) return false;
 		const auto containerType = node.Type == UIClass::UI_ComboBox
 			? UIClass::UI_ComboBoxItem
 			: node.Type == UIClass::UI_TreeView
-				? UIClass::UI_TreeViewItem : UIClass::UI_SelectorItem;
+				? UIClass::UI_TreeViewItem : UIClass::UI_ListBoxItem;
 		if (rule.HasType && rule.Type != UIClass::UI_Base
 			&& rule.Type != containerType) return false;
-		if (rule.Id.empty()) return true;
 		const auto styleId = NodeItemContainerStyleId(node);
-		return !styleId.empty() && EqualsStyleName(rule.Id, styleId);
+		return styleId.empty()
+			? rule.Id.empty()
+			: !rule.Id.empty() && EqualsStyleName(rule.Id, styleId);
 	}
 
 	bool StyleRuleMatchesNodeTree(
@@ -1847,31 +1657,6 @@ namespace
 	{
 		return StyleRuleMatchesNode(rule, node)
 			|| StyleRuleMatchesGeneratedContainer(rule, node);
-	}
-
-	uint32_t StyleStateCount(const DesignerStyleRule& rule)
-	{
-		return static_cast<uint32_t>(std::popcount(
-			static_cast<uint32_t>(rule.RequiredStates)))
-			+ static_cast<uint32_t>(std::popcount(
-				static_cast<uint32_t>(rule.ExcludedStates)));
-	}
-
-	uint32_t StyleConditionCount(const DesignerStyleRule& rule)
-	{
-		return StyleStateCount(rule)
-			+ static_cast<uint32_t>(rule.PropertyConditions.size())
-			+ static_cast<uint32_t>(rule.DataConditions.size());
-	}
-
-	uint32_t StyleRuleSpecificity(const DesignerStyleRule& rule)
-	{
-		const uint32_t id = rule.Id.empty() ? 0u : 1u;
-		const uint32_t qualifiers = static_cast<uint32_t>(rule.Classes.size())
-			+ StyleConditionCount(rule);
-		const uint32_t exactType = !rule.ComponentType.Empty()
-			|| (rule.HasType && rule.Type != UIClass::UI_Base) ? 1u : 0u;
-		return id * 1'000'000u + qualifiers * 1'000u + exactType;
 	}
 
 	DesignerStyleSheet VisibleStylesForNode(
@@ -1912,12 +1697,9 @@ namespace
 			if (!DesignerStyleSheetUtils::ResolveInheritance(
 				VisibleStylesForNode(document, node, ownership),
 				styles, outError)) return false;
-			bool found = false;
-			uint32_t specificity = 0;
-			size_t sourceOrder = 0;
-			for (size_t order = 0; order < styles.Rules.size(); ++order)
+			for (auto item = styles.Rules.rbegin(); item != styles.Rules.rend(); ++item)
 			{
-				const auto& rule = styles.Rules[order];
+				const auto& rule = *item;
 				if (!StyleRuleMatchesNode(rule, node)) continue;
 				const auto setter = std::find_if(
 					rule.Setters.begin(), rule.Setters.end(), [](const auto& candidate)
@@ -1926,16 +1708,8 @@ namespace
 				if (!setter->UsesResource || setter->UsesDynamicResource
 					|| setter->ResourceKey.empty())
 					return Fail(L"无法复制无效的 Style.Template。", outError);
-				const auto candidateSpecificity = StyleRuleSpecificity(rule);
-				if (!found || candidateSpecificity > specificity
-					|| (candidateSpecificity == specificity
-						&& order >= sourceOrder))
-				{
-					key = setter->ResourceKey;
-					specificity = candidateSpecificity;
-					sourceOrder = order;
-					found = true;
-				}
+				key = setter->ResourceKey;
+				break;
 			}
 		}
 		resolved = key.empty()
@@ -1962,12 +1736,9 @@ namespace
 		if (!DesignerStyleSheetUtils::ResolveInheritance(
 			VisibleStylesForNode(document, node, ownership),
 			styles, outError)) return false;
-		bool found = false;
-		uint32_t specificity = 0;
-		size_t sourceOrder = 0;
-		for (size_t order = 0; order < styles.Rules.size(); ++order)
+		for (auto item = styles.Rules.rbegin(); item != styles.Rules.rend(); ++item)
 		{
-			const auto& rule = styles.Rules[order];
+			const auto& rule = *item;
 			if (!StyleRuleMatchesGeneratedContainer(rule, node)) continue;
 			const auto setter = std::find_if(
 				rule.Setters.begin(), rule.Setters.end(), [](const auto& candidate)
@@ -1976,15 +1747,8 @@ namespace
 			if (!setter->UsesResource || setter->UsesDynamicResource
 				|| setter->ResourceKey.empty())
 				return Fail(L"无法复制无效的 ItemContainerStyle.Template。", outError);
-			const auto candidateSpecificity = StyleRuleSpecificity(rule);
-			if (!found || candidateSpecificity > specificity
-				|| (candidateSpecificity == specificity && order >= sourceOrder))
-			{
-				key = setter->ResourceKey;
-				specificity = candidateSpecificity;
-				sourceOrder = order;
-				found = true;
-			}
+			key = setter->ResourceKey;
+			break;
 		}
 
 		if (!key.empty())
@@ -1996,7 +1760,7 @@ namespace
 		container.Type = node.Type == UIClass::UI_ComboBox
 			? UIClass::UI_ComboBoxItem
 			: node.Type == UIClass::UI_TreeView
-				? UIClass::UI_TreeViewItem : UIClass::UI_SelectorItem;
+				? UIClass::UI_TreeViewItem : UIClass::UI_ListBoxItem;
 		container.ComponentType = {};
 		resolved = FindLexicalImplicitControlTemplate(
 			document, container, ownership);
@@ -2018,9 +1782,9 @@ namespace
 				document.StyleSheet, &styleError, document.ResourceBasePath,
 				document.Resources))
 				return Fail(L"无法复制无效的样式表：" + styleError, outError);
-			if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+			if (!DesignerStyleSheetUtils::ResolveInheritance(
 				document.StyleSheet, effectiveStyleSheet, &styleError))
-				return Fail(L"无法展开复制样式依赖：" + styleError, outError);
+				return Fail(L"无法解析复制样式依赖：" + styleError, outError);
 		}
 
 		std::unordered_set<std::wstring> requiredResources;
@@ -2037,7 +1801,7 @@ namespace
 				[&](const std::wstring& rawKey, bool optional)
 				{
 					if (!valid) return;
-					const auto key = Lower(rawKey);
+					const auto key = IdentityKey(rawKey);
 					const auto lexical = FindLexicalResource(
 						node, ownership, rawKey);
 					if (lexical.Resource)
@@ -2076,7 +1840,7 @@ namespace
 		auto includeComponent = [&](const DesignerComponentType& type)
 		{
 			if (!type.Empty() && componentKeys.insert(
-				Lower(type.RegistryKey())).second)
+				IdentityKey(type.RegistryKey())).second)
 				pendingComponents.push(type);
 		};
 		for (const auto& node : document.Nodes)
@@ -2085,14 +1849,13 @@ namespace
 				if (!collectNodeResources(
 					node, documentOwnership, includedNodeIds)) return false;
 				includeComponent(node.ComponentType);
-				if (node.Events.is_object())
-					for (const auto& [storedName, value] : node.Events.ObjectItems())
+				for (const auto& [storedName, value] : node.Events)
 					{
 						(void)value;
 						DesignerComponentType ownerType;
 						std::wstring eventName;
 						if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-							Convert::Utf8ToUnicode(storedName), ownerType, eventName))
+							storedName, ownerType, eventName))
 							includeComponent(ownerType);
 					}
 			}
@@ -2109,14 +1872,13 @@ namespace
 					if (!collectNodeResources(
 						node, templateOwnership, nullptr)) return false;
 					includeComponent(node.ComponentType);
-					if (node.Events.is_object())
-						for (const auto& [storedName, value] : node.Events.ObjectItems())
+					for (const auto& [storedName, value] : node.Events)
 						{
 							(void)value;
 							DesignerComponentType ownerType;
 							std::wstring eventName;
 							if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-								Convert::Utf8ToUnicode(storedName), ownerType, eventName))
+								storedName, ownerType, eventName))
 							includeComponent(ownerType);
 					}
 				}
@@ -2129,18 +1891,18 @@ namespace
 			if (!definition) continue;
 			for (const auto& property : definition->Properties)
 				if (!property.DefaultResourceKey.empty())
-					requiredResources.insert(Lower(property.DefaultResourceKey));
+					requiredResources.insert(IdentityKey(property.DefaultResourceKey));
 			auto collectAnimationResources = [&](const auto& animation)
 			{
 				if (animation.HasTo && animation.ToUsesResource)
-					requiredResources.insert(Lower(animation.ToResourceKey));
+					requiredResources.insert(IdentityKey(animation.ToResourceKey));
 				if (animation.HasFrom && animation.FromUsesResource)
-					requiredResources.insert(Lower(animation.FromResourceKey));
+					requiredResources.insert(IdentityKey(animation.FromResourceKey));
 				if (animation.HasBy && animation.ByUsesResource)
-					requiredResources.insert(Lower(animation.ByResourceKey));
+					requiredResources.insert(IdentityKey(animation.ByResourceKey));
 				for (const auto& keyFrame : animation.KeyFrames)
 					if (keyFrame.UsesResource)
-						requiredResources.insert(Lower(keyFrame.ResourceKey));
+						requiredResources.insert(IdentityKey(keyFrame.ResourceKey));
 			};
 			for (const auto& group : definition->VisualStateGroups)
 			{
@@ -2151,7 +1913,7 @@ namespace
 				{
 					for (const auto& setter : state.Setters)
 						if (setter.UsesResource)
-							requiredResources.insert(Lower(setter.ResourceKey));
+							requiredResources.insert(IdentityKey(setter.ResourceKey));
 					for (const auto& animation : state.Animations)
 						collectAnimationResources(animation);
 				}
@@ -2167,14 +1929,13 @@ namespace
 				if (!collectNodeResources(
 					node, templateOwnership, nullptr)) return false;
 				includeComponent(node.ComponentType);
-				if (node.Events.is_object())
-					for (const auto& [storedName, value] : node.Events.ObjectItems())
+				for (const auto& [storedName, value] : node.Events)
 					{
 						(void)value;
 						DesignerComponentType ownerType;
 						std::wstring eventName;
 						if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
-							Convert::Utf8ToUnicode(storedName), ownerType, eventName))
+							storedName, ownerType, eventName))
 							includeComponent(ownerType);
 					}
 			}
@@ -2185,14 +1946,14 @@ namespace
 				for (const auto& animation : action.Animations)
 				{
 					if (animation.HasTo && animation.ToUsesResource)
-						requiredResources.insert(Lower(animation.ToResourceKey));
+						requiredResources.insert(IdentityKey(animation.ToResourceKey));
 					if (animation.HasFrom && animation.FromUsesResource)
-						requiredResources.insert(Lower(animation.FromResourceKey));
+						requiredResources.insert(IdentityKey(animation.FromResourceKey));
 					if (animation.HasBy && animation.ByUsesResource)
-						requiredResources.insert(Lower(animation.ByResourceKey));
+						requiredResources.insert(IdentityKey(animation.ByResourceKey));
 					for (const auto& keyFrame : animation.KeyFrames)
 						if (keyFrame.UsesResource)
-							requiredResources.insert(Lower(keyFrame.ResourceKey));
+							requiredResources.insert(IdentityKey(keyFrame.ResourceKey));
 				}
 		};
 		for (const auto& rule : effectiveStyleSheet.Rules)
@@ -2209,33 +1970,43 @@ namespace
 			auto portableRule = rule;
 			portableRule.SourceDictionary.clear();
 			output.Rules.push_back(std::move(portableRule));
-			for (const auto& setter : rule.Setters)
-				if (setter.UsesResource
-					&& !EqualsStyleName(setter.PropertyName, L"Template"))
-				{
-					requiredResources.insert(Lower(setter.ResourceKey));
-					if (setter.UsesDynamicResource)
-						optionalResources.insert(Lower(setter.ResourceKey));
-				}
+			auto collectStyleSetters = [&](const auto& setters)
+			{
+				for (const auto& setter : setters)
+					if (setter.UsesResource
+						&& !EqualsStyleName(setter.PropertyName, L"Template"))
+					{
+						requiredResources.insert(IdentityKey(setter.ResourceKey));
+						if (setter.UsesDynamicResource)
+							optionalResources.insert(IdentityKey(setter.ResourceKey));
+					}
+			};
+			collectStyleSetters(rule.Setters);
 			collectStyleActionResources(rule.EnterActions);
 			collectStyleActionResources(rule.ExitActions);
+			for (const auto& trigger : rule.Triggers)
+			{
+				collectStyleSetters(trigger.Setters);
+				collectStyleActionResources(trigger.EnterActions);
+				collectStyleActionResources(trigger.ExitActions);
+			}
 		}
 
 		auto unresolvedResources = requiredResources;
 		for (const auto& resource : promotedLexicalResources)
 		{
 			output.Resources.push_back(resource);
-			unresolvedResources.erase(Lower(resource.Key));
+			unresolvedResources.erase(IdentityKey(resource.Key));
 		}
 		for (const auto& resource : effectiveStyleSheet.Resources)
-			if (requiredResources.contains(Lower(resource.Key))
+			if (requiredResources.contains(IdentityKey(resource.Key))
 				&& !promotedLexicalResourceIndices.contains(
-					Lower(resource.Key)))
+					IdentityKey(resource.Key)))
 			{
 				auto portableResource = resource;
 				portableResource.SourceDictionary.clear();
 				output.Resources.push_back(std::move(portableResource));
-				unresolvedResources.erase(Lower(resource.Key));
+				unresolvedResources.erase(IdentityKey(resource.Key));
 			}
 		for (const auto& key : optionalResources)
 			unresolvedResources.erase(key);
@@ -2284,7 +2055,7 @@ namespace
 		const DesignerStyleSheet& dependencies)
 	{
 		DesignerStyleSheet effectiveTarget;
-		if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+		if (!DesignerStyleSheetUtils::ResolveInheritance(
 			target.StyleSheet, effectiveTarget)) return false;
 		auto relevant = RelevantStyleRules(effectiveTarget, fragment.Nodes);
 		for (auto& rule : relevant) rule.SourceDictionary.clear();
@@ -2309,24 +2080,13 @@ namespace
 	struct IsolatedNodeStyle
 	{
 		std::wstring Id;
-		std::vector<std::wstring> Classes;
 	};
 
 	void ApplyIsolatedNodeStyle(
 		DesignNode& node,
 		const IsolatedNodeStyle& style)
 	{
-		if (!node.Props.is_object()) node.Props = DesignValue::object();
-		node.Props["styleId"] = Convert::UnicodeToUtf8(style.Id);
-		auto& properties = node.Props.ObjectItems();
-		if (style.Classes.empty()) properties.erase("styleClasses");
-		else
-		{
-			auto classes = DesignValue::array();
-			for (const auto& value : style.Classes)
-				classes.push_back(Convert::UnicodeToUtf8(value));
-			node.Props["styleClasses"] = std::move(classes);
-		}
+		node.Properties.StyleResourceKey = style.Id;
 	}
 
 	bool MergeStyleDependencies(
@@ -2349,7 +2109,7 @@ namespace
 			for (const auto& resource : dependencies.Resources)
 			{
 				const auto* existing = FindStyleResource(target.StyleSheet, resource.Key);
-				resourceMap.emplace(Lower(resource.Key),
+				resourceMap.emplace(IdentityKey(resource.Key),
 					existing ? existing->Key : resource.Key);
 			}
 			return true;
@@ -2360,20 +2120,16 @@ namespace
 		for (const auto& node : target.Nodes)
 		{
 			const auto id = NodeStyleId(node);
-			if (!id.empty()) usedSelectorNames.insert(Lower(id));
+			if (!id.empty()) usedSelectorNames.insert(IdentityKey(id));
 			const auto containerId = NodeItemContainerStyleId(node);
-			if (!containerId.empty()) usedSelectorNames.insert(Lower(containerId));
-			for (const auto& value : NodeStyleClasses(node))
-				usedSelectorNames.insert(Lower(value));
+			if (!containerId.empty()) usedSelectorNames.insert(IdentityKey(containerId));
 		}
 		for (const auto& rule : target.StyleSheet.Rules)
 		{
-			if (!rule.Id.empty()) usedSelectorNames.insert(Lower(rule.Id));
-			for (const auto& value : rule.Classes)
-				usedSelectorNames.insert(Lower(value));
+			if (!rule.Id.empty()) usedSelectorNames.insert(IdentityKey(rule.Id));
 		}
 		for (const auto& resource : target.StyleSheet.Resources)
-			usedResourceNames.insert(Lower(resource.Key));
+			usedResourceNames.insert(IdentityKey(resource.Key));
 
 		for (const auto& resource : dependencies.Resources)
 		{
@@ -2381,22 +2137,26 @@ namespace
 			imported.Key = MakeUniqueName(
 				L"CuiPasteResource_" + StyleToken(resource.Key),
 				usedResourceNames);
-			resourceMap.emplace(Lower(resource.Key), imported.Key);
+			resourceMap.emplace(IdentityKey(resource.Key), imported.Key);
 			candidate.StyleSheet.Resources.push_back(std::move(imported));
 		}
 		auto remapImportedRuleResources = [&](DesignerStyleRule& imported,
 			const std::wstring& context)
 		{
-			for (auto& setter : imported.Setters)
+			auto remapSetters = [&](auto& setters)
 			{
-				if (!setter.UsesResource
-					|| EqualsStyleName(setter.PropertyName, L"Template")) continue;
-				const auto found = resourceMap.find(Lower(setter.ResourceKey));
-				if (found == resourceMap.end())
-					return Fail(L"无法重映射" + context + L"样式资源："
-						+ setter.ResourceKey, outError);
-				setter.ResourceKey = found->second;
-			}
+				for (auto& setter : setters)
+				{
+					if (!setter.UsesResource
+						|| EqualsStyleName(setter.PropertyName, L"Template")) continue;
+					const auto found = resourceMap.find(IdentityKey(setter.ResourceKey));
+					if (found == resourceMap.end())
+						return Fail(L"无法重映射" + context + L"样式资源："
+							+ setter.ResourceKey, outError);
+					setter.ResourceKey = found->second;
+				}
+				return true;
+			};
 			auto remapActions = [&](auto& actions)
 			{
 				for (auto& action : actions)
@@ -2406,7 +2166,7 @@ namespace
 							std::wstring& key)
 						{
 							if (!usesResource) return true;
-							const auto found = resourceMap.find(Lower(key));
+							const auto found = resourceMap.find(IdentityKey(key));
 							if (found == resourceMap.end())
 								return Fail(L"无法重映射" + context
 									+ L"动画资源：" + key, outError);
@@ -2425,61 +2185,35 @@ namespace
 					}
 				return true;
 			};
-			return remapActions(imported.EnterActions)
-				&& remapActions(imported.ExitActions);
+			if (!remapSetters(imported.Setters)
+				|| !remapActions(imported.EnterActions)
+				|| !remapActions(imported.ExitActions)) return false;
+			for (auto& trigger : imported.Triggers)
+				if (!remapSetters(trigger.Setters)
+					|| !remapActions(trigger.EnterActions)
+					|| !remapActions(trigger.ExitActions)) return false;
+			return true;
 		};
 
 		for (const auto& node : fragment.Nodes)
 		{
 			std::vector<const DesignerStyleRule*> matchingRules;
-			std::vector<uint32_t> specificities;
-			uint32_t maximumConditionCount = 0;
 			for (const auto& rule : dependencies.Rules)
 			{
 				if (!StyleRuleMatchesNode(rule, node)) continue;
 				matchingRules.push_back(&rule);
-				specificities.push_back(StyleRuleSpecificity(rule));
-				maximumConditionCount = (std::max)(
-					maximumConditionCount, StyleConditionCount(rule));
 			}
 			if (matchingRules.empty()) continue;
 
-			auto distinctSpecificities = specificities;
-			std::sort(distinctSpecificities.begin(), distinctSpecificities.end());
-			distinctSpecificities.erase(std::unique(
-				distinctSpecificities.begin(), distinctSpecificities.end()),
-				distinctSpecificities.end());
 			IsolatedNodeStyle isolated;
 			isolated.Id = MakeUniqueName(
 				L"CuiPasteStyle_" + StyleToken(nameMap.at(node.Name)),
 				usedSelectorNames);
 
-			std::vector<size_t> extraClassCounts;
-			extraClassCounts.reserve(matchingRules.size());
-			size_t maximumExtraClassCount = 0;
-			for (size_t index = 0; index < matchingRules.size(); ++index)
+			for (const auto* sourceRule : matchingRules)
 			{
-				const auto rank = static_cast<uint32_t>(std::lower_bound(
-					distinctSpecificities.begin(), distinctSpecificities.end(),
-					specificities[index]) - distinctSpecificities.begin());
-				const auto desiredQualifierCount = maximumConditionCount + rank;
-				const auto extra = static_cast<size_t>(
-					desiredQualifierCount - StyleConditionCount(*matchingRules[index]));
-				extraClassCounts.push_back(extra);
-				maximumExtraClassCount = (std::max)(maximumExtraClassCount, extra);
-			}
-			for (size_t index = 0; index < maximumExtraClassCount; ++index)
-				isolated.Classes.push_back(MakeUniqueName(
-					isolated.Id + L"_Q" + std::to_wstring(index + 1),
-					usedSelectorNames));
-
-			for (size_t index = 0; index < matchingRules.size(); ++index)
-			{
-				auto imported = *matchingRules[index];
+				auto imported = *sourceRule;
 				imported.Id = isolated.Id;
-				imported.Classes.assign(
-					isolated.Classes.begin(),
-					isolated.Classes.begin() + extraClassCounts[index]);
 				if (!remapImportedRuleResources(imported, L"粘贴"))
 					return false;
 				candidate.StyleSheet.Rules.push_back(std::move(imported));
@@ -2494,12 +2228,6 @@ namespace
 				if (StyleRuleMatchesGeneratedContainer(rule, node))
 					matchingRules.push_back(&rule);
 			if (matchingRules.empty()) continue;
-			std::stable_sort(matchingRules.begin(), matchingRules.end(),
-				[](const auto* left, const auto* right)
-				{
-					return StyleRuleSpecificity(*left)
-						< StyleRuleSpecificity(*right);
-				});
 			const auto isolatedId = MakeUniqueName(
 				L"CuiPasteItemContainer_" + StyleToken(nameMap.at(node.Name)),
 				usedSelectorNames);
@@ -2507,7 +2235,6 @@ namespace
 			{
 				auto imported = *sourceRule;
 				imported.Id = isolatedId;
-				imported.Classes.clear();
 				if (!remapImportedRuleResources(imported, L"粘贴项容器"))
 					return false;
 				candidate.StyleSheet.Rules.push_back(std::move(imported));
@@ -2577,9 +2304,23 @@ bool DesignDocumentClipboard::Capture(
 		DesignDocument candidate;
 		candidate.ResourceBasePath = source.ResourceBasePath;
 		candidate.Resources = source.Resources;
-		candidate.Form.Name = L"Clipboard";
-		candidate.Form.Text = L"CUI Clipboard";
-		candidate.Form.Size = source.Form.Size;
+		candidate.Window.Name = L"Clipboard";
+		DesignerStyleValue clipboardTitle;
+		clipboardTitle.Kind = DesignerStyleValueKind::String;
+		clipboardTitle.Text = L"CUI Clipboard";
+		if (!DesignerPropertyCatalog::ApplyNodeValue(
+			candidate.Window, L"Title", clipboardTitle,
+			nullptr, nullptr, outError))
+			return false;
+		for (const auto* dimension : { L"Width", L"Height" })
+		{
+			DesignerStyleValue value;
+			if (!DesignerPropertyCatalog::CaptureNodeValue(
+				source.Window, dimension, value, nullptr, outError)
+				|| !DesignerPropertyCatalog::ApplyNodeValue(
+					candidate.Window, dimension, value, nullptr, nullptr, outError))
+				return false;
+		}
 		if (!CollectBindingSchema(
 			source, &included, candidate.DataContextSchema, outError)) return false;
 		std::vector<const DesignControlTemplate*> usedControlTemplates;
@@ -2680,7 +2421,7 @@ bool DesignDocumentClipboard::Capture(
 				dependencySource.StyleSheet.Resources.erase(std::remove_if(
 					dependencySource.StyleSheet.Resources.begin(),
 					dependencySource.StyleSheet.Resources.end(), [&](const auto& current)
-					{ return Lower(current.Key) == Lower(resource.Key); }),
+					{ return IdentityKey(current.Key) == IdentityKey(resource.Key); }),
 					dependencySource.StyleSheet.Resources.end());
 				dependencySource.StyleSheet.Resources.push_back(std::move(resource));
 			}
@@ -2698,19 +2439,29 @@ bool DesignDocumentClipboard::Capture(
 		for (const auto& sourceNode : source.Nodes)
 		{
 			if (!included.contains(sourceNode.Id)) continue;
-			if (sourceNode.Bindings.is_object())
-				for (const auto& [targetProperty, binding]
-					: sourceNode.Bindings.ObjectItems())
+			for (const auto& [targetProperty, binding]
+				: sourceNode.Bindings)
 				{
 					std::vector<std::wstring> elementNames;
 					CollectNodeElementBindingNames(binding, elementNames);
 					for (const auto& elementName : elementNames)
 						if (!includedNames.contains(elementName))
 							return Fail(L"控件 " + sourceNode.Name + L" 的绑定 "
-								+ Convert::Utf8ToUnicode(targetProperty)
+								+ targetProperty
 								+ L" 引用了复制范围外的 ElementName："
 								+ elementName, outError);
 				}
+			for (const auto& binding : sourceNode.InputBindings)
+				if (!binding.CommandTarget.empty()
+					&& !includedNames.contains(binding.CommandTarget))
+					return Fail(L"控件 " + sourceNode.Name
+						+ L" 的 InputBinding.CommandTarget 引用了复制范围外的 x:Name："
+						+ binding.CommandTarget, outError);
+			if (!sourceNode.Structure.CommandTarget.empty()
+				&& !includedNames.contains(sourceNode.Structure.CommandTarget))
+				return Fail(L"控件 " + sourceNode.Name
+					+ L" 的 CommandTarget 引用了复制范围外的 x:Name："
+					+ sourceNode.Structure.CommandTarget, outError);
 			auto node = sourceNode;
 			if (!MakeLocalStylesPortable(
 				source, sourceNode, ownership, included, node, outError))
@@ -2761,13 +2512,13 @@ bool DesignDocumentClipboard::Capture(
 				candidate.StyleSheet.Resources.erase(std::remove_if(
 					candidate.StyleSheet.Resources.begin(),
 					candidate.StyleSheet.Resources.end(), [&](const auto& current)
-					{ return Lower(current.Key) == Lower(resource.Key); }),
+					{ return IdentityKey(current.Key) == IdentityKey(resource.Key); }),
 					candidate.StyleSheet.Resources.end());
 				candidate.StyleSheet.Resources.push_back(resource);
 				root.LocalResources.Resources.erase(std::remove_if(
 					root.LocalResources.Resources.begin(),
 					root.LocalResources.Resources.end(), [&](const auto& current)
-					{ return Lower(current.Key) == Lower(resource.Key); }),
+					{ return IdentityKey(current.Key) == IdentityKey(resource.Key); }),
 					root.LocalResources.Resources.end());
 				root.LocalResources.Resources.push_back(std::move(resource));
 			}
@@ -2885,7 +2636,7 @@ bool DesignDocumentClipboard::Capture(
 					root->LocalObjectResources.DataTemplates.erase(std::remove_if(
 						root->LocalObjectResources.DataTemplates.begin(),
 						root->LocalObjectResources.DataTemplates.end(), [&](const auto& current)
-						{ return Lower(current.Key) == Lower(portable.Key); }),
+						{ return IdentityKey(current.Key) == IdentityKey(portable.Key); }),
 						root->LocalObjectResources.DataTemplates.end());
 					root->LocalObjectResources.DataTemplates.push_back(
 						std::move(portable));
@@ -2919,23 +2670,21 @@ bool DesignDocumentClipboard::Capture(
 				}
 			};
 			if (itemTemplateKey.empty()
-				&& (original.Type == UIClass::UI_ItemsControl
-					|| original.Type == UIClass::UI_ListBox
-					|| original.Type == UIClass::UI_ComboBox
-					|| original.Type == UIClass::UI_TreeView))
+				&& IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, original.Type))
 				promoteImplicitTemplate(NodeItemsSourceItemType(
 					source, original, source.DataContextSchema));
 			if (contentTemplateKey.empty()
 				&& (original.Type == UIClass::UI_ContentPresenter
-					|| original.Type == UIClass::UI_ContentControl
-					|| original.Type == UIClass::UI_Button
-					|| original.Type == UIClass::UI_GroupBox
-					|| original.Type == UIClass::UI_Expander))
+					|| IsUIClassAssignableFrom(
+						UIClass::UI_ContentControl, original.Type)))
 				promoteImplicitTemplate(NodeContentDataType(
 					original, source.DataContextSchema));
 			if (headerTemplateKey.empty()
-				&& (original.Type == UIClass::UI_GroupBox
-					|| original.Type == UIClass::UI_Expander))
+				&& (IsUIClassAssignableFrom(
+						UIClass::UI_HeaderedContentControl, original.Type)
+					|| IsUIClassAssignableFrom(
+						UIClass::UI_HeaderedItemsControl, original.Type)))
 				promoteImplicitTemplate(NodeHeaderDataType(
 					original, source.DataContextSchema));
 			const auto panelKey = NodeItemsPanelKey(original);
@@ -2953,7 +2702,7 @@ bool DesignDocumentClipboard::Capture(
 							root->LocalObjectResources.ItemsPanelTemplates.begin(),
 							root->LocalObjectResources.ItemsPanelTemplates.end(),
 							[&](const auto& current)
-							{ return Lower(current.Key) == Lower(portable.Key); }),
+							{ return IdentityKey(current.Key) == IdentityKey(portable.Key); }),
 						root->LocalObjectResources.ItemsPanelTemplates.end());
 					root->LocalObjectResources.ItemsPanelTemplates.push_back(
 						std::move(portable));
@@ -2973,7 +2722,7 @@ bool DesignDocumentClipboard::Capture(
 						root->LocalObjectResources.GroupStyles.begin(),
 						root->LocalObjectResources.GroupStyles.end(),
 						[&](const auto& current)
-						{ return Lower(current.Key) == Lower(portable.Key); }),
+						{ return IdentityKey(current.Key) == IdentityKey(portable.Key); }),
 						root->LocalObjectResources.GroupStyles.end());
 					root->LocalObjectResources.GroupStyles.push_back(
 						std::move(portable));
@@ -3022,7 +2771,7 @@ bool DesignDocumentClipboard::Capture(
 		{
 			std::vector<std::wstring> templateKeys;
 			for (const auto& setter : rule.Setters)
-				if (_wcsicmp(setter.PropertyName.c_str(), L"Template") == 0
+				if (setter.PropertyName == L"Template"
 					&& setter.UsesResource && !setter.UsesDynamicResource
 					&& !setter.ResourceKey.empty())
 					templateKeys.push_back(setter.ResourceKey);
@@ -3045,7 +2794,7 @@ bool DesignDocumentClipboard::Capture(
 							[&](const auto& definition)
 							{
 								return !definition.IsImplicit()
-									&& _wcsicmp(definition.Key.c_str(), key.c_str()) == 0;
+									&& definition.Key == key;
 							});
 					});
 				if (!allVisible) continue;
@@ -3156,26 +2905,21 @@ bool DesignDocumentClipboard::Paste(
 					return Fail(L"粘贴目标父控件已经不存在。", outError);
 				const auto& parent = target.Nodes[resolved->SourceIndex];
 				destinationParent = &parent;
-				if (parent.Type == UIClass::UI_TabControl)
-					return Fail(L"TabControl 必须通过具体 TabPage 接收控件。", outError);
-				if (destination.SplitRegion
-					&& !destination.SplitRegion->empty()
-					&& parent.Type != UIClass::UI_SplitContainer)
-					return Fail(L"只有 SplitContainer 才能指定粘贴区域。", outError);
+				const auto* fragmentRoot = fragmentGraph.FindById(
+					destination.FragmentRootId);
+				if (parent.Type == UIClass::UI_TabControl
+					&& (!fragmentRoot || fragment.Nodes[
+						fragmentRoot->SourceIndex].Type != UIClass::UI_TabItem))
+					return Fail(L"TabControl 只能接收 TabItem。", outError);
 			}
 			else if (!destination.ParentRef.empty())
 			{
-				if (!HasSyntheticParent(target, destination.ParentRef))
-					return Fail(L"粘贴目标 TabPage 已经不存在："
+				const auto* resolved = targetGraph.FindByName(
+					destination.ParentRef);
+				if (!resolved)
+					return Fail(L"粘贴目标控件已经不存在："
 						+ destination.ParentRef, outError);
-				if (destination.SplitRegion
-					&& !destination.SplitRegion->empty())
-					return Fail(L"TabPage 不能指定 SplitContainer 区域。", outError);
-			}
-			else if (destination.SplitRegion
-				&& !destination.SplitRegion->empty())
-			{
-				return Fail(L"窗体根不能指定 SplitContainer 区域。", outError);
+				destinationParent = &target.Nodes[resolved->SourceIndex];
 			}
 
 			std::wstring requestedContent;
@@ -3207,7 +2951,7 @@ bool DesignDocumentClipboard::Paste(
 					definition->ContentProperties.begin(),
 					definition->ContentProperties.end(), [&](const auto& property)
 					{
-						return Lower(property.Name) == Lower(requestedContent);
+						return IdentityKey(property.Name) == IdentityKey(requestedContent);
 					});
 				if (contract == definition->ContentProperties.end())
 					return Fail(L"目标组件不存在视觉内容属性："
@@ -3240,7 +2984,7 @@ bool DesignDocumentClipboard::Paste(
 				definition->ContentProperties.begin(),
 				definition->ContentProperties.end(), [&](const auto& property)
 				{
-					return Lower(property.Name) == Lower(slot);
+					return IdentityKey(property.Name) == IdentityKey(slot);
 				});
 			if (contract == definition->ContentProperties.end()
 				|| contract->Cardinality !=
@@ -3250,15 +2994,15 @@ bool DesignDocumentClipboard::Paste(
 				{
 					return (node.ParentId == parent.Id
 						|| node.ParentRef == parent.Name)
-						&& Lower(node.ComponentContentProperty) == Lower(slot);
+						&& IdentityKey(node.ComponentContentProperty) == IdentityKey(slot);
 				});
 			count += std::count_if(
 				effectiveTargets.begin(), effectiveTargets.end(),
 				[&](const auto& candidate)
 				{
 					return candidate.ParentId == parent.Id
-						&& Lower(contentPropertyByRoot.at(
-							candidate.FragmentRootId)) == Lower(slot);
+						&& IdentityKey(contentPropertyByRoot.at(
+							candidate.FragmentRootId)) == IdentityKey(slot);
 				});
 			if (count > 1)
 				return Fail(L"组件单值视觉内容属性已经被占用："
@@ -3279,7 +3023,7 @@ bool DesignDocumentClipboard::Paste(
 			target, fragment, candidate, outError)) return false;
 		std::unordered_set<std::wstring> usedNames;
 		usedNames.reserve(target.Nodes.size() + fragment.Nodes.size());
-		for (const auto& node : target.Nodes) usedNames.insert(Lower(node.Name));
+		for (const auto& node : target.Nodes) usedNames.insert(IdentityKey(node.Name));
 
 		std::unordered_map<int, int> idMap;
 		std::unordered_map<std::wstring, std::wstring> nameMap;
@@ -3303,7 +3047,7 @@ bool DesignDocumentClipboard::Paste(
 			styleResourceMap, outError)) return false;
 		for (const auto& definition : fragment.DataTemplates)
 		{
-			const auto mapped = templateKeyMap.find(Lower(definition.Key));
+			const auto mapped = templateKeyMap.find(IdentityKey(definition.Key));
 			if (definition.IsImplicit())
 			{
 				if (target.FindImplicitDataTemplate(definition.DataType)) continue;
@@ -3316,8 +3060,8 @@ bool DesignDocumentClipboard::Paste(
 				{
 					return definition.IsImplicit()
 						? item.IsImplicit()
-							&& Lower(item.DataType) == Lower(definition.DataType)
-						: Lower(item.Key) == Lower(mapped->second);
+							&& IdentityKey(item.DataType) == IdentityKey(definition.DataType)
+						: IdentityKey(item.Key) == IdentityKey(mapped->second);
 				});
 			if (imported != candidate.DataTemplates.end())
 			{
@@ -3339,7 +3083,7 @@ bool DesignDocumentClipboard::Paste(
 				if (!property.DefaultResourceKey.empty())
 				{
 					const auto mapped = styleResourceMap.find(
-						Lower(property.DefaultResourceKey));
+						IdentityKey(property.DefaultResourceKey));
 					if (mapped != styleResourceMap.end())
 						property.DefaultResourceKey = mapped->second;
 				}
@@ -3352,21 +3096,21 @@ bool DesignDocumentClipboard::Paste(
 				if (animation.HasTo && animation.ToUsesResource)
 				{
 					const auto mapped = styleResourceMap.find(
-						Lower(animation.ToResourceKey));
+						IdentityKey(animation.ToResourceKey));
 					if (mapped != styleResourceMap.end())
 						animation.ToResourceKey = mapped->second;
 				}
 				if (animation.HasFrom && animation.FromUsesResource)
 				{
 					const auto mapped = styleResourceMap.find(
-						Lower(animation.FromResourceKey));
+						IdentityKey(animation.FromResourceKey));
 					if (mapped != styleResourceMap.end())
 						animation.FromResourceKey = mapped->second;
 				}
 				if (animation.HasBy && animation.ByUsesResource)
 				{
 					const auto mapped = styleResourceMap.find(
-						Lower(animation.ByResourceKey));
+						IdentityKey(animation.ByResourceKey));
 					if (mapped != styleResourceMap.end())
 						animation.ByResourceKey = mapped->second;
 				}
@@ -3374,7 +3118,7 @@ bool DesignDocumentClipboard::Paste(
 					if (keyFrame.UsesResource)
 					{
 						const auto mapped = styleResourceMap.find(
-							Lower(keyFrame.ResourceKey));
+							IdentityKey(keyFrame.ResourceKey));
 						if (mapped != styleResourceMap.end())
 							keyFrame.ResourceKey = mapped->second;
 					}
@@ -3390,7 +3134,7 @@ bool DesignDocumentClipboard::Paste(
 						if (setter.UsesResource)
 						{
 							const auto mapped = styleResourceMap.find(
-								Lower(setter.ResourceKey));
+								IdentityKey(setter.ResourceKey));
 							if (mapped != styleResourceMap.end())
 								setter.ResourceKey = mapped->second;
 						}
@@ -3413,25 +3157,22 @@ bool DesignDocumentClipboard::Paste(
 		std::unordered_set<std::wstring> ambiguousHandlerNames;
 		for (const auto& node : fragment.Nodes)
 		{
-			if (!node.Events.is_object()) continue;
 			const auto& newName = nameMap.at(node.Name);
 			for (const auto& [eventName, handlerValue]
-				: node.Events.ObjectItems())
+				: node.Events)
 			{
-				if (!handlerValue.is_string()) continue;
-				auto event = Convert::Utf8ToUnicode(eventName);
+				auto event = eventName;
 				DesignerComponentType attachedOwner;
 				std::wstring attachedEvent;
 				if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
 					event, attachedOwner, attachedEvent))
 					event = std::move(attachedEvent);
-				const auto storedHandler = Convert::Utf8ToUnicode(
-					handlerValue.get<std::string>());
+				const auto& storedHandler = handlerValue;
 				const auto conventionalName =
 					DesignerEventCatalog::MakeDefaultHandlerName(
 						node.Name, event);
-				if (DesignerEventCatalog::ResolveHandlerName(
-					storedHandler, node.Name, event) != conventionalName
+				if (DesignerEventCatalog::NormalizeHandlerName(storedHandler)
+					!= conventionalName
 					|| ambiguousHandlerNames.contains(conventionalName)) continue;
 				const auto remappedName =
 					DesignerEventCatalog::MakeDefaultHandlerName(
@@ -3488,8 +3229,7 @@ bool DesignDocumentClipboard::Paste(
 			auto node = original;
 			node.Id = idMap.at(original.Id);
 			node.Name = nameMap.at(original.Name);
-			RewriteNodeElementBindings(node, nameMap);
-			RemapTabPageKeys(node, original.Name, node.Name);
+			RewriteNodeElementReferences(node, nameMap);
 			RewriteNodeItemTemplate(node, templateKeyMap);
 			RewriteNodeDataList(node, dataListKeyMap);
 			RewriteNodeItemsPanel(node, panelKeyMap);
@@ -3502,28 +3242,21 @@ bool DesignDocumentClipboard::Paste(
 			const auto isolatedContainerStyle =
 				isolatedContainerStyles.find(original.Id);
 			if (isolatedContainerStyle != isolatedContainerStyles.end())
-			{
-				if (!node.Extra.is_object()) node.Extra = DesignValue::object();
-				node.Extra["itemContainerStyle"] = Convert::UnicodeToUtf8(
-					isolatedContainerStyle->second);
-			}
-			if (node.Events.is_object())
-				for (auto& [eventName, handlerValue]
-					: node.Events.ObjectItems())
+				node.Structure.ItemContainerStyle =
+					isolatedContainerStyle->second;
+			for (auto& [eventName, handlerValue] : node.Events)
 				{
 					(void)eventName;
-					if (!handlerValue.is_string()) continue;
 					const auto found = handlerNameMap.find(
-						Convert::Utf8ToUnicode(
-							handlerValue.get<std::string>()));
+						handlerValue);
 					if (found != handlerNameMap.end())
-						handlerValue = Convert::UnicodeToUtf8(found->second);
+						handlerValue = found->second;
 				}
 			if (rootIndices.contains(index))
 			{
 				const auto& destination = *targetByRoot.at(original.Id);
-				if (node.Extra.is_object())
-					node.Extra.ObjectItems().erase("headeredRegion");
+				if (node.Structure.ChildRole == DesignNodeChildRole::Header)
+					node.Structure.ChildRole = DesignNodeChildRole::Default;
 				node.ComponentContentProperty =
 					contentPropertyByRoot.at(original.Id);
 				node.PresentedComponentContent.clear();
@@ -3536,32 +3269,6 @@ bool DesignDocumentClipboard::Paste(
 						resolved->SourceIndex].Name;
 				}
 				else node.ParentRef = destination.ParentRef;
-				if (destination.SplitRegion)
-				{
-					if (node.Extra.is_object())
-						node.Extra.ObjectItems().erase("splitRegion");
-					if (!destination.SplitRegion->empty())
-					{
-						if (*destination.SplitRegion != "panel1"
-							&& *destination.SplitRegion != "panel2")
-							return Fail(L"SplitContainer 粘贴区域无效。", outError);
-						node.Extra["splitRegion"] =
-							*destination.SplitRegion;
-					}
-				}
-				if (node.ParentId > 0)
-				{
-					const auto* resolved = targetGraph.FindById(node.ParentId);
-					const auto& parent = target.Nodes[resolved->SourceIndex];
-					if (parent.Type == UIClass::UI_SplitContainer)
-					{
-						const auto region = node.Extra.is_object()
-							? node.Extra.value("splitRegion", std::string{})
-							: std::string{};
-						if (region != "panel1" && region != "panel2")
-							return Fail(L"粘贴到 SplitContainer 时必须指定 First 或 Second 区域。", outError);
-					}
-				}
 				const auto parentOrderKey = ParentOrderKey(node);
 				node.Order = nextOrderByParent[parentOrderKey]++;
 				if ((node.Type == UIClass::UI_Menu

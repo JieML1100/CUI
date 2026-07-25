@@ -1,81 +1,73 @@
 #include "XamlEditorDialog.h"
+#include "ProgrammaticControlFactory.h"
 #include "DesignerCanvas.h"
+#include "../CUI/include/WindowInfrastructure.h"
 
 #include <algorithm>
 
 XamlEditorDialog::XamlEditorDialog(
 	DesignerCanvas* canvas,
 	std::wstring initialXaml)
-	: Form(L"编辑 CUI XAML", POINT{ 180, 70 }, SIZE{ 1080, 800 }),
+	: Window(),
 	  _canvas(canvas),
 	  _lastValidXaml(initialXaml)
 {
-	VisibleHead = true;
-	MinBox = false;
-	MaxBox = true;
-	AllowResize = true;
-	BackColor = Colors::WhiteSmoke;
+	Title = L"编辑 CUI XAML";
+	Left = 180.0f;
+	Top = 70.0f;
+	Width = 1080.0f;
+	Height = 800.0f;
+	ResizeMode = ::ResizeMode::CanResize;
+	Background = Colors::WhiteSmoke;
+	auto contentOwner = std::make_unique<Panel>();
+	contentOwner->BorderThickness = 0.0f;
+	contentOwner->Background = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	auto* contentRoot = static_cast<Panel*>(SetVisualContent(std::move(contentOwner)));
+	auto addContent = [contentRoot](auto* child) { return contentRoot->AdoptVisualChild(child); };
 
-	auto* tip = AddControl(new Label(
+	auto* tip = addContent(cui::designer::NewControl<Label>(
 		L"停止输入 300ms 后验证；有效 XAML 会立即同步到设计画布。",
 		20, 14));
-	tip->Size = { 1035, 24 };
-	tip->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right
-		| AnchorStyles::Top;
-	tip->Margin = { 0, 0, 25, 0 };
+	tip->Width = 1035.0f;
+	tip->Height = 24.0f;
 
-	_editor = AddControl(new RichTextBox(
+	_editor = addContent(cui::designer::NewControl<RichTextBox>(
 		std::move(initialXaml), 20, 46, 1035, 648));
-	_editor->AllowMultiLine = true;
-	_editor->AllowTabInput = true;
-	_editor->EnableVirtualization = true;
-	_editor->VirtualizeThreshold = 12000;
-	_editor->BackColor = Colors::White;
-	_editor->FocusedColor = Colors::White;
-	_editor->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right
-		| AnchorStyles::Top | AnchorStyles::Bottom;
-	_editor->Margin = { 0, 0, 25, 106 };
+	_editor->Focusable = true;
+	_editor->AcceptsTab = true;
+	_editor->Background = Colors::White;
+	_editor->BorderBrush = Colors::White;
 
-	_status = AddControl(new Label(L"XAML 已与当前画布同步。", 20, 708));
-	_status->Size = { 690, 42 };
-	_status->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right
-		| AnchorStyles::Bottom;
-	_status->Margin = { 0, 0, 370, 54 };
+	_status = addContent(cui::designer::NewControl<Label>(L"XAML 已与当前画布同步。", 20, 708));
+	_status->Width = 690.0f;
+	_status->Height = 42.0f;
 
-	_locateError = AddControl(new Button(L"定位错误", 720, 710, 80, 36));
-	_locateError->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
-	_locateError->Margin = { 0, 0, 260, 54 };
-	_locateError->Enable = false;
-	_locateError->AccessibleDescription = L"当前没有可定位的 XAML 错误。";
+	_locateError = addContent(cui::designer::NewControl<Button>(L"定位错误", 720, 710, 80, 36));
+	_locateError->IsEnabled = false;
+	_locateError->AutomationFullDescription = L"当前没有可定位的 XAML 错误。";
 
-	_restorePreview = AddControl(new Button(L"恢复有效版本", 808, 710, 104, 36));
-	_restorePreview->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
-	_restorePreview->Margin = { 0, 0, 148, 54 };
-	_restorePreview->Enable = false;
-	_restorePreview->AccessibleDescription = L"当前源码已经是最后一次有效版本。";
+	_restorePreview = addContent(cui::designer::NewControl<Button>(L"恢复有效版本", 808, 710, 104, 36));
+	_restorePreview->IsEnabled = false;
+	_restorePreview->AutomationFullDescription = L"当前源码已经是最后一次有效版本。";
 
-	auto* ok = AddControl(new Button(L"确定", 920, 710, 56, 36));
-	ok->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
-	ok->Margin = { 0, 0, 84, 54 };
-	auto* cancel = AddControl(new Button(L"取消", 984, 710, 56, 36));
-	cancel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
-	cancel->Margin = { 0, 0, 20, 54 };
+	auto* ok = addContent(cui::designer::NewControl<Button>(L"确定", 920, 710, 56, 36));
+	auto* cancel = addContent(cui::designer::NewControl<Button>(L"取消", 984, 710, 56, 36));
 
 	_editor->OnTextChanged +=
-		[this](Control*, std::wstring, std::wstring)
+		[this](Control*, TextChangedEventArgs&)
 		{
 			if (_loading) return;
 			SchedulePreview();
 			RefreshRestorePreviewState();
 		};
-	_locateError->OnMouseClick +=
-		[this](Control*, MouseEventArgs) { LocateDiagnostic(); };
-	_restorePreview->OnMouseClick +=
-		[this](Control*, MouseEventArgs) { RestoreLastValidPreview(); };
-	ok->OnMouseClick +=
-		[this](Control*, MouseEventArgs) { Accept(); };
-	cancel->OnMouseClick +=
-		[this](Control*, MouseEventArgs) { Cancel(); };
+	_locateError->Click +=
+		[this](Control*, RoutedEventArgs&) { LocateDiagnostic(); };
+	_restorePreview->Click +=
+		[this](Control*, RoutedEventArgs&) { RestoreLastValidPreview(); };
+	ok->Click +=
+		[this](Control*, RoutedEventArgs&) { Accept(); };
+	cancel->Click +=
+		[this](Control*, RoutedEventArgs&) { Cancel(); };
 
 	RefreshRestorePreviewState();
 }
@@ -112,8 +104,8 @@ bool XamlEditorDialog::ValidateAndPreview()
 		if (diagnostic.HasSourceOffset())
 		{
 			_diagnosticOffset = diagnostic.Utf16Offset;
-			_locateError->Enable = true;
-			_locateError->AccessibleDescription = L"定位到第 "
+			_locateError->IsEnabled = true;
+			_locateError->AutomationFullDescription = L"定位到第 "
 				+ std::to_wstring(diagnostic.Line) + L" 行，第 "
 				+ std::to_wstring(diagnostic.Column) + L" 列的 XAML 错误。";
 			_locateError->InvalidateVisual();
@@ -141,8 +133,8 @@ void XamlEditorDialog::ClearDiagnostic()
 {
 	_diagnosticOffset = DesignerModel::XamlDocumentDiagnostic::UnknownOffset;
 	if (!_locateError) return;
-	_locateError->Enable = false;
-	_locateError->AccessibleDescription = L"当前没有可定位的 XAML 错误。";
+	_locateError->IsEnabled = false;
+	_locateError->AutomationFullDescription = L"当前没有可定位的 XAML 错误。";
 	_locateError->InvalidateVisual();
 }
 
@@ -162,8 +154,8 @@ void XamlEditorDialog::RefreshRestorePreviewState()
 {
 	if (!_restorePreview) return;
 	const bool canRestore = _editor && _editor->Text != _lastValidXaml;
-	_restorePreview->Enable = canRestore;
-	_restorePreview->AccessibleDescription = canRestore
+	_restorePreview->IsEnabled = canRestore;
+	_restorePreview->AutomationFullDescription = canRestore
 		? L"放弃当前草稿并恢复最后一次通过验证的 XAML；可用 Ctrl+Z 撤销恢复。"
 		: L"当前源码已经是最后一次有效版本。";
 	_restorePreview->InvalidateVisual();
@@ -173,7 +165,7 @@ void XamlEditorDialog::RestoreLastValidPreview()
 {
 	if (!_editor || _editor->Text == _lastValidXaml) return;
 	const int caret = static_cast<int>((std::min)(
-		static_cast<size_t>((std::max)(0, _editor->SelectionEnd)),
+		static_cast<size_t>((std::max)(0, _editor->CaretIndex)),
 		_lastValidXaml.size()));
 	_loading = true;
 	_editor->ReplaceAllTextAndSelect(_lastValidXaml, caret, 0);
@@ -202,49 +194,45 @@ void XamlEditorDialog::ShowStatus(std::wstring message, bool isError)
 {
 	if (!_status) return;
 	_status->Text = std::move(message);
-	_status->ForeColor = isError ? Colors::IndianRed : Colors::DarkGreen;
-	_status->AccessibleDescription = _status->Text;
+	_status->Foreground = isError ? Colors::IndianRed : Colors::DarkGreen;
+	_status->AutomationFullDescription = _status->Text;
 	_status->InvalidateVisual();
 }
 
-bool XamlEditorDialog::ProcessMessage(
-	UINT message,
-	WPARAM wParam,
-	LPARAM lParam,
-	int localX,
-	int localY)
+bool XamlEditorDialog::OnPreviewInputReport(const InputReport& input)
 {
-	if (message == WM_CHAR && _suppressedCharacter != L'\0'
-		&& static_cast<wchar_t>(wParam) == _suppressedCharacter)
+	if (input.Kind != InputReportKind::KeyDown) return false;
+	const Key key = input.Key;
+	if (key == Key::Return && input.HasModifier(ModifierKeys::Control))
 	{
-		_suppressedCharacter = L'\0';
-		return true;
-	}
-	if (message == WM_CHAR) _suppressedCharacter = L'\0';
-	if (message == WM_TIMER && wParam == PreviewTimerId)
-	{
-		(void)ValidateAndPreview();
-		return true;
-	}
-	if (message == WM_KEYDOWN && wParam == VK_RETURN
-		&& (::GetKeyState(VK_CONTROL) & 0x8000) != 0)
-	{
-		_suppressedCharacter = L'\r';
+		cui::framework::WindowAccess::TextComposition(
+			*this).SuppressNextCharacter(L'\r');
 		Accept();
 		return true;
 	}
-	if (message == WM_KEYDOWN && wParam == VK_F8
+	if (key == Key::F8
 		&& _diagnosticOffset
 			!= DesignerModel::XamlDocumentDiagnostic::UnknownOffset)
 	{
 		LocateDiagnostic();
 		return true;
 	}
-	if (message == WM_KEYDOWN && wParam == VK_ESCAPE)
+	if (key == Key::Escape)
 	{
 		Cancel();
 		return true;
 	}
-	return Form::ProcessMessage(
-		message, wParam, lParam, localX, localY);
+	return false;
+}
+
+std::optional<LRESULT> XamlEditorDialog::OnPlatformMessage(
+	UINT message, WPARAM wParam, LPARAM lParam)
+{
+	if (message == WM_TIMER && wParam == PreviewTimerId)
+	{
+		(void)ValidateAndPreview();
+		return LRESULT{ 0 };
+	}
+	(void)lParam;
+	return std::nullopt;
 }

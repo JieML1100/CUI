@@ -1,68 +1,63 @@
-﻿#pragma once
-#include "ContentControl.h"
+#pragma once
+#include "ButtonBase.h"
+#include <cstdint>
 
 /**
  * @file Button.h
  * @brief Button：基础按钮控件。
  *
  * 主要行为：
- * - 根据鼠标悬停/按下/Checked 状态绘制不同背景
- * - 通过 Control 事件（OnMouseDown/OnMouseUp/OnMouseClick/OnChecked 等）对外通知
+ * - 根据鼠标悬停和按下状态绘制不同背景
+ * - 通过 ButtonBase/Control 的点击与输入事件对外通知
  */
-class Button : public ContentControl
+class Button : public ButtonBase
 {
 protected:
-	bool DefaultTrackUnderMouse() const override { return true; }
-	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
-	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
-	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override { (void)message; (void)wasSelected; return true; }
+	void AfterDefaultClick(MouseButton button, MouseEventArgs& e) override;
+	void ConfigureContentVisual(Control& child) override;
 private:
-	D2D1_COLOR_F _underMouseColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F _checkedColor = cui::theme::palette::AccentSelected;
-	D2D1_COLOR_F _highlightColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.45f };
-	D2D1_COLOR_F _shadowColor = cui::theme::palette::Shadow;
-	D2D1_COLOR_F _disabledOverlayColor = cui::theme::palette::DisabledOverlay;
-	bool _raised = false;
-	float _borderThickness = 1.5f;
-	float _round = 7.0f;
+	std::wstring _command;
+	std::wstring _commandParameter;
+	ControlWeakReference _commandTarget;
+	bool _isDefault = false;
+	bool _isCancel = false;
+	EventConnection _commandCanExecuteConnection;
+	std::uint64_t _commandSourceRefreshVersion = 0;
+	void ApplyCommandTarget(const ControlWeakReference& value);
+	void RefreshCommandSource();
+	bool ExecuteCommandSource();
 public:
 	virtual UIClass Type();
-	void EnsureBindingPropertiesRegistered() override;
-	/** @brief 鼠标悬停时背景色。 */
-	PROPERTY(D2D1_COLOR_F, UnderMouseColor);
-	GET(D2D1_COLOR_F, UnderMouseColor);
-	SET(D2D1_COLOR_F, UnderMouseColor);
-	/** @brief Checked=true 时背景色。 */
-	PROPERTY(D2D1_COLOR_F, CheckedColor);
-	GET(D2D1_COLOR_F, CheckedColor);
-	SET(D2D1_COLOR_F, CheckedColor);
-	/** @brief 顶部高光色。 */
-	PROPERTY(D2D1_COLOR_F, HighlightColor);
-	GET(D2D1_COLOR_F, HighlightColor);
-	SET(D2D1_COLOR_F, HighlightColor);
-	/** @brief 阴影色。 */
-	PROPERTY(D2D1_COLOR_F, ShadowColor);
-	GET(D2D1_COLOR_F, ShadowColor);
-	SET(D2D1_COLOR_F, ShadowColor);
-	/** @brief 禁用遮罩色。 */
-	PROPERTY(D2D1_COLOR_F, DisabledOverlayColor);
-	GET(D2D1_COLOR_F, DisabledOverlayColor);
-	SET(D2D1_COLOR_F, DisabledOverlayColor);
-	/** @brief 是否启用轻微立体效果（高光、阴影、按下位移）。false 为扁平按钮。 */
-	PROPERTY(bool, Raised);
-	GET(bool, Raised);
-	SET(bool, Raised);
-	PROPERTY(float, BorderThickness);
-	GET(float, BorderThickness);
-	SET(float, BorderThickness);
-	/** @brief 圆角半径（像素）。设置为 0 可得到直角按钮。 */
-	PROPERTY(float, Round);
-	GET(float, Round);
-	SET(float, Round);
-	/** @brief 创建按钮。 */
-	Button(std::wstring text, int x, int y, int width = 120, int height = 24);
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+	/** XAML-authored routed-command identity. */
+	PROPERTY(std::wstring, Command);
+	GET(std::wstring, Command);
+	SET(std::wstring, Command);
+	/** XAML scalar projected as the command parameter. */
+	PROPERTY(std::wstring, CommandParameter);
+	GET(std::wstring, CommandParameter);
+	SET(std::wstring, CommandParameter);
+	/** Optional authored routed-command target. An expired target stays authored. */
+	PROPERTY(class Control*, CommandTarget);
+	GET(class Control*, CommandTarget);
+	SET(class Control*, CommandTarget);
+	bool HasAuthoredCommandTarget() const noexcept
+	{
+		return _commandTarget.HasValue();
+	}
+	/** Removes the authored target so focus-based resolution is used again. */
+	void ClearCommandTarget();
+	/** XAML-authored default action for an otherwise unhandled Enter key. */
+	PROPERTY(bool, IsDefault);
+	GET(bool, IsDefault);
+	SET(bool, IsDefault);
+	/** XAML-authored cancel action for an otherwise unhandled Escape key. */
+	PROPERTY(bool, IsCancel);
+	GET(bool, IsCancel);
+	SET(bool, IsCancel);
+	Button();
 	bool Invoke() override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam,
-		int localX, int localY) override;
+protected:
+	void OnRender() override;
 };

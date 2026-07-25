@@ -1,189 +1,254 @@
 #pragma once
-#include "Control.h"
-#include "ObservableCollection.h"
+#include "HeaderedItemsControl.h"
+#include "Separator.h"
+#include <cstdint>
 #include <vector>
-
-typedef Event<void(class Control*, int)> MenuCommandEvent;
 
 /**
  * @file Menu.h
  * @brief Menu/MenuItem：菜单栏与下拉菜单控件。
  *
  * 设计：
- * - Menu 是复合控件：顶层子控件为 MenuItem（菜单栏项）。
- * - 每个 MenuItem 可通过 SubItems 形成多级子菜单。
- * - Menu 会根据鼠标 hover/open 路径绘制下拉面板，并在点击叶子项时触发 OnMenuCommand。
+ * - Menu 的 Items 是顶层 MenuItem（菜单栏项）。
+ * - 每个 MenuItem 也是 HeaderedItemsControl，其 Items 形成多级子菜单。
+ * - Menu 会根据鼠标 hover/open 路径绘制下拉面板，叶子项统一执行 RoutedCommand。
  */
 
 /**
  * @brief 菜单项。
  *
- * 所有权：
- * - MenuItem::SubItems 由该 MenuItem 拥有；~MenuItem 会 delete 所有 SubItems。
- * - 通过 AddSubItem/AddSeparator 创建的项无需外部释放。
+ * 所有权完全遵循 ItemsControl：authored Items 与 ItemsSource 互斥，
+ * authored MenuItem 的逻辑父级是当前 MenuItem，视觉父级是 ItemsHost。
+ * 外观、尺寸和 popup 动画属于主题/模板实现，不是 MenuItem 的公共状态。
  */
-class MenuItem : public Control
+class MenuItem : public HeaderedItemsControl
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<InvokeAutomationPeer>(
+			*this, AutomationControlType::MenuItem, L"MenuItem");
+	}
+
 private:
 	MenuItem* _parentItem = nullptr;
-	std::vector<MenuItem*> _observedSubItems;
+	std::vector<Control*> _items;
 	std::function<void()> _structureChanged;
-	bool CanAdopt(const MenuItem* item) const noexcept;
-	void OnSubItemsChanged(const CollectionChangedEventArgs& change);
+	std::function<void(MenuItem&)> _interactionStateChanged;
+	std::wstring _command;
+	std::wstring _commandParameter;
+	std::wstring _inputGestureText;
+	bool _isCheckable = false;
+	bool _isChecked = false;
+	bool _staysOpenOnClick = false;
+	bool _isHighlighted = false;
+	bool _isSubmenuOpen = false;
+	bool _projectingInteractionState = false;
+	ControlWeakReference _commandTarget;
+	ControlWeakReference _defaultCommandTarget;
+	EventConnection _commandCanExecuteConnection;
+	std::uint64_t _commandSourceRefreshVersion = 0;
+	void ApplyCommandTarget(const ControlWeakReference& value);
+	ControlWeakReference EffectiveCommandTarget() const noexcept
+	{
+		return _commandTarget.HasValue()
+			? _commandTarget : _defaultCommandTarget;
+	}
 	void SetStructureChangedHandler(std::function<void()> handler);
+	void SetInteractionStateChangedHandler(
+		std::function<void(MenuItem&)> handler);
+	void SynchronizeCommandContext(
+		Window* window, ControlWeakReference defaultCommandTarget);
+	void RefreshCommandSource();
+	void OnPresentationWindowChanged(
+		Window* previousWindow, Window* currentWindow) override;
 	friend class Menu;
 	friend class ContextMenu;
+	bool ValidateAuthoredItemControl(
+		const Control& item, std::string& error) const override;
+	void OnAuthoredItemsChanged() noexcept override;
+	void OnBeforeGeneratedItemsRebuilt() override;
+	void OnGeneratedItemsRebuilt() override;
+	std::unique_ptr<Control> WrapGeneratedItem(
+		std::unique_ptr<Control> visual,
+		const BindingSourceReference& item,
+		size_t index) override;
+	void SynchronizeItems();
+	void SuppressItemsPresentation();
+	void OnControlTemplatePresentationChanged() override;
+	void ConfigureHeaderVisual(Control& child) override;
+	void ReleaseHeaderVisual(Control& child) override;
+	void SetIsHighlightedCore(bool value);
+	void SetIsSubmenuOpenCore(bool value);
 
 public:
-	using SubItemCollection = ObservableCollection<MenuItem*>;
+	using UIElement::Click;
+	using UIElement::Checked;
+	using UIElement::Unchecked;
+	using UIElement::SubmenuOpened;
+	using UIElement::SubmenuClosed;
+
 	virtual UIClass Type() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
 	bool DefaultSelectOnLeftButtonDown() const override { return false; }
-	/** @brief 业务命令 Id（由调用方定义，0 通常表示无命令）。 */
-	int Id = 0;
-	/** @brief 是否为分隔符（Separator=true 时通常不可交互）。 */
-	bool Separator = false;
-	/** @brief 快捷键显示文本（仅展示，不自动绑定热键）。 */
-	std::wstring Shortcut;
-	/**
-	 * @brief 可观察子菜单集合（集合内对象由本 MenuItem 拥有）。
-	 *
-	 * 直接 erase 会分离对象并把释放责任交给调用方；需要明确转移所有权时
-	 * 优先使用 DetachSubItemAt/RemoveSubItem/ClearSubItems。
-	 */
-	SubItemCollection SubItems;
+	void SetHeader(BindingValue value) override;
+	/** @brief XAML 定义的路由命令 identity。 */
+	PROPERTY(std::wstring, Command);
+	GET(std::wstring, Command);
+	SET(std::wstring, Command);
+	/** @brief XAML 标量命令参数。 */
+	PROPERTY(std::wstring, CommandParameter);
+	GET(std::wstring, CommandParameter);
+	SET(std::wstring, CommandParameter);
+	/** Whether invocation toggles the WPF check state. */
+	PROPERTY(bool, IsCheckable);
+	GET(bool, IsCheckable);
+	SET(bool, IsCheckable);
+	/** WPF MenuItem check state; independent from transient popup-open state. */
+	PROPERTY(bool, IsChecked);
+	GET(bool, IsChecked);
+	SET(bool, IsChecked);
+	/** Keeps the owning Menu/ContextMenu open after a leaf invocation. */
+	PROPERTY(bool, StaysOpenOnClick);
+	GET(bool, StaysOpenOnClick);
+	SET(bool, StaysOpenOnClick);
+	/** Framework-projected pointer/keyboard highlight state. */
+	READONLY_PROPERTY(bool, IsHighlighted);
+	GET(bool, IsHighlighted);
+	/** WPF submenu state; interaction uses SetCurrentValue semantics. */
+	PROPERTY(bool, IsSubmenuOpen);
+	GET(bool, IsSubmenuOpen);
+	SET(bool, IsSubmenuOpen);
+	bool IsCheckedForAccessibility() const noexcept override
+	{
+		return _isChecked;
+	}
+	/** Optional authored target overriding the owning popup/menu target. */
+	PROPERTY(class Control*, CommandTarget);
+	GET(class Control*, CommandTarget);
+	SET(class Control*, CommandTarget);
+	bool HasAuthoredCommandTarget() const noexcept
+	{
+		return _commandTarget.HasValue();
+	}
+	/** Removes the authored override and resumes host/default target resolution. */
+	void ClearCommandTarget();
+	/** @brief 菜单中的手势提示；实际触发由同名 KeyBinding 负责。 */
+	PROPERTY(std::wstring, InputGestureText);
+	GET(std::wstring, InputGestureText);
+	std::wstring GetInputGestureText() const { return _inputGestureText; }
+	SET(std::wstring, InputGestureText);
+	MenuItem();
+	~MenuItem() override;
 
-	MenuItem(std::wstring text = L"", int id = 0);
-	~MenuItem();
-
-	/**
-	 * @brief 添加一个子菜单项。
-	 * @return 新创建的子项指针（所有权属于本 MenuItem）。
-	 */
-	MenuItem* AddSubItem(std::wstring text, int id = 0);
+	/** Adds an explicitly constructed MenuItem to this item's Items. */
 	MenuItem* AddSubItem(std::unique_ptr<MenuItem> item);
 	MenuItem* InsertSubItem(
 		int index, std::unique_ptr<MenuItem> item);
 	/** @brief 添加一个分隔符子项。 */
-	MenuItem* AddSeparator();
-	std::unique_ptr<MenuItem> DetachSubItemAt(int index);
+	Separator* AddSeparator();
+	std::unique_ptr<Control> DetachSubItemAt(int index);
 	std::unique_ptr<MenuItem> DetachSubItem(MenuItem* item);
 	bool RemoveSubItemAt(int index);
 	bool RemoveSubItem(MenuItem* item);
 	void ClearSubItems();
 	MenuItem* GetSubItem(int index) const noexcept;
 	int IndexOfSubItem(const MenuItem* item) const noexcept;
+	std::span<Control* const> GetMenuItemsView() const noexcept
+	{
+		return { _items.data(), _items.size() };
+	}
 	MenuItem* ParentItem() const noexcept { return _parentItem; }
-	/** @brief 创建一个分隔符项。 */
-	static MenuItem* CreateSeparator();
-
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
-
-	D2D1_COLOR_F HoverBackColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.18f };
-	D2D1_COLOR_F ActiveBackColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.26f };
-	float CornerRadius = 6.0f;
+	/** Establishes the logical route and command domain for this owned subtree. */
+	void AttachCommandHost(
+		Control& routedOwner,
+		ControlWeakReference defaultCommandTarget = {});
+	/** Detaches this owned subtree from one Menu/ContextMenu command domain. */
+	void DetachCommandHost(Control& routedOwner);
+	bool Invoke() override;
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
 };
 
 /**
  * @brief 菜单控件。
  *
- * 通常作为 Form::MainMenu 使用：
- * - Menu::Update 会尝试将 ParentForm->MainMenu 指向自身
- * - 下拉面板的绘制高度可能覆盖整个 Client 区（用于捕获/处理鼠标）
+ * The menu bar is an ordinary element. While expanded it uses Window's popup
+ * overlay projection so dropdown panels can render and hit-test above content.
  */
-class Menu : public Control
+class Menu : public ItemsControl
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Menu, L"Menu");
+	}
+
 private:
 	bool _expand = false;
 	int _expandIndex = -1;
 	int _hoverTopIndex = -1;
 	std::vector<int> _hoverPath;
 	std::vector<int> _openPath;
-	float _popupProgress = 0.0f;
-	float _popupStartProgress = 0.0f;
-	float _popupTargetProgress = 0.0f;
-	ULONGLONG _popupAnimStartTick = 0;
-	bool _popupAnimating = false;
-
-	float ItemPaddingX = 10.0f;
-	float DropPaddingY = 6.0f;
+	std::vector<Control*> _items;
 
 	float DropLeftLocal();
-	float DropTopLocal() { return (float)BarHeight; }
+	float DropTopLocal() const noexcept { return MenuBarExtent(); }
 	float DropWidthLocal();
 	float DropHeightLocal();
 	int DropCount();
 	bool HasSubMenu(int dropIndex);
-	float CurrentPopupProgress();
-	void BeginPopupReveal(float startProgress = 0.08f);
+	float MenuBarExtent() const noexcept;
+	void SynchronizeInteractionProjection();
 	void OnItemTreeChanged();
+	void OnItemInteractionStateChanged(MenuItem& source);
 	void AttachItemTree(MenuItem* item);
-	bool ValidateChildCollection(
-		std::span<Control* const> children,
-		std::string& error) const override;
-	void OnChildCollectionChanged(
-		const CollectionChangedEventArgs& change,
-		std::span<Control* const> previousChildren) override;
+	void OnPresentationWindowChanged(
+		Window* previousWindow, Window* currentWindow) override;
+	bool ValidateAuthoredItemControl(
+		const Control& item, std::string& error) const override;
+	void OnAuthoredItemsChanged() noexcept override;
+	void OnBeforeGeneratedItemsRebuilt() override;
+	void OnGeneratedItemsRebuilt() override;
+	std::unique_ptr<Control> WrapGeneratedItem(
+		std::unique_ptr<Control> visual,
+		const BindingSourceReference& item,
+		size_t index) override;
+	void SynchronizeItems();
 
 public:
 	virtual UIClass Type() override;
 	bool DefaultSelectOnLeftButtonDown() const override { return false; }
 
-	/**
-	 * @brief 菜单命令事件。
-	 *
-	 * 当用户点击一个“叶子”菜单项（无子菜单且非分隔符）时触发。
-	 * 参数为 MenuItem::Id。
-	 */
-	MenuCommandEvent OnMenuCommand;
+	Menu();
+	~Menu();
 
-	int BarHeight = 28;
-	int DropItemHeight = 26;
-	float BorderThickness = 1.0f;
-
-	D2D1_COLOR_F BarBackColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F BarBorderColor = cui::theme::palette::Border;
-	D2D1_COLOR_F BarItemHoverColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F BarItemActiveColor = cui::theme::palette::AccentSelected;
-	D2D1_COLOR_F DropBackColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F DropBorderColor = cui::theme::palette::Border;
-	D2D1_COLOR_F DropHoverColor = cui::theme::palette::AccentSelected;
-	D2D1_COLOR_F DropTextColor = cui::theme::palette::TextPrimary;
-	D2D1_COLOR_F DropSeparatorColor = cui::theme::palette::Border;
-	float BarItemCornerRadius = 6.0f;
-	float DropCornerRadius = 8.0f;
-	float DropItemCornerRadius = 6.0f;
-	float DropItemHorizontalInset = 6.0f;
-	UINT PopupAnimationDurationMs = 95;
-
-	Menu(int x, int y, int width, int height = 28);
-
-	/**
-	 * @brief 添加一个顶层菜单项（菜单栏项）。
-	 * @return 新建 MenuItem 指针（所有权属于 Menu）。
-	 */
-	MenuItem* AddItem(std::wstring text);
+	/** Adds an explicitly constructed MenuItem to the menu's Items. */
 	MenuItem* AddItem(std::unique_ptr<MenuItem> item);
-	MenuItem* InsertItem(int index, std::wstring text);
 	MenuItem* InsertItem(int index, std::unique_ptr<MenuItem> item);
-	MenuItem* AddSeparator();
+	Separator* AddSeparator();
 	MenuItem* GetItem(int index) const noexcept;
 	int IndexOfItem(const MenuItem* item) const noexcept;
-	std::unique_ptr<MenuItem> DetachItemAt(int index);
+	std::unique_ptr<Control> DetachItemAt(int index);
 	std::unique_ptr<MenuItem> DetachItem(MenuItem* item);
 	bool RemoveItemAt(int index);
 	bool RemoveItem(MenuItem* item);
 	void ClearItems();
 
 	bool ContainsPoint(int localX, int localY) override;
-	bool AutoCloseOnOutsideClick() const override { return _expand; }
-	bool AutoCloseOnFormFocusLoss() const override { return _expand; }
-	void ClosePopup() override;
-	bool IsAnimationRunning() override;
-	UINT GetAnimationIntervalMs() override { return 16; }
-	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	SIZE ActualSize() override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+	/** Popup rows are projected by Menu itself, so Menu is their input surface. */
+	bool HitTestChildren() const override { return false; }
+	void ClosePopup();
+	cui::core::Size GetRenderSizeDip() override;
+protected:
+	void PreparePresentation() override;
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
 };
 

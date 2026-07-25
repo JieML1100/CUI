@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <algorithm>
 #include <cstdint>
 #include <float.h>
 
@@ -7,7 +8,7 @@
  * @brief CUI 布局系统使用的基础类型与枚举。
  *
  * 这些类型用于描述控件在容器中的排布规则：对齐、停靠、锚点、边距、Grid 行列定义等。
- * 坐标/尺寸统一使用 DIP（96 DPI 设计单位）；部分类型支持 Auto/Star/Percent 等策略（见 SizeUnit）。
+ * 坐标/尺寸统一使用 DIP（96 DPI 设计单位）；Grid 长度遵循 Pixel/Auto/Star 语义。
  */
 
 /** @brief 布局方向（主轴方向）。 */
@@ -37,36 +38,20 @@ enum class Dock : uint8_t {
     Left,
     Top,
     Right,
-    Bottom,
-    Fill
-};
-
-/**
- * @brief 锚点标志位（可组合）。
- *
- * 用于在父容器尺寸变化时保持与对应边的距离，常见于 Anchor/Margin 布局。
- */
-enum AnchorStyles : uint8_t {
-    None = 0,
-    Left = 1,
-    Top = 2,
-    Right = 4,
-    Bottom = 8
+    Bottom
 };
 
 /**
  * @brief 尺寸单位/策略。
  *
- * - Pixel：固定像素
- * - Percent：按可用空间百分比
+ * - Pixel：固定 DIP
  * - Auto：根据内容/子元素测量决定
- * - Star：按比例分配（常用于 Grid）
+ * - Star：按比例分配（用于 Grid）
  */
 enum class SizeUnit : uint8_t {
-    Pixel,      // 像素
-    Percent,    // 百分比
-    Auto,       // 自动
-    Star        // 星号(*)，用于Grid的比例分配
+    Pixel,
+    Auto,
+    Star
 };
 
 /**
@@ -94,14 +79,26 @@ struct Thickness {
     bool operator!=(const Thickness& other) const {
         return !(*this == other);
     }
+
+    /**
+     * @brief Returns the widest edge.
+     *
+     * Native fallback renderers that only support a uniform stroke must opt in
+     * to this lossy projection explicitly. The public property system retains
+     * all four WPF Thickness components.
+     */
+    float MaxEdge() const noexcept {
+        return (std::max)(
+            (std::max)(Left, Right),
+            (std::max)(Top, Bottom));
+    }
 };
 
 /**
  * @brief Grid 行/列的尺寸定义。
  *
  * Value 与 Unit 共同定义高度/宽度：
- * - Pixel：Value 为像素
- * - Percent：Value 为可用空间百分比（50 表示 50%）；无界测量时按 Auto 处理
+ * - Pixel：Value 为固定 DIP
  * - Star：Value 为比例因子（默认 1.0）
  * - Auto：由内容决定（Value 通常忽略）
  */
@@ -124,14 +121,9 @@ struct GridLength {
         return GridLength(px, SizeUnit::Pixel); 
     }
 
-    static GridLength Percent(float percent) {
-        return GridLength(percent, SizeUnit::Percent);
-    }
-    
     bool IsAuto() const { return Unit == SizeUnit::Auto; }
     bool IsStar() const { return Unit == SizeUnit::Star; }
     bool IsPixel() const { return Unit == SizeUnit::Pixel; }
-    bool IsPercent() const { return Unit == SizeUnit::Percent; }
 };
 
 /** @brief Grid 行定义。 */

@@ -43,9 +43,9 @@ public:
 	GET(float, FontSize);
 	SET(float, FontSize);
 
-	PROPERTY(std::wstring, FontName);
-	GET(std::wstring, FontName);
-	SET(std::wstring, FontName);
+	PROPERTY(std::wstring, FontFamily);
+	GET(std::wstring, FontFamily);
+	SET(std::wstring, FontFamily);
 
 	D2D1_SIZE_F GetTextSize(std::wstring str, float w = FLT_MAX, float h = FLT_MAX);
 	D2D1_SIZE_F GetTextSize(IDWriteTextLayout* textLayout);

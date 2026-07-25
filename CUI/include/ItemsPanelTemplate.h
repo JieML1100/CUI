@@ -24,7 +24,6 @@ struct ItemsPanelTemplate final
 {
 	ItemsPanelKind Kind = ItemsPanelKind::Stack;
 	Orientation Orientation = Orientation::Vertical;
-	float Spacing = 0.0f;
 	float ItemWidth = 0.0f;
 	float ItemHeight = 0.0f;
 	float CacheLength = 1.0f;

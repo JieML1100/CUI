@@ -6,7 +6,7 @@
               AlignmentX="Center"
               AlignmentY="Center"
               Opacity="0.9"/>
-  <Style TargetType="Label" x:Key="ImageText">
+  <Style TargetType="TextBlock" x:Key="ImageText">
     <Setter Property="Foreground" Value="{StaticResource RuntimeBadgeForeground}"/>
   </Style>
 </ResourceDictionary>

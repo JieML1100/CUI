@@ -23,12 +23,10 @@
     <ClInclude Include="include\CRandom.h" />
     <ClInclude Include="include\Clipboard.h" />
     <ClInclude Include="include\Convert.h" />
-    <ClInclude Include="include\DataPack.h" />
     <ClInclude Include="include\DateTime.h" />
     <ClInclude Include="include\Dialog.h" />
     <ClInclude Include="include\Dictionary.h" />
     <ClInclude Include="include\Environment.h" />
-    <ClInclude Include="include\Event.h" />
     <ClInclude Include="include\File.h" />
     <ClInclude Include="include\FileInfo.h" />
     <ClInclude Include="include\FileStream.h" />
@@ -53,11 +51,9 @@
     <ClCompile Include="src\CRandom.cpp" />
     <ClCompile Include="src\Clipboard.cpp" />
     <ClCompile Include="src\Convert.cpp" />
-    <ClCompile Include="src\DataPack.cpp" />
     <ClCompile Include="src\DateTime.cpp" />
     <ClCompile Include="src\Dialog.cpp" />
     <ClCompile Include="src\Environment.cpp" />
-    <ClCompile Include="src\Event.cpp" />
     <ClCompile Include="src\File.cpp" />
     <ClCompile Include="src\FileInfo.cpp" />
     <ClCompile Include="src\FileStream.cpp" />

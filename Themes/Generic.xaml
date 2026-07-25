@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary
+  xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!--
+    CUI framework defaults are authored here, never registered by C++.
+    Native control classes provide behavior only; this dictionary owns their
+    default presentation, resources, templates and declarative states.
+  -->
+  <Color x:Key="CuiButtonBackground">#FFF8FAFD</Color>
+  <Color x:Key="CuiButtonBackgroundPointerOver">#FFEAF2FF</Color>
+  <Color x:Key="CuiButtonBackgroundPressed">#FFD7E6FF</Color>
+  <Color x:Key="CuiButtonBackgroundDisabled">#FFF1F3F6</Color>
+  <Color x:Key="CuiButtonBorder">#FFB9C5D6</Color>
+  <Color x:Key="CuiButtonBorderPointerOver">#FF5B8FE5</Color>
+  <Color x:Key="CuiButtonBorderPressed">#FF2F6FE4</Color>
+  <Color x:Key="CuiButtonBorderDisabled">#FFD9DEE7</Color>
+  <Color x:Key="CuiButtonForeground">#FF172033</Color>
+
+  <ControlTemplate x:Key="CuiButtonTemplate" TargetType="Button">
+    <Border
+      x:Name="PART_Chrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="Background"
+                Value="{StaticResource CuiButtonBackgroundDisabled}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiButtonBorderDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Pressed">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsPressed" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="Background"
+                Value="{StaticResource CuiButtonBackgroundPressed}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiButtonBorderPressed}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="PointerOver">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsMouseOver" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="Background"
+                Value="{StaticResource CuiButtonBackgroundPointerOver}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiButtonBorderPointerOver}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="Button">
+    <Setter Property="Background"
+      Value="{StaticResource CuiButtonBackground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiButtonBorder}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiButtonForeground}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="10,5"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiButtonTemplate}"/>
+  </Style>
+</ResourceDictionary>

@@ -1,9 +1,14 @@
 #include "ControlPlacementCommand.h"
 #include "../../DesignerCanvas.h"
-#include "../../../CUI/include/SplitContainer.h"
+#include "../../../CUI/include/Canvas.h"
+#include "../../../CUI/include/Layout/DockPanel.h"
+#include "../../../CUI/include/Layout/Grid.h"
 #include "../../../CUI/include/TabControl.h"
+#include "../../../CUI/include/ItemsControl.h"
+#include "../../../CUI/include/TemplateInfrastructure.h"
 #include "../../../CUI/include/Panel.h"
 #include <algorithm>
+#include <stdexcept>
 
 namespace
 {
@@ -23,20 +28,39 @@ namespace
 		return result;
 	}
 
+	bool CanvasOffsetEqual(float left, float right) noexcept
+	{
+		return (!cui::layout::IsCanvasOffsetSet(left)
+			&& !cui::layout::IsCanvasOffsetSet(right)) || left == right;
+	}
+
 	void RefreshLayout(DesignerCanvas* canvas, Control* control)
 	{
 		if (!control) return;
-		if (auto* split = dynamic_cast<SplitContainer*>(control->Parent))
-		{
-			split->RefreshSplitterLayout();
-		}
-		else if (auto* parent = dynamic_cast<Panel*>(control->Parent))
+		if (auto* parent = dynamic_cast<Panel*>(control->GetVisualParent()))
 		{
 			parent->InvalidateLayout();
 			parent->UpdateLayout();
 		}
 		control->InvalidateVisual();
 		if (canvas) canvas->InvalidateVisual();
+	}
+
+	ItemsControl* FindAuthoredItemsOwner(
+		Control* control, size_t* outIndex = nullptr) noexcept
+	{
+		if (!control) return nullptr;
+		auto* owner = dynamic_cast<ItemsControl*>(control->GetLogicalParent());
+		if (!owner || control->GetVisualParent()
+			!= cui::framework::TemplateAccess::GetItemsHost(*owner))
+			return nullptr;
+		for (size_t index = 0; index < owner->AuthoredItemCount(); ++index)
+		{
+			if (owner->GetAuthoredItem(index) != control) continue;
+			if (outIndex) *outIndex = index;
+			return owner;
+		}
+		return nullptr;
 	}
 
 	std::wstring FirstPlacementDifference(
@@ -51,30 +75,25 @@ namespace
 		if (actual.ComponentContentProperty
 			!= expected.ComponentContentProperty)
 			return L"ComponentContentProperty";
-		if (actual.ParentPageIndex != expected.ParentPageIndex)
-			return L"ParentPageIndex";
 		if (actual.ChildIndex != expected.ChildIndex) return L"ChildIndex";
-		if (actual.Location.x != expected.Location.x
-			|| actual.Location.y != expected.Location.y) return L"Location";
-		if (actual.Size.cx != expected.Size.cx
-			|| actual.Size.cy != expected.Size.cy)
-			return L"Size actual=" + std::to_wstring(actual.Size.cx)
-				+ L"x" + std::to_wstring(actual.Size.cy)
-				+ L", expected=" + std::to_wstring(expected.Size.cx)
-				+ L"x" + std::to_wstring(expected.Size.cy);
 		if (actual.Margin != expected.Margin) return L"Margin";
-		if (actual.Width != expected.Width) return L"LayoutWidth";
-		if (actual.Height != expected.Height) return L"LayoutHeight";
-		if (actual.HAlign != expected.HAlign) return L"HAlign";
-		if (actual.VAlign != expected.VAlign) return L"VAlign";
-		if (actual.AnchorStyles != expected.AnchorStyles) return L"Anchor";
+		if (actual.Width != expected.Width) return L"Width";
+		if (actual.Height != expected.Height) return L"Height";
+		if (!CanvasOffsetEqual(actual.CanvasLeft, expected.CanvasLeft)) return L"Canvas.Left";
+		if (!CanvasOffsetEqual(actual.CanvasTop, expected.CanvasTop)) return L"Canvas.Top";
+		if (!CanvasOffsetEqual(actual.CanvasRight, expected.CanvasRight)) return L"Canvas.Right";
+		if (!CanvasOffsetEqual(actual.CanvasBottom, expected.CanvasBottom)) return L"Canvas.Bottom";
+		if (actual.Horizontal != expected.Horizontal) return L"HorizontalAlignment";
+		if (actual.Vertical != expected.Vertical) return L"VerticalAlignment";
 		if (actual.DockPosition != expected.DockPosition) return L"Dock";
-		if (actual.GridRow != expected.GridRow) return L"GridRow";
-		if (actual.GridColumn != expected.GridColumn) return L"GridColumn";
-		if (actual.GridRowSpan != expected.GridRowSpan) return L"GridRowSpan";
+		if (actual.GridRow != expected.GridRow) return L"Grid.Row";
+		if (actual.GridColumn != expected.GridColumn) return L"Grid.Column";
+		if (actual.GridRowSpan != expected.GridRowSpan) return L"Grid.RowSpan";
 		if (actual.GridColumnSpan != expected.GridColumnSpan)
-			return L"GridColumnSpan";
+			return L"Grid.ColumnSpan";
 		if (actual.ZIndex != expected.ZIndex) return L"ZIndex";
+		if (actual.LocalValueMask != expected.LocalValueMask)
+			return L"dependency-property Local source";
 		return L"unknown";
 	}
 
@@ -110,7 +129,7 @@ bool ControlPlacementCommand::CaptureTarget(
 		return false;
 	}
 	auto* control = target->ControlInstance;
-	auto* runtimeParent = control->Parent;
+	auto* runtimeParent = control->GetVisualParent();
 	if (!runtimeParent)
 	{
 		if (outError) *outError = L"布局差量目标没有运行时父级。";
@@ -121,7 +140,7 @@ bool ControlPlacementCommand::CaptureTarget(
 	state.TargetName = target->Name;
 	state.TargetType = target->Type;
 	state.ComponentContentProperty = target->ComponentContentProperty;
-	state.ChildIndex = runtimeParent->IndexOfControl(control);
+	state.ChildIndex = runtimeParent->IndexOfVisualChild(control);
 	if (state.ChildIndex < 0)
 	{
 		if (outError) *outError = L"布局差量目标不在父级子集合中。";
@@ -142,36 +161,6 @@ bool ControlPlacementCommand::CaptureTarget(
 	}
 	else
 	{
-		bool parentFound = false;
-		for (const auto& candidate : canvas->_designerControls)
-		{
-			if (!candidate || !candidate->ControlInstance
-				|| candidate->Type != UIClass::UI_TabControl)
-				continue;
-			auto* tabs = dynamic_cast<TabControl*>(candidate->ControlInstance);
-			if (!tabs) continue;
-			for (int pageIndex = 0; pageIndex < tabs->Count; ++pageIndex)
-			{
-				auto* page = tabs->operator[](pageIndex);
-				if (page != target->DesignerParent) continue;
-				if (runtimeParent != page)
-				{
-					if (outError) *outError =
-						L"TabPage 的设计父级与运行时父级不一致。";
-					return false;
-				}
-				state.ParentKind = DesignerPlacementParentKind::TabPage;
-				state.ParentName = candidate->Name;
-				state.ParentType = candidate->Type;
-				state.ParentPageIndex = pageIndex;
-				parentFound = true;
-				break;
-			}
-			if (parentFound) break;
-		}
-
-		if (!parentFound)
-		{
 			const auto parent = std::find_if(
 				canvas->_designerControls.begin(),
 				canvas->_designerControls.end(),
@@ -188,23 +177,19 @@ bool ControlPlacementCommand::CaptureTarget(
 			}
 			state.ParentName = (*parent)->Name;
 			state.ParentType = (*parent)->Type;
-			if (auto* split = dynamic_cast<SplitContainer*>(
+			if (auto* items = dynamic_cast<ItemsControl*>(
 				(*parent)->ControlInstance))
 			{
-				if (runtimeParent == split->FirstPanel())
-					state.ParentKind =
-						DesignerPlacementParentKind::SplitFirst;
-				else if (runtimeParent == split->SecondPanel())
-					state.ParentKind =
-						DesignerPlacementParentKind::SplitSecond;
-				else if (runtimeParent == split)
-					state.ParentKind = DesignerPlacementParentKind::Control;
-				else
+				size_t itemIndex = 0;
+				if (items->GetItemsSource()
+					|| FindAuthoredItemsOwner(control, &itemIndex) != items)
 				{
 					if (outError) *outError =
-						L"SplitContainer 的运行时区域无法标识。";
+						L"ItemsControl 设计父级与 authored Items 所有权不一致。";
 					return false;
 				}
+				state.ChildIndex = static_cast<int>(itemIndex);
+				state.ParentKind = DesignerPlacementParentKind::ItemsControl;
 			}
 			else
 			{
@@ -230,23 +215,47 @@ bool ControlPlacementCommand::CaptureTarget(
 				}
 				state.ParentKind = DesignerPlacementParentKind::Control;
 			}
-		}
 	}
 
-	state.Location = control->Location;
-	state.Size = control->Size;
 	state.Margin = control->Margin;
-	state.Width = control->LayoutWidth;
-	state.Height = control->LayoutHeight;
-	state.HAlign = control->HAlign;
-	state.VAlign = control->VAlign;
-	state.AnchorStyles = control->AnchorStyles;
-	state.DockPosition = control->DockPosition;
-	state.GridRow = control->GridRow;
-	state.GridColumn = control->GridColumn;
-	state.GridRowSpan = control->GridRowSpan;
-	state.GridColumnSpan = control->GridColumnSpan;
+	state.Width = control->Width;
+	state.Height = control->Height;
+	state.CanvasLeft = Canvas::GetLeft(*(control));
+	state.CanvasTop = Canvas::GetTop(*(control));
+	state.CanvasRight = Canvas::GetRight(*(control));
+	state.CanvasBottom = Canvas::GetBottom(*(control));
+	state.Horizontal = control->HorizontalAlignment;
+	state.Vertical = control->VerticalAlignment;
+	state.DockPosition = DockPanel::GetDock(*(control));
+	state.GridRow = Grid::GetRow(*(control));
+	state.GridColumn = Grid::GetColumn(*(control));
+	state.GridRowSpan = Grid::GetRowSpan(*(control));
+	state.GridColumnSpan = Grid::GetColumnSpan(*(control));
 	state.ZIndex = control->ZIndex;
+	auto captureLocal = [&](DesignerPlacementLocalValue value,
+		const wchar_t* propertyName)
+	{
+		state.SetLocalValue(value, control->HasPropertyValue(
+			propertyName, DependencyPropertyValueSource::Local));
+	};
+	captureLocal(DesignerPlacementLocalValue::Margin, L"Margin");
+	captureLocal(DesignerPlacementLocalValue::Width, L"Width");
+	captureLocal(DesignerPlacementLocalValue::Height, L"Height");
+	captureLocal(DesignerPlacementLocalValue::CanvasLeft, L"Canvas.Left");
+	captureLocal(DesignerPlacementLocalValue::CanvasTop, L"Canvas.Top");
+	captureLocal(DesignerPlacementLocalValue::CanvasRight, L"Canvas.Right");
+	captureLocal(DesignerPlacementLocalValue::CanvasBottom, L"Canvas.Bottom");
+	captureLocal(DesignerPlacementLocalValue::HorizontalAlignment,
+		L"HorizontalAlignment");
+	captureLocal(DesignerPlacementLocalValue::VerticalAlignment,
+		L"VerticalAlignment");
+	captureLocal(DesignerPlacementLocalValue::Dock, L"DockPanel.Dock");
+	captureLocal(DesignerPlacementLocalValue::GridRow, L"Grid.Row");
+	captureLocal(DesignerPlacementLocalValue::GridColumn, L"Grid.Column");
+	captureLocal(DesignerPlacementLocalValue::GridRowSpan, L"Grid.RowSpan");
+	captureLocal(DesignerPlacementLocalValue::GridColumnSpan,
+		L"Grid.ColumnSpan");
+	captureLocal(DesignerPlacementLocalValue::ZIndex, L"ZIndex");
 	out = std::move(state);
 	if (outError) outError->clear();
 	return true;
@@ -326,32 +335,17 @@ bool ControlPlacementCommand::ResolveParent(
 		}
 		designerParent = parentControl;
 		break;
-	case DesignerPlacementParentKind::TabPage:
+	case DesignerPlacementParentKind::ItemsControl:
 	{
-		auto* tabs = dynamic_cast<TabControl*>(parentControl);
-		if (!tabs || state.ParentPageIndex < 0
-			|| state.ParentPageIndex >= tabs->Count)
+		auto* items = dynamic_cast<ItemsControl*>(parentControl);
+		if (!items || items->GetItemsSource()
+			|| !cui::framework::TemplateAccess::GetItemsHost(*items))
 		{
-			if (outError) *outError = L"布局差量 TabPage 已不存在。";
+			if (outError) *outError = L"布局差量 ItemsControl 已不可编辑。";
 			return false;
 		}
-		runtimeParent = tabs->operator[](state.ParentPageIndex);
-		designerParent = runtimeParent;
-		break;
-	}
-	case DesignerPlacementParentKind::SplitFirst:
-	case DesignerPlacementParentKind::SplitSecond:
-	{
-		auto* split = dynamic_cast<SplitContainer*>(parentControl);
-		if (!split)
-		{
-			if (outError) *outError = L"布局差量 SplitContainer 已不存在。";
-			return false;
-		}
-		runtimeParent = state.ParentKind
-			== DesignerPlacementParentKind::SplitFirst
-			? split->FirstPanel() : split->SecondPanel();
-		designerParent = split;
+		runtimeParent = cui::framework::TemplateAccess::GetItemsHost(*items);
+		designerParent = items;
 		break;
 	}
 	default:
@@ -384,7 +378,7 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 		desiredDesignerParent, outError))
 		return false;
 	auto* control = target->ControlInstance;
-	auto* previousParent = control->Parent;
+	auto* previousParent = control->GetVisualParent();
 	if (!previousParent || state.ChildIndex < 0
 		|| desiredRuntimeParent == control)
 	{
@@ -392,7 +386,7 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 		return false;
 	}
 	for (Control* ancestor = desiredRuntimeParent; ancestor;
-		ancestor = ancestor->Parent)
+		ancestor = ancestor->GetVisualParent())
 	{
 		if (ancestor == control)
 		{
@@ -403,32 +397,59 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 
 	try
 	{
-		const int previousIndex = previousParent->IndexOfControl(control);
+		size_t previousItemIndex = 0;
+		auto* previousItemsOwner =
+			FindAuthoredItemsOwner(control, &previousItemIndex);
+		auto* desiredItemsOwner = state.ParentKind
+			== DesignerPlacementParentKind::ItemsControl
+			? dynamic_cast<ItemsControl*>(desiredDesignerParent) : nullptr;
+		const int previousIndex = previousItemsOwner
+			? static_cast<int>(previousItemIndex)
+			: previousParent->IndexOfVisualChild(control);
 		if (previousIndex < 0)
 		{
 			if (outError) *outError = L"布局差量目标不在当前父级中。";
 			return false;
 		}
-		if (previousParent == desiredRuntimeParent)
+		if (previousItemsOwner && previousItemsOwner == desiredItemsOwner)
 		{
-			if (state.ChildIndex >= desiredRuntimeParent->Count)
+			if (state.ChildIndex >= static_cast<int>(
+				desiredItemsOwner->AuthoredItemCount()))
+			{
+				if (outError) *outError = L"布局差量 Items 同级顺序越界。";
+				return false;
+			}
+			if (previousIndex != state.ChildIndex
+				&& !desiredItemsOwner->MoveItemControl(
+					previousItemIndex, static_cast<size_t>(state.ChildIndex)))
+			{
+				if (outError) *outError = L"无法移动 authored Item。";
+				return false;
+			}
+		}
+		else if (!previousItemsOwner && !desiredItemsOwner
+			&& previousParent == desiredRuntimeParent)
+		{
+			if (state.ChildIndex >= desiredRuntimeParent->VisualChildCount())
 			{
 				if (outError) *outError = L"布局差量同级顺序越界。";
 				return false;
 			}
 			if (previousIndex != state.ChildIndex)
-				desiredRuntimeParent->Children.Move(
+				desiredRuntimeParent->MoveVisualChild(
 					static_cast<size_t>(previousIndex),
 					static_cast<size_t>(state.ChildIndex));
 		}
 		else
 		{
-			if (state.ChildIndex > desiredRuntimeParent->Count)
+			if (state.ChildIndex > desiredRuntimeParent->VisualChildCount())
 			{
 				if (outError) *outError = L"布局差量目标父级顺序越界。";
 				return false;
 			}
-			auto owner = previousParent->DetachControl(control);
+			auto owner = previousItemsOwner
+				? previousItemsOwner->DetachItemControlAt(previousItemIndex)
+				: previousParent->DetachVisualChild(control);
 			if (!owner)
 			{
 				if (outError) *outError = L"无法从原父级分离布局目标。";
@@ -437,25 +458,36 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 			Control* raw = owner.get();
 			try
 			{
-				desiredRuntimeParent->InsertControl(state.ChildIndex, raw);
+				if (desiredItemsOwner)
+					desiredItemsOwner->InsertItemControl(
+						static_cast<size_t>(state.ChildIndex), raw);
+				else
+					desiredRuntimeParent->InsertVisualChild(
+						state.ChildIndex, raw);
 				owner.release();
 			}
 			catch (...)
 			{
-				if (raw->Parent == desiredRuntimeParent) owner.release();
 				std::unique_ptr<Control> rollbackOwner;
-				if (raw->Parent)
-					rollbackOwner = raw->Parent->DetachControl(raw);
+				if (desiredItemsOwner)
+					rollbackOwner = desiredItemsOwner->DetachItemControl(raw);
+				if (!rollbackOwner && raw->GetVisualParent())
+					rollbackOwner = raw->GetVisualParent()->DetachVisualChild(raw);
 				else if (owner.get() == raw)
 					rollbackOwner = std::move(owner);
 				if (rollbackOwner)
 				{
 					const int rollbackIndex = (std::clamp)(
-						previousIndex, 0, previousParent->Count);
+						previousIndex, 0, previousParent->VisualChildCount());
 					try
 					{
-						previousParent->InsertControl(
-							rollbackIndex, rollbackOwner.get());
+						if (previousItemsOwner)
+							previousItemsOwner->InsertItemControl(
+								static_cast<size_t>(rollbackIndex),
+								rollbackOwner.get());
+						else
+							previousParent->InsertVisualChild(
+								rollbackIndex, rollbackOwner.get());
 						rollbackOwner.release();
 					}
 					catch (...)
@@ -465,7 +497,7 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 						rollbackOwner.release();
 					}
 				}
-				if (outError) *outError = raw->Parent == previousParent
+				if (outError) *outError = raw->GetVisualParent() == previousParent
 					? L"挂载布局目标失败，已恢复原父级。"
 					: L"挂载布局目标失败，且原父级恢复失败。";
 				return false;
@@ -474,23 +506,85 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 
 		target->DesignerParent = desiredDesignerParent;
 		target->ComponentContentProperty = state.ComponentContentProperty;
-		control->DockPosition = state.DockPosition;
-		control->GridRow = state.GridRow;
-		control->GridColumn = state.GridColumn;
-		control->GridRowSpan = state.GridRowSpan;
-		control->GridColumnSpan = state.GridColumnSpan;
-		control->ZIndex = state.ZIndex;
-		control->HAlign = state.HAlign;
-		control->VAlign = state.VAlign;
-		control->AnchorStyles = state.AnchorStyles;
-		// Compatibility Size and public Length declarations are distinct: an
-		// arranged/clipped control can retain a configured Size that differs
-		// from the current fixed/Auto declaration. Restore both layers.
-		control->Size = state.Size;
-		control->LayoutWidth = state.Width;
-		control->LayoutHeight = state.Height;
-		control->Margin = state.Margin;
-		control->Location = state.Location;
+		auto restoreLocal = [&](
+			DesignerPlacementLocalValue value,
+			const wchar_t* propertyName,
+			auto&& valueMatches,
+			auto&& setValue)
+		{
+			const bool wantsLocal = state.HasLocalValue(value);
+			const bool hasLocal = control->HasPropertyValue(
+				propertyName, DependencyPropertyValueSource::Local);
+			if (wantsLocal)
+			{
+				// Avoid replacing a Local binding/resource expression when its
+				// effective layout value already matches the snapshot.
+				if (!hasLocal || !valueMatches()) setValue();
+			}
+			else if (hasLocal && !control->ClearPropertyValue(propertyName))
+				throw std::runtime_error(
+					"failed to clear placement Local value");
+		};
+		restoreLocal(DesignerPlacementLocalValue::Dock, L"DockPanel.Dock",
+			[&] { return DockPanel::GetDock(*control) == state.DockPosition; },
+			[&] { DockPanel::SetDock(*control, state.DockPosition); });
+		restoreLocal(DesignerPlacementLocalValue::GridRow, L"Grid.Row",
+			[&] { return Grid::GetRow(*control) == state.GridRow; },
+			[&] { Grid::SetRow(*control, state.GridRow); });
+		restoreLocal(DesignerPlacementLocalValue::GridColumn, L"Grid.Column",
+			[&] { return Grid::GetColumn(*control) == state.GridColumn; },
+			[&] { Grid::SetColumn(*control, state.GridColumn); });
+		restoreLocal(DesignerPlacementLocalValue::GridRowSpan, L"Grid.RowSpan",
+			[&] { return Grid::GetRowSpan(*control) == state.GridRowSpan; },
+			[&] { Grid::SetRowSpan(*control, state.GridRowSpan); });
+		restoreLocal(DesignerPlacementLocalValue::GridColumnSpan,
+			L"Grid.ColumnSpan",
+			[&] { return Grid::GetColumnSpan(*control) == state.GridColumnSpan; },
+			[&] { Grid::SetColumnSpan(*control, state.GridColumnSpan); });
+		restoreLocal(DesignerPlacementLocalValue::ZIndex, L"ZIndex",
+			[&] { return control->ZIndex == state.ZIndex; },
+			[&] { control->ZIndex = state.ZIndex; });
+		restoreLocal(DesignerPlacementLocalValue::HorizontalAlignment,
+			L"HorizontalAlignment",
+			[&] { return control->HorizontalAlignment == state.Horizontal; },
+			[&] { control->HorizontalAlignment = state.Horizontal; });
+		restoreLocal(DesignerPlacementLocalValue::VerticalAlignment,
+			L"VerticalAlignment",
+			[&] { return control->VerticalAlignment == state.Vertical; },
+			[&] { control->VerticalAlignment = state.Vertical; });
+		restoreLocal(DesignerPlacementLocalValue::Width, L"Width",
+			[&] { return control->Width == state.Width; },
+			[&] { control->Width = state.Width; });
+		restoreLocal(DesignerPlacementLocalValue::Height, L"Height",
+			[&] { return control->Height == state.Height; },
+			[&] { control->Height = state.Height; });
+		restoreLocal(DesignerPlacementLocalValue::Margin, L"Margin",
+			[&] { return control->Margin == state.Margin; },
+			[&] { control->Margin = state.Margin; });
+		restoreLocal(DesignerPlacementLocalValue::CanvasLeft, L"Canvas.Left",
+			[&] {
+				return CanvasOffsetEqual(
+					Canvas::GetLeft(*control), state.CanvasLeft);
+			},
+			[&] { Canvas::SetLeft(*control, state.CanvasLeft); });
+		restoreLocal(DesignerPlacementLocalValue::CanvasTop, L"Canvas.Top",
+			[&] {
+				return CanvasOffsetEqual(
+					Canvas::GetTop(*control), state.CanvasTop);
+			},
+			[&] { Canvas::SetTop(*control, state.CanvasTop); });
+		restoreLocal(DesignerPlacementLocalValue::CanvasRight, L"Canvas.Right",
+			[&] {
+				return CanvasOffsetEqual(
+					Canvas::GetRight(*control), state.CanvasRight);
+			},
+			[&] { Canvas::SetRight(*control, state.CanvasRight); });
+		restoreLocal(DesignerPlacementLocalValue::CanvasBottom, L"Canvas.Bottom",
+			[&] {
+				return CanvasOffsetEqual(
+					Canvas::GetBottom(*control), state.CanvasBottom);
+			},
+			[&] { Canvas::SetBottom(*control, state.CanvasBottom); });
 		RefreshLayout(canvas, previousParent);
 		if (desiredRuntimeParent != previousParent)
 			RefreshLayout(canvas, desiredRuntimeParent);
@@ -530,13 +624,13 @@ bool ControlPlacementCommand::ApplyState(
 			applyError = L"布局树或属性未恢复到请求的精确状态（"
 				+ FirstPlacementDifference(actual, state);
 			if (target && target->ControlInstance
-				&& target->ControlInstance->Parent)
+				&& target->ControlInstance->GetVisualParent())
 			{
 				const auto parentSize =
-					target->ControlInstance->Parent->ActualSize();
+					target->ControlInstance->GetVisualParent()->GetActualSizeDip();
 				applyError += L", parent="
-					+ std::to_wstring(parentSize.cx) + L"x"
-					+ std::to_wstring(parentSize.cy);
+					+ std::to_wstring(parentSize.width) + L"x"
+					+ std::to_wstring(parentSize.height);
 			}
 			applyError += L"）。";
 			applied = false;
@@ -578,24 +672,38 @@ bool DesignerControlPlacementState::EquivalentTo(
 		&& ParentName == other.ParentName
 		&& ParentType == other.ParentType
 		&& ComponentContentProperty == other.ComponentContentProperty
-		&& ParentPageIndex == other.ParentPageIndex
 		&& ChildIndex == other.ChildIndex
-		&& Location.x == other.Location.x
-		&& Location.y == other.Location.y
-		&& Size.cx == other.Size.cx
-		&& Size.cy == other.Size.cy
 		&& Margin == other.Margin
 		&& Width == other.Width
 		&& Height == other.Height
-		&& HAlign == other.HAlign
-		&& VAlign == other.VAlign
-		&& AnchorStyles == other.AnchorStyles
+		&& CanvasOffsetEqual(CanvasLeft, other.CanvasLeft)
+		&& CanvasOffsetEqual(CanvasTop, other.CanvasTop)
+		&& CanvasOffsetEqual(CanvasRight, other.CanvasRight)
+		&& CanvasOffsetEqual(CanvasBottom, other.CanvasBottom)
+		&& Horizontal == other.Horizontal
+		&& Vertical == other.Vertical
 		&& DockPosition == other.DockPosition
 		&& GridRow == other.GridRow
 		&& GridColumn == other.GridColumn
 		&& GridRowSpan == other.GridRowSpan
 		&& GridColumnSpan == other.GridColumnSpan
-		&& ZIndex == other.ZIndex;
+		&& ZIndex == other.ZIndex
+		&& LocalValueMask == other.LocalValueMask;
+}
+
+bool DesignerControlPlacementState::HasLocalValue(
+	DesignerPlacementLocalValue value) const noexcept
+{
+	return (LocalValueMask & static_cast<uint32_t>(value)) != 0;
+}
+
+void DesignerControlPlacementState::SetLocalValue(
+	DesignerPlacementLocalValue value,
+	bool present) noexcept
+{
+	const auto mask = static_cast<uint32_t>(value);
+	if (present) LocalValueMask |= mask;
+	else LocalValueMask &= ~mask;
 }
 
 size_t DesignerControlPlacementState::GetEstimatedMemoryUsage() const noexcept

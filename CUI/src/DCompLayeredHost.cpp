@@ -490,14 +490,15 @@ void* DCompLayeredHost::GetOverlaySwapChain() const
 #endif
 }
 
-void DCompLayeredHost::CommitComposition()
+HRESULT DCompLayeredHost::CommitComposition()
 {
 #ifdef CUI_ENABLE_WEBVIEW2
     if (_impl->dcompDevice)
     {
-        _impl->dcompDevice->Commit();
+        return _impl->dcompDevice->Commit();
     }
 #endif
+	return S_OK;
 }
 
 bool DCompLayeredHost::IsInitialized() const

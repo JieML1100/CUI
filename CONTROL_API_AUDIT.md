@@ -1,196 +1,210 @@
-# CUI Control API Audit
+# CUI WPF 语义审计
 
-This note tracks the "production-useful" control APIs that should exist beyond the minimum demo surface.
+本文档记录当前公共架构边界，不再保存已删除 WinForms/早期 CUI API 的功能清单。历史实现不能作为兼容需求；
+若旧代码与这里的单一路径冲突，应删除旧代码而不是增加别名、fallback 或双写。
 
-## Completed in Current Pass
+## 固定约定
 
-- Designer property access
-  - Unified apply, capture, tracking, and reset decisions on runtime property metadata instead of per-editor persistence branches.
-  - Routed legacy-backed ordinary property edits through the Local value-source path, preserving coercion, change callbacks, and Style/Binding precedence while keeping legacy XML compatibility.
-  - Metadata/Automatic values enter the typed metadata bag; Legacy/Transient duplicates are removed, and reset reveals the next effective value source.
-  - Replaced the duplicate form snapshot and text/Boolean switches with a typed 21-property catalog over the persisted `DesignFormModel`.
-  - Added visible per-property reset actions with undo participation and deferred panel rebuilding, and preserved explicit form font size with the default font family.
-  - Replaced hard-coded ordinary scalar rows with a PropertyGrid catalog that includes Legacy properties, canonical display aliases, and parent-sensitive Grid/Dock visibility.
-  - Added metadata for the remaining LinkLabel, loading/progress ring, DateTimePicker, PictureBox, TreeView, and Z-order scalar rows.
-  - Replaced the structural-editor control-type chain with an extensible eight-entry `DesignerCustomEditorCatalog` and one dialog dispatcher.
-  - Wrapped all eight modal structural editors in strict Canvas document transactions: confirmed changes create one undo entry, cancel/no-op creates none, nested transactions are rejected, and exception/invalid-state/commit failures restore the prior document and complete selection.
-  - Added a typed `DesignerControlPropertyCatalog` for wrapper-owned Name, Anchor, style identity/classes, font overrides, and MediaPlayer source data; PropertyGrid capture/apply/reset now goes through Binder-injected context instead of raw-field and float/Boolean fallbacks.
-  - Added `DesignerPropertyRowCatalog` as the single presentation projection for form, wrapper-owned, and runtime-metadata properties, with cross-source deduplication, global category ordering, editor hints, and reset capability; PropertyGrid now renders one row stream.
-  - Added tokenized PropertyGrid filtering across scalar rows, events, bindings, and structural editors, plus visible effective Default/Theme/Style/Binding/Local source diagnostics that refresh after edits.
-  - Added multi-selection common-property projection with explicit mixed values/sources, Binding-owned read-only preflight, batch apply/reset, and one undo command preserving the full selection; single-target event, binding, and structural editors are hidden for multi-selection.
-  - Added transactional `DesignerPropertyEdit` validation/apply/reset with target snapshots and rollback on rejected or throwing setters; PropertyGrid now surfaces accessible fixed-area errors and refuses edits that cannot establish or commit undo snapshots, including grouped slider previews.
-  - Runtime Form attachments now survive in-place, recomposed, and replaced document reloads: presentation changes auto-apply, named Form events re-resolve transactionally, and resolver/host rejection restores prior presentation, borrowed-font semantics, connections, and root slots.
-  - Added a shared-state `RuntimeEventHandlerRegistry` for dynamic XAML hosts: typed CUI Event-member registration replaces per-load name switches, rejects invalid/duplicate/cross-signature routes, diagnoses unknown handlers, and accepts later registrations through already-retained resolvers.
-  - Added WinForms-style event-row activation: double-click reuses an existing handler or creates the conventional default through the normal undoable property transaction. Explicit export now persists a validated `x:Class` separately from `Form.Name` plus an extensionless relative `d:CodeBehind`; the association participates in document Undo/Redo, survives save/reopen, regenerates/appends missing stubs, and never persists an absolute workstation path.
-  - Extended `x:Class` to namespace-qualified identities with XAML-dot/C++-scope normalization. Generated/user headers open the corresponding namespace, sources use qualified definitions, include names come from the export stem, and a solution-level static generated sample is compiled, executed, and byte-semantics-checked against fresh generator output.
-  - Replaced substring-based user-handler detection with a lightweight C++ token scan that recognizes real out-of-class bodies, ignores comments and ordinary/raw strings, and distinguishes prefix-colliding names before appending missing stubs. The same preflight now rejects existing user files whose class/base/constructor identity disagrees with `x:Class` before any generated target is replaced.
-  - Added rollback-capable atomic file batches for generated code sets. All outputs stage and flush before commit; a real locked-middle-target regression proves reverse restoration of existing files, removal of newly created targets, and cleanup of transaction artifacts.
-  - Added `Load*IntoForm` and retryable `AttachToForm` transactions so initial dynamic hosting commits parsing/materialization, runtime attachments, Form presentation/events, and root ownership as one unit; attached documents reject unsafe direct Load replacement and missing future Form resolvers roll back Reload.
-  - Added a non-movable `RuntimeDocumentSession` for the common file-backed Form host. It composes the document, shared typed-event registry, and threadless watcher; initial mount remains atomic, cross-thread polling is rejected before control access, and failed named-event reloads can be retried after late route registration without replacing the active UI.
-  - Added programmatic PropertyGrid apply/reset and row/error inspection on the production interaction path, plus a windowless `Designer.exe --self-test` smoke gate covering mixed multi-selection, atomic edits, rejected-input feedback, reset, full-selection restoration, and undo/redo document rebuilds.
-  - Made Designer command undo fallible and history-safe: failed/throwing undo and redo retain their original stack entries, while add/delete and interaction snapshot coordination refuses uncaptured mutations and rolls back failed post-capture or command commits.
-  - Consolidated scalar apply/reset, DataContext Schema, document styles, bindings, grouped sliders, structural dialogs, and Canvas snapshot commands behind one result-bearing document transaction service. Explicit states distinguish committed/no-op/canceled/rolled-back/rejected/failed outcomes, cancellation restores leaked mutations, and PropertyGrid no longer owns parallel document/selection snapshot code.
-  - Migrated keyboard nudge, mouse move/resize, and SplitContainer splitter previews off the remaining Boolean snapshot wrappers. Canvas now exposes/publishes completed interaction results, Designer reports them in its status area, mouse-up commits once, and Escape/cancel/focus/capture interruption rolls previews back without consuming undo or redo; splitter metadata failures no longer fall through to raw setters.
-  - Replaced the remaining Boolean command results across `IDesignerCommand`, `CommandManager`, the coordinator, and Canvas Add/Delete/Undo/Redo with `DesignerDocumentTransactionResult`. Empty history is `Unchanged`, failed restores retain errors and restoration state while preserving their stack entry, and Canvas publishes labeled discrete-command completion events consumed by the Designer status area.
-  - Added branch-safe document state IDs and save points, Dirty/title notifications, unsaved New/Open/Close prompting, result-bearing lifecycle APIs, rollback-safe full-document replacement, and same-directory atomic XML save. Failed parse/apply/write/replace operations preserve the prior document, selection, history state, old file, and Dirty marker.
-  - Added debounced crash recovery with versioned single-file envelopes, atomic session snapshots keyed by PID plus process creation time, live-owner filtering, corruption quarantine, startup Restore/Discard/Keep prompting, and an undo-free dirty recovery baseline. Clean lifecycle operations remove only the current session snapshot.
-  - Added save-point-safe history coalescing for same-selection property edits and keyboard nudges, plus an estimated 64 MiB Undo+Redo memory budget with nearest-command retention, host tuning/diagnostics, failure-stable accounting, and thousand-command pressure coverage.
-  - Replaced full-document history for ordinary control properties/grouped sliders and SplitterDistance pointer previews with `ControlPropertyCommand`, and keyboard nudges plus pointer Move/Resize/Reparent/container reorder with `ControlPlacementCommand`. Splitter gestures opt out of time-window merging so every pointer gesture remains a separate history entry. Placement/tree deltas preserve Root/control/Tab/Split parent locators, sibling order, Grid/Dock fields, selection, and instance identity; both delta families validate expected starts, resolve rebuilt targets by name/type, roll back partial failures, and stay below 32 KiB in Designer pressure gates.
-  - Replaced Canvas Add/Delete full-document history with ownership-safe `ControlSubtreeCommand`. Attached controls remain exclusively runtime-tree-owned; absent roots move into command-owned `unique_ptr`s. Normalized subtree nodes, Root/control/Tab/Split locators, sibling order, ToolBar item-size overrides, wrapper identity, bindings, and complete selection survive undo/redo and unrelated full-document rebuilds. Expected-endpoint/name conflicts preserve their history entries for retry, simple entries stay below 32 KiB, and nested subtree entries stay below 64 KiB.
-  - Materialized persisted Designer bindings against the design-time data context with reversible Local-value snapshots, per-target `BindingCollection::Find/Remove`, attach diagnostics, and matching generated-code failure rollback so constructor Local values no longer mask Binding.
-  - Extended unified property rows with Binding/Validation/Style/Theme diagnostics, style rule attribution, validation/style change refresh, tokenized diagnostic filtering, accessible inline summaries, and mixed-selection diagnostic aggregation; Binding-owned reset now follows the same read-only preflight as apply.
-- ProgressBar
-  - Stable `MaxValue`, `Value`, and `PercentageValue` clamping.
-  - Added `OnValueChanged`, `SetRange`, `Increment`, and `Reset`.
-- Slider
-  - Added `SetRange`, `Increment`, `Decrement`, and `Reset`.
-  - `Min`/`Max` setters now keep the range coherent.
-- ComboBox
-  - Added `ItemCount`, `GetSelectedItem`, `SetSelectedIndex`, `FindItem`, `AddItem`, `InsertItem`, `RemoveItemAt`, and `ClearItems`.
-  - Item mutation keeps selection, text, scroll, popup state, and `OnSelectionChanged` synchronized.
-  - `Items` is now an observable, vector-compatible collection. Direct insert/remove/move/swap operations publish precise changes, preserve the selected logical item and its virtual accessibility identity, and batching coalesces to one reset notification.
-  - Its virtual UIA container now exposes vertical Scroll Pattern metrics and actions without coupling scrolling to selection.
-- ListView / ListBox
-  - Added atomic `SetItems` so structural loads and generated code preserve multiple selected flags.
-  - Selection, focus, hover, and scrolling now use observable current-value metadata without replacing active bindings.
-  - `FullRowSelect` and `HideSelectionWhenLostFocus` now participate in rendering.
-  - `Items` and `Columns` are observable collections; direct structural mutations immediately reconcile selection/focus/scroll state, stable accessibility IDs, structure notifications, and rendering.
-  - The virtual UIA container exposes Scroll Pattern. Details mode additionally exposes Grid/Table, stable column-header fragments, row fragments, and row/column-addressable cell fragments with TableItem header relationships.
-- TextBox
-  - Added selection APIs: `SelectionLength`, `HasSelection`, `Select`, `SelectAll`, `ClearSelection`.
-  - Added editing APIs: `Clear`, `InsertText`, `Copy`, `Cut`, `Paste`, public `Undo`, and public `Redo`.
-- RichTextBox
-  - Added the same selection/editing API surface as `TextBox`.
-  - Public editing APIs keep virtualized buffer, selection range, scroll, and render invalidation synchronized.
-- PasswordBox
-  - Added selection APIs: `SelectionLength`, `HasSelection`, `Select`, `SelectAll`, `ClearSelection`.
-  - Added safe editing APIs: `Clear`, `InsertText`, and `Paste`.
-  - Added configurable `PasswordChar` and `RevealPassword`.
-  - Copy/cut are intentionally not exposed by default to avoid pushing secrets into the clipboard.
-- CheckBox
-  - Added `SetChecked`, `Toggle`, and keyboard activation with Space/Enter.
-- RadioBox
-  - Added `SetChecked` and keyboard activation with Space/Enter.
-- Switch
-  - Added `SetChecked`, `Toggle`, keyboard activation with Space/Enter, and programmatic animation/event synchronization.
-- TabControl
-  - Added ownership-safe page management APIs: `AddPage(unique_ptr)`, `InsertPage`, `GetPage`, `IndexOfPage`, `DetachPageAt`, `DetachPage`, `RemovePageAt`, `RemovePage`, and `ClearPages`.
-  - Structural edits preserve the selected page by object identity, update an active TwoWay `SelectedIndex` binding, cancel stale transitions, and resynchronize native child windows.
-  - `Pages` now projects the observable `Control::Children` collection while remaining readable as a vector; `SelectPage` remains the programmatic selection entry point.
-- TreeView
-  - `TreeNode::Children` is observable and propagates nested subtree attachment, selection/hover cleanup, scroll clamping, stable virtual IDs, structure notifications, and rendering to its owning TreeView.
-  - Added ownership-safe `AddChild`, `DetachChildAt`, `RemoveChild`, `RemoveChildAt`, and `ClearChildren`; direct vector-compatible mutation remains available for source compatibility.
-  - Its virtual UIA container now exposes vertical Scroll Pattern metrics and actions over the visible expanded-node sequence.
-- GridView
-  - Added `FullRowSelect`, enabled by default, so selected rows render with a full-row selection effect while preserving active-cell editing.
-  - Added row/column/cell helpers: `RowCount`, `ColumnCount`, `AddColumn`, `RemoveColumnAt`, `AddRow`, `RemoveRowAt`, `GetCell`, and `SetCellValue`.
-  - Added programmatic selection helpers: `SelectCell` and `SelectRow`.
-  - Added nested `BeginUpdate`/`EndUpdate` and RAII `DeferUpdates` batching for structural changes.
-  - `Rows` and `Columns` are observable collections. Direct add/remove/move/swap/sort keeps selected row/column identity stable and moves every row's cells with its logical column; batched row/column notifications observe a fully aligned grid.
-  - Added explicit `BeginEdit`, `SetEditingText`, `CommitEdit`, and `CancelEdit` session APIs that also work without a parent Form.
-  - Moved layout, behavior, appearance, selection, sort, and scroll state onto shared property metadata; interaction state remains transient and binding-safe.
-  - Its virtual UIA container exposes horizontal and vertical Scroll Pattern metrics and actions alongside Grid/Table.
-  - Added row-level multi-select via the `MultiSelect` property: Ctrl+click toggles a row, Shift+click extends a range from the anchor, and the programmatic surface offers `GetSelectedRows`, `GetSelectedRowCount`, `IsRowSelected`, `SetRowSelected`, `SelectRowRange`, and `SelectAllRows`. Single-selection APIs (`SelectedRowIndex`, `SelectRow`) remain the focus/anchor row and stay fully compatible.
-  - Added runtime column management: `SetColumnVisible`/`IsColumnVisible` hide or show a column while preserving its data and original index, and `MoveColumn` reorders a column while moving every row's cell and remapping selection/sort/hidden-column state.
-  - Added atomic `SetRows` for one-shot bulk loads: a single batched update triggers only one arrange/render pass, far more efficient than per-row `AddRow` for large data. Note: GridView keeps an in-memory `Rows` collection — it does not yet virtualize row data by demand; use `SetRows`/`DeferUpdates` and `PagedGridView` for large datasets.
-- PagedGridView
-  - Added atomic `SetRows` / `SetColumns` plus nested `BeginUpdate` / `EndUpdate` and RAII `DeferUpdates` batching.
-  - Added const row/column accessors and safe boolean row/column removal results.
-  - `Rows` and the projected `Columns` are observable. Direct column insert/remove/move/swap and batched resets keep cells aligned across every page, while row identity and page clamping remain stable.
-  - Moved pager layout, behavior, appearance, page size, and transient page index onto shared property metadata.
-  - Paging interactions and page-size clamping now preserve active `PageIndex` bindings.
-- PropertyGridView
-  - Added atomic `SetItems`, public selection helpers, and explicit editing-session APIs that also work without a parent Form.
-  - Added reusable mixed-value, reset-request, action-row, localized-header, and bounded-slider semantics. Slider sessions publish start/completed/canceled events so hosts can group live previews into one command.
-  - The Designer surface now hosts this native grid directly. Native Bool/Enum/Color/Slider editors (including `ColorPickerPopup`) replace per-row Designer control construction; binding and structural dialogs are exposed as native action rows.
-  - `Items` is observable; direct insert/remove/move/swap/sort and batched reset preserve logical selection, active editor identity, binding state, category state, and scrolling.
-  - Moved layout, behavior, appearance, selection, hover, and scrolling onto shared property metadata; interaction state remains transient and binding-safe.
-  - Removed Designer-specific scalar branches in favor of generic metadata persistence and code generation.
-  - Structural item persistence/codegen now preserves `Description`, `ReadOnly`, `Options`, and `Tag` and restores through `SetItems`.
-- MediaPlayer
-  - Added boolean-returning `TryPlay`, `TryPause`, `TryStop`, `TryResume`, and `TrySeek` plus `TogglePlayback`, `SeekBy`, normalized `SetProgress`, and explicit `Close`.
-  - Added state/error inspection helpers, `OnStateChanged`, and detailed `OnMediaError(HRESULT)` while retaining the compatibility events.
-  - Synchronized asynchronous Media Foundation callback detachment and made playback state, last error, and decoder-thread position publication atomic.
-  - Moved playback configuration, decode preferences, and render mode onto shared property metadata with coercion and TwoWay Binding support.
-  - Removed Designer-specific scalar persistence/property/codegen branches; legacy scalar fields upgrade to metadata and generated configuration precedes `Load`.
-- WebBrowser
-  - Replaced the macro-dependent public class layouts with one PImpl ABI; public headers no longer expose WebView2, WRL, COM, DirectComposition, or event-token types.
-  - Added explicit initialization state and per-stage HRESULT diagnostics plus boolean-returning `TryNavigate`, `TrySetHtml`, reload/stop/history operations.
-  - Replaced competing pending URL/HTML fields with one last-write-wins pending navigation slot and preserved configuration set before WebView creation.
-  - Added persistent `InitialUrl`, `ZoomFactor`, context-menu, status-bar, and zoom-control metadata with coercion and TwoWay Binding support.
-  - Guarded WebView2 environment/controller/event/script callbacks with a shared lifetime token and made the disabled build report `Unsupported` / `E_NOTIMPL` through the same ABI.
-  - Reused the real metadata contract in the Designer placeholder, so persistence and generated C++ use the generic metadata path.
-- ScrollView
-  - Added scroll metrics and range accessors: `GetScrollLayout`, `MaxScrollX`, and `MaxScrollY`.
-  - Added programmatic scrolling helpers: `ScrollToStart`, `ScrollToEnd`, `ScrollToTop`, `ScrollToBottom`, `ScrollToLeft`, `ScrollToRight`, and `ScrollIntoView`.
-- ProgressRing
-  - Matched `ProgressBar` value semantics with `MaxValue`, `Value`, `OnValueChanged`, `SetRange`, `Increment`, and `Reset`.
-- PictureBox
-  - Added `LoadFromFile`, `ClearImage`, and `SizeToImage`.
-- ToolBar
-  - Added `RemoveToolButton`, `RemoveToolButtonAt`, and `ClearToolButtons`.
-- SplitContainer
-  - Added `SetOrientation`, `SetSplitterPercent`, `GetSplitterPercent`, `CollapseFirstPanel`, and `CollapseSecondPanel`.
-- LoadingRing
-  - Added `Start`, `Stop`, and `Restart`.
-- ToolTip
-  - Added `Target`, `IsOpen`, and `SetText`.
-- ContextMenu
-  - Added `GetItem`, `FindItemById`, `FindItemByText`, ownership-safe insert/detach/remove APIs, recursive removal, and `ClearItems`.
-- DateTimePicker
-  - Added `SetNow`, `SetToday`, `SetDate`, `SetTime`, and `GetDisplayText`.
-- Menu/MenuItem
-  - Added ownership-safe top-level insert/detach/remove/clear APIs.
-  - `MenuItem::SubItems` is observable and has matching `unique_ptr`-based insert/detach/remove/clear helpers. Structural changes invalidate stale hover/open paths in both Menu and ContextMenu.
-- StatusBar
-  - Added `InsertPart`, `RemovePartAt`, and `FindPart`.
-- Taskbar
-  - Replaced the shared raw COM pointer with per-instance PImpl/ComPtr ownership, balanced COM initialization, `HrInit`, and null-safe destruction.
-  - Added `TrySetValue`, `TrySetState`, `TryClear`, indeterminate/paused/error/normal helpers, cached state/value inspection, and initialization/operation HRESULT diagnostics.
-  - Value updates clamp to Total and switch NoProgress/Indeterminate to Normal while legacy void methods remain source-compatible.
-- Control child ownership
-  - `Control::Children` is now an observable, vector-readable owning collection. Direct add/remove/replace/move/swap and batched mutations synchronize Parent/ParentForm, inherited styles, Form interaction references, layout, and accessibility before public notification.
-  - Invalid null, duplicate, cross-parent, cyclic, TabControl non-page, and Menu non-item insertions are rejected with the collection restored.
-  - Added `InsertControl`, `InsertOwned`, `DetachControlAt`, `DeleteControlAt`, `ClearControls`, `ContainsControl`, and `IndexOfControl`; erase/clear remain detach-only compatibility operations.
-  - Form now exposes indexed root insertion plus `TryInsertOwned`, which preserves the caller's `unique_ptr` on failure and supports RuntimeDocument's transactional external-root host adapter.
-  - Form exposes its unscaled configured/default-font and ownership state so runtime presentation rollback can preserve borrowed versus owned font semantics without observing DPI-scaled substitutes.
-- NotifyIcon
-  - Migrated the complete tray, tooltip, balloon, and menu path from ANSI to Unicode while retaining narrow UTF-8/ACP compatibility overloads.
-  - Added `TryInitialize`, `TryShow`, `TryHide`, tooltip/balloon/menu Try APIs, visible/initialized state, and HRESULT diagnostics.
-  - Replaced shallow copied menu handles with a value-semantic recursive menu model; popup HMENU trees are built on demand and destroyed after use.
-  - Added recursive find/enable/rename/remove, duplicate command rejection, count inspection, automatic right-click popup, and Explorer-restart recovery.
-  - Form dispatch now matches window/message/icon ID and supports multiple visible NotifyIcon instances; `Instance` remains only as a legacy alias.
-- Keyboard focus and accessibility
-  - Added metadata-backed `IsTabStop`, `TabIndex`, `AccessKey`, accessible name/description/help text, AutomationId, role, and focus-visual properties.
-  - Added stable tree-order Tab traversal with TabIndex sorting, Shift+Tab wrapping, access-key routing, default/cancel buttons, and a shared `Focus()` / `Invoke()` contract.
-  - Button, LinkLabel, CheckBox, RadioBox, and Switch now retain logical focus after pointer activation and expose the same primary action to keyboard and assistive technology callers.
-  - Added value-only accessibility snapshots with effective enabled/visible/focus/check/password/read-only state; editable content is separated from accessible names and password text is never exposed.
-  - Form now answers `WM_GETOBJECT` with a lifetime-safe MSAA client object covering names, roles, states, values, shortcuts, focus, location, navigation, hit testing, selection, and default actions, plus WinEvent change notifications.
-  - Added a lifetime-safe native UI Automation fragment provider for the real Control tree, including stable runtime IDs, hierarchy navigation, hit testing, focus, property/event updates, and safe invalidation of retained providers after Form destruction.
-  - Added Invoke, Toggle, Value, RangeValue, ExpandCollapse, SelectionItem, and Selection patterns for core action, edit, range, combo/expander, radio, and tab controls; password values stay private.
-  - Added stable virtual UIA fragments for ListView/ListBox items, ComboBox items, TreeNode objects, and GridView headers, rows, and cells, including hierarchical navigation, virtual hit testing, and safe invalidation after item removal or Form destruction.
-  - Added virtual Selection/SelectionItem, Toggle, ExpandCollapse, Grid/GridItem, Table/TableItem, Value, Invoke, VirtualizedItem, and ScrollItem patterns. ListView/ListBox, ComboBox, TreeView, and GridView containers also expose native Scroll Pattern metrics/actions; ListView Details mode exposes a stable header/row/cell tree with Grid/Table semantics. Provider focus is tracked independently from selection, selection operations are idempotent, and scrolling does not silently change selection.
-  - Native virtual navigation now uses indexed child, sibling, and owner-local hit-test queries instead of copying and recursively scanning complete child lists. The four built-in virtual containers maintain mutation-invalidated ID indexes; ListView Details and GridView create cell identities on demand and prune only materialized identities after row/column changes.
-  - ListView rendering now derives a contiguous viewport candidate range for List, Details, Tile, and Icon modes instead of scanning every item per frame. Icon hit testing maps coordinates directly to a grid candidate and validates only that item; `GetVisibleItemRange()` exposes the same half-open range for deferred item work.
-  - ListView item identity now uses a parallel logical-ID vector and incrementally repairs only the affected suffix/range for add, remove, move, swap, and replace. Its logical-ID selection cache preserves multiple selections across structural movement and distinguishes item-projected current values from genuinely external Local/Binding input. Nested `DeferUpdates()` keeps owner state synchronized per mutation while coalescing public Items/Columns Reset events, scrolling, UIA notification, and redraw.
-  - Added Windows high-contrast, client-animation, text-scale, and keyboard-focus-cue snapshots with automatic setting refresh, scalable inherited/explicit fonts, common system-color overrides, and reduced-motion handling across animated controls.
-  - Designer catalogs and code generation persist the new keyboard/accessibility metadata, including AccessibleRole choices.
+- 控件类型、属性、事件、命令、模板部件及名称作用域均由 XAML Schema 定义。
+- C++ 只承载 native behavior host、事件/命令处理、平台消息、输入、渲染 realization 和自动化 peer。
+- C++ 不向 XAML 注册控件类型，也不根据 C++ RTTI/枚举猜测声明类型能力。
+- 动态 Materializer、Designer 预览和静态 CodeGen 必须消费同一 XAML QName、属性元数据和事件目录。
+- 框架默认外观只定义在 `Themes/Generic.xaml`；C++ 只能嵌入、缓存、物化和执行该 XAML。
+- 不保留与新方向无关的 Legacy 兼容入口。
 
-## Next High-Value Passes
+## 本轮确认并清除的旧语义
 
-- Virtual collection depth
-  - Add row-header relationships only to controls that visually present row headers; current ListView Details and GridView surfaces present column headers only.
-  - Extend observable collection migration to remaining designer-owned structural models where direct vector mutation is still public.
-  - Add measured render/UIA latency budgets on dedicated, controlled benchmark machines. Indexed navigation, lazy two-dimensional identity materialization, and mutation invalidation are now stressed with 12k-row Details, 12k-item ComboBox, 5k-node TreeView, and 3k-by-6 GridView datasets; `CUI_TEST_TIMINGS=1` emits informational per-test baselines without making workstation speed a correctness gate.
-  - Add deeper event-listener tests for recycling and bulk updates; direct mutation, stable identity, physical/nested ownership, and batched notification order are now covered for the Control tree, ComboBox, ListView/ListBox, TreeView, GridView, PagedGridView, PropertyGridView, tabs, and menu trees.
-- System-preference depth
-  - Audit specialized selected/hover/accent colors under Windows contrast themes instead of relying only on common surface, foreground, and focus overrides.
-  - Exercise large text through 225% in dense and composite controls, fixing clipping and minimum-size assumptions discovered by visual regression.
+### 外观与渲染
 
-## Verification Checklist
+- 已删除公共 `BackColor`、`ForeColor`、`BorderColor`；公共外观只使用 `Background`、`Foreground`、
+  `BorderBrush` 等 Brush 依赖属性。
+- 已删除 `FocusedColor`、`FocusBorderColor` 和 Control 尾部直绘焦点/验证装饰器。焦点、验证、hover、pressed
+  等状态由 Style、Template/Adorner 和 VisualState 表达。
+- `BrushKind::None` 是真正的 unset/no-paint 值；透明色不是“没有 Brush”。颜色字面量只作为 XAML 简写，
+  进入模型后只保存结构化 Brush，避免标量文本与对象双表示。
+- 公开 setter 走 Local value source；高对比度和默认外观只进入 Theme/fallback，不覆写作者 Local 值。
+- Panel 在 `Background=None` 时不绘制 fallback fill；ContentControl/ItemsControl 不安装透明画刷伪 Theme 值。
+- TextBlock behavior 不硬画 disabled overlay；状态外观属于 Style/Template/VisualState。
 
-- Public setters clamp invalid input instead of leaving controls in inconsistent states.
-- Programmatic changes fire changed events only when the observable value actually changes.
-- Programmatic changes call `InvalidateVisual()` when the visual result changes.
-- Text editing APIs preserve undo/redo behavior where the user would expect it.
-- Container/list mutation updates selected indices and scroll offsets after removing or inserting items.
+### 自动化与可访问性
+
+- XAML 只公开 `AutomationProperties.Name`、`FullDescription`、`HelpText`、`AutomationId` 等 attached property。
+- 自动化能力只由 `AutomationPeer` 声明；已删除 `AccessibleRole`、角色推断、按 `UIClass` 猜 Pattern 和
+  `IAccessibilityVirtualizedControl` 并行 provider。
+- 虚拟子项使用同一 `AutomationPattern` 集合，包括 ScrollItem、VirtualizedItem、GridItem 和 TableItem。
+- Window/UIA provider 只查询 peer。ComboBox 的 UIA Scroll 指标读取其真实 `ScrollViewer`，不再复制滚动模型。
+
+### 焦点与助记键
+
+- 焦点状态只来自每 Window 唯一 `FocusManager` 的只读 `IsFocused`、`IsKeyboardFocused`、
+  `IsKeyboardFocusWithin` 投影；selection 不得冒充 focus。
+- `Focusable` 决定可否取得键盘焦点，`IsTabStop` 只决定 Tab 候选资格。
+- 助记键只解析 WPF `AccessText` 标记 `_`，`__` 表示字面 `_`。不存在通用可写 `AccessKey` 依赖属性。
+
+### 类型与静态生成
+
+- `RuntimeTypeId(namespace URI + local name)` 是声明类型的唯一身份；`UIClass` 只是内部 native behavior host。
+- Parser 对控件和全部 `Style.TargetType` 保存 QName；动态 Materializer 与静态 CodeGen 都附加同一
+  `DeclarativeTypeDescriptor`。
+- 静态 Style selector 同时输出 QName，不能只输出 `UIClass`。当前 CodeGen 契约为 v32，保证旧生成 stamp 失效。
+- 静态 generated base 构造函数不展开 XAML；用户 code-behind 构造函数体调用 `InitializeComponent()`，确保
+  C++ 虚事件、命令和模板状态在完整派生实例上连接。旧 base-constructor lowering 不保留。
+- 旧 native 名称不再作为 XAML QName 接受，也不通过 serializer/loader 自动升级。
+- `Panel` 是抽象 XAML 类型；`ComboBoxItem : ListBoxItem`、`ToolBar : HeaderedItemsControl`、
+  `Popup : FrameworkElement` 且只拥有 `Child`，能力由真实层级而不是 Designer/serializer 白名单决定。
+- `Panel`、`Decorator`、`ContentPresenter`、`ItemsPresenter`、TextBlock behavior host 和 `WebBrowser`
+  均停在 `FrameworkElement` 语义边界；`Border : Decorator`，`ItemsControl : Control`。私有 C++ behavior
+  继承不能扩大 projected XAML 能力。
+
+### 身份与值转换
+
+- QName、成员、依赖属性、事件、资源 key、`x:Name`、binding/DataContext 路径、VisualState/Storyboard、
+  TargetName/PropertyPath、Style 条件和 Designer 扩展 ID 均精确匹配。
+- 错误大小写不被 parser、runtime、Designer 或 CodeGen canonicalize 成正确身份。
+- 声明组件的 String `AllowedValues` 是作者数据，精确比较；bool 只接受不区分大小写的 `true/false`，
+  不接受 `1/0/yes/no/on/off` 或空串。
+- 仅文件系统路径、展示搜索/排序、enum/value token 以及显式 `CollectionViewSource.IgnoreCase` 数据比较允许
+  大小写折叠。
+
+### 树、宿主与基础状态
+
+- Visual children 只有只读 view；所有权变化和重排必须经过 `Control` 的受控事务 API。
+- presentation Window 只有只读查询，不能由任意调用方改写；平台宿主只由 Window 内部拥有。
+- `DesignId` 只有只读 runtime 查询和 infrastructure-only 写桥，不是依赖属性或应用状态。
+- `Tag` 是任意 `BindingValue` 的对象依赖属性；Cursor 是可继承依赖属性，最终解析不会被控件的默认命中策略覆盖。
+- 文本编辑缓存均为私有状态；选择和 caret 只能通过规范编辑 API 改变。
+- 公共 CLR-shaped 依赖属性 setter 等价于 `SetValue` 并产生 Local source；behavior 内部仅在明确需要保留
+  expression 时使用 `SetCurrentValue`。
+- projected 类型找不到有效依赖属性元数据时，`SetPropertyField`/`SetCurrentPropertyField` 必须拒绝写入，
+  不得落入共享 C++ backing。通用 `Text` 也不能借 behavior-host 基类泄漏给非文本类型。
+
+### 原生 realization 边界
+
+- 公共 typography 只有 `FontFamily` / `FontSize`；不存在可持有或替换的 `Control.Font` 对象。
+- `GetRenderFont()` 和 `GetDrawingContext()` 仅供 C++ native behavior 在 measure/render 阶段使用。
+- Window 不公开 `Render` 或 `PlatformWindowHost`。扩展绘制通过 `NativeSurfaceRenderContext`，不能任意取得并长期保存
+  当前 D2D frame context。
+- `PresentationRenderHost` 是设备/surface/frame transaction 的唯一 owner，`PresentationScene` 是 retained 结构权威。
+- `PresentationRenderHost` 可跨帧持有设备和 surface 资源，但 active `DrawingContext` 只在已打开的 frame surface
+  内存在；关闭 surface、commit/abort 和 device recovery 后必须为空。`WM_PAINT` 通过 host attached 状态启动
+  transaction，不能要求帧外 context 预先存在。
+
+### 已删除的容器/内容旁路
+
+- StackPanel 不公开 `Spacing` 或容器级 content alignment；间距和交叉轴对齐由子元素 Margin/Alignment 表达。
+- GroupStyle 只保留 HeaderTemplate 等声明语义，不保存 HeaderIndent/HeaderSpacing/HeaderHeight 固定像素布局。
+- 不存在 ContentText/HeaderText 字符串捷径或 ContextMenu 字符串 item bag；内容与项目只走对象树、模板和 Items 管线。
+- `Control` 不公开 `CanvasLeft`、`GridRow` 或 `DockPosition` 等扁平属性；附加值只由
+  `Canvas::Get/Set*`、`Grid::Get/Set*`、`DockPanel::Get/SetDock` 投影。
+
+### Style/Resource 降级边界
+
+- `Control` 不公开 Style key、Theme/Document StyleSheet 或 ResourceDictionary backing 的 getter/setter。
+- Runtime、Designer 与 CodeGen 只能通过 infrastructure-only `StyleAccess` 安装 XAML 降级结果。
+- `ControlStyleSheet` 是 XAML Style/Resources 的物化 IR，不是 CSS 式第二作者系统；应用代码只使用
+  ResourceDictionary、Style、Setter、Trigger、Template 与 Dynamic/StaticResource 语义。
+- `Themes/Generic.xaml` 是框架 Theme 的唯一声明源；共享 `XamlDocumentCompiler` 为 Runtime、Designer 和
+  CodeGen 展开同一模板树，Theme 与作者 Style 保持不同值源。
+- `Button` 的默认 Style、ControlTemplate、TemplateBinding 和 CommonStates 已迁入 Generic.xaml。
+  Local Template 和作者 Style.Template 可覆盖 Theme；C++ 不提供第二套默认模板注册。
+- Style base Setter 必须先进入有效值系统，再编译和同步依赖这些对象的 Trigger/Storyboard clocks；
+  不能靠 native 构造器预制透明 Brush 来让对象路径“碰巧可解析”。
+
+### 结构布局与 chrome 所有权
+
+- `Control.BorderThickness` 是四边 `Thickness`，Runtime、Designer、CodeGen、布局和渲染共用同一类型。
+  `Border` 不保存第二份 thickness backing，也不重复注册同名 metadata。
+- ContentPresenter/ItemsPresenter 不自动消费 Padding；Popup 不拥有 Background/Padding；WebBrowser 外观由
+  XAML Border/Template 组合表达。结构类型不能读取隐藏 Control chrome。
+- 模板根始终安排在 Control 的完整 final slot；Padding 由模板树中的 Border/Presenter 通过 TemplateBinding
+  消费一次，behavior host 不预先 deflate。
+- `Background=None` 表示无绘制；透明 Brush 只有作者或 Theme XAML 显式声明时才存在。
+- `AffectsParentArrange` 必须使父 Panel 的 child-arrangement policy 失效；Canvas attached offset 变化需要真实
+  重排子元素，同时保持 Measure 缓存有效，并只推进 retained geometry revision。
+
+### 生命周期、拖放与输入身份
+
+- Window 事件面只保留 WPF `Closing`、`Closed`、`LocationChanged`、`ContentRendered`；不存在 `Shown`、
+  `ThemeChanged`、FormClosing/FormClosed 或二次 system-key 发布。
+- 拖放只有 OLE + routed `DragEventArgs`；不存在 `WM_DROPFILES`、`DropFile`、`DropText` 或平行文件列表载荷。
+- `SizeChanged` 携带 PreviousSize/NewSize，位置变化单独发布；`IsVisibleChanged` 只观察有效 Visibility 转换。
+- `Key` 数值不等于 Win32 virtual key。`VK_*` 只在 Window 平台边界映射；公开 system key 只由
+  `Key == Key::System` 和 `SystemKey` 表示，不存在第三个 `IsSystemKey` 布尔状态。
+- `Key`、`ModifierKeys`、`MouseButton`、`MouseButtonState` 和 `MouseButtonStates` 是正交身份；不接受
+  Keys/MouseButtons 混合掩码、KeyData、PressedButtons 或 SuppressKeyPress。
+- CodeGen 输出 Key/MouseAction/ModifierKeys 的符号表达式，不把 enum 整数写入生成 ABI。
+
+### 事件所有者与发布权限
+
+- 普通 `Event` 消费者只能订阅；publisher 的 Raise/Clear 只在 `EventInfrastructure.h`。
+- parent-change 通知只由 Tree infrastructure 发布；route engine 的 handler-table 访问只在
+  `RoutedEventInfrastructure.h`。
+- `Click` 的内部 route slot 是 protected；公开 facade 只存在于 `ButtonBase`、`MenuItem`。
+  Designer/Runtime/CodeGen 不再使用 `UIElement::Click` 作为公开事件 owner。
+- 其他 owner-specific routed event 同样由实际控件用 `using` 暴露；UIElement 的 protected slot 只是
+  `AddHandler`/route 实现，不是所有元素都拥有这些 CLR 事件的声明。
+
+### Window 与 Application 基础设施
+
+- transient presentation、tab order 构建、native color/cursor 投影、输入/focus/text-composition 统计、
+  dirty rect、scene/frame/device-recovery 诊断均由 `WindowInfrastructure.h` 窄桥访问，不属于公共 Window 语义。
+- `Application::PumpPendingMessages` 已删除；不存在 DoEvents 式同步消息泵旁路。DPI 缩放 helper 是 Window 私有平台实现。
+- 未使用的 `Application::ExecutablePath`、`StartupPath`、`ApplicationName`、`LocalUserAppDataPath`、
+  `UserAppDataPath` 和 `Window::IsShowingAsDialog()` 已删除；Application 不再兼任 WinForms 式路径工具箱，
+  Window 也不公开内部 modal-loop 状态。
+- `Application::Run` 仍是当前唯一进程 Dispatcher loop；`GetWindows` 是只读 snapshot，mutable HWND registry 不公开。
+
+## 仍保留但不属于 Legacy 的内部实现
+
+- 无模板时的 native fallback renderer，以及受保护的 `Renderer*Color`/系统色输入。
+- `UIClass` 的 behavior-host 映射和框架 class-handler 继承闭包。
+- 尚未迁入 `Generic.xaml` 的控件仍可能由 Runtime/CodeGen 以 Theme source 安装 presenter 默认值；
+  已完成迁移的 Button 不再依赖这条默认外观路径。
+- `Control` 私有 Style/Resource lowering 存储和 Canvas/Grid/DockPanel attached-property backing；外部只能经
+  infrastructure bridge 或真实 owner API 访问。
+- C++ 内部 `AutomationName`、`ProcessAccessKey` 等存储/行为名称；它们分别实现
+  `AutomationProperties.Name` 和 AccessText 输入语义，不是额外 XAML 属性。
+- `UIClass`、native fallback renderer、内部 ObservableCollection 通知和非拥有 parent 指针；它们均封闭在
+  behavior/所有权实现内，不决定 XAML 类型身份，也不公开第二个可写状态面。
+- XAML `DesignId` current-only 编辑元数据及只读 runtime identity；它服务增量热重载/Designer，不允许应用改写。
+- Window `Handle` 是明确的 HWND interop 投影；具体 `PlatformWindowHost` 和 DrawingContext 不公开。
+
+以上内部路径都必须让位于 XAML 作者值，且不得注册为第二套公共属性或类型系统。
+
+## 当前持续门禁
+
+- 全仓非文档代码不存在 `BackColor`、`ForeColor`、`BorderColor`、`AccessibleRole`、`FocusedColor`、
+  `FocusBorderColor`、`IAccessibilityVirtualizedControl` 或 `AccessibilityVirtualPattern`。
+- XAML QName 经 Parser → canonical XAML → Parser、动态 Materializer和静态 CodeGen 往返不丢失。
+- Brush shorthand 经往返后只剩结构化对象表示。
+- Visual child、presentation host、DesignId、Tag、Cursor 与文本选择均只能走各自的单一规范入口。
+- 任意 XAML Cursor 值能覆盖控件默认区域光标，Theme/Default 才调用 native `QueryCursor` 行为。
+- 公共头文件不存在 `Window.Render`、`GetPlatformWindowHost()` 或 `Control.Font` 对象入口。
+- 普通 UIElement 不公开 Click；生成物不含 `&UIElement::Click` 或 numeric `static_cast<Key>(...)`。
+- 非基础设施代码不调用 Window presentation/input/focus/text diagnostics，且不存在 `PumpPendingMessages`。
+- 公共面不存在 Application 路径杂项工具或 `Window::IsShowingAsDialog()` 状态探针。
+- 输入公共面不含 `IsSystemKey`、KeyData、MouseButtons/PressedButtons 或旧 DropFile/DropText。
+- public `Control` 不含 StyleSheet/ResourceDictionary lowering setter 或扁平 Canvas/Grid/Dock 属性。
+- 错误大小写的 XAML 类型、成员、资源、binding path、VisualState/Storyboard 身份和声明字符串候选值被拒绝。
+- bool legacy token 被拒绝。
+- Generic.xaml、作者 Style 与 Local 值分别保持 Theme、Style 与 Local 来源；模板内部值保持 Template 来源。
+- unsupported projected property 不产生隐藏 backing 写入；公开 DP wrapper 写入后报告 Local source。
+- structural element 不消费未声明的 Control Padding/Border/Text，模板 Padding 不得双重扣除。
+- BorderThickness 只有一个 Thickness backing；Border、布局和 renderer 读取同一有效值。
+- Style Setter 先于依赖对象路径的 Trigger/Storyboard clock 物化。
+- frame transaction 外不暴露 DrawingContext，host/device 的跨帧所有权与当帧绘制权限严格分离。
+- Canvas 等 attached layout property 会使父 Panel 真正重排，并命中独立 geometry revision/cache 分类。
+- 静态生成物只在 `InitializeComponent()` 中展开 XAML，用户构造函数必须显式调用它。
+- Designer、CUITest、Runtime sample、static generated sample、CodeGen version 与完整核心回归全部通过。
+
+## 下一阶段
+
+1. 将 CheckBox、RadioButton、ProgressBar、Slider 等剩余控件的默认 Style/ControlTemplate/VisualState
+   批量迁入 `Generic.xaml`，覆盖完成后删除对应 native fallback。
+2. 补齐 Background/Foreground/BorderBrush 在所有 renderer 中对渐变、图片、Transform 和 None 的 realization。
+3. 建立独立 Adorner 层承载 validation/focus 等非内容视觉。
+4. 扩展 AutomationPeer 与虚拟 peer，但不得恢复基于具体控件类型的 Window/UIA 分派。
+
+当前 current-only Designer Schema 为 v43，静态生成契约为 v32，核心回归为 317/317。旧 native 名称、
+旧 QName、旧 snapshot、旧生成 stamp、base-constructor lowering、隐藏 chrome backing 和错误大小写 fallback
+均不保留。

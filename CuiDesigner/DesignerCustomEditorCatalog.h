@@ -6,14 +6,7 @@
 
 enum class DesignerCustomEditorKind : unsigned char
 {
-	ComboBoxItems,
-	GridViewColumns,
-	TabControlPages,
-	ToolBarButtons,
-	TreeViewNodes,
-	GridPanelDefinitions,
-	MenuItems,
-	StatusBarParts
+	GridDefinitions
 };
 
 struct DesignerCustomEditorDescriptor
@@ -22,7 +15,7 @@ struct DesignerCustomEditorDescriptor
 	UIClass TargetType = UIClass::UI_Base;
 	std::wstring ButtonText;
 	int Order = 0;
-	DesignerCustomEditorKind Kind = DesignerCustomEditorKind::ComboBoxItems;
+	DesignerCustomEditorKind Kind = DesignerCustomEditorKind::GridDefinitions;
 };
 
 /** Designer-only registry for structural/collection editors. */

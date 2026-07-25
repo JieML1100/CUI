@@ -1,6 +1,7 @@
 #include "DesignerPropertyEdit.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../CUI/include/DependencyPropertyInfrastructure.h"
 #include <algorithm>
 #include <cwctype>
 
@@ -8,7 +9,7 @@ namespace
 {
 	bool NamesEqual(const std::wstring& left, const std::wstring& right)
 	{
-		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		return left == right;
 	}
 
 	std::wstring Trim(std::wstring value)
@@ -29,7 +30,7 @@ namespace
 		const DesignerControlPropertyDescriptor& property,
 		std::wstring valueText)
 	{
-		if (property.Editor == DesignerControlPropertyEditorKind::FontName)
+		if (property.Editor == DesignerDependencyPropertyEditorKind::FontFamily)
 		{
 			valueText = Trim(std::move(valueText));
 			if (NamesEqual(valueText, L"<Default>")) valueText.clear();
@@ -64,10 +65,10 @@ namespace
 bool DesignerPropertyValueSnapshot::EquivalentTo(
 	const DesignerPropertyValueSnapshot& other) const noexcept
 {
-	if (UsesLegacyPersistence != other.UsesLegacyPersistence
+	if (UsesNativePersistence != other.UsesNativePersistence
 		|| CanonicalPropertyName != other.CanonicalPropertyName)
 		return false;
-	if (UsesLegacyPersistence)
+	if (UsesNativePersistence)
 		return EffectiveSerializedValue == other.EffectiveSerializedValue;
 	return DesignValue == other.DesignValue
 		&& HasLocalValue == other.HasLocalValue
@@ -184,13 +185,16 @@ bool CaptureSnapshot(
 		snapshot.CanonicalPropertyName = std::move(canonicalName);
 	if (const auto* metadata = runtimeControl.FindPropertyMetadata(
 		snapshot.CanonicalPropertyName))
-		snapshot.UsesLegacyPersistence = metadata->Design().Persistence
-			== ControlPropertyPersistence::Legacy;
+		snapshot.UsesNativePersistence = metadata->Design().Persistence
+			== DependencyPropertyPersistence::Native;
 
-	snapshot.HasLocalValue = runtimeControl.TryGetPropertyValue(
-		row.Name,
-		ControlPropertyValueSource::Local,
-		snapshot.LocalValue);
+	snapshot.HasLocalValue = runtimeControl.GetPropertyExpressionKind(
+		row.Name, DependencyPropertyValueSource::Local)
+		== DependencyPropertyExpressionKind::None
+		&& runtimeControl.TryGetPropertyValue(
+			row.Name,
+			DependencyPropertyValueSource::Local,
+			snapshot.LocalValue);
 	if (snapshot.HasLocalValue)
 		snapshot.LocalSerializedValue = snapshot.EffectiveSerializedValue;
 	const auto tracked = designerControl.MetadataProperties.find(
@@ -241,17 +245,16 @@ bool RestoreSnapshot(
 	{
 		const auto& canonicalName = snapshot.CanonicalPropertyName.empty()
 			? row.Name : snapshot.CanonicalPropertyName;
-		if (snapshot.UsesLegacyPersistence)
+		if (snapshot.UsesNativePersistence)
 		{
 			BindingValue converted;
 			restored = DesignerStyleSheetUtils::TryConvertValue(
 				snapshot.EffectiveSerializedValue, converted, outError)
-				&& runtimeControl.TrySetPropertyBaseValue(
-					canonicalName, converted);
+				&& cui::framework::DependencyPropertyAccess::SetBaseValue(
+					runtimeControl, canonicalName, converted);
 			if (restored && runtimeControl.HasPropertyValue(
-				canonicalName, ControlPropertyValueSource::Local))
-				restored = runtimeControl.ClearPropertyValue(
-					canonicalName, ControlPropertyValueSource::Local);
+				canonicalName, DependencyPropertyValueSource::Local))
+				restored = runtimeControl.ClearPropertyValue(canonicalName);
 			if (restored)
 			{
 				designerControl.MetadataProperties.erase(canonicalName);
@@ -264,19 +267,15 @@ bool RestoreSnapshot(
 				canonicalName, snapshot.TrackedDynamicResourceKey);
 		else if (snapshot.HasLocalValue)
 			restored = runtimeControl.TrySetPropertyValue(
-				row.Name,
-				snapshot.LocalValue,
-				ControlPropertyValueSource::Local);
+				row.Name, snapshot.LocalValue);
 		else
 		{
-			restored = runtimeControl.ClearPropertyValue(
-				row.Name,
-				ControlPropertyValueSource::Local);
+			restored = runtimeControl.ClearPropertyValue(row.Name);
 			if (!restored)
 				restored = !runtimeControl.HasPropertyValue(
-					row.Name, ControlPropertyValueSource::Local);
+					row.Name, DependencyPropertyValueSource::Local);
 		}
-		if (restored && !snapshot.UsesLegacyPersistence)
+		if (restored && !snapshot.UsesNativePersistence)
 		{
 			if (snapshot.HasTrackedValue)
 				designerControl.MetadataProperties[canonicalName]
@@ -359,8 +358,8 @@ DesignerPropertyEditResult Validate(
 		if (row.Source != DesignerPropertyRowSource::RuntimeMetadata)
 			return DesignerPropertyEditResult::Failure(
 				L"当前属性来源不支持控件批量编辑。");
-		if (runtimeControl.GetPropertyValueSource(row.Name)
-			== ControlPropertyValueSource::Binding)
+		if (runtimeControl.GetPropertyExpressionKind(row.Name)
+			== DependencyPropertyExpressionKind::Binding)
 			return DesignerPropertyEditResult::Failure(
 				TargetPrefix(editTarget) + L"属性 " + row.Name
 				+ L" 由 Binding 占用，不能设置 Local 值。");

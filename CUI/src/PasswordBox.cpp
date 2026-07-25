@@ -1,27 +1,24 @@
-﻿#pragma once
+#pragma once
 #define NOMINMAX
 #include "PasswordBox.h"
-#include "Form.h"
+#include "Window.h"
 #include "TextEditCore.h"
 #include <cstring>
-#pragma comment(lib, "Imm32.lib")
 
 namespace
 {
+	constexpr float FallbackCornerRadius = 6.0f;
+	constexpr float FallbackFocusBorderThickness = 1.6f;
+	constexpr auto FallbackHoverColor = cui::theme::palette::SurfaceSubtle;
+	constexpr auto FallbackFocusBorderColor = cui::theme::palette::Accent;
+	constexpr auto FallbackDisabledOverlayColor =
+		cui::theme::palette::DisabledOverlay;
+
 	CuiTextEdit::EditOptions PasswordEditOptions()
 	{
 		CuiTextEdit::EditOptions options;
 		options.allowMultiLine = false;
 		return options;
-	}
-
-	void CommitTextChange(Control* control, const std::wstring& oldText, const std::wstring& newText)
-	{
-		if (!control || oldText == newText)
-			return;
-		control->SetTextInternal(newText);
-		control->TextChanged = true;
-		control->OnTextChanged(control, oldText, newText);
 	}
 
 	bool TryReadClipboardText(HWND owner, std::wstring& text)
@@ -48,84 +45,187 @@ namespace
 }
 
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
-bool PasswordBox::HandlesNavigationKey(WPARAM key) const
+
+void PasswordBox::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+	static const bool registered = []
+	{
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyOptions<PasswordBox, std::wstring> options;
+		options.DefaultValue = std::wstring{};
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Changed = [](
+			PasswordBox& target, const std::wstring&, const std::wstring&)
+		{
+			target.PublishPasswordChanged();
+		};
+		DependencyPropertyRegistry::Register<PasswordBox, std::wstring>(
+			L"Password",
+			[](PasswordBox& target) { return target.Password; },
+			[](PasswordBox& target, const std::wstring& value)
+			{ target.Password = value; },
+			[](PasswordBox& target, Handler handler, DataSourceUpdateMode mode)
+			{
+				if (mode == DataSourceUpdateMode::OnValidation)
+					return target.OnLostFocus.Subscribe(
+						[handler = std::move(handler)](Control*) { handler(); });
+				return target.PasswordChanged.Subscribe(
+					[handler = std::move(handler)](
+						Control*, RoutedEventArgs&) { handler(); });
+			}, std::move(options));
+		RegisterControlBorderThicknessMetadata<PasswordBox>(1.0f, 60);
+		return true;
+	}();
+	(void)registered;
+}
+
+GET_CPP(PasswordBox, std::wstring, Password)
+{
+	return _text;
+}
+
+SET_CPP(PasswordBox, std::wstring, Password)
+{
+	(void)SetPropertyField(L"Password", _text, std::move(value));
+}
+
+void PasswordBox::CommitPasswordEdit(std::wstring value)
+{
+	if (_text == value) return;
+	_text = std::move(value);
+	PublishPasswordChanged();
+}
+
+void PasswordBox::PublishPasswordChanged()
+{
+	RoutedEventArgs args;
+	PasswordChanged(this, args);
+	NotifyAccessibilityValueChanged();
+	RequestLayout();
+	InvalidateVisual();
+}
+
+bool PasswordBox::HandlesNavigationKey(Key key) const
 {
 	switch (key)
 	{
-	case VK_HOME:
-	case VK_END:
-	case VK_PRIOR:
-	case VK_NEXT:
+	case Key::Left:
+	case Key::Right:
+	case Key::Up:
+	case Key::Down:
+	case Key::Home:
+	case Key::End:
+	case Key::PageUp:
+	case Key::PageDown:
 		return true;
 	default:
 		return false;
 	}
 }
-PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)
+PasswordBox::PasswordBox()
 {
-	this->Text = text;
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
-	this->BackColor = cui::theme::palette::Surface;
-	this->BorderColor = cui::theme::palette::BorderStrong;
-	this->ForeColor = cui::theme::palette::TextPrimary;
+	RegisterDependencyProperties();
+	InitializeControlBorderThicknessDefault(1.0f);
+	(void)TrySetPropertyValue(
+		L"Padding", BindingValue(Thickness{ 5.0f }),
+		DependencyPropertyValueSource::Theme);
+	this->RendererBackgroundColor = cui::theme::palette::Surface;
+	this->RendererBorderColor = cui::theme::palette::BorderStrong;
+	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 }
 void PasswordBox::InputText(std::wstring input)
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	CuiTextEdit::ReplaceSelection(newText, this->SelectionStart, this->SelectionEnd, input, PasswordEditOptions());
-	CommitTextChange(this, oldText, newText);
+	std::wstring newText = this->Password;
+	CuiTextEdit::ReplaceSelection(newText, this->_selectionStart, this->_selectionEnd, input, PasswordEditOptions());
+	CommitPasswordEdit(std::move(newText));
 }
 void PasswordBox::InputBack()
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	CuiTextEdit::Backspace(newText, this->SelectionStart, this->SelectionEnd, PasswordEditOptions());
-	CommitTextChange(this, oldText, newText);
+	std::wstring newText = this->Password;
+	CuiTextEdit::Backspace(newText, this->_selectionStart, this->_selectionEnd, PasswordEditOptions());
+	CommitPasswordEdit(std::move(newText));
 }
 void PasswordBox::InputDelete()
 {
-	std::wstring oldText = this->Text;
-	std::wstring newText = this->Text;
-	CuiTextEdit::DeleteForward(newText, this->SelectionStart, this->SelectionEnd, PasswordEditOptions());
-	CommitTextChange(this, oldText, newText);
+	std::wstring newText = this->Password;
+	CuiTextEdit::DeleteForward(newText, this->_selectionStart, this->_selectionEnd, PasswordEditOptions());
+	CommitPasswordEdit(std::move(newText));
 }
 void PasswordBox::UpdateScroll(bool arrival)
 {
-	float renderWidth = this->Width - (TextMargin * 2.0f);
-	auto font = this->Font;
-	std::wstring maskedText = this->GetDisplayText();
-	auto lastSelect = font->HitTestTextRange(maskedText, (UINT32)SelectionEnd, (UINT32)0)[0];
-	if ((lastSelect.left + lastSelect.width) - HorizontalScrollOffset > renderWidth)
+	(void)arrival;
+	float renderWidth = (std::max)(
+		0.0f, this->ActualWidth - Padding.Left - Padding.Right);
+	auto font = this->GetRenderFont();
+	if (!font)
 	{
-		HorizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
+		_horizontalScrollOffset = 0.0f;
+		return;
 	}
-	if (lastSelect.left - HorizontalScrollOffset < 0.0f)
+	std::wstring maskedText = this->GetDisplayText();
+	auto hit = font->HitTestTextRange(
+		maskedText,
+		static_cast<UINT32>((std::clamp)(
+			_selectionEnd, 0, static_cast<int>(maskedText.size()))),
+		0);
+	if (hit.empty())
 	{
-		HorizontalScrollOffset = lastSelect.left;
+		_horizontalScrollOffset = 0.0f;
+		return;
+	}
+	const auto& lastSelect = hit.front();
+	if ((lastSelect.left + lastSelect.width) - _horizontalScrollOffset > renderWidth)
+	{
+		_horizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
+	}
+	if (lastSelect.left - _horizontalScrollOffset < 0.0f)
+	{
+		_horizontalScrollOffset = lastSelect.left;
 	}
 }
 std::wstring PasswordBox::GetSelectedString()
 {
-	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Password.size());
 	if (!span.HasSelection())
 		return L"";
-	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
+	return this->Password.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 
 std::wstring PasswordBox::GetDisplayText()
 {
-	if (this->RevealPassword)
-		return this->Text;
-	return std::wstring(this->Text.size(), this->PasswordChar);
+	return std::wstring(this->Password.size(), _passwordChar);
 }
 
 // ---- 公共选择/编辑 API ----
+int PasswordBox::GetSelectionStart()
+{
+	auto span = CuiTextEdit::NormalizeSelection(
+		_selectionStart, _selectionEnd, Password.size());
+	return span.start;
+}
+
 int PasswordBox::GetSelectionLength()
 {
-	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Password.size());
 	return span.HasSelection() ? static_cast<int>(span.Length()) : 0;
+}
+
+int PasswordBox::GetCaretIndex()
+{
+	return (std::clamp)(
+		_selectionEnd, 0, static_cast<int>(Password.size()));
+}
+
+void PasswordBox::SetCaretIndex(int value)
+{
+	Select(value, 0);
 }
 
 bool PasswordBox::HasSelection()
@@ -135,24 +235,24 @@ bool PasswordBox::HasSelection()
 
 void PasswordBox::Select(int start, int length)
 {
-	const int textLen = static_cast<int>(this->Text.size());
+	const int textLen = static_cast<int>(this->Password.size());
 	start = (std::clamp)(start, 0, textLen);
 	length = (std::clamp)(length, 0, textLen - start);
-	this->SelectionStart = start;
-	this->SelectionEnd = start + length;
+	this->_selectionStart = start;
+	this->_selectionEnd = start + length;
 	this->InvalidateVisual();
 }
 
 void PasswordBox::SelectAll()
 {
-	this->SelectionStart = 0;
-	this->SelectionEnd = static_cast<int>(this->Text.size());
+	this->_selectionStart = 0;
+	this->_selectionEnd = static_cast<int>(this->Password.size());
 	this->InvalidateVisual();
 }
 
 void PasswordBox::ClearSelection()
 {
-	this->SelectionEnd = this->SelectionStart;
+	this->_selectionEnd = this->_selectionStart;
 	this->InvalidateVisual();
 }
 
@@ -171,57 +271,90 @@ void PasswordBox::InsertText(const std::wstring& text)
 bool PasswordBox::Paste()
 {
 	std::wstring clipboardText;
-	if (!TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
+	if (!TryReadClipboardText(this->GetPresentationWindow() ? this->GetPresentationWindow()->Handle : nullptr, clipboardText))
 		return false;
 	if (clipboardText.empty()) return false;
 	this->InputText(clipboardText);
 	return true;
 }
 
-void PasswordBox::Update()
+bool PasswordBox::ApplyTextInput(const TextCompositionEventArgs& input)
 {
-	if (this->IsVisual == false)return;
-	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	auto d2d = this->ParentForm->Render;
-	auto font = this->Font;
-	float renderHeight = this->Height - (TextMargin * 2.0f);
+	if (input.Text.empty()) return false;
+	InputText(input.Text);
+	UpdateScroll();
+	InvalidateVisual();
+	return true;
+}
+
+bool PasswordBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
+{
+	if (_caretRectCacheValid)
+	{
+		outRect = _caretRectCache;
+		return true;
+	}
+	const auto absolute = GetAbsoluteLocationDip();
+	const float x = static_cast<float>(absolute.x)
+		+ Padding.Left - _horizontalScrollOffset;
+	const float y = static_cast<float>(absolute.y) + Padding.Top;
+	const float height = GetRenderFont() && GetRenderFont()->FontHeight > 0.0f
+		? GetRenderFont()->FontHeight : 16.0f;
+	outRect = D2D1::RectF(x, y, x + 1.0f, y + height);
+	return true;
+}
+
+void PasswordBox::OnRender()
+{
+	if (this->IsVisible == false)return;
+	bool isUnderMouse = this->IsMouseOver;
+	auto d2d = this->GetDrawingContext();
+	auto font = this->GetRenderFont();
+	float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
 	std::wstring maskedText = this->GetDisplayText();
-	textSize = font->GetTextSize(maskedText, FLT_MAX, renderHeight);
-	float textOffsetY = (this->Height - textSize.height) * 0.5f;
-	if (textOffsetY < 0.0f) textOffsetY = 0.0f;
+	_textSize = font->GetTextSize(maskedText, FLT_MAX, renderHeight);
+	float textOffsetY = Padding.Top
+		+ (std::max)(0.0f, (renderHeight - _textSize.height) * 0.5f);
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
-	bool isSelected = this->ParentForm->Selected == this;
+	bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
 	D2D1_POINT_2F caretStart{};
 	D2D1_POINT_2F caretEnd{};
 	this->BeginRender();
+	if (GetControlTemplateRoot())
 	{
-		auto backColor = this->BackColor;
-		const float radius = (std::min)(CornerRadius, actualHeight * 0.5f);
+		this->EndRender();
+		return;
+	}
+	{
+		auto backColor = this->RendererBackgroundColor;
+		const float radius = (std::min)(FallbackCornerRadius,
+			actualHeight * 0.5f);
 		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, backColor, radius);
-		if ((isUnderMouse || isSelected) && this->UnderMouseColor.a > 0.0f)
-			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, actualWidth - 2.0f), (std::max)(0.0f, actualHeight - 2.0f), this->UnderMouseColor, (std::max)(0.0f, radius - 1.0f));
-		if (this->Image)
+		if ((isUnderMouse || isSelected) && FallbackHoverColor.a > 0.0f)
+			d2d->FillRoundRect(1.0f, 1.0f,
+				(std::max)(0.0f, actualWidth - 2.0f),
+				(std::max)(0.0f, actualHeight - 2.0f),
+				FallbackHoverColor, (std::max)(0.0f, radius - 1.0f));
+		if (this->Password.size() > 0)
 		{
-			this->RenderImage(radius);
-		}
-		if (this->Text.size() > 0)
-		{
-			auto font = this->Font;
+			auto font = this->GetRenderFont();
 			if (isSelected)
 			{
-				int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-				int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
+				int sels = _selectionStart <= _selectionEnd ? _selectionStart : _selectionEnd;
+				int sele = _selectionEnd >= _selectionStart ? _selectionEnd : _selectionStart;
 				int selLen = sele - sels;
 				auto selRange = font->HitTestTextRange(maskedText, (UINT32)sels, (UINT32)selLen);
 				if (selLen != 0)
 				{
 					for (auto sr : selRange)
 					{
-						d2d->FillRect(sr.left + TextMargin - HorizontalScrollOffset, sr.top + textOffsetY, sr.width, sr.height, this->SelectedBackColor);
+						d2d->FillRect(sr.left + Padding.Left - _horizontalScrollOffset,
+							sr.top + textOffsetY, sr.width, sr.height,
+							_selectedBackColor);
 					}
 				}
 				else
@@ -229,24 +362,24 @@ void PasswordBox::Update()
 					if (!selRange.empty())
 					{
 						const auto caret = selRange[0];
-						const float cx = caret.left + TextMargin - HorizontalScrollOffset;
+						const float cx = caret.left + Padding.Left - _horizontalScrollOffset;
 						const float cy = caret.top + textOffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
 						const auto absoluteLocation = this->GetAbsoluteLocationDip();
 						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						shouldDrawCaret = true;
-						caretStart = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + textOffsetY };
-						caretEnd = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
+						caretStart = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + textOffsetY };
+						caretEnd = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
 					}
 				}
 				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
 				if (textLayout) {
 					d2d->DrawStringLayoutEffect(textLayout,
-						TextMargin - HorizontalScrollOffset, textOffsetY,
-						this->ForeColor,
+						Padding.Left - _horizontalScrollOffset, textOffsetY,
+						this->RendererForegroundColor,
 						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-						this->SelectedForeColor,
+						_selectedForeColor,
 						font);
 					textLayout->Release();
 				}
@@ -256,8 +389,8 @@ void PasswordBox::Update()
 				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
 				if (textLayout) {
 					d2d->DrawStringLayout(textLayout,
-						TextMargin - HorizontalScrollOffset, textOffsetY,
-						this->ForeColor);
+						Padding.Left - _horizontalScrollOffset, textOffsetY,
+						this->RendererForegroundColor);
 					textLayout->Release();
 				}
 			}
@@ -266,32 +399,38 @@ void PasswordBox::Update()
 		{
 			if (isSelected)
 			{
-				const float cx = (float)TextMargin - HorizontalScrollOffset;
+				const float cx = Padding.Left - _horizontalScrollOffset;
 				const float cy = textOffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				const auto absoluteLocation = this->GetAbsoluteLocationDip();
 				this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
-				caretStart = { (float)TextMargin - HorizontalScrollOffset, textOffsetY };
-				caretEnd = { (float)TextMargin - HorizontalScrollOffset, textOffsetY + 16.0f };
+				caretStart = { Padding.Left - _horizontalScrollOffset, textOffsetY };
+				caretEnd = { Padding.Left - _horizontalScrollOffset, textOffsetY + 16.0f };
 			}
 		}
-		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		UpdateCaretBlinkState(isSelected, this->_selectionStart, this->_selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 		if (shouldDrawCaret && IsCaretBlinkVisible())
 		{
-			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
+			d2d->DrawLine(caretStart, caretEnd, this->RendererForegroundColor);
 		}
-		const auto borderColor = isSelected ? this->FocusedColor : this->BorderColor;
-		const float borderWidth = isSelected ? (std::max)(this->BorderThickness, this->FocusBorder) : this->BorderThickness;
+		const auto borderColor = isSelected
+			? FallbackFocusBorderColor : this->RendererBorderColor;
+		const float borderWidth = isSelected
+			? (std::max)(this->BorderThickness.MaxEdge(),
+				FallbackFocusBorderThickness)
+			: this->BorderThickness.MaxEdge();
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
 				borderColor, borderWidth, radius);
 	}
-	if (!this->Enable)
+	if (!this->IsEnabled)
 	{
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, DisabledOverlayColor, (std::min)(CornerRadius, actualHeight * 0.5f));
+		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight,
+			FallbackDisabledOverlayColor,
+			(std::min)(FallbackCornerRadius, actualHeight * 0.5f));
 	}
 	this->EndRender();
 }
@@ -300,240 +439,209 @@ bool PasswordBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	return GetCaretBlinkInvalidRect(outRect);
 }
-bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+bool PasswordBox::ProcessInput(const InputReport& input)
 {
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
+	if (!this->IsEnabled || !this->IsVisible) return true;
+	switch (input.Kind)
 	{
-	case WM_DROPFILES:
+	case InputReportKind::MouseWheel:
 	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
-		TCHAR fileName[MAX_PATH]{};
-		std::vector<std::wstring> files;
-		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
-		{
-			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
-			files.push_back(fileName);
-		}
-		DragFinish(hDropInfo);
-		if (!files.empty())
-		{
-			this->OnDropFile(this, files);
-		}
-	}
-	break;
-	case WM_MOUSEWHEEL:
-	{
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
-	case WM_MOUSEMOVE:
+	case InputReportKind::PointerMove:
 	{
-		this->ParentForm->UnderMouse = this;
-		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this)
+		if (input.IsButtonPressed(MouseButton::Left)
+			&& this->GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			auto font = this->Font;
-			float renderHeight = this->Height - (TextMargin * 2.0f);
+			auto font = this->GetRenderFont();
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
 			std::wstring maskedText = this->GetDisplayText();
-			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			_selectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX,
+				renderHeight, (input.X - Padding.Left)
+					+ this->_horizontalScrollOffset, input.Y - Padding.Top);
 			UpdateScroll();
 			this->InvalidateVisual();
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseMove(this, eventArgs);
 	}
 	break;
-	case WM_LBUTTONDOWN:
-	case WM_RBUTTONDOWN:
-	case WM_MBUTTONDOWN:
+	case InputReportKind::PointerDown:
 	{
-		if (WM_LBUTTONDOWN == message)
+		if (input.ChangedButton == MouseButton::Left)
 		{
-			if (this->ParentForm->Selected != this)
+			(void)CaptureMouse();
+			if (this->GetPresentationWindow()->GetKeyboardFocusedElement() != this)
 			{
-				auto previousSelection = this->ParentForm->Selected;
-				this->ParentForm->SetSelectedControl(this, false);
+				auto previousSelection = this->GetPresentationWindow()->GetKeyboardFocusedElement();
+				this->GetPresentationWindow()->SetKeyboardFocus(this, false);
 				if (previousSelection) previousSelection->InvalidateVisual();
 			}
-			auto font = this->Font;
-			float renderHeight = this->Height - (TextMargin * 2.0f);
+			auto font = this->GetRenderFont();
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
 			std::wstring maskedText = this->GetDisplayText();
-			this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			this->_selectionStart = this->_selectionEnd =
+				font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight,
+					(input.X - Padding.Left) + this->_horizontalScrollOffset,
+					input.Y - Padding.Top);
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
-	case WM_LBUTTONUP:
-	case WM_RBUTTONUP:
-	case WM_MBUTTONUP:
+	case InputReportKind::PointerUp:
 	{
-		if (this->ParentForm->Selected == this)
+		if (this->GetPresentationWindow()->GetKeyboardFocusedElement() == this)
 		{
-			float renderHeight = this->Height - (TextMargin * 2.0f);
-			auto font = this->Font;
+			float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
+			auto font = this->GetRenderFont();
 			std::wstring maskedText = this->GetDisplayText();
-			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
+			_selectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX,
+				renderHeight, (input.X - Padding.Left)
+					+ this->_horizontalScrollOffset, input.Y - Padding.Top);
 		}
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
+		if (input.ChangedButton == MouseButton::Left && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
 	}
 	break;
-	case WM_LBUTTONDBLCLK:
+	case InputReportKind::Cancel:
+	case InputReportKind::CaptureLost:
+		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+			(void)ReleaseMouseCapture();
+		return Control::ProcessInput(input);
+	case InputReportKind::PointerDoubleClick:
 	{
-		this->ParentForm->SetSelectedControl(this, false);
-		this->SelectionStart = 0;
-		this->SelectionEnd = static_cast<int>(this->Text.size());
-		this->HorizontalScrollOffset = 0.0f;
-		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		if (input.ChangedButton != MouseButton::Left)
+			return Control::ProcessInput(input);
+		this->GetPresentationWindow()->SetKeyboardFocus(this, false);
+		this->_selectionStart = 0;
+		this->_selectionEnd = static_cast<int>(this->Password.size());
+		this->_horizontalScrollOffset = 0.0f;
+		auto eventArgs = input.CreateMouseEventArgs();
 		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
-	case WM_KEYDOWN:
+	case InputReportKind::KeyDown:
 	{
-		if (this->ParentForm)
+		bool handled = false;
+		if (input.HasModifier(ModifierKeys::Control))
 		{
-			D2D1_RECT_F imeRect{};
-			if (this->_caretRectCacheValid)
+			if (input.Key == Key::A)
 			{
-				imeRect = this->_caretRectCache;
+				SelectAll();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
 			}
-			else
+			if (input.Key == Key::V)
 			{
-				const auto absoluteLocation = this->GetAbsoluteLocationDip();
-				float caretX = (float)absoluteLocation.x + this->TextMargin - this->HorizontalScrollOffset;
-				float caretY = (float)absoluteLocation.y;
-				float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
-				imeRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
+				(void)Paste();
+				UpdateScroll();
+				InvalidateVisual();
+				return true;
 			}
-			this->ParentForm->SetImeCompositionWindowFromLogicalRect(imeRect);
 		}
-		if (wParam == VK_DELETE)
+		if (input.Key == Key::Back)
 		{
+			handled = true;
+			InputBack();
+			UpdateScroll();
+		}
+		else if (input.Key == Key::Delete)
+		{
+			handled = true;
 			this->InputDelete();
 			UpdateScroll();
 		}
-		else if (wParam == VK_RIGHT)
+		else if (input.Key == Key::Right)
 		{
-			int textLength = static_cast<int>(this->Text.size());
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			handled = true;
+			int textLength = static_cast<int>(this->Password.size());
+			const bool extendSelection = input.HasModifier(ModifierKeys::Shift);
+			auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Password.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionStart = this->SelectionEnd = span.end;
+				this->_selectionStart = this->_selectionEnd = span.end;
 				UpdateScroll();
 			}
-			else if (this->SelectionEnd < textLength)
+			else if (this->_selectionEnd < textLength)
 			{
-				this->SelectionEnd = CuiTextEdit::GetNextCaretIndex(this->Text, this->SelectionEnd, false);
+				this->_selectionEnd = CuiTextEdit::GetNextCaretIndex(this->Password, this->_selectionEnd, false);
 				if (!extendSelection)
-					this->SelectionStart = this->SelectionEnd;
+					this->_selectionStart = this->_selectionEnd;
 				UpdateScroll();
 			}
 		}
-		else if (wParam == VK_LEFT)
+		else if (input.Key == Key::Left)
 		{
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			handled = true;
+			const bool extendSelection = input.HasModifier(ModifierKeys::Shift);
+			auto span = CuiTextEdit::NormalizeSelection(this->_selectionStart, this->_selectionEnd, this->Password.size());
 			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionStart = this->SelectionEnd = span.start;
+				this->_selectionStart = this->_selectionEnd = span.start;
 				UpdateScroll();
 			}
-			else if (this->SelectionEnd > 0)
+			else if (this->_selectionEnd > 0)
 			{
-				this->SelectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Text, this->SelectionEnd, false);
+				this->_selectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Password, this->_selectionEnd, false);
 				if (!extendSelection)
-					this->SelectionStart = this->SelectionEnd;
+					this->_selectionStart = this->_selectionEnd;
 				UpdateScroll();
 			}
 		}
-		else if (wParam == VK_HOME)
+		else if (input.Key == Key::Home)
 		{
-			this->SelectionEnd = 0;
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = 0;
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll();
 		}
-		else if (wParam == VK_END)
+		else if (input.Key == Key::End)
 		{
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = static_cast<int>(this->Password.size());
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll();
 		}
-		else if (wParam == VK_PRIOR)
+		else if (input.Key == Key::PageUp)
 		{
-			this->SelectionEnd = 0;
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = 0;
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll(true);
 		}
-		else if (wParam == VK_NEXT)
+		else if (input.Key == Key::PageDown)
 		{
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				this->SelectionStart = this->SelectionEnd;
+			handled = true;
+			this->_selectionEnd = static_cast<int>(this->Password.size());
+			if (!input.HasModifier(ModifierKeys::Shift))
+				this->_selectionStart = this->_selectionEnd;
 			UpdateScroll(true);
 		}
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		else if (input.Key == Key::Up || input.Key == Key::Down
+			|| input.Key == Key::Return || input.Key == Key::Escape)
+		{
+			handled = true;
+		}
+		auto eventArgs = input.CreateKeyEventArgs();
 		this->OnKeyDown(this, eventArgs);
 		this->InvalidateVisual();
+		return handled;
 	}
-	break;
-	case WM_CHAR:
+	case InputReportKind::KeyUp:
 	{
-		wchar_t ch = (wchar_t)(wParam);
-		if (CuiTextEdit::IsTextInputChar(ch))
-		{
-			const wchar_t c[] = { ch,L'\0' };
-			this->InputText(c);
-			UpdateScroll();
-		}
-		else if (ch == 1)
-		{
-			this->SelectionStart = 0;
-			this->SelectionEnd = static_cast<int>(this->Text.size());
-			UpdateScroll();
-		}
-		else if (ch == 8)
-		{
-			if (this->Text.size() > 0)
-			{
-				this->InputBack();
-				UpdateScroll();
-			}
-		}
-		else if (ch == 22)
-		{
-			std::wstring clipboardText;
-			if (TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
-			{
-				this->InputText(clipboardText);
-				UpdateScroll();
-			}
-		}
-		this->InvalidateVisual();
-	}
-	break;
-	case WM_IME_COMPOSITION:
-	{
-		if (lParam & GCS_RESULTSTR)
-		{
-			// Unicode windows receive committed IME text through WM_CHAR as well.
-			// Keep the edit mutation in one path to avoid duplicate characters.
-			this->InvalidateVisual();
-		}
-	}
-	break;
-	case WM_KEYUP:
-	{
-		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		auto eventArgs = input.CreateKeyEventArgs();
 		this->OnKeyUp(this, eventArgs);
 		this->InvalidateVisual();
 	}

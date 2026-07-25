@@ -169,7 +169,6 @@
   <ItemGroup>
     <ClCompile Include="BindingEditorDialog.cpp" />
     <ClCompile Include="CodeBehindExportDialog.cpp" />
-    <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
     <ClCompile Include="DataContextSchemaEditorDialog.cpp" />
     <ClCompile Include="DataResourcesEditorDialog.cpp" />
     <ClCompile Include="DesignerCore\CommandManager.cpp" />
@@ -197,9 +196,6 @@
     <ClCompile Include="DesignerCore\Commands\ControlStructureCommand.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\ControlOwnedCollectionCommand.cpp">
-      <MultiProcessorCompilation>false</MultiProcessorCompilation>
-    </ClCompile>
     <ClCompile Include="DesignerCore\Commands\ControlPlacementCommand.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
@@ -211,8 +207,6 @@
     </ClCompile>
     <ClCompile Include="DesignerModel\DesignRecoveryStore.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
-    <ClCompile Include="MenuItemsEditorDialog.cpp" />
-    <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
     <ClCompile Include="StyleSheetEditorDialog.cpp" />
     <ClCompile Include="main.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
@@ -231,18 +225,22 @@
     <ClCompile Include="DesignerPropertyEdit.cpp" />
     <ClCompile Include="DesignerStructureEdit.cpp" />
     <ClCompile Include="EventHandlerEditorDialog.cpp" />
-    <ClCompile Include="DesignerSelfTest.cpp" />
+    <ClCompile Include="DesignerSelfTest.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="SourceCodeNavigator.cpp" />
     <ClCompile Include="DesignerTypes.cpp" />
-    <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp" />
-    <ClCompile Include="GridViewColumnsEditorDialog.cpp" />
+    <ClCompile Include="GridDefinitionsEditorDialog.cpp" />
     <ClCompile Include="PropertyGrid.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="TabControlPagesEditorDialog.cpp" />
-    <ClCompile Include="ToolBarButtonsEditorDialog.cpp" />
+	<ClCompile Include="NativePropertyGridView.cpp">
+	  <MultiProcessorCompilation>false</MultiProcessorCompilation>
+	</ClCompile>
+	<ClCompile Include="DesignerDropDownPopup.cpp" />
+	<ClCompile Include="DesignerColorPickerPopup.cpp" />
     <ClCompile Include="ToolBox.cpp" />
-    <ClCompile Include="TreeViewNodesEditorDialog.cpp" />
     <ClCompile Include="XamlEditorDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -252,8 +250,6 @@
     <ClInclude Include="DesignerModel\DesignCodeGenerationService.h" />
     <ClInclude Include="DesignerEventCatalog.h" />
     <ClInclude Include="EventHandlerEditorDialog.h" />
-    <ClInclude Include="CodeGenInput.h" />
-    <ClInclude Include="ComboBoxItemsEditorDialog.h" />
     <ClInclude Include="DataContextSchemaEditorDialog.h" />
     <ClInclude Include="DataResourcesEditorDialog.h" />
     <ClInclude Include="DesignerModel\DesignDataResourceEditorModel.h" />
@@ -264,23 +260,23 @@
     <ClInclude Include="DesignerCore\LayoutBridge.h" />
     <ClInclude Include="DesignerCore\SelectionService.h" />
     <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\DesignNodeMemory.h" />
     <ClInclude Include="DesignerCore\Commands\ControlPropertyCommand.h" />
     <ClInclude Include="DesignerCore\Commands\EventHandlerCommand.h" />
     <ClInclude Include="DesignerCore\Commands\EventHandlerCodeMigration.h" />
     <ClInclude Include="DesignerCore\Commands\ControlStructureCommand.h" />
-    <ClInclude Include="DesignerCore\Commands\ControlOwnedCollectionCommand.h" />
     <ClInclude Include="DesignerCore\Commands\ControlPlacementCommand.h" />
     <ClInclude Include="DesignerCore\Commands\ControlSubtreeCommand.h" />
     <ClInclude Include="DesignerCore\PropertyGridBinder.h" />
     <ClInclude Include="DesignerModel\AtomicFile.h" />
-    <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
     <ClInclude Include="DesignerModel\DesignDocumentControlPool.h" />
     <ClInclude Include="DesignerModel\DesignDocument.h" />
     <ClInclude Include="DesignerModel\DesignDocumentClipboard.h" />
     <ClInclude Include="DesignerModel\DesignDocumentEventIndex.h" />
     <ClInclude Include="DesignerModel\DesignDocumentFileFormat.h" />
     <ClInclude Include="DesignerModel\DesignDocumentGraph.h" />
-    <ClInclude Include="DesignerModel\DesignDocumentMaterializer.h" />
+    <ClInclude Include="..\CuiRuntime\include\XamlObjectMaterializer.h" />
+    <ClInclude Include="..\CuiRuntime\include\XamlRuntimeSchema.h" />
     <ClInclude Include="DesignerModel\RuntimeDocument.h" />
     <ClInclude Include="DesignerModel\RuntimeDocumentFileWatcher.h" />
     <ClInclude Include="DesignerModel\RuntimeDocumentTopologyReloader.h" />
@@ -290,8 +286,6 @@
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
     <ClInclude Include="DesignerModel\DesignRecoveryStore.h" />
     <ClInclude Include="FakeWebBrowser.h" />
-    <ClInclude Include="MenuItemsEditorDialog.h" />
-    <ClInclude Include="StatusBarPartsEditorDialog.h" />
     <ClInclude Include="StyleSheetEditorDialog.h" />
     <ClInclude Include="Designer.h" />
     <ClInclude Include="DesignerCanvas.h" />
@@ -299,7 +293,6 @@
     <ClInclude Include="DesignerDataContextSchemaUtils.h" />
     <ClInclude Include="DesignerControlCatalog.h" />
     <ClInclude Include="DesignerControlFactory.h" />
-    <ClInclude Include="DesignerFormPropertyCatalog.h" />
     <ClInclude Include="DesignerCustomEditorCatalog.h" />
     <ClInclude Include="DesignerControlPropertyCatalog.h" />
     <ClInclude Include="DesignerPropertyRowCatalog.h" />
@@ -312,13 +305,12 @@
     <ClInclude Include="DesignerStyleSheet.h" />
     <ClInclude Include="DesignerStyleSheetUtils.h" />
     <ClInclude Include="DesignerTypes.h" />
-    <ClInclude Include="GridPanelDefinitionsEditorDialog.h" />
-    <ClInclude Include="GridViewColumnsEditorDialog.h" />
+    <ClInclude Include="GridDefinitionsEditorDialog.h" />
     <ClInclude Include="PropertyGrid.h" />
-    <ClInclude Include="TabControlPagesEditorDialog.h" />
-    <ClInclude Include="ToolBarButtonsEditorDialog.h" />
+	<ClInclude Include="NativePropertyGridView.h" />
+	<ClInclude Include="DesignerDropDownPopup.h" />
+	<ClInclude Include="DesignerColorPickerPopup.h" />
     <ClInclude Include="ToolBox.h" />
-    <ClInclude Include="TreeViewNodesEditorDialog.h" />
     <ClInclude Include="XamlEditorDialog.h" />
   </ItemGroup>
   <ItemGroup>

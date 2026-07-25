@@ -1,5 +1,5 @@
-﻿#include "Layout/WrapPanel.h"
-#include "Form.h"
+#include "Layout/WrapPanel.h"
+#include "Window.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -7,28 +7,28 @@
 namespace
 {
 	template<typename TValue>
-	ControlPropertyOptions<WrapPanel, TValue> WrapLayoutOptions(
+	DependencyPropertyOptions<WrapPanel, TValue> WrapLayoutOptions(
 		TValue defaultValue,
 		int order,
-		ControlPropertyEditorKind editor)
+		DependencyPropertyEditorKind editor)
 	{
-		ControlPropertyOptions<WrapPanel, TValue> options;
+		DependencyPropertyOptions<WrapPanel, TValue> options;
 		options.DefaultValue = defaultValue;
-		options.Flags = ControlPropertyFlags::AffectsMeasure
-			| ControlPropertyFlags::AffectsArrange;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange;
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		return options;
 	}
 
-	ControlPropertyOptions<WrapPanel, float> WrapItemSizeOptions(
+	DependencyPropertyOptions<WrapPanel, float> WrapItemSizeOptions(
 		int order,
 		const wchar_t* displayName)
 	{
-		auto options = WrapLayoutOptions(0.0f, order, ControlPropertyEditorKind::Number);
+		auto options = WrapLayoutOptions(0.0f, order, DependencyPropertyEditorKind::Number);
 		options.Coerce = [](WrapPanel&, const float& proposed) -> std::optional<float>
 		{
 			return std::isfinite(proposed) && proposed > 0.0f ? proposed : 0.0f;
@@ -72,16 +72,6 @@ namespace
 	}
 }
 
-SIZE WrapLayoutEngine::Measure(Control* container, SIZE availableSize)
-{
-	if (!container) return SIZE{ 0, 0 };
-	LayoutContext context(container);
-	const auto desired = Measure(context, cui::core::Constraints{ cui::core::Size{
-		static_cast<float>((std::max)(0L, availableSize.cx)),
-		static_cast<float>((std::max)(0L, availableSize.cy)) } });
-	return SIZE{ static_cast<LONG>(std::ceil(desired.width)), static_cast<LONG>(std::ceil(desired.height)) };
-}
-
 cui::core::Size WrapLayoutEngine::Measure(LayoutContext& context, const cui::core::Constraints& available)
 {
 	const auto availableSize = available.Normalized().maximum;
@@ -98,7 +88,7 @@ cui::core::Size WrapLayoutEngine::Measure(LayoutContext& context, const cui::cor
 		for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 		{
 			auto child = context.ChildAt(childIndex);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			
 			Thickness margin = child->Margin;
 			const auto childSize = MeasureWrapItem(
@@ -146,7 +136,7 @@ cui::core::Size WrapLayoutEngine::Measure(LayoutContext& context, const cui::cor
 		for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 		{
 			auto child = context.ChildAt(childIndex);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			
 			Thickness margin = child->Margin;
 			const auto childSize = MeasureWrapItem(
@@ -188,22 +178,13 @@ cui::core::Size WrapLayoutEngine::Measure(LayoutContext& context, const cui::cor
 	return desiredSize;
 }
 
-void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
+void WrapLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRect)
 {
-	if (!container) return;
-	LayoutContext context(container);
-	Arrange(context, finalRect);
-}
-
-void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
-{
-	
-	const float originX = finalRect.left;
-	const float originY = finalRect.top;
-	float containerWidth = finalRect.right - finalRect.left;
-	float containerHeight = finalRect.bottom - finalRect.top;
-	if (containerWidth < 0.0f) containerWidth = 0.0f;
-	if (containerHeight < 0.0f) containerHeight = 0.0f;
+	finalRect = finalRect.Normalized();
+	const float originX = finalRect.x;
+	const float originY = finalRect.y;
+	const float containerWidth = finalRect.width;
+	const float containerHeight = finalRect.height;
 	const cui::core::Size availableSize{ containerWidth, containerHeight };
 	
 	if (_orientation == Orientation::Horizontal)
@@ -216,7 +197,7 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 		for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 		{
 			auto child = context.ChildAt(childIndex);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			
 			Thickness margin = child->Margin;
 			const auto childSize = MeasureWrapItem(
@@ -236,7 +217,7 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置子控件位置
-			child->ApplyLayout(cui::core::Rect{
+			child->Arrange(cui::core::Rect{
 				originX + currentX + margin.Left,
 				originY + currentY + margin.Top,
 				itemWidth,
@@ -257,7 +238,7 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 		for (int childIndex = 0; childIndex < context.ChildCount(); childIndex++)
 		{
 			auto child = context.ChildAt(childIndex);
-			if (!child || !child->Visible) continue;
+			if (!child || child->IsCollapsed()) continue;
 			
 			Thickness margin = child->Margin;
 			const auto childSize = MeasureWrapItem(
@@ -277,7 +258,7 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置子控件位置
-			child->ApplyLayout(cui::core::Rect{
+			child->Arrange(cui::core::Rect{
 				originX + currentX + margin.Left,
 				originY + currentY + margin.Top,
 				itemWidth,
@@ -294,26 +275,26 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, D2D1_RECT_F finalRect)
 
 // WrapPanel 实现
 
-void WrapPanel::EnsureBindingPropertiesRegistered()
+void WrapPanel::RegisterDependencyProperties()
 {
-	Panel::EnsureBindingPropertiesRegistered();
+	Panel::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		auto orientationOptions = WrapLayoutOptions(
-			Orientation::Horizontal, 10, ControlPropertyEditorKind::Choice);
+			Orientation::Horizontal, 10, DependencyPropertyEditorKind::Choice);
 		orientationOptions.Design.Choices = {
 			{ L"Horizontal", BindingValue(Orientation::Horizontal) },
 			{ L"Vertical", BindingValue(Orientation::Vertical) }
 		};
-		BindingPropertyRegistry::Register<WrapPanel, Orientation>(L"Orientation",
+		DependencyPropertyRegistry::Register<WrapPanel, Orientation>(L"Orientation",
 			[](WrapPanel& target) { return target.GetOrientation(); },
 			[](WrapPanel& target, const Orientation& value) { target.SetOrientation(value); },
 			{}, std::move(orientationOptions));
-		BindingPropertyRegistry::Register<WrapPanel, float>(L"ItemWidth",
+		DependencyPropertyRegistry::Register<WrapPanel, float>(L"ItemWidth",
 			[](WrapPanel& target) { return target.GetItemWidth(); },
 			[](WrapPanel& target, const float& value) { target.SetItemWidth(value); },
 			{}, WrapItemSizeOptions(20, L"Item Width (0 = Auto)"));
-		BindingPropertyRegistry::Register<WrapPanel, float>(L"ItemHeight",
+		DependencyPropertyRegistry::Register<WrapPanel, float>(L"ItemHeight",
 			[](WrapPanel& target) { return target.GetItemHeight(); },
 			[](WrapPanel& target, const float& value) { target.SetItemHeight(value); },
 			{}, WrapItemSizeOptions(30, L"Item Height (0 = Auto)"));
@@ -323,13 +304,6 @@ void WrapPanel::EnsureBindingPropertiesRegistered()
 }
 
 WrapPanel::WrapPanel()
-{
-	_wrapEngine = new WrapLayoutEngine();
-	SetLayoutEngine(_wrapEngine);
-}
-
-WrapPanel::WrapPanel(int x, int y, int width, int height)
-	: Panel(x, y, width, height)
 {
 	_wrapEngine = new WrapLayoutEngine();
 	SetLayoutEngine(_wrapEngine);

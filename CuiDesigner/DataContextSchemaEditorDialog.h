@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DesignerTypes.h"
-#include "../CUI/include/Form.h"
+#include "../CUI/include/Window.h"
 #include "../CUI/include/Label.h"
 #include "../CUI/include/TextBox.h"
 #include "../CUI/include/RichTextBox.h"
@@ -10,7 +10,7 @@
 #include "../CUI/include/Button.h"
 
 /** Structured editor for the document-level design-time DataContext schema. */
-class DataContextSchemaEditorDialog : public Form
+class DataContextSchemaEditorDialog : public Window
 {
 public:
 	bool Applied = false;

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "../CUI/include/WebBrowser.h"
 
@@ -13,5 +13,6 @@ class FakeWebBrowser : public WebBrowser
 public:
 	FakeWebBrowser(int x, int y, int width, int height);
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
-	void Update() override;
+protected:
+	void OnRender() override;
 };

@@ -1,5 +1,5 @@
-﻿#pragma once
-#include "Control.h"
+#pragma once
+#include "RangeBase.h"
 #include <algorithm>
 
 /**
@@ -7,9 +7,9 @@
  * @brief Slider：滑动条控件。
  *
  * 约定：
- * - 通过 Min/Max/Value 表示数值范围
- * - 拖拽滑块会更新 Value，并触发 OnValueChanged
- * - 可启用 SnapToStep 以 Step 为步进对 Value 进行吸附
+ * - 通过 Minimum/Maximum/Value 表示数值范围
+ * - 拖拽滑块会更新 Value，并触发 routed ValueChanged
+ * - 可启用 IsSnapToTickEnabled，以 TickFrequency 对 Value 吸附
  */
 
 /**
@@ -17,16 +17,20 @@
  * @param oldValue 变化前的值。
  * @param newValue 变化后的值。
  */
-typedef Event<void(class Control*, float oldValue, float newValue)> ValueChangedEvent;
-
-class Slider : public Control
+class Slider : public RangeBase
 {
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<RangeBaseAutomationPeer>(
+			*this, AutomationControlType::Slider, L"Slider");
+	}
+
 private:
-	float _min = 0.0f;
-	float _max = 100.0f;
-	float _value = 0.0f;
-	float _step = 1.0f;
-	bool _snapToStep = false;
+	double _smallChange = 1.0;
+	double _largeChange = 10.0;
+	double _tickFrequency = 1.0;
+	bool _isSnapToTickEnabled = false;
 	D2D1_COLOR_F _trackBackColor = cui::theme::palette::ScrollTrack;
 	D2D1_COLOR_F _trackForeColor = cui::theme::palette::Accent;
 	D2D1_COLOR_F _trackHoverColor = cui::theme::palette::AccentSoft;
@@ -42,91 +46,59 @@ private:
 	float _thumbDragRadiusDelta = 2.0f;
 	bool _dragging = false;
 
-	float TrackLeftLocal() { return (std::max)(12.0f, ThumbRadius + ThumbDragRadiusDelta + 4.0f); }
-	float TrackRightLocal() { return (float)this->Width - TrackLeftLocal(); }
-	float TrackYLocal() { return (float)this->Height * 0.5f; }
+	float TrackLeftLocal() { return (std::max)(12.0f, _thumbRadius + _thumbDragRadiusDelta + 4.0f); }
+	float TrackRightLocal() { return this->ActualWidth - TrackLeftLocal(); }
+	float TrackYLocal() { return this->ActualHeight * 0.5f; }
 	float ValueToT()
 	{
-		float range = (_max - _min);
-		if (range <= 0.00001f) return 0.0f;
-		return (_value - _min) / range;
+		const double range = Maximum - Minimum;
+		if (range <= 0.0000001) return 0.0f;
+		return static_cast<float>((Value - Minimum) / range);
 	}
-	float XToValue(int localX)
+	double XToValue(int localX)
 	{
 		float trackLeft = TrackLeftLocal();
 		float trackRight = TrackRightLocal();
-		if (trackRight <= trackLeft) return _min;
+		if (trackRight <= trackLeft) return Minimum;
 		float ratio = ((float)localX - trackLeft) / (trackRight - trackLeft);
 		ratio = std::clamp(ratio, 0.0f, 1.0f);
-		return _min + ratio * (_max - _min);
+		return Minimum + static_cast<double>(ratio) * (Maximum - Minimum);
 	}
-	float CoerceValue(float value) const;
-	void SetCurrentValue(float value);
-	void ReevaluateValue();
 
 public:
-	/** @brief 值变化事件。 */
-	ValueChangedEvent OnValueChanged;
-
 	/** @brief 创建滑动条。 */
-	Slider(int x, int y, int width = 240, int height = 32);
+	Slider();
 	virtual UIClass Type() override;
-	void EnsureBindingPropertiesRegistered() override;
+	static void RegisterDependencyProperties();
+	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
 
-	PROPERTY(float, Min);
-	GET(float, Min);
-	SET(float, Min);
+	PROPERTY(double, SmallChange);
+	GET(double, SmallChange);
+	SET(double, SmallChange);
 
-	PROPERTY(float, Max);
-	GET(float, Max);
-	SET(float, Max);
+	PROPERTY(double, LargeChange);
+	GET(double, LargeChange);
+	SET(double, LargeChange);
 
-	PROPERTY(float, Value);
-	GET(float, Value);
-	SET(float, Value);
+	PROPERTY(double, TickFrequency);
+	GET(double, TickFrequency);
+	SET(double, TickFrequency);
 
-	PROPERTY(float, Step);
-	GET(float, Step);
-	SET(float, Step);
-
-	PROPERTY(bool, SnapToStep);
-	GET(bool, SnapToStep);
-	SET(bool, SnapToStep);
-
-#define CUI_SLIDER_PROPERTY(type, name) \
-	PROPERTY(type, name); \
-	GET(type, name); \
-	SET(type, name)
-
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, TrackBackColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, TrackForeColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, TrackHoverColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, TrackBorderColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, ThumbColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, ThumbHoverColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, ThumbBorderColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, ThumbShadowColor);
-	CUI_SLIDER_PROPERTY(D2D1_COLOR_F, DisabledOverlayColor);
-	CUI_SLIDER_PROPERTY(float, TrackHeight);
-	CUI_SLIDER_PROPERTY(float, ThumbRadius);
-	CUI_SLIDER_PROPERTY(float, ThumbHoverRadiusDelta);
-	CUI_SLIDER_PROPERTY(float, ThumbDragRadiusDelta);
-
-#undef CUI_SLIDER_PROPERTY
-
-	/** @brief 同时设置 Min/Max，保持 Value 在新范围内一致。 */
-	void SetRange(float minValue, float maxValue);
-	/** @brief 在当前值上递增一个 Step（或指定 delta），经 Value 属性路径。 */
-	void Increment(float delta);
+	PROPERTY(bool, IsSnapToTickEnabled);
+	GET(bool, IsSnapToTickEnabled);
+	SET(bool, IsSnapToTickEnabled);
+	/** @brief 在当前值上递增 SmallChange（或指定 delta）。 */
+	void Increment(double delta);
 	void Increment();
-	/** @brief 在当前值上递减一个 Step（或指定 delta），经 Value 属性路径。 */
-	void Decrement(float delta);
+	/** @brief 在当前值上递减 SmallChange（或指定 delta）。 */
+	void Decrement(double delta);
 	void Decrement();
-	/** @brief 将 Value 重置为 Min，经 Value 属性路径。 */
+	/** @brief 将 Value 重置为 Minimum。 */
 	void Reset();
 
 	CursorKind QueryCursor(int localX, int localY) override;
-	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+protected:
+	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+	double CoerceRangeValue(double value) const override;
 };
-

@@ -1,6 +1,7 @@
 #include "Binding.h"
 #include "BindingList.h"
 #include "Control.h"
+#include "XamlInfrastructure.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -10,6 +11,7 @@
 #include <locale>
 #include <mutex>
 #include <sstream>
+#include <unordered_set>
 
 namespace
 {
@@ -30,7 +32,19 @@ namespace
 
 	bool IsSameProperty(const std::wstring& a, const std::wstring& b)
 	{
-		return Lower(a) == Lower(b);
+		return a == b;
+	}
+
+	bool IsPropertyNameLess(const std::wstring& a, const std::wstring& b)
+	{
+		const auto common = (std::min)(a.size(), b.size());
+		for (size_t index = 0; index < common; ++index)
+		{
+			const auto left = std::towlower(a[index]);
+			const auto right = std::towlower(b[index]);
+			if (left != right) return left < right;
+		}
+		return a.size() < b.size();
 	}
 
 	bool TryParseBindingPropertyPathCore(
@@ -47,7 +61,44 @@ namespace
 				&& std::iswspace(text[position])) ++position;
 			if (position >= text.size()) break;
 
-			if (text[position] != L'[')
+			if (text[position] == L'(')
+			{
+				const auto close = text.find(L')', position + 1);
+				if (close == std::wstring::npos)
+				{
+					steps.clear();
+					return false;
+				}
+				const auto token = Trim(text.substr(
+					position + 1, close - position - 1));
+				const auto separator = token.rfind(L'.');
+				if (separator == std::wstring::npos)
+				{
+					steps.clear();
+					return false;
+				}
+				auto owner = Trim(token.substr(0, separator));
+				auto property = Trim(token.substr(separator + 1));
+				auto validIdentifier = [](const std::wstring& candidate)
+				{
+					if (candidate.empty()) return false;
+					return std::all_of(candidate.begin(), candidate.end(),
+						[](wchar_t ch)
+						{
+							return std::iswalnum(ch) || ch == L'_'
+								|| ch == L':';
+						});
+				};
+				if (!validIdentifier(owner) || !validIdentifier(property))
+				{
+					steps.clear();
+					return false;
+				}
+				steps.push_back({ BindingPathStepKind::Property,
+					std::move(owner) + L"." + std::move(property) });
+				position = close + 1;
+			}
+			else if (text[position] != L'[')
 			{
 				const size_t begin = position;
 				while (position < text.size()
@@ -156,12 +207,12 @@ namespace
 	bool TryParseBool(const std::wstring& value, bool& out)
 	{
 		auto text = Lower(Trim(value));
-		if (text == L"true" || text == L"1" || text == L"yes" || text == L"on")
+		if (text == L"true")
 		{
 			out = true;
 			return true;
 		}
-		if (text == L"false" || text == L"0" || text == L"no" || text == L"off" || text.empty())
+		if (text == L"false")
 		{
 			out = false;
 			return true;
@@ -616,7 +667,8 @@ namespace
 				{ L"BooleanNegation", BindingValueKind::Bool, BindingValueKind::Bool, true },
 				[]
 				{
-					auto negate = [](const BindingValue& value, BindingValue& out)
+					auto negate = [](const BindingValue& value,
+						const BindingValueConverterContext&, BindingValue& out)
 					{
 						bool booleanValue = false;
 						if (!value.TryGetBool(booleanValue)) return false;
@@ -631,7 +683,8 @@ namespace
 				[]
 				{
 					return std::make_shared<DelegateBindingValueConverter>(
-						[](const BindingValue& value, BindingValue& out)
+						[](const BindingValue& value,
+							const BindingValueConverterContext&, BindingValue& out)
 						{
 							std::wstring text;
 							if (!value.TryGetString(text)) return false;
@@ -644,7 +697,8 @@ namespace
 				{ L"StringTrim", BindingValueKind::String, BindingValueKind::String, true },
 				[]
 				{
-					auto trim = [](const BindingValue& value, BindingValue& out)
+					auto trim = [](const BindingValue& value,
+						const BindingValueConverterContext&, BindingValue& out)
 					{
 						std::wstring text;
 						if (!value.TryGetString(text)) return false;
@@ -688,9 +742,9 @@ namespace
 		return mutex;
 	}
 
-	std::vector<std::unique_ptr<BindingPropertyMetadata>>& RegisteredBindingProperties()
+	std::vector<std::unique_ptr<DependencyPropertyMetadata>>& RegisteredBindingProperties()
 	{
-		static std::vector<std::unique_ptr<BindingPropertyMetadata>> properties;
+		static std::vector<std::unique_ptr<DependencyPropertyMetadata>> properties;
 		return properties;
 	}
 
@@ -879,19 +933,33 @@ const wchar_t* BindingErrorMessage(BindingError error) noexcept
 	return L"Unknown binding error.";
 }
 
-const wchar_t* ControlPropertyValueSourceName(
-	ControlPropertyValueSource source) noexcept
+const wchar_t* DependencyPropertyValueSourceName(
+	DependencyPropertyValueSource source) noexcept
 {
 	switch (source)
 	{
-	case ControlPropertyValueSource::Default: return L"Default";
-	case ControlPropertyValueSource::Inherited: return L"Inherited";
-	case ControlPropertyValueSource::Theme: return L"Theme";
-	case ControlPropertyValueSource::Style: return L"Style";
-	case ControlPropertyValueSource::Binding: return L"Binding";
-	case ControlPropertyValueSource::Local: return L"Local";
-	case ControlPropertyValueSource::VisualState: return L"VisualState";
-	case ControlPropertyValueSource::Animation: return L"Animation";
+	case DependencyPropertyValueSource::Default: return L"Default";
+	case DependencyPropertyValueSource::Inherited: return L"Inherited";
+	case DependencyPropertyValueSource::Theme: return L"Theme";
+	case DependencyPropertyValueSource::Style: return L"Style";
+	case DependencyPropertyValueSource::Template: return L"Template";
+	case DependencyPropertyValueSource::VisualState: return L"VisualState";
+	case DependencyPropertyValueSource::Local: return L"Local";
+	case DependencyPropertyValueSource::Animation: return L"Animation";
+	}
+	return L"Unknown";
+}
+
+const wchar_t* DependencyPropertyExpressionKindName(
+	DependencyPropertyExpressionKind kind) noexcept
+{
+	switch (kind)
+	{
+	case DependencyPropertyExpressionKind::None: return L"None";
+	case DependencyPropertyExpressionKind::Binding: return L"Binding";
+	case DependencyPropertyExpressionKind::DynamicResource: return L"DynamicResource";
+	case DependencyPropertyExpressionKind::TemplateBinding: return L"TemplateBinding";
+	case DependencyPropertyExpressionKind::Animation: return L"Animation";
 	}
 	return L"Unknown";
 }
@@ -1189,13 +1257,6 @@ bool TryConvertBindingValue(
 }
 
 DelegateBindingValueConverter::DelegateBindingValueConverter(
-	Function convert,
-	Function convertBack)
-	: _convert(std::move(convert)), _convertBack(std::move(convertBack))
-{
-}
-
-DelegateBindingValueConverter::DelegateBindingValueConverter(
 	ContextFunction convert,
 	ContextFunction convertBack)
 	: _contextConvert(std::move(convert)),
@@ -1205,26 +1266,10 @@ DelegateBindingValueConverter::DelegateBindingValueConverter(
 
 bool DelegateBindingValueConverter::Convert(
 	const BindingValue& value,
-	BindingValue& out) const
-{
-	return _convert && _convert(value, out);
-}
-
-bool DelegateBindingValueConverter::ConvertBack(
-	const BindingValue& value,
-	BindingValue& out) const
-{
-	return _convertBack && _convertBack(value, out);
-}
-
-bool DelegateBindingValueConverter::Convert(
-	const BindingValue& value,
 	const BindingValueConverterContext& context,
 	BindingValue& out) const
 {
-	return _contextConvert
-		? _contextConvert(value, context, out)
-		: Convert(value, out);
+	return _contextConvert && _contextConvert(value, context, out);
 }
 
 bool DelegateBindingValueConverter::ConvertBack(
@@ -1232,9 +1277,7 @@ bool DelegateBindingValueConverter::ConvertBack(
 	const BindingValueConverterContext& context,
 	BindingValue& out) const
 {
-	return _contextConvertBack
-		? _contextConvertBack(value, context, out)
-		: ConvertBack(value, out);
+	return _contextConvertBack && _contextConvertBack(value, context, out);
 }
 
 bool BindingValueConverterRegistry::Register(
@@ -1334,7 +1377,7 @@ std::vector<BindingValueConverterMetadata> BindingValueConverterRegistry::GetCon
 	std::sort(result.begin(), result.end(),
 		[](const auto& left, const auto& right)
 		{
-			return Lower(left.Name) < Lower(right.Name);
+			return IsPropertyNameLess(left.Name, right.Name);
 		});
 	return result;
 }
@@ -1469,7 +1512,7 @@ MultiBindingValueConverterRegistry::GetConverters()
 	}
 	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
 	{
-		return Lower(left.Name) < Lower(right.Name);
+		return IsPropertyNameLess(left.Name, right.Name);
 	});
 	return result;
 }
@@ -1494,7 +1537,7 @@ MultiBindingValueConverterRegistry::Create(const std::wstring& name)
 	catch (...) { return {}; }
 }
 
-BindingPropertyMetadata::BindingPropertyMetadata(
+DependencyPropertyMetadata::DependencyPropertyMetadata(
 	std::wstring name,
 	BindingValueKind valueKind,
 	std::type_index valueType,
@@ -1509,11 +1552,11 @@ BindingPropertyMetadata::BindingPropertyMetadata(
 	Changed changed,
 	BindingValue defaultValue,
 	bool hasDefaultValue,
-	ControlPropertyFlags flags,
+	DependencyPropertyFlags flags,
 	bool isReadOnly,
 	DataSourceUpdateMode defaultUpdateMode,
 	std::wstring inheritanceKey,
-	ControlPropertyDesignMetadata design)
+	DependencyPropertyDesignMetadata design)
 	: _name(std::move(name)),
 	  _valueKind(valueKind),
 	  _valueType(valueType),
@@ -1538,8 +1581,8 @@ BindingPropertyMetadata::BindingPropertyMetadata(
 {
 }
 
-bool BindingPropertyMetadata::HasSameInheritanceIdentity(
-	const BindingPropertyMetadata& other) const noexcept
+bool DependencyPropertyMetadata::HasSameInheritanceIdentity(
+	const DependencyPropertyMetadata& other) const noexcept
 {
 	if (this == &other) return true;
 	return !_inheritanceKey.empty()
@@ -1549,18 +1592,18 @@ bool BindingPropertyMetadata::HasSameInheritanceIdentity(
 }
 
 BindingMode ResolveBindingMode(
-	const BindingPropertyMetadata& target,
+	const DependencyPropertyMetadata& target,
 	BindingMode requested) noexcept
 {
 	if (requested != BindingMode::Default) return requested;
-	return HasControlPropertyFlag(
-		target.Flags(), ControlPropertyFlags::BindsTwoWayByDefault)
+	return HasDependencyPropertyFlag(
+		target.Flags(), DependencyPropertyFlags::BindsTwoWayByDefault)
 		? BindingMode::TwoWay
 		: BindingMode::OneWay;
 }
 
 DataSourceUpdateMode ResolveDataSourceUpdateMode(
-	const BindingPropertyMetadata& target,
+	const DependencyPropertyMetadata& target,
 	DataSourceUpdateMode requested) noexcept
 {
 	return requested == DataSourceUpdateMode::Default
@@ -1568,21 +1611,21 @@ DataSourceUpdateMode ResolveDataSourceUpdateMode(
 		: requested;
 }
 
-bool BindingPropertyMetadata::IsDesignerBrowsable(Control& target) const
+bool DependencyPropertyMetadata::IsDesignerBrowsable(DependencyObject& target) const
 {
 	if (!_design.Browsable || !Matches(target)) return false;
 	return !_design.BrowsableWhen || _design.BrowsableWhen(target);
 }
 
-bool BindingPropertyMetadata::TryConvert(
+bool DependencyPropertyMetadata::TryConvert(
 	const BindingValue& value,
 	BindingValue& out) const
 {
 	return _valueConverter && _valueConverter(value, out);
 }
 
-bool BindingPropertyMetadata::TryCoerce(
-	Control& target,
+bool DependencyPropertyMetadata::TryCoerce(
+	DependencyObject& target,
 	const BindingValue& value,
 	BindingValue& out) const
 {
@@ -1592,70 +1635,81 @@ bool BindingPropertyMetadata::TryCoerce(
 	return true;
 }
 
-bool BindingPropertyMetadata::ValuesEqual(
+bool DependencyPropertyMetadata::ValuesEqual(
 	const BindingValue& left,
 	const BindingValue& right) const
 {
 	return _comparer && _comparer(left, right);
 }
 
-bool BindingPropertyMetadata::TryGetDefaultValue(BindingValue& out) const
+bool DependencyPropertyMetadata::TryGetDefaultValue(BindingValue& out) const
 {
 	if (!_hasDefaultValue) return false;
 	out = _defaultValue;
 	return true;
 }
 
-bool BindingPropertyMetadata::Matches(const Control& target) const
+bool DependencyPropertyMetadata::Matches(const DependencyObject& target) const
 {
 	return _matcher && _matcher(target);
 }
 
-bool BindingPropertyMetadata::TryGet(Control& target, BindingValue& out) const
+bool DependencyPropertyMetadata::TryGet(DependencyObject& target, BindingValue& out) const
 {
 	return _getter && Matches(target) && _getter(target, out);
 }
 
-bool BindingPropertyMetadata::TrySet(Control& target, const BindingValue& value) const
+bool DependencyPropertyMetadata::TrySet(DependencyObject& target, const BindingValue& value) const
 {
 	if (_isReadOnly) return false;
 	return TrySetInternal(target, value);
 }
 
-bool BindingPropertyMetadata::TrySetInternal(
-	Control& target,
+bool DependencyPropertyMetadata::TrySetInternal(
+	DependencyObject& target,
 	const BindingValue& value) const
 {
+	target.VerifyAccess();
 	if (!_setter || !Matches(target)) return false;
 	BindingValue converted;
 	if (!TryConvert(value, converted)) return false;
 	BindingValue effective;
 	if (!TryCoerce(target, converted, effective)) return false;
+	return TrySetEffective(target, effective);
+}
 
+bool DependencyPropertyMetadata::TrySetEffective(
+	DependencyObject& target,
+	const BindingValue& value) const
+{
+	if (!_setter || !Matches(target)) return false;
+	auto* controlTarget = dynamic_cast<Control*>(&target);
+	const ControlWeakReference targetReference(controlTarget);
 	BindingValue oldValue;
 	const bool hadOldValue = _getter && _getter(target, oldValue);
 	const auto changeVersion = target._propertyChangeVersion;
-	if (!_setter(target, effective)) return false;
+	if (!_setter(target, value)) return false;
+	if (controlTarget && !targetReference) return true;
 	if (target._propertyChangeVersion != changeVersion)
 		return true;
 
-	BindingValue newValue = effective;
+	BindingValue newValue = value;
 	if (_getter) _getter(target, newValue);
 	if (!hadOldValue || !ValuesEqual(oldValue, newValue))
 		target.ApplyPropertyMetadataChange(*this, oldValue, newValue);
 	return true;
 }
 
-void BindingPropertyMetadata::NotifyChanged(
-	Control& target,
+void DependencyPropertyMetadata::NotifyChanged(
+	DependencyObject& target,
 	const BindingValue& oldValue,
 	const BindingValue& newValue) const
 {
 	if (_changed) _changed(target, oldValue, newValue);
 }
 
-EventConnection BindingPropertyMetadata::Subscribe(
-	Control& target,
+EventConnection DependencyPropertyMetadata::Subscribe(
+	DependencyObject& target,
 	ChangeHandler handler,
 	DataSourceUpdateMode updateMode) const
 {
@@ -1664,7 +1718,7 @@ EventConnection BindingPropertyMetadata::Subscribe(
 	return {};
 }
 
-const BindingPropertyMetadata* BindingPropertyRegistry::Register(BindingPropertyMetadata metadata)
+const DependencyPropertyMetadata* DependencyPropertyRegistry::Register(DependencyPropertyMetadata metadata)
 {
 	if (metadata.Name().empty()) return nullptr;
 	std::scoped_lock lock(BindingPropertyMutex());
@@ -1676,54 +1730,105 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(BindingProperty
 			return existing.get();
 	}
 
-	auto property = std::make_unique<BindingPropertyMetadata>(std::move(metadata));
+	auto property = std::make_unique<DependencyPropertyMetadata>(std::move(metadata));
 	const auto* result = property.get();
 	properties.push_back(std::move(property));
 	return result;
 }
 
-const BindingPropertyMetadata* BindingPropertyRegistry::Find(
-	Control& target,
+const DependencyPropertyMetadata* DependencyPropertyRegistry::Find(
+	DependencyObject& target,
 	const std::wstring& propertyName)
 {
 	target.EnsureBindingPropertiesRegistered();
-	if (const auto* dynamic = target.FindDynamicPropertyMetadata(propertyName))
-		return dynamic;
+	if (const auto* declarative =
+		target.FindDeclarativePropertyMetadata(propertyName))
+		return declarative;
+	return FindNative(target, propertyName);
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::FindNative(
+	DependencyObject& target,
+	const std::wstring& propertyName)
+{
+	target.EnsureBindingPropertiesRegistered();
 	std::scoped_lock lock(BindingPropertyMutex());
 	auto& properties = RegisteredBindingProperties();
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
 	{
-		if (IsSameProperty((*it)->Name(), propertyName) && (*it)->Matches(target))
+		if (IsSameProperty((*it)->Name(), propertyName)
+			&& (*it)->Matches(target)
+			&& target.SupportsNativeProperty(**it))
 			return it->get();
 	}
 	return nullptr;
 }
 
-std::vector<const BindingPropertyMetadata*> BindingPropertyRegistry::GetProperties(Control& target)
+std::vector<const DependencyPropertyMetadata*> DependencyPropertyRegistry::GetProperties(DependencyObject& target)
 {
 	target.EnsureBindingPropertiesRegistered();
 	std::scoped_lock lock(BindingPropertyMutex());
-	std::vector<const BindingPropertyMetadata*> result =
-		target.GetDynamicPropertyMetadata();
+	std::vector<const DependencyPropertyMetadata*> result =
+		target.GetDeclarativePropertyMetadata();
 	auto& properties = RegisteredBindingProperties();
+	std::unordered_set<std::wstring> effectiveNames;
+	effectiveNames.reserve(result.size() + properties.size());
+	for (const auto* property : result)
+		if (property) effectiveNames.insert(property->Name());
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
 	{
 		const auto* property = it->get();
-		if (!property->Matches(target))
+		if (!property->Matches(target)
+			|| !target.SupportsNativeProperty(*property))
 			continue;
-		const bool shadowed = std::any_of(
-			result.begin(), result.end(),
-			[property](const BindingPropertyMetadata* existing)
-			{
-				return IsSameProperty(existing->Name(), property->Name());
-			});
-		if (!shadowed)
+		if (effectiveNames.insert(property->Name()).second)
 			result.push_back(property);
 	}
 	std::sort(result.begin(), result.end(),
-		[](const BindingPropertyMetadata* left, const BindingPropertyMetadata* right)
+		[](const DependencyPropertyMetadata* left, const DependencyPropertyMetadata* right)
 		{
-			return Lower(left->Name()) < Lower(right->Name());
+			return IsPropertyNameLess(left->Name(), right->Name());
+		});
+	return result;
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::FindRegistered(
+	std::span<const std::type_index> ownerTypes,
+	const std::wstring& propertyName)
+{
+	std::scoped_lock lock(BindingPropertyMutex());
+	for (auto it = RegisteredBindingProperties().rbegin();
+		it != RegisteredBindingProperties().rend(); ++it)
+	{
+		const auto* property = it->get();
+		if (!IsSameProperty(property->Name(), propertyName)) continue;
+		if (std::find(ownerTypes.begin(), ownerTypes.end(), property->OwnerType())
+			!= ownerTypes.end()) return property;
+	}
+	return nullptr;
+}
+
+std::vector<const DependencyPropertyMetadata*>
+DependencyPropertyRegistry::GetRegisteredProperties(
+	std::span<const std::type_index> ownerTypes)
+{
+	std::scoped_lock lock(BindingPropertyMutex());
+	std::vector<const DependencyPropertyMetadata*> result;
+	std::unordered_set<std::wstring> effectiveNames;
+	for (auto it = RegisteredBindingProperties().rbegin();
+		it != RegisteredBindingProperties().rend(); ++it)
+	{
+		const auto* property = it->get();
+		if (std::find(ownerTypes.begin(), ownerTypes.end(), property->OwnerType())
+			== ownerTypes.end()) continue;
+		if (effectiveNames.insert(property->Name()).second)
+			result.push_back(property);
+	}
+	std::sort(result.begin(), result.end(),
+		[](const DependencyPropertyMetadata* left,
+			const DependencyPropertyMetadata* right)
+		{
+			return IsPropertyNameLess(left->Name(), right->Name());
 		});
 	return result;
 }
@@ -1908,7 +2013,7 @@ std::vector<BindingSourcePropertyMetadata> ObservableObject::GetProperties() con
 	std::sort(result.begin(), result.end(),
 		[](const auto& left, const auto& right)
 		{
-			return Lower(left.Name) < Lower(right.Name);
+			return IsPropertyNameLess(left.Name, right.Name);
 		});
 	return result;
 }
@@ -2215,7 +2320,7 @@ void ObservableObject::OnPropertyChanged(const std::wstring& propertyName)
 	_propertyChanged.Notify(propertyName);
 }
 
-Binding::Binding(Control* target,
+Binding::Binding(DependencyObject* target,
 	std::wstring targetProperty,
 	IBindingSource* source,
 	std::wstring sourceProperty,
@@ -2226,9 +2331,31 @@ Binding::Binding(Control* target,
 	std::optional<BindingValue> targetNullValue,
 	std::optional<BindingValue> converterParameter,
 	std::optional<std::wstring> stringFormat)
+	: Binding(target, std::move(targetProperty), source,
+		std::move(sourceProperty), mode, updateMode, std::move(converter),
+		std::move(fallbackValue), std::move(targetNullValue),
+		std::move(converterParameter), std::move(stringFormat),
+		DependencyPropertyValueSource::Local,
+		DependencyPropertyExpressionKind::Binding)
+{
+}
+
+Binding::Binding(DependencyObject* target,
+	std::wstring targetProperty,
+	IBindingSource* source,
+	std::wstring sourceProperty,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat,
+	DependencyPropertyValueSource targetValueSource,
+	DependencyPropertyExpressionKind expressionKind)
 	: _target(target),
-	_source(source),
-	_targetProperty(std::move(targetProperty)),
+	  _source(source),
+	  _targetProperty(std::move(targetProperty)),
 	_sourceProperty(std::move(sourceProperty)),
 	  _mode(mode),
 	  _updateMode(updateMode),
@@ -2237,15 +2364,19 @@ Binding::Binding(Control* target,
 	  _targetNullValue(std::move(targetNullValue)),
 	  _converterParameter(std::move(converterParameter)),
 	  _stringFormat(std::move(stringFormat)),
-	  _state(std::make_shared<State>())
+	  _state(std::make_shared<State>()),
+	  _targetValueSource(targetValueSource),
+	  _expressionKind(expressionKind)
 {
 	_state->Owner = this;
+	if (_target)
+		_targetLifetime = _target->BindingLifetime();
 	if (_source)
 		_sourceLifetime = _source->BindingLifetime();
 	Attach();
 }
 
-Binding::Binding(Control* target,
+Binding::Binding(DependencyObject* target,
 	std::wstring targetProperty,
 	BindingSourceReference source,
 	std::wstring sourceProperty,
@@ -2256,6 +2387,28 @@ Binding::Binding(Control* target,
 	std::optional<BindingValue> targetNullValue,
 	std::optional<BindingValue> converterParameter,
 	std::optional<std::wstring> stringFormat)
+	: Binding(target, std::move(targetProperty), std::move(source),
+		std::move(sourceProperty), mode, updateMode, std::move(converter),
+		std::move(fallbackValue), std::move(targetNullValue),
+		std::move(converterParameter), std::move(stringFormat),
+		DependencyPropertyValueSource::Local,
+		DependencyPropertyExpressionKind::Binding)
+{
+}
+
+Binding::Binding(DependencyObject* target,
+	std::wstring targetProperty,
+	BindingSourceReference source,
+	std::wstring sourceProperty,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat,
+	DependencyPropertyValueSource targetValueSource,
+	DependencyPropertyExpressionKind expressionKind)
 	: _target(target),
 	  _ownedSource(std::move(source)),
 	  _source(_ownedSource.Get()),
@@ -2268,9 +2421,13 @@ Binding::Binding(Control* target,
 	  _targetNullValue(std::move(targetNullValue)),
 	  _converterParameter(std::move(converterParameter)),
 	  _stringFormat(std::move(stringFormat)),
-	  _state(std::make_shared<State>())
+	  _state(std::make_shared<State>()),
+	  _targetValueSource(targetValueSource),
+	  _expressionKind(expressionKind)
 {
 	_state->Owner = this;
+	if (_target)
+		_targetLifetime = _target->BindingLifetime();
 	if (_source)
 		_sourceLifetime = _source->BindingLifetime();
 	Attach();
@@ -2281,8 +2438,9 @@ Binding::~Binding()
 	if (_state)
 		_state->Owner = nullptr;
 	_targetConnection.Disconnect();
-	if (_ownsTargetValue && _target && !_target->_isDestroying)
-		_target->ClearBindingPropertyValue(_targetProperty, this);
+	if (_ownsTargetValue && IsTargetAlive())
+		_target->ClearBindingPropertyValue(
+			_targetProperty, this, _targetValueSource, _expressionKind);
 	_ownsTargetValue = false;
 	_sourceConnections.clear();
 	_sourcePathOwners.clear();
@@ -2291,6 +2449,12 @@ Binding::~Binding()
 	_validationPathConnections.clear();
 	_validationPathOwners.clear();
 	_validationPathListOwners.clear();
+}
+
+bool Binding::IsTargetAlive() const noexcept
+{
+	return _target && !_targetLifetime.expired()
+		&& !_target->IsDestroying();
 }
 
 bool Binding::HasValidationErrors() const noexcept
@@ -2302,6 +2466,17 @@ void Binding::Attach()
 {
 	if (!Validate())
 		return;
+	if (IsSourceToTargetMode(_mode))
+	{
+		if (!_target->TryAttachBindingPropertyExpression(
+			_targetProperty, this, _targetValueSource, _expressionKind))
+		{
+			_isValid = false;
+			Fail(BindingError::TargetWriteFailed);
+			return;
+		}
+		_ownsTargetValue = true;
+	}
 
 	AttachSourceChangedHandlers();
 	AttachTargetChangedHandlers();
@@ -2319,7 +2494,7 @@ void Binding::Attach()
 bool Binding::Validate()
 {
 	_isValid = false;
-	if (!_target) return Fail(BindingError::InvalidTarget);
+	if (!IsTargetAlive()) return Fail(BindingError::InvalidTarget);
 	if (!_source) return Fail(BindingError::InvalidSource);
 	if (_targetProperty.empty()) return Fail(BindingError::EmptyTargetProperty);
 	if (_sourceProperty.empty()) return Fail(BindingError::EmptySourceProperty);
@@ -2327,7 +2502,7 @@ bool Binding::Validate()
 		return Fail(BindingError::InvalidSourcePropertyPath);
 	if (!IsSourceAlive()) return Fail(BindingError::SourceUnavailable);
 
-	_targetMetadata = BindingPropertyRegistry::Find(*_target, _targetProperty);
+	_targetMetadata = DependencyPropertyRegistry::Find(*_target, _targetProperty);
 	if (!_targetMetadata) return Fail(BindingError::TargetPropertyNotFound);
 	if (_targetMetadata->IsReadOnly())
 		return Fail(BindingError::TargetNotWritable);
@@ -2340,7 +2515,8 @@ bool Binding::Validate()
 	if (IsSourceToTargetMode(_mode) && !_targetMetadata->CanWrite())
 		return Fail(BindingError::TargetNotWritable);
 	if (IsSourceToTargetMode(_mode)
-		&& !_target->CanAcquireBindingPropertyValue(_targetProperty, this))
+		&& !_target->CanAcquireBindingPropertyValue(
+			_targetProperty, this, _targetValueSource, _expressionKind))
 		return Fail(BindingError::DuplicateTargetProperty);
 	if (IsTargetToSourceMode(_mode) && !_targetMetadata->CanRead())
 		return Fail(BindingError::TargetNotReadable);
@@ -2528,7 +2704,7 @@ void Binding::AttachValidationChangedHandlers()
 
 void Binding::AttachTargetChangedHandlers()
 {
-	if (!_target || !_targetMetadata || !IsTargetToSourceMode(_mode)
+	if (!IsTargetAlive() || !_targetMetadata || !IsTargetToSourceMode(_mode)
 		|| _updateMode == DataSourceUpdateMode::Never || !_targetMetadata->CanObserve())
 		return;
 
@@ -2574,12 +2750,17 @@ void Binding::RefreshValidation()
 
 void Binding::OnTargetPropertyChanged()
 {
+	if (_ownsTargetValue && IsTargetAlive()
+		&& !_target->IsBindingExpressionOwner(
+			_targetProperty, this, _targetValueSource, _expressionKind))
+		return;
 	UpdateSource();
 }
 
 bool Binding::UpdateTarget()
 {
-	if (!_isValid || !_target || !_targetMetadata || !_targetMetadata->CanWrite()
+	if (!_isValid || !IsTargetAlive()
+		|| !_targetMetadata || !_targetMetadata->CanWrite()
 		|| !IsSourceToTargetMode(_mode) || _updatingSource)
 		return false;
 	if (!IsSourceAlive())
@@ -2619,18 +2800,35 @@ bool Binding::UpdateTarget()
 
 bool Binding::ApplyTargetValue(const BindingValue& value)
 {
-	if (!_target || !_targetMetadata) return false;
+	if (!IsTargetAlive() || !_targetMetadata) return false;
 	BindingValue converted;
 	if (!_targetMetadata->TryConvert(value, converted))
 		return Fail(BindingError::TargetConversionFailed);
 	_updatingTarget = true;
 	const bool ok = _target->TrySetBindingPropertyValue(
-		_targetProperty, converted, this);
+		_targetProperty, converted, this,
+		_targetValueSource, _expressionKind);
 	_updatingTarget = false;
+	if (!IsTargetAlive())
+		return Fail(BindingError::InvalidTarget);
 	if (!ok) return Fail(BindingError::TargetWriteFailed);
-	_ownsTargetValue = true;
 	_lastError = BindingError::None;
 	return true;
+}
+
+void Binding::DetachReplacedTargetExpression() noexcept
+{
+	_targetConnection.Disconnect();
+	_sourceConnections.clear();
+	_sourcePathOwners.clear();
+	_sourcePathListOwners.clear();
+	_sourceValidationConnections.clear();
+	_validationPathConnections.clear();
+	_validationPathOwners.clear();
+	_validationPathListOwners.clear();
+	if (_state) _state->Owner = nullptr;
+	_ownsTargetValue = false;
+	_isValid = false;
 }
 
 bool Binding::ApplyFallbackValue(BindingError sourceError)
@@ -2642,7 +2840,8 @@ bool Binding::ApplyFallbackValue(BindingError sourceError)
 
 bool Binding::UpdateSource()
 {
-	if (!_isValid || !_target || !_targetMetadata || !_targetMetadata->CanRead()
+	if (!_isValid || !IsTargetAlive()
+		|| !_targetMetadata || !_targetMetadata->CanRead()
 		|| !IsTargetToSourceMode(_mode) || _updatingTarget)
 		return false;
 	if (!IsSourceAlive())
@@ -2843,6 +3042,7 @@ namespace
 	public:
 		bool Convert(
 			const BindingValue& value,
+			const BindingValueConverterContext&,
 			BindingValue& out) const override
 		{
 			MultiBindingResultState state;
@@ -2853,6 +3053,7 @@ namespace
 
 		bool ConvertBack(
 			const BindingValue& value,
+			const BindingValueConverterContext&,
 			BindingValue& out) const override
 		{
 			out = BindingValue(MultiBindingResultState{ true, value });
@@ -2863,6 +3064,39 @@ namespace
 	BindingValue WrapMultiBindingSlotValue(const BindingValue& value)
 	{
 		return BindingValue(MultiBindingSlotState{ true, value });
+	}
+
+	std::shared_ptr<const DeclarativeTypeDescriptor>
+		GetMultiBindingCollectorSchema(std::size_t slotCount)
+	{
+		static std::mutex mutex;
+		static std::unordered_map<std::size_t,
+			std::shared_ptr<const DeclarativeTypeDescriptor>> schemas;
+		std::scoped_lock lock(mutex);
+		const auto found = schemas.find(slotCount);
+		if (found != schemas.end()) return found->second;
+
+		std::vector<DeclarativePropertyDefinition> properties;
+		properties.reserve(slotCount + 1);
+		DeclarativePropertyDefinition result;
+		result.Name = L"CombinedValue";
+		result.ValueKind = BindingValueKind::Object;
+		result.DefaultValue = BindingValue(MultiBindingResultState{});
+		properties.push_back(std::move(result));
+		for (std::size_t index = 0; index < slotCount; ++index)
+		{
+			DeclarativePropertyDefinition slot;
+			slot.Name = L"Value" + std::to_wstring(index);
+			slot.ValueKind = BindingValueKind::Object;
+			slot.DefaultValue = BindingValue(MultiBindingSlotState{});
+			properties.push_back(std::move(slot));
+		}
+		auto descriptor = DeclarativeTypeDescriptor::Create(
+			{ L"urn:cui:internal:binding",
+			  L"MultiBindingCollector" + std::to_wstring(slotCount) },
+			std::move(properties));
+		if (descriptor) schemas.emplace(slotCount, descriptor);
+		return descriptor;
 	}
 }
 
@@ -2891,23 +3125,19 @@ struct MultiBinding::State final
 	bool WritingBack = false;
 	bool ManualUpdateSource = false;
 
-	bool DefineCollectorProperty(
-		const std::wstring& name,
-		const BindingValue& defaultValue)
+	bool InitializeCollector(std::size_t slotCount)
 	{
-		DynamicControlPropertyDefinition definition;
-		definition.Name = name;
-		definition.ValueKind = BindingValueKind::Object;
-		definition.DefaultValue = defaultValue;
-		return Collector.DefineDynamicProperty(std::move(definition));
+		auto descriptor = GetMultiBindingCollectorSchema(slotCount);
+		return descriptor
+			&& cui::framework::XamlAccess::SetTypeDescriptor(
+				Collector, std::move(descriptor));
 	}
 
 	void SetResult(MultiBindingResultState state)
 	{
 		Recomputing = true;
 		(void)Collector.TrySetPropertyValue(
-			ResultProperty, BindingValue(std::move(state)),
-			ControlPropertyValueSource::Local);
+			ResultProperty, BindingValue(std::move(state)));
 		Recomputing = false;
 	}
 
@@ -3075,7 +3305,7 @@ struct MultiBinding::State final
 };
 
 MultiBinding::MultiBinding(
-	Control* target,
+	DependencyObject* target,
 	std::wstring targetProperty,
 	std::vector<MultiBindingSource> sources,
 	BindingMode mode,
@@ -3085,7 +3315,7 @@ MultiBinding::MultiBinding(
 	std::optional<BindingValue> targetNullValue,
 	std::optional<BindingValue> converterParameter,
 	std::optional<std::wstring> stringFormat)
-	: _state(std::make_unique<State>())
+	: _state(std::make_shared<State>())
 {
 	auto& state = *_state;
 	state.TargetProperty = std::move(targetProperty);
@@ -3100,7 +3330,7 @@ MultiBinding::MultiBinding(
 		state.Error = BindingError::InvalidMultiBinding;
 		return;
 	}
-	const auto* targetMetadata = BindingPropertyRegistry::Find(
+	const auto* targetMetadata = DependencyPropertyRegistry::Find(
 		*target, state.TargetProperty);
 	if (!targetMetadata)
 	{
@@ -3137,8 +3367,7 @@ MultiBinding::MultiBinding(
 		return;
 	}
 
-	if (!state.DefineCollectorProperty(
-		State::ResultProperty, BindingValue(MultiBindingResultState{})))
+	if (!state.InitializeCollector(sources.size()))
 	{
 		state.Error = BindingError::InvalidMultiBinding;
 		return;
@@ -3165,33 +3394,31 @@ MultiBinding::MultiBinding(
 			return;
 		}
 		const auto slot = L"Value" + std::to_wstring(index);
-		if (!state.DefineCollectorProperty(
-			slot, BindingValue(MultiBindingSlotState{})))
-		{
-			state.Error = BindingError::InvalidMultiBinding;
-			return;
-		}
 		state.SlotProperties.push_back(slot);
 		state.SourceProperties.push_back(source.SourceProperty);
 	}
 
+	const std::weak_ptr<State> weakState = _state;
 	state.CollectorConnection = state.Collector.OnPropertyValueChanged.Subscribe(
-		[weak = std::weak_ptr<const void>(state.Collector.BindingLifetime()),
-		 statePtr = &state](Control*, const ControlPropertyChangedEventArgs& args)
+		[weakState](DependencyObject*,
+			const DependencyPropertyChangedEventArgs& args)
 		{
-			if (weak.expired()) return;
+			auto state = weakState.lock();
+			if (!state) return;
 			if (IsSameProperty(args.PropertyName, State::ResultProperty))
 			{
 				MultiBindingResultState result;
-				if (args.NewValue.TryGet(result)) statePtr->WriteBack(result);
+				if (args.NewValue.TryGet(result)) state->WriteBack(result);
 			}
-			else statePtr->Recompute();
+			else state->Recompute();
 		});
 	state.ChildValidationConnection =
 		state.Collector.DataBindings.ValidationChanged().Subscribe(
-			[&state](const BindingValidationChangedEventArgs&)
+			[weakState](const BindingValidationChangedEventArgs&)
 			{
-				state.Validation.Notify(state.TargetProperty);
+				auto state = weakState.lock();
+				if (state)
+					state->Validation.Notify(state->TargetProperty);
 			});
 
 	for (size_t index = 0; index < sources.size(); ++index)
@@ -3299,30 +3526,33 @@ const Binding* MultiBinding::TargetBinding() const noexcept
 
 bool MultiBinding::UpdateTarget()
 {
-	return _state && _state->UpdateTarget();
+	auto state = _state;
+	return state && state->UpdateTarget();
 }
 
 bool MultiBinding::UpdateSource()
 {
-	return _state && _state->UpdateSource();
+	auto state = _state;
+	return state && state->UpdateSource();
 }
 
 std::vector<BindingValidationResult> MultiBinding::GetValidationResults() const
 {
 	std::vector<BindingValidationResult> result;
-	if (!_state) return result;
-	const auto childResults = _state->Collector.DataBindings.GetValidationResults();
+	auto state = _state;
+	if (!state) return result;
+	const auto childResults = state->Collector.DataBindings.GetValidationResults();
 	for (size_t index = 0; index < childResults.size(); ++index)
 	{
 		const auto slot = std::find(
-			_state->SlotProperties.begin(), _state->SlotProperties.end(),
+			state->SlotProperties.begin(), state->SlotProperties.end(),
 			childResults[index].TargetProperty);
-		const auto sourceIndex = slot == _state->SlotProperties.end()
+		const auto sourceIndex = slot == state->SlotProperties.end()
 			? size_t{ 0 }
-			: static_cast<size_t>(slot - _state->SlotProperties.begin());
-		result.push_back({ _state->TargetProperty,
-			sourceIndex < _state->SourceProperties.size()
-				? _state->SourceProperties[sourceIndex] : std::wstring{},
+			: static_cast<size_t>(slot - state->SlotProperties.begin());
+		result.push_back({ state->TargetProperty,
+			sourceIndex < state->SourceProperties.size()
+				? state->SourceProperties[sourceIndex] : std::wstring{},
 			childResults[index].Issue });
 	}
 	return result;
@@ -3330,12 +3560,14 @@ std::vector<BindingValidationResult> MultiBinding::GetValidationResults() const
 
 bool MultiBinding::HasValidationIssues() const
 {
-	return _state && _state->Collector.DataBindings.HasValidationIssues();
+	auto state = _state;
+	return state && state->Collector.DataBindings.HasValidationIssues();
 }
 
 bool MultiBinding::HasValidationErrors() const
 {
-	return _state && _state->Collector.DataBindings.HasValidationErrors();
+	auto state = _state;
+	return state && state->Collector.DataBindings.HasValidationErrors();
 }
 
 BindingValidationChangedEvent& MultiBinding::ValidationChanged() noexcept
@@ -3343,16 +3575,34 @@ BindingValidationChangedEvent& MultiBinding::ValidationChanged() noexcept
 	return _state->Validation;
 }
 
-BindingCollection::BindingCollection(Control* owner)
-	: _owner(owner)
+BindingCollection::BindingCollection(DependencyObject* owner)
+	: _owner(owner),
+	  _callbackState(std::make_shared<CallbackState>())
 {
+	_callbackState->Owner = this;
+}
+
+BindingCollection::~BindingCollection()
+{
+	if (_callbackState) _callbackState->Owner = nullptr;
+	_validationConnections.clear();
+	_multiValidationConnections.clear();
+	_items.clear();
+	_multiItems.clear();
+	_owner = nullptr;
 }
 
 void BindingCollection::NotifyValidationChanged(
 	const std::wstring& targetProperty)
 {
+	auto* owner = _owner;
+	const auto ownerLifetime = owner
+		? owner->BindingLifetime() : std::weak_ptr<const void>{};
 	_validationChanged.Notify(targetProperty);
-	if (_owner) _owner->OnBindingValidationChanged(targetProperty);
+	// Validation listeners may remove the complete binding collection. Do not
+	// read this object again after publishing the snapshot.
+	if (owner && !ownerLifetime.expired() && !owner->IsDestroying())
+		owner->OnBindingValidationChanged(targetProperty);
 }
 
 Binding* BindingCollection::Add(const std::wstring& targetProperty,
@@ -3407,10 +3657,14 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 		return nullptr;
 	}
 	auto* result = binding.get();
+	const std::weak_ptr<CallbackState> callbackState = _callbackState;
 	auto validationConnection = result->ValidationChanged().Subscribe(
-		[this, targetProperty](const BindingValidationChangedEventArgs&)
+		[callbackState, targetProperty](
+			const BindingValidationChangedEventArgs&)
 		{
-			NotifyValidationChanged(targetProperty);
+			auto state = callbackState.lock();
+			if (state && state->Owner)
+				state->Owner->NotifyValidationChanged(targetProperty);
 		});
 	_items.push_back(std::move(binding));
 	_validationConnections.push_back(std::move(validationConnection));
@@ -3465,10 +3719,68 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 		return nullptr;
 	}
 	auto* result = binding.get();
+	const std::weak_ptr<CallbackState> callbackState = _callbackState;
 	auto validationConnection = result->ValidationChanged().Subscribe(
-		[this, targetProperty](const BindingValidationChangedEventArgs&)
+		[callbackState, targetProperty](
+			const BindingValidationChangedEventArgs&)
 		{
-			NotifyValidationChanged(targetProperty);
+			auto state = callbackState.lock();
+			if (state && state->Owner)
+				state->Owner->NotifyValidationChanged(targetProperty);
+		});
+	_items.push_back(std::move(binding));
+	_validationConnections.push_back(std::move(validationConnection));
+	if (result->HasValidationIssues())
+		NotifyValidationChanged(targetProperty);
+	_lastError = BindingError::None;
+	return result;
+}
+
+Binding* BindingCollection::AddTemplateBinding(
+	const std::wstring& targetProperty,
+	IBindingSource& templatedParent,
+	const std::wstring& sourceProperty)
+{
+	if (!_owner)
+	{
+		_lastError = BindingError::InvalidTarget;
+		return nullptr;
+	}
+	const bool duplicateTarget = std::any_of(
+		_items.begin(), _items.end(),
+		[&targetProperty](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		}) || FindMulti(targetProperty) != nullptr;
+	if (duplicateTarget)
+	{
+		_lastError = BindingError::DuplicateTargetProperty;
+		return nullptr;
+	}
+
+	auto binding = std::unique_ptr<Binding>(new Binding(
+		_owner, targetProperty, &templatedParent, sourceProperty,
+		BindingMode::OneWay, DataSourceUpdateMode::Never,
+		std::shared_ptr<const IBindingValueConverter>{},
+		std::optional<BindingValue>{}, std::optional<BindingValue>{},
+		std::optional<BindingValue>{}, std::optional<std::wstring>{},
+		DependencyPropertyValueSource::Template,
+		DependencyPropertyExpressionKind::TemplateBinding));
+	if (!binding->IsValid())
+	{
+		_lastError = binding->LastError();
+		return nullptr;
+	}
+	auto* result = binding.get();
+	const std::weak_ptr<CallbackState> callbackState = _callbackState;
+	auto validationConnection = result->ValidationChanged().Subscribe(
+		[callbackState, targetProperty](
+			const BindingValidationChangedEventArgs&)
+		{
+			auto state = callbackState.lock();
+			if (state && state->Owner)
+				state->Owner->NotifyValidationChanged(targetProperty);
 		});
 	_items.push_back(std::move(binding));
 	_validationConnections.push_back(std::move(validationConnection));
@@ -3510,10 +3822,14 @@ MultiBinding* BindingCollection::AddMulti(
 		return nullptr;
 	}
 	auto* result = binding.get();
+	const std::weak_ptr<CallbackState> callbackState = _callbackState;
 	auto validationConnection = result->ValidationChanged().Subscribe(
-		[this, targetProperty](const BindingValidationChangedEventArgs&)
+		[callbackState, targetProperty](
+			const BindingValidationChangedEventArgs&)
 		{
-			NotifyValidationChanged(targetProperty);
+			auto state = callbackState.lock();
+			if (state && state->Owner)
+				state->Owner->NotifyValidationChanged(targetProperty);
 		});
 	_multiItems.push_back(std::move(binding));
 	_multiValidationConnections.push_back(std::move(validationConnection));

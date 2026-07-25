@@ -26,15 +26,6 @@ struct DesignerStyleSetter
 	bool operator==(const DesignerStyleSetter&) const = default;
 };
 
-struct DesignerStyleCondition
-{
-	/** Canonical state property such as IsMouseOver or IsEnabled. */
-	std::wstring Property;
-	bool Value = true;
-
-	bool operator==(const DesignerStyleCondition&) const = default;
-};
-
 struct DesignerStyleDataCondition
 {
 	std::wstring SourceProperty;
@@ -54,8 +45,6 @@ struct DesignerStylePropertyCondition
 struct DesignerStyleTrigger
 {
 	/** One condition is serialized as Trigger; multiple conditions as MultiTrigger. */
-	std::vector<DesignerStyleCondition> Conditions;
-	/** Arbitrary observable metadata-property predicates. */
 	std::vector<DesignerStylePropertyCondition> PropertyConditions;
 	/** One condition is DataTrigger; multiple conditions are MultiDataTrigger. */
 	std::vector<DesignerStyleDataCondition> DataConditions;
@@ -70,14 +59,13 @@ struct DesignerStyleRule
 {
 	bool HasType = false;
 	UIClass Type = UIClass::UI_Base;
+	/** Exact built-in XAML TargetType; Type selects the native behavior host. */
+	RuntimeTypeId XamlType;
 	/** Exact XAML ComponentDefinition target; Type remains its built-in BaseType. */
 	DesignerComponentType ComponentType;
 	std::wstring Id;
 	/** Named style key, or an {x:Type ...} key, inherited before local setters. */
 	std::wstring BasedOn;
-	std::vector<std::wstring> Classes;
-	ControlStyleState RequiredStates = ControlStyleState::None;
-	ControlStyleState ExcludedStates = ControlStyleState::None;
 	/** Populated only on lowered runtime rules. */
 	std::vector<DesignerStylePropertyCondition> PropertyConditions;
 	std::vector<DesignerStyleSetter> Setters;

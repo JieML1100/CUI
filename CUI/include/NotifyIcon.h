@@ -1,51 +1,63 @@
 #pragma once
 
-#include "Control.h"
+#include <Windows.h>
+#include "RoutedCommand.h"
 
 #include <shellapi.h>
 
+#include <any>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
-/** Value-semantic Unicode menu description used by NotifyIcon. */
-class NotifyIconMenuItem
+class Window;
+class Control;
+class PlatformWindowHost;
+
+/**
+ * Value-semantic command source projected into a native tray popup menu.
+ * Win32 menu identifiers are deliberately absent: they exist only while one
+ * popup is open and never become application command identity.
+ */
+class NotifyIconMenuItem final
 {
 public:
 	std::wstring Text;
-	int ID = 0;
-	bool Enabled = true;
-	bool Separator = false;
-	bool HasSubMenu = false;
-	/** Transient handle while a popup is open; never owned by the item. */
-	HMENU SubMenu = nullptr;
-	std::vector<NotifyIconMenuItem> SubItems;
+	RoutedCommand Command;
+	std::any CommandParameter;
+	ControlWeakReference CommandTarget;
+	bool IsEnabled = true;
+	bool IsSeparator = false;
+	std::vector<NotifyIconMenuItem> Items;
 
-	NotifyIconMenuItem(std::wstring text, int id, bool enabled = true);
-	NotifyIconMenuItem(const wchar_t* text, int id, bool enabled = true);
-	/** Compatibility overload; narrow text is interpreted as UTF-8, then ACP. */
-	NotifyIconMenuItem(const std::string& text, int id, bool enabled = true);
-	NotifyIconMenuItem(const char* text, int id, bool enabled = true);
-	NotifyIconMenuItem(const NotifyIconMenuItem& other);
-	NotifyIconMenuItem& operator=(const NotifyIconMenuItem& other);
-	NotifyIconMenuItem(NotifyIconMenuItem&& other) noexcept;
-	NotifyIconMenuItem& operator=(NotifyIconMenuItem&& other) noexcept;
-	~NotifyIconMenuItem() = default;
+	NotifyIconMenuItem() = default;
+	NotifyIconMenuItem(
+		std::wstring text,
+		RoutedCommand command,
+		std::any commandParameter = {},
+		bool isEnabled = true);
 
-	static NotifyIconMenuItem CreateSeparator();
-	bool TryAddSubItem(const NotifyIconMenuItem& item);
-	void AddSubItem(const NotifyIconMenuItem& item);
+	static NotifyIconMenuItem Separator();
+	static NotifyIconMenuItem Submenu(
+		std::wstring text,
+		std::vector<NotifyIconMenuItem> items = {});
+
+	/** Adds a valid command leaf, separator or submenu to this submenu. */
+	bool AddItem(NotifyIconMenuItem item);
+	bool IsSubmenu() const noexcept { return !Items.empty(); }
 };
 
 /**
- * Unicode system-tray icon wrapper. HICON remains caller-owned.
- * All Try* methods report Shell/Win32 failures through GetLastError().
+ * Unicode system-tray service owned by a Window. HICON remains caller-owned.
+ * Tray menu leaves execute the same routed-command transaction as Button,
+ * MenuItem and InputBinding; native numeric ids are transient implementation
+ * details and are never published as application events.
  */
-class NotifyIcon
+class NotifyIcon final
 {
 public:
-	using NotifyIconMouseDownEvent = Event<void(NotifyIcon*, MouseEventArgs)>;
-	using NotifyIconMenuClickEvent = Event<void(NotifyIcon*, int)>;
+	using MouseDownEvent = Event<void(NotifyIcon*, const MouseEventArgs&)>;
 
 	NotifyIcon();
 	~NotifyIcon();
@@ -54,84 +66,43 @@ public:
 	NotifyIcon(NotifyIcon&&) = delete;
 	NotifyIcon& operator=(NotifyIcon&&) = delete;
 
-	/** Compatibility host handle. Prefer TryInitialize() when changing it. */
-	HWND hWnd = nullptr;
-	/** Most recently shown icon, retained for legacy code. Dispatch supports many. */
-	static NotifyIcon* Instance;
-
-	bool TryInitialize(
-		HWND window, UINT iconId,
-		UINT callbackMessage = WM_USER + 1);
-	void InitNotifyIcon(HWND window, int iconId);
+	/** Attaches this service to one live Window; native identity stays internal. */
+	bool TryInitialize(Window& owner);
 	bool IsInitialized() const noexcept;
 	bool IsVisible() const noexcept;
-	UINT GetIconId() const noexcept;
-	UINT GetCallbackMessage() const noexcept;
+	Window* GetOwner() const noexcept;
 	HRESULT GetLastError() const noexcept;
 
 	bool TrySetIcon(HICON icon);
-	void SetIcon(HICON icon);
 	HICON GetIcon() const noexcept;
-
 	bool TryShow();
 	bool TryHide();
-	void ShowNotifyIcon();
-	void HideNotifyIcon();
 
 	bool TrySetToolTip(const std::wstring& text);
-	void SetToolTip(const wchar_t* text);
-	void SetToolTip(const char* text);
 	std::wstring GetToolTip() const;
-
 	bool TryShowBalloonTip(
 		const std::wstring& title,
 		const std::wstring& text,
 		DWORD timeout = 5000,
 		DWORD type = NIIF_INFO);
-	void ShowBalloonTip(
-		const wchar_t* title, const wchar_t* text,
-		int timeout = 5000, int type = NIIF_INFO);
-	void ShowBalloonTip(
-		const char* title, const char* text,
-		int timeout = 5000, int type = NIIF_INFO);
 
-	bool TryAddMenuItem(const NotifyIconMenuItem& item);
-	void AddMenuItem(const NotifyIconMenuItem& item);
+	bool TryAddMenuItem(NotifyIconMenuItem item);
 	bool TryAddMenuSeparator();
-	void AddMenuSeparator();
-	void ClearMenu();
-	size_t MenuItemCount(bool recursive = false) const noexcept;
-	bool RemoveMenuItem(int id);
+	bool TryRemoveMenuItemAt(std::size_t index);
+	void ClearMenu() noexcept;
+	std::size_t MenuItemCount(bool recursive = false) const noexcept;
+	std::span<const NotifyIconMenuItem> GetMenuItems() const noexcept;
 
-	bool TryEnableMenuItem(int id, bool enable);
-	void EnableMenuItem(int id, bool enable);
-	bool TrySetMenuItemText(int id, const std::wstring& text);
-	void SetMenuItemText(int id, const std::wstring& text);
-	void SetMenuItemText(int id, const std::string& text);
+	bool TryShowContextMenu(int screenX, int screenY);
 
-	NotifyIconMenuItem* CreateSubMenu(const std::wstring& text, int id = 0);
-	NotifyIconMenuItem* CreateSubMenu(const std::string& text);
-	bool TryAddSubMenuItem(int parentId, const NotifyIconMenuItem& item);
-	void AddSubMenuItem(int parentId, const NotifyIconMenuItem& item);
-
-	NotifyIconMenuItem* FindMenuItem(
-		int id, std::vector<NotifyIconMenuItem>& items);
-	const NotifyIconMenuItem* FindMenuItem(
-		int id, const std::vector<NotifyIconMenuItem>& items) const;
-	NotifyIconMenuItem* FindMenuItem(int id);
-	const NotifyIconMenuItem* FindMenuItem(int id) const;
-
-	bool TryShowContextMenu(int x, int y);
-	void ShowContextMenu(int x, int y);
-
-	/** Called by Form's window procedure; supports multiple icons and Explorer restart. */
-	static bool DispatchWindowMessage(
-		HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-
-	NotifyIconMouseDownEvent OnNotifyIconMouseDown;
-	NotifyIconMenuClickEvent OnNotifyIconMenuClick;
+	MouseDownEvent OnMouseDown;
 
 private:
 	struct Impl;
-	std::unique_ptr<Impl> _impl;
+	friend class PlatformWindowHost;
+	/** Platform-only callback and Explorer-recovery projection. */
+	static bool HandlePlatformWindowMessage(
+		HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+	void DetachOwner(bool removeNativeIcon) noexcept;
+	std::shared_ptr<Impl> _impl;
 };

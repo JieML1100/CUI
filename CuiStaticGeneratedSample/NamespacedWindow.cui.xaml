@@ -1,18 +1,30 @@
-<Form xmlns="urn:cui"
+<Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:d="urn:cui:designer"
-      x:Name="NamespacedRuntimeForm"
+      x:Name="NamespacedRuntimeWindow"
       x:Class="Acme.Views.MainWindow"
       d:CodeBehind="NamespacedWindow"
-      OnShown="HandleWindowShown"
-      Text="Acme::Views::MainWindow"
+      ContentRendered="HandleWindowContentRendered"
+      Title="Acme::Views::MainWindow"
       Width="800" Height="600">
+  <Window.CommandBindings>
+    <CommandBinding Command="Demo.Static.Refresh"
+                    CanExecute="HandleStaticRefreshCanExecute"
+                    Executed="HandleStaticRefreshExecuted" />
+  </Window.CommandBindings>
+  <Window.InputBindings>
+    <KeyBinding Command="Demo.Static.Refresh" Key="F5"
+                CommandParameter="static-input"
+                CommandTarget="{x:Reference namespaceButton}" />
+  </Window.InputBindings>
   <Button x:Name="namespaceButton"
           DesignId="77"
-          Text="Namespaced"
+		  Command="Demo.Static.Refresh"
+		  CommandParameter="static-input"
+		  CommandTarget="{x:Reference NamespacedRuntimeWindow}"
+          Content="{Binding Caption}"
           Width="120" Height="24"
-          OnDropFile="HandleNamespacedDrop"
-          Click="HandleNamespacedClick"
-          OnPropertyValueChanged="HandleNamespacedPropertyChanged"
-          OnValidationStateChanged="HandleNamespacedValidationChanged" />
-</Form>
+          AllowDrop="True"
+		  Drop="HandleNamespacedDrop"
+          Click="HandleNamespacedClick" />
+</Window>
