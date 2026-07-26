@@ -413,6 +413,18 @@ void Control::SetStyleResourceKey(std::wstring value)
 	RefreshStyleValues(false);
 }
 
+bool Control::HasVisibleStyleRules() const noexcept
+{
+	if (_themeStyleSheet && !_themeStyleSheet->Rules().empty()) return true;
+	if (_styleSheet && !_styleSheet->Rules().empty()) return true;
+	for (const Control* scope = this; scope;
+		scope = scope->GetInheritanceParent())
+		if (scope->_resourceDictionary
+			&& !scope->_resourceDictionary->Rules().empty())
+			return true;
+	return false;
+}
+
 ControlStyleState Control::GetEffectiveStyleState() const noexcept
 {
 	auto result = _styleState;

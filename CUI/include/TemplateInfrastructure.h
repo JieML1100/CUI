@@ -33,6 +33,14 @@ namespace cui::framework
 		{
 			return owner.DetachVisualChildTemplateRoot();
 		}
+		static void CompleteTemplateApplication(Control& owner)
+		{
+			owner.CompleteControlTemplateApplication();
+		}
+		static void AbortTemplateApplication(Control& owner) noexcept
+		{
+			owner.AbortControlTemplateApplication();
+		}
 		static void SetPresentationSuppressed(
 			Control& target, bool value)
 		{

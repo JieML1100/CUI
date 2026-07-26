@@ -135,6 +135,7 @@ private:
 	void HandleFeatureBubble(
 		Control* sender, DeclarativeEventArgs& args);
 	void HandleDispatcherProbe(Control* sender, RoutedEventArgs& e);
+	void HandleTemplateSwap(Control* sender, RoutedEventArgs& e);
 	void HandleRouteOuterPreview(Control* sender, MouseEventArgs& e);
 	void HandleRouteMiddlePreview(Control* sender, MouseEventArgs& e);
 	void HandleRouteSourcePreview(Control* sender, MouseEventArgs& e);

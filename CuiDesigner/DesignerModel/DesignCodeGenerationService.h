@@ -11,7 +11,7 @@
 namespace DesignerModel
 {
 /** Bump together with CuiCodeGen.targets when generated output semantics change. */
-inline constexpr unsigned int DesignCodeGenerationContractVersion = 32;
+inline constexpr unsigned int DesignCodeGenerationContractVersion = 36;
 
 struct DesignCodeGenerationOptions
 {

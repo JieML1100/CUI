@@ -26,6 +26,11 @@ public:
 		Control& root,
 		bool recursive = true,
 		std::wstring* outError = nullptr);
+	/** Installs the Theme Template value before a precompiled tree is attached. */
+	static bool InstallTemplateValue(
+		Control& owner,
+		const std::wstring& resourceKey,
+		std::wstring* outError = nullptr);
 	static bool ApplyTemplateVisualStates(
 		Control& owner,
 		const std::wstring& resourceKey,

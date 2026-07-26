@@ -1,5 +1,6 @@
 #include "DesignerStyleSheetUtils.h"
 #include "DesignerBindingUtils.h"
+#include "DesignerModel/DesignDocument.h"
 #include "DesignerPropertyCatalog.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <Application.h>
@@ -16,6 +17,28 @@
 
 namespace DesignerStyleSheetUtils
 {
+std::vector<RuntimeStyleResource> BuildItemsPanelStyleResources(
+	const std::vector<DesignerModel::DesignItemsPanelTemplate>& templates)
+{
+	std::vector<RuntimeStyleResource> result;
+	result.reserve(templates.size());
+	for (const auto& definition : templates)
+		result.emplace_back(
+			definition.Key,
+			BindingValue(ItemsPanelTemplateReference(
+				std::make_shared<const ItemsPanelTemplate>(
+					definition.Value))));
+	return result;
+}
+
+std::vector<RuntimeStyleResource> BuildItemsPanelStyleResources(
+	const DesignerModel::DesignDocument* document)
+{
+	return document
+		? BuildItemsPanelStyleResources(document->ItemsPanelTemplates)
+		: std::vector<RuntimeStyleResource>{};
+}
+
 namespace
 {
 	std::wstring Lower(std::wstring value)
@@ -28,6 +51,12 @@ namespace
 	bool EqualsName(const std::wstring& left, const std::wstring& right)
 	{
 		return left == right;
+	}
+
+	bool IsStructuralResourceSetter(const std::wstring& property)
+	{
+		return EqualsName(property, L"Template")
+			|| EqualsName(property, L"ItemsPanel");
 	}
 
 	std::vector<std::wstring> Split(const std::wstring& value, wchar_t delimiter)
@@ -1003,7 +1032,7 @@ void RemapRuleResourceKeys(
 	{
 		for (auto& setter : setters)
 			if (setter.UsesResource
-				&& !EqualsName(setter.PropertyName, L"Template"))
+				&& !IsStructuralResourceSetter(setter.PropertyName))
 				remap(setter.ResourceKey);
 	};
 	auto rewriteActions = [&](std::vector<DesignerEventTriggerAction>& actions)
@@ -1173,6 +1202,7 @@ bool PrepareLocalRuntimeStyleSheet(
 		resolved.Rules.end() - localStyleSheet.Rules.size(),
 		resolved.Rules.end());
 	size_t aliasIndex = 0;
+	std::vector<std::pair<std::wstring, std::wstring>> capturedAliases;
 	auto hasLocalResource = [&](const std::wstring& key)
 	{
 		return std::any_of(out.Resources.begin(), out.Resources.end(),
@@ -1182,6 +1212,15 @@ bool PrepareLocalRuntimeStyleSheet(
 	auto aliasStaticResource = [&](std::wstring& key) -> bool
 	{
 		if (hasLocalResource(key)) return true;
+		const auto captured = std::find_if(
+			capturedAliases.begin(), capturedAliases.end(),
+			[&](const auto& alias) { return alias.first == key; });
+		if (captured != capturedAliases.end())
+		{
+			key = captured->second;
+			return true;
+		}
+		const auto originalKey = key;
 		const auto found = std::find_if(
 			visibleStyleSheet.Resources.rbegin(),
 			visibleStyleSheet.Resources.rend(),
@@ -1193,8 +1232,14 @@ bool PrepareLocalRuntimeStyleSheet(
 			return false;
 		}
 		auto alias = *found;
-		alias.Key = L"__cui_static_scope_" + std::to_wstring(aliasIndex++);
+		do
+		{
+			alias.Key =
+				L"__cui_static_scope_" + std::to_wstring(aliasIndex++);
+		}
+		while (hasLocalResource(alias.Key));
 		alias.SourceDictionary.clear();
+		capturedAliases.emplace_back(originalKey, alias.Key);
 		key = alias.Key;
 		out.Resources.push_back(std::move(alias));
 		return true;
@@ -1222,7 +1267,7 @@ bool PrepareLocalRuntimeStyleSheet(
 	auto rewriteSetters = [&](auto& setters)
 	{
 		for (auto& setter : setters)
-			if (!EqualsName(setter.PropertyName, L"Template")
+			if (!IsStructuralResourceSetter(setter.PropertyName)
 				&& setter.UsesResource && !setter.UsesDynamicResource
 				&& !aliasStaticResource(setter.ResourceKey)) return false;
 		return true;
@@ -1373,12 +1418,13 @@ bool Validate(
 				if (ContainsName(properties, property))
 					return Fail(context + L" 中的 Setter 属性重复：" + property, outError);
 				properties.push_back(property);
-				if (property == L"Template")
+				if (IsStructuralResourceSetter(property))
 				{
 					if (!setter.UsesResource || setter.UsesDynamicResource
 						|| Trim(setter.ResourceKey).empty())
 						return Fail(context
-							+ L" Template Setter 必须使用 StaticResource。", outError);
+							+ L" " + property
+							+ L" Setter 必须使用 StaticResource。", outError);
 					continue;
 				}
 				if (setter.UsesResource)
@@ -1570,10 +1616,13 @@ bool Validate(
 			if (trigger.Setters.empty() && trigger.EnterActions.empty()
 				&& trigger.ExitActions.empty())
 				return Fail(L"Style Trigger 没有 Setter 或 TriggerAction。", outError);
-			if (std::any_of(trigger.Setters.begin(), trigger.Setters.end(),
+			const auto structuralSetter = std::find_if(
+				trigger.Setters.begin(), trigger.Setters.end(),
 				[](const auto& setter)
-				{ return EqualsName(setter.PropertyName, L"Template"); }))
-				return Fail(L"Template Setter 目前不支持 Trigger；"
+				{ return IsStructuralResourceSetter(setter.PropertyName); });
+			if (structuralSetter != trigger.Setters.end())
+				return Fail(structuralSetter->PropertyName
+					+ L" Setter 目前不支持 Trigger；"
 					L"请使用 Style 的普通 Setter。", outError);
 			if (!validateDataConditions(trigger.DataConditions,
 				trigger.DataConditions.size() > 1
@@ -1643,7 +1692,23 @@ bool ValidateAgainstRulePropertyMetadata(
 
 		for (const auto& setter : rule.Setters)
 		{
-			if (EqualsName(setter.PropertyName, L"Template")) continue;
+			if (EqualsName(setter.PropertyName, L"Template")
+				|| EqualsName(setter.PropertyName, L"ItemsPanel"))
+			{
+				// A declarative ComponentDefinition owns its XAML template
+				// contract even when its private native behavior host is a
+				// structural type such as Canvas. Built-in types must still
+				// inherit the real Control.Template DP metadata.
+				if (EqualsName(setter.PropertyName, L"Template")
+					&& !rule.ComponentType.Empty())
+					continue;
+				const auto* metadata = schema.FindProperty(setter.PropertyName);
+				if (!metadata || !metadata->CanWrite())
+					return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+						+ L" 的目标类型没有可写 "
+						+ setter.PropertyName + L" 属性。", outError);
+				continue;
+			}
 			const auto* property = DesignerPropertyCatalog::Find(
 				properties, setter.PropertyName);
 			if (!property)
@@ -1707,32 +1772,19 @@ bool ValidateAgainstPropertyMetadata(
 		styleSheet, adapter, outError, resourceBasePath, resources);
 }
 
-bool BuildRuntimeStyleSheet(
-	const DesignerStyleSheet& source,
-	std::shared_ptr<ControlStyleSheet>& out,
+bool MaterializeStoryboardActions(
+	const std::vector<DesignerEventTriggerAction>& sourceActions,
+	const DesignerStyleSheet& styleSheet,
+	std::vector<DeclarativeEventTriggerActionDefinition>& out,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
-	const std::shared_ptr<ResourceLoadContext>& resources)
+	const std::shared_ptr<ResourceLoadContext>& resources,
+	const std::wstring& context)
 {
-	auto styleSheet = source;
-	Canonicalize(styleSheet);
-	if (!Validate(styleSheet, outError, resourceBasePath, resources)) return false;
-	DesignerStyleSheet resolved;
-	if (!ExpandRuntimeRules(styleSheet, resolved, outError)) return false;
-	styleSheet = std::move(resolved);
-
-	auto runtime = std::make_shared<ControlStyleSheet>();
-	for (const auto& resource : styleSheet.Resources)
-	{
-		BindingValue value;
-		if (!TryConvertValue(
-			resource.Value, value, outError, resourceBasePath, resources)) return false;
-		if (!runtime->SetResource(resource.Key, std::move(value)))
-			return Fail(L"无法创建样式资源：" + resource.Key, outError);
-	}
+	out.clear();
+	out.reserve(sourceActions.size());
 	auto materializeAnimation = [&](const DesignerVisualStateAnimation& source,
-		DeclarativeVisualStateAnimation& animation,
-		const std::wstring& context)
+		DeclarativeVisualStateAnimation& animation)
 	{
 		animation.Kind = source.Kind == DesignerAnimationKind::Color
 			? DeclarativeAnimationKind::Color
@@ -1815,7 +1867,8 @@ bool BuildRuntimeStyleSheet(
 				: sourceFrame.Easing == DesignerEasingKind::Sine
 					? DeclarativeEasingKind::Sine
 					: DeclarativeEasingKind::Linear;
-			frame.EasingMode = sourceFrame.EasingMode == DesignerEasingMode::EaseIn
+			frame.EasingMode = sourceFrame.EasingMode
+				== DesignerEasingMode::EaseIn
 				? DeclarativeEasingMode::EaseIn
 				: sourceFrame.EasingMode == DesignerEasingMode::EaseInOut
 					? DeclarativeEasingMode::EaseInOut
@@ -1837,7 +1890,8 @@ bool BuildRuntimeStyleSheet(
 				? DeclarativeRepeatBehaviorKind::Forever
 				: DeclarativeRepeatBehaviorKind::Count;
 		animation.RepeatCount = source.RepeatCount;
-		animation.RepeatDurationMilliseconds = source.RepeatDurationMilliseconds;
+		animation.RepeatDurationMilliseconds =
+			source.RepeatDurationMilliseconds;
 		animation.AutoReverse = source.AutoReverse;
 		animation.FillBehavior = source.FillBehavior
 			== DesignerTimelineFillBehavior::Stop
@@ -1860,31 +1914,66 @@ bool BuildRuntimeStyleSheet(
 				: DeclarativeEasingMode::EaseOut;
 		return true;
 	};
-	auto materializeActions = [&](const auto& sourceActions,
-		std::vector<DeclarativeEventTriggerActionDefinition>& output,
-		const std::wstring& context)
+
+	for (const auto& sourceAction : sourceActions)
 	{
-		for (const auto& sourceAction : sourceActions)
+		DeclarativeEventTriggerActionDefinition action;
+		action.Kind = sourceAction.Kind == DesignerStoryboardActionKind::Begin
+			? DeclarativeStoryboardActionKind::Begin
+			: sourceAction.Kind == DesignerStoryboardActionKind::Pause
+				? DeclarativeStoryboardActionKind::Pause
+			: sourceAction.Kind == DesignerStoryboardActionKind::Resume
+				? DeclarativeStoryboardActionKind::Resume
+				: DeclarativeStoryboardActionKind::Stop;
+		action.StoryboardName = sourceAction.StoryboardName;
+		for (const auto& sourceAnimation : sourceAction.Animations)
 		{
-			DeclarativeEventTriggerActionDefinition action;
-			action.Kind = sourceAction.Kind == DesignerStoryboardActionKind::Begin
-				? DeclarativeStoryboardActionKind::Begin
-				: sourceAction.Kind == DesignerStoryboardActionKind::Pause
-					? DeclarativeStoryboardActionKind::Pause
-				: sourceAction.Kind == DesignerStoryboardActionKind::Resume
-					? DeclarativeStoryboardActionKind::Resume
-					: DeclarativeStoryboardActionKind::Stop;
-			action.StoryboardName = sourceAction.StoryboardName;
-			for (const auto& sourceAnimation : sourceAction.Animations)
-			{
-				DeclarativeVisualStateAnimation animation;
-				if (!materializeAnimation(sourceAnimation, animation, context))
-					return false;
-				action.Animations.push_back(std::move(animation));
-			}
-			output.push_back(std::move(action));
+			DeclarativeVisualStateAnimation animation;
+			if (!materializeAnimation(sourceAnimation, animation)) return false;
+			action.Animations.push_back(std::move(animation));
 		}
-		return true;
+		out.push_back(std::move(action));
+	}
+	if (outError) outError->clear();
+	return true;
+}
+
+bool BuildRuntimeStyleSheet(
+	const DesignerStyleSheet& source,
+	std::shared_ptr<ControlStyleSheet>& out,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources,
+	const std::vector<RuntimeStyleResource>& supplementalResources)
+{
+	auto styleSheet = source;
+	Canonicalize(styleSheet);
+	if (!Validate(styleSheet, outError, resourceBasePath, resources)) return false;
+	DesignerStyleSheet resolved;
+	if (!ExpandRuntimeRules(styleSheet, resolved, outError)) return false;
+	styleSheet = std::move(resolved);
+
+	auto runtime = std::make_shared<ControlStyleSheet>();
+	for (const auto& resource : styleSheet.Resources)
+	{
+		BindingValue value;
+		if (!TryConvertValue(
+			resource.Value, value, outError, resourceBasePath, resources)) return false;
+		if (!runtime->SetResource(resource.Key, std::move(value)))
+			return Fail(L"无法创建样式资源：" + resource.Key, outError);
+	}
+	for (const auto& [key, value] : supplementalResources)
+	{
+		if (Trim(key).empty() || value.Empty()
+			|| !runtime->SetResource(key, value))
+			return Fail(L"无法创建结构型样式资源：" + key, outError);
+	}
+	auto hasSupplementalResource = [&](const std::wstring& key)
+	{
+		return std::any_of(
+			supplementalResources.begin(), supplementalResources.end(),
+			[&](const auto& candidate)
+			{ return EqualsName(candidate.first, key); });
 	};
 	for (const auto& rule : styleSheet.Rules)
 	{
@@ -1921,7 +2010,16 @@ bool BuildRuntimeStyleSheet(
 		setters.reserve(rule.Setters.size());
 		for (const auto& setter : rule.Setters)
 		{
-			if (EqualsName(setter.PropertyName, L"Template")) continue;
+			if (EqualsName(setter.PropertyName, L"Template")
+				&& (!setter.UsesResource || setter.UsesDynamicResource
+					|| !hasSupplementalResource(setter.ResourceKey)))
+				return Fail(L"Template Setter 引用了不存在的 "
+					L"ControlTemplate：" + setter.ResourceKey, outError);
+			if (EqualsName(setter.PropertyName, L"ItemsPanel")
+				&& (!setter.UsesResource || setter.UsesDynamicResource
+					|| !hasSupplementalResource(setter.ResourceKey)))
+				return Fail(L"ItemsPanel Setter 引用了不存在的 "
+					L"ItemsPanelTemplate：" + setter.ResourceKey, outError);
 			if (setter.UsesResource)
 				setters.push_back(setter.UsesDynamicResource
 					? ControlStyleSetter::DynamicResource(
@@ -1938,9 +2036,12 @@ bool BuildRuntimeStyleSheet(
 		}
 		std::vector<DeclarativeEventTriggerActionDefinition> enterActions;
 		std::vector<DeclarativeEventTriggerActionDefinition> exitActions;
-		if (!materializeActions(rule.EnterActions, enterActions,
-			L"Style Trigger.EnterActions")
-			|| !materializeActions(rule.ExitActions, exitActions,
+		if (!MaterializeStoryboardActions(
+			rule.EnterActions, styleSheet, enterActions, outError,
+			resourceBasePath, resources, L"Style Trigger.EnterActions")
+			|| !MaterializeStoryboardActions(
+				rule.ExitActions, styleSheet, exitActions, outError,
+				resourceBasePath, resources,
 				L"Style Trigger.ExitActions")) return false;
 		if (setters.empty() && enterActions.empty() && exitActions.empty())
 			continue;

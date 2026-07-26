@@ -7,6 +7,100 @@
       ContentRendered="HandleWindowContentRendered"
       Title="Acme::Views::MainWindow"
       Width="800" Height="600">
+  <Window.Resources>
+    <Color x:Key="StaticTemplateAccent">#FF336699</Color>
+    <ControlTemplate x:Key="StaticAuthorButtonTemplate"
+                     TargetType="Button">
+      <Border x:Name="StaticAuthorChrome"
+              Background="{StaticResource StaticTemplateAccent}"
+              BorderThickness="2"
+              Padding="{TemplateBinding Padding}">
+        <Border.Triggers>
+          <EventTrigger RoutedEvent="Click">
+            <BeginStoryboard x:Name="StaticAuthorClickClock">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+                                 Storyboard.TargetProperty="(Canvas.Left)"
+                                 From="0" To="30"
+                                 Duration="0:0:0.200"
+                                 AutoReverse="True"/>
+              </Storyboard>
+            </BeginStoryboard>
+          </EventTrigger>
+        </Border.Triggers>
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="AuthorCommonStates">
+            <VisualStateGroup.Transitions>
+              <VisualTransition From="Normal" To="PointerOver"
+                                GeneratedDuration="0:0:0.120">
+                <VisualTransition.GeneratedEasingFunction>
+                  <QuadraticEase EasingMode="EaseInOut"/>
+                </VisualTransition.GeneratedEasingFunction>
+              </VisualTransition>
+            </VisualStateGroup.Transitions>
+            <VisualState x:Name="PointerOver">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsMouseOver" Value="true"/>
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="StaticAuthorChrome"
+                        Property="Background" Value="#FFEAF2FF"/>
+              </VisualState.Setters>
+              <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="StaticAuthorChrome"
+                                   Storyboard.TargetProperty="(Canvas.Top)"
+                                   To="4" Duration="0:0:0.080"/>
+                </Storyboard>
+              </VisualState.Storyboard>
+            </VisualState>
+            <VisualState x:Name="Normal">
+              <VisualState.Setters>
+                <Setter TargetName="StaticAuthorChrome"
+                        Property="Canvas.Top" Value="0"/>
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <StackPanel>
+          <ContentPresenter x:Name="StaticAuthorPresenter"
+                            ContentSource="Content"/>
+          <Button x:Name="StaticNestedButton"
+                  Content="nested Generic.xaml host"/>
+        </StackPanel>
+      </Border>
+    </ControlTemplate>
+    <ControlTemplate x:Key="StaticAuthorButtonTemplateAlternate"
+                     TargetType="Button">
+      <Border x:Name="StaticAlternateChrome"
+              Background="#FFE8F5EE"
+              BorderThickness="3">
+        <ContentPresenter x:Name="StaticAlternatePresenter"
+                          ContentSource="Content"/>
+      </Border>
+    </ControlTemplate>
+    <Style x:Key="StaticAuthorButtonStyle" TargetType="Button">
+      <Setter Property="Template"
+              Value="{StaticResource StaticAuthorButtonTemplate}"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="true">
+          <Trigger.EnterActions>
+            <BeginStoryboard x:Name="StaticStyleHoverClock">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetProperty="FontSize"
+                                 From="14" To="18"
+                                 Duration="0:0:0.100"/>
+              </Storyboard>
+            </BeginStoryboard>
+          </Trigger.EnterActions>
+          <Trigger.ExitActions>
+            <StopStoryboard BeginStoryboardName="StaticStyleHoverClock"/>
+          </Trigger.ExitActions>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+  </Window.Resources>
   <Window.CommandBindings>
     <CommandBinding Command="Demo.Static.Refresh"
                     CanExecute="HandleStaticRefreshCanExecute"
@@ -17,14 +111,27 @@
                 CommandParameter="static-input"
                 CommandTarget="{x:Reference namespaceButton}" />
   </Window.InputBindings>
-  <Button x:Name="namespaceButton"
-          DesignId="77"
-		  Command="Demo.Static.Refresh"
-		  CommandParameter="static-input"
-		  CommandTarget="{x:Reference NamespacedRuntimeWindow}"
-          Content="{Binding Caption}"
-          Width="120" Height="24"
-          AllowDrop="True"
-		  Drop="HandleNamespacedDrop"
-          Click="HandleNamespacedClick" />
+  <StackPanel x:Name="staticRoot" Orientation="Vertical">
+    <Button x:Name="namespaceButton"
+            DesignId="77"
+		    Command="Demo.Static.Refresh"
+		    CommandParameter="static-input"
+		    CommandTarget="{x:Reference NamespacedRuntimeWindow}"
+            Content="{Binding Caption}"
+            Width="120" Height="24"
+            AllowDrop="True"
+		    Drop="HandleNamespacedDrop"
+            Click="HandleNamespacedClick" />
+    <Button x:Name="authorTemplateButton"
+            DesignId="78"
+            Template="{StaticResource StaticAuthorButtonTemplate}"
+            Content="author template"
+            Padding="6"
+            Width="260" Height="72"/>
+    <Button x:Name="styleTemplateButton"
+            DesignId="79"
+            Style="{StaticResource StaticAuthorButtonStyle}"
+            Content="Style.Template"
+            Width="220" Height="48"/>
+  </StackPanel>
 </Window>

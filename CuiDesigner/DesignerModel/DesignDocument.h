@@ -226,6 +226,7 @@ struct DesignNodeTemplateState
 	bool ComponentExpanded = false;
 	bool ControlTemplateExpanded = false;
 	bool Generated = false;
+	bool ResourceScopeFromTheme = false;
 	bool ControlTemplateRoot = false;
 	std::wstring Owner;
 	std::wstring ContentOwner;

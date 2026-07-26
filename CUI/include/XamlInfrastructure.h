@@ -96,6 +96,21 @@ namespace cui::framework
 			target.RetainEventConnection(std::move(connection));
 		}
 
+		static void RetainTemplateEventConnection(
+			Control& target, EventConnection connection)
+		{
+			target.RetainTemplateEventConnection(std::move(connection));
+		}
+
+		static bool SetTemplate(
+			Control& target,
+			const ControlTemplateReference& value,
+			DependencyPropertyValueSource source)
+		{
+			return target.TrySetPropertyValue(
+				L"Template", BindingValue(value), source);
+		}
+
 		static void ClearRetainedEventConnections(Control& target) noexcept
 		{
 			target.ClearRetainedEventConnections();

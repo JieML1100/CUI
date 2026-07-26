@@ -292,10 +292,12 @@ bool ContentPresenter::ValidateContentCandidate(
 		error = L"当前 DataTemplate 只支持 BindingSource 内容。";
 		return false;
 	}
-	auto probe = contentTemplate.Get()->Build(source, 0, &error);
-	if (probe) return true;
-	if (error.empty()) error = L"ContentTemplate 未生成视觉根。";
-	return false;
+	// Coercion validates the Content/ContentTemplate contract only. Instantiating
+	// the template here would create and immediately destroy a complete visual
+	// tree, then Changed/RebuildContent would create it a second time. WPF's
+	// FrameworkTemplate path likewise validates metadata before LoadContent and
+	// performs exactly one instantiation for the committed value.
+	return true;
 }
 
 bool ContentPresenter::RebuildContent()

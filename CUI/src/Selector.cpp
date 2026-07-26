@@ -367,6 +367,8 @@ bool Selector::ApplyItemContainerStyle()
 		{
 			cui::framework::StyleAccess::SetResourceKey(
 				*container, GetItemContainerStyle());
+			if (!cui::framework::StyleAccess::HasVisibleStyleRules(*container))
+				continue;
 			if (!cui::framework::StyleAccess::Refresh(*container, true)) return false;
 		}
 	}

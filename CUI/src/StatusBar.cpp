@@ -6,15 +6,6 @@
 StatusBarItem::StatusBarItem()
 	: ContentControl()
 {
-	(void)TrySetPropertyValue(
-		L"HorizontalAlignment", BindingValue(::HorizontalAlignment::Left),
-		DependencyPropertyValueSource::Theme);
-	(void)TrySetPropertyValue(
-		L"Padding", BindingValue(Thickness(8.0f, 3.0f, 8.0f, 3.0f)),
-		DependencyPropertyValueSource::Theme);
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(Thickness(0.0f)),
-		DependencyPropertyValueSource::Theme);
 }
 
 void StatusBarItem::RegisterDependencyProperties()
@@ -51,20 +42,6 @@ bool StatusBarItem::Initialize(
 StatusBar::StatusBar()
 	: ItemsControl()
 {
-	RendererBackgroundColor = cui::theme::palette::SurfaceSubtle;
-	RendererBorderColor = cui::theme::palette::Border;
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(Thickness(1.0f)),
-		DependencyPropertyValueSource::Theme);
-	RendererForegroundColor = cui::theme::palette::TextSecondary;
-
-	auto panel = std::make_shared<ItemsPanelTemplate>();
-	panel->Kind = ItemsPanelKind::Stack;
-	panel->Orientation = Orientation::Horizontal;
-	(void)TrySetPropertyValue(
-		L"ItemsPanel",
-		BindingValue(ItemsPanelTemplateReference(std::move(panel))),
-		DependencyPropertyValueSource::Theme);
 }
 
 void StatusBar::RegisterDependencyProperties()

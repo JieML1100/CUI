@@ -33,6 +33,7 @@
 #include <ProgressBar.h>
 #include <ProgressRing.h>
 #include <RadioButton.h>
+#include <Layout/Grid.h>
 #include <Layout/RelativePanel.h>
 #include <Layout/StackPanel.h>
 #include <RichTextBox.h>
@@ -645,6 +646,79 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				!= DependencyPropertyValueSource::VisualState)
 			return fail(L"Generic.xaml Theme/ControlTemplate/TemplateBinding/"
 				L"VisualState 主链未完整物化。");
+
+		auto* themeCheck = dynamic_cast<CheckBox*>(
+			_xamlSession.Document().FindControlByName(L"enableInput"));
+		auto* verticalSlider = dynamic_cast<Slider*>(
+			_xamlSession.Document().FindControlByName(
+				L"verticalThemeSlider"));
+		auto* verticalProgress = dynamic_cast<ProgressBar*>(
+			_xamlSession.Document().FindControlByName(
+				L"verticalThemeProgress"));
+		auto* indeterminateProgress = dynamic_cast<ProgressBar*>(
+			_xamlSession.Document().FindControlByName(
+				L"indeterminateProgress"));
+		auto* checkRoot = themeCheck
+			? themeCheck->FindDeclarativeTemplatePart(
+				L"PART_CheckBoxRoot") : nullptr;
+		auto* checkGlyph = themeCheck
+			? themeCheck->FindDeclarativeTemplatePart(
+				L"PART_CheckGlyph") : nullptr;
+		auto* radioRoot = _radioA
+			? _radioA->FindDeclarativeTemplatePart(
+				L"PART_RadioRoot") : nullptr;
+		auto* radioGlyph = _radioA
+			? _radioA->FindDeclarativeTemplatePart(
+				L"PART_RadioGlyph") : nullptr;
+		auto* progressTrack = _progress
+			? _progress->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* progressIndicator = _progress
+			? _progress->FindDeclarativeTemplatePart(
+				L"PART_Indicator") : nullptr;
+		auto* progressGlow = indeterminateProgress
+			? indeterminateProgress->FindDeclarativeTemplatePart(
+				L"PART_GlowRect") : nullptr;
+		auto* sliderTrack = _globalProgress
+			? _globalProgress->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* sliderRange = _globalProgress
+			? _globalProgress->FindDeclarativeTemplatePart(
+				L"PART_SelectionRange") : nullptr;
+		auto* sliderThumb = _globalProgress
+			? _globalProgress->FindDeclarativeTemplatePart(
+				L"PART_Thumb") : nullptr;
+		if (!themeCheck || !verticalSlider || !verticalProgress
+			|| !indeterminateProgress || !checkRoot || !checkGlyph
+			|| !radioRoot || !radioGlyph || !progressTrack
+			|| !progressIndicator || !progressGlow || !sliderTrack
+			|| !sliderRange || !sliderThumb
+			|| themeCheck->GetPropertyValueSource(L"BorderBrush")
+				!= DependencyPropertyValueSource::Theme
+			|| _radioA->GetPropertyValueSource(L"Foreground")
+				!= DependencyPropertyValueSource::Theme
+			|| _progress->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Theme
+			|| _globalProgress->GetPropertyValueSource(L"Background")
+				!= DependencyPropertyValueSource::Theme
+			|| checkRoot->GetTemplatedParent() != themeCheck
+			|| radioRoot->GetTemplatedParent() != _radioA
+			|| progressTrack->GetTemplatedParent() != _progress
+			|| sliderTrack->GetTemplatedParent() != _globalProgress
+			|| themeCheck->GetCurrentVisualState(L"CheckStates")
+				!= L"Checked"
+			|| _radioA->GetCurrentVisualState(L"CheckStates")
+				!= L"Checked"
+			|| indeterminateProgress->GetCurrentVisualState(
+				L"ProgressStates") != L"Indeterminate"
+			|| verticalSlider->Orientation != Orientation::Vertical
+			|| verticalSlider->GetCurrentVisualState(
+				L"OrientationStates") != L"Vertical"
+			|| verticalProgress->Orientation != Orientation::Vertical
+			|| verticalProgress->GetCurrentVisualState(
+				L"OrientationStates") != L"Vertical")
+			return fail(L"Generic.xaml CheckBox/RadioButton/ProgressBar/"
+				L"Slider 模板、部件或 VisualState 未完整物化。");
 
 		cui::framework::InputAccess::PublishPointerOverState(
 			*themeNormalButton, true, true);
@@ -1803,22 +1877,98 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"XAML ToolBar 按钮命名事件未驱动页面导航。");
 		(void)_tabs->SelectItem(previousPage);
 
-		if (!_statusBar || _statusBar->ItemCount() != 2
+		auto* windowContent = dynamic_cast<Grid*>(
+			_xamlSession.Document().FindControlByName(L"windowContent"));
+		auto* firstStatusItem = _statusBar
+			? dynamic_cast<StatusBarItem*>(
+				_statusBar->GetGeneratedItem(0)) : nullptr;
+		auto* statusChrome = _statusBar
+			? _statusBar->FindDeclarativeTemplatePart(
+				L"PART_StatusBarChrome") : nullptr;
+		auto* statusItemsPresenter = _statusBar
+			? dynamic_cast<ItemsPresenter*>(
+				_statusBar->FindDeclarativeTemplatePart(
+					L"PART_ItemsPresenter")) : nullptr;
+		auto* statusItemChrome = firstStatusItem
+			? firstStatusItem->FindDeclarativeTemplatePart(
+				L"PART_StatusBarItemChrome") : nullptr;
+		auto* statusContentPresenter = firstStatusItem
+			? dynamic_cast<ContentPresenter*>(
+				firstStatusItem->FindDeclarativeTemplatePart(
+					L"PART_ContentPresenter")) : nullptr;
+		RequestLayout();
+		UpdateLayout();
+		const auto contentViewport = GetContentViewportSizeDip();
+		const auto statusBounds = _statusBar
+			? _statusBar->GetAbsoluteBoundsDip() : D2D1_RECT_F{};
+		const auto statusSize = _statusBar
+			? _statusBar->GetActualSizeDip() : cui::core::Size{};
+		const auto statusItemSize = firstStatusItem
+			? firstStatusItem->GetActualSizeDip() : cui::core::Size{};
+		if (!windowContent || !_statusBar || _statusBar->ItemCount() != 2
 			|| _statusBar->GeneratedItemCount() != 2
-			|| dynamic_cast<StatusBarItem*>(
-				_statusBar->GetGeneratedItem(0)) == nullptr
+			|| !firstStatusItem || !statusChrome || !statusItemsPresenter
+			|| !statusItemChrome || !statusContentPresenter
+			|| cui::framework::TemplateAccess::GetTemplateRoot(*_statusBar)
+				!= statusChrome
+			|| cui::framework::TemplateAccess::GetItemsPresenter(*_statusBar)
+				!= statusItemsPresenter
+			|| _statusBar->GetPropertyValueSource(L"Template")
+				!= DependencyPropertyValueSource::Theme
+			|| _statusBar->GetPropertyValueSource(L"ItemsPanel")
+				!= DependencyPropertyValueSource::Theme
+			|| firstStatusItem->GetPropertyValueSource(L"Template")
+				!= DependencyPropertyValueSource::Theme
+			|| statusSize.width <= 0.0f || statusSize.height < 25.0f
+			|| statusItemSize.width <= 0.0f
+			|| statusItemSize.height <= 0.0f
+			|| statusBounds.top < 0.0f
+			|| statusBounds.bottom > contentViewport.height + 0.01f
+			|| statusBounds.bottom <= statusBounds.top
 			|| GetStatusBarItemText(1) != L"DemoWindow.cui.xaml")
-			return fail(L"StatusBar ItemsSource/StatusBarItem 未从 XAML 完整物化。");
+			return fail(L"StatusBar Grid 底部布局、Generic.xaml 模板、"
+				L"ItemsPresenter 或 StatusBarItem 未完整物化。");
 
 		auto* relativePanel = dynamic_cast<RelativePanel*>(
 			_xamlSession.Document().FindControlByName(L"demoRelative"));
-		auto* relativeCenter = _xamlSession.Document().FindControlByName(
-			L"relativeCenter");
+		auto* relativeCenter = dynamic_cast<StackPanel*>(
+			_xamlSession.Document().FindControlByName(
+				L"relativeCenter"));
+		auto* naturalTextProbe = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"naturalTextProbe"));
+		auto* wrappedTextProbe = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"wrappedTextProbe"));
+		auto* trimmedTextProbe = dynamic_cast<Label*>(
+			_xamlSession.Document().FindControlByName(L"trimmedTextProbe"));
+		auto* relativeCenterButton =
+			_xamlSession.Document().FindControlByName(
+				L"relativeCenterButton");
 		auto* relativeConstraints = relativePanel && relativeCenter
 			? relativePanel->GetConstraints(relativeCenter) : nullptr;
 		if (!relativeConstraints || !relativeConstraints->CenterHorizontal
-			|| !relativeConstraints->CenterVertical)
-			return fail(L"RelativePanel attached constraints 未从 XAML 物化。");
+			|| !relativeConstraints->CenterVertical
+			|| !naturalTextProbe || !wrappedTextProbe || !trimmedTextProbe
+			|| !relativeCenterButton
+			|| !relativePanel->ClipToBounds
+			|| !relativeCenter->ClipToBounds
+			|| !naturalTextProbe->Width.IsAuto()
+			|| !naturalTextProbe->Height.IsAuto()
+			|| naturalTextProbe->GetDesiredSizeDip().width <= 0.0f
+			|| naturalTextProbe->GetDesiredSizeDip().width >= 500.0f
+			|| std::abs(naturalTextProbe->GetActualSizeDip().width
+				- naturalTextProbe->GetDesiredSizeDip().width) > 0.01f
+			|| wrappedTextProbe->TextWrapping != TextWrapping::Wrap
+			|| wrappedTextProbe->GetDesiredSizeDip().width > 320.01f
+			|| wrappedTextProbe->GetDesiredSizeDip().height
+				<= naturalTextProbe->GetDesiredSizeDip().height
+			|| trimmedTextProbe->TextTrimming
+				!= TextTrimming::CharacterEllipsis
+			|| trimmedTextProbe->GetDesiredSizeDip().width > 220.01f
+			|| relativeCenterButton->GetActualLocationDip().y
+				+ relativeCenterButton->GetActualSizeDip().height
+				> relativeCenter->GetActualSizeDip().height + 0.01f)
+			return fail(L"RelativePanel 约束或 TextBlock 的 Auto DesiredSize、"
+				L"换行、省略、ClipToBounds 或父级高度贡献语义不完整。");
 
 		auto* layoutSurface = dynamic_cast<Canvas*>(
 			_xamlSession.Document().FindControlByName(L"layoutSurface"));
@@ -2073,6 +2223,59 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| templatedParentValue->GetPropertyExpressionKind(L"Text")
 				!= DependencyPropertyExpressionKind::Binding)
 			return fail(L"ControlTemplate / ContentPresenter / TemplatedParent 未实际接管 Button。");
+
+		const auto primaryButtonTemplate = templateButton->GetTemplate();
+		const ControlWeakReference primaryButtonRoot(buttonChrome);
+		BindingValue alternateButtonTemplateValue;
+		ControlTemplateReference alternateButtonTemplate;
+		if (!primaryButtonTemplate
+			|| templateButton->GetPropertyValueSource(L"Template")
+				!= DependencyPropertyValueSource::Local
+			|| !templateButton->TryFindResource(
+				L"WpfLabButtonTemplateAlternate",
+				alternateButtonTemplateValue)
+			|| !alternateButtonTemplateValue.TryGet(
+				alternateButtonTemplate)
+			|| !alternateButtonTemplate)
+			return fail(L"Control.Template DP 或备用模板资源未发布。");
+		templateButton->SetTemplate(alternateButtonTemplate);
+		if (cui::framework::TemplateAccess::GetTemplateRoot(
+				*templateButton) != nullptr
+			|| primaryButtonRoot.Get() != nullptr
+			|| !templateButton->ApplyTemplate())
+			return fail(L"Control.Template 变更未拆除旧树或无法原位重建。");
+		auto* alternateButtonChrome =
+			templateButton->FindDeclarativeTemplatePart(
+				L"wpfAlternateButtonChrome");
+		auto* alternateButtonPresenter =
+			dynamic_cast<ContentPresenter*>(
+				templateButton->FindDeclarativeTemplatePart(
+					L"wpfAlternateContentPresenter"));
+		if (!alternateButtonChrome || !alternateButtonPresenter
+			|| alternateButtonChrome
+				!= cui::framework::TemplateAccess::GetTemplateRoot(
+					*templateButton)
+			|| alternateButtonChrome->GetVisualParent() != templateButton
+			|| alternateButtonChrome->GetLogicalParent() != nullptr
+			|| alternateButtonChrome->GetTemplatedParent() != templateButton
+			|| alternateButtonPresenter->GetTemplatedParent()
+				!= templateButton
+			|| cui::framework::TemplateAccess::GetContentPresenter(
+				*templateButton)
+				!= alternateButtonPresenter
+			|| alternateButtonPresenter->GetGeneratedContent() == nullptr)
+			return fail(L"备用 ControlTemplate 的树关系或 ContentPresenter 未闭环。");
+		const ControlWeakReference alternateButtonRoot(
+			alternateButtonChrome);
+		templateButton->SetTemplate(primaryButtonTemplate);
+		if (alternateButtonRoot.Get() != nullptr
+			|| !templateButton->ApplyTemplate()
+			|| !templateButton->FindDeclarativeTemplatePart(
+				L"wpfButtonChrome")
+			|| templateButton->FindDeclarativeTemplatePart(
+				L"wpfAlternateButtonChrome")
+			|| !templateButton->LastTemplateError().empty())
+			return fail(L"Control.Template 往返重套未恢复主模板。");
 
 		auto* triggerButton = dynamic_cast<Button*>(
 			_xamlSession.Document().FindControlByName(L"wpfTriggerButton"));
@@ -3835,6 +4038,9 @@ void DemoWindow::RegisterXamlHandlers(
 	registerClick(L"HandleDispatcherProbe", UIClass::UI_Button,
 		[this](Control* sender, RoutedEventArgs& e)
 		{ HandleDispatcherProbe(sender, e); });
+	registerClick(L"HandleTemplateSwap", UIClass::UI_Button,
+		[this](Control* sender, RoutedEventArgs& e)
+		{ HandleTemplateSwap(sender, e); });
 	registerClick(L"HandleTextCompositionProbe", UIClass::UI_Button,
 		[this](Control* sender, RoutedEventArgs& e)
 		{ HandleTextCompositionProbe(sender, e); });
@@ -4459,6 +4665,34 @@ void DemoWindow::HandleBasicClick(Control* sender, RoutedEventArgs&)
 	}
 	sender->InvalidateVisual();
 	UpdateStatus(L"Button.Click -> HandleBasicClick");
+}
+
+void DemoWindow::HandleTemplateSwap(Control* sender, RoutedEventArgs&)
+{
+	auto* button = dynamic_cast<Button*>(sender);
+	if (!button) return;
+	BindingValue primaryValue;
+	BindingValue alternateValue;
+	ControlTemplateReference primary;
+	ControlTemplateReference alternate;
+	if (!button->TryFindResource(L"WpfLabButtonTemplate", primaryValue)
+		|| !button->TryFindResource(
+			L"WpfLabButtonTemplateAlternate", alternateValue)
+		|| !primaryValue.TryGet(primary)
+		|| !alternateValue.TryGet(alternate))
+	{
+		UpdateStatus(L"Control.Template swap: resource resolution failed");
+		return;
+	}
+	const bool useAlternate = button->GetTemplate() == primary;
+	button->SetTemplate(useAlternate ? alternate : primary);
+	const bool rebuilt = button->ApplyTemplate();
+	UpdateStatus(
+		rebuilt
+			? useAlternate
+				? L"Control.Template → alternate · same Button host"
+				: L"Control.Template → primary · same Button host"
+			: L"Control.Template swap failed: " + button->LastTemplateError());
 }
 
 void DemoWindow::HandleEnableInput(Control* sender)

@@ -95,9 +95,6 @@ protected:
 	std::vector<Control*> _logicalChildren;
 	std::vector<Control*> _inheritanceChildren;
 
-	// Intrinsic measurement input only. Specified geometry lives in
-	// LayoutStyle and computed geometry lives in LayoutState.
-	cui::core::Size _naturalSize{ 120.0f, 20.0f };
 	float _canvasLeft = cui::layout::UnsetCanvasOffset;
 	float _canvasTop = cui::layout::UnsetCanvasOffset;
 	float _canvasRight = cui::layout::UnsetCanvasOffset;

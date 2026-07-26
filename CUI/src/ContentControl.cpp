@@ -2,6 +2,7 @@
 #include "Layout/OverlayLayout.h"
 #include "Window.h"
 #include "XamlInfrastructure.h"
+#include "TreeInfrastructure.h"
 
 #include <cwctype>
 #include <algorithm>
@@ -320,15 +321,16 @@ Control* ContentControl::AddInfrastructureChild(
 	_changingInfrastructure = true;
 	try
 	{
-		AddOwned(std::move(child));
 		if (role == InfrastructureChildRole::TemplateImplementation)
 		{
 			if (!raw->GetTemplatedParent())
 				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(child), nullptr);
 		}
 		else
-			cui::framework::XamlAccess::SetLogicalParent(*raw, this);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(child), this);
 		_changingInfrastructure = false;
 	}
 	catch (...)
@@ -400,7 +402,6 @@ Control* ContentControl::SetControlTemplateRoot(
 	try
 	{
 		AddInfrastructureChild(std::move(value));
-		cui::framework::XamlAccess::SetLogicalParent(*_controlTemplateRoot, nullptr);
 	}
 	catch (...)
 	{
@@ -408,6 +409,7 @@ Control* ContentControl::SetControlTemplateRoot(
 		OnControlTemplatePresentationChanged();
 		throw;
 	}
+	MarkControlTemplateRootAttached();
 	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
@@ -422,6 +424,7 @@ std::unique_ptr<Control> ContentControl::DetachVisualChildTemplateRoot()
 	auto result = DetachInfrastructureChild(previous);
 	ClearTemplateOwner(result.get(), this);
 	ClearDeclarativeTemplateScope();
+	MarkControlTemplateRootDetached();
 	OnControlTemplatePresentationChanged();
 	return result;
 }

@@ -166,9 +166,13 @@ public:
 	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font = nullptr);
 	void DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush, DWRITE_TEXT_RANGE subRange, ID2D1Brush* effectBrush, Font* font = nullptr);
 
+	/** Draws one natural-size, non-wrapping text layout. */
 	void DrawString(const std::wstring& str, float x, float y, D2D1_COLOR_F color, Font* font = nullptr);
+	/** Draws one natural-size, non-wrapping text layout. */
 	void DrawString(const std::wstring& str, float x, float y, ID2D1Brush* brush, Font* font = nullptr);
+	/** Draws text inside an explicit layout constraint. */
 	void DrawString(const std::wstring& str, float x, float y, float w, float h, D2D1_COLOR_F color, Font* font = nullptr);
+	/** Draws text inside an explicit layout constraint. */
 	void DrawString(const std::wstring& str, float x, float y, float w, float h, ID2D1Brush* brush, Font* font = nullptr);
 
 	void DrawStringCentered(const std::wstring& str, float centerX, float centerY, D2D1_COLOR_F color, Font* font = nullptr);

@@ -88,7 +88,24 @@ private:
 	std::string GenerateTransformExpression(const cui::drawing::Transform& value);
 	std::string GenerateGeometryExpression(const cui::drawing::Geometry& value);
 	std::string GenerateStyleValueExpression(const DesignerStyleValue& value);
-	std::string GenerateStyleSheetCode(int indent);
+	std::string GenerateBindingValueExpression(const BindingValue& value);
+	std::string GenerateDeclarativeAnimationCode(
+		const DeclarativeVisualStateAnimation& animation,
+		const std::string& collectionExpression,
+		int indent);
+	std::string GenerateDeclarativeStoryboardActionsCode(
+		const std::vector<DeclarativeEventTriggerActionDefinition>& actions,
+		const std::string& collectionExpression,
+		int indent);
+	std::string GenerateDeclarativeInteractionsCode(
+		const std::vector<DeclarativeVisualStateGroupDefinition>& visualStateGroups,
+		const std::vector<DeclarativeEventTriggerDefinition>& eventTriggers,
+		const std::string& targetExpression,
+		int indent);
+	std::string GenerateStyleSheetCode(
+		int indent,
+		const std::vector<std::pair<std::wstring, std::string>>&
+			objectResources = {});
 	bool CollectEventHandlers(
 		std::vector<std::pair<std::string, std::string>>& handlers,
 		std::wstring* outError = nullptr) const;
@@ -100,7 +117,11 @@ private:
 	std::string GenerateAuthoredProperties(
 		const DesignerModel::DesignNode& node, int indent);
 	std::string GenerateLocalResources(
-		const DesignerModel::DesignNode& node, int indent);
+		const DesignerModel::DesignNode& node,
+		int indent,
+		const DesignerModel::DesignDocument* sourceDocument = nullptr,
+		const std::vector<std::pair<std::wstring, std::string>>*
+			objectResources = nullptr);
 	std::string GenerateContainerProperties(
 		const DesignerModel::DesignNode& node, int indent);
 	std::string GenerateCppForBaseName(

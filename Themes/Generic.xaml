@@ -17,6 +17,40 @@
   <Color x:Key="CuiButtonBorderPressed">#FF2F6FE4</Color>
   <Color x:Key="CuiButtonBorderDisabled">#FFD9DEE7</Color>
   <Color x:Key="CuiButtonForeground">#FF172033</Color>
+  <Color x:Key="CuiStatusBarBackground">#FFF0F4F9</Color>
+  <Color x:Key="CuiStatusBarBorder">#FFD3DCE8</Color>
+  <Color x:Key="CuiStatusBarForeground">#FF526078</Color>
+  <Color x:Key="CuiControlForeground">#FF172033</Color>
+  <Color x:Key="CuiControlForegroundDisabled">#FF9AA5B5</Color>
+  <Color x:Key="CuiToggleBackground">#FFFFFFFF</Color>
+  <Color x:Key="CuiToggleBorder">#FF98A7BA</Color>
+  <Color x:Key="CuiToggleBorderPointerOver">#FF5B8FE5</Color>
+  <Color x:Key="CuiToggleBorderPressed">#FF2F6FE4</Color>
+  <Color x:Key="CuiToggleBorderDisabled">#FFD3DAE4</Color>
+  <Color x:Key="CuiToggleChecked">#FF2F6FE4</Color>
+  <Color x:Key="CuiToggleMark">#FFFFFFFF</Color>
+  <Color x:Key="CuiProgressTrack">#FFDCE4EF</Color>
+  <Color x:Key="CuiProgressIndicator">#FF2F6FE4</Color>
+  <Color x:Key="CuiProgressGlow">#FF9FC1FF</Color>
+  <Color x:Key="CuiProgressDisabled">#FFB7C1CF</Color>
+  <Color x:Key="CuiSliderTrack">#FFDCE4EF</Color>
+  <Color x:Key="CuiSliderTrackDisabled">#FFE8ECF2</Color>
+  <Color x:Key="CuiSliderSelection">#FF2F6FE4</Color>
+  <Color x:Key="CuiSliderSelectionDisabled">#FFAEB8C6</Color>
+  <Color x:Key="CuiSliderThumb">#FF2F6FE4</Color>
+  <Color x:Key="CuiSliderThumbPointerOver">#FF245FC8</Color>
+  <Color x:Key="CuiSliderThumbDisabled">#FF9AA5B5</Color>
+  <EllipseGeometry x:Key="CuiSliderThumbClip"
+    Center="9,9" RadiusX="9" RadiusY="9"/>
+  <PathGeometry x:Key="CuiCheckMarkClip" FillRule="Nonzero">
+    <PathFigure StartPoint="0,4.5" IsClosed="true">
+      <LineSegment Point="1.8,2.7"/>
+      <LineSegment Point="4.8,5.7"/>
+      <LineSegment Point="10.2,0.3"/>
+      <LineSegment Point="12,2.1"/>
+      <LineSegment Point="4.8,9.3"/>
+    </PathFigure>
+  </PathGeometry>
 
   <ControlTemplate x:Key="CuiButtonTemplate" TargetType="Button">
     <Border
@@ -65,6 +99,8 @@
       </VisualStateManager.VisualStateGroups>
       <ContentPresenter
         x:Name="PART_ContentPresenter"
+        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
         ContentSource="Content"/>
     </Border>
   </ControlTemplate>
@@ -77,8 +113,465 @@
     <Setter Property="Foreground"
       Value="{StaticResource CuiButtonForeground}"/>
     <Setter Property="BorderThickness" Value="1"/>
-    <Setter Property="Padding" Value="10,5"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Padding" Value="10,2"/>
+    <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Template"
       Value="{StaticResource CuiButtonTemplate}"/>
+  </Style>
+
+  <ControlTemplate x:Key="CuiCheckBoxTemplate" TargetType="CheckBox">
+    <Border
+      x:Name="PART_CheckBoxRoot"
+      Padding="{TemplateBinding Padding}">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="CheckStates">
+          <VisualState x:Name="Checked">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsChecked" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_CheckGlyph" Property="Background"
+                Value="{StaticResource CuiToggleChecked}"/>
+              <Setter TargetName="PART_CheckMark" Property="Visibility"
+                Value="Visible"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Unchecked"/>
+        </VisualStateGroup>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_CheckGlyph" Property="BorderBrush"
+                Value="{StaticResource CuiToggleBorderDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Pressed">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsPressed" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_CheckGlyph" Property="BorderBrush"
+                Value="{StaticResource CuiToggleBorderPressed}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="PointerOver">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsMouseOver" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_CheckGlyph" Property="BorderBrush"
+                Value="{StaticResource CuiToggleBorderPointerOver}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <StackPanel Orientation="Horizontal">
+        <Border
+          x:Name="PART_CheckGlyph"
+          Width="18"
+          Height="18"
+          Margin="0,0,8,0"
+          VerticalAlignment="Center"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}">
+          <Border
+            x:Name="PART_CheckMark"
+            Width="12"
+            Height="10"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{StaticResource CuiToggleMark}"
+            Clip="{StaticResource CuiCheckMarkClip}"
+            Visibility="Collapsed"/>
+        </Border>
+        <ContentPresenter
+          x:Name="PART_CheckContent"
+          VerticalAlignment="Center"
+          ContentSource="Content"/>
+      </StackPanel>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="CheckBox">
+    <Setter Property="Background"
+      Value="{StaticResource CuiToggleBackground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiToggleBorder}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiControlForeground}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="2,1"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiCheckBoxTemplate}"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiRadioButtonTemplate"
+    TargetType="RadioButton">
+    <Border
+      x:Name="PART_RadioRoot"
+      Padding="{TemplateBinding Padding}">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="CheckStates">
+          <VisualState x:Name="Checked">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsChecked" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_RadioGlyph" Property="Text"
+                Value="●"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Unchecked"/>
+        </VisualStateGroup>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_RadioGlyph" Property="Foreground"
+                Value="{StaticResource CuiControlForegroundDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Pressed">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsPressed" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_RadioGlyph" Property="Foreground"
+                Value="{StaticResource CuiToggleBorderPressed}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="PointerOver">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsMouseOver" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_RadioGlyph" Property="Foreground"
+                Value="{StaticResource CuiToggleBorderPointerOver}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <StackPanel Orientation="Horizontal">
+        <TextBlock
+          x:Name="PART_RadioGlyph"
+          Width="22"
+          Height="22"
+          Margin="0,0,6,0"
+          VerticalAlignment="Center"
+          FontFamily="Segoe UI Symbol"
+          FontSize="20"
+          Foreground="{StaticResource CuiToggleChecked}"
+          Text="○"/>
+        <ContentPresenter
+          x:Name="PART_RadioContent"
+          VerticalAlignment="Center"
+          ContentSource="Content"/>
+      </StackPanel>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="RadioButton">
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiControlForeground}"/>
+    <Setter Property="Padding" Value="1"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiRadioButtonTemplate}"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiProgressBarTemplate"
+    TargetType="ProgressBar">
+    <Border
+      x:Name="PART_ProgressRoot"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="ProgressStates">
+          <VisualState x:Name="Indeterminate">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsIndeterminate" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_GlowRect" Property="Visibility"
+                Value="Visible"/>
+            </VisualState.Setters>
+            <VisualState.Storyboard>
+              <Storyboard>
+                <ColorAnimation
+                  Storyboard.TargetName="PART_GlowRect"
+                  Storyboard.TargetProperty="(Control.Background).(SolidColorBrush.Color)"
+                  From="#FF7CA9F5"
+                  To="#FFD7E6FF"
+                  Duration="0:0:0.650"
+                  RepeatBehavior="Forever"
+                  AutoReverse="true"/>
+              </Storyboard>
+            </VisualState.Storyboard>
+          </VisualState>
+          <VisualState x:Name="Determinate"/>
+        </VisualStateGroup>
+        <VisualStateGroup x:Name="OrientationStates">
+          <VisualState x:Name="Vertical">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="Orientation" Value="Vertical"/>
+            </VisualState.StateTriggers>
+          </VisualState>
+          <VisualState x:Name="Horizontal"/>
+        </VisualStateGroup>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Indicator" Property="Background"
+                Value="{StaticResource CuiProgressDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Grid x:Name="PART_Track">
+        <Border
+          x:Name="PART_Indicator"
+          HorizontalAlignment="Left"
+          VerticalAlignment="Stretch"
+          Background="{TemplateBinding Foreground}">
+          <Border
+            x:Name="PART_GlowRect"
+            Background="{StaticResource CuiProgressGlow}"
+            Visibility="Collapsed"/>
+        </Border>
+      </Grid>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="ProgressBar">
+    <Setter Property="Background"
+      Value="{StaticResource CuiProgressTrack}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiProgressIndicator}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiButtonBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="2"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiProgressBarTemplate}"/>
+  </Style>
+
+  <ControlTemplate x:Key="CuiSliderTemplate" TargetType="Slider">
+    <Border
+      x:Name="PART_SliderRoot"
+      Padding="{TemplateBinding Padding}">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="OrientationStates">
+          <VisualState x:Name="Vertical">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="Orientation" Value="Vertical"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Track" Property="Cursor"
+                Value="SizeNS"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Horizontal"/>
+        </VisualStateGroup>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_TrackBackground"
+                Property="Background"
+                Value="{StaticResource CuiSliderTrackDisabled}"/>
+              <Setter TargetName="PART_SelectionRange"
+                Property="Background"
+                Value="{StaticResource CuiSliderSelectionDisabled}"/>
+              <Setter TargetName="PART_Thumb"
+                Property="Background"
+                Value="{StaticResource CuiSliderThumbDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="PointerOver">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsMouseOver" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_TrackBackground"
+                Property="BorderBrush"
+                Value="{StaticResource CuiToggleBorderPointerOver}"/>
+              <Setter TargetName="PART_Thumb"
+                Property="Background"
+                Value="{StaticResource CuiSliderThumbPointerOver}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Canvas x:Name="PART_Track" Cursor="SizeWE">
+        <Border
+          x:Name="PART_TrackBackground"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"/>
+        <Border
+          x:Name="PART_SelectionRange"
+          Background="{TemplateBinding Foreground}"/>
+        <Border
+          x:Name="PART_Thumb"
+          Width="18"
+          Height="18"
+          Background="{StaticResource CuiSliderThumb}"
+          Clip="{StaticResource CuiSliderThumbClip}"/>
+      </Canvas>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="Slider">
+    <Setter Property="Background"
+      Value="{StaticResource CuiSliderTrack}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiSliderSelection}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiButtonBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="9,0"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiSliderTemplate}"/>
+  </Style>
+
+  <!--
+    WPF ListBox overrides ItemsPanel metadata with VirtualizingStackPanel and
+    its theme supplies ScrollViewer + ItemsPresenter. Keep both defaults in
+    XAML here: large ItemsSource values must not synchronously instantiate
+    every item before the first frame.
+  -->
+  <ItemsPanelTemplate x:Key="CuiListBoxItemsPanel">
+    <VirtualizingStackPanel ItemHeight="30" CacheLength="1"/>
+  </ItemsPanelTemplate>
+
+  <ItemsPanelTemplate x:Key="CuiListViewItemsPanel">
+    <VirtualizingStackPanel ItemHeight="40" CacheLength="1"/>
+  </ItemsPanelTemplate>
+
+  <ControlTemplate x:Key="CuiListBoxTemplate" TargetType="ListBox">
+    <Border
+      x:Name="PART_ListBoxChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+        VerticalScrollBarVisibility="Auto">
+        <ItemsPresenter x:Name="PART_ItemsPresenter"/>
+      </ScrollViewer>
+    </Border>
+  </ControlTemplate>
+
+  <ControlTemplate x:Key="CuiListViewTemplate" TargetType="ListView">
+    <Border
+      x:Name="PART_ListViewChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+        VerticalScrollBarVisibility="Auto">
+        <ItemsPresenter x:Name="PART_ItemsPresenter"/>
+      </ScrollViewer>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="ListBox">
+    <Setter Property="Background" Value="#FFFFFFFF"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiButtonBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="ItemsPanel"
+      Value="{StaticResource CuiListBoxItemsPanel}"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiListBoxTemplate}"/>
+  </Style>
+
+  <Style TargetType="ListView">
+    <Setter Property="Background" Value="#FFFFFFFF"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiButtonBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="ItemsPanel"
+      Value="{StaticResource CuiListViewItemsPanel}"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiListViewTemplate}"/>
+  </Style>
+
+  <ItemsPanelTemplate x:Key="CuiStatusBarItemsPanel">
+    <StackPanel Orientation="Horizontal"/>
+  </ItemsPanelTemplate>
+
+  <ControlTemplate x:Key="CuiStatusBarTemplate" TargetType="StatusBar">
+    <Border
+      x:Name="PART_StatusBarChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ItemsPresenter x:Name="PART_ItemsPresenter"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="StatusBar">
+    <Setter Property="Background"
+      Value="{StaticResource CuiStatusBarBackground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiStatusBarBorder}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiStatusBarForeground}"/>
+    <Setter Property="BorderThickness" Value="0,1,0,0"/>
+    <Setter Property="Padding" Value="6,0"/>
+    <Setter Property="ItemsPanel"
+      Value="{StaticResource CuiStatusBarItemsPanel}"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiStatusBarTemplate}"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiStatusBarItemTemplate"
+    TargetType="StatusBarItem">
+    <Border
+      x:Name="PART_StatusBarItemChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="StatusBarItem">
+    <Setter Property="HorizontalAlignment" Value="Left"/>
+    <Setter Property="VerticalAlignment" Value="Stretch"/>
+    <Setter Property="Background" Value="#00000000"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="8,3"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiStatusBarItemTemplate}"/>
   </Style>
 </ResourceDictionary>

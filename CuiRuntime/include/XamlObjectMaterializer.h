@@ -9,10 +9,13 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace CuiRuntime
 {
+struct XamlCompiledDocument;
+
 /**
  * Non-owning authored ICommandSource reference produced during materialization.
  * SourceName/MenuItemPath are runtime namescope locators used only when a
@@ -91,6 +94,19 @@ struct XamlMaterializationOptions
 	/** Explicit theme used by the shared compiler; empty selects Generic.xaml. */
 	std::shared_ptr<const DesignerModel::DesignDocument> Theme;
 	bool UseFrameworkTheme = true;
+	/**
+	 * Internal single-use compiled template plan. FrameworkTemplate factories
+	 * cache this immutable expansion and instantiate it repeatedly instead of
+	 * recompiling the same DataTemplate/ControlTemplate for every item.
+	 */
+	std::shared_ptr<const XamlCompiledDocument> CompiledDocument;
+	/**
+	 * Internal ApplyTemplate path. The matching synthetic document node borrows
+	 * this existing behavior host while every generated template node remains
+	 * transactionally owned by the materializer.
+	 */
+	Control* ExistingTemplateOwner = nullptr;
+	int ExistingTemplateOwnerNodeId = 0;
 };
 
 /**
@@ -112,6 +128,36 @@ public:
 		const XamlMaterializationOptions& options,
 		std::wstring* outError = nullptr,
 		DesignerModel::XamlDocumentDiagnostic* outDiagnostic = nullptr);
+
+	/** Lowers keyed XAML ControlTemplate resources to runtime factory values. */
+	static std::vector<std::pair<std::wstring, BindingValue>>
+		BuildControlTemplateStyleResources(
+			std::shared_ptr<const DesignerModel::DesignDocument> document,
+			const XamlMaterializationOptions& options = {});
+
+	/**
+	 * Lowers every structural template resource consumed by runtime style
+	 * setters. Keeping ItemsPanel and Control.Template behind one entry point
+	 * prevents reload/design/code paths from compiling only half of the
+	 * structural resource surface.
+	 */
+	static std::vector<std::pair<std::wstring, BindingValue>>
+		BuildStructuralStyleResources(
+			std::shared_ptr<const DesignerModel::DesignDocument> document,
+			const XamlMaterializationOptions& options = {});
+
+	/**
+	 * Performs the one canonical Designer-model -> runtime interaction lowering.
+	 * Dynamic materialization installs the result directly; static CodeGen
+	 * serializes the same definitions into its generated template factory.
+	 */
+	static bool MaterializeDeclarativeInteractions(
+		const std::vector<DesignerVisualStateGroup>& visualStateGroups,
+		const std::vector<DesignerEventTrigger>& eventTriggers,
+		const DesignerModel::DesignDocument& resourceDocument,
+		std::vector<DeclarativeVisualStateGroupDefinition>& outVisualStateGroups,
+		std::vector<DeclarativeEventTriggerDefinition>& outEventTriggers,
+		std::wstring* outError = nullptr);
 
 	/** Shared declarative VSM installation used by dynamic and static templates. */
 	static bool InstallControlTemplateVisualStates(

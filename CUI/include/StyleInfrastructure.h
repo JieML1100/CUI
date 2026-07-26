@@ -69,6 +69,18 @@ namespace cui::framework
 			return target.GetResourceDictionary();
 		}
 
+		/**
+		 * Returns true when refreshing Style values can resolve at least one
+		 * visible rule. During XAML staging a child can already carry the
+		 * compiler-projected effective values while its document/theme sheets
+		 * have not yet been attached; refreshing in that interval would
+		 * incorrectly clear those values.
+		 */
+		static bool HasVisibleStyleRules(const Control& target) noexcept
+		{
+			return target.HasVisibleStyleRules();
+		}
+
 		static bool Refresh(Control& target, bool recursive = true)
 		{
 			return target.RefreshStyleValues(recursive);

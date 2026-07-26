@@ -614,6 +614,13 @@ public:
 		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 
 private:
+	static bool LoadCore(
+		const DesignDocument& document,
+		RuntimeDocument& output,
+		const RuntimeDocumentLoadOptions& options,
+		bool deferDataBindings,
+		std::wstring* outError,
+		XamlDocumentDiagnostic* outDiagnostic);
 	static bool ReloadHosted(
 		const DesignDocument& document,
 		RuntimeDocument& output,

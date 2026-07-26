@@ -27,43 +27,32 @@ protected:
 	}
 
 private:
+	static void EnsureClassHandlers();
+	static void HandleDescendantPointerPress(
+		Control* sender, RoutedEventArgs& args);
+
 	double _smallChange = 1.0;
 	double _largeChange = 10.0;
 	double _tickFrequency = 1.0;
 	bool _isSnapToTickEnabled = false;
-	D2D1_COLOR_F _trackBackColor = cui::theme::palette::ScrollTrack;
-	D2D1_COLOR_F _trackForeColor = cui::theme::palette::Accent;
-	D2D1_COLOR_F _trackHoverColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F _trackBorderColor = cui::theme::palette::Border;
-	D2D1_COLOR_F _thumbColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F _thumbHoverColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F _thumbBorderColor = cui::theme::palette::BorderStrong;
-	D2D1_COLOR_F _thumbShadowColor = cui::theme::palette::Shadow;
-	D2D1_COLOR_F _disabledOverlayColor = cui::theme::palette::DisabledOverlay;
-	float _trackHeight = 5.0f;
-	float _thumbRadius = 8.0f;
-	float _thumbHoverRadiusDelta = 1.0f;
-	float _thumbDragRadiusDelta = 2.0f;
+	::Orientation _orientation = Orientation::Horizontal;
+	bool _isDirectionReversed = false;
 	bool _dragging = false;
 
-	float TrackLeftLocal() { return (std::max)(12.0f, _thumbRadius + _thumbDragRadiusDelta + 4.0f); }
-	float TrackRightLocal() { return this->ActualWidth - TrackLeftLocal(); }
-	float TrackYLocal() { return this->ActualHeight * 0.5f; }
-	float ValueToT()
+	struct TrackGeometry final
 	{
-		const double range = Maximum - Minimum;
-		if (range <= 0.0000001) return 0.0f;
-		return static_cast<float>((Value - Minimum) / range);
-	}
-	double XToValue(int localX)
-	{
-		float trackLeft = TrackLeftLocal();
-		float trackRight = TrackRightLocal();
-		if (trackRight <= trackLeft) return Minimum;
-		float ratio = ((float)localX - trackLeft) / (trackRight - trackLeft);
-		ratio = std::clamp(ratio, 0.0f, 1.0f);
-		return Minimum + static_cast<double>(ratio) * (Maximum - Minimum);
-	}
+		float Left = 0.0f;
+		float Top = 0.0f;
+		float Width = 0.0f;
+		float Height = 0.0f;
+	};
+
+	TrackGeometry ResolveTrackGeometry() const;
+	float ValueRatio() const;
+	float PositionRatio() const;
+	double PointToValue(int localX, int localY) const;
+	void BeginPointerInteraction(int localX, int localY);
+	void UpdateTemplateParts();
 
 public:
 	/** @brief 创建滑动条。 */
@@ -87,6 +76,14 @@ public:
 	PROPERTY(bool, IsSnapToTickEnabled);
 	GET(bool, IsSnapToTickEnabled);
 	SET(bool, IsSnapToTickEnabled);
+
+	PROPERTY(::Orientation, Orientation);
+	GET(::Orientation, Orientation);
+	SET(::Orientation, Orientation);
+
+	PROPERTY(bool, IsDirectionReversed);
+	GET(bool, IsDirectionReversed);
+	SET(bool, IsDirectionReversed);
 	/** @brief 在当前值上递增 SmallChange（或指定 delta）。 */
 	void Increment(double delta);
 	void Increment();
@@ -97,8 +94,11 @@ public:
 	void Reset();
 
 	CursorKind QueryCursor(int localX, int localY) override;
+	bool HandlesNavigationKey(Key key) const override;
 protected:
-	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
 	double CoerceRangeValue(double value) const override;
+	void OnRangeValueChanged(double oldValue, double newValue) override;
+	void OnComputedLayoutSizeChanged() override;
+	void OnControlTemplatePresentationChanged() override;
 };

@@ -1,5 +1,6 @@
 #include "HeaderedItemsControl.h"
 #include "Layout/OverlayLayout.h"
+#include "TreeInfrastructure.h"
 #include "XamlInfrastructure.h"
 
 #include <algorithm>
@@ -137,15 +138,16 @@ Control* HeaderedItemsControl::AddHeaderInfrastructure(
 	_changingHeaderInfrastructure = true;
 	try
 	{
-		AddOwned(std::move(child));
 		if (role == HeaderInfrastructureRole::TemplateImplementation)
 		{
 			if (!raw->GetTemplatedParent())
 				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(child), nullptr);
 		}
 		else
-			cui::framework::XamlAccess::SetLogicalParent(*raw, this);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(child), this);
 		_changingHeaderInfrastructure = false;
 	}
 	catch (...)

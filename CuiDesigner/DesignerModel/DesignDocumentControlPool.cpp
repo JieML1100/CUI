@@ -16,7 +16,8 @@ bool DesignDocumentControlPool::Build(
 	const DesignDocumentGraph& graph,
 	const Factory& factory,
 	DesignDocumentControlPool& pool,
-	std::wstring* outError)
+	std::wstring* outError,
+	const BorrowedResolver& borrowedResolver)
 {
 	pool = {};
 	if (!factory)
@@ -28,14 +29,22 @@ bool DesignDocumentControlPool::Build(
 	for (const auto& resolved : graph.Nodes())
 	{
 		const auto& node = document.Nodes[resolved.SourceIndex];
-		auto owner = factory(node);
-		if (!owner)
+		Control* borrowed = borrowedResolver
+			? borrowedResolver(node) : nullptr;
+		auto owner = borrowed
+			? std::unique_ptr<Control>{} : factory(node);
+		if (!borrowed && !owner)
 			return Fail(L"无法创建控件实例: " + node.Name, outError);
-		cui::framework::DesignIdentityAccess::Set(*owner, node.Id);
+		// ControlTemplate expansion IDs are compiler-local graph identities,
+		// never authored DesignId values. Publishing them into the live tree
+		// makes a re-applied template shadow unrelated document controls during
+		// FindControlByDesignId traversal.
+		if (owner && !node.TemplateState.Generated)
+			cui::framework::DesignIdentityAccess::Set(*owner, node.Id);
 		Entry entry;
 		entry.Id = node.Id;
 		entry.Name = node.Name;
-		entry.Instance = owner.get();
+		entry.Instance = borrowed ? borrowed : owner.get();
 		entry.Owner = std::move(owner);
 		const size_t index = pool._entries.size();
 		pool._entries.push_back(std::move(entry));

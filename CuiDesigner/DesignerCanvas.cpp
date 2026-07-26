@@ -83,6 +83,7 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <unordered_map>
@@ -7815,6 +7816,10 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 
 	DesignerModel::DesignDocument componentContext;
 	componentContext.Components = rewrittenComponents;
+	componentContext.ControlTemplates = rewrittenControlTemplates;
+	componentContext.DataTemplates = rewrittenTemplates;
+	componentContext.ItemsPanelTemplates = _itemsPanelTemplates;
+	componentContext.GroupStyles = _groupStyles;
 	componentContext.StyleSheet = styleSheet;
 	componentContext.ResourceBasePath = _documentResourceBasePath;
 	componentContext.Resources = _documentResources;
@@ -7839,9 +7844,28 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 		_documentResourceBasePath, _documentResources))
 		return false;
 	std::shared_ptr<ControlStyleSheet> runtime;
+	auto runtimeResourceDocument =
+		std::make_shared<const DesignerModel::DesignDocument>(
+			componentContext);
+	CuiRuntime::XamlMaterializationOptions runtimeResourceOptions;
+	runtimeResourceOptions.ControlFactory =
+		[](UIClass type) { return DesignerControlFactory::Create(type); };
+	runtimeResourceOptions.AllowNativeSurfacePlaceholder = true;
+	auto structuralResources =
+		DesignerStyleSheetUtils::BuildItemsPanelStyleResources(
+			_itemsPanelTemplates);
+	auto templateResources =
+		CuiRuntime::XamlObjectMaterializer::
+			BuildControlTemplateStyleResources(
+				runtimeResourceDocument, runtimeResourceOptions);
+	structuralResources.insert(
+		structuralResources.end(),
+		std::make_move_iterator(templateResources.begin()),
+		std::make_move_iterator(templateResources.end()));
 	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 		styleSheet, runtime, outError, _documentResourceBasePath,
-		_documentResources))
+		_documentResources,
+		structuralResources))
 		return false;
 
 	struct ScopedStyleUpdate
@@ -7869,6 +7893,55 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 			parent = parent->GetVisualParent();
 		}
 		return nullptr;
+	};
+	auto visibleItemsPanelTemplates = [&](const DesignerControl& origin)
+	{
+		auto result = _itemsPanelTemplates;
+		std::vector<const DesignerControl*> route;
+		for (const DesignerControl* scope = &origin; scope;
+			scope = parentDesigner(*scope)) route.push_back(scope);
+		for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
+		{
+			if (!(*scope)->LocalObjectResources) continue;
+			for (const auto& definition :
+				(*scope)->LocalObjectResources->ItemsPanelTemplates)
+			{
+				result.erase(std::remove_if(
+					result.begin(), result.end(),
+					[&](const auto& current)
+					{ return current.Key == definition.Key; }),
+					result.end());
+				result.push_back(definition);
+			}
+		}
+		return result;
+	};
+	auto visibleControlTemplates = [&](const DesignerControl& origin)
+	{
+		auto result = rewrittenControlTemplates;
+		std::vector<const DesignerControl*> route;
+		for (const DesignerControl* scope = &origin; scope;
+			scope = parentDesigner(*scope)) route.push_back(scope);
+		for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
+		{
+			if (!(*scope)->LocalObjectResources) continue;
+			for (const auto& definition :
+				(*scope)->LocalObjectResources->ControlTemplates)
+			{
+				result.erase(std::remove_if(
+					result.begin(), result.end(),
+					[&](const auto& current)
+					{
+						return current.Key == definition.Key
+							&& current.TargetComponentType
+								== definition.TargetComponentType
+							&& current.TargetType
+								== definition.TargetType;
+					}), result.end());
+				result.push_back(definition);
+			}
+		}
+		return result;
 	};
 	auto hasLocalStyleResource = [&](const DesignerControl& origin,
 		const std::wstring& key)
@@ -7919,9 +7992,34 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 		if (!DesignerStyleSheetUtils::PrepareLocalRuntimeStyleSheet(
 			authored, visible, runtimeSource, outError)) return false;
 		std::shared_ptr<ControlStyleSheet> next;
+		auto localItemsPanelTemplates =
+			visibleItemsPanelTemplates(*owner);
+		auto localResourceDocument =
+			std::make_shared<DesignerModel::DesignDocument>(
+				componentContext);
+		localResourceDocument->ControlTemplates =
+			visibleControlTemplates(*owner);
+		localResourceDocument->ItemsPanelTemplates =
+			localItemsPanelTemplates;
+		localResourceDocument->StyleSheet = visible;
+		auto localStructuralResources =
+			DesignerStyleSheetUtils::BuildItemsPanelStyleResources(
+				localItemsPanelTemplates);
+		auto localTemplateResources =
+			CuiRuntime::XamlObjectMaterializer::
+				BuildControlTemplateStyleResources(
+					std::move(localResourceDocument),
+					runtimeResourceOptions);
+		localStructuralResources.insert(
+			localStructuralResources.end(),
+			std::make_move_iterator(
+				localTemplateResources.begin()),
+			std::make_move_iterator(
+				localTemplateResources.end()));
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 			runtimeSource, next, outError, _documentResourceBasePath,
-			_documentResources)) return false;
+			_documentResources,
+			localStructuralResources)) return false;
 		scopedStyleUpdates.push_back({ owner, owner->ControlInstance,
 			authored,
 			cui::framework::StyleAccess::Resources(*owner->ControlInstance),

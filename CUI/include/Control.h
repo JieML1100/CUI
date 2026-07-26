@@ -4,6 +4,7 @@
 #include "Binding.h"
 #include "XamlSchema.h"
 #include "ComponentBehavior.h"
+#include "ControlTemplate.h"
 #include "ObservableCollection.h"
 #include <Colors.h>
 #include "ThemePalette.h"
@@ -505,6 +506,7 @@ namespace cui::framework
 	struct PresentationAccess;
 	struct InputAccess;
 	struct NativeVisualStateAccess;
+	struct TreeAccess;
 	struct XamlAccess;
 	struct DependencyPropertyAccess;
 	struct StyleAccess;
@@ -533,6 +535,7 @@ protected:
 	friend struct cui::framework::InputAccess;
 	friend struct cui::framework::PresentationAccess;
 	friend struct cui::framework::NativeVisualStateAccess;
+	friend struct cui::framework::TreeAccess;
 	friend struct cui::framework::XamlAccess;
 	friend struct cui::framework::DependencyPropertyAccess;
 	friend struct cui::framework::StyleAccess;
@@ -649,18 +652,37 @@ protected:
 	mutable std::unique_ptr<AutomationPeer> _automationPeer;
 	std::unique_ptr<IDeclarativeComponentBehavior>
 		_declarativeComponentBehavior;
+	ControlTemplateReference _template;
 	std::unordered_map<std::wstring, Control*> _templateNameScope;
 	Control* _controlTemplateRoot = nullptr;
 	std::vector<std::pair<std::wstring, Control*>>
 		_declarativeContentPresenters;
+	std::vector<EventConnection> _templateEventConnections;
+	std::vector<EventConnection> _templatePartEventConnections;
 	struct DeclarativeVisualStateRuntime;
 	std::unique_ptr<DeclarativeVisualStateRuntime> _declarativeVisualStates;
+	std::wstring _lastTemplateError;
+	bool _templateApplied = false;
+	bool _applyingTemplate = false;
+	bool _templateApplyCallbackPending = false;
+	struct PendingVisualChildAttachment final
+	{
+		Control* Child = nullptr;
+		ControlWeakReference LogicalParent;
+	};
+	std::vector<PendingVisualChildAttachment>
+		_pendingVisualChildAttachments;
 	bool _dispatchingComponentBehaviorInput = false;
 	std::optional<cui::drawing::Brush> _backgroundBrush;
 	std::optional<cui::drawing::Brush> _foregroundBrush;
 	std::optional<cui::drawing::Brush> _borderBrush;
+	bool _clipToBounds = false;
 	BindingValue _tag;
 	CursorKind _cursor = CursorKind::Auto;
+	::HorizontalAlignment _horizontalContentAlignment =
+		HorizontalAlignment::Left;
+	::VerticalAlignment _verticalContentAlignment =
+		VerticalAlignment::Top;
 	// Authored/local IsEnabled value.  It is deliberately not exposed as a
 	// writable field: every mutation must flow through SetLocalEnabled so the
 	// effective routed subtree is republished atomically.
@@ -864,6 +886,28 @@ protected:
 	virtual std::unique_ptr<Control> DetachVisualChildTemplateRoot();
 	virtual void ConfigureControlTemplateVisual(Control& child);
 	virtual void OnControlTemplatePresentationChanged() {}
+	/** WPF lifecycle hook called after a complete template instance is wired. */
+	virtual void OnApplyTemplate() {}
+	/** Called after Template's effective value changes and the old tree is gone. */
+	virtual void OnTemplateChanged(
+		const ControlTemplateReference& oldTemplate,
+		const ControlTemplateReference& newTemplate)
+	{
+		(void)oldTemplate;
+		(void)newTemplate;
+	}
+	void MarkControlTemplateRootAttached() noexcept
+	{
+		_templateApplied = true;
+		_templateApplyCallbackPending = true;
+	}
+	void MarkControlTemplateRootDetached() noexcept
+	{
+		_templateApplied = false;
+		_templateApplyCallbackPending = false;
+	}
+	void CompleteControlTemplateApplication();
+	void AbortControlTemplateApplication() noexcept;
 	/** Allows specialized containers to reject structurally invalid child types. */
 	virtual bool ValidateVisualChildCollection(
 		std::span<Control* const> children,
@@ -905,6 +949,8 @@ protected:
 		(void)currentValue;
 	}
 	void SynchronizeVisualChildCollection(const CollectionChangedEventArgs& change);
+	Control* InsertVisualChildWithLogicalParent(
+		int index, Control* child, Control* logicalParent);
 	void SetVisualParentCore(Control* value);
 	void SetLogicalParentCore(Control* value);
 	void SetTemplatedParentCore(Control* value);
@@ -1039,6 +1085,18 @@ public:
 	virtual ~Control();
 	/** @brief 返回运行时类型标识。 */
 	virtual UIClass Type();
+	/** Effective WPF Control.Template dependency-property value. */
+	ControlTemplateReference GetTemplate() const noexcept { return _template; }
+	void SetTemplate(ControlTemplateReference value);
+	/**
+	 * Creates the template visual tree on this exact control instance.
+	 * Returns true only when this call created a new visual subtree.
+	 */
+	bool ApplyTemplate();
+	const std::wstring& LastTemplateError() const noexcept
+	{
+		return _lastTemplateError;
+	}
 
 protected:
 	/** Root/runtime hook; normal descendants inherit through the tree. */
@@ -1063,6 +1121,22 @@ protected:
 	void ClearRetainedEventConnections() noexcept
 	{
 		_retainedEventConnections.clear();
+	}
+	/** Retains an authored template-event bridge until Template changes. */
+	void RetainTemplateEventConnection(EventConnection connection)
+	{
+		if (connection.Connected())
+			_templateEventConnections.push_back(std::move(connection));
+	}
+	/** Retains a native behavior subscription to one current template part. */
+	void RetainTemplatePartEventConnection(EventConnection connection)
+	{
+		if (connection.Connected())
+			_templatePartEventConnections.push_back(std::move(connection));
+	}
+	void ClearTemplatePartEventConnections() noexcept
+	{
+		_templatePartEventConnections.clear();
 	}
 	void SetLogicalParent(Control* value)
 	{
@@ -1187,6 +1261,13 @@ public:
 	{
 		return _clip;
 	}
+	/**
+	 * WPF UIElement.ClipToBounds. Ordinary elements default to false; viewport
+	 * controls may still impose an intrinsic child clip through ClipsChildren.
+	 */
+	PROPERTY(bool, ClipToBounds);
+	GET(bool, ClipToBounds);
+	SET(bool, ClipToBounds);
 	/** Sets a device-independent transform that affects this control and its descendants. */
 	void SetRenderTransform(const cui::drawing::Transform& transform);
 	void ClearRenderTransform();
@@ -1427,6 +1508,7 @@ private:
 		bool recursive = true);
 	bool SetResourceDictionary(
 		std::shared_ptr<const ControlStyleSheet> value);
+	bool HasVisibleStyleRules() const noexcept;
 	bool RefreshStyleValues(bool recursive = true);
 
 public:
@@ -1488,8 +1570,20 @@ public:
 			if (ancestor == control)
 				throw std::logic_error("不能将控件添加到自身或其后代");
 		}
+		bool explicitLogicalParent = false;
+		Control* requestedLogicalParent = nullptr;
+		for (auto position = _pendingVisualChildAttachments.rbegin();
+			position != _pendingVisualChildAttachments.rend(); ++position) {
+			if (position->Child != control) continue;
+			explicitLogicalParent = true;
+			requestedLogicalParent = position->LogicalParent.Get();
+			break;
+		}
 		if (control->_isWindowRoot
-			|| control->_visualParent || control->_logicalParent
+			|| control->_visualParent
+			|| (control->_logicalParent
+				&& (!explicitLogicalParent
+					|| control->_logicalParent != requestedLogicalParent))
 			|| (control->GetPresentationWindow() && control->GetPresentationWindow() != this->GetPresentationWindow())) {
 			throw std::logic_error("该控件已属于其他容器");
 		}
@@ -1628,6 +1722,12 @@ public:
 	PROPERTY(::VerticalAlignment, VerticalAlignment);
 	GET(::VerticalAlignment, VerticalAlignment);
 	SET(::VerticalAlignment, VerticalAlignment);
+	PROPERTY(::HorizontalAlignment, HorizontalContentAlignment);
+	GET(::HorizontalAlignment, HorizontalContentAlignment);
+	SET(::HorizontalAlignment, HorizontalContentAlignment);
+	PROPERTY(::VerticalAlignment, VerticalContentAlignment);
+	GET(::VerticalAlignment, VerticalContentAlignment);
+	SET(::VerticalAlignment, VerticalContentAlignment);
 private:
 	/** Backing wrappers for attached properties owned by Grid and DockPanel. */
 	PROPERTY(int, GridRow);
@@ -1753,7 +1853,7 @@ public:
 	 */
 	virtual cui::core::Point GetVisualChildrenLayoutOriginDip() { return {}; }
 	virtual cui::core::Point GetVisualChildrenRenderOffset() const { return {}; }
-	virtual bool ClipsChildren() { return false; }
+	virtual bool ClipsChildren() { return _clipToBounds; }
 	virtual D2D1_RECT_F GetVisualChildrenClipRect()
 	{
 		auto actualSize = this->GetActualSizeDip();

@@ -62,6 +62,18 @@ namespace
 		return result;
 	}
 
+	std::vector<std::pair<std::wstring, BindingValue>>
+	BuildStructuralStyleResourcesFor(
+		const DesignDocument* document,
+		const RuntimeDocumentLoadOptions& options)
+	{
+		if (!document) return {};
+		return CuiRuntime::XamlObjectMaterializer::
+			BuildStructuralStyleResources(
+				std::make_shared<const DesignDocument>(*document),
+				MaterializationOptionsFor(options));
+	}
+
 	void SetError(std::wstring* output, std::wstring value)
 	{
 		if (output) *output = std::move(value);
@@ -654,13 +666,24 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 	{
 		try
 		{
+			RuntimeDocumentLoadOptions resourceOptions;
+			resourceOptions.NativeSurfaceBehaviors =
+				target._nativeSurfaceBehaviors;
+			resourceOptions.DeclarativeComponentBehaviors =
+				target._declarativeComponentBehaviors;
+			resourceOptions.AllowNativeSurfacePlaceholder =
+				target._allowNativeSurfacePlaceholder;
 			std::shared_ptr<ControlStyleSheet> styleSheet;
 			if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 				target._styleSheet, styleSheet, nullptr,
 				target._sourceDocument
 					? target._sourceDocument->ResourceBasePath : std::wstring{},
 				target._sourceDocument
-					? target._sourceDocument->Resources : nullptr)) return;
+					? target._sourceDocument->Resources : nullptr,
+				BuildStructuralStyleResourcesFor(
+					target._sourceDocument
+						? &*target._sourceDocument : nullptr,
+					resourceOptions))) return;
 			if (auto* contentRoot = target._contentRoot.Get())
 				(void)cui::framework::StyleAccess::SetDocumentStyles(
 					*contentRoot, styleSheet, true);
@@ -736,7 +759,9 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 			document.StyleSheet, runtimeStyleSheet, outError,
-			document.ResourceBasePath, document.Resources))
+			document.ResourceBasePath, document.Resources,
+			BuildStructuralStyleResourcesFor(
+				&document, effectiveOptions)))
 		{
 			const auto error = outError ? *outError : std::wstring{};
 			rollbackRuntime();

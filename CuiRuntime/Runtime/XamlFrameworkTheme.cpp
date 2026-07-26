@@ -4,8 +4,10 @@
 #include "../../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../../CuiDesigner/DesignerStyleSheetUtils.h"
 #include "../../CUI/include/StyleInfrastructure.h"
+#include "../../CUI/include/XamlInfrastructure.h"
 #include "CuiFrameworkTheme.g.h"
 
+#include <iterator>
 #include <mutex>
 #include <string>
 
@@ -39,14 +41,27 @@ namespace
 				xaml, document, &cache.Error))
 				return;
 
-			std::shared_ptr<ControlStyleSheet> styleSheet;
-			if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-				document.StyleSheet, styleSheet, &cache.Error,
-				document.ResourceBasePath, document.Resources))
-				return;
-			cache.Document =
+			auto sharedDocument =
 				std::make_shared<const DesignerModel::DesignDocument>(
 					std::move(document));
+			std::shared_ptr<ControlStyleSheet> styleSheet;
+			auto structuralResources =
+				DesignerStyleSheetUtils::BuildItemsPanelStyleResources(
+					sharedDocument->ItemsPanelTemplates);
+			auto controlTemplates =
+				CuiRuntime::XamlObjectMaterializer::
+					BuildControlTemplateStyleResources(sharedDocument);
+			structuralResources.insert(
+				structuralResources.end(),
+				std::make_move_iterator(controlTemplates.begin()),
+				std::make_move_iterator(controlTemplates.end()));
+			if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+				sharedDocument->StyleSheet, styleSheet, &cache.Error,
+				sharedDocument->ResourceBasePath,
+				sharedDocument->Resources,
+				structuralResources))
+				return;
+			cache.Document = std::move(sharedDocument);
 			cache.StyleSheet = std::move(styleSheet);
 			cache.Error.clear();
 		});
@@ -83,6 +98,35 @@ bool CuiRuntime::XamlFrameworkTheme::Apply(
 	{
 		if (outError) *outError =
 			L"Generic.xaml 主题样式无法应用到控件树。";
+		return false;
+	}
+	if (outError) outError->clear();
+	return true;
+}
+
+bool CuiRuntime::XamlFrameworkTheme::InstallTemplateValue(
+	Control& owner,
+	const std::wstring& resourceKey,
+	std::wstring* outError)
+{
+	auto styleSheet = DefaultStyleSheet(outError);
+	BindingValue value;
+	ControlTemplateReference reference;
+	if (!styleSheet
+		|| !styleSheet->TryGetResource(resourceKey, value)
+		|| !value.TryGet(reference) || !reference)
+	{
+		if (outError) *outError =
+			L"Generic.xaml ControlTemplate 运行期资源不存在："
+			+ resourceKey;
+		return false;
+	}
+	if (!cui::framework::XamlAccess::SetTemplate(
+		owner, reference, DependencyPropertyValueSource::Theme))
+	{
+		if (outError) *outError =
+			L"Generic.xaml Control.Template Theme 值安装失败："
+			+ resourceKey;
 		return false;
 	}
 	if (outError) outError->clear();

@@ -6,6 +6,8 @@
 #include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../CuiRuntime/include/XamlDocumentCompiler.h"
+#include "../CuiRuntime/include/XamlObjectMaterializer.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <algorithm>
 #include <array>
@@ -478,29 +480,6 @@ bool CodeGenerator::ValidateDocument(
 	if (!validateNode(document.Window)) return false;
 	for (const auto& node : document.Nodes)
 		if (!validateNode(node)) return false;
-	for (const auto& owner : document.Nodes)
-	{
-		if (owner.TemplateState.AppliedControlTemplate.empty()
-			|| owner.TemplateState.AppliedControlTemplateFromTheme)
-			continue;
-		const auto& key =
-			owner.TemplateState.AppliedControlTemplateResource;
-		const auto* definition = !key.empty()
-			? document.FindControlTemplate(document.Nodes, owner, key)
-			: owner.ComponentType.Empty()
-				? document.FindImplicitControlTemplate(
-					document.Nodes, owner, owner.Type)
-				: document.FindImplicitControlTemplate(
-					document.Nodes, owner, owner.ComponentType);
-		if (definition
-			&& (!definition->VisualStateGroups.empty()
-				|| !definition->EventTriggers.empty()))
-			return fail(
-				L"作者 ControlTemplate 的 VisualState/EventTrigger 尚未静态序列化；"
-				L"请使用框架 Generic.xaml 模板或动态 XAML 路径。",
-				&owner, L"Template");
-	}
-
 	if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 		document.StyleSheet, &validationError, document.ResourceBasePath))
 		return fail(L"Window.Resources 无法静态生成: " + validationError,
@@ -1478,9 +1457,521 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 	return "BindingValue()";
 }
 
-std::string CodeGenerator::GenerateStyleSheetCode(int indent)
+std::string CodeGenerator::GenerateBindingValueExpression(
+	const BindingValue& value)
 {
-	if (_styleSheet.Empty()) return "";
+	switch (value.Kind())
+	{
+	case BindingValueKind::Empty:
+		return "BindingValue()";
+	case BindingValueKind::Bool:
+	{
+		bool parsed = false;
+		if (!value.TryGet(parsed)) break;
+		return std::string("BindingValue(")
+			+ (parsed ? "true)" : "false)");
+	}
+	case BindingValueKind::Int:
+	{
+		int parsed = 0;
+		if (!value.TryGet(parsed)) break;
+		return "BindingValue(" + std::to_string(parsed) + ")";
+	}
+	case BindingValueKind::Int64:
+	{
+		long long parsed = 0;
+		if (!value.TryGet(parsed)) break;
+		return "BindingValue(" + std::to_string(parsed) + "LL)";
+	}
+	case BindingValueKind::Float:
+	{
+		float parsed = 0.0f;
+		if (!value.TryGet(parsed)) break;
+		return "BindingValue(" + FloatLiteral(parsed) + ")";
+	}
+	case BindingValueKind::Double:
+	{
+		double parsed = 0.0;
+		if (!value.TryGet(parsed)) break;
+		return "BindingValue(" + DoubleLiteral(parsed) + ")";
+	}
+	case BindingValueKind::String:
+	{
+		std::wstring parsed;
+		if (!value.TryGet(parsed)) break;
+		return "BindingValue(L\"" + EscapeWStringLiteral(parsed) + "\")";
+	}
+	case BindingValueKind::Object:
+		break;
+	}
+
+	D2D1_COLOR_F color{};
+	if (value.TryGet(color))
+		return "BindingValue(" + ColorToString(color) + ")";
+	Thickness thickness;
+	if (value.TryGet(thickness))
+		return "BindingValue(" + ThicknessToString(thickness) + ")";
+	cui::core::Point point{};
+	if (value.TryGet(point))
+		return "BindingValue(cui::core::Point{ " + FloatLiteral(point.x)
+			+ ", " + FloatLiteral(point.y) + " })";
+	cui::core::Vector vector{};
+	if (value.TryGet(vector))
+		return "BindingValue(cui::core::Vector{ " + FloatLiteral(vector.x)
+			+ ", " + FloatLiteral(vector.y) + " })";
+	cui::core::Rect rect{};
+	if (value.TryGet(rect))
+		return "BindingValue(cui::core::Rect{ " + FloatLiteral(rect.x)
+			+ ", " + FloatLiteral(rect.y)
+			+ ", " + FloatLiteral(rect.width)
+			+ ", " + FloatLiteral(rect.height) + " })";
+	cui::core::Size size{};
+	if (value.TryGet(size))
+		return "BindingValue(cui::core::Size{ " + FloatLiteral(size.width)
+			+ ", " + FloatLiteral(size.height) + " })";
+	D2D1_MATRIX_3X2_F matrix{};
+	if (value.TryGet(matrix))
+		return "BindingValue(D2D1::Matrix3x2F("
+			+ FloatLiteral(matrix._11) + ", " + FloatLiteral(matrix._12)
+			+ ", " + FloatLiteral(matrix._21) + ", "
+			+ FloatLiteral(matrix._22) + ", " + FloatLiteral(matrix._31)
+			+ ", " + FloatLiteral(matrix._32) + "))";
+	cui::layout::Length length;
+	if (value.TryGet(length))
+		return length.IsAuto()
+			? "BindingValue(cui::layout::Length::Auto())"
+			: "BindingValue(cui::layout::Length::Fixed("
+				+ FloatLiteral(length.value) + "))";
+	std::shared_ptr<BitmapSource> bitmap;
+	if (value.TryGet(bitmap))
+		return bitmap
+			? "BindingValue(cui::resources::LoadBitmapResource(L\""
+				+ EscapeWStringLiteral(bitmap->GetSourceUri()) + "\"))"
+			: "BindingValue(std::shared_ptr<BitmapSource>{})";
+
+	cui::drawing::Brush brush;
+	if (value.TryGet(brush))
+	{
+		if (brush.Kind == cui::drawing::BrushKind::None)
+			return "BindingValue(cui::drawing::NoBrush())";
+		std::ostringstream expression;
+		expression << "BindingValue([] { cui::drawing::Brush value; value.Kind = "
+			<< (brush.Kind == cui::drawing::BrushKind::Solid
+				? "cui::drawing::BrushKind::Solid"
+				: brush.Kind == cui::drawing::BrushKind::LinearGradient
+					? "cui::drawing::BrushKind::LinearGradient"
+					: brush.Kind == cui::drawing::BrushKind::RadialGradient
+						? "cui::drawing::BrushKind::RadialGradient"
+						: "cui::drawing::BrushKind::Image")
+			<< "; value.MappingMode = "
+			<< (brush.MappingMode
+					== cui::drawing::BrushMappingMode::Absolute
+				? "cui::drawing::BrushMappingMode::Absolute"
+				: "cui::drawing::BrushMappingMode::RelativeToBoundingBox")
+			<< "; value.Opacity = " << FloatLiteral(brush.Opacity) << "; ";
+		if (brush.Kind == cui::drawing::BrushKind::Solid)
+			expression << "value.Color = "
+				<< ColorToString(brush.Color) << "; ";
+		else if (brush.Kind == cui::drawing::BrushKind::LinearGradient)
+			expression << "value.StartPoint = D2D1::Point2F("
+				<< FloatLiteral(brush.StartPoint.x) << ", "
+				<< FloatLiteral(brush.StartPoint.y)
+				<< "); value.EndPoint = D2D1::Point2F("
+				<< FloatLiteral(brush.EndPoint.x) << ", "
+				<< FloatLiteral(brush.EndPoint.y) << "); ";
+		else if (brush.Kind == cui::drawing::BrushKind::RadialGradient)
+			expression << "value.Center = D2D1::Point2F("
+				<< FloatLiteral(brush.Center.x) << ", "
+				<< FloatLiteral(brush.Center.y)
+				<< "); value.GradientOrigin = D2D1::Point2F("
+				<< FloatLiteral(brush.GradientOrigin.x) << ", "
+				<< FloatLiteral(brush.GradientOrigin.y)
+				<< "); value.RadiusX = "
+				<< FloatLiteral(brush.RadiusX)
+				<< "; value.RadiusY = "
+				<< FloatLiteral(brush.RadiusY) << "; ";
+		else
+		{
+			expression
+				<< "value.ImageSource = cui::resources::LoadBitmapResource(L\""
+				<< EscapeWStringLiteral(brush.ImageSource
+					? brush.ImageSource->GetSourceUri() : L"")
+				<< "\"); value.Stretch = "
+				<< (brush.Stretch
+						== cui::drawing::ImageBrushStretch::None
+					? "cui::drawing::ImageBrushStretch::None"
+					: brush.Stretch
+							== cui::drawing::ImageBrushStretch::Uniform
+						? "cui::drawing::ImageBrushStretch::Uniform"
+						: brush.Stretch
+								== cui::drawing::ImageBrushStretch::UniformToFill
+							? "cui::drawing::ImageBrushStretch::UniformToFill"
+							: "cui::drawing::ImageBrushStretch::Fill")
+				<< "; value.AlignmentX = "
+				<< (brush.AlignmentX
+						== cui::drawing::ImageBrushAlignmentX::Left
+					? "cui::drawing::ImageBrushAlignmentX::Left"
+					: brush.AlignmentX
+							== cui::drawing::ImageBrushAlignmentX::Right
+						? "cui::drawing::ImageBrushAlignmentX::Right"
+						: "cui::drawing::ImageBrushAlignmentX::Center")
+				<< "; value.AlignmentY = "
+				<< (brush.AlignmentY
+						== cui::drawing::ImageBrushAlignmentY::Top
+					? "cui::drawing::ImageBrushAlignmentY::Top"
+					: brush.AlignmentY
+							== cui::drawing::ImageBrushAlignmentY::Bottom
+						? "cui::drawing::ImageBrushAlignmentY::Bottom"
+						: "cui::drawing::ImageBrushAlignmentY::Center")
+				<< "; ";
+		}
+		if (brush.Kind == cui::drawing::BrushKind::LinearGradient
+			|| brush.Kind == cui::drawing::BrushKind::RadialGradient)
+			for (const auto& stop : brush.GradientStops)
+				expression << "value.GradientStops.push_back({ "
+					<< FloatLiteral(stop.Offset) << ", "
+					<< ColorToString(stop.Color) << " }); ";
+		if (brush.Transform)
+			expression << "value.Transform = "
+				<< GenerateTransformExpression(*brush.Transform) << "; ";
+		if (brush.RelativeTransform)
+			expression << "value.RelativeTransform = "
+				<< GenerateTransformExpression(*brush.RelativeTransform)
+				<< "; ";
+		expression << "return value; }())";
+		return expression.str();
+	}
+	cui::drawing::Geometry geometry;
+	if (value.TryGet(geometry))
+		return "BindingValue(" + GenerateGeometryExpression(geometry) + ")";
+	cui::drawing::Transform transform;
+	if (value.TryGet(transform))
+		return "BindingValue(" + GenerateTransformExpression(transform) + ")";
+
+	throw std::invalid_argument(
+		"Static declarative interaction contains an unsupported BindingValue type");
+}
+
+std::string CodeGenerator::GenerateDeclarativeAnimationCode(
+	const DeclarativeVisualStateAnimation& animation,
+	const std::string& collectionExpression,
+	int indent)
+{
+	const std::string base(indent, '\t');
+	const std::string body(indent + 1, '\t');
+	std::ostringstream code;
+	auto animationKind = [](DeclarativeAnimationKind value)
+	{
+		switch (value)
+		{
+		case DeclarativeAnimationKind::Color:
+			return "DeclarativeAnimationKind::Color";
+		case DeclarativeAnimationKind::Thickness:
+			return "DeclarativeAnimationKind::Thickness";
+		case DeclarativeAnimationKind::Point:
+			return "DeclarativeAnimationKind::Point";
+		case DeclarativeAnimationKind::Vector:
+			return "DeclarativeAnimationKind::Vector";
+		case DeclarativeAnimationKind::Rect:
+			return "DeclarativeAnimationKind::Rect";
+		case DeclarativeAnimationKind::Size:
+			return "DeclarativeAnimationKind::Size";
+		case DeclarativeAnimationKind::Matrix:
+			return "DeclarativeAnimationKind::Matrix";
+		case DeclarativeAnimationKind::Object:
+			return "DeclarativeAnimationKind::Object";
+		case DeclarativeAnimationKind::Double:
+		default:
+			return "DeclarativeAnimationKind::Double";
+		}
+	};
+	auto easing = [](DeclarativeEasingKind value)
+	{
+		switch (value)
+		{
+		case DeclarativeEasingKind::Quadratic:
+			return "DeclarativeEasingKind::Quadratic";
+		case DeclarativeEasingKind::Cubic:
+			return "DeclarativeEasingKind::Cubic";
+		case DeclarativeEasingKind::Sine:
+			return "DeclarativeEasingKind::Sine";
+		case DeclarativeEasingKind::Linear:
+		default:
+			return "DeclarativeEasingKind::Linear";
+		}
+	};
+	auto easingMode = [](DeclarativeEasingMode value)
+	{
+		switch (value)
+		{
+		case DeclarativeEasingMode::EaseIn:
+			return "DeclarativeEasingMode::EaseIn";
+		case DeclarativeEasingMode::EaseInOut:
+			return "DeclarativeEasingMode::EaseInOut";
+		case DeclarativeEasingMode::EaseOut:
+		default:
+			return "DeclarativeEasingMode::EaseOut";
+		}
+	};
+
+	code << base << "{\n";
+	code << body << "DeclarativeVisualStateAnimation animation;\n";
+	code << body << "animation.Kind = "
+		<< animationKind(animation.Kind) << ";\n";
+	code << body << "animation.TargetName = L\""
+		<< EscapeWStringLiteral(animation.TargetName) << "\";\n";
+	code << body << "animation.PropertyName = L\""
+		<< EscapeWStringLiteral(animation.PropertyName) << "\";\n";
+	if (animation.From)
+		code << body << "animation.From = "
+			<< GenerateBindingValueExpression(*animation.From) << ";\n";
+	if (animation.To)
+		code << body << "animation.To = "
+			<< GenerateBindingValueExpression(*animation.To) << ";\n";
+	if (animation.By)
+		code << body << "animation.By = "
+			<< GenerateBindingValueExpression(*animation.By) << ";\n";
+	code << body << "animation.IsAdditive = "
+		<< (animation.IsAdditive ? "true" : "false") << ";\n";
+	code << body << "animation.IsCumulative = "
+		<< (animation.IsCumulative ? "true" : "false") << ";\n";
+	code << body << "animation.BeginTimeMilliseconds = "
+		<< animation.BeginTimeMilliseconds << "ULL;\n";
+	code << body << "animation.DurationMilliseconds = "
+		<< animation.DurationMilliseconds << "ULL;\n";
+	code << body << "animation.RepeatBehavior = "
+		<< (animation.RepeatBehavior == DeclarativeRepeatBehaviorKind::Duration
+			? "DeclarativeRepeatBehaviorKind::Duration"
+			: animation.RepeatBehavior == DeclarativeRepeatBehaviorKind::Forever
+				? "DeclarativeRepeatBehaviorKind::Forever"
+				: "DeclarativeRepeatBehaviorKind::Count")
+		<< ";\n";
+	code << body << "animation.RepeatCount = "
+		<< DoubleLiteral(animation.RepeatCount) << ";\n";
+	code << body << "animation.RepeatDurationMilliseconds = "
+		<< animation.RepeatDurationMilliseconds << "ULL;\n";
+	code << body << "animation.AutoReverse = "
+		<< (animation.AutoReverse ? "true" : "false") << ";\n";
+	code << body << "animation.FillBehavior = "
+		<< (animation.FillBehavior == DeclarativeTimelineFillBehavior::Stop
+			? "DeclarativeTimelineFillBehavior::Stop"
+			: "DeclarativeTimelineFillBehavior::HoldEnd")
+		<< ";\n";
+	code << body << "animation.SpeedRatio = "
+		<< DoubleLiteral(animation.SpeedRatio) << ";\n";
+	code << body << "animation.AccelerationRatio = "
+		<< DoubleLiteral(animation.AccelerationRatio) << ";\n";
+	code << body << "animation.DecelerationRatio = "
+		<< DoubleLiteral(animation.DecelerationRatio) << ";\n";
+	code << body << "animation.Easing = "
+		<< easing(animation.Easing) << ";\n";
+	code << body << "animation.EasingMode = "
+		<< easingMode(animation.EasingMode) << ";\n";
+	for (const auto& keyFrame : animation.KeyFrames)
+	{
+		code << body << "{\n";
+		code << body << "\tDeclarativeAnimationKeyFrame keyFrame;\n";
+		code << body << "\tkeyFrame.Kind = "
+			<< (keyFrame.Kind == DeclarativeKeyFrameKind::Discrete
+				? "DeclarativeKeyFrameKind::Discrete"
+				: keyFrame.Kind == DeclarativeKeyFrameKind::Easing
+					? "DeclarativeKeyFrameKind::Easing"
+					: keyFrame.Kind == DeclarativeKeyFrameKind::Spline
+						? "DeclarativeKeyFrameKind::Spline"
+						: "DeclarativeKeyFrameKind::Linear")
+			<< ";\n";
+		code << body << "\tkeyFrame.KeyTimeMilliseconds = "
+			<< keyFrame.KeyTimeMilliseconds << "ULL;\n";
+		code << body << "\tkeyFrame.Value = "
+			<< GenerateBindingValueExpression(keyFrame.Value) << ";\n";
+		code << body << "\tkeyFrame.Easing = "
+			<< easing(keyFrame.Easing) << ";\n";
+		code << body << "\tkeyFrame.EasingMode = "
+			<< easingMode(keyFrame.EasingMode) << ";\n";
+		code << body << "\tkeyFrame.KeySplineX1 = "
+			<< FloatLiteral(keyFrame.KeySplineX1) << ";\n";
+		code << body << "\tkeyFrame.KeySplineY1 = "
+			<< FloatLiteral(keyFrame.KeySplineY1) << ";\n";
+		code << body << "\tkeyFrame.KeySplineX2 = "
+			<< FloatLiteral(keyFrame.KeySplineX2) << ";\n";
+		code << body << "\tkeyFrame.KeySplineY2 = "
+			<< FloatLiteral(keyFrame.KeySplineY2) << ";\n";
+		code << body
+			<< "\tanimation.KeyFrames.push_back(std::move(keyFrame));\n";
+		code << body << "}\n";
+	}
+	code << body << collectionExpression
+		<< ".push_back(std::move(animation));\n";
+	code << base << "}\n";
+	return code.str();
+}
+
+std::string CodeGenerator::GenerateDeclarativeStoryboardActionsCode(
+	const std::vector<DeclarativeEventTriggerActionDefinition>& actions,
+	const std::string& collectionExpression,
+	int indent)
+{
+	const std::string base(indent, '\t');
+	const std::string body(indent + 1, '\t');
+	std::ostringstream code;
+	for (const auto& action : actions)
+	{
+		code << base << "{\n";
+		code << body
+			<< "DeclarativeEventTriggerActionDefinition action;\n";
+		code << body << "action.Kind = "
+			<< (action.Kind == DeclarativeStoryboardActionKind::Begin
+				? "DeclarativeStoryboardActionKind::Begin"
+				: action.Kind == DeclarativeStoryboardActionKind::Pause
+					? "DeclarativeStoryboardActionKind::Pause"
+					: action.Kind == DeclarativeStoryboardActionKind::Resume
+						? "DeclarativeStoryboardActionKind::Resume"
+						: "DeclarativeStoryboardActionKind::Stop")
+			<< ";\n";
+		code << body << "action.StoryboardName = L\""
+			<< EscapeWStringLiteral(action.StoryboardName) << "\";\n";
+		for (const auto& animation : action.Animations)
+			code << GenerateDeclarativeAnimationCode(
+				animation, "action.Animations", indent + 1);
+		code << body << collectionExpression
+			<< ".push_back(std::move(action));\n";
+		code << base << "}\n";
+	}
+	return code.str();
+}
+
+std::string CodeGenerator::GenerateDeclarativeInteractionsCode(
+	const std::vector<DeclarativeVisualStateGroupDefinition>& visualStateGroups,
+	const std::vector<DeclarativeEventTriggerDefinition>& eventTriggers,
+	const std::string& targetExpression,
+	int indent)
+{
+	if (visualStateGroups.empty() && eventTriggers.empty()) return {};
+	const std::string tabs(indent, '\t');
+	const std::string inner(indent + 1, '\t');
+	const std::string deep(indent + 2, '\t');
+	std::ostringstream code;
+	auto easing = [](DeclarativeEasingKind value)
+	{
+		switch (value)
+		{
+		case DeclarativeEasingKind::Quadratic:
+			return "DeclarativeEasingKind::Quadratic";
+		case DeclarativeEasingKind::Cubic:
+			return "DeclarativeEasingKind::Cubic";
+		case DeclarativeEasingKind::Sine:
+			return "DeclarativeEasingKind::Sine";
+		case DeclarativeEasingKind::Linear:
+		default:
+			return "DeclarativeEasingKind::Linear";
+		}
+	};
+	auto easingMode = [](DeclarativeEasingMode value)
+	{
+		switch (value)
+		{
+		case DeclarativeEasingMode::EaseIn:
+			return "DeclarativeEasingMode::EaseIn";
+		case DeclarativeEasingMode::EaseInOut:
+			return "DeclarativeEasingMode::EaseInOut";
+		case DeclarativeEasingMode::EaseOut:
+		default:
+			return "DeclarativeEasingMode::EaseOut";
+		}
+	};
+	code << tabs << "{\n";
+	code << inner
+		<< "std::vector<DeclarativeVisualStateGroupDefinition> "
+			"visualStateGroups;\n";
+	code << inner
+		<< "std::vector<DeclarativeEventTriggerDefinition> eventTriggers;\n";
+	for (const auto& sourceGroup : visualStateGroups)
+	{
+		code << inner << "{\n";
+		code << deep << "DeclarativeVisualStateGroupDefinition group;\n";
+		code << deep << "group.Name = L\""
+			<< EscapeWStringLiteral(sourceGroup.Name) << "\";\n";
+		for (const auto& sourceState : sourceGroup.States)
+		{
+			code << deep << "{\n";
+			code << deep << "\tDeclarativeVisualStateDefinition state;\n";
+			code << deep << "\tstate.Name = L\""
+				<< EscapeWStringLiteral(sourceState.Name) << "\";\n";
+			for (const auto& eventName : sourceState.EventNames)
+				code << deep << "\tstate.EventNames.push_back(L\""
+					<< EscapeWStringLiteral(eventName) << "\");\n";
+			for (const auto& condition : sourceState.Conditions)
+				code << deep << "\tstate.Conditions.push_back({ L\""
+					<< EscapeWStringLiteral(condition.PropertyName) << "\", "
+					<< GenerateBindingValueExpression(condition.Value)
+					<< " });\n";
+			for (const auto& setter : sourceState.Setters)
+				code << deep << "\tstate.Setters.push_back({ L\""
+					<< EscapeWStringLiteral(setter.TargetName) << "\", L\""
+					<< EscapeWStringLiteral(setter.PropertyName) << "\", "
+					<< GenerateBindingValueExpression(setter.Value)
+					<< " });\n";
+			for (const auto& animation : sourceState.Animations)
+				code << GenerateDeclarativeAnimationCode(
+					animation, "state.Animations", indent + 3);
+			code << deep
+				<< "\tgroup.States.push_back(std::move(state));\n";
+			code << deep << "}\n";
+		}
+		for (const auto& sourceTransition : sourceGroup.Transitions)
+		{
+			code << deep << "{\n";
+			code << deep
+				<< "\tDeclarativeVisualTransitionDefinition transition;\n";
+			code << deep << "\ttransition.FromState = L\""
+				<< EscapeWStringLiteral(sourceTransition.FromState) << "\";\n";
+			code << deep << "\ttransition.ToState = L\""
+				<< EscapeWStringLiteral(sourceTransition.ToState) << "\";\n";
+			code << deep << "\ttransition.GeneratedDurationMilliseconds = "
+				<< sourceTransition.GeneratedDurationMilliseconds << "ULL;\n";
+			code << deep << "\ttransition.GeneratedEasing = "
+				<< easing(sourceTransition.GeneratedEasing) << ";\n";
+			code << deep << "\ttransition.GeneratedEasingMode = "
+				<< easingMode(sourceTransition.GeneratedEasingMode) << ";\n";
+			for (const auto& animation : sourceTransition.Animations)
+				code << GenerateDeclarativeAnimationCode(
+					animation, "transition.Animations", indent + 3);
+			code << deep
+				<< "\tgroup.Transitions.push_back(std::move(transition));\n";
+			code << deep << "}\n";
+		}
+		code << deep
+			<< "visualStateGroups.push_back(std::move(group));\n";
+		code << inner << "}\n";
+	}
+	for (const auto& sourceTrigger : eventTriggers)
+	{
+		code << inner << "{\n";
+		code << deep << "DeclarativeEventTriggerDefinition trigger;\n";
+		code << deep << "trigger.EventName = L\""
+			<< EscapeWStringLiteral(sourceTrigger.EventName) << "\";\n";
+		code << GenerateDeclarativeStoryboardActionsCode(
+			sourceTrigger.Actions, "trigger.Actions", indent + 2);
+		code << deep
+			<< "eventTriggers.push_back(std::move(trigger));\n";
+		code << inner << "}\n";
+	}
+	code << inner << "std::wstring interactionError;\n";
+	code << inner << "if (!cui::framework::XamlAccess::DefineInteractions("
+		<< targetExpression
+		<< ", std::move(visualStateGroups), std::move(eventTriggers), "
+			"&interactionError))\n";
+	code << deep << "return fail(L\"ControlTemplate 声明交互安装失败：\" "
+		"+ interactionError);\n";
+	code << tabs << "}\n";
+	return code.str();
+}
+
+std::string CodeGenerator::GenerateStyleSheetCode(
+	int indent,
+	const std::vector<std::pair<std::wstring, std::string>>& objectResources)
+{
+	if (_styleSheet.Empty() && objectResources.empty()) return "";
 	std::ostringstream code;
 	const std::string indentStr(indent, '\t');
 	auto styleSheet = _styleSheet;
@@ -1491,14 +1982,6 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 		styleSheet, resolvedStyleSheet, &inheritanceError))
 		throw std::invalid_argument(WStringToString(inheritanceError));
 	styleSheet = std::move(resolvedStyleSheet);
-	if (std::any_of(styleSheet.Rules.begin(), styleSheet.Rules.end(),
-		[](const DesignerStyleRule& rule)
-		{
-			return !rule.EnterActions.empty() || !rule.ExitActions.empty();
-		}))
-		throw std::invalid_argument(
-			"Style Trigger EnterActions/ExitActions require dynamic XAML; "
-			"the auxiliary static C++ generator does not emit Storyboard clocks.");
 
 	code << indentStr << "// 文档级控件样式\n";
 	code << indentStr << "auto __styleSheet = std::make_shared<ControlStyleSheet>();\n";
@@ -1508,6 +1991,10 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 			<< EscapeWStringLiteral(resource.Key) << "\", "
 			<< GenerateStyleValueExpression(resource.Value) << ");\n";
 	}
+	for (const auto& [key, expression] : objectResources)
+		code << indentStr << "__styleSheet->SetResource(L\""
+			<< EscapeWStringLiteral(key) << "\", "
+			<< expression << ");\n";
 	for (size_t index = 0; index < styleSheet.Rules.size(); ++index)
 	{
 		const auto& rule = styleSheet.Rules[index];
@@ -1550,10 +2037,43 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 				<< ".DataConditions.push_back({ L\""
 				<< EscapeWStringLiteral(condition.SourceProperty) << "\", "
 				<< GenerateStyleValueExpression(condition.Value) << " });\n";
-		code << indentStr << "__styleSheet->AddRule(std::move(" << selectorName << "), {\n";
-		for (size_t setterIndex = 0; setterIndex < rule.Setters.size(); ++setterIndex)
+		std::vector<DeclarativeEventTriggerActionDefinition> enterActions;
+		std::vector<DeclarativeEventTriggerActionDefinition> exitActions;
+		std::wstring actionError;
+		if (!DesignerStyleSheetUtils::MaterializeStoryboardActions(
+			rule.EnterActions, styleSheet, enterActions, &actionError,
+			_resourceBasePath, _sourceDocument.Resources,
+			L"Style Trigger.EnterActions")
+			|| !DesignerStyleSheetUtils::MaterializeStoryboardActions(
+				rule.ExitActions, styleSheet, exitActions, &actionError,
+				_resourceBasePath, _sourceDocument.Resources,
+				L"Style Trigger.ExitActions"))
+			throw std::invalid_argument(WStringToString(actionError));
+		const auto enterActionsName =
+			"__styleEnterActions" + std::to_string(index + 1);
+		const auto exitActionsName =
+			"__styleExitActions" + std::to_string(index + 1);
+		if (!enterActions.empty() || !exitActions.empty())
 		{
-			const auto& setter = rule.Setters[setterIndex];
+			code << indentStr
+				<< "std::vector<DeclarativeEventTriggerActionDefinition> "
+				<< enterActionsName << ";\n";
+			code << GenerateDeclarativeStoryboardActionsCode(
+				enterActions, enterActionsName, indent);
+			code << indentStr
+				<< "std::vector<DeclarativeEventTriggerActionDefinition> "
+				<< exitActionsName << ";\n";
+			code << GenerateDeclarativeStoryboardActionsCode(
+				exitActions, exitActionsName, indent);
+		}
+		code << indentStr << "__styleSheet->AddRule(std::move(" << selectorName << "), {\n";
+		std::vector<const DesignerStyleSetter*> emittedSetters;
+		for (const auto& setter : rule.Setters)
+			emittedSetters.push_back(&setter);
+		for (size_t setterIndex = 0;
+			setterIndex < emittedSetters.size(); ++setterIndex)
+		{
+			const auto& setter = *emittedSetters[setterIndex];
 			code << indentStr << "\t";
 			if (setter.UsesResource)
 				code << (setter.UsesDynamicResource
@@ -1564,10 +2084,14 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 			else
 				code << "ControlStyleSetter(L\"" << EscapeWStringLiteral(setter.PropertyName)
 					<< "\", " << GenerateStyleValueExpression(setter.Literal) << ")";
-			if (setterIndex + 1 < rule.Setters.size()) code << ",";
+			if (setterIndex + 1 < emittedSetters.size()) code << ",";
 			code << "\n";
 		}
-		code << indentStr << "});\n";
+		code << indentStr << "}";
+		if (!enterActions.empty() || !exitActions.empty())
+			code << ", std::move(" << enterActionsName
+				<< "), std::move(" << exitActionsName << ")";
+		code << ");\n";
 	}
 	// Window is the document root. One stylesheet attachment covers the root
 	// itself and the complete logical Content subtree.
@@ -1580,87 +2104,47 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 
 std::string CodeGenerator::GenerateLocalResources(
 	const DesignerModel::DesignNode& node,
-	int indent)
+	int indent,
+	const DesignerModel::DesignDocument* sourceDocument,
+	const std::vector<std::pair<std::wstring, std::string>>* objectResources)
 {
 	if (node.LocalResources.Empty()) return {};
+	const auto& document =
+		sourceDocument ? *sourceDocument : _sourceDocument;
 	const std::string indentStr(indent, '\t');
 	const std::string controlName = GetVarName(node);
 	const std::string dictionaryName = "__resources_" + controlName;
-	auto appendScope = [](DesignerStyleSheet& target,
-		const DesignerStyleSheet& source)
-	{
-		for (const auto& resource : source.Resources)
-		{
-			target.Resources.erase(std::remove_if(
-				target.Resources.begin(), target.Resources.end(),
-				[&](const auto& current)
-				{
-					return current.Key == resource.Key;
-				}), target.Resources.end());
-			target.Resources.push_back(resource);
-		}
-		target.Rules.insert(
-			target.Rules.end(), source.Rules.begin(), source.Rules.end());
-	};
-	DesignerStyleSheet visible = _styleSheet;
+	DesignerStyleSheet visible = document.StyleSheet;
 	std::vector<const DesignerModel::DesignNode*> route;
 	for (auto* scope = &node; scope;)
 	{
 		route.push_back(scope);
-		auto found = _sourceDocument.Nodes.end();
+		auto found = document.Nodes.end();
 		if (scope->ParentId > 0)
 			found = std::find_if(
-				_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+				document.Nodes.begin(), document.Nodes.end(),
 				[&](const auto& candidate)
 				{ return candidate.Id == scope->ParentId; });
 		else if (!scope->ParentRef.empty())
 			found = std::find_if(
-				_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+				document.Nodes.begin(), document.Nodes.end(),
 				[&](const auto& candidate)
 				{ return candidate.Name == scope->ParentRef; });
-		scope = found == _sourceDocument.Nodes.end() ? nullptr : &*found;
+		scope = found == document.Nodes.end() ? nullptr : &*found;
 	}
 	for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
-		appendScope(visible, (*scope)->LocalResources);
-	DesignerStyleSheet inherited;
+		DesignerStyleSheetUtils::AppendLexicalScope(
+			visible, (*scope)->LocalResources);
 	std::wstring styleError;
-	if (!DesignerStyleSheetUtils::ResolveInheritance(
-		visible, inherited, &styleError))
+	DesignerStyleSheet local;
+	if (!DesignerStyleSheetUtils::PrepareLocalRuntimeStyleSheet(
+		node.LocalResources, visible, local, &styleError))
 		throw std::invalid_argument(WStringToString(styleError));
-	DesignerStyleSheet local = node.LocalResources;
-	if (inherited.Rules.size() < local.Rules.size())
-		throw std::invalid_argument("Invalid lexical Style rule range");
-	local.Rules.assign(
-		inherited.Rules.end() - local.Rules.size(), inherited.Rules.end());
 	DesignerStyleSheet expanded;
 	if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
 		local, expanded, &styleError))
 		throw std::invalid_argument(WStringToString(styleError));
 	local = std::move(expanded);
-	if (std::any_of(local.Rules.begin(), local.Rules.end(),
-		[](const DesignerStyleRule& rule)
-		{
-			return !rule.EnterActions.empty() || !rule.ExitActions.empty();
-		}))
-		throw std::invalid_argument(
-			"Control-local Style Trigger actions require dynamic XAML");
-	for (auto& rule : local.Rules)
-		for (auto& setter : rule.Setters)
-		{
-			if (!setter.UsesResource || setter.UsesDynamicResource) continue;
-			const auto found = std::find_if(
-				visible.Resources.rbegin(), visible.Resources.rend(),
-				[&](const auto& resource)
-				{
-					return resource.Key == setter.ResourceKey;
-				});
-			if (found == visible.Resources.rend())
-				throw std::invalid_argument("Local Style StaticResource is missing");
-			setter.UsesResource = false;
-			setter.UsesDynamicResource = false;
-			setter.ResourceKey.clear();
-			setter.Literal = found->Value;
-		}
 	std::ostringstream code;
 	code << indentStr << "// 控件级词法资源作用域\n";
 	code << indentStr << "auto " << dictionaryName
@@ -1711,14 +2195,62 @@ std::string CodeGenerator::GenerateLocalResources(
 				<< ".DataConditions.push_back({ L\""
 				<< EscapeWStringLiteral(condition.SourceProperty) << "\", "
 				<< GenerateStyleValueExpression(condition.Value) << " });\n";
+		std::vector<DeclarativeEventTriggerActionDefinition> enterActions;
+		std::vector<DeclarativeEventTriggerActionDefinition> exitActions;
+		std::wstring actionError;
+		if (!DesignerStyleSheetUtils::MaterializeStoryboardActions(
+			rule.EnterActions, local, enterActions, &actionError,
+			document.ResourceBasePath, document.Resources,
+			L"Local Style Trigger.EnterActions")
+			|| !DesignerStyleSheetUtils::MaterializeStoryboardActions(
+				rule.ExitActions, local, exitActions, &actionError,
+				document.ResourceBasePath, document.Resources,
+				L"Local Style Trigger.ExitActions"))
+			throw std::invalid_argument(WStringToString(actionError));
+		const auto enterActionsName = dictionaryName + "_enterActions_"
+			+ std::to_string(index + 1);
+		const auto exitActionsName = dictionaryName + "_exitActions_"
+			+ std::to_string(index + 1);
+		if (!enterActions.empty() || !exitActions.empty())
+		{
+			code << indentStr
+				<< "std::vector<DeclarativeEventTriggerActionDefinition> "
+				<< enterActionsName << ";\n";
+			code << GenerateDeclarativeStoryboardActionsCode(
+				enterActions, enterActionsName, indent);
+			code << indentStr
+				<< "std::vector<DeclarativeEventTriggerActionDefinition> "
+				<< exitActionsName << ";\n";
+			code << GenerateDeclarativeStoryboardActionsCode(
+				exitActions, exitActionsName, indent);
+		}
 		code << indentStr << dictionaryName << "->AddRule(std::move("
 			<< selectorName << "), {\n";
+		std::vector<const DesignerStyleSetter*> emittedSetters;
+		for (const auto& setter : rule.Setters)
+			emittedSetters.push_back(&setter);
 		for (size_t setterIndex = 0;
-			setterIndex < rule.Setters.size(); ++setterIndex)
+			setterIndex < emittedSetters.size(); ++setterIndex)
 		{
-			const auto& setter = rule.Setters[setterIndex];
+			const auto& setter = *emittedSetters[setterIndex];
 			code << indentStr << "\t";
-			if (setter.UsesResource)
+			const std::string* objectExpression = nullptr;
+			if (objectResources
+				&& setter.PropertyName == L"Template"
+				&& setter.UsesResource
+				&& !setter.UsesDynamicResource)
+			{
+				const auto objectResource = std::find_if(
+					objectResources->begin(), objectResources->end(),
+					[&](const auto& resource)
+					{ return resource.first == setter.ResourceKey; });
+				if (objectResource != objectResources->end())
+					objectExpression = &objectResource->second;
+			}
+			if (objectExpression)
+				code << "ControlStyleSetter(L\"Template\", "
+					<< *objectExpression << ")";
+			else if (setter.UsesResource)
 				code << (setter.UsesDynamicResource
 					? "ControlStyleSetter::DynamicResource(L\""
 					: "ControlStyleSetter::Resource(L\"")
@@ -1728,10 +2260,14 @@ std::string CodeGenerator::GenerateLocalResources(
 				code << "ControlStyleSetter(L\""
 					<< EscapeWStringLiteral(setter.PropertyName) << "\", "
 					<< GenerateStyleValueExpression(setter.Literal) << ")";
-			if (setterIndex + 1 < rule.Setters.size()) code << ",";
+			if (setterIndex + 1 < emittedSetters.size()) code << ",";
 			code << "\n";
 		}
-		code << indentStr << "});\n";
+		code << indentStr << "}";
+		if (!enterActions.empty() || !exitActions.empty())
+			code << ", std::move(" << enterActionsName
+				<< "), std::move(" << exitActionsName << ")";
+		code << ");\n";
 	}
 	code << indentStr
 		<< "cui::framework::StyleAccess::SetResources(*"
@@ -1885,8 +2421,28 @@ bool CodeGenerator::CollectEventHandlers(
 			for (const auto& [eventName, handler] : binding.HandlerRoutes())
 				if (handler && !add(eventName, *handler,
 					DesignerEventCatalog::FindControlEvent(
+					node.Type, eventName,
+					ComponentEvents(node)))) return false;
+		}
+	}
+	for (const auto& definition : _sourceDocument.ControlTemplates)
+	{
+		for (const auto& node : definition.Template)
+		{
+			for (const auto& [eventName, storedHandler] : node.Events)
+				if (!add(eventName, storedHandler,
+					DesignerEventCatalog::FindControlEvent(
 						node.Type, eventName,
 						ComponentEvents(node)))) return false;
+			for (const auto& binding : node.CommandBindings)
+			{
+				for (const auto& [eventName, handler]
+					: binding.HandlerRoutes())
+					if (handler && !add(eventName, *handler,
+						DesignerEventCatalog::FindControlEvent(
+							node.Type, eventName,
+							ComponentEvents(node)))) return false;
+			}
 		}
 	}
 	return true;
@@ -1976,6 +2532,39 @@ std::string CodeGenerator::GenerateHeader()
 			}
 		}
 	}
+	for (const auto& definition : _sourceDocument.ControlTemplates)
+	{
+		for (const auto& node : definition.Template)
+		{
+			for (const auto& [eventName, storedHandler] : node.Events)
+			{
+				const auto descriptor =
+					DesignerEventCatalog::FindControlEvent(
+						node.Type, eventName,
+						ComponentEvents(node));
+				if (descriptor)
+					appendBuiltInRoute(
+						false, node.Type, eventName,
+						storedHandler, *descriptor);
+			}
+			for (const auto& binding : node.CommandBindings)
+			{
+				for (const auto& [eventName, handler]
+					: binding.HandlerRoutes())
+				{
+					if (!handler || handler->empty()) continue;
+					const auto descriptor =
+						DesignerEventCatalog::FindControlEvent(
+							node.Type, eventName,
+							ComponentEvents(node));
+					if (descriptor)
+						appendBuiltInRoute(
+							false, node.Type, eventName,
+							*handler, *descriptor);
+				}
+			}
+		}
+	}
 	
 	// 收集需要的头文件
 	std::set<std::string> includes;
@@ -1989,6 +2578,20 @@ std::string CodeGenerator::GenerateHeader()
 			{
 				return !node.CommandBindings.empty()
 					|| !node.InputBindings.empty();
+			})
+		|| std::any_of(
+			_sourceDocument.ControlTemplates.begin(),
+			_sourceDocument.ControlTemplates.end(),
+			[](const auto& definition)
+			{
+				return std::any_of(
+					definition.Template.begin(),
+					definition.Template.end(),
+					[](const auto& node)
+					{
+						return !node.CommandBindings.empty()
+							|| !node.InputBindings.empty();
+					});
 			});
 	if (hasCommands) includes.insert("RoutedCommand.h");
 	const bool hasStyleDataTriggers = std::any_of(
@@ -2004,14 +2607,36 @@ std::string CodeGenerator::GenerateHeader()
 		});
 	const bool hasDataBindings = !_sourceDocument.Window.Bindings.empty()
 		|| hasStyleDataTriggers || std::any_of(
-		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
-		[](const auto& node) { return !node.Bindings.empty(); });
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node) { return !node.Bindings.empty(); })
+		|| std::any_of(
+			_sourceDocument.ControlTemplates.begin(),
+			_sourceDocument.ControlTemplates.end(),
+			[](const auto& definition)
+			{
+				return std::any_of(
+					definition.Template.begin(),
+					definition.Template.end(),
+					[](const auto& node)
+					{ return !node.Bindings.empty(); });
+			});
 	const bool hasAuthoredProperties =
 		!_sourceDocument.Window.Properties.Values.empty()
 		|| std::any_of(
 			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 			[](const auto& node)
-			{ return !node.Properties.Values.empty(); });
+			{ return !node.Properties.Values.empty(); })
+		|| std::any_of(
+			_sourceDocument.ControlTemplates.begin(),
+			_sourceDocument.ControlTemplates.end(),
+			[](const auto& definition)
+			{
+				return std::any_of(
+					definition.Template.begin(),
+					definition.Template.end(),
+					[](const auto& node)
+					{ return !node.Properties.Values.empty(); });
+			});
 	if (hasDataBindings || hasAuthoredProperties)
 		includes.insert("Binding.h");
 	
@@ -2284,6 +2909,162 @@ std::string CodeGenerator::GenerateCpp()
 std::string CodeGenerator::GenerateCppForBaseName(
 	const std::string& generatedHeaderBaseName)
 {
+	struct StaticControlTemplateBlueprint final
+	{
+		size_t SourceIndex = 0;
+		DesignerModel::DesignDocument Document;
+		std::wstring OwnerName;
+		std::string VariableName;
+		std::vector<DeclarativeVisualStateGroupDefinition> VisualStateGroups;
+		std::vector<DeclarativeEventTriggerDefinition> EventTriggers;
+	};
+
+	std::vector<StaticControlTemplateBlueprint> templateBlueprints;
+	templateBlueprints.reserve(_sourceDocument.ControlTemplates.size());
+	for (size_t templateIndex = 0;
+		templateIndex < _sourceDocument.ControlTemplates.size();
+		++templateIndex)
+	{
+		const auto& definition =
+			_sourceDocument.ControlTemplates[templateIndex];
+		if (!definition.TargetComponentType.Empty())
+			throw std::invalid_argument(
+				"Static ControlTemplate builders require a built-in TargetType");
+		const auto* targetDescriptor =
+			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(
+				definition.TargetType);
+		if (!targetDescriptor || !targetDescriptor->IsConstructible)
+			throw std::invalid_argument(
+				"Static ControlTemplate builder TargetType is not constructible");
+
+		DesignerModel::DesignDocument synthetic;
+		synthetic.Window = _sourceDocument.Window;
+		synthetic.Window.Name =
+			L"__cuiStaticTemplateWindow"
+			+ std::to_wstring(templateIndex + 1);
+		synthetic.Window.Properties = {};
+		synthetic.Window.Structure = {};
+		synthetic.Window.TemplateState = {};
+		synthetic.Window.Events.clear();
+		synthetic.Window.Bindings.clear();
+		synthetic.Window.CommandBindings.clear();
+		synthetic.Window.InputBindings.clear();
+		synthetic.Window.LocalResources = {};
+		synthetic.Window.LocalObjectResources = {};
+		synthetic.Window.TemplateBindings.clear();
+		synthetic.Window.TemplateEventBindings.clear();
+		synthetic.CodeBehind = {};
+		synthetic.DataContextSchema = {};
+		synthetic.StyleSheet = _sourceDocument.StyleSheet;
+		synthetic.Components.clear();
+		synthetic.ControlTemplates =
+			_sourceDocument.ControlTemplates;
+		synthetic.DataTypes.clear();
+		synthetic.DataTemplates.clear();
+		synthetic.ItemsPanelTemplates.clear();
+		synthetic.GroupStyles.clear();
+		synthetic.DataLists.clear();
+		synthetic.CollectionViews.clear();
+		synthetic.Nodes.clear();
+		synthetic.ResourceBasePath = _sourceDocument.ResourceBasePath;
+		synthetic.Resources = _sourceDocument.Resources;
+		synthetic.NextStableId = 2;
+
+		std::wstring selectedKey = definition.Key;
+		if (selectedKey.empty())
+		{
+			selectedKey = L"__cuiStaticImplicitControlTemplate"
+				+ std::to_wstring(templateIndex + 1);
+			synthetic.ControlTemplates[templateIndex].Key = selectedKey;
+		}
+
+		DesignerModel::DesignNode owner;
+		owner.Id = 1;
+		owner.Name = L"__cuiStaticTemplateOwner"
+			+ std::to_wstring(templateIndex + 1);
+		owner.Type = definition.TargetType;
+		owner.XamlType = targetDescriptor->TypeId;
+		owner.Order = 0;
+		owner.Structure.ControlTemplate = selectedKey;
+		synthetic.Nodes.push_back(owner);
+
+		CuiRuntime::XamlCompiledDocument compiledTemplate;
+		std::wstring compileError;
+		if (!CuiRuntime::XamlDocumentCompiler::Compile(
+			synthetic, compiledTemplate, {}, &compileError))
+			throw std::invalid_argument(
+				"Static ControlTemplate blueprint compilation failed: "
+				+ WStringToString(compileError));
+		const auto compiledOwner = std::find_if(
+			compiledTemplate.Document.Nodes.begin(),
+			compiledTemplate.Document.Nodes.end(),
+			[&](const auto& node)
+			{
+				return !node.TemplateState.Generated
+					&& node.Name == owner.Name;
+			});
+		if (compiledOwner == compiledTemplate.Document.Nodes.end()
+			|| compiledOwner->TemplateState.AppliedControlTemplate.empty()
+			|| !std::any_of(
+				compiledTemplate.Document.Nodes.begin(),
+				compiledTemplate.Document.Nodes.end(),
+				[&](const auto& node)
+				{
+					return node.TemplateState.Generated
+						&& node.TemplateState.Owner == owner.Name
+						&& node.TemplateState.ControlTemplateRoot;
+				}))
+			throw std::invalid_argument(
+				"Static ControlTemplate blueprint has no generated root");
+
+		StaticControlTemplateBlueprint blueprint;
+		blueprint.SourceIndex = templateIndex;
+		blueprint.Document = std::move(compiledTemplate.Document);
+		blueprint.OwnerName = std::move(owner.Name);
+		const auto identityName = definition.Key.empty()
+			? L"Implicit_" + DesignerStyleSheetUtils::UIClassName(
+				definition.TargetType)
+			: definition.Key;
+		blueprint.VariableName =
+			"__controlTemplate_"
+			+ SanitizeCppIdentifier(WStringToString(identityName))
+			+ "_" + std::to_string(templateIndex + 1);
+		std::wstring interactionError;
+		if (!CuiRuntime::XamlObjectMaterializer::
+			MaterializeDeclarativeInteractions(
+				definition.VisualStateGroups, definition.EventTriggers,
+				_sourceDocument, blueprint.VisualStateGroups,
+				blueprint.EventTriggers, &interactionError))
+			throw std::invalid_argument(
+				"Static ControlTemplate interaction lowering failed: "
+				+ WStringToString(interactionError));
+		templateBlueprints.push_back(std::move(blueprint));
+	}
+	std::vector<std::pair<std::wstring, std::string>>
+		staticObjectResources;
+	for (const auto& blueprint : templateBlueprints)
+	{
+		const auto& definition =
+			_sourceDocument.ControlTemplates[blueprint.SourceIndex];
+		if (definition.Key.empty()) continue;
+		staticObjectResources.emplace_back(
+			definition.Key,
+			"BindingValue(ControlTemplateReference("
+				+ blueprint.VariableName + "))");
+	}
+	std::vector<std::pair<std::wstring, std::string>>
+		weakStaticObjectResources;
+	for (const auto& blueprint : templateBlueprints)
+	{
+		const auto& definition =
+			_sourceDocument.ControlTemplates[blueprint.SourceIndex];
+		if (definition.Key.empty()) continue;
+		weakStaticObjectResources.emplace_back(
+			definition.Key,
+			"BindingValue(ControlTemplateReference(__weak_"
+				+ blueprint.VariableName.substr(2) + ".lock()))");
+	}
+
 	std::ostringstream cpp;
 	const auto identity = ParseQualifiedCppClassName(
 		WStringToString(_className));
@@ -2292,6 +3073,15 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	
 	// 包含头文件
 	cpp << "#include \"" << generatedHeaderBaseName << ".g.h\"\n";
+	std::set<std::string> templateImplementationIncludes;
+	for (const auto& blueprint : templateBlueprints)
+		for (const auto& node : blueprint.Document.Nodes)
+			if (node.TemplateState.Generated)
+				templateImplementationIncludes.insert(
+					GetIncludeForType(node.Type));
+	for (const auto& include : templateImplementationIncludes)
+		cpp << "#include \"" << include << "\"\n";
+	cpp << "#include \"ControlTemplate.h\"\n";
 	cpp << "#include \"XamlInfrastructure.h\"\n";
 	cpp << "#include \"DependencyPropertyInfrastructure.h\"\n";
 	cpp << "#include \"StyleInfrastructure.h\"\n";
@@ -2302,7 +3092,8 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	const bool hasLocalStyleSheets = std::any_of(
 		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 		[](const auto& node) { return !node.LocalResources.Empty(); });
-	if (!_styleSheet.Empty() || hasLocalStyleSheets)
+	if (!_styleSheet.Empty() || hasLocalStyleSheets
+		|| !templateBlueprints.empty())
 		cpp << "#include \"Style.h\"\n";
 	auto usesImageValue = [](const DesignerStyleValue& value)
 	{
@@ -2310,6 +3101,24 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			|| (value.Kind == DesignerStyleValueKind::Brush
 				&& value.ObjectValue.is_object()
 				&& value.ObjectValue.value("type", std::string{}) == "image");
+	};
+	auto animationUsesImage = [&](const DesignerVisualStateAnimation& animation)
+	{
+		if ((animation.HasFrom && usesImageValue(animation.From))
+			|| (animation.HasTo && usesImageValue(animation.To))
+			|| (animation.HasBy && usesImageValue(animation.By)))
+			return true;
+		return std::any_of(
+			animation.KeyFrames.begin(), animation.KeyFrames.end(),
+			[&](const auto& frame) { return usesImageValue(frame.Value); });
+	};
+	auto actionsUseImage = [&](const auto& actions)
+	{
+		for (const auto& action : actions)
+			if (std::any_of(
+				action.Animations.begin(), action.Animations.end(),
+				animationUsesImage)) return true;
+		return false;
 	};
 	auto styleSheetUsesImage = [&](const DesignerStyleSheet& sheet)
 	{
@@ -2321,10 +3130,13 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			if (std::any_of(rule.Setters.begin(), rule.Setters.end(),
 				[&](const auto& setter)
 				{
-					return !setter.UsesResource
-						&& usesImageValue(setter.Literal);
-				})) return true;
+						return !setter.UsesResource
+							&& usesImageValue(setter.Literal);
+					})) return true;
+			if (actionsUseImage(rule.EnterActions)
+				|| actionsUseImage(rule.ExitActions)) return true;
 			for (const auto& trigger : rule.Triggers)
+			{
 				if (std::any_of(
 					trigger.Setters.begin(), trigger.Setters.end(),
 					[&](const auto& setter)
@@ -2332,6 +3144,9 @@ std::string CodeGenerator::GenerateCppForBaseName(
 						return !setter.UsesResource
 							&& usesImageValue(setter.Literal);
 					})) return true;
+				if (actionsUseImage(trigger.EnterActions)
+					|| actionsUseImage(trigger.ExitActions)) return true;
+			}
 		}
 		return false;
 	};
@@ -2345,11 +3160,33 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	bool usesResources = styleSheetUsesImage(_styleSheet)
 		|| propertiesUseImage(_sourceDocument.Window.Properties)
 		|| std::any_of(
+			templateBlueprints.begin(), templateBlueprints.end(),
+			[](const auto& blueprint)
+			{
+				return !blueprint.VisualStateGroups.empty()
+					|| !blueprint.EventTriggers.empty();
+			})
+		|| std::any_of(
 			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 			[&](const auto& node)
 			{
 				return propertiesUseImage(node.Properties)
 					|| styleSheetUsesImage(node.LocalResources);
+			})
+		|| std::any_of(
+			templateBlueprints.begin(), templateBlueprints.end(),
+			[&](const auto& blueprint)
+			{
+				return std::any_of(
+					blueprint.Document.Nodes.begin(),
+					blueprint.Document.Nodes.end(),
+					[&](const auto& node)
+					{
+						return node.TemplateState.Generated
+							&& (propertiesUseImage(node.Properties)
+								|| styleSheetUsesImage(
+									node.LocalResources));
+					});
 			});
 	if (usesResources) cpp << "#include \"Resource.h\"\n";
 	cpp << "#include <functional>\n";
@@ -2357,6 +3194,96 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	cpp << "#include <stdexcept>\n";
 	cpp << "#include <utility>\n";
 	cpp << "#include <vector>\n\n";
+
+	if (!templateBlueprints.empty())
+	{
+		cpp << "namespace\n{\n";
+		cpp << "\tclass CuiGeneratedControlTemplate final\n";
+		cpp << "\t\t: public IControlTemplate,\n";
+		cpp << "\t\t  public std::enable_shared_from_this<"
+			"CuiGeneratedControlTemplate>\n";
+		cpp << "\t{\n";
+		cpp << "\tpublic:\n";
+		cpp << "\t\tusing ApplyCallback = std::function<bool(\n";
+		cpp << "\t\t\tControl&, std::wstring*)>;\n";
+		cpp << "\t\tusing HostFactory = std::function<"
+			"std::unique_ptr<Control>()>;\n\n";
+		cpp << "\t\tCuiGeneratedControlTemplate(\n";
+		cpp << "\t\t\tUIClass targetType,\n";
+		cpp << "\t\t\tstd::wstring identity,\n";
+		cpp << "\t\t\tHostFactory hostFactory)\n";
+		cpp << "\t\t\t: _targetType(targetType),\n";
+		cpp << "\t\t\t  _identity(std::move(identity)),\n";
+		cpp << "\t\t\t  _hostFactory(std::move(hostFactory)) {}\n\n";
+		cpp << "\t\tvoid SetApplyCallback(ApplyCallback value)\n";
+		cpp << "\t\t{\n\t\t\t_apply = std::move(value);\n\t\t}\n\n";
+		cpp << "\t\tUIClass TargetType() const noexcept override\n";
+		cpp << "\t\t{\n\t\t\treturn _targetType;\n\t\t}\n\n";
+		cpp << "\t\tbool Apply(Control& owner,\n";
+		cpp << "\t\t\tstd::wstring* outError = nullptr) const override\n";
+		cpp << "\t\t{\n";
+		cpp << "\t\t\tif (!IsUIClassAssignableFrom("
+			"_targetType, owner.Type()))\n";
+		cpp << "\t\t\t{\n";
+		cpp << "\t\t\t\tif (outError) *outError =\n";
+		cpp << "\t\t\t\t\tL\"生成的 ControlTemplate TargetType "
+			"与宿主不兼容：\" + _identity;\n";
+		cpp << "\t\t\t\treturn false;\n";
+		cpp << "\t\t\t}\n";
+		cpp << "\t\t\tif (!_apply)\n";
+		cpp << "\t\t\t{\n";
+		cpp << "\t\t\t\tif (outError) *outError =\n";
+		cpp << "\t\t\t\t\tL\"生成的 ControlTemplate 尚未完成初始化：\""
+			" + _identity;\n";
+		cpp << "\t\t\t\treturn false;\n";
+		cpp << "\t\t\t}\n";
+		cpp << "\t\t\treturn _apply(owner, outError);\n";
+		cpp << "\t\t}\n\n";
+		cpp << "\t\tstd::unique_ptr<Control> Build(\n";
+		cpp << "\t\t\tstd::wstring* outError = nullptr) const override\n";
+		cpp << "\t\t{\n";
+		cpp << "\t\t\tauto owner = _hostFactory ? _hostFactory() : nullptr;\n";
+		cpp << "\t\t\tif (!owner)\n";
+		cpp << "\t\t\t{\n";
+		cpp << "\t\t\t\tif (outError) *outError =\n";
+		cpp << "\t\t\t\t\tL\"生成的 ControlTemplate 无法构造宿主：\""
+			" + _identity;\n";
+		cpp << "\t\t\t\treturn {};\n";
+		cpp << "\t\t\t}\n";
+		cpp << "\t\t\tauto self = std::static_pointer_cast<"
+			"const IControlTemplate>(shared_from_this());\n";
+		cpp << "\t\t\tif (!cui::framework::XamlAccess::SetTemplate(\n";
+		cpp << "\t\t\t\t*owner, ControlTemplateReference(std::move(self)),\n";
+		cpp << "\t\t\t\tDependencyPropertyValueSource::Local))\n";
+		cpp << "\t\t\t{\n";
+		cpp << "\t\t\t\tif (outError) *outError =\n";
+		cpp << "\t\t\t\t\tL\"生成的 ControlTemplate 无法写入宿主：\""
+			" + _identity;\n";
+		cpp << "\t\t\t\treturn {};\n";
+		cpp << "\t\t\t}\n";
+		cpp << "\t\t\t(void)owner->ApplyTemplate();\n";
+		cpp << "\t\t\tif (!cui::framework::TemplateAccess::"
+			"GetTemplateRoot(*owner)\n";
+		cpp << "\t\t\t\t|| !owner->LastTemplateError().empty())\n";
+		cpp << "\t\t\t{\n";
+		cpp << "\t\t\t\tif (outError) *outError = "
+			"owner->LastTemplateError().empty()\n";
+		cpp << "\t\t\t\t\t? L\"生成的 ControlTemplate 未生成视觉根：\""
+			" + _identity\n";
+		cpp << "\t\t\t\t\t: owner->LastTemplateError();\n";
+		cpp << "\t\t\t\treturn {};\n";
+		cpp << "\t\t\t}\n";
+		cpp << "\t\t\tif (outError) outError->clear();\n";
+		cpp << "\t\t\treturn owner;\n";
+		cpp << "\t\t}\n\n";
+		cpp << "\tprivate:\n";
+		cpp << "\t\tUIClass _targetType = UIClass::UI_Base;\n";
+		cpp << "\t\tstd::wstring _identity;\n";
+		cpp << "\t\tHostFactory _hostFactory;\n";
+		cpp << "\t\tApplyCallback _apply;\n";
+		cpp << "\t};\n";
+		cpp << "}\n\n";
+	}
 	
 	// Do not lower XAML from the generated base constructor. InitializeComponent
 	// is called from the user class constructor body, after base construction,
@@ -2390,8 +3317,13 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	// 1) 先实例化所有可设计控件（不做 AdoptVisualChild）。x:Reference
 	// wiring is emitted only after every member pointer has been assigned.
 	for (const auto& node : _sourceDocument.Nodes)
-		cpp << GenerateControlInstantiation(node, 1);
-	if (!_sourceDocument.Nodes.empty()) cpp << "\n";
+		if (!node.TemplateState.Generated)
+			cpp << GenerateControlInstantiation(node, 1);
+	if (std::any_of(
+		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+		[](const auto& node) { return !node.TemplateState.Generated; }))
+		cpp << "\n";
+	cpp << "\tstd::wstring __frameworkThemeError;\n";
 
 	auto findSourceNodeByName = [&](const std::wstring& name)
 		-> const DesignerModel::DesignNode*
@@ -2401,124 +3333,833 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			[&](const auto& candidate) { return candidate.Name == name; });
 		return found == _sourceDocument.Nodes.end() ? nullptr : &*found;
 	};
-	const bool hasGeneratedTemplateNodes = std::any_of(
-		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
-		[](const auto& node) { return node.TemplateState.Generated; });
-	if (hasGeneratedTemplateNodes)
-		cpp << "\t// Establish the ControlTemplate namescope before properties/bindings.\n";
-	for (const auto& node : _sourceDocument.Nodes)
+
+	if (!templateBlueprints.empty())
 	{
-		if (!node.TemplateState.Generated) continue;
-		const auto* owner = findSourceNodeByName(node.TemplateState.Owner);
-		if (!owner)
-			throw std::invalid_argument(
-				"Generated ControlTemplate node has no owner");
-		const auto nodeVar = GetVarName(node);
-		const auto ownerVar = GetVarName(*owner);
-		cpp << "\tcui::framework::XamlAccess::SetTemplatedParent(*"
-			<< nodeVar << ", " << ownerVar << ");\n";
-		if (!node.TemplateState.PartName.empty())
+		cpp << "\n\t// Repeatable pure-C++ factories for authored "
+			"ControlTemplate resources.\n";
+		for (const auto& blueprint : templateBlueprints)
 		{
-			cpp << "\tif (!cui::framework::XamlAccess::RegisterTemplatePart(*"
-				<< ownerVar << ", L\""
-				<< EscapeWStringLiteral(node.TemplateState.PartName)
-				<< "\", " << nodeVar << "))\n";
-			cpp << "\t\tthrow std::runtime_error("
-				"\"Generated ControlTemplate part registration failed\");\n";
+			const auto& definition =
+				_sourceDocument.ControlTemplates[blueprint.SourceIndex];
+			const auto* descriptor =
+				CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(
+					definition.TargetType);
+			if (!descriptor)
+				throw std::invalid_argument(
+					"Static ControlTemplate TargetType descriptor is missing");
+			const auto typeName = GetControlTypeName(definition.TargetType);
+			const auto identityText = definition.Key.empty()
+				? L"{x:Type "
+					+ DesignerStyleSheetUtils::UIClassName(
+						definition.TargetType) + L"}"
+				: definition.Key;
+			cpp << "\tauto " << blueprint.VariableName
+				<< " = std::make_shared<CuiGeneratedControlTemplate>(\n";
+			cpp << "\t\tUIClass::UI_"
+				<< WStringToString(
+					DesignerStyleSheetUtils::UIClassName(
+						definition.TargetType))
+				<< ", L\"" << EscapeWStringLiteral(identityText)
+				<< "\", []() -> std::unique_ptr<Control>\n";
+			cpp << "\t\t{\n";
+			cpp << "\t\t\tauto result = std::make_unique<"
+				<< typeName << ">();\n";
+			cpp << "\t\t\t(void)result->ClearPropertyValues();\n";
+			cpp << "\t\t\tstatic const auto descriptor = "
+				"DeclarativeTypeDescriptor::Create(\n";
+			cpp << "\t\t\t\tRuntimeTypeId{ L\""
+				<< EscapeWStringLiteral(descriptor->TypeId.NamespaceUri)
+				<< "\", L\""
+				<< EscapeWStringLiteral(descriptor->TypeId.LocalName)
+				<< "\" }, {});\n";
+			cpp << "\t\t\tif (!descriptor || "
+				"!cui::framework::XamlAccess::SetTypeDescriptor("
+				"*result, descriptor))\n";
+			cpp << "\t\t\t\treturn {};\n";
+			cpp << "\t\t\t(void)cui::framework::DependencyPropertyAccess::"
+				"SetValue(*result, L\"Focusable\", BindingValue("
+				<< (descriptor->FocusableByDefault ? "true" : "false")
+				<< "), DependencyPropertyValueSource::Theme);\n";
+			cpp << "\t\t\treturn result;\n";
+			cpp << "\t\t});\n";
+			cpp << "\tstd::weak_ptr<const IControlTemplate> __weak_"
+				<< blueprint.VariableName.substr(2) << " = "
+				<< blueprint.VariableName << ";\n";
 		}
-		if (node.TemplateContentSource == L"Content")
+		cpp << "\n";
+
+		for (const auto& blueprint : templateBlueprints)
 		{
+			const auto& blueprintDocument = blueprint.Document;
+			const auto blueprintOwner = std::find_if(
+				blueprintDocument.Nodes.begin(),
+				blueprintDocument.Nodes.end(),
+				[&](const auto& node)
+				{
+					return !node.TemplateState.Generated
+						&& node.Name == blueprint.OwnerName;
+				});
+			if (blueprintOwner == blueprintDocument.Nodes.end())
+				throw std::invalid_argument(
+					"Static ControlTemplate blueprint owner is missing");
+			std::vector<const DesignerModel::DesignNode*> generatedNodes;
+			for (const auto& node : blueprintDocument.Nodes)
+				if (node.TemplateState.Generated)
+					generatedNodes.push_back(&node);
+
+			auto findBlueprintNodeByName =
+				[&](const std::wstring& name)
+				-> const DesignerModel::DesignNode*
+			{
+				const auto found = std::find_if(
+					blueprintDocument.Nodes.begin(),
+					blueprintDocument.Nodes.end(),
+					[&](const auto& node)
+					{
+						return node.Name == name
+							|| (node.TemplateState.Generated
+								&& node.TemplateState.PartName == name);
+					});
+				return found == blueprintDocument.Nodes.end()
+					? nullptr : &*found;
+			};
+			auto templateOwnerPointerExpression =
+				[&](const std::wstring& name) -> std::string
+			{
+				if (name == blueprint.OwnerName)
+					return "&__templateOwner";
+				const auto* node = findBlueprintNodeByName(name);
+				if (!node || !node->TemplateState.Generated)
+					throw std::invalid_argument(
+						"Static ControlTemplate owner cannot be resolved");
+				return GetVarName(*node);
+			};
+			auto templateOwnerReferenceExpression =
+				[&](const std::wstring& name) -> std::string
+			{
+				if (name == blueprint.OwnerName)
+					return "__templateOwner";
+				const auto* node = findBlueprintNodeByName(name);
+				if (!node || !node->TemplateState.Generated)
+					throw std::invalid_argument(
+						"Static ControlTemplate owner cannot be resolved");
+				return "*" + GetVarName(*node);
+			};
+			auto commandTargetExpression =
+				[&](const std::wstring& name) -> std::string
+			{
+				if (name.empty()) return "nullptr";
+				if (name == blueprint.OwnerName)
+					return "&__templateOwner";
+				if (name == _sourceDocument.Window.Name)
+					return "this";
+				if (const auto* node = findBlueprintNodeByName(name);
+					node && node->TemplateState.Generated)
+					return GetVarName(*node);
+				if (const auto* node = findSourceNodeByName(name);
+					node && !node->TemplateState.Generated)
+					return GetVarName(*node);
+				throw std::invalid_argument(
+					"Static ControlTemplate CommandTarget cannot be resolved");
+			};
+			auto bindingElementExpression =
+				[&](const std::wstring& name) -> std::string
+			{
+				if (name == blueprint.OwnerName)
+					return "__templateOwner";
+				if (name == _sourceDocument.Window.Name)
+					return "*this";
+				if (const auto* node = findBlueprintNodeByName(name);
+					node && node->TemplateState.Generated)
+					return "*" + GetVarName(*node);
+				if (const auto* node = findSourceNodeByName(name);
+					node && !node->TemplateState.Generated)
+					return "*" + GetVarName(*node);
+				throw std::invalid_argument(
+					"Static ControlTemplate ElementName cannot be resolved");
+			};
+			auto sourceTemplateIndex =
+				[&](const DesignerModel::DesignNode& owner)
+				-> std::optional<size_t>
+			{
+				if (owner.TemplateState.AppliedControlTemplateFromTheme
+					|| owner.TemplateState.AppliedControlTemplate.empty())
+					return std::nullopt;
+				const auto& key =
+					owner.TemplateState.AppliedControlTemplateResource;
+				const auto* definition = !key.empty()
+					? blueprintDocument.FindControlTemplate(
+						blueprintDocument.Nodes, owner, key)
+					: owner.ComponentType.Empty()
+						? blueprintDocument.FindImplicitControlTemplate(
+							blueprintDocument.Nodes, owner, owner.Type)
+						: blueprintDocument.FindImplicitControlTemplate(
+							blueprintDocument.Nodes, owner,
+							owner.ComponentType);
+				if (!definition) return std::nullopt;
+				const auto* begin =
+					blueprintDocument.ControlTemplates.data();
+				const auto index =
+					static_cast<size_t>(definition - begin);
+				return index < templateBlueprints.size()
+					? std::optional<size_t>{ index } : std::nullopt;
+			};
+
+			cpp << "\t" << blueprint.VariableName
+				<< "->SetApplyCallback([this";
+			for (const auto& captured : templateBlueprints)
+				cpp << ", __weak_"
+					<< captured.VariableName.substr(2);
+			cpp << "](Control& __templateOwner, "
+				"std::wstring* outError) -> bool\n";
 			cpp << "\t{\n";
-			cpp << "\t\tauto* __contentOwner_" << nodeVar
-				<< " = dynamic_cast<ContentControl*>(" << ownerVar << ");\n";
-			cpp << "\t\tauto* __contentPresenter_" << nodeVar
-				<< " = dynamic_cast<ContentPresenter*>(" << nodeVar << ");\n";
-			cpp << "\t\tif (!__contentOwner_" << nodeVar
-				<< " || !__contentPresenter_" << nodeVar
-				<< " || !cui::framework::TemplateAccess::"
-				"RegisterContentPresenter(*__contentOwner_" << nodeVar
-				<< ", __contentPresenter_" << nodeVar << "))\n";
-			cpp << "\t\t\tthrow std::runtime_error("
-				"\"Generated ContentPresenter registration failed\");\n";
-			cpp << "\t}\n";
-		}
-		else if (node.TemplateContentSource == L"Header")
-		{
-			cpp << "\t{\n";
-			cpp << "\t\tauto* __headerPresenter_" << nodeVar
-				<< " = dynamic_cast<ContentPresenter*>(" << nodeVar << ");\n";
-			cpp << "\t\tbool __headerRegistered_" << nodeVar
-				<< " = false;\n";
-			cpp << "\t\tif (auto* __owner = dynamic_cast<"
-				"HeaderedContentControl*>(" << ownerVar << "))\n";
-			cpp << "\t\t\t__headerRegistered_" << nodeVar
-				<< " = __owner->RegisterTemplateHeaderPresenter("
-				"__headerPresenter_" << nodeVar << ");\n";
-			cpp << "\t\telse if (auto* __owner = dynamic_cast<"
-				"HeaderedItemsControl*>(" << ownerVar << "))\n";
-			cpp << "\t\t\t__headerRegistered_" << nodeVar
-				<< " = __owner->RegisterTemplateHeaderPresenter("
-				"__headerPresenter_" << nodeVar << ");\n";
-			cpp << "\t\tif (!__headerRegistered_" << nodeVar << ")\n";
-			cpp << "\t\t\tthrow std::runtime_error("
-				"\"Generated header ContentPresenter registration failed\");\n";
-			cpp << "\t}\n";
-		}
-		if (node.Type == UIClass::UI_ItemsPresenter)
-		{
-			cpp << "\t{\n";
-			cpp << "\t\tauto* __itemsOwner_" << nodeVar
-				<< " = dynamic_cast<ItemsControl*>(" << ownerVar << ");\n";
-			cpp << "\t\tauto* __itemsPresenter_" << nodeVar
-				<< " = dynamic_cast<ItemsPresenter*>(" << nodeVar << ");\n";
-			cpp << "\t\tif (!__itemsOwner_" << nodeVar
-				<< " || !__itemsPresenter_" << nodeVar
-				<< " || !cui::framework::TemplateAccess::"
-				"RegisterItemsPresenter(*__itemsOwner_" << nodeVar
-				<< ", __itemsPresenter_" << nodeVar << "))\n";
-			cpp << "\t\t\tthrow std::runtime_error("
-				"\"Generated ItemsPresenter registration failed\");\n";
-			cpp << "\t}\n";
+			cpp << "\t\tauto fail = [&](std::wstring message)\n";
+			cpp << "\t\t{\n";
+			cpp << "\t\t\tif (outError) *outError = std::move(message);\n";
+			cpp << "\t\t\treturn false;\n";
+			cpp << "\t\t};\n";
+			cpp << "\t\ttry\n\t\t{\n";
+			cpp << "\t\t\tstd::wstring __templateThemeError;\n";
+
+			for (const auto* node : generatedNodes)
+				cpp << GenerateControlInstantiation(*node, 3);
+			if (!generatedNodes.empty()) cpp << "\n";
+
+			for (const auto* node : generatedNodes)
+			{
+				if (node->TemplateState.
+					AppliedControlTemplateFromTheme)
+				{
+					const auto& resourceKey = node->TemplateState.
+						AppliedControlTemplateResource;
+					if (resourceKey.empty())
+						throw std::invalid_argument(
+							"Nested Theme ControlTemplate key is missing");
+					cpp << "\t\t\tif (!CuiRuntime::XamlFrameworkTheme::"
+						"InstallTemplateValue(*" << GetVarName(*node)
+						<< ", L\"" << EscapeWStringLiteral(resourceKey)
+						<< "\", &__templateThemeError))\n";
+					cpp << "\t\t\t\treturn fail("
+						"L\"嵌套 Generic.xaml Template 安装失败：\" "
+						"+ __templateThemeError);\n";
+				}
+				else if (const auto nestedIndex =
+					sourceTemplateIndex(*node))
+				{
+					const auto& nested =
+						templateBlueprints[*nestedIndex];
+					const auto lockName = "__nestedTemplate_"
+						+ GetVarName(*node);
+					cpp << "\t\t\t{\n";
+					cpp << "\t\t\t\tauto " << lockName
+						<< " = __weak_"
+						<< nested.VariableName.substr(2)
+						<< ".lock();\n";
+					cpp << "\t\t\t\tif (!" << lockName
+						<< " || !cui::framework::XamlAccess::"
+						"SetTemplate(*" << GetVarName(*node)
+						<< ", ControlTemplateReference(std::move("
+						<< lockName << ")), "
+						"DependencyPropertyValueSource::Template))\n";
+					cpp << "\t\t\t\t\treturn fail("
+						"L\"嵌套作者 ControlTemplate 安装失败。\");\n";
+					cpp << "\t\t\t}\n";
+				}
+			}
+			if (std::any_of(
+				generatedNodes.begin(), generatedNodes.end(),
+				[](const auto* node)
+				{
+					return !node->TemplateState.
+						AppliedControlTemplate.empty();
+				}))
+				cpp << "\n";
+
+			cpp << "\t\t\t// Establish a fresh template namescope "
+				"for this application.\n";
+			for (const auto* node : generatedNodes)
+			{
+				const auto nodeVar = GetVarName(*node);
+				const auto ownerPointer =
+					templateOwnerPointerExpression(
+						node->TemplateState.Owner);
+				const auto ownerReference =
+					templateOwnerReferenceExpression(
+						node->TemplateState.Owner);
+				cpp << "\t\t\tcui::framework::XamlAccess::"
+					"SetTemplatedParent(*" << nodeVar << ", "
+					<< ownerPointer << ");\n";
+				if (!node->TemplateState.PartName.empty())
+				{
+					cpp << "\t\t\tif (!cui::framework::XamlAccess::"
+						"RegisterTemplatePart(" << ownerReference
+						<< ", L\""
+						<< EscapeWStringLiteral(
+							node->TemplateState.PartName)
+						<< "\", " << nodeVar << "))\n";
+					cpp << "\t\t\t\treturn fail("
+						"L\"ControlTemplate 部件注册失败。\");\n";
+				}
+				if (node->TemplateContentSource == L"Content")
+				{
+					cpp << "\t\t\t{\n";
+					cpp << "\t\t\t\tauto* contentOwner = "
+						"dynamic_cast<ContentControl*>("
+						<< ownerPointer << ");\n";
+					cpp << "\t\t\t\tauto* presenter = "
+						"dynamic_cast<ContentPresenter*>("
+						<< nodeVar << ");\n";
+					cpp << "\t\t\t\tif (!contentOwner || !presenter "
+						"|| !cui::framework::TemplateAccess::"
+						"RegisterContentPresenter(*contentOwner, presenter))\n";
+					cpp << "\t\t\t\t\treturn fail("
+						"L\"ControlTemplate ContentPresenter 注册失败。\");\n";
+					cpp << "\t\t\t}\n";
+				}
+				else if (node->TemplateContentSource == L"Header")
+				{
+					cpp << "\t\t\t{\n";
+					cpp << "\t\t\t\tauto* presenter = "
+						"dynamic_cast<ContentPresenter*>("
+						<< nodeVar << ");\n";
+					cpp << "\t\t\t\tbool registered = false;\n";
+					cpp << "\t\t\t\tif (auto* contentOwner = "
+						"dynamic_cast<HeaderedContentControl*>("
+						<< ownerPointer << "))\n";
+					cpp << "\t\t\t\t\tregistered = contentOwner->"
+						"RegisterTemplateHeaderPresenter(presenter);\n";
+					cpp << "\t\t\t\telse if (auto* itemsOwner = "
+						"dynamic_cast<HeaderedItemsControl*>("
+						<< ownerPointer << "))\n";
+					cpp << "\t\t\t\t\tregistered = itemsOwner->"
+						"RegisterTemplateHeaderPresenter(presenter);\n";
+					cpp << "\t\t\t\tif (!registered)\n";
+					cpp << "\t\t\t\t\treturn fail("
+						"L\"ControlTemplate HeaderPresenter 注册失败。\");\n";
+					cpp << "\t\t\t}\n";
+				}
+				if (node->Type == UIClass::UI_ItemsPresenter)
+				{
+					cpp << "\t\t\t{\n";
+					cpp << "\t\t\t\tauto* itemsOwner = "
+						"dynamic_cast<ItemsControl*>("
+						<< ownerPointer << ");\n";
+					cpp << "\t\t\t\tauto* presenter = "
+						"dynamic_cast<ItemsPresenter*>("
+						<< nodeVar << ");\n";
+					cpp << "\t\t\t\tif (!itemsOwner || !presenter "
+						"|| !cui::framework::TemplateAccess::"
+						"RegisterItemsPresenter(*itemsOwner, presenter))\n";
+					cpp << "\t\t\t\t\treturn fail("
+						"L\"ControlTemplate ItemsPresenter 注册失败。\");\n";
+					cpp << "\t\t\t}\n";
+				}
+			}
+
+			for (const auto* node : generatedNodes)
+			{
+				const auto nodeVar = GetVarName(*node);
+				if ((node->Type == UIClass::UI_Button
+					|| node->Type == UIClass::UI_MenuItem)
+					&& !node->Structure.CommandTarget.empty())
+					cpp << "\t\t\t" << nodeVar
+						<< "->CommandTarget = "
+						<< commandTargetExpression(
+							node->Structure.CommandTarget)
+						<< ";\n";
+				if (!node->Properties.StyleResourceKey.empty())
+					cpp << "\t\t\tcui::framework::StyleAccess::"
+						"SetResourceKey(*" << nodeVar << ", L\""
+						<< EscapeWStringLiteral(
+							node->Properties.StyleResourceKey)
+						<< "\");\n";
+				cpp << GenerateLocalResources(
+					*node, 3, &blueprintDocument,
+					&weakStaticObjectResources);
+				cpp << GenerateAuthoredProperties(*node, 3);
+				cpp << GenerateContainerProperties(*node, 3);
+			}
+
+			for (const auto* node : generatedNodes)
+			{
+				if (node->TemplateBindings.empty()) continue;
+				const auto nodeVar = GetVarName(*node);
+				const auto ownerReference =
+					templateOwnerReferenceExpression(
+						node->TemplateState.Owner);
+				for (const auto& [targetProperty, sourceProperty]
+					: node->TemplateBindings)
+				{
+					cpp << "\t\t\tif (!" << nodeVar
+						<< "->DataBindings.AddTemplateBinding(L\""
+						<< EscapeWStringLiteral(targetProperty)
+						<< "\", " << ownerReference << ", L\""
+						<< EscapeWStringLiteral(sourceProperty)
+						<< "\"))\n";
+					cpp << "\t\t\t\treturn fail("
+						"L\"ControlTemplate TemplateBinding 安装失败。\");\n";
+				}
+			}
+
+			for (const auto* node : generatedNodes)
+			{
+				const auto nodeVar = GetVarName(*node);
+				for (const auto& binding : node->InputBindings)
+				{
+					std::wstring gestureError;
+					if (binding.Kind
+						== DesignerModel::DesignInputBindingKind::Key)
+					{
+						KeyGesture gesture;
+						if (!TryParseKeyGesture(
+							binding.Gesture, gesture, &gestureError))
+							throw std::invalid_argument(
+								"Static template KeyBinding is invalid");
+						const auto keyExpression =
+							KeyToExpr(gesture.Key);
+						if (keyExpression.empty())
+							throw std::invalid_argument(
+								"Static template KeyBinding key is unsupported");
+						cpp << "\t\t\t(void)" << nodeVar
+							<< "->AddInputBinding(KeyBinding{ "
+							"RoutedCommand(L\""
+							<< EscapeWStringLiteral(binding.Command)
+							<< "\"), KeyGesture{ " << keyExpression
+							<< ", "
+							<< ModifierKeysToExpr(gesture.Modifiers)
+							<< " }, ";
+					}
+					else
+					{
+						MouseGesture gesture;
+						if (!TryParseMouseGesture(
+							binding.Gesture, gesture, &gestureError))
+							throw std::invalid_argument(
+								"Static template MouseBinding is invalid");
+						cpp << "\t\t\t(void)" << nodeVar
+							<< "->AddInputBinding(MouseBinding{ "
+							"RoutedCommand(L\""
+							<< EscapeWStringLiteral(binding.Command)
+							<< "\"), MouseGesture{ "
+							<< MouseActionToExpr(gesture.Action)
+							<< ", "
+							<< ModifierKeysToExpr(gesture.Modifiers)
+							<< " }, ";
+					}
+					if (binding.CommandParameter.empty())
+						cpp << "{}";
+					else cpp << "std::wstring(L\""
+						<< EscapeWStringLiteral(
+							binding.CommandParameter)
+						<< "\")";
+					cpp << ", "
+						<< commandTargetExpression(
+							binding.CommandTarget)
+						<< " });\n";
+				}
+
+				for (const auto& [eventName, storedHandler]
+					: node->Events)
+				{
+					if (storedHandler.empty()) continue;
+					const auto descriptor =
+						DesignerEventCatalog::FindControlEvent(
+							node->Type, eventName,
+							ComponentEvents(*node));
+					if (!descriptor)
+						throw std::invalid_argument(
+							"Static template event is unsupported");
+					cpp << "\t\t\tcui::framework::XamlAccess::"
+						"RetainTemplateEventConnection(__templateOwner,\n";
+					cpp << "\t\t\t\t" << nodeVar << "->"
+						<< descriptor->EventField
+						<< ".Subscribe(std::bind_front(&"
+						<< className << "::"
+						<< Utf8HandlerName(storedHandler)
+						<< ", this)));\n";
+				}
+
+				for (const auto& binding : node->CommandBindings)
+				{
+					cpp << "\t\t\t{\n";
+					cpp << "\t\t\t\tCommandBinding commandBinding;\n";
+					cpp << "\t\t\t\tcommandBinding.Command = "
+						"RoutedCommand(L\""
+						<< EscapeWStringLiteral(binding.Command)
+						<< "\");\n";
+					auto emitCanExecute =
+						[&](const char* field,
+							const std::wstring& storedHandler)
+					{
+						if (storedHandler.empty()) return;
+						cpp << "\t\t\t\tcommandBinding."
+							<< field
+							<< " = [this](Control* sender, "
+							"CanExecuteRoutedEventArgs& e) { "
+							<< Utf8HandlerName(storedHandler)
+							<< "(sender, e); };\n";
+					};
+					auto emitExecuted =
+						[&](const char* field,
+							const std::wstring& storedHandler)
+					{
+						if (storedHandler.empty()) return;
+						cpp << "\t\t\t\tcommandBinding."
+							<< field
+							<< " = [this](Control* sender, "
+							"ExecutedRoutedEventArgs& e) { "
+							<< Utf8HandlerName(storedHandler)
+							<< "(sender, e); };\n";
+					};
+					emitCanExecute(
+						"PreviewCanExecute",
+						binding.PreviewCanExecute);
+					emitCanExecute(
+						"CanExecute", binding.CanExecute);
+					emitExecuted(
+						"PreviewExecuted",
+						binding.PreviewExecuted);
+					emitExecuted(
+						"Executed", binding.Executed);
+					cpp << "\t\t\t\tcui::framework::XamlAccess::"
+						"RetainTemplateEventConnection(__templateOwner,\n";
+					cpp << "\t\t\t\t\t" << nodeVar
+						<< "->AddCommandBinding(std::move("
+						"commandBinding)));\n";
+					cpp << "\t\t\t}\n";
+				}
+			}
+
+			std::unordered_map<const DesignerModel::DesignNode*,
+				std::vector<const DesignerModel::DesignNode*>>
+				templateChildren;
+			auto findBlueprintNodeById =
+				[&](int id) -> const DesignerModel::DesignNode*
+			{
+				const auto found = std::find_if(
+					blueprintDocument.Nodes.begin(),
+					blueprintDocument.Nodes.end(),
+					[&](const auto& node) { return node.Id == id; });
+				return found == blueprintDocument.Nodes.end()
+					? nullptr : &*found;
+			};
+			for (const auto* node : generatedNodes)
+			{
+				const auto* parent = node->ParentId > 0
+					? findBlueprintNodeById(node->ParentId)
+					: !node->ParentRef.empty()
+						? findBlueprintNodeByName(node->ParentRef)
+						: nullptr;
+				templateChildren[parent].push_back(node);
+			}
+			auto sortTemplateChildren = [](auto& children)
+			{
+				std::stable_sort(
+					children.begin(), children.end(),
+					[](const auto* left, const auto* right)
+					{
+						const auto leftOrder = left->Order < 0
+							? (std::numeric_limits<int>::max)()
+							: left->Order;
+						const auto rightOrder = right->Order < 0
+							? (std::numeric_limits<int>::max)()
+							: right->Order;
+						return leftOrder < rightOrder;
+					});
+			};
+			std::function<void(
+				const DesignerModel::DesignNode*, int)>
+				emitTemplateChildren;
+			std::function<void(
+				const DesignerModel::DesignNode&, int)>
+				emitTemplateControl;
+			emitTemplateChildren =
+				[&](const DesignerModel::DesignNode* parent, int indent)
+			{
+				auto found = templateChildren.find(parent);
+				if (found == templateChildren.end()) return;
+				auto children = found->second;
+				sortTemplateChildren(children);
+				for (const auto* child : children)
+					emitTemplateControl(*child, indent);
+			};
+			emitTemplateControl =
+				[&](const DesignerModel::DesignNode& node, int indent)
+			{
+				const std::string indentText(indent, '\t');
+				const auto nodeVar = GetVarName(node);
+				const auto* parent = node.ParentId > 0
+					? findBlueprintNodeById(node.ParentId)
+					: !node.ParentRef.empty()
+						? findBlueprintNodeByName(node.ParentRef)
+						: nullptr;
+				const bool parentIsTop = parent == &*blueprintOwner;
+				const auto parentPointer = parentIsTop
+					? std::string("&__templateOwner")
+					: parent ? GetVarName(*parent) : std::string{};
+				const auto parentReference = parentIsTop
+					? std::string("__templateOwner")
+					: parent ? "*" + GetVarName(*parent)
+						: std::string{};
+				const auto parentType = parentIsTop
+					? blueprintOwner->Type
+					: parent ? parent->Type : UIClass::UI_CUSTOM;
+				if (!parent)
+					throw std::invalid_argument(
+						"Static ControlTemplate node has no parent");
+				const bool isVisualHeader =
+					node.Structure.ChildRole
+					== DesignerModel::DesignNodeChildRole::Header;
+				if (node.TemplateState.ControlTemplateRoot)
+					cpp << indentText
+						<< "cui::framework::TemplateAccess::"
+						"SetTemplateRoot(" << parentReference
+						<< ", std::move(__owned_" << nodeVar
+						<< "));\n";
+				else if (isVisualHeader
+					&& (IsUIClassAssignableFrom(
+							UIClass::UI_HeaderedContentControl,
+							parentType)
+						|| IsUIClassAssignableFrom(
+							UIClass::UI_HeaderedItemsControl,
+							parentType)))
+					cpp << indentText << parentPointer
+						<< "->SetVisualHeader(std::move(__owned_"
+						<< nodeVar << "));\n";
+				else if (IsUIClassAssignableFrom(
+					UIClass::UI_ItemsControl, parentType))
+					cpp << indentText << parentPointer
+						<< "->AddItemControl(std::move(__owned_"
+						<< nodeVar << "));\n";
+				else if (IsUIClassAssignableFrom(
+					UIClass::UI_ContentControl, parentType))
+					cpp << indentText << parentPointer
+						<< "->SetVisualContent(std::move(__owned_"
+						<< nodeVar << "));\n";
+				else if (parentType == UIClass::UI_Popup)
+					cpp << indentText << parentPointer
+						<< "->SetChild(std::move(__owned_"
+						<< nodeVar << "));\n";
+				else if (IsUIClassAssignableFrom(
+					UIClass::UI_Decorator, parentType))
+					cpp << indentText << parentPointer
+						<< "->SetChild(std::move(__owned_"
+						<< nodeVar << "));\n";
+				else
+					cpp << indentText << parentPointer
+						<< "->AddOwned(std::move(__owned_"
+						<< nodeVar << "));\n";
+
+				if (node.TemplateState.ControlTemplateRoot)
+					cpp << indentText
+						<< "cui::framework::XamlAccess::"
+						"SetLogicalParent(*" << nodeVar
+						<< ", nullptr);\n";
+				if (!node.TemplateState.ContentOwner.empty())
+				{
+					const auto logicalOwner =
+						node.TemplateState.ContentOwner
+							== blueprint.OwnerName
+						? std::string("&__templateOwner")
+						: templateOwnerPointerExpression(
+							node.TemplateState.ContentOwner);
+					cpp << indentText
+						<< "cui::framework::XamlAccess::"
+						"SetLogicalParent(*" << nodeVar << ", "
+						<< logicalOwner << ");\n";
+				}
+				emitTemplateChildren(&node, indent);
+			};
+			emitTemplateChildren(&*blueprintOwner, 3);
+
+			cpp << "\t\t\tif (!CuiRuntime::XamlFrameworkTheme::"
+				"Apply(__templateOwner, true, &__templateThemeError))\n";
+			cpp << "\t\t\t\treturn fail("
+				"L\"ControlTemplate 子树主题应用失败：\" "
+				"+ __templateThemeError);\n";
+			cpp << "\t\t\tif (auto documentStyles = "
+				"cui::framework::StyleAccess::DocumentStyles("
+				"__templateOwner);\n";
+			cpp << "\t\t\t\tdocumentStyles && "
+				"!cui::framework::StyleAccess::SetDocumentStyles("
+				"__templateOwner, std::move(documentStyles), true))\n";
+			cpp << "\t\t\t\treturn fail("
+				"L\"ControlTemplate 子树文档样式应用失败。\");\n";
+
+			for (const auto* node : generatedNodes)
+			{
+				if (node->Bindings.empty()) continue;
+				const auto nodeVar = GetVarName(*node);
+				for (const auto& [targetProperty, binding]
+					: node->Bindings)
+				{
+					if (binding.IsMultiBinding())
+						throw std::invalid_argument(
+							"Static ControlTemplate MultiBinding "
+							"is not supported");
+					if (binding.RelativeSource
+						== DesignerBindingRelativeSource::FindAncestor)
+						throw std::invalid_argument(
+							"Static ControlTemplate FindAncestor "
+							"requires dynamic materialization");
+
+					std::string sourceExpression =
+						nodeVar + "->DataContextSource()";
+					std::string sourceGuard;
+					if (!binding.ElementName.empty())
+						sourceExpression =
+							bindingElementExpression(
+								binding.ElementName);
+					else if (binding.RelativeSource
+						== DesignerBindingRelativeSource::Self)
+						sourceExpression = "*" + nodeVar;
+					else if (binding.RelativeSource
+						== DesignerBindingRelativeSource::
+							TemplatedParent)
+						sourceExpression =
+							templateOwnerReferenceExpression(
+								node->TemplateState.Owner);
+					else if (targetProperty == L"DataContext")
+					{
+						sourceGuard = nodeVar
+							+ "->GetInheritanceParent() && ";
+						sourceExpression = nodeVar
+							+ "->GetInheritanceParent()->"
+								"DataContextSource()";
+					}
+
+					const auto converterName =
+						DesignerBindingUtils::Trim(
+							binding.Converter);
+					const auto fallbackExpression =
+						binding.FallbackValue
+						? GenerateStyleValueExpression(
+							*binding.FallbackValue)
+						: "{}";
+					const auto targetNullExpression =
+						binding.TargetNullValue
+						? GenerateStyleValueExpression(
+							*binding.TargetNullValue)
+						: "{}";
+					const auto converterParameterExpression =
+						binding.ConverterParameter
+						? GenerateStyleValueExpression(
+							*binding.ConverterParameter)
+						: "{}";
+					const auto stringFormatExpression =
+						binding.StringFormat
+						? "std::optional<std::wstring>(L\""
+							+ EscapeWStringLiteral(
+								*binding.StringFormat)
+							+ "\")"
+						: "{}";
+					const bool hasExtendedOptions =
+						binding.FallbackValue.has_value()
+						|| binding.TargetNullValue.has_value()
+						|| binding.ConverterParameter.has_value()
+						|| binding.StringFormat.has_value();
+
+					cpp << "\t\t\t{\n";
+					if (!converterName.empty())
+					{
+						cpp << "\t\t\t\tauto converter = "
+							"BindingValueConverterRegistry::Create(L\""
+							<< EscapeWStringLiteral(converterName)
+							<< "\");\n";
+						cpp << "\t\t\t\tif (!converter)\n";
+						cpp << "\t\t\t\t\treturn fail("
+							"L\"ControlTemplate Binding Converter "
+							"不存在。\");\n";
+					}
+					cpp << "\t\t\t\tconst bool attached = "
+						<< sourceGuard << nodeVar
+						<< "->DataBindings.Add(L\""
+						<< EscapeWStringLiteral(targetProperty)
+						<< "\", " << sourceExpression << ", L\""
+						<< EscapeWStringLiteral(
+							binding.SourceProperty)
+						<< "\", " << BindingModeToExpr(binding.Mode)
+						<< ", "
+						<< DataSourceUpdateModeToExpr(
+							binding.UpdateMode);
+					if (!converterName.empty())
+						cpp << ", std::move(converter)";
+					else if (hasExtendedOptions)
+						cpp << ", {}";
+					if (hasExtendedOptions)
+						cpp << ", " << fallbackExpression
+							<< ", " << targetNullExpression
+							<< ", "
+							<< converterParameterExpression
+							<< ", " << stringFormatExpression;
+					cpp << ") != nullptr;\n";
+					cpp << "\t\t\t\tif (!attached)\n";
+					cpp << "\t\t\t\t\treturn fail("
+						"L\"ControlTemplate Binding 安装失败。\");\n";
+					cpp << "\t\t\t}\n";
+				}
+			}
+
+			cpp << GenerateDeclarativeInteractionsCode(
+				blueprint.VisualStateGroups,
+				blueprint.EventTriggers,
+				"__templateOwner", 3);
+
+			for (const auto* node : generatedNodes)
+			{
+				if (!node->TemplateState.
+					AppliedControlTemplateFromTheme) continue;
+				const auto& resourceKey = node->TemplateState.
+					AppliedControlTemplateResource;
+				cpp << "\t\t\tif (!CuiRuntime::XamlFrameworkTheme::"
+					"ApplyTemplateVisualStates(*"
+					<< GetVarName(*node) << ", L\""
+					<< EscapeWStringLiteral(resourceKey)
+					<< "\", &__templateThemeError))\n";
+				cpp << "\t\t\t\treturn fail("
+					"L\"嵌套 Generic.xaml VisualState 安装失败：\" "
+					"+ __templateThemeError);\n";
+			}
+			for (const auto* node : generatedNodes)
+				if (!node->TemplateState.
+					AppliedControlTemplate.empty())
+					cpp << "\t\t\tcui::framework::TemplateAccess::"
+						"CompleteTemplateApplication(*"
+						<< GetVarName(*node) << ");\n";
+
+			cpp << "\t\t\tif (!cui::framework::TemplateAccess::"
+				"GetTemplateRoot(__templateOwner))\n";
+			cpp << "\t\t\t\treturn fail("
+				"L\"ControlTemplate 未生成唯一视觉根。\");\n";
+			cpp << "\t\t\tif (outError) outError->clear();\n";
+			cpp << "\t\t\treturn true;\n";
+			cpp << "\t\t}\n";
+			cpp << "\t\tcatch (const std::exception&)\n";
+			cpp << "\t\t{\n";
+			cpp << "\t\t\treturn fail("
+				"L\"ControlTemplate 静态构造发生运行时异常。\");\n";
+			cpp << "\t\t}\n";
+			cpp << "\t\tcatch (...)\n";
+			cpp << "\t\t{\n";
+			cpp << "\t\t\treturn fail("
+				"L\"ControlTemplate 静态构造发生未知异常。\");\n";
+			cpp << "\t\t}\n";
+			cpp << "\t});\n\n";
 		}
 	}
-	if (hasGeneratedTemplateNodes) cpp << "\n";
 
 	// 2) Apply scalar/structured state after the complete namescope exists.
 	for (const auto& node : _sourceDocument.Nodes)
 	{
+		if (node.TemplateState.Generated) continue;
 		cpp << GenerateControlCommonProperties(node, 1);
-		cpp << GenerateLocalResources(node, 1);
+		cpp << GenerateLocalResources(
+			node, 1, nullptr, &staticObjectResources);
 		cpp << GenerateAuthoredProperties(node, 1);
 		cpp << GenerateContainerProperties(node, 1);
 		cpp << "\n";
 	}
-
-	// TemplateBinding is an expression in the Template value slot. Install it
-	// after literal template properties so static lowering follows the same
-	// ordering as dynamic XAML materialization.
-	for (const auto& node : _sourceDocument.Nodes)
-	{
-		if (!node.TemplateState.Generated || node.TemplateBindings.empty())
-			continue;
-		const auto* owner = findSourceNodeByName(node.TemplateState.Owner);
-		if (!owner)
-			throw std::invalid_argument(
-				"Generated ControlTemplate node has no owner");
-		const auto nodeVar = GetVarName(node);
-		const auto ownerVar = GetVarName(*owner);
-		for (const auto& [targetProperty, sourceProperty]
-			: node.TemplateBindings)
-		{
-			cpp << "\tif (!" << nodeVar
-				<< "->DataBindings.AddTemplateBinding(L\""
-				<< EscapeWStringLiteral(targetProperty) << "\", *"
-				<< ownerVar << ", L\""
-				<< EscapeWStringLiteral(sourceProperty) << "\"))\n";
-			cpp << "\t\tthrow std::runtime_error("
-				"\"Generated TemplateBinding installation failed\");\n";
-		}
-	}
-	if (hasGeneratedTemplateNodes) cpp << "\n";
 
 	auto emitInputBindings = [&](const auto& bindings,
 		const std::string& target)
@@ -2566,6 +4207,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	}
 	for (const auto& node : _sourceDocument.Nodes)
 	{
+		if (node.TemplateState.Generated) continue;
 		if (node.InputBindings.empty()) continue;
 		emitInputBindings(node.InputBindings, GetVarName(node));
 	}
@@ -2573,7 +4215,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		|| std::any_of(
 			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 			[](const auto& node)
-			{ return !node.InputBindings.empty(); })) cpp << "\n";
+			{
+				return !node.TemplateState.Generated
+					&& !node.InputBindings.empty();
+			})) cpp << "\n";
 
 	// Event subscriptions are owned by RAII connections and disconnect before Window teardown.
 	{
@@ -2599,6 +4244,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 
 		for (const auto& node : _sourceDocument.Nodes)
 		{
+			if (node.TemplateState.Generated) continue;
 			std::string ctrlVar = GetVarName(node);
 			for (const auto& kv : node.Events)
 			{
@@ -2678,6 +4324,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	}
 	for (const auto& node : _sourceDocument.Nodes)
 	{
+		if (node.TemplateState.Generated) continue;
 		if (node.CommandBindings.empty()) continue;
 		emitCommandBindings(node.CommandBindings, GetVarName(node));
 	}
@@ -2685,7 +4332,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		|| std::any_of(
 			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 			[](const auto& node)
-			{ return !node.CommandBindings.empty(); })) cpp << "\n";
+			{
+				return !node.TemplateState.Generated
+					&& !node.CommandBindings.empty();
+			})) cpp << "\n";
 
 	// 2) Assemble the logical authored hierarchy. ItemsControl children enter
 	//    Items; ordinary container children enter the visual collection.
@@ -2711,6 +4361,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	};
 	for (const auto& node : _sourceDocument.Nodes)
 	{
+		if (node.TemplateState.Generated) continue;
 		const auto* parent = node.ParentId > 0
 			? findNodeById(node.ParentId)
 			: !node.ParentRef.empty()
@@ -2842,7 +4493,6 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			emitControl(*root, "this", 1);
 	}
 
-	cpp << "\tstd::wstring __frameworkThemeError;\n";
 	cpp << "\tif (!CuiRuntime::XamlFrameworkTheme::Apply("
 		"*this, true, &__frameworkThemeError))\n";
 	cpp << "\t\tthrow std::runtime_error("
@@ -2853,7 +4503,63 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			<< EscapeWStringLiteral(
 				_sourceDocument.Window.Properties.StyleResourceKey)
 			<< "\");\n";
-	cpp << GenerateStyleSheetCode(1);
+	cpp << GenerateStyleSheetCode(1, staticObjectResources);
+
+	auto findAuthoredTemplateIndex =
+		[&](const DesignerModel::DesignNode& owner)
+		-> std::optional<size_t>
+	{
+		if (owner.TemplateState.AppliedControlTemplateFromTheme)
+			return std::nullopt;
+		const auto key = !owner.Structure.ControlTemplate.empty()
+			? owner.Structure.ControlTemplate
+			: owner.TemplateState.AppliedControlTemplateResource;
+		const DesignerModel::DesignControlTemplate* definition = nullptr;
+		if (!key.empty())
+			definition = _sourceDocument.FindControlTemplate(
+				_sourceDocument.Nodes, owner, key);
+		else if (!owner.TemplateState.AppliedControlTemplate.empty())
+			definition = owner.ComponentType.Empty()
+				? _sourceDocument.FindImplicitControlTemplate(
+					_sourceDocument.Nodes, owner, owner.Type)
+				: _sourceDocument.FindImplicitControlTemplate(
+					_sourceDocument.Nodes, owner, owner.ComponentType);
+		else if (_sourceDocument.Nodes.size()
+			== std::count_if(
+				_sourceDocument.Nodes.begin(),
+				_sourceDocument.Nodes.end(),
+				[](const auto& node)
+				{ return !node.TemplateState.Generated; }))
+			definition = owner.ComponentType.Empty()
+				? _sourceDocument.FindImplicitControlTemplate(
+					_sourceDocument.Nodes, owner, owner.Type)
+				: _sourceDocument.FindImplicitControlTemplate(
+					_sourceDocument.Nodes, owner, owner.ComponentType);
+		if (!definition) return std::nullopt;
+		const auto index = static_cast<size_t>(
+			definition - _sourceDocument.ControlTemplates.data());
+		return index < templateBlueprints.size()
+			? std::optional<size_t>{ index } : std::nullopt;
+	};
+	for (const auto& owner : _sourceDocument.Nodes)
+	{
+		if (owner.TemplateState.Generated) continue;
+		const auto templateIndex =
+			findAuthoredTemplateIndex(owner);
+		if (!templateIndex) continue;
+		const auto& blueprint = templateBlueprints[*templateIndex];
+		const auto source = !owner.Structure.ControlTemplate.empty()
+			? "DependencyPropertyValueSource::Local"
+			: "DependencyPropertyValueSource::Style";
+		cpp << "\tif (!cui::framework::XamlAccess::SetTemplate(*"
+			<< GetVarName(owner)
+			<< ", ControlTemplateReference("
+			<< blueprint.VariableName << "), " << source << "))\n";
+		cpp << "\t\tthrow std::runtime_error("
+			"\"Generated authored Control.Template installation failed\");\n";
+	}
+	if (!templateBlueprints.empty()) cpp << "\n";
+
 	if (!_sourceDocument.Window.Properties.Values.empty())
 		cpp << "\t// XAML Window Local 属性/资源表达式\n";
 	for (const auto& [propertyName, assignment]
@@ -2872,23 +4578,24 @@ std::string CodeGenerator::GenerateCppForBaseName(
 
 	for (const auto& owner : _sourceDocument.Nodes)
 	{
-		if (!owner.TemplateState.AppliedControlTemplateFromTheme) continue;
-		const auto& resourceKey =
-			owner.TemplateState.AppliedControlTemplateResource;
-		if (resourceKey.empty())
-			throw std::invalid_argument(
-				"Framework theme template requires a stable resource key");
-		cpp << "\tif (!CuiRuntime::XamlFrameworkTheme::"
-			"ApplyTemplateVisualStates(*" << GetVarName(owner)
-			<< ", L\"" << EscapeWStringLiteral(resourceKey)
-			<< "\", &__frameworkThemeError))\n";
-		cpp << "\t\tthrow std::runtime_error("
-			"\"Generated Generic.xaml visual-state installation failed\");\n";
+		if (owner.TemplateState.Generated) continue;
+		cpp << "\tif (" << GetVarName(owner)
+			<< "->GetTemplate())\n";
+		cpp << "\t{\n";
+		cpp << "\t\t(void)" << GetVarName(owner)
+			<< "->ApplyTemplate();\n";
+		cpp << "\t\tif (!cui::framework::TemplateAccess::"
+			"GetTemplateRoot(*" << GetVarName(owner)
+			<< ") || !" << GetVarName(owner)
+			<< "->LastTemplateError().empty())\n";
+		cpp << "\t\t\tthrow std::runtime_error("
+			"\"Generated ControlTemplate application failed\");\n";
+		cpp << "\t}\n";
 	}
 	if (std::any_of(
 		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
 		[](const auto& node)
-		{ return node.TemplateState.AppliedControlTemplateFromTheme; }))
+		{ return !node.TemplateState.Generated; }))
 		cpp << "\n";
 
 	cpp << "}\n\n";
@@ -2911,8 +4618,19 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		});
 	const bool hasDataBindings = !_sourceDocument.Window.Bindings.empty()
 		|| hasStyleDataTriggers || std::any_of(
-		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
-		[](const auto& node) { return !node.Bindings.empty(); });
+			_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
+			[](const auto& node) { return !node.Bindings.empty(); })
+		|| std::any_of(
+			_sourceDocument.ControlTemplates.begin(),
+			_sourceDocument.ControlTemplates.end(),
+			[](const auto& definition)
+			{
+				return std::any_of(
+					definition.Template.begin(),
+					definition.Template.end(),
+					[](const auto& node)
+					{ return !node.Bindings.empty(); });
+			});
 	if (hasDataBindings)
 	{
 		cpp << "\n";
@@ -3042,6 +4760,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		emitBindings(_sourceDocument.Window.Bindings, "this", true);
 		for (const auto& node : _sourceDocument.Nodes)
 		{
+			if (node.TemplateState.Generated) continue;
 			if (node.Bindings.empty()) continue;
 			emitBindings(node.Bindings, GetVarName(node), false);
 		}

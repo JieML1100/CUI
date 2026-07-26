@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Window xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:d="urn:cui:designer" xmlns:test="urn:cui:test" x:Name="CuiXamlDemo" Title="CUI XAML Component Gallery" Width="1400" Height="800" Background="#FFF4F7FB" Foreground="#FF172033" Closing="HandleClosing" ContentRendered="HandleContentRendered" PreviewExecuted="HandleCommandPreviewExecuted">
+<Window xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:d="urn:cui:designer" xmlns:test="urn:cui:test" x:Name="CuiXamlDemo" Title="CUI XAML Component Gallery" Width="1400" Height="800" Background="#FFE8EEF6" Foreground="#FF172033" Closing="HandleClosing" ContentRendered="HandleContentRendered" PreviewExecuted="HandleCommandPreviewExecuted">
   <Window.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
@@ -9,6 +9,8 @@
       <Color x:Key="Surface">#FFFFFFFF</Color>
       <Color x:Key="SurfaceSoft">#FFF7F9FC</Color>
       <Color x:Key="Border">#FFD3DCE8</Color>
+      <Color x:Key="ContainerSurface">#FFF2F6FB</Color>
+      <Color x:Key="ContainerBorder">#FF9FB2CA</Color>
       <Color x:Key="TextPrimary">#FF172033</Color>
       <Color x:Key="TextMuted">#FF748399</Color>
       <Color x:Key="OnAccent">#FFFFFFFF</Color>
@@ -304,6 +306,15 @@
           </StackPanel>
         </Border>
       </ControlTemplate>
+      <ControlTemplate x:Key="WpfLabButtonTemplateAlternate" TargetType="Button">
+        <Border x:Name="wpfAlternateButtonChrome" Padding="8" Background="#FFE8F5EE" BorderBrush="#FF15966A" BorderThickness="2">
+          <StackPanel>
+            <TextBlock x:Name="wpfAlternateTemplateState" Text="ApplyTemplate · alternate tree" Foreground="{StaticResource Success}" Height="24"/>
+            <TextBlock Text="{Binding (AutomationProperties.Name), RelativeSource={RelativeSource TemplatedParent}}" Foreground="{StaticResource TextMuted}" FontSize="11" Height="20"/>
+            <ContentPresenter x:Name="wpfAlternateContentPresenter" ContentSource="Content"/>
+          </StackPanel>
+        </Border>
+      </ControlTemplate>
       <ItemsPanelTemplate x:Key="WpfLabItemsPanel">
         <VirtualizingStackPanel ItemHeight="30" CacheLength="0.5"/>
       </ItemsPanelTemplate>
@@ -373,7 +384,15 @@
         <Setter Property="Background" Value="{StaticResource Surface}"/>
         <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
         <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="ClipToBounds" Value="true"/>
         <Setter Property="Padding" Kind="Thickness" Value="10"/>
+      </Style>
+      <Style TargetType="Border" x:Key="ContainerFrame">
+        <Setter Property="Background" Value="{StaticResource ContainerSurface}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource ContainerBorder}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="ClipToBounds" Value="true"/>
+        <Setter Property="Padding" Kind="Thickness" Value="8"/>
       </Style>
       <Style TargetType="Button" x:Key="PrimaryButton">
         <Setter Property="Background" Value="{StaticResource Accent}"/>
@@ -423,8 +442,15 @@
     <Property Path="WpfPeople" Kind="Object" ObjectType="BindingList" ItemType="WpfLabPerson" CanWrite="false"/>
     <Property Path="WpfSettings" Kind="Object" ObjectType="BindingSource"/>
   </Window.DataContextSchema>
-  <Canvas x:Name="windowContent">
-    <Menu x:Name="mainMenu" DesignId="1" Canvas.Left="0" Canvas.Top="0" Height="28" Width="1400">
+  <Grid x:Name="windowContent">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="28"/>
+      <RowDefinition Height="40"/>
+      <RowDefinition Height="40"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="26"/>
+    </Grid.RowDefinitions>
+    <Menu x:Name="mainMenu" DesignId="1" Grid.Row="0" Height="28">
       <Menu.Items>
         <MenuItem Header="文件">
           <MenuItem.Items>
@@ -440,7 +466,7 @@
         </MenuItem>
       </Menu.Items>
     </Menu>
-    <ToolBar x:Name="mainToolBar" DesignId="2" Canvas.Left="0" Canvas.Top="28" Height="40" ItemsPanel="{StaticResource MainToolBarItemsPanel}" Padding="6,7" Width="1400">
+    <ToolBar x:Name="mainToolBar" DesignId="2" Grid.Row="1" Height="40" ItemsPanel="{StaticResource MainToolBarItemsPanel}" Padding="6,7">
       <ToolBar.Items>
         <Button x:Name="toolBasic" DesignId="20" Height="26" Click="HandleToolBarAction" Content="基础" Width="88"/>
         <Button x:Name="toolData" DesignId="21" Height="26" Click="HandleToolBarAction" Content="数据" Width="88"/>
@@ -458,15 +484,17 @@
         </Button>
       </ToolBar.Items>
     </ToolBar>
-    <Slider x:Name="globalProgress" DesignId="3" Canvas.Left="12" Canvas.Top="74" Height="28" Maximum="1000" Minimum="0" ValueChanged="HandleGlobalProgress" Value="250" Width="310"/>
-    <TextBlock x:Name="statusText" DesignId="4" Canvas.Left="342" Canvas.Top="79" Foreground="#FF748399" Height="24" MouseWheel="HandleMouseWheel" Style="{StaticResource MutedLabel}" Text="布局来自 DemoWindow.cui.xaml，C++ 仅保留数据和业务" Width="500"/>
-    <TextBlock x:Name="runtimeBadge" DesignId="5" Canvas.Left="1050" Canvas.Top="76" Height="26" Style="{StaticResource ImageText}" Text="Dynamic XAML · RuntimeDocumentSession" Width="330"/>
-    <TabControl x:Name="mainTabs" DesignId="10" TabStripPlacement="Top" Background="#00000000" Canvas.Left="10" Canvas.Top="108" Height="650" Width="1380">
+    <Canvas Grid.Row="2">
+      <Slider x:Name="globalProgress" DesignId="3" Canvas.Left="12" Canvas.Top="6" Height="28" Maximum="1000" Minimum="0" ValueChanged="HandleGlobalProgress" Value="250" Width="310"/>
+      <TextBlock x:Name="statusText" DesignId="4" Canvas.Left="342" Canvas.Top="11" Foreground="#FF748399" Height="24" MouseWheel="HandleMouseWheel" Style="{StaticResource MutedLabel}" Text="布局来自 DemoWindow.cui.xaml，C++ 仅保留数据和业务" Width="500"/>
+      <TextBlock x:Name="runtimeBadge" DesignId="5" Canvas.Left="1050" Canvas.Top="8" Height="26" Style="{StaticResource ImageText}" Text="Dynamic XAML · RuntimeDocumentSession" Width="330"/>
+    </Canvas>
+    <TabControl x:Name="mainTabs" DesignId="10" Grid.Row="3" Margin="10,0,10,10" TabStripPlacement="Top" Background="#00000000">
       <TabItem Header="基础控件" IsSelected="true">
         <Border Canvas.Left="10" Canvas.Top="36" Height="520" Style="{StaticResource SurfacePanel}" Width="1325">
           <Canvas x:Name="basicSurface" DesignId="100" test:FeatureCard.Invoked="HandleFeatureBubble">
             <TextBlock x:Name="basicTitle" DesignId="101" Canvas.Left="12" Canvas.Top="10" FontFamily="Arial" FontSize="18" Height="26" Style="{StaticResource GradientHeader}" Text="基础输入与事件：声明在 XAML，处理函数注册在 C++" Width="600"/>
-            <TextBlock x:Name="frameworkThemeHint" DesignId="124" Canvas.Left="630" Canvas.Top="12" Foreground="{StaticResource TextMuted}" Height="24" Text="Generic.xaml：Theme → ControlTemplate → VisualState（C++ 仅保留 Button 行为）" Width="650"/>
+            <TextBlock x:Name="frameworkThemeHint" DesignId="124" Canvas.Left="630" Canvas.Top="12" Foreground="{StaticResource TextMuted}" Height="24" Text="Generic.xaml：Button / CheckBox / RadioButton / ProgressBar / Slider 默认模板" Width="650"/>
             <Button x:Name="basicButton" DesignId="102" Background="#FF2F6FE4" Canvas.Left="14" Canvas.Top="54" Foreground="#FFFFFFFF" Height="34" IsDefault="true" Click="HandleBasicClick" Style="{StaticResource PrimaryButton}" Content="Enter · IsDefault" Width="150"/>
             <CheckBox x:Name="enableInput" DesignId="103" Canvas.Left="185" Canvas.Top="60" IsChecked="true" Height="26" Checked="HandleEnableInput" Unchecked="HandleEnableInput" Content="启用输入框" Width="150"/>
             <RadioButton x:Name="radioA" DesignId="104" Canvas.Left="14" Canvas.Top="108" GroupName="Plan" IsChecked="true" Height="26" Checked="HandleRadio" Unchecked="HandleRadio" Content="方案 A" Width="110"/>
@@ -479,6 +507,9 @@
             <NumericUpDown x:Name="numberInput" DesignId="110" Canvas.Left="14" Canvas.Top="322" Height="30" Maximum="100" Minimum="0" ValueChanged="HandleNumericValue" Value="42" Width="160"/>
             <Button x:Name="dialogCancelButton" DesignId="123" Canvas.Left="185" Canvas.Top="322" Height="30" IsCancel="true" Click="HandleBasicClick" Content="Escape · IsCancel" Width="155"/>
             <Button x:Name="docsLink" DesignId="111" Canvas.Left="14" Canvas.Top="368" Height="26" Click="HandleDocsLink" Content="CUI XAML 运行时文档" Width="300"/>
+            <TextBlock Canvas.Left="288" Canvas.Top="148" Foreground="{StaticResource TextMuted}" Height="22" Text="Vertical" Width="72"/>
+            <Slider x:Name="verticalThemeSlider" DesignId="127" Canvas.Left="298" Canvas.Top="174" Height="230" Maximum="100" Minimum="0" Orientation="Vertical" Value="65" Width="32"/>
+            <ProgressBar x:Name="verticalThemeProgress" DesignId="128" Canvas.Left="340" Canvas.Top="174" Height="230" Maximum="100" Minimum="0" Orientation="Vertical" Value="65" Width="18"/>
             <TextBox x:Name="gradientInput" DesignId="112" Canvas.Left="370" Canvas.Top="54" Height="42" Text="XAML 画刷输入框：GradientInput" Width="360">
               <Control.Foreground>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -533,6 +564,7 @@
             <Button x:Name="openImageButton" DesignId="201" Background="#FF2F6FE4" Canvas.Left="14" Canvas.Top="14" Foreground="#FFFFFFFF" Height="32" Click="HandleOpenImage" Style="{StaticResource PrimaryButton}" Content="打开图片" Width="150"/>
             <Image x:Name="demoImage" DesignId="202" AllowDrop="True" Canvas.Left="14" Canvas.Top="60" Height="300" PreviewDragEnter="HandleDragRoute" DragEnter="HandleDragRoute" PreviewDragOver="HandleDragRoute" DragOver="HandleDragRoute" PreviewDragLeave="HandleDragRoute" DragLeave="HandleDragRoute" PreviewDrop="HandleDragRoute" Drop="HandleDropImage" Style="{StaticResource ResourceImage}" Width="430"/>
             <ProgressBar x:Name="demoProgress" DesignId="203" Canvas.Left="14" Canvas.Top="384" Height="26" Maximum="1" Value="0.5" Width="430"/>
+            <ProgressBar x:Name="indeterminateProgress" DesignId="215" Canvas.Left="14" Canvas.Top="424" Height="18" IsIndeterminate="true" Width="430"/>
             <LoadingRing x:Name="loadingRing" DesignId="204" Canvas.Left="480" Canvas.Top="52" Height="64" Width="64"/>
             <ProgressRing x:Name="progressRing" DesignId="205" Canvas.Left="570" Canvas.Top="38" FontFamily="Segoe UI" FontSize="16" Height="96" Maximum="100" Minimum="0" Value="50" Width="96"/>
             <Switch x:Name="imageVisible" DesignId="206" Canvas.Left="480" Canvas.Top="154" IsChecked="true" Height="30" Checked="HandleImageVisibility" Unchecked="HandleImageVisibility" Width="64"/>
@@ -723,61 +755,91 @@
         <Border Canvas.Left="10" Canvas.Top="36" Height="520" Style="{StaticResource SurfacePanel}" Width="1325">
           <Canvas x:Name="layoutSurface" DesignId="500">
             <TextBlock x:Name="layoutTitle" DesignId="501" Canvas.Left="12" Canvas.Top="8" Height="24" Text="StackPanel / Grid / DockPanel / WrapPanel / RelativePanel / ScrollViewer" Width="800"/>
-            <Canvas x:Name="canvasSemanticsProbe" DesignId="530" Canvas.Right="12.5" Canvas.Top="4.5" Cursor="Cross" Tag="cursor-inheritance-root" Height="31" Width="430">
+            <Canvas x:Name="canvasSemanticsProbe" DesignId="530" Background="{StaticResource ContainerSurface}" ClipToBounds="true" Canvas.Right="12.5" Canvas.Top="4.5" Cursor="Cross" Tag="cursor-inheritance-root" Height="31" Width="430">
+              <Border Canvas.Left="0" Canvas.Top="0" Background="#00000000" BorderBrush="{StaticResource ContainerBorder}" BorderThickness="1" Height="31" Width="430"/>
               <TextBlock x:Name="canvasLeftWins" DesignId="531" Canvas.Left="0.25" Canvas.Top="0.5" Canvas.Right="40" Canvas.Bottom="5" Height="24" Margin="1,2,3,4" Text="Canvas.Left/Top 优先" Width="190"/>
               <TextBlock x:Name="canvasRightBottom" DesignId="532" Canvas.Right="0.75" Canvas.Bottom="0.5" Height="24" Margin="2,1,4,2" Text="Right/Bottom + fractional DIP" Width="210"/>
             </Canvas>
-            <StackPanel x:Name="demoStack" DesignId="502" Canvas.Left="12" Canvas.Top="42" Height="200" Orientation="Vertical" Width="240">
-              <Button x:Name="stackA" DesignId="503" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack A" Width="180"/>
-              <Button x:Name="stackB" DesignId="504" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack B" Width="200"/>
-              <Button x:Name="stackC" DesignId="505" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack C" Width="160"/>
-            </StackPanel>
-            <Grid x:Name="demoGrid" DesignId="506" Canvas.Left="270" Canvas.Top="42" Height="200" Width="320">
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" MinHeight="0" MaxHeight="3.40282347e+38"/>
-                <RowDefinition Height="*" MinHeight="0" MaxHeight="3.40282347e+38"/>
-                <RowDefinition Height="34" MinHeight="0" MaxHeight="3.40282347e+38"/>
-              </Grid.RowDefinitions>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="0" MaxWidth="3.40282347e+38"/>
-                <ColumnDefinition Width="2*" MinWidth="0" MaxWidth="3.40282347e+38"/>
-              </Grid.ColumnDefinitions>
-              <Button x:Name="gridHeader" DesignId="507" Canvas.Left="0" Canvas.Top="0" Grid.ColumnSpan="2" Height="30" Content="Grid Header" Width="120"/>
-              <TextBlock x:Name="gridLeft" DesignId="508" Canvas.Left="0" Canvas.Top="0" Grid.Row="1" Height="21" Text="Auto / Star" Width="60"/>
-              <TextBox x:Name="gridEditor" DesignId="509" Canvas.Left="0" Canvas.Top="0" Grid.Column="1" Grid.Row="1" Height="25" Text="Grid cell" Width="120"/>
-              <Button x:Name="gridFooter" DesignId="510" Canvas.Left="0" Canvas.Top="0" Grid.ColumnSpan="2" Grid.Row="2" Height="30" Content="Grid Footer" Width="120"/>
-            </Grid>
-            <DockPanel x:Name="demoDock" DesignId="511" Canvas.Left="610" Canvas.Top="42" Height="200" LastChildFill="true" Width="300">
-              <Button x:Name="dockTop" DesignId="512" Canvas.Left="0" Canvas.Top="0" DockPanel.Dock="Top" Height="30" Content="Top" Width="120"/>
-              <Button x:Name="dockLeft" DesignId="513" Canvas.Left="0" Canvas.Top="0" DockPanel.Dock="Left" Height="30" Content="Left" Width="70"/>
-              <TextBlock x:Name="dockFill" DesignId="514" Canvas.Left="0" Canvas.Top="0" Height="150" Text="Fill" Width="110"/>
-            </DockPanel>
-            <WrapPanel x:Name="demoWrap" DesignId="515" Canvas.Left="930" Canvas.Top="42" Height="200" ItemHeight="32" ItemWidth="80" Orientation="Horizontal" Width="360">
-              <Button x:Name="wrap1" DesignId="516" Canvas.Left="0" Canvas.Top="0" Height="32" Content="One" Width="80"/>
-              <Button x:Name="wrap2" DesignId="517" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Two" Width="80"/>
-              <Button x:Name="wrap3" DesignId="518" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Three" Width="80"/>
-              <Button x:Name="wrap4" DesignId="519" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Four" Width="80"/>
-              <Button x:Name="wrap5" DesignId="520" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Five" Width="80"/>
-              <Button x:Name="wrap6" DesignId="521" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Six" Width="80"/>
-            </WrapPanel>
-            <RelativePanel x:Name="demoRelative" DesignId="522" Canvas.Left="12" Canvas.Top="270" Height="190" Width="500">
-              <Button x:Name="relativeCenter" DesignId="523" Canvas.Left="0" Canvas.Top="0" Height="32" RelativePanel.CenterHorizontal="true" RelativePanel.CenterVertical="true" Content="XAML 居中约束" Width="140"/>
-            </RelativePanel>
-            <ScrollViewer x:Name="demoScroll" DesignId="524" Canvas.Left="532" Canvas.Top="270" Height="190" Width="758">
-              <Canvas x:Name="demoScrollContent" Width="1100" Height="360">
-                <Border Canvas.Left="16" Canvas.Top="16" Height="90" Style="{StaticResource SurfacePanel}" Width="220">
-                  <Canvas x:Name="scrollCard1" DesignId="525">
-                    <TextBlock x:Name="scrollCard1Text" DesignId="526" Canvas.Left="0" Canvas.Top="0" Height="21" Text="Card 1 · XAML child" Width="160"/>
-                  </Canvas>
-                </Border>
-                <Border Canvas.Left="270" Canvas.Top="16" Height="90" Style="{StaticResource SurfacePanel}" Width="220">
-                  <Canvas x:Name="scrollCard2" DesignId="527">
-                    <TextBlock x:Name="scrollCard2Text" DesignId="528" Canvas.Left="0" Canvas.Top="0" Height="21" Text="Card 2 · XAML child" Width="160"/>
-                  </Canvas>
-                </Border>
-                <Button x:Name="farButton" DesignId="529" Canvas.Left="920" Canvas.Top="280" Height="32" Click="HandleFarButton" Content="Far Button" Width="140"/>
-              </Canvas>
-            </ScrollViewer>
+            <Border Canvas.Left="12" Canvas.Top="42" Height="200" Style="{StaticResource ContainerFrame}" Width="240">
+              <StackPanel x:Name="demoStack" DesignId="502" ClipToBounds="true" Orientation="Vertical">
+                <Button x:Name="stackA" DesignId="503" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack A" Width="180"/>
+                <Button x:Name="stackB" DesignId="504" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack B" Width="200"/>
+                <Button x:Name="stackC" DesignId="505" Canvas.Left="0" Canvas.Top="0" Height="28" Content="Stack C" Width="160"/>
+              </StackPanel>
+            </Border>
+            <Border Canvas.Left="270" Canvas.Top="42" Height="200" Style="{StaticResource ContainerFrame}" Width="320">
+              <Grid x:Name="demoGrid" DesignId="506" ClipToBounds="true">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" MinHeight="0" MaxHeight="3.40282347e+38"/>
+                  <RowDefinition Height="*" MinHeight="0" MaxHeight="3.40282347e+38"/>
+                  <RowDefinition Height="34" MinHeight="0" MaxHeight="3.40282347e+38"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" MinWidth="0" MaxWidth="3.40282347e+38"/>
+                  <ColumnDefinition Width="2*" MinWidth="0" MaxWidth="3.40282347e+38"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="gridHeader" DesignId="507" Canvas.Left="0" Canvas.Top="0" Grid.ColumnSpan="2" Height="30" Content="Grid Header" Width="120"/>
+                <TextBlock x:Name="gridLeft" DesignId="508" Canvas.Left="0" Canvas.Top="0" Grid.Row="1" Height="21" Text="Auto / Star" Width="60"/>
+                <TextBox x:Name="gridEditor" DesignId="509" Canvas.Left="0" Canvas.Top="0" Grid.Column="1" Grid.Row="1" Height="25" Text="Grid cell" Width="120"/>
+                <Button x:Name="gridFooter" DesignId="510" Canvas.Left="0" Canvas.Top="0" Grid.ColumnSpan="2" Grid.Row="2" Height="30" Content="Grid Footer" Width="120"/>
+              </Grid>
+            </Border>
+            <Border Canvas.Left="610" Canvas.Top="42" Height="200" Style="{StaticResource ContainerFrame}" Width="300">
+              <DockPanel x:Name="demoDock" DesignId="511" ClipToBounds="true" LastChildFill="true">
+                <Button x:Name="dockTop" DesignId="512" Canvas.Left="0" Canvas.Top="0" DockPanel.Dock="Top" Height="30" Content="Top" Width="120"/>
+                <Button x:Name="dockLeft" DesignId="513" Canvas.Left="0" Canvas.Top="0" DockPanel.Dock="Left" Height="30" Content="Left" Width="70"/>
+                <TextBlock x:Name="dockFill" DesignId="514" Canvas.Left="0" Canvas.Top="0" Height="150" Text="Fill" Width="110"/>
+              </DockPanel>
+            </Border>
+            <Border Canvas.Left="930" Canvas.Top="42" Height="200" Style="{StaticResource ContainerFrame}" Width="360">
+              <WrapPanel x:Name="demoWrap" DesignId="515" ClipToBounds="true" ItemHeight="32" ItemWidth="80" Orientation="Horizontal">
+                <Button x:Name="wrap1" DesignId="516" Canvas.Left="0" Canvas.Top="0" Height="32" Content="One" Width="80"/>
+                <Button x:Name="wrap2" DesignId="517" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Two" Width="80"/>
+                <Button x:Name="wrap3" DesignId="518" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Three" Width="80"/>
+                <Button x:Name="wrap4" DesignId="519" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Four" Width="80"/>
+                <Button x:Name="wrap5" DesignId="520" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Five" Width="80"/>
+                <Button x:Name="wrap6" DesignId="521" Canvas.Left="0" Canvas.Top="0" Height="32" Content="Six" Width="80"/>
+              </WrapPanel>
+            </Border>
+            <Border Canvas.Left="12" Canvas.Top="270" Height="190" Style="{StaticResource ContainerFrame}" Width="500">
+              <RelativePanel x:Name="demoRelative" DesignId="522" ClipToBounds="true">
+                <StackPanel x:Name="relativeCenter" DesignId="523"
+                  RelativePanel.CenterHorizontal="true" RelativePanel.CenterVertical="true"
+                  ClipToBounds="true" Orientation="Vertical">
+                  <TextBlock x:Name="naturalTextProbe"
+                    HorizontalAlignment="Left"
+                    Text="Auto DesiredSize · 无 Width / Height"/>
+                  <TextBlock x:Name="wrappedTextProbe"
+                    HorizontalAlignment="Left" Margin="0,8,0,0" MaxWidth="320"
+                    TextWrapping="Wrap"
+                    Text="TextBlock 使用父级约束重新排版；换行后的高度会反向参与 StackPanel 与 RelativePanel 测量。"/>
+                  <TextBlock x:Name="trimmedTextProbe"
+                    Foreground="{StaticResource TextMuted}"
+                    HorizontalAlignment="Left" Margin="0,6,0,0" MaxWidth="220"
+                    TextTrimming="CharacterEllipsis"
+                    Text="CharacterEllipsis · 最终绘制宽度来自 Arrange 槽"/>
+                  <Button x:Name="relativeCenterButton" Height="32" HorizontalAlignment="Left" Margin="0,8,0,0"
+                    Content="XAML 居中约束"/>
+                </StackPanel>
+              </RelativePanel>
+            </Border>
+            <Border Canvas.Left="532" Canvas.Top="270" Height="190" Style="{StaticResource ContainerFrame}" Width="758">
+              <ScrollViewer x:Name="demoScroll" DesignId="524" ClipToBounds="true">
+                <Canvas x:Name="demoScrollContent" ClipToBounds="true" Width="1100" Height="360">
+                  <Border Canvas.Left="16" Canvas.Top="16" Height="90" Style="{StaticResource SurfacePanel}" Width="220">
+                    <Canvas x:Name="scrollCard1" DesignId="525" ClipToBounds="true">
+                      <TextBlock x:Name="scrollCard1Text" DesignId="526" Canvas.Left="0" Canvas.Top="0" Height="21" Text="Card 1 · XAML child" Width="160"/>
+                    </Canvas>
+                  </Border>
+                  <Border Canvas.Left="270" Canvas.Top="16" Height="90" Style="{StaticResource SurfacePanel}" Width="220">
+                    <Canvas x:Name="scrollCard2" DesignId="527" ClipToBounds="true">
+                      <TextBlock x:Name="scrollCard2Text" DesignId="528" Canvas.Left="0" Canvas.Top="0" Height="21" Text="Card 2 · XAML child" Width="160"/>
+                    </Canvas>
+                  </Border>
+                  <Button x:Name="farButton" DesignId="529" Canvas.Left="920" Canvas.Top="280" Height="32" Click="HandleFarButton" Content="Far Button" Width="140"/>
+                </Canvas>
+              </ScrollViewer>
+            </Border>
           </Canvas>
         </Border>
       </TabItem>
@@ -906,7 +968,7 @@
             </ContentControl>
             <Canvas x:Name="wpfTemplateAndStyleScope" Canvas.Left="420" Canvas.Top="48" Height="420" Width="390">
               <TextBlock Canvas.Left="0" Canvas.Top="0" Text="ControlTemplate + resources + triggers" Foreground="{StaticResource Accent}" FontSize="14" Height="24" Width="380"/>
-              <Button x:Name="wpfTemplateButton" AutomationProperties.Name="RelativeSource TemplatedParent" Canvas.Left="0" Canvas.Top="36" Height="112" Template="{StaticResource WpfLabButtonTemplate}" Content="authored content → ContentPresenter" Width="360"/>
+              <Button x:Name="wpfTemplateButton" AutomationProperties.Name="RelativeSource TemplatedParent" Canvas.Left="0" Canvas.Top="36" Height="112" Template="{StaticResource WpfLabButtonTemplate}" Content="click · swap Control.Template on same Button" Click="HandleTemplateSwap" Width="360"/>
               <Button x:Name="wpfTriggerButton" Canvas.Left="0" Canvas.Top="164" Height="38" Style="{StaticResource WpfLabLiveButton}" Content="Trigger ready" Width="220"/>
               <TextBlock x:Name="wpfScopeResourceValue" Canvas.Left="0" Canvas.Top="220" Foreground="{DynamicResource WpfLabAccent}" Height="24" Text="local DynamicResource (green)" Width="300"/>
               <StackPanel x:Name="wpfInnerResourceScope" Canvas.Left="0" Canvas.Top="256" Height="90" Width="360">
@@ -1036,7 +1098,7 @@
         </Border>
       </TabItem>
     </TabControl>
-    <ContextMenu x:Name="systemContextMenu" DesignId="608">
+    <ContextMenu x:Name="systemContextMenu" DesignId="608" Grid.Row="3">
       <ContextMenu.Items>
         <MenuItem Header="新建项目" Command="Demo.System.NewProject" CommandParameter="context-new"/>
         <MenuItem Header="刷新视图" Command="Demo.System.Refresh" CommandParameter="context-refresh" CommandTarget="{x:Reference mainMenu}" InputGestureText="F5"/>
@@ -1049,8 +1111,8 @@
         </MenuItem>
       </ContextMenu.Items>
     </ContextMenu>
-    <StatusBar x:Name="mainStatusBar" DesignId="900" Canvas.Left="0" Canvas.Top="768"
-               Height="26" Width="1400" ItemsSource="{StaticResource DemoStatusEntries}"
+    <StatusBar x:Name="mainStatusBar" DesignId="900" Grid.Row="4"
+               ItemsSource="{StaticResource DemoStatusEntries}"
                DisplayMemberPath="Text"/>
-  </Canvas>
+  </Grid>
 </Window>

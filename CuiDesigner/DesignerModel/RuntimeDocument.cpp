@@ -147,6 +147,36 @@ namespace
 		return result;
 	}
 
+	std::vector<std::pair<std::wstring, BindingValue>>
+	BuildStructuralStyleResourcesFor(
+		const DesignDocument* document,
+		const RuntimeDocumentLoadOptions& options)
+	{
+		if (!document) return {};
+		return CuiRuntime::XamlObjectMaterializer::
+			BuildStructuralStyleResources(
+				std::make_shared<const DesignDocument>(*document),
+				MaterializationOptionsFor(options));
+	}
+
+	std::vector<std::pair<std::wstring, BindingValue>>
+	BuildStructuralStyleResourcesFor(
+		const DesignDocument* document,
+		const std::shared_ptr<const NativeSurfaceBehaviorRegistry>&
+			nativeSurfaceBehaviors,
+		const std::shared_ptr<const DeclarativeComponentBehaviorRegistry>&
+			declarativeComponentBehaviors,
+		bool allowNativeSurfacePlaceholder)
+	{
+		RuntimeDocumentLoadOptions options;
+		options.NativeSurfaceBehaviors = nativeSurfaceBehaviors;
+		options.DeclarativeComponentBehaviors =
+			declarativeComponentBehaviors;
+		options.AllowNativeSurfacePlaceholder =
+			allowNativeSurfacePlaceholder;
+		return BuildStructuralStyleResourcesFor(document, options);
+	}
+
 	class WindowRuntimeDocumentContentHost final
 		: public RuntimeDocumentContentHost
 	{
@@ -2020,7 +2050,12 @@ bool RuntimeDocument::ApplyWindowProperties(
 	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 		_styleSheet, runtimeStyleSheet, outError,
 		_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
-		_sourceDocument ? _sourceDocument->Resources : nullptr)
+		_sourceDocument ? _sourceDocument->Resources : nullptr,
+		BuildStructuralStyleResourcesFor(
+			_sourceDocument ? &*_sourceDocument : nullptr,
+			_nativeSurfaceBehaviors,
+			_declarativeComponentBehaviors,
+			_allowNativeSurfacePlaceholder))
 		|| !cui::framework::StyleAccess::SetDocumentStyles(
 			form, runtimeStyleSheet, false)
 		|| !ApplyWindowNode(_window, form, outError))
@@ -2314,7 +2349,12 @@ bool RuntimeDocument::AttachToWindow(
 	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 		_styleSheet, runtimeStyleSheet, outError,
 		_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
-		_sourceDocument ? _sourceDocument->Resources : nullptr)
+		_sourceDocument ? _sourceDocument->Resources : nullptr,
+		BuildStructuralStyleResourcesFor(
+			_sourceDocument ? &*_sourceDocument : nullptr,
+			_nativeSurfaceBehaviors,
+			_declarativeComponentBehaviors,
+			_allowNativeSurfacePlaceholder))
 		|| !cui::framework::StyleAccess::SetDocumentStyles(
 			form, runtimeStyleSheet, false))
 	{
@@ -2323,7 +2363,7 @@ bool RuntimeDocument::AttachToWindow(
 		presentation->Restore();
 		if (outError && outError->empty())
 			*outError = L"文档样式表无法应用到 XAML Window。";
-		return false;
+			return false;
 	}
 	if (!ApplyWindowNode(_window, form, outError))
 	{
@@ -2368,7 +2408,6 @@ bool RuntimeDocument::AttachToWindow(
 		presentation->Restore();
 		return false;
 	}
-
 	std::optional<WindowDataContextSnapshot> dataContextSnapshot;
 	if (_dataContext)
 	{
@@ -2398,7 +2437,6 @@ bool RuntimeDocument::AttachToWindow(
 			return false;
 		}
 	}
-
 	RemoveDataBindings(_installedBindings);
 	std::vector<InstalledBinding> mountedBindings;
 	if (!InstallDataBindings(
@@ -2439,7 +2477,6 @@ bool RuntimeDocument::AttachToWindow(
 			? std::wstring(L"Window Content 宿主拒绝原子挂载。") : failure);
 		return false;
 	}
-
 	_appliedWindow = &form;
 	_dataContextWindow = &form;
 	if (outError) outError->clear();
@@ -2536,7 +2573,12 @@ bool RuntimeDocument::CommitInheritedWindowAttachments(
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 			_styleSheet, runtimeStyleSheet, outError,
 			_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
-			_sourceDocument ? _sourceDocument->Resources : nullptr)
+			_sourceDocument ? _sourceDocument->Resources : nullptr,
+			BuildStructuralStyleResourcesFor(
+				_sourceDocument ? &*_sourceDocument : nullptr,
+				_nativeSurfaceBehaviors,
+				_declarativeComponentBehaviors,
+				_allowNativeSurfacePlaceholder))
 			|| !cui::framework::StyleAccess::SetDocumentStyles(
 				*appliedWindow, runtimeStyleSheet, false)
 			|| (!HasSameWindowPresentation(previous._window, _window)
@@ -2723,6 +2765,18 @@ bool RuntimeDocumentLoader::Load(
 	std::wstring* outError,
 	XamlDocumentDiagnostic* outDiagnostic)
 {
+	return LoadCore(
+		document, output, options, false, outError, outDiagnostic);
+}
+
+bool RuntimeDocumentLoader::LoadCore(
+	const DesignDocument& document,
+	RuntimeDocument& output,
+	const RuntimeDocumentLoadOptions& options,
+	bool deferDataBindings,
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
+{
 	try
 	{
 		if (output._contentReleased
@@ -2780,10 +2834,19 @@ bool RuntimeDocumentLoader::Load(
 		if (!candidate.ApplyCommandTargetReferences(
 			nullptr, true, nullptr, outError)) return false;
 
-		if (options.DataContext
-			&& !candidate.BindDataContext(options.DataContext, outError))
-			return false;
-		if (!options.DataContext)
+		if (deferDataBindings)
+		{
+			candidate._dataContext = options.DataContext;
+			for (const auto& view : candidate._collectionViews)
+				if (view) view->BindDataContext(
+					BindingSourceReference(options.DataContext));
+		}
+		else if (options.DataContext)
+		{
+			if (!candidate.BindDataContext(options.DataContext, outError))
+				return false;
+		}
+		else
 		{
 			std::vector<RuntimeDocument::InstalledBinding> installed;
 			if (!candidate.InstallDataBindings({}, installed, outError))
@@ -2890,7 +2953,8 @@ bool RuntimeDocumentLoader::LoadIntoWindow(
 	}
 
 	RuntimeDocument candidate;
-	if (!Load(document, candidate, options, outError, outDiagnostic)) return false;
+	if (!LoadCore(
+		document, candidate, options, true, outError, outDiagnostic)) return false;
 	if (!candidate.AttachToWindow(form, formResolver, outError)) return false;
 	output = std::move(candidate);
 	if (outError) outError->clear();
@@ -3450,7 +3514,9 @@ bool RuntimeDocumentLoader::Reload(
 			{
 				if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 					document.StyleSheet, nextRuntimeStyleSheet, outError,
-					document.ResourceBasePath, document.Resources))
+					document.ResourceBasePath, document.Resources,
+					BuildStructuralStyleResourcesFor(
+						&document, inheritedOptions)))
 				{
 					rollbackWindowPresentation();
 					rollbackBindings();

@@ -897,6 +897,83 @@ namespace
 		std::wstring _dataType;
 	};
 
+	class ApplyTemplateProbeButton final : public Button
+	{
+	public:
+		int ApplyTemplateCallbackCount = 0;
+		ControlTemplateReference ReplacementOnApply;
+
+	protected:
+		void OnApplyTemplate() override
+		{
+			++ApplyTemplateCallbackCount;
+			if (ReplacementOnApply)
+			{
+				auto replacement = ReplacementOnApply;
+				ReplacementOnApply = {};
+				SetTemplate(std::move(replacement));
+			}
+		}
+	};
+
+	class ProbeControlTemplate final : public IControlTemplate
+	{
+	public:
+		explicit ProbeControlTemplate(
+			std::wstring partName,
+			bool fail = false)
+			: _partName(std::move(partName)), _fail(fail)
+		{
+		}
+
+		UIClass TargetType() const noexcept override
+		{
+			return UIClass::UI_Button;
+		}
+
+		bool Apply(
+			Control& owner,
+			std::wstring* outError) const override
+		{
+			++ApplyCount;
+			if (_fail)
+			{
+				if (outError) *outError = L"probe failure";
+				return false;
+			}
+			auto root = std::make_unique<Border>();
+			auto* raw = root.get();
+			cui::framework::XamlAccess::SetTemplatedParent(*raw, &owner);
+			if (!cui::framework::XamlAccess::RegisterTemplatePart(
+				owner, _partName, raw))
+			{
+				if (outError) *outError = L"probe part registration failed";
+				return false;
+			}
+			if (cui::framework::TemplateAccess::SetTemplateRoot(
+				owner, std::move(root)) != raw)
+			{
+				if (outError) *outError = L"probe root attachment failed";
+				return false;
+			}
+			if (outError) outError->clear();
+			return true;
+		}
+
+		std::unique_ptr<Control> Build(
+			std::wstring* outError) const override
+		{
+			if (outError) outError->clear();
+			return std::make_unique<Button>();
+		}
+
+		mutable int ApplyCount = 0;
+
+	private:
+		std::wstring _partName;
+		bool _fail = false;
+	};
+
 	class MetadataObservableObject final : public ObservableObject
 	{
 	public:
@@ -6478,6 +6555,10 @@ int main()
 			DesignerPropertyCatalog::GetBrowsableProperties(progress);
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(progressProperties, L"Value") != nullptr);
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(progressProperties, L"Maximum") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+			progressProperties, L"Orientation") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+			progressProperties, L"IsIndeterminate") != nullptr);
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(progressProperties, L"MaxValue") == nullptr);
 
 		ScrollViewer scroll; ConfigureTestControl(scroll, 0, 0, 100, 100);
@@ -7676,15 +7757,25 @@ int main()
 			DesignerPropertyCatalog::Find(sliderProperties, L"Value");
 		const auto* sliderTickFrequency =
 			DesignerPropertyCatalog::Find(sliderProperties, L"TickFrequency");
+		const auto* sliderOrientation =
+			DesignerPropertyCatalog::Find(sliderProperties, L"Orientation");
+		const auto* sliderDirection =
+			DesignerPropertyCatalog::Find(
+				sliderProperties, L"IsDirectionReversed");
 		CUI_EXPECT_TRUE(sliderMinimum != nullptr);
 		CUI_EXPECT_TRUE(sliderValue != nullptr);
 		CUI_EXPECT_TRUE(sliderTickFrequency != nullptr);
+		CUI_EXPECT_TRUE(sliderOrientation != nullptr);
+		CUI_EXPECT_TRUE(sliderDirection != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"Range"), sliderMinimum->Category);
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata, sliderValue->Persistence);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number,
 			sliderTickFrequency->Editor);
 		CUI_EXPECT_TRUE(sliderTickFrequency->Minimum.has_value());
 		CUI_EXPECT_EQ(0.0, *sliderTickFrequency->Minimum);
+		CUI_EXPECT_EQ(2ULL, sliderOrientation->Choices.size());
+		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Boolean,
+			sliderDirection->Editor);
 		for (const wchar_t* removed : { L"TrackBackColor", L"TrackHeight",
 			L"ThumbColor", L"ThumbRadius" })
 		{
@@ -7744,6 +7835,29 @@ int main()
 			boundSlider.GetPropertyExpressionKind(L"Value"));
 		CUI_EXPECT_NEAR(18.0,
 			sliderSource.GetValue<double>(L"Current"), 0.0000001);
+
+		Slider keyboardSlider;
+		ConfigureTestControl(keyboardSlider, 0, 0, 240, 32);
+		keyboardSlider.Minimum = 0.0;
+		keyboardSlider.Maximum = 100.0;
+		keyboardSlider.Value = 50.0;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			keyboardSlider,
+			KeyInput(InputReportKind::KeyDown, Key::Right)));
+		CUI_EXPECT_NEAR(51.0, keyboardSlider.Value, 0.0000001);
+		keyboardSlider.IsDirectionReversed = true;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			keyboardSlider,
+			KeyInput(InputReportKind::KeyDown, Key::Right)));
+		CUI_EXPECT_NEAR(50.0, keyboardSlider.Value, 0.0000001);
+		keyboardSlider.Orientation = Orientation::Vertical;
+		keyboardSlider.IsDirectionReversed = false;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			keyboardSlider,
+			KeyInput(InputReportKind::KeyDown, Key::Up)));
+		CUI_EXPECT_NEAR(51.0, keyboardSlider.Value, 0.0000001);
+		CUI_EXPECT_TRUE(keyboardSlider.HandlesNavigationKey(Key::Up));
+		CUI_EXPECT_FALSE(keyboardSlider.HandlesNavigationKey(Key::Space));
 
 		NumericUpDown numeric; ConfigureTestControl(numeric, 0, 0, 140, 30);
 		const auto numericProperties =
@@ -8172,6 +8286,9 @@ int main()
 		CUI_EXPECT_TRUE(panel.FindPropertyMetadata(
 			L"DisabledOverlayColor") == nullptr);
 		CUI_EXPECT_FALSE(panel.ClipsChildren());
+		CUI_EXPECT_TRUE(
+			panel.FindPropertyMetadata(L"ClipToBounds") != nullptr);
+		CUI_EXPECT_FALSE(panel.ClipToBounds);
 		CUI_EXPECT_TRUE(panel.FindPropertyMetadata(L"Padding") == nullptr);
 		CUI_EXPECT_FALSE(panel.TrySetPropertyValue(
 			L"Padding", BindingValue(Thickness(12.0f))));
@@ -8179,6 +8296,18 @@ int main()
 		panel.BorderThickness = Thickness(8.0f);
 		CUI_EXPECT_EQ(Thickness{}, panel.Padding);
 		CUI_EXPECT_EQ(Thickness{}, panel.BorderThickness);
+
+		panel.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 100.0f, 100.0f });
+		auto* overflowingChild = panel.AdoptVisualChild(new Control());
+		overflowingChild->Arrange(cui::core::Rect{
+			80.0f, 80.0f, 40.0f, 40.0f });
+		CUI_EXPECT_TRUE(overflowingChild->IsRenderPointInsideClip(
+			D2D1::Point2F(110.0f, 90.0f)));
+		panel.ClipToBounds = true;
+		CUI_EXPECT_TRUE(panel.ClipsChildren());
+		CUI_EXPECT_FALSE(overflowingChild->IsRenderPointInsideClip(
+			D2D1::Point2F(110.0f, 90.0f)));
 
 		ContentPresenter contentPresenter;
 		ItemsPresenter itemsPresenter;
@@ -15753,6 +15882,85 @@ int main()
 		CUI_EXPECT_FALSE(error.empty());
 	});
 
+	runner.Add("Control Template DP applies and replaces the exact existing host", []
+	{
+		ApplyTemplateProbeButton host;
+		auto first = std::make_shared<ProbeControlTemplate>(L"firstPart");
+		const ControlTemplateReference firstReference(first);
+		host.SetTemplate(firstReference);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			host.GetPropertyValueSource(L"Template"));
+		CUI_EXPECT_TRUE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(1, first->ApplyCount);
+		CUI_EXPECT_EQ(1, host.ApplyTemplateCallbackCount);
+		auto* firstRoot =
+			cui::framework::TemplateAccess::GetTemplateRoot(host);
+		const ControlWeakReference firstLifetime(firstRoot);
+		CUI_EXPECT_TRUE(firstRoot != nullptr);
+		CUI_EXPECT_TRUE(firstRoot
+			== host.FindDeclarativeTemplatePart(L"firstPart"));
+		CUI_EXPECT_EQ(&host, firstRoot->GetTemplatedParent());
+		CUI_EXPECT_FALSE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(1, first->ApplyCount);
+		CUI_EXPECT_EQ(1, host.ApplyTemplateCallbackCount);
+
+		// Semantic no-op assignment must retain the already applied tree.
+		host.SetTemplate(firstReference);
+		CUI_EXPECT_EQ(firstRoot,
+			cui::framework::TemplateAccess::GetTemplateRoot(host));
+
+		auto second = std::make_shared<ProbeControlTemplate>(L"secondPart");
+		host.SetTemplate(ControlTemplateReference(second));
+		CUI_EXPECT_EQ(nullptr, firstLifetime.Get());
+		CUI_EXPECT_EQ(nullptr,
+			cui::framework::TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_TRUE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(1, second->ApplyCount);
+		CUI_EXPECT_EQ(2, host.ApplyTemplateCallbackCount);
+		CUI_EXPECT_TRUE(host.FindDeclarativeTemplatePart(
+			L"firstPart") == nullptr);
+		CUI_EXPECT_TRUE(host.FindDeclarativeTemplatePart(
+			L"secondPart") != nullptr);
+
+		ApplyTemplateProbeButton callbackHost;
+		auto callbackFirst =
+			std::make_shared<ProbeControlTemplate>(L"callbackFirstPart");
+		auto callbackSecond =
+			std::make_shared<ProbeControlTemplate>(L"callbackSecondPart");
+		callbackHost.ReplacementOnApply =
+			ControlTemplateReference(callbackSecond);
+		callbackHost.SetTemplate(
+			ControlTemplateReference(callbackFirst));
+		CUI_EXPECT_TRUE(callbackHost.ApplyTemplate());
+		CUI_EXPECT_EQ(1, callbackFirst->ApplyCount);
+		CUI_EXPECT_EQ(1, callbackSecond->ApplyCount);
+		CUI_EXPECT_EQ(2, callbackHost.ApplyTemplateCallbackCount);
+		CUI_EXPECT_TRUE(callbackHost.FindDeclarativeTemplatePart(
+			L"callbackFirstPart") == nullptr);
+		CUI_EXPECT_TRUE(callbackHost.FindDeclarativeTemplatePart(
+			L"callbackSecondPart") != nullptr);
+
+		auto failing = std::make_shared<ProbeControlTemplate>(
+			L"neverAttached", true);
+		host.SetTemplate(ControlTemplateReference(failing));
+		CUI_EXPECT_FALSE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(1, failing->ApplyCount);
+		CUI_EXPECT_EQ(std::wstring(L"probe failure"),
+			host.LastTemplateError());
+		CUI_EXPECT_EQ(nullptr,
+			cui::framework::TemplateAccess::GetTemplateRoot(host));
+		// A broken template is suppressed until its effective value changes.
+		CUI_EXPECT_FALSE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(1, failing->ApplyCount);
+		CUI_EXPECT_EQ(2, host.ApplyTemplateCallbackCount);
+
+		host.SetTemplate(firstReference);
+		CUI_EXPECT_TRUE(host.ApplyTemplate());
+		CUI_EXPECT_EQ(2, first->ApplyCount);
+		CUI_EXPECT_EQ(3, host.ApplyTemplateCallbackCount);
+		CUI_EXPECT_TRUE(host.LastTemplateError().empty());
+	});
+
 	runner.Add("ControlTemplate resources own built-in appearance and preserve Content", []
 	{
 		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
@@ -15788,6 +15996,16 @@ int main()
         </Canvas>
       </Border>
     </ControlTemplate>
+    <ControlTemplate x:Key="AlternateButtonTemplate" TargetType="Button">
+      <Border x:Name="alternateChrome"
+              Padding="7"
+              Background="#FFE8F5EE"
+              BorderBrush="#FF15966A"
+              BorderThickness="2">
+        <ContentPresenter x:Name="alternateContentHost"
+                          ContentSource="Content" />
+      </Border>
+    </ControlTemplate>
     <ControlTemplate TargetType="ContentControl">
       <Canvas x:Name="implicitChrome"
              Background="{TemplateBinding Background}">
@@ -15821,7 +16039,7 @@ int main()
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
 			xaml, document, &error));
 		CUI_EXPECT_TRUE(error.empty());
-		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_EQ(3ULL, document.ControlTemplates.size());
 		CUI_EXPECT_FALSE(document.ControlTemplates.front().IsImplicit());
 		CUI_EXPECT_TRUE(document.ControlTemplates.back().IsImplicit());
 		CUI_EXPECT_EQ(UIClass::UI_Button,
@@ -15850,6 +16068,9 @@ int main()
 		CUI_EXPECT_TRUE(button != nullptr);
 		if (button)
 		{
+			CUI_EXPECT_TRUE(static_cast<bool>(button->GetTemplate()));
+			CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+				button->GetPropertyValueSource(L"Template"));
 			auto* chrome = TemplateAccess::GetTemplateRoot(*button);
 			CUI_EXPECT_TRUE(chrome != nullptr);
 			CUI_EXPECT_TRUE(button->GetVisualContent() == nullptr);
@@ -15893,6 +16114,38 @@ int main()
 				CUI_EXPECT_EQ(DependencyPropertyValueSource::VisualState,
 					caption->GetPropertyValueSource(L"Text"));
 			}
+
+			const auto originalTemplate = button->GetTemplate();
+			const ControlWeakReference oldRoot(chrome);
+			BindingValue alternateValue;
+			ControlTemplateReference alternateTemplate;
+			CUI_EXPECT_TRUE(button->TryFindResource(
+				L"AlternateButtonTemplate", alternateValue));
+			CUI_EXPECT_TRUE(alternateValue.TryGet(alternateTemplate));
+			CUI_EXPECT_TRUE(static_cast<bool>(alternateTemplate));
+			button->SetTemplate(alternateTemplate);
+			CUI_EXPECT_EQ(nullptr, TemplateAccess::GetTemplateRoot(*button));
+			CUI_EXPECT_EQ(nullptr, oldRoot.Get());
+			CUI_EXPECT_TRUE(button->ApplyTemplate());
+			auto* alternateChrome =
+				button->FindDeclarativeTemplatePart(L"alternateChrome");
+			CUI_EXPECT_TRUE(alternateChrome != nullptr);
+			CUI_EXPECT_TRUE(alternateChrome
+				== TemplateAccess::GetTemplateRoot(*button));
+			CUI_EXPECT_TRUE(alternateChrome
+				&& alternateChrome->GetTemplatedParent() == button);
+			CUI_EXPECT_TRUE(alternateChrome
+				&& alternateChrome->GetDesignId() == 0);
+			CUI_EXPECT_TRUE(button->FindDeclarativeTemplatePart(
+				L"caption") == nullptr);
+			CUI_EXPECT_FALSE(button->ApplyTemplate());
+			CUI_EXPECT_TRUE(alternateChrome
+				== TemplateAccess::GetTemplateRoot(*button));
+			button->SetTemplate(originalTemplate);
+			CUI_EXPECT_TRUE(button->ApplyTemplate());
+			CUI_EXPECT_TRUE(button->FindDeclarativeTemplatePart(
+				L"caption") != nullptr);
+			CUI_EXPECT_TRUE(button->LastTemplateError().empty());
 		}
 		auto* implicitHost = contentRoot
 			? dynamic_cast<ContentControl*>(contentRoot->FindControlByDesignId(3))
@@ -16482,6 +16735,9 @@ int main()
     <DataTemplate x:Key="PersonRow" DataType="Person">
       <TextBlock x:Name="personName" Text="{Binding Name}" />
     </DataTemplate>
+    <ItemsPanelTemplate x:Key="NonVirtualItemsPanel">
+      <StackPanel />
+    </ItemsPanelTemplate>
     <ControlTemplate x:Key="StyledItemTemplate" TargetType="ListBoxItem">
       <Border x:Name="styledChrome"
               Padding="{TemplateBinding Padding}"
@@ -16545,10 +16801,12 @@ int main()
 	<Canvas x:Name="contentRoot">
 	  <ListBox x:Name="styledPeople" DesignId="1"
            ItemsSource="{StaticResource People}"
+           ItemsPanel="{StaticResource NonVirtualItemsPanel}"
            ItemTemplate="{StaticResource PersonRow}"
            ItemContainerStyle="{StaticResource PersonContainer}" />
 	  <ListBox x:Name="implicitPeople" DesignId="2"
            ItemsSource="{StaticResource People}"
+           ItemsPanel="{StaticResource NonVirtualItemsPanel}"
            ItemTemplate="{StaticResource PersonRow}" />
 	</Canvas>
 </Window>)XAML";
@@ -17964,6 +18222,35 @@ int main()
 			->FindDeclarativeTemplatePart(L"implicitPart") == nullptr);
 		CUI_EXPECT_TRUE(directInstance && directInstance
 			->FindDeclarativeTemplatePart(L"styledPart") == nullptr);
+		CUI_EXPECT_TRUE(styledInstance
+			&& static_cast<bool>(styledInstance->GetTemplate()));
+		CUI_EXPECT_TRUE(directInstance
+			&& static_cast<bool>(directInstance->GetTemplate()));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			styledInstance->GetPropertyValueSource(L"Template"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			directInstance->GetPropertyValueSource(L"Template"));
+		BindingValue componentTemplateValue;
+		ControlTemplateReference componentTemplate;
+		const ControlWeakReference styledRootLifetime(
+			styledInstance
+				? cui::framework::TemplateAccess::GetTemplateRoot(
+					*styledInstance)
+				: nullptr);
+		CUI_EXPECT_TRUE(styledInstance
+			&& styledInstance->TryFindResource(
+				L"DirectSurfaceTemplate", componentTemplateValue));
+		CUI_EXPECT_TRUE(componentTemplateValue.TryGet(componentTemplate));
+		if (styledInstance && componentTemplate)
+		{
+			styledInstance->SetTemplate(componentTemplate);
+			CUI_EXPECT_EQ(nullptr, styledRootLifetime.Get());
+			CUI_EXPECT_TRUE(styledInstance->ApplyTemplate());
+			CUI_EXPECT_TRUE(styledInstance->FindDeclarativeTemplatePart(
+				L"directPart") != nullptr);
+			CUI_EXPECT_TRUE(styledInstance->FindDeclarativeTemplatePart(
+				L"styledPart") == nullptr);
+		}
 
 		DesignerModel::RuntimeDocument runtime;
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
@@ -31268,6 +31555,8 @@ class FreshWindow : public FreshWindowGenerated {};
 			DesignerStyleValueKind::String, L"Styled");
 		input.StyleSheet.Resources.push_back({
 			L"Accent", { DesignerStyleValueKind::Color, L"#FF0078D4" } });
+		input.StyleSheet.Resources.push_back({
+			L"HoverFontSize", { DesignerStyleValueKind::Double, L"12" } });
 		DesignerStyleRule rule;
 		rule.HasType = true;
 		rule.Type = UIClass::UI_Button;
@@ -31315,28 +31604,41 @@ class FreshWindow : public FreshWindowGenerated {};
 			L"Ready", { DesignerStyleValueKind::Bool, L"true" } });
 		DesignerEventTriggerAction enter;
 		enter.Kind = DesignerStoryboardActionKind::Begin;
+		enter.StoryboardName = L"StyleReadyClock";
 		DesignerVisualStateAnimation animation;
 		animation.Kind = DesignerAnimationKind::Double;
 		animation.PropertyName = L"FontSize";
 		animation.HasTo = true;
-		animation.To = { DesignerStyleValueKind::Double, L"12" };
+		animation.ToUsesResource = true;
+		animation.ToResourceKey = L"HoverFontSize";
 		animation.DurationMilliseconds = 100;
 		enter.Animations.push_back(std::move(animation));
 		actionTrigger.EnterActions.push_back(std::move(enter));
+		DesignerEventTriggerAction exit;
+		exit.Kind = DesignerStoryboardActionKind::Stop;
+		exit.StoryboardName = L"StyleReadyClock";
+		actionTrigger.ExitActions.push_back(std::move(exit));
 		input.StyleSheet.Rules.front().Triggers.push_back(
 			std::move(actionTrigger));
-		bool rejectedActions = false;
-		try
-		{
-			CodeGenerator actionGenerator(L"StyledWindow", input);
-			(void)actionGenerator.GenerateCpp();
-		}
-		catch (const std::invalid_argument& exception)
-		{
-			rejectedActions = std::string(exception.what()).find(
-				"dynamic XAML") != std::string::npos;
-		}
-		CUI_EXPECT_TRUE(rejectedActions);
+		CodeGenerator actionGenerator(L"StyledWindow", input);
+		const auto actionCpp = actionGenerator.GenerateCpp();
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"std::vector<DeclarativeEventTriggerActionDefinition> "
+			"__styleEnterActions") != std::string::npos);
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"action.Kind = DeclarativeStoryboardActionKind::Begin;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"action.Kind = DeclarativeStoryboardActionKind::Stop;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"action.StoryboardName = L\"StyleReadyClock\";")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"animation.To = BindingValue(12.0);") != std::string::npos);
+		CUI_EXPECT_TRUE(actionCpp.find(
+			"}, std::move(__styleEnterActions")
+			!= std::string::npos);
 	});
 
 	runner.Add("Typed authored properties lower from DesignDocument", []
@@ -31382,6 +31684,9 @@ class FreshWindow : public FreshWindowGenerated {};
 			std::make_shared<DesignerStyleSheet>();
 		designerControl->LocalResources->Resources.push_back({
 			L"ButtonRadius", { DesignerStyleValueKind::Double, L"6.5" }, {} });
+		designerControl->LocalResources->Resources.push_back({
+			L"__cui_static_scope_0",
+			{ DesignerStyleValueKind::Double, L"0.25" }, {} });
 		DesignerStyleRule baseButton;
 		baseButton.HasType = true;
 		baseButton.Type = UIClass::UI_Button;
@@ -31389,12 +31694,37 @@ class FreshWindow : public FreshWindowGenerated {};
 		baseButton.Setters.push_back({ L"Background", false, {},
 			{ DesignerStyleValueKind::Color, L"#FF102030" } });
 		input.StyleSheet.Rules.push_back(std::move(baseButton));
+		input.StyleSheet.Resources.push_back({
+			L"OuterHoverOpacity",
+			{ DesignerStyleValueKind::Double, L"0.75" } });
 		DesignerStyleRule localButton;
 		localButton.HasType = true;
 		localButton.Type = UIClass::UI_Button;
 		localButton.BasedOn = L"BaseButton";
 		localButton.Setters.push_back({ L"FontSize", true,
 			L"ButtonRadius", {}, true });
+		localButton.Setters.push_back({ L"Opacity", true,
+			L"OuterHoverOpacity", {} });
+		DesignerStyleTrigger localHover;
+		localHover.PropertyConditions.push_back({ L"IsMouseOver",
+			{ DesignerStyleValueKind::Bool, L"true" } });
+		DesignerEventTriggerAction localEnter;
+		localEnter.Kind = DesignerStoryboardActionKind::Begin;
+		localEnter.StoryboardName = L"LocalHoverClock";
+		DesignerVisualStateAnimation localAnimation;
+		localAnimation.Kind = DesignerAnimationKind::Double;
+		localAnimation.PropertyName = L"Opacity";
+		localAnimation.HasTo = true;
+		localAnimation.ToUsesResource = true;
+		localAnimation.ToResourceKey = L"OuterHoverOpacity";
+		localAnimation.DurationMilliseconds = 80;
+		localEnter.Animations.push_back(std::move(localAnimation));
+		localHover.EnterActions.push_back(std::move(localEnter));
+		DesignerEventTriggerAction localExit;
+		localExit.Kind = DesignerStoryboardActionKind::Stop;
+		localExit.StoryboardName = L"LocalHoverClock";
+		localHover.ExitActions.push_back(std::move(localExit));
+		localButton.Triggers.push_back(std::move(localHover));
 		designerControl->LocalResources->Rules.push_back(
 			std::move(localButton));
 		CommitCodeGenFixtureDocument(input, { designerControl });
@@ -31416,6 +31746,28 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(dynamicCpp.find(
 			"ControlStyleSetter::DynamicResource(L\"FontSize\", L\"ButtonRadius\")")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"SetResource(L\"__cui_static_scope_0\", BindingValue(0.25));")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"SetResource(L\"__cui_static_scope_1\", BindingValue(0.75));")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"SetResource(L\"__cui_static_scope_2\"")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"ControlStyleSetter::Resource(L\"Opacity\", "
+			"L\"__cui_static_scope_1\")")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"__resources_metadataButton_enterActions_")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"action.StoryboardName = L\"LocalHoverClock\";")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"animation.To = BindingValue(0.75);")
 			!= std::string::npos);
 	});
 
@@ -31894,6 +32246,108 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_TRUE(state.NeedsArrange());
         CUI_EXPECT_TRUE(state.NeedsPaint());
     });
+
+	runner.Add("TextBlock derives desired size from constrained text layout", []
+	{
+		using namespace cui::core;
+
+		Control emptyControl;
+		const auto emptyDesired =
+			emptyControl.Measure(Constraints{ Size{ 500.0f, 500.0f } });
+		CUI_EXPECT_EQ((Size{}), emptyDesired);
+
+		Label text;
+		text.Text = L"CUI XAML runtime document";
+		text.HorizontalAlignment = HorizontalAlignment::Left;
+
+		const auto natural = text.Measure(
+			Constraints{ Size{ 500.0f, Infinity } });
+		CUI_EXPECT_TRUE(natural.width > 0.0f);
+		CUI_EXPECT_TRUE(natural.width < 500.0f);
+		CUI_EXPECT_TRUE(natural.height > 0.0f);
+
+		const auto constrainedNoWrap = text.Measure(
+			Constraints{ Size{ 60.0f, Infinity } });
+		CUI_EXPECT_NEAR(60.0f, constrainedNoWrap.width, 0.001f);
+		CUI_EXPECT_NEAR(natural.height, constrainedNoWrap.height, 0.001f);
+
+		text.TextWrapping = TextWrapping::Wrap;
+		const auto wrapped = text.Measure(
+			Constraints{ Size{ 60.0f, Infinity } });
+		CUI_EXPECT_TRUE(wrapped.width <= 60.0f);
+		CUI_EXPECT_TRUE(wrapped.height > constrainedNoWrap.height);
+
+		text.Padding = Thickness(4.0f, 3.0f);
+		const auto padded = text.Measure(
+			Constraints{ Size{ 500.0f, Infinity } });
+		CUI_EXPECT_NEAR(natural.width + 8.0f, padded.width, 0.001f);
+		CUI_EXPECT_NEAR(natural.height + 6.0f, padded.height, 0.001f);
+
+		text.TextAlignment = TextAlignment::Center;
+		text.TextTrimming = TextTrimming::CharacterEllipsis;
+		CUI_EXPECT_EQ(TextAlignment::Center, text.TextAlignment);
+		CUI_EXPECT_EQ(
+			TextTrimming::CharacterEllipsis, text.TextTrimming);
+
+		StackPanel stack;
+		auto* autoText = static_cast<Label*>(
+			stack.AdoptVisualChild(new Label()));
+		autoText->Text = L"Auto-sized TextBlock";
+		autoText->HorizontalAlignment = HorizontalAlignment::Left;
+		const auto stackDesired = stack.Measure(
+			Constraints{ Size{ 500.0f, 100.0f } });
+		stack.Arrange(Rect{ 0.0f, 0.0f, 500.0f, 100.0f });
+		CUI_EXPECT_NEAR(
+			autoText->GetDesiredSizeDip().width,
+			stackDesired.width, 0.001f);
+		CUI_EXPECT_NEAR(
+			autoText->GetDesiredSizeDip().width,
+			autoText->GetActualSizeDip().width, 0.001f);
+		CUI_EXPECT_TRUE(autoText->GetActualSizeDip().width < 500.0f);
+
+		Label maxWidthText;
+		maxWidthText.Text =
+			L"MaxWidth must constrain TextBlock before line wrapping computes height";
+		maxWidthText.TextWrapping = TextWrapping::Wrap;
+		maxWidthText.MaxWidth = 90.0f;
+		maxWidthText.HorizontalAlignment = HorizontalAlignment::Left;
+		const auto measuredFromWideParent = maxWidthText.Measure(
+			Constraints{ Size{ 500.0f, Infinity } });
+		const auto measuredAtMaxWidth = maxWidthText.Measure(
+			Constraints{ Size{ 90.0f, Infinity } });
+		CUI_EXPECT_TRUE(
+			measuredFromWideParent.width > 0.0f
+				&& measuredFromWideParent.width <= 90.001f);
+		CUI_EXPECT_NEAR(
+			measuredAtMaxWidth.height,
+			measuredFromWideParent.height, 0.001f);
+
+		StackPanel wrappingStack;
+		auto* wrappingChild = static_cast<Label*>(
+			wrappingStack.AdoptVisualChild(new Label()));
+		wrappingChild->Text =
+			L"Constrained wrapping contributes its final height to the parent";
+		wrappingChild->TextWrapping = TextWrapping::Wrap;
+		wrappingChild->MaxWidth = 90.0f;
+		wrappingChild->HorizontalAlignment = HorizontalAlignment::Left;
+		auto* trailingChild =
+			wrappingStack.AdoptVisualChild(new Control());
+		trailingChild->Width = cui::layout::Length::Fixed(120.0f);
+		trailingChild->Height = cui::layout::Length::Fixed(32.0f);
+		trailingChild->Margin = Thickness(0.0f, 8.0f, 0.0f, 0.0f);
+		const auto wrappingStackDesired = wrappingStack.Measure(
+			Constraints{ Size{ 500.0f, Infinity } });
+		wrappingStack.Arrange(Rect{
+			0.0f, 0.0f,
+			wrappingStackDesired.width,
+			wrappingStackDesired.height });
+		const auto trailingLocation =
+			trailingChild->GetActualLocationDip();
+		const auto trailingSize = trailingChild->GetActualSizeDip();
+		CUI_EXPECT_TRUE(
+			trailingLocation.y + trailingSize.height
+				<= wrappingStack.GetActualSizeDip().height + 0.001f);
+	});
 
     runner.Add("Explicit dimensions take precedence over Stretch during arrange", []
     {
@@ -32754,6 +33208,71 @@ class FreshWindow : public FreshWindowGenerated {};
 			DesignerModel::DesignDocumentSerializer::ToXml(invalidSnapshot),
 			unchanged, &error));
 		CUI_EXPECT_EQ(document, unchanged);
+	});
+
+	runner.Add("ControlTemplate EventTrigger listens to built-in routed events", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="RoutedTemplateTriggerWindow">
+  <Window.Resources>
+    <ControlTemplate x:Key="ClickPulseTemplate" TargetType="Button">
+      <Border x:Name="clickTarget" Canvas.Left="2">
+        <Border.Triggers>
+          <EventTrigger RoutedEvent="Click">
+            <BeginStoryboard x:Name="ClickPulse">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetName="clickTarget"
+                  Storyboard.TargetProperty="(Canvas.Left)"
+                  From="2" To="10" Duration="0:0:1"/>
+              </Storyboard>
+            </BeginStoryboard>
+          </EventTrigger>
+        </Border.Triggers>
+      </Border>
+    </ControlTemplate>
+  </Window.Resources>
+  <Button x:Name="triggerButton"
+    Template="{StaticResource ClickPulseTemplate}"/>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* button = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"triggerButton"));
+		auto* target = button
+			? button->FindDeclarativeTemplatePart(L"clickTarget")
+			: nullptr;
+		CUI_EXPECT_TRUE(button != nullptr && target != nullptr);
+		CUI_EXPECT_NEAR(2.0f, Canvas::GetLeft(*target), 0.0001f);
+		CUI_EXPECT_TRUE(button->Invoke());
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(
+			target->GetPropertyValueSource(L"Canvas.Left")
+				== DependencyPropertyValueSource::Animation);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(
+				*button, ::GetTickCount64() + 500));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*target) > 2.0f
+			&& Canvas::GetLeft(*target) < 10.0f);
+
+		const auto templateReference = button->GetTemplate();
+		const ControlWeakReference oldRoot(target);
+		button->SetTemplate({});
+		CUI_EXPECT_FALSE(oldRoot);
+		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(button->Invoke());
+		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
+		button->SetTemplate(templateReference);
+		CUI_EXPECT_TRUE(button->ApplyTemplate());
+		target = button->FindDeclarativeTemplatePart(L"clickTarget");
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_TRUE(button->Invoke());
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
 	});
 
 	runner.Add("Structural parent setters reject mixed and latent routed cycles", []
@@ -35061,6 +35580,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
 			document, runtime, {}, &error));
 		CUI_EXPECT_TRUE(runtime.AttachToWindow(host, &error));
+		// WPF materialization only invalidates layout; geometry-dependent
+		// directional navigation observes the committed layout pass.
+		host.UpdateLayout();
 		auto* outer = runtime.FindControlByName(L"outer");
 		auto* scope = runtime.FindControlByName(L"cycleScope");
 		auto* first = runtime.FindControlByName(L"first");
@@ -35173,6 +35695,18 @@ class FreshWindow : public FreshWindowGenerated {};
 
 	runner.Add("RadioButton enforces WPF logical and named groups", []
 	{
+		ObservableObject checkSource;
+		checkSource.SetValue(L"Enabled", false);
+		CheckBox boundCheck;
+		CUI_EXPECT_TRUE(boundCheck.DataBindings.Add(
+			L"IsChecked", checkSource, L"Enabled",
+			BindingMode::TwoWay) != nullptr);
+		boundCheck.SetChecked(true);
+		CUI_EXPECT_TRUE(boundCheck.IsChecked);
+		CUI_EXPECT_TRUE(checkSource.GetValue<bool>(L"Enabled"));
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			boundCheck.GetPropertyExpressionKind(L"IsChecked"));
+
 		Panel root;
 		auto* left = AddTestVisual<Panel>(root);
 		auto* right = AddTestVisual<Panel>(root);
@@ -35212,6 +35746,287 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(unrelated->IsChecked);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
 			unrelated->GetPropertyValueSource(L"GroupName"));
+
+		ObservableObject radioSource;
+		radioSource.SetValue(L"Selected", true);
+		Panel bindingGroup;
+		auto* boundRadio = AddTestVisual<RadioButton>(bindingGroup);
+		auto* bindingPeer = AddTestVisual<RadioButton>(bindingGroup);
+		CUI_EXPECT_TRUE(boundRadio->DataBindings.Add(
+			L"IsChecked", radioSource, L"Selected",
+			BindingMode::TwoWay) != nullptr);
+		CUI_EXPECT_TRUE(boundRadio->IsChecked);
+		bindingPeer->SetChecked(true);
+		CUI_EXPECT_FALSE(boundRadio->IsChecked);
+		CUI_EXPECT_TRUE(bindingPeer->IsChecked);
+		CUI_EXPECT_FALSE(radioSource.GetValue<bool>(L"Selected"));
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			boundRadio->GetPropertyExpressionKind(L"IsChecked"));
+	});
+
+	runner.Add("Generic theme owns toggle and range templates", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="600" Height="320">
+  <Canvas Width="600" Height="320">
+    <Button x:Name="button" Canvas.Left="10" Canvas.Top="180"
+            Width="180" Height="26" Content="Button text"/>
+    <CheckBox x:Name="check" Canvas.Left="10" Canvas.Top="10"
+              Width="150" Height="28" IsChecked="true" Content="Check"/>
+    <RadioButton x:Name="radio" Canvas.Left="10" Canvas.Top="48"
+                 Width="150" Height="28" Content="Radio"/>
+    <ProgressBar x:Name="progress" Canvas.Left="10" Canvas.Top="90"
+                 Width="200" Height="20" Maximum="100" Value="50"/>
+    <ProgressBar x:Name="verticalProgress"
+                 Canvas.Left="230" Canvas.Top="10"
+                 Width="20" Height="160" Orientation="Vertical"
+                 Maximum="100" Value="25"/>
+    <ProgressBar x:Name="indeterminate"
+                 Canvas.Left="10" Canvas.Top="126"
+                 Width="200" Height="20" IsIndeterminate="true"/>
+    <Slider x:Name="slider" Canvas.Left="280" Canvas.Top="20"
+            Width="240" Height="32" Maximum="100" Value="25"/>
+    <Slider x:Name="verticalSlider"
+            Canvas.Left="300" Canvas.Top="70"
+            Width="32" Height="200" Orientation="Vertical"
+            Maximum="100" Value="75"/>
+  </Canvas>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto find = [&](const wchar_t* name) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[&](const auto& control)
+				{ return control && control->Name == name; });
+			return found == tree.Controls.end()
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* button = dynamic_cast<Button*>(find(L"button"));
+		auto* check = dynamic_cast<CheckBox*>(find(L"check"));
+		auto* radio = dynamic_cast<RadioButton*>(find(L"radio"));
+		auto* progress = dynamic_cast<ProgressBar*>(find(L"progress"));
+		auto* verticalProgress =
+			dynamic_cast<ProgressBar*>(find(L"verticalProgress"));
+		auto* indeterminate =
+			dynamic_cast<ProgressBar*>(find(L"indeterminate"));
+		auto* slider = dynamic_cast<Slider*>(find(L"slider"));
+		auto* verticalSlider =
+			dynamic_cast<Slider*>(find(L"verticalSlider"));
+		CUI_EXPECT_TRUE(tree.ContentRoot && button && check && radio && progress
+			&& verticalProgress && indeterminate && slider
+			&& verticalSlider);
+
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 600.0f, 320.0f },
+			cui::core::Size{ 600.0f, 320.0f } };
+		(void)tree.ContentRoot->Measure(viewport);
+		tree.ContentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 600.0f, 320.0f });
+		tree.ContentRoot->UpdateLayout();
+		(void)tree.ContentRoot->Measure(viewport);
+		tree.ContentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 600.0f, 320.0f });
+		tree.ContentRoot->UpdateLayout();
+
+		auto* buttonChrome = button
+			? button->FindDeclarativeTemplatePart(
+				L"PART_Chrome") : nullptr;
+		auto* buttonPresenter = dynamic_cast<ContentPresenter*>(button
+			? button->FindDeclarativeTemplatePart(
+				L"PART_ContentPresenter") : nullptr);
+		auto* buttonText = buttonPresenter
+			? dynamic_cast<Label*>(
+				buttonPresenter->GetGeneratedContent()) : nullptr;
+		auto* checkRoot = check
+			? check->FindDeclarativeTemplatePart(
+				L"PART_CheckBoxRoot") : nullptr;
+		auto* checkGlyph = check
+			? check->FindDeclarativeTemplatePart(
+				L"PART_CheckGlyph") : nullptr;
+		auto* checkMark = dynamic_cast<Border*>(check
+			? check->FindDeclarativeTemplatePart(
+				L"PART_CheckMark") : nullptr);
+		auto* radioRoot = radio
+			? radio->FindDeclarativeTemplatePart(
+				L"PART_RadioRoot") : nullptr;
+		auto* progressTrack = progress
+			? progress->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* indicator = progress
+			? progress->FindDeclarativeTemplatePart(
+				L"PART_Indicator") : nullptr;
+		auto* verticalTrack = verticalProgress
+			? verticalProgress->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* verticalIndicator = verticalProgress
+			? verticalProgress->FindDeclarativeTemplatePart(
+				L"PART_Indicator") : nullptr;
+		auto* sliderTrack = slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* sliderTrackBackground = slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_TrackBackground") : nullptr;
+		auto* sliderRange = slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_SelectionRange") : nullptr;
+		auto* sliderThumb = dynamic_cast<Border*>(slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_Thumb") : nullptr);
+		auto* verticalSliderTrack = verticalSlider
+			? verticalSlider->FindDeclarativeTemplatePart(
+				L"PART_Track") : nullptr;
+		auto* verticalSliderTrackBackground = verticalSlider
+			? verticalSlider->FindDeclarativeTemplatePart(
+				L"PART_TrackBackground") : nullptr;
+		auto* verticalSliderThumb = dynamic_cast<Border*>(verticalSlider
+			? verticalSlider->FindDeclarativeTemplatePart(
+				L"PART_Thumb") : nullptr);
+		CUI_EXPECT_TRUE(buttonChrome && buttonPresenter && buttonText
+			&& checkRoot && checkGlyph && checkMark
+			&& radioRoot && progressTrack
+			&& indicator && verticalTrack && verticalIndicator
+			&& sliderTrack && sliderTrackBackground && sliderRange
+			&& sliderThumb && verticalSliderTrack
+			&& verticalSliderTrackBackground && verticalSliderThumb);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			check->GetPropertyValueSource(L"BorderBrush"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			button->GetPropertyValueSource(
+				L"HorizontalContentAlignment"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			button->GetPropertyValueSource(
+				L"VerticalContentAlignment"));
+		CUI_EXPECT_EQ(HorizontalAlignment::Center,
+			button->HorizontalContentAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Center,
+			button->VerticalContentAlignment);
+		CUI_EXPECT_EQ(Thickness(10.0f, 2.0f, 10.0f, 2.0f),
+			button->Padding);
+		CUI_EXPECT_EQ(HorizontalAlignment::Center,
+			buttonPresenter->HorizontalAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Center,
+			buttonPresenter->VerticalAlignment);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+			buttonPresenter->GetPropertyValueSource(
+				L"HorizontalAlignment"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+			buttonPresenter->GetPropertyValueSource(
+				L"VerticalAlignment"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			progress->GetPropertyValueSource(L"Background"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			slider->GetPropertyValueSource(L"Background"));
+		CUI_EXPECT_TRUE(checkRoot->GetTemplatedParent() == check);
+		CUI_EXPECT_TRUE(buttonChrome->GetTemplatedParent() == button);
+		CUI_EXPECT_TRUE(buttonPresenter->GetTemplatedParent() == button);
+		const auto buttonOrigin = button->GetAbsoluteLocationDip();
+		const auto buttonSize = button->GetActualSizeDip();
+		const auto presenterOrigin =
+			buttonPresenter->GetAbsoluteLocationDip();
+		const auto presenterSize =
+			buttonPresenter->GetActualSizeDip();
+		CUI_EXPECT_NEAR(
+			buttonOrigin.x + buttonSize.width * 0.5f,
+			presenterOrigin.x + presenterSize.width * 0.5f,
+			0.001f);
+		CUI_EXPECT_NEAR(
+			buttonOrigin.y + buttonSize.height * 0.5f,
+			presenterOrigin.y + presenterSize.height * 0.5f,
+			0.001f);
+		CUI_EXPECT_TRUE(
+			buttonText->GetActualSizeDip().height + 0.001f
+				>= buttonText->GetDesiredSizeDip().height);
+		CUI_EXPECT_TRUE(progressTrack->GetTemplatedParent() == progress);
+		CUI_EXPECT_TRUE(sliderTrack->GetTemplatedParent() == slider);
+		CUI_EXPECT_EQ(std::wstring(L"Checked"),
+			check->GetCurrentVisualState(L"CheckStates"));
+		CUI_EXPECT_EQ(std::wstring(L"Indeterminate"),
+			indeterminate->GetCurrentVisualState(L"ProgressStates"));
+		CUI_EXPECT_TRUE(indeterminate->HasActiveVisualStateAnimations());
+		CUI_EXPECT_EQ(std::wstring(L"Vertical"),
+			verticalProgress->GetCurrentVisualState(
+				L"OrientationStates"));
+		CUI_EXPECT_EQ(std::wstring(L"Vertical"),
+			verticalSlider->GetCurrentVisualState(
+				L"OrientationStates"));
+		CUI_EXPECT_EQ(Visibility::Visible, checkMark->Visibility);
+		CUI_EXPECT_TRUE(checkMark->GetClip().has_value());
+		if (checkMark->GetClip())
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Path,
+				checkMark->GetClip()->Kind);
+		const auto checkGlyphOrigin =
+			checkGlyph->GetAbsoluteLocationDip();
+		const auto checkMarkOrigin =
+			checkMark->GetAbsoluteLocationDip();
+		CUI_EXPECT_NEAR(
+			3.0f, checkMarkOrigin.x - checkGlyphOrigin.x, 0.1f);
+		CUI_EXPECT_NEAR(
+			4.0f, checkMarkOrigin.y - checkGlyphOrigin.y, 0.1f);
+
+		const auto progressWidth =
+			progressTrack->GetActualSizeDip().width;
+		const auto indicatorWidth =
+			indicator->GetActualSizeDip().width;
+		CUI_EXPECT_TRUE(progressWidth > 0.0f);
+		CUI_EXPECT_NEAR(
+			progressWidth * 0.5f, indicatorWidth, 0.1f);
+		const auto verticalHeight =
+			verticalTrack->GetActualSizeDip().height;
+		const auto verticalIndicatorHeight =
+			verticalIndicator->GetActualSizeDip().height;
+		CUI_EXPECT_TRUE(verticalHeight > 0.0f);
+		CUI_EXPECT_NEAR(
+			verticalHeight * 0.25f,
+			verticalIndicatorHeight, 0.1f);
+		CUI_EXPECT_TRUE(
+			sliderRange->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(Canvas::GetLeft(*sliderThumb) > 0.0f);
+		for (auto* thumb : { sliderThumb, verticalSliderThumb })
+		{
+			const auto thumbSize = thumb->GetActualSizeDip();
+			CUI_EXPECT_NEAR(18.0f, thumbSize.width, 0.1f);
+			CUI_EXPECT_NEAR(18.0f, thumbSize.height, 0.1f);
+			CUI_EXPECT_TRUE(thumb->GetClip().has_value());
+			if (thumb->GetClip())
+			{
+				CUI_EXPECT_EQ(cui::drawing::GeometryKind::Ellipse,
+					thumb->GetClip()->Kind);
+				CUI_EXPECT_NEAR(9.0f, thumb->GetClip()->RadiusX, 0.1f);
+				CUI_EXPECT_NEAR(9.0f, thumb->GetClip()->RadiusY, 0.1f);
+			}
+			CUI_EXPECT_NEAR(
+				0x2F / 255.0f, thumb->Background.Color.r, 0.0001f);
+			CUI_EXPECT_NEAR(
+				0x6F / 255.0f, thumb->Background.Color.g, 0.0001f);
+			CUI_EXPECT_NEAR(
+				0xE4 / 255.0f, thumb->Background.Color.b, 0.0001f);
+		}
+		CUI_EXPECT_NEAR(
+			Canvas::GetTop(*sliderTrackBackground)
+				+ sliderTrackBackground->GetActualSizeDip().height * 0.5f,
+			Canvas::GetTop(*sliderThumb)
+				+ sliderThumb->GetActualSizeDip().height * 0.5f,
+			0.001f);
+		CUI_EXPECT_NEAR(
+			Canvas::GetLeft(*verticalSliderTrackBackground)
+				+ verticalSliderTrackBackground->GetActualSizeDip().width
+					* 0.5f,
+			Canvas::GetLeft(*verticalSliderThumb)
+				+ verticalSliderThumb->GetActualSizeDip().width * 0.5f,
+			0.001f);
+		CUI_EXPECT_EQ(CursorKind::SizeNS,
+			verticalSliderTrack->Cursor);
 	});
 
 	runner.Add("XAML schema exposes one WPF QName per native behavior host", []
@@ -35300,11 +36115,11 @@ class FreshWindow : public FreshWindowGenerated {};
 			UIClass::UI_FrameworkElement, L"Margin") != nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_FrameworkElement, L"Background") == nullptr);
-		// Template is a schema/compiler-owned ControlTemplate reference, not
-		// mutable native C++ backing metadata. Template hosts are still defined
-		// by the projected WPF Control hierarchy.
+		// Control.Template is a real writable dependency property. Structural
+		// types outside the projected Control hierarchy still do not acquire it
+		// from the shared C++ behavior host.
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
-			UIClass::UI_Control, L"Template") == nullptr);
+			UIClass::UI_Control, L"Template") != nullptr);
 		CUI_EXPECT_TRUE(IsControlTemplateHostClass(UIClass::UI_Control));
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_Canvas, L"Background") != nullptr);

@@ -7,6 +7,7 @@
 #include "RoutedCommand.h"
 #include "Visual.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -99,6 +100,9 @@ protected:
 	std::shared_ptr<CommandBindingCollectionState> _commandBindings;
 	std::shared_ptr<CommandCanExecuteObserverState> _commandCanExecuteObservers;
 	std::vector<InputBinding> _inputBindings;
+	std::array<std::unique_ptr<RoutedEvent<RoutedEventArgs>>,
+		static_cast<std::size_t>(RoutedEventId::Count)>
+		_genericRoutedEventHandlers;
 	void InvalidateCommandInfrastructureForDestruction() noexcept;
 
 public:
@@ -285,6 +289,26 @@ protected:
 	}
 
 public:
+	/**
+	 * WPF-style untyped routed-event hook. The returned token is the sole
+	 * subscription lifetime; handledEventsToo matches AddHandler semantics.
+	 */
+	[[nodiscard]] EventConnection AddHandler(
+		RoutedEventId eventId,
+		std::function<void(Control*, RoutedEventArgs&)> handler,
+		bool handledEventsToo = false)
+	{
+		const auto index = static_cast<std::size_t>(eventId);
+		if (!handler || eventId == RoutedEventId::None
+			|| eventId == RoutedEventId::Count
+			|| index >= _genericRoutedEventHandlers.size()) return {};
+		auto& event = _genericRoutedEventHandlers[index];
+		if (!event)
+			event = std::make_unique<RoutedEvent<RoutedEventArgs>>(
+				this, eventId);
+		return event->Subscribe(std::move(handler), handledEventsToo);
+	}
+
 	/** Adds one binding and returns the sole lifetime token for that entry. */
 	[[nodiscard]] EventConnection AddCommandBinding(CommandBinding binding);
 	bool AddInputBinding(KeyBinding binding);

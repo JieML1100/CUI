@@ -106,3 +106,4 @@ dkms.conf
 *.cui.v*.stamp
 *.iobj
 *.ipdb
+/DotNetSource

@@ -46,6 +46,66 @@ namespace
 
 int main(int argc, char** argv)
 {
+	if (argc == 2 && std::string_view(argv[1]) == "--parse-xaml")
+	{
+		std::wstring error;
+		if (!DemoWindow::ValidateXaml(&error))
+		{
+			WriteDiagnostic(error);
+			return 2;
+		}
+		ClearDiagnostic();
+		return 0;
+	}
+	if (argc == 2 && std::string_view(argv[1]) == "--compile-xaml")
+	{
+		DesignerModel::DesignDocument document;
+		CuiRuntime::XamlCompiledDocument compiled;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
+				DemoWindow::XamlFilePath(), document, &error)
+			|| !CuiRuntime::XamlDocumentCompiler::Compile(
+				document, compiled, {}, &error))
+		{
+			WriteDiagnostic(error);
+			return 2;
+		}
+		ClearDiagnostic();
+		return 0;
+	}
+	if (argc == 2 && std::string_view(argv[1]) == "--materialize-xaml")
+	{
+		DesignerModel::DesignDocument document;
+		CuiRuntime::XamlObjectTree tree;
+		CuiRuntime::XamlMaterializationOptions options;
+		options.AllowNativeSurfacePlaceholder = true;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
+				DemoWindow::XamlFilePath(), document, &error)
+			|| !CuiRuntime::XamlObjectMaterializer::Materialize(
+				document, tree, options, &error))
+		{
+			WriteDiagnostic(error);
+			return 2;
+		}
+		ClearDiagnostic();
+		return 0;
+	}
+	if (argc == 2 && std::string_view(argv[1]) == "--construct-xaml")
+	{
+		try
+		{
+			Application::EnsureDpiAwareness();
+			DemoWindow window(DemoWindow::InitializationMode::DeclarativeOnly);
+			ClearDiagnostic();
+			return 0;
+		}
+		catch (const std::exception& error)
+		{
+			WriteDiagnostic(Convert::StringToWString(error.what()));
+			return 2;
+		}
+	}
 	if (argc == 2 && std::string_view(argv[1]) == "--validate-xaml")
 	{
 		try

@@ -264,6 +264,26 @@ namespace
 			const Element& root)
 			: _source(std::move(source))
 		{
+			// Semantic diagnostics request a span for nearly every parsed node
+			// and attribute. Index line starts once so those requests do not
+			// repeatedly scan the complete prefix of an ever larger document.
+			_lineStarts.reserve(
+				static_cast<size_t>(std::count(
+					_source.begin(), _source.end(), L'\n')) + 1);
+			_lineStarts.push_back(0);
+			for (size_t index = 0; index < _source.size(); ++index)
+			{
+				if (_source[index] == L'\r')
+				{
+					if (index + 1 < _source.size()
+						&& _source[index + 1] == L'\n')
+						++index;
+					_lineStarts.push_back(index + 1);
+				}
+				else if (_source[index] == L'\n')
+					_lineStarts.push_back(index + 1);
+			}
+
 			const auto tags = XamlSourceScanner::ScanTags(_source);
 			std::vector<XamlSourceScanner::TagToken> openingTags;
 			openingTags.reserve(tags.size());
@@ -331,6 +351,7 @@ namespace
 
 	private:
 		std::wstring _source;
+		std::vector<size_t> _lineStarts;
 		std::unordered_map<const XmlElement*, XamlSourceScanner::TagToken> _tags;
 
 		static void CollectElements(
@@ -393,26 +414,19 @@ namespace
 			XamlDocumentDiagnostic& diagnostic) const
 		{
 			offset = (std::min)(offset, _source.size());
-			diagnostic.Line = 1;
+			const auto nextLine = std::upper_bound(
+				_lineStarts.begin(), _lineStarts.end(), offset);
+			const auto lineIndex = nextLine == _lineStarts.begin()
+				? size_t{ 0 }
+				: static_cast<size_t>(
+					std::distance(_lineStarts.begin(), nextLine) - 1);
+			const size_t lineStart = _lineStarts.empty()
+				? 0 : _lineStarts[lineIndex];
+			diagnostic.Line = lineIndex + 1;
 			diagnostic.Column = 1;
 			diagnostic.Utf16Offset = offset;
-			for (size_t i = 0; i < offset;)
+			for (size_t i = lineStart; i < offset;)
 			{
-				if (_source[i] == L'\r')
-				{
-					diagnostic.Line++;
-					diagnostic.Column = 1;
-					i++;
-					if (i < offset && _source[i] == L'\n') i++;
-					continue;
-				}
-				if (_source[i] == L'\n')
-				{
-					diagnostic.Line++;
-					diagnostic.Column = 1;
-					i++;
-					continue;
-				}
 				if (i + 1 < offset
 					&& _source[i] >= 0xD800 && _source[i] <= 0xDBFF
 					&& _source[i + 1] >= 0xDC00 && _source[i + 1] <= 0xDFFF)
@@ -3550,21 +3564,40 @@ namespace
 				FromUtf8(element->InnerText()));
 			if (rawProperty.empty()) return Fail(L"Setter 缺少 Property。", error);
 			const auto propertyName = NormalizePropertyName(rawProperty, rawValue);
-			if (Equals(propertyName, L"Template"))
+			const bool controlTemplateSetter =
+				Equals(propertyName, L"Template");
+			const bool itemsPanelSetter =
+				Equals(propertyName, L"ItemsPanel");
+			if (controlTemplateSetter || itemsPanelSetter)
 			{
 				if (!allowControlTemplate)
-					return Fail(L"Template 目前只允许作为 Style 的普通 Setter；"
-						L"Trigger/VisualState 动态换模板尚未开放。", error);
-				if (!ChildElements(element).empty())
-					return Fail(L"Template Setter 必须通过 StaticResource 引用 ControlTemplate。",
+					return Fail(controlTemplateSetter
+						? L"Template 目前只允许作为 Style 的普通 Setter；"
+							L"Trigger/VisualState 动态换模板尚未开放。"
+						: L"ItemsPanel 目前只允许作为 Style 的普通 Setter；"
+							L"Trigger/VisualState 动态切换布局模板尚未开放。",
 						error);
-				setter.PropertyName = L"Template";
+				if (!ChildElements(element).empty())
+					return Fail(propertyName
+						+ L" Setter 必须通过 StaticResource 引用结构资源。",
+						error);
+				if (itemsPanelSetter)
+				{
+					const auto* metadata = schema.FindProperty(propertyName);
+					if (!metadata || !metadata->CanWrite())
+						return Fail(L"Style 目标类型不包含可写属性："
+							+ rawProperty, error);
+				}
+				setter.PropertyName = propertyName;
 				setter.ResourceKey = Trim(
 					Attribute(element, L"Resource").value_or(L""));
 				if (setter.ResourceKey.empty()
 					&& !TryParseStaticResource(rawValue, setter.ResourceKey))
-					return Fail(L"Template Setter 必须通过 {StaticResource key} "
-						L"引用 ControlTemplate。", error);
+					return Fail(propertyName
+						+ L" Setter 必须通过 {StaticResource key} 引用"
+						+ (controlTemplateSetter
+							? L" ControlTemplate。" : L" ItemsPanelTemplate。"),
+						error);
 				setter.UsesResource = true;
 				setter.UsesDynamicResource = false;
 				return true;
@@ -5977,11 +6010,10 @@ namespace
 				DesignerEventTrigger trigger;
 				trigger.EventName = Trim(Attribute(
 					triggerElement, L"RoutedEvent").value_or(L""));
-				const auto event = std::find_if(component.Events.begin(),
-					component.Events.end(), [&](const auto& candidate)
-					{ return Equals(candidate.Name, trigger.EventName); });
-				if (event == component.Events.end())
-					return Fail(L"EventTrigger.RoutedEvent 不是组件声明事件："
+				const auto event = DesignerEventCatalog::FindControlEvent(
+					component.BaseType, trigger.EventName, component.Events);
+				if (!event)
+					return Fail(L"EventTrigger.RoutedEvent 不是模板宿主公开的路由事件："
 						+ trigger.EventName, error);
 				trigger.EventName = event->Name;
 				for (const auto& actionElement : ChildElements(triggerElement))

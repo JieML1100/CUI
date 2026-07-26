@@ -3,9 +3,12 @@
 #include <CuiRuntime.h>
 #include <EventInfrastructure.h>
 #include <InputInfrastructure.h>
+#include <Canvas.h>
+#include <PresentationInfrastructure.h>
 #include <TemplateInfrastructure.h>
 
 #include <iostream>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
@@ -64,6 +67,9 @@ int wmain()
 		: nullptr;
 	if (!staticButton || staticButton->GetDisplayText() != L"Namespaced"
 		|| !staticChrome || !staticPresenter
+		|| !staticButton->GetTemplate()
+		|| staticButton->GetPropertyValueSource(L"Template")
+			!= DependencyPropertyValueSource::Theme
 		|| cui::framework::TemplateAccess::GetTemplateRoot(*staticButton)
 			!= staticChrome
 		|| staticChrome->GetVisualParent() != staticButton
@@ -119,9 +125,226 @@ int wmain()
 			<< (staticButton ? static_cast<int>(
 				staticButton->GetPropertyValueSource(L"DataContext")) : -1)
 			<< L'\n';
+			return 1;
+		}
+
+	auto* authorTemplateButton = window.GetAuthorTemplateButton();
+	auto* styleTemplateButton = window.GetStyleTemplateButton();
+	auto* authorChrome = authorTemplateButton
+		? authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorChrome")
+		: nullptr;
+	auto* authorPresenter = authorTemplateButton
+		? authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorPresenter")
+		: nullptr;
+	auto* nestedButton = authorTemplateButton
+		? dynamic_cast<Button*>(
+			authorTemplateButton->FindDeclarativeTemplatePart(
+				L"StaticNestedButton"))
+		: nullptr;
+	auto* styledChrome = styleTemplateButton
+		? styleTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorChrome")
+		: nullptr;
+	if (!authorTemplateButton || !styleTemplateButton
+		|| !authorChrome || !authorPresenter || !nestedButton
+		|| !nestedButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+		|| !styledChrome
+		|| authorTemplateButton->GetPropertyValueSource(L"Template")
+			!= DependencyPropertyValueSource::Local
+		|| styleTemplateButton->GetPropertyValueSource(L"Template")
+			!= DependencyPropertyValueSource::Style
+		|| authorChrome->GetPropertyValueSource(L"Padding")
+			!= DependencyPropertyValueSource::Template
+		|| cui::framework::TemplateAccess::GetTemplateRoot(
+			*authorTemplateButton) != authorChrome
+		|| cui::framework::TemplateAccess::GetTemplateRoot(
+			*styleTemplateButton) != styledChrome)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate did not initialize.\n";
 		return 1;
 	}
-	staticDataContext->SetValue(
+	cui::framework::InputAccess::PublishPointerOverState(
+		*styleTemplateButton, true, true);
+	const auto stylePointerTick = ::GetTickCount64();
+	if (!styleTemplateButton->HasActiveVisualStateAnimations()
+		|| !cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(
+				*styleTemplateButton, stylePointerTick + 200)
+		|| std::abs(styleTemplateButton->FontSize - 18.0f) > 0.01f
+		|| styleTemplateButton->GetPropertyValueSource(L"FontSize")
+			!= DependencyPropertyValueSource::Animation)
+	{
+		std::wcerr
+			<< L"Generated static Style Trigger.EnterActions "
+				L"did not run its Storyboard.\n";
+		return 1;
+	}
+	cui::framework::InputAccess::PublishPointerOverState(
+		*styleTemplateButton, false, false);
+	if (std::abs(styleTemplateButton->FontSize - 14.0f) > 0.01f
+		|| styleTemplateButton->GetPropertyValueSource(L"FontSize")
+			!= DependencyPropertyValueSource::Style)
+	{
+		std::wcerr
+			<< L"Generated static Style Trigger.ExitActions "
+				L"did not stop and restore its Storyboard.\n";
+		return 1;
+	}
+	if (authorTemplateButton->GetCurrentVisualState(
+			L"AuthorCommonStates") != L"Normal"
+		|| std::abs(Canvas::GetTop(*authorChrome)) > 0.001f)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate did not enter "
+				L"its fallback VisualState.\n";
+		return 1;
+	}
+	cui::framework::InputAccess::PublishPointerOverState(
+		*authorTemplateButton, true, true);
+	const auto authorPointerTick = ::GetTickCount64();
+	if (authorTemplateButton->GetCurrentVisualState(
+			L"AuthorCommonStates") != L"PointerOver"
+		|| !authorTemplateButton->HasActiveVisualStateAnimations()
+		|| !cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(
+				*authorTemplateButton, authorPointerTick + 300)
+		|| std::abs(Canvas::GetTop(*authorChrome) - 4.0f) > 0.01f
+		|| authorChrome->GetPropertyValueSource(L"Background")
+			!= DependencyPropertyValueSource::VisualState)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate VisualState/"
+				L"Storyboard/Transition did not run.\n";
+		return 1;
+	}
+	cui::framework::InputAccess::PublishPointerOverState(
+		*authorTemplateButton, false, false);
+	(void)cui::framework::PresentationAccess::
+		AdvanceVisualStateAnimations(
+			*authorTemplateButton, ::GetTickCount64() + 300);
+	if (authorTemplateButton->GetCurrentVisualState(
+			L"AuthorCommonStates") != L"Normal"
+		|| std::abs(Canvas::GetTop(*authorChrome)) > 0.01f)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate did not leave "
+				L"its animated VisualState.\n";
+		return 1;
+	}
+	if (!authorTemplateButton->Invoke()
+		|| !authorTemplateButton->HasActiveVisualStateAnimations())
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate routed EventTrigger "
+				L"did not start its Storyboard.\n";
+		return 1;
+	}
+	const auto authorClickTick = ::GetTickCount64();
+	if (!cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(
+				*authorTemplateButton, authorClickTick + 100)
+		|| Canvas::GetLeft(*authorChrome) <= 0.0f
+		|| Canvas::GetLeft(*authorChrome) >= 30.0f)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate EventTrigger "
+				L"Storyboard did not advance.\n";
+		return 1;
+	}
+
+	const auto firstAuthorTemplate =
+		authorTemplateButton->GetTemplate();
+	BindingValue alternateTemplateValue;
+	ControlTemplateReference alternateAuthorTemplate;
+	if (!authorTemplateButton->TryFindResource(
+			L"StaticAuthorButtonTemplateAlternate",
+			alternateTemplateValue)
+		|| !alternateTemplateValue.TryGet(alternateAuthorTemplate)
+		|| !alternateAuthorTemplate)
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate resource is missing.\n";
+		return 1;
+	}
+	const ControlWeakReference oldAuthorRoot(authorChrome);
+	authorTemplateButton->SetTemplate(alternateAuthorTemplate);
+	if (!authorTemplateButton->ApplyTemplate()
+		|| oldAuthorRoot
+		|| !authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAlternateChrome")
+		|| authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorChrome")
+		|| authorTemplateButton->HasActiveVisualStateAnimations()
+		|| !authorTemplateButton->LastTemplateError().empty())
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate did not swap in-place.\n";
+		return 1;
+	}
+	authorTemplateButton->SetTemplate(firstAuthorTemplate);
+	if (!authorTemplateButton->ApplyTemplate()
+		|| !authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorChrome")
+		|| !authorTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticNestedButton")
+		|| authorTemplateButton->GetCurrentVisualState(
+			L"AuthorCommonStates") != L"Normal")
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate did not reapply.\n";
+		return 1;
+	}
+	std::wstring builtTemplateError;
+	auto builtTemplateHost =
+		firstAuthorTemplate.Get()->Build(&builtTemplateError);
+	auto* builtTemplateButton =
+		dynamic_cast<Button*>(builtTemplateHost.get());
+	if (!builtTemplateButton
+		|| !builtTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticAuthorChrome")
+		|| !builtTemplateButton->FindDeclarativeTemplatePart(
+			L"StaticNestedButton")
+		|| builtTemplateButton->GetCurrentVisualState(
+			L"AuthorCommonStates") != L"Normal"
+		|| !builtTemplateError.empty())
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate Build failed: "
+			<< builtTemplateError << L'\n';
+		return 1;
+	}
+	if (!builtTemplateButton->Invoke()
+		|| !builtTemplateButton->HasActiveVisualStateAnimations())
+	{
+		std::wcerr
+			<< L"Generated authored ControlTemplate Build lost "
+				L"its routed EventTrigger.\n";
+		return 1;
+	}
+
+		const auto generatedThemeTemplate = staticButton->GetTemplate();
+		const ControlWeakReference generatedThemeRootLifetime(staticChrome);
+		staticButton->SetTemplate({});
+		if (generatedThemeRootLifetime.Get() != nullptr
+			|| cui::framework::TemplateAccess::GetTemplateRoot(*staticButton))
+		{
+			std::wcerr << L"Generated Theme Template did not detach.\n";
+			return 1;
+		}
+		staticButton->SetTemplate(generatedThemeTemplate);
+		if (!staticButton->ApplyTemplate()
+			|| !staticButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			|| !staticButton->FindDeclarativeTemplatePart(
+				L"PART_ContentPresenter")
+			|| !staticButton->LastTemplateError().empty())
+		{
+			std::wcerr << L"Generated Theme Template did not reapply.\n";
+			return 1;
+		}
+		staticDataContext->SetValue(
 		L"Caption", std::wstring(L"Namespaced updated"));
 	if (staticButton->GetDisplayText() != L"Namespaced updated")
 	{

@@ -1027,6 +1027,25 @@ namespace {
 		ctx->DrawTextLayout(D2D1::Point2F(x - OUTLINE_OFFSET, y + OUTLINE_OFFSET), layout, outlineBrush);
 		ctx->DrawTextLayout(D2D1::Point2F(x + OUTLINE_OFFSET, y + OUTLINE_OFFSET), layout, outlineBrush);
 	}
+
+	IDWriteTextLayout* CreateNaturalTextLayout(
+		const std::wstring& text,
+		Font* font)
+	{
+		if (!font || !font->FontObject) return nullptr;
+		ComPtr<IDWriteTextLayout> layout;
+		layout.Attach(Factory::CreateStringLayout(
+			text, FLT_MAX, FLT_MAX, font->FontObject));
+		if (!layout) return nullptr;
+		layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		const auto natural = D2DGraphics::GetTextLayoutSize(layout.Get());
+		// The convenience overload means "natural text extent", not an
+		// effectively infinite paint rectangle. Callers that own a constrained
+		// content slot use the explicit width/height overload instead.
+		layout->SetMaxWidth((std::max)(0.01f, natural.width));
+		layout->SetMaxHeight((std::max)(0.01f, natural.height));
+		return layout.Detach();
+	}
 }
 
 void D2DGraphics::DrawStringLayoutOutlined(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor) {
@@ -1122,23 +1141,27 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 }
 
 void D2DGraphics::DrawString(const std::wstring& str, float x, float y, D2D1_COLOR_F color, Font* font) {
-	D2D1_RECT_F rect = D2D1::RectF(x, y, FLT_MAX, FLT_MAX);
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
+	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx) return;
 	auto brush = GetColorBrush(color);
 	if (!brush) return;
-	ctx->DrawText(str.c_str(), static_cast<UINT32>(str.size()), resolvedFont->FontObject, &rect, brush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), textLayout.Get(), brush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawString(const std::wstring& str, float x, float y, ID2D1Brush* brush, Font* font) {
-	D2D1_RECT_F rect = D2D1::RectF(x, y, FLT_MAX, FLT_MAX);
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
+	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx || !brush) return;
-	ctx->DrawText(str.c_str(), static_cast<UINT32>(str.size()), resolvedFont->FontObject, &rect, brush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), textLayout.Get(), brush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawString(const std::wstring& str, float x, float y, float w, float h, D2D1_COLOR_F color, Font* font) {
@@ -1164,95 +1187,95 @@ void D2DGraphics::DrawString(const std::wstring& str, float x, float y, float w,
 void D2DGraphics::DrawStringCentered(const std::wstring& str, float centerX, float centerY, D2D1_COLOR_F color, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx) { textLayout->Release(); return; }
+	if (!ctx) return;
 	auto brush = GetColorBrush(color);
-	if (!brush) { textLayout->Release(); return; }
-	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	if (!brush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout.Get());
 	float x = centerX - textSize.width * 0.5f;
 	float y = centerY - textSize.height * 0.5f;
-	ctx->DrawTextLayout({ x, y }, textLayout, brush);
-	textLayout->Release();
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), brush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawStringCentered(const std::wstring& str, float centerX, float centerY, ID2D1Brush* brush, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx || !brush) { textLayout->Release(); return; }
-	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	if (!ctx || !brush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout.Get());
 	float x = centerX - textSize.width * 0.5f;
 	float y = centerY - textSize.height * 0.5f;
-	ctx->DrawTextLayout({ x, y }, textLayout, brush);
-	textLayout->Release();
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), brush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawStringOutlined(const std::wstring& str, float x, float y, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx) { textLayout->Release(); return; }
+	if (!ctx) return;
 	auto textBrush = GetColorBrush(textColor);
 	auto outlineBrush = GetBackColorBrush(outlineColor);
-	if (!textBrush || !outlineBrush) { textLayout->Release(); return; }
-	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
-	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
-	textLayout->Release();
+	if (!textBrush || !outlineBrush) return;
+	DrawTextOutline(ctx, textLayout.Get(), x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), textBrush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawStringOutlined(const std::wstring& str, float x, float y, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx || !textBrush) { textLayout->Release(); return; }
+	if (!ctx || !textBrush) return;
 	auto outlineBrush = GetBackColorBrush(outlineColor);
-	if (!outlineBrush) { textLayout->Release(); return; }
-	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
-	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
-	textLayout->Release();
+	if (!outlineBrush) return;
+	DrawTextOutline(ctx, textLayout.Get(), x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), textBrush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawStringCenteredOutlined(const std::wstring& str, float centerX, float centerY, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx) { textLayout->Release(); return; }
+	if (!ctx) return;
 	auto textBrush = GetColorBrush(textColor);
 	auto outlineBrush = GetBackColorBrush(outlineColor);
-	if (!textBrush || !outlineBrush) { textLayout->Release(); return; }
-	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	if (!textBrush || !outlineBrush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout.Get());
 	float x = centerX - textSize.width * 0.5f;
 	float y = centerY - textSize.height * 0.5f;
-	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
-	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
-	textLayout->Release();
+	DrawTextOutline(ctx, textLayout.Get(), x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), textBrush);
 	wicDirty = true;
 }
 void D2DGraphics::DrawStringCenteredOutlined(const std::wstring& str, float centerX, float centerY, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor, Font* font) {
 	Font* resolvedFont = font ? font : DefaultFontObject1();
 	if (!resolvedFont) return;
-	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	ComPtr<IDWriteTextLayout> textLayout;
+	textLayout.Attach(CreateNaturalTextLayout(str, resolvedFont));
 	if (!textLayout) return;
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx || !textBrush) { textLayout->Release(); return; }
+	if (!ctx || !textBrush) return;
 	auto outlineBrush = GetBackColorBrush(outlineColor);
-	if (!outlineBrush) { textLayout->Release(); return; }
-	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	if (!outlineBrush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout.Get());
 	float x = centerX - textSize.width * 0.5f;
 	float y = centerY - textSize.height * 0.5f;
-	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
-	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
-	textLayout->Release();
+	DrawTextOutline(ctx, textLayout.Get(), x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout.Get(), textBrush);
 	wicDirty = true;
 }
 

@@ -4,6 +4,7 @@
 #include "Button.h"
 #include "ContentPresenter.h"
 #include "Control.h"
+#include "Layout/StackPanel.h"
 #include "RoutedCommand.h"
 #include "Window.h"
 #include <functional>
@@ -131,7 +132,10 @@ protected:
 class MainWindowGenerated : public Window, public MainWindowEventSink
 {
 protected:
+	StackPanel* staticRoot = nullptr;
 	Button* namespaceButton = nullptr;
+	Button* authorTemplateButton = nullptr;
+	Button* styleTemplateButton = nullptr;
 	std::vector<EventConnection> _generatedEventConnections;
 	bool _componentInitialized = false;
 	void InitializeComponent();
@@ -146,12 +150,21 @@ public:
 	// Stable identities shared by static and dynamic document paths.
 	struct ControlIds final
 	{
+		static constexpr int staticRoot = 1;
 		static constexpr int namespaceButton = 77;
+		static constexpr int authorTemplateButton = 78;
+		static constexpr int styleTemplateButton = 79;
 	};
 
 	// Type-safe x:Name accessors; ownership remains with the generated Window.
+	[[nodiscard]] StackPanel* GetStaticRoot() noexcept { return staticRoot; }
+	[[nodiscard]] const StackPanel* GetStaticRoot() const noexcept { return staticRoot; }
 	[[nodiscard]] Button* GetNamespaceButton() noexcept { return namespaceButton; }
 	[[nodiscard]] const Button* GetNamespaceButton() const noexcept { return namespaceButton; }
+	[[nodiscard]] Button* GetAuthorTemplateButton() noexcept { return authorTemplateButton; }
+	[[nodiscard]] const Button* GetAuthorTemplateButton() const noexcept { return authorTemplateButton; }
+	[[nodiscard]] Button* GetStyleTemplateButton() noexcept { return styleTemplateButton; }
+	[[nodiscard]] const Button* GetStyleTemplateButton() const noexcept { return styleTemplateButton; }
 
 	MainWindowGenerated();
 	virtual ~MainWindowGenerated();
@@ -180,6 +193,16 @@ public:
 	}
 	// Precondition: the view is still alive; prefer TryDocument() when uncertain.
 	[[nodiscard]] TDocument& Document() const noexcept { return *_document.Get(); }
+	[[nodiscard]] StackPanel* GetStaticRoot() const noexcept
+	{
+		return _document.template FindControlByDesignId<StackPanel>(
+			MainWindowGenerated::ControlIds::staticRoot);
+	}
+	[[nodiscard]] auto ReferenceStaticRoot() const noexcept
+	{
+		return _document.template ReferenceByDesignId<StackPanel>(
+			MainWindowGenerated::ControlIds::staticRoot);
+	}
 	[[nodiscard]] Button* GetNamespaceButton() const noexcept
 	{
 		return _document.template FindControlByDesignId<Button>(
@@ -189,6 +212,26 @@ public:
 	{
 		return _document.template ReferenceByDesignId<Button>(
 			MainWindowGenerated::ControlIds::namespaceButton);
+	}
+	[[nodiscard]] Button* GetAuthorTemplateButton() const noexcept
+	{
+		return _document.template FindControlByDesignId<Button>(
+			MainWindowGenerated::ControlIds::authorTemplateButton);
+	}
+	[[nodiscard]] auto ReferenceAuthorTemplateButton() const noexcept
+	{
+		return _document.template ReferenceByDesignId<Button>(
+			MainWindowGenerated::ControlIds::authorTemplateButton);
+	}
+	[[nodiscard]] Button* GetStyleTemplateButton() const noexcept
+	{
+		return _document.template FindControlByDesignId<Button>(
+			MainWindowGenerated::ControlIds::styleTemplateButton);
+	}
+	[[nodiscard]] auto ReferenceStyleTemplateButton() const noexcept
+	{
+		return _document.template ReferenceByDesignId<Button>(
+			MainWindowGenerated::ControlIds::styleTemplateButton);
 	}
 
 private:

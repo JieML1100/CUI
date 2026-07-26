@@ -9,6 +9,7 @@
 #include "Core/Threading.h"
 #include "InputManager.h"
 #include "XamlInfrastructure.h"
+#include "TreeInfrastructure.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -25,6 +26,13 @@
 
 namespace
 {
+	template<typename TAction>
+	struct ControlScopeExit final
+	{
+		TAction Action;
+		~ControlScopeExit() { Action(); }
+	};
+
 	std::atomic<uint32_t> NextAccessibilityRuntimeId{ 1 };
 	std::atomic<uint32_t> NextAccessibilityVirtualRuntimeId{ 1 };
 	std::vector<std::pair<ControlWeakReference, bool>>
@@ -87,6 +95,28 @@ namespace
 		case VerticalAlignment::Top:
 		default: return cui::layout::Alignment::Start;
 		}
+	}
+
+	cui::core::Constraints ElementSizeConstraints(
+		const cui::layout::LayoutStyle& style)
+	{
+		auto result = style.SizeConstraints();
+		const auto applyExplicitLength = [](
+			const cui::layout::Length& length,
+			float& minimum,
+			float& maximum)
+		{
+			if (!length.IsFixed()) return;
+			maximum = (std::max)(
+				(std::min)(length.value, maximum), minimum);
+			minimum = (std::max)(
+				(std::min)(maximum, length.value), minimum);
+		};
+		applyExplicitLength(
+			style.width, result.minimum.width, result.maximum.width);
+		applyExplicitLength(
+			style.height, result.minimum.height, result.maximum.height);
+		return result;
 	}
 
 	cui::core::Dip ToMaximumDip(LONG value)
@@ -533,6 +563,7 @@ namespace
 			L"MinHeight",
 			L"MaxWidth",
 			L"MaxHeight",
+			L"ClipToBounds",
 			L"Clip",
 			L"RenderTransform",
 			L"RenderTransformOrigin",
@@ -668,6 +699,126 @@ void Control::ConfigureControlTemplateVisual(Control& child)
 	(void)child;
 }
 
+void Control::SetTemplate(ControlTemplateReference value)
+{
+	(void)SetPropertyField(L"Template", _template, std::move(value));
+}
+
+bool Control::ApplyTemplate()
+{
+	VerifyAccess();
+	if (_applyingTemplate) return false;
+	_applyingTemplate = true;
+	ControlScopeExit guard{
+		[this] { _applyingTemplate = false; } };
+	bool createdVisualTree = false;
+	// WPF retries once when OnApplyTemplate changes Template (two total
+	// attempts). Use the same finite contract instead of an open-ended loop.
+	for (size_t attempt = 0; attempt < 2; ++attempt)
+	{
+		// A batched Style refresh may coalesce an effective Template value back
+		// to the same resource after its old visual tree was removed. A
+		// successful applied state is never valid without either a visual root
+		// or an explicit failed-template diagnostic; repair that transient state
+		// so ApplyTemplate can materialize the retained effective value.
+		if (_templateApplied && _template && !GetControlTemplateRoot()
+			&& _lastTemplateError.empty())
+			_templateApplied = false;
+		if (_templateApplied)
+		{
+			CompleteControlTemplateApplication();
+			// OnApplyTemplate is allowed to replace Template. Match WPF by
+			// applying that new effective template before returning.
+			if (_templateApplied) return createdVisualTree;
+			continue;
+		}
+		if (!_template)
+		{
+			_templateApplied = true;
+			_templateApplyCallbackPending = false;
+			_lastTemplateError.clear();
+			return createdVisualTree;
+		}
+
+		const auto applyingTemplate = _template;
+		try
+		{
+			std::wstring error;
+			const bool applied =
+				applyingTemplate.Get()->Apply(*this, &error);
+			if (!applied || !GetControlTemplateRoot())
+			{
+				_lastTemplateError = error.empty()
+					? L"ControlTemplate 未生成视觉根。" : std::move(error);
+				AbortControlTemplateApplication();
+				// A broken template must not start an endless layout/apply loop.
+				_templateApplied = true;
+				return createdVisualTree;
+			}
+			createdVisualTree = true;
+			// The factory may synchronously change Template while building.
+			// Never publish that stale tree as the current template instance.
+			if (!(_template == applyingTemplate))
+			{
+				AbortControlTemplateApplication();
+				continue;
+			}
+			_lastTemplateError.clear();
+			MarkControlTemplateRootAttached();
+			CompleteControlTemplateApplication();
+			if (_templateApplied) return true;
+		}
+		catch (const std::exception&)
+		{
+			_lastTemplateError =
+				L"ControlTemplate 应用失败：运行时异常。";
+			AbortControlTemplateApplication();
+			_templateApplied = true;
+			return createdVisualTree;
+		}
+		catch (...)
+		{
+			_lastTemplateError =
+				L"ControlTemplate 应用失败：未知错误。";
+			AbortControlTemplateApplication();
+			_templateApplied = true;
+			return createdVisualTree;
+		}
+	}
+
+	_lastTemplateError =
+		L"OnApplyTemplate 连续替换 Template，超过安全重试上限。";
+	AbortControlTemplateApplication();
+	_templateApplied = true;
+	return createdVisualTree;
+}
+
+void Control::CompleteControlTemplateApplication()
+{
+	if (!_templateApplyCallbackPending || !GetControlTemplateRoot()) return;
+	_templateApplyCallbackPending = false;
+	OnApplyTemplate();
+}
+
+void Control::AbortControlTemplateApplication() noexcept
+{
+	try
+	{
+		(void)DetachVisualChildTemplateRoot();
+		if (!GetControlTemplateRoot())
+		{
+			ClearDeclarativeTemplateScope();
+			OnControlTemplatePresentationChanged();
+		}
+	}
+	catch (...)
+	{
+		// Rollback is best effort during an already failing template build.
+		ClearDeclarativeTemplateScope();
+	}
+	MarkControlTemplateRootDetached();
+}
+
 Control* Control::SetControlTemplateRoot(std::unique_ptr<Control> value)
 {
 	if (value.get() == _controlTemplateRoot) return _controlTemplateRoot;
@@ -684,8 +835,8 @@ Control* Control::SetControlTemplateRoot(std::unique_ptr<Control> value)
 	_controlTemplateRoot = value.get();
 	try
 	{
-		AddOwned(std::move(value));
-		_controlTemplateRoot->SetLogicalParent(nullptr);
+		cui::framework::TreeAccess::AddOwnedVisualChild(
+			*this, std::move(value), nullptr);
 	}
 	catch (...)
 	{
@@ -693,6 +844,7 @@ Control* Control::SetControlTemplateRoot(std::unique_ptr<Control> value)
 		OnControlTemplatePresentationChanged();
 		throw;
 	}
+	MarkControlTemplateRootAttached();
 	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
@@ -707,6 +859,7 @@ std::unique_ptr<Control> Control::DetachVisualChildTemplateRoot()
 	auto result = DetachVisualChild(previous);
 	ClearGenericTemplateOwner(result.get(), this);
 	ClearDeclarativeTemplateScope();
+	MarkControlTemplateRootDetached();
 	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
@@ -762,6 +915,35 @@ namespace
 		}
 		return false;
 	}
+}
+
+Control* Control::InsertVisualChildWithLogicalParent(
+	int index,
+	Control* child,
+	Control* logicalParent)
+{
+	VerifyAccess();
+	if (!child)
+		throw std::invalid_argument("不能添加空控件");
+	if (WouldCreateRoutedParentCycle(*child, logicalParent))
+		throw std::logic_error("可视/逻辑/模板路由树不能形成循环");
+
+	_pendingVisualChildAttachments.push_back(
+		PendingVisualChildAttachment{
+			child, ControlWeakReference(logicalParent) });
+	ControlScopeExit guard{
+		[this, child]
+		{
+			const auto found = std::find_if(
+				_pendingVisualChildAttachments.rbegin(),
+				_pendingVisualChildAttachments.rend(),
+				[child](const PendingVisualChildAttachment& item)
+				{ return item.Child == child; });
+			if (found != _pendingVisualChildAttachments.rend())
+				_pendingVisualChildAttachments.erase(
+					std::next(found).base());
+		} };
+	return InsertVisualChild(index, child);
 }
 
 void Control::SetVisualParentCore(Control* value)
@@ -978,6 +1160,21 @@ void Control::SynchronizeVisualChildCollection(
 		previous.begin(), previous.end());
 	std::unordered_set<Control*> currentSet;
 	currentSet.reserve(_visualChildren.size());
+	auto requestedLogicalParent =
+		[](Control& owner, Control* child, bool& explicitParent) -> Control*
+		{
+			for (auto position =
+					owner._pendingVisualChildAttachments.rbegin();
+				position != owner._pendingVisualChildAttachments.rend();
+				++position)
+			{
+				if (position->Child != child) continue;
+				explicitParent = true;
+				return position->LogicalParent.Get();
+			}
+			explicitParent = false;
+			return &owner;
+		};
 	auto reject = [&](const char* message, bool invalidArgument = false)
 		{
 			_visualChildren.RestoreRejectedMutation(previous);
@@ -999,11 +1196,19 @@ void Control::SynchronizeVisualChildCollection(
 			if (child->_visualParent != this)
 				reject("子控件 VisualParent 已在集合外被修改");
 		}
-		else if (child->_isWindowRoot || child->_visualParent
-			|| child->_logicalParent
-			|| (child->GetPresentationWindow() && child->GetPresentationWindow() != this->GetPresentationWindow()))
+		else
 		{
-			reject("该控件已属于其他容器");
+			bool explicitLogicalParent = false;
+			auto* logicalParent = requestedLogicalParent(
+				*this, child, explicitLogicalParent);
+			if (child->_isWindowRoot || child->_visualParent
+				|| (child->_logicalParent
+					&& (!explicitLogicalParent
+						|| child->_logicalParent != logicalParent))
+				|| (child->GetPresentationWindow()
+					&& child->GetPresentationWindow()
+						!= this->GetPresentationWindow()))
+				reject("该控件已属于其他容器");
 		}
 	}
 
@@ -1084,15 +1289,21 @@ void Control::SynchronizeVisualChildCollection(
 		if (!owner) return;
 		if (!child || !stillContains(*owner, child)
 			|| child->_visualParent != owner) continue;
-		if (child->_logicalParent && child->_logicalParent != owner) continue;
-		if (child->_logicalParent != owner)
-			child->SetLogicalParentCore(owner);
+		bool explicitLogicalParent = false;
+		auto* logicalParent = requestedLogicalParent(
+			*owner, child, explicitLogicalParent);
+		if (child->_logicalParent
+			&& child->_logicalParent != logicalParent) continue;
+		if (child->_logicalParent != logicalParent)
+			child->SetLogicalParentCore(logicalParent);
 		owner = selfReference.Get();
 		child = childReference.Get();
 		if (!owner) return;
+		logicalParent = requestedLogicalParent(
+			*owner, child, explicitLogicalParent);
 		if (!child || !stillContains(*owner, child)
 			|| child->_visualParent != owner
-			|| child->_logicalParent != owner) continue;
+			|| child->_logicalParent != logicalParent) continue;
 		child->_isWindowRoot = false;
 		PropagatePresentationWindow(child, owner->GetPresentationWindow());
 		owner = selfReference.Get();
@@ -1495,6 +1706,14 @@ cui::drawing::Brush Control::GetComputedBorderBrush() const
 {
 	return _borderBrush.value_or(cui::drawing::NoBrush());
 }
+GET_CPP(Control, bool, ClipToBounds)
+{
+	return _clipToBounds;
+}
+SET_CPP(Control, bool, ClipToBounds)
+{
+	(void)SetPropertyField(L"ClipToBounds", _clipToBounds, value);
+}
 void Control::SetClip(const cui::drawing::Geometry& geometry)
 {
 	if (_clip && *_clip == geometry) return;
@@ -1834,6 +2053,14 @@ Control::GetDeclarativePropertyMetadata() const
 bool Control::SupportsNativeProperty(
 	const DependencyPropertyMetadata& metadata) const
 {
+	// A ComponentDefinition is a declarative control type even when its private
+	// C++ behavior host reuses a structural Canvas/Panel implementation. Its
+	// XAML ControlTemplate contract therefore owns Control.Template; this does
+	// not project Template onto the built-in Canvas QName.
+	if (_declarativeTypeDescriptor
+		&& metadata.OwnerType() == std::type_index(typeid(Control))
+		&& metadata.Name() == L"Template")
+		return true;
 	return IsNativePropertySupportedByUIClass(
 		const_cast<Control*>(this)->Type(), metadata);
 }
@@ -2589,6 +2816,9 @@ void Control::ClearDeclarativeTemplateScope()
 {
 	_templateNameScope.clear();
 	_declarativeContentPresenters.clear();
+	_templateEventConnections.clear();
+	_templatePartEventConnections.clear();
+	_declarativeVisualStates.reset();
 }
 
 void Control::RefreshInheritedPropertyValues()
@@ -2976,6 +3206,8 @@ struct Control::DeclarativeVisualStateRuntime
 	struct RuntimeEventTrigger
 	{
 		std::wstring EventName;
+		/** None identifies a XAML-defined declarative event. */
+		RoutedEventId RoutedEvent = RoutedEventId::None;
 		std::vector<RuntimeEventTriggerAction> Actions;
 	};
 
@@ -7543,7 +7775,17 @@ struct Control::DeclarativeVisualStateRuntime
 				}
 		}
 		for (const auto& trigger : EventTriggers)
-			if (EqualName(trigger.EventName, args.Name))
+			if (trigger.RoutedEvent == RoutedEventId::None
+				&& EqualName(trigger.EventName, args.Name))
+				for (const auto& action : trigger.Actions)
+					ExecuteEventTriggerAction(action);
+	}
+
+	void OnHostRoutedEvent(RoutedEventArgs& args)
+	{
+		if (Applying || args.OriginalSource != Owner) return;
+		for (const auto& trigger : EventTriggers)
+			if (trigger.RoutedEvent == args.EventId)
 				for (const auto& action : trigger.Actions)
 					ExecuteEventTriggerAction(action);
 	}
@@ -8097,14 +8339,33 @@ struct Control::DeclarativeVisualStateRuntime
 		{
 			const auto* sourceEvent = Owner->FindDeclarativeEvent(
 				sourceTrigger.EventName);
-			if (sourceTrigger.EventName.empty() || !sourceEvent)
+			RoutedEventId routedEvent = RoutedEventId::None;
+			if (!sourceEvent)
+				for (auto candidate = static_cast<unsigned int>(
+						RoutedEventId::None) + 1;
+					candidate < static_cast<unsigned int>(
+						RoutedEventId::Count); ++candidate)
+				{
+					const auto id = static_cast<RoutedEventId>(candidate);
+					if (EqualName(
+						GetRoutedEventMetadata(id).Name,
+						sourceTrigger.EventName))
+					{
+						routedEvent = id;
+						break;
+					}
+				}
+			if (sourceTrigger.EventName.empty()
+				|| (!sourceEvent && routedEvent == RoutedEventId::None))
 				return fail(L"EventTrigger 事件不存在："
 					+ sourceTrigger.EventName);
 			if (sourceTrigger.Actions.empty())
 				return fail(L"EventTrigger 至少需要一个 TriggerAction："
-					+ sourceEvent->Name);
+					+ sourceTrigger.EventName);
 			RuntimeEventTrigger trigger;
-			trigger.EventName = sourceEvent->Name;
+			trigger.EventName = sourceEvent
+				? sourceEvent->Name : sourceTrigger.EventName;
+			trigger.RoutedEvent = routedEvent;
 			for (auto& sourceAction : sourceTrigger.Actions)
 			{
 				RuntimeEventTriggerAction action;
@@ -8199,6 +8460,21 @@ struct Control::DeclarativeVisualStateRuntime
 		Connections.push_back(Owner->OnDeclarativeEvent.Subscribe(
 			[this](Control*, DeclarativeEventArgs& args)
 			{ OnHostDeclarativeEvent(args); }));
+		std::vector<RoutedEventId> subscribedRoutedEvents;
+		for (const auto& trigger : EventTriggers)
+		{
+			if (trigger.RoutedEvent == RoutedEventId::None
+				|| std::find(
+					subscribedRoutedEvents.begin(),
+					subscribedRoutedEvents.end(),
+					trigger.RoutedEvent)
+					!= subscribedRoutedEvents.end()) continue;
+			subscribedRoutedEvents.push_back(trigger.RoutedEvent);
+			Connections.push_back(Owner->AddHandler(
+				trigger.RoutedEvent,
+				[this](Control*, RoutedEventArgs& args)
+				{ OnHostRoutedEvent(args); }));
+		}
 		for (size_t index = 0; index < Groups.size(); ++index)
 			if (!GoTo(index, EvaluateState(Groups[index]), false, outError)) return false;
 		if (outError) outError->clear();
@@ -9219,6 +9495,43 @@ void Control::RegisterDependencyProperties()
 					{ handler(); });
 			},
 			std::move(dataContextOptions));
+
+		auto templateDesign = PropertyDesign(
+			L"Appearance", 200, 5,
+			DependencyPropertyPersistence::Metadata);
+		// DesignerControlPropertyCatalog owns the XAML resource picker. The DP
+		// metadata remains the runtime value contract and must not add a second
+		// object editor beside that structural surface.
+		templateDesign.Browsable = false;
+		DependencyPropertyOptions<Control, ControlTemplateReference>
+			templateOptions;
+		templateOptions.DefaultValue = ControlTemplateReference{};
+		templateOptions.Flags = DependencyPropertyFlags::AffectsMeasure;
+		templateOptions.Equals = [](
+			const ControlTemplateReference& left,
+			const ControlTemplateReference& right)
+		{
+			return left == right;
+		};
+		templateOptions.Changed = [](
+			Control& target,
+			const ControlTemplateReference& oldTemplate,
+			const ControlTemplateReference& newTemplate)
+		{
+			target.AbortControlTemplateApplication();
+			target._lastTemplateError.clear();
+			target.OnTemplateChanged(oldTemplate, newTemplate);
+		};
+		templateOptions.Design = std::move(templateDesign);
+		DependencyPropertyRegistry::Register<
+			Control, ControlTemplateReference>(
+			L"Template",
+			[](Control& target) { return target.GetTemplate(); },
+			[](Control& target, const ControlTemplateReference& value)
+			{
+				target.SetTemplate(value);
+			}, {}, std::move(templateOptions));
+
 		auto visibilityDesign = PropertyDesign(L"Common", 0, 30,
 			DependencyPropertyPersistence::Native,
 			DependencyPropertyEditorKind::Choice);
@@ -9429,6 +9742,48 @@ void Control::RegisterDependencyProperties()
 			WithPropertyDesign(DependencyPropertyOptions<Control, ::VerticalAlignment>{
 				::VerticalAlignment::Stretch, DependencyPropertyFlags::AffectsArrange },
 				std::move(verticalAlignmentDesign)));
+		auto horizontalContentAlignmentDesign = PropertyDesign(
+			L"Layout", 100, 102, DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
+		horizontalContentAlignmentDesign.Choices = {
+			PropertyChoice(L"Left", ::HorizontalAlignment::Left),
+			PropertyChoice(L"Center", ::HorizontalAlignment::Center),
+			PropertyChoice(L"Right", ::HorizontalAlignment::Right),
+			PropertyChoice(L"Stretch", ::HorizontalAlignment::Stretch)
+		};
+		DependencyPropertyRegistry::Register<Control, ::HorizontalAlignment>(
+			L"HorizontalContentAlignment",
+			[](Control& target)
+			{ return target.HorizontalContentAlignment; },
+			[](Control& target, const ::HorizontalAlignment& value)
+			{ target.HorizontalContentAlignment = value; },
+			{},
+			WithPropertyDesign(
+				DependencyPropertyOptions<Control, ::HorizontalAlignment>{
+					::HorizontalAlignment::Left,
+					DependencyPropertyFlags::AffectsArrange },
+				std::move(horizontalContentAlignmentDesign)));
+		auto verticalContentAlignmentDesign = PropertyDesign(
+			L"Layout", 100, 104, DependencyPropertyPersistence::Native,
+			DependencyPropertyEditorKind::Choice);
+		verticalContentAlignmentDesign.Choices = {
+			PropertyChoice(L"Top", ::VerticalAlignment::Top),
+			PropertyChoice(L"Center", ::VerticalAlignment::Center),
+			PropertyChoice(L"Bottom", ::VerticalAlignment::Bottom),
+			PropertyChoice(L"Stretch", ::VerticalAlignment::Stretch)
+		};
+		DependencyPropertyRegistry::Register<Control, ::VerticalAlignment>(
+			L"VerticalContentAlignment",
+			[](Control& target)
+			{ return target.VerticalContentAlignment; },
+			[](Control& target, const ::VerticalAlignment& value)
+			{ target.VerticalContentAlignment = value; },
+			{},
+			WithPropertyDesign(
+				DependencyPropertyOptions<Control, ::VerticalAlignment>{
+					::VerticalAlignment::Top,
+					DependencyPropertyFlags::AffectsArrange },
+				std::move(verticalContentAlignmentDesign)));
 		DependencyPropertyRegistry::Register<Control, int>(L"ZIndex",
 			[](Control& target) { return target.ZIndex; },
 			[](Control& target, const int& value) { target.ZIndex = value; },
@@ -9731,6 +10086,31 @@ void Control::RegisterDependencyProperties()
 				if (value == cui::drawing::Geometry{}) target.ClearClip();
 				else target.SetClip(value);
 			}, {}, std::move(clipOptions));
+
+		auto clipToBoundsDesign = PropertyDesign(
+			L"Layout", 100, 160, DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Boolean, L"Clip to bounds");
+		DependencyPropertyOptions<Control, bool> clipToBoundsOptions;
+		clipToBoundsOptions.DefaultValue = false;
+		clipToBoundsOptions.Flags =
+			DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
+		clipToBoundsOptions.Changed = [](
+			Control& target, const bool&, const bool&)
+		{
+			// The old descendant pixels and the new clipped extent both
+			// participate in damage. The layout rectangle itself is unchanged.
+			target.InvalidateVisualSubtree();
+			target.InvalidateVisualBoundsSubtree();
+		};
+		clipToBoundsOptions.Design = std::move(clipToBoundsDesign);
+		DependencyPropertyRegistry::Register<Control, bool>(
+			L"ClipToBounds",
+			[](Control& target) { return target.ClipToBounds; },
+			[](Control& target, const bool& value)
+			{ target.ClipToBounds = value; },
+			{},
+			std::move(clipToBoundsOptions));
 
 		DependencyPropertyOptions<Control, cui::drawing::Transform> transformOptions;
 		transformOptions.DefaultValue = cui::drawing::Transform{};
@@ -10841,6 +11221,40 @@ SET_CPP(Control, ::VerticalAlignment, VerticalAlignment)
 	this->InvalidateVisual();
 }
 
+GET_CPP(Control, ::HorizontalAlignment, HorizontalContentAlignment)
+{
+	return _horizontalContentAlignment;
+}
+SET_CPP(Control, ::HorizontalAlignment, HorizontalContentAlignment)
+{
+	auto* metadata = DependencyPropertyRegistry::Find(
+		*this, L"HorizontalContentAlignment");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(
+		L"HorizontalContentAlignment", _horizontalContentAlignment, value)
+		|| (metadata && !applyingMetadata)) return;
+	this->RequestLayout();
+	this->InvalidateVisual();
+}
+
+GET_CPP(Control, ::VerticalAlignment, VerticalContentAlignment)
+{
+	return _verticalContentAlignment;
+}
+SET_CPP(Control, ::VerticalAlignment, VerticalContentAlignment)
+{
+	auto* metadata = DependencyPropertyRegistry::Find(
+		*this, L"VerticalContentAlignment");
+	const bool applyingMetadata =
+		metadata && _applyingPropertyMetadata == metadata;
+	if (!SetPropertyField(
+		L"VerticalContentAlignment", _verticalContentAlignment, value)
+		|| (metadata && !applyingMetadata)) return;
+	this->RequestLayout();
+	this->InvalidateVisual();
+}
+
 GET_CPP(Control, int, GridRow)
 {
 	return _gridRow;
@@ -10911,7 +11325,11 @@ void Control::SetMaxSizeDip(cui::core::Size value)
 cui::core::Size Control::MeasureCore(const cui::core::Constraints& available)
 {
 	(void)available;
-	return _naturalSize.NonNegative();
+	// WPF Control.MeasureOverride returns zero when neither a template nor a
+	// derived control contributes content.  The former 120x20 fallback was a
+	// WinForms-era preferred size which made empty and text-adjacent elements
+	// claim arbitrary layout space.
+	return {};
 }
 
 cui::core::Size Control::ResolveDesiredSize(
@@ -10919,20 +11337,21 @@ cui::core::Size Control::ResolveDesiredSize(
 	const cui::core::Constraints& available) const
 {
 	intrinsicSize = intrinsicSize.NonNegative();
-	if (_layoutStyle.width.IsFixed())
-		intrinsicSize.width = _layoutStyle.width.value;
-	if (_layoutStyle.height.IsFixed())
-		intrinsicSize.height = _layoutStyle.height.value;
-
-	const auto styleConstraints = _layoutStyle.SizeConstraints();
 	const auto availableConstraints = available.Normalized();
-	const cui::core::Size minimum{
-		(std::max)(styleConstraints.minimum.width, availableConstraints.minimum.width),
-		(std::max)(styleConstraints.minimum.height, availableConstraints.minimum.height) };
-	const cui::core::Size maximum{
-		(std::max)(minimum.width, (std::min)(styleConstraints.maximum.width, availableConstraints.maximum.width)),
-		(std::max)(minimum.height, (std::min)(styleConstraints.maximum.height, availableConstraints.maximum.height)) };
-	return cui::core::Constraints{ minimum, maximum }.Constrain(intrinsicSize);
+	const auto elementConstraints =
+		ElementSizeConstraints(_layoutStyle);
+
+	intrinsicSize.width = (std::clamp)(
+		intrinsicSize.width,
+		elementConstraints.minimum.width,
+		elementConstraints.maximum.width);
+	intrinsicSize.height = (std::clamp)(
+		intrinsicSize.height,
+		elementConstraints.minimum.height,
+		elementConstraints.maximum.height);
+	// The parent remains authoritative when its slot is smaller than the
+	// element's Min/Width, matching FrameworkElement's clipped DesiredSize.
+	return availableConstraints.Constrain(intrinsicSize);
 }
 
 cui::core::Size Control::Measure(const cui::core::Constraints& available)
@@ -10946,12 +11365,32 @@ cui::core::Size Control::Measure(const cui::core::Constraints& available)
 			_layoutState.CommitMeasure({}, constraints);
 		return {};
 	}
+	(void)ApplyTemplate();
 	if (_layoutState.NeedsMeasure() ||
 		_layoutState.lastMeasureConstraints != constraints)
 	{
+		const auto elementConstraints =
+			ElementSizeConstraints(_layoutStyle);
+
+		// WPF applies Width/Height/Min/Max to the available size before
+		// MeasureOverride. This is essential for controls whose height depends
+		// on the offered width, notably wrapping TextBlock.
+		const cui::core::Size measureMaximum{
+			(std::max)(
+				elementConstraints.minimum.width,
+				(std::min)(
+					constraints.maximum.width,
+					elementConstraints.maximum.width)),
+			(std::max)(
+				elementConstraints.minimum.height,
+				(std::min)(
+					constraints.maximum.height,
+					elementConstraints.maximum.height)) };
+		const cui::core::Constraints measureConstraints{
+			cui::core::Size{}, measureMaximum };
 		const auto intrinsic = GetControlTemplateRoot()
-			? GetControlTemplateRoot()->Measure(constraints)
-			: MeasureCore(constraints);
+			? GetControlTemplateRoot()->Measure(measureConstraints)
+			: MeasureCore(measureConstraints);
 		_layoutState.CommitMeasure(ResolveDesiredSize(intrinsic, constraints), constraints);
 	}
 	return _layoutState.desiredSize;
@@ -11071,10 +11510,24 @@ bool Control::IsRenderPointInsideClip(D2D1_POINT_2F renderPoint) const
 		current && visited.insert(current).second;
 		current = current->_visualParent)
 	{
-		if (!current->_clip) continue;
 		D2D1_POINT_2F local{};
-		if (!current->TryTransformRenderPointToLocal(renderPoint, local)
-			|| !current->_clip->ContainsPoint(local)) return false;
+		if (current->_clip
+			&& (!current->TryTransformRenderPointToLocal(renderPoint, local)
+				|| !current->_clip->ContainsPoint(local)))
+			return false;
+
+		// ClipsChildren describes the viewport offered by an ancestor to this
+		// descendant. The element itself is still tested against ContainsPoint;
+		// only its visual parents contribute child-layout clips here.
+		if (current == this
+			|| !const_cast<Control*>(current)->ClipsChildren()) continue;
+		if (!current->TryTransformRenderPointToLocal(renderPoint, local))
+			return false;
+		const auto clip =
+			const_cast<Control*>(current)->GetVisualChildrenClipRect();
+		if (local.x < clip.left || local.y < clip.top
+			|| local.x > clip.right || local.y > clip.bottom)
+			return false;
 	}
 	return true;
 }

@@ -19,13 +19,15 @@ class DesignDocumentControlPool
 {
 public:
 	using Factory = std::function<std::unique_ptr<Control>(const DesignNode&)>;
+	using BorrowedResolver = std::function<Control*(const DesignNode&)>;
 
 	static bool Build(
 		const DesignDocument& document,
 		const DesignDocumentGraph& graph,
 		const Factory& factory,
 		DesignDocumentControlPool& pool,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const BorrowedResolver& borrowedResolver = {});
 
 	Control* FindById(int id) const noexcept;
 	Control* FindByName(const std::wstring& name) const noexcept;

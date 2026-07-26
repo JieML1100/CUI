@@ -6,12 +6,24 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace CuiRuntime { struct XamlTypePropertySchema; }
+namespace DesignerModel
+{
+	struct DesignDocument;
+	struct DesignItemsPanelTemplate;
+}
 
 namespace DesignerStyleSheetUtils
 {
+	using RuntimeStyleResource = std::pair<std::wstring, BindingValue>;
+	std::vector<RuntimeStyleResource> BuildItemsPanelStyleResources(
+		const std::vector<DesignerModel::DesignItemsPanelTemplate>& templates);
+	std::vector<RuntimeStyleResource> BuildItemsPanelStyleResources(
+		const DesignerModel::DesignDocument* document);
+
 	std::wstring Trim(const std::wstring& value);
 	std::wstring ValueKindName(DesignerStyleValueKind kind);
 	bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out);
@@ -88,10 +100,23 @@ namespace DesignerStyleSheetUtils
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {});
+	/**
+	 * Lowers authored Begin/Pause/Resume/Stop storyboard actions through the
+	 * same value/resource conversion used by dynamic and static Style paths.
+	 */
+	bool MaterializeStoryboardActions(
+		const std::vector<DesignerEventTriggerAction>& sourceActions,
+		const DesignerStyleSheet& styleSheet,
+		std::vector<DeclarativeEventTriggerActionDefinition>& out,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {},
+		const std::wstring& context = L"Style Trigger");
 	bool BuildRuntimeStyleSheet(
 		const DesignerStyleSheet& styleSheet,
 		std::shared_ptr<ControlStyleSheet>& out,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
-		const std::shared_ptr<ResourceLoadContext>& resources = {});
+		const std::shared_ptr<ResourceLoadContext>& resources = {},
+		const std::vector<RuntimeStyleResource>& supplementalResources = {});
 }

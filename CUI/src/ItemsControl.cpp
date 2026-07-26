@@ -438,12 +438,15 @@ namespace
 	class GroupedItemHost final : public Panel
 	{
 	public:
-		explicit GroupedItemHost(std::unique_ptr<Control> item)
+		GroupedItemHost(
+			std::unique_ptr<Control> item,
+			Control* itemLogicalParent)
 			: Panel()
 		{
 			SetLayoutEngine(new GroupedItemsLayoutEngine(*this));
 			_item = item.get();
-			AddOwned(std::move(item));
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(item), itemLogicalParent);
 		}
 
 		Control* Item() const noexcept { return _item; }
@@ -465,8 +468,6 @@ namespace
 			auto* itemLogicalParent = _item
 				? _item->GetLogicalParent() : nullptr;
 			auto item = DetachVisualChild(_item);
-			if (item && item->GetLogicalParent())
-				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
 			while (!GetVisualChildrenView().empty())
 			{
 				auto discarded = DetachVisualChild(GetVisualChildrenView().front());
@@ -479,11 +480,9 @@ namespace
 			for (auto& header : headers)
 				AddOwned(std::move(header));
 			_item = item.get();
-			if (item) AddOwned(std::move(item));
-			if (_item && itemLogicalParent
-				&& _item->GetLogicalParent() != itemLogicalParent)
-				cui::framework::XamlAccess::SetLogicalParent(
-					*_item, itemLogicalParent);
+			if (item)
+				cui::framework::TreeAccess::AddOwnedVisualChild(
+					*this, std::move(item), itemLogicalParent);
 			InvalidateLayout();
 		}
 
@@ -655,9 +654,9 @@ ItemsControl::ItemsControl()
 	auto itemsHost = CreateItemsHost();
 	_itemsHost = itemsHost.get();
 	_changingItemsHost = true;
-	AddOwned(std::move(itemsHost));
 	cui::framework::XamlAccess::SetTemplatedParent(*_itemsHost, this);
-	cui::framework::XamlAccess::SetLogicalParent(*_itemsHost, nullptr);
+	cui::framework::TreeAccess::AddOwnedVisualChild(
+		*this, std::move(itemsHost), nullptr);
 	_changingItemsHost = false;
 	RefreshItemsScrollOwner();
 }
@@ -871,10 +870,10 @@ void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 		_changingItemsHost = true;
 		try
 		{
-			AddOwned(std::move(host));
 			if (!raw->GetTemplatedParent())
 				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*this, std::move(host), nullptr);
 			_changingItemsHost = false;
 		}
 		catch (...)
@@ -990,8 +989,8 @@ Control* ItemsControl::SetControlTemplateRoot(
 	_changingTemplateInfrastructure = true;
 	try
 	{
-		AddOwned(std::move(value));
-		cui::framework::XamlAccess::SetLogicalParent(*_controlTemplateRoot, nullptr);
+		cui::framework::TreeAccess::AddOwnedVisualChild(
+			*this, std::move(value), nullptr);
 		_changingTemplateInfrastructure = false;
 	}
 	catch (...)
@@ -1004,6 +1003,7 @@ Control* ItemsControl::SetControlTemplateRoot(
 		throw;
 	}
 	RefreshItemsScrollOwner();
+	MarkControlTemplateRootAttached();
 	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
@@ -1012,7 +1012,19 @@ Control* ItemsControl::SetControlTemplateRoot(
 
 std::unique_ptr<Control> ItemsControl::DetachVisualChildTemplateRoot()
 {
-	if (!_controlTemplateRoot) return {};
+	if (!_controlTemplateRoot)
+	{
+		auto host = TakeItemsHost();
+		_itemsPresenterParentChanged.Disconnect();
+		_templateItemsPresenter = nullptr;
+		ClearDeclarativeTemplateScope();
+		if (host) PlaceItemsHost(std::move(host));
+		MarkControlTemplateRootDetached();
+		OnControlTemplatePresentationChanged();
+		RequestLayout();
+		InvalidateVisual();
+		return {};
+	}
 	_changingTemplateInfrastructure = true;
 	std::unique_ptr<Control> root;
 	try
@@ -1032,6 +1044,7 @@ std::unique_ptr<Control> ItemsControl::DetachVisualChildTemplateRoot()
 	ClearTemplateOwner(root.get(), this);
 	ClearDeclarativeTemplateScope();
 	if (host) PlaceItemsHost(std::move(host));
+	MarkControlTemplateRootDetached();
 	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
@@ -1086,9 +1099,8 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 				if (!owner)
 					throw std::logic_error(
 						"ItemsControl authored item ownership is invalid");
-				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
-				_itemsHost->AddOwned(std::move(owner));
-				cui::framework::XamlAccess::SetLogicalParent(*item, this);
+				cui::framework::TreeAccess::AddOwnedVisualChild(
+					*_itemsHost, std::move(owner), this);
 			}
 			_lastTemplateError.clear();
 			RequestLayout();
@@ -1109,15 +1121,11 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 				else if (item->GetVisualParent() == oldHost.get())
 					owner = oldHost->DetachVisualChild(item);
 				if (!owner) continue;
-				cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
 				owners.push_back(std::move(owner));
 			}
 			for (auto& owner : owners)
-			{
-				auto* item = owner.get();
-				oldHost->AddOwned(std::move(owner));
-				cui::framework::XamlAccess::SetLogicalParent(*item, this);
-			}
+				cui::framework::TreeAccess::AddOwnedVisualChild(
+					*oldHost, std::move(owner), this);
 			auto failedHost = TakeItemsHost();
 			_itemsPanel = previousPanel;
 			PlaceItemsHost(std::move(oldHost));
@@ -1499,6 +1507,8 @@ bool ItemsControl::ApplyItemContainerStyle()
 		if (!container) continue;
 		cui::framework::StyleAccess::SetResourceKey(
 			*container, _itemContainerStyle);
+		if (!cui::framework::StyleAccess::HasVisibleStyleRules(*container))
+			continue;
 		if (!cui::framework::StyleAccess::Refresh(*container, true)) return false;
 	}
 	return true;
@@ -1606,15 +1616,17 @@ Control* ItemsControl::InsertItemControl(size_t index, Control* item)
 		throw std::invalid_argument(itemError.empty()
 			? "ItemsControl rejected authored item" : itemError);
 	_authoredItems.reserve(_authoredItems.size() + 1);
-	_itemsHost->InsertVisualChild(static_cast<int>(index), item);
 	try
 	{
-		cui::framework::XamlAccess::SetLogicalParent(*item, this);
+		cui::framework::TreeAccess::InsertVisualChild(
+			*_itemsHost, static_cast<int>(index), item, this);
 	}
 	catch (...)
 	{
 		auto detached = _itemsHost->DetachVisualChild(item);
 		if (detached.get() == item) (void)detached.release();
+		if (item->GetLogicalParent() == this)
+			cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
 		throw;
 	}
 	_authoredItems.insert(_authoredItems.begin() + index, item);
@@ -1882,7 +1894,7 @@ bool ItemsControl::PrepareGeneratedItem(
 		else
 		{
 			auto host = std::make_unique<GroupedItemHost>(
-				std::move(output.Visual));
+				std::move(output.Visual), this);
 			host->SetHeaders(
 				std::move(headers.Visuals), std::move(headers.Contexts),
 				IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
@@ -1911,7 +1923,8 @@ bool ItemsControl::PrepareGeneratedItem(
 	{
 		auto headers = BuildGroupHeaders(index, item);
 		if (!_lastTemplateError.empty()) return false;
-		auto grouped = std::make_unique<GroupedItemHost>(std::move(visual));
+		auto grouped = std::make_unique<GroupedItemHost>(
+			std::move(visual), this);
 		grouped->SetHeaders(
 			std::move(headers.Visuals), std::move(headers.Contexts),
 			IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
@@ -1963,19 +1976,19 @@ void ItemsControl::AttachPreparedItem(PreparedItem&& item)
 	if (!_itemsHost || !item.Visual) return;
 	const auto index = item.Index;
 	auto* visual = item.Visual.get();
-	cui::framework::XamlAccess::SetLogicalParent(*visual, nullptr);
-	_itemsHost->AddOwned(std::move(item.Visual));
 	if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
 	{
+		cui::framework::TreeAccess::AddOwnedVisualChild(
+			*_itemsHost, std::move(item.Visual), nullptr);
 		// GroupedItemHost is presentation infrastructure.  The item container
 		// remains the ItemsControl logical child just as it does without a
 		// GroupStyle; otherwise ListBoxItem cannot resolve its owning Selector.
-		cui::framework::XamlAccess::SetLogicalParent(*grouped, nullptr);
 		if (auto* logicalItem = grouped->Item())
 			cui::framework::XamlAccess::SetLogicalParent(*logicalItem, this);
 	}
 	else
-		cui::framework::XamlAccess::SetLogicalParent(*visual, this);
+		cui::framework::TreeAccess::AddOwnedVisualChild(
+			*_itemsHost, std::move(item.Visual), this);
 	// Generated containers may be realized after the document-wide style pass.
 	// Re-resolve their keyed/implicit style only after the live inheritance
 	// route exists, so lazy virtualization has the same template semantics as
@@ -1989,7 +2002,6 @@ void ItemsControl::AttachPreparedItem(PreparedItem&& item)
 			cui::framework::StyleAccess::DocumentStyles(*this))
 		(void)cui::framework::StyleAccess::SetDocumentStyles(
 			*visual, std::move(styles), true);
-	(void)cui::framework::StyleAccess::Refresh(*visual, true);
 	if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 		virtualHost->RegisterItem(visual, index);
 	_generator.StoreRealized(
@@ -2007,24 +2019,22 @@ void ItemsControl::ReorderRealizedChildren()
 		(void)index;
 		auto detached = _itemsHost->DetachVisualChild(item.Visual);
 		if (detached)
-		{
-			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
 			ordered.push_back(std::move(detached));
-		}
 	}
 	for (auto& item : ordered)
 	{
 		auto* visual = item.get();
-		_itemsHost->AddOwned(std::move(item));
 		if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
 		{
-			cui::framework::XamlAccess::SetLogicalParent(*grouped, nullptr);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*_itemsHost, std::move(item), nullptr);
 			if (auto* logicalItem = grouped->Item())
 				cui::framework::XamlAccess::SetLogicalParent(
 					*logicalItem, this);
 		}
 		else
-			cui::framework::XamlAccess::SetLogicalParent(*visual, this);
+			cui::framework::TreeAccess::AddOwnedVisualChild(
+				*_itemsHost, std::move(item), this);
 	}
 }
 

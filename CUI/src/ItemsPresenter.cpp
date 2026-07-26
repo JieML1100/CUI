@@ -1,5 +1,6 @@
 #include "ItemsPresenter.h"
 #include "Layout/OverlayLayout.h"
+#include "TreeInfrastructure.h"
 #include "Window.h"
 
 #include <stdexcept>
@@ -82,7 +83,8 @@ Panel* ItemsPresenter::SetItemsHost(std::unique_ptr<Panel> value)
 	_changingItemsHost = true;
 	try
 	{
-		AddOwned(std::move(value));
+		cui::framework::TreeAccess::AddOwnedVisualChild(
+			*this, std::move(value), nullptr);
 		_changingItemsHost = false;
 	}
 	catch (...)

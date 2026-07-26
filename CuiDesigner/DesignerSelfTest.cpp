@@ -640,14 +640,21 @@ bool RunDesignerSelfTest(std::wstring& report)
 		previewSurface->Background = Colors::DodgerBlue;
 		previewSurface->InvalidateVisual();
 		(void)::UpdateWindow(previewOwner.Handle);
-		disabledOwnerRepainted =
+		const auto committedWhileDisabled =
 			cui::framework::WindowAccess::PresentationCommittedFrameCount(
-				previewOwner) > committedBefore;
+				previewOwner);
 		(void)::EnableWindow(previewOwner.Handle, TRUE);
+		(void)::UpdateWindow(previewOwner.Handle);
+		const auto committedAfterEnable =
+			cui::framework::WindowAccess::PresentationCommittedFrameCount(
+				previewOwner);
+		disabledOwnerRepainted =
+			committedWhileDisabled == committedBefore
+			&& committedAfterEnable > committedBefore;
 		(void)::DestroyWindow(previewOwner.Handle);
 	}
 	AppendFailure(failures, disabledOwnerRepainted,
-		L"live XAML: a disabled modal owner discarded the canvas repaint");
+		L"live XAML: a disabled modal owner did not retain and resume the canvas repaint");
 
 	auto catalogDescriptors = DesignerControlCatalog::BuiltInDescriptors();
 	auto findBuiltInDescriptor = [&](UIClass type)
@@ -3072,11 +3079,61 @@ bool RunDesignerSelfTest(std::wstring& report)
       Width="520" Height="280" ContentRendered="HandleRuntimeContentRendered">
   <Window.Resources>
     <Color x:Key="Accent">#FF0067C0</Color>
+    <Thickness x:Key="StaticHoverBorder">7</Thickness>
+    <ControlTemplate x:Key="StaticCodeTemplate" TargetType="Button">
+      <Border x:Name="StaticCodeChrome"
+              Background="{StaticResource Accent}"
+              Padding="{TemplateBinding Padding}">
+        <Border.Triggers>
+          <EventTrigger RoutedEvent="Click">
+            <BeginStoryboard x:Name="StaticClickPulse">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetName="StaticCodeChrome"
+                  Storyboard.TargetProperty="(Canvas.Left)"
+                  From="0" To="12" Duration="0:0:0.200"/>
+              </Storyboard>
+            </BeginStoryboard>
+          </EventTrigger>
+        </Border.Triggers>
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="StaticCommonStates">
+            <VisualStateGroup.Transitions>
+              <VisualTransition From="Normal" To="PointerOver"
+                GeneratedDuration="0:0:0.100"/>
+            </VisualStateGroup.Transitions>
+            <VisualState x:Name="PointerOver">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsMouseOver" Value="true"/>
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="StaticCodeChrome"
+                  Property="Background" Value="#FFEAF2FF"/>
+              </VisualState.Setters>
+            </VisualState>
+            <VisualState x:Name="Normal"/>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <ContentPresenter x:Name="StaticCodePresenter"
+                          ContentSource="Content" />
+      </Border>
+    </ControlTemplate>
     <Style TargetType="Button">
       <Setter Property="IsDefault" Value="false" />
       <Style.Triggers>
         <Trigger Property="IsMouseOver" Value="true">
           <Setter Property="BorderThickness" Value="5.5" />
+          <Trigger.EnterActions>
+            <BeginStoryboard x:Name="StaticStyleHoverClock">
+              <Storyboard>
+                <ThicknessAnimation Storyboard.TargetProperty="BorderThickness"
+                  From="5.5" To="{StaticResource StaticHoverBorder}"
+                  Duration="0:0:0.080" />
+              </Storyboard>
+            </BeginStoryboard>
+          </Trigger.EnterActions>
+          <Trigger.ExitActions>
+            <StopStoryboard BeginStoryboardName="StaticStyleHoverClock" />
+          </Trigger.ExitActions>
         </Trigger>
         <MultiTrigger>
           <MultiTrigger.Conditions>
@@ -3112,6 +3169,7 @@ bool RunDesignerSelfTest(std::wstring& report)
               Orientation="Vertical">
     <Button x:Name="xamlAction" DesignId="501"
             Style="{StaticResource PrimaryButton}"
+            Template="{StaticResource StaticCodeTemplate}"
             Width="180.5" Height="36"
             Content="{Binding Caption, Mode=OneWay}"
             Click="HandleRuntimeClick" />
@@ -3314,6 +3372,13 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& canonicalRuntimeXaml.find(
 			"<Trigger Property=\"IsMouseOver\" Value=\"true\">")
 			!= std::string::npos
+		&& canonicalRuntimeXaml.find("<Trigger.EnterActions>")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<BeginStoryboard x:Name=\"StaticStyleHoverClock\">")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find("<Trigger.ExitActions>")
+			!= std::string::npos
 		&& canonicalRuntimeXaml.find("<MultiTrigger>") != std::string::npos
 		&& canonicalRuntimeXaml.find("<MultiTrigger.Conditions>")
 			!= std::string::npos
@@ -3356,6 +3421,45 @@ bool RunDesignerSelfTest(std::wstring& report)
 			== std::string::npos
 		&& xamlStyleGeneratedCpp.find("xamlAction->Background =")
 			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"class CuiGeneratedControlTemplate final")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"__controlTemplate_StaticCodeTemplate")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"->SetApplyCallback([this")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"ControlTemplateReference(__controlTemplate_StaticCodeTemplate")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeVisualStateGroupDefinition group")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"group.Name = L\"StaticCommonStates\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"trigger.EventName = L\"Click\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"animation.PropertyName = L\"Canvas.Left\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"XamlAccess::DefineInteractions(__templateOwner")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"std::vector<DeclarativeEventTriggerActionDefinition> "
+			"__styleEnterActions") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"action.StoryboardName = L\"StaticStyleHoverClock\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"animation.PropertyName = L\"BorderThickness\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"animation.To = BindingValue(Thickness(7.f, 7.f, 7.f, 7.f));")
+			!= std::string::npos
 		&& generatedExpandedStyleInheritance;
 	const bool runtimeXamlIdentityReady = xamlClickCount == 1
 		&& xamlRuntimeDocument.WindowNode().Name == L"XamlRuntimeWindow"
@@ -3458,6 +3562,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			"BasedOn=\"{StaticResource BaseButton}\"")
 			!= std::string::npos
 		&& generatedExpandedStyleInheritance
+		&& runtimeXamlGeneratedContract
 		&& xamlClickCount == 1
 		&& xamlRuntimeDocument.WindowNode().Name == L"XamlRuntimeWindow"
 		&& parsedXamlDocument.CodeBehind.ClassName
@@ -7457,11 +7562,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& demoCanvas.ApplyDesignDocument(demoDocument, &demoApplyError);
 		auto demoStatus = demoApplied
 			? FindControl(demoCanvas, L"mainStatusBar") : nullptr;
-		const cui::core::Point declaredStatusLocation = demoStatus
-			&& demoStatus->ControlInstance
-			? cui::core::Point{ Canvas::GetLeft(*(demoStatus->ControlInstance)),
-				Canvas::GetTop(*(demoStatus->ControlInstance)) }
-			: cui::core::Point{};
 		const auto declaredStatusWidth = demoStatus
 			&& demoStatus->ControlInstance
 			? demoStatus->ControlInstance->Width : cui::layout::Length::Auto();
@@ -7474,21 +7574,23 @@ bool RunDesignerSelfTest(std::wstring& report)
 		if (demoStatus && demoStatus->ControlInstance
 			&& demoStatus->ControlInstance->GetVisualParent())
 		{
+			auto* statusParent = dynamic_cast<Grid*>(
+				demoStatus->ControlInstance->GetVisualParent());
 			const auto actual = demoStatus->ControlInstance
 				->GetActualLocationDip();
 			const auto actualSize = demoStatus->ControlInstance
 				->GetActualSizeDip();
+			const auto parentSize = statusParent
+				? statusParent->GetActualSizeDip() : cui::core::Size{};
 			statusPreviewMatchesRuntime =
-				std::fabs(actual.x - declaredStatusLocation.x) < 0.01f
-				&& std::fabs(actual.y - declaredStatusLocation.y) < 0.01f
-				&& declaredStatusWidth.IsFixed()
-				&& declaredStatusHeight.IsFixed()
-				&& std::fabs(actualSize.width - declaredStatusWidth.value) < 0.01f
-				&& std::fabs(actualSize.height - declaredStatusHeight.value) < 0.01f
-				&& Canvas::GetLeft(*(demoStatus->ControlInstance))
-					== declaredStatusLocation.x
-				&& Canvas::GetTop(*(demoStatus->ControlInstance))
-					== declaredStatusLocation.y
+				statusParent
+				&& Grid::GetRow(*(demoStatus->ControlInstance)) == 4
+				&& actual.x >= -0.01f && actual.y >= -0.01f
+				&& actualSize.width > 0.0f && actualSize.height > 0.0f
+				&& actual.x + actualSize.width
+					<= parentSize.width + 0.01f
+				&& actual.y + actualSize.height
+					<= parentSize.height + 0.01f
 				&& demoStatus->ControlInstance->Width == declaredStatusWidth
 				&& demoStatus->ControlInstance->Height == declaredStatusHeight;
 		}
@@ -8924,13 +9026,29 @@ bool RunDesignerSelfTest(std::wstring& report)
 			? dynamic_cast<TreeView*>(treeViewItemRecord->ControlInstance) : nullptr;
 		auto* designerRoot = designerTree
 			? designerTree->ContainerFromIndex(0) : nullptr;
+		const bool designerRootApplied = designerRoot
+			&& (designerRoot->ApplyTemplate()
+				|| cui::framework::TemplateAccess::GetTemplateRoot(
+					*designerRoot));
 		std::wstring designerRootHeader;
-		const bool treeViewItemPreviewReady = designerRoot
-			&& designerRoot->FindDeclarativeTemplatePart(L"treeChrome")
+		const bool designerRootPart = designerRoot
+			&& designerRoot->FindDeclarativeTemplatePart(L"treeChrome");
+		const bool designerRootHeaderReady = designerRoot
 			&& designerRoot->GetHeader().TryGetString(designerRootHeader)
-			&& designerRootHeader == L"Root"
-			&& designerRoot->IsExpanded
-			&& designerRoot->HasItems;
+			&& designerRootHeader == L"Root";
+		const bool designerRootPresent = designerRoot != nullptr;
+		const bool designerRootExpanded =
+			designerRoot && designerRoot->IsExpanded;
+		const bool designerRootHasItems =
+			designerRoot && designerRoot->HasItems;
+		const bool designerRootHasTemplate =
+			designerRoot && designerRoot->GetTemplate();
+		const std::wstring designerRootTemplateError = designerRoot
+			? static_cast<Control*>(designerRoot)->LastTemplateError()
+			: std::wstring{};
+		const bool treeViewItemPreviewReady = designerRootApplied
+			&& designerRootPart && designerRootHeaderReady
+			&& designerRootExpanded && designerRootHasItems;
 		DesignerModel::DesignDocument capturedTreeViewItem;
 		const bool treeViewItemCaptured = treeViewItemApplied
 			&& treeViewItemCanvas.BuildDesignDocument(
@@ -8958,6 +9076,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			: nullptr;
 		auto* changedDesignerRoot = changedDesignerTree
 			? changedDesignerTree->ContainerFromIndex(0) : nullptr;
+		if (changedDesignerRoot) (void)changedDesignerRoot->ApplyTemplate();
 		const bool treeViewItemChangedReady = changedDesignerRoot
 			&& changedDesignerRoot->FindDeclarativeTemplatePart(
 				L"treeChromeReloaded")
@@ -8975,6 +9094,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			: nullptr;
 		auto* undoDesignerRoot = undoDesignerTree
 			? undoDesignerTree->ContainerFromIndex(0) : nullptr;
+		if (undoDesignerRoot) (void)undoDesignerRoot->ApplyTemplate();
 		const bool treeViewItemUndoReady = undoDesignerRoot
 			&& undoDesignerRoot->FindDeclarativeTemplatePart(L"treeChrome");
 		const auto redoTreeViewItemEdit = treeViewItemUndoReady
@@ -8987,6 +9107,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			: nullptr;
 		auto* redoDesignerRoot = redoDesignerTree
 			? redoDesignerTree->ContainerFromIndex(0) : nullptr;
+		if (redoDesignerRoot) (void)redoDesignerRoot->ApplyTemplate();
 		const bool treeViewItemRedoReady = redoDesignerRoot
 			&& redoDesignerRoot->FindDeclarativeTemplatePart(
 				L"treeChromeReloaded");
@@ -9023,6 +9144,14 @@ bool RunDesignerSelfTest(std::wstring& report)
 				+ L", node=" + SelfTestFlag(treeViewItemCanonicalNode)
 				+ L", header=" + SelfTestFlag(
 					treeViewItemCanonicalHeader)
+				+ L", root=" + SelfTestFlag(designerRootPresent)
+				+ L", applied=" + SelfTestFlag(designerRootApplied)
+				+ L", part=" + SelfTestFlag(designerRootPart)
+				+ L", rootHeader=" + SelfTestFlag(designerRootHeaderReady)
+				+ L", expanded=" + SelfTestFlag(designerRootExpanded)
+				+ L", hasItems=" + SelfTestFlag(designerRootHasItems)
+				+ L", template=" + SelfTestFlag(designerRootHasTemplate)
+				+ L", templateError=" + designerRootTemplateError
 				+ L", preview=" + SelfTestFlag(treeViewItemChangedReady)
 				+ L", undo=" + SelfTestFlag(treeViewItemUndoReady)
 				+ L", redo=" + SelfTestFlag(treeViewItemRedoReady) + L"]");

@@ -864,6 +864,12 @@ bool InputManager::DispatchPhase(
 		_statistics.ClassHandlersInvoked += classCount.Invoked;
 		_statistics.HandlersSkippedAfterHandled += classCount.Skipped;
 		if (!currentReference || !sourceLifetime) return false;
+		const auto genericCount =
+			cui::framework::RoutedEventAccess::InvokeGenericHandlers(
+				*current, current, args);
+		_statistics.InstanceHandlersInvoked += genericCount.Invoked;
+		_statistics.HandlersSkippedAfterHandled += genericCount.Skipped;
+		if (!currentReference || !sourceLifetime) return false;
 		const auto instanceCount = InvokeInstanceHandlers(*current, args);
 		_statistics.InstanceHandlersInvoked += instanceCount.Invoked;
 		_statistics.HandlersSkippedAfterHandled += instanceCount.Skipped;

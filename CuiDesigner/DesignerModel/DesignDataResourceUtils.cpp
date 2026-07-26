@@ -493,12 +493,35 @@ bool ValidateAndCanonicalize(
 		for (const auto& rule : sheet.Rules)
 			for (const auto& setter : rule.Setters)
 			{
-				if (setter.PropertyName != L"Template")
+				const bool controlTemplate =
+					setter.PropertyName == L"Template";
+				const bool itemsPanel =
+					setter.PropertyName == L"ItemsPanel";
+				if (!controlTemplate && !itemsPanel)
 					continue;
 				if (!setter.UsesResource || setter.UsesDynamicResource
 					|| DesignerBindingUtils::Trim(setter.ResourceKey).empty())
 					return Fail(owner
-						+ L" 的 Style.Template 必须使用 StaticResource。", outError);
+						+ L" 的 Style." + setter.PropertyName
+						+ L" 必须使用 StaticResource。", outError);
+				if (itemsPanel)
+				{
+					const auto* definition = nodes && origin
+						? document.FindItemsPanelTemplate(
+							*nodes, *origin, setter.ResourceKey)
+						: document.FindItemsPanelTemplate(setter.ResourceKey);
+					if (!definition)
+						return Fail(owner
+							+ L" 的 Style.ItemsPanel 引用了未声明的 "
+							L"ItemsPanelTemplate：" + setter.ResourceKey,
+							outError);
+					if (rule.HasType && !IsUIClassAssignableFrom(
+						UIClass::UI_ItemsControl, rule.Type))
+						return Fail(owner
+							+ L" 的 Style.ItemsPanel 只能用于 "
+							L"ItemsControl 派生类型。", outError);
+					continue;
+				}
 				const auto* definition = nodes && origin
 					? document.FindControlTemplate(
 						*nodes, *origin, setter.ResourceKey)
