@@ -27,5 +27,16 @@ namespace cui::framework
 		{
 			return target.AdvanceVisualStateAnimations(nowMilliseconds);
 		}
+
+		static void InvalidateMeasureSubtree(Control& target)
+		{
+			target.InvalidateMeasureSubtree();
+		}
+
+		static void InvalidateVisualRect(
+			Control& target, const D2D1_RECT_F& contentRect)
+		{
+			target.InvalidateVisualRect(contentRect);
+		}
 	};
 }

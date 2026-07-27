@@ -56,6 +56,8 @@
 #include <array>
 #include <cwctype>
 #include <iterator>
+#include <map>
+#include <mutex>
 #include <type_traits>
 #include <typeindex>
 
@@ -264,6 +266,10 @@ namespace
 #define CUI_SCHEMA_OWNER(type) \
 			if constexpr (std::is_base_of_v<type, TConcrete>) \
 				result.emplace_back(typeid(type))
+			CUI_SCHEMA_OWNER(DependencyObject);
+			CUI_SCHEMA_OWNER(Visual);
+			CUI_SCHEMA_OWNER(UIElement);
+			CUI_SCHEMA_OWNER(FrameworkElement);
 			// Most-derived metadata wins when Window projects inherited
 			// FrameworkElement properties onto native platform state.
 			CUI_SCHEMA_OWNER(Window);
@@ -335,18 +341,36 @@ namespace
 	}
 
 	template<typename TConcrete>
-	const std::vector<const DependencyPropertyMetadata*>& NativePropertiesFor()
+	const std::vector<const DependencyPropertyMetadata*>& NativePropertiesFor(
+		UIClass nativeType)
 	{
-		static const auto properties =
+		struct Cache final
+		{
+			std::mutex Mutex;
+			std::map<UIClass,
+				std::vector<const DependencyPropertyMetadata*>> Properties;
+		};
+		static Cache cache;
+		std::scoped_lock lock(cache.Mutex);
+		const auto found = cache.Properties.find(nativeType);
+		if (found != cache.Properties.end()) return found->second;
+		auto properties =
 			DependencyPropertyRegistry::GetRegisteredProperties(
-				NativeOwnerTypes<TConcrete>());
-		return properties;
+				NativeOwnerTypes<TConcrete>(),
+				[nativeType](const DependencyPropertyMetadata& metadata)
+				{
+					return IsNativePropertySupportedByUIClass(
+						nativeType, metadata);
+				});
+		return cache.Properties.emplace(
+			nativeType, std::move(properties)).first->second;
 	}
 
 	template<typename TConcrete>
-	const std::vector<const DependencyPropertyMetadata*>* NativePropertiesPointer()
+	const std::vector<const DependencyPropertyMetadata*>* NativePropertiesPointer(
+		UIClass nativeType)
 	{
-		return &NativePropertiesFor<TConcrete>();
+		return &NativePropertiesFor<TConcrete>(nativeType);
 	}
 
 	const std::vector<const DependencyPropertyMetadata*>* NativePropertySchema(
@@ -356,63 +380,63 @@ namespace
 		{
 		case UIClass::UI_FrameworkElement:
 		case UIClass::UI_Control:
-			return NativePropertiesPointer<Control>();
-		case UIClass::UI_RangeBase: return NativePropertiesPointer<RangeBase>();
-		case UIClass::UI_Label: return NativePropertiesPointer<Label>();
-		case UIClass::UI_Button: return NativePropertiesPointer<Button>();
-		case UIClass::UI_Image: return NativePropertiesPointer<Image>();
-		case UIClass::UI_TextBox: return NativePropertiesPointer<TextBox>();
-		case UIClass::UI_RichTextBox: return NativePropertiesPointer<RichTextBox>();
-		case UIClass::UI_PasswordBox: return NativePropertiesPointer<PasswordBox>();
-		case UIClass::UI_NumericUpDown: return NativePropertiesPointer<NumericUpDown>();
-		case UIClass::UI_Panel: return NativePropertiesPointer<Panel>();
+			return NativePropertiesPointer<Control>(type);
+		case UIClass::UI_RangeBase: return NativePropertiesPointer<RangeBase>(type);
+		case UIClass::UI_Label: return NativePropertiesPointer<Label>(type);
+		case UIClass::UI_Button: return NativePropertiesPointer<Button>(type);
+		case UIClass::UI_Image: return NativePropertiesPointer<Image>(type);
+		case UIClass::UI_TextBox: return NativePropertiesPointer<TextBox>(type);
+		case UIClass::UI_RichTextBox: return NativePropertiesPointer<RichTextBox>(type);
+		case UIClass::UI_PasswordBox: return NativePropertiesPointer<PasswordBox>(type);
+		case UIClass::UI_NumericUpDown: return NativePropertiesPointer<NumericUpDown>(type);
+		case UIClass::UI_Panel: return NativePropertiesPointer<Panel>(type);
 		case UIClass::UI_Decorator:
-			return NativePropertiesPointer<Decorator>();
-		case UIClass::UI_Border: return NativePropertiesPointer<Border>();
-		case UIClass::UI_Canvas: return NativePropertiesPointer<Canvas>();
-		case UIClass::UI_GroupBox: return NativePropertiesPointer<GroupBox>();
-		case UIClass::UI_Expander: return NativePropertiesPointer<Expander>();
-		case UIClass::UI_ScrollViewer: return NativePropertiesPointer<ScrollViewer>();
-		case UIClass::UI_Popup: return NativePropertiesPointer<Popup>();
-		case UIClass::UI_StackPanel: return NativePropertiesPointer<StackPanel>();
-		case UIClass::UI_Grid: return NativePropertiesPointer<Grid>();
-		case UIClass::UI_DockPanel: return NativePropertiesPointer<DockPanel>();
-		case UIClass::UI_WrapPanel: return NativePropertiesPointer<WrapPanel>();
-		case UIClass::UI_RelativePanel: return NativePropertiesPointer<RelativePanel>();
-		case UIClass::UI_CheckBox: return NativePropertiesPointer<CheckBox>();
-		case UIClass::UI_RadioButton: return NativePropertiesPointer<RadioButton>();
-		case UIClass::UI_ComboBox: return NativePropertiesPointer<ComboBox>();
-		case UIClass::UI_ListView: return NativePropertiesPointer<ListView>();
-		case UIClass::UI_ListBox: return NativePropertiesPointer<ListBox>();
-		case UIClass::UI_ChartView: return NativePropertiesPointer<ChartView>();
-		case UIClass::UI_TreeView: return NativePropertiesPointer<TreeView>();
-		case UIClass::UI_ProgressBar: return NativePropertiesPointer<ProgressBar>();
-		case UIClass::UI_LoadingRing: return NativePropertiesPointer<LoadingRing>();
-		case UIClass::UI_ProgressRing: return NativePropertiesPointer<ProgressRing>();
-		case UIClass::UI_Slider: return NativePropertiesPointer<Slider>();
-		case UIClass::UI_Switch: return NativePropertiesPointer<Switch>();
-		case UIClass::UI_TabItem: return NativePropertiesPointer<TabItem>();
-		case UIClass::UI_TabControl: return NativePropertiesPointer<TabControl>();
-		case UIClass::UI_ToolBar: return NativePropertiesPointer<ToolBar>();
-		case UIClass::UI_Menu: return NativePropertiesPointer<Menu>();
-		case UIClass::UI_MenuItem: return NativePropertiesPointer<MenuItem>();
-		case UIClass::UI_Separator: return NativePropertiesPointer<Separator>();
-		case UIClass::UI_ContextMenu: return NativePropertiesPointer<ContextMenu>();
-		case UIClass::UI_StatusBar: return NativePropertiesPointer<StatusBar>();
-		case UIClass::UI_StatusBarItem: return NativePropertiesPointer<StatusBarItem>();
-		case UIClass::UI_WebBrowser: return NativePropertiesPointer<WebBrowser>();
-		case UIClass::UI_MediaPlayer: return NativePropertiesPointer<MediaPlayer>();
-		case UIClass::UI_NativeSurface: return NativePropertiesPointer<NativeSurface>();
-		case UIClass::UI_ItemsControl: return NativePropertiesPointer<ItemsControl>();
-		case UIClass::UI_ContentPresenter: return NativePropertiesPointer<ContentPresenter>();
-		case UIClass::UI_ItemsPresenter: return NativePropertiesPointer<ItemsPresenter>();
-		case UIClass::UI_ContentControl: return NativePropertiesPointer<ContentControl>();
-		case UIClass::UI_Window: return NativePropertiesPointer<Window>();
-		case UIClass::UI_ListBoxItem: return NativePropertiesPointer<ListBoxItem>();
-		case UIClass::UI_ListViewItem: return NativePropertiesPointer<ListViewItem>();
-		case UIClass::UI_ComboBoxItem: return NativePropertiesPointer<ComboBoxItem>();
-		case UIClass::UI_TreeViewItem: return NativePropertiesPointer<TreeViewItem>();
-		case UIClass::UI_CalendarView: return NativePropertiesPointer<CalendarView>();
+			return NativePropertiesPointer<Decorator>(type);
+		case UIClass::UI_Border: return NativePropertiesPointer<Border>(type);
+		case UIClass::UI_Canvas: return NativePropertiesPointer<Canvas>(type);
+		case UIClass::UI_GroupBox: return NativePropertiesPointer<GroupBox>(type);
+		case UIClass::UI_Expander: return NativePropertiesPointer<Expander>(type);
+		case UIClass::UI_ScrollViewer: return NativePropertiesPointer<ScrollViewer>(type);
+		case UIClass::UI_Popup: return NativePropertiesPointer<Popup>(type);
+		case UIClass::UI_StackPanel: return NativePropertiesPointer<StackPanel>(type);
+		case UIClass::UI_Grid: return NativePropertiesPointer<Grid>(type);
+		case UIClass::UI_DockPanel: return NativePropertiesPointer<DockPanel>(type);
+		case UIClass::UI_WrapPanel: return NativePropertiesPointer<WrapPanel>(type);
+		case UIClass::UI_RelativePanel: return NativePropertiesPointer<RelativePanel>(type);
+		case UIClass::UI_CheckBox: return NativePropertiesPointer<CheckBox>(type);
+		case UIClass::UI_RadioButton: return NativePropertiesPointer<RadioButton>(type);
+		case UIClass::UI_ComboBox: return NativePropertiesPointer<ComboBox>(type);
+		case UIClass::UI_ListView: return NativePropertiesPointer<ListView>(type);
+		case UIClass::UI_ListBox: return NativePropertiesPointer<ListBox>(type);
+		case UIClass::UI_ChartView: return NativePropertiesPointer<ChartView>(type);
+		case UIClass::UI_TreeView: return NativePropertiesPointer<TreeView>(type);
+		case UIClass::UI_ProgressBar: return NativePropertiesPointer<ProgressBar>(type);
+		case UIClass::UI_LoadingRing: return NativePropertiesPointer<LoadingRing>(type);
+		case UIClass::UI_ProgressRing: return NativePropertiesPointer<ProgressRing>(type);
+		case UIClass::UI_Slider: return NativePropertiesPointer<Slider>(type);
+		case UIClass::UI_Switch: return NativePropertiesPointer<Switch>(type);
+		case UIClass::UI_TabItem: return NativePropertiesPointer<TabItem>(type);
+		case UIClass::UI_TabControl: return NativePropertiesPointer<TabControl>(type);
+		case UIClass::UI_ToolBar: return NativePropertiesPointer<ToolBar>(type);
+		case UIClass::UI_Menu: return NativePropertiesPointer<Menu>(type);
+		case UIClass::UI_MenuItem: return NativePropertiesPointer<MenuItem>(type);
+		case UIClass::UI_Separator: return NativePropertiesPointer<Separator>(type);
+		case UIClass::UI_ContextMenu: return NativePropertiesPointer<ContextMenu>(type);
+		case UIClass::UI_StatusBar: return NativePropertiesPointer<StatusBar>(type);
+		case UIClass::UI_StatusBarItem: return NativePropertiesPointer<StatusBarItem>(type);
+		case UIClass::UI_WebBrowser: return NativePropertiesPointer<WebBrowser>(type);
+		case UIClass::UI_MediaPlayer: return NativePropertiesPointer<MediaPlayer>(type);
+		case UIClass::UI_NativeSurface: return NativePropertiesPointer<NativeSurface>(type);
+		case UIClass::UI_ItemsControl: return NativePropertiesPointer<ItemsControl>(type);
+		case UIClass::UI_ContentPresenter: return NativePropertiesPointer<ContentPresenter>(type);
+		case UIClass::UI_ItemsPresenter: return NativePropertiesPointer<ItemsPresenter>(type);
+		case UIClass::UI_ContentControl: return NativePropertiesPointer<ContentControl>(type);
+		case UIClass::UI_Window: return NativePropertiesPointer<Window>(type);
+		case UIClass::UI_ListBoxItem: return NativePropertiesPointer<ListBoxItem>(type);
+		case UIClass::UI_ListViewItem: return NativePropertiesPointer<ListViewItem>(type);
+		case UIClass::UI_ComboBoxItem: return NativePropertiesPointer<ComboBoxItem>(type);
+		case UIClass::UI_TreeViewItem: return NativePropertiesPointer<TreeViewItem>(type);
+		case UIClass::UI_CalendarView: return NativePropertiesPointer<CalendarView>(type);
 		default: return nullptr;
 		}
 	}

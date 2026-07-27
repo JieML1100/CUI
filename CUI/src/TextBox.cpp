@@ -27,7 +27,10 @@ namespace
 	{
 		if (!control || oldText == newText)
 			return;
-		control->Text = newText;
+		// User edits are SetCurrentValue in WPF: update the effective target
+		// without replacing a Local Binding or DynamicResource expression.
+		(void)control->TrySetCurrentPropertyValue(
+			L"Text", BindingValue(newText));
 	}
 
 	bool TryReadClipboardText(HWND owner, std::wstring& text)
@@ -161,12 +164,14 @@ namespace
 		DependencyPropertyOptions<TextBox, double> options;
 		options.DefaultValue = 0.4;
 		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		options.Coerce = [](TextBox&, const double& proposed)
 			-> std::optional<double>
 		{
-			return std::isfinite(proposed)
-				? std::optional<double>{ (std::clamp)(proposed, 0.0, 1.0) }
-				: std::nullopt;
+			return (std::clamp)(proposed, 0.0, 1.0);
 		};
 		options.Design.Category = L"Appearance";
 		options.Design.CategoryOrder = 200;
@@ -181,6 +186,20 @@ namespace
 
 }
 
+const DependencyProperty& TextBox::TextProperty()
+{
+	RegisterDependencyProperties();
+	const std::type_index ownerTypes[] = {
+		std::type_index(typeid(TextBox))
+	};
+	const auto* metadata =
+		DependencyPropertyRegistry::FindRegistered(ownerTypes, L"Text");
+	if (!metadata)
+		throw std::logic_error(
+			"TextBox.Text dependency property is not registered");
+	return metadata->Property();
+}
+
 void TextBox::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
@@ -188,8 +207,6 @@ void TextBox::RegisterDependencyProperties()
 	{
 		using Handler = DependencyPropertyMetadata::ChangeHandler;
 		DependencyPropertyRegistry::Register<TextBox, std::wstring>(L"Text",
-			[](TextBox& target) { return target.Text; },
-			[](TextBox& target, const std::wstring& value) { target.Text = value; },
 			[](TextBox& target, Handler handler, DataSourceUpdateMode mode)
 			{
 				if (mode == DataSourceUpdateMode::OnValidation)
@@ -290,7 +307,7 @@ bool TextBox::HandlesNavigationKey(Key key) const
 }
 TextBox::TextBox()
 {
-	InitializeControlBorderThicknessDefault(1.0f);
+	RegisterDependencyProperties();
 	(void)TrySetPropertyValue(
 		L"Padding", BindingValue(Thickness{ 5.0f }),
 		DependencyPropertyValueSource::Theme);

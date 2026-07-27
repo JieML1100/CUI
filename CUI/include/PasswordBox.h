@@ -18,6 +18,9 @@ protected:
 			*this, L"PasswordBox", true);
 	}
 private:
+	// Password content is private editor state. It must never share the
+	// Control/TextBlock/TextBox dependency-property storage path.
+	std::wstring _password;
 	D2D1_COLOR_F _selectedBackColor = cui::theme::palette::SelectionBack;
 	D2D1_COLOR_F _selectedForeColor = cui::theme::palette::TextPrimary;
 	wchar_t _passwordChar = L'\x25CF';

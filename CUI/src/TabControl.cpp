@@ -216,8 +216,7 @@ void TabControl::RegisterDependencyProperties()
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
-		options.Coerce = [](
-			TabControl&, const Dock& value) -> std::optional<Dock>
+		options.Validate = [](const Dock& value)
 		{
 			switch (value)
 			{
@@ -225,9 +224,9 @@ void TabControl::RegisterDependencyProperties()
 			case Dock::Top:
 			case Dock::Right:
 			case Dock::Bottom:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		options.Changed = [](

@@ -17,7 +17,6 @@ GroupBox::GroupBox()
 	: HeaderedContentControl()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.0f);
 	this->RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 }
 

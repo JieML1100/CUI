@@ -278,10 +278,13 @@ void WebBrowser::RegisterDependencyProperties()
 
 		auto zoomOptions = WebBrowserPropertyOptions(
 			1.0, 20, DependencyPropertyEditorKind::Number);
+		zoomOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
-			if (!std::isfinite(proposed)) return std::nullopt;
 			return (std::clamp)(proposed, 0.25, 5.0);
 		};
 		zoomOptions.Design.Minimum = 0.25;
@@ -1768,10 +1771,13 @@ void WebBrowser::RegisterDependencyProperties()
 
 		auto zoomOptions = UnsupportedWebPropertyOptions(
 			1.0, 20, DependencyPropertyEditorKind::Number);
+		zoomOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
-			if (!std::isfinite(proposed)) return std::nullopt;
 			return (std::clamp)(proposed, 0.25, 5.0);
 		};
 		zoomOptions.Design.Minimum = 0.25;

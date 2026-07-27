@@ -131,6 +131,11 @@ public:
 	SET(std::wstring, Text);
 	bool IsAccessibilityReadOnly() const override { return _isReadOnly; }
 	virtual UIClass Type();
+	/**
+	 * CUI compatibility Text identity. WPF RichTextBox exposes Document instead;
+	 * this property remains until the document object model is implemented.
+	 */
+	static const DependencyProperty& TextProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override
 	{

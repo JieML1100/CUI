@@ -74,7 +74,8 @@ Binding、DynamicResource、TemplateBinding 和 Animation 是值槽中的表达�
 `_S` 是 WPF AccessText 助记键标记，`__` 表示字面下划线。外观使用 Brush 属性；不存在
 `BackColor`、`ForeColor`、`BorderColor` 或通用可写 `AccessKey` 属性。
 
-C++ 宿主负责加载 XAML、注册 `OnSave` behavior、提供 DataContext，然后进入 `Application::Run()`；应用代码不再
+C++ 宿主负责创建 `Application`、加载 XAML、注册 `OnSave` behavior、提供 DataContext，然后进入
+`application.Run(window)`；应用代码不再
 用 `AddControl(new ...)` 建立另一棵作者树。完整动态挂载和事件注册见
 [`CuiRuntimeSample/main.cpp`](CuiRuntimeSample/main.cpp)，静态 lowering 见
 [`CuiStaticGeneratedSample`](CuiStaticGeneratedSample)，综合特性展厅见 [`CUITest`](CUITest)。
@@ -113,11 +114,10 @@ C++ 宿主负责加载 XAML、注册 `OnSave` behavior、提供 DataContext，�
 
 ## 架构文档
 
-- [WPF 推进总方向与每批决议](CUI_WPF_ARCHITECTURE_DIRECTION.md)
-- [当前语义审计](CONTROL_API_AUDIT.md)
-- [XAML 声明组件架构](CUI_XAML_COMPONENT_ARCHITECTURE.md)
-- [Agent 开发规则](CUI_AGENT_GUIDE.md)
-- [构建与验证记录](BUILD_VERIFICATION.md)
+- [WPF 底层对齐状态、审计与验证记录](CUI_WPF_FOUNDATION_ALIGNMENT.md)
 
-下一阶段从 XAML 默认主题、ControlTemplate/VisualState、Adorner、完整 Brush realization 和更深的
-AutomationPeer 能力继续推进。native fallback renderer 只是在默认模板覆盖完成前的内部后备，不是第二套公共外观模型。
+下一阶段先继续收敛剩余 DependencyProperty 身份/元数据、
+InheritanceContext/Freezable 和结构元素基类；Application 实例生命周期已经进入底座，
+`Application.xaml`/`StartupUri` 与通用 ResourceDictionary/MergedDictionaries 作为后续上层面接入。
+随后再推进默认主题、Adorner、完整 Brush realization 与更深的 AutomationPeer 能力。
+native fallback renderer 只是在默认模板覆盖完成前的内部后备，不是第二套公共外观模型。

@@ -331,6 +331,12 @@
 	<ClInclude Include="include\DependencyObject.h">
 	  <Filter>include</Filter>
 	</ClInclude>
+	<ClInclude Include="include\DependencyProperty.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\TextElement.h">
+	  <Filter>include</Filter>
+	</ClInclude>
 	<ClInclude Include="include\Visual.h">
 	  <Filter>include</Filter>
 	</ClInclude>
@@ -369,6 +375,9 @@
     <ClCompile Include="src\Control.cpp">
       <Filter>src</Filter>
     </ClCompile>
+	<ClCompile Include="src\TextElement.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
 	<ClCompile Include="src\AutomationPeer.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>

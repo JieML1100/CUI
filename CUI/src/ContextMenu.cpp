@@ -6,6 +6,7 @@
 #include "WindowInfrastructure.h"
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <unordered_set>
 
 namespace
@@ -29,6 +30,20 @@ namespace
 		std::function<void()> Action;
 		~ScopeExit() { if (Action) Action(); }
 	};
+
+	std::optional<DependencyPropertyKey>&
+	PlacementTargetPropertyKeyStorage()
+	{
+		static std::optional<DependencyPropertyKey> key;
+		return key;
+	}
+
+	const DependencyPropertyKey& PlacementTargetPropertyKey(
+		ContextMenu& target)
+	{
+		target.EnsureBindingPropertiesRegistered();
+		return PlacementTargetPropertyKeyStorage().value();
+	}
 
 	D2D1_COLOR_F BoostAlpha(D2D1_COLOR_F color, float factor)
 	{
@@ -144,7 +159,6 @@ void ContextMenu::RegisterDependencyProperties()
 		DependencyPropertyOptions<ContextMenu, ControlWeakReference> targetOptions;
 		targetOptions.DefaultValue = {};
 		targetOptions.Flags = DependencyPropertyFlags::None;
-		targetOptions.IsReadOnly = true;
 		targetOptions.Design.Category = L"State";
 		targetOptions.Design.CategoryOrder = 70;
 		targetOptions.Design.Order = 30;
@@ -152,15 +166,17 @@ void ContextMenu::RegisterDependencyProperties()
 		targetOptions.Design.Persistence =
 			DependencyPropertyPersistence::Transient;
 		targetOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ContextMenu, ControlWeakReference>(
-			L"PlacementTarget",
-			[](ContextMenu& target) { return target._placementTarget; },
-			[](ContextMenu& target, const ControlWeakReference& value)
-			{
-				(void)target.SetReadOnlyPropertyField(
-					L"PlacementTarget", target._placementTarget, value);
-			},
-			subscriber(L"PlacementTarget"), std::move(targetOptions));
+		PlacementTargetPropertyKeyStorage().emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<
+				ContextMenu, ControlWeakReference>(
+				L"PlacementTarget",
+				[](ContextMenu& target) { return target._placementTarget; },
+				[](ContextMenu& target, const ControlWeakReference& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						L"PlacementTarget", target._placementTarget, value);
+				},
+				subscriber(L"PlacementTarget"), std::move(targetOptions)));
 		return true;
 	}();
 	(void)registered;
@@ -347,7 +363,8 @@ void ContextMenu::OnPresentationWindowChanged(
 		auto* placementTarget = _placementTarget.Get();
 		if (!placementTarget
 			|| placementTarget->GetPresentationWindow() != currentWindow)
-			(void)ClearReadOnlyPropertyValue(L"PlacementTarget");
+			(void)ClearReadOnlyPropertyValue(
+				PlacementTargetPropertyKey(*this));
 	}
 	SynchronizeItemCommandHosts();
 	if (_isOpen && currentWindow)
@@ -937,7 +954,7 @@ void ContextMenu::ShowAtCore(
 		&& placementTarget->GetPresentationWindow() != this->GetPresentationWindow())
 		return;
 	(void)TrySetReadOnlyPropertyValue(
-		L"PlacementTarget",
+		PlacementTargetPropertyKey(*this),
 		BindingValue(ControlWeakReference(placementTarget)));
 	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 	if (!host || !host->GetPresentationWindow()) return;
@@ -1032,7 +1049,8 @@ void ContextMenu::DismissPresentationCore()
 	_ignoreNextMouseUp = false;
 	ClearHoverState();
 	SynchronizeInteractionProjection();
-	(void)ClearReadOnlyPropertyValue(L"PlacementTarget");
+	(void)ClearReadOnlyPropertyValue(
+		PlacementTargetPropertyKey(*this));
 	std::vector<ControlWeakReference> items;
 	items.reserve(_items.size());
 	for (auto* entry : _items)

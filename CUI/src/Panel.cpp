@@ -6,11 +6,49 @@
 #include <cmath>
 #include <utility>
 
+namespace
+{
+	std::optional<cui::drawing::Brush> ConvertPanelBrush(
+		const BindingValue& value)
+	{
+		cui::drawing::Brush brush;
+		if (value.TryGet(brush)) return brush;
+		D2D1_COLOR_F color{};
+		if (value.TryGet(color))
+			return cui::drawing::MakeSolidColorBrush(color);
+		return std::nullopt;
+	}
+}
+
 UIClass Panel::Type() { return UIClass::UI_Panel; }
+
+const DependencyProperty& Panel::BackgroundProperty()
+{
+	static const auto* property = []
+	{
+		DependencyPropertyOptions<Panel, cui::drawing::Brush> options;
+		options.DefaultValue = cui::drawing::NoBrush();
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Convert = ConvertPanelBrush;
+		options.Design.Browsable = false;
+		options.Design.DisplayName = L"Background";
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		return DependencyPropertyRegistry::Register<
+			Panel, cui::drawing::Brush>(
+				L"Background", std::move(options));
+	}();
+	return *property;
+}
 
 void Panel::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
+	(void)BackgroundProperty();
 }
 
 Panel::Panel()

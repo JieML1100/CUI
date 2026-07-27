@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Core/Geometry.h"
+#include "Core/Geometry.h"
 
 #include <limits>
 

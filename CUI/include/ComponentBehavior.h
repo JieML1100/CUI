@@ -1,3 +1,5 @@
+#ifndef CUI_COMPONENT_BEHAVIOR_H_INCLUDED
+#define CUI_COMPONENT_BEHAVIOR_H_INCLUDED
 #pragma once
 
 #include "XamlSchema.h"
@@ -122,3 +124,5 @@ protected:
 		Control& host,
 		const std::wstring& propertyName);
 };
+
+#endif // CUI_COMPONENT_BEHAVIOR_H_INCLUDED

@@ -14,6 +14,11 @@ class Border final : public Decorator
 public:
 	Border() = default;
 	UIClass Type() override { return UIClass::UI_Border; }
+	/** WPF identities: Border owns its brush and thickness chrome. */
+	static const DependencyProperty& BorderBrushProperty();
+	static const DependencyProperty& BackgroundProperty();
+	static const DependencyProperty& BorderThicknessProperty();
+	static const DependencyProperty& PaddingProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override
 	{

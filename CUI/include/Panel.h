@@ -42,6 +42,8 @@ protected:
 	void PerformLayout();
 public:
 	virtual UIClass Type();
+	/** WPF identity owner for Panel/Control/Border Background. */
+	static const DependencyProperty& BackgroundProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
 

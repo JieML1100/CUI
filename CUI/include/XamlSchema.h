@@ -128,6 +128,7 @@ private:
 	{
 		BindingValue DefaultValue;
 		std::vector<BindingValue> AllowedValues;
+		std::unique_ptr<DependencyProperty> Property;
 		std::unique_ptr<DependencyPropertyMetadata> Metadata;
 	};
 

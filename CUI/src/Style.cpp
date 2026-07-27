@@ -1,4 +1,5 @@
 #include "Style.h"
+#include "Application.h"
 #include "EventInfrastructure.h"
 #include "StyleInfrastructure.h"
 #include <algorithm>
@@ -417,6 +418,11 @@ bool Control::HasVisibleStyleRules() const noexcept
 {
 	if (_themeStyleSheet && !_themeStyleSheet->Rules().empty()) return true;
 	if (_styleSheet && !_styleSheet->Rules().empty()) return true;
+	if (const auto* application = Application::Current())
+	{
+		const auto resources = application->GetResourcesSnapshot();
+		if (resources && !resources->Rules().empty()) return true;
+	}
 	for (const Control* scope = this; scope;
 		scope = scope->GetInheritanceParent())
 		if (scope->_resourceDictionary
@@ -550,9 +556,13 @@ bool Control::TryFindResource(
 		if (scope->_resourceDictionary
 			&& scope->_resourceDictionary->TryGetResource(resourceKey, value))
 			return true;
-	return (_styleSheet && _styleSheet->TryGetResource(resourceKey, value))
-		|| (_themeStyleSheet
-			&& _themeStyleSheet->TryGetResource(resourceKey, value));
+	if (_styleSheet && _styleSheet->TryGetResource(resourceKey, value))
+		return true;
+	if (const auto* application = Application::Current();
+		application && application->TryFindResource(resourceKey, value))
+		return true;
+	return _themeStyleSheet
+			&& _themeStyleSheet->TryGetResource(resourceKey, value);
 }
 
 bool Control::TryResolveDynamicResource(
@@ -619,7 +629,7 @@ bool Control::ClearDynamicResource(
 	if (!metadata) return false;
 	const int index = EffectiveSlotIndex(source);
 	if (index < 0) return false;
-	const auto entry = _propertyValues.find(metadata);
+	const auto entry = _propertyValues.find(&metadata->Property());
 	if (entry == _propertyValues.end()
 		|| entry->second.Slots[(size_t)index].Expression
 			!= DependencyPropertyExpressionKind::DynamicResource) return false;
@@ -636,7 +646,7 @@ bool Control::TryGetDynamicResourceKey(
 	if (!metadata) return false;
 	const int index = EffectiveSlotIndex(source);
 	if (index < 0) return false;
-	const auto entry = _propertyValues.find(metadata);
+	const auto entry = _propertyValues.find(&metadata->Property());
 	if (entry == _propertyValues.end()) return false;
 	const auto& slot = entry->second.Slots[(size_t)index];
 	if (slot.Expression != DependencyPropertyExpressionKind::DynamicResource)
@@ -768,6 +778,12 @@ std::vector<std::shared_ptr<const ControlStyleSheet>>
 Control::VisibleAuthorStyleSheets() const
 {
 	std::vector<std::shared_ptr<const ControlStyleSheet>> result;
+	if (const auto* application = Application::Current())
+	{
+		const auto resources = application->GetResourcesSnapshot();
+		if (resources && !resources->Rules().empty())
+			result.push_back(resources);
+	}
 	if (_styleSheet) result.push_back(_styleSheet);
 	std::vector<std::shared_ptr<const ControlStyleSheet>> lexical;
 	for (const Control* scope = this; scope;

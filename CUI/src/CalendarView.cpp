@@ -268,12 +268,10 @@ void CalendarView::RegisterDependencyProperties()
 		selectionModeOptions.DefaultValue =
 			static_cast<int>(CalendarSelectionMode::SingleDate);
 		selectionModeOptions.Flags = DependencyPropertyFlags::AffectsRender;
-		selectionModeOptions.Coerce = [](
-			CalendarView&, const int& value) -> std::optional<int>
+		selectionModeOptions.Validate = [](const int& value)
 		{
 			return value >= static_cast<int>(CalendarSelectionMode::None)
-				&& value <= static_cast<int>(CalendarSelectionMode::SingleRange)
-				? std::optional<int>{ value } : std::nullopt;
+				&& value <= static_cast<int>(CalendarSelectionMode::SingleRange);
 		};
 		selectionModeOptions.Design.Category = L"Behavior";
 		selectionModeOptions.Design.CategoryOrder = 110;

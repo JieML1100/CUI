@@ -1322,10 +1322,13 @@ void MediaPlayer::RegisterDependencyProperties()
 
 		auto volumeOptions = MediaPlayerPropertyOptions(
 			1.0, L"Media", 160, 30, DependencyPropertyEditorKind::Number);
+		volumeOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		volumeOptions.Coerce = [](MediaPlayer&, const double& proposed)
 			-> std::optional<double>
 		{
-			if (!std::isfinite(proposed)) return std::nullopt;
 			return (std::clamp)(proposed, 0.0, 1.0);
 		};
 		volumeOptions.Design.Minimum = 0.0;
@@ -1338,12 +1341,14 @@ void MediaPlayer::RegisterDependencyProperties()
 
 		auto playbackRateOptions = MediaPlayerPropertyOptions(
 			1.0f, L"Media", 160, 40, DependencyPropertyEditorKind::Number);
+		playbackRateOptions.Validate = [](const float& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		playbackRateOptions.Coerce = [](MediaPlayer&, const float& proposed)
 			-> std::optional<float>
 		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ ClampRate(proposed) }
-				: std::nullopt;
+			return ClampRate(proposed);
 		};
 		playbackRateOptions.Design.Minimum = 0.10;
 		playbackRateOptions.Design.Maximum = 4.0;
@@ -1373,8 +1378,7 @@ void MediaPlayer::RegisterDependencyProperties()
 		auto renderModeOptions = MediaPlayerPropertyOptions(
 			static_cast<int>(VideoRenderMode::Fit), L"Media", 160, 70,
 			DependencyPropertyEditorKind::Choice, DependencyPropertyFlags::AffectsRender);
-		renderModeOptions.Coerce = [](MediaPlayer&, const int& proposed)
-			-> std::optional<int>
+		renderModeOptions.Validate = [](const int& proposed)
 		{
 			switch (static_cast<VideoRenderMode>(proposed))
 			{
@@ -1383,9 +1387,9 @@ void MediaPlayer::RegisterDependencyProperties()
 			case VideoRenderMode::Stretch:
 			case VideoRenderMode::Center:
 			case VideoRenderMode::UniformToFill:
-				return proposed;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		renderModeOptions.Design.Choices = {

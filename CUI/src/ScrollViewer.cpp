@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,22 @@ namespace
 		return visibility == ScrollBarVisibility::Visible
 			|| (visibility == ScrollBarVisibility::Auto && extent > viewport);
 	}
+
+	struct ScrollViewerReadOnlyPropertyKeys final
+	{
+		std::optional<DependencyPropertyKey> ExtentWidth;
+		std::optional<DependencyPropertyKey> ExtentHeight;
+		std::optional<DependencyPropertyKey> ViewportWidth;
+		std::optional<DependencyPropertyKey> ViewportHeight;
+		std::optional<DependencyPropertyKey> HorizontalOffset;
+		std::optional<DependencyPropertyKey> VerticalOffset;
+	};
+
+	ScrollViewerReadOnlyPropertyKeys& ScrollViewerReadOnlyKeys()
+	{
+		static ScrollViewerReadOnlyPropertyKeys keys;
+		return keys;
+	}
 }
 
 UIClass ScrollViewer::Type() { return UIClass::UI_ScrollViewer; }
@@ -78,8 +95,7 @@ void ScrollViewer::RegisterDependencyProperties()
 			static_cast<int>(ScrollBarVisibility::Auto),
 			L"Behavior", 110, 10,
 			DependencyPropertyEditorKind::Choice, layoutFlags);
-		visibilityOptions.Coerce = [](
-			ScrollViewer&, const int& proposed) -> std::optional<int>
+		visibilityOptions.Validate = [](const int& proposed)
 		{
 			switch (static_cast<ScrollBarVisibility>(proposed))
 			{
@@ -87,9 +103,9 @@ void ScrollViewer::RegisterDependencyProperties()
 			case ScrollBarVisibility::Auto:
 			case ScrollBarVisibility::Hidden:
 			case ScrollBarVisibility::Visible:
-				return proposed;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		visibilityOptions.Design.Choices = {
@@ -117,56 +133,58 @@ void ScrollViewer::RegisterDependencyProperties()
 			std::move(visibilityOptions));
 
 		auto registerReadOnly = [](
+			std::optional<DependencyPropertyKey>& key,
 			const wchar_t* name,
 			auto getter,
 			auto setter)
 		{
 			DependencyPropertyOptions<ScrollViewer, double> options;
 			options.DefaultValue = 0.0;
-			options.IsReadOnly = true;
 			options.Design.Browsable = false;
 			options.Design.Persistence =
 				DependencyPropertyPersistence::Transient;
-			DependencyPropertyRegistry::Register<ScrollViewer, double>(
-				name, std::move(getter), std::move(setter),
-				ScrollViewerPropertySubscriber(name), std::move(options));
+			key.emplace(
+				DependencyPropertyRegistry::RegisterReadOnly<ScrollViewer, double>(
+					name, std::move(getter), std::move(setter),
+					ScrollViewerPropertySubscriber(name), std::move(options)));
 		};
-		registerReadOnly(L"ExtentWidth",
+		auto& keys = ScrollViewerReadOnlyKeys();
+		registerReadOnly(keys.ExtentWidth, L"ExtentWidth",
 			[](ScrollViewer& target) { return target._extentWidth; },
 			[](ScrollViewer& target, const double& value)
 			{
 				(void)target.SetReadOnlyPropertyField(
 					L"ExtentWidth", target._extentWidth, value);
 			});
-		registerReadOnly(L"ExtentHeight",
+		registerReadOnly(keys.ExtentHeight, L"ExtentHeight",
 			[](ScrollViewer& target) { return target._extentHeight; },
 			[](ScrollViewer& target, const double& value)
 			{
 				(void)target.SetReadOnlyPropertyField(
 					L"ExtentHeight", target._extentHeight, value);
 			});
-		registerReadOnly(L"ViewportWidth",
+		registerReadOnly(keys.ViewportWidth, L"ViewportWidth",
 			[](ScrollViewer& target) { return target._viewportWidth; },
 			[](ScrollViewer& target, const double& value)
 			{
 				(void)target.SetReadOnlyPropertyField(
 					L"ViewportWidth", target._viewportWidth, value);
 			});
-		registerReadOnly(L"ViewportHeight",
+		registerReadOnly(keys.ViewportHeight, L"ViewportHeight",
 			[](ScrollViewer& target) { return target._viewportHeight; },
 			[](ScrollViewer& target, const double& value)
 			{
 				(void)target.SetReadOnlyPropertyField(
 					L"ViewportHeight", target._viewportHeight, value);
 			});
-		registerReadOnly(L"HorizontalOffset",
+		registerReadOnly(keys.HorizontalOffset, L"HorizontalOffset",
 			[](ScrollViewer& target) { return target._horizontalOffset; },
 			[](ScrollViewer& target, const double& value)
 			{
 				(void)target.SetReadOnlyPropertyField(
 					L"HorizontalOffset", target._horizontalOffset, value);
 			});
-		registerReadOnly(L"VerticalOffset",
+		registerReadOnly(keys.VerticalOffset, L"VerticalOffset",
 			[](ScrollViewer& target) { return target._verticalOffset; },
 			[](ScrollViewer& target, const double& value)
 			{
@@ -414,18 +432,25 @@ void ScrollViewer::PublishScrollState(
 	const double nextVerticalOffset = std::clamp(
 		verticalOffset, 0.0, static_cast<double>(layout.MaxScrollY));
 
-	auto update = [this](const wchar_t* name, double oldValue, double value)
+	EnsureBindingPropertiesRegistered();
+	const auto& keys = ScrollViewerReadOnlyKeys();
+	auto update = [this](
+		const DependencyPropertyKey& key,
+		double oldValue,
+		double value)
 	{
 		if (std::fabs(oldValue - value) <= 0.000001) return false;
-		return TrySetReadOnlyPropertyValue(name, BindingValue(value));
+		return TrySetReadOnlyPropertyValue(key, BindingValue(value));
 	};
 	const bool changed =
-		update(L"ExtentWidth", oldExtentWidth, layout.ContentWidth)
-		| update(L"ExtentHeight", oldExtentHeight, layout.ContentHeight)
-		| update(L"ViewportWidth", oldViewportWidth, layout.ViewportWidth)
-		| update(L"ViewportHeight", oldViewportHeight, layout.ViewportHeight)
-		| update(L"HorizontalOffset", oldHorizontalOffset, nextHorizontalOffset)
-		| update(L"VerticalOffset", oldVerticalOffset, nextVerticalOffset);
+		update(keys.ExtentWidth.value(), oldExtentWidth, layout.ContentWidth)
+		| update(keys.ExtentHeight.value(), oldExtentHeight, layout.ContentHeight)
+		| update(keys.ViewportWidth.value(), oldViewportWidth, layout.ViewportWidth)
+		| update(keys.ViewportHeight.value(), oldViewportHeight, layout.ViewportHeight)
+		| update(keys.HorizontalOffset.value(),
+			oldHorizontalOffset, nextHorizontalOffset)
+		| update(keys.VerticalOffset.value(),
+			oldVerticalOffset, nextVerticalOffset);
 	if (!changed) return;
 
 	ScrollChangedEventArgs args;

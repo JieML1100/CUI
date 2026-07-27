@@ -122,12 +122,14 @@ void Slider::RegisterDependencyProperties()
 			auto options = SliderPropertyOptions(
 				defaultValue, L"Range", 100, order,
 				DependencyPropertyEditorKind::Number);
+			options.Validate = [](const double& proposed)
+			{
+				return std::isfinite(proposed);
+			};
 			options.Coerce = [](
 				Slider&, const double& proposed) -> std::optional<double>
 			{
-				return std::isfinite(proposed)
-					? std::optional<double>{ (std::max)(0.0, proposed) }
-					: std::nullopt;
+				return (std::max)(0.0, proposed);
 			};
 			options.Design.Minimum = 0.0;
 			options.Design.Step = 0.1;

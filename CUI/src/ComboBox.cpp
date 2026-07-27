@@ -107,6 +107,20 @@ void ComboBoxItem::OnIsSelectedRequested(bool value)
 		(void)owner->SelectIndex(-1);
 }
 
+const DependencyProperty& ComboBox::TextProperty()
+{
+	RegisterDependencyProperties();
+	const std::type_index ownerTypes[] = {
+		std::type_index(typeid(ComboBox))
+	};
+	const auto* metadata =
+		DependencyPropertyRegistry::FindRegistered(ownerTypes, L"Text");
+	if (!metadata)
+		throw std::logic_error(
+			"ComboBox.Text dependency property is not registered");
+	return metadata->Property();
+}
+
 void ComboBox::RegisterDependencyProperties()
 {
 	Selector::RegisterDependencyProperties();
@@ -116,7 +130,8 @@ void ComboBox::RegisterDependencyProperties()
 		DependencyPropertyOptions<ComboBox, std::wstring> textOptions;
 		textOptions.DefaultValue = std::wstring{};
 		textOptions.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsRender;
+			| DependencyPropertyFlags::AffectsRender
+			| DependencyPropertyFlags::BindsTwoWayByDefault;
 		textOptions.Design.Category = L"Common";
 		textOptions.Design.CategoryOrder = 0;
 		textOptions.Design.Order = 10;
@@ -124,9 +139,6 @@ void ComboBox::RegisterDependencyProperties()
 		textOptions.Design.Persistence =
 			DependencyPropertyPersistence::Native;
 		DependencyPropertyRegistry::Register<ComboBox, std::wstring>(L"Text",
-			[](ComboBox& target) { return target.Text; },
-			[](ComboBox& target, const std::wstring& value)
-			{ target.Text = value; },
 			[](ComboBox& target, Handler handler, DataSourceUpdateMode mode)
 			{
 				if (mode == DataSourceUpdateMode::OnValidation)
@@ -162,12 +174,14 @@ void ComboBox::RegisterDependencyProperties()
 			320.0f, L"Layout", 100, 10,
 			DependencyPropertyEditorKind::Number,
 			DependencyPropertyFlags::AffectsArrange);
+		heightOptions.Validate = [](const float& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		heightOptions.Coerce = [](
 			ComboBox&, const float& proposed) -> std::optional<float>
 		{
-			return std::isfinite(proposed)
-				? std::optional<float>{ (std::max)(0.0f, proposed) }
-				: std::nullopt;
+			return (std::max)(0.0f, proposed);
 		};
 		heightOptions.Changed = [](
 			ComboBox& target, const float&, const float&)
@@ -200,7 +214,6 @@ ComboBox::ComboBox()
 	: Selector()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.0f);
 	RendererBackgroundColor = cui::theme::palette::Surface;
 	RendererBorderColor = cui::theme::palette::BorderStrong;
 	RendererForegroundColor = cui::theme::palette::TextPrimary;
@@ -667,9 +680,12 @@ void ComboBox::RefreshDataItem(size_t index)
 
 void ComboBox::SyncTextWithSelection()
 {
-	Text = SelectedIndex >= 0
+	const auto value = SelectedIndex >= 0
 		&& static_cast<size_t>(SelectedIndex) < ItemCount()
 		? GetItemDisplayText(static_cast<size_t>(SelectedIndex)) : std::wstring{};
+	// Selection synchronization is framework behavior, not a new author Local
+	// value. Preserve an existing Binding expression like WPF SetCurrentValue.
+	(void)TrySetCurrentPropertyValue(L"Text", BindingValue(value));
 }
 
 void ComboBox::UpdateGeneratedItemStates()

@@ -128,11 +128,9 @@ void Popup::RegisterDependencyProperties()
 			auto options = PopupOptions(
 				defaultValue, order, DependencyPropertyEditorKind::Number,
 				DependencyPropertyFlags::AffectsArrange);
-			options.Coerce = [](Popup&, const float& proposed)
-				-> std::optional<float>
+			options.Validate = [](const float& proposed)
 			{
-				return std::isfinite(proposed)
-					? std::optional<float>{ proposed } : std::nullopt;
+				return std::isfinite(proposed);
 			};
 			options.Design.Step = 0.5;
 			return options;

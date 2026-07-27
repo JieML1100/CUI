@@ -5344,6 +5344,16 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			if (targetRecord == dcOf.end() || !targetRecord->second
 				|| !targetRecord->second->ControlInstance) continue;
 			auto* target = targetRecord->second->ControlInstance;
+			auto stagedInheritanceParent = [&]() -> Control*
+			{
+				const auto parent = instOf.find(it.parent);
+				if (parent != instOf.end() && parent->second)
+					return parent->second;
+				// A generated root is not attached yet. Its eventual visual
+				// parent is the template owner, but TemplatedParent itself is
+				// deliberately not exposed as FrameworkParent.
+				return target->GetTemplatedParent();
+			};
 			for (const auto& [targetProperty, binding]
 				: targetRecord->second->DataBindings)
 			{
@@ -5386,7 +5396,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 						}
 						else if (targetProperty == L"DataContext")
 						{
-							auto* parent = target->GetInheritanceParent();
+							auto* parent = stagedInheritanceParent();
 							resolved.Source = parent
 								? &parent->DataContextSource()
 								: &target->DataContextSource();
@@ -5441,7 +5451,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				}
 				else if (targetProperty == L"DataContext")
 				{
-					auto* parent = target->GetInheritanceParent();
+					auto* parent = stagedInheritanceParent();
 					bindingSource = parent
 						? &parent->DataContextSource()
 						: &target->DataContextSource();
@@ -5606,11 +5616,11 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			{
 				runtimeParent->AddOwned(std::move(owner));
 			}
-			// A template root is visually hosted by the control instance but is not
-			// an authored logical child. Its inheritance context remains the
-			// explicit TemplatedParent established before attachment.
-			if (it->templateGenerated
-				&& c->GetVisualParent() == c->GetTemplatedParent())
+			// ControlTemplate-generated visuals are never authored logical
+			// children. Their WPF inheritance context follows the containing
+			// visual tree; projected content is reassigned to its content owner
+			// immediately below.
+			if (it->templateGenerated && it->contentOwner.empty())
 				cui::framework::XamlAccess::SetLogicalParent(*c, nullptr);
 			if (!it->contentOwner.empty())
 			{

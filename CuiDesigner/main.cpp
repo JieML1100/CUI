@@ -89,8 +89,8 @@ int main()
 	// The product Designer consumes only framework/XAML-defined types. Native
 	// application code is represented by NativeSurface placeholders and is
 	// never loaded into this process.
+	Application application;
 	Designer designer;
 	designer.InitAndShow();
-	(void)Application::Run();
-	return 0;
+	return application.Run();
 }

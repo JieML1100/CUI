@@ -62,6 +62,7 @@
 #include <Switch.h>
 #include <TabControl.h>
 #include <Taskbar.h>
+#include <TextElement.h>
 #include <TextBox.h>
 #include <TextEditCore.h>
 #include <RichTextBox.h>
@@ -1029,6 +1030,7 @@ namespace
 
 	public:
 		int ChangedCallbackCount = 0;
+		int MaximumLevel = 10;
 		UIClass Type() override { return UIClass::UI_CUSTOM; }
 		int GetLevel() const noexcept { return _level; }
 		void SetLevel(int value)
@@ -1045,6 +1047,26 @@ namespace
 			Control::EnsureBindingPropertiesRegistered();
 			static const bool registered = []
 			{
+				DependencyPropertyOptions<PropertySystemControl, int> options;
+				options.DefaultValue = 4;
+				options.Flags = DependencyPropertyFlags::AffectsMeasure
+					| DependencyPropertyFlags::AffectsRender;
+				options.Coerce = [](
+					PropertySystemControl& target, const int& proposed)
+					-> std::optional<int>
+				{
+					return (std::clamp)(
+						proposed, 0, (std::max)(0, target.MaximumLevel));
+				};
+				options.Changed = [](
+					PropertySystemControl& target, const int&, const int&)
+				{
+					++target.ChangedCallbackCount;
+				};
+				options.Validate = [](const int& value)
+				{
+					return value >= -100 && value <= 100;
+				};
 				DependencyPropertyRegistry::Register<PropertySystemControl, int>(
 					L"Level",
 					[](PropertySystemControl& target) { return target.GetLevel(); },
@@ -1063,22 +1085,496 @@ namespace
 								if (e.PropertyName == L"Level") handler();
 							});
 					},
-					DependencyPropertyOptions<PropertySystemControl, int>{
-						4,
-						DependencyPropertyFlags::AffectsMeasure
-							| DependencyPropertyFlags::AffectsRender,
-						[](PropertySystemControl&, const int& proposed)
-							-> std::optional<int>
-						{
-							return (std::clamp)(proposed, 0, 10);
-						},
-						[](PropertySystemControl& target, const int&, const int&)
-						{
-							++target.ChangedCallbackCount;
-						} });
+					std::move(options));
 				return true;
 			}();
 			(void)registered;
+		}
+	};
+
+	class PropertySystemObject final : public DependencyObject
+	{
+	private:
+		int _quantity = 2;
+
+	public:
+		int MaximumQuantity = 10;
+		int ChangedCallbackCount = 0;
+
+		int GetQuantity() const noexcept { return _quantity; }
+		void SetQuantity(int value)
+		{
+			SetPropertyField(L"Quantity", _quantity, value);
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<PropertySystemObject, int> options;
+				options.DefaultValue = 2;
+				options.Validate = [](const int& value)
+				{
+					return value >= 0 && value <= 20;
+				};
+				options.Coerce = [](
+					PropertySystemObject& target, const int& proposed)
+					-> std::optional<int>
+				{
+					return (std::min)(
+						proposed, (std::max)(0, target.MaximumQuantity));
+				};
+				options.Changed = [](
+					PropertySystemObject& target, const int&, const int&)
+				{
+					++target.ChangedCallbackCount;
+				};
+				DependencyPropertyRegistry::Register<PropertySystemObject, int>(
+					L"Quantity",
+					[](PropertySystemObject& target)
+					{
+						return target.GetQuantity();
+					},
+					[](PropertySystemObject& target, const int& value)
+					{
+						target.SetQuantity(value);
+					},
+					{},
+					std::move(options));
+				return true;
+			}();
+			(void)registered;
+		}
+	};
+
+	const DependencyProperty*& SlotBackedNumberPropertyStorage()
+	{
+		static const DependencyProperty* property = nullptr;
+		return property;
+	}
+
+	std::optional<DependencyPropertyKey>&
+	SlotBackedStatePropertyKeyStorage()
+	{
+		static std::optional<DependencyPropertyKey> key;
+		return key;
+	}
+
+	class SlotBackedPropertyObject : public DependencyObject
+	{
+	public:
+		int MaximumNumber = 10;
+		int ChangedCallbackCount = 0;
+		int LastOldValue = -1;
+		int LastNewValue = -1;
+
+		static void RegisterDependencyProperties()
+		{
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<SlotBackedPropertyObject, int>
+					options;
+				options.DefaultValue = 3;
+				options.Validate = [](const int& value)
+				{
+					return value >= 0 && value <= 100;
+				};
+				options.Coerce = [](
+					SlotBackedPropertyObject& target,
+					const int& proposed) -> std::optional<int>
+				{
+					return (std::min)(
+						proposed,
+						(std::max)(0, target.MaximumNumber));
+				};
+				options.Changed = [](
+					SlotBackedPropertyObject& target,
+					const int& oldValue,
+					const int& newValue)
+				{
+					++target.ChangedCallbackCount;
+					target.LastOldValue = oldValue;
+					target.LastNewValue = newValue;
+				};
+				SlotBackedNumberPropertyStorage() =
+					DependencyPropertyRegistry::Register<
+						SlotBackedPropertyObject, int>(
+						L"Number", std::move(options));
+
+				DependencyPropertyOptions<
+					SlotBackedPropertyObject, int> stateOptions;
+				stateOptions.DefaultValue = 1;
+				SlotBackedStatePropertyKeyStorage().emplace(
+					DependencyPropertyRegistry::RegisterReadOnly<
+						SlotBackedPropertyObject, int>(
+						L"State", std::move(stateOptions)));
+				return SlotBackedNumberPropertyStorage() != nullptr
+					&& SlotBackedStatePropertyKeyStorage().has_value();
+			}();
+			(void)registered;
+		}
+
+		static const DependencyProperty& NumberProperty()
+		{
+			RegisterDependencyProperties();
+			return *SlotBackedNumberPropertyStorage();
+		}
+
+		static const DependencyPropertyKey& StatePropertyKey()
+		{
+			RegisterDependencyProperties();
+			return *SlotBackedStatePropertyKeyStorage();
+		}
+
+		static const DependencyProperty& StateProperty()
+		{
+			return StatePropertyKey().Property();
+		}
+
+		int GetNumber() const
+		{
+			return GetDependencyPropertyValue<int>(NumberProperty());
+		}
+
+		bool SetNumber(int value)
+		{
+			return SetDependencyPropertyValue(NumberProperty(), value);
+		}
+
+		int GetState() const
+		{
+			return GetDependencyPropertyValue<int>(StateProperty());
+		}
+
+		bool PublishState(int value)
+		{
+			return TrySetPropertyValue(
+				StatePropertyKey(), BindingValue(value));
+		}
+
+		bool SetCurrentNumber(int value)
+		{
+			return TrySetCurrentPropertyValue(
+				NumberProperty(), BindingValue(value));
+		}
+
+		bool SetStyleNumber(int value)
+		{
+			return TrySetPropertyValue(
+				L"Number", BindingValue(value),
+				DependencyPropertyValueSource::Style);
+		}
+
+		bool ClearStyleNumber()
+		{
+			return ClearPropertyValue(
+				L"Number", DependencyPropertyValueSource::Style);
+		}
+
+		BindingCollection& Bindings()
+		{
+			if (!_dataBindings)
+				_dataBindings =
+					std::make_unique<BindingCollection>(this);
+			return *_dataBindings;
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
+		}
+	};
+
+	class SlotBackedPeerObject final : public DependencyObject
+	{
+	public:
+		static void RegisterDependencyProperties()
+		{
+			SlotBackedPropertyObject::RegisterDependencyProperties();
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<
+					SlotBackedPeerObject, int> options;
+				options.DefaultValue = 7;
+				options.Coerce = [](
+					SlotBackedPeerObject&,
+					const int& proposed) -> std::optional<int>
+				{
+					return proposed;
+				};
+				return DependencyPropertyRegistry::AddOwner<
+					SlotBackedPeerObject, int>(
+						SlotBackedPropertyObject::NumberProperty(),
+						std::move(options)) != nullptr;
+			}();
+			(void)registered;
+		}
+
+		int GetNumber() const
+		{
+			return GetDependencyPropertyValue<int>(
+				SlotBackedPropertyObject::NumberProperty());
+		}
+
+		bool SetNumber(int value)
+		{
+			return SetDependencyPropertyValue(
+				SlotBackedPropertyObject::NumberProperty(), value);
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
+		}
+	};
+
+	const DependencyProperty*& IdentityLevelPropertyStorage()
+	{
+		static const DependencyProperty* property = nullptr;
+		return property;
+	}
+
+	class IdentityOwnerObject : public DependencyObject
+	{
+	protected:
+		int _level = 2;
+
+	public:
+		int BaseChangedCount = 0;
+
+		int GetLevel() const noexcept { return _level; }
+		void SetLevel(int value)
+		{
+			SetPropertyField(L"IdentityLevel", _level, value);
+		}
+
+		static void RegisterDependencyProperties()
+		{
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<IdentityOwnerObject, int> options;
+				options.DefaultValue = 2;
+				options.Flags = DependencyPropertyFlags::AffectsRender;
+				options.Validate = [](const int& value)
+				{
+					return value >= 0 && value <= 100;
+				};
+				options.Changed = [](
+					IdentityOwnerObject& target, const int&, const int&)
+				{
+					++target.BaseChangedCount;
+				};
+				IdentityLevelPropertyStorage() =
+					DependencyPropertyRegistry::Register<
+						IdentityOwnerObject, int>(
+						L"IdentityLevel",
+						[](IdentityOwnerObject& target)
+						{
+							return target.GetLevel();
+						},
+						[](IdentityOwnerObject& target, const int& value)
+						{
+							target.SetLevel(value);
+						},
+						{},
+						std::move(options));
+				return IdentityLevelPropertyStorage() != nullptr;
+			}();
+			(void)registered;
+		}
+
+		static const DependencyProperty& LevelProperty()
+		{
+			RegisterDependencyProperties();
+			return *IdentityLevelPropertyStorage();
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
+		}
+	};
+
+	class IdentityDerivedObject : public IdentityOwnerObject
+	{
+	public:
+		int DerivedChangedCount = 0;
+		int MaximumLevel = 6;
+
+		IdentityDerivedObject()
+		{
+			_level = 5;
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			IdentityOwnerObject::RegisterDependencyProperties();
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<IdentityDerivedObject, int> options;
+				options.DefaultValue = 5;
+				options.Flags = DependencyPropertyFlags::AffectsMeasure;
+				options.Coerce = [](
+					IdentityDerivedObject& target, const int& value)
+					-> std::optional<int>
+				{
+					return (std::min)(value, target.MaximumLevel);
+				};
+				options.Changed = [](
+					IdentityDerivedObject& target, const int&, const int&)
+				{
+					++target.DerivedChangedCount;
+				};
+				return DependencyPropertyRegistry::OverrideMetadata<
+					IdentityDerivedObject, int>(
+						IdentityOwnerObject::LevelProperty(),
+						std::move(options)) != nullptr;
+			}();
+			(void)registered;
+		}
+	};
+
+	class IdentityGrandchildObject final : public IdentityDerivedObject
+	{
+	public:
+		int GrandchildChangedCount = 0;
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			IdentityDerivedObject::EnsureBindingPropertiesRegistered();
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<IdentityGrandchildObject, int> options;
+				options.Flags = DependencyPropertyFlags::AffectsArrange;
+				options.Changed = [](
+					IdentityGrandchildObject& target,
+					const int&,
+					const int&)
+				{
+					++target.GrandchildChangedCount;
+				};
+				return DependencyPropertyRegistry::OverrideMetadata<
+					IdentityGrandchildObject, int>(
+						IdentityOwnerObject::LevelProperty(),
+						std::move(options)) != nullptr;
+			}();
+			(void)registered;
+		}
+	};
+
+	class IdentityPeerObject final : public DependencyObject
+	{
+	private:
+		int _level = 7;
+
+	public:
+		int ChangedCount = 0;
+
+		int GetLevel() const noexcept { return _level; }
+		void SetLevel(int value)
+		{
+			SetPropertyField(L"IdentityLevel", _level, value);
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			IdentityOwnerObject::RegisterDependencyProperties();
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<IdentityPeerObject, int> options;
+				options.DefaultValue = 7;
+				options.Changed = [](
+					IdentityPeerObject& target, const int&, const int&)
+				{
+					++target.ChangedCount;
+				};
+				return DependencyPropertyRegistry::AddOwner<
+					IdentityPeerObject, int>(
+						IdentityOwnerObject::LevelProperty(),
+						[](IdentityPeerObject& target)
+						{
+							return target.GetLevel();
+						},
+						[](IdentityPeerObject& target, const int& value)
+						{
+							target.SetLevel(value);
+						},
+						{},
+						std::move(options)) != nullptr;
+			}();
+			(void)registered;
+		}
+	};
+
+	std::optional<DependencyPropertyKey>& KeyedStatePropertyKeyStorage()
+	{
+		static std::optional<DependencyPropertyKey> key;
+		return key;
+	}
+
+	class KeyedPropertyObject final : public DependencyObject
+	{
+	private:
+		int _state = 1;
+
+	public:
+		int GetState() const noexcept { return _state; }
+
+		static void RegisterDependencyProperties()
+		{
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<KeyedPropertyObject, int> options;
+				options.DefaultValue = 1;
+				options.Validate = [](const int& value)
+				{
+					return value >= 0 && value <= 10;
+				};
+				KeyedStatePropertyKeyStorage().emplace(
+					DependencyPropertyRegistry::RegisterReadOnly<
+						KeyedPropertyObject, int>(
+						L"State",
+						[](KeyedPropertyObject& target)
+						{
+							return target.GetState();
+						},
+						[](KeyedPropertyObject& target, const int& value)
+						{
+							target.SetState(value);
+						},
+						{},
+						std::move(options)));
+				return true;
+			}();
+			(void)registered;
+		}
+
+		static const DependencyPropertyKey& StatePropertyKey()
+		{
+			RegisterDependencyProperties();
+			return *KeyedStatePropertyKeyStorage();
+		}
+
+		static const DependencyProperty& StateProperty()
+		{
+			return StatePropertyKey().Property();
+		}
+
+		bool SetState(int value)
+		{
+			return SetReadOnlyPropertyField(
+				StatePropertyKey(), _state, value);
+		}
+
+		bool TrySetStateWithoutKey(int value)
+		{
+			return TrySetReadOnlyPropertyValue(
+				L"State", BindingValue(value));
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
 		}
 	};
 
@@ -2214,6 +2710,14 @@ int main()
 			L"Name", std::wstring(L"logical inheritance")));
 		CUI_EXPECT_TRUE(host.SetDataContext(BindingSourceReference(data)));
 
+		Control detachedTemplatePart;
+		cui::framework::XamlAccess::SetTemplatedParent(
+			detachedTemplatePart, &host);
+		CUI_EXPECT_TRUE(detachedTemplatePart.GetTemplatedParent() == &host);
+		CUI_EXPECT_TRUE(
+			detachedTemplatePart.GetInheritanceParent() == nullptr);
+		CUI_EXPECT_TRUE(detachedTemplatePart.GetDataContext().Get() == nullptr);
+
 		auto* templateRoot = AddTestVisual<Control>(host);
 		cui::framework::XamlAccess::SetTemplatedParent(*templateRoot, &host);
 		cui::framework::XamlAccess::SetLogicalParent(*templateRoot, nullptr);
@@ -2225,10 +2729,21 @@ int main()
 
 		auto* templatePart = AddTestVisual<Control>(*templateRoot);
 		cui::framework::XamlAccess::SetTemplatedParent(*templatePart, &host);
+		cui::framework::XamlAccess::SetLogicalParent(*templatePart, nullptr);
 		CUI_EXPECT_TRUE(templatePart->GetVisualParent() == templateRoot);
-		CUI_EXPECT_TRUE(templatePart->GetLogicalParent() == templateRoot);
+		CUI_EXPECT_TRUE(templatePart->GetLogicalParent() == nullptr);
 		CUI_EXPECT_TRUE(templatePart->GetTemplatedParent() == &host);
+		CUI_EXPECT_TRUE(
+			templatePart->GetInheritanceParent() == templateRoot);
 		CUI_EXPECT_TRUE(templatePart->GetRoutedParent() == templateRoot);
+		CUI_EXPECT_TRUE(templateRoot->TrySetPropertyValue(
+			L"FontSize", BindingValue(19.0)));
+		CUI_EXPECT_NEAR(19.0f, templatePart->FontSize, 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			templatePart->GetPropertyValueSource(L"FontSize"));
+		CUI_EXPECT_TRUE(templateRoot->TrySetPropertyValue(
+			L"FontSize", BindingValue(21.0)));
+		CUI_EXPECT_NEAR(21.0f, templatePart->FontSize, 0.0001f);
 		CUI_EXPECT_TRUE(cui::framework::XamlAccess::RegisterTemplatePart(
 			host, L"PART_Probe", templatePart));
 		CUI_EXPECT_TRUE(host.FindDeclarativeTemplatePart(L"PART_Probe")
@@ -4381,6 +4896,1058 @@ int main()
 		CUI_EXPECT_EQ(headerPointer, host.GetVisualHeader());
 	});
 
+	runner.Add("DependencyObject owns effective values without a Control host", []
+	{
+		PropertySystemObject target;
+		const auto* metadata = target.FindPropertyMetadata(L"Quantity");
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		CUI_EXPECT_TRUE(metadata->Matches(target));
+		CUI_EXPECT_TRUE(metadata->IsValidValue(BindingValue(20)));
+		CUI_EXPECT_FALSE(metadata->IsValidValue(BindingValue(21)));
+		CUI_EXPECT_TRUE(target.IsPropertyValueDefault(L"Quantity"));
+
+		int dependencyNotifications = 0;
+		int bindingSourceNotifications = 0;
+		auto dependencyConnection = target.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject* sender,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &target);
+				CUI_EXPECT_EQ(std::wstring(L"Quantity"), args.PropertyName);
+				++dependencyNotifications;
+			});
+		auto bindingSourceConnection = target.PropertyChanged().Subscribe(
+			[&](const PropertyChangedEventArgs& args)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"Quantity"), args.PropertyName);
+				++bindingSourceNotifications;
+			});
+
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			L"Quantity", BindingValue(9)));
+		CUI_EXPECT_EQ(9, target.GetQuantity());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Quantity"));
+		CUI_EXPECT_EQ(1, target.ChangedCallbackCount);
+		CUI_EXPECT_EQ(1, dependencyNotifications);
+		CUI_EXPECT_EQ(1, bindingSourceNotifications);
+
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"Quantity", BindingValue(21)));
+		CUI_EXPECT_EQ(9, target.GetQuantity());
+		CUI_EXPECT_EQ(1, dependencyNotifications);
+
+		target.MaximumQuantity = 4;
+		CUI_EXPECT_TRUE(target.CoerceValue(L"Quantity"));
+		CUI_EXPECT_EQ(4, target.GetQuantity());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Quantity"));
+		target.MaximumQuantity = 10;
+		CUI_EXPECT_TRUE(target.CoerceValue(L"Quantity"));
+		CUI_EXPECT_EQ(9, target.GetQuantity());
+
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			L"Quantity", BindingValue(7)));
+		CUI_EXPECT_EQ(7, target.GetQuantity());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Quantity"));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Quantity"));
+		CUI_EXPECT_EQ(2, target.GetQuantity());
+		CUI_EXPECT_TRUE(target.IsPropertyValueDefault(L"Quantity"));
+	});
+
+	runner.Add("Slot-backed dependency properties need no CLR backing field", []
+	{
+		SlotBackedPropertyObject target;
+		const auto& property =
+			SlotBackedPropertyObject::NumberProperty();
+		const auto* metadata = target.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		CUI_EXPECT_TRUE(metadata->UsesEffectiveValueStorage());
+		CUI_EXPECT_TRUE(metadata->CanRead());
+		CUI_EXPECT_TRUE(metadata->CanWrite());
+		CUI_EXPECT_EQ(3, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
+			target.GetPropertyValueSource(L"Number"));
+
+		const auto* stateMetadata =
+			target.GetPropertyMetadata(
+				SlotBackedPropertyObject::StateProperty());
+		CUI_EXPECT_TRUE(stateMetadata != nullptr);
+		CUI_EXPECT_TRUE(stateMetadata->UsesEffectiveValueStorage());
+		CUI_EXPECT_TRUE(stateMetadata->IsReadOnly());
+		CUI_EXPECT_FALSE(stateMetadata->CanWrite());
+		CUI_EXPECT_EQ(1, target.GetState());
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			SlotBackedPropertyObject::StateProperty(),
+			BindingValue(4)));
+		CUI_EXPECT_TRUE(target.PublishState(4));
+		CUI_EXPECT_EQ(4, target.GetState());
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			SlotBackedPropertyObject::StatePropertyKey()));
+		CUI_EXPECT_EQ(1, target.GetState());
+
+		const DependencyProperty* changedProperty = nullptr;
+		int notifications = 0;
+		auto connection = target.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject* sender,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &target);
+				changedProperty = args.Property;
+				++notifications;
+			});
+
+		CUI_EXPECT_TRUE(target.SetStyleNumber(6));
+		CUI_EXPECT_EQ(6, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			target.GetPropertyValueSource(L"Number"));
+		CUI_EXPECT_TRUE(target.SetNumber(8));
+		CUI_EXPECT_EQ(8, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Number"));
+		CUI_EXPECT_TRUE(changedProperty == &property);
+
+		CUI_EXPECT_TRUE(target.SetCurrentNumber(9));
+		CUI_EXPECT_EQ(9, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Number"));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(property));
+		CUI_EXPECT_EQ(6, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			target.GetPropertyValueSource(L"Number"));
+
+		CUI_EXPECT_TRUE(target.SetCurrentNumber(4));
+		CUI_EXPECT_EQ(4, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			target.GetPropertyValueSource(L"Number"));
+		CUI_EXPECT_TRUE(target.ClearStyleNumber());
+		CUI_EXPECT_EQ(3, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
+			target.GetPropertyValueSource(L"Number"));
+
+		// SetCurrentValue at Default remains a property-engine base value.
+		CUI_EXPECT_TRUE(target.SetCurrentNumber(5));
+		CUI_EXPECT_EQ(5, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
+			target.GetPropertyValueSource(L"Number"));
+		CUI_EXPECT_TRUE(target.SetNumber(8));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(property));
+		CUI_EXPECT_EQ(5, target.GetNumber());
+		CUI_EXPECT_TRUE(target.ResetPropertyValue(L"Number"));
+		CUI_EXPECT_EQ(3, target.GetNumber());
+		CUI_EXPECT_TRUE(target.IsPropertyValueDefault(L"Number"));
+
+		target.MaximumNumber = 5;
+		CUI_EXPECT_TRUE(target.SetNumber(9));
+		CUI_EXPECT_EQ(5, target.GetNumber());
+		BindingValue proposed;
+		int typedProposed = 0;
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(
+			L"Number", DependencyPropertyValueSource::Local,
+			proposed));
+		CUI_EXPECT_TRUE(proposed.TryGet(typedProposed));
+		CUI_EXPECT_EQ(9, typedProposed);
+		target.MaximumNumber = 10;
+		CUI_EXPECT_TRUE(target.CoerceValue(property));
+		CUI_EXPECT_EQ(9, target.GetNumber());
+		CUI_EXPECT_EQ(5, target.LastOldValue);
+		CUI_EXPECT_EQ(9, target.LastNewValue);
+
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(property));
+		ObservableObject source;
+		CUI_EXPECT_TRUE(source.DefineProperty(L"Value", 7));
+		CUI_EXPECT_TRUE(target.Bindings().Add(
+			L"Number", source, L"Value",
+			BindingMode::OneWay) != nullptr);
+		CUI_EXPECT_EQ(7, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			target.GetPropertyExpressionKind(L"Number"));
+		CUI_EXPECT_TRUE(source.SetValue(L"Value", 8));
+		CUI_EXPECT_EQ(8, target.GetNumber());
+		CUI_EXPECT_TRUE(target.SetNumber(4));
+		CUI_EXPECT_EQ(4, target.GetNumber());
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::None,
+			target.GetPropertyExpressionKind(L"Number"));
+		CUI_EXPECT_TRUE(notifications > 0);
+
+		SlotBackedPeerObject peer;
+		const auto* peerMetadata = peer.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(peerMetadata != nullptr);
+		CUI_EXPECT_TRUE(peerMetadata->UsesEffectiveValueStorage());
+		CUI_EXPECT_TRUE(&peerMetadata->Property() == &property);
+		CUI_EXPECT_EQ(7, peer.GetNumber());
+		CUI_EXPECT_TRUE(peer.SetNumber(11));
+		CUI_EXPECT_EQ(11, peer.GetNumber());
+	});
+
+	runner.Add("Foundational Control properties use canonical value slots", []
+	{
+		Panel root;
+		auto* child = root.AdoptVisualChild(new Control());
+		CUI_EXPECT_TRUE(child != nullptr);
+
+		const std::wstring migratedProperties[] = {
+			L"Tag",
+			L"Cursor",
+			L"Focusable",
+			L"IsTabStop",
+			L"TabIndex",
+			L"AllowDrop",
+			L"FocusManager.IsFocusScope",
+			L"KeyboardNavigation.TabNavigation",
+			L"KeyboardNavigation.DirectionalNavigation",
+			L"AutomationProperties.Name",
+			L"AutomationProperties.FullDescription",
+			L"AutomationProperties.HelpText",
+			L"AutomationProperties.AutomationId",
+		};
+		for (const auto& name : migratedProperties)
+		{
+			const auto* metadata =
+				child->FindPropertyMetadata(name);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata->UsesEffectiveValueStorage());
+		}
+
+		root.Cursor = CursorKind::Hand;
+		root.AllowDrop = true;
+		CUI_EXPECT_EQ(CursorKind::Hand, child->Cursor);
+		CUI_EXPECT_TRUE(child->AllowDrop);
+		child->Cursor = CursorKind::IBeam;
+		CUI_EXPECT_EQ(CursorKind::IBeam, child->Cursor);
+		CUI_EXPECT_TRUE(child->ClearPropertyValue(L"Cursor"));
+		CUI_EXPECT_EQ(CursorKind::Hand, child->Cursor);
+
+		child->Tag = BindingValue(std::wstring(L"local"));
+		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
+			*child, L"Tag", BindingValue(std::wstring(L"style")),
+			DependencyPropertyValueSource::Style));
+		std::wstring tag;
+		CUI_EXPECT_TRUE(child->Tag.TryGet(tag));
+		CUI_EXPECT_EQ(std::wstring(L"local"), tag);
+		CUI_EXPECT_TRUE(child->ClearPropertyValue(L"Tag"));
+		CUI_EXPECT_TRUE(child->Tag.TryGet(tag));
+		CUI_EXPECT_EQ(std::wstring(L"style"), tag);
+
+		child->TabIndex = -10;
+		CUI_EXPECT_EQ(0, child->TabIndex);
+		child->AutomationName = L"Canonical";
+		CUI_EXPECT_EQ(std::wstring(L"Canonical"),
+			child->AutomationName);
+	});
+
+	runner.Add("Framework layout declarations use canonical value slots", []
+	{
+		Control target;
+		const std::wstring migratedProperties[] = {
+			L"Canvas.Left",
+			L"Canvas.Top",
+			L"Canvas.Right",
+			L"Canvas.Bottom",
+			L"Width",
+			L"Height",
+			L"MinWidth",
+			L"MinHeight",
+			L"MaxWidth",
+			L"MaxHeight",
+			L"Margin",
+			L"HorizontalAlignment",
+			L"VerticalAlignment",
+			L"Grid.Row",
+			L"Grid.Column",
+			L"Grid.RowSpan",
+			L"Grid.ColumnSpan",
+			L"DockPanel.Dock",
+		};
+		for (const auto& name : migratedProperties)
+		{
+			const auto* metadata = target.FindPropertyMetadata(name);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata->UsesEffectiveValueStorage());
+		}
+
+		const auto* canvasMetadata =
+			target.FindPropertyMetadata(L"Canvas.Left");
+		const auto* gridMetadata =
+			target.FindPropertyMetadata(L"Grid.Row");
+		const auto* dockMetadata =
+			target.FindPropertyMetadata(L"DockPanel.Dock");
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			canvasMetadata->Flags(),
+			DependencyPropertyFlags::AffectsParentArrange));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			gridMetadata->Flags(),
+			DependencyPropertyFlags::AffectsParentMeasure));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			dockMetadata->Flags(),
+			DependencyPropertyFlags::AffectsParentMeasure));
+
+		auto setStyle = [&](const wchar_t* property, BindingValue value)
+		{
+			return cui::framework::DependencyPropertyAccess::SetValue(
+				target, property, value,
+				DependencyPropertyValueSource::Style);
+		};
+		CUI_EXPECT_TRUE(setStyle(
+			L"Width",
+			BindingValue(cui::layout::Length::Fixed(88.0f))));
+		CUI_EXPECT_TRUE(setStyle(
+			L"Margin", BindingValue(Thickness(2.0f, 3.0f, 4.0f, 5.0f))));
+		CUI_EXPECT_TRUE(setStyle(
+			L"HorizontalAlignment",
+			BindingValue(HorizontalAlignment::Right)));
+
+		auto specified = target.GetSpecifiedLayout();
+		CUI_EXPECT_TRUE(specified.width.IsFixed());
+		CUI_EXPECT_NEAR(88.0f, specified.width.value, 0.0001f);
+		CUI_EXPECT_NEAR(2.0f, specified.margin.left, 0.0001f);
+		CUI_EXPECT_NEAR(3.0f, specified.margin.top, 0.0001f);
+		CUI_EXPECT_NEAR(4.0f, specified.margin.right, 0.0001f);
+		CUI_EXPECT_NEAR(5.0f, specified.margin.bottom, 0.0001f);
+		CUI_EXPECT_EQ(cui::layout::Alignment::End,
+			specified.horizontalAlignment);
+
+		target.Width = cui::layout::Length::Fixed(120.0f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Width"));
+		CUI_EXPECT_NEAR(120.0f,
+			target.GetSpecifiedLayout().width.value, 0.0001f);
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Width"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			target.GetPropertyValueSource(L"Width"));
+		CUI_EXPECT_NEAR(88.0f,
+			target.GetSpecifiedLayout().width.value, 0.0001f);
+
+		CUI_EXPECT_TRUE(setStyle(L"Canvas.Left", BindingValue(7.0f)));
+		Canvas::SetLeft(target, 15.0f);
+		CUI_EXPECT_NEAR(15.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Canvas.Left"));
+		CUI_EXPECT_NEAR(7.0f, Canvas::GetLeft(target), 0.0001f);
+
+		CUI_EXPECT_TRUE(setStyle(L"Grid.Row", BindingValue(2)));
+		Grid::SetRow(target, 3);
+		CUI_EXPECT_EQ(3, Grid::GetRow(target));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Grid.Row"));
+		CUI_EXPECT_EQ(2, Grid::GetRow(target));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"Grid.Row", BindingValue(-1)));
+		BindingValue invalidLocal;
+		CUI_EXPECT_FALSE(target.TryGetPropertyValue(
+			L"Grid.Row", DependencyPropertyValueSource::Local,
+			invalidLocal));
+
+		CUI_EXPECT_TRUE(setStyle(
+			L"DockPanel.Dock", BindingValue(Dock::Top)));
+		DockPanel::SetDock(target, Dock::Bottom);
+		CUI_EXPECT_EQ(Dock::Bottom, DockPanel::GetDock(target));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"DockPanel.Dock"));
+		CUI_EXPECT_EQ(Dock::Top, DockPanel::GetDock(target));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"HorizontalAlignment",
+			BindingValue(static_cast<HorizontalAlignment>(99))));
+		CUI_EXPECT_EQ(HorizontalAlignment::Right,
+			target.HorizontalAlignment);
+
+		using namespace cui::core;
+		Canvas canvas;
+		ConfigureTestControl(canvas, 0, 0, 240, 160);
+		auto* canvasChild = canvas.AdoptVisualChild(new Control());
+		canvas.Measure(Constraints{ Size{ 240.0f, 160.0f } });
+		canvas.Arrange(Rect{ 0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_FALSE(canvas.GetComputedLayout().NeedsArrange());
+		Canvas::SetLeft(*canvasChild, 12.0f);
+		CUI_EXPECT_FALSE(canvas.GetComputedLayout().NeedsMeasure());
+		CUI_EXPECT_TRUE(canvas.GetComputedLayout().NeedsArrange());
+
+		Grid grid;
+		ConfigureTestControl(grid, 0, 0, 240, 160);
+		auto* gridChild = grid.AdoptVisualChild(new Control());
+		grid.Measure(Constraints{ Size{ 240.0f, 160.0f } });
+		grid.Arrange(Rect{ 0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_FALSE(grid.GetComputedLayout().NeedsMeasure());
+		Grid::SetRow(*gridChild, 1);
+		CUI_EXPECT_TRUE(grid.GetComputedLayout().NeedsMeasure());
+
+		DockPanel dock;
+		ConfigureTestControl(dock, 0, 0, 240, 160);
+		auto* dockChild = dock.AdoptVisualChild(new Control());
+		dock.Measure(Constraints{ Size{ 240.0f, 160.0f } });
+		dock.Arrange(Rect{ 0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_FALSE(dock.GetComputedLayout().NeedsMeasure());
+		DockPanel::SetDock(*dockChild, Dock::Right);
+		CUI_EXPECT_TRUE(dock.GetComputedLayout().NeedsMeasure());
+	});
+
+	runner.Add("Control chrome declarations use canonical owner slots", []
+	{
+		Control target;
+		for (const auto* name : {
+			L"Padding",
+			L"HorizontalContentAlignment",
+			L"VerticalContentAlignment",
+			L"BorderThickness",
+			L"ClipToBounds" })
+		{
+			const auto* metadata = target.FindPropertyMetadata(name);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata->UsesEffectiveValueStorage());
+		}
+
+		const auto* controlPaddingProperty =
+			target.FindDependencyProperty(L"Padding");
+		const auto* controlBorderProperty =
+			target.FindDependencyProperty(L"BorderThickness");
+		const auto* clipProperty =
+			target.FindDependencyProperty(L"ClipToBounds");
+		CUI_EXPECT_TRUE(controlPaddingProperty != nullptr);
+		CUI_EXPECT_TRUE(controlBorderProperty != nullptr);
+		CUI_EXPECT_TRUE(clipProperty != nullptr);
+		CUI_EXPECT_EQ(std::type_index(typeid(UIElement)),
+			clipProperty->OwnerType());
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			target.FindPropertyMetadata(L"Padding")->Flags(),
+			DependencyPropertyFlags::AffectsParentMeasure));
+
+		Border border;
+		const auto* borderPaddingProperty =
+			border.FindDependencyProperty(L"Padding");
+		const auto* borderBorderProperty =
+			border.FindDependencyProperty(L"BorderThickness");
+		CUI_EXPECT_TRUE(borderPaddingProperty != nullptr);
+		CUI_EXPECT_TRUE(borderBorderProperty != nullptr);
+		CUI_EXPECT_TRUE(borderPaddingProperty != controlPaddingProperty);
+		CUI_EXPECT_TRUE(borderBorderProperty == controlBorderProperty);
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			borderPaddingProperty->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			borderBorderProperty->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			border.FindPropertyMetadata(L"Padding")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			border.FindPropertyMetadata(L"BorderThickness")->OwnerType());
+
+		auto setStyle = [](Control& targetControl,
+			const wchar_t* propertyName, BindingValue value)
+		{
+			return cui::framework::DependencyPropertyAccess::SetValue(
+				targetControl, propertyName, value,
+				DependencyPropertyValueSource::Style);
+		};
+		CUI_EXPECT_TRUE(setStyle(
+			target, L"Padding", BindingValue(Thickness(4.0f))));
+		CUI_EXPECT_TRUE(setStyle(
+			target, L"HorizontalContentAlignment",
+			BindingValue(HorizontalAlignment::Center)));
+		CUI_EXPECT_TRUE(setStyle(
+			target, L"VerticalContentAlignment",
+			BindingValue(VerticalAlignment::Bottom)));
+		target.Padding = Thickness(7.0f);
+		target.HorizontalContentAlignment = HorizontalAlignment::Right;
+		target.VerticalContentAlignment = VerticalAlignment::Center;
+		CUI_EXPECT_EQ(Thickness(7.0f), target.Padding);
+		CUI_EXPECT_EQ(HorizontalAlignment::Right,
+			target.HorizontalContentAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Center,
+			target.VerticalContentAlignment);
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Padding"));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"HorizontalContentAlignment"));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"VerticalContentAlignment"));
+		CUI_EXPECT_EQ(Thickness(4.0f), target.Padding);
+		CUI_EXPECT_EQ(HorizontalAlignment::Center,
+			target.HorizontalContentAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Bottom,
+			target.VerticalContentAlignment);
+		CUI_EXPECT_NEAR(4.0f,
+			target.GetSpecifiedLayout().padding.left, 0.0001f);
+
+		// WPF Control.Padding has no ValidateValue callback, while
+		// Border.Padding owns an independent, non-negative Thickness contract.
+		target.Padding = Thickness(-2.0f);
+		CUI_EXPECT_EQ(Thickness(-2.0f), target.Padding);
+		CUI_EXPECT_FALSE(border.TrySetPropertyValue(
+			L"Padding", BindingValue(Thickness(-1.0f))));
+		CUI_EXPECT_EQ(Thickness{}, border.Padding);
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"HorizontalContentAlignment",
+			BindingValue(static_cast<HorizontalAlignment>(99))));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"VerticalContentAlignment",
+			BindingValue(static_cast<VerticalAlignment>(99))));
+
+		Button button;
+		CUI_EXPECT_EQ(Thickness(1.5f), button.BorderThickness);
+		CUI_EXPECT_TRUE(setStyle(
+			button, L"BorderThickness", BindingValue(Thickness(2.0f))));
+		button.BorderThickness = Thickness(3.0f);
+		CUI_EXPECT_EQ(Thickness(3.0f), button.BorderThickness);
+		CUI_EXPECT_TRUE(button.ClearPropertyValue(L"BorderThickness"));
+		CUI_EXPECT_EQ(Thickness(2.0f), button.BorderThickness);
+		CUI_EXPECT_FALSE(button.TrySetPropertyValue(
+			L"BorderThickness", BindingValue(Thickness(-1.0f))));
+		CUI_EXPECT_EQ(Thickness(2.0f), button.BorderThickness);
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::ClearValue(
+				button, L"BorderThickness",
+				DependencyPropertyValueSource::Style));
+		CUI_EXPECT_EQ(Thickness(1.5f), button.BorderThickness);
+		CUI_EXPECT_TRUE(button.IsPropertyValueDefault(
+			L"BorderThickness"));
+
+		using namespace cui::core;
+		Control clipTarget;
+		clipTarget.Measure(Constraints{ Size{ 100.0f, 40.0f } });
+		clipTarget.Arrange(Rect{ 0.0f, 0.0f, 100.0f, 40.0f });
+		CUI_EXPECT_FALSE(
+			clipTarget.GetComputedLayout().NeedsArrange());
+		CUI_EXPECT_TRUE(setStyle(
+			clipTarget, L"ClipToBounds", BindingValue(true)));
+		CUI_EXPECT_TRUE(clipTarget.ClipToBounds);
+		CUI_EXPECT_TRUE(
+			clipTarget.GetComputedLayout().NeedsArrange());
+		clipTarget.ClipToBounds = false;
+		CUI_EXPECT_FALSE(clipTarget.ClipToBounds);
+		CUI_EXPECT_TRUE(clipTarget.ClearPropertyValue(L"ClipToBounds"));
+		CUI_EXPECT_TRUE(clipTarget.ClipToBounds);
+	});
+
+	runner.Add("Brush declarations use canonical WPF owner slots", []
+	{
+		Control control;
+		Panel panel;
+		Border border;
+		Label textBlock;
+
+		const auto* controlBackground =
+			control.FindDependencyProperty(L"Background");
+		const auto* panelBackground =
+			panel.FindDependencyProperty(L"Background");
+		const auto* borderBackground =
+			border.FindDependencyProperty(L"Background");
+		const auto* textBackground =
+			textBlock.FindDependencyProperty(L"Background");
+		const auto* controlForeground =
+			control.FindDependencyProperty(L"Foreground");
+		const auto* textForeground =
+			textBlock.FindDependencyProperty(L"Foreground");
+		const auto* controlBorderBrush =
+			control.FindDependencyProperty(L"BorderBrush");
+		const auto* borderBorderBrush =
+			border.FindDependencyProperty(L"BorderBrush");
+
+		CUI_EXPECT_TRUE(controlBackground != nullptr);
+		CUI_EXPECT_TRUE(panelBackground != nullptr);
+		CUI_EXPECT_TRUE(borderBackground != nullptr);
+		CUI_EXPECT_TRUE(textBackground != nullptr);
+		CUI_EXPECT_TRUE(controlForeground != nullptr);
+		CUI_EXPECT_TRUE(textForeground != nullptr);
+		CUI_EXPECT_TRUE(controlBorderBrush != nullptr);
+		CUI_EXPECT_TRUE(borderBorderBrush != nullptr);
+		CUI_EXPECT_TRUE(controlBackground == panelBackground);
+		CUI_EXPECT_TRUE(controlBackground == borderBackground);
+		CUI_EXPECT_TRUE(textBackground != controlBackground);
+		CUI_EXPECT_TRUE(controlForeground == textForeground);
+		CUI_EXPECT_TRUE(controlBorderBrush == borderBorderBrush);
+		CUI_EXPECT_TRUE(&Control::BackgroundProperty()
+			== &Panel::BackgroundProperty());
+		CUI_EXPECT_TRUE(&Control::ForegroundProperty()
+			== &TextElement::ForegroundProperty());
+		CUI_EXPECT_TRUE(&Label::ForegroundProperty()
+			== &TextElement::ForegroundProperty());
+		CUI_EXPECT_TRUE(&Label::BackgroundProperty()
+			== &TextElement::BackgroundProperty());
+		CUI_EXPECT_TRUE(&Control::BorderBrushProperty()
+			== &Border::BorderBrushProperty());
+		CUI_EXPECT_TRUE(&Border::BackgroundProperty()
+			== &Panel::BackgroundProperty());
+		CUI_EXPECT_EQ(std::type_index(typeid(Panel)),
+			controlBackground->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(TextElement)),
+			controlForeground->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			controlBorderBrush->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(TextElement)),
+			textBackground->OwnerType());
+
+		for (auto* target : std::to_array<Control*>({
+			&control, &panel, &border, &textBlock }))
+		{
+			for (const auto* name : {
+				L"Background", L"Foreground", L"BorderBrush" })
+			{
+				if (const auto* metadata =
+					target->FindPropertyMetadata(name))
+					CUI_EXPECT_TRUE(metadata->UsesEffectiveValueStorage());
+			}
+		}
+		CUI_EXPECT_EQ(std::type_index(typeid(Control)),
+			control.FindPropertyMetadata(L"Background")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Panel)),
+			panel.FindPropertyMetadata(L"Background")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			border.FindPropertyMetadata(L"Background")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Border)),
+			border.FindPropertyMetadata(L"BorderBrush")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Label)),
+			textBlock.FindPropertyMetadata(L"Background")->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(Label)),
+			textBlock.FindPropertyMetadata(L"Foreground")->OwnerType());
+		CUI_EXPECT_TRUE(panel.FindPropertyMetadata(L"Foreground") == nullptr);
+		CUI_EXPECT_TRUE(panel.FindPropertyMetadata(L"BorderBrush") == nullptr);
+		CUI_EXPECT_TRUE(border.FindPropertyMetadata(L"Foreground") == nullptr);
+		CUI_EXPECT_TRUE(textBlock.FindPropertyMetadata(L"BorderBrush") == nullptr);
+
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::None,
+			control.Background.Kind);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::None,
+			control.Foreground.Kind);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::None,
+			control.BorderBrush.Kind);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			textBlock.Foreground.Kind);
+		CUI_EXPECT_NEAR(0.0f, textBlock.Foreground.Color.r, 0.0001f);
+		CUI_EXPECT_NEAR(0.0f, textBlock.Foreground.Color.g, 0.0001f);
+		CUI_EXPECT_NEAR(0.0f, textBlock.Foreground.Color.b, 0.0001f);
+
+		auto solid = [](float r, float g, float b, float a = 1.0f)
+		{
+			return cui::drawing::MakeSolidColorBrush(
+				D2D1_COLOR_F{ r, g, b, a });
+		};
+		const auto styled = solid(0.1f, 0.2f, 0.3f);
+		const auto local = solid(0.7f, 0.6f, 0.5f);
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::SetValue(
+				control, L"Background", BindingValue(styled),
+				DependencyPropertyValueSource::Style));
+		control.Background = local;
+		CUI_EXPECT_EQ(local, control.Background);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			control.GetPropertyValueSource(L"Background"));
+		CUI_EXPECT_TRUE(control.ClearPropertyValue(L"Background"));
+		CUI_EXPECT_EQ(styled, control.Background);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			control.GetPropertyValueSource(L"Background"));
+
+		const auto borderStyle = solid(0.2f, 0.4f, 0.6f);
+		const auto borderLocal = solid(0.8f, 0.4f, 0.1f);
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::SetValue(
+				border, L"BorderBrush", BindingValue(borderStyle),
+				DependencyPropertyValueSource::Style));
+		border.BorderBrush = borderLocal;
+		CUI_EXPECT_EQ(borderLocal, border.BorderBrush);
+		CUI_EXPECT_TRUE(border.ClearPropertyValue(L"BorderBrush"));
+		CUI_EXPECT_EQ(borderStyle, border.BorderBrush);
+
+		const D2D1_COLOR_F converted{
+			0.25f, 0.5f, 0.75f, 0.8f };
+		CUI_EXPECT_TRUE(panel.TrySetPropertyValue(
+			L"Background", BindingValue(converted)));
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			panel.Background.Kind);
+		CUI_EXPECT_NEAR(converted.r, panel.Background.Color.r, 0.0001f);
+		CUI_EXPECT_TRUE(textBlock.TrySetPropertyValue(
+			L"Foreground", BindingValue(converted)));
+		CUI_EXPECT_NEAR(converted.b,
+			textBlock.Foreground.Color.b, 0.0001f);
+		CUI_EXPECT_TRUE(textBlock.ClearPropertyValue(L"Foreground"));
+
+		Control inheritanceRoot;
+		inheritanceRoot.Foreground = solid(0.9f, 0.15f, 0.3f);
+		auto* middle = inheritanceRoot.AdoptVisualChild(new Canvas());
+		auto* inheritedText = middle->AdoptVisualChild(new Label());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			inheritedText->GetPropertyValueSource(L"Foreground"));
+		CUI_EXPECT_NEAR(0.9f,
+			inheritedText->Foreground.Color.r, 0.0001f);
+		inheritedText->Foreground = solid(0.1f, 0.8f, 0.2f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			inheritedText->GetPropertyValueSource(L"Foreground"));
+		CUI_EXPECT_TRUE(
+			inheritedText->ClearPropertyValue(L"Foreground"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			inheritedText->GetPropertyValueSource(L"Foreground"));
+		CUI_EXPECT_NEAR(0.9f,
+			inheritedText->Foreground.Color.r, 0.0001f);
+
+		class RendererBrushProbe final : public Control
+		{
+		public:
+			D2D1_COLOR_F RenderForeground() const
+			{
+				return const_cast<RendererBrushProbe*>(this)
+					->RendererForegroundColor;
+			}
+			void SetFallback(D2D1_COLOR_F value)
+			{
+				RendererForegroundColor = value;
+			}
+		};
+		RendererBrushProbe probe;
+		const D2D1_COLOR_F fallback{
+			0.12f, 0.34f, 0.56f, 0.78f };
+		probe.SetFallback(fallback);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::None,
+			probe.Foreground.Kind);
+		CUI_EXPECT_NEAR(fallback.r,
+			probe.RenderForeground().r, 0.0001f);
+		probe.Foreground = cui::drawing::MakeSolidColorBrush(
+			D2D1_COLOR_F{ 0.8f, 0.6f, 0.4f, 0.5f }, 0.5f);
+		CUI_EXPECT_NEAR(0.8f,
+			probe.RenderForeground().r, 0.0001f);
+		CUI_EXPECT_NEAR(0.25f,
+			probe.RenderForeground().a, 0.0001f);
+		CUI_EXPECT_TRUE(probe.ClearPropertyValue(L"Foreground"));
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::None,
+			probe.Foreground.Kind);
+		CUI_EXPECT_NEAR(fallback.r,
+			probe.RenderForeground().r, 0.0001f);
+	});
+
+	runner.Add("Template and Text declarations use canonical value slots", []
+	{
+		ApplyTemplateProbeButton templateHost;
+		const auto* templateMetadata =
+			templateHost.FindPropertyMetadata(L"Template");
+		const auto* templateProperty =
+			templateHost.FindDependencyProperty(L"Template");
+		CUI_EXPECT_TRUE(templateMetadata != nullptr);
+		CUI_EXPECT_TRUE(templateMetadata
+			&& templateMetadata->UsesEffectiveValueStorage());
+		CUI_EXPECT_TRUE(templateProperty == &Control::TemplateProperty());
+		CUI_EXPECT_EQ(std::type_index(typeid(Control)),
+			templateProperty->OwnerType());
+		CUI_EXPECT_TRUE(!templateHost.GetTemplate());
+
+		auto styledTemplate =
+			std::make_shared<ProbeControlTemplate>(L"styledPart");
+		auto localTemplate =
+			std::make_shared<ProbeControlTemplate>(L"localPart");
+		const ControlTemplateReference styledReference(styledTemplate);
+		const ControlTemplateReference localReference(localTemplate);
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::SetValue(
+				templateHost, L"Template", BindingValue(styledReference),
+				DependencyPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(templateHost.GetTemplate() == styledReference);
+		CUI_EXPECT_TRUE(templateHost.ApplyTemplate());
+		const ControlWeakReference styledRoot(
+			cui::framework::TemplateAccess::GetTemplateRoot(templateHost));
+
+		templateHost.SetTemplate(localReference);
+		CUI_EXPECT_EQ(nullptr, styledRoot.Get());
+		CUI_EXPECT_TRUE(templateHost.GetTemplate() == localReference);
+		CUI_EXPECT_TRUE(templateHost.ApplyTemplate());
+		const ControlWeakReference localRoot(
+			cui::framework::TemplateAccess::GetTemplateRoot(templateHost));
+		CUI_EXPECT_TRUE(templateHost.ClearPropertyValue(
+			Control::TemplateProperty()));
+		CUI_EXPECT_EQ(nullptr, localRoot.Get());
+		CUI_EXPECT_TRUE(templateHost.GetTemplate() == styledReference);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			templateHost.GetPropertyValueSource(L"Template"));
+		CUI_EXPECT_TRUE(templateHost.ApplyTemplate());
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::ClearValue(
+				templateHost, L"Template",
+				DependencyPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(!templateHost.GetTemplate());
+		CUI_EXPECT_EQ(nullptr,
+			cui::framework::TemplateAccess::GetTemplateRoot(templateHost));
+
+		Control plainControl;
+		Canvas structuralPanel;
+		Label textBlock;
+		TextBox textBox;
+		ComboBox comboBox;
+		RichTextBox richTextBox;
+		CUI_EXPECT_TRUE(
+			plainControl.FindPropertyMetadata(L"Text") == nullptr);
+		CUI_EXPECT_TRUE(
+			structuralPanel.FindPropertyMetadata(L"Text") == nullptr);
+
+		const auto* textBlockProperty =
+			textBlock.FindDependencyProperty(L"Text");
+		const auto* textBoxProperty =
+			textBox.FindDependencyProperty(L"Text");
+		const auto* comboBoxProperty =
+			comboBox.FindDependencyProperty(L"Text");
+		const auto* richTextProperty =
+			richTextBox.FindDependencyProperty(L"Text");
+		CUI_EXPECT_TRUE(textBlockProperty == &Label::TextProperty());
+		CUI_EXPECT_TRUE(textBoxProperty == &TextBox::TextProperty());
+		CUI_EXPECT_TRUE(comboBoxProperty == &ComboBox::TextProperty());
+		CUI_EXPECT_TRUE(richTextProperty == &RichTextBox::TextProperty());
+		CUI_EXPECT_TRUE(textBlockProperty != textBoxProperty);
+		CUI_EXPECT_TRUE(textBlockProperty != comboBoxProperty);
+		CUI_EXPECT_TRUE(textBoxProperty != comboBoxProperty);
+		CUI_EXPECT_TRUE(richTextProperty != textBlockProperty);
+		CUI_EXPECT_TRUE(richTextProperty != textBoxProperty);
+		CUI_EXPECT_TRUE(richTextProperty != comboBoxProperty);
+		CUI_EXPECT_EQ(std::type_index(typeid(Label)),
+			textBlockProperty->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(TextBox)),
+			textBoxProperty->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(ComboBox)),
+			comboBoxProperty->OwnerType());
+		CUI_EXPECT_EQ(std::type_index(typeid(RichTextBox)),
+			richTextProperty->OwnerType());
+
+		for (auto* target : std::to_array<Control*>({
+			&textBlock, &textBox, &comboBox, &richTextBox }))
+		{
+			const auto* metadata = target->FindPropertyMetadata(L"Text");
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata
+				&& metadata->UsesEffectiveValueStorage());
+			CUI_EXPECT_EQ(std::wstring{}, target->GetDisplayText());
+		}
+		const auto* textBoxMetadata =
+			textBox.FindPropertyMetadata(L"Text");
+		const auto* comboTextMetadata =
+			comboBox.FindPropertyMetadata(L"Text");
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			textBoxMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+			textBoxMetadata->DefaultUpdateMode());
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			comboTextMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::SetValue(
+				textBlock, L"Text", BindingValue(L"style text"),
+				DependencyPropertyValueSource::Style));
+		textBlock.Text = L"local text";
+		CUI_EXPECT_EQ(std::wstring(L"local text"), textBlock.Text);
+		CUI_EXPECT_TRUE(
+			textBlock.ClearPropertyValue(Label::TextProperty()));
+		CUI_EXPECT_EQ(std::wstring(L"style text"), textBlock.Text);
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::ClearValue(
+				textBlock, L"Text",
+				DependencyPropertyValueSource::Style));
+		CUI_EXPECT_EQ(std::wstring{}, textBlock.Text);
+
+		ObservableObject editorSource;
+		CUI_EXPECT_TRUE(editorSource.DefineProperty(
+			L"Value", std::wstring(L"before")));
+		TextBox boundEditor;
+		auto* editorBinding = boundEditor.DataBindings.Add(
+			L"Text", editorSource, L"Value");
+		CUI_EXPECT_TRUE(editorBinding != nullptr);
+		CUI_EXPECT_EQ(BindingMode::TwoWay, editorBinding->Mode());
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+			editorBinding->UpdateMode());
+		boundEditor.CaretIndex =
+			static_cast<int>(boundEditor.Text.size());
+		boundEditor.InsertText(L"!");
+		CUI_EXPECT_EQ(std::wstring(L"before!"), boundEditor.Text);
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			boundEditor.GetPropertyExpressionKind(L"Text"));
+		CUI_EXPECT_EQ(std::wstring(L"before"),
+			editorSource.GetValue<std::wstring>(L"Value"));
+		boundEditor.OnLostFocus(&boundEditor);
+		CUI_EXPECT_EQ(std::wstring(L"before!"),
+			editorSource.GetValue<std::wstring>(L"Value"));
+
+		ObservableObject comboSource;
+		CUI_EXPECT_TRUE(comboSource.DefineProperty(
+			L"Value", std::wstring(L"unselected")));
+		ComboBox boundCombo;
+		SetTestComboBoxItems(boundCombo, { L"Alpha", L"Beta" });
+		auto* comboBinding = boundCombo.DataBindings.Add(
+			L"Text", comboSource, L"Value");
+		CUI_EXPECT_TRUE(comboBinding != nullptr);
+		CUI_EXPECT_EQ(BindingMode::TwoWay, comboBinding->Mode());
+		CUI_EXPECT_TRUE(boundCombo.SelectItem(1));
+		CUI_EXPECT_EQ(std::wstring(L"Beta"), boundCombo.Text);
+		CUI_EXPECT_EQ(std::wstring(L"Beta"),
+			comboSource.GetValue<std::wstring>(L"Value"));
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			boundCombo.GetPropertyExpressionKind(L"Text"));
+
+		ObservableObject richSource;
+		CUI_EXPECT_TRUE(richSource.DefineProperty(
+			L"Value", std::wstring(L"body")));
+		RichTextBox boundRichText;
+		auto* richBinding = boundRichText.DataBindings.Add(
+			L"Text", richSource, L"Value", BindingMode::TwoWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(richBinding != nullptr);
+		boundRichText.CaretIndex =
+			static_cast<int>(boundRichText.Text.size());
+		boundRichText.InsertText(L"!");
+		CUI_EXPECT_EQ(std::wstring(L"body!"), boundRichText.Text);
+		CUI_EXPECT_EQ(std::wstring(L"body!"),
+			richSource.GetValue<std::wstring>(L"Value"));
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			boundRichText.GetPropertyExpressionKind(L"Text"));
+	});
+
+	runner.Add("DependencyProperty identity survives metadata overrides and AddOwner", []
+	{
+		IdentityOwnerObject owner;
+		const auto& property = IdentityOwnerObject::LevelProperty();
+		const auto* ownerMetadata =
+			owner.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(ownerMetadata != nullptr);
+		CUI_EXPECT_TRUE(&ownerMetadata->Property() == &property);
+		CUI_EXPECT_TRUE(
+			owner.FindDependencyProperty(L"IdentityLevel") == &property);
+		CUI_EXPECT_EQ(std::type_index(typeid(IdentityOwnerObject)),
+			property.OwnerType());
+		CUI_EXPECT_TRUE(property.GlobalIndex()
+			== ownerMetadata->Property().GlobalIndex());
+		CUI_EXPECT_TRUE(property.IsValidValue(BindingValue(100)));
+		CUI_EXPECT_FALSE(property.IsValidValue(BindingValue(101)));
+
+		const DependencyProperty* changedProperty = nullptr;
+		auto connection = owner.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				changedProperty = args.Property;
+			});
+		CUI_EXPECT_TRUE(owner.TrySetPropertyValue(
+			property, BindingValue(8)));
+		CUI_EXPECT_EQ(8, owner.GetLevel());
+		CUI_EXPECT_TRUE(changedProperty == &property);
+
+		// Register the unrelated AddOwner branch before the derived override.
+		// Effective metadata resolution must follow the target's matching
+		// inheritance branch rather than global registration order.
+		IdentityPeerObject peer;
+		IdentityDerivedObject derived;
+		const auto* derivedMetadata =
+			derived.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(derivedMetadata != nullptr);
+		CUI_EXPECT_TRUE(derivedMetadata != ownerMetadata);
+		CUI_EXPECT_TRUE(&derivedMetadata->Property() == &property);
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			derivedMetadata->Flags(),
+			DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			derivedMetadata->Flags(),
+			DependencyPropertyFlags::AffectsMeasure));
+		CUI_EXPECT_TRUE(derived.IsPropertyValueDefault(L"IdentityLevel"));
+		CUI_EXPECT_TRUE(derived.TrySetPropertyValue(
+			property, BindingValue(9)));
+		CUI_EXPECT_EQ(6, derived.GetLevel());
+		CUI_EXPECT_EQ(1, derived.BaseChangedCount);
+		CUI_EXPECT_EQ(1, derived.DerivedChangedCount);
+		BindingValue proposed;
+		int typedProposed = 0;
+		CUI_EXPECT_TRUE(derived.TryGetPropertyValue(
+			L"IdentityLevel",
+			DependencyPropertyValueSource::Local,
+			proposed));
+		CUI_EXPECT_TRUE(proposed.TryGet(typedProposed));
+		CUI_EXPECT_EQ(9, typedProposed);
+		derived.MaximumLevel = 10;
+		CUI_EXPECT_TRUE(derived.CoerceValue(property));
+		CUI_EXPECT_EQ(9, derived.GetLevel());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			derived.GetPropertyValueSource(L"IdentityLevel"));
+
+		IdentityGrandchildObject grandchild;
+		const auto* grandchildMetadata =
+			grandchild.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(grandchildMetadata != nullptr);
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsMeasure));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsArrange));
+		CUI_EXPECT_TRUE(grandchild.TrySetPropertyValue(
+			property, BindingValue(4)));
+		CUI_EXPECT_EQ(1, grandchild.BaseChangedCount);
+		CUI_EXPECT_EQ(1, grandchild.DerivedChangedCount);
+		CUI_EXPECT_EQ(1, grandchild.GrandchildChangedCount);
+
+		const auto* peerMetadata = peer.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(peerMetadata != nullptr);
+		CUI_EXPECT_TRUE(peerMetadata != ownerMetadata);
+		CUI_EXPECT_TRUE(peerMetadata != derivedMetadata);
+		CUI_EXPECT_TRUE(&peerMetadata->Property() == &property);
+		CUI_EXPECT_TRUE(
+			peer.FindDependencyProperty(L"IdentityLevel") == &property);
+		CUI_EXPECT_TRUE(peer.IsPropertyValueDefault(L"IdentityLevel"));
+		CUI_EXPECT_TRUE(peer.TrySetPropertyValue(
+			property, BindingValue(10)));
+		CUI_EXPECT_EQ(10, peer.GetLevel());
+		CUI_EXPECT_EQ(1, peer.ChangedCount);
+
+		bool duplicateRegistrationRejected = false;
+		try
+		{
+			(void)DependencyPropertyRegistry::Register<
+				IdentityOwnerObject, int>(
+					L"IdentityLevel", {}, {}, {}, {});
+		}
+		catch (const std::invalid_argument&)
+		{
+			duplicateRegistrationRejected = true;
+		}
+		CUI_EXPECT_TRUE(duplicateRegistrationRejected);
+	});
+
+	runner.Add("DependencyPropertyKey is required for read-only writes", []
+	{
+		KeyedPropertyObject target;
+		const auto& property = KeyedPropertyObject::StateProperty();
+		const auto& key = KeyedPropertyObject::StatePropertyKey();
+		const auto* metadata = target.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		CUI_EXPECT_TRUE(property.ReadOnly());
+		CUI_EXPECT_TRUE(metadata->IsReadOnly());
+		CUI_EXPECT_FALSE(metadata->CanWrite());
+		CUI_EXPECT_TRUE(&key.Property() == &property);
+		CUI_EXPECT_TRUE(
+			target.FindDependencyProperty(L"State") == &property);
+
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"State", BindingValue(4)));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			property, BindingValue(4)));
+		CUI_EXPECT_FALSE(target.TrySetStateWithoutKey(4));
+		CUI_EXPECT_EQ(1, target.GetState());
+
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			key, BindingValue(4)));
+		CUI_EXPECT_EQ(4, target.GetState());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"State"));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			key, BindingValue(11)));
+		CUI_EXPECT_EQ(4, target.GetState());
+		CUI_EXPECT_FALSE(target.ClearPropertyValue(property));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(key));
+		CUI_EXPECT_EQ(1, target.GetState());
+		CUI_EXPECT_TRUE(target.IsPropertyValueDefault(L"State"));
+
+		bool duplicateKeyRejected = false;
+		try
+		{
+			(void)DependencyPropertyRegistry::RegisterReadOnly<
+				KeyedPropertyObject, int>(
+					L"State", {}, {}, {}, {});
+		}
+		catch (const std::invalid_argument&)
+		{
+			duplicateKeyRejected = true;
+		}
+		CUI_EXPECT_TRUE(duplicateKeyRejected);
+	});
+
 	runner.Add("Control property metadata coerces defaults and invalidates layout", []
 	{
 		using namespace cui::core;
@@ -4399,6 +5966,8 @@ int main()
 		CUI_EXPECT_TRUE(metadata->TryGetDefaultValue(defaultValue));
 		CUI_EXPECT_TRUE(defaultValue.TryGet(typedDefault));
 		CUI_EXPECT_EQ(4, typedDefault);
+		CUI_EXPECT_TRUE(metadata->IsValidValue(BindingValue(99)));
+		CUI_EXPECT_FALSE(metadata->IsValidValue(BindingValue(101)));
 		CUI_EXPECT_TRUE(target.IsPropertyValueDefault(L"Level"));
 
 		target.Measure(Constraints{ Size{ 200.0f, 100.0f } });
@@ -4427,6 +5996,10 @@ int main()
 		CUI_EXPECT_EQ(1, target.ChangedCallbackCount);
 		CUI_EXPECT_TRUE(target.GetComputedLayout().NeedsMeasure());
 		CUI_EXPECT_FALSE(target.IsPropertyValueDefault(L"Level"));
+		CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+			L"Level", BindingValue(101)));
+		CUI_EXPECT_EQ(10, target.GetLevel());
+		CUI_EXPECT_EQ(1, notifications);
 
 		CUI_EXPECT_TRUE(target.TrySetPropertyValue(L"Level", BindingValue(12)));
 		CUI_EXPECT_EQ(10, target.GetLevel());
@@ -4452,6 +6025,19 @@ int main()
 			L"Level", BindingValue(BindingPayload{ 1, L"wrong type" })));
 		CUI_EXPECT_FALSE(target.TrySetPropertyValue(L"Missing", BindingValue(1)));
 		CUI_EXPECT_FALSE(target.ResetPropertyValue(L"Missing"));
+
+		PropertySystemControl recoerced;
+		CUI_EXPECT_TRUE(recoerced.TrySetPropertyValue(
+			L"Level", BindingValue(9)));
+		recoerced.MaximumLevel = 5;
+		CUI_EXPECT_TRUE(recoerced.CoerceValue(L"Level"));
+		CUI_EXPECT_EQ(5, recoerced.GetLevel());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			recoerced.GetPropertyValueSource(L"Level"));
+		recoerced.MaximumLevel = 10;
+		CUI_EXPECT_TRUE(recoerced.CoerceValue(L"Level"));
+		CUI_EXPECT_EQ(9, recoerced.GetLevel());
+		CUI_EXPECT_FALSE(recoerced.CoerceValue(L"Missing"));
 
 		ObservableObject source;
 		source.SetValue(L"Level", 50);
@@ -4587,6 +6173,12 @@ int main()
 		Control component;
 		CUI_EXPECT_TRUE(cui::framework::XamlAccess::SetTypeDescriptor(
 			component, descriptor, &error));
+		const auto* modeMetadata = component.FindPropertyMetadata(L"Mode");
+		CUI_EXPECT_TRUE(modeMetadata != nullptr);
+		CUI_EXPECT_TRUE(modeMetadata->IsValidValue(
+			BindingValue(std::wstring(L"Busy"))));
+		CUI_EXPECT_FALSE(modeMetadata->IsValidValue(
+			BindingValue(std::wstring(L"busy"))));
 		CUI_EXPECT_TRUE(component.TrySetPropertyValue(
 			L"Mode", BindingValue(std::wstring(L"Busy"))));
 		CUI_EXPECT_FALSE(component.TrySetPropertyValue(
@@ -6783,15 +8375,19 @@ int main()
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
 			button.GetPropertyValueSource(L"Margin"));
 		CUI_EXPECT_EQ(1ULL, trackedValues.size());
-		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
+		error.clear();
+		CUI_EXPECT_FALSE(DesignerPropertyCatalog::ApplyAndTrackValue(
 			button,
 			trackedValues,
 			L"Grid.Row",
 			{ DesignerStyleValueKind::Int, L"-4" },
 			nullptr,
-			&effectiveValue));
+			&effectiveValue,
+			&error));
 		CUI_EXPECT_EQ(0, Grid::GetRow(button));
-		CUI_EXPECT_EQ(std::wstring(L"0"), effectiveValue.Text);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
+			button.GetPropertyValueSource(L"Grid.Row"));
+		CUI_EXPECT_TRUE(!error.empty());
 		CUI_EXPECT_EQ(1ULL, trackedValues.size());
 
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ResetAndUntrackValue(
@@ -7037,6 +8633,13 @@ int main()
 		auto childOwner = MakeTestControl<Label>(L"Inherited", 0, 0);
 		auto* child = childOwner.get();
 		parent.AddOwned(std::move(childOwner));
+		const auto* fontSizeMetadata =
+			parent.FindPropertyMetadata(L"FontSize");
+		CUI_EXPECT_TRUE(fontSizeMetadata != nullptr);
+		CUI_EXPECT_TRUE(
+			fontSizeMetadata->IsValidValue(BindingValue(21.5)));
+		CUI_EXPECT_FALSE(
+			fontSizeMetadata->IsValidValue(BindingValue(500.0)));
 		CUI_EXPECT_TRUE(parent.TrySetPropertyValue(
 			L"FontFamily", BindingValue(std::wstring(L"Consolas"))));
 		CUI_EXPECT_TRUE(parent.TrySetPropertyValue(
@@ -7767,6 +9370,17 @@ int main()
 		CUI_EXPECT_TRUE(sliderTickFrequency != nullptr);
 		CUI_EXPECT_TRUE(sliderOrientation != nullptr);
 		CUI_EXPECT_TRUE(sliderDirection != nullptr);
+		const auto* minimumMetadata =
+			slider.FindPropertyMetadata(L"Minimum");
+		const auto* valueMetadata = slider.FindPropertyMetadata(L"Value");
+		CUI_EXPECT_TRUE(minimumMetadata != nullptr);
+		CUI_EXPECT_TRUE(valueMetadata != nullptr);
+		CUI_EXPECT_TRUE(
+			minimumMetadata->IsValidValue(BindingValue(0.0)));
+		CUI_EXPECT_FALSE(minimumMetadata->IsValidValue(BindingValue(
+			std::numeric_limits<double>::quiet_NaN())));
+		CUI_EXPECT_FALSE(valueMetadata->IsValidValue(BindingValue(
+			std::numeric_limits<double>::infinity())));
 		CUI_EXPECT_EQ(std::wstring(L"Range"), sliderMinimum->Category);
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata, sliderValue->Persistence);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number,
@@ -8010,6 +9624,16 @@ int main()
 		CUI_EXPECT_TRUE(groupBorder != nullptr);
 		CUI_EXPECT_EQ(
 			DependencyPropertyEditorKind::Thickness, groupBorder->Editor);
+		Control baseControl;
+		const auto* baseBorderProperty =
+			baseControl.FindDependencyProperty(L"BorderThickness");
+		CUI_EXPECT_TRUE(baseBorderProperty != nullptr);
+		CUI_EXPECT_TRUE(
+			groupBox.FindDependencyProperty(L"BorderThickness")
+				== baseBorderProperty);
+		CUI_EXPECT_TRUE(
+			groupBox.FindPropertyMetadata(L"BorderThickness")
+				!= baseControl.FindPropertyMetadata(L"BorderThickness"));
 		for (const wchar_t* removed : { L"CaptionMarginLeft", L"CaptionPaddingX",
 			L"CaptionPaddingY", L"CaptionCornerRadius", L"CaptionBackColor",
 			L"CaptionBorderColor" })
@@ -16076,6 +17700,10 @@ int main()
 			CUI_EXPECT_TRUE(button->GetVisualContent() == nullptr);
 			CUI_EXPECT_EQ(1, button->VisualChildCount());
 			CUI_EXPECT_TRUE(chrome == button->FindDeclarativeTemplatePart(L"chrome"));
+			CUI_EXPECT_TRUE(chrome && chrome->GetVisualParent() == button);
+			CUI_EXPECT_TRUE(chrome && chrome->GetLogicalParent() == nullptr);
+			CUI_EXPECT_TRUE(chrome
+				&& chrome->GetInheritanceParent() == button);
 			auto* contentHost = dynamic_cast<ContentPresenter*>(
 				button->FindDeclarativeTemplatePart(L"contentHost"));
 			CUI_EXPECT_TRUE(contentHost != nullptr);
@@ -16100,6 +17728,10 @@ int main()
 			CUI_EXPECT_TRUE(caption != nullptr);
 			if (caption)
 			{
+				CUI_EXPECT_TRUE(caption->GetLogicalParent() == nullptr);
+				CUI_EXPECT_TRUE(caption->GetVisualParent() != nullptr);
+				CUI_EXPECT_TRUE(caption->GetInheritanceParent()
+					== caption->GetVisualParent());
 				CUI_EXPECT_EQ(std::wstring(L"Run"), caption->Text);
 				CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
 					caption->GetPropertyValueSource(L"Text"));
@@ -23423,15 +25055,17 @@ int main()
 			CUI_EXPECT_NEAR(expected.b, actual.b, tolerance);
 			CUI_EXPECT_NEAR(expected.a, actual.a, tolerance);
 		};
-		auto readLinear = [&]() -> const cui::drawing::Brush&
+		auto readLinear = [&]()
 		{
-			CUI_EXPECT_TRUE(linear->GetForegroundBrush().has_value());
-			return *linear->GetForegroundBrush();
+			const auto brush = linear->GetForegroundBrush();
+			CUI_EXPECT_TRUE(brush.has_value());
+			return *brush;
 		};
-		auto readRadial = [&]() -> const cui::drawing::Brush&
+		auto readRadial = [&]()
 		{
-			CUI_EXPECT_TRUE(radial->GetForegroundBrush().has_value());
-			return *radial->GetForegroundBrush();
+			const auto brush = radial->GetForegroundBrush();
+			CUI_EXPECT_TRUE(brush.has_value());
+			return *brush;
 		};
 		auto expectLinearStructure = [&](const cui::drawing::Brush& brush)
 		{
@@ -23871,10 +25505,11 @@ int main()
 			? card->FindDeclarativeTemplatePart(L"brushTarget") : nullptr;
 		if (!card || !target)
 			throw std::runtime_error("Brush transform runtime controls are missing");
-		auto readBrush = [&]() -> const cui::drawing::Brush&
+		auto readBrush = [&]()
 		{
-			CUI_EXPECT_TRUE(target->GetForegroundBrush().has_value());
-			return *target->GetForegroundBrush();
+			const auto brush = target->GetForegroundBrush();
+			CUI_EXPECT_TRUE(brush.has_value());
+			return *brush;
 		};
 		auto expectBaseStructure = [&](const cui::drawing::Brush& brush)
 		{
@@ -24210,10 +25845,13 @@ int main()
 		auto* radial = findPart(L"radialTarget");
 		if (!card || !solid || !linear || !radial)
 			throw std::runtime_error("Brush property runtime controls are missing");
-		auto readBrush = [](Control* target) -> const cui::drawing::Brush&
+		auto readBrush = [](Control* target)
 		{
-			CUI_EXPECT_TRUE(target && target->GetForegroundBrush().has_value());
-			return *target->GetForegroundBrush();
+			const auto brush = target
+				? target->GetForegroundBrush()
+				: std::optional<cui::drawing::Brush>{};
+			CUI_EXPECT_TRUE(brush.has_value());
+			return *brush;
 		};
 		auto go = [&](const wchar_t* state, bool transitions = false)
 		{
@@ -25723,9 +27361,9 @@ int main()
 		{
 			return geometry->GetClip()->Children[0].LocalTransform->Operations[0].Matrix;
 		};
-		auto brushMatrix = [&](bool relative) -> const D2D1_MATRIX_3X2_F&
+		auto brushMatrix = [&](bool relative)
 		{
-			const auto& value = *brush->GetForegroundBrush();
+			const auto value = *brush->GetForegroundBrush();
 			return (relative ? *value.RelativeTransform : *value.Transform)
 				.Operations[0].Matrix;
 		};
@@ -27958,7 +29596,7 @@ int main()
 		CUI_EXPECT_TRUE(imageLabel && imageLabel->GetForegroundBrush().has_value());
 		if (imageLabel && imageLabel->GetForegroundBrush())
 		{
-			const auto& brush = *imageLabel->GetForegroundBrush();
+			const auto brush = *imageLabel->GetForegroundBrush();
 			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::Uniform, brush.Stretch);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Right, brush.AlignmentX);
@@ -27979,7 +29617,7 @@ int main()
 			&& inlineImageLabel->GetForegroundBrush().has_value());
 		if (inlineImageLabel && inlineImageLabel->GetForegroundBrush())
 		{
-			const auto& brush = *inlineImageLabel->GetForegroundBrush();
+			const auto brush = *inlineImageLabel->GetForegroundBrush();
 			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::None, brush.Stretch);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Left, brush.AlignmentX);
@@ -36077,6 +37715,8 @@ class FreshWindow : public FreshWindowGenerated {};
 		}
 		for (const auto& [nativeType, propertyName] : std::to_array({
 			std::pair{ UIClass::UI_Label, L"Text" },
+			std::pair{ UIClass::UI_TextBox, L"Text" },
+			std::pair{ UIClass::UI_ComboBox, L"Text" },
 			std::pair{ UIClass::UI_RichTextBox, L"Text" },
 			std::pair{ UIClass::UI_PasswordBox, L"Password" },
 			std::pair{ UIClass::UI_ContextMenu, L"IsOpen" } }))
@@ -36084,6 +37724,26 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 				nativeType, propertyName) != nullptr);
 		}
+		for (const auto& [nativeType, ownerType] : std::to_array({
+			std::pair{ UIClass::UI_Label, std::type_index(typeid(Label)) },
+			std::pair{ UIClass::UI_TextBox, std::type_index(typeid(TextBox)) },
+			std::pair{ UIClass::UI_ComboBox, std::type_index(typeid(ComboBox)) },
+			std::pair{ UIClass::UI_RichTextBox,
+				std::type_index(typeid(RichTextBox)) } }))
+		{
+			const auto* textMetadata =
+				CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+					nativeType, L"Text");
+			CUI_EXPECT_TRUE(textMetadata != nullptr);
+			CUI_EXPECT_TRUE(textMetadata
+				&& textMetadata->UsesEffectiveValueStorage());
+			CUI_EXPECT_TRUE(textMetadata
+				&& textMetadata->OwnerType() == ownerType);
+		}
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+			UIClass::UI_Control, L"Text") == nullptr);
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+			UIClass::UI_Canvas, L"Text") == nullptr);
 		const auto* contentMetadata =
 			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 				UIClass::UI_Button, L"Content");
@@ -36118,11 +37778,22 @@ class FreshWindow : public FreshWindowGenerated {};
 		// Control.Template is a real writable dependency property. Structural
 		// types outside the projected Control hierarchy still do not acquire it
 		// from the shared C++ behavior host.
-		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
-			UIClass::UI_Control, L"Template") != nullptr);
+		const auto* controlTemplate =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Control, L"Template");
+		CUI_EXPECT_TRUE(controlTemplate != nullptr);
+		CUI_EXPECT_TRUE(controlTemplate
+			&& controlTemplate->UsesEffectiveValueStorage());
+		CUI_EXPECT_TRUE(controlTemplate
+			&& &controlTemplate->Property() == &Control::TemplateProperty());
 		CUI_EXPECT_TRUE(IsControlTemplateHostClass(UIClass::UI_Control));
-		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
-			UIClass::UI_Canvas, L"Background") != nullptr);
+		const auto* panelBackground =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Canvas, L"Background");
+		CUI_EXPECT_TRUE(panelBackground != nullptr);
+		CUI_EXPECT_TRUE(panelBackground
+			&& panelBackground->OwnerType()
+				== std::type_index(typeid(Panel)));
 		for (const auto* property : { L"Padding", L"BorderBrush",
 			L"BorderThickness", L"Template", L"Foreground",
 			L"FontFamily", L"FontSize" })
@@ -36143,12 +37814,36 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(borderThickness
 			&& borderThickness->ValueType()
 				== std::type_index(typeid(Thickness)));
+		const auto* borderBackground =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Border, L"Background");
+		const auto* borderBrush =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Border, L"BorderBrush");
+		CUI_EXPECT_TRUE(borderBackground
+			&& borderBackground->OwnerType()
+				== std::type_index(typeid(Border)));
+		CUI_EXPECT_TRUE(borderBrush
+			&& borderBrush->OwnerType()
+				== std::type_index(typeid(Border)));
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_Border, L"Template") == nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_Label, L"FontFamily") != nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_Label, L"Padding") != nullptr);
+		const auto* textBackground =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Label, L"Background");
+		const auto* textForeground =
+			CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_Label, L"Foreground");
+		CUI_EXPECT_TRUE(textBackground
+			&& textBackground->OwnerType()
+				== std::type_index(typeid(Label)));
+		CUI_EXPECT_TRUE(textForeground
+			&& textForeground->OwnerType()
+				== std::type_index(typeid(Label)));
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_Label, L"BorderBrush") == nullptr);
 		Canvas panelProjection;
@@ -38073,6 +39768,202 @@ class FreshWindow : public FreshWindowGenerated {};
 			legacyStateTrigger, parsed, &error));
 		CUI_EXPECT_TRUE(error.find(L"unsupported attribute: property")
 			!= std::wstring::npos);
+	});
+
+	runner.Add("Application owns WPF lifetime resources and dispatcher shutdown", []
+	{
+		Application application;
+		CUI_EXPECT_TRUE(Application::Current() == &application);
+		CUI_EXPECT_EQ(
+			ShutdownMode::OnLastWindowClose,
+			application.GetShutdownMode());
+		CUI_EXPECT_TRUE(application.GetWindows().empty());
+		CUI_EXPECT_TRUE(application.GetMainWindow() == nullptr);
+
+		bool duplicateRejected = false;
+		try
+		{
+			Application duplicate;
+		}
+		catch (const std::logic_error&)
+		{
+			duplicateRejected = true;
+		}
+		CUI_EXPECT_TRUE(duplicateRejected);
+
+		application.SetShutdownMode(ShutdownMode::OnExplicitShutdown);
+		CUI_EXPECT_EQ(
+			ShutdownMode::OnExplicitShutdown,
+			application.GetShutdownMode());
+		application.SetShutdownMode(ShutdownMode::OnMainWindowClose);
+		CUI_EXPECT_EQ(
+			ShutdownMode::OnMainWindowClose,
+			application.GetShutdownMode());
+		application.SetShutdownMode(ShutdownMode::OnLastWindowClose);
+		bool invalidModeRejected = false;
+		try
+		{
+			application.SetShutdownMode(
+				static_cast<ShutdownMode>(99));
+		}
+		catch (const std::invalid_argument&)
+		{
+			invalidModeRejected = true;
+		}
+		CUI_EXPECT_TRUE(invalidModeRejected);
+
+		auto resources = application.GetResources();
+		CUI_EXPECT_TRUE(resources != nullptr);
+		CUI_EXPECT_TRUE(resources->SetResource(
+			L"Application.FontSize", BindingValue(18.0)));
+
+		ControlStyleSelector applicationTextStyle;
+		applicationTextStyle.Type = UIClass::UI_Label;
+		CUI_EXPECT_TRUE(resources->AddRule(
+			applicationTextStyle,
+			{ ControlStyleSetter(
+				L"FontSize", BindingValue(24.0)) }) != 0);
+
+		Window window;
+		ConfigureTestControl(window, L"Application lifetime");
+		SetDeclaredWindowGeometry(
+			window, 0.0f, 0.0f, 260.0f, 120.0f);
+		auto root = MakeTestControl<Panel>();
+		auto* dynamicText = AddTestVisual<Label>(
+			*root, L"Dynamic", 0, 0, 100, 24);
+		auto* styledText = AddTestVisual<Label>(
+			*root, L"Styled", 0, 30, 100, 24);
+		CUI_EXPECT_TRUE(dynamicText != nullptr);
+		CUI_EXPECT_TRUE(styledText != nullptr);
+		window.SetVisualContent(std::move(root));
+
+		CUI_EXPECT_TRUE(application.GetMainWindow() == &window);
+		CUI_EXPECT_EQ(1ULL, application.GetWindows().size());
+		CUI_EXPECT_TRUE(dynamicText->SetDynamicResource(
+			L"FontSize", L"Application.FontSize"));
+		CUI_EXPECT_NEAR(18.0, dynamicText->FontSize, 0.0001);
+		CUI_EXPECT_NEAR(24.0, styledText->FontSize, 0.0001);
+		CUI_EXPECT_EQ(
+			DependencyPropertyValueSource::Style,
+			styledText->GetPropertyValueSource(L"FontSize"));
+
+		auto documentStyles = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector documentTextStyle;
+		documentTextStyle.Type = UIClass::UI_Label;
+		CUI_EXPECT_TRUE(documentStyles->AddRule(
+			documentTextStyle,
+			{ ControlStyleSetter(
+				L"FontSize", BindingValue(29.0)) }) != 0);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			window, documentStyles, true));
+		CUI_EXPECT_NEAR(29.0, styledText->FontSize, 0.0001);
+
+		CUI_EXPECT_TRUE(resources->SetResource(
+			L"Application.FontSize", BindingValue(21.0)));
+		CUI_EXPECT_NEAR(21.0, dynamicText->FontSize, 0.0001);
+		CUI_EXPECT_NEAR(29.0, styledText->FontSize, 0.0001);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			window, nullptr, true));
+		CUI_EXPECT_NEAR(24.0, styledText->FontSize, 0.0001);
+
+		auto replacement = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(replacement->SetResource(
+			L"Application.FontSize", BindingValue(27.0)));
+		ControlStyleSelector replacementTextStyle;
+		replacementTextStyle.Type = UIClass::UI_Label;
+		CUI_EXPECT_TRUE(replacement->AddRule(
+			replacementTextStyle,
+			{ ControlStyleSetter(
+				L"FontSize", BindingValue(32.0)) }) != 0);
+		application.SetResources(replacement);
+		CUI_EXPECT_TRUE(application.GetResources() == replacement);
+		CUI_EXPECT_NEAR(27.0, dynamicText->FontSize, 0.0001);
+		CUI_EXPECT_NEAR(32.0, styledText->FontSize, 0.0001);
+		CUI_EXPECT_TRUE(resources->SetResource(
+			L"Application.FontSize", BindingValue(44.0)));
+		CUI_EXPECT_NEAR(27.0, dynamicText->FontSize, 0.0001);
+
+		BindingValue foundResource;
+		double foundFontSize = 0.0;
+		CUI_EXPECT_TRUE(application.TryFindResource(
+			L"Application.FontSize", foundResource));
+		CUI_EXPECT_TRUE(foundResource.TryGet(foundFontSize));
+		CUI_EXPECT_NEAR(27.0, foundFontSize, 0.0001);
+		bool missingResourceRejected = false;
+		try
+		{
+			(void)application.FindResource(L"Missing.Application.Resource");
+		}
+		catch (const std::out_of_range&)
+		{
+			missingResourceRejected = true;
+		}
+		CUI_EXPECT_TRUE(missingResourceRejected);
+
+		std::vector<std::wstring> lifecycle;
+		auto startupConnection = application.Startup.Subscribe(
+			[&](Application* sender, StartupEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &application);
+				CUI_EXPECT_TRUE(Application::Current() == &application);
+				CUI_EXPECT_TRUE(application.GetMainWindow() == &window);
+				CUI_EXPECT_EQ(1ULL, application.GetWindows().size());
+				CUI_EXPECT_TRUE(
+					args.Args.size() <= static_cast<size_t>(INT_MAX));
+				lifecycle.push_back(L"Startup");
+			});
+		auto exitConnection = application.Exit.Subscribe(
+			[&](Application* sender, ExitEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &application);
+				CUI_EXPECT_TRUE(Application::Current() == &application);
+				CUI_EXPECT_TRUE(application.IsShuttingDown());
+				CUI_EXPECT_TRUE(application.GetWindows().empty());
+				CUI_EXPECT_EQ(37, args.ApplicationExitCode);
+				args.ApplicationExitCode = 41;
+				lifecycle.push_back(L"Exit");
+			});
+
+		int closingCount = 0;
+		auto closingConnection = window.OnClosing.Subscribe(
+			[&](Window*, CancelEventArgs& args)
+			{
+				++closingCount;
+				args.Cancel = true;
+				if (closingCount == 1)
+				{
+					CUI_EXPECT_TRUE(application.TryPost(
+						[&application]()
+						{
+							application.Shutdown(37);
+						}));
+				}
+			});
+		CUI_EXPECT_TRUE(application.TryPost(
+			[&window]() { window.Close(); }));
+
+		CUI_EXPECT_EQ(41, application.Run(window));
+		CUI_EXPECT_EQ(2, closingCount);
+		CUI_EXPECT_EQ(2ULL, lifecycle.size());
+		CUI_EXPECT_EQ(std::wstring(L"Startup"), lifecycle[0]);
+		CUI_EXPECT_EQ(std::wstring(L"Exit"), lifecycle[1]);
+		CUI_EXPECT_TRUE(application.IsShutdown());
+		CUI_EXPECT_TRUE(Application::Current() == nullptr);
+		CUI_EXPECT_TRUE(application.GetWindows().empty());
+		CUI_EXPECT_TRUE(application.GetMainWindow() == nullptr);
+		CUI_EXPECT_FALSE(cui::HasUIThreadDispatcher());
+		CUI_EXPECT_FALSE(cui::PostToUIThread([] {}));
+
+		bool recreationRejected = false;
+		try
+		{
+			Application recreated;
+		}
+		catch (const std::logic_error&)
+		{
+			recreationRejected = true;
+		}
+		CUI_EXPECT_TRUE(recreationRejected);
 	});
 
     return runner.RunAll();

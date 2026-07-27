@@ -77,6 +77,10 @@ public:
 	GET(::TextTrimming, TextTrimming);
 	SET(::TextTrimming, TextTrimming);
 	virtual UIClass Type();
+	/** WPF TextBlock.Text property identity. */
+	static const DependencyProperty& TextProperty();
+	static const DependencyProperty& ForegroundProperty();
+	static const DependencyProperty& BackgroundProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override
 	{

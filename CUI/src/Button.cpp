@@ -125,7 +125,6 @@ Button::Button()
 	: ButtonBase()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.5f);
 	RetainEventConnection(OnLogicalParentChanged.Subscribe(
 		[this](Control*, Control*, Control*) { RefreshCommandSource(); }));
 	RetainEventConnection(OnVisualParentChanged.Subscribe(

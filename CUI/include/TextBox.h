@@ -35,6 +35,8 @@ public:
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
 	virtual UIClass Type();
+	/** WPF TextBox.Text property identity. */
+	static const DependencyProperty& TextProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
 	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->IsEnabled ? CursorKind::IBeam : CursorKind::Arrow; }

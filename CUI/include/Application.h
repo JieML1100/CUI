@@ -1,11 +1,20 @@
-﻿#pragma once
+#pragma once
+
 #include <Windows.h>
-#include <string>
-#include <unordered_map>
+
+#include "DispatcherObject.h"
+#include "Event.h"
+
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
+class Control;
+class ControlStyleSheet;
 class ResourceResolver;
+class Window;
 
 /** Windows accessibility and visual-effect preferences used by CUI rendering. */
 struct SystemVisualPreferences
@@ -20,58 +29,148 @@ struct SystemVisualPreferences
 		return static_cast<float>(TextScalePercent) / 100.0f;
 	}
 };
+
+/** WPF-compatible policy controlling when an Application shuts down. */
+enum class ShutdownMode : std::uint8_t
+{
+	OnLastWindowClose = 0,
+	OnMainWindowClose = 1,
+	OnExplicitShutdown = 2,
+};
+
+/** Arguments raised once when the Application dispatcher starts. */
+struct StartupEventArgs final : EventArgs
+{
+	std::vector<std::wstring> Args;
+};
+
+/** Mutable process exit code carried by Application.Exit. */
+struct ExitEventArgs final : EventArgs
+{
+	explicit ExitEventArgs(int exitCode = 0)
+		: ApplicationExitCode(exitCode) {}
+
+	int ApplicationExitCode = 0;
+};
+
+using ApplicationStartupEvent =
+	Event<void(class Application*, StartupEventArgs&)>;
+using ApplicationExitEvent =
+	Event<void(class Application*, ExitEventArgs&)>;
+
 /**
- * @file Application.h
- * @brief CUI 应用级静态工具与全局状态。
+ * WPF-shaped application lifetime owner.
  *
- * 该类不负责窗口渲染本身，而是提供：
- * - 窗口(Window)注册表
- * - 进程 Dispatcher 消息循环
- * - 应用级资源解析与平台视觉首选项
+ * Application owns the dispatcher run boundary, its Window collection,
+ * MainWindow, shutdown policy and application ResourceDictionary projection.
+ * Process-wide HWND lookup, DPI queries and the default URI resolver remain
+ * platform services and are intentionally kept behind static interop methods.
  */
-class Application
+class Application : public DispatcherObject
 {
 private:
+	friend class Control;
 	friend class Window;
-	static std::unordered_map<HWND, class Window*> _windows;
-	static void RegisterWindow(class Window& window);
-	static void UnregisterWindow(class Window& window) noexcept;
+
+	static void RegisterWindow(Window& window);
+	static void UnregisterWindow(Window& window) noexcept;
+	static bool IsWindowClosingForShutdown(
+		const Window& window) noexcept;
+	static std::vector<Window*> GetPlatformWindows();
+
 	static UINT GetSystemDpi();
 	static UINT GetDpiForWindow(HWND hwnd);
 	static int ScaleInt(int value, UINT fromDpi, UINT toDpi);
 	static float ScaleFloat(float value, UINT fromDpi, UINT toDpi);
 
-public:
-	/** Read-only WPF-style snapshot of live application windows. */
-	static std::vector<class Window*> GetWindows();
-	/** Explicit HWND interop lookup without exposing the mutable registry. */
-	static class Window* FindWindow(HWND handle) noexcept;
+	void RegisterApplicationWindow(Window& window);
+	void UnregisterApplicationWindow(Window& window) noexcept;
+	void AdoptWindow(Window& window);
+	void RequestShutdown(int exitCode) noexcept;
+	void CompleteShutdown();
+	int RunInternal(Window* window);
 
-	// ---- Application resources ----
+	std::shared_ptr<const ControlStyleSheet>
+		GetResourcesSnapshot() const;
+	void ConnectResources(
+		const std::shared_ptr<ControlStyleSheet>& resources);
+	void OnResourcesChanged();
+	void InvalidateApplicationResources();
+
+	std::vector<Window*> _windows;
+	Window* _mainWindow = nullptr;
+	::ShutdownMode _shutdownMode = ::ShutdownMode::OnLastWindowClose;
+	bool _runStarted = false;
+	bool _startupRaised = false;
+	bool _isShuttingDown = false;
+	bool _shutdownCompleted = false;
+	int _exitCode = 0;
+
+	mutable std::mutex _resourcesMutex;
+	std::shared_ptr<ControlStyleSheet> _resources;
+	EventConnection _resourcesConnection;
+
+protected:
+	virtual void OnStartup(StartupEventArgs& args);
+	virtual void OnExit(ExitEventArgs& args);
+
+public:
+	Application();
+	~Application() override;
+
+	/** Returns the sole Application for this process, or null after shutdown. */
+	static Application* Current() noexcept;
+
+	/** Read-only snapshot of windows owned by this Application dispatcher. */
+	std::vector<Window*> GetWindows() const;
+	Window* GetMainWindow() const;
+	void SetMainWindow(Window* value);
+
+	::ShutdownMode GetShutdownMode() const;
+	void SetShutdownMode(::ShutdownMode value);
+
+	/**
+	 * Lazily creates the mutable application ResourceDictionary projection.
+	 * ControlStyleSheet is CUI's current lowered runtime representation of a
+	 * ResourceDictionary containing ordinary values and Style resources.
+	 */
+	std::shared_ptr<ControlStyleSheet> GetResources();
+	void SetResources(std::shared_ptr<ControlStyleSheet> value);
+	bool TryFindResource(
+		const std::wstring& resourceKey,
+		BindingValue& value) const;
+	BindingValue FindResource(const std::wstring& resourceKey) const;
+
+	ApplicationStartupEvent Startup;
+	ApplicationExitEvent Exit;
+
+	// ---- Platform resource URI resolution ----
 	/** Returns the configured resolver; defaults to file/directory sources. */
 	static std::shared_ptr<const ResourceResolver> GetResourceResolver();
 	/** Installs the resolver snapshot used by subsequent resource loads. */
-	static void SetResourceResolver(std::shared_ptr<const ResourceResolver> resolver);
+	static void SetResourceResolver(
+		std::shared_ptr<const ResourceResolver> resolver);
 	/** Startup convenience for the built-in file resource source. */
 	static void ConfigureResourceDirectories(
 		const std::vector<std::wstring>& directories);
 	/** Restores startup/current-directory file lookup. */
 	static void ResetResourceResolver();
 
-	// ---- DPI helpers ----
-	/**
-	 * @brief 尽可能启用 Per-Monitor V2 DPI Awareness（失败则自动降级）。
-	 *
-	 * 建议在创建任何窗口之前调用；Window 构造时也会兜底调用一次。
-	 */
+	// ---- Platform interop and DPI helpers ----
+	/** Explicit HWND interop lookup without exposing the mutable registry. */
+	static Window* FindWindow(HWND handle) noexcept;
 	static void EnsureDpiAwareness();
-	/** Reads high contrast, client animation, keyboard cue and text scale settings. */
 	static SystemVisualPreferences QuerySystemVisualPreferences();
-	/** Clamps externally supplied preference snapshots to supported safe ranges. */
 	static SystemVisualPreferences NormalizeSystemVisualPreferences(
 		SystemVisualPreferences value) noexcept;
 
-	/** Runs the process Dispatcher until the last registered window closes. */
-	static int Run();
+	/** Starts this Application's dispatcher. May be called only once. */
+	int Run();
+	/** Adopts, assigns and shows window before entering the dispatcher. */
+	int Run(Window& window);
+	/** Requests non-cancelable application shutdown with the supplied code. */
+	void Shutdown(int exitCode = 0);
 
+	bool IsShuttingDown() const noexcept { return _isShuttingDown; }
+	bool IsShutdown() const noexcept { return _shutdownCompleted; }
 };

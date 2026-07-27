@@ -1,5 +1,6 @@
 #pragma once
 #include "Label.h"
+#include "TextElement.h"
 #include "Window.h"
 
 #include <algorithm>
@@ -33,6 +34,17 @@ namespace
 		TValue value)
 	{
 		return { displayName, BindingValue(std::move(value)) };
+	}
+
+	std::optional<cui::drawing::Brush> ConvertLabelBrush(
+		const BindingValue& value)
+	{
+		cui::drawing::Brush brush;
+		if (value.TryGet(brush)) return brush;
+		D2D1_COLOR_F color{};
+		if (value.TryGet(color))
+			return cui::drawing::MakeSolidColorBrush(color);
+		return std::nullopt;
 	}
 
 	float DirectWriteExtent(float value) noexcept
@@ -108,12 +120,79 @@ SET_CPP(Label, ::TextTrimming, TextTrimming)
 	InvalidateFormattedText();
 }
 
+const DependencyProperty& Label::TextProperty()
+{
+	RegisterDependencyProperties();
+	const std::type_index ownerTypes[] = {
+		std::type_index(typeid(Label))
+	};
+	const auto* metadata =
+		DependencyPropertyRegistry::FindRegistered(ownerTypes, L"Text");
+	if (!metadata)
+		throw std::logic_error(
+			"TextBlock.Text dependency property is not registered");
+	return metadata->Property();
+}
+
+const DependencyProperty& Label::ForegroundProperty()
+{
+	RegisterDependencyProperties();
+	return TextElement::ForegroundProperty();
+}
+
+const DependencyProperty& Label::BackgroundProperty()
+{
+	RegisterDependencyProperties();
+	return TextElement::BackgroundProperty();
+}
+
 void Label::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
 	static const bool registered = []
 	{
 		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		auto brushDesign = [](int order, const wchar_t* displayName)
+		{
+			DependencyPropertyDesignMetadata design;
+			design.Browsable = false;
+			design.DisplayName = displayName;
+			design.Category = L"Appearance";
+			design.CategoryOrder = 200;
+			design.Order = order;
+			design.Editor = DependencyPropertyEditorKind::Text;
+			design.Persistence = DependencyPropertyPersistence::Metadata;
+			return design;
+		};
+		DependencyPropertyOptions<Label, cui::drawing::Brush>
+			foregroundOptions;
+		foregroundOptions.DefaultValue =
+			cui::drawing::MakeSolidColorBrush(
+				D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f });
+		foregroundOptions.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsRender;
+		foregroundOptions.Convert = ConvertLabelBrush;
+		foregroundOptions.Design = brushDesign(21, L"Foreground");
+		if (!DependencyPropertyRegistry::AddOwner<
+			Label, cui::drawing::Brush>(
+				TextElement::ForegroundProperty(),
+				std::move(foregroundOptions)))
+			throw std::logic_error(
+				"TextBlock must add ownership of TextElement.Foreground");
+
+		DependencyPropertyOptions<Label, cui::drawing::Brush>
+			backgroundOptions;
+		backgroundOptions.DefaultValue = cui::drawing::NoBrush();
+		backgroundOptions.Flags = DependencyPropertyFlags::AffectsRender;
+		backgroundOptions.Convert = ConvertLabelBrush;
+		backgroundOptions.Design = brushDesign(10, L"Background");
+		if (!DependencyPropertyRegistry::AddOwner<
+			Label, cui::drawing::Brush>(
+				TextElement::BackgroundProperty(),
+				std::move(backgroundOptions)))
+			throw std::logic_error(
+				"TextBlock must add ownership of TextElement.Background");
+
 		DependencyPropertyOptions<Label, std::wstring> options;
 		options.DefaultValue = std::wstring{};
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
@@ -123,10 +202,12 @@ void Label::RegisterDependencyProperties()
 		options.Design.Order = 10;
 		options.Design.Editor = DependencyPropertyEditorKind::Text;
 		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Changed = [](
+			Label& target, const std::wstring&, const std::wstring&)
+		{
+			target.InvalidateFormattedText();
+		};
 		DependencyPropertyRegistry::Register<Label, std::wstring>(L"Text",
-			[](Label& target) { return target.Text; },
-			[](Label& target, const std::wstring& value)
-			{ target.Text = value; },
 			[](Label& target, Handler handler, DataSourceUpdateMode)
 			{
 				return target.OnPropertyValueChanged.Subscribe(
@@ -150,9 +231,7 @@ void Label::RegisterDependencyProperties()
 			TextChoice(L"Center", ::TextAlignment::Center),
 			TextChoice(L"Justify", ::TextAlignment::Justify)
 		};
-		alignmentOptions.Coerce = [](
-			Label&, const ::TextAlignment& value)
-			-> std::optional<::TextAlignment>
+		alignmentOptions.Validate = [](const ::TextAlignment& value)
 		{
 			switch (value)
 			{
@@ -160,9 +239,9 @@ void Label::RegisterDependencyProperties()
 			case ::TextAlignment::Right:
 			case ::TextAlignment::Center:
 			case ::TextAlignment::Justify:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		DependencyPropertyRegistry::Register<Label, ::TextAlignment>(
@@ -179,18 +258,16 @@ void Label::RegisterDependencyProperties()
 			TextChoice(L"Wrap", ::TextWrapping::Wrap),
 			TextChoice(L"WrapWithOverflow", ::TextWrapping::WrapWithOverflow)
 		};
-		wrappingOptions.Coerce = [](
-			Label&, const ::TextWrapping& value)
-			-> std::optional<::TextWrapping>
+		wrappingOptions.Validate = [](const ::TextWrapping& value)
 		{
 			switch (value)
 			{
 			case ::TextWrapping::NoWrap:
 			case ::TextWrapping::Wrap:
 			case ::TextWrapping::WrapWithOverflow:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		DependencyPropertyRegistry::Register<Label, ::TextWrapping>(
@@ -207,18 +284,16 @@ void Label::RegisterDependencyProperties()
 			TextChoice(L"CharacterEllipsis", ::TextTrimming::CharacterEllipsis),
 			TextChoice(L"WordEllipsis", ::TextTrimming::WordEllipsis)
 		};
-		trimmingOptions.Coerce = [](
-			Label&, const ::TextTrimming& value)
-			-> std::optional<::TextTrimming>
+		trimmingOptions.Validate = [](const ::TextTrimming& value)
 		{
 			switch (value)
 			{
 			case ::TextTrimming::None:
 			case ::TextTrimming::CharacterEllipsis:
 			case ::TextTrimming::WordEllipsis:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		DependencyPropertyRegistry::Register<Label, ::TextTrimming>(
@@ -316,8 +391,7 @@ cui::core::Size Label::MeasureCore(const cui::core::Constraints& available)
 {
 	auto font = this->GetRenderFont();
 	if (!font) return {};
-	const cui::core::Insets padding{
-		_padding.Left, _padding.Top, _padding.Right, _padding.Bottom };
+	const auto padding = GetSpecifiedLayout().padding;
 	const auto contentBounds =
 		available.Normalized().Deflate(padding).maximum;
 	auto* layout = EnsureFormattedText(contentBounds, true);
@@ -325,8 +399,8 @@ cui::core::Size Label::MeasureCore(const cui::core::Constraints& available)
 		? font->GetTextSize(layout)
 		: D2D1_SIZE_F{ 0.0f, 0.0f };
 	return cui::core::Size{
-		textSize.width + _padding.Left + _padding.Right,
-		textSize.height + _padding.Top + _padding.Bottom };
+		textSize.width + padding.Horizontal(),
+		textSize.height + padding.Vertical() };
 }
 void Label::OnRender()
 {
@@ -334,6 +408,7 @@ void Label::OnRender()
 	auto d2d = this->GetDrawingContext();
 	if (!d2d) return;
 	const auto size = this->GetActualSizeDip();
+	const auto padding = GetSpecifiedLayout().padding;
 	this->BeginRender(size.width, size.height);
 	{
 		Microsoft::WRL::ComPtr<ID2D1Brush> background;
@@ -348,9 +423,9 @@ void Label::OnRender()
 			*d2d, D2D1::SizeF(size.width, size.height)));
 		const cui::core::Size contentBounds{
 			(std::max)(0.0f,
-				size.width - _padding.Left - _padding.Right),
+				size.width - padding.Horizontal()),
 			(std::max)(0.0f,
-				size.height - _padding.Top - _padding.Bottom)
+				size.height - padding.Vertical())
 		};
 		auto* layout = contentBounds.width > 0.0f
 			&& contentBounds.height > 0.0f
@@ -358,10 +433,10 @@ void Label::OnRender()
 			: nullptr;
 		if (layout && foreground)
 			d2d->DrawStringLayout(
-				layout, _padding.Left, _padding.Top, foreground.Get());
+				layout, padding.left, padding.top, foreground.Get());
 		else if (layout)
 			d2d->DrawStringLayout(
-				layout, _padding.Left, _padding.Top,
+				layout, padding.left, padding.top,
 				this->RendererForegroundColor);
 	}
 	this->EndRender();

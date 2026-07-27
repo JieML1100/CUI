@@ -50,6 +50,8 @@ public:
 	ComboBox();
 	~ComboBox() override;
 	UIClass Type() override { return UIClass::UI_ComboBox; }
+	/** WPF ComboBox.Text property identity. */
+	static const DependencyProperty& TextProperty();
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override
 	{

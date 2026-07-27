@@ -1,3 +1,5 @@
+#ifndef CUI_FRAMEWORK_ELEMENT_H_INCLUDED
+#define CUI_FRAMEWORK_ELEMENT_H_INCLUDED
 #pragma once
 
 #include "Binding.h"
@@ -95,20 +97,6 @@ protected:
 	std::vector<Control*> _logicalChildren;
 	std::vector<Control*> _inheritanceChildren;
 
-	float _canvasLeft = cui::layout::UnsetCanvasOffset;
-	float _canvasTop = cui::layout::UnsetCanvasOffset;
-	float _canvasRight = cui::layout::UnsetCanvasOffset;
-	float _canvasBottom = cui::layout::UnsetCanvasOffset;
-	Thickness _margin;
-	Thickness _padding;
-	HorizontalAlignment _horizontalAlignment = HorizontalAlignment::Stretch;
-	VerticalAlignment _verticalAlignment = VerticalAlignment::Stretch;
-	int _gridRow = 0;
-	int _gridColumn = 0;
-	int _gridRowSpan = 1;
-	int _gridColumnSpan = 1;
-	Dock _dock = Dock::Left;
-	cui::layout::LayoutStyle _layoutStyle;
 	cui::layout::LayoutDeferral _layoutDeferral;
 
 	BindingSourceReference _effectiveDataContext;
@@ -151,7 +139,10 @@ public:
 	Control* GetTemplatedParent() const noexcept { return _templatedParent; }
 	Control* GetInheritanceParent() const noexcept
 	{
-		return _logicalParent ? _logicalParent : _templatedParent;
+		// WPF FrameworkParent is logical-first, then the containing visual.
+		// TemplatedParent is a separate template relationship and must not be
+		// used as a substitute for either tree.
+		return _logicalParent ? _logicalParent : _visualParent;
 	}
 	Control* GetRoutedParent() const noexcept
 	{
@@ -183,3 +174,5 @@ namespace cui::framework
 		}
 	};
 }
+
+#endif // CUI_FRAMEWORK_ELEMENT_H_INCLUDED

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Core/Geometry.h"
+#include "Core/Geometry.h"
 
 #include <cstdint>
 
@@ -66,9 +66,10 @@ enum class Alignment : std::uint8_t {
     Stretch
 };
 
-// User-specified layout properties. Arrange never writes into this object.
-// Container-owned placement data (Grid cell, Canvas coordinates, Dock slot,
-// etc.) is deliberately kept out of the base style.
+// Snapshot of an element's effective layout declarations. It is projected
+// from dependency-property values and is never an independently writable
+// author-value store. Container-owned placement data (Grid cell, Canvas
+// coordinates, Dock slot, etc.) is deliberately kept out of the base style.
 struct LayoutStyle final {
     Length width = Length::Auto();
     Length height = Length::Auto();
@@ -141,8 +142,8 @@ constexpr DirtyFlags& operator&=(DirtyFlags& left, DirtyFlags right) noexcept
     return flags;
 }
 
-// Runtime-computed layout data. It never overwrites LayoutStyle, so public
-// Width/Height declarations can remain stable while layout results change.
+// Runtime-computed layout data. It never overwrites the effective declarations,
+// so public Width/Height values remain stable while layout results change.
 struct LayoutState final {
     Size desiredSize {};
     Rect arrangedRect {};

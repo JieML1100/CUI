@@ -180,10 +180,9 @@ int main(int argc, char** argv)
 	try
 	{
 		Application::EnsureDpiAwareness();
+		Application application;
 		DemoWindow window;
-		window.Show();
-		(void)Application::Run();
-		return 0;
+		return application.Run(window);
 	}
 	catch (const std::exception& error)
 	{

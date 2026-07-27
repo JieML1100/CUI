@@ -2,6 +2,7 @@
 #include "Expander.h"
 
 #include "Layout/OverlayLayout.h"
+#include "TemplateInfrastructure.h"
 #include "Window.h"
 
 #include <algorithm>
@@ -222,7 +223,8 @@ SET_CPP(Expander, ::ExpandDirection, ExpandDirection)
 void Expander::ConfigureContentVisual(Control& child)
 {
 	HeaderedContentControl::ConfigureContentVisual(child);
-	child.SetPresentationSuppressed(!_isExpanded);
+	cui::framework::TemplateAccess::SetPresentationSuppressed(
+		child, !_isExpanded);
 }
 
 cui::core::Insets
@@ -239,7 +241,9 @@ void Expander::SynchronizeContentPresentation()
 {
 	auto* content = GetVisualContent();
 	if (!content) content = GetGeneratedPresenter();
-	if (content) content->SetPresentationSuppressed(!_isExpanded);
+	if (content)
+		cui::framework::TemplateAccess::SetPresentationSuppressed(
+			*content, !_isExpanded);
 }
 
 float Expander::GetHeaderSlotHeightDip(float)

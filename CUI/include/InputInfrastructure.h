@@ -40,6 +40,27 @@ namespace cui::framework
 			return target.ResolveTextInputCaretRect(rect);
 		}
 
+		/** Publishes logical focus owned by FocusManager. */
+		static void PublishLogicalFocusState(
+			Control& target, bool isFocused)
+		{
+			target.SetIsFocusedCore(isFocused);
+		}
+
+		/** Publishes keyboard focus owned by FocusManager. */
+		static void PublishKeyboardFocusState(
+			Control& target, bool isFocused)
+		{
+			target.SetIsKeyboardFocusedCore(isFocused);
+		}
+
+		/** Publishes keyboard-focus-within along the active focus route. */
+		static void PublishKeyboardFocusWithinState(
+			Control& target, bool isFocusWithin)
+		{
+			target.SetIsKeyboardFocusWithinCore(isFocusWithin);
+		}
+
 		/** Publishes pointer-over state owned by the Window hit-test pipeline. */
 		static void PublishPointerOverState(
 			Control& target,

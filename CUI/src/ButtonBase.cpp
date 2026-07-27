@@ -2,7 +2,23 @@
 
 #include "InputManager.h"
 
+#include <optional>
 #include <vector>
+
+namespace
+{
+	std::optional<DependencyPropertyKey>& IsPressedPropertyKeyStorage()
+	{
+		static std::optional<DependencyPropertyKey> key;
+		return key;
+	}
+
+	const DependencyPropertyKey& IsPressedPropertyKey(ButtonBase& target)
+	{
+		target.EnsureBindingPropertiesRegistered();
+		return IsPressedPropertyKeyStorage().value();
+	}
+}
 
 void ButtonBase::EnsureClassHandlers()
 {
@@ -53,21 +69,21 @@ void ButtonBase::RegisterDependencyProperties()
 		DependencyPropertyOptions<ButtonBase, bool> options;
 		options.DefaultValue = false;
 		options.Flags = DependencyPropertyFlags::AffectsRender;
-		options.IsReadOnly = true;
 		options.Design.Category = L"State";
 		options.Design.CategoryOrder = 70;
 		options.Design.Order = 60;
 		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
 		options.Design.Persistence = DependencyPropertyPersistence::Transient;
 		options.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ButtonBase, bool>(
-			L"IsPressed",
-			[](ButtonBase& target) { return target.IsPressed; },
-			[](ButtonBase& target, const bool& value)
-			{
-				(void)target.SetReadOnlyPropertyField(
-					L"IsPressed", target._isPressed, value);
-			}, {}, std::move(options));
+		IsPressedPropertyKeyStorage().emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<ButtonBase, bool>(
+				L"IsPressed",
+				[](ButtonBase& target) { return target.IsPressed; },
+				[](ButtonBase& target, const bool& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						L"IsPressed", target._isPressed, value);
+				}, {}, std::move(options)));
 		return true;
 	}();
 	(void)registered;
@@ -81,5 +97,6 @@ GET_CPP(ButtonBase, bool, IsPressed)
 void ButtonBase::OnPressedVisualStateChanged(bool value)
 {
 	if (_isPressed == value) return;
-	(void)SetReadOnlyPropertyField(L"IsPressed", _isPressed, value);
+	(void)SetReadOnlyPropertyField(
+		IsPressedPropertyKey(*this), _isPressed, value);
 }

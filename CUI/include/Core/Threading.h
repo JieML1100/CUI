@@ -45,6 +45,15 @@ namespace cui
 	bool HasUIThreadDispatcher() noexcept;
 
 	/**
+	 * @brief Permanently terminates the process UI dispatcher for Application exit.
+	 *
+	 * Must run on the owning UI thread. Pending callbacks are discarded and
+	 * later PostToUIThread calls fail instead of silently recreating a dispatcher
+	 * after Application shutdown.
+	 */
+	void ShutdownUIThreadDispatcher() noexcept;
+
+	/**
 	 * @brief 将回调封送到 UI 线程异步执行。
 	 *
 	 * - 若当前已在 UI 线程，仍走队列（保证顺序一致、避免重入）。

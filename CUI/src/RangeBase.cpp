@@ -47,11 +47,9 @@ void RangeBase::RegisterDependencyProperties()
 	static const bool registered = []
 	{
 		auto minimumOptions = RangeOptions(0.0, 10);
-		minimumOptions.Coerce = [](
-			RangeBase&, const double& proposed) -> std::optional<double>
+		minimumOptions.Validate = [](const double& proposed)
 		{
-			return std::isfinite(proposed)
-				? std::optional<double>{ proposed } : std::nullopt;
+			return std::isfinite(proposed);
 		};
 		DependencyPropertyRegistry::Register<RangeBase, double>(L"Minimum",
 			[](RangeBase& target) { return target.Minimum; },
@@ -60,11 +58,14 @@ void RangeBase::RegisterDependencyProperties()
 			RangeSubscriber(L"Minimum"), std::move(minimumOptions));
 
 		auto maximumOptions = RangeOptions(100.0, 20);
+		maximumOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		maximumOptions.Coerce = [](
 			RangeBase& target,
 			const double& proposed) -> std::optional<double>
 		{
-			if (!std::isfinite(proposed)) return std::nullopt;
 			return (std::max)(target.Minimum, proposed);
 		};
 		DependencyPropertyRegistry::Register<RangeBase, double>(L"Maximum",
@@ -74,6 +75,10 @@ void RangeBase::RegisterDependencyProperties()
 			RangeSubscriber(L"Maximum"), std::move(maximumOptions));
 
 		auto valueOptions = RangeOptions(0.0, 30);
+		valueOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		valueOptions.Coerce = [](
 			RangeBase& target,
 			const double& proposed) -> std::optional<double>

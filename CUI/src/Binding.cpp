@@ -742,10 +742,35 @@ namespace
 		return mutex;
 	}
 
+	std::vector<std::unique_ptr<DependencyProperty>>& RegisteredDependencyProperties()
+	{
+		static std::vector<std::unique_ptr<DependencyProperty>> properties;
+		return properties;
+	}
+
 	std::vector<std::unique_ptr<DependencyPropertyMetadata>>& RegisteredBindingProperties()
 	{
 		static std::vector<std::unique_ptr<DependencyPropertyMetadata>> properties;
 		return properties;
+	}
+
+	struct EffectiveMetadataCacheEntry final
+	{
+		const DependencyProperty* Property = nullptr;
+		std::vector<const DependencyPropertyMetadata*> Layers;
+		std::unique_ptr<DependencyPropertyMetadata> Metadata;
+	};
+
+	std::vector<EffectiveMetadataCacheEntry>& EffectiveMetadataCache()
+	{
+		static std::vector<EffectiveMetadataCacheEntry> entries;
+		return entries;
+	}
+
+	std::size_t& NextDependencyPropertyGlobalIndex()
+	{
+		static std::size_t value = 0;
+		return value;
 	}
 
 	std::mutex& BindingPropertyMutex()
@@ -1537,6 +1562,37 @@ MultiBindingValueConverterRegistry::Create(const std::wstring& name)
 	catch (...) { return {}; }
 }
 
+DependencyProperty::DependencyProperty(
+	std::wstring name,
+	BindingValueKind valueKind,
+	std::type_index valueType,
+	std::type_index ownerType,
+	std::size_t globalIndex,
+	Validator validator,
+	std::shared_ptr<const unsigned char> readOnlyAuthorization)
+	: _name(std::move(name)),
+	  _valueKind(valueKind),
+	  _valueType(valueType),
+	  _ownerType(ownerType),
+	  _globalIndex(globalIndex),
+	  _validator(std::move(validator)),
+	  _readOnlyAuthorization(std::move(readOnlyAuthorization))
+{
+}
+
+bool DependencyProperty::IsValidValue(const BindingValue& value) const
+{
+	return !_validator || _validator(value);
+}
+
+bool DependencyProperty::Authorizes(
+	const DependencyPropertyKey& key) const noexcept
+{
+	return key._property == this
+		&& _readOnlyAuthorization
+		&& key._authorization == _readOnlyAuthorization;
+}
+
 DependencyPropertyMetadata::DependencyPropertyMetadata(
 	std::wstring name,
 	BindingValueKind valueKind,
@@ -1544,6 +1600,7 @@ DependencyPropertyMetadata::DependencyPropertyMetadata(
 	std::type_index ownerType,
 	Matcher matcher,
 	ValueConverter valueConverter,
+	Validator validator,
 	Coercer coercer,
 	Comparer comparer,
 	Getter getter,
@@ -1552,6 +1609,7 @@ DependencyPropertyMetadata::DependencyPropertyMetadata(
 	Changed changed,
 	BindingValue defaultValue,
 	bool hasDefaultValue,
+	bool usesEffectiveValueStorage,
 	DependencyPropertyFlags flags,
 	bool isReadOnly,
 	DataSourceUpdateMode defaultUpdateMode,
@@ -1563,6 +1621,7 @@ DependencyPropertyMetadata::DependencyPropertyMetadata(
 	  _ownerType(ownerType),
 	  _matcher(std::move(matcher)),
 	  _valueConverter(std::move(valueConverter)),
+	  _validator(std::move(validator)),
 	  _coercer(std::move(coercer)),
 	  _comparer(std::move(comparer)),
 	  _getter(std::move(getter)),
@@ -1571,6 +1630,7 @@ DependencyPropertyMetadata::DependencyPropertyMetadata(
 	  _changed(std::move(changed)),
 	  _defaultValue(std::move(defaultValue)),
 	  _hasDefaultValue(hasDefaultValue),
+	  _usesEffectiveValueStorage(usesEffectiveValueStorage),
 	  _flags(flags),
 	  _isReadOnly(isReadOnly),
 	  _defaultUpdateMode(defaultUpdateMode == DataSourceUpdateMode::Default
@@ -1585,6 +1645,7 @@ bool DependencyPropertyMetadata::HasSameInheritanceIdentity(
 	const DependencyPropertyMetadata& other) const noexcept
 {
 	if (this == &other) return true;
+	if (_property && _property == other._property) return true;
 	return !_inheritanceKey.empty()
 		&& _inheritanceKey == other._inheritanceKey
 		&& _valueKind == other._valueKind
@@ -1624,13 +1685,73 @@ bool DependencyPropertyMetadata::TryConvert(
 	return _valueConverter && _valueConverter(value, out);
 }
 
+bool DependencyPropertyMetadata::IsValidValue(
+	const BindingValue& value) const
+{
+	return _property
+		? _property->IsValidValue(value)
+		: (!_validator || _validator(value));
+}
+
+void DependencyPropertyMetadata::MergeBaseMetadata(
+	const DependencyPropertyMetadata& base)
+{
+	if (!_valueConverter) _valueConverter = base._valueConverter;
+	if (!_coercer) _coercer = base._coercer;
+	if (!_comparer) _comparer = base._comparer;
+	if (!_getter) _getter = base._getter;
+	if (!_setter) _setter = base._setter;
+	_usesEffectiveValueStorage =
+		_usesEffectiveValueStorage || base._usesEffectiveValueStorage;
+	if (!_subscriber) _subscriber = base._subscriber;
+	if (!_hasDefaultValue && base._hasDefaultValue)
+	{
+		_defaultValue = base._defaultValue;
+		_hasDefaultValue = true;
+	}
+	_flags |= base._flags;
+	if (_inheritanceKey.empty()) _inheritanceKey = base._inheritanceKey;
+	if (_defaultUpdateMode == DataSourceUpdateMode::OnPropertyChanged)
+		_defaultUpdateMode = base._defaultUpdateMode;
+	if (_design.DisplayName.empty()) _design.DisplayName = base._design.DisplayName;
+	if (_design.Category == L"Misc") _design.Category = base._design.Category;
+	if (_design.Choices.empty()) _design.Choices = base._design.Choices;
+	if (!_design.Minimum) _design.Minimum = base._design.Minimum;
+	if (!_design.Maximum) _design.Maximum = base._design.Maximum;
+	if (!_design.Step) _design.Step = base._design.Step;
+	if (_design.Persistence == DependencyPropertyPersistence::Automatic)
+		_design.Persistence = base._design.Persistence;
+	if (!_design.BrowsableWhen) _design.BrowsableWhen = base._design.BrowsableWhen;
+
+	if (base._changed && _changed)
+	{
+		auto baseChanged = base._changed;
+		auto derivedChanged = std::move(_changed);
+		_changed = [
+			baseChanged = std::move(baseChanged),
+			derivedChanged = std::move(derivedChanged)](
+			DependencyObject& target,
+			const BindingValue& oldValue,
+			const BindingValue& newValue)
+		{
+			baseChanged(target, oldValue, newValue);
+			derivedChanged(target, oldValue, newValue);
+		};
+	}
+	else if (!_changed)
+	{
+		_changed = base._changed;
+	}
+}
+
 bool DependencyPropertyMetadata::TryCoerce(
 	DependencyObject& target,
 	const BindingValue& value,
 	BindingValue& out) const
 {
-	if (!Matches(target)) return false;
-	if (_coercer) return _coercer(target, value, out);
+	if (!Matches(target) || !IsValidValue(value)) return false;
+	if (_coercer)
+		return _coercer(target, value, out) && IsValidValue(out);
 	out = value;
 	return true;
 }
@@ -1656,7 +1777,10 @@ bool DependencyPropertyMetadata::Matches(const DependencyObject& target) const
 
 bool DependencyPropertyMetadata::TryGet(DependencyObject& target, BindingValue& out) const
 {
-	return _getter && Matches(target) && _getter(target, out);
+	if (!Matches(target)) return false;
+	if (_usesEffectiveValueStorage)
+		return target.TryGetEffectivePropertyValue(*this, out);
+	return _getter && _getter(target, out);
 }
 
 bool DependencyPropertyMetadata::TrySet(DependencyObject& target, const BindingValue& value) const
@@ -1670,7 +1794,10 @@ bool DependencyPropertyMetadata::TrySetInternal(
 	const BindingValue& value) const
 {
 	target.VerifyAccess();
-	if (!_setter || !Matches(target)) return false;
+	if (!Matches(target)) return false;
+	if (_usesEffectiveValueStorage)
+		return target.TrySetPropertyValue(Property(), value);
+	if (!_setter) return false;
 	BindingValue converted;
 	if (!TryConvert(value, converted)) return false;
 	BindingValue effective;
@@ -1718,21 +1845,228 @@ EventConnection DependencyPropertyMetadata::Subscribe(
 	return {};
 }
 
-const DependencyPropertyMetadata* DependencyPropertyRegistry::Register(DependencyPropertyMetadata metadata)
+std::unique_ptr<DependencyProperty>
+DependencyPropertyRegistry::CreateStandalone(
+	DependencyPropertyMetadata& metadata)
 {
-	if (metadata.Name().empty()) return nullptr;
+	if (metadata._name.empty()) return {};
 	std::scoped_lock lock(BindingPropertyMutex());
-	auto& properties = RegisteredBindingProperties();
-	for (const auto& existing : properties)
+	auto authorization = metadata._isReadOnly
+		? std::make_shared<const unsigned char>(0)
+		: std::shared_ptr<const unsigned char>{};
+	auto property = std::unique_ptr<DependencyProperty>(
+		new DependencyProperty(
+			metadata._name,
+			metadata._valueKind,
+			metadata._valueType,
+			metadata._ownerType,
+			NextDependencyPropertyGlobalIndex()++,
+			metadata._validator,
+			std::move(authorization)));
+	metadata.AttachProperty(*property);
+	if (metadata._hasDefaultValue
+		&& !property->IsValidValue(metadata._defaultValue))
+		throw std::invalid_argument(
+			"Dependency property default value failed validation");
+	return property;
+}
+
+const DependencyProperty* DependencyPropertyRegistry::Register(
+	DependencyPropertyMetadata metadata)
+{
+	if (metadata._name.empty())
+		throw std::invalid_argument(
+			"Dependency property name cannot be empty");
+	std::scoped_lock lock(BindingPropertyMutex());
+	for (const auto& existing : RegisteredBindingProperties())
 	{
 		if (existing->OwnerType() == metadata.OwnerType()
 			&& IsSameProperty(existing->Name(), metadata.Name()))
-			return existing.get();
+			throw std::invalid_argument(
+				"Dependency property is already registered for this owner");
 	}
 
-	auto property = std::make_unique<DependencyPropertyMetadata>(std::move(metadata));
+	auto authorization = metadata._isReadOnly
+		? std::make_shared<const unsigned char>(0)
+		: std::shared_ptr<const unsigned char>{};
+	auto property = std::unique_ptr<DependencyProperty>(
+		new DependencyProperty(
+			metadata._name,
+			metadata._valueKind,
+			metadata._valueType,
+			metadata._ownerType,
+			NextDependencyPropertyGlobalIndex()++,
+			metadata._validator,
+			std::move(authorization)));
+	metadata.AttachProperty(*property);
+	if (metadata._hasDefaultValue
+		&& !property->IsValidValue(metadata._defaultValue))
+		throw std::invalid_argument(
+			"Dependency property default value failed validation");
+
 	const auto* result = property.get();
-	properties.push_back(std::move(property));
+	RegisteredDependencyProperties().push_back(std::move(property));
+	RegisteredBindingProperties().push_back(
+		std::make_unique<DependencyPropertyMetadata>(std::move(metadata)));
+	return result;
+}
+
+DependencyPropertyKey DependencyPropertyRegistry::RegisterReadOnly(
+	DependencyPropertyMetadata metadata)
+{
+	metadata._isReadOnly = true;
+	if (metadata._name.empty())
+		throw std::invalid_argument(
+			"Dependency property name cannot be empty");
+	std::scoped_lock lock(BindingPropertyMutex());
+	for (const auto& existing : RegisteredBindingProperties())
+	{
+		if (existing->OwnerType() != metadata.OwnerType()
+			|| !IsSameProperty(existing->Name(), metadata.Name()))
+			continue;
+		throw std::invalid_argument(
+			"Dependency property is already registered for this owner");
+	}
+
+	auto authorization = std::make_shared<const unsigned char>(0);
+	auto property = std::unique_ptr<DependencyProperty>(
+		new DependencyProperty(
+			metadata._name,
+			metadata._valueKind,
+			metadata._valueType,
+			metadata._ownerType,
+			NextDependencyPropertyGlobalIndex()++,
+			metadata._validator,
+			authorization));
+	metadata.AttachProperty(*property);
+	if (metadata._hasDefaultValue
+		&& !property->IsValidValue(metadata._defaultValue))
+		throw std::invalid_argument(
+			"Dependency property default value failed validation");
+
+	const auto* result = property.get();
+	RegisteredDependencyProperties().push_back(std::move(property));
+	RegisteredBindingProperties().push_back(
+		std::make_unique<DependencyPropertyMetadata>(std::move(metadata)));
+	return DependencyPropertyKey(*result, std::move(authorization));
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::AddOwner(
+	const DependencyProperty& property,
+	DependencyPropertyMetadata metadata,
+	const DependencyPropertyKey* key)
+{
+	std::scoped_lock lock(BindingPropertyMutex());
+	if (property.ReadOnly()
+		? (!key || !property.Authorizes(*key))
+		: key != nullptr)
+		return nullptr;
+	if (metadata._valueKind != property.ValueKind()
+		|| metadata._valueType != property.ValueType())
+		return nullptr;
+
+	bool propertyRegistered = false;
+	for (const auto& candidate : RegisteredBindingProperties())
+	{
+		if (&candidate->Property() != &property) continue;
+		propertyRegistered = true;
+		if (candidate->OwnerType() == metadata.OwnerType())
+			return nullptr;
+	}
+	if (!propertyRegistered) return nullptr;
+
+	metadata.AttachProperty(property);
+	if (metadata._hasDefaultValue
+		&& !property.IsValidValue(metadata._defaultValue))
+		return nullptr;
+	auto stored =
+		std::make_unique<DependencyPropertyMetadata>(std::move(metadata));
+	const auto* result = stored.get();
+	RegisteredBindingProperties().push_back(std::move(stored));
+	return result;
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::OverrideMetadata(
+	const DependencyProperty& property,
+	DependencyPropertyMetadata metadata,
+	const DependencyPropertyKey* key)
+{
+	std::scoped_lock lock(BindingPropertyMutex());
+	if (property.ReadOnly()
+		? (!key || !property.Authorizes(*key))
+		: key != nullptr)
+		return nullptr;
+	if (metadata._valueKind != property.ValueKind()
+		|| metadata._valueType != property.ValueType())
+		return nullptr;
+
+	bool propertyRegistered = false;
+	for (const auto& candidate : RegisteredBindingProperties())
+	{
+		if (&candidate->Property() != &property) continue;
+		propertyRegistered = true;
+		if (candidate->OwnerType() == metadata.OwnerType())
+			return nullptr;
+	}
+	if (!propertyRegistered) return nullptr;
+
+	metadata.AttachProperty(property);
+	if (metadata._hasDefaultValue
+		&& !property.IsValidValue(metadata._defaultValue))
+		return nullptr;
+	auto stored =
+		std::make_unique<DependencyPropertyMetadata>(std::move(metadata));
+	const auto* result = stored.get();
+	RegisteredBindingProperties().push_back(std::move(stored));
+	return result;
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::ResolveMetadata(
+	const DependencyProperty& property,
+	std::span<const DependencyPropertyMetadata* const> layers)
+{
+	if (layers.empty()) return nullptr;
+
+	const DependencyPropertyMetadata* defaultMetadata = nullptr;
+	for (const auto& candidate : RegisteredBindingProperties())
+	{
+		if (&candidate->Property() == &property)
+		{
+			defaultMetadata = candidate.get();
+			break;
+		}
+	}
+	if (!defaultMetadata) return nullptr;
+	if (layers.size() == 1 && layers.front() == defaultMetadata)
+		return defaultMetadata;
+
+	for (const auto& cached : EffectiveMetadataCache())
+	{
+		if (cached.Property != &property
+			|| cached.Layers.size() != layers.size())
+			continue;
+		if (std::equal(
+			cached.Layers.begin(), cached.Layers.end(), layers.begin()))
+			return cached.Metadata.get();
+	}
+
+	auto effective =
+		std::make_unique<DependencyPropertyMetadata>(*defaultMetadata);
+	for (const auto* layer : layers)
+	{
+		if (!layer || layer == defaultMetadata) continue;
+		auto derived =
+			std::make_unique<DependencyPropertyMetadata>(*layer);
+		derived->MergeBaseMetadata(*effective);
+		effective = std::move(derived);
+	}
+
+	EffectiveMetadataCacheEntry cached;
+	cached.Property = &property;
+	cached.Layers.assign(layers.begin(), layers.end());
+	cached.Metadata = std::move(effective);
+	const auto* result = cached.Metadata.get();
+	EffectiveMetadataCache().push_back(std::move(cached));
 	return result;
 }
 
@@ -1747,6 +2081,36 @@ const DependencyPropertyMetadata* DependencyPropertyRegistry::Find(
 	return FindNative(target, propertyName);
 }
 
+const DependencyProperty* DependencyPropertyRegistry::FindProperty(
+	DependencyObject& target,
+	const std::wstring& propertyName)
+{
+	const auto* metadata = Find(target, propertyName);
+	return metadata ? &metadata->Property() : nullptr;
+}
+
+const DependencyPropertyMetadata* DependencyPropertyRegistry::GetMetadata(
+	DependencyObject& target,
+	const DependencyProperty& property)
+{
+	target.EnsureBindingPropertiesRegistered();
+	if (const auto* declarative =
+		target.FindDeclarativePropertyMetadata(property.Name());
+		declarative && &declarative->Property() == &property)
+		return declarative;
+
+	std::scoped_lock lock(BindingPropertyMutex());
+	std::vector<const DependencyPropertyMetadata*> layers;
+	for (const auto& candidate : RegisteredBindingProperties())
+	{
+		if (&candidate->Property() == &property
+			&& candidate->Matches(target)
+			&& target.SupportsNativeProperty(*candidate))
+			layers.push_back(candidate.get());
+	}
+	return ResolveMetadata(property, layers);
+}
+
 const DependencyPropertyMetadata* DependencyPropertyRegistry::FindNative(
 	DependencyObject& target,
 	const std::wstring& propertyName)
@@ -1754,17 +2118,31 @@ const DependencyPropertyMetadata* DependencyPropertyRegistry::FindNative(
 	target.EnsureBindingPropertiesRegistered();
 	std::scoped_lock lock(BindingPropertyMutex());
 	auto& properties = RegisteredBindingProperties();
+	const DependencyProperty* identity = nullptr;
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
 	{
 		if (IsSameProperty((*it)->Name(), propertyName)
 			&& (*it)->Matches(target)
 			&& target.SupportsNativeProperty(**it))
-			return it->get();
+		{
+			identity = &(*it)->Property();
+			break;
+		}
 	}
-	return nullptr;
+	if (!identity) return nullptr;
+	std::vector<const DependencyPropertyMetadata*> layers;
+	for (const auto& candidate : properties)
+	{
+		if (&candidate->Property() == identity
+			&& candidate->Matches(target)
+			&& target.SupportsNativeProperty(*candidate))
+			layers.push_back(candidate.get());
+	}
+	return ResolveMetadata(*identity, layers);
 }
 
-std::vector<const DependencyPropertyMetadata*> DependencyPropertyRegistry::GetProperties(DependencyObject& target)
+std::vector<const DependencyPropertyMetadata*>
+DependencyPropertyRegistry::GetProperties(DependencyObject& target)
 {
 	target.EnsureBindingPropertiesRegistered();
 	std::scoped_lock lock(BindingPropertyMutex());
@@ -1777,15 +2155,27 @@ std::vector<const DependencyPropertyMetadata*> DependencyPropertyRegistry::GetPr
 		if (property) effectiveNames.insert(property->Name());
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
 	{
-		const auto* property = it->get();
-		if (!property->Matches(target)
-			|| !target.SupportsNativeProperty(*property))
+		const auto* candidate = it->get();
+		if (!candidate->Matches(target)
+			|| !target.SupportsNativeProperty(*candidate))
 			continue;
-		if (effectiveNames.insert(property->Name()).second)
-			result.push_back(property);
+		if (!effectiveNames.insert(candidate->Name()).second)
+			continue;
+		std::vector<const DependencyPropertyMetadata*> layers;
+		for (const auto& layer : properties)
+		{
+			if (&layer->Property() == &candidate->Property()
+				&& layer->Matches(target)
+				&& target.SupportsNativeProperty(*layer))
+				layers.push_back(layer.get());
+		}
+		if (const auto* metadata =
+			ResolveMetadata(candidate->Property(), layers))
+			result.push_back(metadata);
 	}
 	std::sort(result.begin(), result.end(),
-		[](const DependencyPropertyMetadata* left, const DependencyPropertyMetadata* right)
+		[](const DependencyPropertyMetadata* left,
+			const DependencyPropertyMetadata* right)
 		{
 			return IsPropertyNameLess(left->Name(), right->Name());
 		});
@@ -1797,20 +2187,36 @@ const DependencyPropertyMetadata* DependencyPropertyRegistry::FindRegistered(
 	const std::wstring& propertyName)
 {
 	std::scoped_lock lock(BindingPropertyMutex());
+	const DependencyProperty* identity = nullptr;
 	for (auto it = RegisteredBindingProperties().rbegin();
 		it != RegisteredBindingProperties().rend(); ++it)
 	{
-		const auto* property = it->get();
-		if (!IsSameProperty(property->Name(), propertyName)) continue;
-		if (std::find(ownerTypes.begin(), ownerTypes.end(), property->OwnerType())
-			!= ownerTypes.end()) return property;
+		const auto* candidate = it->get();
+		if (!IsSameProperty(candidate->Name(), propertyName)) continue;
+		if (std::find(ownerTypes.begin(), ownerTypes.end(), candidate->OwnerType())
+			!= ownerTypes.end())
+		{
+			identity = &candidate->Property();
+			break;
+		}
 	}
-	return nullptr;
+	if (!identity) return nullptr;
+	std::vector<const DependencyPropertyMetadata*> layers;
+	for (const auto& candidate : RegisteredBindingProperties())
+	{
+		if (&candidate->Property() == identity
+			&& std::find(
+				ownerTypes.begin(), ownerTypes.end(), candidate->OwnerType())
+				!= ownerTypes.end())
+			layers.push_back(candidate.get());
+	}
+	return ResolveMetadata(*identity, layers);
 }
 
 std::vector<const DependencyPropertyMetadata*>
 DependencyPropertyRegistry::GetRegisteredProperties(
-	std::span<const std::type_index> ownerTypes)
+	std::span<const std::type_index> ownerTypes,
+	std::function<bool(const DependencyPropertyMetadata&)> include)
 {
 	std::scoped_lock lock(BindingPropertyMutex());
 	std::vector<const DependencyPropertyMetadata*> result;
@@ -1818,11 +2224,25 @@ DependencyPropertyRegistry::GetRegisteredProperties(
 	for (auto it = RegisteredBindingProperties().rbegin();
 		it != RegisteredBindingProperties().rend(); ++it)
 	{
-		const auto* property = it->get();
-		if (std::find(ownerTypes.begin(), ownerTypes.end(), property->OwnerType())
+		const auto* candidate = it->get();
+		if (std::find(ownerTypes.begin(), ownerTypes.end(), candidate->OwnerType())
 			== ownerTypes.end()) continue;
-		if (effectiveNames.insert(property->Name()).second)
-			result.push_back(property);
+		if (include && !include(*candidate)) continue;
+		if (!effectiveNames.insert(candidate->Name()).second)
+			continue;
+		std::vector<const DependencyPropertyMetadata*> layers;
+		for (const auto& layer : RegisteredBindingProperties())
+		{
+			if (&layer->Property() == &candidate->Property()
+				&& std::find(
+					ownerTypes.begin(), ownerTypes.end(), layer->OwnerType())
+					!= ownerTypes.end()
+				&& (!include || include(*layer)))
+				layers.push_back(layer.get());
+		}
+		if (const auto* metadata =
+			ResolveMetadata(candidate->Property(), layers))
+			result.push_back(metadata);
 	}
 	std::sort(result.begin(), result.end(),
 		[](const DependencyPropertyMetadata* left,

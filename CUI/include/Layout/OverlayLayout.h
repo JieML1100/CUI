@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Control.h"
+#include "Control.h"
 #include "LayoutEngine.h"
 
 #include <algorithm>

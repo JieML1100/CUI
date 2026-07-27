@@ -1,3 +1,5 @@
+#ifndef CUI_BINDING_H_INCLUDED
+#define CUI_BINDING_H_INCLUDED
 #pragma once
 
 #include "Core/EventConnection.h"
@@ -21,6 +23,15 @@ class Control;
 class DependencyObject;
 class IBindingList;
 class DeclarativeTypeDescriptor;
+
+/**
+ * Metadata observation callback shared by declaration-only headers.
+ *
+ * Keeping this alias independent from DependencyPropertyMetadata allows
+ * DependencyObject-derived classes to declare overrides without requiring the
+ * metadata class body to be complete at that exact parse point.
+ */
+using DependencyPropertyChangeHandler = std::function<void()>;
 
 enum class BindingMode
 {
@@ -796,7 +807,7 @@ private:
 		_validationIssues;
 };
 
-/** Ordered sources contributing to a Control property's effective value. */
+/** Ordered sources contributing to a DependencyObject property's effective value. */
 enum class DependencyPropertyValueSource : unsigned char
 {
 	Default = 0,
@@ -957,7 +968,9 @@ struct DeclarativePropertyDefinition
 
 /**
  * Behavioral metadata layered on top of a bindable property registration.
- * Coerce returns nullopt to reject a value, or the effective value to apply.
+ * Validate describes the property-wide value contract and is evaluated before
+ * target-sensitive coercion. Coerce returns nullopt when it cannot produce an
+ * effective value, or the effective value to apply.
  */
 template<typename TOwner, typename TValue>
 struct DependencyPropertyOptions
@@ -975,28 +988,134 @@ struct DependencyPropertyOptions
 	bool IsReadOnly = false;
 	/** Optional WPF-style type conversion used before coercion and assignment. */
 	std::function<std::optional<TValue>(const BindingValue&)> Convert;
+	/**
+	 * WPF-style ValidateValueCallback. Unlike Coerce this callback is
+	 * target-independent and validates both registered defaults and every
+	 * proposed value before it enters an effective-value slot.
+	 */
+	std::function<bool(const TValue&)> Validate;
 };
 
+class DependencyPropertyKey;
+class DependencyPropertyMetadata;
+class DependencyPropertyRegistry;
+
 /**
- * Describes one Control property. Reading, writing, subscribing, defaults,
- * coercion and invalidation are supplied by the owner, so Binding, Designer
- * and styles can share one property contract.
+ * Process-lifetime identity of one dependency property.
+ *
+ * Metadata may vary by owner/derived type, while this identity and its
+ * validation/read-only contract remain stable across AddOwner and overrides.
  */
-class DependencyPropertyMetadata final
+class DependencyProperty final
 {
 public:
-	using ChangeHandler = std::function<void()>;
-
 	const std::wstring& Name() const noexcept { return _name; }
 	BindingValueKind ValueKind() const noexcept { return _valueKind; }
 	const std::type_index& ValueType() const noexcept { return _valueType; }
 	const std::type_index& OwnerType() const noexcept { return _ownerType; }
-	bool CanRead() const noexcept { return static_cast<bool>(_getter); }
+	std::size_t GlobalIndex() const noexcept { return _globalIndex; }
+	bool ReadOnly() const noexcept
+	{
+		return static_cast<bool>(_readOnlyAuthorization);
+	}
+	bool IsValidValue(const BindingValue& value) const;
+
+	DependencyProperty(const DependencyProperty&) = delete;
+	DependencyProperty& operator=(const DependencyProperty&) = delete;
+
+private:
+	using Validator = std::function<bool(const BindingValue&)>;
+
+	std::wstring _name;
+	BindingValueKind _valueKind = BindingValueKind::Empty;
+	std::type_index _valueType{ typeid(void) };
+	std::type_index _ownerType{ typeid(void) };
+	std::size_t _globalIndex = 0;
+	Validator _validator;
+	std::shared_ptr<const unsigned char> _readOnlyAuthorization;
+
+	DependencyProperty(
+		std::wstring name,
+		BindingValueKind valueKind,
+		std::type_index valueType,
+		std::type_index ownerType,
+		std::size_t globalIndex,
+		Validator validator,
+		std::shared_ptr<const unsigned char> readOnlyAuthorization);
+
+	bool Authorizes(const DependencyPropertyKey& key) const noexcept;
+
+	friend class DependencyPropertyKey;
+	friend class DependencyPropertyMetadata;
+	friend class DependencyPropertyRegistry;
+	friend class DependencyObject;
+	friend class DeclarativeTypeDescriptor;
+};
+
+/** Capability object required to mutate one registered read-only property. */
+class DependencyPropertyKey final
+{
+public:
+	const DependencyProperty& Property() const noexcept { return *_property; }
+
+private:
+	const DependencyProperty* _property = nullptr;
+	std::shared_ptr<const unsigned char> _authorization;
+
+	DependencyPropertyKey(
+		const DependencyProperty& property,
+		std::shared_ptr<const unsigned char> authorization)
+		: _property(&property),
+		  _authorization(std::move(authorization))
+	{
+	}
+
+	friend class DependencyObject;
+	friend class DependencyProperty;
+	friend class DependencyPropertyRegistry;
+};
+
+/**
+ * Per-type behavior for a DependencyProperty. Reading, writing, subscribing,
+ * defaults, coercion and invalidation may be overridden without changing the
+ * stable property identity used by effective-value storage.
+ */
+class DependencyPropertyMetadata final
+{
+public:
+	using ChangeHandler = DependencyPropertyChangeHandler;
+
+	const DependencyProperty& Property() const noexcept { return *_property; }
+	const std::wstring& Name() const noexcept
+	{
+		return _property ? _property->Name() : _name;
+	}
+	BindingValueKind ValueKind() const noexcept
+	{
+		return _property ? _property->ValueKind() : _valueKind;
+	}
+	const std::type_index& ValueType() const noexcept
+	{
+		return _property ? _property->ValueType() : _valueType;
+	}
+	const std::type_index& OwnerType() const noexcept { return _ownerType; }
+	bool CanRead() const noexcept
+	{
+		return _usesEffectiveValueStorage || static_cast<bool>(_getter);
+	}
 	bool CanWrite() const noexcept
 	{
-		return static_cast<bool>(_setter) && !_isReadOnly;
+		return (_usesEffectiveValueStorage || static_cast<bool>(_setter))
+			&& !IsReadOnly();
 	}
-	bool IsReadOnly() const noexcept { return _isReadOnly; }
+	bool UsesEffectiveValueStorage() const noexcept
+	{
+		return _usesEffectiveValueStorage;
+	}
+	bool IsReadOnly() const noexcept
+	{
+		return _property ? _property->ReadOnly() : _isReadOnly;
+	}
 	bool CanObserve() const noexcept { return static_cast<bool>(_subscriber); }
 	bool HasDefaultValue() const noexcept { return _hasDefaultValue; }
 	DependencyPropertyFlags Flags() const noexcept { return _flags; }
@@ -1012,6 +1131,7 @@ public:
 
 	bool Matches(const DependencyObject& target) const;
 	bool TryConvert(const BindingValue& value, BindingValue& out) const;
+	bool IsValidValue(const BindingValue& value) const;
 	bool TryCoerce(DependencyObject& target, const BindingValue& value, BindingValue& out) const;
 	bool ValuesEqual(const BindingValue& left, const BindingValue& right) const;
 	bool TryGetDefaultValue(BindingValue& out) const;
@@ -1022,6 +1142,7 @@ public:
 private:
 	using Matcher = std::function<bool(const DependencyObject&)>;
 	using ValueConverter = std::function<bool(const BindingValue&, BindingValue&)>;
+	using Validator = std::function<bool(const BindingValue&)>;
 	using Coercer = std::function<bool(DependencyObject&, const BindingValue&, BindingValue&)>;
 	using Comparer = std::function<bool(const BindingValue&, const BindingValue&)>;
 	using Getter = std::function<bool(DependencyObject&, BindingValue&)>;
@@ -1035,6 +1156,7 @@ private:
 	std::type_index _ownerType{ typeid(void) };
 	Matcher _matcher;
 	ValueConverter _valueConverter;
+	Validator _validator;
 	Coercer _coercer;
 	Comparer _comparer;
 	Getter _getter;
@@ -1043,12 +1165,14 @@ private:
 	Changed _changed;
 	BindingValue _defaultValue;
 	bool _hasDefaultValue = false;
+	bool _usesEffectiveValueStorage = false;
 	DependencyPropertyFlags _flags = DependencyPropertyFlags::None;
 	bool _isReadOnly = false;
 	DataSourceUpdateMode _defaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
 	std::wstring _inheritanceKey;
 	DependencyPropertyDesignMetadata _design;
+	const DependencyProperty* _property = nullptr;
 
 	DependencyPropertyMetadata(std::wstring name,
 		BindingValueKind valueKind,
@@ -1056,6 +1180,7 @@ private:
 		std::type_index ownerType,
 		Matcher matcher,
 		ValueConverter valueConverter,
+		Validator validator,
 		Coercer coercer,
 		Comparer comparer,
 		Getter getter,
@@ -1064,6 +1189,7 @@ private:
 		Changed changed,
 		BindingValue defaultValue,
 		bool hasDefaultValue,
+		bool usesEffectiveValueStorage,
 		DependencyPropertyFlags flags,
 		bool isReadOnly,
 		DataSourceUpdateMode defaultUpdateMode,
@@ -1076,11 +1202,16 @@ private:
 		const BindingValue& newValue) const;
 	bool CanWriteInternally() const noexcept
 	{
-		return static_cast<bool>(_setter);
+		return _usesEffectiveValueStorage || static_cast<bool>(_setter);
 	}
 	bool TrySetInternal(DependencyObject& target, const BindingValue& value) const;
 	/** Applies a value already converted and coerced by the effective-value pipeline. */
 	bool TrySetEffective(DependencyObject& target, const BindingValue& value) const;
+	void AttachProperty(const DependencyProperty& property) noexcept
+	{
+		_property = &property;
+	}
+	void MergeBaseMetadata(const DependencyPropertyMetadata& base);
 
 	friend class DependencyPropertyRegistry;
 	friend class DependencyObject;
@@ -1091,15 +1222,84 @@ private:
 class DependencyPropertyRegistry final
 {
 public:
+	/**
+	 * Registers a WPF-style property whose value lives only in the
+	 * DependencyObject effective-value store. CLR-shaped wrappers call
+	 * DependencyObject Get/Set helpers; metadata callbacks own side effects.
+	 */
 	template<typename TOwner, typename TValue>
-	static const DependencyPropertyMetadata* Register(
+	static const DependencyProperty* Register(
+		std::wstring name,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	/**
+	 * Registers a slot-backed property while retaining an owner-specific
+	 * observation trigger (for example TextBox.Text's LostFocus source update).
+	 * The subscriber is behavior metadata; it does not become value storage.
+	 */
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* Register(
+		std::wstring name,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* Register(
 		std::wstring name,
 		std::function<TValue(TOwner&)> getter,
 		std::function<void(TOwner&, const TValue&)> setter,
 		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKey RegisterReadOnly(
+		std::wstring name,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKey RegisterReadOnly(
+		std::wstring name,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* AddOwner(
+		const DependencyProperty& property,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* AddOwner(
+		const DependencyProperty& property,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyPropertyMetadata* OverrideMetadata(
+		const DependencyProperty& property,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* AddOwner(
+		const DependencyPropertyKey& key,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyProperty* AddOwner(
+		const DependencyPropertyKey& key,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static const DependencyPropertyMetadata* OverrideMetadata(
+		const DependencyPropertyKey& key,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
 
 	static const DependencyPropertyMetadata* Find(DependencyObject& target, const std::wstring& propertyName);
+	static const DependencyProperty* FindProperty(
+		DependencyObject& target,
+		const std::wstring& propertyName);
+	static const DependencyPropertyMetadata* GetMetadata(
+		DependencyObject& target,
+		const DependencyProperty& property);
 	/** Finds only C++ framework metadata; declarative schema members are excluded. */
 	static const DependencyPropertyMetadata* FindNative(
 		DependencyObject& target,
@@ -1116,10 +1316,41 @@ public:
 		const std::wstring& propertyName);
 	/** Schema-only effective native metadata with derived overrides applied. */
 	static std::vector<const DependencyPropertyMetadata*> GetRegisteredProperties(
-		std::span<const std::type_index> ownerTypes);
+		std::span<const std::type_index> ownerTypes,
+		std::function<bool(const DependencyPropertyMetadata&)> include = {});
 
 private:
-	static const DependencyPropertyMetadata* Register(DependencyPropertyMetadata metadata);
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyMetadata CreateMetadata(
+		std::wstring name,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber,
+		DependencyPropertyOptions<TOwner, TValue> options,
+		bool usesEffectiveValueStorage,
+		bool includeValidator);
+	static const DependencyProperty* Register(
+		DependencyPropertyMetadata metadata);
+	static DependencyPropertyKey RegisterReadOnly(
+		DependencyPropertyMetadata metadata);
+	static const DependencyPropertyMetadata* AddOwner(
+		const DependencyProperty& property,
+		DependencyPropertyMetadata metadata,
+		const DependencyPropertyKey* key);
+	static const DependencyPropertyMetadata* OverrideMetadata(
+		const DependencyProperty& property,
+		DependencyPropertyMetadata metadata,
+		const DependencyPropertyKey* key);
+	static const DependencyPropertyMetadata* ResolveMetadata(
+		const DependencyProperty& property,
+		std::span<const DependencyPropertyMetadata* const> layers);
+	static std::unique_ptr<DependencyProperty> CreateStandalone(
+		DependencyPropertyMetadata& metadata);
+
+	friend class DeclarativeTypeDescriptor;
 };
 
 /** Resolves BindingMode::Default using the target property's behavior flags. */
@@ -1489,3 +1720,5 @@ private:
 	__declspec(property(get = Get##name, put = Set##name)) type name; \
 	type Get##name() const { return this->GetValue<type>(CUI_BINDING_WIDEN(#name)); } \
 	void Set##name(type value) { this->SetValue<type>(CUI_BINDING_WIDEN(#name), std::move(value)); }
+
+#endif // CUI_BINDING_H_INCLUDED

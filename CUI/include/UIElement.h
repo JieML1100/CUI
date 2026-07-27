@@ -1,3 +1,5 @@
+#ifndef CUI_UI_ELEMENT_H_INCLUDED
+#define CUI_UI_ELEMENT_H_INCLUDED
 #pragma once
 
 #include "Event.h"
@@ -82,20 +84,13 @@ protected:
 	friend struct cui::framework::RoutedEventAccess;
 	cui::layout::LayoutState _layoutState;
 	Visibility _visibility = Visibility::Visible;
-	bool _focusable = false;
-	bool _isTabStop = true;
-	int _tabIndex = 0;
 	bool _isFocused = false;
 	bool _isKeyboardFocused = false;
 	bool _isKeyboardFocusWithin = false;
 	bool _isMouseOver = false;
 	bool _isMouseDirectlyOver = false;
-	bool _allowDrop = false;
 	/** Framework presentation projection; never replaces authored Visibility. */
 	bool _presentationSuppressed = false;
-	bool _isFocusScope = false;
-	KeyboardNavigationMode _tabNavigation = KeyboardNavigationMode::Continue;
-	KeyboardNavigationMode _directionalNavigation = KeyboardNavigationMode::Continue;
 	bool _defaultLeftButtonPressActive = false;
 	std::shared_ptr<CommandBindingCollectionState> _commandBindings;
 	std::shared_ptr<CommandCanExecuteObserverState> _commandCanExecuteObservers;
@@ -331,3 +326,5 @@ public:
 protected:
 	virtual bool ProcessInput(const InputReport& input) = 0;
 };
+
+#endif // CUI_UI_ELEMENT_H_INCLUDED

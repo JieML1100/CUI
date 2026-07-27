@@ -2,6 +2,7 @@
 #include "FocusManager.h"
 
 #include "Control.h"
+#include "InputInfrastructure.h"
 #include "TextCompositionManager.h"
 #include "Window.h"
 
@@ -147,10 +148,12 @@ void FocusManager::RefreshLogicalFocusProjection()
 	}
 	for (auto* previous : _logicalFocusedElements)
 		if (previous && !next.contains(previous))
-			previous->SetIsFocusedCore(false);
+			cui::framework::InputAccess::PublishLogicalFocusState(
+				*previous, false);
 	for (auto* current : next)
 		if (current && !_logicalFocusedElements.contains(current))
-			current->SetIsFocusedCore(true);
+			cui::framework::InputAccess::PublishLogicalFocusState(
+				*current, true);
 	_logicalFocusedElements = std::move(next);
 }
 
@@ -159,9 +162,11 @@ void FocusManager::RefreshKeyboardFocusProjection(
 	Control* current)
 {
 	if (previous && previous != current)
-		previous->SetIsKeyboardFocusedCore(false);
+		cui::framework::InputAccess::PublishKeyboardFocusState(
+			*previous, false);
 	if (current && previous != current)
-		current->SetIsKeyboardFocusedCore(true);
+		cui::framework::InputAccess::PublishKeyboardFocusState(
+			*current, true);
 
 	std::unordered_set<Control*> next;
 	for (auto* value = current; value; value = value->GetRoutedParent())
@@ -172,10 +177,12 @@ void FocusManager::RefreshKeyboardFocusProjection(
 	}
 	for (auto* value : _keyboardFocusWithinElements)
 		if (value && !next.contains(value))
-			value->SetIsKeyboardFocusWithinCore(false);
+			cui::framework::InputAccess::PublishKeyboardFocusWithinState(
+				*value, false);
 	for (auto* value : next)
 		if (value && !_keyboardFocusWithinElements.contains(value))
-			value->SetIsKeyboardFocusWithinCore(true);
+			cui::framework::InputAccess::PublishKeyboardFocusWithinState(
+				*value, true);
 	_keyboardFocusWithinElements = std::move(next);
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../include/Control.h"
+#include "Control.h"
 
 #include <algorithm>
 #include <cmath>
@@ -81,10 +81,13 @@ namespace cui::advanced_properties
 	{
 		auto options = Options<TOwner, float>(defaultValue, category,
 			categoryOrder, order, DependencyPropertyEditorKind::Number);
+		options.Validate = [](const float& value)
+		{
+			return std::isfinite(value);
+		};
 		options.Coerce = [minimum, maximum](
 			TOwner&, const float& value) -> std::optional<float>
 		{
-			if (!std::isfinite(value)) return std::nullopt;
 			return maximum
 				? (std::clamp)(value, minimum, *maximum)
 				: (std::max)(value, minimum);
@@ -146,12 +149,12 @@ namespace cui::advanced_properties
 				{ displayName, BindingValue(static_cast<int>(value)) });
 			allowedValues.push_back(static_cast<int>(value));
 		}
-		options.Coerce = [allowedValues = std::move(allowedValues)](
-			TOwner&, const int& proposed) -> std::optional<int>
+		options.Validate = [allowedValues = std::move(allowedValues)](
+			const int& proposed)
 		{
 			for (const auto value : allowedValues)
-				if (value == proposed) return proposed;
-			return std::nullopt;
+				if (value == proposed) return true;
+			return false;
 		};
 		DependencyPropertyRegistry::Register<TOwner, int>(name,
 			[field](TOwner& target) { return static_cast<int>(target.*field); },

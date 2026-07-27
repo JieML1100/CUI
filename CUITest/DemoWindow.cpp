@@ -874,17 +874,21 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| rootPart->GetInheritanceParent() != card
 			|| rootPart->GetRoutedParent() != card
 			|| templateLayout->GetVisualParent() != rootPart
-			|| templateLayout->GetLogicalParent() != rootPart
+			|| templateLayout->GetLogicalParent() != nullptr
 			|| templateLayout->GetTemplatedParent() != card
+			|| templateLayout->GetInheritanceParent() != rootPart
 			|| statePart->GetVisualParent() != templateLayout
-			|| statePart->GetLogicalParent() != templateLayout
+			|| statePart->GetLogicalParent() != nullptr
 			|| statePart->GetTemplatedParent() != card
+			|| statePart->GetInheritanceParent() != templateLayout
 			|| contentPresenter->GetVisualParent() != templateLayout
-			|| contentPresenter->GetLogicalParent() != templateLayout
+			|| contentPresenter->GetLogicalParent() != nullptr
 			|| contentPresenter->GetTemplatedParent() != card
+			|| contentPresenter->GetInheritanceParent() != templateLayout
 			|| actionsPresenter->GetVisualParent() != templateLayout
-			|| actionsPresenter->GetLogicalParent() != templateLayout
+			|| actionsPresenter->GetLogicalParent() != nullptr
 			|| actionsPresenter->GetTemplatedParent() != card
+			|| actionsPresenter->GetInheritanceParent() != templateLayout
 			|| projectedContent->GetVisualParent() != contentPresenter
 			|| projectedContent->GetLogicalParent() != card
 			|| projectedContent->GetTemplatedParent() != nullptr
@@ -2203,17 +2207,23 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| buttonChrome->GetTemplatedParent() != templateButton
 			|| buttonChrome->GetRoutedParent() != templateButton
 			|| buttonTemplateLayout->GetVisualParent() != buttonChrome
-			|| buttonTemplateLayout->GetLogicalParent() != buttonChrome
+			|| buttonTemplateLayout->GetLogicalParent() != nullptr
 			|| buttonTemplateLayout->GetTemplatedParent() != templateButton
+			|| buttonTemplateLayout->GetInheritanceParent() != buttonChrome
 			|| templatedParentValue->GetVisualParent() != buttonTemplateLayout
-			|| templatedParentValue->GetLogicalParent() != buttonTemplateLayout
+			|| templatedParentValue->GetLogicalParent() != nullptr
 			|| templatedParentValue->GetTemplatedParent() != templateButton
+			|| templatedParentValue->GetInheritanceParent()
+				!= buttonTemplateLayout
 			|| treeRelationValue->GetVisualParent() != buttonTemplateLayout
-			|| treeRelationValue->GetLogicalParent() != buttonTemplateLayout
+			|| treeRelationValue->GetLogicalParent() != nullptr
 			|| treeRelationValue->GetTemplatedParent() != templateButton
+			|| treeRelationValue->GetInheritanceParent()
+				!= buttonTemplateLayout
 			|| buttonPresenter->GetVisualParent() != buttonTemplateLayout
-			|| buttonPresenter->GetLogicalParent() != buttonTemplateLayout
+			|| buttonPresenter->GetLogicalParent() != nullptr
 			|| buttonPresenter->GetTemplatedParent() != templateButton
+			|| buttonPresenter->GetInheritanceParent() != buttonTemplateLayout
 			|| templatedParentValue->Text != L"RelativeSource TemplatedParent"
 			|| buttonChrome->GetPropertyValueSource(L"Padding")
 				!= DependencyPropertyValueSource::Template
@@ -2258,8 +2268,12 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| alternateButtonChrome->GetVisualParent() != templateButton
 			|| alternateButtonChrome->GetLogicalParent() != nullptr
 			|| alternateButtonChrome->GetTemplatedParent() != templateButton
+			|| alternateButtonChrome->GetInheritanceParent() != templateButton
 			|| alternateButtonPresenter->GetTemplatedParent()
 				!= templateButton
+			|| alternateButtonPresenter->GetLogicalParent() != nullptr
+			|| alternateButtonPresenter->GetInheritanceParent()
+				!= alternateButtonPresenter->GetVisualParent()
 			|| cui::framework::TemplateAccess::GetContentPresenter(
 				*templateButton)
 				!= alternateButtonPresenter
@@ -2368,10 +2382,12 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| listTemplateRoot->GetLogicalParent() != nullptr
 			|| listTemplateRoot->GetTemplatedParent() != templateList
 			|| itemsPresenter->GetVisualParent() != listTemplateRoot
-			|| itemsPresenter->GetLogicalParent() != listTemplateRoot
+			|| itemsPresenter->GetLogicalParent() != nullptr
 			|| itemsPresenter->GetTemplatedParent() != templateList
+			|| itemsPresenter->GetInheritanceParent() != listTemplateRoot
 			|| listItemsHost->GetVisualParent() != itemsPresenter
 			|| listItemsHost->GetLogicalParent() != nullptr
+			|| listItemsHost->GetInheritanceParent() != itemsPresenter
 			|| templateList->GeneratedItemCount() != 2
 			|| !templateList->GetItemContainerTemplate()
 			|| !firstContainer || !firstChrome || !firstPresenter
@@ -2380,6 +2396,10 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| firstChrome->GetVisualParent() != firstContainer
 			|| firstChrome->GetLogicalParent() != nullptr
 			|| firstChrome->GetTemplatedParent() != firstContainer
+			|| firstChrome->GetInheritanceParent() != firstContainer
+			|| firstPresenter->GetLogicalParent() != nullptr
+			|| firstPresenter->GetInheritanceParent()
+				!= firstPresenter->GetVisualParent()
 			|| cui::framework::TemplateAccess::GetContentPresenter(*firstContainer)
 				!= firstPresenter
 			|| !firstContainer->Content())

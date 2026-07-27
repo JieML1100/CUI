@@ -1,3 +1,5 @@
+#ifndef CUI_VISUAL_H_INCLUDED
+#define CUI_VISUAL_H_INCLUDED
 #pragma once
 
 #include "DependencyObject.h"
@@ -110,8 +112,10 @@ private:
 	friend struct cui::framework::TreeAccess;
 
 protected:
-	Window* _presentationWindow = nullptr;
-	void SetPresentationWindowCore(Window* value) noexcept
+	using PresentationWindow = Window;
+
+	PresentationWindow* _presentationWindow = nullptr;
+	void SetPresentationWindowCore(PresentationWindow* value) noexcept
 	{
 		_presentationWindow = value;
 	}
@@ -135,7 +139,7 @@ public:
 	~Visual() override = default;
 
 	/** Read-only projection of the native presentation host; tree attachment owns mutation. */
-	Window* GetPresentationWindow() const noexcept
+	PresentationWindow* GetPresentationWindow() const noexcept
 	{
 		return _presentationWindow;
 	}
@@ -155,3 +159,5 @@ public:
 	}
 	virtual void InvalidateVisual() = 0;
 };
+
+#endif // CUI_VISUAL_H_INCLUDED

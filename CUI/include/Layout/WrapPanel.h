@@ -1,5 +1,5 @@
 #pragma once
-#include "../Panel.h"
+#include "Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"
 #include <cmath>

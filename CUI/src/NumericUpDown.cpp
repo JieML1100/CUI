@@ -214,12 +214,14 @@ void NumericUpDown::RegisterDependencyProperties()
 	{
 		auto stepOptions = NumericPropertyOptions(
 			1.0, L"Range", 100, 30, DependencyPropertyEditorKind::Number);
+		stepOptions.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed);
+		};
 		stepOptions.Coerce = [](
 			NumericUpDown&, const double& proposed) -> std::optional<double>
 		{
-			return std::isfinite(proposed)
-				? std::optional<double>{ (std::max)(0.0, proposed) }
-				: std::nullopt;
+			return (std::max)(0.0, proposed);
 		};
 		stepOptions.Design.Minimum = 0.0;
 		stepOptions.Design.Step = 0.1;
@@ -277,7 +279,6 @@ void NumericUpDown::RegisterDependencyProperties()
 NumericUpDown::NumericUpDown()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.0f);
 	this->RendererBackgroundColor = cui::theme::palette::Surface;
 	this->RendererBorderColor = cui::theme::palette::BorderStrong;
 	this->RendererForegroundColor = cui::theme::palette::TextPrimary;

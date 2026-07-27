@@ -3,6 +3,7 @@
 
 #include "Control.h"
 #include "FocusManager.h"
+#include "InputInfrastructure.h"
 #include "InputManager.h"
 #include "TextEditCore.h"
 #include "Window.h"
@@ -217,7 +218,8 @@ bool TextCompositionManager::CommitCore(
 	staging.Preview(args);
 	bool applied = false;
 	if (!staging.Handled())
-		applied = source->DispatchTextInput(args);
+		applied = cui::framework::InputAccess::DispatchTextInput(
+			*source, args);
 	else
 		++_statistics.PreviewApplicationsSuppressed;
 	args.TextApplied = applied;
@@ -840,7 +842,8 @@ bool TextCompositionManager::UpdateCaretPosition()
 	++_statistics.CaretPlacementRequests;
 	D2D1_RECT_F rect{};
 	_snapshot.HasCaretRect = false;
-	if (!source->ResolveTextInputCaretRect(rect)) return false;
+	if (!cui::framework::InputAccess::ResolveTextInputCaretRect(
+		*source, rect)) return false;
 	if (!std::isfinite(rect.left) || !std::isfinite(rect.top)
 		|| !std::isfinite(rect.right) || !std::isfinite(rect.bottom))
 		return false;

@@ -78,8 +78,9 @@ do not bypass the property system through duplicate fields.
 `_S` is the WPF AccessText marker and `__` renders a literal underscore. Appearance uses Brush properties;
 there are no `BackColor`, `ForeColor`, `BorderColor`, or general writable `AccessKey` properties.
 
-The C++ host loads XAML, registers the `OnSave` behavior, supplies DataContext, and enters
-`Application::Run()`. Application code does not build a second authored tree with `AddControl(new ...)`.
+The C++ host creates an `Application`, loads XAML, registers the `OnSave` behavior, supplies DataContext,
+and enters `application.Run(window)`. Application code does not build a second authored tree with
+`AddControl(new ...)`.
 See [`CuiRuntimeSample/main.cpp`](CuiRuntimeSample/main.cpp) for dynamic mounting and event registration,
 [`CuiStaticGeneratedSample`](CuiStaticGeneratedSample) for static lowering, and [`CUITest`](CUITest) for the
 feature gallery.
@@ -116,12 +117,11 @@ Build `Debug|x64` with Visual Studio 2022, MSVC v143, and a Windows SDK:
 
 ## Architecture documents
 
-- [WPF direction and batch decisions](CUI_WPF_ARCHITECTURE_DIRECTION.md)
-- [Current semantic audit](CONTROL_API_AUDIT.md)
-- [Declarative component architecture](CUI_XAML_COMPONENT_ARCHITECTURE.md)
-- [Agent development rules](CUI_AGENT_GUIDE.md)
-- [Build and verification log](BUILD_VERIFICATION.md)
+- [WPF foundation alignment status, audit, and verification](CUI_WPF_FOUNDATION_ALIGNMENT.md)
 
-The next phase moves default themes into XAML Style/ControlTemplate/VisualState, adds an Adorner layer,
-completes Brush realization, and deepens AutomationPeer support. Native fallback rendering remains an internal
-bridge until default templates cover the same states; it is not a second public appearance model.
+The next phase first tightens the remaining DependencyProperty identity and metadata,
+InheritanceContext/Freezable, and structural element base classes. The Application instance lifetime is now
+part of the foundation; Application.xaml/StartupUri and a general ResourceDictionary/MergedDictionaries model
+remain later integration surfaces. Default themes, Adorner, complete Brush realization, and deeper
+AutomationPeer support follow. Native fallback rendering remains an internal bridge until default templates
+cover the same states; it is not a second public appearance model.

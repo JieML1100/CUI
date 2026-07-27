@@ -1,5 +1,7 @@
 #include "Window.h"
 #include "EventInfrastructure.h"
+#include "InputInfrastructure.h"
+#include "PresentationInfrastructure.h"
 #include "Button.h"
 #include "CalendarView.h"
 #include "CheckBox.h"
@@ -4292,12 +4294,15 @@ void Window::UpdateMouseOverProjection(
 	_mouseOverPath = nextPath;
 	for (const auto& reference : previousPath)
 		if (auto* element = reference.Get())
-			element->SetMouseOverCore(
-				contains(nextPath, element), element == directlyOver);
+			cui::framework::InputAccess::PublishPointerOverState(
+				*element,
+				contains(nextPath, element),
+				element == directlyOver);
 	for (const auto& reference : nextPath)
 		if (auto* element = reference.Get();
 			element && !contains(previousPath, element))
-			element->SetMouseOverCore(true, element == directlyOver);
+			cui::framework::InputAccess::PublishPointerOverState(
+				*element, true, element == directlyOver);
 
 	if (!raiseDirectEvents)
 		return;
@@ -4639,12 +4644,15 @@ void Window::InvalidateAnimatedControls(bool immediate)
 			if (!control || !visited.insert(control).second) return;
 			if (!control->IsVisible) return;
 			const bool visualStateFrame =
-				control->AdvanceVisualStateAnimations(nowMilliseconds);
+				cui::framework::PresentationAccess::
+					AdvanceVisualStateAnimations(
+						*control, nowMilliseconds);
 			if (control->IsAnimationRunning() || visualStateFrame)
 			{
 				D2D1_RECT_F rect{};
 				if (control->GetAnimatedInvalidRect(rect))
-					control->InvalidateVisualRect(rect);
+					cui::framework::PresentationAccess::
+						InvalidateVisualRect(*control, rect);
 				else
 					control->InvalidateVisual();
 			}
@@ -4830,7 +4838,9 @@ void Window::ApplySystemVisualPreferences(SystemVisualPreferences preferences)
 	if (textScaleChanged)
 	{
 		for (auto* control : GetVisualChildrenView())
-			if (control) control->InvalidateMeasureSubtree();
+			if (control)
+				cui::framework::PresentationAccess::
+					InvalidateMeasureSubtree(*control);
 		RequestLayout();
 	}
 	if (auto* focused = GetKeyboardFocusedElement()) focused->InvalidateVisual();
@@ -5027,11 +5037,9 @@ void Window::RegisterDependencyProperties()
 			options.DefaultValue =
 				(std::numeric_limits<float>::quiet_NaN)();
 			options.Flags = DependencyPropertyFlags::None;
-			options.Coerce = [](Window&, const float& value)
-				-> std::optional<float>
+			options.Validate = [](const float& value)
 			{
-				return std::isfinite(value) || std::isnan(value)
-					? std::optional<float>{ value } : std::nullopt;
+				return std::isfinite(value) || std::isnan(value);
 			};
 			options.Equals = [](const float& left, const float& right)
 			{
@@ -5083,8 +5091,7 @@ void Window::RegisterDependencyProperties()
 				BindingValue(::WindowStyle::ThreeDBorderWindow) },
 			{ L"ToolWindow", BindingValue(::WindowStyle::ToolWindow) }
 		};
-		windowStyleOptions.Coerce = [](Window&, const ::WindowStyle& value)
-			-> std::optional<::WindowStyle>
+		windowStyleOptions.Validate = [](const ::WindowStyle& value)
 		{
 			switch (value)
 			{
@@ -5092,9 +5099,9 @@ void Window::RegisterDependencyProperties()
 			case ::WindowStyle::SingleBorderWindow:
 			case ::WindowStyle::ThreeDBorderWindow:
 			case ::WindowStyle::ToolWindow:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		windowStyleOptions.Changed = [](
@@ -5123,8 +5130,7 @@ void Window::RegisterDependencyProperties()
 			{ L"CanResizeWithGrip",
 				BindingValue(::ResizeMode::CanResizeWithGrip) }
 		};
-		resizeModeOptions.Coerce = [](Window&, const ::ResizeMode& value)
-			-> std::optional<::ResizeMode>
+		resizeModeOptions.Validate = [](const ::ResizeMode& value)
 		{
 			switch (value)
 			{
@@ -5132,9 +5138,9 @@ void Window::RegisterDependencyProperties()
 			case ::ResizeMode::CanMinimize:
 			case ::ResizeMode::CanResize:
 			case ::ResizeMode::CanResizeWithGrip:
-				return value;
+				return true;
 			default:
-				return std::nullopt;
+				return false;
 			}
 		};
 		resizeModeOptions.Changed = [](
@@ -5817,7 +5823,8 @@ void Window::ApplyDpiChange(UINT newDpi)
 	std::function<void(Control*)> notifyDpi = [&](Control* control)
 	{
 		if (!control) return;
-		control->NotifyDpiChanged(dpiScale);
+		cui::framework::PresentationAccess::NotifyDpiChanged(
+			*control, dpiScale);
 		for (auto* child : control->GetVisualChildrenView()) notifyDpi(child);
 	};
 	for (auto* control : GetVisualChildrenView()) notifyDpi(control);
@@ -5913,7 +5920,8 @@ void Window::SynchronizePresentationResourceGeneration()
 		[&](Control* control)
 	{
 		if (!control || !visited.insert(control).second) return;
-		control->NotifyDeviceResourcesInvalidated();
+		cui::framework::PresentationAccess::
+			NotifyDeviceResourcesInvalidated(*control);
 		for (auto* child : control->GetVisualChildrenView())
 			invalidateResources(child);
 	};
@@ -6058,7 +6066,9 @@ void Window::Show()
 	ShowWindow(this->Handle, SW_SHOWNORMAL);
 	this->Invalidate(true);
 }
-static Window* FindActiveCuiWindow(Window* exclude)
+static Window* FindActiveCuiWindow(
+	Window* exclude,
+	const std::vector<Window*>& platformWindows)
 {
 	auto findWindow = [exclude](HWND handle) -> Window*
 	{
@@ -6075,7 +6085,7 @@ static Window* FindActiveCuiWindow(Window* exclude)
 	if (auto* active = findWindow(::GetActiveWindow()))
 		return active;
 
-	for (auto* window : Application::GetWindows())
+	for (auto* window : platformWindows)
 	{
 		if (auto* candidate = findWindow(window ? window->Handle : nullptr))
 			return candidate;
@@ -6100,9 +6110,10 @@ std::optional<bool> Window::ShowDialog()
 		throw std::logic_error("A visible Window cannot be shown as a dialog");
 
 	EnsureInitialDpiApplied();
+	const auto platformWindows = Application::GetPlatformWindows();
 	auto* ownerWindow = GetOwner();
 	if (!ownerWindow)
-		ownerWindow = FindActiveCuiWindow(this);
+		ownerWindow = FindActiveCuiWindow(this, platformWindows);
 	HWND ownerHandle = ownerWindow ? ownerWindow->Handle : nullptr;
 	if (ownerHandle && !::IsWindow(ownerHandle)) ownerHandle = nullptr;
 	::SetWindowLongPtrW(Handle, GWLP_HWNDPARENT,
@@ -6110,9 +6121,8 @@ std::optional<bool> Window::ShowDialog()
 
 	const DWORD dialogThread = ::GetWindowThreadProcessId(Handle, nullptr);
 	std::vector<HWND> disabledWindows;
-	const auto applicationWindows = Application::GetWindows();
-	disabledWindows.reserve(applicationWindows.size());
-	for (auto* window : applicationWindows)
+	disabledWindows.reserve(platformWindows.size());
+	for (auto* window : platformWindows)
 	{
 		const HWND handle = window ? window->Handle : nullptr;
 		if (!window || window == this || !handle || !::IsWindow(handle)) continue;
@@ -6454,11 +6464,13 @@ bool Window::ProcessInput(const InputReport& input)
 		case InputReportKind::FocusGained:
 			if (_focusManager) (void)_focusManager->ActivateWindow();
 			if (auto* focused = GetKeyboardFocusedElement())
-				(void)focused->DispatchInput(input);
+				(void)cui::framework::InputAccess::DispatchInput(
+					*focused, input);
 			return true;
 		case InputReportKind::FocusLost:
 			if (auto* focused = GetKeyboardFocusedElement())
-				(void)focused->DispatchInput(input);
+				(void)cui::framework::InputAccess::DispatchInput(
+					*focused, input);
 			if (_focusManager) _focusManager->DeactivateWindow();
 			DismissTransientPresentationsForWindowDeactivation();
 			return true;
@@ -6466,7 +6478,9 @@ bool Window::ProcessInput(const InputReport& input)
 		{
 			auto* target = GetMouseCaptured();
 			if (!target) target = GetKeyboardFocusedElement();
-			return target ? target->DispatchInput(input) : false;
+			return target
+				? cui::framework::InputAccess::DispatchInput(*target, input)
+				: false;
 		}
 		default:
 			return Control::ProcessInput(input);
@@ -6492,7 +6506,8 @@ bool Window::ProcessInput(const InputReport& input)
 	{
 		if (!handled && focused)
 		{
-			handled = focused->DispatchInput(input);
+			handled = cui::framework::InputAccess::DispatchInput(
+				*focused, input);
 			if (handled)
 			{
 				auto args = input.CreateKeyEventArgs();
@@ -6612,7 +6627,8 @@ bool Window::ProcessInput(const InputReport& input)
 
 	if (!handled && focused)
 	{
-		handled = focused->DispatchInput(input);
+		handled = cui::framework::InputAccess::DispatchInput(
+			*focused, input);
 		if (handled)
 		{
 			auto args = input.CreateKeyEventArgs();
@@ -6624,7 +6640,8 @@ bool Window::ProcessInput(const InputReport& input)
 				focused, key);
 			if (fallbackTarget)
 			{
-				handled = fallbackTarget->DispatchInput(input);
+				handled = cui::framework::InputAccess::DispatchInput(
+					*fallbackTarget, input);
 				if (handled)
 				{
 					auto args = input.CreateKeyEventArgs();
@@ -6779,7 +6796,8 @@ void Window::ProcessPlatformMessage(
 				captured, contentMouse, localX, localY))
 				return false;
 			hitControl = captured;
-			captured->DispatchInput(nativeInput->Retarget(localX, localY));
+			(void)cui::framework::InputAccess::DispatchInput(
+				*captured, nativeInput->Retarget(localX, localY));
 			return true;
 		};
 	switch (message)
@@ -6841,7 +6859,8 @@ void Window::ProcessPlatformMessage(
 			int localX = 0;
 			int localY = 0;
 			if (TryGetControlLocalPoint(hit, contentMouse, localX, localY))
-				hit->DispatchInput(nativeInput->Retarget(localX, localY));
+				(void)cui::framework::InputAccess::DispatchInput(
+					*hit, nativeInput->Retarget(localX, localY));
 		}
 		UpdateCursor(mouse, contentMouse);
 	}
@@ -6860,7 +6879,8 @@ void Window::ProcessPlatformMessage(
 			int hoverY = 0;
 			if (TryGetControlLocalPoint(
 				this->_mouseDirectlyOver, contentMouse, hoverX, hoverY))
-				(void)this->_mouseDirectlyOver->DispatchInput(
+				(void)cui::framework::InputAccess::DispatchInput(
+					*this->_mouseDirectlyOver,
 					nativeInput->Retarget(hoverX, hoverY));
 		}
 		UpdateMouseOverProjection(nullptr, contentMouse);
@@ -6997,8 +7017,8 @@ void Window::ProcessPlatformMessage(
 				if (!TryGetControlLocalPoint(
 					target, contentMouse, targetX, targetY)) continue;
 				if (!target->CanHandleMouseWheel(delta, targetX, targetY)) continue;
-				if (target->DispatchInput(
-					nativeInput->Retarget(targetX, targetY)))
+				if (cui::framework::InputAccess::DispatchInput(
+					*target, nativeInput->Retarget(targetX, targetY)))
 				{
 					hitControl = target;
 					break;
@@ -7011,7 +7031,8 @@ void Window::ProcessPlatformMessage(
 				int targetY = 0;
 				if (TryGetControlLocalPoint(
 					target, contentMouse, targetX, targetY))
-					target->DispatchInput(
+					(void)cui::framework::InputAccess::DispatchInput(
+						*target,
 						nativeInput->Retarget(targetX, targetY));
 			}
 			break;
@@ -7029,7 +7050,8 @@ void Window::ProcessPlatformMessage(
 				hitControl = nullptr;
 				break;
 			}
-			hit->DispatchInput(
+			(void)cui::framework::InputAccess::DispatchInput(
+				*hit,
 				nativeInput->Retarget(controlLocalX, controlLocalY));
 		}
 
@@ -7053,7 +7075,8 @@ void Window::ProcessPlatformMessage(
 			int capturedY = 0;
 			if (TryGetControlLocalPoint(
 				captured, contentMouse, capturedX, capturedY))
-				(void)captured->DispatchInput(
+				(void)cui::framework::InputAccess::DispatchInput(
+					*captured,
 					nativeInput->Retarget(capturedX, capturedY));
 		}
 		if (_inputManager && reinterpret_cast<HWND>(lParam) != this->Handle)
@@ -7224,6 +7247,7 @@ LRESULT Window::HandlePlatformWindowMessage(
 			form->_closingEventActive = true;
 			const ControlWeakReference lifetime(form);
 			CancelEventArgs args;
+			bool handlerFailed = false;
 			try
 			{
 				cui::framework::EventAccess::Raise(
@@ -7232,16 +7256,20 @@ LRESULT Window::HandlePlatformWindowMessage(
 			catch (...)
 			{
 				// Exceptions must not escape a native window procedure or leave
-				// Closing permanently latched. Treat a failing handler as a
-				// canceled close; application diagnostics may report it above.
+				// Closing permanently latched. During ordinary Close a failing
+				// handler cancels; Application shutdown, like WPF, cannot be
+				// canceled by Closing.
 				if (auto* live = dynamic_cast<Window*>(lifetime.Get()))
 					live->_closingEventActive = false;
-				return 0;
+				handlerFailed = true;
 			}
 			auto* live = static_cast<Window*>(lifetime.Get());
 			if (!live) return 0;
 			live->_closingEventActive = false;
-			if (args.Cancel || !::IsWindow(hWnd)) return 0;
+			const bool applicationShutdown =
+				Application::IsWindowClosingForShutdown(*live);
+			if (((args.Cancel || handlerFailed) && !applicationShutdown)
+				|| !::IsWindow(hWnd)) return 0;
 			// Window owns its lifecycle messages.  Native hooks cannot consume an
 			// already accepted close after the cancellable Closing event ran.
 			return ::DefWindowProcW(hWnd, message, wParam, lParam);

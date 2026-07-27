@@ -249,6 +249,8 @@
 	<ClInclude Include="include\DispatcherObject.h" />
 	<ClInclude Include="include\ControlWeakReference.h" />
 	<ClInclude Include="include\DependencyObject.h" />
+	<ClInclude Include="include\DependencyProperty.h" />
+	<ClInclude Include="include\TextElement.h" />
 	<ClInclude Include="include\Visual.h" />
 	<ClInclude Include="include\UIElement.h" />
 	<ClInclude Include="include\FocusManager.h" />
@@ -338,6 +340,7 @@
     <ClCompile Include="src\Core\Threading.cpp" />
 	<ClCompile Include="src\DispatcherObject.cpp" />
 	<ClCompile Include="src\DependencyObject.cpp" />
+	<ClCompile Include="src\TextElement.cpp" />
     <ClCompile Include="src\Binding.cpp" />
     <ClCompile Include="src\XamlSchema.cpp" />
     <ClCompile Include="src\Brush.cpp" />

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 
 namespace
@@ -36,6 +37,20 @@ namespace
 		std::function<void()> Action;
 		~ScopeExit() { if (Action) Action(); }
 	};
+
+	std::optional<DependencyPropertyKey>&
+	IsHighlightedPropertyKeyStorage()
+	{
+		static std::optional<DependencyPropertyKey> key;
+		return key;
+	}
+
+	const DependencyPropertyKey& IsHighlightedPropertyKey(
+		MenuItem& target)
+	{
+		target.EnsureBindingPropertiesRegistered();
+		return IsHighlightedPropertyKeyStorage().value();
+	}
 
 	struct MenuPanel
 	{
@@ -192,21 +207,22 @@ void MenuItem::RegisterDependencyProperties()
 
 		auto highlightedOptions = booleanOptions(
 			false, 45, DependencyPropertyFlags::AffectsRender);
-		highlightedOptions.IsReadOnly = true;
 		highlightedOptions.Flags = DependencyPropertyFlags::AffectsRender;
 		highlightedOptions.Design.Category = L"State";
 		highlightedOptions.Design.CategoryOrder = 70;
 		highlightedOptions.Design.Persistence =
 			DependencyPropertyPersistence::Transient;
 		highlightedOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<MenuItem, bool>(L"IsHighlighted",
-			[](MenuItem& target) { return target.IsHighlighted; },
-			[](MenuItem& target, const bool& value)
-			{
-				(void)target.SetReadOnlyPropertyField(
-					L"IsHighlighted", target._isHighlighted, value);
-			},
-			{}, std::move(highlightedOptions));
+		IsHighlightedPropertyKeyStorage().emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<MenuItem, bool>(
+				L"IsHighlighted",
+				[](MenuItem& target) { return target.IsHighlighted; },
+				[](MenuItem& target, const bool& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						L"IsHighlighted", target._isHighlighted, value);
+				},
+				{}, std::move(highlightedOptions)));
 
 		auto submenuOptions = booleanOptions(
 			false, 50, DependencyPropertyFlags::AffectsRender);
@@ -297,7 +313,7 @@ void MenuItem::SetIsHighlightedCore(bool value)
 {
 	if (_isHighlighted == value) return;
 	if (!SetReadOnlyPropertyField(
-		L"IsHighlighted", _isHighlighted, value)) return;
+		IsHighlightedPropertyKey(*this), _isHighlighted, value)) return;
 	SetStyleState(ControlStyleState::Hovered, value);
 }
 

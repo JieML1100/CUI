@@ -1,7 +1,10 @@
+#ifndef CUI_CONTROL_H_INCLUDED
+#define CUI_CONTROL_H_INCLUDED
 #pragma once
 #define NOMINMAX
-#include "Event.h"
 #include "Binding.h"
+#include "DependencyProperty.h"
+#include "Event.h"
 #include "XamlSchema.h"
 #include "ComponentBehavior.h"
 #include "ControlTemplate.h"
@@ -495,6 +498,7 @@ typedef Event<void(class Control*, const DeclarativeVisualStateChangedEventArgs&
 
 class ControlStyleSheet;
 struct ControlStyleResolution;
+class Application;
 class Control;
 class Canvas;
 class Grid;
@@ -524,6 +528,9 @@ namespace cui::framework
 class Control : public FrameworkElement
 {
 protected:
+	using FrameworkApplication = Application;
+	using DeclarativeComponentBehavior = IDeclarativeComponentBehavior;
+
 	friend class Visual;
 	friend class Expander;
 	friend class Canvas;
@@ -532,6 +539,7 @@ protected:
 	friend class PresentationScene;
 	friend class TextCompositionManager;
 	friend class Window;
+	friend FrameworkApplication;
 	friend struct cui::framework::InputAccess;
 	friend struct cui::framework::PresentationAccess;
 	friend struct cui::framework::NativeVisualStateAccess;
@@ -570,60 +578,40 @@ protected:
 	PROPERTY(D2D1_COLOR_F, RendererBorderColor);
 	GET(D2D1_COLOR_F, RendererBorderColor);
 	SET(D2D1_COLOR_F, RendererBorderColor);
-	/** Effective-value projection hooks; public mutation must use the DP surface. */
-	void ApplyBackgroundBrush(const cui::drawing::Brush& brush);
-	void ClearBackgroundBrush();
-	void ApplyForegroundBrush(const cui::drawing::Brush& brush);
-	void ClearForegroundBrush();
-	void ApplyBorderBrush(const cui::drawing::Brush& brush);
-	void ClearBorderBrush();
-	Thickness _borderThickness{};
-	void InitializeControlBorderThicknessDefault(float value) noexcept
-	{
-		_borderThickness = Thickness(std::isfinite(value)
-			? (std::max)(0.0f, value) : 0.0f);
-	}
 	template<typename TOwner>
 	static void RegisterControlBorderThicknessMetadata(
 		float defaultValue, int designOrder = 40)
 	{
-		DependencyPropertyOptions<TOwner, Thickness> options;
-		options.DefaultValue = Thickness(defaultValue);
-		options.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsArrange
-			| DependencyPropertyFlags::AffectsRender;
-		options.Coerce = [](
-			TOwner&, const Thickness& proposed) -> std::optional<Thickness>
+		static const bool registered = [defaultValue, designOrder]
 		{
-			const bool valid = std::isfinite(proposed.Left)
-				&& proposed.Left >= 0.0f
-				&& std::isfinite(proposed.Top)
-				&& proposed.Top >= 0.0f
-				&& std::isfinite(proposed.Right)
-				&& proposed.Right >= 0.0f
-				&& std::isfinite(proposed.Bottom)
-				&& proposed.Bottom >= 0.0f;
-			return valid ? std::optional<Thickness>{ proposed } : std::nullopt;
-		};
-		options.Design.Category = L"Appearance";
-		options.Design.CategoryOrder = 200;
-		options.Design.Order = designOrder;
-		options.Design.Editor = DependencyPropertyEditorKind::Thickness;
-		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+			const std::type_index controlOwner[] = {
+				std::type_index(typeid(Control))
+			};
+			const auto* base =
+				DependencyPropertyRegistry::FindRegistered(
+					controlOwner, L"BorderThickness");
+			if (!base)
+				throw std::logic_error(
+					"Control.BorderThickness must be registered first");
 
-		DependencyPropertyRegistry::Register<TOwner, Thickness>(
-			L"BorderThickness",
-			[](TOwner& target)
-			{
-				return static_cast<Control&>(target).GetBorderThickness();
-			},
-			[](TOwner& target, const Thickness& value)
-			{
-				static_cast<Control&>(target).SetBorderThickness(value);
-			}, {}, std::move(options));
+			DependencyPropertyOptions<TOwner, Thickness> options;
+			options.DefaultValue = Thickness(defaultValue);
+			options.Flags = DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsArrange
+				| DependencyPropertyFlags::AffectsRender;
+			options.Design.Category = L"Appearance";
+			options.Design.CategoryOrder = 200;
+			options.Design.Order = designOrder;
+			options.Design.Editor = DependencyPropertyEditorKind::Thickness;
+			options.Design.Persistence =
+				DependencyPropertyPersistence::Metadata;
+			return DependencyPropertyRegistry::OverrideMetadata<
+				TOwner, Thickness>(
+					base->Property(), std::move(options)) != nullptr;
+		}();
+		(void)registered;
 	}
-	std::wstring _text = std::wstring(L"");
-	/** Internal storage projection; Control itself does not own a public Text API. */
+	/** Internal wrapper projection; Control itself does not own a public Text API. */
 	PROPERTY(std::wstring, Text);
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
@@ -644,15 +632,10 @@ protected:
 	ULONGLONG _caretBlinkResetTick = 0;
 	bool _validationHasError = false;
 	std::vector<BindingValidationResult> _validationErrors;
-	std::wstring _automationName;
-	std::wstring _automationFullDescription;
-	std::wstring _automationHelpText;
-	std::wstring _automationId;
 	uint32_t _accessibilityRuntimeId = 0;
 	mutable std::unique_ptr<AutomationPeer> _automationPeer;
-	std::unique_ptr<IDeclarativeComponentBehavior>
+	std::unique_ptr<DeclarativeComponentBehavior>
 		_declarativeComponentBehavior;
-	ControlTemplateReference _template;
 	std::unordered_map<std::wstring, Control*> _templateNameScope;
 	Control* _controlTemplateRoot = nullptr;
 	std::vector<std::pair<std::wstring, Control*>>
@@ -673,16 +656,6 @@ protected:
 	std::vector<PendingVisualChildAttachment>
 		_pendingVisualChildAttachments;
 	bool _dispatchingComponentBehaviorInput = false;
-	std::optional<cui::drawing::Brush> _backgroundBrush;
-	std::optional<cui::drawing::Brush> _foregroundBrush;
-	std::optional<cui::drawing::Brush> _borderBrush;
-	bool _clipToBounds = false;
-	BindingValue _tag;
-	CursorKind _cursor = CursorKind::Auto;
-	::HorizontalAlignment _horizontalContentAlignment =
-		HorizontalAlignment::Left;
-	::VerticalAlignment _verticalContentAlignment =
-		VerticalAlignment::Top;
 	// Authored/local IsEnabled value.  It is deliberately not exposed as a
 	// writable field: every mutation must flow through SetLocalEnabled so the
 	// effective routed subtree is republished atomically.
@@ -693,28 +666,33 @@ protected:
 	bool _commandCanExecute = true;
 	bool _hasCommandCanExecute = false;
 
-	friend class BindingCollection;
+	friend DataBindingCollection;
 	friend class Binding;
 	friend class FocusManager;
 	friend class DependencyPropertyMetadata;
 	friend class DependencyPropertyRegistry;
-	friend class DeclarativeTypeDescriptor;
-	friend class IDeclarativeComponentBehavior;
-	const DependencyPropertyMetadata* FindDeclarativePropertyMetadata(
-		const std::wstring& propertyName) const;
-	std::vector<const DependencyPropertyMetadata*>
-		GetDeclarativePropertyMetadata() const;
+	friend DeclarativeType;
+	friend DeclarativeComponentBehavior;
+	DeclarativePropertyMetadataPointer FindDeclarativePropertyMetadata(
+		const std::wstring& propertyName) const override;
+	DeclarativePropertyMetadataCollection
+		GetDeclarativePropertyMetadata() const override;
 	bool SupportsNativeProperty(
-		const DependencyPropertyMetadata& metadata) const override;
+		const DeclarativePropertyMetadata& metadata) const override;
 	bool TryGetDeclarativePropertyBacking(
-		const DeclarativeTypeDescriptor& owner,
+		const DeclarativeType& owner,
 		std::size_t slot,
 		BindingValue& out) const;
 	bool TrySetDeclarativePropertyBacking(
-		const DeclarativeTypeDescriptor& owner,
+		const DeclarativeType& owner,
 		std::size_t slot,
 		const BindingValue& value);
-	void OnBindingValidationChanged(const std::wstring& targetProperty);
+	void OnBindingValidationChanged(
+		const std::wstring& targetProperty) override;
+	EventConnection SubscribeDefaultPropertyChange(
+		const std::wstring& propertyName,
+		DependencyPropertyChangeHandler handler,
+		DataSourceUpdateMode updateMode) override;
 	void SetIsFocusedCore(bool value);
 	void SetIsKeyboardFocusedCore(bool value);
 	void SetIsKeyboardFocusWithinCore(bool value);
@@ -737,72 +715,9 @@ protected:
 	void RefreshInheritedPropertiesRecursive();
 	void RefreshInheritedPropertyValues();
 	void ApplyPropertyMetadataChange(
-		const DependencyPropertyMetadata& metadata,
+		const DeclarativePropertyMetadata& metadata,
 		const BindingValue& oldValue,
-		const BindingValue& newValue);
-	bool ApplyEffectivePropertyValue(
-		const DependencyPropertyMetadata& metadata,
-		const BindingValue& value,
-		DependencyPropertyValueSource source,
-		bool allowReadOnly = false);
-	bool TryResolveEffectivePropertyValue(
-		const DependencyPropertyMetadata& metadata,
-		const EffectiveValueEntry& entry,
-		BindingValue& value,
-		DependencyPropertyValueSource& source) const;
-	bool TryEvaluateEffectivePropertyValue(
-		const DependencyPropertyMetadata& metadata,
-		const EffectiveValueEntry& entry,
-		BindingValue& value,
-		DependencyPropertyValueSource& source) const;
-	bool CanAcquireBindingPropertyValue(
-		const std::wstring& propertyName,
-		const Binding* owner,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind);
-	bool TryAttachBindingPropertyExpression(
-		const std::wstring& propertyName,
-		const Binding* owner,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind);
-	bool TrySetBindingPropertyValue(
-		const std::wstring& propertyName,
-		const BindingValue& value,
-		const Binding* owner,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind);
-	bool TrySetEffectiveValueEntry(
-		const DependencyPropertyMetadata& metadata,
-		std::optional<BindingValue> proposedValue,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind,
-		const Binding* owner,
-		std::wstring resourceKey,
-		bool allowReadOnly);
-	bool TrySetPropertyValueOwned(
-		const std::wstring& propertyName,
-		const BindingValue& value,
-		DependencyPropertyValueSource source,
-		const Binding* owner,
-		bool allowReadOnly = false);
-	bool ClearPropertyValueOwned(
-		const std::wstring& propertyName,
-		DependencyPropertyValueSource source,
-		const Binding* owner,
-		bool allowReadOnly = false);
-	bool ClearBindingPropertyValue(
-		const std::wstring& propertyName,
-		const Binding* owner,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind);
-	bool IsBindingExpressionOwner(
-		const std::wstring& propertyName,
-		const Binding* owner,
-		DependencyPropertyValueSource source,
-		DependencyPropertyExpressionKind expressionKind) const;
-	void RetireBindingExpression(
-		const std::wstring& propertyName,
-		const Binding* owner);
+		const BindingValue& newValue) override;
 	bool TrySetDynamicResourceExpressionOwned(
 		const std::wstring& propertyName,
 		std::wstring resourceKey,
@@ -827,35 +742,15 @@ protected:
 	void RebuildStyleDataContextSubscriptions();
 	void RebuildStyleSubscriptions(bool recursive);
 	void UpdateEffectiveDataContext(BindingSourceReference value);
-	/** Framework/attached-behavior equivalent of SetValue(DependencyPropertyKey). */
-	bool TrySetReadOnlyPropertyValue(
-		const std::wstring& propertyName,
-		const BindingValue& value);
-	bool ClearReadOnlyPropertyValue(const std::wstring& propertyName);
-
-	template<typename TValue>
-	bool SetPropertyField(
-		const std::wstring& propertyName,
-		TValue& storage,
-		TValue value);
-
-	template<typename TValue>
-	bool SetReadOnlyPropertyField(
-		const std::wstring& propertyName,
-		TValue& storage,
-		TValue value);
-
-	template<typename TValue>
-	bool SetCurrentPropertyField(
-		const std::wstring& propertyName,
-		TValue& storage,
-		TValue value);
 
 	/** Routes Visual::ZIndex's CLR wrapper through this object's DP store. */
 	bool RouteVisualZIndexSet(int value);
 
-	/** Re-runs conversion/coercion for the property's current value source. */
-	bool ReevaluatePropertyValue(const std::wstring& propertyName);
+	/** Internal compatibility spelling; delegates to WPF-style CoerceValue. */
+	bool ReevaluatePropertyValue(const std::wstring& propertyName)
+	{
+		return CoerceValue(propertyName);
+	}
 
 	cui::core::Size ResolveDesiredSize(
 		cui::core::Size intrinsicSize,
@@ -866,7 +761,10 @@ protected:
 	bool IsCaretBlinkVisible() const;
 	bool IsCaretBlinkAnimating() const;
 	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
-	virtual bool DefaultSelectOnLeftButtonDown() const { return _focusable; }
+	virtual bool DefaultSelectOnLeftButtonDown() const
+	{
+		return GetDependencyPropertyValue<bool>(L"Focusable");
+	}
 	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
 	virtual bool DefaultInvalidateVisualOnMouseDown(MouseButton button) const { (void)button; return true; }
 	virtual bool DefaultInvalidateVisualOnMouseUp(MouseButton button) const { (void)button; return true; }
@@ -926,10 +824,12 @@ protected:
 		(void)previousChildren;
 	}
 	/** Framework-only propagation of the current Window presentation source. */
-	static void PropagatePresentationWindow(Control* control, Window* window);
+	static void PropagatePresentationWindow(
+		Control* control, PresentationWindow* window);
 	/** Called after this element and its visual descendants enter/leave a Window. */
 	virtual void OnPresentationWindowChanged(
-		Window* previousWindow, Window* currentWindow)
+		PresentationWindow* previousWindow,
+		PresentationWindow* currentWindow)
 	{
 		(void)previousWindow;
 		(void)currentWindow;
@@ -1086,7 +986,7 @@ public:
 	/** @brief 返回运行时类型标识。 */
 	virtual UIClass Type();
 	/** Effective WPF Control.Template dependency-property value. */
-	ControlTemplateReference GetTemplate() const noexcept { return _template; }
+	ControlTemplateReference GetTemplate() const;
 	void SetTemplate(ControlTemplateReference value);
 	/**
 	 * Creates the template visual tree on this exact control instance.
@@ -1166,12 +1066,12 @@ protected:
 	/** Projects the internal press gesture into ButtonBase.IsPressed. */
 	virtual void OnPressedVisualStateChanged(bool) {}
 	bool SetDeclarativeComponentBehavior(
-		std::unique_ptr<IDeclarativeComponentBehavior> behavior,
+		std::unique_ptr<DeclarativeComponentBehavior> behavior,
 		const DeclarativeComponentBehaviorContext& context,
 		std::wstring* outError = nullptr);
 	void ClearDeclarativeComponentBehavior() noexcept;
 	bool SetDeclarativeTypeDescriptor(
-		std::shared_ptr<const DeclarativeTypeDescriptor> descriptor,
+		std::shared_ptr<const DeclarativeType> descriptor,
 		std::wstring* outError = nullptr);
 	bool RegisterDeclarativeTemplatePart(
 		std::wstring localName,
@@ -1180,18 +1080,6 @@ protected:
 		std::wstring propertyName,
 		Control* instance);
 	void ClearDeclarativeTemplateScope();
-	bool TrySetPropertyValue(
-		const std::wstring& propertyName,
-		const BindingValue& value,
-		DependencyPropertyValueSource source);
-	bool ClearPropertyValue(
-		const std::wstring& propertyName,
-		DependencyPropertyValueSource source);
-	size_t ClearPropertyValues(DependencyPropertyValueSource source);
-	/** Updates the metadata base value without creating a precedence contribution. */
-	bool TrySetPropertyBaseValue(
-		const std::wstring& propertyName,
-		const BindingValue& value);
 	bool SetDynamicResource(
 		const std::wstring& propertyName,
 		std::wstring resourceKey,
@@ -1205,11 +1093,11 @@ public:
 	 * Installs one application behavior on this XAML component instance.
 	 * The Control owns it and guarantees Detach before template children die.
 	 */
-	IDeclarativeComponentBehavior* GetDeclarativeComponentBehavior() noexcept
+	DeclarativeComponentBehavior* GetDeclarativeComponentBehavior() noexcept
 	{
 		return _declarativeComponentBehavior.get();
 	}
-	const IDeclarativeComponentBehavior*
+	const DeclarativeComponentBehavior*
 		GetDeclarativeComponentBehavior() const noexcept
 	{
 		return _declarativeComponentBehavior.get();
@@ -1222,10 +1110,7 @@ public:
 	PROPERTY(cui::drawing::Brush, Background);
 	GET(cui::drawing::Brush, Background);
 	SET(cui::drawing::Brush, Background);
-	const std::optional<cui::drawing::Brush>& GetBackgroundBrush() const noexcept
-	{
-		return _backgroundBrush;
-	}
+	std::optional<cui::drawing::Brush> GetBackgroundBrush() const;
 	/** Effective Brush value used by diagnostics and non-rendering consumers. */
 	cui::drawing::Brush GetComputedBackgroundBrush() const;
 	ID2D1Brush* CreateBackgroundBrush(
@@ -1234,10 +1119,7 @@ public:
 	PROPERTY(cui::drawing::Brush, Foreground);
 	GET(cui::drawing::Brush, Foreground);
 	SET(cui::drawing::Brush, Foreground);
-	const std::optional<cui::drawing::Brush>& GetForegroundBrush() const noexcept
-	{
-		return _foregroundBrush;
-	}
+	std::optional<cui::drawing::Brush> GetForegroundBrush() const;
 	cui::drawing::Brush GetComputedForegroundBrush() const;
 	/** Returns an owned COM brush reference, or nullptr when no brush is set. */
 	ID2D1Brush* CreateForegroundBrush(
@@ -1246,10 +1128,7 @@ public:
 	PROPERTY(cui::drawing::Brush, BorderBrush);
 	GET(cui::drawing::Brush, BorderBrush);
 	SET(cui::drawing::Brush, BorderBrush);
-	const std::optional<cui::drawing::Brush>& GetLocalBorderBrush() const noexcept
-	{
-		return _borderBrush;
-	}
+	std::optional<cui::drawing::Brush> GetLocalBorderBrush() const;
 	cui::drawing::Brush GetComputedBorderBrush() const;
 	ID2D1Brush* CreateBorderBrush(
 		D2DGraphics& graphics,
@@ -1309,8 +1188,8 @@ public:
 	GET(const std::wstring&, FontFamily);
 	READONLY_PROPERTY(double, FontSize);
 	GET(double, FontSize);
-	READONLY_PROPERTY(BindingCollection&, DataBindings);
-	GET(BindingCollection&, DataBindings);
+	READONLY_PROPERTY(DataBindingCollection&, DataBindings);
+	GET(DataBindingCollection&, DataBindings);
 	/** WPF FrameworkElement.Tag equivalent; retains arbitrary scalar/object values. */
 	PROPERTY(BindingValue, Tag);
 	GET(BindingValue, Tag);
@@ -1422,37 +1301,7 @@ public:
 	/** Returns zero when reduced motion is active, otherwise the configured duration. */
 	UINT EffectiveAnimationDuration(UINT configuredDurationMs) const;
 	BindingValidationChangedEvent OnValidationStateChanged;
-	const DependencyPropertyMetadata* FindPropertyMetadata(
-		const std::wstring& propertyName);
-	bool TryGetPropertyValue(
-		const std::wstring& propertyName,
-		BindingValue& out);
-	bool TryGetPropertyValue(
-		const std::wstring& propertyName,
-		DependencyPropertyValueSource source,
-		BindingValue& out);
-	bool TrySetPropertyValue(
-		const std::wstring& propertyName,
-		const BindingValue& value) override;
-	bool TrySetCurrentPropertyValue(
-		const std::wstring& propertyName,
-		const BindingValue& value) override;
-	/** WPF ClearValue semantics: removes only the Local contribution. */
-	bool ClearPropertyValue(const std::wstring& propertyName);
-	/** Clears all Local values and expressions from this object. */
-	size_t ClearPropertyValues();
-	bool HasPropertyValue(
-		const std::wstring& propertyName,
-		DependencyPropertyValueSource source);
-	DependencyPropertyValueSource GetPropertyValueSource(
-		const std::wstring& propertyName);
-	DependencyPropertyExpressionKind GetPropertyExpressionKind(
-		const std::wstring& propertyName,
-		DependencyPropertyValueSource source =
-			DependencyPropertyValueSource::Local);
-	bool ResetPropertyValue(const std::wstring& propertyName);
-	bool IsPropertyValueDefault(const std::wstring& propertyName);
-	const std::shared_ptr<const DeclarativeTypeDescriptor>&
+	const std::shared_ptr<const DeclarativeType>&
 		GetDeclarativeTypeDescriptor() const noexcept
 	{
 		return _declarativeTypeDescriptor;
@@ -1527,6 +1376,12 @@ public:
 		std::wstring& resourceKey,
 		DependencyPropertyValueSource source =
 			DependencyPropertyValueSource::Local);
+	/** WPF AddOwner identities for the Control appearance surface. */
+	static const DependencyProperty& BackgroundProperty();
+	static const DependencyProperty& ForegroundProperty();
+	static const DependencyProperty& BorderBrushProperty();
+	/** WPF Control.Template property identity. */
+	static const DependencyProperty& TemplateProperty();
 	/** @brief Registers metadata owned by this runtime control type. */
 	static void RegisterDependencyProperties();
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
@@ -1688,8 +1543,16 @@ public:
 	PROPERTY(cui::layout::Length, Height);
 	GET(cui::layout::Length, Height);
 	SET(cui::layout::Length, Height);
-	bool IsWidthAuto() const noexcept { return _layoutStyle.width.IsAuto(); }
-	bool IsHeightAuto() const noexcept { return _layoutStyle.height.IsAuto(); }
+	bool IsWidthAuto() const noexcept
+	{
+		return GetDependencyPropertyValue<cui::layout::Length>(
+			L"Width").IsAuto();
+	}
+	bool IsHeightAuto() const noexcept
+	{
+		return GetDependencyPropertyValue<cui::layout::Length>(
+			L"Height").IsAuto();
+	}
 	PROPERTY(float, MinWidth);
 	GET(float, MinWidth);
 	SET(float, MinWidth);
@@ -1771,7 +1634,11 @@ public:
 	 * Expander、ScrollViewer 等派生容器的专用内容区语义。
 	 */
 	void UpdateLayout() { PerformPendingLayout(); }
-	const cui::layout::LayoutStyle& GetSpecifiedLayout() const { return _layoutStyle; }
+	/**
+	 * Read-only snapshot of the effective WPF layout declarations. The
+	 * dependency-property store remains their single source of truth.
+	 */
+	cui::layout::LayoutStyle GetSpecifiedLayout() const;
 	const cui::layout::LayoutState& GetComputedLayout() const { return _layoutState; }
 	cui::core::Size GetDesiredSizeDip() const noexcept { return _layoutState.desiredSize; }
 	cui::core::Point GetActualLocationDip() const;
@@ -1853,7 +1720,7 @@ public:
 	 */
 	virtual cui::core::Point GetVisualChildrenLayoutOriginDip() { return {}; }
 	virtual cui::core::Point GetVisualChildrenRenderOffset() const { return {}; }
-	virtual bool ClipsChildren() { return _clipToBounds; }
+	virtual bool ClipsChildren() { return ClipToBounds; }
 	virtual D2D1_RECT_F GetVisualChildrenClipRect()
 	{
 		auto actualSize = this->GetActualSizeDip();
@@ -1889,424 +1756,4 @@ protected:
 	bool DispatchInput(const InputReport& input);
 };
 
-namespace cui::property_system_detail
-{
-	template<typename TValue>
-	constexpr BindingValueKind ValueKind() noexcept
-	{
-		using Value = std::remove_cvref_t<TValue>;
-		if constexpr (std::is_same_v<Value, BindingValue>)
-			return BindingValueKind::Object;
-		else if constexpr (std::is_same_v<Value, bool>)
-			return BindingValueKind::Bool;
-		else if constexpr (std::is_same_v<Value, int>)
-			return BindingValueKind::Int;
-		else if constexpr (std::is_same_v<Value, long long>)
-			return BindingValueKind::Int64;
-		else if constexpr (std::is_same_v<Value, float>)
-			return BindingValueKind::Float;
-		else if constexpr (std::is_same_v<Value, double>)
-			return BindingValueKind::Double;
-		else if constexpr (std::is_same_v<Value, std::wstring>)
-			return BindingValueKind::String;
-		else if constexpr (std::is_enum_v<Value>)
-		{
-			using Underlying = std::underlying_type_t<Value>;
-			constexpr bool fitsInt = sizeof(Underlying) < sizeof(int)
-				|| (sizeof(Underlying) == sizeof(int)
-					&& std::is_signed_v<Underlying>);
-			return fitsInt ? BindingValueKind::Int : BindingValueKind::Int64;
-		}
-		else
-			return BindingValueKind::Object;
-	}
-
-	/**
-	 * Native enum storage is an implementation detail. The dependency-property
-	 * interchange contract exposes every enum as a canonical signed number plus
-	 * its metadata Choices, so XAML tooling never needs a C++ enum whitelist.
-	 */
-	template<typename TValue>
-	BindingValue Pack(TValue&& value)
-	{
-		using Value = std::remove_cvref_t<TValue>;
-		if constexpr (std::is_enum_v<Value>)
-		{
-			if constexpr (ValueKind<Value>() == BindingValueKind::Int)
-				return BindingValue(static_cast<int>(value));
-			else
-				return BindingValue(static_cast<long long>(value));
-		}
-		else
-		{
-			return BindingValue(std::forward<TValue>(value));
-		}
-	}
-}
-
-template<typename TOwner, typename TValue>
-const DependencyPropertyMetadata* DependencyPropertyRegistry::Register(
-	std::wstring name,
-	std::function<TValue(TOwner&)> getter,
-	std::function<void(TOwner&, const TValue&)> setter,
-	std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber,
-	DependencyPropertyOptions<TOwner, TValue> options)
-{
-	static_assert(std::is_base_of_v<DependencyObject, TOwner>,
-		"Bindable property owners must derive from DependencyObject.");
-
-	constexpr BindingValueKind valueKind =
-		cui::property_system_detail::ValueKind<TValue>();
-
-	auto matcher = [](const DependencyObject& target)
-	{
-		return dynamic_cast<const TOwner*>(&target) != nullptr;
-	};
-
-	auto customValueConverter = std::move(options.Convert);
-	DependencyPropertyMetadata::ValueConverter valueConverter = [
-		customValueConverter = std::move(customValueConverter)](
-		const BindingValue& value,
-		BindingValue& out)
-	{
-		using Value = std::remove_cv_t<TValue>;
-		if (customValueConverter)
-		{
-			auto converted = customValueConverter(value);
-			if (!converted.has_value()) return false;
-			out = cui::property_system_detail::Pack(
-				std::move(*converted));
-			return true;
-		}
-		if constexpr (std::is_same_v<Value, BindingValue>)
-		{
-			out = value;
-			return true;
-		}
-		else if constexpr (std::is_default_constructible_v<Value>)
-		{
-			Value converted{};
-			if (!value.TryGet(converted)) return false;
-			out = cui::property_system_detail::Pack(std::move(converted));
-			return true;
-		}
-		else
-		{
-			if (value.Kind() != BindingValueKind::Object) return false;
-			const auto* exact = std::any_cast<Value>(
-				&std::get<std::any>(value.Raw()));
-			if (!exact) return false;
-			out = BindingValue(*exact);
-			return true;
-		}
-	};
-
-	DependencyPropertyMetadata::Getter untypedGetter;
-	if (getter)
-	{
-		untypedGetter = [getter = std::move(getter)](DependencyObject& target, BindingValue& out)
-		{
-			auto* owner = dynamic_cast<TOwner*>(&target);
-			if (!owner) return false;
-			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-				out = getter(*owner);
-			else
-				out = cui::property_system_detail::Pack(getter(*owner));
-			return true;
-		};
-	}
-
-	DependencyPropertyMetadata::Setter untypedSetter;
-	if (setter)
-	{
-		untypedSetter = [setter = std::move(setter)](DependencyObject& target, const BindingValue& value)
-		{
-			auto* owner = dynamic_cast<TOwner*>(&target);
-			if (!owner) return false;
-			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-			{
-				setter(*owner, value);
-				return true;
-			}
-			else if constexpr (std::is_default_constructible_v<TValue>)
-			{
-				TValue converted{};
-				if (!value.TryGet(converted)) return false;
-				setter(*owner, converted);
-				return true;
-			}
-			else
-			{
-				if (value.Kind() != BindingValueKind::Object) return false;
-				const auto* exact = std::any_cast<TValue>(
-					&std::get<std::any>(value.Raw()));
-				if (!exact) return false;
-				setter(*owner, *exact);
-				return true;
-			}
-		};
-	}
-
-	DependencyPropertyMetadata::Subscriber untypedSubscriber;
-	if (subscriber)
-	{
-		untypedSubscriber = [subscriber = std::move(subscriber)](
-			DependencyObject& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode updateMode)
-		{
-			auto* owner = dynamic_cast<TOwner*>(&target);
-			return owner
-				? subscriber(*owner, std::move(handler), updateMode)
-				: EventConnection{};
-		};
-	}
-	else
-	{
-		// Dependency properties are observable by definition.  Native owners no
-		// longer need to repeat a per-property forwarding subscriber merely to
-		// participate in Binding, Trigger, or designer observation.
-		auto observedName = name;
-		untypedSubscriber = [observedName = std::move(observedName)](
-			DependencyObject& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode updateMode)
-		{
-			if (updateMode == DataSourceUpdateMode::OnValidation)
-			{
-				if (auto* control = dynamic_cast<Control*>(&target))
-					return control->OnLostFocus.Subscribe(
-						[handler = std::move(handler)](Control*)
-						{
-							handler();
-						});
-			}
-			return target.OnPropertyValueChanged.Subscribe(
-				[observedName, handler = std::move(handler)](
-					DependencyObject*,
-					const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == observedName)
-						handler();
-				});
-		};
-	}
-
-	DependencyPropertyMetadata::Coercer untypedCoercer;
-	if (options.Coerce)
-	{
-		untypedCoercer = [coerce = std::move(options.Coerce)](
-			DependencyObject& target,
-			const BindingValue& value,
-			BindingValue& out)
-		{
-			auto* owner = dynamic_cast<TOwner*>(&target);
-			if (!owner) return false;
-			std::optional<TValue> proposed;
-			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-				proposed = value;
-			else if constexpr (std::is_default_constructible_v<TValue>)
-			{
-				TValue converted{};
-				if (value.TryGet(converted)) proposed = std::move(converted);
-			}
-			else if (value.Kind() == BindingValueKind::Object)
-			{
-				if (const auto* exact = std::any_cast<TValue>(
-					&std::get<std::any>(value.Raw())))
-					proposed = *exact;
-			}
-			if (!proposed.has_value()) return false;
-			auto coerced = coerce(*owner, *proposed);
-			if (!coerced.has_value()) return false;
-			out = cui::property_system_detail::Pack(std::move(*coerced));
-			return true;
-		};
-	}
-
-	DependencyPropertyMetadata::Comparer typedComparer =
-		[equals = std::move(options.Equals)](
-		const BindingValue& left,
-		const BindingValue& right) -> bool
-	{
-		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-		{
-			if (equals) return equals(left, right);
-			return BindingValuesEqual(left, right);
-		}
-		else if constexpr (std::is_default_constructible_v<TValue>)
-		{
-			TValue leftValue{};
-			TValue rightValue{};
-			if (!left.TryGet(leftValue) || !right.TryGet(rightValue)) return false;
-			if (equals) return equals(leftValue, rightValue);
-			if constexpr (requires(const TValue& a, const TValue& b)
-				{ { a == b } -> std::convertible_to<bool>; })
-			{
-				return leftValue == rightValue;
-			}
-			else
-			{
-				return false;
-			}
-		}
-		else
-		{
-			if (left.Kind() != BindingValueKind::Object
-				|| right.Kind() != BindingValueKind::Object)
-				return false;
-			const auto* leftValue = std::any_cast<TValue>(
-				&std::get<std::any>(left.Raw()));
-			const auto* rightValue = std::any_cast<TValue>(
-				&std::get<std::any>(right.Raw()));
-			if (!leftValue || !rightValue) return false;
-			if (equals) return equals(*leftValue, *rightValue);
-			if constexpr (requires(const TValue& a, const TValue& b)
-				{ { a == b } -> std::convertible_to<bool>; })
-				return *leftValue == *rightValue;
-			return false;
-		}
-	};
-
-	DependencyPropertyMetadata::Changed untypedChanged;
-	if (options.Changed)
-	{
-		untypedChanged = [changed = std::move(options.Changed)](
-			DependencyObject& target,
-			const BindingValue& oldValue,
-			const BindingValue& newValue)
-		{
-			auto* owner = dynamic_cast<TOwner*>(&target);
-			if (!owner) return;
-			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-				changed(*owner, oldValue, newValue);
-			else if constexpr (std::is_default_constructible_v<TValue>)
-			{
-				TValue typedOld{};
-				TValue typedNew{};
-				if (oldValue.TryGet(typedOld) && newValue.TryGet(typedNew))
-					changed(*owner, typedOld, typedNew);
-			}
-			else if (oldValue.Kind() == BindingValueKind::Object
-				&& newValue.Kind() == BindingValueKind::Object)
-			{
-				const auto* typedOld = std::any_cast<TValue>(
-					&std::get<std::any>(oldValue.Raw()));
-				const auto* typedNew = std::any_cast<TValue>(
-					&std::get<std::any>(newValue.Raw()));
-				if (typedOld && typedNew) changed(*owner, *typedOld, *typedNew);
-			}
-		};
-	}
-
-	BindingValue defaultValue;
-	const bool hasDefaultValue = options.DefaultValue.has_value();
-	if (hasDefaultValue)
-	{
-		defaultValue = cui::property_system_detail::Pack(
-			std::move(*options.DefaultValue));
-	}
-
-	return Register(DependencyPropertyMetadata(
-		std::move(name),
-		valueKind,
-		std::type_index(typeid(TValue)),
-		std::type_index(typeid(TOwner)),
-		std::move(matcher),
-		std::move(valueConverter),
-		std::move(untypedCoercer),
-		std::move(typedComparer),
-		std::move(untypedGetter),
-		std::move(untypedSetter),
-		std::move(untypedSubscriber),
-		std::move(untypedChanged),
-		std::move(defaultValue),
-		hasDefaultValue,
-		options.Flags,
-		options.IsReadOnly,
-		options.DefaultUpdateMode,
-		{},
-		std::move(options.Design)));
-}
-
-template<typename TValue>
-bool Control::SetPropertyField(
-	const std::wstring& propertyName,
-	TValue& storage,
-	TValue value)
-{
-	VerifyAccess();
-	auto* metadata = DependencyPropertyRegistry::Find(*this, propertyName);
-	// A missing effective metadata entry means that the projected XAML/WPF
-	// type does not own this property.  The private C++ behavior-host
-	// inheritance graph must never turn that into an untracked side channel.
-	// Native implementation state which is intentionally not a dependency
-	// property is written explicitly and must not use this helper.
-	if (!metadata) return false;
-	BindingValue proposed =
-		cui::property_system_detail::Pack(std::move(value));
-	if (_applyingPropertyMetadata == metadata)
-	{
-		TValue typed = storage;
-		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-			typed = proposed;
-		else if (!proposed.TryGet(typed)) return false;
-
-		BindingValue oldValue = cui::property_system_detail::Pack(storage);
-		BindingValue newValue = cui::property_system_detail::Pack(typed);
-		if (metadata->ValuesEqual(oldValue, newValue)) return true;
-		storage = std::move(typed);
-		ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
-		return true;
-	}
-	// A public CLR-style wrapper is exactly SetValue in WPF terms.  Internal
-	// behavior that must preserve an expression uses SetCurrentPropertyField;
-	// metadata application is handled by the guarded branch above.
-	return TrySetPropertyValue(
-		propertyName, proposed, DependencyPropertyValueSource::Local);
-}
-
-template<typename TValue>
-bool Control::SetCurrentPropertyField(
-	const std::wstring& propertyName,
-	TValue& storage,
-	TValue value)
-{
-	VerifyAccess();
-	(void)storage;
-	auto* metadata = DependencyPropertyRegistry::Find(*this, propertyName);
-	// SetCurrentValue has the same ownership boundary as SetValue: it may
-	// preserve an existing expression, but it cannot manufacture a property
-	// which the projected type does not expose.
-	if (!metadata) return false;
-	return TrySetCurrentPropertyValue(
-		propertyName, BindingValue(std::move(value)));
-}
-
-template<typename TValue>
-bool Control::SetReadOnlyPropertyField(
-	const std::wstring& propertyName,
-	TValue& storage,
-	TValue value)
-{
-	VerifyAccess();
-	auto* metadata = DependencyPropertyRegistry::Find(*this, propertyName);
-	if (!metadata || !metadata->IsReadOnly()) return false;
-	BindingValue proposed =
-		cui::property_system_detail::Pack(std::move(value));
-	if (_applyingPropertyMetadata == metadata)
-	{
-		TValue typed = storage;
-		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
-			typed = proposed;
-		else if (!proposed.TryGet(typed)) return false;
-
-		BindingValue oldValue = cui::property_system_detail::Pack(storage);
-		BindingValue newValue = cui::property_system_detail::Pack(typed);
-		if (metadata->ValuesEqual(oldValue, newValue)) return true;
-		storage = std::move(typed);
-		ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
-		return true;
-	}
-	return TrySetReadOnlyPropertyValue(propertyName, proposed);
-}
+#endif // CUI_CONTROL_H_INCLUDED

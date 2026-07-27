@@ -19,6 +19,7 @@ namespace
 
 	std::atomic<std::uint32_t> g_uiThreadId{ 0 };
 	std::atomic<HWND> g_dispatcherHwnd{ nullptr };
+	std::atomic<bool> g_dispatcherShutdown{ false };
 
 	std::mutex g_queueMutex;
 	std::deque<std::function<void()>> g_callbackQueue;
@@ -96,6 +97,7 @@ namespace
 
 void InitializeUIThread()
 {
+	if (g_dispatcherShutdown.load(std::memory_order_acquire)) return;
 	const std::uint32_t current = static_cast<std::uint32_t>(::GetCurrentThreadId());
 	std::uint32_t expected = 0;
 	if (!g_uiThreadId.compare_exchange_strong(expected, current))
@@ -127,12 +129,28 @@ std::uint32_t GetUIThreadId() noexcept
 
 bool HasUIThreadDispatcher() noexcept
 {
-	return g_dispatcherHwnd.load(std::memory_order_acquire) != nullptr;
+	return !g_dispatcherShutdown.load(std::memory_order_acquire)
+		&& g_dispatcherHwnd.load(std::memory_order_acquire) != nullptr;
+}
+
+void ShutdownUIThreadDispatcher() noexcept
+{
+	if (!IsUIThread()) return;
+	g_dispatcherShutdown.store(true, std::memory_order_release);
+	const HWND hwnd =
+		g_dispatcherHwnd.exchange(nullptr, std::memory_order_acq_rel);
+	if (hwnd && ::IsWindow(hwnd)) (void)::DestroyWindow(hwnd);
+	{
+		std::lock_guard<std::mutex> lock(g_queueMutex);
+		g_callbackQueue.clear();
+		g_pumpPosted.store(false, std::memory_order_relaxed);
+	}
 }
 
 bool PostToUIThread(std::function<void()> fn)
 {
 	if (!fn) return false;
+	if (g_dispatcherShutdown.load(std::memory_order_acquire)) return false;
 
 	// 若尚无 dispatcher（如应用尚未创建窗口），尝试惰性登记当前线程。
 	if (!HasUIThreadDispatcher())
@@ -140,11 +158,13 @@ bool PostToUIThread(std::function<void()> fn)
 		InitializeUIThread();
 	}
 
-	HWND hwnd = g_dispatcherHwnd.load(std::memory_order_acquire);
-	if (hwnd == nullptr) return false;
-
+	HWND hwnd = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(g_queueMutex);
+		if (g_dispatcherShutdown.load(std::memory_order_acquire))
+			return false;
+		hwnd = g_dispatcherHwnd.load(std::memory_order_acquire);
+		if (hwnd == nullptr) return false;
 		g_callbackQueue.push_back(std::move(fn));
 	}
 

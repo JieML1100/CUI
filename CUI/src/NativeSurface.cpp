@@ -1,6 +1,6 @@
-#include "../include/NativeSurface.h"
+#include "NativeSurface.h"
 
-#include "../include/Window.h"
+#include "Window.h"
 
 #include <algorithm>
 #include <cmath>

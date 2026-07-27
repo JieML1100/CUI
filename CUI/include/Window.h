@@ -1,3 +1,5 @@
+#ifndef CUI_WINDOW_H_INCLUDED
+#define CUI_WINDOW_H_INCLUDED
 #pragma once
 #include <vector>
 #include <string>
@@ -469,3 +471,5 @@ private:
 	LRESULT HandlePlatformWindowMessage(
 		HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 };
+
+#endif // CUI_WINDOW_H_INCLUDED

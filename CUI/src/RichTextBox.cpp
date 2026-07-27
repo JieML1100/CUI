@@ -80,6 +80,20 @@ namespace
 
 UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 
+const DependencyProperty& RichTextBox::TextProperty()
+{
+	RegisterDependencyProperties();
+	const std::type_index ownerTypes[] = {
+		std::type_index(typeid(RichTextBox))
+	};
+	const auto* metadata =
+		DependencyPropertyRegistry::FindRegistered(ownerTypes, L"Text");
+	if (!metadata)
+		throw std::logic_error(
+			"RichTextBox compatibility Text property is not registered");
+	return metadata->Property();
+}
+
 GET_CPP(RichTextBox, std::wstring, Text) { return Control::GetText(); }
 SET_CPP(RichTextBox, std::wstring, Text)
 {
@@ -134,9 +148,6 @@ void RichTextBox::RegisterDependencyProperties()
 		};
 		DependencyPropertyRegistry::Register<RichTextBox, std::wstring>(
 			L"Text",
-			[](RichTextBox& target) { return target.Text; },
-			[](RichTextBox& target, const std::wstring& value)
-			{ target.Text = value; },
 			[](RichTextBox& target, Handler handler, DataSourceUpdateMode mode)
 			{
 				if (mode == DataSourceUpdateMode::OnValidation)
@@ -237,7 +248,6 @@ CursorKind RichTextBox::QueryCursor(int localX, int localY)
 RichTextBox::RichTextBox()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.0f);
 	(void)TrySetPropertyValue(
 		L"Padding", BindingValue(Thickness{ 5.0f }),
 		DependencyPropertyValueSource::Theme);
@@ -324,7 +334,10 @@ void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
 		return;
 	this->highlightRanges.clear();
 	this->textStyleRanges.clear();
-	this->Text = this->buffer;
+	// Editing updates the current target value while retaining any Local
+	// expression. RichTextBox.Text is a temporary CUI compatibility surface.
+	(void)TrySetCurrentPropertyValue(
+		L"Text", BindingValue(this->buffer));
 	this->bufferSyncedFromControl = true;
 }
 

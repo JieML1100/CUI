@@ -274,23 +274,24 @@ bool DeclarativeTypeDescriptor::Build(
 					return target
 						&& target->GetDeclarativeTypeDescriptor().get() == owner;
 				},
-				[kind = definition.ValueKind, objectDefault = normalizedDefault,
-				 allowedValues = std::move(normalizedAllowedValues)](
+				[kind = definition.ValueKind, objectDefault = normalizedDefault](
 					const BindingValue& value, BindingValue& converted)
 				{
-					bool success = false;
 					if (kind == BindingValueKind::Object)
-						success = TryConvertBindingValue(
+						return TryConvertBindingValue(
 							value, objectDefault, converted);
-					else success = TryConvertBindingValue(value, kind, converted);
-					if (!success) return false;
+					return TryConvertBindingValue(value, kind, converted);
+				},
+				[allowedValues = std::move(normalizedAllowedValues)](
+					const BindingValue& value)
+				{
 					if (allowedValues.empty()) return true;
 					return std::any_of(
 						allowedValues.begin(), allowedValues.end(),
 						[&](const auto& candidate)
 						{
 							return DeclarativePropertyValuesEqual(
-								candidate, converted);
+								candidate, value);
 						});
 				},
 				{},
@@ -335,6 +336,7 @@ bool DeclarativeTypeDescriptor::Build(
 				{},
 				normalizedDefault,
 				true,
+				false,
 				definition.Flags,
 				definition.IsReadOnly,
 				definition.DefaultUpdateMode,
@@ -344,6 +346,11 @@ bool DeclarativeTypeDescriptor::Build(
 		PropertyEntry entry;
 		entry.DefaultValue = std::move(normalizedDefault);
 		entry.AllowedValues = std::move(schemaAllowedValues);
+		entry.Property =
+			DependencyPropertyRegistry::CreateStandalone(*metadata);
+		if (!entry.Property)
+			return fail(L"声明属性无法创建稳定的 DependencyProperty 身份："
+				+ canonicalName);
 		entry.Metadata = std::move(metadata);
 		_propertyIndex.emplace(key, slot);
 		_propertyMetadata.push_back(entry.Metadata.get());

@@ -88,18 +88,18 @@ void PasswordBox::RegisterDependencyProperties()
 
 GET_CPP(PasswordBox, std::wstring, Password)
 {
-	return _text;
+	return _password;
 }
 
 SET_CPP(PasswordBox, std::wstring, Password)
 {
-	(void)SetPropertyField(L"Password", _text, std::move(value));
+	(void)SetPropertyField(L"Password", _password, std::move(value));
 }
 
 void PasswordBox::CommitPasswordEdit(std::wstring value)
 {
-	if (_text == value) return;
-	_text = std::move(value);
+	if (_password == value) return;
+	_password = std::move(value);
 	PublishPasswordChanged();
 }
 
@@ -132,7 +132,6 @@ bool PasswordBox::HandlesNavigationKey(Key key) const
 PasswordBox::PasswordBox()
 {
 	RegisterDependencyProperties();
-	InitializeControlBorderThicknessDefault(1.0f);
 	(void)TrySetPropertyValue(
 		L"Padding", BindingValue(Thickness{ 5.0f }),
 		DependencyPropertyValueSource::Theme);

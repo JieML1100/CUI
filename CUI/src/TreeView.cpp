@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cwctype>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -81,6 +82,28 @@ namespace
 		return x >= rect.left && x <= rect.right
 			&& y >= rect.top && y <= rect.bottom;
 	}
+
+	struct TreeReadOnlyPropertyKeys final
+	{
+		std::optional<DependencyPropertyKey> HasItems;
+		std::optional<DependencyPropertyKey> Level;
+		std::optional<DependencyPropertyKey> SelectedItem;
+		std::optional<DependencyPropertyKey> SelectedValue;
+	};
+
+	TreeReadOnlyPropertyKeys& TreeReadOnlyKeys()
+	{
+		static TreeReadOnlyPropertyKeys keys;
+		return keys;
+	}
+
+	const DependencyPropertyKey& TreeItemReadOnlyKey(
+		TreeViewItem& target,
+		const std::optional<DependencyPropertyKey>& key)
+	{
+		target.EnsureBindingPropertiesRegistered();
+		return key.value();
+	}
 }
 
 TreeViewItem::TreeViewItem()
@@ -140,36 +163,43 @@ void TreeViewItem::RegisterDependencyProperties()
 					[handler = std::move(handler)](TreeViewItem*) { handler(); });
 			}, TreeItemStateOptions(
 				false, 10, false, DependencyPropertyPersistence::Metadata));
-		DependencyPropertyRegistry::Register<TreeViewItem, bool>(L"HasItems",
-			[](TreeViewItem& target) { return target.GetHasItems(); },
-			[](TreeViewItem& target, const bool& value)
-			{
-				(void)target.SetReadOnlyPropertyField(
-					L"HasItems", target._hasItems, value);
-			},
-			[](TreeViewItem& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._hasItemsChanged.Subscribe(
-					[handler = std::move(handler)](TreeViewItem*) { handler(); });
-			}, TreeItemStateOptions(
-				false, 20, true, DependencyPropertyPersistence::Transient));
-		DependencyPropertyRegistry::Register<TreeViewItem, int>(L"Level",
-			[](TreeViewItem& target) { return target.GetLevel(); },
-			[](TreeViewItem& target, const int& value)
-			{
-				(void)target.SetReadOnlyPropertyField(
-					L"Level", target._level, value);
-			},
-			[](TreeViewItem& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._levelChanged.Subscribe(
-					[handler = std::move(handler)](TreeViewItem*) { handler(); });
-			}, TreeItemStateOptions(
-				0, 30, true, DependencyPropertyPersistence::Transient));
+		auto& readOnlyKeys = TreeReadOnlyKeys();
+		readOnlyKeys.HasItems.emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<TreeViewItem, bool>(
+				L"HasItems",
+				[](TreeViewItem& target) { return target.GetHasItems(); },
+				[](TreeViewItem& target, const bool& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						L"HasItems", target._hasItems, value);
+				},
+				[](TreeViewItem& target,
+					DependencyPropertyMetadata::ChangeHandler handler,
+					DataSourceUpdateMode)
+				{
+					return target._hasItemsChanged.Subscribe(
+						[handler = std::move(handler)](TreeViewItem*) { handler(); });
+				}, TreeItemStateOptions(
+					false, 20, true,
+					DependencyPropertyPersistence::Transient)));
+		readOnlyKeys.Level.emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<TreeViewItem, int>(
+				L"Level",
+				[](TreeViewItem& target) { return target.GetLevel(); },
+				[](TreeViewItem& target, const int& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						L"Level", target._level, value);
+				},
+				[](TreeViewItem& target,
+					DependencyPropertyMetadata::ChangeHandler handler,
+					DataSourceUpdateMode)
+				{
+					return target._levelChanged.Subscribe(
+						[handler = std::move(handler)](TreeViewItem*) { handler(); });
+				}, TreeItemStateOptions(
+					0, 30, true,
+					DependencyPropertyPersistence::Transient)));
 		DependencyPropertyRegistry::Register<TreeViewItem, bool>(L"IsSelected",
 			[](TreeViewItem& target) { return target.GetIsSelected(); },
 			[](TreeViewItem& target, const bool& value)
@@ -265,7 +295,9 @@ bool TreeViewItem::InitializeGenerated(
 	_parentItem = nullptr;
 	_dataItem = item;
 	_headerDataTemplate = std::move(headerTemplate);
-	if (!SetReadOnlyPropertyField(L"Level", _level, level))
+	if (!SetReadOnlyPropertyField(
+		TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().Level),
+		_level, level))
 	{
 		if (outError) *outError =
 			L"TreeViewItem Level 只读属性状态无法发布。";
@@ -384,7 +416,9 @@ void TreeViewItem::BindHierarchy(
 	_parentItem = parent;
 	if (_level != level)
 	{
-		(void)SetReadOnlyPropertyField(L"Level", _level, level);
+		(void)SetReadOnlyPropertyField(
+			TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().Level),
+			_level, level);
 		cui::framework::EventAccess::Raise(_levelChanged, this);
 	}
 	SyncHasItems();
@@ -422,7 +456,9 @@ void TreeViewItem::SyncHasItems()
 	const bool value = source
 		? source.Get()->Count() != 0 : AuthoredItemCount() != 0;
 	if (_hasItems == value) return;
-	if (!SetReadOnlyPropertyField(L"HasItems", _hasItems, value)) return;
+	if (!SetReadOnlyPropertyField(
+		TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().HasItems),
+		_hasItems, value)) return;
 	cui::framework::EventAccess::Raise(_hasItemsChanged, this);
 }
 
@@ -636,29 +672,31 @@ void TreeView::RegisterDependencyProperties()
 			options.Design.Order = order;
 			options.Design.Browsable = false;
 			options.Design.Persistence = DependencyPropertyPersistence::Transient;
-			options.IsReadOnly = true;
 			return options;
 		};
-		DependencyPropertyRegistry::Register<TreeView, BindingValue>(
-			L"SelectedItem",
-			[](TreeView& target) { return target.GetSelectedItem(); }, {},
-			[](TreeView& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._selectedItemChanged.Subscribe(
-					[handler = std::move(handler)](TreeView*) { handler(); });
-			}, projectionOptions(50));
-		DependencyPropertyRegistry::Register<TreeView, BindingValue>(
-			L"SelectedValue",
-			[](TreeView& target) { return target.GetSelectedValue(); }, {},
-			[](TreeView& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._selectedValueChanged.Subscribe(
-					[handler = std::move(handler)](TreeView*) { handler(); });
-			}, projectionOptions(60));
+		auto& readOnlyKeys = TreeReadOnlyKeys();
+		readOnlyKeys.SelectedItem.emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<TreeView, BindingValue>(
+				L"SelectedItem",
+				[](TreeView& target) { return target.GetSelectedItem(); }, {},
+				[](TreeView& target,
+					DependencyPropertyMetadata::ChangeHandler handler,
+					DataSourceUpdateMode)
+				{
+					return target._selectedItemChanged.Subscribe(
+						[handler = std::move(handler)](TreeView*) { handler(); });
+				}, projectionOptions(50)));
+		readOnlyKeys.SelectedValue.emplace(
+			DependencyPropertyRegistry::RegisterReadOnly<TreeView, BindingValue>(
+				L"SelectedValue",
+				[](TreeView& target) { return target.GetSelectedValue(); }, {},
+				[](TreeView& target,
+					DependencyPropertyMetadata::ChangeHandler handler,
+					DataSourceUpdateMode)
+				{
+					return target._selectedValueChanged.Subscribe(
+						[handler = std::move(handler)](TreeView*) { handler(); });
+				}, projectionOptions(60)));
 		return true;
 	}();
 	(void)registered;
