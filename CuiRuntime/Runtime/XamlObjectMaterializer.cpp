@@ -1030,6 +1030,14 @@ namespace
 				const auto presenter = contentPresenters.find(sourceName);
 				if (presenter == contentPresenters.end())
 				{
+					// WPF TabItem templates present only the Header. The owning
+					// TabControl projects the selected page into its single central
+					// content host, so authored page visuals must remain attached to
+					// the TabItem logical Content slot instead of requiring a second
+					// per-item ContentPresenter.
+					if (!isHeader && IsUIClassAssignableFrom(
+						UIClass::UI_TabItem, ownerType))
+						continue;
 					if (outError) *outError = L"ControlTemplate 必须用 ContentPresenter ContentSource=\""
 						+ sourceName + L"\" 承载视觉内容：" + ownerName;
 					return false;

@@ -348,6 +348,134 @@ namespace
 			index, MakeTestControl<TabItem>(std::move(header)));
 	}
 
+	struct TestCentralTabTemplateParts final
+	{
+		DockPanel* Root = nullptr;
+		ItemsPresenter* HeadersPresenter = nullptr;
+		ContentPresenter* SelectedContentHost = nullptr;
+	};
+
+	TestCentralTabTemplateParts InstallCentralTabTemplate(TabControl& owner)
+	{
+		auto root = MakeTestControl<DockPanel>();
+		auto* rootPointer = root.get();
+		auto headersPresenter = MakeTestControl<ItemsPresenter>();
+		auto* headersPresenterPointer = headersPresenter.get();
+		headersPresenterPointer->Height = 28.0f;
+		auto selectedContentHost = MakeTestControl<ContentPresenter>();
+		auto* selectedContentHostPointer = selectedContentHost.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*rootPointer, &owner);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*headersPresenterPointer, &owner);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*selectedContentHostPointer, &owner);
+		if (!selectedContentHostPointer->DataBindings.AddTemplateBinding(
+			ContentPresenter::ContentProperty(), owner,
+			TabControl::SelectedContentProperty()))
+			throw std::logic_error(
+				"failed to bind TabControl selected content host");
+		if (!selectedContentHostPointer->DataBindings.AddTemplateBinding(
+			ContentPresenter::ContentTemplateProperty(), owner,
+			TabControl::SelectedContentTemplateProperty()))
+			throw std::logic_error(
+				"failed to bind TabControl selected content template");
+		DockPanel::SetDock(*headersPresenterPointer, Dock::Top);
+		rootPointer->AddOwned(std::move(headersPresenter));
+		rootPointer->AddOwned(std::move(selectedContentHost));
+		if (!cui::framework::TemplateAccess::RegisterTemplatePart(
+			owner,
+			MakeTemplatePartToken(L"PART_ItemsPresenter"),
+			headersPresenterPointer))
+			throw std::logic_error(
+				"failed to register TabControl header presenter part");
+		if (!cui::framework::TemplateAccess::RegisterTemplatePart(
+			owner,
+			MakeTemplatePartToken(L"PART_SelectedContentHost"),
+			selectedContentHostPointer))
+			throw std::logic_error(
+				"failed to register TabControl selected content host");
+		if (cui::framework::TemplateAccess::SetTemplateRoot(
+			owner, std::move(root)) != rootPointer)
+			throw std::logic_error("failed to install TabControl template root");
+		if (!cui::framework::TemplateAccess::RegisterItemsPresenter(
+			owner, headersPresenterPointer))
+			throw std::logic_error(
+				"failed to register TabControl ItemsPresenter");
+		return {
+			rootPointer, headersPresenterPointer, selectedContentHostPointer };
+	}
+
+	class ProbeCentralTabTemplate final : public IControlTemplate
+	{
+	public:
+		UIClass TargetType() const noexcept override
+		{
+			return UIClass::UI_TabControl;
+		}
+
+		bool Apply(Control& owner, std::wstring* outError) const override
+		{
+			auto* tabs = dynamic_cast<TabControl*>(&owner);
+			if (!tabs)
+			{
+				if (outError) *outError = L"missing TabControl owner";
+				return false;
+			}
+			try
+			{
+				LastParts = InstallCentralTabTemplate(*tabs);
+				++ApplyCount;
+				if (outError) outError->clear();
+				return true;
+			}
+			catch (...)
+			{
+				if (outError)
+					*outError = L"central TabControl template failed";
+				return false;
+			}
+		}
+
+		std::unique_ptr<Control> Build(
+			std::wstring* outError) const override
+		{
+			if (outError) outError->clear();
+			return std::make_unique<TabControl>();
+		}
+
+		mutable int ApplyCount = 0;
+		mutable TestCentralTabTemplateParts LastParts;
+	};
+
+	struct TestHeaderOnlyTabTemplateParts final
+	{
+		Grid* Root = nullptr;
+		Border* Header = nullptr;
+	};
+
+	TestHeaderOnlyTabTemplateParts InstallHeaderOnlyTabTemplate(
+		TabItem& item,
+		float headerWidth = 96.0f,
+		float headerHeight = 28.0f)
+	{
+		auto root = MakeTestControl<Grid>();
+		auto* rootPointer = root.get();
+		auto header = MakeTestControl<Border>();
+		auto* headerPointer = header.get();
+		headerPointer->Width = headerWidth;
+		headerPointer->Height = headerHeight;
+		cui::framework::TreeAccess::SetTemplatedParent(*rootPointer, &item);
+		cui::framework::TreeAccess::SetTemplatedParent(*headerPointer, &item);
+		rootPointer->AddOwned(std::move(header));
+		if (!cui::framework::TemplateAccess::RegisterTemplatePart(
+			item, MakeTemplatePartToken(L"PART_Header"), headerPointer))
+			throw std::logic_error("failed to register TabItem header");
+		if (cui::framework::TemplateAccess::SetTemplateRoot(
+			item, std::move(root)) != rootPointer)
+			throw std::logic_error("failed to install TabItem template root");
+		return { rootPointer, headerPointer };
+	}
+
 	std::unique_ptr<MenuItem> MakeTestMenuItem(
 		std::wstring header, std::wstring command = {})
 	{
@@ -13671,49 +13799,45 @@ int main()
 		ConfigureTestControl(tabs, 0, 0, 320, 180);
 		tabs.Arrange(cui::core::Rect{ 0.0f, 0.0f, 320.0f, 180.0f });
 		CUI_EXPECT_FALSE(tabs.ClipsChildren());
-		CUI_EXPECT_FALSE(tabs.ShouldHitTestChildrenAt(20, 14));
+		// An empty TabControl reserves no synthetic header strip; its complete
+		// slot remains the (empty) content hit region.
+		CUI_EXPECT_TRUE(tabs.ShouldHitTestChildrenAt(20, 14));
 		CUI_EXPECT_TRUE(tabs.ShouldHitTestChildrenAt(20, 80));
 		CUI_EXPECT_FALSE(tabs.ShouldHitTestChildrenAt(20, 181));
 
-		// Tab headers and selected content share one TabItem visual subtree.
-		// The TabControl itself therefore cannot impose a content-only ancestor
-		// clip: the selected content host owns that viewport locally.
+		// WPF presents one selected page through the TabControl template. TabItem
+		// owns header interaction and logical Content, but no page-local content
+		// presenter or viewport.
+		const auto central = InstallCentralTabTemplate(tabs);
 		auto pageOwner = MakeTestControl<TabItem>(L"Viewport");
 		auto* page = pageOwner.get();
-		auto templateRoot = MakeTestControl<Canvas>();
-		auto* templateRootRaw = templateRoot.get();
-		auto headerOwner = MakeTestControl<Border>();
-		auto* header = headerOwner.get();
-		header->Width = 96.0f;
-		header->Height = 28.0f;
-		auto contentHostOwner = MakeTestControl<ContentPresenter>();
-		auto* contentHost = contentHostOwner.get();
 		auto overflowOwner = MakeTestControl<Panel>();
 		auto* overflow = overflowOwner.get();
-		CUI_EXPECT_TRUE(contentHost->AddOwned(
+		CUI_EXPECT_TRUE(page->SetVisualContent(
 			std::move(overflowOwner)) == overflow);
-		cui::framework::TreeAccess::SetTemplatedParent(
-			*templateRootRaw, page);
-		cui::framework::TreeAccess::SetTemplatedParent(*header, page);
-		cui::framework::TreeAccess::SetTemplatedParent(*contentHost, page);
-		templateRootRaw->AddOwned(std::move(headerOwner));
-		templateRootRaw->AddOwned(std::move(contentHostOwner));
-		CUI_EXPECT_TRUE(TemplateAccess::RegisterTemplatePart(
-			*page, MakeTemplatePartToken(L"PART_Header"), header));
-		CUI_EXPECT_TRUE(TemplateAccess::RegisterTemplatePart(
-			*page, MakeTemplatePartToken(L"PART_SelectedContentHost"),
-			contentHost));
-		CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
-			*page, std::move(templateRoot)) == templateRootRaw);
+		const auto pageTemplate = InstallHeaderOnlyTabTemplate(*page);
 		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		(void)tabs.Measure(viewport);
 		tabs.Arrange(cui::core::Rect{ 0.0f, 0.0f, 320.0f, 180.0f });
-		tabs.UpdateLayout();
+		cui::framework::PresentationAccess::Prepare(tabs);
 
 		CUI_EXPECT_FALSE(tabs.ClipsChildren());
-		CUI_EXPECT_TRUE(contentHost->ClipToBounds);
-		CUI_EXPECT_TRUE(contentHost->ClipsChildren());
-		const auto headerBounds = header->GetAbsoluteRectDip();
-		const auto contentBounds = contentHost->GetAbsoluteRectDip();
+		CUI_EXPECT_TRUE(central.SelectedContentHost->ClipToBounds);
+		CUI_EXPECT_TRUE(central.SelectedContentHost->ClipsChildren());
+		CUI_EXPECT_EQ(1, central.SelectedContentHost->VisualChildCount());
+		CUI_EXPECT_TRUE(
+			central.SelectedContentHost->GetVisualContent() == overflow);
+		CUI_EXPECT_TRUE(overflow->GetVisualParent()
+			== central.SelectedContentHost);
+		CUI_EXPECT_TRUE(overflow->GetLogicalParent() == page);
+		CUI_EXPECT_TRUE(page->FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_SelectedContentHost")) == nullptr);
+		const auto headerBounds = pageTemplate.Header->GetAbsoluteRectDip();
+		const auto contentBounds =
+			central.SelectedContentHost->GetAbsoluteRectDip();
 		CUI_EXPECT_TRUE(headerBounds.height > 0.0f);
 		CUI_EXPECT_TRUE(contentBounds.height > 0.0f);
 		CUI_EXPECT_TRUE(headerBounds.Bottom() <= contentBounds.Top());
@@ -13723,7 +13847,8 @@ int main()
 		CUI_EXPECT_TRUE(tabs.ShouldHitTestChildrenAt(
 			static_cast<int>(headerPoint.x),
 			static_cast<int>(headerPoint.y)));
-		CUI_EXPECT_TRUE(header->IsRenderPointInsideClip(headerPoint));
+		CUI_EXPECT_TRUE(
+			pageTemplate.Header->IsRenderPointInsideClip(headerPoint));
 
 		// Deliberately place selected content across the host's top edge. Its
 		// own geometry contains the header-side point, but the host viewport
@@ -13738,6 +13863,982 @@ int main()
 		CUI_EXPECT_FALSE(overflow->IsRenderPointInsideClip(overflowPoint));
 		CUI_EXPECT_TRUE(overflow->IsRenderPointInsideClip(D2D1::Point2F(
 			contentBounds.x + 4.0f, contentBounds.y + 4.0f)));
+	});
+
+	runner.Add("TabControl central host presents one selected visual page", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto central = InstallCentralTabTemplate(tabs);
+
+		auto firstOwner = MakeTestControl<TabItem>(L"First");
+		auto* first = firstOwner.get();
+		auto firstBodyOwner = MakeTestControl<Grid>();
+		auto* firstBody = firstBodyOwner.get();
+		CUI_EXPECT_TRUE(first->SetVisualContent(
+			std::move(firstBodyOwner)) == firstBody);
+		(void)InstallHeaderOnlyTabTemplate(*first, 92.0f);
+
+		auto secondOwner = MakeTestControl<TabItem>(L"Second");
+		auto* second = secondOwner.get();
+		auto secondBodyOwner = MakeTestControl<Grid>();
+		auto* secondBody = secondBodyOwner.get();
+		CUI_EXPECT_TRUE(second->SetVisualContent(
+			std::move(secondBodyOwner)) == secondBody);
+		(void)InstallHeaderOnlyTabTemplate(*second, 108.0f);
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		auto expectSelectedVisual = [&](int index)
+		{
+			auto* expected = index == 0 ? firstBody : secondBody;
+			auto* hidden = index == 0 ? secondBody : firstBody;
+			auto* expectedPage = index == 0 ? first : second;
+			auto* hiddenPage = index == 0 ? second : first;
+			CUI_EXPECT_EQ(index, tabs.SelectedIndex);
+			CUI_EXPECT_EQ(1, central.SelectedContentHost->VisualChildCount());
+			CUI_EXPECT_TRUE(
+				central.SelectedContentHost->GetVisualContent() == expected);
+			CUI_EXPECT_TRUE(expected->GetVisualParent()
+				== central.SelectedContentHost);
+			CUI_EXPECT_TRUE(expected->GetLogicalParent() == expectedPage);
+			CUI_EXPECT_TRUE(expected->IsVisible);
+			CUI_EXPECT_TRUE(hidden->GetVisualParent() == nullptr);
+			CUI_EXPECT_TRUE(hidden->GetLogicalParent() == hiddenPage);
+			CUI_EXPECT_FALSE(hidden->IsVisible);
+		};
+
+		commitLayout();
+		expectSelectedVisual(0);
+		bool retargetOnHide = true;
+		auto visibilityRetarget = firstBody->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (!retargetOnHide
+					|| !args.NewValue.TryGetBool(current) || current)
+					return;
+				retargetOnHide = false;
+				(void)tabs.SelectItem(0);
+			});
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		commitLayout();
+		CUI_EXPECT_FALSE(retargetOnHide);
+		expectSelectedVisual(0);
+		visibilityRetarget.Disconnect();
+		for (int cycle = 0; cycle < 3; ++cycle)
+		{
+			CUI_EXPECT_TRUE(tabs.SelectItem(1));
+			commitLayout();
+			expectSelectedVisual(1);
+			CUI_EXPECT_TRUE(tabs.SelectItem(0));
+			commitLayout();
+			expectSelectedVisual(0);
+		}
+
+		auto insertedOwner = MakeTestControl<TabItem>(L"Inserted");
+		auto* inserted = insertedOwner.get();
+		bool insertedDuringRestore = false;
+		auto mutationRetarget = firstBody->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (insertedDuringRestore
+					|| !args.NewValue.TryGetBool(current) || current)
+					return;
+				insertedDuringRestore = true;
+				CUI_EXPECT_TRUE(tabs.InsertItem(
+					0, std::move(insertedOwner)) == inserted);
+			});
+		auto detachedSecond = tabs.DetachItemAt(1);
+		mutationRetarget.Disconnect();
+		CUI_EXPECT_TRUE(insertedDuringRestore);
+		CUI_EXPECT_TRUE(detachedSecond.get() == second);
+		CUI_EXPECT_TRUE(tabs.GetItem(0) == inserted);
+		CUI_EXPECT_TRUE(tabs.GetItem(tabs.SelectedIndex) == first);
+		commitLayout();
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			== firstBody);
+		CUI_EXPECT_TRUE(firstBody->IsVisible);
+		CUI_EXPECT_TRUE(secondBody->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(secondBody->GetLogicalParent() == second);
+		CUI_EXPECT_TRUE(secondBody->IsVisible);
+
+		auto* firstAsContent = static_cast<ContentControl*>(first);
+		CUI_EXPECT_TRUE(firstAsContent->GetVisualContent() == firstBody);
+		const ControlWeakReference oldFirstBody(firstBody);
+		auto replacementOwner = MakeTestControl<Grid>();
+		auto* replacement = replacementOwner.get();
+		CUI_EXPECT_TRUE(firstAsContent->SetVisualContent(
+			std::move(replacementOwner)) == replacement);
+		commitLayout();
+		CUI_EXPECT_TRUE(oldFirstBody.Get() == nullptr);
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			== replacement);
+		CUI_EXPECT_TRUE(firstAsContent->GetVisualContent() == replacement);
+		auto detachedReplacement = firstAsContent->DetachVisualContent();
+		CUI_EXPECT_TRUE(detachedReplacement.get() == replacement);
+		CUI_EXPECT_TRUE(replacement->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(replacement->GetLogicalParent() == nullptr);
+		CUI_EXPECT_TRUE(replacement->IsVisible);
+		CUI_EXPECT_EQ(0, central.SelectedContentHost->VisualChildCount());
+
+	});
+
+	runner.Add("TabItem detach releases suppression after callback transfer", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 180);
+		(void)InstallCentralTabTemplate(tabs);
+		auto firstOwner = MakeTestControl<TabItem>(L"First");
+		auto* first = firstOwner.get();
+		auto firstBodyOwner = MakeTestControl<Grid>();
+		CUI_EXPECT_TRUE(first->SetVisualContent(
+			std::move(firstBodyOwner)) != nullptr);
+		(void)InstallHeaderOnlyTabTemplate(*first);
+		auto secondOwner = MakeTestControl<TabItem>(L"Second");
+		auto* second = secondOwner.get();
+		auto secondBodyOwner = MakeTestControl<Grid>();
+		auto* secondBody = secondBodyOwner.get();
+		CUI_EXPECT_TRUE(second->SetVisualContent(
+			std::move(secondBodyOwner)) == secondBody);
+		(void)InstallHeaderOnlyTabTemplate(*second);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		(void)tabs.Measure(viewport);
+		tabs.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 320.0f, 180.0f });
+		cui::framework::PresentationAccess::Prepare(tabs);
+		CUI_EXPECT_FALSE(secondBody->IsVisible);
+
+		Panel alternate;
+		bool transferred = false;
+		auto transfer =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*secondBody,
+				[&](Control*, Control*, Control* current)
+				{
+					if (transferred || current) return;
+					transferred = true;
+					alternate.AdoptVisualChild(secondBody);
+				});
+		auto detached = second->DetachVisualContent();
+		CUI_EXPECT_TRUE(detached == nullptr);
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_TRUE(alternate.ContainsControl(secondBody));
+		CUI_EXPECT_TRUE(secondBody->GetVisualParent() == &alternate);
+		CUI_EXPECT_TRUE(secondBody->IsVisible);
+	});
+
+	runner.Add("TabControl inherited detach releases transferred pages", []
+	{
+		auto exercise = [](bool throwAfterTransfer)
+		{
+			TabControl tabs;
+			ConfigureTestControl(tabs, 0, 0, 320, 180);
+			(void)InstallCentralTabTemplate(tabs);
+			auto firstOwner = MakeTestControl<TabItem>(L"First");
+			auto* first = firstOwner.get();
+			auto firstBodyOwner = MakeTestControl<Grid>();
+			CUI_EXPECT_TRUE(first->SetVisualContent(
+				std::move(firstBodyOwner)) != nullptr);
+			(void)InstallHeaderOnlyTabTemplate(*first);
+			auto secondOwner = MakeTestControl<TabItem>(L"Second");
+			auto* second = secondOwner.get();
+			auto secondBodyOwner = MakeTestControl<Grid>();
+			auto* secondBody = secondBodyOwner.get();
+			CUI_EXPECT_TRUE(second->SetVisualContent(
+				std::move(secondBodyOwner)) == secondBody);
+			(void)InstallHeaderOnlyTabTemplate(*second);
+			CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+			CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+			const cui::core::Constraints viewport{
+				cui::core::Size{ 320.0f, 180.0f },
+				cui::core::Size{ 320.0f, 180.0f } };
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 320.0f, 180.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+			CUI_EXPECT_FALSE(secondBody->IsVisible);
+
+			Panel alternate;
+			bool transferred = false;
+			auto transfer =
+				cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+					*second,
+					[&](Control*, Control*, Control* current)
+					{
+						if (transferred || current) return;
+						transferred = true;
+						alternate.AdoptVisualChild(second);
+						if (throwAfterTransfer)
+							throw std::runtime_error("transfer observer");
+					});
+			ItemsControl* items = &tabs;
+			bool threw = false;
+			std::unique_ptr<Control> detached;
+			try { detached = items->DetachItemControlAt(1); }
+			catch (const std::runtime_error&) { threw = true; }
+			CUI_EXPECT_EQ(throwAfterTransfer, threw);
+			CUI_EXPECT_TRUE(detached == nullptr);
+			CUI_EXPECT_TRUE(transferred);
+			CUI_EXPECT_TRUE(alternate.ContainsControl(second));
+			CUI_EXPECT_TRUE(secondBody->IsVisible);
+			CUI_EXPECT_EQ(1ULL, tabs.ItemCount());
+		};
+		exercise(false);
+		exercise(true);
+	});
+
+	runner.Add("TabItem content replacement survives reentrant page removal", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 180);
+		(void)InstallCentralTabTemplate(tabs);
+		auto pageOwner = MakeTestControl<TabItem>(L"Disposable");
+		auto* page = pageOwner.get();
+		auto oldBodyOwner = MakeTestControl<Grid>();
+		auto* oldBody = oldBodyOwner.get();
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(oldBodyOwner)) == oldBody);
+		(void)InstallHeaderOnlyTabTemplate(*page);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		(void)tabs.Measure(viewport);
+		tabs.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 320.0f, 180.0f });
+		cui::framework::PresentationAccess::Prepare(tabs);
+
+		auto replacementOwner = MakeTestControl<Grid>();
+		auto* replacement = replacementOwner.get();
+		const ControlWeakReference pageLifetime(page);
+		const ControlWeakReference replacementLifetime(replacement);
+		bool removed = false;
+		auto removePage = replacement->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (removed || !args.NewValue.TryGetBool(current) || current)
+					return;
+				removed = true;
+				CUI_EXPECT_TRUE(tabs.RemoveItem(page));
+			});
+		auto* result = page->SetVisualContent(std::move(replacementOwner));
+		CUI_EXPECT_TRUE(removed);
+		CUI_EXPECT_TRUE(result == nullptr);
+		CUI_EXPECT_TRUE(pageLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(replacementLifetime.Get() == nullptr);
+		CUI_EXPECT_EQ(0ULL, tabs.ItemCount());
+	});
+
+	runner.Add("TabControl reapplies its central host without losing visual content", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto originalTemplate = InstallCentralTabTemplate(tabs);
+
+		auto firstOwner = MakeTestControl<TabItem>(L"First");
+		auto* first = firstOwner.get();
+		auto firstBodyOwner = MakeTestControl<Panel>();
+		auto* firstBody = firstBodyOwner.get();
+		CUI_EXPECT_TRUE(first->SetVisualContent(
+			std::move(firstBodyOwner)) == firstBody);
+		(void)InstallHeaderOnlyTabTemplate(*first);
+
+		auto secondOwner = MakeTestControl<TabItem>(L"Second");
+		auto* second = secondOwner.get();
+		auto secondBodyOwner = MakeTestControl<Panel>();
+		auto* secondBody = secondBodyOwner.get();
+		CUI_EXPECT_TRUE(second->SetVisualContent(
+			std::move(secondBodyOwner)) == secondBody);
+		(void)InstallHeaderOnlyTabTemplate(*second);
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		commitLayout();
+		CUI_EXPECT_EQ(1, tabs.SelectedIndex);
+		CUI_EXPECT_TRUE(originalTemplate.SelectedContentHost
+			->GetVisualContent() == secondBody);
+		CUI_EXPECT_TRUE(secondBody->GetLogicalParent() == second);
+
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(tabs);
+		CUI_EXPECT_TRUE(detachedRoot.get() == originalTemplate.Root);
+		CUI_EXPECT_EQ(0,
+			originalTemplate.SelectedContentHost->VisualChildCount());
+		CUI_EXPECT_TRUE(secondBody->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(secondBody->GetLogicalParent() == second);
+		CUI_EXPECT_FALSE(secondBody->IsVisible);
+
+		const auto replacementTemplate = InstallCentralTabTemplate(tabs);
+		commitLayout();
+		CUI_EXPECT_EQ(1, tabs.SelectedIndex);
+		CUI_EXPECT_EQ(1,
+			replacementTemplate.SelectedContentHost->VisualChildCount());
+		CUI_EXPECT_TRUE(replacementTemplate.SelectedContentHost
+			->GetVisualContent() == secondBody);
+		CUI_EXPECT_TRUE(secondBody->GetVisualParent()
+			== replacementTemplate.SelectedContentHost);
+		CUI_EXPECT_TRUE(secondBody->GetLogicalParent() == second);
+		CUI_EXPECT_TRUE(secondBody->IsVisible);
+		CUI_EXPECT_TRUE(firstBody->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(firstBody->GetLogicalParent() == first);
+		CUI_EXPECT_FALSE(firstBody->IsVisible);
+		CUI_EXPECT_EQ(0,
+			originalTemplate.SelectedContentHost->VisualChildCount());
+	});
+
+	runner.Add("TabControl revalidates central host after selected visual detach callback", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto originalTemplate = InstallCentralTabTemplate(tabs);
+		const ControlWeakReference originalRootLifetime(
+			originalTemplate.Root);
+		const ControlWeakReference originalHostLifetime(
+			originalTemplate.SelectedContentHost);
+
+		auto pageOwner = MakeTestControl<TabItem>(L"Direct page");
+		auto* page = pageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		const ControlWeakReference pageLifetime(page);
+		const ControlWeakReference bodyLifetime(body);
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(bodyOwner)) == body);
+
+		bool detachedHost = false;
+		bool detachedRootReturned = false;
+		auto detachHost =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*body,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (detachedHost || previous != page || current) return;
+					detachedHost = true;
+					auto detachedRoot =
+						TemplateAccess::DetachTemplateRoot(tabs);
+					detachedRootReturned =
+						detachedRoot.get() == originalTemplate.Root;
+					detachedRoot.reset();
+				});
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		commitLayout();
+		detachHost.Disconnect();
+
+		CUI_EXPECT_TRUE(detachedHost);
+		CUI_EXPECT_TRUE(detachedRootReturned);
+		CUI_EXPECT_TRUE(originalRootLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(originalHostLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(tabs) == nullptr);
+		CUI_EXPECT_TRUE(pageLifetime.Get() == page);
+		CUI_EXPECT_TRUE(bodyLifetime.Get() == body);
+		CUI_EXPECT_TRUE(page->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body->GetVisualParent() == page);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == page);
+
+		const auto replacementTemplate = InstallCentralTabTemplate(tabs);
+		commitLayout();
+		CUI_EXPECT_TRUE(replacementTemplate.SelectedContentHost
+			->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body->GetVisualParent()
+			== replacementTemplate.SelectedContentHost);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == page);
+		CUI_EXPECT_TRUE(body->IsVisible);
+	});
+
+	runner.Add("TabControl releases suppression after selected visual detach transfer", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto central = InstallCentralTabTemplate(tabs);
+
+		auto pageOwner = MakeTestControl<TabItem>(L"Transferred page");
+		auto* page = pageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(bodyOwner)) == body);
+
+		Panel alternate;
+		bool transferred = false;
+		auto transfer =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*body,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (transferred || previous != page || current) return;
+					bool logicalOwnershipCommit = false;
+					cui::framework::TreeAccess::SetLogicalParent(
+						*body, nullptr, &logicalOwnershipCommit);
+					transferred =
+						alternate.AdoptVisualChild(body) == body;
+				});
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		(void)tabs.Measure(viewport);
+		tabs.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 360.0f, 220.0f });
+		cui::framework::PresentationAccess::Prepare(tabs);
+		transfer.Disconnect();
+
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_TRUE(alternate.ContainsControl(body));
+		CUI_EXPECT_TRUE(body->GetVisualParent() == &alternate);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == &alternate);
+		CUI_EXPECT_TRUE(body->IsVisible);
+		CUI_EXPECT_EQ(0, central.SelectedContentHost->VisualChildCount());
+	});
+
+	runner.Add("TabControl restores selected visual when owner dies during detach", []
+	{
+		auto tabsOwner = std::make_unique<TabControl>();
+		auto* tabs = tabsOwner.get();
+		const ControlWeakReference tabsLifetime(tabs);
+		ConfigureTestControl(*tabs, 0, 0, 360, 220);
+
+		auto pageOwner = MakeTestControl<TabItem>(L"Retained page");
+		auto* page = pageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		const ControlWeakReference pageLifetime(page);
+		const ControlWeakReference bodyLifetime(body);
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(bodyOwner)) == body);
+		CUI_EXPECT_TRUE(tabs->AddItem(std::move(pageOwner)) == page);
+		const auto central = InstallCentralTabTemplate(*tabs);
+		const ControlWeakReference rootLifetime(central.Root);
+		const ControlWeakReference hostLifetime(
+			central.SelectedContentHost);
+
+		std::unique_ptr<Control> retainedPage;
+		bool ownerDestroyed = false;
+		auto destroyOwner =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*body,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (ownerDestroyed || previous != page || current) return;
+					retainedPage = tabs->DetachItem(page);
+					if (retainedPage.get() != page) return;
+					ownerDestroyed = true;
+					tabsOwner.reset();
+				});
+
+		auto fallbackTemplate =
+			std::make_shared<TestItemTemplate>(L"Fallback");
+		tabs->SetContentTemplate(
+			ItemTemplateReference(fallbackTemplate));
+		destroyOwner.Disconnect();
+
+		CUI_EXPECT_TRUE(ownerDestroyed);
+		CUI_EXPECT_TRUE(tabsLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(rootLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(hostLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(retainedPage.get() == page);
+		CUI_EXPECT_TRUE(pageLifetime.Get() == page);
+		CUI_EXPECT_TRUE(bodyLifetime.Get() == body);
+		CUI_EXPECT_TRUE(page->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body->GetVisualParent() == page);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == page);
+		CUI_EXPECT_TRUE(body->IsVisible);
+	});
+
+	runner.Add("TabControl switches between visual and data content lanes", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto central = InstallCentralTabTemplate(tabs);
+
+		auto visualPageOwner = MakeTestControl<TabItem>(L"Visual");
+		auto* visualPage = visualPageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		CUI_EXPECT_TRUE(visualPage->SetVisualContent(
+			std::move(bodyOwner)) == body);
+		(void)InstallHeaderOnlyTabTemplate(*visualPage);
+
+		auto dataPageOwner = MakeTestControl<TabItem>(L"Data");
+		auto* dataPage = dataPageOwner.get();
+		dataPage->SetContent(BindingValue(std::wstring(L"Data page")));
+		(void)InstallHeaderOnlyTabTemplate(*dataPage);
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(visualPageOwner))
+			== visualPage);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(dataPageOwner)) == dataPage);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+
+		commitLayout();
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			== body);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == visualPage);
+
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		commitLayout();
+		std::wstring selectedText;
+		std::wstring hostText;
+		CUI_EXPECT_TRUE(tabs.GetSelectedContent().TryGet(selectedText));
+		CUI_EXPECT_TRUE(
+			central.SelectedContentHost->GetContent().TryGet(hostText));
+		CUI_EXPECT_EQ(std::wstring(L"Data page"), selectedText);
+		CUI_EXPECT_EQ(std::wstring(L"Data page"), hostText);
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			!= body);
+		CUI_EXPECT_TRUE(body->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == visualPage);
+		CUI_EXPECT_FALSE(body->IsVisible);
+
+		CUI_EXPECT_TRUE(tabs.SelectItem(0));
+		commitLayout();
+		CUI_EXPECT_TRUE(tabs.GetSelectedContent().Empty());
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetContent().Empty());
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			== body);
+		CUI_EXPECT_TRUE(body->GetVisualParent()
+			== central.SelectedContentHost);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == visualPage);
+		CUI_EXPECT_TRUE(body->IsVisible);
+	});
+
+	runner.Add("TabControl swaps typed selected data pairs atomically", []
+	{
+		constexpr auto personType = MakeDataTypeToken(L"Person");
+		constexpr auto orderType = MakeDataTypeToken(L"Order");
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(
+			L"Name", std::wstring(L"Bob")));
+		auto personTemplate = std::make_shared<TestItemTemplate>(L"Person");
+		auto alternatePersonTemplate =
+			std::make_shared<TestItemTemplate>(L"Person");
+		auto orderTemplate = std::make_shared<TestItemTemplate>(L"Order");
+
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto central = InstallCentralTabTemplate(tabs);
+		auto personPageOwner = MakeTestControl<TabItem>(L"Person");
+		auto* personPage = personPageOwner.get();
+		personPage->SetContentTypeToken(personType);
+		personPage->SetContentTemplate(
+			ItemTemplateReference(personTemplate));
+		personPage->SetContent(BindingValue(
+			BindingSourceReference(alice)));
+		(void)InstallHeaderOnlyTabTemplate(*personPage);
+		auto orderPageOwner = MakeTestControl<TabItem>(L"Order");
+		auto* orderPage = orderPageOwner.get();
+		orderPage->SetContentTypeToken(orderType);
+		orderPage->SetContentTemplate(ItemTemplateReference(orderTemplate));
+		orderPage->SetContent(BindingValue(BindingSourceReference(bob)));
+		(void)InstallHeaderOnlyTabTemplate(*orderPage);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(personPageOwner))
+			== personPage);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(orderPageOwner)) == orderPage);
+
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		auto expectDataPair = [&](int selectedIndex,
+			DataTypeToken expectedType,
+			const std::shared_ptr<const IItemTemplate>& expectedTemplate,
+			const std::shared_ptr<IBindingSource>& expectedSource,
+			const std::wstring& expectedText)
+		{
+			CUI_EXPECT_EQ(selectedIndex, tabs.SelectedIndex);
+			CUI_EXPECT_EQ(expectedType.Value,
+				central.SelectedContentHost->GetContentTypeToken().Value);
+			CUI_EXPECT_TRUE(central.SelectedContentHost
+				->GetContentTemplate().Get() == expectedTemplate.get());
+			BindingSourceReference selectedSource;
+			BindingSourceReference hostSource;
+			CUI_EXPECT_TRUE(tabs.GetSelectedContent().TryGet(selectedSource));
+			CUI_EXPECT_TRUE(central.SelectedContentHost
+				->GetContent().TryGet(hostSource));
+			CUI_EXPECT_TRUE(selectedSource.Shared() == expectedSource);
+			CUI_EXPECT_TRUE(hostSource.Shared() == expectedSource);
+			auto* label = dynamic_cast<Label*>(
+				central.SelectedContentHost->GetGeneratedContent());
+			CUI_EXPECT_TRUE(label != nullptr);
+			CUI_EXPECT_EQ(expectedText,
+				label ? label->Text : std::wstring{});
+			CUI_EXPECT_TRUE(central.SelectedContentHost
+				->LastTemplateError().empty());
+		};
+
+		commitLayout();
+		expectDataPair(0, personType, personTemplate, alice, L"Alice");
+
+		// A stable selected TabItem publishes Content and ContentTemplate
+		// immediately; no layout/Prepare pass is needed to refresh the owner or
+		// its central presenter.
+		auto alicia = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alicia->DefineProperty(
+			L"Name", std::wstring(L"Alicia")));
+		personPage->SetContent(BindingValue(
+			BindingSourceReference(alicia)));
+		expectDataPair(0, personType, personTemplate, alicia, L"Alicia");
+		personPage->SetContentTemplate(
+			ItemTemplateReference(alternatePersonTemplate));
+		expectDataPair(0, personType,
+			alternatePersonTemplate, alicia, L"Alicia");
+
+		// Retargeting selection from the first selected-value notification must
+		// prevent the stale second half of the Order pair from being published.
+		bool retargetOnOrderTemplate = true;
+		auto retarget = tabs.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				if (!retargetOnOrderTemplate
+					|| args.Property
+						!= &TabControl::SelectedContentTemplateProperty())
+					return;
+				ItemTemplateReference next;
+				if (!args.NewValue.TryGet(next)
+					|| next.Get() != orderTemplate.get()) return;
+				retargetOnOrderTemplate = false;
+				CUI_EXPECT_TRUE(tabs.SelectItem(0));
+			});
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		CUI_EXPECT_FALSE(retargetOnOrderTemplate);
+		expectDataPair(0, personType,
+			alternatePersonTemplate, alicia, L"Alicia");
+		retarget.Disconnect();
+
+		auto robert = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(robert->DefineProperty(
+			L"Name", std::wstring(L"Robert")));
+		bool mutateNewPageDuringPublication = true;
+		auto mutateNewPage = tabs.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				if (!mutateNewPageDuringPublication
+					|| args.Property
+						!= &TabControl::SelectedContentTemplateProperty())
+					return;
+				ItemTemplateReference next;
+				if (!args.NewValue.TryGet(next)
+					|| next.Get() != orderTemplate.get()) return;
+				mutateNewPageDuringPublication = false;
+				orderPage->SetContent(BindingValue(
+					BindingSourceReference(robert)));
+			});
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		CUI_EXPECT_FALSE(mutateNewPageDuringPublication);
+		mutateNewPage.Disconnect();
+		expectDataPair(1, orderType, orderTemplate, robert, L"Robert");
+	});
+
+	runner.Add("TabControl retains equal data pair and observes replacement page", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 180);
+		const auto central = InstallCentralTabTemplate(tabs);
+		auto firstOwner = MakeTestControl<TabItem>(L"First");
+		auto* first = firstOwner.get();
+		first->SetContent(BindingValue(std::wstring(L"Shared")));
+		(void)InstallHeaderOnlyTabTemplate(*first);
+		auto secondOwner = MakeTestControl<TabItem>(L"Second");
+		auto* second = secondOwner.get();
+		second->SetContent(BindingValue(std::wstring(L"Shared")));
+		(void)InstallHeaderOnlyTabTemplate(*second);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		(void)tabs.Measure(viewport);
+		tabs.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 320.0f, 180.0f });
+		cui::framework::PresentationAccess::Prepare(tabs);
+		auto expectHostText = [&](const std::wstring& expected)
+		{
+			std::wstring ownerText;
+			std::wstring hostText;
+			CUI_EXPECT_TRUE(tabs.GetSelectedContent().TryGet(ownerText));
+			CUI_EXPECT_TRUE(central.SelectedContentHost
+				->GetContent().TryGet(hostText));
+			CUI_EXPECT_EQ(expected, ownerText);
+			CUI_EXPECT_EQ(expected, hostText);
+			auto* label = dynamic_cast<Label*>(
+				central.SelectedContentHost->GetGeneratedContent());
+			CUI_EXPECT_TRUE(label != nullptr);
+			CUI_EXPECT_EQ(expected,
+				label ? label->Text : std::wstring{});
+		};
+		expectHostText(L"Shared");
+		auto detached = tabs.DetachItem(first);
+		CUI_EXPECT_TRUE(detached.get() == first);
+		CUI_EXPECT_TRUE(tabs.GetItem(0) == second);
+		CUI_EXPECT_EQ(0, tabs.SelectedIndex);
+		// Equal selected DP values do not notify TemplateBinding. The existing
+		// data visual must therefore remain committed across the identity-only
+		// switch instead of being vacated and waiting for a notification.
+		expectHostText(L"Shared");
+		second->SetContent(BindingValue(std::wstring(L"Updated")));
+		// Mutation reconciliation must have moved the observation from the
+		// detached-but-still-alive first page to the replacement selection.
+		expectHostText(L"Updated");
+	});
+
+	runner.Add("TabControl survives page removal while parking selected content", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 180);
+		const auto central = InstallCentralTabTemplate(tabs);
+		auto pageOwner = MakeTestControl<TabItem>(L"Disposable");
+		auto* page = pageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		const ControlWeakReference pageLifetime(page);
+		const ControlWeakReference bodyLifetime(body);
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(bodyOwner)) == body);
+		(void)InstallHeaderOnlyTabTemplate(*page);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		(void)tabs.Measure(viewport);
+		tabs.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 320.0f, 180.0f });
+		cui::framework::PresentationAccess::Prepare(tabs);
+		CUI_EXPECT_TRUE(central.SelectedContentHost->GetVisualContent()
+			== body);
+
+		bool removedDuringSuppression = false;
+		auto removePage = body->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (removedDuringSuppression
+					|| !args.NewValue.TryGetBool(current) || current)
+					return;
+				removedDuringSuppression = true;
+				CUI_EXPECT_TRUE(tabs.RemoveItem(page));
+			});
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(tabs);
+		removePage.Disconnect();
+		CUI_EXPECT_TRUE(detachedRoot.get() == central.Root);
+		CUI_EXPECT_TRUE(removedDuringSuppression);
+		CUI_EXPECT_TRUE(pageLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(bodyLifetime.Get() == nullptr);
+		CUI_EXPECT_EQ(0, central.SelectedContentHost->VisualChildCount());
+		CUI_EXPECT_EQ(0ULL, tabs.ItemCount());
+		CUI_EXPECT_EQ(-1, tabs.SelectedIndex);
+		CUI_EXPECT_TRUE(tabs.GetSelectedItem().Empty());
+		CUI_EXPECT_TRUE(tabs.GetSelectedContent().Empty());
+	});
+
+	runner.Add("TabControl defers reentrant template detach while parking selected content", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 180);
+		const auto originalTemplate = InstallCentralTabTemplate(tabs);
+		auto pageOwner = MakeTestControl<TabItem>(L"Reentrant detach");
+		auto* page = pageOwner.get();
+		auto bodyOwner = MakeTestControl<Grid>();
+		auto* body = bodyOwner.get();
+		const ControlWeakReference pageLifetime(page);
+		const ControlWeakReference bodyLifetime(body);
+		CUI_EXPECT_TRUE(page->SetVisualContent(
+			std::move(bodyOwner)) == body);
+		(void)InstallHeaderOnlyTabTemplate(*page);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 180.0f },
+			cui::core::Size{ 320.0f, 180.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 320.0f, 180.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		commitLayout();
+		CUI_EXPECT_TRUE(originalTemplate.SelectedContentHost
+			->GetVisualContent() == body);
+
+		bool nestedDetachAttempted = false;
+		auto detachAgain = body->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (nestedDetachAttempted
+					|| !args.NewValue.TryGetBool(current) || current)
+					return;
+				nestedDetachAttempted = true;
+				// Deliberately discard the nested ownership result. Before the
+				// reentrancy guard this destroyed the center host and page body.
+				(void)TemplateAccess::DetachTemplateRoot(tabs);
+			});
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(tabs);
+		detachAgain.Disconnect();
+		CUI_EXPECT_TRUE(nestedDetachAttempted);
+		CUI_EXPECT_TRUE(detachedRoot.get() == originalTemplate.Root);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(tabs) == nullptr);
+		CUI_EXPECT_TRUE(pageLifetime.Get() == page);
+		CUI_EXPECT_TRUE(bodyLifetime.Get() == body);
+		CUI_EXPECT_EQ(0,
+			originalTemplate.SelectedContentHost->VisualChildCount());
+		CUI_EXPECT_TRUE(page->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == page);
+		CUI_EXPECT_FALSE(body->IsVisible);
+
+		const auto replacementTemplate = InstallCentralTabTemplate(tabs);
+		commitLayout();
+		CUI_EXPECT_TRUE(replacementTemplate.SelectedContentHost
+			->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body->GetVisualParent()
+			== replacementTemplate.SelectedContentHost);
+		CUI_EXPECT_TRUE(body->GetLogicalParent() == page);
+		CUI_EXPECT_TRUE(body->IsVisible);
+	});
+
+	runner.Add("TabControl reapplies Template changed by page hide callback", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 360, 220);
+		const auto originalTemplate = InstallCentralTabTemplate(tabs);
+		const ControlWeakReference originalRootLifetime(
+			originalTemplate.Root);
+
+		auto firstOwner = MakeTestControl<TabItem>(L"First");
+		auto* first = firstOwner.get();
+		auto firstBodyOwner = MakeTestControl<Grid>();
+		auto* firstBody = firstBodyOwner.get();
+		const ControlWeakReference firstBodyLifetime(firstBody);
+		CUI_EXPECT_TRUE(first->SetVisualContent(
+			std::move(firstBodyOwner)) == firstBody);
+		(void)InstallHeaderOnlyTabTemplate(*first);
+
+		auto secondOwner = MakeTestControl<TabItem>(L"Second");
+		auto* second = secondOwner.get();
+		auto secondBodyOwner = MakeTestControl<Grid>();
+		auto* secondBody = secondBodyOwner.get();
+		const ControlWeakReference secondBodyLifetime(secondBody);
+		CUI_EXPECT_TRUE(second->SetVisualContent(
+			std::move(secondBodyOwner)) == secondBody);
+		(void)InstallHeaderOnlyTabTemplate(*second);
+
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(firstOwner)) == first);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(secondOwner)) == second);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		auto commitLayout = [&]
+		{
+			(void)tabs.Measure(viewport);
+			tabs.Arrange(cui::core::Rect{
+				0.0f, 0.0f, 360.0f, 220.0f });
+			cui::framework::PresentationAccess::Prepare(tabs);
+		};
+		commitLayout();
+		CUI_EXPECT_TRUE(originalTemplate.SelectedContentHost
+			->GetVisualContent() == firstBody);
+
+		auto replacement = std::make_shared<ProbeCentralTabTemplate>();
+		const ControlTemplateReference replacementReference(replacement);
+		bool templateChangedWhileHiding = false;
+		auto changeTemplate = firstBody->IsVisibleChanged.Subscribe(
+			[&](DependencyObject*,
+				const DependencyPropertyChangedEventArgs& args)
+			{
+				bool current = true;
+				if (templateChangedWhileHiding
+					|| !args.NewValue.TryGetBool(current) || current)
+					return;
+				templateChangedWhileHiding = true;
+				tabs.SetTemplate(replacementReference);
+			});
+		CUI_EXPECT_TRUE(tabs.SelectItem(1));
+		changeTemplate.Disconnect();
+		CUI_EXPECT_TRUE(templateChangedWhileHiding);
+		CUI_EXPECT_TRUE(originalRootLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(tabs) == nullptr);
+		CUI_EXPECT_TRUE(firstBodyLifetime.Get() == firstBody);
+		CUI_EXPECT_TRUE(secondBodyLifetime.Get() == secondBody);
+		CUI_EXPECT_TRUE(firstBody->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(firstBody->GetLogicalParent() == first);
+		CUI_EXPECT_FALSE(firstBody->IsVisible);
+
+		CUI_EXPECT_TRUE(tabs.ApplyTemplate());
+		CUI_EXPECT_EQ(1, replacement->ApplyCount);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(tabs)
+			== replacement->LastParts.Root);
+		commitLayout();
+		CUI_EXPECT_EQ(1, tabs.SelectedIndex);
+		CUI_EXPECT_TRUE(replacement->LastParts.SelectedContentHost
+			->GetVisualContent() == secondBody);
+		CUI_EXPECT_TRUE(secondBody->GetVisualParent()
+			== replacement->LastParts.SelectedContentHost);
+		CUI_EXPECT_TRUE(secondBody->GetLogicalParent() == second);
+		CUI_EXPECT_TRUE(secondBody->IsVisible);
+		CUI_EXPECT_TRUE(firstBodyLifetime.Get() == firstBody);
+		CUI_EXPECT_TRUE(firstBody->GetLogicalParent() == first);
 	});
 
 	runner.Add("Popup placement target owns its toggle input transaction", []
@@ -22268,6 +23369,140 @@ int main()
 		CUI_EXPECT_FALSE(CuiRuntime::XamlObjectMaterializer::Materialize(
 			recursiveDocument, rejectedTree, &error));
 		CUI_EXPECT_TRUE(error.find(L"递归") != std::wstring::npos);
+	});
+
+	runner.Add("TabControl XAML pipeline projects header-only visual content", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="TabPipelineWindow">
+  <Window.Resources>
+    <ControlTemplate x:Key="CentralTabs" TargetType="TabControl">
+      <DockPanel x:Name="tabRoot" LastChildFill="true">
+        <ItemsPresenter x:Name="PART_ItemsPresenter"
+                        DockPanel.Dock="Top" />
+        <ContentPresenter x:Name="PART_SelectedContentHost"
+                          ClipToBounds="true"
+                          Content="{TemplateBinding SelectedContent}"
+                          ContentTemplate="{TemplateBinding SelectedContentTemplate}" />
+      </DockPanel>
+    </ControlTemplate>
+    <ControlTemplate x:Key="HeaderOnlyTab" TargetType="TabItem">
+      <Grid x:Name="headerRoot">
+        <Border x:Name="PART_Header">
+          <ContentPresenter x:Name="PART_HeaderPresenter"
+                            ContentSource="Header" />
+        </Border>
+      </Grid>
+    </ControlTemplate>
+  </Window.Resources>
+  <TabControl x:Name="tabs" DesignId="1"
+              Width="320" Height="180"
+              Template="{StaticResource CentralTabs}">
+    <TabItem x:Name="page" DesignId="2" Header="Visual page"
+             Template="{StaticResource HeaderOnlyTab}">
+      <Grid x:Name="body" DesignId="3" />
+    </TabItem>
+  </TabControl>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto tabsTemplate = std::find_if(
+			document.ControlTemplates.begin(),
+			document.ControlTemplates.end(), [](const auto& candidate)
+			{ return candidate.Key == L"CentralTabs"; });
+		CUI_EXPECT_TRUE(tabsTemplate != document.ControlTemplates.end());
+		const DesignerModel::DesignNode* hostNode = nullptr;
+		if (tabsTemplate != document.ControlTemplates.end())
+		{
+			const auto found = std::find_if(
+				tabsTemplate->Template.begin(), tabsTemplate->Template.end(),
+				[](const auto& node)
+				{ return node.Name == L"PART_SelectedContentHost"; });
+			if (found != tabsTemplate->Template.end()) hostNode = &*found;
+		}
+		CUI_EXPECT_TRUE(hostNode != nullptr);
+		if (hostNode)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"SelectedContent"),
+				hostNode->TemplateBindings.at(L"Content"));
+			CUI_EXPECT_EQ(std::wstring(L"SelectedContentTemplate"),
+				hostNode->TemplateBindings.at(L"ContentTemplate"));
+		}
+		const auto itemTemplate = std::find_if(
+			document.ControlTemplates.begin(),
+			document.ControlTemplates.end(), [](const auto& candidate)
+			{ return candidate.Key == L"HeaderOnlyTab"; });
+		CUI_EXPECT_TRUE(itemTemplate != document.ControlTemplates.end());
+		CUI_EXPECT_FALSE(itemTemplate != document.ControlTemplates.end()
+			&& std::any_of(
+				itemTemplate->Template.begin(), itemTemplate->Template.end(),
+				[](const auto& node)
+				{ return node.TemplateContentSource == L"Content"; }));
+
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto controlById = [&](int id) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[id](const auto& control)
+				{
+					return control && control->StableId == id;
+				});
+			return found == tree.Controls.end() || !*found
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* tabs = dynamic_cast<TabControl*>(controlById(1));
+		CUI_EXPECT_TRUE(tabs != nullptr);
+		auto* page = dynamic_cast<TabItem*>(controlById(2));
+		auto* body = dynamic_cast<Grid*>(controlById(3));
+		auto* host = tabs ? dynamic_cast<ContentPresenter*>(
+			tabs->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_SelectedContentHost"))) : nullptr;
+		CUI_EXPECT_TRUE(page != nullptr);
+		CUI_EXPECT_TRUE(body != nullptr);
+		CUI_EXPECT_TRUE(host != nullptr);
+		if (tabs)
+		{
+			const cui::core::Constraints viewport{
+				cui::core::Size{ 320.0f, 180.0f },
+				cui::core::Size{ 320.0f, 180.0f } };
+			(void)tabs->Measure(viewport);
+			tabs->Arrange(cui::core::Rect{
+				0.0f, 0.0f, 320.0f, 180.0f });
+			cui::framework::PresentationAccess::Prepare(*tabs);
+		}
+		CUI_EXPECT_TRUE(host && host->GetVisualContent() == body);
+		CUI_EXPECT_TRUE(body && body->GetVisualParent() == host);
+		CUI_EXPECT_TRUE(body && body->GetLogicalParent() == page);
+
+		const auto source = CodeGenerator(
+			L"TabPipelineWindow", document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("TabPipelineWindow");
+		CUI_EXPECT_TRUE(source.find(
+			"TabControl::SelectedContentProperty()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"TabControl::SelectedContentTemplateProperty()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"ContentPresenter::ContentProperty()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"ContentPresenter::ContentTemplateProperty()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DataBindings.AddTemplateBinding(L\"")
+			== std::string::npos);
 	});
 
 	runner.Add("ControlTemplate ContentSource owns Content and Header slots", []

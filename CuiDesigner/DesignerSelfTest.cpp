@@ -7949,101 +7949,101 @@ bool RunDesignerSelfTest(std::wstring& report)
 				&& gradient->GetPropertyValueSource(L"RenderTransform")
 					== DependencyPropertyValueSource::Style;
 		}
-		bool surfaceChildMoveStable = false;
-		if (auto basicButton = demoApplied
-			? FindControl(demoCanvas, L"basicButton") : nullptr;
-			basicButton && basicButton->ControlInstance)
+		bool wpfLayoutMaterialized = false;
+		std::wstring wpfLayoutDetail;
+		if (demoApplied)
 		{
-			auto* control = basicButton->ControlInstance;
-			const cui::core::Point beforeLocation{
-				Canvas::GetLeft(*(control)), Canvas::GetTop(*(control)) };
-			const auto beforeWidth = control->Width;
-			const auto beforeHeight = control->Height;
-			const auto beforeAbsolute = control->GetAbsoluteLocationDip();
-			demoCanvas.RestoreSelectionByNames(
-				{ basicButton->Name }, basicButton->Name, false);
-			const auto moved = demoCanvas.NudgeSelectionBy(1, 1);
-			const auto afterAbsolute = control->GetAbsoluteLocationDip();
-			surfaceChildMoveStable = moved.HasChanges()
-				&& Canvas::GetLeft(*(control)) == beforeLocation.x + 1.0f
-				&& Canvas::GetTop(*(control)) == beforeLocation.y + 1.0f
-				&& control->Width == beforeWidth
-				&& control->Height == beforeHeight
-				&& std::fabs(afterAbsolute.x - beforeAbsolute.x - 1.0f) < 0.01f
-				&& std::fabs(afterAbsolute.y - beforeAbsolute.y - 1.0f) < 0.01f;
-		}
-		bool transformedChildMoveStable = false;
-		if (auto gradientLabel = demoApplied
-			? FindControl(demoCanvas, L"gradientLabel") : nullptr;
-			gradientLabel && gradientLabel->ControlInstance)
-		{
-			auto* control = gradientLabel->ControlInstance;
-			const cui::core::Point beforeLocation{
-				Canvas::GetLeft(*(control)), Canvas::GetTop(*(control)) };
-			const auto beforeWidth = control->Width;
-			const auto beforeHeight = control->Height;
-			demoCanvas.RestoreSelectionByNames(
-				{ gradientLabel->Name }, gradientLabel->Name, false);
-			const auto moved = demoCanvas.NudgeSelectionBy(1, 0);
-			transformedChildMoveStable = moved.HasChanges()
-				&& Canvas::GetLeft(*(control)) == beforeLocation.x + 1.0f
-				&& Canvas::GetTop(*(control)) == beforeLocation.y
-				&& control->Width == beforeWidth
-				&& control->Height == beforeHeight;
-		}
-		std::wstring groupMoveDetail;
-		std::wstring expanderMoveDetail;
-		const auto nestedContainerChildMoveStable =
-			[&](const std::wstring& name, std::wstring& detail)
+			auto surfaceWrapper = FindControl(demoCanvas, L"basicSurface");
+			auto titleWrapper = FindControl(demoCanvas, L"basicTitle");
+			auto hintWrapper = FindControl(demoCanvas, L"frameworkThemeHint");
+			auto buttonWrapper = FindControl(demoCanvas, L"basicButton");
+			auto gradientWrapper = FindControl(demoCanvas, L"gradientLabel");
+			auto groupWrapper = FindControl(demoCanvas, L"groupName");
+			auto expanderWrapper = FindControl(demoCanvas, L"expanderText");
+			auto* surface = surfaceWrapper
+				? dynamic_cast<Grid*>(surfaceWrapper->ControlInstance) : nullptr;
+			auto* title = titleWrapper ? titleWrapper->ControlInstance : nullptr;
+			auto* hint = hintWrapper ? hintWrapper->ControlInstance : nullptr;
+			auto* button = buttonWrapper ? buttonWrapper->ControlInstance : nullptr;
+			auto* gradient = gradientWrapper ? gradientWrapper->ControlInstance : nullptr;
+			auto* groupName = groupWrapper ? groupWrapper->ControlInstance : nullptr;
+			auto* expanderText = expanderWrapper
+				? expanderWrapper->ControlInstance : nullptr;
+			const auto hasAncestor = [](Control* control, UIClass type)
 			{
-				auto wrapper = demoApplied
-					? FindControl(demoCanvas, name) : nullptr;
-				if (!wrapper || !wrapper->ControlInstance) return false;
-				auto* control = wrapper->ControlInstance;
-				const cui::core::Point beforeLocation{
-					Canvas::GetLeft(*(control)), Canvas::GetTop(*(control)) };
-				const auto beforeWidth = control->Width;
-				const auto beforeHeight = control->Height;
-				const auto beforeAbsolute = control->GetAbsoluteLocationDip();
-				demoCanvas.RestoreSelectionByNames(
-					{ wrapper->Name }, wrapper->Name, false);
-				const auto moved = demoCanvas.NudgeSelectionBy(1, 1);
-				const auto afterAbsolute = control->GetAbsoluteLocationDip();
-				const bool stable = moved.HasChanges()
-					&& Canvas::GetLeft(*(control)) == beforeLocation.x + 1.0f
-					&& Canvas::GetTop(*(control)) == beforeLocation.y + 1.0f
-					&& control->Width == beforeWidth
-					&& control->Height == beforeHeight
-					&& std::fabs(afterAbsolute.x
-						- beforeAbsolute.x - 1.0f) < 0.01f
-					&& std::fabs(afterAbsolute.y
-						- beforeAbsolute.y - 1.0f) < 0.01f;
-				if (!stable)
-					detail = L"changed="
-						+ std::wstring(moved.HasChanges() ? L"1" : L"0")
-						+ L"; loc="
-						+ std::to_wstring(beforeLocation.x) + L","
-						+ std::to_wstring(beforeLocation.y) + L"->"
-						+ std::to_wstring(Canvas::GetLeft(*(control))) + L","
-						+ std::to_wstring(Canvas::GetTop(*(control))) + L"; size="
-						+ std::to_wstring(beforeWidth.value) + L","
-						+ std::to_wstring(beforeHeight.value) + L"->"
-						+ std::to_wstring(control->Width.value) + L","
-						+ std::to_wstring(control->Height.value) + L"; abs="
-						+ std::to_wstring(beforeAbsolute.x) + L","
-						+ std::to_wstring(beforeAbsolute.y) + L"->"
-						+ std::to_wstring(afterAbsolute.x) + L","
-						+ std::to_wstring(afterAbsolute.y);
-				return stable;
+				for (auto* current = control ? control->GetVisualParent() : nullptr;
+					current; current = current->GetVisualParent())
+					if (current->Type() == type) return true;
+				return false;
 			};
-		const bool groupChildMoveStable =
-			nestedContainerChildMoveStable(
-				L"groupName", groupMoveDetail);
-		const bool expanderChildMoveStable =
-			nestedContainerChildMoveStable(
-				L"expanderText", expanderMoveDetail);
-		const bool specialContainerMovesStable =
-			groupChildMoveStable && expanderChildMoveStable;
+			const auto hasNoCanvasOffsets = [](Control* control)
+			{
+				return control
+					&& std::isnan(Canvas::GetLeft(*control))
+					&& std::isnan(Canvas::GetTop(*control))
+					&& std::isnan(Canvas::GetRight(*control))
+					&& std::isnan(Canvas::GetBottom(*control));
+			};
+			const auto hasPositiveLayout = [](Control* control)
+			{
+				const auto size = control
+					? control->GetActualSizeDip() : cui::core::Size{};
+				return size.width > 0.0f && size.height > 0.0f;
+			};
+			const auto buttonLocation = button
+				? button->GetAbsoluteLocationDip() : cui::core::Point{};
+			const auto gradientLocation = gradient
+				? gradient->GetAbsoluteLocationDip() : cui::core::Point{};
+			const auto groupLocation = groupName
+				? groupName->GetAbsoluteLocationDip() : cui::core::Point{};
+			const bool gridContract = surface
+				&& surface->GetRows().size() == 2
+				&& surface->GetColumns().size() == 3
+				&& surface->GetRows()[0].Height.IsAuto()
+				&& surface->GetRows()[1].Height.IsStar()
+				&& surface->GetColumns()[0].Width.IsStar()
+				&& surface->GetColumns()[1].Width.IsStar()
+				&& surface->GetColumns()[2].Width.IsStar()
+				&& title && Grid::GetRow(*title) == 0
+				&& Grid::GetColumn(*title) == 0
+				&& Grid::GetColumnSpan(*title) == 2
+				&& hint && Grid::GetRow(*hint) == 0
+				&& Grid::GetColumn(*hint) == 2;
+			const bool flowContract = button && gradient && groupName && expanderText
+				&& button->GetVisualParent()
+				&& button->GetVisualParent()->Type() == UIClass::UI_StackPanel
+				&& gradient->GetVisualParent()
+				&& gradient->GetVisualParent()->Type() == UIClass::UI_StackPanel
+				&& groupName->GetVisualParent()
+				&& groupName->GetVisualParent()->Type() == UIClass::UI_StackPanel
+				&& expanderText->GetVisualParent()
+				&& expanderText->GetVisualParent()->Type() == UIClass::UI_StackPanel
+				&& hasAncestor(groupName, UIClass::UI_GroupBox)
+				&& hasAncestor(expanderText, UIClass::UI_Expander);
+			const bool offsetsCleared = hasNoCanvasOffsets(button)
+				&& hasNoCanvasOffsets(gradient)
+				&& hasNoCanvasOffsets(groupName)
+				&& hasNoCanvasOffsets(expanderText);
+			const bool autoSizing = groupName && groupName->Width.IsAuto()
+				&& expanderText && expanderText->Width.IsAuto()
+				&& expanderText->Height.IsAuto();
+			const bool boundsAndOrder = hasPositiveLayout(surface)
+				&& hasPositiveLayout(button) && hasPositiveLayout(gradient)
+				&& hasPositiveLayout(groupName) && hasPositiveLayout(expanderText)
+				&& buttonLocation.x < gradientLocation.x
+				&& gradientLocation.x < groupLocation.x;
+			wpfLayoutMaterialized = gridContract && flowContract
+				&& offsetsCleared && autoSizing && boundsAndOrder;
+			if (!wpfLayoutMaterialized)
+				wpfLayoutDetail = std::wstring(L"grid=") + SelfTestFlag(gridContract)
+					+ L"; flow=" + SelfTestFlag(flowContract)
+					+ L"; offsets=" + SelfTestFlag(offsetsCleared)
+					+ L"; auto=" + SelfTestFlag(autoSizing)
+					+ L"; bounds=" + SelfTestFlag(boundsAndOrder)
+					+ L"; x=" + std::to_wstring(buttonLocation.x) + L","
+					+ std::to_wstring(gradientLocation.x) + L","
+					+ std::to_wstring(groupLocation.x);
+		}
 		const bool navigationCompositionMaterialized = demoApplied
 			&& FindControl(demoCanvas, L"navigationComposition")
 			&& FindControl(demoCanvas, L"detailComposition");
@@ -8060,14 +8060,12 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& drawingResourcesMaterialized
 			&& previewRootFillsWindow
 			&& statusPreviewMatchesRuntime
-			&& surfaceChildMoveStable
-			&& transformedChildMoveStable
-			&& specialContainerMovesStable
+			&& wpfLayoutMaterialized
 			&& navigationCompositionMaterialized
 			&& notificationCompositionMaterialized
 			&& webBrowserMaterialized
 			&& mediaPlayerMaterialized,
-			L"public XAML gallery: DemoWindow preview geometry, movement, or compact serialization regressed"
+			L"public XAML gallery: DemoWindow WPF layout, preview geometry, or compact serialization regressed"
 			+ std::wstring(L" [path=") + demoPath.wstring()
 			+ L", parse=" + demoParseError
 			+ L", apply=" + demoApplyError
@@ -8076,12 +8074,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", rootWidth=" + std::to_wstring(demoRootSize.width)
 			+ L"/" + std::to_wstring(
 				demoCanvas.GetDesignedWindowSize().width)
-			+ L", surface=" + (surfaceChildMoveStable ? L"1" : L"0")
-			+ L", transform=" + (transformedChildMoveStable ? L"1" : L"0")
-			+ L", group=" + (groupChildMoveStable ? L"1" : L"0")
-			+ L", groupDetail=" + groupMoveDetail
-			+ L", expander=" + (expanderChildMoveStable ? L"1" : L"0")
-			+ L", expanderDetail=" + expanderMoveDetail
+			+ L", wpfLayout=" + SelfTestFlag(wpfLayoutMaterialized)
+			+ L", wpfLayoutDetail=" + wpfLayoutDetail
 			+ L", composed=" + (composedDataMaterialized ? L"1" : L"0")
 			+ L", objects=" + (objectResourcesMaterialized ? L"1" : L"0")
 			+ L", bitmap=" + SelfTestFlag(imageResourceMaterialized)

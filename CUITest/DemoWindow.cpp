@@ -2305,7 +2305,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				+ std::to_wstring(centerSize.height) + L"。");
 		}
 
-		auto* layoutSurface = dynamic_cast<Canvas*>(
+		auto* layoutSurface = dynamic_cast<Grid*>(
 			FindGeneratedControlByName(L"layoutSurface"));
 		auto* canvasProbe = dynamic_cast<Canvas*>(
 			FindGeneratedControlByName(L"canvasSemanticsProbe"));
@@ -2315,6 +2315,12 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			FindGeneratedControlByName(L"canvasRightBottom"));
 		std::wstring canvasTag;
 		if (!layoutSurface || !canvasProbe || !canvasLeftWins || !canvasRightBottom
+			|| layoutSurface->GetRows().size() != 3
+			|| layoutSurface->GetColumns().size() != 4
+			|| !layoutSurface->GetRows()[0].Height.IsAuto()
+			|| !layoutSurface->GetRows()[2].Height.IsStar()
+			|| Grid::GetRow(*canvasProbe) != 0
+			|| Grid::GetColumn(*canvasProbe) != 3
 			|| canvasProbe->Type() != UIClass::UI_Canvas
 			|| canvasProbe->Cursor != CursorKind::Cross
 			|| canvasProbe->GetPropertyValueSource(Control::CursorProperty())
@@ -2327,42 +2333,32 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| canvasTag != L"cursor-inheritance-root"
 			|| canvasProbe->GetPropertyValueSource(Control::TagProperty())
 				!= DependencyPropertyValueSource::Local
-			|| std::abs(Canvas::GetRight(*(canvasProbe)) - 12.5f) > 0.001f
-			|| std::abs(Canvas::GetTop(*(canvasProbe)) - 4.5f) > 0.001f
-			|| std::abs(Canvas::GetLeft(*(canvasLeftWins)) - 0.25f) > 0.001f
-			|| std::abs(Canvas::GetRight(*(canvasLeftWins)) - 40.0f) > 0.001f
-			|| std::abs(Canvas::GetRight(*(canvasRightBottom)) - 0.75f) > 0.001f
-			|| std::abs(Canvas::GetBottom(*(canvasRightBottom)) - 0.5f) > 0.001f)
-			return fail(L"Canvas 附加属性、Cursor 继承或对象 Tag 未从 XAML 物化。");
-		layoutSurface->UpdateLayout();
+			|| !std::isnan(Canvas::GetLeft(*canvasProbe))
+			|| !std::isnan(Canvas::GetTop(*canvasProbe))
+			|| !std::isnan(Canvas::GetRight(*canvasProbe))
+			|| !std::isnan(Canvas::GetBottom(*canvasProbe))
+			|| std::abs(Canvas::GetLeft(*canvasLeftWins) - 0.25f) > 0.001f
+			|| std::abs(Canvas::GetRight(*canvasLeftWins) - 40.0f) > 0.001f
+			|| std::abs(Canvas::GetRight(*canvasRightBottom) - 0.75f) > 0.001f
+			|| std::abs(Canvas::GetBottom(*canvasRightBottom) - 0.5f) > 0.001f)
+			return fail(L"Grid 页面骨架或隔离的 Canvas 语义探针未从 XAML 正确物化。");
 		canvasProbe->UpdateLayout();
-		const auto surfaceSize = layoutSurface->GetActualSizeDip();
 		const auto probeSize = canvasProbe->GetActualSizeDip();
 		const auto rightBottomSize = canvasRightBottom->GetActualSizeDip();
-		const auto expectedProbeX = surfaceSize.width
-			- Canvas::GetRight(*(canvasProbe)) - probeSize.width;
-		const auto expectedProbeY = Canvas::GetTop(*(canvasProbe));
 		const auto expectedRightBottomX = probeSize.width
-			- Canvas::GetRight(*(canvasRightBottom)) - rightBottomSize.width
+			- Canvas::GetRight(*canvasRightBottom) - rightBottomSize.width
 			- canvasRightBottom->Margin.Right;
 		const auto expectedRightBottomY = probeSize.height
-			- Canvas::GetBottom(*(canvasRightBottom)) - rightBottomSize.height
+			- Canvas::GetBottom(*canvasRightBottom) - rightBottomSize.height
 			- canvasRightBottom->Margin.Bottom;
-		const auto probeLocation = canvasProbe->GetActualLocationDip();
 		const auto leftWinsLocation = canvasLeftWins->GetActualLocationDip();
 		const auto rightBottomLocation = canvasRightBottom->GetActualLocationDip();
-		if (std::abs(probeLocation.x - expectedProbeX) > 0.001f
-			|| std::abs(probeLocation.y - expectedProbeY) > 0.001f
-			|| std::abs(leftWinsLocation.x - 1.25f) > 0.001f
+		if (std::abs(leftWinsLocation.x - 1.25f) > 0.001f
 			|| std::abs(leftWinsLocation.y - 2.5f) > 0.001f
 			|| std::abs(rightBottomLocation.x - expectedRightBottomX) > 0.001f
 			|| std::abs(rightBottomLocation.y - expectedRightBottomY) > 0.001f)
 			return fail(L"Canvas Left/Top 优先级、Right/Bottom 回退或 Margin 布局不正确。"
-				L" probe=" + std::to_wstring(probeLocation.x) + L","
-				+ std::to_wstring(probeLocation.y) + L" expected="
-				+ std::to_wstring(expectedProbeX) + L","
-				+ std::to_wstring(expectedProbeY) + L"; left="
-				+ std::to_wstring(leftWinsLocation.x) + L","
+				L" left=" + std::to_wstring(leftWinsLocation.x) + L","
 				+ std::to_wstring(leftWinsLocation.y) + L" expected=1.25,2.5; right="
 				+ std::to_wstring(rightBottomLocation.x) + L","
 				+ std::to_wstring(rightBottomLocation.y) + L" expected="

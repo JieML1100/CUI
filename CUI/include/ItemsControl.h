@@ -135,7 +135,7 @@ public:
 	Control* InsertItemControl(size_t index, std::unique_ptr<Control> item);
 	Control* AdoptItemControl(Control* item);
 	Control* InsertItemControl(size_t index, Control* item);
-	std::unique_ptr<Control> DetachItemControlAt(size_t index);
+	virtual std::unique_ptr<Control> DetachItemControlAt(size_t index);
 	std::unique_ptr<Control> DetachItemControl(Control* item);
 	bool RemoveItemControlAt(size_t index);
 	bool RemoveItemControl(Control* item);

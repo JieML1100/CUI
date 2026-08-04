@@ -421,17 +421,24 @@ Control* ContentControl::AttachVisualContent(
 
 Control* ContentControl::SetVisualContent(std::unique_ptr<Control> value)
 {
-	if (value.get() == GetVisualContent()) return value.release();
-	auto previous = DetachVisualContent();
+	if (value.get() == ContentControl::GetVisualContent())
+		return value.release();
+	const ControlWeakReference selfLifetime(this);
+	auto previous = ContentControl::DetachVisualContent();
+	auto* self = dynamic_cast<ContentControl*>(selfLifetime.Get());
+	if (!self) return nullptr;
 	if (!value) return nullptr;
+	const ControlWeakReference valueLifetime(value.get());
 	try
 	{
-		return AttachVisualContent(value);
+		(void)self->AttachVisualContent(value);
+		return valueLifetime.Get();
 	}
 	catch (...)
 	{
-		if (!GetVisualContent() && previous)
-			(void)AttachVisualContent(previous);
+		self = dynamic_cast<ContentControl*>(selfLifetime.Get());
+		if (self && !self->ContentControl::GetVisualContent() && previous)
+			(void)self->AttachVisualContent(previous);
 		throw;
 	}
 }
@@ -439,7 +446,7 @@ Control* ContentControl::SetVisualContent(std::unique_ptr<Control> value)
 bool ContentControl::TrySetVisualContent(
 	std::unique_ptr<Control>& value) noexcept
 {
-	if (!value || GetVisualContent()) return false;
+	if (!value || ContentControl::GetVisualContent()) return false;
 	auto* raw = value.get();
 	const ControlWeakReference lifetime(raw);
 	try
@@ -452,18 +459,19 @@ bool ContentControl::TrySetVisualContent(
 		// ContentControl owns the child and TrySet succeeded; reporting false
 		// would violate its ownership-preserving contract.
 		auto* live = lifetime.Get();
-		if (live && GetVisualContent() == live)
+		if (live && ContentControl::GetVisualContent() == live)
 			return true;
 		return false;
 	}
 }
 
-std::unique_ptr<Control> ContentControl::DetachVisualContent()
+std::unique_ptr<Control>
+ContentControl::DetachVisualContentPreservingLogicalParent()
 {
 	std::unique_ptr<Control> result;
 	if (_unpresentedVisualContent)
 		result = std::move(_unpresentedVisualContent);
-	else if (auto* content = GetVisualContent())
+	else if (auto* content = ContentControl::GetVisualContent())
 	{
 		if (content->GetVisualParent() == this)
 			result = DetachOwnedVisualChildPreserving(*this, content);
@@ -474,6 +482,15 @@ std::unique_ptr<Control> ContentControl::DetachVisualContent()
 				*templatePresenter, content);
 	}
 	if (!result) return {};
+	RequestLayout();
+	InvalidateVisual();
+	return result;
+}
+
+std::unique_ptr<Control> ContentControl::DetachVisualContent()
+{
+	auto result = DetachVisualContentPreservingLogicalParent();
+	if (!result) return {};
 	if (result->GetLogicalParent() == this)
 	{
 		std::exception_ptr notificationError;
@@ -483,8 +500,6 @@ std::unique_ptr<Control> ContentControl::DetachVisualContent()
 		// The logical-parent notification occurs after the parent field
 		// commits. Ownership-returning Detach still returns its unique_ptr.
 	}
-	RequestLayout();
-	InvalidateVisual();
 	return result;
 }
 

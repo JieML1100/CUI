@@ -3098,6 +3098,15 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 	if (type == UIClass::UI_TabItem
 		&& propertyName == L"TabStripPlacement")
 		return readOnlyIdentity("TabItem::TabStripPlacementProperty()");
+	if (type == UIClass::UI_TabControl)
+	{
+		if (propertyName == L"SelectedContent")
+			return readOnlyIdentity(
+				"TabControl::SelectedContentProperty()");
+		if (propertyName == L"SelectedContentTemplate")
+			return readOnlyIdentity(
+				"TabControl::SelectedContentTemplateProperty()");
+	}
 	if (type == UIClass::UI_Expander
 		&& propertyName == L"ExpandDirection")
 		return "Expander::ExpandDirectionProperty()";

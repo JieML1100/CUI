@@ -14403,6 +14403,7 @@ SET_CPP(Control, ::Visibility, Visibility)
 		return;
 	}
 	if (_visibility == value) return;
+	const ControlWeakReference lifetime(this);
 	auto snapshot = CaptureEffectiveIsVisibleSubtree(*this);
 	const bool collapsedChanged = (_visibility == ::Visibility::Collapsed)
 		!= (value == ::Visibility::Collapsed);
@@ -14411,12 +14412,14 @@ SET_CPP(Control, ::Visibility, Visibility)
 	else InvalidateVisual();
 	PublishEffectiveIsVisibleChanges(std::move(snapshot));
 
-	if (this->GetPresentationWindow())
+	auto* self = dynamic_cast<Control*>(lifetime.Get());
+	if (!self) return;
+	if (auto* window = self->GetPresentationWindow())
 	{
-		this->GetPresentationWindow()->InvalidatePresentationStructure();
-		this->GetPresentationWindow()->Invalidate(false);
-		this->GetPresentationWindow()->NotifyAccessibilityEvent(
-			this, AccessibilityChange::State);
+		window->InvalidatePresentationStructure();
+		window->Invalidate(false);
+		window->NotifyAccessibilityEvent(
+			self, AccessibilityChange::State);
 	}
 }
 
@@ -14424,17 +14427,20 @@ void Control::SetPresentationSuppressed(bool value)
 {
 	VerifyAccess();
 	if (_presentationSuppressed == value) return;
+	const ControlWeakReference lifetime(this);
 	auto snapshot = CaptureEffectiveIsVisibleSubtree(*this);
 	_presentationSuppressed = value;
 	if (PresentationSuppressionAffectsLayout())
 		RequestLayout();
 	PublishEffectiveIsVisibleChanges(std::move(snapshot));
-	if (GetPresentationWindow())
+	auto* self = dynamic_cast<Control*>(lifetime.Get());
+	if (!self) return;
+	if (auto* window = self->GetPresentationWindow())
 	{
-		GetPresentationWindow()->InvalidatePresentationStructure();
-		GetPresentationWindow()->Invalidate(false);
-		GetPresentationWindow()->NotifyAccessibilityEvent(
-			this, AccessibilityChange::State);
+		window->InvalidatePresentationStructure();
+		window->Invalidate(false);
+		window->NotifyAccessibilityEvent(
+			self, AccessibilityChange::State);
 	}
 }
 

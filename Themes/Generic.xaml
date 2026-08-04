@@ -1890,15 +1890,51 @@
   </Style>
 
   <ControlTemplate x:Key="CuiTabControlTemplate" TargetType="TabControl">
-    <Canvas x:Name="PART_TabControlRoot">
-      <Border
-        x:Name="PART_ContentChrome"
-        Background="{TemplateBinding Background}"
-        BorderBrush="{TemplateBinding BorderBrush}"
-        BorderThickness="{TemplateBinding BorderThickness}"
-        CornerRadius="0,4,4,4"/>
-      <ItemsPresenter x:Name="PART_ItemsPresenter"/>
+    <DockPanel x:Name="PART_TabControlRoot" LastChildFill="true">
       <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="PlacementStates">
+          <VisualState x:Name="Bottom">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="TabStripPlacement" Value="Bottom"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_ItemsPresenter"
+                Property="DockPanel.Dock" Value="Bottom"/>
+              <Setter TargetName="PART_ContentChrome"
+                Property="CornerRadius" Value="4,4,4,0"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Left">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="TabStripPlacement" Value="Left"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_ItemsPresenter"
+                Property="DockPanel.Dock" Value="Left"/>
+              <Setter TargetName="PART_ContentChrome"
+                Property="CornerRadius" Value="0,4,4,4"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Right">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="TabStripPlacement" Value="Right"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_ItemsPresenter"
+                Property="DockPanel.Dock" Value="Right"/>
+              <Setter TargetName="PART_ContentChrome"
+                Property="CornerRadius" Value="4,0,4,4"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Top">
+            <VisualState.Setters>
+              <Setter TargetName="PART_ItemsPresenter"
+                Property="DockPanel.Dock" Value="Top"/>
+              <Setter TargetName="PART_ContentChrome"
+                Property="CornerRadius" Value="0,4,4,4"/>
+            </VisualState.Setters>
+          </VisualState>
+        </VisualStateGroup>
         <VisualStateGroup x:Name="CommonStates">
           <VisualState x:Name="Normal"/>
           <VisualState x:Name="Disabled">
@@ -1908,7 +1944,25 @@
           </VisualState>
         </VisualStateGroup>
       </VisualStateManager.VisualStateGroups>
-    </Canvas>
+      <ItemsPresenter
+        x:Name="PART_ItemsPresenter"
+        DockPanel.Dock="Top"/>
+      <Border
+        x:Name="PART_ContentChrome"
+        Background="{TemplateBinding Background}"
+        BorderBrush="{TemplateBinding BorderBrush}"
+        BorderThickness="{TemplateBinding BorderThickness}"
+        CornerRadius="0,4,4,4"
+        ClipToBounds="true">
+        <ContentPresenter
+          x:Name="PART_SelectedContentHost"
+          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+          ClipToBounds="true"
+          Content="{TemplateBinding SelectedContent}"
+          ContentTemplate="{TemplateBinding SelectedContentTemplate}"/>
+      </Border>
+    </DockPanel>
   </ControlTemplate>
 
   <Style TargetType="TabControl">
@@ -1920,7 +1974,8 @@
       Value="{StaticResource CuiTabForeground}"/>
     <Setter Property="BorderThickness" Value="0,1,0,0"/>
     <Setter Property="Padding" Value="0"/>
-    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Stretch"/>
     <Setter Property="IsTabStop" Value="false"/>
     <Setter Property="Template"
       Value="{StaticResource CuiTabControlTemplate}"/>
@@ -1938,7 +1993,7 @@
   </Style>
 
   <ControlTemplate x:Key="CuiTabItemTemplate" TargetType="TabItem">
-    <Canvas x:Name="PART_TabItemRoot">
+    <Grid x:Name="PART_TabItemRoot">
       <VisualStateManager.VisualStateGroups>
         <VisualStateGroup x:Name="SelectionStates">
           <VisualState x:Name="Selected">
@@ -1950,16 +2005,9 @@
                 Value="{StaticResource CuiTabSelected}"/>
               <Setter TargetName="PART_Header" Property="BorderBrush"
                 Value="{StaticResource CuiTabBorder}"/>
-              <Setter TargetName="PART_SelectedContentHost"
-                Property="Visibility" Value="Visible"/>
             </VisualState.Setters>
           </VisualState>
-          <VisualState x:Name="Unselected">
-            <VisualState.Setters>
-              <Setter TargetName="PART_SelectedContentHost"
-                Property="Visibility" Value="Collapsed"/>
-            </VisualState.Setters>
-          </VisualState>
+          <VisualState x:Name="Unselected"/>
         </VisualStateGroup>
         <VisualStateGroup x:Name="CommonStates">
           <VisualState x:Name="Disabled">
@@ -2032,12 +2080,7 @@
           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
           ContentSource="Header"/>
       </Border>
-      <ContentPresenter
-        x:Name="PART_SelectedContentHost"
-        ClipToBounds="true"
-        Visibility="Collapsed"
-        ContentSource="Content"/>
-    </Canvas>
+    </Grid>
   </ControlTemplate>
 
   <Style TargetType="TabItem">

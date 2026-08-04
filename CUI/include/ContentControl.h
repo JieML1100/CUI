@@ -70,13 +70,14 @@ public:
 #endif
 
 	/** Returns the authored child, excluding the generated presenter. */
-	Control* GetVisualContent() const noexcept;
+	virtual Control* GetVisualContent() const noexcept;
 	/** Replaces the single authored visual Content and transfers ownership. */
-	Control* SetVisualContent(std::unique_ptr<Control> value);
+	virtual Control* SetVisualContent(std::unique_ptr<Control> value);
 	/** Attempts to attach Content while preserving value on failure. */
-	bool TrySetVisualContent(std::unique_ptr<Control>& value) noexcept;
+	virtual bool TrySetVisualContent(
+		std::unique_ptr<Control>& value) noexcept;
 	/** Detaches the authored visual Content and returns its ownership. */
-	std::unique_ptr<Control> DetachVisualContent();
+	virtual std::unique_ptr<Control> DetachVisualContent();
 	const std::wstring& LastContentError() const noexcept
 	{
 		return _lastContentError;
@@ -127,6 +128,10 @@ protected:
 	void OnVisualChildCollectionChanged(
 		const CollectionChangedEventArgs& change,
 		std::span<Control* const> previousChildren) override;
+	/** Detaches the authored visual for an infrastructure projection while
+	 *  retaining this ContentControl as its logical parent. */
+	std::unique_ptr<Control>
+		DetachVisualContentPreservingLogicalParent();
 
 	/**
 	 * Framework-owned visuals (presenters, headers, decorators) participate in

@@ -6962,18 +6962,26 @@ namespace
 				if (IsContentHostType(_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"ContentTemplate"))
 				{
-					std::wstring resourceKey;
-					if (!TryParseStaticResource(value, resourceKey))
-						return Fail(L"ContentPresenter.ContentTemplate 必须引用已声明的 DataTemplate："
-							+ value, error);
-					const auto* definition = FindVisibleDataTemplate(resourceKey);
-					if (!definition)
-						return Fail(L"ContentPresenter.ContentTemplate 引用了未声明的 DataTemplate："
-							+ resourceKey, error);
-					if (!assignedProperties.insert(L"contenttemplate").second)
-						return Fail(L"属性重复：ContentTemplate", error);
-					_document.Nodes[nodeIndex].Structure.ContentTemplate = definition->Key;
-					continue;
+					std::wstring templateSource;
+					std::wstring templateError;
+					if (!TryParseTemplateBinding(
+						value, templateSource, templateError))
+					{
+						if (!templateError.empty())
+							return Fail(templateError, error);
+						std::wstring resourceKey;
+						if (!TryParseStaticResource(value, resourceKey))
+							return Fail(L"ContentPresenter.ContentTemplate 必须引用已声明的 DataTemplate："
+								+ value, error);
+						const auto* definition = FindVisibleDataTemplate(resourceKey);
+						if (!definition)
+							return Fail(L"ContentPresenter.ContentTemplate 引用了未声明的 DataTemplate："
+								+ resourceKey, error);
+						if (!assignedProperties.insert(L"contenttemplate").second)
+							return Fail(L"属性重复：ContentTemplate", error);
+						_document.Nodes[nodeIndex].Structure.ContentTemplate = definition->Key;
+						continue;
+					}
 				}
 				if (IsHeaderedContentControlType(_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"HeaderTemplate"))

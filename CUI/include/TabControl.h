@@ -15,8 +15,6 @@ private:
 
 	bool _isSelected = false;
 	Dock _tabStripPlacement = Dock::Top;
-	D2D1_RECT_F _headerHitRect{};
-	D2D1_RECT_F _contentHitRect{};
 	void ApplyIsSelectedValue(bool value);
 	void SetCurrentIsSelected(bool value);
 	void SetTabStripPlacementProjection(Dock value);
@@ -24,13 +22,14 @@ private:
 	static void HandleDescendantPointerPress(
 		Control* sender, RoutedEventArgs& args);
 	bool IsOriginalSourceWithinHeader(Control* source) const noexcept;
-	void SetHeaderHitRect(D2D1_RECT_F value) noexcept
+	std::unique_ptr<Control> DetachVisualContentForProjection()
 	{
-		_headerHitRect = value;
+		return DetachVisualContentPreservingLogicalParent();
 	}
-	void SetContentHitRect(D2D1_RECT_F value) noexcept
+	bool RestoreVisualContentFromProjection(
+		std::unique_ptr<Control>& value) noexcept
 	{
-		_contentHitRect = value;
+		return ContentControl::TrySetVisualContent(value);
 	}
 
 public:
@@ -55,9 +54,12 @@ public:
 	GET(Dock, TabStripPlacement);
 
 	TabItem();
-	void PreparePresentation() override;
-	bool ContainsPoint(int localX, int localY) override;
-	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
+	/** Includes visual Content temporarily projected by the owning TabControl. */
+	Control* GetVisualContent() const noexcept override;
+	Control* SetVisualContent(std::unique_ptr<Control> value) override;
+	bool TrySetVisualContent(
+		std::unique_ptr<Control>& value) noexcept override;
+	std::unique_ptr<Control> DetachVisualContent() override;
 	bool HandlesNavigationKey(Key key) const override;
 
 protected:
@@ -88,18 +90,30 @@ private:
 	BindingValue _selectedContent;
 	ItemTemplateReference _selectedContentTemplate;
 	TabItem* _selectedTabIdentity = nullptr;
-	std::vector<float> _headerPrimaryExtents;
-	float _tabStripCrossExtent = 28.0f;
+	ControlWeakReference _selectedContentHost;
+	ControlWeakReference _projectedVisualItem;
+	ControlWeakReference _projectedVisualContent;
+	ControlWeakReference _observedSelectedContentItem;
+	EventConnection _selectedContentProjectionObservation;
+	bool _synchronizingSelectionProjection = false;
+	bool _selectionProjectionPending = true;
+	bool _synchronizingContentProjection = false;
+	bool _restoringContentProjection = false;
+	bool _contentProjectionPending = true;
+	bool _templateAbortDeferred = false;
 
 	static constexpr float DefaultHeaderExtent = 28.0f;
 	static constexpr float DefaultVerticalStripExtent = 120.0f;
 
 	void PrepareItemMutation();
 	void ReconcileItemsAfterMutation(TabItem* previouslySelectedItem);
+	void ObserveSelectedContentProjection(TabItem* item);
 	void SynchronizeSelectionProjection();
-	void RefreshHeaderMetrics();
 	void RefreshSelectedContentProjection();
-	void ArrangePage(TabItem* page);
+	void SynchronizeSelectedContentHost();
+	void RestoreProjectedVisualContent();
+	void CompleteDeferredTemplateAbort() noexcept;
+	bool HasProjectedVisualContent(const TabItem* item) const noexcept;
 	D2D1_RECT_F GetTabStripRect() const noexcept;
 	D2D1_RECT_F GetTabHeaderRect(int index) const noexcept;
 	int FindNextEligibleTab(
@@ -141,11 +155,13 @@ public:
 	}
 
 	TabControl();
+	~TabControl() override;
 
 	TabItem* AddItem(std::unique_ptr<TabItem> page);
 	TabItem* InsertItem(int index, std::unique_ptr<TabItem> page);
 	TabItem* GetItem(int index) const noexcept;
 	int IndexOfItem(const TabItem* page) const noexcept;
+	std::unique_ptr<Control> DetachItemControlAt(size_t index) override;
 	std::unique_ptr<TabItem> DetachItemAt(int index);
 	std::unique_ptr<TabItem> DetachItem(TabItem* page);
 	bool RemoveItemAt(int index);
@@ -176,6 +192,7 @@ protected:
 	bool ValidateAuthoredItemControl(
 		const Control& item, std::string& error) const override;
 	void OnAuthoredItemsChanged() noexcept override;
+	void OnBeforeGeneratedItemsRebuilt() override;
 	void OnGeneratedItemsRebuilt() override;
 	std::unique_ptr<Panel> CreateItemsHost() const override;
 	std::unique_ptr<Control> BuildGeneratedItem(
@@ -184,4 +201,9 @@ protected:
 		BindingPathObservation& observation) override;
 	void PreparePresentation() override;
 	void PerformPendingLayout() override;
+	std::unique_ptr<Control> DetachVisualChildTemplateRoot() override;
+	void OnControlTemplatePresentationChanged() override;
+	void OnTemplateChanged(
+		const ControlTemplateReference& oldTemplate,
+		const ControlTemplateReference& newTemplate) override;
 };
