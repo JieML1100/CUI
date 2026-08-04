@@ -12,6 +12,8 @@
 class PasswordBox : public Control
 {
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<TextBoxAutomationPeer>(
@@ -21,10 +23,19 @@ private:
 	// Password content is private editor state. It must never share the
 	// Control/TextBlock/TextBox dependency-property storage path.
 	std::wstring _password;
-	D2D1_COLOR_F _selectedBackColor = cui::theme::palette::SelectionBack;
-	D2D1_COLOR_F _selectedForeColor = cui::theme::palette::TextPrimary;
-	wchar_t _passwordChar = L'\x25CF';
+	std::wstring _passwordChar = L"*";
+	int _maxLength = 0;
+	cui::drawing::Brush _selectionBrush =
+		cui::drawing::MakeSolidColorBrush(cui::theme::palette::Accent);
+	double _selectionOpacity = 0.4;
+	cui::drawing::Brush _selectionTextBrush =
+		cui::drawing::MakeSolidColorBrush(cui::theme::palette::OnAccent);
+	cui::drawing::Brush _caretBrush;
+	bool _isInactiveSelectionHighlightEnabled = false;
 	D2D1_SIZE_F _textSize = { 0,0 };
+	Microsoft::WRL::ComPtr<IDWriteTextLayout> _textLayout;
+	std::wstring _layoutText;
+	IDWriteTextFormat* _layoutFont = nullptr;
 	int _selectionStart = 0;
 	int _selectionEnd = 0;
 	float _horizontalScrollOffset = 0.0f;
@@ -32,14 +43,40 @@ public:
 	using UIElement::PasswordChanged;
 	virtual UIClass Type();
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& PasswordProperty();
+	static const DependencyProperty& PasswordCharProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 	PROPERTY(std::wstring, Password);
 	GET(std::wstring, Password);
 	SET(std::wstring, Password);
+	PROPERTY(std::wstring, PasswordChar);
+	GET(std::wstring, PasswordChar);
+	SET(std::wstring, PasswordChar);
+	PROPERTY(int, MaxLength);
+	GET(int, MaxLength);
+	SET(int, MaxLength);
+	PROPERTY(cui::drawing::Brush, SelectionBrush);
+	GET(cui::drawing::Brush, SelectionBrush);
+	SET(cui::drawing::Brush, SelectionBrush);
+	PROPERTY(double, SelectionOpacity);
+	GET(double, SelectionOpacity);
+	SET(double, SelectionOpacity);
+	PROPERTY(cui::drawing::Brush, SelectionTextBrush);
+	GET(cui::drawing::Brush, SelectionTextBrush);
+	SET(cui::drawing::Brush, SelectionTextBrush);
+	PROPERTY(cui::drawing::Brush, CaretBrush);
+	GET(cui::drawing::Brush, CaretBrush);
+	SET(cui::drawing::Brush, CaretBrush);
+	PROPERTY(bool, IsInactiveSelectionHighlightEnabled);
+	GET(bool, IsInactiveSelectionHighlightEnabled);
+	SET(bool, IsInactiveSelectionHighlightEnabled);
 	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->IsEnabled ? CursorKind::IBeam : CursorKind::Arrow; }
+	bool HitTestChildren() const override { return false; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
@@ -55,6 +92,13 @@ private:
 	void InputText(std::wstring input);
 	void InputBack();
 	void InputDelete();
+	void InvalidateTextLayout() noexcept;
+	IDWriteTextLayout* EnsureTextLayout();
+	float GetTextOriginX();
+	float GetTextOriginY();
+	int HitTestTextPosition(float localX, float localY);
+	bool GetCaretLayoutMetrics(
+		int caretIndex, DWRITE_HIT_TEST_METRICS& metrics);
 	void UpdateScroll(bool arrival = false);
 	/** @brief 返回用于渲染/命中测试的文本（掩码或明文）。 */
 	std::wstring GetDisplayText();

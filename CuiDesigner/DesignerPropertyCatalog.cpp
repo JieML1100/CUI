@@ -23,7 +23,9 @@ namespace
 	{
 		return expected == actual
 			|| (expected == DesignerStyleValueKind::Brush
-				&& actual == DesignerStyleValueKind::Color);
+				&& actual == DesignerStyleValueKind::Color)
+			|| (expected == DesignerStyleValueKind::NullableBool
+				&& actual == DesignerStyleValueKind::Bool);
 	}
 
 	bool EqualsName(const std::wstring& left, const std::wstring& right)
@@ -60,6 +62,13 @@ namespace
 		{
 			bool typed = false;
 			return value.TryGet(typed) && typed ? L"true" : L"false";
+		}
+		case DesignerStyleValueKind::NullableBool:
+		{
+			NullableBool typed;
+			if (!value.TryGet(typed) || !typed.HasValue())
+				return L"{x:Null}";
+			return typed.GetValueOrDefault() ? L"true" : L"false";
 		}
 		case DesignerStyleValueKind::Int:
 		{
@@ -107,6 +116,19 @@ namespace
 				return NumberText(typed.Left) + L", " + NumberText(typed.Top);
 			return NumberText(typed.Left) + L", " + NumberText(typed.Top)
 				+ L", " + NumberText(typed.Right) + L", " + NumberText(typed.Bottom);
+		}
+		case DesignerStyleValueKind::CornerRadius:
+		{
+			::CornerRadius typed;
+			if (!value.TryGet(typed)) return L"0";
+			if (typed.TopLeft == typed.TopRight
+				&& typed.TopLeft == typed.BottomRight
+				&& typed.TopLeft == typed.BottomLeft)
+				return NumberText(typed.TopLeft);
+			return NumberText(typed.TopLeft) + L", "
+				+ NumberText(typed.TopRight) + L", "
+				+ NumberText(typed.BottomRight) + L", "
+				+ NumberText(typed.BottomLeft);
 		}
 		case DesignerStyleValueKind::Point:
 		{
@@ -343,11 +365,13 @@ namespace
 		DesignerStyleValueKind kind,
 		bool hasChoices)
 	{
-		if (hasChoices) return DependencyPropertyEditorKind::Choice;
 		if (requested != DependencyPropertyEditorKind::Auto) return requested;
+		if (hasChoices) return DependencyPropertyEditorKind::Choice;
 		switch (kind)
 		{
-		case DesignerStyleValueKind::Bool: return DependencyPropertyEditorKind::Boolean;
+		case DesignerStyleValueKind::Bool:
+		case DesignerStyleValueKind::NullableBool:
+			return DependencyPropertyEditorKind::Boolean;
 		case DesignerStyleValueKind::Int:
 		case DesignerStyleValueKind::Int64:
 		case DesignerStyleValueKind::Float:
@@ -355,6 +379,7 @@ namespace
 			return DependencyPropertyEditorKind::Number;
 		case DesignerStyleValueKind::Color: return DependencyPropertyEditorKind::Color;
 		case DesignerStyleValueKind::Thickness: return DependencyPropertyEditorKind::Thickness;
+		case DesignerStyleValueKind::CornerRadius: return DependencyPropertyEditorKind::Text;
 		case DesignerStyleValueKind::Point: return DependencyPropertyEditorKind::Text;
 		case DesignerStyleValueKind::Vector: return DependencyPropertyEditorKind::Text;
 		case DesignerStyleValueKind::Rect: return DependencyPropertyEditorKind::Text;
@@ -369,6 +394,19 @@ namespace
 		default:
 			return DependencyPropertyEditorKind::Text;
 		}
+	}
+
+	void AppendIntrinsicChoices(
+		DesignerStyleValueKind kind,
+		std::vector<DesignerPropertyDescriptor::Choice>& choices)
+	{
+		if (kind != DesignerStyleValueKind::NullableBool
+			|| !choices.empty()) return;
+		choices = {
+			{ L"False", L"false" },
+			{ L"True", L"true" },
+			{ L"Indeterminate", L"{x:Null}" }
+		};
 	}
 
 	bool TryCreateDescriptor(
@@ -407,6 +445,7 @@ namespace
 				choice.DisplayName,
 				FormatValue(effective, kind) });
 		}
+		AppendIntrinsicChoices(kind, out.Choices);
 		out.Editor = ResolveEditor(design.Editor, kind, !out.Choices.empty());
 		return true;
 	}
@@ -443,6 +482,7 @@ namespace
 				choice.DisplayName,
 				FormatValue(converted, kind) });
 		}
+		AppendIntrinsicChoices(kind, out.Choices);
 		out.Editor = ResolveEditor(design.Editor, kind, !out.Choices.empty());
 		return true;
 	}
@@ -472,6 +512,9 @@ bool TryGetStyleValueKind(
 	switch (metadata.ValueKind())
 	{
 	case BindingValueKind::Bool: out = DesignerStyleValueKind::Bool; return true;
+	case BindingValueKind::NullableBool:
+		out = DesignerStyleValueKind::NullableBool;
+		return true;
 	case BindingValueKind::Int: out = DesignerStyleValueKind::Int; return true;
 	case BindingValueKind::Int64: out = DesignerStyleValueKind::Int64; return true;
 	case BindingValueKind::Float: out = DesignerStyleValueKind::Float; return true;
@@ -489,6 +532,8 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Color;
 	else if (type == std::type_index(typeid(Thickness)))
 		out = DesignerStyleValueKind::Thickness;
+	else if (type == std::type_index(typeid(::CornerRadius)))
+		out = DesignerStyleValueKind::CornerRadius;
 	else if (type == std::type_index(typeid(cui::core::Point)))
 		out = DesignerStyleValueKind::Point;
 	else if (type == std::type_index(typeid(cui::core::Vector)))

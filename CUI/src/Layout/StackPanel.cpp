@@ -8,22 +8,24 @@ namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<StackPanel, TValue> StackLayoutOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyEditorKind editor)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor))
 	{
 		DependencyPropertyOptions<StackPanel, TValue> options;
 		options.DefaultValue = defaultValue;
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
-
 }
 
 // StackLayoutEngine 实现
@@ -179,24 +181,38 @@ void StackLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRec
 
 // StackPanel 实现
 
-void StackPanel::RegisterDependencyProperties()
+const DependencyProperty& StackPanel::OrientationProperty()
 {
-	Panel::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		auto orientationOptions = StackLayoutOptions(
-			Orientation::Vertical, 10, DependencyPropertyEditorKind::Choice);
-		orientationOptions.Design.Choices = {
+		auto options = StackLayoutOptions(
+			Orientation::Vertical
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				10,
+				DependencyPropertyEditorKind::Choice));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Choices = {
 			{ L"Horizontal", BindingValue(Orientation::Horizontal) },
 			{ L"Vertical", BindingValue(Orientation::Vertical) }
 		};
-		DependencyPropertyRegistry::Register<StackPanel, Orientation>(L"Orientation",
-			[](StackPanel& target) { return target.GetOrientation(); },
-			[](StackPanel& target, const Orientation& value) { target.SetOrientation(value); },
-			{}, std::move(orientationOptions));
-		return true;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			StackPanel, Orientation>(
+				DependencyPropertyRegistrationLiteral(L"Orientation"),
+				[](StackPanel& target) { return target.GetOrientation(); },
+				[](StackPanel& target, const Orientation& value)
+				{ target.SetOrientation(value); },
+				{}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void StackPanel::RegisterDependencyProperties()
+{
+	Panel::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)OrientationProperty();
+#endif
 }
 
 StackPanel::StackPanel()

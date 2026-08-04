@@ -9,6 +9,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

@@ -42,12 +42,12 @@ class ChartView : public Control
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
-		return std::make_unique<AutomationPeer>(
-			*this, AutomationControlType::Image, L"ChartView");
+		return std::make_unique<ChartViewAutomationPeer>(*this);
 	}
 
 private:
 	std::vector<ChartSeries> _series;
+	std::vector<std::vector<uint32_t>> _accessibilityIds;
 	ChartViewKind _chartKind = ChartViewKind::Bar;
 	std::wstring _title = L"Chart";
 	std::wstring _subtitle;
@@ -61,7 +61,6 @@ private:
 
 	// Private native presenter defaults. Public appearance belongs to XAML
 	// templates/styles rather than to ChartView's semantic property surface.
-	float Border = 1.0f;
 	float CornerRadius = 8.0f;
 	float ZoomX = 1.0f;
 	float PanX = 0.0f;
@@ -89,7 +88,19 @@ public:
 	using UIElement::SelectionChanged;
 	UIClass Type() override;
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& ChartKindProperty();
+	static const DependencyProperty& TitleProperty();
+	static const DependencyProperty& SubtitleProperty();
+	static const DependencyProperty& ValuePrecisionProperty();
+	static const DependencyProperty& ShowLegendProperty();
+	static const DependencyProperty& ShowTooltipProperty();
+	static const DependencyProperty& ShowValueLabelsProperty();
+	static const DependencyProperty& ShowGridLinesProperty();
+	static const DependencyProperty& ShowMarkersProperty();
+	static const DependencyProperty& EnablePanZoomProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	ChartView();
 
 	PROPERTY(ChartViewKind, ChartKind);
@@ -143,6 +154,25 @@ public:
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
+	bool HandlesNavigationKey(Key key) const override;
+	bool TryGetAccessibilityVirtualNode(
+		uint32_t id, AccessibilityVirtualNode& result);
+	size_t GetAccessibilityVirtualChildCount(
+		uint32_t parentId) const noexcept;
+	bool TryGetAccessibilityVirtualChildAt(
+		uint32_t parentId, size_t index, uint32_t& result) const noexcept;
+	bool TryGetAccessibilityVirtualSibling(
+		uint32_t parentId, uint32_t id, bool next,
+		uint32_t& result) const noexcept;
+	bool TryHitTestAccessibilityVirtualNode(
+		float localX, float localY, uint32_t& result);
+	AccessibilityVirtualContainerInfo
+		GetAccessibilityVirtualContainerInfo() const noexcept;
+	void GetAccessibilityVirtualSelection(
+		std::vector<uint32_t>& result) const;
+	bool InvokeAccessibilityVirtualNode(uint32_t id);
+	bool SelectAccessibilityVirtualNode(
+		uint32_t id, AccessibilitySelectionAction action);
 protected:
 	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
@@ -154,6 +184,7 @@ private:
 		D2D1_RECT_F Rect{ 0,0,0,0 };
 		D2D1_POINT_2F Center{ 0,0 };
 		float Radius = 0.0f;
+		float InnerRadius = 0.0f;
 		float StartAngle = 0.0f;
 		float SweepAngle = 0.0f;
 		bool IsPie = false;
@@ -179,6 +210,12 @@ private:
 	void UpdateHover(int localX, int localY);
 	void ClampViewport();
 	void UpdateHorizontalScrollDrag(float localX, float width, float height);
+	void EnsurePointVisible(int pointIndex);
+	void DrawKeyboardFocus(D2DGraphics* d2d);
+	uint32_t GetAccessibilityId(
+		int seriesIndex, int pointIndex) const noexcept;
+	bool FindAccessibilityPoint(
+		uint32_t id, int& seriesIndex, int& pointIndex) const noexcept;
 
 	D2D1_RECT_F GetContentRect(float width, float height) const;
 	D2D1_RECT_F GetPlotRect(float width, float height) const;

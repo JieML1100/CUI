@@ -6,6 +6,33 @@
 #include <typeindex>
 #include <unordered_set>
 
+#if !CUI_ENABLE_DYNAMIC_XAML
+#error XamlSchema.Design.cpp requires the Design runtime flavor.
+#endif
+
+namespace cui::details
+{
+	/** Design-runtime-only access to the standalone dependency-property factory. */
+	class DependencyPropertyStandaloneAccess final
+	{
+	public:
+		template<typename... TArgs>
+		static std::unique_ptr<DependencyPropertyMetadata> CreateMetadata(
+			TArgs&&... args)
+		{
+			return std::unique_ptr<DependencyPropertyMetadata>(
+				new DependencyPropertyMetadata(
+					std::forward<TArgs>(args)...));
+		}
+
+		static std::unique_ptr<DependencyProperty> CreateProperty(
+			DependencyPropertyMetadata& metadata)
+		{
+			return DependencyPropertyRegistry::CreateStandalone(metadata);
+		}
+	};
+}
+
 namespace
 {
 	std::wstring MemberKey(const std::wstring& value)
@@ -31,6 +58,8 @@ namespace
 		switch (kind)
 		{
 		case BindingValueKind::Bool: return std::type_index(typeid(bool));
+		case BindingValueKind::NullableBool:
+			return std::type_index(typeid(NullableBool));
 		case BindingValueKind::Int: return std::type_index(typeid(int));
 		case BindingValueKind::Int64: return std::type_index(typeid(long long));
 		case BindingValueKind::Float: return std::type_index(typeid(float));
@@ -135,15 +164,6 @@ namespace
 	}
 }
 
-std::size_t RuntimeTypeIdHash::operator()(
-	const RuntimeTypeId& value) const noexcept
-{
-	const auto namespaceHash = std::hash<std::wstring>{}(value.NamespaceUri);
-	const auto nameHash = std::hash<std::wstring>{}(value.LocalName);
-	return namespaceHash ^ (nameHash + static_cast<std::size_t>(0x9e3779b9)
-		+ (namespaceHash << 6) + (namespaceHash >> 2));
-}
-
 std::shared_ptr<const DeclarativeTypeDescriptor>
 DeclarativeTypeDescriptor::Create(
 	RuntimeTypeId type,
@@ -183,6 +203,7 @@ bool DeclarativeTypeDescriptor::Build(
 	_properties.reserve(properties.size());
 	_propertyMetadata.reserve(properties.size());
 	_propertyIndex.reserve(properties.size());
+	_propertyTokenIndex.reserve(properties.size());
 
 	for (auto& definition : properties)
 	{
@@ -260,9 +281,23 @@ bool DeclarativeTypeDescriptor::Build(
 
 		const auto slot = _properties.size();
 		const auto canonicalName = definition.Name;
+		const auto propertyToken =
+			MakeBindingSourcePropertyToken(canonicalName);
+		const auto [tokenEntry, tokenInserted] =
+			_propertyTokenIndex.emplace(propertyToken.Value, slot);
+		if (!tokenInserted)
+		{
+			const auto existingSlot = tokenEntry->second;
+			const auto* existing = existingSlot < _properties.size()
+				? _properties[existingSlot].Metadata.get() : nullptr;
+			if (!existing || existing->Name() != canonicalName)
+				return fail(L"声明属性 Binding token 发生名称冲突："
+					+ canonicalName);
+			return fail(L"声明属性重复：" + canonicalName);
+		}
 		auto schemaAllowedValues = normalizedAllowedValues;
-		auto metadata = std::unique_ptr<DependencyPropertyMetadata>(
-			new DependencyPropertyMetadata(
+		auto metadata =
+			cui::details::DependencyPropertyStandaloneAccess::CreateMetadata(
 				canonicalName,
 				definition.ValueKind,
 				DeclarativePropertyValueType(
@@ -294,7 +329,7 @@ bool DeclarativeTypeDescriptor::Build(
 								candidate, value);
 						});
 				},
-				{},
+				nullptr,
 				[](const BindingValue& left, const BindingValue& right)
 				{
 					return DeclarativePropertyValuesEqual(left, right);
@@ -329,11 +364,11 @@ bool DeclarativeTypeDescriptor::Build(
 						[canonicalName, handler = std::move(handler)](
 							DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 						{
-							if (args.PropertyName == canonicalName)
+							if (args.Name() == canonicalName)
 								handler();
 						});
 				},
-				{},
+				nullptr,
 				normalizedDefault,
 				true,
 				false,
@@ -341,13 +376,13 @@ bool DeclarativeTypeDescriptor::Build(
 				definition.IsReadOnly,
 				definition.DefaultUpdateMode,
 				std::move(definition.InheritanceKey),
-				std::move(definition.Design)));
+				std::move(definition.Design));
 
 		PropertyEntry entry;
 		entry.DefaultValue = std::move(normalizedDefault);
 		entry.AllowedValues = std::move(schemaAllowedValues);
-		entry.Property =
-			DependencyPropertyRegistry::CreateStandalone(*metadata);
+		entry.Property = cui::details::DependencyPropertyStandaloneAccess::
+			CreateProperty(*metadata);
 		if (!entry.Property)
 			return fail(L"声明属性无法创建稳定的 DependencyProperty 身份："
 				+ canonicalName);
@@ -482,6 +517,15 @@ const DependencyPropertyMetadata* DeclarativeTypeDescriptor::FindProperty(
 {
 	const auto found = _propertyIndex.find(MemberKey(propertyName));
 	return found == _propertyIndex.end()
+		? nullptr : _properties[found->second].Metadata.get();
+}
+
+const DependencyPropertyMetadata* DeclarativeTypeDescriptor::FindProperty(
+	BindingSourcePropertyToken property) const noexcept
+{
+	if (!property) return nullptr;
+	const auto found = _propertyTokenIndex.find(property.Value);
+	return found == _propertyTokenIndex.end()
 		? nullptr : _properties[found->second].Metadata.get();
 }
 

@@ -54,6 +54,10 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="CuiRuntimeFlavor">
+    <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+  </PropertyGroup>
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -95,7 +99,12 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <!--
+        MSVC 14.44 can emit corrupt /GL + /Z7 records for large runtime
+        translation units, which later fail consumer links with LNK1103.
+        Release keeps link-level symbols while omitting per-object type data.
+      -->
+      <DebugInformationFormat>None</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(IntDir);$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -107,6 +116,15 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+	<ClCompile Include="Runtime\BindingConverterRegistry.Design.cpp" />
+	<ClCompile Include="Runtime\CollectionAdapters.Design.cpp" />
+	<ClCompile Include="Runtime\ContentProjection.Design.cpp" />
+	<ClCompile Include="Runtime\StyleMutableBackend.Design.cpp" />
+	<ClCompile Include="Runtime\VisualState.Design.cpp" />
+	<ClCompile Include="Runtime\Control.Design.cpp" />
+	<ClCompile Include="Runtime\DependencyObject.Design.cpp" />
+	<ClCompile Include="Runtime\DependencyPropertyRegistry.Design.cpp" />
+	<ClCompile Include="Runtime\XamlSchema.Design.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
@@ -135,6 +153,7 @@
     <ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp" />
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="include\BindingConverterRegistry.h" />
     <ClInclude Include="include\CuiRuntime.h" />
     <ClInclude Include="include\XamlDocumentCompiler.h" />
     <ClInclude Include="include\XamlFrameworkTheme.h" />
@@ -163,6 +182,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
+      <AdditionalProperties>CuiRuntimeFlavor=$(CuiRuntimeFlavor)</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>

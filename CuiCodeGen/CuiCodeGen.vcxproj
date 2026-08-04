@@ -38,7 +38,7 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -51,10 +51,17 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <!-- The generator is a build-time tool. MSVC 14.44 can emit corrupt
+         debug records when this large translation unit combines /GL and /Z7;
+         ordinary Release optimization is stable and does not affect shipped UI code. -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="CuiRuntimeFlavor">
+    <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+  </PropertyGroup>
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
@@ -80,6 +87,12 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <!-- Build the tool to one canonical solution-root location for both
+         direct project builds and solution builds. AOT consumers must never
+         select between two independently stale generator executables. -->
+    <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -133,6 +146,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h" />
+    <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h" />
   </ItemGroup>
   <ItemGroup>
@@ -144,6 +158,7 @@
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
+      <AdditionalProperties>CuiRuntimeFlavor=$(CuiRuntimeFlavor)</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{DBE82CEF-212B-4FCD-8A2B-99F17C3B7F19}</Project>

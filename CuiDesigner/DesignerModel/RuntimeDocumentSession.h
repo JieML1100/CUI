@@ -2,6 +2,7 @@
 
 #include "RuntimeDocumentFileWatcher.h"
 #include "RuntimeEventHandlerRegistry.h"
+#include "XamlDocumentParser.h"
 
 #include <chrono>
 #include <cstdint>
@@ -21,6 +22,20 @@ struct RuntimeDocumentSessionMountOptions
 		DeclarativeComponentBehaviors;
 	/** Start save-driven file watching after the initial atomic mount. */
 	bool WatchFile = true;
+	/**
+	 * Keep the authored DesignDocument alive after the atomic mount.
+	 *
+	 * Ship hosts that mount once can set this to false to drop the parsed
+	 * document — the largest single allocation of a dynamic mount — as soon as
+	 * the Window is up. Doing so disables in-place/recomposed reload (the watcher
+	 * falls back to full replacement) and empties ResourceDependencies(), so
+	 * StartWatching() no longer observes satellite resource files. Ignored when
+	 * WatchFile is true, because watching without dependencies is a downgrade the
+	 * session should not apply silently.
+	 */
+	bool RetainSourceDocument = true;
+	/** Parser options for internal loads; forwarded to the loader. */
+	XamlDocumentParseOptions ParseOptions;
 };
 
 /**
@@ -112,9 +127,6 @@ private:
 
 	bool CheckOwningThread(std::wstring* outError) const;
 	RuntimeDocumentLoadOptions MakeLoadOptions(
-		std::shared_ptr<IBindingSource> dataContext,
-		std::shared_ptr<const NativeSurfaceBehaviorRegistry> nativeSurfaceBehaviors,
-		std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
-			declarativeComponentBehaviors) const;
+		const RuntimeDocumentSessionMountOptions& options) const;
 };
 }

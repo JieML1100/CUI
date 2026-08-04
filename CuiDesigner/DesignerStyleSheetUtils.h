@@ -112,11 +112,17 @@ namespace DesignerStyleSheetUtils
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {},
 		const std::wstring& context = L"Style Trigger");
+	/**
+	 * Builds the CUI-consumable Style projection. A schema resolver lowers
+	 * every target property to its stable DependencyProperty identity; omitting
+	 * it retains the name-based Designer runtime compatibility projection.
+	 */
 	bool BuildRuntimeStyleSheet(
 		const DesignerStyleSheet& styleSheet,
 		std::shared_ptr<ControlStyleSheet>& out,
 		std::wstring* outError = nullptr,
 		const std::wstring& resourceBasePath = {},
 		const std::shared_ptr<ResourceLoadContext>& resources = {},
-		const std::vector<RuntimeStyleResource>& supplementalResources = {});
+		const std::vector<RuntimeStyleResource>& supplementalResources = {},
+		const RulePropertySchemaResolver& schemaResolver = {});
 }

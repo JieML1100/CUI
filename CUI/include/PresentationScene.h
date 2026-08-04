@@ -12,6 +12,7 @@
 
 #include "PresentationRenderHost.h"
 #include "Visual.h"
+#include "ControlWeakReference.h"
 
 class Control;
 class D2DGraphics;
@@ -101,7 +102,11 @@ private:
 
 	struct Node
 	{
-		Control* Element = nullptr;
+		// The retained scene is allowed to be invalidated by a control while an
+		// earlier node is preparing or rendering.  Keep only a lifetime-checked
+		// identity here: a raw Control* can otherwise outlive a visual mutation
+		// until the next frame synchronizes the topology.
+		ControlWeakReference Element;
 		int Order = 0;
 		size_t SegmentIndex = NoSegment;
 		size_t SubtreeEnd = 0;
@@ -146,11 +151,12 @@ private:
 	PresentationFrameStatistics _frameStatistics;
 
 	void Rebuild(std::span<Control* const> roots);
-	void RefreshNodeState(Node& node);
+	bool RefreshNodeState(Node& node);
 	void ApplyPendingGeometryInvalidations();
-	void RefreshNodeGeometry(Node& node);
-	void CompleteNode(
+	bool RefreshNodeGeometry(Node& node);
+	bool CompleteNode(
 		Node& node,
 		const PresentationRevisionSnapshot& submitted);
+	bool PrepareNodeForRendering(Node& node, Control*& control);
 	void BeginFrameStatistics() noexcept;
 };

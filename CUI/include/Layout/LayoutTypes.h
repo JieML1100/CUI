@@ -62,21 +62,22 @@ enum class SizeUnit : uint8_t {
 struct Thickness {
     float Left, Top, Right, Bottom;
     
-    Thickness(float all = 0.0f) 
+    constexpr Thickness(float all = 0.0f) noexcept
         : Left(all), Top(all), Right(all), Bottom(all) {}
     
-    Thickness(float horizontal, float vertical) 
+    constexpr Thickness(float horizontal, float vertical) noexcept
         : Left(horizontal), Top(vertical), Right(horizontal), Bottom(vertical) {}
     
-    Thickness(float left, float top, float right, float bottom) 
+    constexpr Thickness(
+        float left, float top, float right, float bottom) noexcept
         : Left(left), Top(top), Right(right), Bottom(bottom) {}
     
-    bool operator==(const Thickness& other) const {
+    constexpr bool operator==(const Thickness& other) const noexcept {
         return Left == other.Left && Top == other.Top && 
                Right == other.Right && Bottom == other.Bottom;
     }
     
-    bool operator!=(const Thickness& other) const {
+    constexpr bool operator!=(const Thickness& other) const noexcept {
         return !(*this == other);
     }
 
@@ -87,10 +88,44 @@ struct Thickness {
      * to this lossy projection explicitly. The public property system retains
      * all four WPF Thickness components.
      */
-    float MaxEdge() const noexcept {
+    constexpr float MaxEdge() const noexcept {
         return (std::max)(
             (std::max)(Left, Right),
             (std::max)(Top, Bottom));
+    }
+};
+
+/**
+ * @brief WPF CornerRadius value, in top-left, top-right, bottom-right,
+ * bottom-left order.
+ *
+ * Validation belongs to the dependency property that consumes the value.  The
+ * value type intentionally preserves every authored component so Border can
+ * apply WPF's overlap scaling during rendering.
+ */
+struct CornerRadius {
+    float TopLeft, TopRight, BottomRight, BottomLeft;
+
+    constexpr CornerRadius(float uniformRadius = 0.0f) noexcept
+        : TopLeft(uniformRadius), TopRight(uniformRadius),
+          BottomRight(uniformRadius), BottomLeft(uniformRadius) {}
+
+    constexpr CornerRadius(
+        float topLeft,
+        float topRight,
+        float bottomRight,
+        float bottomLeft) noexcept
+        : TopLeft(topLeft), TopRight(topRight),
+          BottomRight(bottomRight), BottomLeft(bottomLeft) {}
+
+    constexpr bool operator==(const CornerRadius& other) const noexcept {
+        return TopLeft == other.TopLeft && TopRight == other.TopRight
+            && BottomRight == other.BottomRight
+            && BottomLeft == other.BottomLeft;
+    }
+
+    constexpr bool operator!=(const CornerRadius& other) const noexcept {
+        return !(*this == other);
     }
 };
 

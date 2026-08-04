@@ -1,6 +1,14 @@
 #pragma once
 #include "Control.h"
 
+/** WPF StretchDirection contract used by Image layout and rendering. */
+enum class StretchDirection
+{
+	UpOnly,
+	DownOnly,
+	Both
+};
+
 /**
  * @file Image.h
  * @brief Image 的原生渲染宿主。
@@ -16,6 +24,7 @@ private:
 	ID2D1RenderTarget* _sourceCacheTarget = nullptr;
 	cui::drawing::ImageBrushStretch _stretch =
 		cui::drawing::ImageBrushStretch::Uniform;
+	StretchDirection _stretchDirection = StretchDirection::Both;
 	ID2D1Bitmap* EnsureSourceCache();
 	void RenderSource();
 protected:
@@ -29,13 +38,20 @@ protected:
 public:
 	virtual UIClass Type();
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& SourceProperty();
+	static const DependencyProperty& StretchProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	PROPERTY(std::shared_ptr<BitmapSource>, Source);
 	GET(std::shared_ptr<BitmapSource>, Source);
 	SET(std::shared_ptr<BitmapSource>, Source);
 	PROPERTY(cui::drawing::ImageBrushStretch, Stretch);
 	GET(cui::drawing::ImageBrushStretch, Stretch);
 	SET(cui::drawing::ImageBrushStretch, Stretch);
+	PROPERTY(::StretchDirection, StretchDirection);
+	GET(::StretchDirection, StretchDirection);
+	SET(::StretchDirection, StretchDirection);
 	/** @brief 创建图片控件。 */
 	Image();
 protected:

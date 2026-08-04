@@ -3,30 +3,64 @@
 
 UIClass CheckBox::Type() { return UIClass::UI_CheckBox; }
 
-void CheckBox::BeforeDefaultMouseUp(MouseButton button, MouseEventArgs& e, bool hasMatchingPress)
+CheckBox::CheckBox()
 {
-	(void)e;
-	if (button == MouseButton::Left && hasMatchingPress)
-		SetChecked(!IsChecked);
+	RegisterDependencyProperties();
+}
+
+void CheckBox::RegisterDependencyProperties()
+{
+	ToggleButton::RegisterDependencyProperties();
+}
+
+bool CheckBox::OnAccessKey(bool isMultiple)
+{
+	if (!IsKeyboardFocused)
+		(void)Focus();
+	return ToggleButton::OnAccessKey(isMultiple);
+}
+
+bool CheckBox::ProcessInput(const InputReport& input)
+{
+	if (input.Kind == InputReportKind::KeyDown
+		&& !IsThreeState && IsEffectivelyEnabled() && IsVisible)
+	{
+		if (input.Key == Key::OemPlus || input.Key == Key::Add)
+		{
+			SetPressed(false);
+			SetChecked(true);
+			return true;
+		}
+		if (input.Key == Key::OemMinus || input.Key == Key::Subtract)
+		{
+			SetPressed(false);
+			SetChecked(false);
+			return true;
+		}
+	}
+	return ToggleButton::ProcessInput(input);
 }
 
 bool CheckBox::Invoke()
 {
-	if (!IsEnabled || !IsVisible) return false;
-	SetChecked(!IsChecked);
-	RoutedEventArgs eventArgs;
-	Click(this, eventArgs);
-	return true;
+	return ButtonBase::Invoke();
 }
 
 void CheckBox::SetChecked(bool checked)
 {
 	if (IsChecked == checked) return;
 	(void)TrySetCurrentPropertyValue(
-		L"IsChecked", BindingValue(checked));
+		IsCheckedProperty(), BindingValue(NullableBool(checked)));
+}
+
+void CheckBox::SetIndeterminate()
+{
+	if (!IsChecked.HasValue()) return;
+	(void)TrySetCurrentPropertyValue(
+		IsCheckedProperty(), BindingValue(NullableBool{}));
 }
 
 void CheckBox::Toggle()
 {
-	SetChecked(!IsChecked);
+	OnToggle();
 }

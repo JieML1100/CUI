@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Binding.h"
+#include "CuiBuildFeatures.h"
 #include "Layout/CanvasLayout.h"
 #include "Layout/LayoutDeferral.h"
 #include "Layout/LayoutTypes.h"
@@ -105,18 +106,26 @@ protected:
 	std::vector<EventConnection> _retainedEventConnections;
 
 	std::wstring _styleResourceKey;
+	// A StaticResource captured while expanding a framework Theme template is
+	// resolved in that defining dictionary; consuming document dictionaries do
+	// not get to reinterpret the same textual key.
+	bool _styleResourceKeyCapturedFromTheme = false;
 	ControlStyleState _styleState = ControlStyleState::None;
 	std::shared_ptr<const ControlStyleSheet> _themeStyleSheet;
 	std::shared_ptr<const ControlStyleSheet> _styleSheet;
 	std::shared_ptr<const ControlStyleSheet> _resourceDictionary;
+#if CUI_ENABLE_DYNAMIC_XAML
 	EventConnection _themeStyleConnection;
 	EventConnection _styleSheetConnection;
 	EventConnection _resourceDictionaryConnection;
+#endif
 	EventConnection _stylePropertyConditionConnection;
 	std::vector<EventConnection> _styleStateConnections;
 	std::vector<EventConnection> _styleDataContextConnections;
-	std::vector<std::shared_ptr<IBindingSource>> _styleDataContextOwners;
-	std::array<std::vector<std::wstring>, 2> _styleSheetProperties;
+	/** Object and list path segments only need shared lifetime retention. */
+	std::vector<std::shared_ptr<void>> _styleDataContextOwners;
+	std::array<std::vector<DependencyPropertyReference>, 2>
+		_styleSheetProperties;
 	bool _refreshingStyleValues = false;
 	bool _styleRefreshPending = false;
 	bool _refreshingDynamicResources = false;

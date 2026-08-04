@@ -101,7 +101,10 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <!-- MSVC 14.44 reproducibly crashes while importing Utils /GL objects in
+         CUITest's final LTCG pass. Ordinary per-TU Release optimization stays
+         enabled; only cross-module code generation is disabled. -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
     <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
   </PropertyGroup>
@@ -199,7 +202,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <DebugInformationFormat>None</DebugInformationFormat>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
     </ClCompile>

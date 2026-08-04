@@ -1,23 +1,92 @@
 #pragma once
 #define NOMINMAX
 #include "PasswordBox.h"
+#include "TextBox.h"
+#include "TextBoxBase.h"
 #include "Window.h"
 #include "TextEditCore.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <float.h>
+#include <stdexcept>
+#include <typeindex>
 
 namespace
 {
-	constexpr float FallbackCornerRadius = 6.0f;
-	constexpr float FallbackFocusBorderThickness = 1.6f;
-	constexpr auto FallbackHoverColor = cui::theme::palette::SurfaceSubtle;
-	constexpr auto FallbackFocusBorderColor = cui::theme::palette::Accent;
-	constexpr auto FallbackDisabledOverlayColor =
-		cui::theme::palette::DisabledOverlay;
-
 	CuiTextEdit::EditOptions PasswordEditOptions()
 	{
 		CuiTextEdit::EditOptions options;
 		options.allowMultiLine = false;
+		return options;
+	}
+
+	template<typename TValue>
+	DependencyPropertyOptions<PasswordBox, TValue> PasswordOptions(
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor),
+		DependencyPropertyFlags flags =
+			DependencyPropertyFlags::AffectsRender)
+	{
+		DependencyPropertyOptions<PasswordBox, TValue> options;
+		options.DefaultValue = std::move(defaultValue);
+		options.Flags = flags;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = order;
+		options.Design.Editor = editor;
+		options.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		)
+		return options;
+	}
+
+	using DependencyPropertyAccessor = const DependencyProperty& (*)();
+
+	auto PasswordSubscriber(DependencyPropertyAccessor propertyAccessor)
+	{
+		return [propertyAccessor](
+			PasswordBox& target,
+			DependencyPropertyMetadata::ChangeHandler handler,
+			DataSourceUpdateMode)
+		{
+			return target.OnPropertyValueChanged.Subscribe(
+				[propertyAccessor, handler = std::move(handler)](
+					DependencyObject*,
+					const DependencyPropertyChangedEventArgs& args)
+				{
+					if (args.Property == &propertyAccessor()) handler();
+				});
+		};
+	}
+
+	DependencyPropertyOptions<PasswordBox, cui::drawing::Brush>
+		PasswordBrushOptions(
+			cui::drawing::Brush value
+			CUI_DESIGN_METADATA_ARGUMENTS(int order))
+	{
+		auto options = PasswordOptions(
+			std::move(value) CUI_DESIGN_METADATA_ARGUMENTS(
+				order, DependencyPropertyEditorKind::Text));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		)
+		options.Equals = [](const cui::drawing::Brush& left,
+			const cui::drawing::Brush& right) { return left == right; };
+		options.Convert = [](const BindingValue& value)
+			-> std::optional<cui::drawing::Brush>
+		{
+			cui::drawing::Brush brush;
+			if (value.TryGet(brush)) return brush;
+			D2D1_COLOR_F color{};
+			if (value.TryGet(color))
+				return cui::drawing::MakeSolidColorBrush(color);
+			return std::nullopt;
+		};
 		return options;
 	}
 
@@ -46,44 +115,261 @@ namespace
 
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
 
-void PasswordBox::RegisterDependencyProperties()
+namespace
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxMaxLengthMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			auto options = PasswordOptions(
+				0 CUI_DESIGN_METADATA_ARGUMENTS(
+					30, DependencyPropertyEditorKind::Number),
+				DependencyPropertyFlags::None);
+			CUI_DESIGN_METADATA_ONLY(
+			options.Design.Minimum = 0.0;
+			options.Design.Step = 1.0;
+			)
+			return DependencyPropertyRegistry::AddOwnerStatic<PasswordBox, int>(
+				TextBox::MaxLengthProperty(),
+				[](PasswordBox& target) { return target.MaxLength; },
+				[](PasswordBox& target, const int& value)
+				{ target.MaxLength = value; },
+				PasswordSubscriber(&TextBox::MaxLengthProperty),
+				std::move(options));
+		}();
+		return relation;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxSelectionBrushMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			return DependencyPropertyRegistry::AddOwnerStatic<
+				PasswordBox, cui::drawing::Brush>(
+					TextBoxBase::SelectionBrushProperty(),
+					[](PasswordBox& target) { return target.SelectionBrush; },
+					[](PasswordBox& target,
+						const cui::drawing::Brush& value)
+					{ target.SelectionBrush = value; },
+					PasswordSubscriber(&TextBoxBase::SelectionBrushProperty),
+					PasswordBrushOptions(
+						cui::drawing::MakeSolidColorBrush(
+							cui::theme::palette::Accent)
+						CUI_DESIGN_METADATA_ARGUMENTS(40)));
+		}();
+		return relation;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxSelectionOpacityMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			auto options = PasswordOptions(
+				0.4 CUI_DESIGN_METADATA_ARGUMENTS(
+					50, DependencyPropertyEditorKind::Number));
+			options.Coerce = [](PasswordBox&,
+				const double& value) -> std::optional<double>
+			{
+				return (std::clamp)(value, 0.0, 1.0);
+			};
+			CUI_DESIGN_METADATA_ONLY(
+			options.Design.Minimum = 0.0;
+			options.Design.Maximum = 1.0;
+			options.Design.Step = 0.05;
+			)
+			return DependencyPropertyRegistry::AddOwnerStatic<
+				PasswordBox, double>(TextBoxBase::SelectionOpacityProperty(),
+				[](PasswordBox& target) { return target.SelectionOpacity; },
+				[](PasswordBox& target, const double& value)
+				{ target.SelectionOpacity = value; },
+				PasswordSubscriber(&TextBoxBase::SelectionOpacityProperty),
+				std::move(options));
+		}();
+		return relation;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxSelectionTextBrushMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			return DependencyPropertyRegistry::AddOwnerStatic<
+				PasswordBox, cui::drawing::Brush>(
+					TextBoxBase::SelectionTextBrushProperty(),
+					[](PasswordBox& target)
+					{ return target.SelectionTextBrush; },
+					[](PasswordBox& target,
+						const cui::drawing::Brush& value)
+					{ target.SelectionTextBrush = value; },
+					PasswordSubscriber(
+						&TextBoxBase::SelectionTextBrushProperty),
+					PasswordBrushOptions(
+						cui::drawing::MakeSolidColorBrush(
+							cui::theme::palette::OnAccent)
+						CUI_DESIGN_METADATA_ARGUMENTS(60)));
+		}();
+		return relation;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxCaretBrushMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			return DependencyPropertyRegistry::AddOwnerStatic<
+				PasswordBox, cui::drawing::Brush>(
+					TextBoxBase::CaretBrushProperty(),
+					[](PasswordBox& target) { return target.CaretBrush; },
+					[](PasswordBox& target,
+						const cui::drawing::Brush& value)
+					{ target.CaretBrush = value; },
+					PasswordSubscriber(&TextBoxBase::CaretBrushProperty),
+					PasswordBrushOptions(
+						cui::drawing::Brush{}
+						CUI_DESIGN_METADATA_ARGUMENTS(70)));
+		}();
+		return relation;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		PasswordBoxInactiveSelectionMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			return DependencyPropertyRegistry::AddOwnerStatic<PasswordBox, bool>(
+				TextBoxBase::IsInactiveSelectionHighlightEnabledProperty(),
+				[](PasswordBox& target)
+				{ return target.IsInactiveSelectionHighlightEnabled; },
+				[](PasswordBox& target, const bool& value)
+				{ target.IsInactiveSelectionHighlightEnabled = value; },
+				PasswordSubscriber(
+					&TextBoxBase::IsInactiveSelectionHighlightEnabledProperty),
+				PasswordOptions(
+					false CUI_DESIGN_METADATA_ARGUMENTS(
+						80, DependencyPropertyEditorKind::Boolean)));
+		}();
+		return relation;
+	}
+}
+
+const DependencyProperty& PasswordBox::PasswordProperty()
+{
+	static const auto registration = []
 	{
 		using Handler = DependencyPropertyMetadata::ChangeHandler;
 		DependencyPropertyOptions<PasswordBox, std::wstring> options;
 		options.DefaultValue = std::wstring{};
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Common";
 		options.Design.CategoryOrder = 0;
 		options.Design.Order = 10;
 		options.Design.Editor = DependencyPropertyEditorKind::Text;
 		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
 		options.Changed = [](
 			PasswordBox& target, const std::wstring&, const std::wstring&)
 		{
 			target.PublishPasswordChanged();
 		};
-		DependencyPropertyRegistry::Register<PasswordBox, std::wstring>(
-			L"Password",
-			[](PasswordBox& target) { return target.Password; },
-			[](PasswordBox& target, const std::wstring& value)
-			{ target.Password = value; },
-			[](PasswordBox& target, Handler handler, DataSourceUpdateMode mode)
-			{
-				if (mode == DataSourceUpdateMode::OnValidation)
-					return target.OnLostFocus.Subscribe(
-						[handler = std::move(handler)](Control*) { handler(); });
-				return target.PasswordChanged.Subscribe(
-					[handler = std::move(handler)](
-						Control*, RoutedEventArgs&) { handler(); });
-			}, std::move(options));
-		RegisterControlBorderThicknessMetadata<PasswordBox>(1.0f, 60);
-		return true;
+		return DependencyPropertyRegistry::RegisterStatic<
+			PasswordBox, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"Password"),
+				[](PasswordBox& target) { return target.Password; },
+				[](PasswordBox& target, const std::wstring& value)
+				{ target.Password = value; },
+				[](PasswordBox& target, Handler handler,
+					DataSourceUpdateMode mode)
+				{
+					if (mode == DataSourceUpdateMode::OnValidation)
+					{
+						return target.OnLostFocus.Subscribe(
+							[handler = std::move(handler)](Control*)
+							{ handler(); });
+					}
+					return target.PasswordChanged.Subscribe(
+						[handler = std::move(handler)](
+							Control*, RoutedEventArgs&) { handler(); });
+				}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& PasswordBox::PasswordCharProperty()
+{
+	static const auto registration = []
+	{
+		auto options = PasswordOptions(
+			std::wstring(L"*") CUI_DESIGN_METADATA_ARGUMENTS(
+				20, DependencyPropertyEditorKind::Text));
+		options.Validate = [](const std::wstring& value)
+		{
+			if (value.size() == 1) return value[0] != L'\0';
+			return value.size() == 2
+				&& CuiTextEdit::IsHighSurrogate(value[0])
+				&& CuiTextEdit::IsLowSurrogate(value[1]);
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			PasswordBox, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"PasswordChar"),
+				[](PasswordBox& target) { return target.PasswordChar; },
+				[](PasswordBox& target, const std::wstring& value)
+				{ target.PasswordChar = value; },
+				PasswordSubscriber(&PasswordBox::PasswordCharProperty),
+				std::move(options));
+	}();
+	return *registration;
+}
+
+void PasswordBox::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+	CUI_DESIGN_METADATA_ONLY(
+	TextBox::RegisterDependencyProperties();
+	(void)PasswordProperty();
+	(void)PasswordCharProperty();
+	(void)PasswordBoxMaxLengthMetadataRelation();
+	(void)PasswordBoxSelectionBrushMetadataRelation();
+	(void)PasswordBoxSelectionOpacityMetadataRelation();
+	(void)PasswordBoxSelectionTextBrushMetadataRelation();
+	(void)PasswordBoxCaretBrushMetadataRelation();
+	(void)PasswordBoxInactiveSelectionMetadataRelation();
+	(void)RegisterControlBorderThicknessMetadata<
+			PasswordBox, Control>(
+				1.0f CUI_DESIGN_METADATA_ARGUMENTS(60));
+	)
+}
+
+const DependencyPropertyMetadata*
+PasswordBox::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+	if (&property == &TextBox::MaxLengthProperty())
+		return &PasswordBoxMaxLengthMetadataRelation().Metadata();
+	if (&property == &TextBoxBase::SelectionBrushProperty())
+		return &PasswordBoxSelectionBrushMetadataRelation().Metadata();
+	if (&property == &TextBoxBase::SelectionOpacityProperty())
+		return &PasswordBoxSelectionOpacityMetadataRelation().Metadata();
+	if (&property == &TextBoxBase::SelectionTextBrushProperty())
+		return &PasswordBoxSelectionTextBrushMetadataRelation().Metadata();
+	if (&property == &TextBoxBase::CaretBrushProperty())
+		return &PasswordBoxCaretBrushMetadataRelation().Metadata();
+	if (&property ==
+		&TextBoxBase::IsInactiveSelectionHighlightEnabledProperty())
+	{
+		return &PasswordBoxInactiveSelectionMetadataRelation().Metadata();
+	}
+	if (&property == &Control::BorderThicknessProperty())
+	{
+		return &RegisterControlBorderThicknessMetadata<
+			PasswordBox, Control>(
+				1.0f CUI_DESIGN_METADATA_ARGUMENTS(60)).Metadata();
+	}
+	return Control::ResolveExactDependencyPropertyMetadata(property);
 }
 
 GET_CPP(PasswordBox, std::wstring, Password)
@@ -93,7 +379,77 @@ GET_CPP(PasswordBox, std::wstring, Password)
 
 SET_CPP(PasswordBox, std::wstring, Password)
 {
-	(void)SetPropertyField(L"Password", _password, std::move(value));
+	if (!SetPropertyField(
+		PasswordProperty(), _password, std::move(value))) return;
+	_selectionStart = (std::clamp)(
+		_selectionStart, 0, static_cast<int>(_password.size()));
+	_selectionEnd = (std::clamp)(
+		_selectionEnd, 0, static_cast<int>(_password.size()));
+	InvalidateTextLayout();
+}
+
+GET_CPP(PasswordBox, std::wstring, PasswordChar)
+{
+	return _passwordChar;
+}
+SET_CPP(PasswordBox, std::wstring, PasswordChar)
+{
+	if (!SetPropertyField(
+		PasswordCharProperty(), _passwordChar, std::move(value))) return;
+	InvalidateTextLayout();
+}
+GET_CPP(PasswordBox, int, MaxLength) { return _maxLength; }
+SET_CPP(PasswordBox, int, MaxLength)
+{
+	(void)SetPropertyField(TextBox::MaxLengthProperty(), _maxLength, value);
+}
+GET_CPP(PasswordBox, cui::drawing::Brush, SelectionBrush)
+{
+	return _selectionBrush;
+}
+SET_CPP(PasswordBox, cui::drawing::Brush, SelectionBrush)
+{
+	(void)SetPropertyField(
+		TextBoxBase::SelectionBrushProperty(),
+		_selectionBrush, std::move(value));
+}
+GET_CPP(PasswordBox, double, SelectionOpacity)
+{
+	return _selectionOpacity;
+}
+SET_CPP(PasswordBox, double, SelectionOpacity)
+{
+	(void)SetPropertyField(
+		TextBoxBase::SelectionOpacityProperty(), _selectionOpacity, value);
+}
+GET_CPP(PasswordBox, cui::drawing::Brush, SelectionTextBrush)
+{
+	return _selectionTextBrush;
+}
+SET_CPP(PasswordBox, cui::drawing::Brush, SelectionTextBrush)
+{
+	(void)SetPropertyField(
+		TextBoxBase::SelectionTextBrushProperty(),
+		_selectionTextBrush, std::move(value));
+}
+GET_CPP(PasswordBox, cui::drawing::Brush, CaretBrush)
+{
+	return _caretBrush;
+}
+SET_CPP(PasswordBox, cui::drawing::Brush, CaretBrush)
+{
+	(void)SetPropertyField(
+		TextBoxBase::CaretBrushProperty(), _caretBrush, std::move(value));
+}
+GET_CPP(PasswordBox, bool, IsInactiveSelectionHighlightEnabled)
+{
+	return _isInactiveSelectionHighlightEnabled;
+}
+SET_CPP(PasswordBox, bool, IsInactiveSelectionHighlightEnabled)
+{
+	(void)SetPropertyField(
+		TextBoxBase::IsInactiveSelectionHighlightEnabledProperty(),
+		_isInactiveSelectionHighlightEnabled, value);
 }
 
 void PasswordBox::CommitPasswordEdit(std::wstring value)
@@ -105,6 +461,7 @@ void PasswordBox::CommitPasswordEdit(std::wstring value)
 
 void PasswordBox::PublishPasswordChanged()
 {
+	InvalidateTextLayout();
 	RoutedEventArgs args;
 	PasswordChanged(this, args);
 	NotifyAccessibilityValueChanged();
@@ -132,17 +489,15 @@ bool PasswordBox::HandlesNavigationKey(Key key) const
 PasswordBox::PasswordBox()
 {
 	RegisterDependencyProperties();
-	(void)TrySetPropertyValue(
-		L"Padding", BindingValue(Thickness{ 5.0f }),
-		DependencyPropertyValueSource::Theme);
-	this->RendererBackgroundColor = cui::theme::palette::Surface;
-	this->RendererBorderColor = cui::theme::palette::BorderStrong;
-	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 }
 void PasswordBox::InputText(std::wstring input)
 {
 	std::wstring newText = this->Password;
-	CuiTextEdit::ReplaceSelection(newText, this->_selectionStart, this->_selectionEnd, input, PasswordEditOptions());
+	auto options = PasswordEditOptions();
+	options.maxTextLength = static_cast<size_t>(_maxLength);
+	CuiTextEdit::ReplaceSelection(
+		newText, this->_selectionStart,
+		this->_selectionEnd, input, options);
 	CommitPasswordEdit(std::move(newText));
 }
 void PasswordBox::InputBack()
@@ -160,34 +515,26 @@ void PasswordBox::InputDelete()
 void PasswordBox::UpdateScroll(bool arrival)
 {
 	(void)arrival;
-	float renderWidth = (std::max)(
+	const float renderWidth = (std::max)(
 		0.0f, this->ActualWidth - Padding.Left - Padding.Right);
-	auto font = this->GetRenderFont();
-	if (!font)
+	DWRITE_HIT_TEST_METRICS caret{};
+	if (!GetCaretLayoutMetrics(_selectionEnd, caret))
 	{
 		_horizontalScrollOffset = 0.0f;
 		return;
 	}
-	std::wstring maskedText = this->GetDisplayText();
-	auto hit = font->HitTestTextRange(
-		maskedText,
-		static_cast<UINT32>((std::clamp)(
-			_selectionEnd, 0, static_cast<int>(maskedText.size()))),
-		0);
-	if (hit.empty())
+	if ((caret.left + caret.width) - _horizontalScrollOffset
+		> renderWidth)
 	{
-		_horizontalScrollOffset = 0.0f;
-		return;
+		_horizontalScrollOffset =
+			(caret.left + caret.width) - renderWidth;
 	}
-	const auto& lastSelect = hit.front();
-	if ((lastSelect.left + lastSelect.width) - _horizontalScrollOffset > renderWidth)
+	if (caret.left - _horizontalScrollOffset < 0.0f)
 	{
-		_horizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
+		_horizontalScrollOffset = caret.left;
 	}
-	if (lastSelect.left - _horizontalScrollOffset < 0.0f)
-	{
-		_horizontalScrollOffset = lastSelect.left;
-	}
+	_horizontalScrollOffset = (std::max)(
+		0.0f, _horizontalScrollOffset);
 }
 std::wstring PasswordBox::GetSelectedString()
 {
@@ -199,7 +546,134 @@ std::wstring PasswordBox::GetSelectedString()
 
 std::wstring PasswordBox::GetDisplayText()
 {
-	return std::wstring(this->Password.size(), _passwordChar);
+	if (_password.empty()) return {};
+	const std::wstring mask = _passwordChar.empty()
+		? std::wstring(L"*") : _passwordChar;
+	std::wstring result;
+	result.reserve(_password.size() * mask.size());
+	for (size_t index = 0; index < _password.size();)
+	{
+		result.append(mask);
+		index += CuiTextEdit::HasSurrogatePairAt(
+			_password, static_cast<int>(index)) ? 2u : 1u;
+	}
+	return result;
+}
+
+void PasswordBox::InvalidateTextLayout() noexcept
+{
+	_textLayout.Reset();
+	_layoutText.clear();
+	_layoutFont = nullptr;
+	_caretRectCacheValid = false;
+}
+
+IDWriteTextLayout* PasswordBox::EnsureTextLayout()
+{
+	auto* font = GetRenderFont();
+	if (!font || !font->FontObject) return nullptr;
+	const auto display = GetDisplayText();
+	if (_textLayout
+		&& _layoutText == display
+		&& _layoutFont == font->FontObject)
+	{
+		return _textLayout.Get();
+	}
+	_textLayout.Reset();
+	_layoutText = display;
+	_layoutFont = font->FontObject;
+	_textLayout.Attach(Factory::CreateStringLayout(
+		display, FLT_MAX,
+		(std::max)(1.0f,
+			ActualHeight - Padding.Top - Padding.Bottom),
+		font->FontObject));
+	if (_textLayout)
+		_textSize = font->GetTextSize(_textLayout.Get());
+	return _textLayout.Get();
+}
+
+float PasswordBox::GetTextOriginX()
+{
+	return Padding.Left - _horizontalScrollOffset;
+}
+
+float PasswordBox::GetTextOriginY()
+{
+	const float renderHeight = (std::max)(
+		0.0f, ActualHeight - Padding.Top - Padding.Bottom);
+	const float remaining = (std::max)(
+		0.0f, renderHeight - _textSize.height);
+	switch (VerticalContentAlignment)
+	{
+	case VerticalAlignment::Bottom:
+		return Padding.Top + remaining;
+	case VerticalAlignment::Center:
+		return Padding.Top + remaining * 0.5f;
+	case VerticalAlignment::Top:
+	case VerticalAlignment::Stretch:
+	default:
+		return Padding.Top;
+	}
+}
+
+bool PasswordBox::GetCaretLayoutMetrics(
+	int caretIndex, DWRITE_HIT_TEST_METRICS& metrics)
+{
+	auto* layout = EnsureTextLayout();
+	if (!layout) return false;
+	// Password selection indices are password UTF-16 offsets. The display
+	// string may use a surrogate-pair mask, so map through text elements.
+	int displayIndex = 0;
+	for (int index = 0;
+		index < (std::clamp)(
+			caretIndex, 0, static_cast<int>(_password.size()));)
+	{
+		displayIndex += static_cast<int>(_passwordChar.empty()
+			? 1u : _passwordChar.size());
+		index += CuiTextEdit::HasSurrogatePairAt(_password, index)
+			? 2 : 1;
+	}
+	FLOAT x = 0.0f;
+	FLOAT y = 0.0f;
+	return SUCCEEDED(layout->HitTestTextPosition(
+		static_cast<UINT32>(displayIndex),
+		FALSE, &x, &y, &metrics));
+}
+
+int PasswordBox::HitTestTextPosition(
+	float localX, float localY)
+{
+	auto* layout = EnsureTextLayout();
+	if (!layout) return 0;
+	BOOL trailing = FALSE;
+	BOOL inside = FALSE;
+	DWRITE_HIT_TEST_METRICS metrics{};
+	if (FAILED(layout->HitTestPoint(
+		localX - GetTextOriginX(),
+		localY - GetTextOriginY(),
+		&trailing, &inside, &metrics)))
+	{
+		return 0;
+	}
+	const int displayIndex = static_cast<int>(
+		metrics.textPosition
+		+ (trailing ? metrics.length : 0));
+	const size_t maskLength = _passwordChar.empty()
+		? 1u : _passwordChar.size();
+	const int elementIndex = maskLength == 0
+		? displayIndex
+		: displayIndex / static_cast<int>(maskLength);
+	int passwordIndex = 0;
+	for (int element = 0;
+		element < elementIndex
+			&& passwordIndex < static_cast<int>(_password.size());
+		element++)
+	{
+		passwordIndex += CuiTextEdit::HasSurrogatePairAt(
+			_password, passwordIndex) ? 2 : 1;
+	}
+	return (std::clamp)(
+		passwordIndex, 0, static_cast<int>(_password.size()));
 }
 
 // ---- 公共选择/编辑 API ----
@@ -263,7 +737,7 @@ void PasswordBox::Clear()
 
 void PasswordBox::InsertText(const std::wstring& text)
 {
-	if (text.empty()) return;
+	if (text.empty() && !HasSelection()) return;
 	this->InputText(text);
 }
 
@@ -305,133 +779,139 @@ bool PasswordBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
 
 void PasswordBox::OnRender()
 {
-	if (this->IsVisible == false)return;
-	bool isUnderMouse = this->IsMouseOver;
-	auto d2d = this->GetDrawingContext();
-	auto font = this->GetRenderFont();
-	float renderHeight = this->ActualHeight - Padding.Top - Padding.Bottom;
-	std::wstring maskedText = this->GetDisplayText();
-	_textSize = font->GetTextSize(maskedText, FLT_MAX, renderHeight);
-	float textOffsetY = Padding.Top
-		+ (std::max)(0.0f, (renderHeight - _textSize.height) * 0.5f);
-	const auto size = this->GetActualSizeDip();
-	const float actualWidth = size.width;
-	const float actualHeight = size.height;
-	bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
-	this->_caretRectCacheValid = false;
+	if (!IsVisible) return;
+	auto* d2d = GetDrawingContext();
+	auto* font = GetRenderFont();
+	auto* layout = EnsureTextLayout();
+	if (!d2d || !font || !layout) return;
+	const auto size = GetActualSizeDip();
+	const auto brushSize = D2D1::SizeF(size.width, size.height);
+	Microsoft::WRL::ComPtr<ID2D1Brush> foreground;
+	foreground.Attach(CreateForegroundBrush(*d2d, brushSize));
+	auto selectionDefinition = SelectionBrush;
+	selectionDefinition.Opacity *= static_cast<float>(
+		(std::clamp)(SelectionOpacity, 0.0, 1.0));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionBrush;
+	selectionBrush.Attach(
+		selectionDefinition.CreateBrush(*d2d, brushSize));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionTextBrush;
+	selectionTextBrush.Attach(
+		SelectionTextBrush.CreateBrush(*d2d, brushSize));
+	Microsoft::WRL::ComPtr<ID2D1Brush> caretBrush;
+	caretBrush.Attach(CaretBrush.CreateBrush(*d2d, brushSize));
+
+	const bool focused = GetPresentationWindow()
+		&& GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+	const bool showSelection =
+		focused || IsInactiveSelectionHighlightEnabled;
+	const auto span = CuiTextEdit::NormalizeSelection(
+		_selectionStart, _selectionEnd, _password.size());
+	const size_t maskLength =
+		_passwordChar.empty() ? 1u : _passwordChar.size();
+	auto toDisplayIndex = [&](int passwordIndex)
+	{
+		int elements = 0;
+		for (int index = 0;
+			index < (std::clamp)(
+				passwordIndex, 0, static_cast<int>(_password.size()));)
+		{
+			elements++;
+			index += CuiTextEdit::HasSurrogatePairAt(
+				_password, index) ? 2 : 1;
+		}
+		return static_cast<UINT32>(
+			static_cast<size_t>(elements) * maskLength);
+	};
+	const UINT32 selectionStart = toDisplayIndex(span.start);
+	const UINT32 selectionEnd = toDisplayIndex(span.end);
+	const UINT32 selectionLength =
+		selectionEnd - selectionStart;
+	const float originX = GetTextOriginX();
+	const float originY = GetTextOriginY();
+	_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
 	D2D1_POINT_2F caretStart{};
 	D2D1_POINT_2F caretEnd{};
-	this->BeginRender();
-	if (GetControlTemplateRoot())
+
+	BeginRender();
+	if (showSelection && selectionLength > 0 && selectionBrush)
 	{
-		this->EndRender();
-		return;
-	}
-	{
-		auto backColor = this->RendererBackgroundColor;
-		const float radius = (std::min)(FallbackCornerRadius,
-			actualHeight * 0.5f);
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, backColor, radius);
-		if ((isUnderMouse || isSelected) && FallbackHoverColor.a > 0.0f)
-			d2d->FillRoundRect(1.0f, 1.0f,
-				(std::max)(0.0f, actualWidth - 2.0f),
-				(std::max)(0.0f, actualHeight - 2.0f),
-				FallbackHoverColor, (std::max)(0.0f, radius - 1.0f));
-		if (this->Password.size() > 0)
+		auto ranges = font->HitTestTextRange(
+			layout, selectionStart, selectionLength);
+		for (const auto& range : ranges)
 		{
-			auto font = this->GetRenderFont();
-			if (isSelected)
-			{
-				int sels = _selectionStart <= _selectionEnd ? _selectionStart : _selectionEnd;
-				int sele = _selectionEnd >= _selectionStart ? _selectionEnd : _selectionStart;
-				int selLen = sele - sels;
-				auto selRange = font->HitTestTextRange(maskedText, (UINT32)sels, (UINT32)selLen);
-				if (selLen != 0)
-				{
-					for (auto sr : selRange)
-					{
-						d2d->FillRect(sr.left + Padding.Left - _horizontalScrollOffset,
-							sr.top + textOffsetY, sr.width, sr.height,
-							_selectedBackColor);
-					}
-				}
-				else
-				{
-					if (!selRange.empty())
-					{
-						const auto caret = selRange[0];
-						const float cx = caret.left + Padding.Left - _horizontalScrollOffset;
-						const float cy = caret.top + textOffsetY;
-						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
-						const auto absoluteLocation = this->GetAbsoluteLocationDip();
-						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
-						this->_caretRectCacheValid = true;
-						shouldDrawCaret = true;
-						caretStart = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + textOffsetY };
-						caretEnd = { selRange[0].left + Padding.Left - _horizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
-					}
-				}
-				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
-				if (textLayout) {
-					d2d->DrawStringLayoutEffect(textLayout,
-						Padding.Left - _horizontalScrollOffset, textOffsetY,
-						this->RendererForegroundColor,
-						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-						_selectedForeColor,
-						font);
-					textLayout->Release();
-				}
-			}
-			else
-			{
-				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
-				if (textLayout) {
-					d2d->DrawStringLayout(textLayout,
-						Padding.Left - _horizontalScrollOffset, textOffsetY,
-						this->RendererForegroundColor);
-					textLayout->Release();
-				}
-			}
+			d2d->FillRect(
+				range.left + originX,
+				range.top + originY,
+				range.width, range.height,
+				selectionBrush.Get());
 		}
+	}
+	if (showSelection && selectionLength > 0
+		&& selectionTextBrush)
+	{
+		if (foreground)
+			d2d->DrawStringLayoutEffect(
+				layout, originX, originY, foreground.Get(),
+				DWRITE_TEXT_RANGE{
+					selectionStart, selectionLength },
+				selectionTextBrush.Get(), font);
 		else
-		{
-			if (isSelected)
-			{
-				const float cx = Padding.Left - _horizontalScrollOffset;
-				const float cy = textOffsetY;
-				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-				const auto absoluteLocation = this->GetAbsoluteLocationDip();
-				this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
-				this->_caretRectCacheValid = true;
-				shouldDrawCaret = true;
-				caretStart = { Padding.Left - _horizontalScrollOffset, textOffsetY };
-				caretEnd = { Padding.Left - _horizontalScrollOffset, textOffsetY + 16.0f };
-			}
-		}
-		UpdateCaretBlinkState(isSelected, this->_selectionStart, this->_selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
-		if (shouldDrawCaret && IsCaretBlinkVisible())
-		{
-			d2d->DrawLine(caretStart, caretEnd, this->RendererForegroundColor);
-		}
-		const auto borderColor = isSelected
-			? FallbackFocusBorderColor : this->RendererBorderColor;
-		const float borderWidth = isSelected
-			? (std::max)(this->BorderThickness.MaxEdge(),
-				FallbackFocusBorderThickness)
-			: this->BorderThickness.MaxEdge();
-		if (borderWidth > 0.0f && borderColor.a > 0.0f)
-			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
-				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
-				borderColor, borderWidth, radius);
+			d2d->DrawStringLayoutEffect(
+				layout, originX, originY,
+				RendererForegroundColor,
+				DWRITE_TEXT_RANGE{
+					selectionStart, selectionLength },
+				selectionTextBrush.Get(), font);
 	}
-	if (!this->IsEnabled)
+	else if (foreground)
 	{
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight,
-			FallbackDisabledOverlayColor,
-			(std::min)(FallbackCornerRadius, actualHeight * 0.5f));
+		d2d->DrawStringLayout(
+			layout, originX, originY, foreground.Get());
 	}
-	this->EndRender();
+	else
+	{
+		d2d->DrawStringLayout(
+			layout, originX, originY,
+			RendererForegroundColor);
+	}
+
+	if (focused && !span.HasSelection())
+	{
+		DWRITE_HIT_TEST_METRICS caret{};
+		if (GetCaretLayoutMetrics(_selectionEnd, caret))
+		{
+			const float x = caret.left + originX;
+			const float y = caret.top + originY;
+			const float height = caret.height > 0.0f
+				? caret.height : font->FontHeight;
+			const auto absolute = GetAbsoluteLocationDip();
+			_caretRectCache = D2D1::RectF(
+				static_cast<float>(absolute.x) + x - 2.0f,
+				static_cast<float>(absolute.y) + y - 2.0f,
+				static_cast<float>(absolute.x) + x + 2.0f,
+				static_cast<float>(absolute.y) + y + height + 2.0f);
+			_caretRectCacheValid = true;
+			shouldDrawCaret = true;
+			caretStart = D2D1::Point2F(x, y);
+			caretEnd = D2D1::Point2F(x, y + height);
+		}
+	}
+	UpdateCaretBlinkState(
+		focused, _selectionStart, _selectionEnd,
+		_caretRectCacheValid,
+		_caretRectCacheValid ? &_caretRectCache : nullptr);
+	if (shouldDrawCaret && IsCaretBlinkVisible())
+	{
+		if (caretBrush)
+			d2d->DrawLine(caretStart, caretEnd, caretBrush.Get());
+		else if (foreground)
+			d2d->DrawLine(caretStart, caretEnd, foreground.Get());
+		else
+			d2d->DrawLine(
+				caretStart, caretEnd, RendererForegroundColor);
+	}
+	EndRender();
 }
 
 bool PasswordBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)

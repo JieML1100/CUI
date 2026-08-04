@@ -1,10 +1,12 @@
 #include "../include/XamlFrameworkTheme.h"
 
 #include "../include/XamlObjectMaterializer.h"
+#include "../include/XamlRuntimeSchema.h"
 #include "../../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../../CuiDesigner/DesignerStyleSheetUtils.h"
 #include "../../CUI/include/StyleInfrastructure.h"
 #include "../../CUI/include/XamlInfrastructure.h"
+#include "../../CUI/include/XamlSchema.h"
 #include "CuiFrameworkTheme.g.h"
 
 #include <iterator>
@@ -18,6 +20,7 @@ namespace
 		std::once_flag Initialize;
 		std::shared_ptr<const DesignerModel::DesignDocument> Document;
 		std::shared_ptr<const ControlStyleSheet> StyleSheet;
+		std::shared_ptr<XamlSchemaContext> SchemaContext;
 		std::wstring Error;
 	};
 
@@ -44,6 +47,47 @@ namespace
 			auto sharedDocument =
 				std::make_shared<const DesignerModel::DesignDocument>(
 					std::move(document));
+			auto schemaContext = std::make_shared<XamlSchemaContext>();
+			const DesignerStyleSheetUtils::RulePropertySchemaResolver
+				schemaResolver =
+				[sharedDocument, schemaContext](const DesignerStyleRule& rule,
+					CuiRuntime::XamlTypePropertySchema& schema,
+					std::wstring* error) -> bool
+				{
+					const auto* component = rule.ComponentType.Empty()
+						? nullptr
+						: sharedDocument->FindComponent(rule.ComponentType);
+					if (!rule.ComponentType.Empty() && !component)
+					{
+						if (error) *error = L"样式 TargetType 组件不存在。";
+						return false;
+					}
+					if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
+						rule.HasType ? rule.Type : UIClass::UI_Base,
+						component, *sharedDocument, schema, error))
+						return false;
+					if (!schema.DeclarativeType) return true;
+
+					const auto declarativePropertyCount =
+						schema.DeclarativeType->Properties().size();
+					if (declarativePropertyCount > schema.Properties.size())
+					{
+						if (error) *error = L"组件属性 Schema 数量无效。";
+						return false;
+					}
+					auto canonical = schemaContext->GetOrAdd(
+						schema.DeclarativeType, error);
+					if (!canonical) return false;
+					schema.Properties.erase(
+						schema.Properties.begin(),
+						schema.Properties.begin() + declarativePropertyCount);
+					schema.DeclarativeType = std::move(canonical);
+					const auto properties = schema.DeclarativeType->Properties();
+					schema.Properties.insert(schema.Properties.begin(),
+						properties.begin(), properties.end());
+					if (error) error->clear();
+					return true;
+				};
 			std::shared_ptr<ControlStyleSheet> styleSheet;
 			auto structuralResources =
 				DesignerStyleSheetUtils::BuildItemsPanelStyleResources(
@@ -59,10 +103,11 @@ namespace
 				sharedDocument->StyleSheet, styleSheet, &cache.Error,
 				sharedDocument->ResourceBasePath,
 				sharedDocument->Resources,
-				structuralResources))
+				structuralResources, schemaResolver))
 				return;
 			cache.Document = std::move(sharedDocument);
 			cache.StyleSheet = std::move(styleSheet);
+			cache.SchemaContext = std::move(schemaContext);
 			cache.Error.clear();
 		});
 	}
@@ -107,6 +152,7 @@ bool CuiRuntime::XamlFrameworkTheme::Apply(
 bool CuiRuntime::XamlFrameworkTheme::InstallTemplateValue(
 	Control& owner,
 	const std::wstring& resourceKey,
+	DependencyPropertyValueSource valueSource,
 	std::wstring* outError)
 {
 	auto styleSheet = DefaultStyleSheet(outError);
@@ -122,7 +168,7 @@ bool CuiRuntime::XamlFrameworkTheme::InstallTemplateValue(
 		return false;
 	}
 	if (!cui::framework::XamlAccess::SetTemplate(
-		owner, reference, DependencyPropertyValueSource::Theme))
+		owner, reference, valueSource))
 	{
 		if (outError) *outError =
 			L"Generic.xaml Control.Template Theme 值安装失败："

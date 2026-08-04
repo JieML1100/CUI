@@ -1,5 +1,5 @@
 #pragma once
-#include "Control.h"
+#include "TextBoxBase.h"
 
 struct RichTextBoxTextRange
 {
@@ -24,23 +24,21 @@ struct RichTextBoxTextStyleRange
  * - 支持多行、选择区间、滚动条与光标命中测试
  * - 可启用虚拟化：按块（BlockCharCount）构建多个 DWrite TextLayout，以降低超长文本开销
  */
-class RichTextBox : public Control
+class RichTextBox : public TextBoxBase
 {
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<TextBoxAutomationPeer>(*this, L"RichTextBox");
 	}
 private:
-	bool _acceptsTab = false;
-	bool _isReadOnly = false;
 	int _maxLength = 0;
 	bool _enableVirtualization = true;
 	size_t _virtualizeThreshold = 20000;
 	size_t _blockCharCount = 4096;
 	D2D1_COLOR_F _fallbackHoverColor = cui::theme::palette::SurfaceSubtle;
-	D2D1_COLOR_F _selectionBackColor = cui::theme::palette::SelectionBack;
-	D2D1_COLOR_F _selectionForeColor = cui::theme::palette::TextPrimary;
 	D2D1_COLOR_F _highlightBackColor = cui::theme::palette::AccentSelected;
 	D2D1_COLOR_F _fallbackFocusBorderColor = cui::theme::palette::Accent;
 	D2D1_COLOR_F _scrollBackColor = cui::theme::palette::ScrollTrack;
@@ -58,6 +56,20 @@ private:
 	{
 		return (std::max)(0.0f,
 			ActualHeight - Padding.Top - Padding.Bottom);
+	}
+	bool CanVerticallyScroll() const noexcept
+	{
+		return _verticalScrollBarVisibility
+			!= ScrollBarVisibility::Disabled;
+	}
+	bool IsVerticalScrollBarVisible() noexcept
+	{
+		return _verticalScrollBarVisibility
+				== ScrollBarVisibility::Visible
+			|| (_verticalScrollBarVisibility
+					== ScrollBarVisibility::Auto
+				&& _textSize.height > (
+					ActualHeight - Padding.Top - Padding.Bottom));
 	}
 	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
@@ -129,32 +141,28 @@ public:
 	PROPERTY(std::wstring, Text);
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
-	bool IsAccessibilityReadOnly() const override { return _isReadOnly; }
 	virtual UIClass Type();
 	/**
 	 * CUI compatibility Text identity. WPF RichTextBox exposes Document instead;
 	 * this property remains until the document object model is implemented.
 	 */
 	static const DependencyProperty& TextProperty();
+	static const DependencyProperty& MaxLengthProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
+	std::wstring GetSemanticText() const override;
 	CursorKind QueryCursor(int localX, int localY) override;
+	bool HitTestChildren() const override { return false; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	/** WPF-like tab input opt-in. */
-	PROPERTY(bool, AcceptsTab);
-	GET(bool, AcceptsTab);
-	SET(bool, AcceptsTab);
-	/** WPF-like read-only editing policy. */
-	PROPERTY(bool, IsReadOnly);
-	GET(bool, IsReadOnly);
-	SET(bool, IsReadOnly);
 	/** Maximum character count; zero means unlimited. */
 	PROPERTY(int, MaxLength);
 	GET(int, MaxLength);
@@ -183,6 +191,8 @@ private:
 	void EnsureAllBlockMetrics(float renderWidth, float renderHeight);
 	int HitTestGlobalIndex(float x, float y);
 	bool GetCaretMetrics(int caretIndex, float& outX, float& outY, float& outH);
+	int GetVisualLineBoundary(bool lineEnd);
+	int GetVerticalCaretIndex(float lineDelta);
 	void DrawScroll();
 	void UpdateScrollDrag(float posY);
 	void SetScrollByPos(float localY);
@@ -190,6 +200,10 @@ private:
 	void InputBack();
 	void InputDelete();
 	void ApplyUndoRecord(const UndoRecord& rec, bool isUndo);
+	void StoreUndoRecord(UndoRecord record);
+	void StoreRedoRecord(UndoRecord record);
+	void OnUndoPolicyChanged() override;
+	void OnScrollPolicyChanged() override;
 	void UpdateScroll(bool arrival = false);
 	void UpdateLayout();
 	void UpdateSelRange();
@@ -197,7 +211,8 @@ private:
 		IDWriteTextLayout* layout,
 		int textStart,
 		int textLength,
-		bool includeSelection);
+		bool includeSelection,
+		ID2D1Brush* selectionTextBrush);
 	ID2D1SolidColorBrush* GetTextStyleBrush(D2D1_COLOR_F color);
 public:
 	/** @brief 追加文本（不自动换行）。 */
@@ -231,8 +246,16 @@ public:
 	bool Copy();
 	bool Cut();
 	bool Paste();
-	bool CanUndo() const noexcept { return !_isReadOnly && !undoStack.empty(); }
-	bool CanRedo() const noexcept { return !_isReadOnly && !redoStack.empty(); }
+	bool CanUndo() const noexcept
+	{
+		return !_isReadOnly && _isUndoEnabled
+			&& _undoLimit != 0 && !undoStack.empty();
+	}
+	bool CanRedo() const noexcept
+	{
+		return !_isReadOnly && _isUndoEnabled
+			&& _undoLimit != 0 && !redoStack.empty();
+	}
 	bool CanPaste() const noexcept;
 	void Undo();
 	void Redo();

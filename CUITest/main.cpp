@@ -5,15 +5,28 @@
 #include <Windows.h>
 
 #include <exception>
+#include <filesystem>
 #include <string_view>
 
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 
 namespace
 {
+	std::filesystem::path DiagnosticPath()
+	{
+		std::wstring executable(32768, L'\0');
+		const auto length = GetModuleFileNameW(
+			nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+		if (!length || length >= executable.size())
+			return std::filesystem::current_path() / L"CUITest.aot.error.txt";
+		executable.resize(length);
+		return std::filesystem::path(executable).parent_path()
+			/ L"CUITest.aot.error.txt";
+	}
+
 	void WriteDiagnostic(const std::wstring& error)
 	{
-		const auto diagnosticPath = DemoWindow::XamlFilePath() + L".error.txt";
+		const auto diagnosticPath = DiagnosticPath();
 		const auto diagnostic = Convert::WStringToString(error);
 		if (const auto file = CreateFileW(diagnosticPath.c_str(), GENERIC_WRITE,
 			0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -29,7 +42,7 @@ namespace
 			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
 		if (output && output != INVALID_HANDLE_VALUE)
 		{
-			const auto message = L"CUITest XAML failed: " + error + L"\r\n";
+			const auto message = L"CUITest AOT failed: " + error + L"\r\n";
 			DWORD written = 0;
 			(void)WriteConsoleW(output, message.data(),
 				static_cast<DWORD>(message.size()), &written, nullptr);
@@ -39,58 +52,12 @@ namespace
 
 	void ClearDiagnostic()
 	{
-		const auto path = DemoWindow::XamlFilePath() + L".error.txt";
-		(void)DeleteFileW(path.c_str());
+		(void)DeleteFileW(DiagnosticPath().c_str());
 	}
 }
 
 int main(int argc, char** argv)
 {
-	if (argc == 2 && std::string_view(argv[1]) == "--parse-xaml")
-	{
-		std::wstring error;
-		if (!DemoWindow::ValidateXaml(&error))
-		{
-			WriteDiagnostic(error);
-			return 2;
-		}
-		ClearDiagnostic();
-		return 0;
-	}
-	if (argc == 2 && std::string_view(argv[1]) == "--compile-xaml")
-	{
-		DesignerModel::DesignDocument document;
-		CuiRuntime::XamlCompiledDocument compiled;
-		std::wstring error;
-		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
-				DemoWindow::XamlFilePath(), document, &error)
-			|| !CuiRuntime::XamlDocumentCompiler::Compile(
-				document, compiled, {}, &error))
-		{
-			WriteDiagnostic(error);
-			return 2;
-		}
-		ClearDiagnostic();
-		return 0;
-	}
-	if (argc == 2 && std::string_view(argv[1]) == "--materialize-xaml")
-	{
-		DesignerModel::DesignDocument document;
-		CuiRuntime::XamlObjectTree tree;
-		CuiRuntime::XamlMaterializationOptions options;
-		options.AllowNativeSurfacePlaceholder = true;
-		std::wstring error;
-		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
-				DemoWindow::XamlFilePath(), document, &error)
-			|| !CuiRuntime::XamlObjectMaterializer::Materialize(
-				document, tree, options, &error))
-		{
-			WriteDiagnostic(error);
-			return 2;
-		}
-		ClearDiagnostic();
-		return 0;
-	}
 	if (argc == 2 && std::string_view(argv[1]) == "--construct-xaml")
 	{
 		try
@@ -175,6 +142,14 @@ int main(int argc, char** argv)
 			WriteDiagnostic(Convert::StringToWString(error.what()));
 			return 4;
 		}
+	}
+	if (argc != 1)
+	{
+		WriteDiagnostic(
+			L"Unsupported CUITest argument. Production accepts only "
+			L"--construct-xaml, --validate-xaml, --smoke-xaml, "
+			L"or --render-smoke.");
+		return 64;
 	}
 
 	try

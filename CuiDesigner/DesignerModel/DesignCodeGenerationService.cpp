@@ -5,6 +5,7 @@
 #include "DesignDocumentSerializer.h"
 #include "CppUserCodeIndex.h"
 #include "XamlDocumentParser.h"
+#include "../BindingConverterCatalog.h"
 #include "../CodeGenerator.h"
 #include "../DesignerEventCatalog.h"
 #include "../../CuiRuntime/include/XamlDocumentCompiler.h"
@@ -127,6 +128,39 @@ namespace
 		return ValidateOutputBase(outputBase, outError);
 	}
 
+	bool LoadBindingConverterCatalog(
+		const DesignCodeGenerationOptions& options,
+		std::shared_ptr<const BindingConverterCatalog>& output,
+		std::wstring* outError)
+	{
+		output.reset();
+		if (options.ConverterManifestPath.empty()) return true;
+
+		std::error_code pathError;
+		auto manifestPath = std::filesystem::absolute(
+			std::filesystem::path(options.ConverterManifestPath), pathError);
+		if (pathError)
+		{
+			SetError(outError, L"无法解析 Binding converter manifest 路径："
+				+ Widen(pathError.message()));
+			return false;
+		}
+		manifestPath = manifestPath.lexically_normal();
+		auto catalog = std::make_shared<BindingConverterCatalog>();
+		std::wstring catalogError;
+		if (!BindingConverterCatalog::LoadFile(
+			manifestPath.wstring(), *catalog, &catalogError))
+		{
+			SetError(outError, catalogError.empty()
+				? L"无法加载 Binding converter manifest："
+					+ manifestPath.wstring()
+				: std::move(catalogError));
+			return false;
+		}
+		output = std::move(catalog);
+		return true;
+	}
+
 	void PopulateResult(
 		const std::wstring& designFilePath,
 		const std::filesystem::path& outputBase,
@@ -152,6 +186,29 @@ namespace
 			result.OutputBasePath + L".handlers.g.inc";
 	}
 
+	void PopulateGeneratedResult(
+		const std::wstring& designFilePath,
+		const std::filesystem::path& outputBase,
+		const std::wstring& className,
+		DesignGeneratedCodeResult& result)
+	{
+		std::error_code error;
+		result = {};
+		if (!designFilePath.empty())
+		{
+			const auto absoluteDesign = std::filesystem::absolute(
+				std::filesystem::path(designFilePath), error);
+			result.DesignFilePath = error
+				? designFilePath : absoluteDesign.lexically_normal().wstring();
+		}
+		result.OutputBasePath = outputBase.wstring();
+		result.ClassName = className;
+		result.GeneratedHeaderPath = result.OutputBasePath + L".g.h";
+		result.GeneratedSourcePath = result.OutputBasePath + L".g.cpp";
+		result.HandlerDeclarationsPath =
+			result.OutputBasePath + L".handlers.g.inc";
+	}
+
 	bool BuildGenerationPlan(
 		const DesignDocument& document,
 		const std::wstring& designFilePath,
@@ -169,6 +226,10 @@ namespace
 		std::filesystem::path outputBase;
 		if (!ResolveOutputBase(
 			document, designFilePath, options, outputBase, outError))
+			return false;
+
+		std::shared_ptr<const BindingConverterCatalog> converterCatalog;
+		if (!LoadBindingConverterCatalog(options, converterCatalog, outError))
 			return false;
 
 		std::wstring error;
@@ -189,6 +250,7 @@ namespace
 
 		PopulateResult(designFilePath, outputBase, className, result);
 		CodeGenerator generator(className, compiled.Document);
+		generator.SetBindingConverterCatalog(std::move(converterCatalog));
 		if (!generator.BuildFilePlan(
 			result.UserHeaderPath, result.UserSourcePath, files))
 		{
@@ -304,6 +366,15 @@ std::vector<std::wstring> DesignCodeGenerationResult::OutputFiles() const
 	return {
 		UserHeaderPath,
 		UserSourcePath,
+		GeneratedHeaderPath,
+		GeneratedSourcePath,
+		HandlerDeclarationsPath
+	};
+}
+
+std::vector<std::wstring> DesignGeneratedCodeResult::OutputFiles() const
+{
+	return {
 		GeneratedHeaderPath,
 		GeneratedSourcePath,
 		HandlerDeclarationsPath
@@ -893,6 +964,127 @@ bool DesignCodeGenerationService::GenerateFile(
 	DesignDocument document;
 	if (!LoadDocument(designFilePath, document, outError)) return false;
 	return Generate(
+		document, designFilePath, options, outResult, outError);
+}
+
+bool DesignCodeGenerationService::GenerateGeneratedOnly(
+	const DesignDocument& document,
+	const std::wstring& designFilePath,
+	const DesignCodeGenerationOptions& options,
+	DesignGeneratedCodeResult* outResult,
+	std::wstring* outError)
+{
+	if (outResult) *outResult = {};
+	if (outError) outError->clear();
+	try
+	{
+		std::wstring className;
+		if (!ResolveClassName(document, options, className, outError))
+			return false;
+		std::filesystem::path outputBase;
+		if (!ResolveOutputBase(
+			document, designFilePath, options, outputBase, outError))
+			return false;
+
+		std::shared_ptr<const BindingConverterCatalog> converterCatalog;
+		if (!LoadBindingConverterCatalog(options, converterCatalog, outError))
+			return false;
+
+		std::wstring error;
+		// Production lowering starts from the parsed authored document. The
+		// dynamic compiler's framework-theme expansion would copy Generic.xaml
+		// template trees into every application; authored ControlTemplates are
+		// lowered independently by CodeGenerator instead.
+		if (!CodeGenerator::ValidateDocument(document, &error))
+		{
+			SetError(outError, error.empty()
+				? L"无法从设计文档构建静态 C++ 输出。"
+				: std::move(error));
+			return false;
+		}
+
+		DesignGeneratedCodeResult result;
+		PopulateGeneratedResult(
+			designFilePath, outputBase, className, result);
+		const auto parent = outputBase.parent_path();
+		if (!parent.empty())
+		{
+			std::error_code directoryError;
+			std::filesystem::create_directories(parent, directoryError);
+			if (directoryError)
+			{
+				SetError(outError, L"无法创建静态代码输出目录："
+					+ Widen(directoryError.message()));
+				return false;
+			}
+		}
+
+		CodeGenerator generator(
+			className, document,
+			CodeGeneratorOutputKind::StaticWindow);
+		generator.SetBindingConverterCatalog(std::move(converterCatalog));
+		const auto generatedHeader = generator.GenerateHeader();
+		const auto generatedSource = generator.GenerateCppForHeader(
+			NarrowAscii(outputBase.filename().wstring()));
+		const auto handlerDeclarations =
+			generator.GenerateHandlerDeclarations();
+
+		AtomicFileBatchSnapshot snapshot;
+		if (!AtomicFileBatchSnapshot::Capture({
+			result.GeneratedHeaderPath,
+			result.GeneratedSourcePath,
+			result.HandlerDeclarationsPath,
+		}, snapshot, &error))
+		{
+			SetError(outError, error.empty()
+				? L"无法捕获静态生成文件快照。" : std::move(error));
+			return false;
+		}
+		const auto& existing = snapshot.Entries();
+		if (existing.size() != 3)
+		{
+			SetError(outError, L"静态生成文件快照不完整。");
+			return false;
+		}
+		std::vector<CodeGeneratorFileContent> files{
+			{ result.GeneratedHeaderPath, generatedHeader,
+				existing[0].Existed, existing[0].Content },
+			{ result.GeneratedSourcePath, generatedSource,
+				existing[1].Existed, existing[1].Content },
+			{ result.HandlerDeclarationsPath, handlerDeclarations,
+				existing[2].Existed, existing[2].Content },
+		};
+		if (!CommitGenerationPlan(files, &error))
+		{
+			SetError(outError, error.empty()
+				? L"静态生成文件批次提交失败。" : std::move(error));
+			return false;
+		}
+
+		if (outResult) *outResult = std::move(result);
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		SetError(outError,
+			L"静态 C++ 代码生成失败：" + Widen(error.what()));
+	}
+	catch (...)
+	{
+		SetError(outError, L"静态 C++ 代码生成失败：发生未知异常。");
+	}
+	return false;
+}
+
+bool DesignCodeGenerationService::GenerateGeneratedOnlyFile(
+	const std::wstring& designFilePath,
+	const DesignCodeGenerationOptions& options,
+	DesignGeneratedCodeResult* outResult,
+	std::wstring* outError)
+{
+	DesignDocument document;
+	if (!LoadDocument(designFilePath, document, outError)) return false;
+	return GenerateGeneratedOnly(
 		document, designFilePath, options, outResult, outError);
 }
 }

@@ -21,7 +21,9 @@ public:
 	ItemsPresenter();
 	UIClass Type() override { return UIClass::UI_ItemsPresenter; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 protected:
 	void OnRender() override;
 public:
@@ -50,7 +52,12 @@ private:
 	Panel* SetItemsHost(std::unique_ptr<Panel> value);
 	std::unique_ptr<Panel> DetachItemsHost();
 
+	struct ItemsHostMutationFrame;
+
 	Panel* _itemsHost = nullptr;
-	bool _changingItemsHost = false;
+	// Synchronous parent-change callbacks can enter another visual mutation.
+	// Keep the exact active transaction on the call stack instead of exposing
+	// every collection shape through one shared boolean.
+	ItemsHostMutationFrame* _activeItemsHostMutation = nullptr;
 	bool _contentLayoutPending = true;
 };

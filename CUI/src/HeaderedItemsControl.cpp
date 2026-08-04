@@ -1,56 +1,55 @@
 #include "HeaderedItemsControl.h"
+#include "HeaderedContentControl.h"
 #include "Layout/OverlayLayout.h"
 #include "TreeInfrastructure.h"
-#include "XamlInfrastructure.h"
 
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 
 namespace
 {
-	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
-	{
-		return left == right;
-	}
-
 	template<typename TValue>
 	DependencyPropertyOptions<HeaderedItemsControl, TValue> HeaderOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyPersistence persistence =
-			DependencyPropertyPersistence::Metadata)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyPersistence persistence =
+				DependencyPropertyPersistence::Metadata))
 	{
 		DependencyPropertyOptions<HeaderedItemsControl, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
 		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
+		)
 		return options;
 	}
+
 }
 
-HeaderedItemsControl::HeaderedItemsControl()
-	: ItemsControl()
+const DependencyPropertyMetadataRegistration&
+HeaderedItemsControl::HeaderPropertyMetadataRelation()
 {
-}
-
-void HeaderedItemsControl::RegisterDependencyProperties()
-{
-	ItemsControl::RegisterDependencyProperties();
-	static const bool registered = []
+	static const DependencyPropertyMetadataRegistration relation = []
 	{
-		auto headerOptions = HeaderOptions(
-			BindingValue{}, 40, DependencyPropertyPersistence::Native);
-		headerOptions.Design.Browsable = false;
-		headerOptions.Coerce = [](
+		auto options = HeaderOptions(
+			BindingValue{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				40, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		options.Coerce = [](
 			HeaderedItemsControl& target,
 			const BindingValue& proposed) -> std::optional<BindingValue>
 		{
@@ -63,23 +62,35 @@ void HeaderedItemsControl::RegisterDependencyProperties()
 			}
 			return proposed;
 		};
-		headerOptions.Changed = [](
+		options.Changed = [](
 			HeaderedItemsControl& target,
 			const BindingValue&, const BindingValue&)
 		{
 			(void)target.RebuildHeaderPresenter();
 		};
-		DependencyPropertyRegistry::Register<HeaderedItemsControl, BindingValue>(
-			L"Header",
-			[](HeaderedItemsControl& target) { return target.GetHeader(); },
-			[](HeaderedItemsControl& target, const BindingValue& value)
-			{ target.SetHeader(value); }, {}, std::move(headerOptions));
+		return DependencyPropertyRegistry::AddOwnerStatic<
+			HeaderedItemsControl, BindingValue>(
+				HeaderedContentControl::HeaderProperty(),
+				[](HeaderedItemsControl& target) { return target.GetHeader(); },
+				[](HeaderedItemsControl& target, const BindingValue& value)
+				{ target.SetHeader(value); }, {}, std::move(options));
+	}();
+	return relation;
+}
 
-		auto templateOptions = HeaderOptions(
-			ItemTemplateReference{}, 50,
-			DependencyPropertyPersistence::Native);
-		templateOptions.Design.Browsable = false;
-		templateOptions.Coerce = [](
+const DependencyPropertyMetadataRegistration&
+HeaderedItemsControl::HeaderTemplatePropertyMetadataRelation()
+{
+	static const DependencyPropertyMetadataRegistration relation = []
+	{
+		auto options = HeaderOptions(
+			ItemTemplateReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				50, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		options.Coerce = [](
 			HeaderedItemsControl& target,
 			const ItemTemplateReference& proposed)
 			-> std::optional<ItemTemplateReference>
@@ -93,39 +104,55 @@ void HeaderedItemsControl::RegisterDependencyProperties()
 			}
 			return proposed;
 		};
-		templateOptions.Changed = [](
+		options.Changed = [](
 			HeaderedItemsControl& target,
 			const ItemTemplateReference&, const ItemTemplateReference&)
 		{
 			(void)target.RebuildHeaderPresenter();
 		};
-		DependencyPropertyRegistry::Register<HeaderedItemsControl,
-			ItemTemplateReference>(L"HeaderTemplate",
-			[](HeaderedItemsControl& target)
-			{ return target.GetHeaderTemplate(); },
-			[](HeaderedItemsControl& target,
-				const ItemTemplateReference& value)
-			{ target.SetHeaderTemplate(value); }, {},
-			std::move(templateOptions));
-
-		auto pathOptions = HeaderOptions(std::wstring{}, 60);
-		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
-		pathOptions.Changed = [](
-			HeaderedItemsControl& target,
-			const std::wstring&, const std::wstring&)
-		{
-			(void)target.RebuildHeaderPresenter();
-		};
-		DependencyPropertyRegistry::Register<HeaderedItemsControl, std::wstring>(
-			L"HeaderDisplayMemberPath",
-			[](HeaderedItemsControl& target)
-			{ return target.GetHeaderDisplayMemberPath(); },
-			[](HeaderedItemsControl& target, const std::wstring& value)
-			{ target.SetHeaderDisplayMemberPath(value); }, {},
-			std::move(pathOptions));
-		return true;
+		return DependencyPropertyRegistry::AddOwnerStatic<
+			HeaderedItemsControl, ItemTemplateReference>(
+				HeaderedContentControl::HeaderTemplateProperty(),
+				[](HeaderedItemsControl& target)
+				{ return target.GetHeaderTemplate(); },
+				[](HeaderedItemsControl& target,
+					const ItemTemplateReference& value)
+				{ target.SetHeaderTemplate(value); }, {}, std::move(options));
 	}();
-	(void)registered;
+	return relation;
+}
+
+const DependencyProperty& HeaderedItemsControl::HeaderProperty()
+{
+	return HeaderPropertyMetadataRelation().Property();
+}
+
+const DependencyProperty& HeaderedItemsControl::HeaderTemplateProperty()
+{
+	return HeaderTemplatePropertyMetadataRelation().Property();
+}
+
+HeaderedItemsControl::HeaderedItemsControl()
+	: ItemsControl()
+{
+}
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+void HeaderedItemsControl::RegisterDependencyProperties()
+{
+	ItemsControl::RegisterDependencyProperties();
+}
+#endif
+
+const DependencyPropertyMetadata*
+HeaderedItemsControl::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+	if (&property == &HeaderedContentControl::HeaderProperty())
+		return &HeaderPropertyMetadataRelation().Metadata();
+	if (&property == &HeaderedContentControl::HeaderTemplateProperty())
+		return &HeaderTemplatePropertyMetadataRelation().Metadata();
+	return ItemsControl::ResolveExactDependencyPropertyMetadata(property);
 }
 
 Control* HeaderedItemsControl::AddHeaderInfrastructure(
@@ -134,52 +161,110 @@ Control* HeaderedItemsControl::AddHeaderInfrastructure(
 {
 	if (!child) return nullptr;
 	auto* raw = child.get();
+	const ControlWeakReference lifetime(raw);
+	Control* expectedLogicalParent =
+		role == HeaderInfrastructureRole::LogicalSlot
+		? this
+		: nullptr;
 	_headerInfrastructure.push_back(raw);
+	const bool wasChangingHeaderInfrastructure =
+		_changingHeaderInfrastructure;
 	_changingHeaderInfrastructure = true;
 	try
 	{
 		if (role == HeaderInfrastructureRole::TemplateImplementation)
 		{
-			if (!raw->GetTemplatedParent())
-				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-			cui::framework::TreeAccess::AddOwnedVisualChild(
-				*this, std::move(child), nullptr);
+			if (raw->GetTemplatedParent()
+				&& raw->GetTemplatedParent() != this)
+				throw std::logic_error(
+					"header infrastructure already has another template parent");
+			if (!raw->GetTemplatedParent()
+				&& !cui::framework::TreeAccess::
+					SetTemplatedParentPreservingOwnership(
+						child, this))
+				throw std::logic_error(
+					"header infrastructure ownership changed during template-parent publication");
 		}
-		else
-			cui::framework::TreeAccess::AddOwnedVisualChild(
-				*this, std::move(child), this);
-		_changingHeaderInfrastructure = false;
+		if (!child)
+			throw std::logic_error(
+				"header infrastructure ownership changed before attachment");
+		(void)cui::framework::TreeAccess::
+			InsertOwnedVisualChildPreserving(
+				*this, VisualChildCount(), child,
+				expectedLogicalParent);
+
+		auto* live = lifetime.Get();
+		if (!live || live->GetVisualParent() != this
+			|| IndexOfVisualChild(live) < 0
+			|| !IsHeaderInfrastructure(live)
+			|| live->GetLogicalParent() != expectedLogicalParent
+			|| (role == HeaderInfrastructureRole::TemplateImplementation
+				&& live->GetTemplatedParent() != this))
+			throw std::logic_error(
+				"header infrastructure attachment did not commit");
+		_changingHeaderInfrastructure =
+			wasChangingHeaderInfrastructure;
+		return live;
 	}
 	catch (...)
 	{
-		_changingHeaderInfrastructure = false;
-		_headerInfrastructure.erase(std::remove(
-			_headerInfrastructure.begin(), _headerInfrastructure.end(), raw),
-			_headerInfrastructure.end());
+		_changingHeaderInfrastructure =
+			wasChangingHeaderInfrastructure;
+		auto* live = lifetime.Get();
+		const bool stillOwnedHere = live
+			&& live->GetVisualParent() == this
+			&& IndexOfVisualChild(live) >= 0;
+		if (!stillOwnedHere)
+			_headerInfrastructure.erase(std::remove(
+				_headerInfrastructure.begin(),
+				_headerInfrastructure.end(), raw),
+				_headerInfrastructure.end());
+		if (child && (!live || live->GetVisualParent()
+			|| live->GetPresentationWindow()))
+			(void)child.release();
 		throw;
 	}
-	return raw;
 }
 
 std::unique_ptr<Control> HeaderedItemsControl::DetachHeaderInfrastructure(
 	Control* child)
 {
 	if (!IsHeaderInfrastructure(child)) return {};
+	const ControlWeakReference lifetime(child);
+	const bool wasChangingHeaderInfrastructure =
+		_changingHeaderInfrastructure;
 	_changingHeaderInfrastructure = true;
 	std::unique_ptr<Control> result;
 	try
 	{
 		result = DetachVisualChild(child);
-		_changingHeaderInfrastructure = false;
+		_changingHeaderInfrastructure =
+			wasChangingHeaderInfrastructure;
 	}
 	catch (...)
 	{
-		_changingHeaderInfrastructure = false;
+		_changingHeaderInfrastructure =
+			wasChangingHeaderInfrastructure;
+		auto* live = lifetime.Get();
+		if (!live || live->GetVisualParent() != this
+			|| IndexOfVisualChild(live) < 0)
+			_headerInfrastructure.erase(std::remove(
+				_headerInfrastructure.begin(),
+				_headerInfrastructure.end(), child),
+				_headerInfrastructure.end());
 		throw;
 	}
-	_headerInfrastructure.erase(std::remove(
-		_headerInfrastructure.begin(), _headerInfrastructure.end(), child),
-		_headerInfrastructure.end());
+	auto* live = lifetime.Get();
+	const bool stillOwnedHere = live
+		&& live->GetVisualParent() == this
+		&& IndexOfVisualChild(live) >= 0;
+	if (!stillOwnedHere)
+		_headerInfrastructure.erase(std::remove(
+			_headerInfrastructure.begin(),
+			_headerInfrastructure.end(), child),
+			_headerInfrastructure.end());
+	else if (result && result.get() == live)
+		(void)result.release();
 	return result;
 }
 
@@ -370,39 +455,55 @@ void HeaderedItemsControl::PerformPendingLayout()
 void HeaderedItemsControl::SetHeader(BindingValue value)
 {
 	_lastHeaderError.clear();
-	(void)SetPropertyField(L"Header", _header, std::move(value));
+	(void)SetPropertyField(
+		HeaderProperty(), _header, std::move(value));
 }
 
 void HeaderedItemsControl::SetHeaderTemplate(ItemTemplateReference value)
 {
 	_lastHeaderError.clear();
 	(void)SetPropertyField(
-		L"HeaderTemplate", _headerTemplate, std::move(value));
+		HeaderTemplateProperty(), _headerTemplate, std::move(value));
 }
 
-void HeaderedItemsControl::SetHeaderDisplayMemberPath(std::wstring value)
+void HeaderedItemsControl::SetCompiledHeaderDisplayMemberPath(
+	CompiledBindingPathView value)
 {
-	(void)SetPropertyField(
-		L"HeaderDisplayMemberPath", _headerDisplayMemberPath,
-		std::move(value));
+	if (value.Version != CompiledBindingPathVersion)
+		throw std::invalid_argument(
+			"HeaderedItemsControl compiled header display path version is unsupported");
+	const bool unchanged =
+		_compiledHeaderDisplayMemberPath.Version == value.Version
+		&& _compiledHeaderDisplayMemberPath.Steps.data() == value.Steps.data()
+		&& _compiledHeaderDisplayMemberPath.Steps.size() == value.Steps.size();
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (unchanged && _headerDisplayMemberPath.empty()) return;
+#else
+	if (unchanged) return;
+#endif
+	_compiledHeaderDisplayMemberPath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	_headerDisplayMemberPath.clear();
+#endif
+	(void)RebuildHeaderPresenter();
 }
 
-void HeaderedItemsControl::SetHeaderTypeName(std::wstring value)
+void HeaderedItemsControl::SetHeaderTypeToken(DataTypeToken value)
 {
-	if (_headerTypeName == value) return;
-	const auto previous = _headerTypeName;
-	_headerTypeName = std::move(value);
+	if (_headerTypeToken == value) return;
+	const auto previous = _headerTypeToken;
+	_headerTypeToken = value;
 	std::wstring validationError;
 	if (!ValidateHeaderCandidate(
 		_header, _headerTemplate, validationError))
 	{
-		_headerTypeName = previous;
+		_headerTypeToken = previous;
 		_lastHeaderError = std::move(validationError);
 		return;
 	}
 	if (RebuildHeaderPresenter()) return;
 	const auto error = _lastHeaderError;
-	_headerTypeName = previous;
+	_headerTypeToken = previous;
 	(void)RebuildHeaderPresenter();
 	_lastHeaderError = error;
 }
@@ -424,8 +525,7 @@ bool HeaderedItemsControl::ValidateHeaderCandidate(
 		return true;
 	}
 	ContentPresenter probe;
-	probe.SetContentTypeName(_headerTypeName);
-	probe.SetDisplayMemberPath(_headerDisplayMemberPath);
+	ApplyHeaderProjection(probe);
 	probe.SetContentTemplate(headerTemplate);
 	if (!probe.LastTemplateError().empty())
 	{
@@ -438,38 +538,164 @@ bool HeaderedItemsControl::ValidateHeaderCandidate(
 	return false;
 }
 
+void HeaderedItemsControl::ApplyHeaderProjection(
+	ContentPresenter& presenter) const
+{
+	presenter.SetContentTypeToken(_headerTypeToken);
+	presenter.SetCompiledDisplayMemberPath(_compiledHeaderDisplayMemberPath);
+#if CUI_ENABLE_DYNAMIC_XAML
+	ApplyAuthoredHeaderProjection(presenter);
+#endif
+}
+
 Control* HeaderedItemsControl::SetVisualHeader(
 	std::unique_ptr<Control> value)
 {
-	if (value.get() == _visualHeader) return _visualHeader;
+	if (value && value.get() == _visualHeader)
+		return value.release();
 	if (value && (!_header.Empty() || _headerTemplate))
 		throw std::logic_error(
 			"HeaderedItemsControl visual Header cannot be combined with data Header");
+
+	auto isDirectlyOwnedHere = [this](const Control* child)
+	{
+		return child && child->GetVisualParent() == this
+			&& IndexOfVisualChild(child) >= 0;
+	};
+	auto isPublishedHeader = [&](const Control* child)
+	{
+		return isDirectlyOwnedHere(child)
+			&& IsHeaderInfrastructure(child);
+	};
+	auto configureOwned = [this](
+		std::unique_ptr<Control>& owner,
+		const char* destroyedMessage,
+		const char* transferredMessage)
+	{
+		if (!owner) return;
+		const ControlWeakReference lifetime(owner.get());
+		if (!cui::framework::TreeAccess::
+			InvokePreservingVisualOwnership(
+				owner,
+				[this](Control& child)
+				{
+					ConfigureHeaderVisual(child);
+				}))
+		{
+			if (!lifetime)
+				throw std::logic_error(destroyedMessage);
+			throw std::logic_error(transferredMessage);
+		}
+	};
+
+	auto* establishedRaw = _visualHeader;
+	const ControlWeakReference establishedLifetime(establishedRaw);
+	Control* candidateRaw = value.get();
+	const ControlWeakReference candidateLifetime(candidateRaw);
+	if (value)
+	{
+		// Treat customization as a preflight while the established Header is
+		// still intact. Reentrant ownership changes cannot consume both slots.
+		configureOwned(
+			value,
+			"visual Header was destroyed during configuration",
+			"visual Header ownership changed during configuration");
+		if (_visualHeader != establishedRaw)
+			throw std::logic_error(
+				"visual Header slot changed during candidate configuration");
+		auto* liveEstablished = establishedLifetime.Get();
+		if (establishedRaw && !isPublishedHeader(liveEstablished))
+		{
+			if (_visualHeader == establishedRaw)
+				_visualHeader = nullptr;
+			throw std::logic_error(
+				"established visual Header ownership changed during candidate configuration");
+		}
+	}
+
 	auto previous = DetachVisualHeader();
+	auto* liveEstablished = establishedLifetime.Get();
+	if (_visualHeader || isDirectlyOwnedHere(liveEstablished))
+	{
+		// Parent callbacks may reattach the old Header or commit a newer nested
+		// slot. Either state makes this replacement transaction obsolete.
+		if (previous && previous.get() == liveEstablished
+			&& isDirectlyOwnedHere(liveEstablished))
+			(void)previous.release();
+		throw std::logic_error(
+			"established visual Header did not detach");
+	}
 	if (!value)
 	{
 		RequestLayout();
 		InvalidateVisual();
 		return nullptr;
 	}
-	ConfigureHeaderVisual(*value);
-	_visualHeader = value.get();
+
+	_visualHeader = candidateRaw;
 	try
 	{
 		AddHeaderInfrastructure(
 			std::move(value), HeaderInfrastructureRole::LogicalSlot);
+		auto* liveCandidate = candidateLifetime.Get();
+		if (!isPublishedHeader(liveCandidate)
+			|| liveCandidate->GetLogicalParent() != this
+			|| _visualHeader != candidateRaw)
+			throw std::logic_error(
+				"visual Header attachment did not commit");
+		_visualHeader = liveCandidate;
 	}
 	catch (...)
 	{
-		_visualHeader = nullptr;
-		if (previous)
+		const auto originalError = std::current_exception();
+		auto* liveCandidate = candidateLifetime.Get();
+		if (isDirectlyOwnedHere(liveCandidate))
 		{
-			ConfigureHeaderVisual(*previous);
-			_visualHeader = previous.get();
-			AddHeaderInfrastructure(
-				std::move(previous), HeaderInfrastructureRole::LogicalSlot);
+			// Post-commit observer failures do not roll back ownership. Keep
+			// the candidate reachable through the slot; a valid nested slot,
+			// if present, represents a newer committed operation.
+			if (!_visualHeader || _visualHeader == candidateRaw
+				|| !isPublishedHeader(_visualHeader))
+				_visualHeader = liveCandidate;
+			std::rethrow_exception(originalError);
 		}
-		throw;
+
+		if (_visualHeader == candidateRaw)
+			_visualHeader = nullptr;
+		if (!_visualHeader && previous)
+		{
+			auto* previousRaw = previous.get();
+			try
+			{
+				configureOwned(
+					previous,
+					"previous visual Header was destroyed during restoration",
+					"previous visual Header ownership changed during restoration");
+				if (!_visualHeader && previous)
+				{
+					_visualHeader = previousRaw;
+					AddHeaderInfrastructure(
+						std::move(previous),
+						HeaderInfrastructureRole::LogicalSlot);
+				}
+			}
+			catch (...)
+			{
+				// Preserve the candidate failure even if best-effort
+				// restoration reports its own observer/configuration error.
+			}
+
+			auto* livePrevious = establishedLifetime.Get();
+			if (isPublishedHeader(livePrevious))
+			{
+				if (!_visualHeader || _visualHeader == previousRaw
+					|| !isPublishedHeader(_visualHeader))
+					_visualHeader = livePrevious;
+			}
+			else if (_visualHeader == previousRaw)
+				_visualHeader = nullptr;
+		}
+		std::rethrow_exception(originalError);
 	}
 	RequestLayout();
 	InvalidateVisual();
@@ -480,8 +706,38 @@ std::unique_ptr<Control> HeaderedItemsControl::DetachVisualHeader()
 {
 	if (!_visualHeader) return {};
 	auto* previous = _visualHeader;
+	const ControlWeakReference lifetime(previous);
 	_visualHeader = nullptr;
-	auto result = DetachHeaderInfrastructure(previous);
+	std::unique_ptr<Control> result;
+	try
+	{
+		result = DetachHeaderInfrastructure(previous);
+	}
+	catch (...)
+	{
+		auto* live = lifetime.Get();
+		if (live && live->GetVisualParent() == this
+			&& IndexOfVisualChild(live) >= 0)
+		{
+			if (!IsHeaderInfrastructure(live))
+				_headerInfrastructure.push_back(live);
+			_visualHeader = live;
+		}
+		throw;
+	}
+	auto* live = lifetime.Get();
+	if (live && live->GetVisualParent() == this
+		&& IndexOfVisualChild(live) >= 0)
+	{
+		if (result && result.get() == live)
+			(void)result.release();
+		if (!IsHeaderInfrastructure(live))
+			_headerInfrastructure.push_back(live);
+		_visualHeader = live;
+		return {};
+	}
+	if (_visualHeader == previous)
+		_visualHeader = nullptr;
 	if (result) ReleaseHeaderVisual(*result);
 	return result;
 }
@@ -505,10 +761,8 @@ void HeaderedItemsControl::OnControlTemplatePresentationChanged()
 bool HeaderedItemsControl::RebuildHeaderPresenter()
 {
 	_lastHeaderError.clear();
-	if (_headerTemplate && !_headerTypeName.empty()
-		&& !_headerTemplate.Get()->DataTypeName().empty()
-		&& !EqualsTypeName(
-			_headerTypeName, _headerTemplate.Get()->DataTypeName()))
+	if (_headerTemplate && !AreDataTypesCompatible(
+		_headerTypeToken, _headerTemplate.Get()->GetDataTypeToken()))
 	{
 		_lastHeaderError =
 			L"HeaderTemplate DataType 与 Header DataType 不一致。";
@@ -516,6 +770,8 @@ bool HeaderedItemsControl::RebuildHeaderPresenter()
 	}
 	if (_templateHeaderPresenter || GetControlTemplateRoot())
 	{
+		if (_templateHeaderPresenter)
+			ApplyHeaderProjection(*_templateHeaderPresenter);
 		if (_headerPresenter)
 		{
 			auto previous = DetachHeaderInfrastructure(_headerPresenter);
@@ -540,8 +796,7 @@ bool HeaderedItemsControl::RebuildHeaderPresenter()
 	if (!_header.Empty())
 	{
 		replacement = std::make_unique<ContentPresenter>();
-		replacement->SetContentTypeName(_headerTypeName);
-		replacement->SetDisplayMemberPath(_headerDisplayMemberPath);
+		ApplyHeaderProjection(*replacement);
 		replacement->SetContentTemplate(_headerTemplate);
 		replacement->SetContent(_header);
 		ConfigureHeaderVisual(*replacement);

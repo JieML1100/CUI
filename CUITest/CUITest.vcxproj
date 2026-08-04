@@ -74,6 +74,7 @@
     <!-- Keep direct project builds and solution builds on one canonical output. -->
     <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <CuiVerifyAotGeneratedCode>true</CuiVerifyAotGeneratedCode>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ExternalIncludePath>$(SolutionDir)CUI</ExternalIncludePath>
@@ -95,7 +96,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -115,7 +116,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -133,7 +134,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -153,7 +154,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -164,22 +165,27 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="DemoWindow.g.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
+    <CuiAotBoundarySource Include="main.cpp;DemoWindow.cpp;DemoWindow.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="DemoWindow.g.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
-    <None Include="DemoWindow.cui.xaml" />
     <CuiTestAsset Include="Assets\*.svg" />
-    <CuiTestAsset Include="Assets\*.xaml" />
+    <CuiCompile Include="DemoWindow.cui.xaml">
+      <ClassName>DemoWindow</ClassName>
+      <AdditionalInputs>$(ProjectDir)Assets\DemoTheme.xaml</AdditionalInputs>
+    </CuiCompile>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">
-      <Project>{A2F2FB5D-7B17-4C41-9C9A-7C0EB68D6A32}</Project>
+    <ProjectReference Include="..\CuiGeneratedTheme\CuiGeneratedTheme.vcxproj">
+      <Project>{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}</Project>
     </ProjectReference>
     <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
@@ -190,11 +196,9 @@
     <ProjectReference Include="..\Utils\Utils.vcxproj">
       <Project>{1ddaee3c-caa8-489f-bfbe-84d30c9b4774}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\XmlLite\XmlLite.vcxproj">
-      <Project>{b184b7ea-ea4d-4e1e-abdd-a9a6a91cbbcf}</Project>
-    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\build\CuiCodeGen.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" />
   </ImportGroup>
@@ -204,9 +208,21 @@
     </PropertyGroup>
     <Error Condition="!Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets'))" />
   </Target>
-  <Target Name="CopyCuiTestXaml" AfterTargets="Build">
-    <Copy SourceFiles="$(ProjectDir)DemoWindow.cui.xaml" DestinationFiles="$(OutDir)DemoWindow.cui.xaml" SkipUnchangedFiles="true" />
+  <Target Name="CopyCuiTestAssets" AfterTargets="Build">
     <MakeDir Directories="$(OutDir)Assets" />
     <Copy SourceFiles="@(CuiTestAsset)" DestinationFolder="$(OutDir)Assets" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="RemoveLegacyRuntimeXamlAssets" AfterTargets="Build" Condition="'$(CuiVerifyAotGeneratedCode)' == 'true'">
+    <!-- These files were copied by the former runtime-XAML project shape and
+         can survive an incremental migration build even after their items are
+         removed. A production AOT output must not accidentally package them. -->
+    <Delete Files="$(OutDir)DemoWindow.cui.xaml;$(OutDir)Assets\DemoTheme.xaml;$(OutDir)Themes\Generic.xaml" />
+  </Target>
+  <Target Name="VerifyNoRuntimeXamlAssets" AfterTargets="RemoveLegacyRuntimeXamlAssets" Condition="'$(Configuration)' == 'Release'&#xD;&#xA;                  and '$(CuiVerifyAotGeneratedCode)' == 'true'">
+    <ItemGroup>
+      <_CuiRuntimeXamlAsset Include="$(OutDir)**\*.xaml" />
+    </ItemGroup>
+    <Error Condition="'@(_CuiRuntimeXamlAsset)' != ''" Text="CUITest AOT Release output contains runtime XAML: @(_CuiRuntimeXamlAsset->'%(FullPath)', ', ')" />
+    <Message Importance="High" Text="CUITest AOT Release output contains no runtime XAML: $(OutDir)" />
   </Target>
 </Project>

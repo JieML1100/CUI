@@ -1,25 +1,4 @@
 #include "ToggleButton.h"
-#include "Window.h"
-
-namespace
-{
-	auto IsCheckedSubscriber()
-	{
-		return [](ToggleButton& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode)
-		{
-			return target.OnPropertyValueChanged.Subscribe(
-				[handler = std::move(handler)](
-					DependencyObject*,
-					const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == L"IsChecked")
-						handler();
-				});
-		};
-	}
-}
 
 ToggleButton::ToggleButton()
 	: ButtonBase()
@@ -27,51 +6,128 @@ ToggleButton::ToggleButton()
 	RegisterDependencyProperties();
 }
 
-void ToggleButton::RegisterDependencyProperties()
+const DependencyProperty& ToggleButton::IsCheckedProperty()
 {
-	ButtonBase::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		DependencyPropertyOptions<ToggleButton, bool> options;
-		options.DefaultValue = false;
-		options.Flags = DependencyPropertyFlags::AffectsRender;
+		DependencyPropertyOptions<ToggleButton, NullableBool> options;
+		options.DefaultValue = NullableBool(false);
+		options.Flags = DependencyPropertyFlags::AffectsRender
+			| DependencyPropertyFlags::BindsTwoWayByDefault;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Behavior";
 		options.Design.CategoryOrder = 300;
 		options.Design.Order = 10;
-		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		options.Changed = [](ToggleButton& target, const bool& oldValue,
-			const bool& value)
+		options.Design.Choices = {
+			{ L"False", BindingValue(NullableBool(false)) },
+			{ L"True", BindingValue(NullableBool(true)) },
+			{ L"Indeterminate", BindingValue(NullableBool{}) }
+		};
+		)
+		options.Changed = [](ToggleButton& target,
+			const NullableBool& oldValue,
+			const NullableBool& value)
 		{
 			const ControlWeakReference lifetime(&target);
-			target.SetStyleState(ControlStyleState::Checked, value);
+			target.SetStyleState(
+				ControlStyleState::Checked, value == true);
 			auto* live = dynamic_cast<ToggleButton*>(lifetime.Get());
 			if (!live) return;
 			live->OnIsCheckedChanged(oldValue, value);
 			live = dynamic_cast<ToggleButton*>(lifetime.Get());
 			if (!live) return;
 			RoutedEventArgs args;
-			if (value) live->Checked(live, args);
-			else live->Unchecked(live, args);
+			if (value == true)
+				live->Checked(live, args);
+			else if (value == false)
+				live->Unchecked(live, args);
+			else
+				live->Indeterminate(live, args);
 			if (auto* source = dynamic_cast<ToggleButton*>(lifetime.Get()))
 				source->NotifyAccessibilityStateChanged();
 		};
-		DependencyPropertyRegistry::Register<ToggleButton, bool>(L"IsChecked",
-			[](ToggleButton& target) { return target.IsChecked; },
-			[](ToggleButton& target, const bool& value)
-			{ target.IsChecked = value; },
-			IsCheckedSubscriber(), std::move(options));
-		return true;
+		return DependencyPropertyRegistry::RegisterStatic<
+			ToggleButton, NullableBool>(
+				DependencyPropertyRegistrationLiteral(L"IsChecked"),
+				[](ToggleButton& target) { return target.IsChecked; },
+				[](ToggleButton& target, const NullableBool& value)
+				{ target.IsChecked = value; },
+				{}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
 }
 
-GET_CPP(ToggleButton, bool, IsChecked)
+const DependencyProperty& ToggleButton::IsThreeStateProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ToggleButton, bool> options;
+		options.DefaultValue = false;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 20;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<ToggleButton, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsThreeState"),
+			[](ToggleButton& target) { return target.IsThreeState; },
+			[](ToggleButton& target, const bool& value)
+			{
+				target.IsThreeState = value;
+			},
+			{}, std::move(options));
+	}();
+	return *registration;
+}
+
+void ToggleButton::RegisterDependencyProperties()
+{
+	ButtonBase::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)IsCheckedProperty();
+	(void)IsThreeStateProperty();
+#endif
+}
+
+GET_CPP(ToggleButton, NullableBool, IsChecked)
 {
 	return _isChecked;
 }
 
-SET_CPP(ToggleButton, bool, IsChecked)
+SET_CPP(ToggleButton, NullableBool, IsChecked)
 {
-	(void)SetPropertyField(L"IsChecked", _isChecked, value);
+	(void)SetPropertyField(IsCheckedProperty(), _isChecked, value);
+}
+
+GET_CPP(ToggleButton, bool, IsThreeState)
+{
+	return _isThreeState;
+}
+
+SET_CPP(ToggleButton, bool, IsThreeState)
+{
+	(void)SetPropertyField(IsThreeStateProperty(), _isThreeState, value);
+}
+
+void ToggleButton::OnToggle()
+{
+	NullableBool next;
+	if (_isChecked == true)
+		next = _isThreeState ? NullableBool{} : NullableBool(false);
+	else if (_isChecked == false)
+		next = NullableBool(true);
+	else
+		next = NullableBool(false);
+	(void)TrySetCurrentPropertyValue(
+		IsCheckedProperty(), BindingValue(next));
+}
+
+bool ToggleButton::OnClick()
+{
+	OnToggle();
+	return ButtonBase::OnClick();
 }

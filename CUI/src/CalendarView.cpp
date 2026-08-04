@@ -9,6 +9,13 @@
 
 namespace
 {
+	constexpr size_t CalendarPreviousIndex = 0;
+	constexpr size_t CalendarHeaderIndex = 1;
+	constexpr size_t CalendarNextIndex = 2;
+	constexpr size_t CalendarColumnHeaderIndex = 3;
+	constexpr size_t CalendarDayIndex = 10;
+	constexpr size_t CalendarDayCount = 42;
+
 	float RectWidth(const D2D1_RECT_F& rect)
 	{
 		return rect.right - rect.left;
@@ -147,7 +154,7 @@ namespace
 		NormalizeMonth(year, month);
 	}
 
-	SYSTEMTIME AddMonths(const SYSTEMTIME& date, int delta)
+	SYSTEMTIME AddMonthsToDate(const SYSTEMTIME& date, int delta)
 	{
 		int year = (int)date.wYear;
 		int month = (int)date.wMonth + delta;
@@ -258,79 +265,101 @@ UIClass CalendarView::Type()
 	return UIClass::UI_CalendarView;
 }
 
-void CalendarView::RegisterDependencyProperties()
+const DependencyProperty& CalendarView::SelectionModeProperty()
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		using Handler = DependencyPropertyMetadata::ChangeHandler;
-		DependencyPropertyOptions<CalendarView, int> selectionModeOptions;
-		selectionModeOptions.DefaultValue =
+		DependencyPropertyOptions<CalendarView, int> options;
+		options.DefaultValue =
 			static_cast<int>(CalendarSelectionMode::SingleDate);
-		selectionModeOptions.Flags = DependencyPropertyFlags::AffectsRender;
-		selectionModeOptions.Validate = [](const int& value)
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Validate = [](const int& value)
 		{
 			return value >= static_cast<int>(CalendarSelectionMode::None)
-				&& value <= static_cast<int>(CalendarSelectionMode::SingleRange);
+				&& value <= static_cast<int>(
+					CalendarSelectionMode::SingleRange);
 		};
-		selectionModeOptions.Design.Category = L"Behavior";
-		selectionModeOptions.Design.CategoryOrder = 110;
-		selectionModeOptions.Design.Order = 10;
-		selectionModeOptions.Design.Editor =
-			DependencyPropertyEditorKind::Choice;
-		selectionModeOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		selectionModeOptions.Design.Choices = {
-			{ L"None", BindingValue(static_cast<int>(CalendarSelectionMode::None)) },
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 110;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Choices = {
+			{ L"None", BindingValue(static_cast<int>(
+				CalendarSelectionMode::None)) },
 			{ L"SingleDate", BindingValue(static_cast<int>(
 				CalendarSelectionMode::SingleDate)) },
 			{ L"SingleRange", BindingValue(static_cast<int>(
 				CalendarSelectionMode::SingleRange)) }
 		};
-		DependencyPropertyRegistry::Register<CalendarView, int>(L"SelectionMode",
+		)
+		return DependencyPropertyRegistry::RegisterStatic<CalendarView, int>(
+			DependencyPropertyRegistrationLiteral(L"SelectionMode"),
 			[](CalendarView& target)
 			{ return static_cast<int>(target._selectionMode); },
 			[](CalendarView& target, const int& value)
 			{
 				target._selectionMode =
 					static_cast<CalendarSelectionMode>(value);
-			}, {}, std::move(selectionModeOptions));
+			}, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		DependencyPropertyOptions<CalendarView, SYSTEMTIME> selectedDateOptions;
-		selectedDateOptions.DefaultValue = TodayDate();
-		selectedDateOptions.Flags = DependencyPropertyFlags::AffectsRender
+const DependencyProperty& CalendarView::SelectedDateProperty()
+{
+	static const auto registration = []
+	{
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyOptions<CalendarView, SYSTEMTIME> options;
+		options.DefaultValue = TodayDate();
+		options.Flags = DependencyPropertyFlags::AffectsRender
 			| DependencyPropertyFlags::BindsTwoWayByDefault;
-		selectedDateOptions.Equals = [](const SYSTEMTIME& left,
+		options.Equals = [](const SYSTEMTIME& left,
 			const SYSTEMTIME& right) { return IsSameDate(left, right); };
-		selectedDateOptions.Design.Category = L"Common";
-		selectedDateOptions.Design.CategoryOrder = 0;
-		selectedDateOptions.Design.Order = 10;
-		selectedDateOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		selectedDateOptions.Changed = [](
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 10;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
 			CalendarView& target, const SYSTEMTIME&, const SYSTEMTIME& value)
 		{
 			target.SyncDisplayFromDate(value);
 			target.NotifySelectedDatesChanged();
 		};
-		DependencyPropertyRegistry::Register<CalendarView, SYSTEMTIME>(L"SelectedDate",
-			[](CalendarView& target) { return target._selectedDate; },
-			[](CalendarView& target, const SYSTEMTIME& value)
-			{
-				target._selectedDate = MakeDate(
-					static_cast<int>(value.wYear),
-					static_cast<int>(value.wMonth),
-					static_cast<int>(value.wDay));
-			},
-			[](CalendarView& target, Handler handler, DataSourceUpdateMode)
-			{
-				return target.SelectedDatesChanged.Subscribe(
-					[handler = std::move(handler)](
-						Control*, SelectionChangedEventArgs&) { handler(); });
-			}, std::move(selectedDateOptions));
-		return true;
+		return DependencyPropertyRegistry::RegisterStatic<
+			CalendarView, SYSTEMTIME>(
+				DependencyPropertyRegistrationLiteral(L"SelectedDate"),
+				[](CalendarView& target) { return target._selectedDate; },
+				[](CalendarView& target, const SYSTEMTIME& value)
+				{
+					target._selectedDate = MakeDate(
+						static_cast<int>(value.wYear),
+						static_cast<int>(value.wMonth),
+						static_cast<int>(value.wDay));
+					target._currentDate = target._selectedDate;
+				},
+				[](CalendarView& target, Handler handler,
+					DataSourceUpdateMode)
+				{
+					return target.SelectedDatesChanged.Subscribe(
+						[handler = std::move(handler)](
+							Control*, SelectionChangedEventArgs&) { handler(); });
+				}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void CalendarView::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)SelectionModeProperty();
+	(void)SelectedDateProperty();
+#endif
 }
 
 CalendarView::CalendarView()
@@ -339,13 +368,16 @@ CalendarView::CalendarView()
 	this->RendererBorderColor = cui::theme::palette::Border;
 	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 	this->_selectedDate = TodayDate();
+	this->_currentDate = this->_selectedDate;
 	this->DisplayYear = (int)this->_selectedDate.wYear;
 	this->DisplayMonth = (int)this->_selectedDate.wMonth;
+	for (auto& id : _accessibilityIds)
+		id = AllocateAccessibilityVirtualId();
 }
 
 void CalendarView::SetSelectionMode(CalendarSelectionMode value)
 {
-	(void)TrySetPropertyValue(L"SelectionMode",
+	(void)TrySetPropertyValue(SelectionModeProperty(),
 		BindingValue(static_cast<int>(value)));
 }
 
@@ -355,8 +387,9 @@ void CalendarView::SetSelectedDate(const SYSTEMTIME& date)
 		static_cast<int>(date.wYear),
 		static_cast<int>(date.wMonth),
 		static_cast<int>(date.wDay));
+	_currentDate = normalized;
 	(void)TrySetCurrentPropertyValue(
-		L"SelectedDate", BindingValue(normalized));
+		SelectedDateProperty(), BindingValue(normalized));
 }
 
 void CalendarView::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool fireEvent)
@@ -371,6 +404,7 @@ void CalendarView::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool
 	HasRangeStart = true;
 	HasRangeEnd = true;
 	_rangeAnchorSet = false;
+	_currentDate = RangeEnd;
 	SyncDisplayFromDate(RangeStart);
 	if (changed && fireEvent)
 		NotifySelectedDatesChanged();
@@ -405,6 +439,12 @@ void CalendarView::SetDisplayMonth(int year, int month)
 		return;
 	DisplayYear = year;
 	DisplayMonth = month;
+	NotifyAccessibilityVirtualChanged(
+		_accessibilityIds[CalendarHeaderIndex], AccessibilityChange::Name);
+	for (size_t cell = 0; cell < CalendarDayCount; ++cell)
+		NotifyAccessibilityVirtualChanged(
+			_accessibilityIds[CalendarDayIndex + cell],
+			AccessibilityChange::Name);
 	InvalidateVisual();
 }
 
@@ -418,8 +458,7 @@ void CalendarView::AddMonths(int delta)
 
 void CalendarView::SyncDisplayFromDate(const SYSTEMTIME& date)
 {
-	DisplayYear = (int)date.wYear;
-	DisplayMonth = (int)date.wMonth;
+	SetDisplayMonth((int)date.wYear, (int)date.wMonth);
 }
 
 CalendarView::Layout CalendarView::CalcLayout() const
@@ -428,11 +467,13 @@ CalendarView::Layout CalendarView::CalcLayout() const
 	const auto size = GetActualSizeDip();
 	const float width = size.width;
 	const float height = size.height;
-	const float border = (std::max)(0.0f, this->Border);
-	float top = border;
+	const float inset = 0.0f;
+	float top = inset;
 	if (ShowHeader)
 	{
-		layout.HeaderRect = D2D1::RectF(border, border, (std::max)(border, width - border), (std::min)(height - border, border + HeaderHeight));
+		layout.HeaderRect = D2D1::RectF(inset, inset,
+			(std::max)(inset, width - inset),
+			(std::min)(height - inset, inset + HeaderHeight));
 		layout.PrevRect = D2D1::RectF(layout.HeaderRect.left + 7.0f, layout.HeaderRect.top + 5.0f,
 			layout.HeaderRect.left + 7.0f + NavButtonSize, layout.HeaderRect.bottom - 5.0f);
 		layout.NextRect = D2D1::RectF(layout.HeaderRect.right - 7.0f - NavButtonSize, layout.HeaderRect.top + 5.0f,
@@ -441,12 +482,14 @@ CalendarView::Layout CalendarView::CalcLayout() const
 	}
 	if (ShowWeekNames)
 	{
-		layout.WeekRect = D2D1::RectF(border + 8.0f, top, (std::max)(border + 8.0f, width - border - 8.0f),
-			(std::min)(height - border, top + WeekHeaderHeight));
+		layout.WeekRect = D2D1::RectF(inset + 8.0f, top,
+			(std::max)(inset + 8.0f, width - inset - 8.0f),
+			(std::min)(height - inset, top + WeekHeaderHeight));
 		top = layout.WeekRect.bottom;
 	}
-	layout.GridRect = D2D1::RectF(border + 8.0f, top, (std::max)(border + 8.0f, width - border - 8.0f),
-		(std::max)(top, height - border - 8.0f));
+	layout.GridRect = D2D1::RectF(inset + 8.0f, top,
+		(std::max)(inset + 8.0f, width - inset - 8.0f),
+		(std::max)(top, height - inset - 8.0f));
 	layout.CellWidth = RectWidth(layout.GridRect) / 7.0f;
 	layout.CellHeight = RectHeight(layout.GridRect) / 6.0f;
 	return layout;
@@ -484,14 +527,307 @@ bool CalendarView::HandlesNavigationKey(Key key) const
 	return key == Key::Left || key == Key::Right
 		|| key == Key::Up || key == Key::Down
 		|| key == Key::PageUp || key == Key::PageDown
-		|| key == Key::Home || key == Key::End;
+		|| key == Key::Home || key == Key::End
+		|| key == Key::Return || key == Key::Space;
+}
+
+size_t CalendarView::GetAccessibilityVirtualChildCount(
+	uint32_t parentId) const noexcept
+{
+	return parentId == 0 ? _accessibilityIds.size() : 0;
+}
+
+bool CalendarView::TryGetAccessibilityVirtualChildAt(
+	uint32_t parentId, size_t index, uint32_t& result) const noexcept
+{
+	result = 0;
+	if (parentId != 0 || index >= _accessibilityIds.size()) return false;
+	result = _accessibilityIds[index];
+	return result != 0;
+}
+
+bool CalendarView::TryGetAccessibilityVirtualSibling(
+	uint32_t parentId, uint32_t id, bool next,
+	uint32_t& result) const noexcept
+{
+	result = 0;
+	if (parentId != 0 || id == 0) return false;
+	const auto found = std::find(
+		_accessibilityIds.begin(), _accessibilityIds.end(), id);
+	if (found == _accessibilityIds.end()) return false;
+	const auto index = static_cast<size_t>(
+		std::distance(_accessibilityIds.begin(), found));
+	if ((!next && index == 0)
+		|| (next && index + 1 >= _accessibilityIds.size()))
+		return false;
+	result = _accessibilityIds[next ? index + 1 : index - 1];
+	return result != 0;
+}
+
+bool CalendarView::TryGetAccessibilityVirtualNode(
+	uint32_t id, AccessibilityVirtualNode& result)
+{
+	const auto found = std::find(
+		_accessibilityIds.begin(), _accessibilityIds.end(), id);
+	if (found == _accessibilityIds.end()) return false;
+	const size_t index = static_cast<size_t>(
+		std::distance(_accessibilityIds.begin(), found));
+	const auto layout = CalcLayout();
+	const auto snapshot = GetAccessibilitySnapshot();
+	const std::wstring prefix = snapshot.AutomationId.empty()
+		? L"calendar" : snapshot.AutomationId;
+
+	result = {};
+	result.Id = id;
+	result.Enabled = IsEffectivelyEnabled();
+	result.ReadOnly = false;
+
+	if (index == CalendarPreviousIndex || index == CalendarNextIndex)
+	{
+		const bool next = index == CalendarNextIndex;
+		result.ControlType = AutomationControlType::Button;
+		result.Patterns = AutomationPattern::Invoke;
+		result.Name = next ? L"Next month" : L"Previous month";
+		result.AutomationId = prefix + (next ? L".next" : L".previous");
+		result.BoundsDip = next ? layout.NextRect : layout.PrevRect;
+		result.Visible = IsVisible && ShowHeader;
+		return true;
+	}
+
+	if (index == CalendarHeaderIndex)
+	{
+		result.ControlType = AutomationControlType::HeaderItem;
+		result.Name = std::format(
+			L"{:04d}-{:02d}", DisplayYear, DisplayMonth);
+		result.Value = result.Name;
+		result.AutomationId = prefix + L".header";
+		result.BoundsDip = layout.HeaderRect;
+		result.Visible = IsVisible && ShowHeader;
+		result.ReadOnly = true;
+		return true;
+	}
+
+	if (index >= CalendarColumnHeaderIndex
+		&& index < CalendarDayIndex)
+	{
+		static const wchar_t* names[] = {
+			L"Sunday", L"Monday", L"Tuesday", L"Wednesday",
+			L"Thursday", L"Friday", L"Saturday"
+		};
+		const int column = static_cast<int>(
+			index - CalendarColumnHeaderIndex);
+		result.ControlType = AutomationControlType::HeaderItem;
+		result.Name = names[column];
+		result.AutomationId =
+			prefix + L".column-" + std::to_wstring(column);
+		result.BoundsDip = D2D1::RectF(
+			layout.WeekRect.left + layout.CellWidth * column,
+			layout.WeekRect.top,
+			layout.WeekRect.left + layout.CellWidth * (column + 1),
+			layout.WeekRect.bottom);
+		result.Visible = IsVisible && ShowWeekNames;
+		result.Column = column;
+		result.ReadOnly = true;
+		return true;
+	}
+
+	const int cell = static_cast<int>(index - CalendarDayIndex);
+	if (cell < 0 || cell >= static_cast<int>(CalendarDayCount))
+		return false;
+	bool inDisplayMonth = true;
+	const auto date = CellDate(
+		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+	const int row = cell / 7;
+	const int column = cell % 7;
+	const bool selected = _selectionMode == CalendarSelectionMode::SingleDate
+		? IsSameDate(date, _selectedDate)
+		: HasRangeStart && HasRangeEnd
+			&& DateInClosedRange(date, RangeStart, RangeEnd);
+
+	result.ControlType = AutomationControlType::Button;
+	result.Patterns = AutomationPattern::Invoke
+		| AutomationPattern::SelectionItem
+		| AutomationPattern::GridItem
+		| AutomationPattern::TableItem;
+	result.Name = FormatDate(date);
+	result.Value = result.Name;
+	result.AutomationId =
+		prefix + L".cell-" + std::to_wstring(cell);
+	result.BoundsDip = D2D1::RectF(
+		layout.GridRect.left + layout.CellWidth * column,
+		layout.GridRect.top + layout.CellHeight * row,
+		layout.GridRect.left + layout.CellWidth * (column + 1),
+		layout.GridRect.top + layout.CellHeight * (row + 1));
+	result.Visible = IsVisible && (inDisplayMonth || ShowTrailingDays);
+	result.Selected = selected;
+	result.Row = row;
+	result.Column = column;
+	return true;
+}
+
+bool CalendarView::TryHitTestAccessibilityVirtualNode(
+	float localX, float localY, uint32_t& result) const
+{
+	result = 0;
+	const auto layout = CalcLayout();
+	if (ShowHeader)
+	{
+		if (PtInRectF(layout.PrevRect, localX, localY))
+		{
+			result = _accessibilityIds[CalendarPreviousIndex];
+			return true;
+		}
+		if (PtInRectF(layout.NextRect, localX, localY))
+		{
+			result = _accessibilityIds[CalendarNextIndex];
+			return true;
+		}
+		if (PtInRectF(layout.HeaderRect, localX, localY))
+		{
+			result = _accessibilityIds[CalendarHeaderIndex];
+			return true;
+		}
+	}
+	if (ShowWeekNames && PtInRectF(layout.WeekRect, localX, localY)
+		&& layout.CellWidth > 0.0f)
+	{
+		const int column = std::clamp(
+			static_cast<int>((localX - layout.WeekRect.left)
+				/ layout.CellWidth), 0, 6);
+		result = _accessibilityIds[
+			CalendarColumnHeaderIndex + static_cast<size_t>(column)];
+		return true;
+	}
+	SYSTEMTIME date{};
+	bool inDisplayMonth = true;
+	const int cell = HitTestDate(
+		static_cast<int>(localX), static_cast<int>(localY),
+		date, inDisplayMonth);
+	if (cell < 0) return false;
+	result = _accessibilityIds[
+		CalendarDayIndex + static_cast<size_t>(cell)];
+	return true;
+}
+
+AccessibilityVirtualContainerInfo
+CalendarView::GetAccessibilityVirtualContainerInfo() const noexcept
+{
+	AccessibilityVirtualContainerInfo result;
+	result.Patterns = AutomationPattern::Selection
+		| AutomationPattern::Grid
+		| AutomationPattern::Table;
+	result.CanSelectMultiple =
+		_selectionMode == CalendarSelectionMode::SingleRange;
+	result.IsSelectionRequired =
+		_selectionMode != CalendarSelectionMode::None;
+	result.RowCount = 6;
+	result.ColumnCount = 7;
+	return result;
+}
+
+void CalendarView::GetAccessibilityVirtualSelection(
+	std::vector<uint32_t>& result) const
+{
+	result.clear();
+	if (_selectionMode == CalendarSelectionMode::None) return;
+	for (size_t cell = 0; cell < CalendarDayCount; ++cell)
+	{
+		bool inDisplayMonth = true;
+		const auto date = CellDate(
+			DisplayYear, DisplayMonth, static_cast<int>(cell),
+			inDisplayMonth);
+		if (!inDisplayMonth && !ShowTrailingDays) continue;
+		const bool selected =
+			_selectionMode == CalendarSelectionMode::SingleDate
+				? IsSameDate(date, _selectedDate)
+				: HasRangeStart && HasRangeEnd
+					&& DateInClosedRange(date, RangeStart, RangeEnd);
+		if (selected)
+			result.push_back(
+				_accessibilityIds[CalendarDayIndex + cell]);
+	}
+}
+
+bool CalendarView::GetAccessibilityVirtualItemAt(
+	int row, int column, uint32_t& result) const noexcept
+{
+	result = 0;
+	if (row < 0 || row >= 6 || column < 0 || column >= 7)
+		return false;
+	const size_t cell = static_cast<size_t>(row * 7 + column);
+	bool inDisplayMonth = true;
+	(void)CellDate(
+		DisplayYear, DisplayMonth, static_cast<int>(cell),
+		inDisplayMonth);
+	if (!inDisplayMonth && !ShowTrailingDays) return false;
+	result = _accessibilityIds[CalendarDayIndex + cell];
+	return result != 0;
+}
+
+void CalendarView::GetAccessibilityVirtualColumnHeaders(
+	std::vector<uint32_t>& result) const
+{
+	result.assign(
+		_accessibilityIds.begin() + CalendarColumnHeaderIndex,
+		_accessibilityIds.begin() + CalendarDayIndex);
+}
+
+bool CalendarView::InvokeAccessibilityVirtualNode(uint32_t id)
+{
+	if (!IsEffectivelyEnabled()) return false;
+	if (id == _accessibilityIds[CalendarPreviousIndex])
+	{
+		AddMonths(-1);
+		return true;
+	}
+	if (id == _accessibilityIds[CalendarNextIndex])
+	{
+		AddMonths(1);
+		return true;
+	}
+	const auto found = std::find(
+		_accessibilityIds.begin() + CalendarDayIndex,
+		_accessibilityIds.end(), id);
+	if (found == _accessibilityIds.end()) return false;
+	const int cell = static_cast<int>(
+		std::distance(_accessibilityIds.begin() + CalendarDayIndex, found));
+	bool inDisplayMonth = true;
+	const auto date = CellDate(
+		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+	if (!inDisplayMonth && !ShowTrailingDays) return false;
+	SelectDateFromInput(date, inDisplayMonth);
+	NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Invoke);
+	return true;
+}
+
+bool CalendarView::SelectAccessibilityVirtualNode(
+	uint32_t id, AccessibilitySelectionAction action)
+{
+	if (action == AccessibilitySelectionAction::Remove
+		|| !IsEffectivelyEnabled()
+		|| _selectionMode == CalendarSelectionMode::None)
+		return false;
+	const auto found = std::find(
+		_accessibilityIds.begin() + CalendarDayIndex,
+		_accessibilityIds.end(), id);
+	if (found == _accessibilityIds.end()) return false;
+	const int cell = static_cast<int>(
+		std::distance(_accessibilityIds.begin() + CalendarDayIndex, found));
+	bool inDisplayMonth = true;
+	const auto date = CellDate(
+		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+	if (!inDisplayMonth && !ShowTrailingDays) return false;
+	SelectDateFromInput(
+		date, inDisplayMonth,
+		action == AccessibilitySelectionAction::Add);
+	NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Selection);
+	return true;
 }
 
 void CalendarView::DrawHeader(D2DGraphics* d2d, const Layout& layout)
 {
 	if (!ShowHeader || RectHeight(layout.HeaderRect) <= 0.0f)
 		return;
-	d2d->FillRoundRect(layout.HeaderRect, HeaderBackColor, (std::min)(CornerRadius, 8.0f));
 	if (HoverDay == -2)
 		d2d->FillRoundRect(layout.PrevRect, HoverColor, 5.0f);
 	if (HoverDay == -3)
@@ -544,8 +880,7 @@ void CalendarView::DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout)
 			d2d->FillRoundRect(pill, RangeBackColor, 6.0f);
 		if (selected)
 		{
-			d2d->FillRoundRect(pill, SelectedBackColor, 7.0f);
-			d2d->FillRoundRect(pill.left, pill.top + 5.0f, 3.0f, (std::max)(6.0f, RectHeight(pill) - 10.0f), AccentColor, 1.5f);
+			d2d->FillRoundRect(pill, AccentColor, 7.0f);
 		}
 		else if (hover)
 		{
@@ -561,6 +896,12 @@ void CalendarView::DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout)
 			textColor = SelectedForeColor;
 		d2d->DrawStringCentered(std::to_wstring(date.wDay), rect.left + RectWidth(rect) * 0.5f,
 			rect.top + RectHeight(rect) * 0.5f, textColor, GetRenderFont());
+		if (IsKeyboardFocused && IsSameDate(date, _currentDate))
+			d2d->DrawRoundRect(
+				pill.left + 1.0f, pill.top + 1.0f,
+				(std::max)(0.0f, RectWidth(pill) - 2.0f),
+				(std::max)(0.0f, RectHeight(pill) - 2.0f),
+				selected ? SelectedForeColor : AccentColor, 1.2f, 6.0f);
 	}
 }
 
@@ -568,33 +909,47 @@ void CalendarView::NotifySelectedDatesChanged()
 {
 	SelectionChangedEventArgs args;
 	SelectedDatesChanged(this, args);
+	for (size_t cell = 0; cell < CalendarDayCount; ++cell)
+		NotifyAccessibilityVirtualChanged(
+			_accessibilityIds[CalendarDayIndex + cell],
+			AccessibilityChange::Selection);
 }
 
-void CalendarView::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMonth)
+void CalendarView::SelectDateFromInput(
+	const SYSTEMTIME& date, bool inDisplayMonth, bool extendRange)
 {
+	const auto previousCurrent = _currentDate;
+	_currentDate = date;
 	if (!inDisplayMonth)
 		SyncDisplayFromDate(date);
 	if (_selectionMode == CalendarSelectionMode::None)
+	{
+		InvalidateVisual();
 		return;
+	}
 	if (_selectionMode == CalendarSelectionMode::SingleDate)
 	{
 		SetSelectedDate(date);
 		return;
 	}
 
-	if (!_rangeAnchorSet || (HasRangeStart && HasRangeEnd))
+	if (!extendRange)
 	{
-		RangeStart = date;
-		RangeEnd = SYSTEMTIME{};
-		HasRangeStart = true;
-		HasRangeEnd = false;
 		_rangeAnchor = date;
 		_rangeAnchorSet = true;
-		NotifySelectedDatesChanged();
-		InvalidateVisual();
+		SetRange(date, date);
+		_rangeAnchor = date;
+		_rangeAnchorSet = true;
 		return;
 	}
 
+	if (!_rangeAnchorSet)
+	{
+		_rangeAnchor = previousCurrent.wYear != 0
+			? previousCurrent
+			: HasRangeStart ? RangeStart : date;
+		_rangeAnchorSet = true;
+	}
 	SYSTEMTIME a = _rangeAnchor;
 	SYSTEMTIME b = date;
 	if (CompareDate(a, b) > 0)
@@ -603,21 +958,35 @@ void CalendarView::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMon
 	RangeEnd = b;
 	HasRangeStart = true;
 	HasRangeEnd = true;
-	_rangeAnchorSet = false;
 	NotifySelectedDatesChanged();
 	InvalidateVisual();
 }
 
-void CalendarView::MoveSelectedDate(int days)
+void CalendarView::MoveSelectedDate(int days, bool extendRange)
 {
-	if (_selectionMode == CalendarSelectionMode::None)
-		return;
-	if (_selectionMode == CalendarSelectionMode::SingleDate)
-		SetSelectedDate(AddDays(_selectedDate, days));
-	else if (HasRangeStart)
-		SelectDateFromInput(AddDays(HasRangeEnd ? RangeEnd : RangeStart, days), true);
-	else
-		SelectDateFromInput(TodayDate(), true);
+	auto current = _currentDate;
+	if (current.wYear == 0)
+		current = _selectionMode == CalendarSelectionMode::SingleDate
+			? _selectedDate
+			: HasRangeEnd ? RangeEnd
+			: HasRangeStart ? RangeStart : TodayDate();
+	const auto next = AddDays(current, days);
+	SelectDateFromInput(
+		next, next.wYear == DisplayYear && next.wMonth == DisplayMonth,
+		extendRange);
+	SyncDisplayFromDate(next);
+}
+
+void CalendarView::MoveSelectedDateByMonths(
+	int months, bool extendRange)
+{
+	auto current = _currentDate.wYear != 0
+		? _currentDate : TodayDate();
+	const auto next = AddMonthsToDate(current, months);
+	SelectDateFromInput(
+		next, next.wYear == DisplayYear && next.wMonth == DisplayMonth,
+		extendRange);
+	SyncDisplayFromDate(next);
 }
 
 void CalendarView::OnRender()
@@ -633,18 +1002,11 @@ void CalendarView::OnRender()
 	this->BeginRender();
 	{
 		D2D1_COLOR_F surface = this->RendererBackgroundColor.a > 0.0f ? this->RendererBackgroundColor : this->SurfaceColor;
-		d2d->FillRoundRect(Border * 0.5f, Border * 0.5f,
-			(std::max)(0.0f, width - Border), (std::max)(0.0f, height - Border),
-			surface, CornerRadius);
+		d2d->FillRoundRect(
+			0.0f, 0.0f, width, height, surface, CornerRadius);
 
 		DrawHeader(d2d, layout);
 		DrawCalendarGrid(d2d, layout);
-		if (Border > 0.0f && RendererBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f,
-				(std::max)(0.0f, width - Border), (std::max)(0.0f, height - Border),
-				RendererBorderColor, Border, CornerRadius);
-		if (!IsEnabled)
-			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.48f }, CornerRadius);
 	}
 	this->EndRender();
 }
@@ -716,7 +1078,9 @@ bool CalendarView::ProcessInput(const InputReport& input)
 				SYSTEMTIME date{};
 				bool inMonth = true;
 				if (HitTestDate(input.X, input.Y, date, inMonth) >= 0)
-					SelectDateFromInput(date, inMonth);
+					SelectDateFromInput(
+						date, inMonth,
+						input.HasModifier(ModifierKeys::Shift));
 			}
 		}
 		auto e = input.CreateMouseEventArgs();
@@ -730,23 +1094,51 @@ bool CalendarView::ProcessInput(const InputReport& input)
 			(void)ReleaseMouseCapture();
 		return Control::ProcessInput(input);
 	case InputReportKind::KeyDown:
+	{
+		const bool extendRange =
+			input.HasModifier(ModifierKeys::Shift);
 		switch (input.Key)
 		{
-		case Key::Left: MoveSelectedDate(-1); break;
-		case Key::Right: MoveSelectedDate(1); break;
-		case Key::Up: MoveSelectedDate(-7); break;
-		case Key::Down: MoveSelectedDate(7); break;
-		case Key::PageUp: AddMonths(-1); break;
-		case Key::PageDown: AddMonths(1); break;
-		case Key::Home: SetSelectedDate(MakeDate(DisplayYear, DisplayMonth, 1)); break;
-		case Key::End: SetSelectedDate(MakeDate(DisplayYear, DisplayMonth, DaysInMonth(DisplayYear, DisplayMonth))); break;
-		default: break;
+		case Key::Left: MoveSelectedDate(-1, extendRange); break;
+		case Key::Right: MoveSelectedDate(1, extendRange); break;
+		case Key::Up: MoveSelectedDate(-7, extendRange); break;
+		case Key::Down: MoveSelectedDate(7, extendRange); break;
+		case Key::PageUp:
+			MoveSelectedDateByMonths(
+				input.HasModifier(ModifierKeys::Control) ? -12 : -1,
+				extendRange);
+			break;
+		case Key::PageDown:
+			MoveSelectedDateByMonths(
+				input.HasModifier(ModifierKeys::Control) ? 12 : 1,
+				extendRange);
+			break;
+		case Key::Home:
+			SelectDateFromInput(
+				MakeDate(DisplayYear, DisplayMonth, 1), true,
+				extendRange);
+			break;
+		case Key::End:
+			SelectDateFromInput(
+				MakeDate(DisplayYear, DisplayMonth,
+					DaysInMonth(DisplayYear, DisplayMonth)),
+				true, extendRange);
+			break;
+		case Key::Return:
+		case Key::Space:
+			SelectDateFromInput(
+				_currentDate.wYear != 0 ? _currentDate : TodayDate(),
+				true, extendRange);
+			break;
+		default:
+			return Control::ProcessInput(input);
 		}
 		{
 			auto args = input.CreateKeyEventArgs();
 			OnKeyDown(this, args);
 		}
 		return true;
+	}
 	case InputReportKind::KeyUp:
 		{
 			auto args = input.CreateKeyEventArgs();

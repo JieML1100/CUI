@@ -2,16 +2,50 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <CuiCodeGenEnabled Condition="'$(CuiCodeGenEnabled)' == ''">true</CuiCodeGenEnabled>
-    <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">CuiCodeGen.exe</CuiCodeGenExe>
+    <!--
+      AOT consumers build the generator as a host tool instead of carrying a
+      ProjectReference to it. Keep the host request canonical across direct and
+      solution builds so MSBuild can serialize/cache identical requests.
+    -->
+    <CuiCodeGenBuildHost Condition="'$(CuiCodeGenBuildHost)' == ''">true</CuiCodeGenBuildHost>
+    <CuiCodeGenHostBuild Condition="'$(CuiCodeGenHostBuild)' == ''">false</CuiCodeGenHostBuild>
+    <CuiRepoRoot Condition="'$(CuiRepoRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</CuiRepoRoot>
+    <CuiCodeGenProject Condition="'$(CuiCodeGenProject)' == ''">$(CuiRepoRoot)CuiCodeGen\CuiCodeGen.vcxproj</CuiCodeGenProject>
+    <CuiCodeGenHostConfiguration Condition="'$(CuiCodeGenHostConfiguration)' == ''">$(Configuration)</CuiCodeGenHostConfiguration>
+    <CuiCodeGenHostPlatform Condition="'$(CuiCodeGenHostPlatform)' == '' and '$(Platform)' == 'x64'">x64</CuiCodeGenHostPlatform>
+    <CuiCodeGenHostPlatform Condition="'$(CuiCodeGenHostPlatform)' == '' and ('$(Platform)' == 'Win32' or '$(Platform)' == 'x86')">Win32</CuiCodeGenHostPlatform>
+    <CuiCodeGenHostPlatform Condition="'$(CuiCodeGenHostPlatform)' == ''">$(Platform)</CuiCodeGenHostPlatform>
+    <CuiCodeGenHostTarget Condition="'$(CuiCodeGenHostTarget)' == ''">Build</CuiCodeGenHostTarget>
+    <CuiCodeGenHostOutputDir Condition="'$(CuiCodeGenHostOutputDir)' == ''">$(CuiRepoRoot)$(CuiCodeGenHostPlatform)\$(CuiCodeGenHostConfiguration)\</CuiCodeGenHostOutputDir>
+    <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">$(CuiCodeGenHostOutputDir)CuiCodeGen.exe</CuiCodeGenExe>
+    <!-- Consumer-only global properties must not turn the Design host build
+         into another runtime flavor or split otherwise identical requests. -->
+    <CuiCodeGenHostGlobalPropertiesToRemove Condition="'$(CuiCodeGenHostGlobalPropertiesToRemove)' == ''">CuiRuntimeFlavor;CuiCodeGenEnabled;CuiCodeGenExe;CuiGeneratedCodeDir;CuiVerifyAotGeneratedCode;CuiFrameworkThemeMode;CuiRuntimeMeasurement;CuiGeneratedThemeDirectedTests;CuiAotRequireRuntimeFree;CuiMeasureLinkMap</CuiCodeGenHostGlobalPropertiesToRemove>
+    <CuiGeneratedCodeDir Condition="'$(CuiGeneratedCodeDir)' == ''">$(IntDir)CuiGenerated\</CuiGeneratedCodeDir>
+    <!-- CuiCompile is the production, generated-only path. Enforce its
+         runtime-free boundary by default; tooling/diagnostic consumers must
+         opt out explicitly instead of silently accepting dynamic fallback. -->
+    <CuiVerifyAotGeneratedCode Condition="'$(CuiVerifyAotGeneratedCode)' == ''">true</CuiVerifyAotGeneratedCode>
     <!-- Bump whenever generator output semantics change. The versioned default
          stamp invalidates old outputs without depending on unstable linker times. -->
-    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">36</CuiCodeGenContractVersion>
+    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">70</CuiCodeGenContractVersion>
+    <CuiThemeCodeGenContractVersion Condition="'$(CuiThemeCodeGenContractVersion)' == ''">22</CuiThemeCodeGenContractVersion>
   </PropertyGroup>
 
   <ItemDefinitionGroup>
     <CuiDesign>
       <StampFile>$(IntDir)CuiCodeGen\%(Filename).v$(CuiCodeGenContractVersion).stamp</StampFile>
     </CuiDesign>
+    <CuiCompile>
+      <ConverterManifest></ConverterManifest>
+      <StampFile>$(IntDir)CuiCodeGen\compile-%(Filename).v$(CuiCodeGenContractVersion).stamp</StampFile>
+    </CuiCompile>
+    <CuiThemeCompile>
+      <ClassName>CuiGeneratedFrameworkTheme</ClassName>
+      <Mode>Full</Mode>
+      <StampFile>$(IntDir)CuiCodeGen\theme-%(Filename).v$(CuiThemeCodeGenContractVersion).stamp</StampFile>
+      <SpecFile>$(IntDir)CuiCodeGen\theme-%(Filename).v$(CuiThemeCodeGenContractVersion).spec</SpecFile>
+    </CuiThemeCompile>
   </ItemDefinitionGroup>
 
   <!--
@@ -27,7 +61,118 @@
     OutputBase is extensionless. ClassName is normally omitted so x:Class
     remains authoritative. StampFile may be overridden when a project contains
     same-stem design files; its default lives under $(IntDir)CuiCodeGen.
+
+    Build-owned generated-only contract:
+
+      <ItemGroup>
+        <CuiCompile Include="MainWindow.cui.xaml">
+          <ClassName>Optional.Namespace.Override</ClassName>
+          <ConverterManifest>$(ProjectDir)BindingConverters.cui.xml</ConverterManifest>
+        </CuiCompile>
+        <CuiAotBoundarySource Include="MainWindow.cpp;MainWindow.h" />
+      </ItemGroup>
+
+    CuiCompile defaults OutputBase to $(IntDir)CuiGenerated\ plus the logical
+    stem (MainWindow for MainWindow.cui.xaml), adds its .g.cpp to ClCompile,
+    and never creates or edits user .h/.cpp files. CuiAotBoundarySource lets
+    the production gate inspect handwritten code without making it a generator
+    input. ConverterManifest is an optional strict typed converter catalog; it
+    is automatically passed to CuiCodeGen and tracked as an input. AdditionalInputs
+    may list merged dictionaries or other build-time resources that invalidate output.
+
+    Framework-theme contract:
+
+      <ItemGroup>
+        <CuiThemeCompile Include="..\Themes\Generic.xaml">
+          <OutputBase>$(CuiGeneratedCodeDir)CuiFrameworkTheme</OutputBase>
+          <Mode>Closure</Mode>
+          <RootDocuments>$(ProjectDir)MainWindow.cui.xaml</RootDocuments>
+          <PreservedTypes>ControlCreatedByNativeFactory</PreservedTypes>
+          <PreservedResources>ResourceUsedByNativeFactory</PreservedResources>
+        </CuiThemeCompile>
+      </ItemGroup>
+
+    Mode defaults to Full. Closure requires at least one semicolon-separated
+    RootDocuments, PreservedTypes, or PreservedResources entry and emits only
+    their transitive Generic.xaml dependency closure. Full deliberately
+    preserves the complete shared theme.
+
+    CuiThemeCompile emits a public provider and an immutable ThemeProgram.
+    Both generated sources consume CUI only; XML/designer/runtime-XAML modules
+    remain dependencies of CuiCodeGen.exe, not of the generated artifact.
   -->
+  <ItemDefinitionGroup Condition="'$(CuiCodeGenEnabled)' == 'true'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(CuiGeneratedCodeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!-- VC++ snapshots @(ClCompile) before ClCompile runs. Resolve generated
+       paths and add compilation items during project evaluation, not in a
+       BeforeTargets target. The imported targets are evaluated after the
+       consumer declares CuiCompile/CuiThemeCompile items. -->
+  <ItemGroup Condition="'$(CuiCodeGenEnabled)' == 'true'">
+    <CuiCompile Update="@(CuiCompile->WithMetadataValue('OutputBase', ''))">
+      <OutputBase>$(CuiGeneratedCodeDir)$([System.IO.Path]::GetFileNameWithoutExtension('%(CuiCompile.Filename)'))</OutputBase>
+    </CuiCompile>
+    <ClCompile Include="@(CuiCompile->'%(OutputBase).g.cpp')" />
+    <ClInclude Include="@(CuiCompile->'%(OutputBase).g.h')" />
+    <None Include="@(CuiCompile->'%(OutputBase).handlers.g.inc')" />
+
+    <CuiThemeCompile Update="@(CuiThemeCompile->WithMetadataValue('OutputBase', ''))">
+      <OutputBase>$(CuiGeneratedCodeDir)$([System.IO.Path]::GetFileNameWithoutExtension('%(CuiThemeCompile.Filename)'))</OutputBase>
+    </CuiThemeCompile>
+    <ClCompile Include="@(CuiThemeCompile->'%(OutputBase).g.cpp')">
+      <WholeProgramOptimization Condition="'$(Configuration)' == 'Release'">false</WholeProgramOptimization>
+      <DebugInformationFormat Condition="'$(Configuration)' == 'Release'">None</DebugInformationFormat>
+    </ClCompile>
+    <ClCompile Include="@(CuiThemeCompile->'%(OutputBase).program.g.cpp')">
+      <WholeProgramOptimization Condition="'$(Configuration)' == 'Release'">false</WholeProgramOptimization>
+      <DebugInformationFormat Condition="'$(Configuration)' == 'Release'">None</DebugInformationFormat>
+    </ClCompile>
+    <ClInclude Include="@(CuiThemeCompile->'%(OutputBase).g.h')" />
+    <ClInclude Include="@(CuiThemeCompile->'%(OutputBase).program.g.h')" />
+  </ItemGroup>
+
+  <!--
+    Direct project builds request CuiCodeGen through MSBuild's build scheduler;
+    Build remains incremental inside CuiCodeGen.vcxproj. Solution builds rely
+    on the solution ProjectDependencies edge and only validate its output here,
+    avoiding a nested build racing the solution's own CuiCodeGen node. The
+    marker property is a recursion guard if this targets file is ever imported
+    by the host graph itself.
+  -->
+  <Target Name="CuiEnsureCodeGenHostTool"
+          Condition="'$(CuiCodeGenEnabled)' == 'true'
+                  and '$(CuiCodeGenHostBuild)' != 'true'
+                  and ('@(CuiDesign)' != '' or '@(CuiCompile)' != '' or '@(CuiThemeCompile)' != '')">
+    <Error Condition="'$(CuiCodeGenHostConfiguration)' == ''"
+           Text="CUI code generation requires CuiCodeGenHostConfiguration (normally Configuration)." />
+    <Error Condition="'$(CuiCodeGenHostPlatform)' != 'x64' and '$(CuiCodeGenHostPlatform)' != 'Win32'"
+           Text="Unsupported CuiCodeGen host platform '$(CuiCodeGenHostPlatform)'. Expected x64 or Win32." />
+    <Error Condition="!Exists('$(CuiCodeGenProject)')"
+           Text="CuiCodeGen host project was not found: $(CuiCodeGenProject)" />
+    <Message Condition="'$(CuiCodeGenBuildHost)' == 'true' and '$(BuildingSolutionFile)' != 'true'"
+             Importance="High"
+             Text="CUI host-tool direct build: $(CuiCodeGenProject) ($(CuiCodeGenHostConfiguration)|$(CuiCodeGenHostPlatform))" />
+    <Message Condition="'$(BuildingSolutionFile)' == 'true'"
+             Importance="High"
+             Text="CUI host-tool solution dependency: $(CuiCodeGenExe)" />
+    <MSBuild Condition="'$(CuiCodeGenBuildHost)' == 'true' and '$(BuildingSolutionFile)' != 'true'"
+             Projects="$(CuiCodeGenProject)"
+             Targets="$(CuiCodeGenHostTarget)"
+             Properties="Configuration=$(CuiCodeGenHostConfiguration);Platform=$(CuiCodeGenHostPlatform);SolutionDir=$(CuiRepoRoot);BuildProjectReferences=true;CuiCodeGenHostBuild=true"
+             RemoveProperties="$(CuiCodeGenHostGlobalPropertiesToRemove)"
+             BuildInParallel="false"
+             StopOnFirstFailure="true"
+             UseResultsCache="true"
+             UnloadProjectsOnCompletion="false" />
+    <Error Condition="'$(BuildingSolutionFile)' == 'true' and !Exists('$(CuiCodeGenExe)')"
+           Text="CuiCodeGen solution dependency did not produce the configured executable: $(CuiCodeGenExe)" />
+    <Error Condition="'$(BuildingSolutionFile)' != 'true' and !Exists('$(CuiCodeGenExe)')"
+           Text="CuiCodeGen direct host build did not produce the configured executable: $(CuiCodeGenExe)" />
+  </Target>
+
   <Target Name="CuiPrepareCodeGeneration"
           BeforeTargets="CuiGenerateCode"
           Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiDesign)' != ''">
@@ -41,7 +186,7 @@
 
   <Target Name="CuiGenerateCode"
           BeforeTargets="ClCompile"
-          DependsOnTargets="CuiPrepareCodeGeneration"
+          DependsOnTargets="CuiEnsureCodeGenHostTool;CuiPrepareCodeGeneration"
           Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiDesign)' != ''"
           Inputs="%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiDesign.OutputBase).h;%(CuiDesign.OutputBase).cpp;%(CuiDesign.OutputBase).g.h;%(CuiDesign.OutputBase).g.cpp;%(CuiDesign.OutputBase).handlers.g.inc"
           Outputs="%(CuiDesign.StampFile)">
@@ -60,4 +205,144 @@
           Command="&quot;$(CuiCodeGenExe)&quot; generate &quot;%(CuiDesign.FullPath)&quot; --output &quot;%(CuiDesign.OutputBase)&quot; --class &quot;%(CuiDesign.ClassName)&quot; --quiet" />
     <Touch Files="%(CuiDesign.StampFile)" AlwaysCreate="true" />
   </Target>
+
+  <Target Name="CuiPrepareGeneratedCompilation"
+          BeforeTargets="CuiCompileGeneratedCode"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiCompile)' != ''">
+    <Delete Files="%(CuiCompile.StampFile)"
+            Condition="!Exists('%(CuiCompile.OutputBase).g.h')
+                    or !Exists('%(CuiCompile.OutputBase).g.cpp')
+                    or !Exists('%(CuiCompile.OutputBase).handlers.g.inc')" />
+  </Target>
+
+  <Target Name="CuiVerifyAotProjectBoundary"
+          BeforeTargets="CuiCompileGeneratedCode;CuiCompileFrameworkTheme"
+          Condition="'$(CuiCodeGenEnabled)' == 'true'
+                  and '$(CuiVerifyAotGeneratedCode)' == 'true'
+                  and ('@(CuiCompile)' != '' or '@(CuiThemeCompile)' != '')">
+    <ItemGroup>
+      <_CuiForbiddenAotProjectReference
+        Include="@(ProjectReference)"
+        Condition="'%(ProjectReference.Filename)' == 'CuiRuntime'
+                or '%(ProjectReference.Filename)' == 'CuiCodeGen'
+                or '%(ProjectReference.Filename)' == 'CuiDesigner'
+                or '%(ProjectReference.Filename)' == 'CuiCodeGenCore'
+                or '%(ProjectReference.Filename)' == 'XmlLite'" />
+    </ItemGroup>
+    <Error Condition="'@(_CuiForbiddenAotProjectReference)' != ''"
+           Text="CUI AOT production project references design/runtime-XAML modules: @(_CuiForbiddenAotProjectReference->'%(FullPath)', ', ')" />
+  </Target>
+
+  <Target Name="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          DependsOnTargets="CuiEnsureCodeGenHostTool;CuiPrepareGeneratedCompilation"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiCompile)' != ''"
+          Inputs="%(CuiCompile.FullPath);%(CuiCompile.ConverterManifest);%(CuiCompile.AdditionalInputs);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiCompile.OutputBase).g.h;%(CuiCompile.OutputBase).g.cpp;%(CuiCompile.OutputBase).handlers.g.inc"
+          Outputs="%(CuiCompile.StampFile)">
+    <Error Condition="'%(CuiCompile.OutputBase)' == ''"
+           Text="CuiCompile '%(CuiCompile.Identity)' requires extensionless OutputBase metadata." />
+    <Error Condition="'%(CuiCompile.StampFile)' == ''"
+           Text="CuiCompile '%(CuiCompile.Identity)' requires StampFile metadata." />
+    <Error Condition="!Exists('$(CuiCodeGenExe)')"
+           Text="CuiCodeGen executable was not found: $(CuiCodeGenExe)" />
+    <Error Condition="'%(CuiCompile.ConverterManifest)' != '' and !Exists('%(CuiCompile.ConverterManifest)')"
+           Text="CuiCompile '%(CuiCompile.Identity)' converter manifest was not found: %(CuiCompile.ConverterManifest)" />
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiCompile.StampFile)'))));$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiCompile.OutputBase)'))))" />
+    <Message Importance="High"
+             Text="CUI generated-only compilation: %(CuiCompile.Identity) -> %(CuiCompile.OutputBase)" />
+    <PropertyGroup>
+      <_CuiCompileClassArgument></_CuiCompileClassArgument>
+      <_CuiCompileConverterManifestArgument></_CuiCompileConverterManifestArgument>
+      <_CuiCompileClassArgument Condition="'%(CuiCompile.ClassName)' != ''">--class &quot;%(CuiCompile.ClassName)&quot;</_CuiCompileClassArgument>
+      <_CuiCompileConverterManifestArgument Condition="'%(CuiCompile.ConverterManifest)' != ''">--converter-manifest &quot;%(CuiCompile.ConverterManifest)&quot;</_CuiCompileConverterManifestArgument>
+    </PropertyGroup>
+    <Exec Command="&quot;$(CuiCodeGenExe)&quot; compile &quot;%(CuiCompile.FullPath)&quot; --output &quot;%(CuiCompile.OutputBase)&quot; $(_CuiCompileClassArgument) $(_CuiCompileConverterManifestArgument) --quiet" />
+    <Touch Files="%(CuiCompile.StampFile)" AlwaysCreate="true" />
+  </Target>
+
+  <!-- Every production AOT consumer enforces the same runtime-free boundary
+       as the standalone compile gate. The property remains overridable only
+       for an explicitly diagnostic consumer. -->
+  <Target Name="CuiVerifyGeneratedAotBoundary"
+          AfterTargets="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)' == 'true'
+                  and '$(CuiVerifyAotGeneratedCode)' == 'true'
+                  and '@(CuiCompile)' != ''">
+    <Exec Condition="'@(CuiAotBoundarySource)' == ''"
+          Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)VerifyCuiAotGenerated.ps1&quot; -GeneratedBase &quot;%(CuiCompile.OutputBase)&quot;" />
+    <Exec Condition="'@(CuiAotBoundarySource)' != ''"
+          Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)VerifyCuiAotGenerated.ps1&quot; -GeneratedBase &quot;%(CuiCompile.OutputBase)&quot; -SourceFiles &quot;@(CuiAotBoundarySource->'%(FullPath)', ';')&quot;" />
+  </Target>
+
+  <Target Name="CuiPrepareFrameworkThemeCompilation"
+          BeforeTargets="CuiCompileFrameworkTheme"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiThemeCompile)' != ''">
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiThemeCompile.SpecFile)'))))" />
+    <!-- Metadata can come from command-line properties without changing the
+         project timestamp. Materialize one stable spec input so switching
+         Full/Closure roots or preserve lists always invalidates the stamp. -->
+    <WriteLinesToFile File="%(CuiThemeCompile.SpecFile)"
+                      Lines="Mode=%(CuiThemeCompile.Mode)|ClassName=%(CuiThemeCompile.ClassName)|OutputBase=%(CuiThemeCompile.OutputBase)|Roots=%(CuiThemeCompile.RootDocuments)|Types=%(CuiThemeCompile.PreservedTypes)|Resources=%(CuiThemeCompile.PreservedResources)|AdditionalInputs=%(CuiThemeCompile.AdditionalInputs)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+    <Delete Files="%(CuiThemeCompile.OutputBase).carrier.g.h;%(CuiThemeCompile.OutputBase).carrier.g.cpp" />
+    <Delete Files="%(CuiThemeCompile.StampFile)"
+            Condition="!Exists('%(CuiThemeCompile.OutputBase).g.h')
+                    or !Exists('%(CuiThemeCompile.OutputBase).g.cpp')
+                    or !Exists('%(CuiThemeCompile.OutputBase).program.g.h')
+                    or !Exists('%(CuiThemeCompile.OutputBase).program.g.cpp')" />
+  </Target>
+
+  <Target Name="CuiCompileFrameworkTheme"
+          BeforeTargets="ClCompile"
+          DependsOnTargets="CuiEnsureCodeGenHostTool;CuiPrepareFrameworkThemeCompilation"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiThemeCompile)' != ''"
+          Inputs="%(CuiThemeCompile.FullPath);%(CuiThemeCompile.RootDocuments);%(CuiThemeCompile.AdditionalInputs);%(CuiThemeCompile.SpecFile);$(MSBuildProjectFullPath);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiThemeCompile.OutputBase).g.h;%(CuiThemeCompile.OutputBase).g.cpp;%(CuiThemeCompile.OutputBase).program.g.h;%(CuiThemeCompile.OutputBase).program.g.cpp"
+          Outputs="%(CuiThemeCompile.StampFile)">
+    <Error Condition="'%(CuiThemeCompile.OutputBase)' == ''"
+           Text="CuiThemeCompile '%(CuiThemeCompile.Identity)' requires extensionless OutputBase metadata." />
+    <Error Condition="'%(CuiThemeCompile.ClassName)' == ''"
+           Text="CuiThemeCompile '%(CuiThemeCompile.Identity)' requires ClassName metadata." />
+    <Error Condition="'%(CuiThemeCompile.StampFile)' == ''"
+           Text="CuiThemeCompile '%(CuiThemeCompile.Identity)' requires StampFile metadata." />
+    <Error Condition="'%(CuiThemeCompile.SpecFile)' == ''"
+           Text="CuiThemeCompile '%(CuiThemeCompile.Identity)' requires SpecFile metadata." />
+    <Error Condition="'%(CuiThemeCompile.Mode)' != 'Full' and '%(CuiThemeCompile.Mode)' != 'Closure'"
+           Text="CuiThemeCompile '%(CuiThemeCompile.Identity)' Mode must be Full or Closure." />
+    <Error Condition="'%(CuiThemeCompile.Mode)' == 'Closure' and '%(CuiThemeCompile.RootDocuments)' == '' and '%(CuiThemeCompile.PreservedTypes)' == '' and '%(CuiThemeCompile.PreservedResources)' == ''"
+           Text="CuiThemeCompile Closure mode requires RootDocuments, PreservedTypes, or PreservedResources." />
+    <Error Condition="'%(CuiThemeCompile.Mode)' == 'Full' and ('%(CuiThemeCompile.RootDocuments)' != '' or '%(CuiThemeCompile.PreservedTypes)' != '' or '%(CuiThemeCompile.PreservedResources)' != '')"
+           Text="CuiThemeCompile Full mode cannot declare closure roots." />
+    <Error Condition="!Exists('$(CuiCodeGenExe)')"
+           Text="CuiCodeGen executable was not found: $(CuiCodeGenExe)" />
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiThemeCompile.StampFile)'))));$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiThemeCompile.OutputBase)'))))" />
+    <Message Importance="High"
+             Text="CUI static framework-theme compilation: %(CuiThemeCompile.Identity) -> %(CuiThemeCompile.OutputBase)" />
+    <PropertyGroup>
+      <_CuiThemeRootArgument></_CuiThemeRootArgument>
+      <_CuiThemePreservedTypeArgument></_CuiThemePreservedTypeArgument>
+      <_CuiThemePreservedResourceArgument></_CuiThemePreservedResourceArgument>
+      <_CuiThemeRootArgument Condition="'%(CuiThemeCompile.RootDocuments)' != ''">--roots &quot;%(CuiThemeCompile.RootDocuments)&quot;</_CuiThemeRootArgument>
+      <_CuiThemePreservedTypeArgument Condition="'%(CuiThemeCompile.PreservedTypes)' != ''">--preserve-types &quot;%(CuiThemeCompile.PreservedTypes)&quot;</_CuiThemePreservedTypeArgument>
+      <_CuiThemePreservedResourceArgument Condition="'%(CuiThemeCompile.PreservedResources)' != ''">--preserve-resources &quot;%(CuiThemeCompile.PreservedResources)&quot;</_CuiThemePreservedResourceArgument>
+    </PropertyGroup>
+    <Exec Command="&quot;$(CuiCodeGenExe)&quot; compile-theme &quot;%(CuiThemeCompile.FullPath)&quot; --output &quot;%(CuiThemeCompile.OutputBase)&quot; --class &quot;%(CuiThemeCompile.ClassName)&quot; $(_CuiThemeRootArgument) $(_CuiThemePreservedTypeArgument) $(_CuiThemePreservedResourceArgument) --quiet" />
+    <Error Condition="!Exists('%(CuiThemeCompile.OutputBase).g.h')
+                   or !Exists('%(CuiThemeCompile.OutputBase).g.cpp')
+                   or !Exists('%(CuiThemeCompile.OutputBase).program.g.h')
+                   or !Exists('%(CuiThemeCompile.OutputBase).program.g.cpp')"
+           Text="CUI framework-theme generator did not produce the provider + ThemeProgram contract for '%(CuiThemeCompile.Identity)'." />
+    <Touch Files="%(CuiThemeCompile.StampFile)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="CuiVerifyGeneratedThemeAotBoundary"
+          AfterTargets="CuiCompileFrameworkTheme"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)' == 'true'
+                  and '$(CuiVerifyAotGeneratedCode)' == 'true'
+                  and '@(CuiThemeCompile)' != ''">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)VerifyCuiAotGenerated.ps1&quot; -GeneratedBase &quot;%(CuiThemeCompile.OutputBase)&quot; -ArtifactKind Theme" />
+  </Target>
+
 </Project>

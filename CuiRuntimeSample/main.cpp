@@ -653,12 +653,17 @@ int wmain()
 	auto* buttonChrome = button
 		? button->FindDeclarativeTemplatePart(L"PART_Chrome")
 		: nullptr;
+	auto* buttonTemplateRoot = button
+		? cui::framework::TemplateAccess::GetTemplateRoot(*button)
+		: nullptr;
 	if (button->GetDisplayText() != L"Loaded from DataContext"
 		|| !cui::framework::StyleAccess::DocumentStyles(*button)
 		|| !cui::framework::StyleAccess::Theme(*button)
 		|| !buttonChrome
-		|| cui::framework::TemplateAccess::GetTemplateRoot(*button)
-			!= buttonChrome
+		|| !buttonTemplateRoot
+		|| buttonTemplateRoot->GetVisualParent() != button
+		|| buttonTemplateRoot->GetTemplatedParent() != button
+		|| buttonChrome->GetVisualParent() != buttonTemplateRoot
 		|| buttonChrome->GetTemplatedParent() != button
 		|| button->GetCurrentVisualState(L"CommonStates") != L"Normal")
 		return Fail(L"binding/style materialization");

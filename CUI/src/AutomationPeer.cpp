@@ -3,10 +3,15 @@
 #include "Control.h"
 #include "ComboBox.h"
 #include "Expander.h"
+#include "ListBox.h"
+#include "Menu.h"
 #include "NumericUpDown.h"
 #include "RangeBase.h"
 #include "Slider.h"
 #include "TabControl.h"
+#include "TextBox.h"
+#include "ToggleButton.h"
+#include "RadioButton.h"
 #include "TreeView.h"
 
 #include <cmath>
@@ -37,9 +42,13 @@ AutomationControlType AutomationPeer::GetAutomationControlType() const noexcept
 
 std::wstring AutomationPeer::GetAutomationClassName() const
 {
+#if CUI_ENABLE_DYNAMIC_XAML
 	const auto& declarativeName = _owner.GetDeclarativeTypeName();
 	const auto& name = declarativeName.empty()
 		? _fallbackClassName : declarativeName;
+#else
+	const auto& name = _fallbackClassName;
+#endif
 	if (name.empty()) return L"CUI.Control";
 	return name.find(L'.') == std::wstring::npos
 		? L"CUI." + name : name;
@@ -70,7 +79,7 @@ AutomationOperationResult AutomationPeer::Toggle()
 	return AutomationOperationResult::NotSupported;
 }
 
-bool AutomationPeer::TryGetToggleState(bool&) const
+bool AutomationPeer::TryGetToggleState(AutomationToggleState&) const
 {
 	return false;
 }
@@ -259,6 +268,78 @@ AutomationOperationResult InvokeAutomationPeer::Invoke()
 		: AutomationOperationResult::InvalidOperation;
 }
 
+MenuItemAutomationPeer::MenuItemAutomationPeer(Control& owner) :
+	AutomationPeer(owner, AutomationControlType::MenuItem, L"MenuItem")
+{
+}
+
+AutomationPattern MenuItemAutomationPeer::GetPatternSet() const noexcept
+{
+	const auto* item = dynamic_cast<const MenuItem*>(&Owner());
+	if (!item) return AutomationPattern::None;
+	AutomationPattern patterns = item->_items.empty()
+		? AutomationPattern::Invoke
+		: AutomationPattern::ExpandCollapse;
+	if (item->_isCheckable)
+		patterns |= AutomationPattern::Toggle;
+	return patterns;
+}
+
+AutomationOperationResult MenuItemAutomationPeer::Invoke()
+{
+	const auto enabled = EnsureEnabled(Owner());
+	if (enabled != AutomationOperationResult::Succeeded) return enabled;
+	auto* item = dynamic_cast<MenuItem*>(&Owner());
+	if (!item) return AutomationOperationResult::NotSupported;
+	if (!item->_items.empty()) return AutomationOperationResult::NotSupported;
+	return item->InvokeLeafAndDismiss()
+		? AutomationOperationResult::Succeeded
+		: AutomationOperationResult::InvalidOperation;
+}
+
+AutomationOperationResult MenuItemAutomationPeer::Toggle()
+{
+	const auto enabled = EnsureEnabled(Owner());
+	if (enabled != AutomationOperationResult::Succeeded) return enabled;
+	auto* item = dynamic_cast<MenuItem*>(&Owner());
+	if (!item || !item->_isCheckable)
+		return AutomationOperationResult::NotSupported;
+	if (!item->_items.empty())
+		return AutomationOperationResult::InvalidOperation;
+	return item->InvokeLeafAndDismiss()
+		? AutomationOperationResult::Succeeded
+		: AutomationOperationResult::InvalidOperation;
+}
+
+bool MenuItemAutomationPeer::TryGetToggleState(
+	AutomationToggleState& value) const
+{
+	const auto* item = dynamic_cast<const MenuItem*>(&Owner());
+	if (!item || !item->_isCheckable) return false;
+	value = item->_isChecked
+		? AutomationToggleState::On : AutomationToggleState::Off;
+	return true;
+}
+
+bool MenuItemAutomationPeer::TryGetExpanded(bool& value) const
+{
+	const auto* item = dynamic_cast<const MenuItem*>(&Owner());
+	if (!item || item->_items.empty()) return false;
+	value = item->_isSubmenuOpen;
+	return true;
+}
+
+AutomationOperationResult MenuItemAutomationPeer::SetExpanded(bool value)
+{
+	const auto enabled = EnsureEnabled(Owner());
+	if (enabled != AutomationOperationResult::Succeeded) return enabled;
+	auto* item = dynamic_cast<MenuItem*>(&Owner());
+	if (!item || item->_items.empty())
+		return AutomationOperationResult::NotSupported;
+	item->SetIsSubmenuOpenCore(value);
+	return AutomationOperationResult::Succeeded;
+}
+
 ToggleAutomationPeer::ToggleAutomationPeer(Control& owner,
 	AutomationControlType controlType, std::wstring fallbackClassName) :
 	AutomationPeer(owner, controlType, std::move(fallbackClassName))
@@ -274,13 +355,16 @@ AutomationOperationResult ToggleAutomationPeer::Toggle()
 {
 	const auto enabled = EnsureEnabled(Owner());
 	if (enabled != AutomationOperationResult::Succeeded) return enabled;
-	return Owner().Invoke() ? AutomationOperationResult::Succeeded
-		: AutomationOperationResult::InvalidOperation;
+	auto* owner = dynamic_cast<ToggleButton*>(&Owner());
+	if (!owner) return AutomationOperationResult::InvalidOperation;
+	owner->OnToggle();
+	return AutomationOperationResult::Succeeded;
 }
 
-bool ToggleAutomationPeer::TryGetToggleState(bool& value) const
+bool ToggleAutomationPeer::TryGetToggleState(
+	AutomationToggleState& value) const
 {
-	value = Owner().IsCheckedForAccessibility();
+	value = Owner().GetToggleStateForAccessibility();
 	return true;
 }
 
@@ -304,14 +388,17 @@ AutomationOperationResult RadioButtonAutomationPeer::Select()
 {
 	const auto enabled = EnsureEnabled(Owner());
 	if (enabled != AutomationOperationResult::Succeeded) return enabled;
-	return Owner().Invoke() ? AutomationOperationResult::Succeeded
-		: AutomationOperationResult::InvalidOperation;
+	auto* owner = dynamic_cast<RadioButton*>(&Owner());
+	if (!owner) return AutomationOperationResult::InvalidOperation;
+	owner->SetChecked(true);
+	return AutomationOperationResult::Succeeded;
 }
 
 Control* RadioButtonAutomationPeer::GetSelectionContainer() const
 {
-	return Owner().GetLogicalParent()
-		? Owner().GetLogicalParent() : Owner().GetVisualParent();
+	// WPF's RadioButtonAutomationPeer deliberately does not manufacture a
+	// Selection container for an ordinary visual/logical parent.
+	return nullptr;
 }
 
 TextBoxAutomationPeer::TextBoxAutomationPeer(Control& owner,
@@ -343,7 +430,8 @@ AutomationOperationResult TextBoxAutomationPeer::SetValue(
 	const auto enabled = EnsureEnabled(Owner());
 	if (enabled != AutomationOperationResult::Succeeded) return enabled;
 	if (IsReadOnly()) return AutomationOperationResult::InvalidOperation;
-	return Owner().TrySetCurrentPropertyValue(L"Text", BindingValue(value))
+	return Owner().TrySetCurrentPropertyValue(
+		TextBox::TextProperty(), BindingValue(value))
 		? AutomationOperationResult::Succeeded
 		: AutomationOperationResult::InvalidOperation;
 }
@@ -399,9 +487,82 @@ AutomationOperationResult RangeBaseAutomationPeer::SetRangeValue(double value)
 	if (!range) return AutomationOperationResult::NotSupported;
 	if (value < range->Minimum || value > range->Maximum)
 		return AutomationOperationResult::InvalidArgument;
-	return range->TrySetCurrentPropertyValue(L"Value", BindingValue(value))
+	return range->TrySetCurrentPropertyValue(
+		RangeBase::ValueProperty(), BindingValue(value))
 		? AutomationOperationResult::Succeeded
 		: AutomationOperationResult::InvalidOperation;
+}
+
+ListBoxAutomationPeer::ListBoxAutomationPeer(Control& owner) :
+	AutomationPeer(owner, AutomationControlType::List, L"ListBox")
+{
+}
+
+AutomationPattern ListBoxAutomationPeer::GetPatternSet() const noexcept
+{
+	return AutomationPattern::Selection;
+}
+
+Control* ListBoxAutomationPeer::GetSelectedItem() const
+{
+	auto* list = dynamic_cast<ListBox*>(&Owner());
+	if (!list || list->GetSelectedIndex() < 0) return nullptr;
+	const auto index = static_cast<size_t>(list->GetSelectedIndex());
+	return list->GetItemsSource()
+		? list->GetGeneratedItem(index)
+		: list->GetAuthoredItem(index);
+}
+
+bool ListBoxAutomationPeer::CanSelectMultiple() const noexcept
+{
+	const auto* list = dynamic_cast<const ListBox*>(&Owner());
+	return list && list->GetSelectionMode() != SelectionMode::Single;
+}
+
+ListBoxItemAutomationPeer::ListBoxItemAutomationPeer(Control& owner) :
+	AutomationPeer(owner, AutomationControlType::ListItem, L"ListBoxItem")
+{
+}
+
+AutomationPattern
+ListBoxItemAutomationPeer::GetPatternSet() const noexcept
+{
+	return AutomationPattern::SelectionItem
+		| AutomationPattern::ScrollItem;
+}
+
+bool ListBoxItemAutomationPeer::TryGetSelectionItemSelected(
+	bool& value) const
+{
+	const auto* item = dynamic_cast<const ListBoxItem*>(&Owner());
+	if (!item) return false;
+	value = item->GetIsSelected();
+	return true;
+}
+
+AutomationOperationResult ListBoxItemAutomationPeer::Select()
+{
+	const auto enabled = EnsureEnabled(Owner());
+	if (enabled != AutomationOperationResult::Succeeded) return enabled;
+	auto* item = dynamic_cast<ListBoxItem*>(&Owner());
+	auto* selector = dynamic_cast<Selector*>(GetSelectionContainer());
+	if (!item || !selector)
+		return AutomationOperationResult::InvalidOperation;
+	if (auto* list = dynamic_cast<ListBox*>(selector))
+		list->RequestItemSelection(item->ItemIndex(), true);
+	else
+		(void)selector->SelectIndex(static_cast<int>(item->ItemIndex()));
+	return item->GetIsSelected()
+		? AutomationOperationResult::Succeeded
+		: AutomationOperationResult::InvalidOperation;
+}
+
+Control* ListBoxItemAutomationPeer::GetSelectionContainer() const
+{
+	for (auto* parent = Owner().GetLogicalParent(); parent;
+		parent = parent->GetLogicalParent())
+		if (dynamic_cast<Selector*>(parent)) return parent;
+	return nullptr;
 }
 
 ComboBoxAutomationPeer::ComboBoxAutomationPeer(Control& owner) :
@@ -411,12 +572,40 @@ ComboBoxAutomationPeer::ComboBoxAutomationPeer(Control& owner) :
 
 AutomationPattern ComboBoxAutomationPeer::GetPatternSet() const noexcept
 {
-	return AutomationPattern::ExpandCollapse;
+	const auto* combo = dynamic_cast<const ComboBox*>(&Owner());
+	auto patterns = AutomationPattern::ExpandCollapse
+		| AutomationPattern::Selection;
+	if (combo && combo->GetIsEditable())
+		patterns |= AutomationPattern::Value;
+	return patterns;
 }
 
 std::wstring ComboBoxAutomationPeer::GetValue() const
 {
 	return Owner().GetSemanticText();
+}
+
+bool ComboBoxAutomationPeer::IsReadOnly() const
+{
+	const auto* combo = dynamic_cast<const ComboBox*>(&Owner());
+	return !combo || !combo->GetIsEditable()
+		|| combo->GetIsReadOnly();
+}
+
+AutomationOperationResult ComboBoxAutomationPeer::SetValue(
+	const std::wstring& value)
+{
+	const auto enabled = EnsureEnabled(Owner());
+	if (enabled != AutomationOperationResult::Succeeded) return enabled;
+	auto* combo = dynamic_cast<ComboBox*>(&Owner());
+	if (!combo || !combo->GetIsEditable())
+		return AutomationOperationResult::NotSupported;
+	if (combo->GetIsReadOnly())
+		return AutomationOperationResult::InvalidOperation;
+	return combo->TrySetCurrentPropertyValue(
+		ComboBox::TextProperty(), BindingValue(value))
+		? AutomationOperationResult::Succeeded
+		: AutomationOperationResult::InvalidOperation;
 }
 
 bool ComboBoxAutomationPeer::TryGetExpanded(bool& value) const
@@ -435,6 +624,16 @@ AutomationOperationResult ComboBoxAutomationPeer::SetExpanded(bool value)
 	if (!combo) return AutomationOperationResult::NotSupported;
 	combo->SetIsDropDownOpen(value);
 	return AutomationOperationResult::Succeeded;
+}
+
+Control* ComboBoxAutomationPeer::GetSelectedItem() const
+{
+	auto* combo = dynamic_cast<ComboBox*>(&Owner());
+	if (!combo || combo->GetSelectedIndex() < 0) return nullptr;
+	const int index = combo->GetSelectedIndex();
+	return combo->GetItemsSource()
+		? combo->GetGeneratedItem(static_cast<size_t>(index))
+		: combo->GetItem(index);
 }
 
 bool ComboBoxAutomationPeer::TryGetAccessibilityVirtualNode(
@@ -545,7 +744,7 @@ AutomationOperationResult ExpanderAutomationPeer::SetExpanded(bool value)
 	auto* expander = dynamic_cast<Expander*>(&Owner());
 	if (!expander) return AutomationOperationResult::NotSupported;
 	return expander->TrySetCurrentPropertyValue(
-		L"IsExpanded", BindingValue(value))
+		Expander::IsExpandedProperty(), BindingValue(value))
 		? AutomationOperationResult::Succeeded
 		: AutomationOperationResult::InvalidOperation;
 }
@@ -607,6 +806,22 @@ AutomationOperationResult TreeViewItemAutomationPeer::Select()
 	return item->GetIsSelected() || tree->SelectItem(item)
 		? AutomationOperationResult::Succeeded
 		: AutomationOperationResult::InvalidOperation;
+}
+
+TreeViewAutomationPeer::TreeViewAutomationPeer(Control& owner) :
+	AutomationPeer(owner, AutomationControlType::Tree, L"TreeView")
+{
+}
+
+AutomationPattern TreeViewAutomationPeer::GetPatternSet() const noexcept
+{
+	return AutomationPattern::Selection;
+}
+
+Control* TreeViewAutomationPeer::GetSelectedItem() const
+{
+	const auto* tree = dynamic_cast<const TreeView*>(&Owner());
+	return tree ? tree->GetSelectedContainer() : nullptr;
 }
 
 TabItemAutomationPeer::TabItemAutomationPeer(Control& owner) :

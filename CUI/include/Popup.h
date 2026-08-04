@@ -11,7 +11,9 @@ enum class PlacementMode : int
 	Top,
 	Left,
 	Right,
-	Center
+	Center,
+	/** WPF ContextMenu default: use the pointer anchor supplied by its owner. */
+	MousePoint
 };
 
 class Popup;
@@ -30,11 +32,20 @@ public:
 	Popup();
 	~Popup() override;
 	UIClass Type() override { return UIClass::UI_Popup; }
+	/** WPF dependency-property identities used by generated/native code. */
+	static const DependencyProperty& IsOpenProperty();
+	static const DependencyProperty& StaysOpenProperty();
+	static const DependencyProperty& PlacementProperty();
+	static const DependencyProperty& PlacementTargetProperty();
+	static const DependencyProperty& HorizontalOffsetProperty();
+	static const DependencyProperty& VerticalOffsetProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 	bool GetIsOpen() const noexcept { return _isOpen; }
 	void SetIsOpen(bool value);
@@ -78,11 +89,24 @@ public:
 	PopupEvent Closed;
 
 	bool ParticipatesInPresentationScene() const override { return false; }
+	bool PresentationSuppressionAffectsLayout() const noexcept override
+	{
+		return false;
+	}
+	bool BreaksVisualPresentationInheritance() const noexcept override
+	{
+		return true;
+	}
+	bool BlocksReverseInheritance() const noexcept override
+	{
+		return GetTemplatedParent() == nullptr;
+	}
 	bool ClipsChildren() override { return true; }
 	void UpdatePlacement();
 protected:
 	void PreparePresentation() override;
 	void OnRender() override;
+	void RequestLayout() override;
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
 	void Arrange(cui::core::Rect finalRect) override;
@@ -100,6 +124,14 @@ private:
 	float _horizontalOffset = 0.0f;
 	float _verticalOffset = 0.0f;
 	bool _applyingPlacement = false;
+	// A Popup is retained as a transient scene root.  Re-measuring its child
+	// during every paint turns an otherwise cached frame into a full submenu
+	// layout pass, so keep the measured content until layout invalidates it.
+	bool _placementContentDirty = true;
+	bool _hasPlacementSnapshot = false;
+	cui::core::Size _measuredPopupContent{};
+	cui::core::Size _placementViewport{};
+	cui::core::Rect _placementTargetRect{};
 
 	void ApplyIsOpenChange(bool oldValue, bool newValue);
 	void SynchronizeTransientPresentation();

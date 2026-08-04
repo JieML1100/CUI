@@ -29,18 +29,18 @@ RuntimeDocumentSession::RuntimeDocumentSession(
 }
 
 RuntimeDocumentLoadOptions RuntimeDocumentSession::MakeLoadOptions(
-	std::shared_ptr<IBindingSource> dataContext,
-	std::shared_ptr<const NativeSurfaceBehaviorRegistry> nativeSurfaceBehaviors,
-	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
-		declarativeComponentBehaviors) const
+	const RuntimeDocumentSessionMountOptions& options) const
 {
 	RuntimeDocumentLoadOptions result;
-	result.DataContext = std::move(dataContext);
+	result.DataContext = options.DataContext;
 	result.ControlEventResolver = _handlers.ControlResolver();
 	result.RequireControlEventResolver = true;
-	result.NativeSurfaceBehaviors = std::move(nativeSurfaceBehaviors);
+	result.NativeSurfaceBehaviors = options.NativeSurfaceBehaviors;
 	result.DeclarativeComponentBehaviors =
-		std::move(declarativeComponentBehaviors);
+		options.DeclarativeComponentBehaviors;
+	result.RetainSourceDocument =
+		options.WatchFile || options.RetainSourceDocument;
+	result.ParseOptions = options.ParseOptions;
 	return result;
 }
 
@@ -84,9 +84,7 @@ bool RuntimeDocumentSession::MountFile(
 		candidateSource = filePath;
 		if (options.WatchFile
 			&& !candidateWatcher.Start(filePath, outError)) return false;
-		loadOptions = MakeLoadOptions(
-			options.DataContext, options.NativeSurfaceBehaviors,
-			options.DeclarativeComponentBehaviors);
+		loadOptions = MakeLoadOptions(options);
 		windowResolver = _handlers.WindowResolver();
 	}
 	catch (...)
@@ -139,9 +137,7 @@ bool RuntimeDocumentSession::MountDocument(
 		candidateSource = sourceFile;
 		if (options.WatchFile
 			&& !candidateWatcher.Start(sourceFile, outError)) return false;
-		loadOptions = MakeLoadOptions(
-			options.DataContext, options.NativeSurfaceBehaviors,
-			options.DeclarativeComponentBehaviors);
+		loadOptions = MakeLoadOptions(options);
 		windowResolver = _handlers.WindowResolver();
 	}
 	catch (...)

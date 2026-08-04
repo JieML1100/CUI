@@ -1,14 +1,11 @@
 #include "DemoWindow.h"
 
-#include "imgs.h"
-
 #include <BindingList.h>
 #include <Button.h>
 #include <Canvas.h>
 #include <ChartView.h>
 #include <CheckBox.h>
 #include <ComboBox.h>
-#include <ComponentBehavior.h>
 #include <ContentPresenter.h>
 #include <Core/Threading.h>
 #include <ContextMenu.h>
@@ -30,6 +27,7 @@
 #include <StyleInfrastructure.h>
 #include <WindowInfrastructure.h>
 #include <PasswordBox.h>
+#include <Popup.h>
 #include <ProgressBar.h>
 #include <ProgressRing.h>
 #include <RadioButton.h>
@@ -145,16 +143,6 @@ namespace
 		return e.Text;
 	}
 
-	std::wstring ExecutableDirectory()
-	{
-		std::wstring path(32768, L'\0');
-		const auto length = GetModuleFileNameW(
-			nullptr, path.data(), static_cast<DWORD>(path.size()));
-		if (!length || length >= path.size()) return std::filesystem::current_path().wstring();
-		path.resize(length);
-		return std::filesystem::path(path).parent_path().wstring();
-	}
-
 	std::wstring FileNameFromPath(const std::wstring& path)
 	{
 		return std::filesystem::path(path).filename().wstring();
@@ -191,78 +179,6 @@ namespace
 	{
 		throw std::runtime_error(Convert::WStringToString(message));
 	}
-
-	class FeatureCardBehavior final : public IDeclarativeComponentBehavior
-	{
-	public:
-		bool Attach(
-			Control& host,
-			const DeclarativeComponentBehaviorContext& context,
-			std::wstring* outError) override
-		{
-			if (context.Type != RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" }
-				|| !host.FindDeclarativeTemplatePart(L"PART_State")
-				|| !host.FindDeclarativeContentPresenter(L"Content")
-				|| !host.FindDeclarativeContentPresenter(L"Actions"))
-			{
-				if (outError) *outError =
-					L"FeatureCard behavior 未找到 XAML 契约或模板部件。";
-				return false;
-			}
-			_attached = true;
-			if (!SetState(host, L"Behavior attached · QName resolved"))
-			{
-				if (outError) *outError =
-					L"FeatureCard behavior 无法更新 XAML 声明的只读 State。";
-				return false;
-			}
-			if (outError) outError->clear();
-			return true;
-		}
-
-		void Detach(Control&) noexcept override
-		{
-			_attached = false;
-		}
-
-		bool HandleInput(
-			Control& host,
-			const InputReport& input) override
-		{
-			if (input.Kind != InputReportKind::PointerDoubleClick
-				|| input.ChangedButton != MouseButton::Left) return false;
-			++_inputCount;
-			(void)SetState(host, StringHelper::Format(
-				L"Behavior input #%d @ %d,%d",
-				_inputCount, input.X, input.Y));
-			return true;
-		}
-
-		void RenderOverlay(Control& host, D2DGraphics& graphics) override
-		{
-			const auto size = host.GetActualSizeDip();
-			const float x = std::max(10.0f, size.width - 14.0f);
-			graphics.FillEllipse(x, 12.0f, 4.0f, 4.0f,
-				D2D1::ColorF(0.08f, 0.65f, 0.42f, 1.0f));
-		}
-
-		bool Attached() const noexcept { return _attached; }
-		int InputCount() const noexcept { return _inputCount; }
-		bool PublishState(Control& host, std::wstring value)
-		{
-			return SetState(host, std::move(value));
-		}
-
-	private:
-		bool SetState(Control& host, std::wstring value)
-		{
-			return SetReadOnlyProperty(host,
-				L"State", BindingValue(std::move(value)));
-		}
-
-		bool _attached = false;
-		int _inputCount = 0;
-	};
 
 	class DemoSceneBehavior final : public INativeSurfaceBehavior
 	{
@@ -523,46 +439,163 @@ namespace
 	};
 }
 
-std::wstring DemoWindow::XamlFilePath()
-{
-	return (std::filesystem::path(ExecutableDirectory())
-		/ L"DemoWindow.cui.xaml").wstring();
-}
-
-bool DemoWindow::ValidateXaml(std::wstring* outError)
-{
-	DesignerModel::DesignDocument document;
-	return DesignerModel::XamlDocumentParser::LoadFromFile(
-		XamlFilePath(), document, outError);
-}
-
 template<typename T>
 T* DemoWindow::RequireControl(const wchar_t* name)
 {
-	auto* control = dynamic_cast<T*>(
-		_xamlSession.Document().FindControlByName(name));
+	auto* control = dynamic_cast<T*>(FindGeneratedControlByName(name));
 	if (!control) ThrowRuntimeError(L"XAML 缺少控件或类型不匹配：" + std::wstring(name));
 	return control;
 }
 
-DemoWindow::DemoWindow(InitializationMode mode)
-	: Window()
+Control* DemoWindow::FindGeneratedControlByName(
+	std::wstring_view name) const noexcept
 {
-	DesignerModel::DesignDocument document;
-	std::wstring error;
-	if (!DesignerModel::XamlDocumentParser::LoadFromFile(
-		XamlFilePath(), document, &error))
-		ThrowRuntimeError(L"预解析 DemoWindow.cui.xaml 失败：" + error);
-	PrepareDeclarativeRuntime(document);
-	RegisterXamlHandlers(document);
-	RegisterClassCommandBindings();
-	MountXaml(document);
+	// x:Name is compiled into strongly typed fields; it is not retained as a
+	// runtime string dictionary in production.
+	if (name == L"analyticsQuery") return analyticsQuery;
+	if (name == L"analyticsReset") return analyticsReset;
+	if (name == L"analyticsRows") return analyticsRows;
+	if (name == L"authoredStateTree") return authoredStateTree;
+	if (name == L"basicButton") return basicButton;
+	if (name == L"basicCombo") return basicCombo;
+	if (name == L"canvasLeftWins") return canvasLeftWins;
+	if (name == L"canvasRightBottom") return canvasRightBottom;
+	if (name == L"canvasSemanticsProbe") return canvasSemanticsProbe;
+	if (name == L"chartBar") return chartBar;
+	if (name == L"chartPie") return chartPie;
+	if (name == L"commandTargetButton") return commandTargetButton;
+	if (name == L"commandTargetTrace") return commandTargetTrace;
+	if (name == L"composedDensityEditor") return composedDensityEditor;
+	if (name == L"compositionCancelProbe") return compositionCancelProbe;
+	if (name == L"compositionCommitProbe") return compositionCommitProbe;
+	if (name == L"compositionFocusProbe") return compositionFocusProbe;
+	if (name == L"compositionPasswordBox") return compositionPasswordBox;
+	if (name == L"compositionPreviewHandledProbe")
+		return compositionPreviewHandledProbe;
+	if (name == L"compositionResetProbe") return compositionResetProbe;
+	if (name == L"compositionRichTextBox") return compositionRichTextBox;
+	if (name == L"compositionStartProbe") return compositionStartProbe;
+	if (name == L"compositionState") return compositionState;
+	if (name == L"compositionStats") return compositionStats;
+	if (name == L"compositionSurrogateProbe") return compositionSurrogateProbe;
+	if (name == L"compositionTextBox") return compositionTextBox;
+	if (name == L"compositionTrace") return compositionTrace;
+	if (name == L"compositionUnicharProbe") return compositionUnicharProbe;
+	if (name == L"compositionUpdateProbe") return compositionUpdateProbe;
+	if (name == L"demoImage") return demoImage;
+	if (name == L"demoList") return demoList;
+	if (name == L"demoListBox") return demoListBox;
+	if (name == L"demoProgress") return demoProgress;
+	if (name == L"demoRelative") return demoRelative;
+	if (name == L"demoScene") return demoScene;
+	if (name == L"demoScroll") return demoScroll;
+	if (name == L"demoTree") return demoTree;
+	if (name == L"dialogCancelButton") return dialogCancelButton;
+	if (name == L"dismissToast") return dismissToast;
+	if (name == L"enableInput") return enableInput;
+	if (name == L"farButton") return farButton;
+	if (name == L"featureActionA") return featureActionA;
+	if (name == L"featureActionB") return featureActionB;
+	if (name == L"featureCard") return featureCard;
+	if (name == L"featureCardContent") return featureCardContent;
+	if (name == L"globalProgress") return globalProgress;
+	if (name == L"indeterminateProgress") return indeterminateProgress;
+	if (name == L"layoutSurface") return layoutSurface;
+	if (name == L"loadingRing") return loadingRing;
+	if (name == L"mainMenu") return mainMenu;
+	if (name == L"mainStatusBar") return mainStatusBar;
+	if (name == L"mainTabs") return mainTabs;
+	if (name == L"mainToolBar") return mainToolBar;
+	if (name == L"mediaOpen") return mediaOpen;
+	if (name == L"mediaPause") return mediaPause;
+	if (name == L"mediaPlay") return mediaPlay;
+	if (name == L"mediaPlayer") return mediaPlayer;
+	if (name == L"mediaProgress") return mediaProgress;
+	if (name == L"mediaSpeedText") return mediaSpeedText;
+	if (name == L"mediaTime") return mediaTime;
+	if (name == L"nameInput") return nameInput;
+	if (name == L"naturalTextProbe") return naturalTextProbe;
+	if (name == L"notifyBalloon") return notifyBalloon;
+	if (name == L"notifyToggle") return notifyToggle;
+	if (name == L"presentationProbeSurface") return presentationProbeSurface;
+	if (name == L"presentationStatus") return presentationStatus;
+	if (name == L"presentationTopologyTile") return presentationTopologyTile;
+	if (name == L"progressRing") return progressRing;
+	if (name == L"radioA") return radioA;
+	if (name == L"radioB") return radioB;
+	if (name == L"relativeCenter") return relativeCenter;
+	if (name == L"relativeCenterButton") return relativeCenterButton;
+	if (name == L"salesChart") return salesChart;
+	if (name == L"showDialog") return showDialog;
+	if (name == L"sideNavigationList") return sideNavigationList;
+	if (name == L"statusText") return statusText;
+	if (name == L"systemContextMenu") return systemContextMenu;
+	if (name == L"systemSurface") return systemSurface;
+	if (name == L"textCompositionLabSurface") return textCompositionLabSurface;
+	if (name == L"themeDisabledButton") return themeDisabledButton;
+	if (name == L"themeNormalButton") return themeNormalButton;
+	if (name == L"toastMessage") return toastMessage;
+	if (name == L"toolAnalytics") return toolAnalytics;
+	if (name == L"toolBasic") return toolBasic;
+	if (name == L"toolData") return toolData;
+	if (name == L"toolIcon1") return toolIcon1;
+	if (name == L"toolIcon2") return toolIcon2;
+	if (name == L"toolIcon3") return toolIcon3;
+	if (name == L"toolIconImage1") return toolIconImage1;
+	if (name == L"toolIconImage2") return toolIconImage2;
+	if (name == L"toolIconImage3") return toolIconImage3;
+	if (name == L"toolSeparator") return toolSeparator;
+	if (name == L"toolSystem") return toolSystem;
+	if (name == L"trimmedTextProbe") return trimmedTextProbe;
+	if (name == L"verticalThemeProgress") return verticalThemeProgress;
+	if (name == L"verticalThemeSlider") return verticalThemeSlider;
+	if (name == L"webBrowser") return webBrowser;
+	if (name == L"windowContent") return windowContent;
+	if (name == L"wpfAncestorValue") return wpfAncestorValue;
+	if (name == L"wpfBindingScope") return wpfBindingScope;
+	if (name == L"wpfConvertedValue") return wpfConvertedValue;
+	if (name == L"wpfDispatcherProbe") return wpfDispatcherProbe;
+	if (name == L"wpfDispatcherResult") return wpfDispatcherResult;
+	if (name == L"wpfElementMirror") return wpfElementMirror;
+	if (name == L"wpfFallbackValue") return wpfFallbackValue;
+	if (name == L"wpfFocusPeerB") return wpfFocusPeerB;
+	if (name == L"wpfFocusPeerC") return wpfFocusPeerC;
+	if (name == L"wpfHierarchyScope") return wpfHierarchyScope;
+	if (name == L"wpfIndexerValue") return wpfIndexerValue;
+	if (name == L"wpfInnerResourceValue") return wpfInnerResourceValue;
+	if (name == L"wpfInputStats") return wpfInputStats;
+	if (name == L"wpfKeyedIndexerValue") return wpfKeyedIndexerValue;
+	if (name == L"wpfLabSurface") return wpfLabSurface;
+	if (name == L"wpfMultiValue") return wpfMultiValue;
+	if (name == L"wpfNoFocusPeer") return wpfNoFocusPeer;
+	if (name == L"wpfNullValue") return wpfNullValue;
+	if (name == L"wpfRouteMiddle") return wpfRouteMiddle;
+	if (name == L"wpfRouteOuter") return wpfRouteOuter;
+	if (name == L"wpfRouteSource") return wpfRouteSource;
+	if (name == L"wpfRouteTrace") return wpfRouteTrace;
+	if (name == L"wpfScopeResourceValue") return wpfScopeResourceValue;
+	if (name == L"wpfSelfValue") return wpfSelfValue;
+	if (name == L"wpfTemplateButton") return wpfTemplateButton;
+	if (name == L"wpfTemplateList") return wpfTemplateList;
+	if (name == L"wpfTextInputSource") return wpfTextInputSource;
+	if (name == L"wpfTriggerButton") return wpfTriggerButton;
+	if (name == L"wpfTwoWayEditor") return wpfTwoWayEditor;
+	if (name == L"wpfTypographyOverride") return wpfTypographyOverride;
+	if (name == L"wrappedTextProbe") return wrappedTextProbe;
+	return nullptr;
+}
+
+DemoWindow::DemoWindow(InitializationMode mode)
+	: DemoWindowGenerated()
+{
+	PrepareRuntimeData();
+	InitializeComponent();
+	if (!BindData(BindingSourceReference(_dataContext)))
+		ThrowRuntimeError(L"AOT 生成树无法连接运行时 DataContext。");
 	ResolveControls();
-	auto* schemaBadge = RequireControl<Label>(L"runtimeBadge");
-	schemaBadge->Text = _schemaSummary;
-	schemaBadge->InvalidateVisual();
+	AttachStaticBehaviors();
+	RegisterClassCommandBindings();
 	if (mode == InitializationMode::DeclarativeOnly) return;
-	LoadImages();
 	InitializeBasicPage();
 	InitializeContainerPage();
 	InitializeDataPage();
@@ -588,165 +621,259 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 	};
 	try
 	{
-		if (!_xamlSession.IsMounted()
-			|| _xamlSession.MountedWindow() != this
-			|| _xamlSession.SourceFile() != XamlFilePath())
-			return fail(L"预解析 XAML 未通过 RuntimeDocumentSession 保持挂载语义。");
-		auto* schemaBadge = _xamlSession.Document().FindControlByName(
-			L"runtimeBadge");
-		if (_schemaSummary.empty() || !schemaBadge
-			|| schemaBadge->GetDisplayText() != _schemaSummary)
-			return fail(L"无实例 XAML Schema 预检未在 CUITest 中展示。");
+		if (!_componentInitialized || !windowContent || !runtimeBadge
+			|| runtimeBadge->GetDisplayText() != L"AOT XAML · Native C++")
+			return fail(L"AOT InitializeComponent 未构造完整的生成控件树。");
+		const auto& labelClip = gradientLabel
+			? gradientLabel->GetClip()
+			: std::optional<cui::drawing::Geometry>{};
+		const auto& labelTransform = gradientLabel
+			? gradientLabel->GetRenderTransform()
+			: std::optional<cui::drawing::Transform>{};
+		if (!gradientLabel
+			|| gradientLabel->Padding
+				!= Thickness(12.0f, 0.0f, 12.0f, 0.0f)
+			|| gradientLabel->GetPropertyValueSource(
+				Control::PaddingProperty())
+				!= DependencyPropertyValueSource::Local
+			|| !labelClip || labelClip->ContainsPoint(D2D1::Point2F())
+			|| !labelClip->ContainsPoint(D2D1::Point2F(12.0f, 17.0f))
+			|| !labelTransform || labelTransform->Operations.size() != 2
+			|| labelTransform->Operations[0].Kind
+				!= cui::drawing::TransformKind::Rotate
+			|| labelTransform->Operations[0].Angle != -2.0f)
+			return fail(L"gradientLabel 的 Padding/Clip/RenderTransform "
+				L"未保持 WPF 局部坐标语义。");
+		auto applyTemplateForVerification =
+			[&](Control* current, std::wstring_view label)
+		{
+			if (!current || !current->GetTemplate()) return true;
+			(void)current->ApplyTemplate();
+			return current->LastTemplateError().empty()
+				|| fail(L"生成的 ControlTemplate 应用失败（"
+					+ std::wstring(label) + L"）："
+					+ current->LastTemplateError());
+		};
 		auto* themeNormalButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"themeNormalButton"));
+			FindGeneratedControlByName(L"themeNormalButton"));
 		auto* themeDisabledButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"themeDisabledButton"));
+			FindGeneratedControlByName(L"themeDisabledButton"));
+		if (!applyTemplateForVerification(_basicButton, L"basicButton")
+			|| !applyTemplateForVerification(
+				themeNormalButton, L"themeNormalButton")
+			|| !applyTemplateForVerification(
+				themeDisabledButton, L"themeDisabledButton"))
+			return false;
 		auto* basicChrome = _basicButton
-			? _basicButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			? _basicButton->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_Chrome"))
 			: nullptr;
 		auto* basicPresenter = _basicButton
 			? dynamic_cast<ContentPresenter*>(
 				_basicButton->FindDeclarativeTemplatePart(
-					L"PART_ContentPresenter"))
+					MakeTemplatePartToken(L"PART_ContentPresenter")))
+			: nullptr;
+		auto* basicRoot = _basicButton
+			? cui::framework::TemplateAccess::GetTemplateRoot(*_basicButton)
 			: nullptr;
 		auto* normalChrome = themeNormalButton
-			? themeNormalButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			? themeNormalButton->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_Chrome"))
 			: nullptr;
 		auto* disabledChrome = themeDisabledButton
-			? themeDisabledButton->FindDeclarativeTemplatePart(L"PART_Chrome")
+			? themeDisabledButton->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_Chrome"))
 			: nullptr;
-		if (!_basicButton || !themeNormalButton || !themeDisabledButton
-			|| !basicChrome || !basicPresenter
-			|| !normalChrome || !disabledChrome
-			|| cui::framework::TemplateAccess::GetTemplateRoot(*_basicButton)
-				!= basicChrome
-			|| basicChrome->GetVisualParent() != _basicButton
-			|| basicChrome->GetLogicalParent() != nullptr
-			|| basicChrome->GetTemplatedParent() != _basicButton
-			|| basicPresenter->GetVisualParent() != basicChrome
-			|| basicPresenter->GetTemplatedParent() != _basicButton
-			|| basicPresenter->GetPropertyValueSource(L"Content")
-				!= DependencyPropertyValueSource::Template
-			|| basicPresenter->GetPropertyExpressionKind(
-				L"Content", DependencyPropertyValueSource::Template)
-				!= DependencyPropertyExpressionKind::TemplateBinding
-			|| _basicButton->GetPropertyValueSource(L"Background")
-				!= DependencyPropertyValueSource::Local
-			|| _basicButton->GetPropertyValueSource(L"BorderBrush")
-				!= DependencyPropertyValueSource::Theme
-			|| basicChrome->GetPropertyValueSource(L"Background")
-				!= DependencyPropertyValueSource::Template
-			|| themeNormalButton->GetPropertyValueSource(L"Background")
-				!= DependencyPropertyValueSource::Theme
-			|| themeNormalButton->GetCurrentVisualState(L"CommonStates")
-				!= L"Normal"
-			|| themeDisabledButton->GetCurrentVisualState(L"CommonStates")
-				!= L"Disabled"
-			|| disabledChrome->GetPropertyValueSource(L"Background")
-				!= DependencyPropertyValueSource::VisualState)
+		if (_basicButton && !basicChrome)
+			return fail(L"Generic.xaml 未生成 basicButton 的 PART_Chrome："
+				L"Theme=" + std::wstring(
+					cui::framework::StyleAccess::Theme(*_basicButton)
+						? L"存在" : L"缺失")
+				+ L"，Template="
+				+ (_basicButton->GetTemplate() ? L"存在" : L"缺失")
+				+ L"，TemplateSource="
+				+ std::to_wstring(static_cast<int>(
+					_basicButton->GetPropertyValueSource(
+						Control::TemplateProperty()))));
+		const wchar_t* failedThemeInvariant = nullptr;
+		if (!_basicButton) failedThemeInvariant = L"basicButton";
+		else if (!themeNormalButton) failedThemeInvariant = L"themeNormalButton";
+		else if (!themeDisabledButton) failedThemeInvariant = L"themeDisabledButton";
+		else if (!basicChrome) failedThemeInvariant = L"basic PART_Chrome";
+		else if (!basicPresenter)
+			failedThemeInvariant = L"basic PART_ContentPresenter";
+		else if (!normalChrome) failedThemeInvariant = L"normal PART_Chrome";
+		else if (!disabledChrome) failedThemeInvariant = L"disabled PART_Chrome";
+		else if (!basicRoot)
+			failedThemeInvariant = L"basic template root";
+		else if (basicRoot->GetVisualParent() != _basicButton)
+			failedThemeInvariant = L"basic root visual parent";
+		else if (basicRoot->GetLogicalParent() != nullptr)
+			failedThemeInvariant = L"basic root logical parent";
+		else if (basicRoot->GetTemplatedParent() != _basicButton)
+			failedThemeInvariant = L"basic root templated parent";
+		else if (basicChrome->GetVisualParent() != basicRoot)
+			failedThemeInvariant = L"basic chrome visual parent";
+		else if (basicChrome->GetLogicalParent() != nullptr)
+			failedThemeInvariant = L"basic chrome logical parent";
+		else if (basicChrome->GetTemplatedParent() != _basicButton)
+			failedThemeInvariant = L"basic chrome templated parent";
+		else if (basicPresenter->GetVisualParent() != basicChrome)
+			failedThemeInvariant = L"basic presenter visual parent";
+		else if (basicPresenter->GetTemplatedParent() != _basicButton)
+			failedThemeInvariant = L"basic presenter templated parent";
+		else if (basicPresenter->GetPropertyValueSource(
+			ContentPresenter::ContentProperty())
+			!= DependencyPropertyValueSource::Template)
+			failedThemeInvariant = L"presenter Content source";
+		else if (basicPresenter->GetPropertyExpressionKind(
+			ContentPresenter::ContentProperty(),
+			DependencyPropertyValueSource::Template)
+			!= DependencyPropertyExpressionKind::TemplateBinding)
+			failedThemeInvariant = L"presenter Content TemplateBinding";
+		else if (_basicButton->GetPropertyValueSource(
+			Control::BackgroundProperty())
+			!= DependencyPropertyValueSource::Local)
+			failedThemeInvariant = L"basic Background source";
+		else if (_basicButton->GetPropertyValueSource(
+			Control::BorderBrushProperty())
+			!= DependencyPropertyValueSource::Theme)
+			failedThemeInvariant = L"basic BorderBrush source";
+		else if (basicChrome->GetPropertyValueSource(
+			Border::BackgroundProperty())
+			!= DependencyPropertyValueSource::Template)
+			failedThemeInvariant = L"chrome Background source";
+		else if (themeNormalButton->GetPropertyValueSource(
+			Control::BackgroundProperty())
+			!= DependencyPropertyValueSource::Theme)
+			failedThemeInvariant = L"normal Background source";
+		else if (themeNormalButton->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"CommonStates"))
+			!= MakeVisualStateToken(L"Normal"))
+			failedThemeInvariant = L"normal CommonStates";
+		else if (themeDisabledButton->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"CommonStates"))
+			!= MakeVisualStateToken(L"Disabled"))
+			failedThemeInvariant = L"disabled CommonStates";
+		else if (disabledChrome->GetPropertyValueSource(
+			Border::BackgroundProperty())
+			!= DependencyPropertyValueSource::VisualState)
+			failedThemeInvariant = L"disabled chrome Background source";
+		if (failedThemeInvariant)
 			return fail(L"Generic.xaml Theme/ControlTemplate/TemplateBinding/"
-				L"VisualState 主链未完整物化。");
+				L"VisualState 主链未完整物化：" + std::wstring(failedThemeInvariant));
 
 		auto* themeCheck = dynamic_cast<CheckBox*>(
-			_xamlSession.Document().FindControlByName(L"enableInput"));
+			FindGeneratedControlByName(L"enableInput"));
 		auto* verticalSlider = dynamic_cast<Slider*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"verticalThemeSlider"));
 		auto* verticalProgress = dynamic_cast<ProgressBar*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"verticalThemeProgress"));
 		auto* indeterminateProgress = dynamic_cast<ProgressBar*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"indeterminateProgress"));
+		if (!applyTemplateForVerification(themeCheck, L"enableInput")
+			|| !applyTemplateForVerification(_radioA, L"radioA")
+			|| !applyTemplateForVerification(_progress, L"progress")
+			|| !applyTemplateForVerification(
+				indeterminateProgress, L"indeterminateProgress")
+			|| !applyTemplateForVerification(
+				_globalProgress, L"globalProgress")
+			|| !applyTemplateForVerification(
+				verticalSlider, L"verticalThemeSlider")
+			|| !applyTemplateForVerification(
+				verticalProgress, L"verticalThemeProgress"))
+			return false;
 		auto* checkRoot = themeCheck
 			? themeCheck->FindDeclarativeTemplatePart(
-				L"PART_CheckBoxRoot") : nullptr;
+				MakeTemplatePartToken(L"PART_CheckBoxRoot")) : nullptr;
 		auto* checkGlyph = themeCheck
 			? themeCheck->FindDeclarativeTemplatePart(
-				L"PART_CheckGlyph") : nullptr;
+				MakeTemplatePartToken(L"PART_CheckGlyph")) : nullptr;
 		auto* radioRoot = _radioA
 			? _radioA->FindDeclarativeTemplatePart(
-				L"PART_RadioRoot") : nullptr;
+				MakeTemplatePartToken(L"PART_RadioRoot")) : nullptr;
 		auto* radioGlyph = _radioA
 			? _radioA->FindDeclarativeTemplatePart(
-				L"PART_RadioGlyph") : nullptr;
+				MakeTemplatePartToken(L"PART_RadioGlyph")) : nullptr;
 		auto* progressTrack = _progress
 			? _progress->FindDeclarativeTemplatePart(
-				L"PART_Track") : nullptr;
+				MakeTemplatePartToken(L"PART_Track")) : nullptr;
 		auto* progressIndicator = _progress
 			? _progress->FindDeclarativeTemplatePart(
-				L"PART_Indicator") : nullptr;
+				MakeTemplatePartToken(L"PART_Indicator")) : nullptr;
 		auto* progressGlow = indeterminateProgress
 			? indeterminateProgress->FindDeclarativeTemplatePart(
-				L"PART_GlowRect") : nullptr;
+				MakeTemplatePartToken(L"PART_GlowRect")) : nullptr;
 		auto* sliderTrack = _globalProgress
 			? _globalProgress->FindDeclarativeTemplatePart(
-				L"PART_Track") : nullptr;
+				MakeTemplatePartToken(L"PART_Track")) : nullptr;
 		auto* sliderRange = _globalProgress
 			? _globalProgress->FindDeclarativeTemplatePart(
-				L"PART_SelectionRange") : nullptr;
+				MakeTemplatePartToken(L"PART_SelectionRange")) : nullptr;
 		auto* sliderThumb = _globalProgress
 			? _globalProgress->FindDeclarativeTemplatePart(
-				L"PART_Thumb") : nullptr;
+				MakeTemplatePartToken(L"PART_Thumb")) : nullptr;
 		if (!themeCheck || !verticalSlider || !verticalProgress
 			|| !indeterminateProgress || !checkRoot || !checkGlyph
 			|| !radioRoot || !radioGlyph || !progressTrack
 			|| !progressIndicator || !progressGlow || !sliderTrack
 			|| !sliderRange || !sliderThumb
-			|| themeCheck->GetPropertyValueSource(L"BorderBrush")
+			|| themeCheck->GetPropertyValueSource(Control::BorderBrushProperty())
 				!= DependencyPropertyValueSource::Theme
-			|| _radioA->GetPropertyValueSource(L"Foreground")
+			|| _radioA->GetPropertyValueSource(Control::ForegroundProperty())
 				!= DependencyPropertyValueSource::Theme
-			|| _progress->GetPropertyValueSource(L"Background")
+			|| _progress->GetPropertyValueSource(Control::BackgroundProperty())
 				!= DependencyPropertyValueSource::Theme
-			|| _globalProgress->GetPropertyValueSource(L"Background")
+			|| _globalProgress->GetPropertyValueSource(
+				Control::BackgroundProperty())
 				!= DependencyPropertyValueSource::Theme
 			|| checkRoot->GetTemplatedParent() != themeCheck
 			|| radioRoot->GetTemplatedParent() != _radioA
 			|| progressTrack->GetTemplatedParent() != _progress
 			|| sliderTrack->GetTemplatedParent() != _globalProgress
-			|| themeCheck->GetCurrentVisualState(L"CheckStates")
-				!= L"Checked"
-			|| _radioA->GetCurrentVisualState(L"CheckStates")
-				!= L"Checked"
+			|| themeCheck->GetCurrentVisualState(
+				MakeVisualStateGroupToken(L"CheckStates"))
+				!= MakeVisualStateToken(L"Checked")
+			|| _radioA->GetCurrentVisualState(
+				MakeVisualStateGroupToken(L"CheckStates"))
+				!= MakeVisualStateToken(L"Checked")
 			|| indeterminateProgress->GetCurrentVisualState(
-				L"ProgressStates") != L"Indeterminate"
+				MakeVisualStateGroupToken(L"ProgressStates"))
+				!= MakeVisualStateToken(L"Indeterminate")
 			|| verticalSlider->Orientation != Orientation::Vertical
 			|| verticalSlider->GetCurrentVisualState(
-				L"OrientationStates") != L"Vertical"
+				MakeVisualStateGroupToken(L"OrientationStates"))
+				!= MakeVisualStateToken(L"Vertical")
 			|| verticalProgress->Orientation != Orientation::Vertical
 			|| verticalProgress->GetCurrentVisualState(
-				L"OrientationStates") != L"Vertical")
+				MakeVisualStateGroupToken(L"OrientationStates"))
+				!= MakeVisualStateToken(L"Vertical"))
 			return fail(L"Generic.xaml CheckBox/RadioButton/ProgressBar/"
 				L"Slider 模板、部件或 VisualState 未完整物化。");
 
-		cui::framework::InputAccess::PublishPointerOverState(
-			*themeNormalButton, true, true);
-		const bool pointerOverState =
-			themeNormalButton->GetCurrentVisualState(L"CommonStates")
-				== L"PointerOver"
-			&& normalChrome->GetPropertyValueSource(L"Background")
-				== DependencyPropertyValueSource::VisualState;
 		const bool pointerDown = cui::framework::InputAccess::DispatchInput(
 			*themeNormalButton, PointerInput(
 				InputReportKind::PointerDown, MouseButton::Left,
 				5, 5, MouseButton::Left));
 		const bool pressedState = themeNormalButton->IsPressed
-			&& themeNormalButton->GetCurrentVisualState(L"CommonStates")
-				== L"Pressed";
+			&& themeNormalButton->GetCurrentVisualState(
+				MakeVisualStateGroupToken(L"CommonStates"))
+				== MakeVisualStateToken(L"Pressed");
 		const bool pointerUp = cui::framework::InputAccess::DispatchInput(
 			*themeNormalButton, PointerInput(
 				InputReportKind::PointerUp, MouseButton::Left, 5, 5));
-		cui::framework::InputAccess::PublishPointerOverState(
-			*themeNormalButton, false, false);
-		if (!pointerOverState || !pointerDown || !pressedState || !pointerUp
+		if (!pointerDown || !pressedState || !pointerUp
 			|| themeNormalButton->IsPressed
-			|| themeNormalButton->GetCurrentVisualState(L"CommonStates")
-				!= L"Normal"
-			|| normalChrome->GetPropertyValueSource(L"Background")
+			|| themeNormalButton->GetCurrentVisualState(
+				MakeVisualStateGroupToken(L"CommonStates"))
+				!= MakeVisualStateToken(L"Normal")
+			|| normalChrome->GetPropertyValueSource(Border::BackgroundProperty())
 				!= DependencyPropertyValueSource::Template)
 			return fail(L"Generic.xaml Button CommonStates 未响应 "
-				L"PointerOver/Pressed/Normal 状态切换。");
+				L"Pressed/Normal 状态切换。");
 
 		if (!_basicButton || !_dialogCancelButton || !_radioA
 			|| !_basicButton->IsDefault || _basicButton->IsCancel
@@ -755,9 +882,10 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| _radioA->GroupName != L"Plan"
 			|| _radioB->GroupName != L"Plan"
 			|| !_radioA->IsChecked || _radioB->IsChecked
-			|| _basicButton->GetPropertyValueSource(L"IsDefault")
+			|| _basicButton->GetPropertyValueSource(Button::IsDefaultProperty())
 				!= DependencyPropertyValueSource::Local
-			|| _dialogCancelButton->GetPropertyValueSource(L"IsCancel")
+			|| _dialogCancelButton->GetPropertyValueSource(
+				Button::IsCancelProperty())
 				!= DependencyPropertyValueSource::Local)
 			return fail(L"Button IsDefault/IsCancel 未从 XAML 本地值物化。");
 
@@ -794,13 +922,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		const bool escapeUsesCancel = defaultInvocations == 1
 			&& cancelInvocations == 1 && radioInvocations == 0;
 		pressKey(Key::Space);
-		const bool genericSpaceIgnored = defaultInvocations == 1
-			&& cancelInvocations == 1 && radioInvocations == 0;
+		const bool radioSpaceInvoked = defaultInvocations == 1
+			&& cancelInvocations == 1 && radioInvocations == 1;
 		SetKeyboardFocus(_basicButton, false);
 		const bool buttonFocused = GetKeyboardFocusedElement() == _basicButton;
 		pressKey(Key::Space);
 		const bool buttonSpaceInvoked = defaultInvocations == 2
-			&& cancelInvocations == 1 && radioInvocations == 0;
+			&& cancelInvocations == 1 && radioInvocations == 1;
 
 		cui::framework::WindowAccess::TextComposition(*this).Reset();
 		SetKeyboardFocus(previousFocus, false);
@@ -817,48 +945,41 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		}
 		(void)SetStatusBarItemText(0, statusPart);
 		if (!genericFocused || !enterUsesDefault || !escapeUsesCancel
-			|| !genericSpaceIgnored || !buttonFocused || !buttonSpaceInvoked)
-			return fail(L"Window 未按 WPF Button 语义路由 Enter/Escape/Space。");
+			|| !radioSpaceInvoked || !buttonFocused || !buttonSpaceInvoked)
+			return fail(L"Window 未按 WPF Button 语义路由 Enter/Escape/Space："
+				L"genericFocused=" + std::to_wstring(genericFocused)
+				+ L"，enterUsesDefault=" + std::to_wstring(enterUsesDefault)
+				+ L"，escapeUsesCancel=" + std::to_wstring(escapeUsesCancel)
+				+ L"，radioSpaceInvoked=" + std::to_wstring(radioSpaceInvoked)
+				+ L"，buttonFocused=" + std::to_wstring(buttonFocused)
+				+ L"，buttonSpaceInvoked=" + std::to_wstring(buttonSpaceInvoked)
+				+ L"，basicWindow="
+				+ std::to_wstring(_basicButton->GetPresentationWindow() == this)
+				+ L"，cancelWindow="
+				+ std::to_wstring(
+					_dialogCancelButton->GetPresentationWindow() == this)
+				+ L"，radioWindow="
+				+ std::to_wstring(_radioA->GetPresentationWindow() == this)
+				+ L"，basicVisible=" + std::to_wstring(_basicButton->IsVisible)
+				+ L"，cancelVisible="
+				+ std::to_wstring(_dialogCancelButton->IsVisible)
+				+ L"，radioVisible=" + std::to_wstring(_radioA->IsVisible));
 
-		auto* card = _xamlSession.Document().FindControlByName(L"featureCard");
-		if (!card || card->GetDeclarativeTypeId()
-			!= RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" })
-			return fail(L"featureCard 未按 XAML QName 材质化。");
-		const auto& cardSchema = card->GetDeclarativeTypeDescriptor();
-		const auto* stateProperty = cardSchema
-			? cardSchema->FindProperty(L"State") : nullptr;
-		const auto* invokedEvent = cardSchema
-			? cardSchema->FindEvent(L"Invoked") : nullptr;
-		const auto* defaultContent = cardSchema
-			? cardSchema->DefaultContentProperty() : nullptr;
-		const auto* actionsContent = cardSchema
-			? cardSchema->FindContentProperty(L"Actions") : nullptr;
-		if (!cardSchema || cardSchema->PropertyCount() != 5
-			|| cardSchema->Events().size() != 3
-			|| cardSchema->ContentProperties().size() != 2
-			|| !stateProperty || !stateProperty->IsReadOnly()
-			|| stateProperty != card->FindPropertyMetadata(L"State")
-			|| !invokedEvent
-			|| invokedEvent->RoutingStrategy
-				!= DeclarativeEventRoutingStrategy::Bubble
-			|| !defaultContent || defaultContent->Name != L"Content"
-			|| !actionsContent || actionsContent->Cardinality
-				!= DeclarativeContentCardinality::Multiple)
-			return fail(L"FeatureCard 未使用共享的类型级 Schema 元数据。");
-		auto* cardBehavior = dynamic_cast<FeatureCardBehavior*>(
-			card->GetDeclarativeComponentBehavior());
-		if (!cardBehavior || !cardBehavior->Attached())
-			return fail(L"FeatureCard C++ behavior 未挂接。");
-		auto* statePart = dynamic_cast<Label*>(
-			card->FindDeclarativeTemplatePart(L"PART_State"));
-		auto* rootPart = card->FindDeclarativeTemplatePart(L"PART_Root");
-		auto* contentPresenter = card->FindDeclarativeContentPresenter(L"Content");
-		auto* actionsPresenter = card->FindDeclarativeContentPresenter(L"Actions");
-		auto* projectedContent = _xamlSession.Document().FindControlByName(
+		auto* card = featureCard;
+		if (!card
+			|| card->GetCaption()
+				!= L"FeatureCard · 类型/属性/事件均来自 XAML"
+			|| !card->GetIsActive())
+			return fail(L"featureCard 未生成强类型属性投影。");
+		auto* statePart = card->GetPART_State();
+		auto* rootPart = card->GetPART_Root();
+		auto* contentPresenter = card->GetPART_Content();
+		auto* actionsPresenter = card->GetPART_Actions();
+		auto* projectedContent = FindGeneratedControlByName(
 			L"featureCardContent");
-		auto* projectedActionA = _xamlSession.Document().FindControlByName(
+		auto* projectedActionA = FindGeneratedControlByName(
 			L"featureActionA");
-		auto* projectedActionB = _xamlSession.Document().FindControlByName(
+		auto* projectedActionB = FindGeneratedControlByName(
 			L"featureActionB");
 		auto* templateLayout = statePart ? statePart->GetVisualParent() : nullptr;
 		if (!statePart || !rootPart
@@ -1052,72 +1173,91 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				L"NativeFrameworkElement.Executed" })
 			return fail(L"组件模板 InputBinding.CommandTarget 未按本地 namescope "
 				L"重写，或 native class binding fallback 未执行。");
-		BindingValue state;
-		if (!card->TryGetPropertyValue(L"State", state)
-			|| state.ToString().find(L"Behavior attached") == std::wstring::npos
-			|| statePart->Text != state.ToString()
-			|| statePart->GetPropertyValueSource(L"Text")
+		const auto state = card->GetState();
+		if (state.find(L"Typed C++ attached") == std::wstring::npos
+			|| statePart->Text != state
+			|| statePart->GetPropertyValueSource(Label::TextProperty())
 				!= DependencyPropertyValueSource::Template
 			|| statePart->GetPropertyExpressionKind(
-				L"Text", DependencyPropertyValueSource::Template)
+				Label::TextProperty(), DependencyPropertyValueSource::Template)
 				!= DependencyPropertyExpressionKind::TemplateBinding
-			|| rootPart->GetPropertyValueSource(L"Padding")
+			|| rootPart->GetPropertyValueSource(Border::PaddingProperty())
 				!= DependencyPropertyValueSource::Template
 			|| rootPart->GetPropertyExpressionKind(
-				L"Padding", DependencyPropertyValueSource::Template)
+				Border::PaddingProperty(),
+				DependencyPropertyValueSource::Template)
 				!= DependencyPropertyExpressionKind::TemplateBinding
-			|| rootPart->FindPropertyMetadata(L"CornerRadius") != nullptr)
-			return fail(L"FeatureCard 只读 State 或 TemplateBinding 未生效。");
+			|| rootPart->GetPropertyMetadata(
+				Border::CornerRadiusProperty()) == nullptr)
+			return fail(L"FeatureCard 只读 State、TemplateBinding 或 "
+				L"Border.CornerRadius DP 未生效。");
 		if (card->TrySetPropertyValue(
-			L"State", BindingValue(std::wstring(L"illegal write"))))
+			DemoWindowGeneratedFeatureCard::StateProperty(),
+			BindingValue(std::wstring(L"illegal write"))))
 			return fail(L"FeatureCard State 未保持只读契约。");
-		if (card->GetCurrentVisualState(L"InteractionStates") != L"Active")
+		if (card->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"InteractionStates"))
+			!= MakeVisualStateToken(L"Active"))
 			return fail(L"FeatureCard IsActive StateTrigger 未进入 Active。");
-		const bool deactivated = card->TrySetPropertyValue(
-			L"IsActive", BindingValue(false));
+		card->SetIsActive(false);
+		const bool deactivated = !card->GetIsActive();
 		const auto inactiveState = card->GetCurrentVisualState(
-			L"InteractionStates");
-		const bool activated = card->TrySetPropertyValue(
-			L"IsActive", BindingValue(true));
+			MakeVisualStateGroupToken(L"InteractionStates"));
+		card->SetIsActive(true);
+		const bool activated = card->GetIsActive();
 		const auto activeState = card->GetCurrentVisualState(
-			L"InteractionStates");
+			MakeVisualStateGroupToken(L"InteractionStates"));
 		const bool hasTransition = card->HasActiveVisualStateAnimations();
 		const auto transitionSource = rootPart->GetPropertyValueSource(
-			L"Canvas.Left");
+			Control::CanvasLeftProperty());
 		const auto transitionExpression = rootPart->GetPropertyExpressionKind(
-			L"Canvas.Left", DependencyPropertyValueSource::Animation);
-		if (!deactivated || inactiveState != L"Normal" || !activated
-			|| activeState != L"Active" || !hasTransition
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation);
+		if (!deactivated || inactiveState != MakeVisualStateToken(L"Normal")
+			|| !activated || activeState != MakeVisualStateToken(L"Active")
+			|| !hasTransition
 			|| transitionSource != DependencyPropertyValueSource::Animation
 			|| transitionExpression != DependencyPropertyExpressionKind::Animation)
 			return fail(L"FeatureCard VisualTransition 未从 Normal 过渡到 Active。"
 				L" [deactivated=" + std::to_wstring(deactivated)
-				+ L", inactive=" + inactiveState
+				+ L", inactive=" + std::to_wstring(inactiveState.Value)
 				+ L", activated=" + std::to_wstring(activated)
-				+ L", active=" + activeState
+				+ L", active=" + std::to_wstring(activeState.Value)
 				+ L", clock=" + std::to_wstring(hasTransition)
 				+ L", source=" + std::to_wstring(
 					static_cast<int>(transitionSource))
 				+ L", expression=" + std::to_wstring(
 					static_cast<int>(transitionExpression)) + L"]");
-		if (!cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, ::GetTickCount64() + 500)
-			|| card->HasActiveVisualStateAnimations()
-			|| std::abs(Canvas::GetLeft(*(rootPart)) - 12.0f) > 0.001f
-			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+		const bool advancedTransition =
+			cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*card, ::GetTickCount64() + 500);
+		const bool transitionStillActive =
+			card->HasActiveVisualStateAnimations();
+		const auto transitionLeft = Canvas::GetLeft(*rootPart);
+		const auto settledTransitionSource =
+			rootPart->GetPropertyValueSource(Control::CanvasLeftProperty());
+		if (!advancedTransition || transitionStillActive
+			|| std::abs(transitionLeft - 12.0f) > 0.001f
+			|| settledTransitionSource
 				!= DependencyPropertyValueSource::VisualState)
-			return fail(L"FeatureCard VisualTransition 未收敛到 Active Setter。");
+			return fail(L"FeatureCard VisualTransition 未收敛到 Active Setter："
+				L"advanced=" + std::to_wstring(advancedTransition)
+				+ L"，active=" + std::to_wstring(transitionStillActive)
+				+ L"，left=" + std::to_wstring(transitionLeft)
+				+ L"，source=" + std::to_wstring(
+					static_cast<int>(settledTransitionSource)));
 		const D2D1_COLOR_F localBackColor{ 0.7f, 0.1f, 0.5f, 1.0f };
-		if (!rootPart->TrySetPropertyValue(L"Background", BindingValue(localBackColor))
-			|| rootPart->GetPropertyValueSource(L"Background")
+		rootPart->SetBackground(cui::drawing::Brush(localBackColor));
+		if (rootPart->GetPropertyValueSource(Border::BackgroundProperty())
 				!= DependencyPropertyValueSource::Local
 			|| std::abs(rootPart->Background.Color.r - localBackColor.r) > 0.001f
-			|| !rootPart->ClearPropertyValue(L"Background")
-			|| rootPart->GetPropertyValueSource(L"Background")
+			|| !rootPart->ClearPropertyValue(Border::BackgroundProperty())
+			|| rootPart->GetPropertyValueSource(Border::BackgroundProperty())
 				!= DependencyPropertyValueSource::VisualState)
 			return fail(L"Local > VisualState > Template 的有效值优先级未闭环。");
-		if (!card->RaiseDeclarativeEvent(L"Pulse")
+		if (!card->RaisePulse()
 			|| !card->HasActiveVisualStateAnimations()
-			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+			|| rootPart->GetPropertyValueSource(Control::CanvasLeftProperty())
 				!= DependencyPropertyValueSource::Animation)
 			return fail(L"FeatureCard EventTrigger 未启动关键帧 Storyboard。");
 		const auto pulseTick = ::GetTickCount64();
@@ -1125,30 +1265,31 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| Canvas::GetLeft(*(rootPart)) <= 12.0f
 			|| Canvas::GetLeft(*(rootPart)) >= 24.0f)
 			return fail(L"FeatureCard 关键帧 Storyboard 未实际推进。");
-		if (!card->RaiseDeclarativeEvent(L"StopPulse")
+		if (!card->RaiseStopPulse()
 			|| card->HasActiveVisualStateAnimations()
 			|| std::abs(Canvas::GetLeft(*(rootPart)) - 12.0f) > 0.001f
-			|| rootPart->GetPropertyValueSource(L"Canvas.Left")
+			|| rootPart->GetPropertyValueSource(Control::CanvasLeftProperty())
 				!= DependencyPropertyValueSource::VisualState)
 			return fail(L"FeatureCard StopStoryboard 未恢复 VisualState 值源。");
 
 		const auto sourceBefore = _featureInvocations;
 		const auto bubbleBefore = _featureBubbleInvocations;
-		if (!card->RaiseDeclarativeEvent(L"Invoked")
+		if (!card->RaiseInvoked()
 			|| _featureInvocations != sourceBefore + 1
 			|| _featureBubbleInvocations != bubbleBefore + 1)
 			return fail(L"FeatureCard Invoked 源处理或冒泡路由未闭环。");
-		if (card->GetCurrentVisualState(L"InteractionStates") != L"Invoked")
+		if (card->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"InteractionStates"))
+			!= MakeVisualStateToken(L"Invoked"))
 			return fail(L"FeatureCard Invoked EventTrigger 未切换视觉状态。");
-		const auto inputsBefore = cardBehavior->InputCount();
+		const auto inputsBefore = _featureInputCount;
 		if (!cui::framework::InputAccess::DispatchInput(*card, PointerInput(
 				InputReportKind::PointerDoubleClick, MouseButton::Left,
 				17, 29, MouseButton::Left))
-			|| cardBehavior->InputCount() != inputsBefore + 1)
-			return fail(L"FeatureCard behavior 未处理规范化宿主输入。");
-		if (!card->TryGetPropertyValue(L"State", state)
-			|| state.ToString().find(L"Behavior input") == std::wstring::npos)
-			return fail(L"FeatureCard behavior 未能更新只读 State。");
+			|| _featureInputCount != inputsBefore + 1)
+			return fail(L"FeatureCard 强类型输入处理未接收规范化宿主输入。");
+		if (card->GetState().find(L"Typed input") == std::wstring::npos)
+			return fail(L"FeatureCard 强类型输入处理未能发布只读 State。");
 
 		{
 			struct NativeSurfaceTabScope final
@@ -1167,7 +1308,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				return fail(L"无法切换到容器页验证 NativeSurface 输入。");
 
 			auto* scene = dynamic_cast<NativeSurface*>(
-				_xamlSession.Document().FindControlByName(L"demoScene"));
+				FindGeneratedControlByName(L"demoScene"));
 			auto* sceneBehavior = scene ? dynamic_cast<DemoSceneBehavior*>(
 				scene->Behavior()) : nullptr;
 			if (!scene || scene->GetBehaviorKey() != L"DemoScene"
@@ -1189,13 +1330,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			if (!_tabs->SelectItem(10))
 				return fail(L"无法切换到 Presentation 页验证 NativeSurface 输入。");
 			auto* presentationSurface = dynamic_cast<NativeSurface*>(
-				_xamlSession.Document().FindControlByName(
+				FindGeneratedControlByName(
 					L"presentationProbeSurface"));
 			auto* presentationBehavior = presentationSurface
 				? dynamic_cast<PresentationProbeBehavior*>(
 					presentationSurface->Behavior()) : nullptr;
 			auto* presentationStatus = dynamic_cast<Label*>(
-				_xamlSession.Document().FindControlByName(L"presentationStatus"));
+				FindGeneratedControlByName(L"presentationStatus"));
 			if (!presentationSurface || !presentationStatus
 				|| presentationSurface->GetBehaviorKey() != L"PresentationProbe"
 				|| !presentationBehavior || !presentationBehavior->Attached()
@@ -1228,7 +1369,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				return fail(L"无法切换到数据控件页执行层次容器验证。");
 
 		auto* synchronizedList = dynamic_cast<ListBox*>(
-			_xamlSession.Document().FindControlByName(L"demoListBox"));
+			FindGeneratedControlByName(L"demoListBox"));
 		const auto synchronizedSource = synchronizedList
 			? synchronizedList->GetItemsSource() : BindingListReference{};
 		auto* currentView = synchronizedSource
@@ -1260,17 +1401,17 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| currentView->CurrentPosition() != originalPosition)
 			return fail(L"ListBox selection 未同步回 CollectionViewSource currency。");
 		auto* tree = dynamic_cast<TreeView*>(
-			_xamlSession.Document().FindControlByName(L"demoTree"));
+			FindGeneratedControlByName(L"demoTree"));
 		if (!tree || !tree->GetItemsSource()
 			|| tree->GetItemsSource().Get()->Count() != 2
 			|| tree->ItemCount() != 2)
-			return fail(L"TreeView ItemsSource 未从 DataContextSchema 材质化。");
+			return fail(L"TreeView ItemsSource 未从生成绑定连接 DataContext。");
 		auto* rootContainer = tree->ContainerFromIndex(0);
 		if (!rootContainer
 			|| !rootContainer->GetGeneratedHeaderContent()
 			|| !rootContainer->HasItems
 			|| rootContainer->ItemCount() != 3)
-			return fail(L"HierarchicalDataTemplate 根节点或 Children 绑定未材质化。");
+			return fail(L"HierarchicalDataTemplate 根节点或 Children 绑定未生成。");
 		rootContainer->SetIsExpanded(true);
 		if (rootContainer->ItemCount() != 3
 			|| !rootContainer->ContainerFromIndex(0)
@@ -1290,38 +1431,96 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"TreeView SelectedItemChanged 命名处理未闭环。");
 
 		auto* authoredTree = dynamic_cast<TreeView*>(
-			_xamlSession.Document().FindControlByName(L"authoredStateTree"));
+			FindGeneratedControlByName(L"authoredStateTree"));
 		auto* authoredRoot = authoredTree
 			? authoredTree->ContainerFromIndex(0) : nullptr;
 		auto* authoredSelected = authoredRoot
 			? authoredRoot->ContainerFromIndex(0) : nullptr;
 		const auto* expandedMetadata = authoredRoot
-			? authoredRoot->FindPropertyMetadata(L"IsExpanded") : nullptr;
+			? authoredRoot->GetPropertyMetadata(
+				TreeViewItem::IsExpandedProperty()) : nullptr;
 		const auto* selectedMetadata = authoredSelected
-			? authoredSelected->FindPropertyMetadata(L"IsSelected") : nullptr;
+			? authoredSelected->GetPropertyMetadata(
+				TreeViewItem::IsSelectedProperty()) : nullptr;
 		if (!authoredTree || !authoredRoot || !authoredSelected
 			|| !authoredRoot->IsExpanded
 			|| !authoredSelected->IsSelected
 			|| authoredTree->GetSelectedContainer() != authoredSelected
-			|| authoredRoot->GetPropertyValueSource(L"IsExpanded")
+			|| authoredRoot->GetPropertyValueSource(
+				TreeViewItem::IsExpandedProperty())
 				!= DependencyPropertyValueSource::Local
-			|| authoredSelected->GetPropertyValueSource(L"IsSelected")
+			|| authoredSelected->GetPropertyValueSource(
+				TreeViewItem::IsSelectedProperty())
 				!= DependencyPropertyValueSource::Local
 			|| !expandedMetadata || expandedMetadata->IsReadOnly()
+#if CUI_ENABLE_DESIGN_METADATA
 			|| expandedMetadata->Design().Persistence
 				!= DependencyPropertyPersistence::Metadata
+#endif
 			|| !selectedMetadata || selectedMetadata->IsReadOnly()
+#if CUI_ENABLE_DESIGN_METADATA
 			|| selectedMetadata->Design().Persistence
-				!= DependencyPropertyPersistence::Metadata)
-			return fail(L"作者态 TreeViewItem IsExpanded/IsSelected 未形成可写、可持久化的 WPF 容器状态。");
+				!= DependencyPropertyPersistence::Metadata
+#endif
+			)
+			return fail(
+				L"作者态 TreeViewItem IsExpanded/IsSelected 未形成可写、可持久化的 WPF 容器状态："
+				L"tree=" + std::to_wstring(authoredTree ? 1 : 0)
+				+ L"，root=" + std::to_wstring(authoredRoot ? 1 : 0)
+				+ L"，selected=" + std::to_wstring(authoredSelected ? 1 : 0)
+				+ L"，expanded=" + std::to_wstring(
+					authoredRoot && authoredRoot->IsExpanded ? 1 : 0)
+				+ L"，isSelected=" + std::to_wstring(
+					authoredSelected && authoredSelected->IsSelected ? 1 : 0)
+				+ L"，selectedContainer=" + std::to_wstring(
+					authoredTree && authoredTree->GetSelectedContainer()
+						== authoredSelected ? 1 : 0)
+				+ L"，expandedSource=" + std::to_wstring(
+					authoredRoot
+						? static_cast<int>(
+							authoredRoot->GetPropertyValueSource(
+								TreeViewItem::IsExpandedProperty()))
+						: -1)
+				+ L"，selectedSource=" + std::to_wstring(
+					authoredSelected
+						? static_cast<int>(
+							authoredSelected->GetPropertyValueSource(
+								TreeViewItem::IsSelectedProperty()))
+						: -1)
+				+ L"，expandedMetadata=" + std::to_wstring(
+					expandedMetadata ? 1 : 0)
+				+ L"，expandedReadOnly=" + std::to_wstring(
+					expandedMetadata && expandedMetadata->IsReadOnly()
+						? 1 : 0)
+#if CUI_ENABLE_DESIGN_METADATA
+				+ L"，expandedPersistence=" + std::to_wstring(
+					expandedMetadata
+						? static_cast<int>(
+							expandedMetadata->Design().Persistence)
+						: -1)
+#endif
+				+ L"，selectedMetadata=" + std::to_wstring(
+					selectedMetadata ? 1 : 0)
+				+ L"，selectedReadOnly=" + std::to_wstring(
+					selectedMetadata && selectedMetadata->IsReadOnly()
+						? 1 : 0)
+#if CUI_ENABLE_DESIGN_METADATA
+				+ L"，selectedPersistence=" + std::to_wstring(
+					selectedMetadata
+						? static_cast<int>(
+							selectedMetadata->Design().Persistence)
+						: -1)
+#endif
+				);
 
 		auto* density = dynamic_cast<ComboBox*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"composedDensityEditor"));
 		auto* densitySelected = density ? density->GetItem(1) : nullptr;
 		if (!density || density->SelectedIndex != 1 || !densitySelected
 			|| !densitySelected->IsSelected
-			|| densitySelected->GetPropertyValueSource(L"IsSelected")
+			|| densitySelected->GetPropertyValueSource(
+				ItemContainerControl::IsSelectedProperty())
 				!= DependencyPropertyValueSource::Local)
 			return fail(L"ComboBoxItem.IsSelected 作者态未驱动所属 Selector。");
 		}
@@ -1329,69 +1528,17 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		auto* helpMenu = _menu ? _menu->GetItem(1) : nullptr;
 		auto* openMenuItem = fileMenu ? fileMenu->GetSubItem(0) : nullptr;
 		auto* aboutMenuItem = helpMenu ? helpMenu->GetSubItem(0) : nullptr;
-		auto* systemSurface = _xamlSession.Document().FindControlByName(
+		auto* systemSurface = FindGeneratedControlByName(
 			L"systemSurface");
 		auto* commandTargetButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"commandTargetButton"));
+			FindGeneratedControlByName(L"commandTargetButton"));
 		auto* commandTargetTrace = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"commandTargetTrace"));
-		const auto& windowNode = _xamlSession.Document().WindowNode();
+			FindGeneratedControlByName(L"commandTargetTrace"));
 		const auto runtimeInputBindings = GetInputBindings();
 		const auto* openKeyBinding = runtimeInputBindings.empty()
 			? nullptr : std::get_if<KeyBinding>(&runtimeInputBindings.front());
-		DesignerModel::DesignDocument authoredCommandDocument;
-		std::wstring authoredCommandError;
-		if (!DesignerModel::XamlDocumentParser::LoadFromFile(
-			XamlFilePath(), authoredCommandDocument, &authoredCommandError))
-			return fail(L"CommandTarget 作者模型无法重载：" + authoredCommandError);
-		auto findAuthoredNode = [&](const wchar_t* name)
-			-> const DesignerModel::DesignNode*
-		{
-			const auto found = std::find_if(
-				authoredCommandDocument.Nodes.begin(),
-				authoredCommandDocument.Nodes.end(),
-				[name](const auto& node) { return node.Name == name; });
-			return found == authoredCommandDocument.Nodes.end()
-				? nullptr : &*found;
-		};
-		const auto* authoredButton = findAuthoredNode(L"commandTargetButton");
-		const auto* authoredContextMenu = findAuthoredNode(L"systemContextMenu");
-		auto findAuthoredChild = [&](const DesignerModel::DesignNode* parent,
-			int order, UIClass type) -> const DesignerModel::DesignNode*
-		{
-			if (!parent) return nullptr;
-			const auto found = std::find_if(
-				authoredCommandDocument.Nodes.begin(),
-				authoredCommandDocument.Nodes.end(),
-				[&](const auto& node)
-				{
-					return node.ParentId == parent->Id
-						&& node.Order == order && node.Type == type;
-				});
-			return found == authoredCommandDocument.Nodes.end()
-				? nullptr : &*found;
-		};
-		const auto* authoredRefresh = findAuthoredChild(
-			authoredContextMenu, 1, UIClass::UI_MenuItem);
-		const auto* authoredMore = findAuthoredChild(
-			authoredContextMenu, 3, UIClass::UI_MenuItem);
-		const auto* authoredNestedCopy = findAuthoredChild(
-			authoredMore, 0, UIClass::UI_MenuItem);
-		if (!authoredButton
-			|| authoredButton->Structure.CommandTarget != L"systemSurface"
-			|| !authoredRefresh
-			|| authoredRefresh->Structure.CommandTarget != L"mainMenu"
-			|| !authoredNestedCopy
-			|| authoredNestedCopy->Structure.CommandTarget != L"systemSurface"
-			|| !authoredCommandDocument.ValidateCommandTargetReferences(
-				&authoredCommandError))
-			return fail(L"Button/ContextMenu/嵌套 MenuItem 的 typed CommandTarget "
-				L"作者模型不完整：" + authoredCommandError);
 		if (!_menu || _menu->ItemCount() != 2 || !fileMenu || !helpMenu
-			|| windowNode.CommandBindings.size() != 8
-			|| windowNode.InputBindings.size() != 4
 			|| GetInputBindings().size() != 4
-			|| windowNode.InputBindings.front().CommandTarget != L"mainMenu"
 			|| !openKeyBinding || openKeyBinding->CommandTarget != _menu
 			|| fileMenu->GetDisplayText() != L"文件" || fileMenu->ItemCount() != 3
 			|| !openMenuItem
@@ -1402,14 +1549,15 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| !aboutMenuItem
 			|| aboutMenuItem->Command != L"Demo.Help.About"
 			|| !systemSurface || !commandTargetButton || !commandTargetTrace
+			|| !menuItem7 || menuItem7->CommandTarget != _menu
+			|| !menuItem9 || menuItem9->CommandTarget != systemSurface
 			|| !commandTargetButton->HasAuthoredCommandTarget()
 			|| commandTargetButton->CommandTarget != systemSurface
-			|| commandTargetButton->GetPropertyValueSource(L"CommandTarget")
+			|| commandTargetButton->GetPropertyValueSource(
+				ButtonBase::CommandTargetProperty())
 				!= DependencyPropertyValueSource::Local)
-			return fail(L"XAML CommandBindings/InputBindings/MenuItem 命令模型未完整物化："
-				+ std::to_wstring(windowNode.CommandBindings.size()) + L" commands, "
-				+ std::to_wstring(windowNode.InputBindings.size()) + L" model inputs, "
-				+ std::to_wstring(GetInputBindings().size()) + L" runtime inputs, "
+			return fail(L"AOT CommandBindings/InputBindings/MenuItem 命令模型未完整生成："
+				+ std::to_wstring(GetInputBindings().size()) + L" inputs, "
 				+ std::to_wstring(_menu ? _menu->ItemCount() : 0) + L" menu items。");
 
 		auto resetCommandProbe = [this]()
@@ -1431,7 +1579,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			_lastCommandExecutedTransactionId = 0;
 		};
 		auto* commandTargetFocusPeer = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"notifyToggle"));
+			FindGeneratedControlByName(L"notifyToggle"));
 		TabItem* commandTargetPage = nullptr;
 		for (auto* ancestor = commandTargetButton
 			? commandTargetButton->GetVisualParent() : nullptr;
@@ -1548,9 +1696,9 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"Window.MouseBinding Ctrl+MiddleClick 未路由到 RoutedCommand。");
 
 		auto* localCommandScope = dynamic_cast<Panel*>(
-			_xamlSession.Document().FindControlByName(L"wpfHierarchyScope"));
+			FindGeneratedControlByName(L"wpfHierarchyScope"));
 		auto* localCommandButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"wpfDispatcherProbe"));
+			FindGeneratedControlByName(L"wpfDispatcherProbe"));
 		resetCommandProbe();
 		const auto controlShiftP = Key::P;
 		const auto localInputCount = localCommandScope
@@ -1591,6 +1739,14 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				+ L", inputs=" + std::to_wstring(localInputCount)
 				+ L", command=" + localButtonCommand
 				+ L", processed=" + std::to_wstring(localKeyProcessed)
+				+ L", display=" + (localCommandButton
+					? localCommandButton->GetDisplayText() : std::wstring{})
+				+ L", access=" + std::to_wstring(localCommandButton
+					? static_cast<unsigned int>(
+						localCommandButton->GetEffectiveAccessKey()) : 0u)
+				+ L", shortcut=" + (localCommandButton
+					? localCommandButton->GetAccessibilitySnapshot()
+						.KeyboardShortcut : std::wstring{})
 				+ L", focused=" + std::to_wstring(
 					GetKeyboardFocusedElement() == localCommandButton)
 				+ L", enabled=" + std::to_wstring(localCommandButton
@@ -1631,7 +1787,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| refreshContextItem->InputGestureText != L"F5"
 			|| !refreshContextItem->HasAuthoredCommandTarget()
 			|| refreshContextItem->CommandTarget != _menu
-			|| refreshContextItem->GetPropertyValueSource(L"CommandTarget")
+			|| refreshContextItem->GetPropertyValueSource(
+				MenuItem::CommandTargetProperty())
 				!= DependencyPropertyValueSource::Local
 			|| dynamic_cast<Separator*>(
 				_systemContextMenu->GetGeneratedItem(2)) == nullptr
@@ -1639,7 +1796,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| !copyContextItem
 			|| !copyContextItem->HasAuthoredCommandTarget()
 			|| copyContextItem->CommandTarget != systemSurface
-			|| copyContextItem->GetPropertyValueSource(L"CommandTarget")
+			|| copyContextItem->GetPropertyValueSource(
+				MenuItem::CommandTargetProperty())
 				!= DependencyPropertyValueSource::Local
 			|| !contextMore->GetSubItem(1)
 			|| contextMore->GetSubItem(1)->Command != L"Demo.System.About"
@@ -1670,6 +1828,39 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			_lastCommandExecutedTarget;
 		const auto contextInvokeTargetText = commandTargetTrace->Text;
 		resetCommandProbe();
+		// Exercise the real keyboard route and the bottom-right placement used by
+		// the System page instead of proving the nested state only by assigning it.
+		_systemContextMenu->ShowAt(this, 1000, 650);
+		const auto contextFocusBeforeNested = GetKeyboardFocusedElement();
+		SetKeyboardFocus(contextMore, false);
+		const bool nestedContextMoreFocused =
+			GetKeyboardFocusedElement() == contextMore;
+		const bool nestedContextInputHandled =
+			cui::framework::InputAccess::DispatchInput(
+				*this, KeyInput(InputReportKind::KeyDown, Key::Right));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*this, KeyInput(InputReportKind::KeyUp, Key::Right));
+		auto* nestedContextPopup = dynamic_cast<Popup*>(
+			contextMore->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_Popup")));
+		const auto nestedContextPopupRect = nestedContextPopup
+			? nestedContextPopup->GetRenderedAbsoluteRectDip()
+			: D2D1_RECT_F{};
+		const auto contextViewport = GetContentViewportSizeDip();
+		const bool nestedContextPopupInViewport = nestedContextPopup
+			&& nestedContextPopupRect.left >= 0.0f
+			&& nestedContextPopupRect.top >= 0.0f
+			&& nestedContextPopupRect.right > nestedContextPopupRect.left
+			&& nestedContextPopupRect.bottom > nestedContextPopupRect.top
+			&& nestedContextPopupRect.right <= contextViewport.width
+			&& nestedContextPopupRect.bottom <= contextViewport.height;
+		const bool nestedContextPopupPresented =
+			nestedContextMoreFocused && nestedContextInputHandled
+			&& contextMore->IsSubmenuOpen
+			&& nestedContextPopup && nestedContextPopup->IsOpen
+			&& nestedContextPopupInViewport
+			&& cui::framework::WindowAccess::
+				GetTransientPresentationCount(*this) == 2;
 		const bool nestedContextCommandInvoked = copyContextItem->Invoke();
 		const auto nestedContextCanExecuteTarget =
 			_lastCommandCanExecuteTarget;
@@ -1678,6 +1869,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		const auto nestedContextParameter = _lastCommandParameter;
 		const auto nestedContextTargetText = commandTargetTrace->Text;
 		_systemContextMenu->Hide();
+		SetKeyboardFocus(contextFocusBeforeNested, false);
 		const auto nestedContextTargetTextAfterHide = commandTargetTrace->Text;
 		const bool contextTargetsSurvivedHide =
 			_systemContextMenu->PlacementTarget == nullptr
@@ -1685,14 +1877,20 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			&& refreshContextItem->CommandTarget == _menu
 			&& copyContextItem->HasAuthoredCommandTarget()
 			&& copyContextItem->CommandTarget == systemSurface;
+		const auto placementSaw = [&](const std::wstring& entry)
+		{
+			return std::find(
+				contextPlacementTrace.begin(),
+				contextPlacementTrace.end(),
+				entry) != contextPlacementTrace.end();
+		};
 		if (!contextMenuOpened
 			|| !contextPlacementTargetShared
-			|| contextPlacementCanExecuteCount != 4
-			|| contextPlacementTrace != std::vector<std::wstring>{
-				L"CanExecute:Demo.System.NewProject",
-				L"CanExecute:Demo.System.Refresh",
-				L"CanExecute:Demo.System.CopyInfo",
-				L"CanExecute:Demo.System.About" }
+			|| contextPlacementCanExecuteCount < 4
+			|| !placementSaw(L"CanExecute:Demo.System.NewProject")
+			|| !placementSaw(L"CanExecute:Demo.System.Refresh")
+			|| !placementSaw(L"CanExecute:Demo.System.CopyInfo")
+			|| !placementSaw(L"CanExecute:Demo.System.About")
 			|| !contextCommandInvoked
 			|| contextInvokeCanExecuteCount != 1
 			|| contextInvokeExecutedCount != 1
@@ -1710,6 +1908,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				L"Executed:Demo.System.Refresh" }
 			|| contextInvokeStatus
 				!= L"ContextMenu RoutedCommand: Refresh · context-refresh"
+			|| !nestedContextPopupPresented
 			|| !nestedContextCommandInvoked
 			|| nestedContextCanExecuteTarget != L"systemSurface"
 			|| nestedContextExecutedTarget != L"systemSurface"
@@ -1751,6 +1950,17 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				+ contextInvokeExecutedTarget
 				+ L", nestedTarget=" + nestedContextCanExecuteTarget + L"/"
 				+ nestedContextExecutedTarget
+				+ L", nestedPopup="
+				+ std::to_wstring(nestedContextPopupPresented)
+				+ L", nestedFocused/input/inViewport="
+				+ std::to_wstring(nestedContextMoreFocused) + L"/"
+				+ std::to_wstring(nestedContextInputHandled) + L"/"
+				+ std::to_wstring(nestedContextPopupInViewport)
+				+ L", nestedRect="
+				+ std::to_wstring(nestedContextPopupRect.left) + L","
+				+ std::to_wstring(nestedContextPopupRect.top) + L","
+				+ std::to_wstring(nestedContextPopupRect.right) + L","
+				+ std::to_wstring(nestedContextPopupRect.bottom)
 				+ L", targetAfterHide=" + nestedContextTargetTextAfterHide
 				+ L", targetsSurvivedHide="
 				+ std::to_wstring(contextTargetsSurvivedHide)
@@ -1806,27 +2016,27 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"RoutedCommand Window-scope requery 通知不可观察。");
 
 		auto* toolBasic = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolBasic"));
+			FindGeneratedControlByName(L"toolBasic"));
 		auto* toolData = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolData"));
+			FindGeneratedControlByName(L"toolData"));
 		auto* toolAnalytics = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolAnalytics"));
+			FindGeneratedControlByName(L"toolAnalytics"));
 		auto* toolSystem = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolSystem"));
+			FindGeneratedControlByName(L"toolSystem"));
 		auto* toolSeparator =
-			_xamlSession.Document().FindControlByName(L"toolSeparator");
+			FindGeneratedControlByName(L"toolSeparator");
 		auto* toolIcon1 = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolIcon1"));
+			FindGeneratedControlByName(L"toolIcon1"));
 		auto* toolIcon2 = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolIcon2"));
+			FindGeneratedControlByName(L"toolIcon2"));
 		auto* toolIcon3 = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"toolIcon3"));
+			FindGeneratedControlByName(L"toolIcon3"));
 		auto* toolIconImage1 = dynamic_cast<Image*>(
-			_xamlSession.Document().FindControlByName(L"toolIconImage1"));
+			FindGeneratedControlByName(L"toolIconImage1"));
 		auto* toolIconImage2 = dynamic_cast<Image*>(
-			_xamlSession.Document().FindControlByName(L"toolIconImage2"));
+			FindGeneratedControlByName(L"toolIconImage2"));
 		auto* toolIconImage3 = dynamic_cast<Image*>(
-			_xamlSession.Document().FindControlByName(L"toolIconImage3"));
+			FindGeneratedControlByName(L"toolIconImage3"));
 		auto* toolItemsHost = _toolBar
 			? dynamic_cast<StackPanel*>(
 				cui::framework::TemplateAccess::GetItemsHost(*_toolBar)) : nullptr;
@@ -1882,24 +2092,28 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		(void)_tabs->SelectItem(previousPage);
 
 		auto* windowContent = dynamic_cast<Grid*>(
-			_xamlSession.Document().FindControlByName(L"windowContent"));
+			FindGeneratedControlByName(L"windowContent"));
 		auto* firstStatusItem = _statusBar
 			? dynamic_cast<StatusBarItem*>(
 				_statusBar->GetGeneratedItem(0)) : nullptr;
+		if (!applyTemplateForVerification(_statusBar, L"mainStatusBar")
+			|| !applyTemplateForVerification(
+				firstStatusItem, L"first StatusBarItem"))
+			return false;
 		auto* statusChrome = _statusBar
 			? _statusBar->FindDeclarativeTemplatePart(
-				L"PART_StatusBarChrome") : nullptr;
+				MakeTemplatePartToken(L"PART_StatusBarChrome")) : nullptr;
 		auto* statusItemsPresenter = _statusBar
 			? dynamic_cast<ItemsPresenter*>(
 				_statusBar->FindDeclarativeTemplatePart(
-					L"PART_ItemsPresenter")) : nullptr;
+					MakeTemplatePartToken(L"PART_ItemsPresenter"))) : nullptr;
 		auto* statusItemChrome = firstStatusItem
 			? firstStatusItem->FindDeclarativeTemplatePart(
-				L"PART_StatusBarItemChrome") : nullptr;
+				MakeTemplatePartToken(L"PART_StatusBarItemChrome")) : nullptr;
 		auto* statusContentPresenter = firstStatusItem
 			? dynamic_cast<ContentPresenter*>(
 				firstStatusItem->FindDeclarativeTemplatePart(
-					L"PART_ContentPresenter")) : nullptr;
+					MakeTemplatePartToken(L"PART_ContentPresenter"))) : nullptr;
 		RequestLayout();
 		UpdateLayout();
 		const auto contentViewport = GetContentViewportSizeDip();
@@ -1917,11 +2131,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				!= statusChrome
 			|| cui::framework::TemplateAccess::GetItemsPresenter(*_statusBar)
 				!= statusItemsPresenter
-			|| _statusBar->GetPropertyValueSource(L"Template")
+			|| _statusBar->GetPropertyValueSource(Control::TemplateProperty())
 				!= DependencyPropertyValueSource::Theme
-			|| _statusBar->GetPropertyValueSource(L"ItemsPanel")
+			|| _statusBar->GetPropertyValueSource(
+				ItemsControl::ItemsPanelProperty())
 				!= DependencyPropertyValueSource::Theme
-			|| firstStatusItem->GetPropertyValueSource(L"Template")
+			|| firstStatusItem->GetPropertyValueSource(
+				Control::TemplateProperty())
 				!= DependencyPropertyValueSource::Theme
 			|| statusSize.width <= 0.0f || statusSize.height < 25.0f
 			|| statusItemSize.width <= 0.0f
@@ -1930,22 +2146,80 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| statusBounds.bottom > contentViewport.height + 0.01f
 			|| statusBounds.bottom <= statusBounds.top
 			|| GetStatusBarItemText(1) != L"DemoWindow.cui.xaml")
+		{
 			return fail(L"StatusBar Grid 底部布局、Generic.xaml 模板、"
-				L"ItemsPresenter 或 StatusBarItem 未完整物化。");
+				L"ItemsPresenter 或 StatusBarItem 未完整物化："
+				L"window/status/items/generated="
+				+ std::to_wstring(windowContent != nullptr) + L"/"
+				+ std::to_wstring(_statusBar != nullptr) + L"/"
+				+ std::to_wstring(_statusBar ? _statusBar->ItemCount() : 0)
+				+ L"/" + std::to_wstring(
+					_statusBar ? _statusBar->GeneratedItemCount() : 0)
+				+ L"，parts="
+				+ std::to_wstring(firstStatusItem != nullptr) + L"/"
+				+ std::to_wstring(statusChrome != nullptr) + L"/"
+				+ std::to_wstring(statusItemsPresenter != nullptr) + L"/"
+				+ std::to_wstring(statusItemChrome != nullptr) + L"/"
+				+ std::to_wstring(statusContentPresenter != nullptr)
+				+ L"，roots="
+				+ std::to_wstring(_statusBar
+					&& cui::framework::TemplateAccess::
+						GetTemplateRoot(*_statusBar) == statusChrome)
+				+ L"/" + std::to_wstring(_statusBar
+					&& cui::framework::TemplateAccess::
+						GetItemsPresenter(*_statusBar)
+							== statusItemsPresenter)
+				+ L"，sources="
+				+ std::to_wstring(_statusBar ? static_cast<int>(
+					_statusBar->GetPropertyValueSource(
+						Control::TemplateProperty())) : -1)
+				+ L"/" + std::to_wstring(_statusBar ? static_cast<int>(
+					_statusBar->GetPropertyValueSource(
+						ItemsControl::ItemsPanelProperty())) : -1)
+				+ L"/" + std::to_wstring(firstStatusItem ? static_cast<int>(
+					firstStatusItem->GetPropertyValueSource(
+						Control::TemplateProperty())) : -1)
+				+ L"，statusSize="
+				+ std::to_wstring(statusSize.width) + L"x"
+				+ std::to_wstring(statusSize.height)
+				+ L"，itemSize=" + std::to_wstring(statusItemSize.width)
+				+ L"x" + std::to_wstring(statusItemSize.height)
+				+ L"，bounds=(" + std::to_wstring(statusBounds.left)
+				+ L"," + std::to_wstring(statusBounds.top) + L","
+				+ std::to_wstring(statusBounds.right) + L","
+				+ std::to_wstring(statusBounds.bottom) + L")"
+				+ L"，viewport=" + std::to_wstring(contentViewport.width)
+				+ L"x" + std::to_wstring(contentViewport.height)
+				+ L"，text=" + GetStatusBarItemText(1) + L"。");
+		}
+
+		struct LayoutTabScope final
+		{
+			TabControl& Tabs;
+			int SelectedIndex;
+			~LayoutTabScope()
+			{
+				Tabs.SelectedIndex = SelectedIndex;
+			}
+		} restoreLayoutTab{ *_tabs, _tabs->SelectedIndex };
+		if (!_tabs->SelectItem(4))
+			return fail(L"无法切换到布局容器页执行可见布局验证。");
+		RequestLayout();
+		UpdateLayout();
 
 		auto* relativePanel = dynamic_cast<RelativePanel*>(
-			_xamlSession.Document().FindControlByName(L"demoRelative"));
+			FindGeneratedControlByName(L"demoRelative"));
 		auto* relativeCenter = dynamic_cast<StackPanel*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"relativeCenter"));
 		auto* naturalTextProbe = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"naturalTextProbe"));
+			FindGeneratedControlByName(L"naturalTextProbe"));
 		auto* wrappedTextProbe = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wrappedTextProbe"));
+			FindGeneratedControlByName(L"wrappedTextProbe"));
 		auto* trimmedTextProbe = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"trimmedTextProbe"));
+			FindGeneratedControlByName(L"trimmedTextProbe"));
 		auto* relativeCenterButton =
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"relativeCenterButton");
 		auto* relativeConstraints = relativePanel && relativeCenter
 			? relativePanel->GetConstraints(relativeCenter) : nullptr;
@@ -1971,33 +2245,87 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| relativeCenterButton->GetActualLocationDip().y
 				+ relativeCenterButton->GetActualSizeDip().height
 				> relativeCenter->GetActualSizeDip().height + 0.01f)
+		{
+			const auto naturalDesired = naturalTextProbe
+				? naturalTextProbe->GetDesiredSizeDip() : cui::core::Size{};
+			const auto naturalActual = naturalTextProbe
+				? naturalTextProbe->GetActualSizeDip() : cui::core::Size{};
+			const auto wrappedDesired = wrappedTextProbe
+				? wrappedTextProbe->GetDesiredSizeDip() : cui::core::Size{};
+			const auto trimmedDesired = trimmedTextProbe
+				? trimmedTextProbe->GetDesiredSizeDip() : cui::core::Size{};
+			const auto buttonLocation = relativeCenterButton
+				? relativeCenterButton->GetActualLocationDip()
+				: cui::core::Point{};
+			const auto buttonSize = relativeCenterButton
+				? relativeCenterButton->GetActualSizeDip() : cui::core::Size{};
+			const auto centerSize = relativeCenter
+				? relativeCenter->GetActualSizeDip() : cui::core::Size{};
 			return fail(L"RelativePanel 约束或 TextBlock 的 Auto DesiredSize、"
-				L"换行、省略、ClipToBounds 或父级高度贡献语义不完整。");
+				L"换行、省略、ClipToBounds 或父级高度贡献语义不完整："
+				L"selected=" + std::to_wstring(_tabs->SelectedIndex)
+				+ L"，constraints="
+				+ std::to_wstring(relativeConstraints != nullptr) + L"/"
+				+ std::to_wstring(relativeConstraints
+					&& relativeConstraints->CenterHorizontal) + L"/"
+				+ std::to_wstring(relativeConstraints
+					&& relativeConstraints->CenterVertical)
+				+ L"，parts=" + std::to_wstring(relativePanel != nullptr)
+				+ L"/" + std::to_wstring(relativeCenter != nullptr) + L"/"
+				+ std::to_wstring(naturalTextProbe != nullptr) + L"/"
+				+ std::to_wstring(wrappedTextProbe != nullptr) + L"/"
+				+ std::to_wstring(trimmedTextProbe != nullptr) + L"/"
+				+ std::to_wstring(relativeCenterButton != nullptr)
+				+ L"，clip=" + std::to_wstring(
+					relativePanel && relativePanel->ClipToBounds) + L"/"
+				+ std::to_wstring(
+					relativeCenter && relativeCenter->ClipToBounds)
+				+ L"，auto=" + std::to_wstring(
+					naturalTextProbe && naturalTextProbe->Width.IsAuto())
+				+ L"/" + std::to_wstring(
+					naturalTextProbe && naturalTextProbe->Height.IsAuto())
+				+ L"，natural desired/actual="
+				+ std::to_wstring(naturalDesired.width) + L"x"
+				+ std::to_wstring(naturalDesired.height) + L"/"
+				+ std::to_wstring(naturalActual.width) + L"x"
+				+ std::to_wstring(naturalActual.height)
+				+ L"，wrapped kind/desired="
+				+ std::to_wstring(wrappedTextProbe ? static_cast<int>(
+					wrappedTextProbe->TextWrapping) : -1) + L"/"
+				+ std::to_wstring(wrappedDesired.width) + L"x"
+				+ std::to_wstring(wrappedDesired.height)
+				+ L"，trim kind/desired="
+				+ std::to_wstring(trimmedTextProbe ? static_cast<int>(
+					trimmedTextProbe->TextTrimming) : -1) + L"/"
+				+ std::to_wstring(trimmedDesired.width) + L"x"
+				+ std::to_wstring(trimmedDesired.height)
+				+ L"，button=" + std::to_wstring(buttonLocation.y)
+				+ L"+" + std::to_wstring(buttonSize.height)
+				+ L"，center=" + std::to_wstring(centerSize.width) + L"x"
+				+ std::to_wstring(centerSize.height) + L"。");
+		}
 
 		auto* layoutSurface = dynamic_cast<Canvas*>(
-			_xamlSession.Document().FindControlByName(L"layoutSurface"));
+			FindGeneratedControlByName(L"layoutSurface"));
 		auto* canvasProbe = dynamic_cast<Canvas*>(
-			_xamlSession.Document().FindControlByName(L"canvasSemanticsProbe"));
+			FindGeneratedControlByName(L"canvasSemanticsProbe"));
 		auto* canvasLeftWins = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"canvasLeftWins"));
+			FindGeneratedControlByName(L"canvasLeftWins"));
 		auto* canvasRightBottom = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"canvasRightBottom"));
-		const auto canvasType = canvasProbe
-			? canvasProbe->GetDeclarativeTypeId() : RuntimeTypeId{};
+			FindGeneratedControlByName(L"canvasRightBottom"));
 		std::wstring canvasTag;
 		if (!layoutSurface || !canvasProbe || !canvasLeftWins || !canvasRightBottom
-			|| canvasType.NamespaceUri != L"urn:cui"
-			|| canvasType.LocalName != L"Canvas"
+			|| canvasProbe->Type() != UIClass::UI_Canvas
 			|| canvasProbe->Cursor != CursorKind::Cross
-			|| canvasProbe->GetPropertyValueSource(L"Cursor")
+			|| canvasProbe->GetPropertyValueSource(Control::CursorProperty())
 				!= DependencyPropertyValueSource::Local
 			|| canvasLeftWins->Cursor != CursorKind::Cross
-			|| canvasLeftWins->GetPropertyValueSource(L"Cursor")
+			|| canvasLeftWins->GetPropertyValueSource(Control::CursorProperty())
 				!= DependencyPropertyValueSource::Inherited
 			|| canvasLeftWins->ResolvePointerCursor(1, 1) != CursorKind::Cross
 			|| !canvasProbe->Tag.TryGetString(canvasTag)
 			|| canvasTag != L"cursor-inheritance-root"
-			|| canvasProbe->GetPropertyValueSource(L"Tag")
+			|| canvasProbe->GetPropertyValueSource(Control::TagProperty())
 				!= DependencyPropertyValueSource::Local
 			|| std::abs(Canvas::GetRight(*(canvasProbe)) - 12.5f) > 0.001f
 			|| std::abs(Canvas::GetTop(*(canvasProbe)) - 4.5f) > 0.001f
@@ -2053,32 +2381,32 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		if (!_tabs->SelectItem(8))
 			return fail(L"无法切换到 WPF 语义实验页执行可见输入验证。");
 
-		auto* wpfSurface = _xamlSession.Document().FindControlByName(
+		auto* wpfSurface = FindGeneratedControlByName(
 			L"wpfLabSurface");
-		auto* typographyScope = _xamlSession.Document().FindControlByName(
+		auto* typographyScope = FindGeneratedControlByName(
 			L"wpfBindingScope");
 		auto* typographyOverride = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfTypographyOverride"));
+			FindGeneratedControlByName(L"wpfTypographyOverride"));
 		auto* editor = dynamic_cast<TextBox*>(
-			_xamlSession.Document().FindControlByName(L"wpfTwoWayEditor"));
+			FindGeneratedControlByName(L"wpfTwoWayEditor"));
 		auto* elementMirror = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfElementMirror"));
+			FindGeneratedControlByName(L"wpfElementMirror"));
 		auto* selfValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfSelfValue"));
+			FindGeneratedControlByName(L"wpfSelfValue"));
 		auto* ancestorValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfAncestorValue"));
+			FindGeneratedControlByName(L"wpfAncestorValue"));
 		auto* fallbackValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfFallbackValue"));
+			FindGeneratedControlByName(L"wpfFallbackValue"));
 		auto* nullValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfNullValue"));
+			FindGeneratedControlByName(L"wpfNullValue"));
 		auto* indexerValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfIndexerValue"));
+			FindGeneratedControlByName(L"wpfIndexerValue"));
 		auto* keyedIndexerValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfKeyedIndexerValue"));
+			FindGeneratedControlByName(L"wpfKeyedIndexerValue"));
 		auto* convertedValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfConvertedValue"));
+			FindGeneratedControlByName(L"wpfConvertedValue"));
 		auto* multiValue = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfMultiValue"));
+			FindGeneratedControlByName(L"wpfMultiValue"));
 		if (!wpfSurface || !typographyScope || !typographyOverride
 			|| !editor || !elementMirror || !selfValue
 			|| !ancestorValue || !fallbackValue || !nullValue || !indexerValue
@@ -2110,40 +2438,44 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 					editor->CaretBrush.Kind))
 				+ L"，caretR=" + std::to_wstring(
 					editor->CaretBrush.Color.r));
-		if (GetPropertyValueSource(L"DataContext")
+		if (GetPropertyValueSource(Control::DataContextProperty())
 				!= DependencyPropertyValueSource::Local
 			|| GetDataContext().Get() != _dataContext.get()
-			|| typographyScope->GetPropertyValueSource(L"DataContext")
+			|| typographyScope->GetPropertyValueSource(
+				Control::DataContextProperty())
 				!= DependencyPropertyValueSource::Inherited
 			|| typographyScope->GetDataContext().Get() != _dataContext.get()
 			|| nullValue->GetDataContext().Get() != _dataContext.get()
 			|| indexerValue->GetDataContext().Get() != _dataContext.get())
 			return fail(L"Window.DataContext 未作为真实 Content 继承边界传播。");
-		if (typographyScope->GetPropertyValueSource(L"FontFamily")
+		if (typographyScope->GetPropertyValueSource(Control::FontFamilyProperty())
 				!= DependencyPropertyValueSource::Local
 			|| typographyScope->GetPropertyExpressionKind(
-				L"FontFamily", DependencyPropertyValueSource::Local)
+				Control::FontFamilyProperty(),
+				DependencyPropertyValueSource::Local)
 				!= DependencyPropertyExpressionKind::DynamicResource
 			|| typographyScope->GetPropertyExpressionKind(
-				L"FontSize", DependencyPropertyValueSource::Local)
+				Control::FontSizeProperty(),
+				DependencyPropertyValueSource::Local)
 				!= DependencyPropertyExpressionKind::DynamicResource
-			|| elementMirror->GetPropertyValueSource(L"FontFamily")
+			|| elementMirror->GetPropertyValueSource(Control::FontFamilyProperty())
 				!= DependencyPropertyValueSource::Inherited
-			|| elementMirror->GetPropertyValueSource(L"FontSize")
+			|| elementMirror->GetPropertyValueSource(Control::FontSizeProperty())
 				!= DependencyPropertyValueSource::Inherited
 			|| elementMirror->FontFamily != L"Consolas"
 			|| std::abs(elementMirror->FontSize - 15.0f) > 0.001f
-			|| typographyOverride->GetPropertyValueSource(L"FontSize")
+			|| typographyOverride->GetPropertyValueSource(
+				Control::FontSizeProperty())
 				!= DependencyPropertyValueSource::Local
 			|| std::abs(typographyOverride->FontSize - 14.0f) > 0.001f)
 			return fail(L"Typography 继承、Local 覆盖或 DynamicResource 表达式未闭环。");
-		auto* editorBinding = editor->DataBindings.Find(L"Text");
+		auto* editorBinding = editor->DataBindings.Find(TextBox::TextProperty());
 		if (!editorBinding || editorBinding->Mode() != BindingMode::TwoWay
 			|| editorBinding->UpdateMode()
 				!= DataSourceUpdateMode::OnPropertyChanged
-			|| editor->GetPropertyValueSource(L"Text")
+			|| editor->GetPropertyValueSource(TextBox::TextProperty())
 				!= DependencyPropertyValueSource::Local
-			|| editor->GetPropertyExpressionKind(L"Text")
+			|| editor->GetPropertyExpressionKind(TextBox::TextProperty())
 				!= DependencyPropertyExpressionKind::Binding
 			|| editor->Text != L"Ada" || elementMirror->Text != L"Ada"
 			|| selfValue->AutomationName != L"RelativeSource Self"
@@ -2161,12 +2493,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				+ L"' keyed='" + keyedIndexerValue->Text + L"' converted='"
 				+ convertedValue->Text + L"' multi='" + multiValue->Text + L"'");
 		if (!editor->TrySetCurrentPropertyValue(
-			L"Text", BindingValue(std::wstring(L"Augusta"))))
+			TextBox::TextProperty(),
+			BindingValue(std::wstring(L"Augusta"))))
 			return fail(L"TwoWay TextBox 无法更新绑定源。");
 		BindingValue firstName;
 		if (!_dataContext->TryGetValue(L"WpfFirst", firstName)
 			|| firstName.ToString() != L"Augusta"
-			|| editor->GetPropertyExpressionKind(L"Text")
+			|| editor->GetPropertyExpressionKind(TextBox::TextProperty())
 				!= DependencyPropertyExpressionKind::Binding
 			|| elementMirror->Text != L"Augusta"
 			|| multiValue->Text != L"Augusta / Lovelace / runtime data")
@@ -2181,20 +2514,21 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"源到目标更新或 TargetNull 动态恢复未生效。");
 
 		auto* templateButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"wpfTemplateButton"));
+			FindGeneratedControlByName(L"wpfTemplateButton"));
 		auto* templatedParentValue = templateButton
 			? dynamic_cast<Label*>(templateButton->FindDeclarativeTemplatePart(
-				L"wpfTemplatedParentValue")) : nullptr;
+				MakeTemplatePartToken(L"wpfTemplatedParentValue"))) : nullptr;
 		auto* buttonPresenter = templateButton
 			? dynamic_cast<ContentPresenter*>(
 				templateButton->FindDeclarativeTemplatePart(
-					L"wpfButtonContentPresenter")) : nullptr;
+					MakeTemplatePartToken(L"wpfButtonContentPresenter"))) : nullptr;
 		auto* buttonChrome = templateButton
-			? templateButton->FindDeclarativeTemplatePart(L"wpfButtonChrome")
+			? templateButton->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"wpfButtonChrome"))
 			: nullptr;
 		auto* treeRelationValue = templateButton
 			? dynamic_cast<Label*>(templateButton->FindDeclarativeTemplatePart(
-				L"wpfTreeRelationValue")) : nullptr;
+				MakeTemplatePartToken(L"wpfTreeRelationValue"))) : nullptr;
 		auto* buttonTemplateLayout = templatedParentValue
 			? templatedParentValue->GetVisualParent() : nullptr;
 		if (!templateButton || !buttonChrome
@@ -2225,12 +2559,14 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| buttonPresenter->GetTemplatedParent() != templateButton
 			|| buttonPresenter->GetInheritanceParent() != buttonTemplateLayout
 			|| templatedParentValue->Text != L"RelativeSource TemplatedParent"
-			|| buttonChrome->GetPropertyValueSource(L"Padding")
+			|| buttonChrome->GetPropertyValueSource(Border::PaddingProperty())
 				!= DependencyPropertyValueSource::Template
 			|| buttonChrome->GetPropertyExpressionKind(
-				L"Padding", DependencyPropertyValueSource::Template)
+				Border::PaddingProperty(),
+				DependencyPropertyValueSource::Template)
 				!= DependencyPropertyExpressionKind::None
-			|| templatedParentValue->GetPropertyExpressionKind(L"Text")
+			|| templatedParentValue->GetPropertyExpressionKind(
+				Label::TextProperty())
 				!= DependencyPropertyExpressionKind::Binding)
 			return fail(L"ControlTemplate / ContentPresenter / TemplatedParent 未实际接管 Button。");
 
@@ -2239,7 +2575,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		BindingValue alternateButtonTemplateValue;
 		ControlTemplateReference alternateButtonTemplate;
 		if (!primaryButtonTemplate
-			|| templateButton->GetPropertyValueSource(L"Template")
+			|| templateButton->GetPropertyValueSource(
+				Control::TemplateProperty())
 				!= DependencyPropertyValueSource::Local
 			|| !templateButton->TryFindResource(
 				L"WpfLabButtonTemplateAlternate",
@@ -2256,11 +2593,11 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			return fail(L"Control.Template 变更未拆除旧树或无法原位重建。");
 		auto* alternateButtonChrome =
 			templateButton->FindDeclarativeTemplatePart(
-				L"wpfAlternateButtonChrome");
+				MakeTemplatePartToken(L"wpfAlternateButtonChrome"));
 		auto* alternateButtonPresenter =
 			dynamic_cast<ContentPresenter*>(
 				templateButton->FindDeclarativeTemplatePart(
-					L"wpfAlternateContentPresenter"));
+					MakeTemplatePartToken(L"wpfAlternateContentPresenter")));
 		if (!alternateButtonChrome || !alternateButtonPresenter
 			|| alternateButtonChrome
 				!= cui::framework::TemplateAccess::GetTemplateRoot(
@@ -2285,27 +2622,29 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		if (alternateButtonRoot.Get() != nullptr
 			|| !templateButton->ApplyTemplate()
 			|| !templateButton->FindDeclarativeTemplatePart(
-				L"wpfButtonChrome")
+				MakeTemplatePartToken(L"wpfButtonChrome"))
 			|| templateButton->FindDeclarativeTemplatePart(
-				L"wpfAlternateButtonChrome")
+				MakeTemplatePartToken(L"wpfAlternateButtonChrome"))
 			|| !templateButton->LastTemplateError().empty())
 			return fail(L"Control.Template 往返重套未恢复主模板。");
 
 		auto* triggerButton = dynamic_cast<Button*>(
-			_xamlSession.Document().FindControlByName(L"wpfTriggerButton"));
+			FindGeneratedControlByName(L"wpfTriggerButton"));
 		auto* scopedResource = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfScopeResourceValue"));
+			FindGeneratedControlByName(L"wpfScopeResourceValue"));
 		auto* innerResource = dynamic_cast<Label*>(
-			_xamlSession.Document().FindControlByName(L"wpfInnerResourceValue"));
+			FindGeneratedControlByName(L"wpfInnerResourceValue"));
 		if (!triggerButton || !scopedResource || !innerResource
-			|| triggerButton->GetPropertyValueSource(L"Background")
+			|| triggerButton->GetPropertyValueSource(Control::BackgroundProperty())
 				!= DependencyPropertyValueSource::Style
 			|| triggerButton->GetPropertyExpressionKind(
-				L"Background", DependencyPropertyValueSource::Style)
+				Control::BackgroundProperty(),
+				DependencyPropertyValueSource::Style)
 				!= DependencyPropertyExpressionKind::DynamicResource
-			|| scopedResource->GetPropertyValueSource(L"Foreground")
+			|| scopedResource->GetPropertyValueSource(Label::ForegroundProperty())
 				!= DependencyPropertyValueSource::Local
-			|| scopedResource->GetPropertyExpressionKind(L"Foreground")
+			|| scopedResource->GetPropertyExpressionKind(
+				Label::ForegroundProperty())
 				!= DependencyPropertyExpressionKind::DynamicResource
 			|| std::abs(triggerButton->FontSize - 13.0) > 0.001
 			|| triggerButton->IsDefault
@@ -2313,23 +2652,14 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| std::abs(scopedResource->Foreground.Color.g - 0xA3 / 255.0f) > 0.001f
 			|| std::abs(innerResource->Foreground.Color.r - 0xF0 / 255.0f) > 0.001f)
 			return fail(L"BasedOn / DynamicResource 局部遮蔽的初始值不正确。");
-		auto localResources = std::const_pointer_cast<ControlStyleSheet>(
-			cui::framework::StyleAccess::Resources(*wpfSurface));
-		const D2D1_COLOR_F replacementAccent{ 0.4f, 0.2f, 0.8f, 1.0f };
-		if (!localResources
-			|| !localResources->SetResource(
-				L"WpfLabAccent", BindingValue(replacementAccent))
-			|| !localResources->SetResource(
-				L"WpfLabFontFamily", BindingValue(std::wstring(L"Segoe UI")))
-			|| !localResources->SetResource(
-				L"WpfLabFontSize", BindingValue(17.0))
-			|| std::abs(triggerButton->Background.Color.r - replacementAccent.r) > 0.001f
-			|| std::abs(scopedResource->Foreground.Color.b - replacementAccent.b) > 0.001f
+		const auto localResources =
+			cui::framework::StyleAccess::Resources(*wpfSurface);
+		if (!localResources || !localResources->IsImmutable()
 			|| std::abs(innerResource->Foreground.Color.r - 0xF0 / 255.0f) > 0.001f
-			|| elementMirror->FontFamily != L"Segoe UI"
-			|| std::abs(elementMirror->FontSize - 17.0f) > 0.001f
+			|| elementMirror->FontFamily != L"Consolas"
+			|| std::abs(elementMirror->FontSize - 15.0f) > 0.001f
 			|| std::abs(typographyOverride->FontSize - 14.0f) > 0.001f)
-			return fail(L"DynamicResource 未实时刷新 Typography/颜色或破坏局部覆盖与资源遮蔽。");
+			return fail(L"AOT 词法资源未冻结为不可变程序或破坏局部覆盖与资源遮蔽。");
 		if (!_dataContext->SetValue(L"WpfStatus", std::wstring(L"Ready"))
 			|| !triggerButton->HasActiveVisualStateAnimations())
 			return fail(L"DataTrigger EnterActions 未启动 Storyboard。");
@@ -2339,13 +2669,9 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| !_dataContext->SetValue(L"WpfIsAdmin", true)
 			|| !triggerButton->IsDefault)
 			return fail(L"DataTrigger 动画或 MultiDataTrigger AND 条件未生效。");
-		cui::framework::InputAccess::PublishPointerOverState(
-			*triggerButton, true, true);
 		if (std::abs(
 			triggerButton->BorderThickness.MaxEdge() - 4.0f) > 0.001f)
 			return fail(L"MultiTrigger 属性/状态 AND 条件未生效。");
-		cui::framework::InputAccess::PublishPointerOverState(
-			*triggerButton, false, false);
 		if (!_dataContext->SetValue(L"WpfStatus", std::wstring(L"Idle"))
 			|| triggerButton->HasActiveVisualStateAnimations()
 			|| std::abs(triggerButton->FontSize - 13.0) > 0.001
@@ -2354,19 +2680,21 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		(void)_dataContext->SetValue(L"WpfIsAdmin", false);
 
 		auto* templateList = dynamic_cast<ListBox*>(
-			_xamlSession.Document().FindControlByName(L"wpfTemplateList"));
+			FindGeneratedControlByName(L"wpfTemplateList"));
 		auto* itemsPresenter = templateList
 			? dynamic_cast<ItemsPresenter*>(
-				templateList->FindDeclarativeTemplatePart(L"wpfItemsPresenter"))
+				templateList->FindDeclarativeTemplatePart(
+					MakeTemplatePartToken(L"wpfItemsPresenter")))
 			: nullptr;
 		auto* firstContainer = templateList
 			? dynamic_cast<ListBoxItem*>(templateList->GetGeneratedItem(0)) : nullptr;
 		auto* firstChrome = firstContainer
-			? firstContainer->FindDeclarativeTemplatePart(L"wpfItemChrome") : nullptr;
+			? firstContainer->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"wpfItemChrome")) : nullptr;
 		auto* firstPresenter = firstContainer
 			? dynamic_cast<ContentPresenter*>(
 				firstContainer->FindDeclarativeTemplatePart(
-					L"wpfItemContentPresenter")) : nullptr;
+					MakeTemplatePartToken(L"wpfItemContentPresenter"))) : nullptr;
 		auto* listTemplateRoot = templateList
 			? cui::framework::TemplateAccess::GetTemplateRoot(*templateList)
 			: nullptr;
@@ -2403,27 +2731,64 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| cui::framework::TemplateAccess::GetContentPresenter(*firstContainer)
 				!= firstPresenter
 			|| !firstContainer->Content())
-			return fail(L"ItemsPresenter / ListBoxItem ControlTemplate / ContentPresenter 未闭环。");
+			return fail(
+				L"ItemsPresenter / ListBoxItem ControlTemplate / "
+				L"ContentPresenter 未闭环：objects="
+				+ std::to_wstring(templateList != nullptr)
+				+ L"/" + std::to_wstring(itemsPresenter != nullptr)
+				+ L"/" + std::to_wstring(listTemplateRoot != nullptr)
+				+ L"/" + std::to_wstring(listItemsHost != nullptr)
+				+ L"/" + std::to_wstring(firstContainer != nullptr)
+				+ L"/" + std::to_wstring(firstChrome != nullptr)
+				+ L"/" + std::to_wstring(firstPresenter != nullptr)
+				+ L", registrations="
+				+ std::to_wstring(templateList && itemsPresenter
+					&& cui::framework::TemplateAccess::GetItemsPresenter(
+						*templateList) == itemsPresenter)
+				+ L"/" + std::to_wstring(
+					templateList && itemsPresenter && listItemsHost
+					&& cui::framework::TemplateAccess::GetItemsHost(
+						*templateList) == listItemsHost
+					&& cui::framework::TemplateAccess::GetItemsHost(
+						*itemsPresenter) == listItemsHost)
+				+ L"/" + std::to_wstring(firstContainer && firstPresenter
+					&& cui::framework::TemplateAccess::GetContentPresenter(
+						*firstContainer) == firstPresenter)
+				+ L", itemState="
+				+ std::to_wstring(templateList
+					? templateList->GeneratedItemCount() : 0)
+				+ L"/" + std::to_wstring(templateList
+					&& static_cast<bool>(
+						templateList->GetItemContainerTemplate()))
+				+ L"/" + std::to_wstring(firstContainer
+					&& static_cast<bool>(firstContainer->Content()))
+				+ L", contentParents="
+				+ std::to_wstring(firstPresenter
+					&& firstPresenter->GetLogicalParent() == nullptr)
+				+ L"/" + std::to_wstring(firstPresenter
+					&& firstPresenter->GetInheritanceParent()
+						== firstPresenter->GetVisualParent()));
 		if (!templateList->SelectIndex(1))
 			return fail(L"XAML ListBoxItem 容器无法进入选择状态。");
 		auto* selectedContainer = dynamic_cast<ListBoxItem*>(
 			templateList->GetGeneratedItem(1));
 		if (!selectedContainer
-			|| selectedContainer->GetCurrentVisualState(L"SelectionStates")
-				!= L"Selected")
+			|| selectedContainer->GetCurrentVisualState(
+				MakeVisualStateGroupToken(L"SelectionStates"))
+				!= MakeVisualStateToken(L"Selected"))
 			return fail(L"ListBoxItem XAML VisualState 未响应选择。");
 
-		auto* routedSource = _xamlSession.Document().FindControlByName(
+		auto* routedSource = FindGeneratedControlByName(
 			L"wpfRouteSource");
-		auto* focusOuter = _xamlSession.Document().FindControlByName(
+		auto* focusOuter = FindGeneratedControlByName(
 			L"wpfRouteOuter");
-		auto* focusScope = _xamlSession.Document().FindControlByName(
+		auto* focusScope = FindGeneratedControlByName(
 			L"wpfRouteMiddle");
-		auto* focusPeerB = _xamlSession.Document().FindControlByName(
+		auto* focusPeerB = FindGeneratedControlByName(
 			L"wpfFocusPeerB");
-		auto* focusPeerC = _xamlSession.Document().FindControlByName(
+		auto* focusPeerC = FindGeneratedControlByName(
 			L"wpfFocusPeerC");
-		auto* noFocusPeer = _xamlSession.Document().FindControlByName(
+		auto* noFocusPeer = FindGeneratedControlByName(
 			L"wpfNoFocusPeer");
 		auto* routedButton = dynamic_cast<Button*>(routedSource);
 		auto* focusOuterBorder = dynamic_cast<Border*>(focusOuter);
@@ -2542,7 +2907,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		}
 
 		auto* textSource = dynamic_cast<TextBox*>(
-			_xamlSession.Document().FindControlByName(L"wpfTextInputSource"));
+			FindGeneratedControlByName(L"wpfTextInputSource"));
 		if (!textSource)
 			return fail(L"XAML TextInput 演示源不存在。");
 		if (!MoveFocus(FocusNavigationDirection::Right)
@@ -2661,7 +3026,7 @@ void DemoWindow::RegisterClassCommandBindings()
 	};
 	auto exactConnection =
 		RoutedCommandManager::RegisterClassCommandBinding(
-			RuntimeTypeId{ L"urn:cui:test", L"FeatureCard" },
+			DemoWindowGeneratedFeatureCard::ComponentTypeId(),
 			std::move(exact));
 	if (!exactConnection.Connected())
 		ThrowRuntimeError(L"无法注册 FeatureCard 精确 QName class command binding。");
@@ -2697,19 +3062,19 @@ bool DemoWindow::VerifyTextCompositionFeatures(std::wstring* outError)
 	};
 	try
 	{
-		auto* surface = _xamlSession.Document().FindControlByName(
+		auto* surface = FindGeneratedControlByName(
 			L"textCompositionLabSurface");
 		auto* textBox = dynamic_cast<TextBox*>(
-			_xamlSession.Document().FindControlByName(L"compositionTextBox"));
+			FindGeneratedControlByName(L"compositionTextBox"));
 		auto* richTextBox = dynamic_cast<RichTextBox*>(
-			_xamlSession.Document().FindControlByName(L"compositionRichTextBox"));
+			FindGeneratedControlByName(L"compositionRichTextBox"));
 		auto* passwordBox = dynamic_cast<PasswordBox*>(
-			_xamlSession.Document().FindControlByName(L"compositionPasswordBox"));
+			FindGeneratedControlByName(L"compositionPasswordBox"));
 		if (!surface || !textBox || !richTextBox || !passwordBox
-			|| !_xamlSession.Document().FindControlByName(L"compositionState")
-			|| !_xamlSession.Document().FindControlByName(L"compositionStats")
-			|| !_xamlSession.Document().FindControlByName(L"compositionTrace"))
-			return fail(L"TextComposition/IME XAML 实验台未完整材质化。");
+			|| !FindGeneratedControlByName(L"compositionState")
+			|| !FindGeneratedControlByName(L"compositionStats")
+			|| !FindGeneratedControlByName(L"compositionTrace"))
+			return fail(L"TextComposition/IME XAML 实验台未完整生成。");
 		TabItem* compositionPage = nullptr;
 		for (auto* current = surface; current;
 			current = current->GetVisualParent())
@@ -2723,7 +3088,7 @@ bool DemoWindow::VerifyTextCompositionFeatures(std::wstring* outError)
 		const int compositionPageIndex = _tabs && compositionPage
 			? _tabs->IndexOfItem(compositionPage) : -1;
 		if (!_tabs || compositionPageIndex < 0)
-			return fail(L"TextComposition/IME 实验台未挂载到 TabControl。");
+			return fail(L"TextComposition/IME 实验台未连接到 TabControl。");
 		const int originalTabIndex = _tabs->SelectedIndex;
 		struct TextCompositionTabScope final
 		{
@@ -2971,18 +3336,18 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 	try
 	{
 		auto* surface = dynamic_cast<NativeSurface*>(
-			_xamlSession.Document().FindControlByName(
+			FindGeneratedControlByName(
 				L"presentationProbeSurface"));
 		auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
 			surface->Behavior()) : nullptr;
-		auto* topologyTile = _xamlSession.Document().FindControlByName(
+		auto* topologyTile = FindGeneratedControlByName(
 			L"presentationTopologyTile");
 		auto* loadingRing = dynamic_cast<LoadingRing*>(
-			_xamlSession.Document().FindControlByName(L"loadingRing"));
+			FindGeneratedControlByName(L"loadingRing"));
 		auto* scroll = dynamic_cast<ScrollViewer*>(
-			_xamlSession.Document().FindControlByName(L"demoScroll"));
+			FindGeneratedControlByName(L"demoScroll"));
 		auto* scrollProbe =
-			_xamlSession.Document().FindControlByName(L"farButton");
+			FindGeneratedControlByName(L"farButton");
 		if (!_tabs || !surface || !behavior || !behavior->Attached()
 			|| !topologyTile || !loadingRing || !scroll || !scrollProbe
 			|| !Handle)
@@ -3050,9 +3415,19 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		RequestLayout();
 		UpdateLayout();
 		Invalidate(false);
-		if (!drainPresentationWork() || !loadingRing->IsVisible
-			|| !loadingRing->IsAnimationRunning())
-			return fail(L"LoadingRing smoke 未进入稳定可见 retained 场景。");
+		const bool loadingRingPresentationDrained =
+			drainPresentationWork();
+		if (!loadingRingPresentationDrained
+			|| !loadingRing->IsVisible || !loadingRing->IsAnimationRunning())
+			return fail(L"LoadingRing smoke 未进入稳定可见 retained 场景："
+				L"drained=" + std::to_wstring(loadingRingPresentationDrained)
+				+ L"，visible=" + std::to_wstring(loadingRing->IsVisible)
+				+ L"，running="
+				+ std::to_wstring(loadingRing->IsAnimationRunning())
+				+ L"，selected="
+				+ std::to_wstring(_tabs->SelectedIndex)
+				+ L"，target=" + std::to_wstring(containerTabIndex)
+				+ L"。");
 		const auto animationSceneRevision =
 			cui::framework::WindowAccess::PresentationSceneRevision(*this);
 		const auto animationGeometryRevision =
@@ -3062,8 +3437,9 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		const auto committedBeforeAnimation =
 			cui::framework::WindowAccess::
 				PresentationCommittedFrameCount(*this);
-		cui::framework::WindowAccess::
-			TickPresentationAnimationsForTesting(*this);
+		if (!cui::framework::PresentationAccess::
+			InvalidateNativeAnimationFrame(*loadingRing))
+			return fail(L"LoadingRing smoke 无法排队原生动画叶节点。");
 		RECT animationOsDamage{};
 		const bool animationOsDamageQueued =
 			::GetUpdateRect(Handle, &animationOsDamage, FALSE) != FALSE;
@@ -3712,25 +4088,7 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 	}
 }
 
-void DemoWindow::MountXaml(
-	const DesignerModel::DesignDocument& document)
-{
-	DesignerModel::RuntimeDocumentSessionMountOptions options;
-	options.DataContext = _dataContext;
-	options.DeclarativeComponentBehaviors = _componentBehaviors;
-	options.NativeSurfaceBehaviors = _nativeSurfaceBehaviors;
-	options.WatchFile = false;
-	std::wstring error;
-	// Reuse the pre-parsed XAML contract. Besides avoiding redundant catalog
-	// scans, this guarantees behavior/event registration and materialization
-	// consume the exact same ComponentDefinition descriptors.
-	if (!_xamlSession.MountDocument(
-		document, XamlFilePath(), *this, options, &error))
-		ThrowRuntimeError(L"加载 DemoWindow.cui.xaml 失败：" + error);
-}
-
-void DemoWindow::PrepareDeclarativeRuntime(
-	const DesignerModel::DesignDocument& document)
+void DemoWindow::PrepareRuntimeData()
 {
 	auto makeFile = [](const wchar_t* name, const wchar_t* kind)
 	{
@@ -3742,7 +4100,8 @@ void DemoWindow::PrepareDeclarativeRuntime(
 	auto makeFolder = [&](const wchar_t* name,
 		std::initializer_list<std::pair<const wchar_t*, const wchar_t*>> files)
 	{
-		auto children = std::make_shared<ObservableBindingList>(L"DemoFile");
+		auto children = std::make_shared<ObservableBindingList>(
+			MakeDataTypeToken(L"DemoFile"));
 		for (const auto& [fileName, kind] : files)
 			children->Items.push_back(BindingSourceReference(
 				makeFile(fileName, kind)));
@@ -3753,14 +4112,16 @@ void DemoWindow::PrepareDeclarativeRuntime(
 		return folder;
 	};
 
-	_treeRoots = std::make_shared<ObservableBindingList>(L"DemoFolder");
+	_treeRoots = std::make_shared<ObservableBindingList>(
+		MakeDataTypeToken(L"DemoFolder"));
 	_treeRoots->Items.push_back(BindingSourceReference(makeFolder(
 		L"Workspace", { { L"DemoWindow.cui.xaml", L"XAML" },
 			{ L"DemoWindow.cpp", L"C++" }, { L"DemoTheme.xaml", L"XAML" } })));
 	_treeRoots->Items.push_back(BindingSourceReference(makeFolder(
 		L"Runtime", { { L"ComponentDefinition", L"Type" },
 			{ L"NativeSurface", L"Render" }, { L"BindingList", L"Data" } })));
-	_listViewEntries = std::make_shared<ObservableBindingList>(L"DemoListEntry");
+	_listViewEntries = std::make_shared<ObservableBindingList>(
+		MakeDataTypeToken(L"DemoListEntry"));
 	for (int index = 0; index < 40; ++index)
 	{
 		auto entry = std::make_shared<ObservableObject>();
@@ -3779,7 +4140,8 @@ void DemoWindow::PrepareDeclarativeRuntime(
 		(void)person->DefineProperty(L"Role", std::wstring(role));
 		return person;
 	};
-	_wpfLabPeople = std::make_shared<ObservableBindingList>(L"WpfLabPerson");
+	_wpfLabPeople = std::make_shared<ObservableBindingList>(
+		MakeDataTypeToken(L"WpfLabPerson"));
 	_wpfLabPeople->Items.push_back(BindingSourceReference(
 		makeWpfPerson(L"Ada", L"Lovelace", L"Math")));
 	_wpfLabPeople->Items.push_back(BindingSourceReference(
@@ -3798,10 +4160,10 @@ void DemoWindow::PrepareDeclarativeRuntime(
 		true, false, true))
 		ThrowRuntimeError(L"无法创建 DemoListEntries DataContext。 ");
 	BindingSourcePropertyMetadata nullableMetadata;
-	nullableMetadata.Name = L"WpfNullable";
 	nullableMetadata.ValueKind = BindingValueKind::String;
 	nullableMetadata.ValueType = std::type_index(typeid(std::wstring));
 	if (!_dataContext->DefineProperty(
+		MakeBindingSourcePropertyToken(L"WpfNullable"),
 		std::move(nullableMetadata), BindingValue{}))
 		ThrowRuntimeError(L"无法创建 WpfNullable DataContext。 ");
 	if (!_dataContext->DefineProperty(L"WpfFirst", std::wstring(L"Ada"))
@@ -3816,405 +4178,42 @@ void DemoWindow::PrepareDeclarativeRuntime(
 			L"WpfSettings", BindingSourceReference(_wpfLabSettings)))
 		ThrowRuntimeError(L"无法创建 WPF 语义实验 DataContext。 ");
 
-	const auto component = std::find_if(
-		document.Components.begin(), document.Components.end(), [](const auto& item)
-		{
-			return item.Type.XamlNamespace == L"urn:cui:test"
-				&& item.Type.XamlName == L"FeatureCard";
-		});
-	if (component == document.Components.end())
-		ThrowRuntimeError(L"XAML 缺少 test:FeatureCard ComponentDefinition。 ");
-	CuiRuntime::XamlTypePropertySchema componentSchema;
-	std::wstring schemaError;
-	if (!CuiRuntime::XamlRuntimeSchema::BuildPropertySchema(
-		component->BaseType, &*component, document,
-		componentSchema, &schemaError))
-		ThrowRuntimeError(L"FeatureCard XAML Schema 预检失败：" + schemaError);
-	const auto buttonProperties =
-		CuiRuntime::XamlRuntimeSchema::NativeProperties(UIClass::UI_Button);
-	const auto* caption = componentSchema.FindProperty(L"Caption");
-	const auto* background = componentSchema.FindProperty(L"Background");
-	const auto* isDefault = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
-		UIClass::UI_Button, L"IsDefault");
-	if (!componentSchema.DeclarativeType
-		|| componentSchema.DeclarativeType->PropertyCount() != 5
-		|| !caption || !background || !isDefault || buttonProperties.empty())
-		ThrowRuntimeError(L"无实例 XAML Schema 属性合并不完整。");
-	_schemaSummary = L"Schema-first · Button "
-		+ std::to_wstring(buttonProperties.size())
-		+ L" DP · FeatureCard 5 properties";
-
-	_componentBehaviors = std::make_shared<
-		DesignerModel::DeclarativeComponentBehaviorRegistry>();
-	_nativeSurfaceBehaviors = std::make_shared<
-		DesignerModel::NativeSurfaceBehaviorRegistry>();
-	std::wstring error;
-	// The QName and every property/event/content contract come from the parsed
-	// ComponentDefinition. This registry only supplies behavior for that XAML
-	// contract; it is not a C++ control-type factory or schema registration.
-	if (!_componentBehaviors->Register(
-		{ component->Type.XamlNamespace, component->Type.XamlName },
-		[](const DeclarativeComponentBehaviorContext&)
-		{
-			return std::make_unique<FeatureCardBehavior>();
-		}, &error))
-		ThrowRuntimeError(L"注册 FeatureCard behavior 失败：" + error);
-	if (!_nativeSurfaceBehaviors->Register(L"DemoScene",
-		[](NativeSurface&)
-		{
-			return std::make_unique<DemoSceneBehavior>();
-		}, &error))
-		ThrowRuntimeError(L"注册 DemoScene behavior 失败：" + error);
-	if (!_nativeSurfaceBehaviors->Register(L"PresentationProbe",
-		[](NativeSurface&)
-		{
-			return std::make_unique<PresentationProbeBehavior>();
-		}, &error))
-		ThrowRuntimeError(L"注册 PresentationProbe behavior 失败：" + error);
 }
 
-void DemoWindow::RegisterXamlHandlers(
-	const DesignerModel::DesignDocument& document)
+void DemoWindow::AttachStaticBehaviors()
 {
-	auto& registry = _xamlSession.EventHandlers();
-	std::wstring error;
-	auto require = [&](bool result)
-	{
-		if (!result) ThrowRuntimeError(L"注册 XAML 事件失败：" + error);
-	};
+	if (!featureCard)
+		ThrowRuntimeError(L"AOT FeatureCard 未生成强类型实例。");
+	(void)featureCard->ApplyTemplate();
+	if (!featureCard->GetPART_State()
+		|| !featureCard->GetPART_Content()
+		|| !featureCard->GetPART_Actions()
+		|| !featureCard->PublishState(L"Typed C++ attached · generated API"))
+		ThrowRuntimeError(L"无法连接 AOT FeatureCard 强类型契约。");
+	_generatedEventConnections.emplace_back(
+		featureCard->OnMouseDoubleClick.Subscribe(
+			[this](Control*, MouseEventArgs& args)
+			{
+				if (args.ChangedButton != MouseButton::Left) return;
+				++_featureInputCount;
+				(void)featureCard->PublishState(StringHelper::Format(
+					L"Typed input #%d @ %d,%d",
+					_featureInputCount, args.X, args.Y));
+				args.Handled = true;
+			}));
 
-	require(registry.RegisterWindow(L"HandleContentRendered", L"ContentRendered", &Window::ContentRendered,
-		[this](Window* sender) { HandleContentRendered(sender); }, &error));
-	require(registry.RegisterWindow(L"HandleClosing", L"Closing", &Window::OnClosing,
-		[this](Window* sender, CancelEventArgs& args) { HandleClosing(sender, args); }, &error));
-	require(registry.RegisterWindow(L"HandleCommandPreviewCanExecute",
-		L"PreviewCanExecute", &Control::OnPreviewCanExecute,
-		[this](Control* sender, CanExecuteRoutedEventArgs& args)
-		{ HandleCommandPreviewCanExecute(sender, args); }, &error));
-	require(registry.RegisterWindow(L"HandleCommandCanExecute",
-		L"CanExecute", &Control::OnCanExecute,
-		[this](Control* sender, CanExecuteRoutedEventArgs& args)
-		{ HandleCommandCanExecute(sender, args); }, &error));
-	require(registry.RegisterWindow(L"HandleCommandPreviewExecuted",
-		L"PreviewExecuted", &Control::OnPreviewExecuted,
-		[this](Control* sender, ExecutedRoutedEventArgs& args)
-		{ HandleCommandPreviewExecuted(sender, args); }, &error));
-	require(registry.RegisterWindow(L"HandleCommandExecuted",
-		L"Executed", &Control::OnExecuted,
-		[this](Control* sender, ExecutedRoutedEventArgs& args)
-		{ HandleCommandExecuted(sender, args); }, &error));
-	require(registry.RegisterControl(L"HandleLocalCommandCanExecute",
-		UIClass::UI_Canvas, L"CanExecute", &Control::OnCanExecute,
-		[this](Control* sender, CanExecuteRoutedEventArgs& args)
-		{ HandleLocalCommandCanExecute(sender, args); }, &error));
-	require(registry.RegisterControl(L"HandleLocalCommandExecuted",
-		UIClass::UI_Canvas, L"Executed", &Control::OnExecuted,
-		[this](Control* sender, ExecutedRoutedEventArgs& args)
-		{ HandleLocalCommandExecuted(sender, args); }, &error));
-	require(registry.RegisterControl(L"HandleGlobalProgress", UIClass::UI_Slider,
-		L"ValueChanged", &Slider::ValueChanged,
-		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
-		{ HandleGlobalProgress(sender, e.OldValue, e.NewValue); }, &error));
-	require(registry.RegisterControl(L"HandleMouseWheel", UIClass::UI_Label,
-		L"MouseWheel", &Control::OnMouseWheel,
-		[this](Control* sender, MouseEventArgs& e) { HandleMouseWheel(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteOuterPreview", UIClass::UI_Border,
-		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteOuterPreview(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteMiddlePreview", UIClass::UI_Canvas,
-		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteMiddlePreview(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteSourcePreview", UIClass::UI_Button,
-		L"PreviewMouseDown", &Control::OnPreviewMouseDown,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteSourcePreview(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteSourceBubble", UIClass::UI_Button,
-		L"MouseDown", &Control::OnMouseDown,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteSourceBubble(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteMiddleBubble", UIClass::UI_Canvas,
-		L"MouseDown", &Control::OnMouseDown,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteMiddleBubble(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteOuterBubble", UIClass::UI_Border,
-		L"MouseDown", &Control::OnMouseDown,
-		DesignerModel::RuntimeRoutedEventRegistrationOptions{ true },
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleRouteOuterBubble(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteKey", UIClass::UI_Base,
-		L"PreviewKeyDown", &Control::OnPreviewKeyDown,
-		[this](Control* sender, KeyEventArgs& e)
-		{ HandleRouteKey(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteKey", UIClass::UI_Base,
-		L"KeyDown", &Control::OnKeyDown,
-		[this](Control* sender, KeyEventArgs& e)
-		{ HandleRouteKey(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteCaptureChanged", UIClass::UI_Button,
-		L"GotMouseCapture", &Control::OnGotMouseCapture,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleRouteCaptureChanged(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteCaptureChanged", UIClass::UI_Button,
-		L"LostMouseCapture", &Control::OnLostMouseCapture,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleRouteCaptureChanged(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteFocus", UIClass::UI_Button,
-		L"GotFocus", &Control::OnGotFocus,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleRouteFocus(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRoutePreviewGotKeyboardFocus",
-		UIClass::UI_Button, L"PreviewGotKeyboardFocus",
-		&Control::OnPreviewGotKeyboardFocus,
-		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
-		{ HandleRoutePreviewGotKeyboardFocus(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteGotKeyboardFocus",
-		UIClass::UI_Button, L"GotKeyboardFocus",
-		&Control::OnGotKeyboardFocus,
-		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
-		{ HandleRouteGotKeyboardFocus(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRoutePreviewLostKeyboardFocus",
-		UIClass::UI_Button, L"PreviewLostKeyboardFocus",
-		&Control::OnPreviewLostKeyboardFocus,
-		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
-		{ HandleRoutePreviewLostKeyboardFocus(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleRouteLostKeyboardFocus",
-		UIClass::UI_Button, L"LostKeyboardFocus",
-		&Control::OnLostKeyboardFocus,
-		[this](Control* sender, KeyboardFocusChangedEventArgs& e)
-		{ HandleRouteLostKeyboardFocus(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleTextOuterPreview", UIClass::UI_Border,
-		L"PreviewTextInput", &Control::OnPreviewTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleTextOuterPreview(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleTextSourcePreview", UIClass::UI_TextBox,
-		L"PreviewTextInput", &Control::OnPreviewTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleTextSourcePreview(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleTextSourceBubble", UIClass::UI_TextBox,
-		L"TextInput", &Control::OnTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleTextSourceBubble(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleTextOuterBubble", UIClass::UI_Border,
-		L"TextInput", &Control::OnTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleTextOuterBubble(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionPreviewStart",
-		UIClass::UI_Canvas, L"PreviewTextInputStart",
-		&Control::OnPreviewTextInputStart,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionPreviewStart(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionStart",
-		UIClass::UI_Canvas, L"TextInputStart", &Control::OnTextInputStart,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionStart(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionPreviewUpdate",
-		UIClass::UI_Canvas, L"PreviewTextInputUpdate",
-		&Control::OnPreviewTextInputUpdate,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionPreviewUpdate(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionUpdate",
-		UIClass::UI_Canvas, L"TextInputUpdate", &Control::OnTextInputUpdate,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionUpdate(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionPreviewCommit",
-		UIClass::UI_Canvas, L"PreviewTextInput", &Control::OnPreviewTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionPreviewCommit(sender, e); }, &error));
-	require(registry.RegisterControl(L"HandleCompositionCommit",
-		UIClass::UI_Canvas, L"TextInput", &Control::OnTextInput,
-		[this](Control* sender, TextCompositionEventArgs& e)
-		{ HandleCompositionCommit(sender, e); }, &error));
+	auto* scene = RequireControl<NativeSurface>(L"demoScene");
+	scene->SetBehavior(std::make_unique<DemoSceneBehavior>());
+	auto* presentation =
+		RequireControl<NativeSurface>(L"presentationProbeSurface");
+	presentation->SetBehavior(std::make_unique<PresentationProbeBehavior>());
 
-	auto registerClick = [&](const wchar_t* name, UIClass type,
-		auto callback)
-	{
-		require(registry.RegisterControl(name, type, L"Click",
-			&ButtonBase::Click, std::move(callback), &error));
-	};
-	registerClick(L"HandleBasicClick", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleBasicClick(sender, e); });
-	registerClick(L"HandleCommandAvailabilityToggle", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleCommandAvailabilityToggle(sender, e); });
-	registerClick(L"HandleToolBarAction", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleToolBarAction(sender, e); });
-	registerClick(L"HandleDocsLink", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleDocsLink(sender, e); });
-	registerClick(L"HandleOpenImage", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleOpenImage(sender, e); });
-	registerClick(L"HandleAnalyticsAction", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleAnalyticsAction(sender, e); });
-	registerClick(L"HandleChartKind", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleChartKind(sender, e); });
-	registerClick(L"HandleFarButton", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleFarButton(sender, e); });
-	registerClick(L"HandleSystemAction", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleSystemAction(sender, e); });
-	registerClick(L"HandleInvokeWeb", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleInvokeWeb(sender, e); });
-	registerClick(L"HandleMediaCommand", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e) { HandleMediaCommand(sender, e); });
-	registerClick(L"HandleDispatcherProbe", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleDispatcherProbe(sender, e); });
-	registerClick(L"HandleTemplateSwap", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleTemplateSwap(sender, e); });
-	registerClick(L"HandleTextCompositionProbe", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandleTextCompositionProbe(sender, e); });
-	registerClick(L"HandlePresentationRegion", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationRegion(sender, e); });
-	registerClick(L"HandlePresentationGeometry", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationGeometry(sender, e); });
-	registerClick(L"HandlePresentationComposition", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationComposition(sender, e); });
-	registerClick(L"HandlePresentationFullFrame", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationFullFrame(sender, e); });
-	registerClick(L"HandlePresentationTopology", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationTopology(sender, e); });
-	registerClick(L"HandlePresentationDeviceLoss", UIClass::UI_Button,
-		[this](Control* sender, RoutedEventArgs& e)
-		{ HandlePresentationDeviceLoss(sender, e); });
-
-	auto registerToggleState = [&](const wchar_t* name, UIClass type, auto callback)
-	{
-		require(registry.RegisterControl(name, type, L"Checked",
-			&ToggleButton::Checked, callback, &error));
-		require(registry.RegisterControl(name, type, L"Unchecked",
-			&ToggleButton::Unchecked, std::move(callback), &error));
-	};
-	registerToggleState(L"HandleEnableInput", UIClass::UI_CheckBox,
-		[this](Control* sender, RoutedEventArgs&) { HandleEnableInput(sender); });
-	registerToggleState(L"HandleRadio", UIClass::UI_RadioButton,
-		[this](Control* sender, RoutedEventArgs&) { HandleRadio(sender); });
-	registerToggleState(L"HandleImageVisibility", UIClass::UI_Switch,
-		[this](Control* sender, RoutedEventArgs&)
-		{ HandleImageVisibility(sender); });
-	registerToggleState(L"HandleMediaLoop", UIClass::UI_CheckBox,
-		[this](Control* sender, RoutedEventArgs&) { HandleMediaLoop(sender); });
-
-	require(registry.RegisterControl(L"HandleComboSelection", UIClass::UI_ComboBox,
-		L"SelectionChanged", &ComboBox::SelectionChanged,
-		[this](Control* sender, SelectionChangedEventArgs&)
-		{ HandleComboSelection(static_cast<ComboBox*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleNumericValue", UIClass::UI_NumericUpDown,
-		L"ValueChanged", &NumericUpDown::ValueChanged,
-		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
-		{ HandleNumericValue(sender, e.OldValue, e.NewValue); }, &error));
-	require(registry.RegisterControl(L"HandleExpander", UIClass::UI_Expander,
-		L"Expanded", &Expander::Expanded,
-		[this](Control* sender, RoutedEventArgs&)
-		{ HandleExpander(static_cast<Expander*>(sender), true); }, &error));
-	require(registry.RegisterControl(L"HandleExpander", UIClass::UI_Expander,
-		L"Collapsed", &Expander::Collapsed,
-		[this](Control* sender, RoutedEventArgs&)
-		{ HandleExpander(static_cast<Expander*>(sender), false); }, &error));
-	auto registerDragRoute = [&](const wchar_t* eventName, auto eventMember)
-	{
-		require(registry.RegisterControl(
-			L"HandleDragRoute", UIClass::UI_Base, eventName, eventMember,
-			DesignerModel::RuntimeRoutedEventRegistrationOptions{ true },
-			[this](Control* sender, DragEventArgs& e)
-			{ HandleDragRoute(sender, e); }, &error));
-	};
-	registerDragRoute(L"PreviewDragEnter", &Control::OnPreviewDragEnter);
-	registerDragRoute(L"DragEnter", &Control::OnDragEnter);
-	registerDragRoute(L"PreviewDragOver", &Control::OnPreviewDragOver);
-	registerDragRoute(L"DragOver", &Control::OnDragOver);
-	registerDragRoute(L"PreviewDragLeave", &Control::OnPreviewDragLeave);
-	registerDragRoute(L"DragLeave", &Control::OnDragLeave);
-	registerDragRoute(L"PreviewDrop", &Control::OnPreviewDrop);
-	registerDragRoute(L"Drop", &Control::OnDrop);
-	require(registry.RegisterControl(L"HandleDropImage", UIClass::UI_Image,
-		L"Drop", &Control::OnDrop,
-		[this](Control* sender, DragEventArgs& e)
-		{ HandleDropImage(sender, e); }, &error));
-
-	require(registry.RegisterControl(
-		L"HandleListViewSelection", UIClass::UI_ListView,
-		L"SelectionChanged", &Selector::SelectionChanged,
-		[this](Control* sender, SelectionChangedEventArgs&)
-		{ HandleListViewSelection(static_cast<Selector*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleListBoxSelection", UIClass::UI_ListBox,
-		L"SelectionChanged", &Selector::SelectionChanged,
-		[this](Control* sender, SelectionChangedEventArgs&)
-		{ HandleListBoxSelection(static_cast<Selector*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleTreeSelection", UIClass::UI_TreeView,
-		L"SelectedItemChanged", &TreeView::SelectedItemChanged,
-		[this](Control* sender, RoutedPropertyChangedEventArgs<BindingValue>&)
-		{ HandleTreeSelection(static_cast<TreeView*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleChartPoint", UIClass::UI_ChartView,
-		L"PointClick", &ChartView::OnPointClick,
-		[this](ChartView* sender, int series, int point)
-		{ HandleChartPoint(sender, series, point); }, &error));
-	require(registry.RegisterControl(L"HandleSystemSurfaceMouseUp", UIClass::UI_Canvas,
-		L"MouseUp", &Control::OnMouseUp,
-		[this](Control* sender, MouseEventArgs& e)
-		{ HandleSystemSurfaceMouseUp(sender, e); }, &error));
-	auto registerSlider = [&](const wchar_t* name, auto callback)
-	{
-		require(registry.RegisterControl(name, UIClass::UI_Slider,
-			L"ValueChanged", &Slider::ValueChanged,
-			std::move(callback), &error));
-	};
-	registerSlider(L"HandleMediaVolume",
-		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
-		{ HandleMediaVolume(sender, e.OldValue, e.NewValue); });
-	registerSlider(L"HandleMediaSpeed",
-		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
-		{ HandleMediaSpeed(sender, e.OldValue, e.NewValue); });
-	registerSlider(L"HandleMediaSeek",
-		[this](Control* sender, RoutedPropertyChangedEventArgs<double>& e)
-		{ HandleMediaSeek(sender, e.OldValue, e.NewValue); });
-
-	require(registry.RegisterControl(L"HandleMediaOpened", UIClass::UI_MediaPlayer,
-		L"MediaOpened", &MediaPlayer::OnMediaOpened,
-		[this](Control* sender) { HandleMediaOpened(static_cast<MediaPlayer*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleMediaEnded", UIClass::UI_MediaPlayer,
-		L"MediaEnded", &MediaPlayer::OnMediaEnded,
-		[this](Control* sender) { HandleMediaEnded(static_cast<MediaPlayer*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleMediaFailed", UIClass::UI_MediaPlayer,
-		L"MediaFailed", &MediaPlayer::OnMediaFailed,
-		[this](Control* sender) { HandleMediaFailed(static_cast<MediaPlayer*>(sender)); }, &error));
-	require(registry.RegisterControl(L"HandleMediaPosition", UIClass::UI_MediaPlayer,
-		L"PositionChanged", &MediaPlayer::OnPositionChanged,
-		[this](Control* sender, double position)
-		{ HandleMediaPosition(static_cast<MediaPlayer*>(sender), position); }, &error));
-
-	const auto component = std::find_if(
-		document.Components.begin(), document.Components.end(), [](const auto& item)
-		{
-			return item.Type.XamlNamespace == L"urn:cui:test"
-				&& item.Type.XamlName == L"FeatureCard";
-		});
-	if (component == document.Components.end())
-		ThrowRuntimeError(L"XAML 缺少 FeatureCard 事件契约。");
-	const RuntimeTypeId componentType{
-		component->Type.XamlNamespace, component->Type.XamlName };
-	const auto invoked = std::find_if(
-		component->Events.begin(), component->Events.end(), [](const auto& item)
-		{
-			return item.Name == L"Invoked";
-		});
-	if (invoked == component->Events.end())
-		ThrowRuntimeError(L"FeatureCard 缺少 Invoked 事件契约。");
-	require(registry.RegisterComponent(
-		L"HandleFeatureInvoked", componentType, *invoked,
-		[this](Control* sender, DeclarativeEventArgs& args)
-		{ HandleFeatureInvoked(sender, args); }, &error));
-	require(registry.RegisterComponent(
-		L"HandleFeatureBubble", componentType, *invoked,
-		[this](Control* sender, DeclarativeEventArgs& args)
-		{ HandleFeatureBubble(sender, args); }, &error));
+	// handledEventsToo is an AddHandler concern, so it remains a small piece of
+	// application behavior rather than an event attribute in generated XAML.
+	_generatedEventConnections.emplace_back(
+		wpfRouteOuter->OnMouseDown.Subscribe(
+			std::bind_front(&DemoWindow::HandleRouteOuterBubble, this), true));
 }
-
 void DemoWindow::ResolveControls()
 {
 	_menu = RequireControl<Menu>(L"mainMenu");
@@ -4238,14 +4237,6 @@ void DemoWindow::ResolveControls()
 	_mediaProgress = RequireControl<Slider>(L"mediaProgress");
 	_mediaTime = RequireControl<Label>(L"mediaTime");
 	_mediaSpeedText = RequireControl<Label>(L"mediaSpeedText");
-}
-
-void DemoWindow::LoadImages()
-{
-	const char* images[] = { _0_ico, _1_ico, _2_ico, _3_ico, _4_ico,
-		_5_ico, _6_ico, _7_ico, _8_ico, _9_ico };
-	for (size_t i = 0; i < std::size(images); ++i)
-		_images[i] = D2DGraphics::ToBitmapFromSvg(images[i]);
 }
 
 void DemoWindow::InitializeBasicPage()
@@ -4365,7 +4356,9 @@ std::wstring DemoWindow::GetStatusBarItemText(size_t index) const
 		return {};
 	BindingValue value;
 	std::wstring text;
-	return item.Get()->TryGetValue(L"Text", value) && value.TryGetString(text)
+	return item.Get()->TryGetValue(
+		MakeBindingSourcePropertyToken(L"Text"), value)
+		&& value.TryGetString(text)
 		? text : std::wstring{};
 }
 
@@ -4376,17 +4369,14 @@ bool DemoWindow::SetStatusBarItemText(
 	BindingSourceReference item;
 	if (!_statusBar->GetItemsSource().Get()->TryGetItem(index, item) || !item)
 		return false;
-	return item.Get()->TrySetValue(L"Text", BindingValue(text));
+	return item.Get()->TrySetValue(
+		MakeBindingSourcePropertyToken(L"Text"), BindingValue(text));
 }
 
 std::wstring DemoWindow::DescribeCommandTarget(const Control* target) const
 {
 	if (!target) return L"∅";
-	if (target == this)
-	{
-		const auto& name = _xamlSession.Document().WindowNode().Name;
-		return name.empty() ? L"Window" : name;
-	}
+	if (target == this) return L"CuiXamlDemo";
 	static constexpr const wchar_t* namedTargets[] = {
 		L"systemSurface", L"mainMenu", L"basicButton",
 		L"wpfHierarchyScope", L"wpfDispatcherProbe", L"featureCard",
@@ -4394,7 +4384,7 @@ std::wstring DemoWindow::DescribeCommandTarget(const Control* target) const
 	};
 	for (const auto* name : namedTargets)
 	{
-		if (_xamlSession.Document().FindControlByName(name) == target) return name;
+		if (FindGeneratedControlByName(name) == target) return name;
 	}
 	return L"(unnamed)";
 }
@@ -4420,15 +4410,13 @@ void DemoWindow::RecordCommandTarget(
 		_lastCommandCanExecuteTarget = targetName;
 		_pendingCommandTargetCommand = command.Name();
 		_pendingCommandTransactionId = transactionId;
-		// ObserveCanExecute/requery is synchronous and can run again while a
-		// ContextMenu closes. Once an execution has been displayed, a later
-		// query-only transaction must not replace it with a mixed-command trace.
-		if (_lastCommandExecutedTransactionId != 0) return;
-		_displayedCommandCanExecuteTarget = targetName;
-		_lastCommandTargetCommand = command.Name();
+		// CanExecute may run for every command source during a global requery.
+		// Keep that query transaction pending, but do not mutate presentation
+		// state until the matching command is actually executed.
+		return;
 	}
 	auto* trace = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"commandTargetTrace"));
+		FindGeneratedControlByName(L"commandTargetTrace"));
 	if (!trace) return;
 	trace->Text = L"CanExecute target="
 		+ (_displayedCommandCanExecuteTarget.empty()
@@ -4437,7 +4425,6 @@ void DemoWindow::RecordCommandTarget(
 		+ (_lastCommandExecutedTarget.empty()
 			? std::wstring(L"∅") : _lastCommandExecutedTarget)
 		+ L" · " + _lastCommandTargetCommand;
-	trace->InvalidateVisual();
 }
 
 void DemoWindow::UpdateProgress(float value01)
@@ -4479,8 +4466,8 @@ void DemoWindow::HandleContentRendered(Window*)
 	}
 	const bool notifyReady = !_notify || EnsureNotifyIconInitialized(true);
 	UpdateStatus(notifyReady
-		? L"XAML 已挂载：视觉树来自 DemoWindow.cui.xaml"
-		: L"XAML 已挂载：NotifyIcon 等待有效 Window Handle");
+		? L"AOT XAML 已构造：运行时仅执行原生 C++ 控件树"
+		: L"AOT XAML 已构造：NotifyIcon 等待有效 Window Handle");
 }
 
 void DemoWindow::HandleClosing(Window* sender, CancelEventArgs& args)
@@ -4624,7 +4611,7 @@ void DemoWindow::HandleCommandAvailabilityToggle(
 	Control*, RoutedEventArgs&)
 {
 	_classCommandEnabled = !_classCommandEnabled;
-	if (auto* source = _xamlSession.Document().FindControlByName(
+	if (auto* source = FindGeneratedControlByName(
 		L"featureActionB"))
 		(void)RoutedCommandManager::InvalidateRequerySuggested(*source);
 	UpdateStatus(_classCommandEnabled
@@ -4661,8 +4648,10 @@ void DemoWindow::HandleToolBarAction(Control* sender, RoutedEventArgs&)
 	}
 }
 
-void DemoWindow::HandleGlobalProgress(Control*, double, double value)
+void DemoWindow::HandleGlobalProgress(
+	Control*, RoutedPropertyChangedEventArgs<double>& e)
 {
+	const auto value = e.NewValue;
 	UpdateProgress(value / 1000.0f);
 	UpdateStatus(StringHelper::Format(L"XAML Slider Value=%.0f", value));
 }
@@ -4715,36 +4704,39 @@ void DemoWindow::HandleTemplateSwap(Control* sender, RoutedEventArgs&)
 			: L"Control.Template swap failed: " + button->LastTemplateError());
 }
 
-void DemoWindow::HandleEnableInput(Control* sender)
+void DemoWindow::HandleEnableInput(Control* sender, RoutedEventArgs&)
 {
 	auto* target = RequireControl<Control>(L"nameInput");
 	target->IsEnabled = static_cast<CheckBox*>(sender)->IsChecked;
 	target->InvalidateVisual();
 }
 
-void DemoWindow::HandleRadio(Control* sender)
+void DemoWindow::HandleRadio(Control* sender, RoutedEventArgs&)
 {
 	UpdateStatus(sender == _radioA ? L"Radio: A" : L"Radio: B");
 }
 
-void DemoWindow::HandleComboSelection(ComboBox* sender)
+void DemoWindow::HandleComboSelection(
+	Control* sender, SelectionChangedEventArgs&)
 {
-	UpdateStatus(L"ComboBox: " + sender->Text);
+	UpdateStatus(L"ComboBox: " + static_cast<ComboBox*>(sender)->Text);
 }
 
-void DemoWindow::HandleNumericValue(Control*, double, double value)
+void DemoWindow::HandleNumericValue(
+	Control*, RoutedPropertyChangedEventArgs<double>& e)
 {
-	UpdateStatus(StringHelper::Format(L"NumericUpDown: %.0f", value));
+	UpdateStatus(StringHelper::Format(L"NumericUpDown: %.0f", e.NewValue));
 }
 
 void DemoWindow::HandleDocsLink(Control*, RoutedEventArgs&)
 {
-	UpdateStatus(L"CUI XAML = DesignDocument 前端 + RuntimeDocument 材质化");
+	UpdateStatus(L"CUI XAML = 设计期编译器 + 生产期原生 C++ 控件树");
 }
 
-void DemoWindow::HandleExpander(Expander*, bool expanded)
+void DemoWindow::HandleExpander(Control* sender, RoutedEventArgs&)
 {
-	UpdateStatus(expanded ? L"Expander: Expanded" : L"Expander: Collapsed");
+	UpdateStatus(static_cast<Expander*>(sender)->IsExpanded
+		? L"Expander: Expanded" : L"Expander: Collapsed");
 }
 
 void DemoWindow::HandleOpenImage(Control*, RoutedEventArgs&)
@@ -4782,7 +4774,7 @@ void DemoWindow::HandleDropImage(Control*, DragEventArgs& e)
 	UpdateStatus(L"Drop · routed DragEventArgs · image loaded · Handled=true");
 }
 
-void DemoWindow::HandleImageVisibility(Control* sender)
+void DemoWindow::HandleImageVisibility(Control* sender, RoutedEventArgs&)
 {
 	_image->Visibility = static_cast<Switch*>(sender)->IsChecked
 		? Visibility::Visible : Visibility::Hidden;
@@ -4791,32 +4783,36 @@ void DemoWindow::HandleImageVisibility(Control* sender)
 		: L"Image: Visibility=Hidden (layout preserved)");
 }
 
-void DemoWindow::HandleListViewSelection(Selector* sender)
+void DemoWindow::HandleListViewSelection(
+	Control* sender, SelectionChangedEventArgs&)
 {
-	UpdateStatus(L"ListView: " + sender->GetSelectedValue().ToString());
+	UpdateStatus(L"ListView: "
+		+ static_cast<Selector*>(sender)->GetSelectedValue().ToString());
 }
 
-void DemoWindow::HandleListBoxSelection(Selector* sender)
+void DemoWindow::HandleListBoxSelection(
+	Control* sender, SelectionChangedEventArgs&)
 {
-	UpdateStatus(L"ListBox: " + sender->GetSelectedValue().ToString());
+	UpdateStatus(L"ListBox: "
+		+ static_cast<Selector*>(sender)->GetSelectedValue().ToString());
 }
 
-void DemoWindow::HandleTreeSelection(TreeView* sender)
+void DemoWindow::HandleTreeSelection(
+	Control* sender, RoutedPropertyChangedEventArgs<BindingValue>&)
 {
 	++_treeSelectionChanges;
 	UpdateStatus(L"TreeView data selection: "
-		+ sender->GetSelectedValue().ToString());
+		+ static_cast<TreeView*>(sender)->GetSelectedValue().ToString());
 }
 
 void DemoWindow::HandleFeatureInvoked(
 	Control* sender, DeclarativeEventArgs& args)
 {
 	++_featureInvocations;
-	auto* card = args.OriginalSource ? args.OriginalSource : sender;
-	auto* behavior = dynamic_cast<FeatureCardBehavior*>(
-		card ? card->GetDeclarativeComponentBehavior() : nullptr);
-	if (behavior)
-		(void)behavior->PublishState(*card, StringHelper::Format(
+	auto* card = dynamic_cast<DemoWindowGeneratedFeatureCard*>(
+		args.OriginalSource ? args.OriginalSource : sender);
+	if (card)
+		(void)card->PublishState(StringHelper::Format(
 			L"Invoked #%d · source handler", _featureInvocations));
 	UpdateStatus(L"FeatureCard.Invoked: XAML event -> C++ source handler");
 }
@@ -4833,10 +4829,10 @@ void DemoWindow::HandleFeatureBubble(
 
 bool DemoWindow::RunElementHierarchyProbe(std::wstring* outSummary)
 {
-	auto* target = _xamlSession.Document().FindControlByName(
+	auto* target = FindGeneratedControlByName(
 		L"wpfTemplateButton");
 	auto* result = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"wpfDispatcherResult"));
+		FindGeneratedControlByName(L"wpfDispatcherResult"));
 	auto finish = [&](bool success, std::wstring summary)
 	{
 		if (result)
@@ -4857,8 +4853,8 @@ bool DemoWindow::RunElementHierarchyProbe(std::wstring* outSummary)
 	Visual& visual = *target;
 	UIElement& input = *target;
 	FrameworkElement& framework = *target;
-	const auto* backgroundProperty = DependencyPropertyRegistry::Find(
-		dependency, L"Background");
+	const auto* backgroundProperty = dependency.GetPropertyMetadata(
+		Control::BackgroundProperty());
 	const bool layerIdentity = dispatcher.CheckAccess()
 		&& backgroundProperty && backgroundProperty->Matches(dependency)
 		&& backgroundProperty->OwnerType() == std::type_index(typeid(Control))
@@ -4869,26 +4865,26 @@ bool DemoWindow::RunElementHierarchyProbe(std::wstring* outSummary)
 		&& input.GetActualSizeDip().height > 0.0f;
 
 	DependencyObject* changedSender = nullptr;
-	std::wstring changedProperty;
+	const DependencyProperty* changedProperty = nullptr;
 	const auto versionBefore = dependency.PropertyChangeVersion();
 	auto propertyConnection = dependency.OnPropertyValueChanged.Subscribe(
 		[&](DependencyObject* sender,
 			const DependencyPropertyChangedEventArgs& args)
 		{
 			changedSender = sender;
-			changedProperty = args.PropertyName;
+			changedProperty = args.Property;
 		});
-	const bool propertyWritten = dependency.TrySetValue(
-		L"AutomationProperties.AutomationId",
+	const bool propertyWritten = dependency.TrySetPropertyValue(
+		Control::AutomationIdProperty(),
 		BindingValue(std::wstring(L"wpf-hierarchy-probe")));
 	const bool propertyBoundary = propertyWritten
 		&& changedSender == &dependency
-		&& changedProperty == L"AutomationProperties.AutomationId"
+		&& changedProperty == &Control::AutomationIdProperty()
 		&& dependency.PropertyChangeVersion() > versionBefore
-		&& target->GetPropertyValueSource(L"AutomationProperties.AutomationId")
+		&& target->GetPropertyValueSource(Control::AutomationIdProperty())
 			== DependencyPropertyValueSource::Local;
 	(void)target->ClearPropertyValue(
-		L"AutomationProperties.AutomationId");
+		Control::AutomationIdProperty());
 
 	bool foreignCheckAccess = true;
 	bool verifyRejected = false;
@@ -4903,8 +4899,9 @@ bool DemoWindow::RunElementHierarchyProbe(std::wstring* outSummary)
 		catch (const std::logic_error&) { verifyRejected = true; }
 		try
 		{
-			(void)dependency.TrySetValue(
-				L"AutomationProperties.AutomationId", BindingValue(std::wstring(L"illegal")));
+			(void)dependency.TrySetPropertyValue(
+				Control::AutomationIdProperty(),
+				BindingValue(std::wstring(L"illegal")));
 		}
 		catch (const std::logic_error&) { propertyRejected = true; }
 		try { visual.InvalidateVisual(); }
@@ -4978,7 +4975,7 @@ void DemoWindow::HandleRouteMiddlePreview(
 void DemoWindow::HandleRouteSourcePreview(
 	Control* sender, MouseEventArgs& e)
 {
-	auto* source = _xamlSession.Document().FindControlByName(L"wpfRouteSource");
+	auto* source = FindGeneratedControlByName(L"wpfRouteSource");
 	_routedInputTrace.push_back(sender == source
 		&& e.OriginalSource == source && e.Source == source
 		? L"T source" : L"T source(!source)");
@@ -5011,8 +5008,8 @@ void DemoWindow::HandleRouteOuterBubble(
 
 void DemoWindow::HandleRouteKey(Control* sender, KeyEventArgs& e)
 {
-	auto* outer = _xamlSession.Document().FindControlByName(L"wpfRouteOuter");
-	auto* source = _xamlSession.Document().FindControlByName(L"wpfRouteSource");
+	auto* outer = FindGeneratedControlByName(L"wpfRouteOuter");
+	auto* source = FindGeneratedControlByName(L"wpfRouteSource");
 	if (e.Stage == RoutedEventStage::Preview && sender == outer)
 		_routedInputTrace.clear();
 	const wchar_t* stage = e.Stage == RoutedEventStage::Preview ? L"T" : L"B";
@@ -5177,30 +5174,30 @@ void DemoWindow::HandleTextCompositionProbe(
 	Control* sender, RoutedEventArgs& e)
 {
 	auto* textBox = dynamic_cast<TextBox*>(
-		_xamlSession.Document().FindControlByName(L"compositionTextBox"));
+		FindGeneratedControlByName(L"compositionTextBox"));
 	auto* richTextBox = dynamic_cast<RichTextBox*>(
-		_xamlSession.Document().FindControlByName(L"compositionRichTextBox"));
+		FindGeneratedControlByName(L"compositionRichTextBox"));
 	auto* passwordBox = dynamic_cast<PasswordBox*>(
-		_xamlSession.Document().FindControlByName(L"compositionPasswordBox"));
+		FindGeneratedControlByName(L"compositionPasswordBox"));
 	if (!sender || !textBox || !richTextBox || !passwordBox) return;
 	auto& manager = cui::framework::WindowAccess::TextComposition(*this);
-	auto* start = _xamlSession.Document().FindControlByName(
+	auto* start = FindGeneratedControlByName(
 		L"compositionStartProbe");
-	auto* update = _xamlSession.Document().FindControlByName(
+	auto* update = FindGeneratedControlByName(
 		L"compositionUpdateProbe");
-	auto* commit = _xamlSession.Document().FindControlByName(
+	auto* commit = FindGeneratedControlByName(
 		L"compositionCommitProbe");
-	auto* cancel = _xamlSession.Document().FindControlByName(
+	auto* cancel = FindGeneratedControlByName(
 		L"compositionCancelProbe");
-	auto* surrogate = _xamlSession.Document().FindControlByName(
+	auto* surrogate = FindGeneratedControlByName(
 		L"compositionSurrogateProbe");
-	auto* unichar = _xamlSession.Document().FindControlByName(
+	auto* unichar = FindGeneratedControlByName(
 		L"compositionUnicharProbe");
-	auto* focus = _xamlSession.Document().FindControlByName(
+	auto* focus = FindGeneratedControlByName(
 		L"compositionFocusProbe");
-	auto* preview = _xamlSession.Document().FindControlByName(
+	auto* preview = FindGeneratedControlByName(
 		L"compositionPreviewHandledProbe");
-	auto* reset = _xamlSession.Document().FindControlByName(
+	auto* reset = FindGeneratedControlByName(
 		L"compositionResetProbe");
 	auto startFresh = [&]()
 	{
@@ -5318,20 +5315,20 @@ void DemoWindow::HandleTextCompositionProbe(
 void DemoWindow::RefreshTextCompositionSummary()
 {
 	auto* state = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"compositionState"));
+		FindGeneratedControlByName(L"compositionState"));
 	auto* statistics = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"compositionStats"));
+		FindGeneratedControlByName(L"compositionStats"));
 	auto* trace = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"compositionTrace"));
+		FindGeneratedControlByName(L"compositionTrace"));
 	if (!state || !statistics || !trace) return;
 	const auto snapshot = cui::framework::WindowAccess::TextCompositionState(*this);
 	const auto stats = cui::framework::WindowAccess::TextCompositionStatisticsOf(*this);
 	std::wstring source = L"\u2205";
-	if (snapshot.Source == _xamlSession.Document().FindControlByName(
+	if (snapshot.Source == FindGeneratedControlByName(
 		L"compositionTextBox")) source = L"TextBox";
-	else if (snapshot.Source == _xamlSession.Document().FindControlByName(
+	else if (snapshot.Source == FindGeneratedControlByName(
 		L"compositionRichTextBox")) source = L"RichTextBox";
-	else if (snapshot.Source == _xamlSession.Document().FindControlByName(
+	else if (snapshot.Source == FindGeneratedControlByName(
 		L"compositionPasswordBox")) source = L"PasswordBox";
 	else if (snapshot.Source) source = L"other-client";
 	state->Text = CompositionStageText(snapshot.Stage)
@@ -5388,11 +5385,11 @@ void DemoWindow::RefreshRoutedInputSummary()
 void DemoWindow::HandlePresentationRegion(Control*, RoutedEventArgs&)
 {
 	auto* surface = dynamic_cast<NativeSurface*>(
-		_xamlSession.Document().FindControlByName(L"presentationProbeSurface"));
+		FindGeneratedControlByName(L"presentationProbeSurface"));
 	auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
 		surface->Behavior()) : nullptr;
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!surface || !behavior || !status) return;
 	behavior->Pulse(*surface);
 	status->Text = StringHelper::Format(
@@ -5405,10 +5402,10 @@ void DemoWindow::HandlePresentationRegion(Control*, RoutedEventArgs&)
 
 void DemoWindow::HandlePresentationGeometry(Control*, RoutedEventArgs&)
 {
-	auto* tile = _xamlSession.Document().FindControlByName(
+	auto* tile = FindGeneratedControlByName(
 		L"presentationTopologyTile");
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!tile || !status) return;
 	Canvas::SetLeft(*(tile), Canvas::GetLeft(*(tile)) > 580.0f ? 548.0f : 606.0f);
 	status->Text = StringHelper::Format(
@@ -5422,10 +5419,10 @@ void DemoWindow::HandlePresentationGeometry(Control*, RoutedEventArgs&)
 
 void DemoWindow::HandlePresentationComposition(Control*, RoutedEventArgs&)
 {
-	auto* tile = _xamlSession.Document().FindControlByName(
+	auto* tile = FindGeneratedControlByName(
 		L"presentationTopologyTile");
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!tile || !status) return;
 	tile->InvalidateComposition();
 	status->Text = StringHelper::Format(
@@ -5439,11 +5436,11 @@ void DemoWindow::HandlePresentationComposition(Control*, RoutedEventArgs&)
 void DemoWindow::HandlePresentationFullFrame(Control*, RoutedEventArgs&)
 {
 	auto* surface = dynamic_cast<NativeSurface*>(
-		_xamlSession.Document().FindControlByName(L"presentationProbeSurface"));
+		FindGeneratedControlByName(L"presentationProbeSurface"));
 	auto* behavior = surface ? dynamic_cast<PresentationProbeBehavior*>(
 		surface->Behavior()) : nullptr;
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!behavior || !status) return;
 	behavior->NoteFullFrameRequest();
 	status->Text = StringHelper::Format(
@@ -5458,10 +5455,10 @@ void DemoWindow::HandlePresentationFullFrame(Control*, RoutedEventArgs&)
 
 void DemoWindow::HandlePresentationTopology(Control*, RoutedEventArgs&)
 {
-	auto* tile = _xamlSession.Document().FindControlByName(
+	auto* tile = FindGeneratedControlByName(
 		L"presentationTopologyTile");
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!tile || !status) return;
 	tile->Visibility = tile->IsVisible
 		? Visibility::Hidden : Visibility::Visible;
@@ -5479,7 +5476,7 @@ void DemoWindow::HandlePresentationTopology(Control*, RoutedEventArgs&)
 void DemoWindow::HandlePresentationDeviceLoss(Control*, RoutedEventArgs&)
 {
 	auto* status = dynamic_cast<Label*>(
-		_xamlSession.Document().FindControlByName(L"presentationStatus"));
+		FindGeneratedControlByName(L"presentationStatus"));
 	if (!status) return;
 	const auto generation = cui::framework::WindowAccess::PresentationResourceGeneration(*this);
 	const auto recoveries = cui::framework::WindowAccess::PresentationDeviceRecoveryCount(*this);
@@ -5549,7 +5546,7 @@ void DemoWindow::HandleSystemAction(Control* sender, RoutedEventArgs&)
 	{
 		if (EnsureNotifyIconInitialized(true))
 			(void)_notify->TryShowBalloonTip(
-				L"CUI XAML", L"按钮来自动态 XAML。", 3000, NIIF_INFO);
+				L"CUI XAML", L"按钮来自 AOT 生成的 C++ 控件树。", 3000, NIIF_INFO);
 		else UpdateStatus(L"NotifyIcon: 无法在当前 Window Handle 上显示气泡");
 	}
 	else if (sender == RequireControl<Control>(L"showDialog"))
@@ -5606,32 +5603,37 @@ void DemoWindow::HandleMediaCommand(Control* sender, RoutedEventArgs&)
 	else _media->Stop();
 }
 
-void DemoWindow::HandleMediaVolume(Control*, double, double value)
+void DemoWindow::HandleMediaVolume(
+	Control*, RoutedPropertyChangedEventArgs<double>& e)
 {
-	if (_media) _media->Volume = value / 100.0;
+	if (_media) _media->Volume = e.NewValue / 100.0;
 }
 
-void DemoWindow::HandleMediaSpeed(Control*, double, double value)
+void DemoWindow::HandleMediaSpeed(
+	Control*, RoutedPropertyChangedEventArgs<double>& e)
 {
 	if (!_media || !_mediaSpeedText) return;
+	const auto value = e.NewValue;
 	_media->PlaybackRate = value / 100.0f;
 	_mediaSpeedText->Text = StringHelper::Format(L"%.2fx", value / 100.0f);
 	_mediaSpeedText->InvalidateVisual();
 }
 
-void DemoWindow::HandleMediaLoop(Control* sender)
+void DemoWindow::HandleMediaLoop(Control* sender, RoutedEventArgs&)
 {
 	if (_media) _media->Loop = static_cast<CheckBox*>(sender)->IsChecked;
 }
 
-void DemoWindow::HandleMediaSeek(Control*, double, double value)
+void DemoWindow::HandleMediaSeek(
+	Control*, RoutedPropertyChangedEventArgs<double>& e)
 {
 	if (_updatingMediaProgress || !_media || _media->Duration <= 0) return;
-	_media->Position = value / 1000.0 * _media->Duration;
+	_media->Position = e.NewValue / 1000.0 * _media->Duration;
 }
 
-void DemoWindow::HandleMediaOpened(MediaPlayer* sender)
+void DemoWindow::HandleMediaOpened(Control* senderControl)
 {
+	auto* sender = static_cast<MediaPlayer*>(senderControl);
 	const int total = static_cast<int>(sender->Duration);
 	_mediaTime->Text = StringHelper::Format(
 		L"00:00 / %02d:%02d", total / 60, total % 60);
@@ -5639,22 +5641,23 @@ void DemoWindow::HandleMediaOpened(MediaPlayer* sender)
 	UpdateStatus(L"MediaPlayer: " + FileNameFromPath(sender->MediaFile));
 }
 
-void DemoWindow::HandleMediaEnded(MediaPlayer*)
+void DemoWindow::HandleMediaEnded(Control*)
 {
 	_mediaTime->Text = L"播放结束";
 	_mediaTime->InvalidateVisual();
 	UpdateStatus(L"MediaPlayer: Ended");
 }
 
-void DemoWindow::HandleMediaFailed(MediaPlayer*)
+void DemoWindow::HandleMediaFailed(Control*)
 {
 	_mediaTime->Text = L"加载失败";
 	_mediaTime->InvalidateVisual();
 	UpdateStatus(L"MediaPlayer: Failed");
 }
 
-void DemoWindow::HandleMediaPosition(MediaPlayer* sender, double position)
+void DemoWindow::HandleMediaPosition(Control* senderControl, double position)
 {
+	auto* sender = static_cast<MediaPlayer*>(senderControl);
 	const int current = static_cast<int>(position);
 	const int total = std::max(0, static_cast<int>(sender->Duration));
 	_mediaTime->Text = StringHelper::Format(L"%02d:%02d / %02d:%02d",

@@ -1,50 +1,83 @@
 #include "Selector.h"
+#include "DependencyPropertyInfrastructure.h"
 #include "EventInfrastructure.h"
+#include "ListBox.h"
 #include "StyleInfrastructure.h"
 
 #include "Window.h"
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
+#include <stdexcept>
 #include <utility>
 
 namespace
 {
+	bool SameCompiledBindingPath(
+		CompiledBindingPathView left,
+		CompiledBindingPathView right) noexcept
+	{
+		return left.Version == right.Version
+			&& left.Steps.data() == right.Steps.data()
+			&& left.Steps.size() == right.Steps.size();
+	}
+
+	void ValidateCompiledSelectedValuePath(CompiledBindingPathView path)
+	{
+		if (path.Version != CompiledBindingPathVersion)
+			throw std::invalid_argument(
+				"SelectedValuePath compiled path version is unsupported");
+		for (const auto& step : path.Steps)
+		{
+			if (!HasCompiledBindingPathCapability(step.Capabilities,
+				CompiledBindingPathCapabilities::Read))
+				throw std::invalid_argument(
+					"SelectedValuePath requires read capability");
+			if (step.Kind == CompiledBindingPathStepKind::Property
+				&& !step.Property)
+				throw std::invalid_argument(
+					"SelectedValuePath property steps require property tokens");
+		}
+	}
+
+	void AppendObservation(
+		BindingPathObservation& destination,
+		BindingPathObservation source)
+	{
+		destination.Owners.insert(destination.Owners.end(),
+			std::make_move_iterator(source.Owners.begin()),
+			std::make_move_iterator(source.Owners.end()));
+		destination.ListOwners.insert(destination.ListOwners.end(),
+			std::make_move_iterator(source.ListOwners.begin()),
+			std::make_move_iterator(source.ListOwners.end()));
+		destination.Connections.insert(destination.Connections.end(),
+			std::make_move_iterator(source.Connections.begin()),
+			std::make_move_iterator(source.Connections.end()));
+	}
+
 	template<typename TValue>
 	DependencyPropertyOptions<Selector, TValue> SelectorPropertyOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyEditorKind editor,
-		DependencyPropertyPersistence persistence =
-			DependencyPropertyPersistence::Metadata)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor,
+			DependencyPropertyPersistence persistence =
+				DependencyPropertyPersistence::Metadata))
 	{
 		DependencyPropertyOptions<Selector, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = persistence;
+		)
 		return options;
 	}
 
-	auto SelectorPropertySubscriber(const wchar_t* propertyName)
-	{
-		return [propertyName = std::wstring(propertyName)](
-			Selector& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode)
-		{
-			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
-					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == propertyName)
-						handler();
-				});
-		};
-	}
 }
 
 ListBoxItem::ListBoxItem()
@@ -54,14 +87,12 @@ ListBoxItem::ListBoxItem()
 bool ListBoxItem::Initialize(
 	const BindingSourceReference& item,
 	const ItemTemplateReference& contentTemplate,
-	const std::wstring& displayMemberPath,
+	CompiledBindingPathView displayMemberPath,
 	size_t index,
 	std::wstring* outError)
 {
-	if (!InitializeItem(item, contentTemplate, displayMemberPath,
-		index, L"ListBoxItem", outError))
-		return false;
-	return true;
+	return InitializeItem(item, contentTemplate, displayMemberPath,
+		index, L"ListBoxItem", outError);
 }
 
 void ListBoxItem::RegisterDependencyProperties()
@@ -69,8 +100,50 @@ void ListBoxItem::RegisterDependencyProperties()
 	ItemContainerControl::RegisterDependencyProperties();
 }
 
-void ListBoxItem::ActivateItem()
+std::unique_ptr<AutomationPeer>
+ListBoxItem::OnCreateAutomationPeer()
 {
+	return std::make_unique<ListBoxItemAutomationPeer>(*this);
+}
+
+bool ListBoxItem::HandlesNavigationKey(Key key) const
+{
+	return key == Key::Space || key == Key::Return
+		|| ItemContainerControl::HandlesNavigationKey(key);
+}
+
+bool ListBoxItem::ProcessInput(const InputReport& input)
+{
+	if (input.Kind == InputReportKind::KeyDown
+		&& (input.Key == Key::Space || input.Key == Key::Return))
+	{
+		const ControlWeakReference lifetime(this);
+		auto* list = dynamic_cast<ListBox*>(GetLogicalParent());
+		if (list)
+			(void)list->ProcessItemKey(ItemIndex(), input);
+		else
+			ActivateItem(MouseButton::None, input.Modifiers);
+		auto* live = dynamic_cast<ListBoxItem*>(lifetime.Get());
+		if (!live) return true;
+		live->FocusOwner();
+		live = dynamic_cast<ListBoxItem*>(lifetime.Get());
+		if (!live) return true;
+		auto args = input.CreateKeyEventArgs();
+		live->OnKeyDown(live, args);
+		return true;
+	}
+	return ItemContainerControl::ProcessInput(input);
+}
+
+void ListBoxItem::ActivateItem(
+	MouseButton button,
+	ModifierKeys modifiers)
+{
+	if (auto* owner = dynamic_cast<ListBox*>(GetLogicalParent()))
+	{
+		owner->NotifyItemClicked(ItemIndex(), button, modifiers);
+		return;
+	}
 	if (auto* owner = dynamic_cast<Selector*>(GetLogicalParent()))
 		owner->SelectIndex(static_cast<int>(ItemIndex()));
 }
@@ -87,6 +160,11 @@ void ListBoxItem::OnIsSelectedRequested(bool value)
 	auto* owner = dynamic_cast<Selector*>(GetLogicalParent());
 	if (!owner) return;
 	const int index = static_cast<int>(ItemIndex());
+	if (auto* list = dynamic_cast<ListBox*>(owner))
+	{
+		list->RequestItemSelection(ItemIndex(), value);
+		return;
+	}
 	if (value) (void)owner->SelectIndex(index);
 	else if (owner->GetSelectedIndex() == index)
 		(void)owner->SelectIndex(-1);
@@ -95,83 +173,66 @@ void ListBoxItem::OnIsSelectedRequested(bool value)
 Selector::Selector()
 	: ItemsControl()
 {
-	OnGotFocus += [this](Control*) { UpdateContainerSelection(); };
-	OnLostFocus += [this](Control*) { UpdateContainerSelection(); };
+	OnGotFocus += [this](Control*)
+	{
+		UpdateSelectionActiveState();
+		UpdateContainerSelection();
+	};
+	OnLostFocus += [this](Control*)
+	{
+		UpdateSelectionActiveState();
+		UpdateContainerSelection();
+	};
+	RetainEventConnection(OnPropertyValueChanged.Subscribe(
+		[this](DependencyObject*,
+			const DependencyPropertyChangedEventArgs& args)
+		{
+			if (args.Property == &Control::IsKeyboardFocusWithinProperty())
+				UpdateSelectionActiveState();
+		}));
+	UpdateSelectionActiveState();
 }
 
-void Selector::RegisterDependencyProperties()
+const DependencyProperty& Selector::SelectedIndexProperty()
 {
-	ItemsControl::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		auto indexOptions = SelectorPropertyOptions(
-			-1, 40, DependencyPropertyEditorKind::Number);
-		indexOptions.Coerce = [](
+		auto options = SelectorPropertyOptions(
+			-1 CUI_DESIGN_METADATA_ARGUMENTS(
+				40, DependencyPropertyEditorKind::Number));
+		options.Flags = options.Flags
+			| DependencyPropertyFlags::BindsTwoWayByDefault;
+		options.Coerce = [](
 			Selector&, const int& proposed) -> std::optional<int>
 		{
 			return (std::max)(-1, proposed);
 		};
-		indexOptions.Changed = [](
+		options.Changed = [](
 			Selector& target, const int& oldValue, const int& newValue)
 		{
 			target.ApplySelectedIndexChange(oldValue, newValue);
 		};
-		indexOptions.Design.Minimum = -1.0;
-		indexOptions.Design.Step = 1.0;
-		DependencyPropertyRegistry::Register<Selector, int>(
-			L"SelectedIndex",
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = -1.0;
+		options.Design.Step = 1.0;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Selector, int>(
+			DependencyPropertyRegistrationLiteral(L"SelectedIndex"),
 			[](Selector& target) { return target.GetSelectedIndex(); },
 			[](Selector& target, const int& value)
-			{ target.SetSelectedIndex(value); },
-			SelectorPropertySubscriber(L"SelectedIndex"),
-			std::move(indexOptions));
+			{ target.SetSelectedIndex(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto valuePathOptions = SelectorPropertyOptions(
-			std::wstring{}, 50, DependencyPropertyEditorKind::Text);
-		DependencyPropertyRegistry::Register<Selector, std::wstring>(
-			L"SelectedValuePath",
-			[](Selector& target) { return target.GetSelectedValuePath(); },
-			[](Selector& target, const std::wstring& value)
-			{ target.SetSelectedValuePath(value); }, {},
-			std::move(valuePathOptions));
-
-		auto itemOptions = SelectorPropertyOptions(
-			BindingValue{}, 60, DependencyPropertyEditorKind::Auto,
-			DependencyPropertyPersistence::Native);
-		itemOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<Selector, BindingValue>(
-			L"SelectedItem",
-			[](Selector& target) { return target.GetSelectedItem(); },
-			[](Selector& target, const BindingValue& value)
-			{ target.SetSelectedItem(value); },
-			[](Selector& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._selectedItemChanged.Subscribe(
-					[handler = std::move(handler)](Selector*) { handler(); });
-			}, std::move(itemOptions));
-
-		auto valueOptions = SelectorPropertyOptions(
-			BindingValue{}, 70, DependencyPropertyEditorKind::Auto,
-			DependencyPropertyPersistence::Native);
-		valueOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<Selector, BindingValue>(
-			L"SelectedValue",
-			[](Selector& target) { return target.GetSelectedValue(); },
-			[](Selector& target, const BindingValue& value)
-			{ target.SetSelectedValue(value); },
-			[](Selector& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target._selectedValueChanged.Subscribe(
-					[handler = std::move(handler)](Selector*) { handler(); });
-			}, std::move(valueOptions));
-
-		auto synchronizationOptions = SelectorPropertyOptions(
-			false, 80, DependencyPropertyEditorKind::Boolean);
-		synchronizationOptions.Changed = [](
+const DependencyProperty& Selector::IsSynchronizedWithCurrentItemProperty()
+{
+	static const auto registration = []
+	{
+		auto options = SelectorPropertyOptions(
+			false CUI_DESIGN_METADATA_ARGUMENTS(
+				80, DependencyPropertyEditorKind::Boolean));
+		options.Changed = [](
 			Selector& target, const bool& oldValue, const bool&)
 		{
 			try
@@ -187,31 +248,128 @@ void Selector::RegisterDependencyProperties()
 					try
 					{
 						(void)target.TrySetCurrentPropertyValue(
-							L"IsSynchronizedWithCurrentItem",
+							IsSynchronizedWithCurrentItemProperty(),
 							BindingValue(oldValue));
 					}
 					catch (...)
 					{
-						// Preserve the original subscription failure. The nested
-						// setter has already restored the backing boolean before
-						// publishing any user property notifications.
+						// Preserve the original subscription failure.
 					}
 					target._rollingBackCurrentItemSynchronizationProperty = false;
 				}
 				std::rethrow_exception(failure);
 			}
 		};
-		DependencyPropertyRegistry::Register<Selector, bool>(
-			L"IsSynchronizedWithCurrentItem",
+		return DependencyPropertyRegistry::RegisterStatic<Selector, bool>(
+			DependencyPropertyRegistrationLiteral(
+				L"IsSynchronizedWithCurrentItem"),
 			[](Selector& target)
 			{ return target.GetIsSynchronizedWithCurrentItem(); },
 			[](Selector& target, const bool& value)
 			{ target.SetIsSynchronizedWithCurrentItem(value); }, {},
-			std::move(synchronizationOptions));
-
-		return true;
+			std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& Selector::SelectedItemProperty()
+{
+	static const auto registration = []
+	{
+		auto options = SelectorPropertyOptions(
+			BindingValue{} CUI_DESIGN_METADATA_ARGUMENTS(
+				60, DependencyPropertyEditorKind::Auto,
+				DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Selector, BindingValue>(
+			DependencyPropertyRegistrationLiteral(L"SelectedItem"),
+			[](Selector& target) { return target.GetSelectedItem(); },
+			[](Selector& target, const BindingValue& value)
+			{ target.SetSelectedItem(value); },
+			[](Selector& target,
+				DependencyPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedItemChanged.Subscribe(
+					[handler = std::move(handler)](Selector*) { handler(); });
+			}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& Selector::SelectedValueProperty()
+{
+	static const auto registration = []
+	{
+		auto options = SelectorPropertyOptions(
+			BindingValue{} CUI_DESIGN_METADATA_ARGUMENTS(
+				70, DependencyPropertyEditorKind::Auto,
+				DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Selector, BindingValue>(
+			DependencyPropertyRegistrationLiteral(L"SelectedValue"),
+			[](Selector& target) { return target.GetSelectedValue(); },
+			[](Selector& target, const BindingValue& value)
+			{ target.SetSelectedValue(value); },
+			[](Selector& target,
+				DependencyPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedValueChanged.Subscribe(
+					[handler = std::move(handler)](Selector*) { handler(); });
+			}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyPropertyKey& Selector::IsSelectionActivePropertyKey()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Control, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		options.Design.Category = L"State";
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<Control, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsSelectionActive"),
+			std::move(options));
+	}();
+	return registration.Key();
+}
+
+void Selector::RegisterDependencyProperties()
+{
+	ItemsControl::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	RegisterDesignDependencyProperties();
+#endif
+}
+
+void Selector::SetIsSelectionActive(
+	Control& target,
+	bool value)
+{
+	(void)cui::framework::DependencyPropertyAccess::SetReadOnlyValue(
+		target,
+		IsSelectionActivePropertyKey(),
+		BindingValue(value));
+}
+
+void Selector::VisitDeclaredInheritedProperties(
+	void* context, InheritedPropertyVisitor visitor) const
+{
+	ItemsControl::VisitDeclaredInheritedProperties(context, visitor);
+	if (visitor)
+		visitor(context, IsSelectionActivePropertyKey().Property());
 }
 
 int Selector::ClampIndex(int value) const noexcept
@@ -229,7 +387,8 @@ size_t Selector::SelectionItemCount() const noexcept
 
 void Selector::SetSelectedIndex(int value)
 {
-	(void)SetPropertyField(L"SelectedIndex", _selectedIndex, ClampIndex(value));
+	(void)SetPropertyField(
+		SelectedIndexProperty(), _selectedIndex, ClampIndex(value));
 }
 
 bool Selector::SelectIndex(int value)
@@ -238,6 +397,12 @@ bool Selector::SelectIndex(int value)
 	if (_selectedIndex == normalized) return false;
 	SetCurrentSelectedIndex(normalized);
 	return true;
+}
+
+bool Selector::IsIndexSelected(size_t index) const noexcept
+{
+	return _selectedIndex >= 0
+		&& static_cast<size_t>(_selectedIndex) == index;
 }
 
 BindingValue Selector::GetSelectedItem() const
@@ -282,20 +447,67 @@ void Selector::SetSelectedItem(const BindingValue& value)
 		return;
 	}
 	SetCurrentSelectedIndex(FindBindingListItemByValue(
-		GetItemsView(), std::wstring{}, BindingValue(item)));
+		GetItemsView(), CompiledBindingPathView{}, BindingValue(item)));
 }
 
-void Selector::SetSelectedValuePath(std::wstring value)
+void Selector::SetCompiledSelectedValuePath(
+	CompiledBindingPathView value)
 {
-	if (_selectedValuePath == value) return;
-	_selectedValuePath = std::move(value);
-	const auto source = GetPropertyValueSource(L"SelectedValue");
+	ValidateCompiledSelectedValuePath(value);
+	if (SameCompiledBindingPath(_compiledSelectedValuePath, value)
+#if CUI_ENABLE_DYNAMIC_XAML
+		&& _selectedValuePath.empty()
+#endif
+		) return;
+	_compiledSelectedValuePath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	_selectedValuePath.clear();
+#endif
+	const auto source = GetPropertyValueSource(SelectedValueProperty());
 	BindingValue configured;
 	if (source != DependencyPropertyValueSource::Default
-		&& TryGetPropertyValue(L"SelectedValue", source, configured))
+		&& TryGetPropertyValue(SelectedValueProperty(), source, configured))
 		SetSelectedValue(configured);
 	else
 		RefreshSelectedItemState(false);
+}
+
+bool Selector::HasSelectedValuePath() const noexcept
+{
+	if (!_compiledSelectedValuePath.Empty()) return true;
+#if CUI_ENABLE_DYNAMIC_XAML
+	return HasAuthoredSelectedValuePath();
+#else
+	return false;
+#endif
+}
+
+bool Selector::TryReadSelectedValue(
+	IBindingSource& item, BindingValue& value) const
+{
+	if (!_compiledSelectedValuePath.Empty())
+		return TryGetBindingPathValue(
+			item, _compiledSelectedValuePath, value);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return TryReadAuthoredSelectedValue(item, value);
+#else
+	return false;
+#endif
+}
+
+BindingPathObservation Selector::ObserveItemProjectionPaths(
+	const BindingSourceReference& item,
+	std::function<void()> changed) const
+{
+	auto result = ObserveDisplayMemberPath(item, changed);
+	if (!_compiledSelectedValuePath.Empty())
+		AppendObservation(result, ObserveBindingPaths(
+			item, { _compiledSelectedValuePath }, std::move(changed)));
+#if CUI_ENABLE_DYNAMIC_XAML
+	else AppendObservation(result, ObserveAuthoredSelectedValuePath(
+		item, std::move(changed)));
+#endif
+	return result;
 }
 
 BindingValue Selector::GetSelectedValue() const
@@ -305,16 +517,22 @@ BindingValue Selector::GetSelectedValue() const
 	{
 		auto* item = GetAuthoredItem(static_cast<size_t>(_selectedIndex));
 		if (!item) return {};
-		if (_selectedValuePath.empty())
+		if (!HasSelectedValuePath())
 			return BindingValue(static_cast<Control*>(item));
 		BindingValue value;
-		return item->TryGetPropertyValue(_selectedValuePath, value)
+		return TryReadSelectedValue(*item, value)
 			? value : BindingValue{};
 	}
 	BindingValue value;
-	return TryGetBindingListItemValue(
-		GetItemsView(), static_cast<size_t>(_selectedIndex),
-		_selectedValuePath, value)
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (_compiledSelectedValuePath.Empty())
+		return TryReadAuthoredSelectedValueAt(
+			static_cast<size_t>(_selectedIndex), value)
+			? value : BindingValue{};
+#endif
+	return TryGetBindingListItemValue(GetItemsView(),
+		static_cast<size_t>(_selectedIndex),
+		_compiledSelectedValuePath, value)
 		? value : BindingValue{};
 }
 
@@ -333,10 +551,9 @@ void Selector::SetSelectedValue(const BindingValue& value)
 			auto* item = GetAuthoredItem(index);
 			if (!item) continue;
 			BindingValue candidate;
-			if (_selectedValuePath.empty())
+			if (!HasSelectedValuePath())
 				candidate = BindingValue(static_cast<Control*>(item));
-			else if (!item->TryGetPropertyValue(
-				_selectedValuePath, candidate))
+			else if (!TryReadSelectedValue(*item, candidate))
 				continue;
 			if (!BindingValuesEqual(candidate, value)) continue;
 			match = static_cast<int>(index);
@@ -345,16 +562,26 @@ void Selector::SetSelectedValue(const BindingValue& value)
 		SetCurrentSelectedIndex(match);
 		return;
 	}
-	SetCurrentSelectedIndex(value.Empty()
-		? -1
-		: FindBindingListItemByValue(
-			GetItemsView(), _selectedValuePath, value));
+	if (value.Empty())
+	{
+		SetCurrentSelectedIndex(-1);
+		return;
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (_compiledSelectedValuePath.Empty())
+	{
+		SetCurrentSelectedIndex(FindAuthoredSelectedValue(value));
+		return;
+	}
+#endif
+	SetCurrentSelectedIndex(FindBindingListItemByValue(
+		GetItemsView(), _compiledSelectedValuePath, value));
 }
 
 void Selector::SetIsSynchronizedWithCurrentItem(bool value)
 {
 	(void)SetPropertyField(
-		L"IsSynchronizedWithCurrentItem",
+		IsSynchronizedWithCurrentItemProperty(),
 		_isSynchronizedWithCurrentItem,
 		value);
 }
@@ -418,8 +645,16 @@ std::unique_ptr<Control> Selector::BuildGeneratedItem(
 	cui::framework::StyleAccess::SetResourceKey(
 		*container, GetItemContainerStyle());
 	std::wstring error;
-	if (!container->Initialize(
-		item, GetItemTemplate(), GetDisplayMemberPath(), index, &error))
+	bool initialized = false;
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (GetCompiledDisplayMemberPath().Empty())
+		initialized = InitializeAuthoredGeneratedContainer(
+			*container, item, index, error);
+	else
+#endif
+		initialized = container->Initialize(
+			item, GetItemTemplate(), GetCompiledDisplayMemberPath(), index, &error);
+	if (!initialized)
 	{
 		SetLastTemplateError(error.empty()
 			? L"ListBoxItem 内容初始化失败。" : std::move(error));
@@ -477,7 +712,7 @@ void Selector::RestoreItemsSourceTransactionState(
 			}
 			else if (selection->SelectedItemIdentity)
 				restoredIndex = FindBindingListItemByValue(
-					source, std::wstring{},
+					source, CompiledBindingPathView{},
 					BindingValue(selection->SelectedItemIdentity));
 			if (restoredIndex < 0)
 				restoredIndex = ClampIndex(selection->SelectedIndex);
@@ -510,6 +745,12 @@ void Selector::RestoreItemsSourceTransactionState(
 void Selector::OnGeneratedItemsRealized()
 {
 	UpdateContainerSelection();
+}
+
+void Selector::OnTextSearchMatch(size_t index)
+{
+	if (index < SelectionItemCount())
+		(void)SelectIndex(static_cast<int>(index));
 }
 
 void Selector::OnGeneratedItemIndexChanged(
@@ -551,11 +792,11 @@ void Selector::OnAuthoredItemsChanged() noexcept
 	}
 	if (restored < 0)
 	{
-		const auto source = GetPropertyValueSource(L"SelectedIndex");
+		const auto source = GetPropertyValueSource(SelectedIndexProperty());
 		BindingValue configured;
 		int configuredIndex = -1;
 		if (source != DependencyPropertyValueSource::Default
-			&& TryGetPropertyValue(L"SelectedIndex", source, configured)
+			&& TryGetPropertyValue(SelectedIndexProperty(), source, configured)
 			&& configured.TryGet(configuredIndex)
 			&& configuredIndex >= 0
 			&& (static_cast<size_t>(configuredIndex) < AuthoredItemCount()
@@ -591,48 +832,104 @@ void Selector::SetCurrentSelectedIndex(int value)
 		return;
 	}
 	(void)SetCurrentPropertyField(
-		L"SelectedIndex", _selectedIndex, normalized);
+		SelectedIndexProperty(), _selectedIndex, normalized);
+}
+
+void Selector::SetCurrentSelectedIndexWithoutSelectionChanged(
+	int value)
+{
+	const bool previous = _suppressSelectionChanged;
+	_suppressSelectionChanged = true;
+	try
+	{
+		SetCurrentSelectedIndex(value);
+		_suppressSelectionChanged = previous;
+	}
+	catch (...)
+	{
+		_suppressSelectionChanged = previous;
+		throw;
+	}
 }
 
 void Selector::ApplySelectedIndexChange(int oldValue, int newValue)
 {
 	if (oldValue == newValue) return;
 	OnSelectedIndexChanged(oldValue, newValue);
-	RefreshSelectedItemState(true, oldValue);
+	RefreshSelectedItemState(
+		!_suppressSelectionChanged, oldValue);
 	EnsureSelectedItemVisible();
 	SynchronizeCurrentViewFromSelection();
+}
+
+BindingValue Selector::GetSelectionItemAt(size_t index) const
+{
+	if (const auto source = GetItemsView())
+	{
+		BindingSourceReference item;
+		if (index < source.Get()->Count()
+			&& source.Get()->TryGetItem(index, item)
+			&& item)
+			return BindingValue(std::move(item));
+		return {};
+	}
+	if (auto* item = GetAuthoredItem(index))
+		return BindingValue(item);
+	return {};
+}
+
+void Selector::RaiseSelectionChanged(
+	int oldIndex,
+	int newIndex,
+	std::vector<BindingValue> removedItems,
+	std::vector<BindingValue> addedItems)
+{
+	if (_suppressSelectionChanged) return;
+	SelectionChangedEventArgs args(
+		oldIndex, newIndex,
+		std::move(removedItems),
+		std::move(addedItems));
+	SelectionChanged(this, args);
 }
 
 void Selector::RestoreSelectionAfterRebuild()
 {
 	int restored = -1;
 	BindingValue configured;
-	const auto itemSource = GetPropertyValueSource(L"SelectedItem");
+	const auto itemSource = GetPropertyValueSource(SelectedItemProperty());
 	if (itemSource != DependencyPropertyValueSource::Default
-		&& TryGetPropertyValue(L"SelectedItem", itemSource, configured)
+		&& TryGetPropertyValue(SelectedItemProperty(), itemSource, configured)
 		&& !configured.Empty())
 		restored = FindBindingListItemByValue(
-			GetItemsView(), std::wstring{}, configured);
+			GetItemsView(), CompiledBindingPathView{}, configured);
 	if (restored < 0)
 	{
-		const auto valueSource = GetPropertyValueSource(L"SelectedValue");
+		const auto valueSource = GetPropertyValueSource(SelectedValueProperty());
 		if (valueSource != DependencyPropertyValueSource::Default
-			&& TryGetPropertyValue(L"SelectedValue", valueSource, configured)
+			&& TryGetPropertyValue(
+				SelectedValueProperty(), valueSource, configured)
 			&& !configured.Empty())
-			restored = FindBindingListItemByValue(
-				GetItemsView(), _selectedValuePath, configured);
+		{
+#if CUI_ENABLE_DYNAMIC_XAML
+			if (_compiledSelectedValuePath.Empty())
+				restored = FindAuthoredSelectedValue(configured);
+			else
+#endif
+				restored = FindBindingListItemByValue(
+					GetItemsView(), _compiledSelectedValuePath, configured);
+		}
 	}
 	if (restored < 0 && _selectedItemIdentity)
 		restored = FindBindingListItemByValue(
-			GetItemsView(), std::wstring{},
+			GetItemsView(), CompiledBindingPathView{},
 			BindingValue(_selectedItemIdentity));
 	if (restored < 0)
 	{
-		const auto indexSource = GetPropertyValueSource(L"SelectedIndex");
+		const auto indexSource = GetPropertyValueSource(SelectedIndexProperty());
 		int configuredIndex = -1;
 		if (indexSource != DependencyPropertyValueSource::Default
 			&& TryGetPropertyValue(
-				L"SelectedIndex", indexSource, configured)
+				SelectedIndexProperty(), indexSource, configured)
 			&& configured.TryGet(configuredIndex)
 			&& configuredIndex >= 0
 			&& static_cast<size_t>(configuredIndex) < ItemCount())
@@ -665,36 +962,59 @@ void Selector::RefreshSelectedItemState(
 		|| nextAuthored != _selectedAuthoredItemIdentity;
 	_selectedItemIdentity = std::move(next);
 	_selectedAuthoredItemIdentity = nextAuthored;
-	_selectedItemObservation = ObserveBindingPaths(
-		_selectedItemIdentity, { _selectedValuePath },
+	if (!_compiledSelectedValuePath.Empty())
+		_selectedItemObservation = ObserveBindingPaths(
+			_selectedItemIdentity, { _compiledSelectedValuePath },
+			[this] { NotifySelectionProjectionsChanged(); });
+#if CUI_ENABLE_DYNAMIC_XAML
+	else _selectedItemObservation = ObserveAuthoredSelectedValuePath(
+		_selectedItemIdentity,
 		[this] { NotifySelectionProjectionsChanged(); });
+#else
+	else _selectedItemObservation = {};
+#endif
 	UpdateContainerSelection();
 	NotifySelectionProjectionsChanged();
-	if (raiseSelectionChanged || itemChanged)
+	if ((raiseSelectionChanged || itemChanged)
+		&& !_suppressSelectionChanged)
 	{
 		const BindingValue currentItem = GetSelectedItem();
 		std::vector<BindingValue> removed;
 		std::vector<BindingValue> added;
 		if (!previousItem.Empty()) removed.push_back(previousItem);
 		if (!currentItem.Empty()) added.push_back(currentItem);
-		SelectionChangedEventArgs args(
-			previousIndex.value_or(_selectedIndex), _selectedIndex,
-			std::move(removed), std::move(added));
-		SelectionChanged(this, args);
+		RaiseSelectionChanged(
+			previousIndex.value_or(_selectedIndex),
+			_selectedIndex,
+			std::move(removed),
+			std::move(added));
 	}
 }
 
 void Selector::UpdateContainerSelection()
 {
+	for (size_t index = 0; index < AuthoredItemCount(); ++index)
+	{
+		if (auto* container =
+			dynamic_cast<ItemContainerControl*>(
+				GetAuthoredItem(index)))
+			container->SetCurrentIsSelected(
+				IsIndexSelected(index));
+	}
 	for (size_t index = 0; index < ItemCount(); ++index)
 	{
 		if (auto* container = dynamic_cast<ItemContainerControl*>(
 			GetGeneratedItem(index)))
 		{
-			const bool selected = static_cast<int>(index) == _selectedIndex;
-			container->SetCurrentIsSelected(selected);
+			container->SetCurrentIsSelected(
+				IsIndexSelected(index));
 		}
 	}
+}
+
+void Selector::UpdateSelectionActiveState()
+{
+	SetIsSelectionActive(*this, IsKeyboardFocusWithin);
 }
 
 void Selector::EnsureSelectedItemVisible()
@@ -746,18 +1066,18 @@ bool Selector::ProcessInput(const InputReport& input)
 void Selector::NotifySelectionProjectionsChanged()
 {
 	auto synchronize = [this](
-		const wchar_t* propertyName,
+		const DependencyProperty& property,
 		const BindingValue& current)
 	{
-		const auto source = GetPropertyValueSource(propertyName);
+		const auto source = GetPropertyValueSource(property);
 		if (source == DependencyPropertyValueSource::Default) return;
 		BindingValue stored;
-		if (!TryGetPropertyValue(propertyName, source, stored)
+		if (!TryGetPropertyValue(property, source, stored)
 			|| !BindingItemValuesEqual(stored, current))
-			(void)TrySetCurrentPropertyValue(propertyName, current);
+			(void)TrySetCurrentPropertyValue(property, current);
 	};
-	synchronize(L"SelectedItem", GetSelectedItem());
-	synchronize(L"SelectedValue", GetSelectedValue());
+	synchronize(SelectedItemProperty(), GetSelectedItem());
+	synchronize(SelectedValueProperty(), GetSelectedValue());
 	cui::framework::EventAccess::Raise(_selectedItemChanged, this);
 	cui::framework::EventAccess::Raise(_selectedValueChanged, this);
 }
@@ -913,7 +1233,7 @@ void Selector::ApplySelectionFromCurrentView()
 		else
 		{
 			selectedIndex = FindBindingListItemByValue(
-				source, std::wstring{}, BindingValue(currentItem));
+				source, CompiledBindingPathView{}, BindingValue(currentItem));
 		}
 	}
 

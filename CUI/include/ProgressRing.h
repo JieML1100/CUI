@@ -16,8 +16,11 @@ private:
 
 public:
 	virtual UIClass Type();
+	static const DependencyProperty& ShowPercentageProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	PROPERTY(bool, ShowPercentage);
 	GET(bool, ShowPercentage);
 	SET(bool, ShowPercentage);

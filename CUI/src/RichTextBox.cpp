@@ -82,40 +82,95 @@ UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 
 const DependencyProperty& RichTextBox::TextProperty()
 {
-	RegisterDependencyProperties();
-	const std::type_index ownerTypes[] = {
-		std::type_index(typeid(RichTextBox))
-	};
-	const auto* metadata =
-		DependencyPropertyRegistry::FindRegistered(ownerTypes, L"Text");
-	if (!metadata)
-		throw std::logic_error(
-			"RichTextBox compatibility Text property is not registered");
-	return metadata->Property();
+	static const auto registration = []
+	{
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyOptions<RichTextBox, std::wstring> options;
+		options.DefaultValue = std::wstring{};
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
+		options.Changed = [](
+			RichTextBox& target,
+			const std::wstring& oldValue, const std::wstring& newValue)
+		{
+			target.bufferSyncedFromControl = false;
+			target._textLayoutDirty = true;
+			TextChangedEventArgs args(oldValue, newValue);
+			target.OnTextChanged(&target, args);
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			RichTextBox, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"Text"),
+				[](RichTextBox& target, Handler handler,
+					DataSourceUpdateMode mode)
+				{
+					if (mode == DataSourceUpdateMode::OnValidation)
+					{
+						return target.OnLostFocus.Subscribe(
+							[handler = std::move(handler)](Control*)
+							{ handler(); });
+					}
+					return target.OnTextChanged.Subscribe(
+						[handler = std::move(handler)](
+							Control*, TextChangedEventArgs&) { handler(); });
+				}, std::move(options));
+	}();
+	return *registration;
 }
 
-GET_CPP(RichTextBox, std::wstring, Text) { return Control::GetText(); }
+const DependencyProperty& RichTextBox::MaxLengthProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DependencyPropertyOptions<RichTextBox, int>{
+			0, DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsRender,
+			[](RichTextBox&, const int& proposed) -> std::optional<int>
+			{ return (std::max)(0, proposed); } };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 30;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Minimum = 0.0;
+		options.Design.Step = 1.0;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<RichTextBox, int>(
+			DependencyPropertyRegistrationLiteral(L"MaxLength"),
+			[](RichTextBox& target) { return target.MaxLength; },
+			[](RichTextBox& target, const int& value)
+			{ target.MaxLength = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+GET_CPP(RichTextBox, std::wstring, Text)
+{
+	return GetDependencyPropertyValue<std::wstring>(TextProperty());
+}
+
+std::wstring RichTextBox::GetSemanticText() const
+{
+	return GetDependencyPropertyValue<std::wstring>(TextProperty());
+}
+
 SET_CPP(RichTextBox, std::wstring, Text)
 {
-	Control::SetText(std::move(value));
-}
-
-GET_CPP(RichTextBox, bool, AcceptsTab) { return _acceptsTab; }
-SET_CPP(RichTextBox, bool, AcceptsTab)
-{
-	(void)SetPropertyField(L"AcceptsTab", _acceptsTab, value);
-}
-
-GET_CPP(RichTextBox, bool, IsReadOnly) { return _isReadOnly; }
-SET_CPP(RichTextBox, bool, IsReadOnly)
-{
-	(void)SetPropertyField(L"IsReadOnly", _isReadOnly, value);
+	(void)SetDependencyPropertyValue(TextProperty(), std::move(value));
 }
 
 GET_CPP(RichTextBox, int, MaxLength) { return _maxLength; }
 SET_CPP(RichTextBox, int, MaxLength)
 {
-	if (!SetPropertyField(L"MaxLength", _maxLength, value)) return;
+	if (!SetPropertyField(MaxLengthProperty(), _maxLength, value)) return;
 	SyncBufferFromControlIfNeeded();
 	TrimToMaxLength();
 	_textLayoutDirty = true;
@@ -125,75 +180,29 @@ SET_CPP(RichTextBox, int, MaxLength)
 
 void RichTextBox::RegisterDependencyProperties()
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	TextBoxBase::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)TextProperty();
+	(void)MaxLengthProperty();
+#endif
+	CUI_DESIGN_METADATA_ONLY(
+	(void)RegisterControlBorderThicknessMetadata<
+		RichTextBox, TextBoxBase>(
+			1.0f CUI_DESIGN_METADATA_ARGUMENTS(60));
+	)
+}
+
+const DependencyPropertyMetadata*
+RichTextBox::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+	if (&property == &Control::BorderThicknessProperty())
 	{
-		using Handler = DependencyPropertyMetadata::ChangeHandler;
-		DependencyPropertyOptions<RichTextBox, std::wstring> options;
-		options.DefaultValue = std::wstring{};
-		options.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsRender;
-		options.Design.Category = L"Common";
-		options.Design.CategoryOrder = 0;
-		options.Design.Order = 10;
-		options.Design.Editor = DependencyPropertyEditorKind::Text;
-		options.Design.Persistence = DependencyPropertyPersistence::Native;
-		options.Changed = [](RichTextBox& target,
-			const std::wstring& oldValue, const std::wstring& newValue)
-		{
-			target.bufferSyncedFromControl = false;
-			target._textLayoutDirty = true;
-			TextChangedEventArgs args(oldValue, newValue);
-			target.OnTextChanged(&target, args);
-		};
-		DependencyPropertyRegistry::Register<RichTextBox, std::wstring>(
-			L"Text",
-			[](RichTextBox& target, Handler handler, DataSourceUpdateMode mode)
-			{
-				if (mode == DataSourceUpdateMode::OnValidation)
-					return target.OnLostFocus.Subscribe(
-						[handler = std::move(handler)](Control*) { handler(); });
-				return target.OnTextChanged.Subscribe(
-					[handler = std::move(handler)](
-						Control*, TextChangedEventArgs&) { handler(); });
-			}, std::move(options));
-		auto boolOptions = DependencyPropertyOptions<RichTextBox, bool>{
-			false, DependencyPropertyFlags::AffectsRender };
-		boolOptions.Design.Category = L"Behavior";
-		boolOptions.Design.CategoryOrder = 300;
-		boolOptions.Design.Order = 10;
-		boolOptions.Design.Editor = DependencyPropertyEditorKind::Boolean;
-		boolOptions.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<RichTextBox, bool>(L"AcceptsTab",
-			[](RichTextBox& target) { return target.AcceptsTab; },
-			[](RichTextBox& target, const bool& value)
-			{ target.AcceptsTab = value; }, {}, boolOptions);
-		boolOptions.Design.Order = 20;
-		DependencyPropertyRegistry::Register<RichTextBox, bool>(L"IsReadOnly",
-			[](RichTextBox& target) { return target.IsReadOnly; },
-			[](RichTextBox& target, const bool& value)
-			{ target.IsReadOnly = value; }, {}, std::move(boolOptions));
-		auto maxLengthOptions = DependencyPropertyOptions<RichTextBox, int>{
-			0, DependencyPropertyFlags::AffectsMeasure
-				| DependencyPropertyFlags::AffectsRender,
-			[](RichTextBox&, const int& proposed) -> std::optional<int>
-			{ return (std::max)(0, proposed); } };
-		maxLengthOptions.Design.Category = L"Behavior";
-		maxLengthOptions.Design.CategoryOrder = 300;
-		maxLengthOptions.Design.Order = 30;
-		maxLengthOptions.Design.Editor = DependencyPropertyEditorKind::Number;
-		maxLengthOptions.Design.Minimum = 0.0;
-		maxLengthOptions.Design.Step = 1.0;
-		maxLengthOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<RichTextBox, int>(L"MaxLength",
-			[](RichTextBox& target) { return target.MaxLength; },
-			[](RichTextBox& target, const int& value)
-			{ target.MaxLength = value; }, {}, std::move(maxLengthOptions));
-		RegisterControlBorderThicknessMetadata<RichTextBox>(1.0f, 60);
-		return true;
-	}();
-	(void)registered;
+		return &RegisterControlBorderThicknessMetadata<
+			RichTextBox, TextBoxBase>(
+				1.0f CUI_DESIGN_METADATA_ARGUMENTS(60)).Metadata();
+	}
+	return TextBoxBase::ResolveExactDependencyPropertyMetadata(property);
 }
 
 bool RichTextBox::CanHandleMouseWheel(int delta, int localX, int localY)
@@ -248,14 +257,8 @@ CursorKind RichTextBox::QueryCursor(int localX, int localY)
 RichTextBox::RichTextBox()
 {
 	RegisterDependencyProperties();
-	(void)TrySetPropertyValue(
-		L"Padding", BindingValue(Thickness{ 5.0f }),
-		DependencyPropertyValueSource::Theme);
 	this->buffer = this->Text;
 	this->bufferSyncedFromControl = true;
-	this->RendererBackgroundColor = cui::theme::palette::Surface;
-	this->RendererBorderColor = cui::theme::palette::BorderStrong;
-	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
 	UpdateLayout();
 }
 
@@ -337,7 +340,7 @@ void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
 	// Editing updates the current target value while retaining any Local
 	// expression. RichTextBox.Text is a temporary CUI compatibility surface.
 	(void)TrySetCurrentPropertyValue(
-		L"Text", BindingValue(this->buffer));
+		TextProperty(), BindingValue(this->buffer));
 	this->bufferSyncedFromControl = true;
 }
 
@@ -374,7 +377,8 @@ void RichTextBox::ApplyTextDrawingEffects(
 	IDWriteTextLayout* layout,
 	int textStart,
 	int textLength,
-	bool includeSelection)
+	bool includeSelection,
+	ID2D1Brush* selectionTextBrush)
 {
 	if (!layout || !GetPresentationWindow() || !GetDrawingContext()) return;
 	layout->SetDrawingEffect(nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
@@ -399,10 +403,9 @@ void RichTextBox::ApplyTextDrawingEffects(
 	const int selectionEnd = (std::min)(
 		(std::max)(_selectionStart, _selectionEnd), textEnd);
 	if (selectionEnd <= selectionStart) return;
-	auto selectionBrush = GetTextStyleBrush(_selectionForeColor);
-	if (!selectionBrush) return;
+	if (!selectionTextBrush) return;
 	layout->SetDrawingEffect(
-		selectionBrush,
+		selectionTextBrush,
 		DWRITE_TEXT_RANGE{
 			static_cast<UINT32>(selectionStart - textStart),
 			static_cast<UINT32>(selectionEnd - selectionStart) });
@@ -705,8 +708,71 @@ bool RichTextBox::GetCaretMetrics(int caretIndex, float& outX, float& outY, floa
 	outH = hit[0].height;
 	return true;
 }
+
+int RichTextBox::GetVisualLineBoundary(bool lineEnd)
+{
+	SyncBufferFromControlIfNeeded();
+	UpdateLayout();
+	if (_isVirtualized)
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float height = 0.0f;
+		if (!GetCaretMetrics(_selectionEnd, x, y, height))
+			return _selectionEnd;
+		return HitTestGlobalIndex(
+			lineEnd ? TextViewportWidth() : Padding.Left,
+			y + height * 0.5f);
+	}
+	if (!_textLayoutCache) return _selectionEnd;
+	auto* font = GetRenderFont();
+	if (!font) return _selectionEnd;
+	auto caret = font->HitTestTextRange(
+		_textLayoutCache,
+		static_cast<UINT32>((std::clamp)(
+			_selectionEnd, 0, static_cast<int>(buffer.size()))),
+		0);
+	if (caret.empty()) return _selectionEnd;
+	return font->HitTestTextPosition(
+		_textLayoutCache,
+		lineEnd ? TextViewportWidth() : 0.0f,
+		caret.front().top + caret.front().height * 0.5f);
+}
+
+int RichTextBox::GetVerticalCaretIndex(float lineDelta)
+{
+	SyncBufferFromControlIfNeeded();
+	UpdateLayout();
+	auto* font = GetRenderFont();
+	if (!font) return _selectionEnd;
+	if (_isVirtualized)
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float height = 0.0f;
+		if (!GetCaretMetrics(_selectionEnd, x, y, height))
+			return _selectionEnd;
+		return HitTestGlobalIndex(
+			x, y + font->FontHeight * lineDelta);
+	}
+	if (!_textLayoutCache) return _selectionEnd;
+	auto caret = font->HitTestTextRange(
+		_textLayoutCache,
+		static_cast<UINT32>((std::clamp)(
+			_selectionEnd, 0, static_cast<int>(buffer.size()))),
+		0);
+	if (caret.empty()) return _selectionEnd;
+	return font->HitTestTextPosition(
+		_textLayoutCache,
+		caret.front().left,
+		caret.front().top
+			+ font->FontHeight * lineDelta
+			+ caret.front().height * 0.5f);
+}
+
 void RichTextBox::DrawScroll()
 {
+	if (!IsVerticalScrollBarVisible()) return;
 	auto d2d = this->GetDrawingContext();
 	float renderHeight = TextViewportHeight();
 	float maxScroll = _textSize.height - renderHeight;
@@ -905,12 +971,18 @@ void RichTextBox::SetScrollByPos(float localY)
 }
 void RichTextBox::InputText(std::wstring input)
 {
+	if (_isReadOnly) return;
 	SyncBufferFromControlIfNeeded();
 	TrimToMaxLength();
 	std::wstring oldText = this->buffer;
 	const int selStartBefore = this->_selectionStart;
 	const int selEndBefore = this->_selectionEnd;
-	auto result = CuiTextEdit::ReplaceSelection(this->buffer, this->_selectionStart, this->_selectionEnd, input, RichEditOptions());
+	auto options = RichEditOptions();
+	options.acceptsTab = _acceptsTab;
+	options.maxTextLength = static_cast<size_t>(_maxLength);
+	auto result = CuiTextEdit::ReplaceSelection(
+		this->buffer, this->_selectionStart,
+		this->_selectionEnd, input, options);
 	UndoRecord rec;
 	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
@@ -927,7 +999,7 @@ void RichTextBox::InputText(std::wstring input)
 	{
 		rec.selStartAfter = this->_selectionStart;
 		rec.selEndAfter = this->_selectionEnd;
-		this->undoStack.push_back(rec);
+		StoreUndoRecord(std::move(rec));
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
@@ -935,6 +1007,7 @@ void RichTextBox::InputText(std::wstring input)
 }
 void RichTextBox::InputBack()
 {
+	if (_isReadOnly) return;
 	SyncBufferFromControlIfNeeded();
 	std::wstring oldText = this->buffer;
 	const int selStartBefore = this->_selectionStart;
@@ -955,7 +1028,7 @@ void RichTextBox::InputBack()
 	{
 		rec.selStartAfter = this->_selectionStart;
 		rec.selEndAfter = this->_selectionEnd;
-		this->undoStack.push_back(rec);
+		StoreUndoRecord(std::move(rec));
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
@@ -963,6 +1036,7 @@ void RichTextBox::InputBack()
 }
 void RichTextBox::InputDelete()
 {
+	if (_isReadOnly) return;
 	SyncBufferFromControlIfNeeded();
 	std::wstring oldText = this->buffer;
 	const int selStartBefore = this->_selectionStart;
@@ -983,7 +1057,7 @@ void RichTextBox::InputDelete()
 	{
 		rec.selStartAfter = this->_selectionStart;
 		rec.selEndAfter = this->_selectionEnd;
-		this->undoStack.push_back(rec);
+		StoreUndoRecord(std::move(rec));
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
@@ -991,6 +1065,7 @@ void RichTextBox::InputDelete()
 }
 void RichTextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 {
+	if (_isReadOnly) return;
 	SyncBufferFromControlIfNeeded();
 	std::wstring oldText = this->buffer;
 	this->isApplyingUndoRedo = true;
@@ -1029,21 +1104,69 @@ void RichTextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 	SyncControlTextFromBuffer(oldText);
 	NotifySelectionChanged();
 }
+
+void RichTextBox::StoreUndoRecord(UndoRecord record)
+{
+	if (!_isUndoEnabled || _undoLimit == 0) return;
+	undoStack.push_back(std::move(record));
+	if (_undoLimit > 0
+		&& undoStack.size() > static_cast<size_t>(_undoLimit))
+	{
+		undoStack.erase(
+			undoStack.begin(),
+			undoStack.begin()
+				+ static_cast<std::ptrdiff_t>(
+					undoStack.size() - static_cast<size_t>(_undoLimit)));
+	}
+}
+
+void RichTextBox::StoreRedoRecord(UndoRecord record)
+{
+	if (!_isUndoEnabled || _undoLimit == 0) return;
+	redoStack.push_back(std::move(record));
+	if (_undoLimit > 0
+		&& redoStack.size() > static_cast<size_t>(_undoLimit))
+	{
+		redoStack.erase(
+			redoStack.begin(),
+			redoStack.begin()
+				+ static_cast<std::ptrdiff_t>(
+					redoStack.size() - static_cast<size_t>(_undoLimit)));
+	}
+}
+
+void RichTextBox::OnUndoPolicyChanged()
+{
+	undoStack.clear();
+	redoStack.clear();
+}
+
+void RichTextBox::OnScrollPolicyChanged()
+{
+	if (_verticalScrollBarVisibility == ScrollBarVisibility::Disabled)
+		_verticalScrollOffset = 0.0f;
+	_textLayoutDirty = true;
+	blocksDirty = true;
+	blockMetricsDirty = true;
+	RequestLayout();
+	InvalidateVisual();
+}
+
 void RichTextBox::Undo()
 {
-	if (this->undoStack.empty()) return;
+	if (!CanUndo()) return;
 	UndoRecord rec = this->undoStack.back();
 	this->undoStack.pop_back();
 	ApplyUndoRecord(rec, true);
-	this->redoStack.push_back(rec);
+	StoreRedoRecord(std::move(rec));
 }
 void RichTextBox::Redo()
 {
-	if (this->redoStack.empty()) return;
+	if (!CanRedo()) return;
 	UndoRecord rec = this->redoStack.back();
 	this->redoStack.pop_back();
 	ApplyUndoRecord(rec, false);
-	this->undoStack.push_back(rec);
+	StoreUndoRecord(std::move(rec));
 }
 void RichTextBox::UpdateScroll(bool arrival)
 {
@@ -1278,34 +1401,40 @@ void RichTextBox::PreparePresentation()
 void RichTextBox::OnRender()
 {
 	if (this->IsVisible == false)return;
-	bool isUnderMouse = this->IsMouseOver;
 	auto d2d = this->GetDrawingContext();
 	auto font = this->GetRenderFont();
+	if (!d2d || !font) return;
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
-	bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+	Microsoft::WRL::ComPtr<ID2D1Brush> foreground;
+	foreground.Attach(CreateForegroundBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	auto selectionDefinition = SelectionBrush;
+	selectionDefinition.Opacity *= static_cast<float>(
+		(std::clamp)(SelectionOpacity, 0.0, 1.0));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionBrush;
+	selectionBrush.Attach(selectionDefinition.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	Microsoft::WRL::ComPtr<ID2D1Brush> selectionTextBrush;
+	selectionTextBrush.Attach(SelectionTextBrush.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	Microsoft::WRL::ComPtr<ID2D1Brush> caretBrush;
+	caretBrush.Attach(CaretBrush.CreateBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
+	const bool focused = GetPresentationWindow()
+		&& GetPresentationWindow()->GetKeyboardFocusedElement() == this;
+	const bool isSelected = focused
+		|| IsInactiveSelectionHighlightEnabled;
+	const bool showCaret = focused
+		&& (!_isReadOnly || _isReadOnlyCaretVisible);
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
 	D2D1_POINT_2F caretStart{};
 	D2D1_POINT_2F caretEnd{};
 
 	this->BeginRender();
-	if (GetControlTemplateRoot())
 	{
-		this->EndRender();
-		return;
-	}
-	{
-		auto backColor = this->RendererBackgroundColor;
-		const float radius = (std::min)(
-			_fallbackCornerRadius, actualHeight * 0.5f);
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, backColor, radius);
-		if ((isUnderMouse || isSelected) && _fallbackHoverColor.a > 0.0f)
-			d2d->FillRoundRect(1.0f, 1.0f,
-				(std::max)(0.0f, actualWidth - 2.0f),
-				(std::max)(0.0f, actualHeight - 2.0f),
-				_fallbackHoverColor, (std::max)(0.0f, radius - 1.0f));
 		if (this->buffer.size() > 0)
 		{
 			if (this->_isVirtualized)
@@ -1319,7 +1448,7 @@ void RichTextBox::OnRender()
 				int selLen = sele - sels;
 
 				float cx, cy, ch;
-				if (isSelected && selLen == 0 && GetCaretMetrics(this->_selectionEnd, cx, cy, ch))
+				if (showCaret && selLen == 0 && GetCaretMetrics(this->_selectionEnd, cx, cy, ch))
 				{
 					{
 						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
@@ -1381,7 +1510,7 @@ void RichTextBox::OnRender()
 						}
 					}
 
-					if (isSelected && selLen != 0)
+					if (isSelected && selLen != 0 && selectionBrush)
 					{
 						int blockStart = (int)this->blocks[i].start;
 						int blockEnd = (int)(this->blocks[i].start + this->blocks[i].len);
@@ -1399,7 +1528,7 @@ void RichTextBox::OnRender()
 									r.top + drawY,
 									r.width,
 									r.height,
-									_selectionBackColor);
+									selectionBrush.Get());
 							}
 						}
 					}
@@ -1408,15 +1537,24 @@ void RichTextBox::OnRender()
 						blocks[i].layout,
 						static_cast<int>(blocks[i].start),
 						static_cast<int>(blocks[i].len),
-						isSelected);
-					d2d->DrawStringLayout(this->blocks[i].layout, drawX, drawY, this->RendererForegroundColor);
+						isSelected,
+						selectionTextBrush.Get());
+					if (foreground)
+						d2d->DrawStringLayout(
+							this->blocks[i].layout, drawX, drawY,
+							foreground.Get());
+					else
+						d2d->DrawStringLayout(
+							this->blocks[i].layout, drawX, drawY,
+							this->RendererForegroundColor);
 				}
 			}
 			else if (isSelected)
 			{
 				ApplyTextDrawingEffects(
 					_textLayoutCache, 0,
-					static_cast<int>(buffer.size()), true);
+					static_cast<int>(buffer.size()), true,
+					selectionTextBrush.Get());
 				for (const auto& highlight : highlightRanges)
 				{
 					auto ranges = font->HitTestTextRange(
@@ -1437,7 +1575,7 @@ void RichTextBox::OnRender()
 				int sels = _selectionStart <= _selectionEnd ? _selectionStart : _selectionEnd;
 				int sele = _selectionEnd >= _selectionStart ? _selectionEnd : _selectionStart;
 				int selLen = sele - sels;
-				if (selLen != 0)
+				if (selLen != 0 && selectionBrush)
 				{
 					for (auto sr : selRange)
 					{
@@ -1446,12 +1584,12 @@ void RichTextBox::OnRender()
 							(sr.top + Padding.Top) - this->_verticalScrollOffset,
 							sr.width,
 							sr.height,
-							_selectionBackColor);
+							selectionBrush.Get());
 					}
 				}
 				else
 				{
-					if (selLen == 0 && !selRange.empty())
+					if (showCaret && selLen == 0 && !selRange.empty())
 					{
 						const auto caret = selRange[0];
 						const float lx = caret.left + Padding.Left;
@@ -1462,7 +1600,7 @@ void RichTextBox::OnRender()
 						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + lx - 2.0f, static_cast<float>(absoluteLocation.y) + ly - 2.0f, static_cast<float>(absoluteLocation.x) + lx + 2.0f, static_cast<float>(absoluteLocation.y) + ly + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
-					if (!selRange.empty())
+					if (showCaret && !selRange.empty())
 					{
 						shouldDrawCaret = true;
 						caretStart = { selRange[0].left + Padding.Left,
@@ -1472,23 +1610,33 @@ void RichTextBox::OnRender()
 								- this->_verticalScrollOffset };
 					}
 				}
-				d2d->DrawStringLayout(this->_textLayoutCache,
-					Padding.Left, Padding.Top - this->_verticalScrollOffset,
-					this->RendererForegroundColor);
+				if (foreground)
+					d2d->DrawStringLayout(this->_textLayoutCache,
+						Padding.Left, Padding.Top - this->_verticalScrollOffset,
+						foreground.Get());
+				else
+					d2d->DrawStringLayout(this->_textLayoutCache,
+						Padding.Left, Padding.Top - this->_verticalScrollOffset,
+						this->RendererForegroundColor);
 			}
 			else
 			{
 				ApplyTextDrawingEffects(
 					_textLayoutCache, 0,
-					static_cast<int>(buffer.size()), false);
-				d2d->DrawStringLayout(this->_textLayoutCache,
-					Padding.Left, Padding.Top - this->_verticalScrollOffset,
-					this->RendererForegroundColor);
+					static_cast<int>(buffer.size()), false, nullptr);
+				if (foreground)
+					d2d->DrawStringLayout(this->_textLayoutCache,
+						Padding.Left, Padding.Top - this->_verticalScrollOffset,
+						foreground.Get());
+				else
+					d2d->DrawStringLayout(this->_textLayoutCache,
+						Padding.Left, Padding.Top - this->_verticalScrollOffset,
+						this->RendererForegroundColor);
 			}
 		}
 		else
 		{
-			if (isSelected)
+			if (showCaret)
 			{
 				const float lx = Padding.Left;
 				const float ly = Padding.Top;
@@ -1501,28 +1649,19 @@ void RichTextBox::OnRender()
 				caretEnd = { lx, ly + 16.0f };
 			}
 		}
-		UpdateCaretBlinkState(isSelected, this->_selectionStart, this->_selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		UpdateCaretBlinkState(showCaret, this->_selectionStart, this->_selectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 		if (shouldDrawCaret && IsCaretBlinkVisible())
 		{
-			d2d->DrawLine(caretStart, caretEnd, this->RendererForegroundColor);
+			if (caretBrush)
+				d2d->DrawLine(caretStart, caretEnd, caretBrush.Get());
+			else if (foreground)
+				d2d->DrawLine(caretStart, caretEnd, foreground.Get());
+			else
+				d2d->DrawLine(
+					caretStart, caretEnd,
+					this->RendererForegroundColor);
 		}
 		this->DrawScroll();
-		const auto borderColor = isSelected
-			? _fallbackFocusBorderColor : this->RendererBorderColor;
-		const float borderWidth = isSelected
-			? (std::max)(
-				this->BorderThickness.MaxEdge(), _fallbackFocusBorder)
-			: this->BorderThickness.MaxEdge();
-		if (borderWidth > 0.0f && borderColor.a > 0.0f)
-			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
-				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
-				borderColor, borderWidth, radius);
-	}
-	if (!this->IsEnabled)
-	{
-		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight,
-			_fallbackDisabledOverlayColor,
-			(std::min)(_fallbackCornerRadius, actualHeight * 0.5f));
 	}
 	this->EndRender();
 }

@@ -22,14 +22,20 @@ protected:
 		return std::make_unique<RangeBaseAutomationPeer>(
 			*this, AutomationControlType::ProgressBar, L"ProgressBar", true);
 	}
+	void OnMinimumChanged(double oldValue, double newValue) override;
+	void OnMaximumChanged(double oldValue, double newValue) override;
 	void OnRangeValueChanged(double oldValue, double newValue) override;
 	void OnComputedLayoutSizeChanged() override;
 	void OnControlTemplatePresentationChanged() override;
 
 public:
 	virtual UIClass Type();
+	static const DependencyProperty& OrientationProperty();
+	static const DependencyProperty& IsIndeterminateProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	/** @brief 创建进度条。 */
 	ProgressBar();
 	PROPERTY(::Orientation, Orientation);

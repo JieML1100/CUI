@@ -31,16 +31,16 @@
         <VisualStateManager.VisualStateGroups>
           <VisualStateGroup x:Name="AuthorCommonStates">
             <VisualStateGroup.Transitions>
-              <VisualTransition From="Normal" To="PointerOver"
+              <VisualTransition From="Normal" To="Defaulted"
                                 GeneratedDuration="0:0:0.120">
                 <VisualTransition.GeneratedEasingFunction>
                   <QuadraticEase EasingMode="EaseInOut"/>
                 </VisualTransition.GeneratedEasingFunction>
               </VisualTransition>
             </VisualStateGroup.Transitions>
-            <VisualState x:Name="PointerOver">
+            <VisualState x:Name="Defaulted">
               <VisualState.StateTriggers>
-                <StateTrigger Property="IsMouseOver" Value="true"/>
+                <StateTrigger Property="IsDefault" Value="true"/>
               </VisualState.StateTriggers>
               <VisualState.Setters>
                 <Setter TargetName="StaticAuthorChrome"
@@ -84,9 +84,9 @@
               Value="{StaticResource StaticAuthorButtonTemplate}"/>
       <Setter Property="FontSize" Value="14"/>
       <Style.Triggers>
-        <Trigger Property="IsMouseOver" Value="true">
+        <Trigger Property="IsDefault" Value="true">
           <Trigger.EnterActions>
-            <BeginStoryboard x:Name="StaticStyleHoverClock">
+            <BeginStoryboard x:Name="StaticStyleDefaultClock">
               <Storyboard>
                 <DoubleAnimation Storyboard.TargetProperty="FontSize"
                                  From="14" To="18"
@@ -95,7 +95,7 @@
             </BeginStoryboard>
           </Trigger.EnterActions>
           <Trigger.ExitActions>
-            <StopStoryboard BeginStoryboardName="StaticStyleHoverClock"/>
+            <StopStoryboard BeginStoryboardName="StaticStyleDefaultClock"/>
           </Trigger.ExitActions>
         </Trigger>
       </Style.Triggers>
@@ -111,6 +111,9 @@
                 CommandParameter="static-input"
                 CommandTarget="{x:Reference namespaceButton}" />
   </Window.InputBindings>
+  <Window.DataContextSchema>
+    <Property Path="Caption" Kind="String" />
+  </Window.DataContextSchema>
   <StackPanel x:Name="staticRoot" Orientation="Vertical">
     <Button x:Name="namespaceButton"
             DesignId="77"

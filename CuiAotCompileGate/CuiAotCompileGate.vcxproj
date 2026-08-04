@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}</ProjectGuid>
+    <RootNamespace>CuiAotCompileGate</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="Exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <IntDir>$(ProjectDir)..\artifacts\obj\CuiAotCompileGate\$(Platform)\$(Configuration)\</IntDir>
+    <OutDir>$(ProjectDir)..\artifacts\bin\CuiAotCompileGate\$(Platform)\$(Configuration)\</OutDir>
+    <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
+    <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
+    <CuiGeneratedCodeDir>$(IntDir)CuiGenerated\</CuiGeneratedCodeDir>
+    <CuiAotRequireRuntimeFree Condition="'$(CuiAotRequireRuntimeFree)'==''">true</CuiAotRequireRuntimeFree>
+    <CuiVerifyAotGeneratedCode
+      Condition="'$(CuiAotRequireRuntimeFree)'!='true'">false</CuiVerifyAotGeneratedCode>
+    <!--
+      This include exists only for /p:CuiAotRequireRuntimeFree=false. It lets
+      maintainers compile an intermediate generator output far enough to expose
+      C++ lowering errors, without weakening the default production-only gate.
+    -->
+    <CuiAotDiagnosticInclude Condition="'$(CuiAotRequireRuntimeFree)'!='true'">$(ProjectDir)..\CuiRuntime\include;</CuiAotDiagnosticInclude>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/bigobj /FS %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(CuiAotDiagnosticInclude)$(ProjectDir);$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Lib>
+      <LinkTimeCodeGeneration>true</LinkTimeCodeGeneration>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="RuntimeBoundaryProbe.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="TypedBindingConverters.h" />
+    <None Include="TypedBindingConverters.cui.xml" />
+    <None Include="VerifyBindingScopeBoundary.ps1" />
+    <None Include="VerifyDependencyPropertyStorageBoundary.ps1" />
+    <None Include="VerifyTypedConverterBoundary.ps1" />
+  </ItemGroup>
+  <ItemGroup>
+    <CuiCompile Include="..\CUITest\DemoWindow.cui.xaml">
+      <ClassName>DemoWindow</ClassName>
+      <AdditionalInputs>$(ProjectDir)..\CUITest\Assets\DemoTheme.xaml</AdditionalInputs>
+    </CuiCompile>
+    <CuiCompile Include="StaticResourceScopeContract.cui.xaml">
+      <ClassName>StaticResourceScopeContractWindow</ClassName>
+    </CuiCompile>
+    <CuiCompile Include="TypedConverterContract.cui.xaml">
+      <ClassName>TypedConverterContractWindow</ClassName>
+      <ConverterManifest>$(ProjectDir)TypedBindingConverters.cui.xml</ConverterManifest>
+    </CuiCompile>
+    <CuiCompile Include="BindingScopeContract.cui.xaml">
+      <ClassName>BindingScopeContractWindow</ClassName>
+    </CuiCompile>
+    <CuiCompile Include="DependencyPropertyStorageContract.cui.xaml">
+      <ClassName>DependencyPropertyStorageContractWindow</ClassName>
+    </CuiCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      This project checks the generated translation units. The static generated
+      sample is the mandatory executable-link half of the AOT boundary gate.
+    -->
+    <ProjectReference Include="..\CuiStaticGeneratedSample\CuiStaticGeneratedSample.vcxproj">
+      <Project>{6D9F01C8-4E44-4ED3-9D56-2A927C270CB4}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\CUI\CUI.vcxproj">
+      <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\build\CuiCodeGen.targets" />
+  <Target Name="CuiVerifyAotGeneratedRuntimeBoundary"
+          AfterTargets="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)'=='true'
+                  and '@(CuiCompile)'!=''
+                  and '$(CuiAotRequireRuntimeFree)'!='true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\build\VerifyCuiAotGenerated.ps1&quot; -GeneratedBase &quot;%(CuiCompile.OutputBase)&quot; -AllowKnownBlockers" />
+  </Target>
+  <Target Name="CuiVerifyTypedConverterBoundary"
+          AfterTargets="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)'=='true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyTypedConverterBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)TypedConverterContract&quot;" />
+  </Target>
+  <Target Name="CuiVerifyBindingScopeBoundary"
+          AfterTargets="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)'=='true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyBindingScopeBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)BindingScopeContract&quot;" />
+  </Target>
+  <Target Name="CuiVerifyDependencyPropertyStorageBoundary"
+          AfterTargets="CuiCompileGeneratedCode"
+          BeforeTargets="ClCompile"
+          Condition="'$(CuiCodeGenEnabled)'=='true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyDependencyPropertyStorageBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)DependencyPropertyStorageContract&quot;" />
+  </Target>
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

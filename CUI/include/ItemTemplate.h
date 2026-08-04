@@ -13,7 +13,15 @@ class IItemTemplate
 {
 public:
 	virtual ~IItemTemplate() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
+	virtual DataTypeToken GetDataTypeToken() const noexcept
+	{
+		return MakeDataTypeToken(DataTypeName());
+	}
 	virtual const std::wstring& DataTypeName() const noexcept = 0;
+#else
+	virtual DataTypeToken GetDataTypeToken() const noexcept = 0;
+#endif
 	virtual std::unique_ptr<Control> Build(
 		const BindingSourceReference& item,
 		size_t index,

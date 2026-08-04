@@ -1,39 +1,151 @@
 #include "ContentPresenter.h"
 
+#include "ContentControl.h"
 #include "Label.h"
 #include "Layout/OverlayLayout.h"
+#include "TreeInfrastructure.h"
 #include "Window.h"
 
 #include <algorithm>
 #include <cwctype>
+#include <stdexcept>
 #include <utility>
 
 namespace
 {
-	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
-	{
-		return left == right;
-	}
-
 	template<typename TValue>
 	DependencyPropertyOptions<ContentPresenter, TValue> DataOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyPersistence persistence =
-			DependencyPropertyPersistence::Metadata)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyPersistence persistence =
+				DependencyPropertyPersistence::Metadata))
 	{
 		DependencyPropertyOptions<ContentPresenter, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
 		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
+		)
 		return options;
 	}
+
+}
+
+const DependencyPropertyMetadataRegistration&
+ContentPresenter::ContentPropertyMetadataRelation()
+{
+	static const DependencyPropertyMetadataRegistration relation = []
+	{
+		auto options = DataOptions(
+			BindingValue{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				10, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		options.Coerce = [](
+			ContentPresenter& target,
+			const BindingValue& proposed) -> std::optional<BindingValue>
+		{
+			std::wstring error;
+			try
+			{
+				if (!target.ValidateContentCandidate(
+					proposed, target._contentTemplate, error))
+				{
+					target._lastTemplateError = std::move(error);
+					return std::nullopt;
+				}
+			}
+			catch (...)
+			{
+				target._lastTemplateError = std::move(error);
+				throw;
+			}
+			return proposed;
+		};
+		options.Changed = [](
+			ContentPresenter& target,
+			const BindingValue&, const BindingValue&)
+		{
+			(void)target.RebuildContent();
+		};
+		return DependencyPropertyRegistry::AddOwnerStatic<
+			ContentPresenter, BindingValue>(ContentControl::ContentProperty(),
+			[](ContentPresenter& target) { return target.GetContent(); },
+			[](ContentPresenter& target, const BindingValue& value)
+			{ target.SetContent(value); }, {}, std::move(options));
+	}();
+	return relation;
+}
+
+const DependencyPropertyMetadataRegistration&
+ContentPresenter::ContentTemplatePropertyMetadataRelation()
+{
+	static const DependencyPropertyMetadataRegistration relation = []
+	{
+		auto options = DataOptions(
+			ItemTemplateReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				20, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		options.Coerce = [](
+			ContentPresenter& target,
+			const ItemTemplateReference& proposed)
+			-> std::optional<ItemTemplateReference>
+		{
+			std::wstring error;
+			try
+			{
+				if (!target.ValidateContentCandidate(
+					target._content, proposed, error))
+				{
+					target._lastTemplateError = std::move(error);
+					return std::nullopt;
+				}
+			}
+			catch (...)
+			{
+				target._lastTemplateError = std::move(error);
+				throw;
+			}
+			return proposed;
+		};
+		options.Changed = [](
+			ContentPresenter& target,
+			const ItemTemplateReference&, const ItemTemplateReference&)
+		{
+			(void)target.RebuildContent();
+		};
+		return DependencyPropertyRegistry::AddOwnerStatic<
+			ContentPresenter, ItemTemplateReference>(
+				ContentControl::ContentTemplateProperty(),
+				[](ContentPresenter& target)
+				{ return target.GetContentTemplate(); },
+				[](ContentPresenter& target,
+					const ItemTemplateReference& value)
+				{ target.SetContentTemplate(value); }, {}, std::move(options));
+	}();
+	return relation;
+}
+
+const DependencyProperty& ContentPresenter::ContentProperty()
+{
+	return ContentPropertyMetadataRelation().Property();
+}
+
+const DependencyProperty& ContentPresenter::ContentTemplateProperty()
+{
+	return ContentTemplatePropertyMetadataRelation().Property();
 }
 
 ContentPresenter::ContentPresenter()
@@ -87,7 +199,26 @@ bool ContentPresenter::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
-	if (!_changingGeneratedContent && _generatedContent
+	if (_generatedContentMutationTransaction != 0)
+	{
+		auto* expected = _generatedContentMutationVisual.Get();
+		const auto nonNullCount = std::count_if(
+			children.begin(), children.end(),
+			[](const Control* child) { return child != nullptr; });
+		const bool exactMutation = expected
+			? nonNullCount == 1
+				&& std::find(children.begin(), children.end(), expected)
+					!= children.end()
+			: nonNullCount == 0;
+		if (!exactMutation)
+		{
+			error =
+				"ContentPresenter generated content transaction mismatch";
+			return false;
+		}
+		return true;
+	}
+	if (_generatedContent
 		&& std::find(children.begin(), children.end(), _generatedContent)
 		== children.end())
 	{
@@ -114,9 +245,12 @@ bool ContentPresenter::ValidateVisualChildCollection(
 Control* ContentPresenter::GetVisualContent() const noexcept
 {
 	Control* result = nullptr;
+	auto* mutationVisual = _generatedContentMutationTransaction != 0
+		? _generatedContentMutationVisual.Get() : nullptr;
 	for (auto* child : GetVisualChildrenView())
 	{
-		if (!child || child == _generatedContent) continue;
+		if (!child || child == _generatedContent
+			|| child == mutationVisual) continue;
 		if (result) return nullptr;
 		result = child;
 	}
@@ -132,134 +266,96 @@ void ContentPresenter::OnVisualChildCollectionChanged(
 	_contentLayoutPending = true;
 }
 
+#if !CUI_ENABLE_DYNAMIC_XAML
 void ContentPresenter::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		auto contentOptions = DataOptions(
-			BindingValue{}, 10,
-			DependencyPropertyPersistence::Native);
-		contentOptions.Design.Browsable = false;
-		contentOptions.Coerce = [](
-			ContentPresenter& target,
-			const BindingValue& proposed) -> std::optional<BindingValue>
-		{
-			std::wstring error;
-			try
-			{
-				if (!target.ValidateContentCandidate(
-					proposed, target._contentTemplate, error))
-				{
-					target._lastTemplateError = std::move(error);
-					return std::nullopt;
-				}
-			}
-			catch (...)
-			{
-				target._lastTemplateError = std::move(error);
-				throw;
-			}
-			return proposed;
-		};
-		contentOptions.Changed = [](
-			ContentPresenter& target,
-			const BindingValue&, const BindingValue&)
-		{
-			(void)target.RebuildContent();
-		};
-		DependencyPropertyRegistry::Register<ContentPresenter,
-			BindingValue>(L"Content",
-			[](ContentPresenter& target) { return target.GetContent(); },
-			[](ContentPresenter& target, const BindingValue& value)
-			{ target.SetContent(value); }, {}, std::move(contentOptions));
+}
+#endif
 
-		auto templateOptions = DataOptions(
-			ItemTemplateReference{}, 20,
-			DependencyPropertyPersistence::Native);
-		templateOptions.Design.Browsable = false;
-		templateOptions.Coerce = [](
-			ContentPresenter& target,
-			const ItemTemplateReference& proposed)
-			-> std::optional<ItemTemplateReference>
-		{
-			std::wstring error;
-			try
-			{
-				if (!target.ValidateContentCandidate(
-					target._content, proposed, error))
-				{
-					target._lastTemplateError = std::move(error);
-					return std::nullopt;
-				}
-			}
-			catch (...)
-			{
-				target._lastTemplateError = std::move(error);
-				throw;
-			}
-			return proposed;
-		};
-		templateOptions.Changed = [](
-			ContentPresenter& target,
-			const ItemTemplateReference&, const ItemTemplateReference&)
-		{
-			(void)target.RebuildContent();
-		};
-		DependencyPropertyRegistry::Register<ContentPresenter,
-			ItemTemplateReference>(L"ContentTemplate",
-			[](ContentPresenter& target) { return target.GetContentTemplate(); },
-			[](ContentPresenter& target, const ItemTemplateReference& value)
-			{ target.SetContentTemplate(value); }, {}, std::move(templateOptions));
-
-		auto pathOptions = DataOptions(std::wstring{}, 30);
-		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
-		pathOptions.Changed = [](
-			ContentPresenter& target,
-			const std::wstring&, const std::wstring&)
-		{
-			if (!target._contentTemplate) (void)target.RebuildContent();
-		};
-		DependencyPropertyRegistry::Register<ContentPresenter, std::wstring>(
-			L"DisplayMemberPath",
-			[](ContentPresenter& target)
-			{ return target.GetDisplayMemberPath(); },
-			[](ContentPresenter& target, const std::wstring& value)
-			{ target.SetDisplayMemberPath(value); }, {}, std::move(pathOptions));
-		return true;
-	}();
-	(void)registered;
+const DependencyPropertyMetadata*
+ContentPresenter::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+	if (&property == &ContentControl::ContentProperty())
+		return &ContentPropertyMetadataRelation().Metadata();
+	if (&property == &ContentControl::ContentTemplateProperty())
+		return &ContentTemplatePropertyMetadataRelation().Metadata();
+	return Control::ResolveExactDependencyPropertyMetadata(property);
 }
 
 void ContentPresenter::SetContent(BindingValue value)
 {
 	_lastTemplateError.clear();
-	(void)SetPropertyField(L"Content", _content, std::move(value));
+	(void)SetPropertyField(
+		ContentProperty(), _content, std::move(value));
 }
 
 void ContentPresenter::SetContentTemplate(ItemTemplateReference value)
 {
 	_lastTemplateError.clear();
 	(void)SetPropertyField(
-		L"ContentTemplate", _contentTemplate, std::move(value));
+		ContentTemplateProperty(), _contentTemplate, std::move(value));
 }
 
-void ContentPresenter::SetDisplayMemberPath(std::wstring value)
+void ContentPresenter::SetCompiledDisplayMemberPath(
+	CompiledBindingPathView value)
 {
-	(void)SetPropertyField(
-		L"DisplayMemberPath", _displayMemberPath, std::move(value));
+	if (value.Version != CompiledBindingPathVersion)
+		throw std::invalid_argument(
+			"ContentPresenter compiled display path version is unsupported");
+	if (_compiledDisplayMemberPath.Version == value.Version
+		&& _compiledDisplayMemberPath.Steps.data() == value.Steps.data()
+		&& _compiledDisplayMemberPath.Steps.size() == value.Steps.size()
+#if CUI_ENABLE_DYNAMIC_XAML
+		&& _displayMemberPath.empty()
+#endif
+		)
+		return;
+	_compiledDisplayMemberPath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	_displayMemberPath.clear();
+#endif
+	if (!_contentTemplate) (void)RebuildContent();
 }
 
-void ContentPresenter::SetContentTypeName(std::wstring value)
+void ContentPresenter::SetContentTypeToken(DataTypeToken value)
 {
-	if (_contentTypeName == value) return;
-	const auto previous = _contentTypeName;
-	_contentTypeName = std::move(value);
+	if (_contentTypeToken == value) return;
+	const auto previous = _contentTypeToken;
+	_contentTypeToken = value;
 	if (RebuildContent()) return;
 	const auto error = _lastTemplateError;
-	_contentTypeName = previous;
+	_contentTypeToken = previous;
 	(void)RebuildContent();
 	_lastTemplateError = error;
+}
+
+std::wstring ContentPresenter::ReadProjectedDisplayText(
+	const BindingSourceReference& source) const
+{
+	if (!_compiledDisplayMemberPath.Empty())
+		return GetBindingRecordText(source, _compiledDisplayMemberPath);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return ReadAuthoredProjectedDisplayText(source);
+#else
+	return {};
+#endif
+}
+
+BindingPathObservation ContentPresenter::ObserveProjectedDisplayPath(
+	const BindingSourceReference& source,
+	std::function<void()> changed) const
+{
+	if (!_compiledDisplayMemberPath.Empty())
+		return ObserveBindingPaths(
+			source, { _compiledDisplayMemberPath }, std::move(changed));
+#if CUI_ENABLE_DYNAMIC_XAML
+	return ObserveAuthoredProjectedDisplayPath(
+		source, std::move(changed));
+#else
+	return {};
+#endif
 }
 
 bool ContentPresenter::ValidateContentCandidate(
@@ -277,10 +373,8 @@ bool ContentPresenter::ValidateContentCandidate(
 		}
 		return true;
 	}
-	if (contentTemplate && !_contentTypeName.empty()
-		&& !contentTemplate.Get()->DataTypeName().empty()
-		&& !EqualsTypeName(
-			_contentTypeName, contentTemplate.Get()->DataTypeName()))
+	if (contentTemplate && !AreDataTypesCompatible(
+		_contentTypeToken, contentTemplate.Get()->GetDataTypeToken()))
 	{
 		error = L"ContentTemplate DataType 与 Content DataType 不一致。";
 		return false;
@@ -303,6 +397,42 @@ bool ContentPresenter::ValidateContentCandidate(
 bool ContentPresenter::RebuildContent()
 {
 	_lastTemplateError.clear();
+	auto* inheritedMutationVisual =
+		_generatedContentMutationTransaction != 0
+		? _generatedContentMutationVisual.Get() : nullptr;
+	const ControlWeakReference transactionPrevious(
+		_generatedContent ? _generatedContent : inheritedMutationVisual);
+	const auto committedAtEntry =
+		_generatedContentCommittedTransaction;
+	auto transaction = ++_generatedContentTransactionSerial;
+	if (transaction == 0)
+		transaction = ++_generatedContentTransactionSerial;
+	++_generatedContentTransactionDepth;
+	struct TransactionDepthGuard final
+	{
+		size_t& Depth;
+		~TransactionDepthGuard() { --Depth; }
+	} transactionDepthGuard{ _generatedContentTransactionDepth };
+	auto supersededByCommittedRebuild = [&]() noexcept
+		{
+			return _generatedContentCommittedTransaction
+				!= committedAtEntry
+				&& _generatedContentCommittedTransaction
+					!= transaction;
+		};
+	auto beginMutation = [&](Control* expected) noexcept
+		{
+			_generatedContentMutationTransaction = transaction;
+			_generatedContentMutationVisual = expected;
+		};
+	auto endMutation = [&]() noexcept
+		{
+			if (_generatedContentMutationTransaction != transaction)
+				return;
+			_generatedContentMutationTransaction = 0;
+			_generatedContentMutationVisual.Reset();
+		};
+
 	if (GetVisualContent())
 	{
 		if (!_content.Empty() || _contentTemplate)
@@ -313,10 +443,8 @@ bool ContentPresenter::RebuildContent()
 		}
 		return true;
 	}
-	if (_contentTemplate && !_contentTypeName.empty()
-		&& !_contentTemplate.Get()->DataTypeName().empty()
-		&& !EqualsTypeName(_contentTypeName,
-			_contentTemplate.Get()->DataTypeName()))
+	if (_contentTemplate && !AreDataTypesCompatible(
+		_contentTypeToken, _contentTemplate.Get()->GetDataTypeToken()))
 	{
 		_lastTemplateError =
 			L"ContentTemplate DataType 与 Content DataType 不一致。";
@@ -349,32 +477,135 @@ bool ContentPresenter::RebuildContent()
 		else
 		{
 			auto label = std::make_unique<Label>();
-			label->Text = hasSource
-				? GetBindingRecordText(source, _displayMemberPath)
-				: _content.ToString();
+			if (hasSource)
+				label->Text = ReadProjectedDisplayText(source);
+			else label->Text = _content.ToString();
 			replacement = std::move(label);
 			if (hasSource)
-				observation = ObserveBindingPaths(
-					source, { _displayMemberPath }, [this]
-					{ if (!_contentTemplate) (void)RebuildContent(); });
+			{
+				auto changed = [this]
+					{ if (!_contentTemplate) (void)RebuildContent(); };
+				observation = ObserveProjectedDisplayPath(
+					source, std::move(changed));
+			}
 		}
 	}
 
-	_changingGeneratedContent = true;
+	// Template construction and binding setup can themselves run user code.
+	// A newer rebuild that committed there owns the current visual transaction;
+	// this older invocation must not detach it as its presumed previous value.
+	if (supersededByCommittedRebuild())
+		return true;
+
+	const ControlWeakReference replacementLifetime(replacement.get());
+	const auto previousLifetime = transactionPrevious;
+	std::unique_ptr<Control> previous;
+	beginMutation(nullptr);
 	try
 	{
-		auto previous = _generatedContent
-			? DetachVisualChild(_generatedContent) : std::unique_ptr<Control>{};
-		_generatedContent = replacement.get();
-		if (replacement) AddOwned(std::move(replacement));
-		_changingGeneratedContent = false;
+		if (auto* livePrevious = previousLifetime.Get())
+		{
+			bool ownershipCommittedElsewhere = false;
+			std::exception_ptr ignoredNotificationError;
+			previous = cui::framework::TreeAccess::DetachVisualChild(
+				*this, livePrevious, &ownershipCommittedElsewhere,
+				&ignoredNotificationError);
+			if (supersededByCommittedRebuild())
+			{
+				endMutation();
+				return true;
+			}
+			livePrevious = previousLifetime.Get();
+			if (livePrevious && (livePrevious->GetVisualParent() == this
+				|| IndexOfVisualChild(livePrevious) >= 0))
+			{
+				_generatedContent = livePrevious;
+				throw std::logic_error(
+					"ContentPresenter generated content detach did not commit");
+			}
+		}
+
+		// Do not publish the candidate raw pointer before the ownership
+		// transaction commits. Collection validation has an explicit internal
+		// transaction path above, so a callback that transfers or destroys the
+		// candidate cannot leave _generatedContent dangling.
+		_generatedContent = nullptr;
+		if (replacement)
+		{
+			beginMutation(replacementLifetime.Get());
+			(void)cui::framework::TreeAccess::
+				InsertOwnedVisualChildPreserving(
+					*this, VisualChildCount(), replacement, this);
+			if (supersededByCommittedRebuild())
+			{
+				endMutation();
+				return true;
+			}
+			auto* liveReplacement = replacementLifetime.Get();
+			if (!liveReplacement
+				|| liveReplacement->GetVisualParent() != this
+				|| IndexOfVisualChild(liveReplacement) < 0
+				|| liveReplacement->GetLogicalParent() != this)
+				throw std::logic_error(
+					"ContentPresenter generated content attachment did not commit");
+			_generatedContent = liveReplacement;
+		}
+		endMutation();
 	}
 	catch (...)
 	{
-		_changingGeneratedContent = false;
-		_generatedContent = nullptr;
-		throw;
+		const auto originalError = std::current_exception();
+		if (supersededByCommittedRebuild())
+		{
+			endMutation();
+			return true;
+		}
+		auto* liveReplacement = replacementLifetime.Get();
+		const bool replacementOwnedByPresenter = liveReplacement
+			&& (liveReplacement->GetVisualParent() == this
+				|| IndexOfVisualChild(liveReplacement) >= 0);
+		_generatedContent = replacementOwnedByPresenter
+			? liveReplacement : nullptr;
+
+		// A retained replacement owner means insertion failed before commit.
+		// In that case restore the previous visual when possible so a rejected
+		// rebuild does not unnecessarily blank the presenter.
+		if (!replacementOwnedByPresenter && replacement && previous)
+		{
+			beginMutation(previousLifetime.Get());
+			try
+			{
+				(void)cui::framework::TreeAccess::
+					InsertOwnedVisualChildPreserving(
+						*this, VisualChildCount(), previous, this);
+			}
+			catch (...)
+			{
+				// Preserve the rebuild failure. Final weak/parent validation
+				// below still publishes a restoration that committed before a
+				// notification failed.
+			}
+			auto* livePrevious = previousLifetime.Get();
+			if (livePrevious
+				&& livePrevious->GetVisualParent() == this
+				&& IndexOfVisualChild(livePrevious) >= 0)
+				_generatedContent = livePrevious;
+		}
+
+		// Detach itself may have failed before commit. In that case the old
+		// visual never left this presenter and remains the published content.
+		if (!_generatedContent)
+		{
+			auto* livePrevious = previousLifetime.Get();
+			if (livePrevious
+				&& (livePrevious->GetVisualParent() == this
+					|| IndexOfVisualChild(livePrevious) >= 0))
+				_generatedContent = livePrevious;
+		}
+		endMutation();
+		std::rethrow_exception(originalError);
 	}
+	_generatedContentCommittedTransaction = transaction;
 	_contentObservation = std::move(observation);
 	RequestLayout();
 	InvalidateVisual();

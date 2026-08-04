@@ -13,7 +13,6 @@
 #include "ListBox.h"
 #include "ListView.h"
 #include "LoadingRing.h"
-#include "MediaPlayer.h"
 #include "Menu.h"
 #include "NativeSurface.h"
 #include "NotifyIcon.h"
@@ -1084,10 +1083,15 @@ public:
 		case UIA_ToggleToggleStatePropertyId:
 			if (!SupportsToggle()) return S_OK;
 			{
-				bool checked = false;
-				(void)control->GetAutomationPeer().TryGetToggleState(checked);
-				accessibility_detail::SetVariantInt(value,
-					checked ? ToggleState_On : ToggleState_Off);
+				AutomationToggleState state = AutomationToggleState::Off;
+				(void)control->GetAutomationPeer().TryGetToggleState(state);
+				const auto nativeState =
+					state == AutomationToggleState::Indeterminate
+						? ToggleState_Indeterminate
+						: state == AutomationToggleState::On
+							? ToggleState_On
+							: ToggleState_Off;
+				accessibility_detail::SetVariantInt(value, nativeState);
 			}
 			return S_OK;
 		case UIA_ExpandCollapseExpandCollapseStatePropertyId:
@@ -1201,9 +1205,13 @@ public:
 		if (!value) return E_POINTER;
 		auto* peer = CurrentPeer();
 		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		bool checked = false;
-		if (!peer->TryGetToggleState(checked)) return UIA_E_NOTSUPPORTED;
-		*value = checked ? ToggleState_On : ToggleState_Off;
+		AutomationToggleState state = AutomationToggleState::Off;
+		if (!peer->TryGetToggleState(state)) return UIA_E_NOTSUPPORTED;
+		*value = state == AutomationToggleState::Indeterminate
+			? ToggleState_Indeterminate
+			: state == AutomationToggleState::On
+				? ToggleState_On
+				: ToggleState_Off;
 		return S_OK;
 	}
 
@@ -4042,8 +4050,42 @@ void Window::PublishKeyboardFocusTransition(
 		if (invalidateVisual) value->InvalidateVisual();
 		NotifyAccessibilityEvent(value, AccessibilityChange::Focus);
 	}
-	if (_commandManager)
-		(void)RoutedCommandManager::InvalidateRequerySuggested(*this);
+	RefreshKeyboardFocusVisual();
+	RefreshDefaultedButtons();
+}
+
+void Window::RecordMostRecentInputDevice(const InputReport& input)
+{
+	bool keyboard = false;
+	switch (input.Kind)
+	{
+	case InputReportKind::KeyDown:
+	case InputReportKind::KeyUp:
+		keyboard = true;
+		break;
+	case InputReportKind::PointerMove:
+	case InputReportKind::PointerLeave:
+	case InputReportKind::PointerDown:
+	case InputReportKind::PointerUp:
+	case InputReportKind::PointerDoubleClick:
+	case InputReportKind::MouseWheel:
+	case InputReportKind::HorizontalMouseWheel:
+		break;
+	default:
+		return;
+	}
+	if (_keyboardMostRecentInputDevice == keyboard) return;
+	_keyboardMostRecentInputDevice = keyboard;
+	RefreshKeyboardFocusVisual();
+}
+
+void Window::RefreshKeyboardFocusVisual()
+{
+	auto* focused = GetKeyboardFocusedElement();
+	if (!focused) return;
+	focused->SetIsKeyboardFocusVisibleCore(
+		_systemVisualPreferences.KeyboardCuesAlwaysVisible
+		|| _keyboardMostRecentInputDevice);
 }
 
 void Window::PublishLogicalFocusTransition(
@@ -4125,6 +4167,33 @@ std::vector<Control*> Window::GetAccessibleControls() const
 	for (auto* root : GetLogicalChildrenView())
 		visit(root, visit);
 	return result;
+}
+
+void Window::RefreshDefaultedButtons()
+{
+	std::vector<ControlWeakReference> controls;
+	std::vector<Control*> pending;
+	std::unordered_set<Control*> visited;
+	for (auto* root : GetLogicalChildrenView())
+		if (root) pending.push_back(root);
+	while (!pending.empty())
+	{
+		auto* control = pending.back();
+		pending.pop_back();
+		if (!control || !visited.insert(control).second) continue;
+		controls.emplace_back(control);
+		for (auto* child : control->GetLogicalChildrenView())
+			if (child) pending.push_back(child);
+	}
+
+	const ControlWeakReference focusedLifetime(
+		GetKeyboardFocusedElement());
+	for (const auto& reference : controls)
+	{
+		auto* button = dynamic_cast<Button*>(reference.Get());
+		if (!button) continue;
+		button->UpdateIsDefaulted(focusedLifetime.Get());
+	}
 }
 
 void Window::NotifyAccessibilityEvent(Control* control, AccessibilityChange change)
@@ -4217,15 +4286,20 @@ bool Window::ProcessAccessKey(wchar_t key)
 	const size_t start = current == focusOrder.end()
 		? 0
 		: (static_cast<size_t>(current - focusOrder.begin()) + 1) % focusOrder.size();
+	std::vector<Control*> matches;
 	for (size_t offset = 0; offset < focusOrder.size(); ++offset)
 	{
 		auto* candidate = focusOrder[(start + offset) % focusOrder.size()];
 		if (!candidate || candidate->GetEffectiveAccessKey() != key) continue;
+		matches.push_back(candidate);
+	}
+	for (auto* candidate : matches)
+	{
 		if (Handle && ::GetFocus() != Handle)
 			::SetFocus(Handle);
 		SetKeyboardFocus(candidate, true);
-		(void)candidate->Invoke();
-		return true;
+		if (candidate->InvokeAccessKey(matches.size() > 1))
+			return true;
 	}
 	return false;
 }
@@ -4267,72 +4341,97 @@ void Window::UpdateMouseOverProjection(
 	if (directlyOver && (directlyOver->GetPresentationWindow() != this
 		|| !directlyOver->IsVisible))
 		directlyOver = nullptr;
+	_mouseOverContentPoint = contentMouse;
 	if (_mouseDirectlyOver == directlyOver) return;
 
-	ControlWeakReference previousReference(_mouseDirectlyOver);
-	ControlWeakReference nextReference(directlyOver);
-	std::vector<ControlWeakReference> nextPath;
-	std::unordered_set<Control*> visited;
-	for (auto* current = directlyOver;
-		current && visited.insert(current).second;
-		current = current->GetRoutedParent())
-	{
-		if (current != this && current->GetPresentationWindow() != this) break;
-		nextPath.emplace_back(current);
-		if (current == this) break;
-	}
-	auto contains = [](const std::vector<ControlWeakReference>& path,
-		const Control* candidate)
-	{
-		return std::any_of(path.begin(), path.end(),
-			[candidate](const ControlWeakReference& reference)
-			{ return reference.Get() == candidate; });
-	};
-
-	const auto previousPath = std::move(_mouseOverPath);
+	const ControlWeakReference windowLifetime(this);
 	_mouseDirectlyOver = directlyOver;
-	_mouseOverPath = nextPath;
-	for (const auto& reference : previousPath)
-		if (auto* element = reference.Get())
-			cui::framework::InputAccess::PublishPointerOverState(
-				*element,
-				contains(nextPath, element),
-				element == directlyOver);
-	for (const auto& reference : nextPath)
-		if (auto* element = reference.Get();
-			element && !contains(previousPath, element))
-			cui::framework::InputAccess::PublishPointerOverState(
-				*element, true, element == directlyOver);
-
-	if (!raiseDirectEvents)
-		return;
-
-	auto makeArgs = [&](Control* control) -> MouseEventArgs
+	std::exception_ptr firstError;
+	try
 		{
-			if (!control) return MouseEventArgs(
-				MouseButton::None, MouseButtonState::Released,
-				0, 0, 0, 0);
-			int localX = 0;
-			int localY = 0;
-			(void)TryGetControlLocalPoint(
-				control, contentMouse, localX, localY);
-			return MouseEventArgs(
-				MouseButton::None, MouseButtonState::Released,
-				0, localX, localY, 0);
-		};
+		if (_inputManager)
+			_inputManager->SetMouseOverOrigin(
+				directlyOver, raiseDirectEvents);
+	}
+	catch (...)
+	{
+		firstError = std::current_exception();
+	}
+	if (!windowLifetime.Get())
+	{
+		if (firstError) std::rethrow_exception(firstError);
+		return;
+	}
+	try { ReconcileMouseDirectlyOverState(); }
+	catch (...)
+	{
+		if (!firstError) firstError = std::current_exception();
+	}
+	if (firstError) std::rethrow_exception(firstError);
+}
 
-	if (auto* previous = previousReference.Get())
+void Window::ReconcileMouseDirectlyOverState()
+{
+	const ControlWeakReference windowLifetime(this);
+	const ControlWeakReference requested(_mouseDirectlyOver);
+	if (_mouseDirectlyOverStateOwner == requested) return;
+	const auto previous = _mouseDirectlyOverStateOwner;
+	_mouseDirectlyOverStateOwner = requested;
+	std::exception_ptr firstError;
+	if (auto* target = previous.Get())
 	{
-		auto args = makeArgs(previous);
-		previous->OnMouseLeave(previous, args);
-		if (auto* live = previousReference.Get()) live->InvalidateVisual();
+		try
+		{
+			cui::framework::InputAccess::PublishMouseDirectlyOverState(
+				*target, false);
+		}
+		catch (...)
+		{
+			firstError = std::current_exception();
+		}
+		if (!windowLifetime)
+		{
+			if (firstError) std::rethrow_exception(firstError);
+			return;
+		}
 	}
-	if (auto* next = nextReference.Get())
+	if (_mouseDirectlyOverStateOwner == requested)
 	{
-		auto args = makeArgs(next);
-		next->OnMouseEnter(next, args);
-		if (auto* live = nextReference.Get()) live->InvalidateVisual();
+		if (auto* target = requested.Get())
+		{
+			try
+			{
+				cui::framework::InputAccess::PublishMouseDirectlyOverState(
+					*target, true);
+			}
+			catch (...)
+			{
+				if (!firstError) firstError = std::current_exception();
+			}
+			if (!windowLifetime)
+			{
+				if (firstError) std::rethrow_exception(firstError);
+				return;
+			}
+		}
 	}
+	if (firstError) std::rethrow_exception(firstError);
+}
+
+void Window::PublishMouseOverTransition(
+	Control& target, bool isMouseOver)
+{
+	int localX = 0;
+	int localY = 0;
+	(void)TryGetControlLocalPoint(
+		&target, _mouseOverContentPoint, localX, localY);
+	auto args = MouseEventArgs(
+		MouseButton::None, MouseButtonState::Released,
+		0, localX, localY, 0);
+	if (isMouseOver)
+		target.OnMouseEnter(&target, args);
+	else
+		target.OnMouseLeave(&target, args);
 }
 
 bool Window::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
@@ -4558,6 +4657,19 @@ bool Window::RectIntersects(const RECT& a, const RECT& b)
 	return ::IntersectRect(&out, &a, &b) != 0;
 }
 
+Window::PresentationBackdropGeometry
+Window::ResolvePresentationBackdropGeometry(
+	const RECT& logicalDirty,
+	const RECT& logicalClient) noexcept
+{
+	// A region frame clears only the damaged pixels, but the decorative frame
+	// always belongs to the client boundary. Drawing a rectangle around
+	// logicalDirty turns every pointer-over damage edge into a persistent one-
+	// pixel line on transparent retained layers. The already active damage clip
+	// limits this stable client-frame geometry to the portion being repainted.
+	return PresentationBackdropGeometry{ logicalDirty, logicalClient };
+}
+
 RECT Window::ToRECT(D2D1_RECT_F rect, int inflatePx)
 {
 	RECT result{};
@@ -4671,7 +4783,7 @@ GET_CPP(Window, float, Left)
 SET_CPP(Window, float, Left)
 {
 	if (!std::isfinite(value) && !std::isnan(value)) return;
-	if (!SetPropertyField(L"Left", _left, value)) return;
+	if (!SetPropertyField(LeftProperty(), _left, value)) return;
 	if (_synchronizingNativeBounds || !Handle || !std::isfinite(value)) return;
 	RECT bounds{};
 	if (!::GetWindowRect(Handle, &bounds)) return;
@@ -4688,7 +4800,7 @@ GET_CPP(Window, float, Top)
 SET_CPP(Window, float, Top)
 {
 	if (!std::isfinite(value) && !std::isnan(value)) return;
-	if (!SetPropertyField(L"Top", _top, value)) return;
+	if (!SetPropertyField(TopProperty(), _top, value)) return;
 	if (_synchronizingNativeBounds || !Handle || !std::isfinite(value)) return;
 	RECT bounds{};
 	if (!::GetWindowRect(Handle, &bounds)) return;
@@ -4749,9 +4861,9 @@ void Window::SynchronizeNativePosition()
 	const float scale = GetDpiScale();
 	_synchronizingNativeBounds = true;
 	(void)TrySetCurrentPropertyValue(
-		L"Left", BindingValue(static_cast<float>(bounds.left) / scale));
+		LeftProperty(), BindingValue(static_cast<float>(bounds.left) / scale));
 	(void)TrySetCurrentPropertyValue(
-		L"Top", BindingValue(static_cast<float>(bounds.top) / scale));
+		TopProperty(), BindingValue(static_cast<float>(bounds.top) / scale));
 	_synchronizingNativeBounds = false;
 }
 
@@ -4835,6 +4947,7 @@ void Window::ApplySystemVisualPreferences(SystemVisualPreferences preferences)
 	const bool textScaleChanged = preferences.TextScalePercent
 		!= _systemVisualPreferences.TextScalePercent;
 	_systemVisualPreferences = preferences;
+	RefreshKeyboardFocusVisual();
 	if (textScaleChanged)
 	{
 		for (auto* control : GetVisualChildrenView())
@@ -4860,12 +4973,13 @@ GET_CPP(Window, bool, Topmost)
 }
 SET_CPP(Window, bool, Topmost)
 {
-	auto* metadata = DependencyPropertyRegistry::Find(*this, L"Topmost");
+	const auto* metadata =
+		DependencyPropertyRegistry::GetMetadata(*this, TopmostProperty());
 	if (!metadata) return;
 	if (_applyingPropertyMetadata != metadata)
 	{
 		(void)TrySetPropertyValue(
-			L"Topmost", BindingValue(value),
+			TopmostProperty(), BindingValue(value),
 			DependencyPropertyValueSource::Local);
 		return;
 	}
@@ -4906,7 +5020,7 @@ void Window::OnEffectiveIsVisibleChanged(
 
 void Window::SetWindowStyleValue(::WindowStyle value)
 {
-	(void)SetPropertyField(L"WindowStyle", _windowStyle, value);
+	(void)SetPropertyField(WindowStyleProperty(), _windowStyle, value);
 }
 
 GET_CPP(Window, ::ResizeMode, ResizeMode)
@@ -4916,7 +5030,7 @@ GET_CPP(Window, ::ResizeMode, ResizeMode)
 
 SET_CPP(Window, ::ResizeMode, ResizeMode)
 {
-	(void)SetPropertyField(L"ResizeMode", _resizeMode, value);
+	(void)SetPropertyField(ResizeModeProperty(), _resizeMode, value);
 }
 
 bool Window::HasWindowChrome() const noexcept
@@ -4964,13 +5078,13 @@ GET_CPP(Window, bool, ShowInTaskbar)
 }
 SET_CPP(Window, bool, ShowInTaskbar)
 {
-	auto* metadata =
-		DependencyPropertyRegistry::Find(*this, L"ShowInTaskbar");
+	const auto* metadata = DependencyPropertyRegistry::GetMetadata(
+		*this, ShowInTaskbarProperty());
 	if (!metadata) return;
 	if (_applyingPropertyMetadata != metadata)
 	{
 		(void)TrySetPropertyValue(
-			L"ShowInTaskbar", BindingValue(value),
+			ShowInTaskbarProperty(), BindingValue(value),
 			DependencyPropertyValueSource::Local);
 		return;
 	}
@@ -4985,7 +5099,7 @@ GET_CPP(Window, std::wstring, Title)
 
 SET_CPP(Window, std::wstring, Title)
 {
-	(void)SetPropertyField(L"Title", _title, std::move(value));
+	(void)SetPropertyField(TitleProperty(), _title, std::move(value));
 }
 
 std::wstring Window::GetSemanticText() const
@@ -4993,105 +5107,140 @@ std::wstring Window::GetSemanticText() const
 	return _title;
 }
 
-void Window::RegisterDependencyProperties()
+namespace
 {
-	ContentControl::RegisterDependencyProperties();
-	static const bool registered = []
+	DependencyPropertyOptions<Window, float> WindowPositionOptions(
+		float defaultValue CUI_DESIGN_METADATA_ARGUMENTS(int order))
 	{
-		auto design = [](const wchar_t* category, int categoryOrder,
-			int order, DependencyPropertyEditorKind editor)
+		DependencyPropertyOptions<Window, float> options;
+		options.DefaultValue = defaultValue;
+		options.Flags = DependencyPropertyFlags::None;
+		options.Validate = [](const float& value)
 		{
-			DependencyPropertyDesignMetadata value;
-			value.Category = category;
-			value.CategoryOrder = categoryOrder;
-			value.Order = order;
-			value.Editor = editor;
-			value.Persistence = DependencyPropertyPersistence::Native;
-			return value;
+			return std::isfinite(value) || std::isnan(value);
 		};
-		const auto layoutFlags = DependencyPropertyFlags::AffectsArrange
-			| DependencyPropertyFlags::AffectsRender;
+		options.Equals = [](const float& left, const float& right)
+		{
+			return left == right || (std::isnan(left) && std::isnan(right));
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Layout";
+		options.Design.CategoryOrder = 100;
+		options.Design.Order = order;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Step = 0.5;
+		)
+		return options;
+	}
 
-		DependencyPropertyOptions<Window, std::wstring> titleOptions;
-		titleOptions.DefaultValue = L"Window";
-		titleOptions.Flags = DependencyPropertyFlags::AffectsRender;
-		titleOptions.Design = design(L"Common", 0, 10,
-			DependencyPropertyEditorKind::Text);
-		titleOptions.Changed = [](
+	DependencyPropertyOptions<Window, bool> WindowBooleanOptions(
+		bool defaultValue CUI_DESIGN_METADATA_ARGUMENTS(int order))
+	{
+		DependencyPropertyOptions<Window, bool> options;
+		options.DefaultValue = defaultValue;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = order;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
+		return options;
+	}
+}
+
+const DependencyProperty& Window::TitleProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Window, std::wstring> options;
+		options.DefaultValue = L"Window";
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
+		options.Changed = [](
 			Window& target, const std::wstring&, const std::wstring& value)
 		{
-		target._presentationInvalidated = true;
+			target._presentationInvalidated = true;
 			if (target.Handle && ::IsWindow(target.Handle))
 				::SetWindowTextW(target.Handle, value.c_str());
-			target.NotifyAccessibilityEvent(
-				&target, AccessibilityChange::Name);
+			target.NotifyAccessibilityEvent(&target, AccessibilityChange::Name);
 		};
-		DependencyPropertyRegistry::Register<Window, std::wstring>(L"Title",
+		return DependencyPropertyRegistry::RegisterStatic<Window, std::wstring>(
+			DependencyPropertyRegistrationLiteral(L"Title"),
 			[](Window& target) { return target.Title; },
 			[](Window& target, const std::wstring& value)
-			{ target.Title = value; }, {}, std::move(titleOptions));
+			{ target.Title = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto positionOptions = [&](int order)
-		{
-			DependencyPropertyOptions<Window, float> options;
-			options.DefaultValue =
-				(std::numeric_limits<float>::quiet_NaN)();
-			options.Flags = DependencyPropertyFlags::None;
-			options.Validate = [](const float& value)
-			{
-				return std::isfinite(value) || std::isnan(value);
-			};
-			options.Equals = [](const float& left, const float& right)
-			{
-				return left == right
-					|| (std::isnan(left) && std::isnan(right));
-			};
-			options.Design = design(L"Layout", 100, order,
-				DependencyPropertyEditorKind::Number);
-			options.Design.Step = 0.5;
-			return options;
-		};
-		DependencyPropertyRegistry::Register<Window, float>(L"Left",
+const DependencyProperty& Window::LeftProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<Window, float>(
+			DependencyPropertyRegistrationLiteral(L"Left"),
 			[](Window& target) { return target.Left; },
-			[](Window& target, const float& value) { target.Left = value; },
-			{}, positionOptions(10));
-		DependencyPropertyRegistry::Register<Window, float>(L"Top",
+			[](Window& target, const float& value) { target.Left = value; }, {},
+			WindowPositionOptions(
+				(std::numeric_limits<float>::quiet_NaN)()
+				CUI_DESIGN_METADATA_ARGUMENTS(10)));
+	return *registration;
+}
+
+const DependencyProperty& Window::TopProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<Window, float>(
+			DependencyPropertyRegistrationLiteral(L"Top"),
 			[](Window& target) { return target.Top; },
-			[](Window& target, const float& value) { target.Top = value; },
-			{}, positionOptions(20));
+			[](Window& target, const float& value) { target.Top = value; }, {},
+			WindowPositionOptions(
+				(std::numeric_limits<float>::quiet_NaN)()
+				CUI_DESIGN_METADATA_ARGUMENTS(20)));
+	return *registration;
+}
 
-		auto boolOptions = [&](bool defaultValue, int order)
-		{
-			DependencyPropertyOptions<Window, bool> options;
-			options.DefaultValue = defaultValue;
-			options.Flags = DependencyPropertyFlags::AffectsRender;
-			options.Design = design(L"Behavior", 300, order,
-				DependencyPropertyEditorKind::Boolean);
-			return options;
-		};
-#define CUI_WINDOW_BOOL_PROPERTY(propertyName, memberName, defaultValue, order) \
-		DependencyPropertyRegistry::Register<Window, bool>(propertyName, \
-			[](Window& target) { return target.memberName; }, \
-			[](Window& target, const bool& value) { target.memberName = value; }, {}, \
-			boolOptions(defaultValue, order))
-		CUI_WINDOW_BOOL_PROPERTY(L"ShowInTaskbar", ShowInTaskbar, true, 10);
-		CUI_WINDOW_BOOL_PROPERTY(L"Topmost", Topmost, false, 20);
-#undef CUI_WINDOW_BOOL_PROPERTY
+const DependencyProperty& Window::TopmostProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<Window, bool>(
+			DependencyPropertyRegistrationLiteral(L"Topmost"),
+			[](Window& target) { return target.Topmost; },
+			[](Window& target, const bool& value) { target.Topmost = value; }, {},
+			WindowBooleanOptions(false CUI_DESIGN_METADATA_ARGUMENTS(20)));
+	return *registration;
+}
 
-		DependencyPropertyOptions<Window, ::WindowStyle> windowStyleOptions;
-		windowStyleOptions.DefaultValue = ::WindowStyle::SingleBorderWindow;
-		windowStyleOptions.Flags = layoutFlags;
-		windowStyleOptions.Design = design(L"Appearance", 200, 50,
-			DependencyPropertyEditorKind::Choice);
-		windowStyleOptions.Design.Choices = {
+const DependencyProperty& Window::WindowStyleProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Window, ::WindowStyle> options;
+		options.DefaultValue = ::WindowStyle::SingleBorderWindow;
+		options.Flags = DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		options.Design.Order = 50;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Choices = {
 			{ L"None", BindingValue(::WindowStyle::None) },
-			{ L"SingleBorderWindow",
-				BindingValue(::WindowStyle::SingleBorderWindow) },
-			{ L"ThreeDBorderWindow",
-				BindingValue(::WindowStyle::ThreeDBorderWindow) },
+			{ L"SingleBorderWindow", BindingValue(::WindowStyle::SingleBorderWindow) },
+			{ L"ThreeDBorderWindow", BindingValue(::WindowStyle::ThreeDBorderWindow) },
 			{ L"ToolWindow", BindingValue(::WindowStyle::ToolWindow) }
 		};
-		windowStyleOptions.Validate = [](const ::WindowStyle& value)
+		)
+		options.Validate = [](const ::WindowStyle& value)
 		{
 			switch (value)
 			{
@@ -5104,7 +5253,7 @@ void Window::RegisterDependencyProperties()
 				return false;
 			}
 		};
-		windowStyleOptions.Changed = [](
+		options.Changed = [](
 			Window& target, const ::WindowStyle&, const ::WindowStyle&)
 		{
 			target.SynchronizeNativeWindowStyle();
@@ -5112,25 +5261,37 @@ void Window::RegisterDependencyProperties()
 			target.RequestLayout();
 			target.Invalidate(false);
 		};
-		DependencyPropertyRegistry::Register<Window, ::WindowStyle>(
-			L"WindowStyle",
+		return DependencyPropertyRegistry::RegisterStatic<Window, ::WindowStyle>(
+			DependencyPropertyRegistrationLiteral(L"WindowStyle"),
 			[](Window& target) { return target.WindowStyle; },
 			[](Window& target, const ::WindowStyle& value)
-			{ target.WindowStyle = value; }, {}, std::move(windowStyleOptions));
+			{ target.WindowStyle = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		DependencyPropertyOptions<Window, ::ResizeMode> resizeModeOptions;
-		resizeModeOptions.DefaultValue = ::ResizeMode::CanResize;
-		resizeModeOptions.Flags = layoutFlags;
-		resizeModeOptions.Design = design(L"Behavior", 300, 30,
-			DependencyPropertyEditorKind::Choice);
-		resizeModeOptions.Design.Choices = {
+const DependencyProperty& Window::ResizeModeProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Window, ::ResizeMode> options;
+		options.DefaultValue = ::ResizeMode::CanResize;
+		options.Flags = DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 30;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Choices = {
 			{ L"NoResize", BindingValue(::ResizeMode::NoResize) },
 			{ L"CanMinimize", BindingValue(::ResizeMode::CanMinimize) },
 			{ L"CanResize", BindingValue(::ResizeMode::CanResize) },
-			{ L"CanResizeWithGrip",
-				BindingValue(::ResizeMode::CanResizeWithGrip) }
+			{ L"CanResizeWithGrip", BindingValue(::ResizeMode::CanResizeWithGrip) }
 		};
-		resizeModeOptions.Validate = [](const ::ResizeMode& value)
+		)
+		options.Validate = [](const ::ResizeMode& value)
 		{
 			switch (value)
 			{
@@ -5143,21 +5304,46 @@ void Window::RegisterDependencyProperties()
 				return false;
 			}
 		};
-		resizeModeOptions.Changed = [](
+		options.Changed = [](
 			Window& target, const ::ResizeMode&, const ::ResizeMode&)
 		{
 			target.SynchronizeNativeWindowStyle();
 			target.ClearCaptionStates();
 			target.Invalidate(false);
 		};
-		DependencyPropertyRegistry::Register<Window, ::ResizeMode>(
-			L"ResizeMode",
+		return DependencyPropertyRegistry::RegisterStatic<Window, ::ResizeMode>(
+			DependencyPropertyRegistrationLiteral(L"ResizeMode"),
 			[](Window& target) { return target.ResizeMode; },
 			[](Window& target, const ::ResizeMode& value)
-			{ target.ResizeMode = value; }, {}, std::move(resizeModeOptions));
-		return true;
+			{ target.ResizeMode = value; }, {}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& Window::ShowInTaskbarProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<Window, bool>(
+			DependencyPropertyRegistrationLiteral(L"ShowInTaskbar"),
+			[](Window& target) { return target.ShowInTaskbar; },
+			[](Window& target, const bool& value)
+			{ target.ShowInTaskbar = value; }, {},
+			WindowBooleanOptions(true CUI_DESIGN_METADATA_ARGUMENTS(10)));
+	return *registration;
+}
+
+void Window::RegisterDependencyProperties()
+{
+	ContentControl::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)TitleProperty();
+	(void)LeftProperty();
+	(void)TopProperty();
+	(void)TopmostProperty();
+	(void)WindowStyleProperty();
+	(void)ResizeModeProperty();
+	(void)ShowInTaskbarProperty();
+#endif
 }
 
 Window::Window()
@@ -5166,17 +5352,12 @@ Window::Window()
 	_backcolor = cui::theme::palette::Window;
 	_forecolor = cui::theme::palette::TextPrimary;
 	RegisterDependencyProperties();
-	// Window supplies the presentation theme's larger inherited text size;
-	// authored/style/binding values retain normal dependency-property priority.
-	(void)TrySetPropertyValue(
-		L"FontSize", BindingValue(18.0),
-		DependencyPropertyValueSource::Theme);
 	SetPresentationWindowCore(this);
 	_windowBoundsChanged = OnPropertyValueChanged.Subscribe(
 		[this](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 		{
-			if (args.PropertyName == L"Width"
-				|| args.PropertyName == L"Height")
+			if (args.Property == &Control::WidthProperty()
+				|| args.Property == &Control::HeightProperty())
 				ApplySpecifiedSizeToPlatform();
 		});
 	_inputManager = std::make_unique<InputManager>(this);
@@ -5568,6 +5749,8 @@ void Window::CleanupResources()
 	if (_resourcesCleaned)
 		return;
 	_resourcesCleaned = true;
+	try { (void)ReleaseMouseCapture(); }
+	catch (...) {}
 	if (_textCompositionManager) _textCompositionManager->Reset();
 	Application::UnregisterWindow(*this);
 	if (_uiaProvider)
@@ -5596,18 +5779,17 @@ void Window::CleanupResources()
 	// Transient presentation roots are non-owning projections. Their logical or
 	// template owners remain solely responsible for object lifetime.
 	ClearTransientPresentations();
-	UpdateMouseOverProjection(nullptr, POINT{}, false);
+	try { UpdateMouseOverProjection(nullptr, POINT{}, false); }
+	catch (...) {}
+	if (_focusManager) _focusManager->Reset();
 	while (!this->GetVisualChildrenView().empty())
 	{
 		auto owned = DetachVisualChild(this->GetVisualChildrenView().front());
 		if (!owned) break;
 	}
 
-	if (_focusManager) _focusManager->Reset();
-
 	if (_renderHost) _renderHost->Detach();
 	_renderHost.reset();
-	_focusManager.reset();
 }
 
 bool Window::EnsureDCompInitialized()
@@ -5631,6 +5813,13 @@ bool Window::EnsureDCompInitialized()
 void Window::InvalidatePresentationStructure() noexcept
 {
 	if (_presentationScene) _presentationScene->InvalidateStructure();
+	try
+	{
+		RefreshDefaultedButtons();
+	}
+	catch (...)
+	{
+	}
 }
 
 void Window::InvalidatePresentationNode(
@@ -6238,10 +6427,27 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 	const RECT drawRc = frameTransaction.LogicalDirty;
 	const RECT logClientRc = frameTransaction.LogicalClient;
 	const auto effectiveTheme = GetEffectiveNativeThemeFrame();
+	const auto backdrop = ResolvePresentationBackdropGeometry(
+		drawRc, logClientRc);
 
-	this->GetDrawingContext()->FillRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), effectiveTheme.WindowBackColor);
-	this->GetDrawingContext()->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), effectiveTheme.WindowBorderLightColor, 2.0f);
-	this->GetDrawingContext()->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), effectiveTheme.WindowBorderDarkColor, 1.0f);
+	this->GetDrawingContext()->FillRect(
+		(float)backdrop.Damage.left,
+		(float)backdrop.Damage.top,
+		(float)(backdrop.Damage.right - backdrop.Damage.left),
+		(float)(backdrop.Damage.bottom - backdrop.Damage.top),
+		effectiveTheme.WindowBackColor);
+	this->GetDrawingContext()->DrawRect(
+		(float)backdrop.ClientFrame.left,
+		(float)backdrop.ClientFrame.top,
+		(float)(backdrop.ClientFrame.right - backdrop.ClientFrame.left),
+		(float)(backdrop.ClientFrame.bottom - backdrop.ClientFrame.top),
+		effectiveTheme.WindowBorderLightColor, 2.0f);
+	this->GetDrawingContext()->DrawRect(
+		(float)backdrop.ClientFrame.left,
+		(float)backdrop.ClientFrame.top,
+		(float)(backdrop.ClientFrame.right - backdrop.ClientFrame.left),
+		(float)(backdrop.ClientFrame.bottom - backdrop.ClientFrame.top),
+		effectiveTheme.WindowBorderDarkColor, 1.0f);
 
 	if (HasWindowChrome())
 	{
@@ -6432,6 +6638,12 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 	return true;
 }
 
+void Window::RefreshReverseInheritedInputProperties()
+{
+	if (!_resourcesCleaned && _inputManager)
+		_inputManager->RefreshReverseInheritedProperties();
+}
+
 void Window::ClearDetachedControlReferences(Control* root)
 {
 	if (!root)
@@ -6444,7 +6656,8 @@ void Window::ClearDetachedControlReferences(Control* root)
 
 	DismissTransientPresentationsInSubtree(root);
 	if (belongsToDetachedTree(this->_mouseDirectlyOver))
-		UpdateMouseOverProjection(nullptr, POINT{}, false);
+		UpdateMouseOverProjection(
+			nullptr, POINT{}, !_resourcesCleaned);
 	if (belongsToDetachedTree(this->GetKeyboardFocusedElement()))
 		this->SetKeyboardFocus(
 			nullptr, true, FocusChangeReason::TreeDetach);
@@ -6454,6 +6667,7 @@ void Window::ClearDetachedControlReferences(Control* root)
 
 bool Window::ProcessInput(const InputReport& input)
 {
+	RecordMostRecentInputDevice(input);
 	const bool isKeyDown = input.Kind == InputReportKind::KeyDown;
 	const bool isKeyUp = input.Kind == InputReportKind::KeyUp;
 	if (!isKeyDown && !isKeyUp)
@@ -6472,6 +6686,9 @@ bool Window::ProcessInput(const InputReport& input)
 				(void)cui::framework::InputAccess::DispatchInput(
 					*focused, input);
 			if (_focusManager) _focusManager->DeactivateWindow();
+			// WPF mouse-device deactivation retires capture before the
+			// presentation source becomes inactive.
+			(void)ReleaseMouseCapture();
 			DismissTransientPresentationsForWindowDeactivation();
 			return true;
 		case InputReportKind::Cancel:
@@ -6727,6 +6944,7 @@ void Window::ProcessPlatformMessage(
 	POINT contentMouse{ (LONG)(mouse.x / dpiScale), (LONG)((mouse.y - titleBarHeight) / dpiScale) };
 	auto nativeInput = CreateNativeInputReport(
 		message, wParam, lParam, contentMouse);
+	if (nativeInput) RecordMostRecentInputDevice(*nativeInput);
 	const bool previewablePointerInput = nativeInput
 		&& (nativeInput->Kind == InputReportKind::PointerMove
 			|| nativeInput->Kind == InputReportKind::PointerDown
@@ -7067,19 +7285,9 @@ void Window::ProcessPlatformMessage(
 	case WM_CAPTURECHANGED:
 	{
 		if (nativeInput) (void)OnPreviewInputReport(*nativeInput);
-		auto* captured = GetMouseCaptured();
-		if (captured && nativeInput
-			&& reinterpret_cast<HWND>(lParam) != this->Handle)
-		{
-			int capturedX = 0;
-			int capturedY = 0;
-			if (TryGetControlLocalPoint(
-				captured, contentMouse, capturedX, capturedY))
-				(void)cui::framework::InputAccess::DispatchInput(
-					*captured,
-					nativeInput->Retarget(capturedX, capturedY));
-		}
-		if (_inputManager && reinterpret_cast<HWND>(lParam) != this->Handle)
+		const bool captureMovedAway =
+			reinterpret_cast<HWND>(lParam) != this->Handle;
+		if (_inputManager && captureMovedAway)
 			_inputManager->NotifyCaptureLost(*this);
 	}
 	break;

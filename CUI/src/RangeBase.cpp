@@ -2,111 +2,174 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
+#include <typeindex>
 #include <utility>
 
 namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<RangeBase, TValue> RangeOptions(
-		TValue defaultValue, int order)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(int order))
 	{
 		DependencyPropertyOptions<RangeBase, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Range";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = order;
 		options.Design.Editor = DependencyPropertyEditorKind::Number;
 		options.Design.Step = 0.1;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
-	}
-
-	auto RangeSubscriber(const wchar_t* propertyName)
-	{
-		return [propertyName = std::wstring(propertyName)](
-			RangeBase& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode)
-		{
-			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
-					DependencyObject*,
-					const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == propertyName)
-						handler();
-				});
-		};
 	}
 }
 
-void RangeBase::RegisterDependencyProperties()
+const DependencyProperty& RangeBase::MinimumProperty()
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		auto minimumOptions = RangeOptions(0.0, 10);
-		minimumOptions.Validate = [](const double& proposed)
+		auto options = RangeOptions(0.0 CUI_DESIGN_METADATA_ARGUMENTS(10));
+		options.Validate = [](const double& proposed)
 		{
 			return std::isfinite(proposed);
 		};
-		DependencyPropertyRegistry::Register<RangeBase, double>(L"Minimum",
+		options.Changed = [](
+			RangeBase& target, const double& oldValue, const double& newValue)
+		{
+			(void)target.CoerceValue(RangeBase::MaximumProperty());
+			target.ReevaluateRangeValue();
+			target.OnMinimumChanged(oldValue, newValue);
+		};
+		return DependencyPropertyRegistry::RegisterStatic<RangeBase, double>(
+			DependencyPropertyRegistrationLiteral(L"Minimum"),
 			[](RangeBase& target) { return target.Minimum; },
 			[](RangeBase& target, const double& value)
-			{ target.Minimum = value; },
-			RangeSubscriber(L"Minimum"), std::move(minimumOptions));
+			{ target.Minimum = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto maximumOptions = RangeOptions(100.0, 20);
-		maximumOptions.Validate = [](const double& proposed)
+const DependencyProperty& RangeBase::MaximumProperty()
+{
+	static const auto registration = []
+	{
+		auto options = RangeOptions(1.0 CUI_DESIGN_METADATA_ARGUMENTS(20));
+		options.Validate = [](const double& proposed)
 		{
 			return std::isfinite(proposed);
 		};
-		maximumOptions.Coerce = [](
+		options.Coerce = [](
 			RangeBase& target,
 			const double& proposed) -> std::optional<double>
 		{
 			return (std::max)(target.Minimum, proposed);
 		};
-		DependencyPropertyRegistry::Register<RangeBase, double>(L"Maximum",
+		options.Changed = [](
+			RangeBase& target, const double& oldValue, const double& newValue)
+		{
+			target.ReevaluateRangeValue();
+			target.OnMaximumChanged(oldValue, newValue);
+		};
+		return DependencyPropertyRegistry::RegisterStatic<RangeBase, double>(
+			DependencyPropertyRegistrationLiteral(L"Maximum"),
 			[](RangeBase& target) { return target.Maximum; },
 			[](RangeBase& target, const double& value)
-			{ target.Maximum = value; },
-			RangeSubscriber(L"Maximum"), std::move(maximumOptions));
+			{ target.Maximum = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto valueOptions = RangeOptions(0.0, 30);
-		valueOptions.Validate = [](const double& proposed)
+const DependencyProperty& RangeBase::ValueProperty()
+{
+	static const auto registration = []
+	{
+		auto options = RangeOptions(0.0 CUI_DESIGN_METADATA_ARGUMENTS(30));
+		options.Validate = [](const double& proposed)
 		{
 			return std::isfinite(proposed);
 		};
-		valueOptions.Coerce = [](
+		options.Coerce = [](
 			RangeBase& target,
 			const double& proposed) -> std::optional<double>
 		{
 			return target.CoerceRangeValue(proposed);
 		};
-		valueOptions.Equals = [](
-			const double& left, const double& right)
+		options.Equals = [](const double& left, const double& right)
 		{
 			return std::fabs(left - right) <= 0.0000001;
 		};
-		valueOptions.Changed = [](
-			RangeBase& target,
-			const double& oldValue,
-			const double& newValue)
+		options.Changed = [](
+			RangeBase& target, const double& oldValue, const double& newValue)
 		{
 			target.OnRangeValueChanged(oldValue, newValue);
 			RoutedPropertyChangedEventArgs<double> args(oldValue, newValue);
 			target.ValueChanged(&target, args);
 		};
-		DependencyPropertyRegistry::Register<RangeBase, double>(L"Value",
+		return DependencyPropertyRegistry::RegisterStatic<RangeBase, double>(
+			DependencyPropertyRegistrationLiteral(L"Value"),
 			[](RangeBase& target) { return target.Value; },
 			[](RangeBase& target, const double& value)
-			{ target.Value = value; },
-			RangeSubscriber(L"Value"), std::move(valueOptions));
-		return true;
+			{ target.Value = value; }, {}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& RangeBase::SmallChangeProperty()
+{
+	static const auto registration = []
+	{
+		auto options = RangeOptions(0.1 CUI_DESIGN_METADATA_ARGUMENTS(40));
+		options.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed) && proposed >= 0.0;
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.0;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<RangeBase, double>(
+			DependencyPropertyRegistrationLiteral(L"SmallChange"),
+			[](RangeBase& target) { return target.SmallChange; },
+			[](RangeBase& target, const double& value)
+			{ target.SmallChange = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& RangeBase::LargeChangeProperty()
+{
+	static const auto registration = []
+	{
+		auto options = RangeOptions(1.0 CUI_DESIGN_METADATA_ARGUMENTS(50));
+		options.Validate = [](const double& proposed)
+		{
+			return std::isfinite(proposed) && proposed >= 0.0;
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.0;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<RangeBase, double>(
+			DependencyPropertyRegistrationLiteral(L"LargeChange"),
+			[](RangeBase& target) { return target.LargeChange; },
+			[](RangeBase& target, const double& value)
+			{ target.LargeChange = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+void RangeBase::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)MinimumProperty();
+	(void)MaximumProperty();
+	(void)ValueProperty();
+	(void)SmallChangeProperty();
+	(void)LargeChangeProperty();
+#endif
 }
 
 GET_CPP(RangeBase, double, Minimum)
@@ -116,9 +179,7 @@ GET_CPP(RangeBase, double, Minimum)
 
 SET_CPP(RangeBase, double, Minimum)
 {
-	if (!SetPropertyField(L"Minimum", _minimum, value)) return;
-	(void)ReevaluatePropertyValue(L"Maximum");
-	ReevaluateRangeValue();
+	(void)SetPropertyField(MinimumProperty(), _minimum, value);
 }
 
 GET_CPP(RangeBase, double, Maximum)
@@ -128,8 +189,7 @@ GET_CPP(RangeBase, double, Maximum)
 
 SET_CPP(RangeBase, double, Maximum)
 {
-	if (!SetPropertyField(L"Maximum", _maximum, value)) return;
-	ReevaluateRangeValue();
+	(void)SetPropertyField(MaximumProperty(), _maximum, value);
 }
 
 GET_CPP(RangeBase, double, Value)
@@ -139,7 +199,27 @@ GET_CPP(RangeBase, double, Value)
 
 SET_CPP(RangeBase, double, Value)
 {
-	(void)SetPropertyField(L"Value", _value, value);
+	(void)SetPropertyField(ValueProperty(), _value, value);
+}
+
+GET_CPP(RangeBase, double, SmallChange)
+{
+	return _smallChange;
+}
+
+SET_CPP(RangeBase, double, SmallChange)
+{
+	(void)SetPropertyField(SmallChangeProperty(), _smallChange, value);
+}
+
+GET_CPP(RangeBase, double, LargeChange)
+{
+	return _largeChange;
+}
+
+SET_CPP(RangeBase, double, LargeChange)
+{
+	(void)SetPropertyField(LargeChangeProperty(), _largeChange, value);
 }
 
 void RangeBase::SetRange(double minimum, double maximum)
@@ -156,10 +236,10 @@ double RangeBase::CoerceRangeValue(double value) const
 
 void RangeBase::SetCurrentRangeValue(double value)
 {
-	(void)SetCurrentPropertyField(L"Value", _value, value);
+	(void)SetCurrentPropertyField(ValueProperty(), _value, value);
 }
 
 void RangeBase::ReevaluateRangeValue()
 {
-	(void)ReevaluatePropertyValue(L"Value");
+	(void)CoerceValue(ValueProperty());
 }

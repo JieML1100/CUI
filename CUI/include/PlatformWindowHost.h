@@ -5,6 +5,8 @@
 #include <functional>
 #include <string>
 
+class NotifyIcon;
+
 /**
  * Owns the Win32 HWND boundary for one CUI window.
  *
@@ -39,6 +41,17 @@ public:
 	}
 
 private:
+	using NativeMessageHook = bool (*)(
+		HWND, UINT, WPARAM, LPARAM);
+
+	friend class NotifyIcon;
+	/**
+	 * Installs the process-wide optional native-message projection. Repeating
+	 * the same installation is harmless; a competing hook is rejected.
+	 */
+	static bool InstallNativeMessageHook(
+		NativeMessageHook hook) noexcept;
+
 	HWND _handle = nullptr;
 	MessageHandler _handler;
 	bool _dispatchEnabled = false;

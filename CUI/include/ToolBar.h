@@ -18,13 +18,20 @@ protected:
 		return std::make_unique<AutomationPeer>(
 			*this, AutomationControlType::ToolBar, L"ToolBar");
 	}
+	void OnAuthoredItemsChanged() noexcept override;
+	void OnGeneratedItemsRealized() override;
 
 public:
 	ToolBar();
 	UIClass Type() override { return UIClass::UI_ToolBar; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
+
+private:
+	void PrepareItemStyles();
 };

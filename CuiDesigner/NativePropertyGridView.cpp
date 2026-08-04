@@ -20,6 +20,18 @@
 
 namespace
 {
+	const DependencyProperty*& SelectedIndexPropertyStorage()
+	{
+		static const DependencyProperty* property = nullptr;
+		return property;
+	}
+
+	const DependencyProperty& SelectedIndexProperty()
+	{
+		PropertyGridView::RegisterDependencyProperties();
+		return *SelectedIndexPropertyStorage();
+	}
+
 	static float RectWidth(const D2D1_RECT_F& rect)
 	{
 		return rect.right - rect.left;
@@ -294,7 +306,7 @@ namespace
 				[propertyName, handler = std::move(handler)](
 					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (args.PropertyName == propertyName)
+					if (args.Name() == propertyName)
 						handler();
 				});
 		};
@@ -432,7 +444,8 @@ void PropertyGridView::RegisterDependencyProperties()
 		};
 		indexOptions.Design.Browsable = false;
 		indexOptions.Design.Persistence = DependencyPropertyPersistence::Transient;
-		DependencyPropertyRegistry::Register<PropertyGridView, int>(L"SelectedIndex",
+		SelectedIndexPropertyStorage() =
+			DependencyPropertyRegistry::Register<PropertyGridView, int>(L"SelectedIndex",
 			[](PropertyGridView& target) { return target.SelectedIndex; },
 			[](PropertyGridView& target, const int& value) { target.SelectedIndex = value; },
 			PropertyGridPropertySubscriber(L"SelectedIndex"), std::move(indexOptions));
@@ -679,7 +692,7 @@ void PropertyGridView::OnItemsCollectionChanged(
 	int nextSelected = findId(selectedId);
 	if (nextSelected < 0)
 	{
-		const auto source = GetPropertyValueSource(L"SelectedIndex");
+		const auto source = GetPropertyValueSource(SelectedIndexProperty());
 		if (selectedId != 0
 			&& (change.Action == CollectionChangeAction::Remove
 				|| change.Action == CollectionChangeAction::Replace))
@@ -688,7 +701,7 @@ void PropertyGridView::OnItemsCollectionChanged(
 			|| (selectedId == 0
 				&& source != DependencyPropertyValueSource::Default))
 		{
-			(void)ReevaluatePropertyValue(L"SelectedIndex");
+			(void)ReevaluatePropertyValue(SelectedIndexProperty());
 			nextSelected = SelectedIndex;
 		}
 		else

@@ -2,8 +2,14 @@
 #define CUI_COMPONENT_BEHAVIOR_H_INCLUDED
 #pragma once
 
-#include "XamlSchema.h"
+#include "CuiBuildFeatures.h"
+#if !CUI_ENABLE_DYNAMIC_XAML
+#error ComponentBehavior is available only in the CUI design-runtime variant
+#endif
+
+#include "Binding.h"
 #include "InputReport.h"
+#include "RuntimeTypeMetadata.h"
 
 #include <d2d1.h>
 

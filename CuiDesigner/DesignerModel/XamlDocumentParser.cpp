@@ -2333,6 +2333,7 @@ namespace
 			switch (kind)
 			{
 			case DesignerStyleValueKind::Bool: return L"false";
+			case DesignerStyleValueKind::NullableBool: return L"{x:Null}";
 			case DesignerStyleValueKind::Int:
 			case DesignerStyleValueKind::Int64:
 			case DesignerStyleValueKind::Float:
@@ -2340,6 +2341,7 @@ namespace
 			case DesignerStyleValueKind::String: return {};
 			case DesignerStyleValueKind::Color: return L"#00000000";
 			case DesignerStyleValueKind::Thickness: return L"0";
+			case DesignerStyleValueKind::CornerRadius: return L"0";
 			case DesignerStyleValueKind::Point: return L"0, 0";
 			case DesignerStyleValueKind::Vector: return L"0, 0";
 			case DesignerStyleValueKind::Rect: return L"0, 0, 0, 0";
@@ -2356,6 +2358,7 @@ namespace
 			switch (kind)
 			{
 			case DesignerStyleValueKind::Bool:
+			case DesignerStyleValueKind::NullableBool:
 			case DesignerStyleValueKind::Int:
 			case DesignerStyleValueKind::Int64:
 			case DesignerStyleValueKind::Float:
@@ -2363,6 +2366,7 @@ namespace
 			case DesignerStyleValueKind::String:
 			case DesignerStyleValueKind::Color:
 			case DesignerStyleValueKind::Thickness:
+			case DesignerStyleValueKind::CornerRadius:
 			case DesignerStyleValueKind::Point:
 			case DesignerStyleValueKind::Vector:
 			case DesignerStyleValueKind::Rect:
@@ -3606,6 +3610,50 @@ namespace
 				schema.Properties);
 			const auto* descriptor = DesignerPropertyCatalog::Find(
 				properties, propertyName);
+			std::vector<DesignerPropertyDescriptor>
+				qualifiedTargetProperties;
+			// WPF permits a dependency property to be owner-qualified in a
+			// Setter (for example Border.CornerRadius).  Attached properties
+			// already have that exact schema name, so only fall back to the
+			// member name when the qualifier is a built-in base of the style
+			// target.
+			if (!descriptor)
+			{
+				const auto separator = propertyName.find(L'.');
+				if (separator != std::wstring::npos
+					&& separator > 0
+					&& separator + 1 < propertyName.size()
+					&& propertyName.find(L'.', separator + 1)
+						== std::wstring::npos)
+				{
+					const auto ownerName =
+						propertyName.substr(0, separator);
+					const auto memberName =
+						propertyName.substr(separator + 1);
+					const auto* owner =
+						CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+							CuiRuntime::XamlRuntimeSchema::CuiNamespace,
+							ownerName);
+					if (owner)
+					{
+						if (IsUIClassAssignableFrom(
+							owner->NativeType, schema.NativeType))
+							descriptor = DesignerPropertyCatalog::Find(
+								properties, memberName);
+						else if (allowTargetName)
+						{
+							const auto ownerMetadata =
+								CuiRuntime::XamlRuntimeSchema::
+									NativeProperties(owner->NativeType);
+							qualifiedTargetProperties =
+								DesignerPropertyCatalog::GetStyleProperties(
+									ownerMetadata);
+							descriptor = DesignerPropertyCatalog::Find(
+								qualifiedTargetProperties, memberName);
+						}
+					}
+				}
+			}
 			if (!descriptor)
 			{
 				if (const auto* metadata = schema.FindProperty(propertyName);
@@ -7424,6 +7472,9 @@ namespace
 				return *value;
 			if (const auto value = enumValue(
 				L"DockPanel.Dock", { L"Left", L"Top", L"Right", L"Bottom" }))
+				return *value;
+			if (const auto value = enumValue(
+				L"TabStripPlacement", { L"Left", L"Top", L"Right", L"Bottom" }))
 				return *value;
 			return rawValue;
 		}

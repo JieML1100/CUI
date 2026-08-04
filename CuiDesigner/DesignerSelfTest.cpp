@@ -1322,12 +1322,13 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& checkedRow->Value.Text == L"false"
 		&& nativeFalseGrid && nativeFalseGrid->IsVisible
 		&& nativeCheckedItem
-		&& nativeCheckedItem->ValueType == PropertyGridValueType::Bool
-		&& nativeCheckedItem->Value == L"false"
-		&& !nativeCheckedItem->IsMixed
-		&& nativeFalseGrid->CheckBackColor.a >= 0.9f
-		&& nativeFalseGrid->CheckBorderColor.a >= 0.9f,
-		L"property boolean editor: false IsChecked value was not visibly represented");
+		&& nativeCheckedItem->ValueType == PropertyGridValueType::Enum
+		&& nativeCheckedItem->Value == L"False"
+		&& nativeCheckedItem->Options
+			== std::vector<std::wstring>{
+				L"False", L"True", L"Indeterminate" }
+		&& !nativeCheckedItem->IsMixed,
+		L"nullable boolean editor: IsChecked did not expose the WPF three-state choices");
 	AppendFailure(failures,
 		DesignerPropertyRowCatalog::Find(
 			falseBooleanGrid.GetPresentedPropertyRows(), L"Background") == nullptr
@@ -3084,6 +3085,11 @@ bool RunDesignerSelfTest(std::wstring& report)
       <Border x:Name="StaticCodeChrome"
               Background="{StaticResource Accent}"
               Padding="{TemplateBinding Padding}">
+        <Border.RenderTransform>
+          <TransformGroup>
+            <TranslateTransform X="0" />
+          </TransformGroup>
+        </Border.RenderTransform>
         <Border.Triggers>
           <EventTrigger RoutedEvent="Click">
             <BeginStoryboard x:Name="StaticClickPulse">
@@ -3091,6 +3097,9 @@ bool RunDesignerSelfTest(std::wstring& report)
                 <DoubleAnimation Storyboard.TargetName="StaticCodeChrome"
                   Storyboard.TargetProperty="(Canvas.Left)"
                   From="0" To="12" Duration="0:0:0.200"/>
+                <DoubleAnimation Storyboard.TargetName="StaticCodeChrome"
+                  Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(TranslateTransform.X)"
+                  From="0" To="8" Duration="0:0:0.200"/>
               </Storyboard>
             </BeginStoryboard>
           </EventTrigger>
@@ -3128,6 +3137,11 @@ bool RunDesignerSelfTest(std::wstring& report)
                 <ThicknessAnimation Storyboard.TargetProperty="BorderThickness"
                   From="5.5" To="{StaticResource StaticHoverBorder}"
                   Duration="0:0:0.080" />
+                <DoubleAnimationUsingKeyFrames
+                  Storyboard.TargetProperty="(Control.RenderTransform).(TranslateTransform.X)"
+                  Duration="0:0:0.080">
+                  <LinearDoubleKeyFrame KeyTime="0:0:0.080" Value="6" />
+                </DoubleAnimationUsingKeyFrames>
               </Storyboard>
             </BeginStoryboard>
           </Trigger.EnterActions>
@@ -3172,7 +3186,11 @@ bool RunDesignerSelfTest(std::wstring& report)
             Template="{StaticResource StaticCodeTemplate}"
             Width="180.5" Height="36"
             Content="{Binding Caption, Mode=OneWay}"
-            Click="HandleRuntimeClick" />
+            Click="HandleRuntimeClick">
+      <Control.RenderTransform>
+        <TranslateTransform X="0" />
+      </Control.RenderTransform>
+    </Button>
   </StackPanel>
 </Window>)xaml";
 	DesignerModel::DesignDocument parsedXamlDocument;
@@ -3180,6 +3198,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 	const bool parsedRuntimeXaml =
 		DesignerModel::XamlDocumentParser::FromXaml(
 			runtimeXaml, parsedXamlDocument, &xamlError);
+	const auto parsedRuntimeXamlError = parsedRuntimeXaml
+		? std::wstring{} : xamlError;
 	DesignerModel::DesignDocument xamlRoundTrip;
 	const bool roundTrippedRuntimeXaml = parsedRuntimeXaml
 		&& DesignerModel::DesignDocumentSerializer::FromXml(
@@ -3187,6 +3207,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 			xamlRoundTrip,
 			&xamlError)
 		&& xamlRoundTrip == parsedXamlDocument;
+	const auto roundTrippedRuntimeXamlError = roundTrippedRuntimeXaml
+		? std::wstring{} : xamlError;
 	const auto canonicalRuntimeXaml = parsedRuntimeXaml
 		? DesignerModel::XamlDocumentSerializer::ToXaml(parsedXamlDocument)
 		: std::string{};
@@ -3198,17 +3220,23 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&xamlError)
 		&& EquivalentXamlContent(
 			canonicalXamlRoundTrip, parsedXamlDocument);
+	const auto roundTrippedCanonicalXamlError = roundTrippedCanonicalXaml
+		? std::wstring{} : xamlError;
 	const bool builtXamlStyleCodeInput = parsedRuntimeXaml
 		&& CodeGenerator::ValidateDocument(parsedXamlDocument, &xamlError);
 	const auto xamlStyleGeneratedCpp = builtXamlStyleCodeInput
-		? CodeGenerator(L"XamlStyleWindow", parsedXamlDocument).GenerateCpp()
+		? CodeGenerator(
+			L"XamlStyleWindow",
+			parsedXamlDocument,
+			CodeGeneratorOutputKind::StaticWindow).GenerateCpp()
 		: std::string{};
 	const auto firstInheritedBorder = xamlStyleGeneratedCpp.find(
-		"ControlStyleSetter(L\"BorderThickness\"");
+		"Thickness(2.5f, 2.5f, 2.5f, 2.5f)");
 	const bool generatedExpandedStyleInheritance = firstInheritedBorder
 		!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"ControlStyleSetter(L\"BorderThickness\"", firstInheritedBorder + 1)
+			"Thickness(2.5f, 2.5f, 2.5f, 2.5f)",
+			firstInheritedBorder + 1)
 			!= std::string::npos;
 	DesignerModel::RuntimeDocument xamlRuntimeDocument;
 	int xamlClickCount = 0;
@@ -3233,6 +3261,15 @@ bool RunDesignerSelfTest(std::wstring& report)
 	const bool loadedRuntimeXaml =
 		DesignerModel::RuntimeDocumentLoader::LoadXaml(
 			runtimeXaml, xamlRuntimeDocument, xamlOptions, &xamlError);
+	const auto loadedRuntimeXamlError = loadedRuntimeXaml
+		? std::wstring{} : xamlError;
+	const auto runtimeXamlFrontendError = !parsedRuntimeXamlError.empty()
+		? parsedRuntimeXamlError
+		: (!roundTrippedRuntimeXamlError.empty()
+			? roundTrippedRuntimeXamlError
+			: (!roundTrippedCanonicalXamlError.empty()
+				? roundTrippedCanonicalXamlError
+				: loadedRuntimeXamlError));
 	auto* xamlAction = xamlRuntimeDocument.FindControlByDesignId(501);
 	auto* xamlButton = dynamic_cast<Button*>(xamlAction);
 	bool xamlTriggerApplied = false;
@@ -3401,8 +3438,24 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& canonicalRuntimeXaml.find(
 			"BasedOn=\"{StaticResource BaseButton}\"")
 			!= std::string::npos;
+	const auto runtimeXamlCompiledTargetParent = xamlStyleGeneratedCpp.find(
+		"TreeAccess::SetTemplatedParent(*__cuiStaticTemplateOwner");
+	const auto runtimeXamlCompiledTargetRegistration = xamlStyleGeneratedCpp.find(
+		"TemplateAccess::RegisterTemplatePart(__templateOwner");
+	const auto runtimeXamlCompiledInteractionInstall = xamlStyleGeneratedCpp.find(
+		"TemplateAccess::InstallCompiledInteractions(__templateOwner");
+	const bool runtimeXamlCompiledTargetOrder =
+		runtimeXamlCompiledTargetParent != std::string::npos
+		&& runtimeXamlCompiledTargetRegistration != std::string::npos
+		&& runtimeXamlCompiledInteractionInstall != std::string::npos
+		&& runtimeXamlCompiledTargetParent
+			< runtimeXamlCompiledTargetRegistration
+		&& runtimeXamlCompiledTargetRegistration
+			< runtimeXamlCompiledInteractionInstall;
 	const bool runtimeXamlGeneratedContract =
-		xamlStyleGeneratedCpp.find(".DataConditions.push_back")
+		xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledStyleDataConditionOp "
+			"__styleSheet_program_data_conditions")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
 			"::BindData(BindingSourceReference dataContext)")
@@ -3434,32 +3487,112 @@ bool RunDesignerSelfTest(std::wstring& report)
 			"ControlTemplateReference(__controlTemplate_StaticCodeTemplate")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"DeclarativeVisualStateGroupDefinition group")
+			"static const CompiledInteractionProgramView "
+			"__cuiInteractionProgram") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static const BindingValue __cuiInteraction_values")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"const BindingValue __cuiInteraction_values")
 			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionGroupOp "
+			"__cuiInteraction_groups") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionStateOp "
+			"__cuiInteraction_states") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionTransitionOp "
+			"__cuiInteraction_transitions") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static const CompiledInteractionPropertyOperand "
+			"__cuiInteraction_property_operands") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionConditionOp "
+			"__cuiInteraction_conditions") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionSetterOp "
+			"__cuiInteraction_setters") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledStoryboardObjectPathOp "
+			"__cuiInteraction_object_paths") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"CompiledStoryboardObjectPathKind::Transform")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"CompiledStoryboardObjectPathMember::TransformX")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static_cast<uint8_t>(cui::drawing::TransformKind::Translate)")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"std::array<Control*, 2> __cuiInteractionTargets")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find("setter.TargetName")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"{ nullptr, static_cast<RoutedEventId>(11),")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find("trigger.EventName")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DependencyPropertyReference(Control::CanvasLeftProperty())")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find("animation.ObjectPath = L\"")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DeclarativeVisualStateGroupDefinition group")
+			== std::string::npos
 		&& xamlStyleGeneratedCpp.find(
 			"group.Name = L\"StaticCommonStates\"")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"TemplateAccess::InstallCompiledInteractions(__templateOwner")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"trigger.EventName = L\"Click\"")
+			"__cuiInteractionProgram, std::span<const BindingValue>{ "
+			"__cuiInteraction_values }") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"TemplateAccess::DefineInteractions(__templateOwner")
+			== std::string::npos
+		&& runtimeXamlCompiledTargetOrder
+		&& xamlStyleGeneratedCpp.find(
+			"static const CompiledInteractionPropertyOperand "
+			"__styleSheet_program_property_operands") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"DependencyPropertyReference(Control::BorderThicknessProperty())")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"animation.PropertyName = L\"Canvas.Left\"")
+			"static constexpr CompiledStoryboardObjectPathOp "
+			"__styleSheet_program_object_paths") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionKeyFrameOp "
+			"__styleSheet_program_key_frames") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionAnimationOp "
+			"__styleSheet_program_animations") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionStoryboardOp "
+			"__styleSheet_program_storyboards") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledInteractionActionOp "
+			"__styleSheet_program_actions") != std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"{ DeclarativeStoryboardActionKind::Begin, 0u }")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"XamlAccess::DefineInteractions(__templateOwner")
+			"{ DeclarativeStoryboardActionKind::Stop, 0u }")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"std::vector<DeclarativeEventTriggerActionDefinition> "
-			"__styleEnterActions") != std::string::npos
-		&& xamlStyleGeneratedCpp.find(
-			"action.StoryboardName = L\"StaticStyleHoverClock\"")
+			"BindingValue(Thickness(7.f, 7.f, 7.f, 7.f))")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
-			"animation.PropertyName = L\"BorderThickness\"")
-			!= std::string::npos
-		&& xamlStyleGeneratedCpp.find(
-			"animation.To = BindingValue(Thickness(7.f, 7.f, 7.f, 7.f));")
-			!= std::string::npos
+			"std::vector<DeclarativeEventTriggerActionDefinition>")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find("action.StoryboardName =")
+			== std::string::npos
+		&& xamlStyleGeneratedCpp.find("animation.Property =")
+			== std::string::npos
 		&& generatedExpandedStyleInheritance;
 	const bool runtimeXamlIdentityReady = xamlClickCount == 1
 		&& xamlRuntimeDocument.WindowNode().Name == L"XamlRuntimeWindow"
@@ -3536,7 +3669,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& canonicalRuntimeXaml.find(
 			"<Condition Binding=\"{Binding IsAdmin}\" Value=\"true\"")
 			!= std::string::npos
-		&& xamlStyleGeneratedCpp.find(".DataConditions.push_back")
+		&& xamlStyleGeneratedCpp.find(
+			"static constexpr CompiledStyleDataConditionOp "
+			"__styleSheet_program_data_conditions")
 			!= std::string::npos
 		&& xamlStyleGeneratedCpp.find(
 			"::BindData(BindingSourceReference dataContext)")
@@ -3593,13 +3728,20 @@ bool RunDesignerSelfTest(std::wstring& report)
 		L"runtime XAML: frontend, floating/Auto layout, binding, style, event, "
 		L"round-trip, or transactional rollback failed"
 		+ std::wstring(L" [frontend=") + SelfTestFlag(runtimeXamlFrontendReady)
+		+ L", parsed=" + SelfTestFlag(parsedRuntimeXaml)
+		+ L", xmlRound=" + SelfTestFlag(roundTrippedRuntimeXaml)
+		+ L", canonicalRound=" + SelfTestFlag(roundTrippedCanonicalXaml)
+		+ L", loaded=" + SelfTestFlag(loadedRuntimeXaml)
 		+ L", values=" + SelfTestFlag(runtimeXamlEffectiveValues)
 		+ L", triggers=" + SelfTestFlag(runtimeXamlTriggersReady)
 		+ L", canonical=" + SelfTestFlag(runtimeXamlCanonicalStyles)
 		+ L", generated=" + SelfTestFlag(runtimeXamlGeneratedContract)
+		+ L", codeInput=" + SelfTestFlag(builtXamlStyleCodeInput)
+		+ L", cppBytes=" + std::to_wstring(xamlStyleGeneratedCpp.size())
+		+ L", inherited=" + SelfTestFlag(generatedExpandedStyleInheritance)
 		+ L", identity=" + SelfTestFlag(runtimeXamlIdentityReady)
 		+ L", rollback=" + SelfTestFlag(runtimeXamlRollbackReady)
-		+ L", error=" + xamlError + L"]");
+		+ L", error=" + runtimeXamlFrontendError + L"]");
 	DesignerStyleSheet cyclicStyles;
 	DesignerStyleRule cyclicA;
 	cyclicA.Id = L"CycleA";
@@ -7600,12 +7742,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& demoCanvas.BuildDesignDocument(
 				recapturedDemo, &demoCaptureError);
 		std::wstring demoCodeGenError;
-		const bool demoCodeInputBuilt = demoRecaptured
+		const bool staticCodeGenerationReady = demoRecaptured
 			&& CodeGenerator::ValidateDocument(
 				recapturedDemo, &demoCodeGenError);
-		const bool staticCodeGenerationRetired = !demoCodeInputBuilt
-			&& demoCodeGenError.find(L"动态 XAML 类型系统")
-				!= std::wstring::npos;
 		std::string compactDemo;
 		bool demoCompact = false;
 		if (demoRecaptured)
@@ -7823,9 +7962,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 				&& control->Width == beforeWidth
 				&& control->Height == beforeHeight;
 		}
+		std::wstring groupMoveDetail;
 		std::wstring expanderMoveDetail;
 		const auto nestedContainerChildMoveStable =
-			[&](const std::wstring& name)
+			[&](const std::wstring& name, std::wstring& detail)
 			{
 				auto wrapper = demoApplied
 					? FindControl(demoCanvas, name) : nullptr;
@@ -7849,8 +7989,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 						- beforeAbsolute.x - 1.0f) < 0.01f
 					&& std::fabs(afterAbsolute.y
 						- beforeAbsolute.y - 1.0f) < 0.01f;
-				if (!stable && name == L"expanderText")
-					expanderMoveDetail = L"loc="
+				if (!stable)
+					detail = L"changed="
+						+ std::wstring(moved.HasChanges() ? L"1" : L"0")
+						+ L"; loc="
 						+ std::to_wstring(beforeLocation.x) + L","
 						+ std::to_wstring(beforeLocation.y) + L"->"
 						+ std::to_wstring(Canvas::GetLeft(*(control))) + L","
@@ -7866,9 +8008,11 @@ bool RunDesignerSelfTest(std::wstring& report)
 				return stable;
 			};
 		const bool groupChildMoveStable =
-			nestedContainerChildMoveStable(L"groupName");
+			nestedContainerChildMoveStable(
+				L"groupName", groupMoveDetail);
 		const bool expanderChildMoveStable =
-			nestedContainerChildMoveStable(L"expanderText");
+			nestedContainerChildMoveStable(
+				L"expanderText", expanderMoveDetail);
 		const bool specialContainerMovesStable =
 			groupChildMoveStable && expanderChildMoveStable;
 		const bool navigationCompositionMaterialized = demoApplied
@@ -7881,7 +8025,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		const bool mediaPlayerMaterialized = hasType(UIClass::UI_MediaPlayer);
 		AppendFailure(failures,
 			demoParsed && demoApplied && demoRecaptured && demoCompact
-			&& staticCodeGenerationRetired
+			&& staticCodeGenerationReady
 			&& composedDataMaterialized
 			&& objectResourcesMaterialized
 			&& drawingResourcesMaterialized
@@ -7902,6 +8046,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", surface=" + (surfaceChildMoveStable ? L"1" : L"0")
 			+ L", transform=" + (transformedChildMoveStable ? L"1" : L"0")
 			+ L", group=" + (groupChildMoveStable ? L"1" : L"0")
+			+ L", groupDetail=" + groupMoveDetail
 			+ L", expander=" + (expanderChildMoveStable ? L"1" : L"0")
 			+ L", expanderDetail=" + expanderMoveDetail
 			+ L", composed=" + (composedDataMaterialized ? L"1" : L"0")
@@ -7920,7 +8065,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", media=" + (mediaPlayerMaterialized ? L"1" : L"0")
 			+ L", compact=" + (demoCompact ? L"1" : L"0")
 			+ L", compactDetail=" + demoCompactDiagnostic
-			+ L", codegenRetired=" + (staticCodeGenerationRetired ? L"1" : L"0")
+			+ L", codegenReady=" + (staticCodeGenerationReady ? L"1" : L"0")
 			+ L", codegen=" + demoCodeGenError
 			+ L"]");
 	}

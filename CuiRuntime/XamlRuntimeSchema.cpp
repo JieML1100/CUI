@@ -123,6 +123,7 @@ namespace
 			L"文本块", 100, 20, false, L"基础控件"),
 		ToolboxType(L"Button", UIClass::UI_Button, true,
 			L"按钮", 120, 30, true, L"基础控件"),
+		BuiltInType(L"ToggleButton", UIClass::UI_ToggleButton),
 		ToolboxType(L"Image", UIClass::UI_Image, false,
 			L"图像", 150, 150, false, L"基础控件"),
 		ToolboxType(L"TextBox", UIClass::UI_TextBox, true,
@@ -328,6 +329,7 @@ namespace
 			CUI_SCHEMA_OWNER(StatusBarItem);
 			CUI_SCHEMA_OWNER(TabControl);
 			CUI_SCHEMA_OWNER(TabItem);
+			CUI_SCHEMA_OWNER(TextBoxBase);
 			CUI_SCHEMA_OWNER(TextBox);
 			CUI_SCHEMA_OWNER(RichTextBox);
 			CUI_SCHEMA_OWNER(ToolBar);
@@ -384,6 +386,8 @@ namespace
 		case UIClass::UI_RangeBase: return NativePropertiesPointer<RangeBase>(type);
 		case UIClass::UI_Label: return NativePropertiesPointer<Label>(type);
 		case UIClass::UI_Button: return NativePropertiesPointer<Button>(type);
+		case UIClass::UI_ToggleButton:
+			return NativePropertiesPointer<ToggleButton>(type);
 		case UIClass::UI_Image: return NativePropertiesPointer<Image>(type);
 		case UIClass::UI_TextBox: return NativePropertiesPointer<TextBox>(type);
 		case UIClass::UI_RichTextBox: return NativePropertiesPointer<RichTextBox>(type);
@@ -611,6 +615,7 @@ CuiRuntime::XamlRuntimeSchema::CreateNativeControl(UIClass type)
 	case UIClass::UI_Border: return std::make_unique<Border>();
 	case UIClass::UI_Label: return std::make_unique<Label>();
 	case UIClass::UI_Button: return std::make_unique<Button>();
+	case UIClass::UI_ToggleButton: return std::make_unique<ToggleButton>();
 	case UIClass::UI_TextBox: return std::make_unique<TextBox>();
 	case UIClass::UI_RichTextBox: return std::make_unique<RichTextBox>();
 	case UIClass::UI_PasswordBox: return std::make_unique<PasswordBox>();

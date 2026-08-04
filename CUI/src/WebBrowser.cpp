@@ -1,7 +1,10 @@
+#include <Colors.h>
+
 #ifdef CUI_ENABLE_WEBVIEW2
 
 #include "WebBrowser.h"
 #include "EventInfrastructure.h"
+#include "PresentationInfrastructure.h"
 #include "PresentationScene.h"
 #include "Window.h"
 #include "WindowInfrastructure.h"
@@ -129,31 +132,37 @@ namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<WebBrowser, TValue> WebBrowserPropertyOptions(
-		TValue defaultValue, int order, DependencyPropertyEditorKind editor)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor))
 	{
 		DependencyPropertyOptions<WebBrowser, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::None;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Web";
 		options.Design.CategoryOrder = 170;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
 
-	auto WebBrowserPropertySubscriber(const wchar_t* propertyName)
+	auto WebBrowserPropertySubscriber(
+		const DependencyProperty& (*propertyAccessor)())
 	{
-		return [propertyName = std::wstring(propertyName)](
+		return [propertyAccessor](
 			WebBrowser& target,
 			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
+				[propertyAccessor, handler = std::move(handler)](
 					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (args.PropertyName == propertyName)
+					if (args.Property == &propertyAccessor())
 						handler();
 				});
 		};
@@ -188,24 +197,6 @@ static D2D1_RECT_F OffsetRectF(D2D1_RECT_F rect, float dx, float dy)
 	rect.top += dy;
 	rect.bottom += dy;
 	return rect;
-}
-
-static std::wstring ToW(const std::string& s)
-{
-	if (s.empty()) return L"";
-	int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-	std::wstring ws(len, L'\0');
-	if (len > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), ws.data(), len);
-	return ws;
-}
-
-static std::string ToU8(const std::wstring& s)
-{
-	if (s.empty()) return "";
-	int len = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0, nullptr, nullptr);
-	std::string result(len, '\0');
-	if (len > 0) WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), result.data(), len, nullptr, nullptr);
-	return result;
 }
 
 WebBrowser::WebBrowser()
@@ -265,69 +256,108 @@ WebBrowser::~WebBrowser()
 void WebBrowser::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		auto initialUrlOptions = WebBrowserPropertyOptions(
-			std::wstring{}, 10, DependencyPropertyEditorKind::Text);
-		DependencyPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
-			[](WebBrowser& target) { return target.GetInitialUrl(); },
-			[](WebBrowser& target, const std::wstring& value)
-			{ target.SetInitialUrl(value); },
-			WebBrowserPropertySubscriber(L"InitialUrl"),
-			std::move(initialUrlOptions));
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)InitialUrlProperty();
+	(void)ZoomFactorProperty();
+	(void)AreDefaultContextMenusEnabledProperty();
+	(void)IsStatusBarEnabledProperty();
+	(void)IsZoomControlEnabledProperty();
+#endif
+}
 
-		auto zoomOptions = WebBrowserPropertyOptions(
-			1.0, 20, DependencyPropertyEditorKind::Number);
-		zoomOptions.Validate = [](const double& proposed)
-		{
-			return std::isfinite(proposed);
-		};
-		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
+const DependencyProperty& WebBrowser::ZoomFactorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = WebBrowserPropertyOptions(
+			1.0 CUI_DESIGN_METADATA_ARGUMENTS(
+				20, DependencyPropertyEditorKind::Number));
+		options.Validate = [](const double& proposed)
+		{ return std::isfinite(proposed); };
+		options.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
 			return (std::clamp)(proposed, 0.25, 5.0);
 		};
-		zoomOptions.Design.Minimum = 0.25;
-		zoomOptions.Design.Maximum = 5.0;
-		zoomOptions.Design.Step = 0.05;
-		DependencyPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.25;
+		options.Design.Maximum = 5.0;
+		options.Design.Step = 0.05;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<WebBrowser, double>(
+			DependencyPropertyRegistrationLiteral(L"ZoomFactor"),
 			[](WebBrowser& target) { return target.GetZoomFactor(); },
 			[](WebBrowser& target, const double& value)
 			{ target.SetZoomFactor(value); },
-			WebBrowserPropertySubscriber(L"ZoomFactor"),
-			std::move(zoomOptions));
+			WebBrowserPropertySubscriber(&WebBrowser::ZoomFactorProperty),
+			std::move(options));
+	}();
+	return *registration;
+}
 
-		auto contextMenuOptions = WebBrowserPropertyOptions(
-			true, 30, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(
-			L"AreDefaultContextMenusEnabled",
+const DependencyProperty& WebBrowser::AreDefaultContextMenusEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(
+				L"AreDefaultContextMenusEnabled"),
 			[](WebBrowser& target)
 			{ return target.GetAreDefaultContextMenusEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetAreDefaultContextMenusEnabled(value); },
-			WebBrowserPropertySubscriber(L"AreDefaultContextMenusEnabled"),
-			std::move(contextMenuOptions));
+			WebBrowserPropertySubscriber(
+				&WebBrowser::AreDefaultContextMenusEnabledProperty),
+			WebBrowserPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					30, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto statusBarOptions = WebBrowserPropertyOptions(
-			false, 40, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
+const DependencyProperty& WebBrowser::IsStatusBarEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsStatusBarEnabled"),
 			[](WebBrowser& target) { return target.GetIsStatusBarEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsStatusBarEnabled(value); },
-			WebBrowserPropertySubscriber(L"IsStatusBarEnabled"),
-			std::move(statusBarOptions));
+			WebBrowserPropertySubscriber(
+				&WebBrowser::IsStatusBarEnabledProperty),
+			WebBrowserPropertyOptions(
+				false CUI_DESIGN_METADATA_ARGUMENTS(
+					40, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto zoomControlOptions = WebBrowserPropertyOptions(
-			true, 50, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
+const DependencyProperty& WebBrowser::IsZoomControlEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsZoomControlEnabled"),
 			[](WebBrowser& target) { return target.GetIsZoomControlEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsZoomControlEnabled(value); },
-			WebBrowserPropertySubscriber(L"IsZoomControlEnabled"),
-			std::move(zoomControlOptions));
-		return true;
-	}();
-	(void)registered;
+			WebBrowserPropertySubscriber(
+				&WebBrowser::IsZoomControlEnabledProperty),
+			WebBrowserPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					50, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::InitialUrlProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, std::wstring>(
+			DependencyPropertyRegistrationLiteral(L"InitialUrl"),
+			[](WebBrowser& target) { return target.GetInitialUrl(); },
+			[](WebBrowser& target, const std::wstring& value)
+			{ target.SetInitialUrl(value); },
+			WebBrowserPropertySubscriber(&WebBrowser::InitialUrlProperty),
+			WebBrowserPropertyOptions(
+				std::wstring{} CUI_DESIGN_METADATA_ARGUMENTS(
+					10, DependencyPropertyEditorKind::Text)));
+	return *registration;
 }
 
 bool WebBrowser::TryInitialize()
@@ -384,26 +414,30 @@ bool WebBrowser::GetAreDefaultContextMenusEnabled() const
 void WebBrowser::SetAreDefaultContextMenusEnabled(bool value)
 {
 	if (SetPropertyField(
-		L"AreDefaultContextMenusEnabled", _impl->areDefaultContextMenusEnabled, value))
+		AreDefaultContextMenusEnabledProperty(),
+		_impl->areDefaultContextMenusEnabled, value))
 		ApplyWebViewSettings();
 }
 bool WebBrowser::GetIsStatusBarEnabled() const { return _isStatusBarEnabled; }
 void WebBrowser::SetIsStatusBarEnabled(bool value)
 {
-	if (SetPropertyField(L"IsStatusBarEnabled", _impl->isStatusBarEnabled, value))
+	if (SetPropertyField(
+		IsStatusBarEnabledProperty(), _impl->isStatusBarEnabled, value))
 		ApplyWebViewSettings();
 }
 bool WebBrowser::GetIsZoomControlEnabled() const { return _isZoomControlEnabled; }
 void WebBrowser::SetIsZoomControlEnabled(bool value)
 {
-	if (SetPropertyField(L"IsZoomControlEnabled", _impl->isZoomControlEnabled, value))
+	if (SetPropertyField(
+		IsZoomControlEnabledProperty(), _impl->isZoomControlEnabled, value))
 		ApplyWebViewSettings();
 }
 std::wstring WebBrowser::GetInitialUrl() const { return _initialUrl; }
 void WebBrowser::SetInitialUrl(std::wstring value)
 {
 	const auto previousValue = _initialUrl;
-	if (!SetPropertyField(L"InitialUrl", _impl->initialUrl, std::move(value)))
+	if (!SetPropertyField(
+		InitialUrlProperty(), _impl->initialUrl, std::move(value)))
 		return;
 	if (_initialUrl.empty())
 	{
@@ -413,132 +447,6 @@ void WebBrowser::SetInitialUrl(std::wstring value)
 	}
 	else
 		TryNavigate(_initialUrl);
-}
-
-std::wstring WebBrowser::JsStringLiteral(const std::wstring& s)
-{
-	std::wstring out;
-	out.reserve(s.size() + 8);
-	out.push_back(L'"');
-	for (wchar_t c : s)
-	{
-		switch (c)
-		{
-		case L'\\': out += L"\\\\"; break;
-		case L'"': out += L"\\\""; break;
-		case L'\r': out += L"\\r"; break;
-		case L'\n': out += L"\\n"; break;
-		case L'\t': out += L"\\t"; break;
-		default:
-			if (c >= 0 && c < 0x20)
-			{
-				wchar_t buf[8];
-				swprintf_s(buf, L"\\u%04x", (unsigned)c);
-				out += buf;
-			}
-			else
-			{
-				out.push_back(c);
-			}
-			break;
-		}
-	}
-	out.push_back(L'"');
-	return out;
-}
-
-std::wstring WebBrowser::UrlEncodeUtf8(const std::wstring& s)
-{
-	static auto isUnreserved = [](unsigned char c) -> bool
-	{
-		if (c >= 'a' && c <= 'z') return true;
-		if (c >= 'A' && c <= 'Z') return true;
-		if (c >= '0' && c <= '9') return true;
-		switch (c)
-		{
-		case '-': case '_': case '.': case '~': return true;
-		default: return false;
-		}
-	};
-
-	std::string u8 = ToU8(s);
-	std::wstring out;
-	out.reserve(u8.size() * 3);
-	for (unsigned char c : u8)
-	{
-		if (isUnreserved(c))
-		{
-			out.push_back((wchar_t)c);
-		}
-		else
-		{
-			wchar_t buf[4];
-			swprintf_s(buf, L"%%%02X", (unsigned)c);
-			out.append(buf);
-		}
-	}
-	return out;
-}
-
-std::wstring WebBrowser::UrlDecodeUtf8(const std::wstring& s)
-{
-	std::string bytes;
-	bytes.reserve(s.size());
-	for (size_t i = 0; i < s.size(); i++)
-	{
-		wchar_t c = s[i];
-		if (c == L'%' && i + 2 < s.size())
-		{
-			int h1 = HexVal(s[i + 1]);
-			int h2 = HexVal(s[i + 2]);
-			if (h1 >= 0 && h2 >= 0)
-			{
-				bytes.push_back((char)((h1 << 4) | h2));
-				i += 2;
-				continue;
-			}
-		}
-		// encodeURIComponent 不会把空格变成 '+'，但这里兼容一下
-		if (c == L'+')
-			bytes.push_back(' ');
-		else
-			bytes.push_back((char)(c & 0xFF));
-	}
-	return ToW(bytes);
-}
-
-bool WebBrowser::TryParseCuiUrl(const std::wstring& url, std::wstring& outAction, std::unordered_map<std::wstring, std::wstring>& outQuery)
-{
-	outAction.clear();
-	outQuery.clear();
-
-	constexpr const wchar_t* kPrefix = L"cui://";
-	if (url.rfind(kPrefix, 0) != 0) return false;
-
-	std::wstring rest = url.substr(wcslen(kPrefix));
-	// action?key=val&key2=val2
-	size_t qpos = rest.find(L'?');
-	std::wstring action = (qpos == std::wstring::npos) ? rest : rest.substr(0, qpos);
-	if (action.empty()) return false;
-	outAction = action;
-
-	if (qpos == std::wstring::npos) return true;
-	std::wstring query = rest.substr(qpos + 1);
-
-	size_t pos = 0;
-	while (pos < query.size())
-	{
-		size_t amp = query.find(L'&', pos);
-		std::wstring pair = (amp == std::wstring::npos) ? query.substr(pos) : query.substr(pos, amp - pos);
-		pos = (amp == std::wstring::npos) ? query.size() : amp + 1;
-		if (pair.empty()) continue;
-		size_t eq = pair.find(L'=');
-		std::wstring k = (eq == std::wstring::npos) ? pair : pair.substr(0, eq);
-		std::wstring v = (eq == std::wstring::npos) ? L"" : pair.substr(eq + 1);
-		if (k.empty()) continue;
-		outQuery[k] = v;
-	}
-	return true;
 }
 
 void WebBrowser::RegisterJsInvokeHandler(const std::wstring& name, JsInvokeHandler handler)
@@ -1302,6 +1210,9 @@ void WebBrowser::EnsureControllerBounds()
 			if (!IntersectRectF(visibleRect, clip))
 				break;
 		}
+		if (cui::framework::PresentationAccess::
+			BreaksVisualPresentationInheritance(*current))
+			break;
 		current = current->GetVisualParent();
 	}
 
@@ -1620,7 +1531,7 @@ void WebBrowser::SetZoomFactor(double factor)
 {
 	if (!std::isfinite(factor)) return;
 	factor = (std::clamp)(factor, 0.25, 5.0);
-	if (SetPropertyField(L"ZoomFactor", _impl->zoomFactor, factor))
+	if (SetPropertyField(ZoomFactorProperty(), _impl->zoomFactor, factor))
 		ApplyWebViewSettings();
 }
 
@@ -1713,31 +1624,37 @@ namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<WebBrowser, TValue> UnsupportedWebPropertyOptions(
-		TValue defaultValue, int order, DependencyPropertyEditorKind editor)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor))
 	{
 		DependencyPropertyOptions<WebBrowser, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::None;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Web";
 		options.Design.CategoryOrder = 170;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
 
-	auto UnsupportedWebPropertySubscriber(const wchar_t* propertyName)
+	auto UnsupportedWebPropertySubscriber(
+		const DependencyProperty& (*propertyAccessor)())
 	{
-		return [propertyName = std::wstring(propertyName)](
+		return [propertyAccessor](
 			WebBrowser& target,
 			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
+				[propertyAccessor, handler = std::move(handler)](
 					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 				{
-					if (args.PropertyName == propertyName)
+					if (args.Property == &propertyAccessor())
 						handler();
 				});
 		};
@@ -1758,69 +1675,108 @@ WebBrowser::~WebBrowser()
 void WebBrowser::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		auto initialUrlOptions = UnsupportedWebPropertyOptions(
-			std::wstring{}, 10, DependencyPropertyEditorKind::Text);
-		DependencyPropertyRegistry::Register<WebBrowser, std::wstring>(L"InitialUrl",
-			[](WebBrowser& target) { return target.GetInitialUrl(); },
-			[](WebBrowser& target, const std::wstring& value)
-			{ target.SetInitialUrl(value); },
-			UnsupportedWebPropertySubscriber(L"InitialUrl"),
-			std::move(initialUrlOptions));
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)InitialUrlProperty();
+	(void)ZoomFactorProperty();
+	(void)AreDefaultContextMenusEnabledProperty();
+	(void)IsStatusBarEnabledProperty();
+	(void)IsZoomControlEnabledProperty();
+#endif
+}
 
-		auto zoomOptions = UnsupportedWebPropertyOptions(
-			1.0, 20, DependencyPropertyEditorKind::Number);
-		zoomOptions.Validate = [](const double& proposed)
-		{
-			return std::isfinite(proposed);
-		};
-		zoomOptions.Coerce = [](WebBrowser&, const double& proposed)
+const DependencyProperty& WebBrowser::ZoomFactorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = UnsupportedWebPropertyOptions(
+			1.0 CUI_DESIGN_METADATA_ARGUMENTS(
+				20, DependencyPropertyEditorKind::Number));
+		options.Validate = [](const double& proposed)
+		{ return std::isfinite(proposed); };
+		options.Coerce = [](WebBrowser&, const double& proposed)
 			-> std::optional<double>
 		{
 			return (std::clamp)(proposed, 0.25, 5.0);
 		};
-		zoomOptions.Design.Minimum = 0.25;
-		zoomOptions.Design.Maximum = 5.0;
-		zoomOptions.Design.Step = 0.05;
-		DependencyPropertyRegistry::Register<WebBrowser, double>(L"ZoomFactor",
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.25;
+		options.Design.Maximum = 5.0;
+		options.Design.Step = 0.05;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<WebBrowser, double>(
+			DependencyPropertyRegistrationLiteral(L"ZoomFactor"),
 			[](WebBrowser& target) { return target.GetZoomFactor(); },
 			[](WebBrowser& target, const double& value)
 			{ target.SetZoomFactor(value); },
-			UnsupportedWebPropertySubscriber(L"ZoomFactor"),
-			std::move(zoomOptions));
+			UnsupportedWebPropertySubscriber(&WebBrowser::ZoomFactorProperty),
+			std::move(options));
+	}();
+	return *registration;
+}
 
-		auto contextMenuOptions = UnsupportedWebPropertyOptions(
-			true, 30, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(
-			L"AreDefaultContextMenusEnabled",
+const DependencyProperty& WebBrowser::AreDefaultContextMenusEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(
+				L"AreDefaultContextMenusEnabled"),
 			[](WebBrowser& target)
 			{ return target.GetAreDefaultContextMenusEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetAreDefaultContextMenusEnabled(value); },
-			UnsupportedWebPropertySubscriber(L"AreDefaultContextMenusEnabled"),
-			std::move(contextMenuOptions));
+			UnsupportedWebPropertySubscriber(
+				&WebBrowser::AreDefaultContextMenusEnabledProperty),
+			UnsupportedWebPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					30, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto statusBarOptions = UnsupportedWebPropertyOptions(
-			false, 40, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsStatusBarEnabled",
+const DependencyProperty& WebBrowser::IsStatusBarEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsStatusBarEnabled"),
 			[](WebBrowser& target) { return target.GetIsStatusBarEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsStatusBarEnabled(value); },
-			UnsupportedWebPropertySubscriber(L"IsStatusBarEnabled"),
-			std::move(statusBarOptions));
+			UnsupportedWebPropertySubscriber(
+				&WebBrowser::IsStatusBarEnabledProperty),
+			UnsupportedWebPropertyOptions(
+				false CUI_DESIGN_METADATA_ARGUMENTS(
+					40, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto zoomControlOptions = UnsupportedWebPropertyOptions(
-			true, 50, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<WebBrowser, bool>(L"IsZoomControlEnabled",
+const DependencyProperty& WebBrowser::IsZoomControlEnabledProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsZoomControlEnabled"),
 			[](WebBrowser& target) { return target.GetIsZoomControlEnabled(); },
 			[](WebBrowser& target, const bool& value)
 			{ target.SetIsZoomControlEnabled(value); },
-			UnsupportedWebPropertySubscriber(L"IsZoomControlEnabled"),
-			std::move(zoomControlOptions));
-		return true;
-	}();
-	(void)registered;
+			UnsupportedWebPropertySubscriber(
+				&WebBrowser::IsZoomControlEnabledProperty),
+			UnsupportedWebPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					50, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::InitialUrlProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<WebBrowser, std::wstring>(
+			DependencyPropertyRegistrationLiteral(L"InitialUrl"),
+			[](WebBrowser& target) { return target.GetInitialUrl(); },
+			[](WebBrowser& target, const std::wstring& value)
+			{ target.SetInitialUrl(value); },
+			UnsupportedWebPropertySubscriber(&WebBrowser::InitialUrlProperty),
+			UnsupportedWebPropertyOptions(
+				std::wstring{} CUI_DESIGN_METADATA_ARGUMENTS(
+					10, DependencyPropertyEditorKind::Text)));
+	return *registration;
 }
 
 bool WebBrowser::TryInitialize() { return false; }
@@ -1865,7 +1821,7 @@ double WebBrowser::GetZoomFactor() const { return _impl->zoomFactor; }
 void WebBrowser::SetZoomFactor(double value)
 {
 	if (!std::isfinite(value)) return;
-	SetPropertyField(L"ZoomFactor", _impl->zoomFactor,
+	SetPropertyField(ZoomFactorProperty(), _impl->zoomFactor,
 		(std::clamp)(value, 0.25, 5.0));
 }
 bool WebBrowser::GetAreDefaultContextMenusEnabled() const
@@ -1874,7 +1830,7 @@ bool WebBrowser::GetAreDefaultContextMenusEnabled() const
 }
 void WebBrowser::SetAreDefaultContextMenusEnabled(bool value)
 {
-	SetPropertyField(L"AreDefaultContextMenusEnabled",
+	SetPropertyField(AreDefaultContextMenusEnabledProperty(),
 		_impl->areDefaultContextMenusEnabled, value);
 }
 bool WebBrowser::GetIsStatusBarEnabled() const
@@ -1883,7 +1839,8 @@ bool WebBrowser::GetIsStatusBarEnabled() const
 }
 void WebBrowser::SetIsStatusBarEnabled(bool value)
 {
-	SetPropertyField(L"IsStatusBarEnabled", _impl->isStatusBarEnabled, value);
+	SetPropertyField(
+		IsStatusBarEnabledProperty(), _impl->isStatusBarEnabled, value);
 }
 bool WebBrowser::GetIsZoomControlEnabled() const
 {
@@ -1891,12 +1848,13 @@ bool WebBrowser::GetIsZoomControlEnabled() const
 }
 void WebBrowser::SetIsZoomControlEnabled(bool value)
 {
-	SetPropertyField(L"IsZoomControlEnabled", _impl->isZoomControlEnabled, value);
+	SetPropertyField(
+		IsZoomControlEnabledProperty(), _impl->isZoomControlEnabled, value);
 }
 std::wstring WebBrowser::GetInitialUrl() const { return _impl->initialUrl; }
 void WebBrowser::SetInitialUrl(std::wstring value)
 {
-	SetPropertyField(L"InitialUrl", _impl->initialUrl, std::move(value));
+	SetPropertyField(InitialUrlProperty(), _impl->initialUrl, std::move(value));
 }
 
 void WebBrowser::ExecuteScriptAsync(
@@ -1956,6 +1914,14 @@ bool WebBrowser::ForwardMouseInputToWebView(const InputReport&)
 }
 
 #endif
+
+bool WebBrowser::HandlesNavigationKey(Key key) const
+{
+	// Once the composition controller owns focus, every semantic key belongs to
+	// the embedded document. In particular Tab/arrows must not escape through
+	// Window's focus-navigation fallback before ProcessInput can forward them.
+	return key != Key::None;
+}
 
 void WebBrowser::Arrange(cui::core::Rect finalRect)
 {

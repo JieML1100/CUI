@@ -13,7 +13,6 @@
 
 class Window;
 class Control;
-class PlatformWindowHost;
 
 /**
  * Value-semantic command source projected into a native tray popup menu.
@@ -99,7 +98,6 @@ public:
 
 private:
 	struct Impl;
-	friend class PlatformWindowHost;
 	/** Platform-only callback and Explorer-recovery projection. */
 	static bool HandlePlatformWindowMessage(
 		HWND window, UINT message, WPARAM wParam, LPARAM lParam);

@@ -8,6 +8,7 @@
 class ComboBox;
 class Popup;
 class ScrollViewer;
+class TextBox;
 
 /** WPF-style content container generated for one ComboBox item. */
 class ComboBoxItem final : public ListBoxItem
@@ -15,16 +16,29 @@ class ComboBoxItem final : public ListBoxItem
 public:
 	ComboBoxItem();
 	UIClass Type() override { return UIClass::UI_ComboBoxItem; }
+	static const DependencyProperty& IsHighlightedProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
+	bool GetIsHighlighted() const noexcept { return _isHighlighted; }
 
 private:
-	void ActivateItem() override;
+	friend class ComboBox;
+	static const DependencyPropertyKey& IsHighlightedPropertyKey();
+	bool ProcessInput(const InputReport& input) override;
+	void ActivateItem(
+		MouseButton button, ModifierKeys modifiers) override;
 	void FocusOwner() override;
 	void OnIsSelectedRequested(bool value) override;
+	bool ActivatesOnPointerUp() const noexcept override { return true; }
+	void OnIsMouseOverChanged(bool oldValue, bool newValue) override;
+	void SetIsHighlighted(bool value);
+
+	bool _isHighlighted = false;
 };
 
 /**
@@ -38,6 +52,8 @@ private:
 class ComboBox : public Selector
 {
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<ComboBoxAutomationPeer>(*this);
@@ -50,18 +66,62 @@ public:
 	ComboBox();
 	~ComboBox() override;
 	UIClass Type() override { return UIClass::UI_ComboBox; }
-	/** WPF ComboBox.Text property identity. */
+	/** WPF dependency-property identities used by generated/native code. */
 	static const DependencyProperty& TextProperty();
+	static const DependencyProperty& IsDropDownOpenProperty();
+	static const DependencyProperty& IsEditableProperty();
+	static const DependencyProperty& IsReadOnlyProperty();
+	static const DependencyProperty& StaysOpenOnEditProperty();
+	static const DependencyProperty&
+		ShouldPreserveUserEnteredPrefixProperty();
+	static const DependencyProperty& MaxDropDownHeightProperty();
+	static const DependencyProperty& SelectionBoxItemProperty();
+	static const DependencyProperty& SelectionBoxItemTemplateProperty();
+	static const DependencyProperty& SelectionBoxItemStringFormatProperty();
+	static const DependencyProperty& IsSelectionBoxHighlightedProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
+	std::wstring GetSemanticText() const override;
 
 	bool GetIsDropDownOpen() const noexcept { return _isDropDownOpen; }
 	void SetIsDropDownOpen(bool value);
 	__declspec(property(get = GetIsDropDownOpen, put = SetIsDropDownOpen))
 		bool IsDropDownOpen;
+	bool GetIsEditable() const noexcept { return _isEditable; }
+	void SetIsEditable(bool value);
+	bool GetIsReadOnly() const noexcept { return _isReadOnly; }
+	void SetIsReadOnly(bool value);
+	bool GetStaysOpenOnEdit() const noexcept { return _staysOpenOnEdit; }
+	void SetStaysOpenOnEdit(bool value);
+	bool GetShouldPreserveUserEnteredPrefix() const noexcept
+	{
+		return _shouldPreserveUserEnteredPrefix;
+	}
+	void SetShouldPreserveUserEnteredPrefix(bool value);
+	const BindingValue& GetSelectionBoxItem() const noexcept
+	{
+		return _selectionBoxItem;
+	}
+	ItemTemplateReference GetSelectionBoxItemTemplate() const noexcept
+	{
+		return _selectionBoxItemTemplate;
+	}
+	const std::wstring& GetSelectionBoxItemStringFormat() const noexcept
+	{
+		return _selectionBoxItemStringFormat;
+	}
+	bool GetIsSelectionBoxHighlighted() const noexcept
+	{
+		return _isSelectionBoxHighlighted;
+	}
+
+	Event<void(ComboBox*)> DropDownOpened;
+	Event<void(ComboBox*)> DropDownClosed;
 
 	float GetMaxDropDownHeight() const noexcept { return _maxDropDownHeight; }
 	void SetMaxDropDownHeight(float value);
@@ -80,6 +140,7 @@ public:
 
 	/** Selects through Selector's SetCurrentValue-preserving interaction path. */
 	bool SelectItem(int index);
+	bool ProcessItemKey(size_t itemIndex, const InputReport& input);
 
 	// Typed ownership surface corresponding to WPF's Items object model.
 	ComboBoxItem* AddItem(std::unique_ptr<ComboBoxItem> item);
@@ -93,19 +154,33 @@ public:
 	bool RemoveItem(ComboBoxItem* item);
 	void ClearItems();
 
-	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
 	/** The closed selector face is one interaction surface; Popup is a separate root. */
-	bool HitTestChildren() const override { return false; }
+	bool HitTestChildren() const override { return _isEditable; }
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
 	void Arrange(cui::core::Rect finalRect) override;
 protected:
 	void PreparePresentation() override;
-	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
 private:
 	friend class ComboBoxAutomationPeer;
+	friend class ComboBoxItem;
+	static const DependencyPropertyKey& SelectionBoxItemPropertyKey();
+	static const DependencyPropertyKey& SelectionBoxItemTemplatePropertyKey();
+	static const DependencyPropertyKey&
+		SelectionBoxItemStringFormatPropertyKey();
+	static const DependencyPropertyKey&
+		IsSelectionBoxHighlightedPropertyKey();
+	static void EnsureClassHandlers();
+	static void HandleDescendantPointerPress(
+		Control* sender, RoutedEventArgs& args);
+	static void HandleDescendantPointerRelease(
+		Control* sender, RoutedEventArgs& args);
+	bool IsOriginalSourceWithinTemplatePart(
+		Control* source, TemplatePartToken part) const noexcept;
+	void BeginPointerPress(MouseEventArgs& args);
+	bool CompletePointerPress(MouseEventArgs& args);
 
 	bool TryGetAccessibilityVirtualNode(
 		uint32_t id, AccessibilityVirtualNode& result);
@@ -151,20 +226,38 @@ protected:
 		return false;
 	}
 	void OnSelectedIndexChanged(int oldValue, int newValue) override;
+	std::wstring GetTextSearchItemText(
+		size_t index) const override;
+	void OnTextSearchMatch(size_t index) override;
 	void OnControlTemplatePresentationChanged() override;
 	void OnPresentationWindowChanged(
 		Window* previousWindow, Window* currentWindow) override;
 
 private:
 	bool _isDropDownOpen = false;
+	bool _isEditable = false;
+	bool _isReadOnly = false;
+	bool _staysOpenOnEdit = false;
+	bool _shouldPreserveUserEnteredPrefix = false;
+	bool _isSelectionBoxHighlighted = false;
 	bool _pointerPressActive = false;
 	float _maxDropDownHeight = 320.0f;
+	int _highlightedIndex = -1;
+	int _selectionBeforeDropDown = -1;
+	BindingValue _selectionBoxItem = BindingValue(std::wstring{});
+	ItemTemplateReference _selectionBoxItemTemplate;
+	std::wstring _selectionBoxItemStringFormat;
 	Popup* _popup = nullptr;
 	Popup* _defaultPopup = nullptr;
 	ScrollViewer* _dropDownScroll = nullptr;
+	TextBox* _editableTextBox = nullptr;
 	bool _buildingDropDownInfrastructure = false;
+	bool _updatingTextFromSelection = false;
+	bool _updatingEditableTextBox = false;
+	bool _preserveTextDuringSelection = false;
 	EventConnection _popupOpened;
 	EventConnection _popupClosed;
+	EventConnection _editableTextChanged;
 	std::vector<BindingPathObservation> _itemSourceObservations;
 	std::vector<EventConnection> _authoredItemChanges;
 
@@ -175,10 +268,14 @@ private:
 	uint32_t _selectedAccessibilityItemId = 0;
 
 	void ApplyIsDropDownOpenChange(bool oldValue, bool newValue);
+	void ApplyIsEditableChange(bool oldValue, bool newValue);
+	void ApplyIsReadOnlyChange(bool oldValue, bool newValue);
+	void ApplyTextChange(
+		const std::wstring& oldValue, const std::wstring& newValue);
 	void SetCurrentIsDropDownOpen(bool value)
 	{
 		(void)TrySetCurrentPropertyValue(
-			L"IsDropDownOpen", BindingValue(value));
+			IsDropDownOpenProperty(), BindingValue(value));
 	}
 	void ApplyMaxDropDownHeight();
 	bool EnsureDropDownInfrastructure();
@@ -187,6 +284,15 @@ private:
 	ScrollViewer* ResolveScrollOwner() const noexcept;
 	void UpdateItemsHostPresentation();
 	void SyncTextWithSelection();
+	void SyncEditableTextBox();
+	void UpdateSelectionBoxState();
+	void UpdateSelectionBoxHighlightState();
+	void SetHighlightedIndex(int value, bool focusItem);
+	void CommitHighlightedSelection();
+	void CloseDropDown(bool commitSelection);
+	int FindItemByTextPrefix(
+		const std::wstring& text, bool exact) const;
+	void NotifyItemHighlighted(size_t index);
 	void RefreshItems();
 	void RefreshDataItem(size_t index);
 	std::wstring GetAuthoredItemText(size_t index) const;

@@ -1,6 +1,7 @@
 #include "BindingEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include "../CUI/include/BindingList.h"
+#include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPropertyCatalog.h"
@@ -41,6 +42,8 @@ namespace
 		switch (kind)
 		{
 		case DesignerStyleValueKind::Bool: return BindingValueKind::Bool;
+		case DesignerStyleValueKind::NullableBool:
+			return BindingValueKind::NullableBool;
 		case DesignerStyleValueKind::Int: return BindingValueKind::Int;
 		case DesignerStyleValueKind::Int64: return BindingValueKind::Int64;
 		case DesignerStyleValueKind::Float: return BindingValueKind::Float;

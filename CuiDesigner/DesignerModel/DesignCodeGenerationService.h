@@ -11,7 +11,7 @@
 namespace DesignerModel
 {
 /** Bump together with CuiCodeGen.targets when generated output semantics change. */
-inline constexpr unsigned int DesignCodeGenerationContractVersion = 36;
+inline constexpr unsigned int DesignCodeGenerationContractVersion = 70;
 
 struct DesignCodeGenerationOptions
 {
@@ -19,6 +19,8 @@ struct DesignCodeGenerationOptions
 	std::wstring OutputBasePath;
 	/** Optional qualified C++ class override; otherwise x:Class is required. */
 	std::wstring ClassName;
+	/** Optional build-time XML catalog for typed application converters. */
+	std::wstring ConverterManifestPath;
 };
 
 struct DesignCodeGenerationResult
@@ -28,6 +30,23 @@ struct DesignCodeGenerationResult
 	std::wstring ClassName;
 	std::wstring UserHeaderPath;
 	std::wstring UserSourcePath;
+	std::wstring GeneratedHeaderPath;
+	std::wstring GeneratedSourcePath;
+	std::wstring HandlerDeclarationsPath;
+
+	std::vector<std::wstring> OutputFiles() const;
+};
+
+/**
+ * Build-owned generated output. Unlike DesignCodeGenerationResult, this
+ * contract never creates, reads, validates, or updates the user's .h/.cpp
+ * pair.
+ */
+struct DesignGeneratedCodeResult
+{
+	std::wstring DesignFilePath;
+	std::wstring OutputBasePath;
+	std::wstring ClassName;
 	std::wstring GeneratedHeaderPath;
 	std::wstring GeneratedSourcePath;
 	std::wstring HandlerDeclarationsPath;
@@ -172,6 +191,23 @@ public:
 		const std::wstring& designFilePath,
 		const DesignCodeGenerationOptions& options = {},
 		DesignCodeGenerationResult* outResult = nullptr,
+		std::wstring* outError = nullptr);
+
+	/**
+	 * Generates only the build-owned .g.h/.g.cpp/.handlers.g.inc set.
+	 * Existing user .h/.cpp files sharing OutputBasePath are not inspected.
+	 */
+	static bool GenerateGeneratedOnly(
+		const DesignDocument& document,
+		const std::wstring& designFilePath,
+		const DesignCodeGenerationOptions& options,
+		DesignGeneratedCodeResult* outResult = nullptr,
+		std::wstring* outError = nullptr);
+
+	static bool GenerateGeneratedOnlyFile(
+		const std::wstring& designFilePath,
+		const DesignCodeGenerationOptions& options = {},
+		DesignGeneratedCodeResult* outResult = nullptr,
 		std::wstring* outError = nullptr);
 };
 }

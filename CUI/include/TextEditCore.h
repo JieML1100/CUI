@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <cwctype>
 #include <string>
 
@@ -9,6 +10,7 @@ namespace CuiTextEdit
 	struct EditOptions
 	{
 		bool allowMultiLine = false;
+		bool acceptsTab = false;
 		size_t maxTextLength = 0;
 	};
 
@@ -146,25 +148,18 @@ namespace CuiTextEdit
 				}
 				else
 				{
-					normalized.push_back(ch);
+					normalized.push_back(
+						ch == L'\t' && !options.acceptsTab ? L' ' : ch);
 				}
 			}
 			else
 			{
-				if (ch == L'\r')
-				{
-					normalized.push_back(L' ');
-					if (i + 1 < input.size() && input[i + 1] == L'\n')
-						i++;
-				}
-				else if (ch == L'\n')
-				{
-					normalized.push_back(L' ');
-				}
-				else
-				{
-					normalized.push_back(ch);
-				}
+				// WPF's plain-text editor filters interactive input to the
+				// first line when AcceptsReturn is false.
+				if (ch == L'\r' || ch == L'\n')
+					break;
+				normalized.push_back(
+					ch == L'\t' && !options.acceptsTab ? L' ' : ch);
 			}
 		}
 
@@ -240,6 +235,137 @@ namespace CuiTextEdit
 				return i;
 		}
 		return static_cast<int>(text.size());
+	}
+
+	enum class WordCharacterClass : uint8_t
+	{
+		WhiteSpace,
+		Word,
+		Punctuation,
+		LineBreak
+	};
+
+	inline WordCharacterClass ClassifyWordCharacter(
+		const std::wstring& text, int index)
+	{
+		index = ClampIndex(index, text.size());
+		if (index >= static_cast<int>(text.size()))
+			return WordCharacterClass::WhiteSpace;
+		const wchar_t value = text[static_cast<size_t>(index)];
+		if (value == L'\r' || value == L'\n')
+			return WordCharacterClass::LineBreak;
+		if (std::iswspace(static_cast<wint_t>(value)))
+			return WordCharacterClass::WhiteSpace;
+		if (value == L'_' || std::iswalnum(static_cast<wint_t>(value))
+			|| IsHighSurrogate(value) || IsLowSurrogate(value))
+		{
+			return WordCharacterClass::Word;
+		}
+		return WordCharacterClass::Punctuation;
+	}
+
+	/**
+	 * Returns the text-element-safe run selected by WPF-style double click.
+	 * This intentionally distinguishes words, whitespace, punctuation and line
+	 * breaks instead of expanding every double click to the whole document.
+	 */
+	inline SelectionSpan GetWordSelectionSpan(
+		const std::wstring& text, int index, bool preserveCrLf)
+	{
+		if (text.empty()) return {};
+		index = ClampIndex(index, text.size());
+		if (index == static_cast<int>(text.size()))
+			index = GetPreviousCaretIndex(text, index, preserveCrLf);
+		if (IsBetweenSurrogatePair(text, index))
+			index--;
+		if (preserveCrLf && IsBetweenCrLf(text, index))
+			index--;
+
+		const auto category = ClassifyWordCharacter(text, index);
+		int start = index;
+		int end = GetNextCaretIndex(text, index, preserveCrLf);
+		while (start > 0)
+		{
+			const int previous =
+				GetPreviousCaretIndex(text, start, preserveCrLf);
+			if (ClassifyWordCharacter(text, previous) != category)
+				break;
+			start = previous;
+		}
+		while (end < static_cast<int>(text.size())
+			&& ClassifyWordCharacter(text, end) == category)
+		{
+			end = GetNextCaretIndex(text, end, preserveCrLf);
+		}
+		NormalizeSelectionForTextElements(
+			text, start, end, preserveCrLf);
+		return SelectionSpan{ start, end };
+	}
+
+	inline int GetNextWordCaretIndex(
+		const std::wstring& text, int index, bool preserveCrLf)
+	{
+		index = ClampIndex(index, text.size());
+		if (index >= static_cast<int>(text.size()))
+			return static_cast<int>(text.size());
+
+		const auto firstCategory =
+			ClassifyWordCharacter(text, index);
+		while (index < static_cast<int>(text.size())
+			&& ClassifyWordCharacter(text, index) == firstCategory)
+		{
+			index = GetNextCaretIndex(
+				text, index, preserveCrLf);
+		}
+		while (index < static_cast<int>(text.size()))
+		{
+			const auto category =
+				ClassifyWordCharacter(text, index);
+			if (category != WordCharacterClass::WhiteSpace
+				&& category != WordCharacterClass::LineBreak)
+			{
+				break;
+			}
+			index = GetNextCaretIndex(
+				text, index, preserveCrLf);
+		}
+		return index;
+	}
+
+	inline int GetPreviousWordCaretIndex(
+		const std::wstring& text, int index, bool preserveCrLf)
+	{
+		index = ClampIndex(index, text.size());
+		while (index > 0)
+		{
+			const int previous = GetPreviousCaretIndex(
+				text, index, preserveCrLf);
+			const auto category =
+				ClassifyWordCharacter(text, previous);
+			if (category != WordCharacterClass::WhiteSpace
+				&& category != WordCharacterClass::LineBreak)
+			{
+				index = previous;
+				break;
+			}
+			index = previous;
+		}
+		if (index <= 0) return 0;
+
+		const auto category =
+			ClassifyWordCharacter(text, index);
+		while (index > 0)
+		{
+			const int previous = GetPreviousCaretIndex(
+				text, index, preserveCrLf);
+			if (ClassifyWordCharacter(text, previous)
+				!= category)
+			{
+				break;
+			}
+			index = previous;
+		}
+		return index;
 	}
 
 	inline wchar_t FoldSearchCharacter(wchar_t ch)

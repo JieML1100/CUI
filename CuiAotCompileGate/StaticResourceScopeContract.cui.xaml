@@ -1,0 +1,66 @@
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Name="StaticResourceScopeContractWindow"
+        Width="320"
+        Height="180">
+  <Window.Resources>
+    <BitmapImage x:Key="ContractSharedImage"
+                 UriSource="../CUITest/Assets/nav-overview.svg"/>
+    <ControlTemplate x:Key="RelativePanelTemplateContract"
+                     TargetType="Button">
+      <RelativePanel x:Name="templatePanel">
+        <Border x:Name="templateAnchor"
+                RelativePanel.AlignLeftWithPanel="true"/>
+        <Border x:Name="templatePeer"
+                RelativePanel.RightOf="templateAnchor"/>
+      </RelativePanel>
+    </ControlTemplate>
+    <ItemsPanelTemplate x:Key="ContractItemsPanel">
+      <StackPanel Orientation="Vertical"/>
+    </ItemsPanelTemplate>
+  </Window.Resources>
+  <StackPanel x:Name="probeRoot">
+    <Button x:Name="relativeTemplateProbe"
+            Template="{StaticResource RelativePanelTemplateContract}"/>
+    <Image x:Name="rootImage1"
+           Source="{StaticResource ContractSharedImage}"/>
+    <Image x:Name="rootImage2"
+           Source="{StaticResource ContractSharedImage}"/>
+    <ListBox x:Name="globalPanelProbe"
+             ItemsPanel="{StaticResource ContractItemsPanel}"/>
+    <StackPanel x:Name="panelScope">
+      <StackPanel.Resources>
+        <ItemsPanelTemplate x:Key="ContractItemsPanel">
+          <WrapPanel Orientation="Horizontal"
+                     ItemWidth="48"
+                     ItemHeight="20"/>
+        </ItemsPanelTemplate>
+        <Style x:Key="ContractPanelStyle" TargetType="ListBox">
+          <Setter Property="ItemsPanel"
+                  Value="{StaticResource ContractItemsPanel}"/>
+        </Style>
+      </StackPanel.Resources>
+      <ListBox x:Name="localPanelProbe"
+               ItemsPanel="{StaticResource ContractItemsPanel}"/>
+      <ListBox x:Name="styledPanelProbe"
+               Style="{StaticResource ContractPanelStyle}"/>
+      <StackPanel x:Name="panelOnlyScope">
+        <StackPanel.Resources>
+          <ItemsPanelTemplate x:Key="ContractItemsPanel">
+            <VirtualizingStackPanel ItemHeight="22" CacheLength="0.5"/>
+          </ItemsPanelTemplate>
+        </StackPanel.Resources>
+        <ListBox x:Name="innerPanelProbe"
+                 ItemsPanel="{StaticResource ContractItemsPanel}"/>
+      </StackPanel>
+    </StackPanel>
+    <Border x:Name="localScope">
+      <Border.Resources>
+        <BitmapImage x:Key="ContractSharedImage"
+                     UriSource="../CUITest/Assets/nav-assets.svg"/>
+      </Border.Resources>
+      <Image x:Name="localImage"
+             Source="{StaticResource ContractSharedImage}"/>
+    </Border>
+  </StackPanel>
+</Window>

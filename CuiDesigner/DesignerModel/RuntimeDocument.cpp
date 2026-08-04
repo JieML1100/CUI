@@ -1,6 +1,7 @@
 #include "RuntimeDocument.h"
 #include "DesignDocumentEventIndex.h"
 
+#include "../../CuiRuntime/include/BindingConverterRegistry.h"
 #include "../../CuiRuntime/include/XamlObjectMaterializer.h"
 #include "../../CuiRuntime/include/XamlRuntimeSchema.h"
 #include "RuntimeDocumentTopologyReloader.h"
@@ -1171,6 +1172,8 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 		std::move(other._declarativeComponentBehaviors);
 	_allowNativeSurfacePlaceholder = other._allowNativeSurfacePlaceholder;
 	_sourceDocument = std::move(other._sourceDocument);
+	_pendingDocumentStyleSheet =
+		std::move(other._pendingDocumentStyleSheet);
 	_contentReleased = other._contentReleased;
 	_referenceState = std::move(referenceState);
 	other._boundControlCommandHandlerCount = 0;
@@ -1186,7 +1189,7 @@ Control* RuntimeDocument::FindControlByDesignId(int stableId) noexcept
 {
 	if (stableId <= 0) return nullptr;
 	const auto found = _controlsByDesignId.find(stableId);
-	return found == _controlsByDesignId.end() ? nullptr : found->second;
+	return found == _controlsByDesignId.end() ? nullptr : found->second.Get();
 }
 
 const Control* RuntimeDocument::FindControlByDesignId(int stableId) const noexcept
@@ -1197,7 +1200,7 @@ const Control* RuntimeDocument::FindControlByDesignId(int stableId) const noexce
 Control* RuntimeDocument::FindControlByName(const std::wstring& name) noexcept
 {
 	const auto found = _controlsByName.find(name);
-	return found == _controlsByName.end() ? nullptr : found->second;
+	return found == _controlsByName.end() ? nullptr : found->second.Get();
 }
 
 const Control* RuntimeDocument::FindControlByName(
@@ -1208,8 +1211,8 @@ const Control* RuntimeDocument::FindControlByName(
 
 void RuntimeDocument::RebuildControlIndex()
 {
-	std::unordered_map<int, Control*> byDesignId;
-	std::unordered_map<std::wstring, Control*> byName;
+	std::unordered_map<int, ControlWeakReference> byDesignId;
+	std::unordered_map<std::wstring, ControlWeakReference> byName;
 	byDesignId.reserve(_controls.size());
 	byName.reserve(_controls.size());
 	for (const auto& control : _controls)
@@ -1220,6 +1223,11 @@ void RuntimeDocument::RebuildControlIndex()
 	}
 	_controlsByDesignId = std::move(byDesignId);
 	_controlsByName = std::move(byName);
+}
+
+void RuntimeDocument::ReleaseSourceDocument() noexcept
+{
+	_sourceDocument.reset();
 }
 
 bool RuntimeDocument::HasWindowCommandTargetReferences() const noexcept
@@ -1847,6 +1855,17 @@ bool RuntimeDocument::BindControlEvents(
 	const RuntimeControlEventResolver& resolver,
 	std::wstring* outError)
 {
+	return BindControlEventsCore(
+		resolver,
+		_sourceDocument ? &*_sourceDocument : nullptr,
+		outError);
+}
+
+bool RuntimeDocument::BindControlEventsCore(
+	const RuntimeControlEventResolver& resolver,
+	const DesignDocument* sourceDocument,
+	std::wstring* outError)
+{
 	if (!resolver)
 	{
 		SetError(outError, L"未提供控件事件名称解析器。");
@@ -1872,8 +1891,8 @@ bool RuntimeDocument::BindControlEvents(
 			if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
 				eventName, attachedOwnerType, attachedEventName))
 			{
-				const auto* owner = _sourceDocument
-					? _sourceDocument->FindComponent(attachedOwnerType) : nullptr;
+				const auto* owner = sourceDocument
+					? sourceDocument->FindComponent(attachedOwnerType) : nullptr;
 				if (owner)
 				{
 					const auto contract = std::find_if(
@@ -2280,12 +2299,25 @@ bool RuntimeDocument::AttachToWindow(
 	const RuntimeWindowEventResolver& resolver,
 	std::wstring* outError)
 {
+	return AttachToWindowCore(
+		form, resolver,
+		_sourceDocument ? &*_sourceDocument : nullptr,
+		outError);
+}
+
+bool RuntimeDocument::AttachToWindowCore(
+	::Window& form,
+	const RuntimeWindowEventResolver& resolver,
+	const DesignDocument* sourceDocument,
+	std::wstring* outError)
+{
 	try
 	{
-		return AttachToWindow(
+		return AttachToWindowCore(
 			form,
 			std::make_shared<WindowRuntimeDocumentContentHost>(form),
 			resolver,
+			sourceDocument,
 			outError);
 	}
 	catch (...)
@@ -2306,6 +2338,19 @@ bool RuntimeDocument::AttachToWindow(
 	::Window& form,
 	std::shared_ptr<RuntimeDocumentContentHost> contentHost,
 	const RuntimeWindowEventResolver& resolver,
+	std::wstring* outError)
+{
+	return AttachToWindowCore(
+		form, std::move(contentHost), resolver,
+		_sourceDocument ? &*_sourceDocument : nullptr,
+		outError);
+}
+
+bool RuntimeDocument::AttachToWindowCore(
+	::Window& form,
+	std::shared_ptr<RuntimeDocumentContentHost> contentHost,
+	const RuntimeWindowEventResolver& resolver,
+	const DesignDocument* sourceDocument,
 	std::wstring* outError)
 {
 	if (!contentHost)
@@ -2345,18 +2390,32 @@ bool RuntimeDocument::AttachToWindow(
 
 	const auto previousStyleSheet =
 		cui::framework::StyleAccess::DocumentStyles(form);
-	std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
-	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-		_styleSheet, runtimeStyleSheet, outError,
-		_sourceDocument ? _sourceDocument->ResourceBasePath : std::wstring{},
-		_sourceDocument ? _sourceDocument->Resources : nullptr,
-		BuildStructuralStyleResourcesFor(
-			_sourceDocument ? &*_sourceDocument : nullptr,
-			_nativeSurfaceBehaviors,
-			_declarativeComponentBehaviors,
-			_allowNativeSurfacePlaceholder))
-		|| !cui::framework::StyleAccess::SetDocumentStyles(
-			form, runtimeStyleSheet, false))
+	std::shared_ptr<const ControlStyleSheet> runtimeStyleSheet =
+		_pendingDocumentStyleSheet;
+	if (!runtimeStyleSheet)
+	{
+		std::shared_ptr<ControlStyleSheet> builtStyleSheet;
+		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			_styleSheet, builtStyleSheet, outError,
+			sourceDocument ? sourceDocument->ResourceBasePath : std::wstring{},
+			sourceDocument ? sourceDocument->Resources : nullptr,
+			BuildStructuralStyleResourcesFor(
+				sourceDocument,
+				_nativeSurfaceBehaviors,
+				_declarativeComponentBehaviors,
+				_allowNativeSurfacePlaceholder)))
+		{
+			(void)cui::framework::StyleAccess::SetDocumentStyles(
+				form, previousStyleSheet, false);
+			presentation->Restore();
+			if (outError && outError->empty())
+				*outError = L"文档样式表无法应用到 XAML Window。";
+			return false;
+		}
+		runtimeStyleSheet = std::move(builtStyleSheet);
+	}
+	if (!cui::framework::StyleAccess::SetDocumentStyles(
+		form, runtimeStyleSheet, false))
 	{
 		(void)cui::framework::StyleAccess::SetDocumentStyles(
 			form, previousStyleSheet, false);
@@ -2479,6 +2538,7 @@ bool RuntimeDocument::AttachToWindow(
 	}
 	_appliedWindow = &form;
 	_dataContextWindow = &form;
+	_pendingDocumentStyleSheet.reset();
 	if (outError) outError->clear();
 	return true;
 }
@@ -2766,7 +2826,7 @@ bool RuntimeDocumentLoader::Load(
 	XamlDocumentDiagnostic* outDiagnostic)
 {
 	return LoadCore(
-		document, output, options, false, outError, outDiagnostic);
+		document, output, options, false, false, outError, outDiagnostic);
 }
 
 bool RuntimeDocumentLoader::LoadCore(
@@ -2774,6 +2834,7 @@ bool RuntimeDocumentLoader::LoadCore(
 	RuntimeDocument& output,
 	const RuntimeDocumentLoadOptions& options,
 	bool deferDataBindings,
+	bool borrowSourceDocumentForAttach,
 	std::wstring* outError,
 	XamlDocumentDiagnostic* outDiagnostic)
 {
@@ -2797,7 +2858,14 @@ bool RuntimeDocumentLoader::LoadCore(
 			MaterializationOptionsFor(options), outError, outDiagnostic)) return false;
 
 		RuntimeDocument candidate;
-		candidate._sourceDocument = document;
+		// A detached Load must retain the declaration until a later attach (the
+		// caller may release it explicitly afterwards). LoadIntoWindow, however,
+		// can borrow its caller-owned document through the immediate atomic attach
+		// and avoid the otherwise large DesignDocument copy when retention is off.
+		if (options.RetainSourceDocument || !borrowSourceDocumentForAttach)
+			candidate._sourceDocument = document;
+		const auto* sourceDocument = candidate._sourceDocument
+			? &*candidate._sourceDocument : &document;
 		candidate._window = document.Window;
 		candidate._dataContextSchema = document.DataContextSchema;
 		DesignerDataContextSchemaUtils::Canonicalize(
@@ -2830,6 +2898,8 @@ bool RuntimeDocumentLoader::LoadCore(
 				reference.TargetsWindow });
 		candidate._ownedContentRoot = std::move(materialized.ContentRoot);
 		candidate._contentRoot = candidate._ownedContentRoot.get();
+		candidate._pendingDocumentStyleSheet =
+			std::move(materialized.DocumentStyleSheet);
 		candidate.RebuildControlIndex();
 		if (!candidate.ApplyCommandTargetReferences(
 			nullptr, true, nullptr, outError)) return false;
@@ -2855,8 +2925,9 @@ bool RuntimeDocumentLoader::LoadCore(
 		}
 		if (options.ControlEventResolver)
 		{
-			if (!candidate.BindControlEvents(
-				options.ControlEventResolver, outError)) return false;
+			if (!candidate.BindControlEventsCore(
+				options.ControlEventResolver, sourceDocument, outError))
+				return false;
 		}
 		else if (options.RequireControlEventResolver
 			&& HasConfiguredControlEvents(candidate))
@@ -2892,7 +2963,8 @@ bool RuntimeDocumentLoader::LoadXaml(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, outError, outDiagnostic)) return false;
+			xaml, document, options.ParseOptions,
+			outError, outDiagnostic)) return false;
 		return Load(document, output, options, outError, outDiagnostic);
 	}
 	catch (const std::exception&)
@@ -2918,7 +2990,8 @@ bool RuntimeDocumentLoader::LoadXamlFile(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, outError, outDiagnostic)) return false;
+			filePath, document, options.ParseOptions,
+			outError, outDiagnostic)) return false;
 		return Load(document, output, options, outError, outDiagnostic);
 	}
 	catch (const std::exception&)
@@ -2954,8 +3027,12 @@ bool RuntimeDocumentLoader::LoadIntoWindow(
 
 	RuntimeDocument candidate;
 	if (!LoadCore(
-		document, candidate, options, true, outError, outDiagnostic)) return false;
-	if (!candidate.AttachToWindow(form, formResolver, outError)) return false;
+		document, candidate, options, true, true,
+		outError, outDiagnostic)) return false;
+	const auto* attachSourceDocument = candidate._sourceDocument
+		? &*candidate._sourceDocument : &document;
+	if (!candidate.AttachToWindowCore(
+		form, formResolver, attachSourceDocument, outError)) return false;
 	output = std::move(candidate);
 	if (outError) outError->clear();
 	return true;
@@ -2974,7 +3051,8 @@ bool RuntimeDocumentLoader::LoadXamlIntoWindow(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, outError, outDiagnostic)) return false;
+			xaml, document, options.ParseOptions,
+			outError, outDiagnostic)) return false;
 		return LoadIntoWindow(
 			document, form, output, options, formResolver, outError, outDiagnostic);
 	}
@@ -2998,7 +3076,8 @@ bool RuntimeDocumentLoader::LoadXamlFileIntoWindow(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, outError, outDiagnostic)) return false;
+			filePath, document, options.ParseOptions,
+			outError, outDiagnostic)) return false;
 		return LoadIntoWindow(
 			document, form, output, options, formResolver, outError, outDiagnostic);
 	}
@@ -3682,7 +3761,8 @@ bool RuntimeDocumentLoader::ReloadXaml(
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::FromXaml(
-		xaml, document, outError, outDiagnostic)) return false;
+		xaml, document, options.ParseOptions,
+		outError, outDiagnostic)) return false;
 	return Reload(document, output, options, outMode, outError, outDiagnostic);
 }
 
@@ -3696,7 +3776,8 @@ bool RuntimeDocumentLoader::ReloadXamlFile(
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::LoadFromFile(
-		filePath, document, outError, outDiagnostic)) return false;
+		filePath, document, options.ParseOptions,
+		outError, outDiagnostic)) return false;
 	return Reload(document, output, options, outMode, outError, outDiagnostic);
 }
 }

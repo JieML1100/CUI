@@ -9,7 +9,6 @@
 #include "RoutedCommand.h"
 #include "Visual.h"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -44,36 +43,106 @@ inline const wchar_t* VisibilityName(Visibility value) noexcept
 	return L"Visible";
 }
 
-using MouseWheelEvent = RoutedEvent<MouseEventArgs>;
-using MouseMoveEvent = RoutedEvent<MouseEventArgs>;
-using MouseUpEvent = RoutedEvent<MouseEventArgs>;
-using MouseDownEvent = RoutedEvent<MouseEventArgs>;
-using MouseDoubleClickEvent = RoutedEvent<MouseEventArgs>;
-using ClickEvent = RoutedEvent<RoutedEventArgs>;
-using TextChangedEvent = RoutedEvent<TextChangedEventArgs>;
-using PasswordChangedEvent = RoutedEvent<RoutedEventArgs>;
-using ScrollChangedEvent = RoutedEvent<ScrollChangedEventArgs>;
-using SelectionChangedRoutedEvent = RoutedEvent<SelectionChangedEventArgs>;
-using SelectedItemChangedRoutedEvent =
-	RoutedEvent<RoutedPropertyChangedEventArgs<BindingValue>>;
-using ValueChangedRoutedEvent =
-	RoutedEvent<RoutedPropertyChangedEventArgs<double>>;
-using SelectionStateEvent = RoutedEvent<RoutedEventArgs>;
-using MouseEnterEvent = RoutedEvent<MouseEventArgs>;
-using MouseLeaveEvent = RoutedEvent<MouseEventArgs>;
-using KeyUpEvent = RoutedEvent<KeyEventArgs>;
-using KeyDownEvent = RoutedEvent<KeyEventArgs>;
-using TextInputEvent = RoutedEvent<TextCompositionEventArgs>;
-using KeyboardFocusEvent = RoutedEvent<KeyboardFocusChangedEventArgs>;
-using FocusEvent = RoutedEvent<RoutedEventArgs>;
-using CanExecuteEvent = RoutedEvent<CanExecuteRoutedEventArgs>;
-using ExecutedEvent = RoutedEvent<ExecutedRoutedEventArgs>;
-using DragDropEvent = RoutedEvent<DragEventArgs>;
-using SizeChangedEvent = RoutedEvent<SizeChangedEventArgs>;
-using GotFocusEvent = FocusEvent;
-using LostFocusEvent = FocusEvent;
-using GotMouseCaptureEvent = FocusEvent;
-using LostMouseCaptureEvent = FocusEvent;
+using PreviewMouseWheelEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::PreviewMouseWheel>;
+using MouseWheelEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseWheel>;
+using PreviewMouseMoveEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::PreviewMouseMove>;
+using MouseMoveEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseMove>;
+using PreviewMouseUpEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::PreviewMouseUp>;
+using MouseUpEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseUp>;
+using PreviewMouseDownEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::PreviewMouseDown>;
+using MouseDownEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseDown>;
+using PreviewMouseDoubleClickEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::PreviewMouseDoubleClick>;
+using MouseDoubleClickEvent = RoutedEvent<
+	MouseEventArgs, RoutedEventId::MouseDoubleClick>;
+using ClickEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Click>;
+using TextChangedEvent = RoutedEvent<
+	TextChangedEventArgs, RoutedEventId::TextChanged>;
+using PasswordChangedEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::PasswordChanged>;
+using ScrollChangedEvent = RoutedEvent<
+	ScrollChangedEventArgs, RoutedEventId::ScrollChanged>;
+using SelectionChangedRoutedEvent = RoutedEvent<
+	SelectionChangedEventArgs, RoutedEventId::SelectionChanged>;
+using SelectedDatesChangedRoutedEvent = RoutedEvent<
+	SelectionChangedEventArgs, RoutedEventId::SelectedDatesChanged>;
+using SelectedItemChangedRoutedEvent = RoutedEvent<
+	RoutedPropertyChangedEventArgs<BindingValue>,
+	RoutedEventId::SelectedItemChanged>;
+using ValueChangedRoutedEvent = RoutedEvent<
+	RoutedPropertyChangedEventArgs<double>, RoutedEventId::ValueChanged>;
+using SelectedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Selected>;
+using UnselectedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Unselected>;
+using CheckedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Checked>;
+using UncheckedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Unchecked>;
+using ExpandedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Expanded>;
+using CollapsedEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::Collapsed>;
+using SubmenuOpenedEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::SubmenuOpened>;
+using SubmenuClosedEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::SubmenuClosed>;
+using IndeterminateEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::Indeterminate>;
+using MouseEnterEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseEnter>;
+using MouseLeaveEvent = RoutedEvent<MouseEventArgs, RoutedEventId::MouseLeave>;
+using GotMouseCaptureEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::GotMouseCapture>;
+using LostMouseCaptureEvent = RoutedEvent<
+	RoutedEventArgs, RoutedEventId::LostMouseCapture>;
+using PreviewKeyUpEvent = RoutedEvent<KeyEventArgs, RoutedEventId::PreviewKeyUp>;
+using KeyUpEvent = RoutedEvent<KeyEventArgs, RoutedEventId::KeyUp>;
+using PreviewKeyDownEvent = RoutedEvent<
+	KeyEventArgs, RoutedEventId::PreviewKeyDown>;
+using KeyDownEvent = RoutedEvent<KeyEventArgs, RoutedEventId::KeyDown>;
+using PreviewTextInputStartEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::PreviewTextInputStart>;
+using TextInputStartEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::TextInputStart>;
+using PreviewTextInputUpdateEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::PreviewTextInputUpdate>;
+using TextInputUpdateEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::TextInputUpdate>;
+using PreviewTextInputEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::PreviewTextInput>;
+using TextInputEvent = RoutedEvent<
+	TextCompositionEventArgs, RoutedEventId::TextInput>;
+using PreviewGotKeyboardFocusEvent = RoutedEvent<
+	KeyboardFocusChangedEventArgs,
+	RoutedEventId::PreviewGotKeyboardFocus>;
+using GotKeyboardFocusEvent = RoutedEvent<
+	KeyboardFocusChangedEventArgs, RoutedEventId::GotKeyboardFocus>;
+using PreviewLostKeyboardFocusEvent = RoutedEvent<
+	KeyboardFocusChangedEventArgs,
+	RoutedEventId::PreviewLostKeyboardFocus>;
+using LostKeyboardFocusEvent = RoutedEvent<
+	KeyboardFocusChangedEventArgs, RoutedEventId::LostKeyboardFocus>;
+using GotFocusEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::GotFocus>;
+using LostFocusEvent = RoutedEvent<RoutedEventArgs, RoutedEventId::LostFocus>;
+using PreviewCanExecuteEvent = RoutedEvent<
+	CanExecuteRoutedEventArgs, RoutedEventId::PreviewCanExecute>;
+using CanExecuteEvent = RoutedEvent<
+	CanExecuteRoutedEventArgs, RoutedEventId::CanExecute>;
+using PreviewExecutedEvent = RoutedEvent<
+	ExecutedRoutedEventArgs, RoutedEventId::PreviewExecuted>;
+using ExecutedEvent = RoutedEvent<
+	ExecutedRoutedEventArgs, RoutedEventId::Executed>;
+using PreviewDragEnterEvent = RoutedEvent<
+	DragEventArgs, RoutedEventId::PreviewDragEnter>;
+using DragEnterEvent = RoutedEvent<DragEventArgs, RoutedEventId::DragEnter>;
+using PreviewDragOverEvent = RoutedEvent<
+	DragEventArgs, RoutedEventId::PreviewDragOver>;
+using DragOverEvent = RoutedEvent<DragEventArgs, RoutedEventId::DragOver>;
+using PreviewDragLeaveEvent = RoutedEvent<
+	DragEventArgs, RoutedEventId::PreviewDragLeave>;
+using DragLeaveEvent = RoutedEvent<DragEventArgs, RoutedEventId::DragLeave>;
+using PreviewDropEvent = RoutedEvent<DragEventArgs, RoutedEventId::PreviewDrop>;
+using DropEvent = RoutedEvent<DragEventArgs, RoutedEventId::Drop>;
+using SizeChangedEvent = RoutedEvent<
+	SizeChangedEventArgs, RoutedEventId::SizeChanged>;
 using IsVisibleChangedEvent = DependencyPropertyChangedEvent;
 
 /** Owns layout-pass state, input publication, focus participation and hit testing. */
@@ -81,133 +150,134 @@ class UIElement : public Visual
 {
 protected:
 	friend class RoutedCommandManager;
+	friend class RoutedEventHandlerStore;
 	friend struct cui::framework::RoutedEventAccess;
 	cui::layout::LayoutState _layoutState;
 	Visibility _visibility = Visibility::Visible;
 	bool _isFocused = false;
 	bool _isKeyboardFocused = false;
+	bool _isKeyboardFocusVisible = false;
 	bool _isKeyboardFocusWithin = false;
 	bool _isMouseOver = false;
 	bool _isMouseDirectlyOver = false;
+	bool _isMouseCaptured = false;
+	bool _isMouseCaptureWithin = false;
 	/** Framework presentation projection; never replaces authored Visibility. */
 	bool _presentationSuppressed = false;
 	bool _defaultLeftButtonPressActive = false;
 	std::shared_ptr<CommandBindingCollectionState> _commandBindings;
 	std::shared_ptr<CommandCanExecuteObserverState> _commandCanExecuteObservers;
 	std::vector<InputBinding> _inputBindings;
-	std::array<std::unique_ptr<RoutedEvent<RoutedEventArgs>>,
-		static_cast<std::size_t>(RoutedEventId::Count)>
-		_genericRoutedEventHandlers;
+	std::unique_ptr<RoutedEventHandlerStore> _routedEventHandlers;
 	void InvalidateCommandInfrastructureForDestruction() noexcept;
 
 public:
 	UIElement()
-		: OnPreviewMouseWheel(this, RoutedEventId::PreviewMouseWheel),
-		OnMouseWheel(this, RoutedEventId::MouseWheel),
-		OnPreviewMouseMove(this, RoutedEventId::PreviewMouseMove),
-		OnMouseMove(this, RoutedEventId::MouseMove),
-		OnPreviewMouseUp(this, RoutedEventId::PreviewMouseUp),
-		OnMouseUp(this, RoutedEventId::MouseUp),
-		OnPreviewMouseDown(this, RoutedEventId::PreviewMouseDown),
-		OnMouseDown(this, RoutedEventId::MouseDown),
-		OnPreviewMouseDoubleClick(this, RoutedEventId::PreviewMouseDoubleClick),
-		OnMouseDoubleClick(this, RoutedEventId::MouseDoubleClick),
-		Click(this, RoutedEventId::Click),
-		SizeChanged(this, RoutedEventId::SizeChanged),
-		OnMouseEnter(this, RoutedEventId::MouseEnter),
-		OnMouseLeave(this, RoutedEventId::MouseLeave),
-		OnGotMouseCapture(this, RoutedEventId::GotMouseCapture),
-		OnLostMouseCapture(this, RoutedEventId::LostMouseCapture),
-		OnPreviewKeyUp(this, RoutedEventId::PreviewKeyUp),
-		OnKeyUp(this, RoutedEventId::KeyUp),
-		OnPreviewKeyDown(this, RoutedEventId::PreviewKeyDown),
-		OnKeyDown(this, RoutedEventId::KeyDown),
-		OnPreviewTextInputStart(this, RoutedEventId::PreviewTextInputStart),
-		OnTextInputStart(this, RoutedEventId::TextInputStart),
-		OnPreviewTextInputUpdate(this, RoutedEventId::PreviewTextInputUpdate),
-		OnTextInputUpdate(this, RoutedEventId::TextInputUpdate),
-		OnPreviewTextInput(this, RoutedEventId::PreviewTextInput),
-		OnTextInput(this, RoutedEventId::TextInput),
-		OnPreviewGotKeyboardFocus(
-			this, RoutedEventId::PreviewGotKeyboardFocus),
-		OnGotKeyboardFocus(this, RoutedEventId::GotKeyboardFocus),
-		OnPreviewLostKeyboardFocus(
-			this, RoutedEventId::PreviewLostKeyboardFocus),
-		OnLostKeyboardFocus(this, RoutedEventId::LostKeyboardFocus),
-		OnGotFocus(this, RoutedEventId::GotFocus),
-		OnLostFocus(this, RoutedEventId::LostFocus),
-		OnPreviewCanExecute(this, RoutedEventId::PreviewCanExecute),
-		OnCanExecute(this, RoutedEventId::CanExecute),
-		OnPreviewExecuted(this, RoutedEventId::PreviewExecuted),
-		OnExecuted(this, RoutedEventId::Executed),
-		OnPreviewDragEnter(this, RoutedEventId::PreviewDragEnter),
-		OnDragEnter(this, RoutedEventId::DragEnter),
-		OnPreviewDragOver(this, RoutedEventId::PreviewDragOver),
-		OnDragOver(this, RoutedEventId::DragOver),
-		OnPreviewDragLeave(this, RoutedEventId::PreviewDragLeave),
-		OnDragLeave(this, RoutedEventId::DragLeave),
-		OnPreviewDrop(this, RoutedEventId::PreviewDrop),
-		OnDrop(this, RoutedEventId::Drop),
-		OnTextChanged(this, RoutedEventId::TextChanged),
-		PasswordChanged(this, RoutedEventId::PasswordChanged),
-		OnScrollChanged(this, RoutedEventId::ScrollChanged),
-		SelectionChanged(this, RoutedEventId::SelectionChanged),
-		SelectedDatesChanged(this, RoutedEventId::SelectedDatesChanged),
-		SelectedItemChanged(this, RoutedEventId::SelectedItemChanged),
-		ValueChanged(this, RoutedEventId::ValueChanged),
-		Selected(this, RoutedEventId::Selected),
-		Unselected(this, RoutedEventId::Unselected),
-		Checked(this, RoutedEventId::Checked),
-		Unchecked(this, RoutedEventId::Unchecked),
-		Expanded(this, RoutedEventId::Expanded),
-		Collapsed(this, RoutedEventId::Collapsed),
-		SubmenuOpened(this, RoutedEventId::SubmenuOpened),
-		SubmenuClosed(this, RoutedEventId::SubmenuClosed) {}
+		: OnPreviewMouseWheel(this),
+		OnMouseWheel(this),
+		OnPreviewMouseMove(this),
+		OnMouseMove(this),
+		OnPreviewMouseUp(this),
+		OnMouseUp(this),
+		OnPreviewMouseDown(this),
+		OnMouseDown(this),
+		OnPreviewMouseDoubleClick(this),
+		OnMouseDoubleClick(this),
+		Click(this),
+		SizeChanged(this),
+		OnMouseEnter(this),
+		OnMouseLeave(this),
+		OnGotMouseCapture(this),
+		OnLostMouseCapture(this),
+		OnPreviewKeyUp(this),
+		OnKeyUp(this),
+		OnPreviewKeyDown(this),
+		OnKeyDown(this),
+		OnPreviewTextInputStart(this),
+		OnTextInputStart(this),
+		OnPreviewTextInputUpdate(this),
+		OnTextInputUpdate(this),
+		OnPreviewTextInput(this),
+		OnTextInput(this),
+		OnPreviewGotKeyboardFocus(this),
+		OnGotKeyboardFocus(this),
+		OnPreviewLostKeyboardFocus(this),
+		OnLostKeyboardFocus(this),
+		OnGotFocus(this),
+		OnLostFocus(this),
+		OnPreviewCanExecute(this),
+		OnCanExecute(this),
+		OnPreviewExecuted(this),
+		OnExecuted(this),
+		OnPreviewDragEnter(this),
+		OnDragEnter(this),
+		OnPreviewDragOver(this),
+		OnDragOver(this),
+		OnPreviewDragLeave(this),
+		OnDragLeave(this),
+		OnPreviewDrop(this),
+		OnDrop(this),
+		OnTextChanged(this),
+		PasswordChanged(this),
+		OnScrollChanged(this),
+		SelectionChanged(this),
+		SelectedDatesChanged(this),
+		SelectedItemChanged(this),
+		ValueChanged(this),
+		Selected(this),
+		Unselected(this),
+		Checked(this),
+		Unchecked(this),
+		Expanded(this),
+		Collapsed(this),
+		SubmenuOpened(this),
+		SubmenuClosed(this),
+		Indeterminate(this) {}
 	~UIElement() override;
 
-	MouseWheelEvent OnPreviewMouseWheel;
+	PreviewMouseWheelEvent OnPreviewMouseWheel;
 	MouseWheelEvent OnMouseWheel;
-	MouseMoveEvent OnPreviewMouseMove;
+	PreviewMouseMoveEvent OnPreviewMouseMove;
 	MouseMoveEvent OnMouseMove;
-	MouseUpEvent OnPreviewMouseUp;
+	PreviewMouseUpEvent OnPreviewMouseUp;
 	MouseUpEvent OnMouseUp;
-	MouseDownEvent OnPreviewMouseDown;
+	PreviewMouseDownEvent OnPreviewMouseDown;
 	MouseDownEvent OnMouseDown;
-	MouseDoubleClickEvent OnPreviewMouseDoubleClick;
+	PreviewMouseDoubleClickEvent OnPreviewMouseDoubleClick;
 	MouseDoubleClickEvent OnMouseDoubleClick;
 	MouseEnterEvent OnMouseEnter;
 	MouseLeaveEvent OnMouseLeave;
 	GotMouseCaptureEvent OnGotMouseCapture;
 	LostMouseCaptureEvent OnLostMouseCapture;
-	KeyUpEvent OnPreviewKeyUp;
+	PreviewKeyUpEvent OnPreviewKeyUp;
 	KeyUpEvent OnKeyUp;
-	KeyDownEvent OnPreviewKeyDown;
+	PreviewKeyDownEvent OnPreviewKeyDown;
 	KeyDownEvent OnKeyDown;
-	TextInputEvent OnPreviewTextInputStart;
-	TextInputEvent OnTextInputStart;
-	TextInputEvent OnPreviewTextInputUpdate;
-	TextInputEvent OnTextInputUpdate;
-	TextInputEvent OnPreviewTextInput;
+	PreviewTextInputStartEvent OnPreviewTextInputStart;
+	TextInputStartEvent OnTextInputStart;
+	PreviewTextInputUpdateEvent OnPreviewTextInputUpdate;
+	TextInputUpdateEvent OnTextInputUpdate;
+	PreviewTextInputEvent OnPreviewTextInput;
 	TextInputEvent OnTextInput;
-	KeyboardFocusEvent OnPreviewGotKeyboardFocus;
-	KeyboardFocusEvent OnGotKeyboardFocus;
-	KeyboardFocusEvent OnPreviewLostKeyboardFocus;
-	KeyboardFocusEvent OnLostKeyboardFocus;
+	PreviewGotKeyboardFocusEvent OnPreviewGotKeyboardFocus;
+	GotKeyboardFocusEvent OnGotKeyboardFocus;
+	PreviewLostKeyboardFocusEvent OnPreviewLostKeyboardFocus;
+	LostKeyboardFocusEvent OnLostKeyboardFocus;
 	SizeChangedEvent SizeChanged;
 	GotFocusEvent OnGotFocus;
 	LostFocusEvent OnLostFocus;
-	CanExecuteEvent OnPreviewCanExecute;
+	PreviewCanExecuteEvent OnPreviewCanExecute;
 	CanExecuteEvent OnCanExecute;
-	ExecutedEvent OnPreviewExecuted;
+	PreviewExecutedEvent OnPreviewExecuted;
 	ExecutedEvent OnExecuted;
-	DragDropEvent OnPreviewDragEnter;
-	DragDropEvent OnDragEnter;
-	DragDropEvent OnPreviewDragOver;
-	DragDropEvent OnDragOver;
-	DragDropEvent OnPreviewDragLeave;
-	DragDropEvent OnDragLeave;
-	DragDropEvent OnPreviewDrop;
-	DragDropEvent OnDrop;
+	PreviewDragEnterEvent OnPreviewDragEnter;
+	DragEnterEvent OnDragEnter;
+	PreviewDragOverEvent OnPreviewDragOver;
+	DragOverEvent OnDragOver;
+	PreviewDragLeaveEvent OnPreviewDragLeave;
+	DragLeaveEvent OnDragLeave;
+	PreviewDropEvent OnPreviewDrop;
+	DropEvent OnDrop;
 
 protected:
 	/** Route storage exposed only by WPF controls that own a Click facade. */
@@ -220,19 +290,20 @@ protected:
 	ScrollChangedEvent OnScrollChanged;
 	/** Exposed by controls that own WPF selection/value semantics. */
 	SelectionChangedRoutedEvent SelectionChanged;
-	SelectionChangedRoutedEvent SelectedDatesChanged;
+	SelectedDatesChangedRoutedEvent SelectedDatesChanged;
 	SelectedItemChangedRoutedEvent SelectedItemChanged;
 	ValueChangedRoutedEvent ValueChanged;
 	/** Exposed only by selector item containers such as TabItem. */
-	SelectionStateEvent Selected;
-	SelectionStateEvent Unselected;
+	SelectedEvent Selected;
+	UnselectedEvent Unselected;
 	/** Exposed only by controls that own the corresponding WPF state. */
-	SelectionStateEvent Checked;
-	SelectionStateEvent Unchecked;
-	SelectionStateEvent Expanded;
-	SelectionStateEvent Collapsed;
-	SelectionStateEvent SubmenuOpened;
-	SelectionStateEvent SubmenuClosed;
+	CheckedEvent Checked;
+	UncheckedEvent Unchecked;
+	ExpandedEvent Expanded;
+	CollapsedEvent Collapsed;
+	SubmenuOpenedEvent SubmenuOpened;
+	SubmenuClosedEvent SubmenuClosed;
+	IndeterminateEvent Indeterminate;
 
 	/** Internal route endpoint for owner-specific semantic routed events. */
 	RoutedHandlerInvocationCount InvokeSemanticRoutedEventHandlers(
@@ -278,6 +349,8 @@ protected:
 			return SubmenuOpened.InvokeHandlers(sender, args);
 		case RoutedEventId::SubmenuClosed:
 			return SubmenuClosed.InvokeHandlers(sender, args);
+		case RoutedEventId::Indeterminate:
+			return Indeterminate.InvokeHandlers(sender, args);
 		default:
 			return {};
 		}
@@ -293,15 +366,14 @@ public:
 		std::function<void(Control*, RoutedEventArgs&)> handler,
 		bool handledEventsToo = false)
 	{
-		const auto index = static_cast<std::size_t>(eventId);
 		if (!handler || eventId == RoutedEventId::None
-			|| eventId == RoutedEventId::Count
-			|| index >= _genericRoutedEventHandlers.size()) return {};
-		auto& event = _genericRoutedEventHandlers[index];
-		if (!event)
-			event = std::make_unique<RoutedEvent<RoutedEventArgs>>(
-				this, eventId);
-		return event->Subscribe(std::move(handler), handledEventsToo);
+			|| eventId == RoutedEventId::Count) return {};
+		return RoutedEventHandlerStore::Subscribe(
+			*this,
+			eventId,
+			RoutedHandlerStorageKind::Generic,
+			std::move(handler),
+			handledEventsToo);
 	}
 
 	/** Adds one binding and returns the sole lifetime token for that entry. */

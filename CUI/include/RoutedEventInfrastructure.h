@@ -9,9 +9,9 @@ namespace cui::framework
 	{
 		RoutedEventAccess() = delete;
 
-		template<typename TArgs>
+		template<typename TArgs, RoutedEventId TEventId>
 		static RoutedHandlerInvocationCount InvokeHandlers(
-			RoutedEvent<TArgs>& event,
+			RoutedEvent<TArgs, TEventId>& event,
 			Control* sender,
 			TArgs& args)
 		{
@@ -31,11 +31,12 @@ namespace cui::framework
 			Control* sender,
 			RoutedEventArgs& args)
 		{
-			const auto index = static_cast<std::size_t>(args.EventId);
-			if (index >= target._genericRoutedEventHandlers.size()
-				|| !target._genericRoutedEventHandlers[index]) return {};
-			return target._genericRoutedEventHandlers[index]->
-				InvokeHandlers(sender, args);
+			return RoutedEventHandlerStore::Invoke(
+				target,
+				args.EventId,
+				RoutedHandlerStorageKind::Generic,
+				sender,
+				args);
 		}
 
 		template<typename F>

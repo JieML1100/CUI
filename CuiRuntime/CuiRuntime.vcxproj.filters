@@ -1,10 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+	<Filter Include="Design Compatibility"><UniqueIdentifier>{6F20B925-184A-42F9-97C0-1C718F860264}</UniqueIdentifier></Filter>
     <Filter Include="Runtime"><UniqueIdentifier>{23C2D24E-6F8A-4CB9-86E8-8FCFB782D7E5}</UniqueIdentifier></Filter>
     <Filter Include="Runtime\Model"><UniqueIdentifier>{ED5994E3-373C-43A5-B697-D8D83467A859}</UniqueIdentifier></Filter>
   </ItemGroup>
   <ItemGroup>
+	<ClCompile Include="Runtime\BindingConverterRegistry.Design.cpp"><Filter>Runtime</Filter></ClCompile>
+	<ClCompile Include="Runtime\CollectionAdapters.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\ContentProjection.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\StyleMutableBackend.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\VisualState.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\Control.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\DependencyObject.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\DependencyPropertyRegistry.Design.cpp"><Filter>Design Compatibility</Filter></ClCompile>
+	<ClCompile Include="Runtime\XamlSchema.Design.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
@@ -30,6 +40,7 @@
 	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="include\BindingConverterRegistry.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="include\XamlObjectMaterializer.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="include\XamlDocumentCompiler.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="include\XamlFrameworkTheme.h"><Filter>Runtime</Filter></ClInclude>

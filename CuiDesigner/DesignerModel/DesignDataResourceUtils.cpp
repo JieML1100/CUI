@@ -60,6 +60,9 @@ namespace
 		switch (kind)
 		{
 		case BindingValueKind::Bool: result = DesignerStyleValueKind::Bool; return true;
+		case BindingValueKind::NullableBool:
+			result = DesignerStyleValueKind::NullableBool;
+			return true;
 		case BindingValueKind::Int: result = DesignerStyleValueKind::Int; return true;
 		case BindingValueKind::Int64: result = DesignerStyleValueKind::Int64; return true;
 		case BindingValueKind::Float: result = DesignerStyleValueKind::Float; return true;
@@ -74,6 +77,8 @@ namespace
 		switch (kind)
 		{
 		case BindingValueKind::Bool: return BindingValue(false);
+		case BindingValueKind::NullableBool:
+			return BindingValue(NullableBool{});
 		case BindingValueKind::Int: return BindingValue(0);
 		case BindingValueKind::Int64: return BindingValue(static_cast<long long>(0));
 		case BindingValueKind::Float: return BindingValue(0.0f);
@@ -152,7 +157,8 @@ DesignerDataContextSchema BuildCollectionViewGroupSchema(
 
 bool ValidateAndCanonicalize(
 	DesignDocument& document,
-	std::wstring* outError)
+	std::wstring* outError,
+	const DesignDocument* fallbackResources)
 {
 	DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
 	std::wstring rootSchemaError;
@@ -738,6 +744,7 @@ bool ValidateAndCanonicalize(
 					+ L" 的聚合路径不是可读标量："
 					+ aggregate.PropertyName, outError);
 			const bool numeric = property->ValueKind == BindingValueKind::Bool
+				|| property->ValueKind == BindingValueKind::NullableBool
 				|| property->ValueKind == BindingValueKind::Int
 				|| property->ValueKind == BindingValueKind::Int64
 				|| property->ValueKind == BindingValueKind::Float
@@ -930,8 +937,11 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 Control.Template 格式无效。",
 						outError);
 				const auto& key = node.Structure.ControlTemplate;
-				const auto* controlTemplate = document.FindControlTemplate(
+				auto* controlTemplate = document.FindControlTemplate(
 					nodes, node, key);
+				if (!controlTemplate && fallbackResources)
+					controlTemplate =
+						fallbackResources->FindControlTemplate(key);
 				if (!controlTemplate)
 					return Fail(owner + L" 引用了未声明的 ControlTemplate："
 						+ key, outError);
@@ -1032,6 +1042,8 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 ItemTemplate 格式无效。", outError);
 				const auto& key = node.Structure.ItemTemplate;
 				dataTemplate = document.FindDataTemplate(nodes, node, key);
+				if (!dataTemplate && fallbackResources)
+					dataTemplate = fallbackResources->FindDataTemplate(key);
 				if (!dataTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
@@ -1042,6 +1054,9 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 ContentTemplate 格式无效。", outError);
 				const auto& key = node.Structure.ContentTemplate;
 				contentTemplate = document.FindDataTemplate(nodes, node, key);
+				if (!contentTemplate && fallbackResources)
+					contentTemplate =
+						fallbackResources->FindDataTemplate(key);
 				if (!contentTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
@@ -1053,6 +1068,9 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 HeaderTemplate 格式无效。", outError);
 				const auto& key = node.Structure.HeaderTemplate;
 				headerTemplate = document.FindDataTemplate(nodes, node, key);
+				if (!headerTemplate && fallbackResources)
+					headerTemplate =
+						fallbackResources->FindDataTemplate(key);
 				if (!headerTemplate)
 					return Fail(owner + L" 引用了未声明的 DataTemplate：" + key,
 						outError);
@@ -1065,6 +1083,9 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 ItemsPanel 格式无效。", outError);
 				const auto& key = node.Structure.ItemsPanel;
 				itemsPanel = document.FindItemsPanelTemplate(nodes, node, key);
+				if (!itemsPanel && fallbackResources)
+					itemsPanel =
+						fallbackResources->FindItemsPanelTemplate(key);
 				if (!itemsPanel)
 					return Fail(owner + L" 引用了未声明的 ItemsPanelTemplate："
 						+ key, outError);
@@ -1077,6 +1098,8 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 GroupStyle 格式无效。", outError);
 				const auto& key = node.Structure.GroupStyle;
 				groupStyle = document.FindGroupStyle(nodes, node, key);
+				if (!groupStyle && fallbackResources)
+					groupStyle = fallbackResources->FindGroupStyle(key);
 				if (!groupStyle)
 					return Fail(owner + L" 引用了未声明的 GroupStyle：" + key,
 						outError);
@@ -1089,14 +1112,27 @@ bool ValidateAndCanonicalize(
 					return Fail(owner + L" 的 ItemContainerStyle 格式无效。",
 						outError);
 				const auto& key = node.Structure.ItemContainerStyle;
-				const auto style = std::find_if(
+				const DesignerStyleRule* style = nullptr;
+				const auto localStyle = std::find_if(
 					document.StyleSheet.Rules.begin(),
 					document.StyleSheet.Rules.end(),
 					[&](const auto& rule)
 					{
 						return !rule.Id.empty() && rule.Id == key;
 					});
-				if (style == document.StyleSheet.Rules.end())
+				if (localStyle != document.StyleSheet.Rules.end())
+					style = &*localStyle;
+				if (!style && fallbackResources)
+				if (const auto fallbackStyle = std::find_if(
+					fallbackResources->StyleSheet.Rules.begin(),
+					fallbackResources->StyleSheet.Rules.end(),
+					[&](const auto& rule)
+					{
+						return !rule.Id.empty() && rule.Id == key;
+					});
+					fallbackStyle != fallbackResources->StyleSheet.Rules.end())
+					style = &*fallbackStyle;
+				if (!style)
 					return Fail(owner + L" 引用了未声明的 Style：" + key,
 						outError);
 				const auto expectedContainer =
@@ -1191,8 +1227,14 @@ bool ValidateAndCanonicalize(
 			if (itemType && groupStyle)
 			{
 				const auto& groupStyleKey = node.Structure.GroupStyle;
-				const auto* header = document.FindGroupStyleHeaderTemplate(
+				auto* header = document.FindGroupStyleHeaderTemplate(
 					nodes, node, groupStyleKey);
+				if (!header && fallbackResources)
+					header = groupStyle->HeaderTemplate.empty()
+						? fallbackResources->FindImplicitDataTemplate(
+							std::wstring(CollectionViewGroupDataTypeName))
+						: fallbackResources->FindDataTemplate(
+							groupStyle->HeaderTemplate);
 				if (!header && !groupStyle->HeaderTemplate.empty())
 					return Fail(owner + L" 的 GroupStyle " + groupStyle->Key
 						+ L" 引用了未声明的 DataTemplate："
@@ -1232,6 +1274,16 @@ bool ValidateAndCanonicalize(
 			std::unordered_set<std::wstring> localObjectKeys;
 			std::unordered_set<std::wstring> localImplicitTemplateTypes;
 			std::unordered_set<std::wstring> localImplicitControlTemplateTypes;
+			for (const auto& resource : node.LocalResources.Resources)
+				if (!resource.Key.empty()
+					&& !localObjectKeys.insert(resource.Key).second)
+					return Fail(owner + L" 的局部资源键重复："
+						+ resource.Key, outError);
+			for (const auto& rule : node.LocalResources.Rules)
+				if (!rule.Id.empty()
+					&& !localObjectKeys.insert(rule.Id).second)
+					return Fail(owner + L" 的局部资源键重复："
+						+ rule.Id, outError);
 			for (auto& localTemplate
 				: node.LocalObjectResources.ControlTemplates)
 			{
@@ -1481,11 +1533,9 @@ std::shared_ptr<ObservableBindingList> BuildRuntimeList(
 	const DesignDataList& list,
 	std::wstring* outError)
 {
-	auto candidate = document;
-	if (!ValidateAndCanonicalize(candidate, outError)) return {};
-	const auto* canonicalList = candidate.FindDataList(list.Key);
+	const auto* canonicalList = document.FindDataList(list.Key);
 	const auto* dataType = canonicalList
-		? candidate.FindDataType(canonicalList->ItemType) : nullptr;
+		? document.FindDataType(canonicalList->ItemType) : nullptr;
 	if (!canonicalList || !dataType)
 		return Fail(L"DataList 定义不完整：" + list.Key, outError), nullptr;
 
@@ -1525,7 +1575,7 @@ std::shared_ptr<ObservableBindingList> BuildRuntimeList(
 					if (!TryValueKind(property.ValueKind, kind)
 						|| !DesignerStyleSheetUtils::TryConvertValue(
 							{ kind, field->second }, value, outError,
-							candidate.ResourceBasePath, candidate.Resources)) return {};
+							document.ResourceBasePath, document.Resources)) return {};
 				}
 			}
 			BindingSourcePropertyMetadata metadata{

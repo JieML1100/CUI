@@ -1,21 +1,20 @@
 #pragma once
 
 /**
- * CUITest dynamic-XAML host.
+ * CUITest build-time compiled XAML host.
  *
  * DemoWindow.cui.xaml owns the visual tree, layout, persistent properties,
  * styles, and event names. This class owns only runtime services, data, and
- * the C++ implementations registered for those event names.
+ * the C++ implementations for the statically generated event hooks.
  */
-#include <CuiRuntime.h>
-#include <Window.h>
+#include "DemoWindow.g.h"
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
-class BitmapSource;
 class Button;
 class ChartView;
 class ComboBox;
@@ -39,7 +38,7 @@ class ToolBar;
 class TreeView;
 class WebBrowser;
 
-class DemoWindow final : public Window
+class DemoWindow final : public DemoWindowGenerated
 {
 public:
 	enum class InitializationMode
@@ -52,8 +51,6 @@ public:
 	explicit DemoWindow(InitializationMode mode = InitializationMode::Full);
 	~DemoWindow();
 
-	static std::wstring XamlFilePath();
-	static bool ValidateXaml(std::wstring* outError = nullptr);
 	bool VerifyDeclarativeFeatures(std::wstring* outError = nullptr);
 	bool VerifyTextCompositionFeatures(std::wstring* outError = nullptr);
 	bool VerifyRuntimeDataFeatures(std::wstring* outError = nullptr);
@@ -62,15 +59,12 @@ public:
 private:
 	template<typename T>
 	T* RequireControl(const wchar_t* name);
+	Control* FindGeneratedControlByName(std::wstring_view name) const noexcept;
 
-	void PrepareDeclarativeRuntime(
-		const DesignerModel::DesignDocument& document);
+	void PrepareRuntimeData();
+	void AttachStaticBehaviors();
 	void RegisterClassCommandBindings();
-	void RegisterXamlHandlers(
-		const DesignerModel::DesignDocument& document);
-	void MountXaml(const DesignerModel::DesignDocument& document);
 	void ResolveControls();
-	void LoadImages();
 	void InitializeBasicPage();
 	void InitializeContainerPage();
 	void InitializeDataPage();
@@ -89,21 +83,8 @@ private:
 	void RecordCommandTarget(
 		bool executed, const RoutedEventArgs& args, const RoutedCommand& command,
 		std::uint64_t transactionId);
+	void AppendCommandRouteTrace(std::wstring entry);
 
-	void HandleContentRendered(Window* sender);
-	void HandleClosing(Window* sender, CancelEventArgs& args);
-	void HandleCommandPreviewCanExecute(
-		Control* sender, CanExecuteRoutedEventArgs& args);
-	void HandleCommandCanExecute(
-		Control* sender, CanExecuteRoutedEventArgs& args);
-	void HandleCommandPreviewExecuted(
-		Control* sender, ExecutedRoutedEventArgs& args);
-	void HandleCommandExecuted(
-		Control* sender, ExecutedRoutedEventArgs& args);
-	void HandleLocalCommandCanExecute(
-		Control* sender, CanExecuteRoutedEventArgs& args);
-	void HandleLocalCommandExecuted(
-		Control* sender, ExecutedRoutedEventArgs& args);
 	void HandleClassCommandCanExecute(
 		Control* sender, CanExecuteRoutedEventArgs& args);
 	void HandleClassCommandExecuted(
@@ -112,109 +93,106 @@ private:
 		Control* sender, CanExecuteRoutedEventArgs& args);
 	void HandleNativeClassCommandExecuted(
 		Control* sender, ExecutedRoutedEventArgs& args);
-	void HandleCommandAvailabilityToggle(Control* sender, RoutedEventArgs& e);
-	void HandleToolBarAction(Control* sender, RoutedEventArgs& e);
-	void HandleGlobalProgress(Control* sender, double oldValue, double newValue);
-	void HandleMouseWheel(Control* sender, MouseEventArgs& e);
-	void HandleBasicClick(Control* sender, RoutedEventArgs& e);
-	void HandleEnableInput(Control* sender);
-	void HandleRadio(Control* sender);
-	void HandleComboSelection(ComboBox* sender);
-	void HandleNumericValue(Control* sender, double oldValue, double newValue);
-	void HandleDocsLink(Control* sender, RoutedEventArgs& e);
-	void HandleExpander(class Expander* sender, bool expanded);
-	void HandleOpenImage(Control* sender, RoutedEventArgs& e);
-	void HandleDragRoute(Control* sender, DragEventArgs& e);
-	void HandleDropImage(Control* sender, DragEventArgs& e);
-	void HandleImageVisibility(Control* sender);
-	void HandleListViewSelection(class Selector* sender);
-	void HandleListBoxSelection(class Selector* sender);
-	void HandleTreeSelection(TreeView* sender);
-	void HandleFeatureInvoked(
-		Control* sender, DeclarativeEventArgs& args);
-	void HandleFeatureBubble(
-		Control* sender, DeclarativeEventArgs& args);
-	void HandleDispatcherProbe(Control* sender, RoutedEventArgs& e);
-	void HandleTemplateSwap(Control* sender, RoutedEventArgs& e);
-	void HandleRouteOuterPreview(Control* sender, MouseEventArgs& e);
-	void HandleRouteMiddlePreview(Control* sender, MouseEventArgs& e);
-	void HandleRouteSourcePreview(Control* sender, MouseEventArgs& e);
-	void HandleRouteSourceBubble(Control* sender, MouseEventArgs& e);
-	void HandleRouteMiddleBubble(Control* sender, MouseEventArgs& e);
-	void HandleRouteOuterBubble(Control* sender, MouseEventArgs& e);
-	void HandleRouteKey(Control* sender, KeyEventArgs& e);
-	void HandleRouteCaptureChanged(Control* sender, RoutedEventArgs& e);
-	void HandleRouteFocus(Control* sender, RoutedEventArgs& e);
-	void HandleRoutePreviewGotKeyboardFocus(
-		Control* sender, KeyboardFocusChangedEventArgs& e);
-	void HandleRouteGotKeyboardFocus(
-		Control* sender, KeyboardFocusChangedEventArgs& e);
-	void HandleRoutePreviewLostKeyboardFocus(
-		Control* sender, KeyboardFocusChangedEventArgs& e);
-	void HandleRouteLostKeyboardFocus(
-		Control* sender, KeyboardFocusChangedEventArgs& e);
-	void HandleTextOuterPreview(Control* sender, TextCompositionEventArgs& e);
-	void HandleTextSourcePreview(Control* sender, TextCompositionEventArgs& e);
-	void HandleTextSourceBubble(Control* sender, TextCompositionEventArgs& e);
-	void HandleTextOuterBubble(Control* sender, TextCompositionEventArgs& e);
 	void RefreshRoutedInputSummary();
-	void HandleCompositionPreviewStart(
-		Control* sender, TextCompositionEventArgs& e);
-	void HandleCompositionStart(Control* sender, TextCompositionEventArgs& e);
-	void HandleCompositionPreviewUpdate(
-		Control* sender, TextCompositionEventArgs& e);
-	void HandleCompositionUpdate(Control* sender, TextCompositionEventArgs& e);
-	void HandleCompositionPreviewCommit(
-		Control* sender, TextCompositionEventArgs& e);
-	void HandleCompositionCommit(Control* sender, TextCompositionEventArgs& e);
-	void HandleTextCompositionProbe(Control* sender, RoutedEventArgs& e);
 	void RefreshTextCompositionSummary();
-	void HandlePresentationRegion(Control* sender, RoutedEventArgs& e);
-	void HandlePresentationGeometry(Control* sender, RoutedEventArgs& e);
-	void HandlePresentationComposition(Control* sender, RoutedEventArgs& e);
-	void HandlePresentationFullFrame(Control* sender, RoutedEventArgs& e);
-	void HandlePresentationTopology(Control* sender, RoutedEventArgs& e);
-	void HandlePresentationDeviceLoss(Control* sender, RoutedEventArgs& e);
 	bool RunElementHierarchyProbe(std::wstring* outSummary = nullptr);
-	void HandleAnalyticsAction(Control* sender, RoutedEventArgs& e);
-	void HandleChartKind(Control* sender, RoutedEventArgs& e);
-	void HandleChartPoint(ChartView* sender, int seriesIndex, int pointIndex);
-	void HandleFarButton(Control* sender, RoutedEventArgs& e);
-	void HandleSystemAction(Control* sender, RoutedEventArgs& e);
-	void HandleSystemSurfaceMouseUp(Control* sender, MouseEventArgs& e);
-	void HandleInvokeWeb(Control* sender, RoutedEventArgs& e);
-	void HandleMediaCommand(Control* sender, RoutedEventArgs& e);
-	void HandleMediaVolume(Control* sender, double oldValue, double newValue);
-	void HandleMediaSpeed(Control* sender, double oldValue, double newValue);
-	void HandleMediaLoop(Control* sender);
-	void HandleMediaSeek(Control* sender, double oldValue, double newValue);
-	void HandleMediaOpened(MediaPlayer* sender);
-	void HandleMediaEnded(MediaPlayer* sender);
-	void HandleMediaFailed(MediaPlayer* sender);
-	void HandleMediaPosition(MediaPlayer* sender, double position);
+	// WPF's handledEventsToo option belongs to AddHandler/Subscribe, not to
+	// an event attribute in XAML, so this one handler is attached explicitly.
+	void HandleRouteOuterBubble(Control* sender, MouseEventArgs& e);
 
-	DesignerModel::RuntimeDocumentSession _xamlSession;
+	void HandleAnalyticsAction(Control* sender, RoutedEventArgs& e) override;
+	void HandleBasicClick(Control* sender, RoutedEventArgs& e) override;
+	void HandleChartKind(Control* sender, RoutedEventArgs& e) override;
+	void HandleChartPoint(ChartView* sender, int seriesIndex, int pointIndex) override;
+	void HandleClosing(Window* sender, CancelEventArgs& e) override;
+	void HandleComboSelection(Control* sender, SelectionChangedEventArgs& e) override;
+	void HandleCommandAvailabilityToggle(Control* sender, RoutedEventArgs& e) override;
+	void HandleCommandCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) override;
+	void HandleCommandExecuted(Control* sender, ExecutedRoutedEventArgs& e) override;
+	void HandleCommandPreviewCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) override;
+	void HandleCommandPreviewExecuted(Control* sender, ExecutedRoutedEventArgs& e) override;
+	void HandleCompositionCommit(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleCompositionPreviewCommit(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleCompositionPreviewStart(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleCompositionPreviewUpdate(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleCompositionStart(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleCompositionUpdate(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleContentRendered(Window* sender) override;
+	void HandleDispatcherProbe(Control* sender, RoutedEventArgs& e) override;
+	void HandleDocsLink(Control* sender, RoutedEventArgs& e) override;
+	void HandleDragRoute(Control* sender, DragEventArgs& e) override;
+	void HandleDropImage(Control* sender, DragEventArgs& e) override;
+	void HandleEnableInput(Control* sender, RoutedEventArgs& e) override;
+	void HandleExpander(Control* sender, RoutedEventArgs& e) override;
+	void HandleFarButton(Control* sender, RoutedEventArgs& e) override;
+	void HandleFeatureBubble(Control* sender, DeclarativeEventArgs& e) override;
+	void HandleFeatureInvoked(Control* sender, DeclarativeEventArgs& e) override;
+	void HandleGlobalProgress(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
+	void HandleImageVisibility(Control* sender, RoutedEventArgs& e) override;
+	void HandleInvokeWeb(Control* sender, RoutedEventArgs& e) override;
+	void HandleListBoxSelection(Control* sender, SelectionChangedEventArgs& e) override;
+	void HandleListViewSelection(Control* sender, SelectionChangedEventArgs& e) override;
+	void HandleLocalCommandCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) override;
+	void HandleLocalCommandExecuted(Control* sender, ExecutedRoutedEventArgs& e) override;
+	void HandleMediaCommand(Control* sender, RoutedEventArgs& e) override;
+	void HandleMediaEnded(Control* sender) override;
+	void HandleMediaFailed(Control* sender) override;
+	void HandleMediaLoop(Control* sender, RoutedEventArgs& e) override;
+	void HandleMediaOpened(Control* sender) override;
+	void HandleMediaPosition(Control* sender, double position) override;
+	void HandleMediaSeek(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
+	void HandleMediaSpeed(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
+	void HandleMediaVolume(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
+	void HandleMouseWheel(Control* sender, MouseEventArgs& e) override;
+	void HandleNumericValue(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
+	void HandleOpenImage(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationComposition(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationDeviceLoss(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationFullFrame(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationGeometry(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationRegion(Control* sender, RoutedEventArgs& e) override;
+	void HandlePresentationTopology(Control* sender, RoutedEventArgs& e) override;
+	void HandleRadio(Control* sender, RoutedEventArgs& e) override;
+	void HandleRouteCaptureChanged(Control* sender, RoutedEventArgs& e) override;
+	void HandleRouteFocus(Control* sender, RoutedEventArgs& e) override;
+	void HandleRouteGotKeyboardFocus(Control* sender, KeyboardFocusChangedEventArgs& e) override;
+	void HandleRouteKey(Control* sender, KeyEventArgs& e) override;
+	void HandleRouteLostKeyboardFocus(Control* sender, KeyboardFocusChangedEventArgs& e) override;
+	void HandleRouteMiddleBubble(Control* sender, MouseEventArgs& e) override;
+	void HandleRouteMiddlePreview(Control* sender, MouseEventArgs& e) override;
+	void HandleRouteOuterPreview(Control* sender, MouseEventArgs& e) override;
+	void HandleRoutePreviewGotKeyboardFocus(Control* sender, KeyboardFocusChangedEventArgs& e) override;
+	void HandleRoutePreviewLostKeyboardFocus(Control* sender, KeyboardFocusChangedEventArgs& e) override;
+	void HandleRouteSourceBubble(Control* sender, MouseEventArgs& e) override;
+	void HandleRouteSourcePreview(Control* sender, MouseEventArgs& e) override;
+	void HandleSystemAction(Control* sender, RoutedEventArgs& e) override;
+	void HandleSystemSurfaceMouseUp(Control* sender, MouseEventArgs& e) override;
+	void HandleTemplateSwap(Control* sender, RoutedEventArgs& e) override;
+	void HandleTextCompositionProbe(Control* sender, RoutedEventArgs& e) override;
+	void HandleTextOuterBubble(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleTextOuterPreview(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleTextSourceBubble(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleTextSourcePreview(Control* sender, TextCompositionEventArgs& e) override;
+	void HandleToolBarAction(Control* sender, RoutedEventArgs& e) override;
+	void HandleTreeSelection(Control* sender, RoutedPropertyChangedEventArgs<BindingValue>& e) override;
+
 	std::shared_ptr<ObservableObject> _dataContext;
 	bool _runtimeDataInitialized = false;
 	std::shared_ptr<ObservableBindingList> _treeRoots;
 	std::shared_ptr<ObservableBindingList> _listViewEntries;
 	std::shared_ptr<ObservableBindingList> _wpfLabPeople;
 	std::shared_ptr<ObservableObject> _wpfLabSettings;
-	std::shared_ptr<DesignerModel::DeclarativeComponentBehaviorRegistry>
-		_componentBehaviors;
-	std::shared_ptr<DesignerModel::NativeSurfaceBehaviorRegistry>
-		_nativeSurfaceBehaviors;
-	std::wstring _schemaSummary;
 	int _featureInvocations = 0;
 	int _featureBubbleInvocations = 0;
+	int _featureInputCount = 0;
 	int _treeSelectionChanges = 0;
 	std::vector<std::wstring> _routedInputTrace;
 	std::wstring _routedInputDetail;
 	std::vector<std::wstring> _textCompositionTrace;
 	bool _compositionPreviewHandled = false;
 	bool _cancelNextKeyboardFocus = false;
-	Control* _lastKeyboardFocusOld = nullptr;
-	Control* _lastKeyboardFocusNew = nullptr;
+	ControlWeakReference _lastKeyboardFocusOld;
+	ControlWeakReference _lastKeyboardFocusNew;
 	std::vector<std::wstring> _commandRouteTrace;
 	std::vector<std::wstring> _classCommandTrace;
 	std::vector<EventConnection> _classCommandBindingConnections;
@@ -238,8 +216,6 @@ private:
 	std::wstring _displayedCommandCanExecuteTarget;
 	std::uint64_t _pendingCommandTransactionId = 0;
 	std::uint64_t _lastCommandExecutedTransactionId = 0;
-
-	std::shared_ptr<BitmapSource> _images[10]{};
 
 	Menu* _menu = nullptr;
 	ToolBar* _toolBar = nullptr;

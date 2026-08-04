@@ -23,7 +23,11 @@ enum class DesignerStyleValueKind
 	ImageSource,
 	Brush,
 	Geometry,
-	Transform
+	Transform,
+	/** Appended to preserve the serialized numeric values of existing kinds. */
+	CornerRadius,
+	/** WPF Nullable<Boolean>, including the canonical {x:Null} literal. */
+	NullableBool
 };
 
 /** A strongly typed value whose text remains editable and XML-friendly. */

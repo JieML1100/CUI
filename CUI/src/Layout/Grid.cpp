@@ -189,6 +189,121 @@ namespace
 				return left.Span < right.Span;
 			});
 	}
+
+	template<typename TDefinition, typename TLength>
+	float ChildMeasureMaximum(
+		const std::vector<TDefinition>& definitions,
+		const std::vector<float>& allocated,
+		int start,
+		int span,
+		bool bounded,
+		const Thickness& margin,
+		bool horizontal,
+		TLength getLength)
+	{
+		const int end = (std::min)(
+			start + span, static_cast<int>(definitions.size()));
+		for (int index = start; index < end; ++index)
+		{
+			const auto& length = getLength(definitions[static_cast<size_t>(index)]);
+			// Auto receives an unbounded Measure offer in WPF. Star has the same
+			// content-sized behavior when the Grid itself is unbounded on this axis.
+			if (length.IsAuto() || (!bounded && length.IsStar()))
+				return cui::core::Infinity;
+		}
+		const float outer = SumSpan(allocated, start, span);
+		const float margins = horizontal
+			? margin.Left + margin.Right : margin.Top + margin.Bottom;
+		return (std::max)(0.0f, outer - margins);
+	}
+
+	template<typename TDefinition, typename TLength, typename TMinimum,
+		typename TMaximum>
+	std::vector<float> CreateDesiredTrackSizes(
+		const std::vector<TDefinition>& definitions,
+		TLength getLength,
+		TMinimum getMinimum,
+		TMaximum getMaximum)
+	{
+		std::vector<float> result(definitions.size(), 0.0f);
+		for (size_t index = 0; index < definitions.size(); ++index)
+		{
+			const auto& definition = definitions[index];
+			const float minimum = NormalizeMinimum(getMinimum(definition));
+			const float maximum = NormalizeMaximum(
+				getMaximum(definition), minimum);
+			if (getLength(definition).IsPixel())
+			{
+				result[index] = (std::clamp)(
+					NormalizeTrackValue(getLength(definition).Value),
+					minimum, maximum);
+			}
+			else
+			{
+				// A bounded Star track is allocated remaining layout space for child
+				// measurement and Arrange, but that allocation is not Grid.DesiredSize.
+				// Its desired contribution begins at Min just like WPF's measure cache.
+				result[index] = minimum;
+			}
+		}
+		return result;
+	}
+
+	template<typename TDefinition, typename TLength, typename TMaximum>
+	void GrowDesiredTracks(
+		std::vector<float>& desired,
+		const std::vector<float>& allocated,
+		const std::vector<TDefinition>& definitions,
+		const ContentRequest& request,
+		bool bounded,
+		TLength getLength,
+		TMaximum getMaximum)
+	{
+		float deficit = request.Required
+			- SumSpan(desired, request.Start, request.Span);
+		if (!(deficit > TrackEpsilon)) return;
+
+		std::vector<int> active;
+		const int end = (std::min)(request.Start + request.Span,
+			static_cast<int>(definitions.size()));
+		for (int index = request.Start; index < end; ++index)
+		{
+			const size_t track = static_cast<size_t>(index);
+			const auto& length = getLength(definitions[track]);
+			if (length.IsPixel()) continue;
+			float capacity = getMaximum(definitions[track]);
+			if (bounded && length.IsStar() && track < allocated.size())
+				capacity = (std::min)(capacity,
+					(std::max)(desired[track], allocated[track]));
+			if (capacity - desired[track] > TrackEpsilon)
+				active.push_back(index);
+		}
+
+		while (deficit > TrackEpsilon && !active.empty())
+		{
+			const float share = deficit / static_cast<float>(active.size());
+			float distributed = 0.0f;
+			std::vector<int> next;
+			for (int index : active)
+			{
+				const size_t track = static_cast<size_t>(index);
+				const auto& length = getLength(definitions[track]);
+				float capacity = getMaximum(definitions[track]);
+				if (bounded && length.IsStar() && track < allocated.size())
+					capacity = (std::min)(capacity,
+						(std::max)(desired[track], allocated[track]));
+				const float amount = (std::min)(
+					share, (std::max)(0.0f, capacity - desired[track]));
+				desired[track] += amount;
+				distributed += amount;
+				if (capacity - desired[track] > TrackEpsilon)
+					next.push_back(index);
+			}
+			if (!(distributed > TrackEpsilon)) break;
+			deficit -= distributed;
+			active = std::move(next);
+		}
+	}
 }
 
 void GridLayoutEngine::CalculateColumnWidths(LayoutContext& context, float availableWidth)
@@ -396,15 +511,81 @@ cui::core::Size GridLayoutEngine::Measure(LayoutContext& context, const cui::cor
 	const auto maximum = available.Normalized().maximum;
 	CalculateColumnWidths(context, maximum.width);
 	CalculateRowHeights(context, maximum.height);
-	
-	// 计算总尺寸
+
+	const bool widthIsBounded = std::isfinite(maximum.width);
+	const bool heightIsBounded = std::isfinite(maximum.height);
+	auto desiredColumns = CreateDesiredTrackSizes(
+		_columnDefinitions,
+		[](const ColumnDefinition& definition) -> const GridLength&
+		{ return definition.Width; },
+		[](const ColumnDefinition& definition) { return definition.MinWidth; },
+		[](const ColumnDefinition& definition) { return definition.MaxWidth; });
+	auto desiredRows = CreateDesiredTrackSizes(
+		_rowDefinitions,
+		[](const RowDefinition& definition) -> const GridLength&
+		{ return definition.Height; },
+		[](const RowDefinition& definition) { return definition.MinHeight; },
+		[](const RowDefinition& definition) { return definition.MaxHeight; });
+
+	std::vector<ContentRequest> columnRequests;
+	std::vector<ContentRequest> rowRequests;
+	columnRequests.reserve(static_cast<size_t>(context.ChildCount()));
+	rowRequests.reserve(static_cast<size_t>(context.ChildCount()));
+	for (int childIndex = 0; childIndex < context.ChildCount(); ++childIndex)
+	{
+		auto* child = context.ChildAt(childIndex);
+		if (!child || child->IsCollapsed()) continue;
+		const int column = ClampTrackStart(
+			Grid::GetColumn(*child), static_cast<int>(_columnDefinitions.size()));
+		const int columnSpan = ClampTrackSpan(
+			column, Grid::GetColumnSpan(*child),
+			static_cast<int>(_columnDefinitions.size()));
+		const int row = ClampTrackStart(
+			Grid::GetRow(*child), static_cast<int>(_rowDefinitions.size()));
+		const int rowSpan = ClampTrackSpan(
+			row, Grid::GetRowSpan(*child),
+			static_cast<int>(_rowDefinitions.size()));
+		const Thickness margin = child->Margin;
+		const float childMaximumWidth = ChildMeasureMaximum(
+			_columnDefinitions, _columnWidths, column, columnSpan,
+			widthIsBounded, margin, true,
+			[](const ColumnDefinition& definition) -> const GridLength&
+			{ return definition.Width; });
+		const float childMaximumHeight = ChildMeasureMaximum(
+			_rowDefinitions, _rowHeights, row, rowSpan,
+			heightIsBounded, margin, false,
+			[](const RowDefinition& definition) -> const GridLength&
+			{ return definition.Height; });
+		const auto childSize = child->Measure(cui::core::Constraints{
+			cui::core::Size{ childMaximumWidth, childMaximumHeight } });
+		columnRequests.push_back({ column, columnSpan,
+			(std::max)(0.0f,
+				childSize.width + margin.Left + margin.Right) });
+		rowRequests.push_back({ row, rowSpan,
+			(std::max)(0.0f,
+				childSize.height + margin.Top + margin.Bottom) });
+	}
+	SortContentRequests(columnRequests);
+	SortContentRequests(rowRequests);
+	for (const auto& request : columnRequests)
+		GrowDesiredTracks(
+			desiredColumns, _columnWidths, _columnDefinitions,
+			request, widthIsBounded,
+			[](const ColumnDefinition& definition) -> const GridLength&
+			{ return definition.Width; },
+			[](const ColumnDefinition& definition) { return definition.MaxWidth; });
+	for (const auto& request : rowRequests)
+		GrowDesiredTracks(
+			desiredRows, _rowHeights, _rowDefinitions,
+			request, heightIsBounded,
+			[](const RowDefinition& definition) -> const GridLength&
+			{ return definition.Height; },
+			[](const RowDefinition& definition) { return definition.MaxHeight; });
+
 	float totalWidth = 0.0f;
-	for (float columnWidth : _columnWidths)
-		totalWidth += columnWidth;
-	
+	for (float columnWidth : desiredColumns) totalWidth += columnWidth;
 	float totalHeight = 0.0f;
-	for (float rowHeight : _rowHeights)
-		totalHeight += rowHeight;
+	for (float rowHeight : desiredRows) totalHeight += rowHeight;
 	
 	_needsLayout = false;
 	return { totalWidth, totalHeight };

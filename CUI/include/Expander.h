@@ -2,6 +2,8 @@
 
 #include "HeaderedContentControl.h"
 
+class ToggleButton;
+
 /** WPF-compatible direction in which Expander content is placed. */
 enum class ExpandDirection : unsigned char
 {
@@ -13,44 +15,44 @@ enum class ExpandDirection : unsigned char
 
 /**
  * WPF-style HeaderedContentControl whose content participates in measure only
- * while expanded. Chrome and transition policy belong to its template; the
- * native implementation contains only a private fallback presenter.
+ * while expanded. Chrome, direction layout and transition policy belong to
+ * its framework theme ControlTemplate.
  */
 class Expander : public HeaderedContentControl
 {
 private:
-	bool _isExpanded = true;
+	bool _isExpanded = false;
 	::ExpandDirection _expandDirection = ::ExpandDirection::Down;
-	bool _hoverHeader = false;
-	bool _headerPressActive = false;
+	ToggleButton* _headerSite = nullptr;
 
 	void ApplyExpandedStateChange(bool oldValue, bool newValue);
 	void SetCurrentExpanded(bool value);
-	void SynchronizeContentPresentation();
-	bool HeaderHitTest(int localX, int localY) const;
-	cui::core::Rect HeaderRect() const noexcept;
-	cui::core::Rect ContentRect() const noexcept;
+	void SynchronizeHeaderSite();
 
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<ExpanderAutomationPeer>(*this);
 	}
-	void ConfigureContentVisual(Control& child) override;
-	cui::core::Insets GetHeaderPresentationInsets() const noexcept override;
-	float GetHeaderSlotHeightDip(float availableWidth) override;
-	void PerformPendingLayout() override;
+	void OnControlTemplatePresentationChanged() override;
+	bool OnAccessKey(bool isMultiple) override;
 
 public:
 	using UIElement::Expanded;
 	using UIElement::Collapsed;
 
 	UIClass Type() override;
+	static const DependencyProperty& IsExpandedProperty();
+	static const DependencyProperty& ExpandDirectionProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 	Expander();
 
@@ -64,15 +66,4 @@ public:
 
 	void SetExpanded(bool value);
 	void Toggle();
-
-	cui::core::Size MeasureCore(
-		const cui::core::Constraints& available) override;
-	CursorKind QueryCursor(int localX, int localY) override;
-	bool ClipsChildren() override { return true; }
-	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
-	D2D1_RECT_F GetVisualChildrenClipRect() override;
-	bool HandlesNavigationKey(Key key) const override;
-protected:
-	void OnRender() override;
-	bool ProcessInput(const InputReport& input) override;
 };

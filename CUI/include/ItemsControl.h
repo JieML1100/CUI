@@ -7,12 +7,17 @@
 #include "ItemsPresenter.h"
 #include "ScrollViewer.h"
 
+#include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace cui::framework
 {
 	struct TemplateAccess;
+	struct ItemsControlAccess;
 }
+
+class ContentPresenter;
 
 /**
  * Generic templated collection presenter.
@@ -32,8 +37,19 @@ public:
 
 	ItemsControl();
 	UIClass Type() override { return UIClass::UI_ItemsControl; }
+	/** WPF dependency-property identities used by generated/native code. */
+	static const DependencyProperty& ItemsSourceProperty();
+	static const DependencyProperty& ItemTemplateProperty();
+	static const DependencyProperty& GroupStyleProperty();
+	static const DependencyProperty& ItemsPanelProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
+	static const DependencyProperty& DisplayMemberPathProperty();
+#endif
+	static const DependencyProperty& ItemContainerStyleProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 
 	virtual BindingListReference GetItemsSource() const noexcept
 	{
@@ -52,11 +68,42 @@ public:
 		return _itemsPanel;
 	}
 	void SetItemsPanel(ItemsPanelTemplateReference value);
+#if CUI_ENABLE_DYNAMIC_XAML
 	virtual const std::wstring& GetDisplayMemberPath() const noexcept
 	{
 		return _displayMemberPath;
 	}
 	virtual void SetDisplayMemberPath(std::wstring value);
+#endif
+	[[nodiscard]] virtual CompiledBindingPathView
+		GetCompiledDisplayMemberPath() const noexcept
+	{
+		return _compiledDisplayMemberPath;
+	}
+	virtual void SetCompiledDisplayMemberPath(
+		CompiledBindingPathView value);
+	static const DependencyProperty& IsTextSearchEnabledProperty();
+	static const DependencyProperty& IsTextSearchCaseSensitiveProperty();
+	bool GetIsTextSearchEnabled() const;
+	void SetIsTextSearchEnabled(bool value);
+	__declspec(property(
+		get = GetIsTextSearchEnabled,
+		put = SetIsTextSearchEnabled))
+		bool IsTextSearchEnabled;
+	bool GetIsTextSearchCaseSensitive() const;
+	void SetIsTextSearchCaseSensitive(bool value);
+	__declspec(property(
+		get = GetIsTextSearchCaseSensitive,
+		put = SetIsTextSearchCaseSensitive))
+		bool IsTextSearchCaseSensitive;
+	/**
+	 * Framework entry used when committed text originated on this control or
+	 * one of its generated item containers.
+	 */
+	bool ProcessTextSearchInput(
+		const TextCompositionEventArgs& input);
+	/** Updates the active incremental-search prefix for Backspace. */
+	void ProcessTextSearchKey(const InputReport& input);
 	const std::wstring& GetItemContainerStyle() const noexcept
 	{
 		return _itemContainerStyle;
@@ -107,7 +154,11 @@ public:
 	bool IsVirtualizing() const noexcept;
 protected:
 	void PreparePresentation() override;
+	void OnApplyTemplate() override;
 	void OnRender() override;
+	bool ProcessInput(const InputReport& input) override;
+	bool ApplyTextInput(
+		const TextCompositionEventArgs& input) override;
 public:
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
@@ -150,6 +201,7 @@ protected:
 		friend class ItemsControl;
 	};
 	AuthoredItemsUpdateScope DeferAuthoredItemsChanges() noexcept;
+	friend struct cui::framework::ItemsControlAccess;
 	/**
 	 * Per-operation token for state owned by a derived item control.
 	 *
@@ -172,6 +224,14 @@ protected:
 	void RequestLayout() override;
 	void OnComputedLayoutSizeChanged() override;
 	void PerformPendingLayout() override;
+	bool IsItemsLayoutPending() const noexcept
+	{
+		return _itemsLayoutPending;
+	}
+	void CommitItemsLayout() noexcept
+	{
+		_itemsLayoutPending = false;
+	}
 	bool ValidateVisualChildCollection(
 		std::span<Control* const> children,
 		std::string& error) const override;
@@ -197,6 +257,19 @@ protected:
 	virtual void OnGeneratedItemsRealized() {}
 	virtual void OnGeneratedItemIndexChanged(
 		Control&, size_t, size_t) {}
+	virtual std::wstring GetTextSearchItemText(
+		size_t index) const;
+	/** Evaluates the active Design or AOT display projection. */
+	std::wstring GetDisplayMemberText(
+		const BindingSourceReference& item) const;
+	/** Observes only the active display projection lane. */
+	BindingPathObservation ObserveDisplayMemberPath(
+		const BindingSourceReference& item,
+		std::function<void()> changed) const;
+	virtual void OnTextSearchMatch(size_t index)
+	{
+		(void)index;
+	}
 	virtual bool ApplyItemContainerStyle();
 	virtual void OnItemsSourceChanged(
 		const BindingListReference&,
@@ -221,7 +294,11 @@ protected:
 	}
 	bool IsChangingItemsInfrastructure() const noexcept
 	{
-		return _changingItemsHost || _changingTemplateInfrastructure;
+		return _activeDirectVisualMutationFrame != nullptr;
+	}
+	bool IsAuthoredItemsMigrationInProgress() const noexcept
+	{
+		return _migratingAuthoredItems;
 	}
 	/** Effective records consumed by the generator. A derived control may use
 	 *  an internal authored-items view without exposing it as ItemsSource. */
@@ -254,13 +331,27 @@ protected:
 	{
 		_itemTemplate = std::move(value);
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
 	void SetCustomProjectionDisplayMemberPath(std::wstring value)
 	{
 		_displayMemberPath = std::move(value);
+		_compiledDisplayMemberPath = {};
+	}
+#endif
+	void SetCustomProjectionCompiledDisplayMemberPath(
+		CompiledBindingPathView value) noexcept
+	{
+		_compiledDisplayMemberPath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+		_displayMemberPath.clear();
+#endif
 	}
 
 private:
 	friend struct cui::framework::TemplateAccess;
+#if CUI_ENABLE_DYNAMIC_XAML
+	static void RegisterDesignDependencyProperties();
+#endif
 
 	struct PreparedItem final
 	{
@@ -274,6 +365,7 @@ private:
 		std::vector<std::unique_ptr<Control>> Visuals;
 		std::vector<BindingSourceReference> Contexts;
 	};
+	struct DirectVisualMutationFrame;
 
 	BindingListReference _itemsSource;
 	// Immutable projection of the last ItemsSource state whose generated tree
@@ -289,29 +381,40 @@ private:
 	EventConnection _scrollChanged;
 	ItemContainerGenerator _generator;
 	std::vector<Control*> _authoredItems;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _displayMemberPath;
+#endif
+	CompiledBindingPathView _compiledDisplayMemberPath;
 	std::wstring _itemContainerStyle;
 	std::wstring _lastTemplateError;
 	GeneratedContainerInitializer _generatedContainerInitializer;
 	Panel* _itemsHost = nullptr;
 	ItemsPresenter* _templateItemsPresenter = nullptr;
+	ControlWeakReference _pendingTemplateItemsPresenter;
 	Control* _controlTemplateRoot = nullptr;
 	ScrollViewer* _itemsScrollOwner = nullptr;
 	std::unique_ptr<Panel> _detachedItemsHost;
-	bool _changingItemsHost = false;
-	bool _changingTemplateInfrastructure = false;
 	bool _itemsLayoutPending = true;
 	bool _realizingViewport = false;
 	bool _applyingCollectionChange = false;
+	bool _migratingAuthoredItems = false;
 	size_t _itemsSourceUpdateDepth = 0;
 	size_t _authoredItemsUpdateDepth = 0;
 	bool _authoredItemsChangedPending = false;
 	EventConnection _itemsPresenterParentChanged;
+	std::wstring _textSearchPrefix;
+	std::vector<std::wstring> _textSearchChunks;
+	int _textSearchMatchedIndex = -1;
+	std::uint64_t _textSearchLastInputTick = 0;
+	bool _textSearchActive = false;
+	DirectVisualMutationFrame* _activeDirectVisualMutationFrame = nullptr;
 
 	const ItemsPanelTemplate& EffectiveItemsPanel() const noexcept;
 	bool ReplaceItemsHost(ItemsPanelTemplateReference value);
 	std::unique_ptr<Panel> TakeItemsHost();
 	void PlaceItemsHost(std::unique_ptr<Panel> host);
+	bool CommitPendingTemplateItemsPresenter();
+	void ClearPendingTemplateItemsPresenter() noexcept;
 	void RefreshItemsScrollOwner();
 	ScrollViewer* ItemsScrollOwner() const noexcept
 	{
@@ -322,8 +425,9 @@ private:
 	void AttachPreparedItem(PreparedItem&& item);
 	void ReorderRealizedChildren();
 	void ClearRealizedItems(bool keepForRecycle);
-	bool RealizeVirtualViewport();
-	bool RealizeVirtualRange(size_t first, size_t last);
+	bool RealizeVirtualViewport(bool localLayoutForScroll = false);
+	bool RealizeVirtualRange(
+		size_t first, size_t last, bool localLayoutForScroll = false);
 	std::pair<size_t, size_t> VirtualRangeForViewport() const noexcept;
 	std::pair<size_t, size_t> VirtualRangeForOffset(
 		float offset) const noexcept;
@@ -336,9 +440,38 @@ private:
 		size_t index, const BindingSourceReference& item);
 	void RefreshGroupHeaders();
 	static Control* UnwrapGeneratedItem(Control* visual) noexcept;
+	static bool ClearGroupedItemLogicalParentPreservingOwnership(
+		std::unique_ptr<Control>& visual);
 	void BeginAuthoredItemsUpdate() noexcept;
 	void EndAuthoredItemsUpdate() noexcept;
 	void NotifyAuthoredItemsChanged();
 	void RefreshGeneratedItem(
 		const std::weak_ptr<IBindingSource>& itemIdentity);
+	void ResetTextSearch() noexcept;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring ReadAuthoredDisplayMemberText(
+		const BindingSourceReference& item) const;
+	BindingPathObservation ObserveAuthoredDisplayMemberPath(
+		const BindingSourceReference& item,
+		std::function<void()> changed) const;
+	void ApplyAuthoredGeneratedItemProjection(
+		ContentPresenter& presenter) const;
+#endif
 };
+
+namespace cui::framework
+{
+	/** Internal batching surface used while XAML owns an unobservable tree. */
+	struct ItemsControlAccess final
+	{
+		ItemsControlAccess() = delete;
+		using AuthoredItemsUpdateScope =
+			ItemsControl::AuthoredItemsUpdateScope;
+
+		static AuthoredItemsUpdateScope
+			DeferAuthoredItemsChanges(ItemsControl& target) noexcept
+		{
+			return target.DeferAuthoredItemsChanges();
+		}
+	};
+}

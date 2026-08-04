@@ -1,42 +1,78 @@
 #include "Layout/WrapPanel.h"
+#include "Layout/StackPanel.h"
 #include "Window.h"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<WrapPanel, TValue> WrapLayoutOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyEditorKind editor)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyEditorKind editor))
 	{
 		DependencyPropertyOptions<WrapPanel, TValue> options;
 		options.DefaultValue = defaultValue;
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
 
 	DependencyPropertyOptions<WrapPanel, float> WrapItemSizeOptions(
-		int order,
-		const wchar_t* displayName)
+		float defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			const wchar_t* displayName))
 	{
-		auto options = WrapLayoutOptions(0.0f, order, DependencyPropertyEditorKind::Number);
+		auto options = WrapLayoutOptions(defaultValue
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				order,
+				DependencyPropertyEditorKind::Number));
 		options.Coerce = [](WrapPanel&, const float& proposed) -> std::optional<float>
 		{
 			return std::isfinite(proposed) && proposed > 0.0f ? proposed : 0.0f;
 		};
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.DisplayName = displayName;
 		options.Design.Minimum = 0.0;
 		options.Design.Step = 1.0;
+		)
 		return options;
+	}
+
+	const DependencyPropertyMetadataRegistration&
+		WrapPanelOrientationMetadataRelation()
+	{
+		static const DependencyPropertyMetadataRegistration relation = []
+		{
+			auto options = WrapLayoutOptions(
+				Orientation::Horizontal
+				CUI_DESIGN_METADATA_ARGUMENTS(
+					10, DependencyPropertyEditorKind::Choice));
+			CUI_DESIGN_METADATA_ONLY(
+			options.Design.Choices = {
+				{ L"Horizontal", BindingValue(Orientation::Horizontal) },
+				{ L"Vertical", BindingValue(Orientation::Vertical) }
+			};
+			)
+			return DependencyPropertyRegistry::AddOwnerStatic<
+				WrapPanel, Orientation>(StackPanel::OrientationProperty(),
+				[](WrapPanel& target) { return target.GetOrientation(); },
+				[](WrapPanel& target, const Orientation& value)
+				{ target.SetOrientation(value); }, {}, std::move(options));
+		}();
+		return relation;
 	}
 }
 
@@ -275,32 +311,60 @@ void WrapLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRect
 
 // WrapPanel 实现
 
+const DependencyProperty& WrapPanel::OrientationProperty()
+{
+	return WrapPanelOrientationMetadataRelation().Property();
+}
+
+const DependencyProperty& WrapPanel::ItemWidthProperty()
+{
+	static const auto registration = []
+	{
+		return DependencyPropertyRegistry::RegisterStatic<WrapPanel, float>(
+			DependencyPropertyRegistrationLiteral(L"ItemWidth"),
+			[](WrapPanel& target) { return target.GetItemWidth(); },
+			[](WrapPanel& target, const float& value)
+			{ target.SetItemWidth(value); }, {},
+			WrapItemSizeOptions(0.0f CUI_DESIGN_METADATA_ARGUMENTS(
+				20, L"Item Width (0 = Auto)")));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& WrapPanel::ItemHeightProperty()
+{
+	static const auto registration = []
+	{
+		return DependencyPropertyRegistry::RegisterStatic<WrapPanel, float>(
+			DependencyPropertyRegistrationLiteral(L"ItemHeight"),
+			[](WrapPanel& target) { return target.GetItemHeight(); },
+			[](WrapPanel& target, const float& value)
+			{ target.SetItemHeight(value); }, {},
+			WrapItemSizeOptions(0.0f CUI_DESIGN_METADATA_ARGUMENTS(
+				30, L"Item Height (0 = Auto)")));
+	}();
+	return *registration;
+}
+
 void WrapPanel::RegisterDependencyProperties()
 {
 	Panel::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		auto orientationOptions = WrapLayoutOptions(
-			Orientation::Horizontal, 10, DependencyPropertyEditorKind::Choice);
-		orientationOptions.Design.Choices = {
-			{ L"Horizontal", BindingValue(Orientation::Horizontal) },
-			{ L"Vertical", BindingValue(Orientation::Vertical) }
-		};
-		DependencyPropertyRegistry::Register<WrapPanel, Orientation>(L"Orientation",
-			[](WrapPanel& target) { return target.GetOrientation(); },
-			[](WrapPanel& target, const Orientation& value) { target.SetOrientation(value); },
-			{}, std::move(orientationOptions));
-		DependencyPropertyRegistry::Register<WrapPanel, float>(L"ItemWidth",
-			[](WrapPanel& target) { return target.GetItemWidth(); },
-			[](WrapPanel& target, const float& value) { target.SetItemWidth(value); },
-			{}, WrapItemSizeOptions(20, L"Item Width (0 = Auto)"));
-		DependencyPropertyRegistry::Register<WrapPanel, float>(L"ItemHeight",
-			[](WrapPanel& target) { return target.GetItemHeight(); },
-			[](WrapPanel& target, const float& value) { target.SetItemHeight(value); },
-			{}, WrapItemSizeOptions(30, L"Item Height (0 = Auto)"));
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)ItemWidthProperty();
+	(void)ItemHeightProperty();
+#endif
+	CUI_DESIGN_METADATA_ONLY(
+	(void)WrapPanelOrientationMetadataRelation();
+	)
+}
+
+const DependencyPropertyMetadata*
+WrapPanel::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+	if (&property == &StackPanel::OrientationProperty())
+		return &WrapPanelOrientationMetadataRelation().Metadata();
+	return Panel::ResolveExactDependencyPropertyMetadata(property);
 }
 
 WrapPanel::WrapPanel()

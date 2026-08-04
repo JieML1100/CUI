@@ -1,6 +1,11 @@
 #pragma once
 
+#include "CuiBuildFeatures.h"
 #include "Control.h"
+#if CUI_ENABLE_DYNAMIC_XAML
+#include "ComponentBehavior.h"
+#include "XamlSchema.h"
+#endif
 
 #include <memory>
 #include <utility>
@@ -12,6 +17,7 @@ namespace cui::framework
 	{
 		XamlAccess() = delete;
 
+#if CUI_ENABLE_DYNAMIC_XAML
 		static bool SetTypeDescriptor(
 			Control& target,
 			std::shared_ptr<const DeclarativeTypeDescriptor> descriptor,
@@ -20,26 +26,38 @@ namespace cui::framework
 			return target.SetDeclarativeTypeDescriptor(
 				std::move(descriptor), outError);
 		}
+#endif
 
+		static bool RegisterTemplatePart(
+			Control& owner, TemplatePartToken token, Control* instance)
+		{
+			return owner.RegisterDeclarativeTemplatePart(token, instance);
+		}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 		static bool RegisterTemplatePart(
 			Control& owner, std::wstring localName, Control* instance)
 		{
 			return owner.RegisterDeclarativeTemplatePart(
 				std::move(localName), instance);
 		}
+#endif
 
+#if CUI_ENABLE_DYNAMIC_XAML
 		static bool RegisterContentPresenter(
 			Control& owner, std::wstring propertyName, Control* instance)
 		{
 			return owner.RegisterDeclarativeContentPresenter(
 				std::move(propertyName), instance);
 		}
+#endif
 
 		static void ClearTemplateScope(Control& owner)
 		{
 			owner.ClearDeclarativeTemplateScope();
 		}
 
+#if CUI_ENABLE_DYNAMIC_XAML
 		static bool SetComponentBehavior(
 			Control& target,
 			std::unique_ptr<IDeclarativeComponentBehavior> behavior,
@@ -54,6 +72,7 @@ namespace cui::framework
 		{
 			target.ClearDeclarativeComponentBehavior();
 		}
+#endif
 
 		static void SetInheritedDataContext(
 			Control& target, BindingSourceReference value)
@@ -71,6 +90,7 @@ namespace cui::framework
 			target.SetTemplatedParent(parent);
 		}
 
+#if CUI_ENABLE_DYNAMIC_XAML
 		static bool DefineVisualStateGroups(
 			Control& target,
 			std::vector<DeclarativeVisualStateGroupDefinition> groups,
@@ -89,6 +109,7 @@ namespace cui::framework
 			return target.DefineDeclarativeInteractions(
 				std::move(groups), std::move(eventTriggers), outError);
 		}
+#endif
 
 		static void RetainEventConnection(
 			Control& target, EventConnection connection)
@@ -108,7 +129,7 @@ namespace cui::framework
 			DependencyPropertyValueSource source)
 		{
 			return target.TrySetPropertyValue(
-				L"Template", BindingValue(value), source);
+				Control::TemplateProperty(), BindingValue(value), source);
 		}
 
 		static void ClearRetainedEventConnections(Control& target) noexcept

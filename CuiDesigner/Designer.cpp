@@ -2320,7 +2320,7 @@ void Designer::UpdateDocumentPresentation()
 	std::wstring title = L"CUI 窗口设计器 - "
 		+ DisplayDocumentName(_currentFileName);
 	if (dirty) title += L" *";
-	this->Text = title;
+	this->Title = std::move(title);
 	if (_btnReload) _btnReload->IsEnabled = !_currentFileName.empty();
 	if (_btnRegenerate)
 	{

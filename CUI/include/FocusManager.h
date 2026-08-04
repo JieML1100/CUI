@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ControlWeakReference.h"
+
 #include <cstdint>
 #include <span>
 #include <unordered_map>
@@ -65,7 +67,10 @@ class FocusManager final
 public:
 	explicit FocusManager(Window& owner) noexcept;
 
-	Control* KeyboardFocusedElement() const noexcept { return _keyboardFocus; }
+	Control* KeyboardFocusedElement() const noexcept
+	{
+		return _keyboardFocus.Get();
+	}
 	Control* GetFocusScope(Control* element) const noexcept;
 	Control* GetLogicalFocusedElement(Control* scope = nullptr) const noexcept;
 	bool SetLogicalFocus(
@@ -106,13 +111,14 @@ private:
 	};
 
 	Window* _window = nullptr;
-	Control* _keyboardFocus = nullptr;
-	Control* _suspendedKeyboardFocus = nullptr;
+	ControlWeakReference _keyboardFocus;
+	ControlWeakReference _keyboardFocusStateOwner;
+	std::uint64_t _keyboardFocusVersion = 0;
+	ControlWeakReference _suspendedKeyboardFocus;
 	bool _windowActive = true;
 	std::unordered_map<Control*, Control*> _logicalFocus;
 	std::unordered_map<Control*, Control*> _transientRestoreTargets;
 	std::unordered_set<Control*> _logicalFocusedElements;
-	std::unordered_set<Control*> _keyboardFocusWithinElements;
 	FocusManagerStatistics _statistics;
 
 	bool SetKeyboardFocusCore(
@@ -124,6 +130,7 @@ private:
 	void RefreshLogicalFocusProjection();
 	void RefreshKeyboardFocusProjection(
 		Control* previous, Control* current);
+	void ReconcileKeyboardFocusedState();
 	Control* ResolveLogicalFocus(Control* scope) const noexcept;
 	Control* FindNavigationBoundary(
 		Control* origin,

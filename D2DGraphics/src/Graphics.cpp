@@ -25,6 +25,28 @@ constexpr float DEG_TO_RAD = std::numbers::pi_v<float> / 180.0f;
 constexpr float OUTLINE_OFFSET = 1.0f;
 
 namespace {
+	// DirectWrite stores drawing effects on the reusable text layout. Selection
+	// foreground is a one-frame paint concern (as in WPF's text selection
+	// renderer), so every effect draw must leave the caller's layout clean.
+	class DrawingEffectResetScope final {
+	public:
+		explicit DrawingEffectResetScope(IDWriteTextLayout* layout) noexcept
+			: _layout(layout) {}
+		~DrawingEffectResetScope()
+		{
+			if (_layout)
+				(void)_layout->SetDrawingEffect(
+					nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+		}
+
+		DrawingEffectResetScope(const DrawingEffectResetScope&) = delete;
+		DrawingEffectResetScope& operator=(
+			const DrawingEffectResetScope&) = delete;
+
+	private:
+		IDWriteTextLayout* _layout = nullptr;
+	};
+
 	struct SharedD2D11Resources {
 		ComPtr<ID3D11Device> d3dDevice;
 		ComPtr<ID3D11DeviceContext> d3dContext;
@@ -1103,8 +1125,10 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 	auto backBrush = GetBackColorBrush(fontBack);
 	auto frontBrush = GetColorBrush(color);
 	if (!backBrush || !frontBrush) return;
-	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	layout->SetDrawingEffect(backBrush, subRange);
+	DrawingEffectResetScope resetEffect(layout);
+	if (FAILED(layout->SetDrawingEffect(
+		nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX }))
+		|| FAILED(layout->SetDrawingEffect(backBrush, subRange))) return;
 	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, frontBrush);
 	wicDirty = true;
 }
@@ -1114,8 +1138,10 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 	if (!ctx) return;
 	auto backBrush = GetBackColorBrush(fontBack);
 	if (!backBrush) return;
-	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	layout->SetDrawingEffect(backBrush, subRange);
+	DrawingEffectResetScope resetEffect(layout);
+	if (FAILED(layout->SetDrawingEffect(
+		nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX }))
+		|| FAILED(layout->SetDrawingEffect(backBrush, subRange))) return;
 	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
 	wicDirty = true;
 }
@@ -1125,8 +1151,10 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 	if (!ctx) return;
 	auto frontBrush = GetColorBrush(color);
 	if (!frontBrush) return;
-	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	layout->SetDrawingEffect(effectBrush, subRange);
+	DrawingEffectResetScope resetEffect(layout);
+	if (FAILED(layout->SetDrawingEffect(
+		nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX }))
+		|| FAILED(layout->SetDrawingEffect(effectBrush, subRange))) return;
 	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, frontBrush);
 	wicDirty = true;
 }
@@ -1134,8 +1162,10 @@ void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, flo
 	if (!layout || !brush || !effectBrush) return;
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx) return;
-	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	layout->SetDrawingEffect(effectBrush, subRange);
+	DrawingEffectResetScope resetEffect(layout);
+	if (FAILED(layout->SetDrawingEffect(
+		nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX }))
+		|| FAILED(layout->SetDrawingEffect(effectBrush, subRange))) return;
 	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
 	wicDirty = true;
 }

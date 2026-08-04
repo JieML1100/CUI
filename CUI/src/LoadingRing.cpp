@@ -16,30 +16,41 @@ namespace
 			center.x + std::sin(radians) * radius,
 			center.y - std::cos(radians) * radius);
 	}
+
 }
 
 UIClass LoadingRing::Type() { return UIClass::UI_LoadingRing; }
 
-void LoadingRing::RegisterDependencyProperties()
+const DependencyProperty& LoadingRing::IsActiveProperty()
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<LoadingRing, bool> options;
 		options.DefaultValue = true;
 		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Behavior";
 		options.Design.CategoryOrder = 300;
 		options.Design.Order = 10;
 		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
 		options.Design.Persistence = DependencyPropertyPersistence::Native;
-		DependencyPropertyRegistry::Register<LoadingRing, bool>(L"IsActive",
+		)
+		return DependencyPropertyRegistry::RegisterStatic<LoadingRing, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsActive"),
 			[](LoadingRing& target) { return target.IsActive; },
-			[](LoadingRing& target, const bool& value) { target.IsActive = value; },
+			[](LoadingRing& target, const bool& value)
+			{ target.IsActive = value; },
 			{}, std::move(options));
-		return true;
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void LoadingRing::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)IsActiveProperty();
+#endif
 }
 
 GET_CPP(LoadingRing, bool, IsActive)
@@ -49,12 +60,11 @@ GET_CPP(LoadingRing, bool, IsActive)
 
 SET_CPP(LoadingRing, bool, IsActive)
 {
-	auto* metadata =
-		DependencyPropertyRegistry::Find(*this, L"IsActive");
-	const bool applyingMetadata =
-		metadata && _applyingPropertyMetadata == metadata;
-	if (!SetPropertyField(L"IsActive", _active, value)) return;
-	if (metadata && !applyingMetadata) return;
+	const auto& property = IsActiveProperty();
+	const bool applyingMetadata = _applyingPropertyMetadata
+		&& &_applyingPropertyMetadata->Property() == &property;
+	if (!SetPropertyField(property, _active, value)) return;
+	if (!applyingMetadata) return;
 	this->_animStartTick = ::GetTickCount64();
 	this->InvalidateVisual();
 }

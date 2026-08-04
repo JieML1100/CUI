@@ -14,11 +14,19 @@ class HeaderedItemsControl : public ItemsControl
 public:
 	HeaderedItemsControl();
 	UIClass Type() override { return UIClass::UI_HeaderedItemsControl; }
+	/** WPF dependency-property identities used by generated/native code. */
+	static const DependencyProperty& HeaderProperty();
+	static const DependencyProperty& HeaderTemplateProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
+	static const DependencyProperty& HeaderDisplayMemberPathProperty();
+#endif
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
 
@@ -29,16 +37,31 @@ public:
 		return _headerTemplate;
 	}
 	void SetHeaderTemplate(ItemTemplateReference value);
+#if CUI_ENABLE_DYNAMIC_XAML
 	const std::wstring& GetHeaderDisplayMemberPath() const noexcept
 	{
 		return _headerDisplayMemberPath;
 	}
 	void SetHeaderDisplayMemberPath(std::wstring value);
+#endif
+	[[nodiscard]] CompiledBindingPathView
+		GetCompiledHeaderDisplayMemberPath() const noexcept
+	{
+		return _compiledHeaderDisplayMemberPath;
+	}
+	void SetCompiledHeaderDisplayMemberPath(CompiledBindingPathView value);
+	DataTypeToken GetHeaderTypeToken() const noexcept
+	{
+		return _headerTypeToken;
+	}
+	void SetHeaderTypeToken(DataTypeToken value);
+#if CUI_ENABLE_DYNAMIC_XAML
 	const std::wstring& HeaderTypeName() const noexcept
 	{
 		return _headerTypeName;
 	}
 	void SetHeaderTypeName(std::wstring value);
+#endif
 
 	Control* SetVisualHeader(std::unique_ptr<Control> value);
 	std::unique_ptr<Control> DetachVisualHeader();
@@ -76,6 +99,8 @@ public:
 	}
 
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::wstring GetSemanticText() const override;
 	virtual void ConfigureHeaderVisual(Control& child);
 	virtual void ReleaseHeaderVisual(Control& child);
@@ -90,10 +115,20 @@ protected:
 		std::string& error) const override;
 
 private:
+	static const DependencyPropertyMetadataRegistration&
+		HeaderPropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		HeaderTemplatePropertyMetadataRelation();
 	BindingValue _header;
 	ItemTemplateReference _headerTemplate;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _headerDisplayMemberPath;
+#endif
+	CompiledBindingPathView _compiledHeaderDisplayMemberPath;
+	DataTypeToken _headerTypeToken;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _headerTypeName;
+#endif
 	std::wstring _lastHeaderError;
 	Control* _visualHeader = nullptr;
 	ContentPresenter* _headerPresenter = nullptr;
@@ -117,5 +152,9 @@ private:
 		const BindingValue& header,
 		const ItemTemplateReference& headerTemplate,
 		std::wstring& error) const;
+	void ApplyHeaderProjection(ContentPresenter& presenter) const;
+#if CUI_ENABLE_DYNAMIC_XAML
+	void ApplyAuthoredHeaderProjection(ContentPresenter& presenter) const;
+#endif
 	bool RebuildHeaderPresenter();
 };

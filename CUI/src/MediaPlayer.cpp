@@ -1,5 +1,3 @@
-#include <initguid.h>
-
 #include "MediaPlayer.h"
 #include "EventInfrastructure.h"
 #include "Window.h"
@@ -16,8 +14,6 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
 #include <cstdio>
-
-#include <ppl.h>
 
 #include <atomic>
 
@@ -56,40 +52,27 @@ namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<MediaPlayer, TValue> MediaPlayerPropertyOptions(
-		TValue defaultValue,
-		const wchar_t* category,
-		int categoryOrder,
-		int order,
-		DependencyPropertyEditorKind editor,
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			const wchar_t* category,
+			int categoryOrder,
+			int order,
+			DependencyPropertyEditorKind editor),
 		DependencyPropertyFlags flags = DependencyPropertyFlags::None)
 	{
 		DependencyPropertyOptions<MediaPlayer, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = flags;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = category;
 		options.Design.CategoryOrder = categoryOrder;
 		options.Design.Order = order;
 		options.Design.Editor = editor;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
 
-	auto MediaPlayerPropertySubscriber(const wchar_t* propertyName)
-	{
-		return [propertyName = std::wstring(propertyName)](
-			MediaPlayer& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode)
-		{
-			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
-					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == propertyName)
-						handler();
-				});
-		};
-	}
 }
 
 static std::vector<float> BuildTimeStretchStageRates(float rate)
@@ -129,114 +112,17 @@ static double QpcTicksToMs(UINT64 ticks)
 	return (double)ticks * 1000.0 / (double)f.QuadPart;
 }
 
-static inline uint8_t Clip8(int v)
-{
-	return (uint8_t)((v < 0) ? 0 : (v > 255 ? 255 : v));
-}
-
-// NV12 (Y + interleaved UV) -> BGRA
-// 说明：这是 CPU 后备/分析路径，目标是把 MF 的 video processing 从 ReadSample 里挪出来，便于定位瓶颈。
-void MediaPlayer::ConvertNV12ToBGRA(
-	const uint8_t* nv12,
-	size_t nv12Bytes,
-	UINT32 yStride,
-	UINT32 width,
-	UINT32 height,
-	UINT32 cropX,
-	UINT32 cropY,
-	UINT32 visibleW,
-	UINT32 visibleH,
-	std::vector<uint8_t>& outBgra)
-{
-	if (!nv12 || yStride == 0 || width == 0 || height == 0 || visibleW == 0 || visibleH == 0) return;
-	// 需要保证 UV 对齐：NV12 的 UV 采样为 2x2
-	const UINT32 cx = cropX & ~1u;
-	const UINT32 cy = cropY & ~1u;
-	UINT32 w = (visibleW & ~1u);
-	UINT32 h = (visibleH & ~1u);
-	if (cx >= width || cy >= height) return;
-	if (cy + h > height) h = (height - cy) & ~1u;
-	if (cx + w > width) w = (width - cx) & ~1u;
-	if (w == 0 || h == 0) return;
-
-	// stride 需要能覆盖可视宽度，否则会越界
-	if (yStride <= cx) return;
-	UINT32 maxWByStride = (yStride - cx) & ~1u;
-	if (w > maxWByStride) w = maxWByStride;
-	if (w == 0) return;
-
-	const UINT32 uvStride = yStride;
-	if (uvStride <= cx) return;
-	UINT32 maxWByUvStride = (uvStride - cx) & ~1u;
-	if (w > maxWByUvStride) w = maxWByUvStride;
-	if (w == 0) return;
-
-	// 检查 buffer 大小：Y plane + UV plane
-	const UINT32 uvRows = (height + 1) / 2;
-	const size_t yBytes = (size_t)yStride * (size_t)height;
-	const size_t uvBytes = (size_t)uvStride * (size_t)uvRows;
-	if (yBytes > nv12Bytes) return;
-	if (uvBytes > (nv12Bytes - yBytes)) return;
-
-	const uint8_t* yPlane = nv12;
-	const uint8_t* uvPlane = nv12 + yBytes;
-
-	outBgra.resize((size_t)w * (size_t)h * 4);
-
-	auto convertRow = [&](UINT32 row)
-	{
-		const uint8_t* yRow = yPlane + (size_t)(cy + row) * (size_t)yStride + cx;
-		const uint8_t* uvRow = uvPlane + (size_t)((cy + row) / 2) * (size_t)uvStride + cx;
-		uint8_t* dst = outBgra.data() + (size_t)row * (size_t)w * 4;
-
-		for (UINT32 col = 0; col < w; col += 2)
-		{
-			const int U = (int)uvRow[col + 0] - 128;
-			const int V = (int)uvRow[col + 1] - 128;
-			const int c0 = (int)yRow[col + 0] - 16;
-			const int c1 = (int)yRow[col + 1] - 16;
-			const int C0 = (c0 < 0) ? 0 : c0;
-			const int C1 = (c1 < 0) ? 0 : c1;
-
-			// BT.601-ish integer approximation.
-			const int rAdd = 409 * V;
-			const int gAdd = -100 * U - 208 * V;
-			const int bAdd = 516 * U;
-
-			int r = (298 * C0 + rAdd + 128) >> 8;
-			int g = (298 * C0 + gAdd + 128) >> 8;
-			int b = (298 * C0 + bAdd + 128) >> 8;
-			dst[(size_t)col * 4 + 0] = Clip8(b);
-			dst[(size_t)col * 4 + 1] = Clip8(g);
-			dst[(size_t)col * 4 + 2] = Clip8(r);
-			dst[(size_t)col * 4 + 3] = 0xFF;
-
-			r = (298 * C1 + rAdd + 128) >> 8;
-			g = (298 * C1 + gAdd + 128) >> 8;
-			b = (298 * C1 + bAdd + 128) >> 8;
-			dst[(size_t)(col + 1) * 4 + 0] = Clip8(b);
-			dst[(size_t)(col + 1) * 4 + 1] = Clip8(g);
-			dst[(size_t)(col + 1) * 4 + 2] = Clip8(r);
-			dst[(size_t)(col + 1) * 4 + 3] = 0xFF;
-		}
-	};
-
-	// 4K 帧行数大，按行并行可明显降低 VConv；小帧保持串行减少调度开销。
-	if (h >= 256)
-	{
-		Concurrency::parallel_for(0, (int)h, [&](int r) { convertRow((UINT32)r); });
-	}
-	else
-	{
-		for (UINT32 row = 0; row < h; row++) convertRow(row);
-	}
-}
-
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mf.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "evr.lib")
+#pragma comment(lib, "mmdevapi.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "avrt.lib")
+#pragma comment(lib, "ole32.lib")
 
 static bool IsFloatMixFormat(const WAVEFORMATEX* wf)
 {
@@ -1301,84 +1187,132 @@ private:
 
 UIClass MediaPlayer::Type() { return UIClass::UI_MediaPlayer; }
 
-void MediaPlayer::RegisterDependencyProperties()
+const DependencyProperty& MediaPlayer::VolumeProperty()
 {
-	Control::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		auto autoPlayOptions = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 10, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"AutoPlay",
-			[](MediaPlayer& target) { return target.AutoPlay; },
-			[](MediaPlayer& target, const bool& value) { target.AutoPlay = value; },
-			MediaPlayerPropertySubscriber(L"AutoPlay"), std::move(autoPlayOptions));
-
-		auto loopOptions = MediaPlayerPropertyOptions(
-			false, L"Media", 160, 20, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"Loop",
-			[](MediaPlayer& target) { return target.Loop; },
-			[](MediaPlayer& target, const bool& value) { target.Loop = value; },
-			MediaPlayerPropertySubscriber(L"Loop"), std::move(loopOptions));
-
-		auto volumeOptions = MediaPlayerPropertyOptions(
-			1.0, L"Media", 160, 30, DependencyPropertyEditorKind::Number);
-		volumeOptions.Validate = [](const double& proposed)
-		{
-			return std::isfinite(proposed);
-		};
-		volumeOptions.Coerce = [](MediaPlayer&, const double& proposed)
+		auto options = MediaPlayerPropertyOptions(
+			0.5 CUI_DESIGN_METADATA_ARGUMENTS(
+				L"Media", 160, 30, DependencyPropertyEditorKind::Number));
+		options.Validate = [](const double& proposed)
+		{ return std::isfinite(proposed); };
+		options.Coerce = [](MediaPlayer&, const double& proposed)
 			-> std::optional<double>
 		{
 			return (std::clamp)(proposed, 0.0, 1.0);
 		};
-		volumeOptions.Design.Minimum = 0.0;
-		volumeOptions.Design.Maximum = 1.0;
-		volumeOptions.Design.Step = 0.01;
-		DependencyPropertyRegistry::Register<MediaPlayer, double>(L"Volume",
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.0;
+		options.Design.Maximum = 1.0;
+		options.Design.Step = 0.01;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<MediaPlayer, double>(
+			DependencyPropertyRegistrationLiteral(L"Volume"),
 			[](MediaPlayer& target) { return target.Volume; },
-			[](MediaPlayer& target, const double& value) { target.Volume = value; },
-			MediaPlayerPropertySubscriber(L"Volume"), std::move(volumeOptions));
+			[](MediaPlayer& target, const double& value)
+			{ target.Volume = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto playbackRateOptions = MediaPlayerPropertyOptions(
-			1.0f, L"Media", 160, 40, DependencyPropertyEditorKind::Number);
-		playbackRateOptions.Validate = [](const float& proposed)
-		{
-			return std::isfinite(proposed);
-		};
-		playbackRateOptions.Coerce = [](MediaPlayer&, const float& proposed)
+const DependencyProperty& MediaPlayer::PlaybackRateProperty()
+{
+	static const auto registration = []
+	{
+		auto options = MediaPlayerPropertyOptions(
+			1.0f CUI_DESIGN_METADATA_ARGUMENTS(
+				L"Media", 160, 40, DependencyPropertyEditorKind::Number));
+		options.Validate = [](const float& proposed)
+		{ return std::isfinite(proposed); };
+		options.Coerce = [](MediaPlayer&, const float& proposed)
 			-> std::optional<float>
 		{
 			return ClampRate(proposed);
 		};
-		playbackRateOptions.Design.Minimum = 0.10;
-		playbackRateOptions.Design.Maximum = 4.0;
-		playbackRateOptions.Design.Step = 0.10;
-		DependencyPropertyRegistry::Register<MediaPlayer, float>(L"PlaybackRate",
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Minimum = 0.10;
+		options.Design.Maximum = 4.0;
+		options.Design.Step = 0.10;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<MediaPlayer, float>(
+			DependencyPropertyRegistrationLiteral(L"PlaybackRate"),
 			[](MediaPlayer& target) { return target.PlaybackRate; },
-			[](MediaPlayer& target, const float& value) { target.PlaybackRate = value; },
-			MediaPlayerPropertySubscriber(L"PlaybackRate"),
-			std::move(playbackRateOptions));
+			[](MediaPlayer& target, const float& value)
+			{ target.PlaybackRate = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		auto hardwareOptions = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 50, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"EnableHardwareDecode",
+const DependencyProperty& MediaPlayer::AutoPlayProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<MediaPlayer, bool>(
+			DependencyPropertyRegistrationLiteral(L"AutoPlay"),
+			[](MediaPlayer& target) { return target.AutoPlay; },
+			[](MediaPlayer& target, const bool& value)
+			{ target.AutoPlay = value; }, {},
+			MediaPlayerPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					L"Media", 160, 10,
+					DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& MediaPlayer::LoopProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<MediaPlayer, bool>(
+			DependencyPropertyRegistrationLiteral(L"Loop"),
+			[](MediaPlayer& target) { return target.Loop; },
+			[](MediaPlayer& target, const bool& value)
+			{ target.Loop = value; }, {},
+			MediaPlayerPropertyOptions(
+				false CUI_DESIGN_METADATA_ARGUMENTS(
+					L"Media", 160, 20,
+					DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& MediaPlayer::EnableHardwareDecodeProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<MediaPlayer, bool>(
+			DependencyPropertyRegistrationLiteral(L"EnableHardwareDecode"),
 			[](MediaPlayer& target) { return target.EnableHardwareDecode; },
-			[](MediaPlayer& target, const bool& value) { target.EnableHardwareDecode = value; },
-			MediaPlayerPropertySubscriber(L"EnableHardwareDecode"),
-			std::move(hardwareOptions));
+			[](MediaPlayer& target, const bool& value)
+			{ target.EnableHardwareDecode = value; }, {},
+			MediaPlayerPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					L"Media", 160, 50,
+					DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto nv12Options = MediaPlayerPropertyOptions(
-			true, L"Media", 160, 60, DependencyPropertyEditorKind::Boolean);
-		DependencyPropertyRegistry::Register<MediaPlayer, bool>(L"PreferNv12VideoOutput",
+const DependencyProperty& MediaPlayer::PreferNv12VideoOutputProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<MediaPlayer, bool>(
+			DependencyPropertyRegistrationLiteral(L"PreferNv12VideoOutput"),
 			[](MediaPlayer& target) { return target.PreferNv12VideoOutput; },
-			[](MediaPlayer& target, const bool& value) { target.PreferNv12VideoOutput = value; },
-			MediaPlayerPropertySubscriber(L"PreferNv12VideoOutput"),
-			std::move(nv12Options));
+			[](MediaPlayer& target, const bool& value)
+			{ target.PreferNv12VideoOutput = value; }, {},
+			MediaPlayerPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					L"Media", 160, 60,
+					DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
 
-		auto renderModeOptions = MediaPlayerPropertyOptions(
-			static_cast<int>(VideoRenderMode::Fit), L"Media", 160, 70,
-			DependencyPropertyEditorKind::Choice, DependencyPropertyFlags::AffectsRender);
-		renderModeOptions.Validate = [](const int& proposed)
+const DependencyProperty& MediaPlayer::RenderModeProperty()
+{
+	static const auto registration = []
+	{
+		auto options = MediaPlayerPropertyOptions(
+			static_cast<int>(VideoRenderMode::Fit)
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				L"Media", 160, 70, DependencyPropertyEditorKind::Choice),
+			DependencyPropertyFlags::AffectsRender);
+		options.Validate = [](const int& proposed)
 		{
 			switch (static_cast<VideoRenderMode>(proposed))
 			{
@@ -1392,22 +1326,38 @@ void MediaPlayer::RegisterDependencyProperties()
 				return false;
 			}
 		};
-		renderModeOptions.Design.Choices = {
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Choices = {
 			{ L"Fit", BindingValue(static_cast<int>(VideoRenderMode::Fit)) },
 			{ L"Fill", BindingValue(static_cast<int>(VideoRenderMode::Fill)) },
 			{ L"Stretch", BindingValue(static_cast<int>(VideoRenderMode::Stretch)) },
 			{ L"Center", BindingValue(static_cast<int>(VideoRenderMode::Center)) },
 			{ L"UniformToFill", BindingValue(static_cast<int>(VideoRenderMode::UniformToFill)) }
 		};
-		DependencyPropertyRegistry::Register<MediaPlayer, int>(L"RenderMode",
-			[](MediaPlayer& target) { return static_cast<int>(target.RenderMode); },
+		)
+		return DependencyPropertyRegistry::RegisterStatic<MediaPlayer, int>(
+			DependencyPropertyRegistrationLiteral(L"RenderMode"),
+			[](MediaPlayer& target)
+			{ return static_cast<int>(target.RenderMode); },
 			[](MediaPlayer& target, const int& value)
-			{ target.RenderMode = static_cast<VideoRenderMode>(value); },
-			MediaPlayerPropertySubscriber(L"RenderMode"),
-			std::move(renderModeOptions));
-		return true;
+			{ target.RenderMode = static_cast<VideoRenderMode>(value); }, {},
+			std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void MediaPlayer::RegisterDependencyProperties()
+{
+	Control::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)VolumeProperty();
+	(void)PlaybackRateProperty();
+	(void)AutoPlayProperty();
+	(void)LoopProperty();
+	(void)EnableHardwareDecodeProperty();
+	(void)PreferNv12VideoOutputProperty();
+	(void)RenderModeProperty();
+#endif
 }
 
 void MediaPlayer::SetPlayState(PlayState value)
@@ -4101,25 +4051,6 @@ void MediaPlayer::ReportPerfStatsIfDue()
 	return;
 }
 
-bool MediaPlayer::ProcessInput(const InputReport& input)
-{
-	if (!this->IsEnabled || !this->IsVisible) return true;
-
-	switch (input.Kind)
-	{
-	case InputReportKind::PointerDoubleClick:
-	{
-		if (input.ChangedButton == MouseButton::Left && _mediaLoaded)
-			(void)TogglePlayback();
-	}
-	break;
-	default:
-		return Control::ProcessInput(input);
-	}
-
-	return true;
-}
-
 // ========================================
 // 属性实现
 // ========================================
@@ -4159,7 +4090,7 @@ GET_CPP(MediaPlayer, double, Volume)
 
 SET_CPP(MediaPlayer, double, Volume)
 {
-	if (!SetPropertyField(L"Volume", _volumeValue, value)) return;
+	if (!SetPropertyField(VolumeProperty(), _volumeValue, value)) return;
 	_volume.store(_volumeValue);
 	if (_mediaLoaded)
 	{
@@ -4194,7 +4125,7 @@ GET_CPP(MediaPlayer, float, PlaybackRate)
 
 SET_CPP(MediaPlayer, float, PlaybackRate)
 {
-	if (!SetPropertyField(L"PlaybackRate", _playbackRateValue, value)) return;
+	if (!SetPropertyField(PlaybackRateProperty(), _playbackRateValue, value)) return;
 	_playbackRate.store(_playbackRateValue);
 	if (_mediaLoaded)
 	{
@@ -4222,7 +4153,7 @@ GET_CPP(MediaPlayer, bool, AutoPlay)
 
 SET_CPP(MediaPlayer, bool, AutoPlay)
 {
-	(void)SetPropertyField(L"AutoPlay", _autoPlay, value);
+	(void)SetPropertyField(AutoPlayProperty(), _autoPlay, value);
 }
 
 GET_CPP(MediaPlayer, bool, Loop)
@@ -4232,7 +4163,7 @@ GET_CPP(MediaPlayer, bool, Loop)
 
 SET_CPP(MediaPlayer, bool, Loop)
 {
-	(void)SetPropertyField(L"Loop", _loop, value);
+	(void)SetPropertyField(LoopProperty(), _loop, value);
 }
 
 GET_CPP(MediaPlayer, bool, EnableHardwareDecode)
@@ -4243,7 +4174,7 @@ GET_CPP(MediaPlayer, bool, EnableHardwareDecode)
 SET_CPP(MediaPlayer, bool, EnableHardwareDecode)
 {
 	(void)SetPropertyField(
-		L"EnableHardwareDecode", _enableHardwareDecode, value);
+		EnableHardwareDecodeProperty(), _enableHardwareDecode, value);
 }
 
 GET_CPP(MediaPlayer, bool, UsingHardwareDecode)
@@ -4259,7 +4190,7 @@ GET_CPP(MediaPlayer, bool, PreferNv12VideoOutput)
 SET_CPP(MediaPlayer, bool, PreferNv12VideoOutput)
 {
 	(void)SetPropertyField(
-		L"PreferNv12VideoOutput", _preferNv12VideoOutput, value);
+		PreferNv12VideoOutputProperty(), _preferNv12VideoOutput, value);
 }
 
 GET_CPP(MediaPlayer, bool, UsingNv12VideoOutput)
@@ -4300,5 +4231,6 @@ GET_CPP(MediaPlayer, MediaPlayer::VideoRenderMode, RenderMode)
 
 SET_CPP(MediaPlayer, MediaPlayer::VideoRenderMode, RenderMode)
 {
-	(void)SetPropertyField(L"RenderMode", _renderMode, static_cast<int>(value));
+	(void)SetPropertyField(
+		RenderModeProperty(), _renderMode, static_cast<int>(value));
 }

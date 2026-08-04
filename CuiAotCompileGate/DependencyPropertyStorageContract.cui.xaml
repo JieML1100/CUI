@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:storage="urn:cui:aot-dependency-property-storage"
+        x:Name="DependencyPropertyStorageContractWindow"
+        Width="480"
+        Height="320">
+  <Window.Resources>
+    <ComponentDefinition x:Key="storage:StorageCard" BaseType="Canvas">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Default" Inherits="true"/>
+        <ComponentProperty Name="Count" Type="Int" Default="7" AffectsRender="true"/>
+        <ComponentProperty Name="State" Type="String" Default="Created" ReadOnly="true"/>
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="storageLayout">
+          <TextBox x:Name="captionEditor"
+                   Text="{Binding Caption, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"/>
+          <TextBlock x:Name="stateText"
+                     Text="{Binding State, RelativeSource={RelativeSource TemplatedParent}}"/>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Window.Resources>
+
+  <StackPanel x:Name="contractRoot">
+    <TextBox x:Name="captionSource" Text="Bound caption"/>
+    <storage:StorageCard x:Name="boundCard"
+                         Caption="{Binding Text, ElementName=captionSource, Mode=TwoWay}"
+                         Count="11"/>
+    <storage:StorageCard x:Name="defaultCard"/>
+  </StackPanel>
+</Window>

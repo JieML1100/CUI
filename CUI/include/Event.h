@@ -15,7 +15,9 @@
 #include <vector>
 
 class Control;
+class InputManager;
 class UIElement;
+struct KeyboardFocusTransition;
 enum class UIClass : int;
 template<typename Func>
 class Event;
@@ -641,6 +643,8 @@ enum class RoutedEventId : unsigned char
 	DragLeave,
 	PreviewDrop,
 	Drop,
+	/** Appended so the stable numeric identities above remain unchanged. */
+	Indeterminate,
 	Count,
 };
 
@@ -787,12 +791,36 @@ public:
 class KeyboardFocusChangedEventArgs : public RoutedEventArgs
 {
 public:
-	Control* OldFocus = nullptr;
-	Control* NewFocus = nullptr;
-
 	KeyboardFocusChangedEventArgs() = default;
 	KeyboardFocusChangedEventArgs(Control* oldFocus, Control* newFocus)
-		: OldFocus(oldFocus), NewFocus(newFocus) {}
+		: _oldFocus(oldFocus), _newFocus(newFocus) {}
+
+	Control* GetOldFocus() const noexcept { return _oldFocus.Get(); }
+	Control* GetNewFocus() const noexcept { return _newFocus.Get(); }
+	__declspec(property(get = GetOldFocus)) Control* OldFocus;
+	__declspec(property(get = GetNewFocus)) Control* NewFocus;
+
+private:
+	friend class InputManager;
+	friend struct KeyboardFocusTransition;
+
+	KeyboardFocusChangedEventArgs(
+		const KeyboardFocusChangedEventArgs&) = delete;
+	KeyboardFocusChangedEventArgs& operator=(
+		const KeyboardFocusChangedEventArgs&) = delete;
+	KeyboardFocusChangedEventArgs(
+		KeyboardFocusChangedEventArgs&&) noexcept = default;
+	KeyboardFocusChangedEventArgs& operator=(
+		KeyboardFocusChangedEventArgs&&) = delete;
+
+	void SetFocusEndpoints(Control* oldFocus, Control* newFocus) noexcept
+	{
+		_oldFocus = oldFocus;
+		_newFocus = newFocus;
+	}
+
+	ControlWeakReference _oldFocus;
+	ControlWeakReference _newFocus;
 };
 
 class MouseEventArgs : public RoutedEventArgs {
@@ -800,6 +828,8 @@ public:
 	MouseButton ChangedButton = MouseButton::None;
 	MouseButtonState ButtonState = MouseButtonState::Released;
 	MouseButtonStates ButtonStates;
+	/** Keyboard modifier snapshot captured with the pointer report. */
+	ModifierKeys Modifiers = ModifierKeys::None;
 	int ClickCount = 0;
 	int WheelDelta = 0;
 	int X = 0;
@@ -975,11 +1005,78 @@ struct RoutedHandlerInvocationCount final
 	std::size_t Skipped = 0;
 };
 
+enum class RoutedHandlerStorageKind : unsigned char
+{
+	TypedFacade,
+	Generic
+};
+
+/**
+ * One lazily allocated handler table shared by every routed-event facade on
+ * an element.  The implementation is out of line so Event.h only needs the
+ * UIElement declaration, not its complete layout.
+ */
+class RoutedEventHandlerStore final
+{
+public:
+	using ErasedHandler = std::function<void(Control*, RoutedEventArgs&)>;
+
+	RoutedEventHandlerStore();
+	~RoutedEventHandlerStore();
+	RoutedEventHandlerStore(const RoutedEventHandlerStore&) = delete;
+	RoutedEventHandlerStore& operator=(const RoutedEventHandlerStore&) = delete;
+
+	static EventConnection Subscribe(
+		UIElement& owner,
+		RoutedEventId eventId,
+		RoutedHandlerStorageKind kind,
+		ErasedHandler handler,
+		bool handledEventsToo);
+	static void AddPersistent(
+		UIElement& owner,
+		RoutedEventId eventId,
+		RoutedHandlerStorageKind kind,
+		ErasedHandler handler,
+		bool handledEventsToo);
+	static RoutedHandlerInvocationCount Invoke(
+		UIElement& owner,
+		RoutedEventId eventId,
+		RoutedHandlerStorageKind kind,
+		Control* sender,
+		RoutedEventArgs& args);
+	static std::size_t Count(
+		const UIElement& owner,
+		RoutedEventId eventId,
+		RoutedHandlerStorageKind kind) noexcept;
+
+private:
+	struct State;
+	std::shared_ptr<State> _state;
+};
+
 /** Implemented by InputManager; direct calls outside native input still route. */
 bool RaiseRoutedEvent(
 	UIElement& owner,
 	RoutedEventId eventId,
 	RoutedEventArgs& args);
+
+template<RoutedEventId TEventId>
+class RoutedEventIdStorage
+{
+protected:
+	RoutedEventId GetEventId() const noexcept { return TEventId; }
+};
+
+template<>
+class RoutedEventIdStorage<RoutedEventId::None>
+{
+protected:
+	RoutedEventId GetEventId() const noexcept { return _eventId; }
+	void SetEventId(RoutedEventId value) noexcept { _eventId = value; }
+
+private:
+	RoutedEventId _eventId = RoutedEventId::None;
+};
 
 /**
  * CLR-event-shaped facade over a WPF-style routed event.
@@ -988,32 +1085,19 @@ bool RaiseRoutedEvent(
  * invocation always enters the central route. Handlers receive one shared
  * args object by reference; handledEventsToo is per registration.
  */
-template<typename TArgs>
-class RoutedEvent final
+template<typename TArgs, RoutedEventId TEventId = RoutedEventId::None>
+class RoutedEvent final : private RoutedEventIdStorage<TEventId>
 {
 	static_assert(std::is_base_of_v<RoutedEventArgs, TArgs>);
 
 public:
+	using args_type = TArgs;
 	using function_type = void(Control*, TArgs&);
 	using std_function_type = std::function<function_type>;
+	static constexpr RoutedEventId StaticEventId = TEventId;
 
 private:
-	struct Entry final
-	{
-		std::size_t Token = 0;
-		bool HandledEventsToo = false;
-		std_function_type Handler;
-	};
-
-	struct State final
-	{
-		std::size_t NextToken = 1;
-		std::vector<Entry> Entries;
-	};
-
 	UIElement* _owner = nullptr;
-	RoutedEventId _eventId = RoutedEventId::None;
-	std::shared_ptr<State> _state;
 
 	template<typename>
 	static constexpr bool AlwaysFalse = false;
@@ -1039,41 +1123,49 @@ private:
 		}
 	}
 
-	static void RemoveToken(State& state, std::size_t token)
+	static RoutedEventHandlerStore::ErasedHandler EraseHandler(
+		std_function_type handler)
 	{
-		if (token == 0) return;
-		state.Entries.erase(std::remove_if(
-			state.Entries.begin(), state.Entries.end(),
-			[token](const Entry& entry) { return entry.Token == token; }),
-			state.Entries.end());
+		return [handler = std::move(handler)](
+			Control* sender, RoutedEventArgs& args) mutable
+		{
+			handler(sender, static_cast<TArgs&>(args));
+		};
 	}
 
 public:
 	RoutedEvent() = default;
+	explicit RoutedEvent(UIElement* owner) noexcept
+		requires (TEventId != RoutedEventId::None)
+		: _owner(owner) {}
 	RoutedEvent(UIElement* owner, RoutedEventId eventId) noexcept
-		: _owner(owner), _eventId(eventId) {}
+		requires (TEventId == RoutedEventId::None)
+		: _owner(owner)
+	{
+		this->SetEventId(eventId);
+	}
 
 	RoutedEvent(const RoutedEvent&) = delete;
 	RoutedEvent& operator=(const RoutedEvent&) = delete;
 	RoutedEvent(RoutedEvent&&) = delete;
 	RoutedEvent& operator=(RoutedEvent&&) = delete;
 
-	RoutedEventId Id() const noexcept { return _eventId; }
+	RoutedEventId Id() const noexcept
+	{
+		return this->GetEventId();
+	}
 
 	template<typename F>
 	EventConnection Subscribe(F&& fn, bool handledEventsToo = false)
 	{
 		auto handler = AdaptHandler(std::forward<F>(fn));
-		if (!handler) return {};
-		if (!_state) _state = std::make_shared<State>();
-		const auto token = _state->NextToken++;
-		_state->Entries.push_back(Entry{
-			token, handledEventsToo, std::move(handler) });
-		std::weak_ptr<State> weakState = _state;
-		return EventConnection([weakState, token]()
-		{
-			if (auto state = weakState.lock()) RemoveToken(*state, token);
-		});
+		if (!_owner || !handler) return {};
+		return RoutedEventHandlerStore::Subscribe(
+			*_owner,
+			Id(),
+			RoutedHandlerStorageKind::TypedFacade,
+			EraseHandler(std::move(handler)),
+			handledEventsToo);
 	}
 
 	template<typename F>
@@ -1086,20 +1178,23 @@ public:
 	void operator+=(F&& fn)
 	{
 		auto handler = AdaptHandler(std::forward<F>(fn));
-		if (!handler) return;
-		if (!_state) _state = std::make_shared<State>();
-		const auto token = _state->NextToken++;
-		_state->Entries.push_back(Entry{ token, false, std::move(handler) });
+		if (!_owner || !handler) return;
+		RoutedEventHandlerStore::AddPersistent(
+			*_owner,
+			Id(),
+			RoutedHandlerStorageKind::TypedFacade,
+			EraseHandler(std::move(handler)),
+			false);
 	}
 
 	void operator()(Control*, TArgs& args)
 	{
-		if (_owner) (void)RaiseRoutedEvent(*_owner, _eventId, args);
+		if (_owner) (void)RaiseRoutedEvent(*_owner, Id(), args);
 	}
 
 	void operator()(Control*, TArgs&& args)
 	{
-		if (_owner) (void)RaiseRoutedEvent(*_owner, _eventId, args);
+		if (_owner) (void)RaiseRoutedEvent(*_owner, Id(), args);
 	}
 
 	void Invoke(Control* sender, TArgs& args) { (*this)(sender, args); }
@@ -1120,29 +1215,25 @@ private:
 	RoutedHandlerInvocationCount InvokeHandlers(
 		Control* sender, TArgs& args)
 	{
-		RoutedHandlerInvocationCount result;
-		if (!_state || _state->Entries.empty()) return result;
-		const ControlWeakReference senderLifetime(sender);
-		const auto snapshot = _state->Entries;
-		for (const auto& entry : snapshot)
-		{
-			if (sender && !senderLifetime) break;
-			if (args.Handled && !entry.HandledEventsToo)
-			{
-				++result.Skipped;
-				continue;
-			}
-			if (!entry.Handler) continue;
-			entry.Handler(sender, args);
-			++result.Invoked;
-		}
-		return result;
+		return _owner
+			? RoutedEventHandlerStore::Invoke(
+				*_owner,
+				Id(),
+				RoutedHandlerStorageKind::TypedFacade,
+				sender,
+				args)
+			: RoutedHandlerInvocationCount{};
 	}
 
 public:
 	std::size_t Count() const noexcept
 	{
-		return _state ? _state->Entries.size() : 0;
+		return _owner
+			? RoutedEventHandlerStore::Count(
+				*_owner,
+				Id(),
+				RoutedHandlerStorageKind::TypedFacade)
+			: 0;
 	}
 
 	bool Empty() const noexcept { return Count() == 0; }

@@ -66,11 +66,13 @@ struct InputReport final
 
 	[[nodiscard]] MouseEventArgs CreateMouseEventArgs() const
 	{
-		return MouseEventArgs(
+		auto result = MouseEventArgs(
 			ChangedButton,
 			ButtonStates.Get(ChangedButton),
 			ButtonStates,
 			ClickCount, X, Y, WheelDelta);
+		result.Modifiers = Modifiers;
+		return result;
 	}
 
 	[[nodiscard]] KeyEventArgs CreateKeyEventArgs() const

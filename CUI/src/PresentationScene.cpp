@@ -1,6 +1,7 @@
 #include "PresentationScene.h"
 
 #include "Control.h"
+#include "PresentationInfrastructure.h"
 #include "PresentationRenderHost.h"
 #include "Graphics.h"
 
@@ -43,26 +44,37 @@ namespace
 		result.top += titleBarOffset;
 		result.bottom += titleBarOffset;
 
-		for (Control* current = control->GetVisualParent(); current;
-			current = current->GetVisualParent())
+		// Popup and other transient presentation roots render in the window
+		// viewport.  Their former logical ancestors must not clip the retained
+		// scene; descendants still honor clips inside the transient subtree.
+		for (Control* current =
+			cui::framework::PresentationAccess::
+			BreaksVisualPresentationInheritance(*control)
+			? nullptr : control->GetVisualParent(); current;)
 		{
-			if (!current->ClipsChildren()) continue;
-			auto clip = current->GetVisualChildrenClipRect();
-			const auto absolute = current->GetAbsoluteLocationDip();
-			clip = current->TransformAbsoluteRectToRenderSpace(D2D1_RECT_F{
-				clip.left + absolute.x,
-				clip.top + absolute.y,
-				clip.right + absolute.x,
-				clip.bottom + absolute.y });
-			RECT clipRect{
-				static_cast<LONG>(std::floor(clip.left)),
-				static_cast<LONG>(std::floor(clip.top)) + titleBarOffset,
-				static_cast<LONG>(std::ceil(clip.right)),
-				static_cast<LONG>(std::ceil(clip.bottom)) + titleBarOffset };
-			RECT intersection{};
-			if (!::IntersectRect(&intersection, &result, &clipRect))
-				return false;
-			result = intersection;
+			if (current->ClipsChildren())
+			{
+				auto clip = current->GetVisualChildrenClipRect();
+				const auto absolute = current->GetAbsoluteLocationDip();
+				clip = current->TransformAbsoluteRectToRenderSpace(D2D1_RECT_F{
+					clip.left + absolute.x,
+					clip.top + absolute.y,
+					clip.right + absolute.x,
+					clip.bottom + absolute.y });
+				RECT clipRect{
+					static_cast<LONG>(std::floor(clip.left)),
+					static_cast<LONG>(std::floor(clip.top)) + titleBarOffset,
+					static_cast<LONG>(std::ceil(clip.right)),
+					static_cast<LONG>(std::ceil(clip.bottom)) + titleBarOffset };
+				RECT intersection{};
+				if (!::IntersectRect(&intersection, &result, &clipRect))
+					return false;
+				result = intersection;
+			}
+
+			if (cui::framework::PresentationAccess::
+				BreaksVisualPresentationInheritance(*current)) break;
+			current = current->GetVisualParent();
 		}
 		return result.right > result.left && result.bottom > result.top;
 	}
@@ -256,16 +268,18 @@ void PresentationScene::BeginFrameStatistics() noexcept
 	_pendingCommandCacheInvalidations = 0;
 }
 
-void PresentationScene::RefreshNodeState(Node& node)
+bool PresentationScene::RefreshNodeState(Node& node)
 {
-	if (!node.Element) return;
-	const auto revisions = node.Element->GetPresentationRevisions();
+	auto* control = node.Element.Get();
+	if (!control) return false;
+	const auto revisions = control->GetPresentationRevisions();
 	if (revisions.Content != node.AppliedRevisions.Content)
 		node.ContentDirty = true;
 	if (revisions.Geometry != node.AppliedRevisions.Geometry)
 		node.GeometryDirty = true;
 	if (revisions.Composition != node.AppliedRevisions.Composition)
 		node.CompositionDirty = true;
+	return node.Element.Get() == control;
 }
 
 void PresentationScene::ApplyPendingGeometryInvalidations()
@@ -303,30 +317,48 @@ void PresentationScene::ApplyPendingGeometryInvalidations()
 	_pendingGeometryRanges.clear();
 }
 
-void PresentationScene::RefreshNodeGeometry(Node& node)
+bool PresentationScene::RefreshNodeGeometry(Node& node)
 {
-	if (!node.Element || (!node.GeometryDirty && node.HasGeometry)) return;
+	auto* control = node.Element.Get();
+	if (!control) return false;
+	if (!node.GeometryDirty && node.HasGeometry) return true;
 	const auto geometryRevision =
-		node.Element->GetPresentationRevisions().Geometry;
-	node.RenderedBounds = node.Element->GetRenderedAbsoluteRectDip();
+		control->GetPresentationRevisions().Geometry;
+	node.RenderedBounds = control->GetRenderedAbsoluteRectDip();
+	control = node.Element.Get();
+	if (!control) return false;
 	node.HasGeometry = true;
 	node.AppliedRevisions.Geometry = geometryRevision;
 	node.GeometryDirty =
-		node.Element->GetPresentationRevisions().Geometry != geometryRevision;
+		control->GetPresentationRevisions().Geometry != geometryRevision;
 	++_frameStatistics.GeometryRecomputedNodes;
+	return true;
 }
 
-void PresentationScene::CompleteNode(
+bool PresentationScene::CompleteNode(
 	Node& node,
 	const PresentationRevisionSnapshot& submitted)
 {
-	if (!node.Element) return;
+	auto* control = node.Element.Get();
+	if (!control) return false;
 	node.AppliedRevisions = submitted;
-	const auto current = node.Element->GetPresentationRevisions();
+	const auto current = control->GetPresentationRevisions();
 	node.ContentDirty = current.Content != submitted.Content;
 	node.GeometryDirty = current.Geometry != submitted.Geometry;
 	node.CompositionDirty = current.Composition != submitted.Composition;
 	node.HasPresented = true;
+	return true;
+}
+
+bool PresentationScene::PrepareNodeForRendering(
+	Node& node,
+	Control*& control)
+{
+	control = node.Element.Get();
+	if (!control) return false;
+	control->PreparePresentation();
+	control = node.Element.Get();
+	return control && RefreshNodeState(node);
 }
 
 bool PresentationScene::PrepareComposition(PresentationRenderHost& host)
@@ -421,14 +453,12 @@ bool PresentationScene::RenderComposition(
 	{
 		if (!frameHealthy || transaction.Failed) break;
 		if (node.Overlay) continue;
-		auto* control = node.Element;
-		if (!control) continue;
+		Control* control = nullptr;
+		if (!PrepareNodeForRendering(node, control)) continue;
 		if (node.NativeComposition)
 		{
 			endSegment();
 			if (!frameHealthy) break;
-			control->PreparePresentation();
-			RefreshNodeState(node);
 			const bool contentDirtyNode = node.ContentDirty;
 			const bool geometryDirtyNode = node.GeometryDirty;
 			const bool compositionDirtyNode = node.CompositionDirty;
@@ -436,7 +466,9 @@ bool PresentationScene::RenderComposition(
 			if (geometryDirtyNode) ++_frameStatistics.GeometryDirtyNodes;
 			if (compositionDirtyNode)
 				++_frameStatistics.CompositionDirtyNodes;
-			RefreshNodeGeometry(node);
+			if (!RefreshNodeGeometry(node)) continue;
+			control = node.Element.Get();
+			if (!control) continue;
 			if (!control->IsVisible)
 			{
 				++_frameStatistics.CulledNodes;
@@ -450,14 +482,12 @@ bool PresentationScene::RenderComposition(
 				control->OnRender();
 				control->ClearPresentationOrderOverride();
 				++_frameStatistics.NativeCommitNodes;
-				CompleteNode(node, submitted);
+				(void)CompleteNode(node, submitted);
 			}
 			continue;
 		}
 
 		if (!beginSegment(node.SegmentIndex)) break;
-		control->PreparePresentation();
-		RefreshNodeState(node);
 		const bool contentDirtyNode = node.ContentDirty;
 		const bool geometryDirtyNode = node.GeometryDirty;
 		const bool compositionDirtyNode = node.CompositionDirty;
@@ -465,7 +495,9 @@ bool PresentationScene::RenderComposition(
 		if (geometryDirtyNode) ++_frameStatistics.GeometryDirtyNodes;
 		if (compositionDirtyNode)
 			++_frameStatistics.CompositionDirtyNodes;
-		RefreshNodeGeometry(node);
+		if (!RefreshNodeGeometry(node)) continue;
+		control = node.Element.Get();
+		if (!control) continue;
 		if (!control->IsVisible)
 		{
 			++_frameStatistics.CulledNodes;
@@ -489,9 +521,14 @@ bool PresentationScene::RenderComposition(
 		if (needsRecording)
 		{
 			Microsoft::WRL::ComPtr<ID2D1CommandList> commands;
+			const ControlWeakReference renderTarget(control);
 			if (!host.RecordDrawingCommands(
 				transaction, segmentContext,
-				[control] { control->OnRender(); },
+				[renderTarget]
+				{
+					if (auto* live = renderTarget.Get())
+						live->OnRender();
+				},
 				commands.ReleaseAndGetAddressOf()))
 			{
 				frameHealthy = false;
@@ -523,7 +560,7 @@ bool PresentationScene::RenderComposition(
 		if (!contentDirtyNode && !geometryDirtyNode
 			&& !compositionDirtyNode)
 			++_frameStatistics.DamageReplayNodes;
-		CompleteNode(node, submitted);
+		(void)CompleteNode(node, submitted);
 	}
 	endSegment();
 	return frameHealthy && !transaction.Failed;
@@ -549,10 +586,9 @@ void PresentationScene::RenderRaster(const RECT& contentDirty)
 	for (auto& node : _nodes)
 	{
 		if (node.Overlay) continue;
-		auto* control = node.Element;
-		if (!control || !control->IsVisible) continue;
-		control->PreparePresentation();
-		RefreshNodeState(node);
+		Control* control = nullptr;
+		if (!PrepareNodeForRendering(node, control)
+			|| !control->IsVisible) continue;
 		const bool geometryDirtyNode = node.GeometryDirty;
 		if (node.ContentDirty) ++_frameStatistics.ContentDirtyNodes;
 		if (geometryDirtyNode) ++_frameStatistics.GeometryDirtyNodes;
@@ -561,7 +597,9 @@ void PresentationScene::RenderRaster(const RECT& contentDirty)
 		if (!node.ContentDirty && !geometryDirtyNode
 			&& !node.CompositionDirty)
 			++_frameStatistics.DamageReplayNodes;
-		RefreshNodeGeometry(node);
+		if (!RefreshNodeGeometry(node)) continue;
+		control = node.Element.Get();
+		if (!control) continue;
 		const RECT controlRect = ToRect(node.RenderedBounds, 2);
 		RECT clientClip{};
 		if (!GetClientClip(control, contentDirty, 0, clientClip)
@@ -581,7 +619,7 @@ void PresentationScene::RenderRaster(const RECT& contentDirty)
 		control->OnRender();
 		drawingContext->PopDrawRect();
 		++_frameStatistics.ImmediateDrawNodes;
-		CompleteNode(node, submitted);
+		(void)CompleteNode(node, submitted);
 	}
 }
 
@@ -599,10 +637,9 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 	for (auto& node : _nodes)
 	{
 		if (!node.Overlay) continue;
-		auto* control = node.Element;
-		if (!control || !control->IsVisible) continue;
-		control->PreparePresentation();
-		RefreshNodeState(node);
+		Control* control = nullptr;
+		if (!PrepareNodeForRendering(node, control)
+			|| !control->IsVisible) continue;
 		const bool contentDirtyNode = node.ContentDirty;
 		const bool geometryDirtyNode = node.GeometryDirty;
 		const bool compositionDirtyNode = node.CompositionDirty;
@@ -610,7 +647,9 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 		if (geometryDirtyNode) ++_frameStatistics.GeometryDirtyNodes;
 		if (compositionDirtyNode)
 			++_frameStatistics.CompositionDirtyNodes;
-		RefreshNodeGeometry(node);
+		if (!RefreshNodeGeometry(node)) continue;
+		control = node.Element.Get();
+		if (!control) continue;
 		const RECT controlRect = ToRect(node.RenderedBounds, 2);
 		RECT clientClip{};
 		if (!GetClientClip(control, contentDirty, 0, clientClip)
@@ -630,7 +669,7 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 				control->OnRender();
 				control->ClearPresentationOrderOverride();
 				++_frameStatistics.NativeCommitNodes;
-				CompleteNode(node, submitted);
+				(void)CompleteNode(node, submitted);
 			}
 			continue;
 		}
@@ -645,7 +684,7 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 		control->OnRender();
 		drawingContext->PopDrawRect();
 		++_frameStatistics.ImmediateDrawNodes;
-		CompleteNode(node, submitted);
+		(void)CompleteNode(node, submitted);
 	}
 }
 
@@ -676,7 +715,10 @@ int PresentationScene::GetOrder(const Control* control) const noexcept
 	if (!control) return 0;
 	const auto found = std::find_if(
 		_nodes.begin(), _nodes.end(),
-		[control](const Node& node) { return node.Element == control; });
+		[control](const Node& node)
+		{
+			return node.Element.Get() == control;
+		});
 	return found == _nodes.end()
 		? static_cast<int>(_nodes.size()) : found->Order;
 }

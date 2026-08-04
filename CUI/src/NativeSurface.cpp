@@ -10,37 +10,24 @@ namespace
 {
 	template<typename TValue>
 	DependencyPropertyOptions<NativeSurface, TValue> NativeSurfaceOptions(
-		TValue defaultValue,
-		std::wstring category,
-		int order)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			std::wstring category,
+			int order))
 	{
 		DependencyPropertyOptions<NativeSurface, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = std::move(category);
 		options.Design.CategoryOrder = 300;
 		options.Design.Order = order;
 		options.Design.Editor = DependencyPropertyEditorKind::Text;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
 		return options;
 	}
 
-	auto NativeSurfaceSubscriber(const wchar_t* propertyName)
-	{
-		return [name = std::wstring(propertyName)](
-			NativeSurface& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode)
-		{
-			return target.OnPropertyValueChanged.Subscribe(
-				[name, handler = std::move(handler)](
-					DependencyObject*, const DependencyPropertyChangedEventArgs& args)
-				{
-					if (args.PropertyName == name)
-						handler();
-				});
-		};
-	}
 }
 
 NativeSurface::NativeSurface()
@@ -54,41 +41,62 @@ NativeSurface::~NativeSurface()
 	DetachBehavior();
 }
 
+const DependencyProperty& NativeSurface::PlaceholderTextProperty()
+{
+	static const auto registration = []
+	{
+		return DependencyPropertyRegistry::RegisterStatic<
+			NativeSurface, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"PlaceholderText"),
+				[](NativeSurface& target)
+				{ return target.GetPlaceholderText(); },
+				[](NativeSurface& target, const std::wstring& value)
+				{ target.SetPlaceholderText(value); },
+				{},
+				NativeSurfaceOptions(
+					std::wstring(L"NativeSurface")
+					CUI_DESIGN_METADATA_ARGUMENTS(L"Appearance", 20)));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& NativeSurface::BehaviorKeyProperty()
+{
+	static const auto registration = []
+	{
+		return DependencyPropertyRegistry::RegisterStatic<
+			NativeSurface, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"BehaviorKey"),
+				[](NativeSurface& target) { return target.GetBehaviorKey(); },
+				[](NativeSurface& target, const std::wstring& value)
+				{ target.SetBehaviorKey(value); },
+				{},
+				NativeSurfaceOptions(std::wstring{}
+					CUI_DESIGN_METADATA_ARGUMENTS(L"Behavior", 10)));
+	}();
+	return *registration;
+}
+
 void NativeSurface::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		DependencyPropertyRegistry::Register<NativeSurface, std::wstring>(
-			L"BehaviorKey",
-			[](NativeSurface& target) { return target.GetBehaviorKey(); },
-			[](NativeSurface& target, const std::wstring& value)
-			{ target.SetBehaviorKey(value); },
-			NativeSurfaceSubscriber(L"BehaviorKey"),
-			NativeSurfaceOptions(std::wstring{}, L"Behavior", 10));
-		DependencyPropertyRegistry::Register<NativeSurface, std::wstring>(
-			L"PlaceholderText",
-			[](NativeSurface& target) { return target.GetPlaceholderText(); },
-			[](NativeSurface& target, const std::wstring& value)
-			{ target.SetPlaceholderText(value); },
-			NativeSurfaceSubscriber(L"PlaceholderText"),
-			NativeSurfaceOptions(
-				std::wstring(L"NativeSurface"), L"Appearance", 20));
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)BehaviorKeyProperty();
+	(void)PlaceholderTextProperty();
+#endif
 }
 
 void NativeSurface::SetBehaviorKey(std::wstring value)
 {
 	if (_behaviorKey == value) return;
 	DetachBehavior();
-	SetPropertyField(L"BehaviorKey", _behaviorKey, std::move(value));
+	SetPropertyField(BehaviorKeyProperty(), _behaviorKey, std::move(value));
 }
 
 void NativeSurface::SetPlaceholderText(std::wstring value)
 {
-	SetPropertyField(L"PlaceholderText", _placeholderText, std::move(value));
+	SetPropertyField(
+		PlaceholderTextProperty(), _placeholderText, std::move(value));
 }
 
 void NativeSurface::SetBehavior(

@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+class ControlStyleSheet;
+
 namespace CuiRuntime
 {
 struct XamlCompiledDocument;
@@ -54,6 +56,12 @@ struct XamlObjectTree
 {
 	std::unique_ptr<Control> ContentRoot;
 	std::vector<std::shared_ptr<DesignerControl>> Controls;
+	/**
+	 * Runtime document styles already lowered and applied during materialization.
+	 * The initial host attach can reuse the exact sheet instead of resolving the
+	 * Designer stylesheet and constructing every template factory a second time.
+	 */
+	std::shared_ptr<const ControlStyleSheet> DocumentStyleSheet;
 	/** Owns reusable views, including dynamic DataContext-bound resources. */
 	std::vector<std::shared_ptr<CollectionViewSource>> CollectionViews;
 	/** Authored weak command sources, including unresolved Window targets. */
@@ -100,6 +108,12 @@ struct XamlMaterializationOptions
 	 * recompiling the same DataTemplate/ControlTemplate for every item.
 	 */
 	std::shared_ptr<const XamlCompiledDocument> CompiledDocument;
+	/**
+	 * Optional immutable lowering of CompiledDocument::Document styles.
+	 * FrameworkTemplate factories cache this per compile plan; instance-specific
+	 * conditions are still resolved against each new control tree.
+	 */
+	std::shared_ptr<const ControlStyleSheet> DocumentStyleSheet;
 	/**
 	 * Internal ApplyTemplate path. The matching synthetic document node borrows
 	 * this existing behavior host while every generated template node remains
@@ -151,6 +165,15 @@ public:
 	 * Dynamic materialization installs the result directly; static CodeGen
 	 * serializes the same definitions into its generated template factory.
 	 */
+	static bool MaterializeDeclarativeInteractions(
+		Control& owner,
+		const std::vector<DesignerVisualStateGroup>& visualStateGroups,
+		const std::vector<DesignerEventTrigger>& eventTriggers,
+		const DesignerModel::DesignDocument& resourceDocument,
+		std::vector<DeclarativeVisualStateGroupDefinition>& outVisualStateGroups,
+		std::vector<DeclarativeEventTriggerDefinition>& outEventTriggers,
+		std::wstring* outError = nullptr);
+	/** Design/code-generation lowering when no instantiated namescope exists yet. */
 	static bool MaterializeDeclarativeInteractions(
 		const std::vector<DesignerVisualStateGroup>& visualStateGroups,
 		const std::vector<DesignerEventTrigger>& eventTriggers,

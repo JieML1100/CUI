@@ -1,6 +1,7 @@
 #include "DesignerCanvas.h"
 #include "../CUI/include/Canvas.h"
 #include "../CUI/include/EventInfrastructure.h"
+#include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include "../CUI/include/StyleInfrastructure.h"
 #include "../CUI/include/WindowInfrastructure.h"
 #include "ProgrammaticControlFactory.h"
@@ -1691,7 +1692,10 @@ void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
 			newRect = ClampRectToBounds(newRect, bounds, true);
 		}
 
-		ApplyRectToControl(it.ControlInstance, newRect);
+		// Moving must not turn a measured/arranged size back into a Local
+		// Width/Height.  In particular, a themed control may arrange larger
+		// than its authored XAML size; nudge changes placement only.
+		ApplyRectToControl(it.ControlInstance, newRect, true);
 	}
 }
 
@@ -3814,7 +3818,8 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 	return ExecuteCommand(std::move(command));
 }
 
-void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
+void DesignerCanvas::ApplyRectToControl(
+	Control* c, const RECT& rectInCanvas, bool preserveSize)
 {
 	if (!c) return;
 	Control* parent = c->GetVisualParent() ? c->GetVisualParent() : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
@@ -3843,8 +3848,11 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 		Canvas::SetLeft(*(c), 0.0f);
 		Canvas::SetTop(*(c), 0.0f);
 		c->Margin = m;
-		c->Width = static_cast<float>(newW);
-		c->Height = static_cast<float>(newH);
+		if (!preserveSize)
+		{
+			c->Width = static_cast<float>(newW);
+			c->Height = static_cast<float>(newH);
+		}
 		if (auto* p = dynamic_cast<Panel*>(parent))
 		{
 			RefreshDesignerPanelLayout(p);
@@ -3856,8 +3864,11 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 	Canvas::SetTop(*(c), static_cast<float>(newLocal.y));
 	Canvas::SetRight(*(c), cui::layout::UnsetCanvasOffset);
 	Canvas::SetBottom(*(c), cui::layout::UnsetCanvasOffset);
-	c->Width = static_cast<float>(newW);
-	c->Height = static_cast<float>(newH);
+	if (!preserveSize)
+	{
+		c->Width = static_cast<float>(newW);
+		c->Height = static_cast<float>(newH);
+	}
 	c->Margin = {};
 
 	if (auto* p = dynamic_cast<Panel*>(parent))

@@ -105,6 +105,14 @@ enum class AutomationOperationResult : uint8_t
 	InvalidArgument
 };
 
+/** Platform-neutral WPF/UIA TogglePattern state. */
+enum class AutomationToggleState : uint8_t
+{
+	Off,
+	On,
+	Indeterminate
+};
+
 struct AutomationRangeValue
 {
 	double Value = 0.0;
@@ -144,7 +152,7 @@ public:
 
 	virtual AutomationOperationResult Invoke();
 	virtual AutomationOperationResult Toggle();
-	virtual bool TryGetToggleState(bool& value) const;
+	virtual bool TryGetToggleState(AutomationToggleState& value) const;
 	virtual AutomationOperationResult SetValue(const std::wstring& value);
 	virtual bool TryGetRangeValue(AutomationRangeValue& value) const;
 	virtual AutomationOperationResult SetRangeValue(double value);
@@ -214,6 +222,75 @@ public:
 	AutomationOperationResult Invoke() override;
 };
 
+/** WPF ScrollViewerAutomationPeer projection of the UIA Scroll pattern. */
+class ScrollViewerAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit ScrollViewerAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	bool GetAccessibilityScrollInfo(
+		AccessibilityScrollInfo& result) const noexcept override;
+	bool ScrollAccessibility(
+		AccessibilityScrollAmount horizontal,
+		AccessibilityScrollAmount vertical) override;
+	bool SetAccessibilityScrollPercent(
+		double horizontalPercent, double verticalPercent) override;
+};
+
+/** WPF CalendarAutomationPeer projection for CalendarView's native date grid. */
+class CalendarViewAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit CalendarViewAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	bool SupportsVirtualizedChildren() const noexcept override { return true; }
+	bool TryGetAccessibilityVirtualNode(
+		uint32_t id, AccessibilityVirtualNode& result) override;
+	size_t GetAccessibilityVirtualChildCount(uint32_t parentId) override;
+	bool TryGetAccessibilityVirtualChildAt(
+		uint32_t parentId, size_t index, uint32_t& result) override;
+	bool TryGetAccessibilityVirtualSibling(
+		uint32_t parentId, uint32_t id, bool next, uint32_t& result) override;
+	bool TryHitTestAccessibilityVirtualNode(
+		float localX, float localY, uint32_t& result) override;
+	AccessibilityVirtualContainerInfo
+		GetAccessibilityVirtualContainerInfo() const noexcept override;
+	void GetAccessibilityVirtualSelection(
+		std::vector<uint32_t>& result) override;
+	bool GetAccessibilityVirtualItemAt(
+		int row, int column, uint32_t& result) override;
+	void GetAccessibilityVirtualColumnHeaders(
+		std::vector<uint32_t>& result) override;
+	bool InvokeAccessibilityVirtualNode(uint32_t id) override;
+	bool SelectAccessibilityVirtualNode(
+		uint32_t id, AccessibilitySelectionAction action) override;
+};
+
+/** Accessible projection for ChartView's retained data-point renderer. */
+class ChartViewAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit ChartViewAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	bool SupportsVirtualizedChildren() const noexcept override { return true; }
+	bool TryGetAccessibilityVirtualNode(
+		uint32_t id, AccessibilityVirtualNode& result) override;
+	size_t GetAccessibilityVirtualChildCount(uint32_t parentId) override;
+	bool TryGetAccessibilityVirtualChildAt(
+		uint32_t parentId, size_t index, uint32_t& result) override;
+	bool TryGetAccessibilityVirtualSibling(
+		uint32_t parentId, uint32_t id, bool next, uint32_t& result) override;
+	bool TryHitTestAccessibilityVirtualNode(
+		float localX, float localY, uint32_t& result) override;
+	AccessibilityVirtualContainerInfo
+		GetAccessibilityVirtualContainerInfo() const noexcept override;
+	void GetAccessibilityVirtualSelection(
+		std::vector<uint32_t>& result) override;
+	bool InvokeAccessibilityVirtualNode(uint32_t id) override;
+	bool SelectAccessibilityVirtualNode(
+		uint32_t id, AccessibilitySelectionAction action) override;
+};
+
 class ToggleAutomationPeer : public AutomationPeer
 {
 public:
@@ -221,7 +298,20 @@ public:
 		std::wstring fallbackClassName);
 	AutomationPattern GetPatternSet() const noexcept override;
 	AutomationOperationResult Toggle() override;
-	bool TryGetToggleState(bool& value) const override;
+	bool TryGetToggleState(AutomationToggleState& value) const override;
+};
+
+/** WPF MenuItem peer: leaf invocation, check toggling, or submenu expansion. */
+class MenuItemAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit MenuItemAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	AutomationOperationResult Invoke() override;
+	AutomationOperationResult Toggle() override;
+	bool TryGetToggleState(AutomationToggleState& value) const override;
+	bool TryGetExpanded(bool& value) const override;
+	AutomationOperationResult SetExpanded(bool value) override;
 };
 
 class RadioButtonAutomationPeer final : public AutomationPeer
@@ -264,14 +354,37 @@ private:
 	bool _readOnly = false;
 };
 
+class ListBoxAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit ListBoxAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	Control* GetSelectedItem() const override;
+	bool CanSelectMultiple() const noexcept override;
+};
+
+class ListBoxItemAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit ListBoxItemAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	bool TryGetSelectionItemSelected(bool& value) const override;
+	AutomationOperationResult Select() override;
+	Control* GetSelectionContainer() const override;
+};
+
 class ComboBoxAutomationPeer final : public AutomationPeer
 {
 public:
 	explicit ComboBoxAutomationPeer(Control& owner);
 	AutomationPattern GetPatternSet() const noexcept override;
 	std::wstring GetValue() const override;
+	bool IsReadOnly() const override;
+	AutomationOperationResult SetValue(
+		const std::wstring& value) override;
 	bool TryGetExpanded(bool& value) const override;
 	AutomationOperationResult SetExpanded(bool value) override;
+	Control* GetSelectedItem() const override;
 	bool SupportsVirtualizedChildren() const noexcept override { return true; }
 	bool TryGetAccessibilityVirtualNode(
 		uint32_t id, AccessibilityVirtualNode& result) override;
@@ -317,6 +430,14 @@ public:
 	bool TryGetSelectionItemSelected(bool& value) const override;
 	AutomationOperationResult Select() override;
 	Control* GetSelectionContainer() const override;
+};
+
+class TreeViewAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit TreeViewAutomationPeer(Control& owner);
+	AutomationPattern GetPatternSet() const noexcept override;
+	Control* GetSelectedItem() const override;
 };
 
 class TabItemAutomationPeer final : public AutomationPeer

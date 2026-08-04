@@ -817,7 +817,8 @@ bool DecodeDesignNodeProperties(
 				return StructuralError(outError, L"属性赋值缺少 Kind 或 Text。");
 			const auto kind = stored["kind"].get<int>();
 			if (kind < static_cast<int>(DesignerStyleValueKind::Bool)
-				|| kind > static_cast<int>(DesignerStyleValueKind::Transform))
+				|| kind > static_cast<int>(
+					DesignerStyleValueKind::NullableBool))
 				return StructuralError(outError, L"属性赋值 Kind 无效。");
 			if ((stored.contains("resourceKey")
 					&& !stored["resourceKey"].is_string())

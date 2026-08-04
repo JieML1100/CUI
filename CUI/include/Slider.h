@@ -20,6 +20,8 @@
 class Slider : public RangeBase
 {
 protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<RangeBaseAutomationPeer>(
@@ -27,17 +29,23 @@ protected:
 	}
 
 private:
+	static const DependencyPropertyKey& IsThumbDraggingPropertyKey();
 	static void EnsureClassHandlers();
 	static void HandleDescendantPointerPress(
 		Control* sender, RoutedEventArgs& args);
 
-	double _smallChange = 1.0;
-	double _largeChange = 10.0;
 	double _tickFrequency = 1.0;
 	bool _isSnapToTickEnabled = false;
+	bool _isMoveToPointEnabled = false;
+	bool _isSelectionRangeEnabled = false;
+	double _selectionStart = 0.0;
+	double _selectionEnd = 0.0;
 	::Orientation _orientation = Orientation::Horizontal;
 	bool _isDirectionReversed = false;
-	bool _dragging = false;
+	bool _isThumbDragging = false;
+	double _dragStartValue = 0.0;
+	int _dragStartX = 0;
+	int _dragStartY = 0;
 
 	struct TrackGeometry final
 	{
@@ -50,24 +58,38 @@ private:
 	TrackGeometry ResolveTrackGeometry() const;
 	float ValueRatio() const;
 	float PositionRatio() const;
+	float PositionRatio(double value) const;
 	double PointToValue(int localX, int localY) const;
-	void BeginPointerInteraction(int localX, int localY);
+	double ValueFromDragDelta(int localX, int localY) const;
+	double SnapToTick(double value) const;
+	void UpdateValueFromInput(double value);
+	void MoveToNextTick(double direction);
+	bool IsPointOverThumb(int localX, int localY) const;
+	bool IsOriginalSourceWithinThumb(Control* source) const;
+	void HandlePointerPress(
+		int localX, int localY, bool isThumbPress);
+	void BeginThumbDrag(int localX, int localY);
+	void SetThumbDragging(bool value);
 	void UpdateTemplateParts();
 
 public:
 	/** @brief 创建滑动条。 */
 	Slider();
 	virtual UIClass Type() override;
+	static const DependencyProperty& TickFrequencyProperty();
+	static const DependencyProperty& OrientationProperty();
+	static const DependencyProperty& IsSelectionRangeEnabledProperty();
+	static const DependencyProperty& IsSnapToTickEnabledProperty();
+	static const DependencyProperty& IsMoveToPointEnabledProperty();
+	static const DependencyProperty& SelectionStartProperty();
+	static const DependencyProperty& SelectionEndProperty();
+	static const DependencyProperty& IsDirectionReversedProperty();
+	static const DependencyProperty& IsThumbDraggingProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
-
-	PROPERTY(double, SmallChange);
-	GET(double, SmallChange);
-	SET(double, SmallChange);
-
-	PROPERTY(double, LargeChange);
-	GET(double, LargeChange);
-	SET(double, LargeChange);
+#endif
+	void Arrange(cui::core::Rect finalRect) override;
 
 	PROPERTY(double, TickFrequency);
 	GET(double, TickFrequency);
@@ -77,6 +99,22 @@ public:
 	GET(bool, IsSnapToTickEnabled);
 	SET(bool, IsSnapToTickEnabled);
 
+	PROPERTY(bool, IsMoveToPointEnabled);
+	GET(bool, IsMoveToPointEnabled);
+	SET(bool, IsMoveToPointEnabled);
+
+	PROPERTY(bool, IsSelectionRangeEnabled);
+	GET(bool, IsSelectionRangeEnabled);
+	SET(bool, IsSelectionRangeEnabled);
+
+	PROPERTY(double, SelectionStart);
+	GET(double, SelectionStart);
+	SET(double, SelectionStart);
+
+	PROPERTY(double, SelectionEnd);
+	GET(double, SelectionEnd);
+	SET(double, SelectionEnd);
+
 	PROPERTY(::Orientation, Orientation);
 	GET(::Orientation, Orientation);
 	SET(::Orientation, Orientation);
@@ -84,6 +122,11 @@ public:
 	PROPERTY(bool, IsDirectionReversed);
 	GET(bool, IsDirectionReversed);
 	SET(bool, IsDirectionReversed);
+
+	/** Template-state projection of WPF Thumb.IsDragging. */
+	READONLY_PROPERTY(bool, IsThumbDragging);
+	GET(bool, IsThumbDragging);
+
 	/** @brief 在当前值上递增 SmallChange（或指定 delta）。 */
 	void Increment(double delta);
 	void Increment();
@@ -96,8 +139,10 @@ public:
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
 protected:
+	void PreparePresentation() override;
 	bool ProcessInput(const InputReport& input) override;
-	double CoerceRangeValue(double value) const override;
+	void OnMinimumChanged(double oldValue, double newValue) override;
+	void OnMaximumChanged(double oldValue, double newValue) override;
 	void OnRangeValueChanged(double oldValue, double newValue) override;
 	void OnComputedLayoutSizeChanged() override;
 	void OnControlTemplatePresentationChanged() override;

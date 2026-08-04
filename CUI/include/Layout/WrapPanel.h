@@ -75,8 +75,13 @@ public:
     virtual ~WrapPanel();
     
     UIClass Type() override { return UIClass::UI_WrapPanel; }
+    static const DependencyProperty& OrientationProperty();
+    static const DependencyProperty& ItemWidthProperty();
+    static const DependencyProperty& ItemHeightProperty();
     static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
     void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
     
     void SetOrientation(Orientation value) {
         _wrapEngine->SetOrientation(value);
@@ -104,4 +109,8 @@ public:
     float GetItemHeight() const {
         return _wrapEngine->GetItemHeight();
     }
+
+protected:
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
 };

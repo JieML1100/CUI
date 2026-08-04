@@ -55,6 +55,10 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="CuiRuntimeFlavor">
+    <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+  </PropertyGroup>
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
@@ -85,7 +89,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -107,7 +111,7 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -120,6 +124,9 @@
       <SubSystem>Console</SubSystem>
       <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- CuiRuntime is regenerated as a /GL static library. Reusing the
+           Designer IPDB across that replacement can surface as LNK1103. -->
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
@@ -127,7 +134,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -149,7 +156,7 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -162,6 +169,8 @@
       <SubSystem>Console</SubSystem>
       <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- Force full LTCG instead of reusing a stale Designer IPDB. -->
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
@@ -325,6 +334,7 @@
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
+      <AdditionalProperties>CuiRuntimeFlavor=$(CuiRuntimeFlavor)</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="..\Utils\Utils.vcxproj">
       <Project>{1ddaee3c-caa8-489f-bfbe-84d30c9b4774}</Project>

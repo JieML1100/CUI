@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:scope="urn:cui:aot-binding-scope"
+        x:Name="BindingScopeContractWindow"
+        Width="640"
+        Height="480">
+  <Window.Resources>
+    <DataType x:Key="BindingScopeItem">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String"/>
+        <Property Path="Role" Kind="String"/>
+      </DataType.Properties>
+    </DataType>
+
+    <DataList x:Key="BindingScopeItems" ItemType="BindingScopeItem">
+      <DataRecord Name="Ada" Role="Compiler"/>
+      <DataRecord Name="Grace" Role="Runtime"/>
+    </DataList>
+
+    <DataTemplate x:Key="BindingScopeItemTemplate" DataType="BindingScopeItem">
+      <StackPanel x:Name="dataTemplateRow" Orientation="Horizontal">
+        <TextBlock x:Name="dataTemplateOrdinary" Text="{Binding Name}"/>
+        <TextBlock x:Name="dataTemplateMulti">
+          <TextBlock.Text>
+            <MultiBinding StringFormat="data:{0}|{1}">
+              <Binding Path="Name"/>
+              <Binding Path="Role"/>
+            </MultiBinding>
+          </TextBlock.Text>
+        </TextBlock>
+      </StackPanel>
+    </DataTemplate>
+
+    <ComponentDefinition x:Key="scope:BindingScopeCard" BaseType="Canvas">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Component"/>
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="componentLayout">
+          <TextBlock x:Name="componentOrdinary"
+                     Text="{Binding Caption, RelativeSource={RelativeSource TemplatedParent}}"/>
+          <TextBox x:Name="componentElementSource" Text="Element"/>
+          <TextBlock x:Name="componentMulti">
+            <TextBlock.Text>
+              <MultiBinding StringFormat="component:{0}|{1}">
+                <Binding Path="Caption"
+                         RelativeSource="{RelativeSource TemplatedParent}"/>
+                <Binding Path="Text" ElementName="componentElementSource"/>
+              </MultiBinding>
+            </TextBlock.Text>
+          </TextBlock>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+
+    <ControlTemplate x:Key="BindingScopeButtonTemplate" TargetType="Button">
+      <Border x:Name="controlTemplateChrome">
+        <StackPanel x:Name="controlTemplateAncestor" Tag="Ancestor">
+          <TextBox x:Name="controlTemplateElementSource" Text="Element"/>
+          <TextBlock x:Name="controlTemplateOrdinary"
+                     Text="{Binding Tag, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type StackPanel}}}"/>
+          <TextBlock x:Name="controlTemplateMulti">
+            <TextBlock.Text>
+              <MultiBinding StringFormat="control:{0}|{1}">
+                <Binding Path="Tag"
+                         RelativeSource="{RelativeSource FindAncestor, AncestorType={x:Type StackPanel}}"/>
+                <Binding Path="Text" ElementName="controlTemplateElementSource"/>
+              </MultiBinding>
+            </TextBlock.Text>
+          </TextBlock>
+        </StackPanel>
+      </Border>
+    </ControlTemplate>
+  </Window.Resources>
+
+  <StackPanel x:Name="contractRoot">
+    <TextBox x:Name="windowLeftSource" Text="Left"/>
+    <TextBox x:Name="windowRightSource" Text="Right"/>
+    <TextBlock x:Name="windowMulti">
+      <TextBlock.Text>
+        <MultiBinding StringFormat="window:{0}|{1}">
+          <Binding Path="Text" ElementName="windowLeftSource"/>
+          <Binding Path="Text" ElementName="windowRightSource"/>
+        </MultiBinding>
+      </TextBlock.Text>
+    </TextBlock>
+    <scope:BindingScopeCard x:Name="componentInstance" Caption="AOT component"/>
+    <ItemsControl x:Name="dataTemplateInstance"
+                  ItemsSource="{StaticResource BindingScopeItems}"
+                  ItemTemplate="{StaticResource BindingScopeItemTemplate}"/>
+    <TextBlock x:Name="complexNativePathMirror"
+               Text="{Binding ItemsSource[0].Name, ElementName=dataTemplateInstance}"/>
+    <Button x:Name="controlTemplateInstance"
+            Content="AOT template"
+            Template="{StaticResource BindingScopeButtonTemplate}"/>
+  </StackPanel>
+</Window>

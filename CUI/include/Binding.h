@@ -3,7 +3,11 @@
 #pragma once
 
 #include "Core/EventConnection.h"
+#include "CuiBuildFeatures.h"
 #include <any>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <concepts>
 #include <functional>
@@ -12,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <typeindex>
 #include <unordered_map>
@@ -21,8 +26,16 @@
 
 class Control;
 class DependencyObject;
+class DependencyProperty;
+class IBindingSource;
 class IBindingList;
-class DeclarativeTypeDescriptor;
+
+#if CUI_ENABLE_DYNAMIC_XAML
+namespace cui::details
+{
+	class DependencyPropertyStandaloneAccess;
+}
+#endif
 
 /**
  * Metadata observation callback shared by declaration-only headers.
@@ -32,6 +45,69 @@ class DeclarativeTypeDescriptor;
  * metadata class body to be complete at that exact parse point.
  */
 using DependencyPropertyChangeHandler = std::function<void()>;
+
+/**
+ * Stable, name-free identity for one property exposed by an IBindingSource.
+ *
+ * Zero is reserved for "all properties" / object-level validation.  AOT
+ * generated code hashes the canonical schema member at compile time and keeps
+ * only this token in Production execution tables.
+ */
+struct BindingSourcePropertyToken final
+{
+	std::uint64_t Value = 0;
+
+	[[nodiscard]] constexpr explicit operator bool() const noexcept
+	{
+		return Value != 0;
+	}
+	constexpr bool operator==(
+		const BindingSourcePropertyToken&) const noexcept = default;
+};
+
+/** 64-bit FNV-1a over stable UTF-32 code units. */
+[[nodiscard]] constexpr BindingSourcePropertyToken
+MakeBindingSourcePropertyToken(std::wstring_view name) noexcept
+{
+	if (name.empty()) return {};
+	std::uint64_t hash = 14695981039346656037ull;
+	for (const wchar_t character : name)
+	{
+		const auto codeUnit = static_cast<std::uint32_t>(character);
+		for (unsigned shift = 0; shift != 32; shift += 8)
+		{
+			hash ^= static_cast<std::uint8_t>(codeUnit >> shift);
+			hash *= 1099511628211ull;
+		}
+	}
+	return { hash == 0 ? 1ull : hash };
+}
+
+/**
+ * One dependency-property member literal expressed in the active runtime
+ * flavor. Design retains the authored name for schema discovery; Production
+ * lowers the same source literal directly to its stable token.
+ */
+#if CUI_ENABLE_DYNAMIC_XAML
+template<std::size_t Size>
+[[nodiscard]] inline std::wstring DependencyPropertyRegistrationLiteral(
+	const wchar_t (&name)[Size])
+{
+	static_assert(Size > 1,
+		"Dependency-property registration names cannot be empty");
+	return std::wstring(name, Size - 1);
+}
+#else
+template<std::size_t Size>
+[[nodiscard]] consteval BindingSourcePropertyToken
+DependencyPropertyRegistrationLiteral(const wchar_t (&name)[Size]) noexcept
+{
+	static_assert(Size > 1,
+		"Dependency-property registration names cannot be empty");
+	return MakeBindingSourcePropertyToken(
+		std::wstring_view(name, Size - 1));
+}
+#endif
 
 enum class BindingMode
 {
@@ -116,6 +192,51 @@ struct BindingValidationResult
 	bool operator==(const BindingValidationResult&) const = default;
 };
 
+/**
+ * Compact WPF Nullable<Boolean> value used by ToggleButton.IsChecked.
+ *
+ * Unlike std::optional<bool>, conversion in a boolean context reflects the
+ * contained value rather than merely HasValue().  This preserves the behavior
+ * of existing native `if (toggle.IsChecked)` call sites while still retaining
+ * an explicit indeterminate/null state in BindingValue.
+ */
+class NullableBool final
+{
+public:
+	constexpr NullableBool() noexcept = default;
+	constexpr NullableBool(std::nullopt_t) noexcept {}
+	constexpr NullableBool(bool value) noexcept
+		: _hasValue(true), _value(value)
+	{
+	}
+
+	constexpr bool HasValue() const noexcept { return _hasValue; }
+	constexpr bool GetValueOrDefault(bool fallback = false) const noexcept
+	{
+		return _hasValue ? _value : fallback;
+	}
+	constexpr operator bool() const noexcept
+	{
+		return _hasValue && _value;
+	}
+
+	constexpr bool operator==(const NullableBool&) const noexcept = default;
+	friend constexpr bool operator==(
+		NullableBool left, bool right) noexcept
+	{
+		return left._hasValue && left._value == right;
+	}
+	friend constexpr bool operator==(
+		bool left, NullableBool right) noexcept
+	{
+		return right == left;
+	}
+
+private:
+	bool _hasValue = false;
+	bool _value = false;
+};
+
 enum class BindingValueKind
 {
 	Empty,
@@ -125,16 +246,20 @@ enum class BindingValueKind
 	Float,
 	Double,
 	String,
-	Object
+	Object,
+	/** Appended so the stable numeric identities above remain unchanged. */
+	NullableBool
 };
 
 class BindingValue
 {
 public:
-	using Storage = std::variant<std::monostate, bool, int, long long, float, double, std::wstring, std::any>;
+	using Storage = std::variant<std::monostate, bool, int, long long, float,
+		double, std::wstring, std::any, NullableBool>;
 
 	BindingValue();
 	BindingValue(bool value);
+	BindingValue(NullableBool value);
 	BindingValue(int value);
 	BindingValue(long long value);
 	BindingValue(float value);
@@ -146,6 +271,7 @@ public:
 	template<typename T>
 		requires (!std::is_same_v<std::remove_cvref_t<T>, BindingValue>
 			&& !std::is_same_v<std::remove_cvref_t<T>, bool>
+			&& !std::is_same_v<std::remove_cvref_t<T>, NullableBool>
 			&& !std::is_same_v<std::remove_cvref_t<T>, int>
 			&& !std::is_same_v<std::remove_cvref_t<T>, long long>
 			&& !std::is_same_v<std::remove_cvref_t<T>, float>
@@ -162,6 +288,7 @@ public:
 	std::wstring ToString() const;
 
 	bool TryGetBool(bool& out) const;
+	bool TryGetNullableBool(NullableBool& out) const;
 	bool TryGetInt(int& out) const;
 	bool TryGetInt64(long long& out) const;
 	bool TryGetFloat(float& out) const;
@@ -174,6 +301,8 @@ public:
 		using Value = std::remove_cv_t<T>;
 		if constexpr (std::is_same_v<Value, bool>)
 			return TryGetBool(out);
+		else if constexpr (std::is_same_v<Value, NullableBool>)
+			return TryGetNullableBool(out);
 		else if constexpr (std::is_same_v<Value, int>)
 			return TryGetInt(out);
 		else if constexpr (std::is_same_v<Value, long long>)
@@ -258,11 +387,14 @@ public:
 	const std::type_info& Type() const noexcept;
 
 	const Storage& Raw() const { return _value; }
+	/** Projects the normalized value into command/event APIs that use std::any. */
+	std::any ToAny() const;
 
 private:
 	Storage _value;
 };
 
+#if CUI_ENABLE_DYNAMIC_XAML
 /** One parsed member or indexer in a WPF-style Binding PropertyPath. */
 enum class BindingPathStepKind : uint8_t
 {
@@ -277,7 +409,188 @@ struct BindingPathStep final
 
 	bool operator==(const BindingPathStep&) const = default;
 };
+#endif
 
+/** One name-free operation in an AOT-lowered binding path. */
+enum class CompiledBindingPathStepKind : std::uint8_t
+{
+	Property,
+	ListIndex
+};
+
+enum class CompiledBindingPathCapabilities : std::uint8_t
+{
+	None = 0,
+	Read = 1 << 0,
+	Write = 1 << 1,
+	Observe = 1 << 2
+};
+
+[[nodiscard]] constexpr CompiledBindingPathCapabilities operator|(
+	CompiledBindingPathCapabilities left,
+	CompiledBindingPathCapabilities right) noexcept
+{
+	return static_cast<CompiledBindingPathCapabilities>(
+		static_cast<std::uint8_t>(left) | static_cast<std::uint8_t>(right));
+}
+
+[[nodiscard]] constexpr bool HasCompiledBindingPathCapability(
+	CompiledBindingPathCapabilities value,
+	CompiledBindingPathCapabilities capability) noexcept
+{
+	return (static_cast<std::uint8_t>(value)
+		& static_cast<std::uint8_t>(capability)) != 0;
+}
+
+struct CompiledSourceHandle;
+struct CompiledBindingPathStep;
+
+/**
+ * Whole-endpoint operations for one AOT-resolved binding source property.
+ *
+ * Object identifies the stable source/provider instance and Context is an
+ * accessor-specific immutable operand (for example, a DependencyProperty).
+ * Generated/native endpoints may therefore call a concrete property directly;
+ * the legacy CompiledBindingPath lane remains the explicit IBindingSource
+ * adapter for sources whose concrete contract is unknown at build time.
+ */
+struct CompiledSourceOps final
+{
+	using CapabilitiesCallback = CompiledBindingPathCapabilities(*)(
+		const CompiledSourceHandle&);
+	using ValueKindCallback = BindingValueKind(*)(
+		const CompiledSourceHandle&);
+	using LifetimeCallback = std::weak_ptr<const void>(*)(
+		const CompiledSourceHandle&);
+	using ReadCallback = bool(*)(
+		const CompiledSourceHandle&, BindingValue&);
+	using WriteCallback = bool(*)(
+		const CompiledSourceHandle&, const BindingValue&);
+	using SubscribeCallback = EventConnection(*)(
+		const CompiledSourceHandle&, DependencyPropertyChangeHandler);
+	using ValidationCallback = std::vector<BindingValidationIssue>(*)(
+		const CompiledSourceHandle&);
+	using SubscribeValidationCallback = EventConnection(*)(
+		const CompiledSourceHandle&, DependencyPropertyChangeHandler);
+
+	CapabilitiesCallback Capabilities = nullptr;
+	ValueKindCallback ValueKind = nullptr;
+	LifetimeCallback Lifetime = nullptr;
+	ReadCallback Read = nullptr;
+	WriteCallback Write = nullptr;
+	SubscribeCallback Subscribe = nullptr;
+	ValidationCallback Validation = nullptr;
+	SubscribeValidationCallback SubscribeValidation = nullptr;
+};
+
+/** Compact, non-owning handle to one already-resolved source endpoint. */
+struct CompiledSourceHandle final
+{
+	void* Object = nullptr;
+	const void* Context = nullptr;
+	const CompiledSourceOps* Ops = nullptr;
+
+	[[nodiscard]] constexpr explicit operator bool() const noexcept
+	{
+		return Object != nullptr && Ops != nullptr;
+	}
+	[[nodiscard]] CompiledBindingPathCapabilities Capabilities() const
+	{
+		return *this && Ops->Capabilities
+			? Ops->Capabilities(*this)
+			: CompiledBindingPathCapabilities::None;
+	}
+	[[nodiscard]] BindingValueKind ValueKind() const
+	{
+		return *this && Ops->ValueKind
+			? Ops->ValueKind(*this) : BindingValueKind::Empty;
+	}
+	[[nodiscard]] std::weak_ptr<const void> Lifetime() const
+	{
+		return *this && Ops->Lifetime
+			? Ops->Lifetime(*this) : std::weak_ptr<const void>{};
+	}
+};
+
+static_assert(std::is_trivially_copyable_v<CompiledSourceHandle>);
+static_assert(std::is_standard_layout_v<CompiledSourceHandle>);
+
+/**
+ * Resolves one property step against the current path cursor without a name or
+ * BindingSourcePropertyToken lookup. A non-null resolver is authoritative: an
+ * empty result is a hard endpoint-resolution failure and must never fall back
+ * to the external-source token adapter.
+ */
+using CompiledBindingPathEndpointResolver =
+	CompiledSourceHandle(*)(IBindingSource&) noexcept;
+
+namespace cui::binding
+{
+	/** Creates an exact DependencyObject/DependencyProperty source endpoint. */
+	[[nodiscard]] CompiledSourceHandle MakeCompiledDependencyPropertySource(
+		DependencyObject& source,
+		const DependencyProperty& property) noexcept;
+	/**
+	 * Resolves an exact DependencyProperty endpoint from a path cursor source.
+	 * Returns empty when the cursor is not a DependencyObject.
+	 */
+	[[nodiscard]] CompiledSourceHandle ResolveCompiledDependencyPropertySource(
+		IBindingSource& source,
+		const DependencyProperty& property) noexcept;
+
+	/**
+	 * Wraps one explicitly unknown external C++ source property in the compact
+	 * endpoint ABI. The process-lifetime descriptor supplies the already-lowered
+	 * token, capabilities and value kind; only value access remains virtual.
+	 */
+	[[nodiscard]] CompiledSourceHandle MakeCompiledBindingSourcePropertyAdapter(
+		IBindingSource& source,
+		const CompiledBindingPathStep& property) noexcept;
+}
+
+struct CompiledBindingPathStep final
+{
+	CompiledBindingPathStepKind Kind = CompiledBindingPathStepKind::Property;
+	CompiledBindingPathCapabilities Capabilities =
+		CompiledBindingPathCapabilities::Read
+		| CompiledBindingPathCapabilities::Observe;
+	BindingValueKind ValueKind = BindingValueKind::Empty;
+	BindingSourcePropertyToken Property;
+	std::uint32_t ListIndex = 0;
+	CompiledBindingPathEndpointResolver EndpointResolver = nullptr;
+
+	constexpr bool operator==(const CompiledBindingPathStep&) const noexcept = default;
+};
+
+inline constexpr std::uint32_t CompiledBindingPathVersion = 2;
+
+/**
+ * Non-owning view of an immutable, process-lifetime AOT path table.
+ * Generated code must keep the referenced step array alive for the Binding.
+ */
+struct CompiledBindingPathView final
+{
+	std::span<const CompiledBindingPathStep> Steps;
+	std::uint32_t Version = CompiledBindingPathVersion;
+
+	constexpr CompiledBindingPathView() noexcept = default;
+	constexpr explicit CompiledBindingPathView(
+		std::span<const CompiledBindingPathStep> steps,
+		std::uint32_t version = CompiledBindingPathVersion) noexcept
+		: Steps(steps), Version(version)
+	{
+	}
+	template<std::size_t Size>
+	constexpr CompiledBindingPathView(
+		const CompiledBindingPathStep (&steps)[Size]) noexcept
+		: Steps(steps), Version(CompiledBindingPathVersion)
+	{
+	}
+
+	[[nodiscard]] constexpr bool Empty() const noexcept { return Steps.empty(); }
+};
+
+#if CUI_ENABLE_DYNAMIC_XAML
 /**
  * Parses paths such as Profile.Name, People[0].Name,
  * (AutomationProperties.Name) and Settings['accent.color']. Quoted keys
@@ -286,6 +599,7 @@ struct BindingPathStep final
 bool TryParseBindingPropertyPath(
 	const std::wstring& value,
 	std::vector<BindingPathStep>& steps);
+#endif
 
 bool TryConvertBindingValue(const BindingValue& value, BindingValueKind targetKind, BindingValue& out);
 /** Converts while preserving the concrete type represented by targetValue. */
@@ -372,38 +686,17 @@ private:
 	ContextFunction _contextConvertBack;
 };
 
-/** Discoverable converter metadata used by runtime registration and design tools. */
-struct BindingValueConverterMetadata
+/** Stable identities emitted by AOT code for framework-provided converters. */
+enum class BuiltInBindingValueConverter : std::uint8_t
 {
-	std::wstring Name;
-	/** Empty means that the converter accepts any source kind. */
-	BindingValueKind SourceKind = BindingValueKind::Empty;
-	/** Empty means that the converter can target any property kind. */
-	BindingValueKind TargetKind = BindingValueKind::Empty;
-	bool CanConvertBack = true;
-
-	bool operator==(const BindingValueConverterMetadata&) const = default;
+	BooleanNegation,
+	StringIsNotEmpty,
+	StringTrim
 };
 
-/**
- * Process-wide named converter registry. Built-in converters are always present;
- * applications may register custom factories before generated forms call BindData.
- */
-class BindingValueConverterRegistry final
-{
-public:
-	using Factory = std::function<std::shared_ptr<const IBindingValueConverter>()>;
-
-	static bool Register(
-		BindingValueConverterMetadata metadata,
-		Factory factory,
-		bool replaceExisting = false);
-	/** Removes a custom registration. Built-in registrations cannot be removed. */
-	static bool Unregister(const std::wstring& name);
-	static std::optional<BindingValueConverterMetadata> Find(const std::wstring& name);
-	static std::vector<BindingValueConverterMetadata> GetConverters();
-	static std::shared_ptr<const IBindingValueConverter> Create(const std::wstring& name);
-};
+/** Returns one process-lifetime singleton without consulting the name registry. */
+std::shared_ptr<const IBindingValueConverter>
+GetBuiltInBindingValueConverter(BuiltInBindingValueConverter converter);
 
 /** Context supplied to WPF-style IMultiValueConverter implementations. */
 struct MultiBindingValueConverterContext final
@@ -466,41 +759,19 @@ private:
 	ConvertBackFunction _convertBack;
 };
 
-struct MultiBindingValueConverterMetadata
-{
-	std::wstring Name;
-	size_t MinimumInputCount = 2;
-	BindingValueKind TargetKind = BindingValueKind::Empty;
-	bool CanConvertBack = false;
-
-	bool operator==(const MultiBindingValueConverterMetadata&) const = default;
-};
-
-class MultiBindingValueConverterRegistry final
-{
-public:
-	using Factory = std::function<
-		std::shared_ptr<const IMultiBindingValueConverter>()>;
-
-	static bool Register(
-		MultiBindingValueConverterMetadata metadata,
-		Factory factory,
-		bool replaceExisting = false);
-	static bool Unregister(const std::wstring& name);
-	static std::optional<MultiBindingValueConverterMetadata> Find(
-		const std::wstring& name);
-	static std::vector<MultiBindingValueConverterMetadata> GetConverters();
-	static std::shared_ptr<const IMultiBindingValueConverter> Create(
-		const std::wstring& name);
-};
-
 class PropertyChangedEventArgs
 {
 public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring PropertyName;
+#endif
+	BindingSourcePropertyToken PropertyToken;
 
 	PropertyChangedEventArgs() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
 	explicit PropertyChangedEventArgs(std::wstring propertyName);
+#endif
+	explicit PropertyChangedEventArgs(BindingSourcePropertyToken propertyToken) noexcept;
 };
 
 class PropertyChangedEvent
@@ -518,7 +789,10 @@ public:
 	size_t Add(Handler handler);
 	EventConnection Subscribe(Handler handler);
 	void Remove(size_t token);
+	/** Production immediately lowers names to tokens; event args never retain them. */
 	void Notify(const std::wstring& propertyName);
+	void Notify(BindingSourcePropertyToken propertyToken);
+	void Notify(const PropertyChangedEventArgs& args);
 	void Clear();
 	size_t Count() const noexcept;
 
@@ -531,10 +805,17 @@ class BindingValidationChangedEventArgs
 {
 public:
 	/** Empty means object-level validation or that every property may have changed. */
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring PropertyName;
+#endif
+	BindingSourcePropertyToken PropertyToken;
 
 	BindingValidationChangedEventArgs() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
 	explicit BindingValidationChangedEventArgs(std::wstring propertyName);
+#endif
+	explicit BindingValidationChangedEventArgs(
+		BindingSourcePropertyToken propertyToken) noexcept;
 };
 
 /** RAII-observable validation notification independent from value changes. */
@@ -557,7 +838,10 @@ public:
 	size_t Add(Handler handler);
 	EventConnection Subscribe(Handler handler);
 	void Remove(size_t token);
+	/** Production immediately lowers names to tokens; event args never retain them. */
 	void Notify(const std::wstring& propertyName);
+	void Notify(BindingSourcePropertyToken propertyToken);
+	void Notify(const BindingValidationChangedEventArgs& args);
 	void Clear();
 	size_t Count() const noexcept;
 
@@ -576,12 +860,59 @@ public:
 /** Discoverable metadata for one property exposed by an IBindingSource. */
 struct BindingSourcePropertyMetadata
 {
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring Name;
+#endif
 	BindingValueKind ValueKind = BindingValueKind::Empty;
 	std::type_index ValueType{ typeid(void) };
 	bool CanRead = true;
 	bool CanWrite = true;
 	bool CanObserve = true;
+
+	BindingSourcePropertyMetadata() = default;
+	BindingSourcePropertyMetadata(
+		BindingValueKind valueKind,
+		std::type_index valueType,
+		bool canRead = true,
+		bool canWrite = true,
+		bool canObserve = true) noexcept
+		: ValueKind(valueKind),
+		  ValueType(valueType),
+		  CanRead(canRead),
+		  CanWrite(canWrite),
+		  CanObserve(canObserve)
+	{
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	BindingSourcePropertyMetadata(
+		std::wstring name,
+		BindingValueKind valueKind,
+		std::type_index valueType,
+		bool canRead = true,
+		bool canWrite = true,
+		bool canObserve = true)
+		: BindingSourcePropertyMetadata(
+			valueKind, valueType, canRead, canWrite, canObserve)
+	{
+		Name = std::move(name);
+	}
+#else
+	/**
+	 * Transitional aggregate-spelling compatibility for generated sources that
+	 * already emit an empty Design-name slot. No name is retained in Production.
+	 */
+	BindingSourcePropertyMetadata(
+		std::nullptr_t,
+		BindingValueKind valueKind,
+		std::type_index valueType,
+		bool canRead = true,
+		bool canWrite = true,
+		bool canObserve = true) noexcept
+		: BindingSourcePropertyMetadata(
+			valueKind, valueType, canRead, canWrite, canObserve)
+	{
+	}
+#endif
 
 	bool operator==(const BindingSourcePropertyMetadata&) const = default;
 };
@@ -589,16 +920,60 @@ struct BindingSourcePropertyMetadata
 class IBindingSource : public INotifyPropertyChanged
 {
 public:
-	IBindingSource()
-		: _bindingLifetime(std::make_shared<int>(0)) {}
-	IBindingSource(const IBindingSource&)
-		: _bindingLifetime(std::make_shared<int>(0)) {}
-	IBindingSource(IBindingSource&&)
-		: _bindingLifetime(std::make_shared<int>(0)) {}
+	IBindingSource() = default;
+	IBindingSource(const IBindingSource&) noexcept {}
+	IBindingSource(IBindingSource&&) noexcept {}
 	IBindingSource& operator=(const IBindingSource&) noexcept { return *this; }
 	IBindingSource& operator=(IBindingSource&&) noexcept { return *this; }
-	virtual bool TryGetValue(const std::wstring& propertyName, BindingValue& out) const = 0;
-	virtual bool TrySetValue(const std::wstring& propertyName, const BindingValue& value) = 0;
+	/**
+	 * Name-free AOT surface. Production sources must implement this contract;
+	 * Design keeps the historical defaults so dynamically discovered sources
+	 * remain source compatible with the XAML editor.
+	 */
+	virtual bool TryGetValue(
+		BindingSourcePropertyToken property,
+		BindingValue& out) const
+#if CUI_ENABLE_DYNAMIC_XAML
+	{
+		(void)property;
+		(void)out;
+		return false;
+	}
+#else
+		= 0;
+#endif
+	virtual bool TrySetValue(
+		BindingSourcePropertyToken property,
+		const BindingValue& value)
+#if CUI_ENABLE_DYNAMIC_XAML
+	{
+		(void)property;
+		(void)value;
+		return false;
+	}
+#else
+		= 0;
+#endif
+	virtual bool TryGetPropertyMetadata(
+		BindingSourcePropertyToken property,
+		BindingSourcePropertyMetadata& out) const
+#if CUI_ENABLE_DYNAMIC_XAML
+	{
+		(void)property;
+		(void)out;
+		return false;
+	}
+#else
+		= 0;
+#endif
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic/name compatibility surface owned exclusively by the Design ABI. */
+	virtual bool TryGetValue(
+		const std::wstring& propertyName,
+		BindingValue& out) const = 0;
+	virtual bool TrySetValue(
+		const std::wstring& propertyName,
+		const BindingValue& value) = 0;
 	/** Optional discovery API. Existing custom sources may keep the defaults. */
 	virtual bool TryGetPropertyMetadata(
 		const std::wstring& propertyName,
@@ -619,21 +994,40 @@ public:
 		(void)propertyName;
 		return {};
 	}
+#endif
+	virtual std::vector<BindingValidationIssue> GetValidationIssues(
+		BindingSourcePropertyToken property) const
+	{
+		(void)property;
+		return {};
+	}
 	/** Returns null when the source exposes only snapshot validation state. */
 	virtual BindingValidationChangedEvent* ValidationChanged() noexcept
 	{
 		return nullptr;
 	}
-	std::weak_ptr<const void> BindingLifetime() const noexcept { return _bindingLifetime; }
+	std::weak_ptr<const void> BindingLifetime() const
+	{
+		if (!_bindingLifetime)
+			_bindingLifetime = std::make_shared<int>(0);
+		return _bindingLifetime;
+	}
 
 private:
-	std::shared_ptr<const void> _bindingLifetime;
+	mutable std::shared_ptr<const void> _bindingLifetime;
 };
 
-/** Reads a member/indexer path from any binding source. */
+#if CUI_ENABLE_DYNAMIC_XAML
+/** Reads a dynamic member/indexer path from any Design binding source. */
 bool TryGetBindingPathValue(
 	const IBindingSource& source,
 	const std::wstring& path,
+	BindingValue& out);
+#endif
+/** Executes an AOT path without parsing or retaining a source-path string. */
+bool TryGetBindingPathValue(
+	const IBindingSource& source,
+	CompiledBindingPathView path,
 	BindingValue& out);
 
 /**
@@ -678,15 +1072,31 @@ public:
 	void SetSource(BindingSourceReference source);
 	const BindingSourceReference& Source() const noexcept { return _source; }
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool TryGetValue(const std::wstring& propertyName,
 		BindingValue& out) const override;
+#endif
+	bool TryGetValue(BindingSourcePropertyToken property,
+		BindingValue& out) const override;
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool TrySetValue(const std::wstring& propertyName,
 		const BindingValue& value) override;
+#endif
+	bool TrySetValue(BindingSourcePropertyToken property,
+		const BindingValue& value) override;
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool TryGetPropertyMetadata(const std::wstring& propertyName,
 		BindingSourcePropertyMetadata& out) const override;
+#endif
+	bool TryGetPropertyMetadata(BindingSourcePropertyToken property,
+		BindingSourcePropertyMetadata& out) const override;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::vector<BindingSourcePropertyMetadata> GetProperties() const override;
 	std::vector<BindingValidationIssue> GetValidationIssues(
 		const std::wstring& propertyName) const override;
+#endif
+	std::vector<BindingValidationIssue> GetValidationIssues(
+		BindingSourcePropertyToken property) const override;
 	BindingValidationChangedEvent* ValidationChanged() noexcept override
 	{
 		return &_validationChanged;
@@ -703,9 +1113,14 @@ private:
 };
 
 /** Collects object and field issues along a dotted source path. */
+#if CUI_ENABLE_DYNAMIC_XAML
 std::vector<BindingValidationIssue> GetBindingValidationIssuesForPath(
 	const IBindingSource& source,
 	const std::wstring& sourcePropertyPath);
+#endif
+std::vector<BindingValidationIssue> GetBindingValidationIssuesForPath(
+	const IBindingSource& source,
+	CompiledBindingPathView sourcePropertyPath);
 
 class ObservableObject : public IBindingSource
 {
@@ -716,20 +1131,40 @@ public:
 		return &_validationChanged;
 	}
 
-	bool TryGetValue(const std::wstring& propertyName, BindingValue& out) const override;
-	bool TrySetValue(const std::wstring& propertyName, const BindingValue& value) override;
+	/** Design overrides IBindingSource; Production keeps this only as an explicit
+	 * ObservableObject convenience and never exposes it through the source ABI. */
+	bool TryGetValue(const std::wstring& propertyName, BindingValue& out) const;
+	bool TryGetValue(BindingSourcePropertyToken property, BindingValue& out) const override;
+	bool TrySetValue(const std::wstring& propertyName, const BindingValue& value);
+	bool TrySetValue(BindingSourcePropertyToken property,
+		const BindingValue& value) override;
 	bool TryGetPropertyMetadata(
 		const std::wstring& propertyName,
+		BindingSourcePropertyMetadata& out) const;
+	bool TryGetPropertyMetadata(
+		BindingSourcePropertyToken property,
 		BindingSourcePropertyMetadata& out) const override;
+	#if CUI_ENABLE_DYNAMIC_XAML
 	std::vector<BindingSourcePropertyMetadata> GetProperties() const override;
+	#endif
 	std::vector<BindingValidationIssue> GetValidationIssues(
-		const std::wstring& propertyName) const override;
+		const std::wstring& propertyName) const;
+	std::vector<BindingValidationIssue> GetValidationIssues(
+		BindingSourcePropertyToken property) const override;
 	bool HasValidationIssues() const noexcept;
 	bool HasValidationErrors() const noexcept;
 	bool HasValidationErrors(const std::wstring& propertyName) const;
+	bool HasValidationErrors(BindingSourcePropertyToken property) const;
 
 	/** Defines metadata and an optional initial value without requiring CanWrite. */
+	#if CUI_ENABLE_DYNAMIC_XAML
 	bool DefineProperty(
+		BindingSourcePropertyMetadata metadata,
+		const BindingValue& initialValue = {},
+		bool replaceExisting = false);
+	#endif
+	bool DefineProperty(
+		BindingSourcePropertyToken property,
 		BindingSourcePropertyMetadata metadata,
 		const BindingValue& initialValue = {},
 		bool replaceExisting = false);
@@ -744,13 +1179,24 @@ public:
 		bool replaceExisting = false)
 	{
 		BindingValue value(std::move(initialValue));
+		#if CUI_ENABLE_DYNAMIC_XAML
 		return DefineProperty(
 			{ std::move(name), value.Kind(), std::type_index(value.Type()),
 				canRead, canWrite, canObserve },
 			value,
 			replaceExisting);
+		#else
+		const auto property = MakeBindingSourcePropertyToken(name);
+		return property && DefineProperty(
+			property,
+			{ value.Kind(), std::type_index(value.Type()),
+				canRead, canWrite, canObserve },
+			value,
+			replaceExisting);
+		#endif
 	}
 	bool RemoveProperty(const std::wstring& propertyName);
+	bool RemoveProperty(BindingSourcePropertyToken property);
 
 	template<typename T>
 	T GetValue(const std::wstring& propertyName, const T& defaultValue = T{}) const
@@ -764,26 +1210,56 @@ public:
 	}
 
 	template<typename T>
+	T GetValue(BindingSourcePropertyToken property, const T& defaultValue = T{}) const
+	{
+		BindingValue value;
+		if (!TryGetValue(property, value))
+			return defaultValue;
+
+		T result{};
+		return value.TryGet(result) ? result : defaultValue;
+	}
+
+	template<typename T>
 	bool SetValue(const std::wstring& propertyName, T value)
 	{
 		return TrySetValue(propertyName, BindingValue(std::move(value)));
 	}
 
+	template<typename T>
+	bool SetValue(BindingSourcePropertyToken property, T value)
+	{
+		return TrySetValue(property, BindingValue(std::move(value)));
+	}
+
 protected:
 	void OnPropertyChanged(const std::wstring& propertyName);
+	void OnPropertyChanged(BindingSourcePropertyToken property);
 	/** Replaces the issues for one property; empty propertyName is object-level. */
 	bool SetValidationIssues(
 		const std::wstring& propertyName,
+		std::vector<BindingValidationIssue> issues);
+	bool SetValidationIssues(
+		BindingSourcePropertyToken property,
 		std::vector<BindingValidationIssue> issues);
 	bool SetValidationError(
 		const std::wstring& propertyName,
 		std::wstring message,
 		std::wstring code = {});
+	bool SetValidationError(
+		BindingSourcePropertyToken property,
+		std::wstring message,
+		std::wstring code = {});
 	bool ClearValidationIssues(const std::wstring& propertyName);
+	bool ClearValidationIssues(BindingSourcePropertyToken property);
 	bool ClearAllValidationIssues();
 	/** Updates declared read-only properties from a derived view-model. */
 	bool SetCurrentValue(
 		const std::wstring& propertyName,
+		const BindingValue& value,
+		bool notify = true);
+	bool SetCurrentValue(
+		BindingSourcePropertyToken property,
 		const BindingValue& value,
 		bool notify = true);
 
@@ -794,6 +1270,13 @@ protected:
 		return SetCurrentValue(propertyName, BindingValue(std::move(value)), notify);
 	}
 
+	template<typename T>
+		requires (!std::is_same_v<std::remove_cvref_t<T>, BindingValue>)
+	bool SetCurrentValue(BindingSourcePropertyToken property, T value, bool notify = true)
+	{
+		return SetCurrentValue(property, BindingValue(std::move(value)), notify);
+	}
+
 private:
 	bool NormalizeValue(
 		BindingSourcePropertyMetadata& metadata,
@@ -801,9 +1284,9 @@ private:
 		BindingValue& out) const;
 	PropertyChangedEvent _propertyChanged;
 	BindingValidationChangedEvent _validationChanged;
-	std::unordered_map<std::wstring, BindingValue> _values;
-	std::unordered_map<std::wstring, BindingSourcePropertyMetadata> _metadata;
-	std::unordered_map<std::wstring, std::vector<BindingValidationIssue>>
+	std::unordered_map<std::uint64_t, BindingValue> _values;
+	std::unordered_map<std::uint64_t, BindingSourcePropertyMetadata> _metadata;
+	std::unordered_map<std::uint64_t, std::vector<BindingValidationIssue>>
 		_validationIssues;
 };
 
@@ -882,6 +1365,7 @@ constexpr bool HasDependencyPropertyFlag(
 }
 
 /** Preferred editor used by metadata-driven design tools. */
+#if CUI_ENABLE_DESIGN_METADATA
 enum class DependencyPropertyEditorKind : unsigned char
 {
 	Auto,
@@ -935,36 +1419,7 @@ struct DependencyPropertyDesignMetadata
 	/** Optional target-sensitive visibility, evaluated after Browsable. */
 	std::function<bool(DependencyObject&)> BrowsableWhen;
 };
-
-/**
- * Property contract owned by an immutable declarative type descriptor.
- *
- * Unlike DependencyPropertyRegistry entries this definition does not require a
- * C++ owner type or getter/setter pair. DeclarativeTypeDescriptor creates one
- * shared DependencyPropertyMetadata object for the XAML type; Control instances
- * keep only their value slots.
- *
- * Object-valued definitions must provide a non-empty, concrete DefaultValue.
- * The default's runtime type becomes part of the property contract, so values
- * of unrelated object types cannot be assigned through Binding or styles.
- */
-struct DeclarativePropertyDefinition
-{
-	std::wstring Name;
-	BindingValueKind ValueKind = BindingValueKind::String;
-	BindingValue DefaultValue = BindingValue(std::wstring{});
-	/** Optional closed set accepted after conversion; used by declarative enums. */
-	std::vector<BindingValue> AllowedValues;
-	DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
-	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
-	DataSourceUpdateMode DefaultUpdateMode =
-		DataSourceUpdateMode::OnPropertyChanged;
-	/** Stable identity shared by instances when Flags contains Inherits. */
-	std::wstring InheritanceKey;
-	DependencyPropertyDesignMetadata Design;
-	/** Public XAML/style/Binding writes are rejected; component behavior may update it. */
-	bool IsReadOnly = false;
-};
+#endif
 
 /**
  * Behavioral metadata layered on top of a bindable property registration.
@@ -980,7 +1435,9 @@ struct DependencyPropertyOptions
 	std::function<std::optional<TValue>(TOwner&, const TValue&)> Coerce;
 	std::function<void(TOwner&, const TValue&, const TValue&)> Changed;
 	std::function<bool(const TValue&, const TValue&)> Equals;
+#if CUI_ENABLE_DESIGN_METADATA
 	DependencyPropertyDesignMetadata Design;
+#endif
 	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
 	DataSourceUpdateMode DefaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
@@ -998,7 +1455,24 @@ struct DependencyPropertyOptions
 
 class DependencyPropertyKey;
 class DependencyPropertyMetadata;
+#if CUI_ENABLE_DYNAMIC_XAML
+class DependencyPropertyMetadataCache;
+#endif
+class DependencyPropertyRegistration;
+class DependencyPropertyKeyRegistration;
+class DependencyPropertyMetadataRegistration;
 class DependencyPropertyRegistry;
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+namespace cui::property_system_detail
+{
+	[[nodiscard]] inline const std::wstring& EmptyDependencyPropertyText() noexcept
+	{
+		static const std::wstring empty;
+		return empty;
+	}
+}
+#endif
 
 /**
  * Process-lifetime identity of one dependency property.
@@ -1009,11 +1483,29 @@ class DependencyPropertyRegistry;
 class DependencyProperty final
 {
 public:
-	const std::wstring& Name() const noexcept { return _name; }
+	const std::wstring& Name() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _name;
+#else
+		return cui::property_system_detail::EmptyDependencyPropertyText();
+#endif
+	}
+	BindingSourcePropertyToken BindingSourceToken() const noexcept
+	{
+		return _bindingSourceToken;
+	}
 	BindingValueKind ValueKind() const noexcept { return _valueKind; }
 	const std::type_index& ValueType() const noexcept { return _valueType; }
 	const std::type_index& OwnerType() const noexcept { return _ownerType; }
-	std::size_t GlobalIndex() const noexcept { return _globalIndex; }
+	std::size_t GlobalIndex() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _globalIndex;
+#else
+		return reinterpret_cast<std::size_t>(this);
+#endif
+	}
 	bool ReadOnly() const noexcept
 	{
 		return static_cast<bool>(_readOnlyAuthorization);
@@ -1026,13 +1518,32 @@ public:
 private:
 	using Validator = std::function<bool(const BindingValue&)>;
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _name;
+#endif
+	BindingSourcePropertyToken _bindingSourceToken;
 	BindingValueKind _valueKind = BindingValueKind::Empty;
 	std::type_index _valueType{ typeid(void) };
 	std::type_index _ownerType{ typeid(void) };
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::size_t _globalIndex = 0;
+#endif
 	Validator _validator;
 	std::shared_ptr<const unsigned char> _readOnlyAuthorization;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design-only immutable metadata index used by the legacy schema registry. */
+	std::shared_ptr<DependencyPropertyMetadataCache> _metadataCache;
+#endif
+	/** Accessor-owned default metadata in Production; declarative metadata in Design. */
+	const DependencyPropertyMetadata* _standaloneMetadata = nullptr;
+#if !CUI_ENABLE_DYNAMIC_XAML
+	/**
+	 * Intrusive, property-local relation layers. Nodes live in accessor-local
+	 * statics, so publication needs no owner table, allocation, or lock.
+	 */
+	mutable std::atomic<const DependencyPropertyMetadataRegistration*>
+		_staticMetadataRelations{ nullptr };
+#endif
 
 	DependencyProperty(
 		std::wstring name,
@@ -1047,10 +1558,160 @@ private:
 
 	friend class DependencyPropertyKey;
 	friend class DependencyPropertyMetadata;
+#if CUI_ENABLE_DYNAMIC_XAML
+	friend class DependencyPropertyMetadataCache;
+#endif
+	friend class DependencyPropertyRegistration;
+	friend class DependencyPropertyKeyRegistration;
+	friend class DependencyPropertyMetadataRegistration;
 	friend class DependencyPropertyRegistry;
 	friend class DependencyObject;
-	friend class DeclarativeTypeDescriptor;
 };
+
+/**
+ * One target dependency-property operand lowered either to its
+ * process-lifetime identity or, only for a dynamically materialized design
+ * document, to a late-bound name. Production instances contain exactly the
+ * identity pointer, so repeated Style/Trigger entries neither retain nor
+ * resolve target-property strings at runtime.
+ */
+class DependencyPropertyReference final
+{
+public:
+	DependencyPropertyReference() = default;
+	explicit DependencyPropertyReference(
+		const DependencyProperty& property) noexcept
+		: _property(&property)
+	{
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	explicit DependencyPropertyReference(std::wstring dynamicName)
+		: _dynamicName(std::move(dynamicName))
+	{
+	}
+#endif
+
+	[[nodiscard]] const DependencyProperty* Identity() const noexcept
+	{
+		return _property;
+	}
+	[[nodiscard]] bool IsCompiled() const noexcept
+	{
+		return _property != nullptr;
+	}
+	[[nodiscard]] bool Empty() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return !_property && _dynamicName.empty();
+#else
+		return !_property;
+#endif
+	}
+	[[nodiscard]] const std::wstring& Name() const noexcept
+	{
+		if (_property) return _property->Name();
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _dynamicName;
+#else
+		static const std::wstring empty;
+		return empty;
+#endif
+	}
+
+	[[nodiscard]] bool Matches(
+		const DependencyPropertyReference& other) const noexcept
+	{
+		if (_property && other._property) return _property == other._property;
+		if (_property || other._property) return false;
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _dynamicName == other._dynamicName;
+#else
+		return true;
+#endif
+	}
+	[[nodiscard]] bool Matches(
+		const DependencyProperty* property,
+		const std::wstring& propertyName) const noexcept
+	{
+		if (_property) return property && _property == property;
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _dynamicName == propertyName;
+#else
+		return !property && propertyName.empty();
+#endif
+	}
+
+private:
+	const DependencyProperty* _property = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring _dynamicName;
+#endif
+};
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+static_assert(sizeof(DependencyPropertyReference)
+	== sizeof(const DependencyProperty*));
+#endif
+
+/**
+ * One binding-source operand. Production contains only the dependency-property
+ * identity used by TemplateBinding. Name/path storage belongs exclusively to
+ * the dynamic Design lane; ordinary AOT bindings use CompiledBindingPathView.
+ */
+class BindingSourcePropertyReference final
+{
+public:
+	BindingSourcePropertyReference() = default;
+	explicit BindingSourcePropertyReference(
+		const DependencyProperty& property) noexcept
+		: _property(&property)
+	{
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	explicit BindingSourcePropertyReference(std::wstring propertyPath)
+		: _propertyPath(std::move(propertyPath))
+	{
+	}
+#endif
+
+	[[nodiscard]] const DependencyProperty* Identity() const noexcept
+	{
+		return _property;
+	}
+	[[nodiscard]] bool IsCompiled() const noexcept
+	{
+		return _property != nullptr;
+	}
+	[[nodiscard]] bool Empty() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return !_property && _propertyPath.empty();
+#else
+		return !_property;
+#endif
+	}
+	[[nodiscard]] const std::wstring& Name() const noexcept
+	{
+		if (_property) return _property->Name();
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _propertyPath;
+#else
+		static const std::wstring empty;
+		return empty;
+#endif
+	}
+
+private:
+	const DependencyProperty* _property = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring _propertyPath;
+#endif
+};
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+static_assert(sizeof(BindingSourcePropertyReference)
+	== sizeof(const DependencyProperty*));
+#endif
 
 /** Capability object required to mutate one registered read-only property. */
 class DependencyPropertyKey final
@@ -1073,6 +1734,7 @@ private:
 	friend class DependencyObject;
 	friend class DependencyProperty;
 	friend class DependencyPropertyRegistry;
+	friend class DependencyPropertyKeyRegistration;
 };
 
 /**
@@ -1088,7 +1750,11 @@ public:
 	const DependencyProperty& Property() const noexcept { return *_property; }
 	const std::wstring& Name() const noexcept
 	{
+#if CUI_ENABLE_DYNAMIC_XAML
 		return _property ? _property->Name() : _name;
+#else
+		return cui::property_system_detail::EmptyDependencyPropertyText();
+#endif
 	}
 	BindingValueKind ValueKind() const noexcept
 	{
@@ -1116,16 +1782,32 @@ public:
 	{
 		return _property ? _property->ReadOnly() : _isReadOnly;
 	}
-	bool CanObserve() const noexcept { return static_cast<bool>(_subscriber); }
+	bool CanObserve() const noexcept
+	{
+		return _usesGenericObservation || static_cast<bool>(_subscriber);
+	}
+	bool UsesGenericObservation() const noexcept
+	{
+		return _usesGenericObservation;
+	}
 	bool HasDefaultValue() const noexcept { return _hasDefaultValue; }
 	DependencyPropertyFlags Flags() const noexcept { return _flags; }
 	DataSourceUpdateMode DefaultUpdateMode() const noexcept
 	{
 		return _defaultUpdateMode;
 	}
-	const std::wstring& InheritanceKey() const noexcept { return _inheritanceKey; }
+	const std::wstring& InheritanceKey() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _inheritanceKey;
+#else
+		return cui::property_system_detail::EmptyDependencyPropertyText();
+#endif
+	}
+#if CUI_ENABLE_DESIGN_METADATA
 	const DependencyPropertyDesignMetadata& Design() const noexcept { return _design; }
 	bool IsDesignerBrowsable(DependencyObject& target) const;
+#endif
 	bool HasSameInheritanceIdentity(
 		const DependencyPropertyMetadata& other) const noexcept;
 
@@ -1150,7 +1832,9 @@ private:
 	using Subscriber = std::function<EventConnection(DependencyObject&, ChangeHandler, DataSourceUpdateMode)>;
 	using Changed = std::function<void(DependencyObject&, const BindingValue&, const BindingValue&)>;
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _name;
+#endif
 	BindingValueKind _valueKind = BindingValueKind::Empty;
 	std::type_index _valueType{ typeid(void) };
 	std::type_index _ownerType{ typeid(void) };
@@ -1166,12 +1850,17 @@ private:
 	BindingValue _defaultValue;
 	bool _hasDefaultValue = false;
 	bool _usesEffectiveValueStorage = false;
+	bool _usesGenericObservation = false;
 	DependencyPropertyFlags _flags = DependencyPropertyFlags::None;
 	bool _isReadOnly = false;
 	DataSourceUpdateMode _defaultUpdateMode =
 		DataSourceUpdateMode::OnPropertyChanged;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _inheritanceKey;
+#endif
+#if CUI_ENABLE_DESIGN_METADATA
 	DependencyPropertyDesignMetadata _design;
+#endif
 	const DependencyProperty* _property = nullptr;
 
 	DependencyPropertyMetadata(std::wstring name,
@@ -1193,8 +1882,11 @@ private:
 		DependencyPropertyFlags flags,
 		bool isReadOnly,
 		DataSourceUpdateMode defaultUpdateMode,
-		std::wstring inheritanceKey,
-		DependencyPropertyDesignMetadata design);
+		std::wstring inheritanceKey
+#if CUI_ENABLE_DESIGN_METADATA
+		, DependencyPropertyDesignMetadata design
+#endif
+		);
 
 	void NotifyChanged(
 		DependencyObject& target,
@@ -1211,17 +1903,208 @@ private:
 	{
 		_property = &property;
 	}
+	void MarkGenericObservation() noexcept
+	{
+		_usesGenericObservation = true;
+	}
 	void MergeBaseMetadata(const DependencyPropertyMetadata& base);
 
 	friend class DependencyPropertyRegistry;
+#if CUI_ENABLE_DYNAMIC_XAML
+	friend class DependencyPropertyMetadataCache;
+#endif
+	friend class DependencyPropertyRegistration;
+	friend class DependencyPropertyKeyRegistration;
+	friend class DependencyPropertyMetadataRegistration;
 	friend class DependencyObject;
 	friend class Control;
-	friend class DeclarativeTypeDescriptor;
+#if CUI_ENABLE_DYNAMIC_XAML
+	friend class cui::details::DependencyPropertyStandaloneAccess;
+#endif
+};
+
+/**
+ * Caller-owned process-lifetime storage for one dependency-property identity
+ * and its default metadata.
+ *
+ * Production keeps both objects inline in the accessor's function-local static
+ * and never publishes them through the name registry. Design builds retain the
+ * existing registry-backed behavior so schema enumeration and metadata tools
+ * continue to see the same property surface.
+ */
+class DependencyPropertyRegistration final
+{
+public:
+	DependencyPropertyRegistration(
+		const DependencyPropertyRegistration&) = delete;
+	DependencyPropertyRegistration& operator=(
+		const DependencyPropertyRegistration&) = delete;
+	DependencyPropertyRegistration(
+		DependencyPropertyRegistration&&) = delete;
+	DependencyPropertyRegistration& operator=(
+		DependencyPropertyRegistration&&) = delete;
+
+	[[nodiscard]] explicit operator bool() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _property != nullptr;
+#else
+		return true;
+#endif
+	}
+	[[nodiscard]] const DependencyProperty& Property() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return *_property;
+#else
+		return _property;
+#endif
+	}
+	[[nodiscard]] const DependencyProperty& operator*() const noexcept
+	{
+		return Property();
+	}
+
+private:
+#if CUI_ENABLE_DYNAMIC_XAML
+	const DependencyProperty* _property = nullptr;
+	explicit DependencyPropertyRegistration(
+		const DependencyProperty* property) noexcept;
+#else
+	// Property is constructed first so it can take ownership of the authored
+	// name and identity validator before the remaining metadata is moved inline.
+	DependencyProperty _property;
+	DependencyPropertyMetadata _metadata;
+	explicit DependencyPropertyRegistration(
+		DependencyPropertyMetadata metadata,
+		BindingSourcePropertyToken token);
+#endif
+
+	friend class DependencyPropertyRegistry;
+};
+
+/**
+ * Caller-owned storage for one AddOwner/metadata-override relation.
+ *
+ * Design publishes the relation through the legacy schema registry and keeps
+ * only its resulting pointer. Production owns the effective metadata inline,
+ * merges its explicit immediate base exactly once, and links the stable node
+ * only to the exact DependencyProperty identity.
+ */
+class DependencyPropertyMetadataRegistration final
+{
+public:
+	DependencyPropertyMetadataRegistration(
+		const DependencyPropertyMetadataRegistration&) = delete;
+	DependencyPropertyMetadataRegistration& operator=(
+		const DependencyPropertyMetadataRegistration&) = delete;
+	DependencyPropertyMetadataRegistration(
+		DependencyPropertyMetadataRegistration&&) = delete;
+	DependencyPropertyMetadataRegistration& operator=(
+		DependencyPropertyMetadataRegistration&&) = delete;
+
+	[[nodiscard]] explicit operator bool() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _metadata != nullptr;
+#else
+		return true;
+#endif
+	}
+	[[nodiscard]] const DependencyProperty& Property() const noexcept
+	{
+		return Metadata().Property();
+	}
+	[[nodiscard]] const DependencyPropertyMetadata& Metadata() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return *_metadata;
+#else
+		return _metadata;
+#endif
+	}
+	[[nodiscard]] const DependencyPropertyMetadata& operator*() const noexcept
+	{
+		return Metadata();
+	}
+
+private:
+#if CUI_ENABLE_DYNAMIC_XAML
+	const DependencyPropertyMetadata* _metadata = nullptr;
+	explicit DependencyPropertyMetadataRegistration(
+		const DependencyPropertyMetadata* metadata) noexcept;
+#else
+	DependencyPropertyMetadata _metadata;
+	const DependencyPropertyMetadataRegistration* _immediateBase = nullptr;
+	const DependencyPropertyMetadataRegistration* _next = nullptr;
+
+	DependencyPropertyMetadataRegistration(
+		const DependencyProperty& property,
+		DependencyPropertyMetadata metadata,
+		const DependencyPropertyMetadataRegistration* immediateBase);
+	[[nodiscard]] bool IsBasedOn(
+		const DependencyPropertyMetadataRegistration& candidate) const noexcept;
+#endif
+
+	friend class DependencyObject;
+	friend class DependencyPropertyRegistry;
+};
+
+/** Caller-owned static registration for a read-only dependency property. */
+class DependencyPropertyKeyRegistration final
+{
+public:
+	DependencyPropertyKeyRegistration(
+		const DependencyPropertyKeyRegistration&) = delete;
+	DependencyPropertyKeyRegistration& operator=(
+		const DependencyPropertyKeyRegistration&) = delete;
+	DependencyPropertyKeyRegistration(
+		DependencyPropertyKeyRegistration&&) = delete;
+	DependencyPropertyKeyRegistration& operator=(
+		DependencyPropertyKeyRegistration&&) = delete;
+
+	[[nodiscard]] explicit operator bool() const noexcept
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return _key.Property().ReadOnly();
+#else
+		return true;
+#endif
+	}
+	[[nodiscard]] const DependencyPropertyKey& Key() const noexcept
+	{
+		return _key;
+	}
+	[[nodiscard]] const DependencyPropertyKey& operator*() const noexcept
+	{
+		return Key();
+	}
+
+private:
+#if CUI_ENABLE_DYNAMIC_XAML
+	DependencyPropertyKey _key;
+	explicit DependencyPropertyKeyRegistration(
+		DependencyPropertyKey key) noexcept;
+#else
+	// The empty-owner aliasing shared_ptr used by _property/_key points at this
+	// byte without allocating a control block. The wrapper never moves, so the
+	// authorization identity is process-stable.
+	const unsigned char _authorization = 0;
+	DependencyProperty _property;
+	DependencyPropertyMetadata _metadata;
+	DependencyPropertyKey _key;
+	explicit DependencyPropertyKeyRegistration(
+		DependencyPropertyMetadata metadata,
+		BindingSourcePropertyToken token);
+#endif
+
+	friend class DependencyPropertyRegistry;
 };
 
 class DependencyPropertyRegistry final
 {
 public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	/**
 	 * Registers a WPF-style property whose value lives only in the
 	 * DependencyObject effective-value store. CLR-shaped wrappers call
@@ -1251,6 +2134,61 @@ public:
 		std::function<void(TOwner&, const TValue&)> setter,
 		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	/**
+	 * Creates accessor-owned static storage in Production and preserves normal
+	 * registry publication in Design. Each call result must be retained in a
+	 * function-local static; unlike Register, Production returns no global owner.
+	 */
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		std::wstring name,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#if !CUI_ENABLE_DYNAMIC_XAML
+	/**
+	 * Production-only AOT entry point. The schema compiler supplies the stable
+	 * member token directly, so neither the authored name nor a first-touch name
+	 * hash is retained by the executable.
+	 */
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		BindingSourcePropertyToken token,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		BindingSourcePropertyToken token,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		BindingSourcePropertyToken token,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		std::wstring name,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyRegistration RegisterStatic(
+		std::wstring name,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#if CUI_ENABLE_DYNAMIC_XAML
 	template<typename TOwner, typename TValue>
 	static DependencyPropertyKey RegisterReadOnly(
 		std::wstring name,
@@ -1262,6 +2200,35 @@ public:
 		std::function<void(TOwner&, const TValue&)> setter,
 		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKeyRegistration RegisterReadOnlyStatic(
+		std::wstring name,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#if !CUI_ENABLE_DYNAMIC_XAML
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKeyRegistration RegisterReadOnlyStatic(
+		BindingSourcePropertyToken token,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKeyRegistration RegisterReadOnlyStatic(
+		BindingSourcePropertyToken token,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyKeyRegistration RegisterReadOnlyStatic(
+		std::wstring name,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#if CUI_ENABLE_DYNAMIC_XAML
 	template<typename TOwner, typename TValue>
 	static const DependencyProperty* AddOwner(
 		const DependencyProperty& property,
@@ -1273,10 +2240,52 @@ public:
 		std::function<void(TOwner&, const TValue&)> setter,
 		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	/**
+	 * Accessor-owned AddOwner relation. Production publishes only an intrusive
+	 * layer on the exact property identity; Design mirrors the legacy registry.
+	 */
 	template<typename TOwner, typename TValue>
+	static DependencyPropertyMetadataRegistration AddOwnerStatic(
+		const DependencyProperty& property,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	template<typename TOwner, typename TValue>
+	static DependencyPropertyMetadataRegistration AddOwnerStatic(
+		const DependencyProperty& property,
+		std::function<TValue(TOwner&)> getter,
+		std::function<void(TOwner&, const TValue&)> setter,
+		std::function<EventConnection(
+			TOwner&,
+			DependencyPropertyMetadata::ChangeHandler,
+			DataSourceUpdateMode)> subscriber = {},
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	/**
+	 * Overrides metadata after forcing the owner's immediate C++ base to
+	 * register. The explicit immediate base keeps WPF inheritance order
+	 * deterministic even when a most-derived static accessor is touched first.
+	 */
+#if CUI_ENABLE_DYNAMIC_XAML
+	template<typename TOwner, typename TImmediateBase, typename TValue>
 	static const DependencyPropertyMetadata* OverrideMetadata(
 		const DependencyProperty& property,
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
+	/** Accessor-owned writable metadata override merged with default metadata. */
+	template<typename TOwner, typename TImmediateBase, typename TValue>
+	static DependencyPropertyMetadataRegistration OverrideMetadataStatic(
+		const DependencyProperty& property,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+	/**
+	 * Accessor-owned override merged with an explicit immediate-base relation.
+	 * This overload makes multi-level override chains independent of first-touch
+	 * and publication order.
+	 */
+	template<typename TOwner, typename TImmediateBase, typename TValue>
+	static DependencyPropertyMetadataRegistration OverrideMetadataStatic(
+		const DependencyProperty& property,
+		const DependencyPropertyMetadataRegistration& immediateBase,
+		DependencyPropertyOptions<TOwner, TValue> options = {});
+#if CUI_ENABLE_DYNAMIC_XAML
 	template<typename TOwner, typename TValue>
 	static const DependencyProperty* AddOwner(
 		const DependencyPropertyKey& key,
@@ -1288,18 +2297,17 @@ public:
 		std::function<void(TOwner&, const TValue&)> setter,
 		std::function<EventConnection(TOwner&, DependencyPropertyMetadata::ChangeHandler, DataSourceUpdateMode)> subscriber = {},
 		DependencyPropertyOptions<TOwner, TValue> options = {});
-	template<typename TOwner, typename TValue>
+	template<typename TOwner, typename TImmediateBase, typename TValue>
 	static const DependencyPropertyMetadata* OverrideMetadata(
 		const DependencyPropertyKey& key,
 		DependencyPropertyOptions<TOwner, TValue> options = {});
+#endif
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	static const DependencyPropertyMetadata* Find(DependencyObject& target, const std::wstring& propertyName);
 	static const DependencyProperty* FindProperty(
 		DependencyObject& target,
 		const std::wstring& propertyName);
-	static const DependencyPropertyMetadata* GetMetadata(
-		DependencyObject& target,
-		const DependencyProperty& property);
 	/** Finds only C++ framework metadata; declarative schema members are excluded. */
 	static const DependencyPropertyMetadata* FindNative(
 		DependencyObject& target,
@@ -1318,6 +2326,13 @@ public:
 	static std::vector<const DependencyPropertyMetadata*> GetRegisteredProperties(
 		std::span<const std::type_index> ownerTypes,
 		std::function<bool(const DependencyPropertyMetadata&)> include = {});
+	static const DependencyPropertyMetadata* Find(
+		DependencyObject& target,
+		BindingSourcePropertyToken property);
+#endif
+	static const DependencyPropertyMetadata* GetMetadata(
+		DependencyObject& target,
+		const DependencyProperty& property);
 
 private:
 	template<typename TOwner, typename TValue>
@@ -1332,6 +2347,7 @@ private:
 		DependencyPropertyOptions<TOwner, TValue> options,
 		bool usesEffectiveValueStorage,
 		bool includeValidator);
+#if CUI_ENABLE_DYNAMIC_XAML
 	static const DependencyProperty* Register(
 		DependencyPropertyMetadata metadata);
 	static DependencyPropertyKey RegisterReadOnly(
@@ -1347,10 +2363,16 @@ private:
 	static const DependencyPropertyMetadata* ResolveMetadata(
 		const DependencyProperty& property,
 		std::span<const DependencyPropertyMetadata* const> layers);
+	static const DependencyPropertyMetadata* FindNativeCore(
+		DependencyObject& target,
+		const std::wstring& propertyName);
 	static std::unique_ptr<DependencyProperty> CreateStandalone(
 		DependencyPropertyMetadata& metadata);
+#endif
 
-	friend class DeclarativeTypeDescriptor;
+#if CUI_ENABLE_DYNAMIC_XAML
+	friend class cui::details::DependencyPropertyStandaloneAccess;
+#endif
 };
 
 /** Resolves BindingMode::Default using the target property's behavior flags. */
@@ -1363,9 +2385,100 @@ DataSourceUpdateMode ResolveDataSourceUpdateMode(
 	const DependencyPropertyMetadata& target,
 	DataSourceUpdateMode requested) noexcept;
 
+/**
+ * Mutually-exclusive source operand shared by Binding and MultiBindingSource.
+ *
+ * Adapter-backed bindings retain either a borrowed source or an owning source
+ * together with their compiled path. Direct AOT endpoints retain only the
+ * compact handle. Keeping these lanes in one tagged RAII value prevents every
+ * Binding from paying for both representations at once.
+ */
+class BindingSourceStorage final
+{
+public:
+	BindingSourceStorage() = default;
+	BindingSourceStorage(
+		IBindingSource* source,
+		CompiledBindingPathView path) noexcept
+		: _value(BorrowedAdapter{ source, path })
+	{
+	}
+	BindingSourceStorage(
+		BindingSourceReference source,
+		CompiledBindingPathView path) noexcept
+		: _value(OwnedAdapter{ std::move(source), path })
+	{
+	}
+	explicit BindingSourceStorage(CompiledSourceHandle source) noexcept
+		: _value(source)
+	{
+	}
+
+	[[nodiscard]] IBindingSource* AdapterSource() const noexcept
+	{
+		if (const auto* source = std::get_if<BorrowedAdapter>(&_value))
+			return source->Source;
+		if (const auto* source = std::get_if<OwnedAdapter>(&_value))
+			return source->Source.Get();
+		return nullptr;
+	}
+	[[nodiscard]] const BindingSourceReference* OwnedSource() const noexcept
+	{
+		if (const auto* source = std::get_if<OwnedAdapter>(&_value))
+			return &source->Source;
+		return nullptr;
+	}
+	[[nodiscard]] BindingSourceReference TakeOwnedSource() noexcept
+	{
+		if (auto* source = std::get_if<OwnedAdapter>(&_value))
+			return std::move(source->Source);
+		return {};
+	}
+	[[nodiscard]] CompiledSourceHandle DirectSource() const noexcept
+	{
+		if (const auto* source = std::get_if<CompiledSourceHandle>(&_value))
+			return *source;
+		return {};
+	}
+	[[nodiscard]] CompiledBindingPathView CompiledPath() const noexcept
+	{
+		if (const auto* source = std::get_if<BorrowedAdapter>(&_value))
+			return source->Path;
+		if (const auto* source = std::get_if<OwnedAdapter>(&_value))
+			return source->Path;
+		return {};
+	}
+
+private:
+	struct BorrowedAdapter final
+	{
+		IBindingSource* Source = nullptr;
+		CompiledBindingPathView Path;
+	};
+	struct OwnedAdapter final
+	{
+		BindingSourceReference Source;
+		CompiledBindingPathView Path;
+	};
+
+	std::variant<std::monostate, BorrowedAdapter, OwnedAdapter,
+		CompiledSourceHandle> _value;
+};
+
+// The previous representation permanently retained all four operands (72 B
+// on x64). The tagged lane is 48 B and must retain at least one pointer-width
+// of that saving as the alternatives evolve.
+static_assert(sizeof(void*) != 8 || sizeof(BindingSourceStorage) == 48);
+static_assert(sizeof(void*) != 8
+	|| sizeof(BindingSourceStorage)
+		<= sizeof(BindingSourceReference) + sizeof(IBindingSource*)
+			+ sizeof(CompiledSourceHandle)
+			+ sizeof(CompiledBindingPathView) - sizeof(void*));
+
 class Binding
 {
 public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	Binding(DependencyObject* target,
 		std::wstring targetProperty,
 		IBindingSource* source,
@@ -1377,6 +2490,42 @@ public:
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
+#endif
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		IBindingSource* source,
+		CompiledBindingPathView sourcePath,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		CompiledSourceHandle source,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		IBindingSource* source,
+		std::wstring sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
+#if CUI_ENABLE_DYNAMIC_XAML
 	Binding(DependencyObject* target,
 		std::wstring targetProperty,
 		BindingSourceReference source,
@@ -1388,13 +2537,59 @@ public:
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
+#endif
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		BindingSourceReference source,
+		CompiledBindingPathView sourcePath,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		BindingSourceReference source,
+		std::wstring sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
 	~Binding();
 
 	Binding(const Binding&) = delete;
 	Binding& operator=(const Binding&) = delete;
 
-	const std::wstring& TargetProperty() const { return _targetProperty; }
-	const std::wstring& SourceProperty() const { return _sourceProperty; }
+	const std::wstring& TargetProperty() const { return _targetProperty.Name(); }
+	const DependencyProperty* TargetPropertyIdentity() const noexcept
+	{
+		return _targetMetadata
+			? &_targetMetadata->Property() : _targetProperty.Identity();
+	}
+	const std::wstring& SourceProperty() const { return _sourceProperty.Name(); }
+	const DependencyProperty* SourcePropertyIdentity() const noexcept
+	{
+		return _sourceProperty.Identity();
+	}
+	[[nodiscard]] CompiledBindingPathView CompiledSourcePath() const noexcept
+	{
+		return _sourceStorage.CompiledPath();
+	}
+	[[nodiscard]] bool UsesCompiledSourcePath() const noexcept
+	{
+		return !CompiledSourcePath().Empty();
+	}
+	[[nodiscard]] bool UsesDirectSource() const noexcept
+	{
+		return static_cast<bool>(_sourceStorage.DirectSource());
+	}
 	BindingMode Mode() const { return _mode; }
 	DataSourceUpdateMode UpdateMode() const { return _updateMode; }
 	const std::shared_ptr<const IBindingValueConverter>& Converter() const noexcept { return _converter; }
@@ -1440,11 +2635,13 @@ private:
 	};
 
 	DependencyObject* _target = nullptr;
-	BindingSourceReference _ownedSource;
-	IBindingSource* _source = nullptr;
-	std::wstring _targetProperty;
-	std::wstring _sourceProperty;
+	BindingSourceStorage _sourceStorage;
+	DependencyObject* _sourceDependencyObject = nullptr;
+	DependencyPropertyReference _targetProperty;
+	BindingSourcePropertyReference _sourceProperty;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::vector<BindingPathStep> _sourcePath;
+#endif
 	BindingMode _mode = BindingMode::Default;
 	DataSourceUpdateMode _updateMode = DataSourceUpdateMode::Default;
 	std::shared_ptr<const IBindingValueConverter> _converter;
@@ -1471,15 +2668,16 @@ private:
 	bool _isValid = false;
 	BindingError _lastError = BindingError::None;
 	const DependencyPropertyMetadata* _targetMetadata = nullptr;
+	const DependencyPropertyMetadata* _sourceMetadata = nullptr;
 	DependencyPropertyValueSource _targetValueSource =
 		DependencyPropertyValueSource::Local;
 	DependencyPropertyExpressionKind _expressionKind =
 		DependencyPropertyExpressionKind::Binding;
 
 	Binding(DependencyObject* target,
-		std::wstring targetProperty,
+		DependencyPropertyReference targetProperty,
 		IBindingSource* source,
-		std::wstring sourceProperty,
+		CompiledBindingPathView sourcePath,
 		BindingMode mode,
 		DataSourceUpdateMode updateMode,
 		std::shared_ptr<const IBindingValueConverter> converter,
@@ -1490,9 +2688,9 @@ private:
 		DependencyPropertyValueSource targetValueSource,
 		DependencyPropertyExpressionKind expressionKind);
 	Binding(DependencyObject* target,
-		std::wstring targetProperty,
+		DependencyPropertyReference targetProperty,
 		BindingSourceReference source,
-		std::wstring sourceProperty,
+		CompiledBindingPathView sourcePath,
 		BindingMode mode,
 		DataSourceUpdateMode updateMode,
 		std::shared_ptr<const IBindingValueConverter> converter,
@@ -1500,6 +2698,52 @@ private:
 		std::optional<BindingValue> targetNullValue,
 		std::optional<BindingValue> converterParameter,
 		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
+	Binding(DependencyObject* target,
+		DependencyPropertyReference targetProperty,
+		CompiledSourceHandle source,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding(DependencyObject* target,
+		DependencyPropertyReference targetProperty,
+		IBindingSource* source,
+		BindingSourcePropertyReference sourceProperty,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
+	Binding(DependencyObject* target,
+		DependencyPropertyReference targetProperty,
+		BindingSourceReference source,
+		BindingSourcePropertyReference sourceProperty,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat,
+		DependencyPropertyValueSource targetValueSource,
+		DependencyPropertyExpressionKind expressionKind);
+#endif
+	Binding(DependencyObject* target,
+		const DependencyProperty& targetProperty,
+		DependencyObject& source,
+		const DependencyProperty& sourceProperty,
 		DependencyPropertyValueSource targetValueSource,
 		DependencyPropertyExpressionKind expressionKind);
 
@@ -1525,7 +2769,19 @@ private:
 		return false;
 	}
 	bool IsTargetAlive() const noexcept;
-	bool IsSourceAlive() const noexcept { return _source && !_sourceLifetime.expired(); }
+	[[nodiscard]] IBindingSource* AdapterSource() const noexcept
+	{
+		return _sourceStorage.AdapterSource();
+	}
+	[[nodiscard]] CompiledSourceHandle DirectSource() const noexcept
+	{
+		return _sourceStorage.DirectSource();
+	}
+	bool IsSourceAlive() const noexcept
+	{
+		return (DirectSource() || AdapterSource())
+			&& !_sourceLifetime.expired();
+	}
 	void DetachReplacedTargetExpression() noexcept;
 
 	friend class Control;
@@ -1536,9 +2792,13 @@ private:
 /** One child expression consumed by MultiBinding. */
 struct MultiBindingSource final
 {
-	IBindingSource* Source = nullptr;
-	BindingSourceReference OwnedSource;
+private:
+	BindingSourceStorage _sourceStorage;
+
+public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring SourceProperty;
+#endif
 	std::shared_ptr<const IBindingValueConverter> Converter;
 	std::optional<BindingValue> FallbackValue;
 	std::optional<BindingValue> TargetNullValue;
@@ -1548,6 +2808,7 @@ struct MultiBindingSource final
 	std::optional<DataSourceUpdateMode> UpdateMode;
 
 	MultiBindingSource() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
 	MultiBindingSource(
 		IBindingSource* source,
 		std::wstring sourceProperty,
@@ -1564,7 +2825,67 @@ struct MultiBindingSource final
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
+#endif
+	MultiBindingSource(
+		IBindingSource* source,
+		CompiledBindingPathView sourcePath,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	MultiBindingSource(
+		BindingSourceReference source,
+		CompiledBindingPathView sourcePath,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	MultiBindingSource(
+		CompiledSourceHandle source,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+
+	[[nodiscard]] IBindingSource* AdapterSource() const noexcept
+	{
+		return _sourceStorage.AdapterSource();
+	}
+	[[nodiscard]] const BindingSourceReference* OwnedSource() const noexcept
+	{
+		return _sourceStorage.OwnedSource();
+	}
+	[[nodiscard]] BindingSourceReference TakeOwnedSource() noexcept
+	{
+		return _sourceStorage.TakeOwnedSource();
+	}
+	[[nodiscard]] CompiledBindingPathView SourcePath() const noexcept
+	{
+		return _sourceStorage.CompiledPath();
+	}
+	[[nodiscard]] CompiledSourceHandle DirectSource() const noexcept
+	{
+		return _sourceStorage.DirectSource();
+	}
+
+	[[nodiscard]] bool UsesCompiledSourcePath() const noexcept
+	{
+		return !SourcePath().Empty();
+	}
+	[[nodiscard]] bool UsesDirectSource() const noexcept
+	{
+		return static_cast<bool>(DirectSource());
+	}
 };
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+// Production x64 budgets measured after the mutually-exclusive source cutover.
+static_assert(sizeof(void*) != 8 || sizeof(Binding) <= 808);
+static_assert(sizeof(void*) != 8 || sizeof(MultiBindingSource) <= 368);
+#endif
 
 /**
  * WPF-style multi-source binding. Child expressions reuse Binding itself, so
@@ -1574,9 +2895,22 @@ struct MultiBindingSource final
 class MultiBinding final
 {
 public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	MultiBinding(
 		DependencyObject* target,
 		std::wstring targetProperty,
+		std::vector<MultiBindingSource> sources,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IMultiBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
+	MultiBinding(
+		DependencyObject* target,
+		const DependencyProperty& targetProperty,
 		std::vector<MultiBindingSource> sources,
 		BindingMode mode = BindingMode::Default,
 		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
@@ -1591,6 +2925,7 @@ public:
 	MultiBinding& operator=(const MultiBinding&) = delete;
 
 	const std::wstring& TargetProperty() const noexcept;
+	const DependencyProperty* TargetPropertyIdentity() const noexcept;
 	BindingMode Mode() const noexcept;
 	DataSourceUpdateMode UpdateMode() const noexcept;
 	size_t SourceCount() const noexcept;
@@ -1611,6 +2946,17 @@ public:
 private:
 	struct State;
 	std::shared_ptr<State> _state;
+	MultiBinding(
+		DependencyObject* target,
+		DependencyPropertyReference targetProperty,
+		std::vector<MultiBindingSource> sources,
+		BindingMode mode,
+		DataSourceUpdateMode updateMode,
+		std::shared_ptr<const IMultiBindingValueConverter> converter,
+		std::optional<BindingValue> fallbackValue,
+		std::optional<BindingValue> targetNullValue,
+		std::optional<BindingValue> converterParameter,
+		std::optional<std::wstring> stringFormat);
 };
 
 class BindingCollection
@@ -1619,6 +2965,7 @@ public:
 	explicit BindingCollection(DependencyObject* owner);
 	~BindingCollection();
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	Binding* Add(const std::wstring& targetProperty,
 		IBindingSource* source,
 		const std::wstring& sourceProperty,
@@ -1629,6 +2976,39 @@ public:
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
+#endif
+	Binding* Add(const DependencyProperty& targetProperty,
+		IBindingSource* source,
+		CompiledBindingPathView sourcePath,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	Binding* Add(const DependencyProperty& targetProperty,
+		CompiledSourceHandle source,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding* Add(const DependencyProperty& targetProperty,
+		IBindingSource* source,
+		const std::wstring& sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
+#if CUI_ENABLE_DYNAMIC_XAML
 	Binding* Add(const std::wstring& targetProperty,
 		BindingSourceReference source,
 		const std::wstring& sourceProperty,
@@ -1639,7 +3019,31 @@ public:
 		std::optional<BindingValue> targetNullValue = {},
 		std::optional<BindingValue> converterParameter = {},
 		std::optional<std::wstring> stringFormat = {});
+#endif
+	Binding* Add(const DependencyProperty& targetProperty,
+		BindingSourceReference source,
+		CompiledBindingPathView sourcePath,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding* Add(const DependencyProperty& targetProperty,
+		BindingSourceReference source,
+		const std::wstring& sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	Binding* Add(const std::wstring& targetProperty,
 		IBindingSource& source,
 		const std::wstring& sourceProperty,
@@ -1656,13 +3060,67 @@ public:
 			std::move(targetNullValue), std::move(converterParameter),
 			std::move(stringFormat));
 	}
+#endif
+	Binding* Add(const DependencyProperty& targetProperty,
+		IBindingSource& source,
+		CompiledBindingPathView sourcePath,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {})
+	{
+		return Add(targetProperty, &source, sourcePath, mode, updateMode,
+			std::move(converter), std::move(fallbackValue),
+			std::move(targetNullValue), std::move(converterParameter),
+			std::move(stringFormat));
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	Binding* Add(const DependencyProperty& targetProperty,
+		IBindingSource& source,
+		const std::wstring& sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {})
+	{
+		return Add(targetProperty, &source, sourceProperty, mode, updateMode,
+			std::move(converter), std::move(fallbackValue),
+			std::move(targetNullValue), std::move(converterParameter),
+			std::move(stringFormat));
+	}
+#endif
+#if CUI_ENABLE_DYNAMIC_XAML
 	/** Installs a one-way TemplateBinding in the Template precedence slot. */
 	Binding* AddTemplateBinding(
 		const std::wstring& targetProperty,
 		IBindingSource& templatedParent,
 		const std::wstring& sourceProperty);
+#endif
+	/** Compiled TemplateBinding: neither endpoint performs name lookup. */
+	Binding* AddTemplateBinding(
+		const DependencyProperty& targetProperty,
+		DependencyObject& templatedParent,
+		const DependencyProperty& sourceProperty);
+#if CUI_ENABLE_DYNAMIC_XAML
 	MultiBinding* AddMulti(
 		const std::wstring& targetProperty,
+		std::vector<MultiBindingSource> sources,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IMultiBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+#endif
+	MultiBinding* AddMulti(
+		const DependencyProperty& targetProperty,
 		std::vector<MultiBindingSource> sources,
 		BindingMode mode = BindingMode::Default,
 		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
@@ -1674,6 +3132,15 @@ public:
 
 	void Clear();
 	/** Finds a binding by its exact canonical target-property identity. */
+	Binding* Find(const DependencyProperty& targetProperty);
+	const Binding* Find(const DependencyProperty& targetProperty) const;
+	MultiBinding* FindMulti(const DependencyProperty& targetProperty);
+	const MultiBinding* FindMulti(const DependencyProperty& targetProperty) const;
+	bool Remove(const DependencyProperty& targetProperty);
+	bool UpdateTarget(const DependencyProperty& targetProperty);
+	bool UpdateSource(const DependencyProperty& targetProperty);
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Designer compatibility path for unresolved target-property names. */
 	Binding* Find(const std::wstring& targetProperty);
 	const Binding* Find(const std::wstring& targetProperty) const;
 	MultiBinding* FindMulti(const std::wstring& targetProperty);
@@ -1684,6 +3151,7 @@ public:
 	bool UpdateTarget(const std::wstring& targetProperty);
 	/** Commits either a Binding or MultiBinding selected by target property. */
 	bool UpdateSource(const std::wstring& targetProperty);
+#endif
 	size_t Count() const;
 	std::vector<BindingValidationResult> GetValidationResults() const;
 	bool HasValidationIssues() const;

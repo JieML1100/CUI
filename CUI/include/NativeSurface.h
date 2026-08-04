@@ -101,7 +101,11 @@ public:
 
 	UIClass Type() override { return UIClass::UI_NativeSurface; }
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& PlaceholderTextProperty();
+	static const DependencyProperty& BehaviorKeyProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 protected:
 	void OnRender() override;
 	bool ApplyTextInput(const TextCompositionEventArgs& input) override;

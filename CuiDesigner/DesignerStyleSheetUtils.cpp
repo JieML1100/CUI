@@ -1,6 +1,7 @@
 #include "DesignerStyleSheetUtils.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/StoryboardPropertyPath.h"
 #include "DesignerPropertyCatalog.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <Application.h>
@@ -577,6 +578,8 @@ std::wstring ValueKindName(DesignerStyleValueKind kind)
 	case DesignerStyleValueKind::Brush: return L"Brush";
 	case DesignerStyleValueKind::Geometry: return L"Geometry";
 	case DesignerStyleValueKind::Transform: return L"Transform";
+	case DesignerStyleValueKind::CornerRadius: return L"CornerRadius";
+	case DesignerStyleValueKind::NullableBool: return L"NullableBool";
 	}
 	return L"String";
 }
@@ -593,7 +596,9 @@ bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out)
 		DesignerStyleValueKind::Matrix,
 		DesignerStyleValueKind::Length,
 		DesignerStyleValueKind::ImageSource, DesignerStyleValueKind::Brush,
-		DesignerStyleValueKind::Geometry, DesignerStyleValueKind::Transform })
+		DesignerStyleValueKind::Geometry, DesignerStyleValueKind::Transform,
+		DesignerStyleValueKind::CornerRadius,
+		DesignerStyleValueKind::NullableBool })
 	{
 		if (EqualsName(Trim(value), ValueKindName(kind)))
 		{
@@ -609,7 +614,7 @@ std::vector<std::wstring> ValueKindNames()
 	return { L"Bool", L"Int", L"Int64", L"Float", L"Double", L"String",
 		L"Color", L"Thickness", L"Point", L"Vector", L"Rect", L"Size", L"Matrix",
 		L"Length", L"ImageSource", L"Brush",
-		L"Geometry", L"Transform" };
+		L"Geometry", L"Transform", L"CornerRadius", L"NullableBool" };
 }
 
 std::wstring UIClassName(UIClass type)
@@ -677,6 +682,19 @@ bool TryConvertValue(
 		else return invalid();
 		return true;
 	}
+	case DesignerStyleValueKind::NullableBool:
+	{
+		const auto text = Lower(Trim(value.Text));
+		if (text == L"true" || text == L"1")
+			out = BindingValue(NullableBool(true));
+		else if (text == L"false" || text == L"0")
+			out = BindingValue(NullableBool(false));
+		else if (text == L"{x:null}" || text == L"null")
+			out = BindingValue(NullableBool{});
+		else
+			return invalid();
+		return true;
+	}
 	case DesignerStyleValueKind::Int:
 	{
 		long long parsed = 0;
@@ -726,6 +744,22 @@ bool TryConvertValue(
 		else if (parsed.size() == 2) thickness = Thickness(parsed[0], parsed[1]);
 		else thickness = Thickness(parsed[0], parsed[1], parsed[2], parsed[3]);
 		out = BindingValue(thickness);
+		return true;
+	}
+	case DesignerStyleValueKind::CornerRadius:
+	{
+		std::vector<float> parsed;
+		if (!TryParseFloatList(value.Text, { 1, 4 }, parsed)
+			|| std::any_of(parsed.begin(), parsed.end(),
+				[](float component)
+				{
+					return !std::isfinite(component) || component < 0.0f;
+				}))
+			return invalid();
+		out = parsed.size() == 1
+			? BindingValue(::CornerRadius(parsed[0]))
+			: BindingValue(::CornerRadius(
+				parsed[0], parsed[1], parsed[2], parsed[3]));
 		return true;
 	}
 	case DesignerStyleValueKind::Point:
@@ -891,6 +925,7 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 			switch (condition.Value.Kind)
 			{
 			case DesignerStyleValueKind::Bool:
+			case DesignerStyleValueKind::NullableBool:
 			case DesignerStyleValueKind::Int:
 			case DesignerStyleValueKind::Int64:
 			case DesignerStyleValueKind::Float:
@@ -1804,7 +1839,12 @@ bool MaterializeStoryboardActions(
 				? DeclarativeAnimationKind::Object
 				: DeclarativeAnimationKind::Double;
 		animation.TargetName = source.TargetName;
-		animation.PropertyName = source.PropertyName;
+		if (DesignerModel::ClassifyStoryboardObjectPath(source.PropertyName)
+			!= DesignerModel::StoryboardObjectPathKind::None)
+			animation.ObjectPath = source.PropertyName;
+		else
+			animation.Property = DependencyPropertyReference(
+				source.PropertyName);
 		auto resolveValue = [&](const DesignerStyleValue& literal,
 			bool usesResource, const std::wstring& resourceKey,
 			BindingValue& output, const std::wstring& label)
@@ -1944,7 +1984,8 @@ bool BuildRuntimeStyleSheet(
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
 	const std::shared_ptr<ResourceLoadContext>& resources,
-	const std::vector<RuntimeStyleResource>& supplementalResources)
+	const std::vector<RuntimeStyleResource>& supplementalResources,
+	const RulePropertySchemaResolver& schemaResolver)
 {
 	auto styleSheet = source;
 	Canonicalize(styleSheet);
@@ -1975,8 +2016,47 @@ bool BuildRuntimeStyleSheet(
 			[&](const auto& candidate)
 			{ return EqualsName(candidate.first, key); });
 	};
-	for (const auto& rule : styleSheet.Rules)
+	for (size_t ruleIndex = 0;
+		ruleIndex < styleSheet.Rules.size(); ++ruleIndex)
 	{
+		const auto& rule = styleSheet.Rules[ruleIndex];
+		CuiRuntime::XamlTypePropertySchema schema;
+		const CuiRuntime::XamlTypePropertySchema* ruleSchema = nullptr;
+		if (schemaResolver)
+		{
+			std::wstring schemaError;
+			if (!schemaResolver(rule, schema, &schemaError))
+				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L" 的 TargetType Schema 无法解析："
+					+ schemaError, outError);
+			ruleSchema = &schema;
+		}
+		auto findPropertyMetadata = [&](const std::wstring& propertyName,
+			bool requireWritable,
+			const std::wstring& context)
+			-> const DependencyPropertyMetadata*
+		{
+			if (!ruleSchema) return nullptr;
+			const auto* metadata = ruleSchema->FindProperty(propertyName);
+			// ComponentDefinition is a declarative Control even when its native
+			// behavior host is structural. Its Template contract therefore uses
+			// the stable Control.Template identity that the runtime host accepts.
+			if (!metadata && !rule.ComponentType.Empty()
+				&& EqualsName(propertyName, L"Template"))
+				metadata = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+					UIClass::UI_Control, L"Template");
+			if (!metadata || (requireWritable
+					? !metadata->CanWrite() : !metadata->CanRead()))
+			{
+				Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L" 的 " + context + L" 属性没有"
+					+ (requireWritable ? L"可写" : L"可读")
+					+ L" DependencyProperty identity："
+					+ propertyName, outError);
+				return nullptr;
+			}
+			return metadata;
+		};
 		ControlStyleSelector selector;
 		if (rule.HasType) selector.Type = rule.Type;
 		if (!rule.ComponentType.Empty())
@@ -1995,8 +2075,17 @@ bool BuildRuntimeStyleSheet(
 			BindingValue value;
 			if (!TryConvertValue(condition.Value, value, outError,
 				resourceBasePath, resources)) return false;
-			selector.PropertyConditions.push_back({
-				condition.Property, std::move(value) });
+			if (ruleSchema)
+			{
+				const auto* metadata = findPropertyMetadata(
+					condition.Property, false, L"Trigger Condition");
+				if (!metadata) return false;
+				selector.PropertyConditions.emplace_back(
+					metadata->Property(), std::move(value));
+			}
+			else
+				selector.PropertyConditions.emplace_back(
+					condition.Property, std::move(value));
 		}
 		for (const auto& condition : rule.DataConditions)
 		{
@@ -2020,18 +2109,35 @@ bool BuildRuntimeStyleSheet(
 					|| !hasSupplementalResource(setter.ResourceKey)))
 				return Fail(L"ItemsPanel Setter 引用了不存在的 "
 					L"ItemsPanelTemplate：" + setter.ResourceKey, outError);
+			const auto* metadata = ruleSchema
+				? findPropertyMetadata(
+					setter.PropertyName, true, L"Setter")
+				: nullptr;
+			if (ruleSchema && !metadata) return false;
 			if (setter.UsesResource)
-				setters.push_back(setter.UsesDynamicResource
-					? ControlStyleSetter::DynamicResource(
-						setter.PropertyName, setter.ResourceKey)
-					: ControlStyleSetter::Resource(
-						setter.PropertyName, setter.ResourceKey));
+			{
+				if (metadata)
+					setters.push_back(setter.UsesDynamicResource
+						? ControlStyleSetter::DynamicResource(
+							metadata->Property(), setter.ResourceKey)
+						: ControlStyleSetter::Resource(
+							metadata->Property(), setter.ResourceKey));
+				else
+					setters.push_back(setter.UsesDynamicResource
+						? ControlStyleSetter::DynamicResource(
+							setter.PropertyName, setter.ResourceKey)
+						: ControlStyleSetter::Resource(
+							setter.PropertyName, setter.ResourceKey));
+			}
 			else
 			{
 				BindingValue value;
 				if (!TryConvertValue(
 					setter.Literal, value, outError, resourceBasePath, resources)) return false;
-				setters.emplace_back(setter.PropertyName, std::move(value));
+				if (metadata)
+					setters.emplace_back(metadata->Property(), std::move(value));
+				else
+					setters.emplace_back(setter.PropertyName, std::move(value));
 			}
 		}
 		std::vector<DeclarativeEventTriggerActionDefinition> enterActions;
@@ -2043,6 +2149,34 @@ bool BuildRuntimeStyleSheet(
 				rule.ExitActions, styleSheet, exitActions, outError,
 				resourceBasePath, resources,
 				L"Style Trigger.ExitActions")) return false;
+		if (ruleSchema)
+		{
+			auto normalizeAnimations = [&](auto& actions,
+				const std::wstring& context)
+			{
+				for (auto& action : actions)
+					for (auto& animation : action.Animations)
+					{
+						if (!animation.ObjectPath.empty())
+						{
+							animation.Property = {};
+							continue;
+						}
+						const auto propertyName = animation.Property.Name();
+						const auto* metadata = findPropertyMetadata(
+							propertyName, true, context);
+						if (!metadata) return false;
+						animation.Property = DependencyPropertyReference(
+							metadata->Property());
+					}
+				return true;
+			};
+			if (!normalizeAnimations(
+				enterActions, L"Trigger.EnterActions Storyboard")
+				|| !normalizeAnimations(
+					exitActions, L"Trigger.ExitActions Storyboard"))
+				return false;
+		}
 		if (setters.empty() && enterActions.empty() && exitActions.empty())
 			continue;
 		if (!runtime->AddRule(std::move(selector), std::move(setters),

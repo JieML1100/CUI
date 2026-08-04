@@ -3,11 +3,12 @@
 
 class ContextMenu;
 using ContextMenuEvent = Event<void(ContextMenu*)>;
+enum class PlacementMode : int;
 
 /**
  * WPF-style context menu. Placement is initiated by behavior through ShowAt;
- * IsOpen/PlacementTarget are semantic state, while popup chrome is private to
- * the current fallback presenter.
+ * IsOpen/PlacementTarget are semantic state, while ItemsPresenter and chrome
+ * are supplied by the framework theme ControlTemplate.
  */
 class ContextMenu : public ItemsControl
 {
@@ -24,23 +25,20 @@ private:
 	bool _staysOpen = false;
 	bool _ignoreNextMouseUp = false;
 	ControlWeakReference _placementTarget;
+	ControlWeakReference _servicePlacementTarget;
+	bool _servicePlacementTargetActive = false;
+	float _horizontalOffset = 0.0f;
+	float _verticalOffset = 0.0f;
+	cui::core::Rect _placementRectangle{};
+	PlacementMode _placement;
+	bool _hasDropShadow = false;
 	cui::core::Point _anchor{};
 	std::vector<int> _hoverPath;
 	std::vector<int> _openPath;
 	std::vector<Control*> _items;
+	std::vector<ControlWeakReference> _generatedItemsRebuildSnapshot;
+	bool _generatedItemsRebuildPending = false;
 
-	struct PopupPanel
-	{
-		std::span<Control* const> Items;
-		float X = 0;
-		float Y = 0;
-		float W = 0;
-		float H = 0;
-		bool OpenedToLeft = false;
-	};
-
-	float CalcPanelWidth(std::span<Control* const> items);
-	std::vector<PopupPanel> BuildPanels();
 	void AttachItemTree(MenuItem* item);
 	void SynchronizeItemCommandHosts();
 	void OnPresentationWindowChanged(
@@ -49,6 +47,9 @@ private:
 	void ClearHoverState();
 	void SynchronizeInteractionProjection();
 	void ApplyIsOpenChange(bool oldValue, bool newValue);
+	void ApplyPlacementTarget(const ControlWeakReference& value);
+	bool ApplyServicePlacementTarget(Control* value);
+	void ClearServicePlacementTarget();
 	void PresentCore();
 	void DismissPresentationCore();
 	void ShowAtCore(
@@ -64,35 +65,68 @@ private:
 		std::unique_ptr<Control> visual,
 		const BindingSourceReference& item,
 		size_t index) override;
+	std::unique_ptr<Panel> CreateItemsHost() const override;
 	void SynchronizeItems();
-	void SuppressItemsPresentation();
 	void OnControlTemplatePresentationChanged() override;
+	void ArrangePopupSurface();
+	MenuItem* HitTopLevelItem(int rootX, int rootY) const noexcept;
 
 public:
 	ContextMenu();
 	~ContextMenu();
 
 	virtual UIClass Type() override;
+	/** WPF dependency-property identities used by generated/native code. */
+	static const DependencyProperty& IsOpenProperty();
+	static const DependencyProperty& StaysOpenProperty();
+	static const DependencyProperty& PlacementTargetProperty();
+	static const DependencyProperty& HorizontalOffsetProperty();
+	static const DependencyProperty& VerticalOffsetProperty();
+	static const DependencyProperty& PlacementRectangleProperty();
+	static const DependencyProperty& PlacementProperty();
+	static const DependencyProperty& HasDropShadowProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 	bool GetIsOpen() const noexcept { return _isOpen; }
 	void SetIsOpen(bool value);
 	__declspec(property(get = GetIsOpen, put = SetIsOpen)) bool IsOpen;
 	bool GetStaysOpen() const noexcept { return _staysOpen; }
 	void SetStaysOpen(bool value);
 	__declspec(property(get = GetStaysOpen, put = SetStaysOpen)) bool StaysOpen;
-	READONLY_PROPERTY(class Control*, PlacementTarget);
+	PROPERTY(class Control*, PlacementTarget);
 	GET(class Control*, PlacementTarget);
+	SET(class Control*, PlacementTarget);
+	PROPERTY(float, HorizontalOffset);
+	GET(float, HorizontalOffset);
+	SET(float, HorizontalOffset);
+	PROPERTY(float, VerticalOffset);
+	GET(float, VerticalOffset);
+	SET(float, VerticalOffset);
+	PROPERTY(cui::core::Rect, PlacementRectangle);
+	GET(cui::core::Rect, PlacementRectangle);
+	SET(cui::core::Rect, PlacementRectangle);
+	PROPERTY(PlacementMode, Placement);
+	GET(PlacementMode, Placement);
+	SET(PlacementMode, Placement);
+	PROPERTY(bool, HasDropShadow);
+	GET(bool, HasDropShadow);
+	SET(bool, HasDropShadow);
 	ContextMenuEvent Opened;
 	ContextMenuEvent Closed;
-	bool HitTestChildren() const override { return false; }
 	bool ContainsPoint(int localX, int localY) override;
 	cui::core::Size GetRenderSizeDip() override;
+	bool PresentationSuppressionAffectsLayout() const noexcept override
+	{
+		return false;
+	}
 protected:
-	void OnRender() override;
+	void PreparePresentation() override;
+	bool HandlesNavigationKey(Key key) const override;
 	bool ProcessInput(const InputReport& input) override;
 public:
 	MenuItem* AddItem(std::unique_ptr<MenuItem> item);

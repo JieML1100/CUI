@@ -80,9 +80,15 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
-    <CuiCodeGenPlatformPrefix Condition="'$(Platform)'=='x64'">x64\</CuiCodeGenPlatformPrefix>
-    <CuiCodeGenExe Condition="'$(BuildingSolutionFile)'=='true'">$(OutDir)CuiCodeGen.exe</CuiCodeGenExe>
-    <CuiCodeGenExe Condition="'$(BuildingSolutionFile)'!='true'">$(ProjectDir)..\CuiCodeGen\$(CuiCodeGenPlatformPrefix)$(Configuration)\CuiCodeGen.exe</CuiCodeGenExe>
+    <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <CuiFrameworkThemeMode Condition="'$(CuiFrameworkThemeMode)'==''">Closure</CuiFrameworkThemeMode>
+    <CuiRuntimeMeasurement Condition="'$(CuiRuntimeMeasurement)'==''">false</CuiRuntimeMeasurement>
+    <CuiRuntimeFlavor Condition="'$(CuiRuntimeMeasurement)'=='true' and '$(CuiRuntimeFlavor)'==''">Production</CuiRuntimeFlavor>
+    <CuiRuntimeMeasurementThemeFull Condition="'$(CuiFrameworkThemeMode)'=='Full'">1</CuiRuntimeMeasurementThemeFull>
+    <CuiRuntimeMeasurementThemeFull Condition="'$(CuiFrameworkThemeMode)'!='Full'">0</CuiRuntimeMeasurementThemeFull>
+    <TargetName Condition="'$(CuiRuntimeMeasurement)'=='true'">CuiStaticGeneratedSample.Measure.$(CuiFrameworkThemeMode)</TargetName>
+    <IntDir Condition="'$(CuiRuntimeMeasurement)'=='true'">$(ProjectDir)obj\$(Platform)\$(Configuration)\RuntimeMeasure\$(CuiFrameworkThemeMode)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
@@ -95,7 +101,7 @@
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir);$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir);$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</EnableParallelCodeGeneration>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</EnableParallelCodeGeneration>
     </ClCompile>
@@ -103,7 +109,6 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;evr.lib;mfuuid.lib;mfplat.lib;mf.lib;mfreadwrite.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -119,7 +124,7 @@
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir);$(ProjectDir)..\CuiRuntime\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir);$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</EnableParallelCodeGeneration>
       <EnableParallelCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</EnableParallelCodeGeneration>
     </ClCompile>
@@ -128,33 +133,45 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile Condition="'$(CuiMeasureLinkMap)'=='true'">true</GenerateMapFile>
+      <MapFileName Condition="'$(CuiMeasureLinkMap)'=='true'">$(OutDir)$(TargetName).map</MapFileName>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;evr.lib;mfuuid.lib;mfplat.lib;mf.lib;mfreadwrite.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="NamespacedWindow.cpp" />
-    <ClCompile Include="NamespacedWindow.g.cpp" />
+    <ClCompile Include="main.cpp">
+      <ExcludedFromBuild Condition="'$(CuiRuntimeMeasurement)'=='true'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="NamespacedWindow.cpp">
+      <ExcludedFromBuild Condition="'$(CuiRuntimeMeasurement)'=='true'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="RuntimeMeasurement.cpp">
+      <ExcludedFromBuild Condition="'$(CuiRuntimeMeasurement)'!='true'">true</ExcludedFromBuild>
+      <PreprocessorDefinitions>CUI_RUNTIME_MEASUREMENT_THEME_FULL=$(CuiRuntimeMeasurementThemeFull);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NamespacedWindow.h" />
-    <ClInclude Include="NamespacedWindow.g.h" />
-    <ClInclude Include="NamespacedWindow.handlers.g.inc" />
   </ItemGroup>
   <ItemGroup>
-    <CuiDesign Include="NamespacedWindow.cui.xaml">
+    <CuiCompile Include="NamespacedWindow.cui.xaml">
       <OutputBase>$(ProjectDir)NamespacedWindow</OutputBase>
-    </CuiDesign>
+    </CuiCompile>
+    <CuiThemeCompile Include="..\Themes\Generic.xaml"
+                     Condition="'$(CuiFrameworkThemeMode)'=='Closure'">
+      <OutputBase>$(CuiGeneratedCodeDir)CuiFrameworkTheme</OutputBase>
+      <Mode>Closure</Mode>
+      <RootDocuments>$(ProjectDir)NamespacedWindow.cui.xaml</RootDocuments>
+    </CuiThemeCompile>
+    <CuiAotBoundarySource Include="main.cpp;NamespacedWindow.cpp;NamespacedWindow.h"
+                          Condition="'$(CuiRuntimeMeasurement)'!='true'" />
+    <CuiAotBoundarySource Include="RuntimeMeasurement.cpp"
+                          Condition="'$(CuiRuntimeMeasurement)'=='true'" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\CuiCodeGen\CuiCodeGen.vcxproj">
-      <Project>{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}</Project>
-      <LinkLibraryDependencies>false</LinkLibraryDependencies>
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-    </ProjectReference>
-    <ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">
-      <Project>{A2F2FB5D-7B17-4C41-9C9A-7C0EB68D6A32}</Project>
+    <ProjectReference Include="..\CuiGeneratedTheme\CuiGeneratedTheme.vcxproj"
+                      Condition="'$(CuiFrameworkThemeMode)'=='Full'">
+      <Project>{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}</Project>
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
@@ -165,10 +182,17 @@
     <ProjectReference Include="..\Utils\Utils.vcxproj">
       <Project>{1ddaee3c-caa8-489f-bfbe-84d30C9B4774}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\XmlLite\XmlLite.vcxproj">
-      <Project>{b184b7ea-ea4d-4e1e-abdd-a9a6a91cbbcf}</Project>
-    </ProjectReference>
   </ItemGroup>
+  <Target Name="CuiValidateFrameworkThemeMode" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(CuiFrameworkThemeMode)'!='Closure' and '$(CuiFrameworkThemeMode)'!='Full'"
+           Text="CuiFrameworkThemeMode must be Closure or Full." />
+    <Error Condition="'$(CuiRuntimeMeasurement)'!='true' and '$(CuiRuntimeMeasurement)'!='false'"
+           Text="CuiRuntimeMeasurement must be true or false." />
+    <Error Condition="'$(CuiRuntimeMeasurement)'=='true' and ('$(Configuration)'!='Release' or '$(Platform)'!='x64')"
+           Text="CUI runtime measurement requires Release|x64." />
+    <Error Condition="'$(CuiRuntimeMeasurement)'=='true' and '$(CuiRuntimeFlavor)'!='Production'"
+           Text="CUI runtime measurement requires CuiRuntimeFlavor=Production." />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="..\build\CuiCodeGen.targets" />
   <ImportGroup Label="ExtensionTargets" />

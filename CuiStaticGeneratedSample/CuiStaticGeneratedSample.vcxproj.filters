@@ -7,6 +7,9 @@
     <Filter Include="User">
       <UniqueIdentifier>{AB441BBF-C00E-449F-AB74-A79234A391FB}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Measurement">
+      <UniqueIdentifier>{1FA08D4B-CB76-440B-9425-E51BFC06B40F}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -15,6 +18,9 @@
     </ClCompile>
     <ClCompile Include="NamespacedWindow.g.cpp">
       <Filter>Generated</Filter>
+    </ClCompile>
+    <ClCompile Include="RuntimeMeasurement.cpp">
+      <Filter>Measurement</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

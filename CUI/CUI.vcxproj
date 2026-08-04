@@ -49,10 +49,14 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <!-- MSVC 14.44 crashes nondeterministically while importing this large
+         library's /GL objects into CUITest. Keep normal Release optimization
+         and disable only cross-module code generation for reliable builds. -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <!-- WebView2 (NuGet: Microsoft.Web.WebView2) -->
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
@@ -139,7 +143,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <DebugInformationFormat>None</DebugInformationFormat>
       <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -193,7 +197,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <DebugInformationFormat>None</DebugInformationFormat>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
       <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -228,6 +232,7 @@
 	<ClInclude Include="include\XamlInfrastructure.h" />
 	<ClInclude Include="include\DependencyPropertyInfrastructure.h" />
 	<ClInclude Include="include\StyleInfrastructure.h" />
+	<ClInclude Include="include\CuiGeneratedFrameworkTheme.h" />
 	<ClInclude Include="include\RoutedEventInfrastructure.h" />
 	<ClInclude Include="include\WindowInfrastructure.h" />
 	<ClInclude Include="include\EventInfrastructure.h" />
@@ -255,6 +260,7 @@
 	<ClInclude Include="include\UIElement.h" />
 	<ClInclude Include="include\FocusManager.h" />
 	<ClInclude Include="include\InputManager.h" />
+	<ClInclude Include="include\ReverseInheritedProperty.h" />
 	<ClInclude Include="include\InputReport.h" />
 	<ClInclude Include="include\TextCompositionManager.h" />
 	<ClInclude Include="include\RoutedCommand.h" />
@@ -262,6 +268,10 @@
     <ClInclude Include="include\Application.h" />
     <ClInclude Include="include\Resource.h" />
     <ClInclude Include="include\Binding.h" />
+    <ClInclude Include="include\CompiledBindingRecord.h" />
+    <ClInclude Include="include\RelativeSource.h" />
+    <ClInclude Include="include\CuiBuildFeatures.h" />
+    <ClInclude Include="include\RuntimeTypeMetadata.h" />
     <ClInclude Include="include\XamlSchema.h" />
     <ClInclude Include="include\Brush.h" />
     <ClInclude Include="include\Geometry.h" />
@@ -270,6 +280,7 @@
 	<ClInclude Include="include\ButtonBase.h" />
 	<ClInclude Include="include\ToggleButton.h" />
 	<ClInclude Include="include\RangeBase.h" />
+	<ClInclude Include="include\TextBoxBase.h" />
     <ClInclude Include="include\Button.h" />
     <ClInclude Include="include\CalendarView.h" />
     <ClInclude Include="include\ChartView.h" />
@@ -342,7 +353,9 @@
 	<ClCompile Include="src\DependencyObject.cpp" />
 	<ClCompile Include="src\TextElement.cpp" />
     <ClCompile Include="src\Binding.cpp" />
-    <ClCompile Include="src\XamlSchema.cpp" />
+    <ClCompile Include="src\CompiledBindingRecord.cpp" />
+    <ClCompile Include="src\RelativeSource.cpp" />
+    <ClCompile Include="src\RuntimeTypeMetadata.cpp" />
     <ClCompile Include="src\Brush.cpp" />
     <ClCompile Include="src\Geometry.cpp" />
     <ClCompile Include="src\Transform.cpp" />
@@ -350,6 +363,7 @@
 	<ClCompile Include="src\ButtonBase.cpp" />
 	<ClCompile Include="src\ToggleButton.cpp" />
 	<ClCompile Include="src\RangeBase.cpp" />
+	<ClCompile Include="src\TextBoxBase.cpp" />
     <ClCompile Include="src\Button.cpp" />
     <ClCompile Include="src\CalendarView.cpp" />
     <ClCompile Include="src\ChartView.cpp" />
@@ -358,6 +372,7 @@
 	<ClCompile Include="src\CollectionViewSource.cpp" />
     <ClCompile Include="src\ContextMenu.cpp" />
 	<ClCompile Include="src\AutomationPeer.cpp" />
+	<ClCompile Include="src\AutomationVirtualizedPeers.cpp" />
     <ClCompile Include="src\Control.cpp">
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -388,7 +403,10 @@
 	<ClCompile Include="src\PlatformWindowHost.cpp" />
 	<ClCompile Include="src\InputManager.cpp" />
 	<ClCompile Include="src\TextCompositionManager.cpp" />
-	<ClCompile Include="src\RoutedCommand.cpp" />
+	<ClCompile Include="src\RoutedCommand.cpp">
+	  <!-- Avoid MSVC 14.44 corrupt LTCG records in this large translation unit. -->
+	  <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">false</WholeProgramOptimization>
+	</ClCompile>
 	<ClCompile Include="src\PresentationRenderHost.cpp" />
 	<ClCompile Include="src\PresentationScene.cpp" />
     <ClCompile Include="src\NumericUpDown.cpp" />
@@ -410,9 +428,12 @@
     <ClCompile Include="src\ToolBar.cpp" />
     <ClCompile Include="src\StatusBar.cpp" />
     <ClCompile Include="src\WebBrowser.cpp" />
+    <ClCompile Include="src\WebBrowserUtilities.cpp" />
     <ClCompile Include="src\TextBox.cpp" />
     <ClCompile Include="src\TreeView.cpp" />
+    <ClCompile Include="src\MediaFoundationGuids.cpp" />
     <ClCompile Include="src\MediaPlayer.cpp" />
+    <ClCompile Include="src\MediaPlayerPixelConversion.cpp" />
     <ClCompile Include="src\Layout\StackPanel.cpp" />
     <ClCompile Include="src\Layout\Grid.cpp" />
     <ClCompile Include="src\Layout\DockPanel.cpp" />

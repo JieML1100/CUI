@@ -46,7 +46,7 @@
         </DataType.Properties>
       </DataType>
       <DataList x:Key="BasicChoices" ItemType="DemoChoice">
-        <DataRecord Id="1" Text="动态 XAML"/>
+        <DataRecord Id="1" Text="AOT XAML"/>
         <DataRecord Id="2" Text="声明式数据资源"/>
         <DataRecord Id="3" Text="NativeSurface 扩展"/>
       </DataList>
@@ -134,7 +134,8 @@
         </StackPanel>
       </DataTemplate>
       <ControlTemplate x:Key="DemoListViewItemTemplate" TargetType="ListViewItem">
-        <Border Padding="6,2" BorderBrush="{StaticResource Border}" BorderThickness="1">
+        <Border Padding="6,2" Background="{TemplateBinding Background}"
+          BorderBrush="{StaticResource Border}" BorderThickness="1">
           <ContentPresenter ContentSource="Content"/>
         </Border>
       </ControlTemplate>
@@ -171,16 +172,23 @@
         </DataType.Properties>
       </DataType>
       <HierarchicalDataTemplate DataType="DemoFolder" ItemsSource="{Binding Children}">
-        <StackPanel Orientation="Horizontal" Height="26">
-          <TextBlock Text="&#x25A3;" Foreground="{StaticResource Accent}" Width="22" Height="24"/>
-          <TextBlock Text="{Binding Name}" Height="24"/>
+        <!-- Let TreeViewItem own the row height. Fixed TextBlock heights keep
+             their text layout at the top and visually separate it from the
+             vertically centered expander glyph. -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock Text="&#x25A3;" Foreground="{StaticResource Accent}"
+            Width="22" VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
         </StackPanel>
       </HierarchicalDataTemplate>
       <DataTemplate DataType="DemoFile">
-        <StackPanel Orientation="Horizontal" Height="26">
-          <TextBlock Text="&#x2022;" Foreground="{StaticResource TextMuted}" Width="22" Height="24"/>
-          <TextBlock Text="{Binding Name}" Width="108" Height="24"/>
-          <TextBlock Text="{Binding Kind}" Foreground="{StaticResource TextMuted}" Width="48" Height="24"/>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock Text="&#x2022;" Foreground="{StaticResource TextMuted}"
+            Width="22" VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding Name}" Width="108"
+            VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding Kind}" Foreground="{StaticResource TextMuted}"
+            Width="48" VerticalAlignment="Center"/>
         </StackPanel>
       </DataTemplate>
       <ComponentDefinition x:Key="test:FeatureCard" BaseType="Canvas" DisplayName="WPF feature card">
@@ -374,7 +382,7 @@
           <MultiTrigger>
             <MultiTrigger.Conditions>
               <Condition Property="Content" Value="Trigger ready"/>
-              <Condition Property="IsMouseOver" Value="true"/>
+              <Condition Property="IsDefault" Value="true"/>
             </MultiTrigger.Conditions>
             <Setter Property="BorderThickness" Value="4"/>
           </MultiTrigger>
@@ -448,7 +456,7 @@
       <RowDefinition Height="40"/>
       <RowDefinition Height="40"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="26"/>
+      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
     <Menu x:Name="mainMenu" DesignId="1" Grid.Row="0" Height="28">
       <Menu.Items>
@@ -487,7 +495,7 @@
     <Canvas Grid.Row="2">
       <Slider x:Name="globalProgress" DesignId="3" Canvas.Left="12" Canvas.Top="6" Height="28" Maximum="1000" Minimum="0" ValueChanged="HandleGlobalProgress" Value="250" Width="310"/>
       <TextBlock x:Name="statusText" DesignId="4" Canvas.Left="342" Canvas.Top="11" Foreground="#FF748399" Height="24" MouseWheel="HandleMouseWheel" Style="{StaticResource MutedLabel}" Text="布局来自 DemoWindow.cui.xaml，C++ 仅保留数据和业务" Width="500"/>
-      <TextBlock x:Name="runtimeBadge" DesignId="5" Canvas.Left="1050" Canvas.Top="8" Height="26" Style="{StaticResource ImageText}" Text="Dynamic XAML · RuntimeDocumentSession" Width="330"/>
+      <TextBlock x:Name="runtimeBadge" DesignId="5" Canvas.Left="1050" Canvas.Top="8" Height="26" Style="{StaticResource ImageText}" Text="AOT XAML · Native C++" Width="330"/>
     </Canvas>
     <TabControl x:Name="mainTabs" DesignId="10" Grid.Row="3" Margin="10,0,10,10" TabStripPlacement="Top" Background="#00000000">
       <TabItem Header="基础控件" IsSelected="true">
@@ -504,13 +512,13 @@
             <ComboBox x:Name="basicCombo" DesignId="108" Canvas.Left="14" Canvas.Top="238" DisplayMemberPath="Text" Height="30" ItemsSource="{StaticResource BasicChoices}" SelectionChanged="HandleComboSelection" SelectedIndex="0" SelectedValuePath="Id" Width="260"/>
             <TextBox x:Name="dateInput" DesignId="109" Canvas.Left="14" Canvas.Top="280"
               Height="30" Text="2026-07-23" Width="260"/>
-            <NumericUpDown x:Name="numberInput" DesignId="110" Canvas.Left="14" Canvas.Top="322" Height="30" Maximum="100" Minimum="0" ValueChanged="HandleNumericValue" Value="42" Width="160"/>
+            <NumericUpDown x:Name="numberInput" DesignId="110" Canvas.Left="14" Canvas.Top="322" Height="32" Maximum="100" Minimum="0" ValueChanged="HandleNumericValue" Value="42" Width="160"/>
             <Button x:Name="dialogCancelButton" DesignId="123" Canvas.Left="185" Canvas.Top="322" Height="30" IsCancel="true" Click="HandleBasicClick" Content="Escape · IsCancel" Width="155"/>
             <Button x:Name="docsLink" DesignId="111" Canvas.Left="14" Canvas.Top="368" Height="26" Click="HandleDocsLink" Content="CUI XAML 运行时文档" Width="300"/>
             <TextBlock Canvas.Left="288" Canvas.Top="148" Foreground="{StaticResource TextMuted}" Height="22" Text="Vertical" Width="72"/>
             <Slider x:Name="verticalThemeSlider" DesignId="127" Canvas.Left="298" Canvas.Top="174" Height="230" Maximum="100" Minimum="0" Orientation="Vertical" Value="65" Width="32"/>
             <ProgressBar x:Name="verticalThemeProgress" DesignId="128" Canvas.Left="340" Canvas.Top="174" Height="230" Maximum="100" Minimum="0" Orientation="Vertical" Value="65" Width="18"/>
-            <TextBox x:Name="gradientInput" DesignId="112" Canvas.Left="370" Canvas.Top="54" Height="42" Text="XAML 画刷输入框：GradientInput" Width="360">
+            <TextBox x:Name="gradientInput" DesignId="112" Canvas.Left="370" Canvas.Top="54" Height="42" Text="XAML 画刷输入框：GradientInput" VerticalContentAlignment="Center" Width="360">
               <Control.Foreground>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                   <GradientStop Color="#FFE30940" Offset="0"/>
@@ -520,7 +528,7 @@
                 </LinearGradientBrush>
               </Control.Foreground>
             </TextBox>
-            <TextBlock x:Name="gradientLabel" DesignId="113" Canvas.Left="370" Canvas.Top="112" Height="34" Style="{StaticResource ResourceGeometryVisual}" Text="自定义控件的画刷、裁剪与变换均由 XAML 表达" Width="440" RenderTransformOrigin="0.5,0.5">
+            <TextBlock x:Name="gradientLabel" DesignId="113" Canvas.Left="370" Canvas.Top="112" Height="34" Padding="12,0,12,0" Style="{StaticResource ResourceGeometryVisual}" Text="自定义控件的画刷、裁剪与变换均由 XAML 表达" Width="440" RenderTransformOrigin="0.5,0.5">
               <Control.Foreground>
                 <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.200000003,0.200000003" RadiusX="0.699999988" RadiusY="0.899999976">
                   <GradientStop Color="#FFE30940" Offset="0"/>
@@ -550,11 +558,20 @@
                 <Button x:Name="themeDisabledButton" DesignId="126" Canvas.Left="210" Canvas.Top="124" Height="28" IsEnabled="false" Content="Disabled state" Width="170"/>
               </Canvas>
             </GroupBox>
-            <Expander x:Name="basicExpander" DesignId="118" Canvas.Left="850" Canvas.Top="250" Header="展开：运行时能力说明" Expanded="HandleExpander" Collapsed="HandleExpander" Width="430">
+            <Expander x:Name="basicExpander" DesignId="118" Canvas.Left="850" Canvas.Top="250" Header="展开：运行时能力说明" IsExpanded="true" Expanded="HandleExpander" Collapsed="HandleExpander" Width="430">
               <Canvas x:Name="basicExpanderContent" DesignId="121" Height="144">
                 <TextBlock x:Name="expanderText" DesignId="119" Canvas.Left="16" Canvas.Top="24" Height="80" Text="XAML 负责结构、属性、样式和事件名；C++ 负责真实业务对象与函数实现。" Width="380"/>
               </Canvas>
             </Expander>
+            <ContentControl x:Name="themeContentControlProbe"
+              Visibility="Collapsed" Content="ContentControl theme probe"/>
+            <ItemsControl x:Name="themeItemsControlProbe"
+              Visibility="Collapsed">
+              <ItemsControl.Items>
+                <TextBlock Text="ItemsControl theme probe"/>
+              </ItemsControl.Items>
+            </ItemsControl>
+            <Separator x:Name="themeSeparatorProbe" Visibility="Collapsed"/>
           </Canvas>
         </Border>
       </TabItem>
@@ -982,7 +999,7 @@
             <Canvas x:Name="wpfItemsScope" Canvas.Left="828" Canvas.Top="48" Height="420" Width="465">
               <TextBlock Canvas.Left="0" Canvas.Top="0" Text="ItemsPresenter + ListBoxItem + DataTemplate" Foreground="{StaticResource Accent}" FontSize="14" Height="24" Width="430"/>
               <ListBox x:Name="wpfTemplateList" Canvas.Left="0" Canvas.Top="36" DisplayMemberPath="First" Height="176" ItemContainerStyle="{StaticResource WpfLabContainerStyle}" ItemsPanel="{StaticResource WpfLabItemsPanel}" ItemsSource="{Binding WpfPeople}" ItemTemplate="{StaticResource WpfLabPersonRow}" Template="{StaticResource WpfLabListTemplate}" Width="430"/>
-              <Border x:Name="wpfRouteOuter" Canvas.Left="0" Canvas.Top="224" FocusManager.IsFocusScope="true" Height="188" Width="430" Background="#FFF7F9FC" Style="{StaticResource WpfFocusScopeBorder}" PreviewMouseDown="HandleRouteOuterPreview" MouseDown="HandleRouteOuterBubble" PreviewKeyDown="HandleRouteKey" KeyDown="HandleRouteKey" PreviewTextInput="HandleTextOuterPreview" TextInput="HandleTextOuterBubble">
+              <Border x:Name="wpfRouteOuter" Canvas.Left="0" Canvas.Top="224" FocusManager.IsFocusScope="true" Height="188" Width="430" Background="#FFF7F9FC" Style="{StaticResource WpfFocusScopeBorder}" PreviewMouseDown="HandleRouteOuterPreview" PreviewKeyDown="HandleRouteKey" KeyDown="HandleRouteKey" PreviewTextInput="HandleTextOuterPreview" TextInput="HandleTextOuterBubble">
                 <Border.Resources>
                   <Style TargetType="Button">
                     <Setter Property="BorderBrush" Value="#FFD3DCE8"/>
@@ -1018,11 +1035,11 @@
                 <CommandBinding Command="Demo.Wpf.Probe" CanExecute="HandleLocalCommandCanExecute" Executed="HandleLocalCommandExecuted"/>
               </Canvas.CommandBindings>
               <Canvas.InputBindings>
-                <KeyBinding Command="Demo.Wpf.Probe" Key="P" Modifiers="Control,Shift" CommandParameter="local-keybinding"/>
-                <MouseBinding Command="Demo.Wpf.Probe" Gesture="Alt+RightClick" CommandParameter="local-mousebinding"/>
+                <KeyBinding Command="Demo.Wpf.Probe" Key="P" Modifiers="Control,Shift" CommandParameter="local-keybinding" CommandTarget="{x:Reference wpfHierarchyScope}"/>
+                <MouseBinding Command="Demo.Wpf.Probe" Gesture="Alt+RightClick" CommandParameter="local-mousebinding" CommandTarget="{x:Reference wpfHierarchyScope}"/>
               </Canvas.InputBindings>
               <TextBlock x:Name="wpfHierarchyChain" Canvas.Left="0" Canvas.Top="5" Foreground="{StaticResource TextMuted}" Height="24" Text="FocusScope · logical/keyboard focus · Tab/方向策略 · RoutedCommand" Width="690"/>
-              <Button x:Name="wpfDispatcherProbe" Canvas.Left="700" Canvas.Top="0" Command="Demo.Wpf.Probe" CommandParameter="command-button" Height="32" Click="HandleDispatcherProbe" Content="_Run Dispatcher/命令探针" Padding="6,4" Width="220"/>
+              <Button x:Name="wpfDispatcherProbe" Canvas.Left="700" Canvas.Top="0" Command="Demo.Wpf.Probe" CommandParameter="command-button" CommandTarget="{x:Reference wpfHierarchyScope}" Height="32" Click="HandleDispatcherProbe" Content="_Run Dispatcher/命令探针" Padding="6,4" Width="220"/>
               <TextBlock x:Name="wpfDispatcherResult" Canvas.Left="925" Canvas.Top="5" Height="24" Text="Ready · foreign-thread writes must throw" Width="345"/>
             </Canvas>
           </Canvas>

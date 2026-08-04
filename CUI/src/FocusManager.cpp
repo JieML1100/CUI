@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -161,29 +162,79 @@ void FocusManager::RefreshKeyboardFocusProjection(
 	Control* previous,
 	Control* current)
 {
-	if (previous && previous != current)
-		cui::framework::InputAccess::PublishKeyboardFocusState(
-			*previous, false);
-	if (current && previous != current)
-		cui::framework::InputAccess::PublishKeyboardFocusState(
-			*current, true);
-
-	std::unordered_set<Control*> next;
-	for (auto* value = current; value; value = value->GetRoutedParent())
+	(void)previous;
+	(void)current;
+	const ControlWeakReference windowLifetime(_window);
+	std::exception_ptr firstError;
+	try
 	{
-		if (!IsOwned(value)) break;
-		next.insert(value);
-		if (value == _window) break;
+		if (_window && _window->_inputManager)
+			_window->_inputManager->SetKeyboardFocusWithinOrigin(
+				_keyboardFocus.Get());
 	}
-	for (auto* value : _keyboardFocusWithinElements)
-		if (value && !next.contains(value))
-			cui::framework::InputAccess::PublishKeyboardFocusWithinState(
-				*value, false);
-	for (auto* value : next)
-		if (value && !_keyboardFocusWithinElements.contains(value))
-			cui::framework::InputAccess::PublishKeyboardFocusWithinState(
-				*value, true);
-	_keyboardFocusWithinElements = std::move(next);
+	catch (...)
+	{
+		firstError = std::current_exception();
+	}
+	if (!windowLifetime.Get())
+	{
+		if (firstError) std::rethrow_exception(firstError);
+		return;
+	}
+	try { ReconcileKeyboardFocusedState(); }
+	catch (...)
+	{
+		if (!firstError) firstError = std::current_exception();
+	}
+	if (firstError) std::rethrow_exception(firstError);
+}
+
+void FocusManager::ReconcileKeyboardFocusedState()
+{
+	const ControlWeakReference windowLifetime(_window);
+	const auto requested = _keyboardFocus;
+	if (_keyboardFocusStateOwner == requested) return;
+	const auto previous = _keyboardFocusStateOwner;
+	_keyboardFocusStateOwner = requested;
+	std::exception_ptr firstError;
+	if (auto* target = previous.Get())
+	{
+		try
+		{
+			cui::framework::InputAccess::PublishKeyboardFocusState(
+				*target, false);
+		}
+		catch (...)
+		{
+			firstError = std::current_exception();
+		}
+		if (!windowLifetime)
+		{
+			if (firstError) std::rethrow_exception(firstError);
+			return;
+		}
+	}
+	if (_keyboardFocusStateOwner == requested)
+	{
+		if (auto* target = requested.Get())
+		{
+			try
+			{
+				cui::framework::InputAccess::PublishKeyboardFocusState(
+					*target, true);
+			}
+			catch (...)
+			{
+				if (!firstError) firstError = std::current_exception();
+			}
+			if (!windowLifetime)
+			{
+				if (firstError) std::rethrow_exception(firstError);
+				return;
+			}
+		}
+	}
+	if (firstError) std::rethrow_exception(firstError);
 }
 
 bool FocusManager::SetLogicalFocus(
@@ -227,8 +278,13 @@ bool FocusManager::SetKeyboardFocusCore(
 		_suspendedKeyboardFocus = element;
 		return false;
 	}
-	if (_keyboardFocus == element) return true;
-	auto* previous = _keyboardFocus;
+	if (_keyboardFocus == element
+		&& (element || !_keyboardFocus.HasValue())) return true;
+	auto* previous = _keyboardFocus.Get();
+	const ControlWeakReference requestedReference(element);
+	const ControlWeakReference previousReference(previous);
+	const ControlWeakReference windowLifetime(_window);
+	std::exception_ptr projectionError;
 	auto commit = [&]
 	{
 		if (_window->_textCompositionManager)
@@ -237,14 +293,29 @@ bool FocusManager::SetKeyboardFocusCore(
 		// Native composition completion can synchronously publish TextInput, and
 		// an application handler may move focus again. Never overwrite that newer
 		// accepted transition with this now-stale request.
-		if (_keyboardFocus != previous) return false;
-		_keyboardFocus = element;
-		RefreshKeyboardFocusProjection(previous, element);
-		if (updateLogicalFocus && element) UpdateLogicalFocusChain(element);
+		if (!windowLifetime.Get() || _keyboardFocus != previous) return false;
+		_keyboardFocus = requestedReference.Get();
+		const auto transitionVersion = ++_keyboardFocusVersion;
+		try { RefreshKeyboardFocusProjection(previous, _keyboardFocus.Get()); }
+		catch (...)
+		{
+			projectionError = std::current_exception();
+		}
+		if (!windowLifetime.Get()
+			|| _keyboardFocusVersion != transitionVersion
+			|| _keyboardFocus != requestedReference.Get()) return false;
+		auto* const committed = requestedReference.Get();
+		if (updateLogicalFocus && committed)
+			UpdateLogicalFocusChain(committed);
+		if (!windowLifetime.Get()
+			|| _keyboardFocusVersion != transitionVersion
+			|| _keyboardFocus != requestedReference.Get()) return false;
 		++_statistics.KeyboardTransitions;
 		_window->PublishKeyboardFocusTransition(
-			previous, element, invalidateVisual);
-		return true;
+			previousReference.Get(), committed, invalidateVisual);
+		return windowLifetime.Get()
+			&& _keyboardFocusVersion == transitionVersion
+			&& _keyboardFocus == requestedReference.Get();
 	};
 
 	if (_window->_inputManager)
@@ -256,6 +327,16 @@ bool FocusManager::SetKeyboardFocusCore(
 		auto transition =
 			_window->_inputManager->BeginKeyboardFocusTransition(
 				previous, element, cancelable);
+		// Preview handlers may destroy the Window or the requested element.  The
+		// transition owns weak endpoints, so reject it before the commit lambda can
+		// reuse either this FocusManager or the raw request parameter.
+		if (!windowLifetime.Get()) return false;
+		if (element && !requestedReference.Get())
+		{
+			_window->_inputManager->CancelKeyboardFocusTransition(transition);
+			++_statistics.KeyboardTransitionsCanceled;
+			return false;
+		}
 		if (!transition.Accepted)
 		{
 			++_statistics.KeyboardTransitionsCanceled;
@@ -268,18 +349,39 @@ bool FocusManager::SetKeyboardFocusCore(
 			++_statistics.KeyboardTransitionsCanceled;
 			return false;
 		}
-		if (!commit())
+		try
 		{
-			_window->_inputManager->CancelKeyboardFocusTransition(
-				transition);
-			++_statistics.KeyboardTransitionsCanceled;
-			return false;
+			if (!commit())
+			{
+				if (windowLifetime.Get())
+					_window->_inputManager->CancelKeyboardFocusTransition(
+						transition);
+				if (windowLifetime.Get())
+					++_statistics.KeyboardTransitionsCanceled;
+				if (projectionError)
+					std::rethrow_exception(projectionError);
+				return false;
+			}
 		}
+		catch (...)
+		{
+			if (windowLifetime.Get())
+				_window->_inputManager->CancelKeyboardFocusTransition(
+					transition);
+			throw;
+		}
+		if (!windowLifetime.Get()) return false;
 		_window->_inputManager->CompleteKeyboardFocusTransition(
 			transition);
 	}
-	else if (!commit()) return false;
-	return _keyboardFocus == element;
+	else if (!commit())
+	{
+		if (projectionError) std::rethrow_exception(projectionError);
+		return false;
+	}
+	if (projectionError) std::rethrow_exception(projectionError);
+	return windowLifetime.Get()
+		&& _keyboardFocus == requestedReference.Get();
 }
 
 bool FocusManager::SetKeyboardFocus(
@@ -443,7 +545,7 @@ Control* FocusManager::FindTabTarget(
 {
 	KeyboardNavigationMode boundaryMode = KeyboardNavigationMode::Continue;
 	auto* boundary = FindNavigationBoundary(
-		_keyboardFocus, false, boundaryMode);
+		_keyboardFocus.Get(), false, boundaryMode);
 	auto order = BuildTabOrderFor(
 		boundary == _window ? nullptr : boundary, true, true);
 	if (order.empty()) return nullptr;
@@ -451,7 +553,8 @@ Control* FocusManager::FindTabTarget(
 	if (direction == FocusNavigationDirection::First) return order.front();
 	if (direction == FocusNavigationDirection::Last) return order.back();
 	const bool forward = direction == FocusNavigationDirection::Next;
-	auto current = std::find(order.begin(), order.end(), _keyboardFocus);
+	auto current = std::find(
+		order.begin(), order.end(), _keyboardFocus.Get());
 	if (current == order.end()) return forward ? order.front() : order.back();
 	const auto index = static_cast<std::size_t>(current - order.begin());
 	if (forward && index + 1 < order.size()) return order[index + 1];
@@ -467,10 +570,13 @@ Control* FocusManager::FindDirectionalTarget(
 	if (!_keyboardFocus) return FindTabTarget(FocusNavigationDirection::First);
 	KeyboardNavigationMode boundaryMode = KeyboardNavigationMode::Continue;
 	auto* boundary = FindNavigationBoundary(
-		_keyboardFocus, true, boundaryMode);
+		_keyboardFocus.Get(), true, boundaryMode);
 	auto candidates = BuildTabOrderFor(
 		boundary == _window ? nullptr : boundary, false, false);
-	const auto originRect = _keyboardFocus->GetAbsoluteRectDip();
+	auto* const keyboardFocus = _keyboardFocus.Get();
+	if (!keyboardFocus)
+		return FindTabTarget(FocusNavigationDirection::First);
+	const auto originRect = keyboardFocus->GetAbsoluteRectDip();
 	const float originX = CenterX(originRect);
 	const float originY = CenterY(originRect);
 	Control* best = nullptr;
@@ -478,7 +584,7 @@ Control* FocusManager::FindDirectionalTarget(
 
 	for (auto* candidate : candidates)
 	{
-		if (!candidate || candidate == _keyboardFocus) continue;
+		if (!candidate || candidate == keyboardFocus) continue;
 		const auto rect = candidate->GetAbsoluteRectDip();
 		const float dx = CenterX(rect) - originX;
 		const float dy = CenterY(rect) - originY;
@@ -515,7 +621,7 @@ Control* FocusManager::FindDirectionalTarget(
 	float edgeScore = (std::numeric_limits<float>::max)();
 	for (auto* candidate : candidates)
 	{
-		if (!candidate || candidate == _keyboardFocus) continue;
+		if (!candidate || candidate == keyboardFocus) continue;
 		const auto rect = candidate->GetAbsoluteRectDip();
 		const float x = CenterX(rect);
 		const float y = CenterY(rect);
@@ -561,7 +667,8 @@ void FocusManager::DeactivateWindow()
 {
 	if (!_windowActive && !_keyboardFocus) return;
 	_windowActive = false;
-	if (_keyboardFocus) _suspendedKeyboardFocus = _keyboardFocus;
+	if (auto* focused = _keyboardFocus.Get())
+		_suspendedKeyboardFocus = focused;
 	(void)SetKeyboardFocusCore(
 		nullptr, true, FocusChangeReason::WindowActivation, false);
 }
@@ -570,7 +677,7 @@ bool FocusManager::ActivateWindow()
 {
 	if (_windowActive && _keyboardFocus) return true;
 	_windowActive = true;
-	auto* restore = _suspendedKeyboardFocus;
+	auto* restore = _suspendedKeyboardFocus.Get();
 	_suspendedKeyboardFocus = nullptr;
 	if (!IsOwned(restore) || !restore->CanReceiveKeyboardFocus())
 		restore = ResolveLogicalFocus(_window);
@@ -584,7 +691,7 @@ bool FocusManager::ActivateWindow()
 void FocusManager::OpenTransientScope(Control* scope)
 {
 	if (!scope || !IsOwned(scope)) return;
-	auto* restore = _keyboardFocus;
+	auto* restore = _keyboardFocus.Get();
 	if (restore && IsDescendantOrSelf(restore, scope))
 	{
 		auto* parentScope = GetFocusScope(scope->GetRoutedParent());
@@ -600,10 +707,10 @@ void FocusManager::CloseTransientScope(Control* scope)
 	if (found == _transientRestoreTargets.end()) return;
 	auto* restore = found->second;
 	_transientRestoreTargets.erase(found);
-	const bool keyboardInside = _keyboardFocus
-		&& IsDescendantOrSelf(_keyboardFocus, scope);
-	const bool suspendedInside = _suspendedKeyboardFocus
-		&& IsDescendantOrSelf(_suspendedKeyboardFocus, scope);
+	const bool keyboardInside = IsDescendantOrSelf(
+		_keyboardFocus.Get(), scope);
+	const bool suspendedInside = IsDescendantOrSelf(
+		_suspendedKeyboardFocus.Get(), scope);
 	if (!keyboardInside && !suspendedInside) return;
 	if (!IsOwned(restore) || !restore->CanReceiveKeyboardFocus())
 	{
@@ -627,10 +734,10 @@ void FocusManager::CloseTransientScope(Control* scope)
 void FocusManager::DetachVisualChild(Control* root)
 {
 	if (!root) return;
-	if (IsDescendantOrSelf(_keyboardFocus, root))
+	if (IsDescendantOrSelf(_keyboardFocus.Get(), root))
 		(void)SetKeyboardFocusCore(
 			nullptr, true, FocusChangeReason::TreeDetach, false);
-	if (IsDescendantOrSelf(_suspendedKeyboardFocus, root))
+	if (IsDescendantOrSelf(_suspendedKeyboardFocus.Get(), root))
 		_suspendedKeyboardFocus = nullptr;
 	for (auto it = _logicalFocus.begin(); it != _logicalFocus.end();)
 	{
@@ -652,19 +759,19 @@ void FocusManager::DetachVisualChild(Control* root)
 
 void FocusManager::Reset() noexcept
 {
-	try
-	{
-		RefreshKeyboardFocusProjection(_keyboardFocus, nullptr);
-		_logicalFocus.clear();
-		RefreshLogicalFocusProjection();
-	}
-	catch (...)
-	{
-	}
+	auto* const previous = _keyboardFocus.Get();
 	_keyboardFocus = nullptr;
+	++_keyboardFocusVersion;
+	try { RefreshKeyboardFocusProjection(previous, nullptr); }
+	catch (...) {}
+	// A reverse-inherited or exact-focus observer must not prevent the logical
+	// projection from being cleared during Window teardown.
+	_logicalFocus.clear();
+	try { RefreshLogicalFocusProjection(); }
+	catch (...) {}
 	_suspendedKeyboardFocus = nullptr;
 	_logicalFocusedElements.clear();
-	_keyboardFocusWithinElements.clear();
+	_keyboardFocusStateOwner.Reset();
 	_transientRestoreTargets.clear();
 	_windowActive = false;
 }

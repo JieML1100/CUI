@@ -18,8 +18,10 @@ public:
 	static const DependencyProperty& BackgroundProperty();
 	static void RegisterDependencyProperties();
 
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 };

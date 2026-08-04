@@ -24,12 +24,13 @@ UIClass Panel::Type() { return UIClass::UI_Panel; }
 
 const DependencyProperty& Panel::BackgroundProperty()
 {
-	static const auto* property = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<Panel, cui::drawing::Brush> options;
 		options.DefaultValue = cui::drawing::NoBrush();
 		options.Flags = DependencyPropertyFlags::AffectsRender;
 		options.Convert = ConvertPanelBrush;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Browsable = false;
 		options.Design.DisplayName = L"Background";
 		options.Design.Category = L"Appearance";
@@ -38,17 +39,21 @@ const DependencyProperty& Panel::BackgroundProperty()
 		options.Design.Editor = DependencyPropertyEditorKind::Text;
 		options.Design.Persistence =
 			DependencyPropertyPersistence::Metadata;
-		return DependencyPropertyRegistry::Register<
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
 			Panel, cui::drawing::Brush>(
-				L"Background", std::move(options));
+				DependencyPropertyRegistrationLiteral(L"Background"),
+				std::move(options));
 	}();
-	return *property;
+	return *registration;
 }
 
 void Panel::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	(void)BackgroundProperty();
+#endif
 }
 
 Panel::Panel()
@@ -144,7 +149,8 @@ void Panel::InvalidateLayout()
 
 	// A child's desired geometry can affect every auto-sized ancestor. Bubble
 	// the request to the root and ensure the window schedules a new frame.
-	Control::RequestLayout();
+	if (ShouldPropagateLayoutInvalidation())
+		Control::RequestLayout();
 }
 
 void Panel::InvalidateArrangeLayout()
@@ -155,7 +161,8 @@ void Panel::InvalidateArrangeLayout()
 
 	// Preserve the measure result while scheduling the parent policy that
 	// assigns child slots.
-	Control::RequestArrange();
+	if (ShouldPropagateLayoutInvalidation())
+		Control::RequestArrange();
 }
 
 void Panel::PerformLayout()

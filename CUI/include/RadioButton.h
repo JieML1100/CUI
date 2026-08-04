@@ -13,22 +13,26 @@ class RadioButton : public ToggleButton
 	std::wstring _groupName;
 	void UpdateRadioButtonGroup();
 protected:
+	bool OnAccessKey(bool isMultiple) override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<RadioButtonAutomationPeer>(*this);
 	}
-	void OnIsCheckedChanged(bool oldValue, bool newValue) override;
-	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
-	void BeforeDefaultMouseUp(MouseButton button, MouseEventArgs& e, bool hasMatchingPress) override;
+	void OnIsCheckedChanged(
+		NullableBool oldValue, NullableBool newValue) override;
+	void OnToggle() override;
 public:
 	virtual UIClass Type();
 	/** @brief 创建单选框。 */
 	RadioButton();
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& GroupNameProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 	PROPERTY(std::wstring, GroupName);
 	GET(std::wstring, GroupName);
 	SET(std::wstring, GroupName);

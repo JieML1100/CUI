@@ -55,6 +55,10 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="CuiRuntimeFlavor">
+    <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+  </PropertyGroup>
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
@@ -78,7 +82,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;_DEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -96,11 +100,16 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CUI_INCLUDE_DESIGN_METADATA;NDEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <!--
+        MSVC 14.44 can emit corrupt /GL + /Z7 records for the large
+        CodeGenerator translation unit, which later fails with LNK1103.
+        Release keeps link-level symbols while omitting per-object type data.
+      -->
+      <DebugInformationFormat>None</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -112,13 +121,20 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp" />
+	<ClCompile Include="..\CuiDesigner\BindingConverterCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp">
+      <!-- The generator TU exceeds MSVC 14.44's reliable LTCG object size. -->
+      <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">false</WholeProgramOptimization>
+    </ClCompile>
+    <ClCompile Include="..\CuiDesigner\FrameworkThemeCodeGenerator.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.cpp" />
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="..\CuiDesigner\BindingConverterCatalog.h" />
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h" />
+    <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.h" />
@@ -129,6 +145,7 @@
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
+      <AdditionalProperties>CuiRuntimeFlavor=$(CuiRuntimeFlavor)</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{DBE82CEF-212B-4FCD-8A2B-99F17C3B7F19}</Project>

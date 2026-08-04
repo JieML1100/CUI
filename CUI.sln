@@ -8,6 +8,9 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Designer", "CuiDesigner\CuiDesigner.vcxproj", "{328D4361-1094-47D8-B085-0A933A42EA91}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CUITest", "CUITest\CUITest.vcxproj", "{4EA7B10C-41E3-4BEA-9BBE-34872A65CE1D}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6} = {5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CUICoreTests", "CUICoreTests\CUICoreTests.vcxproj", "{9E6D3E1B-FE11-4DA6-85BD-6C4EC5BAA5A2}"
 EndProject
@@ -22,10 +25,23 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiRuntimeSample", "CuiRuntimeSample\CuiRuntimeSample.vcxproj", "{EE9557C5-F6EE-41ED-8D02-8E37F214DB48}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiStaticGeneratedSample", "CuiStaticGeneratedSample\CuiStaticGeneratedSample.vcxproj", "{6D9F01C8-4E44-4ED3-9D56-2A927C270CB4}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6} = {5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiCodeGenCore", "CuiCodeGenCore\CuiCodeGenCore.vcxproj", "{4A2749A7-CA13-4EEA-9E62-BF23B221E934}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiCodeGen", "CuiCodeGen\CuiCodeGen.vcxproj", "{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiGeneratedTheme", "CuiGeneratedTheme\CuiGeneratedTheme.vcxproj", "{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6} = {5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CuiAotCompileGate", "CuiAotCompileGate\CuiAotCompileGate.vcxproj", "{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6} = {5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -131,6 +147,22 @@ Global
 		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}.Release|x64.Build.0 = Release|x64
 		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}.Release|x86.ActiveCfg = Release|Win32
 		{5C5D9B1F-0DE9-4C98-A187-8C5ABBA795A6}.Release|x86.Build.0 = Release|Win32
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Debug|x64.ActiveCfg = Debug|x64
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Debug|x64.Build.0 = Debug|x64
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Debug|x86.ActiveCfg = Debug|Win32
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Debug|x86.Build.0 = Debug|Win32
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Release|x64.ActiveCfg = Release|x64
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Release|x64.Build.0 = Release|x64
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Release|x86.ActiveCfg = Release|Win32
+		{B1C2D4B9-C017-4BB3-A4DC-6D2A69AF38A1}.Release|x86.Build.0 = Release|Win32
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Debug|x64.ActiveCfg = Debug|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Debug|x64.Build.0 = Debug|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Debug|x86.ActiveCfg = Debug|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Debug|x86.Build.0 = Debug|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Release|x64.ActiveCfg = Release|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Release|x64.Build.0 = Release|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Release|x86.ActiveCfg = Release|x64
+		{B4F8D987-E9BB-4F9D-B99A-68FE7FE73582}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

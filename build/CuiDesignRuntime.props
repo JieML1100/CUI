@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <CuiRuntimeFlavor Condition="'$(CuiRuntimeFlavor)'==''">Production</CuiRuntimeFlavor>
+    <CuiDynamicXamlEnabled Condition="'$(CuiRuntimeFlavor)'=='Design'">1</CuiDynamicXamlEnabled>
+    <CuiDynamicXamlEnabled Condition="'$(CuiRuntimeFlavor)'!='Design'">0</CuiDynamicXamlEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='CUI'">
+    <!--
+      Do not inherit the C++ defaults based on SolutionDir: direct project and
+      solution builds otherwise publish the same flavor to different directories.
+      Anchor both public libraries at the repository output root and give each
+      flavor its own intermediates (including tlogs).
+    -->
+    <OutDir>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..\$(Platform)\$(Configuration)\'))</OutDir>
+    <IntDir Condition="'$(CuiRuntimeFlavor)'=='Production'">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\Production\'))</IntDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='CUI' and '$(CuiRuntimeFlavor)'=='Design'">
+    <TargetName>CUIDesignCore</TargetName>
+    <IntDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\Design\'))</IntDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- Keep the ABI flavor last so inherited property sheets cannot silently override it. -->
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);CUI_RUNTIME_FLAVOR_DESIGN=$(CuiDynamicXamlEnabled)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <Target Name="ValidateCuiRuntimeFlavor" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="'$(CuiRuntimeFlavor)'!='Production' and '$(CuiRuntimeFlavor)'!='Design'"
+      Text="Unsupported CuiRuntimeFlavor '$(CuiRuntimeFlavor)'. Expected Production or Design." />
+  </Target>
+</Project>

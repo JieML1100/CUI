@@ -34,27 +34,6 @@ using Microsoft::WRL::ComPtr;
  * 注意：该头文件包含较多平台相关依赖（MF/EVR/D3D/WASAPI），仅在 Windows/MSVC 环境下使用。
  */
 
-#if defined(_MSC_VER)
-// Media Foundation + EVR
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mf.lib")
-#pragma comment(lib, "mfreadwrite.lib")
-#pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "evr.lib")
-
-// D3D/DXGI
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
-
-// WASAPI / MMCSS
-#pragma comment(lib, "mmdevapi.lib")
-#pragma comment(lib, "avrt.lib")
-
-// misc
-#pragma comment(lib, "shlwapi.lib")
-#pragma comment(lib, "ole32.lib")
-#endif
-
 // ============================================================================
 // MediaPlayer - Windows 原生媒体播放器控件
 // ============================================================================
@@ -177,8 +156,8 @@ private:
 	bool _usingNv12VideoOutput = false; // 当前视频输出是否为 NV12
 	std::atomic<double> _position{ 0.0 }; // 当前播放位置（秒，可由解码线程更新）
 	double _duration = 0.0;           // 媒体总时长（秒）
-	double _volumeValue = 1.0;          // 属性系统 backing；播放线程读取下方原子镜像
-	std::atomic<double> _volume{ 1.0 }; // 音量 (0.0-1.0)
+	double _volumeValue = 0.5;          // 属性系统 backing；播放线程读取下方原子镜像
+	std::atomic<double> _volume{ 0.5 }; // 音量 (0.0-1.0)
 	float _playbackRateValue = 1.0f;   // 属性系统 backing；播放线程读取下方原子镜像
 	std::atomic<float> _playbackRate{ 1.0f }; // 播放速率
 	int _renderMode = static_cast<int>(VideoRenderMode::Fit); // 元数据使用稳定整数值
@@ -218,6 +197,12 @@ private:
 	bool _pendingStart = false;       // 是否有待处理的启动
 	bool _hasPendingStartPosition = false;  // 是否有待处理的起始位置
 	double _pendingStartPosition = 0.0;     // 待处理的起始位置
+	// Construction must remain cheap: a declarative tree can contain a hidden
+	// MediaPlayer page.  Media Foundation and its D3D/session worker resources
+	// are acquired only by the first actual Load operation.
+	bool _initializationAttempted = false;
+	HRESULT _initializationHr = E_PENDING;
+	bool _mfStarted = false;
 	HRESULT _coInitHr = E_UNEXPECTED;       // COM初始化结果
 	bool _didCoInit = false;                // 是否执行了COM初始化
 	std::atomic<HRESULT> _lastMfError{ S_OK }; // 最后一个 Media Foundation 错误
@@ -277,6 +262,7 @@ private:
 	bool _ownsVideoBitmap = false;                    // 是否拥有位图
 
 	// ========== Media Foundation 内部方法 ==========
+	bool EnsureInitialized();
 	HRESULT InitializeMF();                           // 初始化Media Foundation
 	HRESULT CreateMediaSession();                     // 创建媒体会话
 	void ShutdownMediaSession();                      // 关闭媒体会话
@@ -345,10 +331,23 @@ public:
 	static void ConvertNV12ToBGRA(const uint8_t* nv12, size_t nv12Bytes, UINT32 nv12Stride, UINT32 srcW, UINT32 srcH, UINT32 cropX, UINT32 cropY, UINT32 w, UINT32 h, std::vector<uint8_t>& outBGRA);
 	virtual UIClass Type() override;
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& VolumeProperty();
+	static const DependencyProperty& PlaybackRateProperty();
+	static const DependencyProperty& AutoPlayProperty();
+	static const DependencyProperty& LoopProperty();
+	static const DependencyProperty& EnableHardwareDecodeProperty();
+	static const DependencyProperty& PreferNv12VideoOutputProperty();
+	static const DependencyProperty& RenderModeProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+	{
+		return std::make_unique<AutomationPeer>(
+			*this, AutomationControlType::Custom, L"MediaPlayer");
+	}
 	void OnRender() override;
-	bool ProcessInput(const InputReport& input) override;
 public:
 	// ========== 媒体控制方法 ==========
 	/// <summary>

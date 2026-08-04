@@ -14,6 +14,16 @@ struct XamlDocumentParseOptions
 	std::wstring ResourceBasePath;
 	/** Optional per-load context; defaults to an Application resolver snapshot. */
 	std::shared_ptr<ResourceLoadContext> Resources;
+	/**
+	 * Source spans (DesignNode::Source, XamlDocumentSourceMap) only serve
+	 * editor-facing features: designer selection sync, squiggles, and code
+	 * generation diagnostics. Runtime hosts that merely materialize a document
+	 * can clear this to skip the per-element tag index and the per-attribute
+	 * span maps, which dominate document memory on large windows. Failure
+	 * diagnostics stay accurate: the index is still built whenever a caller
+	 * passes outDiagnostic.
+	 */
+	bool CaptureSourceSpans = true;
 };
 
 /**

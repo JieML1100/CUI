@@ -1,6 +1,5 @@
 #include "ItemsControl.h"
 #include "DependencyPropertyInfrastructure.h"
-#include "XamlInfrastructure.h"
 #include "StyleInfrastructure.h"
 #include "TreeInfrastructure.h"
 
@@ -23,24 +22,58 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+#if CUI_ENABLE_DYNAMIC_XAML
+namespace cui::design
+{
+	const std::wstring& AuthoredBindingListItemTypeName(
+		const IBindingList& source) noexcept;
+}
+#endif
 #include <vector>
 
 namespace
 {
-	void ClearTemplateOwner(Control* root, Control* owner)
+	bool SameCompiledBindingPath(
+		CompiledBindingPathView left,
+		CompiledBindingPathView right) noexcept
 	{
-		if (!root || !owner) return;
-		std::vector<Control*> stack{ root };
-		while (!stack.empty())
+		return left.Version == right.Version
+			&& left.Steps.data() == right.Steps.data()
+			&& left.Steps.size() == right.Steps.size();
+	}
+
+	void ValidateCompiledMemberPath(
+		CompiledBindingPathView path,
+		const char* propertyName)
+	{
+		if (path.Version != CompiledBindingPathVersion)
+			throw std::invalid_argument(std::string(propertyName)
+				+ " compiled path version is unsupported");
+		for (const auto& step : path.Steps)
 		{
-			auto* current = stack.back();
-			stack.pop_back();
-			if (!current) continue;
-			for (auto* child : current->GetVisualChildrenView())
-				if (child) stack.push_back(child);
-			if (current->GetTemplatedParent() == owner)
-				cui::framework::XamlAccess::SetTemplatedParent(*current, nullptr);
+			if (!HasCompiledBindingPathCapability(step.Capabilities,
+				CompiledBindingPathCapabilities::Read))
+				throw std::invalid_argument(std::string(propertyName)
+					+ " compiled path requires read capability");
+			if (step.Kind == CompiledBindingPathStepKind::Property
+				&& !step.Property)
+				throw std::invalid_argument(std::string(propertyName)
+					+ " compiled property steps require property tokens");
 		}
+	}
+
+	bool VisualSubtreeContains(
+		const Control* root,
+		const Control* candidate) noexcept
+	{
+		if (!root || !candidate) return false;
+		for (auto* current = candidate; current;
+			current = current->GetVisualParent())
+		{
+			if (current == root) return true;
+		}
+		return false;
 	}
 
 	class MaterializedItemsSourceSnapshot final
@@ -49,10 +82,16 @@ namespace
 	{
 	public:
 		MaterializedItemsSourceSnapshot(
+			DataTypeToken itemTypeToken,
+#if CUI_ENABLE_DYNAMIC_XAML
 			std::wstring itemTypeName,
+#endif
 			std::vector<BindingSourceReference> items,
 			std::vector<BindingListGroup> groups)
-			: _itemTypeName(std::move(itemTypeName)),
+			: _itemTypeToken(itemTypeToken),
+#if CUI_ENABLE_DYNAMIC_XAML
+			  _itemTypeName(std::move(itemTypeName)),
+#endif
 			  _items(std::move(items)),
 			  _groups(std::move(groups)) {}
 
@@ -66,10 +105,16 @@ namespace
 			return true;
 		}
 		EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+		DataTypeToken GetItemTypeToken() const noexcept override
+		{
+			return _itemTypeToken;
+		}
+#if CUI_ENABLE_DYNAMIC_XAML
 		const std::wstring& ItemTypeName() const noexcept override
 		{
 			return _itemTypeName;
 		}
+#endif
 		const std::vector<BindingListGroup>& Groups() const noexcept override
 		{
 			return _groups;
@@ -79,12 +124,12 @@ namespace
 		bool CanApply(
 			const CollectionChangedEventArgs& change,
 			size_t actualNewCount,
-			const std::wstring& itemTypeName) const noexcept
+			DataTypeToken itemTypeToken) const noexcept
 		{
 			if (change.Action == CollectionChangeAction::Reset
 				|| change.OldSize != _items.size()
 				|| change.NewSize != actualNewCount
-				|| itemTypeName != _itemTypeName) return false;
+				|| itemTypeToken != _itemTypeToken) return false;
 			switch (change.Action)
 			{
 			case CollectionChangeAction::Add:
@@ -160,7 +205,10 @@ namespace
 		}
 
 	private:
+		DataTypeToken _itemTypeToken;
+#if CUI_ENABLE_DYNAMIC_XAML
 		std::wstring _itemTypeName;
+#endif
 		std::vector<BindingSourceReference> _items;
 		std::vector<BindingListGroup> _groups;
 	};
@@ -192,7 +240,10 @@ namespace
 			groups = grouped->Groups();
 		output = BindingListReference(
 			std::make_shared<MaterializedItemsSourceSnapshot>(
-				source.Get()->ItemTypeName(),
+				source.Get()->GetItemTypeToken(),
+#if CUI_ENABLE_DYNAMIC_XAML
+				cui::design::AuthoredBindingListItemTypeName(*source.Get()),
+#endif
 				std::move(items), std::move(groups)));
 		return true;
 	}
@@ -218,7 +269,7 @@ namespace
 			? dynamic_cast<MaterializedItemsSourceSnapshot*>(
 				materializedSnapshot.Get()) : nullptr;
 		if (!source || !snapshot || !snapshot->CanApply(
-			change, source.Get()->Count(), source.Get()->ItemTypeName()))
+			change, source.Get()->Count(), source.Get()->GetItemTypeToken()))
 		{
 			output.Replace = true;
 			return TryCaptureItemsSourceSnapshot(
@@ -252,27 +303,26 @@ namespace
 		return true;
 	}
 
-	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
-	{
-		return left == right;
-	}
-
 	template<typename TValue>
 	DependencyPropertyOptions<ItemsControl, TValue> DataOptions(
-		TValue defaultValue,
-		int order,
-		DependencyPropertyPersistence persistence = DependencyPropertyPersistence::Metadata)
+		TValue defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyPersistence persistence =
+				DependencyPropertyPersistence::Metadata))
 	{
 		DependencyPropertyOptions<ItemsControl, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Data";
 		options.Design.CategoryOrder = 80;
 		options.Design.Order = order;
 		options.Design.Editor = DependencyPropertyEditorKind::Auto;
 		options.Design.Persistence = persistence;
+		)
 		return options;
 	}
 
@@ -285,6 +335,39 @@ namespace
 	bool IsFiniteNonNegative(float value) noexcept
 	{
 		return std::isfinite(value) && value >= 0.0f;
+	}
+
+	bool TextEquals(
+		const std::wstring& left,
+		const std::wstring& right,
+		bool caseSensitive) noexcept
+	{
+		if (left.size() != right.size()) return false;
+		if (caseSensitive) return left == right;
+		return std::equal(
+			left.begin(), left.end(), right.begin(),
+			[](wchar_t leftCharacter, wchar_t rightCharacter)
+			{
+				return std::towlower(leftCharacter)
+					== std::towlower(rightCharacter);
+			});
+	}
+
+	bool TextStartsWith(
+		const std::wstring& value,
+		const std::wstring& prefix,
+		bool caseSensitive) noexcept
+	{
+		if (prefix.empty() || prefix.size() > value.size()) return false;
+		if (caseSensitive)
+			return std::equal(prefix.begin(), prefix.end(), value.begin());
+		return std::equal(
+			prefix.begin(), prefix.end(), value.begin(),
+			[](wchar_t prefixCharacter, wchar_t valueCharacter)
+			{
+				return std::towlower(prefixCharacter)
+					== std::towlower(valueCharacter);
+			});
 	}
 
 	// Internal estimate used only to seed virtualized grouped extents. It is not
@@ -325,7 +408,8 @@ namespace
 		{
 			SetLayoutEngine(new VirtualizingStackLayoutEngine(*this));
 			(void)TrySetPropertyValue(
-				L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+				Control::VerticalAlignmentProperty(),
+				BindingValue(VerticalAlignment::Top),
 				DependencyPropertyValueSource::Template);
 		}
 
@@ -407,14 +491,27 @@ namespace
 		{
 			return _offsets.empty() ? 0.0f : _offsets.back();
 		}
+		bool SetLocalLayoutInvalidation(bool value) noexcept
+		{
+			return std::exchange(_localLayoutInvalidation, value);
+		}
 
 	private:
+		bool ShouldPropagateLayoutInvalidation() const noexcept override
+		{
+			// Realization caused solely by a changed scroll offset does not
+			// change the virtual host's total extent. Keep that structural
+			// mutation inside the host and commit its new children immediately.
+			return !_localLayoutInvalidation;
+		}
+
 		size_t _itemCount = 0;
 		float _itemHeight = 0.0f;
 		float _headerHeight = 0.0f;
 		std::vector<size_t> _headerCounts;
 		std::vector<float> _offsets;
 		std::unordered_map<Control*, size_t> _indices;
+		bool _localLayoutInvalidation = false;
 	};
 
 	class GroupedItemHost;
@@ -465,25 +562,319 @@ namespace
 			float fixedHeaderHeight = 0.0f,
 			float fixedItemHeight = 0.0f)
 		{
-			auto* itemLogicalParent = _item
-				? _item->GetLogicalParent() : nullptr;
-			auto item = DetachVisualChild(_item);
-			while (!GetVisualChildrenView().empty())
+			if (_changingHeaders)
+				throw std::logic_error(
+					"GroupedItemHost does not support reentrant header changes");
+			const auto initialChildren = GetVisualChildrenView();
+			if (!_item
+				|| _headerCount > initialChildren.size()
+				|| initialChildren.size() != _headerCount + 1
+				|| initialChildren[_headerCount] != _item
+				|| _contexts.size() != _headerCount)
+				throw std::logic_error(
+					"GroupedItemHost current header metadata is invalid");
+			if (contexts.size() != headers.size()
+				|| std::any_of(
+					headers.begin(), headers.end(),
+					[](const auto& header) { return !header; }))
+				throw std::invalid_argument(
+					"GroupedItemHost header visuals and contexts do not match");
+			_changingHeaders = true;
+			struct HeaderChangeGuard final
 			{
-				auto discarded = DetachVisualChild(GetVisualChildrenView().front());
-				(void)discarded;
+				bool& Value;
+				~HeaderChangeGuard() { Value = false; }
+			} changeGuard{ _changingHeaders };
+
+			struct PreviousChild final
+			{
+				ControlWeakReference Lifetime;
+				ControlWeakReference LogicalParent;
+				bool IsItem = false;
+				size_t HeaderIndex = static_cast<size_t>(-1);
+				std::unique_ptr<Control> Owner;
+			};
+
+			const ControlWeakReference previousItemLifetime(_item);
+			const auto previousHeaderCount = _headerCount;
+			const auto previousFixedHeaderHeight = _fixedHeaderHeight;
+			const auto previousFixedItemHeight = _fixedItemHeight;
+			const auto previousContexts = _contexts;
+			std::vector<BindingSourceReference> restoredContextsScratch;
+			restoredContextsScratch.reserve(previousHeaderCount);
+			std::vector<ControlWeakReference> candidateHeaders;
+			candidateHeaders.reserve(headers.size());
+			std::vector<PreviousChild> previousChildren;
+			previousChildren.reserve(GetVisualChildrenView().size());
+			size_t visualIndex = 0;
+			for (auto* child : GetVisualChildrenView())
+			{
+				previousChildren.push_back(PreviousChild{
+					ControlWeakReference(child),
+					ControlWeakReference(child
+						? child->GetLogicalParent() : nullptr),
+					child && child == _item,
+					visualIndex < previousHeaderCount
+						? visualIndex : static_cast<size_t>(-1),
+					{} });
+				++visualIndex;
 			}
-			_headerCount = headers.size();
-			_fixedHeaderHeight = (std::max)(0.0f, fixedHeaderHeight);
-			_fixedItemHeight = (std::max)(0.0f, fixedItemHeight);
-			_contexts = std::move(contexts);
-			for (auto& header : headers)
-				AddOwned(std::move(header));
-			_item = item.get();
-			if (item)
-				cui::framework::TreeAccess::AddOwnedVisualChild(
-					*this, std::move(item), itemLogicalParent);
+
+			std::exception_ptr firstNotificationError;
+			std::exception_ptr transactionError;
+			auto rememberFirst = [&](std::exception_ptr error)
+			{
+				if (error && !firstNotificationError)
+					firstNotificationError = std::move(error);
+			};
+			auto fail = [&](const char* message)
+			{
+				if (!transactionError)
+					transactionError = std::make_exception_ptr(
+						std::logic_error(message));
+			};
+			auto isOwnedHere = [this](Control* child) noexcept
+			{
+				return child && child->GetVisualParent() == this
+					&& IndexOfVisualChild(child) >= 0;
+			};
+
+			// Never publish a raw item while callbacks can detach, transfer or
+			// destroy it. The slot is republished only from a verified final tree.
+			_item = nullptr;
+			_headerCount = 0;
+
+			for (auto& entry : previousChildren)
+			{
+				auto* live = entry.Lifetime.Get();
+				if (!live)
+				{
+					fail("GroupedItemHost previous child expired");
+					break;
+				}
+				bool ownershipCommit = false;
+				std::exception_ptr notificationError;
+				try
+				{
+					entry.Owner =
+						cui::framework::TreeAccess::DetachVisualChild(
+							*this, live, &ownershipCommit,
+							&notificationError);
+				}
+				catch (...)
+				{
+					transactionError = std::current_exception();
+					break;
+				}
+				rememberFirst(notificationError);
+				live = entry.Lifetime.Get();
+				if (!entry.Owner || entry.Owner.get() != live)
+				{
+					fail(isOwnedHere(live)
+						? "GroupedItemHost previous child detach did not commit"
+						: "GroupedItemHost previous child ownership escaped");
+					break;
+				}
+			}
+			if (!transactionError && VisualChildCount() != 0)
+				fail("GroupedItemHost detach left unexpected visual children");
+
+			if (!transactionError)
+			{
+				for (auto& header : headers)
+				{
+					if (!header)
+					{
+						fail("GroupedItemHost header is null");
+						break;
+					}
+					const ControlWeakReference lifetime(header.get());
+					std::exception_ptr attachError;
+					try
+					{
+						(void)cui::framework::TreeAccess::
+							InsertOwnedVisualChildPreserving(
+								*this, VisualChildCount(), header, this);
+					}
+					catch (...)
+					{
+						attachError = std::current_exception();
+					}
+					auto* live = lifetime.Get();
+					const bool attached = isOwnedHere(live)
+						&& live->GetLogicalParent() == this;
+					if (!attached)
+					{
+						transactionError = attachError
+							? attachError
+							: std::make_exception_ptr(std::logic_error(
+								"GroupedItemHost header attachment did not commit"));
+						break;
+					}
+					candidateHeaders.push_back(lifetime);
+					rememberFirst(attachError);
+				}
+			}
+
+			auto itemEntry = std::find_if(
+				previousChildren.begin(), previousChildren.end(),
+				[](const PreviousChild& entry) { return entry.IsItem; });
+			ControlWeakReference committedItem;
+			if (!transactionError)
+			{
+				if (itemEntry == previousChildren.end() || !itemEntry->Owner)
+					fail("GroupedItemHost lost its item owner");
+				else
+				{
+					const auto itemLifetime = itemEntry->Lifetime;
+					auto* logicalParent = itemEntry->LogicalParent.Get();
+					std::exception_ptr attachError;
+					try
+					{
+						(void)cui::framework::TreeAccess::
+							InsertOwnedVisualChildPreserving(
+								*this, VisualChildCount(),
+								itemEntry->Owner, logicalParent);
+					}
+					catch (...)
+					{
+						attachError = std::current_exception();
+					}
+					auto* live = itemLifetime.Get();
+					if (!isOwnedHere(live)
+						|| live->GetLogicalParent() != logicalParent)
+						transactionError = attachError
+							? attachError
+							: std::make_exception_ptr(std::logic_error(
+								"GroupedItemHost item attachment did not commit"));
+					else
+					{
+						committedItem = itemLifetime;
+						rememberFirst(attachError);
+					}
+				}
+			}
+
+			if (!transactionError)
+			{
+				const auto children = GetVisualChildrenView();
+				bool exact = children.size() == candidateHeaders.size() + 1;
+				for (size_t index = 0;
+					exact && index < candidateHeaders.size(); ++index)
+					exact = children[index] == candidateHeaders[index].Get();
+				exact = exact && children.back() == committedItem.Get();
+				if (!exact)
+					fail("GroupedItemHost header transaction final state is invalid");
+			}
+
+			if (!transactionError)
+			{
+				_item = committedItem.Get();
+				_headerCount = candidateHeaders.size();
+				_fixedHeaderHeight =
+					(std::max)(0.0f, fixedHeaderHeight);
+				_fixedItemHeight =
+					(std::max)(0.0f, fixedItemHeight);
+				_contexts = std::move(contexts);
+				InvalidateLayout();
+				if (firstNotificationError)
+					std::rethrow_exception(firstNotificationError);
+				return;
+			}
+			if (firstNotificationError)
+				transactionError = firstNotificationError;
+
+			// Remove every candidate or callback-injected visual before restoring
+			// the old weak identities. Detached owners are intentionally local:
+			// failed replacement content must not survive the transaction.
+			for (size_t pass = 0; pass < 1024; ++pass)
+			{
+				Control* unexpected = nullptr;
+				for (auto* child : GetVisualChildrenView())
+				{
+					const bool wasPrevious = std::any_of(
+						previousChildren.begin(), previousChildren.end(),
+						[child](const PreviousChild& entry)
+						{ return entry.Lifetime.Get() == child; });
+					if (child && !wasPrevious)
+					{
+						unexpected = child;
+						break;
+					}
+				}
+				if (!unexpected) break;
+				const ControlWeakReference childReference(unexpected);
+				auto* child = childReference.Get();
+				if (!child || !isOwnedHere(child)) continue;
+				bool ownershipCommit = false;
+				std::exception_ptr ignoredNotificationError;
+				try
+				{
+					auto discarded =
+						cui::framework::TreeAccess::DetachVisualChild(
+							*this, child, &ownershipCommit,
+							&ignoredNotificationError);
+					(void)discarded;
+				}
+				catch (...)
+				{
+					// Rollback is best-effort, but metadata below is always
+					// republished from the surviving weak identities.
+				}
+			}
+
+			for (auto& entry : previousChildren)
+			{
+				auto* live = entry.Lifetime.Get();
+				if (isOwnedHere(live)) continue;
+				if (!entry.Owner || entry.Owner.get() != live) continue;
+				try
+				{
+					(void)cui::framework::TreeAccess::
+						InsertOwnedVisualChildPreserving(
+							*this, VisualChildCount(), entry.Owner,
+							entry.LogicalParent.Get());
+				}
+				catch (...)
+				{
+					// Preserve transactionError. A post-commit restoration is
+					// recognized by the final weak/parent scan below.
+				}
+			}
+
+			size_t restoreIndex = 0;
+			for (const auto& entry : previousChildren)
+			{
+				auto* live = entry.Lifetime.Get();
+				if (!isOwnedHere(live)) continue;
+				const int currentIndex = IndexOfVisualChild(live);
+				if (currentIndex != static_cast<int>(restoreIndex))
+				try
+				{
+					(void)MoveVisualChild(
+						currentIndex, static_cast<int>(restoreIndex));
+				}
+				catch (...) {}
+				++restoreIndex;
+			}
+
+			auto* restoredItem = previousItemLifetime.Get();
+			_item = isOwnedHere(restoredItem) ? restoredItem : nullptr;
+			for (const auto& entry : previousChildren)
+			{
+				if (entry.HeaderIndex == static_cast<size_t>(-1)
+					|| entry.HeaderIndex >= previousContexts.size())
+					continue;
+				if (isOwnedHere(entry.Lifetime.Get()))
+					restoredContextsScratch.push_back(
+						previousContexts[entry.HeaderIndex]);
+			}
+			_headerCount = restoredContextsScratch.size();
+			_contexts = std::move(restoredContextsScratch);
+			_fixedHeaderHeight = previousFixedHeaderHeight;
+			_fixedItemHeight = previousFixedItemHeight;
 			InvalidateLayout();
+			std::rethrow_exception(transactionError);
 		}
 
 	private:
@@ -492,6 +883,7 @@ namespace
 		float _fixedHeaderHeight = 0.0f;
 		float _fixedItemHeight = 0.0f;
 		std::vector<BindingSourceReference> _contexts;
+		bool _changingHeaders = false;
 	};
 
 	struct GroupedLayoutItem final
@@ -648,16 +1040,58 @@ namespace
 	}
 }
 
+struct ItemsControl::DirectVisualMutationFrame final
+{
+	explicit DirectVisualMutationFrame(
+		ItemsControl& owner,
+		Control* after)
+		: Owner(owner),
+		Previous(owner._activeDirectVisualMutationFrame),
+		After(after),
+		HasAfter(after != nullptr)
+	{
+		const auto before = owner.GetVisualChildrenView();
+		auto* previousInfrastructure = std::find(
+			before.begin(), before.end(),
+			owner._controlTemplateRoot) != before.end()
+			? owner._controlTemplateRoot
+			: std::find(
+				before.begin(), before.end(),
+				owner._itemsHost) != before.end()
+				? owner._itemsHost : nullptr;
+		if (previousInfrastructure)
+		{
+			Before = previousInfrastructure;
+			HasBefore = true;
+		}
+		owner._activeDirectVisualMutationFrame = this;
+	}
+	DirectVisualMutationFrame(
+		const DirectVisualMutationFrame&) = delete;
+	DirectVisualMutationFrame& operator=(
+		const DirectVisualMutationFrame&) = delete;
+	~DirectVisualMutationFrame()
+	{
+		Owner._activeDirectVisualMutationFrame = Previous;
+	}
+
+	ItemsControl& Owner;
+	DirectVisualMutationFrame* Previous = nullptr;
+	ControlWeakReference Before;
+	ControlWeakReference After;
+	bool HasBefore = false;
+	bool HasAfter = false;
+};
+
 ItemsControl::ItemsControl()
 	: Control()
 {
 	auto itemsHost = CreateItemsHost();
 	_itemsHost = itemsHost.get();
-	_changingItemsHost = true;
-	cui::framework::XamlAccess::SetTemplatedParent(*_itemsHost, this);
+	cui::framework::TreeAccess::SetTemplatedParent(*_itemsHost, this);
+	DirectVisualMutationFrame mutation(*this, _itemsHost);
 	cui::framework::TreeAccess::AddOwnedVisualChild(
 		*this, std::move(itemsHost), nullptr);
-	_changingItemsHost = false;
 	RefreshItemsScrollOwner();
 }
 
@@ -665,7 +1099,24 @@ bool ItemsControl::ValidateVisualChildCollection(
 	std::span<Control* const> children,
 	std::string& error) const
 {
-	if (_changingItemsHost || _changingTemplateInfrastructure) return true;
+	if (_activeDirectVisualMutationFrame)
+	{
+		const auto& frame = *_activeDirectVisualMutationFrame;
+		auto matches = [&](
+			bool hasExpected,
+			const ControlWeakReference& expected) noexcept
+		{
+			if (!hasExpected) return children.empty();
+			return children.size() == 1 && children.front()
+				&& expected.Get() == children.front();
+		};
+		if (matches(frame.HasBefore, frame.Before)
+			|| matches(frame.HasAfter, frame.After))
+			return true;
+		error =
+			"ItemsControl direct-child transaction rejected an unexpected visual";
+		return false;
+	}
 	if (_controlTemplateRoot && children.size() == 1
 		&& children.front() == _controlTemplateRoot)
 		return true;
@@ -676,72 +1127,197 @@ bool ItemsControl::ValidateVisualChildCollection(
 	return false;
 }
 
+const DependencyProperty& ItemsControl::ItemsSourceProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataOptions(
+			BindingListReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				10, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ItemsControl, BindingListReference>(
+				DependencyPropertyRegistrationLiteral(L"ItemsSource"),
+				[](ItemsControl& target) { return target.GetItemsSource(); },
+				[](ItemsControl& target, const BindingListReference& value)
+				{ target.SetItemsSource(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ItemsControl::ItemTemplateProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataOptions(
+			ItemTemplateReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				20, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ItemsControl, ItemTemplateReference>(
+				DependencyPropertyRegistrationLiteral(L"ItemTemplate"),
+				[](ItemsControl& target) { return target.GetItemTemplate(); },
+				[](ItemsControl& target, const ItemTemplateReference& value)
+				{ target.SetItemTemplate(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ItemsControl::GroupStyleProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataOptions(
+			GroupStyleReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				25, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ItemsControl, GroupStyleReference>(
+				DependencyPropertyRegistrationLiteral(L"GroupStyle"),
+				[](ItemsControl& target) { return target.GetGroupStyle(); },
+				[](ItemsControl& target, const GroupStyleReference& value)
+				{ target.SetGroupStyle(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ItemsControl::ItemsPanelProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataOptions(
+			ItemsPanelTemplateReference{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				30, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ItemsControl, ItemsPanelTemplateReference>(
+				DependencyPropertyRegistrationLiteral(L"ItemsPanel"),
+				[](ItemsControl& target) { return target.GetItemsPanel(); },
+				[](ItemsControl& target, const ItemsPanelTemplateReference& value)
+				{ target.SetItemsPanel(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ItemsControl::ItemContainerStyleProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataOptions(
+			std::wstring{}
+			CUI_DESIGN_METADATA_ARGUMENTS(
+				50, DependencyPropertyPersistence::Native));
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ItemsControl, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"ItemContainerStyle"),
+				[](ItemsControl& target) { return target.GetItemContainerStyle(); },
+				[](ItemsControl& target, const std::wstring& value)
+				{ target.SetItemContainerStyle(value); }, {},
+				std::move(options));
+	}();
+	return *registration;
+}
+
 void ItemsControl::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
+#if CUI_ENABLE_DYNAMIC_XAML
+	RegisterDesignDependencyProperties();
+#endif
+}
+
+const DependencyProperty& ItemsControl::IsTextSearchEnabledProperty()
+{
+	static const auto registration = []
 	{
-		auto sourceOptions = DataOptions(
-			BindingListReference{}, 10,
-			DependencyPropertyPersistence::Native);
-		sourceOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ItemsControl, BindingListReference>(
-			L"ItemsSource",
-			[](ItemsControl& target) { return target.GetItemsSource(); },
-			[](ItemsControl& target, const BindingListReference& value)
-			{ target.SetItemsSource(value); }, {}, std::move(sourceOptions));
-
-		auto templateOptions = DataOptions(
-			ItemTemplateReference{}, 20,
-			DependencyPropertyPersistence::Native);
-		templateOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ItemsControl, ItemTemplateReference>(
-			L"ItemTemplate",
-			[](ItemsControl& target) { return target.GetItemTemplate(); },
-			[](ItemsControl& target, const ItemTemplateReference& value)
-			{ target.SetItemTemplate(value); }, {}, std::move(templateOptions));
-
-		auto groupOptions = DataOptions(
-			GroupStyleReference{}, 25,
-			DependencyPropertyPersistence::Native);
-		groupOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ItemsControl, GroupStyleReference>(
-			L"GroupStyle",
-			[](ItemsControl& target) { return target.GetGroupStyle(); },
-			[](ItemsControl& target, const GroupStyleReference& value)
-			{ target.SetGroupStyle(value); }, {}, std::move(groupOptions));
-
-		auto panelOptions = DataOptions(
-			ItemsPanelTemplateReference{}, 30,
-			DependencyPropertyPersistence::Native);
-		panelOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ItemsControl, ItemsPanelTemplateReference>(
-			L"ItemsPanel",
-			[](ItemsControl& target) { return target.GetItemsPanel(); },
-			[](ItemsControl& target, const ItemsPanelTemplateReference& value)
-			{ target.SetItemsPanel(value); }, {}, std::move(panelOptions));
-
-		auto pathOptions = DataOptions(std::wstring{}, 40);
-		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
-		DependencyPropertyRegistry::Register<ItemsControl, std::wstring>(
-			L"DisplayMemberPath",
-			[](ItemsControl& target) { return target.GetDisplayMemberPath(); },
-			[](ItemsControl& target, const std::wstring& value)
-			{ target.SetDisplayMemberPath(value); }, {}, std::move(pathOptions));
-
-		auto containerStyleOptions = DataOptions(
-			std::wstring{}, 50,
-			DependencyPropertyPersistence::Native);
-		containerStyleOptions.Design.Browsable = false;
-		DependencyPropertyRegistry::Register<ItemsControl, std::wstring>(
-			L"ItemContainerStyle",
-			[](ItemsControl& target) { return target.GetItemContainerStyle(); },
-			[](ItemsControl& target, const std::wstring& value)
-			{ target.SetItemContainerStyle(value); }, {},
-			std::move(containerStyleOptions));
-		return true;
+		DependencyPropertyOptions<ItemsControl, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::None;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 60;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
+			ItemsControl& target, const bool&, const bool& enabled)
+		{
+			if (!enabled) target.ResetTextSearch();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<ItemsControl, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsTextSearchEnabled"),
+			std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& ItemsControl::IsTextSearchCaseSensitiveProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ItemsControl, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::None;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 70;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence =
+			DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
+			ItemsControl& target, const bool&, const bool&)
+		{
+			target.ResetTextSearch();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<ItemsControl, bool>(
+			DependencyPropertyRegistrationLiteral(
+				L"IsTextSearchCaseSensitive"),
+			std::move(options));
+	}();
+	return *registration;
+}
+
+bool ItemsControl::GetIsTextSearchEnabled() const
+{
+	return GetDependencyPropertyValue<bool>(
+		IsTextSearchEnabledProperty());
+}
+
+void ItemsControl::SetIsTextSearchEnabled(bool value)
+{
+	(void)SetDependencyPropertyValue(
+		IsTextSearchEnabledProperty(), value);
+}
+
+bool ItemsControl::GetIsTextSearchCaseSensitive() const
+{
+	return GetDependencyPropertyValue<bool>(
+		IsTextSearchCaseSensitiveProperty());
+}
+
+void ItemsControl::SetIsTextSearchCaseSensitive(bool value)
+{
+	(void)SetDependencyPropertyValue(
+		IsTextSearchCaseSensitiveProperty(), value);
 }
 
 const ItemsPanelTemplate& ItemsControl::EffectiveItemsPanel() const noexcept
@@ -783,13 +1359,16 @@ std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
 	{
 		auto panel = std::make_unique<WrapPanel>();
 		(void)cui::framework::DependencyPropertyAccess::SetValue(
-			*panel, L"Orientation", BindingValue(definition.Orientation),
+			*panel, WrapPanel::OrientationProperty(),
+			BindingValue(definition.Orientation),
 			DependencyPropertyValueSource::Template);
 		(void)cui::framework::DependencyPropertyAccess::SetValue(
-			*panel, L"ItemWidth", BindingValue(definition.ItemWidth),
+			*panel, WrapPanel::ItemWidthProperty(),
+			BindingValue(definition.ItemWidth),
 			DependencyPropertyValueSource::Template);
 		(void)cui::framework::DependencyPropertyAccess::SetValue(
-			*panel, L"ItemHeight", BindingValue(definition.ItemHeight),
+			*panel, WrapPanel::ItemHeightProperty(),
+			BindingValue(definition.ItemHeight),
 			DependencyPropertyValueSource::Template);
 		result = std::move(panel);
 	}
@@ -801,12 +1380,14 @@ std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
 	{
 		auto panel = std::make_unique<StackPanel>();
 		(void)cui::framework::DependencyPropertyAccess::SetValue(
-			*panel, L"Orientation", BindingValue(definition.Orientation),
+			*panel, StackPanel::OrientationProperty(),
+			BindingValue(definition.Orientation),
 			DependencyPropertyValueSource::Template);
 		result = std::move(panel);
 	}
 	(void)cui::framework::DependencyPropertyAccess::SetValue(
-		*result, L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+		*result, Control::VerticalAlignmentProperty(),
+		BindingValue(VerticalAlignment::Top),
 		DependencyPropertyValueSource::Template);
 	return result;
 }
@@ -814,75 +1395,199 @@ std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
 std::unique_ptr<Panel> ItemsControl::TakeItemsHost()
 {
 	if (!_itemsHost) return {};
+	auto* requestedHost = _itemsHost;
+	const ControlWeakReference hostLifetime(requestedHost);
 	if (_templateItemsPresenter
 		&& _templateItemsPresenter->GetItemsHost() == _itemsHost)
-		return _templateItemsPresenter->DetachItemsHost();
+	{
+		auto* presenter = _templateItemsPresenter;
+		const ControlWeakReference presenterLifetime(presenter);
+		std::unique_ptr<Panel> detached;
+		try
+		{
+			detached = presenter->DetachItemsHost();
+		}
+		catch (...)
+		{
+			auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+			auto* livePresenter = dynamic_cast<ItemsPresenter*>(
+				presenterLifetime.Get());
+			_itemsHost = liveHost && livePresenter
+				&& livePresenter->GetItemsHost() == liveHost
+				&& liveHost->GetVisualParent() == livePresenter
+				&& livePresenter->IndexOfVisualChild(liveHost) >= 0
+				? liveHost : nullptr;
+			if (!livePresenter && _templateItemsPresenter == presenter)
+				_templateItemsPresenter = nullptr;
+			throw;
+		}
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		auto* livePresenter = dynamic_cast<ItemsPresenter*>(
+			presenterLifetime.Get());
+		if (detached)
+		{
+			if (detached.get() != liveHost)
+				throw std::logic_error(
+					"ItemsPresenter returned an unexpected ItemsHost owner");
+			_itemsHost = detached.get();
+			return detached;
+		}
+		if (liveHost && livePresenter
+			&& livePresenter->GetItemsHost() == liveHost
+			&& liveHost->GetVisualParent() == livePresenter
+			&& livePresenter->IndexOfVisualChild(liveHost) >= 0)
+		{
+			_itemsHost = liveHost;
+			return {};
+		}
+		// A committed callback may transfer or destroy the host and still make
+		// DetachItemsHost return no owner. Never retain the old raw slot.
+		_itemsHost = nullptr;
+		if (!livePresenter && _templateItemsPresenter == presenter)
+			_templateItemsPresenter = nullptr;
+		return {};
+	}
 	if (_detachedItemsHost)
-		return std::move(_detachedItemsHost);
-	if (_itemsHost->GetVisualParent() != this) return {};
-	_changingItemsHost = true;
+	{
+		auto detached = std::move(_detachedItemsHost);
+		_itemsHost = detached.get();
+		return detached;
+	}
+	if (requestedHost->GetVisualParent() != this
+		|| IndexOfVisualChild(requestedHost) < 0)
+	{
+		_itemsHost = nullptr;
+		return {};
+	}
 	std::unique_ptr<Control> detached;
 	try
 	{
-		detached = DetachVisualChild(_itemsHost);
-		_changingItemsHost = false;
+		DirectVisualMutationFrame mutation(*this, nullptr);
+		detached = DetachVisualChild(requestedHost);
 	}
 	catch (...)
 	{
-		_changingItemsHost = false;
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		_itemsHost = liveHost && liveHost->GetVisualParent() == this
+			&& IndexOfVisualChild(liveHost) >= 0 ? liveHost : nullptr;
 		throw;
 	}
-	return std::unique_ptr<Panel>(
+	auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+	if (liveHost && liveHost->GetVisualParent() == this
+		&& IndexOfVisualChild(liveHost) >= 0)
+	{
+		_itemsHost = liveHost;
+		return {};
+	}
+	auto result = std::unique_ptr<Panel>(
 		static_cast<Panel*>(detached.release()));
+	_itemsHost = result ? result.get() : nullptr;
+	return result;
 }
 
 void ItemsControl::PlaceItemsHost(std::unique_ptr<Panel> host)
 {
 	if (!host) throw std::invalid_argument("ItemsControl ItemsHost is null");
 	auto* raw = host.get();
+	const ControlWeakReference lifetime(raw);
 	_itemsHost = raw;
-	if (_templateItemsPresenter)
+	try
 	{
-		cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
-		if (!raw->GetTemplatedParent())
-			cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-		try
+		if (_templateItemsPresenter)
 		{
+			if (!cui::framework::TreeAccess::
+				SetLogicalParentPreservingOwnership(
+					host, nullptr))
+				throw std::logic_error(
+					"ItemsHost ownership changed during logical-parent publication");
+			if (host && !host->GetTemplatedParent()
+				&& !cui::framework::TreeAccess::
+					SetTemplatedParentPreservingOwnership(
+						host, this))
+				throw std::logic_error(
+					"ItemsHost ownership changed during template-parent publication");
+			if (!host)
+				throw std::logic_error(
+					"ItemsHost ownership was transferred before presenter attachment");
 			_templateItemsPresenter->SetItemsHost(std::move(host));
-			cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
+			auto* live = dynamic_cast<Panel*>(lifetime.Get());
+			if (!live
+				|| _templateItemsPresenter->GetItemsHost() != live
+				|| live->GetVisualParent() != _templateItemsPresenter)
+				throw std::logic_error(
+					"ItemsPresenter did not retain the ItemsHost");
 		}
-		catch (...)
+		else if (_controlTemplateRoot)
 		{
-			_itemsHost = _templateItemsPresenter->GetItemsHost() == raw
-				? raw : nullptr;
-			throw;
+			if (!host->GetTemplatedParent()
+				&& !cui::framework::TreeAccess::
+					SetTemplatedParentPreservingOwnership(
+						host, this))
+				throw std::logic_error(
+					"ItemsHost ownership changed during template-parent publication");
+			if (!host || !cui::framework::TreeAccess::
+				SetLogicalParentPreservingOwnership(
+					host, nullptr))
+				throw std::logic_error(
+					"ItemsHost ownership changed during logical-parent publication");
+			_detachedItemsHost = std::move(host);
+		}
+		else
+		{
+			if (!host->GetTemplatedParent()
+				&& !cui::framework::TreeAccess::
+					SetTemplatedParentPreservingOwnership(
+						host, this))
+				throw std::logic_error(
+					"ItemsHost ownership changed during template-parent publication");
+			try
+			{
+				DirectVisualMutationFrame mutation(*this, raw);
+				(void)cui::framework::TreeAccess::
+					InsertOwnedVisualChildPreserving(
+						*this, VisualChildCount(),
+						host, nullptr);
+			}
+			catch (...)
+			{
+				throw;
+			}
 		}
 	}
-	else if (_controlTemplateRoot)
+	catch (...)
 	{
-		if (!raw->GetTemplatedParent())
-			cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-		cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
-		_detachedItemsHost = std::move(host);
+		auto* live = dynamic_cast<Panel*>(lifetime.Get());
+		if (live && host.get() == live)
+			_detachedItemsHost = std::move(host);
+		const bool presenterOwns = live && _templateItemsPresenter
+			&& _templateItemsPresenter->GetItemsHost() == live
+			&& live->GetVisualParent() == _templateItemsPresenter;
+		const bool detachedOwner = live
+			&& _detachedItemsHost.get() == live;
+		const bool directOwner = live
+			&& live->GetVisualParent() == this
+			&& IndexOfVisualChild(live) >= 0;
+		_itemsHost = presenterOwns || detachedOwner || directOwner
+			? live : nullptr;
+		throw;
 	}
-	else
+	auto* live = dynamic_cast<Panel*>(lifetime.Get());
+	const bool presenterOwns = live && _templateItemsPresenter
+		&& _templateItemsPresenter->GetItemsHost() == live
+		&& live->GetVisualParent() == _templateItemsPresenter
+		&& _templateItemsPresenter->IndexOfVisualChild(live) >= 0;
+	const bool detachedOwner = live
+		&& _detachedItemsHost.get() == live;
+	const bool directOwner = live
+		&& live->GetVisualParent() == this
+		&& IndexOfVisualChild(live) >= 0;
+	if (!presenterOwns && !detachedOwner && !directOwner)
 	{
-		_changingItemsHost = true;
-		try
-		{
-			if (!raw->GetTemplatedParent())
-				cui::framework::XamlAccess::SetTemplatedParent(*raw, this);
-			cui::framework::TreeAccess::AddOwnedVisualChild(
-				*this, std::move(host), nullptr);
-			_changingItemsHost = false;
-		}
-		catch (...)
-		{
-			_changingItemsHost = false;
-			_itemsHost = ContainsControl(raw) ? raw : nullptr;
-			throw;
-		}
+		_itemsHost = nullptr;
+		throw std::logic_error(
+			"ItemsControl ItemsHost placement did not commit");
 	}
+	_itemsHost = live;
 	RefreshItemsScrollOwner();
 }
 
@@ -930,48 +1635,243 @@ void ItemsControl::RefreshItemsScrollOwner()
 			[this](Control*, ScrollChangedEventArgs&)
 			{
 				if (IsVirtualizing() && !_applyingCollectionChange)
+					(void)RealizeVirtualViewport(true);
+			});
+}
+
+void ItemsControl::ClearPendingTemplateItemsPresenter() noexcept
+{
+	_pendingTemplateItemsPresenter.Reset();
+}
+
+bool ItemsControl::CommitPendingTemplateItemsPresenter()
+{
+	const auto candidateReference = _pendingTemplateItemsPresenter;
+	auto* candidate = dynamic_cast<ItemsPresenter*>(
+		candidateReference.Get());
+	if (!candidate || candidate->GetTemplatedParent() != this)
+	{
+		ClearPendingTemplateItemsPresenter();
+		return false;
+	}
+	auto* root = _controlTemplateRoot;
+	if (!root || !VisualSubtreeContains(root, candidate))
+		return false;
+	if (_templateItemsPresenter)
+	{
+		const bool alreadyCommitted =
+			_templateItemsPresenter == candidate
+			&& candidate->GetItemsHost() == _itemsHost
+			&& _itemsHost
+			&& _itemsHost->GetVisualParent() == candidate
+			&& candidate->IndexOfVisualChild(_itemsHost) >= 0;
+		if (alreadyCommitted)
+			ClearPendingTemplateItemsPresenter();
+		return alreadyCommitted;
+	}
+
+	const ControlWeakReference rootLifetime(root);
+	auto host = TakeItemsHost();
+	if (!host)
+		throw std::logic_error(
+			"ItemsControl lost its ItemsHost while committing ItemsPresenter");
+	const ControlWeakReference hostLifetime(host.get());
+	candidate = dynamic_cast<ItemsPresenter*>(candidateReference.Get());
+	root = rootLifetime.Get();
+	if (!candidate || !root || _controlTemplateRoot != root
+		|| root->GetVisualParent() != this
+		|| IndexOfVisualChild(root) < 0
+		|| candidate->GetTemplatedParent() != this
+		|| !VisualSubtreeContains(root, candidate))
+	{
+		ClearPendingTemplateItemsPresenter();
+		PlaceItemsHost(std::move(host));
+		return false;
+	}
+
+	_templateItemsPresenter = candidate;
+	try
+	{
+		_itemsPresenterParentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+			*candidate,
+			[this](Control* sender, Control*, Control*)
+			{
+				auto* presenter =
+					dynamic_cast<ItemsPresenter*>(sender);
+				if (presenter
+					&& _templateItemsPresenter == presenter
+					&& _controlTemplateRoot
+					&& !VisualSubtreeContains(
+						_controlTemplateRoot, presenter))
+				{
+					std::unique_ptr<Panel> recoveredHost;
+					auto* presenterHost = presenter->GetItemsHost();
+					if (presenterHost
+						&& presenterHost == _itemsHost
+						&& presenterHost->GetVisualParent()
+						== presenter
+						&& presenter->IndexOfVisualChild(
+							presenterHost) >= 0)
+					{
+						try
+						{
+							recoveredHost =
+								presenter->DetachItemsHost();
+						}
+						catch (...) {}
+					}
+					// The presenter is no longer reachable from the active
+					// template root. Clear the template-owner identity while
+					// its parent-change transaction still observes any further
+					// ownership transfer.
+					(void)ClearTemplateOwnerSubtree(
+						presenter, this);
+					_itemsPresenterParentChanged.Disconnect();
+					_templateItemsPresenter = nullptr;
+					_itemsHost = nullptr;
+					if (recoveredHost)
+					{
+						try
+						{
+							PlaceItemsHost(
+								std::move(recoveredHost));
+						}
+						catch (...) {}
+					}
+				}
+				RefreshItemsScrollOwner();
+				if (IsVirtualizing())
 					(void)RealizeVirtualViewport();
 			});
+	}
+	catch (...)
+	{
+		const auto originalError = std::current_exception();
+		_templateItemsPresenter = nullptr;
+		_itemsHost = nullptr;
+		ClearPendingTemplateItemsPresenter();
+		try { PlaceItemsHost(std::move(host)); }
+		catch (...) {}
+		std::rethrow_exception(originalError);
+	}
+
+	auto finalCommitted = [&]() noexcept
+	{
+		auto* liveRoot = rootLifetime.Get();
+		auto* livePresenter = dynamic_cast<ItemsPresenter*>(
+			candidateReference.Get());
+		auto* liveHost = dynamic_cast<Panel*>(
+			hostLifetime.Get());
+		return liveRoot && _controlTemplateRoot == liveRoot
+			&& liveRoot->GetVisualParent() == this
+			&& IndexOfVisualChild(liveRoot) >= 0
+			&& livePresenter
+			&& _templateItemsPresenter == livePresenter
+			&& livePresenter->GetTemplatedParent() == this
+			&& VisualSubtreeContains(liveRoot, livePresenter)
+			&& liveHost && _itemsHost == liveHost
+			&& livePresenter->GetItemsHost() == liveHost
+			&& liveHost->GetVisualParent() == livePresenter
+			&& livePresenter->IndexOfVisualChild(liveHost) >= 0;
+	};
+	auto rollback = [&]() noexcept
+	{
+		std::unique_ptr<Panel> recoveredHost;
+		auto* livePresenter = dynamic_cast<ItemsPresenter*>(
+			candidateReference.Get());
+		auto* liveHost = dynamic_cast<Panel*>(
+			hostLifetime.Get());
+		if (livePresenter && liveHost
+			&& livePresenter->GetItemsHost() == liveHost
+			&& liveHost->GetVisualParent() == livePresenter
+			&& livePresenter->IndexOfVisualChild(liveHost) >= 0)
+		{
+			try { recoveredHost = livePresenter->DetachItemsHost(); }
+			catch (...) {}
+		}
+		auto* liveRoot = rootLifetime.Get();
+		livePresenter = dynamic_cast<ItemsPresenter*>(
+			candidateReference.Get());
+		if (livePresenter
+			&& livePresenter->GetTemplatedParent() == this
+			&& (!liveRoot
+				|| !VisualSubtreeContains(
+					liveRoot, livePresenter)))
+			(void)ClearTemplateOwnerSubtree(
+				livePresenter, this);
+		if (!recoveredHost && liveHost
+			&& _detachedItemsHost.get() == liveHost)
+			recoveredHost = std::move(_detachedItemsHost);
+		_itemsPresenterParentChanged.Disconnect();
+		_templateItemsPresenter = nullptr;
+		_itemsHost = nullptr;
+		ClearPendingTemplateItemsPresenter();
+		if (recoveredHost)
+		{
+			try { PlaceItemsHost(std::move(recoveredHost)); }
+			catch (...) {}
+		}
+	};
+
+	try
+	{
+		PlaceItemsHost(std::move(host));
+	}
+	catch (...)
+	{
+		const auto originalError = std::current_exception();
+		if (finalCommitted())
+		{
+			ClearPendingTemplateItemsPresenter();
+			RefreshItemsScrollOwner();
+			std::rethrow_exception(originalError);
+		}
+		rollback();
+		std::rethrow_exception(originalError);
+	}
+	if (!finalCommitted())
+	{
+		rollback();
+		throw std::logic_error(
+			"ItemsControl ItemsPresenter commitment did not retain the active root and ItemsHost");
+	}
+	ClearPendingTemplateItemsPresenter();
+	RefreshItemsScrollOwner();
+	return true;
 }
 
 bool ItemsControl::RegisterTemplateItemsPresenter(
 	ItemsPresenter* presenter)
 {
-	if (!presenter || presenter->GetTemplatedParent() != this
-		|| (_templateItemsPresenter
-		&& _templateItemsPresenter != presenter)) return false;
+	if (!presenter || presenter->GetTemplatedParent() != this)
+		return false;
 	if (_templateItemsPresenter == presenter) return true;
-	auto host = TakeItemsHost();
-	if (!host) return false;
-	_templateItemsPresenter = presenter;
-	_itemsPresenterParentChanged =
-		cui::framework::TreeAccess::SubscribeVisualParentChanged(*presenter,
-		[this](Control*, Control*, Control*)
-		{
-			RefreshItemsScrollOwner();
-			if (IsVirtualizing()) (void)RealizeVirtualViewport();
-		});
-	try
+	if (_templateItemsPresenter
+		&& _templateItemsPresenter != presenter)
+		return false;
+	_pendingTemplateItemsPresenter = presenter;
+	if (_controlTemplateRoot)
 	{
-		PlaceItemsHost(std::move(host));
-		return true;
-	}
-	catch (...)
-	{
-		if (presenter->GetItemsHost() == _itemsHost)
+		if (!VisualSubtreeContains(_controlTemplateRoot, presenter))
 		{
-			RefreshItemsScrollOwner();
-			throw;
+			ClearPendingTemplateItemsPresenter();
+			return false;
 		}
-		_itemsPresenterParentChanged.Disconnect();
-		_templateItemsPresenter = nullptr;
-		throw;
+		return CommitPendingTemplateItemsPresenter();
 	}
+	RequestLayout();
+	return true;
 }
 
 Control* ItemsControl::SetControlTemplateRoot(
 	std::unique_ptr<Control> value)
 {
+	if (value && value.get() == _controlTemplateRoot)
+	{
+		(void)value.release();
+		return _controlTemplateRoot;
+	}
 	if (!value)
 	{
 		(void)DetachVisualChildTemplateRoot();
@@ -979,32 +1879,134 @@ Control* ItemsControl::SetControlTemplateRoot(
 	}
 	if (_controlTemplateRoot)
 		throw std::logic_error("ItemsControl already owns a ControlTemplate root");
+	auto* candidateRoot = value.get();
+	if (auto* pending = dynamic_cast<ItemsPresenter*>(
+		_pendingTemplateItemsPresenter.Get()))
+	{
+		if (pending->GetTemplatedParent() != this)
+			ClearPendingTemplateItemsPresenter();
+		else if (!VisualSubtreeContains(candidateRoot, pending)
+			&& pending->GetVisualParent())
+		{
+			ClearPendingTemplateItemsPresenter();
+			throw std::logic_error(
+				"ItemsControl pending ItemsPresenter does not belong to the candidate template root");
+		}
+	}
+	else if (_pendingTemplateItemsPresenter.HasValue())
+		ClearPendingTemplateItemsPresenter();
 	if (!_templateItemsPresenter)
 	{
 		auto host = TakeItemsHost();
 		if (!host) throw std::logic_error("ItemsControl lost its ItemsHost");
 		_detachedItemsHost = std::move(host);
 	}
-	_controlTemplateRoot = value.get();
-	_changingTemplateInfrastructure = true;
+	const ControlWeakReference candidateLifetime(candidateRoot);
+	const ControlWeakReference presenterLifetime(
+		_templateItemsPresenter);
+	_controlTemplateRoot = candidateRoot;
 	try
 	{
-		cui::framework::TreeAccess::AddOwnedVisualChild(
-			*this, std::move(value), nullptr);
-		_changingTemplateInfrastructure = false;
+		DirectVisualMutationFrame mutation(*this, candidateRoot);
+		(void)cui::framework::TreeAccess::
+			InsertOwnedVisualChildPreserving(
+				*this, VisualChildCount(), value, nullptr);
+		auto* live = candidateLifetime.Get();
+		if (!live || live->GetVisualParent() != this
+			|| IndexOfVisualChild(live) < 0)
+			throw std::logic_error(
+				"ItemsControl template root attachment did not commit");
 	}
 	catch (...)
 	{
-		_changingTemplateInfrastructure = false;
-		_controlTemplateRoot = nullptr;
-		if (_detachedItemsHost)
-			PlaceItemsHost(std::move(_detachedItemsHost));
+		const auto originalError = std::current_exception();
+		auto* live = candidateLifetime.Get();
+		if (live && (live->GetVisualParent() == this
+			|| IndexOfVisualChild(live) >= 0))
+		{
+			// The collection owns a post-commit failure. Keep it published so
+			// the caller's AbortTemplateApplication can detach it normally.
+			_controlTemplateRoot = live;
+			MarkControlTemplateRootAttached();
+		}
+		else
+		{
+			std::unique_ptr<Panel> host;
+			auto* presenter = dynamic_cast<ItemsPresenter*>(
+				presenterLifetime.Get());
+			if (presenter && _templateItemsPresenter == presenter)
+			{
+				auto* presenterHost = presenter->GetItemsHost();
+				if (presenterHost && presenterHost == _itemsHost
+					&& presenterHost->GetVisualParent() == presenter)
+				{
+					try { host = presenter->DetachItemsHost(); }
+					catch (...) {}
+				}
+			}
+			if (!host && _detachedItemsHost)
+				host = std::move(_detachedItemsHost);
+			_itemsPresenterParentChanged.Disconnect();
+			_templateItemsPresenter = nullptr;
+			_itemsHost = nullptr;
+			ClearPendingTemplateItemsPresenter();
+			if (_controlTemplateRoot == candidateRoot)
+				_controlTemplateRoot = nullptr;
+			if (value)
+				(void)ClearTemplateOwnerSubtreePreservingOwnership(
+					value, this);
+			else
+				(void)ClearTemplateOwnerSubtree(live, this);
+			try { ClearDeclarativeTemplateScope(); }
+			catch (...) {}
+			if (host)
+			{
+				try { PlaceItemsHost(std::move(host)); }
+				catch (...) {}
+			}
+			MarkControlTemplateRootDetached();
+			try { OnControlTemplatePresentationChanged(); }
+			catch (...) {}
+		}
+		std::rethrow_exception(originalError);
+	}
+	auto* liveRoot = candidateLifetime.Get();
+	if (!liveRoot || liveRoot->GetVisualParent() != this
+		|| IndexOfVisualChild(liveRoot) < 0)
+		throw std::logic_error(
+			"ItemsControl template root ownership is invalid");
+	_controlTemplateRoot = liveRoot;
+	MarkControlTemplateRootAttached();
+	try
+	{
+		if (auto* pending = dynamic_cast<ItemsPresenter*>(
+			_pendingTemplateItemsPresenter.Get()))
+		{
+			if (pending->GetTemplatedParent() != this
+				|| (pending->GetVisualParent()
+					&& !VisualSubtreeContains(liveRoot, pending)))
+			{
+				ClearPendingTemplateItemsPresenter();
+				throw std::logic_error(
+					"ItemsControl pending ItemsPresenter escaped the active template root");
+			}
+			(void)CommitPendingTemplateItemsPresenter();
+		}
+		if (_templateItemsPresenter
+			&& !VisualSubtreeContains(
+				liveRoot, _templateItemsPresenter))
+			throw std::logic_error(
+				"ItemsControl active ItemsPresenter is outside the template root");
 		OnControlTemplatePresentationChanged();
-		throw;
+	}
+	catch (...)
+	{
+		const auto originalError = std::current_exception();
+		try { (void)DetachVisualChildTemplateRoot(); }
+		catch (...) {}
+		std::rethrow_exception(originalError);
 	}
 	RefreshItemsScrollOwner();
-	MarkControlTemplateRootAttached();
-	OnControlTemplatePresentationChanged();
 	RequestLayout();
 	InvalidateVisual();
 	return _controlTemplateRoot;
@@ -1017,6 +2019,7 @@ std::unique_ptr<Control> ItemsControl::DetachVisualChildTemplateRoot()
 		auto host = TakeItemsHost();
 		_itemsPresenterParentChanged.Disconnect();
 		_templateItemsPresenter = nullptr;
+		ClearPendingTemplateItemsPresenter();
 		ClearDeclarativeTemplateScope();
 		if (host) PlaceItemsHost(std::move(host));
 		MarkControlTemplateRootDetached();
@@ -1025,34 +2028,104 @@ std::unique_ptr<Control> ItemsControl::DetachVisualChildTemplateRoot()
 		InvalidateVisual();
 		return {};
 	}
-	_changingTemplateInfrastructure = true;
+	auto* previous = _controlTemplateRoot;
+	const ControlWeakReference previousLifetime(previous);
+	const ControlWeakReference presenterLifetime(
+		_templateItemsPresenter);
 	std::unique_ptr<Control> root;
+	std::exception_ptr notificationError;
+	bool visualOwnershipCommit = false;
 	try
 	{
-		root = DetachVisualChild(_controlTemplateRoot);
-		_changingTemplateInfrastructure = false;
+		DirectVisualMutationFrame mutation(*this, nullptr);
+		root = cui::framework::TreeAccess::DetachVisualChild(
+			*this, previous, &visualOwnershipCommit,
+			&notificationError);
 	}
 	catch (...)
 	{
-		_changingTemplateInfrastructure = false;
+		auto* live = previousLifetime.Get();
+		if (live && live->GetVisualParent() == this
+			&& IndexOfVisualChild(live) >= 0)
+		{
+			_controlTemplateRoot = live;
+			MarkControlTemplateRootAttached();
+		}
 		throw;
 	}
-	auto host = TakeItemsHost();
+
+	auto* livePrevious = previousLifetime.Get();
+	if (livePrevious && livePrevious->GetVisualParent() == this
+		&& IndexOfVisualChild(livePrevious) >= 0)
+	{
+		_controlTemplateRoot = livePrevious;
+		MarkControlTemplateRootAttached();
+		if (notificationError)
+			std::rethrow_exception(notificationError);
+		throw std::logic_error(
+			"ItemsControl template root detach did not commit");
+	}
+
+	std::exception_ptr cleanupError;
+	std::unique_ptr<Panel> host;
+	auto* presenter = dynamic_cast<ItemsPresenter*>(
+		presenterLifetime.Get());
+	if (presenter && _templateItemsPresenter == presenter)
+	{
+		auto* presenterHost = presenter->GetItemsHost();
+		if (presenterHost && presenterHost == _itemsHost
+			&& presenterHost->GetVisualParent() == presenter)
+		{
+			try { host = presenter->DetachItemsHost(); }
+			catch (...)
+			{
+				cleanupError = std::current_exception();
+			}
+		}
+	}
+	if (!host && _detachedItemsHost)
+		host = std::move(_detachedItemsHost);
 	_itemsPresenterParentChanged.Disconnect();
 	_templateItemsPresenter = nullptr;
+	ClearPendingTemplateItemsPresenter();
+	_itemsHost = nullptr;
 	_controlTemplateRoot = nullptr;
-	ClearTemplateOwner(root.get(), this);
-	ClearDeclarativeTemplateScope();
-	if (host) PlaceItemsHost(std::move(host));
+	auto ownerError = root
+		? ClearTemplateOwnerSubtreePreservingOwnership(root, this)
+		: ClearTemplateOwnerSubtree(livePrevious, this);
+	if (!cleanupError) cleanupError = ownerError;
+	try { ClearDeclarativeTemplateScope(); }
+	catch (...)
+	{
+		if (!cleanupError) cleanupError = std::current_exception();
+	}
+	if (host)
+	{
+		try { PlaceItemsHost(std::move(host)); }
+		catch (...)
+		{
+			if (!cleanupError) cleanupError = std::current_exception();
+		}
+	}
 	MarkControlTemplateRootDetached();
-	OnControlTemplatePresentationChanged();
+	try { OnControlTemplatePresentationChanged(); }
+	catch (...)
+	{
+		if (!cleanupError) cleanupError = std::current_exception();
+	}
 	RequestLayout();
 	InvalidateVisual();
+	if (!cleanupError) cleanupError = notificationError;
+	if (cleanupError)
+		std::rethrow_exception(cleanupError);
 	return root;
 }
 
 void ItemsControl::SetItemsPanel(ItemsPanelTemplateReference value)
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support reentrant ItemsHost migration");
 	if (_itemsPanel == value) return;
 	const auto& definition = value ? *value.Get() : DefaultItemsPanel();
 	if (!IsValidItemsPanel(definition))
@@ -1079,6 +2152,288 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 		return false;
 	}
 
+	if (!_authoredItems.empty())
+	{
+		std::vector<ControlWeakReference> authoredItems;
+		std::vector<Control*> restoredItems;
+		authoredItems.reserve(_authoredItems.size());
+		restoredItems.reserve(_authoredItems.size());
+		for (auto* item : _authoredItems)
+			authoredItems.emplace_back(item);
+
+		_migratingAuthoredItems = true;
+		struct AuthoredMigrationGuard final
+		{
+			bool& Value;
+			~AuthoredMigrationGuard() { Value = false; }
+		} migrationGuard{ _migratingAuthoredItems };
+		// Raw authored slots are unpublished for the complete callback-bearing
+		// transaction. They are reconstructed only from a verified final host.
+		_authoredItems.clear();
+		auto oldGenerator = std::move(_generator);
+		std::unique_ptr<Panel> oldHost;
+		std::unique_ptr<Control> inFlight;
+		try
+		{
+			oldHost = TakeItemsHost();
+			if (!oldHost)
+				throw std::logic_error(
+					"ItemsControl authored ItemsHost ownership is invalid");
+			const ControlWeakReference oldHostLifetime(oldHost.get());
+			if (!cui::framework::TreeAccess::
+				InvokePreservingVisualOwnership(
+					oldHost,
+					[&](Control&)
+					{
+						PlaceItemsHost(std::move(replacement));
+					}))
+				throw std::logic_error(
+					"ItemsControl previous ItemsHost ownership escaped during migration");
+			auto* replacementHost = _itemsHost;
+			const ControlWeakReference replacementHostLifetime(
+				replacementHost);
+			if (!replacementHost)
+				throw std::logic_error(
+					"ItemsControl replacement ItemsHost did not commit");
+
+			for (const auto& itemReference : authoredItems)
+			{
+				std::exception_ptr notificationError;
+				const bool retainedOldHost =
+					cui::framework::TreeAccess::
+					InvokePreservingVisualOwnership(
+						oldHost,
+						[&](Control& previousRoot)
+						{
+							auto* previousHost =
+								dynamic_cast<Panel*>(&previousRoot);
+							auto* nextHost = dynamic_cast<Panel*>(
+								replacementHostLifetime.Get());
+							auto* liveItem = itemReference.Get();
+							if (!previousHost || !nextHost
+								|| _itemsHost != nextHost || !liveItem
+								|| liveItem->GetVisualParent()
+								!= previousHost
+								|| previousHost->IndexOfVisualChild(
+									liveItem) < 0)
+								throw std::logic_error(
+									"ItemsControl authored item ownership changed during migration");
+							bool ownershipCommit = false;
+							inFlight =
+								cui::framework::TreeAccess::DetachVisualChild(
+									*previousHost, liveItem,
+									&ownershipCommit,
+									&notificationError);
+							if (!inFlight
+								|| inFlight.get() != itemReference.Get())
+								throw std::logic_error(
+									"ItemsControl authored item detach did not commit");
+							(void)cui::framework::TreeAccess::
+								InsertOwnedVisualChildPreserving(
+									*nextHost,
+									nextHost->VisualChildCount(),
+									inFlight, this);
+							liveItem = itemReference.Get();
+							if (!liveItem
+								|| liveItem->GetVisualParent() != nextHost
+								|| nextHost->IndexOfVisualChild(
+									liveItem) < 0
+								|| liveItem->GetLogicalParent() != this)
+								throw std::logic_error(
+									"ItemsControl authored item attachment did not commit");
+							if (notificationError)
+								std::rethrow_exception(notificationError);
+						});
+				if (!retainedOldHost)
+					throw std::logic_error(
+						"ItemsControl previous ItemsHost was transferred during migration");
+			}
+
+			auto* liveReplacement = dynamic_cast<Panel*>(
+				replacementHostLifetime.Get());
+			auto* liveOldHost = dynamic_cast<Panel*>(
+				oldHostLifetime.Get());
+			if (!liveReplacement || _itemsHost != liveReplacement
+				|| !liveOldHost || oldHost.get() != liveOldHost
+				|| liveReplacement->VisualChildCount()
+				!= static_cast<int>(authoredItems.size()))
+				throw std::logic_error(
+					"ItemsControl authored migration final host is invalid");
+			const auto children =
+				liveReplacement->GetVisualChildrenView();
+			for (size_t index = 0;
+				index < authoredItems.size(); ++index)
+			{
+				auto* liveItem = authoredItems[index].Get();
+				if (!liveItem || children[index] != liveItem
+					|| liveItem->GetVisualParent() != liveReplacement
+					|| liveItem->GetLogicalParent() != this)
+					throw std::logic_error(
+						"ItemsControl authored migration order did not commit");
+				restoredItems.push_back(liveItem);
+			}
+			_authoredItems = std::move(restoredItems);
+			_lastTemplateError.clear();
+			RequestLayout();
+			InvalidateVisual();
+			return true;
+		}
+		catch (...)
+		{
+			// Put an interrupted detach back first; never carry an owner token
+			// across later callback-bearing rollback operations.
+			if (inFlight && oldHost)
+			{
+				try
+				{
+					(void)cui::framework::TreeAccess::
+						InvokePreservingVisualOwnership(
+							oldHost,
+							[&](Control& previousRoot)
+							{
+								(void)cui::framework::TreeAccess::
+									InsertOwnedVisualChildPreserving(
+										previousRoot,
+										previousRoot.VisualChildCount(),
+										inFlight, this);
+							});
+				}
+				catch (...) {}
+			}
+			inFlight.reset();
+
+			for (const auto& itemReference : authoredItems)
+			{
+				if (!oldHost) break;
+				try
+				{
+					(void)cui::framework::TreeAccess::
+						InvokePreservingVisualOwnership(
+							oldHost,
+							[&](Control& previousRoot)
+							{
+								auto* previousHost =
+									dynamic_cast<Panel*>(&previousRoot);
+								auto* liveItem = itemReference.Get();
+								if (!previousHost || !liveItem
+									|| (liveItem->GetVisualParent()
+										== previousHost
+										&& previousHost->
+										IndexOfVisualChild(liveItem) >= 0))
+									return;
+								auto* currentHost = _itemsHost;
+								if (!currentHost
+									|| liveItem->GetVisualParent()
+									!= currentHost
+									|| currentHost->IndexOfVisualChild(
+										liveItem) < 0)
+									return;
+								bool ownershipCommit = false;
+								std::exception_ptr ignoredNotificationError;
+								auto owner =
+									cui::framework::TreeAccess::
+									DetachVisualChild(
+										*currentHost, liveItem,
+										&ownershipCommit,
+										&ignoredNotificationError);
+								if (!owner) return;
+								try
+								{
+									(void)cui::framework::TreeAccess::
+										InsertOwnedVisualChildPreserving(
+											*previousHost,
+											previousHost->VisualChildCount(),
+											owner, this);
+								}
+								catch (...) {}
+							});
+				}
+				catch (...) {}
+			}
+			if (oldHost)
+			{
+				try
+				{
+					(void)cui::framework::TreeAccess::
+						InvokePreservingVisualOwnership(
+							oldHost,
+							[&](Control& previousRoot)
+							{
+								auto* previousHost =
+									dynamic_cast<Panel*>(&previousRoot);
+								if (!previousHost) return;
+								size_t targetIndex = 0;
+								for (const auto& itemReference
+									: authoredItems)
+								{
+									auto* liveItem = itemReference.Get();
+									if (!liveItem
+										|| liveItem->GetVisualParent()
+										!= previousHost)
+										continue;
+									const int currentIndex =
+										previousHost->
+										IndexOfVisualChild(liveItem);
+									if (currentIndex >= 0
+										&& currentIndex
+										!= static_cast<int>(
+											targetIndex))
+										(void)previousHost->
+											MoveVisualChild(
+												currentIndex,
+												static_cast<int>(
+													targetIndex));
+									++targetIndex;
+								}
+							});
+				}
+				catch (...) {}
+			}
+
+			try
+			{
+				if (oldHost)
+				{
+					(void)cui::framework::TreeAccess::
+						InvokePreservingVisualOwnership(
+							oldHost,
+							[&](Control&)
+							{
+								auto failedHost = TakeItemsHost();
+								(void)failedHost;
+							});
+				}
+				else
+				{
+					auto failedHost = TakeItemsHost();
+					(void)failedHost;
+				}
+			}
+			catch (...) {}
+			_itemsPanel = previousPanel;
+			if (oldHost)
+			{
+				try { PlaceItemsHost(std::move(oldHost)); }
+				catch (...) {}
+			}
+			_generator = std::move(oldGenerator);
+			restoredItems.clear();
+			auto* restoredHost = _itemsHost;
+			for (const auto& itemReference : authoredItems)
+			{
+				auto* liveItem = itemReference.Get();
+				if (restoredHost && liveItem
+					&& liveItem->GetVisualParent() == restoredHost
+					&& restoredHost->IndexOfVisualChild(liveItem) >= 0
+					&& liveItem->GetLogicalParent() == this)
+					restoredItems.push_back(liveItem);
+			}
+			_authoredItems = std::move(restoredItems);
+			_lastTemplateError = L"ItemsPanelTemplate 无法迁移 authored Items。";
+			return false;
+		}
+	}
+
 	auto oldGenerator = std::move(_generator);
 	auto oldHost = TakeItemsHost();
 	if (!oldHost)
@@ -1089,52 +2444,6 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 		return false;
 	}
 	PlaceItemsHost(std::move(replacement));
-	if (!_authoredItems.empty())
-	{
-		try
-		{
-			for (auto* item : _authoredItems)
-			{
-				auto owner = oldHost->DetachVisualChild(item);
-				if (!owner)
-					throw std::logic_error(
-						"ItemsControl authored item ownership is invalid");
-				cui::framework::TreeAccess::AddOwnedVisualChild(
-					*_itemsHost, std::move(owner), this);
-			}
-			_lastTemplateError.clear();
-			RequestLayout();
-			InvalidateVisual();
-			return true;
-		}
-		catch (...)
-		{
-			// Reassemble the previous host in authored order before restoring it.
-			// Pointer storage is already reserved and remains the source of truth.
-			std::vector<std::unique_ptr<Control>> owners;
-			owners.reserve(_authoredItems.size());
-			for (auto* item : _authoredItems)
-			{
-				std::unique_ptr<Control> owner;
-				if (item->GetVisualParent() == _itemsHost)
-					owner = _itemsHost->DetachVisualChild(item);
-				else if (item->GetVisualParent() == oldHost.get())
-					owner = oldHost->DetachVisualChild(item);
-				if (!owner) continue;
-				owners.push_back(std::move(owner));
-			}
-			for (auto& owner : owners)
-				cui::framework::TreeAccess::AddOwnedVisualChild(
-					*oldHost, std::move(owner), this);
-			auto failedHost = TakeItemsHost();
-			_itemsPanel = previousPanel;
-			PlaceItemsHost(std::move(oldHost));
-			_generator = std::move(oldGenerator);
-			_lastTemplateError = L"ItemsPanelTemplate 无法迁移 authored Items。";
-			return false;
-		}
-	}
-
 	if (RebuildGeneratedItems()) return true;
 	const auto error = _lastTemplateError;
 	auto failedHost = TakeItemsHost();
@@ -1340,6 +2649,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		std::rethrow_exception(failure);
 	}
 	_materializedItemsSourceSnapshot = std::move(candidateSnapshot);
+	ResetTextSearch();
 	--_itemsSourceUpdateDepth;
 }
 
@@ -1349,6 +2659,7 @@ void ItemsControl::SetCustomProjectionItemsSource(BindingListReference value)
 		throw std::logic_error(
 			"ItemsControl Items and ItemsSource cannot both be populated");
 	_itemsSource = std::move(value);
+	ResetTextSearch();
 }
 
 void ItemsControl::HandleItemsSourceChange(
@@ -1402,6 +2713,7 @@ void ItemsControl::HandleItemsSourceChange(
 					std::move(preparedSnapshot.ChangedItems),
 					std::move(preparedSnapshot.Groups));
 			}
+			ResetTextSearch();
 			derivedState.reset();
 		}
 		else
@@ -1437,7 +2749,11 @@ void ItemsControl::SetItemTemplate(ItemTemplateReference value)
 	if (_itemTemplate == value) return;
 	const auto previous = _itemTemplate;
 	_itemTemplate = std::move(value);
-	if (RebuildGeneratedItems()) return;
+	if (RebuildGeneratedItems())
+	{
+		ResetTextSearch();
+		return;
+	}
 	const auto error = _lastTemplateError;
 	_itemTemplate = previous;
 	_lastTemplateError = error;
@@ -1455,11 +2771,163 @@ void ItemsControl::SetGroupStyle(GroupStyleReference value)
 	_lastTemplateError = error;
 }
 
-void ItemsControl::SetDisplayMemberPath(std::wstring value)
+void ItemsControl::SetCompiledDisplayMemberPath(
+	CompiledBindingPathView value)
 {
-	if (_displayMemberPath == value) return;
-	_displayMemberPath = std::move(value);
+	ValidateCompiledMemberPath(value, "DisplayMemberPath");
+	if (SameCompiledBindingPath(_compiledDisplayMemberPath, value)
+#if CUI_ENABLE_DYNAMIC_XAML
+		&& _displayMemberPath.empty()
+#endif
+		) return;
+	_compiledDisplayMemberPath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	_displayMemberPath.clear();
+#endif
+	ResetTextSearch();
 	if (_itemsSource && !_itemTemplate) (void)RebuildGeneratedItems();
+}
+
+std::wstring ItemsControl::GetDisplayMemberText(
+	const BindingSourceReference& item) const
+{
+	if (!_compiledDisplayMemberPath.Empty())
+		return GetBindingRecordText(item, _compiledDisplayMemberPath);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return ReadAuthoredDisplayMemberText(item);
+#else
+	return {};
+#endif
+}
+
+BindingPathObservation ItemsControl::ObserveDisplayMemberPath(
+	const BindingSourceReference& item,
+	std::function<void()> changed) const
+{
+	if (!_compiledDisplayMemberPath.Empty())
+		return ObserveBindingPaths(
+			item, { _compiledDisplayMemberPath }, std::move(changed));
+#if CUI_ENABLE_DYNAMIC_XAML
+	return ObserveAuthoredDisplayMemberPath(item, std::move(changed));
+#else
+	return {};
+#endif
+}
+
+std::wstring ItemsControl::GetTextSearchItemText(size_t index) const
+{
+	if (index >= ItemCount()) return {};
+	if (!_itemsSource)
+	{
+		auto* item = GetAuthoredItem(index);
+		return item ? item->GetDisplayText() : std::wstring{};
+	}
+
+	BindingSourceReference item;
+	if (!_itemsSource.Get()->TryGetItem(index, item) || !item) return {};
+	auto result = GetDisplayMemberText(item);
+	if (!result.empty()) return result;
+
+	// An authored DataTemplate can expose a better semantic projection than a
+	// record with no DisplayMemberPath. Use it when that item is already
+	// realized, without forcing realization as a side effect of searching.
+	auto* realized = GetGeneratedItem(index);
+	return realized ? realized->GetDisplayText() : std::wstring{};
+}
+
+bool ItemsControl::ProcessTextSearchInput(
+	const TextCompositionEventArgs& input)
+{
+	if (!GetIsTextSearchEnabled() || input.Text.empty()
+		|| ItemCount() == 0) return false;
+
+	const auto now = ::GetTickCount64();
+	const auto timeout = static_cast<std::uint64_t>(
+		::GetDoubleClickTime()) * 2u;
+	if (_textSearchActive
+		&& now - _textSearchLastInputTick > timeout)
+		ResetTextSearch();
+
+	const size_t count = ItemCount();
+	const size_t start = _textSearchActive
+		&& _textSearchMatchedIndex >= 0
+		&& static_cast<size_t>(_textSearchMatchedIndex) < count
+		? static_cast<size_t>(_textSearchMatchedIndex) : 0;
+	const bool repeatedChunk = !_textSearchChunks.empty()
+		&& TextEquals(
+			_textSearchChunks.back(), input.Text, false);
+	const auto newPrefix = _textSearchPrefix + input.Text;
+	const bool caseSensitive = GetIsTextSearchCaseSensitive();
+	size_t match = count;
+	size_t fallback = count;
+
+	for (size_t offset = 0; offset < count; ++offset)
+	{
+		const size_t index = (start + offset) % count;
+		const auto itemText = GetTextSearchItemText(index);
+		if (TextStartsWith(itemText, newPrefix, caseSensitive))
+		{
+			match = index;
+			break;
+		}
+		if (repeatedChunk && offset != 0 && fallback == count
+			&& TextStartsWith(
+				itemText, _textSearchPrefix, caseSensitive))
+			fallback = index;
+	}
+
+	const bool acceptedNewChunk = match != count;
+	if (!acceptedNewChunk) match = fallback;
+	if (match != count)
+	{
+		if (!_textSearchActive || match != start)
+			OnTextSearchMatch(match);
+		_textSearchMatchedIndex = static_cast<int>(match);
+		if (acceptedNewChunk)
+		{
+			_textSearchPrefix = newPrefix;
+			_textSearchChunks.push_back(input.Text);
+		}
+		_textSearchActive = true;
+	}
+
+	if (_textSearchActive)
+		_textSearchLastInputTick = now;
+	return match != count;
+}
+
+void ItemsControl::ProcessTextSearchKey(const InputReport& input)
+{
+	if (!GetIsTextSearchEnabled()
+		|| input.Kind != InputReportKind::KeyDown
+		|| input.Key != Key::Back
+		|| !_textSearchActive) return;
+
+	const auto now = ::GetTickCount64();
+	const auto timeout = static_cast<std::uint64_t>(
+		::GetDoubleClickTime()) * 2u;
+	if (now - _textSearchLastInputTick > timeout)
+	{
+		ResetTextSearch();
+		return;
+	}
+	if (_textSearchChunks.empty()) return;
+	const auto chunkLength = _textSearchChunks.back().size();
+	_textSearchChunks.pop_back();
+	if (chunkLength <= _textSearchPrefix.size())
+		_textSearchPrefix.resize(_textSearchPrefix.size() - chunkLength);
+	else
+		_textSearchPrefix.clear();
+	_textSearchLastInputTick = now;
+}
+
+void ItemsControl::ResetTextSearch() noexcept
+{
+	_textSearchPrefix.clear();
+	_textSearchChunks.clear();
+	_textSearchMatchedIndex = -1;
+	_textSearchLastInputTick = 0;
+	_textSearchActive = false;
 }
 
 void ItemsControl::SetItemContainerStyle(std::wstring value)
@@ -1519,6 +2987,22 @@ Control* ItemsControl::UnwrapGeneratedItem(Control* visual) noexcept
 	if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
 		return grouped->Item();
 	return visual;
+}
+
+bool ItemsControl::ClearGroupedItemLogicalParentPreservingOwnership(
+	std::unique_ptr<Control>& visual)
+{
+	if (!visual || !dynamic_cast<GroupedItemHost*>(visual.get()))
+		return true;
+	return cui::framework::TreeAccess::InvokePreservingVisualOwnership(
+		visual,
+		[](Control& root)
+		{
+			auto* logicalItem = UnwrapGeneratedItem(&root);
+			if (logicalItem && logicalItem != &root)
+				cui::framework::TreeAccess::SetLogicalParent(
+					*logicalItem, nullptr);
+		});
 }
 
 Control* ItemsControl::GetGeneratedItem(size_t index) const noexcept
@@ -1591,6 +3075,7 @@ void ItemsControl::EndAuthoredItemsUpdate() noexcept
 
 void ItemsControl::NotifyAuthoredItemsChanged()
 {
+	ResetTextSearch();
 	if (_authoredItemsUpdateDepth != 0)
 	{
 		_authoredItemsChangedPending = true;
@@ -1604,6 +3089,9 @@ void ItemsControl::NotifyAuthoredItemsChanged()
 
 Control* ItemsControl::InsertItemControl(size_t index, Control* item)
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support authored-item mutation during ItemsHost migration");
 	if (!item) throw std::invalid_argument("ItemsControl item is null");
 	if (_itemsSource)
 		throw std::logic_error(
@@ -1616,40 +3104,100 @@ Control* ItemsControl::InsertItemControl(size_t index, Control* item)
 		throw std::invalid_argument(itemError.empty()
 			? "ItemsControl rejected authored item" : itemError);
 	_authoredItems.reserve(_authoredItems.size() + 1);
+	const ControlWeakReference lifetime(item);
+	bool structuralCommit = false;
 	try
 	{
 		cui::framework::TreeAccess::InsertVisualChild(
-			*_itemsHost, static_cast<int>(index), item, this);
+			*_itemsHost, static_cast<int>(index), item, this,
+			&structuralCommit);
 	}
 	catch (...)
 	{
-		auto detached = _itemsHost->DetachVisualChild(item);
-		if (detached.get() == item) (void)detached.release();
-		if (item->GetLogicalParent() == this)
-			cui::framework::XamlAccess::SetLogicalParent(*item, nullptr);
+		auto* live = lifetime.Get();
+		if (live && _itemsHost
+			&& _itemsHost->IndexOfVisualChild(live) >= 0)
+		{
+			auto detached = _itemsHost->DetachVisualChild(live);
+			if (detached.get() == live)
+				(void)detached.release();
+		}
+		live = lifetime.Get();
+		if (live && !live->GetVisualParent()
+			&& live->GetLogicalParent() == this)
+			cui::framework::TreeAccess::SetLogicalParent(
+				*live, nullptr);
 		throw;
 	}
-	_authoredItems.insert(_authoredItems.begin() + index, item);
+	auto* live = lifetime.Get();
+	if (!live || !_itemsHost
+		|| live->GetVisualParent() != _itemsHost
+		|| _itemsHost->IndexOfVisualChild(live) < 0
+		|| live->GetLogicalParent() != this)
+		throw std::logic_error(
+			structuralCommit
+				? "ItemsControl item ownership changed during insertion"
+				: "ItemsControl item insertion did not commit");
+	_authoredItems.insert(_authoredItems.begin() + index, live);
 	NotifyAuthoredItemsChanged();
-	return item;
+	return live;
 }
 
 Control* ItemsControl::InsertItemControl(
 	size_t index, std::unique_ptr<Control> item)
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support authored-item mutation during ItemsHost migration");
 	if (!item) throw std::invalid_argument("ItemsControl item is null");
+	if (_itemsSource)
+		throw std::logic_error(
+			"ItemsControl Items and ItemsSource cannot both be populated");
+	if (!_itemsHost) throw std::logic_error("ItemsControl has no ItemsHost");
+	if (index > _authoredItems.size())
+		throw std::out_of_range("ItemsControl item index is out of range");
+	std::string itemError;
+	if (!ValidateAuthoredItemControl(*item, itemError))
+		throw std::invalid_argument(itemError.empty()
+			? "ItemsControl rejected authored item" : itemError);
+	_authoredItems.reserve(_authoredItems.size() + 1);
+
 	auto* raw = item.get();
+	const ControlWeakReference lifetime(raw);
 	try
 	{
-		(void)InsertItemControl(index, raw);
+		(void)cui::framework::TreeAccess::
+			InsertOwnedVisualChildPreserving(
+				*_itemsHost, static_cast<int>(index),
+				item, this);
 	}
 	catch (...)
 	{
-		if (raw->GetVisualParent() == _itemsHost) (void)item.release();
+		auto* live = lifetime.Get();
+		if (live && _itemsHost
+			&& _itemsHost->IndexOfVisualChild(live) >= 0)
+		{
+			bool ownershipCommit = false;
+			std::exception_ptr ignoredNotificationError;
+			auto recovered =
+				cui::framework::TreeAccess::DetachVisualChild(
+					*_itemsHost, live, &ownershipCommit,
+					&ignoredNotificationError);
+			if (recovered)
+				item.reset(recovered.release());
+		}
 		throw;
 	}
-	(void)item.release();
-	return raw;
+	auto* live = lifetime.Get();
+	if (!live || !_itemsHost
+		|| live->GetVisualParent() != _itemsHost
+		|| _itemsHost->IndexOfVisualChild(live) < 0
+		|| live->GetLogicalParent() != this)
+		throw std::logic_error(
+			"ItemsControl owned item was transferred during insertion");
+	_authoredItems.insert(_authoredItems.begin() + index, live);
+	NotifyAuthoredItemsChanged();
+	return live;
 }
 
 Control* ItemsControl::AddItemControl(std::unique_ptr<Control> item)
@@ -1664,13 +3212,42 @@ Control* ItemsControl::AdoptItemControl(Control* item)
 
 std::unique_ptr<Control> ItemsControl::DetachItemControlAt(size_t index)
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support authored-item mutation during ItemsHost migration");
 	if (index >= _authoredItems.size() || !_itemsHost) return {};
 	auto* raw = _authoredItems[index];
-	auto result = _itemsHost->DetachVisualChild(raw);
-	if (!result) return {};
+	const ControlWeakReference lifetime(raw);
+	auto* sourceHost = _itemsHost;
+	auto result = sourceHost->DetachVisualChild(raw);
+	auto* live = lifetime.Get();
+	if (live && live->GetVisualParent() == sourceHost
+		&& sourceHost->IndexOfVisualChild(live) >= 0)
+		return {};
+	// The visual removal has committed even when a callback transferred or
+	// destroyed the item and no owner token can be returned.
 	_authoredItems.erase(_authoredItems.begin() + index);
-	cui::framework::XamlAccess::SetLogicalParent(*raw, nullptr);
-	NotifyAuthoredItemsChanged();
+	std::exception_ptr parentError;
+	if (result)
+	{
+		try
+		{
+			(void)cui::framework::TreeAccess::
+				SetLogicalParentPreservingOwnership(
+					result, nullptr, &parentError);
+		}
+		catch (...)
+		{
+			parentError = std::current_exception();
+		}
+	}
+	try { NotifyAuthoredItemsChanged(); }
+	catch (...)
+	{
+		if (!parentError) parentError = std::current_exception();
+	}
+	if (parentError)
+		std::rethrow_exception(parentError);
 	return result;
 }
 
@@ -1694,6 +3271,9 @@ bool ItemsControl::RemoveItemControl(Control* item)
 
 bool ItemsControl::MoveItemControl(size_t oldIndex, size_t newIndex)
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support authored-item mutation during ItemsHost migration");
 	if (oldIndex >= _authoredItems.size() || newIndex >= _authoredItems.size())
 		return false;
 	if (oldIndex == newIndex) return true;
@@ -1709,6 +3289,9 @@ bool ItemsControl::MoveItemControl(size_t oldIndex, size_t newIndex)
 
 void ItemsControl::ClearItemControls()
 {
+	if (_migratingAuthoredItems)
+		throw std::logic_error(
+			"ItemsControl does not support authored-item mutation during ItemsHost migration");
 	std::vector<std::unique_ptr<Control>> removed;
 	removed.reserve(_authoredItems.size());
 	auto update = DeferAuthoredItemsChanges();
@@ -1741,8 +3324,14 @@ ItemsControl::PreparedGroupHeaders ItemsControl::BuildGroupHeaders(
 	for (const auto& group : grouped->Groups())
 	{
 		if (group.StartIndex != index) continue;
+#if CUI_ENABLE_DYNAMIC_XAML
 		auto groupItems = std::make_shared<ObservableBindingList>(
-			_itemsSource.Get()->ItemTypeName());
+			cui::design::AuthoredBindingListItemTypeName(*_itemsSource.Get()));
+		groupItems->SetItemTypeToken(_itemsSource.Get()->GetItemTypeToken());
+#else
+		auto groupItems = std::make_shared<ObservableBindingList>(
+			_itemsSource.Get()->GetItemTypeToken());
+#endif
 		for (size_t offset = 0; offset < group.ItemCount; ++offset)
 		{
 			BindingSourceReference member;
@@ -1918,7 +3507,16 @@ bool ItemsControl::PrepareGeneratedItem(
 			_lastTemplateError = L"项容器未生成视觉根。";
 		return false;
 	}
-	if (!InitializeGeneratedContainer(*visual)) return false;
+	bool initialized = false;
+	if (!cui::framework::TreeAccess::InvokePreservingVisualOwnership(
+		visual,
+		[&](Control& container)
+		{
+			initialized = InitializeGeneratedContainer(container);
+		}))
+		throw std::logic_error(
+			"generated container ownership changed during initialization");
+	if (!initialized) return false;
 	if (IsGroupingActive())
 	{
 		auto headers = BuildGroupHeaders(index, item);
@@ -1943,14 +3541,19 @@ std::unique_ptr<Control> ItemsControl::BuildGeneratedItem(
 	observation = {};
 	auto presenter = std::make_unique<ContentPresenter>();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(
-		*presenter, L"VerticalAlignment", BindingValue(VerticalAlignment::Top),
+		*presenter, Control::VerticalAlignmentProperty(),
+		BindingValue(VerticalAlignment::Top),
 		DependencyPropertyValueSource::Theme);
 	cui::framework::StyleAccess::SetResourceKey(
 		*presenter, _itemContainerStyle);
-	presenter->SetContentTypeName(_itemTemplate
-		? _itemTemplate.Get()->DataTypeName()
-		: (_itemsSource ? _itemsSource.Get()->ItemTypeName() : std::wstring{}));
-	presenter->SetDisplayMemberPath(_displayMemberPath);
+	presenter->SetContentTypeToken(_itemTemplate
+		? _itemTemplate.Get()->GetDataTypeToken()
+		: (_itemsSource ? _itemsSource.Get()->GetItemTypeToken()
+			: DataTypeToken{}));
+	presenter->SetCompiledDisplayMemberPath(_compiledDisplayMemberPath);
+#if CUI_ENABLE_DYNAMIC_XAML
+	ApplyAuthoredGeneratedItemProjection(*presenter);
+#endif
 	presenter->SetContentTemplate(_itemTemplate);
 	try
 	{
@@ -1973,68 +3576,257 @@ std::unique_ptr<Control> ItemsControl::BuildGeneratedItem(
 
 void ItemsControl::AttachPreparedItem(PreparedItem&& item)
 {
-	if (!_itemsHost || !item.Visual) return;
+	if (!_itemsHost)
+		throw std::logic_error("ItemsControl has no ItemsHost");
+	if (!item.Visual)
+		throw std::invalid_argument(
+			"ItemsControl prepared item has no visual");
 	const auto index = item.Index;
-	auto* visual = item.Visual.get();
-	if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
+	auto* requestedHost = _itemsHost;
+	auto* requestedVisual = item.Visual.get();
+	const bool groupedVisual =
+		dynamic_cast<GroupedItemHost*>(requestedVisual) != nullptr;
+	auto* requestedLogicalItem = groupedVisual
+		? UnwrapGeneratedItem(requestedVisual) : requestedVisual;
+	const ControlWeakReference hostLifetime(requestedHost);
+	const ControlWeakReference visualLifetime(requestedVisual);
+	const ControlWeakReference logicalItemLifetime(requestedLogicalItem);
+	auto validateAttachment = [&]() -> std::pair<Panel*, Control*>
 	{
-		cui::framework::TreeAccess::AddOwnedVisualChild(
-			*_itemsHost, std::move(item.Visual), nullptr);
-		// GroupedItemHost is presentation infrastructure.  The item container
-		// remains the ItemsControl logical child just as it does without a
-		// GroupStyle; otherwise ListBoxItem cannot resolve its owning Selector.
-		if (auto* logicalItem = grouped->Item())
-			cui::framework::XamlAccess::SetLogicalParent(*logicalItem, this);
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		auto* liveVisual = visualLifetime.Get();
+		auto* liveLogicalItem = logicalItemLifetime.Get();
+		const bool rootOwned = liveHost && _itemsHost == liveHost
+			&& liveVisual
+			&& liveVisual->GetVisualParent() == liveHost
+			&& liveHost->IndexOfVisualChild(liveVisual) >= 0;
+		const bool logicalOwned = groupedVisual
+			? liveLogicalItem
+				&& liveLogicalItem != liveVisual
+				&& UnwrapGeneratedItem(liveVisual) == liveLogicalItem
+				&& liveLogicalItem->GetLogicalParent() == this
+			: liveLogicalItem == liveVisual
+				&& liveVisual
+				&& liveVisual->GetLogicalParent() == this;
+		if (!rootOwned || !logicalOwned)
+			throw std::logic_error(
+				"ItemsControl prepared item ownership did not commit");
+		return { liveHost, liveVisual };
+	};
+
+	try
+	{
+		(void)cui::framework::TreeAccess::
+			InsertOwnedVisualChildPreserving(
+				*requestedHost, requestedHost->VisualChildCount(),
+				item.Visual, groupedVisual ? nullptr : this);
+		auto [liveHost, liveVisual] = validateAttachment();
+
+		// Generated containers may be realized after the document-wide style
+		// pass. Re-resolve only after the live inheritance route exists.
+		if (!cui::framework::StyleAccess::Theme(*liveVisual))
+			if (const auto theme =
+				cui::framework::StyleAccess::Theme(*this))
+				(void)cui::framework::StyleAccess::SetTheme(
+					*liveVisual, std::move(theme), true);
+		std::tie(liveHost, liveVisual) = validateAttachment();
+		if (!cui::framework::StyleAccess::DocumentStyles(*liveVisual))
+			if (const auto styles =
+				cui::framework::StyleAccess::DocumentStyles(*this))
+				(void)cui::framework::StyleAccess::SetDocumentStyles(
+					*liveVisual, std::move(styles), true);
+		std::tie(liveHost, liveVisual) = validateAttachment();
+		if (auto* virtualHost =
+			dynamic_cast<VirtualizingItemsHost*>(liveHost))
+		{
+			virtualHost->RegisterItem(liveVisual, index);
+			std::tie(liveHost, liveVisual) = validateAttachment();
+			virtualHost = dynamic_cast<VirtualizingItemsHost*>(liveHost);
+			if (!virtualHost || virtualHost->IndexOf(liveVisual) != index)
+				throw std::logic_error(
+					"ItemsControl virtual item registration did not commit");
+		}
+		_generator.StoreRealized(
+			index, liveVisual, std::move(item.Observation));
+		if (_generator.GetRealized(index) != visualLifetime.Get())
+			throw std::logic_error(
+				"ItemsControl generator realization did not commit");
 	}
-	else
-		cui::framework::TreeAccess::AddOwnedVisualChild(
-			*_itemsHost, std::move(item.Visual), this);
-	// Generated containers may be realized after the document-wide style pass.
-	// Re-resolve their keyed/implicit style only after the live inheritance
-	// route exists, so lazy virtualization has the same template semantics as
-	// containers materialized with the original XAML tree.
-	if (!cui::framework::StyleAccess::Theme(*visual))
-		if (const auto theme = cui::framework::StyleAccess::Theme(*this))
-		(void)cui::framework::StyleAccess::SetTheme(
-			*visual, std::move(theme), true);
-	if (!cui::framework::StyleAccess::DocumentStyles(*visual))
-		if (const auto styles =
-			cui::framework::StyleAccess::DocumentStyles(*this))
-		(void)cui::framework::StyleAccess::SetDocumentStyles(
-			*visual, std::move(styles), true);
-	if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
-		virtualHost->RegisterItem(visual, index);
-	_generator.StoreRealized(
-		index, visual, std::move(item.Observation));
+	catch (...)
+	{
+		const auto originalError = std::current_exception();
+		if (_generator.GetRealized(index) == requestedVisual)
+			(void)_generator.TakeRealized(index);
+
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		auto* liveVisual = visualLifetime.Get();
+		if (auto* virtualHost =
+			dynamic_cast<VirtualizingItemsHost*>(liveHost))
+			virtualHost->UnregisterItem(requestedVisual);
+		if (liveHost && liveVisual
+			&& liveVisual->GetVisualParent() == liveHost
+			&& liveHost->IndexOfVisualChild(liveVisual) >= 0)
+		{
+			try
+			{
+				bool ownershipCommit = false;
+				std::exception_ptr ignoredNotificationError;
+				auto recovered =
+					cui::framework::TreeAccess::DetachVisualChild(
+						*liveHost, liveVisual, &ownershipCommit,
+						&ignoredNotificationError);
+				if (recovered)
+				{
+					try
+					{
+						(void)ClearGroupedItemLogicalParentPreservingOwnership(
+							recovered);
+						std::exception_ptr ignoredParentError;
+						if (recovered)
+							(void)cui::framework::TreeAccess::
+								SetLogicalParentPreservingOwnership(
+									recovered, nullptr,
+									&ignoredParentError);
+					}
+					catch (...) {}
+				}
+			}
+			catch (...) {}
+		}
+		std::rethrow_exception(originalError);
+	}
 }
 
 void ItemsControl::ReorderRealizedChildren()
 {
 	if (!_itemsHost || IsVirtualizing()
 		|| _generator.RealizedCount() < 2) return;
-	std::vector<std::unique_ptr<Control>> ordered;
-	ordered.reserve(_generator.RealizedCount());
+	struct RealizedOrderEntry final
+	{
+		size_t Index = 0;
+		Control* Identity = nullptr;
+		ControlWeakReference Lifetime;
+	};
+
+	auto* requestedHost = _itemsHost;
+	const ControlWeakReference hostLifetime(requestedHost);
+	std::vector<RealizedOrderEntry> desired;
+	std::vector<ControlWeakReference> previousOrder;
+	std::unordered_set<Control*> identities;
+	desired.reserve(_generator.RealizedCount());
+	previousOrder.reserve(
+		static_cast<size_t>(requestedHost->VisualChildCount()));
+	identities.reserve(_generator.RealizedCount());
 	for (const auto& [index, item] : _generator.RealizedItems())
 	{
-		(void)index;
-		auto detached = _itemsHost->DetachVisualChild(item.Visual);
-		if (detached)
-			ordered.push_back(std::move(detached));
+		auto* visual = item.Visual;
+		if (!visual || !identities.insert(visual).second)
+			throw std::logic_error(
+				"ItemsControl generator contains an invalid realized identity");
+		const ControlWeakReference lifetime(visual);
+		if (lifetime.Get() != visual
+			|| visual->GetVisualParent() != requestedHost
+			|| requestedHost->IndexOfVisualChild(visual) < 0)
+			throw std::logic_error(
+				"ItemsControl generator is not owned by its ItemsHost");
+		desired.push_back({ index, visual, lifetime });
 	}
-	for (auto& item : ordered)
+	for (auto* child : requestedHost->GetVisualChildrenView())
+		previousOrder.emplace_back(child);
+	if (previousOrder.size() != desired.size())
+		throw std::logic_error(
+			"ItemsControl ItemsHost contains untracked realized children");
+
+	try
 	{
-		auto* visual = item.get();
-		if (auto* grouped = dynamic_cast<GroupedItemHost*>(visual))
+		for (size_t targetIndex = 0;
+			targetIndex < desired.size(); ++targetIndex)
 		{
-			cui::framework::TreeAccess::AddOwnedVisualChild(
-				*_itemsHost, std::move(item), nullptr);
-			if (auto* logicalItem = grouped->Item())
-				cui::framework::XamlAccess::SetLogicalParent(
-					*logicalItem, this);
+			auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+			auto* liveVisual = desired[targetIndex].Lifetime.Get();
+			if (!liveHost || _itemsHost != liveHost
+				|| !liveVisual
+				|| liveVisual->GetVisualParent() != liveHost)
+				throw std::logic_error(
+					"ItemsControl realized ownership changed during reorder");
+			const int currentIndex =
+				liveHost->IndexOfVisualChild(liveVisual);
+			if (currentIndex < 0)
+				throw std::logic_error(
+					"ItemsControl realized child escaped during reorder");
+			if (currentIndex != static_cast<int>(targetIndex)
+				&& !liveHost->MoveVisualChild(
+					currentIndex, static_cast<int>(targetIndex)))
+				throw std::logic_error(
+					"ItemsControl realized child could not be reordered");
 		}
-		else
-			cui::framework::TreeAccess::AddOwnedVisualChild(
-				*_itemsHost, std::move(item), this);
+
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		if (!liveHost || _itemsHost != liveHost
+			|| liveHost->VisualChildCount()
+			!= static_cast<int>(desired.size()))
+			throw std::logic_error(
+				"ItemsControl ItemsHost changed during reorder");
+		const auto children = liveHost->GetVisualChildrenView();
+		for (size_t index = 0; index < desired.size(); ++index)
+		{
+			auto* live = desired[index].Lifetime.Get();
+			if (!live || children[index] != live
+				|| live->GetVisualParent() != liveHost)
+				throw std::logic_error(
+					"ItemsControl realized order did not commit");
+		}
+	}
+	catch (...)
+	{
+		const auto originalError = std::current_exception();
+		// Moving never relinquishes ownership. Restore the old order in place
+		// when all captured identities still belong to the same host.
+		try
+		{
+			auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+			bool canRestore = liveHost && _itemsHost == liveHost
+				&& liveHost->VisualChildCount()
+				== static_cast<int>(previousOrder.size());
+			for (const auto& reference : previousOrder)
+			{
+				auto* child = reference.Get();
+				canRestore = canRestore && child
+					&& child->GetVisualParent() == liveHost
+					&& liveHost->IndexOfVisualChild(child) >= 0;
+			}
+			if (canRestore)
+			{
+				for (size_t targetIndex = 0;
+					targetIndex < previousOrder.size(); ++targetIndex)
+				{
+					auto* child = previousOrder[targetIndex].Get();
+					const int currentIndex =
+						liveHost->IndexOfVisualChild(child);
+					if (currentIndex != static_cast<int>(targetIndex))
+						(void)liveHost->MoveVisualChild(
+							currentIndex,
+							static_cast<int>(targetIndex));
+				}
+			}
+		}
+		catch (...) {}
+
+		// A reentrant collection observer may still have transferred or
+		// destroyed a visual. Remove only those invalid identities so the
+		// generator never publishes stale raw pointers.
+		auto* liveHost = dynamic_cast<Panel*>(hostLifetime.Get());
+		for (const auto& entry : desired)
+		{
+			if (_generator.GetRealized(entry.Index) != entry.Identity)
+				continue;
+			auto* live = entry.Lifetime.Get();
+			if (!liveHost || _itemsHost != liveHost || !live
+				|| live->GetVisualParent() != liveHost
+				|| liveHost->IndexOfVisualChild(live) < 0)
+				(void)_generator.TakeRealized(entry.Index);
+		}
+		std::rethrow_exception(originalError);
 	}
 }
 
@@ -2061,11 +3853,15 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 		auto detached = _itemsHost->DetachVisualChild(visual);
 		if (detached)
 		{
-			if (auto* logicalItem = UnwrapGeneratedItem(detached.get());
-				logicalItem && logicalItem != detached.get())
-				cui::framework::XamlAccess::SetLogicalParent(
-					*logicalItem, nullptr);
-			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
+			(void)ClearGroupedItemLogicalParentPreservingOwnership(
+				detached);
+			std::exception_ptr parentError;
+			if (detached)
+				(void)cui::framework::TreeAccess::
+					SetLogicalParentPreservingOwnership(
+						detached, nullptr, &parentError);
+			if (parentError)
+				std::rethrow_exception(parentError);
 		}
 		if (keepForRecycle && detached)
 			_generator.StoreRecycled(index, {
@@ -2108,12 +3904,26 @@ std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
 	return { first, last };
 }
 
-bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
+bool ItemsControl::RealizeVirtualRange(
+	size_t first, size_t last, bool localLayoutForScroll)
 {
 	if (!IsVirtualizing() || !_itemsHost || _realizingViewport) return true;
 	const size_t count = ItemCount();
 	first = (std::min)(first, count);
 	last = (std::clamp)(last, first, count);
+	auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
+	const bool previousLocalLayout = virtualHost
+		? virtualHost->SetLocalLayoutInvalidation(localLayoutForScroll)
+		: false;
+	struct LocalLayoutGuard final
+	{
+		VirtualizingItemsHost* Host;
+		bool Previous;
+		~LocalLayoutGuard()
+		{
+			if (Host) (void)Host->SetLocalLayoutInvalidation(Previous);
+		}
+	} localLayoutGuard{ virtualHost, previousLocalLayout };
 	_realizingViewport = true;
 	struct RealizingViewportGuard final
 	{
@@ -2157,16 +3967,20 @@ bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
 	{
 		auto item = _generator.TakeRealized(index);
 		auto* visual = item.Visual;
-		if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
+		if (virtualHost)
 			virtualHost->UnregisterItem(visual);
 		auto detached = _itemsHost->DetachVisualChild(visual);
 		if (detached)
 		{
-			if (auto* logicalItem = UnwrapGeneratedItem(detached.get());
-				logicalItem && logicalItem != detached.get())
-				cui::framework::XamlAccess::SetLogicalParent(
-					*logicalItem, nullptr);
-			cui::framework::XamlAccess::SetLogicalParent(*detached, nullptr);
+			(void)ClearGroupedItemLogicalParentPreservingOwnership(
+				detached);
+			std::exception_ptr parentError;
+			if (detached)
+				(void)cui::framework::TreeAccess::
+					SetLogicalParentPreservingOwnership(
+						detached, nullptr, &parentError);
+			if (parentError)
+				std::rethrow_exception(parentError);
 		}
 		if (detached)
 			_generator.StoreRecycled(index, {
@@ -2176,17 +3990,25 @@ bool ItemsControl::RealizeVirtualRange(size_t first, size_t last)
 		AttachPreparedItem(std::move(addition));
 	TrimRecyclePool(first, last);
 	_itemsHost->InvalidateLayout();
-	RequestLayout();
+	if (localLayoutForScroll)
+	{
+		// The extent is unchanged, so a scroll-only realization can measure and
+		// arrange its fixed host without scheduling a new root layout pass.
+		_itemsHost->UpdateLayout();
+		CommitItemsLayout();
+	}
+	else
+		RequestLayout();
 	OnGeneratedItemsRealized();
 	_realizingViewport = false;
 	return true;
 }
 
-bool ItemsControl::RealizeVirtualViewport()
+bool ItemsControl::RealizeVirtualViewport(bool localLayoutForScroll)
 {
 	if (!IsVirtualizing()) return true;
 	const auto [first, last] = VirtualRangeForViewport();
-	return RealizeVirtualRange(first, last);
+	return RealizeVirtualRange(first, last, localLayoutForScroll);
 }
 
 void ItemsControl::TrimRecyclePool(size_t first, size_t last)
@@ -2289,13 +4111,15 @@ bool ItemsControl::ApplyCollectionChange(
 				auto detached = _itemsHost->DetachVisualChild(item.Visual);
 				if (detached)
 				{
-					if (auto* logicalItem =
-						UnwrapGeneratedItem(detached.get());
-						logicalItem && logicalItem != detached.get())
-						cui::framework::XamlAccess::SetLogicalParent(
-							*logicalItem, nullptr);
-					cui::framework::XamlAccess::SetLogicalParent(
-						*detached, nullptr);
+					(void)ClearGroupedItemLogicalParentPreservingOwnership(
+						detached);
+					std::exception_ptr parentError;
+					if (detached)
+						(void)cui::framework::TreeAccess::
+							SetLogicalParentPreservingOwnership(
+								detached, nullptr, &parentError);
+					if (parentError)
+						std::rethrow_exception(parentError);
 				}
 			}
 			for (const auto& indexChange : _generator.Apply(change))
@@ -2348,7 +4172,7 @@ void ItemsControl::RefreshGeneratedItem(
 	const auto item = itemIdentity.lock();
 	if (!item || !_itemsSource) return;
 	const int index = FindBindingListItemByValue(
-		_itemsSource, std::wstring{},
+		_itemsSource, CompiledBindingPathView{},
 		BindingValue(BindingSourceReference(item)));
 	if (index < 0) return;
 	const size_t itemIndex = static_cast<size_t>(index);
@@ -2373,12 +4197,10 @@ bool ItemsControl::RebuildGeneratedItems()
 {
 	_lastTemplateError.clear();
 	const auto sourceItemType = _itemsSource
-		? _itemsSource.Get()->ItemTypeName() : std::wstring{};
+		? _itemsSource.Get()->GetItemTypeToken() : DataTypeToken{};
 	if (_itemsSource && _itemTemplate
-		&& !sourceItemType.empty()
-		&& !_itemTemplate.Get()->DataTypeName().empty()
-		&& !EqualsTypeName(_itemTemplate.Get()->DataTypeName(),
-			sourceItemType))
+		&& !AreDataTypesCompatible(sourceItemType,
+			_itemTemplate.Get()->GetDataTypeToken()))
 	{
 		_lastTemplateError = L"ItemTemplate DataType 与 ItemsSource ItemType 不一致。";
 		return false;
@@ -2387,9 +4209,8 @@ bool ItemsControl::RebuildGeneratedItems()
 	{
 		const auto* style = _groupStyle.Get();
 		if (style->HeaderTemplate
-			&& !EqualsTypeName(
-				style->HeaderTemplate.Get()->DataTypeName(),
-				std::wstring(CollectionViewGroupDataTypeName)))
+			&& style->HeaderTemplate.Get()->GetDataTypeToken()
+				!= CollectionViewGroupDataTypeToken)
 		{
 			_lastTemplateError = L"GroupStyle HeaderTemplate DataType 必须为 CollectionViewGroup。";
 			return false;
@@ -2471,7 +4292,7 @@ bool ItemsControl::BringItemIntoView(size_t index)
 		UpdateLayout();
 		scrollOwner->ScrollToVerticalOffset(
 			std::ceil((std::max)(0.0f, target)));
-		(void)RealizeVirtualViewport();
+		(void)RealizeVirtualViewport(true);
 		if (auto* item = GetGeneratedItem(index))
 		{
 			(void)scrollOwner->BringDescendantIntoView(item);
@@ -2485,10 +4306,45 @@ bool ItemsControl::BringItemIntoView(size_t index)
 	return false;
 }
 
+void ItemsControl::OnApplyTemplate()
+{
+	if (_pendingTemplateItemsPresenter.HasValue()
+		&& !CommitPendingTemplateItemsPresenter())
+		ClearPendingTemplateItemsPresenter();
+	if (_templateItemsPresenter
+		&& (!_controlTemplateRoot
+			|| !VisualSubtreeContains(
+				_controlTemplateRoot, _templateItemsPresenter)))
+		throw std::logic_error(
+			"ItemsControl active ItemsPresenter is outside the applied template root");
+	Control::OnApplyTemplate();
+}
+
 void ItemsControl::PreparePresentation()
 {
+	if (_pendingTemplateItemsPresenter.HasValue())
+		(void)CommitPendingTemplateItemsPresenter();
 	Control::PreparePresentation();
 	if (IsVirtualizing()) (void)RealizeVirtualViewport();
+}
+
+bool ItemsControl::ProcessInput(const InputReport& input)
+{
+	if (input.Kind == InputReportKind::FocusLost)
+		ResetTextSearch();
+	ProcessTextSearchKey(input);
+	return Control::ProcessInput(input);
+}
+
+bool ItemsControl::ApplyTextInput(
+	const TextCompositionEventArgs& input)
+{
+	if (!GetIsTextSearchEnabled() || input.Text.empty())
+		return Control::ApplyTextInput(input);
+	(void)ProcessTextSearchInput(input);
+	// WPF marks committed text handled once text search is enabled even when
+	// the current prefix has no matching item, preventing access-key fallback.
+	return true;
 }
 
 void ItemsControl::OnRender()

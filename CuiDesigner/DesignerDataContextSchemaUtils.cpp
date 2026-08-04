@@ -70,6 +70,7 @@ const wchar_t* ValueKindName(BindingValueKind kind) noexcept
 	{
 	case BindingValueKind::Empty: return L"Unknown";
 	case BindingValueKind::Bool: return L"Bool";
+	case BindingValueKind::NullableBool: return L"NullableBool";
 	case BindingValueKind::Int: return L"Int";
 	case BindingValueKind::Int64: return L"Int64";
 	case BindingValueKind::Float: return L"Float";
@@ -86,6 +87,7 @@ bool TryParseValueKind(const std::wstring& text, BindingValueKind& kind)
 	for (const auto candidate : {
 		BindingValueKind::Empty,
 		BindingValueKind::Bool,
+		BindingValueKind::NullableBool,
 		BindingValueKind::Int,
 		BindingValueKind::Int64,
 		BindingValueKind::Float,
@@ -221,7 +223,7 @@ bool Validate(const DesignerDataContextSchema& schema, std::wstring* outError)
 			return false;
 		}
 		if (schema[i].ValueKind < BindingValueKind::Empty
-			|| schema[i].ValueKind > BindingValueKind::Object)
+			|| schema[i].ValueKind > BindingValueKind::NullableBool)
 		{
 			if (outError) *outError = L"DataContext 属性 " + path + L" 的值类型无效。";
 			return false;

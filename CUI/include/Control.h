@@ -3,13 +3,16 @@
 #pragma once
 #define NOMINMAX
 #include "Binding.h"
+#include "CuiBuildFeatures.h"
 #include "DependencyProperty.h"
 #include "Event.h"
+#include "RuntimeTypeMetadata.h"
+#if CUI_ENABLE_DYNAMIC_XAML
 #include "XamlSchema.h"
 #include "ComponentBehavior.h"
+#endif
 #include "ControlTemplate.h"
 #include "ObservableCollection.h"
-#include <Colors.h>
 #include "ThemePalette.h"
 #include "Brush.h"
 #include "Geometry.h"
@@ -32,6 +35,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <wrl/client.h>
@@ -40,6 +44,12 @@
 #include "Layout/LayoutDeferral.h"
 
 struct ID2D1Bitmap;
+
+namespace cui::framework
+{
+	class ReverseInheritedProperty;
+	enum class ReverseInheritedPropertyKind : unsigned char;
+}
 
 /**
  * @file Control.h
@@ -71,6 +81,8 @@ enum class UIClass : int
 	UI_RangeBase,
 	UI_Button,
 	UI_Image,
+	/** Abstract WPF editable-text behavior base. */
+	UI_TextBoxBase,
 	UI_TextBox,
 	UI_RichTextBox,
 	UI_PasswordBox,
@@ -303,29 +315,263 @@ typedef Event<void(class Control*, EventArgs)> EventHandler;
  */
 struct DeclarativeEventArgs : RoutedEventArgs
 {
-	std::wstring Name;
+	/** Stable AOT identity; production dispatch never compares event names. */
+	const DeclarativeEventDefinition* Definition = nullptr;
 	BindingValue Value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design/runtime-XAML compatibility sidecar. */
+	std::wstring Name;
 	RuntimeTypeId OwnerType;
+#endif
 };
 
 typedef Event<void(class Control*, DeclarativeEventArgs&)>
 	DeclarativeEvent;
 
-/** One host-property predicate that can activate a declarative visual state. */
+/**
+ * Stable, compiled identity for one name in a ControlTemplate namescope.
+ *
+ * Zero is reserved for "no part" / the template owner.  Compiled code hashes
+ * authored names once and the production runtime retains only this token and
+ * the resolved pointer.
+ */
+struct TemplatePartToken final
+{
+	uint64_t Value = 0;
+
+	constexpr TemplatePartToken() noexcept = default;
+	explicit constexpr TemplatePartToken(uint64_t value) noexcept
+		: Value(value)
+	{
+	}
+
+	[[nodiscard]] explicit constexpr operator bool() const noexcept
+	{
+		return Value != 0;
+	}
+
+	friend constexpr bool operator==(
+		TemplatePartToken left, TemplatePartToken right) noexcept = default;
+};
+
+/** Stable FNV-1a identity over the wchar_t code units emitted by the AOT compiler. */
+[[nodiscard]] constexpr TemplatePartToken MakeTemplatePartToken(
+	std::wstring_view localName) noexcept
+{
+	if (localName.empty()) return {};
+	uint64_t hash = 14695981039346656037ull;
+	for (const auto codeUnit : localName)
+	{
+		hash ^= static_cast<uint64_t>(codeUnit);
+		hash *= 1099511628211ull;
+	}
+	// Token zero is the template owner.  The design/compiler collision gate
+	// still compares the original names for every non-empty token.
+	return TemplatePartToken(hash == 0 ? 1 : hash);
+}
+
+/**
+ * Stable, name-free identity for one property declared by a compiled
+ * ComponentDefinition.
+ *
+ * Tokens are scoped to the generated component type.  The AOT compiler
+ * rejects collisions inside each component before emitting the direct
+ * token-to-metadata dispatch table.
+ */
+struct ComponentPropertyToken final
+{
+	std::uint64_t Value = 0;
+
+	constexpr ComponentPropertyToken() noexcept = default;
+	explicit constexpr ComponentPropertyToken(std::uint64_t value) noexcept
+		: Value(value)
+	{
+	}
+
+	[[nodiscard]] explicit constexpr operator bool() const noexcept
+	{
+		return Value != 0;
+	}
+
+	friend constexpr bool operator==(
+		ComponentPropertyToken left,
+		ComponentPropertyToken right) noexcept = default;
+};
+
+/** 64-bit FNV-1a over stable UTF-32 code units. */
+[[nodiscard]] constexpr ComponentPropertyToken MakeComponentPropertyToken(
+	std::wstring_view propertyName) noexcept
+{
+	if (propertyName.empty()) return {};
+	std::uint64_t hash = 14695981039346656037ull;
+	for (const wchar_t character : propertyName)
+	{
+		const auto codeUnit = static_cast<std::uint32_t>(character);
+		for (unsigned shift = 0; shift != 32; shift += 8)
+		{
+			hash ^= static_cast<std::uint8_t>(codeUnit >> shift);
+			hash *= 1099511628211ull;
+		}
+	}
+	return ComponentPropertyToken(hash == 0 ? 1ull : hash);
+}
+
+/** Strong process-stable identities emitted for compiled visual-state programs. */
+struct VisualStateGroupToken final
+{
+	uint64_t Value = 0;
+
+	constexpr VisualStateGroupToken() noexcept = default;
+	explicit constexpr VisualStateGroupToken(uint64_t value) noexcept
+		: Value(value)
+	{
+	}
+	[[nodiscard]] explicit constexpr operator bool() const noexcept
+	{
+		return Value != 0;
+	}
+	friend constexpr bool operator==(
+		VisualStateGroupToken left,
+		VisualStateGroupToken right) noexcept = default;
+};
+
+struct VisualStateToken final
+{
+	uint64_t Value = 0;
+
+	constexpr VisualStateToken() noexcept = default;
+	explicit constexpr VisualStateToken(uint64_t value) noexcept
+		: Value(value)
+	{
+	}
+	[[nodiscard]] explicit constexpr operator bool() const noexcept
+	{
+		return Value != 0;
+	}
+	friend constexpr bool operator==(
+		VisualStateToken left, VisualStateToken right) noexcept = default;
+};
+
+[[nodiscard]] constexpr uint64_t MakeCompiledInteractionNameToken(
+	std::wstring_view name) noexcept
+{
+	uint64_t hash = 14695981039346656037ULL;
+	for (const auto character : name)
+	{
+		const auto codeUnit = static_cast<uint32_t>(character);
+		for (unsigned int byte = 0; byte < sizeof(wchar_t); ++byte)
+		{
+			hash ^= static_cast<unsigned char>(codeUnit >> (byte * 8));
+			hash *= 1099511628211ULL;
+		}
+	}
+	return hash == 0 ? 1 : hash;
+}
+
+[[nodiscard]] constexpr VisualStateGroupToken MakeVisualStateGroupToken(
+	std::wstring_view name) noexcept
+{
+	return VisualStateGroupToken(MakeCompiledInteractionNameToken(name));
+}
+
+[[nodiscard]] constexpr VisualStateToken MakeVisualStateToken(
+	std::wstring_view name) noexcept
+{
+	return VisualStateToken(MakeCompiledInteractionNameToken(name));
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
+/** Design-only predicate accepted by the dynamic-XAML interaction adapter. */
 struct DeclarativeVisualStateCondition
 {
-	std::wstring PropertyName;
+	DependencyPropertyReference Property;
 	BindingValue Value;
+
+	DeclarativeVisualStateCondition() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
+	DeclarativeVisualStateCondition(
+		std::wstring propertyName, BindingValue value)
+		: Property(DependencyPropertyReference(std::move(propertyName))),
+		  Value(std::move(value))
+	{
+	}
+#endif
+	DeclarativeVisualStateCondition(
+		const DependencyProperty& property, BindingValue value)
+		: Property(DependencyPropertyReference(property)),
+		  Value(std::move(value))
+	{
+	}
+	DeclarativeVisualStateCondition(
+		DependencyPropertyReference property, BindingValue value)
+		: Property(std::move(property)),
+		  Value(std::move(value))
+	{
+	}
 };
 
 /** One property value applied to the component host or a named template part. */
 struct DeclarativeVisualStateSetter
 {
-	/** Empty targets the component host; otherwise this is a template-local name. */
+	/** Null targets the component host; otherwise this is the resolved template part. */
+	Control* Target = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic-XAML compatibility sidecar; compiled definitions never retain it. */
 	std::wstring TargetName;
-	std::wstring PropertyName;
+#endif
+	DependencyPropertyReference Property;
 	BindingValue Value;
+
+	DeclarativeVisualStateSetter() = default;
+#if CUI_ENABLE_DYNAMIC_XAML
+	DeclarativeVisualStateSetter(
+		std::wstring targetName,
+		std::wstring propertyName,
+		BindingValue value)
+		: TargetName(std::move(targetName)),
+		  Property(DependencyPropertyReference(std::move(propertyName))),
+		  Value(std::move(value))
+	{
+	}
+	DeclarativeVisualStateSetter(
+		std::wstring targetName,
+		const DependencyProperty& property,
+		BindingValue value)
+		: TargetName(std::move(targetName)),
+		  Property(DependencyPropertyReference(property)),
+		  Value(std::move(value))
+	{
+	}
+	DeclarativeVisualStateSetter(
+		std::wstring targetName,
+		DependencyPropertyReference property,
+		BindingValue value)
+		: TargetName(std::move(targetName)),
+		  Property(std::move(property)),
+		  Value(std::move(value))
+	{
+	}
+#endif
+	DeclarativeVisualStateSetter(
+		Control* target,
+		DependencyPropertyReference property,
+		BindingValue value)
+		: Target(target),
+		  Property(std::move(property)),
+		  Value(std::move(value))
+	{
+	}
+	DeclarativeVisualStateSetter(
+		Control* target,
+		const DependencyProperty& property,
+		BindingValue value)
+		: Target(target),
+		  Property(DependencyPropertyReference(property)),
+		  Value(std::move(value))
+	{
+	}
 };
+#endif
 
 enum class DeclarativeAnimationKind : unsigned char
 {
@@ -377,7 +623,8 @@ enum class DeclarativeTimelineFillBehavior : unsigned char
 	Stop,
 };
 
-/** One explicitly timed value in a Double/Color/Thickness/Point/Rect/Size/Object key-frame animation. */
+#if CUI_ENABLE_DYNAMIC_XAML
+/** Design-only key-frame definition accepted by the dynamic-XAML adapter. */
 struct DeclarativeAnimationKeyFrame
 {
 	DeclarativeKeyFrameKind Kind = DeclarativeKeyFrameKind::Linear;
@@ -396,9 +643,16 @@ struct DeclarativeAnimationKeyFrame
 struct DeclarativeVisualStateAnimation
 {
 	DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
-	/** Empty targets the component host; otherwise this is a template-local name. */
+	/** Null targets the component host; otherwise this is the resolved template part. */
+	Control* Target = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic-XAML compatibility sidecar; compiled definitions never retain it. */
 	std::wstring TargetName;
-	std::wstring PropertyName;
+#endif
+	/** Direct dependency-property operand used by compiled documents. */
+	DependencyPropertyReference Property;
+	/** Non-empty only for a multi-segment WPF Storyboard.TargetProperty path. */
+	std::wstring ObjectPath;
 	/** WPF From/To/By endpoints; missing values use the current/base animation inputs. */
 	std::optional<BindingValue> From;
 	std::optional<BindingValue> To;
@@ -426,7 +680,13 @@ struct DeclarativeVisualStateAnimation
 	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
 	/** Non-empty selects the corresponding UsingKeyFrames timeline. */
 	std::vector<DeclarativeAnimationKeyFrame> KeyFrames;
+
+	[[nodiscard]] const std::wstring& PropertyPath() const noexcept
+	{
+		return ObjectPath.empty() ? Property.Name() : ObjectPath;
+	}
 };
+#endif
 
 /** WPF-style action executed by a component EventTrigger. */
 enum class DeclarativeStoryboardActionKind : unsigned char
@@ -437,6 +697,7 @@ enum class DeclarativeStoryboardActionKind : unsigned char
 	Stop,
 };
 
+#if CUI_ENABLE_DYNAMIC_XAML
 struct DeclarativeEventTriggerActionDefinition
 {
 	DeclarativeStoryboardActionKind Kind =
@@ -447,10 +708,15 @@ struct DeclarativeEventTriggerActionDefinition
 	std::vector<DeclarativeVisualStateAnimation> Animations;
 };
 
-/** One template-root EventTrigger driven by a component-owned routed event. */
+/** Design-only EventTrigger graph accepted by the dynamic-XAML adapter. */
 struct DeclarativeEventTriggerDefinition
 {
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring EventName;
+#endif
+	/** Exactly one of Event and RoutedEvent is populated by compiled code. */
+	const DeclarativeEventDefinition* Event = nullptr;
+	RoutedEventId RoutedEvent = RoutedEventId::None;
 	std::vector<DeclarativeEventTriggerActionDefinition> Actions;
 };
 
@@ -461,7 +727,11 @@ struct DeclarativeVisualStateDefinition
 	/** All conditions must match. Empty conditions and events identify the fallback state. */
 	std::vector<DeclarativeVisualStateCondition> Conditions;
 	/** A matching component-owned routed event enters this state. */
+	std::vector<const DeclarativeEventDefinition*> Events;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design/runtime-XAML compatibility sidecar resolved once during Build. */
 	std::vector<std::wstring> EventNames;
+#endif
 	std::vector<DeclarativeVisualStateSetter> Setters;
 	std::vector<DeclarativeVisualStateAnimation> Animations;
 };
@@ -485,12 +755,260 @@ struct DeclarativeVisualStateGroupDefinition
 	std::vector<DeclarativeVisualStateDefinition> States;
 	std::vector<DeclarativeVisualTransitionDefinition> Transitions;
 };
+#endif
+
+inline constexpr uint32_t CompiledInteractionInvalidIndex = UINT32_MAX;
+
+struct CompiledInteractionRange final
+{
+	uint32_t Offset = 0;
+	uint32_t Count = 0;
+};
+
+/** String-free adapter selected by the AOT compiler for a complex property path. */
+enum class CompiledStoryboardObjectPathKind : uint8_t
+{
+	Transform,
+	Geometry,
+	PathGeometry,
+	GeometryTransform,
+	Brush,
+	BrushTransform,
+};
+
+enum class CompiledStoryboardObjectPathMember : uint8_t
+{
+	TransformX,
+	TransformY,
+	TransformScaleX,
+	TransformScaleY,
+	TransformAngle,
+	TransformAngleX,
+	TransformAngleY,
+	TransformCenterX,
+	TransformCenterY,
+	TransformMatrix,
+	GeometryRect,
+	GeometryCenter,
+	GeometryRadiusX,
+	GeometryRadiusY,
+	GeometryFillRule,
+	PathFigureStartPoint,
+	PathFigureIsClosed,
+	PathFigureIsFilled,
+	PathSegmentPoint,
+	PathSegmentPoint1,
+	PathSegmentPoint2,
+	PathSegmentPoint3,
+	PathArcSize,
+	PathArcRotationAngle,
+	PathArcIsLargeArc,
+	PathArcSweepDirection,
+	BrushSolidColor,
+	BrushOpacity,
+	BrushStartPoint,
+	BrushEndPoint,
+	BrushCenter,
+	BrushGradientOrigin,
+	BrushRadiusX,
+	BrushRadiusY,
+	BrushGradientStopColor,
+	BrushGradientStopOffset,
+};
+
+enum class CompiledStoryboardObjectPathFlags : uint8_t
+{
+	None = 0,
+	RelativeTransform = 1u << 0,
+	HasPathSegment = 1u << 1,
+};
+
+constexpr CompiledStoryboardObjectPathFlags operator|(
+	CompiledStoryboardObjectPathFlags left,
+	CompiledStoryboardObjectPathFlags right) noexcept
+{
+	return static_cast<CompiledStoryboardObjectPathFlags>(
+		static_cast<uint8_t>(left) | static_cast<uint8_t>(right));
+}
+
+constexpr bool HasCompiledStoryboardObjectPathFlag(
+	CompiledStoryboardObjectPathFlags value,
+	CompiledStoryboardObjectPathFlags flag) noexcept
+{
+	return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
+}
+
+struct CompiledStoryboardObjectPathOp final
+{
+	CompiledStoryboardObjectPathKind Kind =
+		CompiledStoryboardObjectPathKind::Transform;
+	CompiledStoryboardObjectPathMember Member =
+		CompiledStoryboardObjectPathMember::TransformX;
+	/** Numeric drawing kind, or UINT8_MAX when the canonical owner is generic. */
+	uint8_t ExpectedObjectKind = UINT8_MAX;
+	/** TransformKind for nested transforms; zero when not applicable. */
+	uint8_t ExpectedAuxiliaryKind = 0;
+	CompiledStoryboardObjectPathFlags Flags =
+		CompiledStoryboardObjectPathFlags::None;
+	uint8_t Reserved = 0;
+	/** Transform operation, gradient-stop, or path-figure index. */
+	uint32_t Index0 = 0;
+	/** Path-segment index; zero for all other adapters. */
+	uint32_t Index1 = 0;
+	CompiledInteractionRange ChildIndices;
+	/** Stable canonical identity used for same-root ownership checks. */
+	uint64_t Identity = 0;
+};
+
+struct CompiledInteractionPropertyOperand final
+{
+	uint32_t TargetSlot = 0;
+	DependencyPropertyReference Property;
+};
+
+struct CompiledInteractionConditionOp final
+{
+	uint32_t OperandIndex = CompiledInteractionInvalidIndex;
+	uint32_t ValueIndex = CompiledInteractionInvalidIndex;
+};
+
+struct CompiledInteractionSetterOp final
+{
+	uint32_t OperandIndex = CompiledInteractionInvalidIndex;
+	uint32_t ValueIndex = CompiledInteractionInvalidIndex;
+};
+
+struct CompiledInteractionKeyFrameOp final
+{
+	DeclarativeKeyFrameKind Kind = DeclarativeKeyFrameKind::Linear;
+	unsigned long long KeyTimeMilliseconds = 0;
+	uint32_t ValueIndex = CompiledInteractionInvalidIndex;
+	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+	float KeySplineX1 = 0.0f;
+	float KeySplineY1 = 0.0f;
+	float KeySplineX2 = 1.0f;
+	float KeySplineY2 = 1.0f;
+};
+
+struct CompiledInteractionAnimationOp final
+{
+	DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
+	uint32_t OperandIndex = CompiledInteractionInvalidIndex;
+	uint32_t ObjectPathIndex = CompiledInteractionInvalidIndex;
+	uint32_t FromValueIndex = CompiledInteractionInvalidIndex;
+	uint32_t ToValueIndex = CompiledInteractionInvalidIndex;
+	uint32_t ByValueIndex = CompiledInteractionInvalidIndex;
+	CompiledInteractionRange KeyFrames;
+	bool IsAdditive = false;
+	bool IsCumulative = false;
+	unsigned long long BeginTimeMilliseconds = 0;
+	unsigned long long DurationMilliseconds = 0;
+	DeclarativeRepeatBehaviorKind RepeatBehavior =
+		DeclarativeRepeatBehaviorKind::Count;
+	double RepeatCount = 1.0;
+	unsigned long long RepeatDurationMilliseconds = 0;
+	bool AutoReverse = false;
+	DeclarativeTimelineFillBehavior FillBehavior =
+		DeclarativeTimelineFillBehavior::HoldEnd;
+	double SpeedRatio = 1.0;
+	double AccelerationRatio = 0.0;
+	double DecelerationRatio = 0.0;
+	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+};
+
+struct CompiledInteractionStateOp final
+{
+	VisualStateToken Token;
+	CompiledInteractionRange Conditions;
+	CompiledInteractionRange Events;
+	CompiledInteractionRange Setters;
+	CompiledInteractionRange Animations;
+};
+
+struct CompiledInteractionTransitionOp final
+{
+	/** Group-local indexes; Invalid means the WPF wildcard. */
+	uint32_t FromStateIndex = CompiledInteractionInvalidIndex;
+	uint32_t ToStateIndex = CompiledInteractionInvalidIndex;
+	unsigned long long GeneratedDurationMilliseconds = 0;
+	DeclarativeEasingKind GeneratedEasing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode GeneratedEasingMode =
+		DeclarativeEasingMode::EaseOut;
+	CompiledInteractionRange Animations;
+};
+
+struct CompiledInteractionGroupOp final
+{
+	VisualStateGroupToken Token;
+	CompiledInteractionRange States;
+	CompiledInteractionRange Transitions;
+	uint32_t FallbackStateIndex = CompiledInteractionInvalidIndex;
+	/** Indexes into PropertyOperands, pre-grouped for property-change filtering. */
+	CompiledInteractionRange ConditionOperands;
+};
+
+struct CompiledInteractionStoryboardOp final
+{
+	CompiledInteractionRange Animations;
+};
+
+struct CompiledInteractionActionOp final
+{
+	DeclarativeStoryboardActionKind Kind =
+		DeclarativeStoryboardActionKind::Begin;
+	uint32_t StoryboardIndex = CompiledInteractionInvalidIndex;
+};
+
+struct CompiledInteractionEventTriggerOp final
+{
+	const DeclarativeEventDefinition* Event = nullptr;
+	RoutedEventId RoutedEvent = RoutedEventId::None;
+	CompiledInteractionRange Actions;
+};
+
+inline constexpr uint32_t CompiledInteractionProgramViewVersion = 2;
+
+/**
+ * Immutable, non-owning AOT interaction program. Every referenced structural
+ * opcode table must remain valid for the lifetime of each installed template
+ * instance; generated programs therefore use process-lifetime static storage.
+ * Per-instance values and target slots are supplied separately and need remain
+ * valid only for InstallCompiledInteractions. Target slot zero is always the
+ * template owner.
+ */
+struct CompiledInteractionProgramView final
+{
+	uint32_t Version = CompiledInteractionProgramViewVersion;
+	uint32_t TargetCount = 1;
+	std::span<const CompiledInteractionPropertyOperand> PropertyOperands;
+	std::span<const uint32_t> ObjectPathChildIndices;
+	std::span<const CompiledStoryboardObjectPathOp> ObjectPaths;
+	std::span<const CompiledInteractionConditionOp> Conditions;
+	std::span<const CompiledInteractionSetterOp> Setters;
+	std::span<const CompiledInteractionKeyFrameOp> KeyFrames;
+	std::span<const CompiledInteractionAnimationOp> Animations;
+	std::span<const DeclarativeEventDefinition* const> StateEvents;
+	std::span<const CompiledInteractionStateOp> States;
+	std::span<const CompiledInteractionTransitionOp> Transitions;
+	std::span<const uint32_t> GroupConditionOperands;
+	std::span<const CompiledInteractionGroupOp> Groups;
+	std::span<const CompiledInteractionStoryboardOp> Storyboards;
+	std::span<const CompiledInteractionActionOp> Actions;
+	std::span<const CompiledInteractionEventTriggerOp> EventTriggers;
+};
 
 struct DeclarativeVisualStateChangedEventArgs
 {
+	VisualStateGroupToken Group;
+	VisualStateToken OldStateToken;
+	VisualStateToken NewStateToken;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring GroupName;
 	std::wstring OldState;
 	std::wstring NewState;
+#endif
 };
 
 typedef Event<void(class Control*, const DeclarativeVisualStateChangedEventArgs&)>
@@ -498,6 +1016,9 @@ typedef Event<void(class Control*, const DeclarativeVisualStateChangedEventArgs&
 
 class ControlStyleSheet;
 struct ControlStyleResolution;
+#if CUI_ENABLE_DYNAMIC_XAML
+struct ControlVisualStateDesignSidecar;
+#endif
 class Application;
 class Control;
 class Canvas;
@@ -529,7 +1050,34 @@ class Control : public FrameworkElement
 {
 protected:
 	using FrameworkApplication = Application;
+#if CUI_ENABLE_DYNAMIC_XAML
+	using DeclarativeType = DeclarativeTypeDescriptor;
 	using DeclarativeComponentBehavior = IDeclarativeComponentBehavior;
+#endif
+
+	/**
+	 * Build-time generated component subclasses override these narrow hooks.
+	 * They keep token/event/property identity available to normal WPF runtime
+	 * services without attaching a dynamically constructed XAML type
+	 * descriptor or QName strings to every instance.
+	 */
+	virtual ComponentTypeToken GetCompiledComponentTypeTokenCore() const noexcept
+	{
+		return {};
+	}
+	virtual const DependencyPropertyMetadata*
+		FindCompiledComponentPropertyCore(
+			ComponentPropertyToken property) const
+	{
+		(void)property;
+		return nullptr;
+	}
+	virtual bool IsCompiledComponentPropertyCore(
+		const DependencyPropertyMetadata& metadata) const noexcept
+	{
+		(void)metadata;
+		return false;
+	}
 
 	friend class Visual;
 	friend class Expander;
@@ -539,6 +1087,7 @@ protected:
 	friend class PresentationScene;
 	friend class TextCompositionManager;
 	friend class Window;
+	friend class cui::framework::ReverseInheritedProperty;
 	friend FrameworkApplication;
 	friend struct cui::framework::InputAccess;
 	friend struct cui::framework::PresentationAccess;
@@ -578,12 +1127,44 @@ protected:
 	PROPERTY(D2D1_COLOR_F, RendererBorderColor);
 	GET(D2D1_COLOR_F, RendererBorderColor);
 	SET(D2D1_COLOR_F, RendererBorderColor);
-	template<typename TOwner>
-	static void RegisterControlBorderThicknessMetadata(
-		float defaultValue, int designOrder = 40)
+	static const DependencyPropertyMetadataRegistration&
+		BackgroundPropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		ForegroundPropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		BorderBrushPropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		BorderThicknessPropertyMetadataRelation();
+	static const DependencyPropertyKey& IsVisiblePropertyKey();
+	static const DependencyPropertyKey& ActualWidthPropertyKey();
+	static const DependencyPropertyKey& ActualHeightPropertyKey();
+	static const DependencyPropertyKey& ValidationHasErrorPropertyKey();
+	static const DependencyPropertyKey& ValidationErrorsPropertyKey();
+	static const DependencyPropertyKey& IsFocusedPropertyKey();
+	static const DependencyPropertyKey& IsKeyboardFocusedPropertyKey();
+	static const DependencyPropertyKey& IsKeyboardFocusVisiblePropertyKey();
+	static const DependencyPropertyKey& IsKeyboardFocusWithinPropertyKey();
+	static const DependencyPropertyKey& IsMouseOverPropertyKey();
+	static const DependencyPropertyKey& IsMouseDirectlyOverPropertyKey();
+	static const DependencyPropertyKey& IsMouseCapturedPropertyKey();
+	static const DependencyPropertyKey& IsMouseCaptureWithinPropertyKey();
+	template<typename TOwner, typename TImmediateBase>
+	static const DependencyPropertyMetadataRegistration&
+		RegisterControlBorderThicknessMetadata(
+		float defaultValue
+		CUI_DESIGN_METADATA_ARGUMENTS(int designOrder = 40))
 	{
-		static const bool registered = [defaultValue, designOrder]
+		static const DependencyPropertyMetadataRegistration relation =
+			[defaultValue
+			CUI_DESIGN_METADATA_ARGUMENTS(designOrder)]
 		{
+			const auto& property = Control::BorderThicknessProperty();
+			DependencyPropertyOptions<TOwner, Thickness> options;
+			options.DefaultValue = Thickness(defaultValue);
+			options.Flags = DependencyPropertyFlags::AffectsMeasure
+				| DependencyPropertyFlags::AffectsArrange
+				| DependencyPropertyFlags::AffectsRender;
+			CUI_DESIGN_METADATA_ONLY(
 			const std::type_index controlOwner[] = {
 				std::type_index(typeid(Control))
 			};
@@ -593,33 +1174,22 @@ protected:
 			if (!base)
 				throw std::logic_error(
 					"Control.BorderThickness must be registered first");
-
-			DependencyPropertyOptions<TOwner, Thickness> options;
-			options.DefaultValue = Thickness(defaultValue);
-			options.Flags = DependencyPropertyFlags::AffectsMeasure
-				| DependencyPropertyFlags::AffectsArrange
-				| DependencyPropertyFlags::AffectsRender;
-			options.Design.Category = L"Appearance";
-			options.Design.CategoryOrder = 200;
+			options.Design = base->Design();
 			options.Design.Order = designOrder;
-			options.Design.Editor = DependencyPropertyEditorKind::Thickness;
-			options.Design.Persistence =
-				DependencyPropertyPersistence::Metadata;
-			return DependencyPropertyRegistry::OverrideMetadata<
-				TOwner, Thickness>(
-					base->Property(), std::move(options)) != nullptr;
+			)
+			return DependencyPropertyRegistry::OverrideMetadataStatic<
+				TOwner, TImmediateBase, Thickness>(
+					property,
+					Control::BorderThicknessPropertyMetadataRelation(),
+					std::move(options));
 		}();
-		(void)registered;
+		return relation;
 	}
-	/** Internal wrapper projection; Control itself does not own a public Text API. */
-	PROPERTY(std::wstring, Text);
-	GET(std::wstring, Text);
-	SET(std::wstring, Text);
 	// Effective WPF-style typography values. The DirectWrite object is a
 	// private render projection and never participates in the public value
 	// system or external ownership.
-	std::wstring _fontName = L"Arial";
-	double _fontSize = 14.0;
+	std::wstring _fontName = L"Segoe UI";
+	double _fontSize = 12.0;
 	std::unique_ptr<Font> _renderFont;
 	std::unique_ptr<Font> _systemScaledFont;
 	float _systemScaledFontSourceSize = 0.0f;
@@ -634,16 +1204,50 @@ protected:
 	std::vector<BindingValidationResult> _validationErrors;
 	uint32_t _accessibilityRuntimeId = 0;
 	mutable std::unique_ptr<AutomationPeer> _automationPeer;
+#if CUI_ENABLE_DYNAMIC_XAML
+	struct DynamicXamlPropertyState;
+	std::unique_ptr<DynamicXamlPropertyState> _dynamicXamlPropertyState;
 	std::unique_ptr<DeclarativeComponentBehavior>
 		_declarativeComponentBehavior;
-	std::unordered_map<std::wstring, Control*> _templateNameScope;
+	void InstallDynamicXamlPropertyState(
+		std::shared_ptr<const DeclarativeType> descriptor,
+		std::vector<BindingValue> values);
+	bool TryReadDynamicXamlPropertySlot(
+		const DeclarativeType& owner,
+		std::size_t slot,
+		BindingValue& out) const;
+	bool TryWriteDynamicXamlPropertySlot(
+		const DeclarativeType& owner,
+		std::size_t slot,
+		const BindingValue& value);
+#endif
+	std::vector<std::pair<TemplatePartToken, Control*>> _templateNameScope;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Names are design/dynamic diagnostics only and never enter Production. */
+	std::vector<std::pair<TemplatePartToken, std::wstring>>
+		_templateNameScopeNames;
+#endif
 	Control* _controlTemplateRoot = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic component slots are discovered by authored property name only in
+	 * the Design/XAML compatibility runtime. Generated components retain their
+	 * presenter pointers in strongly typed members instead. */
 	std::vector<std::pair<std::wstring, Control*>>
 		_declarativeContentPresenters;
+#endif
 	std::vector<EventConnection> _templateEventConnections;
 	std::vector<EventConnection> _templatePartEventConnections;
 	struct DeclarativeVisualStateRuntime;
 	std::unique_ptr<DeclarativeVisualStateRuntime> _declarativeVisualStates;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Authored group/state names and Design-owned program lifetime stay out of Production. */
+	std::shared_ptr<ControlVisualStateDesignSidecar>
+		_visualStateDesignSidecar;
+	bool InstallDesignInteractionDefinitions(
+		std::vector<DeclarativeVisualStateGroupDefinition> groups,
+		std::vector<DeclarativeEventTriggerDefinition> eventTriggers,
+		std::wstring* outError);
+#endif
 	std::wstring _lastTemplateError;
 	bool _templateApplied = false;
 	bool _applyingTemplate = false;
@@ -652,10 +1256,16 @@ protected:
 	{
 		Control* Child = nullptr;
 		ControlWeakReference LogicalParent;
+		// Stack-owned transaction token used by ownership-preserving callers.
+		// SynchronizeVisualChildCollection publishes it only after structural
+		// validation succeeds and before any parent/public notification runs.
+		bool* StructuralCommit = nullptr;
 	};
 	std::vector<PendingVisualChildAttachment>
 		_pendingVisualChildAttachments;
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool _dispatchingComponentBehaviorInput = false;
+#endif
 	// Authored/local IsEnabled value.  It is deliberately not exposed as a
 	// writable field: every mutation must flow through SetLocalEnabled so the
 	// effective routed subtree is republished atomically.
@@ -671,14 +1281,17 @@ protected:
 	friend class FocusManager;
 	friend class DependencyPropertyMetadata;
 	friend class DependencyPropertyRegistry;
+#if CUI_ENABLE_DYNAMIC_XAML
 	friend DeclarativeType;
 	friend DeclarativeComponentBehavior;
-	DeclarativePropertyMetadataPointer FindDeclarativePropertyMetadata(
+	DeclarativePropertyMetadataPointer FindObjectPropertyMetadataByName(
 		const std::wstring& propertyName) const override;
 	DeclarativePropertyMetadataCollection
-		GetDeclarativePropertyMetadata() const override;
+		GetObjectPropertyMetadata() const override;
+#endif
 	bool SupportsNativeProperty(
 		const DeclarativePropertyMetadata& metadata) const override;
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool TryGetDeclarativePropertyBacking(
 		const DeclarativeType& owner,
 		std::size_t slot,
@@ -687,16 +1300,25 @@ protected:
 		const DeclarativeType& owner,
 		std::size_t slot,
 		const BindingValue& value);
+#endif
 	void OnBindingValidationChanged(
 		const std::wstring& targetProperty) override;
 	EventConnection SubscribeDefaultPropertyChange(
-		const std::wstring& propertyName,
+		const DependencyProperty& property,
 		DependencyPropertyChangeHandler handler,
 		DataSourceUpdateMode updateMode) override;
 	void SetIsFocusedCore(bool value);
 	void SetIsKeyboardFocusedCore(bool value);
-	void SetIsKeyboardFocusWithinCore(bool value);
-	void SetMouseOverCore(bool isMouseOver, bool isMouseDirectlyOver);
+	void SetIsKeyboardFocusVisibleCore(bool value);
+	void SetIsMouseDirectlyOverCore(bool value);
+	void SetIsMouseCapturedCore(bool value);
+	bool StageReverseInheritedPropertyChange(
+		cui::framework::ReverseInheritedPropertyKind kind,
+		bool value,
+		DeferredPropertyChange& change);
+	void PublishReverseInheritedPropertyChange(
+		cui::framework::ReverseInheritedPropertyKind kind,
+		const DeferredPropertyChange& change);
 	virtual void OnIsMouseOverChanged(bool, bool) {}
 	void ApplyTypographyFont();
 	/** Native text realization used only by C++ measure/render implementations. */
@@ -712,14 +1334,29 @@ protected:
 	void PublishEffectiveIsVisibleChanges(
 		std::vector<std::pair<ControlWeakReference, bool>> snapshot);
 	void RequestArrange();
+	/** Allocation-free enumeration of inherited DP identities declared by this type. */
+	using InheritedPropertyVisitor = void(*)(
+		void* context, const DependencyProperty& property);
+	const DependencyPropertyMetadata* ResolveExactDependencyPropertyMetadata(
+		const DependencyProperty& property) const override;
+	virtual void VisitDeclaredInheritedProperties(
+		void* context, InheritedPropertyVisitor visitor) const;
+	void RefreshInheritedPropertyValue(const DependencyProperty& property);
+	void RefreshInheritedPropertyRecursive(const DependencyProperty& property);
 	void RefreshInheritedPropertiesRecursive();
 	void RefreshInheritedPropertyValues();
 	void ApplyPropertyMetadataChange(
 		const DeclarativePropertyMetadata& metadata,
 		const BindingValue& oldValue,
 		const BindingValue& newValue) override;
+	#if CUI_ENABLE_DYNAMIC_XAML
 	bool TrySetDynamicResourceExpressionOwned(
 		const std::wstring& propertyName,
+		std::wstring resourceKey,
+		DependencyPropertyValueSource source);
+	#endif
+	bool TrySetDynamicResourceExpressionOwned(
+		const DependencyPropertyMetadata& metadata,
 		std::wstring resourceKey,
 		DependencyPropertyValueSource source);
 	std::vector<std::shared_ptr<const ControlStyleSheet>>
@@ -727,12 +1364,12 @@ protected:
 	bool RefreshStyleValuesForSource(
 		DependencyPropertyValueSource source,
 		const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets,
-		std::vector<std::wstring>& appliedProperties);
+		std::vector<DependencyPropertyReference>& appliedProperties);
 	bool SynchronizeStyleTriggerActions(
 		DependencyPropertyValueSource source,
 		const std::shared_ptr<const ControlStyleSheet>& sheet,
 		const ControlStyleResolution& resolution);
-	void PruneStyleTriggerActions(
+	bool PruneStyleTriggerActions(
 		DependencyPropertyValueSource source,
 		const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets);
 	bool TryResolveDynamicResource(
@@ -747,9 +1384,9 @@ protected:
 	bool RouteVisualZIndexSet(int value);
 
 	/** Internal compatibility spelling; delegates to WPF-style CoerceValue. */
-	bool ReevaluatePropertyValue(const std::wstring& propertyName)
+	bool ReevaluatePropertyValue(const DependencyProperty& property)
 	{
-		return CoerceValue(propertyName);
+		return CoerceValue(property);
 	}
 
 	cui::core::Size ResolveDesiredSize(
@@ -763,7 +1400,7 @@ protected:
 	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
 	virtual bool DefaultSelectOnLeftButtonDown() const
 	{
-		return GetDependencyPropertyValue<bool>(L"Focusable");
+		return GetDependencyPropertyValue<bool>(FocusableProperty());
 	}
 	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
 	virtual bool DefaultInvalidateVisualOnMouseDown(MouseButton button) const { (void)button; return true; }
@@ -783,6 +1420,15 @@ protected:
 	virtual Control* SetControlTemplateRoot(std::unique_ptr<Control> value);
 	virtual std::unique_ptr<Control> DetachVisualChildTemplateRoot();
 	virtual void ConfigureControlTemplateVisual(Control& child);
+	void ConfigureControlTemplateVisualPreservingOwnership(
+		std::unique_ptr<Control>& value);
+	static std::exception_ptr ClearTemplateOwnerSubtree(
+		Control* root,
+		Control* owner) noexcept;
+	static std::exception_ptr
+		ClearTemplateOwnerSubtreePreservingOwnership(
+			std::unique_ptr<Control>& root,
+			Control* owner) noexcept;
 	virtual void OnControlTemplatePresentationChanged() {}
 	/** WPF lifecycle hook called after a complete template instance is wired. */
 	virtual void OnApplyTemplate() {}
@@ -834,6 +1480,8 @@ protected:
 		(void)previousWindow;
 		(void)currentWindow;
 	}
+	/** Stops input reverse inheritance after including this element. */
+	virtual bool BlocksReverseInheritance() const noexcept { return false; }
 	/** Effective IsEnabled transition hook; callers must revalidate lifetime after it. */
 	virtual void OnEffectiveIsEnabledChanged(
 		bool previousValue, bool currentValue)
@@ -850,10 +1498,26 @@ protected:
 	}
 	void SynchronizeVisualChildCollection(const CollectionChangedEventArgs& change);
 	Control* InsertVisualChildWithLogicalParent(
-		int index, Control* child, Control* logicalParent);
+		int index,
+		Control* child,
+		Control* logicalParent,
+		bool* structuralCommit = nullptr);
 	void SetVisualParentCore(Control* value);
 	void SetLogicalParentCore(Control* value);
+	void SetLogicalParentCoreObservingVisualOwnership(
+		Control* value,
+		bool* visualOwnershipCommit);
 	void SetTemplatedParentCore(Control* value);
+	void SetTemplatedParentCoreObservingVisualOwnership(
+		Control* value,
+		bool* visualOwnershipCommit);
+	void InvokeWithVisualOwnershipObservationCore(
+		const std::function<void()>& callback,
+		bool* visualOwnershipCommit);
+	std::unique_ptr<Control> DetachVisualChildCore(
+		Control* child,
+		bool* visualOwnershipCommit,
+		std::exception_ptr* notificationError);
 	void RefreshInheritanceContext(bool recursive);
 	void RegisterInheritanceChild(Control* child);
 	void UnregisterInheritanceChild(Control* child);
@@ -922,14 +1586,21 @@ public:
 	PropertyChangedEvent& DataContextChanged() noexcept { return _dataContextChanged; }
 	/** Every node on a declarative routed-event route publishes the event here. */
 	DeclarativeEvent OnDeclarativeEvent;
+#if CUI_ENABLE_DYNAMIC_XAML
 	const DeclarativeEventDefinition* FindDeclarativeEvent(
 		const std::wstring& eventName) const noexcept;
 	bool RaiseDeclarativeEvent(
 		std::wstring eventName,
 		BindingValue value = {});
+#endif
+	/** Compiled component path: dispatch by definition identity, without lookup. */
+	bool RaiseDeclarativeEvent(
+		const DeclarativeEventDefinition& definition,
+		BindingValue value = {});
 	/** WPF-style overload that returns routed state, including Handled, to the raiser. */
 	bool RaiseDeclarativeEvent(DeclarativeEventArgs& args);
 	/** Explicit state entry used by component behavior and declarative event triggers. */
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool GoToVisualState(
 		const std::wstring& groupName,
 		const std::wstring& stateName,
@@ -948,8 +1619,19 @@ public:
 		const std::wstring& stateName,
 		bool useTransitions,
 		std::wstring* outError = nullptr);
+#endif
+	/** Compiled path: direct token lookup without retaining or comparing names. */
+	bool GoToVisualState(
+		VisualStateGroupToken group,
+		VisualStateToken state,
+		bool useTransitions = true,
+		std::wstring* outError = nullptr);
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring GetCurrentVisualState(
 		const std::wstring& groupName) const;
+#endif
+	VisualStateToken GetCurrentVisualState(
+		VisualStateGroupToken group) const noexcept;
 	/** True while at least one VisualState Storyboard timeline is active. */
 	bool HasActiveVisualStateAnimations() const noexcept;
 	DeclarativeVisualStateChangedEvent OnVisualStateChanged;
@@ -968,7 +1650,8 @@ public:
 	bool GetIsVisible() const;
 	bool IsCollapsed() const noexcept
 	{
-		return _presentationSuppressed
+		return (_presentationSuppressed
+				&& PresentationSuppressionAffectsLayout())
 			|| _visibility == ::Visibility::Collapsed;
 	}
 	IsVisibleChangedEvent IsVisibleChanged;
@@ -1002,6 +1685,7 @@ protected:
 	/** Root/runtime hook; normal descendants inherit through the tree. */
 	void SetInheritedDataContext(BindingSourceReference value);
 	/** Installs one immutable set of XAML-owned visual-state groups. */
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool DefineVisualStateGroups(
 		std::vector<DeclarativeVisualStateGroupDefinition> groups,
 		std::wstring* outError = nullptr);
@@ -1009,6 +1693,13 @@ protected:
 	bool DefineDeclarativeInteractions(
 		std::vector<DeclarativeVisualStateGroupDefinition> groups,
 		std::vector<DeclarativeEventTriggerDefinition> eventTriggers,
+		std::wstring* outError = nullptr);
+#endif
+	/** Binds one process-lifetime AOT program to this template instance. */
+	bool InstallCompiledInteractions(
+		const CompiledInteractionProgramView& program,
+		std::span<const BindingValue> values,
+		std::span<Control* const> targets,
 		std::wstring* outError = nullptr);
 	/** Advances XAML-owned timelines from the Window presentation clock. */
 	bool AdvanceVisualStateAnimations(unsigned long long nowMilliseconds);
@@ -1050,6 +1741,22 @@ protected:
 	}
 	/** Derived state/layout preparation performed before retained scene rendering. */
 	virtual void PreparePresentation() { PerformPendingLayout(); }
+	/**
+	 * Popup-like transient roots can suppress their main-tree projection
+	 * without collapsing their independently measured content.
+	 */
+	virtual bool PresentationSuppressionAffectsLayout() const noexcept
+	{
+		return true;
+	}
+	/**
+	 * True when a transient root starts a new visual-presentation inheritance
+	 * scope instead of inheriting suppression from its visual parent.
+	 */
+	virtual bool BreaksVisualPresentationInheritance() const noexcept
+	{
+		return false;
+	}
 	/** Selects the drawing or native-composition path without runtime type switches. */
 	virtual PresentationSurfaceKind GetPresentationSurfaceKind() const noexcept
 	{
@@ -1065,6 +1772,7 @@ protected:
 	void SetStyleState(ControlStyleState state, bool enabled = true);
 	/** Projects the internal press gesture into ButtonBase.IsPressed. */
 	virtual void OnPressedVisualStateChanged(bool) {}
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool SetDeclarativeComponentBehavior(
 		std::unique_ptr<DeclarativeComponentBehavior> behavior,
 		const DeclarativeComponentBehaviorContext& context,
@@ -1073,22 +1781,40 @@ protected:
 	bool SetDeclarativeTypeDescriptor(
 		std::shared_ptr<const DeclarativeType> descriptor,
 		std::wstring* outError = nullptr);
+#endif
+	bool RegisterDeclarativeTemplatePart(
+		TemplatePartToken token,
+		Control* instance);
+#if CUI_ENABLE_DYNAMIC_XAML
 	bool RegisterDeclarativeTemplatePart(
 		std::wstring localName,
 		Control* instance);
 	bool RegisterDeclarativeContentPresenter(
 		std::wstring propertyName,
 		Control* instance);
+#endif
 	void ClearDeclarativeTemplateScope();
+	#if CUI_ENABLE_DYNAMIC_XAML
 	bool SetDynamicResource(
 		const std::wstring& propertyName,
 		std::wstring resourceKey,
 		DependencyPropertyValueSource source);
+	#endif
+	bool SetDynamicResource(
+		const DependencyProperty& property,
+		std::wstring resourceKey,
+		DependencyPropertyValueSource source);
+	#if CUI_ENABLE_DYNAMIC_XAML
 	bool ClearDynamicResource(
 		const std::wstring& propertyName,
 		DependencyPropertyValueSource source);
+	#endif
+	bool ClearDynamicResource(
+		const DependencyProperty& property,
+		DependencyPropertyValueSource source);
 
 public:
+#if CUI_ENABLE_DYNAMIC_XAML
 	/**
 	 * Installs one application behavior on this XAML component instance.
 	 * The Control owns it and guarantees Detach before template children die.
@@ -1106,6 +1832,7 @@ public:
 	{
 		return static_cast<bool>(_declarativeComponentBehavior);
 	}
+#endif
 	/** Device-independent WPF brush surfaces; raw colors are renderer fallbacks only. */
 	PROPERTY(cui::drawing::Brush, Background);
 	GET(cui::drawing::Brush, Background);
@@ -1186,8 +1913,10 @@ public:
 	virtual bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) { (void)outRect; return false; }
 	READONLY_PROPERTY(const std::wstring&, FontFamily);
 	GET(const std::wstring&, FontFamily);
+	void SetFontFamily(std::wstring value);
 	READONLY_PROPERTY(double, FontSize);
 	GET(double, FontSize);
+	void SetFontSize(double value);
 	READONLY_PROPERTY(DataBindingCollection&, DataBindings);
 	GET(DataBindingCollection&, DataBindings);
 	/** WPF FrameworkElement.Tag equivalent; retains arbitrary scalar/object values. */
@@ -1212,10 +1941,13 @@ public:
 	/** True only for the Window's current keyboard-focus element. */
 	READONLY_PROPERTY(bool, IsKeyboardFocused);
 	GET(bool, IsKeyboardFocused);
-	/** True for the keyboard-focus element and every routed ancestor. */
+	/** Theme-facing WPF focus-visual projection: keyboard input or system cues. */
+	READONLY_PROPERTY(bool, IsKeyboardFocusVisible);
+	GET(bool, IsKeyboardFocusVisible);
+	/** True across the focused element's visual/logical ancestor closure. */
 	READONLY_PROPERTY(bool, IsKeyboardFocusWithin);
 	GET(bool, IsKeyboardFocusWithin);
-	/** True for the directly hit element and every routed ancestor. */
+	/** True across the directly hit element's visual/logical ancestor closure. */
 	READONLY_PROPERTY(bool, IsMouseOver);
 	GET(bool, IsMouseOver);
 	/** True only for the Window's current pointer hit element. */
@@ -1258,6 +1990,11 @@ public:
 	std::wstring GetEffectiveAutomationFullDescription() const;
 	std::wstring GetEffectiveKeyboardShortcut() const;
 	wchar_t GetEffectiveAccessKey() const;
+	/** Dispatches an AccessKeyManager match through the control's WPF hook. */
+	bool InvokeAccessKey(bool isMultiple)
+	{
+		return OnAccessKey(isMultiple);
+	}
 	/** Returns the lazily-created WPF-style semantic peer for this instance. */
 	AutomationPeer& GetAutomationPeer() const;
 	/** Stable per-process id used by native accessibility fragment providers. */
@@ -1268,6 +2005,16 @@ public:
 	AccessibilitySnapshot GetAccessibilitySnapshot() const;
 	/** ToggleButton overrides this; ordinary controls never carry toggle state. */
 	virtual bool IsCheckedForAccessibility() const noexcept { return false; }
+	/**
+	 * UI Automation's Toggle pattern is tri-state even though the legacy MSAA
+	 * snapshot below only exposes a checked bit.
+	 */
+	virtual AutomationToggleState GetToggleStateForAccessibility() const noexcept
+	{
+		return IsCheckedForAccessibility()
+			? AutomationToggleState::On
+			: AutomationToggleState::Off;
+	}
 	virtual bool IsAccessibilityReadOnly() const { return false; }
 	/**
 	 * Effective WPF-style IsEnabled value.  The local value, command-source
@@ -1294,6 +2041,9 @@ public:
 	/** Releases pointer delivery when this control owns capture. */
 	bool ReleaseMouseCapture();
 	bool IsMouseCaptured() const;
+	/** True for the captured element and both visual/logical ancestor graphs. */
+	READONLY_PROPERTY(bool, IsMouseCaptureWithin);
+	GET(bool, IsMouseCaptureWithin);
 	/** Performs the control's primary action; overridden by actionable controls. */
 	virtual bool Invoke();
 	/** Returns false when Windows requests reduced client-area motion. */
@@ -1301,16 +2051,32 @@ public:
 	/** Returns zero when reduced motion is active, otherwise the configured duration. */
 	UINT EffectiveAnimationDuration(UINT configuredDurationMs) const;
 	BindingValidationChangedEvent OnValidationStateChanged;
+#if CUI_ENABLE_DYNAMIC_XAML
 	const std::shared_ptr<const DeclarativeType>&
-		GetDeclarativeTypeDescriptor() const noexcept
+		GetDeclarativeTypeDescriptor() const noexcept;
+#endif
+	/** Exact, name-free ComponentDefinition identity; zero means native type. */
+	ComponentTypeToken GetDeclarativeTypeToken() const noexcept
 	{
-		return _declarativeTypeDescriptor;
+#if CUI_ENABLE_DYNAMIC_XAML
+		const auto& descriptor = GetDeclarativeTypeDescriptor();
+		if (descriptor)
+		{
+			const auto& type = descriptor->TypeId();
+			return MakeComponentTypeToken(type.NamespaceUri, type.LocalName);
+		}
+#endif
+		return GetCompiledComponentTypeTokenCore();
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic-XAML QName sidecar; Production has no reverse token lookup. */
 	const RuntimeTypeId& GetDeclarativeTypeId() const noexcept
 	{
 		static const RuntimeTypeId empty;
-		return _declarativeTypeDescriptor
-			? _declarativeTypeDescriptor->TypeId() : empty;
+		const auto& descriptor = GetDeclarativeTypeDescriptor();
+		if (descriptor)
+			return descriptor->TypeId();
+		return empty;
 	}
 	const std::wstring& GetDeclarativeTypeNamespace() const noexcept
 	{
@@ -1320,22 +2086,34 @@ public:
 	{
 		return GetDeclarativeTypeId().LocalName;
 	}
-	/** Runtime-only equivalent of WPF GetTemplateChild for the owning component. */
+#endif
+	/** Token-only production equivalent of WPF GetTemplateChild. Zero returns this owner. */
+	Control* FindDeclarativeTemplatePart(TemplatePartToken token) noexcept;
+	const Control* FindDeclarativeTemplatePart(
+		TemplatePartToken token) const noexcept;
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic-XAML/design compatibility lookup with collision validation. */
 	Control* FindDeclarativeTemplatePart(const std::wstring& localName) noexcept;
 	const Control* FindDeclarativeTemplatePart(
 		const std::wstring& localName) const noexcept;
-	/** Returns the generated presenter for one declared visual content property. */
+#endif
+	#if CUI_ENABLE_DYNAMIC_XAML
+	/** Dynamic-XAML compatibility lookup. Generated components address their
+	 * strongly typed presenter members directly in Production. */
 	Control* FindDeclarativeContentPresenter(
 		const std::wstring& propertyName) noexcept;
 	const Control* FindDeclarativeContentPresenter(
 		const std::wstring& propertyName) const noexcept;
+	#endif
 private:
 	/** XAML Style/Resources lowering surface; only StyleAccess may project it. */
 	const std::wstring& GetStyleResourceKey() const noexcept
 	{
 		return _styleResourceKey;
 	}
-	void SetStyleResourceKey(std::wstring value);
+	void SetStyleResourceKey(
+		std::wstring value,
+		bool capturedFromTheme = false);
 	std::shared_ptr<const ControlStyleSheet> GetThemeStyleSheet() const noexcept
 	{
 		return _themeStyleSheet;
@@ -1355,6 +2133,10 @@ private:
 	bool SetStyleSheet(
 		std::shared_ptr<const ControlStyleSheet> value,
 		bool recursive = true);
+	bool SetStyleEnvironment(
+		std::shared_ptr<const ControlStyleSheet> theme,
+		std::shared_ptr<const ControlStyleSheet> styles,
+		bool recursive = true);
 	bool SetResourceDictionary(
 		std::shared_ptr<const ControlStyleSheet> value);
 	bool HasVisibleStyleRules() const noexcept;
@@ -1366,6 +2148,7 @@ public:
 		const std::wstring& resourceKey,
 		BindingValue& value) const;
 	/** Installs a WPF-like DynamicResource expression as a Local value. */
+	#if CUI_ENABLE_DYNAMIC_XAML
 	bool SetDynamicResource(
 		const std::wstring& propertyName,
 		std::wstring resourceKey);
@@ -1376,15 +2159,89 @@ public:
 		std::wstring& resourceKey,
 		DependencyPropertyValueSource source =
 			DependencyPropertyValueSource::Local);
-	/** WPF AddOwner identities for the Control appearance surface. */
+	#endif
+	bool SetDynamicResource(
+		const DependencyProperty& property,
+		std::wstring resourceKey);
+	bool ClearDynamicResource(const DependencyProperty& property);
+	bool TryGetDynamicResourceKey(
+		const DependencyProperty& property,
+		std::wstring& resourceKey,
+		DependencyPropertyValueSource source =
+			DependencyPropertyValueSource::Local);
+	/**
+	 * Stable dependency-property identities used by CLR-shaped wrappers and
+	 * build-time generated C++.  Keeping these identities public lets AOT
+	 * templates write the Template precedence slot without a property-name
+	 * lookup.
+	 */
+	static const DependencyProperty& IsEnabledProperty();
+	static const DependencyProperty& IsVisibleProperty();
+	static const DependencyProperty& ActualWidthProperty();
+	static const DependencyProperty& ActualHeightProperty();
+	static const DependencyProperty& ValidationHasErrorProperty();
+	static const DependencyProperty& ValidationErrorsProperty();
+	static const DependencyProperty& IsFocusedProperty();
+	static const DependencyProperty& IsKeyboardFocusedProperty();
+	static const DependencyProperty& IsKeyboardFocusVisibleProperty();
+	static const DependencyProperty& IsKeyboardFocusWithinProperty();
+	static const DependencyProperty& IsMouseOverProperty();
+	static const DependencyProperty& IsMouseDirectlyOverProperty();
+	static const DependencyProperty& IsMouseCapturedProperty();
+	static const DependencyProperty& IsMouseCaptureWithinProperty();
+	static const DependencyProperty& AllowDropProperty();
+	static const DependencyProperty& VisibilityProperty();
 	static const DependencyProperty& BackgroundProperty();
 	static const DependencyProperty& ForegroundProperty();
 	static const DependencyProperty& BorderBrushProperty();
-	/** WPF Control.Template property identity. */
+	static const DependencyProperty& ClipToBoundsProperty();
+	static const DependencyProperty& ClipProperty();
+	static const DependencyProperty& RenderTransformProperty();
+	static const DependencyProperty& RenderTransformOriginProperty();
+	static const DependencyProperty& ZIndexProperty();
+	static const DependencyProperty& TagProperty();
+	static const DependencyProperty& FocusableProperty();
+	static const DependencyProperty& IsTabStopProperty();
+	static const DependencyProperty& TabIndexProperty();
+	static const DependencyProperty& IsFocusScopeProperty();
+	static const DependencyProperty& TabNavigationProperty();
+	static const DependencyProperty& DirectionalNavigationProperty();
+	static const DependencyProperty& CursorProperty();
+	static const DependencyProperty& AutomationNameProperty();
+	static const DependencyProperty& AutomationFullDescriptionProperty();
+	static const DependencyProperty& AutomationHelpTextProperty();
+	static const DependencyProperty& AutomationIdProperty();
+	static const DependencyProperty& FontFamilyProperty();
+	static const DependencyProperty& FontSizeProperty();
+	static const DependencyProperty& WidthProperty();
+	static const DependencyProperty& HeightProperty();
+	static const DependencyProperty& MinWidthProperty();
+	static const DependencyProperty& MinHeightProperty();
+	static const DependencyProperty& MaxWidthProperty();
+	static const DependencyProperty& MaxHeightProperty();
+	static const DependencyProperty& BorderThicknessProperty();
+	static const DependencyProperty& MarginProperty();
+	static const DependencyProperty& PaddingProperty();
+	static const DependencyProperty& HorizontalAlignmentProperty();
+	static const DependencyProperty& VerticalAlignmentProperty();
+	static const DependencyProperty& HorizontalContentAlignmentProperty();
+	static const DependencyProperty& VerticalContentAlignmentProperty();
+	static const DependencyProperty& CanvasLeftProperty();
+	static const DependencyProperty& CanvasTopProperty();
+	static const DependencyProperty& CanvasRightProperty();
+	static const DependencyProperty& CanvasBottomProperty();
+	static const DependencyProperty& GridRowProperty();
+	static const DependencyProperty& GridColumnProperty();
+	static const DependencyProperty& GridRowSpanProperty();
+	static const DependencyProperty& GridColumnSpanProperty();
+	static const DependencyProperty& DockPositionProperty();
+	static const DependencyProperty& DataContextProperty();
 	static const DependencyProperty& TemplateProperty();
 	/** @brief Registers metadata owned by this runtime control type. */
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	/** Number of implementation-owned visual children. This is not an authored
 	 *  Items/Content collection; semantic containers expose their own API. */
 	int VisualChildCount() const noexcept
@@ -1469,19 +2326,57 @@ public:
 		if (!control)
 			throw std::invalid_argument("不能添加空控件");
 		T* raw = control.release();
+		const ControlWeakReference lifetime(raw);
+		bool structuralCommit = false;
 		try
 		{
-			this->InsertVisualChild(index, raw);
+			(void)this->InsertVisualChildWithLogicalParent(
+				index, raw, this, &structuralCommit);
 		}
 		catch (...)
 		{
-			// A public collection observer may throw after attachment. In that
-			// case the container already owns the object and must retain it.
-			if (raw->GetVisualParent() != this)
-				control.reset(raw);
+			auto* live = lifetime.Get();
+			const bool requestedParentOwns = live
+				&& this->IndexOfVisualChild(live) >= 0;
+			if (requestedParentOwns
+				&& live->GetVisualParent() == this
+				&& live->GetLogicalParent() != this)
+			{
+				// Visual-parent publication may throw after the collection
+				// already accepted the child. Finish the logical edge while
+				// ownership remains with this container.
+				try { live->SetLogicalParentCore(this); }
+				catch (...) {}
+			}
+			// A post-commit callback may detach the child into an external
+			// unique_ptr and leave its final VisualParent null. Only the
+			// structural token can distinguish that transfer from a rejected
+			// insertion; never reconstruct a second owner after commit.
+			if (live && !structuralCommit && !requestedParentOwns
+				&& !live->GetVisualParent())
+				control.reset(static_cast<T*>(live));
 			throw;
 		}
-		return raw;
+		auto* live = lifetime.Get();
+		if (!live)
+			throw std::logic_error(
+				"owned visual child was destroyed during attachment");
+		if (live->GetVisualParent() != this
+			|| this->IndexOfVisualChild(live) < 0
+			|| live->GetLogicalParent() != this)
+		{
+			// The insertion committed, then a synchronous observer deliberately
+			// moved the child again. The callback owns that transfer; return the
+			// still-live identity instead of treating it as validation failure.
+			if (structuralCommit)
+				return static_cast<T*>(live);
+			if (live && !structuralCommit && !live->GetVisualParent()
+				&& this->IndexOfVisualChild(live) < 0)
+				control.reset(static_cast<T*>(live));
+			throw std::logic_error(
+				"owned visual child attachment did not commit");
+		}
+		return static_cast<T*>(live);
 	}
 
 	/** Programmatic tree construction always starts from a property-neutral host. */
@@ -1495,6 +2390,8 @@ public:
 	/**
 	 * @brief 从当前容器分离一个直接子控件，并将所有权交还给调用方。
 	 * @return 成功时返回拥有该控件的 unique_ptr；child 不是直接子控件时返回空。
+	 * 结构提交后的观察者异常不会撤销所有权转移；框架内部可通过
+	 * TreeAccess 捕获该通知错误并在完成清理后重新抛出。
 	 */
 	std::unique_ptr<Control> DetachVisualChild(Control* child);
 	/** @brief 按索引分离直接子控件；索引无效时返回空。 */
@@ -1546,12 +2443,12 @@ public:
 	bool IsWidthAuto() const noexcept
 	{
 		return GetDependencyPropertyValue<cui::layout::Length>(
-			L"Width").IsAuto();
+			WidthProperty()).IsAuto();
 	}
 	bool IsHeightAuto() const noexcept
 	{
 		return GetDependencyPropertyValue<cui::layout::Length>(
-			L"Height").IsAuto();
+			HeightProperty()).IsAuto();
 	}
 	PROPERTY(float, MinWidth);
 	GET(float, MinWidth);
@@ -1732,6 +2629,18 @@ public:
 	virtual bool HandlesNavigationKey(Key key) const { (void)key; return false; }
 
 protected:
+	/** Constraint-dependent cache preparation before the derived measure pass. */
+	virtual void PrepareMeasureCore(
+		const cui::core::Constraints& available)
+	{
+		(void)available;
+	}
+	/** WPF AccessKeyManager callback. */
+	virtual bool OnAccessKey(bool isMultiple)
+	{
+		(void)isMultiple;
+		return Invoke();
+	}
 	void SetPresentationOrderOverride(int order) { _hasPresentationOrderOverride = true; _presentationOrderOverride = order; }
 	void ClearPresentationOrderOverride() { _hasPresentationOrderOverride = false; }
 	bool TryGetPresentationOrderOverride(int& order) const { if (!_hasPresentationOrderOverride) return false; order = _presentationOrderOverride; return true; }

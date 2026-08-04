@@ -20,7 +20,7 @@ protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<AutomationPeer>(
-			*this, AutomationControlType::Document, L"WebBrowser");
+			*this, AutomationControlType::Pane, L"WebBrowser");
 	}
 
 public:
@@ -136,8 +136,16 @@ public:
 
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
 	bool HandlesMouseWheel() const override { return true; }
+	bool HandlesNavigationKey(Key key) const override;
+	static const DependencyProperty& ZoomFactorProperty();
+	static const DependencyProperty& AreDefaultContextMenusEnabledProperty();
+	static const DependencyProperty& IsStatusBarEnabledProperty();
+	static const DependencyProperty& IsZoomControlEnabledProperty();
+	static const DependencyProperty& InitialUrlProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 protected:
 	PresentationSurfaceKind GetPresentationSurfaceKind() const noexcept override
 	{

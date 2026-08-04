@@ -2,6 +2,7 @@
 
 #include "ControlWeakReference.h"
 #include "Event.h"
+#include "ReverseInheritedProperty.h"
 
 #include <bitset>
 #include <cstddef>
@@ -88,12 +89,15 @@ bool RaiseRoutedEventOnRoute(
 struct KeyboardFocusTransition final
 {
 	explicit KeyboardFocusTransition(Control* previous, Control* current)
-		: Lost(previous, current), Got(previous, current) {}
+		: Previous(previous), Current(current),
+		Lost(previous, current), Got(previous, current) {}
 	KeyboardFocusTransition(const KeyboardFocusTransition&) = delete;
 	KeyboardFocusTransition& operator=(const KeyboardFocusTransition&) = delete;
 	KeyboardFocusTransition(KeyboardFocusTransition&&) noexcept = default;
-	KeyboardFocusTransition& operator=(KeyboardFocusTransition&&) noexcept = default;
+	KeyboardFocusTransition& operator=(KeyboardFocusTransition&&) = delete;
 
+	ControlWeakReference Previous;
+	ControlWeakReference Current;
 	KeyboardFocusChangedEventArgs Lost;
 	KeyboardFocusChangedEventArgs Got;
 	bool Accepted = false;
@@ -116,6 +120,7 @@ private:
 	struct ActiveInput final
 	{
 		InputManager* Owner = nullptr;
+		ControlWeakReference OwnerWindow;
 		ActiveInput* Previous = nullptr;
 		Control* OriginalSource = nullptr;
 		ControlWeakReference OriginalSourceLifetime;
@@ -133,7 +138,11 @@ private:
 	static thread_local ActiveInput* CurrentInput;
 	InputStagingStatistics _statistics;
 	Window* _window = nullptr;
-	Control* _mouseCaptured = nullptr;
+	ControlWeakReference _mouseCaptured;
+	cui::framework::ReverseInheritedProperty _keyboardFocusWithin;
+	cui::framework::ReverseInheritedProperty _mouseOver;
+	cui::framework::ReverseInheritedProperty _mouseCaptureWithin;
+	std::uint64_t _mouseCaptureVersion = 0;
 
 	bool Route(
 		UIElement& owner,
@@ -146,6 +155,8 @@ private:
 		RoutedEventArgs& args,
 		ActiveInput* active,
 		std::span<const ControlWeakReference> sourceToRootRoute = {});
+	void CompleteMouseCaptureLoss(
+		const ControlWeakReference& previous);
 	bool RouteSnapshot(
 		Control& source,
 		RoutedEventId eventId,
@@ -195,14 +206,30 @@ public:
 		ActiveInput _state;
 	};
 
-	explicit InputManager(Window* owner = nullptr) noexcept : _window(owner) {}
+	explicit InputManager(Window* owner = nullptr) noexcept
+		: _window(owner),
+		_keyboardFocusWithin(
+			owner,
+			cui::framework::ReverseInheritedPropertyKind::KeyboardFocusWithin),
+		_mouseOver(
+			owner,
+			cui::framework::ReverseInheritedPropertyKind::MouseOver),
+		_mouseCaptureWithin(
+			owner,
+			cui::framework::ReverseInheritedPropertyKind::MouseCaptureWithin)
+	{
+	}
 	InputManager(const InputManager&) = delete;
 	InputManager& operator=(const InputManager&) = delete;
 
-	Control* MouseCaptured() const noexcept { return _mouseCaptured; }
+	Control* MouseCaptured() const noexcept { return _mouseCaptured.Get(); }
 	bool CaptureMouse(Window& window, Control* target);
 	bool ReleaseMouseCapture(Window& window, Control* expectedOwner = nullptr);
 	void NotifyCaptureLost(Window& window);
+	void SetKeyboardFocusWithinOrigin(Control* target);
+	void SetMouseOverOrigin(
+		Control* target, bool raiseInputEvents = true);
+	void RefreshReverseInheritedProperties();
 	void DetachVisualChild(Window& window, Control* root);
 	KeyboardFocusTransition BeginKeyboardFocusTransition(
 		Control* previous,

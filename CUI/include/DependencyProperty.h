@@ -20,6 +20,8 @@ namespace cui::property_system_detail
 			return BindingValueKind::Object;
 		else if constexpr (std::is_same_v<Value, bool>)
 			return BindingValueKind::Bool;
+		else if constexpr (std::is_same_v<Value, NullableBool>)
+			return BindingValueKind::NullableBool;
 		else if constexpr (std::is_same_v<Value, int>)
 			return BindingValueKind::Int;
 		else if constexpr (std::is_same_v<Value, long long>)
@@ -153,7 +155,11 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 	DependencyPropertyMetadata::Getter untypedGetter;
 	if (getter)
 	{
-		untypedGetter = [getter = std::move(getter)](DependencyObject& target, BindingValue& out)
+		// Metadata owns adapters for the lifetime of the process-wide property
+		// registration.  Keep an independent typed callback in the adapter;
+		// registration is cold-path work and the explicit copy makes that
+		// ownership boundary unambiguous.
+		untypedGetter = [getter](DependencyObject& target, BindingValue& out)
 		{
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return false;
@@ -168,7 +174,7 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 	DependencyPropertyMetadata::Setter untypedSetter;
 	if (setter)
 	{
-		untypedSetter = [setter = std::move(setter)](DependencyObject& target, const BindingValue& value)
+		untypedSetter = [setter](DependencyObject& target, const BindingValue& value)
 		{
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return false;
@@ -197,9 +203,10 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 	}
 
 	DependencyPropertyMetadata::Subscriber untypedSubscriber;
+	bool usesGenericObservation = false;
 	if (subscriber)
 	{
-		untypedSubscriber = [subscriber = std::move(subscriber)](
+		untypedSubscriber = [subscriber](
 			DependencyObject& target,
 			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode updateMode)
@@ -213,17 +220,9 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 	else
 	{
 		// Dependency properties are observable by definition.  Native owners no
-		// longer need to repeat a per-property forwarding subscriber merely to
-		// participate in Binding, Trigger, or designer observation.
-		auto observedName = name;
-		untypedSubscriber = [observedName = std::move(observedName)](
-			DependencyObject& target,
-			DependencyPropertyMetadata::ChangeHandler handler,
-			DataSourceUpdateMode updateMode)
-		{
-			return target.SubscribeDefaultPropertyChange(
-				observedName, std::move(handler), updateMode);
-		};
+		// longer need a per-property lambda that captures the authored name.
+		// Subscribe resolves the attached DependencyProperty identity instead.
+		usesGenericObservation = true;
 	}
 
 	DependencyPropertyMetadata::Coercer untypedCoercer;
@@ -359,7 +358,7 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 		throw std::invalid_argument(
 			"Dependency property default value failed validation");
 
-	return DependencyPropertyMetadata(
+	DependencyPropertyMetadata metadata(
 		std::move(name),
 		valueKind,
 		std::type_index(typeid(TValue)),
@@ -379,10 +378,16 @@ DependencyPropertyMetadata DependencyPropertyRegistry::CreateMetadata(
 		options.Flags,
 		options.IsReadOnly,
 		options.DefaultUpdateMode,
-		{},
-		std::move(options.Design));
+		{}
+#if CUI_ENABLE_DESIGN_METADATA
+		, std::move(options.Design)
+#endif
+		);
+	if (usesGenericObservation) metadata.MarkGenericObservation();
+	return metadata;
 }
 
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TOwner, typename TValue>
 const DependencyProperty* DependencyPropertyRegistry::Register(
 	std::wstring name,
@@ -430,7 +435,142 @@ const DependencyProperty* DependencyPropertyRegistry::Register(
 		std::move(name), std::move(getter), std::move(setter),
 		std::move(subscriber), std::move(options), false, true));
 }
+#endif
 
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	std::wstring name,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+#if !CUI_ENABLE_DYNAMIC_XAML
+	const auto token = MakeBindingSourcePropertyToken(name);
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(name), {}, {}, {}, std::move(options), true, true);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyRegistration(Register(std::move(metadata)));
+#else
+	return DependencyPropertyRegistration(std::move(metadata), token);
+#endif
+}
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	BindingSourcePropertyToken token,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (!token)
+		throw std::invalid_argument(
+			"Static dependency property token cannot be empty");
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		{}, {}, {}, {}, std::move(options), true, true);
+	return DependencyPropertyRegistration(std::move(metadata), token);
+}
+
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	BindingSourcePropertyToken token,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (!token)
+		throw std::invalid_argument(
+			"Static dependency property token cannot be empty");
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		{}, {}, {}, std::move(subscriber), std::move(options), true, true);
+	return DependencyPropertyRegistration(std::move(metadata), token);
+}
+
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	BindingSourcePropertyToken token,
+	std::function<TValue(TOwner&)> getter,
+	std::function<void(TOwner&, const TValue&)> setter,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (!token)
+		throw std::invalid_argument(
+			"Static dependency property token cannot be empty");
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		{}, std::move(getter), std::move(setter), std::move(subscriber),
+		std::move(options), false, true);
+	return DependencyPropertyRegistration(std::move(metadata), token);
+}
+#endif
+
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	std::wstring name,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+#if !CUI_ENABLE_DYNAMIC_XAML
+	const auto token = MakeBindingSourcePropertyToken(name);
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(name), {}, {}, std::move(subscriber),
+		std::move(options), true, true);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyRegistration(Register(std::move(metadata)));
+#else
+	return DependencyPropertyRegistration(std::move(metadata), token);
+#endif
+}
+
+template<typename TOwner, typename TValue>
+DependencyPropertyRegistration DependencyPropertyRegistry::RegisterStatic(
+	std::wstring name,
+	std::function<TValue(TOwner&)> getter,
+	std::function<void(TOwner&, const TValue&)> setter,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (options.IsReadOnly)
+		throw std::invalid_argument(
+			"Use RegisterReadOnlyStatic to register a read-only dependency property");
+#if !CUI_ENABLE_DYNAMIC_XAML
+	const auto token = MakeBindingSourcePropertyToken(name);
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(name), std::move(getter), std::move(setter),
+		std::move(subscriber), std::move(options), false, true);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyRegistration(Register(std::move(metadata)));
+#else
+	return DependencyPropertyRegistration(std::move(metadata), token);
+#endif
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TOwner, typename TValue>
 DependencyPropertyKey DependencyPropertyRegistry::RegisterReadOnly(
 	std::wstring name,
@@ -457,7 +597,99 @@ DependencyPropertyKey DependencyPropertyRegistry::RegisterReadOnly(
 		std::move(name), std::move(getter), std::move(setter),
 		std::move(subscriber), std::move(options), false, true));
 }
+#endif
 
+template<typename TOwner, typename TValue>
+DependencyPropertyKeyRegistration
+DependencyPropertyRegistry::RegisterReadOnlyStatic(
+	std::wstring name,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	options.IsReadOnly = true;
+#if !CUI_ENABLE_DYNAMIC_XAML
+	const auto token = MakeBindingSourcePropertyToken(name);
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(name), {}, {}, {}, std::move(options), true, true);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyKeyRegistration(
+		RegisterReadOnly(std::move(metadata)));
+#else
+	return DependencyPropertyKeyRegistration(
+		std::move(metadata), token);
+#endif
+}
+
+#if !CUI_ENABLE_DYNAMIC_XAML
+template<typename TOwner, typename TValue>
+DependencyPropertyKeyRegistration
+DependencyPropertyRegistry::RegisterReadOnlyStatic(
+	BindingSourcePropertyToken token,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (!token)
+		throw std::invalid_argument(
+			"Static dependency property token cannot be empty");
+	options.IsReadOnly = true;
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		{}, {}, {}, {}, std::move(options), true, true);
+	return DependencyPropertyKeyRegistration(
+		std::move(metadata), token);
+}
+
+template<typename TOwner, typename TValue>
+DependencyPropertyKeyRegistration
+DependencyPropertyRegistry::RegisterReadOnlyStatic(
+	BindingSourcePropertyToken token,
+	std::function<TValue(TOwner&)> getter,
+	std::function<void(TOwner&, const TValue&)> setter,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (!token)
+		throw std::invalid_argument(
+			"Static dependency property token cannot be empty");
+	options.IsReadOnly = true;
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		{}, std::move(getter), std::move(setter), std::move(subscriber),
+		std::move(options), false, true);
+	return DependencyPropertyKeyRegistration(
+		std::move(metadata), token);
+}
+#endif
+
+template<typename TOwner, typename TValue>
+DependencyPropertyKeyRegistration
+DependencyPropertyRegistry::RegisterReadOnlyStatic(
+	std::wstring name,
+	std::function<TValue(TOwner&)> getter,
+	std::function<void(TOwner&, const TValue&)> setter,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	options.IsReadOnly = true;
+#if !CUI_ENABLE_DYNAMIC_XAML
+	const auto token = MakeBindingSourcePropertyToken(name);
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(name), std::move(getter), std::move(setter),
+		std::move(subscriber), std::move(options), false, true);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyKeyRegistration(
+		RegisterReadOnly(std::move(metadata)));
+#else
+	return DependencyPropertyKeyRegistration(
+		std::move(metadata), token);
+#endif
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TOwner, typename TValue>
 const DependencyProperty* DependencyPropertyRegistry::AddOwner(
 	const DependencyProperty& property,
@@ -495,11 +727,18 @@ const DependencyProperty* DependencyPropertyRegistry::AddOwner(
 		? &property : nullptr;
 }
 
-template<typename TOwner, typename TValue>
+template<typename TOwner, typename TImmediateBase, typename TValue>
 const DependencyPropertyMetadata* DependencyPropertyRegistry::OverrideMetadata(
 	const DependencyProperty& property,
 	DependencyPropertyOptions<TOwner, TValue> options)
 {
+	static_assert(std::is_base_of_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be a base of TOwner");
+	static_assert(!std::is_same_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be less derived than TOwner");
+	static_assert(std::is_base_of_v<DependencyObject, TImmediateBase>,
+		"TImmediateBase must derive from DependencyObject");
+	TImmediateBase::RegisterDependencyProperties();
 	if (options.Validate)
 		throw std::invalid_argument(
 			"ValidateValue belongs to the DependencyProperty identity");
@@ -548,11 +787,18 @@ const DependencyProperty* DependencyPropertyRegistry::AddOwner(
 		? &property : nullptr;
 }
 
-template<typename TOwner, typename TValue>
+template<typename TOwner, typename TImmediateBase, typename TValue>
 const DependencyPropertyMetadata* DependencyPropertyRegistry::OverrideMetadata(
 	const DependencyPropertyKey& key,
 	DependencyPropertyOptions<TOwner, TValue> options)
 {
+	static_assert(std::is_base_of_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be a base of TOwner");
+	static_assert(!std::is_same_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be less derived than TOwner");
+	static_assert(std::is_base_of_v<DependencyObject, TImmediateBase>,
+		"TImmediateBase must derive from DependencyObject");
+	TImmediateBase::RegisterDependencyProperties();
 	const auto& property = key.Property();
 	if (options.Validate)
 		throw std::invalid_argument(
@@ -562,7 +808,158 @@ const DependencyPropertyMetadata* DependencyPropertyRegistry::OverrideMetadata(
 		property.Name(), {}, {}, {}, std::move(options), false, false);
 	return OverrideMetadata(property, std::move(metadata), &key);
 }
+#endif
 
+template<typename TOwner, typename TValue>
+DependencyPropertyMetadataRegistration
+DependencyPropertyRegistry::AddOwnerStatic(
+	const DependencyProperty& property,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (property.ReadOnly())
+		throw std::invalid_argument(
+			"Writable AddOwnerStatic cannot add a read-only property");
+	if (options.Validate)
+		throw std::invalid_argument(
+			"ValidateValue belongs to the DependencyProperty identity");
+	options.IsReadOnly = false;
+	std::wstring metadataName;
+#if CUI_ENABLE_DYNAMIC_XAML
+	metadataName = property.Name();
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(metadataName), {}, {}, {}, std::move(options), true, false);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const auto* registered = AddOwner(
+		property, std::move(metadata), nullptr);
+	if (!registered)
+		throw std::logic_error("AddOwnerStatic metadata registration failed");
+	return DependencyPropertyMetadataRegistration(registered);
+#else
+	return DependencyPropertyMetadataRegistration(
+		property, std::move(metadata), nullptr);
+#endif
+}
+
+template<typename TOwner, typename TValue>
+DependencyPropertyMetadataRegistration
+DependencyPropertyRegistry::AddOwnerStatic(
+	const DependencyProperty& property,
+	std::function<TValue(TOwner&)> getter,
+	std::function<void(TOwner&, const TValue&)> setter,
+	std::function<EventConnection(
+		TOwner&,
+		DependencyPropertyMetadata::ChangeHandler,
+		DataSourceUpdateMode)> subscriber,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	if (property.ReadOnly())
+		throw std::invalid_argument(
+			"Writable AddOwnerStatic cannot add a read-only property");
+	if (options.Validate)
+		throw std::invalid_argument(
+			"ValidateValue belongs to the DependencyProperty identity");
+	options.IsReadOnly = false;
+	std::wstring metadataName;
+#if CUI_ENABLE_DYNAMIC_XAML
+	metadataName = property.Name();
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(metadataName), std::move(getter), std::move(setter),
+		std::move(subscriber), std::move(options), false, false);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const auto* registered = AddOwner(
+		property, std::move(metadata), nullptr);
+	if (!registered)
+		throw std::logic_error("AddOwnerStatic metadata registration failed");
+	return DependencyPropertyMetadataRegistration(registered);
+#else
+	return DependencyPropertyMetadataRegistration(
+		property, std::move(metadata), nullptr);
+#endif
+}
+
+template<typename TOwner, typename TImmediateBase, typename TValue>
+DependencyPropertyMetadataRegistration
+DependencyPropertyRegistry::OverrideMetadataStatic(
+	const DependencyProperty& property,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	static_assert(std::is_base_of_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be a base of TOwner");
+	static_assert(!std::is_same_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be less derived than TOwner");
+	static_assert(std::is_base_of_v<DependencyObject, TImmediateBase>,
+		"TImmediateBase must derive from DependencyObject");
+	if (property.ReadOnly())
+		throw std::invalid_argument(
+			"Writable OverrideMetadataStatic cannot override a read-only property");
+	if (options.Validate)
+		throw std::invalid_argument(
+			"ValidateValue belongs to the DependencyProperty identity");
+	options.IsReadOnly = false;
+	std::wstring metadataName;
+#if CUI_ENABLE_DYNAMIC_XAML
+	TImmediateBase::RegisterDependencyProperties();
+	metadataName = property.Name();
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(metadataName), {}, {}, {}, std::move(options), false, false);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const auto* registered = OverrideMetadata(
+		property, std::move(metadata), nullptr);
+	if (!registered)
+		throw std::logic_error("OverrideMetadataStatic registration failed");
+	return DependencyPropertyMetadataRegistration(registered);
+#else
+	return DependencyPropertyMetadataRegistration(
+		property, std::move(metadata), nullptr);
+#endif
+}
+
+template<typename TOwner, typename TImmediateBase, typename TValue>
+DependencyPropertyMetadataRegistration
+DependencyPropertyRegistry::OverrideMetadataStatic(
+	const DependencyProperty& property,
+	const DependencyPropertyMetadataRegistration& immediateBase,
+	DependencyPropertyOptions<TOwner, TValue> options)
+{
+	static_assert(std::is_base_of_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be a base of TOwner");
+	static_assert(!std::is_same_v<TImmediateBase, TOwner>,
+		"TImmediateBase must be less derived than TOwner");
+	static_assert(std::is_base_of_v<DependencyObject, TImmediateBase>,
+		"TImmediateBase must derive from DependencyObject");
+	if (!immediateBase || &immediateBase.Property() != &property)
+		throw std::invalid_argument(
+			"Immediate-base metadata must belong to the overridden property");
+	if (property.ReadOnly())
+		throw std::invalid_argument(
+			"Writable OverrideMetadataStatic cannot override a read-only property");
+	if (options.Validate)
+		throw std::invalid_argument(
+			"ValidateValue belongs to the DependencyProperty identity");
+	options.IsReadOnly = false;
+	std::wstring metadataName;
+#if CUI_ENABLE_DYNAMIC_XAML
+	TImmediateBase::RegisterDependencyProperties();
+	metadataName = property.Name();
+#endif
+	auto metadata = CreateMetadata<TOwner, TValue>(
+		std::move(metadataName), {}, {}, {}, std::move(options), false, false);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const auto* registered = OverrideMetadata(
+		property, std::move(metadata), nullptr);
+	if (!registered)
+		throw std::logic_error("OverrideMetadataStatic registration failed");
+	return DependencyPropertyMetadataRegistration(registered);
+#else
+	return DependencyPropertyMetadataRegistration(
+		property, std::move(metadata), &immediateBase);
+#endif
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TValue>
 bool DependencyObject::SetPropertyField(
 	const std::wstring& propertyName,
@@ -596,8 +993,10 @@ bool DependencyObject::SetPropertyField(
 	// A public CLR-style wrapper is exactly SetValue in WPF terms.  Internal
 	// behavior that must preserve an expression uses SetCurrentPropertyField;
 	// metadata application is handled by the guarded branch above.
-	return TrySetPropertyValue(
-		propertyName, proposed, DependencyPropertyValueSource::Local);
+	// Reuse the metadata resolved above so a CLR wrapper never performs the
+	// same property lookup a second time.
+	return TrySetPropertyValueOwned(
+		*metadata, proposed, DependencyPropertyValueSource::Local, nullptr);
 }
 
 template<typename TValue>
@@ -613,10 +1012,56 @@ bool DependencyObject::SetCurrentPropertyField(
 	// preserve an existing expression, but it cannot manufacture a property
 	// which the projected type does not expose.
 	if (!metadata) return false;
-	return TrySetCurrentPropertyValue(
-		propertyName, BindingValue(std::move(value)));
+	return TrySetCurrentPropertyValueCore(
+		*metadata, BindingValue(std::move(value)));
 }
 
+// Name-based CLR wrapper compatibility ends here. Production wrappers use the
+// DependencyProperty identity overload below.
+#endif
+
+template<typename TValue>
+bool DependencyObject::SetPropertyField(
+	const DependencyProperty& property,
+	TValue& storage,
+	TValue value)
+{
+	VerifyAccess();
+	auto* metadata = GetPropertyMetadata(property);
+	if (!metadata) return false;
+	BindingValue proposed =
+		cui::property_system_detail::Pack(std::move(value));
+	if (_applyingPropertyMetadata == metadata)
+	{
+		TValue typed = storage;
+		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+			typed = proposed;
+		else if (!proposed.TryGet(typed)) return false;
+
+		BindingValue oldValue = cui::property_system_detail::Pack(storage);
+		BindingValue newValue = cui::property_system_detail::Pack(typed);
+		if (metadata->ValuesEqual(oldValue, newValue)) return true;
+		storage = std::move(typed);
+		ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
+		return true;
+	}
+	return TrySetPropertyValueOwned(
+		*metadata, proposed, DependencyPropertyValueSource::Local, nullptr);
+}
+
+template<typename TValue>
+bool DependencyObject::SetCurrentPropertyField(
+	const DependencyProperty& property,
+	TValue& storage,
+	TValue value)
+{
+	VerifyAccess();
+	(void)storage;
+	return TrySetCurrentPropertyValue(
+		property, BindingValue(std::move(value)));
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TValue>
 bool DependencyObject::SetReadOnlyPropertyField(
 	const std::wstring& propertyName,
@@ -639,11 +1084,24 @@ bool DependencyObject::SetReadOnlyPropertyField(
 		BindingValue newValue = cui::property_system_detail::Pack(typed);
 		if (metadata->ValuesEqual(oldValue, newValue)) return true;
 		storage = std::move(typed);
-		ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
+		if (_stagingPropertyChange)
+		{
+			_stagingPropertyChange->Metadata = metadata;
+			_stagingPropertyChange->Previous = std::move(oldValue);
+			_stagingPropertyChange->Current = std::move(newValue);
+		}
+		else
+			ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
 		return true;
 	}
-	return TrySetReadOnlyPropertyValue(propertyName, proposed);
+	if (FindObjectPropertyMetadataByName(metadata->Name()) != metadata)
+		return false;
+	return TrySetPropertyValueOwned(
+		*metadata, proposed, DependencyPropertyValueSource::Local,
+		nullptr, true);
 }
+
+#endif
 
 template<typename TValue>
 bool DependencyObject::SetReadOnlyPropertyField(
@@ -652,6 +1110,7 @@ bool DependencyObject::SetReadOnlyPropertyField(
 	TValue value)
 {
 	VerifyAccess();
+	if (!key.Property().Authorizes(key)) return false;
 	auto* metadata =
 		DependencyPropertyRegistry::GetMetadata(*this, key.Property());
 	if (!metadata || !metadata->IsReadOnly()) return false;
@@ -668,12 +1127,52 @@ bool DependencyObject::SetReadOnlyPropertyField(
 		BindingValue newValue = cui::property_system_detail::Pack(typed);
 		if (metadata->ValuesEqual(oldValue, newValue)) return true;
 		storage = std::move(typed);
-		ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
+		if (_stagingPropertyChange)
+		{
+			_stagingPropertyChange->Metadata = metadata;
+			_stagingPropertyChange->Previous = std::move(oldValue);
+			_stagingPropertyChange->Current = std::move(newValue);
+		}
+		else
+			ApplyPropertyMetadataChange(*metadata, oldValue, newValue);
 		return true;
 	}
-	return TrySetReadOnlyPropertyValue(key, proposed);
+	return TrySetPropertyValueOwned(
+		*metadata, proposed, DependencyPropertyValueSource::Local,
+		nullptr, true);
 }
 
+template<typename TValue>
+bool DependencyObject::StageReadOnlyPropertyField(
+	const DependencyPropertyKey& key,
+	TValue& storage,
+	TValue value,
+	DeferredPropertyChange& change)
+{
+	VerifyAccess();
+	if (_stagingPropertyChange)
+		throw std::logic_error(
+			"dependency property already has a staged change");
+	change = {};
+	_stagingPropertyChange = &change;
+	bool result = false;
+	try
+	{
+		result = SetReadOnlyPropertyField(
+			key, storage, std::move(value));
+	}
+	catch (...)
+	{
+		_stagingPropertyChange = nullptr;
+		change = {};
+		throw;
+	}
+	_stagingPropertyChange = nullptr;
+	if (!result) change = {};
+	return result;
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TValue>
 TValue DependencyObject::GetDependencyPropertyValue(
 	const std::wstring& propertyName) const
@@ -698,6 +1197,8 @@ TValue DependencyObject::GetDependencyPropertyValue(
 		return typed;
 	}
 }
+
+#endif
 
 template<typename TValue>
 TValue DependencyObject::GetDependencyPropertyValue(
@@ -724,6 +1225,7 @@ TValue DependencyObject::GetDependencyPropertyValue(
 	}
 }
 
+#if CUI_ENABLE_DYNAMIC_XAML
 template<typename TValue>
 bool DependencyObject::SetDependencyPropertyValue(
 	const std::wstring& propertyName,
@@ -733,6 +1235,8 @@ bool DependencyObject::SetDependencyPropertyValue(
 		propertyName,
 		cui::property_system_detail::Pack(std::move(value)));
 }
+
+#endif
 
 template<typename TValue>
 bool DependencyObject::SetDependencyPropertyValue(

@@ -54,6 +54,10 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="CuiRuntimeFlavor">
+    <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+  </PropertyGroup>
+  <Import Project="..\build\CuiDesignRuntime.props" />
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
@@ -136,6 +140,7 @@
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
+      <AdditionalProperties>CuiRuntimeFlavor=$(CuiRuntimeFlavor)</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>

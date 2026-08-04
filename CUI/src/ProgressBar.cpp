@@ -5,56 +5,68 @@
 
 UIClass ProgressBar::Type() { return UIClass::UI_ProgressBar; }
 
-void ProgressBar::RegisterDependencyProperties()
+const DependencyProperty& ProgressBar::OrientationProperty()
 {
-	RangeBase::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		DependencyPropertyOptions<ProgressBar, ::Orientation>
-			orientationOptions;
-		orientationOptions.DefaultValue = Orientation::Horizontal;
-		orientationOptions.Flags = DependencyPropertyFlags::AffectsMeasure
+		DependencyPropertyOptions<ProgressBar, ::Orientation> options;
+		options.DefaultValue = Orientation::Horizontal;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
-		orientationOptions.Design.Category = L"Layout";
-		orientationOptions.Design.CategoryOrder = 50;
-		orientationOptions.Design.Order = 10;
-		orientationOptions.Design.Editor =
-			DependencyPropertyEditorKind::Choice;
-		orientationOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		orientationOptions.Design.Choices = {
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Layout";
+		options.Design.CategoryOrder = 50;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Choices = {
 			{ L"Horizontal", BindingValue(Orientation::Horizontal) },
 			{ L"Vertical", BindingValue(Orientation::Vertical) }
 		};
-		DependencyPropertyRegistry::Register<ProgressBar, ::Orientation>(
-			L"Orientation",
-			[](ProgressBar& target) { return target.Orientation; },
-			[](ProgressBar& target, const ::Orientation& value)
-			{ target.Orientation = value; },
-			{}, std::move(orientationOptions));
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ProgressBar, ::Orientation>(
+				DependencyPropertyRegistrationLiteral(L"Orientation"),
+				[](ProgressBar& target) { return target.Orientation; },
+				[](ProgressBar& target, const ::Orientation& value)
+				{ target.Orientation = value; },
+				{}, std::move(options));
+	}();
+	return *registration;
+}
 
-		DependencyPropertyOptions<ProgressBar, bool>
-			indeterminateOptions;
-		indeterminateOptions.DefaultValue = false;
-		indeterminateOptions.Flags =
-			DependencyPropertyFlags::AffectsRender;
-		indeterminateOptions.Design.Category = L"Behavior";
-		indeterminateOptions.Design.CategoryOrder = 300;
-		indeterminateOptions.Design.Order = 10;
-		indeterminateOptions.Design.Editor =
-			DependencyPropertyEditorKind::Boolean;
-		indeterminateOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<ProgressBar, bool>(
-			L"IsIndeterminate",
+const DependencyProperty& ProgressBar::IsIndeterminateProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ProgressBar, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<ProgressBar, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsIndeterminate"),
 			[](ProgressBar& target) { return target.IsIndeterminate; },
 			[](ProgressBar& target, const bool& value)
 			{ target.IsIndeterminate = value; },
-			{}, std::move(indeterminateOptions));
-		return true;
+			{}, std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void ProgressBar::RegisterDependencyProperties()
+{
+	RangeBase::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)OrientationProperty();
+	(void)IsIndeterminateProperty();
+#endif
 }
 
 ProgressBar::ProgressBar()
@@ -79,7 +91,7 @@ GET_CPP(ProgressBar, ::Orientation, Orientation)
 
 SET_CPP(ProgressBar, ::Orientation, Orientation)
 {
-	if (!SetPropertyField(L"Orientation", _orientation, value)) return;
+	if (!SetPropertyField(OrientationProperty(), _orientation, value)) return;
 	UpdateIndicator();
 }
 
@@ -91,8 +103,24 @@ GET_CPP(ProgressBar, bool, IsIndeterminate)
 SET_CPP(ProgressBar, bool, IsIndeterminate)
 {
 	if (!SetPropertyField(
-		L"IsIndeterminate", _isIndeterminate, value)) return;
+		IsIndeterminateProperty(), _isIndeterminate, value)) return;
 	UpdateIndicator();
+}
+
+void ProgressBar::OnMinimumChanged(double oldValue, double newValue)
+{
+	(void)oldValue;
+	(void)newValue;
+	UpdateIndicator();
+	NotifyAccessibilityValueChanged();
+}
+
+void ProgressBar::OnMaximumChanged(double oldValue, double newValue)
+{
+	(void)oldValue;
+	(void)newValue;
+	UpdateIndicator();
+	NotifyAccessibilityValueChanged();
 }
 
 void ProgressBar::OnRangeValueChanged(double oldValue, double newValue)
@@ -100,6 +128,7 @@ void ProgressBar::OnRangeValueChanged(double oldValue, double newValue)
 	(void)oldValue;
 	(void)newValue;
 	UpdateIndicator();
+	NotifyAccessibilityValueChanged();
 }
 
 void ProgressBar::OnComputedLayoutSizeChanged()
@@ -110,7 +139,8 @@ void ProgressBar::OnComputedLayoutSizeChanged()
 void ProgressBar::OnControlTemplatePresentationChanged()
 {
 	ClearTemplatePartEventConnections();
-	if (auto* track = FindDeclarativeTemplatePart(L"PART_Track"))
+	if (auto* track = FindDeclarativeTemplatePart(
+		MakeTemplatePartToken(L"PART_Track")))
 	{
 		const ControlWeakReference lifetime(this);
 		RetainTemplatePartEventConnection(track->SizeChanged.Subscribe(
@@ -126,8 +156,10 @@ void ProgressBar::OnControlTemplatePresentationChanged()
 
 void ProgressBar::UpdateIndicator()
 {
-	auto* track = FindDeclarativeTemplatePart(L"PART_Track");
-	auto* indicator = FindDeclarativeTemplatePart(L"PART_Indicator");
+	auto* track = FindDeclarativeTemplatePart(
+		MakeTemplatePartToken(L"PART_Track"));
+	auto* indicator = FindDeclarativeTemplatePart(
+		MakeTemplatePartToken(L"PART_Indicator"));
 	if (!track || !indicator) return;
 
 	const double range = Maximum - Minimum;

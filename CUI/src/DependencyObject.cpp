@@ -15,15 +15,176 @@ namespace
 				DependencyPropertyValueSource::Inherited)
 			: -1;
 	}
+
+	DependencyObject* CompiledDependencySource(
+		const CompiledSourceHandle& source) noexcept
+	{
+		return static_cast<DependencyObject*>(source.Object);
+	}
+
+	const DependencyProperty* CompiledDependencyProperty(
+		const CompiledSourceHandle& source) noexcept
+	{
+		return static_cast<const DependencyProperty*>(source.Context);
+	}
+
+	CompiledBindingPathCapabilities DependencySourceCapabilities(
+		const CompiledSourceHandle& source)
+	{
+		auto* object = CompiledDependencySource(source);
+		const auto* property = CompiledDependencyProperty(source);
+		if (!object || !property) return CompiledBindingPathCapabilities::None;
+		const auto* metadata = object->GetPropertyMetadata(*property);
+		if (!metadata) return CompiledBindingPathCapabilities::None;
+		auto result = CompiledBindingPathCapabilities::None;
+		if (metadata->CanRead())
+			result = result | CompiledBindingPathCapabilities::Read;
+		if (metadata->CanWrite())
+			result = result | CompiledBindingPathCapabilities::Write;
+		if (metadata->CanObserve())
+			result = result | CompiledBindingPathCapabilities::Observe;
+		return result;
+	}
+
+	BindingValueKind DependencySourceValueKind(
+		const CompiledSourceHandle& source)
+	{
+		auto* object = CompiledDependencySource(source);
+		const auto* property = CompiledDependencyProperty(source);
+		if (!object || !property) return BindingValueKind::Empty;
+		const auto* metadata = object->GetPropertyMetadata(*property);
+		return metadata ? metadata->ValueKind() : BindingValueKind::Empty;
+	}
+
+	std::weak_ptr<const void> DependencySourceLifetime(
+		const CompiledSourceHandle& source)
+	{
+		auto* object = CompiledDependencySource(source);
+		return object ? object->BindingLifetime()
+			: std::weak_ptr<const void>{};
+	}
+
+	bool ReadDependencySource(
+		const CompiledSourceHandle& source,
+		BindingValue& out)
+	{
+		auto* object = CompiledDependencySource(source);
+		const auto* property = CompiledDependencyProperty(source);
+		return object && property
+			&& object->TryGetPropertyValue(*property, out);
+	}
+
+	bool WriteDependencySource(
+		const CompiledSourceHandle& source,
+		const BindingValue& value)
+	{
+		auto* object = CompiledDependencySource(source);
+		const auto* property = CompiledDependencyProperty(source);
+		return object && property
+			&& object->TrySetPropertyValue(*property, value);
+	}
+
+	EventConnection SubscribeDependencySource(
+		const CompiledSourceHandle& source,
+		DependencyPropertyChangeHandler handler)
+	{
+		auto* object = CompiledDependencySource(source);
+		const auto* property = CompiledDependencyProperty(source);
+		if (!object || !property || !handler) return {};
+		const auto* metadata = object->GetPropertyMetadata(*property);
+		return metadata
+			? metadata->Subscribe(*object, std::move(handler),
+				DataSourceUpdateMode::OnPropertyChanged)
+			: EventConnection{};
+	}
+
+	const CompiledSourceOps DependencySourceOps{
+		&DependencySourceCapabilities,
+		&DependencySourceValueKind,
+		&DependencySourceLifetime,
+		&ReadDependencySource,
+		&WriteDependencySource,
+		&SubscribeDependencySource,
+		nullptr,
+		nullptr
+	};
+}
+
+CompiledSourceHandle cui::binding::MakeCompiledDependencyPropertySource(
+	DependencyObject& source,
+	const DependencyProperty& property) noexcept
+{
+	return { &source, &property, &DependencySourceOps };
+}
+
+CompiledSourceHandle cui::binding::ResolveCompiledDependencyPropertySource(
+	IBindingSource& source,
+	const DependencyProperty& property) noexcept
+{
+	auto* dependencySource = dynamic_cast<DependencyObject*>(&source);
+	return dependencySource
+		? MakeCompiledDependencyPropertySource(*dependencySource, property)
+		: CompiledSourceHandle{};
 }
 
 DependencyObject::~DependencyObject()
 {
 	InvalidateLifetimeToken();
 	_isDestroying = true;
+#if CUI_ENABLE_DYNAMIC_XAML
 	_bindingSourceMetadataConnections.clear();
+#endif
 	_dataBindings.reset();
 	_propertyValues.clear();
+}
+
+const DependencyPropertyMetadata*
+DependencyObject::ResolveExactDependencyPropertyMetadata(
+	const DependencyProperty& property) const
+{
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)property;
+	return nullptr;
+#else
+	const auto matches = [this, &property](
+		const DependencyPropertyMetadataRegistration& relation)
+	{
+		const auto& metadata = relation.Metadata();
+		return &metadata.Property() == &property
+			&& metadata.Matches(*this)
+			&& SupportsNativeProperty(metadata);
+	};
+
+	// First select a matching descendant whenever the explicit immediate-base
+	// chain proves it is more specific. A second pass rejects incomparable
+	// branches, so publication/first-touch order cannot affect the result.
+	const auto* relations = property._staticMetadataRelations.load(
+		std::memory_order_acquire);
+	const DependencyPropertyMetadataRegistration* best = nullptr;
+	for (auto* candidate = relations;
+		candidate; candidate = candidate->_next)
+	{
+		if (!matches(*candidate)) continue;
+		if (!best || candidate->IsBasedOn(*best)) best = candidate;
+	}
+	if (!best) return nullptr;
+	for (auto* candidate = relations;
+		candidate; candidate = candidate->_next)
+	{
+		if (candidate == best || !matches(*candidate)) continue;
+		if (!best->IsBasedOn(*candidate)) return nullptr;
+	}
+	return &best->Metadata();
+#endif
+}
+
+void DependencyObject::PublishDeferredPropertyChange(
+	const DeferredPropertyChange& change)
+{
+	VerifyAccess();
+	if (!change.Metadata) return;
+	ApplyPropertyMetadataChange(
+		*change.Metadata, change.Previous, change.Current);
 }
 
 void DependencyObject::ApplyPropertyMetadataChange(
@@ -31,6 +192,7 @@ void DependencyObject::ApplyPropertyMetadataChange(
 	const BindingValue& oldValue,
 	const BindingValue& newValue)
 {
+	if (DeferPropertyMetadataChange(metadata, oldValue, newValue)) return;
 	DependencyObject* const self = this;
 	const auto lifetime = WeakLifetimeToken();
 	const auto isAlive = [&lifetime]
@@ -44,56 +206,61 @@ void DependencyObject::ApplyPropertyMetadataChange(
 	if (!isAlive()) return;
 
 	DependencyPropertyChangedEventArgs args{
-		metadata.Name(), oldValue, newValue, &metadata.Property() };
+		metadata.Property(), oldValue, newValue };
 	cui::framework::EventAccess::Raise(
 		self->OnPropertyValueChanged, self, args);
 	if (!isAlive()) return;
+#if CUI_ENABLE_DYNAMIC_XAML
 	self->_bindingSourcePropertyChanged.Notify(metadata.Name());
+#else
+	self->_bindingSourcePropertyChanged.Notify(
+		metadata.Property().BindingSourceToken());
+#endif
 }
 
 EventConnection DependencyObject::SubscribeDefaultPropertyChange(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	DependencyPropertyChangeHandler handler,
 	DataSourceUpdateMode updateMode)
 {
 	(void)updateMode;
 	return OnPropertyValueChanged.Subscribe(
-		[propertyName, handler = std::move(handler)](
+		[expected = &property, handler = std::move(handler)](
 			DependencyObject*,
 			const DependencyPropertyChangedEventArgs& args)
 		{
-			if (args.PropertyName == propertyName)
+			if (args.Property == expected)
 				handler();
 		});
 }
 
-const DependencyProperty* DependencyObject::FindDependencyProperty(
-	const std::wstring& propertyName)
+bool DependencyObject::DeferPropertyMetadataChange(
+	const DependencyPropertyMetadata& metadata,
+	const BindingValue& oldValue,
+	const BindingValue& newValue)
 {
-	EnsureBindingPropertiesRegistered();
-	return DependencyPropertyRegistry::FindProperty(*this, propertyName);
-}
-
-const DependencyPropertyMetadata* DependencyObject::FindPropertyMetadata(
-	const std::wstring& propertyName)
-{
-	EnsureBindingPropertiesRegistered();
-	return DependencyPropertyRegistry::Find(*this, propertyName);
+	if (!_stagingPropertyChange) return false;
+	_stagingPropertyChange->Metadata = &metadata;
+	_stagingPropertyChange->Previous = oldValue;
+	_stagingPropertyChange->Current = newValue;
+	return true;
 }
 
 const DependencyPropertyMetadata* DependencyObject::GetPropertyMetadata(
 	const DependencyProperty& property)
 {
-	EnsureBindingPropertiesRegistered();
 	return DependencyPropertyRegistry::GetMetadata(*this, property);
 }
 
-bool DependencyObject::TryGetPropertyValue(
-	const std::wstring& propertyName,
-	BindingValue& out)
+const DependencyPropertyMetadata* DependencyObject::GetPropertyMetadata(
+	BindingSourcePropertyToken property)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	return metadata && metadata->TryGet(*this, out);
+#if CUI_ENABLE_DYNAMIC_XAML
+	return DependencyPropertyRegistry::Find(*this, property);
+#else
+	(void)property;
+	return nullptr;
+#endif
 }
 
 bool DependencyObject::TryGetPropertyValue(
@@ -105,17 +272,17 @@ bool DependencyObject::TryGetPropertyValue(
 }
 
 bool DependencyObject::TryGetPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	DependencyPropertyValueSource source,
 	BindingValue& out)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata) return false;
 	if (source == DependencyPropertyValueSource::Default)
 		return metadata->TryGetDefaultValue(out);
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0) return false;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&property);
 	if (entry == _propertyValues.end()
 		|| !entry->second.Slots[(size_t)index].ProposedValue.has_value())
 		return false;
@@ -124,22 +291,21 @@ bool DependencyObject::TryGetPropertyValue(
 }
 
 bool DependencyObject::TrySetPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	const BindingValue& value)
 {
 	return TrySetPropertyValue(
-		propertyName, value, DependencyPropertyValueSource::Local);
+		property, value, DependencyPropertyValueSource::Local);
 }
 
 bool DependencyObject::TrySetPropertyValue(
 	const DependencyProperty& property,
-	const BindingValue& value)
+	const BindingValue& value,
+	DependencyPropertyValueSource source)
 {
 	const auto* metadata = GetPropertyMetadata(property);
-	return metadata
-		&& TrySetPropertyValueOwned(
-			metadata->Name(), value,
-			DependencyPropertyValueSource::Local, nullptr);
+	return metadata && TrySetPropertyValueOwned(
+		*metadata, value, source, nullptr);
 }
 
 bool DependencyObject::TrySetPropertyValue(
@@ -149,37 +315,41 @@ bool DependencyObject::TrySetPropertyValue(
 	return TrySetReadOnlyPropertyValue(key, value);
 }
 
-bool DependencyObject::TrySetPropertyValue(
-	const std::wstring& propertyName,
-	const BindingValue& value,
-	DependencyPropertyValueSource source)
-{
-	return TrySetPropertyValueOwned(propertyName, value, source, nullptr);
-}
-
 bool DependencyObject::TrySetPropertyValueOwned(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const BindingValue& value,
 	DependencyPropertyValueSource source,
 	const Binding* owner,
 	bool allowReadOnly)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
 	const int index = StoredPropertySourceIndex(source);
-	if (!metadata || index < 0
-		|| (!metadata->CanWrite()
-			&& !(allowReadOnly && metadata->IsReadOnly()
-				&& metadata->CanWriteInternally()))) return false;
+	if (index < 0
+		|| (!metadata.CanWrite()
+			&& !(allowReadOnly && metadata.IsReadOnly()
+				&& metadata.CanWriteInternally()))) return false;
 
 	if (owner) return false;
 	BindingValue converted;
-	if (!metadata->TryConvert(value, converted)) return false;
+	if (!metadata.TryConvert(value, converted)) return false;
 	return TrySetEffectiveValueEntry(
-		*metadata, std::move(converted), source,
+		metadata, std::move(converted), source,
 		source == DependencyPropertyValueSource::Animation
 			? DependencyPropertyExpressionKind::Animation
 			: DependencyPropertyExpressionKind::None,
 		nullptr, {}, allowReadOnly);
+}
+
+bool DependencyObject::TrySetEffectiveValueEntry(
+	const DependencyPropertyMetadata& metadata,
+	std::optional<BindingValue> proposedValue,
+	DependencyPropertyValueSource source,
+	DependencyPropertyExpressionKind expressionKind,
+	const Binding* owner,
+	std::wstring resourceKey)
+{
+	return TrySetEffectiveValueEntry(
+		metadata, std::move(proposedValue), source, expressionKind,
+		owner, std::move(resourceKey), false);
 }
 
 bool DependencyObject::TrySetEffectiveValueEntry(
@@ -305,19 +475,17 @@ bool DependencyObject::TrySetEffectiveValueEntry(
 	}
 
 	if (retiredBinding)
-		RetireBindingExpression(metadata.Name(), retiredBinding);
+		RetireBindingExpression(metadata.Property(), retiredBinding);
 	return true;
 }
 
 bool DependencyObject::CanAcquireBindingPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const Binding* owner,
 	DependencyPropertyValueSource source,
 	DependencyPropertyExpressionKind expressionKind)
 {
-	if (!owner) return false;
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !metadata->CanWrite()) return false;
+	if (!owner || !metadata.CanWrite()) return false;
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0
 		|| (expressionKind == DependencyPropertyExpressionKind::Binding
@@ -325,7 +493,7 @@ bool DependencyObject::CanAcquireBindingPropertyValue(
 		|| (expressionKind == DependencyPropertyExpressionKind::TemplateBinding
 			&& source != DependencyPropertyValueSource::Template))
 		return false;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&metadata.Property());
 	if (entry == _propertyValues.end()) return true;
 	const auto& slot = entry->second.Slots[(size_t)index];
 	const bool isBindingExpression =
@@ -336,59 +504,55 @@ bool DependencyObject::CanAcquireBindingPropertyValue(
 }
 
 bool DependencyObject::TryAttachBindingPropertyExpression(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const Binding* owner,
 	DependencyPropertyValueSource source,
 	DependencyPropertyExpressionKind expressionKind)
 {
 	if (!CanAcquireBindingPropertyValue(
-		propertyName, owner, source, expressionKind)) return false;
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	return metadata && TrySetEffectiveValueEntry(
-		*metadata, std::nullopt, source, expressionKind, owner, {}, false);
+		metadata, owner, source, expressionKind)) return false;
+	return TrySetEffectiveValueEntry(
+		metadata, std::nullopt, source, expressionKind, owner, {}, false);
 }
 
 bool DependencyObject::TrySetBindingPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const BindingValue& value,
 	const Binding* owner,
 	DependencyPropertyValueSource source,
 	DependencyPropertyExpressionKind expressionKind)
 {
-	if (!owner) return false;
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !IsBindingExpressionOwner(
-		propertyName, owner, source, expressionKind)) return false;
+	if (!owner || !IsBindingExpressionOwner(
+		metadata, owner, source, expressionKind)) return false;
 	BindingValue converted;
-	if (!metadata->TryConvert(value, converted)) return false;
+	if (!metadata.TryConvert(value, converted)) return false;
 	return TrySetEffectiveValueEntry(
-		*metadata, std::move(converted), source,
+		metadata, std::move(converted), source,
 		expressionKind, owner, {}, false);
 }
 
-bool DependencyObject::TrySetCurrentPropertyValue(
-	const std::wstring& propertyName,
+bool DependencyObject::TrySetCurrentPropertyValueCore(
+	const DependencyPropertyMetadata& metadata,
 	const BindingValue& value)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !metadata->CanWrite()) return false;
+	if (!metadata.CanWrite()) return false;
 
 	BindingValue converted;
 	BindingValue coerced;
-	if (!metadata->TryConvert(value, converted)
-		|| !metadata->TryCoerce(*this, converted, coerced)) return false;
+	if (!metadata.TryConvert(value, converted)
+		|| !metadata.TryCoerce(*this, converted, coerced)) return false;
 	BindingValue current;
-	if (metadata->TryGet(*this, current)
-		&& metadata->ValuesEqual(current, coerced)) return true;
+	if (metadata.TryGet(*this, current)
+		&& metadata.ValuesEqual(current, coerced)) return true;
 
 	DependencyPropertyValueSource source =
 		DependencyPropertyValueSource::Default;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&metadata.Property());
 	if (entry != _propertyValues.end())
 	{
 		BindingValue ignored;
 		(void)TryResolveEffectivePropertyValue(
-			*metadata, entry->second, ignored, source);
+			metadata, entry->second, ignored, source);
 		const int sourceIndex = StoredPropertySourceIndex(source);
 		const auto* slot = sourceIndex < 0 ? nullptr
 			: &entry->second.Slots[static_cast<size_t>(sourceIndex)];
@@ -400,7 +564,7 @@ bool DependencyObject::TrySetCurrentPropertyValue(
 					== DependencyPropertyExpressionKind::TemplateBinding))
 		{
 			return TrySetEffectiveValueEntry(
-				*metadata, std::move(converted),
+				metadata, std::move(converted),
 				source, slot->Expression, slot->BindingOwner,
 				slot->ResourceKey, false);
 		}
@@ -410,8 +574,13 @@ bool DependencyObject::TrySetCurrentPropertyValue(
 	// it never promotes a Default/Style/Template/Inherited value to Local.
 	// A later update from that source therefore remains authoritative.
 	return source == DependencyPropertyValueSource::Default
-		? TrySetPropertyBaseValue(propertyName, converted)
-		: TrySetPropertyValue(propertyName, converted, source);
+		? TrySetPropertyBaseValueCore(metadata, converted)
+		: TrySetEffectiveValueEntry(
+			metadata, std::move(converted), source,
+			source == DependencyPropertyValueSource::Animation
+				? DependencyPropertyExpressionKind::Animation
+				: DependencyPropertyExpressionKind::None,
+			nullptr, {}, false);
 }
 
 bool DependencyObject::TrySetCurrentPropertyValue(
@@ -419,23 +588,7 @@ bool DependencyObject::TrySetCurrentPropertyValue(
 	const BindingValue& value)
 {
 	const auto* metadata = GetPropertyMetadata(property);
-	return metadata
-		&& TrySetCurrentPropertyValue(metadata->Name(), value);
-}
-
-bool DependencyObject::TrySetReadOnlyPropertyValue(
-	const std::wstring& propertyName,
-	const BindingValue& value)
-{
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	// Name-based framework access exists only for a declarative component's
-	// behavior host. Native read-only properties require the unforgeable key
-	// returned by RegisterReadOnly.
-	if (!metadata || !metadata->IsReadOnly()
-		|| FindDeclarativePropertyMetadata(metadata->Name()) != metadata)
-		return false;
-	return TrySetPropertyValueOwned(
-		metadata->Name(), value, DependencyPropertyValueSource::Local, nullptr, true);
+	return metadata && TrySetCurrentPropertyValueCore(*metadata, value);
 }
 
 bool DependencyObject::TrySetReadOnlyPropertyValue(
@@ -447,19 +600,8 @@ bool DependencyObject::TrySetReadOnlyPropertyValue(
 	const auto* metadata = GetPropertyMetadata(property);
 	return metadata
 		&& TrySetPropertyValueOwned(
-			metadata->Name(), value,
+			*metadata, value,
 			DependencyPropertyValueSource::Local, nullptr, true);
-}
-
-bool DependencyObject::ClearReadOnlyPropertyValue(
-	const std::wstring& propertyName)
-{
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !metadata->IsReadOnly()
-		|| FindDeclarativePropertyMetadata(metadata->Name()) != metadata)
-		return false;
-	return ClearPropertyValueOwned(
-		metadata->Name(), DependencyPropertyValueSource::Local, nullptr, true);
 }
 
 bool DependencyObject::ClearReadOnlyPropertyValue(
@@ -470,67 +612,59 @@ bool DependencyObject::ClearReadOnlyPropertyValue(
 	const auto* metadata = GetPropertyMetadata(property);
 	return metadata
 		&& ClearPropertyValueOwned(
-			metadata->Name(), DependencyPropertyValueSource::Local,
+			*metadata, DependencyPropertyValueSource::Local,
 			nullptr, true);
 }
 
-bool DependencyObject::CoerceValue(const std::wstring& propertyName)
+bool DependencyObject::CoerceValueCore(
+	const DependencyPropertyMetadata& metadata)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata
-		|| (!metadata->CanWrite()
-			&& !(metadata->IsReadOnly()
-				&& metadata->CanWriteInternally()))) return false;
-	const bool allowReadOnly = metadata->IsReadOnly();
+	if (!metadata.CanWrite()
+		&& !(metadata.IsReadOnly()
+			&& metadata.CanWriteInternally())) return false;
+	const bool allowReadOnly = metadata.IsReadOnly();
 
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&metadata.Property());
 	if (entry != _propertyValues.end())
 	{
 		BindingValue effective;
 		DependencyPropertyValueSource source = DependencyPropertyValueSource::Default;
 		if (!TryEvaluateEffectivePropertyValue(
-			*metadata, entry->second, effective, source)) return false;
+			metadata, entry->second, effective, source)) return false;
 		BindingValue current;
-		if (metadata->TryGet(*this, current)
-			&& metadata->ValuesEqual(current, effective)) return true;
+		if (metadata.TryGet(*this, current)
+			&& metadata.ValuesEqual(current, effective)) return true;
 		return ApplyEffectivePropertyValue(
-			*metadata, effective, source, allowReadOnly);
+			metadata, effective, source, allowReadOnly);
 	}
 
 	BindingValue proposed;
-	if (!metadata->TryGetDefaultValue(proposed)
-		&& !metadata->TryGet(*this, proposed)) return false;
+	if (!metadata.TryGetDefaultValue(proposed)
+		&& !metadata.TryGet(*this, proposed)) return false;
 	BindingValue converted;
 	BindingValue effective;
-	if (!metadata->TryConvert(proposed, converted)
-		|| !metadata->TryCoerce(*this, converted, effective)) return false;
+	if (!metadata.TryConvert(proposed, converted)
+		|| !metadata.TryCoerce(*this, converted, effective)) return false;
 
 	BindingValue current;
-	if (metadata->TryGet(*this, current)
-		&& metadata->ValuesEqual(current, effective)) return true;
+	if (metadata.TryGet(*this, current)
+		&& metadata.ValuesEqual(current, effective)) return true;
 	return ApplyEffectivePropertyValue(
-		*metadata, effective, DependencyPropertyValueSource::Default,
+		metadata, effective, DependencyPropertyValueSource::Default,
 		allowReadOnly);
 }
 
 bool DependencyObject::CoerceValue(const DependencyProperty& property)
 {
 	const auto* metadata = GetPropertyMetadata(property);
-	return metadata && CoerceValue(metadata->Name());
-}
-
-bool DependencyObject::ClearPropertyValue(
-	const std::wstring& propertyName)
-{
-	return ClearPropertyValue(
-		propertyName, DependencyPropertyValueSource::Local);
+	return metadata && CoerceValueCore(*metadata);
 }
 
 bool DependencyObject::ClearPropertyValue(
 	const DependencyProperty& property)
 {
-	const auto* metadata = GetPropertyMetadata(property);
-	return metadata && ClearPropertyValue(metadata->Name());
+	return ClearPropertyValue(
+		property, DependencyPropertyValueSource::Local);
 }
 
 bool DependencyObject::ClearPropertyValue(
@@ -540,25 +674,26 @@ bool DependencyObject::ClearPropertyValue(
 }
 
 bool DependencyObject::ClearPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	DependencyPropertyValueSource source)
 {
-	return ClearPropertyValueOwned(propertyName, source, nullptr);
+	const auto* metadata = GetPropertyMetadata(property);
+	return metadata && ClearPropertyValueOwned(
+		*metadata, source, nullptr);
 }
 
 bool DependencyObject::ClearPropertyValueOwned(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	DependencyPropertyValueSource source,
 	const Binding* owner,
 	bool allowReadOnly)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
 	const int index = StoredPropertySourceIndex(source);
-	if (!metadata || index < 0
-		|| (!metadata->CanWrite()
-			&& !(allowReadOnly && metadata->IsReadOnly()
-				&& metadata->CanWriteInternally()))) return false;
-	auto entryIt = _propertyValues.find(&metadata->Property());
+	if (index < 0
+		|| (!metadata.CanWrite()
+			&& !(allowReadOnly && metadata.IsReadOnly()
+				&& metadata.CanWriteInternally()))) return false;
+	auto entryIt = _propertyValues.find(&metadata.Property());
 	if (entryIt == _propertyValues.end()) return false;
 	auto& entry = entryIt->second;
 	const size_t sourceIndex = (size_t)index;
@@ -571,12 +706,12 @@ bool DependencyObject::ClearPropertyValueOwned(
 
 	BindingValue oldEffective;
 	DependencyPropertyValueSource oldSource = DependencyPropertyValueSource::Default;
-	const bool hadOldEffective = metadata->UsesEffectiveValueStorage()
+	const bool hadOldEffective = metadata.UsesEffectiveValueStorage()
 		&& entry.HasEffectiveValue
 		? (oldEffective = entry.EffectiveValue,
 			oldSource = entry.EffectiveSource, true)
 		: TryEvaluateEffectivePropertyValue(
-			*metadata, entry, oldEffective, oldSource);
+			metadata, entry, oldEffective, oldSource);
 	const auto previous = slot;
 	const Binding* retiredBinding = bindingExpression && !owner
 		? slot.BindingOwner : nullptr;
@@ -585,23 +720,23 @@ bool DependencyObject::ClearPropertyValueOwned(
 	BindingValue newEffective;
 	DependencyPropertyValueSource newSource = DependencyPropertyValueSource::Default;
 	const bool hasNewEffective = TryEvaluateEffectivePropertyValue(
-		*metadata, entry, newEffective, newSource);
+		metadata, entry, newEffective, newSource);
 	BindingValue currentEffective;
 	const bool backingStorageMatches = hasNewEffective
-		&& (metadata->UsesEffectiveValueStorage()
+		&& (metadata.UsesEffectiveValueStorage()
 			? entry.HasEffectiveValue
-				&& metadata->ValuesEqual(
+				&& metadata.ValuesEqual(
 					entry.EffectiveValue, newEffective)
-			: metadata->TryGet(*this, currentEffective)
-				&& metadata->ValuesEqual(
+			: metadata.TryGet(*this, currentEffective)
+				&& metadata.ValuesEqual(
 					currentEffective, newEffective));
 	const bool effectiveUnchanged = hadOldEffective && hasNewEffective
 		&& oldSource == newSource
-		&& metadata->ValuesEqual(oldEffective, newEffective)
+		&& metadata.ValuesEqual(oldEffective, newEffective)
 		&& backingStorageMatches;
 	const bool applied = effectiveUnchanged || !hasNewEffective
 		|| ApplyEffectivePropertyValue(
-			*metadata, newEffective, newSource, allowReadOnly);
+			metadata, newEffective, newSource, allowReadOnly);
 	if (!applied)
 	{
 		slot = previous;
@@ -609,51 +744,48 @@ bool DependencyObject::ClearPropertyValueOwned(
 	}
 	// A slot-backed entry also owns a modified Default/base value and its
 	// evaluated coercion cache. Keep it after the last precedence source clears.
-	if (!entry.HasSources() && !metadata->UsesEffectiveValueStorage())
+	if (!entry.HasSources() && !metadata.UsesEffectiveValueStorage())
 		_propertyValues.erase(entryIt);
 	if (retiredBinding)
-		RetireBindingExpression(metadata->Name(), retiredBinding);
+		RetireBindingExpression(metadata.Property(), retiredBinding);
 	return true;
 
 }
 
 bool DependencyObject::ClearBindingPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const Binding* owner,
 	DependencyPropertyValueSource source,
 	DependencyPropertyExpressionKind expressionKind)
 {
-	if (!owner) return false;
-	if (!IsBindingExpressionOwner(
-		propertyName, owner, source, expressionKind)) return false;
-	return ClearPropertyValueOwned(propertyName, source, owner);
+	if (!owner || !IsBindingExpressionOwner(
+		metadata, owner, source, expressionKind)) return false;
+	return ClearPropertyValueOwned(metadata, source, owner);
 }
 
 bool DependencyObject::IsBindingExpressionOwner(
-	const std::wstring& propertyName,
+	const DependencyPropertyMetadata& metadata,
 	const Binding* owner,
 	DependencyPropertyValueSource source,
 	DependencyPropertyExpressionKind expressionKind) const
 {
 	if (!owner) return false;
-	auto* mutableThis = const_cast<DependencyObject*>(this);
-	const auto* metadata = mutableThis->FindPropertyMetadata(propertyName);
 	const int index = StoredPropertySourceIndex(source);
-	if (!metadata || index < 0) return false;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	if (index < 0) return false;
+	const auto entry = _propertyValues.find(&metadata.Property());
 	if (entry == _propertyValues.end()) return false;
 	const auto& slot = entry->second.Slots[(size_t)index];
 	return slot.Expression == expressionKind && slot.BindingOwner == owner;
 }
 
 void DependencyObject::RetireBindingExpression(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	const Binding* owner)
 {
 	if (!owner) return;
-	if (_dataBindings && _dataBindings->Find(propertyName) == owner)
+	if (_dataBindings && _dataBindings->Find(property) == owner)
 	{
-		(void)_dataBindings->Remove(propertyName);
+		(void)_dataBindings->Remove(property);
 		return;
 	}
 	const_cast<Binding*>(owner)->DetachReplacedTargetExpression();
@@ -664,17 +796,17 @@ size_t DependencyObject::ClearPropertyValues(
 {
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0) return 0;
-	std::vector<std::wstring> properties;
+	std::vector<const DependencyProperty*> properties;
 	properties.reserve(_propertyValues.size());
-	for (const auto& [metadata, entry] : _propertyValues)
+	for (const auto& [property, entry] : _propertyValues)
 	{
-		if (metadata && entry.Slots[(size_t)index].IsOccupied())
-			properties.push_back(metadata->Name());
+		if (property && entry.Slots[(size_t)index].IsOccupied())
+			properties.push_back(property);
 	}
 	size_t cleared = 0;
-	for (const auto& property : properties)
+	for (const auto* property : properties)
 	{
-		if (ClearPropertyValue(property, source)) ++cleared;
+		if (property && ClearPropertyValue(*property, source)) ++cleared;
 	}
 	return cleared;
 }
@@ -685,10 +817,10 @@ size_t DependencyObject::ClearPropertyValues()
 }
 
 bool DependencyObject::HasPropertyValue(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	DependencyPropertyValueSource source)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata) return false;
 	if (source == DependencyPropertyValueSource::Default)
 	{
@@ -703,11 +835,11 @@ bool DependencyObject::HasPropertyValue(
 }
 
 DependencyPropertyValueSource DependencyObject::GetPropertyValueSource(
-	const std::wstring& propertyName)
+	const DependencyProperty& property)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata) return DependencyPropertyValueSource::Default;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&property);
 	if (entry == _propertyValues.end())
 		return DependencyPropertyValueSource::Default;
 	BindingValue value;
@@ -717,23 +849,23 @@ DependencyPropertyValueSource DependencyObject::GetPropertyValueSource(
 }
 
 DependencyPropertyExpressionKind DependencyObject::GetPropertyExpressionKind(
-	const std::wstring& propertyName,
+	const DependencyProperty& property,
 	DependencyPropertyValueSource source)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	const int index = StoredPropertySourceIndex(source);
 	if (!metadata || index < 0) return DependencyPropertyExpressionKind::None;
-	const auto entry = _propertyValues.find(&metadata->Property());
+	const auto entry = _propertyValues.find(&property);
 	return entry == _propertyValues.end()
 		? DependencyPropertyExpressionKind::None
 		: entry->second.Slots[(size_t)index].Expression;
 }
 
-bool DependencyObject::ResetPropertyValue(const std::wstring& propertyName)
+bool DependencyObject::ResetPropertyValue(const DependencyProperty& property)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata || !metadata->CanWrite()) return false;
-	if (ClearPropertyValue(propertyName, DependencyPropertyValueSource::Local))
+	if (ClearPropertyValue(property, DependencyPropertyValueSource::Local))
 		return true;
 	auto entry = _propertyValues.find(&metadata->Property());
 	if (entry != _propertyValues.end() && entry->second.HasSources())
@@ -774,27 +906,25 @@ bool DependencyObject::ResetPropertyValue(const std::wstring& propertyName)
 			*metadata, effective, DependencyPropertyValueSource::Default);
 }
 
-bool DependencyObject::TrySetPropertyBaseValue(
-	const std::wstring& propertyName,
-	const BindingValue& value)
+bool DependencyObject::TrySetPropertyBaseValueCore(
+	const DependencyPropertyMetadata& metadata,
+	const BindingValue& convertedValue)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
-	if (!metadata || !metadata->CanWrite()) return false;
-	BindingValue converted;
-	if (!metadata->TryConvert(value, converted)) return false;
-	if (metadata->UsesEffectiveValueStorage())
+	if (!metadata.CanWrite() || !metadata.IsValidValue(convertedValue))
+		return false;
+	if (metadata.UsesEffectiveValueStorage())
 	{
 		BindingValue ignored;
-		if (!TryGetEffectivePropertyValue(*metadata, ignored)) return false;
+		if (!TryGetEffectivePropertyValue(metadata, ignored)) return false;
 	}
 
-	auto entryIt = _propertyValues.find(&metadata->Property());
+	auto entryIt = _propertyValues.find(&metadata.Property());
 	if (entryIt == _propertyValues.end())
 	{
 		BindingValue effective;
-		if (!metadata->TryCoerce(*this, converted, effective)) return false;
+		if (!metadata.TryCoerce(*this, convertedValue, effective)) return false;
 		return ApplyEffectivePropertyValue(
-			*metadata, effective, DependencyPropertyValueSource::Default);
+			metadata, effective, DependencyPropertyValueSource::Default);
 	}
 
 	auto& entry = entryIt->second;
@@ -803,19 +933,19 @@ bool DependencyObject::TrySetPropertyBaseValue(
 	BindingValue previousEffective;
 	DependencyPropertyValueSource previousSource =
 		DependencyPropertyValueSource::Default;
-	const bool hadPreviousEffective = metadata->UsesEffectiveValueStorage()
+	const bool hadPreviousEffective = metadata.UsesEffectiveValueStorage()
 		&& entry.HasEffectiveValue
 		? (previousEffective = entry.EffectiveValue,
 			previousSource = entry.EffectiveSource, true)
 		: TryEvaluateEffectivePropertyValue(
-			*metadata, entry, previousEffective, previousSource);
-	entry.BaseValue = converted;
+			metadata, entry, previousEffective, previousSource);
+	entry.BaseValue = convertedValue;
 	entry.HasBaseValue = true;
 
 	BindingValue nextEffective;
 	DependencyPropertyValueSource nextSource = DependencyPropertyValueSource::Default;
 	if (!TryEvaluateEffectivePropertyValue(
-		*metadata, entry, nextEffective, nextSource))
+		metadata, entry, nextEffective, nextSource))
 	{
 		entry.BaseValue = previousBase;
 		entry.HasBaseValue = previouslyHadBase;
@@ -824,9 +954,9 @@ bool DependencyObject::TrySetPropertyBaseValue(
 	if (nextSource != DependencyPropertyValueSource::Default
 		|| (hadPreviousEffective
 			&& previousSource == nextSource
-			&& metadata->ValuesEqual(previousEffective, nextEffective)))
+			&& metadata.ValuesEqual(previousEffective, nextEffective)))
 		return true;
-	if (ApplyEffectivePropertyValue(*metadata, nextEffective, nextSource))
+	if (ApplyEffectivePropertyValue(metadata, nextEffective, nextSource))
 		return true;
 	entry.BaseValue = previousBase;
 	entry.HasBaseValue = previouslyHadBase;
@@ -834,9 +964,9 @@ bool DependencyObject::TrySetPropertyBaseValue(
 }
 
 bool DependencyObject::IsPropertyValueDefault(
-	const std::wstring& propertyName)
+	const DependencyProperty& property)
 {
-	const auto* metadata = FindPropertyMetadata(propertyName);
+	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata || !metadata->CanRead()) return false;
 	BindingValue currentValue;
 	BindingValue defaultValue;
@@ -914,6 +1044,14 @@ bool DependencyObject::TryGetEffectivePropertyValue(
 bool DependencyObject::ApplyEffectivePropertyValue(
 	const DependencyPropertyMetadata& metadata,
 	const BindingValue& value,
+	DependencyPropertyValueSource source)
+{
+	return ApplyEffectivePropertyValue(metadata, value, source, false);
+}
+
+bool DependencyObject::ApplyEffectivePropertyValue(
+	const DependencyPropertyMetadata& metadata,
+	const BindingValue& value,
 	DependencyPropertyValueSource source,
 	bool allowReadOnly)
 {
@@ -973,33 +1111,35 @@ bool DependencyObject::ApplyEffectivePropertyValue(
 }
 
 bool DependencyObject::TryGetValue(
-	const std::wstring& propertyName,
+	BindingSourcePropertyToken property,
 	BindingValue& out) const
 {
-	return const_cast<DependencyObject*>(this)->TryGetPropertyValue(
-		propertyName, out);
+	auto& target = *const_cast<DependencyObject*>(this);
+	const auto* metadata = target.GetPropertyMetadata(property);
+	return metadata && metadata->TryGet(target, out);
 }
 
 bool DependencyObject::TrySetValue(
-	const std::wstring& propertyName,
+	BindingSourcePropertyToken property,
 	const BindingValue& value)
 {
 	VerifyAccess();
-	// WPF DependencyObject.SetValue establishes a Local contribution and may
-	// replace the expression occupying that slot. SetCurrentValue is exposed
-	// separately by Control for behavior code that must preserve the source.
-	return TrySetPropertyValue(propertyName, value);
+	const auto* metadata = GetPropertyMetadata(property);
+	return metadata && TrySetPropertyValueOwned(
+		*metadata, value, DependencyPropertyValueSource::Local, nullptr);
 }
 
 bool DependencyObject::TryGetPropertyMetadata(
-	const std::wstring& propertyName,
+	BindingSourcePropertyToken property,
 	BindingSourcePropertyMetadata& out) const
 {
 	auto& target = *const_cast<DependencyObject*>(this);
-	const auto* metadata = DependencyPropertyRegistry::Find(
-		target, propertyName);
+	const auto* metadata = target.GetPropertyMetadata(property);
 	if (!metadata) return false;
-	out.Name = metadata->Name();
+#if CUI_ENABLE_DYNAMIC_XAML
+	// The token route does not need to materialize the design-time member name.
+	out.Name.clear();
+#endif
 	out.ValueKind = metadata->ValueKind();
 	out.ValueType = metadata->ValueType();
 	out.CanRead = metadata->CanRead();
@@ -1008,41 +1148,9 @@ bool DependencyObject::TryGetPropertyMetadata(
 	return true;
 }
 
-std::vector<BindingSourcePropertyMetadata> DependencyObject::GetProperties() const
-{
-	auto& target = *const_cast<DependencyObject*>(this);
-	std::vector<BindingSourcePropertyMetadata> result;
-	for (const auto* metadata : DependencyPropertyRegistry::GetProperties(target))
-	{
-		if (!metadata) continue;
-		result.push_back({
-			metadata->Name(), metadata->ValueKind(), metadata->ValueType(),
-			metadata->CanRead(), metadata->CanWrite(), true });
-	}
-	return result;
-}
-
+#if !CUI_ENABLE_DYNAMIC_XAML
 PropertyChangedEvent& DependencyObject::PropertyChanged()
 {
-	if (!_bindingSourceMetadataConnectionsInitialized)
-	{
-		_bindingSourceMetadataConnectionsInitialized = true;
-		for (const auto* metadata :
-			DependencyPropertyRegistry::GetProperties(*this))
-		{
-			if (!metadata || !metadata->CanObserve()) continue;
-			auto connection = metadata->Subscribe(
-				*this,
-				[this, metadata]
-				{
-					if (_applyingPropertyMetadata == metadata) return;
-					_bindingSourcePropertyChanged.Notify(metadata->Name());
-				},
-				DataSourceUpdateMode::OnPropertyChanged);
-			if (connection.Connected())
-				_bindingSourceMetadataConnections.push_back(
-					std::move(connection));
-		}
-	}
 	return _bindingSourcePropertyChanged;
 }
+#endif

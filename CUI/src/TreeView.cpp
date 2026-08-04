@@ -4,77 +4,67 @@
 
 #include "ScrollViewer.h"
 #include "TemplateInfrastructure.h"
+#include "ToggleButton.h"
 #include "Window.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cwctype>
-#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
 namespace
 {
-	constexpr float DefaultTreeIndent = 18.0f;
-	constexpr float DefaultChevronSlot = 18.0f;
-	constexpr float DefaultRowHeight = 28.0f;
+	constexpr int DefaultTreeChevronSlot = 18;
 
-	bool EqualsTypeName(const std::wstring& left, const std::wstring& right)
+	bool SameCompiledBindingPath(
+		CompiledBindingPathView left,
+		CompiledBindingPathView right) noexcept
 	{
-		return left == right;
+		return left.Version == right.Version
+			&& left.Steps.data() == right.Steps.data()
+			&& left.Steps.size() == right.Steps.size();
+	}
+
+	void ValidateCompiledTreeValuePath(CompiledBindingPathView path)
+	{
+		if (path.Version != CompiledBindingPathVersion)
+			throw std::invalid_argument(
+				"TreeView.SelectedValuePath compiled version is unsupported");
+		for (const auto& step : path.Steps)
+		{
+			if (!HasCompiledBindingPathCapability(step.Capabilities,
+				CompiledBindingPathCapabilities::Read)
+				|| (step.Kind == CompiledBindingPathStepKind::Property
+					&& !step.Property))
+				throw std::invalid_argument(
+					"TreeView.SelectedValuePath requires readable property tokens");
+		}
 	}
 
 	template<typename TValue>
 	DependencyPropertyOptions<TreeViewItem, TValue> TreeItemStateOptions(
 		TValue defaultValue,
-		int order,
-		bool readOnly,
-		DependencyPropertyPersistence persistence)
+		bool readOnly
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			int order,
+			DependencyPropertyPersistence persistence))
 	{
 		DependencyPropertyOptions<TreeViewItem, TValue> options;
 		options.DefaultValue = std::move(defaultValue);
 		options.Flags = DependencyPropertyFlags::AffectsMeasure
 			| DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"State";
 		options.Design.CategoryOrder = 70;
 		options.Design.Order = order;
 		options.Design.Browsable = !readOnly;
 		options.Design.Persistence = persistence;
+		)
 		options.IsReadOnly = readOnly;
 		return options;
-	}
-
-	void DrawChevron(
-		D2DGraphics& render,
-		float centerX,
-		float centerY,
-		bool expanded,
-		D2D1_COLOR_F color)
-	{
-		constexpr float halfWidth = 2.5f;
-		constexpr float halfHeight = 4.0f;
-		if (expanded)
-		{
-			render.DrawLine(
-				D2D1::Point2F(centerX - halfHeight, centerY - halfWidth),
-				D2D1::Point2F(centerX, centerY + halfWidth), color, 1.6f);
-			render.DrawLine(
-				D2D1::Point2F(centerX, centerY + halfWidth),
-				D2D1::Point2F(centerX + halfHeight, centerY - halfWidth),
-				color, 1.6f);
-		}
-		else
-		{
-			render.DrawLine(
-				D2D1::Point2F(centerX - halfWidth, centerY - halfHeight),
-				D2D1::Point2F(centerX + halfWidth, centerY), color, 1.6f);
-			render.DrawLine(
-				D2D1::Point2F(centerX + halfWidth, centerY),
-				D2D1::Point2F(centerX - halfWidth, centerY + halfHeight),
-				color, 1.6f);
-		}
 	}
 
 	bool PointInRect(float x, float y, const D2D1_RECT_F& rect) noexcept
@@ -83,75 +73,13 @@ namespace
 			&& y >= rect.top && y <= rect.bottom;
 	}
 
-	struct TreeReadOnlyPropertyKeys final
-	{
-		std::optional<DependencyPropertyKey> HasItems;
-		std::optional<DependencyPropertyKey> Level;
-		std::optional<DependencyPropertyKey> SelectedItem;
-		std::optional<DependencyPropertyKey> SelectedValue;
-	};
-
-	TreeReadOnlyPropertyKeys& TreeReadOnlyKeys()
-	{
-		static TreeReadOnlyPropertyKeys keys;
-		return keys;
-	}
-
-	const DependencyPropertyKey& TreeItemReadOnlyKey(
-		TreeViewItem& target,
-		const std::optional<DependencyPropertyKey>& key)
-	{
-		target.EnsureBindingPropertiesRegistered();
-		return key.value();
-	}
 }
 
-TreeViewItem::TreeViewItem()
-	: HeaderedItemsControl()
+const DependencyProperty& TreeViewItem::IsExpandedProperty()
 {
-	EnsureBindingPropertiesRegistered();
-	_accessibilityId = AllocateAccessibilityVirtualId();
-	(void)TrySetPropertyValue(
-		L"VerticalAlignment", BindingValue(::VerticalAlignment::Top),
-		DependencyPropertyValueSource::Theme);
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(Thickness(0.0f)),
-		DependencyPropertyValueSource::Theme);
-	RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	RetainEventConnection(OnMouseDown.Subscribe(
-		[this](Control*, MouseEventArgs& args)
-		{
-			if (args.ChangedButton != MouseButton::Left || !_owner) return;
-
-			auto* header = GetHeaderVisual();
-			const auto headerLocation = header
-				? header->GetActualLocationDip() : cui::core::Point{};
-			const auto headerSize = header
-				? header->GetActualSizeDip()
-				: cui::core::Size{
-					GetActualSizeDip().width, DefaultRowHeight };
-			const float rowHeight = (std::max)(
-				DefaultRowHeight, headerLocation.y + headerSize.height);
-			if (args.Y < 0.0f || args.Y > rowHeight) return;
-
-			if (auto* window = _owner->GetPresentationWindow())
-				window->SetKeyboardFocus(_owner, true);
-			if (_hasItems && args.X >= 0.0f
-				&& args.X <= DefaultChevronSlot)
-				SetCurrentIsExpanded(!_expanded);
-			else
-				(void)_owner->SelectItem(this, true);
-			args.Handled = true;
-		}));
-	ApplyExpansionPresentation();
-}
-
-void TreeViewItem::RegisterDependencyProperties()
-{
-	HeaderedItemsControl::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		DependencyPropertyRegistry::Register<TreeViewItem, bool>(L"IsExpanded",
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<TreeViewItem, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsExpanded"),
 			[](TreeViewItem& target) { return target.GetIsExpanded(); },
 			[](TreeViewItem& target, const bool& value)
 			{ target.ApplyIsExpandedValue(value); },
@@ -162,45 +90,21 @@ void TreeViewItem::RegisterDependencyProperties()
 				return target._expandedChanged.Subscribe(
 					[handler = std::move(handler)](TreeViewItem*) { handler(); });
 			}, TreeItemStateOptions(
-				false, 10, false, DependencyPropertyPersistence::Metadata));
-		auto& readOnlyKeys = TreeReadOnlyKeys();
-		readOnlyKeys.HasItems.emplace(
-			DependencyPropertyRegistry::RegisterReadOnly<TreeViewItem, bool>(
-				L"HasItems",
-				[](TreeViewItem& target) { return target.GetHasItems(); },
-				[](TreeViewItem& target, const bool& value)
-				{
-					(void)target.SetReadOnlyPropertyField(
-						L"HasItems", target._hasItems, value);
-				},
-				[](TreeViewItem& target,
-					DependencyPropertyMetadata::ChangeHandler handler,
-					DataSourceUpdateMode)
-				{
-					return target._hasItemsChanged.Subscribe(
-						[handler = std::move(handler)](TreeViewItem*) { handler(); });
-				}, TreeItemStateOptions(
-					false, 20, true,
-					DependencyPropertyPersistence::Transient)));
-		readOnlyKeys.Level.emplace(
-			DependencyPropertyRegistry::RegisterReadOnly<TreeViewItem, int>(
-				L"Level",
-				[](TreeViewItem& target) { return target.GetLevel(); },
-				[](TreeViewItem& target, const int& value)
-				{
-					(void)target.SetReadOnlyPropertyField(
-						L"Level", target._level, value);
-				},
-				[](TreeViewItem& target,
-					DependencyPropertyMetadata::ChangeHandler handler,
-					DataSourceUpdateMode)
-				{
-					return target._levelChanged.Subscribe(
-						[handler = std::move(handler)](TreeViewItem*) { handler(); });
-				}, TreeItemStateOptions(
-					0, 30, true,
-					DependencyPropertyPersistence::Transient)));
-		DependencyPropertyRegistry::Register<TreeViewItem, bool>(L"IsSelected",
+				false, false CUI_DESIGN_METADATA_ARGUMENTS(
+					10, DependencyPropertyPersistence::Metadata)));
+	return *registration;
+}
+
+const DependencyProperty& TreeViewItem::HasItemsProperty()
+{
+	return HasItemsPropertyKey().Property();
+}
+
+const DependencyProperty& TreeViewItem::IsSelectedProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<TreeViewItem, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsSelected"),
 			[](TreeViewItem& target) { return target.GetIsSelected(); },
 			[](TreeViewItem& target, const bool& value)
 			{ target.ApplyIsSelectedValue(value); },
@@ -211,22 +115,95 @@ void TreeViewItem::RegisterDependencyProperties()
 				return target._selectedChanged.Subscribe(
 					[handler = std::move(handler)](TreeViewItem*) { handler(); });
 			}, TreeItemStateOptions(
-				false, 40, false, DependencyPropertyPersistence::Metadata));
-		return true;
-	}();
-	(void)registered;
+				false, false CUI_DESIGN_METADATA_ARGUMENTS(
+					40, DependencyPropertyPersistence::Metadata)));
+	return *registration;
+}
+
+const DependencyPropertyKey& TreeViewItem::HasItemsPropertyKey()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterReadOnlyStatic<TreeViewItem, bool>(
+			DependencyPropertyRegistrationLiteral(L"HasItems"),
+			[](TreeViewItem& target) { return target.GetHasItems(); },
+			[](TreeViewItem& target, const bool& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					HasItemsPropertyKey(), target._hasItems, value);
+			},
+			[](TreeViewItem& target,
+				DependencyPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._hasItemsChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(
+				false, true CUI_DESIGN_METADATA_ARGUMENTS(
+					20, DependencyPropertyPersistence::Transient)));
+	return registration.Key();
+}
+
+const DependencyPropertyKey& TreeViewItem::LevelPropertyKey()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterReadOnlyStatic<TreeViewItem, int>(
+			DependencyPropertyRegistrationLiteral(L"Level"),
+			[](TreeViewItem& target) { return target.GetLevel(); },
+			[](TreeViewItem& target, const int& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					LevelPropertyKey(), target._level, value);
+			},
+			[](TreeViewItem& target,
+				DependencyPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._levelChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(
+				0, true CUI_DESIGN_METADATA_ARGUMENTS(
+					30, DependencyPropertyPersistence::Transient)));
+	return registration.Key();
+}
+
+TreeViewItem::TreeViewItem()
+	: HeaderedItemsControl()
+{
+#if CUI_ENABLE_DYNAMIC_XAML
+	EnsureBindingPropertiesRegistered();
+#endif
+	_accessibilityId = AllocateAccessibilityVirtualId();
+	RetainEventConnection(OnMouseDown.Subscribe(
+		[this](Control*, MouseEventArgs& args)
+		{
+			HandleHeaderPointer(args, false);
+		}));
+	RetainEventConnection(OnMouseDoubleClick.Subscribe(
+		[this](Control*, MouseEventArgs& args)
+		{
+			HandleHeaderPointer(args, true);
+		}));
+	ApplyExpansionPresentation();
+}
+
+void TreeViewItem::RegisterDependencyProperties()
+{
+	HeaderedItemsControl::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	RegisterDesignDependencyProperties();
+#endif
 }
 
 cui::core::Insets
 TreeViewItem::GetHeaderPresentationInsets() const noexcept
 {
-	return cui::core::Insets{ DefaultChevronSlot, 0.0f, 0.0f, 0.0f };
+	return {};
 }
 
 cui::core::Insets
 TreeViewItem::GetItemsPresentationInsets() const noexcept
 {
-	return cui::core::Insets{ DefaultTreeIndent, 0.0f, 0.0f, 0.0f };
+	return {};
 }
 
 bool TreeViewItem::ValidateAuthoredItemControl(
@@ -282,9 +259,10 @@ TreeViewItem* TreeViewItem::ContainerFromIndex(size_t index) const noexcept
 
 bool TreeViewItem::InitializeGenerated(
 	TreeView& owner,
+	const ItemsControl& projectionOwner,
 	const BindingSourceReference& item,
 	ItemTemplateReference headerTemplate,
-	const std::wstring& displayMemberPath,
+	CompiledBindingPathView displayMemberPath,
 	int level,
 	std::wstring* outError)
 {
@@ -296,7 +274,7 @@ bool TreeViewItem::InitializeGenerated(
 	_dataItem = item;
 	_headerDataTemplate = std::move(headerTemplate);
 	if (!SetReadOnlyPropertyField(
-		TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().Level),
+		LevelPropertyKey(),
 		_level, level))
 	{
 		if (outError) *outError =
@@ -304,10 +282,18 @@ bool TreeViewItem::InitializeGenerated(
 		_initializingGeneratedContainer = false;
 		return false;
 	}
-	SetHeaderTypeName(_headerDataTemplate
-		? _headerDataTemplate.Get()->DataTypeName()
-		: std::wstring{});
-	SetHeaderDisplayMemberPath(displayMemberPath);
+	SetHeaderTypeToken(_headerDataTemplate
+		? _headerDataTemplate.Get()->GetDataTypeToken()
+		: DataTypeToken{});
+	if (!displayMemberPath.Empty())
+	{
+		SetCompiledDisplayMemberPath(displayMemberPath);
+		SetCompiledHeaderDisplayMemberPath(displayMemberPath);
+	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	owner.ApplyAuthoredGeneratedContainerProjection(
+		*this, projectionOwner);
+#endif
 	SetHeaderTemplate(_headerDataTemplate);
 	if (!SetDataContext(item))
 	{
@@ -405,8 +391,38 @@ bool TreeViewItem::EnsureChildrenRealized()
 {
 	if (!_generatedContainer || !_hierarchicalItemsSource) return true;
 	if (GetMaterializedItemsSource() == _hierarchicalItemsSource) return true;
+	_materializingExpansionChildren = true;
 	HeaderedItemsControl::SetItemsSource(_hierarchicalItemsSource);
-	return LastTemplateError().empty();
+	_materializingExpansionChildren = false;
+	if (!LastTemplateError().empty()) return false;
+	if (_owner) _owner->BindExpandedSubtree(*this);
+	return true;
+}
+
+bool TreeViewItem::HierarchyMigrationInProgress() const noexcept
+{
+	if (_owner && _owner->AuthoredHierarchyMigrationInProgress())
+		return true;
+	for (auto* current = this; current;
+		current = current->_parentItem)
+		if (current->IsAuthoredItemsMigrationInProgress())
+			return true;
+	return false;
+}
+
+void TreeViewItem::CollectMaterializedChildContainers(
+	std::vector<TreeViewItem*>& output) const
+{
+	if (_generatedContainer && _hierarchicalItemsSource
+		&& !GetMaterializedItemsSource()) return;
+	for (size_t index = 0;
+		index < HeaderedItemsControl::ItemCount();
+		++index)
+	{
+		auto* child = dynamic_cast<TreeViewItem*>(
+			HeaderedItemsControl::GetGeneratedItem(index));
+		if (child) output.push_back(child);
+	}
 }
 
 void TreeViewItem::BindHierarchy(
@@ -417,7 +433,7 @@ void TreeViewItem::BindHierarchy(
 	if (_level != level)
 	{
 		(void)SetReadOnlyPropertyField(
-			TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().Level),
+			LevelPropertyKey(),
 			_level, level);
 		cui::framework::EventAccess::Raise(_levelChanged, this);
 	}
@@ -434,7 +450,9 @@ void TreeViewItem::UnbindHierarchy() noexcept
 void TreeViewItem::ApplyIsExpandedValue(bool value)
 {
 	if (_expanded == value) return;
-	if (!SetPropertyField(L"IsExpanded", _expanded, value)) return;
+	const bool restoreFocus =
+		!value && ShouldRestoreFocusAfterCollapse();
+	if (!SetPropertyField(IsExpandedProperty(), _expanded, value)) return;
 	cui::framework::EventAccess::Raise(_expandedChanged, this);
 	RoutedEventArgs args;
 	if (value) Expanded(this, args);
@@ -442,12 +460,14 @@ void TreeViewItem::ApplyIsExpandedValue(bool value)
 	ApplyExpansionPresentation();
 	if (_owner)
 	{
-		_owner->RefreshHierarchy();
+		if (value) _owner->BindExpandedSubtree(*this);
+		else (void)_owner->HandleSelectionAndCollapsed(*this);
 		// Expansion mutates the realized hierarchy and therefore the geometry
 		// used by the very next pointer hit test.  Commit the owning ItemsControl
 		// boundary now so rendering and input cannot observe the old row map.
 		_owner->UpdateLayout();
 	}
+	RestoreFocusAfterCollapse(restoreFocus);
 }
 
 void TreeViewItem::SyncHasItems()
@@ -457,7 +477,7 @@ void TreeViewItem::SyncHasItems()
 		? source.Get()->Count() != 0 : AuthoredItemCount() != 0;
 	if (_hasItems == value) return;
 	if (!SetReadOnlyPropertyField(
-		TreeItemReadOnlyKey(*this, TreeReadOnlyKeys().HasItems),
+		HasItemsPropertyKey(),
 		_hasItems, value)) return;
 	cui::framework::EventAccess::Raise(_hasItemsChanged, this);
 }
@@ -465,56 +485,179 @@ void TreeViewItem::SyncHasItems()
 void TreeViewItem::ApplyIsSelectedValue(bool value)
 {
 	if (_selected == value) return;
-	if (!SetPropertyField(L"IsSelected", _selected, value)) return;
+	if (!SetPropertyField(IsSelectedProperty(), _selected, value)) return;
 	SetStyleState(ControlStyleState::Selected, value);
-	const auto back = value
-		? cui::theme::palette::AccentSelected
-		: IsMouseOver ? cui::theme::palette::AccentSoft
-		: D2D1_COLOR_F{ 0, 0, 0, 0 };
-	(void)TrySetPropertyValue(L"Background", BindingValue(back),
-		DependencyPropertyValueSource::Theme);
 	cui::framework::EventAccess::Raise(_selectedChanged, this);
 	RoutedEventArgs args;
 	if (value) Selected(this, args);
 	else Unselected(this, args);
 }
 
-void TreeViewItem::OnIsMouseOverChanged(bool, bool value)
+void TreeViewItem::OnIsMouseOverChanged(bool, bool)
 {
-	if (!_selected)
-	{
-		const auto back = value
-			? cui::theme::palette::AccentSoft
-			: D2D1_COLOR_F{ 0, 0, 0, 0 };
-		(void)TrySetPropertyValue(L"Background", BindingValue(back),
-			DependencyPropertyValueSource::Theme);
-	}
 }
 
 void TreeViewItem::ApplyExpansionPresentation()
 {
-	if (auto* host = GetItemsHost())
-		cui::framework::TemplateAccess::SetPresentationSuppressed(
-			*host, !_expanded);
+	if (_expanderPart)
+		(void)_expanderPart->TrySetCurrentPropertyValue(
+			ToggleButton::IsCheckedProperty(),
+			BindingValue(NullableBool(_expanded)));
+	// The ItemsPresenter owns template chrome, while the generated ItemsHost is
+	// the semantic layout boundary for descendants. Keep that internal host in
+	// lockstep with IsExpanded as well, so custom templates and lazy hierarchy
+	// realization cannot leave collapsed children participating in layout.
+	if (auto* itemsHost = GetItemsHost())
+		(void)itemsHost->TrySetCurrentPropertyValue(
+			Control::VisibilityProperty(),
+			BindingValue(_expanded ? L"Visible" : L"Collapsed"));
 	RequestLayout();
 	InvalidateVisual();
+}
+
+void TreeViewItem::OnControlTemplatePresentationChanged()
+{
+	_expanderClickConnection.Disconnect();
+	_expanderPart = nullptr;
+	HeaderedItemsControl::OnControlTemplatePresentationChanged();
+	_expanderPart = dynamic_cast<ToggleButton*>(
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_Expander")));
+	if (_expanderPart)
+	{
+		const ControlWeakReference lifetime(this);
+		_expanderClickConnection = _expanderPart->Click.Subscribe(
+			[lifetime](Control* sender, RoutedEventArgs&)
+			{
+				auto* item =
+					dynamic_cast<TreeViewItem*>(lifetime.Get());
+				auto* expander = item ? item->_expanderPart : nullptr;
+				if (!item || sender != expander) return;
+				item->SetCurrentIsExpanded(
+					expander->IsChecked == true);
+			});
+	}
+	ApplyExpansionPresentation();
+}
+
+Control* TreeViewItem::GetHeaderInteractionVisual() noexcept
+{
+	if (auto* chrome =
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_HeaderChrome")))
+		return chrome;
+	return GetHeaderVisual();
+}
+
+bool TreeViewItem::IsExpanderSource(Control* source) const noexcept
+{
+	if (!_expanderPart || !source) return false;
+	for (auto* current = source; current;
+		current = current->GetRoutedParent())
+	{
+		if (current == _expanderPart) return true;
+		if (current == this) break;
+	}
+	return false;
+}
+
+void TreeViewItem::HandleHeaderPointer(
+	MouseEventArgs& args,
+	bool doubleClick)
+{
+	if (args.Handled || args.ChangedButton != MouseButton::Left
+		|| !_owner || !IsEffectivelyEnabled()) return;
+	if (IsExpanderSource(args.OriginalSource)) return;
+	auto* header = GetHeaderInteractionVisual();
+	bool withinHeader = false;
+	for (auto* current = args.OriginalSource; current;
+		current = current->GetRoutedParent())
+	{
+		if (current == header)
+		{
+			withinHeader = true;
+			break;
+		}
+		if (current == this) break;
+	}
+	if (!withinHeader && args.OriginalSource != this) return;
+	// A direct report targets the behavior host when no finer template hit was
+	// supplied (including the native fallback path). Preserve the TreeView
+	// chevron slot contract without competing with an actual PART_Expander,
+	// whose routed Click owns template-authored input.
+	if (!doubleClick && args.OriginalSource == this && _hasItems
+		&& args.X >= 0 && args.X <= DefaultTreeChevronSlot)
+	{
+		SetCurrentIsExpanded(!_expanded);
+		args.Handled = true;
+		return;
+	}
+	const ControlWeakReference lifetime(this);
+	if (!_owner->FocusAndSelectItem(this, true)) return;
+	auto* live = dynamic_cast<TreeViewItem*>(lifetime.Get());
+	if (!live) return;
+	if (doubleClick && live->_hasItems)
+		live->SetCurrentIsExpanded(!live->_expanded);
+	args.Handled = true;
+}
+
+bool TreeViewItem::ShouldRestoreFocusAfterCollapse() const noexcept
+{
+	if (!_owner || !_expanded) return false;
+	auto* focused = GetPresentationWindow()
+		? GetPresentationWindow()->GetKeyboardFocusedElement()
+		: nullptr;
+	if (!focused || focused == this) return false;
+	for (auto* current = focused; current;
+		current = current->GetRoutedParent())
+	{
+		if (current == this) return true;
+	}
+	return false;
+}
+
+void TreeViewItem::RestoreFocusAfterCollapse(bool requested)
+{
+	if (requested && _owner)
+		(void)_owner->FocusAndSelectItem(this, true);
+}
+
+bool TreeViewItem::HandlesNavigationKey(Key key) const
+{
+	return _owner
+		? _owner->HandlesNavigationKey(key)
+		: HeaderedItemsControl::HandlesNavigationKey(key);
+}
+
+bool TreeViewItem::ProcessInput(const InputReport& input)
+{
+	if (input.Kind == InputReportKind::KeyDown && _owner)
+	{
+		if (_owner->ProcessItemNavigationKey(this, input))
+		{
+			auto args = input.CreateKeyEventArgs();
+			OnKeyDown(this, args);
+			return true;
+		}
+	}
+	return HeaderedItemsControl::ProcessInput(input);
 }
 
 void TreeViewItem::SetIsExpanded(bool value)
 {
 	if (value && !EnsureChildrenRealized()) return;
-	(void)SetPropertyField(L"IsExpanded", _expanded, value);
+	(void)SetPropertyField(IsExpandedProperty(), _expanded, value);
 }
 
 void TreeViewItem::SetCurrentIsExpanded(bool value)
 {
 	if (value && !EnsureChildrenRealized()) return;
-	(void)SetCurrentPropertyField(L"IsExpanded", _expanded, value);
+	(void)SetCurrentPropertyField(IsExpandedProperty(), _expanded, value);
 }
 
 void TreeViewItem::SetIsSelected(bool value)
 {
-	if (!SetPropertyField(L"IsSelected", _selected, value)) return;
+	if (!SetPropertyField(IsSelectedProperty(), _selected, value)) return;
 	if (_owner)
 	{
 		if (value) (void)_owner->SelectItem(this, true);
@@ -526,7 +669,7 @@ void TreeViewItem::SetIsSelected(bool value)
 
 void TreeViewItem::SetCurrentIsSelected(bool value)
 {
-	(void)SetCurrentPropertyField(L"IsSelected", _selected, value);
+	(void)SetCurrentPropertyField(IsSelectedProperty(), _selected, value);
 }
 
 std::unique_ptr<Control> TreeViewItem::BuildGeneratedItem(
@@ -552,7 +695,8 @@ std::unique_ptr<Control> TreeViewItem::BuildGeneratedItem(
 	auto source = GetMaterializedItemsSource();
 	std::wstring error;
 	auto container = _owner->CreateGeneratedContainer(
-		source, item, GetItemTemplate(), GetDisplayMemberPath(),
+		source, item, GetItemTemplate(), *this,
+		GetCompiledDisplayMemberPath(),
 		GetItemContainerStyle(),
 		_level + 1, &error);
 	if (!container)
@@ -566,75 +710,45 @@ std::unique_ptr<Control> TreeViewItem::BuildGeneratedItem(
 
 void TreeViewItem::OnBeforeGeneratedItemsRebuilt()
 {
-	if (_owner && !_initializingGeneratedContainer)
+	if (_owner && !_initializingGeneratedContainer
+		&& !_materializingExpansionChildren
+		&& !HierarchyMigrationInProgress())
 		_owner->PrepareHierarchyMutation();
 }
 
 void TreeViewItem::OnGeneratedItemsRebuilt()
 {
 	SyncHasItems();
-	if (_owner && !_initializingGeneratedContainer)
+	if (_owner && !_initializingGeneratedContainer
+		&& !_materializingExpansionChildren
+		&& !HierarchyMigrationInProgress())
 		_owner->CompleteHierarchyMutation();
 }
 
 void TreeViewItem::OnGeneratedItemsRealized()
 {
 	SyncHasItems();
-	if (_owner && !_initializingGeneratedContainer)
+	if (_owner && !_initializingGeneratedContainer
+		&& !_materializingExpansionChildren
+		&& !HierarchyMigrationInProgress())
 		_owner->RefreshHierarchy();
 }
 
 void TreeViewItem::OnAuthoredItemsChanged() noexcept
 {
 	SyncHasItems();
-	if (_owner && !_initializingGeneratedContainer)
+	if (_owner && !_initializingGeneratedContainer
+		&& !_materializingExpansionChildren
+		&& !HierarchyMigrationInProgress())
 		_owner->RefreshHierarchy();
-}
-
-void TreeViewItem::OnRender()
-{
-	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
-	auto* render = GetDrawingContext();
-	auto* header = GetHeaderVisual();
-	const auto itemSize = GetActualSizeDip();
-	const auto headerLocation = header
-		? header->GetActualLocationDip() : cui::core::Point{};
-	const auto headerSize = header
-		? header->GetActualSizeDip()
-		: cui::core::Size{ itemSize.width, DefaultRowHeight };
-	const float rowHeight = (std::max)(DefaultRowHeight,
-		headerLocation.y + headerSize.height);
-
-	if (!GetControlTemplateRoot())
-	{
-		BeginRender();
-		if (RendererBackgroundColor.a > 0.0f)
-			render->FillRoundRect(
-				0.0f, 1.0f, itemSize.width, (std::max)(0.0f, rowHeight - 2.0f),
-				RendererBackgroundColor, 5.0f);
-		if (_hasItems)
-			DrawChevron(*render, DefaultChevronSlot * 0.5f,
-				rowHeight * 0.5f, _expanded, RendererForegroundColor);
-		if (_selected)
-			render->FillRoundRect(0.0f, 5.0f, 3.0f,
-				(std::max)(6.0f, rowHeight - 10.0f),
-				cui::theme::palette::Accent, 1.5f);
-		EndRender();
-	}
 }
 
 TreeView::TreeView()
 	: ItemsControl()
 {
+#if CUI_ENABLE_DYNAMIC_XAML
 	EnsureBindingPropertiesRegistered();
-	(void)TrySetPropertyValue(
-		L"Focusable", BindingValue(true),
-		DependencyPropertyValueSource::Theme);
-	RendererBackgroundColor = cui::theme::palette::Surface;
-	RendererBorderColor = cui::theme::palette::Border;
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(Thickness(1.0f)),
-		DependencyPropertyValueSource::Theme);
+#endif
 }
 
 TreeView::~TreeView()
@@ -643,41 +757,25 @@ TreeView::~TreeView()
 		if (auto* item = dynamic_cast<TreeViewItem*>(reference.Get()))
 			item->UnbindHierarchy();
 	_boundContainers.clear();
+	_boundContainerIndex.clear();
 }
 
-void TreeView::RegisterDependencyProperties()
+const DependencyPropertyKey& TreeView::SelectedItemPropertyKey()
 {
-	ItemsControl::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		DependencyPropertyOptions<TreeView, std::wstring> pathOptions;
-		pathOptions.DefaultValue = std::wstring{};
-		pathOptions.Design.Category = L"Data";
-		pathOptions.Design.CategoryOrder = 80;
-		pathOptions.Design.Order = 40;
-		pathOptions.Design.Editor = DependencyPropertyEditorKind::Text;
-		pathOptions.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<TreeView, std::wstring>(
-			L"SelectedValuePath",
-			[](TreeView& target) { return target.GetSelectedValuePath(); },
-			[](TreeView& target, const std::wstring& value)
-			{ target.SetSelectedValuePath(value); }, {}, std::move(pathOptions));
-
-		auto projectionOptions = [](int order)
-		{
-			DependencyPropertyOptions<TreeView, BindingValue> options;
-			options.DefaultValue = BindingValue{};
-			options.Design.Category = L"Data";
-			options.Design.CategoryOrder = 80;
-			options.Design.Order = order;
-			options.Design.Browsable = false;
-			options.Design.Persistence = DependencyPropertyPersistence::Transient;
-			return options;
-		};
-		auto& readOnlyKeys = TreeReadOnlyKeys();
-		readOnlyKeys.SelectedItem.emplace(
-			DependencyPropertyRegistry::RegisterReadOnly<TreeView, BindingValue>(
-				L"SelectedItem",
+		DependencyPropertyOptions<TreeView, BindingValue> options;
+		options.DefaultValue = BindingValue{};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Data";
+		options.Design.CategoryOrder = 80;
+		options.Design.Order = 50;
+		options.Design.Browsable = false;
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<
+			TreeView, BindingValue>(
+				DependencyPropertyRegistrationLiteral(L"SelectedItem"),
 				[](TreeView& target) { return target.GetSelectedItem(); }, {},
 				[](TreeView& target,
 					DependencyPropertyMetadata::ChangeHandler handler,
@@ -685,10 +783,27 @@ void TreeView::RegisterDependencyProperties()
 				{
 					return target._selectedItemChanged.Subscribe(
 						[handler = std::move(handler)](TreeView*) { handler(); });
-				}, projectionOptions(50)));
-		readOnlyKeys.SelectedValue.emplace(
-			DependencyPropertyRegistry::RegisterReadOnly<TreeView, BindingValue>(
-				L"SelectedValue",
+				}, std::move(options));
+	}();
+	return registration.Key();
+}
+
+const DependencyPropertyKey& TreeView::SelectedValuePropertyKey()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<TreeView, BindingValue> options;
+		options.DefaultValue = BindingValue{};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Data";
+		options.Design.CategoryOrder = 80;
+		options.Design.Order = 60;
+		options.Design.Browsable = false;
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<
+			TreeView, BindingValue>(
+				DependencyPropertyRegistrationLiteral(L"SelectedValue"),
 				[](TreeView& target) { return target.GetSelectedValue(); }, {},
 				[](TreeView& target,
 					DependencyPropertyMetadata::ChangeHandler handler,
@@ -696,10 +811,17 @@ void TreeView::RegisterDependencyProperties()
 				{
 					return target._selectedValueChanged.Subscribe(
 						[handler = std::move(handler)](TreeView*) { handler(); });
-				}, projectionOptions(60)));
-		return true;
+				}, std::move(options));
 	}();
-	(void)registered;
+	return registration.Key();
+}
+
+void TreeView::RegisterDependencyProperties()
+{
+	ItemsControl::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	RegisterDesignDependencyProperties();
+#endif
 }
 
 bool TreeView::ValidateAuthoredItemControl(
@@ -718,26 +840,28 @@ ItemTemplateReference TreeView::ResolveDataItemTemplate(
 {
 	if (outError) outError->clear();
 	if (!source) return {};
-	const auto& itemType = source.Get()->ItemTypeName();
+	const auto itemType = source.Get()->GetItemTypeToken();
 	ItemTemplateReference result = localTemplate;
 	if (!result && level != 0)
 	{
 		const auto rootTemplate = GetItemTemplate();
-		if (rootTemplate && (itemType.empty()
-			|| rootTemplate.Get()->DataTypeName().empty()
-			|| EqualsTypeName(
-				rootTemplate.Get()->DataTypeName(), itemType)))
+		if (rootTemplate && AreDataTypesCompatible(
+			itemType, rootTemplate.Get()->GetDataTypeToken()))
 			result = rootTemplate;
 	}
-	if (!result && _implicitItemTemplateResolver)
-		result = _implicitItemTemplateResolver(itemType);
-	if (result && !itemType.empty()
-		&& !result.Get()->DataTypeName().empty()
-		&& !EqualsTypeName(result.Get()->DataTypeName(), itemType))
+	if (!result && _compiledImplicitItemTemplateResolver)
+		result = _compiledImplicitItemTemplateResolver(itemType);
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (!result) result = ResolveAuthoredImplicitItemTemplate(source);
+#endif
+	if (result && !AreDataTypesCompatible(
+		itemType, result.Get()->GetDataTypeToken()))
 	{
 		if (outError) *outError =
-			L"TreeView ItemTemplate DataType 与 ItemsSource ItemType 不一致："
-			+ itemType;
+			L"TreeView ItemTemplate DataType 与 ItemsSource ItemType 不一致。";
+#if CUI_ENABLE_DYNAMIC_XAML
+		if (outError) AppendAuthoredItemTypeDiagnostic(source, *outError);
+#endif
 		return {};
 	}
 	return result;
@@ -747,7 +871,8 @@ std::unique_ptr<TreeViewItem> TreeView::CreateGeneratedContainer(
 	const BindingListReference& source,
 	const BindingSourceReference& item,
 	const ItemTemplateReference& localTemplate,
-	const std::wstring& displayMemberPath,
+	const ItemsControl& projectionOwner,
+	CompiledBindingPathView displayMemberPath,
 	const std::wstring& containerStyle,
 	int level,
 	std::wstring* outError)
@@ -788,7 +913,8 @@ std::unique_ptr<TreeViewItem> TreeView::CreateGeneratedContainer(
 	cui::framework::StyleAccess::SetResourceKey(
 		*container, containerStyle);
 	if (!container->InitializeGenerated(
-		*this, item, std::move(itemTemplate), displayMemberPath,
+		*this, projectionOwner, item,
+		std::move(itemTemplate), displayMemberPath,
 		level, outError)) return {};
 	return container;
 }
@@ -801,7 +927,8 @@ std::unique_ptr<Control> TreeView::BuildGeneratedItem(
 	observation = {};
 	std::wstring error;
 	auto container = CreateGeneratedContainer(
-		GetItemsSource(), item, GetItemTemplate(), GetDisplayMemberPath(),
+		GetItemsSource(), item, GetItemTemplate(), *this,
+		GetCompiledDisplayMemberPath(),
 		GetItemContainerStyle(), 0, &error);
 	if (!container) SetLastTemplateError(std::move(error));
 	return container;
@@ -820,17 +947,18 @@ void TreeView::SetItemTemplate(ItemTemplateReference value)
 	RefreshHierarchy();
 }
 
-void TreeView::SetDisplayMemberPath(std::wstring value)
+void TreeView::SetCompiledDisplayMemberPath(
+	CompiledBindingPathView value)
 {
-	ItemsControl::SetDisplayMemberPath(std::move(value));
+	ItemsControl::SetCompiledDisplayMemberPath(value);
 	RebuildAuthoredDataDescendants();
 	RefreshHierarchy();
 }
 
-void TreeView::SetImplicitItemTemplateResolver(
-	ImplicitItemTemplateResolver value)
+void TreeView::SetCompiledImplicitItemTemplateResolver(
+	CompiledImplicitItemTemplateResolver value)
 {
-	_implicitItemTemplateResolver = std::move(value);
+	_compiledImplicitItemTemplateResolver = std::move(value);
 	if (GetItemsSource()) (void)RebuildGeneratedItems();
 	RebuildAuthoredDataDescendants();
 	RefreshHierarchy();
@@ -881,21 +1009,52 @@ void TreeView::CompleteHierarchyMutation()
 }
 
 void TreeView::CollectContainers(
-	ItemsControl& owner,
 	TreeViewItem* parent,
 	int level,
 	std::vector<TreeViewItem*>& output)
 {
-	for (size_t index = 0; index < owner.ItemCount(); ++index)
+	const size_t count = parent ? parent->ItemCount() : ItemCount();
+	for (size_t index = 0; index < count; ++index)
 	{
 		auto* item = parent
 			? parent->ContainerFromIndex(index)
-			: dynamic_cast<TreeViewItem*>(owner.GetGeneratedItem(index));
+			: dynamic_cast<TreeViewItem*>(GetGeneratedItem(index));
 		if (!item) continue;
 		item->BindHierarchy(*this, parent, level);
 		output.push_back(item);
-		CollectContainers(*item, item, level + 1, output);
+		CollectContainers(item, level + 1, output);
 	}
+}
+
+void TreeView::CollectMaterializedChildren(
+	TreeViewItem* parent,
+	std::vector<TreeViewItem*>& output) const
+{
+	if (!parent) return;
+	std::vector<TreeViewItem*> children;
+	parent->CollectMaterializedChildContainers(children);
+	for (auto* child : children)
+	{
+		if (!child) continue;
+		output.push_back(child);
+		CollectMaterializedChildren(child, output);
+	}
+}
+
+void TreeView::BindExpandedSubtree(TreeViewItem& parent)
+{
+	if (parent._owner != this) return;
+	std::vector<TreeViewItem*> descendants;
+	CollectContainers(&parent, parent._level + 1, descendants);
+	for (auto* item : descendants)
+	{
+		if (!item || !_boundContainerIndex.insert(item).second) continue;
+		_boundContainers.emplace_back(item);
+	}
+	if (_selectedContainer
+		&& !_boundContainerIndex.contains(_selectedContainer))
+		(void)HandleSelectionAndCollapsed(parent);
+	InvalidateVisual();
 }
 
 void TreeView::RefreshHierarchy(bool restoreSelection)
@@ -909,16 +1068,23 @@ void TreeView::RefreshHierarchy(bool restoreSelection)
 		item->UnbindHierarchy();
 	}
 	_boundContainers.clear();
+	_boundContainerIndex.clear();
 
 	std::vector<TreeViewItem*> containers;
-	CollectContainers(*this, nullptr, 0, containers);
+	CollectContainers(nullptr, 0, containers);
 	_boundContainers.reserve(containers.size());
-	for (auto* item : containers) _boundContainers.emplace_back(item);
+	_boundContainerIndex.reserve(containers.size());
+	for (auto* item : containers)
+	{
+		_boundContainers.emplace_back(item);
+		_boundContainerIndex.insert(item);
+	}
 
 	auto contains = [&](const TreeViewItem* candidate)
 	{
-		return candidate && std::find(
-			containers.begin(), containers.end(), candidate) != containers.end();
+		return candidate
+			&& _boundContainerIndex.contains(
+				const_cast<TreeViewItem*>(candidate));
 	};
 	TreeViewItem* candidate = contains(_selectedContainer)
 		? _selectedContainer : nullptr;
@@ -970,9 +1136,8 @@ void TreeView::RefreshHierarchy(bool restoreSelection)
 bool TreeView::ContainsContainer(const TreeViewItem* item) const noexcept
 {
 	return item && item->_owner == this
-		&& std::any_of(_boundContainers.begin(), _boundContainers.end(),
-			[item](const ControlWeakReference& reference)
-			{ return reference.Get() == item; });
+		&& _boundContainerIndex.contains(
+			const_cast<TreeViewItem*>(item));
 }
 
 void TreeView::CollectVisibleContainers(std::vector<TreeViewItem*>& output)
@@ -1004,20 +1169,36 @@ BindingValue TreeView::GetSelectedItem() const
 BindingValue TreeView::GetSelectedValue() const
 {
 	if (!_selectedContainer) return {};
-	if (_selectedValuePath.empty()) return GetSelectedItem();
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (_compiledSelectedValuePath.Empty()
+		&& HasAuthoredSelectedValuePath())
+		return ReadAuthoredSelectedValue();
+#endif
+	if (_compiledSelectedValuePath.Empty()) return GetSelectedItem();
 	BindingValue result;
 	if (_selectedContainer->_dataItem)
 		return TryGetBindingPathValue(
-			*_selectedContainer->_dataItem.Get(), _selectedValuePath, result)
+			*_selectedContainer->_dataItem.Get(),
+			_compiledSelectedValuePath, result)
 			? result : BindingValue{};
-	return _selectedContainer->TryGetPropertyValue(_selectedValuePath, result)
+	return TryGetBindingPathValue(
+		*_selectedContainer, _compiledSelectedValuePath, result)
 		? result : BindingValue{};
 }
 
-void TreeView::SetSelectedValuePath(std::wstring value)
+void TreeView::SetCompiledSelectedValuePath(
+	CompiledBindingPathView value)
 {
-	if (_selectedValuePath == value) return;
-	_selectedValuePath = std::move(value);
+	ValidateCompiledTreeValuePath(value);
+	if (SameCompiledBindingPath(_compiledSelectedValuePath, value)
+#if CUI_ENABLE_DYNAMIC_XAML
+		&& _selectedValuePath.empty()
+#endif
+		) return;
+	_compiledSelectedValuePath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	_selectedValuePath.clear();
+#endif
 	RefreshSelectedItemObservation();
 	cui::framework::EventAccess::Raise(_selectedValueChanged, this);
 }
@@ -1025,15 +1206,20 @@ void TreeView::SetSelectedValuePath(std::wstring value)
 void TreeView::RefreshSelectedItemObservation()
 {
 	_selectedItemObservation = {};
-	if (!_selectedContainer || !_selectedContainer->_dataItem
-		|| _selectedValuePath.empty()) return;
-	_selectedItemObservation = ObserveBindingPaths(
-		_selectedContainer->_dataItem, { _selectedValuePath },
-		[this]
-		{
-			RefreshSelectedItemObservation();
-			cui::framework::EventAccess::Raise(_selectedValueChanged, this);
-		});
+	if (!_selectedContainer || !_selectedContainer->_dataItem) return;
+	auto changed = [this]
+	{
+		RefreshSelectedItemObservation();
+		cui::framework::EventAccess::Raise(_selectedValueChanged, this);
+	};
+	if (!_compiledSelectedValuePath.Empty())
+		_selectedItemObservation = ObserveBindingPaths(
+			_selectedContainer->_dataItem,
+			{ _compiledSelectedValuePath }, std::move(changed));
+#if CUI_ENABLE_DYNAMIC_XAML
+	else _selectedItemObservation =
+		ObserveAuthoredSelectedValuePath(std::move(changed));
+#endif
 }
 
 void TreeView::NotifySelectionProjectionChanged(bool itemChanged)
@@ -1088,6 +1274,172 @@ bool TreeView::ApplySelection(TreeViewItem* item, bool bringIntoView)
 bool TreeView::SelectItem(TreeViewItem* item, bool bringIntoView)
 {
 	return ApplySelection(item, bringIntoView);
+}
+
+bool TreeView::FocusAndSelectItem(
+	TreeViewItem* item,
+	bool bringIntoView)
+{
+	if (!item || !ContainsContainer(item)
+		|| !item->IsVisible || !item->IsEffectivelyEnabled())
+		return false;
+	const ControlWeakReference lifetime(item);
+	(void)ApplySelection(item, bringIntoView);
+	item = dynamic_cast<TreeViewItem*>(lifetime.Get());
+	return item && item->Focus();
+}
+
+bool TreeView::HandleSelectionAndCollapsed(TreeViewItem& collapsed)
+{
+	if (!_selectedContainer || _selectedContainer == &collapsed)
+		return false;
+	for (auto* parent = _selectedContainer->_parentItem;
+		parent; parent = parent->_parentItem)
+	{
+		if (parent != &collapsed) continue;
+		return FocusAndSelectItem(&collapsed, true);
+	}
+	return false;
+}
+
+void TreeView::RestoreFocusOnPointerDown()
+{
+	if (_selectedContainer
+		&& FocusAndSelectItem(_selectedContainer, false)) return;
+	(void)Focus();
+}
+
+ScrollViewer* TreeView::GetScrollHost() noexcept
+{
+	if (auto* part = dynamic_cast<ScrollViewer*>(
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_ScrollViewer"))))
+		return part;
+	for (auto* current = GetVisualParent(); current;
+		current = current->GetVisualParent())
+		if (auto* scroll = dynamic_cast<ScrollViewer*>(current))
+			return scroll;
+	return nullptr;
+}
+
+bool TreeView::HandleScrollKey(Key key)
+{
+	auto* scroll = GetScrollHost();
+	if (!scroll) return false;
+	switch (key)
+	{
+	case Key::PageUp:
+		scroll->PageUp();
+		return true;
+	case Key::PageDown:
+		scroll->PageDown();
+		return true;
+	case Key::Home:
+		scroll->ScrollToHome();
+		return true;
+	case Key::End:
+		scroll->ScrollToEnd();
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool TreeView::ExpandSubtree(TreeViewItem* item)
+{
+	if (!item || !ContainsContainer(item)) return false;
+	if (item->GetHasItems())
+		item->SetCurrentIsExpanded(true);
+	std::vector<TreeViewItem*> children;
+	item->CollectMaterializedChildContainers(children);
+	bool expanded = item->GetHasItems();
+	for (auto* child : children)
+		expanded = ExpandSubtree(child) || expanded;
+	return expanded;
+}
+
+bool TreeView::ProcessItemNavigationKey(
+	TreeViewItem* origin,
+	const InputReport& input)
+{
+	if (input.Kind != InputReportKind::KeyDown
+		|| !HandlesNavigationKey(input.Key)) return false;
+	if (!origin || !ContainsContainer(origin))
+		origin = _selectedContainer;
+	if (input.Key == Key::Space)
+		return origin && FocusAndSelectItem(origin, true);
+	if (input.Key == Key::Add)
+	{
+		if (origin && origin->GetHasItems())
+			origin->SetCurrentIsExpanded(true);
+		return true;
+	}
+	if (input.Key == Key::Subtract)
+	{
+		if (origin) origin->SetCurrentIsExpanded(false);
+		return true;
+	}
+	if (input.Key == Key::Multiply)
+	{
+		(void)ExpandSubtree(origin);
+		return true;
+	}
+
+	std::vector<TreeViewItem*> visible;
+	CollectVisibleContainers(visible);
+	visible.erase(std::remove_if(
+		visible.begin(), visible.end(),
+		[](TreeViewItem* item)
+		{
+			return !item || !item->IsEffectivelyEnabled();
+		}), visible.end());
+	if (visible.empty()) return true;
+	auto current = std::find(visible.begin(), visible.end(), origin);
+	int index = current == visible.end()
+		? -1 : static_cast<int>(current - visible.begin());
+	TreeViewItem* next = origin;
+	switch (input.Key)
+	{
+	case Key::Up:
+		next = visible[static_cast<size_t>((std::max)(0, index - 1))];
+		break;
+	case Key::Down:
+		next = visible[static_cast<size_t>((std::min)(
+			static_cast<int>(visible.size()) - 1, index + 1))];
+		break;
+	case Key::Home:
+		next = visible.front();
+		break;
+	case Key::End:
+		next = visible.back();
+		break;
+	case Key::PageUp:
+		next = visible[static_cast<size_t>((std::max)(0, index - 8))];
+		break;
+	case Key::PageDown:
+		next = visible[static_cast<size_t>((std::min)(
+			static_cast<int>(visible.size()) - 1, index + 8))];
+		break;
+	case Key::Left:
+		if (origin && origin->GetIsExpanded())
+			origin->SetCurrentIsExpanded(false);
+		else if (origin)
+			next = origin->_parentItem;
+		break;
+	case Key::Right:
+		if (origin && origin->GetHasItems()
+			&& !origin->GetIsExpanded())
+			origin->SetCurrentIsExpanded(true);
+		else if (origin && origin->GetIsExpanded())
+			next = origin->ContainerFromIndex(0);
+		break;
+	default:
+		break;
+	}
+	(void)HandleScrollKey(input.Key);
+	if (next && next != origin)
+		(void)FocusAndSelectItem(next, true);
+	return true;
 }
 
 void TreeView::UpdateHover(TreeViewItem* item)
@@ -1154,6 +1506,10 @@ bool TreeView::HandlesNavigationKey(Key key) const
 	case Key::End:
 	case Key::PageUp:
 	case Key::PageDown:
+	case Key::Space:
+	case Key::Add:
+	case Key::Subtract:
+	case Key::Multiply:
 		return true;
 	default:
 		return false;
@@ -1162,83 +1518,20 @@ bool TreeView::HandlesNavigationKey(Key key) const
 
 bool TreeView::ProcessInput(const InputReport& input)
 {
-	if (!IsEnabled || !IsVisible) return true;
-	bool handled = false;
-	if (input.Kind == InputReportKind::PointerMove)
-		UpdateHover(HitTestItem(
-			static_cast<float>(input.X), static_cast<float>(input.Y)));
-	else if (input.Kind == InputReportKind::PointerLeave)
-		UpdateHover(nullptr);
-	else if (input.Kind == InputReportKind::PointerDown
+	if (!IsEffectivelyEnabled() || !IsVisible) return true;
+	if (input.Kind == InputReportKind::PointerDown
 		&& input.ChangedButton == MouseButton::Left)
 	{
-		auto* item = HitTestItem(
-			static_cast<float>(input.X), static_cast<float>(input.Y));
-		if (item)
-		{
-			if (GetPresentationWindow()) GetPresentationWindow()->SetKeyboardFocus(this, true);
-			const auto treeBounds = GetAbsoluteBoundsDip();
-			auto* header = item->GetHeaderVisual();
-			const auto headerBounds = header
-				? header->GetAbsoluteBoundsDip() : item->GetAbsoluteBoundsDip();
-			const float absoluteX = treeBounds.left + input.X;
-			if (item->GetHasItems()
-				&& absoluteX <= headerBounds.left + DefaultChevronSlot)
-				item->SetCurrentIsExpanded(!item->GetIsExpanded());
-			else (void)ApplySelection(item, true);
-			handled = true;
-		}
+		RestoreFocusOnPointerDown();
 	}
-	else if (input.Kind == InputReportKind::KeyDown)
+	if (input.Kind == InputReportKind::KeyDown
+		&& ProcessItemNavigationKey(_selectedContainer, input))
 	{
-		std::vector<TreeViewItem*> visible;
-		CollectVisibleContainers(visible);
-		if (!visible.empty())
-		{
-			auto current = std::find(
-				visible.begin(), visible.end(), _selectedContainer);
-			int index = current == visible.end()
-				? -1 : static_cast<int>(current - visible.begin());
-			TreeViewItem* next = _selectedContainer;
-			switch (input.Key)
-			{
-			case Key::Up:
-				next = visible[static_cast<size_t>((std::max)(0, index - 1))];
-				break;
-			case Key::Down:
-				next = visible[static_cast<size_t>((std::min)(
-					static_cast<int>(visible.size()) - 1, index + 1))];
-				break;
-			case Key::Home: next = visible.front(); break;
-			case Key::End: next = visible.back(); break;
-			case Key::PageUp:
-				next = visible[static_cast<size_t>((std::max)(0, index - 8))];
-				break;
-			case Key::PageDown:
-				next = visible[static_cast<size_t>((std::min)(
-					static_cast<int>(visible.size()) - 1, index + 8))];
-				break;
-			case Key::Left:
-				if (_selectedContainer && _selectedContainer->GetIsExpanded())
-					_selectedContainer->SetCurrentIsExpanded(false);
-				else if (_selectedContainer)
-					next = _selectedContainer->_parentItem;
-				break;
-			case Key::Right:
-				if (_selectedContainer && _selectedContainer->GetHasItems()
-					&& !_selectedContainer->GetIsExpanded())
-					_selectedContainer->SetCurrentIsExpanded(true);
-				else if (_selectedContainer && _selectedContainer->GetIsExpanded())
-					next = _selectedContainer->ContainerFromIndex(0);
-				break;
-			default: next = nullptr; break;
-			}
-			if (next) (void)ApplySelection(next, true);
-			handled = HandlesNavigationKey(input.Key);
-		}
+		auto args = input.CreateKeyEventArgs();
+		OnKeyDown(this, args);
+		return true;
 	}
-	(void)Control::ProcessInput(input);
-	return handled;
+	return ItemsControl::ProcessInput(input);
 }
 
 bool TreeView::ApplyItemContainerStyle()
@@ -1316,18 +1609,7 @@ void TreeView::DrawDropIndicator()
 void TreeView::OnRender()
 {
 	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
-	const auto size = GetActualSizeDip();
-	BeginRender();
-	if (RendererBackgroundColor.a > 0.0f)
-		GetDrawingContext()->FillRect(0.0f, 0.0f,
-			size.width, size.height, RendererBackgroundColor);
-	EndRender();
 	BeginRender();
 	DrawDropIndicator();
-	const float border = BorderThickness.MaxEdge();
-	if (border > 0.0f && RendererBorderColor.a > 0.0f)
-		GetDrawingContext()->DrawRect(
-			0.0f, 0.0f, size.width, size.height,
-			RendererBorderColor, border);
 	EndRender();
 }

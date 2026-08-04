@@ -1,6 +1,7 @@
 #include "Decorator.h"
 
 #include "Layout/OverlayLayout.h"
+#include "TreeInfrastructure.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -37,21 +38,19 @@ bool Decorator::TrySetChild(std::unique_ptr<Control>& value) noexcept
 {
 	if (!value || GetChild()) return false;
 	auto* raw = value.get();
+	const ControlWeakReference lifetime(raw);
 	try
 	{
-		InsertVisualChild(0, raw);
-		value.release();
-		return true;
+		(void)cui::framework::TreeAccess::
+			InsertOwnedVisualChildPreserving(
+				*this, 0, value, this);
 	}
 	catch (...)
 	{
-		if (raw->GetVisualParent() == this)
-		{
-			try { value = DetachVisualChild(raw); }
-			catch (...) {}
-		}
-		return false;
 	}
+	auto* live = lifetime.Get();
+	return live && live->GetVisualParent() == this
+		&& IndexOfVisualChild(live) >= 0;
 }
 
 std::unique_ptr<Control> Decorator::DetachChild()

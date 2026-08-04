@@ -48,6 +48,18 @@
     <ClInclude Include="include\Binding.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\CompiledBindingRecord.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RelativeSource.h">
+      <Filter>include</Filter>
+    </ClInclude>
+	<ClInclude Include="include\CuiBuildFeatures.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\RuntimeTypeMetadata.h">
+	  <Filter>include</Filter>
+	</ClInclude>
 	<ClInclude Include="include\XamlSchema.h">
 	  <Filter>include</Filter>
 	</ClInclude>
@@ -85,6 +97,9 @@
 	  <Filter>include</Filter>
 	</ClInclude>
 	<ClInclude Include="include\StyleInfrastructure.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\CuiGeneratedFrameworkTheme.h">
 	  <Filter>include</Filter>
 	</ClInclude>
 	<ClInclude Include="include\RoutedEventInfrastructure.h">
@@ -151,6 +166,9 @@
 	  <Filter>include</Filter>
 	</ClInclude>
 	<ClInclude Include="include\RangeBase.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\TextBoxBase.h">
 	  <Filter>include</Filter>
 	</ClInclude>
     <ClInclude Include="include\ObservableCollection.h">
@@ -349,6 +367,9 @@
 	<ClInclude Include="include\InputManager.h">
 	  <Filter>include</Filter>
 	</ClInclude>
+	<ClInclude Include="include\ReverseInheritedProperty.h">
+	  <Filter>include</Filter>
+	</ClInclude>
 	<ClInclude Include="include\InputReport.h">
 	  <Filter>include</Filter>
 	</ClInclude>
@@ -381,6 +402,9 @@
 	<ClCompile Include="src\AutomationPeer.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>
+	<ClCompile Include="src\AutomationVirtualizedPeers.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
 	<ClCompile Include="src\DispatcherObject.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>
@@ -402,7 +426,13 @@
     <ClCompile Include="src\Binding.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\XamlSchema.cpp">
+    <ClCompile Include="src\CompiledBindingRecord.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RelativeSource.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+	<ClCompile Include="src\RuntimeTypeMetadata.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>
     <ClCompile Include="src\Brush.cpp">
@@ -424,6 +454,9 @@
 	  <Filter>src</Filter>
 	</ClCompile>
 	<ClCompile Include="src\RangeBase.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\TextBoxBase.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>
     <ClCompile Include="src\Button.cpp">
@@ -570,6 +603,9 @@
     <ClCompile Include="src\WebBrowser.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\WebBrowserUtilities.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Layout\WrapPanel.cpp">
       <Filter>src\Layout</Filter>
     </ClCompile>
@@ -604,6 +640,12 @@
 	  <Filter>src</Filter>
 	</ClCompile>
     <ClCompile Include="src\MediaPlayer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MediaFoundationGuids.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MediaPlayerPixelConversion.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Expander.cpp">

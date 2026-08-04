@@ -1,59 +1,80 @@
 #include "Image.h"
 #include "Window.h"
 #include <algorithm>
+
 UIClass Image::Type() { return UIClass::UI_Image; }
+
+const DependencyProperty& Image::SourceProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Image,
+			std::shared_ptr<BitmapSource>> options;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		options.Equals = [](
+			const std::shared_ptr<BitmapSource>& left,
+			const std::shared_ptr<BitmapSource>& right)
+			{ return left == right; };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Image,
+			std::shared_ptr<BitmapSource>>(
+				DependencyPropertyRegistrationLiteral(L"Source"),
+				[](Image& target) { return target.Source; },
+				[](Image& target, const std::shared_ptr<BitmapSource>& value)
+				{ target.Source = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& Image::StretchProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<Image,
+			cui::drawing::ImageBrushStretch> options;
+		options.DefaultValue = cui::drawing::ImageBrushStretch::Uniform;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		options.Design.Order = 20;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Choices = {
+			{ L"None", BindingValue(cui::drawing::ImageBrushStretch::None) },
+			{ L"Fill", BindingValue(cui::drawing::ImageBrushStretch::Fill) },
+			{ L"Uniform", BindingValue(
+				cui::drawing::ImageBrushStretch::Uniform) },
+			{ L"UniformToFill", BindingValue(
+				cui::drawing::ImageBrushStretch::UniformToFill) }
+		};
+		)
+		return DependencyPropertyRegistry::RegisterStatic<Image,
+			cui::drawing::ImageBrushStretch>(
+				DependencyPropertyRegistrationLiteral(L"Stretch"),
+				[](Image& target) { return target.Stretch; },
+				[](Image& target,
+					const cui::drawing::ImageBrushStretch& value)
+				{ target.Stretch = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
 void Image::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		DependencyPropertyOptions<Image,
-			std::shared_ptr<BitmapSource>> sourceOptions;
-		sourceOptions.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsRender;
-		sourceOptions.Equals = [](
-			const std::shared_ptr<BitmapSource>& left,
-			const std::shared_ptr<BitmapSource>& right)
-			{ return left == right; };
-		sourceOptions.Design.Category = L"Appearance";
-		sourceOptions.Design.CategoryOrder = 200;
-		sourceOptions.Design.Order = 10;
-		sourceOptions.Design.Editor = DependencyPropertyEditorKind::Text;
-		sourceOptions.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<Image,
-			std::shared_ptr<BitmapSource>>(L"Source",
-			[](Image& target) { return target.Source; },
-			[](Image& target, const std::shared_ptr<BitmapSource>& value)
-			{ target.Source = value; }, {}, std::move(sourceOptions));
-
-		DependencyPropertyOptions<Image,
-			cui::drawing::ImageBrushStretch> stretchOptions;
-		stretchOptions.DefaultValue =
-			cui::drawing::ImageBrushStretch::Uniform;
-		stretchOptions.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsRender;
-		stretchOptions.Design.Category = L"Appearance";
-		stretchOptions.Design.CategoryOrder = 200;
-		stretchOptions.Design.Order = 20;
-		stretchOptions.Design.Editor = DependencyPropertyEditorKind::Choice;
-		stretchOptions.Design.Persistence = DependencyPropertyPersistence::Native;
-		stretchOptions.Design.Choices = {
-			{ L"None", BindingValue(cui::drawing::ImageBrushStretch::None) },
-			{ L"Fill", BindingValue(cui::drawing::ImageBrushStretch::Fill) },
-			{ L"Uniform", BindingValue(cui::drawing::ImageBrushStretch::Uniform) },
-			{ L"UniformToFill",
-				BindingValue(cui::drawing::ImageBrushStretch::UniformToFill) }
-		};
-		DependencyPropertyRegistry::Register<Image,
-			cui::drawing::ImageBrushStretch>(L"Stretch",
-			[](Image& target) { return target.Stretch; },
-			[](Image& target,
-				const cui::drawing::ImageBrushStretch& value)
-			{ target.Stretch = value; }, {}, std::move(stretchOptions));
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)SourceProperty();
+	(void)StretchProperty();
+#endif
 }
 
 GET_CPP(Image, std::shared_ptr<BitmapSource>, Source)
@@ -63,7 +84,7 @@ GET_CPP(Image, std::shared_ptr<BitmapSource>, Source)
 
 SET_CPP(Image, std::shared_ptr<BitmapSource>, Source)
 {
-	if (!SetPropertyField(L"Source", _source, std::move(value))) return;
+	if (!SetPropertyField(SourceProperty(), _source, std::move(value))) return;
 	_sourceCache.Reset();
 	_sourceCacheTarget = nullptr;
 }
@@ -75,7 +96,7 @@ GET_CPP(Image, cui::drawing::ImageBrushStretch, Stretch)
 
 SET_CPP(Image, cui::drawing::ImageBrushStretch, Stretch)
 {
-	(void)SetPropertyField(L"Stretch", _stretch, value);
+	(void)SetPropertyField(StretchProperty(), _stretch, value);
 }
 
 Image::Image()

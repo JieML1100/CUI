@@ -1,6 +1,7 @@
 #include "NotifyIcon.h"
 #include "EventInfrastructure.h"
 
+#include "PlatformWindowHost.h"
 #include "Window.h"
 #include "WindowInfrastructure.h"
 
@@ -228,6 +229,12 @@ void NotifyIcon::DetachOwner(bool removeNativeIcon) noexcept
 
 bool NotifyIcon::TryInitialize(Window& owner)
 {
+	if (!PlatformWindowHost::InstallNativeMessageHook(
+		&NotifyIcon::HandlePlatformWindowMessage))
+	{
+		_impl->LastError = E_UNEXPECTED;
+		return false;
+	}
 	const HWND window = owner.GetHandle();
 	if (_impl->PopupActive)
 	{

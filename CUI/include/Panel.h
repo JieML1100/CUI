@@ -39,13 +39,24 @@ protected:
 	void SetLayoutEngine(class LayoutEngine* engine);
 	/** Invalidates only the panel's child-arrangement policy. */
 	void InvalidateArrangeLayout();
+	/**
+	 * Lets a specialized Panel keep a bounded structural mutation local while
+	 * still marking its own measure/arrange state dirty.  The default keeps the
+	 * normal WPF-style ancestor invalidation path.
+	 */
+	virtual bool ShouldPropagateLayoutInvalidation() const noexcept
+	{
+		return true;
+	}
 	void PerformLayout();
 public:
 	virtual UIClass Type();
 	/** WPF identity owner for Panel/Control/Border Background. */
 	static const DependencyProperty& BackgroundProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 
 	Panel();
 	virtual ~Panel();

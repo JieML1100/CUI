@@ -101,6 +101,64 @@ inline bool IsMatrixTransformLeaf(const cui::xaml::PropertyPath& path) noexcept
 		&& StoryboardPathEquals(leaf.Name, L"Matrix");
 }
 
+inline bool TryResolveTransformPathLeaf(
+	size_t operationIndex,
+	const std::wstring& leafOwner,
+	const std::wstring& leaf,
+	ResolvedTransformAnimationPath& output,
+	std::wstring* outError = nullptr)
+{
+	auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		return false;
+	};
+	std::wstring canonicalOwner;
+	std::wstring canonicalLeaf;
+	auto leafAllowed = [&](std::initializer_list<const wchar_t*> names)
+	{
+		const auto found = std::find_if(names.begin(), names.end(),
+			[&](const auto* name) { return StoryboardPathEquals(leaf, name); });
+		if (found == names.end()) return false;
+		canonicalLeaf = *found;
+		return true;
+	};
+	bool validLeaf = false;
+	if (StoryboardPathEquals(leafOwner, L"TranslateTransform"))
+	{
+		canonicalOwner = L"TranslateTransform";
+		validLeaf = leafAllowed({ L"X", L"Y" });
+	}
+	else if (StoryboardPathEquals(leafOwner, L"ScaleTransform"))
+	{
+		canonicalOwner = L"ScaleTransform";
+		validLeaf = leafAllowed({ L"ScaleX", L"ScaleY", L"CenterX", L"CenterY" });
+	}
+	else if (StoryboardPathEquals(leafOwner, L"RotateTransform"))
+	{
+		canonicalOwner = L"RotateTransform";
+		validLeaf = leafAllowed({ L"Angle", L"CenterX", L"CenterY" });
+	}
+	else if (StoryboardPathEquals(leafOwner, L"SkewTransform"))
+	{
+		canonicalOwner = L"SkewTransform";
+		validLeaf = leafAllowed({ L"AngleX", L"AngleY", L"CenterX", L"CenterY" });
+	}
+	else if (StoryboardPathEquals(leafOwner, L"MatrixTransform"))
+	{
+		canonicalOwner = L"MatrixTransform";
+		validLeaf = leafAllowed({ L"Matrix" });
+	}
+	if (!validLeaf)
+		return fail(L"动画路径的 Transform 类型或末端属性不受支持。");
+
+	output.OperationIndex = operationIndex;
+	output.TransformType = std::move(canonicalOwner);
+	output.PropertyName = std::move(canonicalLeaf);
+	if (outError) outError->clear();
+	return true;
+}
+
 inline bool TryResolveTransformOperationLeaf(
 	const DesignValue& operations,
 	size_t operationIndex,
@@ -121,54 +179,21 @@ inline bool TryResolveTransformOperationLeaf(
 		|| !operation["type"].is_string())
 		return fail(L"Transform 操作格式无效。");
 
+	ResolvedTransformAnimationPath resolved;
+	if (!TryResolveTransformPathLeaf(
+		operationIndex, leafOwner, leaf, resolved, nullptr))
+		return fail(L"动画路径的 Transform 类型或末端属性与实际操作不匹配。");
 	const auto type = operation["type"].get<std::string>();
-	std::wstring canonicalOwner;
-	std::wstring canonicalLeaf;
-	auto leafAllowed = [&](std::initializer_list<const wchar_t*> names)
-	{
-		const auto found = std::find_if(names.begin(), names.end(),
-			[&](const auto* name) { return StoryboardPathEquals(leaf, name); });
-		if (found == names.end()) return false;
-		canonicalLeaf = *found;
-		return true;
-	};
-	bool validLeaf = false;
-	if (type == "translate"
-		&& StoryboardPathEquals(leafOwner, L"TranslateTransform"))
-	{
-		canonicalOwner = L"TranslateTransform";
-		validLeaf = leafAllowed({ L"X", L"Y" });
-	}
-	else if (type == "scale"
-		&& StoryboardPathEquals(leafOwner, L"ScaleTransform"))
-	{
-		canonicalOwner = L"ScaleTransform";
-		validLeaf = leafAllowed({ L"ScaleX", L"ScaleY", L"CenterX", L"CenterY" });
-	}
-	else if (type == "rotate"
-		&& StoryboardPathEquals(leafOwner, L"RotateTransform"))
-	{
-		canonicalOwner = L"RotateTransform";
-		validLeaf = leafAllowed({ L"Angle", L"CenterX", L"CenterY" });
-	}
-	else if (type == "skew"
-		&& StoryboardPathEquals(leafOwner, L"SkewTransform"))
-	{
-		canonicalOwner = L"SkewTransform";
-		validLeaf = leafAllowed({ L"AngleX", L"AngleY", L"CenterX", L"CenterY" });
-	}
-	else if (type == "matrix"
-		&& StoryboardPathEquals(leafOwner, L"MatrixTransform"))
-	{
-		canonicalOwner = L"MatrixTransform";
-		validLeaf = leafAllowed({ L"Matrix" });
-	}
-	if (!validLeaf)
+	const bool typeMatches =
+		(type == "translate" && resolved.TransformType == L"TranslateTransform")
+		|| (type == "scale" && resolved.TransformType == L"ScaleTransform")
+		|| (type == "rotate" && resolved.TransformType == L"RotateTransform")
+		|| (type == "skew" && resolved.TransformType == L"SkewTransform")
+		|| (type == "matrix" && resolved.TransformType == L"MatrixTransform");
+	if (!typeMatches)
 		return fail(L"动画路径的 Transform 类型或末端属性与实际操作不匹配。");
 
-	output.OperationIndex = operationIndex;
-	output.TransformType = std::move(canonicalOwner);
-	output.PropertyName = std::move(canonicalLeaf);
+	output = std::move(resolved);
 	if (outError) outError->clear();
 	return true;
 }
@@ -186,50 +211,77 @@ inline bool TryResolveTransformAnimationPath(
 		if (outError) *outError = std::move(message);
 		return false;
 	};
-	if (targetName.empty())
-		return fail(L"复合属性路径首批只能定位模板具名控件。");
 	cui::xaml::PropertyPath path;
 	std::wstring parseError;
 	if (!cui::xaml::TryParsePropertyPath(text, path, &parseError))
 		return fail(L"Storyboard.TargetProperty：" + parseError);
-	if (path.Segments.size() != 4
-		|| path.Segments[0].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[1].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| path.Segments[2].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Index
-		|| path.Segments[3].Kind
-			!= cui::xaml::PropertyPathSegmentKind::Property
-		|| !StoryboardPathEquals(path.Segments[0].Name, L"RenderTransform")
-		|| (!StoryboardPathEquals(
-			StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
-			&& !StoryboardPathEquals(
-				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement"))
-		|| !StoryboardPathEquals(
+	const bool renderTransformRoot = !path.Segments.empty()
+		&& path.Segments[0].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& StoryboardPathEquals(path.Segments[0].Name, L"RenderTransform")
+		&& (StoryboardPathEquals(
+				StoryboardPathLocalType(path.Segments[0].OwnerType), L"Control")
+			|| StoryboardPathEquals(
+				StoryboardPathLocalType(path.Segments[0].OwnerType), L"UIElement"));
+	const bool directTransform = renderTransformRoot
+		&& path.Segments.size() == 2
+		&& path.Segments[1].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property;
+	const bool groupedTransform = renderTransformRoot
+		&& path.Segments.size() == 4
+		&& path.Segments[1].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& path.Segments[2].Kind
+			== cui::xaml::PropertyPathSegmentKind::Index
+		&& path.Segments[3].Kind
+			== cui::xaml::PropertyPathSegmentKind::Property
+		&& StoryboardPathEquals(
 			StoryboardPathLocalType(path.Segments[1].OwnerType), L"TransformGroup")
-		|| !StoryboardPathEquals(path.Segments[1].Name, L"Children"))
-		return fail(L"复合动画路径必须是 "
+		&& StoryboardPathEquals(path.Segments[1].Name, L"Children");
+	if (!directTransform && !groupedTransform)
+		return fail(L"Transform 动画路径必须是 "
+			L"(Control.RenderTransform).(TransformType.Property) 或 "
 			L"(Control.RenderTransform).(TransformGroup.Children)[n]."
 			L"(TransformType.Property)。");
 
-	const auto target = std::find_if(
-		component.Template.begin(), component.Template.end(),
-		[&](const auto& node)
-		{ return StoryboardPathEquals(node.Name, targetName); });
-	const auto* renderTransform = target == component.Template.end()
-		? nullptr : StoryboardMetadataObject(*target, L"RenderTransform");
-	if (!renderTransform || !renderTransform->is_array()
-		|| path.Segments[2].Index >= renderTransform->size())
-		return fail(L"动画目标未声明路径所需的 RenderTransform 操作。");
-	const auto leafOwner = StoryboardPathLocalType(path.Segments[3].OwnerType);
-	const auto& leaf = path.Segments[3].Name;
-	if (!TryResolveTransformOperationLeaf(
-		*renderTransform, path.Segments[2].Index,
-		leafOwner, leaf, output, outError)) return false;
-	output.CanonicalPath = L"(Control.RenderTransform)."
-		L"(TransformGroup.Children)[" + std::to_wstring(output.OperationIndex)
-		+ L"].(" + output.TransformType + L"." + output.PropertyName + L")";
+	const size_t operationIndex =
+		directTransform ? 0 : path.Segments[2].Index;
+	const auto& terminal =
+		directTransform ? path.Segments[1] : path.Segments[3];
+	const auto leafOwner = StoryboardPathLocalType(terminal.OwnerType);
+	const auto& leaf = terminal.Name;
+	if (targetName.empty())
+	{
+		// A Style Storyboard without TargetName targets the styled control.
+		// Its concrete RenderTransform belongs to the eventual style instance,
+		// so the AOT frontend can validate only the declared object path here.
+		if (!TryResolveTransformPathLeaf(
+			operationIndex, leafOwner, leaf, output, outError)) return false;
+	}
+	else
+	{
+		const auto target = std::find_if(
+			component.Template.begin(), component.Template.end(),
+			[&](const auto& node)
+			{ return StoryboardPathEquals(node.Name, targetName); });
+		const auto* renderTransform = target == component.Template.end()
+			? nullptr : StoryboardMetadataObject(*target, L"RenderTransform");
+		if (!renderTransform || !renderTransform->is_array()
+			|| (directTransform && renderTransform->size() != 1)
+			|| operationIndex >= renderTransform->size())
+			return fail(L"动画目标未声明路径所需的 RenderTransform 操作。");
+		if (!TryResolveTransformOperationLeaf(
+			*renderTransform, operationIndex,
+			leafOwner, leaf, output, outError)) return false;
+	}
+	output.CanonicalPath = directTransform
+		? L"(Control.RenderTransform).(" + output.TransformType
+			+ L"." + output.PropertyName + L")"
+		: L"(Control.RenderTransform)."
+			L"(TransformGroup.Children)["
+			+ std::to_wstring(output.OperationIndex)
+			+ L"].(" + output.TransformType + L"."
+			+ output.PropertyName + L")";
 	if (outError) outError->clear();
 	return true;
 }

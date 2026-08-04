@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CuiBindingConverters Version="1">
+  <Single Id="AotFixture.Prefix"
+          Include="TypedBindingConverters.h"
+          Factory="CuiAotFixture::Converters::CreatePrefixConverter"
+          SourceKind="String"
+          TargetKind="String"
+          CanConvertBack="false"/>
+  <Multi Id="AotFixture.Join"
+         Include="TypedBindingConverters.h"
+         Factory="CuiAotFixture::Converters::CreateJoinConverter"
+         MinimumInputCount="2"
+         TargetKind="String"
+         CanConvertBack="false"/>
+</CuiBindingConverters>

@@ -49,8 +49,11 @@ public:
     virtual ~StackPanel();
     
     UIClass Type() override { return UIClass::UI_StackPanel; }
+    static const DependencyProperty& OrientationProperty();
     static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
     void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
     
     /** @brief 设置/获取主轴方向。 */
     void SetOrientation(Orientation value) { 

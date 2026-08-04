@@ -54,8 +54,11 @@ public:
 	{
 		element.SetDockPosition(value);
 	}
+	static const DependencyProperty& LastChildFillProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
     void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
     
     /** @brief 设置/获取 LastChildFill。 */
     void SetLastChildFill(bool value);

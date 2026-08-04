@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ControlWeakReference.h"
+#include "CuiBuildFeatures.h"
 #include "Event.h"
 
 #include <any>
@@ -17,7 +18,10 @@ class Control;
 class InputManager;
 class UIElement;
 class Window;
+struct ComponentTypeToken;
+#if CUI_ENABLE_DYNAMIC_XAML
 struct RuntimeTypeId;
+#endif
 
 namespace cui::framework
 {
@@ -253,10 +257,16 @@ private:
 
 public:
 
-	/** Registers one exact XAML QName class behavior. */
+	/** Registers one exact compiled component class behavior. */
+	static EventConnection RegisterClassCommandBinding(
+		ComponentTypeToken ownerType,
+		CommandBinding binding);
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design compatibility overload that lowers the QName to a token. */
 	static EventConnection RegisterClassCommandBinding(
 		const RuntimeTypeId& ownerType,
 		CommandBinding binding);
+#endif
 	/** Registers a native behavior-host class fallback (derived before base). */
 	static EventConnection RegisterClassCommandBinding(
 		UIClass ownerClass,
@@ -270,6 +280,13 @@ public:
 		Control& source,
 		RoutedCommandSourceQuery query,
 		CanExecuteObserver observer);
+	/**
+	 * Defers observer publication while one command source is being moved
+	 * through transient presentation parents. Window-domain registration still
+	 * follows every transition; disposal publishes once only when the final
+	 * domain differs from the domain at entry.
+	 */
+	static EventConnection DeferSourceScopeTransitions(Control& source);
 
 	static EventConnection SubscribeRequerySuggested(
 		Control& scope,

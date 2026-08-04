@@ -1,4 +1,5 @@
 #include "DesignerBindingUtils.h"
+#include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
@@ -738,6 +739,7 @@ const wchar_t* ValueKindName(BindingValueKind kind) noexcept
 	{
 	case BindingValueKind::Empty: return L"Empty";
 	case BindingValueKind::Bool: return L"Bool";
+	case BindingValueKind::NullableBool: return L"NullableBool";
 	case BindingValueKind::Int: return L"Int";
 	case BindingValueKind::Int64: return L"Int64";
 	case BindingValueKind::Float: return L"Float";
@@ -746,6 +748,20 @@ const wchar_t* ValueKindName(BindingValueKind kind) noexcept
 	case BindingValueKind::Object: return L"Object";
 	}
 	return L"Unknown";
+}
+
+namespace
+{
+	bool AreBindingKindsCompatible(
+		BindingValueKind expected,
+		BindingValueKind actual) noexcept
+	{
+		return expected == actual
+			|| ((expected == BindingValueKind::Bool
+					|| expected == BindingValueKind::NullableBool)
+				&& (actual == BindingValueKind::Bool
+					|| actual == BindingValueKind::NullableBool));
+	}
 }
 
 bool IsModeStructurallyCompatible(
@@ -881,7 +897,8 @@ bool ValidateTarget(
 					return false;
 				}
 				if (converter->TargetKind != BindingValueKind::Empty
-					&& converter->TargetKind != target.ValueKind)
+					&& !AreBindingKindsCompatible(
+						target.ValueKind, converter->TargetKind))
 				{
 					if (outError) *outError = L"MultiBinding Converter "
 						+ converter->Name + L" 的目标值类型与属性不兼容。";
@@ -1124,7 +1141,8 @@ bool ValidateTarget(
 			if (sourceProperty
 				&& sourceProperty->ValueKind != BindingValueKind::Empty
 				&& converter->SourceKind != BindingValueKind::Empty
-				&& converter->SourceKind != sourceProperty->ValueKind)
+				&& !AreBindingKindsCompatible(
+					converter->SourceKind, sourceProperty->ValueKind))
 			{
 				if (outError) *outError = L"Converter " + converter->Name
 					+ L" 的源值类型与 DataContext Schema 不兼容。";
@@ -1132,7 +1150,8 @@ bool ValidateTarget(
 			}
 			if (target.ValueKind != BindingValueKind::Empty
 				&& converter->TargetKind != BindingValueKind::Empty
-				&& converter->TargetKind != target.ValueKind)
+				&& !AreBindingKindsCompatible(
+					target.ValueKind, converter->TargetKind))
 			{
 				if (outError) *outError = L"Converter " + converter->Name
 					+ L" 的目标值类型与属性不兼容。";

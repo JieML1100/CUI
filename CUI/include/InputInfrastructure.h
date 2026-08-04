@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Control.h"
+#include "ReverseInheritedProperty.h"
 
 namespace cui::framework
 {
@@ -54,20 +55,38 @@ namespace cui::framework
 			target.SetIsKeyboardFocusedCore(isFocused);
 		}
 
-		/** Publishes keyboard-focus-within along the active focus route. */
-		static void PublishKeyboardFocusWithinState(
-			Control& target, bool isFocusWithin)
+		/** Publishes the exact pointer origin after IsMouseOver propagation. */
+		static void PublishMouseDirectlyOverState(
+			Control& target, bool isMouseDirectlyOver)
 		{
-			target.SetIsKeyboardFocusWithinCore(isFocusWithin);
+			target.SetIsMouseDirectlyOverCore(isMouseDirectlyOver);
 		}
 
-		/** Publishes pointer-over state owned by the Window hit-test pipeline. */
+#if CUI_RUNTIME_FLAVOR_DESIGN
+		/** Design/test seam for previewing pointer-triggered styles off-window. */
 		static void PublishPointerOverState(
 			Control& target,
 			bool isMouseOver,
 			bool isMouseDirectlyOver)
 		{
-			target.SetMouseOverCore(isMouseOver, isMouseDirectlyOver);
+			DependencyObject::DeferredPropertyChange change;
+			if (target.StageReverseInheritedPropertyChange(
+				cui::framework::ReverseInheritedPropertyKind::MouseOver,
+				isMouseOver,
+				change))
+				target.PublishReverseInheritedPropertyChange(
+					cui::framework::ReverseInheritedPropertyKind::MouseOver,
+					change);
+			target.SetIsMouseDirectlyOverCore(
+				isMouseOver && isMouseDirectlyOver);
+		}
+#endif
+
+		/** Publishes direct mouse capture owned by InputManager. */
+		static void PublishMouseCaptureState(
+			Control& target, bool isMouseCaptured)
+		{
+			target.SetIsMouseCapturedCore(isMouseCaptured);
 		}
 	};
 }

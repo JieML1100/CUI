@@ -1,8 +1,61 @@
 #pragma once
 #include <windows.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <span>
+#include <vector>
+
 struct IDCompositionDevice;
 struct IDCompositionVisual;
+
+// Deliberately value-only so the DirectComposition stack policy can be tested
+// without a desktop compositor or an HWND.  Tokens are opaque visual pointers
+// at the host boundary and must never escape into the public control API.
+namespace cui::dcomp_detail
+{
+	struct VisualStackEntry final
+	{
+		uintptr_t Token = 0;
+		int Layer = 0;
+		int Order = 0;
+		uint64_t Sequence = 0;
+	};
+
+	struct VisualStackInsertion final
+	{
+		uintptr_t Token = 0;
+		bool InsertAbove = false;
+		uintptr_t ReferenceToken = 0;
+	};
+
+	inline std::vector<VisualStackInsertion> BuildVisualStackInsertionPlan(
+		std::span<const VisualStackEntry> source)
+	{
+		std::vector<VisualStackEntry> entries(source.begin(), source.end());
+		std::stable_sort(entries.begin(), entries.end(),
+			[](const VisualStackEntry& left, const VisualStackEntry& right)
+			{
+				if (left.Layer != right.Layer)
+					return left.Layer < right.Layer;
+				if (left.Order != right.Order)
+					return left.Order < right.Order;
+				return left.Sequence < right.Sequence;
+			});
+
+		std::vector<VisualStackInsertion> result;
+		result.reserve(entries.size());
+		uintptr_t previous = 0;
+		for (const auto& entry : entries)
+		{
+			if (entry.Token == 0) continue;
+			result.push_back(VisualStackInsertion{
+				entry.Token, previous != 0, previous });
+			previous = entry.Token;
+		}
+		return result;
+	}
+}
 
 /**
  * @file DCompLayeredHost.h

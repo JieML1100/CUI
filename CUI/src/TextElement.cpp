@@ -16,6 +16,7 @@ namespace
 		return std::nullopt;
 	}
 
+#if CUI_ENABLE_DESIGN_METADATA
 	DependencyPropertyDesignMetadata TextBrushDesign(
 		int order,
 		const wchar_t* displayName)
@@ -30,11 +31,12 @@ namespace
 		design.Persistence = DependencyPropertyPersistence::Metadata;
 		return design;
 	}
+#endif
 }
 
 const DependencyProperty& TextElement::ForegroundProperty()
 {
-	static const auto* property = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<TextElement, cui::drawing::Brush> options;
 		options.DefaultValue = cui::drawing::MakeSolidColorBrush(
@@ -42,32 +44,40 @@ const DependencyProperty& TextElement::ForegroundProperty()
 		options.Flags = DependencyPropertyFlags::Inherits
 			| DependencyPropertyFlags::AffectsRender;
 		options.Convert = ConvertTextBrush;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design = TextBrushDesign(21, L"Foreground");
-		return DependencyPropertyRegistry::Register<
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
 			TextElement, cui::drawing::Brush>(
-				L"Foreground", std::move(options));
+				DependencyPropertyRegistrationLiteral(L"Foreground"),
+				std::move(options));
 	}();
-	return *property;
+	return *registration;
 }
 
 const DependencyProperty& TextElement::BackgroundProperty()
 {
-	static const auto* property = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<TextElement, cui::drawing::Brush> options;
 		options.DefaultValue = cui::drawing::NoBrush();
 		options.Flags = DependencyPropertyFlags::AffectsRender;
 		options.Convert = ConvertTextBrush;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design = TextBrushDesign(10, L"Background");
-		return DependencyPropertyRegistry::Register<
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
 			TextElement, cui::drawing::Brush>(
-				L"Background", std::move(options));
+				DependencyPropertyRegistrationLiteral(L"Background"),
+				std::move(options));
 	}();
-	return *property;
+	return *registration;
 }
 
 void TextElement::RegisterDependencyProperties()
 {
+#if CUI_ENABLE_DYNAMIC_XAML
 	(void)ForegroundProperty();
 	(void)BackgroundProperty();
+#endif
 }

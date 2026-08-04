@@ -4,29 +4,41 @@
 #include "Window.h"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
+#include <typeindex>
 
 UIClass ProgressRing::Type() { return UIClass::UI_ProgressRing; }
+
+const DependencyProperty& ProgressRing::ShowPercentageProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ProgressRing, bool> options;
+		options.DefaultValue = true;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<ProgressRing, bool>(
+			DependencyPropertyRegistrationLiteral(L"ShowPercentage"),
+			[](ProgressRing& target) { return target.ShowPercentage; },
+			[](ProgressRing& target, const bool& value)
+			{ target.ShowPercentage = value; },
+			{}, std::move(options));
+	}();
+	return *registration;
+}
 
 void ProgressRing::RegisterDependencyProperties()
 {
 	RangeBase::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		DependencyPropertyOptions<ProgressRing, bool> showPercentage;
-		showPercentage.DefaultValue = true;
-		showPercentage.Flags = DependencyPropertyFlags::AffectsRender;
-		showPercentage.Design.Category = L"Behavior";
-		showPercentage.Design.CategoryOrder = 300;
-		showPercentage.Design.Order = 10;
-		showPercentage.Design.Editor = DependencyPropertyEditorKind::Boolean;
-		showPercentage.Design.Persistence = DependencyPropertyPersistence::Native;
-		DependencyPropertyRegistry::Register<ProgressRing, bool>(L"ShowPercentage",
-			[](ProgressRing& target) { return target.ShowPercentage; },
-			[](ProgressRing& target, const bool& value) { target.ShowPercentage = value; },
-			{}, std::move(showPercentage));
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)ShowPercentageProperty();
+#endif
 }
 
 GET_CPP(ProgressRing, bool, ShowPercentage)
@@ -37,7 +49,7 @@ GET_CPP(ProgressRing, bool, ShowPercentage)
 SET_CPP(ProgressRing, bool, ShowPercentage)
 {
 	(void)SetPropertyField(
-		L"ShowPercentage", _showPercentage, value);
+		ShowPercentageProperty(), _showPercentage, value);
 }
 
 ProgressRing::ProgressRing()
@@ -46,7 +58,7 @@ ProgressRing::ProgressRing()
 	this->RendererForegroundColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 1.0f);
 	this->RendererBorderColor = D2D1::ColorF(0, 0, 0, 0);
 	(void)TrySetPropertyValue(
-		L"FontSize", BindingValue(16.0),
+		Control::FontSizeProperty(), BindingValue(16.0),
 		DependencyPropertyValueSource::Theme);
 }
 

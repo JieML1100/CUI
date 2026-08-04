@@ -1,9 +1,12 @@
 #include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
+#include "../CuiDesigner/FrameworkThemeCodeGenerator.h"
 
 #include <Windows.h>
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -47,7 +50,9 @@ namespace
 			L"CuiCodeGen - CUI headless design-file code generator\r\n"
 			L"\r\n"
 			L"Usage:\r\n"
-			L"  CuiCodeGen generate <design-file> [--output <base>] [--class <name>] [--quiet]\r\n"
+			L"  CuiCodeGen generate <design-file> [--output <base>] [--class <name>] [--converter-manifest <xml>] [--quiet]\r\n"
+			L"  CuiCodeGen compile <xaml-file> --output <base> [--class <name>] [--converter-manifest <xml>] [--quiet]\r\n"
+			L"  CuiCodeGen compile-theme <resource-dictionary> --output <base> [--class <name>] [--root <xaml>]... [--preserve-type <type>]... [--preserve-resource <key>]... [--quiet]\r\n"
 			L"  CuiCodeGen --help\r\n"
 			L"  CuiCodeGen --version\r\n"
 			L"\r\n"
@@ -85,6 +90,23 @@ namespace
 		}
 		return true;
 	}
+
+	void AppendSemicolonSeparated(
+		const std::wstring& values,
+		std::vector<std::wstring>& output)
+	{
+		size_t start = 0;
+		while (start <= values.size())
+		{
+			const auto separator = values.find(L';', start);
+			const auto end = separator == std::wstring::npos
+				? values.size() : separator;
+			if (end > start)
+				output.push_back(values.substr(start, end - start));
+			if (separator == std::wstring::npos) break;
+			start = separator + 1;
+		}
+	}
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -103,7 +125,16 @@ int wmain(int argc, wchar_t** argv)
 			DesignerModel::DesignCodeGenerationContractVersion));
 		return ExitSuccess;
 	}
-	if (argc < 3 || std::wstring_view(argv[1]) != L"generate")
+	if (argc < 3)
+	{
+		PrintUsage(standardError);
+		return ExitUsageError;
+	}
+	const std::wstring_view command(argv[1]);
+	const bool generateUserFiles = command == L"generate";
+	const bool compileGeneratedOnly = command == L"compile";
+	const bool compileTheme = command == L"compile-theme";
+	if (!generateUserFiles && !compileGeneratedOnly && !compileTheme)
 	{
 		PrintUsage(standardError);
 		return ExitUsageError;
@@ -111,6 +142,9 @@ int wmain(int argc, wchar_t** argv)
 
 	const std::wstring designFile = argv[2];
 	DesignerModel::DesignCodeGenerationOptions options;
+	std::vector<std::wstring> themeRootDocuments;
+	std::vector<std::wstring> preservedThemeTypes;
+	std::vector<std::wstring> preservedThemeResources;
 	bool quiet = false;
 	std::wstring parseError;
 	for (int index = 3; index < argc; ++index)
@@ -143,6 +177,105 @@ int wmain(int argc, wchar_t** argv)
 				options.ClassName, parseError)) break;
 			continue;
 		}
+		if (argument == L"--converter-manifest"
+			|| argument.starts_with(L"--converter-manifest="))
+		{
+			if (compileTheme)
+			{
+				parseError = L"--converter-manifest 不适用于 compile-theme。";
+				break;
+			}
+			if (!options.ConverterManifestPath.empty())
+			{
+				parseError = L"--converter-manifest 只能指定一次。";
+				break;
+			}
+			if (!ReadOptionValue(index, argc, argv, L"--converter-manifest",
+				options.ConverterManifestPath, parseError)) break;
+			continue;
+		}
+		if (argument == L"--root" || argument.starts_with(L"--root="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--root 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring root;
+			if (!ReadOptionValue(index, argc, argv, L"--root",
+				root, parseError)) break;
+			themeRootDocuments.push_back(std::move(root));
+			continue;
+		}
+		if (argument == L"--roots" || argument.starts_with(L"--roots="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--roots 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring roots;
+			if (!ReadOptionValue(index, argc, argv, L"--roots",
+				roots, parseError)) break;
+			AppendSemicolonSeparated(roots, themeRootDocuments);
+			continue;
+		}
+		if (argument == L"--preserve-type"
+			|| argument.starts_with(L"--preserve-type="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--preserve-type 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring type;
+			if (!ReadOptionValue(index, argc, argv, L"--preserve-type",
+				type, parseError)) break;
+			preservedThemeTypes.push_back(std::move(type));
+			continue;
+		}
+		if (argument == L"--preserve-types"
+			|| argument.starts_with(L"--preserve-types="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--preserve-types 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring types;
+			if (!ReadOptionValue(index, argc, argv, L"--preserve-types",
+				types, parseError)) break;
+			AppendSemicolonSeparated(types, preservedThemeTypes);
+			continue;
+		}
+		if (argument == L"--preserve-resource"
+			|| argument.starts_with(L"--preserve-resource="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--preserve-resource 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring resource;
+			if (!ReadOptionValue(index, argc, argv, L"--preserve-resource",
+				resource, parseError)) break;
+			preservedThemeResources.push_back(std::move(resource));
+			continue;
+		}
+		if (argument == L"--preserve-resources"
+			|| argument.starts_with(L"--preserve-resources="))
+		{
+			if (!compileTheme)
+			{
+				parseError = L"--preserve-resources 仅适用于 compile-theme。";
+				break;
+			}
+			std::wstring resources;
+			if (!ReadOptionValue(index, argc, argv, L"--preserve-resources",
+				resources, parseError)) break;
+			AppendSemicolonSeparated(resources, preservedThemeResources);
+			continue;
+		}
 		parseError = L"未知参数：" + std::wstring(argument);
 		break;
 	}
@@ -152,19 +285,74 @@ int wmain(int argc, wchar_t** argv)
 		return ExitUsageError;
 	}
 
-	DesignerModel::DesignCodeGenerationResult result;
 	std::wstring error;
-	if (!DesignerModel::DesignCodeGenerationService::GenerateFile(
-		designFile, options, &result, &error))
+	std::wstring generatedClass;
+	std::vector<std::wstring> generatedFiles;
+	if (generateUserFiles)
 	{
-		WriteLine(standardError, L"CuiCodeGen: "
-			+ (error.empty() ? L"代码生成失败。" : error));
-		return ExitGenerationFailure;
+		DesignerModel::DesignCodeGenerationResult result;
+		if (!DesignerModel::DesignCodeGenerationService::GenerateFile(
+			designFile, options, &result, &error))
+		{
+			WriteLine(standardError, L"CuiCodeGen: "
+				+ (error.empty() ? L"代码生成失败。" : error));
+			return ExitGenerationFailure;
+		}
+		generatedClass = result.ClassName;
+		generatedFiles = result.OutputFiles();
+	}
+	else if (compileGeneratedOnly)
+	{
+		DesignerModel::DesignGeneratedCodeResult result;
+		if (!DesignerModel::DesignCodeGenerationService::
+			GenerateGeneratedOnlyFile(
+				designFile, options, &result, &error))
+		{
+			WriteLine(standardError, L"CuiCodeGen: "
+				+ (error.empty() ? L"静态 C++ 代码生成失败。" : error));
+			return ExitGenerationFailure;
+		}
+		generatedClass = result.ClassName;
+		generatedFiles = result.OutputFiles();
+	}
+	else
+	{
+		DesignerModel::FrameworkThemeCodeGenerationOptions themeOptions;
+		themeOptions.OutputBasePath = options.OutputBasePath;
+		themeOptions.RootDocuments = std::move(themeRootDocuments);
+		themeOptions.PreservedTypes = std::move(preservedThemeTypes);
+		themeOptions.PreservedResources =
+			std::move(preservedThemeResources);
+		if (!options.ClassName.empty())
+			themeOptions.ClassName = options.ClassName;
+		DesignerModel::FrameworkThemeCodeGenerationResult result;
+		if (!DesignerModel::FrameworkThemeCodeGenerator::GenerateFile(
+			designFile, themeOptions, &result, &error))
+		{
+			WriteLine(standardError, L"CuiCodeGen: "
+				+ (error.empty() ? L"静态主题代码生成失败。" : error));
+			return ExitGenerationFailure;
+		}
+		generatedClass = result.ClassName;
+		generatedFiles = result.OutputFiles();
+		if (!quiet && result.IsApplicationClosure())
+		{
+			WriteLine(standardOutput,
+				L"Theme closure: styles "
+				+ std::to_wstring(result.RetainedStyleRuleCount) + L"/"
+				+ std::to_wstring(result.SourceStyleRuleCount)
+				+ L", templates "
+				+ std::to_wstring(result.RetainedControlTemplateCount) + L"/"
+				+ std::to_wstring(result.SourceControlTemplateCount)
+				+ L", resources "
+				+ std::to_wstring(result.RetainedResourceCount) + L"/"
+				+ std::to_wstring(result.SourceResourceCount));
+		}
 	}
 	if (!quiet)
 	{
-		WriteLine(standardOutput, L"Generated " + result.ClassName);
-		for (const auto& path : result.OutputFiles())
+		WriteLine(standardOutput, L"Generated " + generatedClass);
+		for (const auto& path : generatedFiles)
 			WriteLine(standardOutput, L"  " + path);
 	}
 	return ExitSuccess;

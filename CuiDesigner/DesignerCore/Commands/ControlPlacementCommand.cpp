@@ -76,24 +76,49 @@ namespace
 			!= expected.ComponentContentProperty)
 			return L"ComponentContentProperty";
 		if (actual.ChildIndex != expected.ChildIndex) return L"ChildIndex";
-		if (actual.Margin != expected.Margin) return L"Margin";
-		if (actual.Width != expected.Width) return L"Width";
-		if (actual.Height != expected.Height) return L"Height";
-		if (!CanvasOffsetEqual(actual.CanvasLeft, expected.CanvasLeft)) return L"Canvas.Left";
-		if (!CanvasOffsetEqual(actual.CanvasTop, expected.CanvasTop)) return L"Canvas.Top";
-		if (!CanvasOffsetEqual(actual.CanvasRight, expected.CanvasRight)) return L"Canvas.Right";
-		if (!CanvasOffsetEqual(actual.CanvasBottom, expected.CanvasBottom)) return L"Canvas.Bottom";
-		if (actual.Horizontal != expected.Horizontal) return L"HorizontalAlignment";
-		if (actual.Vertical != expected.Vertical) return L"VerticalAlignment";
-		if (actual.DockPosition != expected.DockPosition) return L"Dock";
-		if (actual.GridRow != expected.GridRow) return L"Grid.Row";
-		if (actual.GridColumn != expected.GridColumn) return L"Grid.Column";
-		if (actual.GridRowSpan != expected.GridRowSpan) return L"Grid.RowSpan";
-		if (actual.GridColumnSpan != expected.GridColumnSpan)
-			return L"Grid.ColumnSpan";
-		if (actual.ZIndex != expected.ZIndex) return L"ZIndex";
 		if (actual.LocalValueMask != expected.LocalValueMask)
 			return L"dependency-property Local source";
+		auto authored = [&](DesignerPlacementLocalValue value)
+		{
+			return expected.HasLocalValue(value);
+		};
+		if (authored(DesignerPlacementLocalValue::Margin)
+			&& actual.Margin != expected.Margin) return L"Margin";
+		if (authored(DesignerPlacementLocalValue::Width)
+			&& actual.Width != expected.Width) return L"Width";
+		if (authored(DesignerPlacementLocalValue::Height)
+			&& actual.Height != expected.Height) return L"Height";
+		if (authored(DesignerPlacementLocalValue::CanvasLeft)
+			&& !CanvasOffsetEqual(actual.CanvasLeft, expected.CanvasLeft))
+			return L"Canvas.Left";
+		if (authored(DesignerPlacementLocalValue::CanvasTop)
+			&& !CanvasOffsetEqual(actual.CanvasTop, expected.CanvasTop))
+			return L"Canvas.Top";
+		if (authored(DesignerPlacementLocalValue::CanvasRight)
+			&& !CanvasOffsetEqual(actual.CanvasRight, expected.CanvasRight))
+			return L"Canvas.Right";
+		if (authored(DesignerPlacementLocalValue::CanvasBottom)
+			&& !CanvasOffsetEqual(actual.CanvasBottom, expected.CanvasBottom))
+			return L"Canvas.Bottom";
+		if (authored(DesignerPlacementLocalValue::HorizontalAlignment)
+			&& actual.Horizontal != expected.Horizontal)
+			return L"HorizontalAlignment";
+		if (authored(DesignerPlacementLocalValue::VerticalAlignment)
+			&& actual.Vertical != expected.Vertical)
+			return L"VerticalAlignment";
+		if (authored(DesignerPlacementLocalValue::Dock)
+			&& actual.DockPosition != expected.DockPosition) return L"Dock";
+		if (authored(DesignerPlacementLocalValue::GridRow)
+			&& actual.GridRow != expected.GridRow) return L"Grid.Row";
+		if (authored(DesignerPlacementLocalValue::GridColumn)
+			&& actual.GridColumn != expected.GridColumn) return L"Grid.Column";
+		if (authored(DesignerPlacementLocalValue::GridRowSpan)
+			&& actual.GridRowSpan != expected.GridRowSpan) return L"Grid.RowSpan";
+		if (authored(DesignerPlacementLocalValue::GridColumnSpan)
+			&& actual.GridColumnSpan != expected.GridColumnSpan)
+			return L"Grid.ColumnSpan";
+		if (authored(DesignerPlacementLocalValue::ZIndex)
+			&& actual.ZIndex != expected.ZIndex) return L"ZIndex";
 		return L"unknown";
 	}
 
@@ -673,22 +698,43 @@ bool DesignerControlPlacementState::EquivalentTo(
 		&& ParentType == other.ParentType
 		&& ComponentContentProperty == other.ComponentContentProperty
 		&& ChildIndex == other.ChildIndex
-		&& Margin == other.Margin
-		&& Width == other.Width
-		&& Height == other.Height
-		&& CanvasOffsetEqual(CanvasLeft, other.CanvasLeft)
-		&& CanvasOffsetEqual(CanvasTop, other.CanvasTop)
-		&& CanvasOffsetEqual(CanvasRight, other.CanvasRight)
-		&& CanvasOffsetEqual(CanvasBottom, other.CanvasBottom)
-		&& Horizontal == other.Horizontal
-		&& Vertical == other.Vertical
-		&& DockPosition == other.DockPosition
-		&& GridRow == other.GridRow
-		&& GridColumn == other.GridColumn
-		&& GridRowSpan == other.GridRowSpan
-		&& GridColumnSpan == other.GridColumnSpan
-		&& ZIndex == other.ZIndex
-		&& LocalValueMask == other.LocalValueMask;
+		&& LocalValueMask == other.LocalValueMask
+		// A placement delta owns authored Local values, not effective values
+		// supplied by Style, Theme, inheritance or metadata. Reattaching the
+		// same subtree beneath a rebuilt parent must preserve the absence of a
+		// Local contribution without freezing the old effective value as Local.
+		&& (!HasLocalValue(DesignerPlacementLocalValue::Margin)
+			|| Margin == other.Margin)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::Width)
+			|| Width == other.Width)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::Height)
+			|| Height == other.Height)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::CanvasLeft)
+			|| CanvasOffsetEqual(CanvasLeft, other.CanvasLeft))
+		&& (!HasLocalValue(DesignerPlacementLocalValue::CanvasTop)
+			|| CanvasOffsetEqual(CanvasTop, other.CanvasTop))
+		&& (!HasLocalValue(DesignerPlacementLocalValue::CanvasRight)
+			|| CanvasOffsetEqual(CanvasRight, other.CanvasRight))
+		&& (!HasLocalValue(DesignerPlacementLocalValue::CanvasBottom)
+			|| CanvasOffsetEqual(CanvasBottom, other.CanvasBottom))
+		&& (!HasLocalValue(
+				DesignerPlacementLocalValue::HorizontalAlignment)
+			|| Horizontal == other.Horizontal)
+		&& (!HasLocalValue(
+				DesignerPlacementLocalValue::VerticalAlignment)
+			|| Vertical == other.Vertical)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::Dock)
+			|| DockPosition == other.DockPosition)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::GridRow)
+			|| GridRow == other.GridRow)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::GridColumn)
+			|| GridColumn == other.GridColumn)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::GridRowSpan)
+			|| GridRowSpan == other.GridRowSpan)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::GridColumnSpan)
+			|| GridColumnSpan == other.GridColumnSpan)
+		&& (!HasLocalValue(DesignerPlacementLocalValue::ZIndex)
+			|| ZIndex == other.ZIndex);
 }
 
 bool DesignerControlPlacementState::HasLocalValue(

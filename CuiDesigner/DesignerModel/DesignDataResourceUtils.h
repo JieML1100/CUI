@@ -18,9 +18,16 @@ namespace DesignerModel::DesignDataResourceUtils
 	/** Canonicalizes and validates every DataType/DataTemplate/DataList relation. */
 	bool ValidateAndCanonicalize(
 		DesignDocument& document,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const DesignDocument* fallbackResources = nullptr);
 
-	/** Materializes an embedded DataList as an observable, strongly typed source. */
+	/**
+	 * Materializes a DataList from an already canonicalized document.
+	 *
+	 * Validation belongs to the document load/compile boundary. Revalidating and
+	 * copying the complete document once per list would also lose the compiler's
+	 * Theme resource scope after template expansion.
+	 */
 	std::shared_ptr<ObservableBindingList> BuildRuntimeList(
 		const DesignDocument& document,
 		const DesignDataList& list,

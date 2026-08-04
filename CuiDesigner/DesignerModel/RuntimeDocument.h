@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DesignDocument.h"
+#include "XamlDocumentParser.h"
 #include "../DesignerEventCatalog.h"
 #include "../../CUI/include/Core/EventConnection.h"
 #include "../../CUI/include/ControlWeakReference.h"
@@ -19,6 +20,7 @@
 #include <vector>
 
 class Window;
+class ControlStyleSheet;
 struct CommandBinding;
 
 namespace DesignerModel
@@ -182,6 +184,20 @@ struct RuntimeDocumentLoadOptions
 	bool ForceBehaviorRefresh = false;
 	/** Rebuilds runtime resources when dependency bytes changed but XAML is identical. */
 	bool ForceResourceRefresh = false;
+	/**
+	 * Keeps the authored DesignDocument alive for the document's whole lifetime.
+	 *
+	 * Set this to false in ship hosts that mount XAML once and never reload it:
+	 * the parsed document is by far the largest allocation a dynamic mount makes,
+	 * and every mount-path consumer is finished once AttachToWindow() has
+	 * returned. Releasing it forfeits in-place/recomposed reload (topology reload
+	 * degrades to full replacement), ResourceDependencies() (it then reports an
+	 * empty list, so dependency-driven file watching stops seeing satellite
+	 * resources) and persistence/static lowering off this document.
+	 */
+	bool RetainSourceDocument = true;
+	/** Parser options for internal parse calls; defaults capture source spans. */
+	XamlDocumentParseOptions ParseOptions;
 };
 
 enum class RuntimeDocumentReloadMode
@@ -202,7 +218,9 @@ enum class RuntimeDocumentReloadMode
  * The DesignerControl records are transient materialization projections used by
  * runtime lookup, event wiring and transactional reload. They are never an
  * authored declaration source; persistence and static lowering consume the
- * retained DesignDocument. Window targets passed to ApplyWindowProperties(),
+ * retained DesignDocument, which stays alive unless the host opted out through
+ * RuntimeDocumentLoadOptions::RetainSourceDocument or called
+ * ReleaseSourceDocument(). Window targets passed to ApplyWindowProperties(),
  * BindWindowEvents(), or TransferContentRootTo(Window) are retained non-owning
  * and must outlive this document.
  */
@@ -229,6 +247,19 @@ public:
 			? _sourceDocument->ResourceDependencies()
 			: std::vector<ResourceDependency>{};
 	}
+	/** False once the authored document was released; reload then replaces. */
+	bool HasSourceDocument() const noexcept
+	{
+		return _sourceDocument.has_value();
+	}
+	/**
+	 * Frees the authored DesignDocument retained by the mount.
+	 *
+	 * Safe to call once AttachToWindow() has succeeded: no mount-path consumer
+	 * reads it afterwards. It is not undoable, and it permanently downgrades this
+	 * document as described on RuntimeDocumentLoadOptions::RetainSourceDocument.
+	 */
+	void ReleaseSourceDocument() noexcept;
 	const std::vector<std::shared_ptr<DesignerControl>>& Controls() const noexcept
 	{
 		return _controls;
@@ -385,8 +416,12 @@ private:
 	std::vector<PendingCommandTargetReference> _commandTargetReferences;
 	std::vector<PendingInputBindingTargetReference>
 		_inputBindingTargetReferences;
-	std::unordered_map<int, Control*> _controlsByDesignId;
-	std::unordered_map<std::wstring, Control*> _controlsByName;
+	// Runtime namescopes must never publish a dangling address when a visual
+	// content object is removed or replaced independently of the authored
+	// record. The source document retains identity; these indexes retain only
+	// lifetime-aware projections.
+	std::unordered_map<int, ControlWeakReference> _controlsByDesignId;
+	std::unordered_map<std::wstring, ControlWeakReference> _controlsByName;
 	std::vector<InstalledBinding> _installedBindings;
 	std::vector<EventConnection> _eventConnections;
 	std::vector<EventConnection> _windowEventConnections;
@@ -408,9 +443,29 @@ private:
 		_declarativeComponentBehaviors;
 	bool _allowNativeSurfacePlaceholder = false;
 	std::optional<DesignDocument> _sourceDocument;
+	/**
+	 * Exact runtime stylesheet already installed on the detached materialized
+	 * tree. Retained only until its first atomic Window attach.
+	 */
+	std::shared_ptr<const ControlStyleSheet> _pendingDocumentStyleSheet;
 	bool _contentReleased = false;
 	std::shared_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
 
+	bool BindControlEventsCore(
+		const RuntimeControlEventResolver& resolver,
+		const DesignDocument* sourceDocument,
+		std::wstring* outError);
+	bool AttachToWindowCore(
+		::Window& form,
+		const RuntimeWindowEventResolver& resolver,
+		const DesignDocument* sourceDocument,
+		std::wstring* outError);
+	bool AttachToWindowCore(
+		::Window& form,
+		std::shared_ptr<RuntimeDocumentContentHost> contentHost,
+		const RuntimeWindowEventResolver& resolver,
+		const DesignDocument* sourceDocument,
+		std::wstring* outError);
 	bool InstallDataBindings(
 		const std::shared_ptr<IBindingSource>& source,
 		std::vector<InstalledBinding>& installed,
@@ -619,6 +674,7 @@ private:
 		RuntimeDocument& output,
 		const RuntimeDocumentLoadOptions& options,
 		bool deferDataBindings,
+		bool borrowSourceDocumentForAttach,
 		std::wstring* outError,
 		XamlDocumentDiagnostic* outDiagnostic);
 	static bool ReloadHosted(

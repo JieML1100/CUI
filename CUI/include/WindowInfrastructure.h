@@ -89,9 +89,46 @@ namespace cui::framework
 			return Window::BuildTabOrder(roots);
 		}
 
+		static bool ProcessAccessKey(Window& target, wchar_t key)
+		{
+			return target.ProcessAccessKey(key);
+		}
+
+		static Control* HitTestControlAt(
+			Window& target, int contentX, int contentY)
+		{
+			return target.HitTestControlAt(POINT{
+				static_cast<LONG>(contentX),
+				static_cast<LONG>(contentY) });
+		}
+
+#if CUI_RUNTIME_FLAVOR_DESIGN
+		static void UpdateMouseOverProjectionForTesting(
+			Window& target,
+			Control* directlyOver,
+			int contentX,
+			int contentY,
+			bool raiseDirectEvents = true)
+		{
+			target.UpdateMouseOverProjection(
+				directlyOver,
+				POINT{ static_cast<LONG>(contentX),
+					static_cast<LONG>(contentY) },
+				raiseDirectEvents);
+		}
+#endif
+
 		static void UpdateCursorFromCurrentMouse(Window& target)
 		{
 			target.UpdateCursorFromCurrentMouse();
+		}
+
+		/** Implements Window.DialogCancelCommand for Button.IsCancel. */
+		static bool TryCancelDialog(Window& target)
+		{
+			if (!target._showingAsDialog) return false;
+			target.DialogResult = false;
+			return true;
 		}
 
 		static InputStagingStatistics InputStatistics(
@@ -135,10 +172,34 @@ namespace cui::framework
 			return target.TryGetLastRenderDirtyRect(logicalDirty, fullFrame);
 		}
 
+		/** Test seam for the damage clear versus stable client-frame geometry. */
+		static RECT PresentationBackdropDamageForTesting(
+			const RECT& logicalDirty,
+			const RECT& logicalClient) noexcept
+		{
+			return Window::ResolvePresentationBackdropGeometry(
+				logicalDirty, logicalClient).Damage;
+		}
+
+		static RECT PresentationClientFrameForTesting(
+			const RECT& logicalDirty,
+			const RECT& logicalClient) noexcept
+		{
+			return Window::ResolvePresentationBackdropGeometry(
+				logicalDirty, logicalClient).ClientFrame;
+		}
+
 		static uint64_t PresentationSceneRevision(
 			const Window& target) noexcept
 		{
 			return target.GetPresentationSceneRevision();
+		}
+
+		/** Synchronizes the retained scene and returns a control's paint order. */
+		static int PresentationOrder(
+			Window& target, Control* control)
+		{
+			return target.GetPresentationOrder(control);
 		}
 
 		static uint64_t PresentationContentRevision(
@@ -244,6 +305,13 @@ namespace cui::framework
 		static void TickPresentationAnimationsForTesting(Window& target)
 		{
 			target.InvalidateAnimatedControls(false);
+		}
+
+		/** Test seam for the window-owned native/declarative animation scheduler. */
+		static UINT AnimationTimerIntervalForTesting(
+			const Window& target) noexcept
+		{
+			return target._animIntervalMs;
 		}
 
 		static bool TryGetCloseCaptionRectForTesting(

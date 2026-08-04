@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include "CuiBuildFeatures.h"
 #include "DispatcherObject.h"
 #include "Event.h"
 
@@ -92,8 +93,10 @@ private:
 
 	std::shared_ptr<const ControlStyleSheet>
 		GetResourcesSnapshot() const;
+#if CUI_ENABLE_DYNAMIC_XAML
 	void ConnectResources(
 		const std::shared_ptr<ControlStyleSheet>& resources);
+#endif
 	void OnResourcesChanged();
 	void InvalidateApplicationResources();
 
@@ -107,8 +110,12 @@ private:
 	int _exitCode = 0;
 
 	mutable std::mutex _resourcesMutex;
+#if CUI_ENABLE_DYNAMIC_XAML
 	std::shared_ptr<ControlStyleSheet> _resources;
 	EventConnection _resourcesConnection;
+#else
+	std::shared_ptr<const ControlStyleSheet> _resources;
+#endif
 
 protected:
 	virtual void OnStartup(StartupEventArgs& args);
@@ -129,13 +136,15 @@ public:
 	::ShutdownMode GetShutdownMode() const;
 	void SetShutdownMode(::ShutdownMode value);
 
-	/**
-	 * Lazily creates the mutable application ResourceDictionary projection.
-	 * ControlStyleSheet is CUI's current lowered runtime representation of a
-	 * ResourceDictionary containing ordinary values and Style resources.
-	 */
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design-runtime mutable ResourceDictionary projection. */
 	std::shared_ptr<ControlStyleSheet> GetResources();
 	void SetResources(std::shared_ptr<ControlStyleSheet> value);
+#else
+	/** Production application resources are installed as one immutable snapshot. */
+	std::shared_ptr<const ControlStyleSheet> GetResources() const;
+	void SetResources(std::shared_ptr<const ControlStyleSheet> value);
+#endif
 	bool TryFindResource(
 		const std::wstring& resourceKey,
 		BindingValue& value) const;

@@ -251,43 +251,56 @@ void DockLayoutEngine::Arrange(LayoutContext& context, cui::core::Rect finalRect
 
 // DockPanel 实现
 
-void DockPanel::RegisterDependencyProperties()
+const DependencyProperty& DockPanel::LastChildFillProperty()
 {
-	Panel::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<DockPanel, bool> options{
 			true,
 			DependencyPropertyFlags::AffectsMeasure
 				| DependencyPropertyFlags::AffectsArrange };
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = 10;
 		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<DockPanel, bool>(L"LastChildFill",
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DockPanel, bool>(
+			DependencyPropertyRegistrationLiteral(L"LastChildFill"),
 			[](DockPanel& target) { return target.GetLastChildFill(); },
-			[](DockPanel& target, const bool& value) { target.SetLastChildFill(value); },
-			[](DockPanel& target, DependencyPropertyMetadata::ChangeHandler handler,
+			[](DockPanel& target, const bool& value)
+			{ target.SetLastChildFill(value); },
+			[](DockPanel& target,
+				DependencyPropertyMetadata::ChangeHandler handler,
 				DataSourceUpdateMode)
 			{
 				return target.OnPropertyValueChanged.Subscribe(
 					[handler = std::move(handler)](
-						DependencyObject*, const DependencyPropertyChangedEventArgs& args)
+						DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
 					{
-						if (args.PropertyName == L"LastChildFill")
+						if (args.Property
+							== &DockPanel::LastChildFillProperty())
 							handler();
 					});
 			},
 			std::move(options));
-		return true;
 	}();
-	(void)registered;
+	return *registration;
+}
+
+void DockPanel::RegisterDependencyProperties()
+{
+	Panel::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)LastChildFillProperty();
+#endif
 }
 
 void DockPanel::SetLastChildFill(bool value)
 {
-	if (!SetPropertyField(L"LastChildFill", _lastChildFill, value)) return;
+	if (!SetPropertyField(LastChildFillProperty(), _lastChildFill, value)) return;
 	_dockEngine->SetLastChildFill(_lastChildFill);
 	InvalidateLayout();
 }

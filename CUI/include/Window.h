@@ -94,6 +94,7 @@ private:
 	friend class FocusManager;
 	friend class TextCompositionManager;
 	friend class WebBrowser;
+	friend class cui::framework::ReverseInheritedProperty;
 	friend struct cui::framework::WindowAccess;
 	void ApplySystemVisualPreferences(SystemVisualPreferences preferences);
 	D2DGraphics* GetCurrentDrawingContext() const noexcept;
@@ -104,8 +105,12 @@ private:
 	void PublishLogicalFocusTransition(
 		Control* previous,
 		Control* current);
+	void RecordMostRecentInputDevice(const InputReport& input);
+	void RefreshKeyboardFocusVisual();
+	void RefreshReverseInheritedInputProperties();
 	void ClearDetachedControlReferences(Control* root);
 	class Button* ResolveDialogButton(bool cancel) const;
+	void RefreshDefaultedButtons();
 	std::vector<Control*> GetAccessibleControls() const;
 	void NotifyAccessibilityEvent(Control* control, AccessibilityChange change);
 	void NotifyAccessibilityVirtualEvent(
@@ -172,8 +177,16 @@ private:
 		D2D1_COLOR_F ClosePressedColor =
 			D2D1_COLOR_F{ 0.90f, 0.20f, 0.20f, 0.70f };
 	};
+	struct PresentationBackdropGeometry final
+	{
+		RECT Damage{};
+		RECT ClientFrame{};
+	};
 	NativeThemeFrame GetNativeThemeFrame() const;
 	NativeThemeFrame GetEffectiveNativeThemeFrame() const;
+	static PresentationBackdropGeometry ResolvePresentationBackdropGeometry(
+		const RECT& logicalDirty,
+		const RECT& logicalClient) noexcept;
 	void ClearCaptionStates();
 	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* control, float inflateDip = 2.0f, bool immediate = false);
@@ -189,6 +202,8 @@ private:
 	void UpdateMouseOverProjection(
 		class Control* directlyOver, POINT contentMouse,
 		bool raiseDirectEvents = true);
+	void ReconcileMouseDirectlyOverState();
+	void PublishMouseOverTransition(Control& target, bool isMouseOver);
 	static HCURSOR GetSystemCursor(CursorKind kind);
 
 	// Window is the root layout boundary for its single semantic content slot.
@@ -228,6 +243,8 @@ private:
 	void SynchronizeNativeClientLayoutSlot();
 	void SynchronizeNativePosition();
 	void RequestArrangeLayout();
+	/** Posts one coalesced UI-thread layout pass without promoting it to full damage. */
+	void ScheduleLayoutDispatch();
 	int GetTitleBarHeightPixels() const noexcept;
 	RECT GetTitleBarClientPixelRect() const noexcept;
 	void BeginWindowLayoutDeferral() noexcept;
@@ -244,11 +261,14 @@ private:
 	void EnsureInitialDpiApplied();
 	// 鼠标 Hover/Leave 跟踪
 	bool _mouseLeaveTracking = false;
+	bool _layoutDispatchPosted = false;
 	class Control* _mouseDirectlyOver = nullptr;
-	std::vector<ControlWeakReference> _mouseOverPath;
+	ControlWeakReference _mouseDirectlyOverStateOwner;
+	POINT _mouseOverContentPoint{};
 	class WindowAccessibleObject* _accessibleObject = nullptr;
 	class WindowUiaProvider* _uiaProvider = nullptr;
 	SystemVisualPreferences _systemVisualPreferences;
+	bool _keyboardMostRecentInputDevice = false;
 	bool _closingEventActive = false;
 	ControlWeakReference _owner;
 	std::optional<bool> _dialogResult;
@@ -283,6 +303,13 @@ private:
 
 public:
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& TitleProperty();
+	static const DependencyProperty& LeftProperty();
+	static const DependencyProperty& TopProperty();
+	static const DependencyProperty& TopmostProperty();
+	static const DependencyProperty& WindowStyleProperty();
+	static const DependencyProperty& ResizeModeProperty();
+	static const DependencyProperty& ShowInTaskbarProperty();
 	UIClass Type() override { return UIClass::UI_Window; }
 	WindowCloseEvent OnClosing = WindowCloseEvent();
 	/** WPF Window.LocationChanged projection of the native top-level position. */

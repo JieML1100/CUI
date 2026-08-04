@@ -30,8 +30,7 @@ private:
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
-		return std::make_unique<AutomationPeer>(
-			*this, AutomationControlType::Pane, L"ScrollViewer");
+		return std::make_unique<ScrollViewerAutomationPeer>(*this);
 	}
 	cui::core::Size MeasureCore(
 		const cui::core::Constraints& available) override;
@@ -54,8 +53,18 @@ public:
 	ScrollViewer();
 
 	UIClass Type() override;
+	static const DependencyProperty& HorizontalScrollBarVisibilityProperty();
+	static const DependencyProperty& VerticalScrollBarVisibilityProperty();
+	static const DependencyProperty& ExtentWidthProperty();
+	static const DependencyProperty& ExtentHeightProperty();
+	static const DependencyProperty& ViewportWidthProperty();
+	static const DependencyProperty& ViewportHeightProperty();
+	static const DependencyProperty& HorizontalOffsetProperty();
+	static const DependencyProperty& VerticalOffsetProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 
 	using UIElement::OnScrollChanged;
 
@@ -79,7 +88,6 @@ public:
 	READONLY_PROPERTY(double, VerticalOffset);
 	GET(double, VerticalOffset);
 
-	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
@@ -107,6 +115,13 @@ public:
 	bool BringDescendantIntoView(Control* descendant);
 
 private:
+	static const DependencyPropertyKey& ExtentWidthPropertyKey();
+	static const DependencyPropertyKey& ExtentHeightPropertyKey();
+	static const DependencyPropertyKey& ViewportWidthPropertyKey();
+	static const DependencyPropertyKey& ViewportHeightPropertyKey();
+	static const DependencyPropertyKey& HorizontalOffsetPropertyKey();
+	static const DependencyPropertyKey& VerticalOffsetPropertyKey();
+
 	bool _draggingVerticalScrollBar = false;
 	bool _draggingHorizontalScrollBar = false;
 	float _verticalScrollThumbGrabOffset = 0.0f;

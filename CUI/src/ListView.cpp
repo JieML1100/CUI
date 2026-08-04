@@ -49,9 +49,18 @@ std::unique_ptr<Control> ListView::BuildGeneratedItem(
 	cui::framework::StyleAccess::SetResourceKey(
 		*container, GetItemContainerStyle());
 	std::wstring error;
-	if (!container->InitializeItem(
-		item, GetItemTemplate(), GetDisplayMemberPath(),
-		index, L"ListViewItem", &error))
+	bool initialized = false;
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (GetCompiledDisplayMemberPath().Empty())
+		initialized = container->InitializeItem(
+			item, GetItemTemplate(), GetDisplayMemberPath(),
+			index, L"ListViewItem", &error);
+	else
+#endif
+		initialized = container->InitializeItem(
+			item, GetItemTemplate(), GetCompiledDisplayMemberPath(),
+			index, L"ListViewItem", &error);
+	if (!initialized)
 	{
 		SetLastTemplateError(error.empty()
 			? L"ListViewItem 内容初始化失败。" : std::move(error));

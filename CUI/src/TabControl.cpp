@@ -1,15 +1,16 @@
 #include "TabControl.h"
 
+#include "Canvas.h"
+#include "InputManager.h"
 #include "Layout/OverlayLayout.h"
 #include "StyleInfrastructure.h"
 #include "TemplateInfrastructure.h"
-#include "Window.h"
-#include "WindowInfrastructure.h"
-#include "XamlInfrastructure.h"
+#include "TreeInfrastructure.h"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
@@ -71,19 +72,20 @@ namespace
 	};
 
 	template<typename TOwner>
-	auto PropertySubscriber(const wchar_t* propertyName)
+	auto PropertySubscriber(
+		const DependencyProperty& (*propertyAccessor)())
 	{
-		return [propertyName = std::wstring(propertyName)](
+		return [propertyAccessor](
 			TOwner& target,
 			DependencyPropertyMetadata::ChangeHandler handler,
 			DataSourceUpdateMode)
 		{
 			return target.OnPropertyValueChanged.Subscribe(
-				[propertyName, handler = std::move(handler)](
+				[propertyAccessor, handler = std::move(handler)](
 					DependencyObject*,
 					const DependencyPropertyChangedEventArgs& args)
 				{
-					if (args.PropertyName == propertyName) handler();
+					if (args.Property == &propertyAccessor()) handler();
 				});
 		};
 	}
@@ -110,106 +112,43 @@ namespace
 		return placement == Dock::Left || placement == Dock::Right;
 	}
 
-	D2D1_COLOR_F WithAlpha(D2D1_COLOR_F color, float alpha) noexcept
-	{
-		color.a = (std::clamp)(alpha, 0.0f, 1.0f);
-		return color;
-	}
 }
 
-TabItem::TabItem()
+const DependencyProperty& TabItem::IsSelectedProperty()
 {
-	RegisterDependencyProperties();
-	(void)TrySetPropertyValue(
-		L"BorderThickness", BindingValue(Thickness(0.0f)),
-		DependencyPropertyValueSource::Theme);
-	SetPresentationSuppressed(true);
-}
-
-void TabItem::RegisterDependencyProperties()
-{
-	HeaderedContentControl::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<TabItem, bool> options;
 		options.DefaultValue = false;
 		options.Flags = DependencyPropertyFlags::AffectsRender;
 		options.IsReadOnly = false;
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"State";
 		options.Design.CategoryOrder = 70;
 		options.Design.Order = 10;
 		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
 		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
 		options.Design.Browsable = true;
-		DependencyPropertyRegistry::Register<TabItem, bool>(
-			L"IsSelected",
+		)
+		return DependencyPropertyRegistry::RegisterStatic<TabItem, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsSelected"),
 			[](TabItem& target) { return target.IsSelected; },
 			[](TabItem& target, const bool& value)
 			{ target.ApplyIsSelectedValue(value); },
-			PropertySubscriber<TabItem>(L"IsSelected"),
+			PropertySubscriber<TabItem>(&TabItem::IsSelectedProperty),
 			std::move(options));
-		return true;
 	}();
-	(void)registered;
+	return *registration;
 }
 
-GET_CPP(TabItem, bool, IsSelected)
+const DependencyProperty& TabItem::TabStripPlacementProperty()
 {
-	return _isSelected;
+	return TabStripPlacementPropertyKey().Property();
 }
 
-SET_CPP(TabItem, bool, IsSelected)
+const DependencyProperty& TabControl::TabStripPlacementProperty()
 {
-	if (!SetPropertyField(L"IsSelected", _isSelected, value)) return;
-	auto* owner = dynamic_cast<TabControl*>(GetLogicalParent());
-	if (!owner) return;
-	const int index = owner->IndexOfItem(this);
-	if (value) (void)owner->SelectItem(index);
-	else if (owner->GetSelectedIndex() == index)
-		(void)owner->SelectIndex(-1);
-}
-
-void TabItem::SetCurrentIsSelected(bool value)
-{
-	(void)SetCurrentPropertyField(L"IsSelected", _isSelected, value);
-}
-
-void TabItem::ApplyIsSelectedValue(bool value)
-{
-	if (_isSelected == value) return;
-	if (!SetPropertyField(L"IsSelected", _isSelected, value)) return;
-	SetPresentationSuppressed(!value);
-	SetStyleState(ControlStyleState::Selected, value);
-	RoutedEventArgs args;
-	if (value) Selected(this, args);
-	else Unselected(this, args);
-	InvalidateVisual();
-}
-
-void TabItem::ConfigureHeaderVisual(Control& child)
-{
-	HeaderedContentControl::ConfigureHeaderVisual(child);
-	// The owning TabControl presents Header in its strip; this instance is the
-	// page content projection only.
-	cui::framework::TemplateAccess::SetPresentationSuppressed(child, true);
-}
-
-void TabItem::ReleaseHeaderVisual(Control& child)
-{
-	cui::framework::TemplateAccess::SetPresentationSuppressed(child, false);
-	HeaderedContentControl::ReleaseHeaderVisual(child);
-}
-
-float TabItem::GetHeaderSlotHeightDip(float)
-{
-	return 0.0f;
-}
-
-void TabControl::RegisterDependencyProperties()
-{
-	Selector::RegisterDependencyProperties();
-	TabItem::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
 		DependencyPropertyOptions<TabControl, Dock> options;
 		options.DefaultValue = Dock::Top;
@@ -235,6 +174,7 @@ void TabControl::RegisterDependencyProperties()
 			target.RequestLayout();
 			target.InvalidateVisual();
 		};
+		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Layout";
 		options.Design.CategoryOrder = 100;
 		options.Design.Order = 10;
@@ -246,16 +186,350 @@ void TabControl::RegisterDependencyProperties()
 			{ L"Right", BindingValue(Dock::Right) },
 			{ L"Bottom", BindingValue(Dock::Bottom) }
 		};
-		DependencyPropertyRegistry::Register<TabControl, Dock>(
-			L"TabStripPlacement",
+		)
+		return DependencyPropertyRegistry::RegisterStatic<TabControl, Dock>(
+			DependencyPropertyRegistrationLiteral(L"TabStripPlacement"),
 			[](TabControl& target) { return target.TabStripPlacement; },
 			[](TabControl& target, const Dock& value)
 			{ target.TabStripPlacement = value; },
-			PropertySubscriber<TabControl>(L"TabStripPlacement"),
+			PropertySubscriber<TabControl>(
+				&TabControl::TabStripPlacementProperty),
 			std::move(options));
-		return true;
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& TabControl::ContentTemplateProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<TabControl, ItemTemplateReference> options;
+		options.DefaultValue = ItemTemplateReference{};
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Content";
+		options.Design.CategoryOrder = 60;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			TabControl, ItemTemplateReference>(
+				DependencyPropertyRegistrationLiteral(L"ContentTemplate"),
+				[](TabControl& target) { return target.GetContentTemplate(); },
+				[](TabControl& target, const ItemTemplateReference& value)
+				{ target.SetContentTemplate(value); },
+				PropertySubscriber<TabControl>(
+					&TabControl::ContentTemplateProperty),
+				std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& TabControl::SelectedContentProperty()
+{
+	return SelectedContentPropertyKey().Property();
+}
+
+const DependencyProperty& TabControl::SelectedContentTemplateProperty()
+{
+	return SelectedContentTemplatePropertyKey().Property();
+}
+
+const DependencyPropertyKey& TabItem::TabStripPlacementPropertyKey()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<TabItem, Dock> options;
+		options.DefaultValue = Dock::Top;
+		options.Flags = DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsArrange
+			| DependencyPropertyFlags::AffectsRender;
+		options.IsReadOnly = true;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Layout";
+		options.Design.CategoryOrder = 100;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Browsable = false;
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		options.Design.Choices = {
+			{ L"Left", BindingValue(Dock::Left) },
+			{ L"Top", BindingValue(Dock::Top) },
+			{ L"Right", BindingValue(Dock::Right) },
+			{ L"Bottom", BindingValue(Dock::Bottom) }
+		};
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<TabItem, Dock>(
+			DependencyPropertyRegistrationLiteral(L"TabStripPlacement"),
+			[](TabItem& target) { return target.TabStripPlacement; },
+			[](TabItem& target, const Dock& value)
+			{
+				(void)target.SetReadOnlyPropertyField(
+					TabStripPlacementPropertyKey(),
+					target._tabStripPlacement, value);
+			},
+			PropertySubscriber<TabItem>(
+				&TabItem::TabStripPlacementProperty),
+			std::move(options));
+	}();
+	return registration.Key();
+}
+
+const DependencyPropertyKey& TabControl::SelectedContentPropertyKey()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<TabControl, BindingValue> options;
+		options.DefaultValue = BindingValue{};
+		options.IsReadOnly = true;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Content";
+		options.Design.CategoryOrder = 60;
+		options.Design.Order = 20;
+		options.Design.Browsable = false;
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<
+			TabControl, BindingValue>(
+				DependencyPropertyRegistrationLiteral(L"SelectedContent"),
+				[](TabControl& target) { return target.GetSelectedContent(); },
+				[](TabControl& target, const BindingValue& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						SelectedContentPropertyKey(),
+						target._selectedContent, value);
+				},
+				PropertySubscriber<TabControl>(
+					&TabControl::SelectedContentProperty),
+				std::move(options));
+	}();
+	return registration.Key();
+}
+
+const DependencyPropertyKey& TabControl::SelectedContentTemplatePropertyKey()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<TabControl, ItemTemplateReference> options;
+		options.DefaultValue = ItemTemplateReference{};
+		options.IsReadOnly = true;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Content";
+		options.Design.CategoryOrder = 60;
+		options.Design.Order = 30;
+		options.Design.Browsable = false;
+		options.Design.Persistence = DependencyPropertyPersistence::Transient;
+		)
+		return DependencyPropertyRegistry::RegisterReadOnlyStatic<
+			TabControl, ItemTemplateReference>(
+				DependencyPropertyRegistrationLiteral(
+					L"SelectedContentTemplate"),
+				[](TabControl& target)
+				{ return target.GetSelectedContentTemplate(); },
+				[](TabControl& target, const ItemTemplateReference& value)
+				{
+					(void)target.SetReadOnlyPropertyField(
+						SelectedContentTemplatePropertyKey(),
+						target._selectedContentTemplate, value);
+				},
+				PropertySubscriber<TabControl>(
+					&TabControl::SelectedContentTemplateProperty),
+				std::move(options));
+	}();
+	return registration.Key();
+}
+
+TabItem::TabItem()
+{
+	RegisterDependencyProperties();
+	EnsureClassHandlers();
+}
+
+void TabItem::RegisterDependencyProperties()
+{
+	HeaderedContentControl::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)IsSelectedProperty();
+	(void)TabStripPlacementProperty();
+#endif
+}
+
+GET_CPP(TabItem, bool, IsSelected)
+{
+	return _isSelected;
+}
+
+SET_CPP(TabItem, bool, IsSelected)
+{
+	if (!SetPropertyField(IsSelectedProperty(), _isSelected, value)) return;
+	auto* owner = dynamic_cast<TabControl*>(GetLogicalParent());
+	if (!owner) return;
+	const int index = owner->IndexOfItem(this);
+	if (value) (void)owner->SelectItem(index);
+	else if (owner->GetSelectedIndex() == index)
+		(void)owner->SelectIndex(-1);
+}
+
+void TabItem::SetCurrentIsSelected(bool value)
+{
+	(void)SetCurrentPropertyField(IsSelectedProperty(), _isSelected, value);
+}
+
+void TabItem::ApplyIsSelectedValue(bool value)
+{
+	if (_isSelected == value) return;
+	if (!SetPropertyField(IsSelectedProperty(), _isSelected, value)) return;
+	SetStyleState(ControlStyleState::Selected, value);
+	RoutedEventArgs args;
+	if (value) Selected(this, args);
+	else Unselected(this, args);
+	InvalidateVisual();
+}
+
+GET_CPP(TabItem, Dock, TabStripPlacement)
+{
+	return _tabStripPlacement;
+}
+
+void TabItem::SetTabStripPlacementProjection(Dock value)
+{
+	(void)SetReadOnlyPropertyField(
+		TabStripPlacementPropertyKey(),
+		_tabStripPlacement,
+		value);
+}
+
+void TabItem::EnsureClassHandlers()
+{
+	static const std::vector<EventConnection> handlers = []
+	{
+		std::vector<EventConnection> result;
+		result.push_back(RoutedEventManager::RegisterClassHandler(
+			UIClass::UI_TabItem,
+			RoutedEventId::MouseDown,
+			&TabItem::HandleDescendantPointerPress));
+		result.push_back(RoutedEventManager::RegisterClassHandler(
+			UIClass::UI_TabItem,
+			RoutedEventId::MouseDoubleClick,
+			&TabItem::HandleDescendantPointerPress));
+		return result;
+	}();
+	(void)handlers;
+}
+
+bool TabItem::IsOriginalSourceWithinHeader(Control* source) const noexcept
+{
+	auto* header = const_cast<TabItem*>(this)
+		->FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_Header"));
+	if (!header || !source) return false;
+	for (auto* current = source; current; current = current->GetRoutedParent())
+	{
+		if (current == header) return true;
+		if (current == this) break;
+	}
+	return false;
+}
+
+void TabItem::HandleDescendantPointerPress(
+	Control* sender,
+	RoutedEventArgs& args)
+{
+	auto* item = dynamic_cast<TabItem*>(sender);
+	if (!item || args.Handled || !item->IsEffectivelyEnabled()
+		|| !item->IsVisible) return;
+	auto& mouse = static_cast<MouseEventArgs&>(args);
+	if (mouse.ChangedButton != MouseButton::Left
+		|| !item->IsOriginalSourceWithinHeader(args.OriginalSource)) return;
+	auto* owner = dynamic_cast<TabControl*>(item->GetLogicalParent());
+	if (!owner) return;
+	const int index = owner->IndexOfItem(item);
+	if (index >= 0 && owner->FocusAndSelectItem(index))
+		args.Handled = true;
+}
+
+void TabItem::PreparePresentation()
+{
+	HeaderedContentControl::PreparePresentation();
+	auto arrangePart = [](Control* part, const D2D1_RECT_F& rect)
+	{
+		if (!part) return;
+		part->Arrange(cui::core::Rect::FromLTRB(
+			rect.left, rect.top, rect.right, rect.bottom));
+	};
+	arrangePart(
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_Header")),
+		_headerHitRect);
+	auto* contentHost = FindDeclarativeTemplatePart(
+		MakeTemplatePartToken(L"PART_SelectedContentHost"));
+	if (contentHost)
+		(void)contentHost->TrySetCurrentPropertyValue(
+			Control::ClipToBoundsProperty(), BindingValue(true));
+	arrangePart(contentHost, _contentHitRect);
+}
+
+bool TabItem::ContainsPoint(int localX, int localY)
+{
+	if (!Control::ContainsPoint(localX, localY)) return false;
+	const float x = static_cast<float>(localX);
+	const float y = static_cast<float>(localY);
+	return PointInRect(_headerHitRect, x, y)
+		|| (_isSelected && PointInRect(_contentHitRect, x, y));
+}
+
+bool TabItem::ShouldHitTestChildrenAt(int localX, int localY) const
+{
+	const float x = static_cast<float>(localX);
+	const float y = static_cast<float>(localY);
+	return PointInRect(_headerHitRect, x, y)
+		|| (_isSelected && PointInRect(_contentHitRect, x, y));
+}
+
+bool TabItem::HandlesNavigationKey(Key key) const
+{
+	auto* owner = dynamic_cast<TabControl*>(GetLogicalParent());
+	return owner
+		? owner->HandlesNavigationKey(key)
+		: HeaderedContentControl::HandlesNavigationKey(key);
+}
+
+bool TabItem::ProcessInput(const InputReport& input)
+{
+	if (input.Kind == InputReportKind::PointerDown
+		&& input.ChangedButton == MouseButton::Left
+		&& PointInRect(
+			_headerHitRect,
+			static_cast<float>(input.X),
+			static_cast<float>(input.Y)))
+	{
+		auto* owner = dynamic_cast<TabControl*>(GetLogicalParent());
+		if (owner && owner->FocusAndSelectItem(owner->IndexOfItem(this)))
+			return true;
+	}
+	if (input.Kind == InputReportKind::KeyDown)
+	{
+		auto* owner = dynamic_cast<TabControl*>(GetLogicalParent());
+		if ((input.Key == Key::Space || input.Key == Key::Return)
+			&& owner)
+			return owner->FocusAndSelectItem(owner->IndexOfItem(this));
+		if (owner && owner->ProcessTabNavigationKey(input)) return true;
+	}
+	return HeaderedContentControl::ProcessInput(input);
+}
+
+void TabControl::RegisterDependencyProperties()
+{
+	Selector::RegisterDependencyProperties();
+	TabItem::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)TabStripPlacementProperty();
+	(void)ContentTemplateProperty();
+	(void)SelectedContentProperty();
+	(void)SelectedContentTemplateProperty();
+#endif
 }
 
 GET_CPP(TabControl, Dock, TabStripPlacement)
@@ -265,28 +539,62 @@ GET_CPP(TabControl, Dock, TabStripPlacement)
 
 SET_CPP(TabControl, Dock, TabStripPlacement)
 {
-	(void)SetPropertyField(
-		L"TabStripPlacement", _tabStripPlacement, value);
+	if (!SetPropertyField(
+		TabStripPlacementProperty(), _tabStripPlacement, value)) return;
+	for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
+		if (auto* item = GetItem(index))
+			item->SetTabStripPlacementProjection(value);
+	RefreshHeaderMetrics();
+	RequestLayout();
+}
+
+void TabControl::SetContentTemplate(ItemTemplateReference value)
+{
+	if (!SetPropertyField(
+		ContentTemplateProperty(), _contentTemplate, std::move(value))) return;
+	RefreshSelectedContentProjection();
+	RequestLayout();
 }
 
 TabControl::TabControl()
 	: Selector()
 {
 	RegisterDependencyProperties();
+	EnsureClassHandlers();
 	ReplaceItemsHostCore(std::make_unique<TabItemsHost>());
-	(void)TrySetPropertyValue(
-		L"Focusable", BindingValue(true),
-		DependencyPropertyValueSource::Theme);
-	RetainEventConnection(OnMouseMove.Subscribe(
-		[this](Control*, MouseEventArgs& args)
-		{
-			if (args.OriginalSource == this) return;
-			int hovered = -1;
-			(void)TryGetTabHeaderIndexAt(args.X, args.Y, hovered);
-			if (_hoveredHeaderIndex == hovered) return;
-			_hoveredHeaderIndex = hovered;
-			InvalidateVisual();
-		}));
+}
+
+void TabControl::EnsureClassHandlers()
+{
+	static const std::vector<EventConnection> handlers = []
+	{
+		std::vector<EventConnection> result;
+		result.push_back(RoutedEventManager::RegisterClassHandler(
+			UIClass::UI_TabControl,
+			RoutedEventId::MouseDown,
+			&TabControl::HandleRoutedPointerPress));
+		result.push_back(RoutedEventManager::RegisterClassHandler(
+			UIClass::UI_TabControl,
+			RoutedEventId::MouseDoubleClick,
+			&TabControl::HandleRoutedPointerPress));
+		return result;
+	}();
+	(void)handlers;
+}
+
+void TabControl::HandleRoutedPointerPress(
+	Control* sender,
+	RoutedEventArgs& args)
+{
+	auto* owner = dynamic_cast<TabControl*>(sender);
+	if (!owner || args.Handled || !owner->IsEffectivelyEnabled()
+		|| !owner->IsVisible) return;
+	auto& mouse = static_cast<MouseEventArgs&>(args);
+	if (mouse.ChangedButton != MouseButton::Left) return;
+	int index = -1;
+	if (owner->TryGetTabHeaderIndexAt(mouse.X, mouse.Y, index)
+		&& owner->FocusAndSelectItem(index))
+		args.Handled = true;
 }
 
 D2D1_RECT_F TabControl::GetTabStripRect() const noexcept
@@ -294,8 +602,12 @@ D2D1_RECT_F TabControl::GetTabStripRect() const noexcept
 	const auto size = GetActualSizeDip().NonNegative();
 	const float width = size.width;
 	const float height = size.height;
-	const float horizontal = (std::min)(HorizontalStripExtent, height);
-	const float vertical = (std::min)(VerticalStripExtent, width);
+	const float horizontal = (std::min)(
+		(std::max)(DefaultHeaderExtent, _tabStripCrossExtent),
+		height);
+	const float vertical = (std::min)(
+		(std::max)(DefaultVerticalStripExtent, _tabStripCrossExtent),
+		width);
 	switch (_tabStripPlacement)
 	{
 	case Dock::Bottom:
@@ -333,17 +645,40 @@ D2D1_RECT_F TabControl::GetTabHeaderRect(int index) const noexcept
 	const int count = static_cast<int>(ItemCount());
 	if (index < 0 || index >= count || count <= 0) return {};
 	const auto strip = GetTabStripRect();
-	if (IsVerticalStrip(_tabStripPlacement))
+	const bool vertical = IsVerticalStrip(_tabStripPlacement);
+	const float available = vertical
+		? RectHeight(strip)
+		: RectWidth(strip);
+	float total = 0.0f;
+	for (int current = 0; current < count; ++current)
+		total += current < static_cast<int>(_headerPrimaryExtents.size())
+			? _headerPrimaryExtents[static_cast<size_t>(current)]
+			: DefaultHeaderExtent;
+	const float scale = total > available && total > 0.0f
+		? available / total
+		: 1.0f;
+	float start = 0.0f;
+	for (int current = 0; current < index; ++current)
+		start += (current < static_cast<int>(_headerPrimaryExtents.size())
+			? _headerPrimaryExtents[static_cast<size_t>(current)]
+			: DefaultHeaderExtent) * scale;
+	const float extent = (index < static_cast<int>(
+		_headerPrimaryExtents.size())
+		? _headerPrimaryExtents[static_cast<size_t>(index)]
+		: DefaultHeaderExtent) * scale;
+	if (vertical)
 	{
-		const float extent = RectHeight(strip) / static_cast<float>(count);
 		return D2D1::RectF(
-			strip.left, strip.top + extent * index,
-			strip.right, strip.top + extent * (index + 1));
+			strip.left,
+			strip.top + start,
+			strip.right,
+			strip.top + start + extent);
 	}
-	const float extent = RectWidth(strip) / static_cast<float>(count);
 	return D2D1::RectF(
-		strip.left + extent * index, strip.top,
-		strip.left + extent * (index + 1), strip.bottom);
+		strip.left + start,
+		strip.top,
+		strip.left + start + extent,
+		strip.bottom);
 }
 
 bool TabControl::TryGetTabHeaderIndexAt(
@@ -363,22 +698,15 @@ bool TabControl::TryGetTabHeaderIndexAt(
 	return false;
 }
 
-D2D1_RECT_F TabControl::GetVisualChildrenClipRect()
-{
-	return GetContentRect();
-}
-
 bool TabControl::ShouldHitTestChildrenAt(int localX, int localY) const
 {
 	int headerIndex = -1;
-	return !TryGetTabHeaderIndexAt(localX, localY, headerIndex);
-}
-
-CursorKind TabControl::QueryCursor(int localX, int localY)
-{
-	int index = -1;
-	return IsEnabled && TryGetTabHeaderIndexAt(localX, localY, index)
-		? CursorKind::Hand : Control::QueryCursor(localX, localY);
+	if (TryGetTabHeaderIndexAt(localX, localY, headerIndex))
+		return true;
+	return PointInRect(
+		GetContentRect(),
+		static_cast<float>(localX),
+		static_cast<float>(localY));
 }
 
 bool TabControl::HandlesNavigationKey(Key key) const
@@ -404,24 +732,42 @@ void TabControl::PreparePresentation()
 {
 	Selector::PreparePresentation();
 	SynchronizeSelectionProjection();
-	if (auto* page = GetItem(SelectedIndex)) ArrangePage(page);
+	RefreshHeaderMetrics();
+	PerformPendingLayout();
 }
 
 void TabControl::ArrangePage(TabItem* page)
 {
 	if (!page) return;
-	const auto content = GetContentRect();
+	const auto size = GetActualSizeDip().NonNegative();
 	page->Arrange(cui::core::Rect{
-		0.0f, 0.0f, RectWidth(content), RectHeight(content) });
+		0.0f, 0.0f, size.width, size.height });
+	const int index = IndexOfItem(page);
+	page->SetHeaderHitRect(GetTabHeaderRect(index));
+	page->SetContentHitRect(GetContentRect());
+	page->PreparePresentation();
 }
 
 void TabControl::PerformPendingLayout()
 {
+	RefreshHeaderMetrics();
+	const auto size = GetActualSizeDip().NonNegative();
 	const auto content = GetContentRect();
+	if (auto* chrome =
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_ContentChrome")))
+		chrome->Arrange(cui::core::Rect::FromLTRB(
+			content.left, content.top,
+			content.right, content.bottom));
+	if (auto* presenter =
+		FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_ItemsPresenter")))
+		presenter->Arrange(cui::core::Rect{
+			0.0f, 0.0f, size.width, size.height });
 	if (auto* host = GetItemsHost())
 	{
-		host->Arrange(cui::core::Rect::FromLTRB(
-			content.left, content.top, content.right, content.bottom));
+		host->Arrange(cui::core::Rect{
+			0.0f, 0.0f, size.width, size.height });
 	}
 	for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
 	{
@@ -434,13 +780,75 @@ void TabControl::PerformPendingLayout()
 	SynchronizeSelectionProjection();
 }
 
+void TabControl::RefreshHeaderMetrics()
+{
+	_headerPrimaryExtents.clear();
+	_headerPrimaryExtents.reserve(ItemCount());
+	const bool vertical = IsVerticalStrip(_tabStripPlacement);
+	float crossExtent = vertical
+		? DefaultVerticalStripExtent
+		: DefaultHeaderExtent;
+	for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
+	{
+		auto* item = GetItem(index);
+		cui::core::Size desired{};
+		if (item)
+		{
+			item->SetTabStripPlacementProjection(_tabStripPlacement);
+			item->PreparePresentation();
+			if (auto* header =
+				item->FindDeclarativeTemplatePart(
+					MakeTemplatePartToken(L"PART_Header")))
+			{
+				(void)header->Measure(
+					cui::core::Constraints::Unbounded());
+				desired = header->GetDesiredSizeDip();
+			}
+		}
+		const float primary = vertical
+			? desired.height
+			: desired.width;
+		const float cross = vertical
+			? desired.width
+			: desired.height;
+		_headerPrimaryExtents.push_back(
+			(std::max)(DefaultHeaderExtent, primary));
+		crossExtent = (std::max)(crossExtent, cross);
+	}
+	_tabStripCrossExtent = crossExtent;
+}
+
+void TabControl::RefreshSelectedContentProjection()
+{
+	BindingValue content;
+	ItemTemplateReference contentTemplate = _contentTemplate;
+	if (auto* item = GetItem(SelectedIndex))
+	{
+		content = item->GetContent();
+		if (item->GetContentTemplate())
+			contentTemplate = item->GetContentTemplate();
+	}
+	(void)SetReadOnlyPropertyField(
+		SelectedContentPropertyKey(),
+		_selectedContent,
+		std::move(content));
+	(void)SetReadOnlyPropertyField(
+		SelectedContentTemplatePropertyKey(),
+		_selectedContentTemplate,
+		std::move(contentTemplate));
+}
+
 void TabControl::SynchronizeSelectionProjection()
 {
 	const int selected = SelectedIndex;
 	for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
 		if (auto* page = GetItem(index))
+		{
+			page->SetTabStripPlacementProjection(_tabStripPlacement);
 			page->SetCurrentIsSelected(index == selected);
+		}
 	_selectedTabIdentity = GetItem(selected);
+	RefreshSelectedContentProjection();
 }
 
 void TabControl::OnSelectedIndexChanged(int, int)
@@ -452,9 +860,7 @@ void TabControl::OnSelectedIndexChanged(int, int)
 
 void TabControl::PrepareItemMutation()
 {
-	_hoveredHeaderIndex = -1;
-	_pressedHeaderIndex = -1;
-	(void)ReleaseMouseCapture();
+	_selectedTabIdentity = GetItem(SelectedIndex);
 }
 
 void TabControl::ReconcileItemsAfterMutation(
@@ -583,9 +989,9 @@ BindingValue TabControl::GetSelectedValue() const
 	if (GetItemsSource()) return Selector::GetSelectedValue();
 	auto* item = GetItem(SelectedIndex);
 	if (!item) return {};
-	if (GetSelectedValuePath().empty()) return BindingValue(item);
+	if (!HasSelectedValuePath()) return BindingValue(item);
 	BindingValue result;
-	return item->TryGetPropertyValue(GetSelectedValuePath(), result)
+	return TryReadSelectedValue(*item, result)
 		? result : BindingValue{};
 }
 
@@ -601,7 +1007,7 @@ void TabControl::SetSelectedValue(const BindingValue& value)
 		SetCurrentSelectedIndex(-1);
 		return;
 	}
-	if (GetSelectedValuePath().empty())
+	if (!HasSelectedValuePath())
 	{
 		TabItem* item = nullptr;
 		SetCurrentSelectedIndex(value.TryGet(item) ? IndexOfItem(item) : -1);
@@ -611,8 +1017,7 @@ void TabControl::SetSelectedValue(const BindingValue& value)
 	{
 		BindingValue candidate;
 		auto* item = GetItem(index);
-		if (item && item->TryGetPropertyValue(
-			GetSelectedValuePath(), candidate)
+		if (item && TryReadSelectedValue(*item, candidate)
 			&& BindingItemValuesEqual(candidate, value))
 		{
 			SetCurrentSelectedIndex(index);
@@ -636,22 +1041,38 @@ std::unique_ptr<Control> TabControl::BuildGeneratedItem(
 	cui::framework::StyleAccess::SetResourceKey(
 		*page, GetItemContainerStyle());
 	page->SetDataContext(item);
-	page->SetHeader(BindingValue(
-		GetBindingRecordText(item, GetDisplayMemberPath())));
+	page->SetHeader(BindingValue(GetDisplayMemberText(item)));
 	page->SetContent(BindingValue(item));
 	page->SetContentTemplate(GetItemTemplate());
-	page->SetDisplayMemberPath(GetDisplayMemberPath());
+	page->SetCompiledDisplayMemberPath(GetCompiledDisplayMemberPath());
+#if CUI_ENABLE_DYNAMIC_XAML
+	if (GetCompiledDisplayMemberPath().Empty())
+		page->SetDisplayMemberPath(GetDisplayMemberPath());
+#endif
 	auto* pagePointer = page.get();
 	std::weak_ptr<IBindingSource> itemIdentity = item.Shared();
-	const auto displayPath = GetDisplayMemberPath();
-	observation = ObserveBindingPaths(
-		item, { displayPath },
-		[pagePointer, itemIdentity, displayPath]
+	const auto compiledDisplayPath = GetCompiledDisplayMemberPath();
+#if CUI_ENABLE_DYNAMIC_XAML
+	const auto dynamicDisplayPath = GetDisplayMemberPath();
+#endif
+	observation = ObserveDisplayMemberPath(
+		item,
+		[pagePointer, itemIdentity, compiledDisplayPath
+#if CUI_ENABLE_DYNAMIC_XAML
+			, dynamicDisplayPath
+#endif
+		]
 		{
 			const auto source = itemIdentity.lock();
 			if (!source) return;
-			pagePointer->SetHeader(BindingValue(GetBindingRecordText(
-				BindingSourceReference(source), displayPath)));
+			const BindingSourceReference item(source);
+			if (!compiledDisplayPath.Empty())
+				pagePointer->SetHeader(BindingValue(
+					GetBindingRecordText(item, compiledDisplayPath)));
+#if CUI_ENABLE_DYNAMIC_XAML
+			else pagePointer->SetHeader(BindingValue(
+				GetBindingRecordText(item, dynamicDisplayPath)));
+#endif
 		});
 	return page;
 }
@@ -662,7 +1083,8 @@ void TabControl::OnGeneratedItemsRebuilt()
 	if (ItemCount() > 0 && SelectedIndex < 0)
 		SetCurrentSelectedIndex(0);
 	for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
-		if (auto* item = GetItem(index)) cui::framework::XamlAccess::SetLogicalParent(*item, this);
+		if (auto* item = GetItem(index))
+			cui::framework::TreeAccess::SetLogicalParent(*item, this);
 	SynchronizeSelectionProjection();
 	RequestLayout();
 }
@@ -689,172 +1111,87 @@ void TabControl::OnAuthoredItemsChanged() noexcept
 	}
 }
 
-void TabControl::OnRender()
+int TabControl::FindNextEligibleTab(
+	int startIndex,
+	int direction,
+	bool wrap) const noexcept
 {
-	if (!IsVisible || !GetPresentationWindow() || !GetDrawingContext()) return;
-	SynchronizeSelectionProjection();
-	auto* drawing = GetDrawingContext();
-	const auto size = GetActualSizeDip().NonNegative();
-	const auto strip = GetTabStripRect();
-	const auto content = GetContentRect();
-	auto* window = GetPresentationWindow();
-	const auto stripBack = WithAlpha(RendererBackgroundColor, 0.38f);
-	const auto hoverBack =
-		cui::framework::WindowAccess::EffectiveControlBackColor(
-			*window, cui::theme::palette::AccentSoft);
-	const auto selectedBack =
-		cui::framework::WindowAccess::EffectiveControlBackColor(
-			*window, cui::theme::palette::AccentSelected);
-	const auto accent =
-		cui::framework::WindowAccess::EffectiveControlBackColor(
-			*window, cui::theme::palette::Accent);
-	const auto mutedText = WithAlpha(
-		cui::framework::WindowAccess::EffectiveControlForeColor(
-			*window, RendererForegroundColor), 0.72f);
-	const auto activeText =
-		cui::framework::WindowAccess::EffectiveControlForeColor(
-			*window, RendererForegroundColor);
-
-	BeginRender();
-	drawing->FillRect(0.0f, 0.0f, size.width, size.height, RendererBackgroundColor);
-	if (RectWidth(strip) > 0.0f && RectHeight(strip) > 0.0f)
+	const int count = static_cast<int>(ItemCount());
+	if (count <= 0 || direction == 0) return -1;
+	int index = startIndex;
+	for (int visited = 0; visited < count; ++visited)
 	{
-		// DirectWrite may wrap a long header even when its nominal layout height
-		// is one line. The tab strip is a distinct presentation viewport: no
-		// header glyph or hover chrome may leak into the selected page.
-		drawing->PushDrawRect(
-			strip.left, strip.top, RectWidth(strip), RectHeight(strip));
-		drawing->FillRect(
-			strip.left, strip.top, RectWidth(strip), RectHeight(strip), stripBack);
-		for (int index = 0; index < static_cast<int>(ItemCount()); ++index)
+		index += direction;
+		if (index < 0 || index >= count)
 		{
-			const auto header = GetTabHeaderRect(index);
-			drawing->PushDrawRect(
-				header.left, header.top,
-				RectWidth(header), RectHeight(header));
-			const bool selected = index == SelectedIndex;
-			const bool hovered = index == _hoveredHeaderIndex;
-			if (selected || hovered)
-				drawing->FillRect(
-					header.left + 1.0f, header.top + 1.0f,
-					(std::max)(0.0f, RectWidth(header) - 2.0f),
-					(std::max)(0.0f, RectHeight(header) - 2.0f),
-					selected ? selectedBack : hoverBack);
-
-			if (selected)
-			{
-				constexpr float line = 3.0f;
-				switch (_tabStripPlacement)
-				{
-				case Dock::Bottom:
-					drawing->FillRect(header.left, header.top,
-						RectWidth(header), line, accent); break;
-				case Dock::Left:
-					drawing->FillRect(header.right - line, header.top,
-						line, RectHeight(header), accent); break;
-				case Dock::Right:
-					drawing->FillRect(header.left, header.top,
-						line, RectHeight(header), accent); break;
-				case Dock::Top:
-				default:
-					drawing->FillRect(header.left, header.bottom - line,
-						RectWidth(header), line, accent); break;
-				}
-			}
-
-			auto* item = GetItem(index);
-			std::wstring text;
-			if (item) (void)item->GetHeader().TryGet(text);
-			if (!text.empty())
-			{
-				const auto textSize = GetRenderFont()->GetTextSize(text);
-				const float x = header.left + 8.0f;
-				const float y = header.top
-					+ (RectHeight(header) - textSize.height) * 0.5f;
-				drawing->DrawString(
-					text, x, (std::max)(header.top, y),
-					(std::max)(1.0f, RectWidth(header) - 16.0f),
-					textSize.height + 2.0f,
-					selected ? activeText : mutedText, GetRenderFont());
-			}
-			drawing->PopDrawRect();
+			if (!wrap) return -1;
+			index = index < 0 ? count - 1 : 0;
 		}
-		drawing->PopDrawRect();
+		auto* item = GetItem(index);
+		if (item && item->IsVisible
+			&& item->IsEffectivelyEnabled()
+			&& item->CanReceiveKeyboardFocus())
+			return index;
 	}
+	return -1;
+}
 
-	if (RectWidth(content) > 0.0f && RectHeight(content) > 0.0f)
+bool TabControl::FocusAndSelectItem(int index)
+{
+	auto* item = GetItem(index);
+	if (!item || !item->IsVisible || !item->IsEffectivelyEnabled())
+		return false;
+	const ControlWeakReference itemLifetime(item);
+	if (!SelectItem(index)) return false;
+	item = dynamic_cast<TabItem*>(itemLifetime.Get());
+	return item && item->Focus();
+}
+
+bool TabControl::ProcessTabNavigationKey(const InputReport& input)
+{
+	if (input.Kind != InputReportKind::KeyDown || ItemCount() == 0)
+		return false;
+	int start = SelectedIndex;
+	int direction = 0;
+	bool wrap = true;
+	if (input.Key == Key::Tab
+		&& input.HasModifier(ModifierKeys::Control))
+		direction = input.HasModifier(ModifierKeys::Shift) ? -1 : 1;
+	else if (input.Key == Key::Home)
 	{
-		const float border = BorderThickness.MaxEdge();
-		if (border > 0.0f)
-			drawing->DrawRect(
-				content.left, content.top,
-				RectWidth(content), RectHeight(content),
-				RendererBorderColor, border);
+		start = -1;
+		direction = 1;
+		wrap = false;
 	}
-	if (!IsEnabled)
-		drawing->FillRect(
-			0.0f, 0.0f, size.width, size.height,
-			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.45f });
-	EndRender();
+	else if (input.Key == Key::End)
+	{
+		start = static_cast<int>(ItemCount());
+		direction = -1;
+		wrap = false;
+	}
+	else
+	{
+		const bool vertical = IsVerticalStrip(_tabStripPlacement);
+		if ((!vertical && input.Key == Key::Left)
+			|| (vertical && input.Key == Key::Up))
+			direction = -1;
+		else if ((!vertical && input.Key == Key::Right)
+			|| (vertical && input.Key == Key::Down))
+			direction = 1;
+	}
+	if (direction == 0) return false;
+	const int next = FindNextEligibleTab(start, direction, wrap);
+	return next >= 0 && next != SelectedIndex
+		&& FocusAndSelectItem(next);
 }
 
 bool TabControl::ProcessInput(const InputReport& input)
 {
-	if (!IsEnabled || !IsVisible) return true;
-	if (input.Kind == InputReportKind::PointerMove
-		|| input.Kind == InputReportKind::PointerDown)
+	if (ProcessTabNavigationKey(input))
 	{
-		int hovered = -1;
-		(void)TryGetTabHeaderIndexAt(input.X, input.Y, hovered);
-		if (_hoveredHeaderIndex != hovered)
-		{
-			_hoveredHeaderIndex = hovered;
-			InvalidateVisual();
-		}
-	}
-	else if (input.Kind == InputReportKind::PointerLeave
-		&& _hoveredHeaderIndex != -1)
-	{
-		_hoveredHeaderIndex = -1;
-		InvalidateVisual();
-	}
-
-	if (input.Kind == InputReportKind::PointerDown
-		&& input.ChangedButton == MouseButton::Left)
-	{
-		int index = -1;
-		if (TryGetTabHeaderIndexAt(input.X, input.Y, index))
-		{
-			_pressedHeaderIndex = index;
-			(void)CaptureMouse();
-			(void)SelectItem(index);
-			return true;
-		}
-	}
-	else if (input.Kind == InputReportKind::PointerUp
-		&& _pressedHeaderIndex >= 0)
-	{
-		_pressedHeaderIndex = -1;
-		(void)ReleaseMouseCapture();
+		auto args = input.CreateKeyEventArgs();
+		OnKeyDown(this, args);
 		return true;
 	}
-	else if (input.Kind == InputReportKind::KeyDown
-		&& HandlesNavigationKey(input.Key) && ItemCount() > 0)
-	{
-		int next = SelectedIndex < 0 ? 0 : SelectedIndex;
-		switch (input.Key)
-		{
-		case Key::Left:
-		case Key::Up: --next; break;
-		case Key::Right:
-		case Key::Down: ++next; break;
-		case Key::Home: next = 0; break;
-		case Key::End: next = static_cast<int>(ItemCount()) - 1; break;
-		default: break;
-		}
-		(void)SelectItem((std::clamp)(
-			next, 0, static_cast<int>(ItemCount()) - 1));
-		return true;
-	}
-	return Control::ProcessInput(input);
+	return Selector::ProcessInput(input);
 }

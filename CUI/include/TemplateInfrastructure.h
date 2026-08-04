@@ -51,6 +51,61 @@ namespace cui::framework
 		{
 			target.SetParticipatesInPresentationScene(value);
 		}
+		static bool SetTemplate(
+			Control& target,
+			ControlTemplateReference value,
+			DependencyPropertyValueSource source)
+		{
+			return target.TrySetPropertyValue(
+				Control::TemplateProperty(),
+				BindingValue(std::move(value)), source);
+		}
+		static bool RegisterTemplatePart(
+			Control& owner, TemplatePartToken token, Control* instance)
+		{
+			return owner.RegisterDeclarativeTemplatePart(
+				token, instance);
+		}
+#if CUI_ENABLE_DYNAMIC_XAML
+		static bool RegisterTemplatePart(
+			Control& owner, std::wstring localName, Control* instance)
+		{
+			return owner.RegisterDeclarativeTemplatePart(
+				std::move(localName), instance);
+		}
+#endif
+#if CUI_ENABLE_DYNAMIC_XAML
+		static bool RegisterComponentContentPresenter(
+			Control& owner, std::wstring propertyName, Control* instance)
+		{
+			return owner.RegisterDeclarativeContentPresenter(
+				std::move(propertyName), instance);
+		}
+		static bool DefineInteractions(
+			Control& target,
+			std::vector<DeclarativeVisualStateGroupDefinition> groups,
+			std::vector<DeclarativeEventTriggerDefinition> eventTriggers,
+			std::wstring* outError = nullptr)
+		{
+			return target.DefineDeclarativeInteractions(
+				std::move(groups), std::move(eventTriggers), outError);
+		}
+#endif
+		static bool InstallCompiledInteractions(
+			Control& target,
+			const CompiledInteractionProgramView& program,
+			std::span<const BindingValue> values,
+			std::span<Control* const> targets,
+			std::wstring* outError = nullptr)
+		{
+			return target.InstallCompiledInteractions(
+				program, values, targets, outError);
+		}
+		static void RetainTemplateEventConnection(
+			Control& target, EventConnection connection)
+		{
+			target.RetainTemplateEventConnection(std::move(connection));
+		}
 
 		static Panel* GetItemsHost(const ItemsControl& owner) noexcept
 		{

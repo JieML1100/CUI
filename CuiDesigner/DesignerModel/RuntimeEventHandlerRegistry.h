@@ -21,6 +21,32 @@ struct RuntimeRoutedEventRegistrationOptions
 using RuntimeComponentEventRegistrationOptions =
 	RuntimeRoutedEventRegistrationOptions;
 
+namespace Detail
+{
+template<typename RuntimeEvent>
+struct RuntimeCommandEventTraits final
+{
+	static constexpr bool IsCommand = false;
+	static constexpr bool IsCanExecute = false;
+};
+
+template<RoutedEventId EventId>
+struct RuntimeCommandEventTraits<
+	RoutedEvent<CanExecuteRoutedEventArgs, EventId>> final
+{
+	static constexpr bool IsCommand = true;
+	static constexpr bool IsCanExecute = true;
+};
+
+template<RoutedEventId EventId>
+struct RuntimeCommandEventTraits<
+	RoutedEvent<ExecutedRoutedEventArgs, EventId>> final
+{
+	static constexpr bool IsCommand = true;
+	static constexpr bool IsCanExecute = false;
+};
+}
+
 /**
  * Declarative, signature-checked name router for runtime document events.
  *
@@ -183,8 +209,9 @@ public:
 					auto& targetEvent = target->*eventMember;
 					if (!request.CommandName.empty())
 					{
-						if constexpr (!std::is_same_v<RuntimeEvent, CanExecuteEvent>
-							&& !std::is_same_v<RuntimeEvent, ExecutedEvent>)
+						using CommandEventTraits =
+							Detail::RuntimeCommandEventTraits<RuntimeEvent>;
+						if constexpr (!CommandEventTraits::IsCommand)
 						{
 							error = L"CommandBinding 只能绑定命令路由事件。";
 							return false;
@@ -201,7 +228,7 @@ public:
 								error = L"CommandBinding 处理器不接受实例事件 HandledEventsToo 旁路。";
 								return false;
 							}
-							if constexpr (std::is_same_v<RuntimeEvent, CanExecuteEvent>)
+							if constexpr (CommandEventTraits::IsCanExecute)
 							{
 								if (request.Event.Name == L"PreviewCanExecute")
 									request.CommandBindingSink->PreviewCanExecute = callback;
@@ -400,8 +427,9 @@ public:
 					auto& targetEvent = request.Target.*eventMember;
 					if (!request.CommandName.empty())
 					{
-						if constexpr (!std::is_same_v<RuntimeEvent, CanExecuteEvent>
-							&& !std::is_same_v<RuntimeEvent, ExecutedEvent>)
+						using CommandEventTraits =
+							Detail::RuntimeCommandEventTraits<RuntimeEvent>;
+						if constexpr (!CommandEventTraits::IsCommand)
 						{
 							error = L"Window CommandBinding 只能绑定命令路由事件。";
 							return false;
@@ -413,7 +441,7 @@ public:
 								error = L"Window CommandBinding 解析缺少原生命令绑定接收器。";
 								return false;
 							}
-							if constexpr (std::is_same_v<RuntimeEvent, CanExecuteEvent>)
+							if constexpr (CommandEventTraits::IsCanExecute)
 							{
 								if (request.Event.Name == L"PreviewCanExecute")
 									request.CommandBindingSink->PreviewCanExecute = callback;

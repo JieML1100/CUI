@@ -1,6 +1,8 @@
 #pragma once
 #include "Control.h"
 
+#include <array>
+
 /**
  * @file CalendarView.h
  * @brief CalendarView：可模板化日期面板的原生行为宿主。
@@ -28,13 +30,13 @@ class CalendarView : public Control
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
-		return std::make_unique<AutomationPeer>(
-			*this, AutomationControlType::Calendar, L"Calendar");
+		return std::make_unique<CalendarViewAutomationPeer>(*this);
 	}
 
 private:
 	CalendarSelectionMode _selectionMode = CalendarSelectionMode::SingleDate;
 	SYSTEMTIME _selectedDate{};
+	SYSTEMTIME _currentDate{};
 	SYSTEMTIME RangeStart{};
 	SYSTEMTIME RangeEnd{};
 	bool HasRangeStart = false;
@@ -45,34 +47,37 @@ private:
 	int HoverDay = -1;
 	bool HoverDayInMonth = true;
 	bool _pointerPressActive = false;
+	std::array<uint32_t, 52> _accessibilityIds{};
 
 	bool ShowHeader = true;
 	bool ShowWeekNames = true;
 	bool ShowTrailingDays = true;
 	bool HighlightToday = true;
 
-	float Border = 1.0f;
-	float CornerRadius = 8.0f;
+	float CornerRadius = 4.0f;
 	float HeaderHeight = 38.0f;
 	float WeekHeaderHeight = 22.0f;
 	float CellPadding = 3.0f;
 	float NavButtonSize = 28.0f;
 
 	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
-	D2D1_COLOR_F HeaderBackColor = cui::theme::palette::SurfaceMuted;
 	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
 	D2D1_COLOR_F TrailingTextColor = cui::theme::palette::TextMuted;
 	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
-	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
 	D2D1_COLOR_F RangeBackColor = cui::theme::palette::AccentSoft;
 	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
-	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::OnAccent;
 
 public:
 	using UIElement::SelectedDatesChanged;
 	UIClass Type() override;
+	/** WPF dependency-property identities used by generated/native code. */
+	static const DependencyProperty& SelectionModeProperty();
+	static const DependencyProperty& SelectedDateProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 	CalendarView();
 
 	CalendarSelectionMode GetSelectionMode() const noexcept
@@ -93,6 +98,27 @@ public:
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(Key key) const override;
+	bool TryGetAccessibilityVirtualNode(
+		uint32_t id, AccessibilityVirtualNode& result);
+	size_t GetAccessibilityVirtualChildCount(uint32_t parentId) const noexcept;
+	bool TryGetAccessibilityVirtualChildAt(
+		uint32_t parentId, size_t index, uint32_t& result) const noexcept;
+	bool TryGetAccessibilityVirtualSibling(
+		uint32_t parentId, uint32_t id, bool next,
+		uint32_t& result) const noexcept;
+	bool TryHitTestAccessibilityVirtualNode(
+		float localX, float localY, uint32_t& result) const;
+	AccessibilityVirtualContainerInfo
+		GetAccessibilityVirtualContainerInfo() const noexcept;
+	void GetAccessibilityVirtualSelection(
+		std::vector<uint32_t>& result) const;
+	bool GetAccessibilityVirtualItemAt(
+		int row, int column, uint32_t& result) const noexcept;
+	void GetAccessibilityVirtualColumnHeaders(
+		std::vector<uint32_t>& result) const;
+	bool InvokeAccessibilityVirtualNode(uint32_t id);
+	bool SelectAccessibilityVirtualNode(
+		uint32_t id, AccessibilitySelectionAction action);
 protected:
 	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
@@ -115,7 +141,9 @@ private:
 	void DrawHeader(D2DGraphics* d2d, const Layout& layout);
 	void DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout);
 	void NotifySelectedDatesChanged();
-	void SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMonth);
-	void MoveSelectedDate(int days);
+	void SelectDateFromInput(
+		const SYSTEMTIME& date, bool inDisplayMonth, bool extendRange = false);
+	void MoveSelectedDate(int days, bool extendRange = false);
+	void MoveSelectedDateByMonths(int months, bool extendRange = false);
 	void SyncDisplayFromDate(const SYSTEMTIME& date);
 };

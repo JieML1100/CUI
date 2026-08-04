@@ -1,4 +1,5 @@
 #include "TestRunner.h"
+#include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include <EventInfrastructure.h>
 #include <Application.h>
 #include <Border.h>
@@ -9,9 +10,11 @@
 #include <ChartView.h>
 #include <ComboBox.h>
 #include <CollectionViewSource.h>
+#include <CompiledBindingRecord.h>
 #include <ContentControl.h>
 #include <ContentPresenter.h>
 #include <HeaderedContentControl.h>
+#include <HeaderedItemsControl.h>
 #include <ContextMenu.h>
 #include <Convert.h>
 #include <Core/Geometry.h>
@@ -84,7 +87,9 @@
 #include "../CuiDesigner/DesignerPropertyEdit.h"
 #include "../CuiDesigner/DesignerPropertyRowCatalog.h"
 #include "../CuiDesigner/DesignerStyleSheetUtils.h"
+#include "../CuiDesigner/BindingConverterCatalog.h"
 #include "../CuiDesigner/CodeGenerator.h"
+#include "../CuiDesigner/FrameworkThemeCodeGenerator.h"
 #include "../CuiDesigner/DesignerEventCatalog.h"
 #include "../CuiDesigner/DesignerModel/AtomicFile.h"
 #include "../CuiDesigner/DesignerModel/CppUserCodeIndex.h"
@@ -104,6 +109,7 @@
 #include "../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentSerializer.h"
 #include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <concepts>
@@ -129,6 +135,11 @@ static_assert(!std::is_copy_constructible_v<RoutedEventArgs>);
 static_assert(!std::is_copy_constructible_v<MouseEventArgs>);
 static_assert(!std::is_copy_constructible_v<KeyEventArgs>);
 static_assert(!std::is_copy_constructible_v<TextCompositionEventArgs>);
+static_assert(!std::is_copy_assignable_v<KeyboardFocusChangedEventArgs>);
+static_assert(!std::is_move_constructible_v<KeyboardFocusChangedEventArgs>);
+static_assert(!std::is_move_assignable_v<KeyboardFocusChangedEventArgs>);
+static_assert(std::is_move_constructible_v<KeyboardFocusTransition>);
+static_assert(!std::is_move_assignable_v<KeyboardFocusTransition>);
 static_assert(std::is_move_constructible_v<MouseEventArgs>);
 static_assert(std::is_move_constructible_v<KeyEventArgs>);
 static_assert(std::is_move_constructible_v<TextCompositionEventArgs>);
@@ -898,6 +909,147 @@ namespace
 		std::wstring _dataType;
 	};
 
+	class TokenItemTemplate final : public IItemTemplate
+	{
+	public:
+		explicit TokenItemTemplate(DataTypeToken dataType) noexcept
+			: _dataType(dataType) {}
+
+		DataTypeToken GetDataTypeToken() const noexcept override
+		{
+			return _dataType;
+		}
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			static const std::wstring empty;
+			return empty;
+		}
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference& item,
+			size_t,
+			std::wstring* outError) const override
+		{
+			if (!item)
+			{
+				if (outError) *outError = L"missing item";
+				return {};
+			}
+			if (outError) outError->clear();
+			return MakeTestControl<Label>(L"token-template", 0, 0);
+		}
+
+	private:
+		DataTypeToken _dataType;
+	};
+
+	class CompiledRecordProbe final : public CompiledBindingRecord
+	{
+	public:
+		CompiledRecordProbe(int count, std::wstring label)
+			: CompiledBindingRecord(Properties()),
+			  _count(count),
+			  _label(std::move(label))
+		{
+		}
+
+		CompiledSourceHandle CountSource() noexcept
+		{
+			const auto properties = Properties();
+			const auto countToken = MakeBindingSourcePropertyToken(L"Count");
+			const auto found = std::find_if(
+				properties.begin(), properties.end(),
+				[countToken](const auto& property)
+				{ return property.Token == countToken; });
+			return found == properties.end()
+				? CompiledSourceHandle{}
+				: MakeCompiledPropertySource(static_cast<size_t>(
+					std::distance(properties.begin(), found)));
+		}
+
+		bool TryGetValue(
+			BindingSourcePropertyToken property,
+			BindingValue& out) const override
+		{
+			++TokenReadCalls;
+			return CompiledBindingRecord::TryGetValue(property, out);
+		}
+
+		bool TrySetValue(
+			BindingSourcePropertyToken property,
+			const BindingValue& value) override
+		{
+			++TokenWriteCalls;
+			return CompiledBindingRecord::TrySetValue(property, value);
+		}
+
+		bool TryGetPropertyMetadata(
+			BindingSourcePropertyToken property,
+			BindingSourcePropertyMetadata& out) const override
+		{
+			++TokenMetadataCalls;
+			return CompiledBindingRecord::TryGetPropertyMetadata(property, out);
+		}
+
+		mutable int TokenReadCalls = 0;
+		int TokenWriteCalls = 0;
+		mutable int TokenMetadataCalls = 0;
+
+	private:
+		static std::span<const CompiledBindingRecordProperty> Properties()
+		{
+			static const auto values = []
+			{
+				std::array<CompiledBindingRecordProperty, 2> result
+				{{
+					{
+						MakeBindingSourcePropertyToken(L"Count"),
+						BindingValueKind::Int,
+						std::type_index(typeid(int)),
+						true, true, true,
+						+[](const CompiledBindingRecord& source, BindingValue& out)
+						{
+							out = BindingValue(
+								static_cast<const CompiledRecordProbe&>(source)._count);
+							return true;
+						},
+						+[](CompiledBindingRecord& source, const BindingValue& value)
+						{
+							int next = 0;
+							if (!value.TryGet(next))
+								return CompiledBindingRecordWriteResult::Failed;
+							auto& target = static_cast<CompiledRecordProbe&>(source);
+							if (target._count == next)
+								return CompiledBindingRecordWriteResult::Unchanged;
+							target._count = next;
+							return CompiledBindingRecordWriteResult::Changed;
+						}
+					},
+					{
+						MakeBindingSourcePropertyToken(L"Label"),
+						BindingValueKind::String,
+						std::type_index(typeid(std::wstring)),
+						true, false, false,
+						+[](const CompiledBindingRecord& source, BindingValue& out)
+						{
+							out = BindingValue(
+								static_cast<const CompiledRecordProbe&>(source)._label);
+							return true;
+						},
+						nullptr
+					}
+				}};
+				std::sort(result.begin(), result.end(),
+					[](const auto& left, const auto& right)
+					{ return left.Token.Value < right.Token.Value; });
+				return result;
+			}();
+			return values;
+		}
+
+		int _count = 0;
+		std::wstring _label;
+	};
+
 	class ApplyTemplateProbeButton final : public Button
 	{
 	public:
@@ -975,6 +1127,58 @@ namespace
 		bool _fail = false;
 	};
 
+	class FailingContentPresenterTemplate final : public IControlTemplate
+	{
+	public:
+		explicit FailingContentPresenterTemplate(bool attachRoot)
+			: _attachRoot(attachRoot) {}
+
+		UIClass TargetType() const noexcept override
+		{
+			return UIClass::UI_ContentControl;
+		}
+
+		bool Apply(
+			Control& owner,
+			std::wstring* outError) const override
+		{
+			auto* contentOwner = dynamic_cast<ContentControl*>(&owner);
+			if (!contentOwner)
+			{
+				if (outError) *outError = L"missing ContentControl owner";
+				return false;
+			}
+			auto presenter = std::make_unique<ContentPresenter>();
+			auto* raw = presenter.get();
+			cui::framework::TreeAccess::SetTemplatedParent(*raw, &owner);
+			if (!cui::framework::TemplateAccess::RegisterContentPresenter(
+				*contentOwner, raw))
+			{
+				if (outError) *outError = L"presenter registration failed";
+				return false;
+			}
+			if (_attachRoot
+				&& cui::framework::TemplateAccess::SetTemplateRoot(
+					owner, std::move(presenter)) != raw)
+			{
+				if (outError) *outError = L"presenter root attachment failed";
+				return false;
+			}
+			if (outError) *outError = L"failure after presenter registration";
+			return false;
+		}
+
+		std::unique_ptr<Control> Build(
+			std::wstring* outError) const override
+		{
+			if (outError) outError->clear();
+			return std::make_unique<ContentControl>();
+		}
+
+	private:
+		bool _attachRoot = false;
+	};
+
 	class MetadataObservableObject final : public ObservableObject
 	{
 	public:
@@ -983,6 +1187,132 @@ namespace
 		using ObservableObject::SetValidationError;
 		using ObservableObject::SetValidationIssues;
 		using ObservableObject::SetCurrentValue;
+	};
+
+	class TokenOnlyBindingSource final : public IBindingSource
+	{
+	public:
+		struct Entry final
+		{
+			BindingSourcePropertyToken Property;
+			BindingValue Value;
+			bool CanWrite = true;
+		};
+
+		void Define(
+			BindingSourcePropertyToken property,
+			BindingValue value,
+			bool canWrite = true)
+		{
+			Entries.push_back({ property, std::move(value), canWrite });
+		}
+
+		bool Set(BindingSourcePropertyToken property, BindingValue value)
+		{
+			auto* entry = Find(property);
+			if (!entry) return false;
+			entry->Value = std::move(value);
+			Changed.Notify(property);
+			return true;
+		}
+
+		bool TryGetValue(
+			BindingSourcePropertyToken property,
+			BindingValue& out) const override
+		{
+			++TokenGetCalls;
+			const auto* entry = Find(property);
+			if (!entry) return false;
+			out = entry->Value;
+			return true;
+		}
+
+		bool TrySetValue(
+			BindingSourcePropertyToken property,
+			const BindingValue& value) override
+		{
+			++TokenSetCalls;
+			auto* entry = Find(property);
+			if (!entry || !entry->CanWrite) return false;
+			entry->Value = value;
+			Changed.Notify(property);
+			return true;
+		}
+
+		bool TryGetPropertyMetadata(
+			BindingSourcePropertyToken property,
+			BindingSourcePropertyMetadata& out) const override
+		{
+			++TokenMetadataCalls;
+			const auto* entry = Find(property);
+			if (!entry) return false;
+			out = { {}, entry->Value.Kind(),
+				std::type_index(entry->Value.Type()), true,
+				entry->CanWrite, true };
+			return true;
+		}
+
+		bool TryGetValue(
+			const std::wstring&, BindingValue&) const override
+		{
+			++NameGetCalls;
+			return false;
+		}
+
+		bool TrySetValue(
+			const std::wstring&, const BindingValue&) override
+		{
+			++NameSetCalls;
+			return false;
+		}
+
+		bool TryGetPropertyMetadata(
+			const std::wstring&,
+			BindingSourcePropertyMetadata&) const override
+		{
+			++NameMetadataCalls;
+			return false;
+		}
+
+		std::vector<BindingSourcePropertyMetadata> GetProperties() const override
+		{
+			++DiscoveryCalls;
+			return {};
+		}
+
+		PropertyChangedEvent& PropertyChanged() override { return Changed; }
+
+		mutable int TokenGetCalls = 0;
+		int TokenSetCalls = 0;
+		mutable int TokenMetadataCalls = 0;
+		mutable int NameGetCalls = 0;
+		int NameSetCalls = 0;
+		mutable int NameMetadataCalls = 0;
+		mutable int DiscoveryCalls = 0;
+
+	private:
+		Entry* Find(BindingSourcePropertyToken property)
+		{
+			const auto found = std::find_if(
+				Entries.begin(), Entries.end(), [&](const auto& entry)
+				{
+					return entry.Property == property;
+				});
+			return found == Entries.end() ? nullptr : &*found;
+		}
+
+		const Entry* Find(BindingSourcePropertyToken property) const
+		{
+			const auto found = std::find_if(
+				Entries.begin(), Entries.end(), [&](const auto& entry)
+				{
+					return entry.Property == property;
+				});
+			return found == Entries.end() ? nullptr : &*found;
+		}
+
+		std::vector<Entry> Entries;
+		PropertyChangedEvent Changed;
 	};
 
     class MetadataBindingControl final : public Control
@@ -1082,7 +1412,7 @@ namespace
 							[handler = std::move(handler)](
 								DependencyObject*, const DependencyPropertyChangedEventArgs& e)
 							{
-								if (e.PropertyName == L"Level") handler();
+								if (e.Name() == L"Level") handler();
 							});
 					},
 					std::move(options));
@@ -1328,6 +1658,70 @@ namespace
 		}
 	};
 
+	const DependencyProperty*& TypedMetadataLookupPropertyStorage()
+	{
+		static const DependencyProperty* property = nullptr;
+		return property;
+	}
+
+	class TypedMetadataLookupProbe final : public DependencyObject
+	{
+	public:
+		static void RegisterDependencyProperties()
+		{
+			static const bool registered = []
+			{
+				DependencyPropertyOptions<TypedMetadataLookupProbe, int>
+					options;
+				options.DefaultValue = 3;
+				TypedMetadataLookupPropertyStorage() =
+					DependencyPropertyRegistry::Register<
+						TypedMetadataLookupProbe, int>(
+							L"FastValue", std::move(options));
+				return TypedMetadataLookupPropertyStorage() != nullptr;
+			}();
+			(void)registered;
+		}
+
+		static const DependencyProperty& ValueProperty()
+		{
+			RegisterDependencyProperties();
+			return *TypedMetadataLookupPropertyStorage();
+		}
+
+		int DeclarativeLookupCount() const noexcept
+		{
+			return _declarativeLookupCount;
+		}
+		int DeclarativeEnumerationCount() const noexcept
+		{
+			return _declarativeEnumerationCount;
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
+		}
+
+	protected:
+		DeclarativePropertyMetadataPointer FindObjectPropertyMetadataByName(
+			const std::wstring&) const override
+		{
+			++_declarativeLookupCount;
+			return nullptr;
+		}
+		DeclarativePropertyMetadataCollection
+			GetObjectPropertyMetadata() const override
+		{
+			++_declarativeEnumerationCount;
+			return {};
+		}
+
+	private:
+		mutable int _declarativeLookupCount = 0;
+		mutable int _declarativeEnumerationCount = 0;
+	};
+
 	const DependencyProperty*& IdentityLevelPropertyStorage()
 	{
 		static const DependencyProperty* property = nullptr;
@@ -1406,7 +1800,7 @@ namespace
 			_level = 5;
 		}
 
-		void EnsureBindingPropertiesRegistered() override
+		static void RegisterDependencyProperties()
 		{
 			IdentityOwnerObject::RegisterDependencyProperties();
 			static const bool registered = []
@@ -1426,11 +1820,16 @@ namespace
 					++target.DerivedChangedCount;
 				};
 				return DependencyPropertyRegistry::OverrideMetadata<
-					IdentityDerivedObject, int>(
+					IdentityDerivedObject, IdentityOwnerObject, int>(
 						IdentityOwnerObject::LevelProperty(),
 						std::move(options)) != nullptr;
 			}();
 			(void)registered;
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
 		}
 	};
 
@@ -1439,9 +1838,8 @@ namespace
 	public:
 		int GrandchildChangedCount = 0;
 
-		void EnsureBindingPropertiesRegistered() override
+		static void RegisterDependencyProperties()
 		{
-			IdentityDerivedObject::EnsureBindingPropertiesRegistered();
 			static const bool registered = []
 			{
 				DependencyPropertyOptions<IdentityGrandchildObject, int> options;
@@ -1454,11 +1852,16 @@ namespace
 					++target.GrandchildChangedCount;
 				};
 				return DependencyPropertyRegistry::OverrideMetadata<
-					IdentityGrandchildObject, int>(
+					IdentityGrandchildObject, IdentityDerivedObject, int>(
 						IdentityOwnerObject::LevelProperty(),
 						std::move(options)) != nullptr;
 			}();
 			(void)registered;
+		}
+
+		void EnsureBindingPropertiesRegistered() override
+		{
+			RegisterDependencyProperties();
 		}
 	};
 
@@ -1585,6 +1988,12 @@ namespace
 		{
 			PropagatePresentationWindow(control, window);
 		}
+
+		static void SetRawWindowForTeardown(
+			PresentationTestAccess& control, Window* window) noexcept
+		{
+			control.SetPresentationWindowCore(window);
+		}
 	};
 
     class FractionalMeasureControl final : public Control
@@ -1656,7 +2065,7 @@ int main()
 				const DependencyPropertyChangedEventArgs& args)
 			{
 				changedSender = sender;
-				changedName = args.PropertyName;
+				changedName = args.Name();
 			});
 		CUI_EXPECT_TRUE(dependency.TrySetValue(
 			L"Text", BindingValue(std::wstring(L"DependencyObject target"))));
@@ -2834,8 +3243,15 @@ int main()
 			L"Caption", std::wstring(L"Bound session Window")));
 		options.DataContext = viewModel;
 		const std::wstring sourceFile = L"PreparsedWindow.cui.xaml";
-		CUI_EXPECT_TRUE(session.MountDocument(
-			document, sourceFile, form, options, &error));
+		if (!session.MountDocument(
+			document, sourceFile, form, options, &error))
+		{
+			const auto detail = Convert::UnicodeToUtf8(error);
+			cui::test::Fail(
+				"session.MountDocument(document, sourceFile, form, "
+				"options, &error)",
+				__FILE__, __LINE__, detail.c_str());
+		}
 		CUI_EXPECT_TRUE(session.IsMounted());
 		CUI_EXPECT_TRUE(session.MountedWindow() == &form);
 		CUI_EXPECT_EQ(std::wstring(L"Bound session Window"), form.Title);
@@ -2939,6 +3355,44 @@ int main()
 			child->GetVisualParent());
 		CUI_EXPECT_TRUE(parent->HasItems);
 		CUI_EXPECT_TRUE(parent->RemoveItemControlAt(0));
+	});
+
+	runner.Add("TreeView authored local selection survives ItemsHost migration", []
+	{
+		TreeView tree;
+		ConfigureTestControl(tree, 0, 0, 240, 160);
+		auto rootOwner = std::make_unique<TreeViewItem>();
+		auto* root = rootOwner.get();
+		root->SetHeader(BindingValue(L"Root"));
+		root->SetIsExpanded(true);
+		auto childOwner = std::make_unique<TreeViewItem>();
+		auto* child = childOwner.get();
+		child->SetHeader(BindingValue(L"Selected child"));
+		child->SetIsSelected(true);
+
+		CUI_EXPECT_EQ(root,
+			tree.AddItemControl(std::move(rootOwner)));
+		CUI_EXPECT_EQ(child,
+			root->AddItemControl(std::move(childOwner)));
+		CUI_EXPECT_TRUE(root->IsExpanded);
+		CUI_EXPECT_TRUE(child->IsSelected);
+		CUI_EXPECT_EQ(child, tree.GetSelectedContainer());
+
+		auto stack = std::make_shared<ItemsPanelTemplate>();
+		stack->Kind = ItemsPanelKind::Stack;
+		stack->Orientation = Orientation::Vertical;
+		const ItemsPanelTemplateReference panel(stack);
+		tree.SetItemsPanel(panel);
+		root->SetItemsPanel(panel);
+		child->SetItemsPanel(panel);
+
+		CUI_EXPECT_TRUE(root->IsExpanded);
+		CUI_EXPECT_TRUE(child->IsSelected);
+		CUI_EXPECT_EQ(child, tree.GetSelectedContainer());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			root->GetPropertyValueSource(L"IsExpanded"));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			child->GetPropertyValueSource(L"IsSelected"));
 	});
 
 	runner.Add("Collection controls expose scrolling through their viewport owner", []
@@ -3373,6 +3827,44 @@ int main()
 		combo.PrepareForTest();
 		CUI_EXPECT_EQ(settledRequests, combo.LayoutRequestCount);
 		CUI_EXPECT_EQ(0ULL, combo.GeneratedItemCount());
+	});
+
+	runner.Add("ComboBox selection box projection is stable across presentation frames", []
+	{
+		class PresentationProbeComboBox final : public ComboBox
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		auto record = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(record->DefineProperty(
+			L"Name", std::wstring(L"Stable selection")));
+		auto choices = std::make_shared<ObservableBindingList>(L"Choice");
+		choices->Items.push_back(BindingSourceReference(record));
+
+		PresentationProbeComboBox combo;
+		ConfigureTestControl(combo, L"", 0, 0, 180, 28);
+		combo.SetDisplayMemberPath(L"Name");
+		combo.SetItemsSource(BindingListReference(choices));
+		combo.SetSelectedIndex(0);
+		BindingSourceReference projected;
+		CUI_EXPECT_TRUE(combo.GetSelectionBoxItem().TryGet(projected));
+		CUI_EXPECT_TRUE(projected.Shared() == record);
+
+		int projectionChanges = 0;
+		auto connection = combo.OnPropertyValueChanged.Subscribe(
+			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
+			{
+				if (args.Property == &ComboBox::SelectionBoxItemProperty())
+					++projectionChanges;
+			});
+		CUI_EXPECT_TRUE(record->SetValue(
+			L"Name", std::wstring(L"Renamed selection")));
+		CUI_EXPECT_EQ(0, projectionChanges);
+		combo.PrepareForTest();
+		combo.PrepareForTest();
+		CUI_EXPECT_EQ(0, projectionChanges);
 	});
 
 	runner.Add("ListBoxItem containers scroll navigate and expose selection state", []
@@ -3884,6 +4376,190 @@ int main()
 		CUI_EXPECT_EQ(2, box.SelectedIndex);
 		CUI_EXPECT_TRUE(std::none_of(changes.begin(), changes.end(),
 			[](auto action) { return action == CollectionChangeAction::Reset; }));
+	});
+
+	runner.Add("Compiled CollectionView paths remain token-only and live", []
+	{
+		static constexpr auto itemsProperty =
+			MakeBindingSourcePropertyToken(L"Items");
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr auto scoreProperty =
+			MakeBindingSourcePropertyToken(L"Score");
+		static constexpr auto activeProperty =
+			MakeBindingSourcePropertyToken(L"Active");
+		static constexpr auto categoryProperty =
+			MakeBindingSourcePropertyToken(L"Category");
+		static constexpr CompiledBindingPathStep itemsSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Object, itemsProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep nameSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep scoreSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, scoreProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep activeSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Bool, activeProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep categorySteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, categoryProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView itemsPath{ itemsSteps };
+		static constexpr CompiledBindingPathView namePath{ nameSteps };
+		static constexpr CompiledBindingPathView scorePath{ scoreSteps };
+		static constexpr CompiledBindingPathView activePath{ activeSteps };
+		static constexpr CompiledBindingPathView categoryPath{ categorySteps };
+
+		auto makeRecord = [&](const wchar_t* name, int score,
+			bool active, const wchar_t* category)
+		{
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(nameProperty, BindingValue(name));
+			record->Define(scoreProperty, BindingValue(score));
+			record->Define(activeProperty, BindingValue(active));
+			record->Define(categoryProperty, BindingValue(category));
+			return record;
+		};
+		auto alice = makeRecord(L"Alice", 20, true, L"A");
+		auto bob = makeRecord(L"Bob", 30, true, L"B");
+		auto dora = makeRecord(L"Dora", 25, true, L"A");
+		auto source = std::make_shared<ObservableBindingList>(L"Person");
+		for (const auto& record : { alice, bob, dora })
+			source->Items.push_back(BindingSourceReference(record));
+
+		auto root = std::make_shared<TokenOnlyBindingSource>();
+		root->Define(itemsProperty,
+			BindingValue(BindingListReference(source)), false);
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetGroupDescriptions({
+			CollectionGroupDescription::FromCompiledPath(categoryPath) });
+		view->SetAggregateDescriptions({
+			CollectionAggregateDescription::FromCompiledPath(
+				L"Count", {}, CollectionAggregateFunction::Count),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"TotalScore", scorePath, CollectionAggregateFunction::Sum) });
+		view->SetFilterDescriptions({
+			CollectionFilterDescription::FromCompiledPath(
+				activePath, CollectionFilterOperator::Equals,
+				BindingValue(true), false) });
+		view->SetSortDescriptions({
+			CollectionSortDescription::FromCompiledPath(
+				scorePath, CollectionSortDirection::Descending, false),
+			CollectionSortDescription::FromCompiledPath(namePath) });
+		view->SetCompiledSourceBindingPath(itemsPath);
+		view->BindDataContext(BindingSourceReference(root));
+
+		CUI_EXPECT_TRUE(view->GetSource().Shared() == source);
+		CUI_EXPECT_EQ(3ULL, view->Count());
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == dora);
+		CUI_EXPECT_EQ(2ULL, view->Groups().size());
+		double totalScore = 0.0;
+		CUI_EXPECT_TRUE(view->Groups()[0].Aggregates.at(L"TotalScore")
+			.TryGetDouble(totalScore));
+		CUI_EXPECT_EQ(45.0, totalScore);
+
+		CUI_EXPECT_TRUE(alice->Set(scoreProperty, BindingValue(50)));
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == alice);
+		CUI_EXPECT_TRUE(dora->Set(activeProperty, BindingValue(false)));
+		CUI_EXPECT_EQ(2ULL, view->Count());
+		CUI_EXPECT_EQ(2ULL, view->Groups().size());
+
+		auto replacement = std::make_shared<ObservableBindingList>(L"Person");
+		replacement->Items.push_back(BindingSourceReference(alice));
+		CUI_EXPECT_TRUE(root->Set(itemsProperty,
+			BindingValue(BindingListReference(replacement))));
+		CUI_EXPECT_TRUE(view->GetSource().Shared() == replacement);
+		CUI_EXPECT_EQ(1ULL, view->Count());
+
+		for (const auto* tokenSource : {
+			root.get(), alice.get(), bob.get(), dora.get() })
+		{
+			CUI_EXPECT_EQ(0, tokenSource->NameGetCalls);
+			CUI_EXPECT_EQ(0, tokenSource->NameMetadataCalls);
+			CUI_EXPECT_EQ(0, tokenSource->DiscoveryCalls);
+		}
+	});
+
+	runner.Add("Compiled display and selected-value paths stay token-only", []
+	{
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr auto idProperty =
+			MakeBindingSourcePropertyToken(L"Id");
+		static constexpr CompiledBindingPathStep nameSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep idSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, idProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView namePath{ nameSteps };
+		static constexpr CompiledBindingPathView idPath{ idSteps };
+
+		auto makeRecord = [&](const wchar_t* name, int id)
+		{
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(nameProperty, BindingValue(name));
+			record->Define(idProperty, BindingValue(id));
+			return record;
+		};
+		auto alpha = makeRecord(L"Alpha", 1);
+		auto beta = makeRecord(L"Beta", 2);
+		auto source = std::make_shared<ObservableBindingList>(L"Choice");
+		source->Items.push_back(BindingSourceReference(alpha));
+		source->Items.push_back(BindingSourceReference(beta));
+
+		ComboBox combo;
+		ConfigureTestControl(combo, 0, 0, 180, 32);
+		combo.SetCompiledDisplayMemberPath(namePath);
+		combo.SetCompiledSelectedValuePath(idPath);
+		combo.SetItemsSource(BindingListReference(source));
+		combo.SetSelectedValue(BindingValue(2));
+		CUI_EXPECT_EQ(1, combo.GetSelectedIndex());
+		CUI_EXPECT_EQ(std::wstring(L"Beta"), combo.Text);
+		int selectedId = 0;
+		CUI_EXPECT_TRUE(combo.GetSelectedValue().TryGet(selectedId));
+		CUI_EXPECT_EQ(2, selectedId);
+
+		CUI_EXPECT_TRUE(beta->Set(nameProperty, BindingValue(L"Bravo")));
+		CUI_EXPECT_EQ(std::wstring(L"Bravo"), combo.Text);
+		for (const auto* record : { alpha.get(), beta.get() })
+		{
+			CUI_EXPECT_EQ(0, record->NameGetCalls);
+			CUI_EXPECT_EQ(0, record->NameMetadataCalls);
+			CUI_EXPECT_EQ(0, record->DiscoveryCalls);
+		}
 	});
 
 	runner.Add("CollectionViewSource refresh guard survives throwing notifications", []
@@ -4760,6 +5436,276 @@ int main()
 			!= std::wstring::npos);
 	});
 
+	runner.Add("DataTypeToken drives compiled list and implicit template dispatch", []
+	{
+		static_assert(sizeof(DataTypeToken) == sizeof(std::uint64_t));
+		static_assert(std::is_trivially_copyable_v<DataTypeToken>);
+		constexpr auto personType = MakeDataTypeToken(L"Person");
+		constexpr auto orderType = MakeDataTypeToken(L"Order");
+		static_assert(personType && orderType && personType != orderType);
+		static_assert(!MakeDataTypeToken(L""));
+
+		auto record = std::make_shared<ObservableObject>();
+		std::vector<BindingSourceReference> records{
+			BindingSourceReference(record) };
+		auto source = std::make_shared<CompiledBindingList>(
+			std::move(records), personType);
+		CUI_EXPECT_EQ(1ULL, source->Count());
+		CUI_EXPECT_EQ(personType.Value,
+			source->GetItemTypeToken().Value);
+		auto connection = source->SubscribeChanged(
+			[](const CollectionChangedEventArgs&) {});
+		CUI_EXPECT_FALSE(connection.Connected());
+
+		auto personTemplate = std::make_shared<TokenItemTemplate>(personType);
+		ItemsControl items;
+		ConfigureTestControl(items, 0, 0, 200, 80);
+		items.SetItemTemplate(ItemTemplateReference(personTemplate));
+		items.SetItemsSource(BindingListReference(source));
+		CUI_EXPECT_TRUE(items.LastTemplateError().empty());
+		CUI_EXPECT_EQ(1ULL, items.GeneratedItemCount());
+
+		auto orderTemplate = std::make_shared<TokenItemTemplate>(orderType);
+		items.SetItemTemplate(ItemTemplateReference(orderTemplate));
+		CUI_EXPECT_TRUE(items.GetItemTemplate().Get() == personTemplate.get());
+		CUI_EXPECT_TRUE(items.LastTemplateError().find(L"DataType")
+			!= std::wstring::npos);
+
+		DataTypeToken resolvedType;
+		TreeView tree;
+		ConfigureTestControl(tree, 0, 0, 200, 120);
+		tree.SetCompiledImplicitItemTemplateResolver(
+			[&](DataTypeToken itemType)
+			{
+				resolvedType = itemType;
+				return itemType == personType
+					? ItemTemplateReference(personTemplate)
+					: ItemTemplateReference{};
+			});
+		tree.SetItemsSource(BindingListReference(source));
+		CUI_EXPECT_EQ(personType.Value, resolvedType.Value);
+		CUI_EXPECT_TRUE(tree.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(dynamic_cast<TreeViewItem*>(
+			tree.GetGeneratedItem(0)) != nullptr);
+	});
+
+	runner.Add("Compiled binding record uses one token thunk table", []
+	{
+		static_assert(!std::is_copy_constructible_v<CompiledBindingRecord>);
+		static_assert(!std::is_move_constructible_v<CompiledBindingRecord>);
+		const auto countToken = MakeBindingSourcePropertyToken(L"Count");
+		const auto labelToken = MakeBindingSourcePropertyToken(L"Label");
+		CompiledRecordProbe source(3, L"ready");
+
+		BindingValue value;
+		int count = 0;
+		std::wstring label;
+		CUI_EXPECT_TRUE(source.TryGetValue(countToken, value));
+		CUI_EXPECT_TRUE(value.TryGet(count));
+		CUI_EXPECT_EQ(3, count);
+		CUI_EXPECT_TRUE(source.TryGetValue(labelToken, value));
+		CUI_EXPECT_TRUE(value.TryGet(label));
+		CUI_EXPECT_EQ(std::wstring(L"ready"), label);
+
+		BindingSourcePropertyMetadata metadata;
+		CUI_EXPECT_TRUE(source.TryGetPropertyMetadata(countToken, metadata));
+		CUI_EXPECT_EQ(BindingValueKind::Int, metadata.ValueKind);
+		CUI_EXPECT_TRUE(metadata.CanRead);
+		CUI_EXPECT_TRUE(metadata.CanWrite);
+		CUI_EXPECT_TRUE(metadata.CanObserve);
+		CUI_EXPECT_TRUE(source.TryGetPropertyMetadata(labelToken, metadata));
+		CUI_EXPECT_FALSE(metadata.CanWrite);
+		CUI_EXPECT_FALSE(metadata.CanObserve);
+
+		int changeCount = 0;
+		BindingSourcePropertyToken changedToken;
+		auto connection = source.PropertyChanged().Subscribe(
+			[&](const PropertyChangedEventArgs& args)
+			{
+				++changeCount;
+				changedToken = args.PropertyToken;
+			});
+		CUI_EXPECT_TRUE(source.TrySetValue(countToken, BindingValue(8)));
+		CUI_EXPECT_EQ(1, changeCount);
+		CUI_EXPECT_EQ(countToken.Value, changedToken.Value);
+		CUI_EXPECT_TRUE(source.TrySetValue(countToken, BindingValue(8)));
+		CUI_EXPECT_EQ(1, changeCount);
+		CUI_EXPECT_FALSE(source.TrySetValue(
+			countToken, BindingValue(BindingListReference{})));
+		CUI_EXPECT_FALSE(source.TrySetValue(labelToken, BindingValue(L"changed")));
+		CUI_EXPECT_FALSE(source.TryGetValue(
+			MakeBindingSourcePropertyToken(L"Missing"), value));
+	});
+
+	runner.Add("Compiled record direct endpoints bypass token lookup", []
+	{
+		const auto countToken = MakeBindingSourcePropertyToken(L"Count");
+		CompiledRecordProbe source(3, L"ready");
+		const auto endpoint = source.CountSource();
+		CUI_EXPECT_TRUE(static_cast<bool>(endpoint));
+		CUI_EXPECT_FALSE(static_cast<bool>(
+			source.MakeCompiledPropertySource(99)));
+
+		TextBox target;
+		Binding* binding = target.DataBindings.Add(
+			TextBox::TextProperty(), endpoint, BindingMode::TwoWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding->UsesDirectSource());
+		CUI_EXPECT_EQ(std::wstring(L"3"), target.Text);
+		CUI_EXPECT_EQ(0, source.TokenReadCalls);
+		CUI_EXPECT_EQ(0, source.TokenMetadataCalls);
+
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			TextBox::TextProperty(), BindingValue(L"9")));
+		CUI_EXPECT_EQ(0, source.TokenWriteCalls);
+		BindingValue stored;
+		int count = 0;
+		CUI_EXPECT_TRUE(source.TryGetValue(countToken, stored));
+		CUI_EXPECT_TRUE(stored.TryGet(count));
+		CUI_EXPECT_EQ(9, count);
+
+		CUI_EXPECT_TRUE(source.TrySetValue(countToken, BindingValue(11)));
+		CUI_EXPECT_EQ(std::wstring(L"11"), target.Text);
+		CUI_EXPECT_EQ(BindingError::None, binding->LastError());
+	});
+
+	runner.Add("Unknown compiled sources use the explicit token adapter", []
+	{
+		const auto textToken = MakeBindingSourcePropertyToken(L"Text");
+		TokenOnlyBindingSource source;
+		source.Define(textToken, BindingValue(L"seed"));
+		const CompiledBindingPathStep property{
+			CompiledBindingPathStepKind::Property,
+			CompiledBindingPathCapabilities::Read
+				| CompiledBindingPathCapabilities::Write
+				| CompiledBindingPathCapabilities::Observe,
+			BindingValueKind::String,
+			textToken };
+		const auto endpoint =
+			cui::binding::MakeCompiledBindingSourcePropertyAdapter(
+				source, property);
+		CUI_EXPECT_TRUE(static_cast<bool>(endpoint));
+		const CompiledBindingPathStep invalid{
+			CompiledBindingPathStepKind::ListIndex,
+			CompiledBindingPathCapabilities::Read,
+			BindingValueKind::String,
+			textToken };
+		CUI_EXPECT_FALSE(static_cast<bool>(
+			cui::binding::MakeCompiledBindingSourcePropertyAdapter(
+				source, invalid)));
+
+		const CompiledBindingPathStep authoritativeFailure{
+			CompiledBindingPathStepKind::Property,
+			CompiledBindingPathCapabilities::Read
+				| CompiledBindingPathCapabilities::Write
+				| CompiledBindingPathCapabilities::Observe,
+			BindingValueKind::String,
+			textToken,
+			0,
+			+[](IBindingSource&) noexcept -> CompiledSourceHandle
+			{
+				return {};
+			} };
+		CUI_EXPECT_FALSE(static_cast<bool>(
+			cui::binding::MakeCompiledBindingSourcePropertyAdapter(
+				source, authoritativeFailure)));
+		const CompiledBindingPathView authoritativePath{
+			std::span{ &authoritativeFailure, size_t{ 1 } } };
+		BindingValue ignored;
+		CUI_EXPECT_FALSE(TryGetBindingPathValue(
+			source, authoritativePath, ignored));
+		TextBox rejectedTarget;
+		Binding rejectedBinding(
+			&rejectedTarget, TextBox::TextProperty(), &source,
+			authoritativePath, BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_FALSE(rejectedBinding.IsValid());
+		CUI_EXPECT_EQ(BindingError::SourceNotReadable,
+			rejectedBinding.LastError());
+		CUI_EXPECT_EQ(0, source.TokenGetCalls);
+		CUI_EXPECT_EQ(0, source.TokenSetCalls);
+		CUI_EXPECT_EQ(0, source.TokenMetadataCalls);
+
+		TextBox target;
+		Binding* binding = target.DataBindings.Add(
+			TextBox::TextProperty(), endpoint, BindingMode::TwoWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding->UsesDirectSource());
+		CUI_EXPECT_EQ(std::wstring(L"seed"), target.Text);
+		CUI_EXPECT_TRUE(source.TokenGetCalls > 0);
+		CUI_EXPECT_EQ(0, source.TokenMetadataCalls);
+		CUI_EXPECT_EQ(0, source.NameGetCalls);
+		CUI_EXPECT_EQ(0, source.NameMetadataCalls);
+		CUI_EXPECT_EQ(0, source.DiscoveryCalls);
+
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			TextBox::TextProperty(), BindingValue(L"target")));
+		CUI_EXPECT_TRUE(source.TokenSetCalls > 0);
+		CUI_EXPECT_EQ(0, source.NameSetCalls);
+		CUI_EXPECT_TRUE(source.Set(textToken, BindingValue(L"source")));
+		CUI_EXPECT_EQ(std::wstring(L"source"), target.Text);
+		CUI_EXPECT_EQ(BindingError::None, binding->LastError());
+	});
+
+	runner.Add("Compiled paths resolve exact native DP steps without tokens", []
+	{
+		static constexpr auto nameToken =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr CompiledBindingPathStep steps[] =
+		{
+			{
+				CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Object,
+				{},
+				0,
+				+[](IBindingSource& source) noexcept -> CompiledSourceHandle
+				{
+					return cui::binding::ResolveCompiledDependencyPropertySource(
+						source, Control::DataContextProperty());
+				}
+			},
+			{
+				CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Write
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String,
+				nameToken,
+				0
+			}
+		};
+		static constexpr CompiledBindingPathView path{ steps };
+
+		auto first = std::make_shared<TokenOnlyBindingSource>();
+		first->Define(nameToken, BindingValue(L"first"));
+		TextBox source;
+		CUI_EXPECT_TRUE(source.SetDataContext(BindingSourceReference(first)));
+
+		TextBox target;
+		auto* binding = target.DataBindings.Add(
+			TextBox::TextProperty(), &source, path, BindingMode::TwoWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"first"), target.Text);
+
+		auto second = std::make_shared<TokenOnlyBindingSource>();
+		second->Define(nameToken, BindingValue(L"second"));
+		CUI_EXPECT_TRUE(source.SetDataContext(BindingSourceReference(second)));
+		CUI_EXPECT_EQ(std::wstring(L"second"), target.Text);
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			TextBox::TextProperty(), BindingValue(L"written")));
+		BindingValue stored;
+		std::wstring text;
+		CUI_EXPECT_TRUE(second->TryGetValue(nameToken, stored));
+		CUI_EXPECT_TRUE(stored.TryGet(text));
+		CUI_EXPECT_EQ(std::wstring(L"written"), text);
+		CUI_EXPECT_EQ(BindingError::None, binding->LastError());
+	});
+
 	runner.Add("ContentPresenter materializes one typed object atomically", []
 	{
 		auto alice = std::make_shared<ObservableObject>();
@@ -4807,6 +5753,40 @@ int main()
 		presenter.SetContent({});
 		CUI_EXPECT_TRUE(presenter.GetGeneratedContent() == nullptr);
 		CUI_EXPECT_EQ(0, presenter.VisualChildCount());
+	});
+
+	runner.Add("ContentPresenter keeps nested rebuild transaction authoritative", []
+	{
+		ContentPresenter presenter;
+		presenter.SetContent(BindingValue(L"Initial"));
+		auto* initial = dynamic_cast<Label*>(
+			presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(initial != nullptr);
+		const ControlWeakReference initialLifetime(initial);
+		bool nestedRebuild = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*initial,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (nestedRebuild || previous != &presenter || current)
+						return;
+					nestedRebuild = true;
+					presenter.SetDisplayMemberPath(L"Nested");
+				});
+
+		presenter.SetContent(BindingValue(L"Outer"));
+		auto* committed = dynamic_cast<Label*>(
+			presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(nestedRebuild);
+		CUI_EXPECT_TRUE(committed != nullptr);
+		CUI_EXPECT_TRUE(committed != initial);
+		CUI_EXPECT_EQ(std::wstring(L"Outer"), committed->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Nested"),
+			presenter.GetDisplayMemberPath());
+		CUI_EXPECT_EQ(1, presenter.VisualChildCount());
+		CUI_EXPECT_TRUE(presenter.GetVisualContent() == nullptr);
+		CUI_EXPECT_TRUE(initialLifetime.Get() == nullptr);
 	});
 
 	runner.Add("ContentControl owns either one visual child or data content", []
@@ -4864,6 +5844,1578 @@ int main()
 			!= std::wstring::npos);
 	});
 
+	runner.Add("ContentControl projects visual Content across template presenters", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto content = MakeTestControl<Label>(L"Projected", 0, 0);
+		auto* projected = content.get();
+		CUI_EXPECT_EQ(projected, host.SetVisualContent(std::move(content)));
+		CUI_EXPECT_EQ(&host, projected->GetVisualParent());
+		CUI_EXPECT_EQ(&host, projected->GetLogicalParent());
+
+		auto attachTemplate = [&](ContentPresenter*& outPresenter)
+		{
+			auto root = std::make_unique<Canvas>();
+			auto presenter = std::make_unique<ContentPresenter>();
+			outPresenter = presenter.get();
+			root->AddOwned(std::move(presenter));
+			cui::framework::TreeAccess::SetTemplatedParent(
+				*outPresenter, &host);
+			CUI_EXPECT_TRUE(
+				TemplateAccess::RegisterContentPresenter(
+					host, outPresenter));
+			// Registration is only a candidate while the template factory owns
+			// the tree. Content remains with the host until root takeover.
+			CUI_EXPECT_EQ(&host, projected->GetVisualParent());
+			CUI_EXPECT_EQ(&host, projected->GetLogicalParent());
+			CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
+				host, std::move(root)) != nullptr);
+			CUI_EXPECT_EQ(outPresenter, projected->GetVisualParent());
+			CUI_EXPECT_EQ(&host, projected->GetLogicalParent());
+			CUI_EXPECT_EQ(1, host.VisualChildCount());
+		};
+
+		ContentPresenter* firstPresenter = nullptr;
+		attachTemplate(firstPresenter);
+		auto firstRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_TRUE(firstRoot != nullptr);
+		CUI_EXPECT_TRUE(firstPresenter->GetVisualContent() == nullptr);
+		CUI_EXPECT_EQ(&host, projected->GetVisualParent());
+		CUI_EXPECT_EQ(&host, projected->GetLogicalParent());
+
+		ContentPresenter* secondPresenter = nullptr;
+		attachTemplate(secondPresenter);
+		auto detached = host.DetachVisualContent();
+		CUI_EXPECT_EQ(projected, detached.get());
+		CUI_EXPECT_TRUE(projected->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(projected->GetLogicalParent() == nullptr);
+
+		auto late = MakeTestControl<Label>(L"Late", 0, 0);
+		auto* latePointer = late.get();
+		host.AddOwned(std::move(late));
+		CUI_EXPECT_EQ(latePointer, host.GetVisualContent());
+		CUI_EXPECT_EQ(&host, latePointer->GetVisualParent());
+		// Inherited AddOwned completes its collection notification before the
+		// stable layout hook projects Content into the active presenter.
+		host.Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 80.0f });
+		CUI_EXPECT_EQ(secondPresenter, latePointer->GetVisualParent());
+		CUI_EXPECT_EQ(&host, latePointer->GetLogicalParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+
+		auto secondRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_TRUE(secondRoot != nullptr);
+		CUI_EXPECT_EQ(&host, latePointer->GetVisualParent());
+		auto rootWithoutPresenter = std::make_unique<Canvas>();
+		CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
+			host, std::move(rootWithoutPresenter)) != nullptr);
+		CUI_EXPECT_EQ(latePointer, host.GetVisualContent());
+		CUI_EXPECT_TRUE(latePointer->GetVisualParent() == nullptr);
+		CUI_EXPECT_EQ(&host, latePointer->GetLogicalParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+		auto bareRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_TRUE(bareRoot != nullptr);
+		CUI_EXPECT_EQ(&host, latePointer->GetVisualParent());
+		CUI_EXPECT_EQ(&host, latePointer->GetLogicalParent());
+	});
+
+	runner.Add("ContentControl presenter registration rolls back failed template factories", []
+	{
+		for (const bool attachRoot : { false, true })
+		{
+			ContentControl host;
+			ConfigureTestControl(host, 0, 0, 240, 80);
+			auto content = MakeTestControl<Label>(L"Preserved", 0, 0);
+			auto* raw = content.get();
+			const ControlWeakReference lifetime(raw);
+			CUI_EXPECT_EQ(raw, host.SetVisualContent(std::move(content)));
+			host.SetTemplate(ControlTemplateReference(
+				std::make_shared<FailingContentPresenterTemplate>(
+					attachRoot)));
+
+			CUI_EXPECT_FALSE(host.ApplyTemplate());
+			CUI_EXPECT_TRUE(lifetime.Get() == raw);
+			CUI_EXPECT_EQ(raw, host.GetVisualContent());
+			CUI_EXPECT_EQ(&host, raw->GetVisualParent());
+			CUI_EXPECT_EQ(&host, raw->GetLogicalParent());
+			CUI_EXPECT_TRUE(
+				TemplateAccess::GetTemplateRoot(host) == nullptr);
+			CUI_EXPECT_TRUE(
+				TemplateAccess::GetContentPresenter(host) == nullptr);
+		}
+	});
+
+	runner.Add("ContentControl keeps ownership when parent observers throw", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		std::unique_ptr<Control> content =
+			MakeTestControl<Label>(L"Observed", 0, 0);
+		auto* raw = content.get();
+		bool throwOnce = true;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (!throwOnce || current != &host) return;
+					throwOnce = false;
+					throw std::runtime_error("observer failure");
+				});
+
+		// The observer throws after the visual insertion committed. TrySet must
+		// report success and must not leave a second unique_ptr owner.
+		CUI_EXPECT_TRUE(host.TrySetVisualContent(content));
+		CUI_EXPECT_TRUE(content == nullptr);
+		CUI_EXPECT_EQ(raw, host.GetVisualContent());
+		CUI_EXPECT_EQ(&host, raw->GetVisualParent());
+		CUI_EXPECT_EQ(&host, raw->GetLogicalParent());
+
+		bool throwOnLogicalDetach = true;
+		auto logicalParentChanged =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (!throwOnLogicalDetach || current) return;
+					throwOnLogicalDetach = false;
+					throw std::runtime_error("logical observer failure");
+				});
+		auto detached = host.DetachVisualContent();
+		CUI_EXPECT_EQ(raw, detached.get());
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("ContentControl ownership transfer survives nested detach and reparent", []
+	{
+		{
+			ContentControl host;
+			ConfigureTestControl(host, 0, 0, 240, 80);
+			std::unique_ptr<Control> caller =
+				MakeTestControl<Label>(L"Nested detach", 0, 0);
+			auto* raw = caller.get();
+			const ControlWeakReference lifetime(raw);
+			std::unique_ptr<Control> callbackOwner;
+			auto parentChanged =
+				cui::framework::TreeAccess::SubscribeVisualParentChanged(
+					*raw,
+					[&](Control*, Control*, Control* current)
+					{
+						if (current != &host || callbackOwner) return;
+						callbackOwner = host.DetachVisualChild(raw);
+					});
+
+			CUI_EXPECT_FALSE(host.TrySetVisualContent(caller));
+			CUI_EXPECT_TRUE(caller == nullptr);
+			CUI_EXPECT_EQ(raw, callbackOwner.get());
+			CUI_EXPECT_EQ(raw, lifetime.Get());
+			CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+			CUI_EXPECT_TRUE(host.GetVisualContent() == nullptr);
+		}
+
+		{
+			ContentControl host;
+			Panel alternate;
+			ConfigureTestControl(host, 0, 0, 240, 80);
+			ConfigureTestControl(alternate, 0, 0, 240, 80);
+			auto content = MakeTestControl<Label>(L"Nested reparent", 0, 0);
+			auto* raw = content.get();
+			const ControlWeakReference lifetime(raw);
+			CUI_EXPECT_EQ(raw, host.SetVisualContent(std::move(content)));
+			bool reparented = false;
+			auto logicalParentChanged =
+				cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+					*raw,
+					[&](Control*, Control*, Control* current)
+					{
+						if (reparented || current) return;
+						reparented = true;
+						alternate.AdoptVisualChild(raw);
+					});
+
+			auto detached = host.DetachVisualContent();
+			CUI_EXPECT_TRUE(detached == nullptr);
+			CUI_EXPECT_TRUE(reparented);
+			CUI_EXPECT_EQ(raw, lifetime.Get());
+			CUI_EXPECT_EQ(&alternate, raw->GetVisualParent());
+			CUI_EXPECT_EQ(&alternate, raw->GetLogicalParent());
+			CUI_EXPECT_TRUE(alternate.ContainsControl(raw));
+		}
+	});
+
+	runner.Add("Owned visual insertion never reacquires a callback-transferred child", []
+	{
+		auto exercise = [](bool infrastructurePath)
+		{
+			Panel source;
+			Panel alternate;
+			auto caller = MakeTestControl<Label>(
+				infrastructurePath ? L"Infrastructure" : L"Public", 0, 0);
+			auto* raw = caller.get();
+			const ControlWeakReference lifetime(raw);
+			std::unique_ptr<Control> externalOwner;
+			bool handoffComplete = false;
+			bool observerThrew = false;
+			auto parentChanged =
+				cui::framework::TreeAccess::SubscribeVisualParentChanged(
+					*raw,
+					[&](Control*, Control*, Control* current)
+					{
+						if (current != &source || handoffComplete) return;
+						auto detached = source.DetachVisualChild(raw);
+						if (!detached) return;
+						alternate.AddOwned(std::move(detached));
+						externalOwner =
+							alternate.DetachVisualChild(raw);
+						handoffComplete = externalOwner.get() == raw;
+						throw std::runtime_error(
+							"post-commit insertion observer");
+					});
+
+			try
+			{
+				if (infrastructurePath)
+				(void)cui::framework::TreeAccess::InsertOwnedVisualChild(
+					source, 0, std::move(caller), nullptr);
+				else
+					(void)source.InsertOwned(0, std::move(caller));
+			}
+			catch (const std::runtime_error&)
+			{
+				observerThrew = true;
+			}
+
+			const bool destroyedDuringUnwind = !lifetime;
+			if (destroyedDuringUnwind)
+				(void)externalOwner.release();
+			CUI_EXPECT_TRUE(observerThrew);
+			CUI_EXPECT_TRUE(handoffComplete);
+			CUI_EXPECT_FALSE(destroyedDuringUnwind);
+			CUI_EXPECT_EQ(raw, externalOwner.get());
+			CUI_EXPECT_FALSE(source.ContainsControl(raw));
+			CUI_EXPECT_FALSE(alternate.ContainsControl(raw));
+			CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+			CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+		};
+
+		exercise(false);
+		exercise(true);
+	});
+
+	runner.Add("DetachVisualChild never duplicates nested external ownership", []
+	{
+		Panel source;
+		Panel alternate;
+		auto owner = MakeTestControl<Label>(L"Transferred", 0, 0);
+		auto* raw = owner.get();
+		const ControlWeakReference lifetime(raw);
+		CUI_EXPECT_EQ(raw, source.AddOwned(std::move(owner)));
+
+		std::unique_ptr<Control> externalOwner;
+		bool moved = false;
+		auto logicalParentChanged =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (moved || current) return;
+					moved = true;
+					alternate.AdoptVisualChild(raw);
+					externalOwner =
+						alternate.DetachVisualChild(raw);
+				});
+
+		auto outerOwner = source.DetachVisualChild(raw);
+		const bool duplicateOwners = outerOwner && externalOwner
+			&& outerOwner.get() == externalOwner.get();
+		if (duplicateOwners)
+			(void)outerOwner.release();
+		CUI_EXPECT_TRUE(moved);
+		CUI_EXPECT_FALSE(duplicateOwners);
+		CUI_EXPECT_TRUE(outerOwner == nullptr);
+		CUI_EXPECT_EQ(raw, externalOwner.get());
+		CUI_EXPECT_EQ(raw, lifetime.Get());
+		CUI_EXPECT_FALSE(source.ContainsControl(raw));
+		CUI_EXPECT_FALSE(alternate.ContainsControl(raw));
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("ClearVisualChildren preserves callback-transferred ownership", []
+	{
+		Panel source;
+		Panel alternate;
+		auto transferred = MakeTestControl<Label>(L"Transferred", 0, 0);
+		auto* transferredRaw = transferred.get();
+		const ControlWeakReference transferredLifetime(transferredRaw);
+		CUI_EXPECT_EQ(transferredRaw,
+			source.AddOwned(std::move(transferred)));
+		auto removed = MakeTestControl<Label>(L"Removed", 0, 0);
+		auto* removedRaw = removed.get();
+		const ControlWeakReference removedLifetime(removedRaw);
+		CUI_EXPECT_EQ(removedRaw, source.AddOwned(std::move(removed)));
+
+		std::unique_ptr<Control> externalOwner;
+		bool moved = false;
+		auto logicalParentChanged =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*transferredRaw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (moved || current) return;
+					moved = true;
+					alternate.AdoptVisualChild(transferredRaw);
+					externalOwner =
+						alternate.DetachVisualChild(transferredRaw);
+				});
+
+		source.ClearVisualChildren();
+		CUI_EXPECT_TRUE(moved);
+		CUI_EXPECT_EQ(0, source.VisualChildCount());
+		CUI_EXPECT_EQ(transferredRaw, externalOwner.get());
+		CUI_EXPECT_EQ(transferredRaw, transferredLifetime.Get());
+		CUI_EXPECT_TRUE(removedLifetime.Get() == nullptr);
+		CUI_EXPECT_FALSE(alternate.ContainsControl(transferredRaw));
+		CUI_EXPECT_TRUE(
+			transferredRaw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(
+			transferredRaw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("DetachVisualChild returns ownership after post-commit observer error", []
+	{
+		Panel source;
+		auto owner = MakeTestControl<Label>(L"Observed", 0, 0);
+		auto* raw = owner.get();
+		CUI_EXPECT_EQ(raw, source.AddOwned(std::move(owner)));
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (previous == &source && !current)
+						throw std::runtime_error(
+							"detach observer");
+				});
+
+		bool ownershipCommit = false;
+		std::exception_ptr notificationError;
+		auto detached =
+			cui::framework::TreeAccess::DetachVisualChild(
+				source, raw, &ownershipCommit,
+				&notificationError);
+		CUI_EXPECT_EQ(raw, detached.get());
+		CUI_EXPECT_FALSE(ownershipCommit);
+		CUI_EXPECT_TRUE(notificationError != nullptr);
+		CUI_EXPECT_EQ(0, source.VisualChildCount());
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("Content logical detach never reacquires callback-transferred ownership", []
+	{
+		ContentControl host;
+		Panel alternate;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto content = MakeTestControl<Label>(L"Unpresented", 0, 0);
+		auto* raw = content.get();
+		const ControlWeakReference lifetime(raw);
+		CUI_EXPECT_EQ(raw, host.SetVisualContent(std::move(content)));
+		auto rootWithoutPresenter = std::make_unique<Canvas>();
+		CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
+			host, std::move(rootWithoutPresenter)) != nullptr);
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_EQ(&host, raw->GetLogicalParent());
+
+		std::unique_ptr<Control> externalOwner;
+		bool moved = false;
+		auto logicalParentChanged =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (moved || current) return;
+					moved = true;
+					alternate.AdoptVisualChild(raw);
+					externalOwner =
+						alternate.DetachVisualChild(raw);
+				});
+		auto outerOwner = host.DetachVisualContent();
+		CUI_EXPECT_TRUE(moved);
+		CUI_EXPECT_TRUE(outerOwner == nullptr);
+		CUI_EXPECT_EQ(raw, externalOwner.get());
+		CUI_EXPECT_EQ(raw, lifetime.Get());
+		CUI_EXPECT_FALSE(alternate.ContainsControl(raw));
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("Control template root attach failure leaves no hidden visual", []
+	{
+		Control host;
+		auto root = std::make_unique<Canvas>();
+		auto* raw = root.get();
+		const ControlWeakReference lifetime(raw);
+		bool observerThrew = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (current == &host)
+						throw std::runtime_error(
+							"template root attach observer");
+				});
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(root));
+		}
+		catch (const std::runtime_error&)
+		{
+			observerThrew = true;
+		}
+		CUI_EXPECT_TRUE(observerThrew);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_EQ(0, host.VisualChildCount());
+		CUI_EXPECT_TRUE(lifetime.Get() == nullptr);
+	});
+
+	runner.Add("Control template root rejects callback-transferred ownership", []
+	{
+		Control host;
+		Panel alternate;
+		auto root = std::make_unique<Canvas>();
+		auto* raw = root.get();
+		const ControlWeakReference lifetime(raw);
+		cui::framework::TreeAccess::SetTemplatedParent(*raw, &host);
+		std::unique_ptr<Control> externalOwner;
+		bool transferred = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (transferred || current != &host) return;
+					auto detached = host.DetachVisualChild(raw);
+					if (!detached) return;
+					alternate.AddOwned(std::move(detached));
+					externalOwner = alternate.DetachVisualChild(raw);
+					transferred = externalOwner.get() == raw;
+				});
+
+		bool rejected = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(root));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		const bool destroyedDuringUnwind = !lifetime;
+		if (destroyedDuringUnwind)
+			(void)externalOwner.release();
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_FALSE(destroyedDuringUnwind);
+		CUI_EXPECT_EQ(raw, externalOwner.get());
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_EQ(0, host.VisualChildCount());
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetTemplatedParent() == nullptr);
+	});
+
+	runner.Add("ItemsControl authored detach commits external callback transfer", []
+	{
+		ItemsControl host;
+		Panel alternate;
+		auto item = MakeTestControl<Label>(L"Transferred item", 0, 0);
+		auto* raw = item.get();
+		const ControlWeakReference lifetime(raw);
+		CUI_EXPECT_EQ(raw, host.AddItemControl(std::move(item)));
+		CUI_EXPECT_EQ(1, static_cast<int>(host.ItemCount()));
+
+		std::unique_ptr<Control> externalOwner;
+		bool transferred = false;
+		auto logicalParentChanged =
+			cui::framework::TreeAccess::SubscribeLogicalParentChanged(
+				*raw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (transferred || previous != &host || current) return;
+					alternate.AdoptVisualChild(raw);
+					externalOwner = alternate.DetachVisualChild(raw);
+					transferred = externalOwner.get() == raw;
+				});
+
+		auto callerOwner = host.DetachItemControlAt(0);
+		const bool duplicateOwners = callerOwner && externalOwner
+			&& callerOwner.get() == externalOwner.get();
+		if (duplicateOwners)
+			(void)callerOwner.release();
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_FALSE(duplicateOwners);
+		CUI_EXPECT_TRUE(callerOwner == nullptr);
+		CUI_EXPECT_EQ(raw, externalOwner.get());
+		CUI_EXPECT_EQ(raw, lifetime.Get());
+		CUI_EXPECT_EQ(0, static_cast<int>(host.ItemCount()));
+		CUI_EXPECT_TRUE(raw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(raw->GetLogicalParent() == nullptr);
+	});
+
+	runner.Add("ItemsControl generated initialization preserves callback ownership", []
+	{
+		auto record = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(record->DefineProperty(
+			L"Name", std::wstring(L"Transferred")));
+		auto source = std::make_shared<ObservableBindingList>(L"Row");
+		source->Items.push_back(BindingSourceReference(record));
+
+		ItemsControl host;
+		Panel alternate;
+		Control* candidate = nullptr;
+		ControlWeakReference candidateLifetime;
+		std::unique_ptr<Control> externalOwner;
+		bool transferred = false;
+		host.SetGeneratedContainerInitializer(
+			[&](Control& container, std::wstring* error)
+			{
+				candidate = &container;
+				candidateLifetime = candidate;
+				alternate.AdoptVisualChild(candidate);
+				externalOwner =
+					alternate.DetachVisualChild(candidate);
+				transferred = externalOwner.get() == candidate;
+				if (error)
+					*error =
+						L"initializer transferred candidate ownership";
+				return false;
+			});
+
+		bool rejected = false;
+		try
+		{
+			host.SetItemsSource(BindingListReference(source));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		const bool destroyedDuringReturn =
+			candidate && !candidateLifetime;
+		if (destroyedDuringReturn)
+			(void)externalOwner.release();
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_FALSE(destroyedDuringReturn);
+		CUI_EXPECT_EQ(candidate, externalOwner.get());
+		CUI_EXPECT_EQ(candidate, candidateLifetime.Get());
+		CUI_EXPECT_TRUE(candidate->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(candidate->GetLogicalParent() == nullptr);
+		CUI_EXPECT_FALSE(host.GetItemsSource());
+		CUI_EXPECT_EQ(0ULL, host.GeneratedItemCount());
+		CUI_EXPECT_TRUE(host.LastTemplateError().find(L"transferred")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("Grouped headers preserve callback-transferred ownership", []
+	{
+		class TransferringHeaderTemplate final : public IItemTemplate
+		{
+		public:
+			TransferringHeaderTemplate(
+				Panel& alternate,
+				std::unique_ptr<Control>& externalOwner)
+				: Alternate(alternate), ExternalOwner(externalOwner) {}
+
+			const std::wstring& DataTypeName() const noexcept override
+			{
+				static const std::wstring typeName(
+					CollectionViewGroupDataTypeName);
+				return typeName;
+			}
+
+			std::unique_ptr<Control> Build(
+				const BindingSourceReference&,
+				size_t,
+				std::wstring* outError) const override
+			{
+				auto header =
+					MakeTestControl<Label>(L"Transferred header", 0, 0);
+				auto* raw = header.get();
+				Candidate = raw;
+				CandidateLifetime = raw;
+				ParentChanged =
+					cui::framework::TreeAccess::SubscribeVisualParentChanged(
+						*raw,
+						[this, raw](
+							Control*, Control*, Control* current)
+						{
+							if (TransferStarted || !current) return;
+							TransferStarted = true;
+							auto detached =
+								current->DetachVisualChild(raw);
+							if (!detached) return;
+							Alternate.AddOwned(std::move(detached));
+							ExternalOwner =
+								Alternate.DetachVisualChild(raw);
+							Transferred =
+								ExternalOwner.get() == raw;
+						});
+				if (outError) outError->clear();
+				return header;
+			}
+
+			Panel& Alternate;
+			std::unique_ptr<Control>& ExternalOwner;
+			mutable EventConnection ParentChanged;
+			mutable Control* Candidate = nullptr;
+			mutable ControlWeakReference CandidateLifetime;
+			mutable bool TransferStarted = false;
+			mutable bool Transferred = false;
+		};
+
+		auto record = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(record->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		CUI_EXPECT_TRUE(record->DefineProperty(
+			L"Department", std::wstring(L"Engineering")));
+		auto source = std::make_shared<ObservableBindingList>(L"Person");
+		source->Items.push_back(BindingSourceReference(record));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetGroupDescriptions({
+			{ L"Department", CollectionSortDirection::Ascending, true } });
+		view->SetSource(BindingListReference(source));
+
+		Panel alternate;
+		std::unique_ptr<Control> externalOwner;
+		auto headerTemplate =
+			std::make_shared<TransferringHeaderTemplate>(
+				alternate, externalOwner);
+		auto groupStyle = std::make_shared<GroupStyle>();
+		groupStyle->HeaderTemplate =
+			ItemTemplateReference(headerTemplate);
+		ItemsControl host;
+		host.SetDisplayMemberPath(L"Name");
+		host.SetGroupStyle(GroupStyleReference(groupStyle));
+
+		bool rejected = false;
+		try
+		{
+			host.SetItemsSource(BindingListReference(view));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		const bool destroyedDuringReturn =
+			headerTemplate->Candidate
+			&& !headerTemplate->CandidateLifetime;
+		if (destroyedDuringReturn)
+			(void)externalOwner.release();
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_TRUE(headerTemplate->Transferred);
+		CUI_EXPECT_FALSE(destroyedDuringReturn);
+		CUI_EXPECT_EQ(headerTemplate->Candidate, externalOwner.get());
+		CUI_EXPECT_EQ(headerTemplate->Candidate,
+			headerTemplate->CandidateLifetime.Get());
+		CUI_EXPECT_TRUE(
+			headerTemplate->Candidate->GetVisualParent() == nullptr);
+		CUI_EXPECT_FALSE(host.GetItemsSource());
+		CUI_EXPECT_EQ(0ULL, host.GeneratedItemCount());
+	});
+
+	runner.Add("ItemsControl defers ItemsPresenter ownership until root commit", []
+	{
+		ItemsControl host;
+		auto* originalHost = TemplateAccess::GetItemsHost(host);
+		CUI_EXPECT_TRUE(originalHost != nullptr);
+		const ControlWeakReference hostLifetime(originalHost);
+		{
+			auto discarded = std::make_unique<ItemsPresenter>();
+			cui::framework::TreeAccess::SetTemplatedParent(
+				*discarded, &host);
+			CUI_EXPECT_TRUE(TemplateAccess::RegisterItemsPresenter(
+				host, discarded.get()));
+			CUI_EXPECT_TRUE(
+				TemplateAccess::GetItemsPresenter(host) == nullptr);
+			CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+		}
+
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*rootRaw, &host);
+		auto presenter = std::make_unique<ItemsPresenter>();
+		auto* presenterRaw = presenter.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*presenterRaw, &host);
+		root->AddOwned(std::move(presenter));
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterItemsPresenter(
+			host, presenterRaw));
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetItemsPresenter(host) == nullptr);
+		CUI_EXPECT_EQ(originalHost, hostLifetime.Get());
+		CUI_EXPECT_EQ(originalHost, TemplateAccess::GetItemsHost(host));
+		CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+
+		CUI_EXPECT_EQ(rootRaw,
+			TemplateAccess::SetTemplateRoot(host, std::move(root)));
+		CUI_EXPECT_EQ(presenterRaw,
+			TemplateAccess::GetItemsPresenter(host));
+		CUI_EXPECT_EQ(originalHost,
+			TemplateAccess::GetItemsHost(*presenterRaw));
+		CUI_EXPECT_EQ(presenterRaw, originalHost->GetVisualParent());
+		CUI_EXPECT_EQ(1, presenterRaw->VisualChildCount());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detachedRoot.get());
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetItemsPresenter(host) == nullptr);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetItemsHost(*presenterRaw) == nullptr);
+		CUI_EXPECT_EQ(originalHost, TemplateAccess::GetItemsHost(host));
+		CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ItemsControl rejects an ItemsPresenter escaping root commit", []
+	{
+		ItemsControl host;
+		Panel alternate;
+		auto* originalHost = TemplateAccess::GetItemsHost(host);
+		CUI_EXPECT_TRUE(originalHost != nullptr);
+		const ControlWeakReference hostLifetime(originalHost);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		const ControlWeakReference rootLifetime(rootRaw);
+		cui::framework::TreeAccess::SetTemplatedParent(*rootRaw, &host);
+		auto presenter = std::make_unique<ItemsPresenter>();
+		auto* presenterRaw = presenter.get();
+		const ControlWeakReference presenterLifetime(presenterRaw);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*presenterRaw, &host);
+		root->AddOwned(std::move(presenter));
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterItemsPresenter(
+			host, presenterRaw));
+
+		std::unique_ptr<Control> externalPresenterOwner;
+		bool transferred = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*originalHost,
+				[&](Control*, Control*, Control* current)
+				{
+					if (transferred || current != presenterRaw) return;
+					auto detached =
+						rootRaw->DetachVisualChild(presenterRaw);
+					if (!detached) return;
+					alternate.AddOwned(std::move(detached));
+					externalPresenterOwner =
+						alternate.DetachVisualChild(presenterRaw);
+					transferred =
+						externalPresenterOwner.get() == presenterRaw;
+				});
+
+		bool rejected = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(root));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		const bool presenterDestroyed = !presenterLifetime;
+		if (presenterDestroyed)
+			(void)externalPresenterOwner.release();
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_FALSE(presenterDestroyed);
+		CUI_EXPECT_FALSE(rootLifetime);
+		CUI_EXPECT_EQ(presenterRaw, externalPresenterOwner.get());
+		CUI_EXPECT_TRUE(presenterRaw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(presenterRaw->GetLogicalParent() == nullptr);
+		CUI_EXPECT_TRUE(presenterRaw->GetTemplatedParent() == nullptr);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetItemsHost(*presenterRaw) == nullptr);
+		CUI_EXPECT_EQ(originalHost, hostLifetime.Get());
+		CUI_EXPECT_EQ(originalHost, TemplateAccess::GetItemsHost(host));
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetItemsPresenter(host) == nullptr);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ItemsPresenter mutation rejects injected visual children", []
+	{
+		ItemsControl host;
+		auto* originalHost = TemplateAccess::GetItemsHost(host);
+		CUI_EXPECT_TRUE(originalHost != nullptr);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*rootRaw, &host);
+		auto presenter = std::make_unique<ItemsPresenter>();
+		auto* presenterRaw = presenter.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*presenterRaw, &host);
+		root->AddOwned(std::move(presenter));
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterItemsPresenter(
+			host, presenterRaw));
+
+		bool attachInjectionRejected = false;
+		bool detachInjectionRejected = false;
+		ControlWeakReference attachExtraLifetime;
+		ControlWeakReference detachExtraLifetime;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*originalHost,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (current == presenterRaw)
+					{
+						auto extra = std::make_unique<Panel>();
+						attachExtraLifetime = extra.get();
+						try
+						{
+							presenterRaw->AddOwned(std::move(extra));
+						}
+						catch (const std::logic_error&)
+						{
+							attachInjectionRejected = true;
+						}
+					}
+					else if (previous == presenterRaw && !current)
+					{
+						auto extra = std::make_unique<Panel>();
+						detachExtraLifetime = extra.get();
+						try
+						{
+							presenterRaw->AddOwned(std::move(extra));
+						}
+						catch (const std::logic_error&)
+						{
+							detachInjectionRejected = true;
+						}
+					}
+				});
+
+		CUI_EXPECT_EQ(rootRaw,
+			TemplateAccess::SetTemplateRoot(host, std::move(root)));
+		CUI_EXPECT_TRUE(attachInjectionRejected);
+		CUI_EXPECT_FALSE(attachExtraLifetime);
+		CUI_EXPECT_EQ(1, presenterRaw->VisualChildCount());
+		CUI_EXPECT_EQ(originalHost, presenterRaw->GetVisualChild(0));
+
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detachedRoot.get());
+		CUI_EXPECT_TRUE(detachInjectionRejected);
+		CUI_EXPECT_FALSE(detachExtraLifetime);
+		CUI_EXPECT_EQ(0, presenterRaw->VisualChildCount());
+		CUI_EXPECT_EQ(originalHost, TemplateAccess::GetItemsHost(host));
+		CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+	});
+
+	runner.Add("ItemsControl template mutation rejects injected direct children", []
+	{
+		ItemsControl host;
+		auto* originalHost = TemplateAccess::GetItemsHost(host);
+		CUI_EXPECT_TRUE(originalHost != nullptr);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*rootRaw, &host);
+
+		bool attachInjectionRejected = false;
+		bool detachInjectionRejected = false;
+		ControlWeakReference attachExtraLifetime;
+		ControlWeakReference detachExtraLifetime;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*rootRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (current == &host)
+					{
+						auto extra = std::make_unique<Panel>();
+						attachExtraLifetime = extra.get();
+						try
+						{
+							host.AddOwned(std::move(extra));
+						}
+						catch (const std::logic_error&)
+						{
+							attachInjectionRejected = true;
+						}
+					}
+					else if (previous == &host && !current)
+					{
+						auto extra = std::make_unique<Panel>();
+						detachExtraLifetime = extra.get();
+						try
+						{
+							host.AddOwned(std::move(extra));
+						}
+						catch (const std::logic_error&)
+						{
+							detachInjectionRejected = true;
+						}
+					}
+				});
+
+		CUI_EXPECT_EQ(rootRaw,
+			TemplateAccess::SetTemplateRoot(host, std::move(root)));
+		CUI_EXPECT_TRUE(attachInjectionRejected);
+		CUI_EXPECT_FALSE(attachExtraLifetime);
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+		CUI_EXPECT_EQ(rootRaw, host.GetVisualChild(0));
+
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detachedRoot.get());
+		CUI_EXPECT_TRUE(detachInjectionRejected);
+		CUI_EXPECT_FALSE(detachExtraLifetime);
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+		CUI_EXPECT_EQ(originalHost, host.GetVisualChild(0));
+		CUI_EXPECT_EQ(&host, originalHost->GetVisualParent());
+	});
+
+	runner.Add("ContentControl attach failure preserves reentrant replacement root", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto candidate = std::make_unique<Canvas>();
+		auto* candidateRaw = candidate.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*candidateRaw, &host);
+		std::unique_ptr<Control> detachedCandidate;
+		ContentPresenter* replacementRaw = nullptr;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*candidateRaw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (replacementRaw || current != &host) return;
+					detachedCandidate =
+						TemplateAccess::DetachTemplateRoot(host);
+					auto replacement =
+						std::make_unique<ContentPresenter>();
+					replacementRaw = replacement.get();
+					cui::framework::TreeAccess::SetTemplatedParent(
+						*replacementRaw, &host);
+					CUI_EXPECT_TRUE(
+						TemplateAccess::RegisterContentPresenter(
+							host, replacementRaw));
+					CUI_EXPECT_EQ(replacementRaw,
+						TemplateAccess::SetTemplateRoot(
+							host, std::move(replacement)));
+				});
+
+		bool rejectedOuterCandidate = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(candidate));
+		}
+		catch (const std::logic_error&)
+		{
+			rejectedOuterCandidate = true;
+		}
+		CUI_EXPECT_TRUE(rejectedOuterCandidate);
+		CUI_EXPECT_EQ(candidateRaw, detachedCandidate.get());
+		CUI_EXPECT_TRUE(replacementRaw != nullptr);
+		CUI_EXPECT_EQ(replacementRaw,
+			TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_EQ(replacementRaw,
+			TemplateAccess::GetContentPresenter(host));
+		CUI_EXPECT_EQ(&host, replacementRaw->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ContentControl rejects a root with mutated template ownership", []
+	{
+		ContentControl host;
+		Control otherOwner;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto root = std::make_unique<Canvas>();
+		auto* raw = root.get();
+		const ControlWeakReference lifetime(raw);
+		cui::framework::TreeAccess::SetTemplatedParent(*raw, &host);
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (current == &host)
+						cui::framework::TreeAccess::SetTemplatedParent(
+							*raw, &otherOwner);
+				});
+
+		bool rejected = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(root));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_EQ(0, host.VisualChildCount());
+		CUI_EXPECT_TRUE(lifetime.Get() == nullptr);
+	});
+
+	runner.Add("Control template root slot rejects direct replacement", []
+	{
+		Control host;
+		auto established = std::make_unique<Canvas>();
+		auto* establishedRaw = established.get();
+		const ControlWeakReference establishedLifetime(establishedRaw);
+		CUI_EXPECT_EQ(establishedRaw,
+			TemplateAccess::SetTemplateRoot(
+				host, std::move(established)));
+
+		auto replacement = std::make_unique<Canvas>();
+		auto* replacementRaw = replacement.get();
+		const ControlWeakReference replacementLifetime(replacementRaw);
+		bool rejected = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(replacement));
+		}
+		catch (const std::logic_error&)
+		{
+			rejected = true;
+		}
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_EQ(establishedRaw, establishedLifetime.Get());
+		CUI_EXPECT_TRUE(replacementLifetime.Get() == nullptr);
+		CUI_EXPECT_EQ(establishedRaw,
+			TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_EQ(&host, establishedRaw->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+
+		// Defensively consume an invalid duplicate owner without deleting the
+		// root that is already owned by the host.
+		std::unique_ptr<Control> duplicateOwner(establishedRaw);
+		CUI_EXPECT_EQ(establishedRaw,
+			TemplateAccess::SetTemplateRoot(
+				host, std::move(duplicateOwner)));
+		CUI_EXPECT_EQ(establishedRaw, establishedLifetime.Get());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ContentControl revalidates pending presenter after projection callbacks", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto content = MakeTestControl<Label>(L"Projected", 0, 0);
+		auto* projected = content.get();
+		CUI_EXPECT_EQ(projected, host.SetVisualContent(std::move(content)));
+
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		auto first = std::make_unique<ContentPresenter>();
+		auto* firstRaw = first.get();
+		auto second = std::make_unique<ContentPresenter>();
+		auto* secondRaw = second.get();
+		const ControlWeakReference secondLifetime(secondRaw);
+		root->AddOwned(std::move(first));
+		root->AddOwned(std::move(second));
+		cui::framework::TreeAccess::SetTemplatedParent(*firstRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(*secondRaw, &host);
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterContentPresenter(
+			host, firstRaw));
+		CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
+			host, std::move(root)) == rootRaw);
+		CUI_EXPECT_EQ(firstRaw, projected->GetVisualParent());
+
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterContentPresenter(
+			host, secondRaw));
+		bool removedCandidate = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*projected,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (removedCandidate || previous != firstRaw || current)
+						return;
+					removedCandidate = true;
+					auto removed = rootRaw->DetachVisualChild(secondRaw);
+					CUI_EXPECT_EQ(secondRaw, removed.get());
+				});
+		host.Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 80.0f });
+
+		CUI_EXPECT_TRUE(removedCandidate);
+		CUI_EXPECT_TRUE(secondLifetime.Get() == nullptr);
+		CUI_EXPECT_EQ(firstRaw,
+			TemplateAccess::GetContentPresenter(host));
+		CUI_EXPECT_EQ(firstRaw, projected->GetVisualParent());
+		CUI_EXPECT_EQ(&host, projected->GetLogicalParent());
+	});
+
+	runner.Add("ContentControl template cleanup tolerates sibling deletion", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		auto first = MakeTestControl<Label>(L"First", 0, 0);
+		auto* firstRaw = first.get();
+		const ControlWeakReference firstLifetime(firstRaw);
+		auto second = MakeTestControl<Label>(L"Second", 0, 0);
+		auto* secondRaw = second.get();
+		root->AddOwned(std::move(first));
+		root->AddOwned(std::move(second));
+		cui::framework::TreeAccess::SetTemplatedParent(*rootRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(*firstRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(*secondRaw, &host);
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*secondRaw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (current || !firstLifetime.Get()) return;
+					CUI_EXPECT_TRUE(rootRaw->DeleteVisualChild(firstRaw));
+				});
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		auto detached = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detached.get());
+		CUI_EXPECT_TRUE(firstLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(secondRaw->GetTemplatedParent() == nullptr);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+	});
+
+	runner.Add("Control template cleanup tolerates sibling deletion", []
+	{
+		Control host;
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		auto first = MakeTestControl<Label>(L"First", 0, 0);
+		auto* firstRaw = first.get();
+		const ControlWeakReference firstLifetime(firstRaw);
+		auto second = MakeTestControl<Label>(L"Second", 0, 0);
+		auto* secondRaw = second.get();
+		root->AddOwned(std::move(first));
+		root->AddOwned(std::move(second));
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*rootRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*firstRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*secondRaw, &host);
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*secondRaw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (current || !firstLifetime.Get()) return;
+					CUI_EXPECT_TRUE(
+						rootRaw->DeleteVisualChild(firstRaw));
+				});
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		auto detached = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detached.get());
+		CUI_EXPECT_TRUE(firstLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(
+			secondRaw->GetTemplatedParent() == nullptr);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetTemplateRoot(host) == nullptr);
+	});
+
+	runner.Add("Control template cleanup never duplicates transferred root ownership", []
+	{
+		Control host;
+		Panel alternate;
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		const ControlWeakReference rootLifetime(rootRaw);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*rootRaw, &host);
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		std::unique_ptr<Control> externalOwner;
+		bool transferred = false;
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*rootRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (transferred || previous != &host || current) return;
+					alternate.AdoptVisualChild(rootRaw);
+					externalOwner =
+						alternate.DetachVisualChild(rootRaw);
+					transferred = externalOwner.get() == rootRaw;
+				});
+
+		auto callerOwner = TemplateAccess::DetachTemplateRoot(host);
+		const bool duplicateOwners = callerOwner && externalOwner
+			&& callerOwner.get() == externalOwner.get();
+		if (duplicateOwners)
+			(void)callerOwner.release();
+		const bool destroyedDuringCleanup = !rootLifetime;
+		if (destroyedDuringCleanup)
+			(void)externalOwner.release();
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_FALSE(duplicateOwners);
+		CUI_EXPECT_FALSE(destroyedDuringCleanup);
+		CUI_EXPECT_TRUE(callerOwner == nullptr);
+		CUI_EXPECT_EQ(rootRaw, externalOwner.get());
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_TRUE(rootRaw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(rootRaw->GetTemplatedParent() == nullptr);
+	});
+
+	runner.Add("Control template cleanup clears children escaping ancestor callbacks", []
+	{
+		Control host;
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		auto child = MakeTestControl<Label>(L"Escaped", 0, 0);
+		auto* childRaw = child.get();
+		const ControlWeakReference childLifetime(childRaw);
+		rootRaw->AddOwned(std::move(child));
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*rootRaw, &host);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*childRaw, &host);
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		std::unique_ptr<Control> escapedChild;
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*rootRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (escapedChild || previous != &host || current) return;
+					escapedChild = rootRaw->DetachVisualChild(childRaw);
+				});
+
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detachedRoot.get());
+		CUI_EXPECT_EQ(childRaw, escapedChild.get());
+		CUI_EXPECT_EQ(childRaw, childLifetime.Get());
+		CUI_EXPECT_TRUE(childRaw->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(childRaw->GetTemplatedParent() == nullptr);
+		CUI_EXPECT_TRUE(rootRaw->GetTemplatedParent() == nullptr);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+	});
+
+	runner.Add("Control template detach preserves a reentrant replacement root", []
+	{
+		Control host;
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*rootRaw, &host);
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		auto preparedReplacement = std::make_unique<Canvas>();
+		auto* replacementRaw = preparedReplacement.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*replacementRaw, &host);
+		bool replacementInstalled = false;
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*rootRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (replacementInstalled
+						|| previous != &host || current) return;
+					replacementInstalled = true;
+					CUI_EXPECT_EQ(replacementRaw,
+						TemplateAccess::SetTemplateRoot(
+							host, std::move(preparedReplacement)));
+				});
+
+		auto detached = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detached.get());
+		CUI_EXPECT_TRUE(replacementInstalled);
+		CUI_EXPECT_EQ(replacementRaw,
+			TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_EQ(&host, replacementRaw->GetVisualParent());
+		CUI_EXPECT_EQ(&host, replacementRaw->GetTemplatedParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ContentControl detach preserves reentrant presenter root state", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*rootRaw, &host);
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		auto preparedReplacement =
+			std::make_unique<ContentPresenter>();
+		auto* replacementRaw = preparedReplacement.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*replacementRaw, &host);
+		bool replacementInstalled = false;
+		auto templatedParentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+				*rootRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (replacementInstalled
+						|| previous != &host || current) return;
+					replacementInstalled = true;
+					CUI_EXPECT_TRUE(
+						TemplateAccess::RegisterContentPresenter(
+							host, replacementRaw));
+					CUI_EXPECT_EQ(replacementRaw,
+						TemplateAccess::SetTemplateRoot(
+							host, std::move(preparedReplacement)));
+				});
+
+		auto detached = TemplateAccess::DetachTemplateRoot(host);
+		CUI_EXPECT_EQ(rootRaw, detached.get());
+		CUI_EXPECT_TRUE(replacementInstalled);
+		CUI_EXPECT_EQ(replacementRaw,
+			TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_EQ(replacementRaw,
+			TemplateAccess::GetContentPresenter(host));
+		CUI_EXPECT_EQ(&host, replacementRaw->GetVisualParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
+	runner.Add("ContentControl keeps old template when replacement configuration fails", []
+	{
+		class RejectingContentControl final : public ContentControl
+		{
+		public:
+			Control* Rejected = nullptr;
+
+		protected:
+			void ConfigureControlTemplateVisual(Control& child) override
+			{
+				if (&child == Rejected)
+					throw std::runtime_error("replacement configuration failed");
+				ContentControl::ConfigureControlTemplateVisual(child);
+			}
+		};
+
+		RejectingContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto established = std::make_unique<Canvas>();
+		auto* establishedRaw = established.get();
+		const ControlWeakReference establishedLifetime(establishedRaw);
+		CUI_EXPECT_EQ(establishedRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(established)));
+
+		auto replacement = std::make_unique<Canvas>();
+		auto* replacementRaw = replacement.get();
+		const ControlWeakReference replacementLifetime(replacementRaw);
+		host.Rejected = replacementRaw;
+		bool rejected = false;
+		try
+		{
+			(void)TemplateAccess::SetTemplateRoot(
+				host, std::move(replacement));
+		}
+		catch (const std::runtime_error&)
+		{
+			rejected = true;
+		}
+		CUI_EXPECT_TRUE(rejected);
+		CUI_EXPECT_EQ(establishedRaw, establishedLifetime.Get());
+		CUI_EXPECT_EQ(establishedRaw,
+			TemplateAccess::GetTemplateRoot(host));
+		CUI_EXPECT_EQ(&host, establishedRaw->GetVisualParent());
+		CUI_EXPECT_TRUE(replacementLifetime.Get() == nullptr);
+	});
+
+	runner.Add("ContentControl presenter rebuild removes failed replacement", []
+	{
+		class ThrowingPresenterHost final : public ContentControl
+		{
+		public:
+			bool ThrowOnNextAdd = false;
+			ControlWeakReference FailedReplacement;
+
+		protected:
+			void OnVisualChildCollectionChanged(
+				const CollectionChangedEventArgs& change,
+				std::span<Control* const> previousChildren) override
+			{
+				ContentControl::OnVisualChildCollectionChanged(
+					change, previousChildren);
+				if (!ThrowOnNextAdd
+					|| change.Action != CollectionChangeAction::Add)
+					return;
+				ThrowOnNextAdd = false;
+				for (auto* child : GetVisualChildrenView())
+				if (dynamic_cast<ContentPresenter*>(child))
+					FailedReplacement = child;
+				throw std::runtime_error("presenter add observer failed");
+			}
+		};
+
+		ThrowingPresenterHost host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		host.SetContent(BindingValue(L"Established"));
+		auto* established = TemplateAccess::GetGeneratedPresenter(host);
+		CUI_EXPECT_TRUE(established != nullptr);
+		host.ThrowOnNextAdd = true;
+		bool threw = false;
+		try
+		{
+			host.SetContent(BindingValue(L"Replacement"));
+		}
+		catch (const std::runtime_error&)
+		{
+			threw = true;
+		}
+		CUI_EXPECT_TRUE(threw);
+		CUI_EXPECT_EQ(established,
+			TemplateAccess::GetGeneratedPresenter(host));
+		CUI_EXPECT_TRUE(host.FailedReplacement.Get() == nullptr);
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+		CUI_EXPECT_EQ(&host, established->GetVisualParent());
+	});
+
+	runner.Add("ContentControl configures inherited content after collection notification", []
+	{
+		class StableConfigurationHost final : public ContentControl
+		{
+		public:
+			bool InsideCollectionNotification = false;
+			bool ConfiguredInsideNotification = false;
+			int ConfigurationCount = 0;
+
+		protected:
+			void OnVisualChildCollectionChanged(
+				const CollectionChangedEventArgs& change,
+				std::span<Control* const> previousChildren) override
+			{
+				InsideCollectionNotification = true;
+				ContentControl::OnVisualChildCollectionChanged(
+					change, previousChildren);
+				InsideCollectionNotification = false;
+			}
+			void ConfigureContentVisual(Control& child) override
+			{
+				(void)child;
+				ConfiguredInsideNotification |= InsideCollectionNotification;
+				++ConfigurationCount;
+			}
+		};
+
+		StableConfigurationHost host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto content = MakeTestControl<Label>(L"Stable", 0, 0);
+		auto* raw = content.get();
+		host.AddOwned(std::move(content));
+		CUI_EXPECT_EQ(0, host.ConfigurationCount);
+		host.Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 80.0f });
+		CUI_EXPECT_EQ(1, host.ConfigurationCount);
+		CUI_EXPECT_FALSE(host.ConfiguredInsideNotification);
+		CUI_EXPECT_EQ(raw, host.GetVisualContent());
+	});
+
+	runner.Add("ContentControl completes root detach after projection observer error", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto content = MakeTestControl<Label>(L"Observed projection", 0, 0);
+		auto* raw = content.get();
+		CUI_EXPECT_EQ(raw, host.SetVisualContent(std::move(content)));
+		auto presenter = std::make_unique<ContentPresenter>();
+		auto* presenterRaw = presenter.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*presenterRaw, &host);
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterContentPresenter(
+			host, presenterRaw));
+		CUI_EXPECT_EQ(presenterRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(presenter)));
+		CUI_EXPECT_EQ(presenterRaw, raw->GetVisualParent());
+
+		bool throwOnce = true;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*raw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (!throwOnce || previous != presenterRaw || current)
+						return;
+					throwOnce = false;
+					throw std::runtime_error("projection detach observer failed");
+				});
+		bool threw = false;
+		try
+		{
+			(void)TemplateAccess::DetachTemplateRoot(host);
+		}
+		catch (const std::runtime_error&)
+		{
+			threw = true;
+		}
+		CUI_EXPECT_TRUE(threw);
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_TRUE(
+			TemplateAccess::GetContentPresenter(host) == nullptr);
+		CUI_EXPECT_EQ(raw, host.GetVisualContent());
+		CUI_EXPECT_EQ(&host, raw->GetVisualParent());
+		CUI_EXPECT_EQ(&host, raw->GetLogicalParent());
+	});
+
+	runner.Add("ContentControl projection converges after reentrant root detach", []
+	{
+		ContentControl host;
+		ConfigureTestControl(host, 0, 0, 240, 80);
+		auto root = std::make_unique<Canvas>();
+		auto* rootRaw = root.get();
+		CUI_EXPECT_EQ(rootRaw, TemplateAccess::SetTemplateRoot(
+			host, std::move(root)));
+
+		auto content = MakeTestControl<Label>(L"Reentrant", 0, 0);
+		auto* contentRaw = content.get();
+		CUI_EXPECT_EQ(contentRaw, host.AddOwned(std::move(content)));
+		std::unique_ptr<Control> detachedRoot;
+		bool detachedDuringProjection = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*contentRaw,
+				[&](Control*, Control* previous, Control* current)
+				{
+					if (detachedDuringProjection
+						|| previous != &host || current)
+						return;
+					detachedDuringProjection = true;
+					detachedRoot =
+						TemplateAccess::DetachTemplateRoot(host);
+				});
+
+		host.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 240.0f, 80.0f });
+		CUI_EXPECT_TRUE(detachedDuringProjection);
+		CUI_EXPECT_EQ(rootRaw, detachedRoot.get());
+		CUI_EXPECT_TRUE(TemplateAccess::GetTemplateRoot(host) == nullptr);
+		CUI_EXPECT_EQ(contentRaw, host.GetVisualContent());
+		CUI_EXPECT_EQ(&host, contentRaw->GetVisualParent());
+		CUI_EXPECT_EQ(&host, contentRaw->GetLogicalParent());
+		CUI_EXPECT_EQ(1, host.VisualChildCount());
+	});
+
 	runner.Add("HeaderedContentControl keeps independent Header and Content slots", []
 	{
 		HeaderedContentControl host; ConfigureTestControl(host, 0, 0, 260, 140);
@@ -4896,6 +7448,93 @@ int main()
 		CUI_EXPECT_EQ(headerPointer, host.GetVisualHeader());
 	});
 
+	runner.Add("Header slots preserve ownership across configuration and observers", []
+	{
+		class TransferringHeaderHost final : public HeaderedContentControl
+		{
+		public:
+			Control* Candidate = nullptr;
+			Panel Alternate;
+			std::unique_ptr<Control> ExternalOwner;
+			bool TransferOnce = true;
+
+		protected:
+			void ConfigureHeaderVisual(Control& child) override
+			{
+				HeaderedContentControl::ConfigureHeaderVisual(child);
+				if (!TransferOnce || &child != Candidate) return;
+				TransferOnce = false;
+				Alternate.AdoptVisualChild(&child);
+				ExternalOwner = Alternate.DetachVisualChild(&child);
+			}
+		};
+
+		TransferringHeaderHost transferring;
+		ConfigureTestControl(transferring, 0, 0, 260, 140);
+		auto transferred = MakeTestControl<Label>(L"Transferred", 0, 0);
+		auto* transferredRaw = transferred.get();
+		const ControlWeakReference transferredLifetime(transferredRaw);
+		transferring.Candidate = transferredRaw;
+		bool transferRejected = false;
+		try
+		{
+			(void)transferring.SetVisualHeader(
+				std::move(transferred));
+		}
+		catch (const std::logic_error&)
+		{
+			transferRejected = true;
+		}
+		const bool destroyedDuringUnwind = !transferredLifetime;
+		if (destroyedDuringUnwind)
+			(void)transferring.ExternalOwner.release();
+		CUI_EXPECT_TRUE(transferRejected);
+		CUI_EXPECT_FALSE(destroyedDuringUnwind);
+		CUI_EXPECT_EQ(transferredRaw,
+			transferring.ExternalOwner.get());
+		CUI_EXPECT_TRUE(transferring.GetVisualHeader() == nullptr);
+
+		HeaderedContentControl observed;
+		ConfigureTestControl(observed, 0, 0, 260, 140);
+		auto candidate = MakeTestControl<Label>(L"Observed", 0, 0);
+		auto* candidateRaw = candidate.get();
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeVisualParentChanged(
+				*candidateRaw,
+				[&](Control*, Control*, Control* current)
+				{
+					if (current == &observed)
+						throw std::runtime_error(
+							"header attach observer");
+				});
+		bool observerThrew = false;
+		try
+		{
+			(void)observed.SetVisualHeader(std::move(candidate));
+		}
+		catch (const std::runtime_error&)
+		{
+			observerThrew = true;
+		}
+		CUI_EXPECT_TRUE(observerThrew);
+		CUI_EXPECT_EQ(candidateRaw, observed.GetVisualHeader());
+		CUI_EXPECT_EQ(&observed, candidateRaw->GetVisualParent());
+		auto detached = observed.DetachVisualHeader();
+		CUI_EXPECT_EQ(candidateRaw, detached.get());
+
+		HeaderedItemsControl aliasHost;
+		auto alias = MakeTestControl<Label>(L"Alias", 0, 0);
+		auto* aliasRaw = alias.get();
+		const ControlWeakReference aliasLifetime(aliasRaw);
+		CUI_EXPECT_EQ(aliasRaw,
+			aliasHost.SetVisualHeader(std::move(alias)));
+		std::unique_ptr<Control> duplicate(aliasRaw);
+		CUI_EXPECT_EQ(aliasRaw,
+			aliasHost.SetVisualHeader(std::move(duplicate)));
+		CUI_EXPECT_EQ(aliasRaw, aliasLifetime.Get());
+		CUI_EXPECT_EQ(aliasRaw, aliasHost.GetVisualHeader());
+	});
+
 	runner.Add("DependencyObject owns effective values without a Control host", []
 	{
 		PropertySystemObject target;
@@ -4913,7 +7552,8 @@ int main()
 				const DependencyPropertyChangedEventArgs& args)
 			{
 				CUI_EXPECT_TRUE(sender == &target);
-				CUI_EXPECT_EQ(std::wstring(L"Quantity"), args.PropertyName);
+				CUI_EXPECT_TRUE(args.Property == &metadata->Property());
+				CUI_EXPECT_EQ(std::wstring(L"Quantity"), args.Name());
 				++dependencyNotifications;
 			});
 		auto bindingSourceConnection = target.PropertyChanged().Subscribe(
@@ -5378,7 +8018,7 @@ int main()
 			BindingValue(static_cast<VerticalAlignment>(99))));
 
 		Button button;
-		CUI_EXPECT_EQ(Thickness(1.5f), button.BorderThickness);
+		CUI_EXPECT_EQ(Thickness{}, button.BorderThickness);
 		CUI_EXPECT_TRUE(setStyle(
 			button, L"BorderThickness", BindingValue(Thickness(2.0f))));
 		button.BorderThickness = Thickness(3.0f);
@@ -5392,7 +8032,7 @@ int main()
 			cui::framework::DependencyPropertyAccess::ClearValue(
 				button, L"BorderThickness",
 				DependencyPropertyValueSource::Style));
-		CUI_EXPECT_EQ(Thickness(1.5f), button.BorderThickness);
+		CUI_EXPECT_EQ(Thickness{}, button.BorderThickness);
 		CUI_EXPECT_TRUE(button.IsPropertyValueDefault(
 			L"BorderThickness"));
 
@@ -5789,6 +8429,53 @@ int main()
 			boundRichText.GetPropertyExpressionKind(L"Text"));
 	});
 
+	runner.Add("Typed DependencyProperty lookup bypasses declarative names", []
+	{
+		TypedMetadataLookupProbe probe;
+		const auto& property = TypedMetadataLookupProbe::ValueProperty();
+		CUI_EXPECT_EQ(0, probe.DeclarativeLookupCount());
+
+		CUI_EXPECT_TRUE(probe.TrySetPropertyValue(
+			property, BindingValue(9)));
+		BindingValue value;
+		CUI_EXPECT_TRUE(probe.TryGetPropertyValue(property, value));
+		int typed = 0;
+		CUI_EXPECT_TRUE(value.TryGet(typed));
+		CUI_EXPECT_EQ(9, typed);
+		CUI_EXPECT_EQ(0, probe.DeclarativeLookupCount());
+		CUI_EXPECT_EQ(0, probe.DeclarativeEnumerationCount());
+
+		const auto* tokenMetadata = DependencyPropertyRegistry::Find(
+			probe, property.BindingSourceToken());
+		CUI_EXPECT_TRUE(tokenMetadata != nullptr);
+		if (tokenMetadata)
+			CUI_EXPECT_TRUE(&tokenMetadata->Property() == &property);
+		CUI_EXPECT_EQ(0, probe.DeclarativeLookupCount());
+		CUI_EXPECT_EQ(0, probe.DeclarativeEnumerationCount());
+
+		CUI_EXPECT_TRUE(
+			probe.FindPropertyMetadata(L"FastValue") != nullptr);
+		CUI_EXPECT_EQ(1, probe.DeclarativeLookupCount());
+		CUI_EXPECT_EQ(0, probe.DeclarativeEnumerationCount());
+	});
+
+	runner.Add("Button CommandParameter preserves its typed command payload", []
+	{
+		Button button;
+		button.SetCommandParameter(
+			BindingValue(L"typed-command-parameter"));
+		std::wstring stored;
+		CUI_EXPECT_TRUE(button.CommandParameter.TryGet(stored));
+		CUI_EXPECT_EQ(
+			std::wstring(L"typed-command-parameter"), stored);
+		const auto parameter = button.CommandParameter.ToAny();
+		const auto* text = std::any_cast<std::wstring>(&parameter);
+		CUI_EXPECT_TRUE(text != nullptr);
+		if (text)
+			CUI_EXPECT_EQ(
+				std::wstring(L"typed-command-parameter"), *text);
+	});
+
 	runner.Add("DependencyProperty identity survives metadata overrides and AddOwner", []
 	{
 		IdentityOwnerObject owner;
@@ -5818,10 +8505,31 @@ int main()
 		CUI_EXPECT_EQ(8, owner.GetLevel());
 		CUI_EXPECT_TRUE(changedProperty == &property);
 
-		// Register the unrelated AddOwner branch before the derived override.
-		// Effective metadata resolution must follow the target's matching
-		// inheritance branch rather than global registration order.
+		// Request the most-derived override before touching the intermediate
+		// class. OverrideMetadata must force the declared immediate base to
+		// register first, as WPF does.
 		IdentityPeerObject peer;
+		IdentityGrandchildObject::RegisterDependencyProperties();
+		IdentityGrandchildObject grandchild;
+		const auto* grandchildMetadata =
+			grandchild.GetPropertyMetadata(property);
+		CUI_EXPECT_TRUE(grandchildMetadata != nullptr);
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsMeasure));
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			grandchildMetadata->Flags(),
+			DependencyPropertyFlags::AffectsArrange));
+		CUI_EXPECT_TRUE(grandchild.TrySetPropertyValue(
+			property, BindingValue(9)));
+		CUI_EXPECT_EQ(6, grandchild.GetLevel());
+		CUI_EXPECT_EQ(1, grandchild.BaseChangedCount);
+		CUI_EXPECT_EQ(1, grandchild.DerivedChangedCount);
+		CUI_EXPECT_EQ(1, grandchild.GrandchildChangedCount);
+
 		IdentityDerivedObject derived;
 		const auto* derivedMetadata =
 			derived.GetPropertyMetadata(property);
@@ -5854,25 +8562,6 @@ int main()
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
 			derived.GetPropertyValueSource(L"IdentityLevel"));
 
-		IdentityGrandchildObject grandchild;
-		const auto* grandchildMetadata =
-			grandchild.GetPropertyMetadata(property);
-		CUI_EXPECT_TRUE(grandchildMetadata != nullptr);
-		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
-			grandchildMetadata->Flags(),
-			DependencyPropertyFlags::AffectsRender));
-		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
-			grandchildMetadata->Flags(),
-			DependencyPropertyFlags::AffectsMeasure));
-		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
-			grandchildMetadata->Flags(),
-			DependencyPropertyFlags::AffectsArrange));
-		CUI_EXPECT_TRUE(grandchild.TrySetPropertyValue(
-			property, BindingValue(4)));
-		CUI_EXPECT_EQ(1, grandchild.BaseChangedCount);
-		CUI_EXPECT_EQ(1, grandchild.DerivedChangedCount);
-		CUI_EXPECT_EQ(1, grandchild.GrandchildChangedCount);
-
 		const auto* peerMetadata = peer.GetPropertyMetadata(property);
 		CUI_EXPECT_TRUE(peerMetadata != nullptr);
 		CUI_EXPECT_TRUE(peerMetadata != ownerMetadata);
@@ -5885,6 +8574,13 @@ int main()
 			property, BindingValue(10)));
 		CUI_EXPECT_EQ(10, peer.GetLevel());
 		CUI_EXPECT_EQ(1, peer.ChangedCount);
+		CUI_EXPECT_TRUE(owner.GetPropertyMetadata(property) == ownerMetadata);
+		CUI_EXPECT_TRUE(
+			derived.GetPropertyMetadata(property) == derivedMetadata);
+		CUI_EXPECT_TRUE(
+			grandchild.GetPropertyMetadata(property)
+				== grandchildMetadata);
+		CUI_EXPECT_TRUE(peer.GetPropertyMetadata(property) == peerMetadata);
 
 		bool duplicateRegistrationRejected = false;
 		try
@@ -5898,6 +8594,116 @@ int main()
 			duplicateRegistrationRejected = true;
 		}
 		CUI_EXPECT_TRUE(duplicateRegistrationRejected);
+	});
+
+	runner.Add("DependencyProperty token index resolves owners and metadata layers", []
+	{
+		const auto identityToken =
+			MakeBindingSourcePropertyToken(L"IdentityLevel");
+		IdentityOwnerObject owner;
+		IdentityDerivedObject derived;
+		IdentityGrandchildObject grandchild;
+		IdentityPeerObject peer;
+		const auto& identity = IdentityOwnerObject::LevelProperty();
+
+		const auto* ownerMetadata =
+			DependencyPropertyRegistry::Find(owner, identityToken);
+		const auto* derivedMetadata =
+			DependencyPropertyRegistry::Find(derived, identityToken);
+		const auto* grandchildMetadata =
+			DependencyPropertyRegistry::Find(grandchild, identityToken);
+		const auto* peerMetadata =
+			DependencyPropertyRegistry::Find(peer, identityToken);
+		CUI_EXPECT_TRUE(ownerMetadata != nullptr);
+		CUI_EXPECT_TRUE(derivedMetadata != nullptr);
+		CUI_EXPECT_TRUE(grandchildMetadata != nullptr);
+		CUI_EXPECT_TRUE(peerMetadata != nullptr);
+		if (ownerMetadata && derivedMetadata
+			&& grandchildMetadata && peerMetadata)
+		{
+			CUI_EXPECT_TRUE(&ownerMetadata->Property() == &identity);
+			CUI_EXPECT_TRUE(&derivedMetadata->Property() == &identity);
+			CUI_EXPECT_TRUE(&grandchildMetadata->Property() == &identity);
+			CUI_EXPECT_TRUE(&peerMetadata->Property() == &identity);
+			CUI_EXPECT_TRUE(ownerMetadata != derivedMetadata);
+			CUI_EXPECT_TRUE(derivedMetadata != grandchildMetadata);
+			CUI_EXPECT_TRUE(ownerMetadata != peerMetadata);
+		}
+
+		// Unrelated owner hierarchies may register the same canonical member and
+		// token.  The index must resolve by target instead of choosing the latest
+		// globally registered identity.
+		TextBox textBox;
+		Label label;
+		const auto textToken = MakeBindingSourcePropertyToken(L"Text");
+		const auto* textBoxMetadata =
+			DependencyPropertyRegistry::Find(textBox, textToken);
+		const auto* labelMetadata =
+			DependencyPropertyRegistry::Find(label, textToken);
+		CUI_EXPECT_TRUE(textBoxMetadata != nullptr);
+		CUI_EXPECT_TRUE(labelMetadata != nullptr);
+		if (textBoxMetadata && labelMetadata)
+		{
+			CUI_EXPECT_TRUE(
+				&textBoxMetadata->Property() == &TextBox::TextProperty());
+			CUI_EXPECT_TRUE(
+				&labelMetadata->Property() == &Label::TextProperty());
+			CUI_EXPECT_TRUE(
+				&textBoxMetadata->Property() != &labelMetadata->Property());
+		}
+	});
+
+	runner.Add("WPF content and layout owners share dependency-property identities", []
+	{
+		ContentControl contentOwner;
+		ContentPresenter presenter;
+		HeaderedContentControl headerOwner;
+		HeaderedItemsControl headerItems;
+		StackPanel stack;
+		WrapPanel wrap;
+
+		const auto& contentProperty = ContentControl::ContentProperty();
+		CUI_EXPECT_TRUE(
+			&ContentPresenter::ContentProperty() == &contentProperty);
+		CUI_EXPECT_TRUE(
+			presenter.FindDependencyProperty(L"Content") == &contentProperty);
+		CUI_EXPECT_TRUE(contentOwner.GetPropertyMetadata(contentProperty)
+			!= presenter.GetPropertyMetadata(contentProperty));
+
+		const auto& contentTemplateProperty =
+			ContentControl::ContentTemplateProperty();
+		CUI_EXPECT_TRUE(&ContentPresenter::ContentTemplateProperty()
+			== &contentTemplateProperty);
+		CUI_EXPECT_TRUE(presenter.FindDependencyProperty(L"ContentTemplate")
+			== &contentTemplateProperty);
+
+		const auto& headerProperty =
+			HeaderedContentControl::HeaderProperty();
+		CUI_EXPECT_TRUE(
+			&HeaderedItemsControl::HeaderProperty() == &headerProperty);
+		CUI_EXPECT_TRUE(headerItems.FindDependencyProperty(L"Header")
+			== &headerProperty);
+		CUI_EXPECT_TRUE(headerOwner.GetPropertyMetadata(headerProperty)
+			!= headerItems.GetPropertyMetadata(headerProperty));
+
+		const auto& headerTemplateProperty =
+			HeaderedContentControl::HeaderTemplateProperty();
+		CUI_EXPECT_TRUE(&HeaderedItemsControl::HeaderTemplateProperty()
+			== &headerTemplateProperty);
+		CUI_EXPECT_TRUE(
+			headerItems.FindDependencyProperty(L"HeaderTemplate")
+				== &headerTemplateProperty);
+
+		const auto& orientationProperty = StackPanel::OrientationProperty();
+		CUI_EXPECT_TRUE(
+			&WrapPanel::OrientationProperty() == &orientationProperty);
+		CUI_EXPECT_TRUE(wrap.FindDependencyProperty(L"Orientation")
+			== &orientationProperty);
+		CUI_EXPECT_TRUE(stack.GetPropertyMetadata(orientationProperty)
+			!= wrap.GetPropertyMetadata(orientationProperty));
+		CUI_EXPECT_TRUE(wrap.TrySetPropertyValue(
+			orientationProperty, BindingValue(Orientation::Vertical)));
+		CUI_EXPECT_EQ(Orientation::Vertical, wrap.GetOrientation());
 	});
 
 	runner.Add("DependencyPropertyKey is required for read-only writes", []
@@ -5982,7 +8788,7 @@ int main()
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& e)
 			{
 				++notifications;
-				changedName = e.PropertyName;
+				changedName = e.Name();
 				e.OldValue.TryGet(oldLevel);
 				e.NewValue.TryGet(newLevel);
 			});
@@ -6086,35 +8892,44 @@ int main()
 		CUI_EXPECT_TRUE(metadata->CanObserve());
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata,
 			metadata->Design().Persistence);
+		const auto& severityProperty = metadata->Property();
 
 		BindingValue value;
 		int severity = 0;
-		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(
+			severityProperty, value));
 		CUI_EXPECT_TRUE(value.TryGet(severity));
 		CUI_EXPECT_EQ(2, severity);
+		CUI_EXPECT_TRUE(peer.TryGetPropertyValue(
+			severityProperty, value));
+		Control unrelated;
+		CUI_EXPECT_FALSE(unrelated.TryGetPropertyValue(
+			severityProperty, value));
 
 		int notifications = 0;
 		auto connection = target.OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{
-				if (args.PropertyName == L"Severity") ++notifications;
+				if (args.Property == &severityProperty) ++notifications;
 			});
 		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
-			target, L"Severity", BindingValue(4),
+			target, severityProperty, BindingValue(4),
 			DependencyPropertyValueSource::Style));
-		CUI_EXPECT_TRUE(target.TrySetPropertyValue(L"Severity", BindingValue(7)));
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			severityProperty, BindingValue(7)));
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
 			target.GetPropertyValueSource(L"Severity"));
 		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
 		CUI_EXPECT_TRUE(value.TryGet(severity));
 		CUI_EXPECT_EQ(7, severity);
 		CUI_EXPECT_EQ(2, notifications);
-		CUI_EXPECT_TRUE(target.ClearPropertyValue(L"Severity"));
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(severityProperty));
 		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
 		CUI_EXPECT_TRUE(value.TryGet(severity));
 		CUI_EXPECT_EQ(4, severity);
 		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::ClearValue(
-			target, L"Severity", DependencyPropertyValueSource::Style));
+			target, severityProperty,
+			DependencyPropertyValueSource::Style));
 		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
 		CUI_EXPECT_TRUE(value.TryGet(severity));
 		CUI_EXPECT_EQ(2, severity);
@@ -6128,6 +8943,16 @@ int main()
 		auto replacement = CreateDeclarativeTestSchema(
 			{ definition }, &error, L"SeverityComponent");
 		CUI_EXPECT_TRUE(replacement != nullptr);
+		Control replacementTarget;
+		CUI_EXPECT_TRUE(cui::framework::XamlAccess::SetTypeDescriptor(
+			replacementTarget, replacement, &error));
+		const auto* replacementMetadata =
+			replacementTarget.FindPropertyMetadata(L"Severity");
+		CUI_EXPECT_TRUE(replacementMetadata != nullptr);
+		CUI_EXPECT_FALSE(replacementTarget.TryGetPropertyValue(
+			severityProperty, value));
+		CUI_EXPECT_FALSE(target.TryGetPropertyValue(
+			replacementMetadata->Property(), value));
 		XamlSchemaContext schemaContext;
 		CUI_EXPECT_TRUE(schemaContext.GetOrAdd(descriptor, &error) == descriptor);
 		CUI_EXPECT_TRUE(schemaContext.GetOrAdd(replacement, &error) == descriptor);
@@ -6491,10 +9316,10 @@ int main()
 		auto connection = target.OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& e)
 			{
-				if (e.PropertyName == L"Grid.Row"
-					|| e.PropertyName == L"Grid.Column"
-					|| e.PropertyName == L"Grid.RowSpan"
-					|| e.PropertyName == L"Grid.ColumnSpan")
+				if (e.Property == &Control::GridRowProperty()
+					|| e.Property == &Control::GridColumnProperty()
+					|| e.Property == &Control::GridRowSpanProperty()
+					|| e.Property == &Control::GridColumnSpanProperty())
 					++notifications;
 			});
 
@@ -6538,6 +9363,9 @@ int main()
 			return cui::framework::DependencyPropertyAccess::ClearValue(
 				control, property, source);
 		};
+		const auto* levelProperty =
+			layered.FindDependencyProperty(L"Level");
+		CUI_EXPECT_TRUE(levelProperty != nullptr);
 		CUI_EXPECT_TRUE(setSource(layered, L"Level", BindingValue(4),
 			DependencyPropertyValueSource::Template));
 		CUI_EXPECT_TRUE(setSource(layered, L"Level", BindingValue(7),
@@ -6548,8 +9376,11 @@ int main()
 		CUI_EXPECT_EQ(9, layered.GetLevel());
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Animation,
 			layered.GetPropertyValueSource(L"Level"));
-		CUI_EXPECT_TRUE(clearSource(
-			layered, L"Level", DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(
+			levelProperty
+			&& cui::framework::DependencyPropertyAccess::ClearValue(
+				layered, *levelProperty,
+				DependencyPropertyValueSource::Animation));
 		CUI_EXPECT_EQ(6, layered.GetLevel());
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
 			layered.GetPropertyValueSource(L"Level"));
@@ -6566,7 +9397,7 @@ int main()
 		auto connection = target.OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& e)
 			{
-				if (e.PropertyName == L"Level") ++notifications;
+				if (e.Name() == L"Level") ++notifications;
 			});
 
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
@@ -6816,6 +9647,72 @@ int main()
 			L"Level", DependencyPropertyValueSource::Style));
 	});
 
+	runner.Add("Keyed framework Theme Style resolves at WPF Style precedence", []
+	{
+		PropertySystemControl target;
+		auto theme = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector implicit;
+		implicit.Type = UIClass::UI_CUSTOM;
+		CUI_EXPECT_TRUE(theme->AddRule(implicit, {
+			ControlStyleSetter(L"Level", BindingValue(6)) }) != 0);
+		ControlStyleSelector keyed;
+		keyed.Type = UIClass::UI_CUSTOM;
+		keyed.StyleResourceKey = L"toolbar";
+		CUI_EXPECT_TRUE(theme->AddRule(keyed, {
+			ControlStyleSetter(L"Level", BindingValue(9)) }) != 0);
+
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetTheme(
+			target, theme));
+		CUI_EXPECT_EQ(6, target.GetLevel());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			target.GetPropertyValueSource(L"Level"));
+
+		// ToolBar applies its type-specific theme resource as Style.  The
+		// implicit Theme value remains present in the lower precedence slot.
+		cui::framework::StyleAccess::SetResourceKey(target, L"toolbar");
+		CUI_EXPECT_EQ(9, target.GetLevel());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			target.GetPropertyValueSource(L"Level"));
+		BindingValue themeValue;
+		int typedThemeValue = 0;
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(
+			L"Level", DependencyPropertyValueSource::Theme, themeValue));
+		CUI_EXPECT_TRUE(themeValue.TryGet(typedThemeValue));
+		CUI_EXPECT_EQ(6, typedThemeValue);
+
+		auto document = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector documentKeyed;
+		documentKeyed.Type = UIClass::UI_CUSTOM;
+		documentKeyed.StyleResourceKey = L"toolbar";
+		CUI_EXPECT_TRUE(document->AddRule(documentKeyed, {
+			ControlStyleSetter(L"Level", BindingValue(10)) }) != 0);
+		const auto documentResolution = document->Resolve(target);
+		CUI_EXPECT_TRUE(documentResolution.HasStyle);
+		CUI_EXPECT_EQ(1ULL, documentResolution.Setters.size());
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, document));
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::DocumentStyles(target)
+			== document);
+		BindingValue documentStyleValue;
+		int typedDocumentStyleValue = 0;
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(
+			L"Level", DependencyPropertyValueSource::Style,
+			documentStyleValue));
+		CUI_EXPECT_TRUE(documentStyleValue.TryGet(typedDocumentStyleValue));
+		CUI_EXPECT_EQ(10, typedDocumentStyleValue);
+		CUI_EXPECT_EQ(10, target.GetLevel());
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, nullptr));
+		CUI_EXPECT_EQ(9, target.GetLevel());
+
+		cui::framework::StyleAccess::SetResourceKey(target, {});
+		CUI_EXPECT_EQ(6, target.GetLevel());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			target.GetPropertyValueSource(L"Level"));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			L"Level", DependencyPropertyValueSource::Style));
+	});
+
 	runner.Add("Style resources hot reload through Theme and preserve precedence", []
 	{
 		PropertySystemControl target;
@@ -6868,6 +9765,555 @@ int main()
 		CUI_EXPECT_EQ(6, target.GetLevel());
 	});
 
+	runner.Add("Compiled Style rules use dependency property identities", []
+	{
+		Control target;
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector enabled;
+		enabled.Type = UIClass::UI_Base;
+		enabled.PropertyConditions.emplace_back(
+			Control::IsEnabledProperty(), BindingValue(true));
+		CUI_EXPECT_TRUE(sheet->AddRule(
+			std::move(enabled), {
+				ControlStyleSetter(
+					Control::FontSizeProperty(), BindingValue(17.0)) }) != 0);
+
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, sheet));
+		CUI_EXPECT_NEAR(17.0, target.FontSize, 0.0001);
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::FontSizeProperty(),
+			DependencyPropertyValueSource::Style));
+
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			Control::IsEnabledProperty(), BindingValue(false)));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::FontSizeProperty(),
+			DependencyPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			Control::IsEnabledProperty(), BindingValue(true)));
+		CUI_EXPECT_NEAR(17.0, target.FontSize, 0.0001);
+	});
+
+	runner.Add("Flat compiled Style program resolves grouped rules directly", []
+	{
+		PropertySystemControl target;
+		target.EnsureBindingPropertiesRegistered();
+		const auto* levelMetadata = target.FindPropertyMetadata(L"Level");
+		CUI_EXPECT_TRUE(levelMetadata != nullptr);
+		if (!levelMetadata) return;
+
+		CompiledStyleProgram program;
+		program.Strings = { L"Compiled.Level", L"hero" };
+		program.Values = {
+			BindingValue(6), BindingValue(8),
+			BindingValue(true), BindingValue(9) };
+		program.Resources = { { 0, 0 } };
+		program.ResourceLookup = { 0 };
+		program.PropertyConditions = { {
+			DependencyPropertyReference(Control::IsMouseOverProperty()), 2 } };
+		program.Setters = {
+			{ DependencyPropertyReference(levelMetadata->Property()),
+				{ CompiledStyleOperandKind::StaticResource, 0 } },
+			{ DependencyPropertyReference(levelMetadata->Property()),
+				{ CompiledStyleOperandKind::Literal, 1 } },
+			{ DependencyPropertyReference(levelMetadata->Property()),
+				{ CompiledStyleOperandKind::Literal, 3 } }
+		};
+		program.Rules = {
+			{ 1, 0, {}, {}, { 0, 1 }, {}, {} },
+			{ 2, 1, {}, {}, { 1, 1 }, {}, {} },
+			{ 3, 2, { 0, 1 }, {}, { 2, 1 }, {}, {} }
+		};
+		program.RuleIndexes = { 0, 1, 2 };
+		program.PropertyWatchers = {
+			DependencyPropertyReference(Control::IsMouseOverProperty()) };
+		program.Groups = {
+			{ true, UIClass::UI_CUSTOM,
+				{}, CompiledStyleInvalidIndex,
+				{ 0, 1 }, {}, {} },
+			{ true, UIClass::UI_CUSTOM,
+				{}, 1,
+				{ 1, 2 }, { 0, 1 }, {} }
+		};
+		program.GlobalPropertyWatchers = program.PropertyWatchers;
+
+		auto sheet = ControlStyleSheet::CreateCompiled(std::move(program));
+		CUI_EXPECT_TRUE(sheet != nullptr && sheet->IsImmutable());
+		CUI_EXPECT_EQ(3ULL, sheet->RuleCount());
+		CUI_EXPECT_TRUE(sheet->HasRules());
+		CUI_EXPECT_TRUE(sheet->Rules().empty());
+		auto mutableView =
+			std::const_pointer_cast<ControlStyleSheet>(sheet);
+		CUI_EXPECT_EQ(0ULL, mutableView->AddRule({}, {}));
+		CUI_EXPECT_FALSE(
+			mutableView->SetResource(L"late", BindingValue(1)));
+
+		cui::framework::StyleAccess::SetResourceKey(target, L"hero");
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, sheet));
+		CUI_EXPECT_EQ(8, target.GetLevel());
+		cui::framework::InputAccess::PublishPointerOverState(
+			target, true, true);
+		CUI_EXPECT_EQ(9, target.GetLevel());
+		cui::framework::InputAccess::PublishPointerOverState(
+			target, false, false);
+		CUI_EXPECT_EQ(8, target.GetLevel());
+
+		cui::framework::StyleAccess::SetResourceKey(target, {});
+		CUI_EXPECT_EQ(6, target.GetLevel());
+		BindingValue resource;
+		int resourceValue = 0;
+		CUI_EXPECT_TRUE(sheet->TryGetResource(L"Compiled.Level", resource));
+		CUI_EXPECT_TRUE(resource.TryGet(resourceValue));
+		CUI_EXPECT_EQ(6, resourceValue);
+	});
+
+	runner.Add("Compiled Style typed pools mix static and instance values", []
+	{
+		PropertySystemControl target;
+		target.EnsureBindingPropertiesRegistered();
+		const auto* levelMetadata = target.FindPropertyMetadata(L"Level");
+		CUI_EXPECT_TRUE(levelMetadata != nullptr);
+		if (!levelMetadata) return;
+
+		static constexpr int typedInts[] = { 6, 9 };
+		static constexpr bool typedBools[] = { true };
+		static const CompiledStyleValuePoolView valuePools[] = {
+			MakeCompiledStyleValuePoolView(typedInts),
+			MakeCompiledStyleValuePoolView(typedBools)
+		};
+		static constexpr std::wstring_view strings[] = { L"Typed.Level" };
+		static constexpr CompiledStyleResourceOp resources[] = { {
+			0, MakeCompiledStyleStaticValueReference(0, 1) } };
+		static constexpr uint32_t resourceLookup[] = { 0 };
+		static const CompiledStylePropertyConditionOp propertyConditions[] = { {
+			DependencyPropertyReference(Control::IsMouseOverProperty()),
+			MakeCompiledStyleStaticValueReference(1, 0) } };
+		static const CompiledStyleSetterOp setters[] = {
+			{ DependencyPropertyReference(levelMetadata->Property()),
+				{ CompiledStyleOperandKind::Literal,
+					MakeCompiledStyleStaticValueReference(0, 0) } },
+			{ DependencyPropertyReference(levelMetadata->Property()),
+				{ CompiledStyleOperandKind::Literal, 0 } }
+		};
+		static constexpr CompiledStyleRuleOp rules[] = {
+			{ 1, 0, {}, {}, { 0, 1 }, {}, {} },
+			{ 2, 1, { 0, 1 }, {}, { 1, 1 }, {}, {} }
+		};
+		static constexpr uint32_t ruleIndexes[] = { 0, 1 };
+		static const DependencyPropertyReference propertyWatchers[] = {
+			DependencyPropertyReference(Control::IsMouseOverProperty()) };
+		static constexpr CompiledStyleGroupOp groups[] = { {
+			true, UIClass::UI_CUSTOM,
+			{}, CompiledStyleInvalidIndex,
+			{ 0, 2 }, { 0, 1 }, {} } };
+
+		CompiledStyleProgramView view;
+		view.Strings = strings;
+		view.ValuePools = valuePools;
+		view.Resources = resources;
+		view.ResourceLookup = resourceLookup;
+		view.PropertyConditions = propertyConditions;
+		view.Setters = setters;
+		view.Rules = rules;
+		view.RuleIndexes = ruleIndexes;
+		view.PropertyWatchers = propertyWatchers;
+		view.Groups = groups;
+		view.GlobalPropertyWatchers = propertyWatchers;
+
+		auto sheet = ControlStyleSheet::CreateCompiled(
+			view, { BindingValue(8) });
+		CUI_EXPECT_TRUE(sheet != nullptr && sheet->IsImmutable());
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, sheet));
+		CUI_EXPECT_EQ(6, target.GetLevel());
+		cui::framework::InputAccess::PublishPointerOverState(
+			target, true, true);
+		CUI_EXPECT_EQ(8, target.GetLevel());
+		cui::framework::InputAccess::PublishPointerOverState(
+			target, false, false);
+		CUI_EXPECT_EQ(6, target.GetLevel());
+
+		BindingValue resource;
+		int resourceValue = 0;
+		CUI_EXPECT_TRUE(sheet->TryGetResource(L"Typed.Level", resource));
+		CUI_EXPECT_TRUE(resource.TryGet(resourceValue));
+		CUI_EXPECT_EQ(9, resourceValue);
+
+		auto wrongVersion = view;
+		wrongVersion.Version = CompiledStyleProgramViewVersion + 1;
+		CUI_EXPECT_TRUE(ControlStyleSheet::CreateCompiled(
+			wrongVersion, {}) == nullptr);
+
+		static constexpr CompiledStyleResourceOp badResources[] = { {
+			0, MakeCompiledStyleStaticValueReference(0, 99) } };
+		auto badView = view;
+		badView.Resources = badResources;
+		auto badSheet = ControlStyleSheet::CreateCompiled(badView, {});
+		CUI_EXPECT_TRUE(badSheet == nullptr);
+		CUI_EXPECT_EQ(CompiledStyleInvalidIndex,
+			MakeCompiledStyleStaticValueReference(
+				CompiledStyleStaticValuePoolLimit, 0));
+	});
+
+	runner.Add("Flat compiled Style actions execute without owned storyboard graphs", []
+	{
+		static const std::array<BindingValue, 3> values{
+			BindingValue(true), BindingValue(0.25f), BindingValue(0.75f) };
+		static const std::array<CompiledStylePropertyConditionOp, 1>
+			propertyConditions{ {
+				{ DependencyPropertyReference(Control::IsMouseOverProperty()), 0u },
+			} };
+		static const std::array<CompiledInteractionPropertyOperand, 1>
+			propertyOperands{ {
+				{ 0u, DependencyPropertyReference(Control::BackgroundProperty()) },
+			} };
+		static constexpr std::array<CompiledStoryboardObjectPathOp, 1>
+			objectPaths = []
+			{
+				std::array<CompiledStoryboardObjectPathOp, 1> result{};
+				auto& opacity = result.front();
+				opacity.Kind = CompiledStoryboardObjectPathKind::Brush;
+				opacity.Member =
+					CompiledStoryboardObjectPathMember::BrushOpacity;
+				opacity.ExpectedObjectKind = static_cast<uint8_t>(
+					cui::drawing::BrushKind::Solid);
+				opacity.Identity = MakeCompiledInteractionNameToken(
+					L"(Control.Background).(Brush.Opacity)");
+				return result;
+			}();
+		static constexpr std::array<CompiledInteractionAnimationOp, 1>
+			animations = []
+			{
+				std::array<CompiledInteractionAnimationOp, 1> result{};
+				auto& opacity = result.front();
+				opacity.Kind = DeclarativeAnimationKind::Double;
+				opacity.OperandIndex = 0u;
+				opacity.ObjectPathIndex = 0u;
+				opacity.FromValueIndex = 1u;
+				opacity.ToValueIndex = 2u;
+				opacity.DurationMilliseconds = 1000u;
+				return result;
+			}();
+		static constexpr std::array<CompiledInteractionStoryboardOp, 1>
+			storyboards{ { { { 0u, 1u } } } };
+		// Enter deliberately exercises Begin/Pause/Resume in one edge. Exit
+		// stops the same numeric storyboard slot and must restore the base Brush.
+		static constexpr std::array<CompiledInteractionActionOp, 4> actions{ {
+			{ DeclarativeStoryboardActionKind::Begin, 0u },
+			{ DeclarativeStoryboardActionKind::Pause, 0u },
+			{ DeclarativeStoryboardActionKind::Resume, 0u },
+			{ DeclarativeStoryboardActionKind::Stop, 0u },
+		} };
+		static constexpr std::array<CompiledStyleRuleOp, 1> rules{ {
+			{ 1u, 0u, { 0u, 1u }, {}, {}, { 0u, 3u }, { 3u, 1u } },
+		} };
+		static constexpr std::array<uint32_t, 1> ruleIndexes{ 0u };
+		static const std::array<DependencyPropertyReference, 1>
+			propertyWatchers{ DependencyPropertyReference(
+				Control::IsMouseOverProperty()) };
+		static constexpr std::array<CompiledStyleGroupOp, 1> groups{ {
+			{ true, UIClass::UI_Button,
+				{}, CompiledStyleInvalidIndex,
+				{ 0u, 1u }, { 0u, 1u }, {} },
+		} };
+
+		CompiledStyleProgramView view;
+		view.PropertyConditions = propertyConditions;
+		view.PropertyOperands = propertyOperands;
+		view.ObjectPaths = objectPaths;
+		view.Animations = animations;
+		view.Storyboards = storyboards;
+		view.Actions = actions;
+		view.Rules = rules;
+		view.RuleIndexes = ruleIndexes;
+		view.PropertyWatchers = propertyWatchers;
+		view.Groups = groups;
+		view.GlobalPropertyWatchers = propertyWatchers;
+
+		auto expectRejected = [&](const CompiledStyleProgramView& invalidView)
+		{
+			Button invalid;
+			ConfigureTestControl(invalid, L"Invalid flat Style", 0, 0);
+			auto invalidSheet = ControlStyleSheet::CreateCompiled(
+				invalidView, std::vector<BindingValue>(
+					values.begin(), values.end()));
+			CUI_EXPECT_FALSE(invalidSheet
+				&& cui::framework::StyleAccess::SetDocumentStyles(
+					invalid, invalidSheet));
+		};
+		{
+			auto invalidRules = rules;
+			invalidRules.front().EnterActions = { UINT32_MAX, 1u };
+			auto invalidView = view;
+			invalidView.Rules = invalidRules;
+			expectRejected(invalidView);
+		}
+		{
+			// Enter/Exit ranges may not alias the same flat action record.
+			auto overlappingRules = rules;
+			overlappingRules.front().ExitActions = { 2u, 2u };
+			auto invalidView = view;
+			invalidView.Rules = overlappingRules;
+			expectRejected(invalidView);
+		}
+		{
+			// Every rule must belong to exactly one selector group.
+			auto invalidView = view;
+			invalidView.Groups = {};
+			expectRejected(invalidView);
+		}
+		{
+			auto invalidActions = actions;
+			invalidActions.front().Kind =
+				static_cast<DeclarativeStoryboardActionKind>(UINT8_MAX);
+			auto invalidView = view;
+			invalidView.Actions = invalidActions;
+			expectRejected(invalidView);
+		}
+		{
+			auto invalidStoryboards = storyboards;
+			invalidStoryboards.front().Animations = { UINT32_MAX, 1u };
+			auto invalidView = view;
+			invalidView.Storyboards = invalidStoryboards;
+			expectRejected(invalidView);
+		}
+		{
+			auto invalidOperands = propertyOperands;
+			invalidOperands.front().TargetSlot = 1u;
+			auto invalidView = view;
+			invalidView.PropertyOperands = invalidOperands;
+			expectRejected(invalidView);
+		}
+		{
+			auto invalidPaths = objectPaths;
+			invalidPaths.front().Kind =
+				static_cast<CompiledStoryboardObjectPathKind>(UINT8_MAX);
+			auto invalidView = view;
+			invalidView.ObjectPaths = invalidPaths;
+			expectRejected(invalidView);
+		}
+
+		Button button;
+		ConfigureTestControl(button, L"Flat Style", 0, 0);
+		cui::drawing::Brush background;
+		background.Kind = cui::drawing::BrushKind::Solid;
+		background.Color = D2D1::ColorF(D2D1::ColorF::Red);
+		background.Opacity = 0.6f;
+		button.Background = background;
+		auto sheet = ControlStyleSheet::CreateCompiled(
+			view, std::vector<BindingValue>(values.begin(), values.end()));
+		CUI_EXPECT_TRUE(sheet != nullptr);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			button, sheet));
+		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_FALSE(button.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+
+		const auto beginTick = ::GetTickCount64();
+		cui::framework::InputAccess::PublishPointerOverState(
+			button, true, true);
+		CUI_EXPECT_TRUE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(button.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(0.25f, button.Background.Opacity, 0.0001f);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid, button.Background.Kind);
+		CUI_EXPECT_NEAR(1.0f, button.Background.Color.r, 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(button, beginTick + 500u));
+		CUI_EXPECT_TRUE(button.Background.Opacity > 0.25f
+			&& button.Background.Opacity < 0.75f);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid, button.Background.Kind);
+
+		cui::framework::InputAccess::PublishPointerOverState(
+			button, false, false);
+		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_FALSE(button.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(0.6f, button.Background.Opacity, 0.0001f);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid, button.Background.Kind);
+		CUI_EXPECT_NEAR(1.0f, button.Background.Color.r, 0.0001f);
+
+		// The first Begin succeeds, then the second sees a root Brush whose
+		// instance shape no longer matches the object-path descriptor. The edge
+		// must restore both its first clock and every Animation value source.
+		static const std::array<CompiledInteractionPropertyOperand, 2>
+			rollbackOperands{ {
+				{ 0u, DependencyPropertyReference(Control::CanvasTopProperty()) },
+				{ 0u, DependencyPropertyReference(Control::BackgroundProperty()) },
+			} };
+		static constexpr std::array<CompiledInteractionAnimationOp, 2>
+			rollbackAnimations = []
+			{
+				std::array<CompiledInteractionAnimationOp, 2> result{};
+				auto& direct = result.front();
+				direct.Kind = DeclarativeAnimationKind::Double;
+				direct.OperandIndex = 0u;
+				direct.FromValueIndex = 1u;
+				direct.ToValueIndex = 2u;
+				direct.DurationMilliseconds = 1000u;
+				auto& opacity = result.back();
+				opacity.Kind = DeclarativeAnimationKind::Double;
+				opacity.OperandIndex = 1u;
+				opacity.ObjectPathIndex = 0u;
+				opacity.FromValueIndex = 1u;
+				opacity.ToValueIndex = 2u;
+				opacity.DurationMilliseconds = 1000u;
+				return result;
+			}();
+		static constexpr std::array<CompiledInteractionStoryboardOp, 2>
+			rollbackStoryboards{ {
+				{ { 0u, 1u } },
+				{ { 1u, 1u } },
+			} };
+		static constexpr std::array<CompiledInteractionActionOp, 4>
+			rollbackActions{ {
+				{ DeclarativeStoryboardActionKind::Begin, 0u },
+				{ DeclarativeStoryboardActionKind::Begin, 1u },
+				{ DeclarativeStoryboardActionKind::Stop, 0u },
+				{ DeclarativeStoryboardActionKind::Stop, 1u },
+			} };
+		static constexpr std::array<CompiledStyleRuleOp, 1>
+			rollbackRules{ {
+				{ 2u, 0u, { 0u, 1u }, {}, {}, { 0u, 2u }, { 2u, 2u } },
+			} };
+		auto rollbackView = view;
+		rollbackView.PropertyOperands = rollbackOperands;
+		rollbackView.Animations = rollbackAnimations;
+		rollbackView.Storyboards = rollbackStoryboards;
+		rollbackView.Actions = rollbackActions;
+		rollbackView.Rules = rollbackRules;
+
+		Button rollbackButton;
+		ConfigureTestControl(rollbackButton, L"Flat Style rollback", 0, 0);
+		Canvas::SetTop(rollbackButton, 3.0f);
+		rollbackButton.Background = background;
+		auto rollbackSheet = ControlStyleSheet::CreateCompiled(
+			rollbackView,
+			std::vector<BindingValue>(values.begin(), values.end()));
+		CUI_EXPECT_TRUE(rollbackSheet != nullptr);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			rollbackButton, rollbackSheet));
+		CUI_EXPECT_FALSE(rollbackButton.HasActiveVisualStateAnimations());
+
+		auto incompatibleBackground = background;
+		incompatibleBackground.Kind = cui::drawing::BrushKind::None;
+		rollbackButton.Background = incompatibleBackground;
+		cui::framework::InputAccess::PublishPointerOverState(
+			rollbackButton, true, true);
+		CUI_EXPECT_FALSE(rollbackButton.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(rollbackButton), 0.0001f);
+		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+
+		// Active must roll back with the failed edge: after returning to false,
+		// restoring the instance shape lets the next true edge run normally.
+		cui::framework::InputAccess::PublishPointerOverState(
+			rollbackButton, false, false);
+		rollbackButton.Background = background;
+		cui::framework::InputAccess::PublishPointerOverState(
+			rollbackButton, true, true);
+		CUI_EXPECT_TRUE(rollbackButton.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(0.25f, Canvas::GetTop(rollbackButton), 0.0001f);
+		CUI_EXPECT_NEAR(0.25f, rollbackButton.Background.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(rollbackButton.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(rollbackButton.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		cui::framework::InputAccess::PublishPointerOverState(
+			rollbackButton, false, false);
+		CUI_EXPECT_FALSE(rollbackButton.HasActiveVisualStateAnimations());
+		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(rollbackButton.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(rollbackButton), 0.0001f);
+		CUI_EXPECT_NEAR(0.6f, rollbackButton.Background.Opacity, 0.0001f);
+	});
+
+	runner.Add("Style replacement canonicalizes dynamic and compiled identities", []
+	{
+		Control target;
+		auto dynamicSheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector dynamicSelector;
+		dynamicSelector.Type = UIClass::UI_Base;
+		CUI_EXPECT_TRUE(dynamicSheet->AddRule(
+			std::move(dynamicSelector), {
+				ControlStyleSetter(L"FontSize", BindingValue(13.0)) }) != 0);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, dynamicSheet));
+		CUI_EXPECT_NEAR(13.0, target.FontSize, 0.0001);
+
+		auto compiledSheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector compiledSelector;
+		compiledSelector.Type = UIClass::UI_Base;
+		CUI_EXPECT_TRUE(compiledSheet->AddRule(
+			std::move(compiledSelector), {
+				ControlStyleSetter(
+					Control::FontSizeProperty(), BindingValue(21.0)) }) != 0);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			target, compiledSheet));
+		CUI_EXPECT_NEAR(21.0, target.FontSize, 0.0001);
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::FontSizeProperty(),
+			DependencyPropertyValueSource::Style));
+	});
+
+	runner.Add("Style canonicalization preserves same-name property identities", []
+	{
+		Control control;
+		Border border;
+		CUI_EXPECT_TRUE(&Control::PaddingProperty()
+			!= &Border::PaddingProperty());
+
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector selector;
+		selector.Type = UIClass::UI_Base;
+		CUI_EXPECT_TRUE(sheet->AddRule(
+			std::move(selector), {
+				ControlStyleSetter(L"Padding", BindingValue(Thickness(3.0f))) }) != 0);
+
+		const auto controlResolution = sheet->Resolve(control, false);
+		const auto borderResolution = sheet->Resolve(border, false);
+		CUI_EXPECT_TRUE(controlResolution.Success());
+		CUI_EXPECT_TRUE(borderResolution.Success());
+		CUI_EXPECT_EQ(1ULL, controlResolution.Setters.size());
+		CUI_EXPECT_EQ(1ULL, borderResolution.Setters.size());
+		if (controlResolution.Setters.size() == 1)
+			CUI_EXPECT_TRUE(controlResolution.Setters.front().Property.Identity()
+				== &Control::PaddingProperty());
+		if (borderResolution.Setters.size() == 1)
+			CUI_EXPECT_TRUE(borderResolution.Setters.front().Property.Identity()
+				== &Border::PaddingProperty());
+
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			control, sheet));
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
+			border, sheet));
+		CUI_EXPECT_EQ(Thickness(3.0f), control.Padding);
+		CUI_EXPECT_EQ(Thickness(3.0f), border.Padding);
+		CUI_EXPECT_TRUE(control.HasPropertyValue(
+			Control::PaddingProperty(), DependencyPropertyValueSource::Style));
+		CUI_EXPECT_FALSE(control.HasPropertyValue(
+			Border::PaddingProperty(), DependencyPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(border.HasPropertyValue(
+			Border::PaddingProperty(), DependencyPropertyValueSource::Style));
+		CUI_EXPECT_FALSE(border.HasPropertyValue(
+			Control::PaddingProperty(), DependencyPropertyValueSource::Style));
+	});
+
 	runner.Add("DynamicResource is a live Local expression with scoped fallback", []
 	{
 		PropertySystemControl target;
@@ -6917,6 +10363,47 @@ int main()
 			target.GetPropertyExpressionKind(L"Level"));
 		CUI_EXPECT_TRUE(target.ClearPropertyValues() >= 1);
 		CUI_EXPECT_FALSE(target.TryGetDynamicResourceKey(L"Level", key));
+	});
+
+	runner.Add("Typed DynamicResource preserves its Template precedence slot", []
+	{
+		Control target;
+		auto theme = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(theme->SetResource(
+			L"Template.Offset", BindingValue(2.0f)));
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetTheme(
+			target, theme));
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::SetDynamicResource(
+				target, Control::CanvasLeftProperty(),
+				L"Template.Offset",
+				DependencyPropertyValueSource::Template));
+		CUI_EXPECT_NEAR(2.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+			target.GetPropertyValueSource(L"Canvas.Left"));
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::DynamicResource,
+			target.GetPropertyExpressionKind(
+				L"Canvas.Left",
+				DependencyPropertyValueSource::Template));
+
+		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
+			target, Control::CanvasLeftProperty(), BindingValue(12.0f),
+			DependencyPropertyValueSource::VisualState));
+		CUI_EXPECT_NEAR(12.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_TRUE(theme->SetResource(
+			L"Template.Offset", BindingValue(6.0f)));
+		CUI_EXPECT_NEAR(12.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::ClearValue(
+			target, Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::VisualState));
+		CUI_EXPECT_NEAR(6.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+			target.GetPropertyValueSource(L"Canvas.Left"));
+		CUI_EXPECT_TRUE(
+			cui::framework::DependencyPropertyAccess::ClearDynamicResource(
+				target, Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::Template));
+		CUI_EXPECT_TRUE(std::isnan(Canvas::GetLeft(target)));
 	});
 
 	runner.Add("Local ResourceDictionary scopes follow the logical parent chain", []
@@ -7086,7 +10573,8 @@ int main()
 
 		DeclarativeVisualStateAnimation animation;
 		animation.Kind = DeclarativeAnimationKind::Double;
-		animation.PropertyName = L"FontSize";
+		animation.Property = DependencyPropertyReference(
+			Control::FontSizeProperty());
 		animation.From = BindingValue(4.0f);
 		animation.To = BindingValue(12.0f);
 		animation.DurationMilliseconds = 100;
@@ -7254,7 +10742,8 @@ int main()
 		{
 			DeclarativeVisualStateAnimation animation;
 			animation.Kind = DeclarativeAnimationKind::Double;
-			animation.PropertyName = L"FontSize";
+			animation.Property = DependencyPropertyReference(
+				Control::FontSizeProperty());
 			animation.From = BindingValue(from);
 			animation.To = BindingValue(to);
 			animation.DurationMilliseconds = duration;
@@ -7367,6 +10856,29 @@ int main()
 			BindingSourceReference(secondContext)));
 		CUI_EXPECT_FALSE(cui::framework::StyleAccess::SetDocumentStyles(
 			invalid, invalidSheet));
+
+		auto previousTheme = std::make_shared<ControlStyleSheet>();
+		auto previousStyles = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector previousSelector;
+		previousSelector.Type = UIClass::UI_Button;
+		CUI_EXPECT_TRUE(previousStyles->AddRule(
+			std::move(previousSelector), {
+				ControlStyleSetter(
+					Control::FontSizeProperty(), BindingValue(7.0)) }) != 0);
+		Button transactionTarget;
+		ConfigureTestControl(transactionTarget, L"Transaction", 0, 0);
+		CUI_EXPECT_TRUE(transactionTarget.SetDataContext(
+			BindingSourceReference(secondContext)));
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetEnvironment(
+			transactionTarget, previousTheme, previousStyles));
+		CUI_EXPECT_NEAR(7.0, transactionTarget.FontSize, 0.0001);
+		CUI_EXPECT_FALSE(cui::framework::StyleAccess::SetEnvironment(
+			transactionTarget, nullptr, invalidSheet));
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::Theme(
+			transactionTarget) == previousTheme);
+		CUI_EXPECT_TRUE(cui::framework::StyleAccess::DocumentStyles(
+			transactionTarget) == previousStyles);
+		CUI_EXPECT_NEAR(7.0, transactionTarget.FontSize, 0.0001);
 	});
 
 	runner.Add("XAML Style DataTrigger actions round-trip and animate", []
@@ -7722,7 +11234,7 @@ int main()
 
 		CUI_EXPECT_TRUE(cui::framework::StyleAccess::SetDocumentStyles(
 			button, nullptr));
-		CUI_EXPECT_EQ(Thickness(1.5f), button.BorderThickness);
+		CUI_EXPECT_EQ(Thickness{}, button.BorderThickness);
 		CUI_EXPECT_TRUE(button.IsPropertyValueDefault(L"BorderThickness"));
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Default,
 			button.GetPropertyValueSource(L"Background"));
@@ -9385,8 +12897,7 @@ int main()
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata, sliderValue->Persistence);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number,
 			sliderTickFrequency->Editor);
-		CUI_EXPECT_TRUE(sliderTickFrequency->Minimum.has_value());
-		CUI_EXPECT_EQ(0.0, *sliderTickFrequency->Minimum);
+		CUI_EXPECT_FALSE(sliderTickFrequency->Minimum.has_value());
 		CUI_EXPECT_EQ(2ULL, sliderOrientation->Choices.size());
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Boolean,
 			sliderDirection->Editor);
@@ -9423,11 +12934,13 @@ int main()
 		snapped.Value = 4.0;
 		CUI_EXPECT_NEAR(4.0, snapped.Value, 0.0000001);
 		snapped.IsSnapToTickEnabled = true;
-		CUI_EXPECT_NEAR(5.0, snapped.Value, 0.0000001);
+		// WPF only applies tick snapping when a subsequent value update is
+		// requested; enabling the policy does not rewrite the current value.
+		CUI_EXPECT_NEAR(4.0, snapped.Value, 0.0000001);
 		snapped.TickFrequency = -2.0;
-		CUI_EXPECT_NEAR(0.0, snapped.TickFrequency, 0.0000001);
+		CUI_EXPECT_NEAR(-2.0, snapped.TickFrequency, 0.0000001);
 		snapped.SmallChange = -3.0;
-		CUI_EXPECT_NEAR(0.0, snapped.SmallChange, 0.0000001);
+		CUI_EXPECT_NEAR(0.1, snapped.SmallChange, 0.0000001);
 
 		Slider styledValue; ConfigureTestControl(styledValue, 0, 0, 240, 32);
 		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
@@ -9441,6 +12954,7 @@ int main()
 		ObservableObject sliderSource;
 		sliderSource.SetValue(L"Current", 12.0);
 		Slider boundSlider; ConfigureTestControl(boundSlider, 0, 0, 240, 32);
+		boundSlider.Maximum = 25.0;
 		CUI_EXPECT_TRUE(boundSlider.DataBindings.Add(
 			L"Value", sliderSource, L"Current", BindingMode::TwoWay) != nullptr);
 		CUI_EXPECT_TRUE(boundSlider.TrySetCurrentPropertyValue(
@@ -9458,7 +12972,7 @@ int main()
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			keyboardSlider,
 			KeyInput(InputReportKind::KeyDown, Key::Right)));
-		CUI_EXPECT_NEAR(51.0, keyboardSlider.Value, 0.0000001);
+		CUI_EXPECT_NEAR(50.1, keyboardSlider.Value, 0.0000001);
 		keyboardSlider.IsDirectionReversed = true;
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			keyboardSlider,
@@ -9469,7 +12983,7 @@ int main()
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			keyboardSlider,
 			KeyInput(InputReportKind::KeyDown, Key::Up)));
-		CUI_EXPECT_NEAR(51.0, keyboardSlider.Value, 0.0000001);
+		CUI_EXPECT_NEAR(50.1, keyboardSlider.Value, 0.0000001);
 		CUI_EXPECT_TRUE(keyboardSlider.HandlesNavigationKey(Key::Up));
 		CUI_EXPECT_FALSE(keyboardSlider.HandlesNavigationKey(Key::Space));
 
@@ -9516,7 +13030,7 @@ int main()
 		numeric.DecimalPlaces = -2;
 		CUI_EXPECT_EQ(0, numeric.DecimalPlaces);
 		numeric.Increment = -4.0;
-		CUI_EXPECT_NEAR(0.0, numeric.Increment, 0.0000001);
+		CUI_EXPECT_NEAR(1.0, numeric.Increment, 0.0000001);
 
 		ObservableObject numericSource;
 		numericSource.SetValue(L"Current", 6.5);
@@ -9582,7 +13096,7 @@ int main()
 		const auto sliderMaxPosition = cpp.find(
 			"rangeSlider->TrySetPropertyValue(L\"Maximum\", BindingValue(-20.0))");
 		const auto sliderValuePosition = cpp.find(
-			"rangeSlider->TrySetPropertyValue(L\"Value\", BindingValue(-35.0))");
+			"rangeSlider->TrySetPropertyValue(L\"Value\", BindingValue(-33.0))");
 		CUI_EXPECT_TRUE(sliderMinPosition != std::string::npos);
 		CUI_EXPECT_TRUE(sliderMaxPosition != std::string::npos);
 		CUI_EXPECT_TRUE(sliderValuePosition != std::string::npos);
@@ -9633,7 +13147,7 @@ int main()
 				== baseBorderProperty);
 		CUI_EXPECT_TRUE(
 			groupBox.FindPropertyMetadata(L"BorderThickness")
-				!= baseControl.FindPropertyMetadata(L"BorderThickness"));
+				== baseControl.FindPropertyMetadata(L"BorderThickness"));
 		for (const wchar_t* removed : { L"CaptionMarginLeft", L"CaptionPaddingX",
 			L"CaptionPaddingY", L"CaptionCornerRadius", L"CaptionBackColor",
 			L"CaptionBorderColor" })
@@ -9643,7 +13157,7 @@ int main()
 			CUI_EXPECT_TRUE(groupBox.FindPropertyMetadata(removed) == nullptr);
 		}
 		groupBox.BorderThickness = -3.0f;
-		CUI_EXPECT_EQ(Thickness(1.0f), groupBox.BorderThickness);
+		CUI_EXPECT_EQ(Thickness{}, groupBox.BorderThickness);
 		groupBox.SetHeader(BindingValue(std::wstring(L"Semantic header")));
 		std::wstring groupHeader;
 		CUI_EXPECT_TRUE(groupBox.GetHeader().TryGet(groupHeader));
@@ -9693,21 +13207,26 @@ int main()
 		CUI_EXPECT_TRUE(contentRaw->GetActualSizeDip().height > 0.0f);
 		expander.SetExpanded(false);
 		CUI_EXPECT_FALSE(expander.IsExpanded);
-		CUI_EXPECT_FALSE(contentRaw->GetIsVisible());
+		// A bare behavior host does not own the presentation policy. WPF's
+		// default ControlTemplate collapses its content presenter.
+		CUI_EXPECT_TRUE(contentRaw->GetIsVisible());
 		CUI_EXPECT_EQ(Visibility::Visible, contentRaw->Visibility);
 		expander.UpdateLayout();
-		CUI_EXPECT_EQ(cui::core::Size{}, contentRaw->GetActualSizeDip());
-		CUI_EXPECT_EQ(cui::core::Size{}, contentRaw->Measure(
-			cui::core::Constraints::Unbounded()));
+		CUI_EXPECT_TRUE(contentRaw->GetActualSizeDip().height > 0.0f);
 		CUI_EXPECT_EQ(0, expandedEvents);
-		CUI_EXPECT_EQ(1, collapsedEvents);
+		CUI_EXPECT_EQ(0, collapsedEvents);
 		expander.SetExpanded(false);
-		CUI_EXPECT_EQ(1, collapsedEvents);
+		CUI_EXPECT_EQ(0, collapsedEvents);
 		expander.SetExpanded(true);
 		CUI_EXPECT_TRUE(expander.IsExpanded);
 		CUI_EXPECT_TRUE(contentRaw->GetIsVisible());
 		expander.UpdateLayout();
 		CUI_EXPECT_TRUE(contentRaw->GetActualSizeDip().height > 0.0f);
+		CUI_EXPECT_EQ(1, expandedEvents);
+		CUI_EXPECT_EQ(0, collapsedEvents);
+		expander.SetExpanded(false);
+		CUI_EXPECT_FALSE(expander.IsExpanded);
+		CUI_EXPECT_TRUE(contentRaw->GetIsVisible());
 		CUI_EXPECT_EQ(1, expandedEvents);
 		CUI_EXPECT_EQ(1, collapsedEvents);
 		expander.ExpandDirection = ExpandDirection::Left;
@@ -10016,6 +13535,21 @@ int main()
 		CUI_EXPECT_TRUE(toolBar.GetGeneratedItem(1) == second);
 		CUI_EXPECT_TRUE(first->GetLogicalParent() == &toolBar);
 		CUI_EXPECT_TRUE(first->GetVisualParent() == defaultHost);
+		CUI_EXPECT_EQ(std::wstring(L"CuiToolBarButtonStyle"),
+			cui::framework::StyleAccess::ResourceKey(*first));
+		CUI_EXPECT_EQ(std::wstring(L"CuiToolBarButtonStyle"),
+			cui::framework::StyleAccess::ResourceKey(*second));
+
+		ToolBar explicitStyleToolBar;
+		auto explicitButtonOwner = MakeTestControl<Button>(
+			L"Explicit", 0, 0, 72, 26);
+		auto* explicitButton = explicitButtonOwner.get();
+		cui::framework::StyleAccess::SetResourceKey(
+			*explicitButton, L"ExplicitToolItemStyle");
+		CUI_EXPECT_TRUE(explicitStyleToolBar.AddItemControl(
+			std::move(explicitButtonOwner)) == explicitButton);
+		CUI_EXPECT_EQ(std::wstring(L"ExplicitToolItemStyle"),
+			cui::framework::StyleAccess::ResourceKey(*explicitButton));
 
 		auto conflictingSource =
 			std::make_shared<ObservableBindingList>(L"ToolEntry");
@@ -10136,11 +13670,74 @@ int main()
 		TabControl tabs;
 		ConfigureTestControl(tabs, 0, 0, 320, 180);
 		tabs.Arrange(cui::core::Rect{ 0.0f, 0.0f, 320.0f, 180.0f });
-		const auto contentClip = tabs.GetVisualChildrenClipRect();
-		CUI_EXPECT_NEAR(0.0f, contentClip.left, 0.001f);
-		CUI_EXPECT_NEAR(28.0f, contentClip.top, 0.001f);
-		CUI_EXPECT_NEAR(320.0f, contentClip.right, 0.001f);
-		CUI_EXPECT_NEAR(180.0f, contentClip.bottom, 0.001f);
+		CUI_EXPECT_FALSE(tabs.ClipsChildren());
+		CUI_EXPECT_FALSE(tabs.ShouldHitTestChildrenAt(20, 14));
+		CUI_EXPECT_TRUE(tabs.ShouldHitTestChildrenAt(20, 80));
+		CUI_EXPECT_FALSE(tabs.ShouldHitTestChildrenAt(20, 181));
+
+		// Tab headers and selected content share one TabItem visual subtree.
+		// The TabControl itself therefore cannot impose a content-only ancestor
+		// clip: the selected content host owns that viewport locally.
+		auto pageOwner = MakeTestControl<TabItem>(L"Viewport");
+		auto* page = pageOwner.get();
+		auto templateRoot = MakeTestControl<Canvas>();
+		auto* templateRootRaw = templateRoot.get();
+		auto headerOwner = MakeTestControl<Border>();
+		auto* header = headerOwner.get();
+		header->Width = 96.0f;
+		header->Height = 28.0f;
+		auto contentHostOwner = MakeTestControl<ContentPresenter>();
+		auto* contentHost = contentHostOwner.get();
+		auto overflowOwner = MakeTestControl<Panel>();
+		auto* overflow = overflowOwner.get();
+		CUI_EXPECT_TRUE(contentHost->AddOwned(
+			std::move(overflowOwner)) == overflow);
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*templateRootRaw, page);
+		cui::framework::TreeAccess::SetTemplatedParent(*header, page);
+		cui::framework::TreeAccess::SetTemplatedParent(*contentHost, page);
+		templateRootRaw->AddOwned(std::move(headerOwner));
+		templateRootRaw->AddOwned(std::move(contentHostOwner));
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterTemplatePart(
+			*page, MakeTemplatePartToken(L"PART_Header"), header));
+		CUI_EXPECT_TRUE(TemplateAccess::RegisterTemplatePart(
+			*page, MakeTemplatePartToken(L"PART_SelectedContentHost"),
+			contentHost));
+		CUI_EXPECT_TRUE(TemplateAccess::SetTemplateRoot(
+			*page, std::move(templateRoot)) == templateRootRaw);
+		CUI_EXPECT_TRUE(tabs.AddItem(std::move(pageOwner)) == page);
+		tabs.Arrange(cui::core::Rect{ 0.0f, 0.0f, 320.0f, 180.0f });
+		tabs.UpdateLayout();
+
+		CUI_EXPECT_FALSE(tabs.ClipsChildren());
+		CUI_EXPECT_TRUE(contentHost->ClipToBounds);
+		CUI_EXPECT_TRUE(contentHost->ClipsChildren());
+		const auto headerBounds = header->GetAbsoluteRectDip();
+		const auto contentBounds = contentHost->GetAbsoluteRectDip();
+		CUI_EXPECT_TRUE(headerBounds.height > 0.0f);
+		CUI_EXPECT_TRUE(contentBounds.height > 0.0f);
+		CUI_EXPECT_TRUE(headerBounds.Bottom() <= contentBounds.Top());
+		const D2D1_POINT_2F headerPoint = D2D1::Point2F(
+			headerBounds.x + 4.0f,
+			headerBounds.y + headerBounds.height * 0.5f);
+		CUI_EXPECT_TRUE(tabs.ShouldHitTestChildrenAt(
+			static_cast<int>(headerPoint.x),
+			static_cast<int>(headerPoint.y)));
+		CUI_EXPECT_TRUE(header->IsRenderPointInsideClip(headerPoint));
+
+		// Deliberately place selected content across the host's top edge. Its
+		// own geometry contains the header-side point, but the host viewport
+		// must reject it while retaining a point inside the content region.
+		overflow->Arrange(cui::core::Rect{
+			0.0f, -16.0f,
+			contentBounds.width, contentBounds.height + 16.0f });
+		const D2D1_POINT_2F overflowPoint = D2D1::Point2F(
+			contentBounds.x + 4.0f, contentBounds.y - 4.0f);
+		CUI_EXPECT_TRUE(overflow->GetAbsoluteRectDip().Contains(
+			cui::core::Point{ overflowPoint.x, overflowPoint.y }));
+		CUI_EXPECT_FALSE(overflow->IsRenderPointInsideClip(overflowPoint));
+		CUI_EXPECT_TRUE(overflow->IsRenderPointInsideClip(D2D1::Point2F(
+			contentBounds.x + 4.0f, contentBounds.y + 4.0f)));
 	});
 
 	runner.Add("Popup placement target owns its toggle input transaction", []
@@ -10167,6 +13764,25 @@ int main()
 			DismissTransientPresentationsForPointer(host, combo);
 		CUI_EXPECT_TRUE(combo->GetIsDropDownOpen());
 
+		auto* secondItem = combo->GetItem(1);
+		CUI_EXPECT_TRUE(secondItem != nullptr);
+		CUI_EXPECT_TRUE(secondItem && cui::framework::InputAccess::DispatchInput(
+			*secondItem, PointerInput(
+				InputReportKind::PointerDown, MouseButton::Left,
+				10, 10, MouseButton::Left)));
+		CUI_EXPECT_TRUE(secondItem && secondItem->IsMouseCaptured());
+		CUI_EXPECT_FALSE(combo->IsMouseCaptured());
+		CUI_EXPECT_TRUE(secondItem && cui::framework::InputAccess::DispatchInput(
+			*secondItem, PointerInput(
+				InputReportKind::PointerUp, MouseButton::Left, 10, 10)));
+		CUI_EXPECT_EQ(1, combo->SelectedIndex);
+		CUI_EXPECT_FALSE(combo->GetIsDropDownOpen());
+		CUI_EXPECT_FALSE(secondItem && secondItem->IsMouseCaptured());
+
+		combo->SetIsDropDownOpen(true);
+		host.UpdateLayout();
+		CUI_EXPECT_TRUE(combo->GetIsDropDownOpen());
+
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			*combo, PointerInput(
 				InputReportKind::PointerDown, MouseButton::Left,
@@ -10176,6 +13792,120 @@ int main()
 			*combo, PointerInput(
 				InputReportKind::PointerUp, MouseButton::Left,
 				10, 10)));
+		CUI_EXPECT_FALSE(combo->GetIsDropDownOpen());
+
+		// Exercise the native Window hit-test/staging/capture path. Directly
+		// dispatching to ComboBoxItem above does not cover the real Popup input
+		// route used by a mouse click.
+		(void)::SetFocus(host.Handle);
+		CUI_EXPECT_TRUE(::GetFocus() == host.Handle);
+		combo->SetIsDropDownOpen(true);
+		host.UpdateLayout();
+		auto* firstItem = combo->GetItem(0);
+		CUI_EXPECT_TRUE(firstItem != nullptr);
+		CUI_EXPECT_TRUE(host.Handle != nullptr);
+		if (firstItem && host.Handle)
+		{
+			const auto bounds = firstItem->GetAbsoluteRectDip();
+			const auto client = host.ContentDipRectToClientPixels(D2D1::RectF(
+				bounds.x, bounds.y, bounds.Right(), bounds.Bottom()));
+			const int x = (client.left + client.right) / 2;
+			const int y = (client.top + client.bottom) / 2;
+			auto* nativeHit = cui::framework::WindowAccess::HitTestControlAt(
+				host,
+				static_cast<int>(bounds.x + bounds.width * 0.5f),
+				static_cast<int>(bounds.y + bounds.height * 0.5f));
+			CUI_EXPECT_TRUE(nativeHit != nullptr);
+			bool hitFirstItem = false;
+			bool hitPopup = false;
+			for (auto* current = nativeHit; current;
+				current = current->GetVisualParent())
+			{
+				if (current == firstItem) hitFirstItem = true;
+				if (current == popup) hitPopup = true;
+			}
+			CUI_EXPECT_TRUE(hitFirstItem);
+			CUI_EXPECT_TRUE(hitPopup);
+			const LPARAM point = MAKELPARAM(x, y);
+			(void)::SendMessageW(
+				host.Handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+			CUI_EXPECT_TRUE(host.GetMouseCaptured() == firstItem);
+			CUI_EXPECT_TRUE(combo->GetIsDropDownOpen());
+			(void)::SendMessageW(host.Handle, WM_LBUTTONUP, 0, point);
+			CUI_EXPECT_TRUE(host.GetMouseCaptured() == nullptr);
+		}
+		CUI_EXPECT_EQ(0, combo->SelectedIndex);
+		CUI_EXPECT_FALSE(combo->GetIsDropDownOpen());
+	});
+
+	runner.Add("Template-owned generated ComboBox items commit native mouse selection", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Template-owned ComboBox native input");
+		SetDeclaredWindowGeometry(
+			host, 0.0f, 0.0f, 320.0f, 180.0f);
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto* combo = AddTestVisual<ComboBox>(
+			*content, L"", 12, 12, 180, 30);
+
+		// Model Generic.xaml's Grid -> Popup -> ScrollViewer ->
+		// ItemsPresenter shape instead of the native fallback where Popup is
+		// itself the template root.
+		auto templateRoot = std::make_unique<Grid>();
+		auto* templateRootRaw = templateRoot.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*templateRootRaw, combo);
+		auto popupOwner = std::make_unique<Popup>();
+		auto* popup = popupOwner.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*popup, combo);
+		auto scrollOwner = std::make_unique<ScrollViewer>();
+		auto* scroll = scrollOwner.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*scroll, combo);
+		auto presenterOwner = std::make_unique<ItemsPresenter>();
+		auto* presenter = presenterOwner.get();
+		cui::framework::TreeAccess::SetTemplatedParent(*presenter, combo);
+		scroll->SetVisualContent(std::move(presenterOwner));
+		popup->SetChild(std::move(scrollOwner));
+		templateRootRaw->AddOwned(std::move(popupOwner));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::SetTemplateRoot(
+			*combo, std::move(templateRoot)) == templateRootRaw);
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterItemsPresenter(
+			*combo, presenter));
+		auto choices = std::make_shared<ObservableBindingList>(L"Choice");
+		for (const wchar_t* text : { L"One", L"Two", L"Three" })
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Text", text));
+			choices->Items.emplace_back(record);
+		}
+		combo->SetDisplayMemberPath(L"Text");
+		combo->SetItemsSource(BindingListReference(choices));
+		CUI_EXPECT_TRUE(combo->SelectItem(0));
+		host.UpdateLayout();
+		(void)::SetFocus(host.Handle);
+		CUI_EXPECT_TRUE(::GetFocus() == host.Handle);
+
+		auto click = [&](Control& target)
+		{
+			const auto bounds = target.GetAbsoluteRectDip();
+			const auto client = host.ContentDipRectToClientPixels(D2D1::RectF(
+				bounds.x, bounds.y, bounds.Right(), bounds.Bottom()));
+			const LPARAM point = MAKELPARAM(
+				(client.left + client.right) / 2,
+				(client.top + client.bottom) / 2);
+			(void)::SendMessageW(
+				host.Handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+			(void)::SendMessageW(host.Handle, WM_LBUTTONUP, 0, point);
+		};
+		click(*combo);
+		CUI_EXPECT_TRUE(combo->GetIsDropDownOpen());
+		host.UpdateLayout();
+		auto* second = combo->GetGeneratedItem(1);
+		CUI_EXPECT_TRUE(second != nullptr);
+		if (second) click(*second);
+		CUI_EXPECT_EQ(1, combo->SelectedIndex);
 		CUI_EXPECT_FALSE(combo->GetIsDropDownOpen());
 	});
 
@@ -10559,6 +14289,211 @@ int main()
 		CUI_EXPECT_EQ(0, contextMenu.ItemCount());
 	});
 
+	runner.Add("Menu popup projects submenu header text into its transient scene", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Name="root" Width="320" Height="160">
+  <Canvas Width="320" Height="160">
+    <Menu x:Name="menu" Canvas.Left="0" Canvas.Top="0"
+          Width="240" Height="28">
+      <Menu.Items>
+        <MenuItem x:Name="file" Header="File">
+          <MenuItem.Items>
+            <MenuItem x:Name="open" Header="Open"/>
+            <Separator/>
+            <MenuItem Header="Exit"/>
+          </MenuItem.Items>
+        </MenuItem>
+      </Menu.Items>
+    </Menu>
+  </Canvas>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto find = [&](const wchar_t* name) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[&](const auto& control)
+				{ return control && control->Name == name; });
+			return found == tree.Controls.end()
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* file = dynamic_cast<MenuItem*>(find(L"file"));
+		auto* open = dynamic_cast<MenuItem*>(find(L"open"));
+		CUI_EXPECT_TRUE(tree.ContentRoot && file && open);
+		if (!tree.ContentRoot || !file || !open) return;
+		Window root;
+		ConfigureTestControl(root, L"Menu popup transient scene");
+		SetDeclaredWindowGeometry(root, 0.0f, 0.0f, 320.0f, 160.0f);
+		auto* contentRoot = tree.ContentRoot.get();
+		CUI_EXPECT_TRUE(root.SetVisualContent(
+			std::move(tree.ContentRoot)) == contentRoot);
+
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 320.0f, 160.0f },
+			cui::core::Size{ 320.0f, 160.0f } };
+		(void)contentRoot->Measure(viewport);
+		contentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 320.0f, 160.0f });
+		contentRoot->UpdateLayout();
+		auto* itemsHost = cui::framework::TemplateAccess::GetItemsHost(*file);
+		CUI_EXPECT_TRUE(itemsHost
+			&& itemsHost->ParticipatesInPresentationScene());
+		file->IsSubmenuOpen = true;
+		(void)contentRoot->Measure(viewport);
+		contentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 320.0f, 160.0f });
+		contentRoot->UpdateLayout();
+
+		auto* popup = dynamic_cast<Popup*>(file
+			->FindDeclarativeTemplatePart(L"PART_Popup"));
+		auto* itemsPresenter = dynamic_cast<ItemsPresenter*>(file
+			->FindDeclarativeTemplatePart(L"PART_ItemsPresenter"));
+		auto* headerPresenter = dynamic_cast<ContentPresenter*>(open
+			->FindDeclarativeTemplatePart(L"PART_HeaderPresenter"));
+		auto* headerText = headerPresenter
+			? dynamic_cast<Label*>(headerPresenter->GetGeneratedContent())
+			: nullptr;
+		CUI_EXPECT_TRUE(popup && itemsPresenter && headerPresenter && headerText);
+		if (!popup || !itemsPresenter || !headerPresenter || !headerText) return;
+		CUI_EXPECT_TRUE(popup->GetIsOpen());
+		CUI_EXPECT_TRUE(itemsHost
+			&& itemsHost->ParticipatesInPresentationScene());
+		CUI_EXPECT_TRUE(headerText->ParticipatesInPresentationScene());
+		CUI_EXPECT_TRUE(headerText->GetIsVisible());
+		CUI_EXPECT_EQ(std::wstring(L"Open"), headerText->Text);
+		CUI_EXPECT_TRUE(headerText->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(headerText->GetActualSizeDip().height > 0.0f);
+		const auto foreground = headerText->GetComputedForegroundBrush();
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid, foreground.Kind);
+		CUI_EXPECT_TRUE(foreground.Color.a * foreground.Opacity > 0.0f);
+
+		(void)cui::framework::WindowAccess::PresentationOrder(
+			root, headerText);
+		PresentationNodeSnapshot snapshot;
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			TryGetPresentationNodeSnapshot(root, headerText, snapshot));
+		CUI_EXPECT_TRUE(snapshot.Overlay);
+	});
+
+	runner.Add("ContextMenu nested submenu projects into a second transient scene", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Name="root" Width="360" Height="220">
+  <Canvas Width="360" Height="220">
+    <Border x:Name="placement" Canvas.Left="16" Canvas.Top="16"
+            Width="280" Height="160"/>
+    <ContextMenu x:Name="context">
+      <ContextMenu.Items>
+        <MenuItem Header="Refresh"/>
+        <MenuItem x:Name="more" Header="More">
+          <MenuItem.Items>
+            <MenuItem x:Name="copy" Header="Copy info"/>
+            <MenuItem Header="About"/>
+          </MenuItem.Items>
+        </MenuItem>
+      </ContextMenu.Items>
+    </ContextMenu>
+  </Canvas>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto find = [&](const wchar_t* name) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[&](const auto& control)
+				{ return control && control->Name == name; });
+			return found == tree.Controls.end()
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* placement = find(L"placement");
+		auto* context = dynamic_cast<ContextMenu*>(find(L"context"));
+		auto* more = dynamic_cast<MenuItem*>(find(L"more"));
+		auto* copy = dynamic_cast<MenuItem*>(find(L"copy"));
+		CUI_EXPECT_TRUE(tree.ContentRoot && placement && context && more && copy);
+		if (!tree.ContentRoot || !placement || !context || !more || !copy) return;
+
+		Window root;
+		ConfigureTestControl(root, L"ContextMenu nested transient scene");
+		SetDeclaredWindowGeometry(root, 0.0f, 0.0f, 360.0f, 220.0f);
+		auto* contentRoot = tree.ContentRoot.get();
+		CUI_EXPECT_TRUE(root.SetVisualContent(
+			std::move(tree.ContentRoot)) == contentRoot);
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 360.0f, 220.0f },
+			cui::core::Size{ 360.0f, 220.0f } };
+		(void)contentRoot->Measure(viewport);
+		contentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 360.0f, 220.0f });
+		contentRoot->UpdateLayout();
+		CUI_EXPECT_TRUE(context->GetPresentationWindow() == &root);
+		CUI_EXPECT_TRUE(placement->GetPresentationWindow() == &root);
+		CUI_EXPECT_EQ(2, context->ItemCount());
+		(void)context->ApplyTemplate();
+		CUI_EXPECT_TRUE(context->GetItem(0) != nullptr);
+		// A hidden native test window cannot accept OS keyboard focus. Keep this
+		// projection test focused on the transient-scene hierarchy; keyboard
+		// navigation is covered independently by the menu input tests.
+		context->GetItem(0)->Focusable = false;
+		more->Focusable = false;
+
+		// Exercise the same bottom-right placement used by the gallery's system
+		// page so the child Popup must flip/clamp into the viewport.
+		context->ShowAt(placement, 244, 128);
+		CUI_EXPECT_TRUE(context->GetIsOpen());
+		more->IsSubmenuOpen = true;
+		(void)contentRoot->Measure(viewport);
+		contentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 360.0f, 220.0f });
+		contentRoot->UpdateLayout();
+
+		auto* popup = dynamic_cast<Popup*>(more
+			->FindDeclarativeTemplatePart(L"PART_Popup"));
+		auto* headerPresenter = dynamic_cast<ContentPresenter*>(copy
+			->FindDeclarativeTemplatePart(L"PART_HeaderPresenter"));
+		auto* headerText = headerPresenter
+			? dynamic_cast<Label*>(headerPresenter->GetGeneratedContent())
+			: nullptr;
+		CUI_EXPECT_TRUE(context->GetIsOpen());
+		CUI_EXPECT_TRUE(more->IsSubmenuOpen);
+		CUI_EXPECT_TRUE(popup && popup->GetIsOpen());
+		CUI_EXPECT_EQ(2ULL,
+			cui::framework::WindowAccess::GetTransientPresentationCount(root));
+		CUI_EXPECT_TRUE(headerText && headerText->ParticipatesInPresentationScene());
+		if (!popup || !headerText) return;
+		CUI_EXPECT_TRUE(headerText->GetActualSizeDip().width > 0.0f);
+		const auto popupRect = popup->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_TRUE(popupRect.right > popupRect.left
+			&& popupRect.bottom > popupRect.top);
+		CUI_EXPECT_TRUE(popupRect.left >= 0.0f && popupRect.top >= 0.0f);
+		CUI_EXPECT_TRUE(popupRect.right <= 360.0f
+			&& popupRect.bottom <= 220.0f);
+		(void)cui::framework::WindowAccess::PresentationOrder(
+			root, headerText);
+		PresentationNodeSnapshot snapshot;
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			TryGetPresentationNodeSnapshot(root, headerText, snapshot));
+		CUI_EXPECT_TRUE(snapshot.Overlay);
+	});
+
 	runner.Add("ComboBox metadata preserves selector and WPF popup bindings", []
 	{
 		ComboBox combo; ConfigureTestControl(combo, L"", 0, 0, 180, 28);
@@ -10811,39 +14746,71 @@ int main()
 		CUI_EXPECT_EQ(1.0, *volume->Maximum);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Choice, renderMode->Editor);
 		CUI_EXPECT_EQ(5ULL, renderMode->Choices.size());
+		CUI_EXPECT_NEAR(0.5, media.Volume, 0.0000001);
+
+		const std::array mediaProperties{
+			&MediaPlayer::AutoPlayProperty(),
+			&MediaPlayer::LoopProperty(),
+			&MediaPlayer::VolumeProperty(),
+			&MediaPlayer::PlaybackRateProperty(),
+			&MediaPlayer::EnableHardwareDecodeProperty(),
+			&MediaPlayer::PreferNv12VideoOutputProperty(),
+			&MediaPlayer::RenderModeProperty()
+		};
+		for (const auto* property : mediaProperties)
+		{
+			const auto* metadata = media.GetPropertyMetadata(*property);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata && metadata->UsesGenericObservation());
+		}
+		const auto* volumeMetadata = media.GetPropertyMetadata(
+			MediaPlayer::VolumeProperty());
+		if (!volumeMetadata) return;
+		int volumeObservations = 0;
+		auto volumeObservation = volumeMetadata->Subscribe(
+			media, [&] { ++volumeObservations; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(volumeObservation.Connected());
+		media.AutoPlay = false;
+		CUI_EXPECT_EQ(0, volumeObservations);
 
 		int propertyChanges = 0;
 		auto propertyConnection = media.OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{
-				if (args.PropertyName == L"Volume") ++propertyChanges;
+				if (args.Property == &MediaPlayer::VolumeProperty()) ++propertyChanges;
 			});
 		media.Volume = 2.0;
 		CUI_EXPECT_NEAR(1.0, media.Volume, 0.0000001);
-		CUI_EXPECT_EQ(0, propertyChanges);
+		CUI_EXPECT_EQ(1, propertyChanges);
+		CUI_EXPECT_EQ(1, volumeObservations);
 		media.Volume = 0.35;
 		CUI_EXPECT_NEAR(0.35, media.Volume, 0.0000001);
-		CUI_EXPECT_EQ(1, propertyChanges);
+		CUI_EXPECT_EQ(2, propertyChanges);
+		CUI_EXPECT_EQ(2, volumeObservations);
 		media.PlaybackRate = 12.0f;
 		CUI_EXPECT_NEAR(4.0f, media.PlaybackRate, 0.0001f);
 		CUI_EXPECT_FALSE(media.TrySetPropertyValue(
-			L"RenderMode", BindingValue(99)));
+			MediaPlayer::RenderModeProperty(), BindingValue(99)));
 		CUI_EXPECT_EQ(MediaPlayer::VideoRenderMode::Fit, media.RenderMode);
 
 		ObservableObject source;
 		source.SetValue(L"Level", 0.6);
 		MediaPlayer boundMedia; ConfigureTestControl(boundMedia, 0, 0, 320, 180);
 		auto* volumeBinding = boundMedia.DataBindings.Add(
-			L"Volume", source, L"Level", BindingMode::TwoWay);
+			MediaPlayer::VolumeProperty(), source, L"Level", BindingMode::TwoWay);
 		CUI_EXPECT_TRUE(volumeBinding != nullptr);
+		CUI_EXPECT_TRUE(volumeBinding
+			&& volumeBinding->TargetPropertyIdentity()
+				== &MediaPlayer::VolumeProperty());
 		CUI_EXPECT_TRUE(volumeBinding->IsValid());
 		CUI_EXPECT_NEAR(0.6, boundMedia.Volume, 0.0000001);
 		CUI_EXPECT_TRUE(boundMedia.TrySetCurrentPropertyValue(
-			L"Volume", BindingValue(0.45)));
+			MediaPlayer::VolumeProperty(), BindingValue(0.45)));
 		CUI_EXPECT_NEAR(0.45,
 			source.GetValue<double>(L"Level"), 0.0000001);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
-			boundMedia.GetPropertyValueSource(L"Volume"));
+			boundMedia.GetPropertyValueSource(MediaPlayer::VolumeProperty()));
 
 		CUI_EXPECT_FALSE(media.TryPlay());
 		CUI_EXPECT_FALSE(media.TryPause());
@@ -11194,6 +15161,8 @@ int main()
 			[&](Control*, RoutedEventArgs&) { ++buttonClicks; });
 		CUI_EXPECT_TRUE(earlier->Invoke());
 		CUI_EXPECT_EQ(1, buttonClicks);
+		CUI_EXPECT_TRUE(earlier->HandlesNavigationKey(Key::Space));
+		CUI_EXPECT_FALSE(earlier->HandlesNavigationKey(Key::Return));
 		auto& buttonPeer = earlier->GetAutomationPeer();
 		CUI_EXPECT_EQ(AutomationControlType::Button,
 			buttonPeer.GetAutomationControlType());
@@ -11201,6 +15170,8 @@ int main()
 		CUI_EXPECT_FALSE(buttonPeer.SupportsPattern(AutomationPattern::Toggle));
 
 		CheckBox checkBox; ConfigureTestControl(checkBox, L"_Remember", 0, 0);
+		CUI_EXPECT_TRUE(checkBox.HandlesNavigationKey(Key::Space));
+		CUI_EXPECT_FALSE(checkBox.HandlesNavigationKey(Key::Return));
 		int checkedEvents = 0;
 		int uncheckedEvents = 0;
 		auto checkedConnection = checkBox.Checked.Subscribe(
@@ -11219,6 +15190,42 @@ int main()
 		CUI_EXPECT_EQ(AutomationControlType::CheckBox,
 			checkPeer.GetAutomationControlType());
 		CUI_EXPECT_TRUE(checkPeer.SupportsPattern(AutomationPattern::Toggle));
+		AutomationToggleState toggleState = AutomationToggleState::Off;
+		CUI_EXPECT_TRUE(checkPeer.TryGetToggleState(toggleState));
+		CUI_EXPECT_EQ(AutomationToggleState::Off, toggleState);
+		int automationClicks = 0;
+		int indeterminateEvents = 0;
+		auto automationClickConnection = checkBox.Click.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++automationClicks; });
+		auto indeterminateConnection = checkBox.Indeterminate.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++indeterminateEvents; });
+		checkBox.IsThreeState = true;
+		CUI_EXPECT_EQ(
+			AutomationOperationResult::Succeeded, checkPeer.Toggle());
+		CUI_EXPECT_TRUE(checkPeer.TryGetToggleState(toggleState));
+		CUI_EXPECT_EQ(AutomationToggleState::On, toggleState);
+		CUI_EXPECT_EQ(2, checkedEvents);
+		CUI_EXPECT_EQ(
+			AutomationOperationResult::Succeeded, checkPeer.Toggle());
+		CUI_EXPECT_FALSE(checkBox.IsChecked.HasValue());
+		CUI_EXPECT_TRUE(checkPeer.TryGetToggleState(toggleState));
+		CUI_EXPECT_EQ(AutomationToggleState::Indeterminate, toggleState);
+		CUI_EXPECT_EQ(1, indeterminateEvents);
+		CUI_EXPECT_EQ(
+			AutomationOperationResult::Succeeded, checkPeer.Toggle());
+		CUI_EXPECT_TRUE(checkBox.IsChecked == false);
+		CUI_EXPECT_TRUE(checkPeer.TryGetToggleState(toggleState));
+		CUI_EXPECT_EQ(AutomationToggleState::Off, toggleState);
+		CUI_EXPECT_EQ(0, automationClicks);
+
+		BindingValue nullableValue(NullableBool{});
+		CUI_EXPECT_EQ(
+			BindingValueKind::NullableBool, nullableValue.Kind());
+		NullableBool roundTripped;
+		bool collapsedValue = false;
+		CUI_EXPECT_TRUE(nullableValue.TryGet(roundTripped));
+		CUI_EXPECT_FALSE(roundTripped.HasValue());
+		CUI_EXPECT_FALSE(nullableValue.TryGet(collapsedValue));
 
 		PasswordBox password; ConfigureTestControl(password, L"secret", 0, 0);
 		auto passwordSnapshot = password.GetAccessibilitySnapshot();
@@ -11920,6 +15927,7 @@ int main()
 			L"Scaled", 12, 12, 140, 28);
 		auto* fallback = AddTestVisual<RendererProbe>(*content,
 			L"Theme fallback", 164, 12, 140, 28);
+		const float systemMessageFontSize = form.RenderFontSize();
 		editor->Background = D2D1_COLOR_F{ 0.8f, 0.1f, 0.7f, 1.0f };
 		editor->Foreground = D2D1_COLOR_F{ 0.1f, 0.7f, 0.2f, 1.0f };
 		CUI_EXPECT_TRUE(editor->TrySetPropertyValue(
@@ -11939,7 +15947,8 @@ int main()
 		CUI_EXPECT_FALSE(form.AreSystemAnimationsEnabled());
 		CUI_EXPECT_EQ(1.5f, form.GetTextScaleFactor());
 		CUI_EXPECT_EQ(15.0f, editor->RenderFontSize());
-		CUI_EXPECT_EQ(27.0f, form.RenderFontSize());
+		CUI_EXPECT_NEAR(
+			systemMessageFontSize * 1.5f, form.RenderFontSize(), 0.0001f);
 
 		auto systemColor = [](int index)
 		{
@@ -12409,6 +16418,102 @@ int main()
         CUI_EXPECT_EQ(BindingError::None, binding->LastError());
     });
 
+	runner.Add("Built-in Binding converter identities return stable singletons", []
+	{
+		for (const auto converter : {
+			BuiltInBindingValueConverter::BooleanNegation,
+			BuiltInBindingValueConverter::StringIsNotEmpty,
+			BuiltInBindingValueConverter::StringTrim })
+		{
+			const auto first = GetBuiltInBindingValueConverter(converter);
+			const auto second = GetBuiltInBindingValueConverter(converter);
+			CUI_EXPECT_TRUE(first != nullptr);
+			CUI_EXPECT_TRUE(first.get() == second.get());
+		}
+
+		const auto trim = GetBuiltInBindingValueConverter(
+			BuiltInBindingValueConverter::StringTrim);
+		BindingValue converted;
+		std::wstring text;
+		CUI_EXPECT_TRUE(trim->Convert(
+			BindingValue(L"  compiled  "), {}, converted));
+		CUI_EXPECT_TRUE(converted.TryGetString(text));
+		CUI_EXPECT_EQ(std::wstring(L"compiled"), text);
+	});
+
+	runner.Add("AOT Binding converter catalog strictly resolves typed factories", []
+	{
+		constexpr std::string_view manifest = R"XML(
+<CuiBindingConverters Version="1">
+  <Single Id="Tests.ScaleByParameter" Include="App/BindingConverters.h"
+    Factory="app::CreateScaleByParameter" SourceKind="Double"
+    TargetKind="Any" CanConvertBack="true" />
+  <Multi Id="Tests.FullName" Include="App/BindingConverters.h"
+    Factory="app::CreateFullName" MinimumInputCount="2"
+    TargetKind="String" CanConvertBack="true" />
+</CuiBindingConverters>)XML";
+		DesignerModel::BindingConverterCatalog catalog;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::BindingConverterCatalog::FromXml(
+			manifest, catalog, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(2ULL, catalog.Size());
+
+		const auto* single = catalog.Find(
+			L"tests.scalebyparameter",
+			DesignerModel::BindingConverterCatalogKind::Single);
+		const auto* multi = catalog.Find(
+			L"Tests.FullName",
+			DesignerModel::BindingConverterCatalogKind::Multi);
+		CUI_EXPECT_TRUE(single != nullptr);
+		CUI_EXPECT_TRUE(multi != nullptr);
+		CUI_EXPECT_TRUE(catalog.Find(
+			L"Tests.ScaleByParameter",
+			DesignerModel::BindingConverterCatalogKind::Multi) == nullptr);
+		CUI_EXPECT_EQ(BindingValueKind::Double, single->SourceKind);
+		CUI_EXPECT_EQ(BindingValueKind::Empty, single->TargetKind);
+		CUI_EXPECT_TRUE(single->CanConvertBack);
+		CUI_EXPECT_EQ(std::string("::app::CreateScaleByParameter()"),
+			single->FactoryCallExpression());
+		CUI_EXPECT_EQ(2ULL, multi->MinimumInputCount);
+		CUI_EXPECT_EQ(BindingValueKind::String, multi->TargetKind);
+		CUI_EXPECT_EQ(std::string("::app::CreateFullName()"),
+			multi->FactoryCallExpression());
+		const auto includes = catalog.Includes();
+		CUI_EXPECT_EQ(1ULL, includes.size());
+		CUI_EXPECT_EQ(std::string("App/BindingConverters.h"), includes.front());
+
+		auto rejects = [&](std::string_view xml)
+		{
+			DesignerModel::BindingConverterCatalog unchanged = catalog;
+			std::wstring parseError;
+			CUI_EXPECT_FALSE(DesignerModel::BindingConverterCatalog::FromXml(
+				xml, unchanged, &parseError));
+			CUI_EXPECT_TRUE(!parseError.empty());
+			CUI_EXPECT_EQ(catalog.Entries(), unchanged.Entries());
+		};
+		rejects(R"XML(<CuiBindingConverters Version="1">
+  <Single Id="Tests.Duplicate" Include="Converters.h"
+    Factory="app::CreateFirst" SourceKind="Any" TargetKind="Any"
+    CanConvertBack="false" />
+  <Multi Id="tests.duplicate" Include="Converters.h"
+    Factory="app::CreateSecond" MinimumInputCount="2" TargetKind="String"
+    CanConvertBack="false" />
+</CuiBindingConverters>)XML");
+		rejects(R"XML(<CuiBindingConverters Version="1">
+  <Single Id="Tests.BadKind" Include="Converters.h"
+    Factory="app::CreateBadKind" SourceKind="Decimal" TargetKind="String"
+    CanConvertBack="false" />
+</CuiBindingConverters>)XML");
+		rejects(R"XML(<CuiBindingConverters Version="1">
+  <Single Id="Tests.BadInclude" Include="../Converters.h"
+    Factory="app::CreateBadInclude" SourceKind="Any" TargetKind="Any"
+    CanConvertBack="false" />
+</CuiBindingConverters>)XML");
+		rejects(R"XML(<!DOCTYPE CuiBindingConverters [<!ENTITY injected "bad">]>
+<CuiBindingConverters Version="1" />)XML");
+	});
+
     runner.Add("Binding converter registry exposes built-in converters", []
     {
         const auto converters = BindingValueConverterRegistry::GetConverters();
@@ -12595,6 +16700,214 @@ int main()
         CUI_EXPECT_EQ(BindingError::None, binding->LastError());
     });
 
+	runner.Add("Compiled Binding paths stay token-only through nested TwoWay rebinding", []
+	{
+		static constexpr auto profileProperty =
+			MakeBindingSourcePropertyToken(L"Profile");
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr CompiledBindingPathStep namePathSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Object, profileProperty, 0 },
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Write
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView namePath{ namePathSteps };
+
+		auto firstProfile = std::make_shared<TokenOnlyBindingSource>();
+		firstProfile->Define(nameProperty, BindingValue(L"Alice"));
+		auto source = std::make_shared<TokenOnlyBindingSource>();
+		source->Define(profileProperty,
+			BindingValue(BindingSourceReference(firstProfile)));
+
+		TextBox target;
+		Binding* binding = target.DataBindings.Add(
+			TextBox::TextProperty(), BindingSourceReference(source), namePath,
+			BindingMode::TwoWay, DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding->UsesCompiledSourcePath());
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), target.Text);
+
+		int observedChanges = 0;
+		auto observation = ObserveBindingPaths(
+			BindingSourceReference(source), { namePath },
+			[&] { ++observedChanges; });
+		CUI_EXPECT_TRUE(firstProfile->Set(nameProperty, BindingValue(L"Bob")));
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), target.Text);
+		CUI_EXPECT_EQ(1, observedChanges);
+
+		auto secondProfile = std::make_shared<TokenOnlyBindingSource>();
+		secondProfile->Define(nameProperty, BindingValue(L"Carol"));
+		CUI_EXPECT_TRUE(source->Set(profileProperty,
+			BindingValue(BindingSourceReference(secondProfile))));
+		CUI_EXPECT_EQ(std::wstring(L"Carol"), target.Text);
+		CUI_EXPECT_EQ(2, observedChanges);
+
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			TextBox::TextProperty(), BindingValue(L"Dora")));
+		BindingValue storedName;
+		CUI_EXPECT_TRUE(secondProfile->TryGetValue(nameProperty, storedName));
+		CUI_EXPECT_EQ(std::wstring(L"Dora"), storedName.ToString());
+		CUI_EXPECT_TRUE(secondProfile->TokenSetCalls > 0);
+
+		CUI_EXPECT_TRUE(firstProfile->Set(
+			nameProperty, BindingValue(L"stale")));
+		CUI_EXPECT_EQ(std::wstring(L"Dora"), target.Text);
+		for (const auto* tokenSource : {
+			source.get(), firstProfile.get(), secondProfile.get() })
+		{
+			CUI_EXPECT_EQ(0, tokenSource->NameGetCalls);
+			CUI_EXPECT_EQ(0, tokenSource->NameSetCalls);
+			CUI_EXPECT_EQ(0, tokenSource->NameMetadataCalls);
+			CUI_EXPECT_EQ(0, tokenSource->DiscoveryCalls);
+		}
+		CUI_EXPECT_EQ(BindingError::None, binding->LastError());
+	});
+
+	runner.Add("Direct compiled Binding endpoints bypass IBindingSource dispatch", []
+	{
+		struct DirectSourceProbe final
+		{
+			std::wstring Value = L"Alice";
+			PropertyChangedEvent Changed;
+			std::shared_ptr<const void> Lifetime = std::make_shared<int>(0);
+			int ReadCalls = 0;
+			int WriteCalls = 0;
+			int SubscribeCalls = 0;
+		};
+
+		static const CompiledSourceOps operations{
+			+[](const CompiledSourceHandle&)
+			{
+				return CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Write
+					| CompiledBindingPathCapabilities::Observe;
+			},
+			+[](const CompiledSourceHandle&)
+			{
+				return BindingValueKind::String;
+			},
+			+[](const CompiledSourceHandle& source)
+				-> std::weak_ptr<const void>
+			{
+				return static_cast<DirectSourceProbe*>(source.Object)->Lifetime;
+			},
+			+[](const CompiledSourceHandle& source, BindingValue& out)
+			{
+				auto& probe = *static_cast<DirectSourceProbe*>(source.Object);
+				++probe.ReadCalls;
+				out = BindingValue(probe.Value);
+				return true;
+			},
+			+[](const CompiledSourceHandle& source, const BindingValue& value)
+			{
+				auto& probe = *static_cast<DirectSourceProbe*>(source.Object);
+				++probe.WriteCalls;
+				std::wstring next;
+				if (!value.TryGet(next)) return false;
+				if (probe.Value == next) return true;
+				probe.Value = std::move(next);
+				probe.Changed.Notify(BindingSourcePropertyToken{});
+				return true;
+			},
+			+[](const CompiledSourceHandle& source,
+				DependencyPropertyChangeHandler handler)
+			{
+				auto& probe = *static_cast<DirectSourceProbe*>(source.Object);
+				++probe.SubscribeCalls;
+				return probe.Changed.Subscribe(
+					[handler = std::move(handler)](const PropertyChangedEventArgs&)
+					{
+						handler();
+					});
+			},
+			nullptr,
+			nullptr
+		};
+
+		DirectSourceProbe source;
+		const CompiledSourceHandle endpoint{ &source, nullptr, &operations };
+		TextBox target;
+		Binding* binding = target.DataBindings.Add(
+			TextBox::TextProperty(), endpoint, BindingMode::TwoWay,
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding->UsesDirectSource());
+		CUI_EXPECT_FALSE(binding->UsesCompiledSourcePath());
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), target.Text);
+		CUI_EXPECT_EQ(1, source.ReadCalls);
+		CUI_EXPECT_EQ(1, source.SubscribeCalls);
+
+		source.Value = L"Bob";
+		source.Changed.Notify(BindingSourcePropertyToken{});
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), target.Text);
+		CUI_EXPECT_EQ(2, source.ReadCalls);
+
+		CUI_EXPECT_TRUE(target.TrySetCurrentPropertyValue(
+			TextBox::TextProperty(), BindingValue(L"Carol")));
+		CUI_EXPECT_EQ(std::wstring(L"Carol"), source.Value);
+		CUI_EXPECT_EQ(1, source.WriteCalls);
+		CUI_EXPECT_EQ(BindingError::None, binding->LastError());
+	});
+
+	runner.Add("Compiled Binding list index paths read and observe without names", []
+	{
+		static constexpr auto peopleProperty =
+			MakeBindingSourcePropertyToken(L"People");
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr CompiledBindingPathStep firstNameSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Object, peopleProperty, 0 },
+			{ CompiledBindingPathStepKind::ListIndex,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Object, {}, 0 },
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView firstNamePath{ firstNameSteps };
+
+		auto item = std::make_shared<TokenOnlyBindingSource>();
+		item->Define(nameProperty, BindingValue(L"Ada"));
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		people->Items.push_back(BindingSourceReference(item));
+		auto source = std::make_shared<TokenOnlyBindingSource>();
+		source->Define(peopleProperty,
+			BindingValue(BindingListReference(people)), false);
+
+		BindingValue value;
+		CUI_EXPECT_TRUE(TryGetBindingPathValue(
+			*source, firstNamePath, value));
+		CUI_EXPECT_EQ(std::wstring(L"Ada"), value.ToString());
+
+		int observedChanges = 0;
+		auto observation = ObserveBindingPaths(
+			BindingSourceReference(source), { firstNamePath },
+			[&] { ++observedChanges; });
+		CUI_EXPECT_TRUE(item->Set(nameProperty, BindingValue(L"Grace")));
+		CUI_EXPECT_EQ(1, observedChanges);
+		people->Items.clear();
+		CUI_EXPECT_EQ(2, observedChanges);
+		CUI_EXPECT_EQ(0, source->NameGetCalls);
+		CUI_EXPECT_EQ(0, source->NameMetadataCalls);
+		CUI_EXPECT_EQ(0, source->DiscoveryCalls);
+		CUI_EXPECT_EQ(0, item->NameGetCalls);
+		CUI_EXPECT_EQ(0, item->NameMetadataCalls);
+		CUI_EXPECT_EQ(0, item->DiscoveryCalls);
+	});
+
     runner.Add("Binding source paths recover when intermediates appear", []
     {
         ObservableObject source;
@@ -12729,6 +17042,15 @@ int main()
 			{ L"Profile..Name", BindingValueKind::String }
 		};
 		CUI_EXPECT_FALSE(DesignerDataContextSchemaUtils::Validate(invalidPath, &error));
+		BindingValueKind nullableKind = BindingValueKind::Empty;
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::TryParseValueKind(
+			L"NullableBool", nullableKind));
+		CUI_EXPECT_EQ(BindingValueKind::NullableBool, nullableKind);
+		DesignerDataContextSchema nullableSchema{
+			{ L"OptionalFlag", BindingValueKind::NullableBool }
+		};
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Validate(
+			nullableSchema, &error));
 
 		DesignerDataContextProperty people{
 			L"People", BindingValueKind::Object, true, false, true };
@@ -13238,6 +17560,26 @@ int main()
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
 			xml, fromXml, &error));
 		CUI_EXPECT_EQ(document, fromXml);
+
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		const auto staticCpp = CodeGenerator(
+			L"IndexerWindow", document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("IndexerWindow");
+		for (const auto* marker : {
+			"static constexpr CompiledBindingPathStep "
+				"__cuiCompiledBindingPath_",
+			"CompiledBindingPathStepKind::ListIndex",
+			"CompiledBindingPathStepKind::Property",
+			"BindingSourcePropertyToken{",
+			"CompiledBindingPathView{ __cuiCompiledBindingPath_" })
+			CUI_EXPECT_TRUE(staticCpp.find(marker) != std::string::npos);
+		for (const auto* forbidden : {
+			"DataContextSource(), L\"People[0].Name\"",
+			"DataContextSource(), L\"Settings['accent.color']\"",
+			"DataContextSource(), L\"Settings[title]\"",
+			"BindingValueConverterRegistry::Create" })
+			CUI_EXPECT_TRUE(staticCpp.find(forbidden) == std::string::npos);
 
 		auto people = std::make_shared<ObservableBindingList>(L"Person");
 		auto settings = std::make_shared<ObservableObject>();
@@ -14130,9 +18472,10 @@ int main()
 			? dynamic_cast<Label*>(updatedRow->GetVisualChild(1)) : nullptr;
 		CUI_EXPECT_TRUE(updatedRole != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"Alicia"), updatedRole->Text);
-		CUI_EXPECT_FALSE(
-			CodeGenerator::ValidateDocument(updated, &error));
-		CUI_EXPECT_TRUE(error.find(L"DataTemplate") != std::wstring::npos);
+		// AOT now shares the same typed MultiBinding lowering used by the
+		// runtime materializer, so this formerly Design-only document is a valid
+		// static contract as well.
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(updated, &error));
 	});
 
 	runner.Add("Implicit DataTemplates select by type and honor lexical scope", []
@@ -14914,8 +19257,9 @@ int main()
 		DesignerModel::RuntimeDocumentLoadOptions options;
 		options.DataContext = state;
 		DesignerModel::RuntimeDocument runtime;
-		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
-			document, runtime, options, &error));
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
 		auto* items = dynamic_cast<ItemsControl*>(
 			runtime.FindControlByName(L"people"));
 		auto* combo = dynamic_cast<ComboBox*>(
@@ -17720,9 +22064,14 @@ int main()
 			auto* borderChrome = dynamic_cast<Border*>(chrome);
 			CUI_EXPECT_TRUE(borderChrome != nullptr);
 			if (borderChrome)
+			{
 				CUI_EXPECT_EQ(
 					Thickness(2.5f), borderChrome->BorderThickness);
-			CUI_EXPECT_TRUE(chrome->FindPropertyMetadata(L"CornerRadius") == nullptr);
+				CUI_EXPECT_TRUE(
+					chrome->FindPropertyMetadata(L"CornerRadius") != nullptr);
+				CUI_EXPECT_EQ(
+					::CornerRadius{}, borderChrome->CornerRadius);
+			}
 			auto* caption = dynamic_cast<Label*>(
 				button->FindDeclarativeTemplatePart(L"caption"));
 			CUI_EXPECT_TRUE(caption != nullptr);
@@ -18646,6 +22995,110 @@ int main()
   <Style TargetType="ListBoxItem"><Setter Property="Template"
     Value="{StaticResource ButtonTemplate}" /></Style>
 </Window.Resources></Window>)XAML", L"不兼容");
+	});
+
+	runner.Add("Theme template keyed styles outrank consumer implicit templates", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Name="ThemeScopeWindow">
+  <Window.Resources>
+    <ControlTemplate TargetType="TextBox">
+      <Grid x:Name="consumerImplicitTextBoxRoot" />
+    </ControlTemplate>
+    <ControlTemplate x:Key="consumerCollisionTextBoxTemplate"
+                     TargetType="TextBox">
+      <Grid x:Name="consumerCollisionTextBoxRoot" />
+    </ControlTemplate>
+    <Style x:Key="CuiComboBoxEditableTextBoxStyle" TargetType="TextBox">
+      <Setter Property="Template"
+              Value="{StaticResource consumerCollisionTextBoxTemplate}" />
+    </Style>
+    <Style x:Key="PaddingOnlyTextBoxStyle" TargetType="TextBox">
+      <Setter Property="Padding" Value="9" />
+    </Style>
+  </Window.Resources>
+  <StackPanel>
+    <ComboBox x:Name="themeCombo" DesignId="1" IsEditable="true" />
+    <TextBox x:Name="consumerImplicitTextBox" DesignId="2" />
+    <TextBox x:Name="styledFallbackTextBox" DesignId="3"
+             Style="{StaticResource PaddingOnlyTextBoxStyle}" />
+  </StackPanel>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+
+		auto* combo = tree.ContentRoot
+			? dynamic_cast<ComboBox*>(
+				tree.ContentRoot->FindControlByDesignId(1))
+			: nullptr;
+		CUI_EXPECT_TRUE(combo != nullptr);
+		auto* editor = combo
+			? dynamic_cast<TextBox*>(combo->FindDeclarativeTemplatePart(
+				L"PART_EditableTextBox"))
+			: nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			editor ? editor->GetPropertyValueSource(L"Template")
+				: DependencyPropertyValueSource::Default);
+		CUI_EXPECT_TRUE(editor && editor->FindDeclarativeTemplatePart(
+			L"PART_ContentHost") != nullptr);
+		CUI_EXPECT_TRUE(editor && editor->FindDeclarativeTemplatePart(
+			L"consumerImplicitTextBoxRoot") == nullptr);
+		CUI_EXPECT_TRUE(editor && editor->FindDeclarativeTemplatePart(
+			L"consumerCollisionTextBoxRoot") == nullptr);
+
+		auto* consumerImplicit = tree.ContentRoot
+			? dynamic_cast<TextBox*>(
+				tree.ContentRoot->FindControlByDesignId(2))
+			: nullptr;
+		CUI_EXPECT_TRUE(consumerImplicit != nullptr);
+		CUI_EXPECT_TRUE(consumerImplicit
+			&& consumerImplicit->FindDeclarativeTemplatePart(
+				L"consumerImplicitTextBoxRoot") != nullptr);
+
+		auto* styledFallback = tree.ContentRoot
+			? dynamic_cast<TextBox*>(
+				tree.ContentRoot->FindControlByDesignId(3))
+			: nullptr;
+		CUI_EXPECT_TRUE(styledFallback != nullptr);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			styledFallback
+				? styledFallback->GetPropertyValueSource(L"Template")
+				: DependencyPropertyValueSource::Default);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			styledFallback
+				? styledFallback->GetPropertyValueSource(L"Padding")
+				: DependencyPropertyValueSource::Default);
+		CUI_EXPECT_TRUE(styledFallback
+			&& styledFallback->FindDeclarativeTemplatePart(
+				L"PART_TextBoxRoot") != nullptr);
+		CUI_EXPECT_TRUE(styledFallback
+			&& styledFallback->FindDeclarativeTemplatePart(
+				L"consumerImplicitTextBoxRoot") == nullptr);
+
+		const std::string missingStyleXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <TextBox Style="{StaticResource MissingTextBoxStyle}" />
+</Window>)XAML";
+		DesignerModel::DesignDocument missingStyleDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			missingStyleXaml, missingStyleDocument, &error));
+		CuiRuntime::XamlObjectTree rejectedTree;
+		CUI_EXPECT_FALSE(CuiRuntime::XamlObjectMaterializer::Materialize(
+			missingStyleDocument, rejectedTree, &error));
+		CUI_EXPECT_TRUE(error.find(L"Style StaticResource 不存在")
+			!= std::wstring::npos);
 	});
 
 	runner.Add("ComboBoxItem templates own data content and popup states", []
@@ -20193,6 +24646,8 @@ int main()
 			CUI_EXPECT_TRUE(componentStyleSheet->Resolve(ordinaryPanel).Setters.empty());
 		auto* templateRoot = tree.ContentRoot->GetVisualChild(0);
 		CUI_EXPECT_TRUE(templateRoot != nullptr);
+		auto* templateBorder = dynamic_cast<Border*>(templateRoot);
+		CUI_EXPECT_TRUE(templateBorder != nullptr);
 		auto* templatePanel = templateRoot
 			? templateRoot->GetVisualChild(0) : nullptr;
 		Control* captionText = nullptr;
@@ -20202,7 +24657,8 @@ int main()
 		{
 			CUI_EXPECT_EQ(UIClass::UI_Border, templateRoot->Type());
 			CUI_EXPECT_EQ(1, templateRoot->VisualChildCount());
-			CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateRoot->Padding);
+			if (templateBorder)
+				CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateBorder->Padding);
 			CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
 				templateRoot->GetPropertyValueSource(L"Padding"));
 			CUI_EXPECT_EQ(DependencyPropertyExpressionKind::TemplateBinding,
@@ -20286,12 +24742,12 @@ int main()
 			CUI_EXPECT_EQ(std::wstring(L"Compact"), modeText->GetDisplayText());
 		cui::framework::InputAccess::PublishPointerOverState(
 			*tree.ContentRoot, true, true);
-		if (templateRoot)
-			CUI_EXPECT_EQ(Thickness(12.0f), templateRoot->Padding);
+		if (templateBorder)
+			CUI_EXPECT_EQ(Thickness(12.0f), templateBorder->Padding);
 		cui::framework::InputAccess::PublishPointerOverState(
 			*tree.ContentRoot, false, false);
-		if (templateRoot)
-			CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateRoot->Padding);
+		if (templateBorder)
+			CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateBorder->Padding);
 		const auto* modeMetadata =
 			tree.ContentRoot->FindPropertyMetadata(L"DisplayMode");
 		CUI_EXPECT_TRUE(modeMetadata != nullptr);
@@ -20606,9 +25062,8 @@ int main()
 		CUI_EXPECT_TRUE(reroutedControl != nullptr);
 		if (reroutedControl)
 			CUI_EXPECT_TRUE(reroutedControl->GetVisualParent() != previousContentParent);
-		CUI_EXPECT_FALSE(
-			CodeGenerator::ValidateDocument(document, &error));
-		CUI_EXPECT_TRUE(error.find(L"动态 XAML") != std::wstring::npos);
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		CUI_EXPECT_TRUE(error.empty());
 
 		const std::string invalid = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -21614,6 +26069,7 @@ int main()
 		CUI_EXPECT_TRUE(card && card->TrySetPropertyValue(L"IsAnimated", true));
 		CUI_EXPECT_EQ(std::wstring(L"Animated"),
 			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
+		CUI_EXPECT_TRUE(card && card->HasActiveVisualStateAnimations());
 		const auto tick = ::GetTickCount64();
 		CUI_EXPECT_TRUE(card && cui::framework::PresentationAccess::AdvanceVisualStateAnimations(*card, tick + 40));
 		CUI_EXPECT_TRUE(std::isnan(Canvas::GetLeft(*chrome)));
@@ -23780,7 +28236,9 @@ int main()
 			document, runtime, {}, &error));
 		auto* card = runtime.FindControlByName(L"card");
 		auto* chrome = card
-			? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+			? dynamic_cast<Border*>(
+				card->FindDeclarativeTemplatePart(L"chrome"))
+			: nullptr;
 		if (!card || !chrome)
 			throw std::runtime_error("Thickness animation runtime controls are missing");
 		auto go = [&](const wchar_t* state, bool transitions = false)
@@ -23865,7 +28323,10 @@ int main()
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
 			reloadedDocument, runtime, {}, &reloadMode, &error));
 		card = runtime.FindControlByName(L"card");
-		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		chrome = card
+			? dynamic_cast<Border*>(
+				card->FindDeclarativeTemplatePart(L"chrome"))
+			: nullptr;
 		CUI_EXPECT_TRUE(card && chrome);
 		if (card && chrome)
 		{
@@ -24519,7 +28980,8 @@ int main()
 		Panel directRuntimeProbe;
 		DeclarativeVisualStateAnimation invalidDirectAnimation;
 		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Point;
-		invalidDirectAnimation.PropertyName = L"RenderTransformOrigin";
+		invalidDirectAnimation.Property = DependencyPropertyReference(
+			Control::RenderTransformOriginProperty());
 		invalidDirectAnimation.To = BindingValue(cui::core::Point{
 			(std::numeric_limits<float>::quiet_NaN)(), 1.0f });
 		invalidDirectAnimation.DurationMilliseconds = 100;
@@ -24862,7 +29324,8 @@ int main()
 			directRuntimeProbe, std::move(vectorSchema), &error));
 		DeclarativeVisualStateAnimation invalidDirectAnimation;
 		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Vector;
-		invalidDirectAnimation.PropertyName = L"Motion";
+		invalidDirectAnimation.Property = DependencyPropertyReference(
+			std::wstring(L"Motion"));
 		invalidDirectAnimation.To = BindingValue(cui::core::Vector{
 			(std::numeric_limits<float>::quiet_NaN)(), 1.0f });
 		invalidDirectAnimation.DurationMilliseconds = 100;
@@ -25245,7 +29708,7 @@ int main()
 		{
 			DeclarativeVisualStateAnimation animation;
 			animation.Kind = DeclarativeAnimationKind::Color;
-			animation.PropertyName = std::move(path);
+			animation.ObjectPath = std::move(path);
 			animation.To = BindingValue(color);
 			animation.DurationMilliseconds = 100;
 			DeclarativeVisualStateDefinition state;
@@ -25278,7 +29741,7 @@ int main()
 			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }) }, &error));
 		DeclarativeVisualStateAnimation invalidOffsetAnimation;
 		invalidOffsetAnimation.Kind = DeclarativeAnimationKind::Double;
-		invalidOffsetAnimation.PropertyName =
+		invalidOffsetAnimation.ObjectPath =
 			L"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Offset)";
 		invalidOffsetAnimation.To = BindingValue(1.5f);
 		invalidOffsetAnimation.DurationMilliseconds = 100;
@@ -25646,7 +30109,7 @@ int main()
 		missingTransform.Foreground = plainBrush;
 		DeclarativeVisualStateAnimation invalidAnimation;
 		invalidAnimation.Kind = DeclarativeAnimationKind::Double;
-		invalidAnimation.PropertyName =
+		invalidAnimation.ObjectPath =
 			L"(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)";
 		invalidAnimation.To = BindingValue(10.0f);
 		invalidAnimation.DurationMilliseconds = 100;
@@ -25993,7 +30456,7 @@ int main()
 		ContentControl defaultBrushTarget;
 		DeclarativeVisualStateAnimation defaultBrushAnimation;
 		defaultBrushAnimation.Kind = DeclarativeAnimationKind::Double;
-		defaultBrushAnimation.PropertyName =
+		defaultBrushAnimation.ObjectPath =
 			L"(Control.Foreground).(Brush.Opacity)";
 		defaultBrushAnimation.To = BindingValue(0.5f);
 		defaultBrushAnimation.DurationMilliseconds = 100;
@@ -26014,7 +30477,7 @@ int main()
 		invalidOpacityTarget.Foreground = solidBrush;
 		DeclarativeVisualStateAnimation invalidOpacity;
 		invalidOpacity.Kind = DeclarativeAnimationKind::Double;
-		invalidOpacity.PropertyName =
+		invalidOpacity.ObjectPath =
 			L"(Control.Foreground).(Brush.Opacity)";
 		invalidOpacity.To = BindingValue(1.5f);
 		invalidOpacity.DurationMilliseconds = 100;
@@ -26325,7 +30788,7 @@ int main()
 		Panel missingClip;
 		DeclarativeVisualStateAnimation invalidAnimation;
 		invalidAnimation.Kind = DeclarativeAnimationKind::Double;
-		invalidAnimation.PropertyName =
+		invalidAnimation.ObjectPath =
 			L"(Control.Clip).(EllipseGeometry.RadiusX)";
 		invalidAnimation.To = BindingValue(20.0f);
 		invalidAnimation.DurationMilliseconds = 100;
@@ -26347,7 +30810,7 @@ int main()
 		invalidRadiusTarget.SetClip(ellipseClip);
 		DeclarativeVisualStateAnimation negativeRadius;
 		negativeRadius.Kind = DeclarativeAnimationKind::Double;
-		negativeRadius.PropertyName =
+		negativeRadius.ObjectPath =
 			L"(Control.Clip).(EllipseGeometry.RadiusX)";
 		negativeRadius.To = BindingValue(-1.0f);
 		negativeRadius.DurationMilliseconds = 100;
@@ -26724,7 +31187,7 @@ int main()
 		Panel missingPath;
 		DeclarativeVisualStateAnimation invalidAnimation;
 		invalidAnimation.Kind = DeclarativeAnimationKind::Point;
-		invalidAnimation.PropertyName =
+		invalidAnimation.ObjectPath =
 			L"(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)";
 		invalidAnimation.To = BindingValue(cui::core::Point{ 1.0f, 2.0f });
 		invalidAnimation.DurationMilliseconds = 100;
@@ -26750,7 +31213,7 @@ int main()
 		invalidSweepTarget.SetClip(pathClip);
 		DeclarativeVisualStateAnimation invalidSweep;
 		invalidSweep.Kind = DeclarativeAnimationKind::Object;
-		invalidSweep.PropertyName =
+		invalidSweep.ObjectPath =
 			L"(Control.Clip).(PathGeometry.Figures)[0]."
 			L"(PathFigure.Segments)[0].(ArcSegment.SweepDirection)";
 		invalidSweep.DurationMilliseconds = 100;
@@ -27144,7 +31607,7 @@ int main()
 		invalidTarget.SetClip(groupClip);
 		DeclarativeVisualStateAnimation invalidChild;
 		invalidChild.Kind = DeclarativeAnimationKind::Rect;
-		invalidChild.PropertyName =
+		invalidChild.ObjectPath =
 			L"(Control.Clip).(GeometryGroup.Children)[2].(RectangleGeometry.Rect)";
 		invalidChild.To = BindingValue(cui::core::Rect{ 1.0f, 2.0f, 3.0f, 4.0f });
 		invalidChild.DurationMilliseconds = 100;
@@ -27159,7 +31622,7 @@ int main()
 
 		DeclarativeVisualStateAnimation invalidFill;
 		invalidFill.Kind = DeclarativeAnimationKind::Object;
-		invalidFill.PropertyName = L"(Control.Clip).(GeometryGroup.FillRule)";
+		invalidFill.ObjectPath = L"(Control.Clip).(GeometryGroup.FillRule)";
 		invalidFill.DurationMilliseconds = 100;
 		DeclarativeAnimationKeyFrame invalidFillFrame;
 		invalidFillFrame.Kind = DeclarativeKeyFrameKind::Discrete;
@@ -27484,7 +31947,7 @@ int main()
 		invalidTarget.SetRenderTransform(invalidTransform);
 		DeclarativeVisualStateAnimation invalidAnimation;
 		invalidAnimation.Kind = DeclarativeAnimationKind::Matrix;
-		invalidAnimation.PropertyName =
+		invalidAnimation.ObjectPath =
 			L"(Control.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)";
 		D2D1_MATRIX_3X2_F invalidMatrix = D2D1::Matrix3x2F::Identity();
 		invalidMatrix._31 = std::numeric_limits<float>::quiet_NaN();
@@ -28034,7 +32497,8 @@ int main()
 			directRuntimeProbe, std::move(rectSchema), &error));
 		DeclarativeVisualStateAnimation invalidDirectAnimation;
 		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Rect;
-		invalidDirectAnimation.PropertyName = L"Bounds";
+		invalidDirectAnimation.Property = DependencyPropertyReference(
+			std::wstring(L"Bounds"));
 		invalidDirectAnimation.To = BindingValue(
 			cui::core::Rect{ 0.0f, 0.0f, -1.0f, 10.0f });
 		invalidDirectAnimation.DurationMilliseconds = 100;
@@ -28050,7 +32514,7 @@ int main()
 		Panel missingGeometryProbe;
 		DeclarativeVisualStateAnimation invalidPathAnimation;
 		invalidPathAnimation.Kind = DeclarativeAnimationKind::Rect;
-		invalidPathAnimation.PropertyName =
+		invalidPathAnimation.ObjectPath =
 			L"(Control.Clip).(RectangleGeometry.Rect)";
 		invalidPathAnimation.To = BindingValue(
 			cui::core::Rect{ 0.0f, 0.0f, 10.0f, 10.0f });
@@ -28071,7 +32535,7 @@ int main()
 		missingGeometryTransformProbe.SetClip(untransformedGeometry);
 		DeclarativeVisualStateAnimation missingTransformAnimation;
 		missingTransformAnimation.Kind = DeclarativeAnimationKind::Double;
-		missingTransformAnimation.PropertyName =
+		missingTransformAnimation.ObjectPath =
 			L"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)";
 		missingTransformAnimation.To = BindingValue(10.0f);
 		missingTransformAnimation.DurationMilliseconds = 100;
@@ -29406,8 +33870,9 @@ int main()
 		CUI_EXPECT_EQ(std::wstring(L"media/demo.mp4"),
 			parsedPlayer->Structure.MediaFile);
 		DesignerModel::RuntimeDocument runtime;
-		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
-			parsed, runtime, {}, &error));
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			parsed, runtime, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
 		auto* combo = dynamic_cast<ComboBox*>(runtime.FindControlByDesignId(1));
 		CUI_EXPECT_TRUE(combo != nullptr);
 		CUI_EXPECT_TRUE(combo && combo->GetForegroundBrush().has_value());
@@ -30155,6 +34620,87 @@ int main()
 		CUI_EXPECT_EQ(
 			CursorKind::IBeam, numeric.ResolvePointerCursor(5, 15));
 		PresentationTestAccess::SetWindow(&numeric, nullptr);
+	});
+
+	runner.Add("NumericUpDown input survives ValueChanged owner deletion", []
+	{
+		struct NumericInputLifetimeProbe final : NumericUpDown
+		{
+			void RefreshTemplateParts()
+			{
+				OnControlTemplatePresentationChanged();
+			}
+		};
+
+		Window inputHost;
+		ConfigureTestControl(inputHost, L"Numeric input lifetime");
+		SetDeclaredWindowGeometry(
+			inputHost, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>(
+			0.0f, 0.0f, 220.0f, 100.0f);
+		auto* root = rootOwner.get();
+		CUI_EXPECT_TRUE(
+			inputHost.SetVisualContent(std::move(rootOwner)) == root);
+
+		auto* commitOwner = AddTestVisual<NumericInputLifetimeProbe>(
+			*root, 0.0f, 0.0f, 140.0f, 30.0f);
+		commitOwner->Arrange(cui::core::Rect{
+			0.0f, 0.0f, 140.0f, 30.0f });
+		auto* editor = AddTestVisual<TextBox>(
+			*commitOwner, 0.0f, 0.0f, 112.0f, 30.0f);
+		cui::framework::XamlAccess::SetTemplatedParent(
+			*editor, commitOwner);
+		CUI_EXPECT_TRUE(cui::framework::XamlAccess::RegisterTemplatePart(
+			*commitOwner, MakeTemplatePartToken(L"PART_TextBox"), editor));
+		commitOwner->RefreshTemplateParts();
+		editor->SelectAll();
+		TextCompositionEventArgs replacement(L"5");
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchTextInput(
+			*commitOwner, replacement));
+		CUI_EXPECT_EQ(std::wstring(L"5"), editor->Text);
+
+		const ControlWeakReference commitLifetime(commitOwner);
+		bool commitDeleted = false;
+		auto commitDeletion = commitOwner->ValueChanged.Subscribe(
+			[&](Control*, RoutedPropertyChangedEventArgs<double>&)
+			{
+				if (!commitOwner) return;
+				auto* doomed = commitOwner;
+				commitOwner = nullptr;
+				commitDeleted = root->DeleteVisualChild(doomed);
+			});
+		auto* commitTarget = commitOwner;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*commitTarget,
+			KeyInput(InputReportKind::KeyDown, Key::Return)));
+		CUI_EXPECT_TRUE(commitDeleted);
+		CUI_EXPECT_TRUE(commitOwner == nullptr);
+		CUI_EXPECT_FALSE(commitLifetime);
+
+		auto* spinOwner = AddTestVisual<NumericUpDown>(
+			*root, 0.0f, 40.0f, 140.0f, 30.0f);
+		spinOwner->Arrange(cui::core::Rect{
+			0.0f, 40.0f, 140.0f, 30.0f });
+		const ControlWeakReference spinLifetime(spinOwner);
+		bool spinDeleted = false;
+		auto spinDeletion = spinOwner->ValueChanged.Subscribe(
+			[&](Control*, RoutedPropertyChangedEventArgs<double>&)
+			{
+				if (!spinOwner) return;
+				auto* doomed = spinOwner;
+				spinOwner = nullptr;
+				spinDeleted = root->DeleteVisualChild(doomed);
+			});
+		auto* spinTarget = spinOwner;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*spinTarget,
+			PointerInput(
+				InputReportKind::PointerDown, MouseButton::Left,
+				135, 5, MouseButton::Left)));
+		CUI_EXPECT_TRUE(spinDeleted);
+		CUI_EXPECT_TRUE(spinOwner == nullptr);
+		CUI_EXPECT_FALSE(spinLifetime);
+		CUI_EXPECT_TRUE(inputHost.GetMouseCaptured() == nullptr);
 	});
 
 	runner.Add("Designer document graph centralizes identity parent and order resolution", []
@@ -31136,6 +35682,1145 @@ int main()
 		CUI_EXPECT_EQ(previousReferenceCount, index.References().size());
 	});
 
+	runner.Add("Static codegen lowers authored values without dynamic XAML bridges", []
+	{
+		DesignerModel::DesignDocument document;
+		document.Window.Name = L"TypedPropertyProbe";
+		document.Window.Type = UIClass::UI_Window;
+		document.Window.XamlType = { L"urn:cui", L"Window" };
+		document.Window.Events[L"Closing"] = L"HandleClosing";
+
+		DesignerModel::DesignNode panel;
+		panel.Id = 1;
+		panel.Name = L"probePanel";
+		panel.Type = UIClass::UI_RelativePanel;
+		panel.XamlType = { L"urn:cui", L"RelativePanel" };
+		SetDesignNodeProperty(
+			panel, L"Width", DesignerStyleValueKind::Length, L"120");
+		SetDesignNodeProperty(
+			panel, L"Margin", DesignerStyleValueKind::Thickness, L"4");
+		SetDesignNodeProperty(
+			panel, L"Background", DesignerStyleValueKind::Brush, L"#FF112233");
+		SetDesignNodeProperty(
+			panel, L"Visibility", DesignerStyleValueKind::String, L"Collapsed");
+		SetDesignNodeProperty(
+			panel, L"Canvas.Left", DesignerStyleValueKind::Float, L"8");
+		SetDesignNodeProperty(
+			panel, L"Grid.Row", DesignerStyleValueKind::Int, L"1");
+		SetDesignNodeProperty(
+			panel, L"DockPanel.Dock", DesignerStyleValueKind::Int, L"2");
+
+		DesignerModel::DesignNode text;
+		text.Id = 2;
+		text.ParentId = 1;
+		text.Name = L"probeText";
+		text.Type = UIClass::UI_Label;
+		text.XamlType = { L"urn:cui", L"Label" };
+		SetDesignNodeProperty(
+			text, L"Text", DesignerStyleValueKind::String, L"compiled");
+		SetDesignNodeProperty(
+			text, L"FontFamily", DesignerStyleValueKind::String, L"Segoe UI");
+		SetDesignNodeProperty(
+			text, L"FontSize", DesignerStyleValueKind::Double, L"18");
+		SetDesignNodeProperty(
+			text, L"Focusable", DesignerStyleValueKind::Bool, L"false");
+		DesignerModel::DesignRelativePanelConstraints relativeConstraints;
+		relativeConstraints.CenterHorizontal = true;
+		relativeConstraints.CenterVertical = false;
+		relativeConstraints.AlignLeftWithPanel = true;
+		relativeConstraints.AlignTopWithPanel = false;
+		relativeConstraints.AlignRightWithPanel = true;
+		relativeConstraints.AlignBottomWithPanel = false;
+		relativeConstraints.Above = L"probeButton";
+		relativeConstraints.Below = L"probeCheckBox";
+		relativeConstraints.LeftOf = L"probeBorder";
+		relativeConstraints.RightOf = L"probeTextBox";
+		relativeConstraints.AlignLeftWith = L"probeRichTextBox";
+		relativeConstraints.AlignRightWith = L"probeButton";
+		relativeConstraints.AlignTopWith = L"probeCheckBox";
+		relativeConstraints.AlignBottomWith = L"probeBorder";
+		text.Structure.RelativePanel = std::move(relativeConstraints);
+
+		DesignerModel::DesignNode button;
+		button.Id = 3;
+		button.ParentId = 1;
+		button.Name = L"probeButton";
+		button.Type = UIClass::UI_Button;
+		button.XamlType = { L"urn:cui", L"Button" };
+		SetDesignNodeProperty(
+			button, L"Content", DesignerStyleValueKind::String, L"Run");
+		SetDesignNodeProperty(
+			button, L"Command", DesignerStyleValueKind::String, L"Demo.Run");
+
+		DesignerModel::DesignNode checkBox;
+		checkBox.Id = 4;
+		checkBox.ParentId = 1;
+		checkBox.Name = L"probeCheckBox";
+		checkBox.Type = UIClass::UI_CheckBox;
+		checkBox.XamlType = { L"urn:cui", L"CheckBox" };
+		SetDesignNodeProperty(
+			checkBox, L"IsChecked",
+			DesignerStyleValueKind::NullableBool, L"{x:Null}");
+		SetDesignNodeProperty(
+			checkBox, L"IsThreeState",
+			DesignerStyleValueKind::Bool, L"true");
+
+		DesignerModel::DesignNode border;
+		border.Id = 5;
+		border.ParentId = 1;
+		border.Name = L"probeBorder";
+		border.Type = UIClass::UI_Border;
+		border.XamlType = { L"urn:cui", L"Border" };
+		SetDesignNodeProperty(
+			border, L"CornerRadius",
+			DesignerStyleValueKind::CornerRadius, L"1,2,3,4");
+
+		DesignerModel::DesignNode textBox;
+		textBox.Id = 6;
+		textBox.ParentId = 1;
+		textBox.Name = L"probeTextBox";
+		textBox.Type = UIClass::UI_TextBox;
+		textBox.XamlType = { L"urn:cui", L"TextBox" };
+		for (const auto* property : {
+			L"IsReadOnly", L"IsReadOnlyCaretVisible", L"AcceptsReturn",
+			L"AcceptsTab", L"AutoWordSelection",
+			L"IsInactiveSelectionHighlightEnabled" })
+			SetDesignNodeProperty(
+				textBox, property, DesignerStyleValueKind::Bool, L"true");
+		SetDesignNodeProperty(
+			textBox, L"IsUndoEnabled",
+			DesignerStyleValueKind::Bool, L"false");
+		SetDesignNodeProperty(
+			textBox, L"UndoLimit",
+			DesignerStyleValueKind::Int, L"128");
+		SetDesignNodeProperty(
+			textBox, L"HorizontalScrollBarVisibility",
+			DesignerStyleValueKind::Int, L"2");
+		SetDesignNodeProperty(
+			textBox, L"VerticalScrollBarVisibility",
+			DesignerStyleValueKind::Int, L"3");
+		SetDesignNodeProperty(
+			textBox, L"SelectionBrush",
+			DesignerStyleValueKind::Brush, L"#FF112233");
+		SetDesignNodeProperty(
+			textBox, L"SelectionOpacity",
+			DesignerStyleValueKind::Double, L"0.35");
+		SetDesignNodeProperty(
+			textBox, L"SelectionTextBrush",
+			DesignerStyleValueKind::Brush, L"#FFFFFFFF");
+		SetDesignNodeProperty(
+			textBox, L"CaretBrush",
+			DesignerStyleValueKind::Brush, L"#FF445566");
+
+		DesignerModel::DesignNode richTextBox;
+		richTextBox.Id = 7;
+		richTextBox.ParentId = 1;
+		richTextBox.Name = L"probeRichTextBox";
+		richTextBox.Type = UIClass::UI_RichTextBox;
+		richTextBox.XamlType = { L"urn:cui", L"RichTextBox" };
+		SetDesignNodeProperty(
+			richTextBox, L"CaretBrush",
+			DesignerStyleValueKind::Brush, L"#FF778899");
+
+		document.Nodes.push_back(std::move(panel));
+		document.Nodes.push_back(std::move(text));
+		document.Nodes.push_back(std::move(button));
+		document.Nodes.push_back(std::move(checkBox));
+		document.Nodes.push_back(std::move(border));
+		document.Nodes.push_back(std::move(textBox));
+		document.Nodes.push_back(std::move(richTextBox));
+
+		CodeGenerator generator(
+			L"TypedPropertyProbeWindow",
+			document,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto header = generator.GenerateHeader();
+		const auto source = generator.GenerateCppForHeader(
+			"TypedPropertyProbe");
+		const auto handlers = generator.GenerateHandlerDeclarations();
+
+		for (const auto* dynamicBridge : {
+			"RegisterDeclarativeEventHandlers",
+			"class References final",
+			"EventSink" })
+			CUI_EXPECT_TRUE(header.find(dynamicBridge) == std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"#include \"Layout/LayoutTypes.h\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"#include \"Layout/RelativePanel.h\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"virtual void HandleClosing("
+			"Window* sender, CancelEventArgs& e) = 0;")
+			!= std::string::npos);
+
+		CUI_EXPECT_TRUE(source.find(
+			"#include \"CuiGeneratedFrameworkTheme.h\"")
+			!= std::string::npos);
+		for (const auto* dynamicDependency : {
+			"#include \"XamlFrameworkTheme.h\"",
+			"CuiRuntime::",
+			"XamlObjectMaterializer",
+			"RuntimeDocument",
+			"DeclarativeTypeDescriptor::Create",
+			"DesignIdentityAccess::Set",
+			"XamlInfrastructure.h",
+			"XamlAccess::" })
+			CUI_EXPECT_TRUE(
+				source.find(dynamicDependency) == std::string::npos);
+
+		for (const auto* typedSetter : {
+			"probePanel->SetWidth(",
+			"probePanel->SetMargin(",
+			"probePanel->SetBackground(",
+			"probePanel->SetVisibility(Visibility::Collapsed)",
+			"Canvas::SetLeft(*probePanel, 8.f)",
+			"Grid::SetRow(*probePanel, 1)",
+			"DockPanel::SetDock(*probePanel, static_cast<Dock>(2))",
+			"probeText->SetText(L\"compiled\")",
+			"probeText->SetFontFamily(L\"Segoe UI\")",
+			"probeText->SetFontSize(18.0)",
+			"probeText->SetFocusable(false)",
+			"DependencyPropertyAccess::SetValue(*probeButton, "
+			"Control::FocusableProperty(), BindingValue(true), "
+			"DependencyPropertyValueSource::Theme)",
+			"probeButton->SetContent(BindingValue(L\"Run\"))",
+			"probeButton->SetCommand(L\"Demo.Run\")",
+			"probeCheckBox->SetIsChecked(NullableBool{})",
+			"probeCheckBox->SetIsThreeState(true)",
+			"probeBorder->SetCornerRadius("
+				"::CornerRadius(1.f, 2.f, 3.f, 4.f))",
+			"probeTextBox->SetIsReadOnly(true)",
+			"probeTextBox->SetIsReadOnlyCaretVisible(true)",
+			"probeTextBox->SetAcceptsReturn(true)",
+			"probeTextBox->SetAcceptsTab(true)",
+			"probeTextBox->SetAutoWordSelection(true)",
+			"probeTextBox->SetIsUndoEnabled(false)",
+			"probeTextBox->SetUndoLimit(128)",
+			"probeTextBox->SetIsInactiveSelectionHighlightEnabled(true)",
+			"probeTextBox->SetHorizontalScrollBarVisibility("
+				"static_cast<ScrollBarVisibility>(2))",
+			"probeTextBox->SetVerticalScrollBarVisibility("
+				"static_cast<ScrollBarVisibility>(3))",
+			"probeTextBox->SetSelectionBrush(",
+			"probeTextBox->SetSelectionOpacity(0.35)",
+			"probeTextBox->SetSelectionTextBrush(",
+			"probeTextBox->SetCaretBrush(",
+			"probeRichTextBox->SetCaretBrush(" })
+			CUI_EXPECT_TRUE(source.find(typedSetter) != std::string::npos);
+
+		for (const auto* relativeConstraintWrite : {
+			"dynamic_cast<RelativePanel*>(probePanel)",
+			"__relativeConstraints.CenterHorizontal = true",
+			"__relativeConstraints.CenterVertical = false",
+			"__relativeConstraints.AlignLeftWithPanel = true",
+			"__relativeConstraints.AlignTopWithPanel = false",
+			"__relativeConstraints.AlignRightWithPanel = true",
+			"__relativeConstraints.AlignBottomWithPanel = false",
+			"auto* __relativeTarget = probeButton",
+			"auto* __relativeTarget = probeCheckBox",
+			"auto* __relativeTarget = probeBorder",
+			"auto* __relativeTarget = probeTextBox",
+			"auto* __relativeTarget = probeRichTextBox",
+			"__relativeConstraints.Above = __relativeTarget",
+			"__relativeConstraints.Below = __relativeTarget",
+			"__relativeConstraints.LeftOf = __relativeTarget",
+			"__relativeConstraints.RightOf = __relativeTarget",
+			"__relativeConstraints.AlignLeftWith = __relativeTarget",
+			"__relativeConstraints.AlignRightWith = __relativeTarget",
+			"__relativeConstraints.AlignTopWith = __relativeTarget",
+			"__relativeConstraints.AlignBottomWith = __relativeTarget",
+			"__relativePanel->SetConstraints("
+				"probeText, __relativeConstraints)" })
+			CUI_EXPECT_TRUE(
+				source.find(relativeConstraintWrite) != std::string::npos);
+		const auto relativeConstraintPosition = source.find(
+			"__relativePanel->SetConstraints("
+			"probeText, __relativeConstraints)");
+		CUI_EXPECT_TRUE(relativeConstraintPosition
+			> source.rfind("probePanel->AddOwned("));
+		CUI_EXPECT_TRUE(source.find(
+			"TrySetPropertyValue(L\"RelativePanel.")
+			== std::string::npos);
+
+		for (const auto* nameLookup : {
+			"probePanel->TrySetPropertyValue(L\"Width\"",
+			"probePanel->TrySetPropertyValue(L\"Margin\"",
+			"probePanel->TrySetPropertyValue(L\"Background\"",
+			"probePanel->TrySetPropertyValue(L\"Visibility\"",
+			"probePanel->TrySetPropertyValue(L\"Canvas.Left\"",
+			"probePanel->TrySetPropertyValue(L\"Grid.Row\"",
+			"probePanel->TrySetPropertyValue(L\"DockPanel.Dock\"",
+			"probeText->TrySetPropertyValue(L\"Text\"",
+			"probeText->TrySetPropertyValue(L\"FontFamily\"",
+			"probeText->TrySetPropertyValue(L\"FontSize\"",
+			"probeText->TrySetPropertyValue(L\"Focusable\"",
+			"probeButton->TrySetPropertyValue(L\"Content\"",
+			"probeButton->TrySetPropertyValue(L\"Command\"",
+			"probeCheckBox->TrySetPropertyValue(L\"IsChecked\"",
+			"probeCheckBox->TrySetPropertyValue(L\"IsThreeState\"",
+			"probeBorder->TrySetPropertyValue(L\"CornerRadius\"",
+			"probeTextBox->TrySetPropertyValue(L\"IsReadOnly\"",
+			"probeTextBox->TrySetPropertyValue(L\"IsReadOnlyCaretVisible\"",
+			"probeTextBox->TrySetPropertyValue(L\"AcceptsReturn\"",
+			"probeTextBox->TrySetPropertyValue(L\"AcceptsTab\"",
+			"probeTextBox->TrySetPropertyValue(L\"AutoWordSelection\"",
+			"probeTextBox->TrySetPropertyValue(L\"IsUndoEnabled\"",
+			"probeTextBox->TrySetPropertyValue(L\"UndoLimit\"",
+			"probeTextBox->TrySetPropertyValue("
+				"L\"IsInactiveSelectionHighlightEnabled\"",
+			"probeTextBox->TrySetPropertyValue("
+				"L\"HorizontalScrollBarVisibility\"",
+			"probeTextBox->TrySetPropertyValue("
+				"L\"VerticalScrollBarVisibility\"",
+			"probeTextBox->TrySetPropertyValue(L\"SelectionBrush\"",
+			"probeTextBox->TrySetPropertyValue(L\"SelectionOpacity\"",
+			"probeTextBox->TrySetPropertyValue(L\"SelectionTextBrush\"",
+			"probeTextBox->TrySetPropertyValue(L\"CaretBrush\"",
+			"probeRichTextBox->TrySetPropertyValue(L\"CaretBrush\"" })
+			CUI_EXPECT_TRUE(source.find(nameLookup) == std::string::npos);
+
+		CUI_EXPECT_TRUE(source.find(
+			"this->OnClosing.Subscribe(std::bind_front("
+			"&TypedPropertyProbeWindowGenerated::HandleClosing, this))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"void TypedPropertyProbeWindowGenerated::HandleClosing(")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(handlers.find(
+			"void HandleClosing("
+			"Window* sender, CancelEventArgs& e) override;")
+			!= std::string::npos);
+
+		auto unsupportedComponent = document;
+		unsupportedComponent.Nodes[1].ComponentType = {
+			L"urn:cui:test", L"CompiledCard" };
+		bool rejectedDynamicComponentFallback = false;
+		try
+		{
+			CodeGenerator unsupportedGenerator(
+				L"UnsupportedComponentWindow",
+				unsupportedComponent,
+				CodeGeneratorOutputKind::StaticWindow);
+			(void)unsupportedGenerator.GenerateCppForHeader(
+				"UnsupportedComponent");
+		}
+		catch (const std::invalid_argument&)
+		{
+			rejectedDynamicComponentFallback = true;
+		}
+		CUI_EXPECT_TRUE(rejectedDynamicComponentFallback);
+	});
+
+	runner.Add("Static codegen writes shared resources through property identities", []
+	{
+		DesignerModel::DesignDocument document;
+		document.Window.Name = L"SharedResourceIdentityWindow";
+		document.Window.Type = UIClass::UI_Window;
+		document.Window.XamlType = { L"urn:cui", L"Window" };
+
+		DesignerStyleResource sharedFontSize;
+		sharedFontSize.Key = L"SharedFontSize";
+		sharedFontSize.Value.Kind = DesignerStyleValueKind::Double;
+		sharedFontSize.Value.Text = L"18";
+		document.StyleSheet.Resources.push_back(std::move(sharedFontSize));
+
+		SetDesignNodeProperty(
+			document.Window, L"FontSize", DesignerStyleValueKind::Double,
+			L"18", L"SharedFontSize");
+		DesignerModel::DesignNode text;
+		text.Id = 1;
+		text.Name = L"sharedText";
+		text.Type = UIClass::UI_Label;
+		text.XamlType = { L"urn:cui", L"Label" };
+		SetDesignNodeProperty(
+			text, L"FontSize", DesignerStyleValueKind::Double,
+			L"18", L"SharedFontSize");
+		document.Nodes.push_back(std::move(text));
+
+		const auto source = CodeGenerator(
+			L"SharedResourceIdentityWindow",
+			document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("SharedResourceIdentityWindow");
+		CUI_EXPECT_TRUE(source.find(
+			"const auto __documentStaticResource_SharedFontSize_1 = "
+			"BindingValue(18.0)") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DependencyPropertyAccess::SetValue(*sharedText, "
+			"Control::FontSizeProperty(), "
+			"__documentStaticResource_SharedFontSize_1, "
+			"DependencyPropertyValueSource::Local)") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DependencyPropertyAccess::SetValue(*this, "
+			"Control::FontSizeProperty(), "
+			"__documentStaticResource_SharedFontSize_1, "
+			"DependencyPropertyValueSource::Local)") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"TrySetPropertyValue(L\"FontSize\"") == std::string::npos);
+	});
+
+	runner.Add("Static codegen writes ControlTemplate values through typed identities", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:typed-template-tests"
+  x:Name="TypedTemplateWindow">
+  <Window.Resources>
+    <Color x:Key="Accent">#FF112233</Color>
+    <ComponentDefinition x:Key="local:ProbeCard" BaseType="Canvas">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="ready" />
+      </ComponentDefinition.Properties>
+	  <ComponentDefinition.ContentProperties>
+		<ComponentContentProperty Name="Content" Cardinality="Single"
+		                          Default="true" />
+	  </ComponentDefinition.ContentProperties>
+      <ComponentDefinition.Template>
+        <Canvas x:Name="PART_Root" Canvas.Left="2"
+          Background="{DynamicResource Accent}">
+          <Border x:Name="chrome" Padding="4">
+            <StackPanel x:Name="stack" Orientation="Horizontal">
+              <TextBlock x:Name="state"
+                Text="{TemplateBinding Caption}" Height="20" />
+              <Button x:Name="action" Content="Run" />
+			  <StackPanel x:Name="contentHost"
+			              ComponentSlot.Presents="Content" />
+            </StackPanel>
+          </Border>
+        </Canvas>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Window.Resources>
+  <local:ProbeCard x:Name="card">
+	<TextBlock x:Name="projectedContent" Text="Projected" />
+  </local:ProbeCard>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+
+		const auto source = CodeGenerator(
+			L"TypedTemplateWindow",
+			document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("TypedTemplateWindow");
+		for (const auto* typedTemplateWrite : {
+			"Control::CanvasLeftProperty(), BindingValue(2.f), "
+				"DependencyPropertyValueSource::Template",
+			"Control::BackgroundProperty(), L\"Accent\", "
+				"DependencyPropertyValueSource::Template",
+			"Border::PaddingProperty(), "
+				"BindingValue(Thickness(4.f, 4.f, 4.f, 4.f)), "
+				"DependencyPropertyValueSource::Template",
+			"StackPanel::OrientationProperty(), BindingValue(0), "
+				"DependencyPropertyValueSource::Template",
+			"Control::HeightProperty(), "
+				"BindingValue(cui::layout::Length::Fixed(20.f)), "
+				"DependencyPropertyValueSource::Template",
+			"Button::ContentProperty(), BindingValue(L\"Run\"), "
+				"DependencyPropertyValueSource::Template" })
+			CUI_EXPECT_TRUE(
+				source.find(typedTemplateWrite) != std::string::npos);
+
+		CUI_EXPECT_TRUE(source.find(
+			"GetPropertyMetadata(CaptionProperty())")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"FindCompiledComponentPropertyCore(\n"
+			"\tComponentPropertyToken property) const")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"switch (property.Value)") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"candidate->Name() == propertyName") == std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"GetCompiledComponentPropertiesCore") == std::string::npos);
+		CUI_EXPECT_TRUE(source.find("RuntimeTypeId") == std::string::npos);
+		const auto expectedComponentTypeToken = MakeComponentTypeToken(
+			L"urn:cui:typed-template-tests", L"ProbeCard");
+		CUI_EXPECT_TRUE(expectedComponentTypeToken);
+		CUI_EXPECT_TRUE(source.find(
+			"return ComponentTypeToken{ "
+			+ std::to_string(expectedComponentTypeToken.Value)
+			+ "ULL };") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"_presenter_Content = contentHost;") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"RegisterComponentContentPresenter") == std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"FindDeclarativeContentPresenter") == std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DependencyPropertyRegistry::FindNative(\n"
+			"\t\t\t*const_cast<ProbeCard*>(this), L\"Caption\")")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DataBindings.AddTemplateBinding(") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"Label::TextProperty()") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"ProbeCard::CaptionProperty()") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"DataBindings.AddTemplateBinding(L\"") == std::string::npos);
+
+		for (const auto* localTemplateWrite : {
+			"Canvas::SetLeft(",
+			"->SetBackground(",
+			"->SetPadding(",
+			"->SetOrientation(",
+			"->SetText(L\"ready\")",
+			"->SetHeight(",
+			"->SetContent(BindingValue(L\"Run\"))",
+			"SetDynamicResource(*PART_Root, L\"Background\"" })
+			CUI_EXPECT_TRUE(
+				source.find(localTemplateWrite) == std::string::npos);
+	});
+
+	runner.Add("Static codegen lowers native data and ItemsPanel resources", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="StaticDataWindow">
+  <Window.Resources>
+    <DataType x:Key="Choice">
+      <DataType.Properties>
+        <Property Path="Id" Kind="Int"/>
+        <Property Path="Text" Kind="String"/>
+        <Property Path="Category" Kind="String"/>
+        <Property Path="State" Kind="Int"/>
+        <Property Path="Active" Kind="Bool"/>
+		<Property Path="Lowest" Kind="Int64"/>
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="Choices" ItemType="Choice">
+	  <DataRecord Id="7" Text="Seven" Category="Odd" State="2" Active="true"
+		Lowest="-9223372036854775808"/>
+	  <DataRecord Id="9" Text="Nine" Category="Odd" State="1" Active="false"
+		Lowest="-9"/>
+    </DataList>
+    <CollectionViewSource x:Key="ActiveChoices"
+      Source="{StaticResource Choices}">
+      <CollectionViewSource.GroupDescriptions>
+        <GroupDescription PropertyName="Category"/>
+      </CollectionViewSource.GroupDescriptions>
+      <CollectionViewSource.AggregateDescriptions>
+        <AggregateDescription Name="TotalState" PropertyName="State"
+          Function="Sum"/>
+      </CollectionViewSource.AggregateDescriptions>
+      <CollectionViewSource.FilterDescriptions>
+        <FilterDescription PropertyName="Active" Value="true"/>
+      </CollectionViewSource.FilterDescriptions>
+      <CollectionViewSource.SortDescriptions>
+        <SortDescription PropertyName="State" Direction="Descending"/>
+      </CollectionViewSource.SortDescriptions>
+    </CollectionViewSource>
+    <ItemsPanelTemplate x:Key="VirtualRows">
+      <VirtualizingStackPanel ItemHeight="30" CacheLength="0.5"/>
+    </ItemsPanelTemplate>
+  </Window.Resources>
+  <ComboBox x:Name="choices" DisplayMemberPath="Text"
+    ItemsPanel="{StaticResource VirtualRows}"
+    ItemsSource="{StaticResource ActiveChoices}" SelectedIndex="0"
+    SelectedValuePath="Id"/>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		if (!error.empty())
+			std::wcerr << L"Static DataList validation error: "
+				<< error << L'\n';
+
+		CodeGenerator generator(
+			L"StaticDataWindow",
+			document,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto header = generator.GenerateHeader();
+		const auto source = generator.GenerateCppForHeader("StaticDataWindow");
+		for (const auto* include : {
+			"#include \"BindingList.h\"",
+			"#include \"CollectionViewSource.h\"",
+			"#include \"ItemsPanelTemplate.h\"",
+			"#include \"Layout/LayoutTypes.h\"" })
+			CUI_EXPECT_TRUE(header.find(include) != std::string::npos);
+		for (const auto* marker : {
+			"#include \"Style.h\"",
+			"#include \"CompiledBindingRecord.h\"",
+			"class CuiGeneratedDataRecord_Choice_1 final : public "
+				"CompiledBindingRecord",
+			"static const std::array<CompiledBindingRecordProperty, 6> values",
+			"std::make_shared<CompiledBindingList>(std::move("
+				"__compiledDataItems_1), DataTypeToken{",
+			"__compiledDataItems_1.emplace_back(",
+			"std::make_shared<CuiGeneratedDataRecord_Choice_1>(",
+			"\t\t\t7",
+			"\t\t\tL\"Seven\"",
+			"(-9223372036854775807LL - 1LL)",
+			"std::make_shared<CollectionViewSource>()",
+			"static constexpr CompiledBindingPathStep "
+				"__cuiCompiledBindingPath_",
+			"__collectionView_ActiveChoices_1->SetGroupDescriptions({",
+			"CollectionGroupDescription::FromCompiledPath(",
+			"__collectionView_ActiveChoices_1->SetAggregateDescriptions({",
+			"CollectionAggregateDescription::FromCompiledPath("
+				"L\"TotalState\", CompiledBindingPathView{",
+			"__collectionView_ActiveChoices_1->SetFilterDescriptions({",
+			"CollectionFilterDescription::FromCompiledPath(",
+			"__collectionView_ActiveChoices_1->SetSortDescriptions({",
+			"CollectionSortDescription::FromCompiledPath(",
+			"__collectionView_ActiveChoices_1->SetSource("
+				"BindingListReference(__dataList_Choices_1))",
+			"std::make_shared<ItemsPanelTemplate>()",
+			"__itemsPanel_VirtualRows_1->Kind = "
+				"ItemsPanelKind::VirtualizingStack",
+			"__itemsPanel_VirtualRows_1->Orientation = "
+				"Orientation::Vertical",
+			"__itemsPanel_VirtualRows_1->ItemHeight = 30.f",
+			"__itemsPanel_VirtualRows_1->CacheLength = 0.5f",
+			"choices->SetItemsPanel(ItemsPanelTemplateReference("
+				"__itemsPanel_VirtualRows_1))",
+			"choices->SetCompiledDisplayMemberPath("
+				"CompiledBindingPathView{",
+			"choices->SetCompiledSelectedValuePath("
+				"CompiledBindingPathView{",
+			"choices->GetItemsPanel().Get() != "
+				"__itemsPanel_VirtualRows_1.get()",
+			"choices->SetItemsSource("
+				"BindingListReference(__collectionView_ActiveChoices_1))",
+			"choices->GetItemsSource().Get() != "
+				"__collectionView_ActiveChoices_1.get()",
+			"ControlStyleSheet::CreateCompiled(",
+			"CompiledStyleProgramView{",
+			"BindingValue(BindingListReference(__dataList_Choices_1))",
+			"BindingValue(BindingListReference("
+				"__collectionView_ActiveChoices_1))",
+			"BindingValue(ItemsPanelTemplateReference("
+				"__itemsPanel_VirtualRows_1))" })
+		{
+			if (source.find(marker) == std::string::npos)
+				std::cerr << "Missing static resource marker: "
+					<< marker << '\n';
+			CUI_EXPECT_TRUE(source.find(marker) != std::string::npos);
+		}
+		const auto setViewSource = source.find(
+			"__collectionView_ActiveChoices_1->SetSource("
+			"BindingListReference(__dataList_Choices_1))");
+		const auto setItemsSource = source.find(
+			"choices->SetItemsSource("
+			"BindingListReference(__collectionView_ActiveChoices_1))");
+		const auto setItemsPanel = source.find(
+			"choices->SetItemsPanel(ItemsPanelTemplateReference("
+			"__itemsPanel_VirtualRows_1))");
+		CUI_EXPECT_TRUE(setItemsPanel < setItemsSource);
+		CUI_EXPECT_TRUE(setViewSource < setItemsSource);
+		CUI_EXPECT_TRUE(
+			setItemsSource < source.find("choices->SetSelectedIndex(0)"));
+		for (const auto* forbidden : {
+			"CuiRuntime::",
+			"XamlAccess::",
+			"DeclarativeTypeDescriptor::Create",
+			"std::make_shared<ObservableBindingList>",
+			"std::make_shared<ObservableObject>",
+			"->DefineProperty(",
+			"SetSourceBindingPath(",
+			"{ L\"Category\", CollectionSortDirection::Ascending",
+			"{ L\"TotalState\", L\"State\", "
+			"{ L\"Active\", CollectionFilterOperator::Equals",
+			"{ L\"State\", CollectionSortDirection::Descending",
+			"choices->SetDisplayMemberPath(L\"Text\")",
+			"choices->SetSelectedValuePath(L\"Id\")",
+			"TrySetPropertyValue(L\"ItemsPanel\"",
+			"TrySetPropertyValue(L\"ItemsSource\"" })
+			CUI_EXPECT_TRUE(source.find(forbidden) == std::string::npos);
+
+		auto dynamicSource = document;
+		dynamicSource.CollectionViews[0].SourceResource.clear();
+		dynamicSource.CollectionViews[0].SourceBindingPath = L"Choices";
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			dynamicSource, &error));
+		CUI_EXPECT_TRUE(error.find(L"动态 Source Binding")
+			!= std::wstring::npos);
+
+		auto unsupportedTemplate = document;
+		DesignerModel::DesignDataTemplate dataTemplate;
+		dataTemplate.Key = L"ChoiceRow";
+		dataTemplate.DataType = L"Choice";
+		unsupportedTemplate.DataTemplates.push_back(std::move(dataTemplate));
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			unsupportedTemplate, &error));
+		CUI_EXPECT_TRUE(error.find(L"DataTemplate")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("Static codegen lowers lexical local ItemsPanel resources", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+	  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	  x:Name="LocalPanelWindow">
+	  <Window.Resources>
+	    <ItemsPanelTemplate x:Key="SharedPanel">
+	      <StackPanel Orientation="Vertical"/>
+	    </ItemsPanelTemplate>
+	  </Window.Resources>
+	  <Canvas x:Name="host">
+	    <StackPanel x:Name="scope">
+	      <StackPanel.Resources>
+	        <ItemsPanelTemplate x:Key="SharedPanel">
+	          <WrapPanel Orientation="Horizontal" ItemWidth="48" ItemHeight="20"/>
+	        </ItemsPanelTemplate>
+	        <Style x:Key="LocalRows" TargetType="ListBox">
+	          <Setter Property="ItemsPanel"
+	                  Value="{StaticResource SharedPanel}"/>
+	        </Style>
+	      </StackPanel.Resources>
+	      <ListBox x:Name="directRows"
+	               ItemsPanel="{StaticResource SharedPanel}"/>
+	      <ListBox x:Name="styledRows"
+	               Style="{StaticResource LocalRows}"/>
+	      <StackPanel x:Name="innerScope">
+	        <StackPanel.Resources>
+	          <ItemsPanelTemplate x:Key="SharedPanel">
+	            <VirtualizingStackPanel ItemHeight="22" CacheLength="0.5"/>
+	          </ItemsPanelTemplate>
+	          <Style x:Key="DerivedRows"
+	                 TargetType="ListBox"
+	                 BasedOn="{StaticResource LocalRows}"/>
+	        </StackPanel.Resources>
+	        <ListBox x:Name="shadowedRows"
+	                 ItemsPanel="{StaticResource SharedPanel}"/>
+	        <ListBox x:Name="derivedRows"
+	                 Style="{StaticResource DerivedRows}"/>
+	      </StackPanel>
+	    </StackPanel>
+	    <ListBox x:Name="globalRows"
+	             ItemsPanel="{StaticResource SharedPanel}"/>
+	  </Canvas>
+	</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		if (!error.empty())
+			std::wcerr << L"Local ItemsPanel validation error: "
+				<< error << L'\n';
+
+		auto nodeIndex = [&](const std::wstring& name)
+		{
+			const auto node = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& candidate) { return candidate.Name == name; });
+			CUI_EXPECT_TRUE(node != document.Nodes.end());
+			return static_cast<size_t>(node - document.Nodes.begin());
+		};
+		const auto scopeIndex = nodeIndex(L"scope");
+		const auto innerIndex = nodeIndex(L"innerScope");
+		const auto outerVariable = std::string("__localItemsPanel_SharedPanel_")
+			+ std::to_string(scopeIndex + 1) + "_1";
+		const auto innerVariable = std::string("__localItemsPanel_SharedPanel_")
+			+ std::to_string(innerIndex + 1) + "_1";
+		const std::string globalVariable = "__itemsPanel_SharedPanel_1";
+
+		CodeGenerator generator(
+			L"LocalPanelWindow", document,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto header = generator.GenerateHeader();
+		const auto source = generator.GenerateCppForHeader("LocalPanelWindow");
+		CUI_EXPECT_TRUE(header.find("#include \"ItemsPanelTemplate.h\"")
+			!= std::string::npos);
+		for (const auto& marker : std::vector<std::string>{
+			"directRows->SetItemsPanel(ItemsPanelTemplateReference("
+				+ outerVariable + "))",
+			"shadowedRows->SetItemsPanel(ItemsPanelTemplateReference("
+				+ innerVariable + "))",
+			"globalRows->SetItemsPanel(ItemsPanelTemplateReference("
+				+ globalVariable + "))",
+			"auto __resources_innerScope = ControlStyleSheet::CreateCompiled(",
+			"StyleAccess::SetResources(*innerScope, __resources_innerScope)" })
+			CUI_EXPECT_TRUE(source.find(marker) != std::string::npos);
+		const auto outerBinding =
+			"BindingValue(ItemsPanelTemplateReference("
+			+ outerVariable + "))";
+		size_t outerBindingCount = 0;
+		for (size_t at = source.find(outerBinding);
+			at != std::string::npos;
+			at = source.find(outerBinding, at + outerBinding.size()))
+			++outerBindingCount;
+		// One occurrence owns the local resource; another is the local Style
+		// setter lowered to the same lexically visible native descriptor.
+		// The BasedOn copy must retain the outer Style declaration scope even
+		// though the derived Style is declared beside an inner same-key panel.
+		CUI_EXPECT_EQ(3ULL, outerBindingCount);
+		const auto innerBinding =
+			"BindingValue(ItemsPanelTemplateReference("
+			+ innerVariable + "))";
+		size_t innerBindingCount = 0;
+		for (size_t at = source.find(innerBinding);
+			at != std::string::npos;
+			at = source.find(innerBinding, at + innerBinding.size()))
+			++innerBindingCount;
+		// The inner descriptor is owned once by its local dictionary; it must
+		// not be captured by DerivedRows' inherited ItemsPanel setter.
+		CUI_EXPECT_EQ(1ULL, innerBindingCount);
+
+		auto localOnlyDocument = document;
+		localOnlyDocument.ItemsPanelTemplates.clear();
+		const auto globalRows = std::find_if(
+			localOnlyDocument.Nodes.begin(), localOnlyDocument.Nodes.end(),
+			[](const auto& node) { return node.Name == L"globalRows"; });
+		CUI_EXPECT_TRUE(globalRows != localOnlyDocument.Nodes.end());
+		if (globalRows != localOnlyDocument.Nodes.end())
+			globalRows->Structure.ItemsPanel.clear();
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(
+			localOnlyDocument, &error));
+		const auto localOnlyHeader = CodeGenerator(
+			L"LocalOnlyPanelWindow", localOnlyDocument,
+			CodeGeneratorOutputKind::StaticWindow).GenerateHeader();
+		CUI_EXPECT_TRUE(localOnlyHeader.find(
+			"#include \"ItemsPanelTemplate.h\"") != std::string::npos);
+
+		auto unsupportedDataTemplate = document;
+		unsupportedDataTemplate.Nodes[scopeIndex].LocalObjectResources.
+			DataTemplates.emplace_back();
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			unsupportedDataTemplate, &error));
+		CUI_EXPECT_TRUE(error.find(L"regular node 局部 DataTemplate")
+			!= std::wstring::npos);
+		auto unsupportedControlTemplate = document;
+		unsupportedControlTemplate.Nodes[scopeIndex].LocalObjectResources.
+			ControlTemplates.emplace_back();
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			unsupportedControlTemplate, &error));
+		CUI_EXPECT_TRUE(error.find(L"regular node 局部 ControlTemplate")
+			!= std::wstring::npos);
+		auto unsupportedComponent = document;
+		unsupportedComponent.Nodes[scopeIndex].LocalObjectResources.
+			Components.emplace_back();
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			unsupportedComponent, &error));
+		CUI_EXPECT_TRUE(error.find(L"regular node 局部 ComponentDefinition")
+			!= std::wstring::npos);
+
+		auto duplicateValueKey = document;
+		DesignerStyleResource duplicateValue;
+		duplicateValue.Key = L"SharedPanel";
+		duplicateValue.Value.Kind = DesignerStyleValueKind::Color;
+		duplicateValue.Value.Text = L"#FF123456";
+		duplicateValueKey.Nodes[scopeIndex].LocalResources.Resources.push_back(
+			std::move(duplicateValue));
+		std::wstring duplicateValueError;
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			duplicateValueKey, &duplicateValueError));
+		CUI_EXPECT_TRUE(duplicateValueError.find(
+			L"局部 ItemsPanelTemplate 键无效或重复：SharedPanel")
+			!= std::wstring::npos);
+
+		auto duplicateStyleKey = document;
+		CUI_EXPECT_TRUE(!duplicateStyleKey.Nodes[scopeIndex].
+			LocalResources.Rules.empty());
+		if (!duplicateStyleKey.Nodes[scopeIndex].LocalResources.Rules.empty())
+			duplicateStyleKey.Nodes[scopeIndex].LocalResources.Rules.front().Id =
+				L"SharedPanel";
+		std::wstring duplicateStyleError;
+		CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(
+			duplicateStyleKey, &duplicateStyleError));
+		CUI_EXPECT_TRUE(duplicateStyleError.find(
+			L"局部 ItemsPanelTemplate 键无效或重复：SharedPanel")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("Static codegen lowers DataTemplate and hierarchical implicit templates", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="StaticTemplateWindow">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Accent" Color="#FF2474D2"/>
+    <DataType x:Key="Person"><DataType.Properties>
+      <Property Path="Name" Kind="String"/>
+    </DataType.Properties></DataType>
+    <DataType x:Key="Folder"><DataType.Properties>
+      <Property Path="Name" Kind="String"/>
+      <Property Path="Children" Kind="Object" ObjectType="BindingList"
+        ItemType="File"/>
+    </DataType.Properties></DataType>
+    <DataType x:Key="File"><DataType.Properties>
+      <Property Path="Name" Kind="String"/>
+    </DataType.Properties></DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Name="Ada"/>
+    </DataList>
+    <CollectionViewSource x:Key="GroupedPeople"
+      Source="{StaticResource People}">
+      <CollectionViewSource.GroupDescriptions>
+        <GroupDescription PropertyName="Name"/>
+      </CollectionViewSource.GroupDescriptions>
+    </CollectionViewSource>
+    <DataTemplate x:Key="PersonRow" DataType="Person">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Text="{Binding Name}"
+          Foreground="{StaticResource Accent}"/>
+      </StackPanel>
+    </DataTemplate>
+    <HierarchicalDataTemplate DataType="Folder"
+      ItemsSource="{Binding Children}">
+      <TextBlock Text="{Binding Name}"/>
+    </HierarchicalDataTemplate>
+    <DataTemplate DataType="File">
+      <TextBlock Text="{Binding Name}"
+        Foreground="{StaticResource Accent}"/>
+    </DataTemplate>
+    <DataTemplate x:Key="PersonGroupHeader"
+      DataType="CollectionViewGroup">
+      <TextBlock Text="{Binding Key}"
+        Foreground="{StaticResource Accent}"/>
+    </DataTemplate>
+    <GroupStyle x:Key="PeopleGroups"
+      HeaderTemplate="{StaticResource PersonGroupHeader}"/>
+  </Window.Resources>
+  <Window.DataContextSchema>
+    <Property Path="Roots" Kind="Object" ObjectType="BindingList"
+      ItemType="Folder" CanWrite="false"/>
+  </Window.DataContextSchema>
+  <StackPanel>
+    <ComboBox x:Name="people"
+      ItemsSource="{StaticResource GroupedPeople}"
+      ItemTemplate="{StaticResource PersonRow}"
+      GroupStyle="{StaticResource PeopleGroups}"/>
+    <TreeView x:Name="folders" ItemsSource="{Binding Roots}"/>
+  </StackPanel>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		if (!error.empty())
+			std::wcerr << L"Static DataTemplate validation error: "
+				<< error << L'\n';
+
+		CodeGenerator generator(
+			L"StaticTemplateWindow", document,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto source =
+			generator.GenerateCppForHeader("StaticTemplateWindow");
+		for (const auto* marker : {
+			"class CuiGeneratedItemTemplate final : public IItemTemplate",
+			"DataTypeToken GetDataTypeToken() const noexcept override",
+			"std::make_shared<CuiGeneratedItemTemplate>(",
+			"__dataTemplate_PersonRow_1 = "
+				"std::make_shared<CuiGeneratedItemTemplate>(\n\t\tDataTypeToken{",
+			"__dataTemplate_Implicit_Folder_2 = "
+				"std::make_shared<CuiGeneratedItemTemplate>(\n\t\tDataTypeToken{",
+			"__dataTemplate_Implicit_File_3 = "
+				"std::make_shared<CuiGeneratedItemTemplate>(\n\t\tDataTypeToken{",
+			"__dataTemplate_PersonGroupHeader_4 = "
+				"std::make_shared<CuiGeneratedItemTemplate>(\n\t\tDataTypeToken{",
+			"stackPanel1->SetOrientation(static_cast<Orientation>(0))",
+			"SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(",
+			"std::is_same_v<TValue, cui::drawing::Brush>",
+			"return cui::drawing::MakeSolidColorBrush(color)",
+			"DataBindings.Add(Label::TextProperty()",
+			"static constexpr CompiledBindingPathStep "
+				"__cuiCompiledBindingPath_",
+			"CompiledBindingPathView{ __cuiCompiledBindingPath_",
+			"TryGetBindingPathValue(*item.Get(), "
+				"CompiledBindingPathView{",
+			"ObserveBindingPaths(item, { CompiledBindingPathView{",
+			"final : public CompiledBindingRecord",
+			"std::make_shared<CompiledBindingList>(std::move(",
+			"people->SetItemTemplate(ItemTemplateReference("
+				"__dataTemplate_PersonRow_1))",
+			"folders->SetCompiledImplicitItemTemplateResolver([",
+			"if (itemType == DataTypeToken{",
+			"folders->SetItemTemplate(ItemTemplateReference("
+				"__dataTemplate_Implicit_Folder_2))",
+			"std::make_shared<GroupStyle>()",
+			"__groupStyle_PeopleGroups_1->HeaderTemplate = "
+				"ItemTemplateReference(__dataTemplate_PersonGroupHeader_4)",
+			"people->SetGroupStyle(GroupStyleReference("
+				"__groupStyle_PeopleGroups_1))",
+			"ControlStyleSheet::CreateCompiled(",
+			"CompiledStyleProgramView{",
+			"BindingValue(ItemTemplateReference("
+				"__dataTemplate_PersonRow_1))",
+			"BindingValue(GroupStyleReference("
+				"__groupStyle_PeopleGroups_1))" })
+		{
+			if (source.find(marker) == std::string::npos)
+				std::cerr << "Missing static DataTemplate marker: "
+					<< marker << '\n';
+			CUI_EXPECT_TRUE(source.find(marker) != std::string::npos);
+		}
+		const auto setTemplate = source.find(
+			"people->SetItemTemplate(ItemTemplateReference(");
+		const auto setItemsSource = source.find(
+			"people->SetItemsSource(BindingListReference(");
+		const auto setGroupStyle = source.find(
+			"people->SetGroupStyle(GroupStyleReference(");
+		CUI_EXPECT_TRUE(setTemplate < setItemsSource);
+		CUI_EXPECT_TRUE(setGroupStyle < setItemsSource);
+		for (const auto* forbidden : {
+			"CuiRuntime::",
+			"XamlAccess::",
+			"DeclarativeTypeDescriptor::Create",
+			"XamlObjectMaterializer",
+			"TrySetPropertyValue(",
+			"DataTypeName()",
+			"SetImplicitItemTemplateResolver(",
+			"itemTypeName",
+			"std::make_shared<ObservableBindingList>",
+			"std::make_shared<ObservableObject>",
+			"->DefineProperty(",
+			"TryGetBindingPathValue(*item.Get(), L\"Children\"",
+			"ObserveBindingPaths(item, { L\"Children\"",
+			"DataContextSource(), L\"Roots\"",
+			"DataContextSource(), L\"Name\"",
+			"DefineProperty({ L\"Name\"",
+			"BindingValueConverterRegistry::Create",
+			"stackPanel1->ApplyTemplate()",
+			"people->ApplyTemplate()",
+			"folders->ApplyTemplate()" })
+			CUI_EXPECT_TRUE(source.find(forbidden) == std::string::npos);
+	});
+
+	runner.Add("Static codegen projects item-container Style templates before ItemsSource", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="StaticItemContainerWindow">
+  <Window.Resources>
+    <ControlTemplate x:Key="WpfLabListItemTemplate"
+      TargetType="ListBoxItem">
+      <Border><ContentPresenter ContentSource="Content"/></Border>
+    </ControlTemplate>
+    <ControlTemplate x:Key="WpfLabComboItemTemplate"
+      TargetType="ComboBoxItem">
+      <Border><ContentPresenter ContentSource="Content"/></Border>
+    </ControlTemplate>
+    <ControlTemplate x:Key="WpfLabTreeItemTemplate"
+      TargetType="TreeViewItem">
+      <Border><ContentPresenter ContentSource="Header"/></Border>
+    </ControlTemplate>
+    <Style x:Key="WpfLabListBase" TargetType="ListBoxItem">
+      <Setter Property="Template"
+        Value="{StaticResource WpfLabListItemTemplate}"/>
+    </Style>
+    <Style x:Key="WpfLabComboBase" TargetType="ComboBoxItem">
+      <Setter Property="Template"
+        Value="{StaticResource WpfLabComboItemTemplate}"/>
+    </Style>
+    <Style x:Key="WpfLabTreeBase" TargetType="TreeViewItem">
+      <Setter Property="Template"
+        Value="{StaticResource WpfLabTreeItemTemplate}"/>
+    </Style>
+    <Style x:Key="WpfLabContainerStyle" TargetType="ListBoxItem"
+      BasedOn="{StaticResource WpfLabListBase}">
+      <Setter Property="Padding" Value="7"/>
+    </Style>
+    <Style x:Key="WpfLabComboContainerStyle" TargetType="ComboBoxItem"
+      BasedOn="{StaticResource WpfLabComboBase}"/>
+    <Style x:Key="WpfLabTreeContainerStyle" TargetType="TreeViewItem"
+      BasedOn="{StaticResource WpfLabTreeBase}"/>
+  </Window.Resources>
+  <StackPanel x:Name="scope">
+    <ListBox x:Name="list" ItemsSource="{Binding Rows}"
+      ItemContainerStyle="{StaticResource WpfLabContainerStyle}"/>
+    <ComboBox x:Name="combo" ItemsSource="{Binding Rows}"
+      ItemContainerStyle="{StaticResource WpfLabComboContainerStyle}"/>
+    <TreeView x:Name="tree" ItemsSource="{Binding Rows}"
+      ItemContainerStyle="{StaticResource WpfLabTreeContainerStyle}"/>
+  </StackPanel>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(
+				"Static item-container parse failed: "
+				+ Convert::UnicodeToUtf8(error));
+		const auto scope = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[](const auto& node) { return node.Name == L"scope"; });
+		CUI_EXPECT_TRUE(scope != document.Nodes.end());
+		for (const auto* key : {
+			L"WpfLabContainerStyle",
+			L"WpfLabComboContainerStyle",
+			L"WpfLabTreeContainerStyle" })
+		{
+			const auto rule = std::find_if(
+				document.StyleSheet.Rules.begin(),
+				document.StyleSheet.Rules.end(),
+				[&](const auto& candidate) { return candidate.Id == key; });
+			CUI_EXPECT_TRUE(rule != document.StyleSheet.Rules.end());
+			if (scope != document.Nodes.end()
+				&& rule != document.StyleSheet.Rules.end())
+			{
+				scope->LocalResources.Rules.push_back(std::move(*rule));
+				document.StyleSheet.Rules.erase(rule);
+			}
+		}
+		if (!CodeGenerator::ValidateDocument(document, &error))
+			throw std::runtime_error(
+				"Static item-container validation failed: "
+				+ Convert::UnicodeToUtf8(error));
+
+		const auto source = CodeGenerator(
+			L"StaticItemContainerWindow", document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("StaticItemContainerWindow");
+		const std::array<std::pair<const char*, const char*>, 3> projections{ {
+			{
+				"list->SetItemContainerStyle(L\"WpfLabContainerStyle\")",
+				"list->SetItemContainerTemplate(ControlTemplateReference("
+					"__controlTemplate_WpfLabListItemTemplate_1))"
+			},
+			{
+				"combo->SetItemContainerStyle("
+					"L\"WpfLabComboContainerStyle\")",
+				"combo->SetItemContainerTemplate(ControlTemplateReference("
+					"__controlTemplate_WpfLabComboItemTemplate_2))"
+			},
+			{
+				"tree->SetItemContainerStyle("
+					"L\"WpfLabTreeContainerStyle\")",
+				"tree->SetItemContainerTemplate(ControlTemplateReference("
+					"__controlTemplate_WpfLabTreeItemTemplate_3))"
+			}
+		} };
+		const auto bindData = source.find(
+			"::BindData(BindingSourceReference dataContext)");
+		CUI_EXPECT_TRUE(bindData != std::string::npos);
+		for (const auto& [styleWrite, templateWrite] : projections)
+		{
+			const auto styleAt = source.find(styleWrite);
+			const auto templateAt = source.find(templateWrite);
+			CUI_EXPECT_TRUE(styleAt != std::string::npos);
+			CUI_EXPECT_TRUE(templateAt != std::string::npos);
+			CUI_EXPECT_TRUE(styleAt < templateAt);
+			CUI_EXPECT_TRUE(templateAt < bindData);
+		}
+		for (const auto* bindingWrite : {
+			"list->DataBindings.Add(ItemsControl::ItemsSourceProperty()",
+			"combo->DataBindings.Add(ItemsControl::ItemsSourceProperty()",
+			"tree->DataBindings.Add(ItemsControl::ItemsSourceProperty()" })
+			CUI_EXPECT_TRUE(source.find(bindingWrite, bindData)
+				!= std::string::npos);
+		for (const auto* forbidden : {
+			"TrySetPropertyValue(L\"ItemContainerStyle\"",
+			"TrySetCurrentPropertyValue(L\"ItemContainerStyle\"",
+			"DependencyPropertyRegistry::FindNative("
+				"L\"ItemContainerStyle\"" })
+			CUI_EXPECT_TRUE(source.find(forbidden) == std::string::npos);
+	});
+
 	runner.Add("Designer event generation preserves user code across regeneration", []
 	{
 		namespace fs = std::filesystem;
@@ -31293,8 +36978,8 @@ int main()
 			"cui::framework::DesignIdentityAccess::Set(*saveButton, 42);")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(generatedCpp.find(
-			"cui::framework::StyleAccess::SetDocumentStyles("
-			"*this, __styleSheet, true);")
+			"cui::framework::StyleAccess::SetEnvironment(*this, "
+			"std::move(__frameworkThemeStyles), std::move(__styleSheet), true)")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(generatedCpp.find(".Subscribe(std::bind_front(")
 			!= std::string::npos);
@@ -32353,6 +38038,15 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(codeGenTargets.find(
 			".v$(CuiCodeGenContractVersion).stamp") != std::string::npos);
+		const auto themeContractVersion = std::to_string(
+			DesignerModel::FrameworkThemeCodeGenerationContractVersion);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			"<CuiThemeCodeGenContractVersion Condition=\"'$(CuiThemeCodeGenContractVersion)' == ''\">"
+			+ themeContractVersion + "</CuiThemeCodeGenContractVersion>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			"theme-%(Filename).v$(CuiThemeCodeGenContractVersion).stamp")
+			!= std::string::npos);
 		CUI_EXPECT_TRUE(codeGenTargets.find(
 			"Inputs=\"%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);"
 			"$(CuiCodeGenExe);"
@@ -32550,11 +38244,27 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(readText(xamlResult.UserHeaderPath).find(
 			"void HandleWindowContentRendered(Window* sender) noexcept")
-			!= std::string::npos);
+			== std::string::npos);
 		CUI_EXPECT_TRUE(readText(xamlResult.UserSourcePath).find(
-			"MainWindow::HandleWindowContentRendered") == std::string::npos);
+			"MainWindow::HandleWindowContentRendered") != std::string::npos);
 		CUI_EXPECT_TRUE(readText(xamlResult.HandlerDeclarationsPath).find(
-			"HandleWindowContentRendered") == std::string::npos);
+			"HandleWindowContentRendered") != std::string::npos);
+		// Export keeps the live/designer projection; the checked-in sample is
+		// the build-owned Production projection. Regenerate that projection
+		// explicitly before comparing the AOT contract byte-for-byte.
+		DesignerModel::DesignGeneratedCodeResult staticXamlResult;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::GenerateGeneratedOnlyFile(
+				xamlPath.wstring(), xamlOptions, &staticXamlResult, &error));
+		CUI_EXPECT_EQ(3ULL, staticXamlResult.OutputFiles().size());
+		const auto staticGeneratedSource = readText(
+			outputDir / L"NamespacedWindow.g.cpp");
+		CUI_EXPECT_TRUE(staticGeneratedSource.find(
+			"->SetCompiledDisplayMemberPath(static_cast<Button&>("
+			"__templateOwner).GetCompiledDisplayMemberPath())")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(staticGeneratedSource.find(
+			"DisplayMemberPathProperty()") == std::string::npos);
 		for (const auto* fileName : {
 			L"NamespacedWindow.g.h", L"NamespacedWindow.g.cpp",
 			L"NamespacedWindow.handlers.g.inc", L"NamespacedWindow.h",
@@ -32575,14 +38285,15 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 		const auto preservedTime = fs::file_time_type::clock::now()
 			- std::chrono::hours(2);
 		std::vector<fs::file_time_type> preservedTimes;
-		for (const auto& file : xamlResult.OutputFiles())
+		for (const auto& file : staticXamlResult.OutputFiles())
 		{
 			fs::last_write_time(file, preservedTime);
 			preservedTimes.push_back(fs::last_write_time(file));
 		}
-		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::GenerateFile(
-			xamlPath.wstring(), xamlOptions, &xamlResult, &error));
-		const auto regeneratedFiles = xamlResult.OutputFiles();
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::GenerateGeneratedOnlyFile(
+				xamlPath.wstring(), xamlOptions, &staticXamlResult, &error));
+		const auto regeneratedFiles = staticXamlResult.OutputFiles();
 		for (size_t index = 0; index < regeneratedFiles.size(); ++index)
 			CUI_EXPECT_EQ(preservedTimes[index],
 				fs::last_write_time(regeneratedFiles[index]));
@@ -33201,6 +38912,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		DesignerStyleTrigger active;
 		active.PropertyConditions.push_back({ L"IsMouseOver",
 			{ DesignerStyleValueKind::Bool, L"true" } });
+		active.PropertyConditions.push_back({ L"IsMouseCaptured",
+			{ DesignerStyleValueKind::Bool, L"true" } });
+		active.PropertyConditions.push_back({ L"IsMouseCaptureWithin",
+			{ DesignerStyleValueKind::Bool, L"true" } });
 		active.PropertyConditions.push_back({ L"Content",
 			{ DesignerStyleValueKind::String, L"Ready" } });
 		active.Setters = {
@@ -33219,12 +38934,25 @@ class FreshWindow : public FreshWindowGenerated {};
 		const auto cpp = generator.GenerateCpp();
 		CUI_EXPECT_TRUE(cpp.find("#include \"Style.h\"") != std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("SetResource(L\"Accent\"") != std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find("UIClass::UI_Button") != std::string::npos);
+		const auto buttonType = std::string(
+			"__styleSelector1.Type = static_cast<UIClass>(")
+			+ std::to_string(static_cast<int>(UIClass::UI_Button)) + ");";
+		CUI_EXPECT_TRUE(cpp.find(buttonType) != std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
-			"PropertyConditions.push_back({ L\"IsMouseOver\", BindingValue(true) })")
+			"PropertyConditions.push_back({ L\"IsMouseOver\", "
+			"BindingValue(true) })")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
-			"PropertyConditions.push_back({ L\"Content\", BindingValue(L\"Ready\") })")
+			"PropertyConditions.push_back({ L\"IsMouseCaptured\", "
+			"BindingValue(true) })")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"PropertyConditions.push_back({ L\"IsMouseCaptureWithin\", "
+			"BindingValue(true) })")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"PropertyConditions.push_back({ L\"Content\", "
+			"BindingValue(L\"Ready\") })")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("ControlStyleSetter::Resource(L\"Background\", L\"Accent\")")
 			!= std::string::npos);
@@ -33233,9 +38961,53 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(cpp.find("BindingValue(8.5)") != std::string::npos);
 		// Window is the ordinary document root and owns the shared style scope.
 		CUI_EXPECT_TRUE(cpp.find(
-			"cui::framework::StyleAccess::SetDocumentStyles("
-			"*this, __styleSheet, true);")
+			"cui::framework::StyleAccess::SetEnvironment(*this, "
+			"std::move(__frameworkThemeStyles), std::move(__styleSheet), true)")
 			!= std::string::npos);
+
+		auto staticInput = input;
+		// MouseDownColor intentionally exercises the dynamic error path above;
+		// it is not a registered Button dependency property.
+		staticInput.StyleSheet.Rules.front().Triggers.front().Setters.pop_back();
+		const auto staticCpp = CodeGenerator(
+			L"StyledWindow", staticInput,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("StyledWindow");
+		for (const auto* typedStyleOperand : {
+			"ControlStyleSheet::CreateCompiled(",
+			"CompiledStyleProgramView{",
+			"static constexpr std::wstring_view __styleSheet_program_strings[]",
+			"static constexpr D2D1_COLOR_F __styleSheet_program_values_colors[]",
+			"static constexpr double __styleSheet_program_values_doubles[]",
+			"static constexpr bool __styleSheet_program_values_bools[]",
+			"static constexpr std::wstring_view __styleSheet_program_values_string_values[]",
+			"MakeCompiledStyleValuePoolView(",
+			"MakeCompiledStyleStaticValueReference(",
+			"cui::framework::StyleAccess::SetEnvironment(*this",
+			"Control::IsMouseOverProperty()",
+			"Control::IsMouseCapturedProperty()",
+			"Control::IsMouseCaptureWithinProperty()",
+			"Button::ContentProperty()",
+			"Control::BackgroundProperty()",
+			"Control::FontSizeProperty()",
+			"CompiledStyleOperandKind::StaticResource",
+			"CompiledStyleOperandKind::Literal",
+			"std::vector<BindingValue>{}" })
+			CUI_EXPECT_TRUE(
+				staticCpp.find(typedStyleOperand) != std::string::npos);
+		for (const auto* dynamicStyleOperand : {
+			"std::make_shared<ControlStyleSheet>",
+			"->AddRule(",
+			"->SetResource(",
+			"ControlStyleSetter(L\"",
+			"ControlStyleSetter::Resource(L\"",
+			"ControlStyleSetter::DynamicResource(L\"",
+			"PropertyConditions.push_back({ L\"",
+			"PropertyConditions.push_back({ DependencyPropertyReference(L\"",
+			"BindingValue(L\"Ready\")",
+			"BindingValue(8.5)" })
+			CUI_EXPECT_TRUE(
+				staticCpp.find(dynamicStyleOperand) == std::string::npos);
 
 		DesignerStyleTrigger actionTrigger;
 		actionTrigger.DataConditions.push_back({
@@ -33341,7 +39113,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		localButton.BasedOn = L"BaseButton";
 		localButton.Setters.push_back({ L"FontSize", true,
 			L"ButtonRadius", {}, true });
-		localButton.Setters.push_back({ L"Opacity", true,
+		localButton.Setters.push_back({ L"Width", true,
 			L"OuterHoverOpacity", {} });
 		DesignerStyleTrigger localHover;
 		localHover.PropertyConditions.push_back({ L"IsMouseOver",
@@ -33351,7 +39123,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		localEnter.StoryboardName = L"LocalHoverClock";
 		DesignerVisualStateAnimation localAnimation;
 		localAnimation.Kind = DesignerAnimationKind::Double;
-		localAnimation.PropertyName = L"Opacity";
+		localAnimation.PropertyName = L"Width";
 		localAnimation.HasTo = true;
 		localAnimation.ToUsesResource = true;
 		localAnimation.ToResourceKey = L"OuterHoverOpacity";
@@ -33380,7 +39152,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(dynamicCpp.find(
 			"__resources_metadataButton->AddRule") != std::string::npos);
 		CUI_EXPECT_TRUE(dynamicCpp.find(
-			"ControlStyleSetter(L\"Background\", BindingValue(D2D1::ColorF")
+			"ControlStyleSetter(L\"Background\", BindingValue(D2D1_COLOR_F{")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(dynamicCpp.find(
 			"ControlStyleSetter::DynamicResource(L\"FontSize\", L\"ButtonRadius\")")
@@ -33395,7 +39167,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			"SetResource(L\"__cui_static_scope_2\"")
 			== std::string::npos);
 		CUI_EXPECT_TRUE(dynamicCpp.find(
-			"ControlStyleSetter::Resource(L\"Opacity\", "
+			"ControlStyleSetter::Resource(L\"Width\", "
 			"L\"__cui_static_scope_1\")")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(dynamicCpp.find(
@@ -33407,6 +39179,34 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(dynamicCpp.find(
 			"animation.To = BindingValue(0.75);")
 			!= std::string::npos);
+
+		const auto staticCpp = CodeGenerator(
+			L"MetadataWindow", input,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("MetadataWindow");
+		for (const auto* marker : {
+			"auto __resources_metadataButton = "
+				"ControlStyleSheet::CreateCompiled(",
+			"CompiledStyleProgramView{",
+			"CompiledStyleOperandKind::DynamicResource",
+			"CompiledStyleOperandKind::StaticResource",
+			"__resources_metadataButton_program_animations",
+			"__resources_metadataButton_program_storyboards",
+			"__resources_metadataButton_program_actions",
+			"BindingValue(0.75)",
+			"if (!cui::framework::StyleAccess::SetResources("
+				"*metadataButton, __resources_metadataButton))" })
+			CUI_EXPECT_TRUE(staticCpp.find(marker) != std::string::npos);
+		for (const auto* forbidden : {
+			"std::make_shared<ControlStyleSheet>",
+			"->AddRule(",
+			"->SetResource(",
+			"ControlStyleSelector",
+			"ControlStyleSetter",
+			"DeclarativeEventTriggerActionDefinition",
+			"DeclarativeVisualStateAnimation",
+			"action.StoryboardName" })
+			CUI_EXPECT_TRUE(staticCpp.find(forbidden) == std::string::npos);
 	});
 
 	runner.Add("Designer binding code generation installs Local expressions directly", []
@@ -33503,7 +39303,17 @@ class FreshWindow : public FreshWindowGenerated {};
 		CheckBox toggleTarget;
 		CUI_EXPECT_TRUE(DesignerBindingUtils::Validate(
 			toggleTarget, L"IsChecked", binding, &metadata, &error));
-		CUI_EXPECT_EQ(BindingValueKind::Bool, metadata->ValueKind());
+		CUI_EXPECT_EQ(
+			BindingValueKind::NullableBool, metadata->ValueKind());
+		const auto toggleProperties =
+			DesignerPropertyCatalog::GetStyleProperties(toggleTarget);
+		const auto* checkedProperty = DesignerPropertyCatalog::Find(
+			toggleProperties, L"IsChecked");
+		CUI_EXPECT_TRUE(checkedProperty != nullptr);
+		CUI_EXPECT_EQ(
+			DependencyPropertyEditorKind::Choice,
+			checkedProperty->Editor);
+		CUI_EXPECT_EQ(3ULL, checkedProperty->Choices.size());
 
 		binding.Mode = BindingMode::TwoWay;
 		CUI_EXPECT_FALSE(DesignerBindingUtils::Validate(
@@ -33615,17 +39425,154 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(error.find(L"不可写") != std::wstring::npos);
 	});
 
-    runner.Add("Interactive state metadata supports TwoWay binding", []
+	runner.Add("Compiled bindings retain dependency property identities", []
+	{
+		ObservableObject source;
+		source.SetValue(L"Padding", Thickness(3.f));
+
+		Border target;
+		auto* binding = target.DataBindings.Add(
+			Border::PaddingProperty(), source, L"Padding");
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding
+			&& binding->TargetPropertyIdentity() == &Border::PaddingProperty());
+		CUI_EXPECT_EQ(Thickness(3.f), target.Padding);
+		source.SetValue(L"Padding", Thickness(5.f));
+		CUI_EXPECT_EQ(Thickness(5.f), target.Padding);
+
+		Border dynamicTarget;
+		CUI_EXPECT_TRUE(dynamicTarget.DataBindings.Add(
+			L"Padding", source, L"Padding") != nullptr);
+		CUI_EXPECT_EQ(nullptr, dynamicTarget.DataBindings.Add(
+			Border::PaddingProperty(), source, L"Padding"));
+		CUI_EXPECT_EQ(BindingError::DuplicateTargetProperty,
+			dynamicTarget.DataBindings.LastError());
+
+		Control sameNameProbe;
+		CUI_EXPECT_EQ(nullptr, sameNameProbe.DataBindings.Add(
+			Border::PaddingProperty(), source, L"Padding"));
+		CUI_EXPECT_EQ(BindingError::TargetPropertyNotFound,
+			sameNameProbe.DataBindings.LastError());
+		CUI_EXPECT_TRUE(sameNameProbe.DataBindings.Add(
+			Control::PaddingProperty(), source, L"Padding") != nullptr);
+
+		Control templatedParent;
+		templatedParent.SetPadding(Thickness(7.f));
+		Border templateChild;
+		auto* templateBinding = templateChild.DataBindings.AddTemplateBinding(
+			Border::PaddingProperty(), templatedParent,
+			Control::PaddingProperty());
+		CUI_EXPECT_TRUE(templateBinding != nullptr);
+		CUI_EXPECT_TRUE(templateBinding
+			&& templateBinding->TargetPropertyIdentity()
+				== &Border::PaddingProperty());
+		CUI_EXPECT_TRUE(templateBinding
+			&& templateBinding->SourcePropertyIdentity()
+				== &Control::PaddingProperty());
+		CUI_EXPECT_EQ(Thickness(7.f), templateChild.Padding);
+		templatedParent.SetPadding(Thickness(9.f));
+		CUI_EXPECT_EQ(Thickness(9.f), templateChild.Padding);
+	});
+
+	runner.Add("Interactive state metadata supports TwoWay binding", []
     {
         ObservableObject source;
         source.SetValue(L"Expanded", false);
         Expander expander;
         Binding* expandedBinding = expander.DataBindings.Add(
-            L"IsExpanded", source, L"Expanded", BindingMode::TwoWay);
+            Expander::IsExpandedProperty(),
+			source, L"Expanded", BindingMode::TwoWay);
         CUI_EXPECT_TRUE(expandedBinding != nullptr);
+		CUI_EXPECT_TRUE(expandedBinding
+			&& expandedBinding->TargetPropertyIdentity()
+				== &Expander::IsExpandedProperty());
+		const auto* expandedMetadata = expander.GetPropertyMetadata(
+			Expander::IsExpandedProperty());
+		const auto* directionMetadata = expander.GetPropertyMetadata(
+			Expander::ExpandDirectionProperty());
+		CUI_EXPECT_TRUE(expandedMetadata != nullptr);
+		CUI_EXPECT_TRUE(directionMetadata != nullptr);
+		if (!expandedMetadata || !directionMetadata) return;
+		CUI_EXPECT_TRUE(expandedMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(directionMetadata->UsesGenericObservation());
+		int expandedNotifications = 0;
+		auto expandedObservation = expandedMetadata->Subscribe(
+			expander, [&] { ++expandedNotifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(expandedObservation.Connected());
         CUI_EXPECT_FALSE(expander.IsExpanded);
+		expander.ExpandDirection = ExpandDirection::Left;
+		CUI_EXPECT_EQ(0, expandedNotifications);
         expander.Toggle();
+		CUI_EXPECT_EQ(1, expandedNotifications);
         CUI_EXPECT_TRUE(source.GetValue<bool>(L"Expanded"));
+
+		ObservableObject chartSource;
+		chartSource.SetValue(L"Title", std::wstring(L"Bound chart"));
+		chartSource.SetValue(
+			L"Kind", static_cast<int>(ChartViewKind::Line));
+		chartSource.SetValue(L"Precision", 2);
+		ChartView chart;
+		auto* titleBinding = chart.DataBindings.Add(
+			ChartView::TitleProperty(), chartSource, L"Title",
+			BindingMode::TwoWay);
+		auto* kindBinding = chart.DataBindings.Add(
+			ChartView::ChartKindProperty(), chartSource, L"Kind",
+			BindingMode::TwoWay);
+		auto* precisionBinding = chart.DataBindings.Add(
+			ChartView::ValuePrecisionProperty(), chartSource, L"Precision",
+			BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(titleBinding != nullptr);
+		CUI_EXPECT_TRUE(kindBinding != nullptr);
+		CUI_EXPECT_TRUE(precisionBinding != nullptr);
+		CUI_EXPECT_TRUE(titleBinding
+			&& titleBinding->TargetPropertyIdentity()
+				== &ChartView::TitleProperty());
+		CUI_EXPECT_TRUE(kindBinding
+			&& kindBinding->TargetPropertyIdentity()
+				== &ChartView::ChartKindProperty());
+		CUI_EXPECT_TRUE(precisionBinding
+			&& precisionBinding->TargetPropertyIdentity()
+				== &ChartView::ValuePrecisionProperty());
+		CUI_EXPECT_EQ(std::wstring(L"Bound chart"), chart.Title);
+		CUI_EXPECT_EQ(ChartViewKind::Line, chart.ChartKind);
+		CUI_EXPECT_EQ(2, chart.ValuePrecision);
+
+		const auto* titleMetadata = chart.GetPropertyMetadata(
+			ChartView::TitleProperty());
+		const auto* kindMetadata = chart.GetPropertyMetadata(
+			ChartView::ChartKindProperty());
+		const auto* precisionMetadata = chart.GetPropertyMetadata(
+			ChartView::ValuePrecisionProperty());
+		CUI_EXPECT_TRUE(titleMetadata != nullptr);
+		CUI_EXPECT_TRUE(kindMetadata != nullptr);
+		CUI_EXPECT_TRUE(precisionMetadata != nullptr);
+		if (!titleMetadata || !kindMetadata || !precisionMetadata) return;
+		CUI_EXPECT_TRUE(titleMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(kindMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(precisionMetadata->UsesGenericObservation());
+		int titleNotifications = 0;
+		auto titleObservation = titleMetadata->Subscribe(
+			chart, [&] { ++titleNotifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(titleObservation.Connected());
+		chart.Subtitle = L"Unrelated";
+		CUI_EXPECT_EQ(0, titleNotifications);
+		CUI_EXPECT_TRUE(chart.TrySetCurrentPropertyValue(
+			ChartView::TitleProperty(),
+			BindingValue(std::wstring(L"Updated chart"))));
+		CUI_EXPECT_EQ(1, titleNotifications);
+		CUI_EXPECT_EQ(std::wstring(L"Updated chart"),
+			chartSource.GetValue<std::wstring>(L"Title"));
+		CUI_EXPECT_TRUE(chart.TrySetCurrentPropertyValue(
+			ChartView::ChartKindProperty(),
+			BindingValue(static_cast<int>(ChartViewKind::Pie))));
+		CUI_EXPECT_EQ(static_cast<int>(ChartViewKind::Pie),
+			chartSource.GetValue<int>(L"Kind"));
+		CUI_EXPECT_TRUE(chart.TrySetCurrentPropertyValue(
+			ChartView::ValuePrecisionProperty(), BindingValue(99)));
+		CUI_EXPECT_EQ(8, chart.ValuePrecision);
+		CUI_EXPECT_EQ(8, chartSource.GetValue<int>(L"Precision"));
 
 		TabControl tabs; ConfigureTestControl(tabs, 0, 0, 320, 200);
         AddTestTabItem(tabs, L"First");
@@ -33637,9 +39584,1959 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_EQ(1, tabs.SelectedIndex);
         CUI_EXPECT_TRUE(tabs.SelectItem(0));
         CUI_EXPECT_EQ(0, source.GetValue<int>(L"TabIndex"));
-    });
+	});
 
-    runner.Add("Calendar metadata preserves arbitrary SYSTEMTIME values", []
+	runner.Add("Range controls use dependency-property identity observation", []
+	{
+		ObservableObject sliderSource;
+		sliderSource.SetValue(L"Current", 2.0);
+		Slider slider;
+		slider.Maximum = 10.0;
+		auto* valueBinding = slider.DataBindings.Add(
+			RangeBase::ValueProperty(), sliderSource, L"Current",
+			BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(valueBinding != nullptr);
+		CUI_EXPECT_TRUE(valueBinding
+			&& valueBinding->TargetPropertyIdentity()
+				== &RangeBase::ValueProperty());
+
+		const auto* valueMetadata = slider.GetPropertyMetadata(
+			RangeBase::ValueProperty());
+		const auto* tickMetadata = slider.GetPropertyMetadata(
+			Slider::TickFrequencyProperty());
+		const auto* selectionMetadata = slider.GetPropertyMetadata(
+			Slider::SelectionStartProperty());
+		const auto* draggingMetadata = slider.GetPropertyMetadata(
+			Slider::IsThumbDraggingProperty());
+		CUI_EXPECT_TRUE(valueMetadata != nullptr);
+		CUI_EXPECT_TRUE(tickMetadata != nullptr);
+		CUI_EXPECT_TRUE(selectionMetadata != nullptr);
+		CUI_EXPECT_TRUE(draggingMetadata != nullptr);
+		if (!valueMetadata || !tickMetadata
+			|| !selectionMetadata || !draggingMetadata) return;
+		CUI_EXPECT_TRUE(valueMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(tickMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(selectionMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(draggingMetadata->UsesGenericObservation());
+
+		int valueNotifications = 0;
+		auto valueObservation = valueMetadata->Subscribe(
+			slider, [&] { ++valueNotifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(valueObservation.Connected());
+		slider.TickFrequency = 0.5;
+		CUI_EXPECT_EQ(0, valueNotifications);
+		CUI_EXPECT_TRUE(slider.TrySetCurrentPropertyValue(
+			RangeBase::ValueProperty(), BindingValue(4.0)));
+		CUI_EXPECT_EQ(1, valueNotifications);
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			slider.GetPropertyExpressionKind(RangeBase::ValueProperty()));
+		CUI_EXPECT_NEAR(4.0,
+			sliderSource.GetValue<double>(L"Current"), 0.0000001);
+
+		ObservableObject numericSource;
+		numericSource.SetValue(L"Precision", 3);
+		NumericUpDown numeric;
+		auto* precisionBinding = numeric.DataBindings.Add(
+			NumericUpDown::DecimalPlacesProperty(), numericSource, L"Precision",
+			BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(precisionBinding != nullptr);
+		const auto* precisionMetadata = numeric.GetPropertyMetadata(
+			NumericUpDown::DecimalPlacesProperty());
+		const auto* incrementMetadata = numeric.GetPropertyMetadata(
+			NumericUpDown::IncrementProperty());
+		CUI_EXPECT_TRUE(precisionMetadata != nullptr);
+		CUI_EXPECT_TRUE(incrementMetadata != nullptr);
+		if (!precisionMetadata || !incrementMetadata) return;
+		CUI_EXPECT_TRUE(precisionMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(incrementMetadata->UsesGenericObservation());
+
+		int precisionNotifications = 0;
+		auto precisionObservation = precisionMetadata->Subscribe(
+			numeric, [&] { ++precisionNotifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(precisionObservation.Connected());
+		numeric.Increment = 0.25;
+		CUI_EXPECT_EQ(0, precisionNotifications);
+		CUI_EXPECT_TRUE(numeric.TrySetCurrentPropertyValue(
+			NumericUpDown::DecimalPlacesProperty(), BindingValue(99)));
+		CUI_EXPECT_EQ(1, precisionNotifications);
+		CUI_EXPECT_EQ(15, numeric.DecimalPlaces);
+		CUI_EXPECT_EQ(15, numericSource.GetValue<int>(L"Precision"));
+	});
+
+	runner.Add("Popup uses dependency-property identity observation", []
+	{
+		ObservableObject source;
+		source.SetValue(L"Offset", 3.0f);
+		Popup popup;
+		auto* offsetBinding = popup.DataBindings.Add(
+			Popup::HorizontalOffsetProperty(), source, L"Offset",
+			BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(offsetBinding != nullptr);
+		CUI_EXPECT_TRUE(offsetBinding
+			&& offsetBinding->TargetPropertyIdentity()
+				== &Popup::HorizontalOffsetProperty());
+
+		const std::array properties{
+			&Popup::IsOpenProperty(),
+			&Popup::StaysOpenProperty(),
+			&Popup::PlacementProperty(),
+			&Popup::PlacementTargetProperty(),
+			&Popup::HorizontalOffsetProperty(),
+			&Popup::VerticalOffsetProperty()
+		};
+		for (const auto* property : properties)
+		{
+			const auto* metadata = popup.GetPropertyMetadata(*property);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata && metadata->UsesGenericObservation());
+		}
+
+		const auto* offsetMetadata = popup.GetPropertyMetadata(
+			Popup::HorizontalOffsetProperty());
+		if (!offsetMetadata) return;
+		int notifications = 0;
+		auto observation = offsetMetadata->Subscribe(
+			popup, [&] { ++notifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(observation.Connected());
+		popup.SetVerticalOffset(8.0f);
+		CUI_EXPECT_EQ(0, notifications);
+		CUI_EXPECT_TRUE(popup.TrySetCurrentPropertyValue(
+			Popup::HorizontalOffsetProperty(), BindingValue(12.0f)));
+		CUI_EXPECT_EQ(1, notifications);
+		CUI_EXPECT_NEAR(12.0f,
+			source.GetValue<float>(L"Offset"), 0.0001f);
+	});
+
+	runner.Add("ContextMenu uses dependency-property identity observation", []
+	{
+		ObservableObject source;
+		source.SetValue(L"Offset", 3.0f);
+		ContextMenu menu;
+		auto* binding = menu.DataBindings.Add(
+			ContextMenu::HorizontalOffsetProperty(), source, L"Offset",
+			BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding && binding->TargetPropertyIdentity()
+			== &ContextMenu::HorizontalOffsetProperty());
+
+		const std::array properties{
+			&ContextMenu::IsOpenProperty(),
+			&ContextMenu::StaysOpenProperty(),
+			&ContextMenu::PlacementTargetProperty(),
+			&ContextMenu::HorizontalOffsetProperty(),
+			&ContextMenu::VerticalOffsetProperty(),
+			&ContextMenu::PlacementRectangleProperty(),
+			&ContextMenu::PlacementProperty(),
+			&ContextMenu::HasDropShadowProperty()
+		};
+		for (const auto* property : properties)
+		{
+			const auto* metadata = menu.GetPropertyMetadata(*property);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			CUI_EXPECT_TRUE(metadata && metadata->UsesGenericObservation());
+		}
+
+		const auto* offsetMetadata = menu.GetPropertyMetadata(
+			ContextMenu::HorizontalOffsetProperty());
+		if (!offsetMetadata) return;
+		int notifications = 0;
+		auto observation = offsetMetadata->Subscribe(
+			menu, [&] { ++notifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(observation.Connected());
+		menu.VerticalOffset = 8.0f;
+		CUI_EXPECT_EQ(0, notifications);
+		CUI_EXPECT_TRUE(menu.TrySetCurrentPropertyValue(
+			ContextMenu::HorizontalOffsetProperty(), BindingValue(12.0f)));
+		CUI_EXPECT_EQ(1, notifications);
+		CUI_EXPECT_NEAR(12.0f,
+			source.GetValue<float>(L"Offset"), 0.0001f);
+	});
+
+	runner.Add("NativeSurface uses dependency-property identity observation", []
+	{
+		ObservableObject source;
+		source.SetValue(
+			L"Placeholder", std::wstring(L"Initial preview"));
+		NativeSurface surface;
+		auto* binding = surface.DataBindings.Add(
+			NativeSurface::PlaceholderTextProperty(),
+			source, L"Placeholder", BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding && binding->TargetPropertyIdentity()
+			== &NativeSurface::PlaceholderTextProperty());
+		CUI_EXPECT_EQ(
+			std::wstring(L"Initial preview"),
+			surface.GetPlaceholderText());
+
+		const auto* placeholderMetadata = surface.GetPropertyMetadata(
+			NativeSurface::PlaceholderTextProperty());
+		const auto* behaviorMetadata = surface.GetPropertyMetadata(
+			NativeSurface::BehaviorKeyProperty());
+		CUI_EXPECT_TRUE(placeholderMetadata != nullptr);
+		CUI_EXPECT_TRUE(behaviorMetadata != nullptr);
+		if (!placeholderMetadata || !behaviorMetadata) return;
+		CUI_EXPECT_TRUE(placeholderMetadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(behaviorMetadata->UsesGenericObservation());
+
+		int notifications = 0;
+		auto observation = placeholderMetadata->Subscribe(
+			surface, [&] { ++notifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(observation.Connected());
+		surface.SetBehaviorKey(L"Scene3D");
+		CUI_EXPECT_EQ(0, notifications);
+		CUI_EXPECT_TRUE(surface.TrySetCurrentPropertyValue(
+			NativeSurface::PlaceholderTextProperty(),
+			BindingValue(std::wstring(L"Updated preview"))));
+		CUI_EXPECT_EQ(1, notifications);
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			surface.GetPropertyExpressionKind(
+				NativeSurface::PlaceholderTextProperty()));
+		CUI_EXPECT_EQ(
+			std::wstring(L"Updated preview"),
+			source.GetValue<std::wstring>(L"Placeholder"));
+	});
+
+	runner.Add("Selector SelectedIndex uses dependency-property identity observation", []
+	{
+		TabControl tabs;
+		ConfigureTestControl(tabs, 0, 0, 320, 200);
+		AddTestTabItem(tabs, L"First");
+		AddTestTabItem(tabs, L"Second");
+		ObservableObject source;
+		source.SetValue(L"Index", 1);
+		auto* binding = tabs.DataBindings.Add(
+			Selector::SelectedIndexProperty(),
+			source, L"Index", BindingMode::Default);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_TRUE(binding && binding->TargetPropertyIdentity()
+			== &Selector::SelectedIndexProperty());
+		CUI_EXPECT_EQ(1, tabs.SelectedIndex);
+
+		const auto* metadata = tabs.GetPropertyMetadata(
+			Selector::SelectedIndexProperty());
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		if (!metadata) return;
+		CUI_EXPECT_TRUE(metadata->UsesGenericObservation());
+		CUI_EXPECT_TRUE(HasDependencyPropertyFlag(
+			metadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+
+		int notifications = 0;
+		auto observation = metadata->Subscribe(
+			tabs, [&] { ++notifications; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(observation.Connected());
+		tabs.SetSelectedValuePath(L"Header");
+		CUI_EXPECT_EQ(0, notifications);
+		CUI_EXPECT_TRUE(tabs.TrySetCurrentPropertyValue(
+			Selector::SelectedIndexProperty(), BindingValue(0)));
+		CUI_EXPECT_EQ(1, notifications);
+		CUI_EXPECT_EQ(DependencyPropertyExpressionKind::Binding,
+			tabs.GetPropertyExpressionKind(
+				Selector::SelectedIndexProperty()));
+		CUI_EXPECT_EQ(0, source.GetValue<int>(L"Index"));
+	});
+
+	runner.Add("Control direct interaction states use read-only dependency-property identities", []
+	{
+		Control target;
+		const std::array properties{
+			&Control::IsFocusedProperty(),
+			&Control::IsKeyboardFocusedProperty(),
+			&Control::IsMouseDirectlyOverProperty()
+		};
+		std::array<int, 3> notifications{};
+		std::vector<EventConnection> observations;
+		observations.reserve(properties.size());
+		for (size_t index = 0; index < properties.size(); ++index)
+		{
+			const auto* metadata = target.GetPropertyMetadata(*properties[index]);
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			if (!metadata) return;
+			CUI_EXPECT_TRUE(metadata->IsReadOnly());
+			CUI_EXPECT_TRUE(metadata->UsesGenericObservation());
+			CUI_EXPECT_FALSE(target.TrySetPropertyValue(
+				*properties[index], BindingValue(true)));
+			observations.push_back(metadata->Subscribe(
+				target, [&notifications, index]
+				{ ++notifications[index]; },
+				DataSourceUpdateMode::OnPropertyChanged));
+			CUI_EXPECT_TRUE(observations.back().Connected());
+		}
+
+		cui::framework::InputAccess::PublishLogicalFocusState(
+			target, true);
+		CUI_EXPECT_EQ(1, notifications[0]);
+		CUI_EXPECT_EQ(0, notifications[1]);
+		CUI_EXPECT_EQ(0, notifications[2]);
+
+		cui::framework::InputAccess::PublishKeyboardFocusState(
+			target, true);
+		cui::framework::InputAccess::PublishMouseDirectlyOverState(
+			target, true);
+		for (const int count : notifications)
+			CUI_EXPECT_EQ(1, count);
+		CUI_EXPECT_TRUE(target.IsFocused);
+		CUI_EXPECT_TRUE(target.IsKeyboardFocused);
+		CUI_EXPECT_TRUE(target.IsMouseDirectlyOver);
+	});
+
+	runner.Add("Keyboard focus visual follows input device and system keyboard cues", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Keyboard focus visual projection");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 240.0f, 120.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Button>(*root, 8, 8, 90, 30);
+		auto* second = AddTestVisual<Button>(*root, 108, 8, 90, 30);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+		CUI_EXPECT_TRUE(first->IsKeyboardFocused);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocusVisible);
+
+		InputReport keyboard;
+		keyboard.Kind = InputReportKind::KeyDown;
+		keyboard.Key = Key::A;
+		(void)cui::framework::InputAccess::DispatchInput(window, keyboard);
+		CUI_EXPECT_TRUE(first->IsKeyboardFocusVisible);
+
+		InputReport pointer;
+		pointer.Kind = InputReportKind::PointerMove;
+		pointer.X = 12;
+		pointer.Y = 12;
+		(void)cui::framework::InputAccess::DispatchInput(window, pointer);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocusVisible);
+
+		SystemVisualPreferences preferences;
+		preferences.KeyboardCuesAlwaysVisible = true;
+		cui::framework::WindowAccess::ApplySystemVisualPreferences(
+			window, preferences);
+		CUI_EXPECT_TRUE(first->IsKeyboardFocusVisible);
+		(void)cui::framework::InputAccess::DispatchInput(window, pointer);
+		CUI_EXPECT_TRUE(first->IsKeyboardFocusVisible);
+
+		preferences.KeyboardCuesAlwaysVisible = false;
+		cui::framework::WindowAccess::ApplySystemVisualPreferences(
+			window, preferences);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocusVisible);
+		window.SetKeyboardFocus(second, false);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocusVisible);
+		CUI_EXPECT_FALSE(second->IsKeyboardFocusVisible);
+	});
+
+	runner.Add("Keyboard focus within transfers across visual and logical ancestry", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus-within dual tree");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 180.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* leftVisual = AddTestVisual<Panel>(*root);
+		auto* rightVisual = AddTestVisual<Panel>(*root);
+		auto* leftLogical = AddTestVisual<Panel>(*root);
+		auto* rightLogical = AddTestVisual<Panel>(*root);
+		auto* first = AddTestVisual<Control>(*leftVisual, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*rightVisual, 90, 0, 70, 28);
+		first->Focusable = true;
+		second->Focusable = true;
+		cui::framework::XamlAccess::SetLogicalParent(*first, leftLogical);
+		cui::framework::XamlAccess::SetLogicalParent(*second, rightLogical);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+
+		const auto* within = first->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		const auto* exact = first->GetPropertyMetadata(
+			Control::IsKeyboardFocusedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+		CUI_EXPECT_TRUE(within->IsReadOnly());
+		CUI_EXPECT_FALSE(HasDependencyPropertyFlag(
+			within->Flags(), DependencyPropertyFlags::AffectsRender));
+
+		std::vector<std::wstring> trace;
+		std::vector<EventConnection> observations;
+		int rootChanges = 0;
+		int windowChanges = 0;
+		auto observeWithin = [&](Control& target, std::wstring label,
+			int* count = nullptr)
+		{
+			observations.push_back(within->Subscribe(
+				target,
+				[&, targetReference = ControlWeakReference(&target),
+					label = std::move(label), count]
+				{
+					if (count) ++*count;
+					auto* live = targetReference.Get();
+					if (!live) return;
+					trace.push_back(label + (live->IsKeyboardFocusWithin
+						? L".true" : L".false"));
+					CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == second);
+					CUI_EXPECT_FALSE(first->IsKeyboardFocusWithin);
+					CUI_EXPECT_FALSE(leftVisual->IsKeyboardFocusWithin);
+					CUI_EXPECT_FALSE(leftLogical->IsKeyboardFocusWithin);
+					CUI_EXPECT_TRUE(second->IsKeyboardFocusWithin);
+					CUI_EXPECT_TRUE(rightVisual->IsKeyboardFocusWithin);
+					CUI_EXPECT_TRUE(rightLogical->IsKeyboardFocusWithin);
+					CUI_EXPECT_TRUE(root->IsKeyboardFocusWithin);
+					CUI_EXPECT_TRUE(window.IsKeyboardFocusWithin);
+					// WPF's exact-focus getter computes from the already committed
+					// Keyboard.FocusedElement, while its DP notification remains after
+					// the complete Within publication.
+					CUI_EXPECT_FALSE(first->IsKeyboardFocused);
+					CUI_EXPECT_TRUE(second->IsKeyboardFocused);
+				},
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		observeWithin(*first, L"first");
+		observeWithin(*leftVisual, L"left.visual");
+		observeWithin(*leftLogical, L"left.logical");
+		observeWithin(*second, L"second");
+		observeWithin(*rightVisual, L"right.visual");
+		observeWithin(*rightLogical, L"right.logical");
+		observeWithin(*root, L"root", &rootChanges);
+		observeWithin(window, L"window", &windowChanges);
+		observations.push_back(exact->Subscribe(
+			*first,
+			[&] { trace.push_back(L"first.exact.false"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*second,
+			[&] { trace.push_back(L"second.exact.true"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		window.SetKeyboardFocus(second, false);
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"first.false", L"left.visual.false", L"left.logical.false",
+			L"second.true", L"right.visual.true", L"right.logical.true",
+			L"first.exact.false", L"second.exact.true" }), trace);
+		CUI_EXPECT_EQ(0, rootChanges);
+		CUI_EXPECT_EQ(0, windowChanges);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == second);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocused);
+		CUI_EXPECT_TRUE(second->IsKeyboardFocused);
+		observations.clear();
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Keyboard focus within follows logical ancestor reparent", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus-within reparent");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 160.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* visualHost = AddTestVisual<Panel>(*root);
+		auto* oldLogical = AddTestVisual<Panel>(*root);
+		auto* newLogical = AddTestVisual<Panel>(*root);
+		auto* bridge = AddTestVisual<Panel>(*root);
+		auto* leaf = AddTestVisual<Control>(*visualHost, 0, 0, 70, 28);
+		leaf->Focusable = true;
+		cui::framework::XamlAccess::SetLogicalParent(*bridge, oldLogical);
+		cui::framework::XamlAccess::SetLogicalParent(*leaf, bridge);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(leaf, false);
+
+		const auto* within = leaf->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		const auto* exact = leaf->GetPropertyMetadata(
+			Control::IsKeyboardFocusedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+		std::array<int, 4> commonChanges{};
+		int oldChanges = 0;
+		int newChanges = 0;
+		int exactChanges = 0;
+		std::vector<EventConnection> observations;
+		auto observe = [&](Control& target, int& changes)
+		{
+			observations.push_back(within->Subscribe(
+				target, [&changes] { ++changes; },
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		observe(*oldLogical, oldChanges);
+		observe(*newLogical, newChanges);
+		Control* common[]{ leaf, visualHost, root, &window };
+		for (size_t index = 0; index < std::size(common); ++index)
+			observations.push_back(within->Subscribe(
+				*common[index],
+				[&, index] { ++commonChanges[index]; },
+				DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*leaf, [&] { ++exactChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		cui::framework::XamlAccess::SetLogicalParent(*bridge, newLogical);
+		CUI_EXPECT_FALSE(oldLogical->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(newLogical->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(bridge->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(leaf->IsKeyboardFocusWithin);
+		CUI_EXPECT_EQ(1, oldChanges);
+		CUI_EXPECT_EQ(1, newChanges);
+		for (const int changes : commonChanges)
+			CUI_EXPECT_EQ(0, changes);
+		CUI_EXPECT_EQ(0, exactChanges);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == leaf);
+		CUI_EXPECT_TRUE(leaf->IsKeyboardFocused);
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Keyboard focus within reentrancy suppresses a stale owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus-within reentrancy");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 160.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* superseded = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		auto* winner = AddTestVisual<Control>(*root, 180, 0, 70, 28);
+		first->Focusable = true;
+		superseded->Focusable = true;
+		winner->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+
+		const auto* within = first->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		const auto* exact = first->GetPropertyMetadata(
+			Control::IsKeyboardFocusedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+		bool reentered = false;
+		int supersededWithin = 0;
+		int supersededExact = 0;
+		int supersededGot = 0;
+		int winnerExact = 0;
+		int winnerGot = 0;
+		std::vector<EventConnection> observations;
+		observations.push_back(within->Subscribe(
+			*first,
+			[&]
+			{
+				if (first->IsKeyboardFocusWithin || reentered) return;
+				reentered = true;
+				CUI_EXPECT_TRUE(
+					window.GetKeyboardFocusedElement() == superseded);
+				window.SetKeyboardFocus(winner, false);
+			},
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(within->Subscribe(
+			*superseded, [&] { ++supersededWithin; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*superseded, [&] { ++supersededExact; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*winner, [&] { ++winnerExact; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(superseded->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&)
+			{ ++supersededGot; }));
+		observations.push_back(winner->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&)
+			{ ++winnerGot; }));
+
+		window.SetKeyboardFocus(superseded, false);
+		CUI_EXPECT_TRUE(reentered);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == winner);
+		CUI_EXPECT_FALSE(first->IsKeyboardFocused);
+		CUI_EXPECT_FALSE(superseded->IsKeyboardFocused);
+		CUI_EXPECT_TRUE(winner->IsKeyboardFocused);
+		CUI_EXPECT_FALSE(superseded->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(winner->IsKeyboardFocusWithin);
+		CUI_EXPECT_EQ(0, supersededWithin);
+		CUI_EXPECT_EQ(0, supersededExact);
+		CUI_EXPECT_EQ(0, supersededGot);
+		CUI_EXPECT_EQ(1, winnerExact);
+		CUI_EXPECT_EQ(1, winnerGot);
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Keyboard focus within callbacks can delete the requested owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus-within deletion");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* previous = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* doomed = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		previous->Focusable = true;
+		doomed->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(previous, false);
+
+		const auto* within = doomed->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!within) return;
+		const ControlWeakReference doomedLifetime(doomed);
+		bool deleted = false;
+		int doomedGot = 0;
+		auto doomedGotConnection = doomed->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&) { ++doomedGot; });
+		auto deleteConnection = within->Subscribe(
+			*doomed,
+			[&]
+			{
+				if (deleted || !doomed->IsKeyboardFocusWithin) return;
+				deleted = true;
+				CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == doomed);
+				CUI_EXPECT_FALSE(previous->IsKeyboardFocused);
+				CUI_EXPECT_TRUE(doomed->IsKeyboardFocused);
+				CUI_EXPECT_TRUE(root->DeleteVisualChild(doomed));
+				doomed = nullptr;
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		window.SetKeyboardFocus(doomed, false);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_FALSE(doomedLifetime);
+		CUI_EXPECT_TRUE(doomed == nullptr);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == nullptr);
+		CUI_EXPECT_FALSE(previous->IsKeyboardFocused);
+		CUI_EXPECT_FALSE(previous->IsKeyboardFocusWithin);
+		CUI_EXPECT_FALSE(root->IsKeyboardFocusWithin);
+		CUI_EXPECT_FALSE(window.IsKeyboardFocusWithin);
+		CUI_EXPECT_EQ(0, doomedGot);
+	});
+
+	runner.Add("Keyboard focus preview callbacks can delete the requested owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus preview deletion");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* previous = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* doomed = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		previous->Focusable = true;
+		doomed->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(previous, false);
+
+		const ControlWeakReference doomedLifetime(doomed);
+		bool deleted = false;
+		int doomedGot = 0;
+		auto doomedGotConnection = doomed->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&) { ++doomedGot; });
+		auto deleteConnection = root->OnPreviewGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				if (deleted || args.NewFocus != doomed) return;
+				deleted = true;
+				CUI_EXPECT_TRUE(root->DeleteVisualChild(doomed));
+				doomed = nullptr;
+			});
+
+		window.SetKeyboardFocus(doomed, false);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_FALSE(doomedLifetime);
+		CUI_EXPECT_TRUE(doomed == nullptr);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == previous);
+		CUI_EXPECT_TRUE(previous->IsKeyboardFocused);
+		CUI_EXPECT_TRUE(previous->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(root->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(window.IsKeyboardFocusWithin);
+		CUI_EXPECT_EQ(0, doomedGot);
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Lost keyboard focus reentrancy retargets the outer Got", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus lost reentrancy");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* superseded = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		auto* winner = AddTestVisual<Control>(*root, 180, 0, 70, 28);
+		first->Focusable = true;
+		superseded->Focusable = true;
+		winner->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+
+		bool reentered = false;
+		int supersededGot = 0;
+		std::vector<std::pair<Control*, Control*>> winnerEndpoints;
+		std::vector<Control*> winnerSources;
+		auto reenter = first->OnLostKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				if (reentered || args.NewFocus != superseded) return;
+				reentered = true;
+				window.SetKeyboardFocus(winner, false);
+			});
+		auto supersededGotConnection = superseded->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&) { ++supersededGot; });
+		auto winnerGotConnection = winner->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				winnerEndpoints.emplace_back(args.OldFocus, args.NewFocus);
+				winnerSources.push_back(args.Source);
+			});
+
+		window.SetKeyboardFocus(superseded, false);
+		CUI_EXPECT_TRUE(reentered);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == winner);
+		CUI_EXPECT_FALSE(superseded->IsKeyboardFocused);
+		CUI_EXPECT_TRUE(winner->IsKeyboardFocused);
+		CUI_EXPECT_EQ(0, supersededGot);
+		CUI_EXPECT_EQ(2ULL, winnerEndpoints.size());
+		CUI_EXPECT_EQ(2ULL, winnerSources.size());
+		CUI_EXPECT_TRUE(winnerEndpoints[0].first == superseded);
+		CUI_EXPECT_TRUE(winnerEndpoints[0].second == winner);
+		CUI_EXPECT_TRUE(winnerEndpoints[1].first == first);
+		CUI_EXPECT_TRUE(winnerEndpoints[1].second == winner);
+		CUI_EXPECT_TRUE(winnerSources[0] == winner);
+		CUI_EXPECT_TRUE(winnerSources[1] == winner);
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Keyboard focus event endpoints expire within one route", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Focus event weak endpoints");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 240.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* doomed = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		first->Focusable = true;
+		doomed->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+
+		const ControlWeakReference doomedLifetime(doomed);
+		bool deleted = false;
+		bool rootObservedExpiredEndpoint = false;
+		int doomedGot = 0;
+		auto deleteCurrent = first->OnLostKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				if (deleted || args.NewFocus != doomed) return;
+				deleted = true;
+				CUI_EXPECT_TRUE(root->DeleteVisualChild(doomed));
+				doomed = nullptr;
+			});
+		auto observeRoot = root->OnLostKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				if (args.OldFocus == first)
+					rootObservedExpiredEndpoint = args.NewFocus == nullptr;
+			});
+		auto doomedGotConnection = doomed->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&) { ++doomedGot; });
+
+		window.SetKeyboardFocus(doomed, false);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_TRUE(rootObservedExpiredEndpoint);
+		CUI_EXPECT_FALSE(doomedLifetime);
+		CUI_EXPECT_TRUE(doomed == nullptr);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == nullptr);
+		CUI_EXPECT_EQ(0, doomedGot);
+	});
+
+	runner.Add("Keyboard focus handlers can delete the Window", []
+	{
+		auto window = std::make_unique<Window>();
+		ConfigureTestControl(*window, L"Focus event Window deletion");
+		SetDeclaredWindowGeometry(*window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		first->Focusable = true;
+		second->Focusable = true;
+		const ControlWeakReference firstLifetime(first);
+		const ControlWeakReference secondLifetime(second);
+		CUI_EXPECT_TRUE(window->SetVisualContent(std::move(rootOwner)) == root);
+		window->SetKeyboardFocus(first, false);
+		bool deleted = false;
+		auto deleteWindow = first->OnLostKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs& args)
+			{
+				if (deleted || args.NewFocus != second) return;
+				deleted = true;
+				window.reset();
+			});
+
+		auto* windowValue = window.get();
+		windowValue->SetKeyboardFocus(second, false);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_TRUE(window == nullptr);
+		CUI_EXPECT_FALSE(firstLifetime);
+		CUI_EXPECT_FALSE(secondLifetime);
+	});
+
+	runner.Add("Got keyboard focus handlers can delete the Window", []
+	{
+		auto window = std::make_unique<Window>();
+		ConfigureTestControl(*window, L"Got focus Window deletion");
+		SetDeclaredWindowGeometry(*window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* target = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		target->Focusable = true;
+		const ControlWeakReference targetLifetime(target);
+		CUI_EXPECT_TRUE(window->SetVisualContent(std::move(rootOwner)) == root);
+		bool deleted = false;
+		auto deleteWindow = target->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&)
+			{
+				if (deleted) return;
+				deleted = true;
+				window.reset();
+			});
+
+		auto* windowValue = window.get();
+		windowValue->SetKeyboardFocus(target, false);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_TRUE(window == nullptr);
+		CUI_EXPECT_FALSE(targetLifetime);
+	});
+
+	runner.Add("Reverse inherited style remains final after focus reentry", []
+	{
+		struct FocusStyleProbe final : Control
+		{
+			ControlStyleState StyleState() const noexcept
+			{
+				return GetStyleState();
+			}
+		};
+		Window window;
+		ConfigureTestControl(window, L"Focus-within style reentry");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<FocusStyleProbe>(
+			*root, 0, 0, 70, 28);
+		auto* second = AddTestVisual<FocusStyleProbe>(
+			*root, 90, 0, 70, 28);
+		first->Focusable = true;
+		second->Focusable = true;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.SetKeyboardFocus(first, false);
+
+		const auto* within = first->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!within) return;
+		bool reentered = false;
+		auto reenter = within->Subscribe(
+			*first,
+			[&]
+			{
+				if (reentered || first->IsKeyboardFocusWithin) return;
+				reentered = true;
+				window.SetKeyboardFocus(first, false);
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		window.SetKeyboardFocus(second, false);
+		CUI_EXPECT_TRUE(reentered);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == first);
+		CUI_EXPECT_TRUE(first->IsKeyboardFocusWithin);
+		CUI_EXPECT_FALSE(second->IsKeyboardFocusWithin);
+		CUI_EXPECT_TRUE(HasControlStyleState(
+			first->StyleState(),
+			ControlStyleState::KeyboardFocusWithin));
+		CUI_EXPECT_FALSE(HasControlStyleState(
+			second->StyleState(),
+			ControlStyleState::KeyboardFocusWithin));
+		window.SetKeyboardFocus(
+			nullptr, false, FocusChangeReason::TreeDetach);
+	});
+
+	runner.Add("Mouse over transfers across visual and logical ancestry", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		Window window;
+		ConfigureTestControl(window, L"Mouse-over dual tree");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 180.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* leftVisual = AddTestVisual<Panel>(*root);
+		auto* rightVisual = AddTestVisual<Panel>(*root);
+		auto* leftLogical = AddTestVisual<Panel>(*root);
+		auto* rightLogical = AddTestVisual<Panel>(*root);
+		auto* first = AddTestVisual<Control>(*leftVisual, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*rightVisual, 90, 0, 70, 28);
+		cui::framework::XamlAccess::SetLogicalParent(*first, leftLogical);
+		cui::framework::XamlAccess::SetLogicalParent(*second, rightLogical);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, first, 10, 10);
+
+		const auto* over = first->GetPropertyMetadata(
+			Control::IsMouseOverProperty());
+		const auto* direct = first->GetPropertyMetadata(
+			Control::IsMouseDirectlyOverProperty());
+		CUI_EXPECT_TRUE(over != nullptr);
+		CUI_EXPECT_TRUE(direct != nullptr);
+		if (!over || !direct) return;
+		CUI_EXPECT_TRUE(over->IsReadOnly());
+		CUI_EXPECT_FALSE(HasDependencyPropertyFlag(
+			over->Flags(), DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_FALSE(HasDependencyPropertyFlag(
+			direct->Flags(), DependencyPropertyFlags::AffectsRender));
+
+		std::vector<std::wstring> trace;
+		std::vector<EventConnection> observations;
+		int rootChanges = 0;
+		int windowChanges = 0;
+		auto observeOver = [&](Control& target, std::wstring label,
+			int* count = nullptr)
+		{
+			observations.push_back(over->Subscribe(
+				target,
+				[&, targetReference = ControlWeakReference(&target),
+					label = std::move(label), count]
+				{
+					if (count) ++*count;
+					auto* live = targetReference.Get();
+					if (!live) return;
+					trace.push_back(label + (live->IsMouseOver
+						? L".true" : L".false"));
+					CUI_EXPECT_FALSE(first->IsMouseOver);
+					CUI_EXPECT_FALSE(leftVisual->IsMouseOver);
+					CUI_EXPECT_FALSE(leftLogical->IsMouseOver);
+					CUI_EXPECT_TRUE(second->IsMouseOver);
+					CUI_EXPECT_TRUE(rightVisual->IsMouseOver);
+					CUI_EXPECT_TRUE(rightLogical->IsMouseOver);
+					CUI_EXPECT_TRUE(root->IsMouseOver);
+					CUI_EXPECT_TRUE(window.IsMouseOver);
+					// WPF changes IsMouseOver before IsMouseDirectlyOver.
+					CUI_EXPECT_TRUE(first->IsMouseDirectlyOver);
+					CUI_EXPECT_FALSE(second->IsMouseDirectlyOver);
+				},
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		auto observeEvent = [&](Control& target, std::wstring label)
+		{
+			observations.push_back(target.OnMouseEnter.Subscribe(
+				[&, label](Control*, MouseEventArgs&)
+				{ trace.push_back(label + L".enter"); }));
+			observations.push_back(target.OnMouseLeave.Subscribe(
+				[&, label](Control*, MouseEventArgs&)
+				{ trace.push_back(label + L".leave"); }));
+		};
+		observeOver(*first, L"first");
+		observeOver(*leftVisual, L"left.visual");
+		observeOver(*leftLogical, L"left.logical");
+		observeOver(*second, L"second");
+		observeOver(*rightVisual, L"right.visual");
+		observeOver(*rightLogical, L"right.logical");
+		observeOver(*root, L"root", &rootChanges);
+		observeOver(window, L"window", &windowChanges);
+		for (auto [target, label] : std::array{
+			std::pair<Control*, std::wstring>{ first, L"first" },
+			std::pair<Control*, std::wstring>{ leftVisual, L"left.visual" },
+			std::pair<Control*, std::wstring>{ leftLogical, L"left.logical" },
+			std::pair<Control*, std::wstring>{ second, L"second" },
+			std::pair<Control*, std::wstring>{ rightVisual, L"right.visual" },
+			std::pair<Control*, std::wstring>{ rightLogical, L"right.logical" } })
+			observeEvent(*target, std::move(label));
+		observations.push_back(direct->Subscribe(
+			*first, [&] { trace.push_back(L"first.direct.false"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(direct->Subscribe(
+			*second, [&] { trace.push_back(L"second.direct.true"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, second, 100, 10);
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"first.false", L"first.leave",
+			L"left.visual.false", L"left.visual.leave",
+			L"left.logical.false", L"left.logical.leave",
+			L"second.true", L"second.enter",
+			L"right.visual.true", L"right.visual.enter",
+			L"right.logical.true", L"right.logical.enter",
+			L"first.direct.false", L"second.direct.true" }), trace);
+		CUI_EXPECT_EQ(0, rootChanges);
+		CUI_EXPECT_EQ(0, windowChanges);
+		CUI_EXPECT_FALSE(first->IsMouseDirectlyOver);
+		CUI_EXPECT_TRUE(second->IsMouseDirectlyOver);
+		observations.clear();
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, nullptr, 0, 0, false);
+	});
+
+	runner.Add("Mouse over follows logical reparent and Popup boundaries", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		Window window;
+		ConfigureTestControl(window, L"Mouse-over tree refresh");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 180.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* visualHost = AddTestVisual<Panel>(*root);
+		auto* oldLogical = AddTestVisual<Panel>(*root);
+		auto* newLogical = AddTestVisual<Panel>(*root);
+		auto* bridge = AddTestVisual<Panel>(*root);
+		auto* leaf = AddTestVisual<Control>(*visualHost, 0, 0, 70, 28);
+		cui::framework::XamlAccess::SetLogicalParent(*bridge, oldLogical);
+		cui::framework::XamlAccess::SetLogicalParent(*leaf, bridge);
+		auto* popupOwner = AddTestVisual<Control>(*root);
+		auto* popup = AddTestVisual<Popup>(*root);
+		cui::framework::XamlAccess::SetLogicalParent(*popup, popupOwner);
+		auto popupChildOwner = MakeTestControl<Control>(90, 0, 70, 28);
+		auto* popupChild = popupChildOwner.get();
+		CUI_EXPECT_TRUE(popup->SetChild(std::move(popupChildOwner)) == popupChild);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		popup->IsOpen = true;
+
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, leaf, 10, 10);
+		const auto* over = leaf->GetPropertyMetadata(
+			Control::IsMouseOverProperty());
+		const auto* direct = leaf->GetPropertyMetadata(
+			Control::IsMouseDirectlyOverProperty());
+		CUI_EXPECT_TRUE(over != nullptr);
+		CUI_EXPECT_TRUE(direct != nullptr);
+		if (!over || !direct) return;
+		int oldChanges = 0;
+		int newChanges = 0;
+		int exactChanges = 0;
+		std::vector<EventConnection> observations;
+		observations.push_back(over->Subscribe(
+			*oldLogical, [&] { ++oldChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(over->Subscribe(
+			*newLogical, [&] { ++newChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(direct->Subscribe(
+			*leaf, [&] { ++exactChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		cui::framework::XamlAccess::SetLogicalParent(*bridge, newLogical);
+		CUI_EXPECT_FALSE(oldLogical->IsMouseOver);
+		CUI_EXPECT_TRUE(newLogical->IsMouseOver);
+		CUI_EXPECT_TRUE(leaf->IsMouseOver);
+		CUI_EXPECT_TRUE(leaf->IsMouseDirectlyOver);
+		CUI_EXPECT_EQ(1, oldChanges);
+		CUI_EXPECT_EQ(1, newChanges);
+		CUI_EXPECT_EQ(0, exactChanges);
+
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, popupChild, 100, 10);
+		CUI_EXPECT_TRUE(popupChild->IsMouseOver);
+		CUI_EXPECT_TRUE(popup->IsMouseOver);
+		CUI_EXPECT_FALSE(popupOwner->IsMouseOver);
+		CUI_EXPECT_FALSE(root->IsMouseOver);
+		CUI_EXPECT_FALSE(window.IsMouseOver);
+		cui::framework::XamlAccess::SetTemplatedParent(*popup, popupOwner);
+		CUI_EXPECT_TRUE(popupOwner->IsMouseOver);
+		CUI_EXPECT_TRUE(root->IsMouseOver);
+		CUI_EXPECT_TRUE(window.IsMouseOver);
+		cui::framework::XamlAccess::SetTemplatedParent(*popup, nullptr);
+		CUI_EXPECT_FALSE(popupOwner->IsMouseOver);
+		CUI_EXPECT_FALSE(root->IsMouseOver);
+		CUI_EXPECT_FALSE(window.IsMouseOver);
+		CUI_EXPECT_TRUE(popupChild->IsMouseDirectlyOver);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, nullptr, 0, 0, false);
+	});
+
+	runner.Add("Mouse over no-op refresh preserves pending notifications", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		Window window;
+		ConfigureTestControl(window, L"Mouse-over nested refresh");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 280.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		auto* unrelated = AddTestVisual<Control>(*root, 180, 0, 70, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, first, 10, 10);
+
+		const auto* over = first->GetPropertyMetadata(
+			Control::IsMouseOverProperty());
+		CUI_EXPECT_TRUE(over != nullptr);
+		if (!over) return;
+		bool refreshed = false;
+		int secondChanges = 0;
+		int secondEnters = 0;
+		auto refresh = over->Subscribe(
+			*first,
+			[&]
+			{
+				if (refreshed || first->IsMouseOver) return;
+				refreshed = true;
+				cui::framework::XamlAccess::SetTemplatedParent(
+					*unrelated, root);
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto secondState = over->Subscribe(
+			*second, [&] { ++secondChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto secondEnter = second->OnMouseEnter.Subscribe(
+			[&](Control*, MouseEventArgs&) { ++secondEnters; });
+
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, second, 100, 10);
+		CUI_EXPECT_TRUE(refreshed);
+		CUI_EXPECT_FALSE(first->IsMouseOver);
+		CUI_EXPECT_TRUE(second->IsMouseOver);
+		CUI_EXPECT_TRUE(second->IsMouseDirectlyOver);
+		CUI_EXPECT_EQ(1, secondChanges);
+		CUI_EXPECT_EQ(1, secondEnters);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, nullptr, 0, 0, false);
+	});
+
+	runner.Add("Mouse directly over observers can delete the Window", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		auto window = std::make_unique<Window>();
+		ConfigureTestControl(*window, L"Mouse direct Window deletion");
+		SetDeclaredWindowGeometry(*window, 0.0f, 0.0f, 220.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*root, 90, 0, 70, 28);
+		const ControlWeakReference firstLifetime(first);
+		const ControlWeakReference secondLifetime(second);
+		CUI_EXPECT_TRUE(window->SetVisualContent(std::move(rootOwner)) == root);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			*window, first, 10, 10);
+		const auto* direct = first->GetPropertyMetadata(
+			Control::IsMouseDirectlyOverProperty());
+		CUI_EXPECT_TRUE(direct != nullptr);
+		if (!direct) return;
+		bool deleted = false;
+		auto deleteWindow = direct->Subscribe(
+			*first,
+			[&]
+			{
+				if (deleted || first->IsMouseDirectlyOver) return;
+				deleted = true;
+				window.reset();
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			*window, second, 100, 10);
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_TRUE(window == nullptr);
+		CUI_EXPECT_FALSE(firstLifetime);
+		CUI_EXPECT_FALSE(secondLifetime);
+	});
+
+	runner.Add("Normal hovered detach raises MouseLeave for every changed element", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		Window window;
+		ConfigureTestControl(window, L"Mouse-over detach");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 180.0f, 90.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* child = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		const ControlWeakReference childLifetime(child);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			window, child, 10, 10);
+		std::array<int, 3> leaves{};
+		auto childLeave = child->OnMouseLeave.Subscribe(
+			[&](Control*, MouseEventArgs&) { ++leaves[0]; });
+		auto rootLeave = root->OnMouseLeave.Subscribe(
+			[&](Control*, MouseEventArgs&) { ++leaves[1]; });
+		auto windowLeave = window.OnMouseLeave.Subscribe(
+			[&](Control*, MouseEventArgs&) { ++leaves[2]; });
+
+		CUI_EXPECT_TRUE(root->DeleteVisualChild(child));
+		CUI_EXPECT_FALSE(childLifetime);
+		CUI_EXPECT_FALSE(root->IsMouseOver);
+		CUI_EXPECT_FALSE(window.IsMouseOver);
+		for (const int count : leaves) CUI_EXPECT_EQ(1, count);
+	});
+
+	runner.Add("Window teardown contains reverse inherited observer exceptions", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		auto window = std::make_unique<Window>();
+		ConfigureTestControl(*window, L"Reverse observer teardown");
+		SetDeclaredWindowGeometry(*window, 0.0f, 0.0f, 180.0f, 90.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* leaf = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		leaf->Focusable = true;
+		const ControlWeakReference leafLifetime(leaf);
+		CUI_EXPECT_TRUE(window->SetVisualContent(std::move(rootOwner)) == root);
+		window->SetKeyboardFocus(leaf, false);
+		WindowAccess::UpdateMouseOverProjectionForTesting(
+			*window, leaf, 10, 10);
+		const auto* over = leaf->GetPropertyMetadata(
+			Control::IsMouseOverProperty());
+		const auto* within = leaf->GetPropertyMetadata(
+			Control::IsKeyboardFocusWithinProperty());
+		CUI_EXPECT_TRUE(over != nullptr);
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!over || !within) return;
+		auto throwOver = over->Subscribe(
+			*leaf,
+			[&]
+			{
+				if (!leaf->IsMouseOver)
+					throw std::runtime_error("mouse-over teardown observer");
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto throwWithin = within->Subscribe(
+			*leaf,
+			[&]
+			{
+				if (!leaf->IsKeyboardFocusWithin)
+					throw std::runtime_error("focus-within teardown observer");
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		window.reset();
+		CUI_EXPECT_TRUE(window == nullptr);
+		CUI_EXPECT_FALSE(leafLifetime);
+	});
+
+	runner.Add("Mouse capture is one read-only dependency-property transaction", []
+	{
+		struct CaptureProbe final : Control
+		{
+			std::vector<std::wstring>* Trace = nullptr;
+			std::wstring Name;
+			Control* Peer = nullptr;
+
+		protected:
+			bool ProcessInput(const InputReport& input) override
+			{
+				if (input.Kind == InputReportKind::CaptureLost && Trace)
+					Trace->push_back(Name + L".capture-lost.peer."
+						+ (Peer && Peer->IsMouseCaptured()
+							? L"true" : L"false"));
+				return Control::ProcessInput(input);
+			}
+		};
+
+		Window window;
+		ConfigureTestControl(window, L"Mouse capture transaction");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 240.0f, 120.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<CaptureProbe>(*root, 0, 0, 80, 28);
+		auto* second = AddTestVisual<CaptureProbe>(*root, 90, 0, 80, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+
+		const auto& property = Control::IsMouseCapturedProperty();
+		const auto* firstMetadata = first->GetPropertyMetadata(property);
+		const auto* secondMetadata = second->GetPropertyMetadata(property);
+		const auto& withinProperty =
+			Control::IsMouseCaptureWithinProperty();
+		const auto* withinMetadata =
+			first->GetPropertyMetadata(withinProperty);
+		CUI_EXPECT_TRUE(firstMetadata != nullptr);
+		CUI_EXPECT_TRUE(secondMetadata != nullptr);
+		CUI_EXPECT_TRUE(withinMetadata != nullptr);
+		if (!firstMetadata || !secondMetadata || !withinMetadata) return;
+		CUI_EXPECT_TRUE(&firstMetadata->Property() == &property);
+		CUI_EXPECT_TRUE(&secondMetadata->Property() == &property);
+		CUI_EXPECT_TRUE(firstMetadata->IsReadOnly());
+		CUI_EXPECT_TRUE(firstMetadata->UsesGenericObservation());
+		CUI_EXPECT_FALSE(HasDependencyPropertyFlag(
+			firstMetadata->Flags(), DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_TRUE(&withinMetadata->Property() == &withinProperty);
+		CUI_EXPECT_TRUE(withinMetadata->IsReadOnly());
+		CUI_EXPECT_TRUE(withinMetadata->UsesGenericObservation());
+		CUI_EXPECT_FALSE(HasDependencyPropertyFlag(
+			withinMetadata->Flags(), DependencyPropertyFlags::AffectsRender));
+		CUI_EXPECT_FALSE(first->IsMouseCaptured());
+		CUI_EXPECT_FALSE(second->IsMouseCaptured());
+		CUI_EXPECT_FALSE(first->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(second->IsMouseCaptureWithin);
+
+		std::vector<std::wstring> trace;
+		first->Trace = &trace;
+		first->Name = L"first";
+		first->Peer = second;
+		second->Trace = &trace;
+		second->Name = L"second";
+		second->Peer = first;
+		auto firstState = firstMetadata->Subscribe(
+			*first,
+			[&]
+			{
+				trace.push_back(first->IsMouseCaptured()
+					? L"first.true" : L"first.false");
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto secondState = secondMetadata->Subscribe(
+			*second,
+			[&]
+			{
+				trace.push_back(second->IsMouseCaptured()
+					? L"second.true" : L"second.false");
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto firstLost = first->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&)
+			{
+				trace.push_back(second->IsMouseCaptured()
+					? L"first.lost.second.true"
+					: L"first.lost.second.false");
+			});
+		auto secondGot = second->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&)
+			{
+				trace.push_back(first->IsMouseCaptured()
+					? L"second.got.first.true"
+					: L"second.got.first.false");
+			});
+		auto secondLost = second->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&)
+			{
+				trace.push_back(first->IsMouseCaptured()
+					? L"second.lost.first.true"
+					: L"second.lost.first.false");
+			});
+		CUI_EXPECT_TRUE(firstState.Connected());
+		CUI_EXPECT_TRUE(secondState.Connected());
+
+		CUI_EXPECT_FALSE(first->TrySetPropertyValue(
+			property, BindingValue(true)));
+		CUI_EXPECT_FALSE(first->TrySetCurrentPropertyValue(
+			property, BindingValue(true)));
+		CUI_EXPECT_FALSE(first->TrySetPropertyValue(
+			withinProperty, BindingValue(true)));
+		CUI_EXPECT_FALSE(first->TrySetCurrentPropertyValue(
+			withinProperty, BindingValue(true)));
+		CUI_EXPECT_TRUE(trace.empty());
+
+		first->IsEnabled = false;
+		CUI_EXPECT_FALSE(first->CaptureMouse());
+		CUI_EXPECT_TRUE(trace.empty());
+		first->IsEnabled = true;
+		root->IsEnabled = false;
+		CUI_EXPECT_FALSE(first->CaptureMouse());
+		CUI_EXPECT_TRUE(trace.empty());
+		root->IsEnabled = true;
+		CUI_EXPECT_TRUE(first->CaptureMouse());
+		CUI_EXPECT_TRUE(first->IsMouseCaptured());
+		CUI_EXPECT_TRUE(first->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == first);
+		trace.clear();
+		CUI_EXPECT_TRUE(first->CaptureMouse());
+		CUI_EXPECT_TRUE(trace.empty());
+
+		CUI_EXPECT_TRUE(second->CaptureMouse());
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"first.false", L"second.true",
+			L"first.capture-lost.peer.true",
+			L"first.lost.second.true",
+			L"second.got.first.false" }), trace);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == second);
+		CUI_EXPECT_FALSE(first->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(second->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(first->ReleaseMouseCapture());
+		CUI_EXPECT_EQ(5ULL, trace.size());
+
+		trace.clear();
+		CUI_EXPECT_TRUE(second->ReleaseMouseCapture());
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"second.false", L"second.capture-lost.peer.false",
+			L"second.lost.first.false" }), trace);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+		CUI_EXPECT_FALSE(second->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(window.IsMouseCaptureWithin);
+
+		CUI_EXPECT_TRUE(first->CaptureMouse());
+		trace.clear();
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			window, LifecycleInput(InputReportKind::Cancel)));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"first.false", L"first.capture-lost.peer.false",
+			L"first.lost.second.false" }), trace);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+
+		CUI_EXPECT_TRUE(second->CaptureMouse());
+		trace.clear();
+		const ControlWeakReference secondLifetime(second);
+		CUI_EXPECT_TRUE(root->DeleteVisualChild(second));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"second.false", L"second.capture-lost.peer.false",
+			L"second.lost.first.false" }), trace);
+		CUI_EXPECT_FALSE(secondLifetime);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+	});
+
+	runner.Add("Logical parent teardown ignores an expired presentation source", []
+	{
+		auto parent = std::make_unique<Control>();
+		auto child = std::make_unique<PresentationTestAccess>();
+		cui::framework::XamlAccess::SetLogicalParent(*child, parent.get());
+		CUI_EXPECT_TRUE(child->GetLogicalParent() == parent.get());
+
+		// Detached design-time trees can temporarily retain a staging Window raw
+		// address. Parent destruction must only sever the logical edge; reverse
+		// inheritance is already inactive and must not inspect that retired source.
+		{
+			auto stagingWindow = std::make_unique<Window>();
+			PresentationTestAccess::SetRawWindowForTeardown(
+				*child, stagingWindow.get());
+		}
+		parent.reset();
+		CUI_EXPECT_TRUE(child->GetLogicalParent() == nullptr);
+		PresentationTestAccess::SetRawWindowForTeardown(*child, nullptr);
+	});
+
+	runner.Add("Logical host teardown refreshes surviving capture ancestry", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within logical teardown");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 300.0f, 150.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* visualHost = AddTestVisual<Panel>(*root);
+		auto* logicalAncestor = AddTestVisual<PresentationTestAccess>(*root);
+		auto* leaf = AddTestVisual<Control>(*visualHost, 0, 0, 70, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+
+		auto logicalHost = std::make_unique<PresentationTestAccess>();
+		PresentationTestAccess::SetWindow(logicalHost.get(), &window);
+		cui::framework::XamlAccess::SetLogicalParent(
+			*logicalHost, logicalAncestor);
+		cui::framework::XamlAccess::SetLogicalParent(*leaf, logicalHost.get());
+		CUI_EXPECT_TRUE(leaf->CaptureMouse());
+		CUI_EXPECT_TRUE(logicalHost->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(logicalAncestor->IsMouseCaptureWithin);
+
+		const auto* within = leaf->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		const auto* exact = leaf->GetPropertyMetadata(
+			Control::IsMouseCapturedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+		std::array<int, 4> commonChanges{};
+		int logicalAncestorChanges = 0;
+		int exactChanges = 0;
+		std::vector<EventConnection> observations;
+		Control* common[]{ leaf, visualHost, root, &window };
+		for (size_t index = 0; index < std::size(common); ++index)
+			observations.push_back(within->Subscribe(
+				*common[index],
+				[&, index] { ++commonChanges[index]; },
+				DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(within->Subscribe(
+			*logicalAncestor,
+			[&] { ++logicalAncestorChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*leaf, [&] { ++exactChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		const ControlWeakReference logicalHostLifetime(logicalHost.get());
+		logicalHost.reset();
+		CUI_EXPECT_FALSE(logicalHostLifetime);
+		CUI_EXPECT_TRUE(leaf->GetLogicalParent() == nullptr);
+		CUI_EXPECT_FALSE(logicalAncestor->IsMouseCaptureWithin);
+		CUI_EXPECT_EQ(1, logicalAncestorChanges);
+		for (const int changes : commonChanges)
+			CUI_EXPECT_EQ(0, changes);
+		CUI_EXPECT_EQ(0, exactChanges);
+		CUI_EXPECT_TRUE(leaf->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(visualHost->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == leaf);
+		CUI_EXPECT_TRUE(leaf->IsMouseCaptured());
+		CUI_EXPECT_TRUE(leaf->ReleaseMouseCapture());
+	});
+
+	runner.Add("Mouse capture within transfers without common-ancestor churn", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within transfer");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 300.0f, 140.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* left = AddTestVisual<Panel>(*root);
+		auto* right = AddTestVisual<Panel>(*root);
+		auto* first = AddTestVisual<Control>(*left, 0, 0, 70, 28);
+		auto* second = AddTestVisual<Control>(*right, 90, 0, 70, 28);
+		CUI_EXPECT_TRUE(first->GetVisualParent() == left);
+		CUI_EXPECT_TRUE(first->GetLogicalParent() == left);
+		CUI_EXPECT_TRUE(second->GetVisualParent() == right);
+		CUI_EXPECT_TRUE(second->GetLogicalParent() == right);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		CUI_EXPECT_TRUE(first->CaptureMouse());
+
+		const auto* within = first->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		const auto* exact = first->GetPropertyMetadata(
+			Control::IsMouseCapturedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+
+		std::vector<std::wstring> trace;
+		std::vector<EventConnection> observations;
+		int rootChanges = 0;
+		int windowChanges = 0;
+		auto observeWithin = [&](Control& target, std::wstring label,
+			int* count = nullptr)
+		{
+			observations.push_back(within->Subscribe(
+				target,
+				[&, targetReference = ControlWeakReference(&target),
+					label = std::move(label), count]
+				{
+					if (count) ++*count;
+					auto* live = targetReference.Get();
+					if (!live) return;
+					trace.push_back(label + (live->IsMouseCaptureWithin
+						? L".true" : L".false"));
+					CUI_EXPECT_TRUE(window.GetMouseCaptured() == second);
+					CUI_EXPECT_TRUE(first->IsMouseCaptured());
+					CUI_EXPECT_FALSE(second->IsMouseCaptured());
+					CUI_EXPECT_FALSE(first->IsMouseCaptureWithin);
+					CUI_EXPECT_FALSE(left->IsMouseCaptureWithin);
+					CUI_EXPECT_TRUE(second->IsMouseCaptureWithin);
+					CUI_EXPECT_TRUE(right->IsMouseCaptureWithin);
+					CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+					CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+				},
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		observeWithin(*first, L"first");
+		observeWithin(*left, L"left");
+		observeWithin(*second, L"second");
+		observeWithin(*right, L"right");
+		observeWithin(*root, L"root", &rootChanges);
+		observeWithin(window, L"window", &windowChanges);
+		observations.push_back(exact->Subscribe(
+			*first,
+			[&] { trace.push_back(L"first.exact.false"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(exact->Subscribe(
+			*second,
+			[&] { trace.push_back(L"second.exact.true"); },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		CUI_EXPECT_TRUE(second->CaptureMouse());
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"first.false", L"left.false",
+			L"second.true", L"right.true",
+			L"first.exact.false", L"second.exact.true" }), trace);
+		CUI_EXPECT_EQ(0, rootChanges);
+		CUI_EXPECT_EQ(0, windowChanges);
+		observations.clear();
+		CUI_EXPECT_TRUE(second->ReleaseMouseCapture());
+	});
+
+	runner.Add("Mouse capture within unions visual and logical ancestry", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within dual tree");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 260.0f, 140.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* visualHost = AddTestVisual<Panel>(*root);
+		auto* logicalHost = AddTestVisual<Panel>(*root);
+		auto* leaf = AddTestVisual<Control>(*visualHost, 0, 0, 70, 28);
+		cui::framework::XamlAccess::SetLogicalParent(*leaf, logicalHost);
+		CUI_EXPECT_TRUE(leaf->GetRoutedParent() == visualHost);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+
+		const auto* metadata = leaf->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		if (!metadata) return;
+		std::array<int, 5> changes{};
+		std::vector<EventConnection> observations;
+		Control* values[]{ leaf, visualHost, logicalHost, root, &window };
+		for (size_t index = 0; index < std::size(values); ++index)
+			observations.push_back(metadata->Subscribe(
+				*values[index],
+				[&, index] { ++changes[index]; },
+				DataSourceUpdateMode::OnPropertyChanged));
+
+		CUI_EXPECT_TRUE(leaf->CaptureMouse());
+		for (auto* value : values)
+			CUI_EXPECT_TRUE(value->IsMouseCaptureWithin);
+		CUI_EXPECT_EQ(1, changes[0]);
+		CUI_EXPECT_EQ(1, changes[1]);
+		CUI_EXPECT_EQ(1, changes[2]);
+		CUI_EXPECT_EQ(1, changes[3]);
+		CUI_EXPECT_EQ(1, changes[4]);
+		CUI_EXPECT_TRUE(leaf->ReleaseMouseCapture());
+		for (auto* value : values)
+			CUI_EXPECT_FALSE(value->IsMouseCaptureWithin);
+		CUI_EXPECT_EQ(2, changes[0]);
+		CUI_EXPECT_EQ(2, changes[1]);
+		CUI_EXPECT_EQ(2, changes[2]);
+		CUI_EXPECT_EQ(2, changes[3]);
+		CUI_EXPECT_EQ(2, changes[4]);
+	});
+
+	runner.Add("Captured logical ancestry follows ancestor reparent", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within reparent");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 300.0f, 150.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* visualHost = AddTestVisual<Panel>(*root);
+		auto* oldLogicalHost = AddTestVisual<Panel>(*root);
+		auto* newLogicalHost = AddTestVisual<Panel>(*root);
+		auto* bridge = AddTestVisual<Panel>(*root);
+		cui::framework::XamlAccess::SetLogicalParent(
+			*bridge, oldLogicalHost);
+		auto* leaf = AddTestVisual<Control>(*visualHost, 0, 0, 70, 28);
+		cui::framework::XamlAccess::SetLogicalParent(*leaf, bridge);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		CUI_EXPECT_TRUE(leaf->CaptureMouse());
+
+		const auto* within = leaf->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		const auto* exact = leaf->GetPropertyMetadata(
+			Control::IsMouseCapturedProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		CUI_EXPECT_TRUE(exact != nullptr);
+		if (!within || !exact) return;
+		int oldChanges = 0;
+		int newChanges = 0;
+		int bridgeChanges = 0;
+		int visualChanges = 0;
+		int rootChanges = 0;
+		int windowChanges = 0;
+		int exactChanges = 0;
+		std::vector<EventConnection> observations;
+		auto observe = [&](Control& target, int& changes)
+		{
+			observations.push_back(within->Subscribe(
+				target, [&changes] { ++changes; },
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		observe(*oldLogicalHost, oldChanges);
+		observe(*newLogicalHost, newChanges);
+		observe(*bridge, bridgeChanges);
+		observe(*visualHost, visualChanges);
+		observe(*root, rootChanges);
+		observe(window, windowChanges);
+		observations.push_back(exact->Subscribe(
+			*leaf, [&] { ++exactChanges; },
+			DataSourceUpdateMode::OnPropertyChanged));
+
+		cui::framework::XamlAccess::SetLogicalParent(
+			*bridge, newLogicalHost);
+		CUI_EXPECT_FALSE(oldLogicalHost->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(newLogicalHost->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(leaf->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(bridge->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(visualHost->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == leaf);
+		CUI_EXPECT_TRUE(leaf->IsMouseCaptured());
+		CUI_EXPECT_EQ(1, oldChanges);
+		CUI_EXPECT_EQ(1, newChanges);
+		CUI_EXPECT_EQ(0, bridgeChanges);
+		CUI_EXPECT_EQ(0, visualChanges);
+		CUI_EXPECT_EQ(0, rootChanges);
+		CUI_EXPECT_EQ(0, windowChanges);
+		CUI_EXPECT_EQ(0, exactChanges);
+		CUI_EXPECT_TRUE(leaf->ReleaseMouseCapture());
+	});
+
+	runner.Add("Mouse capture within reentrancy supersedes an unobserved owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within reentrancy");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 280.0f, 120.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* first = AddTestVisual<Control>(*root, 0, 0, 60, 28);
+		auto* superseded = AddTestVisual<Control>(*root, 70, 0, 60, 28);
+		auto* winner = AddTestVisual<Control>(*root, 140, 0, 60, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		CUI_EXPECT_TRUE(first->CaptureMouse());
+
+		const auto* within = first->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!within) return;
+		int supersededChanges = 0;
+		int winnerChanges = 0;
+		int rootChanges = 0;
+		int windowChanges = 0;
+		int supersededGot = 0;
+		int winnerGot = 0;
+		bool reentered = false;
+		auto firstWithin = within->Subscribe(
+			*first,
+			[&]
+			{
+				if (first->IsMouseCaptureWithin || reentered) return;
+				reentered = true;
+				CUI_EXPECT_TRUE(window.GetMouseCaptured() == superseded);
+				CUI_EXPECT_TRUE(first->IsMouseCaptured());
+				CUI_EXPECT_FALSE(superseded->IsMouseCaptured());
+				CUI_EXPECT_TRUE(winner->CaptureMouse());
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto supersededWithin = within->Subscribe(
+			*superseded, [&] { ++supersededChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto winnerWithin = within->Subscribe(
+			*winner, [&] { ++winnerChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto rootWithin = within->Subscribe(
+			*root, [&] { ++rootChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto windowWithin = within->Subscribe(
+			window, [&] { ++windowChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto supersededGotConnection = superseded->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++supersededGot; });
+		auto winnerGotConnection = winner->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++winnerGot; });
+
+		CUI_EXPECT_FALSE(window.CaptureMouse(superseded));
+		CUI_EXPECT_TRUE(reentered);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == winner);
+		CUI_EXPECT_FALSE(first->IsMouseCaptured());
+		CUI_EXPECT_FALSE(superseded->IsMouseCaptured());
+		CUI_EXPECT_TRUE(winner->IsMouseCaptured());
+		CUI_EXPECT_FALSE(first->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(superseded->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(winner->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_EQ(0, supersededChanges);
+		CUI_EXPECT_EQ(1, winnerChanges);
+		CUI_EXPECT_EQ(0, rootChanges);
+		CUI_EXPECT_EQ(0, windowChanges);
+		CUI_EXPECT_EQ(0, supersededGot);
+		CUI_EXPECT_EQ(1, winnerGot);
+		CUI_EXPECT_TRUE(winner->ReleaseMouseCapture());
+	});
+
+	runner.Add("Mouse capture within callbacks can delete the requested owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Capture-within deletion");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 200.0f, 100.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* previous = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* doomed = AddTestVisual<Control>(*root, 80, 0, 70, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		CUI_EXPECT_TRUE(previous->CaptureMouse());
+
+		const auto* within = doomed->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!within) return;
+		const ControlWeakReference doomedLifetime(doomed);
+		int previousLost = 0;
+		int doomedGot = 0;
+		bool deleted = false;
+		auto previousLostConnection = previous->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++previousLost; });
+		auto doomedGotConnection = doomed->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++doomedGot; });
+		auto deleteConnection = within->Subscribe(
+			*doomed,
+			[&]
+			{
+				if (deleted || !doomed->IsMouseCaptureWithin) return;
+				deleted = true;
+				CUI_EXPECT_TRUE(window.GetMouseCaptured() == doomed);
+				CUI_EXPECT_TRUE(previous->IsMouseCaptured());
+				CUI_EXPECT_FALSE(doomed->IsMouseCaptured());
+				CUI_EXPECT_FALSE(previous->IsMouseCaptureWithin);
+				CUI_EXPECT_TRUE(root->IsMouseCaptureWithin);
+				CUI_EXPECT_TRUE(window.IsMouseCaptureWithin);
+				CUI_EXPECT_TRUE(root->DeleteVisualChild(doomed));
+				doomed = nullptr;
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		CUI_EXPECT_FALSE(window.CaptureMouse(doomed));
+		CUI_EXPECT_TRUE(deleted);
+		CUI_EXPECT_FALSE(doomedLifetime);
+		CUI_EXPECT_TRUE(doomed == nullptr);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+		CUI_EXPECT_FALSE(previous->IsMouseCaptured());
+		CUI_EXPECT_FALSE(previous->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(root->IsMouseCaptureWithin);
+		CUI_EXPECT_FALSE(window.IsMouseCaptureWithin);
+		CUI_EXPECT_EQ(1, previousLost);
+		CUI_EXPECT_EQ(0, doomedGot);
+	});
+
+	runner.Add("Window teardown clears captured state before controls die", []
+	{
+		std::vector<std::wstring> trace;
+		std::vector<EventConnection> observations;
+		ControlWeakReference capturedLifetime;
+		auto window = std::make_unique<Window>();
+		auto* windowValue = window.get();
+		ConfigureTestControl(*window, L"Mouse capture teardown");
+		SetDeclaredWindowGeometry(*window, 0.0f, 0.0f, 180.0f, 90.0f);
+		auto root = MakeTestControl<Panel>();
+		auto* rootValue = root.get();
+		auto* captured = AddTestVisual<Control>(*root, 0, 0, 80, 28);
+		capturedLifetime = captured;
+		CUI_EXPECT_TRUE(window->SetVisualContent(std::move(root)) != nullptr);
+
+		const auto* metadata = captured->GetPropertyMetadata(
+			Control::IsMouseCapturedProperty());
+		const auto* within = captured->GetPropertyMetadata(
+			Control::IsMouseCaptureWithinProperty());
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		CUI_EXPECT_TRUE(within != nullptr);
+		if (!metadata || !within) return;
+		auto observeWithin = [&](Control& target, std::wstring label)
+		{
+			observations.push_back(within->Subscribe(
+				target,
+				[&, label = std::move(label)]
+				{
+					trace.push_back(label + L".false");
+				},
+				DataSourceUpdateMode::OnPropertyChanged));
+		};
+		observeWithin(*captured, L"within.captured");
+		observeWithin(*rootValue, L"within.root");
+		observeWithin(*windowValue, L"within.window");
+		observations.push_back(metadata->Subscribe(
+			*captured,
+			[&]
+			{
+				if (!captured->IsMouseCaptured())
+				{
+					CUI_EXPECT_FALSE(captured->IsMouseCaptureWithin);
+					CUI_EXPECT_FALSE(rootValue->IsMouseCaptureWithin);
+					CUI_EXPECT_FALSE(windowValue->IsMouseCaptureWithin);
+				}
+				trace.push_back(captured->IsMouseCaptured()
+					? L"state.true" : L"state.false");
+			},
+			DataSourceUpdateMode::OnPropertyChanged));
+		observations.push_back(captured->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&)
+			{
+				CUI_EXPECT_FALSE(captured->IsMouseCaptureWithin);
+				CUI_EXPECT_FALSE(rootValue->IsMouseCaptureWithin);
+				CUI_EXPECT_FALSE(windowValue->IsMouseCaptureWithin);
+				trace.push_back(captured->IsMouseCaptured()
+					? L"lost.true" : L"lost.false");
+			}));
+		CUI_EXPECT_TRUE(captured->CaptureMouse());
+		trace.clear();
+
+		window.reset();
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"within.captured.false", L"within.root.false",
+			L"within.window.false", L"state.false", L"lost.false" }), trace);
+		CUI_EXPECT_FALSE(capturedLifetime);
+	});
+
+	runner.Add("Mouse capture callbacks cannot publish a stale new owner", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"Mouse capture reentrancy");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 120.0f);
+		auto rootOwner = MakeTestControl<Panel>();
+		auto* root = rootOwner.get();
+		auto* oldOwner = AddTestVisual<Control>(*root, 0, 0, 70, 28);
+		auto* deletedRequest = AddTestVisual<Control>(*root, 80, 0, 70, 28);
+		auto* nextRequest = AddTestVisual<Control>(*root, 160, 0, 70, 28);
+		auto* reentrantWinner = AddTestVisual<Control>(*root, 240, 0, 70, 28);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+
+		int oldLostCount = 0;
+		int deletedGotCount = 0;
+		int nextGotCount = 0;
+		int winnerGotCount = 0;
+		auto oldLost = oldOwner->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++oldLostCount; });
+		auto deletedGot = deletedRequest->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++deletedGotCount; });
+		auto nextGot = nextRequest->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++nextGotCount; });
+		auto winnerGot = reentrantWinner->OnGotMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&) { ++winnerGotCount; });
+
+		const auto* metadata = deletedRequest->GetPropertyMetadata(
+			Control::IsMouseCapturedProperty());
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		if (!metadata) return;
+		const ControlWeakReference deletedLifetime(deletedRequest);
+		bool deletingRequest = false;
+		auto deleteOnCapture = metadata->Subscribe(
+			*deletedRequest,
+			[&]
+			{
+				if (deletingRequest || !deletedRequest
+					|| !deletedRequest->IsMouseCaptured()) return;
+				deletingRequest = true;
+				CUI_EXPECT_TRUE(root->DeleteVisualChild(deletedRequest));
+				deletedRequest = nullptr;
+			},
+			DataSourceUpdateMode::OnPropertyChanged);
+
+		CUI_EXPECT_TRUE(oldOwner->CaptureMouse());
+		CUI_EXPECT_FALSE(window.CaptureMouse(deletedRequest));
+		CUI_EXPECT_FALSE(deletedLifetime);
+		CUI_EXPECT_TRUE(deletedRequest == nullptr);
+		CUI_EXPECT_FALSE(oldOwner->IsMouseCaptured());
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+		CUI_EXPECT_EQ(1, oldLostCount);
+		CUI_EXPECT_EQ(0, deletedGotCount);
+
+		CUI_EXPECT_TRUE(oldOwner->CaptureMouse());
+		auto transferAgain = oldOwner->OnLostMouseCapture.Subscribe(
+			[&](Control*, RoutedEventArgs&)
+			{
+				CUI_EXPECT_TRUE(reentrantWinner->CaptureMouse());
+			});
+		CUI_EXPECT_FALSE(window.CaptureMouse(nextRequest));
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == reentrantWinner);
+		CUI_EXPECT_FALSE(oldOwner->IsMouseCaptured());
+		CUI_EXPECT_FALSE(nextRequest->IsMouseCaptured());
+		CUI_EXPECT_TRUE(reentrantWinner->IsMouseCaptured());
+		CUI_EXPECT_EQ(2, oldLostCount);
+		CUI_EXPECT_EQ(0, nextGotCount);
+		CUI_EXPECT_EQ(1, winnerGotCount);
+		CUI_EXPECT_TRUE(reentrantWinner->ReleaseMouseCapture());
+	});
+
+	runner.Add("Calendar metadata preserves arbitrary SYSTEMTIME values", []
     {
         SYSTEMTIME initial{};
         initial.wYear = 2026;
@@ -34271,7 +42168,7 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_NEAR(40.0f, desired.height, 0.0001f);
     });
 
-    runner.Add("Grid redistributes bounded Pixel and Star tracks", []
+    runner.Add("Grid keeps bounded Star allocation out of DesiredSize", []
     {
         using namespace cui::core;
 
@@ -34297,7 +42194,11 @@ class FreshWindow : public FreshWindowGenerated {};
 
         LayoutContext context(&container);
         const auto desired = engine.Measure(context, Constraints{ Size{ 200.0f, 20.0f } });
-        CUI_EXPECT_NEAR(200.0f, desired.width, 0.0001f);
+        // WPF measures bounded Star tracks with their allocated share, but the
+        // unused share is not part of Grid.DesiredSize. The result is the
+        // Pixel track (50), the first Star minimum (80), and the second
+        // Star child's content demand (1).
+        CUI_EXPECT_NEAR(131.0f, desired.width, 0.0001f);
         engine.Arrange(context, Rect{ 0.0f, 0.0f, 200.0f, 20.0f });
 
         CUI_EXPECT_NEAR(50.0f, fixedChild->GetActualSizeDip().width, 0.0001f);
@@ -34305,6 +42206,70 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_NEAR(40.0f, cappedChild->GetActualSizeDip().width, 0.0001f);
         CUI_EXPECT_NEAR(50.0f, flexibleChild->GetActualLocationDip().x, 0.0001f);
         CUI_EXPECT_NEAR(160.0f, cappedChild->GetActualLocationDip().x, 0.0001f);
+    });
+
+    runner.Add("Grid bounded Star row desires content and arranges allocation", []
+    {
+        using namespace cui::core;
+
+        Control container;
+        auto* child = container.AdoptVisualChild(
+            new FractionalMeasureControl(Size{ 120.0f, 24.0f }));
+        child->HorizontalAlignment = HorizontalAlignment::Stretch;
+        child->VerticalAlignment = VerticalAlignment::Stretch;
+
+        GridLayoutEngine engine;
+        engine.AddColumn(ColumnDefinition(GridLength::Star()));
+        engine.AddRow(RowDefinition(GridLength::Star()));
+        engine.AddRow(RowDefinition(GridLength::Auto()));
+
+        LayoutContext context(&container);
+        const auto desired = engine.Measure(
+            context, Constraints{ Size{ 430.0f, 520.0f } });
+        CUI_EXPECT_NEAR(120.0f, desired.width, 0.0001f);
+        CUI_EXPECT_NEAR(24.0f, desired.height, 0.0001f);
+
+        engine.Arrange(context, Rect{ 0.0f, 0.0f, 430.0f, 520.0f });
+        CUI_EXPECT_NEAR(430.0f, child->GetActualSizeDip().width, 0.0001f);
+        CUI_EXPECT_NEAR(520.0f, child->GetActualSizeDip().height, 0.0001f);
+    });
+
+    runner.Add("Grid Star header leaves DockPanel expander content space", []
+    {
+        using namespace cui::core;
+
+        Control expanderRoot;
+        auto* header = expanderRoot.AdoptVisualChild(new Grid());
+        header->AddColumn(GridLength::Star());
+        header->AddColumn(GridLength::Auto());
+        header->AddRow(GridLength::Star());
+        header->AddRow(GridLength::Auto());
+        auto* headerText = header->AdoptVisualChild(
+            new FractionalMeasureControl(Size{ 180.0f, 24.0f }));
+        headerText->HorizontalAlignment = HorizontalAlignment::Stretch;
+        headerText->VerticalAlignment = VerticalAlignment::Center;
+        header->HorizontalAlignment = HorizontalAlignment::Stretch;
+        header->VerticalAlignment = VerticalAlignment::Center;
+        DockPanel::SetDock(*header, Dock::Top);
+
+        auto* content = expanderRoot.AdoptVisualChild(
+            new FractionalMeasureControl(Size{ 380.0f, 144.0f }));
+        content->HorizontalAlignment = HorizontalAlignment::Stretch;
+        content->VerticalAlignment = VerticalAlignment::Stretch;
+        DockPanel::SetDock(*content, Dock::Bottom);
+
+        DockLayoutEngine engine;
+        LayoutContext context(&expanderRoot);
+        const auto desired = engine.Measure(
+            context, Constraints{ Size{ 430.0f, 520.0f } });
+        CUI_EXPECT_NEAR(380.0f, desired.width, 0.0001f);
+        CUI_EXPECT_NEAR(168.0f, desired.height, 0.0001f);
+
+        engine.Arrange(context, Rect{ 0.0f, 0.0f, 430.0f, 300.0f });
+        CUI_EXPECT_NEAR(0.0f, header->GetActualLocationDip().y, 0.0001f);
+        CUI_EXPECT_NEAR(24.0f, header->GetActualSizeDip().height, 0.0001f);
+        CUI_EXPECT_NEAR(24.0f, content->GetActualLocationDip().y, 0.0001f);
+        CUI_EXPECT_NEAR(276.0f, content->GetActualSizeDip().height, 0.0001f);
     });
 
     runner.Add("Grid Auto tracks include spanning content", []
@@ -34355,7 +42320,10 @@ class FreshWindow : public FreshWindowGenerated {};
 
         LayoutContext context(&container);
         const auto desired = engine.Measure(context, Constraints{ Size{ 200.0f, 10.0f } });
-        CUI_EXPECT_NEAR(200.0f, desired.width, 0.0001f);
+        // The bounded Star column receives the remaining 180 DIPs for
+        // Arrange, while the spanning child's 100-DIP demand is the Grid's
+        // WPF DesiredSize contribution.
+        CUI_EXPECT_NEAR(100.0f, desired.width, 0.0001f);
         engine.Arrange(context, Rect{ 0.0f, 0.0f, 200.0f, 10.0f });
         CUI_EXPECT_NEAR(20.0f, autoChild->GetActualSizeDip().width, 0.0001f);
     });
@@ -34605,7 +42573,827 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_TRUE(child.FindPropertyMetadata(L"Canvas.Right") != nullptr);
         CUI_EXPECT_TRUE(child.FindPropertyMetadata(L"Canvas.Bottom") != nullptr);
         CUI_EXPECT_TRUE(child.FindPropertyMetadata(L"Anchor") == nullptr);
+
+		Control layered;
+		CUI_EXPECT_TRUE(
+			layered.FindDependencyProperty(L"Canvas.Left")
+				== &Control::CanvasLeftProperty());
+		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
+			layered, Control::CanvasLeftProperty(), BindingValue(2.0f),
+			DependencyPropertyValueSource::Template));
+		CUI_EXPECT_TRUE(cui::framework::DependencyPropertyAccess::SetValue(
+			layered, Control::CanvasLeftProperty(), BindingValue(12.0f),
+			DependencyPropertyValueSource::VisualState));
+		CUI_EXPECT_NEAR(12.0f, Canvas::GetLeft(layered), 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::VisualState,
+			layered.GetPropertyValueSource(L"Canvas.Left"));
+		Canvas::SetLeft(layered, 4.0f);
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetLeft(layered), 0.0001f);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			layered.GetPropertyValueSource(L"Canvas.Left"));
+		CUI_EXPECT_TRUE(layered.ClearPropertyValue(
+			Control::CanvasLeftProperty()));
+		CUI_EXPECT_NEAR(12.0f, Canvas::GetLeft(layered), 0.0001f);
     });
+
+	runner.Add("Typed declarative event identities drive states and triggers without name lookup", []
+	{
+		const DeclarativeEventDefinition invoked{
+			L"Invoked", BindingValueKind::Empty,
+			DeclarativeEventRoutingStrategy::Direct };
+		// Deliberately has the same design-time name and contract. Only the
+		// definition address is the compiled event identity.
+		const DeclarativeEventDefinition distinctInvoked{
+			L"Invoked", BindingValueKind::Empty,
+			DeclarativeEventRoutingStrategy::Direct };
+
+		Panel stateHost;
+		std::vector<const DeclarativeEventDefinition*> observedDefinitions;
+		auto stateEventConnection = stateHost.OnDeclarativeEvent.Subscribe(
+			[&](Control*, DeclarativeEventArgs& args)
+			{
+				observedDefinitions.push_back(args.Definition);
+			});
+		DeclarativeVisualStateDefinition idle;
+		idle.Name = L"Idle";
+		idle.Setters.emplace_back(
+			nullptr, Control::CanvasLeftProperty(), BindingValue(1.0f));
+		DeclarativeVisualStateDefinition activated;
+		activated.Name = L"Activated";
+		activated.Events.push_back(&invoked);
+		activated.Setters.emplace_back(
+			nullptr, Control::CanvasLeftProperty(), BindingValue(7.0f));
+		DeclarativeVisualStateGroupDefinition modeStates;
+		modeStates.Name = L"ModeStates";
+		modeStates.States.push_back(std::move(idle));
+		modeStates.States.push_back(std::move(activated));
+		std::wstring error;
+		CUI_EXPECT_TRUE(cui::framework::XamlAccess::DefineInteractions(
+			stateHost, { std::move(modeStates) }, {}, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_NEAR(1.0f, Canvas::GetLeft(stateHost), 0.0001f);
+
+		CUI_EXPECT_TRUE(stateHost.RaiseDeclarativeEvent(distinctInvoked));
+		CUI_EXPECT_EQ(1ULL, observedDefinitions.size());
+		CUI_EXPECT_TRUE(observedDefinitions.back() == &distinctInvoked);
+		CUI_EXPECT_NEAR(1.0f, Canvas::GetLeft(stateHost), 0.0001f);
+		CUI_EXPECT_TRUE(stateHost.RaiseDeclarativeEvent(invoked));
+		CUI_EXPECT_EQ(2ULL, observedDefinitions.size());
+		CUI_EXPECT_TRUE(observedDefinitions.back() == &invoked);
+		CUI_EXPECT_NEAR(7.0f, Canvas::GetLeft(stateHost), 0.0001f);
+
+		auto makePulse = [](const DependencyProperty& property,
+			float from, float to, const wchar_t* name)
+		{
+			DeclarativeVisualStateAnimation animation;
+			animation.Kind = DeclarativeAnimationKind::Double;
+			animation.Property = DependencyPropertyReference(property);
+			animation.From = BindingValue(from);
+			animation.To = BindingValue(to);
+			animation.DurationMilliseconds = 1000;
+			DeclarativeEventTriggerActionDefinition begin;
+			begin.Kind = DeclarativeStoryboardActionKind::Begin;
+			begin.StoryboardName = name;
+			begin.Animations.push_back(std::move(animation));
+			return begin;
+		};
+
+		Panel componentTriggerHost;
+		DeclarativeEventTriggerDefinition componentTrigger;
+		componentTrigger.Event = &invoked;
+		componentTrigger.Actions.push_back(makePulse(
+			Control::CanvasTopProperty(), 4.0f, 12.0f, L"ComponentPulse"));
+		const bool componentTriggerDefined =
+			cui::framework::XamlAccess::DefineInteractions(
+				componentTriggerHost, {},
+				{ std::move(componentTrigger) }, &error);
+		if (!componentTriggerDefined)
+			throw std::runtime_error("typed component EventTrigger: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(componentTriggerHost.RaiseDeclarativeEvent(
+			distinctInvoked));
+		CUI_EXPECT_FALSE(componentTriggerHost.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(componentTriggerHost.RaiseDeclarativeEvent(invoked));
+		CUI_EXPECT_TRUE(componentTriggerHost.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(componentTriggerHost), 0.0001f);
+
+		Button routedTriggerHost;
+		DeclarativeEventTriggerDefinition routedTrigger;
+		routedTrigger.RoutedEvent = RoutedEventId::Click;
+#if CUI_ENABLE_DYNAMIC_XAML
+		// A pre-resolved routed ID must not scan or trust this sidecar name.
+		routedTrigger.EventName = L"DefinitelyNotClick";
+#endif
+		routedTrigger.Actions.push_back(makePulse(
+			Control::CanvasTopProperty(), 2.0f, 8.0f, L"RoutedPulse"));
+		const bool routedTriggerDefined =
+			cui::framework::XamlAccess::DefineInteractions(
+				routedTriggerHost, {}, { std::move(routedTrigger) }, &error);
+		if (!routedTriggerDefined)
+			throw std::runtime_error("typed routed EventTrigger: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(routedTriggerHost.RaiseDeclarativeEvent(invoked));
+		CUI_EXPECT_FALSE(routedTriggerHost.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(routedTriggerHost.Invoke());
+		CUI_EXPECT_TRUE(routedTriggerHost.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, Canvas::GetTop(routedTriggerHost), 0.0001f);
+	});
+
+	runner.Add("Compiled interaction program executes IDs and storyboard actions", []
+	{
+		static constexpr auto modeGroup =
+			MakeVisualStateGroupToken(L"CompiledModeStates");
+		static constexpr auto idleState =
+			MakeVisualStateToken(L"CompiledIdle");
+		static constexpr auto activeState =
+			MakeVisualStateToken(L"CompiledActive");
+		static const DeclarativeEventDefinition activateEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		// Both definitions intentionally have the same empty Design name. The
+		// process-lifetime address is the compiled component-event identity.
+		static const DeclarativeEventDefinition distinctActivateEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const DeclarativeEventDefinition beginEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const DeclarativeEventDefinition distinctBeginEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const DeclarativeEventDefinition pauseEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const DeclarativeEventDefinition resumeEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const DeclarativeEventDefinition stopEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+
+		static const std::array<BindingValue, 6> values{
+			BindingValue(2.0f), BindingValue(7.0f),
+			BindingValue(4.0f), BindingValue(12.0f),
+			BindingValue(0.25f), BindingValue(0.75f) };
+		static const std::array<CompiledInteractionPropertyOperand, 3>
+			propertyOperands{ {
+				{ 1u, DependencyPropertyReference(Control::CanvasLeftProperty()) },
+				{ 1u, DependencyPropertyReference(Control::CanvasTopProperty()) },
+				{ 1u, DependencyPropertyReference(Control::BackgroundProperty()) },
+			} };
+		static constexpr std::array<CompiledInteractionSetterOp, 2> setters{ {
+			{ 0u, 0u },
+			{ 0u, 1u },
+		} };
+		static constexpr std::array<CompiledStoryboardObjectPathOp, 1>
+			objectPaths = []
+			{
+				std::array<CompiledStoryboardObjectPathOp, 1> result{};
+				auto& opacity = result.front();
+				opacity.Kind = CompiledStoryboardObjectPathKind::Brush;
+				opacity.Member =
+					CompiledStoryboardObjectPathMember::BrushOpacity;
+				opacity.ExpectedObjectKind = static_cast<uint8_t>(
+					cui::drawing::BrushKind::Solid);
+				opacity.Identity = MakeCompiledInteractionNameToken(
+					L"(Control.Background).(Brush.Opacity)");
+				return result;
+			}();
+		static constexpr std::array<CompiledInteractionAnimationOp, 2>
+			animations = []
+			{
+				std::array<CompiledInteractionAnimationOp, 2> result{};
+				auto& pulse = result.front();
+				pulse.Kind = DeclarativeAnimationKind::Double;
+				pulse.OperandIndex = 1u;
+				pulse.FromValueIndex = 2u;
+				pulse.ToValueIndex = 3u;
+				pulse.DurationMilliseconds = 1000u;
+				auto& opacity = result.back();
+				opacity.Kind = DeclarativeAnimationKind::Double;
+				opacity.OperandIndex = 2u;
+				opacity.ObjectPathIndex = 0u;
+				opacity.FromValueIndex = 4u;
+				opacity.ToValueIndex = 5u;
+				opacity.DurationMilliseconds = 1000u;
+				return result;
+			}();
+		static const std::array<const DeclarativeEventDefinition*, 1>
+			stateEvents{ &activateEvent };
+		static constexpr std::array<CompiledInteractionStateOp, 2> states{ {
+			{ idleState, {}, {}, { 0u, 1u }, {} },
+			{ activeState, {}, { 0u, 1u }, { 1u, 1u }, {} },
+		} };
+		// The wildcard route is deliberately first and immediate. Selecting the
+		// exact group-local 0 -> 1 indexes must instead create a one-second clock.
+		static constexpr std::array<CompiledInteractionTransitionOp, 2>
+			transitions{ {
+				{ CompiledInteractionInvalidIndex,
+					CompiledInteractionInvalidIndex, 0u,
+					DeclarativeEasingKind::Linear,
+					DeclarativeEasingMode::EaseOut, {} },
+				{ 0u, 1u, 1000u, DeclarativeEasingKind::Linear,
+					DeclarativeEasingMode::EaseOut, {} },
+			} };
+		static constexpr std::array<CompiledInteractionGroupOp, 1> groups{ {
+			{ modeGroup, { 0u, 2u }, { 0u, 2u }, 0u, {} },
+		} };
+		static constexpr std::array<CompiledInteractionStoryboardOp, 1>
+			storyboards{ { { { 0u, 2u } } } };
+		static constexpr std::array<CompiledInteractionActionOp, 5> actions{ {
+			{ DeclarativeStoryboardActionKind::Begin, 0u },
+			{ DeclarativeStoryboardActionKind::Pause, 0u },
+			{ DeclarativeStoryboardActionKind::Resume, 0u },
+			{ DeclarativeStoryboardActionKind::Stop, 0u },
+			{ DeclarativeStoryboardActionKind::Begin, 0u },
+		} };
+		static const std::array<CompiledInteractionEventTriggerOp, 5>
+			eventTriggers{ {
+				{ &beginEvent, RoutedEventId::None, { 0u, 1u } },
+				{ &pauseEvent, RoutedEventId::None, { 1u, 1u } },
+				{ &resumeEvent, RoutedEventId::None, { 2u, 1u } },
+				{ &stopEvent, RoutedEventId::None, { 3u, 1u } },
+				{ nullptr, RoutedEventId::Click, { 4u, 1u } },
+			} };
+
+		CompiledInteractionProgramView program;
+		program.Version = CompiledInteractionProgramViewVersion;
+		program.TargetCount = 2u;
+		program.PropertyOperands = propertyOperands;
+		program.ObjectPaths = objectPaths;
+		program.Setters = setters;
+		program.Animations = animations;
+		program.StateEvents = stateEvents;
+		program.States = states;
+		program.Transitions = transitions;
+		program.Groups = groups;
+		program.Storyboards = storyboards;
+		program.Actions = actions;
+		program.EventTriggers = eventTriggers;
+
+		{
+			Panel unregisteredTarget;
+			Button rejectingHost;
+			std::array<Control*, 2> unregisteredSlots{
+				&rejectingHost, &unregisteredTarget };
+			std::wstring rejectedError;
+			CUI_EXPECT_FALSE(cui::framework::TemplateAccess::
+				InstallCompiledInteractions(rejectingHost, program,
+					values, unregisteredSlots, &rejectedError));
+			CUI_EXPECT_FALSE(rejectedError.empty());
+		}
+		auto expectRegisteredProgramRejected = [&] (
+			const CompiledInteractionProgramView& invalidProgram)
+		{
+			Panel invalidTarget;
+			Button invalidHost;
+			cui::framework::XamlAccess::SetTemplatedParent(
+				invalidTarget, &invalidHost);
+			CUI_EXPECT_TRUE(cui::framework::TemplateAccess::
+				RegisterTemplatePart(invalidHost,
+					MakeTemplatePartToken(L"InvalidCompiledTarget"),
+					&invalidTarget));
+			cui::drawing::Brush invalidBackground;
+			invalidBackground.Kind = cui::drawing::BrushKind::Solid;
+			invalidBackground.Color = D2D1::ColorF(D2D1::ColorF::Red);
+			invalidBackground.Opacity = 0.6f;
+			invalidTarget.Background = invalidBackground;
+			Canvas::SetLeft(invalidTarget, 29.0f);
+			Canvas::SetTop(invalidTarget, 31.0f);
+			std::array<Control*, 2> invalidSlots{
+				&invalidHost, &invalidTarget };
+			std::wstring invalidError;
+			CUI_EXPECT_FALSE(cui::framework::TemplateAccess::
+				InstallCompiledInteractions(invalidHost, invalidProgram,
+					values, invalidSlots, &invalidError));
+			CUI_EXPECT_FALSE(invalidError.empty());
+			CUI_EXPECT_FALSE(invalidHost.HasActiveVisualStateAnimations());
+			CUI_EXPECT_FALSE(invalidTarget.HasPropertyValue(
+				Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_FALSE(invalidTarget.HasPropertyValue(
+				Control::CanvasTopProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_FALSE(invalidTarget.HasPropertyValue(
+				Control::BackgroundProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_NEAR(29.0f, Canvas::GetLeft(invalidTarget), 0.0001f);
+			CUI_EXPECT_NEAR(31.0f, Canvas::GetTop(invalidTarget), 0.0001f);
+			CUI_EXPECT_NEAR(
+				0.6f, invalidTarget.Background.Opacity, 0.0001f);
+
+			// Rejection must release the one-install guard and leave the host
+			// clean enough for the valid ABI-v2 program to install immediately.
+			invalidError.clear();
+			CUI_EXPECT_TRUE(cui::framework::TemplateAccess::
+				InstallCompiledInteractions(invalidHost, program,
+					values, invalidSlots, &invalidError));
+			CUI_EXPECT_TRUE(invalidError.empty());
+			CUI_EXPECT_TRUE(
+				invalidHost.GetCurrentVisualState(modeGroup) == idleState);
+			CUI_EXPECT_FALSE(invalidHost.HasActiveVisualStateAnimations());
+			// Local remains effective, while the lower-priority VisualState source
+			// is still installed and observable below it.
+			CUI_EXPECT_NEAR(29.0f, Canvas::GetLeft(invalidTarget), 0.0001f);
+			CUI_EXPECT_NEAR(31.0f, Canvas::GetTop(invalidTarget), 0.0001f);
+			CUI_EXPECT_TRUE(invalidTarget.HasPropertyValue(
+				Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::VisualState));
+			CUI_EXPECT_FALSE(invalidTarget.HasPropertyValue(
+				Control::CanvasTopProperty(),
+				DependencyPropertyValueSource::Animation));
+		};
+		{
+			auto invalidActions = actions;
+			invalidActions.front().Kind =
+				static_cast<DeclarativeStoryboardActionKind>(UINT8_MAX);
+			auto invalidProgram = program;
+			invalidProgram.Actions = invalidActions;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		{
+			auto emptyStoryboards = storyboards;
+			emptyStoryboards.front().Animations = {};
+			auto invalidProgram = program;
+			invalidProgram.Storyboards = emptyStoryboards;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		{
+			const std::array<uint32_t, 1> unexpectedConditionOperands{ 0u };
+			auto mismatchedGroups = groups;
+			mismatchedGroups.front().ConditionOperands = { 0u, 1u };
+			auto invalidProgram = program;
+			invalidProgram.GroupConditionOperands = unexpectedConditionOperands;
+			invalidProgram.Groups = mismatchedGroups;
+			expectRegisteredProgramRejected(invalidProgram);
+		}
+		// Restarting a delayed compiled storyboard must leave its staged Base
+		// frame owned by the replacement clock until BeginTime elapses.
+		{
+			auto delayedAnimations = animations;
+			for (auto& animation : delayedAnimations)
+				animation.BeginTimeMilliseconds = 500u;
+			auto delayedProgram = program;
+			delayedProgram.Animations = delayedAnimations;
+			Panel delayedTarget;
+			Button delayedHost;
+			cui::framework::XamlAccess::SetTemplatedParent(
+				delayedTarget, &delayedHost);
+			CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+				delayedHost, MakeTemplatePartToken(L"DelayedCompiledTarget"),
+				&delayedTarget));
+			cui::drawing::Brush delayedBackground;
+			delayedBackground.Kind = cui::drawing::BrushKind::Solid;
+			delayedBackground.Color = D2D1::ColorF(D2D1::ColorF::Red);
+			delayedBackground.Opacity = 0.6f;
+			delayedTarget.Background = delayedBackground;
+			Canvas::SetTop(delayedTarget, 3.0f);
+			std::array<Control*, 2> delayedSlots{
+				&delayedHost, &delayedTarget };
+			std::wstring delayedError;
+			CUI_EXPECT_TRUE(cui::framework::TemplateAccess::
+				InstallCompiledInteractions(delayedHost, delayedProgram,
+					values, delayedSlots, &delayedError));
+			const auto delayedTick = ::GetTickCount64();
+			CUI_EXPECT_TRUE(delayedHost.RaiseDeclarativeEvent(beginEvent));
+			CUI_EXPECT_TRUE(delayedHost.RaiseDeclarativeEvent(beginEvent));
+			CUI_EXPECT_TRUE(delayedTarget.HasPropertyValue(
+				Control::CanvasTopProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_TRUE(delayedTarget.HasPropertyValue(
+				Control::BackgroundProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(delayedTarget), 0.0001f);
+			CUI_EXPECT_NEAR(
+				0.6f, delayedTarget.Background.Opacity, 0.0001f);
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(delayedHost, delayedTick + 100u));
+			CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(delayedTarget), 0.0001f);
+			CUI_EXPECT_TRUE(delayedHost.RaiseDeclarativeEvent(stopEvent));
+			CUI_EXPECT_FALSE(delayedHost.HasActiveVisualStateAnimations());
+		}
+
+		// Slot pointers are non-owning. Construct targets first so the owner and
+		// its interaction runtime are destroyed before any referenced target.
+		Panel target;
+		Button host;
+		cui::framework::XamlAccess::SetTemplatedParent(target, &host);
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+			host, MakeTemplatePartToken(L"CompiledTarget"), &target));
+		cui::drawing::Brush background;
+		background.Kind = cui::drawing::BrushKind::Solid;
+		background.Color = D2D1::ColorF(D2D1::ColorF::Red);
+		background.Opacity = 0.6f;
+		target.Background = background;
+		auto expectSolidRedBackground = [&]
+		{
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+				target.Background.Kind);
+			CUI_EXPECT_NEAR(1.0f, target.Background.Color.r, 0.0001f);
+			CUI_EXPECT_NEAR(0.0f, target.Background.Color.g, 0.0001f);
+			CUI_EXPECT_NEAR(0.0f, target.Background.Color.b, 0.0001f);
+		};
+		Canvas::SetTop(target, 3.0f);
+		std::array<Control*, 2> targetSlots{ &host, &target };
+		DeclarativeVisualStateChangedEventArgs lastStateChange;
+		auto stateConnection = host.OnVisualStateChanged.Subscribe(
+			[&](Control*, const DeclarativeVisualStateChangedEventArgs& args)
+			{ lastStateChange = args; });
+		std::wstring error;
+		const bool installed = cui::framework::TemplateAccess::
+			InstallCompiledInteractions(
+				host, program, values, targetSlots, &error);
+		if (!installed)
+			throw std::runtime_error("compiled interaction install: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(host.GetCurrentVisualState(modeGroup) == idleState);
+		CUI_EXPECT_NEAR(2.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::VisualState));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+
+		CUI_EXPECT_TRUE(host.GoToVisualState(
+			modeGroup, activeState, false, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(host.GetCurrentVisualState(modeGroup) == activeState);
+		CUI_EXPECT_TRUE(lastStateChange.Group == modeGroup);
+		CUI_EXPECT_TRUE(lastStateChange.NewStateToken == activeState);
+		CUI_EXPECT_NEAR(7.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_TRUE(host.GoToVisualState(
+			modeGroup, idleState, false, &error));
+		CUI_EXPECT_NEAR(2.0f, Canvas::GetLeft(target), 0.0001f);
+
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(distinctActivateEvent));
+		CUI_EXPECT_TRUE(host.GetCurrentVisualState(modeGroup) == idleState);
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		const auto transitionTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(activateEvent));
+		CUI_EXPECT_TRUE(host.GetCurrentVisualState(modeGroup) == activeState);
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, transitionTick + 500u));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(target) > 2.0f
+			&& Canvas::GetLeft(target) < 7.0f);
+		const auto transitionMidpoint = Canvas::GetLeft(target);
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation));
+
+		// Event-triggered clocks use a separate domain from the generated VSM
+		// transition. Stopping the Event storyboard must leave Canvas.Left's
+		// transition clock running and advancing.
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(beginEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.25f, target.Background.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(stopEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, transitionTick + 750u));
+		CUI_EXPECT_TRUE(Canvas::GetLeft(target) > transitionMidpoint
+			&& Canvas::GetLeft(target) < 7.0f);
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, transitionTick + 2000u));
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(lastStateChange.OldStateToken == idleState);
+		CUI_EXPECT_TRUE(lastStateChange.NewStateToken == activeState);
+		CUI_EXPECT_NEAR(7.0f, Canvas::GetLeft(target), 0.0001f);
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::VisualState));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasLeftProperty(),
+			DependencyPropertyValueSource::Animation));
+
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(distinctBeginEvent));
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		expectSolidRedBackground();
+		const auto beginTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(beginEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.25f, target.Background.Opacity, 0.0001f);
+		expectSolidRedBackground();
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 250u));
+		CUI_EXPECT_TRUE(Canvas::GetTop(target) > 4.0f
+			&& Canvas::GetTop(target) < 12.0f);
+		CUI_EXPECT_TRUE(target.Background.Opacity > 0.25f
+			&& target.Background.Opacity < 0.75f);
+		expectSolidRedBackground();
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(pauseEvent));
+		const auto pausedTop = Canvas::GetTop(target);
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_TRUE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 500u));
+		CUI_EXPECT_NEAR(pausedTop, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(resumeEvent));
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+			AdvanceVisualStateAnimations(host, beginTick + 750u));
+		CUI_EXPECT_TRUE(Canvas::GetTop(target) > pausedTop);
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(stopEvent));
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::CanvasTopProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_FALSE(target.HasPropertyValue(
+			Control::BackgroundProperty(),
+			DependencyPropertyValueSource::Animation));
+		CUI_EXPECT_NEAR(3.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
+		expectSolidRedBackground();
+
+		CUI_EXPECT_TRUE(host.Invoke());
+		CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(4.0f, Canvas::GetTop(target), 0.0001f);
+		CUI_EXPECT_NEAR(0.25f, target.Background.Opacity, 0.0001f);
+		CUI_EXPECT_TRUE(host.RaiseDeclarativeEvent(stopEvent));
+		CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(0.6f, target.Background.Opacity, 0.0001f);
+	});
+
+	runner.Add("Compiled VSM preserves reverse restart and failed pending transitions", []
+	{
+		static constexpr auto groupToken =
+			MakeVisualStateGroupToken(L"CompiledRecoveryStates");
+		static constexpr auto stateA =
+			MakeVisualStateToken(L"CompiledRecoveryA");
+		static constexpr auto stateB =
+			MakeVisualStateToken(L"CompiledRecoveryB");
+		static const DeclarativeEventDefinition stateBEvent{
+			BindingValueKind::Empty, DeclarativeEventRoutingStrategy::Direct };
+		static const std::array<BindingValue, 8> values{
+			BindingValue(1.0f), BindingValue(2.0f),
+			BindingValue(10.0f), BindingValue(20.0f),
+			BindingValue(0.2f), BindingValue(0.8f),
+			BindingValue(30.0f), BindingValue(40.0f) };
+		static const std::array<CompiledInteractionPropertyOperand, 3>
+			propertyOperands{ {
+				{ 1u, DependencyPropertyReference(Control::CanvasLeftProperty()) },
+				{ 1u, DependencyPropertyReference(Control::CanvasTopProperty()) },
+				{ 1u, DependencyPropertyReference(Control::BackgroundProperty()) },
+			} };
+		static constexpr std::array<CompiledInteractionSetterOp, 2> setters{ {
+			{ 0u, 0u },
+			{ 0u, 1u },
+		} };
+		static constexpr std::array<CompiledStoryboardObjectPathOp, 1>
+			objectPaths = []
+			{
+				std::array<CompiledStoryboardObjectPathOp, 1> result{};
+				auto& opacity = result.front();
+				opacity.Kind = CompiledStoryboardObjectPathKind::Brush;
+				opacity.Member =
+					CompiledStoryboardObjectPathMember::BrushOpacity;
+				opacity.ExpectedObjectKind = static_cast<uint8_t>(
+					cui::drawing::BrushKind::Solid);
+				opacity.Identity = MakeCompiledInteractionNameToken(
+					L"(Control.Background).(Brush.Opacity)");
+				return result;
+			}();
+		static constexpr std::array<CompiledInteractionAnimationOp, 3>
+			animations = []
+			{
+				std::array<CompiledInteractionAnimationOp, 3> result{};
+				auto& stateClock = result[0];
+				stateClock.Kind = DeclarativeAnimationKind::Double;
+				stateClock.OperandIndex = 1u;
+				stateClock.FromValueIndex = 2u;
+				stateClock.ToValueIndex = 3u;
+				stateClock.DurationMilliseconds = 1000u;
+				auto& stoppedOpacity = result[1];
+				stoppedOpacity.Kind = DeclarativeAnimationKind::Double;
+				stoppedOpacity.OperandIndex = 2u;
+				stoppedOpacity.ObjectPathIndex = 0u;
+				stoppedOpacity.FromValueIndex = 4u;
+				stoppedOpacity.ToValueIndex = 5u;
+				stoppedOpacity.DurationMilliseconds = 100u;
+				stoppedOpacity.FillBehavior =
+					DeclarativeTimelineFillBehavior::Stop;
+				auto& transitionClock = result[2];
+				transitionClock.Kind = DeclarativeAnimationKind::Double;
+				transitionClock.OperandIndex = 0u;
+				transitionClock.FromValueIndex = 6u;
+				transitionClock.ToValueIndex = 7u;
+				transitionClock.DurationMilliseconds = 1000u;
+				return result;
+			}();
+		static const std::array<const DeclarativeEventDefinition*, 1>
+			stateEvents{ &stateBEvent };
+		static constexpr std::array<CompiledInteractionStateOp, 2> states{ {
+			{ stateA, {}, {}, { 0u, 1u }, { 0u, 2u } },
+			{ stateB, {}, { 0u, 1u }, { 1u, 1u }, {} },
+		} };
+		static constexpr std::array<CompiledInteractionTransitionOp, 2>
+			transitions{ {
+				{ 0u, 1u, 0u, DeclarativeEasingKind::Linear,
+					DeclarativeEasingMode::EaseOut, { 2u, 1u } },
+				{ 1u, 0u, 0u, DeclarativeEasingKind::Linear,
+					DeclarativeEasingMode::EaseOut, { 2u, 1u } },
+			} };
+		static constexpr std::array<CompiledInteractionGroupOp, 1> groups{ {
+			{ groupToken, { 0u, 2u }, { 0u, 2u }, 0u, {} },
+		} };
+
+		CompiledInteractionProgramView program;
+		program.Version = CompiledInteractionProgramViewVersion;
+		program.TargetCount = 2u;
+		program.PropertyOperands = propertyOperands;
+		program.ObjectPaths = objectPaths;
+		program.Setters = setters;
+		program.Animations = animations;
+		program.StateEvents = stateEvents;
+		program.States = states;
+		program.Transitions = transitions;
+		program.Groups = groups;
+
+		cui::drawing::Brush solidBackground;
+		solidBackground.Kind = cui::drawing::BrushKind::Solid;
+		solidBackground.Color = D2D1::ColorF(D2D1::ColorF::Red);
+		solidBackground.Opacity = 0.6f;
+		auto incompatibleBackground = solidBackground;
+		incompatibleBackground.Kind = cui::drawing::BrushKind::LinearGradient;
+		incompatibleBackground.GradientStops.push_back({ 0.0f,
+			D2D1_COLOR_F{ 1.0f, 0.0f, 0.0f, 1.0f } });
+
+		auto install = [&](Panel& target, Button& host)
+			{
+				cui::framework::XamlAccess::SetTemplatedParent(target, &host);
+				CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+					host, MakeTemplatePartToken(L"CompiledRecoveryTarget"), &target));
+				target.Background = solidBackground;
+				Canvas::SetTop(target, 5.0f);
+				std::array<Control*, 2> targetSlots{ &host, &target };
+				std::wstring error;
+				const bool installed = cui::framework::TemplateAccess::
+					InstallCompiledInteractions(
+						host, program, values, targetSlots, &error);
+				if (!installed)
+					throw std::runtime_error("compiled recovery install: "
+						+ Convert::WStringToString(error));
+				CUI_EXPECT_TRUE(error.empty());
+				CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateA);
+			};
+		auto settleStateA = [](Button& host, Panel& target)
+			{
+				const auto tick = ::GetTickCount64();
+				CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+					AdvanceVisualStateAnimations(host, tick + 2000u));
+				CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+				CUI_EXPECT_NEAR(20.0f, Canvas::GetTop(target), 0.0001f);
+				CUI_EXPECT_FALSE(target.HasPropertyValue(
+					Control::BackgroundProperty(),
+					DependencyPropertyValueSource::Animation));
+			};
+
+		// Completing B -> A while the committed state is still A must force the
+		// A storyboard to restart. An A -> A commit intentionally raises no event.
+		{
+			Panel target;
+			Button host;
+			install(target, host);
+			settleStateA(host, target);
+			size_t stateChanges = 0;
+			auto stateConnection = host.OnVisualStateChanged.Subscribe(
+				[&](Control*, const DeclarativeVisualStateChangedEventArgs&)
+				{ ++stateChanges; });
+			std::wstring error;
+			CUI_EXPECT_TRUE(host.GoToVisualState(
+				groupToken, stateB, true, &error));
+			const auto reverseTick = ::GetTickCount64();
+			CUI_EXPECT_TRUE(host.GoToVisualState(
+				groupToken, stateA, true, &error));
+			CUI_EXPECT_TRUE(error.empty());
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(host, reverseTick + 2000u));
+			CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateA);
+			CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+			CUI_EXPECT_TRUE(target.HasPropertyValue(
+				Control::CanvasTopProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_NEAR(10.0f, Canvas::GetTop(target), 0.0001f);
+			CUI_EXPECT_EQ(0ULL, stateChanges);
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(host, reverseTick + 2500u));
+			CUI_EXPECT_TRUE(Canvas::GetTop(target) > 10.0f
+				&& Canvas::GetTop(target) < 20.0f);
+		}
+
+		// A stopped object-path animation no longer owns Background. Replacing
+		// that local root must not make materializing the old A state necessary.
+		{
+			Panel target;
+			Button host;
+			install(target, host);
+			settleStateA(host, target);
+			target.Background = incompatibleBackground;
+			std::wstring error;
+			CUI_EXPECT_TRUE(host.GoToVisualState(
+				groupToken, stateB, false, &error));
+			CUI_EXPECT_TRUE(error.empty());
+			CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateB);
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient,
+				target.Background.Kind);
+			CUI_EXPECT_FALSE(target.HasPropertyValue(
+				Control::CanvasTopProperty(),
+				DependencyPropertyValueSource::Animation));
+		}
+
+		// A failed immediate override of an in-flight A -> B transition must
+		// preserve the original pending target and its advancing transition clock.
+		{
+			Panel target;
+			Button host;
+			install(target, host);
+			settleStateA(host, target);
+			size_t stateChanges = 0;
+			DeclarativeVisualStateChangedEventArgs lastChange;
+			auto stateConnection = host.OnVisualStateChanged.Subscribe(
+				[&](Control*, const DeclarativeVisualStateChangedEventArgs& args)
+				{
+					++stateChanges;
+					lastChange = args;
+				});
+			std::wstring error;
+			const auto transitionTick = ::GetTickCount64();
+			CUI_EXPECT_TRUE(host.GoToVisualState(
+				groupToken, stateB, true, &error));
+			target.Background = incompatibleBackground;
+			error.clear();
+			CUI_EXPECT_FALSE(host.GoToVisualState(
+				groupToken, stateA, false, &error));
+			CUI_EXPECT_FALSE(error.empty());
+			CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateB);
+			CUI_EXPECT_TRUE(host.HasActiveVisualStateAnimations());
+			CUI_EXPECT_TRUE(target.HasPropertyValue(
+				Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::Animation));
+			CUI_EXPECT_EQ(0ULL, stateChanges);
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(host, transitionTick + 500u));
+			CUI_EXPECT_TRUE(Canvas::GetLeft(target) > 30.0f
+				&& Canvas::GetLeft(target) < 40.0f);
+			target.Background = solidBackground;
+			CUI_EXPECT_TRUE(cui::framework::PresentationAccess::
+				AdvanceVisualStateAnimations(host, transitionTick + 2000u));
+			CUI_EXPECT_TRUE(host.GetCurrentVisualState(groupToken) == stateB);
+			CUI_EXPECT_FALSE(host.HasActiveVisualStateAnimations());
+			CUI_EXPECT_EQ(1ULL, stateChanges);
+			CUI_EXPECT_TRUE(lastChange.OldStateToken == stateA);
+			CUI_EXPECT_TRUE(lastChange.NewStateToken == stateB);
+			CUI_EXPECT_NEAR(2.0f, Canvas::GetLeft(target), 0.0001f);
+			CUI_EXPECT_FALSE(target.HasPropertyValue(
+				Control::CanvasLeftProperty(),
+				DependencyPropertyValueSource::Animation));
+		}
+	});
 
 	runner.Add("Component EventTriggers control named Storyboards transactionally", []
 	{
@@ -35326,7 +44114,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto propertyLifetime = target->OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{
-				if (args.PropertyName == L"IsEnabled")
+				if (args.Property == &Control::IsEnabledProperty())
 					target.reset();
 			});
 		CUI_EXPECT_TRUE(target->TrySetValue(L"IsEnabled", BindingValue(false)));
@@ -35485,7 +44273,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		};
 		auto exactLifetime =
 			RoutedCommandManager::RegisterClassCommandBinding(
-				exactSchema->TypeId(), std::move(exact));
+				MakeComponentTypeToken(
+					exactSchema->TypeId().NamespaceUri,
+					exactSchema->TypeId().LocalName),
+				std::move(exact));
 
 		CommandBinding native;
 		native.Command = command;
@@ -35642,6 +44433,144 @@ class FreshWindow : public FreshWindowGenerated {};
 		cui::PumpUIThreadCallbacks();
 	});
 
+	runner.Add("Command requery follows WPF input completion events", []
+	{
+		Window form; ConfigureTestControl(form, L"Input requery domain");
+		SetDeclaredWindowGeometry(form, 0.0f, 0.0f, 240.0f, 120.0f);
+		std::unique_ptr<Control> contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(contentOwner.get());
+		auto* firstFocus = AddTestVisual<Button>(
+			*content, L"First", 0, 0, 80, 28);
+		auto* secondFocus = AddTestVisual<Button>(
+			*content, L"Second", 90, 0, 80, 28);
+		firstFocus->Focusable = true;
+		secondFocus->Focusable = true;
+		CUI_EXPECT_TRUE(form.TrySetVisualContent(contentOwner));
+		cui::PumpUIThreadCallbacks();
+
+		int canExecuteCount = 0;
+		const RoutedCommand probeCommand(L"Core.InputCompletionRequery");
+		CommandBinding probeBinding;
+		probeBinding.Command = probeCommand;
+		probeBinding.CanExecute = [&canExecuteCount](
+			Control*, CanExecuteRoutedEventArgs& args)
+		{
+			++canExecuteCount;
+			args.CanExecute = true;
+		};
+		auto bindingLifetime = form.AddCommandBinding(std::move(probeBinding));
+		CUI_EXPECT_TRUE(bindingLifetime.Connected());
+		// Adding a binding schedules a requery. Drain it before observing the
+		// input-driven generations measured below.
+		cui::PumpUIThreadCallbacks();
+
+		int observerCount = 0;
+		auto canExecuteObserver = RoutedCommandManager::ObserveCanExecute(
+			*firstFocus,
+			RoutedCommandSourceQuery{
+				probeCommand, {}, ControlWeakReference(firstFocus) },
+			[&observerCount](
+				Control&, const RoutedCommandCanExecuteResult& result)
+			{
+				++observerCount;
+				CUI_EXPECT_TRUE(result.CanExecute);
+			});
+		CUI_EXPECT_TRUE(canExecuteObserver.Connected());
+		CUI_EXPECT_EQ(1, canExecuteCount);
+		CUI_EXPECT_EQ(1, observerCount);
+
+		int suggestedCount = 0;
+		auto suggested = RoutedCommandManager::SubscribeRequerySuggested(
+			*content, [&](const RoutedCommandRequeryEventArgs&)
+			{ ++suggestedCount; });
+		CUI_EXPECT_TRUE(suggested.Connected());
+
+		InputManager stagingManager(&form);
+		auto stageMouse = [&](RoutedEventId eventId, const InputReport& report)
+		{
+			auto args = report.CreateMouseEventArgs();
+			InputManager::StagingScope staging(
+				stagingManager, content, eventId,
+				static_cast<float>(report.X), static_cast<float>(report.Y));
+			staging.Preview(args);
+			staging.Complete(args);
+		};
+		auto stageKey = [&](RoutedEventId eventId, const InputReport& report)
+		{
+			auto args = report.CreateKeyEventArgs();
+			InputManager::StagingScope staging(
+				stagingManager, content, eventId);
+			staging.Preview(args);
+			staging.Complete(args);
+		};
+
+		stageMouse(RoutedEventId::MouseMove,
+			PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, 10, 10));
+		stageMouse(RoutedEventId::MouseDown,
+			PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 10, 10, MouseButton::Left));
+		stageMouse(RoutedEventId::MouseWheel, WheelInput(120, 10, 10));
+		stageKey(RoutedEventId::KeyDown,
+			KeyInput(InputReportKind::KeyDown, Key::A));
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(0, suggestedCount);
+		CUI_EXPECT_EQ(1, canExecuteCount);
+		CUI_EXPECT_EQ(1, observerCount);
+
+		stageMouse(RoutedEventId::MouseUp,
+			PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, 10, 10));
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(1, suggestedCount);
+		CUI_EXPECT_EQ(2, canExecuteCount);
+		CUI_EXPECT_EQ(2, observerCount);
+		stageKey(RoutedEventId::KeyUp,
+			KeyInput(InputReportKind::KeyUp, Key::A));
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(2, suggestedCount);
+		CUI_EXPECT_EQ(3, canExecuteCount);
+		CUI_EXPECT_EQ(3, observerCount);
+
+		int suggestedDuringGot = -1;
+		auto observeGot = firstFocus->OnGotKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&)
+			{
+				cui::PumpUIThreadCallbacks();
+				suggestedDuringGot = suggestedCount;
+			});
+		form.SetKeyboardFocus(firstFocus, false);
+		CUI_EXPECT_EQ(2, suggestedDuringGot);
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(3, suggestedCount);
+		form.SetKeyboardFocus(secondFocus, false);
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(4, suggestedCount);
+
+		int suggestedDuringLost = -1;
+		auto observeLost = secondFocus->OnLostKeyboardFocus.Subscribe(
+			[&](Control*, KeyboardFocusChangedEventArgs&)
+			{
+				cui::PumpUIThreadCallbacks();
+				suggestedDuringLost = suggestedCount;
+			});
+		form.SetKeyboardFocus(nullptr, false);
+		CUI_EXPECT_EQ(4, suggestedDuringLost);
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(5, suggestedCount);
+
+		form.SetKeyboardFocus(secondFocus, false);
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(6, suggestedCount);
+		auto rejectLost = secondFocus->OnPreviewLostKeyboardFocus.Subscribe(
+			[](Control*, KeyboardFocusChangedEventArgs& args)
+			{ args.Handled = true; });
+		form.SetKeyboardFocus(nullptr, false);
+		cui::PumpUIThreadCallbacks();
+		CUI_EXPECT_EQ(6, suggestedCount);
+		CUI_EXPECT_TRUE(form.GetKeyboardFocusedElement() == secondFocus);
+	});
+
 	runner.Add("Command CanExecute coerces effective IsEnabled without replacing authored state", []
 	{
 		Panel parent;
@@ -35686,7 +44615,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto enabledChanged = descendant->OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{
-				if (args.PropertyName == L"IsEnabled")
+				if (args.Property == &Control::IsEnabledProperty())
 					++descendantEnabledChanges;
 			});
 		window.IsEnabled = false;
@@ -35760,6 +44689,8 @@ class FreshWindow : public FreshWindowGenerated {};
 				const DependencyPropertyChangedEventArgs& args)
 			{
 				CUI_EXPECT_TRUE(sender == child);
+				CUI_EXPECT_TRUE(
+					args.Property == &Control::IsVisibleProperty());
 				bool oldValue = false;
 				bool newValue = false;
 				CUI_EXPECT_TRUE(args.OldValue.TryGetBool(oldValue));
@@ -36064,6 +44995,147 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(*context, PointerInput(
 				InputReportKind::PointerUp,
 				MouseButton::Left, 24, 24)));
+			CUI_EXPECT_TRUE(contextLifetime.Get() == nullptr);
+		}
+
+		// Service PlacementTarget publication is observable. Deleting the popup
+		// from that synchronous property callback must stop both the inner DP
+		// setter and the outer ShowAt transaction from using the old host.
+		{
+			Window window; ConfigureTestControl(
+				window, L"Context placement deletion");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 260.0f, 140.0f);
+			std::unique_ptr<Control> rootOwner = MakeTestControl<Panel>();
+			auto* root = dynamic_cast<Panel*>(rootOwner.get());
+			CUI_EXPECT_TRUE(root != nullptr);
+			if (!root) return;
+			auto* placement = AddTestVisual<Button>(
+				*root, L"Placement", 8, 8, 100, 28);
+			auto* context = AddTestVisual<ContextMenu>(*root);
+			AddTestMenuItem(*context, L"Delete on placement");
+			CUI_EXPECT_TRUE(window.TrySetVisualContent(rootOwner));
+			const ControlWeakReference contextLifetime(context);
+			bool placementPublished = false;
+			bool deletedFromPlacement = false;
+			auto placementConnection =
+				context->OnPropertyValueChanged.Subscribe(
+					[&](DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
+					{
+						if (args.Property
+							!= &ContextMenu::PlacementTargetProperty()
+							|| context->PlacementTarget != placement) return;
+						placementPublished = true;
+						deletedFromPlacement =
+							root->DeleteVisualChild(context);
+					});
+			context->ShowAt(placement, 4, 4);
+			CUI_EXPECT_TRUE(placementPublished);
+			CUI_EXPECT_TRUE(deletedFromPlacement);
+			CUI_EXPECT_TRUE(contextLifetime.Get() == nullptr);
+		}
+
+		// Opened precedes initial keyboard focus. An Opened handler may delete
+		// the popup and every candidate item, so focus selection must use weak
+		// snapshots rather than the host's live item vector.
+		{
+			Window window; ConfigureTestControl(
+				window, L"Context opened deletion");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 260.0f, 140.0f);
+			std::unique_ptr<Control> rootOwner = MakeTestControl<Panel>();
+			auto* root = dynamic_cast<Panel*>(rootOwner.get());
+			CUI_EXPECT_TRUE(root != nullptr);
+			if (!root) return;
+			auto* context = AddTestVisual<ContextMenu>(*root);
+			auto* item = AddTestMenuItem(*context, L"Delete when opened");
+			CUI_EXPECT_TRUE(window.TrySetVisualContent(rootOwner));
+			const ControlWeakReference contextLifetime(context);
+			const ControlWeakReference itemLifetime(item);
+			bool openedRaised = false;
+			bool deletedFromOpened = false;
+			auto openedConnection = context->Opened.Subscribe(
+				[&](ContextMenu*)
+				{
+					openedRaised = true;
+					deletedFromOpened = root->DeleteVisualChild(context);
+				});
+			context->ShowAt(12, 12);
+			CUI_EXPECT_TRUE(openedRaised);
+			CUI_EXPECT_TRUE(deletedFromOpened);
+			CUI_EXPECT_TRUE(contextLifetime.Get() == nullptr);
+			CUI_EXPECT_TRUE(itemLifetime.Get() == nullptr);
+		}
+
+		// Closing a service-targeted popup clears PlacementTarget. That DP
+		// callback can delete the host before DismissPresentationCore raises
+		// Closed or invalidates, and Hide must not reuse stale state afterward.
+		{
+			Window window; ConfigureTestControl(
+				window, L"Context close-clear deletion");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 260.0f, 140.0f);
+			std::unique_ptr<Control> rootOwner = MakeTestControl<Panel>();
+			auto* root = dynamic_cast<Panel*>(rootOwner.get());
+			CUI_EXPECT_TRUE(root != nullptr);
+			if (!root) return;
+			auto* placement = AddTestVisual<Button>(
+				*root, L"Placement", 8, 8, 100, 28);
+			auto* context = AddTestVisual<ContextMenu>(*root);
+			AddTestMenuItem(*context, L"Delete when cleared");
+			CUI_EXPECT_TRUE(window.TrySetVisualContent(rootOwner));
+			context->ShowAt(placement, 4, 4);
+			CUI_EXPECT_TRUE(context->IsOpen);
+			CUI_EXPECT_TRUE(context->PlacementTarget == placement);
+			const ControlWeakReference contextLifetime(context);
+			bool placementCleared = false;
+			bool deletedFromClear = false;
+			auto placementConnection =
+				context->OnPropertyValueChanged.Subscribe(
+					[&](DependencyObject*,
+						const DependencyPropertyChangedEventArgs& args)
+					{
+						if (args.Property
+							!= &ContextMenu::PlacementTargetProperty()
+							|| context->PlacementTarget != nullptr) return;
+						placementCleared = true;
+						deletedFromClear = root->DeleteVisualChild(context);
+					});
+			context->Hide();
+			CUI_EXPECT_TRUE(placementCleared);
+			CUI_EXPECT_TRUE(deletedFromClear);
+			CUI_EXPECT_TRUE(contextLifetime.Get() == nullptr);
+		}
+
+		// Closed is the final public callback in dismissal. Deletion there must
+		// prevent the trailing visual invalidation from touching the dead host.
+		{
+			Window window; ConfigureTestControl(
+				window, L"Context closed deletion");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 260.0f, 140.0f);
+			std::unique_ptr<Control> rootOwner = MakeTestControl<Panel>();
+			auto* root = dynamic_cast<Panel*>(rootOwner.get());
+			CUI_EXPECT_TRUE(root != nullptr);
+			if (!root) return;
+			auto* context = AddTestVisual<ContextMenu>(*root);
+			AddTestMenuItem(*context, L"Delete when closed");
+			CUI_EXPECT_TRUE(window.TrySetVisualContent(rootOwner));
+			context->ShowAt(12, 12);
+			CUI_EXPECT_TRUE(context->IsOpen);
+			const ControlWeakReference contextLifetime(context);
+			bool closedRaised = false;
+			bool deletedFromClosed = false;
+			auto closedConnection = context->Closed.Subscribe(
+				[&](ContextMenu*)
+				{
+					closedRaised = true;
+					deletedFromClosed = root->DeleteVisualChild(context);
+				});
+			context->Hide();
+			CUI_EXPECT_TRUE(closedRaised);
+			CUI_EXPECT_TRUE(deletedFromClosed);
 			CUI_EXPECT_TRUE(contextLifetime.Get() == nullptr);
 		}
 	});
@@ -37515,12 +46587,18 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto* sliderTrackBackground = slider
 			? slider->FindDeclarativeTemplatePart(
 				L"PART_TrackBackground") : nullptr;
-		auto* sliderRange = slider
+		auto* sliderSelectionRange = slider
 			? slider->FindDeclarativeTemplatePart(
 				L"PART_SelectionRange") : nullptr;
+		auto* sliderSelectedRange = slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_SelectedRange") : nullptr;
 		auto* sliderThumb = dynamic_cast<Border*>(slider
 			? slider->FindDeclarativeTemplatePart(
 				L"PART_Thumb") : nullptr);
+		auto* sliderThumbInner = dynamic_cast<Border*>(slider
+			? slider->FindDeclarativeTemplatePart(
+				L"PART_ThumbInner") : nullptr);
 		auto* verticalSliderTrack = verticalSlider
 			? verticalSlider->FindDeclarativeTemplatePart(
 				L"PART_Track") : nullptr;
@@ -37530,13 +46608,19 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto* verticalSliderThumb = dynamic_cast<Border*>(verticalSlider
 			? verticalSlider->FindDeclarativeTemplatePart(
 				L"PART_Thumb") : nullptr);
+		auto* verticalSliderThumbInner =
+			dynamic_cast<Border*>(verticalSlider
+				? verticalSlider->FindDeclarativeTemplatePart(
+					L"PART_ThumbInner") : nullptr);
 		CUI_EXPECT_TRUE(buttonChrome && buttonPresenter && buttonText
 			&& checkRoot && checkGlyph && checkMark
 			&& radioRoot && progressTrack
 			&& indicator && verticalTrack && verticalIndicator
-			&& sliderTrack && sliderTrackBackground && sliderRange
-			&& sliderThumb && verticalSliderTrack
-			&& verticalSliderTrackBackground && verticalSliderThumb);
+			&& sliderTrack && sliderTrackBackground
+			&& sliderSelectionRange && sliderSelectedRange
+			&& sliderThumb && sliderThumbInner && verticalSliderTrack
+			&& verticalSliderTrackBackground && verticalSliderThumb
+			&& verticalSliderThumbInner);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
 			check->GetPropertyValueSource(L"BorderBrush"));
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
@@ -37549,7 +46633,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			button->HorizontalContentAlignment);
 		CUI_EXPECT_EQ(VerticalAlignment::Center,
 			button->VerticalContentAlignment);
-		CUI_EXPECT_EQ(Thickness(10.0f, 2.0f, 10.0f, 2.0f),
+		CUI_EXPECT_EQ(Thickness(11.0f, 5.0f, 11.0f, 6.0f),
 			button->Padding);
 		CUI_EXPECT_EQ(HorizontalAlignment::Center,
 			buttonPresenter->HorizontalAlignment);
@@ -37579,7 +46663,9 @@ class FreshWindow : public FreshWindowGenerated {};
 			presenterOrigin.x + presenterSize.width * 0.5f,
 			0.001f);
 		CUI_EXPECT_NEAR(
-			buttonOrigin.y + buttonSize.height * 0.5f,
+			// WPF's 5/6 vertical Padding intentionally places the content
+			// half a DIP above the outer chrome center.
+			buttonOrigin.y + buttonSize.height * 0.5f - 0.5f,
 			presenterOrigin.y + presenterSize.height * 0.5f,
 			0.001f);
 		CUI_EXPECT_TRUE(
@@ -37608,9 +46694,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		const auto checkMarkOrigin =
 			checkMark->GetAbsoluteLocationDip();
 		CUI_EXPECT_NEAR(
-			3.0f, checkMarkOrigin.x - checkGlyphOrigin.x, 0.1f);
+			4.0f, checkMarkOrigin.x - checkGlyphOrigin.x, 0.1f);
 		CUI_EXPECT_NEAR(
-			4.0f, checkMarkOrigin.y - checkGlyphOrigin.y, 0.1f);
+			5.0f, checkMarkOrigin.y - checkGlyphOrigin.y, 0.1f);
 
 		const auto progressWidth =
 			progressTrack->GetActualSizeDip().width;
@@ -37627,28 +46713,50 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_NEAR(
 			verticalHeight * 0.25f,
 			verticalIndicatorHeight, 0.1f);
+		CUI_EXPECT_EQ(std::wstring(L"SelectedRange"),
+			slider->GetCurrentVisualState(L"SelectionStates"));
+		CUI_EXPECT_EQ(
+			Visibility::Collapsed, sliderSelectionRange->Visibility);
+		CUI_EXPECT_EQ(
+			Visibility::Visible, sliderSelectedRange->Visibility);
 		CUI_EXPECT_TRUE(
-			sliderRange->GetActualSizeDip().width > 0.0f);
+			sliderSelectedRange->GetActualSizeDip().width > 0.0f);
+		slider->IsSelectionRangeEnabled = true;
+		slider->SelectionStart = 10.0;
+		slider->SelectionEnd = 60.0;
+		(void)tree.ContentRoot->Measure(viewport);
+		tree.ContentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 600.0f, 320.0f });
+		tree.ContentRoot->UpdateLayout();
+		CUI_EXPECT_EQ(std::wstring(L"SelectionRange"),
+			slider->GetCurrentVisualState(L"SelectionStates"));
+		CUI_EXPECT_EQ(
+			Visibility::Visible, sliderSelectionRange->Visibility);
+		CUI_EXPECT_EQ(
+			Visibility::Collapsed, sliderSelectedRange->Visibility);
+		CUI_EXPECT_TRUE(
+			sliderSelectionRange->GetActualSizeDip().width > 0.0f);
 		CUI_EXPECT_TRUE(Canvas::GetLeft(*sliderThumb) > 0.0f);
-		for (auto* thumb : { sliderThumb, verticalSliderThumb })
+		for (const auto& [thumb, inner] : std::to_array({
+			std::pair{ sliderThumb, sliderThumbInner },
+			std::pair{ verticalSliderThumb, verticalSliderThumbInner } }))
 		{
 			const auto thumbSize = thumb->GetActualSizeDip();
-			CUI_EXPECT_NEAR(18.0f, thumbSize.width, 0.1f);
-			CUI_EXPECT_NEAR(18.0f, thumbSize.height, 0.1f);
-			CUI_EXPECT_TRUE(thumb->GetClip().has_value());
-			if (thumb->GetClip())
-			{
-				CUI_EXPECT_EQ(cui::drawing::GeometryKind::Ellipse,
-					thumb->GetClip()->Kind);
-				CUI_EXPECT_NEAR(9.0f, thumb->GetClip()->RadiusX, 0.1f);
-				CUI_EXPECT_NEAR(9.0f, thumb->GetClip()->RadiusY, 0.1f);
-			}
+			CUI_EXPECT_NEAR(20.0f, thumbSize.width, 0.1f);
+			CUI_EXPECT_NEAR(20.0f, thumbSize.height, 0.1f);
+			CUI_EXPECT_EQ(
+				::CornerRadius(10.0f), thumb->CornerRadius);
+			const auto innerSize = inner->GetActualSizeDip();
+			CUI_EXPECT_NEAR(12.0f, innerSize.width, 0.1f);
+			CUI_EXPECT_NEAR(12.0f, innerSize.height, 0.1f);
+			CUI_EXPECT_EQ(
+				::CornerRadius(6.0f), inner->CornerRadius);
 			CUI_EXPECT_NEAR(
-				0x2F / 255.0f, thumb->Background.Color.r, 0.0001f);
+				0x2F / 255.0f, inner->Background.Color.r, 0.0001f);
 			CUI_EXPECT_NEAR(
-				0x6F / 255.0f, thumb->Background.Color.g, 0.0001f);
+				0x6F / 255.0f, inner->Background.Color.g, 0.0001f);
 			CUI_EXPECT_NEAR(
-				0xE4 / 255.0f, thumb->Background.Color.b, 0.0001f);
+				0xE4 / 255.0f, inner->Background.Color.b, 0.0001f);
 		}
 		CUI_EXPECT_NEAR(
 			Canvas::GetTop(*sliderTrackBackground)
@@ -37663,8 +46771,283 @@ class FreshWindow : public FreshWindowGenerated {};
 			Canvas::GetLeft(*verticalSliderThumb)
 				+ verticalSliderThumb->GetActualSizeDip().width * 0.5f,
 			0.001f);
-		CUI_EXPECT_EQ(CursorKind::SizeNS,
+		CUI_EXPECT_EQ(CursorKind::Arrow,
 			verticalSliderTrack->Cursor);
+	});
+
+	runner.Add("Generic NumericUpDown spin buttons preserve compact glyph geometry", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="220" Height="80">
+  <Canvas Width="220" Height="80">
+    <NumericUpDown x:Name="numeric"
+                   Canvas.Left="10" Canvas.Top="10"
+                   Width="160" Height="30"
+                   Minimum="0" Maximum="100" Value="42"/>
+  </Canvas>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto find = [&](const wchar_t* name) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[&](const auto& control)
+				{ return control && control->Name == name; });
+			return found == tree.Controls.end()
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* numeric = dynamic_cast<NumericUpDown*>(find(L"numeric"));
+		CUI_EXPECT_TRUE(tree.ContentRoot && numeric);
+
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 220.0f, 80.0f },
+			cui::core::Size{ 220.0f, 80.0f } };
+		(void)tree.ContentRoot->Measure(viewport);
+		tree.ContentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 220.0f, 80.0f });
+		tree.ContentRoot->UpdateLayout();
+		(void)tree.ContentRoot->Measure(viewport);
+		tree.ContentRoot->Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 220.0f, 80.0f });
+		tree.ContentRoot->UpdateLayout();
+
+		auto* increase = dynamic_cast<Button*>(numeric
+			? numeric->FindDeclarativeTemplatePart(
+				L"PART_IncreaseButton") : nullptr);
+		auto* decrease = dynamic_cast<Button*>(numeric
+			? numeric->FindDeclarativeTemplatePart(
+				L"PART_DecreaseButton") : nullptr);
+		auto* editor = dynamic_cast<TextBox*>(numeric
+			? numeric->FindDeclarativeTemplatePart(
+				L"PART_TextBox") : nullptr);
+		auto* increaseChrome = dynamic_cast<Border*>(increase
+			? increase->FindDeclarativeTemplatePart(
+				L"PART_SpinChrome") : nullptr);
+		auto* decreaseChrome = dynamic_cast<Border*>(decrease
+			? decrease->FindDeclarativeTemplatePart(
+				L"PART_SpinChrome") : nullptr);
+		auto* increasePresenter = dynamic_cast<ContentPresenter*>(increase
+			? increase->FindDeclarativeTemplatePart(
+				L"PART_SpinContentPresenter") : nullptr);
+		auto* decreasePresenter = dynamic_cast<ContentPresenter*>(decrease
+			? decrease->FindDeclarativeTemplatePart(
+				L"PART_SpinContentPresenter") : nullptr);
+		auto* increaseGlyph = increasePresenter
+			? dynamic_cast<Label*>(increasePresenter->GetGeneratedContent())
+			: nullptr;
+		auto* decreaseGlyph = decreasePresenter
+			? dynamic_cast<Label*>(decreasePresenter->GetGeneratedContent())
+			: nullptr;
+		CUI_EXPECT_TRUE(numeric && editor && increase && decrease
+			&& increaseChrome && decreaseChrome
+			&& increasePresenter && decreasePresenter
+			&& increaseGlyph && decreaseGlyph);
+		if (!numeric || !editor || !increase || !decrease
+			|| !increaseChrome || !decreaseChrome
+			|| !increasePresenter || !decreasePresenter
+			|| !increaseGlyph || !decreaseGlyph)
+			return;
+
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
+			numeric->GetPropertyValueSource(L"MinHeight"));
+		CUI_EXPECT_NEAR(32.0f, numeric->MinHeight, 0.001f);
+		CUI_EXPECT_NEAR(
+			32.0f, numeric->GetActualSizeDip().height, 0.001f);
+		CUI_EXPECT_EQ(VerticalAlignment::Center,
+			editor->VerticalContentAlignment);
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+			editor->GetPropertyValueSource(
+				L"VerticalContentAlignment"));
+		for (auto* button : { increase, decrease })
+		{
+			CUI_EXPECT_EQ(HorizontalAlignment::Stretch,
+				button->HorizontalAlignment);
+			CUI_EXPECT_EQ(VerticalAlignment::Stretch,
+				button->VerticalAlignment);
+			CUI_EXPECT_EQ(HorizontalAlignment::Center,
+				button->HorizontalContentAlignment);
+			CUI_EXPECT_EQ(VerticalAlignment::Center,
+				button->VerticalContentAlignment);
+			CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+				button->GetPropertyValueSource(L"Template"));
+			CUI_EXPECT_NEAR(
+				28.0f, button->GetActualSizeDip().width, 0.001f);
+			CUI_EXPECT_NEAR(
+				16.0f, button->GetActualSizeDip().height, 0.001f);
+		}
+		for (auto* presenter : { increasePresenter, decreasePresenter })
+		{
+			CUI_EXPECT_EQ(HorizontalAlignment::Center,
+				presenter->HorizontalAlignment);
+			CUI_EXPECT_EQ(VerticalAlignment::Center,
+				presenter->VerticalAlignment);
+			CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+				presenter->GetPropertyValueSource(L"HorizontalAlignment"));
+			CUI_EXPECT_EQ(DependencyPropertyValueSource::Template,
+				presenter->GetPropertyValueSource(L"VerticalAlignment"));
+		}
+		CUI_EXPECT_EQ(::CornerRadius(0.0f, 4.0f, 0.0f, 0.0f),
+			increaseChrome->CornerRadius);
+		CUI_EXPECT_EQ(::CornerRadius(0.0f, 0.0f, 4.0f, 0.0f),
+			decreaseChrome->CornerRadius);
+		CUI_EXPECT_EQ(std::wstring(L"\uE70E"), increaseGlyph->Text);
+		CUI_EXPECT_EQ(std::wstring(L"\uE70D"), decreaseGlyph->Text);
+		for (auto* glyph : { increaseGlyph, decreaseGlyph })
+		{
+			CUI_EXPECT_TRUE(
+				glyph->GetActualSizeDip().height + 0.001f
+					>= glyph->GetDesiredSizeDip().height);
+		}
+
+		const auto numericOrigin = numeric->GetAbsoluteLocationDip();
+		const auto numericSize = numeric->GetActualSizeDip();
+		const auto increaseOrigin = increase->GetAbsoluteLocationDip();
+		const auto decreaseOrigin = decrease->GetAbsoluteLocationDip();
+		CUI_EXPECT_NEAR(numericOrigin.y, increaseOrigin.y, 0.001f);
+		CUI_EXPECT_NEAR(
+			increaseOrigin.y + increase->GetActualSizeDip().height,
+			decreaseOrigin.y, 0.001f);
+		CUI_EXPECT_NEAR(
+			numericOrigin.y + numericSize.height,
+			decreaseOrigin.y + decrease->GetActualSizeDip().height,
+			0.001f);
+		CUI_EXPECT_TRUE(increase->Invoke());
+		CUI_EXPECT_NEAR(43.0, numeric->Value, 0.0001);
+		CUI_EXPECT_TRUE(decrease->Invoke());
+		CUI_EXPECT_NEAR(42.0, numeric->Value, 0.0001);
+	});
+
+	runner.Add("Generic Expander measures content below its header and collapses it", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="480" Height="280">
+  <Canvas Width="480" Height="280">
+    <Expander x:Name="expander"
+              Canvas.Left="10" Canvas.Top="10"
+              Width="430" Header="Details" IsExpanded="true">
+      <Canvas x:Name="content" Height="144">
+        <TextBlock x:Name="body"
+                   Canvas.Left="16" Canvas.Top="24"
+                   Width="380" Height="40"
+                   Text="Expanded content"/>
+      </Canvas>
+    </Expander>
+  </Canvas>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto find = [&](const wchar_t* name) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[&](const auto& control)
+				{ return control && control->Name == name; });
+			return found == tree.Controls.end()
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* expander = dynamic_cast<Expander*>(find(L"expander"));
+		auto* content = dynamic_cast<Canvas*>(find(L"content"));
+		auto* body = dynamic_cast<Label*>(find(L"body"));
+		CUI_EXPECT_TRUE(tree.ContentRoot && expander && content && body);
+
+		const cui::core::Constraints viewport{
+			cui::core::Size{ 480.0f, 280.0f },
+			cui::core::Size{ 480.0f, 280.0f } };
+		auto updateLayout = [&]
+		{
+			(void)tree.ContentRoot->Measure(viewport);
+			tree.ContentRoot->Arrange(
+				cui::core::Rect{ 0.0f, 0.0f, 480.0f, 280.0f });
+			tree.ContentRoot->UpdateLayout();
+			(void)tree.ContentRoot->Measure(viewport);
+			tree.ContentRoot->Arrange(
+				cui::core::Rect{ 0.0f, 0.0f, 480.0f, 280.0f });
+			tree.ContentRoot->UpdateLayout();
+		};
+		updateLayout();
+
+		auto* header = dynamic_cast<ToggleButton*>(expander
+			? expander->FindDeclarativeTemplatePart(L"HeaderSite")
+			: nullptr);
+		auto* contentBorder = dynamic_cast<Border*>(expander
+			? expander->FindDeclarativeTemplatePart(
+				L"PART_ContentPresenterBorder") : nullptr);
+		auto* expandSite = dynamic_cast<ContentPresenter*>(expander
+			? expander->FindDeclarativeTemplatePart(
+				L"PART_ExpandSite") : nullptr);
+		auto* glyph = dynamic_cast<Label*>(expander
+			? expander->FindDeclarativeTemplatePart(
+				L"PART_ExpansionGlyph") : nullptr);
+		CUI_EXPECT_TRUE(expander && content && body && header
+			&& contentBorder && expandSite && glyph);
+		if (!expander || !content || !body || !header
+			|| !contentBorder || !expandSite || !glyph)
+			return;
+
+		CUI_EXPECT_TRUE(expander->IsExpanded);
+		CUI_EXPECT_TRUE(header->IsChecked);
+		CUI_EXPECT_EQ(std::wstring(L"DownExpanded"),
+			expander->GetCurrentVisualState(L"ExpansionStates"));
+		CUI_EXPECT_EQ(Visibility::Visible, contentBorder->Visibility);
+		CUI_EXPECT_NEAR(12.0f, glyph->FontSize, 0.001f);
+		CUI_EXPECT_EQ(std::wstring(L"\uE70E"), glyph->Text);
+		CUI_EXPECT_NEAR(
+			144.0f, content->GetActualSizeDip().height, 0.001f);
+		CUI_EXPECT_TRUE(expandSite->GetActualSizeDip().height > 0.0f);
+		CUI_EXPECT_TRUE(
+			expander->GetActualSizeDip().height
+				> header->GetActualSizeDip().height);
+
+		const auto expanderOrigin = expander->GetAbsoluteLocationDip();
+		const auto expanderSize = expander->GetActualSizeDip();
+		const auto headerOrigin = header->GetAbsoluteLocationDip();
+		const auto headerSize = header->GetActualSizeDip();
+		const auto contentOrigin = contentBorder->GetAbsoluteLocationDip();
+		const auto bodyOrigin = body->GetAbsoluteLocationDip();
+		CUI_EXPECT_NEAR(expanderOrigin.y, headerOrigin.y, 0.001f);
+		CUI_EXPECT_NEAR(
+			headerOrigin.y + headerSize.height,
+			contentOrigin.y, 0.001f);
+		CUI_EXPECT_TRUE(
+			bodyOrigin.y + body->GetActualSizeDip().height
+				<= expanderOrigin.y + expanderSize.height + 0.001f);
+
+		expander->SetExpanded(false);
+		updateLayout();
+		CUI_EXPECT_FALSE(expander->IsExpanded);
+		CUI_EXPECT_FALSE(header->IsChecked);
+		CUI_EXPECT_EQ(std::wstring(L"DownCollapsed"),
+			expander->GetCurrentVisualState(L"ExpansionStates"));
+		CUI_EXPECT_EQ(Visibility::Collapsed, contentBorder->Visibility);
+		CUI_EXPECT_EQ(std::wstring(L"\uE70D"), glyph->Text);
+		CUI_EXPECT_NEAR(
+			header->GetActualSizeDip().height,
+			expander->GetActualSizeDip().height, 0.001f);
+
+		expander->SetExpanded(true);
+		updateLayout();
+		CUI_EXPECT_EQ(std::wstring(L"DownExpanded"),
+			expander->GetCurrentVisualState(L"ExpansionStates"));
+		CUI_EXPECT_EQ(Visibility::Visible, contentBorder->Visibility);
+		CUI_EXPECT_NEAR(
+			144.0f, content->GetActualSizeDip().height, 0.001f);
 	});
 
 	runner.Add("XAML schema exposes one WPF QName per native behavior host", []
@@ -37672,6 +47055,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::array canonicalTypes{
 			std::pair{ L"TextBlock", UIClass::UI_Label },
 			std::pair{ L"Image", UIClass::UI_Image },
+			std::pair{ L"ToggleButton", UIClass::UI_ToggleButton },
 			std::pair{ L"RadioButton", UIClass::UI_RadioButton },
 			std::pair{ L"Border", UIClass::UI_Border },
 			std::pair{ L"Canvas", UIClass::UI_Canvas },
@@ -37958,12 +47342,15 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(generated.find(
 			"RuntimeTypeId{ L\"urn:cui\", L\"Canvas\" }")
 			!= std::string::npos);
+		// Built-in UIClass selectors already carry the canonical runtime
+		// identity. Production output must not duplicate it through the
+		// dynamic-XAML declarative QName fields.
 		CUI_EXPECT_TRUE(generated.find(
 			".DeclarativeTypeNamespace = L\"urn:cui\";")
-			!= std::string::npos);
+			== std::string::npos);
 		CUI_EXPECT_TRUE(generated.find(
 			".DeclarativeTypeName = L\"Canvas\";")
-			!= std::string::npos);
+			== std::string::npos);
 
 		auto legacySnapshot =
 			DesignerModel::DesignDocumentSerializer::ToXml(document);
@@ -38301,6 +47688,38 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(arranged.Content, composed.Content);
 		CUI_EXPECT_EQ(arranged.Geometry, composed.Geometry);
 		CUI_EXPECT_TRUE(composed.Composition > arranged.Composition);
+	});
+
+	runner.Add("Adjacent hover damage clears locally without painting interior frame edges", []
+	{
+		using WindowAccess = cui::framework::WindowAccess;
+		const RECT client{ 0, 0, 1400, 800 };
+		const RECT firstHover{ 28, 54, 120, 84 };
+		const RECT secondHover{ 118, 54, 210, 84 };
+
+		const RECT firstDamage =
+			WindowAccess::PresentationBackdropDamageForTesting(
+				firstHover, client);
+		const RECT secondDamage =
+			WindowAccess::PresentationBackdropDamageForTesting(
+				secondHover, client);
+		CUI_EXPECT_TRUE(::EqualRect(&firstDamage, &firstHover) != FALSE);
+		CUI_EXPECT_TRUE(::EqualRect(&secondDamage, &secondHover) != FALSE);
+
+		// Moving across adjacent ToolBar buttons must not turn either local
+		// damage rectangle into a visible decorative border. Both partial
+		// frames reuse the one stable client-frame geometry; the active D2D
+		// clip decides whether a real outer edge participates in the frame.
+		const RECT firstFrame =
+			WindowAccess::PresentationClientFrameForTesting(
+				firstHover, client);
+		const RECT secondFrame =
+			WindowAccess::PresentationClientFrameForTesting(
+				secondHover, client);
+		CUI_EXPECT_TRUE(::EqualRect(&firstFrame, &client) != FALSE);
+		CUI_EXPECT_TRUE(::EqualRect(&secondFrame, &client) != FALSE);
+		CUI_EXPECT_TRUE(::EqualRect(&firstFrame, &firstHover) == FALSE);
+		CUI_EXPECT_TRUE(::EqualRect(&secondFrame, &secondHover) == FALSE);
 	});
 
 	runner.Add("Input staging shares one tunnel bubble route with handled class semantics", []
@@ -39257,6 +48676,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_FALSE(IsControlTemplateHostClass(UIClass::UI_Border));
 		CUI_EXPECT_FALSE(IsControlTemplateHostClass(UIClass::UI_Popup));
 		CUI_EXPECT_TRUE(IsControlTemplateHostClass(UIClass::UI_Button));
+		CUI_EXPECT_TRUE(IsControlTemplateHostClass(UIClass::UI_Window));
 		CUI_EXPECT_EQ(UIClass::UI_ListBoxItem,
 			GetUIClassBase(UIClass::UI_ComboBoxItem));
 		CUI_EXPECT_EQ(UIClass::UI_HeaderedItemsControl,
@@ -39691,6 +49111,65 @@ class FreshWindow : public FreshWindowGenerated {};
 		target.BeginRender();
 		target.Clear(D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f });
 		target.DrawCommandList(commands.Get());
+		target.EndRender();
+		CUI_EXPECT_FALSE(target.IsDeviceLost());
+	});
+
+	runner.Add("Text selection drawing effects do not leak into the reused layout", []
+	{
+		D2DGraphics::InitOptions options;
+		options.kind = D2DGraphics::SurfaceKind::Offscreen;
+		options.width = 160;
+		options.height = 40;
+		D2DGraphics target(options);
+		CUI_EXPECT_TRUE(target.GetDeviceContextRaw() != nullptr);
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+		layout.Attach(target.CreateStringLayout(
+			L"selection", 150.0f, 32.0f));
+		auto* foreground = target.GetColorBrush(
+			D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f));
+		auto* selectedForeground = target.GetColorBrush(
+			D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+		CUI_EXPECT_TRUE(layout != nullptr);
+		CUI_EXPECT_TRUE(foreground != nullptr);
+		CUI_EXPECT_TRUE(selectedForeground != nullptr);
+		if (!layout || !foreground || !selectedForeground) return;
+
+		auto expectNoEffect = [&]
+		{
+			Microsoft::WRL::ComPtr<IUnknown> effect;
+			DWRITE_TEXT_RANGE range{};
+			CUI_EXPECT_TRUE(SUCCEEDED(layout->GetDrawingEffect(
+				2, effect.ReleaseAndGetAddressOf(), &range)));
+			CUI_EXPECT_TRUE(effect == nullptr);
+		};
+		const DWRITE_TEXT_RANGE selection{ 1, 5 };
+		target.BeginRender();
+		target.Clear(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+
+		target.DrawStringLayoutEffect(
+			layout.Get(), 0.0f, 0.0f,
+			D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f), selection,
+			D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+		expectNoEffect();
+		target.DrawStringLayoutEffect(
+			layout.Get(), 0.0f, 0.0f, foreground, selection,
+			D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+		expectNoEffect();
+		target.DrawStringLayoutEffect(
+			layout.Get(), 0.0f, 0.0f,
+			D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f), selection,
+			selectedForeground);
+		expectNoEffect();
+		target.DrawStringLayoutEffect(
+			layout.Get(), 0.0f, 0.0f, foreground, selection,
+			selectedForeground);
+		expectNoEffect();
+
+		// This is the next TextBox/PasswordBox frame after a click folds the
+		// selection to a caret. It must use only the ordinary foreground.
+		target.DrawStringLayout(
+			layout.Get(), 0.0f, 0.0f, foreground);
 		target.EndRender();
 		CUI_EXPECT_FALSE(target.IsDeviceLost());
 	});

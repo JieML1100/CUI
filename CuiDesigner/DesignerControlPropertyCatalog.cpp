@@ -70,6 +70,15 @@ namespace
 			result.Text = typed ? L"true" : L"false";
 			break;
 		}
+		case DesignerStyleValueKind::NullableBool:
+		{
+			NullableBool typed;
+			(void)value.TryGet(typed);
+			result.Text = !typed.HasValue()
+				? L"{x:Null}"
+				: typed.GetValueOrDefault() ? L"true" : L"false";
+			break;
+		}
 		case DesignerStyleValueKind::Int:
 		{
 			int typed = 0;

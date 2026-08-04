@@ -18,6 +18,11 @@ namespace DesignerBindingUtils
 		DataSourceUpdateMode DefaultUpdateMode =
 			DataSourceUpdateMode::OnPropertyChanged;
 		bool IsReadOnly = false;
+		/**
+		 * Optional BindingValue kind accepted by the runtime converter even
+		 * when the canonical property kind is Object (for example bool?).
+		 */
+		BindingValueKind ConvertibleValueKind = BindingValueKind::Empty;
 	};
 
 	std::wstring Trim(const std::wstring& value);
@@ -66,13 +71,13 @@ namespace DesignerBindingUtils
 		const DesignerDataBinding& binding,
 		const BindingSourceResolver& resolveSource,
 		std::wstring* outError = nullptr);
-	/** Resolves the current nth matching logical ancestor, if any. */
+	/** Resolves the current nth matching routed ancestor, if any. */
 	Control* FindAncestorSource(
 		Control& target,
 		const DesignerDataBinding& binding) noexcept;
 	/**
-	 * Creates a stable source that follows logical-parent changes and delegates
-	 * property/validation notifications to the currently matching ancestor.
+	 * Creates a stable source that follows visual/logical/templated parent
+	 * changes and delegates notifications to the matching routed ancestor.
 	 */
 	BindingSourceReference CreateAncestorSource(
 		Control& target,

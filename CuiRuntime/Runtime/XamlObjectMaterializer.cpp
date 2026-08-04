@@ -1,4 +1,5 @@
 #include "../include/XamlObjectMaterializer.h"
+#include "../include/BindingConverterRegistry.h"
 #include "../include/XamlDocumentCompiler.h"
 #include "../include/XamlFrameworkTheme.h"
 #include "../../CUI/include/HeaderedItemsControl.h"
@@ -7,6 +8,7 @@
 #include "../../CuiDesigner/DesignerModel/DesignDocumentControlPool.h"
 #include "../../CuiDesigner/DesignerModel/DesignDataResourceUtils.h"
 #include "../../CuiDesigner/DesignerModel/DesignDocumentGraph.h"
+#include "../../CuiDesigner/DesignerModel/StoryboardPropertyPath.h"
 #include "../../CuiDesigner/DesignerBindingUtils.h"
 #include "../../CuiDesigner/DesignerDataContextSchemaUtils.h"
 #include "../../CuiDesigner/DesignerEventCatalog.h"
@@ -256,9 +258,11 @@ namespace
 		const DesignerStyleSheet& source,
 		const DesignerModel::DesignNode& owner,
 		std::wstring& key,
-		std::wstring* outError)
+		std::wstring* outError,
+		bool* outMatchedStyle = nullptr)
 	{
 		key.clear();
+		if (outMatchedStyle) *outMatchedStyle = false;
 		DesignerStyleSheet resolved;
 		if (!DesignerStyleSheetUtils::ResolveInheritance(
 			source, resolved, outError))
@@ -276,6 +280,7 @@ namespace
 		}
 		if (effectiveStyle)
 		{
+			if (outMatchedStyle) *outMatchedStyle = true;
 			const auto& rule = *effectiveStyle;
 			const auto setter = std::find_if(
 				rule.Setters.begin(), rule.Setters.end(), [](const auto& candidate)
@@ -294,39 +299,12 @@ namespace
 		return true;
 	}
 
-	static bool ResolveStyledControlTemplateKey(
-		const DesignerModel::DesignDocument& document,
-		const std::vector<DesignerModel::DesignNode>& nodes,
-		const DesignerModel::DesignDocument* theme,
-		const DesignerModel::DesignNode& owner,
-		std::wstring& key,
-		bool& fromTheme,
-		std::wstring* outError)
-	{
-		fromTheme = false;
-		if (!ResolveStyledControlTemplateKeyFromSheet(
-			VisibleStyleSheet(document, nodes, owner),
-			owner, key, outError))
-			return false;
-		if (!key.empty()) return true;
-		if (!theme) return true;
-
-		// A keyed author Style remains above Theme, but omitting Template from
-		// that Style must not suppress the implicit framework template.
-		auto themeProbe = owner;
-		themeProbe.Properties.StyleResourceKey.clear();
-		if (!ResolveStyledControlTemplateKeyFromSheet(
-			theme->StyleSheet, themeProbe, key, outError))
-			return false;
-		fromTheme = !key.empty();
-		return true;
-	}
-
 	struct EffectiveControlTemplate
 	{
 		const DesignerModel::DesignControlTemplate* Definition = nullptr;
 		std::wstring ResourceKey;
 		bool FromTheme = false;
+		bool FromExplicitStyle = false;
 	};
 
 	static bool ResolveEffectiveControlTemplate(
@@ -338,11 +316,54 @@ namespace
 		std::wstring* outError)
 	{
 		result = {};
+		bool documentStyleMatched = false;
+		bool explicitStyleMatched = false;
 		if (!owner.Structure.ControlTemplate.empty())
+		{
 			result.ResourceKey = owner.Structure.ControlTemplate;
-		else if (!ResolveStyledControlTemplateKey(
-			document, nodes, theme, owner, result.ResourceKey,
-			result.FromTheme, outError)) return false;
+			// StaticResource inside a framework Theme template resolves against
+			// the dictionary that defines that template, not the consuming
+			// document's resources.
+			result.FromTheme = owner.TemplateState.ResourceScopeFromTheme;
+		}
+		else
+		{
+			const bool explicitStyle =
+				!owner.Properties.StyleResourceKey.empty();
+			// Theme-generated nodes must not see a consuming document's same-key
+			// Style. Their explicit StaticResource starts in the defining Theme.
+			if (!(explicitStyle
+				&& owner.TemplateState.ResourceScopeFromTheme))
+			{
+				if (!ResolveStyledControlTemplateKeyFromSheet(
+					VisibleStyleSheet(document, nodes, owner), owner,
+					result.ResourceKey, outError,
+					&documentStyleMatched)) return false;
+				explicitStyleMatched =
+					explicitStyle && documentStyleMatched;
+				result.FromExplicitStyle = explicitStyleMatched
+					&& !result.ResourceKey.empty();
+			}
+			if (explicitStyle && !documentStyleMatched
+				&& result.ResourceKey.empty())
+			{
+				bool themeStyleMatched = false;
+				if (theme && !ResolveStyledControlTemplateKeyFromSheet(
+					theme->StyleSheet, owner, result.ResourceKey,
+					outError, &themeStyleMatched)) return false;
+				if (!theme || !themeStyleMatched)
+				{
+					if (outError) *outError = L"Style StaticResource 不存在："
+						+ owner.Properties.StyleResourceKey
+						+ L" -> " + owner.Name;
+					return false;
+				}
+				explicitStyleMatched = true;
+				result.FromTheme = true;
+				result.FromExplicitStyle =
+					!result.ResourceKey.empty();
+			}
+		}
 
 		if (!result.ResourceKey.empty())
 		{
@@ -365,13 +386,39 @@ namespace
 		}
 		else
 		{
-			result.Definition = owner.ComponentType.Empty()
-				? document.FindImplicitControlTemplate(nodes, owner, owner.Type)
-				: document.FindImplicitControlTemplate(
-					nodes, owner, owner.ComponentType);
+			// Author resources are above the framework Theme.  In particular, a
+			// keyless ControlTemplate is the author's implicit Template value and
+			// must be selected before the Theme Style's Template setter.  The old
+			// order selected Generic.xaml first, so compilation expanded one tree
+			// while the document Style pass later attempted to install another.
+			if (!explicitStyleMatched)
+				result.Definition = owner.ComponentType.Empty()
+					? document.FindImplicitControlTemplate(
+						nodes, owner, owner.Type)
+					: document.FindImplicitControlTemplate(
+						nodes, owner, owner.ComponentType);
 			if (!result.Definition && theme)
 			{
-				result.Definition = owner.ComponentType.Empty()
+				auto themeProbe = owner;
+				// An explicit Style that has no Template setter still receives the
+				// lower-precedence implicit Theme Style's framework template.
+				themeProbe.Properties.StyleResourceKey.clear();
+				if (!ResolveStyledControlTemplateKeyFromSheet(
+					theme->StyleSheet, themeProbe,
+					result.ResourceKey, outError)) return false;
+				if (!result.ResourceKey.empty())
+				{
+					result.Definition = theme->FindControlTemplate(
+						result.ResourceKey);
+					if (!result.Definition)
+					{
+						if (outError) *outError = L"控件 " + owner.Name
+							+ L" 引用了不存在的主题 ControlTemplate："
+							+ result.ResourceKey;
+						return false;
+					}
+				}
+				else result.Definition = owner.ComponentType.Empty()
 					? theme->FindImplicitControlTemplate(owner.Type)
 					: theme->FindImplicitControlTemplate(owner.ComponentType);
 				result.FromTheme = result.Definition != nullptr;
@@ -559,6 +606,9 @@ namespace
 					AppliedControlTemplateResource = effectiveTemplate.ResourceKey;
 				output.Nodes[instanceIndex].TemplateState.
 					AppliedControlTemplateFromTheme = effectiveTemplate.FromTheme;
+				output.Nodes[instanceIndex].TemplateState.
+					AppliedControlTemplateFromStyle =
+						effectiveTemplate.FromExplicitStyle;
 			}
 			if (visualTemplate.empty()) return true;
 
@@ -777,6 +827,8 @@ namespace
 				effectiveTemplate.ResourceKey;
 			owner.TemplateState.AppliedControlTemplateFromTheme =
 				effectiveTemplate.FromTheme;
+			owner.TemplateState.AppliedControlTemplateFromStyle =
+				effectiveTemplate.FromExplicitStyle;
 
 			const auto ownerName = owner.Name;
 			const auto ownerId = owner.Id;
@@ -963,6 +1015,8 @@ namespace
 		switch (kind)
 		{
 		case DesignerStyleValueKind::Bool: return BindingValueKind::Bool;
+		case DesignerStyleValueKind::NullableBool:
+			return BindingValueKind::NullableBool;
 		case DesignerStyleValueKind::Int: return BindingValueKind::Int;
 		case DesignerStyleValueKind::Int64: return BindingValueKind::Int64;
 		case DesignerStyleValueKind::Float: return BindingValueKind::Float;
@@ -1145,6 +1199,7 @@ namespace
 	}
 
 	static bool MaterializeDeclarativeInteractionsCore(
+		Control* owner,
 		const std::vector<DesignerVisualStateGroup>& sourceGroups,
 		const std::vector<DesignerEventTrigger>& sourceEventTriggers,
 		const DesignerModel::DesignDocument& document,
@@ -1152,6 +1207,10 @@ namespace
 		std::vector<DeclarativeEventTriggerDefinition>& eventTriggers,
 		std::wstring* outError)
 	{
+		// Dynamic XAML retains authored names until Control installs the final
+		// component/template descriptor.  Generated Production interactions take
+		// the separate compiled identity path and never enter this materializer.
+		(void)owner;
 		groups.clear();
 		eventTriggers.clear();
 		if (sourceGroups.empty() && sourceEventTriggers.empty())
@@ -1170,6 +1229,22 @@ namespace
 				document.ResourceBasePath, document.Resources)) return true;
 			if (outError) *outError = context + L"：" + conversionError;
 			return false;
+		};
+		auto assignAnimationProperty = [](
+			const std::wstring& propertyName,
+			DeclarativeVisualStateAnimation& animation)
+		{
+			if (ClassifyStoryboardObjectPath(propertyName)
+				!= StoryboardObjectPathKind::None)
+			{
+				animation.Property = {};
+				animation.ObjectPath = propertyName;
+			}
+			else
+			{
+				animation.Property = DependencyPropertyReference(propertyName);
+				animation.ObjectPath.clear();
+			}
 		};
 		auto materializeAnimation = [&](const DesignerVisualStateAnimation& source,
 			const std::wstring& context, DeclarativeVisualStateAnimation& animation)
@@ -1192,7 +1267,7 @@ namespace
 					? DeclarativeAnimationKind::Object
 					: DeclarativeAnimationKind::Double;
 			animation.TargetName = source.TargetName;
-			animation.PropertyName = source.PropertyName;
+			assignAnimationProperty(source.PropertyName, animation);
 			auto resolveValue = [&](const DesignerStyleValue& literal,
 				bool usesResource, const std::wstring& resourceKey,
 				BindingValue& output, const std::wstring& label)
@@ -1336,17 +1411,17 @@ namespace
 				for (const auto& sourceCondition : sourceState.Conditions)
 				{
 					DeclarativeVisualStateCondition condition;
-					condition.PropertyName = sourceCondition.PropertyName;
 					if (!convert(sourceCondition.Value, condition.Value,
 						L"视觉状态条件 " + sourceState.Name + L"."
 							+ sourceCondition.PropertyName)) return false;
+					condition.Property = DependencyPropertyReference(
+						sourceCondition.PropertyName);
 					state.Conditions.push_back(std::move(condition));
 				}
 				for (const auto& sourceSetter : sourceState.Setters)
 				{
 					DeclarativeVisualStateSetter setter;
 					setter.TargetName = sourceSetter.TargetName;
-					setter.PropertyName = sourceSetter.PropertyName;
 					const DesignerStyleValue* value = &sourceSetter.Literal;
 					if (sourceSetter.UsesResource)
 					{
@@ -1364,6 +1439,8 @@ namespace
 					if (!convert(*value, setter.Value,
 						L"视觉状态 Setter " + sourceState.Name + L"."
 							+ sourceSetter.PropertyName)) return false;
+					setter.Property = DependencyPropertyReference(
+						sourceSetter.PropertyName);
 					state.Setters.push_back(std::move(setter));
 				}
 				for (const auto& sourceAnimation : sourceState.Animations)
@@ -1388,7 +1465,8 @@ namespace
 							? DeclarativeAnimationKind::Object
 							: DeclarativeAnimationKind::Double;
 					animation.TargetName = sourceAnimation.TargetName;
-					animation.PropertyName = sourceAnimation.PropertyName;
+					assignAnimationProperty(
+						sourceAnimation.PropertyName, animation);
 					auto resolveValue = [&](const DesignerStyleValue& literal,
 						bool usesResource, const std::wstring& resourceKey,
 						BindingValue& output, const std::wstring& label)
@@ -1616,7 +1694,7 @@ namespace
 		std::vector<DeclarativeVisualStateGroupDefinition> groups;
 		std::vector<DeclarativeEventTriggerDefinition> eventTriggers;
 		if (!MaterializeDeclarativeInteractionsCore(
-			component.VisualStateGroups, component.EventTriggers, document,
+			&control, component.VisualStateGroups, component.EventTriggers, document,
 			groups, eventTriggers, outError)) return false;
 		if (groups.empty() && eventTriggers.empty()) return true;
 		std::wstring stateError;
@@ -2068,51 +2146,69 @@ namespace
 		{
 			owner.RaiseDeclarativeEvent(name);
 		};
-		TextInputEvent UIElement::* textCompositionEvent = nullptr;
-		DragDropEvent UIElement::* dragDropEvent = nullptr;
-		bool projectCommittedText = false;
-		if (sourceEvent == L"PreviewTextInputStart")
-			textCompositionEvent = &UIElement::OnPreviewTextInputStart;
-		else if (sourceEvent == L"TextInputStart")
-			textCompositionEvent = &UIElement::OnTextInputStart;
-		else if (sourceEvent == L"PreviewTextInputUpdate")
-			textCompositionEvent = &UIElement::OnPreviewTextInputUpdate;
-		else if (sourceEvent == L"TextInputUpdate")
-			textCompositionEvent = &UIElement::OnTextInputUpdate;
-		else if (sourceEvent == L"PreviewTextInput")
+		const bool textCompositionEvent =
+			sourceEvent == L"PreviewTextInputStart"
+			|| sourceEvent == L"TextInputStart"
+			|| sourceEvent == L"PreviewTextInputUpdate"
+			|| sourceEvent == L"TextInputUpdate"
+			|| sourceEvent == L"PreviewTextInput"
+			|| sourceEvent == L"TextInput";
+		const bool dragDropEvent =
+			sourceEvent == L"PreviewDragEnter"
+			|| sourceEvent == L"DragEnter"
+			|| sourceEvent == L"PreviewDragOver"
+			|| sourceEvent == L"DragOver"
+			|| sourceEvent == L"PreviewDragLeave"
+			|| sourceEvent == L"DragLeave"
+			|| sourceEvent == L"PreviewDrop"
+			|| sourceEvent == L"Drop";
+		const bool projectCommittedText =
+			sourceEvent == L"PreviewTextInput"
+			|| sourceEvent == L"TextInput";
+		auto subscribeTextComposition = [&](auto handler) -> EventConnection
 		{
-			textCompositionEvent = &UIElement::OnPreviewTextInput;
-			projectCommittedText = true;
-		}
-		else if (sourceEvent == L"TextInput")
+			if (sourceEvent == L"PreviewTextInputStart")
+				return source.OnPreviewTextInputStart.Subscribe(handler);
+			if (sourceEvent == L"TextInputStart")
+				return source.OnTextInputStart.Subscribe(handler);
+			if (sourceEvent == L"PreviewTextInputUpdate")
+				return source.OnPreviewTextInputUpdate.Subscribe(handler);
+			if (sourceEvent == L"TextInputUpdate")
+				return source.OnTextInputUpdate.Subscribe(handler);
+			if (sourceEvent == L"PreviewTextInput")
+				return source.OnPreviewTextInput.Subscribe(handler);
+			if (sourceEvent == L"TextInput")
+				return source.OnTextInput.Subscribe(handler);
+			return {};
+		};
+		auto subscribeDragDrop = [&](auto handler) -> EventConnection
 		{
-			textCompositionEvent = &UIElement::OnTextInput;
-			projectCommittedText = true;
-		}
-		else if (sourceEvent == L"PreviewDragEnter")
-			dragDropEvent = &UIElement::OnPreviewDragEnter;
-		else if (sourceEvent == L"DragEnter")
-			dragDropEvent = &UIElement::OnDragEnter;
-		else if (sourceEvent == L"PreviewDragOver")
-			dragDropEvent = &UIElement::OnPreviewDragOver;
-		else if (sourceEvent == L"DragOver")
-			dragDropEvent = &UIElement::OnDragOver;
-		else if (sourceEvent == L"PreviewDragLeave")
-			dragDropEvent = &UIElement::OnPreviewDragLeave;
-		else if (sourceEvent == L"DragLeave")
-			dragDropEvent = &UIElement::OnDragLeave;
-		else if (sourceEvent == L"PreviewDrop")
-			dragDropEvent = &UIElement::OnPreviewDrop;
-		else if (sourceEvent == L"Drop")
-			dragDropEvent = &UIElement::OnDrop;
+			if (sourceEvent == L"PreviewDragEnter")
+				return source.OnPreviewDragEnter.Subscribe(handler);
+			if (sourceEvent == L"DragEnter")
+				return source.OnDragEnter.Subscribe(handler);
+			if (sourceEvent == L"PreviewDragOver")
+				return source.OnPreviewDragOver.Subscribe(handler);
+			if (sourceEvent == L"DragOver")
+				return source.OnDragOver.Subscribe(handler);
+			if (sourceEvent == L"PreviewDragLeave")
+				return source.OnPreviewDragLeave.Subscribe(handler);
+			if (sourceEvent == L"DragLeave")
+				return source.OnDragLeave.Subscribe(handler);
+			if (sourceEvent == L"PreviewDrop")
+				return source.OnPreviewDrop.Subscribe(handler);
+			if (sourceEvent == L"Drop")
+				return source.OnDrop.Subscribe(handler);
+			return {};
+		};
 		if (targetEvent.Payload == DesignerComponentEventPayload::None)
 		{
 			if (textCompositionEvent)
-				connection = (source.*textCompositionEvent).Subscribe(
+				connection = subscribeTextComposition(
 					[raiseNone](Control*, TextCompositionEventArgs&) mutable
 					{ raiseNone(); });
 			else if (dragDropEvent)
-				connection = (source.*dragDropEvent).Subscribe(
+				connection = subscribeDragDrop(
 					[raiseNone](Control*, DragEventArgs&) mutable
 					{ raiseNone(); });
 			else if (sourceEvent == L"Click")
@@ -2198,11 +2294,14 @@ namespace
 				auto subscribe = [&](auto* owner)
 				{
 					if (!owner) return;
-					auto& event = sourceEvent == L"Checked"
-						? owner->Checked : owner->Unchecked;
-					connection = event.Subscribe(
-						[raiseNone](Control*, RoutedEventArgs&) mutable
-						{ raiseNone(); });
+					if (sourceEvent == L"Checked")
+						connection = owner->Checked.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
+					else
+						connection = owner->Unchecked.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
 				};
 				if (auto* toggle = dynamic_cast<ToggleButton*>(&source))
 					subscribe(toggle);
@@ -2214,11 +2313,14 @@ namespace
 			{
 				if (auto* expander = dynamic_cast<Expander*>(&source))
 				{
-					auto& event = sourceEvent == L"Expanded"
-						? expander->Expanded : expander->Collapsed;
-					connection = event.Subscribe(
-						[raiseNone](Control*, RoutedEventArgs&) mutable
-						{ raiseNone(); });
+					if (sourceEvent == L"Expanded")
+						connection = expander->Expanded.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
+					else
+						connection = expander->Collapsed.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
 				}
 			}
 			else if (sourceEvent == L"SubmenuOpened"
@@ -2226,11 +2328,14 @@ namespace
 			{
 				if (auto* item = dynamic_cast<MenuItem*>(&source))
 				{
-					auto& event = sourceEvent == L"SubmenuOpened"
-						? item->SubmenuOpened : item->SubmenuClosed;
-					connection = event.Subscribe(
-						[raiseNone](Control*, RoutedEventArgs&) mutable
-						{ raiseNone(); });
+					if (sourceEvent == L"SubmenuOpened")
+						connection = item->SubmenuOpened.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
+					else
+						connection = item->SubmenuClosed.Subscribe(
+							[raiseNone](Control*, RoutedEventArgs&) mutable
+							{ raiseNone(); });
 				}
 			}
 			else if (sourceEvent == L"Opened")
@@ -2264,22 +2369,23 @@ namespace
 		{
 			if (auto* toggle = dynamic_cast<ToggleButton*>(&source))
 			{
-				auto& event = sourceEvent == L"Checked"
-					? toggle->Checked : toggle->Unchecked;
 				const bool projectedValue = sourceEvent == L"Checked";
-				connection = event.Subscribe(
+				auto projectValue =
 					[&owner, name = targetEvent.Name, projectedValue](
 						Control*, RoutedEventArgs&)
 					{
 						owner.RaiseDeclarativeEvent(name,
 							BindingValue(projectedValue));
-					});
+					};
+				connection = projectedValue
+					? toggle->Checked.Subscribe(projectValue)
+					: toggle->Unchecked.Subscribe(projectValue);
 			}
 		}
 		else if (targetEvent.Payload == DesignerComponentEventPayload::String
 			&& textCompositionEvent)
 		{
-			connection = (source.*textCompositionEvent).Subscribe(
+			connection = subscribeTextComposition(
 				[&owner, name = targetEvent.Name, projectCommittedText](
 					Control*, TextCompositionEventArgs& args)
 				{
@@ -2856,7 +2962,8 @@ namespace
 		mutable std::wstring _compileError;
 	};
 
-	class MaterializedControlTemplate final : public IControlTemplate
+	class MaterializedControlTemplate final : public IControlTemplate,
+		public std::enable_shared_from_this<MaterializedControlTemplate>
 	{
 	public:
 		MaterializedControlTemplate(
@@ -2867,8 +2974,20 @@ namespace
 			CuiRuntime::XamlMaterializationOptions options,
 			std::wstring styleId,
 			std::wstring templateResourceKey,
-			DesignerComponentType targetComponentType = {})
+			DesignerComponentType targetComponentType,
+			DesignerModel::DesignControlTemplate templateIdentityDefinition,
+			std::shared_ptr<const DesignerModel::DesignDocument>
+				templateIdentityDocument = {},
+			bool templateIdentityUsesDocumentScope = false)
 			: _document(std::move(document)),
+			  _templateIdentityDocument(
+				  templateIdentityDocument
+					  ? std::move(templateIdentityDocument)
+					  : _document),
+			  _templateIdentityDefinition(
+				  std::move(templateIdentityDefinition)),
+			  _templateIdentityUsesDocumentScope(
+				  templateIdentityUsesDocumentScope),
 			  _targetType(targetType),
 			  _visibleObjects(std::move(visibleObjects)),
 			  _visibleStyles(std::move(visibleStyles)),
@@ -2967,14 +3086,27 @@ namespace
 		{
 			const auto* typed =
 				dynamic_cast<const MaterializedControlTemplate*>(&other);
-			return typed
-				&& _document.get() == typed->_document.get()
-				&& _targetType == typed->_targetType
-				&& _targetComponentType.RegistryKey()
-					== typed->_targetComponentType.RegistryKey()
-				&& _styleId == typed->_styleId
-				&& _templateResourceKey
-					== typed->_templateResourceKey;
+			if (!typed
+				|| _targetType != typed->_targetType
+				|| _targetComponentType.RegistryKey()
+					!= typed->_targetComponentType.RegistryKey()
+				|| _styleId != typed->_styleId
+				|| _templateResourceKey
+					!= typed->_templateResourceKey
+				|| _templateIdentityDefinition
+					!= typed->_templateIdentityDefinition)
+				return false;
+			// A document owns multiple nested ResourceDictionary scopes.  Pointer
+			// identity alone therefore cannot distinguish two local templates that
+			// reuse the same key or implicit TargetType.  Global Theme/document
+			// resources have one stable scope; local resources additionally compare
+			// their fully resolved structural and Style scopes.
+			if (_templateIdentityDocument.get()
+				!= typed->_templateIdentityDocument.get()) return false;
+			return (_templateIdentityUsesDocumentScope
+					&& typed->_templateIdentityUsesDocumentScope)
+				|| (_visibleObjects == typed->_visibleObjects
+					&& _visibleStyles == typed->_visibleStyles);
 		}
 
 		std::unique_ptr<Control> Build(
@@ -3070,11 +3202,50 @@ namespace
 			}
 			if (outError) outError->clear();
 			auto result = std::move(tree.ContentRoot);
+			if (_styleId.empty())
+			{
+				// A generated container is built in a cached, isolated document and
+				// then enters its ItemsControl's inheritance tree.  Preserve the
+				// factory's already selected effective template in the internal
+				// Template source slot so that the parent Theme style cannot replace
+				// an author keyless ControlTemplate during that attachment.
+				std::shared_ptr<const IControlTemplate> stableTemplate =
+					shared_from_this();
+				if (!cui::framework::DependencyPropertyAccess::SetValue(
+					*result, Control::TemplateProperty(),
+					BindingValue(ControlTemplateReference(
+						std::move(stableTemplate))),
+					DependencyPropertyValueSource::Template))
+				{
+					if (outError) *outError =
+						L"生成项容器无法保留已解析的 ControlTemplate。";
+					return {};
+				}
+				if (!cui::framework::TemplateAccess::GetTemplateRoot(*result)
+					&& !result->ApplyTemplate())
+				{
+					if (outError) *outError = result->LastTemplateError().empty()
+						? L"生成项容器无法重新应用 ControlTemplate。"
+						: result->LastTemplateError();
+					return {};
+				}
+			}
 			return result;
 		}
 
 	private:
 		std::shared_ptr<const DesignerModel::DesignDocument> _document;
+		/**
+		 * Semantic source of the selected template resource. Item containers
+		 * keep the application document as their materialization context so
+		 * DataTypes/DataTemplates remain visible, while a Theme-owned template
+		 * must still compare equal to the same resource supplied later by the
+		 * inherited Theme style.
+		 */
+		std::shared_ptr<const DesignerModel::DesignDocument>
+			_templateIdentityDocument;
+		DesignerModel::DesignControlTemplate _templateIdentityDefinition;
+		bool _templateIdentityUsesDocumentScope = false;
 		UIClass _targetType = UIClass::UI_Base;
 		DesignerModel::DesignObjectResourceDictionary _visibleObjects;
 		DesignerStyleSheet _visibleStyles;
@@ -3087,6 +3258,110 @@ namespace
 			_buildCompiledDocument;
 		mutable std::wstring _buildCompileError;
 	};
+
+	static bool IsDocumentControlTemplateDefinition(
+		const DesignerModel::DesignDocument& document,
+		const DesignerModel::DesignControlTemplate* definition) noexcept
+	{
+		return definition && std::any_of(
+			document.ControlTemplates.begin(),
+			document.ControlTemplates.end(),
+			[definition](const auto& candidate)
+			{ return &candidate == definition; });
+	}
+
+	static std::wstring ImplicitControlTemplateStyleResourceKey(
+		const DesignerModel::DesignControlTemplate& definition)
+	{
+		// Keyless ControlTemplates are author resources, but the runtime Style
+		// engine needs a stable resource key to retain their Template setter when
+		// an element is attached to a new inheritance parent.  Keep this key in a
+		// private-use namespace so it cannot collide with an authored XAML key.
+		return L"\xF8FF.CUI.ImplicitControlTemplate."
+			+ (definition.TargetComponentType.Empty()
+				? L"native." + std::to_wstring(
+					static_cast<int>(definition.TargetType))
+				: L"component."
+					+ definition.TargetComponentType.RegistryKey());
+	}
+
+	static bool IsImplicitStyleForControlTemplate(
+		const DesignerStyleRule& rule,
+		const DesignerModel::DesignControlTemplate& definition)
+	{
+		if (!rule.Id.empty() || !rule.HasType
+			|| rule.Type != definition.TargetType) return false;
+		if (!definition.TargetComponentType.Empty())
+			return !rule.ComponentType.Empty()
+				&& rule.ComponentType.RegistryKey()
+					== definition.TargetComponentType.RegistryKey();
+		return rule.ComponentType.Empty();
+	}
+
+	static std::vector<const DesignerModel::DesignControlTemplate*>
+	EffectiveImplicitControlTemplates(
+		const std::vector<DesignerModel::DesignControlTemplate>& definitions)
+	{
+		std::vector<const DesignerModel::DesignControlTemplate*> result;
+		std::unordered_set<std::wstring> identities;
+		for (auto current = definitions.rbegin();
+			current != definitions.rend(); ++current)
+		{
+			if (!current->IsImplicit()) continue;
+			const auto identity = ImplicitControlTemplateStyleResourceKey(*current);
+			if (identities.insert(identity).second)
+				result.push_back(&*current);
+		}
+		std::reverse(result.begin(), result.end());
+		return result;
+	}
+
+	static void ProjectImplicitControlTemplateStyles(
+		const std::vector<DesignerModel::DesignControlTemplate>& definitions,
+		DesignerStyleSheet& styleSheet)
+	{
+		for (const auto* definition :
+			EffectiveImplicitControlTemplates(definitions))
+		{
+			if (!definition) continue;
+			auto rule = std::find_if(
+				styleSheet.Rules.begin(), styleSheet.Rules.end(),
+				[&](const DesignerStyleRule& candidate)
+				{
+					return IsImplicitStyleForControlTemplate(
+						candidate, *definition);
+				});
+			if (rule == styleSheet.Rules.end())
+			{
+				DesignerStyleRule projected;
+				projected.HasType = true;
+				projected.Type = definition->TargetType;
+				projected.ComponentType = definition->TargetComponentType;
+				if (projected.ComponentType.Empty())
+					if (const auto* descriptor =
+						CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(
+							definition->TargetType))
+						projected.XamlType = descriptor->TypeId;
+				styleSheet.Rules.push_back(std::move(projected));
+				rule = std::prev(styleSheet.Rules.end());
+			}
+			const bool alreadyDefinesTemplate = std::any_of(
+				rule->Setters.begin(), rule->Setters.end(),
+				[](const DesignerStyleSetter& setter)
+				{
+					return _wcsicmp(
+						setter.PropertyName.c_str(), L"Template") == 0;
+				});
+			if (alreadyDefinesTemplate) continue;
+
+			DesignerStyleSetter setter;
+			setter.PropertyName = L"Template";
+			setter.UsesResource = true;
+			setter.ResourceKey =
+				ImplicitControlTemplateStyleResourceKey(*definition);
+			rule->Setters.push_back(std::move(setter));
+		}
+	}
 }
 
 std::shared_ptr<const DeclarativeTypeDescriptor>
@@ -3174,7 +3449,7 @@ bool CuiRuntime::XamlDocumentCompiler::Compile(
 		if (!canonicalSource.ValidateCommandTargetReferences(&error))
 			return fail(std::move(error));
 		if (!DesignDataResourceUtils::ValidateAndCanonicalize(
-			canonicalSource, &error))
+			canonicalSource, &error, theme.get()))
 			return fail(std::move(error));
 
 		DesignDocument expandedDocument = canonicalSource;
@@ -3196,7 +3471,6 @@ bool CuiRuntime::XamlDocumentCompiler::Compile(
 				return fail(
 					L"模板展开层级超过 64；可能存在间接递归。");
 		}
-
 		XamlCompiledDocument candidate;
 		candidate.Document = std::move(expandedDocument);
 		candidate.Theme = std::move(theme);
@@ -3251,7 +3525,23 @@ CuiRuntime::XamlObjectMaterializer::BuildControlTemplateStyleResources(
 				std::make_shared<MaterializedControlTemplate>(
 					document, definition.TargetType, visibleObjects,
 					document->StyleSheet, nestedOptions, std::wstring{},
-					definition.Key, definition.TargetComponentType))));
+					definition.Key, definition.TargetComponentType,
+					definition,
+					std::shared_ptr<const DesignDocument>{}, true))));
+	}
+	for (const auto* definition :
+		EffectiveImplicitControlTemplates(document->ControlTemplates))
+	{
+		if (!definition) continue;
+		result.emplace_back(
+			ImplicitControlTemplateStyleResourceKey(*definition),
+			BindingValue(ControlTemplateReference(
+				std::make_shared<MaterializedControlTemplate>(
+					document, definition->TargetType, visibleObjects,
+					document->StyleSheet, nestedOptions, std::wstring{},
+					std::wstring{}, definition->TargetComponentType,
+					*definition,
+					std::shared_ptr<const DesignDocument>{}, true))));
 	}
 	return result;
 }
@@ -3367,6 +3657,54 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 		};
 		auto schemaContext = options.SchemaContext
 			? options.SchemaContext : std::make_shared<XamlSchemaContext>();
+		auto buildRuntimeStylePropertySchema =
+			[schemaContext](const DesignDocument& schemaDocument,
+				const DesignerStyleRule& rule,
+				XamlTypePropertySchema& schema,
+				std::wstring* error) -> bool
+			{
+				const auto* component = rule.ComponentType.Empty()
+					? nullptr : schemaDocument.FindComponent(rule.ComponentType);
+				if (!rule.ComponentType.Empty() && !component)
+				{
+					if (error) *error = L"样式 TargetType 组件不存在。";
+					return false;
+				}
+				if (!XamlRuntimeSchema::BuildPropertySchema(
+					rule.HasType ? rule.Type : UIClass::UI_Base,
+					component, schemaDocument, schema, error))
+					return false;
+				if (!schema.DeclarativeType) return true;
+
+				const auto declarativePropertyCount =
+					schema.DeclarativeType->Properties().size();
+				if (declarativePropertyCount > schema.Properties.size())
+				{
+					if (error) *error = L"组件属性 Schema 数量无效。";
+					return false;
+				}
+				auto canonical = schemaContext->GetOrAdd(
+					schema.DeclarativeType, error);
+				if (!canonical) return false;
+				schema.Properties.erase(
+					schema.Properties.begin(),
+					schema.Properties.begin() + declarativePropertyCount);
+				schema.DeclarativeType = std::move(canonical);
+				const auto properties = schema.DeclarativeType->Properties();
+				schema.Properties.insert(
+					schema.Properties.begin(), properties.begin(), properties.end());
+				if (error) error->clear();
+				return true;
+			};
+		const DesignerStyleSheetUtils::RulePropertySchemaResolver
+			documentStyleSchemaResolver =
+			[&](const DesignerStyleRule& rule,
+				XamlTypePropertySchema& schema,
+				std::wstring* error)
+			{
+				return buildRuntimeStylePropertySchema(
+					document, rule, schema, error);
+			};
 		auto nestedOptions = options;
 		nestedOptions.SchemaContext = schemaContext;
 		nestedOptions.Theme = compiled.Theme;
@@ -3417,21 +3755,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			return false;
 		if (!DesignerStyleSheetUtils::ValidateAgainstRulePropertyMetadata(
 			document.StyleSheet,
-			[&](const DesignerStyleRule& rule,
-				XamlTypePropertySchema& schema,
-				std::wstring* error) -> bool
-			{
-				const auto* component = rule.ComponentType.Empty()
-					? nullptr : document.FindComponent(rule.ComponentType);
-				if (!rule.ComponentType.Empty() && !component)
-				{
-					if (error) *error = L"样式 TargetType 组件不存在。";
-					return false;
-				}
-				return XamlRuntimeSchema::BuildPropertySchema(
-					rule.HasType ? rule.Type : UIClass::UI_Base,
-					component, document, schema, error);
-			},
+			documentStyleSchemaResolver,
 			outError,
 			document.ResourceBasePath,
 			document.Resources))
@@ -3877,6 +4201,13 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 					visibleObjects.ControlTemplates)
 				{
 					if (definition.Key.empty()) continue;
+					const auto* selectedDefinition = it.source
+						? document.FindControlTemplate(
+							document.Nodes, *it.source, definition.Key)
+						: document.FindControlTemplate(definition.Key);
+					const bool documentTemplate =
+						IsDocumentControlTemplateDefinition(
+							document, selectedDefinition);
 					structuralResources.emplace_back(
 						definition.Key,
 						BindingValue(ControlTemplateReference(
@@ -3884,12 +4215,48 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 								templateDocument, definition.TargetType,
 								visibleObjects, visibleStyles, nestedOptions,
 								std::wstring{}, definition.Key,
-								definition.TargetComponentType))));
+								definition.TargetComponentType, definition,
+								std::shared_ptr<const DesignDocument>{},
+								documentTemplate))));
 				}
+				for (const auto* definition :
+					EffectiveImplicitControlTemplates(
+						visibleObjects.ControlTemplates))
+				{
+					if (!definition) continue;
+					const auto* selectedDefinition = it.source
+						? (definition->TargetComponentType.Empty()
+							? document.FindImplicitControlTemplate(
+								document.Nodes, *it.source,
+								definition->TargetType)
+							: document.FindImplicitControlTemplate(
+								document.Nodes, *it.source,
+								definition->TargetComponentType))
+						: (definition->TargetComponentType.Empty()
+							? document.FindImplicitControlTemplate(
+								definition->TargetType)
+							: document.FindImplicitControlTemplate(
+								definition->TargetComponentType));
+					const bool documentTemplate =
+						IsDocumentControlTemplateDefinition(
+							document, selectedDefinition);
+					structuralResources.emplace_back(
+						ImplicitControlTemplateStyleResourceKey(*definition),
+						BindingValue(ControlTemplateReference(
+							std::make_shared<MaterializedControlTemplate>(
+								templateDocument, definition->TargetType,
+								visibleObjects, visibleStyles, nestedOptions,
+								std::wstring{}, std::wstring{},
+								definition->TargetComponentType, *definition,
+								std::shared_ptr<const DesignDocument>{},
+								documentTemplate))));
+				}
+				ProjectImplicitControlTemplateStyles(
+					it.localObjectResources.ControlTemplates, runtimeSource);
 				if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
 					runtimeSource, localResources, outError,
 					document.ResourceBasePath, document.Resources,
-					structuralResources)
+					structuralResources, documentStyleSchemaResolver)
 					|| !cui::framework::StyleAccess::SetResources(
 						*c, std::move(localResources)))
 				{
@@ -3993,17 +4360,26 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 					document.Nodes, *it.source);
 				visibleStyles = visibleStyleScope(it);
 			}
+			const bool documentTemplate = fromTheme
+				|| IsDocumentControlTemplateDefinition(document, definition);
 			auto reference = ControlTemplateReference(
 				std::make_shared<MaterializedControlTemplate>(
 					sourceDocument, definition->TargetType,
 					std::move(visibleObjects),
 					std::move(visibleStyles), nestedOptions, std::wstring{},
-					resourceKey, definition->TargetComponentType));
+					resourceKey, definition->TargetComponentType, *definition,
+					std::shared_ptr<const DesignDocument>{}, documentTemplate));
 			const auto valueSource =
 				!it.structure.ControlTemplate.empty()
 				? (it.templateGenerated
 					? DependencyPropertyValueSource::Template
 					: DependencyPropertyValueSource::Local)
+				// A keyed Style remains an explicit Style even when its resource
+				// dictionary is the framework Theme. Publish its already-expanded
+				// Template at the same precedence used by RefreshStyleValues so the
+				// Theme pass does not detach an equivalent initial template tree.
+				: it.source->TemplateState.AppliedControlTemplateFromStyle
+					? DependencyPropertyValueSource::Style
 				: fromTheme
 					? DependencyPropertyValueSource::Theme
 					: DependencyPropertyValueSource::Style;
@@ -4038,89 +4414,6 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			cui::framework::XamlAccess::SetTemplatedParent(
 				*generated->second, owner->second);
 		}
-		for (const auto& it : items)
-		{
-			if (!it.templateGenerated || it.templateOwner.empty()
-				|| it.templatePartName.empty()) continue;
-			const auto owner = instOf.find(it.templateOwner);
-			const auto part = instOf.find(it.name);
-			if (owner == instOf.end() || part == instOf.end()
-				|| !owner->second || !part->second
-				|| !cui::framework::XamlAccess::RegisterTemplatePart(
-					*owner->second, it.templatePartName, part->second))
-			{
-				if (outError) *outError = L"组件模板部件注册失败："
-					+ it.templateOwner + L"." + it.templatePartName;
-				return false;
-			}
-		}
-
-		for (const auto& it : items)
-		{
-			if (it.presentedContent.empty() || it.templateOwner.empty()) continue;
-			const auto owner = dcOf.find(it.templateOwner);
-			const auto presenter = instOf.find(it.name);
-			if (owner == dcOf.end() || !owner->second
-				|| presenter == instOf.end() || !presenter->second) continue;
-			owner->second->ComponentContentPresenters[
-				it.presentedContent] = presenter->second;
-			if (!owner->second->ControlInstance
-				|| !cui::framework::XamlAccess::RegisterContentPresenter(
-					*owner->second->ControlInstance,
-					it.presentedContent, presenter->second))
-			{
-				if (outError) *outError = L"组件内容 Presenter 注册失败："
-					+ it.templateOwner + L"." + it.presentedContent;
-				return false;
-			}
-		}
-
-		for (const auto& it : items)
-		{
-			if (it.templateContentSource.empty()
-				|| it.templateOwner.empty()) continue;
-			const auto owner = instOf.find(it.templateOwner);
-			const auto presenter = instOf.find(it.name);
-			auto* contentPresenter = presenter == instOf.end()
-				? nullptr : dynamic_cast<ContentPresenter*>(presenter->second);
-			auto* contentHost = owner == instOf.end()
-				? nullptr : dynamic_cast<ContentControl*>(owner->second);
-			bool registered = false;
-			if (it.templateContentSource == L"Content" && contentHost)
-				registered = cui::framework::TemplateAccess::RegisterContentPresenter(
-					*contentHost, contentPresenter);
-			else if (it.templateContentSource == L"Header")
-				registered = owner != instOf.end()
-					&& RegisterTemplateHeaderPresenter(
-						owner->second, contentPresenter);
-			if (!registered)
-			{
-				if (outError) *outError = L"ControlTemplate ContentSource 注册失败："
-					+ it.templateOwner + L"." + it.templateContentSource;
-				return false;
-			}
-		}
-
-		for (const auto& it : items)
-		{
-			if (!it.templateGenerated || it.templateOwner.empty()
-				|| it.type != UIClass::UI_ItemsPresenter) continue;
-			const auto owner = instOf.find(it.templateOwner);
-			const auto presenter = instOf.find(it.name);
-			auto* itemsControl = owner == instOf.end()
-				? nullptr : dynamic_cast<ItemsControl*>(owner->second);
-			auto* itemsPresenter = presenter == instOf.end()
-				? nullptr : dynamic_cast<ItemsPresenter*>(presenter->second);
-			if (!itemsControl || !itemsPresenter
-				|| !cui::framework::TemplateAccess::RegisterItemsPresenter(
-					*itemsControl, itemsPresenter))
-			{
-				if (outError) *outError = L"ControlTemplate ItemsPresenter 注册失败："
-					+ it.templateOwner + L"." + it.templatePartName;
-				return false;
-			}
-		}
-
 		for (auto& it : items)
 		{
 			setDiagnosticContext(it.source);
@@ -4288,7 +4581,8 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			}
 
 			cui::framework::StyleAccess::SetResourceKey(
-				*c, it.properties.StyleResourceKey);
+				*c, it.properties.StyleResourceKey,
+				it.templateResourceFromTheme);
 
 			using PropertyEntry = std::pair<
 				const std::wstring*, const DesignPropertyAssignment*>;
@@ -4600,6 +4894,9 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 					switch (property->ValueKind)
 					{
 					case BindingValueKind::Bool: kind = DesignerStyleValueKind::Bool; break;
+					case BindingValueKind::NullableBool:
+						kind = DesignerStyleValueKind::NullableBool;
+						break;
 					case BindingValueKind::Int: kind = DesignerStyleValueKind::Int; break;
 					case BindingValueKind::Int64: kind = DesignerStyleValueKind::Int64; break;
 					case BindingValueKind::Float: kind = DesignerStyleValueKind::Float; break;
@@ -4855,11 +5152,17 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				visibleObjects.ItemsPanelTemplates = document.ItemsPanelTemplates;
 				visibleObjects.GroupStyles = document.GroupStyles;
 			}
+			const bool documentTemplate = effective.FromTheme
+				|| IsDocumentControlTemplateDefinition(
+					document, effective.Definition);
 			auto runtimeTemplate = ControlTemplateReference(
 				std::make_shared<MaterializedControlTemplate>(
 					templateDocument, containerType,
 					std::move(visibleObjects), visibleStyleScope(it), nestedOptions,
-					containerStyle, effective.Definition->Key));
+					containerStyle, effective.Definition->Key,
+					DesignerComponentType{}, *effective.Definition,
+					effective.FromTheme ? compiled.Theme : templateDocument,
+					documentTemplate));
 			if (selector)
 				selector->SetItemContainerTemplate(runtimeTemplate);
 			else tree->SetItemContainerTemplate(runtimeTemplate);
@@ -5563,22 +5866,154 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 		std::unordered_set<std::wstring> attached;
 		attached.reserve(items.size());
 
-		auto attachOne = [&](Pending* it, Control* runtimeParent, Control* designerParent)
+		// Attaching a templated control to its styled parent can change the
+		// effective Template and clear its declarative template scope.  Register
+		// the already materialized scope only after that owner attachment has
+		// stabilized, immediately before SetTemplateRoot invokes presentation
+		// callbacks which are allowed to query template parts.
+		std::unordered_set<std::wstring> registeredTemplateScopes;
+		registeredTemplateScopes.reserve(items.size());
+		auto registerTemplateScope =
+			[&](const std::wstring& ownerName) -> bool
+			{
+				if (registeredTemplateScopes.contains(ownerName)) return true;
+
+				for (const auto& candidate : items)
+				{
+					if (!candidate.templateGenerated
+						|| candidate.templateOwner != ownerName
+						|| candidate.templatePartName.empty()) continue;
+					const auto owner = instOf.find(ownerName);
+					const auto part = instOf.find(candidate.name);
+					if (owner == instOf.end() || part == instOf.end()
+						|| !owner->second || !part->second
+						|| !cui::framework::XamlAccess::RegisterTemplatePart(
+							*owner->second, candidate.templatePartName,
+							part->second))
+					{
+						if (outError) *outError = L"组件模板部件注册失败："
+							+ ownerName + L"." + candidate.templatePartName;
+						return false;
+					}
+				}
+
+				for (const auto& candidate : items)
+				{
+					if (candidate.templateOwner != ownerName
+						|| candidate.presentedContent.empty()) continue;
+					const auto owner = dcOf.find(ownerName);
+					const auto presenter = instOf.find(candidate.name);
+					if (owner == dcOf.end() || !owner->second
+						|| presenter == instOf.end() || !presenter->second)
+						continue;
+					owner->second->ComponentContentPresenters[
+						candidate.presentedContent] = presenter->second;
+					if (!owner->second->ControlInstance
+						|| !cui::framework::XamlAccess::RegisterContentPresenter(
+							*owner->second->ControlInstance,
+							candidate.presentedContent, presenter->second))
+					{
+						if (outError) *outError =
+							L"组件内容 Presenter 注册失败："
+							+ ownerName + L"." + candidate.presentedContent;
+						return false;
+					}
+				}
+
+				for (const auto& candidate : items)
+				{
+					if (candidate.templateOwner != ownerName
+						|| candidate.templateContentSource.empty()) continue;
+					const auto owner = instOf.find(ownerName);
+					const auto presenter = instOf.find(candidate.name);
+					auto* contentPresenter = presenter == instOf.end()
+						? nullptr
+						: dynamic_cast<ContentPresenter*>(presenter->second);
+					auto* contentHost = owner == instOf.end()
+						? nullptr
+						: dynamic_cast<ContentControl*>(owner->second);
+					bool registered = false;
+					if (candidate.templateContentSource == L"Content"
+						&& contentHost)
+						registered =
+							cui::framework::TemplateAccess::
+								RegisterContentPresenter(
+									*contentHost, contentPresenter);
+					else if (candidate.templateContentSource == L"Header")
+						registered = owner != instOf.end()
+							&& RegisterTemplateHeaderPresenter(
+								owner->second, contentPresenter);
+					if (!registered)
+					{
+						if (outError) *outError =
+							L"ControlTemplate ContentSource 注册失败："
+							+ ownerName + L"."
+							+ candidate.templateContentSource;
+						return false;
+					}
+				}
+
+				for (const auto& candidate : items)
+				{
+					if (!candidate.templateGenerated
+						|| candidate.templateOwner != ownerName
+						|| candidate.type != UIClass::UI_ItemsPresenter)
+						continue;
+					const auto owner = instOf.find(ownerName);
+					const auto presenter = instOf.find(candidate.name);
+					auto* itemsControl = owner == instOf.end()
+						? nullptr : dynamic_cast<ItemsControl*>(owner->second);
+					auto* itemsPresenter = presenter == instOf.end()
+						? nullptr
+						: dynamic_cast<ItemsPresenter*>(presenter->second);
+					if (!itemsControl || !itemsPresenter
+						|| !cui::framework::TemplateAccess::
+							RegisterItemsPresenter(
+								*itemsControl, itemsPresenter))
+					{
+						if (outError) *outError =
+							L"ControlTemplate ItemsPresenter 注册失败："
+							+ ownerName + L"."
+							+ candidate.templatePartName;
+						return false;
+					}
+				}
+
+				registeredTemplateScopes.insert(ownerName);
+				return true;
+			};
+
+		auto attachOne = [&](Pending* it, Control* runtimeParent,
+			Control* designerParent) -> bool
 		{
-			if (!it) return;
+			if (!it) return true;
 			auto dc = dcOf[it->name];
-			if (!dc || !dc->ControlInstance) return;
+			if (!dc || !dc->ControlInstance) return true;
 			auto* c = dc->ControlInstance;
 			if (it->borrowedTemplateOwner)
 			{
 				dc->DesignerParent = designerParent;
 				attached.insert(it->name);
-				return;
+				return true;
 			}
 			if (!runtimeParent) runtimeParent = &stagingRoot;
-			if (!runtimeParent) return;
+			if (!runtimeParent) return true;
+			if (it->controlTemplateRoot)
+			{
+				// Parent attachment may already have applied the effective
+				// Theme template.  Tear down that transient instance first so
+				// its namescope cannot collide with the compiler-expanded
+				// initial tree.  Registration must still precede the new root
+				// attachment because presentation callbacks resolve parts.
+				if (cui::framework::TemplateAccess::GetTemplateRoot(
+					*runtimeParent))
+					(void)cui::framework::TemplateAccess::
+						DetachTemplateRoot(*runtimeParent);
+				if (!registerTemplateScope(it->templateOwner))
+					return false;
+			}
 			auto owner = controlPool.TakeById(it->id);
-			if (!owner || owner.get() != c) return;
+			if (!owner || owner.get() != c) return true;
 			// A ControlTemplate slot keeps the authored Header marker for
 			// Designer capture, but its physical owner is the generated
 			// ContentPresenter rather than the HeaderedContentControl.
@@ -5636,24 +6071,35 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			if (!it->templateGenerated)
 				candidate.Controls.push_back(dc);
 			attached.insert(it->name);
+			return true;
 		};
 
-		std::function<void(const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)> attachChildren;
+		std::function<bool(const std::wstring& parentKey,
+			Control* runtimeParent, Control* designerParent)> attachChildren;
 		attachChildren = [&](const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)
 		{
 			auto it = childrenByParent.find(parentKey);
-			if (it == childrenByParent.end()) return;
+			if (it == childrenByParent.end()) return true;
 			for (auto* ch : it->second)
 			{
-				attachOne(ch, runtimeParent, designerParent);
-				attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
+				if (!attachOne(ch, runtimeParent, designerParent))
+					return false;
+				if (!attachChildren(ch->name,
+					dcOf[ch->name]->ControlInstance,
+					dcOf[ch->name]->ControlInstance))
+					return false;
 			}
+			return true;
 		};
 
 		for (auto* it : roots)
 		{
-			attachOne(it, &stagingRoot, nullptr);
-			attachChildren(it->name, dcOf[it->name]->ControlInstance, dcOf[it->name]->ControlInstance);
+			if (!attachOne(it, &stagingRoot, nullptr))
+				return false;
+			if (!attachChildren(it->name,
+				dcOf[it->name]->ControlInstance,
+				dcOf[it->name]->ControlInstance))
+				return false;
 		}
 
 		for (const auto& it : items)
@@ -5727,6 +6173,33 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				}
 			}
 		}
+		auto validateTemplateNameScopes =
+			[&](const wchar_t* stage) -> bool
+			{
+				for (const auto& it : items)
+				{
+					if (!it.templateGenerated
+						|| it.templateOwner.empty()
+						|| it.templatePartName.empty()) continue;
+					const auto owner = instOf.find(it.templateOwner);
+					const auto part = instOf.find(it.name);
+					if (owner != instOf.end() && part != instOf.end()
+						&& owner->second && part->second
+						&& owner->second->FindDeclarativeTemplatePart(
+							it.templatePartName) == part->second)
+						continue;
+					if (outError)
+						*outError = L"ControlTemplate 模板部件在 "
+							+ std::wstring(stage)
+							+ L" 阶段丢失："
+							+ it.templateOwner + L"."
+							+ it.templatePartName;
+					return false;
+				}
+				return true;
+			};
+		if (!validateTemplateNameScopes(L"visual attach"))
+			return false;
 
 		std::shared_ptr<const ControlStyleSheet> runtimeThemeStyleSheet;
 		if (compiled.Theme)
@@ -5751,11 +6224,23 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 						controlTemplateResources.begin()),
 					std::make_move_iterator(
 						controlTemplateResources.end()));
+				const DesignerStyleSheetUtils::RulePropertySchemaResolver
+					themeStyleSchemaResolver =
+					[&](const DesignerStyleRule& rule,
+						XamlTypePropertySchema& schema,
+						std::wstring* error)
+					{
+						return buildRuntimeStylePropertySchema(
+							*compiled.Theme, rule, schema, error);
+					};
+				auto runtimeThemeSource = compiled.Theme->StyleSheet;
+				ProjectImplicitControlTemplateStyles(
+					compiled.Theme->ControlTemplates, runtimeThemeSource);
 				if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-					compiled.Theme->StyleSheet, customThemeStyleSheet, outError,
+					runtimeThemeSource, customThemeStyleSheet, outError,
 					compiled.Theme->ResourceBasePath,
 					compiled.Theme->Resources,
-					structuralResources))
+					structuralResources, themeStyleSchemaResolver))
 					return false;
 				runtimeThemeStyleSheet = std::move(customThemeStyleSheet);
 			}
@@ -5769,6 +6254,8 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				return false;
 			}
 		}
+		if (!validateTemplateNameScopes(L"Theme apply"))
+			return false;
 
 		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
 		auto documentStructuralResources =
@@ -5783,10 +6270,13 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				documentControlTemplateResources.begin()),
 			std::make_move_iterator(
 				documentControlTemplateResources.end()));
+		auto runtimeDocumentStyleSource = document.StyleSheet;
+		ProjectImplicitControlTemplateStyles(
+			document.ControlTemplates, runtimeDocumentStyleSource);
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-			document.StyleSheet, runtimeStyleSheet, outError,
+			runtimeDocumentStyleSource, runtimeStyleSheet, outError,
 			document.ResourceBasePath, document.Resources,
-			documentStructuralResources))
+			documentStructuralResources, documentStyleSchemaResolver))
 			return false;
 		if ((!document.StyleSheet.Empty()
 				|| !documentStructuralResources.empty())
@@ -5797,6 +6287,9 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				L"文档样式表无法应用到完整控件树。";
 			return false;
 		}
+		if (!validateTemplateNameScopes(L"document Style apply"))
+			return false;
+		candidate.DocumentStyleSheet = runtimeStyleSheet;
 
 		for (auto& it : items)
 		{
@@ -5951,6 +6444,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 }
 
 bool CuiRuntime::XamlObjectMaterializer::MaterializeDeclarativeInteractions(
+	Control& owner,
 	const std::vector<DesignerVisualStateGroup>& visualStateGroups,
 	const std::vector<DesignerEventTrigger>& eventTriggers,
 	const DesignerModel::DesignDocument& resourceDocument,
@@ -5959,7 +6453,20 @@ bool CuiRuntime::XamlObjectMaterializer::MaterializeDeclarativeInteractions(
 	std::wstring* outError)
 {
 	return MaterializeDeclarativeInteractionsCore(
-		visualStateGroups, eventTriggers, resourceDocument,
+		&owner, visualStateGroups, eventTriggers, resourceDocument,
+		outVisualStateGroups, outEventTriggers, outError);
+}
+
+bool CuiRuntime::XamlObjectMaterializer::MaterializeDeclarativeInteractions(
+	const std::vector<DesignerVisualStateGroup>& visualStateGroups,
+	const std::vector<DesignerEventTrigger>& eventTriggers,
+	const DesignerModel::DesignDocument& resourceDocument,
+	std::vector<DeclarativeVisualStateGroupDefinition>& outVisualStateGroups,
+	std::vector<DeclarativeEventTriggerDefinition>& outEventTriggers,
+	std::wstring* outError)
+{
+	return MaterializeDeclarativeInteractionsCore(
+		nullptr, visualStateGroups, eventTriggers, resourceDocument,
 		outVisualStateGroups, outEventTriggers, outError);
 }
 
@@ -5972,7 +6479,7 @@ bool CuiRuntime::XamlObjectMaterializer::InstallControlTemplateVisualStates(
 	std::vector<DeclarativeVisualStateGroupDefinition> groups;
 	std::vector<DeclarativeEventTriggerDefinition> eventTriggers;
 	if (!MaterializeDeclarativeInteractionsCore(
-		definition.VisualStateGroups, definition.EventTriggers,
+		&owner, definition.VisualStateGroups, definition.EventTriggers,
 		resourceDocument, groups, eventTriggers, outError)) return false;
 	if (groups.empty() && eventTriggers.empty()) return true;
 	std::wstring stateError;

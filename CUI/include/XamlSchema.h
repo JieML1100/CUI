@@ -1,7 +1,13 @@
 #pragma once
 
+#include "CuiBuildFeatures.h"
+#if !CUI_ENABLE_DYNAMIC_XAML
+#error XamlSchema is available only in the CUI design-runtime variant
+#endif
+
 #include "Binding.h"
 #include "Event.h"
+#include "RuntimeTypeMetadata.h"
 
 #include <cstddef>
 #include <memory>
@@ -13,47 +19,33 @@
 #include <vector>
 
 /**
- * Canonical runtime identity of a XAML type.
+ * Property contract owned by an immutable declarative type descriptor.
  *
- * Namespace prefixes are document syntax and never enter runtime identity.
+ * Unlike DependencyPropertyRegistry entries this definition does not require a
+ * C++ owner type or getter/setter pair. DeclarativeTypeDescriptor creates one
+ * shared DependencyPropertyMetadata object for the XAML type; Control instances
+ * keep only their value slots.
+ *
+ * Object-valued definitions must provide a non-empty, concrete DefaultValue.
+ * The default's runtime type becomes part of the property contract, so values
+ * of unrelated object types cannot be assigned through Binding or styles.
  */
-struct RuntimeTypeId final
-{
-	std::wstring NamespaceUri;
-	std::wstring LocalName;
-
-	bool Empty() const noexcept
-	{
-		return NamespaceUri.empty() && LocalName.empty();
-	}
-
-	bool Valid() const noexcept
-	{
-		return !NamespaceUri.empty() && !LocalName.empty();
-	}
-
-	std::wstring RegistryKey() const
-	{
-		return NamespaceUri + L"|" + LocalName;
-	}
-
-	bool operator==(const RuntimeTypeId&) const = default;
-};
-
-struct RuntimeTypeIdHash final
-{
-	std::size_t operator()(const RuntimeTypeId& value) const noexcept;
-};
-
-using DeclarativeEventRoutingStrategy = RoutedEventRoutingStrategy;
-
-/** One routed event declared by a XAML type. Its owner is the descriptor. */
-struct DeclarativeEventDefinition final
+struct DeclarativePropertyDefinition
 {
 	std::wstring Name;
-	BindingValueKind PayloadKind = BindingValueKind::Empty;
-	DeclarativeEventRoutingStrategy RoutingStrategy =
-		DeclarativeEventRoutingStrategy::Direct;
+	BindingValueKind ValueKind = BindingValueKind::String;
+	BindingValue DefaultValue = BindingValue(std::wstring{});
+	/** Optional closed set accepted after conversion; used by declarative enums. */
+	std::vector<BindingValue> AllowedValues;
+	DependencyPropertyFlags Flags = DependencyPropertyFlags::None;
+	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
+	DataSourceUpdateMode DefaultUpdateMode =
+		DataSourceUpdateMode::OnPropertyChanged;
+	/** Stable identity shared by instances when Flags contains Inherits. */
+	std::wstring InheritanceKey;
+	DependencyPropertyDesignMetadata Design;
+	/** Public XAML/style/Binding writes are rejected; component behavior may update it. */
+	bool IsReadOnly = false;
 };
 
 enum class DeclarativeContentCardinality : unsigned char
@@ -94,6 +86,8 @@ public:
 	std::size_t PropertyCount() const noexcept { return _properties.size(); }
 	const DependencyPropertyMetadata* FindProperty(
 		const std::wstring& propertyName) const noexcept;
+	const DependencyPropertyMetadata* FindProperty(
+		BindingSourcePropertyToken property) const noexcept;
 	std::span<const DependencyPropertyMetadata* const> Properties() const noexcept
 	{
 		return _propertyMetadata;
@@ -145,6 +139,7 @@ private:
 	std::vector<PropertyEntry> _properties;
 	std::vector<const DependencyPropertyMetadata*> _propertyMetadata;
 	std::unordered_map<std::wstring, std::size_t> _propertyIndex;
+	std::unordered_map<std::uint64_t, std::size_t> _propertyTokenIndex;
 	std::vector<DeclarativeEventDefinition> _events;
 	std::unordered_map<std::wstring, std::size_t> _eventIndex;
 	std::vector<DeclarativeContentPropertyDefinition> _contentProperties;

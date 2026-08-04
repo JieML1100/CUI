@@ -11,6 +11,11 @@ Acme::Views::MainWindow::MainWindow()
 	// User initialization belongs here.
 }
 
+void Acme::Views::MainWindow::HandleWindowContentRendered(Window* sender)
+{
+	(void)sender;
+}
+
 void Acme::Views::MainWindow::HandleNamespacedDrop(
 	Control* sender, DragEventArgs& e)
 {
@@ -22,17 +27,6 @@ void Acme::Views::MainWindow::HandleNamespacedDrop(
 void Acme::Views::MainWindow::HandleNamespacedClick(Control* sender, RoutedEventArgs& e)
 {
 	(void)sender;
-	(void)e;
-}
-
-void Acme::Views::MainWindow::HandleNamespacedPropertyChanged(DependencyObject* sender, const DependencyPropertyChangedEventArgs& e)
-{
-	(void)sender;
-	(void)e;
-}
-
-void Acme::Views::MainWindow::HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e)
-{
 	(void)e;
 }
 

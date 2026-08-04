@@ -17,9 +17,13 @@ namespace cui::framework
 	{
 		StyleAccess() = delete;
 
-		static void SetResourceKey(Control& target, std::wstring value)
+		static void SetResourceKey(
+			Control& target,
+			std::wstring value,
+			bool capturedFromTheme = false)
 		{
-			target.SetStyleResourceKey(std::move(value));
+			target.SetStyleResourceKey(
+				std::move(value), capturedFromTheme);
 		}
 
 		static const std::wstring& ResourceKey(
@@ -54,6 +58,22 @@ namespace cui::framework
 			const Control& target) noexcept
 		{
 			return target.GetStyleSheet();
+		}
+
+		/**
+		 * Installs the immutable Theme and document Style projections as one
+		 * XAML initialization transaction. The target observes the same Theme
+		 * then Style precedence, but subscriptions, DynamicResource lookup and
+		 * rule resolution are refreshed only after both inputs are present.
+		 */
+		static bool SetEnvironment(
+			Control& target,
+			std::shared_ptr<const ControlStyleSheet> theme,
+			std::shared_ptr<const ControlStyleSheet> styles,
+			bool recursive = true)
+		{
+			return target.SetStyleEnvironment(
+				std::move(theme), std::move(styles), recursive);
 		}
 
 		static bool SetResources(

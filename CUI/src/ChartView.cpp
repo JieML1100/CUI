@@ -2,6 +2,7 @@
 #include "EventInfrastructure.h"
 #include "Window.h"
 #include "AdvancedControlPropertyRegistration.h"
+#include <Colors.h>
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -74,6 +75,7 @@ namespace
 	{
 		return (std::max)(0.0f, rect.bottom - rect.top);
 	}
+
 }
 
 ChartPoint::ChartPoint(std::wstring label, double value)
@@ -96,90 +98,181 @@ UIClass ChartView::Type()
 	return UIClass::UI_ChartView;
 }
 
+const DependencyProperty& ChartView::ChartKindProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterEnumFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ChartKind"),
+		&ChartView::_chartKind, ChartViewKind::Bar,
+		{ ChartViewKind::Bar, ChartViewKind::Pie, ChartViewKind::Line }
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Data", 600, 30,
+			{ { L"Bar", ChartViewKind::Bar },
+			  { L"Pie", ChartViewKind::Pie },
+			  { L"Line", ChartViewKind::Line } }));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::TitleProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"Title"),
+		&ChartView::_title, std::wstring(L"Chart")
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Data", 600, 10, DependencyPropertyEditorKind::Text));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::SubtitleProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"Subtitle"),
+		&ChartView::_subtitle, std::wstring{}
+		CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Data", 600, 20, DependencyPropertyEditorKind::Text));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ValuePrecisionProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterIntMetricStatic(
+		DependencyPropertyRegistrationLiteral(L"ValuePrecision"),
+		&ChartView::_valuePrecision, 0
+		CUI_DESIGN_METADATA_ARGUMENTS(L"Data", 600, 40), 0, 8);
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ShowLegendProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ShowLegend"),
+		&ChartView::_showLegend, true CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 10, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ShowTooltipProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ShowTooltip"),
+		&ChartView::_showTooltip, true CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 20, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ShowValueLabelsProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ShowValueLabels"),
+		&ChartView::_showValueLabels, false CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 30, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ShowGridLinesProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ShowGridLines"),
+		&ChartView::_showGridLines, true CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 40, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::ShowMarkersProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"ShowMarkers"),
+		&ChartView::_showMarkers, true CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 50, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
+const DependencyProperty& ChartView::EnablePanZoomProperty()
+{
+	using namespace cui::advanced_properties;
+	static const auto registration = RegisterFieldStatic(
+		DependencyPropertyRegistrationLiteral(L"EnablePanZoom"),
+		&ChartView::_enablePanZoom, true CUI_DESIGN_METADATA_ARGUMENTS(
+			L"Behavior", 110, 60, DependencyPropertyEditorKind::Boolean));
+	return *registration;
+}
+
 void ChartView::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		using namespace cui::advanced_properties;
-		RegisterField(L"Title", &ChartView::_title, std::wstring(L"Chart"),
-			L"Data", 600, 10, DependencyPropertyEditorKind::Text);
-		RegisterField(L"Subtitle", &ChartView::_subtitle, std::wstring{},
-			L"Data", 600, 20, DependencyPropertyEditorKind::Text);
-		RegisterEnumField(L"ChartKind", &ChartView::_chartKind,
-			ChartViewKind::Bar, L"Data", 600, 30,
-			{ { L"Bar", ChartViewKind::Bar },
-			  { L"Pie", ChartViewKind::Pie },
-			  { L"Line", ChartViewKind::Line } });
-		RegisterIntMetric(L"ValuePrecision", &ChartView::_valuePrecision, 0,
-			L"Data", 600, 40, 0, 8);
-		RegisterField(L"ShowLegend", &ChartView::_showLegend, true,
-			L"Behavior", 110, 10, DependencyPropertyEditorKind::Boolean);
-		RegisterField(L"ShowTooltip", &ChartView::_showTooltip, true,
-			L"Behavior", 110, 20, DependencyPropertyEditorKind::Boolean);
-		RegisterField(L"ShowValueLabels", &ChartView::_showValueLabels, false,
-			L"Behavior", 110, 30, DependencyPropertyEditorKind::Boolean);
-		RegisterField(L"ShowGridLines", &ChartView::_showGridLines, true,
-			L"Behavior", 110, 40, DependencyPropertyEditorKind::Boolean);
-		RegisterField(L"ShowMarkers", &ChartView::_showMarkers, true,
-			L"Behavior", 110, 50, DependencyPropertyEditorKind::Boolean);
-		RegisterField(L"EnablePanZoom", &ChartView::_enablePanZoom, true,
-			L"Behavior", 110, 60, DependencyPropertyEditorKind::Boolean);
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)ChartKindProperty();
+	(void)TitleProperty();
+	(void)SubtitleProperty();
+	(void)ValuePrecisionProperty();
+	(void)ShowLegendProperty();
+	(void)ShowTooltipProperty();
+	(void)ShowValueLabelsProperty();
+	(void)ShowGridLinesProperty();
+	(void)ShowMarkersProperty();
+	(void)EnablePanZoomProperty();
+#endif
 }
 
 GET_CPP(ChartView, ChartViewKind, ChartKind) { return _chartKind; }
 SET_CPP(ChartView, ChartViewKind, ChartKind)
 {
 	(void)TrySetPropertyValue(
-		L"ChartKind", BindingValue(static_cast<int>(value)));
+		ChartKindProperty(), BindingValue(static_cast<int>(value)));
 }
 GET_CPP(ChartView, std::wstring, Title) { return _title; }
 SET_CPP(ChartView, std::wstring, Title)
 {
-	(void)SetPropertyField(L"Title", _title, std::move(value));
+	(void)SetPropertyField(TitleProperty(), _title, std::move(value));
 }
 GET_CPP(ChartView, std::wstring, Subtitle) { return _subtitle; }
 SET_CPP(ChartView, std::wstring, Subtitle)
 {
-	(void)SetPropertyField(L"Subtitle", _subtitle, std::move(value));
+	(void)SetPropertyField(SubtitleProperty(), _subtitle, std::move(value));
 }
 GET_CPP(ChartView, int, ValuePrecision) { return _valuePrecision; }
 SET_CPP(ChartView, int, ValuePrecision)
 {
-	(void)SetPropertyField(L"ValuePrecision", _valuePrecision, value);
+	(void)SetPropertyField(ValuePrecisionProperty(), _valuePrecision, value);
 }
 GET_CPP(ChartView, bool, ShowLegend) { return _showLegend; }
 SET_CPP(ChartView, bool, ShowLegend)
 {
-	(void)SetPropertyField(L"ShowLegend", _showLegend, value);
+	(void)SetPropertyField(ShowLegendProperty(), _showLegend, value);
 }
 GET_CPP(ChartView, bool, ShowTooltip) { return _showTooltip; }
 SET_CPP(ChartView, bool, ShowTooltip)
 {
-	(void)SetPropertyField(L"ShowTooltip", _showTooltip, value);
+	(void)SetPropertyField(ShowTooltipProperty(), _showTooltip, value);
 }
 GET_CPP(ChartView, bool, ShowValueLabels) { return _showValueLabels; }
 SET_CPP(ChartView, bool, ShowValueLabels)
 {
-	(void)SetPropertyField(L"ShowValueLabels", _showValueLabels, value);
+	(void)SetPropertyField(
+		ShowValueLabelsProperty(), _showValueLabels, value);
 }
 GET_CPP(ChartView, bool, ShowGridLines) { return _showGridLines; }
 SET_CPP(ChartView, bool, ShowGridLines)
 {
-	(void)SetPropertyField(L"ShowGridLines", _showGridLines, value);
+	(void)SetPropertyField(ShowGridLinesProperty(), _showGridLines, value);
 }
 GET_CPP(ChartView, bool, ShowMarkers) { return _showMarkers; }
 SET_CPP(ChartView, bool, ShowMarkers)
 {
-	(void)SetPropertyField(L"ShowMarkers", _showMarkers, value);
+	(void)SetPropertyField(ShowMarkersProperty(), _showMarkers, value);
 }
 GET_CPP(ChartView, bool, EnablePanZoom) { return _enablePanZoom; }
 SET_CPP(ChartView, bool, EnablePanZoom)
 {
-	(void)SetPropertyField(L"EnablePanZoom", _enablePanZoom, value);
+	(void)SetPropertyField(EnablePanZoomProperty(), _enablePanZoom, value);
 }
 
 ChartView::ChartView()
@@ -192,28 +285,41 @@ ChartView::ChartView()
 void ChartView::Clear()
 {
 	_series.clear();
+	_accessibilityIds.clear();
 	HoveredSeriesIndex = -1;
 	HoveredPointIndex = -1;
 	SelectedSeriesIndex = -1;
 	SelectedPointIndex = -1;
 	ResetView();
+	NotifyAccessibilityStructureChanged();
 }
 
 int ChartView::AddSeries(const ChartSeries& series)
 {
 	_series.push_back(series);
+	auto& ids = _accessibilityIds.emplace_back();
+	ids.reserve(series.Points.size());
+	for (size_t index = 0; index < series.Points.size(); ++index)
+		ids.push_back(AllocateAccessibilityVirtualId());
 	ClampViewport();
 	InvalidateVisual();
+	NotifyAccessibilityStructureChanged();
 	return static_cast<int>(_series.size()) - 1;
 }
 
 void ChartView::SetSingleSeries(const std::vector<ChartPoint>& points, const std::wstring& name)
 {
 	_series.clear();
+	_accessibilityIds.clear();
 	ChartSeries series(name, AccentColor);
 	series.Points = points;
 	_series.push_back(series);
+	auto& ids = _accessibilityIds.emplace_back();
+	ids.reserve(points.size());
+	for (size_t index = 0; index < points.size(); ++index)
+		ids.push_back(AllocateAccessibilityVirtualId());
 	ResetView();
+	NotifyAccessibilityStructureChanged();
 }
 
 void ChartView::ResetView()
@@ -236,11 +342,27 @@ bool ChartView::SelectPoint(int seriesIndex, int pointIndex)
 	if (SelectedSeriesIndex == seriesIndex && SelectedPointIndex == pointIndex)
 		return true;
 
+	const uint32_t previousId =
+		GetAccessibilityId(SelectedSeriesIndex, SelectedPointIndex);
 	const int previousPointIndex = SelectedPointIndex;
 	SelectedSeriesIndex = seriesIndex;
 	SelectedPointIndex = pointIndex;
+	EnsurePointVisible(pointIndex);
 	SelectionChangedEventArgs args(previousPointIndex, pointIndex);
 	SelectionChanged(this, args);
+	if (previousId != 0)
+		NotifyAccessibilityVirtualChanged(
+			previousId, AccessibilityChange::Selection);
+	const uint32_t currentId =
+		GetAccessibilityId(seriesIndex, pointIndex);
+	if (currentId != 0)
+	{
+		NotifyAccessibilityVirtualChanged(
+			currentId, AccessibilityChange::Selection);
+		if (IsKeyboardFocused)
+			NotifyAccessibilityVirtualChanged(
+				currentId, AccessibilityChange::Focus);
+	}
 	InvalidateVisual();
 	return true;
 }
@@ -278,10 +400,223 @@ bool ChartView::CanHandleMouseWheel(int delta, int localX, int localY)
 	return PointInRect((float)localX, (float)localY, GetPlotRect(size.width, size.height));
 }
 
+bool ChartView::HandlesNavigationKey(Key key) const
+{
+	return key == Key::Left || key == Key::Right
+		|| key == Key::Up || key == Key::Down
+		|| key == Key::PageUp || key == Key::PageDown
+		|| key == Key::Home || key == Key::End
+		|| key == Key::Return || key == Key::Space;
+}
+
+uint32_t ChartView::GetAccessibilityId(
+	int seriesIndex, int pointIndex) const noexcept
+{
+	if (seriesIndex < 0 || pointIndex < 0
+		|| static_cast<size_t>(seriesIndex) >= _accessibilityIds.size()
+		|| static_cast<size_t>(pointIndex)
+			>= _accessibilityIds[static_cast<size_t>(seriesIndex)].size())
+		return 0;
+	return _accessibilityIds[static_cast<size_t>(seriesIndex)]
+		[static_cast<size_t>(pointIndex)];
+}
+
+bool ChartView::FindAccessibilityPoint(
+	uint32_t id, int& seriesIndex, int& pointIndex) const noexcept
+{
+	seriesIndex = -1;
+	pointIndex = -1;
+	if (id == 0) return false;
+	for (size_t series = 0; series < _accessibilityIds.size(); ++series)
+	{
+		const auto& ids = _accessibilityIds[series];
+		const auto found = std::find(ids.begin(), ids.end(), id);
+		if (found == ids.end()) continue;
+		seriesIndex = static_cast<int>(series);
+		pointIndex = static_cast<int>(std::distance(ids.begin(), found));
+		return true;
+	}
+	return false;
+}
+
+size_t ChartView::GetAccessibilityVirtualChildCount(
+	uint32_t parentId) const noexcept
+{
+	if (parentId != 0) return 0;
+	size_t count = 0;
+	for (size_t series = 0; series < _series.size(); ++series)
+		if (_series[series].Visible)
+			count += _series[series].Points.size();
+	return count;
+}
+
+bool ChartView::TryGetAccessibilityVirtualChildAt(
+	uint32_t parentId, size_t index, uint32_t& result) const noexcept
+{
+	result = 0;
+	if (parentId != 0) return false;
+	for (size_t series = 0; series < _series.size(); ++series)
+	{
+		if (!_series[series].Visible) continue;
+		const size_t count = _series[series].Points.size();
+		if (index >= count)
+		{
+			index -= count;
+			continue;
+		}
+		result = GetAccessibilityId(
+			static_cast<int>(series), static_cast<int>(index));
+		return result != 0;
+	}
+	return false;
+}
+
+bool ChartView::TryGetAccessibilityVirtualSibling(
+	uint32_t parentId, uint32_t id, bool next,
+	uint32_t& result) const noexcept
+{
+	result = 0;
+	if (parentId != 0) return false;
+	const size_t count = GetAccessibilityVirtualChildCount(0);
+	for (size_t index = 0; index < count; ++index)
+	{
+		uint32_t current = 0;
+		if (!TryGetAccessibilityVirtualChildAt(0, index, current)
+			|| current != id) continue;
+		if ((!next && index == 0) || (next && index + 1 >= count))
+			return false;
+		return TryGetAccessibilityVirtualChildAt(
+			0, next ? index + 1 : index - 1, result);
+	}
+	return false;
+}
+
+bool ChartView::TryGetAccessibilityVirtualNode(
+	uint32_t id, AccessibilityVirtualNode& result)
+{
+	int seriesIndex = -1;
+	int pointIndex = -1;
+	if (!FindAccessibilityPoint(id, seriesIndex, pointIndex)
+		|| seriesIndex >= static_cast<int>(_series.size())
+		|| pointIndex >= static_cast<int>(_series[seriesIndex].Points.size())
+		|| !_series[seriesIndex].Visible)
+		return false;
+
+	RebuildHitRegions();
+	D2D1_RECT_F bounds{};
+	bool visible = false;
+	for (const auto& region : _hitRegions)
+	{
+		if (region.SeriesIndex != seriesIndex
+			|| region.PointIndex != pointIndex) continue;
+		if (region.IsPie)
+			bounds = D2D1::RectF(
+				region.Center.x - region.Radius,
+				region.Center.y - region.Radius,
+				region.Center.x + region.Radius,
+				region.Center.y + region.Radius);
+		else
+			bounds = region.Rect;
+		visible = true;
+		break;
+	}
+	const auto snapshot = GetAccessibilitySnapshot();
+	const auto& point = _series[seriesIndex].Points[pointIndex];
+	const std::wstring prefix = snapshot.AutomationId.empty()
+		? L"chart" : snapshot.AutomationId;
+	result = {};
+	result.Id = id;
+	result.ControlType = AutomationControlType::DataItem;
+	result.Patterns = AutomationPattern::Invoke
+		| AutomationPattern::SelectionItem;
+	result.Name = GetPointText(seriesIndex, pointIndex);
+	result.Description = _series[seriesIndex].Name;
+	result.Value = FormatValue(point.Value);
+	result.AutomationId =
+		prefix + L".point-" + std::to_wstring(id);
+	result.BoundsDip = bounds;
+	result.Enabled = IsEffectivelyEnabled();
+	result.Visible = IsVisible && visible;
+	result.Selected = SelectedSeriesIndex == seriesIndex
+		&& SelectedPointIndex == pointIndex;
+	result.Row = pointIndex;
+	result.Column = seriesIndex;
+	return true;
+}
+
+bool ChartView::TryHitTestAccessibilityVirtualNode(
+	float localX, float localY, uint32_t& result)
+{
+	result = 0;
+	int seriesIndex = -1;
+	int pointIndex = -1;
+	RebuildHitRegions();
+	if (!HitTestInternal(
+		static_cast<int>(localX), static_cast<int>(localY),
+		seriesIndex, pointIndex))
+		return false;
+	result = GetAccessibilityId(seriesIndex, pointIndex);
+	return result != 0;
+}
+
+AccessibilityVirtualContainerInfo
+ChartView::GetAccessibilityVirtualContainerInfo() const noexcept
+{
+	AccessibilityVirtualContainerInfo result;
+	result.Patterns = AutomationPattern::Selection;
+	result.CanSelectMultiple = false;
+	result.IsSelectionRequired = false;
+	result.RowCount = GetPointCount();
+	result.ColumnCount = GetVisibleSeriesCount();
+	return result;
+}
+
+void ChartView::GetAccessibilityVirtualSelection(
+	std::vector<uint32_t>& result) const
+{
+	result.clear();
+	const uint32_t id =
+		GetAccessibilityId(SelectedSeriesIndex, SelectedPointIndex);
+	if (id != 0) result.push_back(id);
+}
+
+bool ChartView::InvokeAccessibilityVirtualNode(uint32_t id)
+{
+	if (!IsEffectivelyEnabled()) return false;
+	int seriesIndex = -1;
+	int pointIndex = -1;
+	if (!FindAccessibilityPoint(id, seriesIndex, pointIndex)
+		|| seriesIndex >= static_cast<int>(_series.size())
+		|| !_series[seriesIndex].Visible
+		|| pointIndex >= static_cast<int>(_series[seriesIndex].Points.size())
+		|| !SelectPoint(seriesIndex, pointIndex))
+		return false;
+	cui::framework::EventAccess::Raise(
+		OnPointClick, this, seriesIndex, pointIndex);
+	NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Invoke);
+	return true;
+}
+
+bool ChartView::SelectAccessibilityVirtualNode(
+	uint32_t id, AccessibilitySelectionAction action)
+{
+	if (action == AccessibilitySelectionAction::Remove
+		|| !IsEffectivelyEnabled())
+		return false;
+	int seriesIndex = -1;
+	int pointIndex = -1;
+	if (!FindAccessibilityPoint(id, seriesIndex, pointIndex)
+		|| seriesIndex >= static_cast<int>(_series.size())
+		|| !_series[seriesIndex].Visible)
+		return false;
+	return SelectPoint(seriesIndex, pointIndex);
+}
+
 void ChartView::OnRender()
 {
 	if (!IsVisible) return;
 	auto d2d = GetDrawingContext();
+	if (!d2d) return;
 	const auto size = GetActualSizeDip();
 	const float width = size.width;
 	const float height = size.height;
@@ -313,11 +648,9 @@ void ChartView::OnRender()
 		}
 		DrawLegend(d2d, content);
 		DrawHorizontalScrollBar(d2d, width, height);
+		DrawKeyboardFocus(d2d);
 		DrawTooltip(d2d, width, height);
 	}
-
-	if (!IsEnabled)
-		d2d->FillRoundRect(0, 0, width, height, D2D1_COLOR_F{ 1,1,1,0.45f }, CornerRadius);
 	EndRender();
 }
 
@@ -424,6 +757,113 @@ bool ChartView::ProcessInput(const InputReport& input)
 		OnMouseDoubleClick(this, eventObj);
 		break;
 	}
+	case InputReportKind::KeyDown:
+	{
+		auto firstVisiblePoint = [this](bool last)
+			-> std::pair<int, int>
+		{
+			if (last)
+			{
+				for (int series = static_cast<int>(_series.size()) - 1;
+					series >= 0; --series)
+					if (_series[series].Visible
+						&& !_series[series].Points.empty())
+						return {
+							series,
+							static_cast<int>(
+								_series[series].Points.size()) - 1 };
+			}
+			else
+			{
+				for (int series = 0;
+					series < static_cast<int>(_series.size()); ++series)
+					if (_series[series].Visible
+						&& !_series[series].Points.empty())
+						return { series, 0 };
+			}
+			return { -1, -1 };
+		};
+
+		int series = SelectedSeriesIndex;
+		int point = SelectedPointIndex;
+		if (series < 0 || point < 0
+			|| series >= static_cast<int>(_series.size())
+			|| !_series[series].Visible
+			|| point >= static_cast<int>(_series[series].Points.size()))
+		{
+			const auto first = firstVisiblePoint(false);
+			series = first.first;
+			point = first.second;
+		}
+		if (series < 0 || point < 0)
+			return Control::ProcessInput(input);
+
+		bool invoke = false;
+		switch (input.Key)
+		{
+		case Key::Left:
+			point = (std::max)(0, point - 1);
+			break;
+		case Key::Right:
+			point = (std::min)(
+				static_cast<int>(_series[series].Points.size()) - 1,
+				point + 1);
+			break;
+		case Key::PageUp:
+			point = (std::max)(0, point - 10);
+			break;
+		case Key::PageDown:
+			point = (std::min)(
+				static_cast<int>(_series[series].Points.size()) - 1,
+				point + 10);
+			break;
+		case Key::Home:
+			point = 0;
+			break;
+		case Key::End:
+			point = static_cast<int>(_series[series].Points.size()) - 1;
+			break;
+		case Key::Up:
+		case Key::Down:
+		{
+			const int direction = input.Key == Key::Up ? -1 : 1;
+			for (int next = series + direction;
+				next >= 0 && next < static_cast<int>(_series.size());
+				next += direction)
+			{
+				if (!_series[next].Visible
+					|| _series[next].Points.empty()) continue;
+				series = next;
+				point = (std::min)(
+					point,
+					static_cast<int>(_series[next].Points.size()) - 1);
+				break;
+			}
+			break;
+		}
+		case Key::Return:
+		case Key::Space:
+			invoke = true;
+			break;
+		default:
+			return Control::ProcessInput(input);
+		}
+		(void)SelectPoint(series, point);
+		if (invoke)
+			cui::framework::EventAccess::Raise(
+				OnPointClick, this, series, point);
+		auto args = input.CreateKeyEventArgs();
+		OnKeyDown(this, args);
+		break;
+	}
+	case InputReportKind::KeyUp:
+	{
+		if (!HandlesNavigationKey(input.Key))
+			return Control::ProcessInput(input);
+		auto args = input.CreateKeyEventArgs();
+		OnKeyUp(this, args);
+		break;
+	}
 	default:
 		return Control::ProcessInput(input);
 	}
@@ -432,8 +872,12 @@ bool ChartView::ProcessInput(const InputReport& input)
 
 void ChartView::DrawFrame(D2DGraphics* d2d, float width, float height)
 {
-	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, RendererBackgroundColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, RendererBorderColor, Border, CornerRadius);
+	// The theme owns border thickness, border brush and disabled chrome.  The
+	// retained native presenter only realizes the themed background beneath
+	// its data drawing so template visuals never need to cover the chart.
+	d2d->FillRoundRect(
+		0.0f, 0.0f, width, height,
+		RendererBackgroundColor, CornerRadius);
 
 	if (!Title.empty())
 	{
@@ -781,6 +1225,7 @@ void ChartView::RebuildHitRegions()
 			r.PointIndex = i;
 			r.Center = center;
 			r.Radius = radius + 8.0f;
+			r.InnerRadius = radius * 0.48f;
 			r.StartAngle = startAngle;
 			r.SweepAngle = sweep;
 			r.IsPie = true;
@@ -863,7 +1308,7 @@ bool ChartView::HitTestInternal(int localX, int localY, int& seriesIndex, int& p
 			float dx = x - r.Center.x;
 			float dy = y - r.Center.y;
 			float dist = std::sqrt(dx * dx + dy * dy);
-			if (dist > r.Radius) continue;
+			if (dist > r.Radius || dist < r.InnerRadius) continue;
 			float angle = std::atan2(-dy, dx) * 180.0f / ChartPi;
 			if (!AngleInSweep(angle, r.StartAngle, r.SweepAngle)) continue;
 		}
@@ -938,6 +1383,67 @@ void ChartView::UpdateHorizontalScrollDrag(float localX, float width, float heig
 	{
 		cui::framework::EventAccess::Raise(OnViewportChanged, this);
 		InvalidateVisual();
+	}
+}
+
+void ChartView::EnsurePointVisible(int pointIndex)
+{
+	if (pointIndex < 0 || ChartKind == ChartViewKind::Pie
+		|| !EnablePanZoom || ZoomX <= 1.001f)
+		return;
+	const auto size = GetActualSizeDip();
+	const auto plot = GetPlotRect(size.width, size.height);
+	const int count = GetPointCount();
+	if (count <= 0 || RectWidth(plot) <= 0.0f) return;
+	const float step = GetVirtualPlotWidth(plot) / static_cast<float>(count);
+	const float left = pointIndex * step;
+	const float right = left + step;
+	const float viewport = RectWidth(plot);
+	const float previous = PanX;
+	if (left < PanX)
+		PanX = left;
+	else if (right > PanX + viewport)
+		PanX = right - viewport;
+	ClampViewport();
+	if (std::fabs(previous - PanX) > 0.01f)
+	{
+		cui::framework::EventAccess::Raise(OnViewportChanged, this);
+		NotifyAccessibilityScrollChanged();
+	}
+}
+
+void ChartView::DrawKeyboardFocus(D2DGraphics* d2d)
+{
+	if (!d2d || !IsKeyboardFocused
+		|| SelectedSeriesIndex < 0 || SelectedPointIndex < 0)
+		return;
+	for (const auto& region : _hitRegions)
+	{
+		if (region.SeriesIndex != SelectedSeriesIndex
+			|| region.PointIndex != SelectedPointIndex) continue;
+		if (region.IsPie)
+		{
+			d2d->DrawEllipse(
+				region.Center.x, region.Center.y,
+				region.Radius + 2.0f, region.Radius + 2.0f,
+				RendererForegroundColor, 1.5f);
+		}
+		else if (region.IsCircle)
+		{
+			d2d->DrawEllipse(
+				region.Center.x, region.Center.y,
+				region.Radius + 3.0f, region.Radius + 3.0f,
+				RendererForegroundColor, 1.5f);
+		}
+		else
+		{
+			d2d->DrawRoundRect(
+				region.Rect.left - 2.0f, region.Rect.top - 2.0f,
+				RectWidth(region.Rect) + 4.0f,
+				RectHeight(region.Rect) + 4.0f,
+				RendererForegroundColor, 1.5f, 4.0f);
+		}
+		return;
 	}
 }
 

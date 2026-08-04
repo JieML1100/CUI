@@ -9,10 +9,12 @@ public:
 	ListViewItem() = default;
 	UIClass Type() override { return UIClass::UI_ListViewItem; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 };
 
 /**
@@ -29,10 +31,12 @@ public:
 	ListView();
 	UIClass Type() override { return UIClass::UI_ListView; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 protected:
 	std::unique_ptr<Control> BuildGeneratedItem(

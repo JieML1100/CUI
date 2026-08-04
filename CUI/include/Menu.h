@@ -4,6 +4,17 @@
 #include <cstdint>
 #include <vector>
 
+class Popup;
+
+/** WPF role used by one MenuItem template for menu-bar and popup rows. */
+enum class MenuItemRole : int
+{
+	TopLevelItem = 0,
+	TopLevelHeader,
+	SubmenuItem,
+	SubmenuHeader
+};
+
 /**
  * @file Menu.h
  * @brief Menu/MenuItem：菜单栏与下拉菜单控件。
@@ -11,7 +22,8 @@
  * 设计：
  * - Menu 的 Items 是顶层 MenuItem（菜单栏项）。
  * - 每个 MenuItem 也是 HeaderedItemsControl，其 Items 形成多级子菜单。
- * - Menu 会根据鼠标 hover/open 路径绘制下拉面板，叶子项统一执行 RoutedCommand。
+ * - MenuItem 的 ControlTemplate 通过 Popup + ItemsPresenter 呈现子菜单；
+ *   native class 只维护 role/open/highlight/command 行为。
  */
 
 /**
@@ -26,24 +38,36 @@ class MenuItem : public HeaderedItemsControl
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
-		return std::make_unique<InvokeAutomationPeer>(
-			*this, AutomationControlType::MenuItem, L"MenuItem");
+		return std::make_unique<MenuItemAutomationPeer>(*this);
 	}
 
 private:
+	static const DependencyPropertyKey& IsHighlightedPropertyKey();
+	static const DependencyPropertyKey& IsPressedPropertyKey();
+	static const DependencyPropertyKey& RolePropertyKey();
+
 	MenuItem* _parentItem = nullptr;
 	std::vector<Control*> _items;
+	std::vector<ControlWeakReference> _generatedItemsRebuildSnapshot;
+	bool _generatedItemsRebuildPending = false;
 	std::function<void()> _structureChanged;
 	std::function<void(MenuItem&)> _interactionStateChanged;
 	std::wstring _command;
 	std::wstring _commandParameter;
 	std::wstring _inputGestureText;
+	BindingValue _icon;
 	bool _isCheckable = false;
 	bool _isChecked = false;
 	bool _staysOpenOnClick = false;
 	bool _isHighlighted = false;
+	bool _isPressed = false;
 	bool _isSubmenuOpen = false;
 	bool _projectingInteractionState = false;
+	bool _pointerPressActive = false;
+	MenuItemRole _role = MenuItemRole::TopLevelItem;
+	Popup* _submenuPopup = nullptr;
+	EventConnection _submenuPopupOpened;
+	EventConnection _submenuPopupClosed;
 	ControlWeakReference _commandTarget;
 	ControlWeakReference _defaultCommandTarget;
 	EventConnection _commandCanExecuteConnection;
@@ -58,12 +82,15 @@ private:
 	void SetInteractionStateChangedHandler(
 		std::function<void(MenuItem&)> handler);
 	void SynchronizeCommandContext(
-		Window* window, ControlWeakReference defaultCommandTarget);
+		Window* window,
+		ControlWeakReference defaultCommandTarget,
+		bool commandRouteChanged = false);
 	void RefreshCommandSource();
 	void OnPresentationWindowChanged(
 		Window* previousWindow, Window* currentWindow) override;
 	friend class Menu;
 	friend class ContextMenu;
+	friend class MenuItemAutomationPeer;
 	bool ValidateAuthoredItemControl(
 		const Control& item, std::string& error) const override;
 	void OnAuthoredItemsChanged() noexcept override;
@@ -73,13 +100,32 @@ private:
 		std::unique_ptr<Control> visual,
 		const BindingSourceReference& item,
 		size_t index) override;
-	void SynchronizeItems();
-	void SuppressItemsPresentation();
-	void OnControlTemplatePresentationChanged() override;
+	std::unique_ptr<Panel> CreateItemsHost() const override;
 	void ConfigureHeaderVisual(Control& child) override;
 	void ReleaseHeaderVisual(Control& child) override;
+	void SynchronizeItems();
+	void SynchronizeItemsHostPresentation();
+	void OnControlTemplatePresentationChanged() override;
+	void OnApplyTemplate() override;
 	void SetIsHighlightedCore(bool value);
 	void SetIsSubmenuOpenCore(bool value);
+	void UpdateRole();
+	Popup* ResolveSubmenuPopup() const noexcept;
+	bool ItemsHostUsesSubmenuPopup() const noexcept;
+	void ConfigureSubmenuPopup(Popup* popup);
+	bool ShouldOpenSubmenuOnPointerMove() const noexcept;
+	bool IsInMenuMode() const noexcept;
+	Control* ResolveMenuHost() const noexcept;
+	MenuItem* FindNavigableChild(bool last) const noexcept;
+	MenuItem* FindNavigableSibling(
+		int direction, bool edge = false) const noexcept;
+	MenuItem* RootTopLevelItem() noexcept;
+	bool FocusForMenuNavigation();
+	bool FocusSiblingFromKeyboard(int direction, bool edge = false);
+	bool OpenSubmenuFromKeyboard(bool selectFirst);
+	bool CloseKeyboardLevel();
+	bool InvokeLeafAndDismiss();
+	void SetIsPressedCore(bool value);
 
 public:
 	using UIElement::Click;
@@ -89,12 +135,27 @@ public:
 	using UIElement::SubmenuClosed;
 
 	virtual UIClass Type() override;
+	static const DependencyProperty& CommandProperty();
+	static const DependencyProperty& CommandParameterProperty();
+	static const DependencyProperty& InputGestureTextProperty();
+	static const DependencyProperty& IconProperty();
+	static const DependencyProperty& IsCheckableProperty();
+	static const DependencyProperty& IsCheckedProperty();
+	static const DependencyProperty& StaysOpenOnClickProperty();
+	static const DependencyProperty& IsHighlightedProperty();
+	static const DependencyProperty& IsPressedProperty();
+	static const DependencyProperty& RoleProperty();
+	static const DependencyProperty& IsSubmenuOpenProperty();
+	static const DependencyProperty& CommandTargetProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 	bool DefaultSelectOnLeftButtonDown() const override { return false; }
+	bool HitTestChildren() const override { return false; }
 	void SetHeader(BindingValue value) override;
 	/** @brief XAML 定义的路由命令 identity。 */
 	PROPERTY(std::wstring, Command);
@@ -104,6 +165,9 @@ public:
 	PROPERTY(std::wstring, CommandParameter);
 	GET(std::wstring, CommandParameter);
 	SET(std::wstring, CommandParameter);
+	/** WPF MenuItem.Icon data slot; primitives are presented by the template. */
+	BindingValue GetIcon() const { return _icon; }
+	void SetIcon(BindingValue value);
 	/** Whether invocation toggles the WPF check state. */
 	PROPERTY(bool, IsCheckable);
 	GET(bool, IsCheckable);
@@ -119,6 +183,12 @@ public:
 	/** Framework-projected pointer/keyboard highlight state. */
 	READONLY_PROPERTY(bool, IsHighlighted);
 	GET(bool, IsHighlighted);
+	/** WPF read-only press state for pointer interaction. */
+	READONLY_PROPERTY(bool, IsPressed);
+	GET(bool, IsPressed);
+	/** WPF template role: top-level item/header or submenu item/header. */
+	READONLY_PROPERTY(MenuItemRole, Role);
+	GET(MenuItemRole, Role);
 	/** WPF submenu state; interaction uses SetCurrentValue semantics. */
 	PROPERTY(bool, IsSubmenuOpen);
 	GET(bool, IsSubmenuOpen);
@@ -171,15 +241,16 @@ public:
 	void DetachCommandHost(Control& routedOwner);
 	bool Invoke() override;
 protected:
-	void OnRender() override;
+	bool OnAccessKey(bool isMultiple) override;
+	bool HandlesNavigationKey(Key key) const override;
 	bool ProcessInput(const InputReport& input) override;
 };
 
 /**
  * @brief 菜单控件。
  *
- * The menu bar is an ordinary element. While expanded it uses Window's popup
- * overlay projection so dropdown panels can render and hit-test above content.
+ * The menu bar is an ordinary ItemsControl. Each header owns its Popup through
+ * the MenuItem ControlTemplate.
  */
 class Menu : public ItemsControl
 {
@@ -198,13 +269,6 @@ private:
 	std::vector<int> _openPath;
 	std::vector<Control*> _items;
 
-	float DropLeftLocal();
-	float DropTopLocal() const noexcept { return MenuBarExtent(); }
-	float DropWidthLocal();
-	float DropHeightLocal();
-	int DropCount();
-	bool HasSubMenu(int dropIndex);
-	float MenuBarExtent() const noexcept;
 	void SynchronizeInteractionProjection();
 	void OnItemTreeChanged();
 	void OnItemInteractionStateChanged(MenuItem& source);
@@ -224,6 +288,13 @@ private:
 
 public:
 	virtual UIClass Type() override;
+	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+#endif
 	bool DefaultSelectOnLeftButtonDown() const override { return false; }
 
 	Menu();
@@ -242,13 +313,11 @@ public:
 	void ClearItems();
 
 	bool ContainsPoint(int localX, int localY) override;
-	/** Popup rows are projected by Menu itself, so Menu is their input surface. */
-	bool HitTestChildren() const override { return false; }
 	void ClosePopup();
+	bool IsMenuModeActive() const noexcept { return _expand; }
 	cui::core::Size GetRenderSizeDip() override;
 protected:
 	void PreparePresentation() override;
-	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;
 };
 

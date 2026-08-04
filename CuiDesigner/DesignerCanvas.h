@@ -357,7 +357,8 @@ private:
 	void AddHGuide(int yCanvas);
 	RECT ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceParent);
 	RECT ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle);
-	void ApplyRectToControl(Control* c, const RECT& rectInCanvas);
+	void ApplyRectToControl(
+		Control* c, const RECT& rectInCanvas, bool preserveSize = false);
 	bool IsTabOrderCandidate(
 		const std::shared_ptr<DesignerControl>& control) const;
 	std::vector<std::shared_ptr<DesignerControl>>

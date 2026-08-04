@@ -128,7 +128,7 @@ namespace
 			? L"Theme" : L"Style";
 		for (const auto& setter : resolution.Setters)
 		{
-			if (!NamesEqual(setter.PropertyName, row.Name)) continue;
+			if (!NamesEqual(setter.Property.Name(), row.Name)) continue;
 			DesignerPropertyDiagnostic diagnostic;
 			diagnostic.Kind = kind;
 			diagnostic.Severity = BindingValidationSeverity::Info;

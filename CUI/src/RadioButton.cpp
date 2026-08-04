@@ -7,6 +7,35 @@
 
 UIClass RadioButton::Type() { return UIClass::UI_RadioButton; }
 
+const DependencyProperty& RadioButton::GroupNameProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<RadioButton, std::wstring> options;
+		options.DefaultValue = std::wstring{};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 20;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](RadioButton& target,
+			const std::wstring&, const std::wstring&)
+		{
+			if (target.IsChecked)
+				target.UpdateRadioButtonGroup();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			RadioButton, std::wstring>(
+				DependencyPropertyRegistrationLiteral(L"GroupName"),
+				[](RadioButton& target) { return target.GroupName; },
+				[](RadioButton& target, const std::wstring& value)
+				{ target.GroupName = value; },
+				{}, std::move(options));
+	}();
+	return *registration;
+}
+
 RadioButton::RadioButton()
 {
 	RegisterDependencyProperties();
@@ -33,35 +62,16 @@ RadioButton::RadioButton()
 void RadioButton::RegisterDependencyProperties()
 {
 	ToggleButton::RegisterDependencyProperties();
-	static const bool registered = []
-	{
-		DependencyPropertyOptions<RadioButton, std::wstring> options;
-		options.DefaultValue = std::wstring{};
-		options.Design.Category = L"Behavior";
-		options.Design.CategoryOrder = 300;
-		options.Design.Order = 20;
-		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		options.Changed = [](RadioButton& target,
-			const std::wstring&, const std::wstring&)
-		{
-			if (target.IsChecked)
-				target.UpdateRadioButtonGroup();
-		};
-		DependencyPropertyRegistry::Register<RadioButton, std::wstring>(
-			L"GroupName",
-			[](RadioButton& target) { return target.GroupName; },
-			[](RadioButton& target, const std::wstring& value)
-			{ target.GroupName = value; },
-			{}, std::move(options));
-		return true;
-	}();
-	(void)registered;
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)GroupNameProperty();
+#endif
 }
 
-void RadioButton::OnIsCheckedChanged(bool oldValue, bool newValue)
+void RadioButton::OnIsCheckedChanged(
+	NullableBool oldValue, NullableBool newValue)
 {
 	(void)oldValue;
-	if (newValue)
+	if (newValue == true)
 		UpdateRadioButtonGroup();
 }
 
@@ -120,28 +130,29 @@ void RadioButton::UpdateRadioButtonGroup()
 	}
 }
 
-void RadioButton::BeforeDefaultMouseUp(MouseButton button, MouseEventArgs& e, bool hasMatchingPress)
+void RadioButton::OnToggle()
 {
-	(void)e;
-	if (button == MouseButton::Left && hasMatchingPress && this->IsChecked == false)
-		SetChecked(true);
+	(void)TrySetCurrentPropertyValue(
+		IsCheckedProperty(), BindingValue(NullableBool(true)));
+}
+
+bool RadioButton::OnAccessKey(bool isMultiple)
+{
+	if (!IsKeyboardFocused)
+		(void)Focus();
+	return ToggleButton::OnAccessKey(isMultiple);
 }
 
 bool RadioButton::Invoke()
 {
-	if (!IsEnabled || !IsVisible) return false;
-	if (!IsChecked)
-		SetChecked(true);
-	RoutedEventArgs eventArgs;
-	Click(this, eventArgs);
-	return true;
+	return ButtonBase::Invoke();
 }
 
 void RadioButton::SetChecked(bool checked)
 {
 	if (IsChecked == checked) return;
 	(void)TrySetCurrentPropertyValue(
-		L"IsChecked", BindingValue(checked));
+		IsCheckedProperty(), BindingValue(NullableBool(checked)));
 }
 
 GET_CPP(RadioButton, std::wstring, GroupName)
@@ -151,5 +162,5 @@ GET_CPP(RadioButton, std::wstring, GroupName)
 
 SET_CPP(RadioButton, std::wstring, GroupName)
 {
-	(void)SetPropertyField(L"GroupName", _groupName, std::move(value));
+	(void)SetPropertyField(GroupNameProperty(), _groupName, std::move(value));
 }

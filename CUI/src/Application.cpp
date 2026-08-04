@@ -190,7 +190,9 @@ Application::~Application()
 			// handler throws.
 		}
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
 	_resourcesConnection.Disconnect();
+#endif
 	{
 		std::scoped_lock lock(platformWindowsMutex);
 		for (auto& [handle, registration] : platformWindows)
@@ -368,6 +370,7 @@ void Application::SetShutdownMode(::ShutdownMode value)
 	_shutdownMode = value;
 }
 
+#if CUI_ENABLE_DYNAMIC_XAML
 void Application::ConnectResources(
 	const std::shared_ptr<ControlStyleSheet>& resources)
 {
@@ -407,6 +410,26 @@ void Application::SetResources(
 	}
 	if (changed) OnResourcesChanged();
 }
+#else
+std::shared_ptr<const ControlStyleSheet> Application::GetResources() const
+{
+	std::scoped_lock lock(_resourcesMutex);
+	return _resources;
+}
+
+void Application::SetResources(
+	std::shared_ptr<const ControlStyleSheet> value)
+{
+	bool changed = false;
+	{
+		std::scoped_lock lock(_resourcesMutex);
+		if (_resources == value) return;
+		_resources = std::move(value);
+		changed = true;
+	}
+	if (changed) OnResourcesChanged();
+}
+#endif
 
 std::shared_ptr<const ControlStyleSheet>
 Application::GetResourcesSnapshot() const
@@ -640,7 +663,9 @@ void Application::CompleteShutdown()
 	}
 	_exitCode = args.ApplicationExitCode;
 	_mainWindow = nullptr;
+#if CUI_ENABLE_DYNAMIC_XAML
 	_resourcesConnection.Disconnect();
+#endif
 
 	Application* expected = this;
 	(void)currentApplication.compare_exchange_strong(

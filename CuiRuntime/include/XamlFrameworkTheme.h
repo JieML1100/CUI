@@ -7,6 +7,7 @@
 
 class Control;
 class ControlStyleSheet;
+enum class DependencyPropertyValueSource : unsigned char;
 
 namespace CuiRuntime
 {
@@ -30,6 +31,7 @@ public:
 	static bool InstallTemplateValue(
 		Control& owner,
 		const std::wstring& resourceKey,
+		DependencyPropertyValueSource valueSource,
 		std::wstring* outError = nullptr);
 	static bool ApplyTemplateVisualStates(
 		Control& owner,

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cwctype>
 #include <functional>
+#include <iterator>
 #include <unordered_set>
 
 namespace
@@ -26,6 +27,7 @@ namespace
 		const auto numeric = [](BindingValueKind kind)
 		{
 			return kind == BindingValueKind::Bool
+				|| kind == BindingValueKind::NullableBool
 				|| kind == BindingValueKind::Int
 				|| kind == BindingValueKind::Int64
 				|| kind == BindingValueKind::Float
@@ -58,6 +60,45 @@ namespace
 		const BindingSourceReference& right) noexcept
 	{
 		return left.Shared() == right.Shared();
+	}
+
+	template<typename TDescription>
+	bool TryGetDescriptionValue(
+		IBindingSource& source,
+		const TDescription& description,
+		BindingValue& out)
+	{
+		if (!description.CompiledPath.Empty())
+			return TryGetBindingPathValue(
+				source, description.CompiledPath, out);
+#if CUI_ENABLE_DYNAMIC_XAML
+		return cui::design::TryReadAuthoredCollectionDescription(
+			source, description, out);
+#else
+		return false;
+#endif
+	}
+
+	template<typename TDescription>
+	bool HasDescriptionPath(const TDescription& description) noexcept
+	{
+		if (!description.CompiledPath.Empty()) return true;
+#if CUI_ENABLE_DYNAMIC_XAML
+		return cui::design::HasAuthoredCollectionDescriptionPath(description);
+#else
+		return false;
+#endif
+	}
+
+	std::wstring CollectionGroupPropertyName(
+		const CollectionGroupDescription& description)
+	{
+#if CUI_ENABLE_DYNAMIC_XAML
+		return cui::design::AuthoredCollectionGroupPropertyName(description);
+#else
+		(void)description;
+		return {};
+#endif
 	}
 
 	bool SameGroups(
@@ -110,15 +151,17 @@ EventConnection CollectionViewSource::SubscribeCurrentChanged(
 		[handler = std::move(handler)](CollectionViewSource*) { handler(); });
 }
 
-const std::wstring& CollectionViewSource::ItemTypeName() const noexcept
+DataTypeToken CollectionViewSource::GetItemTypeToken() const noexcept
 {
-	static const std::wstring empty;
-	return _source ? _source.Get()->ItemTypeName() : empty;
+	return _source ? _source.Get()->GetItemTypeToken() : DataTypeToken{};
 }
 
 void CollectionViewSource::SetSource(BindingListReference value)
 {
-	_sourceBindingPath.clear();
+#if CUI_ENABLE_DYNAMIC_XAML
+	ClearAuthoredSourceBindingPath();
+#endif
+	_sourceCompiledBindingPath = {};
 	_dataContext = {};
 	_sourceBindingObservation = {};
 	SetResolvedSource(std::move(value));
@@ -135,16 +178,29 @@ void CollectionViewSource::SetResolvedSource(BindingListReference value)
 	Refresh();
 }
 
-void CollectionViewSource::SetSourceBindingPath(std::wstring value)
+void CollectionViewSource::SetCompiledSourceBindingPath(
+	CompiledBindingPathView value)
 {
-	if (_sourceBindingPath == value) return;
-	_sourceBindingPath = std::move(value);
+	if (SameCompiledCollectionPath(_sourceCompiledBindingPath, value)
+#if CUI_ENABLE_DYNAMIC_XAML
+		&& !HasAuthoredSourceBindingPath()
+#endif
+		) return;
+	_sourceCompiledBindingPath = value;
+#if CUI_ENABLE_DYNAMIC_XAML
+	ClearAuthoredSourceBindingPath();
+#endif
 	ResolveBoundSource();
 }
 
 void CollectionViewSource::BindDataContext(BindingSourceReference value)
 {
-	if (_sourceBindingPath.empty()) return;
+	const bool hasPath = !_sourceCompiledBindingPath.Empty()
+#if CUI_ENABLE_DYNAMIC_XAML
+		|| HasAuthoredSourceBindingPath()
+#endif
+		;
+	if (!hasPath) return;
 	if (_dataContext.Shared() == value.Shared()) return;
 	_dataContext = std::move(value);
 	ResolveBoundSource();
@@ -154,16 +210,20 @@ void CollectionViewSource::ResolveBoundSource()
 {
 	_sourceBindingObservation = {};
 	BindingListReference resolved;
-	if (_dataContext && !_sourceBindingPath.empty())
+	if (_dataContext && !_sourceCompiledBindingPath.Empty())
 	{
 		BindingValue value;
 		(void)(TryGetBindingPathValue(
-			*_dataContext.Get(), _sourceBindingPath, value)
+			*_dataContext.Get(), _sourceCompiledBindingPath, value)
 			&& value.TryGet(resolved));
 		_sourceBindingObservation = ObserveBindingPaths(
-			_dataContext, { _sourceBindingPath },
+			_dataContext, { _sourceCompiledBindingPath },
 			[this] { ResolveBoundSource(); });
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	else if (_dataContext && HasAuthoredSourceBindingPath())
+		ResolveAuthoredSourceBinding(resolved);
+#endif
 	SetResolvedSource(std::move(resolved));
 }
 
@@ -219,9 +279,8 @@ bool CollectionViewSource::PassesFilters(
 	for (const auto& filter : _filterDescriptions)
 	{
 		BindingValue candidate;
-		const bool found = !filter.PropertyName.empty()
-			&& TryGetBindingPathValue(
-				*item.Get(), filter.PropertyName, candidate);
+		const bool found = HasDescriptionPath(filter)
+			&& TryGetDescriptionValue(*item.Get(), filter, candidate);
 		if (filter.Operator == CollectionFilterOperator::IsEmpty)
 		{
 			if (found && !candidate.Empty()) return false;
@@ -330,10 +389,10 @@ void CollectionViewSource::RebuildProjection()
 				{
 					BindingValue l;
 					BindingValue r;
-					const bool hasLeft = left && TryGetBindingPathValue(
-						*left.Get(), group.PropertyName, l);
-					const bool hasRight = right && TryGetBindingPathValue(
-						*right.Get(), group.PropertyName, r);
+					const bool hasLeft = left
+						&& TryGetDescriptionValue(*left.Get(), group, l);
+					const bool hasRight = right
+						&& TryGetDescriptionValue(*right.Get(), group, r);
 					const int comparison = !hasLeft || !hasRight
 						? hasLeft == hasRight ? 0 : hasLeft ? 1 : -1
 						: CompareValues(l, r, group.IgnoreCase);
@@ -345,10 +404,10 @@ void CollectionViewSource::RebuildProjection()
 				{
 					BindingValue l;
 					BindingValue r;
-					const bool hasLeft = left && TryGetBindingPathValue(
-						*left.Get(), sort.PropertyName, l);
-					const bool hasRight = right && TryGetBindingPathValue(
-						*right.Get(), sort.PropertyName, r);
+					const bool hasLeft = left
+						&& TryGetDescriptionValue(*left.Get(), sort, l);
+					const bool hasRight = right
+						&& TryGetDescriptionValue(*right.Get(), sort, r);
 					const int comparison = !hasLeft || !hasRight
 						? hasLeft == hasRight ? 0 : hasLeft ? 1 : -1
 						: CompareValues(l, r, sort.IgnoreCase);
@@ -390,8 +449,8 @@ std::vector<BindingListGroup> CollectionViewSource::BuildGroups(
 			for (size_t index = begin; index < end; ++index)
 			{
 				BindingValue candidate;
-				if (!items[index] || !TryGetBindingPathValue(
-					*items[index].Get(), aggregate.PropertyName, candidate)
+				if (!items[index] || !TryGetDescriptionValue(
+					*items[index].Get(), aggregate, candidate)
 					|| candidate.Empty()) continue;
 				if (aggregate.Function == CollectionAggregateFunction::Sum
 					|| aggregate.Function == CollectionAggregateFunction::Average)
@@ -430,20 +489,20 @@ std::vector<BindingListGroup> CollectionViewSource::BuildGroups(
 		{
 			BindingValue key;
 			if (items[groupBegin])
-				(void)TryGetBindingPathValue(
-					*items[groupBegin].Get(), description.PropertyName, key);
+				(void)TryGetDescriptionValue(
+					*items[groupBegin].Get(), description, key);
 			size_t groupEnd = groupBegin + 1;
 			for (; groupEnd < end; ++groupEnd)
 			{
 				BindingValue candidate;
 				if (items[groupEnd])
-					(void)TryGetBindingPathValue(
-						*items[groupEnd].Get(), description.PropertyName, candidate);
+					(void)TryGetDescriptionValue(
+						*items[groupEnd].Get(), description, candidate);
 				if (CompareValues(key, candidate, description.IgnoreCase) != 0)
 					break;
 			}
 			BindingListGroup group{
-				key, description.PropertyName, level,
+				key, CollectionGroupPropertyName(description), level,
 				groupBegin, groupEnd - groupBegin };
 			group.Aggregates = buildAggregates(groupBegin, groupEnd);
 			result.push_back(std::move(group));
@@ -520,56 +579,42 @@ void CollectionViewSource::RebuildItemObservations()
 {
 	_itemObservations.clear();
 	if (!_source) return;
-	std::vector<std::wstring> paths;
-	paths.reserve(_filterDescriptions.size() + _sortDescriptions.size()
+	std::vector<CompiledBindingPathView> compiledPaths;
+	compiledPaths.reserve(_filterDescriptions.size() + _sortDescriptions.size()
 		+ _groupDescriptions.size() + _aggregateDescriptions.size());
-	for (const auto& filter : _filterDescriptions)
-		if (!filter.PropertyName.empty()) paths.push_back(filter.PropertyName);
-	for (const auto& sort : _sortDescriptions)
-		if (!sort.PropertyName.empty()) paths.push_back(sort.PropertyName);
-	for (const auto& group : _groupDescriptions)
-		if (!group.PropertyName.empty()) paths.push_back(group.PropertyName);
-	for (const auto& aggregate : _aggregateDescriptions)
-		if (!aggregate.PropertyName.empty()) paths.push_back(aggregate.PropertyName);
-	std::sort(paths.begin(), paths.end());
-	paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
-	if (paths.empty()) return;
-	_itemObservations.reserve(_source.Get()->Count());
-	for (size_t index = 0; index < _source.Get()->Count(); ++index)
+	auto appendCompiledPath = [&](CompiledBindingPathView path)
 	{
-		BindingSourceReference item;
-		if (!_source.Get()->TryGetItem(index, item) || !item) continue;
-		BindingPathObservation observation;
-		observation.Owners.push_back(item.Shared());
-		std::unordered_set<const IBindingSource*> subscribed;
-		for (const auto& path : paths)
+		if (path.Empty()) return;
+		if (std::none_of(
+			compiledPaths.begin(), compiledPaths.end(),
+			[&](CompiledBindingPathView current)
+			{ return SameCompiledCollectionPath(current, path); }))
+			compiledPaths.push_back(path);
+	};
+	for (const auto& filter : _filterDescriptions)
+		appendCompiledPath(filter.CompiledPath);
+	for (const auto& sort : _sortDescriptions)
+		appendCompiledPath(sort.CompiledPath);
+	for (const auto& group : _groupDescriptions)
+		appendCompiledPath(group.CompiledPath);
+	for (const auto& aggregate : _aggregateDescriptions)
+		appendCompiledPath(aggregate.CompiledPath);
+	if (!compiledPaths.empty())
+	{
+		_itemObservations.reserve(_source.Get()->Count());
+		for (size_t index = 0; index < _source.Get()->Count(); ++index)
 		{
-			IBindingSource* current = item.Get();
-			if (subscribed.insert(current).second)
-				observation.Connections.push_back(
-					current->PropertyChanged().Subscribe(
-						[this](const PropertyChangedEventArgs&) { Refresh(); }));
-			size_t start = 0;
-			while (start < path.size())
-			{
-				const auto separator = path.find(L'.', start);
-				if (separator == std::wstring::npos) break;
-				const auto name = path.substr(start, separator - start);
-				BindingValue value;
-				BindingSourceReference nested;
-				if (!current->TryGetValue(name, value)
-					|| !value.TryGet(nested) || !nested) break;
-				observation.Owners.push_back(nested.Shared());
-				current = nested.Get();
-				if (subscribed.insert(current).second)
-					observation.Connections.push_back(
-						current->PropertyChanged().Subscribe(
-							[this](const PropertyChangedEventArgs&) { Refresh(); }));
-				start = separator + 1;
-			}
+			BindingSourceReference item;
+			if (!_source.Get()->TryGetItem(index, item) || !item) continue;
+			_itemObservations.push_back(ObserveBindingPaths(
+				item,
+				std::span<const CompiledBindingPathView>{ compiledPaths },
+				[this] { Refresh(); }));
 		}
-		_itemObservations.push_back(std::move(observation));
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
+	AppendAuthoredItemObservations();
+#endif
 }
 
 void CollectionViewSource::RestoreCurrentItem()

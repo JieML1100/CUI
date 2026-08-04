@@ -18,10 +18,12 @@ public:
 
 	UIClass Type() override { return UIClass::UI_Decorator; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 	Control* GetChild() const noexcept;
 	Control* SetChild(std::unique_ptr<Control> value);

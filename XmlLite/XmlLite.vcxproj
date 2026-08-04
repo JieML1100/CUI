@@ -139,7 +139,9 @@
       <AdditionalIncludeDirectories>$(ProjectDir)include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
     </ClCompile>
   </ItemDefinitionGroup>

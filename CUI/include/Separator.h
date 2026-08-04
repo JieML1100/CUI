@@ -5,8 +5,8 @@
 /**
  * WPF-style structural separator.
  *
- * Separator is a real item control, not a flag on MenuItem. Its visual is a
- * thin rule whose axis follows the arranged aspect ratio.
+ * Separator is a real control, not a flag on MenuItem. It owns no native
+ * pixels; its theme can replace the thin-rule ControlTemplate per container.
  */
 class Separator final : public Control
 {
@@ -21,10 +21,10 @@ public:
 	Separator();
 	UIClass Type() override { return UIClass::UI_Separator; }
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
-protected:
-	void OnRender() override;
+#endif
 };

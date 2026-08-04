@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary
+  xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ControlTemplate
+    x:Key="CornerRadiusVisualStateTemplate"
+    TargetType="Expander">
+    <DockPanel x:Name="Root">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="ExpansionStates">
+          <VisualState x:Name="Expanded">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsExpanded" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter
+                TargetName="ContentBorder"
+                Property="CornerRadius"
+                Value="1,2,3,4"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Collapsed"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Border x:Name="ContentBorder" CornerRadius="0"/>
+    </DockPanel>
+  </ControlTemplate>
+  <Style TargetType="Expander">
+    <Setter
+      Property="Template"
+      Value="{StaticResource CornerRadiusVisualStateTemplate}"/>
+  </Style>
+</ResourceDictionary>

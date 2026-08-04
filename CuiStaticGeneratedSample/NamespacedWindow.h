@@ -13,11 +13,6 @@ public:
 	~MainWindow() override = default;
 
 private:
-	void HandleWindowContentRendered(Window* sender) noexcept
-	{
-		(void)sender;
-	}
-
 #include "NamespacedWindow.handlers.g.inc"
 };
 

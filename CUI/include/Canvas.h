@@ -8,7 +8,7 @@
  * Panel remains the non-authored native base shared by all panel layouts;
  * Canvas is the concrete XAML type that owns the absolute-layout identity.
  */
-class Canvas final : public Panel
+class Canvas : public Panel
 {
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
@@ -56,8 +56,10 @@ public:
 	{
 		Panel::RegisterDependencyProperties();
 	}
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 };

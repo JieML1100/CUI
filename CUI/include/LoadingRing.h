@@ -21,7 +21,10 @@ private:
 public:
 	virtual UIClass Type();
 	static void RegisterDependencyProperties();
+	static const DependencyProperty& IsActiveProperty();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
+#endif
 
 	PROPERTY(bool, IsActive);
 	GET(bool, IsActive);

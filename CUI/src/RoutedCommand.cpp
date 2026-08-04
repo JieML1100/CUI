@@ -7,7 +7,7 @@
 #include "UIElement.h"
 #include "Window.h"
 #include "WindowInfrastructure.h"
-#include "XamlSchema.h"
+#include "RuntimeTypeMetadata.h"
 
 #include <algorithm>
 #include <atomic>
@@ -181,7 +181,7 @@ namespace
 		std::uint64_t Token = 0;
 		ClassCommandBindingOwnerKind OwnerKind =
 			ClassCommandBindingOwnerKind::Native;
-		RuntimeTypeId DeclarativeOwner;
+		ComponentTypeToken ComponentOwner;
 		UIClass NativeOwner = UIClass::UI_Base;
 		CommandBinding Binding;
 	};
@@ -684,10 +684,10 @@ bool RoutedCommandManager::ProcessInput(
 }
 
 EventConnection RoutedCommandManager::RegisterClassCommandBinding(
-	const RuntimeTypeId& ownerType,
+	ComponentTypeToken ownerType,
 	CommandBinding binding)
 {
-	if (!ownerType.Valid() || binding.Command.Empty()) return {};
+	if (!ownerType || binding.Command.Empty()) return {};
 	auto& registry = ClassCommandBindings();
 	std::uint64_t token = 0;
 	{
@@ -707,6 +707,16 @@ EventConnection RoutedCommandManager::RegisterClassCommandBinding(
 			current.Entries.end());
 	});
 }
+
+#if CUI_ENABLE_DYNAMIC_XAML
+EventConnection RoutedCommandManager::RegisterClassCommandBinding(
+	const RuntimeTypeId& ownerType,
+	CommandBinding binding)
+{
+	return RegisterClassCommandBinding(MakeComponentTypeToken(
+		ownerType.NamespaceUri, ownerType.LocalName), std::move(binding));
+}
+#endif
 
 EventConnection RoutedCommandManager::RegisterClassCommandBinding(
 	UIClass ownerClass,
@@ -749,13 +759,13 @@ RoutedHandlerInvocationCount RoutedCommandManager::InvokeCommandBindings(
 	{
 		auto& registry = ClassCommandBindings();
 		std::scoped_lock lock(registry.Mutex);
-		const auto& declarativeType = target.GetDeclarativeTypeId();
+		const auto componentType = target.GetDeclarativeTypeToken();
 		for (const auto& entry : registry.Entries)
 		{
 			if (entry.OwnerKind == ClassCommandBindingOwnerKind::Declarative)
 			{
-				if (declarativeType.Valid()
-					&& entry.DeclarativeOwner == declarativeType)
+				if (componentType
+					&& entry.ComponentOwner == componentType)
 					exact.push_back(entry);
 			}
 			else if (IsUIClassAssignableFrom(entry.NativeOwner, target.Type()))

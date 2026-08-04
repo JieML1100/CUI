@@ -1,68 +1,15 @@
 #include "ContextMenu.h"
 #include "EventInfrastructure.h"
+#include "Popup.h"
 #include "StyleInfrastructure.h"
 #include "TemplateInfrastructure.h"
 #include "Window.h"
 #include "WindowInfrastructure.h"
 #include <algorithm>
 #include <cmath>
-#include <optional>
-#include <unordered_set>
 
 namespace
 {
-	// Private fallback-presenter metrics. Templates own the public appearance.
-	constexpr float ItemHorizontalPadding = 12.0f;
-	constexpr float PopupVerticalPadding = 6.0f;
-	constexpr float PopupItemExtent = 28.0f;
-	constexpr float PopupBorderThickness = 1.0f;
-	constexpr float PopupCornerRadius = 8.0f;
-	constexpr float PopupItemCornerRadius = 6.0f;
-	constexpr float PopupItemHorizontalInset = 6.0f;
-	constexpr D2D1_COLOR_F PopupBackground = cui::theme::palette::Surface;
-	constexpr D2D1_COLOR_F PopupBorder = cui::theme::palette::Border;
-	constexpr D2D1_COLOR_F PopupHighlight = cui::theme::palette::AccentSelected;
-	constexpr D2D1_COLOR_F PopupText = cui::theme::palette::TextPrimary;
-	constexpr D2D1_COLOR_F PopupSeparator = cui::theme::palette::Border;
-
-	struct ScopeExit
-	{
-		std::function<void()> Action;
-		~ScopeExit() { if (Action) Action(); }
-	};
-
-	std::optional<DependencyPropertyKey>&
-	PlacementTargetPropertyKeyStorage()
-	{
-		static std::optional<DependencyPropertyKey> key;
-		return key;
-	}
-
-	const DependencyPropertyKey& PlacementTargetPropertyKey(
-		ContextMenu& target)
-	{
-		target.EnsureBindingPropertiesRegistered();
-		return PlacementTargetPropertyKeyStorage().value();
-	}
-
-	D2D1_COLOR_F BoostAlpha(D2D1_COLOR_F color, float factor)
-	{
-		color.a = (std::clamp)(color.a * factor, 0.0f, 1.0f);
-		return color;
-	}
-
-	D2D1_SIZE_F LogicalPopupExtent(Window* form)
-	{
-		if (!form) return D2D1::SizeF(0.0f, 0.0f);
-		const auto viewport = form->GetContentViewportSizeDip();
-		return D2D1::SizeF(viewport.width, viewport.height);
-	}
-
-	bool IsSeparator(const Control* item)
-	{
-		return dynamic_cast<const Separator*>(item) != nullptr;
-	}
-
 	MenuItem* AsMenuItem(Control* item)
 	{
 		return dynamic_cast<MenuItem*>(item);
@@ -92,124 +39,407 @@ namespace
 		}
 		return false;
 	}
+
 }
 
 UIClass ContextMenu::Type() { return UIClass::UI_ContextMenu; }
 GET_CPP(ContextMenu, Control*, PlacementTarget) { return _placementTarget.Get(); }
 
-void ContextMenu::RegisterDependencyProperties()
+const DependencyProperty& ContextMenu::IsOpenProperty()
 {
-	ItemsControl::RegisterDependencyProperties();
-	MenuItem::RegisterDependencyProperties();
-	static const bool registered = []
+	static const auto registration = []
 	{
-		auto subscriber = [](const wchar_t* propertyName)
-		{
-			return [name = std::wstring(propertyName)](
-				ContextMenu& target,
-				DependencyPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target.OnPropertyValueChanged.Subscribe(
-					[name, handler = std::move(handler)](
-						DependencyObject*,
-						const DependencyPropertyChangedEventArgs& args)
-					{
-						if (args.PropertyName == name)
-							handler();
-					});
-			};
-		};
-
-		DependencyPropertyOptions<ContextMenu, bool> openOptions;
-		openOptions.DefaultValue = false;
-		openOptions.Flags = DependencyPropertyFlags::AffectsArrange
+		DependencyPropertyOptions<ContextMenu, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::AffectsArrange
 			| DependencyPropertyFlags::AffectsRender;
-		openOptions.Design.Category = L"Behavior";
-		openOptions.Design.CategoryOrder = 300;
-		openOptions.Design.Order = 10;
-		openOptions.Design.Editor = DependencyPropertyEditorKind::Boolean;
-		openOptions.Design.Persistence = DependencyPropertyPersistence::Metadata;
-		openOptions.Changed = [](
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
 			ContextMenu& target, const bool& oldValue, const bool& newValue)
 		{
 			target.ApplyIsOpenChange(oldValue, newValue);
 		};
-		DependencyPropertyRegistry::Register<ContextMenu, bool>(L"IsOpen",
+		return DependencyPropertyRegistry::RegisterStatic<ContextMenu, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsOpen"),
 			[](ContextMenu& target) { return target.GetIsOpen(); },
 			[](ContextMenu& target, const bool& value)
-			{ target.SetIsOpen(value); },
-			subscriber(L"IsOpen"), std::move(openOptions));
+			{ target.SetIsOpen(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		DependencyPropertyOptions<ContextMenu, bool> staysOpenOptions;
-		staysOpenOptions.DefaultValue = false;
-		staysOpenOptions.Flags = DependencyPropertyFlags::None;
-		staysOpenOptions.Design.Category = L"Behavior";
-		staysOpenOptions.Design.CategoryOrder = 300;
-		staysOpenOptions.Design.Order = 20;
-		staysOpenOptions.Design.Editor = DependencyPropertyEditorKind::Boolean;
-		staysOpenOptions.Design.Persistence =
-			DependencyPropertyPersistence::Metadata;
-		DependencyPropertyRegistry::Register<ContextMenu, bool>(L"StaysOpen",
+const DependencyProperty& ContextMenu::StaysOpenProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::None;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 20;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<ContextMenu, bool>(
+			DependencyPropertyRegistrationLiteral(L"StaysOpen"),
 			[](ContextMenu& target) { return target.GetStaysOpen(); },
 			[](ContextMenu& target, const bool& value)
-			{ target.SetStaysOpen(value); },
-			subscriber(L"StaysOpen"), std::move(staysOpenOptions));
+			{ target.SetStaysOpen(value); }, {}, std::move(options));
+	}();
+	return *registration;
+}
 
-		DependencyPropertyOptions<ContextMenu, ControlWeakReference> targetOptions;
-		targetOptions.DefaultValue = {};
-		targetOptions.Flags = DependencyPropertyFlags::None;
-		targetOptions.Design.Category = L"State";
-		targetOptions.Design.CategoryOrder = 70;
-		targetOptions.Design.Order = 30;
-		targetOptions.Design.Editor = DependencyPropertyEditorKind::Auto;
-		targetOptions.Design.Persistence =
-			DependencyPropertyPersistence::Transient;
-		targetOptions.Design.Browsable = false;
-		PlacementTargetPropertyKeyStorage().emplace(
-			DependencyPropertyRegistry::RegisterReadOnly<
-				ContextMenu, ControlWeakReference>(
-				L"PlacementTarget",
+const DependencyProperty& ContextMenu::PlacementTargetProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, ControlWeakReference> options;
+		options.DefaultValue = {};
+		options.Flags = DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 30;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			ContextMenu, ControlWeakReference>(
+				DependencyPropertyRegistrationLiteral(L"PlacementTarget"),
 				[](ContextMenu& target) { return target._placementTarget; },
 				[](ContextMenu& target, const ControlWeakReference& value)
-				{
-					(void)target.SetReadOnlyPropertyField(
-						L"PlacementTarget", target._placementTarget, value);
-				},
-				subscriber(L"PlacementTarget"), std::move(targetOptions)));
-		return true;
+				{ target.ApplyPlacementTarget(value); }, {},
+				std::move(options));
 	}();
-	(void)registered;
+	return *registration;
+}
+
+const DependencyProperty& ContextMenu::HorizontalOffsetProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, float> options;
+		options.DefaultValue = 0.0f;
+		options.Flags = DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 40;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Step = 0.5;
+		)
+		options.Validate = [](const float& value)
+		{ return std::isfinite(value); };
+		options.Changed = [](
+			ContextMenu& target, const float&, const float&)
+		{
+			if (target._isOpen) target.ArrangePopupSurface();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<ContextMenu, float>(
+			DependencyPropertyRegistrationLiteral(L"HorizontalOffset"),
+			[](ContextMenu& target) { return target.HorizontalOffset; },
+			[](ContextMenu& target, const float& value)
+			{ target.HorizontalOffset = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ContextMenu::VerticalOffsetProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, float> options;
+		options.DefaultValue = 0.0f;
+		options.Flags = DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 50;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Step = 0.5;
+		)
+		options.Validate = [](const float& value)
+		{ return std::isfinite(value); };
+		options.Changed = [](
+			ContextMenu& target, const float&, const float&)
+		{
+			if (target._isOpen) target.ArrangePopupSurface();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<ContextMenu, float>(
+			DependencyPropertyRegistrationLiteral(L"VerticalOffset"),
+			[](ContextMenu& target) { return target.VerticalOffset; },
+			[](ContextMenu& target, const float& value)
+			{ target.VerticalOffset = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ContextMenu::PlacementRectangleProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, cui::core::Rect> options;
+		options.DefaultValue = {};
+		options.Flags = DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 60;
+		options.Design.Editor = DependencyPropertyEditorKind::Auto;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
+			ContextMenu& target,
+			const cui::core::Rect&,
+			const cui::core::Rect&)
+		{
+			if (target._isOpen) target.ArrangePopupSurface();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			ContextMenu, cui::core::Rect>(
+				DependencyPropertyRegistrationLiteral(L"PlacementRectangle"),
+				[](ContextMenu& target) { return target.PlacementRectangle; },
+				[](ContextMenu& target, const cui::core::Rect& value)
+				{ target.PlacementRectangle = value; }, {},
+				std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ContextMenu::PlacementProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, PlacementMode> options;
+		options.DefaultValue = PlacementMode::MousePoint;
+		options.Flags = DependencyPropertyFlags::AffectsArrange;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 70;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Choices = {
+			{ L"Absolute", BindingValue(PlacementMode::Absolute) },
+			{ L"Bottom", BindingValue(PlacementMode::Bottom) },
+			{ L"Top", BindingValue(PlacementMode::Top) },
+			{ L"Left", BindingValue(PlacementMode::Left) },
+			{ L"Right", BindingValue(PlacementMode::Right) },
+			{ L"Center", BindingValue(PlacementMode::Center) },
+			{ L"MousePoint", BindingValue(PlacementMode::MousePoint) }
+		};
+		)
+		options.Changed = [](
+			ContextMenu& target,
+			const PlacementMode&, const PlacementMode&)
+		{
+			if (target._isOpen) target.ArrangePopupSurface();
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			ContextMenu, PlacementMode>(
+				DependencyPropertyRegistrationLiteral(L"Placement"),
+				[](ContextMenu& target) { return target.Placement; },
+				[](ContextMenu& target, const PlacementMode& value)
+				{ target.Placement = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& ContextMenu::HasDropShadowProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<ContextMenu, bool> options;
+		options.DefaultValue = false;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 10;
+		options.Design.Order = 80;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<ContextMenu, bool>(
+			DependencyPropertyRegistrationLiteral(L"HasDropShadow"),
+			[](ContextMenu& target) { return target.HasDropShadow; },
+			[](ContextMenu& target, const bool& value)
+			{ target.HasDropShadow = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+void ContextMenu::RegisterDependencyProperties()
+{
+	ItemsControl::RegisterDependencyProperties();
+	MenuItem::RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	(void)IsOpenProperty();
+	(void)StaysOpenProperty();
+	(void)PlacementTargetProperty();
+	(void)HorizontalOffsetProperty();
+	(void)VerticalOffsetProperty();
+	(void)PlacementRectangleProperty();
+	(void)PlacementProperty();
+	(void)HasDropShadowProperty();
+#endif
 }
 
 void ContextMenu::SetIsOpen(bool value)
 {
-	(void)SetPropertyField(L"IsOpen", _isOpen, value);
+	(void)SetPropertyField(IsOpenProperty(), _isOpen, value);
 }
 
 void ContextMenu::SetStaysOpen(bool value)
 {
-	if (!SetPropertyField(L"StaysOpen", _staysOpen, value)) return;
-	if (_isPresented && GetPresentationWindow())
+	const ControlWeakReference hostLifetime(this);
+	if (!SetPropertyField(
+		StaysOpenProperty(), _staysOpen, value)) return;
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (host && host->_isPresented && host->GetPresentationWindow())
 	{
 		TransientPresentationOptions options;
-		options.DismissOnOutsidePointerDown = !_staysOpen;
-		options.DismissOnWindowDeactivation = !_staysOpen;
+		options.DismissOnOutsidePointerDown = !host->_staysOpen;
+		options.DismissOnWindowDeactivation = !host->_staysOpen;
 		(void)cui::framework::WindowAccess::OpenTransientPresentation(
-			*GetPresentationWindow(), this, options,
+			*host->GetPresentationWindow(), host, options,
 			[](Control& root)
 			{ static_cast<ContextMenu&>(root).Hide(); });
 	}
 }
 
+SET_CPP(ContextMenu, Control*, PlacementTarget)
+{
+	const ControlWeakReference hostLifetime(this);
+	ClearServicePlacementTarget();
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	(void)host->TrySetPropertyValue(
+		PlacementTargetProperty(),
+		BindingValue(ControlWeakReference(value)),
+		DependencyPropertyValueSource::Local);
+}
+
+GET_CPP(ContextMenu, float, HorizontalOffset)
+{
+	return _horizontalOffset;
+}
+
+SET_CPP(ContextMenu, float, HorizontalOffset)
+{
+	(void)SetPropertyField(
+		HorizontalOffsetProperty(), _horizontalOffset,
+		std::isfinite(value) ? value : 0.0f);
+}
+
+GET_CPP(ContextMenu, float, VerticalOffset)
+{
+	return _verticalOffset;
+}
+
+SET_CPP(ContextMenu, float, VerticalOffset)
+{
+	(void)SetPropertyField(
+		VerticalOffsetProperty(), _verticalOffset,
+		std::isfinite(value) ? value : 0.0f);
+}
+
+GET_CPP(ContextMenu, cui::core::Rect, PlacementRectangle)
+{
+	return _placementRectangle;
+}
+
+SET_CPP(ContextMenu, cui::core::Rect, PlacementRectangle)
+{
+	(void)SetPropertyField(
+		PlacementRectangleProperty(), _placementRectangle, value);
+}
+
+GET_CPP(ContextMenu, PlacementMode, Placement)
+{
+	return _placement;
+}
+
+SET_CPP(ContextMenu, PlacementMode, Placement)
+{
+	(void)SetPropertyField(PlacementProperty(), _placement, value);
+}
+
+GET_CPP(ContextMenu, bool, HasDropShadow)
+{
+	return _hasDropShadow;
+}
+
+SET_CPP(ContextMenu, bool, HasDropShadow)
+{
+	(void)SetPropertyField(
+		HasDropShadowProperty(), _hasDropShadow, value);
+}
+
+void ContextMenu::ApplyPlacementTarget(
+	const ControlWeakReference& value)
+{
+	const ControlWeakReference hostLifetime(this);
+	if (!SetPropertyField(
+		PlacementTargetProperty(), _placementTarget, value)) return;
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->SynchronizeItemCommandHosts();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (host && host->_isOpen) host->ArrangePopupSurface();
+}
+
+bool ContextMenu::ApplyServicePlacementTarget(Control* value)
+{
+	const ControlWeakReference hostLifetime(this);
+	if (!value || _servicePlacementTargetActive
+		|| _placementTarget.HasValue()) return false;
+	_servicePlacementTarget = ControlWeakReference(value);
+	_servicePlacementTargetActive = true;
+	if (TrySetCurrentPropertyValue(
+		PlacementTargetProperty(),
+		BindingValue(_servicePlacementTarget)))
+		return true;
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return false;
+	host->_servicePlacementTarget = ControlWeakReference{};
+	host->_servicePlacementTargetActive = false;
+	return false;
+}
+
+void ContextMenu::ClearServicePlacementTarget()
+{
+	if (!_servicePlacementTargetActive) return;
+	const auto serviceTarget = _servicePlacementTarget;
+	_servicePlacementTarget = ControlWeakReference{};
+	_servicePlacementTargetActive = false;
+	if (_placementTarget == serviceTarget)
+		(void)TrySetCurrentPropertyValue(
+			PlacementTargetProperty(),
+			BindingValue(ControlWeakReference{}));
+}
+
 ContextMenu::ContextMenu()
-	: ItemsControl()
+	: ItemsControl(),
+	_placement(PlacementMode::MousePoint)
 {
 	RegisterDependencyProperties();
+	if (auto* itemsHost = GetItemsHost())
+		cui::framework::TemplateAccess::
+			SetParticipatesInPresentationScene(*itemsHost, false);
 	this->RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->RendererBorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->RendererForegroundColor = PopupText;
-	SuppressItemsPresentation();
+	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
+	SetPresentationSuppressed(true);
 }
 
 ContextMenu::~ContextMenu()
@@ -235,7 +465,8 @@ void ContextMenu::AttachItemTree(MenuItem* item)
 	item->SetStructureChangedHandler([this]()
 		{
 			ClearHoverState();
-			if (_isOpen) Hide();
+			if (_isOpen)
+				Hide();
 			else InvalidateVisual();
 		});
 	item->SetInteractionStateChangedHandler(
@@ -254,6 +485,11 @@ bool ContextMenu::ValidateAuthoredItemControl(
 
 void ContextMenu::OnBeforeGeneratedItemsRebuilt()
 {
+	_generatedItemsRebuildSnapshot.clear();
+	_generatedItemsRebuildSnapshot.reserve(_items.size());
+	for (auto* entry : _items)
+		_generatedItemsRebuildSnapshot.emplace_back(entry);
+	_generatedItemsRebuildPending = true;
 	for (auto* entry : _items)
 	{
 		auto* item = AsMenuItem(entry);
@@ -274,6 +510,22 @@ void ContextMenu::SynchronizeItems()
 		auto* item = GetGeneratedItem(index);
 		if (item) current.push_back(item);
 	}
+	bool structureChanged = current != _items;
+	if (_generatedItemsRebuildPending)
+	{
+		structureChanged = current.size()
+			!= _generatedItemsRebuildSnapshot.size();
+		if (!structureChanged)
+			for (size_t index = 0; index < current.size(); ++index)
+				if (_generatedItemsRebuildSnapshot[index].Get()
+					!= current[index])
+				{
+					structureChanged = true;
+					break;
+				}
+		_generatedItemsRebuildSnapshot.clear();
+		_generatedItemsRebuildPending = false;
+	}
 	for (auto* entry : _items)
 	{
 		if (std::find(current.begin(), current.end(), entry)
@@ -287,9 +539,17 @@ void ContextMenu::SynchronizeItems()
 	_items = std::move(current);
 	for (auto* entry : _items)
 		if (auto* item = AsMenuItem(entry)) AttachItemTree(item);
-	SuppressItemsPresentation();
+	if (!structureChanged)
+	{
+		InvalidateVisual();
+		return;
+	}
 	ClearHoverState();
-	if (_isOpen) Hide();
+	// Initial template/container realization happens after IsOpen becomes true
+	// but before the transient root is presented.  That is not a live menu
+	// mutation and must not cancel the first ShowAt transaction.
+	if (_isPresented)
+		Hide();
 	else InvalidateVisual();
 }
 
@@ -304,20 +564,24 @@ void ContextMenu::OnGeneratedItemsRebuilt()
 	SynchronizeItems();
 }
 
-void ContextMenu::SuppressItemsPresentation()
+std::unique_ptr<Panel> ContextMenu::CreateItemsHost() const
 {
-	// ContextMenu draws one transient popup projection. Its generator host is
-	// still the logical owner of rows, but those rows cannot simultaneously be
-	// flattened into the retained overlay scene.
-	if (auto* host = GetItemsHost())
-		cui::framework::TemplateAccess::SetParticipatesInPresentationScene(
-			*host, false);
+	auto itemsHost = ItemsControl::CreateItemsHost();
+	if (itemsHost)
+		cui::framework::TemplateAccess::
+			SetParticipatesInPresentationScene(
+				*itemsHost, GetControlTemplateRoot() != nullptr);
+	return itemsHost;
 }
 
 void ContextMenu::OnControlTemplatePresentationChanged()
 {
 	ItemsControl::OnControlTemplatePresentationChanged();
-	SuppressItemsPresentation();
+	if (auto* itemsHost = GetItemsHost())
+		cui::framework::TemplateAccess::
+			SetParticipatesInPresentationScene(
+				*itemsHost, GetControlTemplateRoot() != nullptr);
+	if (_isOpen) ArrangePopupSurface();
 }
 
 std::unique_ptr<Control> ContextMenu::WrapGeneratedItem(
@@ -329,8 +593,7 @@ std::unique_ptr<Control> ContextMenu::WrapGeneratedItem(
 	cui::framework::StyleAccess::SetResourceKey(
 		*container, GetItemContainerStyle());
 	if (visual) container->SetVisualHeader(std::move(visual));
-	else container->SetHeader(BindingValue(GetBindingRecordText(
-		item, GetDisplayMemberPath())));
+	else container->SetHeader(BindingValue(GetDisplayMemberText(item)));
 	return container;
 }
 
@@ -354,21 +617,41 @@ void ContextMenu::SynchronizeItemCommandHosts()
 void ContextMenu::OnPresentationWindowChanged(
 	Window* previousWindow, Window* currentWindow)
 {
-	if (previousWindow)
+	const ControlWeakReference hostLifetime(this);
+	const ControlWeakReference previousWindowLifetime(previousWindow);
+	const ControlWeakReference currentWindowLifetime(currentWindow);
+	Control::OnPresentationWindowChanged(previousWindow, currentWindow);
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	auto* livePreviousWindow = previousWindow
+		? dynamic_cast<Window*>(previousWindowLifetime.Get()) : nullptr;
+	if (previousWindow && !livePreviousWindow) return;
+	if (livePreviousWindow)
 		(void)cui::framework::WindowAccess::CloseTransientPresentation(
-			*previousWindow, this);
-	_isPresented = false;
-	if (_placementTarget.HasValue())
+			*livePreviousWindow, host);
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->_isPresented = false;
+	if (host->_servicePlacementTargetActive)
 	{
-		auto* placementTarget = _placementTarget.Get();
+		auto* placementTarget = host->_servicePlacementTarget.Get();
+		auto* liveCurrentWindow = currentWindow
+			? dynamic_cast<Window*>(currentWindowLifetime.Get()) : nullptr;
+		if (currentWindow && !liveCurrentWindow) return;
 		if (!placementTarget
-			|| placementTarget->GetPresentationWindow() != currentWindow)
-			(void)ClearReadOnlyPropertyValue(
-				PlacementTargetPropertyKey(*this));
+			|| placementTarget->GetPresentationWindow() != liveCurrentWindow)
+			host->ClearServicePlacementTarget();
 	}
-	SynchronizeItemCommandHosts();
-	if (_isOpen && currentWindow)
-		PresentCore();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->SynchronizeItemCommandHosts();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	auto* liveCurrentWindow = currentWindow
+		? dynamic_cast<Window*>(currentWindowLifetime.Get()) : nullptr;
+	if (currentWindow && !liveCurrentWindow) return;
+	if (host->_isOpen && liveCurrentWindow)
+		host->PresentCore();
 }
 
 void ContextMenu::OnItemInteractionStateChanged(MenuItem& source)
@@ -377,433 +660,188 @@ void ContextMenu::OnItemInteractionStateChanged(MenuItem& source)
 	if (!FindMenuItemPath(_items, &source, path) || path.empty()) return;
 	if (!IsInteractive(&source))
 	{
-		ClearHoverState();
+		source.SetIsSubmenuOpenCore(false);
+		return;
 	}
-	else if (_isOpen && source.IsSubmenuOpen
+	if (_isOpen && source.IsSubmenuOpen
 		&& !source.GetMenuItemsView().empty())
 	{
-		_openPath = path;
-		_hoverPath = path;
-	}
-	else if (_isOpen)
-	{
-		const auto openDepth = path.size();
-		if (_openPath.size() >= openDepth
-			&& std::equal(path.begin(), path.end(), _openPath.begin()))
+		auto* root = source.RootTopLevelItem();
+		for (auto* entry : _items)
 		{
-			_openPath.resize(openDepth - 1);
-			if (_hoverPath.size() > openDepth - 1)
-				_hoverPath.resize(openDepth - 1);
+			auto* item = AsMenuItem(entry);
+			if (!item || item == root) continue;
+			item->SetIsSubmenuOpenCore(false);
+			item->SetIsHighlightedCore(false);
 		}
 	}
-	SynchronizeInteractionProjection();
 	InvalidateVisual();
 }
 
-float ContextMenu::CalcPanelWidth(std::span<Control* const> items)
-{
-	float w = 120.0f;
-	auto font = this->GetRenderFont();
-	for (auto* entry : items)
-	{
-		auto* it = AsMenuItem(entry);
-		if (!it) continue;
-		auto ts = font->GetTextSize(it->GetDisplayText());
-		float tw = ts.width + ItemHorizontalPadding * 2.0f + 42.0f;
-		if (!it->InputGestureText.empty())
-		{
-			auto ss = font->GetTextSize(it->InputGestureText);
-			tw += ss.width + 20.0f;
-		}
-		if (!it->GetMenuItemsView().empty())
-			tw += 18.0f;
-		if (tw > w) w = tw;
-	}
-	if (w < 80.0f) w = 80.0f;
-	if (this->GetPresentationWindow())
-	{
-		float maxW = LogicalPopupExtent(this->GetPresentationWindow()).width - 8.0f;
-		if (w > maxW) w = maxW;
-	}
-	return w;
-}
-
-std::vector<ContextMenu::PopupPanel> ContextMenu::BuildPanels()
-{
-	std::vector<PopupPanel> panels;
-	if (!_isOpen || _items.empty())
-		return panels;
-
-	auto clampPanelXY = [&](float& x, float& y, float w, float h)
-		{
-			if (!this->GetPresentationWindow()) return;
-			const auto extent = LogicalPopupExtent(this->GetPresentationWindow());
-			float maxX = extent.width;
-			float maxY = extent.height;
-			if (x < 0.0f) x = 0.0f;
-			if (y < 0.0f) y = 0.0f;
-			if (x + w > maxX) x = (std::max)(0.0f, maxX - w);
-			if (y + h > maxY) y = (std::max)(0.0f, maxY - h);
-		};
-
-	PopupPanel root;
-	root.Items = _items;
-	root.X = _anchor.x;
-	root.Y = _anchor.y;
-	root.W = CalcPanelWidth(root.Items);
-	root.H = PopupVerticalPadding * 2.0f + (float)root.Items.size() * (float)PopupItemExtent;
-	clampPanelXY(root.X, root.Y, root.W, root.H);
-	panels.push_back(root);
-
-	for (size_t level = 0; level < _openPath.size(); level++)
-	{
-		int openIdx = _openPath[level];
-		if (openIdx < 0) break;
-		const auto& prev = panels.back();
-		if (prev.Items.empty()) break;
-		if (openIdx >= (int)prev.Items.size()) break;
-		auto* owner = AsMenuItem(prev.Items[openIdx]);
-		if (!IsInteractive(owner) || owner->GetMenuItemsView().empty()) break;
-
-		PopupPanel p;
-		p.Items = owner->GetMenuItemsView();
-		p.W = CalcPanelWidth(p.Items);
-		p.H = PopupVerticalPadding * 2.0f + (float)p.Items.size() * (float)PopupItemExtent;
-		p.X = prev.X + prev.W - 1.0f;
-		p.Y = prev.Y + PopupVerticalPadding + (float)openIdx * (float)PopupItemExtent;
-		if (this->GetPresentationWindow())
-		{
-			float maxX = LogicalPopupExtent(this->GetPresentationWindow()).width;
-			if (p.X + p.W > maxX)
-			{
-				p.X = prev.X - p.W - 4.0f;
-				p.OpenedToLeft = true;
-			}
-			if (p.X < 0.0f) p.X = 0.0f;
-		}
-		clampPanelXY(p.X, p.Y, p.W, p.H);
-		panels.push_back(p);
-		if (panels.size() > 32) break;
-	}
-
-	return panels;
-}
 
 void ContextMenu::ClearHoverState()
 {
+	const ControlWeakReference hostLifetime(this);
 	_hoverPath.clear();
 	_openPath.clear();
-	SynchronizeInteractionProjection();
+	std::vector<ControlWeakReference> items;
+	auto snapshot = [&](auto&& self, MenuItem& item) -> void
+	{
+		items.emplace_back(&item);
+		for (auto* child : item.GetMenuItemsView())
+			if (auto* menuItem = AsMenuItem(child))
+				self(self, *menuItem);
+	};
+	for (auto* entry : _items)
+		if (auto* item = AsMenuItem(entry)) snapshot(snapshot, *item);
+	for (const auto& itemLifetime : items)
+	{
+		auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+		auto* item = dynamic_cast<MenuItem*>(itemLifetime.Get());
+		std::vector<int> path;
+		if (!host || !item
+			|| !FindMenuItemPath(host->_items, item, path)) continue;
+		item->SetIsSubmenuOpenCore(false);
+		host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+		item = dynamic_cast<MenuItem*>(itemLifetime.Get());
+		path.clear();
+		if (!host || !item
+			|| !FindMenuItemPath(host->_items, item, path)) continue;
+		item->SetIsHighlightedCore(false);
+	}
 }
 
 void ContextMenu::SynchronizeInteractionProjection()
 {
-	std::unordered_set<MenuItem*> highlightedItems;
-	std::unordered_set<MenuItem*> openedItems;
-	if (_isOpen)
-	{
-		std::span<Control* const> current{ _items.data(), _items.size() };
-		const size_t depth = (std::max)(_hoverPath.size(), _openPath.size());
-		for (size_t level = 0; level < depth; ++level)
-		{
-			if (level < _hoverPath.size())
-			{
-				const int highlighted = _hoverPath[level];
-				if (highlighted >= 0
-					&& highlighted < static_cast<int>(current.size()))
-					if (auto* item = AsMenuItem(current[highlighted]))
-						highlightedItems.insert(item);
-			}
-			if (level >= _openPath.size()) break;
-			const int opened = _openPath[level];
-			if (opened < 0 || opened >= static_cast<int>(current.size())) break;
-			auto* item = AsMenuItem(current[opened]);
-			if (!item) break;
-			openedItems.insert(item);
-			current = item->GetMenuItemsView();
-		}
-	}
-	auto apply = [&](auto&& self, MenuItem& item) -> void
-	{
-		item.SetIsHighlightedCore(highlightedItems.contains(&item));
-		item.SetIsSubmenuOpenCore(openedItems.contains(&item));
-		for (auto* child : item.GetMenuItemsView())
-			if (auto* menuItem = AsMenuItem(child)) self(self, *menuItem);
-	};
+	const ControlWeakReference hostLifetime(this);
+	std::vector<ControlWeakReference> items;
+	items.reserve(_items.size());
 	for (auto* entry : _items)
-		if (auto* item = AsMenuItem(entry)) apply(apply, *item);
+		if (auto* item = AsMenuItem(entry)) items.emplace_back(item);
+	for (const auto& itemLifetime : items)
+	{
+		auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+		auto* item = dynamic_cast<MenuItem*>(itemLifetime.Get());
+		if (!host || !item || host->IndexOfItem(item) < 0) continue;
+		item->UpdateRole();
+	}
 }
+
 
 cui::core::Size ContextMenu::GetRenderSizeDip()
 {
-	if (!this->GetPresentationWindow())
-		return {};
-	return this->GetPresentationWindow()->GetContentViewportSizeDip();
+	return _isOpen ? ItemsControl::GetRenderSizeDip()
+		: cui::core::Size{};
 }
 
 bool ContextMenu::ContainsPoint(int localX, int localY)
 {
-	if (!_isOpen)
-		return false;
-	auto panels = BuildPanels();
-	for (const auto& pn : panels)
-	{
-		if (localX >= pn.X && localX <= pn.X + pn.W && localY >= pn.Y && localY <= pn.Y + pn.H)
-			return true;
-	}
-	return false;
+	return _isOpen
+		&& ItemsControl::ContainsPoint(localX, localY);
 }
 
-void ContextMenu::OnRender()
+void ContextMenu::PreparePresentation()
 {
-	if (!this->IsVisible || !_isOpen || !this->GetPresentationWindow() || _items.empty())
-		return;
-	SynchronizeInteractionProjection();
+	ItemsControl::PreparePresentation();
+	if (_isOpen) ArrangePopupSurface();
+}
 
-	auto d2d = this->GetDrawingContext();
-	const auto size = this->GetActualSizeDip();
-	auto font = this->GetRenderFont();
-	auto panels = BuildPanels();
-
-	this->BeginRender(size.width, size.height);
+bool ContextMenu::HandlesNavigationKey(Key key) const
+{
+	switch (key)
 	{
-		for (size_t level = 0; level < panels.size(); level++)
-		{
-			const auto& pn = panels[level];
-			if (pn.Items.empty()) continue;
-			d2d->PushDrawRect(pn.X, pn.Y, pn.W, pn.H);
-			d2d->FillRoundRect(
-				pn.X, pn.Y, pn.W, pn.H,
-				PopupBackground, PopupCornerRadius);
-			d2d->DrawRoundRect(
-				pn.X, pn.Y, pn.W, pn.H,
-				PopupBorder, PopupBorderThickness, PopupCornerRadius);
-
-			int hoverIdx = (level < _hoverPath.size() ? _hoverPath[level] : -1);
-			int openIdx = (level < _openPath.size() ? _openPath[level] : -1);
-			for (int i = 0; i < (int)pn.Items.size(); i++)
-			{
-				auto* entry = pn.Items[i];
-				float iy = pn.Y + PopupVerticalPadding + (float)i * (float)PopupItemExtent;
-				if (IsSeparator(entry))
-				{
-					float y = iy + (float)PopupItemExtent * 0.5f;
-					d2d->DrawLine(pn.X + 12.0f, y,
-						pn.X + pn.W - 12.0f, y, PopupSeparator, 1.0f);
-					continue;
-				}
-				auto* it = AsMenuItem(entry);
-				const bool itemEnabled = IsInteractive(it);
-				if (itemEnabled && (i == hoverIdx || i == openIdx))
-				{
-					const float inset = (std::max)(0.0f, PopupItemHorizontalInset);
-					auto itemRect = D2D1::RectF(pn.X + inset, iy + 2.0f, pn.X + pn.W - inset, iy + (float)PopupItemExtent - 2.0f);
-					const auto hoverColor = PopupHighlight;
-					d2d->FillRoundRect(itemRect, hoverColor, PopupItemCornerRadius);
-					d2d->DrawRoundRect(itemRect, BoostAlpha(hoverColor, i == openIdx ? 2.1f : 1.7f), 1.0f, PopupItemCornerRadius);
-					const float stripeH = (std::max)(0.0f, itemRect.bottom - itemRect.top - 8.0f);
-					if (stripeH > 0.0f)
-						d2d->FillRoundRect(itemRect.left + 4.0f, itemRect.top + 4.0f, 3.0f, stripeH, BoostAlpha(hoverColor, 3.0f), 1.5f);
-				}
-				if (!it || !it->IsVisible) continue;
-				auto textColor = PopupText;
-				if (!itemEnabled) textColor.a *= 0.45f;
-
-				auto ts = font->GetTextSize(it->GetDisplayText());
-				float ty = iy + ((float)PopupItemExtent - ts.height) * 0.5f;
-				if (ty < iy) ty = iy;
-				const float checkSlot = 18.0f;
-				if (it->IsChecked)
-				{
-					auto checkSize = font->GetTextSize(L"\u2713");
-					const float checkY = iy
-						+ ((float)PopupItemExtent - checkSize.height) * 0.5f;
-					d2d->DrawString(
-						L"\u2713", pn.X + ItemHorizontalPadding, checkY,
-						textColor, font);
-				}
-				d2d->DrawString(
-					it->GetDisplayText(), pn.X + ItemHorizontalPadding + checkSlot, ty,
-					textColor, font);
-				const float arrowReserve =
-					!it->GetMenuItemsView().empty() ? 18.0f : 0.0f;
-				if (!it->InputGestureText.empty())
-				{
-					auto ss = font->GetTextSize(it->InputGestureText);
-					float sx = pn.X + pn.W - 14.0f - arrowReserve - ss.width;
-					d2d->DrawString(it->InputGestureText, sx, ty,
-						textColor, font);
-				}
-				if (!it->GetMenuItemsView().empty())
-				{
-					std::wstring arrow = L"\u203A";
-					if (i == openIdx && (level + 1) < panels.size() && panels[level + 1].OpenedToLeft)
-						arrow = L"\u2039";
-					auto as = font->GetTextSize(arrow);
-					float ax = pn.X + pn.W - 14.0f - as.width;
-					d2d->DrawString(arrow, ax, ty,
-						textColor, font);
-				}
-			}
-			d2d->PopDrawRect();
-		}
+	case Key::Left:
+	case Key::Right:
+	case Key::Up:
+	case Key::Down:
+	case Key::Home:
+	case Key::End:
+	case Key::Return:
+	case Key::Space:
+	case Key::Escape:
+		return true;
+	default:
+		return ItemsControl::HandlesNavigationKey(key);
 	}
-	this->EndRender();
+}
+
+MenuItem* ContextMenu::HitTopLevelItem(
+	int rootX, int rootY) const noexcept
+{
+	for (auto* entry : _items)
+	{
+		auto* item = AsMenuItem(entry);
+		if (!IsInteractive(item)) continue;
+		// ContextMenu is a transient presentation root. Host-level input uses
+		// Window content coordinates (the same coordinate space as placement),
+		// while a MenuItem reached by normal scene hit testing receives its own
+		// retargeted local report and never comes through this fallback.
+		if (item->GetAbsoluteRectDip().Contains(
+			cui::core::Point{
+				static_cast<float>(rootX),
+				static_cast<float>(rootY) }))
+			return item;
+	}
+	return nullptr;
 }
 
 bool ContextMenu::ProcessInput(const InputReport& input)
 {
-	const ControlWeakReference hostLifetime(this);
-	ScopeExit projectOnExit{ [hostLifetime]
-		{
-			if (auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get()))
-				host->SynchronizeInteractionProjection();
-		} };
-	if (!this->IsEffectivelyEnabled() || !this->IsVisible || !_isOpen)
+	if (!IsEffectivelyEnabled() || !IsVisible || !_isOpen)
 		return true;
-
-	if (_ignoreNextMouseUp && input.Kind == InputReportKind::PointerDown)
-	{
+	if (_ignoreNextMouseUp
+		&& input.Kind == InputReportKind::PointerDown)
 		_ignoreNextMouseUp = false;
-	}
-
-	if (_ignoreNextMouseUp && input.Kind == InputReportKind::PointerUp)
+	if (_ignoreNextMouseUp
+		&& input.Kind == InputReportKind::PointerUp)
 	{
 		_ignoreNextMouseUp = false;
 		return true;
 	}
-
-	auto panels = BuildPanels();
-	auto pointInRect = [&](float x, float y, const PopupPanel& pn) -> bool
-		{
-			return x >= pn.X && x <= pn.X + pn.W && y >= pn.Y && y <= pn.Y + pn.H;
-		};
-	auto ensureSize = [](std::vector<int>& values, size_t count)
-		{
-			if (values.size() < count) values.resize(count, -1);
-		};
-
-	int hitLevel = -1;
-	for (int i = (int)panels.size() - 1; i >= 0; i--)
-	{
-		if (pointInRect((float)input.X, (float)input.Y, panels[i]))
-		{
-			hitLevel = i;
-			break;
-		}
-	}
-
-	bool inBridge = false;
-	for (size_t i = 0; i + 1 < panels.size(); i++)
-	{
-		const auto& a = panels[i];
-		const auto& b = panels[i + 1];
-		float bridgeL = (std::min)(a.X + a.W - 2.0f, b.X + 2.0f);
-		float bridgeR = (std::max)(a.X + a.W - 2.0f, b.X + 2.0f);
-		float bridgeT = b.Y;
-		float bridgeB = b.Y + b.H;
-		if ((float)input.X >= bridgeL && (float)input.X <= bridgeR
-			&& (float)input.Y >= bridgeT && (float)input.Y <= bridgeB)
-		{
-			inBridge = true;
-			break;
-		}
-	}
-
 	if (input.Kind == InputReportKind::PointerMove)
 	{
-		auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
-		if (!host || !host->GetPresentationWindow()) return true;
-		if (hitLevel >= 0)
+		if (auto* item = HitTopLevelItem(input.X, input.Y))
 		{
-			const auto& pn = panels[hitLevel];
-			int itemIndex = (int)(((float)input.Y
-				- (pn.Y + PopupVerticalPadding)) / (float)PopupItemExtent);
-			int itemCount = static_cast<int>(pn.Items.size());
-			if (itemIndex < 0 || itemIndex >= itemCount) itemIndex = -1;
-			MenuItem* hovered = nullptr;
-			if (itemIndex >= 0)
-				hovered = AsMenuItem(pn.Items[itemIndex]);
-			if (!IsInteractive(hovered))
-			{
-				hovered = nullptr;
-				itemIndex = -1;
-			}
-			bool needsUpdate = false;
-
-			ensureSize(_hoverPath, (size_t)hitLevel + 1);
-			ensureSize(_openPath, (size_t)hitLevel + 1);
-			if (_hoverPath.size() > (size_t)hitLevel + 1)
-				_hoverPath.resize((size_t)hitLevel + 1, -1);
-			if (_openPath.size() > (size_t)hitLevel + 1)
-				_openPath.resize((size_t)hitLevel + 1, -1);
-
-			if (_hoverPath[hitLevel] != itemIndex)
-			{
-				_hoverPath[hitLevel] = itemIndex;
-				needsUpdate = true;
-			}
-
-			int newOpen = -1;
-			if (IsInteractive(hovered)
-				&& !hovered->GetMenuItemsView().empty())
-				newOpen = itemIndex;
-
-			if (_openPath[hitLevel] != newOpen)
-			{
-				_openPath[hitLevel] = newOpen;
-				needsUpdate = true;
-			}
-			if (needsUpdate) InvalidateVisual();
-		}
-		else if (!inBridge)
-		{
-			if (!_hoverPath.empty() || !_openPath.empty())
-			{
-				ClearHoverState();
-				InvalidateVisual();
-			}
+			const ControlWeakReference itemLifetime(item);
+			item->SetIsHighlightedCore(true);
+			item = dynamic_cast<MenuItem*>(itemLifetime.Get());
+			if (item && !item->GetMenuItemsView().empty())
+				item->SetIsSubmenuOpenCore(true);
 		}
 		return true;
 	}
-
 	if (input.Kind == InputReportKind::PointerUp
 		&& (input.ChangedButton == MouseButton::Left
 			|| input.ChangedButton == MouseButton::Right))
 	{
-		if (hitLevel >= 0)
+		if (auto* item = HitTopLevelItem(input.X, input.Y))
 		{
-			const auto& pn = panels[hitLevel];
-			int itemIndex = (int)(((float)input.Y
-				- (pn.Y + PopupVerticalPadding)) / (float)PopupItemExtent);
-			int itemCount = static_cast<int>(pn.Items.size());
-			if (itemIndex >= 0 && itemIndex < itemCount)
-			{
-				auto* item = AsMenuItem(pn.Items[itemIndex]);
-				if (IsInteractive(item))
-				{
-					if (!item->GetMenuItemsView().empty())
-					{
-						ensureSize(_openPath, (size_t)hitLevel + 1);
-						_openPath[hitLevel] = itemIndex;
-						InvalidateVisual();
-					}
-					else
-					{
-						const bool staysOpen = item->StaysOpenOnClick;
-						const bool invoked = item->Invoke();
-						auto* host = dynamic_cast<ContextMenu*>(
-							hostLifetime.Get());
-						if (!host) return true;
-						if (invoked && !staysOpen) host->Hide();
-					}
-				}
-			}
+			if (!item->GetMenuItemsView().empty())
+				item->SetIsSubmenuOpenCore(true);
+			else
+				(void)item->InvokeLeafAndDismiss();
 		}
 		return true;
 	}
-
-	return true;
+	if (input.Kind == InputReportKind::KeyDown)
+	{
+		if (input.Key == Key::Escape)
+		{
+			Hide();
+			return true;
+		}
+		if ((input.Key == Key::Down
+			|| input.Key == Key::Home)
+			&& !_items.empty())
+			for (auto* entry : _items)
+				if (auto* item = AsMenuItem(entry);
+					IsInteractive(item))
+				{
+					(void)item->FocusForMenuNavigation();
+					return true;
+				}
+	}
+	return ItemsControl::ProcessInput(input);
 }
 
 MenuItem* ContextMenu::AddItem(std::unique_ptr<MenuItem> item)
@@ -941,6 +979,108 @@ void ContextMenu::ClearItems()
 	ClearHoverState();
 }
 
+void ContextMenu::ArrangePopupSurface()
+{
+	if (!_isOpen || !GetPresentationWindow()) return;
+	const auto viewport =
+		GetPresentationWindow()->GetContentViewportSizeDip();
+	const float edge = 2.0f;
+	const float maximumWidth =
+		(std::max)(1.0f, viewport.width - edge * 2.0f);
+	const float maximumHeight =
+		(std::max)(1.0f, viewport.height - edge * 2.0f);
+	const auto desired = Measure(cui::core::Constraints{
+		{ 0.0f, 0.0f },
+		{ maximumWidth, maximumHeight } });
+	const float width = (std::clamp)(
+		desired.width, 1.0f, maximumWidth);
+	const float height = (std::clamp)(
+		desired.height, 1.0f, maximumHeight);
+
+	cui::core::Rect targetRect{};
+	if (auto* target = _placementTarget.Get())
+		targetRect = target->GetAbsoluteRectDip();
+	if (_placementRectangle != cui::core::Rect{})
+	{
+		targetRect = _placementRectangle.Normalized();
+		if (auto* target = _placementTarget.Get())
+		{
+			const auto absolute = target->GetAbsoluteLocationDip();
+			targetRect.x += absolute.x;
+			targetRect.y += absolute.y;
+		}
+	}
+
+	float x = _anchor.x;
+	float y = _anchor.y;
+	switch (_placement)
+	{
+	case PlacementMode::Bottom:
+		x = targetRect.x;
+		y = targetRect.y + targetRect.height;
+		if (y + height > viewport.height - edge
+			&& targetRect.y - height >= edge)
+			y = targetRect.y - height;
+		break;
+	case PlacementMode::Top:
+		x = targetRect.x;
+		y = targetRect.y - height;
+		if (y < edge
+			&& targetRect.y + targetRect.height + height
+				<= viewport.height - edge)
+			y = targetRect.y + targetRect.height;
+		break;
+	case PlacementMode::Left:
+		x = targetRect.x - width;
+		y = targetRect.y;
+		if (x < edge
+			&& targetRect.x + targetRect.width + width
+				<= viewport.width - edge)
+			x = targetRect.x + targetRect.width;
+		break;
+	case PlacementMode::Right:
+		x = targetRect.x + targetRect.width;
+		y = targetRect.y;
+		if (x + width > viewport.width - edge
+			&& targetRect.x - width >= edge)
+			x = targetRect.x - width;
+		break;
+	case PlacementMode::Center:
+		x = targetRect.x
+			+ (targetRect.width - width) * 0.5f;
+		y = targetRect.y
+			+ (targetRect.height - height) * 0.5f;
+		break;
+	case PlacementMode::Absolute:
+		if (_placementRectangle != cui::core::Rect{})
+		{
+			x = targetRect.x;
+			y = targetRect.y;
+		}
+		break;
+	case PlacementMode::MousePoint:
+	default:
+		break;
+	}
+	x += _horizontalOffset;
+	y += _verticalOffset;
+	x = (std::clamp)(
+		x, edge, (std::max)(edge,
+			viewport.width - width - edge));
+	y = (std::clamp)(
+		y, edge, (std::max)(edge,
+			viewport.height - height - edge));
+
+	cui::core::Point parentAbsolute{};
+	if (auto* parent = GetVisualParent())
+		parentAbsolute = parent->GetAbsoluteLocationDip();
+	ItemsControl::Arrange({
+		x - parentAbsolute.x,
+		y - parentAbsolute.y,
+		width,
+		height });
+}
+
 void ContextMenu::ShowAtCore(
 	Control* placementTarget,
 	int x, int y,
@@ -948,15 +1088,18 @@ void ContextMenu::ShowAtCore(
 {
 	const ControlWeakReference hostLifetime(this);
 	const ControlWeakReference placementLifetime(placementTarget);
-	if (!this->GetPresentationWindow() || _items.empty())
-		return;
+	if (!this->GetPresentationWindow() || _items.empty()) return;
 	if (placementTarget
 		&& placementTarget->GetPresentationWindow() != this->GetPresentationWindow())
 		return;
-	(void)TrySetReadOnlyPropertyValue(
-		PlacementTargetPropertyKey(*this),
-		BindingValue(ControlWeakReference(placementTarget)));
 	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->ClearServicePlacementTarget();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host || !host->GetPresentationWindow()) return;
+	if (placementTarget)
+		(void)host->ApplyServicePlacementTarget(placementTarget);
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 	if (!host || !host->GetPresentationWindow()) return;
 	if (placementTarget
 		&& (!placementLifetime
@@ -970,7 +1113,8 @@ void ContextMenu::ShowAtCore(
 		host->PresentCore();
 		return;
 	}
-	(void)host->TrySetCurrentPropertyValue(L"IsOpen", BindingValue(true));
+	(void)host->TrySetCurrentPropertyValue(
+		IsOpenProperty(), BindingValue(true));
 }
 
 void ContextMenu::ApplyIsOpenChange(bool oldValue, bool newValue)
@@ -1002,7 +1146,10 @@ void ContextMenu::PresentCore()
 	if (host->_placementTarget.HasValue()
 		&& (!placementLifetime
 			|| placementLifetime.Get()->GetPresentationWindow() != host->GetPresentationWindow()))
+	{
+		host->Hide();
 		return;
+	}
 	const bool wasPresented = host->_isPresented;
 	host->ClearHoverState();
 	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
@@ -1014,15 +1161,19 @@ void ContextMenu::PresentCore()
 		host->Hide();
 		return;
 	}
+	host->SetPresentationSuppressed(false);
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host || !host->GetPresentationWindow() || !host->_isOpen) return;
+	host->ArrangePopupSurface();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host || !host->GetPresentationWindow() || !host->_isOpen) return;
 	TransientPresentationOptions options;
 	options.DismissOnOutsidePointerDown = !host->_staysOpen;
 	options.DismissOnWindowDeactivation = !host->_staysOpen;
 	const bool presented = cui::framework::WindowAccess::OpenTransientPresentation(
 		*host->GetPresentationWindow(), host, options,
 		[](Control& root)
-		{
-			static_cast<ContextMenu&>(root).Hide();
-		});
+		{ static_cast<ContextMenu&>(root).Hide(); });
 	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 	if (!host || !host->GetPresentationWindow()) return;
 	if (!presented)
@@ -1032,9 +1183,24 @@ void ContextMenu::PresentCore()
 	}
 	host->_isPresented = true;
 	host->SynchronizeInteractionProjection();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host || !host->GetPresentationWindow() || !host->_isOpen) return;
 	if (!wasPresented)
 	{
 		cui::framework::EventAccess::Raise(host->Opened, host);
+		host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+		if (!host || !host->GetPresentationWindow() || !host->_isOpen) return;
+		ControlWeakReference focusCandidate;
+		for (auto* entry : host->_items)
+			if (auto* item = AsMenuItem(entry);
+				IsInteractive(item))
+			{
+				focusCandidate = item;
+				break;
+			}
+		auto* item = dynamic_cast<MenuItem*>(focusCandidate.Get());
+		if (item && host->IndexOfItem(item) >= 0)
+			(void)item->FocusForMenuNavigation();
 		host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 		if (!host || !host->GetPresentationWindow() || !host->_isOpen) return;
 	}
@@ -1047,27 +1213,37 @@ void ContextMenu::DismissPresentationCore()
 	const bool wasPresented = _isPresented;
 	_isPresented = false;
 	_ignoreNextMouseUp = false;
-	ClearHoverState();
-	SynchronizeInteractionProjection();
-	(void)ClearReadOnlyPropertyValue(
-		PlacementTargetPropertyKey(*this));
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->ClearHoverState();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->SynchronizeInteractionProjection();
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
 	std::vector<ControlWeakReference> items;
-	items.reserve(_items.size());
-	for (auto* entry : _items)
+	items.reserve(host->_items.size());
+	for (auto* entry : host->_items)
 		if (auto* item = AsMenuItem(entry)) items.emplace_back(item);
 	for (const auto& itemLifetime : items)
 	{
-		auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+		host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 		auto* item = dynamic_cast<MenuItem*>(itemLifetime.Get());
 		if (!host || !item || host->IndexOfItem(item) < 0)
 			continue;
 		host->AttachItemTree(item);
 	}
-	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 	if (!host || host->_isOpen) return;
 	if (host->GetPresentationWindow())
 		(void)cui::framework::WindowAccess::CloseTransientPresentation(
 			*host->GetPresentationWindow(), host);
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->SetPresentationSuppressed(true);
+	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
+	host->ClearServicePlacementTarget();
 	host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
 	if (!host) return;
 	if (wasPresented)
@@ -1095,19 +1271,23 @@ void ContextMenu::ShowAt(class Control* relativeTo, int x, int y, bool ignoreNex
 		|| relativeTo->GetPresentationWindow() != this->GetPresentationWindow())
 		return;
 	const auto relativeAbs = relativeTo->GetAbsoluteLocationDip();
-	const auto menuAbs = this->GetAbsoluteLocationDip();
 	ShowAtCore(relativeTo,
-		static_cast<int>(std::round(relativeAbs.x - menuAbs.x + (float)x)),
-		static_cast<int>(std::round(relativeAbs.y - menuAbs.y + (float)y)),
+		static_cast<int>(std::round(relativeAbs.x + (float)x)),
+		static_cast<int>(std::round(relativeAbs.y + (float)y)),
 		ignoreNextMouseUp);
 }
 
 void ContextMenu::Hide()
 {
+	const ControlWeakReference hostLifetime(this);
 	if (!_isOpen && !_isPresented)
 		return;
-	(void)TrySetCurrentPropertyValue(L"IsOpen", BindingValue(false));
+	(void)TrySetCurrentPropertyValue(
+		IsOpenProperty(), BindingValue(false));
+	auto* host = dynamic_cast<ContextMenu*>(hostLifetime.Get());
+	if (!host) return;
 	// A failed current-value commit can only occur for invalid metadata. Keep
 	// transient presentation coherent even in that defensive path.
-	if (!_isOpen && _isPresented) DismissPresentationCore();
+	if (!host->_isOpen && host->_isPresented)
+		host->DismissPresentationCore();
 }

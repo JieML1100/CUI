@@ -234,6 +234,7 @@ struct DesignNodeTemplateState
 	std::wstring AppliedControlTemplate;
 	std::wstring AppliedControlTemplateResource;
 	bool AppliedControlTemplateFromTheme = false;
+	bool AppliedControlTemplateFromStyle = false;
 	std::wstring ControlTemplateChain;
 	bool operator==(const DesignNodeTemplateState&) const = default;
 };

@@ -11,35 +11,61 @@ class TabItem : public HeaderedContentControl
 {
 private:
 	friend class TabControl;
+	static const DependencyPropertyKey& TabStripPlacementPropertyKey();
+
 	bool _isSelected = false;
+	Dock _tabStripPlacement = Dock::Top;
+	D2D1_RECT_F _headerHitRect{};
+	D2D1_RECT_F _contentHitRect{};
 	void ApplyIsSelectedValue(bool value);
 	void SetCurrentIsSelected(bool value);
+	void SetTabStripPlacementProjection(Dock value);
+	static void EnsureClassHandlers();
+	static void HandleDescendantPointerPress(
+		Control* sender, RoutedEventArgs& args);
+	bool IsOriginalSourceWithinHeader(Control* source) const noexcept;
+	void SetHeaderHitRect(D2D1_RECT_F value) noexcept
+	{
+		_headerHitRect = value;
+	}
+	void SetContentHitRect(D2D1_RECT_F value) noexcept
+	{
+		_contentHitRect = value;
+	}
 
 public:
 	using UIElement::Selected;
 	using UIElement::Unselected;
 
 	UIClass Type() override { return UIClass::UI_TabItem; }
+	static const DependencyProperty& IsSelectedProperty();
+	static const DependencyProperty& TabStripPlacementProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 	PROPERTY(bool, IsSelected);
 	GET(bool, IsSelected);
 	SET(bool, IsSelected);
+	READONLY_PROPERTY(Dock, TabStripPlacement);
+	GET(Dock, TabStripPlacement);
 
 	TabItem();
+	void PreparePresentation() override;
+	bool ContainsPoint(int localX, int localY) override;
+	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
+	bool HandlesNavigationKey(Key key) const override;
 
 protected:
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<TabItemAutomationPeer>(*this);
 	}
-	void ConfigureHeaderVisual(Control& child) override;
-	void ReleaseHeaderVisual(Control& child) override;
-	float GetHeaderSlotHeightDip(float availableWidth) override;
+	bool ProcessInput(const InputReport& input) override;
 };
 
 /**
@@ -53,32 +79,66 @@ protected:
 class TabControl : public Selector
 {
 private:
-	Dock _tabStripPlacement = Dock::Top;
-	TabItem* _selectedTabIdentity = nullptr;
-	int _hoveredHeaderIndex = -1;
-	int _pressedHeaderIndex = -1;
+	friend class TabItem;
+	static const DependencyPropertyKey& SelectedContentPropertyKey();
+	static const DependencyPropertyKey& SelectedContentTemplatePropertyKey();
 
-	static constexpr float HorizontalStripExtent = 28.0f;
-	static constexpr float VerticalStripExtent = 120.0f;
+	Dock _tabStripPlacement = Dock::Top;
+	ItemTemplateReference _contentTemplate;
+	BindingValue _selectedContent;
+	ItemTemplateReference _selectedContentTemplate;
+	TabItem* _selectedTabIdentity = nullptr;
+	std::vector<float> _headerPrimaryExtents;
+	float _tabStripCrossExtent = 28.0f;
+
+	static constexpr float DefaultHeaderExtent = 28.0f;
+	static constexpr float DefaultVerticalStripExtent = 120.0f;
 
 	void PrepareItemMutation();
 	void ReconcileItemsAfterMutation(TabItem* previouslySelectedItem);
 	void SynchronizeSelectionProjection();
+	void RefreshHeaderMetrics();
+	void RefreshSelectedContentProjection();
 	void ArrangePage(TabItem* page);
 	D2D1_RECT_F GetTabStripRect() const noexcept;
 	D2D1_RECT_F GetTabHeaderRect(int index) const noexcept;
+	int FindNextEligibleTab(
+		int startIndex, int direction, bool wrap) const noexcept;
+	bool FocusAndSelectItem(int index);
+	bool ProcessTabNavigationKey(const InputReport& input);
+	static void EnsureClassHandlers();
+	static void HandleRoutedPointerPress(
+		Control* sender, RoutedEventArgs& args);
 
 public:
 	UIClass Type() override { return UIClass::UI_TabControl; }
+	static const DependencyProperty& TabStripPlacementProperty();
+	static const DependencyProperty& ContentTemplateProperty();
+	static const DependencyProperty& SelectedContentProperty();
+	static const DependencyProperty& SelectedContentTemplateProperty();
 	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
 	{
 		RegisterDependencyProperties();
 	}
+#endif
 
 	PROPERTY(Dock, TabStripPlacement);
 	GET(Dock, TabStripPlacement);
 	SET(Dock, TabStripPlacement);
+	ItemTemplateReference GetContentTemplate() const noexcept
+	{
+		return _contentTemplate;
+	}
+	void SetContentTemplate(ItemTemplateReference value);
+	READONLY_PROPERTY(BindingValue, SelectedContent);
+	BindingValue GetSelectedContent() const { return _selectedContent; }
+	READONLY_PROPERTY(ItemTemplateReference, SelectedContentTemplate);
+	ItemTemplateReference GetSelectedContentTemplate() const noexcept
+	{
+		return _selectedContentTemplate;
+	}
 
 	TabControl();
 
@@ -103,14 +163,10 @@ public:
 	bool TryGetTabHeaderIndexAt(
 		int localX, int localY, int& outIndex) const noexcept;
 	D2D1_RECT_F GetContentRect() const noexcept;
-	bool ClipsChildren() override { return true; }
-	D2D1_RECT_F GetVisualChildrenClipRect() override;
 	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
-	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;
 protected:
 	bool ProcessInput(const InputReport& input) override;
-	void OnRender() override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
 	{
 		return std::make_unique<TabControlAutomationPeer>(*this);

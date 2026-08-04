@@ -1,12 +1,13 @@
 #include "PlatformWindowHost.h"
 
-#include "NotifyIcon.h"
-
+#include <atomic>
 #include <mutex>
 
 namespace
 {
 	constexpr wchar_t PlatformWindowClassName[] = L"Cui.PlatformWindowHost";
+	using NativeMessageHook = bool (*)(HWND, UINT, WPARAM, LPARAM);
+	std::atomic<NativeMessageHook> nativeMessageHook{ nullptr };
 }
 
 PlatformWindowHost::~PlatformWindowHost()
@@ -74,14 +75,26 @@ void PlatformWindowHost::Destroy() noexcept
 	if (::IsWindow(handle)) (void)::DestroyWindow(handle);
 }
 
+bool PlatformWindowHost::InstallNativeMessageHook(
+	NativeMessageHook hook) noexcept
+{
+	if (!hook) return false;
+	auto expected = static_cast<NativeMessageHook>(nullptr);
+	return nativeMessageHook.compare_exchange_strong(
+		expected, hook,
+		std::memory_order_release,
+		std::memory_order_acquire)
+		|| expected == hook;
+}
+
 LRESULT CALLBACK PlatformWindowHost::WindowProcedure(
 	HWND window,
 	UINT message,
 	WPARAM wParam,
 	LPARAM lParam)
 {
-	if (NotifyIcon::HandlePlatformWindowMessage(window, message, wParam, lParam))
-		return 0;
+	if (const auto hook = nativeMessageHook.load(std::memory_order_acquire);
+		hook && hook(window, message, wParam, lParam)) return 0;
 
 	auto* host = reinterpret_cast<PlatformWindowHost*>(
 		::GetWindowLongPtrW(window, GWLP_USERDATA));
