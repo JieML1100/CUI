@@ -3,6 +3,7 @@
 #include "../include/XamlDocumentCompiler.h"
 #include "../include/XamlFrameworkTheme.h"
 #include "../../CUI/include/HeaderedItemsControl.h"
+#include "../../CUI/include/ToolBar.h"
 #include "../include/XamlRuntimeSchema.h"
 
 #include "../../CuiDesigner/DesignerModel/DesignDocumentControlPool.h"
@@ -196,7 +197,8 @@ namespace
 	}
 
 	static void ProjectDirectItemContainerStyles(
-		DesignerModel::DesignDocument& document)
+		DesignerModel::DesignDocument& document,
+		const DesignerModel::DesignDocument* theme)
 	{
 		for (const auto& owner : document.Nodes)
 		{
@@ -214,6 +216,33 @@ namespace
 				if (parent != &owner) continue;
 				child.Properties.StyleResourceKey =
 					owner.Structure.ItemContainerStyle;
+			}
+		}
+
+		if (!theme) return;
+
+		// WPF ToolBar.PrepareContainerForItemOverride supplies a type-specific
+		// keyed Style to directly hosted controls. Project that resource reference
+		// before ControlTemplate expansion so Designer does not first materialize
+		// the ordinary Button template and replace it during Theme application.
+		// It remains a dynamic resource reference: a consumer may override the
+		// ToolBar key, while Designer must not persist the derived element Style.
+		for (const auto& owner : document.Nodes)
+		{
+			if (owner.Type != UIClass::UI_ToolBar
+				|| !owner.Structure.ItemContainerStyle.empty()) continue;
+			for (auto& child : document.Nodes)
+			{
+				if (child.Structure.ChildRole != DesignNodeChildRole::Default
+					|| !child.Properties.StyleResourceKey.empty()) continue;
+				const auto* parent = ParentNode(document.Nodes, child);
+				if (parent != &owner) continue;
+				const auto* key = ToolBar::DefaultItemStyleResourceKey(
+					child.Type);
+				if (!key) continue;
+				child.Properties.StyleResourceKey = key;
+				child.TemplateState.StyleResourceScopeFromTheme = false;
+				child.TemplateState.StyleResourceIsAutomatic = true;
 			}
 		}
 	}
@@ -333,7 +362,7 @@ namespace
 			// Theme-generated nodes must not see a consuming document's same-key
 			// Style. Their explicit StaticResource starts in the defining Theme.
 			if (!(explicitStyle
-				&& owner.TemplateState.ResourceScopeFromTheme))
+				&& owner.TemplateState.StyleResourceScopeFromTheme))
 			{
 				if (!ResolveStyledControlTemplateKeyFromSheet(
 					VisibleStyleSheet(document, nodes, owner), owner,
@@ -701,6 +730,8 @@ namespace
 						controlTemplateChain;
 					generated.TemplateState.ResourceScopeFromTheme =
 						effectiveTemplate.FromTheme;
+					generated.TemplateState.StyleResourceScopeFromTheme =
+						effectiveTemplate.FromTheme;
 				}
 				output.Nodes.push_back(std::move(generated));
 				if (!local.PresentedComponentContent.empty())
@@ -952,6 +983,8 @@ namespace
 				generated.TemplateState.PartName = local.Name;
 				generated.TemplateState.ControlTemplateChain = chain;
 				generated.TemplateState.ResourceScopeFromTheme =
+					effectiveTemplate.FromTheme;
+				generated.TemplateState.StyleResourceScopeFromTheme =
 					effectiveTemplate.FromTheme;
 				if (!local.TemplateContentSource.empty())
 				{
@@ -3460,7 +3493,7 @@ bool CuiRuntime::XamlDocumentCompiler::Compile(
 			if (!ExpandComponentTemplates(
 				expandedDocument, theme.get(), componentPass, &error))
 				return fail(std::move(error));
-			ProjectDirectItemContainerStyles(componentPass);
+			ProjectDirectItemContainerStyles(componentPass, theme.get());
 			DesignDocument controlTemplatePass;
 			if (!ExpandControlTemplates(
 				componentPass, theme.get(), controlTemplatePass, &error))
@@ -3840,6 +3873,8 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			std::wstring templateContentSource;
 			bool templateGenerated = false;
 			bool templateResourceFromTheme = false;
+			bool styleResourceFromTheme = false;
+			bool styleResourceIsAutomatic = false;
 			bool controlTemplateRoot = false;
 			bool borrowedTemplateOwner = false;
 			DesignerComponentType componentType;
@@ -3876,6 +3911,10 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			p.templateResourceFromTheme =
 				node.TemplateState.Generated
 				&& node.TemplateState.ResourceScopeFromTheme;
+			p.styleResourceFromTheme =
+				node.TemplateState.StyleResourceScopeFromTheme;
+			p.styleResourceIsAutomatic =
+				node.TemplateState.StyleResourceIsAutomatic;
 			p.templateOwner = node.TemplateState.Owner;
 			p.templatePartName = node.TemplateState.PartName;
 			p.contentOwner = node.TemplateState.ContentOwner;
@@ -4048,8 +4087,6 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 		dcOf.reserve(items.size());
 		std::unordered_map<std::wstring, Control*> instOf;
 		instOf.reserve(items.size());
-
-
 		auto resolveItemType = [&](const Pending& item)
 			-> const DesignDataTypeDefinition*
 		{
@@ -4582,7 +4619,8 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 
 			cui::framework::StyleAccess::SetResourceKey(
 				*c, it.properties.StyleResourceKey,
-				it.templateResourceFromTheme);
+				it.styleResourceFromTheme,
+				it.styleResourceIsAutomatic);
 
 			using PropertyEntry = std::pair<
 				const std::wstring*, const DesignPropertyAssignment*>;
@@ -6245,17 +6283,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				runtimeThemeStyleSheet = std::move(customThemeStyleSheet);
 			}
 			if (!runtimeThemeStyleSheet) return false;
-			if (!compiled.Theme->StyleSheet.Empty()
-				&& !cui::framework::StyleAccess::SetTheme(
-					stagingRoot, runtimeThemeStyleSheet, true))
-			{
-				if (outError) *outError =
-					L"框架主题无法应用到完整控件树。";
-				return false;
-			}
 		}
-		if (!validateTemplateNameScopes(L"Theme apply"))
-			return false;
 
 		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
 		auto documentStructuralResources =
@@ -6278,16 +6306,26 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			document.ResourceBasePath, document.Resources,
 			documentStructuralResources, documentStyleSchemaResolver))
 			return false;
-		if ((!document.StyleSheet.Empty()
-				|| !documentStructuralResources.empty())
-			&& !cui::framework::StyleAccess::SetDocumentStyles(
-				stagingRoot, runtimeStyleSheet, true))
+		const bool hasThemeStyles = compiled.Theme
+			&& !compiled.Theme->StyleSheet.Empty();
+		const bool hasDocumentStyles = !document.StyleSheet.Empty()
+			|| !documentStructuralResources.empty();
+		// Install both sheets as one XAML initialization transaction. A keyed
+		// ToolBar Style is a dynamic resource reference, so applying Theme alone
+		// first could transiently replace a document override's already-expanded
+		// template and destroy its namescope before document Style is attached.
+		if ((hasThemeStyles || hasDocumentStyles)
+			&& !cui::framework::StyleAccess::SetEnvironment(
+				stagingRoot,
+				hasThemeStyles ? runtimeThemeStyleSheet : nullptr,
+				hasDocumentStyles ? runtimeStyleSheet : nullptr,
+				true))
 		{
 			if (outError) *outError =
-				L"文档样式表无法应用到完整控件树。";
+				L"框架主题/文档样式环境无法应用到完整控件树。";
 			return false;
 		}
-		if (!validateTemplateNameScopes(L"document Style apply"))
+		if (!validateTemplateNameScopes(L"Style environment apply"))
 			return false;
 		candidate.DocumentStyleSheet = runtimeStyleSheet;
 

@@ -165,13 +165,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="DemoWindow.g.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
     <CuiAotBoundarySource Include="main.cpp;DemoWindow.cpp;DemoWindow.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="DemoWindow.g.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
   </ItemGroup>

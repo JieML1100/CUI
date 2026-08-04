@@ -862,12 +862,15 @@ ControlStyleSheet::CompiledDataConditionPaths() const
 
 void Control::SetStyleResourceKey(
 	std::wstring value,
-	bool capturedFromTheme)
+	bool capturedFromTheme,
+	bool automatic)
 {
 	if (StyleNameEquals(_styleResourceKey, value)
-		&& _styleResourceKeyCapturedFromTheme == capturedFromTheme) return;
+		&& _styleResourceKeyCapturedFromTheme == capturedFromTheme
+		&& _styleResourceKeyIsAutomatic == automatic) return;
 	_styleResourceKey = std::move(value);
 	_styleResourceKeyCapturedFromTheme = capturedFromTheme;
+	_styleResourceKeyIsAutomatic = automatic;
 	RefreshStyleValues(false);
 }
 

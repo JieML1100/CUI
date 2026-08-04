@@ -110,6 +110,9 @@ protected:
 	// resolved in that defining dictionary; consuming document dictionaries do
 	// not get to reinterpret the same textual key.
 	bool _styleResourceKeyCapturedFromTheme = false;
+	// Container preparation can assign a Style resource reference that is not
+	// authored on the element and must not be persisted by Designer round-trips.
+	bool _styleResourceKeyIsAutomatic = false;
 	ControlStyleState _styleState = ControlStyleState::None;
 	std::shared_ptr<const ControlStyleSheet> _themeStyleSheet;
 	std::shared_ptr<const ControlStyleSheet> _styleSheet;

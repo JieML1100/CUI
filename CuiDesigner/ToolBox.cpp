@@ -331,6 +331,7 @@ void ToolBoxItem::OnRender()
 {
 	if (!this->IsVisible || !this->GetPresentationWindow() || !this->GetDrawingContext()) return;
 	const bool isUnderMouse = this->IsMouseOver;
+	const bool isPressed = this->IsPressed;
 	const bool isSelected = this->GetPresentationWindow()->GetKeyboardFocusedElement() == this;
 	auto* d2d = this->GetDrawingContext();
 	const auto size = this->GetActualSizeDip();
@@ -340,15 +341,18 @@ void ToolBoxItem::OnRender()
 	this->BeginRender();
 	{
 		const float radius = 6.0f;
+		const auto cardFill = isPressed ? WithAlpha(accent, 0.22f)
+			: isSelected ? WithAlpha(accent, 0.16f)
+			: isUnderMouse ? WithAlpha(accent, 0.09f)
+			: Colors::White;
+		const auto cardBorder = isPressed ? WithAlpha(accent, 0.92f)
+			: isSelected ? WithAlpha(accent, 0.78f)
+			: isUnderMouse ? WithAlpha(accent, 0.45f)
+			: D2D1::ColorF(0.42f, 0.47f, 0.56f, 0.18f);
 		d2d->FillRoundRect(1.0f, 1.0f, width - 2.0f, height - 2.0f,
-			isSelected ? WithAlpha(accent, 0.16f)
-			: (isUnderMouse ? WithAlpha(accent, 0.09f) : Colors::White),
-			radius);
+			cardFill, radius);
 		d2d->DrawRoundRect(1.0f, 1.0f, width - 2.0f, height - 2.0f,
-			isSelected ? WithAlpha(accent, 0.78f)
-			: (isUnderMouse ? WithAlpha(accent, 0.45f)
-				: D2D1::ColorF(0.42f, 0.47f, 0.56f, 0.18f)),
-			1.0f, radius);
+			cardBorder, 1.0f, radius);
 
 		const auto iconRect = D2D1::RectF(7.0f, 4.0f, 39.0f, height - 4.0f);
 		d2d->FillRoundRect(iconRect, WithAlpha(accent, 0.12f), 6.0f);
@@ -359,7 +363,7 @@ void ToolBoxItem::OnRender()
 		const auto primaryColor = this->IsEnabled
 			? D2D1::ColorF(0.12f, 0.14f, 0.18f, 1.0f)
 			: D2D1::ColorF(0.45f, 0.48f, 0.53f, 1.0f);
-		d2d->DrawString(FitSingleLine(this->GetRenderFont(), this->GetDisplayText(), textWidth), textLeft, 2.0f,
+		d2d->DrawString(FitSingleLine(this->GetRenderFont(), this->Descriptor.DisplayName, textWidth), textLeft, 2.0f,
 			textWidth, height * 0.55f,
 			primaryColor, this->GetRenderFont());
 		d2d->DrawString(FitSingleLine(this->GetRenderFont(), this->TypeName, textWidth), textLeft, height * 0.46f,

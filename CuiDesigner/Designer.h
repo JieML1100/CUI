@@ -171,6 +171,7 @@ private:
 	bool ConfirmCanReplaceOrCloseDocument();
 	void PrepareDocumentLifecycle();
 	void UpdateDocumentPresentation();
+	void ApplyFrameworkTheme();
 	void InitializeRecoverySession();
 	void TryRestoreRecoveryOnStartup();
 	void ScheduleRecoverySnapshot();

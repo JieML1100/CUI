@@ -23101,6 +23101,106 @@ int main()
 			!= std::wstring::npos);
 	});
 
+	runner.Add("ToolBar Theme item styles precede template expansion", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:toolbar-projection" x:Name="ToolBarWindow">
+  <Window.Resources>
+    <ControlTemplate TargetType="Button">
+      <Grid x:Name="consumerImplicitButtonRoot" />
+    </ControlTemplate>
+    <ComponentDefinition x:Key="local:Probe" BaseType="Canvas">
+      <ComponentDefinition.Template>
+        <Canvas />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Window.Resources>
+  <ToolBar>
+    <Button x:Name="toolButton" DesignId="1" Content="Run" />
+  </ToolBar>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+
+		auto* button = tree.ContentRoot
+			? dynamic_cast<Button*>(
+				tree.ContentRoot->FindControlByDesignId(1))
+			: nullptr;
+		CUI_EXPECT_TRUE(button != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"CuiToolBarButtonStyle"),
+			button ? cui::framework::StyleAccess::ResourceKey(*button)
+				: std::wstring{});
+		CUI_EXPECT_FALSE(button
+			&& cui::framework::StyleAccess::ResourceKeyCapturedFromTheme(
+				*button));
+		CUI_EXPECT_TRUE(button
+			&& cui::framework::StyleAccess::ResourceKeyIsAutomatic(*button));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			button ? button->GetPropertyValueSource(L"Template")
+				: DependencyPropertyValueSource::Default);
+		CUI_EXPECT_TRUE(button && button->FindDeclarativeTemplatePart(
+			L"PART_ToolBarButtonChrome") != nullptr);
+		CUI_EXPECT_TRUE(button && button->FindDeclarativeTemplatePart(
+			L"consumerImplicitButtonRoot") == nullptr);
+
+		const std::string overrideXaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Window.Resources>
+    <ControlTemplate x:Key="consumerToolBarButtonTemplate"
+                     TargetType="Button">
+      <Grid x:Name="consumerToolBarButtonRoot" />
+    </ControlTemplate>
+    <Style x:Key="CuiToolBarButtonStyle" TargetType="Button">
+      <Setter Property="Template"
+              Value="{StaticResource consumerToolBarButtonTemplate}" />
+    </Style>
+  </Window.Resources>
+  <ToolBar>
+    <Button x:Name="overriddenToolButton" DesignId="2" />
+  </ToolBar>
+</Window>)XAML";
+		DesignerModel::DesignDocument overrideDocument;
+		error.clear();
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			overrideXaml, overrideDocument, &error));
+		CuiRuntime::XamlObjectTree overrideTree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			overrideDocument, overrideTree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* overriddenButton = overrideTree.ContentRoot
+			? dynamic_cast<Button*>(
+				overrideTree.ContentRoot->FindControlByDesignId(2))
+			: nullptr;
+		CUI_EXPECT_TRUE(overriddenButton != nullptr);
+		CUI_EXPECT_TRUE(overriddenButton
+			&& cui::framework::StyleAccess::ResourceKeyIsAutomatic(
+				*overriddenButton));
+		CUI_EXPECT_FALSE(overriddenButton
+			&& cui::framework::StyleAccess::ResourceKeyCapturedFromTheme(
+				*overriddenButton));
+		CUI_EXPECT_TRUE(overriddenButton
+			&& overriddenButton->FindDeclarativeTemplatePart(
+				L"consumerToolBarButtonRoot") != nullptr);
+		CUI_EXPECT_TRUE(overriddenButton
+			&& overriddenButton->FindDeclarativeTemplatePart(
+				L"PART_ToolBarButtonChrome") == nullptr);
+
+		// Static generation preflight deliberately runs without Generic.xaml.
+		// The compiler-only ToolBar projection must not leak into that pass.
+		error.clear();
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+	});
+
 	runner.Add("ComboBoxItem templates own data content and popup states", []
 	{
 		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>

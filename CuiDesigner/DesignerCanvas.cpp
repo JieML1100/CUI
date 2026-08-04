@@ -586,6 +586,10 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	// 画布（外围）与设计面板（内部）区分：设计面板负责裁剪/承载被设计控件
 	this->Background = Colors::WhiteSmoke;
 	this->BorderThickness = 2.0f;
+	// Zoom/pan is a view transform inherited by every preview descendant.  The
+	// DesignerCanvas is the viewport, so transformed children must not escape
+	// into the toolbox, property grid, toolbar, or status strip.
+	this->ClipToBounds = true;
 
 	_designSurface = cui::designer::NewControl<Panel>(
 		static_cast<float>(_designSurfaceOrigin.x),
@@ -606,6 +610,12 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 			0.0f, static_cast<float>(top), _designedWindowSize.width,
 			static_cast<float>(h));
 	}
+	// This ContentControl is Designer infrastructure, not authored content.
+	// Keep its direct-content host topology stable when the Designer shell's
+	// implicit Generic.xaml styles are installed; a themed ContentPresenter
+	// would otherwise become the runtime parent of Window.Content and break the
+	// design-parent/runtime-parent invariant used by snapshots and placement.
+	_clientSurface->SetTemplate(ControlTemplateReference{});
 	Canvas::SetLeft(*(_clientSurface), 0.0f);
 	Canvas::SetTop(*(_clientSurface), static_cast<float>(DesignedClientTop()));
 	_clientSurface->Background = _designedWindowBackgroundColor;
@@ -622,6 +632,12 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 		_designedWindowSize.width,
 		_designedWindowSize.height });
 	UpdateClientSurfaceLayout();
+	// Clip-aware hit testing uses the arranged viewport.  Seed that geometry for
+	// off-screen document operations and self-tests; the owning layout pass may
+	// replace it later with the same normal Arrange contract.
+	this->Arrange(cui::core::Rect{
+		static_cast<float>(x), static_cast<float>(y),
+		static_cast<float>(width), static_cast<float>(height) });
 }
 
 DesignerCanvas::~DesignerCanvas()
@@ -2793,7 +2809,48 @@ DesignerCanvas::NudgeSelectionBy(int dx, int dy)
 	try
 	{
 		BeginDragFromCurrentSelection(_dragStartPoint);
-		ApplyMoveDeltaToSelection(dx, dy);
+		// Keyboard nudge is a DIP delta, not a pointer-coordinate round trip.
+		// Preserve subpixel layout origins (for example a 0.5 DIP Grid split)
+		// so one key press cannot become a two-DIP Canvas.Left/Top change.
+		for (const auto& item : _dragStartItems)
+		{
+			auto* control = item.ControlInstance;
+			auto* parent = item.Parent;
+			if (!control || !parent) continue;
+			const auto controlLocation = control->GetAbsoluteLocationDip();
+			const auto parentLocation = parent->GetAbsoluteLocationDip();
+			const auto layoutOrigin = parent->GetVisualChildrenLayoutOriginDip();
+			const auto renderOffset = parent->GetVisualChildrenRenderOffset();
+			const float localX = controlLocation.x - parentLocation.x
+				- layoutOrigin.x - renderOffset.x + static_cast<float>(dx);
+			const float localY = controlLocation.y - parentLocation.y
+				- layoutOrigin.y - renderOffset.y + static_cast<float>(dy);
+
+			if (parent->Type() == UIClass::UI_RelativePanel)
+			{
+				auto margin = control->Margin;
+				margin.Left = localX;
+				margin.Top = localY;
+				margin.Right = 0.0f;
+				margin.Bottom = 0.0f;
+				Canvas::SetLeft(*control, 0.0f);
+				Canvas::SetTop(*control, 0.0f);
+				control->Margin = margin;
+			}
+			else
+			{
+				if (!IsLayoutContainer(parent)
+					&& UsesAlignmentManagedPlacement(control))
+					ResetAlignmentForManualPlacement(control);
+				Canvas::SetLeft(*control, localX);
+				Canvas::SetTop(*control, localY);
+				Canvas::SetRight(*control, cui::layout::UnsetCanvasOffset);
+				Canvas::SetBottom(*control, cui::layout::UnsetCanvasOffset);
+				control->Margin = {};
+			}
+			if (auto* panel = dynamic_cast<Panel*>(parent))
+				RefreshDesignerPanelLayout(panel);
+		}
 		for (auto& selected : _selectedControls)
 			if (selected && selected->ControlInstance)
 				ClampControlToDesignSurface(selected->ControlInstance);
@@ -4286,6 +4343,9 @@ void DesignerCanvas::UpdateClientSurfaceLayout()
 	const auto designSize = _designSurface->GetActualSizeDip();
 	int h = static_cast<int>(std::lround(designSize.height)) - top;
 	if (h < 0) h = 0;
+	_clientSurface->Width = cui::layout::Length::Fixed(designSize.width);
+	_clientSurface->Height = cui::layout::Length::Fixed(
+		static_cast<float>(h));
 	_clientSurface->Arrange(cui::core::Rect{
 		0.0f, static_cast<float>(top), designSize.width, static_cast<float>(h) });
 	Canvas::SetLeft(*(_clientSurface), 0.0f);
@@ -4294,14 +4354,17 @@ void DesignerCanvas::UpdateClientSurfaceLayout()
 	{
 		RefreshDesignerPanelLayout(p);
 	}
-	// _clientSurface is design chrome, not an authored multi-root Canvas. The
-	// default document Canvas represents Window.Content and fills that slot.
-	if (_defaultContentRoot
-		&& _defaultContentRoot->GetVisualParent() == _clientSurface)
+	// WPF Window.ArrangeOverride gives its single visual child the complete
+	// client bounds.  The design chrome must do the same for every authored root,
+	// not only for the synthetic default Canvas; otherwise an Auto-sized Grid can
+	// retain its former desired width when the authored Window is wider.
+	const auto root = GetDocumentContentRootRecord();
+	if (root && root->ControlInstance
+		&& root->ControlInstance->GetVisualParent() == _clientSurface)
 	{
-		_defaultContentRoot->Arrange(cui::core::Rect{
+		root->ControlInstance->Arrange(cui::core::Rect{
 			{}, _clientSurface->GetActualSizeDip() });
-		RefreshDesignerPanelLayout(_defaultContentRoot);
+		RefreshDesignerPanelLayout(root->ControlInstance);
 	}
 }
 
@@ -9545,8 +9608,13 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			node.Order = GetVisualChildIndex(runtimeParent, c);
 
 			node.Properties = {};
-			node.Properties.StyleResourceKey =
-				cui::framework::StyleAccess::ResourceKey(*c);
+			// ToolBar and Theme templates may install a captured framework Style
+			// resource at runtime. It is derived container/template state, not an
+			// authored Style attribute, so a Designer round-trip must not persist it.
+			if (!cui::framework::StyleAccess::ResourceKeyCapturedFromTheme(*c)
+				&& !cui::framework::StyleAccess::ResourceKeyIsAutomatic(*c))
+				node.Properties.StyleResourceKey =
+					cui::framework::StyleAccess::ResourceKey(*c);
 			auto hasAuthoredEntry = [&](const std::wstring& propertyName)
 			{
 				const auto matches = [&](const auto& values)

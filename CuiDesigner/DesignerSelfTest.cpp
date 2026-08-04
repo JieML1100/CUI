@@ -50,6 +50,7 @@
 #include "../CUI/include/Image.h"
 #include "../CUI/include/PresentationInfrastructure.h"
 #include "../CUI/include/WindowInfrastructure.h"
+#include "../CUI/include/CuiGeneratedFrameworkTheme.h"
 #include "../CUI/include/RoutedEventInfrastructure.h"
 #include "../CUI/include/ProgressBar.h"
 #include "../CUI/include/StatusBar.h"
@@ -475,12 +476,23 @@ bool RunDesignerSelfTest(std::wstring& report)
 {
 	std::vector<std::wstring> failures;
 	ToolBox toolBox(0, 0, 260, 640);
+	const auto toolboxDescriptors =
+		DesignerControlCatalog::BuiltInDescriptors();
+	std::unique_ptr<ToolBoxItem> toolboxPresentationProbe;
+	if (!toolboxDescriptors.empty())
+		toolboxPresentationProbe = std::make_unique<ToolBoxItem>(
+			toolboxDescriptors.front(), 0, 0, 220, 40);
 	AppendFailure(failures,
 		toolBox.GetItemCount()
-			== DesignerControlCatalog::BuiltInDescriptors().size()
-		&& toolBox.GetVisibleItemCount() == toolBox.GetItemCount()
-		&& toolBox.GetVisibleCategoryCount() == 7,
+			== toolboxDescriptors.size()
+			&& toolBox.GetVisibleItemCount() == toolBox.GetItemCount()
+			&& toolBox.GetVisibleCategoryCount() == 7,
 		L"toolbox: controls were not grouped into the expected native categories");
+	AppendFailure(failures,
+		toolboxPresentationProbe
+			&& toolboxPresentationProbe->GetContent().Empty()
+			&& !toolboxPresentationProbe->GetTemplate(),
+		L"toolbox: custom card retained a Button content/template projection and would render its name twice");
 	toolBox.SetFilterText(L"媒体");
 	AppendFailure(failures,
 		toolBox.GetVisibleItemCount() == 2
@@ -724,6 +736,15 @@ bool RunDesignerSelfTest(std::wstring& report)
 
 		Designer dragDesigner;
 		dragDesigner.InitializeComponents();
+		auto* toolboxCard = dynamic_cast<Button*>(
+			FindDescendantByAutomationName(
+				dragDesigner._toolBox, L"文本块"));
+		const bool designerChromeStructure = toolboxCard
+			&& toolboxCard->GetContent().Empty()
+			&& !toolboxCard->GetTemplate()
+			&& dragDesigner._canvas && dragDesigner._canvas->ClipToBounds;
+		AppendFailure(failures, designerChromeStructure,
+			L"designer chrome: toolbox card projection or canvas viewport clipping was not installed");
 		const auto canvasOrigin = dragDesigner._canvas->GetAbsoluteLocationDip();
 		const auto canvasViewPoint = dragDesigner._canvas->CanvasToViewPoint(
 			POINT{ 140, 140 });
@@ -7712,6 +7733,14 @@ bool RunDesignerSelfTest(std::wstring& report)
 			? demoStatus->ControlInstance->Height : cui::layout::Length::Auto();
 		if (demoApplied)
 			cui::framework::PresentationAccess::Prepare(demoCanvas);
+		auto demoRoot = demoApplied
+			? FindControl(demoCanvas, L"windowContent") : nullptr;
+		const auto demoRootSize = demoRoot && demoRoot->ControlInstance
+			? demoRoot->ControlInstance->GetActualSizeDip()
+			: cui::core::Size{};
+		const bool previewRootFillsWindow = demoRoot
+			&& std::fabs(demoRootSize.width
+				- demoCanvas.GetDesignedWindowSize().width) < 0.01f;
 		bool statusPreviewMatchesRuntime = false;
 		if (demoStatus && demoStatus->ControlInstance
 			&& demoStatus->ControlInstance->GetVisualParent())
@@ -8029,6 +8058,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& composedDataMaterialized
 			&& objectResourcesMaterialized
 			&& drawingResourcesMaterialized
+			&& previewRootFillsWindow
 			&& statusPreviewMatchesRuntime
 			&& surfaceChildMoveStable
 			&& transformedChildMoveStable
@@ -8043,6 +8073,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", apply=" + demoApplyError
 			+ L", capture=" + demoCaptureError
 			+ L", status=" + (statusPreviewMatchesRuntime ? L"1" : L"0")
+			+ L", rootWidth=" + std::to_wstring(demoRootSize.width)
+			+ L"/" + std::to_wstring(
+				demoCanvas.GetDesignedWindowSize().width)
 			+ L", surface=" + (surfaceChildMoveStable ? L"1" : L"0")
 			+ L", transform=" + (transformedChildMoveStable ? L"1" : L"0")
 			+ L", group=" + (groupChildMoveStable ? L"1" : L"0")
@@ -9744,6 +9777,46 @@ bool RunDesignerSelfTest(std::wstring& report)
 				+ L", undo=" + std::to_wstring(undoPreserved)
 				+ L", deleteRejected="
 				+ std::to_wstring(danglingDeleteRejected) + L"]");
+	}
+
+	// Install the full framework theme only after the document-operation suite.
+	// This mirrors product startup while keeping unrelated headless canvas tests
+	// independent from Designer chrome template lifetime.
+	{
+		Designer themedDesigner;
+		themedDesigner.InitializeComponents();
+		auto* propertyModeButton = dynamic_cast<Button*>(
+			FindDescendantByAutomationName(
+				themedDesigner._propertyGrid, L"显示属性"));
+		std::wstring themeError;
+		auto* themeRoot = themedDesigner.GetVisualContent();
+		const bool themeApplied = themeRoot
+			&& themedDesigner._btnNew
+			&& themedDesigner._btnToolboxView && propertyModeButton
+			&& CuiGeneratedFrameworkTheme::Apply(
+				*themeRoot, true, &themeError);
+		DesignerModel::DesignDocument themedSnapshot;
+		std::wstring snapshotError;
+		const bool snapshotCaptured = themeApplied
+			&& themedDesigner._canvas
+			&& themedDesigner._canvas->BuildDesignDocument(
+				themedSnapshot, &snapshotError);
+		const bool designerChromeThemed = themeApplied
+			&& snapshotCaptured
+			&& themedDesigner._btnNew->GetTemplate()
+			&& themedDesigner._btnNew->HorizontalContentAlignment
+				== HorizontalAlignment::Center
+			&& themedDesigner._btnNew->VerticalContentAlignment
+				== VerticalAlignment::Center
+			&& themedDesigner._btnToolboxView
+			&& themedDesigner._btnToolboxView->GetTemplate()
+			&& propertyModeButton && propertyModeButton->GetTemplate();
+		AppendFailure(failures, designerChromeThemed,
+			L"designer chrome: Generic.xaml button alignment/states were not installed: "
+				+ themeError
+				+ (snapshotError.empty()
+					? std::wstring{}
+					: L"; themed document snapshot: " + snapshotError));
 	}
 
 	if (failures.empty())

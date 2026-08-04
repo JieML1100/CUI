@@ -35,7 +35,10 @@ public:
 		Category(Descriptor.Category),
 		BaseY(y)
 	{
-		SetContent(BindingValue(Descriptor.DisplayName));
+		// ToolBoxItem owns its complete card rendering.  Keeping Button.Content
+		// would also project a ContentPresenter and draw the display name a second
+		// time on top of the custom card once Generic.xaml is active.
+		SetTemplate(ControlTemplateReference{});
 		Canvas::SetLeft(*this, static_cast<float>(x));
 		Canvas::SetTop(*this, static_cast<float>(y));
 		Width = static_cast<float>(width);

@@ -13,6 +13,7 @@
 #include "../CUI/include/NativeVisualStateInfrastructure.h"
 #include "../CUI/include/XamlInfrastructure.h"
 #include "../CUI/include/WindowInfrastructure.h"
+#include "../CUI/include/CuiGeneratedFrameworkTheme.h"
 #include <Utils.h>
 #include <Windows.h>
 #include <commdlg.h>
@@ -332,9 +333,26 @@ Designer::~Designer()
 	DiscardSessionRecoverySnapshot();
 }
 
+void Designer::ApplyFrameworkTheme()
+{
+	auto* contentRoot = GetVisualContent();
+	if (!contentRoot) return;
+
+	std::wstring themeError;
+	if (!CuiGeneratedFrameworkTheme::Apply(
+		*contentRoot, true, &themeError))
+	{
+		throw std::runtime_error(Convert::UnicodeToUtf8(
+			themeError.empty()
+				? L"Designer 无法加载 Generic.xaml 主题。"
+				: themeError));
+	}
+}
+
 void Designer::InitAndShow()
 {
 	InitializeComponents();
+	ApplyFrameworkTheme();
 	InitializeRecoverySession();
 	this->Show();
 	StartClipboardMonitoring();

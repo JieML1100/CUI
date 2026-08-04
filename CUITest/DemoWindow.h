@@ -7,7 +7,7 @@
  * styles, and event names. This class owns only runtime services, data, and
  * the C++ implementations for the statically generated event hooks.
  */
-#include "DemoWindow.g.h"
+#include <DemoWindow.g.h>
 
 #include <cstdint>
 #include <memory>

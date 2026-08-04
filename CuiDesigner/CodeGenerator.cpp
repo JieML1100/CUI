@@ -3492,9 +3492,10 @@ std::string CodeGenerator::GenerateControlCommonProperties(
 			<< EscapeWStringLiteral(node.Properties.StyleResourceKey)
 			<< "\", "
 			<< (_outputKind == CodeGeneratorOutputKind::FrameworkThemeProgram
-				|| node.TemplateState.ResourceScopeFromTheme
+				|| node.TemplateState.StyleResourceScopeFromTheme
 				? "true" : "false")
-			<< ");\n";
+			<< (node.TemplateState.StyleResourceIsAutomatic
+				? ", true" : "") << ");\n";
 	return code.str();
 }
 
@@ -9691,9 +9692,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 							node.Properties.StyleResourceKey)
 						<< "\", "
 						<< (frameworkThemeProgram
-							|| node.TemplateState.ResourceScopeFromTheme
+							|| node.TemplateState.StyleResourceScopeFromTheme
 							? "true" : "false")
-						<< ");\n";
+						<< (node.TemplateState.StyleResourceIsAutomatic
+							? ", true" : "") << ");\n";
 				cpp << GenerateAuthoredProperties(node, 2);
 				cpp << GenerateContainerProperties(node, 2);
 			}
@@ -12172,9 +12174,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 							node->Properties.StyleResourceKey)
 						<< "\", "
 						<< (frameworkThemeProgram
-							|| node->TemplateState.ResourceScopeFromTheme
+							|| node->TemplateState.StyleResourceScopeFromTheme
 							? "true" : "false")
-						<< ");\n";
+						<< (node->TemplateState.StyleResourceIsAutomatic
+							? ", true" : "") << ");\n";
 				cpp << GenerateLocalResources(
 					*node, 3, &blueprintDocument,
 					&weakStaticObjectResources, nullptr, true);
@@ -13410,9 +13413,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				_sourceDocument.Window.Properties.StyleResourceKey)
 			<< "\", "
 			<< (frameworkThemeProgram
-				|| _sourceDocument.Window.TemplateState.ResourceScopeFromTheme
+				|| _sourceDocument.Window.TemplateState.StyleResourceScopeFromTheme
 				? "true" : "false")
-			<< ");\n";
+			<< (_sourceDocument.Window.TemplateState.StyleResourceIsAutomatic
+				? ", true" : "") << ");\n";
 	cpp << GenerateStyleSheetCode(
 		1, staticObjectResources,
 		&sharedDocumentResources, frameworkThemeProgram,

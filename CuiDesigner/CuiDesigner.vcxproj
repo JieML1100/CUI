@@ -57,6 +57,9 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup Label="CuiRuntimeFlavor">
     <CuiRuntimeFlavor>Design</CuiRuntimeFlavor>
+    <!-- The Designer is a tooling host, but its own Generic.xaml shell theme
+         is still compiled directly into the executable as AOT code. -->
+    <CuiVerifyAotGeneratedCode>false</CuiVerifyAotGeneratedCode>
   </PropertyGroup>
   <Import Project="..\build\CuiDesignRuntime.props" />
   <PropertyGroup Label="WebView2Package">
@@ -253,6 +256,13 @@
     <ClCompile Include="XamlEditorDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <CuiThemeCompile Include="..\Themes\Generic.xaml">
+      <OutputBase>$(CuiGeneratedCodeDir)CuiDesignerFrameworkTheme</OutputBase>
+      <ClassName>CuiGeneratedFrameworkTheme</ClassName>
+      <Mode>Full</Mode>
+    </CuiThemeCompile>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="BindingEditorDialog.h" />
     <ClInclude Include="CodeBehindExportDialog.h" />
     <ClInclude Include="CodeGenerator.h" />
@@ -345,5 +355,6 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="..\build\CuiCodeGen.targets" />
   </ImportGroup>
 </Project>

@@ -20,16 +20,29 @@ namespace cui::framework
 		static void SetResourceKey(
 			Control& target,
 			std::wstring value,
-			bool capturedFromTheme = false)
+			bool capturedFromTheme = false,
+			bool automatic = false)
 		{
 			target.SetStyleResourceKey(
-				std::move(value), capturedFromTheme);
+				std::move(value), capturedFromTheme, automatic);
 		}
 
 		static const std::wstring& ResourceKey(
 			const Control& target) noexcept
 		{
 			return target.GetStyleResourceKey();
+		}
+
+		static bool ResourceKeyCapturedFromTheme(
+			const Control& target) noexcept
+		{
+			return target.IsStyleResourceKeyCapturedFromTheme();
+		}
+
+		static bool ResourceKeyIsAutomatic(
+			const Control& target) noexcept
+		{
+			return target.IsStyleResourceKeyAutomatic();
 		}
 
 		static bool SetTheme(

@@ -24,6 +24,11 @@ protected:
 public:
 	ToolBar();
 	UIClass Type() override { return UIClass::UI_ToolBar; }
+	/**
+	 * Framework Theme Style captured by ToolBar for a directly hosted item type.
+	 * This is the native projection of WPF's ToolBar.*StyleKey resources.
+	 */
+	static const wchar_t* DefaultItemStyleResourceKey(UIClass type) noexcept;
 	static void RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override

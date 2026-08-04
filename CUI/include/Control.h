@@ -2111,9 +2111,18 @@ private:
 	{
 		return _styleResourceKey;
 	}
+	bool IsStyleResourceKeyCapturedFromTheme() const noexcept
+	{
+		return _styleResourceKeyCapturedFromTheme;
+	}
+	bool IsStyleResourceKeyAutomatic() const noexcept
+	{
+		return _styleResourceKeyIsAutomatic;
+	}
 	void SetStyleResourceKey(
 		std::wstring value,
-		bool capturedFromTheme = false);
+		bool capturedFromTheme = false,
+		bool automatic = false);
 	std::shared_ptr<const ControlStyleSheet> GetThemeStyleSheet() const noexcept
 	{
 		return _themeStyleSheet;

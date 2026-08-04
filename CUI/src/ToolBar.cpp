@@ -3,22 +3,19 @@
 
 #include <memory>
 
-namespace
+const wchar_t* ToolBar::DefaultItemStyleResourceKey(UIClass type) noexcept
 {
-	const wchar_t* ToolBarItemStyleKey(UIClass type) noexcept
+	switch (type)
 	{
-		switch (type)
-		{
-		case UIClass::UI_Button: return L"CuiToolBarButtonStyle";
-		case UIClass::UI_ToggleButton: return L"CuiToolBarToggleButtonStyle";
-		case UIClass::UI_CheckBox: return L"CuiToolBarCheckBoxStyle";
-		case UIClass::UI_RadioButton: return L"CuiToolBarRadioButtonStyle";
-		case UIClass::UI_ComboBox: return L"CuiToolBarComboBoxStyle";
-		case UIClass::UI_TextBox: return L"CuiToolBarTextBoxStyle";
-		case UIClass::UI_Menu: return L"CuiToolBarMenuStyle";
-		case UIClass::UI_Separator: return L"CuiToolBarSeparatorStyle";
-		default: return nullptr;
-		}
+	case UIClass::UI_Button: return L"CuiToolBarButtonStyle";
+	case UIClass::UI_ToggleButton: return L"CuiToolBarToggleButtonStyle";
+	case UIClass::UI_CheckBox: return L"CuiToolBarCheckBoxStyle";
+	case UIClass::UI_RadioButton: return L"CuiToolBarRadioButtonStyle";
+	case UIClass::UI_ComboBox: return L"CuiToolBarComboBoxStyle";
+	case UIClass::UI_TextBox: return L"CuiToolBarTextBoxStyle";
+	case UIClass::UI_Menu: return L"CuiToolBarMenuStyle";
+	case UIClass::UI_Separator: return L"CuiToolBarSeparatorStyle";
+	default: return nullptr;
 	}
 }
 
@@ -59,8 +56,9 @@ void ToolBar::PrepareItemStyles()
 		if (!containerStyle.empty())
 			cui::framework::StyleAccess::SetResourceKey(*item, containerStyle);
 		else if (cui::framework::StyleAccess::ResourceKey(*item).empty())
-			if (const auto* key = ToolBarItemStyleKey(item->Type()))
-				cui::framework::StyleAccess::SetResourceKey(*item, key);
+			if (const auto* key = DefaultItemStyleResourceKey(item->Type()))
+				cui::framework::StyleAccess::SetResourceKey(
+					*item, key, false, true);
 		if (cui::framework::StyleAccess::HasVisibleStyleRules(*item))
 			(void)cui::framework::StyleAccess::Refresh(*item, true);
 	};

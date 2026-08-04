@@ -226,6 +226,10 @@ struct DesignNodeTemplateState
 	bool ComponentExpanded = false;
 	bool ControlTemplateExpanded = false;
 	bool Generated = false;
+	/** Static Style resource was captured from the defining Theme dictionary. */
+	bool StyleResourceScopeFromTheme = false;
+	/** Style resource key was assigned by container preparation, not XAML. */
+	bool StyleResourceIsAutomatic = false;
 	bool ResourceScopeFromTheme = false;
 	bool ControlTemplateRoot = false;
 	std::wstring Owner;
