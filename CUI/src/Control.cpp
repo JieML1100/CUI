@@ -1650,7 +1650,7 @@ void Control::SetVisualParentCore(Control* value)
 ControlWeakReference::ControlWeakReference(Control* target) noexcept
 	: _target(target),
 	_lifetime(target ? target->WeakLifetimeToken()
-		: std::weak_ptr<const bool>{})
+		: std::weak_ptr<const std::atomic_bool>{})
 {
 }
 
@@ -1658,7 +1658,7 @@ ControlWeakReference& ControlWeakReference::operator=(Control* target) noexcept
 {
 	_target = target;
 	_lifetime = target ? target->WeakLifetimeToken()
-		: std::weak_ptr<const bool>{};
+		: std::weak_ptr<const std::atomic_bool>{};
 	return *this;
 }
 
@@ -1666,7 +1666,8 @@ Control* ControlWeakReference::Get() const noexcept
 {
 	if (!_target) return nullptr;
 	const auto lifetime = _lifetime.lock();
-	return lifetime && *lifetime ? _target : nullptr;
+	return lifetime
+		&& lifetime->load(std::memory_order_acquire) ? _target : nullptr;
 }
 
 void Control::PropagatePresentationWindow(

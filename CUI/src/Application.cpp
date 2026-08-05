@@ -318,6 +318,16 @@ std::vector<Window*> Application::GetPlatformWindows()
 	return result;
 }
 
+std::vector<HWND> Application::GetPlatformWindowHandles()
+{
+	std::vector<HWND> result;
+	std::scoped_lock lock(platformWindowsMutex);
+	result.reserve(platformWindows.size());
+	for (const auto& [handle, registration] : platformWindows)
+		if (handle && registration.WindowPointer) result.push_back(handle);
+	return result;
+}
+
 Window* Application::FindWindow(HWND handle) noexcept
 {
 	std::scoped_lock lock(platformWindowsMutex);

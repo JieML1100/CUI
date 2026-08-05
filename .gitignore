@@ -117,3 +117,4 @@ dkms.conf
 /CUI_WPF_FOUNDATION_ALIGNMENT.md
 /CUI_XAML_AOT_ARCHITECTURE.md
 /.temp/codegen-example
+/artifacts

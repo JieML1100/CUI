@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <atomic>
 #include <memory>
 
 class Control;
@@ -75,5 +76,5 @@ public:
 
 private:
 	Control* _target = nullptr;
-	std::weak_ptr<const bool> _lifetime;
+	std::weak_ptr<const std::atomic_bool> _lifetime;
 };

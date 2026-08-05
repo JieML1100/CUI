@@ -1,23 +1,21 @@
 #include "DCompLayeredHost.h"
+#include "Graphics.h"
 
 #ifdef CUI_ENABLE_WEBVIEW2
 #include <dcomp.h>
 #include <dxgi1_2.h>
 #include <d3d11.h>
-#include <d2d1_1.h>
 #include <algorithm>
 #include <vector>
 #include <wrl/client.h>
 
 #if defined(_MSC_VER)
-#pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #endif
 
 namespace
 {
     using DCompositionCreateDeviceProc = HRESULT(WINAPI*)(IDXGIDevice*, REFIID, void**);
-    using CreateDXGIFactory2Proc = HRESULT(WINAPI*)(UINT, REFIID, void**);
 
     DCompositionCreateDeviceProc ResolveDCompositionCreateDevice()
     {
@@ -27,24 +25,6 @@ namespace
         return reinterpret_cast<DCompositionCreateDeviceProc>(::GetProcAddress(dcompModule, "DCompositionCreateDevice"));
     }
 
-    HRESULT CreateDXGIFactory2Runtime(IDXGIFactory2** factory)
-    {
-        if (!factory)
-            return E_POINTER;
-        *factory = nullptr;
-
-        HMODULE dxgiModule = ::GetModuleHandleW(L"dxgi.dll");
-        if (!dxgiModule)
-            dxgiModule = ::LoadLibraryW(L"dxgi.dll");
-        if (!dxgiModule)
-            return HRESULT_FROM_WIN32(::GetLastError());
-
-        auto createFactory = reinterpret_cast<CreateDXGIFactory2Proc>(::GetProcAddress(dxgiModule, "CreateDXGIFactory2"));
-        if (!createFactory)
-            return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
-
-        return createFactory(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(factory));
-    }
 }
 #endif
 
@@ -63,6 +43,7 @@ public:
     Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice;
     Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
     Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice;
+    GraphicsSharedD3DDeviceInfo sharedDeviceInfo{};
     Microsoft::WRL::ComPtr<IDCompositionDevice> dcompDevice;
     Microsoft::WRL::ComPtr<IDCompositionTarget> dcompTarget;
     Microsoft::WRL::ComPtr<IDCompositionVisual> rootVisual;
@@ -85,10 +66,10 @@ public:
         return it == layerVisuals.end() ? nullptr : &(*it);
     }
 
-    void RebuildVisualStack()
+    HRESULT RebuildVisualStack()
     {
         if (!rootVisual)
-            return;
+            return E_NOT_VALID_STATE;
         std::stable_sort(layerVisuals.begin(), layerVisuals.end(), [](const LayerVisual& a, const LayerVisual& b)
             {
                 if (a.layer != b.layer) return a.layer < b.layer;
@@ -96,12 +77,20 @@ public:
                 return a.sequence < b.sequence;
             });
 
-        rootVisual->RemoveAllVisuals();
+		HRESULT hr = rootVisual->RemoveAllVisuals();
+		if (FAILED(hr)) return hr;
         for (const auto& item : layerVisuals)
         {
             if (item.visual)
-                rootVisual->AddVisual(item.visual, FALSE, nullptr);
+			{
+				// The list is sorted bottom-to-top.  With no reference visual,
+				// insertAbove=FALSE places the new visual above all existing
+				// siblings, preserving that order.
+				hr = rootVisual->AddVisual(item.visual, FALSE, nullptr);
+				if (FAILED(hr)) return hr;
+			}
         }
+		return S_OK;
     }
 #endif
     bool initialized = false;
@@ -124,62 +113,23 @@ bool DCompLayeredHost::Initialize(HWND hwnd, UINT width, UINT height)
 #ifdef CUI_ENABLE_WEBVIEW2
     if (_impl->initialized)
         return true;
+    // A previous initialization attempt may have failed after creating only a
+    // prefix of the composition graph. Retry from a clean device-domain state.
+    Cleanup();
     if (!hwnd || !::IsWindow(hwnd))
         return false;
 
     _impl->hwnd = hwnd;
 
-    // 创建 D3D11 设备
-    UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    D3D_FEATURE_LEVEL featureLevels[] = {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0,
-    };
-    D3D_FEATURE_LEVEL obtainedFeatureLevel;
-    HRESULT hr = D3D11CreateDevice(
+    // DirectComposition、D2D 和媒体解码必须处在同一 D3D11 设备域，
+    // 这样 DXGI 视频表面才能无 CPU 拷贝地交给任意一种呈现宿主。
+    HRESULT hr = Graphics_AcquireSharedD3DDevice(
+        _impl->d3dDevice.ReleaseAndGetAddressOf(),
         nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        createDeviceFlags,
-        featureLevels,
-        static_cast<UINT>(_countof(featureLevels)),
-        D3D11_SDK_VERSION,
-        _impl->d3dDevice.GetAddressOf(),
-        &obtainedFeatureLevel,
-        nullptr);
-
-    if (FAILED(hr))
-    {
-        // 回退到 WARP
-        hr = D3D11CreateDevice(
-            nullptr,
-            D3D_DRIVER_TYPE_WARP,
-            nullptr,
-            createDeviceFlags,
-            featureLevels,
-            static_cast<UINT>(_countof(featureLevels)),
-            D3D11_SDK_VERSION,
-            &_impl->d3dDevice,
-            &obtainedFeatureLevel,
-            nullptr);
-        if (FAILED(hr))
-            return false;
-    }
-
-    hr = _impl->d3dDevice.As(&_impl->dxgiDevice);
-    if (FAILED(hr))
-        return false;
-
-    // 创建 D2D 设备（与 D2DGraphics 共享 DXGI 设备）
-    Microsoft::WRL::ComPtr<ID2D1Factory1> d2dFactory;
-    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory.GetAddressOf());
-    if (FAILED(hr))
-        return false;
-
-    hr = d2dFactory->CreateDevice(_impl->dxgiDevice.Get(), _impl->d2dDevice.GetAddressOf());
-    if (FAILED(hr))
+        _impl->dxgiDevice.ReleaseAndGetAddressOf(),
+        _impl->d2dDevice.ReleaseAndGetAddressOf(),
+        &_impl->sharedDeviceInfo);
+    if (FAILED(hr) || !_impl->d3dDevice || !_impl->dxgiDevice || !_impl->d2dDevice)
         return false;
 
     // 创建 DComp 设备
@@ -203,15 +153,23 @@ bool DCompLayeredHost::Initialize(HWND hwnd, UINT width, UINT height)
     hr = _impl->dcompDevice->CreateVisual(_impl->rootVisual.GetAddressOf());
     if (FAILED(hr))
         return false;
-    _impl->dcompTarget->SetRoot(_impl->rootVisual.Get());
+	hr = _impl->dcompTarget->SetRoot(_impl->rootVisual.Get());
+	if (FAILED(hr)) return false;
 
     // 创建 D2D Visual（底层，用于自绘渲染）
     hr = _impl->dcompDevice->CreateVisual(_impl->d2dVisual.GetAddressOf());
     if (FAILED(hr))
         return false;
 
-    // 创建 Composition 交换链
-    hr = CreateDXGIFactory2Runtime(_impl->dxgiFactory.ReleaseAndGetAddressOf());
+    // Obtain the factory through the shared device's adapter so all
+    // composition swap chains remain in the same adapter domain.
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    hr = _impl->dxgiDevice->GetAdapter(adapter.GetAddressOf());
+    if (FAILED(hr))
+        return false;
+    hr = adapter->GetParent(
+        __uuidof(IDXGIFactory2),
+        reinterpret_cast<void**>(_impl->dxgiFactory.ReleaseAndGetAddressOf()));
     if (FAILED(hr))
         return false;
 
@@ -234,7 +192,8 @@ bool DCompLayeredHost::Initialize(HWND hwnd, UINT width, UINT height)
     if (FAILED(hr))
         return false;
 
-    _impl->d2dVisual->SetContent(_impl->swapChain.Get());
+	hr = _impl->d2dVisual->SetContent(_impl->swapChain.Get());
+	if (FAILED(hr)) return false;
     _impl->layerVisuals.push_back({ _impl->d2dVisual.Get(), 0, 0, _impl->nextSequence++ });
 
     // 创建 WebContainer Visual（中间层，用于挂载 WebView2）
@@ -258,9 +217,11 @@ bool DCompLayeredHost::Initialize(HWND hwnd, UINT width, UINT height)
     if (FAILED(hr))
         return false;
 
-    _impl->overlayVisual->SetContent(_impl->overlaySwapChain.Get());
+	hr = _impl->overlayVisual->SetContent(_impl->overlaySwapChain.Get());
+	if (FAILED(hr)) return false;
     _impl->layerVisuals.push_back({ _impl->overlayVisual.Get(), 200000, 0, _impl->nextSequence++ });
-    _impl->RebuildVisualStack();
+	if (FAILED(_impl->RebuildVisualStack()))
+		return false;
 
     _impl->initialized = true;
     return true;
@@ -325,6 +286,7 @@ void DCompLayeredHost::Cleanup()
     _impl->d2dDevice.Reset();
     _impl->dxgiDevice.Reset();
     _impl->d3dDevice.Reset();
+    _impl->sharedDeviceInfo = {};
 #endif
     _impl->initialized = false;
     _impl->hwnd = nullptr;
@@ -382,10 +344,12 @@ bool DCompLayeredHost::CreateD2DLayer(void** outSwapChain, IDCompositionVisual**
     if (FAILED(hr) || !visual)
         return false;
 
-    visual->SetContent(swapChain.Get());
+	hr = visual->SetContent(swapChain.Get());
+	if (FAILED(hr)) return false;
+	if (!RegisterVisual(visual.Get(), layer, order))
+		return false;
     *outSwapChain = swapChain.Detach();
     *outVisual = visual.Detach();
-    RegisterVisual(*outVisual, layer, order);
     return true;
 #else
     if (outSwapChain) *outSwapChain = nullptr;
@@ -412,15 +376,35 @@ bool DCompLayeredHost::RegisterVisual(IDCompositionVisual* visual, int layer, in
         return false;
     if (auto* item = _impl->FindLayerVisual(visual))
     {
+		const int previousLayer = item->layer;
+		const int previousOrder = item->order;
+		const uint64_t sequence = item->sequence;
         item->layer = layer;
         item->order = order;
+		if (SUCCEEDED(_impl->RebuildVisualStack())) return true;
+		const auto restore = std::find_if(
+			_impl->layerVisuals.begin(), _impl->layerVisuals.end(),
+			[sequence](const Impl::LayerVisual& candidate)
+			{ return candidate.sequence == sequence; });
+		if (restore != _impl->layerVisuals.end())
+		{
+			restore->layer = previousLayer;
+			restore->order = previousOrder;
+		}
+		(void)_impl->RebuildVisualStack();
+		return false;
     }
-    else
-    {
-        _impl->layerVisuals.push_back({ visual, layer, order, _impl->nextSequence++ });
-    }
-    _impl->RebuildVisualStack();
-    return true;
+	const uint64_t sequence = _impl->nextSequence++;
+	_impl->layerVisuals.push_back({
+		visual, layer, order, sequence });
+	if (SUCCEEDED(_impl->RebuildVisualStack())) return true;
+	_impl->layerVisuals.erase(std::remove_if(
+		_impl->layerVisuals.begin(), _impl->layerVisuals.end(),
+		[sequence](const Impl::LayerVisual& candidate)
+		{ return candidate.sequence == sequence; }),
+		_impl->layerVisuals.end());
+	(void)_impl->RebuildVisualStack();
+	return false;
 #else
     (void)visual;
     (void)layer;
@@ -438,9 +422,24 @@ void DCompLayeredHost::UpdateVisualOrder(IDCompositionVisual* visual, int layer,
     {
         if (item->layer == layer && item->order == order)
             return;
-        item->layer = layer;
-        item->order = order;
-        _impl->RebuildVisualStack();
+		const int previousLayer = item->layer;
+		const int previousOrder = item->order;
+		const uint64_t sequence = item->sequence;
+		item->layer = layer;
+		item->order = order;
+		if (FAILED(_impl->RebuildVisualStack()))
+		{
+			const auto restore = std::find_if(
+				_impl->layerVisuals.begin(), _impl->layerVisuals.end(),
+				[sequence](const Impl::LayerVisual& candidate)
+				{ return candidate.sequence == sequence; });
+			if (restore != _impl->layerVisuals.end())
+			{
+				restore->layer = previousLayer;
+				restore->order = previousOrder;
+			}
+			(void)_impl->RebuildVisualStack();
+		}
     }
     else
     {
@@ -466,7 +465,7 @@ void DCompLayeredHost::UnregisterVisual(IDCompositionVisual* visual)
             }),
         _impl->layerVisuals.end());
     if (oldSize != _impl->layerVisuals.size())
-        _impl->RebuildVisualStack();
+		(void)_impl->RebuildVisualStack();
 #else
     (void)visual;
 #endif
@@ -504,4 +503,20 @@ HRESULT DCompLayeredHost::CommitComposition()
 bool DCompLayeredHost::IsInitialized() const
 {
     return _impl->initialized;
+}
+
+bool DCompLayeredHost::IsDeviceLost() const noexcept
+{
+#ifdef CUI_ENABLE_WEBVIEW2
+	if (_impl->sharedDeviceInfo.Generation != 0
+		&& Graphics_GetSharedD3DDeviceGeneration()
+			!= _impl->sharedDeviceInfo.Generation)
+	{
+		return true;
+	}
+    return _impl->d3dDevice
+        && FAILED(_impl->d3dDevice->GetDeviceRemovedReason());
+#else
+    return false;
+#endif
 }

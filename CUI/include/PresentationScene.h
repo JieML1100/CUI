@@ -92,6 +92,8 @@ public:
 		float logicalHeight);
 	/** Draws flattened content nodes into the active raster surface. */
 	void RenderRaster(const RECT& contentDirty);
+	/** Returns whether the independent transparent overlay needs a new frame. */
+	bool RequiresOverlayFrame();
 	/** Draws flattened transient nodes into the active overlay/raster surface. */
 	void RenderOverlay(const RECT& contentDirty);
 
@@ -137,6 +139,7 @@ private:
 	bool _allGeometryDirty = false;
 	std::vector<Control*> _transientRoots;
 	bool _requiresComposition = false;
+	bool _overlaySurfaceDirty = true;
 	bool _structureDirty = true;
 	bool _rendering = false;
 	uint64_t _revision = 0;

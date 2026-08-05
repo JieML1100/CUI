@@ -1,4 +1,5 @@
 ﻿#include "Factory.h"
+#include <mutex>
 #include <wrl/client.h>
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "Dwrite.lib")
@@ -9,6 +10,8 @@ IDWriteFactory* Factory::pDWriteFactory = NULL;
 IWICImagingFactory* Factory::_pImageFactory = NULL;
 
 ID2D1Factory1* Factory::D2DFactory() {
+	static std::mutex factoryMutex;
+	std::scoped_lock lock(factoryMutex);
 	if (!pD2DFactory) {
 		D2D1_FACTORY_OPTIONS factoryOptions = {};
 #if defined(_DEBUG)

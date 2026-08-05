@@ -1343,13 +1343,35 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				|| presentationSurface->GetPresentationWindow() != this
 				|| !Handle)
 				return fail(L"PresentationRenderHost 可见实验未挂接到真实 Window behavior。");
+			RequestLayout();
+			UpdateLayout();
+			const auto presentationBounds =
+				presentationSurface->GetAbsoluteBoundsDip();
+			const int presentationHitX = static_cast<int>(std::floor(
+				(presentationBounds.left + presentationBounds.right) * 0.5f));
+			const int presentationHitY = static_cast<int>(std::floor(
+				(presentationBounds.top + presentationBounds.bottom) * 0.5f));
+			auto* presentationHit =
+				cui::framework::WindowAccess::HitTestControlAt(
+					*this, presentationHitX, presentationHitY);
+			if (presentationHit != presentationSurface)
+				return fail(L"Presentation 可见探针被装饰层遮挡，"
+					L"Window hit-test 未命中 NativeSurface。");
+			const auto presentationClientBounds =
+				ContentDipRectToClientPixels(presentationBounds);
+			const LPARAM presentationPoint = MAKELPARAM(
+				(presentationClientBounds.left + presentationClientBounds.right) / 2,
+				(presentationClientBounds.top + presentationClientBounds.bottom) / 2);
 			const int regionRequests = presentationBehavior->RegionRequests();
-			(void)cui::framework::InputAccess::DispatchInput(
-				*presentationSurface, PointerInput(
-					InputReportKind::PointerDown, MouseButton::Left,
-					73, 91, MouseButton::Left));
-			if (presentationBehavior->RegionRequests() != regionRequests + 1)
-				return fail(L"Presentation NativeSurface 未提交局部 DIP 脏区。");
+			(void)::SendMessageW(
+				Handle, WM_LBUTTONDOWN, MK_LBUTTON, presentationPoint);
+			(void)::SendMessageW(
+				Handle, WM_MOUSEMOVE, MK_LBUTTON, presentationPoint);
+			(void)::SendMessageW(
+				Handle, WM_LBUTTONUP, 0, presentationPoint);
+			if (presentationBehavior->RegionRequests() != regionRequests + 2)
+				return fail(L"Presentation NativeSurface 未通过真实 Window 指针按下/移动"
+					L"提交局部 DIP 脏区。");
 		}
 
 		{
@@ -5403,7 +5425,7 @@ void DemoWindow::HandlePresentationGeometry(Control*, RoutedEventArgs&)
 	auto* status = dynamic_cast<Label*>(
 		FindGeneratedControlByName(L"presentationStatus"));
 	if (!tile || !status) return;
-	Canvas::SetLeft(*(tile), Canvas::GetLeft(*(tile)) > 580.0f ? 548.0f : 606.0f);
+	Canvas::SetLeft(*(tile), Canvas::GetLeft(*(tile)) > 40.0f ? 12.0f : 70.0f);
 	status->Text = StringHelper::Format(
 		L"Geometry move queued · lanes C/G/P %llu/%llu/%llu · topology r%llu stable",
 		static_cast<unsigned long long>(cui::framework::WindowAccess::PresentationContentRevision(*this)),

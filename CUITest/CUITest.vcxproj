@@ -167,11 +167,13 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
-    <CuiAotBoundarySource Include="main.cpp;DemoWindow.cpp;DemoWindow.h" />
+    <ClCompile Include="MediaPerformanceRunner.cpp" />
+    <CuiAotBoundarySource Include="main.cpp;DemoWindow.cpp;DemoWindow.h;MediaPerformanceRunner.cpp;MediaPerformanceRunner.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
+    <ClInclude Include="MediaPerformanceRunner.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

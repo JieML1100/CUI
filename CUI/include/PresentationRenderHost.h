@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -79,6 +80,8 @@ public:
 	bool Attach(HWND window, UINT dpi = 96);
 	void Detach() noexcept;
 	bool IsAttached() const noexcept;
+	/** One-shot test seam for the real transient initial-attach recovery path. */
+	static void FailNextPrimaryAttachForTesting() noexcept;
 
 	D2DGraphics* DrawingContext() const noexcept { return _active; }
 	D2DGraphics* PrimaryContext() const noexcept { return _primary.get(); }
@@ -193,6 +196,7 @@ private:
 	uint64_t _activeTransactionSequence = 0;
 	uint64_t _nextFrameSequence = 0;
 	uint64_t _resourceGeneration = 0;
+	uint64_t _sharedDeviceGeneration = 0;
 	uint64_t _committedFrames = 0;
 	uint64_t _abortedFrames = 0;
 	uint64_t _deviceRecoveries = 0;
@@ -207,6 +211,7 @@ private:
 	RECT _lastPrimaryDirty{};
 	bool _lastPrimaryWasFull = false;
 	bool _hasLastPrimaryFrame = false;
+	static std::atomic<bool> _failNextPrimaryAttachForTesting;
 
 	bool OwnsContext(const D2DGraphics* context) const noexcept;
 	RECT ToLogicalRect(const RECT& physical) const noexcept;

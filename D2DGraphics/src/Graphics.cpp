@@ -2,9 +2,11 @@
 #include "SvgParserInternal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <numbers>
 
 #include <d2derr.h>
@@ -48,10 +50,15 @@ namespace {
 	};
 
 	struct SharedD2D11Resources {
+		std::mutex mutex;
 		ComPtr<ID3D11Device> d3dDevice;
 		ComPtr<ID3D11DeviceContext> d3dContext;
 		ComPtr<IDXGIDevice> dxgiDevice;
 		ComPtr<ID2D1Device> d2dDevice;
+		uint64_t generation = 0;
+		std::atomic<uint64_t> publishedGeneration{ 0 };
+		bool supportsVideo = false;
+		bool isHardware = false;
 	};
 
 	SharedD2D11Resources& Shared() {
@@ -60,27 +67,29 @@ namespace {
 	}
 
 	bool IsDeviceRemovedHr(HRESULT hr) {
-		return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
-			hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+		return hr == DXGI_ERROR_DEVICE_REMOVED
+			|| hr == DXGI_ERROR_DEVICE_RESET
+			|| hr == DXGI_ERROR_DEVICE_HUNG
+			|| hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 	}
 
-	void ResetSharedDevice() {
-		auto& s = Shared();
+	void ResetSharedDeviceLocked(SharedD2D11Resources& s) {
 		s.d2dDevice.Reset();
 		s.dxgiDevice.Reset();
 		s.d3dContext.Reset();
 		s.d3dDevice.Reset();
+		s.supportsVideo = false;
+		s.isHardware = false;
 	}
 
-	HRESULT CreateSharedDeviceIfNeeded() {
-		auto& s = Shared();
+	HRESULT CreateSharedDeviceIfNeededLocked(SharedD2D11Resources& s) {
 		if (s.d3dDevice) {
 			HRESULT reason = s.d3dDevice->GetDeviceRemovedReason();
-			if (reason != S_OK && IsDeviceRemovedHr(reason)) {
-				ResetSharedDevice();
+			if (FAILED(reason)) {
+				ResetSharedDeviceLocked(s);
 			}
 		}
-		if (s.d2dDevice && s.dxgiDevice && s.d3dDevice) {
+		if (s.d2dDevice && s.dxgiDevice && s.d3dContext && s.d3dDevice) {
 			return S_OK;
 		}
 
@@ -99,64 +108,65 @@ namespace {
 
 		ComPtr<ID3D11Device> dev;
 		ComPtr<ID3D11DeviceContext> ctx;
-		HRESULT hr = D3D11CreateDevice(
-			nullptr,
-			D3D_DRIVER_TYPE_HARDWARE,
-			nullptr,
-			flags,
-			featureLevels,
-			_countof(featureLevels),
-			D3D11_SDK_VERSION,
-			&dev,
-			&obtained,
-			&ctx);
-
-		if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
-			hr = D3D11CreateDevice(
-				nullptr,
-				D3D_DRIVER_TYPE_HARDWARE,
-				nullptr,
-				flags & ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-				featureLevels,
-				_countof(featureLevels),
-				D3D11_SDK_VERSION,
-				&dev,
-				&obtained,
-				&ctx);
-		}
-
-		if (FAILED(hr)) {
-			hr = D3D11CreateDevice(
-				nullptr,
-				D3D_DRIVER_TYPE_WARP,
-				nullptr,
-				flags,
-				featureLevels,
-				_countof(featureLevels),
-				D3D11_SDK_VERSION,
-				&dev,
-				&obtained,
-				&ctx);
-			if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
-				hr = D3D11CreateDevice(
-					nullptr,
-					D3D_DRIVER_TYPE_WARP,
-					nullptr,
-					flags & ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-					featureLevels,
-					_countof(featureLevels),
-					D3D11_SDK_VERSION,
-					&dev,
-					&obtained,
-					&ctx);
+		bool supportsVideo = true;
+		bool isHardware = true;
+		auto tryCreate = [&](D3D_DRIVER_TYPE driverType,
+			UINT attemptFlags, bool& videoSupport) {
+			dev.Reset();
+			ctx.Reset();
+			videoSupport =
+				(attemptFlags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT) != 0;
+			HRESULT result = D3D11CreateDevice(
+				nullptr, driverType, nullptr, attemptFlags,
+				featureLevels, _countof(featureLevels), D3D11_SDK_VERSION,
+				&dev, &obtained, &ctx);
+			if (FAILED(result) && videoSupport) {
+				dev.Reset();
+				ctx.Reset();
+				videoSupport = false;
+				result = D3D11CreateDevice(
+					nullptr, driverType, nullptr,
+					attemptFlags & ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+					featureLevels, _countof(featureLevels),
+					D3D11_SDK_VERSION, &dev, &obtained, &ctx);
 			}
+			return result;
+		};
+		auto tryCreateWithDebugFallback = [&](D3D_DRIVER_TYPE driverType,
+			bool& videoSupport) {
+			HRESULT result = tryCreate(driverType, flags, videoSupport);
+#if defined(_DEBUG)
+			// Debug builds must remain runnable on machines where the optional
+			// Windows Graphics Tools feature (D3D debug layer) is not installed.
+			if (FAILED(result) && (flags & D3D11_CREATE_DEVICE_DEBUG))
+				result = tryCreate(
+					driverType, flags & ~D3D11_CREATE_DEVICE_DEBUG,
+					videoSupport);
+#endif
+			return result;
+		};
+
+		HRESULT hr = tryCreateWithDebugFallback(
+			D3D_DRIVER_TYPE_HARDWARE, supportsVideo);
+		if (FAILED(hr)) {
+			isHardware = false;
+			hr = tryCreateWithDebugFallback(
+				D3D_DRIVER_TYPE_WARP, supportsVideo);
 		}
 		if (FAILED(hr)) {
 			return hr;
 		}
 		ComPtr<ID3D10Multithread> multithread;
-		if (SUCCEEDED(dev.As(&multithread)) && multithread) {
+		if (SUCCEEDED(ctx.As(&multithread)) && multithread) {
 			multithread->SetMultithreadProtected(TRUE);
+		}
+		else {
+			return E_NOINTERFACE;
+		}
+
+		ComPtr<ID3D11VideoDevice> videoDevice;
+		if (!supportsVideo || FAILED(dev.As(&videoDevice)) || !videoDevice) {
+			supportsVideo = false;
 		}
 
 		ComPtr<IDXGIDevice> dxgiDevice;
@@ -166,7 +176,9 @@ namespace {
 		}
 
 		ComPtr<ID2D1Device> d2dDevice;
-		hr = _D2DFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
+		auto* d2dFactory = Factory::D2DFactory();
+		if (!d2dFactory) return E_FAIL;
+		hr = d2dFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
 		if (FAILED(hr)) {
 			return hr;
 		}
@@ -175,7 +187,18 @@ namespace {
 		s.d3dContext = ctx;
 		s.dxgiDevice = dxgiDevice;
 		s.d2dDevice = d2dDevice;
+		s.supportsVideo = supportsVideo;
+		s.isHardware = isHardware;
+		++s.generation;
+		if (s.generation == 0) ++s.generation;
+		s.publishedGeneration.store(s.generation, std::memory_order_release);
 		return S_OK;
+	}
+
+	HRESULT CreateSharedDeviceIfNeeded() {
+		auto& s = Shared();
+		std::scoped_lock lock(s.mutex);
+		return CreateSharedDeviceIfNeededLocked(s);
 	}
 
 	bool WritePixelsToWicBitmap(IWICBitmap* dst, const void* src, UINT stride, UINT width, UINT height) {
@@ -208,14 +231,86 @@ HRESULT Graphics_EnsureSharedD3DDevice() {
 	return CreateSharedDeviceIfNeeded();
 }
 
+HRESULT Graphics_AcquireSharedD3DDevice(
+	ID3D11Device** d3dDevice,
+	ID3D11DeviceContext** d3dContext,
+	IDXGIDevice** dxgiDevice,
+	ID2D1Device** d2dDevice,
+	GraphicsSharedD3DDeviceInfo* info) {
+	if (d3dDevice) *d3dDevice = nullptr;
+	if (d3dContext) *d3dContext = nullptr;
+	if (dxgiDevice) *dxgiDevice = nullptr;
+	if (d2dDevice) *d2dDevice = nullptr;
+	if (info) *info = {};
+
+	auto& s = Shared();
+	std::scoped_lock lock(s.mutex);
+	HRESULT hr = CreateSharedDeviceIfNeededLocked(s);
+	if (FAILED(hr)) return hr;
+
+	if (d3dDevice) s.d3dDevice.CopyTo(d3dDevice);
+	if (d3dContext) s.d3dContext.CopyTo(d3dContext);
+	if (dxgiDevice) s.dxgiDevice.CopyTo(dxgiDevice);
+	if (d2dDevice) s.d2dDevice.CopyTo(d2dDevice);
+	if (info) {
+		info->Generation = s.generation;
+		info->SupportsVideo = s.supportsVideo;
+		info->IsHardware = s.isHardware;
+	}
+	return S_OK;
+}
+
+uint64_t Graphics_GetSharedD3DDeviceGeneration() noexcept {
+	return Shared().publishedGeneration.load(std::memory_order_acquire);
+}
+
+HRESULT Graphics_RotateSharedD3DDeviceForTesting(
+	GraphicsSharedD3DDeviceInfo* info) {
+	if (info) *info = {};
+	auto& s = Shared();
+	std::scoped_lock lock(s.mutex);
+	// Rotation is a transaction: a failed replacement must leave every caller
+	// on the previous healthy domain instead of clearing the registry and
+	// allowing a later acquire to split live hosts across generations.
+	auto previousD3DDevice = s.d3dDevice;
+	auto previousD3DContext = s.d3dContext;
+	auto previousDxgiDevice = s.dxgiDevice;
+	auto previousD2DDevice = s.d2dDevice;
+	const bool previousSupportsVideo = s.supportsVideo;
+	const bool previousIsHardware = s.isHardware;
+	ResetSharedDeviceLocked(s);
+	const HRESULT hr = CreateSharedDeviceIfNeededLocked(s);
+	if (FAILED(hr)) {
+		s.d3dDevice = std::move(previousD3DDevice);
+		s.d3dContext = std::move(previousD3DContext);
+		s.dxgiDevice = std::move(previousDxgiDevice);
+		s.d2dDevice = std::move(previousD2DDevice);
+		s.supportsVideo = previousSupportsVideo;
+		s.isHardware = previousIsHardware;
+		return hr;
+	}
+	if (info) {
+		info->Generation = s.generation;
+		info->SupportsVideo = s.supportsVideo;
+		info->IsHardware = s.isHardware;
+	}
+	return S_OK;
+}
+
 ID3D11Device* Graphics_GetSharedD3DDevice() {
-	CreateSharedDeviceIfNeeded();
-	return Shared().d3dDevice.Get();
+	thread_local ComPtr<ID3D11Device> snapshot;
+	snapshot.Reset();
+	(void)Graphics_AcquireSharedD3DDevice(
+		snapshot.ReleaseAndGetAddressOf(), nullptr, nullptr, nullptr, nullptr);
+	return snapshot.Get();
 }
 
 IDXGIDevice* Graphics_GetSharedDXGIDevice() {
-	CreateSharedDeviceIfNeeded();
-	return Shared().dxgiDevice.Get();
+	thread_local ComPtr<IDXGIDevice> snapshot;
+	snapshot.Reset();
+	(void)Graphics_AcquireSharedD3DDevice(
+		nullptr, nullptr, snapshot.ReleaseAndGetAddressOf(), nullptr, nullptr);
+	return snapshot.Get();
 }
 
 namespace {
@@ -276,12 +371,14 @@ HRESULT D2DGraphics::EnsureDeviceResources() {
 		return S_OK;
 	}
 
-	HRESULT hr = CreateSharedDeviceIfNeeded();
+	ComPtr<ID2D1Device> sharedD2DDevice;
+	HRESULT hr = Graphics_AcquireSharedD3DDevice(
+		nullptr, nullptr, nullptr, sharedD2DDevice.GetAddressOf(), nullptr);
 	if (FAILED(hr)) {
 		return hr;
 	}
 
-	pD2DDevice = Shared().d2dDevice;
+	pD2DDevice = sharedD2DDevice;
 	if (!pD2DDevice) {
 		return E_FAIL;
 	}
@@ -2002,7 +2099,20 @@ ID2D1Bitmap* CompatibleGraphics::GetBitmap() const {
 HRESULT HwndGraphics::InitDevice() {
 	if (!hwnd) return E_INVALIDARG;
 
-	HRESULT hr = EnsureDeviceResources();
+	// Acquire the complete device domain in one registry snapshot. Taking the
+	// D2D and D3D halves separately could mix generations during device loss.
+	ComPtr<ID3D11Device> d3dDevice;
+	ComPtr<IDXGIDevice> dxgiDevice;
+	ComPtr<ID2D1Device> d2dDevice;
+	HRESULT hr = Graphics_AcquireSharedD3DDevice(
+		d3dDevice.GetAddressOf(), nullptr, dxgiDevice.GetAddressOf(),
+		d2dDevice.GetAddressOf(), nullptr);
+	if (FAILED(hr) || !d3dDevice || !dxgiDevice || !d2dDevice)
+		return FAILED(hr) ? hr : E_FAIL;
+
+	pD2DDevice = d2dDevice;
+	hr = pD2DDevice->CreateDeviceContext(
+		D2D1_DEVICE_CONTEXT_OPTIONS_NONE, pDeviceContext.ReleaseAndGetAddressOf());
 	if (FAILED(hr)) return hr;
 
 	RECT rc{};
@@ -2011,8 +2121,6 @@ HRESULT HwndGraphics::InitDevice() {
 	UINT height = std::max<UINT>(1, static_cast<UINT>(rc.bottom - rc.top));
 
 	// CreateSwapChainForHwnd 需要 IDXGIFactory2
-	ComPtr<IDXGIDevice> dxgiDevice = Shared().dxgiDevice;
-	if (!dxgiDevice) return E_FAIL;
 	ComPtr<IDXGIAdapter> adapter;
 	hr = dxgiDevice->GetAdapter(&adapter);
 	if (FAILED(hr)) return hr;
@@ -2032,7 +2140,7 @@ HRESULT HwndGraphics::InitDevice() {
 	desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
 	ComPtr<IDXGISwapChain1> swapChain1;
-	hr = factory->CreateSwapChainForHwnd(Shared().d3dDevice.Get(), hwnd, &desc, nullptr, nullptr, &swapChain1);
+	hr = factory->CreateSwapChainForHwnd(d3dDevice.Get(), hwnd, &desc, nullptr, nullptr, &swapChain1);
 	if (SUCCEEDED(hr)) {
 		factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
 		pSwapChain = swapChain1;
@@ -2056,7 +2164,7 @@ HRESULT HwndGraphics::InitDevice() {
 		if (FAILED(hr)) return hr;
 
 		ComPtr<IDXGISwapChain> legacySwapChain;
-		hr = legacyFactory->CreateSwapChain(Shared().d3dDevice.Get(), &legacyDesc, &legacySwapChain);
+		hr = legacyFactory->CreateSwapChain(d3dDevice.Get(), &legacyDesc, &legacySwapChain);
 		if (FAILED(hr)) return hr;
 
 		legacyFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
@@ -2073,7 +2181,8 @@ HRESULT HwndGraphics::InitDevice() {
 
 HwndGraphics::HwndGraphics(HWND hWnd) {
 	hwnd = hWnd;
-	InitDevice();
+	if (FAILED(InitDevice()))
+		ResetTarget();
 }
 
 void HwndGraphics::ReSize(UINT width, UINT height) {

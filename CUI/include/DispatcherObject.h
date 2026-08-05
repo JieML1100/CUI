@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <memory>
 
@@ -28,21 +29,23 @@ public:
 	}
 	bool TryPost(std::function<void()> callback) const;
 	/** Captures lifetime without extending the object's ownership. */
-	std::weak_ptr<const bool> WeakLifetimeToken() const noexcept
+	std::weak_ptr<const std::atomic_bool> WeakLifetimeToken() const noexcept
 	{
 		return _lifetimeToken;
 	}
 
 protected:
-	std::weak_ptr<bool> LifetimeToken() const noexcept
+	std::weak_ptr<std::atomic_bool> LifetimeToken() const noexcept
 	{
 		return _lifetimeToken;
 	}
 	void InvalidateLifetimeToken() noexcept
 	{
-		if (_lifetimeToken) *_lifetimeToken = false;
+		if (_lifetimeToken)
+			_lifetimeToken->store(false, std::memory_order_release);
 	}
-	std::shared_ptr<bool> _lifetimeToken = std::make_shared<bool>(true);
+	std::shared_ptr<std::atomic_bool> _lifetimeToken =
+		std::make_shared<std::atomic_bool>(true);
 
 private:
 	std::uint32_t _dispatcherThreadId = 0;

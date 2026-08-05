@@ -1,4 +1,5 @@
 #include "DemoWindow.h"
+#include "MediaPerformanceRunner.h"
 
 #include <Utils.h>
 
@@ -58,6 +59,38 @@ namespace
 
 int main(int argc, char** argv)
 {
+	const auto mediaPerformance = ParseMediaPerformanceCommandLine();
+	if (mediaPerformance.State != MediaPerformanceParseState::NotRequested)
+	{
+		if (mediaPerformance.State == MediaPerformanceParseState::Invalid)
+		{
+			WriteDiagnostic(L"Invalid CUITest media performance arguments: "
+				+ mediaPerformance.Error);
+			return 64;
+		}
+		try
+		{
+			Application::EnsureDpiAwareness();
+			std::wstring error;
+			const int result = RunMediaPerformance(
+				mediaPerformance.Options, &error);
+			if (result != 0)
+			{
+				WriteDiagnostic(error.empty()
+					? L"CUITest media performance run failed." : error);
+				return result;
+			}
+			ClearDiagnostic();
+			return 0;
+		}
+		catch (const std::exception& error)
+		{
+			WriteDiagnostic(L"CUITest media performance run failed: "
+				+ Convert::StringToWString(error.what()));
+			return 5;
+		}
+	}
+
 	if (argc == 2 && std::string_view(argv[1]) == "--construct-xaml")
 	{
 		try
@@ -148,7 +181,13 @@ int main(int argc, char** argv)
 		WriteDiagnostic(
 			L"Unsupported CUITest argument. Production accepts only "
 			L"--construct-xaml, --validate-xaml, --smoke-xaml, "
-			L"or --render-smoke.");
+			L"--render-smoke, or --media <path> [--rate 0.1..4.0] "
+			L"[--duration seconds] [--video-path auto|cpu|gpu-required] "
+			L"[--require-audio] "
+			L"[--expect-width pixels] [--expect-height pixels] [--expect-fps value] "
+			L"[--inject-presentation-device-loss-at seconds | "
+			L"--inject-shared-device-rotation-at seconds] "
+			L"[--perf-json path].");
 		return 64;
 	}
 

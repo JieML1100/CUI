@@ -356,8 +356,27 @@ private:
 };
 
 struct ID3D11Device;
+struct ID3D11DeviceContext;
 struct IDXGIDevice;
+
+struct GraphicsSharedD3DDeviceInfo {
+	uint64_t Generation = 0;
+	bool SupportsVideo = false;
+	bool IsHardware = false;
+};
+
 HRESULT Graphics_EnsureSharedD3DDevice();
+HRESULT Graphics_AcquireSharedD3DDevice(
+	ID3D11Device** d3dDevice,
+	ID3D11DeviceContext** d3dContext,
+	IDXGIDevice** dxgiDevice,
+	ID2D1Device** d2dDevice,
+	GraphicsSharedD3DDeviceInfo* info = nullptr);
+/** Lock-free generation probe for render-loop device-domain checks. */
+uint64_t Graphics_GetSharedD3DDeviceGeneration() noexcept;
+/** Deterministically rotates the shared device registry for recovery tests. */
+HRESULT Graphics_RotateSharedD3DDeviceForTesting(
+	GraphicsSharedD3DDeviceInfo* info = nullptr);
 ID3D11Device* Graphics_GetSharedD3DDevice();
 IDXGIDevice* Graphics_GetSharedDXGIDevice();
 

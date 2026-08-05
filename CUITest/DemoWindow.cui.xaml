@@ -1521,13 +1521,18 @@
             <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource PageHeader}"
               Text="XAML visual tree → retained PresentationScene → PresentationRenderHost → PlatformWindowHost (HWND)"/>
             <Grid Grid.Row="1" Grid.Column="0" Margin="0,0,18,0">
-              <NativeSurface x:Name="presentationProbeSurface" BehaviorKey="PresentationProbe"
+              <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <NativeSurface x:Name="presentationProbeSurface" Grid.Row="0" BehaviorKey="PresentationProbe"
                 PlaceholderText="PresentationProbe behavior 未注册"
                 AutomationProperties.Name="Presentation render host dirty-region probe"/>
-              <!-- Canvas is intentional here: moving this overlay node exercises the
-                   retained scene's geometry-only invalidation lane. -->
-              <Canvas Background="#00000000">
-                <TextBlock x:Name="presentationTopologyTile" Canvas.Left="606" Canvas.Top="14"
+              <!-- Canvas.Left is intentional on this separate geometry track: moving
+                   the node exercises geometry-only invalidation without covering the
+                   interactive NativeSurface above it. -->
+              <Canvas Grid.Row="1" Margin="0,10,0,0" Height="42" Background="#00000000">
+                <TextBlock x:Name="presentationTopologyTile" Canvas.Left="12" Canvas.Top="0"
                   Background="{StaticResource Accent}" Foreground="{StaticResource OnAccent}"
                   Height="42" Text="retained node · ZIndex 5" Width="178" ZIndex="5"/>
               </Canvas>

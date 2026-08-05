@@ -152,6 +152,9 @@ public:
 	bool HitTestPoint(int localX, int localY, int& seriesIndex, int& pointIndex);
 
 	CursorKind QueryCursor(int localX, int localY) override;
+	// Generic.xaml contributes decorative chrome only; the native chart owns
+	// point selection, viewport dragging and pointer cursor semantics.
+	bool HitTestChildren() const override { return false; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(Key key) const override;

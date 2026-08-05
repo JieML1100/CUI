@@ -92,6 +92,7 @@ public:
 
     HRESULT CommitComposition();
     bool IsInitialized() const;
+    bool IsDeviceLost() const noexcept;
 
 private:
     class Impl;

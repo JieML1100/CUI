@@ -2,6 +2,7 @@
 #include "EventInfrastructure.h"
 #include "InputInfrastructure.h"
 #include "PresentationInfrastructure.h"
+#include "Graphics.h"
 #include "Button.h"
 #include "CalendarView.h"
 #include "CheckBox.h"
@@ -5924,6 +5925,26 @@ void Window::InjectPresentationDeviceLossForTesting()
 	_renderHost->InjectDeviceLossForTesting();
 	Invalidate(false);
 }
+
+bool Window::InjectSharedGraphicsDeviceRotationForTesting()
+{
+	if (!_renderHost) return false;
+	GraphicsSharedD3DDeviceInfo replacement{};
+	if (FAILED(Graphics_RotateSharedD3DDeviceForTesting(&replacement))
+		|| replacement.Generation == 0)
+	{
+		return false;
+	}
+	// Every composition host is tied to the previous shared domain.  Queue an
+	// OS-level repaint by HWND so windows owned by other dispatchers observe the
+	// lock-free generation change on their own threads; never mutate a sibling
+	// PresentationRenderHost cross-thread.
+	for (HWND handle : Application::GetPlatformWindowHandles())
+	{
+		if (::IsWindow(handle)) (void)::InvalidateRect(handle, nullptr, FALSE);
+	}
+	return true;
+}
 IDCompositionDevice* Window::GetDCompDevice() const
 {
 #ifdef CUI_ENABLE_WEBVIEW2
@@ -5991,10 +6012,12 @@ int Window::GetPresentationOrder(Control* control)
 	return _presentationScene->GetOrder(control);
 }
 
-void Window::CommitComposition()
+bool Window::CommitComposition()
 {
 #ifdef CUI_ENABLE_WEBVIEW2
-	if (_renderHost) (void)_renderHost->CommitComposition();
+	return !_renderHost || _renderHost->CommitComposition();
+#else
+	return true;
 #endif
 }
 
@@ -6387,13 +6410,13 @@ bool Window::TryGetLastRenderDirtyRect(
 
 bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 {
-	if (!IsWindow(this->Handle) || !_renderHost
-		|| !_renderHost->PrimaryContext()) return false;
+	if (!IsWindow(this->Handle) || !_renderHost) return false;
 
 	if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
 		return false;
 	if (_renderHost->IsDeviceLost() && !RecoverRenderIfNeeded())
 		return false;
+	if (!_renderHost->PrimaryContext()) return false;
 
 	// Commit the root Content slot before the retained scene reads geometry.
 	if (!this->IsLayoutSuspended() && _contentLayoutPending)
@@ -6596,7 +6619,10 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 		frameTransaction, frameTransaction.Primary)) return false;
 
 	PresentationRenderHost::SurfaceFrame overlayFrame;
-	if (_renderHost->OverlayContext())
+	if (_renderHost->OverlayContext()
+		&& contentDirty.right > contentDirty.left
+		&& contentDirty.bottom > contentDirty.top
+		&& _presentationScene->RequiresOverlayFrame())
 	{
 		if (!_renderHost->OpenOverlaySurface(
 			frameTransaction, overlayFrame)) return false;
@@ -6609,11 +6635,11 @@ bool Window::UpdateDirtyRect(const RECT& dirty, bool force)
 			- frameTransaction.LogicalClient.top);
 
 		const int ovTop = GetTitleBarHeightDip();
-		RECT overlayContent{};
-		overlayContent.left   = 0;
-		overlayContent.top    = 0;
-		overlayContent.right  = (LONG)ovLogW;
-		overlayContent.bottom = (LONG)ovLogH - ovTop;
+		RECT overlayContent = contentDirty;
+		overlayContent.right = (std::min)(
+			overlayContent.right, static_cast<LONG>(ovLogW));
+		overlayContent.bottom = (std::min)(
+			overlayContent.bottom, static_cast<LONG>(ovLogH) - ovTop);
 
 		if (overlayContent.right > overlayContent.left && overlayContent.bottom > overlayContent.top)
 		{
@@ -7575,9 +7601,14 @@ LRESULT Window::HandlePlatformWindowMessage(
 			const bool hasPaintDirty = paintDirty.right > paintDirty.left
 				&& paintDirty.bottom > paintDirty.top;
 			bool rendered = false;
-			if (form->_renderHost
-				&& form->_renderHost->IsAttached() && hasPaintDirty)
+			if (form->_renderHost && hasPaintDirty
+				&& (form->_renderHost->IsAttached()
+					|| form->_renderHost->IsDeviceLost()))
 			{
+				// A transient initial HwndGraphics construction failure keeps the
+				// HWND plus a reset request but intentionally has no PrimaryContext.
+				// UpdateDirtyRect owns recovery, so the paint path must remain
+				// reachable before IsAttached becomes true.
 				if (form->_presentationInvalidated
 					|| form->_renderHost->NeedsFullFrame()
 					|| hadPendingPaint || hadQueuedDamage)

@@ -2,9 +2,11 @@
 #include "EventInfrastructure.h"
 #include "Window.h"
 #include "Core/Threading.h"
-#include <d3d11_1.h>
+#include "Graphics.h"
 #include <d2d1helper.h>
+#include <dxgi1_2.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <mferror.h>
@@ -14,6 +16,8 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
 #include <cstdio>
+#include <limits>
+#include <utility>
 
 #include <atomic>
 
@@ -116,13 +120,13 @@ static double QpcTicksToMs(UINT64 ticks)
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "mfreadwrite.lib")
 #pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "evr.lib")
 #pragma comment(lib, "mmdevapi.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "avrt.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 static bool IsFloatMixFormat(const WAVEFORMATEX* wf)
 {
@@ -840,6 +844,11 @@ private:
 		// 保留 search 窗口之前的一点余量即可
 		if (_nextPredFrame <= _baseFrame) return;
 		size_t keepFrom = (_nextPredFrame > _searchFrames) ? (_nextPredFrame - _searchFrames) : _baseFrame;
+		const size_t availableFrames = AvailableFrames();
+		const size_t availableEnd = _baseFrame + availableFrames;
+		// High tempos can predict beyond PCM that has actually arrived. Never
+		// move the absolute input coordinate into that future range.
+		if (keepFrom > availableEnd) keepFrom = availableEnd;
 		if (keepFrom <= _baseFrame) return;
 		size_t dropFrames = keepFrom - _baseFrame;
 		// 不要频繁 erase；累计到一定规模再 compact
@@ -848,7 +857,7 @@ private:
 		if (dropSamples >= _in.size())
 		{
 			_in.clear();
-			_baseFrame = keepFrom;
+			_baseFrame = availableEnd;
 			return;
 		}
 		_in.erase(_in.begin(), _in.begin() + (ptrdiff_t)dropSamples);
@@ -886,6 +895,36 @@ private:
 		}
 	}
 };
+
+UINT64 MediaPlayer::MeasureWsolaOutputFramesForTesting(
+	float rate, UINT32 inputFrames, UINT32 chunkFrames)
+{
+	if (inputFrames == 0 || chunkFrames == 0) return 0;
+	constexpr UINT32 sampleRate = 48'000;
+	constexpr UINT32 channels = 2;
+	WsolaTimeStretch stretch(sampleRate, channels, true, 32);
+	std::vector<float> input(
+		static_cast<size_t>(chunkFrames) * channels, 0.0f);
+	std::vector<uint8_t> output;
+	UINT64 outputFrames = 0;
+	UINT32 consumedFrames = 0;
+	while (consumedFrames < inputFrames)
+	{
+		const UINT32 frames = (std::min)(
+			chunkFrames, inputFrames - consumedFrames);
+		if (!stretch.ProcessChunk(
+			input.data(), static_cast<size_t>(frames) * channels * sizeof(float),
+			rate, 1.0f, output))
+		{
+			return 0;
+		}
+		outputFrames += output.size() / (channels * sizeof(float));
+		consumedFrames += frames;
+	}
+	if (!stretch.Drain(rate, 1.0f, output)) return 0;
+	outputFrames += output.size() / (channels * sizeof(float));
+	return outputFrames;
+}
 
 static void ApplyVolume(void* data, size_t bytes, UINT32 bitsPerSample, float volume, bool isFloat)
 {
@@ -934,14 +973,21 @@ static void ApplyVolume(void* data, size_t bytes, UINT32 bitsPerSample, float vo
 static bool TryGetVideoAperture(IMFMediaType* mt, MFVideoArea& area)
 {
 	if (!mt) return false;
+	UINT32 panScanEnabled = FALSE;
+	if (SUCCEEDED(mt->GetUINT32(
+		MF_MT_PAN_SCAN_ENABLED, &panScanEnabled)) && panScanEnabled)
+	{
+		UINT32 blobSize = sizeof(MFVideoArea);
+		if (SUCCEEDED(mt->GetBlob(
+			MF_MT_PAN_SCAN_APERTURE, reinterpret_cast<UINT8*>(&area),
+			blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
+			return true;
+	}
 	UINT32 blobSize = sizeof(MFVideoArea);
 	if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
 	blobSize = sizeof(MFVideoArea);
 	if (SUCCEEDED(mt->GetBlob(MF_MT_GEOMETRIC_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
-		return true;
-	blobSize = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_PAN_SCAN_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
 	return false;
 }
@@ -981,7 +1027,10 @@ static void ApplyVideoCropFromMediaType(IMFMediaType* mt, UINT32 frameW, UINT32 
 // MediaPlayerCallback 实现
 // ========================================
 
-MediaPlayerCallback::MediaPlayerCallback(MediaPlayer* player) : _refCount(1), _player(player) {}
+MediaPlayerCallback::MediaPlayerCallback(
+	MediaPlayer* player, UINT64 mediaLoadGeneration)
+	: _refCount(1), _player(player),
+	_mediaLoadGeneration(mediaLoadGeneration) {}
 MediaPlayerCallback::~MediaPlayerCallback() {}
 
 STDMETHODIMP MediaPlayerCallback::QueryInterface(REFIID riid, void** ppv)
@@ -1019,6 +1068,8 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 	ComPtr<IMFMediaEvent> pEvent;
 	hr = player->_mediaSession->EndGetEvent(pResult, &pEvent);
 	if (FAILED(hr)) return S_OK;
+	if (_mediaLoadGeneration != player->CurrentMediaLoadGeneration())
+		return S_OK;
 
 	MediaEventType eventType;
 	hr = pEvent->GetType(&eventType);
@@ -1034,20 +1085,48 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 		{
 			if (status == MF_TOPOSTATUS_READY)
 			{
-				player->_topologyReady = true;
+				player->MarkTopologyReady();
 				player->RefreshVideoFormatFromSource();
-				if (player->_mediaLoaded)
+				if (player->_mediaLoaded.load(std::memory_order_acquire))
 				{
 					player->SetVolumeImpl(player->_volume);
-					player->SetPlaybackRateImpl(player->_playbackRate);
-					if (player->_pendingStart)
+					std::weak_ptr<std::atomic_bool> weakLifetime =
+						player->_lifetimeToken;
+					player->DispatchToOwner([player, weakLifetime]()
 					{
-						player->_pendingStart = false;
-						const bool usePos = player->_hasPendingStartPosition;
-						const double pos = player->_pendingStartPosition;
-						player->_hasPendingStartPosition = false;
-						player->StartPlaybackInternal(usePos, pos);
-					}
+						auto lifetime = weakLifetime.lock();
+						if (!lifetime || !*lifetime) return;
+						UINT64 startEpoch = 0;
+						UINT64 explicitGeneration = 0;
+						UINT64 mediaGeneration = 0;
+						const HRESULT startHr =
+							player->StartPendingPlaybackIfAllowed(
+								&startEpoch, &explicitGeneration,
+								&mediaGeneration);
+						if (FAILED(startHr))
+						{
+							if (player->_useSourceReader
+								&& player->_useMediaSessionAudioCompanion
+								&& startEpoch != 0)
+							{
+								player->HandleCompanionSessionFailure(
+									startHr, startEpoch);
+							}
+							else
+							{
+								MediaPlayer::StandaloneSessionCommandToken
+									failureToken{};
+								failureToken.Sequence =
+									(std::numeric_limits<UINT64>::max)();
+								failureToken.ExplicitCommandGeneration =
+									explicitGeneration;
+								failureToken.MediaLoadGeneration =
+									mediaGeneration;
+								player->HandleStandaloneSessionFailure(
+									startHr, failureToken);
+							}
+						}
+					});
 				}
 			}
 		}
@@ -1059,32 +1138,160 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 	}
 	case MESessionStarted:
 	{
-		player->SetPlayState(MediaPlayer::PlayState::Playing);
-		player->UpdatePositionFromClock(true);
+		HRESULT eventStatus = S_OK;
+		const HRESULT statusResult = pEvent->GetStatus(&eventStatus);
+		if (FAILED(statusResult)) eventStatus = statusResult;
+		if (player->_useSourceReader
+			&& player->_useMediaSessionAudioCompanion)
+		{
+			UINT64 observedEpoch = 0;
+			const auto observation = player->ObserveCompanionSessionStarted(
+				eventStatus, &observedEpoch);
+			if (observation
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleCompanionSessionFailure(
+					eventStatus, observedEpoch);
+			}
+			else if (observation
+				== MediaPlayer::CompanionSessionObservation::Accepted)
+			{
+				std::weak_ptr<std::atomic_bool> weakLifetime =
+					player->_lifetimeToken;
+				player->DispatchToOwner(
+					[player, observedEpoch, weakLifetime]
+					{
+						auto lifetime = weakLifetime.lock();
+						if (!lifetime || !*lifetime) return;
+						player->StartSourceReaderWorkerAfterCompanionStarted(
+							observedEpoch);
+					});
+			}
+		}
+		else if (FAILED(eventStatus))
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			const auto observation = player->ObserveStandaloneSessionCommand(
+				MediaPlayer::StandaloneSessionCommandKind::Start,
+				eventStatus, &token);
+			if (observation
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleStandaloneSessionFailure(eventStatus, token);
+			}
+		}
+		else
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			(void)player->ObserveStandaloneSessionCommand(
+				MediaPlayer::StandaloneSessionCommandKind::Start,
+				eventStatus, &token);
+		}
 		break;
 	}
 	case MESessionPaused:
 	{
-		player->SetPlayState(MediaPlayer::PlayState::Paused);
-		player->UpdatePositionFromClock(true);
+		HRESULT eventStatus = S_OK;
+		const HRESULT statusResult = pEvent->GetStatus(&eventStatus);
+		if (FAILED(statusResult)) eventStatus = statusResult;
+		if (player->_useSourceReader
+			&& player->_useMediaSessionAudioCompanion)
+		{
+			UINT64 observedEpoch = 0;
+			if (player->ObserveCompanionSessionControl(
+				MediaPlayer::CompanionSessionControlKind::Pause,
+				eventStatus, &observedEpoch)
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleCompanionSessionFailure(
+					eventStatus, observedEpoch);
+			}
+		}
+		else
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			const auto observation = player->ObserveStandaloneSessionCommand(
+				MediaPlayer::StandaloneSessionCommandKind::Pause,
+				eventStatus, &token);
+			if (observation
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleStandaloneSessionFailure(eventStatus, token);
+			}
+		}
 		break;
 	}
 	case MESessionStopped:
 	{
-		player->SetPlayState(MediaPlayer::PlayState::Stopped);
-		player->UpdatePositionFromClock(true);
+		HRESULT eventStatus = S_OK;
+		const HRESULT statusResult = pEvent->GetStatus(&eventStatus);
+		if (FAILED(statusResult)) eventStatus = statusResult;
+		if (player->_useSourceReader
+			&& player->_useMediaSessionAudioCompanion)
+		{
+			UINT64 observedEpoch = 0;
+			if (player->ObserveCompanionSessionControl(
+				MediaPlayer::CompanionSessionControlKind::Stop,
+				eventStatus, &observedEpoch)
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleCompanionSessionFailure(
+					eventStatus, observedEpoch);
+			}
+		}
+		else
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			const auto observation = player->ObserveStandaloneSessionCommand(
+				MediaPlayer::StandaloneSessionCommandKind::Stop,
+				eventStatus, &token);
+			if (observation
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleStandaloneSessionFailure(eventStatus, token);
+			}
+		}
 		break;
 	}
 	case MESessionEnded:
 	{
-		// 播放结束
-		player->SetPlayState(MediaPlayer::PlayState::Stopped);
-		player->UpdatePositionFromClock(true);
-		player->FireMediaEnded();
-		if (player->_loop)
+		HRESULT eventStatus = S_OK;
+		const HRESULT statusResult = pEvent->GetStatus(&eventStatus);
+		if (FAILED(statusResult)) eventStatus = statusResult;
+		if (player->_useSourceReader
+			&& player->_useMediaSessionAudioCompanion)
 		{
-			player->Seek(0.0);
-			player->Play();
+			// The SourceReader video stream and this audio companion participate
+			// in one epoch/mask coordinator.  Neither side owns Ended or Loop.
+			UINT64 observedEpoch = 0;
+			if (player->ObserveCompanionSessionEnded(
+				eventStatus, &observedEpoch)
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleCompanionSessionFailure(
+					eventStatus, observedEpoch);
+			}
+		}
+		else if (FAILED(eventStatus))
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			const auto observation = player->ObserveStandaloneSessionEnded(
+				eventStatus, &token);
+			if (observation
+				== MediaPlayer::CompanionSessionObservation::FailedCurrent)
+			{
+				player->HandleStandaloneSessionFailure(eventStatus, token);
+			}
+		}
+		else
+		{
+			MediaPlayer::StandaloneSessionCommandToken token{};
+			if (player->ObserveStandaloneSessionEnded(
+				eventStatus, &token)
+				== MediaPlayer::CompanionSessionObservation::Accepted)
+			{
+				player->QueueStandaloneSessionCompletion(token);
+			}
 		}
 		break;
 	}
@@ -1094,7 +1301,19 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 		HRESULT statusHr = S_OK;
 		(void)pEvent->GetStatus(&statusHr);
 		DebugOutputHr(L"MEError", statusHr);
-		player->ReportMediaFailure(statusHr);
+		if (player->_useSourceReader
+			&& player->_useMediaSessionAudioCompanion)
+		{
+			player->HandleCompanionSessionFailure(
+				statusHr,
+				player->CaptureCompanionSessionFailureEpoch());
+		}
+		else
+		{
+			auto token = player->CaptureStandaloneSessionFailureToken();
+			if (token.Sequence != 0)
+				player->HandleStandaloneSessionFailure(statusHr, token);
+		}
 		break;
 	}
 	}
@@ -1215,6 +1434,26 @@ const DependencyProperty& MediaPlayer::VolumeProperty()
 	return *registration;
 }
 
+static UINT32 QueryPresentationRateLimitHz(HWND window) noexcept
+{
+	constexpr UINT32 fallbackRateHz = 60;
+	if (!window) return fallbackRateHz;
+	const HMONITOR monitor = MonitorFromWindow(
+		window, MONITOR_DEFAULTTONEAREST);
+	if (!monitor) return fallbackRateHz;
+	MONITORINFOEXW monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (!GetMonitorInfoW(monitor, &monitorInfo)) return fallbackRateHz;
+	DEVMODEW mode{};
+	mode.dmSize = sizeof(mode);
+	if (!EnumDisplaySettingsW(
+		monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &mode))
+		return fallbackRateHz;
+	const UINT32 refreshRateHz = mode.dmDisplayFrequency;
+	return refreshRateHz >= 24 && refreshRateHz <= 1000
+		? refreshRateHz : fallbackRateHz;
+}
+
 const DependencyProperty& MediaPlayer::PlaybackRateProperty()
 {
 	static const auto registration = []
@@ -1288,6 +1527,21 @@ const DependencyProperty& MediaPlayer::EnableHardwareDecodeProperty()
 	return *registration;
 }
 
+const DependencyProperty& MediaPlayer::EnableDxgiVideoOutputProperty()
+{
+	static const auto registration =
+		DependencyPropertyRegistry::RegisterStatic<MediaPlayer, bool>(
+			DependencyPropertyRegistrationLiteral(L"EnableDxgiVideoOutput"),
+			[](MediaPlayer& target) { return target.EnableDxgiVideoOutput; },
+			[](MediaPlayer& target, const bool& value)
+			{ target.EnableDxgiVideoOutput = value; }, {},
+			MediaPlayerPropertyOptions(
+				true CUI_DESIGN_METADATA_ARGUMENTS(
+					L"Media", 160, 55,
+					DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
 const DependencyProperty& MediaPlayer::PreferNv12VideoOutputProperty()
 {
 	static const auto registration =
@@ -1355,6 +1609,7 @@ void MediaPlayer::RegisterDependencyProperties()
 	(void)AutoPlayProperty();
 	(void)LoopProperty();
 	(void)EnableHardwareDecodeProperty();
+	(void)EnableDxgiVideoOutputProperty();
 	(void)PreferNv12VideoOutputProperty();
 	(void)RenderModeProperty();
 #endif
@@ -1362,53 +1617,1156 @@ void MediaPlayer::RegisterDependencyProperties()
 
 void MediaPlayer::SetPlayState(PlayState value)
 {
-	const PlayState oldValue = _playState.exchange(value);
-	if (oldValue == value) return;
+	PlayState oldValue = PlayState::Stopped;
+	if (!CommitPlayState(value, oldValue)) return;
+	RaisePlayStateChanged(oldValue, value);
+}
+
+bool MediaPlayer::CommitPlayState(
+	PlayState value, PlayState& oldValue) noexcept
+{
+	oldValue = _playState.exchange(value, std::memory_order_acq_rel);
+	return oldValue != value;
+}
+
+void MediaPlayer::RaisePlayStateChanged(
+	PlayState oldValue, PlayState value)
+{
 	// 状态变更可能来自播放工作线程；事件必须在 UI 线程上 invoke，
 	// 避免用户处理器在错误线程触碰其他 UI 控件。
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
 	DispatchToOwner([this, oldValue, value, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
+		RequestVisualInvalidation();
 		cui::framework::EventAccess::Raise(
 			OnStateChanged, this, oldValue, value);
-		RequestVisualInvalidation();
+	});
+}
+
+MediaPlayer::PlaybackTransitionLease::~PlaybackTransitionLease()
+{
+	if (_owner) _owner->EndPlaybackTransition();
+}
+
+MediaPlayer::PlaybackTransitionLease::PlaybackTransitionLease(
+	PlaybackTransitionLease&& other) noexcept
+	: _owner(std::exchange(other._owner, nullptr))
+{
+}
+
+MediaPlayer::PlaybackTransitionLease&
+MediaPlayer::PlaybackTransitionLease::operator=(
+	PlaybackTransitionLease&& other) noexcept
+{
+	if (this == &other) return *this;
+	if (_owner) _owner->EndPlaybackTransition();
+	_owner = std::exchange(other._owner, nullptr);
+	return *this;
+}
+
+MediaPlayer::PlaybackTransitionLease MediaPlayer::AcquirePlaybackTransition(
+	PlaybackTransitionOrigin origin) noexcept
+{
+	_playbackCommandMutex.lock();
+	std::scoped_lock lock(_threadMutex);
+	if (_playbackGate == PlaybackGateState::Quiescing)
+	{
+		_playbackCommandMutex.unlock();
+		return {};
+	}
+	if (origin == PlaybackTransitionOrigin::Automatic
+		&& _playbackGate != PlaybackGateState::Open)
+	{
+		_playbackCommandMutex.unlock();
+		return {};
+	}
+	if (origin == PlaybackTransitionOrigin::ExplicitPlay)
+		_playbackGate = PlaybackGateState::Open;
+	++_playTransitionsInFlight;
+	return PlaybackTransitionLease(this);
+}
+
+UINT64 MediaPlayer::AdvanceExplicitPlaybackCommandGeneration() noexcept
+{
+	UINT64 next = _explicitPlaybackCommandGeneration.fetch_add(
+		1, std::memory_order_acq_rel) + 1;
+	if (next == 0)
+	{
+		_explicitPlaybackCommandGeneration.store(1, std::memory_order_release);
+		next = 1;
+	}
+	return next;
+}
+
+UINT64 MediaPlayer::CurrentExplicitPlaybackCommandGeneration() const noexcept
+{
+	return _explicitPlaybackCommandGeneration.load(std::memory_order_acquire);
+}
+
+UINT64 MediaPlayer::AdvanceMediaLoadGeneration() noexcept
+{
+	UINT64 next = _mediaLoadGeneration.fetch_add(
+		1, std::memory_order_acq_rel) + 1;
+	if (next == 0)
+	{
+		_mediaLoadGeneration.store(1, std::memory_order_release);
+		next = 1;
+	}
+	return next;
+}
+
+UINT64 MediaPlayer::CurrentMediaLoadGeneration() const noexcept
+{
+	return _mediaLoadGeneration.load(std::memory_order_acquire);
+}
+
+void MediaPlayer::EndPlaybackTransition() noexcept
+{
+	{
+		std::scoped_lock lock(_threadMutex);
+		if (_playTransitionsInFlight > 0)
+			--_playTransitionsInFlight;
+	}
+	_threadIdleCv.notify_all();
+	_playbackCommandMutex.unlock();
+}
+
+void MediaPlayer::BeginPlaybackQuiescence() noexcept
+{
+	std::unique_lock lock(_threadMutex);
+	_playbackGate = PlaybackGateState::Quiescing;
+	_threadIdleCv.wait(lock, [this]
+	{
+		return _playTransitionsInFlight == 0;
+	});
+	_threadPlaying = false;
+	WakePlaybackThread();
+	if (_playThread.joinable()
+		&& _playThread.get_id() != std::this_thread::get_id())
+	{
+		_threadIdleCv.wait(lock, [this]
+		{
+			return !_playbackWorkerActive;
+		});
+	}
+}
+
+void MediaPlayer::CompletePlaybackQuiescence() noexcept
+{
+	{
+		std::scoped_lock lock(_threadMutex);
+		_playbackGate = PlaybackGateState::Quiesced;
+	}
+	_threadIdleCv.notify_all();
+}
+
+void MediaPlayer::OpenPlaybackGate() noexcept
+{
+	{
+		std::scoped_lock lock(_threadMutex);
+		_playbackGate = PlaybackGateState::Open;
+	}
+	_threadIdleCv.notify_all();
+}
+
+bool MediaPlayer::QueuePendingStartIfTopologyNotReady(
+	bool usePosition, double position) noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	if (_topologyReady)
+	{
+		// A direct owner-thread command supersedes a request that READY has
+		// not drained yet.
+		_pendingStart = false;
+		_hasPendingStartPosition = false;
+		_pendingStartPosition = 0.0;
+		return false;
+	}
+	_pendingStartPosition = position;
+	_hasPendingStartPosition = usePosition;
+	_pendingStart = true;
+	return true;
+}
+
+void MediaPlayer::MarkTopologyReady() noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	_topologyReady = true;
+}
+
+bool MediaPlayer::TakePendingStartIfTopologyReady(
+	bool& usePosition, double& position) noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	if (!_topologyReady || !_pendingStart) return false;
+	usePosition = _hasPendingStartPosition;
+	position = _pendingStartPosition;
+	_pendingStart = false;
+	_hasPendingStartPosition = false;
+	_pendingStartPosition = 0.0;
+	return true;
+}
+
+bool MediaPlayer::ClearPendingStart() noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	const bool hadPendingStart = _pendingStart;
+	_pendingStart = false;
+	_hasPendingStartPosition = false;
+	_pendingStartPosition = 0.0;
+	return hadPendingStart;
+}
+
+void MediaPlayer::ResetTopologyState() noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	_topologyReady = false;
+	_pendingStart = false;
+	_hasPendingStartPosition = false;
+	_pendingStartPosition = 0.0;
+	_pendingStandaloneSessionCommands.clear();
+	_activeStandaloneSessionPlayback = {};
+	_completedStandaloneSessionPlayback = {};
+}
+
+UINT8 MediaPlayer::GetSourceReaderPlaybackEndMask() const noexcept
+{
+	UINT8 mask = 0;
+	if (_actualVideoStreamIndex != static_cast<DWORD>(-1))
+		mask |= PlaybackEndReaderVideo;
+	if (_useMediaSessionAudioCompanion)
+	{
+		mask |= PlaybackEndCompanionSession;
+	}
+	else if (_actualAudioStreamIndex != static_cast<DWORD>(-1))
+	{
+		mask |= PlaybackEndReaderAudio;
+	}
+	return mask;
+}
+
+UINT64 MediaPlayer::BeginPlaybackEndEpoch(
+	UINT8 expectedMask, bool discardPendingSessionStarts) noexcept
+{
+	std::scoped_lock lock(_playbackEndMutex);
+	++_playbackEndEpoch;
+	if (_playbackEndEpoch == 0) ++_playbackEndEpoch;
+	_playbackEndExpectedMask = expectedMask;
+	_playbackEndObservedMask = 0;
+	_playbackEndCompletionQueued = false;
+	_pendingSourceReaderWorkerStartEpoch = 0;
+	if (discardPendingSessionStarts)
+	{
+		_activeCompanionSessionEpoch = 0;
+		_pendingCompanionSessionStartEpochs.clear();
+		_pendingCompanionSessionPauseEpochs.clear();
+		_pendingCompanionSessionStopEpochs.clear();
+	}
+	return _playbackEndEpoch;
+}
+
+UINT64 MediaPlayer::CurrentPlaybackEndEpoch() const noexcept
+{
+	std::scoped_lock lock(_playbackEndMutex);
+	return _playbackEndEpoch;
+}
+
+UINT64 MediaPlayer::QueueCompanionSessionStartEpoch() noexcept
+{
+	if (!_useSourceReader || !_useMediaSessionAudioCompanion) return 0;
+	std::scoped_lock lock(_playbackEndMutex);
+	if ((_playbackEndExpectedMask & PlaybackEndCompanionSession) == 0)
+		return 0;
+	_pendingCompanionSessionStartEpochs.push_back(_playbackEndEpoch);
+	_pendingSourceReaderWorkerStartEpoch = _playbackEndEpoch;
+	return _playbackEndEpoch;
+}
+
+void MediaPlayer::CancelCompanionSessionStartEpoch(UINT64 epoch) noexcept
+{
+	if (epoch == 0) return;
+	std::scoped_lock lock(_playbackEndMutex);
+	// Playback transitions serialize Start calls.  Older events can remain at
+	// the front, while the request being cancelled is the newest queue entry.
+	if (!_pendingCompanionSessionStartEpochs.empty()
+		&& _pendingCompanionSessionStartEpochs.back() == epoch)
+	{
+		_pendingCompanionSessionStartEpochs.pop_back();
+	}
+	if (_pendingSourceReaderWorkerStartEpoch == epoch)
+		_pendingSourceReaderWorkerStartEpoch = 0;
+}
+
+UINT64 MediaPlayer::CaptureCompanionSessionFailureEpoch() const noexcept
+{
+	if (!_useSourceReader.load(std::memory_order_acquire)
+		|| !_useMediaSessionAudioCompanion)
+	{
+		return 0;
+	}
+	std::scoped_lock lock(_playbackEndMutex);
+	// Prefer the oldest event provenance.  In particular, while a replacement
+	// Start is pending, a generic MEError queued by the superseded active run
+	// must remain bound to that old epoch rather than stop the replacement.
+	UINT64 capturedEpoch = _activeCompanionSessionEpoch;
+	auto captureOlder = [&capturedEpoch](const std::deque<UINT64>& pending)
+	{
+		if (!pending.empty()
+			&& (capturedEpoch == 0 || pending.front() < capturedEpoch))
+		{
+			capturedEpoch = pending.front();
+		}
+	};
+	captureOlder(_pendingCompanionSessionStartEpochs);
+	captureOlder(_pendingCompanionSessionPauseEpochs);
+	captureOlder(_pendingCompanionSessionStopEpochs);
+	return capturedEpoch;
+}
+
+UINT64 MediaPlayer::QueueCompanionSessionControlEpoch(
+	CompanionSessionControlKind kind) noexcept
+{
+	if (!_useSourceReader.load(std::memory_order_acquire)
+		|| !_useMediaSessionAudioCompanion)
+	{
+		return 0;
+	}
+	std::scoped_lock lock(_playbackEndMutex);
+	if ((_playbackEndExpectedMask & PlaybackEndCompanionSession) == 0)
+		return 0;
+	auto& pending = kind == CompanionSessionControlKind::Pause
+		? _pendingCompanionSessionPauseEpochs
+		: _pendingCompanionSessionStopEpochs;
+	pending.push_back(_playbackEndEpoch);
+	return _playbackEndEpoch;
+}
+
+void MediaPlayer::CancelCompanionSessionControlEpoch(
+	CompanionSessionControlKind kind, UINT64 epoch) noexcept
+{
+	if (epoch == 0) return;
+	std::scoped_lock lock(_playbackEndMutex);
+	auto& pending = kind == CompanionSessionControlKind::Pause
+		? _pendingCompanionSessionPauseEpochs
+		: _pendingCompanionSessionStopEpochs;
+	if (!pending.empty() && pending.back() == epoch)
+		pending.pop_back();
+}
+
+MediaPlayer::CompanionSessionObservation
+MediaPlayer::ObserveCompanionSessionControl(
+	CompanionSessionControlKind kind, HRESULT eventStatus,
+	UINT64* observedEpoch) noexcept
+{
+	if (observedEpoch) *observedEpoch = 0;
+	if (!_useSourceReader.load(std::memory_order_acquire)
+		|| !_useMediaSessionAudioCompanion)
+	{
+		return CompanionSessionObservation::Ignored;
+	}
+	std::scoped_lock lock(_playbackEndMutex);
+	auto& pending = kind == CompanionSessionControlKind::Pause
+		? _pendingCompanionSessionPauseEpochs
+		: _pendingCompanionSessionStopEpochs;
+	if (pending.empty()) return CompanionSessionObservation::Ignored;
+	const UINT64 commandEpoch = pending.front();
+	pending.pop_front();
+	if (commandEpoch != _playbackEndEpoch)
+		return CompanionSessionObservation::Ignored;
+	if (observedEpoch) *observedEpoch = commandEpoch;
+	if (FAILED(eventStatus))
+		return CompanionSessionObservation::FailedCurrent;
+	_activeCompanionSessionEpoch = 0;
+	return CompanionSessionObservation::Accepted;
+}
+
+MediaPlayer::CompanionSessionObservation
+MediaPlayer::ObserveCompanionSessionStarted(
+	HRESULT eventStatus, UINT64* observedEpoch) noexcept
+{
+	if (observedEpoch) *observedEpoch = 0;
+	if (!_useSourceReader || !_useMediaSessionAudioCompanion)
+		return CompanionSessionObservation::Ignored;
+	std::scoped_lock lock(_playbackEndMutex);
+	if (_pendingCompanionSessionStartEpochs.empty())
+	{
+		if (_activeCompanionSessionEpoch != _playbackEndEpoch)
+			_activeCompanionSessionEpoch = 0;
+		return CompanionSessionObservation::Ignored;
+	}
+	const UINT64 startedEpoch =
+		_pendingCompanionSessionStartEpochs.front();
+	_pendingCompanionSessionStartEpochs.pop_front();
+	if (startedEpoch != _playbackEndEpoch)
+	{
+		if (_activeCompanionSessionEpoch != _playbackEndEpoch)
+			_activeCompanionSessionEpoch = 0;
+		return CompanionSessionObservation::Ignored;
+	}
+	if (observedEpoch) *observedEpoch = startedEpoch;
+	if (FAILED(eventStatus))
+	{
+		_activeCompanionSessionEpoch = 0;
+		if (_pendingSourceReaderWorkerStartEpoch == startedEpoch)
+			_pendingSourceReaderWorkerStartEpoch = 0;
+		return CompanionSessionObservation::FailedCurrent;
+	}
+	_activeCompanionSessionEpoch = startedEpoch;
+	_statCompanionSessionStartedEvents.fetch_add(
+		1, std::memory_order_relaxed);
+	return CompanionSessionObservation::Accepted;
+}
+
+bool MediaPlayer::TakeSourceReaderWorkerStartForEpoch(
+	UINT64 epoch) noexcept
+{
+	if (epoch == 0) return false;
+	std::scoped_lock lock(_playbackEndMutex);
+	if (epoch != _playbackEndEpoch
+		|| _activeCompanionSessionEpoch != epoch
+		|| _pendingSourceReaderWorkerStartEpoch != epoch)
+	{
+		return false;
+	}
+	_pendingSourceReaderWorkerStartEpoch = 0;
+	return true;
+}
+
+void MediaPlayer::StartSourceReaderWorkerAfterCompanionStarted(
+	UINT64 epoch)
+{
+	if (!CheckAccess())
+	{
+		std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+		DispatchToOwner([this, epoch, weakLifetime]
+		{
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return;
+			StartSourceReaderWorkerAfterCompanionStarted(epoch);
+		});
+		return;
+	}
+
+	auto transition = AcquirePlaybackTransition(
+		PlaybackTransitionOrigin::Automatic);
+	if (!transition
+		|| !_mediaLoaded.load(std::memory_order_acquire)
+		|| !_sourceReader
+		|| !_useMediaSessionAudioCompanion.load(std::memory_order_acquire)
+		|| _playState.load(std::memory_order_acquire)
+			!= PlayState::Playing
+		|| !TakeSourceReaderWorkerStartForEpoch(epoch))
+	{
+		return;
+	}
+	if (!_playThread.joinable())
+	{
+		_threadExit = false;
+		_playThread = std::thread([this] { PlaybackThreadMain(); });
+	}
+	_threadPlaying.store(true, std::memory_order_release);
+	WakePlaybackThread();
+}
+
+MediaPlayer::CompanionSessionObservation
+MediaPlayer::ObserveCompanionSessionEnded(
+	HRESULT eventStatus, UINT64* observedEpoch)
+{
+	if (observedEpoch) *observedEpoch = 0;
+	UINT64 endedEpoch = 0;
+	{
+		std::scoped_lock lock(_playbackEndMutex);
+		if (_activeCompanionSessionEpoch == _playbackEndEpoch
+			&& (_playbackEndExpectedMask
+				& PlaybackEndCompanionSession) != 0)
+		{
+			endedEpoch = _activeCompanionSessionEpoch;
+		}
+		_activeCompanionSessionEpoch = 0;
+	}
+	if (endedEpoch == 0) return CompanionSessionObservation::Ignored;
+	if (observedEpoch) *observedEpoch = endedEpoch;
+	if (FAILED(eventStatus))
+		return CompanionSessionObservation::FailedCurrent;
+	(void)SignalPlaybackEnd(PlaybackEndCompanionSession, endedEpoch);
+	return CompanionSessionObservation::Accepted;
+}
+
+void MediaPlayer::HandleCompanionSessionFailure(
+	HRESULT error, UINT64 expectedEpoch)
+{
+	if (expectedEpoch == 0) return;
+	if (SUCCEEDED(error)) error = E_FAIL;
+	if (!CheckAccess())
+	{
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+		DispatchToOwner([this, error, expectedEpoch, weakLifetime]
+		{
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return;
+			HandleCompanionSessionFailure(error, expectedEpoch);
+		});
+		return;
+	}
+
+	// The session callback is asynchronous.  A Seek/Stop/Load can advance the
+	// playback transaction before this owner-thread continuation runs; an old
+	// failure must never stop or report against the replacement transaction.
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	if (CurrentPlaybackEndEpoch() != expectedEpoch) return;
+
+	// Publish failure only after the old reader transaction has left
+	// ReadSample.  An OnMediaFailed handler may immediately retry Play, and it
+	// must never race the old worker clearing the new run's playing flag.
+	BeginPlaybackQuiescence();
+	_needSyncReset.store(true, std::memory_order_release);
+	DeferredPlaybackNotifications notifications{};
+	CommitTerminalSourceReaderFailure(error, notifications);
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications), true);
+}
+
+void MediaPlayer::HandleSourceReaderFailure(
+	HRESULT error, UINT64 expectedEpoch,
+	UINT64 expectedExplicitCommandGeneration,
+	UINT64 expectedMediaLoadGeneration)
+{
+	if (expectedEpoch == 0 || expectedExplicitCommandGeneration == 0
+		|| expectedMediaLoadGeneration == 0)
+	{
+		return;
+	}
+	if (SUCCEEDED(error)) error = E_FAIL;
+	if (!CheckAccess())
+	{
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+		DispatchToOwner([this, error, expectedEpoch,
+			expectedExplicitCommandGeneration,
+			expectedMediaLoadGeneration, weakLifetime]
+		{
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return;
+			HandleSourceReaderFailure(
+				error, expectedEpoch,
+				expectedExplicitCommandGeneration,
+				expectedMediaLoadGeneration);
+		});
+		return;
+	}
+
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	if (CurrentPlaybackEndEpoch() != expectedEpoch
+		|| CurrentExplicitPlaybackCommandGeneration()
+			!= expectedExplicitCommandGeneration
+		|| CurrentMediaLoadGeneration() != expectedMediaLoadGeneration)
+	{
+		return;
+	}
+	BeginPlaybackQuiescence();
+	_needSyncReset.store(true, std::memory_order_release);
+	DeferredPlaybackNotifications notifications{};
+	CommitTerminalSourceReaderFailure(error, notifications);
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications), true);
+}
+
+MediaPlayer::StandaloneSessionCommandToken
+MediaPlayer::QueueStandaloneSessionCommand(
+	StandaloneSessionCommandKind kind) noexcept
+{
+	StandaloneSessionCommandToken token{};
+	if (_useSourceReader.load(std::memory_order_acquire)) return token;
+	token.Kind = kind;
+	token.ExplicitCommandGeneration =
+		CurrentExplicitPlaybackCommandGeneration();
+	token.MediaLoadGeneration = CurrentMediaLoadGeneration();
+	std::scoped_lock lock(_sessionStateMutex);
+	++_nextStandaloneSessionCommandSequence;
+	if (_nextStandaloneSessionCommandSequence == 0)
+		++_nextStandaloneSessionCommandSequence;
+	token.Sequence = _nextStandaloneSessionCommandSequence;
+	_pendingStandaloneSessionCommands.push_back(token);
+	return token;
+}
+
+void MediaPlayer::CancelStandaloneSessionCommand(
+	const StandaloneSessionCommandToken& token) noexcept
+{
+	if (token.Sequence == 0) return;
+	std::scoped_lock lock(_sessionStateMutex);
+	const auto found = std::find_if(
+		_pendingStandaloneSessionCommands.rbegin(),
+		_pendingStandaloneSessionCommands.rend(),
+		[&token](const StandaloneSessionCommandToken& pending)
+		{
+			return pending.Sequence == token.Sequence;
+		});
+	if (found != _pendingStandaloneSessionCommands.rend())
+		_pendingStandaloneSessionCommands.erase(std::next(found).base());
+}
+
+void MediaPlayer::RestoreStandaloneSessionIdentityAfterCommandFailure(
+	const StandaloneSessionCommandToken& token) noexcept
+{
+	if (token.Sequence == 0) return;
+	std::scoped_lock lock(_sessionStateMutex);
+	const auto found = std::find_if(
+		_pendingStandaloneSessionCommands.rbegin(),
+		_pendingStandaloneSessionCommands.rend(),
+		[&token](const StandaloneSessionCommandToken& pending)
+		{
+			return pending.Sequence == token.Sequence;
+		});
+	if (found != _pendingStandaloneSessionCommands.rend())
+		_pendingStandaloneSessionCommands.erase(std::next(found).base());
+
+	if (token.MediaLoadGeneration != CurrentMediaLoadGeneration()
+		|| token.ExplicitCommandGeneration
+			!= CurrentExplicitPlaybackCommandGeneration())
+	{
+		return;
+	}
+	auto restorePriorIdentity = [&token](StandaloneSessionCommandToken& prior)
+	{
+		if (prior.Sequence != 0 && prior.Sequence < token.Sequence
+			&& prior.MediaLoadGeneration == token.MediaLoadGeneration)
+		{
+			prior.ExplicitCommandGeneration =
+				token.ExplicitCommandGeneration;
+		}
+	};
+	for (auto& pending : _pendingStandaloneSessionCommands)
+		restorePriorIdentity(pending);
+	restorePriorIdentity(_activeStandaloneSessionPlayback);
+	restorePriorIdentity(_completedStandaloneSessionPlayback);
+}
+
+void MediaPlayer::CommitStandaloneSessionCommandSuccess(
+	const StandaloneSessionCommandToken& token) noexcept
+{
+	if (token.Sequence == 0) return;
+	std::scoped_lock lock(_sessionStateMutex);
+	// IMFMediaSession commands are asynchronous.  S_OK only means accepted;
+	// MESessionStarted/Paused/Stopped is the point at which the active identity
+	// may change.  Publishing a Start here lets an old queued MESessionEnded be
+	// mistaken for the newly requested run.  A very short session may also have
+	// delivered Started and Ended synchronously before Start returned; preserve
+	// that completion when it belongs to this exact command.
+	if (_completedStandaloneSessionPlayback.Sequence != token.Sequence
+		|| _completedStandaloneSessionPlayback.ExplicitCommandGeneration
+			!= token.ExplicitCommandGeneration
+		|| _completedStandaloneSessionPlayback.MediaLoadGeneration
+			!= token.MediaLoadGeneration)
+	{
+		_completedStandaloneSessionPlayback = {};
+	}
+}
+
+MediaPlayer::CompanionSessionObservation
+MediaPlayer::ObserveStandaloneSessionCommand(
+	StandaloneSessionCommandKind kind, HRESULT eventStatus,
+	StandaloneSessionCommandToken* observedToken) noexcept
+{
+	if (observedToken) *observedToken = {};
+	StandaloneSessionCommandToken token{};
+	{
+		std::scoped_lock lock(_sessionStateMutex);
+		const auto found = std::find_if(
+			_pendingStandaloneSessionCommands.begin(),
+			_pendingStandaloneSessionCommands.end(),
+			[kind](const StandaloneSessionCommandToken& pending)
+			{
+				return pending.Kind == kind;
+			});
+		if (found == _pendingStandaloneSessionCommands.end())
+			return CompanionSessionObservation::Ignored;
+		token = *found;
+		_pendingStandaloneSessionCommands.erase(found);
+		if (token.ExplicitCommandGeneration
+				!= CurrentExplicitPlaybackCommandGeneration()
+			|| token.MediaLoadGeneration != CurrentMediaLoadGeneration())
+		{
+			return CompanionSessionObservation::Ignored;
+		}
+		if (observedToken) *observedToken = token;
+		if (FAILED(eventStatus))
+			return CompanionSessionObservation::FailedCurrent;
+		if (kind == StandaloneSessionCommandKind::Start)
+		{
+			_activeStandaloneSessionPlayback = token;
+		}
+		else
+		{
+			_activeStandaloneSessionPlayback = {};
+		}
+		_completedStandaloneSessionPlayback = {};
+	}
+	return CompanionSessionObservation::Accepted;
+}
+
+MediaPlayer::CompanionSessionObservation
+MediaPlayer::ObserveStandaloneSessionEnded(
+	HRESULT eventStatus,
+	StandaloneSessionCommandToken* observedToken) noexcept
+{
+	if (observedToken) *observedToken = {};
+	std::scoped_lock lock(_sessionStateMutex);
+	const StandaloneSessionCommandToken token =
+		_activeStandaloneSessionPlayback;
+	if (token.Sequence == 0
+		|| token.ExplicitCommandGeneration
+			!= CurrentExplicitPlaybackCommandGeneration()
+		|| token.MediaLoadGeneration != CurrentMediaLoadGeneration()
+		|| std::any_of(
+			_pendingStandaloneSessionCommands.begin(),
+			_pendingStandaloneSessionCommands.end(),
+			[&token](const StandaloneSessionCommandToken& pending)
+			{
+				return pending.Kind
+						== StandaloneSessionCommandKind::Start
+					&& pending.Sequence >= token.Sequence;
+			}))
+	{
+		return CompanionSessionObservation::Ignored;
+	}
+	_activeStandaloneSessionPlayback = {};
+	if (observedToken) *observedToken = token;
+	if (FAILED(eventStatus))
+	{
+		_completedStandaloneSessionPlayback = {};
+		return CompanionSessionObservation::FailedCurrent;
+	}
+	_completedStandaloneSessionPlayback = token;
+	return CompanionSessionObservation::Accepted;
+}
+
+bool MediaPlayer::IsStandaloneSessionCompletionCurrent(
+	const StandaloneSessionCommandToken& token) const noexcept
+{
+	if (token.Sequence == 0
+		|| token.MediaLoadGeneration != CurrentMediaLoadGeneration())
+	{
+		return false;
+	}
+	std::scoped_lock lock(_sessionStateMutex);
+	return _completedStandaloneSessionPlayback.Sequence == token.Sequence
+		&& _completedStandaloneSessionPlayback.ExplicitCommandGeneration
+			== token.ExplicitCommandGeneration
+		&& _activeStandaloneSessionPlayback.Sequence == 0;
+}
+
+MediaPlayer::StandaloneSessionCommandToken
+MediaPlayer::CaptureStandaloneSessionFailureToken() const noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	StandaloneSessionCommandToken token =
+		_activeStandaloneSessionPlayback;
+	for (const auto& pending : _pendingStandaloneSessionCommands)
+	{
+		if (token.Sequence == 0 || pending.Sequence < token.Sequence)
+		{
+			token = pending;
+		}
+	}
+	return token;
+}
+
+MediaPlayer::StandaloneSessionCommandToken
+MediaPlayer::CaptureStandaloneSessionCompletionToken() const noexcept
+{
+	std::scoped_lock lock(_sessionStateMutex);
+	const auto token = _completedStandaloneSessionPlayback;
+	if (token.Sequence == 0
+		|| token.ExplicitCommandGeneration
+			!= CurrentExplicitPlaybackCommandGeneration()
+		|| token.MediaLoadGeneration != CurrentMediaLoadGeneration())
+	{
+		return {};
+	}
+	return token;
+}
+
+void MediaPlayer::HandleStandaloneSessionFailure(
+	HRESULT error, StandaloneSessionCommandToken token)
+{
+	if (token.Sequence == 0) return;
+	if (SUCCEEDED(error)) error = E_FAIL;
+	if (!CheckAccess())
+	{
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+		DispatchToOwner([this, error, token, weakLifetime]
+		{
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return;
+			HandleStandaloneSessionFailure(error, token);
+		});
+		return;
+	}
+
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	if (token.ExplicitCommandGeneration
+			!= CurrentExplicitPlaybackCommandGeneration()
+		|| token.MediaLoadGeneration != CurrentMediaLoadGeneration())
+	{
+		return;
+	}
+	BeginPlaybackQuiescence();
+	CompletePlaybackQuiescence();
+	ReportMediaFailure(error, true);
+}
+
+void MediaPlayer::QueueStandaloneSessionCompletion(
+	StandaloneSessionCommandToken token)
+{
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	DispatchToOwner([this, token, weakLifetime]() mutable
+	{
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+
+		DeferredPlaybackNotifications notifications{};
+		{
+			std::unique_lock<std::recursive_mutex> commandLock(
+				_playbackCommandMutex);
+			if (!_mediaLoaded.load(std::memory_order_acquire)
+				|| CurrentExplicitPlaybackCommandGeneration()
+					!= token.ExplicitCommandGeneration
+				|| CurrentMediaLoadGeneration()
+					!= token.MediaLoadGeneration
+				|| !IsStandaloneSessionCompletionCurrent(token))
+			{
+				return;
+			}
+			notifications.ExpectedExplicitCommandGeneration =
+				token.ExplicitCommandGeneration;
+			notifications.ExpectedMediaLoadGeneration =
+				token.MediaLoadGeneration;
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Stopped, notifications.OldState);
+			notifications.NewState = PlayState::Stopped;
+		}
+
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= token.ExplicitCommandGeneration
+			|| CurrentMediaLoadGeneration()
+				!= token.MediaLoadGeneration
+			|| !IsStandaloneSessionCompletionCurrent(token))
+		{
+			return;
+		}
+		FireMediaEnded();
+		lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= token.ExplicitCommandGeneration
+			|| CurrentMediaLoadGeneration()
+				!= token.MediaLoadGeneration
+			|| !IsStandaloneSessionCompletionCurrent(token))
+		{
+			return;
+		}
+		if (_loop.load(std::memory_order_acquire))
+		{
+			(void)TryRestartAfterMediaEnded(
+				token.ExplicitCommandGeneration,
+				token.MediaLoadGeneration, 0, token.Sequence);
+		}
+	});
+}
+
+bool MediaPlayer::SignalPlaybackEnd(UINT8 streamMask, UINT64 epoch)
+{
+	bool queueCompletion = false;
+	{
+		std::scoped_lock lock(_playbackEndMutex);
+		if (epoch == 0 || epoch != _playbackEndEpoch
+			|| (streamMask & _playbackEndExpectedMask) == 0)
+		{
+			return false;
+		}
+		_playbackEndObservedMask |=
+			streamMask & _playbackEndExpectedMask;
+		if (_playbackEndExpectedMask != 0
+			&& _playbackEndObservedMask == _playbackEndExpectedMask
+			&& !_playbackEndCompletionQueued)
+		{
+			_playbackEndCompletionQueued = true;
+			queueCompletion = true;
+		}
+	}
+	if (queueCompletion)
+	{
+		QueuePlaybackEndCompletion(
+			epoch, CurrentExplicitPlaybackCommandGeneration(),
+			CurrentMediaLoadGeneration());
+	}
+	return queueCompletion;
+}
+
+bool MediaPlayer::IsPlaybackEndCompletionCurrent(UINT64 epoch) const noexcept
+{
+	std::scoped_lock lock(_playbackEndMutex);
+	return epoch != 0 && epoch == _playbackEndEpoch
+		&& _playbackEndCompletionQueued
+		&& _playbackEndExpectedMask != 0
+		&& _playbackEndObservedMask == _playbackEndExpectedMask;
+}
+
+void MediaPlayer::QueuePlaybackEndCompletion(
+	UINT64 epoch, UINT64 explicitCommandGeneration,
+	UINT64 mediaLoadGeneration)
+{
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	DispatchToOwner(
+		[this, epoch, explicitCommandGeneration,
+			mediaLoadGeneration, weakLifetime]() mutable
+	{
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+
+		DeferredPlaybackNotifications notifications{};
+		{
+			std::unique_lock<std::recursive_mutex> commandLock(
+				_playbackCommandMutex);
+			if (!_mediaLoaded.load(std::memory_order_acquire)
+				|| !IsPlaybackEndCompletionCurrent(epoch))
+			{
+				return;
+			}
+			if (CurrentExplicitPlaybackCommandGeneration()
+					!= explicitCommandGeneration
+				|| CurrentMediaLoadGeneration() != mediaLoadGeneration)
+			{
+				return;
+			}
+			notifications.ExpectedExplicitCommandGeneration =
+				explicitCommandGeneration;
+			notifications.ExpectedMediaLoadGeneration =
+				mediaLoadGeneration;
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Stopped, notifications.OldState);
+			notifications.NewState = PlayState::Stopped;
+		}
+
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= explicitCommandGeneration
+			|| CurrentMediaLoadGeneration() != mediaLoadGeneration
+			|| !IsPlaybackEndCompletionCurrent(epoch))
+		{
+			return;
+		}
+
+		FireMediaEnded();
+		lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= explicitCommandGeneration
+			|| CurrentMediaLoadGeneration() != mediaLoadGeneration
+			|| !IsPlaybackEndCompletionCurrent(epoch))
+		{
+			return;
+		}
+
+		// Event handlers may close/seek the player or disable Loop.  Revalidate
+		// the captured epoch before the sole automatic restart transaction.
+		if (_loop.load(std::memory_order_acquire)
+			&& IsPlaybackEndCompletionCurrent(epoch))
+		{
+			(void)TryRestartAfterMediaEnded(
+				explicitCommandGeneration, mediaLoadGeneration,
+				epoch, 0);
+		}
 	});
 }
 
 void MediaPlayer::SetObservedPosition(
 	double value, bool notify, bool forceEvent)
 {
-	if (!std::isfinite(value)) return;
-	value = (std::max)(0.0, value);
-	if (_duration > 0.0) value = (std::min)(value, _duration);
-	const double oldValue = _position.exchange(value);
-	const bool changed = std::fabs(value - oldValue) > 1e-9;
-	if (notify && (changed || forceEvent))
+	double committedValue = 0.0;
+	if (CommitObservedPosition(
+		value, notify, forceEvent, committedValue))
 	{
-		std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-		DispatchToOwner([this, value, weakLifetime]() {
-			auto lifetime = weakLifetime.lock();
-			if (!lifetime || !*lifetime) return;
-			cui::framework::EventAccess::Raise(
-				OnPositionChanged, this, value);
-		});
+		FirePositionChanged(committedValue);
 	}
 }
 
-void MediaPlayer::ReportMediaFailure(HRESULT error)
+bool MediaPlayer::CommitObservedPosition(
+	double value, bool notify, bool forceEvent,
+	double& committedValue) noexcept
+{
+	if (!std::isfinite(value)) return false;
+	value = (std::max)(0.0, value);
+	if (_duration > 0.0) value = (std::min)(value, _duration);
+	committedValue = value;
+	const double oldValue = _position.exchange(
+		value, std::memory_order_acq_rel);
+	const bool changed = std::fabs(value - oldValue) > 1e-9;
+	return notify && (changed || forceEvent);
+}
+
+void MediaPlayer::RaiseDeferredPlaybackNotifications(
+	DeferredPlaybackNotifications notifications, bool deferOnOwner)
+{
+	if (!notifications.StateChanged && !notifications.PositionChanged
+		&& !notifications.MediaOpened && !notifications.MediaFailed
+		&& !notifications.MediaError)
+	{
+		return;
+	}
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	auto callback = [this, notifications, weakLifetime]() mutable
+	{
+		auto isAlive = [&weakLifetime]()
+		{
+			auto lifetime = weakLifetime.lock();
+			return lifetime && *lifetime;
+		};
+		auto isCurrent = [this, &notifications, &isAlive]()
+		{
+			if (!isAlive()) return false;
+			return (notifications.ExpectedExplicitCommandGeneration == 0
+				|| CurrentExplicitPlaybackCommandGeneration()
+					== notifications.ExpectedExplicitCommandGeneration)
+				&& (notifications.ExpectedMediaLoadGeneration == 0
+					|| CurrentMediaLoadGeneration()
+						== notifications.ExpectedMediaLoadGeneration);
+		};
+		auto raisePosition = [this, &notifications, &isCurrent]()
+		{
+			if (!notifications.PositionChanged || !isCurrent()) return false;
+			cui::framework::EventAccess::Raise(
+				OnPositionChanged, this, notifications.Position);
+			return isCurrent();
+		};
+		auto raiseState = [this, &notifications, &isCurrent]()
+		{
+			if (!notifications.StateChanged || !isCurrent()) return false;
+			if (notifications.StateVisualInvalidationNeeded)
+				RequestVisualInvalidation();
+			cui::framework::EventAccess::Raise(
+				OnStateChanged, this,
+				notifications.OldState, notifications.NewState);
+			return isCurrent();
+		};
+
+		if (notifications.PositionFirst)
+		{
+			if (notifications.PositionChanged && !raisePosition()) return;
+			if (notifications.StateChanged && !raiseState()) return;
+		}
+		else
+		{
+			if (notifications.StateChanged && !raiseState()) return;
+			if (notifications.PositionChanged && !raisePosition()) return;
+		}
+		if (notifications.MediaOpened)
+		{
+			if (!isCurrent()) return;
+			cui::framework::EventAccess::Raise(OnMediaOpened, this);
+			if (!isCurrent()) return;
+		}
+		if (notifications.MediaFailed)
+		{
+			if (!isCurrent()) return;
+			RequestVisualInvalidation();
+			cui::framework::EventAccess::Raise(OnMediaFailed, this);
+			if (!isCurrent()) return;
+		}
+		if (notifications.MediaError)
+		{
+			if (!isCurrent()) return;
+			cui::framework::EventAccess::Raise(
+				OnMediaError, this, notifications.Error);
+			if (!isCurrent()) return;
+		}
+		if (notifications.AutoPlay)
+		{
+			if (!isAlive()) return;
+			(void)TryAutoPlayAfterLoad(
+				notifications.AutoPlayExplicitCommandGeneration,
+				notifications.ExpectedMediaLoadGeneration);
+		}
+	};
+	if (deferOnOwner)
+	{
+		// PostToUIThread can report a PostMessage failure after retaining the
+		// callback in its queue.  Never fall back to inline dispatch here: doing
+		// so could both reenter a live command transaction and later deliver the
+		// same callback a second time when the queue is drained.
+		(void)TryPost(std::move(callback));
+		return;
+	}
+	DispatchToOwner(std::move(callback));
+}
+
+void MediaPlayer::ReportMediaFailure(
+	HRESULT error, bool deferOnOwner, bool stopPlaybackState)
+{
+	DeferredPlaybackNotifications notifications{};
+	CommitMediaFailure(error, notifications, stopPlaybackState);
+	// Failure can be discovered inside a larger Load/Seek transaction.  Always
+	// post the user callbacks so reentrant recovery cannot resume inside that
+	// partially committed command or destroy the object under its stack frame.
+	RaiseDeferredPlaybackNotifications(
+		std::move(notifications), deferOnOwner);
+}
+
+void MediaPlayer::CommitMediaFailure(
+	HRESULT error, DeferredPlaybackNotifications& notifications,
+	bool stopPlaybackState)
 {
 	if (SUCCEEDED(error)) error = E_FAIL;
 	_lastMfError.store(error);
-	SetPlayState(PlayState::Stopped);
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	DispatchToOwner([this, error, weakLifetime]() {
-		auto lifetime = weakLifetime.lock();
-		if (!lifetime || !*lifetime) return;
-		cui::framework::EventAccess::Raise(OnMediaFailed, this);
-		cui::framework::EventAccess::Raise(OnMediaError, this, error);
-		RequestVisualInvalidation();
-	});
+	if (stopPlaybackState)
+	{
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Stopped, notifications.OldState);
+		notifications.NewState = PlayState::Stopped;
+	}
+	notifications.MediaFailed = true;
+	notifications.MediaError = true;
+	notifications.Error = error;
+	if (notifications.ExpectedExplicitCommandGeneration == 0)
+	{
+		notifications.ExpectedExplicitCommandGeneration =
+			CurrentExplicitPlaybackCommandGeneration();
+	}
+	if (notifications.ExpectedMediaLoadGeneration == 0)
+	{
+		notifications.ExpectedMediaLoadGeneration =
+			CurrentMediaLoadGeneration();
+	}
+}
+
+void MediaPlayer::CommitTerminalSourceReaderFailure(
+	HRESULT error, DeferredPlaybackNotifications& notifications)
+{
+	if (SUCCEEDED(error)) error = E_FAIL;
+	_lastMfError.store(error);
+	notifications.ExpectedExplicitCommandGeneration =
+		CurrentExplicitPlaybackCommandGeneration();
+	notifications.ExpectedMediaLoadGeneration =
+		CurrentMediaLoadGeneration();
+	_mediaLoaded.store(false, std::memory_order_release);
+	StopSourceReaderPlayback(true);
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Stopped, notifications.OldState);
+	notifications.NewState = PlayState::Stopped;
+	notifications.MediaFailed = true;
+	notifications.MediaError = true;
+	notifications.Error = error;
 }
 
 void MediaPlayer::DispatchToOwner(std::function<void()> callback)
@@ -1424,24 +2782,465 @@ void MediaPlayer::DispatchToOwner(std::function<void()> callback)
 
 void MediaPlayer::RequestVisualInvalidation()
 {
+	_statVisualInvalidationRequests.fetch_add(1, std::memory_order_relaxed);
 	if (CheckAccess())
 	{
+		_visualInvalidationPending.store(false, std::memory_order_release);
 		Control::InvalidateVisual();
 		return;
 	}
-	std::weak_ptr<bool> weakLifetime = LifetimeToken();
-	(void)TryPost([this, weakLifetime]
+	bool expected = false;
+	if (!_visualInvalidationPending.compare_exchange_strong(
+		expected, true, std::memory_order_acq_rel))
+	{
+		_statCoalescedVisualInvalidations.fetch_add(
+			1, std::memory_order_relaxed);
+		return;
+	}
+	std::weak_ptr<std::atomic_bool> weakLifetime = LifetimeToken();
+	if (!TryPost([this, weakLifetime]
 	{
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
+		_visualInvalidationPending.store(false, std::memory_order_release);
 		Control::InvalidateVisual();
-	});
+	}))
+	{
+		_visualInvalidationPending.store(false, std::memory_order_release);
+	}
+}
+
+std::vector<uint8_t> MediaPlayer::AcquireVideoFrameBuffer()
+{
+	std::vector<uint8_t> frame;
+	std::scoped_lock lock(_videoFrameMutex);
+	frame.swap(_videoFrameSpare);
+	return frame;
+}
+
+void MediaPlayer::PublishVideoFrame(
+	std::vector<uint8_t>&& frame, UINT32 stride, SIZE videoSize)
+{
+	if (frame.empty() || stride == 0
+		|| videoSize.cx <= 0 || videoSize.cy <= 0)
+		return;
+	bool overwritten = false;
+	ComPtr<IMFSample> replacedGpuSample;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		overwritten = _videoFrameReady || _gpuVideoSampleReady;
+		replacedGpuSample = std::move(_gpuVideoSample);
+		_gpuVideoSampleGeneration = 0;
+		_gpuVideoSampleReady = false;
+		_videoFrame.swap(frame);
+		_videoFrameStride = stride;
+		_videoFrameVideoSize = videoSize;
+		_videoFrameReady = true;
+		if (frame.capacity() > _videoFrameSpare.capacity())
+			_videoFrameSpare.swap(frame);
+	}
+	if (overwritten)
+		_statOverwrittenVideoFrames.fetch_add(1, std::memory_order_relaxed);
+	RequestVisualInvalidation();
+}
+
+void MediaPlayer::RecycleVideoFrame(std::vector<uint8_t>& frame)
+{
+	if (frame.capacity() == 0) return;
+	std::scoped_lock lock(_videoFrameMutex);
+	if (frame.capacity() > _videoFrameSpare.capacity())
+		_videoFrameSpare.swap(frame);
+}
+
+void MediaPlayer::PreservePresentedVideoFrame(
+	std::vector<uint8_t>& frame, UINT32 stride, SIZE videoSize)
+{
+	if (frame.empty() || stride == 0
+		|| videoSize.cx <= 0 || videoSize.cy <= 0)
+	{
+		RecycleVideoFrame(frame);
+		return;
+	}
+	std::scoped_lock lock(_videoFrameMutex);
+	_lastPresentedGpuSample.Reset();
+	_lastPresentedGpuSampleGeneration = 0;
+	_lastPresentedVideoFrame.swap(frame);
+	_lastPresentedVideoFrameStride = stride;
+	_lastPresentedVideoFrameVideoSize = videoSize;
+	if (frame.capacity() > _videoFrameSpare.capacity())
+		_videoFrameSpare.swap(frame);
+}
+
+void MediaPlayer::PreserveGpuPresentedFrameForRecovery() noexcept
+{
+	try
+	{
+		if (!_videoBitmapUsesGpuSurface
+			|| _gpuOutputSlot >= GpuOutputBufferCount
+			|| !_gpuOutputTextures[_gpuOutputSlot]) return;
+		ComPtr<ID3D11Texture2D> source =
+			_gpuOutputTextures[_gpuOutputSlot];
+		ComPtr<ID3D11Device> device;
+		source->GetDevice(device.GetAddressOf());
+		if (!device) return;
+		ComPtr<ID3D11DeviceContext> context;
+		device->GetImmediateContext(context.GetAddressOf());
+		if (!context) return;
+
+		D3D11_TEXTURE2D_DESC description{};
+		source->GetDesc(&description);
+		if (description.Width == 0 || description.Height == 0
+			|| description.Format != DXGI_FORMAT_B8G8R8A8_UNORM) return;
+		description.Usage = D3D11_USAGE_STAGING;
+		description.BindFlags = 0;
+		description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		description.MiscFlags = 0;
+		ComPtr<ID3D11Texture2D> staging;
+		if (FAILED(device->CreateTexture2D(
+			&description, nullptr, staging.GetAddressOf())) || !staging) return;
+		context->CopyResource(staging.Get(), source.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (FAILED(context->Map(
+			staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)) || !mapped.pData)
+			return;
+		struct UnmapScope final
+		{
+			ID3D11DeviceContext* Context = nullptr;
+			ID3D11Texture2D* Texture = nullptr;
+			~UnmapScope()
+			{
+				if (Context && Texture) Context->Unmap(Texture, 0);
+			}
+		} unmap{ context.Get(), staging.Get() };
+
+		const UINT32 stride = description.Width * 4u;
+		std::vector<uint8_t> snapshot(
+			static_cast<size_t>(stride) * description.Height);
+		for (UINT32 row = 0; row < description.Height; ++row)
+		{
+			memcpy(snapshot.data() + static_cast<size_t>(row) * stride,
+				static_cast<const uint8_t*>(mapped.pData)
+					+ static_cast<size_t>(row) * mapped.RowPitch,
+				stride);
+		}
+		std::scoped_lock lock(_videoFrameMutex);
+		_lastPresentedVideoFrame = std::move(snapshot);
+		_lastPresentedVideoFrameStride = stride;
+		_lastPresentedVideoFrameVideoSize = SIZE{
+			static_cast<LONG>(description.Width),
+			static_cast<LONG>(description.Height) };
+	}
+	catch (...)
+	{
+		// Recovery snapshots are best effort; never make Pause throw.
+	}
+}
+
+void MediaPlayer::ReleaseVideoFrameBuffers() noexcept
+{
+	ComPtr<IMFSample> releasedGpuSample;
+	std::scoped_lock lock(_videoFrameMutex);
+	releasedGpuSample = std::move(_gpuVideoSample);
+	_lastPresentedGpuSample.Reset();
+	_lastPresentedGpuSampleGeneration = 0;
+	_gpuVideoSampleGeneration = 0;
+	_gpuVideoSampleReady = false;
+	std::vector<uint8_t>{}.swap(_videoFrame);
+	std::vector<uint8_t>{}.swap(_videoFrameSpare);
+	std::vector<uint8_t>{}.swap(_lastPresentedVideoFrame);
+	_videoFrameReady = false;
+	_videoFrameStride = 0;
+	_videoFrameVideoSize = {};
+	_lastPresentedVideoFrameStride = 0;
+	_lastPresentedVideoFrameVideoSize = {};
+	_videoStride = 0;
+	_videoSubtype = GUID_NULL;
+	_videoBytesPerPixel = 4;
+	_videoBottomUp = false;
+	_videoTransferMatrix = MFVideoTransferMatrix_Unknown;
+	_videoNominalRange = MFNominalRange_Unknown;
+	_videoD3DFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+	_videoFrameSize = {};
+	_videoSize = {};
+	_videoPixelAspectNumerator = 1;
+	_videoPixelAspectDenominator = 1;
+	_videoCropX = 0;
+	_videoCropY = 0;
+}
+
+void MediaPlayer::RefreshPresentationRateLimit() noexcept
+{
+	auto* presentationWindow = GetPresentationWindow();
+	const HWND window = presentationWindow ? presentationWindow->Handle : nullptr;
+	const HMONITOR monitor = window
+		? MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) : nullptr;
+	const LARGE_INTEGER now = QpcNow();
+	const LARGE_INTEGER frequency = QpcFreq();
+	if (monitor == _presentationRateMonitor
+		&& _lastPresentationRateRefreshQpc > 0
+		&& frequency.QuadPart > 0
+		&& now.QuadPart - _lastPresentationRateRefreshQpc < frequency.QuadPart)
+		return;
+	_presentationRateMonitor = monitor;
+	_lastPresentationRateRefreshQpc = now.QuadPart;
+	_videoPresentationRateLimitHz.store(
+		QueryPresentationRateLimitHz(window), std::memory_order_relaxed);
+}
+
+namespace
+{
+	UINT64 PackAdapterLuid(ID3D11Device* device) noexcept
+	{
+		if (!device) return 0;
+		ComPtr<IDXGIDevice> dxgiDevice;
+		ComPtr<IDXGIAdapter> adapter;
+		DXGI_ADAPTER_DESC description{};
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))
+			|| !dxgiDevice
+			|| FAILED(dxgiDevice->GetAdapter(adapter.GetAddressOf()))
+			|| !adapter
+			|| FAILED(adapter->GetDesc(&description)))
+			return 0;
+		return (static_cast<UINT64>(
+			static_cast<UINT32>(description.AdapterLuid.HighPart)) << 32)
+			| static_cast<UINT64>(description.AdapterLuid.LowPart);
+	}
+}
+
+bool MediaPlayer::ConfigureSourceReaderDxgiManager(IMFAttributes* attributes)
+{
+	if (!attributes || !_enableHardwareDecode || !_enableDxgiVideoOutput
+		|| !_preferNv12VideoOutput)
+		return false;
+
+	ComPtr<ID3D11Device> device;
+	ComPtr<ID3D11DeviceContext> context;
+	GraphicsSharedD3DDeviceInfo deviceInfo{};
+	HRESULT hr = Graphics_AcquireSharedD3DDevice(
+		device.GetAddressOf(), context.GetAddressOf(), nullptr, nullptr,
+		&deviceInfo);
+	if (FAILED(hr) || !device || !context || !deviceInfo.SupportsVideo
+		|| !deviceInfo.IsHardware)
+		return false;
+
+	UINT resetToken = 0;
+	ComPtr<IMFDXGIDeviceManager> manager;
+	hr = MFCreateDXGIDeviceManager(&resetToken, manager.GetAddressOf());
+	if (FAILED(hr) || !manager) return false;
+	hr = manager->ResetDevice(device.Get(), resetToken);
+	if (FAILED(hr)) return false;
+	hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager.Get());
+	if (FAILED(hr)) return false;
+
+	{
+		std::scoped_lock lock(_dxgiStateMutex);
+		_dxgiDeviceManager = manager;
+		_mediaD3DDevice = device;
+		_mediaD3DContext = context;
+		_dxgiDeviceResetToken = resetToken;
+		_dxgiDeviceGeneration.store(
+			deviceInfo.Generation, std::memory_order_release);
+		_dxgiAdapterLuid.store(
+			PackAdapterLuid(device.Get()), std::memory_order_release);
+		_dxgiDeviceManagerActive.store(true, std::memory_order_release);
+		_dxgiPresentationFailureGeneration.store(
+			0, std::memory_order_release);
+	}
+	_consecutiveGpuSurfaceImportFailures = 0;
+	_consecutiveCpuVideoBufferLockFailures = 0;
+	return true;
+}
+
+void MediaPlayer::ReleaseSourceReaderDxgiManager() noexcept
+{
+	ComPtr<IMFDXGIDeviceManager> manager;
+	ComPtr<ID3D11Device> device;
+	ComPtr<ID3D11DeviceContext> context;
+	{
+		std::scoped_lock lock(_dxgiStateMutex);
+		manager = std::move(_dxgiDeviceManager);
+		device = std::move(_mediaD3DDevice);
+		context = std::move(_mediaD3DContext);
+		_dxgiDeviceResetToken = 0;
+		_dxgiDeviceManagerActive.store(false, std::memory_order_release);
+		_dxgiDeviceGeneration.store(0, std::memory_order_release);
+		_dxgiAdapterLuid.store(0, std::memory_order_release);
+		_dxgiPresentationFailureGeneration.store(
+			0, std::memory_order_release);
+	}
+	_consecutiveGpuSurfaceImportFailures = 0;
+	_consecutiveCpuVideoBufferLockFailures = 0;
+}
+
+bool MediaPlayer::TryRebindDxgiDeviceManager()
+{
+	if (!_dxgiDeviceManagerActive.load(std::memory_order_acquire))
+		return false;
+
+	ComPtr<ID3D11Device> currentDevice;
+	ComPtr<IMFDXGIDeviceManager> manager;
+	UINT resetToken = 0;
+	UINT64 boundGeneration = 0;
+	{
+		std::scoped_lock lock(_dxgiStateMutex);
+		currentDevice = _mediaD3DDevice;
+		manager = _dxgiDeviceManager;
+		resetToken = _dxgiDeviceResetToken;
+		boundGeneration =
+			_dxgiDeviceGeneration.load(std::memory_order_acquire);
+	}
+	if (!manager) return false;
+	const UINT64 publishedGeneration =
+		Graphics_GetSharedD3DDeviceGeneration();
+	if (currentDevice && boundGeneration != 0
+		&& publishedGeneration == boundGeneration
+		&& currentDevice->GetDeviceRemovedReason() == S_OK)
+	{
+		return true;
+	}
+
+	ComPtr<ID3D11Device> replacementDevice;
+	ComPtr<ID3D11DeviceContext> replacementContext;
+	GraphicsSharedD3DDeviceInfo deviceInfo{};
+	HRESULT hr = Graphics_AcquireSharedD3DDevice(
+		replacementDevice.GetAddressOf(), replacementContext.GetAddressOf(),
+		nullptr, nullptr, &deviceInfo);
+	if (FAILED(hr) || !replacementDevice || !replacementContext
+		|| !deviceInfo.SupportsVideo || !deviceInfo.IsHardware)
+		return false;
+	if (currentDevice
+		&& currentDevice->GetDeviceRemovedReason() == S_OK
+		&& currentDevice.Get() == replacementDevice.Get()
+		&& boundGeneration == deviceInfo.Generation)
+	{
+		return true;
+	}
+	hr = manager->ResetDevice(replacementDevice.Get(), resetToken);
+	if (FAILED(hr)) return false;
+
+	ComPtr<IMFSample> staleSample;
+	{
+		// Publish device, context and generation as one epoch, while clearing the
+		// old-device mailbox under the same lock order used by the producer.
+		std::scoped_lock lock(_dxgiStateMutex, _videoFrameMutex);
+		if (_dxgiDeviceManager.Get() != manager.Get()
+			|| _dxgiDeviceResetToken != resetToken)
+			return false;
+		_mediaD3DDevice = replacementDevice;
+		_mediaD3DContext = replacementContext;
+		_dxgiDeviceGeneration.store(
+			deviceInfo.Generation, std::memory_order_release);
+		_dxgiAdapterLuid.store(
+			PackAdapterLuid(replacementDevice.Get()),
+			std::memory_order_release);
+		_dxgiPresentationFailureGeneration.store(
+			0, std::memory_order_release);
+		staleSample = std::move(_gpuVideoSample);
+		_gpuVideoSampleGeneration = 0;
+		_gpuVideoSampleReady = false;
+	}
+	_consecutiveGpuSurfaceImportFailures = 0;
+	_statGpuDeviceRebinds.fetch_add(1, std::memory_order_relaxed);
+	ReleaseGpuPresentationResources(true);
+	return true;
+}
+
+MediaPlayer::DxgiVideoSampleDisposition
+MediaPlayer::TryPublishDxgiVideoSample(IMFSample* sample)
+{
+	if (!sample) return DxgiVideoSampleDisposition::CpuFallbackEligible;
+	UINT64 currentGeneration = 0;
+	UINT64 failedGeneration = 0;
+	ComPtr<ID3D11Device> expectedDevice;
+	{
+		std::scoped_lock lock(_dxgiStateMutex);
+		if (!_dxgiDeviceManagerActive.load(std::memory_order_acquire))
+			return DxgiVideoSampleDisposition::CpuFallbackEligible;
+		currentGeneration =
+			_dxgiDeviceGeneration.load(std::memory_order_acquire);
+		failedGeneration = _dxgiPresentationFailureGeneration.load(
+			std::memory_order_acquire);
+		expectedDevice = _mediaD3DDevice;
+	}
+	if (failedGeneration != 0)
+	{
+		if (failedGeneration == currentGeneration)
+			return DxgiVideoSampleDisposition::CpuFallbackEligible;
+		UINT64 expected = failedGeneration;
+		(void)_dxgiPresentationFailureGeneration.compare_exchange_strong(
+			expected, 0, std::memory_order_acq_rel);
+	}
+
+	DWORD bufferCount = 0;
+	if (FAILED(sample->GetBufferCount(&bufferCount)))
+		return DxgiVideoSampleDisposition::CpuFallbackEligible;
+	ComPtr<ID3D11Texture2D> texture;
+	for (DWORD index = 0; index < bufferCount && !texture; ++index)
+	{
+		ComPtr<IMFMediaBuffer> buffer;
+		ComPtr<IMFDXGIBuffer> dxgiBuffer;
+		if (FAILED(sample->GetBufferByIndex(index, buffer.GetAddressOf()))
+			|| !buffer
+			|| FAILED(buffer.As(&dxgiBuffer)) || !dxgiBuffer)
+			continue;
+		(void)dxgiBuffer->GetResource(
+			__uuidof(ID3D11Texture2D),
+			reinterpret_cast<void**>(texture.GetAddressOf()));
+	}
+	if (!texture) return DxgiVideoSampleDisposition::CpuFallbackEligible;
+
+	ComPtr<ID3D11Device> sampleDevice;
+	texture->GetDevice(sampleDevice.GetAddressOf());
+	if (!sampleDevice || !expectedDevice
+		|| sampleDevice.Get() != expectedDevice.Get())
+	{
+		_statStaleGenerationFrames.fetch_add(1, std::memory_order_relaxed);
+		return DxgiVideoSampleDisposition::DropStale;
+	}
+
+	ComPtr<IMFSample> retainedSample = sample;
+	ComPtr<IMFSample> replacedSample;
+	std::vector<uint8_t> replacedCpuFrame;
+	bool overwritten = false;
+	{
+		// Revalidate the epoch while publishing so ResetDevice cannot clear a
+		// newly published replacement-device sample, nor relabel an old sample.
+		std::scoped_lock lock(_dxgiStateMutex, _videoFrameMutex);
+		if (!_dxgiDeviceManagerActive.load(std::memory_order_acquire)
+			|| _mediaD3DDevice.Get() != expectedDevice.Get()
+			|| _dxgiDeviceGeneration.load(std::memory_order_acquire)
+				!= currentGeneration)
+		{
+			_statStaleGenerationFrames.fetch_add(
+				1, std::memory_order_relaxed);
+			return DxgiVideoSampleDisposition::DropStale;
+		}
+		if (_dxgiPresentationFailureGeneration.load(
+			std::memory_order_acquire) == currentGeneration)
+			return DxgiVideoSampleDisposition::CpuFallbackEligible;
+		overwritten = _gpuVideoSampleReady || _videoFrameReady;
+		replacedSample = std::move(_gpuVideoSample);
+		if (_videoFrameReady)
+			replacedCpuFrame.swap(_videoFrame);
+		_videoFrameReady = false;
+		_videoFrameStride = 0;
+		_videoFrameVideoSize = {};
+		_gpuVideoSample = retainedSample;
+		_gpuVideoSampleGeneration = currentGeneration;
+		_gpuVideoSampleReady = true;
+	}
+	RecycleVideoFrame(replacedCpuFrame);
+	_statDxgiVideoSamples.fetch_add(1, std::memory_order_relaxed);
+	if (overwritten)
+		_statOverwrittenVideoFrames.fetch_add(1, std::memory_order_relaxed);
+	RequestVisualInvalidation();
+	return DxgiVideoSampleDisposition::Published;
 }
 
 // ========== 跨线程事件封送助手 ==========
 void MediaPlayer::FireMediaOpened()
 {
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
 	DispatchToOwner([this, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
@@ -1451,7 +3250,7 @@ void MediaPlayer::FireMediaOpened()
 
 void MediaPlayer::FireMediaEnded()
 {
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
 	DispatchToOwner([this, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
@@ -1459,19 +3258,35 @@ void MediaPlayer::FireMediaEnded()
 	});
 }
 
-void MediaPlayer::FirePositionChanged(double value)
+void MediaPlayer::FirePositionChanged(
+	double value, UINT64 expectedPlaybackEpoch,
+	UINT64 expectedExplicitCommandGeneration,
+	UINT64 expectedMediaLoadGeneration)
 {
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
-	DispatchToOwner([this, value, weakLifetime]() {
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	DispatchToOwner([this, value, expectedPlaybackEpoch,
+		expectedExplicitCommandGeneration,
+		expectedMediaLoadGeneration, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
+		if ((expectedPlaybackEpoch != 0
+				&& CurrentPlaybackEndEpoch() != expectedPlaybackEpoch)
+			|| (expectedExplicitCommandGeneration != 0
+				&& CurrentExplicitPlaybackCommandGeneration()
+					!= expectedExplicitCommandGeneration)
+			|| (expectedMediaLoadGeneration != 0
+				&& CurrentMediaLoadGeneration()
+					!= expectedMediaLoadGeneration))
+		{
+			return;
+		}
 		cui::framework::EventAccess::Raise(OnPositionChanged, this, value);
 	});
 }
 
 void MediaPlayer::FireMediaError(HRESULT error)
 {
-	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
 	DispatchToOwner([this, error, weakLifetime]() {
 		auto lifetime = weakLifetime.lock();
 		if (!lifetime || !*lifetime) return;
@@ -1481,37 +3296,62 @@ void MediaPlayer::FireMediaError(HRESULT error)
 
 MediaPlayer::MediaPlayer()
 {
+	_playbackWakeEvent = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
 	this->RendererBackgroundColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f };
 	this->RendererBorderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
-
-	HRESULT hr = InitializeMF();
-	if (FAILED(hr))
-	{
-		_initialized = false;
-	}
-	else
-	{
-		_initialized = true;
-	}
 }
 
 MediaPlayer::~MediaPlayer()
 {
+	// Invalidate derived callbacks before any MediaPlayer storage is torn down.
+	// Base destructors do this too, but that is too late for queued callbacks
+	// that could otherwise enter this half-destroyed derived object.
+	InvalidateLifetimeToken();
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
 	if (_eventCallback) _eventCallback->DetachPlayer();
 	_threadExit = true;
 	_threadPlaying = false;
-	_threadCv.notify_all();
+	WakePlaybackThread();
 	if (_playThread.joinable())
 		_playThread.join();
 	ShutdownWasapi();
 	ShutdownSourceReader();
 	ReleaseResources();
-	MFShutdown();
+	if (_mfStarted)
+	{
+		MFShutdown();
+		_mfStarted = false;
+	}
 	if (_didCoInit)
 	{
 		::CoUninitialize();
 		_didCoInit = false;
 	}
+	if (_playbackWakeEvent)
+	{
+		::CloseHandle(_playbackWakeEvent);
+		_playbackWakeEvent = nullptr;
+	}
+}
+
+void MediaPlayer::WakePlaybackThread() noexcept
+{
+	_threadCv.notify_all();
+	if (_playbackWakeEvent) (void)::SetEvent(_playbackWakeEvent);
+}
+
+bool MediaPlayer::EnsureInitialized()
+{
+	if (_initialized) return true;
+	if (_initializationAttempted) return false;
+
+	_initializationAttempted = true;
+	_initializationHr = InitializeMF();
+	_initialized = SUCCEEDED(_initializationHr);
+	if (!_initialized)
+		_lastMfError.store(_initializationHr);
+	return _initialized;
 }
 
 HRESULT MediaPlayer::InitializeMF()
@@ -1539,24 +3379,9 @@ HRESULT MediaPlayer::InitializeMF()
 	// 这里使用完整启动以确保 Media Session 正常工作。
 	hr = MFStartup(MF_VERSION, 0);
 	if (FAILED(hr)) return hr;
+	_mfStarted = true;
 
-	// 创建 Media Session + 事件回调
-	hr = CreateMediaSession();
-	if (FAILED(hr)) return hr;
-
-	// 初始化 Direct3D
-	hr = InitializeD3D();
-	if (FAILED(hr))
-	{
-		// 当前播放器的视频路径是 SourceReader/SampleGrabber + D2D 位图自渲染，D3D 只作为旧互操作路径的可选依赖。
-		// Win7/精简显卡驱动环境中 D3D 初始化可能失败，不能因此让音频或软件解码路径整体不可用。
-		DebugOutputHr(L"InitializeD3D failed (non-fatal)", hr);
-		_d3dDevice.Reset();
-		_d3dContext.Reset();
-		return S_OK;
-	}
-
-	return hr;
+	return S_OK;
 }
 
 bool MediaPlayer::InitWasapi()
@@ -1606,10 +3431,22 @@ bool MediaPlayer::InitWasapiWithFormat(const WAVEFORMATEX* format)
 		if (FAILED(hr) || !_audioMixFormat) { DebugOutputHr(L"WASAPI: GetMixFormat", hr); return false; }
 	}
 
-	// Use shared mode, event-driven not required.
+	_audioReadyEvent = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+	if (!_audioReadyEvent)
+	{
+		DebugOutputHr(L"WASAPI: CreateEvent", HRESULT_FROM_WIN32(GetLastError()));
+		return false;
+	}
+
+	// Event-driven refill avoids a Sleep(1) polling loop on the same worker that
+	// schedules video frames and performs time stretching.
 	REFERENCE_TIME bufferDuration = 1000000; // 100ms
-	hr = _audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, bufferDuration, 0, _audioMixFormat, nullptr);
+	hr = _audioClient->Initialize(
+		AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+		bufferDuration, 0, _audioMixFormat, nullptr);
 	if (FAILED(hr)) { DebugOutputHr(L"WASAPI: Initialize", hr); return false; }
+	hr = _audioClient->SetEventHandle(_audioReadyEvent);
+	if (FAILED(hr)) { DebugOutputHr(L"WASAPI: SetEventHandle", hr); return false; }
 
 	hr = _audioClient->GetBufferSize(&_audioBufferFrameCount);
 	if (FAILED(hr)) { DebugOutputHr(L"WASAPI: GetBufferSize", hr); return false; }
@@ -1633,6 +3470,11 @@ void MediaPlayer::ShutdownWasapi()
 		(void)_audioClient->Stop();
 	_audioRenderClient.Reset();
 	_audioClient.Reset();
+	if (_audioReadyEvent)
+	{
+		::CloseHandle(_audioReadyEvent);
+		_audioReadyEvent = nullptr;
+	}
 	_audioDevice.Reset();
 	_mmDeviceEnumerator.Reset();
 	_timeStretch.reset();
@@ -1690,7 +3532,11 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 	_sourceReaderAudioSubtype = GUID_NULL;
 	{
 		ComPtr<IMFMediaType> currentType;
-		if (SUCCEEDED(_sourceReader->GetCurrentMediaType(_srAudioStream, &currentType)) && currentType)
+		const HRESULT currentTypeHr =
+			_sourceReader->GetCurrentMediaType(_srAudioStream, &currentType);
+		if (currentTypeHr == MF_E_INVALIDSTREAMNUMBER)
+			return false;
+		if (SUCCEEDED(currentTypeHr) && currentType)
 			_sourceReaderAudioSubtype = GetAudioSubtypeFromMediaType(currentType.Get());
 	}
 
@@ -1731,7 +3577,11 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 		ComPtr<IMFMediaType> nativeType;
 		HRESULT nativeHr = _sourceReader->GetNativeMediaType(_srAudioStream, typeIndex, &nativeType);
 		if (nativeHr == MF_E_NO_MORE_TYPES) break;
-		if (FAILED(nativeHr) || !nativeType) continue;
+		// MF_E_INVALIDSTREAMNUMBER means the source has no audio stream.  More
+		// generally, a failed enumeration call cannot become successful merely
+		// by incrementing the media-type index; continuing here used to spin the
+		// UI thread forever for video-only files.
+		if (FAILED(nativeHr) || !nativeType) break;
 
 		WAVEFORMATEX* nativeWave = nullptr;
 		UINT32 nativeWaveSize = 0;
@@ -1781,19 +3631,37 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 void MediaPlayer::UpdateVideoFormatFromSourceReader()
 {
 	if (!_sourceReader) return;
+	_videoFrameRateKnown.store(false, std::memory_order_relaxed);
 	ComPtr<IMFMediaType> mt;
 	if (FAILED(_sourceReader->GetCurrentMediaType(_srVideoStream, &mt)) || !mt) return;
+	UINT32 frameRateNumerator = 0;
+	UINT32 frameRateDenominator = 0;
+	if (SUCCEEDED(MFGetAttributeRatio(
+		mt.Get(), MF_MT_FRAME_RATE,
+		&frameRateNumerator, &frameRateDenominator))
+		&& frameRateNumerator > 0 && frameRateDenominator > 0)
+	{
+		const LONGLONG duration = std::max<LONGLONG>(1,
+			(10'000'000LL * frameRateDenominator) / frameRateNumerator);
+		_videoFrameDurationHns.store(duration, std::memory_order_relaxed);
+		_videoFrameRateKnown.store(true, std::memory_order_relaxed);
+	}
 	
 	UINT32 w = 0, h = 0;
 	if (SUCCEEDED(MFGetAttributeSize(mt.Get(), MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0)
 	{
+		UINT32 pixelAspectNumerator = 1;
+		UINT32 pixelAspectDenominator = 1;
+		if (FAILED(MFGetAttributeRatio(
+			mt.Get(), MF_MT_PIXEL_ASPECT_RATIO,
+			&pixelAspectNumerator, &pixelAspectDenominator))
+			|| pixelAspectNumerator == 0 || pixelAspectDenominator == 0)
+		{
+			pixelAspectNumerator = 1;
+			pixelAspectDenominator = 1;
+		}
 		UINT32 cropX = 0, cropY = 0, visibleW = w, visibleH = h;
 		ApplyVideoCropFromMediaType(mt.Get(), w, h, cropX, cropY, visibleW, visibleH);
-
-		_videoFrameSize = SIZE{ (LONG)w, (LONG)h };
-		_videoSize = SIZE{ (LONG)visibleW, (LONG)visibleH };
-		_videoCropX = cropX;
-		_videoCropY = cropY;
 		
 		// 获取实际的stride（步长）
 		UINT32 strideAttr = MFGetAttributeUINT32(mt.Get(), MF_MT_DEFAULT_STRIDE, 0);
@@ -1802,10 +3670,28 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 		UINT32 stride = bottomUp ? (UINT32)(-signedStride) : strideAttr;
 		
 		// 检查格式以确定正确的stride
-		GUID subtype;
-		if (SUCCEEDED(mt->GetGUID(MF_MT_SUBTYPE, &subtype)))
+		GUID subtype = GUID_NULL;
+		UINT32 bytesPerPixel = 4;
+		const bool hasSubtype = SUCCEEDED(mt->GetGUID(MF_MT_SUBTYPE, &subtype));
+		const auto transferMatrix = static_cast<MFVideoTransferMatrix>(
+			MFGetAttributeUINT32(mt.Get(), MF_MT_YUV_MATRIX,
+				MFVideoTransferMatrix_Unknown));
+		const auto nominalRange = static_cast<MFNominalRange>(
+			MFGetAttributeUINT32(mt.Get(), MF_MT_VIDEO_NOMINAL_RANGE,
+				MFNominalRange_Unknown));
+		const auto interlaceMode = static_cast<MFVideoInterlaceMode>(
+			MFGetAttributeUINT32(mt.Get(), MF_MT_INTERLACE_MODE,
+				MFVideoInterlace_Progressive));
+		D3D11_VIDEO_FRAME_FORMAT d3dFrameFormat =
+			D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+		if (interlaceMode == MFVideoInterlace_FieldInterleavedUpperFirst
+			|| interlaceMode == MFVideoInterlace_FieldSingleUpper)
+			d3dFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST;
+		else if (interlaceMode == MFVideoInterlace_FieldInterleavedLowerFirst
+			|| interlaceMode == MFVideoInterlace_FieldSingleLower)
+			d3dFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_BOTTOM_FIELD_FIRST;
+		if (hasSubtype)
 		{
-			UINT32 bytesPerPixel = 4;
 			if (subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32)
 			{
 				// RGB32/ARGB32: 每像素4字节
@@ -1832,29 +3718,41 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 				bytesPerPixel = 4;
 				if (stride == 0) stride = w * 4;
 			}
-
-			{
-				std::scoped_lock lock(_videoFrameMutex);
-				_videoSubtype = subtype;
-				_videoBytesPerPixel = bytesPerPixel;
-				_videoBottomUp = bottomUp;
-			}
-			
-			wchar_t dbgMsg[256];
-			swprintf_s(dbgMsg, L"Video format: %dx%d, stride=%u, bpp=%u, bottomUp=%d\n", w, h, stride, bytesPerPixel, bottomUp ? 1 : 0);
-			PrintLogWide(dbgMsg);
 		}
 		else
 		{
 			// 无法获取格式，使用默认值
 			if (stride == 0) stride = w * 4;
-			std::scoped_lock lock(_videoFrameMutex);
-			_videoSubtype = GUID_NULL;
-			_videoBytesPerPixel = 4;
-			_videoBottomUp = false;
+			bottomUp = false;
 		}
-		
-		_videoStride = stride;
+
+		{
+			std::scoped_lock lock(_videoFrameMutex);
+			_videoFrameSize = SIZE{ (LONG)w, (LONG)h };
+			_videoSize = SIZE{ (LONG)visibleW, (LONG)visibleH };
+			_videoPixelAspectNumerator = pixelAspectNumerator;
+			_videoPixelAspectDenominator = pixelAspectDenominator;
+			_videoCropX = cropX;
+			_videoCropY = cropY;
+			_videoStride = stride;
+			_videoSubtype = hasSubtype ? subtype : GUID_NULL;
+			_videoBytesPerPixel = bytesPerPixel;
+			_videoBottomUp = bottomUp;
+			_videoTransferMatrix = transferMatrix;
+			_videoNominalRange = nominalRange;
+			_videoD3DFrameFormat = d3dFrameFormat;
+		}
+		// A media-type change is a new GPU compatibility boundary. A previous
+		// unsupported format must not blacklist a later progressive SDR type on
+		// the same D3D device generation.
+		_dxgiPresentationFailureGeneration.store(
+			0, std::memory_order_release);
+
+		wchar_t dbgMsg[256];
+		swprintf_s(dbgMsg,
+			L"Video format: %dx%d, stride=%u, bpp=%u, bottomUp=%d\n",
+			w, h, stride, bytesPerPixel, bottomUp ? 1 : 0);
+		PrintLogWide(dbgMsg);
 	}
 }
 
@@ -1877,16 +3775,19 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 		hr = MFCreateAttributes(&attr, 10);
 		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(HW)", hr); return false; }
 
+		const bool usingDxgiManager = ConfigureSourceReaderDxgiManager(attr.Get());
 		(void)attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
 		// 不设置 MF_SOURCE_READER_DISABLE_DXVA，让 MF 自行选择 DXVA/软件路径。
 		// 若优先 NV12，则关闭 MF video processing（否则会把颜色转换成本算进 ReadSample）。
-		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, _preferNv12VideoOutput ? FALSE : TRUE);
+		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
+			(usingDxgiManager || _preferNv12VideoOutput) ? FALSE : TRUE);
 
 		hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
 		if (FAILED(hr) && hr == E_INVALIDARG)
 		{
 			// 某些系统/解码器对 HW_TRANSFORMS 属性不接受（返回 E_INVALIDARG），做一次温和降级再试。
 			DebugOutputHr(L"SourceReader: HW init got E_INVALIDARG, retry without HW_TRANSFORMS", hr);
+			ReleaseSourceReaderDxgiManager();
 			attr.Reset();
 			if (SUCCEEDED(MFCreateAttributes(&attr, 8)))
 			{
@@ -1904,6 +3805,7 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 	// 失败回退：维持原先强制软解配置（最稳）
 	if (!_sourceReader)
 	{
+		ReleaseSourceReaderDxgiManager();
 		ComPtr<IMFAttributes> attr;
 		hr = MFCreateAttributes(&attr, 8);
 		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(SW)", hr); return false; }
@@ -1972,6 +3874,13 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 		}
 	}
 
+	if (_actualVideoStreamIndex == static_cast<DWORD>(-1)
+		&& _actualAudioStreamIndex == static_cast<DWORD>(-1))
+	{
+		_lastMfError.store(MF_E_INVALIDMEDIATYPE);
+		return false;
+	}
+
 	// Duration
 	PROPVARIANT var;
 	PropVariantInit(&var);
@@ -2007,13 +3916,16 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 		hr = MFCreateAttributes(&attr, 10);
 		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(HW, mem)", hr); return false; }
 
+		const bool usingDxgiManager = ConfigureSourceReaderDxgiManager(attr.Get());
 		(void)attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, _preferNv12VideoOutput ? FALSE : TRUE);
+		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
+			(usingDxgiManager || _preferNv12VideoOutput) ? FALSE : TRUE);
 
 		hr = MFCreateSourceReaderFromByteStream(_memoryByteStream.Get(), attr.Get(), &_sourceReader);
 		if (FAILED(hr) && hr == E_INVALIDARG)
 		{
 			DebugOutputHr(L"SourceReader: HW init got E_INVALIDARG (mem), retry without HW_TRANSFORMS", hr);
+			ReleaseSourceReaderDxgiManager();
 			attr.Reset();
 			if (SUCCEEDED(MFCreateAttributes(&attr, 8)))
 			{
@@ -2031,6 +3943,7 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 	// 失败回退：强制软解
 	if (!_sourceReader)
 	{
+		ReleaseSourceReaderDxgiManager();
 		ComPtr<IMFAttributes> attr;
 		hr = MFCreateAttributes(&attr, 8);
 		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(SW, mem)", hr); return false; }
@@ -2099,6 +4012,13 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 		}
 	}
 
+	if (_actualVideoStreamIndex == static_cast<DWORD>(-1)
+		&& _actualAudioStreamIndex == static_cast<DWORD>(-1))
+	{
+		_lastMfError.store(MF_E_INVALIDMEDIATYPE);
+		return false;
+	}
+
 	// Duration
 	PROPVARIANT var;
 	PropVariantInit(&var);
@@ -2116,13 +4036,27 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 
 void MediaPlayer::ShutdownSourceReader()
 {
+	ComPtr<IMFSample> pendingGpuSample;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		pendingGpuSample = std::move(_gpuVideoSample);
+		_gpuVideoSampleGeneration = 0;
+		_gpuVideoSampleReady = false;
+		_lastPresentedGpuSample.Reset();
+		_lastPresentedGpuSampleGeneration = 0;
+	}
+	ReleaseGpuPresentationResources(true);
+	pendingGpuSample.Reset();
 	_sourceReader.Reset();
+	ReleaseSourceReaderDxgiManager();
 	_memoryByteStream.Reset();
 	_memoryStream.Reset();
 }
 
 void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 {
+	if (shutdown)
+		(void)BeginPlaybackEndEpoch(0, true);
 	_threadPlaying = false;
 	_needSyncReset = true;
 	if (_audioClient) (void)_audioClient->Stop();
@@ -2131,7 +4065,7 @@ void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 	if (_playThread.joinable())
 	{
 		_threadExit = true;
-		_threadCv.notify_all();
+		WakePlaybackThread();
 		_playThread.join();
 		_threadExit = false;
 	}
@@ -2142,22 +4076,29 @@ void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 		ShutdownMediaSession();
 		_mediaSource.Reset();
 		_topology.Reset();
-		_topologyReady = false;
-		_pendingStart = false;
-		_hasPendingStartPosition = false;
-		_pendingStartPosition = 0.0;
+		ResetTopologyState();
 		_useMediaSessionAudioCompanion = false;
 	}
 }
 
-bool MediaPlayer::WriteAudioToWasapi(const BYTE* data, UINT32 bytes, bool dropRemainderIfFull)
+HRESULT MediaPlayer::WriteAudioToWasapi(
+	const BYTE* data, UINT32 bytes, bool dropRemainderIfFull)
 {
-	if (!_audioClient || !_audioRenderClient || !_audioMixFormat) return false;
-	if (!data || bytes == 0) return true;
+	if (!_audioClient || !_audioRenderClient || !_audioMixFormat
+		|| !_audioReadyEvent) return E_NOT_VALID_STATE;
+	if (!data || bytes == 0) return S_OK;
 
 	_statAudioWriteCalls.fetch_add(1, std::memory_order_relaxed);
 	_statAudioWriteBytes.fetch_add(bytes, std::memory_order_relaxed);
 	const LARGE_INTEGER t0 = QpcNow();
+	auto finish = [this, t0](HRESULT result)
+	{
+		const LARGE_INTEGER t1 = QpcNow();
+		_statAudioWriteQpcTicks.fetch_add(
+			static_cast<UINT64>(t1.QuadPart - t0.QuadPart),
+			std::memory_order_relaxed);
+		return result;
+	};
 
 	// 防止卡死：若音频引擎长时间完全不接收新帧，避免在此无限等待。
 	ULONGLONG lastProgressTick = GetTickCount64();
@@ -2165,67 +4106,169 @@ bool MediaPlayer::WriteAudioToWasapi(const BYTE* data, UINT32 bytes, bool dropRe
 	UINT32 offset = 0;
 	while (offset < bytes)
 	{
-		if (_threadExit || !_threadPlaying.load())
-			return false;
+		if (_threadExit || !_threadPlaying.load()
+			|| _needSyncReset.load(std::memory_order_acquire))
+			return finish(S_FALSE);
 
 		UINT32 padding = 0;
 		HRESULT hr = _audioClient->GetCurrentPadding(&padding);
-		if (FAILED(hr)) { DebugOutputHr(L"WASAPI: GetCurrentPadding", hr); return false; }
-		UINT32 availableFrames = _audioBufferFrameCount - padding;
+		if (FAILED(hr))
+		{
+			DebugOutputHr(L"WASAPI: GetCurrentPadding", hr);
+			return finish(hr);
+		}
+		UINT32 availableFrames = padding < _audioBufferFrameCount
+			? _audioBufferFrameCount - padding : 0;
 		if (availableFrames == 0)
 		{
 			if (dropRemainderIfFull)
-				return true;
-			if (GetTickCount64() - lastProgressTick > 2000)
+				return finish(S_OK);
+			const ULONGLONG stalledMilliseconds =
+				GetTickCount64() - lastProgressTick;
+			if (stalledMilliseconds >= 2000)
 			{
-				DebugOutputHr(L"WASAPI: write timeout (buffer never drains)", E_FAIL);
-				return false;
+				const HRESULT timeout = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+				DebugOutputHr(
+					L"WASAPI: write timeout (buffer never drains)", timeout);
+				return finish(timeout);
 			}
-			Sleep(1);
-			continue;
+			HANDLE waits[2] = { _audioReadyEvent, _playbackWakeEvent };
+			const DWORD waitCount = _playbackWakeEvent ? 2u : 1u;
+			const DWORD waitResult = ::WaitForMultipleObjects(
+				waitCount, waits, FALSE,
+				static_cast<DWORD>(2000 - stalledMilliseconds));
+			if (waitResult == WAIT_OBJECT_0) continue;
+			if (waitCount == 2 && waitResult == WAIT_OBJECT_0 + 1)
+			{
+				if (_threadExit || !_threadPlaying.load()
+					|| _needSyncReset.load(std::memory_order_acquire))
+					return finish(S_FALSE);
+				continue;
+			}
+			if (waitResult == WAIT_TIMEOUT)
+				return finish(HRESULT_FROM_WIN32(WAIT_TIMEOUT));
+			return finish(HRESULT_FROM_WIN32(GetLastError()));
 		}
 		UINT32 bytesPerFrame = _audioMixFormat->nBlockAlign;
-		if (bytesPerFrame == 0) return false;
+		if (bytesPerFrame == 0) return finish(MF_E_INVALIDMEDIATYPE);
+		if ((bytes - offset) < bytesPerFrame)
+			return finish(E_INVALIDARG);
 		UINT32 availableBytes = availableFrames * bytesPerFrame;
 		UINT32 toWrite = (std::min)(availableBytes, bytes - offset);
 		UINT32 framesToWrite = toWrite / bytesPerFrame;
 		if (framesToWrite == 0)
 		{
-			if (dropRemainderIfFull)
-				return true;
-			if (GetTickCount64() - lastProgressTick > 2000)
-			{
-				DebugOutputHr(L"WASAPI: write timeout (framesToWrite==0)", E_FAIL);
-				return false;
-			}
-			Sleep(1);
+			if (dropRemainderIfFull) return finish(S_OK);
 			continue;
 		}
 		BYTE* pData = nullptr;
 		hr = _audioRenderClient->GetBuffer(framesToWrite, &pData);
-		if (FAILED(hr)) { DebugOutputHr(L"WASAPI: GetBuffer", hr); return false; }
+		if (FAILED(hr))
+		{
+			DebugOutputHr(L"WASAPI: GetBuffer", hr);
+			return finish(hr);
+		}
 		memcpy(pData, data + offset, framesToWrite * bytesPerFrame);
 		hr = _audioRenderClient->ReleaseBuffer(framesToWrite, 0);
-		if (FAILED(hr)) { DebugOutputHr(L"WASAPI: ReleaseBuffer", hr); return false; }
+		if (FAILED(hr))
+		{
+			DebugOutputHr(L"WASAPI: ReleaseBuffer", hr);
+			return finish(hr);
+		}
 		offset += framesToWrite * bytesPerFrame;
 		lastProgressTick = GetTickCount64();
 	}
-	const LARGE_INTEGER t1 = QpcNow();
-	_statAudioWriteQpcTicks.fetch_add((UINT64)(t1.QuadPart - t0.QuadPart), std::memory_order_relaxed);
-	return true;
+	return finish(S_OK);
+}
+
+HRESULT MediaPlayer::WaitForWasapiDrain()
+{
+	if (!_audioClient || !_audioReadyEvent) return E_NOT_VALID_STATE;
+	const ULONGLONG started = GetTickCount64();
+	for (;;)
+	{
+		if (_threadExit || !_threadPlaying.load(std::memory_order_acquire)
+			|| _needSyncReset.load(std::memory_order_acquire)) return S_FALSE;
+		UINT32 padding = 0;
+		const HRESULT paddingResult =
+			_audioClient->GetCurrentPadding(&padding);
+		if (FAILED(paddingResult)) return paddingResult;
+		if (padding == 0) return S_OK;
+		const ULONGLONG elapsed = GetTickCount64() - started;
+		if (elapsed >= 2000) return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+		HANDLE waits[2] = { _audioReadyEvent, _playbackWakeEvent };
+		const DWORD waitCount = _playbackWakeEvent ? 2u : 1u;
+		const DWORD waitResult = ::WaitForMultipleObjects(
+			waitCount, waits, FALSE, static_cast<DWORD>(2000 - elapsed));
+		if (waitResult == WAIT_OBJECT_0) continue;
+		if (waitCount == 2 && waitResult == WAIT_OBJECT_0 + 1)
+		{
+			if (_threadExit || !_threadPlaying.load(std::memory_order_acquire)
+				|| _needSyncReset.load(std::memory_order_acquire)) return S_FALSE;
+			continue;
+		}
+		if (waitResult == WAIT_TIMEOUT)
+			return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+		return HRESULT_FROM_WIN32(GetLastError());
+	}
 }
 
 void MediaPlayer::PlaybackThreadMain()
 {
 	HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	HANDLE pacingTimer = ::CreateWaitableTimerExW(
+		nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+		TIMER_MODIFY_STATE | SYNCHRONIZE);
+	if (!pacingTimer)
+	{
+		pacingTimer = ::CreateWaitableTimerExW(
+			nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
+	}
+	auto waitForPacing = [this, pacingTimer](double seconds)
+	{
+		if (seconds <= 0.0) return;
+		if (pacingTimer)
+		{
+			LARGE_INTEGER due{};
+			due.QuadPart = -(std::max<LONGLONG>)(
+				1, static_cast<LONGLONG>(std::llround(
+					seconds * static_cast<double>(HNS_PER_SEC))));
+			if (::SetWaitableTimerEx(
+				pacingTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+			{
+				HANDLE waits[2] = { pacingTimer, _playbackWakeEvent };
+				const DWORD waitCount = _playbackWakeEvent ? 2u : 1u;
+				(void)::WaitForMultipleObjects(
+					waitCount, waits, FALSE, INFINITE);
+				(void)::CancelWaitableTimer(pacingTimer);
+				return;
+			}
+		}
+		std::unique_lock lock(_threadMutex);
+		(void)_threadCv.wait_for(
+			lock, std::chrono::duration<double>(seconds), [this]
+			{
+				return _threadExit.load(std::memory_order_acquire)
+					|| !_threadPlaying.load(std::memory_order_acquire)
+					|| _needSyncReset.load(std::memory_order_acquire);
+			});
+	};
 	// Simple A/V sync based on timestamps.
-	LONGLONG firstTs = -1;
+	LONGLONG firstVideoTs = -1;
 	LARGE_INTEGER freq{};
 	QueryPerformanceFrequency(&freq);
 	LARGE_INTEGER startQpc{};
 	QueryPerformanceCounter(&startQpc);
 	LONGLONG lastPositionEventQpc = 0;
 	float syncRate = 1.0f;
+	double nextVideoPresentationTargetSeconds = 0.0;
+	bool hasVideoPresentationCadence = false;
+	bool videoEndOfStream = false;
+	bool audioEndOfStream = false;
+	UINT64 playbackEndEpoch = CurrentPlaybackEndEpoch();
+	UINT64 playbackExplicitCommandGeneration =
+		CurrentExplicitPlaybackCommandGeneration();
+	UINT64 playbackMediaLoadGeneration = CurrentMediaLoadGeneration();
 
 	while (!_threadExit)
 	{
@@ -2234,23 +4277,53 @@ void MediaPlayer::PlaybackThreadMain()
 			std::unique_lock lk(_threadMutex);
 			_threadCv.wait(lk, [&] { return _threadExit || _threadPlaying.load(); });
 			if (_threadExit) break;
+			_playbackWorkerActive = true;
 		}
 
-		firstTs = -1;
+		firstVideoTs = -1;
 		lastPositionEventQpc = 0;
 		syncRate = ClampRate(_playbackRate.load());
+		hasVideoPresentationCadence = false;
+		videoEndOfStream = false;
+		audioEndOfStream = false;
+		playbackEndEpoch = CurrentPlaybackEndEpoch();
+		playbackExplicitCommandGeneration =
+			CurrentExplicitPlaybackCommandGeneration();
+		playbackMediaLoadGeneration = CurrentMediaLoadGeneration();
+		auto failAudioPlayback = [this, &playbackEndEpoch,
+			&playbackExplicitCommandGeneration,
+			&playbackMediaLoadGeneration](HRESULT error)
+		{
+			if (SUCCEEDED(error)) error = E_FAIL;
+			DebugOutputHr(L"WASAPI: terminal playback failure", error);
+			_threadPlaying.store(false, std::memory_order_release);
+			HandleSourceReaderFailure(
+				error, playbackEndEpoch,
+				playbackExplicitCommandGeneration,
+				playbackMediaLoadGeneration);
+		};
 
 		// SourceReader 后端：始终保持音频输出开启；倍速由 WSOLA 对 PCM 做变速不变调处理。
 		if (_audioClient && _hasAudio)
-			(void)_audioClient->Start();
+		{
+			const HRESULT audioStart = _audioClient->Start();
+			if (FAILED(audioStart)) failAudioPlayback(audioStart);
+		}
 
 		while (_threadPlaying && !_threadExit)
 		{
 		if (_needSyncReset)
 		{
-			firstTs = -1;
+			firstVideoTs = -1;
 			lastPositionEventQpc = 0;
 			syncRate = ClampRate(_playbackRate.load());
+			hasVideoPresentationCadence = false;
+			videoEndOfStream = false;
+			audioEndOfStream = false;
+			playbackEndEpoch = CurrentPlaybackEndEpoch();
+			playbackExplicitCommandGeneration =
+				CurrentExplicitPlaybackCommandGeneration();
+			playbackMediaLoadGeneration = CurrentMediaLoadGeneration();
 			if (_timeStretch) _timeStretch->Reset();
 			for (auto& stretchStage : _timeStretchChain)
 				if (stretchStage) stretchStage->Reset();
@@ -2258,9 +4331,16 @@ void MediaPlayer::PlaybackThreadMain()
 			// 这里通过 Stop+Reset 清空缓冲，避免回到 1.0x 后仍听到“被拉长的片段”。
 			if (_audioClient && _hasAudio)
 			{
-				(void)_audioClient->Stop();
-				(void)_audioClient->Reset();
-				(void)_audioClient->Start();
+				HRESULT audioControl = _audioClient->Stop();
+				if (SUCCEEDED(audioControl))
+					audioControl = _audioClient->Reset();
+				if (SUCCEEDED(audioControl))
+					audioControl = _audioClient->Start();
+				if (FAILED(audioControl))
+				{
+					failAudioPlayback(audioControl);
+					break;
+				}
 			}
 			_needSyncReset = false;
 		}
@@ -2271,7 +4351,19 @@ void MediaPlayer::PlaybackThreadMain()
 		ComPtr<IMFSample> sample;
 		_statReadSampleCalls.fetch_add(1, std::memory_order_relaxed);
 		const LARGE_INTEGER tRead0 = QpcNow();
-		HRESULT hr = _sourceReader->ReadSample(MF_SOURCE_READER_ANY_STREAM, 0, &streamIndex, &flags, &ts, &sample);
+		DWORD requestedStream = MF_SOURCE_READER_ANY_STREAM;
+		if (videoEndOfStream && !audioEndOfStream
+			&& _actualAudioStreamIndex != static_cast<DWORD>(-1))
+		{
+			requestedStream = _actualAudioStreamIndex;
+		}
+		else if (audioEndOfStream && !videoEndOfStream
+			&& _actualVideoStreamIndex != static_cast<DWORD>(-1))
+		{
+			requestedStream = _actualVideoStreamIndex;
+		}
+		HRESULT hr = _sourceReader->ReadSample(
+			requestedStream, 0, &streamIndex, &flags, &ts, &sample);
 		const LARGE_INTEGER tRead1 = QpcNow();
 		const UINT64 readTicks = (UINT64)(tRead1.QuadPart - tRead0.QuadPart);
 		_statReadSampleQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
@@ -2279,12 +4371,79 @@ void MediaPlayer::PlaybackThreadMain()
 		{
 			DebugOutputHr(L"SourceReader: ReadSample failed", hr);
 			_threadPlaying = false;
-			ReportMediaFailure(hr);
+			HandleSourceReaderFailure(
+				hr, playbackEndEpoch,
+				playbackExplicitCommandGeneration,
+				playbackMediaLoadGeneration);
 			break;
+		}
+		if ((flags & MF_SOURCE_READERF_ERROR) != 0)
+		{
+			// MF may return S_OK with this terminal flag and no sample. Once it is
+			// observed the SourceReader is in an error state and must not be read
+			// again.
+			constexpr HRESULT sourceReaderFlagError = E_FAIL;
+			DebugOutputHr(
+				L"SourceReader: terminal error flag", sourceReaderFlagError);
+			_threadPlaying = false;
+			HandleSourceReaderFailure(
+				sourceReaderFlagError, playbackEndEpoch,
+				playbackExplicitCommandGeneration,
+				playbackMediaLoadGeneration);
+			break;
+		}
+
+		// Flags and output type changes are valid even when ReadSample returns a
+		// null sample. Resolve the stream before handling EOS or deciding whether
+		// there is pixel/PCM data to process.
+		bool isVideo = streamIndex == _actualVideoStreamIndex;
+		bool isAudio = streamIndex == _actualAudioStreamIndex;
+		if ((!isVideo && !isAudio)
+			|| (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0
+			|| (flags & MF_SOURCE_READERF_NEWSTREAM) != 0)
+		{
+			GUID majorType{};
+			ComPtr<IMFMediaType> mt;
+			if (_sourceReader
+				&& SUCCEEDED(_sourceReader->GetCurrentMediaType(
+					streamIndex, &mt))
+				&& mt
+				&& SUCCEEDED(mt->GetGUID(MF_MT_MAJOR_TYPE, &majorType)))
+			{
+				isVideo = majorType == MFMediaType_Video;
+				isAudio = majorType == MFMediaType_Audio;
+				if (isVideo) _actualVideoStreamIndex = streamIndex;
+				if (isAudio) _actualAudioStreamIndex = streamIndex;
+			}
+		}
+		if ((flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0
+			&& isVideo)
+		{
+			UpdateVideoFormatFromSourceReader();
 		}
 
 		if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
 		{
+			const bool sourceReaderHasVideo =
+				_actualVideoStreamIndex != static_cast<DWORD>(-1);
+			const bool sourceReaderHasAudio =
+				!_useMediaSessionAudioCompanion
+				&& _actualAudioStreamIndex != static_cast<DWORD>(-1);
+			if (isVideo) videoEndOfStream = true;
+			if (isAudio) audioEndOfStream = true;
+			if (!isVideo && !isAudio)
+			{
+				if (sourceReaderHasVideo && !sourceReaderHasAudio)
+					videoEndOfStream = true;
+				if (sourceReaderHasAudio && !sourceReaderHasVideo)
+					audioEndOfStream = true;
+			}
+			const bool allSelectedStreamsEnded =
+				(!sourceReaderHasVideo || videoEndOfStream)
+				&& (!sourceReaderHasAudio || audioEndOfStream);
+			if (!allSelectedStreamsEnded) continue;
+
+			HRESULT audioDrainResult = S_OK;
 			if (_hasAudio && _audioClient && _audioRenderClient && _audioMixFormat)
 			{
 				const bool isFloat = IsFloatMixFormat(_audioMixFormat);
@@ -2304,13 +4463,19 @@ void MediaPlayer::PlaybackThreadMain()
 							const float stageRate = (stageIndex < stageRates.size()) ? stageRates[stageIndex] : 1.0f;
 							const float stageVolume = (stageIndex + 1 == _timeStretchChain.size()) ? (float)_volume.load() : 1.0f;
 							if (!_timeStretchChain[stageIndex]->ProcessChunk(stageInput.data(), stageInput.size(), stageRate, stageVolume, stageOutput))
+							{
+								audioDrainResult = E_FAIL;
 								break;
+							}
 						}
 						std::vector<uint8_t> drainedAudio;
 						const float drainRate = (stageIndex < stageRates.size()) ? stageRates[stageIndex] : 1.0f;
 						const float drainVolume = (stageIndex + 1 == _timeStretchChain.size()) ? (float)_volume.load() : 1.0f;
 						if (!_timeStretchChain[stageIndex]->Drain(drainRate, drainVolume, drainedAudio))
+						{
+							audioDrainResult = E_FAIL;
 							break;
+						}
 						if (!drainedAudio.empty())
 							stageOutput.insert(stageOutput.end(), drainedAudio.begin(), drainedAudio.end());
 						if (stageOutput.empty())
@@ -2320,7 +4485,8 @@ void MediaPlayer::PlaybackThreadMain()
 							continue;
 						}
 						if (stageIndex + 1 == _timeStretchChain.size())
-							(void)WriteAudioToWasapi(stageOutput.data(), (UINT32)stageOutput.size());
+							audioDrainResult = WriteAudioToWasapi(
+								stageOutput.data(), (UINT32)stageOutput.size());
 						else
 						{
 							stageInput = std::move(stageOutput);
@@ -2329,28 +4495,23 @@ void MediaPlayer::PlaybackThreadMain()
 					}
 				}
 			}
-			if (_loop && _sourceReader)
+			if (audioDrainResult == S_OK && _hasAudio && _audioClient)
+				audioDrainResult = WaitForWasapiDrain();
+			if (audioDrainResult == S_OK && _hasAudio && _audioClient)
+				audioDrainResult = _audioClient->Stop();
+			if (audioDrainResult != S_OK)
 			{
-				// Loop: flush & seek to start, then continue.
-				(void)_sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
-				if (_timeStretch) _timeStretch->Reset();
-				for (auto& stretchStage : _timeStretchChain)
-					if (stretchStage) stretchStage->Reset();
-				PROPVARIANT var;
-				PropVariantInit(&var);
-				var.vt = VT_I8;
-				var.hVal.QuadPart = 0;
-				(void)_sourceReader->SetCurrentPosition(GUID_NULL, var);
-				PropVariantClear(&var);
-				_needSyncReset = true;
-				SetObservedPosition(0.0, true);
-				// 仍然触发 ended 事件，便于 UI 更新
-				FireMediaEnded();
-				continue;
+				if (FAILED(audioDrainResult))
+					failAudioPlayback(audioDrainResult);
+				break;
 			}
 			_threadPlaying = false;
-			SetPlayState(PlayState::Stopped);
-			FireMediaEnded();
+			UINT8 endedMask = 0;
+			if (videoEndOfStream)
+				endedMask |= PlaybackEndReaderVideo;
+			if (audioEndOfStream)
+				endedMask |= PlaybackEndReaderAudio;
+			(void)SignalPlaybackEnd(endedMask, playbackEndEpoch);
 			break;
 		}
 
@@ -2358,36 +4519,41 @@ void MediaPlayer::PlaybackThreadMain()
 		float currentRateForSync = ClampRate(_playbackRate.load());
 		if (std::fabs(currentRateForSync - syncRate) > 0.0005f)
 		{
-			firstTs = -1;
+			firstVideoTs = -1;
 			syncRate = currentRateForSync;
+			hasVideoPresentationCadence = false;
 			QueryPerformanceCounter(&startQpc);
 		}
-		if (firstTs < 0)
+		if (isVideo && firstVideoTs < 0)
 		{
-			firstTs = ts;
+			firstVideoTs = ts;
 			QueryPerformanceCounter(&startQpc);
 		}
 
-		// 关键修复：不要仅依赖 _actualVideoStreamIndex/_actualAudioStreamIndex。
-		// 对某些文件/解码器，streamIndex 的映射或类型会变化；若误把音频当视频会出现严重花屏。
-		GUID majorType{};
-		if (_sourceReader)
+		if (isVideo)
 		{
-			ComPtr<IMFMediaType> mt;
-			if (SUCCEEDED(_sourceReader->GetCurrentMediaType(streamIndex, &mt)) && mt)
-				(void)mt->GetGUID(MF_MT_MAJOR_TYPE, &majorType);
+			_statReadSampleVideoCalls.fetch_add(1, std::memory_order_relaxed);
+			_statReadSampleVideoQpcTicks.fetch_add(
+				readTicks, std::memory_order_relaxed);
 		}
-		const bool isVideo = (majorType == MFMediaType_Video);
-		const bool isAudio = (majorType == MFMediaType_Audio);
+		else if (isAudio)
+		{
+			_statReadSampleAudioCalls.fetch_add(1, std::memory_order_relaxed);
+			_statReadSampleAudioQpcTicks.fetch_add(
+				readTicks, std::memory_order_relaxed);
+		}
 
 		// SourceReader 返回的是解码样本。音频样本由 WASAPI 缓冲自然限速；若再按原始时间戳 sleep，
 		// 变速后的 PCM 会被二次节拍，表现为卡顿、不同步或倍速失效。视频仍按时间戳节拍。
-		if (!isAudio)
+		double videoLatenessSeconds = 0.0;
+		double videoTargetElapsedSeconds = 0.0;
+		if (isVideo)
 		{
 			float rate = currentRateForSync;
 			if (rate < 0.01f) rate = 1.0f;
 
-			const double relSec = (double)(ts - firstTs) / HNS_PER_SEC;
+			const double relSec =
+				(double)(ts - firstVideoTs) / HNS_PER_SEC;
 			double targetElapsedSec = relSec / rate;
 			for (;;)
 			{
@@ -2397,15 +4563,29 @@ void MediaPlayer::PlaybackThreadMain()
 				QueryPerformanceCounter(&now);
 				double elapsedSec = (double)(now.QuadPart - startQpc.QuadPart) / (double)freq.QuadPart;
 				double delta = targetElapsedSec - elapsedSec;
-				if (delta <= 0.005) break;
+				if (delta <= 0.00025) break;
 
-				DWORD ms = (DWORD)std::clamp(delta * 1000.0, 1.0, 50.0);
-				Sleep(ms);
+				waitForPacing(delta);
 				rate = ClampRate(_playbackRate.load());
 				if (rate < 0.01f) rate = 1.0f;
 				targetElapsedSec = relSec / rate;
 			}
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			const double elapsedSec =
+				(double)(now.QuadPart - startQpc.QuadPart)
+				/ (double)freq.QuadPart;
+			videoLatenessSeconds = std::max(
+				0.0, elapsedSec - targetElapsedSec);
+			videoTargetElapsedSeconds = targetElapsedSec;
 		}
+		// Pause/seek/rate changes wake the high-resolution timer.  The sample was
+		// read under the old clock transaction and must not update position or be
+		// published after that cancellation.
+		if (_threadExit || !_threadPlaying.load(std::memory_order_acquire))
+			break;
+		if (_needSyncReset.load(std::memory_order_acquire))
+			continue;
 
 		SetObservedPosition((double)ts / HNS_PER_SEC, false);
 		LARGE_INTEGER positionNow{};
@@ -2413,104 +4593,339 @@ void MediaPlayer::PlaybackThreadMain()
 		if (lastPositionEventQpc == 0 || (positionNow.QuadPart - lastPositionEventQpc) >= (freq.QuadPart / 20))
 		{
 			lastPositionEventQpc = positionNow.QuadPart;
-			FirePositionChanged(_position.load());
+			FirePositionChanged(
+				_position.load(), playbackEndEpoch,
+				playbackExplicitCommandGeneration,
+				playbackMediaLoadGeneration);
 		}
 
+		if (isVideo)
+		{
+			_statDecodedVideoFrames.fetch_add(1, std::memory_order_relaxed);
+			const UINT64 latenessTicks = videoLatenessSeconds > 0.0
+				? static_cast<UINT64>(videoLatenessSeconds * freq.QuadPart)
+				: 0;
+			UINT64 previousMaximum =
+				_statMaxVideoLatenessQpcTicks.load(std::memory_order_relaxed);
+			while (latenessTicks > previousMaximum
+				&& !_statMaxVideoLatenessQpcTicks.compare_exchange_weak(
+					previousMaximum, latenessTicks,
+					std::memory_order_relaxed))
+			{
+			}
+
+			const float rate = ClampRate(_playbackRate.load());
+			const double sourceFrameSeconds = std::max(
+				0.001, (double)_videoFrameDurationHns.load(
+					std::memory_order_relaxed) / HNS_PER_SEC);
+			const double lateDropThresholdSeconds = std::max(
+				0.005, sourceFrameSeconds / std::max(0.1f, rate));
+			if (videoLatenessSeconds > lateDropThresholdSeconds)
+			{
+				_statDroppedLateVideoFrames.fetch_add(
+					1, std::memory_order_relaxed);
+				continue;
+			}
+
+			// Do not convert/upload samples faster than the hosting monitor can
+			// present them.  Thin on the media timeline before touching CPU pixels,
+			// while preserving 120 fps playback on a high-refresh display.
+			const UINT32 presentationRateLimitHz = std::max<UINT32>(
+				1, _videoPresentationRateLimitHz.load(std::memory_order_relaxed));
+			const double minimumPresentationIntervalSeconds =
+				1.0 / static_cast<double>(presentationRateLimitHz);
+			constexpr double presentationIntervalToleranceSeconds = 0.0001;
+			if (hasVideoPresentationCadence
+				&& videoTargetElapsedSeconds + presentationIntervalToleranceSeconds
+					< nextVideoPresentationTargetSeconds)
+			{
+				_statThinnedVideoFrames.fetch_add(
+					1, std::memory_order_relaxed);
+				continue;
+			}
+			if (!hasVideoPresentationCadence)
+			{
+				nextVideoPresentationTargetSeconds =
+					videoTargetElapsedSeconds + minimumPresentationIntervalSeconds;
+				hasVideoPresentationCadence = true;
+			}
+			else
+			{
+				do
+				{
+					nextVideoPresentationTargetSeconds +=
+						minimumPresentationIntervalSeconds;
+				} while (nextVideoPresentationTargetSeconds
+					<= videoTargetElapsedSeconds
+						+ presentationIntervalToleranceSeconds);
+			}
+		}
+
+		// A SourceReader bound to the shared MF DXGI manager yields decoder-owned
+		// surfaces. Retain the sample in a one-slot mailbox and let the UI thread
+		// perform one GPU VideoProcessor conversion into a stable BGRA texture.
+		// The CPU path below remains the compatibility fallback for system-memory
+		// samples and for decoders that ignore the device-manager request.
+		const DxgiVideoSampleDisposition dxgiDisposition = isVideo
+			? TryPublishDxgiVideoSample(sample.Get())
+			: DxgiVideoSampleDisposition::CpuFallbackEligible;
+		if (isVideo
+			&& dxgiDisposition == DxgiVideoSampleDisposition::Published)
+		{
+			_actualVideoStreamIndex = streamIndex;
+			continue;
+		}
+		if (isVideo
+			&& dxgiDisposition == DxgiVideoSampleDisposition::DropStale)
+		{
+			// A decoder can release a small number of old-device samples after
+			// ResetDevice.  They cannot be safely locked/read back and are not a
+			// CPU fallback; drop them until the new generation arrives.
+			_actualVideoStreamIndex = streamIndex;
+			continue;
+		}
+		if (isVideo)
+			_statCpuFallbackVideoFrames.fetch_add(1, std::memory_order_relaxed);
+
 		ComPtr<IMFMediaBuffer> buf;
+		ComPtr<IMF2DBuffer2> buffer2D;
 		_statSamplesToContigCalls.fetch_add(1, std::memory_order_relaxed);
 		const LARGE_INTEGER tContig0 = QpcNow();
 		hr = sample->ConvertToContiguousBuffer(&buf);
 		const LARGE_INTEGER tContig1 = QpcNow();
 		const UINT64 contigTicks = (UINT64)(tContig1.QuadPart - tContig0.QuadPart);
 		_statSamplesToContigQpcTicks.fetch_add(contigTicks, std::memory_order_relaxed);
-		if (FAILED(hr) || !buf) continue;
+		if ((FAILED(hr) || !buf) && isVideo)
+		{
+			// Decoder-owned DXGI samples need not support the linear Lock contract.
+			// Keep the original 2D buffer and use its explicit readback lock below.
+			DWORD sourceBufferCount = 0;
+			if (SUCCEEDED(sample->GetBufferCount(&sourceBufferCount)))
+			{
+				for (DWORD index = 0;
+					index < sourceBufferCount && !buffer2D; ++index)
+				{
+					ComPtr<IMFMediaBuffer> candidate;
+					ComPtr<IMF2DBuffer2> candidate2D;
+					if (SUCCEEDED(sample->GetBufferByIndex(
+						index, candidate.GetAddressOf()))
+						&& candidate
+						&& SUCCEEDED(candidate.As(&candidate2D))
+						&& candidate2D)
+					{
+						buf = candidate;
+						buffer2D = candidate2D;
+					}
+				}
+			}
+		}
+		if (!buf)
+		{
+			const HRESULT bufferError = FAILED(hr) ? hr : E_FAIL;
+			if (isVideo
+				&& ++_consecutiveCpuVideoBufferLockFailures >= 3)
+			{
+				DebugOutputHr(
+					L"SourceReader: CPU video buffer unavailable",
+					bufferError);
+				_threadPlaying = false;
+				HandleSourceReaderFailure(
+					bufferError, playbackEndEpoch,
+					playbackExplicitCommandGeneration,
+					playbackMediaLoadGeneration);
+				break;
+			}
+			continue;
+		}
 		BYTE* p = nullptr;
 		DWORD maxLen = 0, curLen = 0;
-		hr = buf->Lock(&p, &maxLen, &curLen);
-		if (FAILED(hr)) continue;
+		BYTE* bufferStart = nullptr;
+		LONG lockedPitch = 0;
+		bool lockedAs2D = false;
+		if (isVideo)
+		{
+			if (!buffer2D) (void)buf.As(&buffer2D);
+			if (buffer2D)
+			{
+				hr = buffer2D->Lock2DSize(
+					MF2DBuffer_LockFlags_Read, &p, &lockedPitch,
+					&bufferStart, &curLen);
+				if (SUCCEEDED(hr))
+				{
+					lockedAs2D = true;
+					maxLen = curLen;
+				}
+			}
+		}
+		if (!lockedAs2D)
+			hr = buf->Lock(&p, &maxLen, &curLen);
+		if (FAILED(hr))
+		{
+			if (isVideo
+				&& ++_consecutiveCpuVideoBufferLockFailures >= 3)
+			{
+				DebugOutputHr(
+					L"SourceReader: CPU video buffer lock failed", hr);
+				_threadPlaying = false;
+				HandleSourceReaderFailure(
+					hr, playbackEndEpoch,
+					playbackExplicitCommandGeneration,
+					playbackMediaLoadGeneration);
+				break;
+			}
+			continue;
+		}
 		struct MediaBufferUnlockGuard
 		{
 			IMFMediaBuffer* Buffer = nullptr;
+			IMF2DBuffer2* Buffer2D = nullptr;
+			bool LockedAs2D = false;
 			~MediaBufferUnlockGuard()
 			{
-				if (Buffer) (void)Buffer->Unlock();
+				if (LockedAs2D && Buffer2D)
+					(void)Buffer2D->Unlock2D();
+				else if (Buffer)
+					(void)Buffer->Unlock();
 			}
-		} bufferUnlockGuard{ buf.Get() };
-		if (!p || curLen == 0) continue;
+		} bufferUnlockGuard{ buf.Get(), buffer2D.Get(), lockedAs2D };
+		if (!p || curLen == 0)
+		{
+			if (isVideo
+				&& ++_consecutiveCpuVideoBufferLockFailures >= 3)
+			{
+				constexpr HRESULT emptyBufferError = E_FAIL;
+				DebugOutputHr(
+					L"SourceReader: CPU video buffer is empty",
+					emptyBufferError);
+				_threadPlaying = false;
+				HandleSourceReaderFailure(
+					emptyBufferError, playbackEndEpoch,
+					playbackExplicitCommandGeneration,
+					playbackMediaLoadGeneration);
+				break;
+			}
+			continue;
+		}
 
 		if (isVideo)
 		{
-			_statReadSampleVideoCalls.fetch_add(1, std::memory_order_relaxed);
-			_statReadSampleVideoQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
-		}
-		else if (isAudio)
-		{
-			_statReadSampleAudioCalls.fetch_add(1, std::memory_order_relaxed);
-			_statReadSampleAudioQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
-		}
-
-		// 若发生类型变化，刷新视频格式信息（尺寸/stride/像素格式）。
-		if ((flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0 && isVideo)
-		{
-			UpdateVideoFormatFromSourceReader();
-		}
-
-		if (isVideo)
-		{
+			_consecutiveCpuVideoBufferLockFailures = 0;
 			_actualVideoStreamIndex = streamIndex;
-			_hasVideo = true;
-			if (_videoSize.cx <= 0 || _videoSize.cy <= 0)
-				UpdateVideoFormatFromSourceReader();
-			
+
 			// 统一转换为 BGRA32，消除像素格式/stride 差异导致的花屏。
 			// 注意：部分解码链路会输出带 padding 的帧，并通过 aperture 指定真实可视区域。
-			const LONG frameW = _videoFrameSize.cx;
-			const LONG frameH = _videoFrameSize.cy;
-			const LONG w = _videoSize.cx;
-			const LONG h = _videoSize.cy;
-			const UINT32 cropX = _videoCropX;
-			const UINT32 cropY = _videoCropY;
+			LONG frameW = 0;
+			LONG frameH = 0;
+			LONG w = 0;
+			LONG h = 0;
+			UINT32 cropX = 0;
+			UINT32 cropY = 0;
+			GUID subtype{};
+			UINT32 srcStride = 0;
+			UINT32 bpp = 4;
+			bool bottomUp = false;
+			MFVideoTransferMatrix transferMatrix =
+				MFVideoTransferMatrix_Unknown;
+			MFNominalRange nominalRange = MFNominalRange_Unknown;
+			auto snapshotVideoFormat = [&]
+			{
+				std::scoped_lock lock(_videoFrameMutex);
+				frameW = _videoFrameSize.cx;
+				frameH = _videoFrameSize.cy;
+				w = _videoSize.cx;
+				h = _videoSize.cy;
+				cropX = _videoCropX;
+				cropY = _videoCropY;
+				subtype = _videoSubtype;
+				srcStride = _videoStride;
+				bpp = (_videoBytesPerPixel == 0) ? 4 : _videoBytesPerPixel;
+				bottomUp = _videoBottomUp;
+				transferMatrix = _videoTransferMatrix;
+				nominalRange = _videoNominalRange;
+			};
+			snapshotVideoFormat();
+			if (w <= 0 || h <= 0)
+			{
+				UpdateVideoFormatFromSourceReader();
+				snapshotVideoFormat();
+			}
+			size_t accessibleBytes = curLen;
+			if (lockedAs2D && lockedPitch != 0 && frameH > 0)
+			{
+				const UINT32 pitchMagnitude = static_cast<UINT32>(
+					lockedPitch < 0
+						? -static_cast<int64_t>(lockedPitch)
+						: lockedPitch);
+				srcStride = pitchMagnitude;
+				bottomUp = false;
+				if (bufferStart)
+				{
+					const uintptr_t bufferBegin =
+						reinterpret_cast<uintptr_t>(bufferStart);
+					const uintptr_t bufferEnd = bufferBegin + curLen;
+					const uintptr_t scanline = reinterpret_cast<uintptr_t>(p);
+					if (scanline < bufferBegin || scanline >= bufferEnd)
+						accessibleBytes = 0;
+					else
+						accessibleBytes = bufferEnd - scanline;
+				}
+			}
 			if (frameW > 0 && frameH > 0 && w > 0 && h > 0)
 			{
-				_statDecodedVideoFrames.fetch_add(1, std::memory_order_relaxed);
 				_statVideoConvertCalls.fetch_add(1, std::memory_order_relaxed);
 				const LARGE_INTEGER tVid0 = QpcNow();
-				GUID subtype{};
-				UINT32 srcStride = 0;
-				UINT32 bpp = 4;
-				bool bottomUp = false;
-				{
-					std::scoped_lock lock(_videoFrameMutex);
-					subtype = _videoSubtype;
-					srcStride = _videoStride;
-					bpp = (_videoBytesPerPixel == 0) ? 4 : _videoBytesPerPixel;
-					bottomUp = _videoBottomUp;
-				}
 
 				if (subtype == MFVideoFormat_NV12)
 				{
-					// NV12: p points to NV12 contiguous buffer.
-					if (srcStride == 0) srcStride = (UINT32)frameW;
-					std::vector<uint8_t> converted;
-					ConvertNV12ToBGRA(p, (size_t)curLen, srcStride, (UINT32)frameW, (UINT32)frameH, cropX, cropY, (UINT32)w, (UINT32)h, converted);
-					if (!converted.empty())
+					// NV12 uses a positive Y-plane pitch followed by the UV
+					// plane. A negative multi-plane pitch has no compatible
+					// linear contract in this CPU converter.
+					if (lockedAs2D && lockedPitch < 0)
 					{
-						{
-							std::scoped_lock lock(_videoFrameMutex);
-							_videoFrame = std::move(converted);
-							_videoFrameStride = (UINT32)w * 4;
-							_videoFrameReady = true;
-						}
+						constexpr HRESULT pitchError =
+							MF_E_INVALIDMEDIATYPE;
+						DebugOutputHr(
+							L"SourceReader: negative NV12 pitch unsupported",
+							pitchError);
+						_threadPlaying = false;
+						HandleSourceReaderFailure(
+							pitchError, playbackEndEpoch,
+							playbackExplicitCommandGeneration,
+							playbackMediaLoadGeneration);
+						break;
+					}
+					if (srcStride == 0) srcStride = (UINT32)frameW;
+					auto converted = AcquireVideoFrameBuffer();
+					const bool convertedSuccessfully = ConvertNV12ToBGRA(
+						p, accessibleBytes, srcStride,
+						static_cast<UINT32>(frameW),
+						static_cast<UINT32>(frameH), cropX, cropY,
+						static_cast<UINT32>(w), static_cast<UINT32>(h),
+						transferMatrix, nominalRange, converted);
+					if (convertedSuccessfully && !converted.empty())
+					{
 						const LARGE_INTEGER tVid1 = QpcNow();
 						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-						this->RequestVisualInvalidation();
+						PublishVideoFrame(
+							std::move(converted), (UINT32)w * 4, SIZE{ w, h });
 					}
 					else
 					{
 						const LARGE_INTEGER tVid1 = QpcNow();
 						_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+						constexpr HRESULT conversionError =
+							MF_E_INVALIDMEDIATYPE;
+						DebugOutputHr(
+							L"SourceReader: NV12 CPU conversion failed",
+							conversionError);
+						_threadPlaying = false;
+						HandleSourceReaderFailure(
+							conversionError, playbackEndEpoch,
+							playbackExplicitCommandGeneration,
+							playbackMediaLoadGeneration);
+						break;
 					}
 					continue;
 				}
@@ -2519,19 +4934,43 @@ void MediaPlayer::PlaybackThreadMain()
 				const UINT32 minStride = (UINT32)frameW * bpp;
 				if (srcStride == 0) srcStride = minStride;
 				if (srcStride < minStride) srcStride = minStride;
-				const UINT32 needed = srcStride * (UINT32)frameH;
-				if (curLen >= needed)
+				const UINT64 needed =
+					static_cast<UINT64>(srcStride)
+					* static_cast<UINT32>(frameH);
+				if (lockedAs2D || static_cast<UINT64>(curLen) >= needed)
 				{
-					std::vector<uint8_t> converted;
+					auto converted = AcquireVideoFrameBuffer();
 					converted.resize((size_t)w * (size_t)h * 4);
 					const UINT32 cropWBytes = (UINT32)w * 4;
 					for (LONG row = 0; row < h; row++)
 					{
 						LONG rawRow = (LONG)cropY + row;
 						if (rawRow < 0 || rawRow >= frameH) break;
-						LONG srcRow = bottomUp ? (frameH - 1 - rawRow) : rawRow;
-						const BYTE* srcRowPtr = p + (size_t)srcRow * (size_t)srcStride + (size_t)cropX * (size_t)bpp;
+						LONG srcRow = bottomUp
+							? (frameH - 1 - rawRow) : rawRow;
+						const BYTE* srcRowPtr = lockedAs2D
+							? p + static_cast<ptrdiff_t>(rawRow)
+								* static_cast<ptrdiff_t>(lockedPitch)
+								+ static_cast<size_t>(cropX) * bpp
+							: p + static_cast<size_t>(srcRow) * srcStride
+								+ static_cast<size_t>(cropX) * bpp;
 						uint8_t* dstRowPtr = converted.data() + (size_t)row * (size_t)w * 4;
+						if (lockedAs2D && bufferStart)
+						{
+							const uintptr_t begin =
+								reinterpret_cast<uintptr_t>(bufferStart);
+							const uintptr_t end = begin + curLen;
+							const uintptr_t rowBegin =
+								reinterpret_cast<uintptr_t>(srcRowPtr);
+							const UINT64 rowBytes =
+								static_cast<UINT64>(w) * bpp;
+							if (rowBegin < begin || rowBegin > end
+								|| rowBytes > end - rowBegin)
+							{
+								converted.clear();
+								break;
+							}
+						}
 
 						if (bpp == 4)
 						{
@@ -2557,17 +4996,25 @@ void MediaPlayer::PlaybackThreadMain()
 						}
 					}
 
+					if (converted.empty())
 					{
-						std::scoped_lock lock(_videoFrameMutex);
-						_videoFrame = std::move(converted);
-						_videoFrameStride = (UINT32)w * 4;
-						_videoFrameReady = true;
+						constexpr HRESULT boundsError = E_FAIL;
+						DebugOutputHr(
+							L"SourceReader: CPU video row outside buffer",
+							boundsError);
+						_threadPlaying = false;
+						HandleSourceReaderFailure(
+							boundsError, playbackEndEpoch,
+							playbackExplicitCommandGeneration,
+							playbackMediaLoadGeneration);
+						break;
 					}
 					const LARGE_INTEGER tVid1 = QpcNow();
 					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-					this->RequestVisualInvalidation();
+					PublishVideoFrame(
+						std::move(converted), (UINT32)w * 4, SIZE{ w, h });
 				}
 				else
 				{
@@ -2595,7 +5042,14 @@ void MediaPlayer::PlaybackThreadMain()
 			if (std::fabs(rate - 1.0f) < 0.0005f)
 			{
 				ApplyVolume(p, (size_t)curLen, _audioBitsPerSample, vol, isFloat);
-				(void)WriteAudioToWasapi(p, curLen, false);
+				const HRESULT audioWrite =
+					WriteAudioToWasapi(p, curLen, false);
+				if (audioWrite != S_OK)
+				{
+					if (FAILED(audioWrite)) failAudioPlayback(audioWrite);
+					if (FAILED(audioWrite)) break;
+					continue;
+				}
 			}
 			else
 			{
@@ -2658,19 +5112,40 @@ void MediaPlayer::PlaybackThreadMain()
 
 					if (stretchOk)
 					{
+						HRESULT audioWrite = S_OK;
 						if (stageBytes > 0)
-							(void)WriteAudioToWasapi(stageData, (UINT32)stageBytes, false);
+							audioWrite = WriteAudioToWasapi(
+								stageData, (UINT32)stageBytes, false);
+						if (audioWrite != S_OK)
+						{
+							if (FAILED(audioWrite))
+								failAudioPlayback(audioWrite);
+							if (FAILED(audioWrite)) break;
+						}
 						continue;
 					}
 				}
 
 				// 最后兜底：不支持的 PCM 格式保持原音调/原速播放，避免错误的重采样变调。
 				ApplyVolume(p, (size_t)curLen, _audioBitsPerSample, vol, isFloat);
-				(void)WriteAudioToWasapi(p, curLen, false);
+				const HRESULT audioWrite =
+					WriteAudioToWasapi(p, curLen, false);
+				if (audioWrite != S_OK)
+				{
+					if (FAILED(audioWrite)) failAudioPlayback(audioWrite);
+					if (FAILED(audioWrite)) break;
+					continue;
+				}
 			}
 		}
 
 		}
+
+		{
+			std::scoped_lock lock(_threadMutex);
+			_playbackWorkerActive = false;
+		}
+		_threadIdleCv.notify_all();
 
 		if (_audioClient && _hasAudio)
 			(void)_audioClient->Stop();
@@ -2678,6 +5153,7 @@ void MediaPlayer::PlaybackThreadMain()
 
 	if (SUCCEEDED(hrCo))
 		CoUninitialize();
+	if (pacingTimer) ::CloseHandle(pacingTimer);
 }
 
 HRESULT MediaPlayer::CreateMediaSession()
@@ -2687,7 +5163,8 @@ HRESULT MediaPlayer::CreateMediaSession()
 	HRESULT hr = MFCreateMediaSession(nullptr, &_mediaSession);
 	if (FAILED(hr)) return hr;
 
-	_eventCallback = new (std::nothrow) MediaPlayerCallback(this);
+	_eventCallback = new (std::nothrow) MediaPlayerCallback(
+		this, CurrentMediaLoadGeneration());
 	if (_eventCallback)
 	{
 		hr = _mediaSession->BeginGetEvent(_eventCallback.Get(), nullptr);
@@ -2727,7 +5204,8 @@ HRESULT MediaPlayer::EnsureVideoDisplayControl()
 	return MFGetService(_mediaSession.Get(), MR_VIDEO_RENDER_SERVICE, IID_PPV_ARGS(&_videoDisplayControl));
 }
 
-void MediaPlayer::UpdatePositionFromClock(bool forceEvent)
+void MediaPlayer::UpdatePositionFromClock(
+	bool forceEvent, bool deferNotification)
 {
 	if (!_mediaLoaded) return;
 	if (!_mediaSession) return;
@@ -2750,50 +5228,16 @@ void MediaPlayer::UpdatePositionFromClock(bool forceEvent)
 
 	if (forceEvent || std::abs(newPos - _position.load()) >= 0.10)
 	{
-		SetObservedPosition(newPos, true, forceEvent);
+		DeferredPlaybackNotifications notifications{};
+		notifications.PositionChanged = CommitObservedPosition(
+			newPos, true, forceEvent, notifications.Position);
+		notifications.ExpectedExplicitCommandGeneration =
+			CurrentExplicitPlaybackCommandGeneration();
+		notifications.ExpectedMediaLoadGeneration =
+			CurrentMediaLoadGeneration();
+		RaiseDeferredPlaybackNotifications(
+			std::move(notifications), deferNotification);
 	}
-}
-
-HRESULT MediaPlayer::InitializeD3D()
-{
-	// 创建 D3D11 设备。Win7 的 D3D11 运行时不接受 11_1 feature level，
-	// 直接把 11_1 放进数组常会返回 E_INVALIDARG，因此需要先试 11_0，再把 11_1 作为可选增强。
-	D3D_FEATURE_LEVEL featureLevelsWin7[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
-	D3D_FEATURE_LEVEL featureLevelsModern[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
-	D3D_FEATURE_LEVEL featureLevel;
-	UINT createDeviceFlags = 0;
-
-	auto createDevice = [&](D3D_DRIVER_TYPE driverType, const D3D_FEATURE_LEVEL* levels, UINT levelCount) -> HRESULT
-	{
-		_d3dDevice.Reset();
-		_d3dContext.Reset();
-		return D3D11CreateDevice(
-			nullptr,
-			driverType,
-			0,
-			createDeviceFlags,
-			levels,
-			levelCount,
-			D3D11_SDK_VERSION,
-			&_d3dDevice,
-			&featureLevel,
-			&_d3dContext
-		);
-	};
-
-	HRESULT hr = createDevice(D3D_DRIVER_TYPE_HARDWARE, featureLevelsWin7, (UINT)std::size(featureLevelsWin7));
-	if (FAILED(hr))
-		hr = createDevice(D3D_DRIVER_TYPE_HARDWARE, featureLevelsModern, (UINT)std::size(featureLevelsModern));
-
-	if (FAILED(hr))
-	{
-		// 如果硬件加速失败，尝试 WARP
-		hr = createDevice(D3D_DRIVER_TYPE_WARP, featureLevelsWin7, (UINT)std::size(featureLevelsWin7));
-		if (FAILED(hr))
-			hr = createDevice(D3D_DRIVER_TYPE_WARP, featureLevelsModern, (UINT)std::size(featureLevelsModern));
-	}
-
-	return hr;
 }
 
 HRESULT MediaPlayer::CreateMediaSource(const std::wstring& url)
@@ -2891,6 +5335,7 @@ HRESULT MediaPlayer::CreateTopology()
 				UINT32 w = 0, h = 0;
 				if (SUCCEEDED(MFGetAttributeSize(currentType.Get(), MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0)
 				{
+					std::scoped_lock lock(_videoFrameMutex);
 					_videoFrameSize = SIZE{ (LONG)w, (LONG)h };
 					_videoSize = SIZE{ (LONG)w, (LONG)h };
 					_videoCropX = 0;
@@ -3074,16 +5519,23 @@ HRESULT MediaPlayer::InitializeVideoRenderer()
 void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 {
 	if (!data || size == 0) return;
-	if (_videoSize.cx <= 0 || _videoSize.cy <= 0) return;
-	if (_videoFrameSize.cx <= 0 || _videoFrameSize.cy <= 0) return;
 
 	// SampleGrabber 的输出可能带行对齐 padding；推断 stride 并规范化成连续 BGRA32(width*4)。
-	const UINT32 frameW = (UINT32)_videoFrameSize.cx;
-	const UINT32 frameH = (UINT32)_videoFrameSize.cy;
-	const UINT32 w = (UINT32)_videoSize.cx;
-	const UINT32 h = (UINT32)_videoSize.cy;
-	const UINT32 cropX = _videoCropX;
-	const UINT32 cropY = _videoCropY;
+	UINT32 frameW = 0;
+	UINT32 frameH = 0;
+	UINT32 w = 0;
+	UINT32 h = 0;
+	UINT32 cropX = 0;
+	UINT32 cropY = 0;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		frameW = static_cast<UINT32>((std::max)(0L, _videoFrameSize.cx));
+		frameH = static_cast<UINT32>((std::max)(0L, _videoFrameSize.cy));
+		w = static_cast<UINT32>((std::max)(0L, _videoSize.cx));
+		h = static_cast<UINT32>((std::max)(0L, _videoSize.cy));
+		cropX = _videoCropX;
+		cropY = _videoCropY;
+	}
 	const UINT32 expectedStride = w * 4;
 	const UINT32 expectedSize = expectedStride * h;
 	if (w == 0 || h == 0 || frameH == 0 || frameW == 0) return;
@@ -3099,7 +5551,7 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 	if (size < needed)
 		return;
 
-	std::vector<uint8_t> normalized;
+	auto normalized = AcquireVideoFrameBuffer();
 	normalized.resize(expectedSize);
 	for (UINT32 row = 0; row < h; row++)
 	{
@@ -3111,14 +5563,9 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 		memcpy(dst, src, expectedStride);
 	}
 
-	{
-		std::scoped_lock lock(_videoFrameMutex);
-		_videoFrameStride = expectedStride;
-		_videoFrame = std::move(normalized);
-		_videoFrameReady = true;
-	}
-	// CUI 是完全自渲染框架：需要主动 Invalidate 才会刷新画面。
-	this->RequestVisualInvalidation();
+	PublishVideoFrame(
+		std::move(normalized), expectedStride,
+		SIZE{ static_cast<LONG>(w), static_cast<LONG>(h) });
 }
 
 void MediaPlayer::RefreshVideoFormatFromSource()
@@ -3156,6 +5603,7 @@ void MediaPlayer::RefreshVideoFormatFromSource()
 		{
 			UINT32 cropX = 0, cropY = 0, visibleW = width, visibleH = height;
 			ApplyVideoCropFromMediaType(pMediaType.Get(), width, height, cropX, cropY, visibleW, visibleH);
+			std::scoped_lock lock(_videoFrameMutex);
 			_videoFrameSize = SIZE{ (LONG)width, (LONG)height };
 			_videoSize = SIZE{ (LONG)visibleW, (LONG)visibleH };
 			_videoCropX = cropX;
@@ -3168,10 +5616,54 @@ void MediaPlayer::RefreshVideoFormatFromSource()
 
 bool MediaPlayer::Load(const std::wstring& mediaFile)
 {
-	if (!_initialized) { ReportMediaFailure(MF_E_NOT_INITIALIZED); return false; }
-	if (!this->GetPresentationWindow()) { ReportMediaFailure(E_HANDLE); return false; }
-	if (mediaFile.empty()) { ReportMediaFailure(E_INVALIDARG); return false; }
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	DeferredPlaybackNotifications notifications{};
+	notifications.PositionFirst = true;
+	auto failPrecondition = [this, &commandLock, &notifications](HRESULT error)
+	{
+		CommitMediaFailure(error, notifications, false);
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return false;
+	};
+	if (mediaFile.empty())
+	{
+		return failPrecondition(E_INVALIDARG);
+	}
+	auto* presentationWindow = this->GetPresentationWindow();
+	if (!presentationWindow)
+	{
+		return failPrecondition(E_HANDLE);
+	}
+	if (!EnsureInitialized())
+	{
+		const HRESULT initializationError = _initializationHr;
+		return failPrecondition(initializationError);
+	}
+	const UINT64 explicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+	const UINT64 mediaLoadGeneration = AdvanceMediaLoadGeneration();
+	notifications.ExpectedMediaLoadGeneration = mediaLoadGeneration;
+	auto failLoad = [this, &commandLock, &notifications](HRESULT error)
+	{
+		CommitMediaFailure(error, notifications, true);
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(
+			std::move(notifications), true);
+		return false;
+	};
+	BeginPlaybackQuiescence();
+	_mediaLoaded = false;
+	WakePlaybackThread();
+	CompletePlaybackQuiescence();
 	ClearMediaError();
+	ResetPerformanceCounters();
+	_videoFrameDurationHns.store(333333, std::memory_order_relaxed);
+	_videoFrameRateKnown.store(false, std::memory_order_relaxed);
+	_presentationRateMonitor = nullptr;
+	_lastPresentationRateRefreshQpc = 0;
+	RefreshPresentationRateLimit();
 	const bool preferSourceReader = _preferSourceReader;
 
 	// 若之前在 SourceReader 后端播放，先彻底停掉线程/音频，避免后续后端切换时状态互相干扰。
@@ -3191,24 +5683,12 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		// 上面已 StopSourceReaderPlayback(true)
 		_mediaFile = mediaFile;
 		_mediaLoaded = false;
-		SetObservedPosition(0.0);
+		notifications.PositionChanged = CommitObservedPosition(
+			0.0, true, false, notifications.Position);
 		_duration = 0.0;
 		_hasVideo = false;
 		_hasAudio = false;
-		_videoSize = SIZE{ 0,0 };
-		{
-			std::scoped_lock lock(_videoFrameMutex);
-			_videoFrame.clear();
-			_videoFrameReady = false;
-			_videoFrameStride = 0;
-			_videoStride = 0;
-			_videoSubtype = GUID_NULL;
-			_videoBytesPerPixel = 4;
-			_videoBottomUp = false;
-			_videoFrameSize = SIZE{ 0,0 };
-			_videoCropX = 0;
-			_videoCropY = 0;
-		}
+		ReleaseVideoFrameBuffers();
 		_memoryByteStream.Reset();
 		_memoryStream.Reset();
 		if (_videoBitmap && _ownsVideoBitmap)
@@ -3219,8 +5699,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		if (!InitSourceReader(mediaFile))
 		{
 			_mediaLoaded = false;
-			ReportMediaFailure(_lastMfError.load());
-			return false;
+			return failLoad(_lastMfError.load());
 		}
 
 		if (_hasVideo && !_hasAudio && _sourceReaderAudioNegotiationFailed && ShouldFallbackToMediaSessionForAudioSubtype(_sourceReaderAudioSubtype))
@@ -3230,14 +5709,11 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 				ShutdownMediaSession();
 				_mediaSource.Reset();
 				_topology.Reset();
-				_topologyReady = false;
+				ResetTopologyState();
 			}
 			else
 			{
-				_topologyReady = false;
-				_pendingStart = false;
-				_hasPendingStartPosition = false;
-				_pendingStartPosition = 0.0;
+				ResetTopologyState();
 				HRESULT topologyHr = _mediaSession->SetTopology(0, _topology.Get());
 				if (SUCCEEDED(topologyHr))
 				{
@@ -3250,85 +5726,74 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 					ShutdownMediaSession();
 					_mediaSource.Reset();
 					_topology.Reset();
-					_topologyReady = false;
+					ResetTopologyState();
 				}
 			}
-
-			_mediaLoaded = true;
-			SetPlayState(PlayState::Stopped);
-			FireMediaOpened();
-			this->RequestVisualInvalidation();
-
-			if (_autoPlay)
-				Play();
-			return true;
 		}
-		else
-		{
+
+		(void)BeginPlaybackEndEpoch(
+			GetSourceReaderPlaybackEndMask(), false);
 		_mediaLoaded = true;
-			SetPlayState(PlayState::Stopped);
-		FireMediaOpened();
-		this->RequestVisualInvalidation();
-
-		// AutoPlay
-		if (_autoPlay)
-			Play();
+		OpenPlaybackGate();
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Stopped, notifications.OldState);
+		notifications.NewState = PlayState::Stopped;
+		notifications.ExpectedExplicitCommandGeneration =
+			explicitCommandGeneration;
+		DeferredPlaybackNotifications openedNotifications{};
+		openedNotifications.MediaOpened = true;
+		openedNotifications.ExpectedMediaLoadGeneration =
+			mediaLoadGeneration;
+		openedNotifications.AutoPlay = true;
+		openedNotifications.AutoPlayExplicitCommandGeneration =
+			explicitCommandGeneration;
+		RequestVisualInvalidation();
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(
+			std::move(notifications), true);
+		RaiseDeferredPlaybackNotifications(
+			std::move(openedNotifications), true);
 		return true;
-		}
 	}
 
 	// 每次加载重建 session，避免旧拓扑状态残留
 	_useSourceReader = false;
 	HRESULT hr = CreateMediaSession();
-	if (FAILED(hr)) { ReportMediaFailure(hr); return false; }
+	if (FAILED(hr)) return failLoad(hr);
 
 	_mediaFile = mediaFile;
 	_mediaLoaded = false;
-	_topologyReady = false;
-	_pendingStart = false;
-	_hasPendingStartPosition = false;
-	_pendingStartPosition = 0.0;
+	ResetTopologyState();
 
 	// 清理之前的资源（不再 Shutdown session）
 	_mediaSource.Reset();
 	_topology.Reset();
 	_videoDisplayControl.Reset();
 	_presentationClock.Reset();
-	if (_videoBitmap && _ownsVideoBitmap)
-	{
-		_videoBitmap->Release();
-	}
-	_videoBitmap = nullptr;
-	_ownsVideoBitmap = false;
-	{
-		std::scoped_lock lock(_videoFrameMutex);
-		_videoFrame.clear();
-		_videoFrameStride = 0;
-		_videoStride = 0;
-		_videoFrameReady = false;
-	}
+	ReleaseGpuPresentationResources(true);
+	ReleaseVideoFrameBuffers();
 	_hasVideo = false;
 	_hasAudio = false;
-	SetObservedPosition(0.0);
+	notifications.PositionChanged = CommitObservedPosition(
+		0.0, true, false, notifications.Position);
 	_duration = 0.0;
-	_videoSize = SIZE{ 0, 0 };
 
 	// 创建媒体源
 	hr = CreateMediaSource(mediaFile);
-	if (FAILED(hr)) { ReportMediaFailure(hr); return false; }
+	if (FAILED(hr)) return failLoad(hr);
 
 	// 创建拓扑
 	hr = CreateTopology();
-	if (FAILED(hr)) { ReportMediaFailure(hr); return false; }
+	if (FAILED(hr)) return failLoad(hr);
 
 	// 设置拓扑
 	hr = _mediaSession->SetTopology(0, _topology.Get());
-	if (FAILED(hr)) { ReportMediaFailure(hr); return false; }
+	if (FAILED(hr)) return failLoad(hr);
 
 	// 完全自渲染：不使用 EVR，不需要 VideoDisplayControl
 
 	_mediaLoaded = true;
-	FireMediaOpened();
+	OpenPlaybackGate();
 
 	// 获取时长
 	ComPtr<IMFPresentationDescriptor> pSourcePD;
@@ -3349,40 +5814,75 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		RefreshVideoFormatFromSource();
 	}
 
-	// 自动播放：允许在拓扑未 Ready 时先 Start（Media Session 会排队等待拓扑完成）
-	if (_autoPlay)
-	{
-		if (!_topologyReady)
-		{
-			_pendingStart = true;
-			SetPlayState(PlayState::Playing);
-			this->RequestVisualInvalidation();
-		}
-		else
-		{
-			HRESULT startHr = StartPlayback();
-			if (SUCCEEDED(startHr))
-			{
-				SetPlayState(PlayState::Playing);
-				this->RequestVisualInvalidation();
-			}
-			else
-			{
-				_pendingStart = true;
-				DebugOutputHr(L"AutoPlay Start failed (will retry on topology ready)", startHr);
-			}
-		}
-	}
-
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Stopped, notifications.OldState);
+	notifications.NewState = PlayState::Stopped;
+	notifications.ExpectedExplicitCommandGeneration =
+		explicitCommandGeneration;
+	DeferredPlaybackNotifications openedNotifications{};
+	openedNotifications.MediaOpened = true;
+	openedNotifications.ExpectedMediaLoadGeneration = mediaLoadGeneration;
+	openedNotifications.AutoPlay = true;
+	openedNotifications.AutoPlayExplicitCommandGeneration =
+		explicitCommandGeneration;
+	RequestVisualInvalidation();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications), true);
+	RaiseDeferredPlaybackNotifications(
+		std::move(openedNotifications), true);
 	return true;
 }
 
 bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHint)
 {
-	if (!_initialized) { ReportMediaFailure(MF_E_NOT_INITIALIZED); return false; }
-	if (!this->GetPresentationWindow()) { ReportMediaFailure(E_HANDLE); return false; }
-	if (!data || size == 0) { ReportMediaFailure(E_INVALIDARG); return false; }
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	DeferredPlaybackNotifications notifications{};
+	notifications.PositionFirst = true;
+	auto failPrecondition = [this, &commandLock, &notifications](HRESULT error)
+	{
+		CommitMediaFailure(error, notifications, false);
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return false;
+	};
+	if (!data || size == 0)
+	{
+		return failPrecondition(E_INVALIDARG);
+	}
+	auto* presentationWindow = this->GetPresentationWindow();
+	if (!presentationWindow)
+	{
+		return failPrecondition(E_HANDLE);
+	}
+	if (!EnsureInitialized())
+	{
+		const HRESULT initializationError = _initializationHr;
+		return failPrecondition(initializationError);
+	}
+	const UINT64 explicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+	const UINT64 mediaLoadGeneration = AdvanceMediaLoadGeneration();
+	notifications.ExpectedMediaLoadGeneration = mediaLoadGeneration;
+	auto failLoad = [this, &commandLock, &notifications](HRESULT error)
+	{
+		CommitMediaFailure(error, notifications, true);
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(
+			std::move(notifications), true);
+		return false;
+	};
+	BeginPlaybackQuiescence();
+	_mediaLoaded = false;
+	WakePlaybackThread();
+	CompletePlaybackQuiescence();
 	ClearMediaError();
+	ResetPerformanceCounters();
+	_videoFrameDurationHns.store(333333, std::memory_order_relaxed);
+	_videoFrameRateKnown.store(false, std::memory_order_relaxed);
+	_presentationRateMonitor = nullptr;
+	_lastPresentationRateRefreshQpc = 0;
+	RefreshPresentationRateLimit();
 
 	// 强制使用 SourceReader 路径（内存流仅支持 SourceReader）
 	_useSourceReader = true;
@@ -3395,24 +5895,12 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 
 	_mediaFile = nameHint;
 	_mediaLoaded = false;
-	SetObservedPosition(0.0);
+	notifications.PositionChanged = CommitObservedPosition(
+		0.0, true, false, notifications.Position);
 	_duration = 0.0;
 	_hasVideo = false;
 	_hasAudio = false;
-	_videoSize = SIZE{ 0,0 };
-	{
-		std::scoped_lock lock(_videoFrameMutex);
-		_videoFrame.clear();
-		_videoFrameReady = false;
-		_videoFrameStride = 0;
-		_videoStride = 0;
-		_videoSubtype = GUID_NULL;
-		_videoBytesPerPixel = 4;
-		_videoBottomUp = false;
-		_videoFrameSize = SIZE{ 0,0 };
-		_videoCropX = 0;
-		_videoCropY = 0;
-	}
+	ReleaseVideoFrameBuffers();
 	if (_videoBitmap && _ownsVideoBitmap)
 		_videoBitmap->Release();
 	_videoBitmap = nullptr;
@@ -3422,13 +5910,12 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 
 	// 构建内存 IStream
 	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
-	if (!hMem) { ReportMediaFailure(E_OUTOFMEMORY); return false; }
+	if (!hMem) return failLoad(E_OUTOFMEMORY);
 	void* pMem = GlobalLock(hMem);
 	if (!pMem)
 	{
 		GlobalFree(hMem);
-		ReportMediaFailure(E_OUTOFMEMORY);
-		return false;
+		return failLoad(E_OUTOFMEMORY);
 	}
 	memcpy(pMem, data, size);
 	GlobalUnlock(hMem);
@@ -3439,8 +5926,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	{
 		GlobalFree(hMem);
 		DebugOutputHr(L"CreateStreamOnHGlobal failed", hr);
-		ReportMediaFailure(hr);
-		return false;
+		return failLoad(hr);
 	}
 
 	ComPtr<IMFByteStream> byteStream;
@@ -3448,8 +5934,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	if (FAILED(hr) || !byteStream)
 	{
 		DebugOutputHr(L"MFCreateMFByteStreamOnStream failed", hr);
-		ReportMediaFailure(hr);
-		return false;
+		return failLoad(hr);
 	}
 
 	// 设置名称提示，帮助识别格式（如 .mp4）
@@ -3465,105 +5950,350 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	if (!InitSourceReaderFromByteStream(byteStream.Get()))
 	{
 		_mediaLoaded = false;
-		ReportMediaFailure(_lastMfError.load());
-		return false;
+		return failLoad(_lastMfError.load());
 	}
 
+	(void)BeginPlaybackEndEpoch(
+		GetSourceReaderPlaybackEndMask(), false);
 	_mediaLoaded = true;
-	SetPlayState(PlayState::Stopped);
-	FireMediaOpened();
-	this->RequestVisualInvalidation();
-
-	if (_autoPlay)
-		Play();
+	OpenPlaybackGate();
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Stopped, notifications.OldState);
+	notifications.NewState = PlayState::Stopped;
+	notifications.ExpectedExplicitCommandGeneration =
+		explicitCommandGeneration;
+	DeferredPlaybackNotifications openedNotifications{};
+	openedNotifications.MediaOpened = true;
+	openedNotifications.ExpectedMediaLoadGeneration = mediaLoadGeneration;
+	openedNotifications.AutoPlay = true;
+	openedNotifications.AutoPlayExplicitCommandGeneration =
+		explicitCommandGeneration;
+	RequestVisualInvalidation();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications), true);
+	RaiseDeferredPlaybackNotifications(
+		std::move(openedNotifications), true);
 	return true;
 }
 
 void MediaPlayer::Play() { (void)TryPlay(); }
 
-bool MediaPlayer::TryPlay()
+bool MediaPlayer::TryPlayCore(
+	HRESULT& startError, bool startMediaSessionCompanion,
+	bool overrideCompanionPosition, double companionPosition)
 {
+	startError = S_OK;
 	if (!_mediaLoaded) return false;
 	if (_useSourceReader)
 	{
 		if (!_sourceReader) return false;
+		if (startMediaSessionCompanion
+			&& _useMediaSessionAudioCompanion && _mediaSession)
+		{
+			const double position = overrideCompanionPosition
+				? companionPosition
+				: _position.load(std::memory_order_acquire);
+			if (!QueuePendingStartIfTopologyNotReady(true, position))
+			{
+				const HRESULT hr = StartPlaybackInternal(true, position);
+				if (FAILED(hr))
+				{
+					startError = hr;
+					return false;
+				}
+			}
+		}
+		if (_useMediaSessionAudioCompanion && _mediaSession)
+		{
+			// Start/seek has either queued the topology request or issued the
+			// companion Start.  MESessionStarted for this exact epoch opens the
+			// reader worker so video cannot establish an early clock lead.
+			return true;
+		}
 		if (!_playThread.joinable())
 		{
 			_threadExit = false;
 			_playThread = std::thread([this] { PlaybackThreadMain(); });
 		}
-		SetPlayState(PlayState::Playing);
 		_threadPlaying = true;
-		_threadCv.notify_all();
-		if (_useMediaSessionAudioCompanion && _mediaSession)
+		WakePlaybackThread();
+		return true;
+	}
+	if (QueuePendingStartIfTopologyNotReady(false, 0.0))
+		return true;
+	const HRESULT hr = StartPlayback();
+	if (SUCCEEDED(hr)) return true;
+	ClearPendingStart();
+	startError = hr;
+	return false;
+}
+
+bool MediaPlayer::TryAutoPlayAfterLoad(
+	UINT64 expectedExplicitCommandGeneration,
+	UINT64 expectedMediaLoadGeneration)
+{
+	HRESULT startError = S_OK;
+	bool started = false;
+	DeferredPlaybackNotifications notifications{};
+	notifications.ExpectedExplicitCommandGeneration =
+		expectedExplicitCommandGeneration;
+	notifications.ExpectedMediaLoadGeneration =
+		expectedMediaLoadGeneration;
+	{
+		auto transition = AcquirePlaybackTransition(
+			PlaybackTransitionOrigin::Automatic);
+		if (!transition
+			|| expectedExplicitCommandGeneration == 0
+			|| expectedMediaLoadGeneration == 0
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= expectedExplicitCommandGeneration
+			|| CurrentMediaLoadGeneration() != expectedMediaLoadGeneration
+			|| !_mediaLoaded.load(std::memory_order_acquire)
+			|| !_autoPlay)
 		{
-			if (!_topologyReady)
+			return false;
+		}
+		if (_playState.load(std::memory_order_acquire)
+			== PlayState::Playing)
+		{
+			return true;
+		}
+		if (_useSourceReader && _useMediaSessionAudioCompanion)
+		{
+			(void)BeginPlaybackEndEpoch(
+				GetSourceReaderPlaybackEndMask(), false);
+		}
+		started = TryPlayCore(startError);
+		if (started)
+		{
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Playing, notifications.OldState);
+			notifications.NewState = PlayState::Playing;
+		}
+		if (FAILED(startError))
+		{
+			_lastMfError.store(startError);
+			notifications.MediaError = true;
+			notifications.Error = startError;
+		}
+	}
+	if (FAILED(startError))
+		DebugOutputHr(L"AutoPlay Start failed", startError);
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
+	return started;
+}
+
+bool MediaPlayer::TryPlay()
+{
+	return TryPlayImpl(false);
+}
+
+bool MediaPlayer::TryPlayImpl(bool requirePausedState)
+{
+	HRESULT startError = S_OK;
+	bool started = false;
+	bool replayedCompletedMedia = false;
+	bool completedReplayAttempted = false;
+	DeferredPlaybackNotifications notifications{};
+	notifications.PositionFirst = true;
+	{
+		auto transition = AcquirePlaybackTransition(
+			PlaybackTransitionOrigin::ExplicitPlay);
+		if (!transition) return false;
+		if (!_mediaLoaded.load(std::memory_order_acquire)) return false;
+		if (requirePausedState
+			&& _playState.load(std::memory_order_acquire)
+				!= PlayState::Paused)
+		{
+			return false;
+		}
+		if (_useSourceReader)
+		{
+			const UINT64 completedEpoch = CurrentPlaybackEndEpoch();
+			if (IsPlaybackEndCompletionCurrent(completedEpoch))
 			{
-				_pendingStart = true;
-				_hasPendingStartPosition = false;
+				completedReplayAttempted = true;
+				notifications.ExpectedExplicitCommandGeneration =
+					AdvanceExplicitPlaybackCommandGeneration();
+				bool companionStartIssued = false;
+				replayedCompletedMedia = TrySeekCore(
+					0.0, startError, &companionStartIssued);
+				if (replayedCompletedMedia)
+					started = TryPlayCore(
+						startError, !companionStartIssued, true, 0.0);
+			}
+			else if (_playState.load(std::memory_order_acquire)
+				== PlayState::Playing)
+			{
+				// Play is idempotent.  In particular, do not issue a second
+				// companion Start while the first Started event is still pending.
+				notifications.ExpectedExplicitCommandGeneration =
+					CurrentExplicitPlaybackCommandGeneration();
+				started = true;
 			}
 			else
 			{
-				const HRESULT hr = StartPlayback();
-				if (FAILED(hr))
+				notifications.ExpectedExplicitCommandGeneration =
+					AdvanceExplicitPlaybackCommandGeneration();
+				if (_useMediaSessionAudioCompanion)
 				{
-					_lastMfError.store(hr);
-					FireMediaError(hr);
+					(void)BeginPlaybackEndEpoch(
+						GetSourceReaderPlaybackEndMask(), false);
 				}
+				started = TryPlayCore(startError);
 			}
 		}
-		return true;
+		else
+		{
+			const StandaloneSessionCommandToken completedToken =
+				CaptureStandaloneSessionCompletionToken();
+			if (completedToken.Sequence != 0)
+			{
+				completedReplayAttempted = true;
+				notifications.ExpectedExplicitCommandGeneration =
+					AdvanceExplicitPlaybackCommandGeneration();
+				replayedCompletedMedia =
+					TrySeekCore(0.0, startError);
+				started = replayedCompletedMedia;
+			}
+			else if (_playState.load(std::memory_order_acquire)
+				== PlayState::Playing)
+			{
+				notifications.ExpectedExplicitCommandGeneration =
+					CurrentExplicitPlaybackCommandGeneration();
+				started = true;
+			}
+			else
+			{
+				notifications.ExpectedExplicitCommandGeneration =
+					AdvanceExplicitPlaybackCommandGeneration();
+				started = TryPlayCore(startError);
+			}
+		}
+		notifications.ExpectedMediaLoadGeneration =
+			CurrentMediaLoadGeneration();
+		if (started)
+		{
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Playing, notifications.OldState);
+			notifications.NewState = PlayState::Playing;
+		}
+		if (replayedCompletedMedia)
+		{
+			notifications.PositionChanged = CommitObservedPosition(
+				0.0, true, false, notifications.Position);
+			_needSyncReset.store(true, std::memory_order_release);
+			RequestVisualInvalidation();
+		}
+		if (completedReplayAttempted && !started && SUCCEEDED(startError))
+			startError = E_FAIL;
+		if (FAILED(startError))
+		{
+			_lastMfError.store(startError);
+			notifications.MediaError = true;
+			notifications.Error = startError;
+			if (completedReplayAttempted)
+			{
+				// Advancing the explicit generation intentionally invalidates the
+				// queued old EOS callback.  If rewind/start then fails, publish a
+				// terminal public state here so that callback cannot leave a ghost
+				// Playing state with no live worker/session.
+				_threadPlaying.store(false, std::memory_order_release);
+				WakePlaybackThread();
+				if (_audioClient) (void)_audioClient->Stop();
+				notifications.StateChanged = CommitPlayState(
+					PlayState::Stopped, notifications.OldState);
+				notifications.NewState = PlayState::Stopped;
+			}
+		}
 	}
-	if (!_topologyReady)
-	{
-		_pendingStart = true;
-		_hasPendingStartPosition = false;
-		SetPlayState(PlayState::Playing);
-		return true;
-	}
-	const HRESULT hr = StartPlayback();
-	if (SUCCEEDED(hr))
-	{
-		SetPlayState(PlayState::Playing);
-		return true;
-	}
-	_pendingStart = false;
-	_lastMfError.store(hr);
-	FireMediaError(hr);
-	DebugOutputHr(L"Play Start failed", hr);
-	return false;
+	if (FAILED(startError))
+		DebugOutputHr(L"Play Start failed", startError);
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
+	return started;
 }
 
 void MediaPlayer::Pause() { (void)TryPause(); }
 
 bool MediaPlayer::TryPause()
 {
-	if (!_mediaLoaded || _playState.load() != PlayState::Playing) return false;
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	if (!_mediaLoaded
+		|| _playState.load(std::memory_order_acquire)
+			!= PlayState::Playing)
+	{
+		return false;
+	}
+	DeferredPlaybackNotifications notifications{};
+	notifications.ExpectedExplicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+	notifications.ExpectedMediaLoadGeneration =
+		CurrentMediaLoadGeneration();
+	BeginPlaybackQuiescence();
+	PreserveGpuPresentedFrameForRecovery();
 	if (_useSourceReader)
 	{
-		SetPlayState(PlayState::Paused);
-		_threadPlaying = false;
-		if (_audioClient) (void)_audioClient->Stop();
-		if (_useMediaSessionAudioCompanion && _mediaSession)
+		(void)BeginPlaybackEndEpoch(
+			GetSourceReaderPlaybackEndMask(), false);
+	}
+	WakePlaybackThread();
+	const bool cancelledPendingStart = ClearPendingStart();
+	if (_useSourceReader)
+	{
+		HRESULT pauseError = _audioClient
+			? _audioClient->Stop() : S_OK;
+		if (_useMediaSessionAudioCompanion && _mediaSession
+			&& !cancelledPendingStart && SUCCEEDED(pauseError))
 		{
-			const HRESULT hr = PausePlayback();
-			if (FAILED(hr))
-			{
-				_lastMfError.store(hr);
-				FireMediaError(hr);
-			}
+			pauseError = PausePlayback();
 		}
+		if (FAILED(pauseError))
+		{
+			CommitTerminalSourceReaderFailure(
+				pauseError, notifications);
+			CompletePlaybackQuiescence();
+			commandLock.unlock();
+			RaiseDeferredPlaybackNotifications(
+				std::move(notifications));
+			return false;
+		}
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Paused, notifications.OldState);
+		notifications.NewState = PlayState::Paused;
+		CompletePlaybackQuiescence();
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return true;
+	}
+	if (cancelledPendingStart)
+	{
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Paused, notifications.OldState);
+		notifications.NewState = PlayState::Paused;
+		CompletePlaybackQuiescence();
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
 		return true;
 	}
 
 	const HRESULT hr = PausePlayback();
 	if (FAILED(hr))
 	{
+		OpenPlaybackGate();
 		_lastMfError.store(hr);
-		FireMediaError(hr);
+		notifications.MediaError = true;
+		notifications.Error = hr;
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
 		return false;
 	}
-	SetPlayState(PlayState::Paused);
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Paused, notifications.OldState);
+	notifications.NewState = PlayState::Paused;
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
 	return true;
 }
 
@@ -3571,43 +6301,95 @@ void MediaPlayer::Stop() { (void)TryStop(); }
 
 bool MediaPlayer::TryStop()
 {
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
 	if (!_mediaLoaded) return false;
+	DeferredPlaybackNotifications notifications{};
+	notifications.ExpectedExplicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+	notifications.ExpectedMediaLoadGeneration =
+		CurrentMediaLoadGeneration();
+	BeginPlaybackQuiescence();
+	WakePlaybackThread();
+	const bool cancelledPendingStart = ClearPendingStart();
 	if (_useSourceReader)
 	{
-		_threadPlaying = false;
-		SetPlayState(PlayState::Stopped);
-		SetObservedPosition(0.0);
+		(void)BeginPlaybackEndEpoch(
+			GetSourceReaderPlaybackEndMask(), false);
 		if (_timeStretch) _timeStretch->Reset();
-		if (_useMediaSessionAudioCompanion && _mediaSession)
-			(void)StopPlayback();
+		HRESULT companionStopError = S_OK;
+		if (_useMediaSessionAudioCompanion && _mediaSession
+			&& !cancelledPendingStart)
+		{
+			companionStopError = StopPlayback();
+		}
+		HRESULT stopError = S_OK;
 		if (_sourceReader)
 		{
 			PROPVARIANT var;
 			PropVariantInit(&var);
 			var.vt = VT_I8;
 			var.hVal.QuadPart = 0;
-			const HRESULT hr = _sourceReader->SetCurrentPosition(GUID_NULL, var);
+			stopError = _sourceReader->SetCurrentPosition(GUID_NULL, var);
 			PropVariantClear(&var);
-			if (FAILED(hr))
-			{
-				_lastMfError.store(hr);
-				FireMediaError(hr);
-				return false;
-			}
 		}
+		const HRESULT failure = FAILED(companionStopError)
+			? companionStopError : stopError;
+		if (FAILED(failure))
+		{
+			notifications.PositionChanged = CommitObservedPosition(
+				0.0, true, false, notifications.Position);
+			CommitTerminalSourceReaderFailure(failure, notifications);
+			RequestVisualInvalidation();
+			CompletePlaybackQuiescence();
+			commandLock.unlock();
+			RaiseDeferredPlaybackNotifications(
+				std::move(notifications));
+			return false;
+		}
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Stopped, notifications.OldState);
+		notifications.NewState = PlayState::Stopped;
+		notifications.PositionChanged = CommitObservedPosition(
+			0.0, true, false, notifications.Position);
 		RequestVisualInvalidation();
+		CompletePlaybackQuiescence();
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return true;
+	}
+	if (cancelledPendingStart)
+	{
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Stopped, notifications.OldState);
+		notifications.NewState = PlayState::Stopped;
+		notifications.PositionChanged = CommitObservedPosition(
+			0.0, true, false, notifications.Position);
+		CompletePlaybackQuiescence();
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
 		return true;
 	}
 
 	const HRESULT hr = StopPlayback();
 	if (FAILED(hr))
 	{
+		OpenPlaybackGate();
 		_lastMfError.store(hr);
-		FireMediaError(hr);
+		notifications.MediaError = true;
+		notifications.Error = hr;
+		commandLock.unlock();
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
 		return false;
 	}
-	SetPlayState(PlayState::Stopped);
-	SetObservedPosition(0.0);
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Stopped, notifications.OldState);
+	notifications.NewState = PlayState::Stopped;
+	notifications.PositionChanged = CommitObservedPosition(
+		0.0, true, false, notifications.Position);
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
 	return true;
 }
 
@@ -3615,20 +6397,69 @@ void MediaPlayer::Resume() { (void)TryResume(); }
 
 bool MediaPlayer::TryResume()
 {
-	return _playState.load() == PlayState::Paused && TryPlay();
+	return TryPlayImpl(true);
 }
 
 void MediaPlayer::Seek(double seconds) { (void)TrySeek(seconds); }
 
-bool MediaPlayer::TrySeek(double seconds)
+bool MediaPlayer::TrySeekCore(
+	double seconds, HRESULT& seekError, bool* companionStartIssued)
 {
-	if (!_mediaLoaded || !std::isfinite(seconds)) return false;
-	seconds = (std::max)(0.0, _duration > 0.0
-		? (std::min)(seconds, _duration) : seconds);
+	seekError = S_OK;
+	if (companionStartIssued) *companionStartIssued = false;
+	if (!_mediaLoaded) return false;
 	if (_useSourceReader)
 	{
 		if (!_sourceReader) return false;
+		// The reader can reach EOS and clear its worker flag just before a
+		// playing seek acquires the transition.  The coordinated UI completion
+		// may still be queued, so preserve the public Playing intent as well as
+		// the instantaneous worker flag.
+		const bool resumeWorker =
+			_threadPlaying.exchange(false, std::memory_order_acq_rel)
+			|| _playState.load(std::memory_order_acquire)
+				== PlayState::Playing;
+		WakePlaybackThread();
+		if (_playThread.joinable()
+			&& _playThread.get_id() != std::this_thread::get_id())
+		{
+			std::unique_lock lock(_threadMutex);
+			_threadIdleCv.wait(lock, [this]
+			{
+				return !_playbackWorkerActive;
+			});
+		}
+		auto resumeSourceReaderWorker = [this, resumeWorker]
+		{
+			if (!resumeWorker) return;
+			bool mayResume = false;
+			{
+				std::scoped_lock lock(_threadMutex);
+				mayResume = _playbackGate == PlaybackGateState::Open;
+				if (mayResume) _threadPlaying = true;
+			}
+			if (mayResume) WakePlaybackThread();
+		};
+		auto finishFailedSeek = [this, &resumeSourceReaderWorker]
+		{
+			if (!_useMediaSessionAudioCompanion)
+			{
+				_needSyncReset.store(true, std::memory_order_release);
+				resumeSourceReaderWorker();
+				return;
+			}
+			// A companion seek is one A/V transaction.  Never resume only the
+			// reader after either half fails, or the epoch would wait forever for
+			// a companion Ended event that cannot arrive.
+			_threadPlaying.store(false, std::memory_order_release);
+			_needSyncReset.store(true, std::memory_order_release);
+			(void)BeginPlaybackEndEpoch(
+				GetSourceReaderPlaybackEndMask(), false);
+			if (_mediaSession) (void)StopPlayback();
+		};
 		if (_timeStretch) _timeStretch->Reset();
+		(void)BeginPlaybackEndEpoch(
+			GetSourceReaderPlaybackEndMask(), false);
 		PROPVARIANT var;
 		PropVariantInit(&var);
 		var.vt = VT_I8;
@@ -3637,49 +6468,208 @@ bool MediaPlayer::TrySeek(double seconds)
 		PropVariantClear(&var);
 		if (FAILED(hr))
 		{
-			_lastMfError.store(hr);
-			FireMediaError(hr);
-			DebugOutputHr(L"SourceReader: SetCurrentPosition failed", hr);
+			finishFailedSeek();
+			seekError = hr;
 			return false;
 		}
-		if (_useMediaSessionAudioCompanion && _mediaSession)
+		if (resumeWorker && _useMediaSessionAudioCompanion
+			&& _mediaSession)
 		{
-			if (!_topologyReady)
+			if (QueuePendingStartIfTopologyNotReady(true, seconds))
 			{
-				_pendingStart = true;
-				_hasPendingStartPosition = true;
-				_pendingStartPosition = seconds;
+				if (companionStartIssued) *companionStartIssued = true;
 			}
 			else
 			{
-				(void)SetPositionImpl(seconds);
+				const HRESULT companionResult = SetPositionImpl(seconds);
+				if (FAILED(companionResult))
+				{
+					finishFailedSeek();
+					seekError = companionResult;
+					return false;
+				}
+				if (companionStartIssued) *companionStartIssued = true;
 			}
 		}
-		SetObservedPosition(seconds);
 		_needSyncReset = true;
-		RequestVisualInvalidation();
+		// For a companion seek, SetPositionImpl (or the READY continuation)
+		// arms the worker for the new epoch.  Resume only after its Started
+		// event; otherwise high playback rates amplify the initial A/V skew.
+		if (!(resumeWorker && _useMediaSessionAudioCompanion
+			&& _mediaSession))
+		{
+			resumeSourceReaderWorker();
+		}
 		return true;
 	}
-	if (!_topologyReady)
-	{
-		_pendingStart = true;
-		_hasPendingStartPosition = true;
-		_pendingStartPosition = seconds;
-		SetObservedPosition(seconds);
+	if (QueuePendingStartIfTopologyNotReady(true, seconds))
 		return true;
-	}
 
 	const HRESULT hr = SetPositionImpl(seconds);
 	if (FAILED(hr))
 	{
-		_lastMfError.store(hr);
-		FireMediaError(hr);
-		DebugOutputHr(L"SetPositionImpl failed", hr);
+		seekError = hr;
 		return false;
 	}
-	SetObservedPosition(seconds);
-	RequestVisualInvalidation();
 	return true;
+}
+
+bool MediaPlayer::TrySeek(double seconds)
+{
+	HRESULT seekError = S_OK;
+	bool seeked = false;
+	bool sourceReader = false;
+	DeferredPlaybackNotifications notifications{};
+	{
+		auto transition = AcquirePlaybackTransition(
+			PlaybackTransitionOrigin::ExplicitSeek);
+		if (!transition) return false;
+		if (!_mediaLoaded || !std::isfinite(seconds)) return false;
+		seconds = (std::max)(0.0, _duration > 0.0
+			? (std::min)(seconds, _duration) : seconds);
+		notifications.ExpectedExplicitCommandGeneration =
+			AdvanceExplicitPlaybackCommandGeneration();
+		notifications.ExpectedMediaLoadGeneration =
+			CurrentMediaLoadGeneration();
+		sourceReader = _useSourceReader;
+		seeked = TrySeekCore(seconds, seekError);
+		if (FAILED(seekError))
+		{
+			if (sourceReader && _useMediaSessionAudioCompanion)
+			{
+				CommitTerminalSourceReaderFailure(
+					seekError, notifications);
+			}
+			else
+			{
+				_lastMfError.store(seekError);
+				notifications.MediaError = true;
+				notifications.Error = seekError;
+			}
+		}
+		else if (seeked)
+		{
+			notifications.PositionChanged = CommitObservedPosition(
+				seconds, true, false, notifications.Position);
+			if (sourceReader)
+				_needSyncReset.store(true, std::memory_order_release);
+			RequestVisualInvalidation();
+		}
+	}
+	if (FAILED(seekError))
+	{
+		DebugOutputHr(sourceReader
+			? L"SourceReader: SetCurrentPosition failed"
+			: L"SetPositionImpl failed", seekError);
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return false;
+	}
+	if (!seeked) return false;
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
+	return true;
+}
+
+bool MediaPlayer::TryRestartAfterMediaEnded(
+	UINT64 expectedExplicitCommandGeneration,
+	UINT64 expectedMediaLoadGeneration,
+	UINT64 expectedSourceReaderEpoch,
+	UINT64 expectedStandaloneCompletionSequence)
+{
+	HRESULT seekError = S_OK;
+	HRESULT startError = S_OK;
+	bool seeked = false;
+	bool started = false;
+	bool sourceReader = false;
+	DeferredPlaybackNotifications notifications{};
+	notifications.PositionFirst = true;
+	{
+		auto transition = AcquirePlaybackTransition(
+			PlaybackTransitionOrigin::Automatic);
+		if (!transition
+			|| expectedExplicitCommandGeneration == 0
+			|| expectedMediaLoadGeneration == 0
+			|| CurrentExplicitPlaybackCommandGeneration()
+				!= expectedExplicitCommandGeneration
+			|| CurrentMediaLoadGeneration() != expectedMediaLoadGeneration
+			|| !_loop.load(std::memory_order_acquire) || !_mediaLoaded)
+			return false;
+		notifications.ExpectedExplicitCommandGeneration =
+			expectedExplicitCommandGeneration;
+		notifications.ExpectedMediaLoadGeneration =
+			expectedMediaLoadGeneration;
+		sourceReader = _useSourceReader;
+		if (sourceReader)
+		{
+			if (expectedSourceReaderEpoch == 0
+				|| !IsPlaybackEndCompletionCurrent(
+					expectedSourceReaderEpoch))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			StandaloneSessionCommandToken completedToken{};
+			completedToken.Sequence =
+				expectedStandaloneCompletionSequence;
+			completedToken.ExplicitCommandGeneration =
+				expectedExplicitCommandGeneration;
+			completedToken.MediaLoadGeneration =
+				expectedMediaLoadGeneration;
+			if (!IsStandaloneSessionCompletionCurrent(completedToken))
+				return false;
+		}
+		bool companionStartIssued = false;
+		seeked = TrySeekCore(
+			0.0, seekError, &companionStartIssued);
+		if (seeked)
+		{
+			// Seek already starts/queues the MediaSession at position zero.
+			// SourceReader still needs its worker flag reopened, but must not
+			// issue a second companion Start that overwrites that position.
+			started = sourceReader
+				? TryPlayCore(
+					startError, !companionStartIssued, true, 0.0)
+				: true;
+			notifications.PositionChanged = CommitObservedPosition(
+				0.0, true, false, notifications.Position);
+			if (sourceReader)
+				_needSyncReset.store(true, std::memory_order_release);
+			RequestVisualInvalidation();
+		}
+		if (started)
+		{
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Playing, notifications.OldState);
+			notifications.NewState = PlayState::Playing;
+		}
+		if ((!seeked || !started)
+			&& SUCCEEDED(seekError) && SUCCEEDED(startError))
+		{
+			startError = E_FAIL;
+		}
+		const HRESULT failure =
+			FAILED(seekError) ? seekError : startError;
+		if (FAILED(failure))
+		{
+			_threadPlaying.store(false, std::memory_order_release);
+			WakePlaybackThread();
+			if (_audioClient) (void)_audioClient->Stop();
+			notifications.StateChanged = CommitPlayState(
+				PlayState::Stopped, notifications.OldState);
+			notifications.NewState = PlayState::Stopped;
+			_lastMfError.store(failure);
+			notifications.MediaError = true;
+			notifications.Error = failure;
+		}
+	}
+	const HRESULT failure = FAILED(seekError) ? seekError : startError;
+	if (FAILED(failure))
+	{
+		DebugOutputHr(L"Loop restart failed", failure);
+	}
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
+	return seeked && started;
 }
 
 bool MediaPlayer::TogglePlayback()
@@ -3700,15 +6690,30 @@ bool MediaPlayer::SetProgress(double progress)
 
 void MediaPlayer::Close()
 {
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	DeferredPlaybackNotifications notifications{};
+	notifications.ExpectedExplicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+	(void)AdvanceMediaLoadGeneration();
+	BeginPlaybackQuiescence();
+	WakePlaybackThread();
+	_mediaLoaded = false;
 	StopSourceReaderPlayback(true);
 	ReleaseResources();
 	_memoryByteStream.Reset();
 	_memoryStream.Reset();
 	_mediaFile.clear();
-	SetPlayState(PlayState::Stopped);
-	SetObservedPosition(0.0);
+	notifications.StateChanged = CommitPlayState(
+		PlayState::Stopped, notifications.OldState);
+	notifications.NewState = PlayState::Stopped;
+	notifications.PositionChanged = CommitObservedPosition(
+		0.0, true, false, notifications.Position);
 	ClearMediaError();
 	RequestVisualInvalidation();
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
 }
 
 HRESULT MediaPlayer::StartPlayback()
@@ -3716,9 +6721,25 @@ HRESULT MediaPlayer::StartPlayback()
 	return StartPlaybackInternal(false, 0.0);
 }
 
-HRESULT MediaPlayer::StartPlaybackInternal(bool usePosition, double positionSeconds)
+HRESULT MediaPlayer::StartPlaybackInternal(
+	bool usePosition, double positionSeconds, UINT64* companionStartEpoch)
 {
+	if (companionStartEpoch) *companionStartEpoch = 0;
 	if (!_mediaSession) return E_NOT_VALID_STATE;
+	const UINT64 queuedCompanionStartEpoch =
+		QueueCompanionSessionStartEpoch();
+	if (companionStartEpoch)
+		*companionStartEpoch = queuedCompanionStartEpoch;
+	// The self-rendered SourceReader worker must not publish a new speed until
+	// the audio companion has accepted that exact rate.  Preflight before Start
+	// so an unsupported rate cannot launch audio at its previous speed.
+	const HRESULT rateResult = SetPlaybackRateImpl(
+		_playbackRate.load(std::memory_order_acquire));
+	if (FAILED(rateResult))
+	{
+		CancelCompanionSessionStartEpoch(queuedCompanionStartEpoch);
+		return rateResult;
+	}
 
 	PROPVARIANT varStart;
 	PropVariantInit(&varStart);
@@ -3732,23 +6753,73 @@ HRESULT MediaPlayer::StartPlaybackInternal(bool usePosition, double positionSeco
 		varStart.vt = VT_EMPTY;
 	}
 
+	const StandaloneSessionCommandToken standaloneCommand =
+		QueueStandaloneSessionCommand(
+			StandaloneSessionCommandKind::Start);
 	HRESULT hr = _mediaSession->Start(nullptr, &varStart);
 	PropVariantClear(&varStart);
 	if (SUCCEEDED(hr))
 	{
+		CommitStandaloneSessionCommandSuccess(standaloneCommand);
 		SetVolumeImpl(_volume);
-		SetPlaybackRateImpl(_playbackRate);
 	}
 	else
 	{
+		CancelCompanionSessionStartEpoch(queuedCompanionStartEpoch);
+		RestoreStandaloneSessionIdentityAfterCommandFailure(
+			standaloneCommand);
 		DebugOutputHr(L"IMFMediaSession::Start failed", hr);
 	}
 	return hr;
 }
 
+HRESULT MediaPlayer::StartPendingPlaybackIfAllowed(
+	UINT64* companionStartEpoch,
+	UINT64* explicitCommandGeneration,
+	UINT64* mediaLoadGeneration)
+{
+	if (companionStartEpoch) *companionStartEpoch = 0;
+	if (explicitCommandGeneration) *explicitCommandGeneration = 0;
+	if (mediaLoadGeneration) *mediaLoadGeneration = 0;
+	auto transition = AcquirePlaybackTransition(
+		PlaybackTransitionOrigin::Automatic);
+	if (!transition || !_mediaLoaded) return S_FALSE;
+	bool usePosition = false;
+	double positionSeconds = 0.0;
+	// READY and direct Seek/Play are serialized by the command lease.  A newer
+	// direct command either wins first and clears this pending request, or runs
+	// after this exact request has been started; an old position can never be
+	// applied to a newer playback epoch.
+	if (!TakePendingStartIfTopologyReady(usePosition, positionSeconds))
+		return S_FALSE;
+	if (explicitCommandGeneration)
+		*explicitCommandGeneration =
+			CurrentExplicitPlaybackCommandGeneration();
+	if (mediaLoadGeneration)
+		*mediaLoadGeneration = CurrentMediaLoadGeneration();
+	return StartPlaybackInternal(
+		usePosition, positionSeconds, companionStartEpoch);
+}
+
 HRESULT MediaPlayer::PausePlayback()
 {
+	const UINT64 companionCommandEpoch =
+		QueueCompanionSessionControlEpoch(
+			CompanionSessionControlKind::Pause);
+	const StandaloneSessionCommandToken standaloneCommand =
+		QueueStandaloneSessionCommand(
+			StandaloneSessionCommandKind::Pause);
 	HRESULT hr = _mediaSession->Pause();
+	if (SUCCEEDED(hr))
+		CommitStandaloneSessionCommandSuccess(standaloneCommand);
+	else
+	{
+		CancelCompanionSessionControlEpoch(
+			CompanionSessionControlKind::Pause,
+			companionCommandEpoch);
+		RestoreStandaloneSessionIdentityAfterCommandFailure(
+			standaloneCommand);
+	}
 	return hr;
 }
 
@@ -3758,8 +6829,24 @@ HRESULT MediaPlayer::StopPlayback()
 	PropVariantInit(&varStop);
 	varStop.vt = VT_EMPTY;
 
+	const UINT64 companionCommandEpoch =
+		QueueCompanionSessionControlEpoch(
+			CompanionSessionControlKind::Stop);
+	const StandaloneSessionCommandToken standaloneCommand =
+		QueueStandaloneSessionCommand(
+			StandaloneSessionCommandKind::Stop);
 	HRESULT hr = _mediaSession->Stop();
 	PropVariantClear(&varStop);
+	if (SUCCEEDED(hr))
+		CommitStandaloneSessionCommandSuccess(standaloneCommand);
+	else
+	{
+		CancelCompanionSessionControlEpoch(
+			CompanionSessionControlKind::Stop,
+			companionCommandEpoch);
+		RestoreStandaloneSessionIdentityAfterCommandFailure(
+			standaloneCommand);
+	}
 
 	return hr;
 }
@@ -3773,8 +6860,23 @@ HRESULT MediaPlayer::SetPositionImpl(double seconds)
 	var.vt = VT_I8;
 	var.hVal.QuadPart = (LONGLONG)(seconds * HNS_PER_SEC);  // 100ns
 
+	const UINT64 companionStartEpoch =
+		QueueCompanionSessionStartEpoch();
+	const StandaloneSessionCommandToken standaloneCommand =
+		QueueStandaloneSessionCommand(
+			StandaloneSessionCommandKind::Start);
 	HRESULT hr = _mediaSession->Start(nullptr, &var);
 	PropVariantClear(&var);
+	if (SUCCEEDED(hr))
+	{
+		CommitStandaloneSessionCommandSuccess(standaloneCommand);
+	}
+	else
+	{
+		CancelCompanionSessionStartEpoch(companionStartEpoch);
+		RestoreStandaloneSessionIdentityAfterCommandFailure(
+			standaloneCommand);
+	}
 	return hr;
 }
 
@@ -3825,26 +6927,14 @@ void MediaPlayer::ReleaseResources()
 	_mediaSource.Reset();
 	_topology.Reset();
 	_videoDisplayControl.Reset();
-	{
-		std::scoped_lock lock(_videoFrameMutex);
-		_videoFrame.clear();
-		_videoFrameStride = 0;
-		_videoStride = 0;
-		_videoFrameReady = false;
-	}
+	ReleaseVideoFrameBuffers();
+	ResetTopologyState();
 	_mediaLoaded = false;
 	_hasVideo = false;
 	_hasAudio = false;
-	SetObservedPosition(0.0);
 	_duration = 0.0;
-	_videoSize = SIZE{ 0, 0 };
 
-	if (_videoBitmap && _ownsVideoBitmap)
-	{
-		_videoBitmap->Release();
-	}
-	_videoBitmap = nullptr;
-	_ownsVideoBitmap = false;
+	ReleaseGpuPresentationResources(true);
 }
 
 void MediaPlayer::UpdateVideoBitmap()
@@ -3852,20 +6942,391 @@ void MediaPlayer::UpdateVideoBitmap()
 	// 旧 EVR 路径已移除（完全自渲染）
 }
 
+void MediaPlayer::ReleaseGpuPresentationResources(bool releaseBitmap) noexcept
+{
+	if (_videoBitmapUsesGpuSurface)
+	{
+		_videoBitmap = nullptr;
+		_ownsVideoBitmap = false;
+	}
+	else if (releaseBitmap && _videoBitmap && _ownsVideoBitmap)
+	{
+		_videoBitmap->Release();
+		_videoBitmap = nullptr;
+		_ownsVideoBitmap = false;
+	}
+	_videoBitmapUsesGpuSurface = false;
+	for (auto& bitmap : _gpuOutputBitmaps) bitmap.Reset();
+	for (auto& view : _gpuOutputViews) view.Reset();
+	for (auto& texture : _gpuOutputTextures) texture.Reset();
+	_gpuOutputSlot = GpuOutputBufferCount - 1;
+	_gpuVideoFrameIndex = 0;
+	_gpuVideoProcessor.Reset();
+	_gpuVideoProcessorEnumerator.Reset();
+	_gpuVideoContext.Reset();
+	_gpuVideoDevice.Reset();
+	_gpuPresentationDeviceGeneration = 0;
+	_gpuProcessorInputWidth = 0;
+	_gpuProcessorInputHeight = 0;
+	_gpuProcessorInputFormat = DXGI_FORMAT_UNKNOWN;
+	_gpuProcessorFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+	_gpuProcessorFrameDurationHns = 0;
+	_gpuProcessorOutputWidth = 0;
+	_gpuProcessorOutputHeight = 0;
+}
+
+bool MediaPlayer::TryProcessDxgiVideoSample(
+	IMFSample* sample, UINT64 generation, D2DGraphics* graphics,
+	bool& staleGeneration)
+{
+	staleGeneration = false;
+	if (!sample || !graphics || !TryRebindDxgiDeviceManager())
+		return false;
+
+	ComPtr<ID3D11Device> device;
+	ComPtr<ID3D11DeviceContext> context;
+	UINT64 currentGeneration = 0;
+	{
+		std::scoped_lock lock(_dxgiStateMutex);
+		device = _mediaD3DDevice;
+		context = _mediaD3DContext;
+		currentGeneration =
+			_dxgiDeviceGeneration.load(std::memory_order_acquire);
+	}
+	if (!device || !context || generation == 0
+		|| generation != currentGeneration)
+	{
+		_statStaleGenerationFrames.fetch_add(1, std::memory_order_relaxed);
+		staleGeneration = true;
+		return false;
+	}
+
+	ComPtr<IMFDXGIBuffer> dxgiBuffer;
+	DWORD bufferCount = 0;
+	if (FAILED(sample->GetBufferCount(&bufferCount))) return false;
+	for (DWORD index = 0; index < bufferCount && !dxgiBuffer; ++index)
+	{
+		ComPtr<IMFMediaBuffer> buffer;
+		if (SUCCEEDED(sample->GetBufferByIndex(index, buffer.GetAddressOf()))
+			&& buffer)
+			(void)buffer.As(&dxgiBuffer);
+	}
+	if (!dxgiBuffer) return false;
+
+	ComPtr<ID3D11Texture2D> inputTexture;
+	if (FAILED(dxgiBuffer->GetResource(
+		__uuidof(ID3D11Texture2D),
+		reinterpret_cast<void**>(inputTexture.GetAddressOf())))
+		|| !inputTexture)
+		return false;
+	UINT inputSubresource = 0;
+	if (FAILED(dxgiBuffer->GetSubresourceIndex(&inputSubresource)))
+		return false;
+	ComPtr<ID3D11Device> inputDevice;
+	inputTexture->GetDevice(inputDevice.GetAddressOf());
+	if (!inputDevice || inputDevice.Get() != device.Get())
+	{
+		_statStaleGenerationFrames.fetch_add(1, std::memory_order_relaxed);
+		staleGeneration = true;
+		return false;
+	}
+
+	D3D11_TEXTURE2D_DESC inputDescription{};
+	inputTexture->GetDesc(&inputDescription);
+	if (inputDescription.Width == 0 || inputDescription.Height == 0
+		|| inputDescription.Format == DXGI_FORMAT_UNKNOWN)
+		return false;
+
+	UINT32 cropX = 0;
+	UINT32 cropY = 0;
+	UINT32 outputWidth = 0;
+	UINT32 outputHeight = 0;
+	MFVideoTransferMatrix transferMatrix = MFVideoTransferMatrix_Unknown;
+	MFNominalRange nominalRange = MFNominalRange_Unknown;
+	D3D11_VIDEO_FRAME_FORMAT frameFormat =
+		D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		cropX = _videoCropX;
+		cropY = _videoCropY;
+		outputWidth = static_cast<UINT32>((std::max)(0L, _videoSize.cx));
+		outputHeight = static_cast<UINT32>((std::max)(0L, _videoSize.cy));
+		transferMatrix = _videoTransferMatrix;
+		nominalRange = _videoNominalRange;
+		frameFormat = _videoD3DFrameFormat;
+	}
+	if (cropX >= inputDescription.Width || cropY >= inputDescription.Height)
+		return false;
+	outputWidth = (std::min)(outputWidth, inputDescription.Width - cropX);
+	outputHeight = (std::min)(outputHeight, inputDescription.Height - cropY);
+	if (outputWidth == 0 || outputHeight == 0) return false;
+	// This fast path currently guarantees progressive SDR YUV conversion. Keep
+	// interlaced field cadence and BT.2020/HDR out of the legacy color-space API
+	// instead of silently presenting them with the wrong matrix.
+	if (frameFormat != D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE
+		|| transferMatrix == MFVideoTransferMatrix_BT2020_10
+		|| transferMatrix == MFVideoTransferMatrix_BT2020_12)
+		return false;
+
+	const LONGLONG frameDurationHns = (std::max<LONGLONG>)(
+		1, _videoFrameDurationHns.load(std::memory_order_relaxed));
+	const bool recreateProcessor =
+		!_gpuVideoProcessor || !_gpuOutputTextures[0] || !_gpuOutputViews[0]
+		|| !_gpuOutputBitmaps[0]
+		|| _gpuPresentationDeviceGeneration != currentGeneration
+		|| _gpuProcessorInputWidth != inputDescription.Width
+		|| _gpuProcessorInputHeight != inputDescription.Height
+		|| _gpuProcessorInputFormat != inputDescription.Format
+		|| _gpuProcessorFrameFormat != frameFormat
+		|| _gpuProcessorFrameDurationHns != frameDurationHns
+		|| _gpuProcessorOutputWidth != outputWidth
+		|| _gpuProcessorOutputHeight != outputHeight;
+
+	ComPtr<ID3D11VideoDevice> videoDevice = _gpuVideoDevice;
+	ComPtr<ID3D11VideoContext> videoContext = _gpuVideoContext;
+	ComPtr<ID3D11VideoProcessorEnumerator> processorEnumerator =
+		_gpuVideoProcessorEnumerator;
+	ComPtr<ID3D11VideoProcessor> processor = _gpuVideoProcessor;
+	auto outputTextures = _gpuOutputTextures;
+	auto outputViews = _gpuOutputViews;
+	auto outputBitmaps = _gpuOutputBitmaps;
+	UINT64 videoFrameIndex = recreateProcessor ? 0 : _gpuVideoFrameIndex;
+	const size_t outputSlot = recreateProcessor
+		? 0 : ((_gpuOutputSlot + 1) % GpuOutputBufferCount);
+	if (recreateProcessor)
+	{
+		videoDevice.Reset();
+		videoContext.Reset();
+		processorEnumerator.Reset();
+		processor.Reset();
+		for (auto& bitmap : outputBitmaps) bitmap.Reset();
+		for (auto& view : outputViews) view.Reset();
+		for (auto& texture : outputTextures) texture.Reset();
+		if (FAILED(device.As(&videoDevice)) || !videoDevice
+			|| FAILED(context.As(&videoContext)) || !videoContext)
+			return false;
+
+		D3D11_VIDEO_PROCESSOR_CONTENT_DESC contentDescription{};
+		contentDescription.InputFrameFormat = frameFormat;
+		contentDescription.InputWidth = inputDescription.Width;
+		contentDescription.InputHeight = inputDescription.Height;
+		const UINT frameDuration = static_cast<UINT>(frameDurationHns);
+		contentDescription.InputFrameRate = { 10'000'000u, frameDuration };
+		contentDescription.OutputWidth = outputWidth;
+		contentDescription.OutputHeight = outputHeight;
+		contentDescription.OutputFrameRate =
+			contentDescription.InputFrameRate;
+		contentDescription.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+		HRESULT hr = videoDevice->CreateVideoProcessorEnumerator(
+			&contentDescription, processorEnumerator.GetAddressOf());
+		if (FAILED(hr) || !processorEnumerator) return false;
+		UINT inputFormatSupport = 0;
+		UINT outputFormatSupport = 0;
+		if (FAILED(processorEnumerator->CheckVideoProcessorFormat(
+			inputDescription.Format, &inputFormatSupport))
+			|| !(inputFormatSupport &
+				D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)
+			|| FAILED(processorEnumerator->CheckVideoProcessorFormat(
+				DXGI_FORMAT_B8G8R8A8_UNORM, &outputFormatSupport))
+			|| !(outputFormatSupport &
+				D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT))
+			return false;
+
+		hr = videoDevice->CreateVideoProcessor(
+			processorEnumerator.Get(), 0, processor.GetAddressOf());
+		if (FAILED(hr) || !processor) return false;
+
+		D3D11_TEXTURE2D_DESC outputDescription{};
+		outputDescription.Width = outputWidth;
+		outputDescription.Height = outputHeight;
+		outputDescription.MipLevels = 1;
+		outputDescription.ArraySize = 1;
+		outputDescription.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		outputDescription.SampleDesc.Count = 1;
+		outputDescription.Usage = D3D11_USAGE_DEFAULT;
+		outputDescription.BindFlags =
+			D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDescription{};
+		outputViewDescription.ViewDimension =
+			D3D11_VPOV_DIMENSION_TEXTURE2D;
+		outputViewDescription.Texture2D.MipSlice = 0;
+		for (size_t slot = 0; slot < GpuOutputBufferCount; ++slot)
+		{
+			hr = device->CreateTexture2D(
+				&outputDescription, nullptr,
+				outputTextures[slot].GetAddressOf());
+			if (FAILED(hr) || !outputTextures[slot]) return false;
+			hr = videoDevice->CreateVideoProcessorOutputView(
+				outputTextures[slot].Get(), processorEnumerator.Get(),
+				&outputViewDescription, outputViews[slot].GetAddressOf());
+			if (FAILED(hr) || !outputViews[slot]) return false;
+
+			ComPtr<IDXGISurface> outputSurface;
+			if (FAILED(outputTextures[slot].As(&outputSurface))
+				|| !outputSurface)
+				return false;
+			outputBitmaps[slot].Attach(
+				graphics->CreateBitmapFromDxgiSurface(outputSurface.Get()));
+			if (!outputBitmaps[slot]) return false;
+		}
+	}
+
+	D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputViewDescription{};
+	inputViewDescription.FourCC = 0;
+	inputViewDescription.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+	const UINT mipLevels = (std::max)(1u, inputDescription.MipLevels);
+	inputViewDescription.Texture2D.MipSlice = inputSubresource % mipLevels;
+	inputViewDescription.Texture2D.ArraySlice = inputSubresource / mipLevels;
+	if (inputViewDescription.Texture2D.ArraySlice >= inputDescription.ArraySize)
+		return false;
+	ComPtr<ID3D11VideoProcessorInputView> inputView;
+	HRESULT hr = videoDevice->CreateVideoProcessorInputView(
+		inputTexture.Get(), processorEnumerator.Get(),
+		&inputViewDescription, inputView.GetAddressOf());
+	if (FAILED(hr) || !inputView) return false;
+	const RECT sourceRect{
+		static_cast<LONG>(cropX), static_cast<LONG>(cropY),
+		static_cast<LONG>(cropX + outputWidth),
+		static_cast<LONG>(cropY + outputHeight) };
+	const RECT outputRect{
+		0, 0, static_cast<LONG>(outputWidth),
+		static_cast<LONG>(outputHeight) };
+	videoContext->VideoProcessorSetStreamFrameFormat(
+		processor.Get(), 0, frameFormat);
+	D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputColorSpace{};
+	// The legacy D3D11 color-space descriptor can express BT.601 vs BT.709.
+	// For unknown metadata, HD content follows the normal BT.709 convention.
+	inputColorSpace.YCbCr_Matrix =
+		transferMatrix == MFVideoTransferMatrix_BT709
+		|| (transferMatrix == MFVideoTransferMatrix_Unknown
+			&& inputDescription.Height >= 720)
+		? 1u : 0u;
+	if (nominalRange == MFNominalRange_0_255)
+		inputColorSpace.Nominal_Range =
+			D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+	else if (nominalRange == MFNominalRange_16_235
+		|| nominalRange == MFNominalRange_Unknown)
+		inputColorSpace.Nominal_Range =
+			D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+	videoContext->VideoProcessorSetStreamColorSpace(
+		processor.Get(), 0, &inputColorSpace);
+	D3D11_VIDEO_PROCESSOR_COLOR_SPACE outputColorSpace{};
+	outputColorSpace.Nominal_Range =
+		D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+	videoContext->VideoProcessorSetOutputColorSpace(
+		processor.Get(), &outputColorSpace);
+	videoContext->VideoProcessorSetOutputAlphaFillMode(
+		processor.Get(),
+		D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_OPAQUE, 0);
+	videoContext->VideoProcessorSetStreamAutoProcessingMode(
+		processor.Get(), 0, FALSE);
+	videoContext->VideoProcessorSetStreamSourceRect(
+		processor.Get(), 0, TRUE, &sourceRect);
+	videoContext->VideoProcessorSetStreamDestRect(
+		processor.Get(), 0, TRUE, &outputRect);
+	videoContext->VideoProcessorSetOutputTargetRect(
+		processor.Get(), TRUE, &outputRect);
+
+	D3D11_VIDEO_PROCESSOR_STREAM stream{};
+	stream.Enable = TRUE;
+	stream.OutputIndex = 0;
+	stream.InputFrameOrField = static_cast<UINT>(videoFrameIndex);
+	stream.pInputSurface = inputView.Get();
+	hr = videoContext->VideoProcessorBlt(
+		processor.Get(), outputViews[outputSlot].Get(),
+		static_cast<UINT>(videoFrameIndex), 1, &stream);
+	if (FAILED(hr)) return false;
+
+	if (recreateProcessor)
+	{
+		ReleaseGpuPresentationResources(true);
+		_gpuVideoDevice = videoDevice;
+		_gpuVideoContext = videoContext;
+		_gpuVideoProcessorEnumerator = processorEnumerator;
+		_gpuVideoProcessor = processor;
+		_gpuOutputTextures = outputTextures;
+		_gpuOutputViews = outputViews;
+		_gpuOutputBitmaps = outputBitmaps;
+		_gpuPresentationDeviceGeneration = currentGeneration;
+		_gpuProcessorInputWidth = inputDescription.Width;
+		_gpuProcessorInputHeight = inputDescription.Height;
+		_gpuProcessorInputFormat = inputDescription.Format;
+		_gpuProcessorFrameFormat = frameFormat;
+		_gpuProcessorFrameDurationHns = frameDurationHns;
+		_gpuProcessorOutputWidth = outputWidth;
+		_gpuProcessorOutputHeight = outputHeight;
+	}
+	_gpuOutputSlot = outputSlot;
+	_gpuVideoFrameIndex = videoFrameIndex + 1;
+	_videoBitmap = _gpuOutputBitmaps[outputSlot].Get();
+	_ownsVideoBitmap = false;
+	_videoBitmapUsesGpuSurface = true;
+
+	_statGpuVideoProcessorFrames.fetch_add(1, std::memory_order_relaxed);
+	return true;
+}
+
 void MediaPlayer::OnRender()
 {
+	RefreshPresentationRateLimit();
 	if (!this->IsVisible) return;
 	_statRenderUpdates.fetch_add(1, std::memory_order_relaxed);
 
 	const auto size = this->GetActualSizeDip();
 	auto d2d = this->GetDrawingContext();
+	ComPtr<IMFSample> gpuSample;
+	UINT64 gpuSampleGeneration = 0;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		if (_gpuVideoSampleReady)
+		{
+			gpuSample = std::move(_gpuVideoSample);
+			gpuSampleGeneration = _gpuVideoSampleGeneration;
+			_gpuVideoSampleGeneration = 0;
+			_gpuVideoSampleReady = false;
+		}
+	}
+	bool staleGpuSample = false;
+	const bool processedGpuFrame = gpuSample
+		&& TryProcessDxgiVideoSample(
+			gpuSample.Get(), gpuSampleGeneration, d2d, staleGpuSample);
+	if (processedGpuFrame)
+	{
+		{
+			std::scoped_lock lock(_videoFrameMutex);
+			_lastPresentedGpuSample = gpuSample;
+			_lastPresentedGpuSampleGeneration = gpuSampleGeneration;
+		}
+		_consecutiveGpuSurfaceImportFailures = 0;
+	}
+	else if (gpuSample && staleGpuSample)
+	{
+		// Device rotation deliberately drops surfaces from the retired
+		// generation. They are recovery bookkeeping, not import failures, and
+		// must not trip gpu-required or the consecutive-failure fallback.
+		_consecutiveGpuSurfaceImportFailures = 0;
+	}
+	else if (gpuSample)
+	{
+		_statGpuSurfaceImportFailures.fetch_add(1, std::memory_order_relaxed);
+		++_consecutiveGpuSurfaceImportFailures;
+		if (_consecutiveGpuSurfaceImportFailures >= 3
+			&& gpuSampleGeneration != 0)
+		{
+			_dxgiPresentationFailureGeneration.store(
+				gpuSampleGeneration, std::memory_order_release);
+		}
+	}
 	this->BeginRender();
 
 	// 更新播放位置（用于进度条）
 	// 关键修复：SourceReader 模式下 position 由播放线程驱动，不能再用 MediaSession 时钟覆盖，否则会来回跳。
 	if (!_useSourceReader && _mediaLoaded && _playState == PlayState::Playing)
 	{
-		UpdatePositionFromClock(false);
+		// Rendering must never synchronously invoke user code: a position
+		// handler can delete this control while BeginRender is active.
+		UpdatePositionFromClock(false, true);
 	}
 
 	// 背景
@@ -3876,26 +7337,34 @@ void MediaPlayer::OnRender()
 	{
 		std::vector<uint8_t> frame;
 		UINT32 stride = 0;
+		SIZE frameVideoSize{};
 		bool hasNewFrame = false;
+		bool uploadedNewFrame = processedGpuFrame;
 		{
 			std::scoped_lock lock(_videoFrameMutex);
 			if (_videoFrameReady)
 			{
 				frame.swap(_videoFrame);
 				stride = _videoFrameStride;
+				frameVideoSize = _videoFrameVideoSize;
 				_videoFrameReady = false;
 				hasNewFrame = true;
 			}
 		}
 
 		// 只有在有新帧时才上传；否则继续绘制上一帧，避免闪烁（背景黑屏）。
-		if (hasNewFrame && !frame.empty() && _videoSize.cx > 0 && _videoSize.cy > 0 && stride > 0)
+		if (hasNewFrame && !frame.empty()
+			&& frameVideoSize.cx > 0 && frameVideoSize.cy > 0 && stride > 0)
 		{
+			HRESULT uploadResult = E_FAIL;
+			if (_videoBitmapUsesGpuSurface)
+				ReleaseGpuPresentationResources(true);
 			// 如果视频尺寸发生变化，必须重建 bitmap，否则右侧/下侧可能残留旧像素（常见表现为绿色条）。
 			if (_videoBitmap)
 			{
 				auto ps = _videoBitmap->GetPixelSize();
-				if (ps.width != (UINT32)_videoSize.cx || ps.height != (UINT32)_videoSize.cy)
+				if (ps.width != (UINT32)frameVideoSize.cx
+					|| ps.height != (UINT32)frameVideoSize.cy)
 				{
 					if (_videoBitmap && _ownsVideoBitmap)
 						_videoBitmap->Release();
@@ -3913,7 +7382,10 @@ void MediaPlayer::OnRender()
 					props.pixelFormat = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE);
 					props.dpiX = 96.0f;
 					props.dpiY = 96.0f;
-					rt->CreateBitmap(D2D1::SizeU((UINT32)_videoSize.cx, (UINT32)_videoSize.cy), nullptr, 0, &props, &_videoBitmap);
+					rt->CreateBitmap(
+						D2D1::SizeU((UINT32)frameVideoSize.cx,
+							(UINT32)frameVideoSize.cy),
+						nullptr, 0, &props, &_videoBitmap);
 					_ownsVideoBitmap = true;
 				}
 			}
@@ -3923,14 +7395,15 @@ void MediaPlayer::OnRender()
 				_statVideoUploadCalls.fetch_add(1, std::memory_order_relaxed);
 				_statVideoUploadBytes.fetch_add((UINT64)frame.size(), std::memory_order_relaxed);
 				const LARGE_INTEGER tUp0 = QpcNow();
-				const UINT32 w = (UINT32)_videoSize.cx;
-				const UINT32 h = (UINT32)_videoSize.cy;
+				const UINT32 w = (UINT32)frameVideoSize.cx;
+				const UINT32 h = (UINT32)frameVideoSize.cy;
 				const UINT32 expectedStride = w * 4;
 				const size_t expectedSize = (size_t)expectedStride * (size_t)h;
 
 				if (frame.size() >= expectedSize && stride == expectedStride)
 				{
-					_videoBitmap->CopyFromMemory(nullptr, frame.data(), expectedStride);
+					uploadResult = _videoBitmap->CopyFromMemory(
+						nullptr, frame.data(), expectedStride);
 				}
 				else if (stride >= expectedStride && frame.size() >= (size_t)stride * (size_t)h)
 				{
@@ -3942,30 +7415,55 @@ void MediaPlayer::OnRender()
 						uint8_t* dst = normalized.data() + (size_t)row * (size_t)expectedStride;
 						memcpy(dst, src, expectedStride);
 					}
-					_videoBitmap->CopyFromMemory(nullptr, normalized.data(), expectedStride);
+					uploadResult = _videoBitmap->CopyFromMemory(
+						nullptr, normalized.data(), expectedStride);
 				}
 				else if (frame.size() >= expectedSize)
 				{
 					// stride 元数据不可信但数据是连续的：按 expectedStride 写入
-					_videoBitmap->CopyFromMemory(nullptr, frame.data(), expectedStride);
+					uploadResult = _videoBitmap->CopyFromMemory(
+						nullptr, frame.data(), expectedStride);
 				}
 				const LARGE_INTEGER tUp1 = QpcNow();
 				const UINT64 uploadTicks = (UINT64)(tUp1.QuadPart - tUp0.QuadPart);
 				_statVideoUploadQpcTicks.fetch_add(uploadTicks, std::memory_order_relaxed);
+				uploadedNewFrame = SUCCEEDED(uploadResult);
 			}
 		}
+		if (uploadedNewFrame)
+			PreservePresentedVideoFrame(frame, stride, frameVideoSize);
+		else
+			RecycleVideoFrame(frame);
 
 		// 没有新帧也要继续绘制上一帧，避免闪烁
-		if (_videoBitmap && _videoSize.cx > 0 && _videoSize.cy > 0)
+		if (_videoBitmap)
 		{
+			const auto bitmapSize = _videoBitmap->GetPixelSize();
+			if (bitmapSize.width == 0 || bitmapSize.height == 0)
+			{
+				this->EndRender();
+				ReportPerfStatsIfDue();
+				return;
+			}
 			// 根据渲染模式计算目标矩形
 			float destX = 0.0f;
 			float destY = 0.0f;
 			float destWidth = size.width;
 			float destHeight = size.height;
 			
-			float videoWidth = (float)_videoSize.cx;
-			float videoHeight = (float)_videoSize.cy;
+			UINT32 pixelAspectNumerator = 1;
+			UINT32 pixelAspectDenominator = 1;
+			{
+				std::scoped_lock lock(_videoFrameMutex);
+				pixelAspectNumerator = _videoPixelAspectNumerator;
+				pixelAspectDenominator = _videoPixelAspectDenominator;
+			}
+			const float pixelAspect = pixelAspectDenominator != 0
+				? static_cast<float>(pixelAspectNumerator)
+					/ static_cast<float>(pixelAspectDenominator)
+				: 1.0f;
+			float videoWidth = (float)bitmapSize.width * pixelAspect;
+			float videoHeight = (float)bitmapSize.height;
 			
 			switch (static_cast<VideoRenderMode>(_renderMode))
 			{
@@ -4038,6 +7536,7 @@ void MediaPlayer::OnRender()
 			const UINT64 drawTicks = (UINT64)(tDraw1.QuadPart - tDraw0.QuadPart);
 			_statDrawBitmapQpcTicks.fetch_add(drawTicks, std::memory_order_relaxed);
 			this->EndRender();
+			if (uploadedNewFrame) RecordSubmittedVideoFrame();
 			ReportPerfStatsIfDue();
 			return;
 		}
@@ -4046,9 +7545,343 @@ void MediaPlayer::OnRender()
 	ReportPerfStatsIfDue();
 }
 
+void MediaPlayer::RecordSubmittedVideoFrame() noexcept
+{
+	const LARGE_INTEGER now = QpcNow();
+	const LONGLONG previous = _statLastSubmittedFrameQpc.exchange(
+		now.QuadPart, std::memory_order_relaxed);
+	if (previous > 0 && now.QuadPart > previous)
+	{
+		const LARGE_INTEGER frequency = QpcFreq();
+		if (frequency.QuadPart > 0)
+		{
+			const double milliseconds =
+				static_cast<double>(now.QuadPart - previous) * 1000.0
+				/ static_cast<double>(frequency.QuadPart);
+			const size_t bucket = (std::min)(
+				SubmittedIntervalHistogramBucketCount - 1,
+				static_cast<size_t>((std::max)(0.0, milliseconds)));
+			_statSubmittedIntervalHistogram[bucket].fetch_add(
+				1, std::memory_order_relaxed);
+		}
+	}
+	_statSubmittedVideoFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
+void MediaPlayer::NotifyDeviceResourcesInvalidated() noexcept
+{
+	bool restoredCpuFrame = false;
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		if (!_videoFrameReady && !_lastPresentedVideoFrame.empty())
+		{
+			_videoFrame.swap(_lastPresentedVideoFrame);
+			_videoFrameStride = _lastPresentedVideoFrameStride;
+			_videoFrameVideoSize = _lastPresentedVideoFrameVideoSize;
+			_videoFrameReady = true;
+			restoredCpuFrame = true;
+			_lastPresentedVideoFrameStride = 0;
+			_lastPresentedVideoFrameVideoSize = {};
+		}
+	}
+	// A presentation generation change is also the retry boundary for transient
+	// D2D-surface import failures. If the shared D3D device was genuinely lost,
+	// the recovered host has already created its replacement, so ResetDevice can
+	// be performed here even while playback is paused or the mailbox is empty.
+	_dxgiPresentationFailureGeneration.store(0, std::memory_order_release);
+	_consecutiveGpuSurfaceImportFailures = 0;
+	(void)TryRebindDxgiDeviceManager();
+	const UINT64 currentGeneration =
+		_dxgiDeviceGeneration.load(std::memory_order_acquire);
+	if (!restoredCpuFrame && currentGeneration != 0)
+	{
+		std::scoped_lock lock(_videoFrameMutex);
+		if (!_videoFrameReady && !_gpuVideoSampleReady
+			&& _lastPresentedGpuSample
+			&& _lastPresentedGpuSampleGeneration == currentGeneration)
+		{
+			_gpuVideoSample = _lastPresentedGpuSample;
+			_gpuVideoSampleGeneration = currentGeneration;
+			_gpuVideoSampleReady = true;
+		}
+	}
+	ReleaseGpuPresentationResources(true);
+	Control::NotifyDeviceResourcesInvalidated();
+}
+
+MediaPlayer::PerformanceSnapshot
+MediaPlayer::GetPerformanceSnapshot() const noexcept
+{
+	PerformanceSnapshot snapshot;
+	const LARGE_INTEGER frequency = QpcFreq();
+	snapshot.QpcFrequency = frequency.QuadPart > 0
+		? static_cast<UINT64>(frequency.QuadPart) : 0;
+	snapshot.VideoPresentationRateLimitHz =
+		_videoPresentationRateLimitHz.load(std::memory_order_relaxed);
+	snapshot.VideoFrameDurationHns =
+		_videoFrameDurationHns.load(std::memory_order_relaxed);
+	snapshot.VideoFrameRateKnown =
+		_videoFrameRateKnown.load(std::memory_order_relaxed);
+	snapshot.ReadSampleCalls =
+		_statReadSampleCalls.load(std::memory_order_relaxed);
+	snapshot.ReadSampleQpcTicks =
+		_statReadSampleQpcTicks.load(std::memory_order_relaxed);
+	snapshot.SamplesToContiguousBufferCalls =
+		_statSamplesToContigCalls.load(std::memory_order_relaxed);
+	snapshot.SamplesToContiguousBufferQpcTicks =
+		_statSamplesToContigQpcTicks.load(std::memory_order_relaxed);
+	snapshot.DxgiVideoSamples =
+		_statDxgiVideoSamples.load(std::memory_order_relaxed);
+	snapshot.GpuVideoProcessorFrames =
+		_statGpuVideoProcessorFrames.load(std::memory_order_relaxed);
+	snapshot.GpuSurfaceImportFailures =
+		_statGpuSurfaceImportFailures.load(std::memory_order_relaxed);
+	snapshot.CpuFallbackVideoFrames =
+		_statCpuFallbackVideoFrames.load(std::memory_order_relaxed);
+	snapshot.GpuDeviceRebinds =
+		_statGpuDeviceRebinds.load(std::memory_order_relaxed);
+	snapshot.StaleGenerationFrames =
+		_statStaleGenerationFrames.load(std::memory_order_relaxed);
+	snapshot.SharedDeviceGeneration =
+		_dxgiDeviceGeneration.load(std::memory_order_relaxed);
+	snapshot.AdapterLuid =
+		_dxgiAdapterLuid.load(std::memory_order_relaxed);
+	snapshot.DxgiDeviceManagerActive =
+		_dxgiDeviceManagerActive.load(std::memory_order_relaxed);
+	snapshot.DecodedVideoFrames =
+		_statDecodedVideoFrames.load(std::memory_order_relaxed);
+	snapshot.ConvertedVideoFrames =
+		_statVideoConvertCalls.load(std::memory_order_relaxed);
+	snapshot.VideoConvertQpcTicks =
+		_statVideoConvertQpcTicks.load(std::memory_order_relaxed);
+	snapshot.VideoConvertBytes =
+		_statVideoConvertBytes.load(std::memory_order_relaxed);
+	snapshot.SubmittedVideoFrames =
+		_statSubmittedVideoFrames.load(std::memory_order_relaxed);
+	snapshot.DroppedLateVideoFrames =
+		_statDroppedLateVideoFrames.load(std::memory_order_relaxed);
+	snapshot.ThinnedVideoFrames =
+		_statThinnedVideoFrames.load(std::memory_order_relaxed);
+	snapshot.OverwrittenVideoFrames =
+		_statOverwrittenVideoFrames.load(std::memory_order_relaxed);
+	snapshot.MaximumVideoLatenessQpcTicks =
+		_statMaxVideoLatenessQpcTicks.load(std::memory_order_relaxed);
+	std::array<UINT64, SubmittedIntervalHistogramBucketCount>
+		intervalHistogram{};
+	for (size_t index = 0; index < intervalHistogram.size(); ++index)
+	{
+		intervalHistogram[index] =
+			_statSubmittedIntervalHistogram[index].load(
+				std::memory_order_relaxed);
+		snapshot.SubmittedFrameIntervalSamples += intervalHistogram[index];
+	}
+	auto percentileMilliseconds = [&](double percentile)
+	{
+		if (snapshot.SubmittedFrameIntervalSamples == 0) return 0.0;
+		const UINT64 target = static_cast<UINT64>(std::ceil(
+			static_cast<double>(snapshot.SubmittedFrameIntervalSamples)
+				* percentile));
+		UINT64 cumulative = 0;
+		for (size_t index = 0; index < intervalHistogram.size(); ++index)
+		{
+			cumulative += intervalHistogram[index];
+			if (cumulative >= target)
+				return static_cast<double>(index + 1);
+		}
+		return static_cast<double>(intervalHistogram.size());
+	};
+	snapshot.SubmittedFrameIntervalP95Ms =
+		percentileMilliseconds(0.95);
+	snapshot.SubmittedFrameIntervalP99Ms =
+		percentileMilliseconds(0.99);
+	snapshot.VisualInvalidationRequests =
+		_statVisualInvalidationRequests.load(std::memory_order_relaxed);
+	snapshot.CoalescedVisualInvalidations =
+		_statCoalescedVisualInvalidations.load(std::memory_order_relaxed);
+	snapshot.AudioWriteCalls =
+		_statAudioWriteCalls.load(std::memory_order_relaxed);
+	snapshot.AudioWriteQpcTicks =
+		_statAudioWriteQpcTicks.load(std::memory_order_relaxed);
+	snapshot.AudioWriteBytes =
+		_statAudioWriteBytes.load(std::memory_order_relaxed);
+	snapshot.CompanionSessionStartedEvents =
+		_statCompanionSessionStartedEvents.load(std::memory_order_relaxed);
+	snapshot.RenderUpdates =
+		_statRenderUpdates.load(std::memory_order_relaxed);
+	snapshot.VideoUploadCalls =
+		_statVideoUploadCalls.load(std::memory_order_relaxed);
+	snapshot.VideoUploadQpcTicks =
+		_statVideoUploadQpcTicks.load(std::memory_order_relaxed);
+	snapshot.VideoUploadBytes =
+		_statVideoUploadBytes.load(std::memory_order_relaxed);
+	snapshot.DrawBitmapCalls =
+		_statDrawBitmapCalls.load(std::memory_order_relaxed);
+	snapshot.DrawBitmapQpcTicks =
+		_statDrawBitmapQpcTicks.load(std::memory_order_relaxed);
+	// Timestamp after the counter loads so no value in this snapshot is
+	// charged to a measurement interval that ended before it was observed.
+	const LONGLONG started =
+		_statMeasurementStartQpc.load(std::memory_order_relaxed);
+	if (started > 0)
+	{
+		const LARGE_INTEGER now = QpcNow();
+		snapshot.MeasurementQpcTicks = now.QuadPart > started
+			? static_cast<UINT64>(now.QuadPart - started) : 0;
+	}
+	return snapshot;
+}
+
+MediaPlayer::PerformanceSnapshot
+MediaPlayer::PauseAndGetPerformanceSnapshot()
+{
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	if (!_useSourceReader) return GetPerformanceSnapshot();
+	DeferredPlaybackNotifications notifications{};
+	notifications.ExpectedExplicitCommandGeneration =
+		AdvanceExplicitPlaybackCommandGeneration();
+
+	// Close the start gate before touching worker/session state.  If an
+	// automatic loop or topology-ready continuation already owns a transition,
+	// BeginPlaybackQuiescence waits for it and this stop wins afterwards.
+	BeginPlaybackQuiescence();
+	PreserveGpuPresentedFrameForRecovery();
+	(void)BeginPlaybackEndEpoch(
+		GetSourceReaderPlaybackEndMask(), false);
+	WakePlaybackThread();
+	const bool cancelledPendingStart = ClearPendingStart();
+	HRESULT pauseError = _audioClient
+		? _audioClient->Stop() : S_OK;
+	if (_useMediaSessionAudioCompanion && _mediaSession
+		&& !cancelledPendingStart && SUCCEEDED(pauseError))
+	{
+		pauseError = PausePlayback();
+	}
+
+	if (_playThread.joinable())
+	{
+		std::unique_lock lock(_threadMutex);
+		_threadIdleCv.wait(lock, [this]
+		{
+			return !_playbackWorkerActive;
+		});
+	}
+	if (FAILED(pauseError))
+	{
+		CommitTerminalSourceReaderFailure(pauseError, notifications);
+	}
+	else if (_mediaLoaded.load(std::memory_order_acquire))
+	{
+		notifications.StateChanged = CommitPlayState(
+			PlayState::Paused, notifications.OldState);
+		notifications.NewState = PlayState::Paused;
+		if (notifications.StateChanged)
+		{
+			RequestVisualInvalidation();
+			notifications.StateVisualInvalidationNeeded = false;
+		}
+	}
+	// SetPlayState may request one final visual invalidation.  Include that
+	// deterministic bookkeeping in the closed measurement interval.
+	const PerformanceSnapshot snapshot = GetPerformanceSnapshot();
+	CompletePlaybackQuiescence();
+	commandLock.unlock();
+	RaiseDeferredPlaybackNotifications(std::move(notifications));
+	return snapshot;
+}
+
+void MediaPlayer::ResetPerformanceCounters() noexcept
+{
+	auto reset = [](auto& counter)
+	{
+		counter.store(0, std::memory_order_relaxed);
+	};
+	reset(_statReadSampleCalls);
+	reset(_statReadSampleQpcTicks);
+	reset(_statReadSampleVideoCalls);
+	reset(_statReadSampleVideoQpcTicks);
+	reset(_statReadSampleAudioCalls);
+	reset(_statReadSampleAudioQpcTicks);
+	reset(_statSamplesToContigCalls);
+	reset(_statSamplesToContigQpcTicks);
+	reset(_statDxgiVideoSamples);
+	reset(_statGpuVideoProcessorFrames);
+	reset(_statGpuSurfaceImportFailures);
+	reset(_statCpuFallbackVideoFrames);
+	reset(_statGpuDeviceRebinds);
+	reset(_statStaleGenerationFrames);
+	reset(_statDecodedVideoFrames);
+	reset(_statVideoConvertCalls);
+	reset(_statVideoConvertQpcTicks);
+	reset(_statVideoConvertBytes);
+	reset(_statSubmittedVideoFrames);
+	for (auto& bucket : _statSubmittedIntervalHistogram) reset(bucket);
+	_statLastSubmittedFrameQpc.store(0, std::memory_order_relaxed);
+	reset(_statDroppedLateVideoFrames);
+	reset(_statThinnedVideoFrames);
+	reset(_statOverwrittenVideoFrames);
+	reset(_statMaxVideoLatenessQpcTicks);
+	reset(_statVisualInvalidationRequests);
+	reset(_statCoalescedVisualInvalidations);
+	reset(_statAudioWriteCalls);
+	reset(_statAudioWriteQpcTicks);
+	reset(_statAudioWriteBytes);
+	reset(_statCompanionSessionStartedEvents);
+	reset(_statRenderUpdates);
+	reset(_statVideoUploadCalls);
+	reset(_statVideoUploadQpcTicks);
+	reset(_statVideoUploadBytes);
+	reset(_statDrawBitmapCalls);
+	reset(_statDrawBitmapQpcTicks);
+	_visualInvalidationPending.store(false, std::memory_order_relaxed);
+	const LARGE_INTEGER now = QpcNow();
+	_statMeasurementStartQpc.store(now.QuadPart, std::memory_order_relaxed);
+	_statLastReportQpc.store(now.QuadPart, std::memory_order_relaxed);
+}
+
 void MediaPlayer::ReportPerfStatsIfDue()
 {
-	return;
+	if (!_performanceReportingEnabled.load(std::memory_order_relaxed)) return;
+	const LARGE_INTEGER frequency = QpcFreq();
+	if (frequency.QuadPart <= 0) return;
+	const LARGE_INTEGER now = QpcNow();
+	LONGLONG previous = _statLastReportQpc.load(std::memory_order_relaxed);
+	if (previous > 0 && now.QuadPart - previous < frequency.QuadPart) return;
+	if (!_statLastReportQpc.compare_exchange_strong(
+		previous, now.QuadPart, std::memory_order_relaxed))
+		return;
+
+	const PerformanceSnapshot snapshot = GetPerformanceSnapshot();
+	const double elapsedSeconds = snapshot.QpcFrequency > 0
+		? static_cast<double>(snapshot.MeasurementQpcTicks)
+			/ static_cast<double>(snapshot.QpcFrequency) : 0.0;
+	auto averageMilliseconds = [&](UINT64 ticks, UINT64 calls)
+	{
+		return calls > 0 ? QpcTicksToMs(ticks) / calls : 0.0;
+	};
+	wchar_t message[1024]{};
+	swprintf_s(message,
+		L"[MediaPlayerPerf] elapsed=%.2fs decoded=%llu dxgi=%llu gpu=%llu converted=%llu "
+		L"submitted=%llu dropped=%llu thinned=%llu overwritten=%llu read=%.3fms "
+		L"convert=%.3fms upload=%.3fms invalidations=%llu coalesced=%llu\n",
+		elapsedSeconds,
+		static_cast<unsigned long long>(snapshot.DecodedVideoFrames),
+		static_cast<unsigned long long>(snapshot.DxgiVideoSamples),
+		static_cast<unsigned long long>(snapshot.GpuVideoProcessorFrames),
+		static_cast<unsigned long long>(snapshot.ConvertedVideoFrames),
+		static_cast<unsigned long long>(snapshot.SubmittedVideoFrames),
+		static_cast<unsigned long long>(snapshot.DroppedLateVideoFrames),
+		static_cast<unsigned long long>(snapshot.ThinnedVideoFrames),
+		static_cast<unsigned long long>(snapshot.OverwrittenVideoFrames),
+		averageMilliseconds(
+			snapshot.ReadSampleQpcTicks, snapshot.ReadSampleCalls),
+		averageMilliseconds(
+			snapshot.VideoConvertQpcTicks, snapshot.ConvertedVideoFrames),
+		averageMilliseconds(
+			snapshot.VideoUploadQpcTicks, snapshot.VideoUploadCalls),
+		static_cast<unsigned long long>(snapshot.VisualInvalidationRequests),
+		static_cast<unsigned long long>(snapshot.CoalescedVisualInvalidations));
+	PrintLogWide(message);
 }
 
 // ========================================
@@ -4090,7 +7923,12 @@ GET_CPP(MediaPlayer, double, Volume)
 
 SET_CPP(MediaPlayer, double, Volume)
 {
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
 	if (!SetPropertyField(VolumeProperty(), _volumeValue, value)) return;
+	auto lifetime = weakLifetime.lock();
+	if (!lifetime || !*lifetime) return;
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
 	_volume.store(_volumeValue);
 	if (_mediaLoaded)
 	{
@@ -4125,25 +7963,61 @@ GET_CPP(MediaPlayer, float, PlaybackRate)
 
 SET_CPP(MediaPlayer, float, PlaybackRate)
 {
-	if (!SetPropertyField(PlaybackRateProperty(), _playbackRateValue, value)) return;
-	_playbackRate.store(_playbackRateValue);
-	if (_mediaLoaded)
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	const float previousRate = _playbackRate.load(
+		std::memory_order_acquire);
+	if (!SetPropertyField(
+		PlaybackRateProperty(), _playbackRateValue, value))
+	{
+		return;
+	}
+	auto lifetime = weakLifetime.lock();
+	if (!lifetime || !*lifetime) return;
+	const float requestedRate = _playbackRateValue;
+	std::unique_lock<std::recursive_mutex> commandLock(
+		_playbackCommandMutex);
+	HRESULT rateError = S_OK;
+	if (_mediaLoaded.load(std::memory_order_acquire))
 	{
 		if (_useSourceReader)
 		{
-			// SourceReader 模式：视频节奏由时间戳/倍速控制；音频由 WSOLA 做变速不变调输出。
-			_needSyncReset = true;
+			// SourceReader+WASAPI performs rate conversion in software.  An
+			// audio companion must accept the exact same rate first.
 			if (_useMediaSessionAudioCompanion && _mediaSession)
-			{
-				SetPlaybackRateImpl(_playbackRate.load());
-			}
+				rateError = SetPlaybackRateImpl(requestedRate);
 		}
-		else
+		else if (_mediaSession)
 		{
-			// Media Session模式
-			SetPlaybackRateImpl(_playbackRate.load());
+			rateError = SetPlaybackRateImpl(requestedRate);
 		}
 	}
+	if (FAILED(rateError))
+	{
+		_playbackRate.store(previousRate, std::memory_order_release);
+		_lastMfError.store(rateError);
+		DeferredPlaybackNotifications notifications{};
+		notifications.MediaError = true;
+		notifications.Error = rateError;
+		notifications.ExpectedExplicitCommandGeneration =
+			CurrentExplicitPlaybackCommandGeneration();
+		notifications.ExpectedMediaLoadGeneration =
+			CurrentMediaLoadGeneration();
+		commandLock.unlock();
+		(void)SetPropertyField(
+			PlaybackRateProperty(), _playbackRateValue, previousRate);
+		lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		if (_playbackRate.load(std::memory_order_acquire)
+			!= previousRate)
+		{
+			return;
+		}
+		RaiseDeferredPlaybackNotifications(std::move(notifications));
+		return;
+	}
+	_playbackRate.store(requestedRate, std::memory_order_release);
+	_needSyncReset.store(true, std::memory_order_release);
+	WakePlaybackThread();
 }
 
 GET_CPP(MediaPlayer, bool, AutoPlay)
@@ -4158,12 +8032,16 @@ SET_CPP(MediaPlayer, bool, AutoPlay)
 
 GET_CPP(MediaPlayer, bool, Loop)
 {
-	return _loop;
+	return _loop.load(std::memory_order_acquire);
 }
 
 SET_CPP(MediaPlayer, bool, Loop)
 {
-	(void)SetPropertyField(LoopProperty(), _loop, value);
+	std::weak_ptr<std::atomic_bool> weakLifetime = _lifetimeToken;
+	if (!SetPropertyField(LoopProperty(), _loopValue, value)) return;
+	auto lifetime = weakLifetime.lock();
+	if (!lifetime || !*lifetime) return;
+	_loop.store(_loopValue, std::memory_order_release);
 }
 
 GET_CPP(MediaPlayer, bool, EnableHardwareDecode)
@@ -4193,9 +8071,25 @@ SET_CPP(MediaPlayer, bool, PreferNv12VideoOutput)
 		PreferNv12VideoOutputProperty(), _preferNv12VideoOutput, value);
 }
 
+GET_CPP(MediaPlayer, bool, EnableDxgiVideoOutput)
+{
+	return _enableDxgiVideoOutput;
+}
+
+SET_CPP(MediaPlayer, bool, EnableDxgiVideoOutput)
+{
+	(void)SetPropertyField(
+		EnableDxgiVideoOutputProperty(), _enableDxgiVideoOutput, value);
+}
+
 GET_CPP(MediaPlayer, bool, UsingNv12VideoOutput)
 {
 	return _usingNv12VideoOutput;
+}
+
+GET_CPP(MediaPlayer, bool, UsingDxgiVideoOutput)
+{
+	return _dxgiDeviceManagerActive.load(std::memory_order_acquire);
 }
 
 GET_CPP(MediaPlayer, bool, HasVideo)
@@ -4210,6 +8104,7 @@ GET_CPP(MediaPlayer, bool, HasAudio)
 
 GET_CPP(MediaPlayer, cui::core::Size, VideoSize)
 {
+	std::scoped_lock lock(_videoFrameMutex);
 	return cui::core::Size{
 		static_cast<float>(_videoSize.cx),
 		static_cast<float>(_videoSize.cy) };

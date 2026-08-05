@@ -1,4 +1,5 @@
 #include "TestRunner.h"
+#include "MediaPlayerRegressionTests.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include <EventInfrastructure.h>
 #include <Application.h>
@@ -2157,6 +2158,7 @@ namespace
 int main()
 {
     cui::test::Runner runner;
+	RegisterMediaPlayerRegressionTests(runner);
 
 	runner.Add("WPF element hierarchy owns dispatcher property visual input and framework boundaries", []
 	{
@@ -36158,6 +36160,105 @@ int main()
 			CUI_EXPECT_TRUE(control != nullptr);
 			if (control) CUI_EXPECT_EQ(type, control->Type());
 		}
+	});
+
+	runner.Add("ChartView owns pointer input beneath decorative template chrome", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"ChartView template input");
+		SetDeclaredWindowGeometry(
+			host, 0.0f, 0.0f, 320.0f, 220.0f);
+		auto contentOwner = MakeTestControl<Canvas>();
+		auto* content = static_cast<Canvas*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto chartOwner = MakeTestControl<ChartView>(
+			20.0f, 20.0f, 260.0f, 160.0f);
+		auto* chart = chartOwner.get();
+		chart->ChartKind = ChartViewKind::Line;
+		chart->Title = L"";
+		chart->ShowLegend = false;
+		chart->SetSingleSeries({ ChartPoint{ L"Q1", 10.0 } });
+
+		// Mirror Generic.xaml's full-size Grid -> transparent Border chrome.
+		// ChartView paints and interacts with its data points itself, so this
+		// decoration must not become the direct pointer-input target.
+		auto templateRoot = MakeTestControl<Grid>();
+		auto* templateRootPointer = templateRoot.get();
+		auto chromeOwner = MakeTestControl<Border>();
+		auto* chrome = chromeOwner.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*templateRootPointer, chart);
+		cui::framework::TreeAccess::SetTemplatedParent(*chrome, chart);
+		templateRootPointer->AddOwned(std::move(chromeOwner));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::SetTemplateRoot(
+			*chart, std::move(templateRoot)) == templateRootPointer);
+		content->AddOwned(std::move(chartOwner));
+		host.UpdateLayout();
+
+		CUI_EXPECT_FALSE(chart->HitTestChildren());
+		CUI_EXPECT_TRUE(chrome->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(chrome->GetActualSizeDip().height > 0.0f);
+		uint32_t virtualPointId = 0;
+		AccessibilityVirtualNode virtualPoint;
+		CUI_EXPECT_TRUE(chart->TryGetAccessibilityVirtualChildAt(
+			0, 0, virtualPointId));
+		CUI_EXPECT_TRUE(chart->TryGetAccessibilityVirtualNode(
+			virtualPointId, virtualPoint));
+		const int localX = static_cast<int>(
+			(virtualPoint.BoundsDip.left
+				+ virtualPoint.BoundsDip.right) * 0.5f);
+		const int localY = static_cast<int>(
+			(virtualPoint.BoundsDip.top
+				+ virtualPoint.BoundsDip.bottom) * 0.5f);
+		int seriesIndex = -1;
+		int pointIndex = -1;
+		CUI_EXPECT_TRUE(chart->HitTestPoint(
+			localX, localY, seriesIndex, pointIndex));
+		CUI_EXPECT_EQ(0, seriesIndex);
+		CUI_EXPECT_EQ(0, pointIndex);
+
+		const auto origin = chart->GetAbsoluteLocationDip();
+		const float contentX = static_cast<float>(origin.x) + localX;
+		const float contentY = static_cast<float>(origin.y) + localY;
+		auto* hit = cui::framework::WindowAccess::HitTestControlAt(
+			host, static_cast<int>(contentX), static_cast<int>(contentY));
+		CUI_EXPECT_TRUE(hit == chart);
+
+		int clickCount = 0;
+		auto pointClick = chart->OnPointClick.Subscribe(
+			[&](ChartView* sender, int series, int point)
+			{
+				CUI_EXPECT_TRUE(sender == chart);
+				CUI_EXPECT_EQ(0, series);
+				CUI_EXPECT_EQ(0, point);
+				++clickCount;
+			});
+		CUI_EXPECT_TRUE(host.Handle != nullptr);
+		const auto clientPoint = host.ContentDipRectToClientPixels(
+			D2D1::RectF(contentX, contentY, contentX + 1.0f, contentY + 1.0f));
+		const int clientX = (clientPoint.left + clientPoint.right) / 2;
+		const int clientY = (clientPoint.top + clientPoint.bottom) / 2;
+		const LPARAM pointerPoint = MAKELPARAM(clientX, clientY);
+		(void)::SendMessageW(
+			host.Handle, WM_LBUTTONDOWN, MK_LBUTTON, pointerPoint);
+		(void)::SendMessageW(host.Handle, WM_LBUTTONUP, 0, pointerPoint);
+		CUI_EXPECT_EQ(1, clickCount);
+		CUI_EXPECT_EQ(0, chart->GetSelectedSeriesIndex());
+		CUI_EXPECT_EQ(0, chart->GetSelectedPointIndex());
+
+		chart->SetSingleSeries({
+			ChartPoint{ L"Q1", 10.0 }, ChartPoint{ L"Q2", 12.0 },
+			ChartPoint{ L"Q3", 9.0 }, ChartPoint{ L"Q4", 14.0 },
+			ChartPoint{ L"Q5", 11.0 }, ChartPoint{ L"Q6", 15.0 } });
+		const float oldZoom = chart->GetZoomX();
+		POINT wheelPoint{ clientX, clientY };
+		CUI_EXPECT_TRUE(::ClientToScreen(host.Handle, &wheelPoint));
+		(void)::SendMessageW(
+			host.Handle, WM_MOUSEWHEEL,
+			MAKEWPARAM(0, WHEEL_DELTA),
+			MAKELPARAM(wheelPoint.x, wheelPoint.y));
+		CUI_EXPECT_TRUE(chart->GetZoomX() > oldZoom);
+		CUI_EXPECT_TRUE(pointClick.Connected());
 	});
 
 	runner.Add("RelativePanel attached constraints round-trip and materialize dynamically", []

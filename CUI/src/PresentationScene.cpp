@@ -170,10 +170,15 @@ void PresentationScene::SynchronizeResourceGeneration(
 		}
 		node.HasPresented = false;
 	}
+	_overlaySurfaceDirty = true;
 }
 
 void PresentationScene::Rebuild(std::span<Control* const> roots)
 {
+	// The transparent swap chain retains pixels independently of the primary
+	// surface.  A topology change must therefore produce one clearing frame even
+	// when the last transient root was removed and no overlay nodes remain.
+	_overlaySurfaceDirty = true;
 	_rasterRoots.assign(roots.begin(), roots.end());
 	std::stable_sort(
 		_rasterRoots.begin(), _rasterRoots.end(),
@@ -623,6 +628,19 @@ void PresentationScene::RenderRaster(const RECT& contentDirty)
 	}
 }
 
+bool PresentationScene::RequiresOverlayFrame()
+{
+	ApplyPendingGeometryInvalidations();
+	if (_overlaySurfaceDirty) return true;
+	for (auto& node : _nodes)
+	{
+		if (!node.Overlay || !RefreshNodeState(node)) continue;
+		if (!node.HasPresented || node.ContentDirty || node.GeometryDirty
+			|| node.CompositionDirty) return true;
+	}
+	return false;
+}
+
 void PresentationScene::RenderOverlay(const RECT& contentDirty)
 {
 	if (contentDirty.right <= contentDirty.left
@@ -638,8 +656,7 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 	{
 		if (!node.Overlay) continue;
 		Control* control = nullptr;
-		if (!PrepareNodeForRendering(node, control)
-			|| !control->IsVisible) continue;
+		if (!PrepareNodeForRendering(node, control)) continue;
 		const bool contentDirtyNode = node.ContentDirty;
 		const bool geometryDirtyNode = node.GeometryDirty;
 		const bool compositionDirtyNode = node.CompositionDirty;
@@ -647,6 +664,12 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 		if (geometryDirtyNode) ++_frameStatistics.GeometryDirtyNodes;
 		if (compositionDirtyNode)
 			++_frameStatistics.CompositionDirtyNodes;
+		const auto submitted = control->GetPresentationRevisions();
+		if (!control->IsVisible)
+		{
+			(void)CompleteNode(node, submitted);
+			continue;
+		}
 		if (!RefreshNodeGeometry(node)) continue;
 		control = node.Element.Get();
 		if (!control) continue;
@@ -659,7 +682,6 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 			continue;
 		}
 
-		const auto submitted = control->GetPresentationRevisions();
 		if (node.NativeComposition)
 		{
 			if (!node.HasPresented || contentDirtyNode
@@ -686,6 +708,7 @@ void PresentationScene::RenderOverlay(const RECT& contentDirty)
 		++_frameStatistics.ImmediateDrawNodes;
 		(void)CompleteNode(node, submitted);
 	}
+	_overlaySurfaceDirty = false;
 }
 
 bool PresentationScene::TryGetNodeSnapshot(

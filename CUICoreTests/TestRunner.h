@@ -155,6 +155,12 @@ namespace cui::test
 			std::cout << "[==========] " << executed << " test(s), "
 					  << passed << " passed, " << failed << " failed\n"
 					  << std::flush;
+			if (!filter.empty() && executed == 0)
+			{
+				std::cerr << "[  FAILED  ] CUI_TEST_FILTER matched no tests: "
+					<< filter << '\n' << std::flush;
+				return 2;
+			}
             return failed == 0 ? 0 : 1;
         }
 

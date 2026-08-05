@@ -458,6 +458,8 @@ protected:
 private:
 	/** Injects a deterministic device reset through the production recovery path. */
 	void InjectPresentationDeviceLossForTesting();
+	/** Rotates the shared D3D domain, then drives normal presentation recovery. */
+	bool InjectSharedGraphicsDeviceRotationForTesting();
 
 	/** True while the retained renderer or the HWND paint queue has work. */
 	bool HasPendingRenderWork() const noexcept;
@@ -493,7 +495,7 @@ private:
 		Control* control,
 		PresentationInvalidationKind kind) noexcept;
 	int GetPresentationOrder(Control* control);
-	void CommitComposition();
+	bool CommitComposition();
 	void ProcessPlatformMessage(UINT message, WPARAM wParam, LPARAM lParam);
 	LRESULT HandlePlatformWindowMessage(
 		HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);

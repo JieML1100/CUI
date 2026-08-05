@@ -12,6 +12,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+std::atomic<bool>
+	PresentationRenderHost::_failNextPrimaryAttachForTesting{ false };
+
 PresentationRenderHost::PresentationRenderHost() = default;
 
 PresentationRenderHost::~PresentationRenderHost()
@@ -32,12 +35,28 @@ bool PresentationRenderHost::Attach(HWND window, UINT dpi)
 		LONG{ 1 }, client.right - client.left));
 	_height = static_cast<UINT>((std::max)(
 		LONG{ 1 }, client.bottom - client.top));
+	if (_failNextPrimaryAttachForTesting.exchange(
+		false, std::memory_order_acq_rel))
+	{
+		_deviceResetRequested = true;
+		InvalidateFrameHistory();
+		return false;
+	}
 	_primary = std::make_unique<HwndGraphics>(_window);
 	if (!_primary || !_primary->GetDeviceContextRaw())
 	{
 		_primary.reset();
-		_window = nullptr;
+		// Preserve the HWND attachment so queued damage can enter RecoverDevice
+		// on the next paint after a transient graphics initialization failure.
+		_deviceResetRequested = true;
+		InvalidateFrameHistory();
 		return false;
+	}
+	GraphicsSharedD3DDeviceInfo deviceInfo{};
+	if (SUCCEEDED(Graphics_AcquireSharedD3DDevice(
+		nullptr, nullptr, nullptr, nullptr, &deviceInfo)))
+	{
+		_sharedDeviceGeneration = deviceInfo.Generation;
 	}
 	_primary->SetDpi(static_cast<FLOAT>(_dpi), static_cast<FLOAT>(_dpi));
 	// The device context is owned for the host lifetime, but it is exposed to
@@ -78,6 +97,7 @@ void PresentationRenderHost::Detach() noexcept
 	_hasPresentedFrame = false;
 	_transactionOpen = false;
 	_activeTransactionSequence = 0;
+	_sharedDeviceGeneration = 0;
 	_pendingDamage = {};
 	_hasPendingDamage = false;
 	_fullDamagePending = false;
@@ -94,6 +114,11 @@ bool PresentationRenderHost::IsAttached() const noexcept
 {
 	return _window && ::IsWindow(_window) && _primary
 		&& _primary->GetDeviceContextRaw();
+}
+
+void PresentationRenderHost::FailNextPrimaryAttachForTesting() noexcept
+{
+	_failNextPrimaryAttachForTesting.store(true, std::memory_order_release);
 }
 
 bool PresentationRenderHost::OwnsContext(
@@ -291,7 +316,7 @@ bool PresentationRenderHost::OpenOverlaySurface(
 {
 	if (!_overlay) return false;
 	return OpenSurface(transaction, _overlay.get(), SurfaceRole::Overlay,
-		transaction.LogicalClient, true, surface);
+		transaction.LogicalDirty, true, surface);
 }
 
 bool PresentationRenderHost::ValidateClosedContext(
@@ -550,6 +575,10 @@ void PresentationRenderHost::InvalidateFrameHistory() noexcept
 bool PresentationRenderHost::IsDeviceLost() const noexcept
 {
 	if (_deviceResetRequested) return true;
+	if (_sharedDeviceGeneration != 0
+		&& Graphics_GetSharedD3DDeviceGeneration()
+			!= _sharedDeviceGeneration) return true;
+	if (_composition && _composition->IsDeviceLost()) return true;
 	if (_primary && _primary->IsDeviceLost()) return true;
 	if (_overlay && _overlay->IsDeviceLost()) return true;
 	for (const auto& layer : _sceneLayers)
@@ -579,6 +608,15 @@ bool PresentationRenderHost::RecoverDevice()
 		_primary->SetDpi(static_cast<FLOAT>(_dpi), static_cast<FLOAT>(_dpi));
 		_active = nullptr;
 		if (restoreComposition) restored = CreateCompositionResources();
+	}
+	if (restored)
+	{
+		GraphicsSharedD3DDeviceInfo deviceInfo{};
+		restored = SUCCEEDED(Graphics_AcquireSharedD3DDevice(
+			nullptr, nullptr, nullptr, nullptr, &deviceInfo))
+			&& deviceInfo.Generation != 0;
+		if (restored)
+			_sharedDeviceGeneration = deviceInfo.Generation;
 	}
 	if (restored)
 	{

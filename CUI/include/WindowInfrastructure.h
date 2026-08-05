@@ -325,5 +325,10 @@ namespace cui::framework
 		{
 			target.InjectPresentationDeviceLossForTesting();
 		}
+
+		static bool InjectSharedGraphicsDeviceRotationForTesting(Window& target)
+		{
+			return target.InjectSharedGraphicsDeviceRotationForTesting();
+		}
 	};
 }

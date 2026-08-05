@@ -78,6 +78,8 @@ private:
 	static bool IsWindowClosingForShutdown(
 		const Window& window) noexcept;
 	static std::vector<Window*> GetPlatformWindows();
+	/** Thread-safe HWND snapshot for cross-dispatcher OS invalidation. */
+	static std::vector<HWND> GetPlatformWindowHandles();
 
 	static UINT GetSystemDpi();
 	static UINT GetDpiForWindow(HWND hwnd);

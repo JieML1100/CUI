@@ -245,6 +245,7 @@ private:
 
 	static int ResolvePresentationOrder(WebBrowser* browser);
 	void EnsureInitialized();
+	bool RebindCompositionVisual();
 	bool EnsureInteropInstalled();
 	void EnsureControllerBounds();
 	void ApplyWebViewSettings();
@@ -253,6 +254,7 @@ private:
 protected:
 	void OnEffectiveIsVisibleChanged(
 		bool previousValue, bool currentValue) override;
+	void NotifyDeviceResourcesInvalidated() noexcept override;
 
 
 private:

@@ -522,6 +522,46 @@ static std::wstring JsonUnquote(const std::wstring& json)
 	return out;
 }
 
+bool WebBrowser::RebindCompositionVisual()
+{
+	auto* window = this->GetPresentationWindow();
+	if (!window || !window->Handle) return false;
+	IDCompositionDevice* dcompDevice = window->GetDCompDevice();
+	if (!dcompDevice) return false;
+
+	if (_compositionController && _rootAttached)
+		(void)_compositionController->put_RootVisualTarget(nullptr);
+	_rootAttached = false;
+	if (_dcompVisual)
+		window->UnregisterDCompVisual(_dcompVisual.Get());
+	_dcompClip.Reset();
+	_dcompVisual.Reset();
+
+	ComPtr<IDCompositionVisual> replacementVisual;
+	ComPtr<IDCompositionRectangleClip> replacementClip;
+	HRESULT hr = dcompDevice->CreateVisual(
+		replacementVisual.GetAddressOf());
+	if (FAILED(hr) || !replacementVisual) return false;
+	hr = dcompDevice->CreateRectangleClip(
+		replacementClip.GetAddressOf());
+	if (FAILED(hr) || !replacementClip) return false;
+	hr = replacementVisual->SetClip(replacementClip.Get());
+	if (FAILED(hr)) return false;
+	if (!window->RegisterDCompVisual(
+		replacementVisual.Get(), PresentationSceneContentLayer,
+		ResolvePresentationOrder(this)))
+	{
+		return false;
+	}
+	_dcompVisual = std::move(replacementVisual);
+	_dcompClip = std::move(replacementClip);
+	if (window->CommitComposition()) return true;
+	window->UnregisterDCompVisual(_dcompVisual.Get());
+	_dcompClip.Reset();
+	_dcompVisual.Reset();
+	return false;
+}
+
 void WebBrowser::EnsureInitialized()
 {
 	if (_initialized) return;
@@ -540,6 +580,19 @@ void WebBrowser::EnsureInitialized()
 	_cachedSource.clear();
 	_cachedTitle.clear();
 
+	// A composition-device rotation can make the host temporarily unavailable.
+	// Do not turn that recoverable host condition into a permanent WebView2
+	// initialization failure (and do this before balancing COM initialization
+	// would become necessary on every retry).
+	if (!_dcompVisual && !RebindCompositionVisual())
+	{
+		_lastInitHr = E_PENDING;
+		_initializationState = InitializationState::NotStarted;
+		_initialized = false;
+		this->InvalidateVisual();
+		return;
+	}
+
 	_lastCoInitHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 	if (FAILED(_lastCoInitHr) && _lastCoInitHr != RPC_E_CHANGED_MODE)
 	{
@@ -547,37 +600,6 @@ void WebBrowser::EnsureInitialized()
 		_initializationState = InitializationState::Failed;
 		this->InvalidateVisual();
 		return;
-	}
-
-		// DirectComposition：为每个 WebBrowser 创建一个独立的 Visual，并交给 Window 的 DComp 层栈排序
-	IDCompositionDevice* dcompDevice = this->GetPresentationWindow()->GetDCompDevice();
-		if (!dcompDevice)
-	{
-		_lastInitHr = E_NOINTERFACE;
-		_initializationState = InitializationState::Failed;
-		this->InvalidateVisual();
-		return;
-	}
-
-	if (!_dcompVisual)
-	{
-		HRESULT hrv = dcompDevice->CreateVisual(&_dcompVisual);
-		if (FAILED(hrv) || !_dcompVisual)
-		{
-			_lastInitHr = hrv;
-			_initializationState = InitializationState::Failed;
-			this->InvalidateVisual();
-			return;
-		}
-		dcompDevice->CreateRectangleClip(&_dcompClip);
-		if (_dcompClip)
-		{
-			_dcompVisual->SetClip(_dcompClip.Get());
-		}
-			this->GetPresentationWindow()->RegisterDCompVisual(
-				_dcompVisual.Get(), PresentationSceneContentLayer,
-				ResolvePresentationOrder(this));
-		this->GetPresentationWindow()->CommitComposition();
 	}
 
 	auto lifetime = _lifetime;
@@ -662,8 +684,15 @@ void WebBrowser::EnsureInitialized()
 					// 将 WebView2 视觉树挂到我们的 DComp Visual
 					if (_compositionController && _dcompVisual)
 					{
-						_compositionController->put_RootVisualTarget(_dcompVisual.Get());
-						_rootAttached = true;
+						const HRESULT rootResult =
+							_compositionController->put_RootVisualTarget(
+								_dcompVisual.Get());
+						_rootAttached = SUCCEEDED(rootResult);
+						if (FAILED(rootResult))
+						{
+							_lastControllerHr = rootResult;
+							_lastInitHr = rootResult;
+						}
 						this->GetPresentationWindow()->CommitComposition();
 					}
 
@@ -1269,13 +1298,18 @@ void WebBrowser::EnsureControllerBounds()
 		{
 			if (!visible && _rootAttached)
 			{
-				_compositionController->put_RootVisualTarget(nullptr);
-				_rootAttached = false;
+				const HRESULT rootResult =
+					_compositionController->put_RootVisualTarget(nullptr);
+				if (SUCCEEDED(rootResult)) _rootAttached = false;
+				else _lastControllerHr = rootResult;
 			}
 			else if (visible && !_rootAttached)
 			{
-				_compositionController->put_RootVisualTarget(_dcompVisual.Get());
-				_rootAttached = true;
+				const HRESULT rootResult =
+					_compositionController->put_RootVisualTarget(
+						_dcompVisual.Get());
+				if (SUCCEEDED(rootResult)) _rootAttached = true;
+				else _lastControllerHr = rootResult;
 			}
 		}
 
@@ -1296,8 +1330,23 @@ void WebBrowser::OnEffectiveIsVisibleChanged(
 void WebBrowser::OnRender()
 {
 	EnsureInitialized();
+	if (_initialized && !_dcompVisual)
+		(void)RebindCompositionVisual();
 	EnsureControllerBounds();
 
+}
+
+void WebBrowser::NotifyDeviceResourcesInvalidated() noexcept
+{
+	try
+	{
+		if (_initialized && RebindCompositionVisual())
+			EnsureControllerBounds();
+	}
+	catch (...)
+	{
+	}
+	Control::NotifyDeviceResourcesInvalidated();
 }
 
 
@@ -1905,9 +1954,14 @@ bool WebBrowser::ProcessInput(const InputReport& input)
 }
 
 void WebBrowser::EnsureInitialized() {}
+bool WebBrowser::RebindCompositionVisual() { return false; }
 bool WebBrowser::EnsureInteropInstalled() { return false; }
 void WebBrowser::EnsureControllerBounds() {}
 void WebBrowser::ApplyWebViewSettings() {}
+void WebBrowser::NotifyDeviceResourcesInvalidated() noexcept
+{
+	Control::NotifyDeviceResourcesInvalidated();
+}
 bool WebBrowser::ForwardMouseInputToWebView(const InputReport&)
 {
 	return false;
