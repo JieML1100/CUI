@@ -207,34 +207,6 @@ namespace
 					return BindingValue(std::wstring{});
 				});
 
-			auto mediaOnly = [](const DesignerControl& target)
-			{
-				return target.Type == UIClass::UI_MediaPlayer;
-			};
-			add(Property(L"MediaFile", L"Data", 600, 10,
-				DesignerStyleValueKind::String,
-				DesignerDependencyPropertyEditorKind::Text, true), mediaOnly,
-				[](const DesignerControl& target, const DesignerControlPropertyContext&)
-				{
-					const auto found = target.DesignStrings.find(L"mediaFile");
-					return BindingValue(found == target.DesignStrings.end()
-						? std::wstring{} : found->second);
-				},
-				[](DesignerControl& target, DesignerControlPropertyContext&,
-					const BindingValue& value)
-				{
-					std::wstring typed;
-					if (!value.TryGet(typed)) return false;
-					typed = Trim(std::move(typed));
-					if (typed.empty()) target.DesignStrings.erase(L"mediaFile");
-					else target.DesignStrings[L"mediaFile"] = std::move(typed);
-					return true;
-				},
-				[](const DesignerControl&, const DesignerControlPropertyContext&)
-				{
-					return BindingValue(std::wstring{});
-				});
-
 			auto itemsControlOnly = [](const DesignerControl& target)
 			{
 				return IsUIClassAssignableFrom(

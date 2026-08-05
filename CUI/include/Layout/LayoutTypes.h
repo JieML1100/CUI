@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <float.h>
+#include <Core/Geometry.h>
 
 /**
  * @file LayoutTypes.h
@@ -32,6 +33,66 @@ enum class VerticalAlignment : uint8_t {
     Bottom,
     Stretch
 };
+
+/** WPF content scaling mode shared by ImageBrush, Image and MediaElement. */
+enum class Stretch {
+    None,
+    Fill,
+    Uniform,
+    UniformToFill
+};
+
+/** WPF scaling constraint shared by Image and MediaElement. */
+enum class StretchDirection {
+    UpOnly,
+    DownOnly,
+    Both
+};
+
+namespace cui::layout
+{
+/**
+ * Computes WPF Viewbox scale factors for an available and natural size.
+ * Infinite axes borrow the scale from the constrained axis; Stretch.None
+ * always preserves the natural scale regardless of StretchDirection.
+ */
+inline cui::core::Size ComputeStretchScaleFactor(
+    cui::core::Size available,
+    cui::core::Size natural,
+    ::Stretch stretch,
+    ::StretchDirection direction) noexcept
+{
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    const bool widthBounded = available.width < cui::core::Infinity;
+    const bool heightBounded = available.height < cui::core::Infinity;
+    if (stretch != ::Stretch::None && (widthBounded || heightBounded))
+    {
+        scaleX = natural.width > 0.0f
+            ? available.width / natural.width : 0.0f;
+        scaleY = natural.height > 0.0f
+            ? available.height / natural.height : 0.0f;
+        if (!widthBounded) scaleX = scaleY;
+        else if (!heightBounded) scaleY = scaleX;
+        else if (stretch == ::Stretch::Uniform)
+            scaleX = scaleY = (std::min)(scaleX, scaleY);
+        else if (stretch == ::Stretch::UniformToFill)
+            scaleX = scaleY = (std::max)(scaleX, scaleY);
+
+        if (direction == ::StretchDirection::UpOnly)
+        {
+            scaleX = (std::max)(scaleX, 1.0f);
+            scaleY = (std::max)(scaleY, 1.0f);
+        }
+        else if (direction == ::StretchDirection::DownOnly)
+        {
+            scaleX = (std::min)(scaleX, 1.0f);
+            scaleY = (std::min)(scaleY, 1.0f);
+        }
+    }
+    return { scaleX, scaleY };
+}
+}
 
 /** @brief 停靠位置（DockPanel 等使用）。 */
 enum class Dock : uint8_t {

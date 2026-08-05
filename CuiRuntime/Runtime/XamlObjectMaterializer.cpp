@@ -51,7 +51,7 @@
 #include "../../CUI/include/ContextMenu.h"
 #include "../../CUI/include/Popup.h"
 #include "../../CUI/include/StatusBar.h"
-#include "../../CUI/include/MediaPlayer.h"
+#include "../../CUI/include/MediaElement.h"
 #include "../../CUI/include/NativeSurface.h"
 #include "../../CUI/include/ItemsControl.h"
 #include "../../CUI/include/ItemsPresenter.h"
@@ -4794,13 +4794,6 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 							chart->AddSeries(series);
 						}
 					}
-				}
-				else if (it.type == UIClass::UI_MediaPlayer)
-				{
-					if (it.extra.contains("mediaFile") && it.extra["mediaFile"].is_string())
-						dc->DesignStrings[L"mediaFile"] = FromUtf8(it.extra["mediaFile"].get<std::string>());
-					else
-						dc->DesignStrings.erase(L"mediaFile");
 				}
 			}
 		}

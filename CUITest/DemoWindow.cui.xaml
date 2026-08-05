@@ -1198,7 +1198,7 @@
           </Grid>
         </Border>
       </TabItem>
-      <TabItem Header="MediaPlayer">
+      <TabItem Header="MediaElement">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
           <Grid x:Name="mediaSurface" DesignId="800">
             <Grid.RowDefinitions>
@@ -1206,7 +1206,8 @@
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <MediaPlayer x:Name="mediaPlayer" DesignId="801" Grid.Row="0" AutoPlay="true" Loop="false"
+			<MediaElement x:Name="mediaElement" DesignId="801" Grid.Row="0"
+			  LoadedBehavior="Manual" UnloadedBehavior="Close" Stretch="Uniform" Loop="false"
               MediaEnded="HandleMediaEnded" MediaFailed="HandleMediaFailed" MediaOpened="HandleMediaOpened"
               PositionChanged="HandleMediaPosition"/>
             <Grid Grid.Row="1" Margin="0,14,0,10">

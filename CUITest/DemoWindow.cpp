@@ -16,7 +16,7 @@
 #include <LoadingRing.h>
 #include <ItemsPresenter.h>
 #include <InputInfrastructure.h>
-#include <MediaPlayer.h>
+#include <MediaElement.h>
 #include <Menu.h>
 #include <MessageDialog.h>
 #include <NativeSurface.h>
@@ -509,7 +509,7 @@ Control* DemoWindow::FindGeneratedControlByName(
 	if (name == L"mediaOpen") return mediaOpen;
 	if (name == L"mediaPause") return mediaPause;
 	if (name == L"mediaPlay") return mediaPlay;
-	if (name == L"mediaPlayer") return mediaPlayer;
+	if (name == L"mediaElement") return mediaElement;
 	if (name == L"mediaProgress") return mediaProgress;
 	if (name == L"mediaSpeedText") return mediaSpeedText;
 	if (name == L"mediaTime") return mediaTime;
@@ -2093,11 +2093,11 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| !toolIconImage1->Source || !toolIconImage2->Source
 			|| !toolIconImage3->Source
 			|| toolIconImage1->Stretch
-				!= cui::drawing::ImageBrushStretch::Uniform
+				!= ::Stretch::Uniform
 			|| toolIconImage2->Stretch
-				!= cui::drawing::ImageBrushStretch::Uniform
+				!= ::Stretch::Uniform
 			|| toolIconImage3->Stretch
-				!= cui::drawing::ImageBrushStretch::Uniform)
+				!= ::Stretch::Uniform)
 			return fail(L"ToolBar authored Items/ItemsHost 所有权未按 WPF 语义物化。");
 		resetCommandProbe();
 		if (!toolIcon1->Invoke()
@@ -4095,7 +4095,7 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 			|| list->ItemCount() != 40)
 			return fail(L"非平台运行时数据路径未完整填充 ListView。");
 		if (!_media || std::abs(_media->Volume - 0.8) > 0.001)
-			return fail(L"MediaPlayer 运行时数据初始化未执行。");
+			return fail(L"MediaElement 运行时数据初始化未执行。");
 		if (outError) outError->clear();
 		return true;
 	}
@@ -4251,7 +4251,7 @@ void DemoWindow::ResolveControls()
 	_toastMessage = RequireControl<Label>(L"toastMessage");
 	_systemContextMenu = RequireControl<ContextMenu>(L"systemContextMenu");
 	_web = RequireControl<WebBrowser>(L"webBrowser");
-	_media = RequireControl<MediaPlayer>(L"mediaPlayer");
+	_media = RequireControl<MediaElement>(L"mediaElement");
 	_mediaProgress = RequireControl<Slider>(L"mediaProgress");
 	_mediaTime = RequireControl<Label>(L"mediaTime");
 	_mediaSpeedText = RequireControl<Label>(L"mediaSpeedText");
@@ -5632,7 +5632,7 @@ void DemoWindow::HandleMediaSpeed(
 {
 	if (!_media || !_mediaSpeedText) return;
 	const auto value = e.NewValue;
-	_media->PlaybackRate = value / 100.0f;
+	_media->SpeedRatio = value / 100.0f;
 	_mediaSpeedText->Text = StringHelper::Format(L"%.2fx", value / 100.0f);
 	_mediaSpeedText->InvalidateVisual();
 }
@@ -5651,31 +5651,31 @@ void DemoWindow::HandleMediaSeek(
 
 void DemoWindow::HandleMediaOpened(Control* senderControl)
 {
-	auto* sender = static_cast<MediaPlayer*>(senderControl);
+	auto* sender = static_cast<MediaElement*>(senderControl);
 	const int total = static_cast<int>(sender->Duration);
 	_mediaTime->Text = StringHelper::Format(
 		L"00:00 / %02d:%02d", total / 60, total % 60);
 	_mediaTime->InvalidateVisual();
-	UpdateStatus(L"MediaPlayer: " + FileNameFromPath(sender->MediaFile));
+	UpdateStatus(L"MediaElement: " + FileNameFromPath(sender->Source));
 }
 
 void DemoWindow::HandleMediaEnded(Control*)
 {
 	_mediaTime->Text = L"播放结束";
 	_mediaTime->InvalidateVisual();
-	UpdateStatus(L"MediaPlayer: Ended");
+	UpdateStatus(L"MediaElement: Ended");
 }
 
 void DemoWindow::HandleMediaFailed(Control*)
 {
 	_mediaTime->Text = L"加载失败";
 	_mediaTime->InvalidateVisual();
-	UpdateStatus(L"MediaPlayer: Failed");
+	UpdateStatus(L"MediaElement: Failed");
 }
 
 void DemoWindow::HandleMediaPosition(Control* senderControl, double position)
 {
-	auto* sender = static_cast<MediaPlayer*>(senderControl);
+	auto* sender = static_cast<MediaElement*>(senderControl);
 	const int current = static_cast<int>(position);
 	const int total = std::max(0, static_cast<int>(sender->Duration));
 	_mediaTime->Text = StringHelper::Format(L"%02d:%02d / %02d:%02d",

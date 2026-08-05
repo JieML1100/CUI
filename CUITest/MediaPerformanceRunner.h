@@ -40,11 +40,11 @@ struct MediaPerformanceCommandLine final
 	std::wstring Error;
 };
 
-/** Parses the deterministic CUITest MediaPlayer performance command line. */
+/** Parses the deterministic CUITest MediaElement performance command line. */
 MediaPerformanceCommandLine ParseMediaPerformanceCommandLine();
 
 /**
- * Runs a visible MediaPlayer presentation for a fixed wall-clock duration.
+ * Runs a visible MediaElement presentation for a fixed wall-clock duration.
  * Returns zero on a completed measurement and a non-zero automation exit code
  * on load, playback, timeout or output failure.
  */

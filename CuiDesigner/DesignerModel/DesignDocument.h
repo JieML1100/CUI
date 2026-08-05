@@ -208,7 +208,6 @@ struct DesignNodeStructure
 	std::wstring GroupStyle;
 	std::wstring ItemsPanel;
 	std::wstring ItemContainerStyle;
-	std::wstring MediaFile;
 	DesignNodeChildRole ChildRole = DesignNodeChildRole::Default;
 	std::optional<DesignRelativePanelConstraints> RelativePanel;
 

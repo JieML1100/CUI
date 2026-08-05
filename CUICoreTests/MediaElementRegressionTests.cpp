@@ -1,8 +1,8 @@
-#include "MediaPlayerRegressionTests.h"
+#include "MediaElementRegressionTests.h"
 
 #include "TestRunner.h"
 #include <Graphics.h>
-#include <MediaPlayer.h>
+#include <MediaElement.h>
 #include <PresentationRenderHost.h>
 #include <Window.h>
 #include <WindowInfrastructure.h>
@@ -18,28 +18,28 @@
 #include <utility>
 #include <Core/Threading.h>
 
-struct MediaPlayerRegressionTestAccess final
+struct MediaElementRegressionTestAccess final
 {
 	static UINT64 MeasureWsolaOutputFrames(
 		float rate, UINT32 inputFrames, UINT32 chunkFrames)
 	{
-		return MediaPlayer::MeasureWsolaOutputFramesForTesting(
+		return MediaElement::MeasureWsolaOutputFramesForTesting(
 			rate, inputFrames, chunkFrames);
 	}
 	static constexpr UINT8 ReaderVideo() noexcept
 	{
-		return MediaPlayer::PlaybackEndReaderVideo;
+		return MediaElement::PlaybackEndReaderVideo;
 	}
 	static constexpr UINT8 ReaderAudio() noexcept
 	{
-		return MediaPlayer::PlaybackEndReaderAudio;
+		return MediaElement::PlaybackEndReaderAudio;
 	}
 	static constexpr UINT8 CompanionSession() noexcept
 	{
-		return MediaPlayer::PlaybackEndCompanionSession;
+		return MediaElement::PlaybackEndCompanionSession;
 	}
 	static void Configure(
-		MediaPlayer& player, bool companion, bool loaded = true) noexcept
+		MediaElement& player, bool companion, bool loaded = true) noexcept
 	{
 		player._useSourceReader.store(true, std::memory_order_release);
 		player._useMediaSessionAudioCompanion.store(
@@ -47,107 +47,107 @@ struct MediaPlayerRegressionTestAccess final
 		player._mediaLoaded.store(loaded, std::memory_order_release);
 		player._loop.store(false, std::memory_order_release);
 	}
-	static UINT64 Begin(MediaPlayer& player, UINT8 expectedMask) noexcept
+	static UINT64 Begin(MediaElement& player, UINT8 expectedMask) noexcept
 	{
 		return player.BeginPlaybackEndEpoch(expectedMask, false);
 	}
-	static UINT64 QueueSessionStart(MediaPlayer& player) noexcept
+	static UINT64 QueueSessionStart(MediaElement& player) noexcept
 	{
 		return player.QueueCompanionSessionStartEpoch();
 	}
-	static void ObserveSessionStarted(MediaPlayer& player) noexcept
+	static void ObserveSessionStarted(MediaElement& player) noexcept
 	{
 		(void)player.ObserveCompanionSessionStarted(S_OK);
 	}
-	static UINT64 PendingReaderWorkerStart(MediaPlayer& player) noexcept
+	static UINT64 PendingReaderWorkerStart(MediaElement& player) noexcept
 	{
 		std::scoped_lock lock(player._playbackEndMutex);
 		return player._pendingSourceReaderWorkerStartEpoch;
 	}
 	static bool TakeReaderWorkerStart(
-		MediaPlayer& player, UINT64 epoch) noexcept
+		MediaElement& player, UINT64 epoch) noexcept
 	{
 		return player.TakeSourceReaderWorkerStartForEpoch(epoch);
 	}
-	static bool ObserveSessionStartFailed(MediaPlayer& player) noexcept
+	static bool ObserveSessionStartFailed(MediaElement& player) noexcept
 	{
 		return player.ObserveCompanionSessionStarted(E_FAIL)
-			== MediaPlayer::CompanionSessionObservation::FailedCurrent;
+			== MediaElement::CompanionSessionObservation::FailedCurrent;
 	}
 	static void HandleSessionFailure(
-		MediaPlayer& player, HRESULT error, UINT64 epoch)
+		MediaElement& player, HRESULT error, UINT64 epoch)
 	{
 		player.HandleCompanionSessionFailure(error, epoch);
 	}
-	static void ObserveSessionEnded(MediaPlayer& player)
+	static void ObserveSessionEnded(MediaElement& player)
 	{
 		(void)player.ObserveCompanionSessionEnded(S_OK);
 	}
-	static UINT64 CaptureSessionFailureEpoch(MediaPlayer& player) noexcept
+	static UINT64 CaptureSessionFailureEpoch(MediaElement& player) noexcept
 	{
 		return player.CaptureCompanionSessionFailureEpoch();
 	}
-	static UINT64 QueueSessionPause(MediaPlayer& player) noexcept
+	static UINT64 QueueSessionPause(MediaElement& player) noexcept
 	{
 		return player.QueueCompanionSessionControlEpoch(
-			MediaPlayer::CompanionSessionControlKind::Pause);
+			MediaElement::CompanionSessionControlKind::Pause);
 	}
-	static UINT64 QueueSessionStop(MediaPlayer& player) noexcept
+	static UINT64 QueueSessionStop(MediaElement& player) noexcept
 	{
 		return player.QueueCompanionSessionControlEpoch(
-			MediaPlayer::CompanionSessionControlKind::Stop);
+			MediaElement::CompanionSessionControlKind::Stop);
 	}
-	static bool ObserveSessionPause(MediaPlayer& player, HRESULT status) noexcept
+	static bool ObserveSessionPause(MediaElement& player, HRESULT status) noexcept
 	{
 		return player.ObserveCompanionSessionControl(
-			MediaPlayer::CompanionSessionControlKind::Pause, status)
-			== MediaPlayer::CompanionSessionObservation::Accepted;
+			MediaElement::CompanionSessionControlKind::Pause, status)
+			== MediaElement::CompanionSessionObservation::Accepted;
 	}
-	static bool ObserveSessionStopFailed(MediaPlayer& player) noexcept
+	static bool ObserveSessionStopFailed(MediaElement& player) noexcept
 	{
 		return player.ObserveCompanionSessionControl(
-			MediaPlayer::CompanionSessionControlKind::Stop, E_FAIL)
-			== MediaPlayer::CompanionSessionObservation::FailedCurrent;
+			MediaElement::CompanionSessionControlKind::Stop, E_FAIL)
+			== MediaElement::CompanionSessionObservation::FailedCurrent;
 	}
-	static void ConfigureStandalone(MediaPlayer& player) noexcept
+	static void ConfigureStandalone(MediaElement& player) noexcept
 	{
 		player._useSourceReader.store(false, std::memory_order_release);
 		player._mediaLoaded.store(true, std::memory_order_release);
 	}
-	static UINT64 CurrentExplicit(MediaPlayer& player) noexcept
+	static UINT64 CurrentExplicit(MediaElement& player) noexcept
 	{
 		return player.CurrentExplicitPlaybackCommandGeneration();
 	}
-	static UINT64 AdvanceExplicit(MediaPlayer& player) noexcept
+	static UINT64 AdvanceExplicit(MediaElement& player) noexcept
 	{
 		return player.AdvanceExplicitPlaybackCommandGeneration();
 	}
-	static UINT64 QueueAcceptedStandaloneStart(MediaPlayer& player) noexcept
+	static UINT64 QueueAcceptedStandaloneStart(MediaElement& player) noexcept
 	{
 		auto token = player.QueueStandaloneSessionCommand(
-			MediaPlayer::StandaloneSessionCommandKind::Start);
+			MediaElement::StandaloneSessionCommandKind::Start);
 		player.CommitStandaloneSessionCommandSuccess(token);
 		return token.Sequence;
 	}
-	static bool ObserveStandaloneStart(MediaPlayer& player) noexcept
+	static bool ObserveStandaloneStart(MediaElement& player) noexcept
 	{
 		return player.ObserveStandaloneSessionCommand(
-			MediaPlayer::StandaloneSessionCommandKind::Start, S_OK)
-			== MediaPlayer::CompanionSessionObservation::Accepted;
+			MediaElement::StandaloneSessionCommandKind::Start, S_OK)
+			== MediaElement::CompanionSessionObservation::Accepted;
 	}
-	static bool ObserveStandaloneEnd(MediaPlayer& player) noexcept
+	static bool ObserveStandaloneEnd(MediaElement& player) noexcept
 	{
 		return player.ObserveStandaloneSessionEnded(S_OK)
-			== MediaPlayer::CompanionSessionObservation::Accepted;
+			== MediaElement::CompanionSessionObservation::Accepted;
 	}
 	static std::pair<UINT64, UINT64>
 		CompleteStandaloneStartBeforeSynchronousReturn(
-			MediaPlayer& player) noexcept
+			MediaElement& player) noexcept
 	{
 		const auto token = player.QueueStandaloneSessionCommand(
-			MediaPlayer::StandaloneSessionCommandKind::Start);
+			MediaElement::StandaloneSessionCommandKind::Start);
 		(void)player.ObserveStandaloneSessionCommand(
-			MediaPlayer::StandaloneSessionCommandKind::Start, S_OK);
+			MediaElement::StandaloneSessionCommandKind::Start, S_OK);
 		(void)player.ObserveStandaloneSessionEnded(S_OK);
 		player.CommitStandaloneSessionCommandSuccess(token);
 		const auto completion =
@@ -155,13 +155,13 @@ struct MediaPlayerRegressionTestAccess final
 		return { token.Sequence, completion.Sequence };
 	}
 	static std::pair<UINT64, UINT64> CaptureStandaloneFailure(
-		MediaPlayer& player) noexcept
+		MediaElement& player) noexcept
 	{
 		const auto token = player.CaptureStandaloneSessionFailureToken();
 		return { token.Sequence, token.ExplicitCommandGeneration };
 	}
 	static std::pair<UINT64, UINT64> ActiveStandalone(
-		MediaPlayer& player) noexcept
+		MediaElement& player) noexcept
 	{
 		std::scoped_lock lock(player._sessionStateMutex);
 		return {
@@ -169,13 +169,13 @@ struct MediaPlayerRegressionTestAccess final
 			player._activeStandaloneSessionPlayback
 				.ExplicitCommandGeneration };
 	}
-	static void FailStandaloneStopSynchronously(MediaPlayer& player) noexcept
+	static void FailStandaloneStopSynchronously(MediaElement& player) noexcept
 	{
 		const auto token = player.QueueStandaloneSessionCommand(
-			MediaPlayer::StandaloneSessionCommandKind::Stop);
+			MediaElement::StandaloneSessionCommandKind::Stop);
 		player.RestoreStandaloneSessionIdentityAfterCommandFailure(token);
 	}
-	static bool Signal(MediaPlayer& player, UINT8 mask, UINT64 epoch)
+	static bool Signal(MediaElement& player, UINT8 mask, UINT64 epoch)
 	{
 		return player.SignalPlaybackEnd(mask, epoch);
 	}
@@ -189,9 +189,9 @@ namespace
 		L"CUI_TEST_SHARED_GRAPHICS_ACQUIRE_CHILD";
 	constexpr wchar_t kTestFilterVariable[] = L"CUI_TEST_FILTER";
 	constexpr char kVideoOnlyTestName[] =
-		"MediaPlayer video-only source load completes without audio negotiation spin";
+		"MediaElement video-only source load completes without audio negotiation spin";
 	constexpr wchar_t kVideoOnlyTestFilter[] =
-		L"MediaPlayer video-only source load completes without audio negotiation spin";
+		L"MediaElement video-only source load completes without audio negotiation spin";
 	constexpr char kSharedAcquireTestName[] =
 		"Shared graphics device acquire is strong atomic and stable";
 	constexpr wchar_t kSharedAcquireChildArgument[] =
@@ -346,7 +346,7 @@ namespace
 
 	struct PlaybackEndSignalThreadContext final
 	{
-		MediaPlayer* Player = nullptr;
+		MediaElement* Player = nullptr;
 		UINT8 Mask = 0;
 		UINT64 Epoch = 0;
 		std::atomic<int>* CompletionClaims = nullptr;
@@ -358,7 +358,7 @@ namespace
 			static_cast<PlaybackEndSignalThreadContext*>(parameter));
 		if (!context || !context->Player || !context->CompletionClaims)
 			return ERROR_INVALID_PARAMETER;
-		if (MediaPlayerRegressionTestAccess::Signal(
+		if (MediaElementRegressionTestAccess::Signal(
 			*context->Player, context->Mask, context->Epoch))
 		{
 			context->CompletionClaims->fetch_add(
@@ -368,7 +368,7 @@ namespace
 	}
 
 	HANDLE StartPlaybackEndSignalThread(
-		MediaPlayer& player, UINT8 mask, UINT64 epoch,
+		MediaElement& player, UINT8 mask, UINT64 epoch,
 		std::atomic<int>& completionClaims)
 	{
 		auto context = std::make_unique<PlaybackEndSignalThreadContext>();
@@ -385,7 +385,7 @@ namespace
 
 	struct CompanionFailureThreadContext final
 	{
-		MediaPlayer* Player = nullptr;
+		MediaElement* Player = nullptr;
 		HRESULT Error = E_FAIL;
 		UINT64 Epoch = 0;
 	};
@@ -395,13 +395,13 @@ namespace
 		std::unique_ptr<CompanionFailureThreadContext> context(
 			static_cast<CompanionFailureThreadContext*>(parameter));
 		if (!context || !context->Player) return ERROR_INVALID_PARAMETER;
-		MediaPlayerRegressionTestAccess::HandleSessionFailure(
+		MediaElementRegressionTestAccess::HandleSessionFailure(
 			*context->Player, context->Error, context->Epoch);
 		return ERROR_SUCCESS;
 	}
 
 	HANDLE StartCompanionFailureThread(
-		MediaPlayer& player, HRESULT error, UINT64 epoch)
+		MediaElement& player, HRESULT error, UINT64 epoch)
 	{
 		auto context = std::make_unique<CompanionFailureThreadContext>();
 		context->Player = &player;
@@ -571,17 +571,17 @@ namespace
 	}
 }
 
-void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
+void RegisterMediaElementRegressionTests(cui::test::Runner& runner)
 {
-	runner.Add("MediaPlayer WSOLA compaction never advances beyond received PCM", []
+	runner.Add("MediaElement WSOLA compaction never advances beyond received PCM", []
 	{
 		constexpr UINT32 inputFrames = 48'000 * 5;
 		constexpr UINT32 chunkFrames = 1'024;
 		const UINT64 output2x =
-			MediaPlayerRegressionTestAccess::MeasureWsolaOutputFrames(
+			MediaElementRegressionTestAccess::MeasureWsolaOutputFrames(
 				2.0f, inputFrames, chunkFrames);
 		const UINT64 output4x =
-			MediaPlayerRegressionTestAccess::MeasureWsolaOutputFrames(
+			MediaElementRegressionTestAccess::MeasureWsolaOutputFrames(
 				4.0f, inputFrames, chunkFrames);
 
 		// Drain contributes a bounded tail, so admit 15% over the ideal
@@ -593,20 +593,20 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		CUI_EXPECT_TRUE(output4x <= 69'000);
 	});
 
-	runner.Add("MediaPlayer end coordinator is epoch-safe and exactly once", []
+	runner.Add("MediaElement end coordinator is epoch-safe and exactly once", []
 	{
-		MediaPlayer sourceReaderPlayer;
-		MediaPlayerRegressionTestAccess::Configure(
+		MediaElement sourceReaderPlayer;
+		MediaElementRegressionTestAccess::Configure(
 			sourceReaderPlayer, false);
 		int sourceReaderEnded = 0;
 		auto sourceReaderConnection =
 			sourceReaderPlayer.OnMediaEnded.Subscribe(
 				[&](Control*) { ++sourceReaderEnded; });
 		const UINT8 readerMask =
-			MediaPlayerRegressionTestAccess::ReaderVideo()
-			| MediaPlayerRegressionTestAccess::ReaderAudio();
+			MediaElementRegressionTestAccess::ReaderVideo()
+			| MediaElementRegressionTestAccess::ReaderAudio();
 		const UINT64 staleReaderEpoch =
-			MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::Begin(
 				sourceReaderPlayer, readerMask);
 		std::atomic<int> completionClaims{ 0 };
 		HANDLE staleCompletion = StartPlaybackEndSignalThread(
@@ -621,10 +621,10 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		// The worker queued completion to the owner, but a seek wins before the
 		// dispatcher executes it.  The captured epoch must make that callback a
 		// no-op, and a late reader signal from the old epoch must also be ignored.
-		const UINT64 readerEpoch = MediaPlayerRegressionTestAccess::Begin(
+		const UINT64 readerEpoch = MediaElementRegressionTestAccess::Begin(
 			sourceReaderPlayer, readerMask);
 		CUI_EXPECT_TRUE(readerEpoch > staleReaderEpoch);
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			sourceReaderPlayer, readerMask, staleReaderEpoch));
 		cui::PumpUIThreadCallbacks();
 		CUI_EXPECT_EQ(0, sourceReaderEnded);
@@ -633,11 +633,11 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		HANDLE endSignals[2]{
 			StartPlaybackEndSignalThread(
 				sourceReaderPlayer,
-				MediaPlayerRegressionTestAccess::ReaderAudio(), readerEpoch,
+				MediaElementRegressionTestAccess::ReaderAudio(), readerEpoch,
 				completionClaims),
 			StartPlaybackEndSignalThread(
 				sourceReaderPlayer,
-				MediaPlayerRegressionTestAccess::ReaderVideo(), readerEpoch,
+				MediaElementRegressionTestAccess::ReaderVideo(), readerEpoch,
 				completionClaims)
 		};
 		CUI_EXPECT_TRUE(endSignals[0] != nullptr);
@@ -649,13 +649,13 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		CUI_EXPECT_EQ(1, completionClaims.load(std::memory_order_relaxed));
 		cui::PumpUIThreadCallbacks();
 		CUI_EXPECT_EQ(1, sourceReaderEnded);
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			sourceReaderPlayer, readerMask, readerEpoch));
 		CUI_EXPECT_EQ(1, sourceReaderEnded);
 		sourceReaderPlayer.Close();
 
-		MediaPlayer companionPlayer;
-		MediaPlayerRegressionTestAccess::Configure(companionPlayer, true);
+		MediaElement companionPlayer;
+		MediaElementRegressionTestAccess::Configure(companionPlayer, true);
 		int companionEnded = 0;
 		int companionFailures = 0;
 		auto companionConnection = companionPlayer.OnMediaEnded.Subscribe(
@@ -663,76 +663,76 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		auto companionFailureConnection = companionPlayer.OnMediaFailed.Subscribe(
 			[&](Control*) { ++companionFailures; });
 		const UINT8 companionMask =
-			MediaPlayerRegressionTestAccess::ReaderVideo()
-			| MediaPlayerRegressionTestAccess::CompanionSession();
-		const UINT64 staleEpoch = MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::ReaderVideo()
+			| MediaElementRegressionTestAccess::CompanionSession();
+		const UINT64 staleEpoch = MediaElementRegressionTestAccess::Begin(
 			companionPlayer, companionMask);
 		CUI_EXPECT_EQ(staleEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionStart(
+			MediaElementRegressionTestAccess::QueueSessionStart(
 				companionPlayer));
 		CUI_EXPECT_EQ(staleEpoch,
-			MediaPlayerRegressionTestAccess::PendingReaderWorkerStart(
+			MediaElementRegressionTestAccess::PendingReaderWorkerStart(
 				companionPlayer));
 
 		// A seek creates a new epoch before the old Started/Ended pair arrives.
-		const UINT64 currentEpoch = MediaPlayerRegressionTestAccess::Begin(
+		const UINT64 currentEpoch = MediaElementRegressionTestAccess::Begin(
 			companionPlayer, companionMask);
 		CUI_EXPECT_TRUE(currentEpoch > staleEpoch);
 		CUI_EXPECT_EQ(static_cast<UINT64>(0),
-			MediaPlayerRegressionTestAccess::PendingReaderWorkerStart(
+			MediaElementRegressionTestAccess::PendingReaderWorkerStart(
 				companionPlayer));
-		MediaPlayerRegressionTestAccess::ObserveSessionStarted(companionPlayer);
-		MediaPlayerRegressionTestAccess::ObserveSessionEnded(companionPlayer);
+		MediaElementRegressionTestAccess::ObserveSessionStarted(companionPlayer);
+		MediaElementRegressionTestAccess::ObserveSessionEnded(companionPlayer);
 		CUI_EXPECT_EQ(0, companionEnded);
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			companionPlayer,
-			MediaPlayerRegressionTestAccess::ReaderVideo(), currentEpoch));
+			MediaElementRegressionTestAccess::ReaderVideo(), currentEpoch));
 		CUI_EXPECT_EQ(currentEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionStart(
+			MediaElementRegressionTestAccess::QueueSessionStart(
 				companionPlayer));
 		CUI_EXPECT_EQ(currentEpoch,
-			MediaPlayerRegressionTestAccess::PendingReaderWorkerStart(
+			MediaElementRegressionTestAccess::PendingReaderWorkerStart(
 				companionPlayer));
-		MediaPlayerRegressionTestAccess::ObserveSessionStarted(companionPlayer);
+		MediaElementRegressionTestAccess::ObserveSessionStarted(companionPlayer);
 		CUI_EXPECT_FALSE(
-			MediaPlayerRegressionTestAccess::TakeReaderWorkerStart(
+			MediaElementRegressionTestAccess::TakeReaderWorkerStart(
 				companionPlayer, staleEpoch));
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::TakeReaderWorkerStart(
+			MediaElementRegressionTestAccess::TakeReaderWorkerStart(
 				companionPlayer, currentEpoch));
 		CUI_EXPECT_FALSE(
-			MediaPlayerRegressionTestAccess::TakeReaderWorkerStart(
+			MediaElementRegressionTestAccess::TakeReaderWorkerStart(
 				companionPlayer, currentEpoch));
-		MediaPlayerRegressionTestAccess::ObserveSessionEnded(companionPlayer);
+		MediaElementRegressionTestAccess::ObserveSessionEnded(companionPlayer);
 		CUI_EXPECT_EQ(1, companionEnded);
-		MediaPlayerRegressionTestAccess::ObserveSessionEnded(companionPlayer);
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		MediaElementRegressionTestAccess::ObserveSessionEnded(companionPlayer);
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			companionPlayer, companionMask, currentEpoch));
 		CUI_EXPECT_EQ(1, companionEnded);
 
 		const UINT64 failedStartEpoch =
-			MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::Begin(
 				companionPlayer, companionMask);
 		CUI_EXPECT_EQ(failedStartEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionStart(
+			MediaElementRegressionTestAccess::QueueSessionStart(
 				companionPlayer));
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveSessionStartFailed(
+			MediaElementRegressionTestAccess::ObserveSessionStartFailed(
 				companionPlayer));
 		CUI_EXPECT_EQ(static_cast<UINT64>(0),
-			MediaPlayerRegressionTestAccess::PendingReaderWorkerStart(
+			MediaElementRegressionTestAccess::PendingReaderWorkerStart(
 				companionPlayer));
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			companionPlayer,
-			MediaPlayerRegressionTestAccess::ReaderVideo(), failedStartEpoch));
-		MediaPlayerRegressionTestAccess::ObserveSessionEnded(companionPlayer);
+			MediaElementRegressionTestAccess::ReaderVideo(), failedStartEpoch));
+		MediaElementRegressionTestAccess::ObserveSessionEnded(companionPlayer);
 		CUI_EXPECT_EQ(1, companionEnded);
 
 		// A callback thread can post a failure just before a replacement seek.
 		// The owner continuation must bind to the captured transaction instead
 		// of stopping or reporting against the replacement epoch.
 		const UINT64 queuedFailureEpoch =
-			MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::Begin(
 				companionPlayer, companionMask);
 		HANDLE queuedFailure = StartCompanionFailureThread(
 			companionPlayer, E_ABORT, queuedFailureEpoch);
@@ -741,58 +741,58 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 			::WaitForSingleObject(queuedFailure, INFINITE));
 		(void)::CloseHandle(queuedFailure);
 		const UINT64 replacementEpoch =
-			MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::Begin(
 				companionPlayer, companionMask);
 		CUI_EXPECT_TRUE(replacementEpoch > queuedFailureEpoch);
 		cui::PumpUIThreadCallbacks();
 		CUI_EXPECT_EQ(0, companionFailures);
 
 		// The same failure remains terminal while its captured epoch is current.
-		MediaPlayerRegressionTestAccess::HandleSessionFailure(
+		MediaElementRegressionTestAccess::HandleSessionFailure(
 			companionPlayer, E_ABORT, replacementEpoch);
 		CUI_EXPECT_EQ(0, companionFailures);
 		cui::PumpUIThreadCallbacks();
 		CUI_EXPECT_EQ(1, companionFailures);
-		CUI_EXPECT_FALSE(MediaPlayerRegressionTestAccess::Signal(
+		CUI_EXPECT_FALSE(MediaElementRegressionTestAccess::Signal(
 			companionPlayer, companionMask, replacementEpoch));
 		companionPlayer.Close();
 	});
 
-	runner.Add("MediaPlayer async session provenance rejects stale callbacks", []
+	runner.Add("MediaElement async session provenance rejects stale callbacks", []
 	{
-		MediaPlayer standalone;
-		MediaPlayerRegressionTestAccess::ConfigureStandalone(standalone);
+		MediaElement standalone;
+		MediaElementRegressionTestAccess::ConfigureStandalone(standalone);
 		const UINT64 firstGeneration =
-			MediaPlayerRegressionTestAccess::CurrentExplicit(standalone);
+			MediaElementRegressionTestAccess::CurrentExplicit(standalone);
 		const UINT64 firstStart =
-			MediaPlayerRegressionTestAccess::QueueAcceptedStandaloneStart(
+			MediaElementRegressionTestAccess::QueueAcceptedStandaloneStart(
 				standalone);
 		// Synchronous IMFMediaSession::Start success is only acceptance; the
 		// active run must remain unpublished until MESessionStarted arrives.
 		CUI_EXPECT_EQ(static_cast<UINT64>(0),
-			MediaPlayerRegressionTestAccess::ActiveStandalone(standalone).first);
+			MediaElementRegressionTestAccess::ActiveStandalone(standalone).first);
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveStandaloneStart(standalone));
+			MediaElementRegressionTestAccess::ObserveStandaloneStart(standalone));
 		CUI_EXPECT_EQ(firstStart,
-			MediaPlayerRegressionTestAccess::ActiveStandalone(standalone).first);
+			MediaElementRegressionTestAccess::ActiveStandalone(standalone).first);
 
 		const UINT64 replacementGeneration =
-			MediaPlayerRegressionTestAccess::AdvanceExplicit(standalone);
+			MediaElementRegressionTestAccess::AdvanceExplicit(standalone);
 		const UINT64 replacementStart =
-			MediaPlayerRegressionTestAccess::QueueAcceptedStandaloneStart(
+			MediaElementRegressionTestAccess::QueueAcceptedStandaloneStart(
 				standalone);
 		CUI_EXPECT_EQ(firstStart,
-			MediaPlayerRegressionTestAccess::ActiveStandalone(standalone).first);
+			MediaElementRegressionTestAccess::ActiveStandalone(standalone).first);
 		const auto staleFailure =
-			MediaPlayerRegressionTestAccess::CaptureStandaloneFailure(standalone);
+			MediaElementRegressionTestAccess::CaptureStandaloneFailure(standalone);
 		CUI_EXPECT_EQ(firstStart, staleFailure.first);
 		CUI_EXPECT_EQ(firstGeneration, staleFailure.second);
 		CUI_EXPECT_FALSE(
-			MediaPlayerRegressionTestAccess::ObserveStandaloneEnd(standalone));
+			MediaElementRegressionTestAccess::ObserveStandaloneEnd(standalone));
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveStandaloneStart(standalone));
+			MediaElementRegressionTestAccess::ObserveStandaloneStart(standalone));
 		const auto replacementActive =
-			MediaPlayerRegressionTestAccess::ActiveStandalone(standalone);
+			MediaElementRegressionTestAccess::ActiveStandalone(standalone);
 		CUI_EXPECT_EQ(replacementStart, replacementActive.first);
 		CUI_EXPECT_EQ(replacementGeneration, replacementActive.second);
 
@@ -800,53 +800,53 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		// rebind it to the new explicit generation so its eventual Ended remains
 		// observable instead of being discarded as stale.
 		const UINT64 failedCommandGeneration =
-			MediaPlayerRegressionTestAccess::AdvanceExplicit(standalone);
-		MediaPlayerRegressionTestAccess::FailStandaloneStopSynchronously(
+			MediaElementRegressionTestAccess::AdvanceExplicit(standalone);
+		MediaElementRegressionTestAccess::FailStandaloneStopSynchronously(
 			standalone);
 		const auto restoredActive =
-			MediaPlayerRegressionTestAccess::ActiveStandalone(standalone);
+			MediaElementRegressionTestAccess::ActiveStandalone(standalone);
 		CUI_EXPECT_EQ(replacementStart, restoredActive.first);
 		CUI_EXPECT_EQ(failedCommandGeneration, restoredActive.second);
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveStandaloneEnd(standalone));
+			MediaElementRegressionTestAccess::ObserveStandaloneEnd(standalone));
 
-		MediaPlayer synchronousCompletion;
-		MediaPlayerRegressionTestAccess::ConfigureStandalone(
+		MediaElement synchronousCompletion;
+		MediaElementRegressionTestAccess::ConfigureStandalone(
 			synchronousCompletion);
-		const auto synchronousStart = MediaPlayerRegressionTestAccess::
+		const auto synchronousStart = MediaElementRegressionTestAccess::
 			CompleteStandaloneStartBeforeSynchronousReturn(
 				synchronousCompletion);
 		CUI_EXPECT_TRUE(synchronousStart.first != 0);
 		CUI_EXPECT_EQ(synchronousStart.first, synchronousStart.second);
 
-		MediaPlayer companion;
-		MediaPlayerRegressionTestAccess::Configure(companion, true);
+		MediaElement companion;
+		MediaElementRegressionTestAccess::Configure(companion, true);
 		const UINT8 companionMask =
-			MediaPlayerRegressionTestAccess::ReaderVideo()
-			| MediaPlayerRegressionTestAccess::CompanionSession();
-		const UINT64 activeEpoch = MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::ReaderVideo()
+			| MediaElementRegressionTestAccess::CompanionSession();
+		const UINT64 activeEpoch = MediaElementRegressionTestAccess::Begin(
 			companion, companionMask);
 		CUI_EXPECT_EQ(activeEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionStart(companion));
-		MediaPlayerRegressionTestAccess::ObserveSessionStarted(companion);
-		const UINT64 pauseEpoch = MediaPlayerRegressionTestAccess::Begin(
+			MediaElementRegressionTestAccess::QueueSessionStart(companion));
+		MediaElementRegressionTestAccess::ObserveSessionStarted(companion);
+		const UINT64 pauseEpoch = MediaElementRegressionTestAccess::Begin(
 			companion, companionMask);
 		CUI_EXPECT_EQ(pauseEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionPause(companion));
+			MediaElementRegressionTestAccess::QueueSessionPause(companion));
 		// A generic error delivered before the Pause status is still owned by
 		// the superseded active run and must be rejected by the new epoch.
 		CUI_EXPECT_EQ(activeEpoch,
-			MediaPlayerRegressionTestAccess::CaptureSessionFailureEpoch(
+			MediaElementRegressionTestAccess::CaptureSessionFailureEpoch(
 				companion));
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveSessionPause(
+			MediaElementRegressionTestAccess::ObserveSessionPause(
 				companion, S_OK));
-		const UINT64 stopEpoch = MediaPlayerRegressionTestAccess::Begin(
+		const UINT64 stopEpoch = MediaElementRegressionTestAccess::Begin(
 			companion, companionMask);
 		CUI_EXPECT_EQ(stopEpoch,
-			MediaPlayerRegressionTestAccess::QueueSessionStop(companion));
+			MediaElementRegressionTestAccess::QueueSessionStop(companion));
 		CUI_EXPECT_TRUE(
-			MediaPlayerRegressionTestAccess::ObserveSessionStopFailed(
+			MediaElementRegressionTestAccess::ObserveSessionStopFailed(
 				companion));
 	});
 
@@ -894,7 +894,7 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 			WindowAccess::PresentationCommittedFrameCount(window) > committed);
 	});
 
-	runner.Add("MediaPlayer NV12 fallback preserves odd aperture geometry", []
+	runner.Add("MediaElement NV12 fallback preserves odd aperture geometry", []
 	{
 		constexpr UINT32 width = 4;
 		constexpr UINT32 height = 4;
@@ -908,7 +908,7 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		}
 
 		std::vector<uint8_t> bgra;
-		CUI_EXPECT_TRUE(MediaPlayer::ConvertNV12ToBGRA(
+		CUI_EXPECT_TRUE(MediaElement::ConvertNV12ToBGRA(
 			nv12.data(), nv12.size(), stride, width, height,
 			1, 1, 3, 3, MFVideoTransferMatrix_BT601,
 			MFNominalRange_16_235, bgra));
@@ -923,7 +923,7 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		CUI_EXPECT_TRUE(bgra.front() != bgra[8 * 4]);
 	});
 
-	runner.Add("MediaPlayer NV12 fallback honors matrix and range", []
+	runner.Add("MediaElement NV12 fallback honors matrix and range", []
 	{
 		std::vector<uint8_t> nv12{
 			100, 100,
@@ -932,15 +932,15 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		std::vector<uint8_t> bt601Limited;
 		std::vector<uint8_t> bt709Limited;
 		std::vector<uint8_t> bt601Full;
-		CUI_EXPECT_TRUE(MediaPlayer::ConvertNV12ToBGRA(
+		CUI_EXPECT_TRUE(MediaElement::ConvertNV12ToBGRA(
 			nv12.data(), nv12.size(), 2, 2, 2, 0, 0, 2, 2,
 			MFVideoTransferMatrix_BT601, MFNominalRange_16_235,
 			bt601Limited));
-		CUI_EXPECT_TRUE(MediaPlayer::ConvertNV12ToBGRA(
+		CUI_EXPECT_TRUE(MediaElement::ConvertNV12ToBGRA(
 			nv12.data(), nv12.size(), 2, 2, 2, 0, 0, 2, 2,
 			MFVideoTransferMatrix_BT709, MFNominalRange_16_235,
 			bt709Limited));
-		CUI_EXPECT_TRUE(MediaPlayer::ConvertNV12ToBGRA(
+		CUI_EXPECT_TRUE(MediaElement::ConvertNV12ToBGRA(
 			nv12.data(), nv12.size(), 2, 2, 2, 0, 0, 2, 2,
 			MFVideoTransferMatrix_BT601, MFNominalRange_0_255,
 			bt601Full));
@@ -952,7 +952,7 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		CUI_EXPECT_TRUE(bt601Limited != bt601Full);
 
 		std::vector<uint8_t> unsupported{ 1, 2, 3 };
-		CUI_EXPECT_FALSE(MediaPlayer::ConvertNV12ToBGRA(
+		CUI_EXPECT_FALSE(MediaElement::ConvertNV12ToBGRA(
 			nv12.data(), nv12.size(), 2, 2, 2, 0, 0, 2, 2,
 			MFVideoTransferMatrix_BT2020_10,
 			MFNominalRange_16_235, unsupported));
@@ -1175,71 +1175,85 @@ void RegisterMediaPlayerRegressionTests(cui::test::Runner& runner)
 		if (!childMediaPath.empty())
 		{
 			Window host;
-			auto mediaOwner = std::make_unique<MediaPlayer>();
-			auto* mediaPlayer = mediaOwner.get();
+			auto mediaOwner = std::make_unique<MediaElement>();
+			auto* mediaElement = mediaOwner.get();
 			host.SetVisualContent(std::move(mediaOwner));
-			mediaPlayer->AutoPlay = false;
-			CUI_EXPECT_TRUE(mediaPlayer->Load(childMediaPath));
-			CUI_EXPECT_TRUE(mediaPlayer->IsLoaded());
-			CUI_EXPECT_TRUE(mediaPlayer->HasVideo);
-			CUI_EXPECT_FALSE(mediaPlayer->HasAudio);
+			mediaElement->LoadedBehavior = MediaState::Manual;
+			CUI_EXPECT_TRUE(mediaElement->Load(childMediaPath));
+			CUI_EXPECT_TRUE(mediaElement->IsLoaded());
+			CUI_EXPECT_TRUE(mediaElement->HasVideo);
+			CUI_EXPECT_FALSE(mediaElement->HasAudio);
 
-			mediaPlayer->Loop = true;
-			CUI_EXPECT_TRUE(mediaPlayer->TryPlay());
+			mediaElement->Loop = true;
+			CUI_EXPECT_TRUE(mediaElement->TryPlay());
 			const auto firstReadDeadline = std::chrono::steady_clock::now()
 				+ std::chrono::seconds(2);
-			while (mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls == 0
+			while (mediaElement->GetPerformanceSnapshot().ReadSampleCalls == 0
 				&& std::chrono::steady_clock::now() < firstReadDeadline)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			CUI_EXPECT_TRUE(
-				mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls > 0);
+				mediaElement->GetPerformanceSnapshot().ReadSampleCalls > 0);
 
 			const auto pausedSnapshot =
-				mediaPlayer->PauseAndGetPerformanceSnapshot();
+				mediaElement->PauseAndGetPerformanceSnapshot();
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			const auto stableSnapshot = mediaPlayer->GetPerformanceSnapshot();
+			const auto stableSnapshot = mediaElement->GetPerformanceSnapshot();
 			CUI_EXPECT_EQ(
 				pausedSnapshot.ReadSampleCalls, stableSnapshot.ReadSampleCalls);
 			CUI_EXPECT_EQ(
 				pausedSnapshot.DecodedVideoFrames,
 				stableSnapshot.DecodedVideoFrames);
-			CUI_EXPECT_FALSE(mediaPlayer->IsPlaying());
+			CUI_EXPECT_FALSE(mediaElement->IsPlaying());
 
 			// A later explicit command must reopen a quiesced gate.
-			CUI_EXPECT_TRUE(mediaPlayer->TryPlay());
+			CUI_EXPECT_TRUE(mediaElement->TryPlay());
 			const auto resumedReadDeadline = std::chrono::steady_clock::now()
 				+ std::chrono::seconds(2);
-			while (mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls
+			while (mediaElement->GetPerformanceSnapshot().ReadSampleCalls
 					== stableSnapshot.ReadSampleCalls
 				&& std::chrono::steady_clock::now() < resumedReadDeadline)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			CUI_EXPECT_TRUE(
-				mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls
+				mediaElement->GetPerformanceSnapshot().ReadSampleCalls
 					> stableSnapshot.ReadSampleCalls);
 
 			// A playing seek must first quiesce the synchronous SourceReader and
 			// then reopen the worker without racing a pending ReadSample.
-			const auto beforeSeek = mediaPlayer->GetPerformanceSnapshot();
-			CUI_EXPECT_TRUE(mediaPlayer->TrySeek(0.0));
+			const auto beforeSeek = mediaElement->GetPerformanceSnapshot();
+			CUI_EXPECT_TRUE(mediaElement->TrySeek(0.0));
 			const auto seekResumeDeadline = std::chrono::steady_clock::now()
 				+ std::chrono::seconds(2);
-			while (mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls
+			while (mediaElement->GetPerformanceSnapshot().ReadSampleCalls
 					== beforeSeek.ReadSampleCalls
 				&& std::chrono::steady_clock::now() < seekResumeDeadline)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			CUI_EXPECT_TRUE(
-				mediaPlayer->GetPerformanceSnapshot().ReadSampleCalls
+				mediaElement->GetPerformanceSnapshot().ReadSampleCalls
 					> beforeSeek.ReadSampleCalls);
-			CUI_EXPECT_TRUE(mediaPlayer->IsPlaying());
-			CUI_EXPECT_FALSE(mediaPlayer->HasMediaError());
-			(void)mediaPlayer->PauseAndGetPerformanceSnapshot();
-			mediaPlayer->Close();
+			CUI_EXPECT_TRUE(mediaElement->IsPlaying());
+			CUI_EXPECT_FALSE(mediaElement->HasMediaError());
+			(void)mediaElement->PauseAndGetPerformanceSnapshot();
+			mediaElement->Close();
+
+			// WPF Manual control retains Source across Close and opens it lazily
+			// for Pause/Stop as well as Play.
+			CUI_EXPECT_FALSE(mediaElement->IsLoaded());
+			CUI_EXPECT_EQ(childMediaPath, mediaElement->Source);
+			CUI_EXPECT_TRUE(mediaElement->TryPause());
+			CUI_EXPECT_TRUE(mediaElement->IsLoaded());
+			CUI_EXPECT_TRUE(mediaElement->IsPaused());
+			mediaElement->Close();
+			CUI_EXPECT_TRUE(mediaElement->TryStop());
+			CUI_EXPECT_TRUE(mediaElement->IsLoaded());
+			CUI_EXPECT_TRUE(mediaElement->IsStopped());
+			CUI_EXPECT_NEAR(0.0, mediaElement->Position, 0.000001);
+			mediaElement->Close();
 			return;
 		}
 

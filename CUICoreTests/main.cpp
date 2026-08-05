@@ -1,5 +1,5 @@
 #include "TestRunner.h"
-#include "MediaPlayerRegressionTests.h"
+#include "MediaElementRegressionTests.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include <EventInfrastructure.h>
 #include <Application.h>
@@ -43,7 +43,7 @@
 #include <DependencyPropertyInfrastructure.h>
 #include <TemplateInfrastructure.h>
 #include <LoadingRing.h>
-#include <MediaPlayer.h>
+#include <MediaElement.h>
 #include <Menu.h>
 #include <NativeSurface.h>
 #include <NotifyIcon.h>
@@ -722,9 +722,6 @@ namespace
 				&& region->second == L"header")
 				found->Structure.ChildRole =
 					DesignerModel::DesignNodeChildRole::Header;
-			if (const auto media = control->DesignStrings.find(L"mediaFile");
-				media != control->DesignStrings.end())
-				found->Structure.MediaFile = media->second;
 			if (const auto* grid = dynamic_cast<Grid*>(
 				control->ControlInstance))
 			{
@@ -2158,7 +2155,7 @@ namespace
 int main()
 {
     cui::test::Runner runner;
-	RegisterMediaPlayerRegressionTests(runner);
+	RegisterMediaElementRegressionTests(runner);
 
 	runner.Add("WPF element hierarchy owns dispatcher property visual input and framework boundaries", []
 	{
@@ -11880,10 +11877,10 @@ int main()
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyValue(
 			picture, L"Stretch", { DesignerStyleValueKind::Int, L"3" },
 			nullptr, nullptr, &error));
-		CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::UniformToFill,
+		CUI_EXPECT_EQ(::Stretch::UniformToFill,
 			picture.Stretch);
 		CUI_EXPECT_TRUE(picture.ResetPropertyValue(L"Stretch"));
-		CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::Uniform,
+		CUI_EXPECT_EQ(::Stretch::Uniform,
 			picture.Stretch);
 
 		TreeView tree; ConfigureTestControl(tree, 0, 0);
@@ -12243,24 +12240,24 @@ int main()
 		CUI_EXPECT_EQ(std::wstring(L"primary-button"),
 			cui::framework::StyleAccess::ResourceKey(button));
 
-		MediaPlayer media; ConfigureTestControl(media, 0, 0, 320, 180);
+		MediaElement media; ConfigureTestControl(media, 0, 0, 320, 180);
 		DesignerControl mediaTarget(
-			&media, L"mediaPlayer1", UIClass::UI_MediaPlayer);
+			&media, L"mediaElement1", UIClass::UI_MediaElement);
 		const auto mediaProperties =
 			DesignerControlPropertyCatalog::GetProperties(mediaTarget);
-		CUI_EXPECT_TRUE(mediaProperties.size() >= 5);
+		CUI_EXPECT_EQ(3ULL, mediaProperties.size());
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
-			mediaTarget, L"Template") != nullptr);
-		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
-			mediaTarget, context, L"MediaFile",
-			{ DesignerStyleValueKind::String, L"  C:\\media\\clip.mp4  " },
-			&effective, &error));
-		CUI_EXPECT_EQ(std::wstring(L"C:\\media\\clip.mp4"),
-			mediaTarget.DesignStrings[L"mediaFile"]);
-		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
-			mediaTarget, context, L"MediaFile", &effective, &error));
-		CUI_EXPECT_TRUE(mediaTarget.DesignStrings.find(L"mediaFile")
-			== mediaTarget.DesignStrings.end());
+			mediaTarget, L"Name") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			mediaTarget, L"Locked") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			mediaTarget, L"Style") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			mediaTarget, L"Template") == nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			mediaTarget, L"MediaFile") == nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			mediaTarget, L"Source") == nullptr);
 
 		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::ApplyValue(
 			target, context, L"Missing",
@@ -12502,17 +12499,25 @@ int main()
 		CUI_EXPECT_TRUE(value != nullptr);
 		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Text, value->Editor);
 
-		MediaPlayer media; ConfigureTestControl(media, 0, 0, 320, 180);
+		MediaElement media; ConfigureTestControl(media, 0, 0, 320, 180);
 		DesignerControl mediaTarget(
-			&media, L"mediaPlayer1", UIClass::UI_MediaPlayer);
+			&media, L"mediaElement1", UIClass::UI_MediaElement);
 		const auto mediaRows = DesignerPropertyRowCatalog::GetControlRows(
 			mediaTarget, context);
-		const auto* mediaFile = DesignerPropertyRowCatalog::Find(
-			mediaRows, L"MediaFile");
-		CUI_EXPECT_TRUE(mediaFile != nullptr);
-		CUI_EXPECT_EQ(DesignerPropertyRowSource::ControlDesign,
-			mediaFile->Source);
-		CUI_EXPECT_EQ(std::wstring(L"Data"), mediaFile->Category);
+		const auto* mediaSource = DesignerPropertyRowCatalog::Find(
+			mediaRows, L"Source");
+		CUI_EXPECT_TRUE(mediaSource != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowSource::RuntimeMetadata,
+			mediaSource->Source);
+		CUI_EXPECT_EQ(std::wstring(L"Media"), mediaSource->Category);
+		for (const auto* obsoleteOrControlProperty : {
+			L"MediaFile", L"AutoPlay", L"PlaybackRate", L"RenderMode",
+			L"Template", L"Background", L"BorderBrush",
+			L"BorderThickness", L"Padding" })
+		{
+			CUI_EXPECT_TRUE(DesignerPropertyRowCatalog::Find(
+				mediaRows, obsoleteOrControlProperty) == nullptr);
+		}
 
 		ItemsControl itemsControl; ConfigureTestControl(itemsControl, 0, 0, 240, 160);
 		DesignerControl itemsTarget(
@@ -15818,47 +15823,75 @@ int main()
 			list.GetGeneratedItem(1))->IsSelected);
 	});
 
-	runner.Add("MediaPlayer metadata, binding, safe controls and codegen stay coherent", []
+	runner.Add("MediaElement metadata, binding, safe controls and codegen stay coherent", []
 	{
-		MediaPlayer media; ConfigureTestControl(media, 0, 0, 320, 180);
+		MediaElement media; ConfigureTestControl(media, 0, 0, 320, 180);
 		const auto properties =
 			DesignerPropertyCatalog::GetBrowsableProperties(media);
-		const auto* autoPlay =
-			DesignerPropertyCatalog::Find(properties, L"AutoPlay");
+		const auto* sourceProperty =
+			DesignerPropertyCatalog::Find(properties, L"Source");
+		const auto* loadedBehavior =
+			DesignerPropertyCatalog::Find(properties, L"LoadedBehavior");
+		const auto* unloadedBehavior =
+			DesignerPropertyCatalog::Find(properties, L"UnloadedBehavior");
 		const auto* volume =
 			DesignerPropertyCatalog::Find(properties, L"Volume");
 		const auto* playbackRate =
-			DesignerPropertyCatalog::Find(properties, L"PlaybackRate");
+			DesignerPropertyCatalog::Find(properties, L"SpeedRatio");
 		const auto* hardware =
 			DesignerPropertyCatalog::Find(properties, L"EnableHardwareDecode");
 		const auto* nv12 =
 			DesignerPropertyCatalog::Find(properties, L"PreferNv12VideoOutput");
-		const auto* renderMode =
-			DesignerPropertyCatalog::Find(properties, L"RenderMode");
-		CUI_EXPECT_TRUE(autoPlay != nullptr);
+		const auto* stretch =
+			DesignerPropertyCatalog::Find(properties, L"Stretch");
+		const auto* stretchDirection =
+			DesignerPropertyCatalog::Find(properties, L"StretchDirection");
+		CUI_EXPECT_TRUE(sourceProperty != nullptr);
+		CUI_EXPECT_TRUE(loadedBehavior != nullptr);
+		CUI_EXPECT_TRUE(unloadedBehavior != nullptr);
 		CUI_EXPECT_TRUE(volume != nullptr);
 		CUI_EXPECT_TRUE(playbackRate != nullptr);
 		CUI_EXPECT_TRUE(hardware != nullptr);
 		CUI_EXPECT_TRUE(nv12 != nullptr);
-		CUI_EXPECT_TRUE(renderMode != nullptr);
+		CUI_EXPECT_TRUE(stretch != nullptr);
+		CUI_EXPECT_TRUE(stretchDirection != nullptr);
+		for (const auto* obsoleteName : {
+			L"MediaFile", L"AutoPlay", L"PlaybackRate", L"RenderMode" })
+		{
+			CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+				properties, obsoleteName) == nullptr);
+		}
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata, volume->Persistence);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number, volume->Editor);
 		CUI_EXPECT_TRUE(volume->Minimum.has_value());
 		CUI_EXPECT_TRUE(volume->Maximum.has_value());
 		CUI_EXPECT_EQ(0.0, *volume->Minimum);
 		CUI_EXPECT_EQ(1.0, *volume->Maximum);
-		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Choice, renderMode->Editor);
-		CUI_EXPECT_EQ(5ULL, renderMode->Choices.size());
+		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata,
+			sourceProperty->Persistence);
+		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Choice, stretch->Editor);
+		CUI_EXPECT_EQ(4ULL, stretch->Choices.size());
 		CUI_EXPECT_NEAR(0.5, media.Volume, 0.0000001);
+		CUI_EXPECT_EQ(MediaState::Play, media.LoadedBehavior);
+		CUI_EXPECT_EQ(MediaState::Close, media.UnloadedBehavior);
+		auto& mediaPeer = media.GetAutomationPeer();
+		CUI_EXPECT_EQ(AutomationControlType::Custom,
+			mediaPeer.GetAutomationControlType());
+		CUI_EXPECT_EQ(std::wstring(L"CUI.MediaElement"),
+			mediaPeer.GetAutomationClassName());
+		CUI_EXPECT_FALSE(mediaPeer.SupportsPattern(AutomationPattern::Invoke));
 
 		const std::array mediaProperties{
-			&MediaPlayer::AutoPlayProperty(),
-			&MediaPlayer::LoopProperty(),
-			&MediaPlayer::VolumeProperty(),
-			&MediaPlayer::PlaybackRateProperty(),
-			&MediaPlayer::EnableHardwareDecodeProperty(),
-			&MediaPlayer::PreferNv12VideoOutputProperty(),
-			&MediaPlayer::RenderModeProperty()
+			&MediaElement::SourceProperty(),
+			&MediaElement::LoadedBehaviorProperty(),
+			&MediaElement::UnloadedBehaviorProperty(),
+			&MediaElement::LoopProperty(),
+			&MediaElement::VolumeProperty(),
+			&MediaElement::SpeedRatioProperty(),
+			&MediaElement::EnableHardwareDecodeProperty(),
+			&MediaElement::PreferNv12VideoOutputProperty(),
+			&MediaElement::StretchProperty(),
+			&MediaElement::StretchDirectionProperty()
 		};
 		for (const auto* property : mediaProperties)
 		{
@@ -15867,21 +15900,21 @@ int main()
 			CUI_EXPECT_TRUE(metadata && metadata->UsesGenericObservation());
 		}
 		const auto* volumeMetadata = media.GetPropertyMetadata(
-			MediaPlayer::VolumeProperty());
+			MediaElement::VolumeProperty());
 		if (!volumeMetadata) return;
 		int volumeObservations = 0;
 		auto volumeObservation = volumeMetadata->Subscribe(
 			media, [&] { ++volumeObservations; },
 			DataSourceUpdateMode::OnPropertyChanged);
 		CUI_EXPECT_TRUE(volumeObservation.Connected());
-		media.AutoPlay = false;
+		media.LoadedBehavior = MediaState::Manual;
 		CUI_EXPECT_EQ(0, volumeObservations);
 
 		int propertyChanges = 0;
 		auto propertyConnection = media.OnPropertyValueChanged.Subscribe(
 			[&](DependencyObject*, const DependencyPropertyChangedEventArgs& args)
 			{
-				if (args.Property == &MediaPlayer::VolumeProperty()) ++propertyChanges;
+				if (args.Property == &MediaElement::VolumeProperty()) ++propertyChanges;
 			});
 		media.Volume = 2.0;
 		CUI_EXPECT_NEAR(1.0, media.Volume, 0.0000001);
@@ -15891,29 +15924,62 @@ int main()
 		CUI_EXPECT_NEAR(0.35, media.Volume, 0.0000001);
 		CUI_EXPECT_EQ(2, propertyChanges);
 		CUI_EXPECT_EQ(2, volumeObservations);
-		media.PlaybackRate = 12.0f;
-		CUI_EXPECT_NEAR(4.0f, media.PlaybackRate, 0.0001f);
+		media.SpeedRatio = 12.0;
+		CUI_EXPECT_NEAR(4.0, media.SpeedRatio, 0.0001);
 		CUI_EXPECT_FALSE(media.TrySetPropertyValue(
-			MediaPlayer::RenderModeProperty(), BindingValue(99)));
-		CUI_EXPECT_EQ(MediaPlayer::VideoRenderMode::Fit, media.RenderMode);
+			MediaElement::StretchProperty(), BindingValue(
+				static_cast<::Stretch>(99))));
+		CUI_EXPECT_EQ(::Stretch::Uniform, media.Stretch);
+		CUI_EXPECT_FALSE(media.TrySetPropertyValue(
+			MediaElement::StretchDirectionProperty(), BindingValue(
+				static_cast<::StretchDirection>(99))));
+		CUI_EXPECT_EQ(::StretchDirection::Both, media.StretchDirection);
+
+		const auto fillScale = cui::layout::ComputeStretchScaleFactor(
+			{ 640.0f, 480.0f }, { 1920.0f, 1080.0f },
+			::Stretch::Fill, ::StretchDirection::Both);
+		CUI_EXPECT_NEAR(1.0f / 3.0f, fillScale.width, 0.000001f);
+		CUI_EXPECT_NEAR(4.0f / 9.0f, fillScale.height, 0.000001f);
+		const auto uniformScale = cui::layout::ComputeStretchScaleFactor(
+			{ 640.0f, 480.0f }, { 1920.0f, 1080.0f },
+			::Stretch::Uniform, ::StretchDirection::Both);
+		CUI_EXPECT_NEAR(1.0f / 3.0f, uniformScale.width, 0.000001f);
+		CUI_EXPECT_NEAR(1.0f / 3.0f, uniformScale.height, 0.000001f);
+		const auto uniformToFillScale = cui::layout::ComputeStretchScaleFactor(
+			{ 640.0f, 480.0f }, { 1920.0f, 1080.0f },
+			::Stretch::UniformToFill, ::StretchDirection::Both);
+		CUI_EXPECT_NEAR(4.0f / 9.0f,
+			uniformToFillScale.width, 0.000001f);
+		CUI_EXPECT_NEAR(4.0f / 9.0f,
+			uniformToFillScale.height, 0.000001f);
+		const auto upOnlyScale = cui::layout::ComputeStretchScaleFactor(
+			{ 320.0f, 180.0f }, { 1920.0f, 1080.0f },
+			::Stretch::Uniform, ::StretchDirection::UpOnly);
+		CUI_EXPECT_NEAR(1.0f, upOnlyScale.width, 0.000001f);
+		CUI_EXPECT_NEAR(1.0f, upOnlyScale.height, 0.000001f);
+		const auto downOnlyScale = cui::layout::ComputeStretchScaleFactor(
+			{ 3840.0f, 2160.0f }, { 1920.0f, 1080.0f },
+			::Stretch::Uniform, ::StretchDirection::DownOnly);
+		CUI_EXPECT_NEAR(1.0f, downOnlyScale.width, 0.000001f);
+		CUI_EXPECT_NEAR(1.0f, downOnlyScale.height, 0.000001f);
 
 		ObservableObject source;
 		source.SetValue(L"Level", 0.6);
-		MediaPlayer boundMedia; ConfigureTestControl(boundMedia, 0, 0, 320, 180);
+		MediaElement boundMedia; ConfigureTestControl(boundMedia, 0, 0, 320, 180);
 		auto* volumeBinding = boundMedia.DataBindings.Add(
-			MediaPlayer::VolumeProperty(), source, L"Level", BindingMode::TwoWay);
+			MediaElement::VolumeProperty(), source, L"Level", BindingMode::TwoWay);
 		CUI_EXPECT_TRUE(volumeBinding != nullptr);
 		CUI_EXPECT_TRUE(volumeBinding
 			&& volumeBinding->TargetPropertyIdentity()
-				== &MediaPlayer::VolumeProperty());
+				== &MediaElement::VolumeProperty());
 		CUI_EXPECT_TRUE(volumeBinding->IsValid());
 		CUI_EXPECT_NEAR(0.6, boundMedia.Volume, 0.0000001);
 		CUI_EXPECT_TRUE(boundMedia.TrySetCurrentPropertyValue(
-			MediaPlayer::VolumeProperty(), BindingValue(0.45)));
+			MediaElement::VolumeProperty(), BindingValue(0.45)));
 		CUI_EXPECT_NEAR(0.45,
 			source.GetValue<double>(L"Level"), 0.0000001);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
-			boundMedia.GetPropertyValueSource(MediaPlayer::VolumeProperty()));
+			boundMedia.GetPropertyValueSource(MediaElement::VolumeProperty()));
 
 		CUI_EXPECT_FALSE(media.TryPlay());
 		CUI_EXPECT_FALSE(media.TryPause());
@@ -15929,7 +15995,7 @@ int main()
 		int detailedErrors = 0;
 		HRESULT lastEventError = S_OK;
 		auto errorConnection = media.OnMediaError.Subscribe(
-			[&](MediaPlayer*, HRESULT error)
+			[&](MediaElement*, HRESULT error)
 			{
 				++detailedErrors;
 				lastEventError = error;
@@ -15942,10 +16008,9 @@ int main()
 		CUI_EXPECT_FALSE(media.HasMediaError());
 		media.Close();
 
-		MediaPlayer generated; ConfigureTestControl(generated, 0, 0, 320, 180);
+		MediaElement generated; ConfigureTestControl(generated, 0, 0, 320, 180);
 		auto designer = std::make_shared<DesignerControl>(
-			&generated, L"previewPlayer", UIClass::UI_MediaPlayer);
-		designer->DesignStrings[L"mediaFile"] = L"C:\\media\\clip.mp4";
+			&generated, L"previewPlayer", UIClass::UI_MediaElement);
 		std::wstring canonicalName;
 		DesignerStyleValue effectiveValue;
 		std::wstring error;
@@ -15957,31 +16022,153 @@ int main()
 				&canonicalName, &effectiveValue, &error));
 			designer->MetadataProperties[canonicalName] = effectiveValue;
 		};
-		applyTracked(L"AutoPlay", { DesignerStyleValueKind::Bool, L"false" });
-		applyTracked(L"Volume", { DesignerStyleValueKind::Double, L"0.25" });
-		applyTracked(L"PlaybackRate", { DesignerStyleValueKind::Float, L"1.5" });
-		applyTracked(L"RenderMode", {
+		applyTracked(L"Source", {
+			DesignerStyleValueKind::String, L"C:\\media\\clip.mp4" });
+		applyTracked(L"LoadedBehavior", {
 			DesignerStyleValueKind::Int,
-			std::to_wstring(static_cast<int>(MediaPlayer::VideoRenderMode::Fill)) });
+			std::to_wstring(static_cast<int>(MediaState::Manual)) });
+		applyTracked(L"UnloadedBehavior", {
+			DesignerStyleValueKind::Int,
+			std::to_wstring(static_cast<int>(MediaState::Close)) });
+		applyTracked(L"Volume", { DesignerStyleValueKind::Double, L"0.25" });
+		applyTracked(L"SpeedRatio", { DesignerStyleValueKind::Double, L"1.5" });
+		applyTracked(L"Stretch", {
+			DesignerStyleValueKind::Int,
+			std::to_wstring(static_cast<int>(
+				::Stretch::UniformToFill)) });
+		applyTracked(L"StretchDirection", {
+			DesignerStyleValueKind::Int,
+			std::to_wstring(static_cast<int>(
+				::StretchDirection::DownOnly)) });
+		CUI_EXPECT_EQ(std::wstring(L"C:\\media\\clip.mp4"), generated.Source);
 		DesignerModel::DesignDocument input;
 		CommitCodeGenFixtureDocument(input, { designer });
 		CodeGenerator generator(L"MediaMetadataWindow", input);
 		const auto cpp = generator.GenerateCpp();
-		const auto autoPlayPosition = cpp.find(
-			"previewPlayer->TrySetPropertyValue(L\"AutoPlay\", BindingValue(false))");
-		const auto volumePosition = cpp.find(
-			"previewPlayer->TrySetPropertyValue(L\"Volume\", BindingValue(0.25))");
-		const auto loadPosition = cpp.find(
-			"previewPlayer->Load(L\"C:\\\\media\\\\clip.mp4\")");
-		CUI_EXPECT_TRUE(autoPlayPosition != std::string::npos);
-		CUI_EXPECT_TRUE(volumePosition != std::string::npos);
-		CUI_EXPECT_TRUE(loadPosition != std::string::npos);
-		CUI_EXPECT_TRUE(autoPlayPosition < loadPosition);
-		CUI_EXPECT_TRUE(volumePosition < loadPosition);
-		CUI_EXPECT_TRUE(cpp.find("previewPlayer->AutoPlay =")
+		for (const auto* canonicalProperty : {
+			"Source", "LoadedBehavior", "UnloadedBehavior", "Volume",
+			"SpeedRatio", "Stretch", "StretchDirection" })
+		{
+			CUI_EXPECT_TRUE(cpp.find(std::string(
+				"previewPlayer->TrySetPropertyValue(L\"") + canonicalProperty
+				+ "\"") != std::string::npos);
+		}
+		CUI_EXPECT_TRUE(cpp.find("previewPlayer->Load(") == std::string::npos);
+		for (const auto* obsoleteToken : {
+			"AutoPlay", "PlaybackRate", "RenderMode", "MediaFile" })
+			CUI_EXPECT_TRUE(cpp.find(obsoleteToken) == std::string::npos);
+
+		const auto staticCpp = CodeGenerator(
+			L"MediaMetadataWindow", input,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("MediaMetadataWindow");
+		for (const auto* canonicalSetter : {
+			"previewPlayer->SetSource(",
+			"previewPlayer->SetLoadedBehavior(",
+			"previewPlayer->SetUnloadedBehavior(",
+			"previewPlayer->SetVolume(",
+			"previewPlayer->SetSpeedRatio(",
+			"previewPlayer->SetStretch(",
+			"previewPlayer->SetStretchDirection(" })
+		{
+			CUI_EXPECT_TRUE(staticCpp.find(canonicalSetter) != std::string::npos);
+		}
+		CUI_EXPECT_TRUE(staticCpp.find(
+			"std::make_unique<MediaElement>()") != std::string::npos);
+		CUI_EXPECT_TRUE(staticCpp.find("previewPlayer->Load(")
 			== std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find("previewPlayer->RenderMode =")
-			== std::string::npos);
+		for (const auto* obsoleteToken : {
+			"AutoPlay", "PlaybackRate", "RenderMode", "MediaFile",
+			"std::make_unique<MediaPlayer>", "\"MediaPlayer.h\"" })
+			CUI_EXPECT_TRUE(staticCpp.find(obsoleteToken) == std::string::npos);
+	});
+
+	runner.Add("MediaElement snapshot migration moves legacy mediaFile into Source", []
+	{
+		CUI_EXPECT_EQ(43,
+			DesignerModel::DesignDocument::CurrentSchemaVersion);
+
+		auto snapshotWithLegacyMediaFile = [](
+			const std::optional<std::wstring>& canonicalSource)
+		{
+			DesignerModel::DesignDocument document;
+			DesignerModel::DesignNode media;
+			media.Id = document.AllocateNodeId();
+			media.Name = L"snapshotMedia";
+			media.Type = UIClass::UI_MediaElement;
+			if (const auto* descriptor =
+				CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(media.Type))
+				media.XamlType = descriptor->TypeId;
+			if (canonicalSource)
+				SetDesignNodeProperty(media, L"Source",
+					DesignerStyleValueKind::String, *canonicalSource);
+			document.Nodes.push_back(std::move(media));
+
+			auto snapshot =
+				DesignerModel::DesignDocumentSerializer::ToXml(document);
+			const auto controlAt = snapshot.find("name=\"snapshotMedia\"");
+			CUI_EXPECT_TRUE(controlAt != std::string::npos);
+			const auto structureAt = snapshot.find("<structure", controlAt);
+			CUI_EXPECT_TRUE(structureAt != std::string::npos);
+			const auto structureBodyAt = snapshot.find('>', structureAt);
+			CUI_EXPECT_TRUE(structureBodyAt != std::string::npos);
+			if (structureBodyAt != std::string::npos)
+			{
+				const std::string legacyMember =
+					"<member name=\"mediaFile\" type=\"string\">"
+					"legacy-structure.mp4</member>";
+				if (structureBodyAt > structureAt
+					&& snapshot[structureBodyAt - 1] == '/')
+					snapshot.replace(structureBodyAt - 1, 2,
+						">" + legacyMember + "</structure>");
+				else
+					snapshot.insert(structureBodyAt + 1, legacyMember);
+			}
+			return snapshot;
+		};
+
+		std::wstring error;
+		DesignerModel::DesignDocument migrated;
+		const auto legacyOnly = snapshotWithLegacyMediaFile(std::nullopt);
+		CUI_EXPECT_TRUE(legacyOnly.find("version=\"43\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			legacyOnly, migrated, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, migrated.Nodes.size());
+		if (migrated.Nodes.size() == 1)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"legacy-structure.mp4"),
+				DesignNodePropertyText(migrated.Nodes.front(), L"Source"));
+			CUI_EXPECT_FALSE(DesignerModel::EncodeDesignNodeStructure(
+				UIClass::UI_MediaElement, migrated.Nodes.front().Structure)
+				.contains("mediaFile"));
+		}
+
+		DesignerModel::DesignDocument canonicalWins;
+		error.clear();
+		const auto canonicalAndLegacy = snapshotWithLegacyMediaFile(
+			std::wstring(L"canonical-source.mp4"));
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			canonicalAndLegacy, canonicalWins, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, canonicalWins.Nodes.size());
+		if (canonicalWins.Nodes.size() == 1)
+			CUI_EXPECT_EQ(std::wstring(L"canonical-source.mp4"),
+				DesignNodePropertyText(
+					canonicalWins.Nodes.front(), L"Source"));
+
+		DesignerModel::DesignValue directStructure =
+			DesignerModel::DesignValue::object();
+		directStructure["mediaFile"] = "direct-decode.mp4";
+		DesignerModel::DesignNodeStructure unchanged;
+		unchanged.ContentTemplate = L"sentinel-template";
+		const auto beforeDecode = unchanged;
+		error.clear();
+		CUI_EXPECT_FALSE(DesignerModel::DecodeDesignNodeStructure(
+			UIClass::UI_MediaElement, directStructure, unchanged, &error));
+		CUI_EXPECT_EQ(beforeDecode, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"mediaFile") != std::wstring::npos);
 	});
 
 	runner.Add("WebBrowser ABI, pending navigation, metadata and codegen stay coherent", []
@@ -35094,8 +35281,10 @@ int main()
 		document.Nodes.push_back(std::move(fileItem));
 		document.Nodes.push_back(std::move(openItem));
 		document.Nodes.push_back(std::move(menuSeparator));
-		addNode(8, L"player", UIClass::UI_MediaPlayer, {
-			{ "mediaFile", "media/demo.mp4" } });
+		addNode(8, L"player", UIClass::UI_MediaElement,
+			DesignerModel::DesignValue::object());
+		SetDesignNodeProperty(document.Nodes.back(), L"Source",
+			DesignerStyleValueKind::String, L"media/demo.mp4");
 		const auto canonical =
 			DesignerModel::XamlDocumentSerializer::ToXaml(document);
 		for (const auto forbidden : { "d:ProjectedProperties", "d:DesignProps",
@@ -35111,10 +35300,11 @@ int main()
 			"<SkewTransform", "<Control.Foreground>", "<LinearGradientBrush",
 			"x:Name=\"choiceOne\"", "x:Name=\"outlineRoot\"",
 			"x:Name=\"openMenuItem\"",
-			"Source=\"media/demo.mp4\"" })
+			"<MediaElement", "Source=\"media/demo.mp4\"" })
 			if (canonical.find(expected) == std::string::npos)
 				throw std::runtime_error(std::string(
 					"missing collection XAML marker: ") + expected);
+		CUI_EXPECT_TRUE(canonical.find("<MediaPlayer") == std::string::npos);
 
 		DesignerModel::DesignDocument parsed;
 		std::wstring error;
@@ -35205,11 +35395,18 @@ int main()
 		CUI_EXPECT_EQ(parsedFileItem->Id, parsedSeparator->ParentId);
 		CUI_EXPECT_EQ(UIClass::UI_Separator, parsedSeparator->Type);
 		CUI_EXPECT_EQ(std::wstring(L"media/demo.mp4"),
-			parsedPlayer->Structure.MediaFile);
+			DesignNodePropertyText(*parsedPlayer, L"Source"));
 		DesignerModel::RuntimeDocument runtime;
 		if (!DesignerModel::RuntimeDocumentLoader::Load(
 			parsed, runtime, {}, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* runtimeMedia = dynamic_cast<MediaElement*>(
+			runtime.FindControlByDesignId(8));
+		CUI_EXPECT_TRUE(runtimeMedia != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"media/demo.mp4"),
+			runtimeMedia ? runtimeMedia->Source : std::wstring{});
+		CUI_EXPECT_TRUE(runtimeMedia && !runtimeMedia->IsLoaded());
+		CUI_EXPECT_TRUE(runtimeMedia && runtimeMedia->MediaFile.empty());
 		auto* combo = dynamic_cast<ComboBox*>(runtime.FindControlByDesignId(1));
 		CUI_EXPECT_TRUE(combo != nullptr);
 		CUI_EXPECT_TRUE(combo && combo->GetForegroundBrush().has_value());
@@ -35400,7 +35597,7 @@ int main()
 		{
 			const auto brush = *imageLabel->GetForegroundBrush();
 			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
-			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::Uniform, brush.Stretch);
+			CUI_EXPECT_EQ(::Stretch::Uniform, brush.Stretch);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Right, brush.AlignmentX);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentY::Bottom, brush.AlignmentY);
 			CUI_EXPECT_NEAR(0.75f, brush.Opacity, 0.001f);
@@ -35421,7 +35618,7 @@ int main()
 		{
 			const auto brush = *inlineImageLabel->GetForegroundBrush();
 			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
-			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::None, brush.Stretch);
+			CUI_EXPECT_EQ(::Stretch::None, brush.Stretch);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Left, brush.AlignmentX);
 			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentY::Top, brush.AlignmentY);
 		}
@@ -36827,9 +37024,19 @@ int main()
 		auto browserStarting = DesignerEventCatalog::FindControlEvent(
 			UIClass::UI_WebBrowser, L"NavigationStarting");
 		CUI_EXPECT_TRUE(browserStarting.has_value());
-		auto mediaState = DesignerEventCatalog::FindControlEvent(
-			UIClass::UI_MediaPlayer, L"StateChanged");
-		CUI_EXPECT_TRUE(mediaState.has_value());
+		auto playbackState = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_MediaElement, L"PlaybackStateChanged");
+		CUI_EXPECT_TRUE(playbackState.has_value());
+		CUI_EXPECT_EQ(DesignerEventCategory::Media,
+			playbackState->Category);
+		CUI_EXPECT_EQ(std::string(
+			"MediaElement* sender, MediaElement::PlaybackState oldState, "
+			"MediaElement::PlaybackState newState"),
+			playbackState->ParameterList);
+		CUI_EXPECT_EQ(std::string("OnPlaybackStateChanged"),
+			playbackState->EventField);
+		CUI_EXPECT_FALSE(DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_MediaElement, L"StateChanged").has_value());
 		auto formTheme = DesignerEventCatalog::FindWindowEvent(L"ThemeChanged");
 		CUI_EXPECT_FALSE(formTheme.has_value());
 		CUI_EXPECT_FALSE(DesignerEventCatalog::FindControlEvent(
@@ -48491,6 +48698,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::array canonicalTypes{
 			std::pair{ L"TextBlock", UIClass::UI_Label },
 			std::pair{ L"Image", UIClass::UI_Image },
+			std::pair{ L"MediaElement", UIClass::UI_MediaElement },
 			std::pair{ L"ToggleButton", UIClass::UI_ToggleButton },
 			std::pair{ L"RadioButton", UIClass::UI_RadioButton },
 			std::pair{ L"Border", UIClass::UI_Border },
@@ -48589,6 +48797,36 @@ class FreshWindow : public FreshWindowGenerated {};
 			UIClass::UI_WebBrowser, L"Template") == nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_WebBrowser, L"Background") == nullptr);
+		CUI_EXPECT_EQ(UIClass::UI_FrameworkElement,
+			GetUIClassBase(UIClass::UI_MediaElement));
+		CUI_EXPECT_TRUE(IsUIClassAssignableFrom(
+			UIClass::UI_FrameworkElement, UIClass::UI_MediaElement));
+		CUI_EXPECT_FALSE(IsUIClassAssignableFrom(
+			UIClass::UI_Control, UIClass::UI_MediaElement));
+		const auto* mediaElementDescriptor =
+			CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				L"urn:cui", L"MediaElement");
+		CUI_EXPECT_TRUE(mediaElementDescriptor != nullptr);
+		CUI_EXPECT_TRUE(mediaElementDescriptor
+			&& !mediaElementDescriptor->FocusableByDefault);
+		CUI_EXPECT_TRUE(mediaElementDescriptor
+			&& !mediaElementDescriptor->DesignerIsContainer);
+		for (const auto* canonicalProperty : {
+			L"Source", L"LoadedBehavior", L"UnloadedBehavior", L"Volume",
+			L"SpeedRatio", L"Stretch", L"StretchDirection" })
+		{
+			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_MediaElement, canonicalProperty) != nullptr);
+		}
+		for (const auto* obsoleteOrControlProperty : {
+			L"MediaFile", L"AutoPlay", L"PlaybackRate", L"RenderMode",
+			L"Template", L"Background", L"BorderBrush",
+			L"BorderThickness", L"Padding", L"Foreground",
+			L"FontFamily", L"FontSize" })
+		{
+			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+				UIClass::UI_MediaElement, obsoleteOrControlProperty) == nullptr);
+		}
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_ToolBar, L"Header") != nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
@@ -48687,11 +48925,17 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		for (const auto* legacyName : { L"Base", L"Label", L"LinkLabel",
 			L"PictureBox", L"RadioBox", L"GridPanel",
-			L"ScrollView", L"SelectorItem" })
+			L"ScrollView", L"SelectorItem", L"MediaPlayer" })
 		{
 			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
 				L"urn:cui", legacyName) == nullptr);
 		}
+		DesignerModel::DesignDocument rejectedLegacyMedia;
+		std::wstring legacyMediaError;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"xaml(<Window xmlns="urn:cui"><MediaPlayer /></Window>)xaml",
+			rejectedLegacyMedia, &legacyMediaError));
+		CUI_EXPECT_TRUE(!legacyMediaError.empty());
 		const auto* left = CuiRuntime::XamlRuntimeSchema::FindAttachedProperty(
 			L"urn:cui", L"Canvas", L"Left");
 		CUI_EXPECT_TRUE(left != nullptr);

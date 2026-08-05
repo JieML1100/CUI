@@ -2336,13 +2336,13 @@ bool RunDesignerSelfTest(std::wstring& report)
 
 	DesignerCanvas nativeSliderCanvas(0, 0, 800, 640);
 	nativeSliderCanvas.AdoptVisualChildToCanvasCore(
-		UIClass::UI_MediaPlayer, POINT{ 170, 160 });
+		UIClass::UI_MediaElement, POINT{ 170, 160 });
 	PropertyGrid nativeSliderGrid(0, 0, 360, 620);
 	nativeSliderGrid.SetDesignerCanvas(&nativeSliderCanvas);
 	ReloadCurrentSelection(nativeSliderGrid, nativeSliderCanvas);
 	// RangeBase.Value is bounded by the live Minimum/Maximum dependency
 	// properties, not by fixed design metadata. Exercise the native bounded
-	// editor with MediaPlayer.Volume, whose metadata owns a fixed 0..1 interval.
+	// editor with MediaElement.Volume, whose metadata owns a fixed 0..1 interval.
 	const auto* boundedRow = DesignerPropertyRowCatalog::Find(
 		nativeSliderGrid.GetPresentedPropertyRows(), L"Volume");
 	auto* nativeSliderView = nativeSliderGrid.GetNativePropertyGrid();
@@ -7922,7 +7922,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 				&& badgeBrush->ImageSource->GetSourceUri()
 					== L"Assets/nav-overview.svg"
 				&& badgeBrush->Stretch
-					== cui::drawing::ImageBrushStretch::UniformToFill
+					== ::Stretch::UniformToFill
 				&& std::fabs(badgeBrush->Opacity - 0.9f) < 0.01f;
 			objectResourcesMaterialized = imageResourceMaterialized
 				&& gradientBrushResourceMaterialized
@@ -8051,7 +8051,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& FindControl(demoCanvas, L"notificationPanel")
 			&& FindControl(demoCanvas, L"toastMessage");
 		const bool webBrowserMaterialized = hasType(UIClass::UI_WebBrowser);
-		const bool mediaPlayerMaterialized = hasType(UIClass::UI_MediaPlayer);
+		const bool mediaElementMaterialized = hasType(UIClass::UI_MediaElement);
 		AppendFailure(failures,
 			demoParsed && demoApplied && demoRecaptured && demoCompact
 			&& staticCodeGenerationReady
@@ -8064,7 +8064,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& navigationCompositionMaterialized
 			&& notificationCompositionMaterialized
 			&& webBrowserMaterialized
-			&& mediaPlayerMaterialized,
+			&& mediaElementMaterialized,
 			L"public XAML gallery: DemoWindow WPF layout, preview geometry, or compact serialization regressed"
 			+ std::wstring(L" [path=") + demoPath.wstring()
 			+ L", parse=" + demoParseError
@@ -8089,7 +8089,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", notificationComposition="
 				+ (notificationCompositionMaterialized ? L"1" : L"0")
 			+ L", web=" + (webBrowserMaterialized ? L"1" : L"0")
-			+ L", media=" + (mediaPlayerMaterialized ? L"1" : L"0")
+			+ L", media=" + (mediaElementMaterialized ? L"1" : L"0")
 			+ L", compact=" + (demoCompact ? L"1" : L"0")
 			+ L", compactDetail=" + demoCompactDiagnostic
 			+ L", codegenReady=" + (staticCodeGenerationReady ? L"1" : L"0")

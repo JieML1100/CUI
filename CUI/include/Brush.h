@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Layout/LayoutTypes.h"
 #include "Transform.h"
 
 #include <d2d1.h>
@@ -13,6 +14,8 @@ struct ID2D1Brush;
 
 namespace cui::drawing
 {
+using ImageBrushStretch [[deprecated("Use ::Stretch")]] = ::Stretch;
+
 enum class BrushKind
 {
 	/** WPF null-brush value; paints nothing and reveals renderer/theme fallback. */
@@ -27,14 +30,6 @@ enum class BrushMappingMode
 {
 	Absolute,
 	RelativeToBoundingBox
-};
-
-enum class ImageBrushStretch
-{
-	None,
-	Fill,
-	Uniform,
-	UniformToFill
 };
 
 enum class ImageBrushAlignmentX
@@ -92,7 +87,7 @@ struct Brush
 	/** Applied in normalized 1x1 brush-output coordinates before mapping. */
 	std::optional<cui::drawing::Transform> RelativeTransform;
 	std::shared_ptr<BitmapSource> ImageSource;
-	ImageBrushStretch Stretch = ImageBrushStretch::Fill;
+	::Stretch Stretch = ::Stretch::Fill;
 	ImageBrushAlignmentX AlignmentX = ImageBrushAlignmentX::Center;
 	ImageBrushAlignmentY AlignmentY = ImageBrushAlignmentY::Center;
 

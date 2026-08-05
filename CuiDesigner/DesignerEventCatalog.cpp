@@ -9,7 +9,7 @@
 #include "../CUI/include/Window.h"
 #include "../CUI/include/ListView.h"
 #include "../CUI/include/ListBox.h"
-#include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/MediaElement.h"
 #include "../CUI/include/Menu.h"
 #include "../CUI/include/ContextMenu.h"
 #include "../CUI/include/NumericUpDown.h"
@@ -79,7 +79,7 @@ namespace
 	CUI_CPP_EVENT_TYPE(TabItem, "TabItem");
 	CUI_CPP_EVENT_TYPE(TreeView, "TreeView");
 	CUI_CPP_EVENT_TYPE(WebBrowser, "WebBrowser");
-	CUI_CPP_EVENT_TYPE(MediaPlayer, "MediaPlayer");
+	CUI_CPP_EVENT_TYPE(MediaElement, "MediaElement");
 	CUI_CPP_EVENT_TYPE(MouseEventArgs, "MouseEventArgs");
 	CUI_CPP_EVENT_TYPE(DragEventArgs, "DragEventArgs");
 	CUI_CPP_EVENT_TYPE(SizeChangedEventArgs, "SizeChangedEventArgs");
@@ -122,7 +122,7 @@ namespace
 		"WebBrowser::ProcessFailedArgs");
 	CUI_CPP_EVENT_TYPE(WebBrowser::WebMessageReceivedArgs,
 		"WebBrowser::WebMessageReceivedArgs");
-	CUI_CPP_EVENT_TYPE(MediaPlayer::PlayState, "MediaPlayer::PlayState");
+	CUI_CPP_EVENT_TYPE(MediaElement::PlaybackState, "MediaElement::PlaybackState");
 
 #undef CUI_CPP_EVENT_TYPE
 
@@ -198,7 +198,7 @@ namespace
 			|| Contains(name, L"Error") || Contains(name, L"Failed"))
 			return DesignerEventCategory::Diagnostics;
 		if (Contains(name, L"Media") || name == L"PositionChanged"
-			|| name == L"StateChanged")
+			|| name == L"PlaybackStateChanged")
 			return DesignerEventCategory::Media;
 		if (Contains(name, L"Mouse") || Contains(name, L"Hover"))
 			return DesignerEventCategory::Mouse;
@@ -267,7 +267,7 @@ namespace
 			return L"Click";
 		case UIClass::UI_WebBrowser:
 			return L"NavigationCompleted";
-		case UIClass::UI_MediaPlayer:
+		case UIClass::UI_MediaElement:
 			return L"MediaOpened";
 		default:
 			return L"MouseDown";
@@ -613,16 +613,16 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 				OnWebMessageReceived, "sender", "e"),
 		});
 		break;
-	case UIClass::UI_MediaPlayer:
+	case UIClass::UI_MediaElement:
 		Append(out, {
-			CUI_EVENT(MediaPlayer, OnMediaOpened, OnMediaOpened, "sender"),
-			CUI_EVENT(MediaPlayer, OnMediaEnded, OnMediaEnded, "sender"),
-			CUI_EVENT(MediaPlayer, OnMediaFailed, OnMediaFailed, "sender"),
-			CUI_EVENT(MediaPlayer, OnPositionChanged,
+			CUI_EVENT(MediaElement, OnMediaOpened, OnMediaOpened, "sender"),
+			CUI_EVENT(MediaElement, OnMediaEnded, OnMediaEnded, "sender"),
+			CUI_EVENT(MediaElement, OnMediaFailed, OnMediaFailed, "sender"),
+			CUI_EVENT(MediaElement, OnPositionChanged,
 				OnPositionChanged, "sender", "position"),
-			CUI_EVENT(MediaPlayer, OnStateChanged,
-				OnStateChanged, "sender", "oldState", "newState"),
-			CUI_EVENT(MediaPlayer, OnMediaError,
+			CUI_EVENT(MediaElement, OnPlaybackStateChanged,
+				OnPlaybackStateChanged, "sender", "oldState", "newState"),
+			CUI_EVENT(MediaElement, OnMediaError,
 				OnMediaError, "sender", "error"),
 		});
 		break;

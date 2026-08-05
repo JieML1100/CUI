@@ -614,6 +614,7 @@ UIClass GetUIClassBase(UIClass type) noexcept
 		return UIClass::UI_ListBox;
 	case UIClass::UI_Label:
 	case UIClass::UI_Image:
+	case UIClass::UI_MediaElement:
 	case UIClass::UI_WebBrowser:
 	case UIClass::UI_NativeSurface:
 		return UIClass::UI_FrameworkElement;

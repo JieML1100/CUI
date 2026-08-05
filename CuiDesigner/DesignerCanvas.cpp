@@ -73,7 +73,6 @@
 #include "../CUI/include/ToolBar.h"
 #include "../CUI/include/Menu.h"
 #include "../CUI/include/StatusBar.h"
-#include "../CUI/include/MediaPlayer.h"
 #include "../CUI/include/NativeSurface.h"
 #include "../CUI/include/Layout/StackPanel.h"
 #include "../CUI/include/Layout/Grid.h"
@@ -8827,9 +8826,9 @@ namespace
 		{
 			value["source"] = brush.ImageSource
 				? ToUtf8(brush.ImageSource->GetSourceUri()) : std::string{};
-			value["stretch"] = brush.Stretch == cui::drawing::ImageBrushStretch::None
-				? "none" : brush.Stretch == cui::drawing::ImageBrushStretch::Uniform
-					? "uniform" : brush.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+			value["stretch"] = brush.Stretch == ::Stretch::None
+				? "none" : brush.Stretch == ::Stretch::Uniform
+					? "uniform" : brush.Stretch == ::Stretch::UniformToFill
 						? "uniformToFill" : "fill";
 			value["alignmentX"] = brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
 				? "left" : brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
@@ -9857,14 +9856,6 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				}
 				extra["rows"] = rows;
 				extra["columns"] = cols;
-			}
-			else if (dc->Type == UIClass::UI_MediaPlayer)
-			{
-				auto* mediaPlayer = (MediaPlayer*)c;
-				// 设计期保存：媒体源路径放在 DesignStrings 中，避免加载文件也能保持可往返。
-				auto it = dc->DesignStrings.find(L"mediaFile");
-				std::wstring mediaFile = (it != dc->DesignStrings.end()) ? it->second : mediaPlayer->MediaFile;
-				if (!mediaFile.empty()) extra["mediaFile"] = ToUtf8(mediaFile);
 			}
 			auto shouldCaptureLocalObject = [&](const wchar_t* propertyName)
 			{

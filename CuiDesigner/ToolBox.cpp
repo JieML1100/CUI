@@ -264,7 +264,7 @@ namespace
 			d2d->DrawEllipse(cx, cy, 3.5f, 8.0f, color, 1.0f);
 			d2d->DrawLine(cx - 8.0f, cy, cx + 8.0f, cy, color, 1.0f);
 			break;
-		case UIClass::UI_MediaPlayer:
+		case UIClass::UI_MediaElement:
 			d2d->DrawRoundRect(frame, color, 1.2f, 3.0f);
 			d2d->DrawLine(cx - 3.0f, cy - 5.0f, cx + 5.0f, cy, color, 1.5f);
 			d2d->DrawLine(cx + 5.0f, cy, cx - 3.0f, cy + 5.0f, color, 1.5f);

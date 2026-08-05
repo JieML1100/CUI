@@ -38,8 +38,7 @@ namespace DesignerCommandMemory
 			+ StringHeap(value.ControlTemplate)
 			+ StringHeap(value.GroupStyle)
 			+ StringHeap(value.ItemsPanel)
-			+ StringHeap(value.ItemContainerStyle)
-			+ StringHeap(value.MediaFile);
+			+ StringHeap(value.ItemContainerStyle);
 		if (value.RelativePanel)
 		{
 			const auto& constraints = *value.RelativePanel;

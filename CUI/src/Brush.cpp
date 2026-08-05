@@ -102,21 +102,13 @@ ID2D1Brush* Brush::CreateBrush(
 		const float targetWidth = (std::max)(0.0f, FiniteOr(bounds.width, 0.0f));
 		const float targetHeight = (std::max)(0.0f, FiniteOr(bounds.height, 0.0f));
 		if (targetWidth <= 0.0f || targetHeight <= 0.0f) return nullptr;
-		float scaleX = 1.0f;
-		float scaleY = 1.0f;
-		if (Stretch == ImageBrushStretch::Fill)
-		{
-			scaleX = targetWidth / sourceWidth;
-			scaleY = targetHeight / sourceHeight;
-		}
-		else if (Stretch == ImageBrushStretch::Uniform
-			|| Stretch == ImageBrushStretch::UniformToFill)
-		{
-			const float uniform = Stretch == ImageBrushStretch::Uniform
-				? (std::min)(targetWidth / sourceWidth, targetHeight / sourceHeight)
-				: (std::max)(targetWidth / sourceWidth, targetHeight / sourceHeight);
-			scaleX = scaleY = uniform;
-		}
+		const auto stretchScale = cui::layout::ComputeStretchScaleFactor(
+			{ targetWidth, targetHeight },
+			{ sourceWidth, sourceHeight },
+			Stretch,
+			::StretchDirection::Both);
+		float scaleX = stretchScale.width;
+		float scaleY = stretchScale.height;
 		scaleX = (std::max)(0.0001f, FiniteOr(scaleX, 1.0f));
 		scaleY = (std::max)(0.0001f, FiniteOr(scaleY, 1.0f));
 		const float renderedWidth = sourceWidth * scaleX;

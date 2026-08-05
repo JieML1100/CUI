@@ -535,7 +535,7 @@ public:
 		LocalObjectResources;
 
 	// 设计期附加数据（不一定映射到运行时属性）。
-	// 例如：MediaPlayer 的媒体源路径等。
+	// 例如：MediaElement 的媒体源路径等。
 	std::unordered_map<std::wstring, std::wstring> DesignStrings;
 
 	// 用于调整大小的句柄位置

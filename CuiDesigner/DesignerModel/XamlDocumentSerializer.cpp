@@ -2754,13 +2754,6 @@ namespace
 				WriteBrush(property, value);
 				extra.ObjectItems().erase(key);
 			}
-			if (node.Type == UIClass::UI_MediaPlayer && extra.contains("mediaFile"))
-			{
-				if (!extra["mediaFile"].is_string())
-					throw std::invalid_argument("MediaPlayer Source must be a string");
-				Set(element, "Source", FromUtf8(extra["mediaFile"].get<std::string>()));
-				extra.ObjectItems().erase("mediaFile");
-			}
 			if (IsUIClassAssignableFrom(
 				UIClass::UI_ItemsControl, node.Type)
 				&& extra.contains("itemTemplate"))

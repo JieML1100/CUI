@@ -171,7 +171,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="MediaPlayerRegressionTests.cpp" />
+    <ClCompile Include="MediaElementRegressionTests.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
@@ -194,7 +194,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="MediaPlayerRegressionTests.h" />
+    <ClInclude Include="MediaElementRegressionTests.h" />
     <ClInclude Include="TestRunner.h" />
   </ItemGroup>
   <ItemGroup>

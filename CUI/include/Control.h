@@ -118,7 +118,9 @@ enum class UIClass : int
 	UI_StatusBarItem,
 	UI_Slider,
 	UI_WebBrowser,
-	UI_MediaPlayer,
+	UI_MediaElement,
+	/** Transitional numeric/source alias; MediaElement is the canonical type. */
+	UI_MediaPlayer = UI_MediaElement,
 	UI_StackPanel,
 	UI_Grid,
 	UI_DockPanel,

@@ -293,9 +293,9 @@ namespace
 		{
 			value["source"] = brush.ImageSource
 				? Convert::UnicodeToUtf8(brush.ImageSource->GetSourceUri()) : std::string{};
-			value["stretch"] = brush.Stretch == cui::drawing::ImageBrushStretch::None
-				? "none" : brush.Stretch == cui::drawing::ImageBrushStretch::Uniform
-					? "uniform" : brush.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+			value["stretch"] = brush.Stretch == ::Stretch::None
+				? "none" : brush.Stretch == ::Stretch::Uniform
+					? "uniform" : brush.Stretch == ::Stretch::UniformToFill
 						? "uniformToFill" : "fill";
 			value["alignmentX"] = brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
 				? "left" : brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Right

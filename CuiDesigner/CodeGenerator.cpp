@@ -1940,7 +1940,10 @@ CodeGenerator::FindKnownProperty(
 			"std::shared_ptr<BitmapSource>" };
 	if (propertyName == L"Stretch" && type == UIClass::UI_Image)
 		return TypedPropertyInfo{
-			"SetStretch", false, {}, "cui::drawing::ImageBrushStretch" };
+			"SetStretch", false, {}, "::Stretch" };
+	if (propertyName == L"StretchDirection" && type == UIClass::UI_Image)
+		return TypedPropertyInfo{
+			"SetStretchDirection", false, {}, "::StretchDirection" };
 	if (propertyName == L"Subtitle" && type == UIClass::UI_ChartView)
 		return TypedPropertyInfo{ "SetSubtitle" };
 	if (propertyName == L"Title" && type == UIClass::UI_ChartView)
@@ -1954,19 +1957,29 @@ CodeGenerator::FindKnownProperty(
 	if (propertyName == L"IsActive"
 		&& type == UIClass::UI_LoadingRing)
 		return TypedPropertyInfo{ "SetIsActive" };
-	if (type == UIClass::UI_MediaPlayer)
+	if (type == UIClass::UI_MediaElement)
 	{
+		if (propertyName == L"Source")
+			return TypedPropertyInfo{ "SetSource" };
 		if (propertyName == L"Volume"
-			|| propertyName == L"PlaybackRate"
-			|| propertyName == L"AutoPlay"
+			|| propertyName == L"SpeedRatio"
 			|| propertyName == L"Loop")
 			return TypedPropertyInfo{
 				propertyName == L"Volume" ? "SetVolume"
-					: propertyName == L"PlaybackRate" ? "SetPlaybackRate"
-					: propertyName == L"AutoPlay" ? "SetAutoPlay" : "SetLoop" };
-		if (propertyName == L"RenderMode")
+					: propertyName == L"SpeedRatio" ? "SetSpeedRatio" : "SetLoop" };
+		if (propertyName == L"LoadedBehavior"
+			|| propertyName == L"UnloadedBehavior")
 			return TypedPropertyInfo{
-				"SetRenderMode", false, {}, "MediaPlayer::VideoRenderMode" };
+				propertyName == L"LoadedBehavior"
+					? "SetLoadedBehavior" : "SetUnloadedBehavior",
+				false, {}, "MediaState" };
+		if (propertyName == L"Stretch")
+			return TypedPropertyInfo{
+				"SetStretch", false, {},
+				"::Stretch" };
+		if (propertyName == L"StretchDirection")
+			return TypedPropertyInfo{
+				"SetStretchDirection", false, {}, "::StretchDirection" };
 	}
 	if (propertyName == L"Title" && type == UIClass::UI_Window)
 		return TypedPropertyInfo{ "SetTitle" };
@@ -2883,7 +2896,7 @@ std::string CodeGenerator::GetControlTypeName(UIClass type) const
 	case UIClass::UI_StatusBarItem: return "StatusBarItem";
 	case UIClass::UI_ContextMenu: return "ContextMenu";
 	case UIClass::UI_WebBrowser: return "WebBrowser";
-	case UIClass::UI_MediaPlayer: return "MediaPlayer";
+	case UIClass::UI_MediaElement: return "MediaElement";
 	case UIClass::UI_NativeSurface: return "NativeSurface";
 	case UIClass::UI_ItemsControl: return "ItemsControl";
 	case UIClass::UI_ContentPresenter: return "ContentPresenter";
@@ -4105,13 +4118,13 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 				<< EscapeWStringLiteral(parsed.ImageSource
 					? parsed.ImageSource->GetSourceUri() : L"") << "\"); ";
 			expression << "value.Stretch = "
-				<< (parsed.Stretch == cui::drawing::ImageBrushStretch::None
-					? "cui::drawing::ImageBrushStretch::None"
-					: parsed.Stretch == cui::drawing::ImageBrushStretch::Uniform
-						? "cui::drawing::ImageBrushStretch::Uniform"
-						: parsed.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
-							? "cui::drawing::ImageBrushStretch::UniformToFill"
-							: "cui::drawing::ImageBrushStretch::Fill") << "; ";
+				<< (parsed.Stretch == ::Stretch::None
+					? "::Stretch::None"
+					: parsed.Stretch == ::Stretch::Uniform
+						? "::Stretch::Uniform"
+						: parsed.Stretch == ::Stretch::UniformToFill
+							? "::Stretch::UniformToFill"
+							: "::Stretch::Fill") << "; ";
 			expression << "value.AlignmentX = "
 				<< (parsed.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
 					? "cui::drawing::ImageBrushAlignmentX::Left"
@@ -4315,15 +4328,15 @@ std::string CodeGenerator::GenerateBindingValueExpression(
 					? brush.ImageSource->GetSourceUri() : L"")
 				<< "\"); value.Stretch = "
 				<< (brush.Stretch
-						== cui::drawing::ImageBrushStretch::None
-					? "cui::drawing::ImageBrushStretch::None"
+						== ::Stretch::None
+					? "::Stretch::None"
 					: brush.Stretch
-							== cui::drawing::ImageBrushStretch::Uniform
-						? "cui::drawing::ImageBrushStretch::Uniform"
+							== ::Stretch::Uniform
+						? "::Stretch::Uniform"
 						: brush.Stretch
-								== cui::drawing::ImageBrushStretch::UniformToFill
-							? "cui::drawing::ImageBrushStretch::UniformToFill"
-							: "cui::drawing::ImageBrushStretch::Fill")
+								== ::Stretch::UniformToFill
+							? "::Stretch::UniformToFill"
+							: "::Stretch::Fill")
 				<< "; value.AlignmentX = "
 				<< (brush.AlignmentX
 						== cui::drawing::ImageBrushAlignmentX::Left
@@ -6234,15 +6247,6 @@ std::string CodeGenerator::GenerateContainerProperties(
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
 	std::string name = GetVarName(node);
-
-	// 元数据已先生成；最后 Load，确保 AutoPlay/Loop/解码策略在加载前生效。
-	if (node.Type == UIClass::UI_MediaPlayer
-		&& !node.Structure.MediaFile.empty())
-	{
-		code << indentStr << name << "->Load(L\""
-			<< EscapeWStringLiteral(node.Structure.MediaFile)
-			<< "\");\n";
-	}
 
 	if (node.Type == UIClass::UI_Grid)
 	{

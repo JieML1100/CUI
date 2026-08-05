@@ -80,6 +80,14 @@ namespace
 	{
 		if (s == "Any") { out = UIClass::UI_Base; return true; }
 		if (s == "CUSTOM") { out = UIClass::UI_CUSTOM; return true; }
+		// Snapshots created before the visual media type was aligned with WPF
+		// persisted the native type spelling. Keep this alias local to snapshot
+		// loading rather than publishing a second canonical Schema identity.
+		if (s == "MediaPlayer")
+		{
+			out = UIClass::UI_MediaElement;
+			return true;
+		}
 		const auto* descriptor = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
 			CuiRuntime::XamlRuntimeSchema::CuiNamespace, FromUtf8(s));
 		if (!descriptor) return false;
@@ -99,6 +107,77 @@ namespace
 		const auto* descriptor =
 			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(out);
 		return descriptor && descriptor->IsConstructible;
+	}
+
+	static void CanonicalizeSnapshotXamlType(
+		UIClass nativeType,
+		RuntimeTypeId& xamlType)
+	{
+		if (nativeType != UIClass::UI_MediaElement
+			|| xamlType.NamespaceUri
+				!= CuiRuntime::XamlRuntimeSchema::CuiNamespace
+			|| xamlType.LocalName != L"MediaPlayer") return;
+		if (const auto* canonical =
+			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(nativeType))
+			xamlType = canonical->TypeId;
+	}
+
+	/**
+	 * Decodes the persisted structure bag while consuming the one historical
+	 * MediaPlayer-only field that moved into the canonical property bag.
+	 *
+	 * DecodeDesignNodeStructure deliberately remains strict: mediaFile is not a
+	 * current structural member and must not be accepted by ordinary callers.
+	 * This adapter is used only by Designer snapshot deserialization.
+	 */
+	static bool DecodeSnapshotNodeStructure(
+		UIClass type,
+		const DesignValue& value,
+		DesignNodeStructure& structure,
+		DesignNodeProperties& properties,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return DecodeDesignNodeStructure(
+				type, value, structure, outError);
+
+		DesignValue canonicalValue = value;
+		std::optional<std::wstring> legacySource;
+		const auto mediaFile = canonicalValue.ObjectItems().find("mediaFile");
+		if (mediaFile != canonicalValue.ObjectItems().end())
+		{
+			if (type != UIClass::UI_MediaElement)
+			{
+				if (outError)
+					*outError = L"旧 mediaFile 结构字段仅适用于 MediaElement。";
+				return false;
+			}
+			if (!mediaFile->second.is_string())
+			{
+				if (outError)
+					*outError = L"旧 mediaFile 结构字段必须是字符串。";
+				return false;
+			}
+			legacySource = FromUtf8(mediaFile->second.get<std::string>());
+			canonicalValue.ObjectItems().erase(mediaFile);
+		}
+
+		DesignNodeStructure decoded;
+		if (!DecodeDesignNodeStructure(
+			type, canonicalValue, decoded, outError)) return false;
+
+		// A canonical property assignment always wins over the retired
+		// structure field, including resource-backed and explicitly empty
+		// assignments.
+		if (legacySource && !properties.Find(L"Source"))
+		{
+			DesignPropertyAssignment source;
+			source.Value.Kind = DesignerStyleValueKind::String;
+			source.Value.Text = std::move(*legacySource);
+			properties.Set(L"Source", std::move(source));
+		}
+		structure = std::move(decoded);
+		return true;
 	}
 
 	static bool IsComponentContentPresenterType(UIClass type) noexcept
@@ -531,6 +610,7 @@ namespace
 				if (outError) *outError = L"Template node has an invalid XAML type identity.";
 				return false;
 			}
+			CanonicalizeSnapshotXamlType(node.Type, node.XamlType);
 		}
 		DesignValue encodedProperties = DesignValue::object();
 		if (value.contains("properties"))
@@ -602,8 +682,9 @@ namespace
 			}
 			encodedStructure = value["structure"];
 		}
-		if (!DecodeDesignNodeStructure(
-			node.Type, encodedStructure, node.Structure, outError)) return false;
+		if (!DecodeSnapshotNodeStructure(
+			node.Type, encodedStructure, node.Structure,
+			node.Properties, outError)) return false;
 		if (value.contains("localResources")
 			&& !LocalResourcesFromValue(
 				value["localResources"], node.LocalResources,
@@ -5380,6 +5461,7 @@ bool DesignDocumentSerializer::FromXml(
 					+ node.Name;
 				return false;
 			}
+			CanonicalizeSnapshotXamlType(node.Type, node.XamlType);
 		}
 		node.ComponentContentProperty = FromUtf8(
 			control->GetAttribute("componentContentProperty"));
@@ -5428,8 +5510,9 @@ bool DesignDocumentSerializer::FromXml(
 		DesignValue encodedStructure = DesignValue::object();
 		if (structure && !ReadValue(structure, encodedStructure, outError))
 			return false;
-		if (!DecodeDesignNodeStructure(
-			node.Type, encodedStructure, node.Structure, outError))
+		if (!DecodeSnapshotNodeStructure(
+			node.Type, encodedStructure, node.Structure,
+			node.Properties, outError))
 		{
 			if (outError && !outError->empty())
 				*outError = L"Control " + node.Name + L" structure: " + *outError;

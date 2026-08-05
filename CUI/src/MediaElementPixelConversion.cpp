@@ -1,4 +1,4 @@
-#include "MediaPlayer.h"
+#include "MediaElement.h"
 
 #include <algorithm>
 #include <ppl.h>
@@ -15,7 +15,7 @@ namespace
 // Platform-independent CPU fallback kept outside the Media Foundation member.
 // Callers that only need pixel conversion no longer select the decoder/session
 // backend or its platform import directives from the CUI archive.
-bool MediaPlayer::ConvertNV12ToBGRA(
+bool MediaElement::ConvertNV12ToBGRA(
 	const uint8_t* nv12,
 	size_t nv12Bytes,
 	UINT32 yStride,

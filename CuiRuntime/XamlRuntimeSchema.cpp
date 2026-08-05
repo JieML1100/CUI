@@ -38,7 +38,7 @@
 #include "../CUI/include/Menu.h"
 #include "../CUI/include/ContextMenu.h"
 #include "../CUI/include/StatusBar.h"
-#include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/MediaElement.h"
 #include "../CUI/include/NativeSurface.h"
 #include "../CUI/include/ItemsControl.h"
 #include "../CUI/include/ItemsPresenter.h"
@@ -180,8 +180,8 @@ namespace
 			L"滑块", 200, 30, false, L"输入"),
 		ToolboxType(L"WebBrowser", UIClass::UI_WebBrowser, true,
 			L"浏览器", 500, 360, false, L"媒体与 Web"),
-		ToolboxType(L"MediaPlayer", UIClass::UI_MediaPlayer, true,
-			L"媒体播放器", 640, 360, false, L"媒体与 Web"),
+		ToolboxType(L"MediaElement", UIClass::UI_MediaElement, false,
+			L"媒体元素", 640, 360, false, L"媒体与 Web"),
 		ToolboxType(L"StackPanel", UIClass::UI_StackPanel, false,
 			L"堆叠面板", 200, 200, true, L"布局"),
 		ToolboxType(L"Grid", UIClass::UI_Grid, false,
@@ -309,7 +309,7 @@ namespace
 			CUI_SCHEMA_OWNER(ListView);
 			CUI_SCHEMA_OWNER(ListViewItem);
 			CUI_SCHEMA_OWNER(LoadingRing);
-			CUI_SCHEMA_OWNER(MediaPlayer);
+			CUI_SCHEMA_OWNER(MediaElement);
 			CUI_SCHEMA_OWNER(Menu);
 			CUI_SCHEMA_OWNER(MenuItem);
 			CUI_SCHEMA_OWNER(ContextMenu);
@@ -429,7 +429,7 @@ namespace
 		case UIClass::UI_StatusBar: return NativePropertiesPointer<StatusBar>(type);
 		case UIClass::UI_StatusBarItem: return NativePropertiesPointer<StatusBarItem>(type);
 		case UIClass::UI_WebBrowser: return NativePropertiesPointer<WebBrowser>(type);
-		case UIClass::UI_MediaPlayer: return NativePropertiesPointer<MediaPlayer>(type);
+		case UIClass::UI_MediaElement: return NativePropertiesPointer<MediaElement>(type);
 		case UIClass::UI_NativeSurface: return NativePropertiesPointer<NativeSurface>(type);
 		case UIClass::UI_ItemsControl: return NativePropertiesPointer<ItemsControl>(type);
 		case UIClass::UI_ContentPresenter: return NativePropertiesPointer<ContentPresenter>(type);
@@ -654,7 +654,7 @@ CuiRuntime::XamlRuntimeSchema::CreateNativeControl(UIClass type)
 	case UIClass::UI_StatusBar: return std::make_unique<StatusBar>();
 	case UIClass::UI_StatusBarItem: return std::make_unique<StatusBarItem>();
 	case UIClass::UI_WebBrowser: return std::make_unique<WebBrowser>();
-	case UIClass::UI_MediaPlayer: return std::make_unique<MediaPlayer>();
+	case UIClass::UI_MediaElement: return std::make_unique<MediaElement>();
 	case UIClass::UI_NativeSurface: return std::make_unique<NativeSurface>();
 	case UIClass::UI_ItemsControl: return std::make_unique<ItemsControl>();
 	case UIClass::UI_ContentPresenter: return std::make_unique<ContentPresenter>();

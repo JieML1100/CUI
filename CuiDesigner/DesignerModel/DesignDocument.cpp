@@ -243,7 +243,6 @@ bool DesignNodeStructure::Empty() const noexcept
 		&& ContentTemplate.empty() && HeaderTemplate.empty()
 		&& ControlTemplate.empty() && GroupStyle.empty()
 		&& ItemsPanel.empty() && ItemContainerStyle.empty()
-		&& MediaFile.empty()
 		&& ChildRole == DesignNodeChildRole::Default
 		&& (!RelativePanel || RelativePanel->Empty())
 		&& !GridRows && !GridColumns
@@ -421,7 +420,6 @@ DesignValue EncodeDesignNodeStructure(
 	stringField("groupStyle", structure.GroupStyle);
 	stringField("itemsPanel", structure.ItemsPanel);
 	stringField("itemContainerStyle", structure.ItemContainerStyle);
-	stringField("mediaFile", structure.MediaFile);
 	if (structure.ChildRole == DesignNodeChildRole::Header)
 		result["headeredRegion"] = "header";
 	if (structure.RelativePanel && !structure.RelativePanel->Empty())
@@ -554,11 +552,6 @@ bool DecodeDesignNodeStructure(
 		if (key == "itemContainerStyle")
 		{
 			if (!readString(key, decoded.ItemContainerStyle)) return false;
-			continue;
-		}
-		if (key == "mediaFile")
-		{
-			if (!readString(key, decoded.MediaFile)) return false;
 			continue;
 		}
 		if (key == "headeredRegion")

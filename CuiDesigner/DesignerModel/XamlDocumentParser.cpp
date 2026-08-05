@@ -7208,12 +7208,6 @@ namespace
 				if (!templateError.empty())
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 的属性 " + name + L"：" + templateError, error);
-				if (_document.Nodes[nodeIndex].Type == UIClass::UI_MediaPlayer
-					&& Equals(name, L"Source"))
-				{
-					_document.Nodes[nodeIndex].Structure.MediaFile = value;
-					continue;
-				}
 				const auto* component = FindVisibleComponent(
 					_document.Nodes[nodeIndex].ComponentType);
 				if (!prefix.empty() && !Equals(prefix, L"x")

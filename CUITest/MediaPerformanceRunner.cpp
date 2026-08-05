@@ -1,7 +1,7 @@
 #include "MediaPerformanceRunner.h"
 
 #include <Application.h>
-#include <MediaPlayer.h>
+#include <MediaElement.h>
 #include <Window.h>
 #include <WindowInfrastructure.h>
 
@@ -140,13 +140,13 @@ namespace
 	{
 		bool Captured = false;
 		cui::core::Size VideoSize{};
-		MediaPlayer::PerformanceSnapshot Performance{};
+		MediaElement::PerformanceSnapshot Performance{};
 		ProcessSample Process{};
 		ProcessSample ProcessAfterClose{};
-		float ActualRate = 0.0f;
+		double ActualRate = 0.0;
 		double PositionSeconds = 0.0;
 		double DurationSeconds = 0.0;
-		MediaPlayer::PlayState State = MediaPlayer::PlayState::Stopped;
+		MediaElement::PlaybackState State = MediaElement::PlaybackState::Stopped;
 		bool HasVideo = false;
 		bool HasAudio = false;
 		bool UsingHardwareDecode = false;
@@ -268,12 +268,12 @@ namespace
 			&& written == static_cast<DWORD>(line.size());
 	}
 
-	const wchar_t* PlayStateName(MediaPlayer::PlayState state) noexcept
+	const wchar_t* PlaybackStateName(MediaElement::PlaybackState state) noexcept
 	{
 		switch (state)
 		{
-		case MediaPlayer::PlayState::Playing: return L"playing";
-		case MediaPlayer::PlayState::Paused: return L"paused";
+		case MediaElement::PlaybackState::Playing: return L"playing";
+		case MediaElement::PlaybackState::Paused: return L"paused";
 		default: return L"stopped";
 		}
 	}
@@ -300,25 +300,25 @@ namespace
 			_watchdogCompletionStartedEvent(watchdogCompletionStartedEvent),
 			_createdAt(QueryCounter())
 		{
-			Title = L"CUI MediaPlayer deterministic performance run";
+			Title = L"CUI MediaElement deterministic performance run";
 			Width = 960.0f;
 			Height = 540.0f;
 			ShowInTaskbar = false;
 
-			auto player = std::make_unique<MediaPlayer>();
+			auto player = std::make_unique<MediaElement>();
 			_player = player.get();
-			_player->AutoPlay = false;
+			_player->LoadedBehavior = MediaState::Manual;
 			_player->Loop = true;
 			_player->EnableHardwareDecode = true;
 			_player->EnableDxgiVideoOutput =
 				_options.VideoPath != MediaPerformanceVideoPath::Cpu;
-			_player->PlaybackRate = static_cast<float>(_options.Rate);
+			_player->SpeedRatio = static_cast<float>(_options.Rate);
 			SetVisualContent(std::move(player));
 
 			_contentRendered = ContentRendered.Subscribe(
 				[this](Window*) { StartMeasurement(); });
 			_mediaError = _player->OnMediaError.Subscribe(
-				[this](MediaPlayer*, HRESULT error)
+				[this](MediaElement*, HRESULT error)
 				{
 					_lastMediaError = error;
 					if (_measurementStarted)
@@ -385,7 +385,7 @@ namespace
 					{
 						const auto before = _player
 							? _player->GetPerformanceSnapshot()
-							: MediaPlayer::PerformanceSnapshot{};
+							: MediaElement::PerformanceSnapshot{};
 						_gpuFramesAtPresentationDeviceLoss =
 							before.GpuVideoProcessorFrames;
 						_submittedFramesAtPresentationDeviceLoss =
@@ -409,7 +409,7 @@ namespace
 					{
 						const auto before = _player
 							? _player->GetPerformanceSnapshot()
-							: MediaPlayer::PerformanceSnapshot{};
+							: MediaElement::PerformanceSnapshot{};
 						_sharedDeviceGenerationAtRotation =
 							before.SharedDeviceGeneration;
 						_gpuDeviceRebindsAtSharedDeviceRotation =
@@ -452,7 +452,7 @@ namespace
 			{
 				_resultCode = 6;
 				_resultStatus = L"media_error";
-				_resultError = L"MediaPlayer reported a playback error.";
+				_resultError = L"MediaElement reported a playback error.";
 				Complete();
 				return LRESULT{ 0 };
 			}
@@ -534,7 +534,7 @@ namespace
 			{
 				_resultCode = 5;
 				_resultStatus = L"player_initialization_failed";
-				_resultError = L"MediaPlayer was not created.";
+				_resultError = L"MediaElement was not created.";
 				Complete();
 				return;
 			}
@@ -544,7 +544,7 @@ namespace
 				_lastMediaError = _player->GetLastMediaError();
 				_resultCode = 5;
 				_resultStatus = L"load_failed";
-				_resultError = L"MediaPlayer failed to load the requested media file.";
+				_resultError = L"MediaElement failed to load the requested media file.";
 				Complete();
 				return;
 			}
@@ -553,7 +553,7 @@ namespace
 			{
 				_resultCode = 10;
 				_resultStatus = L"gpu_path_unavailable";
-				_resultError = L"MediaPlayer could not bind the shared DXGI device manager.";
+				_resultError = L"MediaElement could not bind the shared DXGI device manager.";
 				Complete();
 				return;
 			}
@@ -626,7 +626,7 @@ namespace
 			{
 				_resultCode = 6;
 				_resultStatus = L"play_rejected";
-				_resultError = L"MediaPlayer rejected TryPlay after a successful load.";
+				_resultError = L"MediaElement rejected TryPlay after a successful load.";
 				Complete();
 				return;
 			}
@@ -664,10 +664,10 @@ namespace
 			const auto performance = _completionSnapshot.Captured
 				? _completionSnapshot.Performance
 				: (_player ? _player->GetPerformanceSnapshot()
-					: MediaPlayer::PerformanceSnapshot{});
-			const float actualRate = _completionSnapshot.Captured
+					: MediaElement::PerformanceSnapshot{});
+			const double actualRate = _completionSnapshot.Captured
 				? _completionSnapshot.ActualRate
-				: (_player ? _player->PlaybackRate : 0.0f);
+				: (_player ? _player->SpeedRatio : 0.0);
 			const double positionSeconds = _completionSnapshot.Captured
 				? _completionSnapshot.PositionSeconds
 				: (_player ? _player->Position : 0.0);
@@ -676,7 +676,7 @@ namespace
 				: (_player ? _player->Duration : 0.0);
 			const auto playState = _completionSnapshot.Captured
 				? _completionSnapshot.State
-				: (_player ? _player->State : MediaPlayer::PlayState::Stopped);
+				: (_player ? _player->State : MediaElement::PlaybackState::Stopped);
 			const bool hasVideo = _completionSnapshot.Captured
 				? _completionSnapshot.HasVideo : (_player && _player->HasVideo);
 			const bool hasAudio = _completionSnapshot.Captured
@@ -803,7 +803,7 @@ namespace
 				<< "  \"media_duration_seconds\": "
 				<< mediaDurationSeconds << ",\n"
 				<< "  \"play_state\": "
-				<< JsonEscape(_player ? PlayStateName(playState) : L"unavailable")
+				<< JsonEscape(_player ? PlaybackStateName(playState) : L"unavailable")
 				<< ",\n"
 				<< "  \"has_video\": " << hasVideo << ",\n"
 				<< "  \"has_audio\": " << hasAudio << ",\n"
@@ -1048,7 +1048,7 @@ namespace
 					? _player->PauseAndGetPerformanceSnapshot()
 					: _player->GetPerformanceSnapshot();
 				_completionSnapshot.VideoSize = _player->VideoSize;
-				_completionSnapshot.ActualRate = _player->PlaybackRate;
+				_completionSnapshot.ActualRate = _player->SpeedRatio;
 				_completionSnapshot.PositionSeconds = _player->Position;
 				_completionSnapshot.DurationSeconds = _player->Duration;
 				_completionSnapshot.HasVideo = _player->HasVideo;
@@ -1314,7 +1314,7 @@ namespace
 					|| std::fabs(_completionSnapshot.ActualRate
 						- _options.Rate) > 0.01
 					|| _completionSnapshot.State
-						!= MediaPlayer::PlayState::Playing);
+						!= MediaElement::PlaybackState::Playing);
 			const bool qualityFailed = _completionSnapshot.HasVideo
 				&& (lostFrameRatio > 0.05
 					|| _completionSnapshot.
@@ -1412,7 +1412,7 @@ namespace
 		MediaPerformanceOptions _options;
 		HANDLE _watchdogStartedEvent = nullptr;
 		HANDLE _watchdogCompletionStartedEvent = nullptr;
-		MediaPlayer* _player = nullptr;
+		MediaElement* _player = nullptr;
 		EventConnection _contentRendered;
 		EventConnection _mediaError;
 		EventConnection _mediaEnded;

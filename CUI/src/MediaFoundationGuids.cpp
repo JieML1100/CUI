@@ -1,6 +1,6 @@
 // The Windows SDK import libraries do not provide this EVR service GUID.
 // Keep its one stable SDK definition in a media-only archive member:
-// MediaPlayer's reference selects it, while unrelated CUI applications no
+// MediaElement's reference selects it, while unrelated CUI applications no
 // longer select the full media backend through incidental WIC/MF GUID ownership.
 #include <initguid.h>
 

@@ -20,7 +20,7 @@ class ChartView;
 class ComboBox;
 class ContextMenu;
 class Label;
-class MediaPlayer;
+class MediaElement;
 class Menu;
 class NotifyIcon;
 class ObservableBindingList;
@@ -233,7 +233,7 @@ private:
 	ChartView* _chart = nullptr;
 	Label* _toastMessage = nullptr;
 	WebBrowser* _web = nullptr;
-	MediaPlayer* _media = nullptr;
+	MediaElement* _media = nullptr;
 	Slider* _mediaProgress = nullptr;
 	Label* _mediaTime = nullptr;
 	Label* _mediaSpeedText = nullptr;

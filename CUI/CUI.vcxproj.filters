@@ -330,6 +330,9 @@
     <ClInclude Include="include\DCompLayeredHost.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\MediaElement.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\MediaPlayer.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -639,13 +642,13 @@
 	<ClCompile Include="src\Popup.cpp">
 	  <Filter>src</Filter>
 	</ClCompile>
-    <ClCompile Include="src\MediaPlayer.cpp">
+    <ClCompile Include="src\MediaElement.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\MediaFoundationGuids.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="src\MediaPlayerPixelConversion.cpp">
+    <ClCompile Include="src\MediaElementPixelConversion.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Expander.cpp">

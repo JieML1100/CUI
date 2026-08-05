@@ -3078,13 +3078,6 @@
       Value="{StaticResource CuiChartViewTemplate}"/>
   </Style>
 
-  <Style TargetType="MediaPlayer">
-    <Setter Property="Background"
-      Value="{StaticResource CuiMediaBackground}"/>
-    <Setter Property="BorderBrush" Value="#00000000"/>
-    <Setter Property="BorderThickness" Value="0"/>
-  </Style>
-
   <ControlTemplate x:Key="CuiWindowTemplate" TargetType="Window">
     <Border
       x:Name="PART_WindowChrome"

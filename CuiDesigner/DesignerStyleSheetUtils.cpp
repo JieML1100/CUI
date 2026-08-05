@@ -289,11 +289,11 @@ namespace
 			if (!output.ImageSource)
 				return Fail(L"无法解码 ImageBrush：" + resolved.Identity, outError);
 			const auto stretch = value.value("stretch", std::string("fill"));
-			if (stretch == "none") output.Stretch = cui::drawing::ImageBrushStretch::None;
-			else if (stretch == "fill") output.Stretch = cui::drawing::ImageBrushStretch::Fill;
-			else if (stretch == "uniform") output.Stretch = cui::drawing::ImageBrushStretch::Uniform;
+			if (stretch == "none") output.Stretch = ::Stretch::None;
+			else if (stretch == "fill") output.Stretch = ::Stretch::Fill;
+			else if (stretch == "uniform") output.Stretch = ::Stretch::Uniform;
 			else if (stretch == "uniformToFill")
-				output.Stretch = cui::drawing::ImageBrushStretch::UniformToFill;
+				output.Stretch = ::Stretch::UniformToFill;
 			else return Fail(L"ImageBrush Stretch 无效。", outError);
 			const auto alignmentX = value.value("alignmentX", std::string("center"));
 			if (alignmentX == "left") output.AlignmentX = cui::drawing::ImageBrushAlignmentX::Left;

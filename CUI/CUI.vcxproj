@@ -329,6 +329,7 @@
     <ClInclude Include="include\TextEditCore.h" />
     <ClInclude Include="include\TextBox.h" />
     <ClInclude Include="include\TreeView.h" />
+    <ClInclude Include="include\MediaElement.h" />
     <ClInclude Include="include\MediaPlayer.h" />
     <ClInclude Include="include\Layout\LayoutTypes.h" />
     <ClInclude Include="include\Layout\LayoutState.h" />
@@ -432,8 +433,8 @@
     <ClCompile Include="src\TextBox.cpp" />
     <ClCompile Include="src\TreeView.cpp" />
     <ClCompile Include="src\MediaFoundationGuids.cpp" />
-    <ClCompile Include="src\MediaPlayer.cpp" />
-    <ClCompile Include="src\MediaPlayerPixelConversion.cpp" />
+    <ClCompile Include="src\MediaElement.cpp" />
+    <ClCompile Include="src\MediaElementPixelConversion.cpp" />
     <ClCompile Include="src\Layout\StackPanel.cpp" />
     <ClCompile Include="src\Layout\Grid.cpp" />
     <ClCompile Include="src\Layout\DockPanel.cpp" />
