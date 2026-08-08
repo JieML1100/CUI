@@ -41,6 +41,7 @@
 #include <ItemContainer.h>
 #include <InputInfrastructure.h>
 #include <DependencyPropertyInfrastructure.h>
+#include <DCompLayeredHost.h>
 #include <TemplateInfrastructure.h>
 #include <LoadingRing.h>
 #include <MediaElement.h>
@@ -14860,6 +14861,13 @@ int main()
 		auto* combo = AddTestVisual<ComboBox>(
 			*content, L"", 12, 12, 160, 28);
 		SetTestComboBoxItems(*combo, { L"One", L"Two" });
+		cui::drawing::Transform targetTransform;
+		cui::drawing::TransformOperation targetTranslation;
+		targetTranslation.Kind = cui::drawing::TransformKind::Translate;
+		targetTranslation.X = 34.0f;
+		targetTranslation.Y = 9.0f;
+		targetTransform.Operations.push_back(targetTranslation);
+		combo->SetRenderTransform(targetTransform);
 		host.UpdateLayout();
 		combo->SetIsDropDownOpen(true);
 		host.UpdateLayout();
@@ -14868,6 +14876,14 @@ int main()
 			TemplateAccess::GetTemplateRoot(*combo));
 		CUI_EXPECT_TRUE(popup != nullptr);
 		CUI_EXPECT_TRUE(popup && popup->GetIsOpen());
+		if (popup)
+		{
+			const auto renderedTarget = combo->GetRenderedAbsoluteRectDip();
+			const auto popupBounds = popup->GetAbsoluteRectDip();
+			CUI_EXPECT_NEAR(renderedTarget.left, popupBounds.x, 0.01f);
+			CUI_EXPECT_NEAR(
+				renderedTarget.bottom, popupBounds.y, 0.01f);
+		}
 		cui::framework::WindowAccess::
 			DismissTransientPresentationsForPointer(host, combo);
 		CUI_EXPECT_TRUE(combo->GetIsDropDownOpen());
@@ -14944,6 +14960,82 @@ int main()
 		}
 		CUI_EXPECT_EQ(0, combo->SelectedIndex);
 		CUI_EXPECT_FALSE(combo->GetIsDropDownOpen());
+	});
+
+	runner.Add("ContextMenu placement uses rendered target coordinates once", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Transformed ContextMenu placement");
+		SetDeclaredWindowGeometry(
+			host, 0.0f, 0.0f, 440.0f, 320.0f);
+		auto contentOwner = MakeTestControl<Canvas>();
+		auto* content = static_cast<Canvas*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		cui::drawing::Transform parentTransform;
+		cui::drawing::TransformOperation parentScale;
+		parentScale.Kind = cui::drawing::TransformKind::Scale;
+		parentScale.ScaleX = 1.1f;
+		parentScale.ScaleY = 1.1f;
+		cui::drawing::TransformOperation parentTranslation;
+		parentTranslation.Kind = cui::drawing::TransformKind::Translate;
+		parentTranslation.X = 18.0f;
+		parentTranslation.Y = 11.0f;
+		parentTransform.Operations = { parentScale, parentTranslation };
+		content->SetRenderTransform(parentTransform);
+
+		auto* target = AddTestVisual<Border>(
+			*content, 50, 40, 100, 30);
+		auto* menu = AddTestVisual<ContextMenu>(*content);
+		(void)AddTestMenuItem(*menu, L"Inspect");
+		menu->PlacementTarget = target;
+		menu->Placement = PlacementMode::Bottom;
+		host.UpdateLayout();
+		menu->ShowAt(target, 0, 0);
+		CUI_EXPECT_TRUE(menu->IsOpen);
+		host.UpdateLayout();
+
+		const auto renderedTarget = target->GetRenderedAbsoluteRectDip();
+		auto menuBounds = menu->GetAbsoluteRectDip();
+		CUI_EXPECT_NEAR(renderedTarget.left, menuBounds.x, 0.01f);
+		CUI_EXPECT_NEAR(renderedTarget.bottom, menuBounds.y, 0.01f);
+		const auto renderedMenu = menu->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_NEAR(menuBounds.x, renderedMenu.left, 0.01f);
+		CUI_EXPECT_NEAR(menuBounds.y, renderedMenu.top, 0.01f);
+		menu->Hide();
+
+		const cui::core::Rect placementRect{ 10.0f, 5.0f, 30.0f, 12.0f };
+		menu->PlacementRectangle = placementRect;
+		menu->Placement = PlacementMode::Bottom;
+		menu->ShowAt(target, 0, 0);
+		CUI_EXPECT_TRUE(menu->IsOpen);
+		host.UpdateLayout();
+		const auto targetAbsolute = target->GetAbsoluteLocationDip();
+		const auto renderedPlacement = target->TransformAbsoluteRectToRenderSpace(
+			D2D1::RectF(
+				targetAbsolute.x + placementRect.x,
+				targetAbsolute.y + placementRect.y,
+				targetAbsolute.x + placementRect.Right(),
+				targetAbsolute.y + placementRect.Bottom()));
+		menuBounds = menu->GetAbsoluteRectDip();
+		CUI_EXPECT_NEAR(renderedPlacement.left, menuBounds.x, 0.01f);
+		CUI_EXPECT_NEAR(renderedPlacement.bottom, menuBounds.y, 0.01f);
+		menu->Hide();
+
+		menu->PlacementRectangle = cui::core::Rect{};
+		menu->Placement = PlacementMode::MousePoint;
+		menu->ShowAt(target, 20, 10);
+		CUI_EXPECT_TRUE(menu->IsOpen);
+		host.UpdateLayout();
+		const auto targetMatrix = target->GetLocalToRenderTransform();
+		const auto renderedAnchor = D2D1::Matrix3x2F(
+			targetMatrix._11, targetMatrix._12,
+			targetMatrix._21, targetMatrix._22,
+			targetMatrix._31, targetMatrix._32)
+			.TransformPoint(D2D1::Point2F(20.0f, 10.0f));
+		menuBounds = menu->GetAbsoluteRectDip();
+		CUI_EXPECT_NEAR(std::round(renderedAnchor.x), menuBounds.x, 0.01f);
+		CUI_EXPECT_NEAR(std::round(renderedAnchor.y), menuBounds.y, 0.01f);
+		menu->Hide();
 	});
 
 	runner.Add("Template-owned generated ComboBox items commit native mouse selection", []
@@ -16079,7 +16171,7 @@ int main()
 			== std::string::npos);
 		for (const auto* obsoleteToken : {
 			"AutoPlay", "PlaybackRate", "RenderMode", "MediaFile",
-			"std::make_unique<MediaPlayer>", "\"MediaPlayer.h\"" })
+			"std::make_unique<MediaElement>", "\"MediaElement.h\"" })
 			CUI_EXPECT_TRUE(staticCpp.find(obsoleteToken) == std::string::npos);
 	});
 
@@ -16231,15 +16323,25 @@ int main()
 			DesignerPropertyCatalog::Find(properties, L"IsStatusBarEnabled");
 		const auto* zoomControl =
 			DesignerPropertyCatalog::Find(properties, L"IsZoomControlEnabled");
+		const auto* defaultBackground = DesignerPropertyCatalog::Find(
+			properties, L"DefaultBackgroundColor");
+		const auto* cornerRadius = DesignerPropertyCatalog::Find(
+			properties, L"CornerRadius");
 		CUI_EXPECT_TRUE(initialUrl != nullptr);
 		CUI_EXPECT_TRUE(zoom != nullptr);
 		CUI_EXPECT_TRUE(contextMenus != nullptr);
 		CUI_EXPECT_TRUE(statusBar != nullptr);
 		CUI_EXPECT_TRUE(zoomControl != nullptr);
+		CUI_EXPECT_TRUE(defaultBackground != nullptr);
+		CUI_EXPECT_TRUE(cornerRadius != nullptr);
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata,
 			initialUrl->Persistence);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Text, initialUrl->Editor);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number, zoom->Editor);
+		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Color,
+			defaultBackground->Editor);
+		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Text,
+			cornerRadius->Editor);
 		CUI_EXPECT_TRUE(zoom->Minimum.has_value());
 		CUI_EXPECT_TRUE(zoom->Maximum.has_value());
 		CUI_EXPECT_TRUE(zoom->Step.has_value());
@@ -16256,9 +16358,23 @@ int main()
 		browser.AreDefaultContextMenusEnabled = false;
 		browser.IsStatusBarEnabled = true;
 		browser.IsZoomControlEnabled = false;
+		browser.DefaultBackgroundColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
 		CUI_EXPECT_FALSE(browser.AreDefaultContextMenusEnabled);
 		CUI_EXPECT_TRUE(browser.IsStatusBarEnabled);
 		CUI_EXPECT_FALSE(browser.IsZoomControlEnabled);
+		CUI_EXPECT_NEAR(0.0f, browser.DefaultBackgroundColor.a, 0.000001f);
+		browser.DefaultBackgroundColor = D2D1::ColorF(0.2f, 0.3f, 0.4f, 0.5f);
+		CUI_EXPECT_NEAR(0.0f, browser.DefaultBackgroundColor.a, 0.000001f);
+		browser.DefaultBackgroundColor = D2D1::ColorF(0.2f, 0.3f, 0.4f, 1.0f);
+		CUI_EXPECT_NEAR(0.2f, browser.DefaultBackgroundColor.r, 0.000001f);
+		CUI_EXPECT_NEAR(1.0f, browser.DefaultBackgroundColor.a, 0.000001f);
+		browser.CornerRadius = ::CornerRadius(6.0f, 8.0f, 10.0f, 12.0f);
+		CUI_EXPECT_NEAR(6.0f, browser.CornerRadius.TopLeft, 0.000001f);
+		CUI_EXPECT_NEAR(8.0f, browser.CornerRadius.TopRight, 0.000001f);
+		CUI_EXPECT_NEAR(10.0f, browser.CornerRadius.BottomRight, 0.000001f);
+		CUI_EXPECT_NEAR(12.0f, browser.CornerRadius.BottomLeft, 0.000001f);
+		browser.CornerRadius = ::CornerRadius(-1.0f);
+		CUI_EXPECT_NEAR(6.0f, browser.CornerRadius.TopLeft, 0.000001f);
 
 		ObservableObject source;
 		source.SetValue(L"BrowserZoom", 1.75);
@@ -16293,6 +16409,8 @@ int main()
 			DesignerStyleValueKind::Double, L"1.25" });
 		applyTracked(L"IsStatusBarEnabled", {
 			DesignerStyleValueKind::Bool, L"true" });
+		applyTracked(L"CornerRadius", {
+			DesignerStyleValueKind::CornerRadius, L"6,8,10,12" });
 		CUI_EXPECT_EQ(std::wstring(L"https://docs.example.test/"),
 			generated.InitialUrl);
 #if defined(CUI_TEST_WEBVIEW2_DISABLED)
@@ -16313,9 +16431,13 @@ int main()
 			"helpBrowser->TrySetPropertyValue(L\"ZoomFactor\", BindingValue(1.25))");
 		const auto statusPosition = cpp.find(
 			"helpBrowser->TrySetPropertyValue(L\"IsStatusBarEnabled\", BindingValue(true))");
+		const auto radiusPosition = cpp.find(
+			"helpBrowser->TrySetPropertyValue(L\"CornerRadius\", "
+			"BindingValue(::CornerRadius(6.f, 8.f, 10.f, 12.f)))");
 		CUI_EXPECT_TRUE(urlPosition != std::string::npos);
 		CUI_EXPECT_TRUE(zoomPosition != std::string::npos);
 		CUI_EXPECT_TRUE(statusPosition != std::string::npos);
+		CUI_EXPECT_TRUE(radiusPosition != std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("helpBrowser->Navigate(") == std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("helpBrowser->ZoomFactor =") == std::string::npos);
 	});
@@ -34967,6 +35089,218 @@ int main()
 		CUI_EXPECT_NEAR(88.0f, bounds.bottom, 0.001f);
 	});
 
+	runner.Add("DComp native surfaces preserve the CUI transform coordinate contract", []
+	{
+		const D2D1_MATRIX_3X2_F dipTransform{
+			0.8f, 0.6f, -0.6f, 0.8f, 12.0f, 18.0f };
+		const auto pixels =
+			cui::dcomp_detail::DipTransformToPhysicalPixels(
+				dipTransform, 1.5f, 27.0f);
+		CUI_EXPECT_NEAR(0.8f, pixels._11, 0.001f);
+		CUI_EXPECT_NEAR(0.6f, pixels._12, 0.001f);
+		CUI_EXPECT_NEAR(-0.6f, pixels._21, 0.001f);
+		CUI_EXPECT_NEAR(0.8f, pixels._22, 0.001f);
+		CUI_EXPECT_NEAR(18.0f, pixels._31, 0.001f);
+		CUI_EXPECT_NEAR(54.0f, pixels._32, 0.001f);
+
+		const auto localPixels = D2D1::Point2F(15.0f, 30.0f);
+		const auto projectedPixels = D2D1::Matrix3x2F(
+			pixels._11, pixels._12, pixels._21,
+			pixels._22, pixels._31, pixels._32)
+			.TransformPoint(localPixels);
+		const auto localDip = D2D1::Point2F(
+			localPixels.x / 1.5f, localPixels.y / 1.5f);
+		const auto projectedDip = D2D1::Matrix3x2F(
+			dipTransform._11, dipTransform._12,
+			dipTransform._21, dipTransform._22,
+			dipTransform._31, dipTransform._32)
+			.TransformPoint(localDip);
+		CUI_EXPECT_NEAR(projectedDip.x * 1.5f,
+			projectedPixels.x, 0.001f);
+		CUI_EXPECT_NEAR(projectedDip.y * 1.5f + 27.0f,
+			projectedPixels.y, 0.001f);
+
+		const auto authoredRadii =
+			cui::dcomp_detail::ResolveRoundedClipRadii(
+				100.0f, 50.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);
+		CUI_EXPECT_NEAR(6.0f, authoredRadii.TopLeft, 0.001f);
+		CUI_EXPECT_NEAR(8.0f, authoredRadii.TopRight, 0.001f);
+		CUI_EXPECT_NEAR(10.0f, authoredRadii.BottomRight, 0.001f);
+		CUI_EXPECT_NEAR(12.0f, authoredRadii.BottomLeft, 0.001f);
+		const auto fittedRadii =
+			cui::dcomp_detail::ResolveRoundedClipRadii(
+				100.0f, 50.0f, 1.0f, 40.0f, 40.0f, 40.0f, 40.0f);
+		CUI_EXPECT_NEAR(25.0f, fittedRadii.TopLeft, 0.001f);
+		CUI_EXPECT_NEAR(25.0f, fittedRadii.TopRight, 0.001f);
+		CUI_EXPECT_NEAR(25.0f, fittedRadii.BottomRight, 0.001f);
+		CUI_EXPECT_NEAR(25.0f, fittedRadii.BottomLeft, 0.001f);
+	});
+
+	runner.Add("ScrollViewer brings transformed descendants into the rendered viewport", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Transformed BringIntoView");
+		SetDeclaredWindowGeometry(host, 0.0f, 0.0f, 360.0f, 240.0f);
+		auto rootOwner = MakeTestControl<Canvas>();
+		auto* root = static_cast<Canvas*>(
+			host.SetVisualContent(std::move(rootOwner)));
+		auto* scroll = AddTestVisual<ScrollViewer>(
+			*root, 20, 20, 100, 80);
+		auto contentOwner = MakeTestControl<Canvas>(0, 0, 300, 240);
+		contentOwner->Width = cui::layout::Length::Fixed(300.0f);
+		contentOwner->Height = cui::layout::Length::Fixed(240.0f);
+		auto* content = contentOwner.get();
+		auto* target = AddTestVisual<Button>(
+			*content, L"Target", 30, 20, 40, 24);
+		CUI_EXPECT_TRUE(scroll->SetVisualContent(
+			std::move(contentOwner)) == content);
+		host.UpdateLayout();
+
+		cui::drawing::Transform transform;
+		cui::drawing::TransformOperation move;
+		move.Kind = cui::drawing::TransformKind::Translate;
+		move.X = 150.0f;
+		transform.Operations.push_back(move);
+		target->SetRenderTransform(transform);
+		const auto viewport = scroll->GetRenderedAbsoluteRectDip();
+		const auto before = target->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_TRUE(before.right
+			> viewport.left + static_cast<float>(scroll->ViewportWidth));
+		CUI_EXPECT_TRUE(scroll->BringDescendantIntoView(target));
+		CUI_EXPECT_TRUE(scroll->HorizontalOffset > 100.0);
+		const auto after = target->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_TRUE(after.right
+			<= viewport.left + static_cast<float>(scroll->ViewportWidth) + 0.01f);
+	});
+
+	runner.Add("Transformed ComboBox popup exposes render-space virtual bounds", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Transformed ComboBox accessibility");
+		SetDeclaredWindowGeometry(host, 0.0f, 0.0f, 360.0f, 240.0f);
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto* combo = AddTestVisual<ComboBox>(
+			*content, L"", 20, 20, 160, 28);
+		SetTestComboBoxItems(*combo, { L"One", L"Two", L"Three" });
+		cui::drawing::Transform transform;
+		cui::drawing::TransformOperation move;
+		move.Kind = cui::drawing::TransformKind::Translate;
+		move.X = 37.0f;
+		move.Y = 13.0f;
+		transform.Operations.push_back(move);
+		combo->SetRenderTransform(transform);
+		host.UpdateLayout();
+		combo->SetIsDropDownOpen(true);
+		host.UpdateLayout();
+
+		auto* item = combo->GetGeneratedItem(0);
+		CUI_EXPECT_TRUE(item != nullptr);
+		auto& peer = combo->GetAutomationPeer();
+		uint32_t id = 0;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(0, 0, id));
+		AccessibilityVirtualNode node;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(id, node));
+		CUI_EXPECT_TRUE(node.BoundsAreRenderSpace);
+		if (item)
+		{
+			const auto rendered = item->GetRenderedAbsoluteRectDip();
+			CUI_EXPECT_NEAR(rendered.left, node.BoundsDip.left, 0.01f);
+			CUI_EXPECT_NEAR(rendered.top, node.BoundsDip.top, 0.01f);
+			CUI_EXPECT_NEAR(rendered.right, node.BoundsDip.right, 0.01f);
+			CUI_EXPECT_NEAR(rendered.bottom, node.BoundsDip.bottom, 0.01f);
+			D2D1_POINT_2F local{};
+			const auto center = D2D1::Point2F(
+				(rendered.left + rendered.right) * 0.5f,
+				(rendered.top + rendered.bottom) * 0.5f);
+			CUI_EXPECT_TRUE(combo->TryTransformRenderPointToLocal(center, local));
+			uint32_t hit = 0;
+			CUI_EXPECT_TRUE(peer.TryHitTestAccessibilityVirtualNode(
+				local.x, local.y, hit));
+			CUI_EXPECT_EQ(id, hit);
+		}
+	});
+
+	runner.Add("Transformed text controls expose rendered caret coordinates", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Transformed caret coordinates");
+		SetDeclaredWindowGeometry(host, 0.0f, 0.0f, 420.0f, 220.0f);
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto* text = AddTestVisual<TextBox>(
+			*content, L"Text", 20, 20, 180, 30);
+		auto* password = AddTestVisual<PasswordBox>(
+			*content, L"", 20, 70, 180, 30);
+		password->Password = L"secret";
+		auto* rich = AddTestVisual<RichTextBox>(
+			*content, L"Rich", 20, 120, 240, 60);
+		host.UpdateLayout();
+
+		cui::drawing::Transform transform;
+		cui::drawing::TransformOperation translation;
+		translation.Kind = cui::drawing::TransformKind::Translate;
+		translation.X = 31.0f;
+		translation.Y = 14.0f;
+		transform.Operations.push_back(translation);
+		for (auto* control : std::array<Control*, 3>{ text, password, rich })
+		{
+			D2D1_RECT_F before{};
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::
+				ResolveTextInputCaretRect(*control, before));
+			control->SetRenderTransform(transform);
+			D2D1_RECT_F after{};
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::
+				ResolveTextInputCaretRect(*control, after));
+			CUI_EXPECT_NEAR(before.left + 31.0f, after.left, 0.01f);
+			CUI_EXPECT_NEAR(before.top + 14.0f, after.top, 0.01f);
+			CUI_EXPECT_NEAR(before.right + 31.0f, after.right, 0.01f);
+			CUI_EXPECT_NEAR(before.bottom + 14.0f, after.bottom, 0.01f);
+		}
+	});
+
+	runner.Add("Directional focus navigation follows rendered positions", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"Transformed directional focus");
+		SetDeclaredWindowGeometry(host, 0.0f, 0.0f, 480.0f, 220.0f);
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto* origin = AddTestVisual<Button>(
+			*content, L"Origin", 100, 80, 80, 30);
+		auto* layoutRightVisualLeft = AddTestVisual<Button>(
+			*content, L"Visual left", 220, 80, 80, 30);
+		auto* layoutLeftVisualRight = AddTestVisual<Button>(
+			*content, L"Visual right", 10, 80, 80, 30);
+		for (auto* control : { origin,
+			layoutRightVisualLeft, layoutLeftVisualRight })
+		{
+			control->Focusable = true;
+			control->IsTabStop = true;
+		}
+		cui::drawing::Transform leftTransform;
+		cui::drawing::TransformOperation moveLeft;
+		moveLeft.Kind = cui::drawing::TransformKind::Translate;
+		moveLeft.X = -190.0f;
+		leftTransform.Operations.push_back(moveLeft);
+		layoutRightVisualLeft->SetRenderTransform(leftTransform);
+		cui::drawing::Transform rightTransform;
+		cui::drawing::TransformOperation moveRight;
+		moveRight.Kind = cui::drawing::TransformKind::Translate;
+		moveRight.X = 310.0f;
+		rightTransform.Operations.push_back(moveRight);
+		layoutLeftVisualRight->SetRenderTransform(rightTransform);
+		host.UpdateLayout();
+
+		host.SetKeyboardFocus(origin, false);
+		CUI_EXPECT_TRUE(host.MoveFocus(FocusNavigationDirection::Right));
+		CUI_EXPECT_TRUE(host.GetKeyboardFocusedElement()
+			== layoutLeftVisualRight);
+	});
+
 	runner.Add("Geometry clips provide exact fill rules and inherit through transforms", []
 	{
 		cui::drawing::Geometry rounded;
@@ -35091,6 +35425,68 @@ int main()
 		parent.ClearClip();
 		CUI_EXPECT_FALSE(parent.GetClip().has_value());
 		CUI_EXPECT_TRUE(child->IsRenderPointInsideClip(outside));
+	});
+
+	runner.Add("Designer recaptures StaticResource RenderTransform values for codegen", []
+	{
+		const std::string xaml = R"xaml(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="TransformResourceWindow" Width="480" Height="240">
+  <Window.Resources>
+    <TransformGroup x:Key="ButtonTransform">
+      <ScaleTransform ScaleX="1.1" ScaleY="0.9" />
+      <RotateTransform Angle="4" CenterX="40" CenterY="15" />
+    </TransformGroup>
+  </Window.Resources>
+  <Canvas x:Name="contentRoot">
+    <Button x:Name="transformButton" Width="120" Height="36"
+      RenderTransform="{StaticResource ButtonTransform}" />
+  </Canvas>
+</Window>)xaml";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* button = runtime.FindControlByName(L"transformButton");
+		CUI_EXPECT_TRUE(button != nullptr);
+		if (!button) return;
+
+		std::wstring canonicalName;
+		DesignerStyleValue captured;
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::CaptureValue(
+			*button, L"RenderTransform", &canonicalName, captured, &error));
+		CUI_EXPECT_EQ(std::wstring(L"RenderTransform"), canonicalName);
+		CUI_EXPECT_EQ(DesignerStyleValueKind::Transform, captured.Kind);
+		CUI_EXPECT_TRUE(captured.ObjectValue.is_array());
+		CUI_EXPECT_EQ(2ULL, captured.ObjectValue.size());
+
+		auto node = std::find_if(document.Nodes.begin(), document.Nodes.end(),
+			[](const auto& candidate)
+			{ return candidate.Name == L"transformButton"; });
+		CUI_EXPECT_TRUE(node != document.Nodes.end());
+		if (node == document.Nodes.end()) return;
+		auto assignment = node->Properties.Values.find(L"RenderTransform");
+		CUI_EXPECT_TRUE(assignment != node->Properties.Values.end());
+		if (assignment == node->Properties.Values.end()) return;
+		CUI_EXPECT_EQ(std::wstring(L"ButtonTransform"),
+			assignment->second.ResourceKey);
+		assignment->second.Value = std::move(captured);
+
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		const auto generated = CodeGenerator(
+			L"TransformResourceWindow", document).GenerateCpp();
+		CUI_EXPECT_TRUE(generated.find("cui::drawing::TransformKind::Scale")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generated.find("cui::drawing::TransformKind::Rotate")
+			!= std::string::npos);
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"RenderTransform=\"{StaticResource ButtonTransform}\"")
+			!= std::string::npos);
 	});
 
 	runner.Add("Public XAML collection properties round-trip without designer bags", []
@@ -35304,7 +35700,7 @@ int main()
 			if (canonical.find(expected) == std::string::npos)
 				throw std::runtime_error(std::string(
 					"missing collection XAML marker: ") + expected);
-		CUI_EXPECT_TRUE(canonical.find("<MediaPlayer") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<MediaElement") == std::string::npos);
 
 		DesignerModel::DesignDocument parsed;
 		std::wstring error;
@@ -36375,6 +36771,17 @@ int main()
 		chart->Title = L"";
 		chart->ShowLegend = false;
 		chart->SetSingleSeries({ ChartPoint{ L"Q1", 10.0 } });
+		cui::drawing::Transform chartTransform;
+		cui::drawing::TransformOperation chartScale;
+		chartScale.Kind = cui::drawing::TransformKind::Scale;
+		chartScale.ScaleX = 1.04f;
+		chartScale.ScaleY = 1.04f;
+		cui::drawing::TransformOperation chartRotation;
+		chartRotation.Kind = cui::drawing::TransformKind::Rotate;
+		chartRotation.Angle = 4.0f;
+		chartTransform.Operations = { chartScale, chartRotation };
+		chart->SetRenderTransformOrigin(D2D1::Point2F(0.5f, 0.5f));
+		chart->SetRenderTransform(chartTransform);
 
 		// Mirror Generic.xaml's full-size Grid -> transparent Border chrome.
 		// ChartView paints and interacts with its data points itself, so this
@@ -36414,11 +36821,18 @@ int main()
 		CUI_EXPECT_EQ(0, seriesIndex);
 		CUI_EXPECT_EQ(0, pointIndex);
 
-		const auto origin = chart->GetAbsoluteLocationDip();
-		const float contentX = static_cast<float>(origin.x) + localX;
-		const float contentY = static_cast<float>(origin.y) + localY;
+		const auto rawTransform = chart->GetLocalToRenderTransform();
+		const auto renderPoint = D2D1::Matrix3x2F(
+			rawTransform._11, rawTransform._12,
+			rawTransform._21, rawTransform._22,
+			rawTransform._31, rawTransform._32)
+			.TransformPoint(D2D1::Point2F(
+				static_cast<float>(localX), static_cast<float>(localY)));
+		const float contentX = renderPoint.x;
+		const float contentY = renderPoint.y;
 		auto* hit = cui::framework::WindowAccess::HitTestControlAt(
-			host, static_cast<int>(contentX), static_cast<int>(contentY));
+			host, static_cast<int>(std::lround(contentX)),
+			static_cast<int>(std::lround(contentY)));
 		CUI_EXPECT_TRUE(hit == chart);
 
 		int clickCount = 0;
@@ -36456,6 +36870,101 @@ int main()
 			MAKELPARAM(wheelPoint.x, wheelPoint.y));
 		CUI_EXPECT_TRUE(chart->GetZoomX() > oldZoom);
 		CUI_EXPECT_TRUE(pointClick.Connected());
+	});
+
+	runner.Add("CalendarView owns transformed input beneath decorative template chrome", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"CalendarView transformed template input");
+		SetDeclaredWindowGeometry(
+			host, 0.0f, 0.0f, 360.0f, 260.0f);
+		auto contentOwner = MakeTestControl<Canvas>();
+		auto* content = static_cast<Canvas*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto calendarOwner = MakeTestControl<CalendarView>(
+			40.0f, 30.0f, 260.0f, 190.0f);
+		auto* calendar = calendarOwner.get();
+		SYSTEMTIME initial{};
+		initial.wYear = 2026;
+		initial.wMonth = 1;
+		initial.wDay = 1;
+		calendar->SetSelectedDate(initial);
+		calendar->SetDisplayMonth(2027, 3);
+
+		cui::drawing::Transform calendarTransform;
+		cui::drawing::TransformOperation scale;
+		scale.Kind = cui::drawing::TransformKind::Scale;
+		scale.ScaleX = 1.03f;
+		scale.ScaleY = 1.03f;
+		cui::drawing::TransformOperation rotate;
+		rotate.Kind = cui::drawing::TransformKind::Rotate;
+		rotate.Angle = -3.5f;
+		calendarTransform.Operations = { scale, rotate };
+		calendar->SetRenderTransformOrigin(D2D1::Point2F(0.5f, 0.5f));
+		calendar->SetRenderTransform(calendarTransform);
+
+		// Mirror Generic.xaml's full-size decorative Grid/Border subtree.
+		auto templateRoot = MakeTestControl<Grid>();
+		auto* templateRootPointer = templateRoot.get();
+		auto chromeOwner = MakeTestControl<Border>();
+		auto* chrome = chromeOwner.get();
+		cui::framework::TreeAccess::SetTemplatedParent(
+			*templateRootPointer, calendar);
+		cui::framework::TreeAccess::SetTemplatedParent(*chrome, calendar);
+		templateRootPointer->AddOwned(std::move(chromeOwner));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::SetTemplateRoot(
+			*calendar, std::move(templateRoot)) == templateRootPointer);
+		content->AddOwned(std::move(calendarOwner));
+		host.UpdateLayout();
+
+		CUI_EXPECT_FALSE(calendar->HitTestChildren());
+		CUI_EXPECT_TRUE(chrome->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(chrome->GetActualSizeDip().height > 0.0f);
+		uint32_t cellId = 0;
+		AccessibilityVirtualNode cell;
+		CUI_EXPECT_TRUE(calendar->GetAccessibilityVirtualItemAt(
+			2, 3, cellId));
+		CUI_EXPECT_TRUE(calendar->TryGetAccessibilityVirtualNode(
+			cellId, cell));
+		const int localX = static_cast<int>(
+			(cell.BoundsDip.left + cell.BoundsDip.right) * 0.5f);
+		const int localY = static_cast<int>(
+			(cell.BoundsDip.top + cell.BoundsDip.bottom) * 0.5f);
+		SYSTEMTIME target{};
+		bool inDisplayMonth = false;
+		CUI_EXPECT_TRUE(calendar->HitTestDate(
+			localX, localY, target, inDisplayMonth) >= 0);
+
+		const auto rawTransform = calendar->GetLocalToRenderTransform();
+		const auto renderPoint = D2D1::Matrix3x2F(
+			rawTransform._11, rawTransform._12,
+			rawTransform._21, rawTransform._22,
+			rawTransform._31, rawTransform._32)
+			.TransformPoint(D2D1::Point2F(
+				static_cast<float>(localX), static_cast<float>(localY)));
+		auto* hit = cui::framework::WindowAccess::HitTestControlAt(
+			host, static_cast<int>(std::lround(renderPoint.x)),
+			static_cast<int>(std::lround(renderPoint.y)));
+		CUI_EXPECT_TRUE(hit == calendar);
+
+		const auto clientPoint = host.ContentDipRectToClientPixels(
+			D2D1::RectF(renderPoint.x, renderPoint.y,
+				renderPoint.x + 1.0f, renderPoint.y + 1.0f));
+		const LPARAM pointerPoint = MAKELPARAM(
+			(clientPoint.left + clientPoint.right) / 2,
+			(clientPoint.top + clientPoint.bottom) / 2);
+		(void)::SendMessageW(
+			host.Handle, WM_LBUTTONDOWN, MK_LBUTTON, pointerPoint);
+		CUI_EXPECT_TRUE(host.GetMouseCaptured() == calendar);
+		(void)::SendMessageW(host.Handle, WM_LBUTTONUP, 0, pointerPoint);
+		CUI_EXPECT_TRUE(host.GetMouseCaptured() == nullptr);
+		const auto selected = calendar->GetSelectedDate();
+		CUI_EXPECT_EQ(static_cast<int>(target.wYear),
+			static_cast<int>(selected.wYear));
+		CUI_EXPECT_EQ(static_cast<int>(target.wMonth),
+			static_cast<int>(selected.wMonth));
+		CUI_EXPECT_EQ(static_cast<int>(target.wDay),
+			static_cast<int>(selected.wDay));
 	});
 
 	runner.Add("RelativePanel attached constraints round-trip and materialize dynamically", []
@@ -39689,6 +40198,9 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(codeGenTargets.find(
 			"theme-%(Filename).v$(CuiThemeCodeGenContractVersion).stamp")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			"CuiCodeGenHostBuild=true;CuiRuntimeFlavor=Design\"")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(codeGenTargets.find(
 			"Inputs=\"%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);"
@@ -45695,6 +46207,61 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == focusedFallback);
 	});
 
+	runner.Add("Explicit command targets use logical Window domains for inactive content", []
+	{
+		Window window; ConfigureTestControl(window, L"Logical command domain");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 120.0f);
+		std::unique_ptr<Control> rootOwner = MakeTestControl<Panel>();
+		auto* root = dynamic_cast<Panel*>(rootOwner.get());
+		auto* source = AddTestVisual<Button>(*root, L"Source", 0, 0);
+		auto* logicalHost = AddTestVisual<Panel>(*root);
+		CUI_EXPECT_TRUE(window.TrySetVisualContent(rootOwner));
+
+		auto inactiveTarget = MakeTestControl<Panel>();
+		cui::framework::TreeAccess::SetLogicalParent(
+			*inactiveTarget, logicalHost);
+		CUI_EXPECT_TRUE(inactiveTarget->GetPresentationWindow() == nullptr);
+		CUI_EXPECT_TRUE(logicalHost->GetPresentationWindow() == &window);
+
+		int executions = 0;
+		CommandBinding binding;
+		binding.Command = RoutedCommand(L"Core.LogicalCommandDomain");
+		binding.CanExecute = [](
+			Control*, CanExecuteRoutedEventArgs& args)
+		{
+			args.CanExecute = true;
+		};
+		binding.Executed = [&](Control*, ExecutedRoutedEventArgs&)
+		{
+			++executions;
+		};
+		auto bindingLifetime = window.AddCommandBinding(std::move(binding));
+		const RoutedCommandSourceQuery query{
+			RoutedCommand(L"Core.LogicalCommandDomain"), {},
+			ControlWeakReference(inactiveTarget.get()) };
+		const auto logicalResult =
+			RoutedCommandManager::ExecuteCommandSource(*source, query);
+		CUI_EXPECT_TRUE(logicalResult.Executed);
+		CUI_EXPECT_TRUE(logicalResult.Query.Target == inactiveTarget.get());
+		CUI_EXPECT_EQ(1, executions);
+
+		Window foreignWindow;
+		ConfigureTestControl(foreignWindow, L"Foreign command domain");
+		SetDeclaredWindowGeometry(
+			foreignWindow, 0.0f, 0.0f, 320.0f, 120.0f);
+		std::unique_ptr<Control> foreignRoot = MakeTestControl<Panel>();
+		auto* foreignPanel = dynamic_cast<Panel*>(foreignRoot.get());
+		auto* foreignTarget = AddTestVisual<Panel>(*foreignPanel);
+		CUI_EXPECT_TRUE(foreignWindow.TrySetVisualContent(foreignRoot));
+		const auto foreignResult = RoutedCommandManager::ExecuteCommandSource(
+			*source, RoutedCommandSourceQuery{
+				RoutedCommand(L"Core.LogicalCommandDomain"), {},
+				ControlWeakReference(foreignTarget) });
+		CUI_EXPECT_FALSE(foreignResult.Executed);
+		CUI_EXPECT_TRUE(foreignResult.Query.Target == nullptr);
+		CUI_EXPECT_EQ(1, executions);
+	});
+
 	runner.Add("Click publication stops when the source deletes itself", []
 	{
 		struct LifetimeButton final : Button
@@ -48925,7 +49492,7 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		for (const auto* legacyName : { L"Base", L"Label", L"LinkLabel",
 			L"PictureBox", L"RadioBox", L"GridPanel",
-			L"ScrollView", L"SelectorItem", L"MediaPlayer" })
+			L"ScrollView", L"SelectorItem", L"MediaElement" })
 		{
 			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
 				L"urn:cui", legacyName) == nullptr);
@@ -48933,7 +49500,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		DesignerModel::DesignDocument rejectedLegacyMedia;
 		std::wstring legacyMediaError;
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
-			R"xaml(<Window xmlns="urn:cui"><MediaPlayer /></Window>)xaml",
+			R"xaml(<Window xmlns="urn:cui"><MediaElement /></Window>)xaml",
 			rejectedLegacyMedia, &legacyMediaError));
 		CUI_EXPECT_TRUE(!legacyMediaError.empty());
 		const auto* left = CuiRuntime::XamlRuntimeSchema::FindAttachedProperty(

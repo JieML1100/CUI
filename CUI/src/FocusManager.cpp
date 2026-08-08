@@ -29,6 +29,16 @@ namespace
 		}
 	}
 
+	cui::core::Rect RenderedBounds(Control& control)
+	{
+		const auto rendered = control.GetRenderedAbsoluteRectDip();
+		return cui::core::Rect{
+			rendered.left,
+			rendered.top,
+			rendered.right - rendered.left,
+			rendered.bottom - rendered.top };
+	}
+
 	bool IsBoundaryMode(KeyboardNavigationMode mode) noexcept
 	{
 		return mode == KeyboardNavigationMode::Cycle
@@ -576,7 +586,7 @@ Control* FocusManager::FindDirectionalTarget(
 	auto* const keyboardFocus = _keyboardFocus.Get();
 	if (!keyboardFocus)
 		return FindTabTarget(FocusNavigationDirection::First);
-	const auto originRect = keyboardFocus->GetAbsoluteRectDip();
+	const auto originRect = RenderedBounds(*keyboardFocus);
 	const float originX = CenterX(originRect);
 	const float originY = CenterY(originRect);
 	Control* best = nullptr;
@@ -585,7 +595,7 @@ Control* FocusManager::FindDirectionalTarget(
 	for (auto* candidate : candidates)
 	{
 		if (!candidate || candidate == keyboardFocus) continue;
-		const auto rect = candidate->GetAbsoluteRectDip();
+		const auto rect = RenderedBounds(*candidate);
 		const float dx = CenterX(rect) - originX;
 		const float dy = CenterY(rect) - originY;
 		float primary = 0.0f;
@@ -622,7 +632,7 @@ Control* FocusManager::FindDirectionalTarget(
 	for (auto* candidate : candidates)
 	{
 		if (!candidate || candidate == keyboardFocus) continue;
-		const auto rect = candidate->GetAbsoluteRectDip();
+		const auto rect = RenderedBounds(*candidate);
 		const float x = CenterX(rect);
 		const float y = CenterY(rect);
 		float edge = 0.0f;

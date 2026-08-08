@@ -764,7 +764,7 @@ bool PasswordBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
 {
 	if (_caretRectCacheValid)
 	{
-		outRect = _caretRectCache;
+		outRect = TransformAbsoluteRectToRenderSpace(_caretRectCache);
 		return true;
 	}
 	const auto absolute = GetAbsoluteLocationDip();
@@ -773,7 +773,8 @@ bool PasswordBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
 	const float y = static_cast<float>(absolute.y) + Padding.Top;
 	const float height = GetRenderFont() && GetRenderFont()->FontHeight > 0.0f
 		? GetRenderFont()->FontHeight : 16.0f;
-	outRect = D2D1::RectF(x, y, x + 1.0f, y + height);
+	outRect = TransformAbsoluteRectToRenderSpace(
+		D2D1::RectF(x, y, x + 1.0f, y + height));
 	return true;
 }
 

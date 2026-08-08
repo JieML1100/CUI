@@ -1792,21 +1792,9 @@ bool ComboBox::TryGetItemBounds(
 	if (!_popup || !_popup->GetIsOpen()) return false;
 	auto* item = GetGeneratedItem(index);
 	if (!item) return true;
-	const auto itemRect = item->GetAbsoluteRectDip();
-	const auto owner = GetAbsoluteLocationDip();
-	bounds = D2D1::RectF(
-		itemRect.x - owner.x,
-		itemRect.y - owner.y,
-		itemRect.x - owner.x + itemRect.width,
-		itemRect.y - owner.y + itemRect.height);
-	const auto popupRect = _popup->GetAbsoluteRectDip();
-	const D2D1_RECT_F itemAbsolute = D2D1::RectF(
-		itemRect.x, itemRect.y,
-		itemRect.x + itemRect.width, itemRect.y + itemRect.height);
-	const D2D1_RECT_F popupAbsolute = D2D1::RectF(
-		popupRect.x, popupRect.y,
-		popupRect.x + popupRect.width, popupRect.y + popupRect.height);
-	visible = item->IsVisible && Intersects(itemAbsolute, popupAbsolute);
+	bounds = item->GetRenderedAbsoluteRectDip();
+	const auto popupBounds = _popup->GetRenderedAbsoluteRectDip();
+	visible = item->IsVisible && Intersects(bounds, popupBounds);
 	if (!visible) bounds = D2D1::RectF();
 	return true;
 }
@@ -1847,14 +1835,20 @@ bool ComboBox::TryHitTestAccessibilityVirtualNode(
 {
 	result = 0;
 	if (!_popup || !_popup->GetIsOpen()) return false;
+	const auto rawTransform = GetLocalToRenderTransform();
+	const auto renderPoint = D2D1::Matrix3x2F(
+		rawTransform._11, rawTransform._12,
+		rawTransform._21, rawTransform._22,
+		rawTransform._31, rawTransform._32)
+		.TransformPoint(D2D1::Point2F(localX, localY));
 	const size_t count = ItemCount();
 	for (size_t index = 0; index < count; ++index)
 	{
 		D2D1_RECT_F bounds{};
 		bool visible = false;
 		if (!TryGetItemBounds(index, bounds, visible) || !visible) continue;
-		if (localX < bounds.left || localX > bounds.right
-			|| localY < bounds.top || localY > bounds.bottom) continue;
+		if (renderPoint.x < bounds.left || renderPoint.x > bounds.right
+			|| renderPoint.y < bounds.top || renderPoint.y > bounds.bottom) continue;
 		return TryGetAccessibilityVirtualChildAt(0, index, result);
 	}
 	return false;
@@ -1881,6 +1875,7 @@ bool ComboBox::TryGetAccessibilityVirtualNode(
 		? L"item-" + std::to_wstring(id)
 		: ownerId + L".item-" + std::to_wstring(id);
 	result.BoundsDip = bounds;
+	result.BoundsAreRenderSpace = true;
 	result.Enabled = IsEffectivelyEnabled();
 	result.Visible = IsVisible && visible;
 	result.Selected = index == SelectedIndex;

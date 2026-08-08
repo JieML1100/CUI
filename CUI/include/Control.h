@@ -119,8 +119,6 @@ enum class UIClass : int
 	UI_Slider,
 	UI_WebBrowser,
 	UI_MediaElement,
-	/** Transitional numeric/source alias; MediaElement is the canonical type. */
-	UI_MediaPlayer = UI_MediaElement,
 	UI_StackPanel,
 	UI_Grid,
 	UI_DockPanel,
@@ -261,7 +259,11 @@ struct AccessibilityVirtualNode
 	std::wstring Description;
 	std::wstring Value;
 	std::wstring AutomationId;
-	D2D1_RECT_F BoundsDip{ 0, 0, 0, 0 }; // owner-local DIPs
+	D2D1_RECT_F BoundsDip{ 0, 0, 0, 0 };
+	// Most virtual nodes use owner-local DIPs. Transient presentation roots,
+	// such as ComboBox popup items, can instead publish window render-space
+	// DIPs so the UIA bridge does not apply the owner's RenderTransform twice.
+	bool BoundsAreRenderSpace = false;
 	bool Enabled = true;
 	bool Visible = true;
 	bool Selected = false;

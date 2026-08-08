@@ -1,7 +1,9 @@
 #pragma once
 #include <windows.h>
+#include <d2d1.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -14,6 +16,73 @@ struct IDCompositionVisual;
 // at the host boundary and must never escape into the public control API.
 namespace cui::dcomp_detail
 {
+	/** Converts a DIP-space affine transform to DComp physical pixels. */
+	inline D2D1_MATRIX_3X2_F DipTransformToPhysicalPixels(
+		D2D1_MATRIX_3X2_F value,
+		float dpiScale,
+		float titleBarOffsetPixels = 0.0f) noexcept
+	{
+		if (!std::isfinite(dpiScale) || dpiScale <= 0.0f)
+			dpiScale = 1.0f;
+		value._31 *= dpiScale;
+		value._32 = value._32 * dpiScale + titleBarOffsetPixels;
+		return value;
+	}
+
+	/** Physical-pixel radii for a DComp rounded rectangle clip. */
+	struct RoundedClipRadii final
+	{
+		float TopLeft = 0.0f;
+		float TopRight = 0.0f;
+		float BottomRight = 0.0f;
+		float BottomLeft = 0.0f;
+	};
+
+	/**
+	 * Converts authored DIP corner radii and scales overlapping corners as one
+	 * shape.  Keeping one common scale factor preserves the original proportions
+	 * and avoids relying on compositor-specific overlap handling.
+	 */
+	inline RoundedClipRadii ResolveRoundedClipRadii(
+		float widthPixels,
+		float heightPixels,
+		float dpiScale,
+		float topLeftDip,
+		float topRightDip,
+		float bottomRightDip,
+		float bottomLeftDip) noexcept
+	{
+		widthPixels = std::isfinite(widthPixels)
+			? (std::max)(0.0f, widthPixels) : 0.0f;
+		heightPixels = std::isfinite(heightPixels)
+			? (std::max)(0.0f, heightPixels) : 0.0f;
+		if (!std::isfinite(dpiScale) || dpiScale <= 0.0f)
+			dpiScale = 1.0f;
+		auto radius = [dpiScale](float value)
+		{
+			return std::isfinite(value)
+				? (std::max)(0.0f, value) * dpiScale : 0.0f;
+		};
+		RoundedClipRadii result{
+			radius(topLeftDip), radius(topRightDip),
+			radius(bottomRightDip), radius(bottomLeftDip) };
+		float scale = 1.0f;
+		auto constrain = [&scale](float available, float requested)
+		{
+			if (requested > available && requested > 0.0f)
+				scale = (std::min)(scale, available / requested);
+		};
+		constrain(widthPixels, result.TopLeft + result.TopRight);
+		constrain(widthPixels, result.BottomLeft + result.BottomRight);
+		constrain(heightPixels, result.TopLeft + result.BottomLeft);
+		constrain(heightPixels, result.TopRight + result.BottomRight);
+		result.TopLeft *= scale;
+		result.TopRight *= scale;
+		result.BottomRight *= scale;
+		result.BottomLeft *= scale;
+		return result;
+	}
+
 	struct VisualStackEntry final
 	{
 		uintptr_t Token = 0;

@@ -118,11 +118,16 @@ public:
 	SET(bool, HasDropShadow);
 	ContextMenuEvent Opened;
 	ContextMenuEvent Closed;
+	void Arrange(cui::core::Rect finalRect) override;
 	bool ContainsPoint(int localX, int localY) override;
 	cui::core::Size GetRenderSizeDip() override;
 	bool PresentationSuppressionAffectsLayout() const noexcept override
 	{
 		return false;
+	}
+	bool BreaksVisualPresentationInheritance() const noexcept override
+	{
+		return true;
 	}
 protected:
 	void PreparePresentation() override;

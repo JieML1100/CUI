@@ -776,10 +776,9 @@ MenuItem* ContextMenu::HitTopLevelItem(
 		// Window content coordinates (the same coordinate space as placement),
 		// while a MenuItem reached by normal scene hit testing receives its own
 		// retargeted local report and never comes through this fallback.
-		if (item->GetAbsoluteRectDip().Contains(
-			cui::core::Point{
-				static_cast<float>(rootX),
-				static_cast<float>(rootY) }))
+		const auto rendered = item->GetRenderedAbsoluteRectDip();
+		if (rootX >= rendered.left && rootY >= rendered.top
+			&& rootX < rendered.right && rootY < rendered.bottom)
 			return item;
 	}
 	return nullptr;
@@ -999,7 +998,14 @@ void ContextMenu::ArrangePopupSurface()
 
 	cui::core::Rect targetRect{};
 	if (auto* target = _placementTarget.Get())
-		targetRect = target->GetAbsoluteRectDip();
+	{
+		const auto rendered = target->GetRenderedAbsoluteRectDip();
+		targetRect = cui::core::Rect{
+			rendered.left,
+			rendered.top,
+			rendered.right - rendered.left,
+			rendered.bottom - rendered.top };
+	}
 	if (_placementRectangle != cui::core::Rect{})
 	{
 		targetRect = _placementRectangle.Normalized();
@@ -1008,6 +1014,14 @@ void ContextMenu::ArrangePopupSurface()
 			const auto absolute = target->GetAbsoluteLocationDip();
 			targetRect.x += absolute.x;
 			targetRect.y += absolute.y;
+			const auto rendered = target->TransformAbsoluteRectToRenderSpace(
+				D2D1::RectF(targetRect.Left(), targetRect.Top(),
+					targetRect.Right(), targetRect.Bottom()));
+			targetRect = cui::core::Rect{
+				rendered.left,
+				rendered.top,
+				rendered.right - rendered.left,
+				rendered.bottom - rendered.top };
 		}
 	}
 
@@ -1071,14 +1085,23 @@ void ContextMenu::ArrangePopupSurface()
 		y, edge, (std::max)(edge,
 			viewport.height - height - edge));
 
-	cui::core::Point parentAbsolute{};
-	if (auto* parent = GetVisualParent())
-		parentAbsolute = parent->GetAbsoluteLocationDip();
+	// ContextMenu is an independent transient root. Its arranged coordinates
+	// belong directly to the window content viewport, just like Popup.
 	ItemsControl::Arrange({
-		x - parentAbsolute.x,
-		y - parentAbsolute.y,
+		x,
+		y,
 		width,
 		height });
+}
+
+void ContextMenu::Arrange(cui::core::Rect finalRect)
+{
+	if (!_isOpen)
+	{
+		ItemsControl::Arrange(finalRect);
+		return;
+	}
+	ArrangePopupSurface();
 }
 
 void ContextMenu::ShowAtCore(
@@ -1270,10 +1293,15 @@ void ContextMenu::ShowAt(class Control* relativeTo, int x, int y, bool ignoreNex
 	if (!this->GetPresentationWindow()
 		|| relativeTo->GetPresentationWindow() != this->GetPresentationWindow())
 		return;
-	const auto relativeAbs = relativeTo->GetAbsoluteLocationDip();
+	const auto raw = relativeTo->GetLocalToRenderTransform();
+	const auto anchor = D2D1::Matrix3x2F(
+		raw._11, raw._12, raw._21,
+		raw._22, raw._31, raw._32)
+		.TransformPoint(D2D1::Point2F(
+			static_cast<float>(x), static_cast<float>(y)));
 	ShowAtCore(relativeTo,
-		static_cast<int>(std::round(relativeAbs.x + (float)x)),
-		static_cast<int>(std::round(relativeAbs.y + (float)y)),
+		static_cast<int>(std::round(anchor.x)),
+		static_cast<int>(std::round(anchor.y)),
 		ignoreNextMouseUp);
 }
 

@@ -835,12 +835,31 @@ Control* RoutedCommandManager::ResolveCommandTarget(
 	Control& source,
 	const ControlWeakReference& requested) noexcept
 {
+	auto resolveDomain = [](Control& control) noexcept -> Window*
+	{
+		for (auto* current = &control; current;
+			current = current->GetRoutedParent())
+		{
+			if (auto* window = current->GetPresentationWindow())
+				return window;
+			if (auto* window = dynamic_cast<Window*>(current))
+				return window;
+		}
+		return nullptr;
+	};
 	if (requested.HasValue())
 	{
 		auto* target = requested.Get();
 		if (!target) return nullptr;
-		if (source.GetPresentationWindow() != target->GetPresentationWindow()
-			&& (source.GetPresentationWindow() || target->GetPresentationWindow())) return nullptr;
+		// A target can be temporarily absent from the presentation tree while it
+		// remains in the same logical command route (for example inactive
+		// TabItem content referenced by a ContextMenu).  Compare routed Window
+		// domains instead of the target's direct visual-mount cache so that the
+		// explicit route remains usable without admitting cross-Window targets.
+		auto* sourceDomain = resolveDomain(source);
+		auto* targetDomain = resolveDomain(*target);
+		if (sourceDomain != targetDomain && (sourceDomain || targetDomain))
+			return nullptr;
 		return target;
 	}
 	if (source.GetPresentationWindow())

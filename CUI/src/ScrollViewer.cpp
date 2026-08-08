@@ -622,12 +622,33 @@ bool ScrollViewer::BringDescendantIntoView(Control* descendant)
 		(*current)->UpdateLayout();
 
 	const auto layout = CalcScrollLayout();
-	const auto owner = GetAbsoluteLocationDip();
-	const auto target = descendant->GetAbsoluteRectDip();
-	const float left = target.x - owner.x;
-	const float top = target.y - owner.y;
-	const float right = left + target.width;
-	const float bottom = top + target.height;
+	const auto ownerRaw = GetLocalToRenderTransform();
+	auto renderToOwner = D2D1::Matrix3x2F(
+		ownerRaw._11, ownerRaw._12, ownerRaw._21, ownerRaw._22,
+		ownerRaw._31, ownerRaw._32);
+	if (!renderToOwner.Invert()) return false;
+	const auto targetRaw = descendant->GetLocalToRenderTransform();
+	const auto targetToOwner = D2D1::Matrix3x2F(
+		targetRaw._11, targetRaw._12, targetRaw._21, targetRaw._22,
+		targetRaw._31, targetRaw._32) * renderToOwner;
+	const auto targetSize = descendant->GetActualSizeDip();
+	const D2D1_POINT_2F corners[] = {
+		targetToOwner.TransformPoint(D2D1::Point2F()),
+		targetToOwner.TransformPoint(D2D1::Point2F(targetSize.width, 0.0f)),
+		targetToOwner.TransformPoint(D2D1::Point2F(0.0f, targetSize.height)),
+		targetToOwner.TransformPoint(D2D1::Point2F(
+			targetSize.width, targetSize.height)) };
+	float left = corners[0].x;
+	float top = corners[0].y;
+	float right = corners[0].x;
+	float bottom = corners[0].y;
+	for (size_t index = 1; index < std::size(corners); ++index)
+	{
+		left = (std::min)(left, corners[index].x);
+		top = (std::min)(top, corners[index].y);
+		right = (std::max)(right, corners[index].x);
+		bottom = (std::max)(bottom, corners[index].y);
+	}
 	double x = _horizontalOffset;
 	double y = _verticalOffset;
 	if (left < 0.0f) x += static_cast<int>(std::floor(left));

@@ -852,14 +852,26 @@ bool CaptureValue(
 	if (!TryGetStyleProperty(target, propertyName, property))
 		return Fail(L"目标类型没有可持久化的元数据属性：" + propertyName, outError);
 	out = DesignerStyleValue{ property.ValueKind, property.SampleValue };
-	if (property.ValueKind == DesignerStyleValueKind::Brush)
+	if (property.ValueKind == DesignerStyleValueKind::Brush
+		|| property.ValueKind == DesignerStyleValueKind::Transform)
 	{
 		BindingValue runtimeValue;
-		cui::drawing::Brush brush;
 		if (property.Metadata
-			&& property.Metadata->TryGet(target, runtimeValue)
-			&& runtimeValue.TryGet(brush))
-			out.ObjectValue = BrushToValue(brush);
+			&& property.Metadata->TryGet(target, runtimeValue))
+		{
+			if (property.ValueKind == DesignerStyleValueKind::Brush)
+			{
+				cui::drawing::Brush brush;
+				if (runtimeValue.TryGet(brush))
+					out.ObjectValue = BrushToValue(brush);
+			}
+			else
+			{
+				cui::drawing::Transform transform;
+				if (runtimeValue.TryGet(transform))
+					out.ObjectValue = TransformToValue(transform);
+			}
+		}
 	}
 	if (outCanonicalName) *outCanonicalName = property.Name;
 	if (outError) outError->clear();

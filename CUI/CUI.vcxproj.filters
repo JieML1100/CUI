@@ -27,12 +27,12 @@
     <ClInclude Include="include\Control.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\AutomationPeer.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ComponentBehavior.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\AutomationPeer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ComponentBehavior.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ThemePalette.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -54,66 +54,66 @@
     <ClInclude Include="include\RelativeSource.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\CuiBuildFeatures.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\RuntimeTypeMetadata.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\XamlSchema.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\BindingList.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\CollectionViewSource.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\GroupStyle.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\CuiBuildFeatures.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RuntimeTypeMetadata.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\XamlSchema.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\BindingList.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\CollectionViewSource.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\GroupStyle.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ItemTemplate.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ItemsPanelTemplate.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ItemsControl.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ItemsPresenter.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\TemplateInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\NativeVisualStateInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\XamlInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\DependencyPropertyInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\StyleInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\CuiGeneratedFrameworkTheme.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\RoutedEventInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\WindowInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\EventInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\TreeInfrastructure.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ItemsPanelTemplate.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ItemsControl.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ItemsPresenter.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TemplateInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\NativeVisualStateInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\XamlInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\DependencyPropertyInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\StyleInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\CuiGeneratedFrameworkTheme.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RoutedEventInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\WindowInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\EventInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TreeInfrastructure.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ContentPresenter.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -126,27 +126,27 @@
     <ClInclude Include="include\Border.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\ControlTemplate.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ItemContainer.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\HeaderedContentControl.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\HeaderedItemsControl.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\Selector.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\Separator.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ListBox.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\ControlTemplate.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ItemContainer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\HeaderedContentControl.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\HeaderedItemsControl.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Selector.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Separator.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ListBox.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\Brush.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -159,18 +159,18 @@
     <ClInclude Include="include\Style.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\ButtonBase.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ToggleButton.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\RangeBase.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\TextBoxBase.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\ButtonBase.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ToggleButton.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RangeBase.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TextBoxBase.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ObservableCollection.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -210,30 +210,27 @@
     <ClInclude Include="include\Canvas.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\ItemContainerGenerator.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\NativeSurface.h">
+      <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\NativeSurface.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\PlatformWindowHost.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\PresentationRenderHost.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\PresentationScene.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\PlatformWindowHost.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PresentationRenderHost.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PresentationScene.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\PasswordBox.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\Image.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\Popup.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\Popup.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\LoadingRing.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -303,9 +300,9 @@
     <ClInclude Include="include\Layout\CanvasLayout.h">
       <Filter>include\Layout</Filter>
     </ClInclude>
-	<ClInclude Include="include\Layout\OverlayLayout.h">
-	  <Filter>include\Layout</Filter>
-	</ClInclude>
+    <ClInclude Include="include\Layout\OverlayLayout.h">
+      <Filter>include\Layout</Filter>
+    </ClInclude>
     <ClInclude Include="include\Layout\RelativePanel.h">
       <Filter>include\Layout</Filter>
     </ClInclude>
@@ -333,9 +330,6 @@
     <ClInclude Include="include\MediaElement.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\MediaPlayer.h">
-      <Filter>include</Filter>
-    </ClInclude>
     <ClInclude Include="include\Event.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -346,51 +340,52 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\Core\Threading.h" />
-	<ClInclude Include="include\DispatcherObject.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\DependencyObject.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\DependencyProperty.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\TextElement.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\Visual.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\UIElement.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\FocusManager.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\InputManager.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ReverseInheritedProperty.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\InputReport.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ControlWeakReference.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\TextCompositionManager.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\RoutedCommand.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\FrameworkElement.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\DispatcherObject.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\DependencyObject.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\DependencyProperty.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TextElement.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Visual.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\UIElement.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\FocusManager.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\InputManager.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ReverseInheritedProperty.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\InputReport.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ControlWeakReference.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TextCompositionManager.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RoutedCommand.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\FrameworkElement.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="src\AdvancedControlPropertyRegistration.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="include\ItemContainerGenerator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Layout\CanvasLayout.cpp">
@@ -399,27 +394,27 @@
     <ClCompile Include="src\Control.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\TextElement.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\AutomationPeer.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\AutomationVirtualizedPeers.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\DispatcherObject.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\DependencyObject.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\TextElement.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutomationPeer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutomationVirtualizedPeers.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DispatcherObject.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DependencyObject.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Window.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\FocusManager.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\FocusManager.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Application.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -435,9 +430,9 @@
     <ClCompile Include="src\RelativeSource.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\RuntimeTypeMetadata.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\RuntimeTypeMetadata.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Brush.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -450,18 +445,18 @@
     <ClCompile Include="src\Style.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\ButtonBase.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\ToggleButton.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\RangeBase.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\TextBoxBase.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\ButtonBase.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ToggleButton.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RangeBase.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TextBoxBase.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Button.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -492,15 +487,15 @@
     <ClCompile Include="src\ListView.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\CollectionViewSource.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\CollectionViewSource.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\ItemsControl.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\ItemsPresenter.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ItemsPresenter.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\ContentPresenter.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -513,24 +508,24 @@
     <ClCompile Include="src\Border.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\HeaderedContentControl.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\HeaderedItemsControl.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\Selector.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\Separator.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\ItemContainer.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\ListBox.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\HeaderedContentControl.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\HeaderedItemsControl.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Selector.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Separator.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ItemContainer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ListBox.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\MessageDialog.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -540,30 +535,27 @@
     <ClCompile Include="src\Canvas.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="src\ItemContainerGenerator.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\NativeSurface.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\NativeSurface.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\PlatformWindowHost.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\InputManager.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\TextCompositionManager.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\RoutedCommand.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\PresentationRenderHost.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
-	<ClCompile Include="src\PresentationScene.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\PlatformWindowHost.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\InputManager.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TextCompositionManager.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RoutedCommand.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PresentationRenderHost.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PresentationScene.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\PasswordBox.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -639,9 +631,9 @@
     <ClCompile Include="src\DCompLayeredHost.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\Popup.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\Popup.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\MediaElement.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -658,6 +650,7 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Core\Threading.cpp" />
+    <ClCompile Include="src\ItemContainerGenerator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

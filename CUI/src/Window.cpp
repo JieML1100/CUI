@@ -1765,12 +1765,16 @@ public:
 		auto* form = _root ? _root->GetWindow() : nullptr;
 		if (!CurrentNode(&node) || !form || !_owner)
 			return UIA_E_ELEMENTNOTAVAILABLE;
-		const auto owner = _owner->GetAbsoluteLocationDip();
-		const D2D1_RECT_F absolute = D2D1::RectF(
-			owner.x + node.BoundsDip.left, owner.y + node.BoundsDip.top,
-			owner.x + node.BoundsDip.right, owner.y + node.BoundsDip.bottom);
-		RECT rectangle = form->ContentDipRectToClientPixels(
-			_owner->TransformAbsoluteRectToRenderSpace(absolute));
+		D2D1_RECT_F rendered = node.BoundsDip;
+		if (!node.BoundsAreRenderSpace)
+		{
+			const auto owner = _owner->GetAbsoluteLocationDip();
+			const D2D1_RECT_F absolute = D2D1::RectF(
+				owner.x + node.BoundsDip.left, owner.y + node.BoundsDip.top,
+				owner.x + node.BoundsDip.right, owner.y + node.BoundsDip.bottom);
+			rendered = _owner->TransformAbsoluteRectToRenderSpace(absolute);
+		}
+		RECT rectangle = form->ContentDipRectToClientPixels(rendered);
 		POINT points[2]{ { rectangle.left, rectangle.top },
 			{ rectangle.right, rectangle.bottom } };
 		::MapWindowPoints(form->Handle, nullptr, points, 2);

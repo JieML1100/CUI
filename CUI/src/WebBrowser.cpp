@@ -3,6 +3,7 @@
 #ifdef CUI_ENABLE_WEBVIEW2
 
 #include "WebBrowser.h"
+#include "DCompLayeredHost.h"
 #include "EventInfrastructure.h"
 #include "PresentationInfrastructure.h"
 #include "PresentationScene.h"
@@ -15,6 +16,7 @@
 #include <memory>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <windowsx.h>
 #include <dcomp.h>
@@ -32,6 +34,12 @@ using Microsoft::WRL::ComPtr;
 
 struct WebBrowser::Impl
 {
+	struct CompositionClipLayer final
+	{
+		ComPtr<IDCompositionVisual> Visual;
+		ComPtr<IDCompositionRectangleClip> Clip;
+	};
+
 	bool initialized = false;
 	bool webviewReady = false;
 	InitializationState initializationState = InitializationState::NotStarted;
@@ -52,6 +60,8 @@ struct WebBrowser::Impl
 	bool areDefaultContextMenusEnabled = true;
 	bool isStatusBarEnabled = false;
 	bool isZoomControlEnabled = true;
+	D2D1_COLOR_F defaultBackgroundColor = Colors::White;
+	::CornerRadius cornerRadius{};
 	std::wstring initialUrl;
 	std::unordered_map<std::wstring, JsInvokeHandler> invokeHandlers;
 	std::shared_ptr<std::atomic<bool>> lifetime =
@@ -62,8 +72,18 @@ struct WebBrowser::Impl
 	ComPtr<ICoreWebView2CompositionController> compositionController;
 	ComPtr<ICoreWebView2> webview;
 	ComPtr<ICoreWebView2_2> webview2;
+	// The registered anchor owns ancestor clip wrappers.  The boundary visual is
+	// CUI-only: it owns the control shape, quality policy, and RenderTransform.
+	// WebView2 receives the content visual below it as RootVisualTarget, so the
+	// component cannot replace or bypass CUI's final antialiased boundary.
 	ComPtr<IDCompositionVisual> dcompVisual;
-	ComPtr<IDCompositionRectangleClip> dcompClip;
+	ComPtr<IDCompositionVisual> dcompBoundaryVisual;
+	ComPtr<IDCompositionRectangleClip> dcompBoundaryClip;
+	ComPtr<IDCompositionVisual> dcompContentVisual;
+	std::vector<CompositionClipLayer> dcompClipLayers;
+	bool dcompClipTreeValid = false;
+	int controllerBoundsWidth = 0;
+	int controllerBoundsHeight = 0;
 	bool rootAttached = false;
 	bool interopInstalled = false;
 	bool hasSystemCursorId = false;
@@ -102,6 +122,8 @@ struct WebBrowser::Impl
 #define _areDefaultContextMenusEnabled (_impl->areDefaultContextMenusEnabled)
 #define _isStatusBarEnabled (_impl->isStatusBarEnabled)
 #define _isZoomControlEnabled (_impl->isZoomControlEnabled)
+#define _defaultBackgroundColor (_impl->defaultBackgroundColor)
+#define _cornerRadius (_impl->cornerRadius)
 #define _initialUrl (_impl->initialUrl)
 #define _invokeHandlers (_impl->invokeHandlers)
 #define _lifetime (_impl->lifetime)
@@ -111,7 +133,13 @@ struct WebBrowser::Impl
 #define _webview (_impl->webview)
 #define _webview2 (_impl->webview2)
 #define _dcompVisual (_impl->dcompVisual)
-#define _dcompClip (_impl->dcompClip)
+#define _dcompBoundaryVisual (_impl->dcompBoundaryVisual)
+#define _dcompBoundaryClip (_impl->dcompBoundaryClip)
+#define _dcompContentVisual (_impl->dcompContentVisual)
+#define _dcompClipLayers (_impl->dcompClipLayers)
+#define _dcompClipTreeValid (_impl->dcompClipTreeValid)
+#define _controllerBoundsWidth (_impl->controllerBoundsWidth)
+#define _controllerBoundsHeight (_impl->controllerBoundsHeight)
 #define _rootAttached (_impl->rootAttached)
 #define _interopInstalled (_impl->interopInstalled)
 #define _hasSystemCursorId (_impl->hasSystemCursorId)
@@ -181,24 +209,6 @@ int WebBrowser::ResolvePresentationOrder(WebBrowser* browser)
 
 static int HexVal(wchar_t c);
 
-static bool IntersectRectF(D2D1_RECT_F& target, const D2D1_RECT_F& clip)
-{
-	target.left = (std::max)(target.left, clip.left);
-	target.top = (std::max)(target.top, clip.top);
-	target.right = (std::min)(target.right, clip.right);
-	target.bottom = (std::min)(target.bottom, clip.bottom);
-	return target.right > target.left && target.bottom > target.top;
-}
-
-static D2D1_RECT_F OffsetRectF(D2D1_RECT_F rect, float dx, float dy)
-{
-	rect.left += dx;
-	rect.right += dx;
-	rect.top += dy;
-	rect.bottom += dy;
-	return rect;
-}
-
 WebBrowser::WebBrowser()
 	: _impl(std::make_unique<Impl>())
 {
@@ -249,7 +259,11 @@ WebBrowser::~WebBrowser()
 			this->GetPresentationWindow()->UnregisterDCompVisual(_dcompVisual.Get());
 			this->GetPresentationWindow()->CommitComposition();
 		}
-	_dcompClip.Reset();
+	_dcompClipLayers.clear();
+	_dcompClipTreeValid = false;
+	_dcompContentVisual.Reset();
+	_dcompBoundaryClip.Reset();
+	_dcompBoundaryVisual.Reset();
 	_dcompVisual.Reset();
 }
 
@@ -262,6 +276,8 @@ void WebBrowser::RegisterDependencyProperties()
 	(void)AreDefaultContextMenusEnabledProperty();
 	(void)IsStatusBarEnabledProperty();
 	(void)IsZoomControlEnabledProperty();
+	(void)DefaultBackgroundColorProperty();
+	(void)CornerRadiusProperty();
 #endif
 }
 
@@ -342,6 +358,78 @@ const DependencyProperty& WebBrowser::IsZoomControlEnabledProperty()
 			WebBrowserPropertyOptions(
 				true CUI_DESIGN_METADATA_ARGUMENTS(
 					50, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::DefaultBackgroundColorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = WebBrowserPropertyOptions(
+			Colors::White CUI_DESIGN_METADATA_ARGUMENTS(
+				60, DependencyPropertyEditorKind::Color));
+		options.Validate = [](const D2D1_COLOR_F& proposed)
+		{
+			auto channel = [](float value)
+			{
+				return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+			};
+			return channel(proposed.r) && channel(proposed.g)
+				&& channel(proposed.b) && channel(proposed.a)
+				&& (proposed.a <= 1e-6f || proposed.a >= 1.0f - 1e-6f);
+		};
+		options.Equals = [](const D2D1_COLOR_F& left,
+			const D2D1_COLOR_F& right)
+		{
+			return std::fabs(left.r - right.r) <= 1e-6f
+				&& std::fabs(left.g - right.g) <= 1e-6f
+				&& std::fabs(left.b - right.b) <= 1e-6f
+				&& std::fabs(left.a - right.a) <= 1e-6f;
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			WebBrowser, D2D1_COLOR_F>(
+				DependencyPropertyRegistrationLiteral(
+					L"DefaultBackgroundColor"),
+				[](WebBrowser& target)
+				{ return target.GetDefaultBackgroundColor(); },
+				[](WebBrowser& target, const D2D1_COLOR_F& value)
+				{ target.SetDefaultBackgroundColor(value); },
+				WebBrowserPropertySubscriber(
+					&WebBrowser::DefaultBackgroundColorProperty),
+				std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::CornerRadiusProperty()
+{
+	static const auto registration = []
+	{
+		auto options = WebBrowserPropertyOptions(
+			::CornerRadius{} CUI_DESIGN_METADATA_ARGUMENTS(
+				70, DependencyPropertyEditorKind::Text));
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Validate = [](const ::CornerRadius& value)
+		{
+			return std::isfinite(value.TopLeft) && value.TopLeft >= 0.0f
+				&& std::isfinite(value.TopRight) && value.TopRight >= 0.0f
+				&& std::isfinite(value.BottomRight) && value.BottomRight >= 0.0f
+				&& std::isfinite(value.BottomLeft) && value.BottomLeft >= 0.0f;
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			WebBrowser, ::CornerRadius>(
+				DependencyPropertyRegistrationLiteral(L"CornerRadius"),
+				[](WebBrowser& target) { return target.GetCornerRadius(); },
+				[](WebBrowser& target, const ::CornerRadius& value)
+				{ target.SetCornerRadius(value); },
+				WebBrowserPropertySubscriber(
+					&WebBrowser::CornerRadiusProperty),
+				std::move(options));
+	}();
 	return *registration;
 }
 
@@ -431,6 +519,26 @@ void WebBrowser::SetIsZoomControlEnabled(bool value)
 	if (SetPropertyField(
 		IsZoomControlEnabledProperty(), _impl->isZoomControlEnabled, value))
 		ApplyWebViewSettings();
+}
+D2D1_COLOR_F WebBrowser::GetDefaultBackgroundColor() const
+{
+	return _defaultBackgroundColor;
+}
+void WebBrowser::SetDefaultBackgroundColor(D2D1_COLOR_F value)
+{
+	if (SetPropertyField(DefaultBackgroundColorProperty(),
+		_impl->defaultBackgroundColor, value))
+		ApplyWebViewSettings();
+}
+::CornerRadius WebBrowser::GetCornerRadius() const
+{
+	return _cornerRadius;
+}
+void WebBrowser::SetCornerRadius(::CornerRadius value)
+{
+	if (SetPropertyField(
+		CornerRadiusProperty(), _impl->cornerRadius, value))
+		EnsureControllerBounds();
 }
 std::wstring WebBrowser::GetInitialUrl() const { return _initialUrl; }
 void WebBrowser::SetInitialUrl(std::wstring value)
@@ -534,18 +642,57 @@ bool WebBrowser::RebindCompositionVisual()
 	_rootAttached = false;
 	if (_dcompVisual)
 		window->UnregisterDCompVisual(_dcompVisual.Get());
-	_dcompClip.Reset();
+	_dcompClipLayers.clear();
+	_dcompClipTreeValid = false;
+	_dcompContentVisual.Reset();
+	_dcompBoundaryClip.Reset();
+	_dcompBoundaryVisual.Reset();
 	_dcompVisual.Reset();
 
 	ComPtr<IDCompositionVisual> replacementVisual;
-	ComPtr<IDCompositionRectangleClip> replacementClip;
+	ComPtr<IDCompositionVisual> replacementBoundaryVisual;
+	ComPtr<IDCompositionRectangleClip> replacementBoundaryClip;
+	ComPtr<IDCompositionVisual> replacementContentVisual;
+	auto configureQuality = [&](IDCompositionVisual* visual)
+	{
+		if (!visual) return false;
+		HRESULT result = visual->SetBitmapInterpolationMode(
+			DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);
+		if (SUCCEEDED(result))
+			result = visual->SetBorderMode(
+				DCOMPOSITION_BORDER_MODE_SOFT);
+		if (FAILED(result)) _lastControllerHr = result;
+		return SUCCEEDED(result);
+	};
 	HRESULT hr = dcompDevice->CreateVisual(
 		replacementVisual.GetAddressOf());
 	if (FAILED(hr) || !replacementVisual) return false;
+	if (!configureQuality(replacementVisual.Get())) return false;
+
+	// Never put the CUI clip or RenderTransform on RootVisualTarget itself.
+	// WebView2 owns the subtree connected there.  This dedicated parent is the
+	// final, component-independent raster boundary and therefore the only layer
+	// that defines the browser shape and its transformed edge coverage.
+	hr = dcompDevice->CreateVisual(
+		replacementBoundaryVisual.GetAddressOf());
+	if (FAILED(hr) || !replacementBoundaryVisual) return false;
+	if (!configureQuality(replacementBoundaryVisual.Get())) return false;
 	hr = dcompDevice->CreateRectangleClip(
-		replacementClip.GetAddressOf());
-	if (FAILED(hr) || !replacementClip) return false;
-	hr = replacementVisual->SetClip(replacementClip.Get());
+		replacementBoundaryClip.GetAddressOf());
+	if (FAILED(hr) || !replacementBoundaryClip) return false;
+	hr = replacementBoundaryVisual->SetClip(
+		replacementBoundaryClip.Get());
+	if (FAILED(hr)) return false;
+
+	hr = dcompDevice->CreateVisual(
+		replacementContentVisual.GetAddressOf());
+	if (FAILED(hr) || !replacementContentVisual) return false;
+	if (!configureQuality(replacementContentVisual.Get())) return false;
+	hr = replacementBoundaryVisual->AddVisual(
+		replacementContentVisual.Get(), FALSE, nullptr);
+	if (FAILED(hr)) return false;
+	hr = replacementVisual->AddVisual(
+		replacementBoundaryVisual.Get(), FALSE, nullptr);
 	if (FAILED(hr)) return false;
 	if (!window->RegisterDCompVisual(
 		replacementVisual.Get(), PresentationSceneContentLayer,
@@ -554,12 +701,111 @@ bool WebBrowser::RebindCompositionVisual()
 		return false;
 	}
 	_dcompVisual = std::move(replacementVisual);
-	_dcompClip = std::move(replacementClip);
+	_dcompBoundaryVisual = std::move(replacementBoundaryVisual);
+	_dcompBoundaryClip = std::move(replacementBoundaryClip);
+	_dcompContentVisual = std::move(replacementContentVisual);
+	_dcompClipTreeValid = true;
 	if (window->CommitComposition()) return true;
 	window->UnregisterDCompVisual(_dcompVisual.Get());
-	_dcompClip.Reset();
+	_dcompContentVisual.Reset();
+	_dcompBoundaryClip.Reset();
+	_dcompBoundaryVisual.Reset();
 	_dcompVisual.Reset();
+	_dcompClipTreeValid = false;
 	return false;
+}
+
+bool WebBrowser::EnsureCompositionClipLayerCount(std::size_t count)
+{
+	if (!_dcompVisual || !_dcompBoundaryVisual || !_dcompContentVisual)
+		return false;
+	if (_dcompClipTreeValid && _dcompClipLayers.size() == count) return true;
+	auto* window = GetPresentationWindow();
+	auto* device = window ? window->GetDCompDevice() : nullptr;
+	if (!device) return false;
+
+	std::vector<Impl::CompositionClipLayer> replacement;
+	replacement.reserve(count);
+	for (std::size_t index = 0; index < count; ++index)
+	{
+		Impl::CompositionClipLayer layer;
+		HRESULT hr = device->CreateVisual(layer.Visual.GetAddressOf());
+		if (FAILED(hr) || !layer.Visual)
+		{
+			_lastControllerHr = FAILED(hr) ? hr : E_FAIL;
+			return false;
+		}
+		hr = layer.Visual->SetBitmapInterpolationMode(
+			DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);
+		if (SUCCEEDED(hr))
+			hr = layer.Visual->SetBorderMode(
+				DCOMPOSITION_BORDER_MODE_SOFT);
+		if (FAILED(hr))
+		{
+			_lastControllerHr = hr;
+			return false;
+		}
+		hr = device->CreateRectangleClip(layer.Clip.GetAddressOf());
+		if (FAILED(hr) || !layer.Clip)
+		{
+			_lastControllerHr = FAILED(hr) ? hr : E_FAIL;
+			return false;
+		}
+		hr = layer.Visual->SetClip(layer.Clip.Get());
+		if (FAILED(hr))
+		{
+			_lastControllerHr = hr;
+			return false;
+		}
+		replacement.push_back(std::move(layer));
+	}
+
+	// A DComp visual has one parent. Fully disconnect the old wrappers before
+	// moving CUI's retained boundary visual into the replacement chain.  The
+	// WebView RootVisualTarget remains attached below that boundary throughout.
+	_dcompClipTreeValid = false;
+	HRESULT hr = _dcompVisual->RemoveAllVisuals();
+	if (FAILED(hr))
+	{
+		_lastControllerHr = hr;
+		return false;
+	}
+	for (auto& layer : _dcompClipLayers)
+	{
+		if (!layer.Visual) continue;
+		hr = layer.Visual->RemoveAllVisuals();
+		if (FAILED(hr))
+		{
+			_lastControllerHr = hr;
+			return false;
+		}
+	}
+	IDCompositionVisual* parent = _dcompVisual.Get();
+	for (auto& layer : replacement)
+	{
+		hr = parent->AddVisual(layer.Visual.Get(), FALSE, nullptr);
+		if (FAILED(hr)) break;
+		parent = layer.Visual.Get();
+	}
+	if (SUCCEEDED(hr))
+		hr = parent->AddVisual(
+			_dcompBoundaryVisual.Get(), FALSE, nullptr);
+	if (FAILED(hr))
+	{
+		for (auto& layer : replacement)
+			if (layer.Visual) (void)layer.Visual->RemoveAllVisuals();
+		(void)_dcompVisual->RemoveAllVisuals();
+		const HRESULT restoreResult = _dcompVisual->AddVisual(
+			_dcompBoundaryVisual.Get(), FALSE, nullptr);
+		_dcompClipLayers.clear();
+		_dcompClipTreeValid = SUCCEEDED(restoreResult);
+		_lastControllerHr = hr;
+		return false;
+	}
+
+	_dcompClipLayers = std::move(replacement);
+	_dcompClipTreeValid = true;
+	return true;
 }
 
 void WebBrowser::EnsureInitialized()
@@ -647,6 +893,8 @@ void WebBrowser::EnsureInitialized()
 					}
 					_compositionController = compositionController;
 					_controller.Reset();
+					_controllerBoundsWidth = 0;
+					_controllerBoundsHeight = 0;
 					// 同一对象上也实现 ICoreWebView2Controller
 					const HRESULT controllerInterfaceHr =
 						_compositionController.As(&_controller);
@@ -682,11 +930,11 @@ void WebBrowser::EnsureInitialized()
 					}
 
 					// 将 WebView2 视觉树挂到我们的 DComp Visual
-					if (_compositionController && _dcompVisual)
+					if (_compositionController && _dcompContentVisual)
 					{
 						const HRESULT rootResult =
 							_compositionController->put_RootVisualTarget(
-								_dcompVisual.Get());
+								_dcompContentVisual.Get());
 						_rootAttached = SUCCEEDED(rootResult);
 						if (FAILED(rootResult))
 						{
@@ -1061,6 +1309,23 @@ void WebBrowser::ApplyWebViewSettings()
 			_isZoomControlEnabled ? TRUE : FALSE));
 	}
 	rememberFailure(_controller->put_ZoomFactor(_zoomFactor));
+	ComPtr<ICoreWebView2Controller2> controller2;
+	const HRESULT controller2Hr = _controller.As(&controller2);
+	rememberFailure(controller2Hr);
+	if (SUCCEEDED(controller2Hr) && controller2)
+	{
+		auto byteChannel = [](float value)
+		{
+			return static_cast<BYTE>(std::lround(
+				(std::clamp)(value, 0.0f, 1.0f) * 255.0f));
+		};
+		const COREWEBVIEW2_COLOR color{
+			_defaultBackgroundColor.a <= 1e-6f ? BYTE{ 0 } : BYTE{ 255 },
+			byteChannel(_defaultBackgroundColor.r),
+			byteChannel(_defaultBackgroundColor.g),
+			byteChannel(_defaultBackgroundColor.b) };
+		rememberFailure(controller2->put_DefaultBackgroundColor(color));
+	}
 	_lastWebViewHr = firstFailure;
 }
 
@@ -1216,82 +1481,167 @@ void WebBrowser::EnsureControllerBounds()
 {
 	if (!this->GetPresentationWindow() || !this->GetPresentationWindow()->Handle) return;
 
-	// All Win32/DComp coordinates must be in physical pixels
-	const float dpiSc = (this->GetPresentationWindow() ? this->GetPresentationWindow()->GetDpiScale() : 1.0f);
-	const auto abs = this->GetAbsoluteLocationDip();
+	// The WebView controller owns a local physical-pixel surface. DirectComposition
+	// then projects that surface through the same local-to-render matrix used by
+	// CUI drawing and inverse hit testing.
+	const float dpiSc = this->GetPresentationWindow()->GetDpiScale();
 	const auto size = this->GetActualSizeDip();
-	D2D1_RECT_F webRect{
-		abs.x,
-		abs.y,
-		abs.x + size.width,
-		abs.y + size.height
-	};
-	D2D1_RECT_F visibleRect = webRect;
+	const int top = this->GetPresentationWindow()->GetTitleBarHeightPixels();
+	const int w = (std::max)(1,
+		static_cast<int>(std::ceil(size.width * dpiSc)));
+	const int h = (std::max)(1,
+		static_cast<int>(std::ceil(size.height * dpiSc)));
 
-	Control* current = this->GetVisualParent();
-	while (current)
+	struct ClipEntry final
+	{
+		D2D1_RECT_F Rect{};
+		D2D1_MATRIX_3X2_F ToRoot{};
+	};
+	std::vector<ClipEntry> clips;
+	for (auto* current = this->GetVisualParent(); current;
+		current = current->GetVisualParent())
 	{
 		if (current->ClipsChildren())
 		{
-			auto clip = current->GetVisualChildrenClipRect();
-			const auto parentAbs = current->GetAbsoluteLocationDip();
-			clip = OffsetRectF(clip, parentAbs.x, parentAbs.y);
-			if (!IntersectRectF(visibleRect, clip))
-				break;
+			clips.push_back(ClipEntry{
+				current->GetVisualChildrenClipRect(),
+				current->GetLocalToRenderTransform() });
 		}
 		if (cui::framework::PresentationAccess::
 			BreaksVisualPresentationInheritance(*current))
 			break;
-		current = current->GetVisualParent();
 	}
+	std::reverse(clips.begin(), clips.end());
 
-	const bool hasVisibleArea = visibleRect.right > visibleRect.left && visibleRect.bottom > visibleRect.top;
-	const int top = this->GetPresentationWindow()
-		? this->GetPresentationWindow()->GetTitleBarHeightPixels() : 0;
-	int x = (int)std::floor(webRect.left * dpiSc);
-	int y = (int)std::floor(webRect.top * dpiSc) + top;
-	int w = (std::max)(1, (int)std::ceil((webRect.right - webRect.left) * dpiSc));
-	int h = (std::max)(1, (int)std::ceil((webRect.bottom - webRect.top) * dpiSc));
-	float clipLeft = (visibleRect.left - webRect.left) * dpiSc;
-	float clipTop = (visibleRect.top - webRect.top) * dpiSc;
-	float clipRight = (visibleRect.right - webRect.left) * dpiSc;
-	float clipBottom = (visibleRect.bottom - webRect.top) * dpiSc;
+	bool compositionReady = EnsureCompositionClipLayerCount(clips.size());
+	bool transformReady = compositionReady;
+	auto record = [&](HRESULT result)
+	{
+		if (FAILED(result))
+		{
+			_lastControllerHr = result;
+			transformReady = false;
+		}
+	};
+	auto asMatrix = [](const D2D1_MATRIX_3X2_F& value)
+	{
+		return D2D1::Matrix3x2F(
+			value._11, value._12, value._21,
+			value._22, value._31, value._32);
+	};
+	auto relativeTransform = [&](const D2D1_MATRIX_3X2_F& child,
+		const D2D1_MATRIX_3X2_F& parent,
+		D2D1_MATRIX_3X2_F& result)
+	{
+		auto inverseParent = asMatrix(parent);
+		if (!inverseParent.Invert()) return false;
+		result = asMatrix(child) * inverseParent;
+		return true;
+	};
 
-	const bool parentEnabled = ::IsWindowEnabled(this->GetPresentationWindow()->Handle) != FALSE;
-	const bool visible = (parentEnabled && this->IsVisible && _webviewReady && hasVisibleArea);
-
-	if (_controller)
+	// RenderTransform is a compositor concern.  Do not renegotiate the browser
+	// viewport for transform-only frames: changing Bounds can relayout the page
+	// and reallocate browser-side surfaces, whereas DComp can project the stable
+	// local surface without either cost.
+	if (_controller
+		&& (w != _controllerBoundsWidth || h != _controllerBoundsHeight))
 	{
 		RECT rc{ 0,0,w,h };
-		_controller->put_Bounds(rc);
-		_controller->put_IsVisible(visible ? TRUE : FALSE);
-		_controller->NotifyParentWindowPositionChanged();
+		const HRESULT boundsResult = _controller->put_Bounds(rc);
+		record(boundsResult);
+		if (SUCCEEDED(boundsResult))
+		{
+			_controllerBoundsWidth = w;
+			_controllerBoundsHeight = h;
+		}
+	}
+
+	if (_dcompBoundaryClip)
+	{
+		const float clipWidth = (std::max)(0.0f, size.width * dpiSc);
+		const float clipHeight = (std::max)(0.0f, size.height * dpiSc);
+		const auto radii = cui::dcomp_detail::ResolveRoundedClipRadii(
+			clipWidth, clipHeight, dpiSc,
+			_cornerRadius.TopLeft, _cornerRadius.TopRight,
+			_cornerRadius.BottomRight, _cornerRadius.BottomLeft);
+		record(_dcompBoundaryClip->SetLeft(0.0f));
+		record(_dcompBoundaryClip->SetTop(0.0f));
+		record(_dcompBoundaryClip->SetRight(clipWidth));
+		record(_dcompBoundaryClip->SetBottom(clipHeight));
+		record(_dcompBoundaryClip->SetTopLeftRadiusX(radii.TopLeft));
+		record(_dcompBoundaryClip->SetTopLeftRadiusY(radii.TopLeft));
+		record(_dcompBoundaryClip->SetTopRightRadiusX(radii.TopRight));
+		record(_dcompBoundaryClip->SetTopRightRadiusY(radii.TopRight));
+		record(_dcompBoundaryClip->SetBottomRightRadiusX(radii.BottomRight));
+		record(_dcompBoundaryClip->SetBottomRightRadiusY(radii.BottomRight));
+		record(_dcompBoundaryClip->SetBottomLeftRadiusX(radii.BottomLeft));
+		record(_dcompBoundaryClip->SetBottomLeftRadiusY(radii.BottomLeft));
+	}
+
+	if (compositionReady && _dcompBoundaryVisual)
+	{
+		const auto browserToRoot = GetLocalToRenderTransform();
+		if (clips.empty())
+		{
+			record(_dcompBoundaryVisual->SetTransform(
+				cui::dcomp_detail::DipTransformToPhysicalPixels(
+					browserToRoot, dpiSc, static_cast<float>(top))));
+		}
+		else
+		{
+			record(_dcompClipLayers.front().Visual->SetTransform(
+				cui::dcomp_detail::DipTransformToPhysicalPixels(
+					clips.front().ToRoot, dpiSc, static_cast<float>(top))));
+			for (std::size_t index = 0; index < clips.size(); ++index)
+			{
+				const auto& rect = clips[index].Rect;
+				auto& layer = _dcompClipLayers[index];
+				record(layer.Clip->SetLeft(rect.left * dpiSc));
+				record(layer.Clip->SetTop(rect.top * dpiSc));
+				record(layer.Clip->SetRight(rect.right * dpiSc));
+				record(layer.Clip->SetBottom(rect.bottom * dpiSc));
+				if (index == 0) continue;
+				D2D1_MATRIX_3X2_F relative{};
+				if (!relativeTransform(
+					clips[index].ToRoot, clips[index - 1].ToRoot, relative))
+				{
+					transformReady = false;
+					continue;
+				}
+				record(layer.Visual->SetTransform(
+					cui::dcomp_detail::DipTransformToPhysicalPixels(
+						relative, dpiSc)));
+			}
+			D2D1_MATRIX_3X2_F boundaryRelative{};
+			if (!relativeTransform(
+				browserToRoot, clips.back().ToRoot, boundaryRelative))
+				transformReady = false;
+			else
+				record(_dcompBoundaryVisual->SetTransform(
+					cui::dcomp_detail::DipTransformToPhysicalPixels(
+						boundaryRelative, dpiSc)));
+		}
+	}
+
+	bool hasArea = size.width > 0.0f && size.height > 0.0f;
+	for (const auto& clip : clips)
+		hasArea = hasArea && clip.Rect.right > clip.Rect.left
+			&& clip.Rect.bottom > clip.Rect.top;
+	const bool parentEnabled = ::IsWindowEnabled(
+		this->GetPresentationWindow()->Handle) != FALSE;
+	const bool visible = parentEnabled && this->IsVisible && _webviewReady
+		&& hasArea && compositionReady && transformReady;
+	if (_controller)
+	{
+		record(_controller->put_IsVisible(visible ? TRUE : FALSE));
+		record(_controller->NotifyParentWindowPositionChanged());
 	}
 
 	if (_dcompVisual)
 	{
-			this->GetPresentationWindow()->UpdateDCompVisualOrder(
-				_dcompVisual.Get(), PresentationSceneContentLayer,
-				ResolvePresentationOrder(this));
-		_dcompVisual->SetOffsetX((float)x);
-		_dcompVisual->SetOffsetY((float)y);
-		if (_dcompClip)
-		{
-			if (hasVisibleArea)
-			{
-				_dcompClip->SetLeft(clipLeft);
-				_dcompClip->SetTop(clipTop);
-				_dcompClip->SetRight(clipRight);
-				_dcompClip->SetBottom(clipBottom);
-			}
-			else
-			{
-				_dcompClip->SetLeft(0.0f);
-				_dcompClip->SetTop(0.0f);
-				_dcompClip->SetRight(0.0f);
-				_dcompClip->SetBottom(0.0f);
-			}
-		}
+		this->GetPresentationWindow()->UpdateDCompVisualOrder(
+			_dcompVisual.Get(), PresentationSceneContentLayer,
+			ResolvePresentationOrder(this));
 
 		// 关键：隐藏时断开 RootVisualTarget，避免“隐藏页残留显示上一帧”
 		if (_compositionController)
@@ -1307,7 +1657,7 @@ void WebBrowser::EnsureControllerBounds()
 			{
 				const HRESULT rootResult =
 					_compositionController->put_RootVisualTarget(
-						_dcompVisual.Get());
+						_dcompContentVisual.Get());
 				if (SUCCEEDED(rootResult)) _rootAttached = true;
 				else _lastControllerHr = rootResult;
 			}
@@ -1352,7 +1702,18 @@ void WebBrowser::NotifyDeviceResourcesInvalidated() noexcept
 
 bool WebBrowser::ProcessInput(const InputReport& input)
 {
-	ForwardMouseInputToWebView(input);
+	const bool forwarded = ForwardMouseInputToWebView(input);
+	if (forwarded && input.Kind == InputReportKind::PointerDown)
+		(void)CaptureMouse();
+	if (input.Kind == InputReportKind::PointerUp && IsMouseCaptured()
+		&& !input.IsButtonPressed(MouseButton::Left)
+		&& !input.IsButtonPressed(MouseButton::Right)
+		&& !input.IsButtonPressed(MouseButton::Middle)
+		&& !input.IsButtonPressed(MouseButton::XButton1)
+		&& !input.IsButtonPressed(MouseButton::XButton2))
+		(void)ReleaseMouseCapture();
+	if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
+		(void)ReleaseMouseCapture();
 	Control::ProcessInput(input);
 	return true;
 }
@@ -1378,6 +1739,11 @@ bool WebBrowser::ForwardMouseInputToWebView(const InputReport& input)
 	case InputReportKind::PointerMove:
 		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
 		break;
+	case InputReportKind::PointerLeave:
+	case InputReportKind::CaptureLost:
+	case InputReportKind::Cancel:
+		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE;
+		break;
 	case InputReportKind::PointerDown:
 		switch (input.ChangedButton)
 		{
@@ -1387,6 +1753,14 @@ bool WebBrowser::ForwardMouseInputToWebView(const InputReport& input)
 			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN; break;
 		case MouseButton::Middle:
 			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN; break;
+		case MouseButton::XButton1:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOWN;
+			mouseData = 1;
+			break;
+		case MouseButton::XButton2:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOWN;
+			mouseData = 2;
+			break;
 		default: return false;
 		}
 		break;
@@ -1399,6 +1773,37 @@ bool WebBrowser::ForwardMouseInputToWebView(const InputReport& input)
 			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP; break;
 		case MouseButton::Middle:
 			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP; break;
+		case MouseButton::XButton1:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_UP;
+			mouseData = 1;
+			break;
+		case MouseButton::XButton2:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_UP;
+			mouseData = 2;
+			break;
+		default: return false;
+		}
+		break;
+	case InputReportKind::PointerDoubleClick:
+		switch (input.ChangedButton)
+		{
+		case MouseButton::Left:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK;
+			break;
+		case MouseButton::Right:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOUBLE_CLICK;
+			break;
+		case MouseButton::Middle:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOUBLE_CLICK;
+			break;
+		case MouseButton::XButton1:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOUBLE_CLICK;
+			mouseData = 1;
+			break;
+		case MouseButton::XButton2:
+			kind = COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOUBLE_CLICK;
+			mouseData = 2;
+			break;
 		default: return false;
 		}
 		break;
@@ -1423,10 +1828,25 @@ bool WebBrowser::ForwardMouseInputToWebView(const InputReport& input)
 	if (input.HasModifier(ModifierKeys::Control)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
 	if (input.HasModifier(ModifierKeys::Shift)) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
 
-	// localX/localY are in logical (96-DPI) units; SendMouseInput expects physical pixels within the DComp visual
+	// Window already inverse-transformed the report to WebBrowser-local DIPs.
+	// SendMouseInput consumes physical pixels within the controller surface.
 	const float dpiSc = (this->GetPresentationWindow() ? this->GetPresentationWindow()->GetDpiScale() : 1.0f);
-	POINT pt{ (LONG)(input.X * dpiSc), (LONG)(input.Y * dpiSc) };
-	_compositionController->SendMouseInput(kind, vkeys, mouseData, pt);
+	POINT pt{
+		static_cast<LONG>(std::lround(input.X * dpiSc)),
+		static_cast<LONG>(std::lround(input.Y * dpiSc)) };
+	if (kind == COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE)
+	{
+		vkeys = static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(0);
+		mouseData = 0;
+		pt = POINT{};
+	}
+	const HRESULT sendResult = _compositionController->SendMouseInput(
+		kind, vkeys, mouseData, pt);
+	if (FAILED(sendResult))
+	{
+		_lastControllerHr = sendResult;
+		return false;
+	}
 
 	// 尽量同步光标（Window 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）
 	if (input.Kind == InputReportKind::PointerMove
@@ -1663,6 +2083,8 @@ struct WebBrowser::Impl
 	bool areDefaultContextMenusEnabled = true;
 	bool isStatusBarEnabled = false;
 	bool isZoomControlEnabled = true;
+	D2D1_COLOR_F defaultBackgroundColor = Colors::White;
+	::CornerRadius cornerRadius{};
 	std::wstring initialUrl;
 	std::unordered_map<std::wstring, JsInvokeHandler> invokeHandlers;
 	std::shared_ptr<std::atomic<bool>> lifetime =
@@ -1730,6 +2152,8 @@ void WebBrowser::RegisterDependencyProperties()
 	(void)AreDefaultContextMenusEnabledProperty();
 	(void)IsStatusBarEnabledProperty();
 	(void)IsZoomControlEnabledProperty();
+	(void)DefaultBackgroundColorProperty();
+	(void)CornerRadiusProperty();
 #endif
 }
 
@@ -1810,6 +2234,78 @@ const DependencyProperty& WebBrowser::IsZoomControlEnabledProperty()
 			UnsupportedWebPropertyOptions(
 				true CUI_DESIGN_METADATA_ARGUMENTS(
 					50, DependencyPropertyEditorKind::Boolean)));
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::DefaultBackgroundColorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = UnsupportedWebPropertyOptions(
+			Colors::White CUI_DESIGN_METADATA_ARGUMENTS(
+				60, DependencyPropertyEditorKind::Color));
+		options.Validate = [](const D2D1_COLOR_F& proposed)
+		{
+			auto channel = [](float value)
+			{
+				return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+			};
+			return channel(proposed.r) && channel(proposed.g)
+				&& channel(proposed.b) && channel(proposed.a)
+				&& (proposed.a <= 1e-6f || proposed.a >= 1.0f - 1e-6f);
+		};
+		options.Equals = [](const D2D1_COLOR_F& left,
+			const D2D1_COLOR_F& right)
+		{
+			return std::fabs(left.r - right.r) <= 1e-6f
+				&& std::fabs(left.g - right.g) <= 1e-6f
+				&& std::fabs(left.b - right.b) <= 1e-6f
+				&& std::fabs(left.a - right.a) <= 1e-6f;
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			WebBrowser, D2D1_COLOR_F>(
+				DependencyPropertyRegistrationLiteral(
+					L"DefaultBackgroundColor"),
+				[](WebBrowser& target)
+				{ return target.GetDefaultBackgroundColor(); },
+				[](WebBrowser& target, const D2D1_COLOR_F& value)
+				{ target.SetDefaultBackgroundColor(value); },
+				UnsupportedWebPropertySubscriber(
+					&WebBrowser::DefaultBackgroundColorProperty),
+				std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& WebBrowser::CornerRadiusProperty()
+{
+	static const auto registration = []
+	{
+		auto options = UnsupportedWebPropertyOptions(
+			::CornerRadius{} CUI_DESIGN_METADATA_ARGUMENTS(
+				70, DependencyPropertyEditorKind::Text));
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Validate = [](const ::CornerRadius& value)
+		{
+			return std::isfinite(value.TopLeft) && value.TopLeft >= 0.0f
+				&& std::isfinite(value.TopRight) && value.TopRight >= 0.0f
+				&& std::isfinite(value.BottomRight) && value.BottomRight >= 0.0f
+				&& std::isfinite(value.BottomLeft) && value.BottomLeft >= 0.0f;
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			WebBrowser, ::CornerRadius>(
+				DependencyPropertyRegistrationLiteral(L"CornerRadius"),
+				[](WebBrowser& target) { return target.GetCornerRadius(); },
+				[](WebBrowser& target, const ::CornerRadius& value)
+				{ target.SetCornerRadius(value); },
+				UnsupportedWebPropertySubscriber(
+					&WebBrowser::CornerRadiusProperty),
+				std::move(options));
+	}();
 	return *registration;
 }
 
@@ -1900,6 +2396,24 @@ void WebBrowser::SetIsZoomControlEnabled(bool value)
 	SetPropertyField(
 		IsZoomControlEnabledProperty(), _impl->isZoomControlEnabled, value);
 }
+D2D1_COLOR_F WebBrowser::GetDefaultBackgroundColor() const
+{
+	return _impl->defaultBackgroundColor;
+}
+void WebBrowser::SetDefaultBackgroundColor(D2D1_COLOR_F value)
+{
+	(void)SetPropertyField(DefaultBackgroundColorProperty(),
+		_impl->defaultBackgroundColor, value);
+}
+::CornerRadius WebBrowser::GetCornerRadius() const
+{
+	return _impl->cornerRadius;
+}
+void WebBrowser::SetCornerRadius(::CornerRadius value)
+{
+	(void)SetPropertyField(
+		CornerRadiusProperty(), _impl->cornerRadius, value);
+}
 std::wstring WebBrowser::GetInitialUrl() const { return _impl->initialUrl; }
 void WebBrowser::SetInitialUrl(std::wstring value)
 {
@@ -1955,6 +2469,7 @@ bool WebBrowser::ProcessInput(const InputReport& input)
 
 void WebBrowser::EnsureInitialized() {}
 bool WebBrowser::RebindCompositionVisual() { return false; }
+bool WebBrowser::EnsureCompositionClipLayerCount(std::size_t) { return false; }
 bool WebBrowser::EnsureInteropInstalled() { return false; }
 void WebBrowser::EnsureControllerBounds() {}
 void WebBrowser::ApplyWebViewSettings() {}

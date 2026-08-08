@@ -19,7 +19,9 @@
     <CuiCodeGenHostOutputDir Condition="'$(CuiCodeGenHostOutputDir)' == ''">$(CuiRepoRoot)$(CuiCodeGenHostPlatform)\$(CuiCodeGenHostConfiguration)\</CuiCodeGenHostOutputDir>
     <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">$(CuiCodeGenHostOutputDir)CuiCodeGen.exe</CuiCodeGenExe>
     <!-- Consumer-only global properties must not turn the Design host build
-         into another runtime flavor or split otherwise identical requests. -->
+         into another runtime flavor or split otherwise identical requests.
+         The nested request sets Design explicitly below so MSBuild's results
+         cache cannot reuse a Production CUI project result for the host. -->
     <CuiCodeGenHostGlobalPropertiesToRemove Condition="'$(CuiCodeGenHostGlobalPropertiesToRemove)' == ''">CuiRuntimeFlavor;CuiCodeGenEnabled;CuiCodeGenExe;CuiGeneratedCodeDir;CuiVerifyAotGeneratedCode;CuiFrameworkThemeMode;CuiRuntimeMeasurement;CuiGeneratedThemeDirectedTests;CuiAotRequireRuntimeFree;CuiMeasureLinkMap</CuiCodeGenHostGlobalPropertiesToRemove>
     <CuiGeneratedCodeDir Condition="'$(CuiGeneratedCodeDir)' == ''">$(IntDir)CuiGenerated\</CuiGeneratedCodeDir>
     <!-- CuiCompile is the production, generated-only path. Enforce its
@@ -161,7 +163,7 @@
     <MSBuild Condition="'$(CuiCodeGenBuildHost)' == 'true' and '$(BuildingSolutionFile)' != 'true'"
              Projects="$(CuiCodeGenProject)"
              Targets="$(CuiCodeGenHostTarget)"
-             Properties="Configuration=$(CuiCodeGenHostConfiguration);Platform=$(CuiCodeGenHostPlatform);SolutionDir=$(CuiRepoRoot);BuildProjectReferences=true;CuiCodeGenHostBuild=true"
+             Properties="Configuration=$(CuiCodeGenHostConfiguration);Platform=$(CuiCodeGenHostPlatform);SolutionDir=$(CuiRepoRoot);BuildProjectReferences=true;CuiCodeGenHostBuild=true;CuiRuntimeFlavor=Design"
              RemoveProperties="$(CuiCodeGenHostGlobalPropertiesToRemove)"
              BuildInParallel="false"
              StopOnFirstFailure="true"

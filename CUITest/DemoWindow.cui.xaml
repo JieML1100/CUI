@@ -39,6 +39,10 @@
         <RotateTransform Angle="-2"/>
         <ScaleTransform ScaleX="1.01999998" ScaleY="1.01999998"/>
       </TransformGroup>
+      <TransformGroup x:Key="WebBrowserCompositionTransform">
+        <ScaleTransform ScaleX="0.985" ScaleY="0.985"/>
+        <RotateTransform Angle="-0.6"/>
+      </TransformGroup>
       <DataType x:Key="DemoChoice">
         <DataType.Properties>
           <Property Path="Id" Kind="Int"/>
@@ -1190,11 +1194,14 @@
                 Click="HandleInvokeWeb" Style="{StaticResource PrimaryButton}" Content="C++ 调用 JavaScript"/>
               <TextBlock x:Name="webHint" DesignId="702" Grid.Column="1" Margin="18,5,0,0"
                 Style="{StaticResource DescriptionText}"
-                Text="WebBrowser 的位置与大小由 Grid 的 Star 行列协商；HTML 与 JS bridge 属于运行时业务数据。"/>
+                Text="WebBrowser 由 Grid 的 Star 行列协商，并以稳定栅格面加声明式 RenderTransform 验证 WebView2 合成越界与输入映射。"/>
             </Grid>
-            <Border Grid.Row="1" Background="#FF000000" CornerRadius="6" ClipToBounds="true">
-              <WebBrowser x:Name="webBrowser" DesignId="703"/>
-            </Border>
+            <!-- The WebView2 viewport remains rectangular; CornerRadius belongs to
+                 CUI's private composition boundary and transforms with the surface. -->
+            <WebBrowser x:Name="webBrowser" DesignId="703" Grid.Row="1"
+              DefaultBackgroundColor="#00000000" CornerRadius="6"
+              RenderTransformOrigin="0.5,0.5"
+              RenderTransform="{StaticResource WebBrowserCompositionTransform}"/>
           </Grid>
         </Border>
       </TabItem>

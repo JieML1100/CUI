@@ -1799,7 +1799,8 @@ CodeGenerator::FindKnownProperty(
 	if (propertyName == L"HeaderDisplayMemberPath" && headeredControl)
 		return TypedPropertyInfo{ "SetHeaderDisplayMemberPath" };
 	if (propertyName == L"CornerRadius"
-		&& type == UIClass::UI_Border)
+		&& (type == UIClass::UI_Border
+			|| type == UIClass::UI_WebBrowser))
 		return TypedPropertyInfo{ "SetCornerRadius" };
 	if (propertyName == L"Command"
 		&& (buttonBase || type == UIClass::UI_MenuItem))
@@ -1957,6 +1958,11 @@ CodeGenerator::FindKnownProperty(
 	if (propertyName == L"IsActive"
 		&& type == UIClass::UI_LoadingRing)
 		return TypedPropertyInfo{ "SetIsActive" };
+	if (propertyName == L"DefaultBackgroundColor"
+		&& type == UIClass::UI_WebBrowser)
+		return TypedPropertyInfo{
+			"SetDefaultBackgroundColor", false, {}, {}, false,
+			"D2D1_COLOR_F" };
 	if (type == UIClass::UI_MediaElement)
 	{
 		if (propertyName == L"Source")

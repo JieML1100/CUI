@@ -1,6 +1,7 @@
 #pragma once
 #include "Control.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -12,7 +13,14 @@
  *
  * 公共类布局不依赖 CUI_ENABLE_WEBVIEW2。WebView2/COM/DComp 类型全部隐藏在
  * 实现对象中，因此应用、Designer 与测试无需包含 WebView2 SDK，也不会因宏不同
- * 产生 ABI 分裂。
+ * 产生 ABI 分裂。RenderTransform 只投影稳定的浏览器本地表面，不改变 Controller
+ * Bounds；变换后的越界内容默认可见，仅由显式的各级 ClipsChildren 矩形裁剪。
+ * CornerRadius 由 CUI 独占的 DirectComposition 边界 Visual 实现，先在浏览器
+ * 本地坐标中裁成原始形状，再将整个合成结果投影到窗口；它不依赖网页 CSS，
+ * 也不通过另一个未变换的 Border 伪造背景。
+ * Control::Clip 的任意 Geometry 无法由 DComp 的矩形 clip 等价表达，因而不属于
+ * WebView2 原生合成表面的支持契约。DefaultBackgroundColor 直接投影 WebView2
+ * 合成控制器属性，仅接受全透明或全不透明颜色（WebView2 不支持半透明默认底色）。
  */
 class WebBrowser : public Control
 {
@@ -141,6 +149,8 @@ public:
 	static const DependencyProperty& AreDefaultContextMenusEnabledProperty();
 	static const DependencyProperty& IsStatusBarEnabledProperty();
 	static const DependencyProperty& IsZoomControlEnabledProperty();
+	static const DependencyProperty& DefaultBackgroundColorProperty();
+	static const DependencyProperty& CornerRadiusProperty();
 	static const DependencyProperty& InitialUrlProperty();
 	static void RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -201,6 +211,10 @@ public:
 	void SetIsStatusBarEnabled(bool value);
 	bool GetIsZoomControlEnabled() const;
 	void SetIsZoomControlEnabled(bool value);
+	D2D1_COLOR_F GetDefaultBackgroundColor() const;
+	void SetDefaultBackgroundColor(D2D1_COLOR_F value);
+	::CornerRadius GetCornerRadius() const;
+	void SetCornerRadius(::CornerRadius value);
 	std::wstring GetInitialUrl() const;
 	void SetInitialUrl(std::wstring value);
 
@@ -208,6 +222,8 @@ public:
 	PROPERTY(bool, AreDefaultContextMenusEnabled);
 	PROPERTY(bool, IsStatusBarEnabled);
 	PROPERTY(bool, IsZoomControlEnabled);
+	PROPERTY(D2D1_COLOR_F, DefaultBackgroundColor);
+	PROPERTY(::CornerRadius, CornerRadius);
 	PROPERTY(std::wstring, InitialUrl);
 
 	void ExecuteScriptAsync(
@@ -246,6 +262,7 @@ private:
 	static int ResolvePresentationOrder(WebBrowser* browser);
 	void EnsureInitialized();
 	bool RebindCompositionVisual();
+	bool EnsureCompositionClipLayerCount(std::size_t count);
 	bool EnsureInteropInstalled();
 	void EnsureControllerBounds();
 	void ApplyWebViewSettings();

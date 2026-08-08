@@ -899,11 +899,11 @@ bool RichTextBox::TryGetTextInputCaretRect(D2D1_RECT_F& outRect)
 			height = hit[0].height > 0.0f ? hit[0].height : height;
 		}
 	}
-	outRect = D2D1::RectF(
+	outRect = TransformAbsoluteRectToRenderSpace(D2D1::RectF(
 		static_cast<float>(absolute.x) + x,
 		static_cast<float>(absolute.y) + y,
 		static_cast<float>(absolute.x) + x + 1.0f,
-		static_cast<float>(absolute.y) + y + (std::max)(1.0f, height));
+		static_cast<float>(absolute.y) + y + (std::max)(1.0f, height)));
 	return true;
 }
 

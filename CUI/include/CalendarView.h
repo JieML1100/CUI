@@ -97,6 +97,10 @@ public:
 
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
+	// CalendarView paints and handles its cells as one input leaf. Theme
+	// decoration (for example PART_OuterChrome) must not become the deepest
+	// pointer target and bypass CalendarView::ProcessInput.
+	bool HitTestChildren() const override { return false; }
 	bool HandlesNavigationKey(Key key) const override;
 	bool TryGetAccessibilityVirtualNode(
 		uint32_t id, AccessibilityVirtualNode& result);

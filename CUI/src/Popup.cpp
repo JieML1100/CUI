@@ -345,9 +345,16 @@ void Popup::UpdatePlacement()
 		const float viewportWidth = (std::max)(1.0f, viewport.width);
 		const float viewportHeight = (std::max)(1.0f, viewport.height);
 		const auto target = _placementTarget.Get();
-		const auto targetRect = target
-			? target->GetAbsoluteRectDip()
-			: cui::core::Rect{};
+		cui::core::Rect targetRect{};
+		if (target)
+		{
+			const auto rendered = target->GetRenderedAbsoluteRectDip();
+			targetRect = cui::core::Rect{
+				rendered.left,
+				rendered.top,
+				rendered.right - rendered.left,
+				rendered.bottom - rendered.top };
+		}
 		const auto style = GetSpecifiedLayout();
 		const auto limits = style.SizeConstraints();
 		const float maximumWidth = (std::min)(

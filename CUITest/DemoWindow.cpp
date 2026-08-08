@@ -733,7 +733,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			failedThemeInvariant = L"presenter Content TemplateBinding";
 		else if (_basicButton->GetPropertyValueSource(
 			Control::BackgroundProperty())
-			!= DependencyPropertyValueSource::Local)
+			!= DependencyPropertyValueSource::Style)
 			failedThemeInvariant = L"basic Background source";
 		else if (_basicButton->GetPropertyValueSource(
 			Control::BorderBrushProperty())
@@ -816,43 +816,93 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		auto* sliderThumb = _globalProgress
 			? _globalProgress->FindDeclarativeTemplatePart(
 				MakeTemplatePartToken(L"PART_Thumb")) : nullptr;
-		if (!themeCheck || !verticalSlider || !verticalProgress
-			|| !indeterminateProgress || !checkRoot || !checkGlyph
-			|| !radioRoot || !radioGlyph || !progressTrack
-			|| !progressIndicator || !progressGlow || !sliderTrack
-			|| !sliderRange || !sliderThumb
-			|| themeCheck->GetPropertyValueSource(Control::BorderBrushProperty())
-				!= DependencyPropertyValueSource::Theme
-			|| _radioA->GetPropertyValueSource(Control::ForegroundProperty())
-				!= DependencyPropertyValueSource::Theme
-			|| _progress->GetPropertyValueSource(Control::BackgroundProperty())
-				!= DependencyPropertyValueSource::Theme
-			|| _globalProgress->GetPropertyValueSource(
-				Control::BackgroundProperty())
-				!= DependencyPropertyValueSource::Theme
-			|| checkRoot->GetTemplatedParent() != themeCheck
-			|| radioRoot->GetTemplatedParent() != _radioA
-			|| progressTrack->GetTemplatedParent() != _progress
-			|| sliderTrack->GetTemplatedParent() != _globalProgress
-			|| themeCheck->GetCurrentVisualState(
-				MakeVisualStateGroupToken(L"CheckStates"))
-				!= MakeVisualStateToken(L"Checked")
-			|| _radioA->GetCurrentVisualState(
-				MakeVisualStateGroupToken(L"CheckStates"))
-				!= MakeVisualStateToken(L"Checked")
-			|| indeterminateProgress->GetCurrentVisualState(
+		bool indeterminateStateMatches = indeterminateProgress
+			&& indeterminateProgress->GetCurrentVisualState(
 				MakeVisualStateGroupToken(L"ProgressStates"))
-				!= MakeVisualStateToken(L"Indeterminate")
-			|| verticalSlider->Orientation != Orientation::Vertical
-			|| verticalSlider->GetCurrentVisualState(
-				MakeVisualStateGroupToken(L"OrientationStates"))
-				!= MakeVisualStateToken(L"Vertical")
-			|| verticalProgress->Orientation != Orientation::Vertical
-			|| verticalProgress->GetCurrentVisualState(
-				MakeVisualStateGroupToken(L"OrientationStates"))
-				!= MakeVisualStateToken(L"Vertical"))
+				== MakeVisualStateToken(L"Indeterminate");
+		if (!indeterminateStateMatches && indeterminateProgress && _tabs)
+		{
+			TabItem* ownerTab = nullptr;
+			for (auto* current = indeterminateProgress->GetVisualParent();
+				current && !ownerTab; current = current->GetVisualParent())
+				ownerTab = dynamic_cast<TabItem*>(current);
+			const int ownerIndex = _tabs->IndexOfItem(ownerTab);
+			const int previousIndex = _tabs->SelectedIndex;
+			if (ownerIndex >= 0)
+			{
+				_tabs->SelectedIndex = ownerIndex;
+				RequestLayout();
+				UpdateLayout();
+				indeterminateStateMatches =
+					indeterminateProgress->GetCurrentVisualState(
+						MakeVisualStateGroupToken(L"ProgressStates"))
+					== MakeVisualStateToken(L"Indeterminate");
+				_tabs->SelectedIndex = previousIndex;
+				RequestLayout();
+				UpdateLayout();
+			}
+		}
+		const wchar_t* failedControlThemeInvariant = nullptr;
+		if (!themeCheck) failedControlThemeInvariant = L"enableInput";
+		else if (!verticalSlider) failedControlThemeInvariant = L"verticalSlider";
+		else if (!verticalProgress) failedControlThemeInvariant = L"verticalProgress";
+		else if (!indeterminateProgress) failedControlThemeInvariant = L"indeterminateProgress";
+		else if (!checkRoot) failedControlThemeInvariant = L"checkRoot";
+		else if (!checkGlyph) failedControlThemeInvariant = L"checkGlyph";
+		else if (!radioRoot) failedControlThemeInvariant = L"radioRoot";
+		else if (!radioGlyph) failedControlThemeInvariant = L"radioGlyph";
+		else if (!progressTrack) failedControlThemeInvariant = L"progressTrack";
+		else if (!progressIndicator) failedControlThemeInvariant = L"progressIndicator";
+		else if (!progressGlow) failedControlThemeInvariant = L"progressGlow";
+		else if (!sliderTrack) failedControlThemeInvariant = L"sliderTrack";
+		else if (!sliderRange) failedControlThemeInvariant = L"sliderRange";
+		else if (!sliderThumb) failedControlThemeInvariant = L"sliderThumb";
+		else if (themeCheck->GetPropertyValueSource(
+			Control::BorderBrushProperty()) != DependencyPropertyValueSource::Theme)
+			failedControlThemeInvariant = L"CheckBox BorderBrush source";
+		else if (_radioA->GetPropertyValueSource(
+			Control::ForegroundProperty()) != DependencyPropertyValueSource::Theme)
+			failedControlThemeInvariant = L"RadioButton Foreground source";
+		else if (_progress->GetPropertyValueSource(
+			Control::BackgroundProperty()) != DependencyPropertyValueSource::Theme)
+			failedControlThemeInvariant = L"ProgressBar Background source";
+		else if (_globalProgress->GetPropertyValueSource(
+			Control::BackgroundProperty()) != DependencyPropertyValueSource::Theme)
+			failedControlThemeInvariant = L"Slider Background source";
+		else if (checkRoot->GetTemplatedParent() != themeCheck)
+			failedControlThemeInvariant = L"checkRoot templated parent";
+		else if (radioRoot->GetTemplatedParent() != _radioA)
+			failedControlThemeInvariant = L"radioRoot templated parent";
+		else if (progressTrack->GetTemplatedParent() != _progress)
+			failedControlThemeInvariant = L"progressTrack templated parent";
+		else if (sliderTrack->GetTemplatedParent() != _globalProgress)
+			failedControlThemeInvariant = L"sliderTrack templated parent";
+		else if (themeCheck->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"CheckStates"))
+			!= MakeVisualStateToken(L"Checked"))
+			failedControlThemeInvariant = L"CheckBox Checked state";
+		else if (_radioA->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"CheckStates"))
+			!= MakeVisualStateToken(L"Checked"))
+			failedControlThemeInvariant = L"RadioButton Checked state";
+		else if (!indeterminateStateMatches)
+			failedControlThemeInvariant = L"ProgressBar Indeterminate state";
+		else if (verticalSlider->Orientation != Orientation::Vertical)
+			failedControlThemeInvariant = L"Slider Orientation";
+		else if (verticalSlider->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"OrientationStates"))
+			!= MakeVisualStateToken(L"Vertical"))
+			failedControlThemeInvariant = L"Slider Vertical state";
+		else if (verticalProgress->Orientation != Orientation::Vertical)
+			failedControlThemeInvariant = L"ProgressBar Orientation";
+		else if (verticalProgress->GetCurrentVisualState(
+			MakeVisualStateGroupToken(L"OrientationStates"))
+			!= MakeVisualStateToken(L"Vertical"))
+			failedControlThemeInvariant = L"ProgressBar Vertical state";
+		if (failedControlThemeInvariant)
 			return fail(L"Generic.xaml CheckBox/RadioButton/ProgressBar/"
-				L"Slider 模板、部件或 VisualState 未完整物化。");
+				L"Slider 模板、部件或 VisualState 未完整物化："
+				+ std::wstring(failedControlThemeInvariant));
 
 		const bool pointerDown = cui::framework::InputAccess::DispatchInput(
 			*themeNormalButton, PointerInput(
@@ -1604,8 +1654,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			FindGeneratedControlByName(L"notifyToggle"));
 		TabItem* commandTargetPage = nullptr;
 		for (auto* ancestor = commandTargetButton
-			? commandTargetButton->GetVisualParent() : nullptr;
-			ancestor; ancestor = ancestor->GetVisualParent())
+			? commandTargetButton->GetRoutedParent() : nullptr;
+			ancestor; ancestor = ancestor->GetRoutedParent())
 			if ((commandTargetPage = dynamic_cast<TabItem*>(ancestor))) break;
 		const int commandTargetPageIndex = _tabs && commandTargetPage
 			? _tabs->IndexOfItem(commandTargetPage) : -1;
@@ -2059,6 +2109,18 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			FindGeneratedControlByName(L"toolIconImage2"));
 		auto* toolIconImage3 = dynamic_cast<Image*>(
 			FindGeneratedControlByName(L"toolIconImage3"));
+		if (!applyTemplateForVerification(_toolBar, L"mainToolBar"))
+			return false;
+		auto* toolTemplateRoot = _toolBar
+			? cui::framework::TemplateAccess::GetTemplateRoot(*_toolBar)
+			: nullptr;
+		auto* toolChrome = _toolBar
+			? _toolBar->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ToolBarChrome")) : nullptr;
+		auto* toolItemsPresenter = _toolBar
+			? dynamic_cast<ItemsPresenter*>(
+				_toolBar->FindDeclarativeTemplatePart(
+					MakeTemplatePartToken(L"PART_ItemsPresenter"))) : nullptr;
 		auto* toolItemsHost = _toolBar
 			? dynamic_cast<StackPanel*>(
 				cui::framework::TemplateAccess::GetItemsHost(*_toolBar)) : nullptr;
@@ -2081,9 +2143,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			}
 		}
 		if (!_toolBar || _toolBar->VisualChildCount() != 1
-			|| _toolBar->GetVisualChild(0) != toolItemsHost
-			|| _toolBar->AuthoredItemCount() != authoredToolItems.size()
+			|| _toolBar->GetVisualChild(0) != toolTemplateRoot
+			|| toolTemplateRoot != toolChrome
+			|| !toolItemsPresenter
+			|| toolItemsPresenter->GetVisualParent() != toolChrome
 			|| !toolItemsHost
+			|| toolItemsHost->GetVisualParent() != toolItemsPresenter
+			|| _toolBar->AuthoredItemCount() != authoredToolItems.size()
 			|| toolItemsHost->VisualChildCount()
 				!= static_cast<int>(authoredToolItems.size())
 			|| toolItemsHost->GetOrientation() != Orientation::Horizontal
@@ -2098,7 +2164,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				!= ::Stretch::Uniform
 			|| toolIconImage3->Stretch
 				!= ::Stretch::Uniform)
-			return fail(L"ToolBar authored Items/ItemsHost 所有权未按 WPF 语义物化。");
+			return fail(L"ToolBar ControlTemplate/ItemsPresenter/ItemsHost 与 authored "
+				L"Items 所有权未按 WPF 语义物化。");
 		resetCommandProbe();
 		if (!toolIcon1->Invoke()
 			|| toolIcon1->Command != L"Demo.File.Open"
@@ -2398,6 +2465,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		} restoreWpfTab{ *_tabs, _tabs->SelectedIndex };
 		if (!_tabs->SelectItem(8))
 			return fail(L"无法切换到 WPF 语义实验页执行可见输入验证。");
+		RequestLayout();
+		UpdateLayout();
 
 		auto* wpfSurface = FindGeneratedControlByName(
 			L"wpfLabSurface");
@@ -2533,6 +2602,9 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 
 		auto* templateButton = dynamic_cast<Button*>(
 			FindGeneratedControlByName(L"wpfTemplateButton"));
+		if (!applyTemplateForVerification(
+			templateButton, L"wpfTemplateButton"))
+			return false;
 		auto* templatedParentValue = templateButton
 			? dynamic_cast<Label*>(templateButton->FindDeclarativeTemplatePart(
 				MakeTemplatePartToken(L"wpfTemplatedParentValue"))) : nullptr;
@@ -2699,6 +2771,9 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 
 		auto* templateList = dynamic_cast<ListBox*>(
 			FindGeneratedControlByName(L"wpfTemplateList"));
+		if (!applyTemplateForVerification(
+			templateList, L"wpfTemplateList"))
+			return false;
 		auto* itemsPresenter = templateList
 			? dynamic_cast<ItemsPresenter*>(
 				templateList->FindDeclarativeTemplatePart(
@@ -2706,6 +2781,9 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			: nullptr;
 		auto* firstContainer = templateList
 			? dynamic_cast<ListBoxItem*>(templateList->GetGeneratedItem(0)) : nullptr;
+		if (!applyTemplateForVerification(
+			firstContainer, L"first wpfTemplateList item"))
+			return false;
 		auto* firstChrome = firstContainer
 			? firstContainer->FindDeclarativeTemplatePart(
 				MakeTemplatePartToken(L"wpfItemChrome")) : nullptr;
@@ -2786,10 +2864,13 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				+ L"/" + std::to_wstring(firstPresenter
 					&& firstPresenter->GetInheritanceParent()
 						== firstPresenter->GetVisualParent()));
-		if (!templateList->SelectIndex(1))
-			return fail(L"XAML ListBoxItem 容器无法进入选择状态。");
 		auto* selectedContainer = dynamic_cast<ListBoxItem*>(
 			templateList->GetGeneratedItem(1));
+		if (!applyTemplateForVerification(
+			selectedContainer, L"selected wpfTemplateList item"))
+			return false;
+		if (!templateList->SelectIndex(1))
+			return fail(L"XAML ListBoxItem 容器无法进入选择状态。");
 		if (!selectedContainer
 			|| selectedContainer->GetCurrentVisualState(
 				MakeVisualStateGroupToken(L"SelectionStates"))
@@ -3095,7 +3176,7 @@ bool DemoWindow::VerifyTextCompositionFeatures(std::wstring* outError)
 			return fail(L"TextComposition/IME XAML 实验台未完整生成。");
 		TabItem* compositionPage = nullptr;
 		for (auto* current = surface; current;
-			current = current->GetVisualParent())
+			current = current->GetRoutedParent())
 		{
 			if (auto* page = dynamic_cast<TabItem*>(current))
 			{
@@ -3744,6 +3825,9 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		// DirectComposition surface tree. Every newly created scene swap chain
 		// must submit one complete history-establishing frame before Present1
 		// dirty rectangles are legal. Leaving the page must remain renderable.
+		if (!_web->TrySetHtml(
+			L"<!doctype html><meta charset='utf-8'><button>transform smoke</button>"))
+			return fail(L"WebBrowser render smoke 无法排队离线 HTML 内容。");
 		const auto abortedBeforeBrowser =
 			cui::framework::WindowAccess::
 				PresentationAbortedFrameCount(*this);
@@ -3753,6 +3837,43 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		_tabs->SelectedIndex = browserTabIndex;
 		RequestLayout();
 		UpdateLayout();
+		const auto browserTransform = _web->GetRenderTransform();
+		const auto browserSize = _web->GetActualSizeDip();
+		auto* browserViewport = _web->GetVisualParent();
+		const bool browserViewportPaintsBackdrop = browserViewport
+			&& browserViewport->Background.Kind
+				!= cui::drawing::BrushKind::None;
+		const auto browserMatrix = _web->GetLocalToRenderTransform();
+		const auto browserCenter = D2D1::Matrix3x2F(
+			browserMatrix._11, browserMatrix._12,
+			browserMatrix._21, browserMatrix._22,
+			browserMatrix._31, browserMatrix._32)
+			.TransformPoint(D2D1::Point2F(
+				browserSize.width * 0.5f, browserSize.height * 0.5f));
+		auto* browserHit = cui::framework::WindowAccess::HitTestControlAt(
+			*this, static_cast<int>(std::lround(browserCenter.x)),
+			static_cast<int>(std::lround(browserCenter.y)));
+		if (!browserTransform || browserTransform->Operations.size() != 2
+			|| browserSize.width <= 0.0f || browserSize.height <= 0.0f
+			|| _web->DefaultBackgroundColor.a > 1e-6f
+			|| std::fabs(_web->CornerRadius.TopLeft - 6.0f) > 1e-6f
+			|| std::fabs(_web->CornerRadius.TopRight - 6.0f) > 1e-6f
+			|| std::fabs(_web->CornerRadius.BottomRight - 6.0f) > 1e-6f
+			|| std::fabs(_web->CornerRadius.BottomLeft - 6.0f) > 1e-6f
+			|| !browserViewport || browserViewport->ClipsChildren()
+			|| browserViewportPaintsBackdrop
+			|| browserHit != _web)
+			return fail(L"WebBrowser 的声明式变换未进入实际布局/命中链："
+				L"operations=" + std::to_wstring(
+					browserTransform ? browserTransform->Operations.size() : 0)
+				+ L"，size=(" + std::to_wstring(browserSize.width) + L","
+				+ std::to_wstring(browserSize.height) + L")，center=("
+				+ std::to_wstring(browserCenter.x) + L","
+				+ std::to_wstring(browserCenter.y) + L")，overflow="
+				+ std::to_wstring(browserViewport != nullptr) + L"/"
+				+ std::to_wstring(browserViewport
+					&& !browserViewport->ClipsChildren()) + L"，backdrop="
+				+ std::to_wstring(browserViewportPaintsBackdrop) + L"。");
 		Invalidate(false);
 		if (!drainPresentationWork()
 			|| !_web->IsVisible
@@ -3782,6 +3903,51 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 						cui::framework::WindowAccess::
 							PresentationLastFailedPresentHr(*this)))
 				+ L"。");
+
+		const ULONGLONG webViewDeadline = ::GetTickCount64() + 8000;
+		while (!_web->IsWebViewReady()
+			&& _web->GetInitializationState()
+				!= WebBrowser::InitializationState::Failed
+			&& _web->GetInitializationState()
+				!= WebBrowser::InitializationState::Unsupported
+			&& ::GetTickCount64() < webViewDeadline)
+		{
+			MSG message{};
+			while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+			{
+				if (message.message == WM_QUIT) break;
+				::TranslateMessage(&message);
+				::DispatchMessageW(&message);
+			}
+			(void)drainPresentationWork();
+			if (!_web->IsWebViewReady())
+				(void)::MsgWaitForMultipleObjectsEx(
+					0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+		}
+		if (!_web->IsWebViewReady()
+			|| FAILED(_web->GetLastWebViewError()))
+			return fail(L"WebView2 composition controller 未在 render smoke 中就绪："
+				L"state=" + std::to_wstring(static_cast<int>(
+					_web->GetInitializationState()))
+				+ L"，environment=0x" + StringHelper::Format(
+					L"%08X", static_cast<unsigned int>(
+						_web->GetLastEnvironmentError()))
+				+ L"，controller=0x" + StringHelper::Format(
+					L"%08X", static_cast<unsigned int>(
+						_web->GetLastControllerError())) + L"。");
+
+		const auto browserClientPoint = ContentDipRectToClientPixels(
+			D2D1::RectF(browserCenter.x, browserCenter.y,
+				browserCenter.x + 1.0f, browserCenter.y + 1.0f));
+		const LPARAM browserPointer = MAKELPARAM(
+			browserClientPoint.left, browserClientPoint.top);
+		(void)::SendMessageW(
+			Handle, WM_LBUTTONDOWN, MK_LBUTTON, browserPointer);
+		if (GetMouseCaptured() != _web)
+			return fail(L"变换后的 WebView2 未接受实际鼠标按下或建立捕获。");
+		(void)::SendMessageW(Handle, WM_LBUTTONUP, 0, browserPointer);
+		if (GetMouseCaptured())
+			return fail(L"WebView2 鼠标抬起后未释放 CUI 捕获。");
 
 		const auto committedOnBrowser =
 			cui::framework::WindowAccess::
