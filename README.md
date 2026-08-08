@@ -175,17 +175,3 @@ Design object 及各组精确成员定义；Closure/Full Production MAP 不得�
 runtime correctness 收尾已清零这组历史失败，当前完整 Core 为 **442/442**。Production AOT、
 静态样例、Designer、MAP 和性能门均已按当前代码复验；性能聚合为 0 regressions，Closure/Full
 只拉入 39/72 个 CUI object modules，Design/XML/name-registry trace 为 0。
-
-## 架构文档
-
-- [WPF 底层对齐状态、审计与验证记录](CUI_WPF_FOUNDATION_ALIGNMENT.md)
-
-AOT 生成组件与 framework native DependencyProperty 的按需 static identity/storage、动态
-registry/name compatibility、content/collection mixed strategy、Style mutable backend 与 VisualState Design backend
-均已完成归位，A8f 迁移至此封板；精确边界和证据见
-[A8f 最终收尾计划](CUI_AOT_FINAL_CLOSEOUT_PLAN.md)。A8f 当时保留的 12 项历史 runtime
-行为失败已在迁移范围之外的独立 correctness 批次完成，当前仓库级 Core 回归为 **442/442**；
-设计时 XAML、AOT 生成与纯 Production 运行时边界仍保持贯通。
-InheritanceContext/Freezable、结构元素基类、`Application.xaml`/`StartupUri`、通用
-ResourceDictionary/MergedDictionaries、默认主题和更深 AutomationPeer 能力都在迁移封板后作为独立
-功能批次推进。native fallback renderer 只是在默认模板覆盖完成前的内部后备，不是第二套公共外观模型。

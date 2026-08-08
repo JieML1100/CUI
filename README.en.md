@@ -114,14 +114,3 @@ Build `Debug|x64` with Visual Studio 2022, MSVC v143, and a Windows SDK:
 .\x64\Debug\CuiCodeGen.exe --version
 .\x64\Debug\CUICoreTests.exe
 ```
-
-## Architecture documents
-
-- [WPF foundation alignment status, audit, and verification](CUI_WPF_FOUNDATION_ALIGNMENT.md)
-
-The next phase first tightens the remaining DependencyProperty identity and metadata,
-InheritanceContext/Freezable, and structural element base classes. The Application instance lifetime is now
-part of the foundation; Application.xaml/StartupUri and a general ResourceDictionary/MergedDictionaries model
-remain later integration surfaces. Default themes, Adorner, complete Brush realization, and deeper
-AutomationPeer support follow. Native fallback rendering remains an internal bridge until default templates
-cover the same states; it is not a second public appearance model.
