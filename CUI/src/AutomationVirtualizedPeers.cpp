@@ -127,7 +127,8 @@ bool ScrollViewerAutomationPeer::SetAccessibilityScrollPercent(
 }
 
 CalendarViewAutomationPeer::CalendarViewAutomationPeer(Control& owner) :
-	AutomationPeer(owner, AutomationControlType::Calendar, L"CalendarView")
+	AutomationPeer(owner, AutomationControlType::Calendar,
+		owner.Type() == UIClass::UI_Calendar ? L"Calendar" : L"CalendarView")
 {
 }
 

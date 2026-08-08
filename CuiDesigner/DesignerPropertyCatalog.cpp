@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <format>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -93,7 +94,14 @@ namespace
 		case DesignerStyleValueKind::String:
 		{
 			std::wstring typed;
-			return value.TryGet(typed) ? typed : L"";
+			if (value.TryGet(typed)) return typed;
+			SYSTEMTIME date{};
+			if (!value.TryGet(date) || date.wYear == 0) return L"";
+			return std::format(
+				L"{:04d}-{:02d}-{:02d}",
+				static_cast<int>(date.wYear),
+				static_cast<int>(date.wMonth),
+				static_cast<int>(date.wDay));
 		}
 		case DesignerStyleValueKind::Color:
 		{
@@ -554,6 +562,10 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Geometry;
 	else if (type == std::type_index(typeid(cui::drawing::Transform)))
 		out = DesignerStyleValueKind::Transform;
+	else if (type == std::type_index(typeid(SYSTEMTIME)))
+		// Date values remain canonical XML-friendly scalar literals. Metadata
+		// owns parsing and validation for the target Calendar/DatePicker DP.
+		out = DesignerStyleValueKind::String;
 	else if (type == std::type_index(typeid(BindingValue)))
 		// ContentControl.Content is object-typed at runtime, but an authored
 		// attribute literal is still canonical scalar text. Structured visual or

@@ -679,8 +679,8 @@ namespace
 			if ((!leftBehavior) != (!rightBehavior)
 				|| (leftBehavior && *leftBehavior != *rightBehavior)) return false;
 		}
-		return left.Id == right.Id
-			&& left.ParentId == right.ParentId
+		return !left.NameIsGenerated
+			&& !right.NameIsGenerated
 			&& left.ParentRef == right.ParentRef
 			&& left.Name == right.Name
 			&& left.Type == right.Type
@@ -759,14 +759,18 @@ namespace
 		if (current.CollectionViews != next.CollectionViews)
 			return false;
 		if (current.Nodes.size() != next.Nodes.size()) return false;
-		std::unordered_map<int, const DesignNode*> currentById;
-		currentById.reserve(current.Nodes.size());
+		std::unordered_map<std::wstring, const DesignNode*> currentByName;
+		currentByName.reserve(current.Nodes.size());
 		for (const auto& node : current.Nodes)
-			currentById.emplace(node.Id, &node);
+		{
+			if (node.NameIsGenerated) return false;
+			currentByName.emplace(node.Name, &node);
+		}
 		for (const auto& node : next.Nodes)
 		{
-			const auto found = currentById.find(node.Id);
-			if (found == currentById.end()
+			if (node.NameIsGenerated) return false;
+			const auto found = currentByName.find(node.Name);
+			if (found == currentByName.end()
 				|| !SameNodeShapeForInPlaceReload(*found->second, node))
 				return false;
 		}
@@ -1147,7 +1151,6 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	_commandTargetReferences = std::move(other._commandTargetReferences);
 	_inputBindingTargetReferences =
 		std::move(other._inputBindingTargetReferences);
-	_controlsByDesignId = std::move(other._controlsByDesignId);
 	_controlsByName = std::move(other._controlsByName);
 	_installedBindings = std::move(other._installedBindings);
 	_eventConnections = std::move(other._eventConnections);
@@ -1185,18 +1188,6 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	return *this;
 }
 
-Control* RuntimeDocument::FindControlByDesignId(int stableId) noexcept
-{
-	if (stableId <= 0) return nullptr;
-	const auto found = _controlsByDesignId.find(stableId);
-	return found == _controlsByDesignId.end() ? nullptr : found->second.Get();
-}
-
-const Control* RuntimeDocument::FindControlByDesignId(int stableId) const noexcept
-{
-	return const_cast<RuntimeDocument*>(this)->FindControlByDesignId(stableId);
-}
-
 Control* RuntimeDocument::FindControlByName(const std::wstring& name) noexcept
 {
 	const auto found = _controlsByName.find(name);
@@ -1211,17 +1202,14 @@ const Control* RuntimeDocument::FindControlByName(
 
 void RuntimeDocument::RebuildControlIndex()
 {
-	std::unordered_map<int, ControlWeakReference> byDesignId;
 	std::unordered_map<std::wstring, ControlWeakReference> byName;
-	byDesignId.reserve(_controls.size());
 	byName.reserve(_controls.size());
 	for (const auto& control : _controls)
 	{
-		if (!control || !control->ControlInstance) continue;
-		byDesignId.emplace(control->StableId, control->ControlInstance);
+		if (!control || !control->ControlInstance
+			|| control->NameIsGenerated) continue;
 		byName.emplace(control->Name, control->ControlInstance);
 	}
-	_controlsByDesignId = std::move(byDesignId);
 	_controlsByName = std::move(byName);
 }
 
@@ -1274,6 +1262,11 @@ bool RuntimeDocument::ApplyCommandTargetReferences(
 		-> Control*
 	{
 		auto* owner = resolveRuntimeName(reference.SourceName);
+		// Unnamed controls deliberately do not enter the public Name index. Their
+		// materialization record still owns a weak source locator for this internal
+		// wiring pass. Named sources prefer namescope resolution so a recomposed
+		// subtree follows the retained instance instead of its discarded placeholder.
+		if (!owner) owner = reference.Source.Get();
 		if (reference.MenuItemPath.empty()) return owner;
 		if (!owner) return nullptr;
 		const auto topIndex = reference.MenuItemPath.front();
@@ -1379,6 +1372,7 @@ bool RuntimeDocument::ApplyCommandTargetReferences(
 	for (auto& reference : _inputBindingTargetReferences)
 	{
 		auto* source = resolveRuntimeName(reference.SourceName);
+		if (!source) source = reference.Source.Get();
 		if (!source)
 		{
 			RestoreCommandTargetSnapshots(snapshots);
@@ -1931,7 +1925,6 @@ bool RuntimeDocument::BindControlEventsCore(
 
 			RuntimeControlEventRequest request{
 				*control->ControlInstance,
-				control->StableId,
 				control->Name,
 				control->Type,
 				eventOwnerType,
@@ -1976,7 +1969,7 @@ bool RuntimeDocument::BindControlEventsCore(
 					return false;
 				}
 				RuntimeControlEventRequest request{
-					*control->ControlInstance, control->StableId, control->Name,
+					*control->ControlInstance, control->Name,
 					control->Type,
 					control->ControlInstance->GetDeclarativeTypeId(),
 					*descriptor, handlerName, binding.Command, &resolvedBinding };
@@ -3297,29 +3290,29 @@ bool RuntimeDocumentLoader::Reload(
 			&& !options.ForceBehaviorRefresh
 			&& CanReloadInPlace(*output._sourceDocument, document))
 		{
-			std::unordered_map<int, const DesignNode*> currentById;
-			currentById.reserve(output._sourceDocument->Nodes.size());
+			std::unordered_map<std::wstring, const DesignNode*> currentByName;
+			currentByName.reserve(output._sourceDocument->Nodes.size());
 			for (const auto& node : output._sourceDocument->Nodes)
-				currentById.emplace(node.Id, &node);
-			std::unordered_map<int, const DesignNode*> nextById;
-			nextById.reserve(document.Nodes.size());
+				currentByName.emplace(node.Name, &node);
+			std::unordered_map<std::wstring, const DesignNode*> nextByName;
+			nextByName.reserve(document.Nodes.size());
 			for (const auto& node : document.Nodes)
-				nextById.emplace(node.Id, &node);
+				nextByName.emplace(node.Name, &node);
 
 			const bool hasPropertyChanges = std::any_of(
 				document.Nodes.begin(), document.Nodes.end(),
 				[&](const DesignNode& node)
 				{
-					const auto found = currentById.find(node.Id);
-					return found == currentById.end()
+					const auto found = currentByName.find(node.Name);
+					return found == currentByName.end()
 						|| found->second->Properties != node.Properties;
 				});
 			const bool hasControlBindingChanges = std::any_of(
 				document.Nodes.begin(), document.Nodes.end(),
 				[&](const DesignNode& node)
 				{
-					const auto found = currentById.find(node.Id);
-					return found == currentById.end()
+					const auto found = currentByName.find(node.Name);
+					return found == currentByName.end()
 						|| found->second->Bindings != node.Bindings;
 				});
 			const bool hasWindowBindingChanges =
@@ -3333,7 +3326,7 @@ bool RuntimeDocumentLoader::Reload(
 			const bool needsCandidate = hasPropertyChanges
 				|| hasBindingChanges || hasStyleChanges || hasSchemaChanges;
 			CuiRuntime::XamlObjectTree reloadCandidate;
-			std::unordered_map<int, const DesignerControl*> candidateById;
+			std::unordered_map<std::wstring, const DesignerControl*> candidateByName;
 			if (needsCandidate)
 			{
 				auto candidateOptions =
@@ -3347,9 +3340,9 @@ bool RuntimeDocumentLoader::Reload(
 				if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 					document, reloadCandidate,
 					candidateOptions, outError, outDiagnostic)) return false;
-				candidateById.reserve(reloadCandidate.Controls.size());
+				candidateByName.reserve(reloadCandidate.Controls.size());
 				for (const auto& control : reloadCandidate.Controls)
-					if (control) candidateById.emplace(control->StableId, control.get());
+					if (control) candidateByName.emplace(control->Name, control.get());
 			}
 
 			std::vector<DesignEventHandlerMap> nextHandlers;
@@ -3376,31 +3369,31 @@ bool RuntimeDocumentLoader::Reload(
 					rollbackProperties();
 					return false;
 				}
-				const auto found = nextById.find(control->StableId);
-				if (found == nextById.end())
+				const auto found = nextByName.find(control->Name);
+				if (found == nextByName.end())
 				{
-					SetError(outError, L"增量重载无法解析控件稳定 ID："
-						+ std::to_wstring(control->StableId));
+					SetError(outError, L"增量重载无法解析控件 x:Name："
+						+ control->Name);
 					rollbackProperties();
 					return false;
 				}
-				const auto currentFound = currentById.find(control->StableId);
-				if (currentFound == currentById.end())
+				const auto currentFound = currentByName.find(control->Name);
+				if (currentFound == currentByName.end())
 				{
-					SetError(outError, L"增量重载无法解析旧控件稳定 ID："
-						+ std::to_wstring(control->StableId));
+					SetError(outError, L"增量重载无法解析旧控件 x:Name："
+						+ control->Name);
 					rollbackProperties();
 					return false;
 				}
 				if (currentFound->second->Properties
 					!= found->second->Properties)
 				{
-					const auto candidateFound = candidateById.find(control->StableId);
-					if (candidateFound == candidateById.end()
+					const auto candidateFound = candidateByName.find(control->Name);
+					if (candidateFound == candidateByName.end()
 						|| !candidateFound->second)
 					{
-						SetError(outError, L"增量重载候选树缺少控件稳定 ID："
-							+ std::to_wstring(control->StableId));
+						SetError(outError, L"增量重载候选树缺少控件 x:Name："
+							+ control->Name);
 						rollbackProperties();
 						return false;
 					}
@@ -3451,12 +3444,12 @@ bool RuntimeDocumentLoader::Reload(
 				}
 				if (hasBindingChanges)
 				{
-					const auto candidateFound = candidateById.find(control->StableId);
-					if (candidateFound == candidateById.end()
+					const auto candidateFound = candidateByName.find(control->Name);
+					if (candidateFound == candidateByName.end()
 						|| !candidateFound->second)
 					{
-						SetError(outError, L"增量重载候选树缺少绑定控件稳定 ID："
-							+ std::to_wstring(control->StableId));
+						SetError(outError, L"增量重载候选树缺少绑定控件 x:Name："
+							+ control->Name);
 						rollbackProperties();
 						return false;
 					}

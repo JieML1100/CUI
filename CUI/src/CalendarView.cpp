@@ -1,10 +1,12 @@
 #define NOMINMAX
 #include "CalendarView.h"
+#include "EventInfrastructure.h"
 #include "Window.h"
 
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <optional>
 #include <utility>
 
 namespace
@@ -76,6 +78,48 @@ namespace
 		return st;
 	}
 
+	bool IsEmptyDate(const SYSTEMTIME& date) noexcept
+	{
+		return date.wYear == 0;
+	}
+
+	bool IsValidDate(const SYSTEMTIME& date) noexcept
+	{
+		if (IsEmptyDate(date)) return true;
+		if (date.wYear < 1 || date.wYear > 9999
+			|| date.wMonth < 1 || date.wMonth > 12
+			|| date.wDay < 1)
+			return false;
+		static constexpr int days[] =
+			{ 31,28,31,30,31,30,31,31,30,31,30,31 };
+		int maximum = days[date.wMonth - 1];
+		const bool leap = (date.wYear % 4 == 0 && date.wYear % 100 != 0)
+			|| date.wYear % 400 == 0;
+		if (date.wMonth == 2 && leap) maximum = 29;
+		return date.wDay <= maximum;
+	}
+
+	std::optional<SYSTEMTIME> ConvertCalendarDateValue(
+		const BindingValue& value)
+	{
+		SYSTEMTIME typed{};
+		if (value.TryGet(typed))
+			return IsValidDate(typed)
+				? std::optional<SYSTEMTIME>(typed) : std::nullopt;
+		std::wstring text;
+		if (!value.TryGet(text)) return std::nullopt;
+		int year = 0;
+		int month = 0;
+		int day = 0;
+		wchar_t tail = 0;
+		const int parsed = swscanf_s(
+			text.c_str(), L"%d-%d-%d%c",
+			&year, &month, &day, &tail, 1u);
+		const auto date = MakeDate(year, month, day);
+		return parsed == 3 && !IsEmptyDate(date) && IsValidDate(date)
+			? std::optional<SYSTEMTIME>(date) : std::nullopt;
+	}
+
 	SYSTEMTIME TodayDate()
 	{
 		SYSTEMTIME st{};
@@ -127,11 +171,11 @@ namespace
 		return daysInSelectedMonth;
 	}
 
-	int FirstWeekday(int year, int month)
+	int FirstWeekday(int year, int month, int firstDayOfWeek)
 	{
 		int value = (DaysFromCivil(year, (unsigned)month, 1) + 4) % 7;
 		if (value < 0) value += 7;
-		return value;
+		return (value - firstDayOfWeek + 7) % 7;
 	}
 
 	void NormalizeMonth(int& year, int& month)
@@ -163,9 +207,11 @@ namespace
 		return MakeDate(year, month, day);
 	}
 
-	SYSTEMTIME CellDate(int year, int month, int cellIndex, bool& inDisplayMonth)
+	SYSTEMTIME CellDate(
+		int year, int month, int firstDayOfWeek,
+		int cellIndex, bool& inDisplayMonth)
 	{
-		const int first = FirstWeekday(year, month);
+		const int first = FirstWeekday(year, month, firstDayOfWeek);
 		const int days = DaysInMonth(year, month);
 		int day = cellIndex - first + 1;
 		int y = year;
@@ -247,12 +293,14 @@ namespace
 		d2d->DrawLine(p2, p3, color, 1.8f);
 	}
 
-	void DrawWeekNames(D2DGraphics* d2d, Font* font, const D2D1_RECT_F& weekRect, float cellWidth, D2D1_COLOR_F color)
+	void DrawWeekNames(
+		D2DGraphics* d2d, Font* font, const D2D1_RECT_F& weekRect,
+		float cellWidth, D2D1_COLOR_F color, int firstDayOfWeek)
 	{
 		static const wchar_t* weekNames[7] = { L"Sun", L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat" };
 		for (int i = 0; i < 7; ++i)
 		{
-			std::wstring text = weekNames[i];
+			std::wstring text = weekNames[(i + firstDayOfWeek) % 7];
 			float cx = weekRect.left + cellWidth * (i + 0.5f);
 			float cy = weekRect.top + RectHeight(weekRect) * 0.5f;
 			d2d->DrawStringCentered(text, cx, cy, color, font);
@@ -313,11 +361,16 @@ const DependencyProperty& CalendarView::SelectedDateProperty()
 	{
 		using Handler = DependencyPropertyMetadata::ChangeHandler;
 		DependencyPropertyOptions<CalendarView, SYSTEMTIME> options;
-		options.DefaultValue = TodayDate();
+		options.DefaultValue = SYSTEMTIME{};
 		options.Flags = DependencyPropertyFlags::AffectsRender
 			| DependencyPropertyFlags::BindsTwoWayByDefault;
 		options.Equals = [](const SYSTEMTIME& left,
 			const SYSTEMTIME& right) { return IsSameDate(left, right); };
+		options.Convert = ConvertCalendarDateValue;
+		options.Validate = [](const SYSTEMTIME& value)
+		{
+			return IsValidDate(value);
+		};
 		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Common";
 		options.Design.CategoryOrder = 0;
@@ -327,7 +380,7 @@ const DependencyProperty& CalendarView::SelectedDateProperty()
 		options.Changed = [](
 			CalendarView& target, const SYSTEMTIME&, const SYSTEMTIME& value)
 		{
-			target.SyncDisplayFromDate(value);
+			if (!IsEmptyDate(value)) target.SyncDisplayFromDate(value);
 			target.NotifySelectedDatesChanged();
 		};
 		return DependencyPropertyRegistry::RegisterStatic<
@@ -336,6 +389,11 @@ const DependencyProperty& CalendarView::SelectedDateProperty()
 				[](CalendarView& target) { return target._selectedDate; },
 				[](CalendarView& target, const SYSTEMTIME& value)
 				{
+					if (IsEmptyDate(value))
+					{
+						target._selectedDate = {};
+						return;
+					}
 					target._selectedDate = MakeDate(
 						static_cast<int>(value.wYear),
 						static_cast<int>(value.wMonth),
@@ -353,12 +411,133 @@ const DependencyProperty& CalendarView::SelectedDateProperty()
 	return *registration;
 }
 
+const DependencyProperty& CalendarView::DisplayDateProperty()
+{
+	static const auto registration = []
+	{
+		using Handler = DependencyPropertyMetadata::ChangeHandler;
+		DependencyPropertyOptions<CalendarView, SYSTEMTIME> options;
+		options.DefaultValue = TodayDate();
+		options.Flags = DependencyPropertyFlags::AffectsRender
+			| DependencyPropertyFlags::BindsTwoWayByDefault;
+		options.Equals = [](const SYSTEMTIME& left,
+			const SYSTEMTIME& right) { return IsSameDate(left, right); };
+		options.Convert = ConvertCalendarDateValue;
+		options.Validate = [](const SYSTEMTIME& value)
+		{
+			return !IsEmptyDate(value) && IsValidDate(value);
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 20;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		options.Changed = [](
+			CalendarView& target, const SYSTEMTIME&, const SYSTEMTIME&)
+		{
+			target.NotifyAccessibilityVirtualChanged(
+				target._accessibilityIds[CalendarHeaderIndex],
+				AccessibilityChange::Name);
+			for (size_t cell = 0; cell < CalendarDayCount; ++cell)
+				target.NotifyAccessibilityVirtualChanged(
+					target._accessibilityIds[CalendarDayIndex + cell],
+					AccessibilityChange::Name);
+			cui::framework::EventAccess::Raise(
+				target.DisplayDateChanged, &target);
+		};
+		return DependencyPropertyRegistry::RegisterStatic<
+			CalendarView, SYSTEMTIME>(
+				DependencyPropertyRegistrationLiteral(L"DisplayDate"),
+				[](CalendarView& target) { return target._displayDate; },
+				[](CalendarView& target, const SYSTEMTIME& value)
+				{
+					target._displayDate = MakeDate(
+						static_cast<int>(value.wYear),
+						static_cast<int>(value.wMonth),
+						static_cast<int>(value.wDay));
+					target.DisplayYear = value.wYear;
+					target.DisplayMonth = value.wMonth;
+				},
+				[](CalendarView& target, Handler handler,
+					DataSourceUpdateMode)
+				{
+					return target.DisplayDateChanged.Subscribe(
+						[handler = std::move(handler)](CalendarView*)
+						{ handler(); });
+				}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& CalendarView::FirstDayOfWeekProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<CalendarView, int> options;
+		options.DefaultValue = 0;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		options.Validate = [](const int& value)
+		{
+			return value >= 0 && value <= 6;
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 110;
+		options.Design.Order = 20;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Choices = {
+			{ L"Sunday", BindingValue(0) },
+			{ L"Monday", BindingValue(1) },
+			{ L"Tuesday", BindingValue(2) },
+			{ L"Wednesday", BindingValue(3) },
+			{ L"Thursday", BindingValue(4) },
+			{ L"Friday", BindingValue(5) },
+			{ L"Saturday", BindingValue(6) }
+		};
+		)
+		return DependencyPropertyRegistry::RegisterStatic<CalendarView, int>(
+			DependencyPropertyRegistrationLiteral(L"FirstDayOfWeek"),
+			[](CalendarView& target) { return target._firstDayOfWeek; },
+			[](CalendarView& target, const int& value)
+			{ target._firstDayOfWeek = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& CalendarView::IsTodayHighlightedProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<CalendarView, bool> options;
+		options.DefaultValue = true;
+		options.Flags = DependencyPropertyFlags::AffectsRender;
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<CalendarView, bool>(
+			DependencyPropertyRegistrationLiteral(L"IsTodayHighlighted"),
+			[](CalendarView& target) { return target._isTodayHighlighted; },
+			[](CalendarView& target, const bool& value)
+			{ target._isTodayHighlighted = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
 void CalendarView::RegisterDependencyProperties()
 {
 	Control::RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
 	(void)SelectionModeProperty();
 	(void)SelectedDateProperty();
+	(void)DisplayDateProperty();
+	(void)FirstDayOfWeekProperty();
+	(void)IsTodayHighlightedProperty();
 #endif
 }
 
@@ -367,10 +546,11 @@ CalendarView::CalendarView()
 	this->RendererBackgroundColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->RendererBorderColor = cui::theme::palette::Border;
 	this->RendererForegroundColor = cui::theme::palette::TextPrimary;
-	this->_selectedDate = TodayDate();
-	this->_currentDate = this->_selectedDate;
-	this->DisplayYear = (int)this->_selectedDate.wYear;
-	this->DisplayMonth = (int)this->_selectedDate.wMonth;
+	this->_selectedDate = {};
+	this->_currentDate = TodayDate();
+	this->_displayDate = this->_currentDate;
+	this->DisplayYear = (int)this->_displayDate.wYear;
+	this->DisplayMonth = (int)this->_displayDate.wMonth;
 	for (auto& id : _accessibilityIds)
 		id = AllocateAccessibilityVirtualId();
 }
@@ -383,6 +563,12 @@ void CalendarView::SetSelectionMode(CalendarSelectionMode value)
 
 void CalendarView::SetSelectedDate(const SYSTEMTIME& date)
 {
+	if (IsEmptyDate(date))
+	{
+		ClearSelectedDate();
+		return;
+	}
+	if (!IsValidDate(date)) return;
 	const auto normalized = MakeDate(
 		static_cast<int>(date.wYear),
 		static_cast<int>(date.wMonth),
@@ -390,6 +576,33 @@ void CalendarView::SetSelectedDate(const SYSTEMTIME& date)
 	_currentDate = normalized;
 	(void)TrySetCurrentPropertyValue(
 		SelectedDateProperty(), BindingValue(normalized));
+}
+
+void CalendarView::ClearSelectedDate()
+{
+	(void)TrySetCurrentPropertyValue(
+		SelectedDateProperty(), BindingValue(SYSTEMTIME{}));
+}
+
+void CalendarView::SetDisplayDate(const SYSTEMTIME& date)
+{
+	if (IsEmptyDate(date) || !IsValidDate(date)) return;
+	const auto normalized = MakeDate(
+		static_cast<int>(date.wYear),
+		static_cast<int>(date.wMonth),
+		static_cast<int>(date.wDay));
+	(void)TrySetPropertyValue(DisplayDateProperty(), BindingValue(normalized));
+}
+
+void CalendarView::SetFirstDayOfWeek(int value)
+{
+	(void)TrySetPropertyValue(FirstDayOfWeekProperty(), BindingValue(value));
+}
+
+void CalendarView::SetIsTodayHighlighted(bool value)
+{
+	(void)TrySetPropertyValue(
+		IsTodayHighlightedProperty(), BindingValue(value));
 }
 
 void CalendarView::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool fireEvent)
@@ -437,15 +650,11 @@ void CalendarView::SetDisplayMonth(int year, int month)
 	NormalizeMonth(year, month);
 	if (DisplayYear == year && DisplayMonth == month)
 		return;
-	DisplayYear = year;
-	DisplayMonth = month;
-	NotifyAccessibilityVirtualChanged(
-		_accessibilityIds[CalendarHeaderIndex], AccessibilityChange::Name);
-	for (size_t cell = 0; cell < CalendarDayCount; ++cell)
-		NotifyAccessibilityVirtualChanged(
-			_accessibilityIds[CalendarDayIndex + cell],
-			AccessibilityChange::Name);
-	InvalidateVisual();
+	const int day = (std::min)(
+		_displayDate.wDay == 0 ? 1 : static_cast<int>(_displayDate.wDay),
+		DaysInMonth(year, month));
+	(void)TrySetCurrentPropertyValue(
+		DisplayDateProperty(), BindingValue(MakeDate(year, month, day)));
 }
 
 void CalendarView::AddMonths(int delta)
@@ -458,7 +667,12 @@ void CalendarView::AddMonths(int delta)
 
 void CalendarView::SyncDisplayFromDate(const SYSTEMTIME& date)
 {
-	SetDisplayMonth((int)date.wYear, (int)date.wMonth);
+	if (IsEmptyDate(date) || !IsValidDate(date)) return;
+	(void)TrySetCurrentPropertyValue(
+		DisplayDateProperty(), BindingValue(MakeDate(
+			static_cast<int>(date.wYear),
+			static_cast<int>(date.wMonth),
+			static_cast<int>(date.wDay))));
 }
 
 CalendarView::Layout CalendarView::CalcLayout() const
@@ -505,7 +719,9 @@ int CalendarView::HitTestDate(int localX, int localY, SYSTEMTIME& outDate, bool&
 	col = (std::clamp)(col, 0, 6);
 	row = (std::clamp)(row, 0, 5);
 	int cell = row * 7 + col;
-	outDate = CellDate(DisplayYear, DisplayMonth, cell, inDisplayMonth);
+	outDate = CellDate(
+		DisplayYear, DisplayMonth, _firstDayOfWeek,
+		cell, inDisplayMonth);
 	if (!ShowTrailingDays && !inDisplayMonth)
 		return -1;
 	return cell;
@@ -617,7 +833,7 @@ bool CalendarView::TryGetAccessibilityVirtualNode(
 		const int column = static_cast<int>(
 			index - CalendarColumnHeaderIndex);
 		result.ControlType = AutomationControlType::HeaderItem;
-		result.Name = names[column];
+		result.Name = names[(column + _firstDayOfWeek) % 7];
 		result.AutomationId =
 			prefix + L".column-" + std::to_wstring(column);
 		result.BoundsDip = D2D1::RectF(
@@ -636,7 +852,8 @@ bool CalendarView::TryGetAccessibilityVirtualNode(
 		return false;
 	bool inDisplayMonth = true;
 	const auto date = CellDate(
-		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+		DisplayYear, DisplayMonth, _firstDayOfWeek,
+		cell, inDisplayMonth);
 	const int row = cell / 7;
 	const int column = cell % 7;
 	const bool selected = _selectionMode == CalendarSelectionMode::SingleDate
@@ -734,7 +951,8 @@ void CalendarView::GetAccessibilityVirtualSelection(
 	{
 		bool inDisplayMonth = true;
 		const auto date = CellDate(
-			DisplayYear, DisplayMonth, static_cast<int>(cell),
+			DisplayYear, DisplayMonth, _firstDayOfWeek,
+			static_cast<int>(cell),
 			inDisplayMonth);
 		if (!inDisplayMonth && !ShowTrailingDays) continue;
 		const bool selected =
@@ -757,7 +975,8 @@ bool CalendarView::GetAccessibilityVirtualItemAt(
 	const size_t cell = static_cast<size_t>(row * 7 + column);
 	bool inDisplayMonth = true;
 	(void)CellDate(
-		DisplayYear, DisplayMonth, static_cast<int>(cell),
+		DisplayYear, DisplayMonth, _firstDayOfWeek,
+		static_cast<int>(cell),
 		inDisplayMonth);
 	if (!inDisplayMonth && !ShowTrailingDays) return false;
 	result = _accessibilityIds[CalendarDayIndex + cell];
@@ -793,7 +1012,8 @@ bool CalendarView::InvokeAccessibilityVirtualNode(uint32_t id)
 		std::distance(_accessibilityIds.begin() + CalendarDayIndex, found));
 	bool inDisplayMonth = true;
 	const auto date = CellDate(
-		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+		DisplayYear, DisplayMonth, _firstDayOfWeek,
+		cell, inDisplayMonth);
 	if (!inDisplayMonth && !ShowTrailingDays) return false;
 	SelectDateFromInput(date, inDisplayMonth);
 	NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Invoke);
@@ -815,7 +1035,8 @@ bool CalendarView::SelectAccessibilityVirtualNode(
 		std::distance(_accessibilityIds.begin() + CalendarDayIndex, found));
 	bool inDisplayMonth = true;
 	const auto date = CellDate(
-		DisplayYear, DisplayMonth, cell, inDisplayMonth);
+		DisplayYear, DisplayMonth, _firstDayOfWeek,
+		cell, inDisplayMonth);
 	if (!inDisplayMonth && !ShowTrailingDays) return false;
 	SelectDateFromInput(
 		date, inDisplayMonth,
@@ -842,13 +1063,17 @@ void CalendarView::DrawHeader(D2DGraphics* d2d, const Layout& layout)
 void CalendarView::DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout)
 {
 	if (ShowWeekNames && RectHeight(layout.WeekRect) > 0.0f)
-		DrawWeekNames(d2d, GetRenderFont(), layout.WeekRect, layout.CellWidth, MutedTextColor);
+		DrawWeekNames(
+			d2d, GetRenderFont(), layout.WeekRect,
+			layout.CellWidth, MutedTextColor, _firstDayOfWeek);
 
 	SYSTEMTIME today = TodayDate();
 	for (int cell = 0; cell < 42; ++cell)
 	{
 		bool inMonth = true;
-		SYSTEMTIME date = CellDate(DisplayYear, DisplayMonth, cell, inMonth);
+		SYSTEMTIME date = CellDate(
+			DisplayYear, DisplayMonth, _firstDayOfWeek,
+			cell, inMonth);
 		if (!ShowTrailingDays && !inMonth)
 			continue;
 		int row = cell / 7;
@@ -874,7 +1099,7 @@ void CalendarView::DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout)
 		}
 		bool hover = HoverDay > 0 && HoverDay == (int)date.wDay && HoverDayInMonth == inMonth &&
 			(inMonth || ShowTrailingDays);
-		bool isToday = HighlightToday && IsSameDate(date, today);
+		bool isToday = _isTodayHighlighted && IsSameDate(date, today);
 
 		if (rangeMid)
 			d2d->FillRoundRect(pill, RangeBackColor, 6.0f);

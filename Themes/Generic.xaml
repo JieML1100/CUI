@@ -2983,6 +2983,40 @@
     owns the outer border and disabled chrome, as it does for TextBoxBase.
   -->
   <ControlTemplate
+    x:Key="CuiCalendarTemplate"
+    TargetType="Calendar">
+    <Grid x:Name="PART_Root">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_DisabledOverlay"
+                Property="Visibility" Value="Visible"/>
+              <Setter Property="Foreground"
+                Value="{StaticResource CuiControlForegroundDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Border
+        x:Name="PART_OuterChrome"
+        Background="#00000000"
+        BorderBrush="{TemplateBinding BorderBrush}"
+        BorderThickness="{TemplateBinding BorderThickness}"
+        CornerRadius="4"/>
+      <Border
+        x:Name="PART_DisabledOverlay"
+        Background="#70FFFFFF"
+        CornerRadius="4"
+        Visibility="Collapsed"/>
+    </Grid>
+  </ControlTemplate>
+
+  <ControlTemplate
     x:Key="CuiCalendarViewTemplate"
     TargetType="CalendarView">
     <Grid x:Name="PART_CalendarRoot">
@@ -3013,6 +3047,105 @@
         Background="#70FFFFFF"
         CornerRadius="4"
         Visibility="Collapsed"/>
+    </Grid>
+  </ControlTemplate>
+
+  <ControlTemplate
+    x:Key="CuiDatePickerTemplate"
+    TargetType="DatePicker">
+    <Grid x:Name="PART_Root">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup x:Name="CommonStates">
+          <VisualState x:Name="Disabled">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsEnabled" Value="false"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="Background"
+                Value="{StaticResource CuiTextControlBackgroundDisabled}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiTextControlBorderDisabled}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Focused">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsKeyboardFocusWithin" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiTextControlBorderFocused}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderThickness"
+                Value="2"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Opened">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsDropDownOpen" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Button" Property="Background"
+                Value="{StaticResource CuiComboBoxPointerOver}"/>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiTextControlBorderFocused}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="PointerOver">
+            <VisualState.StateTriggers>
+              <StateTrigger Property="IsMouseOver" Value="true"/>
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter TargetName="PART_Chrome" Property="BorderBrush"
+                Value="{StaticResource CuiTextControlBorderPointerOver}"/>
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="Normal"/>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="32"/>
+      </Grid.ColumnDefinitions>
+      <Border
+        x:Name="PART_Chrome"
+        Grid.ColumnSpan="2"
+        Background="{TemplateBinding Background}"
+        BorderBrush="{TemplateBinding BorderBrush}"
+        BorderThickness="{TemplateBinding BorderThickness}"
+        CornerRadius="{DynamicResource CuiControlCornerRadius}"/>
+      <TextBox
+        x:Name="PART_TextBox"
+        Grid.Column="0"
+        MinWidth="0"
+        MinHeight="0"
+        Padding="{TemplateBinding Padding}"
+        Background="#00000000"
+        BorderBrush="#00000000"
+        BorderThickness="0"
+        Foreground="{TemplateBinding Foreground}"
+        HorizontalAlignment="Stretch"
+        VerticalAlignment="Stretch"
+        VerticalContentAlignment="Center"
+        Text="{TemplateBinding Text}"/>
+      <Button
+        x:Name="PART_Button"
+        Grid.Column="1"
+        Content="&#xE787;"
+        FontFamily="Segoe Fluent Icons"
+        FontSize="14"
+        Background="#00000000"
+        BorderThickness="1,0,0,0"
+        Padding="0"
+        HorizontalAlignment="Stretch"
+        VerticalAlignment="Stretch"
+        HorizontalContentAlignment="Center"
+        VerticalContentAlignment="Center"
+        Focusable="false"
+        IsTabStop="false"
+        Cursor="Hand"/>
+      <Popup
+        x:Name="PART_Popup"
+        IsOpen="{TemplateBinding IsDropDownOpen}"
+        StaysOpen="false"/>
     </Grid>
   </ControlTemplate>
 
@@ -3050,7 +3183,42 @@
     </Grid>
   </ControlTemplate>
 
+  <Style TargetType="Calendar">
+    <Setter Property="MinWidth" Value="280"/>
+    <Setter Property="MinHeight" Value="300"/>
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataSurface}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataSurfaceBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiControlForeground}"/>
+    <Setter Property="Focusable" Value="true"/>
+    <Setter Property="IsTabStop" Value="true"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiCalendarTemplate}"/>
+  </Style>
+
+  <Style TargetType="DatePicker">
+    <Setter Property="MinWidth" Value="140"/>
+    <Setter Property="MinHeight" Value="30"/>
+    <Setter Property="Background"
+      Value="{StaticResource CuiTextControlBackground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiTextControlBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiControlForeground}"/>
+    <Setter Property="Padding" Value="8,3"/>
+    <Setter Property="Focusable" Value="false"/>
+    <Setter Property="IsTabStop" Value="false"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDatePickerTemplate}"/>
+  </Style>
+
   <Style TargetType="CalendarView">
+    <Setter Property="MinWidth" Value="280"/>
+    <Setter Property="MinHeight" Value="300"/>
     <Setter Property="Background"
       Value="{StaticResource CuiDataSurface}"/>
     <Setter Property="BorderBrush"

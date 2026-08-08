@@ -19,7 +19,7 @@ enum class DesignEventOwnerKind
 struct DesignEventReference
 {
 	DesignEventOwnerKind OwnerKind = DesignEventOwnerKind::Control;
-	int OwnerDesignId = 0;
+	int OwnerNodeId = 0;
 	std::wstring SubjectName;
 	UIClass SubjectType = UIClass::UI_Base;
 	std::wstring EventName;

@@ -1314,7 +1314,6 @@ namespace
 			if (!root)
 				return Fail(L"XAML 没有根元素。", error);
 			IndexSourceSymbols(root);
-			IndexExplicitDesignIds(root);
 			const auto rootName = FromUtf8(root->LocalName());
 			if (!Equals(rootName, L"Window"))
 				return Fail(L"XAML 根元素必须是 Window。", error);
@@ -1395,7 +1394,6 @@ namespace
 			if (!root)
 				return Fail(L"XAML 没有根元素。", error);
 			IndexSourceSymbols(root);
-			IndexExplicitDesignIds(root);
 			if (!Equals(FromUtf8(root->LocalName()), L"ResourceDictionary"))
 				return Fail(L"资源文件根元素必须是 ResourceDictionary。", error);
 			if (!ParseResourceDictionary(root, error)) return false;
@@ -1502,10 +1500,11 @@ namespace
 		std::vector<DesignObjectResourceDictionary> _objectResourceScopes;
 		bool _parsingLocalResources = false;
 		std::unordered_set<int> _usedIds;
-		// Auto-generated IDs must not consume an explicit DesignId/x:Uid that
-		// appears later in document order.
-		std::unordered_set<int> _reservedExplicitIds;
 		std::unordered_set<std::wstring> _usedNames;
+		// Generated graph keys must never consume an authored x:Name that appears
+		// later in source order. This set may span nested namescopes: over-reserving
+		// only changes an invisible key and cannot reject otherwise valid XAML.
+		std::unordered_set<std::wstring> _reservedAuthoredNames;
 		std::unordered_map<std::wstring, int> _nameCounters;
 		std::vector<std::wstring> _bindingPaths;
 		DesignComponentDefinition* _activeTemplateComponent = nullptr;
@@ -1761,6 +1760,12 @@ namespace
 			{
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
 				const auto name = FromUtf8(attribute->LocalName());
+				if (Equals(name, L"Name"))
+				{
+					auto authoredName = Trim(FromUtf8(attribute->Value()));
+					if (!authoredName.empty())
+						_reservedAuthoredNames.insert(std::move(authoredName));
+				}
 				if (!Equals(name, L"Key") && !Equals(name, L"Name")
 					&& !Equals(name, L"TargetType")
 					&& !Equals(name, L"DataType")
@@ -1799,9 +1804,12 @@ namespace
 		{
 			DiagnosticContext context(*this, root);
 			_document.Window.Source.Element = _sourceLocations.Span(root.get());
-			if (const auto name = Attribute(root, L"Name"))
+			const auto name = Attribute(root, L"Name");
+			const auto xName = Attribute(root, L"Name", L"x");
+			_document.Window.NameIsGenerated = !name && !xName;
+			if (name)
 				_document.Window.Name = Trim(*name);
-			if (const auto xName = Attribute(root, L"Name", L"x"))
+			if (xName)
 				_document.Window.Name = Trim(*xName);
 			if (!ValidateIdentifier(_document.Window.Name, L"窗体名称", error)) return false;
 
@@ -5784,50 +5792,30 @@ namespace
 			for (;;)
 			{
 				const auto candidate = stem + std::to_wstring(++next);
-				if (!_usedNames.contains(candidate)) return candidate;
+				if (!_usedNames.contains(candidate)
+					&& !_reservedAuthoredNames.contains(candidate)) return candidate;
 			}
-		}
-
-		void IndexExplicitDesignIds(const Element& element)
-		{
-			if (!element) return;
-			const auto idText = Attribute(element, L"DesignId").value_or(
-				Attribute(element, L"Uid", L"x").value_or(L""));
-			int id = 0;
-			if (!idText.empty() && TryParseInteger(idText, id) && id > 0)
-				_reservedExplicitIds.insert(id);
-			for (const auto& child : ChildElements(element))
-				IndexExplicitDesignIds(child);
 		}
 
 		bool ReadControlIdentity(
 			const Element& element,
 			UIClass type,
 			std::wstring& name,
+			bool& nameIsGenerated,
 			int& id,
 			std::wstring& error)
 		{
 			DiagnosticContext context(*this, element);
 			name = Trim(Attribute(element, L"Name", L"x").value_or(
 				Attribute(element, L"Name").value_or(L"")));
-			if (name.empty()) name = MakeControlName(type);
+			nameIsGenerated = name.empty();
+			if (nameIsGenerated) name = MakeControlName(type);
 			if (!ValidateIdentifier(name, L"控件名称", error)) return false;
 			if (!_usedNames.insert(name).second)
 				return Fail(L"控件名称重复：" + name, error);
 
-			const auto idText = Attribute(element, L"DesignId").value_or(
-				Attribute(element, L"Uid", L"x").value_or(L""));
-			if (!idText.empty())
-			{
-				if (!TryParseInteger(idText, id) || id <= 0)
-					return Fail(L"控件 " + name + L" 的 DesignId 必须是正整数。", error);
-			}
-			else
-			{
-				do { id = _document.AllocateNodeId(); }
-				while (_usedIds.contains(id)
-					|| _reservedExplicitIds.contains(id));
-			}
+			do { id = _document.AllocateNodeId(); }
+			while (_usedIds.contains(id));
 			if (!_usedIds.insert(id).second)
 				return Fail(L"控件稳定 ID 重复：" + std::to_wstring(id), error);
 			if (id >= _document.NextStableId)
@@ -6236,7 +6224,9 @@ namespace
 						error);
 			}
 			DesignNode node;
-			if (!ReadControlIdentity(element, type, node.Name, node.Id, error)) return false;
+			if (!ReadControlIdentity(
+				element, type, node.Name, node.NameIsGenerated, node.Id, error))
+				return false;
 			node.Type = type;
 			if (builtInType) node.XamlType = builtInDescriptor->TypeId;
 			node.ComponentType = std::move(componentType);
@@ -6775,8 +6765,7 @@ namespace
 					_document.Nodes[nodeIndex].Locked = locked;
 					continue;
 				}
-				if (Equals(name, L"Name") || Equals(name, L"DesignId")
-					|| (Equals(prefix, L"x") && Equals(name, L"Uid"))) continue;
+				if (Equals(name, L"Name")) continue;
 				const auto commandSourceType = _document.Nodes[nodeIndex].Type;
 				if (prefix.empty() && Equals(name, L"CommandTarget")
 					&& (commandSourceType == UIClass::UI_Button

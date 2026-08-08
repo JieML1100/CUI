@@ -22,7 +22,6 @@ class ControlStyleSheet;
 
 namespace cui::framework
 {
-	struct DesignIdentityAccess;
 	struct TreeAccess;
 }
 
@@ -87,9 +86,6 @@ using ParentChangedEvent = Event<void(Control*, Control*, Control*)>;
 class FrameworkElement : public UIElement
 {
 private:
-	// Editor/compiler identity is infrastructure metadata, never an author DP.
-	int _designId = 0;
-	friend struct cui::framework::DesignIdentityAccess;
 	friend struct cui::framework::TreeAccess;
 
 protected:
@@ -145,8 +141,6 @@ public:
 	FrameworkElement() = default;
 	~FrameworkElement() override = default;
 
-	int GetDesignId() const noexcept { return _designId; }
-
 	Control* GetLogicalParent() const noexcept { return _logicalParent; }
 	Control* GetTemplatedParent() const noexcept { return _templatedParent; }
 	Control* GetInheritanceParent() const noexcept
@@ -174,17 +168,5 @@ public:
 	virtual bool ClearDataContext() = 0;
 	virtual IBindingSource& DataContextSource() = 0;
 };
-
-namespace cui::framework
-{
-	/** Narrow bridge used only by XAML materialization, codegen and designer identity maps. */
-	struct DesignIdentityAccess final
-	{
-		static void Set(FrameworkElement& target, int value) noexcept
-		{
-			target._designId = value > 0 ? value : 0;
-		}
-	};
-}
 
 #endif // CUI_FRAMEWORK_ELEMENT_H_INCLUDED

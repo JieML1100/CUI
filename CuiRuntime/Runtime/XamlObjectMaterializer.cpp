@@ -59,7 +59,9 @@
 #include "../../CUI/include/ContentControl.h"
 #include "../../CUI/include/HeaderedContentControl.h"
 #include "../../CUI/include/TemplateInfrastructure.h"
+#include "../../CUI/include/Calendar.h"
 #include "../../CUI/include/CalendarView.h"
+#include "../../CUI/include/DatePicker.h"
 #include "../../CUI/include/Layout/StackPanel.h"
 #include "../../CUI/include/Layout/Grid.h"
 #include "../../CUI/include/Layout/DockPanel.h"
@@ -3856,6 +3858,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 		{
 			const DesignNode* source = nullptr;
 			std::wstring name;
+			bool nameIsGenerated = false;
 			int id = 0;
 			UIClass type = UIClass::UI_Base;
 			RuntimeTypeId xamlType;
@@ -3896,6 +3899,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			Pending p;
 			p.source = &node;
 			p.name = node.Name;
+			p.nameIsGenerated = node.NameIsGenerated;
 			p.id = node.Id;
 			p.type = node.Type;
 			p.xamlType = node.XamlType;
@@ -4216,6 +4220,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			}
 			auto dc = std::make_shared<DesignerControl>(
 				c, it.name, it.type, nullptr, it.id);
+			dc->NameIsGenerated = it.nameIsGenerated;
 			dc->XamlType = it.xamlType;
 			if (!it.localResources.Empty())
 				dc->LocalResources =
@@ -6421,7 +6426,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 					return false;
 				}
 				DeclarativeComponentBehaviorContext context{
-					*host->second, it.id, it.name,
+					*host->second, it.name,
 					host->second->GetDeclarativeTypeId() };
 				std::unique_ptr<IDeclarativeComponentBehavior> behavior;
 				try

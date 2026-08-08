@@ -17,6 +17,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class Window;
@@ -95,7 +96,6 @@ private:
 struct RuntimeControlEventRequest
 {
 	Control& Target;
-	int StableId = 0;
 	std::wstring ControlName;
 	UIClass ControlType = UIClass::UI_Base;
 	RuntimeTypeId DeclarativeOwnerType;
@@ -204,7 +204,7 @@ enum class RuntimeDocumentReloadMode
 {
 	Unchanged,
 	InPlace,
-	/** Topology changed, but one or more unchanged DesignId subtrees were retained. */
+	/** Topology changed, but one or more unchanged named subtrees were retained. */
 	Recomposed,
 	Replaced,
 };
@@ -271,25 +271,29 @@ public:
 		return static_cast<bool>(_contentHost);
 	}
 
-	Control* FindControlByDesignId(int stableId) noexcept;
-	const Control* FindControlByDesignId(int stableId) const noexcept;
 	Control* FindControlByName(const std::wstring& name) noexcept;
 	const Control* FindControlByName(const std::wstring& name) const noexcept;
 
 	template<typename T>
-	T* FindControlByDesignId(int stableId) noexcept
+	T* FindControlByName(const std::wstring& name) noexcept
 	{
-		return dynamic_cast<T*>(FindControlByDesignId(stableId));
+		return dynamic_cast<T*>(FindControlByName(name));
+	}
+
+	template<typename T>
+	const T* FindControlByName(const std::wstring& name) const noexcept
+	{
+		return dynamic_cast<const T*>(FindControlByName(name));
 	}
 
 	/**
-	 * Creates a lightweight typed reference resolved through the stable ID index
+	 * Creates a lightweight typed reference resolved through the authored Name index
 	 * on every access. It follows in-place, recomposed, and replaced reloads as
 	 * well as move construction. Destroying the document expires the reference;
 	 * Get() then returns nullptr without retaining document or control ownership.
 	 */
 	template<typename T = Control>
-	RuntimeControlRef<T> ReferenceByDesignId(int stableId) noexcept;
+	RuntimeControlRef<T> ReferenceByName(std::wstring name);
 
 	/**
 	 * Creates a non-owning document view backed by the same weak lifetime state
@@ -420,7 +424,6 @@ private:
 	// content object is removed or replaced independently of the authored
 	// record. The source document retains identity; these indexes retain only
 	// lifetime-aware projections.
-	std::unordered_map<int, ControlWeakReference> _controlsByDesignId;
 	std::unordered_map<std::wstring, ControlWeakReference> _controlsByName;
 	std::vector<InstalledBinding> _installedBindings;
 	std::vector<EventConnection> _eventConnections;
@@ -490,19 +493,19 @@ private:
 		std::wstring* outError);
 };
 
-/** Non-owning, reload-aware typed reference to one stable design control. */
+/** Non-owning, reload-aware typed reference to one authored named control. */
 template<typename T>
 class RuntimeControlRef final
 {
 public:
 	RuntimeControlRef() = default;
 
-	int StableId() const noexcept { return _stableId; }
+	const std::wstring& Name() const noexcept { return _name; }
 	T* Get() const noexcept
 	{
 		const auto state = _referenceState.lock();
 		return state && state->Document
-			? state->Document->FindControlByDesignId<T>(_stableId) : nullptr;
+			? state->Document->FindControlByName<T>(_name) : nullptr;
 	}
 	explicit operator bool() const noexcept { return Get() != nullptr; }
 	T* operator->() const noexcept { return Get(); }
@@ -512,13 +515,13 @@ private:
 	friend class RuntimeDocument;
 	RuntimeControlRef(
 		const std::shared_ptr<Detail::RuntimeDocumentReferenceState>& state,
-		int stableId) noexcept
-		: _referenceState(state), _stableId(stableId)
+		std::wstring name) noexcept
+		: _referenceState(state), _name(std::move(name))
 	{
 	}
 
 	std::weak_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
-	int _stableId = 0;
+	std::wstring _name;
 };
 
 /** Non-owning, move-aware weak view of one RuntimeDocument object identity. */
@@ -535,19 +538,19 @@ public:
 	explicit operator bool() const noexcept { return Get() != nullptr; }
 
 	template<typename T = Control>
-	T* FindControlByDesignId(int stableId) const noexcept
+	T* FindControlByName(const std::wstring& name) const noexcept
 	{
 		const auto document = Get();
 		return document
-			? document->FindControlByDesignId<T>(stableId) : nullptr;
+			? document->FindControlByName<T>(name) : nullptr;
 	}
 
 	template<typename T = Control>
-	RuntimeControlRef<T> ReferenceByDesignId(int stableId) const noexcept
+	RuntimeControlRef<T> ReferenceByName(std::wstring name) const
 	{
 		const auto document = Get();
 		return document
-			? document->ReferenceByDesignId<T>(stableId)
+			? document->ReferenceByName<T>(std::move(name))
 			: RuntimeControlRef<T>{};
 	}
 
@@ -563,12 +566,11 @@ private:
 };
 
 template<typename T>
-RuntimeControlRef<T> RuntimeDocument::ReferenceByDesignId(
-	int stableId) noexcept
+RuntimeControlRef<T> RuntimeDocument::ReferenceByName(std::wstring name)
 {
 	static_assert(std::is_base_of_v<Control, T>,
 		"RuntimeControlRef<T> requires a Control-derived type");
-	return RuntimeControlRef<T>(_referenceState, stableId);
+	return RuntimeControlRef<T>(_referenceState, std::move(name));
 }
 
 inline RuntimeDocumentRef RuntimeDocument::Reference() noexcept
@@ -637,8 +639,8 @@ public:
 	/**
 	 * Reloads transactionally. Common scalar/metadata properties, Binding and
 	 * DataContext schema, document styles, control events, and Window presentation
-	 * reuse every control instance by DesignId. Topology changes first recompose
-	 * a candidate tree with maximal unchanged DesignId subtrees; if none can be
+	 * reuse every explicitly named control instance by x:Name. Topology changes
+	 * first recompose a candidate tree with maximal unchanged named subtrees; if none can be
 	 * retained, structural collection payloads and font ownership fall back to
 	 * full replacement while RuntimeDocument owns its Content or has a
 	 * transactional external-Content host adapter.

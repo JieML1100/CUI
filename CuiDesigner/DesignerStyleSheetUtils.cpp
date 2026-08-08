@@ -651,7 +651,7 @@ std::vector<std::wstring> UIClassNames(bool includeAny)
 	std::vector<std::wstring> result;
 	if (includeAny) result.push_back(L"Any");
 	for (int numeric = static_cast<int>(UIClass::UI_FrameworkElement);
-		numeric <= static_cast<int>(UIClass::UI_CUSTOM); ++numeric)
+		numeric <= static_cast<int>(UIClass::UI_Last); ++numeric)
 	{
 		auto name = UIClassName(static_cast<UIClass>(numeric));
 		if (!name.empty()) result.push_back(std::move(name));

@@ -177,7 +177,13 @@
     <ClInclude Include="include\Button.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\Calendar.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\CalendarView.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\DatePicker.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\ChartView.h">
@@ -461,6 +467,9 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\CalendarView.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DatePicker.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\ChartView.cpp">

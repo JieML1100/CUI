@@ -45,7 +45,9 @@
 #include "../CUI/include/ContentPresenter.h"
 #include "../CUI/include/ContentControl.h"
 #include "../CUI/include/Window.h"
+#include "../CUI/include/Calendar.h"
 #include "../CUI/include/CalendarView.h"
+#include "../CUI/include/DatePicker.h"
 #include "../CUI/include/Layout/StackPanel.h"
 #include "../CUI/include/Layout/Grid.h"
 #include "../CUI/include/Layout/DockPanel.h"
@@ -195,8 +197,11 @@ namespace
 		BuiltInType(L"ContextMenu", UIClass::UI_ContextMenu),
 		ToolboxType(L"ChartView", UIClass::UI_ChartView, true,
 			L"交互图表", 420, 260, false, L"数据与列表"),
-		ToolboxType(L"CalendarView", UIClass::UI_CalendarView, true,
-			L"日历", 280, 300, false, L"基础控件"),
+		ToolboxType(L"Calendar", UIClass::UI_Calendar, true,
+			L"日历", 280, 300, false, L"输入"),
+		ToolboxType(L"DatePicker", UIClass::UI_DatePicker, false,
+			L"日期选择器", 160, 32, false, L"输入"),
+		BuiltInType(L"CalendarView", UIClass::UI_CalendarView),
 		ToolboxType(L"NumericUpDown", UIClass::UI_NumericUpDown, true,
 			L"数值步进框", 140, 30, false, L"输入"),
 		ToolboxType(L"Expander", UIClass::UI_Expander, true,
@@ -287,7 +292,9 @@ namespace
 			CUI_SCHEMA_OWNER(CheckBox);
 			CUI_SCHEMA_OWNER(RadioButton);
 			CUI_SCHEMA_OWNER(Switch);
+			CUI_SCHEMA_OWNER(Calendar);
 			CUI_SCHEMA_OWNER(CalendarView);
+			CUI_SCHEMA_OWNER(DatePicker);
 			CUI_SCHEMA_OWNER(ChartView);
 			CUI_SCHEMA_OWNER(ComboBoxItem);
 			CUI_SCHEMA_OWNER(ComboBox);
@@ -413,6 +420,8 @@ namespace
 		case UIClass::UI_ListView: return NativePropertiesPointer<ListView>(type);
 		case UIClass::UI_ListBox: return NativePropertiesPointer<ListBox>(type);
 		case UIClass::UI_ChartView: return NativePropertiesPointer<ChartView>(type);
+		case UIClass::UI_Calendar: return NativePropertiesPointer<Calendar>(type);
+		case UIClass::UI_DatePicker: return NativePropertiesPointer<DatePicker>(type);
 		case UIClass::UI_TreeView: return NativePropertiesPointer<TreeView>(type);
 		case UIClass::UI_ProgressBar: return NativePropertiesPointer<ProgressBar>(type);
 		case UIClass::UI_LoadingRing: return NativePropertiesPointer<LoadingRing>(type);
@@ -664,6 +673,8 @@ CuiRuntime::XamlRuntimeSchema::CreateNativeControl(UIClass type)
 	case UIClass::UI_ListViewItem: return std::make_unique<ListViewItem>();
 	case UIClass::UI_ComboBoxItem: return std::make_unique<ComboBoxItem>();
 	case UIClass::UI_TreeViewItem: return std::make_unique<TreeViewItem>();
+	case UIClass::UI_Calendar: return std::make_unique<Calendar>();
+	case UIClass::UI_DatePicker: return std::make_unique<DatePicker>();
 	case UIClass::UI_CalendarView: return std::make_unique<CalendarView>();
 		default: return nullptr;
 		}

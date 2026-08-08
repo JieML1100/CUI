@@ -130,6 +130,7 @@ private:
 	void HandleGlobalProgress(Control* sender, RoutedPropertyChangedEventArgs<double>& e) override;
 	void HandleImageVisibility(Control* sender, RoutedEventArgs& e) override;
 	void HandleInvokeWeb(Control* sender, RoutedEventArgs& e) override;
+	void HandleNavigationWeb(Control* sender, RoutedEventArgs& e) override;
 	void HandleListBoxSelection(Control* sender, SelectionChangedEventArgs& e) override;
 	void HandleListViewSelection(Control* sender, SelectionChangedEventArgs& e) override;
 	void HandleLocalCommandCanExecute(Control* sender, CanExecuteRoutedEventArgs& e) override;

@@ -1,7 +1,9 @@
 #include "DesignerEventCatalog.h"
 
 #include "../CUI/include/ChartView.h"
+#include "../CUI/include/Calendar.h"
 #include "../CUI/include/CalendarView.h"
+#include "../CUI/include/DatePicker.h"
 #include "../CUI/include/ToggleButton.h"
 #include "../CUI/include/ButtonBase.h"
 #include "../CUI/include/ComboBox.h"
@@ -68,7 +70,11 @@ namespace
 	CUI_CPP_EVENT_TYPE(Menu, "Menu");
 	CUI_CPP_EVENT_TYPE(ContextMenu, "ContextMenu");
 	CUI_CPP_EVENT_TYPE(ChartView, "ChartView");
+	CUI_CPP_EVENT_TYPE(Calendar, "Calendar");
 	CUI_CPP_EVENT_TYPE(CalendarView, "CalendarView");
+	CUI_CPP_EVENT_TYPE(DatePicker, "DatePicker");
+	CUI_CPP_EVENT_TYPE(DatePickerDateValidationErrorEventArgs,
+		"DatePickerDateValidationErrorEventArgs");
 	CUI_CPP_EVENT_TYPE(NumericUpDown, "NumericUpDown");
 	CUI_CPP_EVENT_TYPE(PasswordBox, "PasswordBox");
 	CUI_CPP_EVENT_TYPE(Expander, "Expander");
@@ -250,8 +256,11 @@ namespace
 			return L"SelectionChanged";
 		case UIClass::UI_TreeView:
 			return L"SelectedItemChanged";
+		case UIClass::UI_Calendar:
 		case UIClass::UI_CalendarView:
 			return L"SelectedDatesChanged";
+		case UIClass::UI_DatePicker:
+			return L"SelectedDateChanged";
 		case UIClass::UI_ChartView:
 			return L"PointClick";
 		case UIClass::UI_Slider:
@@ -529,9 +538,22 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 			CUI_EVENT(TreeViewItem, Collapsed, Collapsed, "sender", "e"),
 		});
 		break;
+	case UIClass::UI_Calendar:
 	case UIClass::UI_CalendarView:
 		Append(out, { CUI_EVENT(CalendarView, SelectedDatesChanged,
 			SelectedDatesChanged, "sender", "e") });
+		break;
+	case UIClass::UI_DatePicker:
+		Append(out, {
+			CUI_EVENT(DatePicker, CalendarOpened,
+				CalendarOpened, "sender"),
+			CUI_EVENT(DatePicker, CalendarClosed,
+				CalendarClosed, "sender"),
+			CUI_EVENT(DatePicker, SelectedDateChanged,
+				SelectedDateChanged, "sender", "e"),
+			CUI_EVENT(DatePicker, DateValidationError,
+				DateValidationError, "sender", "e"),
+		});
 		break;
 	case UIClass::UI_ListView:
 	case UIClass::UI_ListBox:
@@ -1035,7 +1057,7 @@ bool DesignerEventCatalog::IsKnownEventName(const std::wstring& eventName)
 {
 	if (FindWindowEvent(eventName)) return true;
 	for (int value = static_cast<int>(UIClass::UI_Base);
-		value <= static_cast<int>(UIClass::UI_CUSTOM); ++value)
+		value <= static_cast<int>(UIClass::UI_Last); ++value)
 	{
 		if (FindControlEvent(static_cast<UIClass>(value), eventName)) return true;
 	}

@@ -2842,9 +2842,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& renameCanvas.GetSelectedControl()
 		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton"
 		&& renameCanvas.GetSelectedControl() == renameIdentity
-		&& renameCanvas.GetSelectedControl()->StableId == originalStableId
-		&& renameCanvas.GetSelectedControl()->ControlInstance->GetDesignId()
-			== originalStableId;
+		&& renameCanvas.GetSelectedControl()->StableId == originalStableId;
 	AppendFailure(failures,
 		renamedInitially && renameUndone && renameRedone,
 		std::wstring(L"property delta: Name undo/redo lost identity or selection [apply=")
@@ -2877,7 +2875,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 		appliedRenamedDocument
 		&& reloadedIdentity
 		&& reloadedIdentity->StableId == originalStableId
-		&& reloadedIdentity->ControlInstance->GetDesignId() == originalStableId
 		&& reloadedRenamedDocument.NextStableId > originalStableId,
 		L"stable identity: save/load or rename changed the control id");
 
@@ -2987,7 +2984,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			runtimeOptions,
 			&runtimeDocumentError);
 	auto* runtimeLoadedControl = runtimeSourceControl
-		? runtimeDocument.FindControlByDesignId(runtimeSourceControl->StableId)
+		? runtimeDocument.FindControlByName(runtimeSourceControl->Name)
 		: nullptr;
 	if (runtimeLoadedControl)
 	{
@@ -3087,8 +3084,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 	AppendFailure(failures,
 		rejectedRuntimeReplacement
 		&& !runtimeDocumentError.empty()
-		&& runtimeDocument.FindControlByDesignId(
-			runtimeSourceControl ? runtimeSourceControl->StableId : 0)
+		&& runtimeDocument.FindControlByName(
+			runtimeSourceControl ? runtimeSourceControl->Name : std::wstring{})
 			== runtimeBeforeRejectedLoad,
 		L"runtime document: rejected normalized model corrupted the previously loaded tree");
 
@@ -3199,10 +3196,10 @@ bool RunDesignerSelfTest(std::wstring& report)
       <Setter Property="Background" Value="{StaticResource Accent}" />
     </Style>
   </Window.Resources>
-  <StackPanel x:Name="xamlRoot" DesignId="500"
+  <StackPanel x:Name="xamlRoot"
               Width="Auto" Height="Auto"
               Orientation="Vertical">
-    <Button x:Name="xamlAction" DesignId="501"
+    <Button x:Name="xamlAction"
             Style="{StaticResource PrimaryButton}"
             Template="{StaticResource StaticCodeTemplate}"
             Width="180.5" Height="36"
@@ -3291,7 +3288,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 			: (!roundTrippedCanonicalXamlError.empty()
 				? roundTrippedCanonicalXamlError
 				: loadedRuntimeXamlError));
-	auto* xamlAction = xamlRuntimeDocument.FindControlByDesignId(501);
+	auto* xamlAction = xamlRuntimeDocument.FindControlByName(L"xamlAction");
 	auto* xamlButton = dynamic_cast<Button*>(xamlAction);
 	bool xamlTriggerApplied = false;
 	bool xamlTriggerRestored = false;
@@ -3624,7 +3621,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& xamlRuntimeDocument.ContentRoot()
 		&& xamlRuntimeDocument.Controls().size() == 2;
 	const bool runtimeXamlRollbackReady = rejectedXamlReplacement
-		&& xamlRuntimeDocument.FindControlByDesignId(501)
+		&& xamlRuntimeDocument.FindControlByName(L"xamlAction")
 			== xamlActionBeforeFailure
 		&& rejectedParserReplacement
 		&& unchangedParsedDocument == parsedXamlDocument
@@ -3728,7 +3725,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& xamlRuntimeDocument.ContentRoot()
 		&& xamlRuntimeDocument.Controls().size() == 2
 		&& rejectedXamlReplacement
-		&& xamlRuntimeDocument.FindControlByDesignId(501)
+		&& xamlRuntimeDocument.FindControlByName(L"xamlAction")
 			== xamlActionBeforeFailure
 		&& rejectedParserReplacement
 		&& unchangedParsedDocument == parsedXamlDocument
@@ -3826,8 +3823,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 				externalOptions,
 				&runtimeDocumentError);
 		externallyOwnedRuntimeControl = runtimeSourceControl
-			? externallyOwnedDocument.FindControlByDesignId(
-				runtimeSourceControl->StableId)
+			? externallyOwnedDocument.FindControlByName(
+				runtimeSourceControl->Name)
 			: nullptr;
 		externallyOwnedRuntimeContent =
 			externallyOwnedDocument.ReleaseContentRoot();
@@ -4682,9 +4679,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 		<Window xmlns="urn:cui"
 		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 		      x:Name="ClipboardWindow">
-		  <Canvas x:Name="panel1" DesignId="1" Canvas.Left="40" Canvas.Top="50"
+		  <Canvas x:Name="panel1" Canvas.Left="40" Canvas.Top="50"
 		         Width="240" Height="160">
-		    <Button x:Name="button1" DesignId="2" Canvas.Left="10" Canvas.Top="12"
+		    <Button x:Name="button1" Canvas.Left="10" Canvas.Top="12"
 		            Width="100" Height="30" Content="Paste" />
 		  </Canvas>
 		</Window>)xaml";
@@ -5320,7 +5317,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		<Window xmlns="urn:cui"
 		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 		      x:Name="ClipboardChild">
-		  <TextBlock x:Name="insertLabel1" DesignId="10"
+		  <TextBlock x:Name="insertLabel1"
 		         Canvas.Left="8" Canvas.Top="9" Width="80" Height="24"
 		         Text="Inside" />
 		</Window>)xaml";
@@ -5621,7 +5618,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		<Window xmlns="urn:cui"
 		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 		      x:Name="GridPasteWindow">
-		  <Grid x:Name="grid1" DesignId="1" Canvas.Left="80"
+		  <Grid x:Name="grid1" Canvas.Left="80"
 		             Canvas.Top="70" Width="240" Height="180">
 		    <Grid.RowDefinitions>
 		      <RowDefinition Height="*" />
@@ -8636,12 +8633,12 @@ bool RunDesignerSelfTest(std::wstring& report)
       </Canvas>
     </ControlTemplate>
   </Window.Resources>
-  <GroupBox x:Name="slotHost" DesignId="1"
+  <GroupBox x:Name="slotHost"
             Template="{StaticResource GroupSlots}">
     <GroupBox.Header>
-      <TextBlock x:Name="slotHeader" DesignId="2" Text="Header before" />
+      <TextBlock x:Name="slotHeader" Text="Header before" />
     </GroupBox.Header>
-    <TextBlock x:Name="slotBody" DesignId="3" Text="Body before" />
+    <TextBlock x:Name="slotBody" Text="Body before" />
   </GroupBox>
 </Window>)XAML";
 		DesignerModel::DesignDocument slotDocument;
@@ -8775,7 +8772,7 @@ bool RunDesignerSelfTest(std::wstring& report)
       </Grid>
     </ControlTemplate>
   </Window.Resources>
-  <ListBox x:Name="templatedList" DesignId="1"
+  <ListBox x:Name="templatedList"
            Template="{StaticResource ListChrome}" />
 </Window>)XAML";
 		DesignerModel::DesignDocument itemsPresenterDocument;
@@ -8913,7 +8910,7 @@ bool RunDesignerSelfTest(std::wstring& report)
               Value="{StaticResource DesignerItemChrome}" />
     </Style>
   </Window.Resources>
-  <ListBox x:Name="designerList" DesignId="1"
+  <ListBox x:Name="designerList"
            ItemsSource="{StaticResource DesignerRows}"
            ItemTemplate="{StaticResource DesignerRowTemplate}"
            ItemContainerStyle="{StaticResource DesignerContainerStyle}" />
@@ -9049,7 +9046,7 @@ bool RunDesignerSelfTest(std::wstring& report)
               Value="{StaticResource DesignerChoiceChrome}" />
     </Style>
   </Window.Resources>
-  <ComboBox x:Name="designerCombo" DesignId="1"
+  <ComboBox x:Name="designerCombo"
             ItemsSource="{StaticResource DesignerChoices}"
             ItemsPanel="{StaticResource DesignerChoiceItemsPanel}"
             ItemTemplate="{StaticResource DesignerChoiceTemplate}"
@@ -9171,7 +9168,7 @@ bool RunDesignerSelfTest(std::wstring& report)
               Value="{StaticResource DesignerTreeChrome}" />
     </Style>
   </Window.Resources>
-  <TreeView x:Name="designerTree" DesignId="1"
+  <TreeView x:Name="designerTree"
             ItemContainerStyle="{StaticResource DesignerTreeContainer}">
     <TreeView.Items>
       <TreeViewItem Header="Root" IsExpanded="True">
@@ -9358,7 +9355,7 @@ bool RunDesignerSelfTest(std::wstring& report)
       <TextBlock x:Name="fileHeader" Text="{Binding Name}" />
     </DataTemplate>
   </Window.Resources>
-  <TreeView x:Name="hierarchyTree" DesignId="1"
+  <TreeView x:Name="hierarchyTree"
             ItemsSource="{StaticResource DesignerFolders}" />
 </Window>)XAML";
 		DesignerModel::DesignDocument hierarchicalTreeDocument;

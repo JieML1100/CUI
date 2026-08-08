@@ -39,15 +39,6 @@ public:
 		static constexpr BindingSourcePropertyToken Caption{ 7131070297711251227ULL };
 	};
 
-	// Stable identities shared by static and dynamic document paths.
-	struct ControlIds final
-	{
-		static constexpr int staticRoot = 1;
-		static constexpr int namespaceButton = 77;
-		static constexpr int authorTemplateButton = 78;
-		static constexpr int styleTemplateButton = 79;
-	};
-
 	// Type-safe x:Name accessors; ownership remains with the generated Window.
 	[[nodiscard]] StackPanel* GetStaticRoot() noexcept { return staticRoot; }
 	[[nodiscard]] const StackPanel* GetStaticRoot() const noexcept { return staticRoot; }

@@ -201,14 +201,15 @@ namespace
 
 	void AppendStackPanelProbeChild(
 		DesignerModel::DesignDocument& document,
-		int parentId,
+		const std::wstring& parentName,
 		std::wstring name,
 		std::string text)
 	{
 		const auto parent = std::find_if(
 			document.Nodes.begin(), document.Nodes.end(),
-			[&](const auto& node) { return node.Id == parentId; });
+			[&](const auto& node) { return node.Name == parentName; });
 		if (parent == document.Nodes.end()) return;
+		const int parentId = parent->Id;
 		int order = 0;
 		for (const auto& node : document.Nodes)
 			if (node.ParentId == parentId)
@@ -258,15 +259,15 @@ int wmain()
 	  <Property Path="People" Kind="Object" ObjectType="BindingList"
 			ItemType="Person" CanWrite="false" />
 	</Window.DataContextSchema>
-  <StackPanel x:Name="rootPanel" DesignId="10"
+  <StackPanel x:Name="rootPanel"
               Width="Auto" Height="Auto"
               Orientation="Vertical">
-    <Button x:Name="actionButton" DesignId="11"
+    <Button x:Name="actionButton"
             Style="{StaticResource PrimaryButton}"
 			Width="180" Height="36"
 			Content="{Binding Caption, Mode=OneWay}"
 			Click="HandleAction" />
-	<ItemsControl x:Name="peopleList" DesignId="12"
+	<ItemsControl x:Name="peopleList"
 			Width="300" Height="120"
 			ItemsSource="{Binding People}"
 			ItemTemplate="{StaticResource PersonRow}" />
@@ -328,7 +329,7 @@ int wmain()
 <Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       x:Name="NativeSurfaceWindow">
-  <NativeSurface x:Name="runtimeScene" DesignId="19"
+  <NativeSurface x:Name="runtimeScene"
       BehaviorKey="Scene3D" PlaceholderText="3D scene" Width="320" Height="180" />
 </Window>)xaml";
 	auto sceneState = std::make_shared<RuntimeSceneState>();
@@ -344,7 +345,7 @@ int wmain()
 	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
 		nativeSurfaceXaml, surfaceRuntime, surfaceOptions, &error))
 		return Fail(L"NativeSurface load", error);
-	auto* runtimeScene = surfaceRuntime.FindControlByDesignId<NativeSurface>(19);
+	auto* runtimeScene = surfaceRuntime.FindControlByName<NativeSurface>(L"runtimeScene");
 	if (!runtimeScene || !runtimeScene->HasBehavior()
 		|| runtimeScene->GetBehaviorKey() != L"Scene3D")
 		return Fail(L"NativeSurface identity/behavior");
@@ -364,7 +365,7 @@ int wmain()
 <Window xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       x:Name="LayoutWindow">
-  <Grid x:Name="rootGrid" DesignId="20">
+  <Grid x:Name="rootGrid">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="2*" MinHeight="24" />
@@ -374,7 +375,7 @@ int wmain()
       <ColumnDefinition Width="120" />
     </Grid.ColumnDefinitions>
     <TabControl x:Name="tabs" Grid.Row="1">
-      <TabItem Header="General">
+	  <TabItem x:Name="generalTab" Header="General">
         <TextBlock x:Name="insideTab">Nested tab content</TextBlock>
       </TabItem>
     </TabControl>
@@ -519,7 +520,6 @@ int wmain()
 	addedLabel.Order = 500;
 	SetNodeProperty(addedLabel, L"Text", DesignerStyleValueKind::String,
 		L"Added during reload");
-	const auto addedLabelId = addedLabel.Id;
 	addedLayoutSource.Nodes.push_back(std::move(addedLabel));
 	auto* rootGridBeforeAdd = layoutRuntime.FindControlByName(L"rootGrid");
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
@@ -532,7 +532,7 @@ int wmain()
 		|| !layoutRuntime.FindControlByName(L"addedLabel"))
 		return Fail(L"child add identity preservation");
 	auto addedLabelReference =
-		layoutRuntime.ReferenceByDesignId<Label>(addedLabelId);
+		layoutRuntime.ReferenceByName<Label>(L"addedLabel");
 	if (!addedLabelReference
 		|| addedLabelReference.Get()
 			!= layoutRuntime.FindControlByName(L"addedLabel"))
@@ -644,10 +644,10 @@ int wmain()
 	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
 		xaml, runtime, options, &error)) return Fail(L"LoadXaml", error);
 
-	auto* button = runtime.FindControlByDesignId<Button>(11);
+	auto* button = runtime.FindControlByName<Button>(L"actionButton");
 	if (!button || button != runtime.FindControlByName(L"actionButton"))
 		return Fail(L"stable control lookup");
-	auto buttonReference = runtime.ReferenceByDesignId<Button>(11);
+	auto buttonReference = runtime.ReferenceByName<Button>(L"actionButton");
 	if (buttonReference.Get() != button)
 		return Fail(L"stable typed button reference");
 	auto* buttonChrome = button
@@ -667,7 +667,7 @@ int wmain()
 		|| buttonChrome->GetTemplatedParent() != button
 		|| button->GetCurrentVisualState(L"CommonStates") != L"Normal")
 		return Fail(L"binding/style materialization");
-	auto* peopleControl = runtime.FindControlByDesignId<ItemsControl>(12);
+	auto* peopleControl = runtime.FindControlByName<ItemsControl>(L"peopleList");
 	auto* firstPersonPresenter = peopleControl
 		&& peopleControl->GeneratedItemCount() == 1
 		? dynamic_cast<ContentPresenter*>(peopleControl->GetGeneratedItem(0))
@@ -700,7 +700,7 @@ int wmain()
 			DesignerDataObjectKind::BindingList, L"Person" }
 	};
 	for (auto& node : bindingReloadSource.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 		{
 			node.Bindings[L"Content"].SourceProperty = L"AlternateCaption";
 			node.Bindings[L"Content"].Mode = BindingMode::OneTime;
@@ -712,7 +712,7 @@ int wmain()
 		return Fail(L"in-place binding reload", error);
 	const auto* reloadedBinding = button->DataBindings.Find(L"Content");
 	if (bindingReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| !reloadedBinding
 		|| reloadedBinding->Mode() != BindingMode::OneTime
 		|| reloadedBinding->SourceProperty() != L"AlternateCaption"
@@ -733,7 +733,7 @@ int wmain()
 		styleReloadSource, runtime, {}, &styleReloadMode, &error))
 		return Fail(L"in-place style reload", error);
 	if (styleReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| button->Background.Color.r < 0.9f
 		|| button->Background.Color.g > 0.1f
 		|| button->Background.Color.b > 0.1f)
@@ -753,7 +753,7 @@ int wmain()
 	auto conflictingExpressionSource = styleReloadSource;
 	for (auto& node : conflictingExpressionSource.Nodes)
 	{
-		if (node.Id != 11) continue;
+		if (node.Name != L"actionButton") continue;
 		SetNodeProperty(node, L"Content", DesignerStyleValueKind::String,
 			L"conflicting local value");
 	}
@@ -764,14 +764,14 @@ int wmain()
 		&conflictingExpressionMode, &error))
 		return Fail(L"duplicate local expression unexpectedly accepted");
 	if (error.find(L"多个本地值表达式") == std::wstring::npos
-		|| runtime.FindControlByDesignId<Button>(11) != button
+		|| runtime.FindControlByName<Button>(L"actionButton") != button
 		|| buttonReference.Get() != button
 		|| button->GetDisplayText() != L"Reloaded binding source")
 		return Fail(L"duplicate local expression transactional rejection", error);
 
 	auto eventReloadSource = styleReloadSource;
 	for (auto& node : eventReloadSource.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 			node.Events[L"Click"] = L"HandleReloadedAction";
 	SetNodeProperty(eventReloadSource.Window, L"Title",
 		DesignerStyleValueKind::String, L"Reloaded in place");
@@ -796,7 +796,7 @@ int wmain()
 		runtime, reloadOptions, &eventReloadMode, &error))
 		return Fail(L"in-place event reload", error);
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| NodePropertyText(runtime.WindowNode(), L"Title", L"Window")
 			!= L"Reloaded in place"
 		|| runtime.BoundDataContext() != viewModel)
@@ -807,7 +807,7 @@ int wmain()
 
 	auto rejectedEventReload = eventReloadSource;
 	for (auto& node : rejectedEventReload.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 		{
 			node.Events[L"Click"] = L"HandleRejectedAction";
 			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
@@ -821,7 +821,7 @@ int wmain()
 		return Fail(L"failed in-place resolver unexpectedly accepted");
 	if (error.find(L"未注册运行时处理函数") == std::wstring::npos)
 		return Fail(L"unknown named control handler diagnostic", error);
-	if (runtime.FindControlByDesignId(11) != button)
+	if (runtime.FindControlByName(L"actionButton") != button)
 		return Fail(L"failed in-place reload replaced identity");
 	if (!button->IsVisible)
 		return Fail(L"failed in-place reload did not roll back properties");
@@ -845,15 +845,15 @@ int wmain()
 
 	auto topologyReloadSource = eventReloadSource;
 	AppendStackPanelProbeChild(
-		topologyReloadSource, 10, L"topologyProbe", "Topology probe");
+		topologyReloadSource, L"rootPanel", L"topologyProbe", "Topology probe");
 	auto* rootPanelBeforeTopologyReload =
-		runtime.FindControlByDesignId(10);
+		runtime.FindControlByName(L"rootPanel");
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		topologyReloadSource, runtime, {}, &eventReloadMode, &error))
 		return Fail(L"event/binding topology recomposition", error);
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::Recomposed
-		|| runtime.FindControlByDesignId(10) == rootPanelBeforeTopologyReload
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"rootPanel") == rootPanelBeforeTopologyReload
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| buttonReference.Get() != button
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"event/binding topology identity preservation");
@@ -863,7 +863,7 @@ int wmain()
 
 	auto rejectedTopologyReload = topologyReloadSource;
 	AppendStackPanelProbeChild(
-		rejectedTopologyReload, 10,
+		rejectedTopologyReload, L"rootPanel",
 		L"rejectedTopologyProbe", "Rejected topology probe");
 	DesignerModel::RuntimeDocumentLoadOptions rejectedTopologyOptions;
 	rejectedTopologyOptions.RequireControlEventResolver = true;
@@ -876,13 +876,13 @@ int wmain()
 		return false;
 	};
 	auto* rootPanelBeforeRejectedTopology =
-		runtime.FindControlByDesignId(10);
+		runtime.FindControlByName(L"rootPanel");
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
 		rejectedTopologyReload, runtime, rejectedTopologyOptions,
 		&eventReloadMode, &error))
 		return Fail(L"failed topology resolver unexpectedly accepted");
-	if (runtime.FindControlByDesignId(10) != rootPanelBeforeRejectedTopology
-		|| runtime.FindControlByDesignId(11) != button
+	if (runtime.FindControlByName(L"rootPanel") != rootPanelBeforeRejectedTopology
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"failed topology recomposition did not roll back identity");
 	button->Click.Invoke(button, RoutedEventArgs{});
@@ -965,12 +965,12 @@ int wmain()
 		return Fail(L"Window DataContext inheritance after atomic attachment");
 	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
 	if (windowContentRenderedCount != 1) return Fail(L"form event invocation");
-	auto* rootAfterAtomicAttach = runtime.FindControlByDesignId(10);
+	auto* rootAfterAtomicAttach = runtime.FindControlByName(L"rootPanel");
 	if (DesignerModel::RuntimeDocumentLoader::Load(
 		source, runtime, options, &error))
 		return Fail(L"direct Load replaced an attached RuntimeDocument");
 	if (error.find(L"请使用 Reload") == std::wstring::npos
-		|| runtime.FindControlByDesignId(10) != rootAfterAtomicAttach
+		|| runtime.FindControlByName(L"rootPanel") != rootAfterAtomicAttach
 		|| host.GetVisualContent() != rootAfterAtomicAttach)
 		return Fail(L"attached RuntimeDocument direct-Load rejection", error);
 	const auto shownBeforeRejectedDirectLoad = windowContentRenderedCount;
@@ -982,12 +982,12 @@ int wmain()
 		return Fail(L"Window typography dependency-property setup");
 
 	if (!runtime.HasContentHostAdapter()
-		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
+		|| host.GetVisualContent() != runtime.FindControlByName(L"rootPanel"))
 		return Fail(L"Window Content ownership placement");
 
 	auto transferredReloadSource = topologyReloadSource;
 	for (auto& node : transferredReloadSource.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 			node.Events[L"Click"] = L"HandleAfterTransfer";
 	if (!eventHandlers.RegisterControl(
 		L"HandleAfterTransfer",
@@ -1006,19 +1006,19 @@ int wmain()
 		transferredReloadSource, runtime, transferredReloadOptions,
 		&eventReloadMode, &error)
 		|| eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| runtime.FindControlByDesignId(11) != button)
+		|| runtime.FindControlByName(L"actionButton") != button)
 		return Fail(L"event reload after ownership transfer", error);
 
 	auto transferredPropertyReload = transferredReloadSource;
 	for (auto& node : transferredPropertyReload.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
 				L"Collapsed");
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		transferredPropertyReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error)
 		|| eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| button->IsVisible)
 		return Fail(L"property reload after ownership transfer", error);
 
@@ -1028,10 +1028,10 @@ int wmain()
 	rejectedWindowAttachmentReload.Window.Events[L"ContentRendered"] =
 		L"HandleReloadedContentRendered";
 	AppendStackPanelProbeChild(
-		rejectedWindowAttachmentReload, 10,
+		rejectedWindowAttachmentReload, L"rootPanel",
 		L"formAttachmentProbe", "Window attachment probe");
 	auto* rootBeforeRejectedWindowAttachment =
-		runtime.FindControlByDesignId(10);
+		runtime.FindControlByName(L"rootPanel");
 	const auto formTextBeforeRejectedAttachment = host.Title;
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
 		rejectedWindowAttachmentReload, runtime, transferredReloadOptions,
@@ -1043,9 +1043,9 @@ int wmain()
 		|| host.FontFamily != L"Arial" || host.FontSize != 17.0
 		|| host.GetPropertyValueSource(L"FontSize")
 			!= DependencyPropertyValueSource::Local
-		|| runtime.FindControlByDesignId(10)
+		|| runtime.FindControlByName(L"rootPanel")
 			!= rootBeforeRejectedWindowAttachment
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| host.GetVisualContent() != rootBeforeRejectedWindowAttachment)
 		return Fail(L"Window presentation/event rollback");
 	const auto shownBeforeRejectedAttachment = windowContentRenderedCount;
@@ -1069,7 +1069,7 @@ int wmain()
 
 	auto rejectedHostedTopology = transferredPropertyReload;
 	AppendStackPanelProbeChild(
-		rejectedHostedTopology, 10,
+		rejectedHostedTopology, L"rootPanel",
 		L"rejectedHostedProbe", "Rejected hosted probe");
 	DesignerModel::RuntimeDocumentLoadOptions rejectedHostedOptions;
 	rejectedHostedOptions.RequireControlEventResolver = true;
@@ -1081,13 +1081,13 @@ int wmain()
 		resolverError = L"intentional adapted-host rollback probe";
 		return false;
 	};
-	auto* rootBeforeHostedRollback = runtime.FindControlByDesignId(10);
+	auto* rootBeforeHostedRollback = runtime.FindControlByName(L"rootPanel");
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
 		rejectedHostedTopology, runtime, rejectedHostedOptions,
 		&eventReloadMode, &error))
 		return Fail(L"failed adapted-host topology unexpectedly accepted");
-	if (runtime.FindControlByDesignId(10) != rootBeforeHostedRollback
-		|| runtime.FindControlByDesignId(11) != button
+	if (runtime.FindControlByName(L"rootPanel") != rootBeforeHostedRollback
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| host.GetVisualContent() != rootBeforeHostedRollback)
 		return Fail(L"adapted-host topology rollback placement");
 	const auto clicksBeforeHostedRollbackProbe = reloadedClickCount;
@@ -1102,11 +1102,11 @@ int wmain()
 		hostedTopologyReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error)
 		|| eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::Recomposed
-		|| runtime.FindControlByDesignId(10) == rootBeforeHostedRollback
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"rootPanel") == rootBeforeHostedRollback
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| buttonReference.Get() != button
 		|| host.Title != L"Hosted recomposed Window"
-		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
+		|| host.GetVisualContent() != runtime.FindControlByName(L"rootPanel"))
 		return Fail(L"adapted-host topology recomposition", error);
 	const auto shownBeforeHostedRecomposition = windowContentRenderedCount;
 	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
@@ -1123,21 +1123,21 @@ int wmain()
 	hostedReplacementReload.ItemsPanelTemplates.push_back(
 		std::move(replacementItemsPanel));
 	for (auto& node : hostedReplacementReload.Nodes)
-		if (node.Id == 12)
+		if (node.Name == L"peopleList")
 			node.Structure.ItemsPanel = L"RuntimeReplacementItemsPanel";
 	auto* buttonBeforeHostedReplacement = button;
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
 		hostedReplacementReload, runtime, transferredReloadOptions,
 		&eventReloadMode, &error))
 		return Fail(L"adapted-host full replacement", error);
-	button = runtime.FindControlByDesignId<Button>(11);
+	button = runtime.FindControlByName<Button>(L"actionButton");
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::Replaced
 		|| !button || button == buttonBeforeHostedReplacement
 		|| !runtime.HasContentHostAdapter()
 		|| buttonReference.Get() != button
 		|| button->IsVisible
 		|| host.Title != L"Hosted replaced Window"
-		|| host.GetVisualContent() != runtime.FindControlByDesignId(10))
+		|| host.GetVisualContent() != runtime.FindControlByName(L"rootPanel"))
 		return Fail(L"adapted-host replacement identity or placement",
 			L"mode=" + std::to_wstring(static_cast<int>(eventReloadMode))
 			+ L", button=" + std::to_wstring(button != nullptr)
@@ -1146,7 +1146,7 @@ int wmain()
 			+ L", reference=" + std::to_wstring(buttonReference.Get() == button)
 			+ L", visible=" + std::to_wstring(button ? button->IsVisible : true)
 			+ L", content=" + std::to_wstring(
-				host.GetVisualContent() == runtime.FindControlByDesignId(10))
+				host.GetVisualContent() == runtime.FindControlByName(L"rootPanel"))
 			+ L", title=" + host.Title);
 	const auto shownBeforeHostedReplacement = windowContentRenderedCount;
 	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
@@ -1155,22 +1155,22 @@ int wmain()
 
 	auto invalidHostedCandidate = hostedReplacementReload;
 	AppendStackPanelProbeChild(
-		invalidHostedCandidate, 10,
+		invalidHostedCandidate, L"rootPanel",
 		L"invalidHostedProbe", "Invalid hosted probe");
 	for (auto& node : invalidHostedCandidate.Nodes)
-		if (node.Id == 10)
+		if (node.Name == L"rootPanel")
 		{
 			SetNodeProperty(node, L"NoSuchRuntimeProperty",
 				DesignerStyleValueKind::String, L"invalid");
 		}
 	auto* rootBeforeInvalidHostedCandidate =
-		runtime.FindControlByDesignId(10);
+		runtime.FindControlByName(L"rootPanel");
 	if (DesignerModel::RuntimeDocumentLoader::Reload(
 		invalidHostedCandidate, runtime, transferredReloadOptions,
 		&eventReloadMode, &error))
 		return Fail(L"invalid adapted-host candidate unexpectedly accepted");
-	if (runtime.FindControlByDesignId(10) != rootBeforeInvalidHostedCandidate
-		|| runtime.FindControlByDesignId(11) != button
+	if (runtime.FindControlByName(L"rootPanel") != rootBeforeInvalidHostedCandidate
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| host.GetVisualContent() != rootBeforeInvalidHostedCandidate)
 		return Fail(L"invalid adapted-host candidate rollback");
 
@@ -1186,7 +1186,7 @@ int wmain()
 		&eventReloadMode, &error))
 		return Fail(L"watcher baseline runtime alignment", error);
 	hostedReplacementReload = std::move(canonicalWatcherBaseline);
-	button = runtime.FindControlByDesignId<Button>(11);
+	button = runtime.FindControlByName<Button>(L"actionButton");
 	if (!button || buttonReference.Get() != button)
 		return Fail(L"watcher baseline stable reference alignment");
 
@@ -1216,7 +1216,7 @@ int wmain()
 
 	auto rejectedWatchedDocument = hostedReplacementReload;
 	for (auto& node : rejectedWatchedDocument.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 			node.Events[L"Click"] = L"HandleWatcherRejected";
 	if (!DesignerModel::XamlDocumentSerializer::SaveToFile(
 		rejectedWatchedDocument, watchedFile.Path, &error))
@@ -1234,7 +1234,7 @@ int wmain()
 	if (watchResult.State != DesignerModel::RuntimeDocumentWatchState::Failed
 		|| !watchResult.ReloadAttempted
 		|| watchResult.Error.empty()
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| button->IsVisible)
 		return Fail(L"watcher failed reload rollback", watchResult.Error);
 	const auto repeatedFailure = watcher.PollAt(
@@ -1262,7 +1262,7 @@ int wmain()
 	if (watchResult.State != DesignerModel::RuntimeDocumentWatchState::Reloaded
 		|| watchResult.ReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| !watchResult.ReloadAttempted
-		|| runtime.FindControlByDesignId(11) != button
+		|| runtime.FindControlByName(L"actionButton") != button
 		|| NodePropertyText(runtime.WindowNode(), L"Title", L"Window")
 			!= L"Watcher reloaded in place"
 		|| host.Title != L"Watcher reloaded in place")
@@ -1334,7 +1334,7 @@ int wmain()
 		sessionFile.Path, sessionHost, sessionOptions, &error))
 		return Fail(L"session atomic mount retry", error);
 	auto* sessionButton =
-		session.Document().FindControlByDesignId<Button>(11);
+		session.Document().FindControlByName<Button>(L"actionButton");
 	if (!session.IsMounted()
 		|| session.MountedWindow() != &sessionHost
 		|| session.SourceFile() != sessionFile.Path
@@ -1343,7 +1343,7 @@ int wmain()
 		|| !sessionButton
 		|| sessionButton->GetDisplayText() != L"Loaded from DataContext"
 		|| sessionHost.GetVisualContent()
-			!= session.Document().FindControlByDesignId(10))
+			!= session.Document().FindControlByName(L"rootPanel"))
 		return Fail(L"session mounted state");
 	sessionButton->Click.Invoke(sessionButton, RoutedEventArgs{});
 	cui::framework::EventAccess::Raise(sessionHost.ContentRendered, &sessionHost);
@@ -1374,7 +1374,7 @@ int wmain()
 	SetNodeProperty(sessionReload.Window, L"Title",
 		DesignerStyleValueKind::String, L"Session reloaded transactionally");
 	for (auto& node : sessionReload.Nodes)
-		if (node.Id == 11)
+		if (node.Name == L"actionButton")
 		{
 			SetNodeProperty(node, L"Visibility", DesignerStyleValueKind::String,
 				L"Collapsed");
@@ -1394,7 +1394,7 @@ int wmain()
 	if (sessionWatchResult.State
 			!= DesignerModel::RuntimeDocumentWatchState::Failed
 		|| !sessionWatchResult.ReloadAttempted
-		|| session.Document().FindControlByDesignId(11) != sessionButton
+		|| session.Document().FindControlByName(L"actionButton") != sessionButton
 		|| !sessionButton->IsVisible
 		|| sessionHost.Title != L"CUI dynamic XAML sample")
 		return Fail(L"session failed reload rollback", sessionWatchResult.Error);
@@ -1417,7 +1417,7 @@ int wmain()
 			!= DesignerModel::RuntimeDocumentWatchState::Reloaded
 		|| sessionWatchResult.ReloadMode
 			!= DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| session.Document().FindControlByDesignId(11) != sessionButton
+		|| session.Document().FindControlByName(L"actionButton") != sessionButton
 		|| sessionButton->IsVisible
 		|| sessionHost.Title != L"Session reloaded transactionally")
 		return Fail(L"session retry after late registration",

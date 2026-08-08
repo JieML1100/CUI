@@ -346,6 +346,8 @@ struct DesignNode
 	int ParentId = 0;
 	std::wstring ParentRef;
 	std::wstring Name;
+	/** True when Name is a parser/designer-local key rather than authored x:Name. */
+	bool NameIsGenerated = false;
 	UIClass Type = UIClass::UI_Base;
 	/** Authoritative built-in XAML identity; Native Type selects behavior only. */
 	RuntimeTypeId XamlType;

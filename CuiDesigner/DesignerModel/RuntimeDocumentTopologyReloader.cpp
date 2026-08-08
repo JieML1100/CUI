@@ -84,7 +84,7 @@ namespace
 		const DesignDocument* Document = nullptr;
 		DesignDocumentGraph Graph;
 		std::unordered_map<int, size_t> IndexById;
-		std::unordered_map<std::wstring, int> IdByName;
+		std::unordered_map<std::wstring, int> AuthoredIdByName;
 
 		bool Build(const DesignDocument& document, std::wstring* outError)
 		{
@@ -95,7 +95,8 @@ namespace
 			{
 				const auto& node = document.Nodes[index];
 				IndexById.emplace(node.Id, index);
-				IdByName.emplace(node.Name, node.Id);
+				if (!node.NameIsGenerated)
+					AuthoredIdByName.emplace(node.Name, node.Id);
 			}
 			return true;
 		}
@@ -105,6 +106,12 @@ namespace
 			const auto found = IndexById.find(stableId);
 			return found == IndexById.end()
 				? nullptr : &Document->Nodes[found->second];
+		}
+
+		int FindAuthoredId(const std::wstring& name) const noexcept
+		{
+			const auto found = AuthoredIdByName.find(name);
+			return found == AuthoredIdByName.end() ? 0 : found->second;
 		}
 
 		std::vector<int> Children(const DesignNode& node) const
@@ -122,14 +129,16 @@ namespace
 		int OwningNodeId(const DesignNode& node) const noexcept
 		{
 			if (node.ParentId > 0) return node.ParentId;
-			const auto found = IdByName.find(node.ParentRef);
-			return found == IdByName.end() ? 0 : found->second;
+			for (const auto& [id, index] : IndexById)
+				if (Document->Nodes[index].Name == node.ParentRef) return id;
+			return 0;
 		}
 	};
 
 	bool SameReusablePayload(const DesignNode& current, const DesignNode& next)
 	{
-		return current.Id == next.Id
+		return !current.NameIsGenerated
+			&& !next.NameIsGenerated
 			&& current.Name == next.Name
 			&& current.Type == next.Type
 			&& current.ComponentType == next.ComponentType
@@ -156,51 +165,63 @@ namespace
 		{
 		}
 
-		bool Equivalent(int stableId)
+		bool Equivalent(int nextId)
 		{
-			const auto memo = _memo.find(stableId);
+			const auto memo = _memo.find(nextId);
 			if (memo != _memo.end()) return memo->second;
-			const auto* current = _current.Find(stableId);
-			const auto* next = _next.Find(stableId);
+			const auto* next = _next.Find(nextId);
+			const int currentId = next && !next->NameIsGenerated
+				? _current.FindAuthoredId(next->Name) : 0;
+			const auto* current = _current.Find(currentId);
 			bool equivalent = current && next
 				&& SameReusablePayload(*current, *next)
-				&& SameLexicalResourceScope(stableId);
+				&& SameLexicalResourceScope(currentId, nextId);
 			if (equivalent)
 			{
 				const auto currentChildren = _current.Children(*current);
 				const auto nextChildren = _next.Children(*next);
-				equivalent = currentChildren == nextChildren;
+				equivalent = currentChildren.size() == nextChildren.size();
 				if (equivalent)
-					for (const auto childId : nextChildren)
-						if (!Equivalent(childId))
+					for (size_t index = 0; index < nextChildren.size(); ++index)
+					{
+						const auto* currentChild = _current.Find(currentChildren[index]);
+						const auto* nextChild = _next.Find(nextChildren[index]);
+						if (!currentChild || !nextChild
+							|| currentChild->Name != nextChild->Name
+							|| !Equivalent(nextChildren[index]))
 						{
 							equivalent = false;
 							break;
 						}
+					}
 			}
-			_memo.emplace(stableId, equivalent);
+			_memo.emplace(nextId, equivalent);
 			return equivalent;
 		}
 
-		void CollectSubtreeIds(int stableId, std::unordered_set<int>& result)
+		void CollectSubtreeNames(
+			int nextId,
+			std::unordered_set<std::wstring>& result)
 		{
-			if (!result.insert(stableId).second) return;
-			const auto* node = _next.Find(stableId);
+			const auto* node = _next.Find(nextId);
 			if (!node) return;
+			if (!result.insert(node->Name).second) return;
 			for (const auto childId : _next.Children(*node))
-				CollectSubtreeIds(childId, result);
+				CollectSubtreeNames(childId, result);
 		}
 
 	private:
-		bool SameLexicalResourceScope(int stableId) const
+		bool SameLexicalResourceScope(int currentId, int nextId) const
 		{
-			int currentId = stableId;
-			int nextId = stableId;
 			for (;;)
 			{
 				const auto* current = _current.Find(currentId);
 				const auto* next = _next.Find(nextId);
 				if (!current || !next
+					|| current->NameIsGenerated != next->NameIsGenerated
+					|| current->Type != next->Type
+					|| (!current->NameIsGenerated
+						&& current->Name != next->Name)
 					|| current->LocalResources != next->LocalResources
 					|| current->LocalObjectResources
 						!= next->LocalObjectResources)
@@ -335,7 +356,6 @@ namespace
 
 	struct SubtreeSwap
 	{
-		int StableId = 0;
 		Control* Reused = nullptr;
 		Attachment PreviousAttachment;
 		Attachment CandidateAttachment;
@@ -447,14 +467,13 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		reusableRoots.push_back(node.Id);
 	}
 	if (reusableRoots.empty()) return true;
-	std::unordered_set<int> reusedIds;
-	for (const auto stableId : reusableRoots)
-		matcher.CollectSubtreeIds(stableId, reusedIds);
+	std::unordered_set<std::wstring> reusedNames;
+	for (const auto nextId : reusableRoots)
+		matcher.CollectSubtreeNames(nextId, reusedNames);
 	std::vector<std::wstring> reusedRuntimePrefixes;
-	reusedRuntimePrefixes.reserve(reusedIds.size());
-	for (const auto stableId : reusedIds)
-		if (const auto* node = nextTopology.Find(stableId))
-			reusedRuntimePrefixes.push_back(node->Name);
+	reusedRuntimePrefixes.reserve(reusedNames.size());
+	for (const auto& name : reusedNames)
+		reusedRuntimePrefixes.push_back(name);
 	auto isReusedRuntimeNode = [&reusedRuntimePrefixes](
 		const std::wstring& name)
 	{
@@ -540,14 +559,16 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		candidate._ownedContentRoot, candidate._contentRoot, candidate._controls);
 	candidate.RebuildControlIndex();
 
-	std::unordered_map<int, std::shared_ptr<DesignerControl>> oldRecords;
-	std::unordered_map<int, std::shared_ptr<DesignerControl>> candidateRecords;
+	std::unordered_map<std::wstring, std::shared_ptr<DesignerControl>> oldRecords;
+	std::unordered_map<std::wstring, std::shared_ptr<DesignerControl>> candidateRecords;
 	oldRecords.reserve(output._controls.size());
 	candidateRecords.reserve(candidate._controls.size());
 	for (const auto& record : output._controls)
-		if (record) oldRecords.emplace(record->StableId, record);
+		if (record && !record->NameIsGenerated)
+			oldRecords.emplace(record->Name, record);
 	for (const auto& record : candidate._controls)
-		if (record) candidateRecords.emplace(record->StableId, record);
+		if (record && !record->NameIsGenerated)
+			candidateRecords.emplace(record->Name, record);
 
 	std::vector<SubtreeSwap> swaps;
 	swaps.reserve(reusableRoots.size());
@@ -578,10 +599,17 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 			candidate._controls);
 	};
 
-	for (const auto stableId : reusableRoots)
+	for (const auto nextId : reusableRoots)
 	{
-		const auto oldFound = oldRecords.find(stableId);
-		const auto candidateFound = candidateRecords.find(stableId);
+		const auto* nextNode = nextTopology.Find(nextId);
+		if (!nextNode)
+		{
+			rollbackTopology();
+			SetError(outError, L"拓扑重组无法解析可复用的命名控件。");
+			return false;
+		}
+		const auto oldFound = oldRecords.find(nextNode->Name);
+		const auto candidateFound = candidateRecords.find(nextNode->Name);
 		if (oldFound == oldRecords.end() || candidateFound == candidateRecords.end()
 			|| !oldFound->second || !candidateFound->second
 			|| !oldFound->second->ControlInstance
@@ -589,13 +617,12 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		{
 			rollbackTopology();
 			SetError(outError,
-				L"拓扑重组无法解析可复用控件稳定 ID："
-				+ std::to_wstring(stableId));
+				L"拓扑重组无法解析可复用控件 x:Name："
+				+ nextNode->Name);
 			return false;
 		}
 
 		SubtreeSwap swap;
-		swap.StableId = stableId;
 		swap.Reused = oldFound->second->ControlInstance;
 		std::unique_ptr<Control> reusedOwner;
 		if (!DetachFrom(
@@ -642,11 +669,21 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		swaps.push_back(std::move(swap));
 	}
 
+	struct ReusedRecordIdentity
+	{
+		std::shared_ptr<DesignerControl> Record;
+		int NextNodeId = 0;
+	};
+	std::vector<ReusedRecordIdentity> reusedRecordIdentities;
+	reusedRecordIdentities.reserve(reusedNames.size());
 	for (auto& record : candidate._controls)
 	{
-		if (!record || !reusedIds.contains(record->StableId)) continue;
-		const auto found = oldRecords.find(record->StableId);
-		if (found != oldRecords.end()) record = found->second;
+		if (!record || !reusedNames.contains(record->Name)) continue;
+		const int nextNodeId = record->StableId;
+		const auto found = oldRecords.find(record->Name);
+		if (found == oldRecords.end()) continue;
+		record = found->second;
+		reusedRecordIdentities.push_back({ record, nextNodeId });
 	}
 	RefreshRecordsAndContentRoot(
 		candidate._ownedContentRoot, candidate._contentRoot, candidate._controls);
@@ -811,7 +848,9 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		return false;
 	}
 
-	outReusedControlCount = reusedIds.size();
+	for (const auto& identity : reusedRecordIdentities)
+		if (identity.Record) identity.Record->StableId = identity.NextNodeId;
+	outReusedControlCount = reusedNames.size();
 	output = std::move(candidate);
 	outApplied = true;
 	if (outError) outError->clear();

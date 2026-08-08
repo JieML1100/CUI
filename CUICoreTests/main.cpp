@@ -6,6 +6,7 @@
 #include <Border.h>
 #include <Button.h>
 #include <CheckBox.h>
+#include <Calendar.h>
 #include <CalendarView.h>
 #include <Canvas.h>
 #include <ChartView.h>
@@ -41,6 +42,7 @@
 #include <ItemContainer.h>
 #include <InputInfrastructure.h>
 #include <DependencyPropertyInfrastructure.h>
+#include <DatePicker.h>
 #include <DCompLayeredHost.h>
 #include <TemplateInfrastructure.h>
 #include <LoadingRing.h>
@@ -632,6 +634,29 @@ namespace
 		assignment.ResourceKey = std::move(resourceKey);
 		assignment.DynamicResourceKey = std::move(dynamicResourceKey);
 		node.Properties.Set(std::move(name), std::move(assignment));
+	}
+
+	template<typename T = Control>
+	T* FindMaterializedControlByName(
+		const CuiRuntime::XamlObjectTree& tree,
+		const std::wstring& name)
+	{
+		const auto found = std::find_if(
+			tree.Controls.begin(), tree.Controls.end(),
+			[&](const auto& control)
+			{ return control && control->Name == name; });
+		return found == tree.Controls.end() || !*found
+			? nullptr : dynamic_cast<T*>((*found)->ControlInstance);
+	}
+
+	int FindDesignNodeIdByName(
+		const DesignerModel::DesignDocument& document,
+		const std::wstring& name)
+	{
+		const auto found = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[&](const auto& node) { return node.Name == name; });
+		return found == document.Nodes.end() ? 0 : found->Id;
 	}
 
 	// Property-editor tests exercise a live preview first, then explicitly
@@ -9315,13 +9340,13 @@ int main()
 		auto* rootBehaviorAccess = rootBehavior.get();
 		CUI_EXPECT_TRUE(cui::framework::XamlAccess::SetComponentBehavior(
 			root, std::move(rootBehavior),
-			DeclarativeComponentBehaviorContext{ root, 0, L"root", {} },
+			DeclarativeComponentBehaviorContext{ root, L"root", {} },
 			&error));
 		auto childBehavior = std::make_unique<ReadOnlyStateBehavior>();
 		auto* childBehaviorAccess = childBehavior.get();
 		CUI_EXPECT_TRUE(cui::framework::XamlAccess::SetComponentBehavior(
 			*child, std::move(childBehavior),
-			DeclarativeComponentBehaviorContext{ *child, 0, L"child", {} },
+			DeclarativeComponentBehaviorContext{ *child, L"child", {} },
 			&error));
 		const auto* metadata = root.FindPropertyMetadata(L"Status");
 		CUI_EXPECT_TRUE(metadata != nullptr);
@@ -12312,12 +12337,12 @@ int main()
     <String x:Key="BodyFont">Consolas</String>
     <Double x:Key="BodySize">19.5</Double>
   </Window.Resources>
-  <ContentControl x:Name="typeScope" DesignId="1"
+  <ContentControl x:Name="typeScope"
                   FontFamily="{DynamicResource BodyFont}"
                   FontSize="{DynamicResource BodySize}">
     <Canvas>
-      <TextBlock x:Name="typeInherited" DesignId="2" Text="Inherited"/>
-      <TextBlock x:Name="typeLocal" DesignId="3" Text="Local" FontSize="16"/>
+      <TextBlock x:Name="typeInherited" Text="Inherited"/>
+      <TextBlock x:Name="typeLocal" Text="Local" FontSize="16"/>
     </Canvas>
   </ContentControl>
 </Window>)XAML";
@@ -12330,8 +12355,9 @@ int main()
 		CUI_EXPECT_TRUE(CuiRuntime::XamlObjectMaterializer::Materialize(
 			document, tree, &error));
 		auto* scope = tree.ContentRoot.get();
-		auto* inherited = scope ? scope->FindControlByDesignId(2) : nullptr;
-		auto* local = scope ? scope->FindControlByDesignId(3) : nullptr;
+		auto* inherited = FindMaterializedControlByName(
+			tree, L"typeInherited");
+		auto* local = FindMaterializedControlByName(tree, L"typeLocal");
 		CUI_EXPECT_TRUE(scope != nullptr && inherited != nullptr && local != nullptr);
 		if (scope && inherited && local)
 		{
@@ -22238,27 +22264,106 @@ int main()
 		fs::remove_all(root);
 	});
 
-	runner.Add("Controls support stable design-id lookup across nested ownership", []
+	runner.Add("XAML persists only authored names and hides unnamed controls", []
 	{
-		Panel root; ConfigureTestControl(root, 0, 0, 320, 240);
-		cui::framework::DesignIdentityAccess::Set(root, 10);
-		auto containerOwner = MakeTestControl<Panel>(0, 0, 200, 160);
-		auto* container = containerOwner.get();
-		cui::framework::DesignIdentityAccess::Set(*container, 20);
-		auto buttonOwner = MakeTestControl<Button>(L"Nested", 0, 0);
-		auto* button = buttonOwner.get();
-		cui::framework::DesignIdentityAccess::Set(*button, 30);
-		container->AddOwned(std::move(buttonOwner));
-		root.AddOwned(std::move(containerOwner));
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <StackPanel x:Name="root">
+    <Button Content="Transient" />
+	<Button x:Name="button1" Content="Authored" />
+  </StackPanel>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		const auto unnamed = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[](const auto& node) { return node.NameIsGenerated; });
+		CUI_EXPECT_TRUE(unnamed != document.Nodes.end());
+		if (unnamed == document.Nodes.end()) return;
+		const auto transientName = unnamed->Name;
+		const auto serialized =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(serialized.find("DesignId") == std::string::npos);
+		CUI_EXPECT_TRUE(serialized.find(
+			"x:Name=\"" + Convert::UnicodeToUtf8(transientName) + "\"")
+			== std::string::npos);
+		auto transientAccessor = Convert::UnicodeToUtf8(transientName);
+		if (!transientAccessor.empty() && transientAccessor.front() >= 'a'
+			&& transientAccessor.front() <= 'z')
+			transientAccessor.front() = static_cast<char>(
+				transientAccessor.front() - 'a' + 'A');
+		const auto generatedHeader = CodeGenerator(
+			L"AuthoredNameWindow", document).GenerateHeader();
+		CUI_EXPECT_TRUE(generatedHeader.find("GetButton1() noexcept")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"Get" + transientAccessor + "() noexcept") == std::string::npos);
 
-		CUI_EXPECT_EQ(&root, root.FindControlByDesignId(10));
-		CUI_EXPECT_EQ(container, root.FindControlByDesignId(20));
-		CUI_EXPECT_EQ(button, root.FindControlByDesignId(30));
-		CUI_EXPECT_EQ(nullptr, root.FindControlByDesignId(0));
-		CUI_EXPECT_EQ(nullptr, root.FindControlByDesignId(999));
-		const Control& constRoot = root;
-		CUI_EXPECT_EQ(static_cast<const Control*>(button),
-			constRoot.FindControlByDesignId(30));
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"root") != nullptr);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"button1") != nullptr);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(transientName) == nullptr);
+
+		auto rootReference = runtime.ReferenceByName<StackPanel>(L"root");
+		auto* originalRoot = rootReference.Get();
+		auto buttonReference = runtime.ReferenceByName<Button>(L"button1");
+		auto* originalButton = buttonReference.Get();
+		auto renumberedAnonymous = document;
+		for (auto& node : renumberedAnonymous.Nodes)
+		{
+			node.Id += 100;
+			if (node.ParentId > 0) node.ParentId += 100;
+		}
+		renumberedAnonymous.RecalculateNextStableId();
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			renumberedAnonymous, runtime, {}, &mode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Recomposed, mode);
+		CUI_EXPECT_TRUE(rootReference.Get()
+			== runtime.FindControlByName<StackPanel>(L"root"));
+		CUI_EXPECT_TRUE(rootReference.Get() != originalRoot);
+		CUI_EXPECT_TRUE(buttonReference.Get() == originalButton);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(transientName) == nullptr);
+
+		const std::string namedXaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Button x:Name="action" Content="Before" />
+</Window>)XAML";
+		DesignerModel::DesignDocument namedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			namedXaml, namedDocument, &error));
+		DesignerModel::RuntimeDocument namedRuntime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			namedDocument, namedRuntime, {}, &error));
+		auto actionReference = namedRuntime.ReferenceByName<Button>(L"action");
+		auto* originalAction = actionReference.Get();
+		auto renumberedNamed = namedDocument;
+		renumberedNamed.Nodes.front().Id += 200;
+		renumberedNamed.RecalculateNextStableId();
+		SetDesignNodeProperty(
+			renumberedNamed.Nodes.front(), L"Content",
+			DesignerStyleValueKind::String, L"After");
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			renumberedNamed, namedRuntime, {}, &mode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::InPlace, mode);
+		CUI_EXPECT_TRUE(actionReference.Get() == originalAction);
+		CUI_EXPECT_EQ(std::wstring(L"After"),
+			actionReference->GetDisplayText());
+
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Window xmlns="urn:cui"><Button DesignId="7" /></Window>)XAML",
+			rejected, &error));
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Button x:Uid="7" />
+</Window>)XAML",
+			rejected, &error));
 	});
 
 	runner.Add("Designer clipboard preserves nested XAML subtrees and remaps identity", []
@@ -23396,7 +23501,7 @@ int main()
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
 	  <Button x:Name="templatedButton"
-          DesignId="1"
+
           Content="Run"
           Background="#FF123456"
           BorderBrush="#FFABCDEF"
@@ -23404,11 +23509,11 @@ int main()
           FontSize="9"
 		  Template="{StaticResource AccentButtonTemplate}" />
 	  <ContentControl x:Name="implicitHost"
-                  DesignId="3"
+
                   Content="Implicit"
                   Background="#FF224466" />
 	  <Button x:Name="dataButton"
-          DesignId="4"
+
           Content="Data content"
           Template="{StaticResource AccentButtonTemplate}" />
 	</Canvas>
@@ -23443,8 +23548,8 @@ int main()
 		CUI_EXPECT_TRUE(tree.ContentRoot != nullptr);
 		CUI_EXPECT_EQ(4ULL, tree.Controls.size());
 		auto* contentRoot = tree.ContentRoot.get();
-		auto* button = contentRoot
-			? dynamic_cast<Button*>(contentRoot->FindControlByDesignId(1)) : nullptr;
+		auto* button = FindMaterializedControlByName<Button>(
+			tree, L"templatedButton");
 		CUI_EXPECT_TRUE(button != nullptr);
 		if (button)
 		{
@@ -23528,7 +23633,9 @@ int main()
 			CUI_EXPECT_TRUE(alternateChrome
 				&& alternateChrome->GetTemplatedParent() == button);
 			CUI_EXPECT_TRUE(alternateChrome
-				&& alternateChrome->GetDesignId() == 0);
+				&& std::none_of(tree.Controls.begin(), tree.Controls.end(),
+					[&](const auto& control)
+					{ return control && control->ControlInstance == alternateChrome; }));
 			CUI_EXPECT_TRUE(button->FindDeclarativeTemplatePart(
 				L"caption") == nullptr);
 			CUI_EXPECT_FALSE(button->ApplyTemplate());
@@ -23540,9 +23647,8 @@ int main()
 				L"caption") != nullptr);
 			CUI_EXPECT_TRUE(button->LastTemplateError().empty());
 		}
-		auto* implicitHost = contentRoot
-			? dynamic_cast<ContentControl*>(contentRoot->FindControlByDesignId(3))
-			: nullptr;
+		auto* implicitHost = FindMaterializedControlByName<ContentControl>(
+			tree, L"implicitHost");
 		CUI_EXPECT_TRUE(implicitHost != nullptr);
 		if (implicitHost)
 		{
@@ -23551,8 +23657,8 @@ int main()
 			CUI_EXPECT_TRUE(implicitHost->FindDeclarativeTemplatePart(
 				L"implicitCaption") != nullptr);
 		}
-		auto* dataButton = contentRoot
-			? dynamic_cast<Button*>(contentRoot->FindControlByDesignId(4)) : nullptr;
+		auto* dataButton = FindMaterializedControlByName<Button>(
+			tree, L"dataButton");
 		CUI_EXPECT_TRUE(dataButton != nullptr);
 		if (dataButton)
 		{
@@ -23576,7 +23682,8 @@ int main()
 
 		DesignerModel::DesignDocument fragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 1 }, fragment, &error));
+			document, { FindDesignNodeIdByName(document, L"templatedButton") },
+			fragment, &error));
 		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.size());
 		CUI_EXPECT_TRUE(fragment.ControlTemplates.empty());
@@ -23585,7 +23692,9 @@ int main()
 		DesignerModel::DesignDocument portableFragment;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
 			fragmentXaml, portableFragment, &error));
-		CUI_EXPECT_TRUE(portableFragment == fragment);
+		// XAML carries authored structure, not the designer's transient node IDs.
+		CUI_EXPECT_EQ(fragmentXaml,
+			DesignerModel::XamlDocumentSerializer::ToXaml(portableFragment));
 		const auto fragmentXml =
 			DesignerModel::DesignDocumentSerializer::ToXml(fragment);
 		DesignerModel::DesignDocument fragmentSnapshot;
@@ -23670,7 +23779,7 @@ int main()
               Style="{StaticResource RecursiveButtonStyle}" />
     </ControlTemplate>
   </Window.Resources>
-  <Button x:Name="recursiveHost" DesignId="1"
+  <Button x:Name="recursiveHost"
           Template="{StaticResource RecursiveButtonTemplate}" />
 </Window>)XAML";
 		DesignerModel::DesignDocument recursiveDocument;
@@ -23708,12 +23817,12 @@ int main()
       </Grid>
     </ControlTemplate>
   </Window.Resources>
-  <TabControl x:Name="tabs" DesignId="1"
+  <TabControl x:Name="tabs"
               Width="320" Height="180"
               Template="{StaticResource CentralTabs}">
-    <TabItem x:Name="page" DesignId="2" Header="Visual page"
+    <TabItem x:Name="page" Header="Visual page"
              Template="{StaticResource HeaderOnlyTab}">
-      <Grid x:Name="body" DesignId="3" />
+      <Grid x:Name="body" />
     </TabItem>
   </TabControl>
 </Window>)XAML";
@@ -23760,21 +23869,10 @@ int main()
 		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 			document, tree, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
-		auto controlById = [&](int id) -> Control*
-		{
-			const auto found = std::find_if(
-				tree.Controls.begin(), tree.Controls.end(),
-				[id](const auto& control)
-				{
-					return control && control->StableId == id;
-				});
-			return found == tree.Controls.end() || !*found
-				? nullptr : (*found)->ControlInstance;
-		};
-		auto* tabs = dynamic_cast<TabControl*>(controlById(1));
+		auto* tabs = FindMaterializedControlByName<TabControl>(tree, L"tabs");
 		CUI_EXPECT_TRUE(tabs != nullptr);
-		auto* page = dynamic_cast<TabItem*>(controlById(2));
-		auto* body = dynamic_cast<Grid*>(controlById(3));
+		auto* page = FindMaterializedControlByName<TabItem>(tree, L"page");
+		auto* body = FindMaterializedControlByName<Grid>(tree, L"body");
 		auto* host = tabs ? dynamic_cast<ContentPresenter*>(
 			tabs->FindDeclarativeTemplatePart(
 				MakeTemplatePartToken(L"PART_SelectedContentHost"))) : nullptr;
@@ -23833,14 +23931,14 @@ int main()
     </ControlTemplate>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <GroupBox x:Name="visualHost" DesignId="1"
+	  <GroupBox x:Name="visualHost"
             Template="{StaticResource HeaderedTemplate}">
     <GroupBox.Header>
-      <TextBlock x:Name="visualHeader" DesignId="2" Text="Visual header" />
+      <TextBlock x:Name="visualHeader" Text="Visual header" />
     </GroupBox.Header>
-    <Canvas x:Name="visualBody" DesignId="3" />
+    <Canvas x:Name="visualBody" />
 	  </GroupBox>
-	  <GroupBox x:Name="dataHost" DesignId="4"
+	  <GroupBox x:Name="dataHost"
             Header="Header data" Content="Body data"
             Template="{StaticResource HeaderedTemplate}" />
 	</Canvas>
@@ -23865,28 +23963,18 @@ int main()
 		CUI_EXPECT_TRUE(error.empty());
 		CUI_EXPECT_TRUE(tree.ContentRoot != nullptr);
 		CUI_EXPECT_EQ(5ULL, tree.Controls.size());
-		auto controlById = [&](int id) -> Control*
-		{
-			const auto found = std::find_if(
-				tree.Controls.begin(), tree.Controls.end(),
-				[id](const auto& control)
-				{
-					return control && control->StableId == id;
-				});
-			return found == tree.Controls.end() || !*found
-				? nullptr : (*found)->ControlInstance;
-		};
-		auto* contentRoot = tree.ContentRoot.get();
-		auto* visual = contentRoot
-			? dynamic_cast<GroupBox*>(contentRoot->FindControlByDesignId(1)) : nullptr;
+		auto* visual = FindMaterializedControlByName<GroupBox>(
+			tree, L"visualHost");
 		CUI_EXPECT_TRUE(visual != nullptr);
 		if (visual)
 		{
 			auto* headerPresenter = visual->GetTemplateHeaderPresenter();
 			auto* contentPresenter =
 				TemplateAccess::GetContentPresenter(*visual);
-			auto* header = dynamic_cast<Label*>(controlById(2));
-			auto* body = dynamic_cast<Panel*>(controlById(3));
+			auto* header = FindMaterializedControlByName<Label>(
+				tree, L"visualHeader");
+			auto* body = FindMaterializedControlByName<Panel>(
+				tree, L"visualBody");
 			CUI_EXPECT_TRUE(headerPresenter != nullptr);
 			CUI_EXPECT_TRUE(contentPresenter != nullptr);
 			CUI_EXPECT_TRUE(header != nullptr && header->GetVisualParent() == headerPresenter);
@@ -23899,8 +23987,7 @@ int main()
 			CUI_EXPECT_EQ(1, visual->VisualChildCount());
 		}
 
-		auto* data = contentRoot
-			? dynamic_cast<GroupBox*>(contentRoot->FindControlByDesignId(4)) : nullptr;
+		auto* data = FindMaterializedControlByName<GroupBox>(tree, L"dataHost");
 		CUI_EXPECT_TRUE(data != nullptr);
 		if (data)
 		{
@@ -23953,7 +24040,8 @@ int main()
 
 		DesignerModel::DesignDocument fragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 1 }, fragment, &error));
+			document, { FindDesignNodeIdByName(document, L"visualHost") },
+			fragment, &error));
 		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.size());
 		DesignerModel::DesignDocument pasted;
@@ -24000,9 +24088,9 @@ int main()
                                      TargetType="Button">
     <Canvas x:Name="chrome" />
   </ControlTemplate></Window.Resources>
-  <Button x:Name="host" DesignId="1"
+  <Button x:Name="host"
           Template="{StaticResource MissingContentTemplate}">
-    <TextBlock DesignId="2" />
+    <TextBlock />
   </Button>
 </Window>)XAML";
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
@@ -24047,12 +24135,12 @@ int main()
     </ControlTemplate>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <ListBox x:Name="rows" DesignId="1" Width="200" Height="72"
+	  <ListBox x:Name="rows" Width="200" Height="72"
            DisplayMemberPath="Text"
            ItemsSource="{StaticResource Rows}"
            ItemsPanel="{StaticResource VirtualRows}"
            Template="{StaticResource ListChrome}" />
-	  <ItemsControl x:Name="hiddenRows" DesignId="2"
+	  <ItemsControl x:Name="hiddenRows"
                 ItemsSource="{StaticResource Rows}"
                 DisplayMemberPath="Text"
                 Template="{StaticResource HiddenItems}" />
@@ -24077,12 +24165,11 @@ int main()
 			throw std::runtime_error("ItemsPresenter materialization failed: "
 				+ Convert::UnicodeToUtf8(error));
 		CUI_EXPECT_TRUE(error.empty());
-		auto findControl = [&](int designId) -> Control*
+		auto findControl = [&](const std::wstring& name) -> Control*
 		{
-			return tree.ContentRoot
-				? tree.ContentRoot->FindControlByDesignId(designId) : nullptr;
+			return FindMaterializedControlByName(tree, name);
 		};
-		auto* list = dynamic_cast<ListBox*>(findControl(1));
+		auto* list = dynamic_cast<ListBox*>(findControl(L"rows"));
 		CUI_EXPECT_TRUE(list != nullptr);
 		if (list)
 		{
@@ -24118,7 +24205,7 @@ int main()
 			CUI_EXPECT_EQ(4ULL, list->GeneratedItemCount());
 		}
 
-		auto* hidden = dynamic_cast<ItemsControl*>(findControl(2));
+		auto* hidden = dynamic_cast<ItemsControl*>(findControl(L"hiddenRows"));
 		CUI_EXPECT_TRUE(hidden != nullptr);
 		if (hidden)
 		{
@@ -24158,7 +24245,8 @@ int main()
 			version24, upgradedVersion24, &error));
 		DesignerModel::DesignDocument fragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 1 }, fragment, &error));
+			document, { FindDesignNodeIdByName(document, L"rows") },
+			fragment, &error));
 		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.size());
 		CUI_EXPECT_TRUE(std::any_of(fragment.Nodes.front()
@@ -24326,12 +24414,12 @@ int main()
     </Style>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <ListBox x:Name="styledPeople" DesignId="1"
+	  <ListBox x:Name="styledPeople"
            ItemsSource="{StaticResource People}"
            ItemsPanel="{StaticResource NonVirtualItemsPanel}"
            ItemTemplate="{StaticResource PersonRow}"
            ItemContainerStyle="{StaticResource PersonContainer}" />
-	  <ListBox x:Name="implicitPeople" DesignId="2"
+	  <ListBox x:Name="implicitPeople"
            ItemsSource="{StaticResource People}"
            ItemsPanel="{StaticResource NonVirtualItemsPanel}"
            ItemTemplate="{StaticResource PersonRow}" />
@@ -24356,16 +24444,10 @@ int main()
 			document, tree, &error))
 			throw std::runtime_error("ListBoxItem materialization failed: "
 				+ Convert::UnicodeToUtf8(error));
-		auto findList = [&](int id) -> ListBox*
-		{
-			const auto found = std::find_if(tree.Controls.begin(), tree.Controls.end(),
-				[id](const auto& control)
-				{ return control && control->StableId == id; });
-			return found == tree.Controls.end() || !*found
-				? nullptr : dynamic_cast<ListBox*>((*found)->ControlInstance);
-		};
-		auto* styled = findList(1);
-		auto* implicit = findList(2);
+		auto* styled = FindMaterializedControlByName<ListBox>(
+			tree, L"styledPeople");
+		auto* implicit = FindMaterializedControlByName<ListBox>(
+			tree, L"implicitPeople");
 		CUI_EXPECT_TRUE(styled != nullptr);
 		CUI_EXPECT_TRUE(implicit != nullptr);
 		CUI_EXPECT_TRUE(styled && styled->GetItemContainerTemplate());
@@ -24467,7 +24549,8 @@ int main()
 
 		DesignerModel::DesignDocument styledFragment;
 		if (!DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 1 }, styledFragment, &error))
+			document, { FindDesignNodeIdByName(document, L"styledPeople") },
+			styledFragment, &error))
 			throw std::runtime_error("ListBoxItem clipboard capture failed: "
 				+ Convert::UnicodeToUtf8(error));
 		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
@@ -24476,7 +24559,8 @@ int main()
 			[](const auto& item) { return item.Key == L"StyledItemTemplate"; }));
 		DesignerModel::DesignDocument implicitFragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 2 }, implicitFragment, &error));
+			document, { FindDesignNodeIdByName(document, L"implicitPeople") },
+			implicitFragment, &error));
 		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.begin(),
 			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
@@ -24566,9 +24650,9 @@ int main()
     </Style>
   </Window.Resources>
   <StackPanel>
-    <ComboBox x:Name="themeCombo" DesignId="1" IsEditable="true" />
-    <TextBox x:Name="consumerImplicitTextBox" DesignId="2" />
-    <TextBox x:Name="styledFallbackTextBox" DesignId="3"
+    <ComboBox x:Name="themeCombo" IsEditable="true" />
+    <TextBox x:Name="consumerImplicitTextBox" />
+    <TextBox x:Name="styledFallbackTextBox"
              Style="{StaticResource PaddingOnlyTextBoxStyle}" />
   </StackPanel>
 </Window>)XAML";
@@ -24583,10 +24667,8 @@ int main()
 			document, tree, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
 
-		auto* combo = tree.ContentRoot
-			? dynamic_cast<ComboBox*>(
-				tree.ContentRoot->FindControlByDesignId(1))
-			: nullptr;
+		auto* combo = FindMaterializedControlByName<ComboBox>(
+			tree, L"themeCombo");
 		CUI_EXPECT_TRUE(combo != nullptr);
 		auto* editor = combo
 			? dynamic_cast<TextBox*>(combo->FindDeclarativeTemplatePart(
@@ -24603,19 +24685,15 @@ int main()
 		CUI_EXPECT_TRUE(editor && editor->FindDeclarativeTemplatePart(
 			L"consumerCollisionTextBoxRoot") == nullptr);
 
-		auto* consumerImplicit = tree.ContentRoot
-			? dynamic_cast<TextBox*>(
-				tree.ContentRoot->FindControlByDesignId(2))
-			: nullptr;
+		auto* consumerImplicit = FindMaterializedControlByName<TextBox>(
+			tree, L"consumerImplicitTextBox");
 		CUI_EXPECT_TRUE(consumerImplicit != nullptr);
 		CUI_EXPECT_TRUE(consumerImplicit
 			&& consumerImplicit->FindDeclarativeTemplatePart(
 				L"consumerImplicitTextBoxRoot") != nullptr);
 
-		auto* styledFallback = tree.ContentRoot
-			? dynamic_cast<TextBox*>(
-				tree.ContentRoot->FindControlByDesignId(3))
-			: nullptr;
+		auto* styledFallback = FindMaterializedControlByName<TextBox>(
+			tree, L"styledFallbackTextBox");
 		CUI_EXPECT_TRUE(styledFallback != nullptr);
 		CUI_EXPECT_EQ(DependencyPropertyValueSource::Theme,
 			styledFallback
@@ -24663,7 +24741,7 @@ int main()
     </ComponentDefinition>
   </Window.Resources>
   <ToolBar>
-    <Button x:Name="toolButton" DesignId="1" Content="Run" />
+    <Button x:Name="toolButton" Content="Run" />
   </ToolBar>
 </Window>)XAML";
 
@@ -24677,10 +24755,8 @@ int main()
 			document, tree, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
 
-		auto* button = tree.ContentRoot
-			? dynamic_cast<Button*>(
-				tree.ContentRoot->FindControlByDesignId(1))
-			: nullptr;
+		auto* button = FindMaterializedControlByName<Button>(
+			tree, L"toolButton");
 		CUI_EXPECT_TRUE(button != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"CuiToolBarButtonStyle"),
 			button ? cui::framework::StyleAccess::ResourceKey(*button)
@@ -24711,7 +24787,7 @@ int main()
     </Style>
   </Window.Resources>
   <ToolBar>
-    <Button x:Name="overriddenToolButton" DesignId="2" />
+    <Button x:Name="overriddenToolButton" />
   </ToolBar>
 </Window>)XAML";
 		DesignerModel::DesignDocument overrideDocument;
@@ -24722,10 +24798,8 @@ int main()
 		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
 			overrideDocument, overrideTree, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
-		auto* overriddenButton = overrideTree.ContentRoot
-			? dynamic_cast<Button*>(
-				overrideTree.ContentRoot->FindControlByDesignId(2))
-			: nullptr;
+		auto* overriddenButton = FindMaterializedControlByName<Button>(
+			overrideTree, L"overriddenToolButton");
 		CUI_EXPECT_TRUE(overriddenButton != nullptr);
 		CUI_EXPECT_TRUE(overriddenButton
 			&& cui::framework::StyleAccess::ResourceKeyIsAutomatic(
@@ -24827,14 +24901,14 @@ int main()
     </Style>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <ComboBox x:Name="styledChoices" DesignId="101"
+	  <ComboBox x:Name="styledChoices"
             ItemsSource="{StaticResource People}"
             ItemTemplate="{StaticResource PersonChoice}"
             ItemContainerStyle="{StaticResource ChoiceContainer}" />
-	  <ComboBox x:Name="implicitChoices" DesignId="102"
+	  <ComboBox x:Name="implicitChoices"
             ItemsSource="{StaticResource People}"
             ItemTemplate="{StaticResource PersonChoice}" />
-	  <ComboBox x:Name="staticChoices" DesignId="103">
+	  <ComboBox x:Name="staticChoices">
     <ComboBoxItem Content="One" />
     <ComboBoxItem Content="Two" />
 	  </ComboBox>
@@ -24858,17 +24932,12 @@ int main()
 			document, tree, &error))
 			throw std::runtime_error("ComboBoxItem materialization failed: "
 				+ Convert::UnicodeToUtf8(error));
-		auto findCombo = [&](int id) -> ComboBox*
-		{
-			const auto found = std::find_if(tree.Controls.begin(), tree.Controls.end(),
-				[id](const auto& control)
-				{ return control && control->StableId == id; });
-			return found == tree.Controls.end() || !*found
-				? nullptr : dynamic_cast<ComboBox*>((*found)->ControlInstance);
-		};
-		auto* styled = findCombo(101);
-		auto* implicit = findCombo(102);
-		auto* staticItems = findCombo(103);
+		auto* styled = FindMaterializedControlByName<ComboBox>(
+			tree, L"styledChoices");
+		auto* implicit = FindMaterializedControlByName<ComboBox>(
+			tree, L"implicitChoices");
+		auto* staticItems = FindMaterializedControlByName<ComboBox>(
+			tree, L"staticChoices");
 		CUI_EXPECT_TRUE(styled != nullptr);
 		CUI_EXPECT_TRUE(implicit != nullptr);
 		CUI_EXPECT_TRUE(staticItems != nullptr);
@@ -24990,7 +25059,8 @@ int main()
 
 		DesignerModel::DesignDocument styledFragment;
 		if (!DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 101 }, styledFragment, &error))
+			document, { FindDesignNodeIdByName(document, L"styledChoices") },
+			styledFragment, &error))
 			throw std::runtime_error("ComboBoxItem clipboard capture failed: "
 				+ Convert::UnicodeToUtf8(error));
 		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
@@ -24999,7 +25069,8 @@ int main()
 			[](const auto& item) { return item.Key == L"ChoiceChrome"; }));
 		DesignerModel::DesignDocument implicitFragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 102 }, implicitFragment, &error));
+			document, { FindDesignNodeIdByName(document, L"implicitChoices") },
+			implicitFragment, &error));
 		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.begin(),
 			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
@@ -25120,7 +25191,7 @@ int main()
     </Style>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <TreeView x:Name="styledTree" DesignId="201"
+	  <TreeView x:Name="styledTree"
             ItemContainerStyle="{StaticResource TreeContainer}">
     <TreeView.Items>
       <TreeViewItem Header="Root" IsExpanded="true">
@@ -25128,7 +25199,7 @@ int main()
       </TreeViewItem>
     </TreeView.Items>
 	  </TreeView>
-	  <TreeView x:Name="implicitTree" DesignId="202">
+	  <TreeView x:Name="implicitTree">
     <TreeView.Items>
       <TreeViewItem Header="Implicit" />
     </TreeView.Items>
@@ -25152,16 +25223,10 @@ int main()
 			document, materialized, &error))
 			throw std::runtime_error("TreeViewItem materialization failed: "
 				+ Convert::UnicodeToUtf8(error));
-		auto findTree = [&](int id) -> TreeView*
-		{
-			const auto found = std::find_if(materialized.Controls.begin(),
-				materialized.Controls.end(), [id](const auto& control)
-				{ return control && control->StableId == id; });
-			return found == materialized.Controls.end() || !*found
-				? nullptr : dynamic_cast<TreeView*>((*found)->ControlInstance);
-		};
-		auto* styled = findTree(201);
-		auto* implicit = findTree(202);
+		auto* styled = FindMaterializedControlByName<TreeView>(
+			materialized, L"styledTree");
+		auto* implicit = FindMaterializedControlByName<TreeView>(
+			materialized, L"implicitTree");
 		CUI_EXPECT_TRUE(styled != nullptr);
 		CUI_EXPECT_TRUE(implicit != nullptr);
 		CUI_EXPECT_TRUE(styled && styled->GetItemContainerTemplate());
@@ -25236,14 +25301,16 @@ int main()
 
 		DesignerModel::DesignDocument styledFragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 201 }, styledFragment, &error));
+			document, { FindDesignNodeIdByName(document, L"styledTree") },
+			styledFragment, &error));
 		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.begin(),
 			styledFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
 			[](const auto& item) { return item.Key == L"TreeChrome"; }));
 		DesignerModel::DesignDocument implicitFragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 202 }, implicitFragment, &error));
+			document, { FindDesignNodeIdByName(document, L"implicitTree") },
+			implicitFragment, &error));
 		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.begin(),
 			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
@@ -25332,7 +25399,7 @@ int main()
     <Property Path="Roots" Kind="Object" ObjectType="BindingList"
               ItemType="Folder" />
   </Window.DataContextSchema>
-  <TreeView x:Name="dataTree" DesignId="301"
+  <TreeView x:Name="dataTree"
             Width="320" Height="240"
             DisplayMemberPath="Name"
 			SelectedValuePath="Name"
@@ -25606,7 +25673,8 @@ int main()
 
 		DesignerModel::DesignDocument fragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 301 }, fragment, &error));
+			document, { FindDesignNodeIdByName(document, L"dataTree") },
+			fragment, &error));
 		const auto* copiedFolder = fragment.FindImplicitDataTemplate(L"Folder");
 		CUI_EXPECT_TRUE(copiedFolder && copiedFolder->Hierarchical
 			&& copiedFolder->ItemsSourceBinding);
@@ -25888,14 +25956,14 @@ int main()
     </Style>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <local:DefaultSurface x:Name="defaultSurface" DesignId="1"
+	  <local:DefaultSurface x:Name="defaultSurface"
                         Caption="Component fallback" />
-	  <local:ThemedSurface x:Name="implicitSurface" DesignId="2"
+	  <local:ThemedSurface x:Name="implicitSurface"
                        Caption="Implicit QName" />
-	  <local:ThemedSurface x:Name="styledSurface" DesignId="3"
+	  <local:ThemedSurface x:Name="styledSurface"
                        Style="{StaticResource StyledSurface}"
                        Caption="Style template" />
-	  <local:ThemedSurface x:Name="directSurface" DesignId="4"
+	  <local:ThemedSurface x:Name="directSurface"
                        Style="{StaticResource StyledSurface}"
                        Template="{StaticResource DirectSurfaceTemplate}"
                        Caption="Direct template" />
@@ -25924,18 +25992,14 @@ int main()
 			document, tree, &error));
 		CUI_EXPECT_TRUE(error.empty());
 		CUI_EXPECT_TRUE(tree.ContentRoot != nullptr);
-		auto findInstance = [&](int designId) -> Control*
+		auto findInstance = [&](const wchar_t* name) -> Control*
 		{
-			const auto found = std::find_if(tree.Controls.begin(), tree.Controls.end(),
-				[designId](const auto& control)
-				{ return control && control->StableId == designId; });
-			return found == tree.Controls.end() || !*found
-				? nullptr : (*found)->ControlInstance;
+			return FindMaterializedControlByName(tree, name);
 		};
-		auto expectPart = [&](int designId, const wchar_t* part,
+		auto expectPart = [&](const wchar_t* name, const wchar_t* part,
 			const wchar_t* text)
 		{
-			auto* instance = findInstance(designId);
+			auto* instance = findInstance(name);
 			CUI_EXPECT_TRUE(instance != nullptr);
 			if (!instance) return;
 			auto* label = dynamic_cast<Label*>(
@@ -25943,12 +26007,12 @@ int main()
 			CUI_EXPECT_TRUE(label != nullptr);
 			if (label) CUI_EXPECT_EQ(std::wstring(text), label->Text);
 		};
-		expectPart(1, L"defaultPart", L"Component fallback");
-		expectPart(2, L"implicitPart", L"Implicit QName");
-		expectPart(3, L"styledPart", L"Style template");
-		expectPart(4, L"directPart", L"Direct template");
-		auto* styledInstance = findInstance(3);
-		auto* directInstance = findInstance(4);
+		expectPart(L"defaultSurface", L"defaultPart", L"Component fallback");
+		expectPart(L"implicitSurface", L"implicitPart", L"Implicit QName");
+		expectPart(L"styledSurface", L"styledPart", L"Style template");
+		expectPart(L"directSurface", L"directPart", L"Direct template");
+		auto* styledInstance = findInstance(L"styledSurface");
+		auto* directInstance = findInstance(L"directSurface");
 		CUI_EXPECT_TRUE(styledInstance && styledInstance
 			->FindDeclarativeTemplatePart(L"implicitPart") == nullptr);
 		CUI_EXPECT_TRUE(directInstance && directInstance
@@ -26024,7 +26088,8 @@ int main()
 
 		DesignerModel::DesignDocument fragment;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
-			document, { 3 }, fragment, &error));
+			document, { FindDesignNodeIdByName(document, L"styledSurface") },
+			fragment, &error));
 		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
 		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
 			.LocalObjectResources.ControlTemplates.size());
@@ -26173,7 +26238,7 @@ int main()
                         Default="true" />
       </ComponentDefinition.Events>
       <ComponentDefinition.Template>
-        <Border x:Name="templateRoot" DesignId="1"
+        <Border x:Name="templateRoot"
                     Padding="{TemplateBinding ContentPadding}"
 		            MinWidth="{TemplateBinding MinimumContentWidth}"
 		            MinHeight="{TemplateBinding MinimumContentHeight}"
@@ -26184,22 +26249,22 @@ int main()
                     MouseUp="{RaiseEvent Invoked}">
           <StackPanel>
             <TextBlock x:Name="captionText"
-                    DesignId="2"
+
                     Foreground="{TemplateBinding AccentColor}"
                     Text="{TemplateBinding Caption}" />
             <TextBlock x:Name="captionMirror"
-                   DesignId="6"
+
                    Foreground="{TemplateBinding AccentColor}"
                    Text="{Binding Text, ElementName=captionText}" />
             <TextBlock x:Name="modeText"
-                   DesignId="3"
+
                    Foreground="{TemplateBinding AccentColor}"
                    Text="{TemplateBinding DisplayMode}" />
             <StackPanel x:Name="contentHost"
-                        DesignId="4"
+
                         ComponentSlot.Presents="Content" />
             <StackPanel x:Name="actionsHost"
-                        DesignId="5"
+
                         Orientation="Horizontal"
                         ComponentSlot.Presents="Actions" />
           </StackPanel>
@@ -26213,7 +26278,7 @@ int main()
     </LinearGradientBrush>
   </Window.Resources>
   <local:StatusSurface x:Name="statusSurface"
-                        DesignId="1"
+
                        Severity="7"
                        Caption="Warning"
 	                       MinimumContentWidth="120"
@@ -26222,10 +26287,10 @@ int main()
                         Invoked="HandleStatusInvoked"
                         Width="320"
                         Height="120">
-    <TextBlock x:Name="statusContent" DesignId="2" Text="Projected content" />
+    <TextBlock x:Name="statusContent" Text="Projected content" />
     <local:StatusSurface.Actions>
-      <Button x:Name="primaryAction" DesignId="3" Content="Accept" />
-      <Button x:Name="secondaryAction" DesignId="4" Content="Cancel" />
+      <Button x:Name="primaryAction" Content="Accept" />
+      <Button x:Name="secondaryAction" Content="Cancel" />
     </local:StatusSurface.Actions>
   </local:StatusSurface>
 </Window>)XAML";
@@ -26746,15 +26811,15 @@ int main()
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <StackPanel x:Name="outer" DesignId="1"
+  <StackPanel x:Name="outer"
               local:RoutedCard.Invoked="HandleOuterInvoked"
               local:RoutedCard.HandledInvoked="HandleOuterHandled"
               local:RoutedCard.PreviewInvoked="HandleOuterPreview">
-    <Canvas x:Name="middle" DesignId="2"
+    <Canvas x:Name="middle"
            local:RoutedCard.Invoked="HandleMiddleInvoked"
            local:RoutedCard.HandledInvoked="HandleMiddleHandled"
            local:RoutedCard.PreviewInvoked="HandleMiddlePreview">
-      <local:RoutedCard x:Name="card" DesignId="3"
+      <local:RoutedCard x:Name="card"
                         Invoked="HandleSourceInvoked"
                         HandledInvoked="HandleSourceHandled"
                         PreviewInvoked="HandleSourcePreview" />
@@ -27111,7 +27176,7 @@ int main()
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <local:StateCard x:Name="card" DesignId="1" />
+  <local:StateCard x:Name="card" />
 </Window>)XAML";
 
 		DesignerModel::DesignDocument document;
@@ -27373,7 +27438,7 @@ int main()
 
 		auto activeXaml = canonical;
 		const auto cardTag = activeXaml.find(
-			"<local:StateCard x:Name=\"card\" DesignId=\"1\"");
+			"<local:StateCard x:Name=\"card\"");
 		CUI_EXPECT_TRUE(cardTag != std::string::npos);
 		if (cardTag != std::string::npos)
 		{
@@ -27618,7 +27683,7 @@ int main()
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <local:KeyFrameCard x:Name="card" DesignId="1" />
+  <local:KeyFrameCard x:Name="card" />
 </Window>)XAML";
 
 		DesignerModel::DesignDocument document;
@@ -27755,7 +27820,7 @@ int main()
 
 		auto activeXaml = canonical;
 		const auto cardTag = activeXaml.find(
-			"<local:KeyFrameCard x:Name=\"card\" DesignId=\"1\"");
+			"<local:KeyFrameCard x:Name=\"card\"");
 		CUI_EXPECT_TRUE(cardTag != std::string::npos);
 		if (cardTag != std::string::npos)
 		{
@@ -27944,7 +28009,7 @@ int main()
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <local:TransitionCard x:Name="card" DesignId="1" />
+  <local:TransitionCard x:Name="card" />
 </Window>)XAML";
 
 		DesignerModel::DesignDocument document;
@@ -34222,9 +34287,9 @@ int main()
   <Window.DataContextSchema>
     <Property Path="AccentLevel" Kind="Int" />
   </Window.DataContextSchema>
-  <local:ThemeScope x:Name="outerScope" DesignId="1"
+  <local:ThemeScope x:Name="outerScope"
                     AccentLevel="{Binding AccentLevel}">
-    <local:ThemeScope x:Name="innerScope" DesignId="2" />
+    <local:ThemeScope x:Name="innerScope" />
   </local:ThemeScope>
 </Window>)XAML";
 
@@ -34414,8 +34479,8 @@ int main()
     </ComponentDefinition>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <local:StatusMeter x:Name="meter" DesignId="1" />
-	  <TextBlock x:Name="mirror" DesignId="2"
+	  <local:StatusMeter x:Name="meter" />
+	  <TextBlock x:Name="mirror"
 	         Text="{Binding Status, ElementName=meter}" />
 	</Canvas>
 </Window>)XAML";
@@ -34467,7 +34532,7 @@ int main()
 			CUI_EXPECT_TRUE(cui::framework::XamlAccess::SetComponentBehavior(
 				*meter, std::move(behavior),
 				DeclarativeComponentBehaviorContext{
-					*meter, 1, L"meter", meter->GetDeclarativeTypeId() },
+					*meter, L"meter", meter->GetDeclarativeTypeId() },
 				&error));
 			const auto* metadata = meter->FindPropertyMetadata(L"Status");
 			CUI_EXPECT_TRUE(metadata != nullptr);
@@ -34510,12 +34575,12 @@ int main()
 
 		auto invalidLiteral = xaml;
 		const auto instance = invalidLiteral.find(
-			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+			"<local:StatusMeter x:Name=\"meter\" />");
 		CUI_EXPECT_TRUE(instance != std::string::npos);
 		if (instance != std::string::npos)
 			invalidLiteral.replace(instance,
-				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
-				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" Status=\"Busy\" />");
+				std::string("<local:StatusMeter x:Name=\"meter\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\" Status=\"Busy\" />");
 		DesignerModel::DesignDocument unchanged = document;
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
 			invalidLiteral, unchanged, &error));
@@ -34524,11 +34589,11 @@ int main()
 
 		auto invalidBinding = xaml;
 		const auto bindingInstance = invalidBinding.find(
-			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+			"<local:StatusMeter x:Name=\"meter\" />");
 		if (bindingInstance != std::string::npos)
 			invalidBinding.replace(bindingInstance,
-				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
-				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" Status=\"{Binding Status}\" />");
+				std::string("<local:StatusMeter x:Name=\"meter\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\" Status=\"{Binding Status}\" />");
 		unchanged = document;
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
 			invalidBinding, unchanged, &error));
@@ -34537,11 +34602,11 @@ int main()
 
 		auto invalidMultiBinding = xaml;
 		const auto multiBindingInstance = invalidMultiBinding.find(
-			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+			"<local:StatusMeter x:Name=\"meter\" />");
 		if (multiBindingInstance != std::string::npos)
 			invalidMultiBinding.replace(multiBindingInstance,
-				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
-				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\">\n"
+				std::string("<local:StatusMeter x:Name=\"meter\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\">\n"
 				"    <local:StatusMeter.Status>\n"
 				"      <MultiBinding StringFormat=\"{}{0} {1}\">\n"
 				"        <Binding Path=\"First\" />\n"
@@ -34606,8 +34671,8 @@ int main()
     </ComponentDefinition>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <local:StatusCard x:Name="card" DesignId="1" Width="240" Height="120">
-	    <Button x:Name="contentButton" DesignId="2" Content="Content" />
+	  <local:StatusCard x:Name="card" Width="240" Height="120">
+	    <Button x:Name="contentButton" Content="Content" />
 	  </local:StatusCard>
 	</Canvas>
 </Window>)XAML";
@@ -34625,7 +34690,6 @@ int main()
 			Control* StatePart = nullptr;
 			Control* ContentPresenter = nullptr;
 			std::wstring InstanceName;
-			int StableId = 0;
 		};
 		class CardBehavior final : public IDeclarativeComponentBehavior
 		{
@@ -34641,7 +34705,6 @@ int main()
 				++State->Attached;
 				State->LastHost = &host;
 				State->InstanceName = context.InstanceName;
-				State->StableId = context.StableId;
 				State->StatePart = host.FindDeclarativeTemplatePart(L"PART_State");
 				State->ContentPresenter =
 					host.FindDeclarativeContentPresenter(L"Content");
@@ -34746,7 +34809,6 @@ int main()
 			CUI_EXPECT_EQ(0, firstState->Detached);
 			CUI_EXPECT_EQ(1, firstState->DpiChanges);
 			CUI_EXPECT_EQ(std::wstring(L"card"), firstState->InstanceName);
-			CUI_EXPECT_EQ(1, firstState->StableId);
 			auto* stateLabel = card
 				? dynamic_cast<Label*>(card->FindDeclarativeTemplatePart(
 					L"PART_State")) : nullptr;
@@ -34841,7 +34903,7 @@ int main()
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="NativeSurfaceWindow">
-  <NativeSurface x:Name="scene" DesignId="41"
+  <NativeSurface x:Name="scene"
     BehaviorKey="Scene3D" PlaceholderText="3D scene preview"
     Width="320" Height="180" />
 </Window>)XAML";
@@ -34933,7 +34995,7 @@ int main()
 			DesignerModel::RuntimeDocument runtime;
 			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::LoadXaml(
 				xaml, runtime, options, &error));
-			auto* surface = runtime.FindControlByDesignId<NativeSurface>(41);
+			auto* surface = runtime.FindControlByName<NativeSurface>(L"scene");
 			CUI_EXPECT_TRUE(surface != nullptr);
 			if (surface)
 			{
@@ -35796,14 +35858,14 @@ int main()
 		if (!DesignerModel::RuntimeDocumentLoader::Load(
 			parsed, runtime, {}, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
-		auto* runtimeMedia = dynamic_cast<MediaElement*>(
-			runtime.FindControlByDesignId(8));
+		auto* runtimeMedia =
+			runtime.FindControlByName<MediaElement>(L"player");
 		CUI_EXPECT_TRUE(runtimeMedia != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"media/demo.mp4"),
 			runtimeMedia ? runtimeMedia->Source : std::wstring{});
 		CUI_EXPECT_TRUE(runtimeMedia && !runtimeMedia->IsLoaded());
 		CUI_EXPECT_TRUE(runtimeMedia && runtimeMedia->MediaFile.empty());
-		auto* combo = dynamic_cast<ComboBox*>(runtime.FindControlByDesignId(1));
+		auto* combo = runtime.FindControlByName<ComboBox>(L"choices");
 		CUI_EXPECT_TRUE(combo != nullptr);
 		CUI_EXPECT_TRUE(combo && combo->GetForegroundBrush().has_value());
 		if (combo && combo->GetForegroundBrush())
@@ -36324,7 +36386,7 @@ int main()
 	{
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Button x:Name="sourceButton" DesignId="1" Content="Source"
+  <Button x:Name="sourceButton" Content="Source"
           FontFamily="Consolas" FontSize="18"/>
 </Window>)XAML";
 		const std::wstring source = Convert::Utf8ToUnicode(xaml);
@@ -36720,16 +36782,15 @@ int main()
 				{ return std::make_unique<TrackedControl>(destroyed); },
 				pool, &error));
 			CUI_EXPECT_EQ(3ULL, pool.PendingCount());
-			CUI_EXPECT_EQ(2, pool.FindByName(L"control2")->GetDesignId());
 			CUI_EXPECT_EQ(pool.FindById(2), pool.FindByName(L"control2"));
 
 			Control runtimeRoot;
 			auto attached = pool.TakeByName(L"control2");
 			CUI_EXPECT_TRUE(attached != nullptr);
+			auto* attachedControl = attached.get();
 			runtimeRoot.AddOwned(std::move(attached));
 			CUI_EXPECT_EQ(2ULL, pool.PendingCount());
-			CUI_EXPECT_EQ(runtimeRoot.GetVisualChild(0),
-				runtimeRoot.FindControlByDesignId(2));
+			CUI_EXPECT_EQ(attachedControl, runtimeRoot.GetVisualChild(0));
 		}
 		CUI_EXPECT_EQ(3, destroyed);
 
@@ -36967,20 +37028,333 @@ int main()
 			static_cast<int>(selected.wDay));
 	});
 
+	runner.Add("Calendar exposes WPF date properties and Monday-first grid semantics", []
+	{
+		Calendar calendar;
+		CUI_EXPECT_EQ(UIClass::UI_Calendar, calendar.Type());
+		CUI_EXPECT_FALSE(calendar.HasSelectedDate());
+		CUI_EXPECT_EQ(std::wstring(L"CUI.Calendar"),
+			calendar.GetAutomationPeer().GetAutomationClassName());
+		const auto* calendarType =
+			CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				L"urn:cui", L"Calendar");
+		const auto* datePickerType =
+			CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				L"urn:cui", L"DatePicker");
+		const auto* compatibilityType =
+			CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				L"urn:cui", L"CalendarView");
+		CUI_EXPECT_TRUE(calendarType != nullptr);
+		CUI_EXPECT_TRUE(calendarType
+			&& calendarType->NativeType == UIClass::UI_Calendar);
+		CUI_EXPECT_TRUE(calendarType
+			&& calendarType->IsDesignerToolboxType());
+		CUI_EXPECT_TRUE(datePickerType != nullptr);
+		CUI_EXPECT_TRUE(datePickerType
+			&& datePickerType->NativeType == UIClass::UI_DatePicker);
+		CUI_EXPECT_TRUE(datePickerType
+			&& datePickerType->IsDesignerToolboxType());
+		CUI_EXPECT_TRUE(compatibilityType != nullptr);
+		CUI_EXPECT_TRUE(compatibilityType
+			&& compatibilityType->NativeType == UIClass::UI_CalendarView);
+		CUI_EXPECT_TRUE(compatibilityType
+			&& !compatibilityType->IsDesignerToolboxType());
+		CUI_EXPECT_EQ(UIClass::UI_CalendarView,
+			GetUIClassBase(UIClass::UI_Calendar));
+		for (const auto& [nativeType, propertyName] : std::to_array({
+			std::pair{ UIClass::UI_Calendar, L"SelectedDate" },
+			std::pair{ UIClass::UI_Calendar, L"DisplayDate" },
+			std::pair{ UIClass::UI_Calendar, L"FirstDayOfWeek" },
+			std::pair{ UIClass::UI_DatePicker, L"SelectedDate" },
+			std::pair{ UIClass::UI_DatePicker, L"Text" },
+			std::pair{ UIClass::UI_DatePicker, L"IsDropDownOpen" } }))
+		{
+			CUI_EXPECT_TRUE(
+				CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+					nativeType, propertyName) != nullptr);
+		}
+
+		int displayChanges = 0;
+		auto displayChanged = calendar.DisplayDateChanged.Subscribe(
+			[&](CalendarView* sender)
+			{
+				CUI_EXPECT_TRUE(sender == &calendar);
+				++displayChanges;
+			});
+		SYSTEMTIME august{};
+		august.wYear = 2026;
+		august.wMonth = 8;
+		august.wDay = 15;
+		calendar.SetDisplayDate(august);
+		calendar.SetFirstDayOfWeek(1);
+		calendar.SetIsTodayHighlighted(false);
+		CUI_EXPECT_EQ(1, displayChanges);
+		CUI_EXPECT_EQ(1, calendar.GetFirstDayOfWeek());
+		CUI_EXPECT_FALSE(calendar.GetIsTodayHighlighted());
+		CUI_EXPECT_EQ(15,
+			static_cast<int>(calendar.GetDisplayDate().wDay));
+
+		std::vector<uint32_t> headers;
+		calendar.GetAccessibilityVirtualColumnHeaders(headers);
+		CUI_EXPECT_EQ(7ULL,
+			static_cast<unsigned long long>(headers.size()));
+		AccessibilityVirtualNode monday;
+		CUI_EXPECT_TRUE(!headers.empty()
+			&& calendar.TryGetAccessibilityVirtualNode(headers.front(), monday));
+		CUI_EXPECT_EQ(std::wstring(L"Monday"), monday.Name);
+		uint32_t leadingCell = 0;
+		AccessibilityVirtualNode leadingDate;
+		CUI_EXPECT_TRUE(calendar.GetAccessibilityVirtualItemAt(
+			0, 0, leadingCell));
+		CUI_EXPECT_TRUE(calendar.TryGetAccessibilityVirtualNode(
+			leadingCell, leadingDate));
+		CUI_EXPECT_EQ(std::wstring(L"2026-07-27"), leadingDate.Name);
+
+		const auto* selectedMetadata =
+			calendar.FindPropertyMetadata(L"SelectedDate");
+		const auto* displayMetadata =
+			calendar.FindPropertyMetadata(L"DisplayDate");
+		CUI_EXPECT_TRUE(selectedMetadata != nullptr);
+		CUI_EXPECT_TRUE(displayMetadata != nullptr);
+		CUI_EXPECT_TRUE(selectedMetadata && HasDependencyPropertyFlag(
+			selectedMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+		CUI_EXPECT_TRUE(displayMetadata && HasDependencyPropertyFlag(
+			displayMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+		Calendar literalCalendar;
+		CUI_EXPECT_TRUE(literalCalendar.TrySetPropertyValue(
+			CalendarView::SelectedDateProperty(),
+			BindingValue(std::wstring(L"2026-08-09"))));
+		CUI_EXPECT_EQ(9,
+			static_cast<int>(literalCalendar.GetSelectedDate().wDay));
+		CUI_EXPECT_FALSE(literalCalendar.TrySetPropertyValue(
+			CalendarView::SelectedDateProperty(),
+			BindingValue(std::wstring(L"2026-02-30"))));
+		DesignerStyleValueKind dateKind{};
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::TryGetStyleValueKind(
+			*selectedMetadata, dateKind));
+		CUI_EXPECT_EQ(DesignerStyleValueKind::String, dateKind);
+		DesignerStyleValue canonicalDate;
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::NormalizeStyleValue(
+			*selectedMetadata,
+			DesignerStyleValue{
+				DesignerStyleValueKind::String, L"2026-08-10" },
+			canonicalDate));
+		CUI_EXPECT_EQ(std::wstring(L"2026-08-10"), canonicalDate.Text);
+		DatePicker literalPicker;
+		CUI_EXPECT_TRUE(literalPicker.TrySetPropertyValue(
+			DatePicker::DisplayDateProperty(),
+			BindingValue(std::wstring(L"2027-02-14"))));
+		CUI_EXPECT_EQ(14,
+			static_cast<int>(literalPicker.GetDisplayDate().wDay));
+
+		int selectionChanges = 0;
+		auto selected = calendar.SelectedDatesChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&) { ++selectionChanges; });
+		SYSTEMTIME choice = august;
+		choice.wDay = 8;
+		calendar.SetSelectedDate(choice);
+		CUI_EXPECT_TRUE(calendar.HasSelectedDate());
+		CUI_EXPECT_EQ(8,
+			static_cast<int>(calendar.GetSelectedDate().wDay));
+		calendar.ClearSelectedDate();
+		CUI_EXPECT_FALSE(calendar.HasSelectedDate());
+		CUI_EXPECT_EQ(2, selectionChanges);
+		CUI_EXPECT_TRUE(displayChanged.Connected());
+		CUI_EXPECT_TRUE(selected.Connected());
+	});
+
+	runner.Add("DatePicker commits culture dates and preserves two-way date identity", []
+	{
+		DatePicker picker;
+		CUI_EXPECT_EQ(UIClass::UI_DatePicker, picker.Type());
+		CUI_EXPECT_FALSE(picker.HasSelectedDate());
+		const auto* selectedMetadata =
+			picker.FindPropertyMetadata(L"SelectedDate");
+		const auto* openMetadata =
+			picker.FindPropertyMetadata(L"IsDropDownOpen");
+		CUI_EXPECT_TRUE(selectedMetadata != nullptr);
+		CUI_EXPECT_TRUE(openMetadata != nullptr);
+		CUI_EXPECT_TRUE(selectedMetadata && HasDependencyPropertyFlag(
+			selectedMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+		CUI_EXPECT_TRUE(openMetadata && HasDependencyPropertyFlag(
+			openMetadata->Flags(),
+			DependencyPropertyFlags::BindsTwoWayByDefault));
+
+		int selectedChanges = 0;
+		int validationErrors = 0;
+		auto selected = picker.SelectedDateChanged.Subscribe(
+			[&](DatePicker* sender, SelectionChangedEventArgs&)
+			{
+				CUI_EXPECT_TRUE(sender == &picker);
+				++selectedChanges;
+			});
+		auto validation = picker.DateValidationError.Subscribe(
+			[&](DatePicker* sender,
+				DatePickerDateValidationErrorEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &picker);
+				CUI_EXPECT_EQ(std::wstring(L"not-a-date"), args.Text);
+				++validationErrors;
+			});
+		picker.SetText(L"2026-08-08");
+		CUI_EXPECT_TRUE(picker.CommitText());
+		CUI_EXPECT_TRUE(picker.HasSelectedDate());
+		CUI_EXPECT_EQ(2026,
+			static_cast<int>(picker.GetSelectedDate().wYear));
+		CUI_EXPECT_EQ(8,
+			static_cast<int>(picker.GetSelectedDate().wMonth));
+		CUI_EXPECT_EQ(8,
+			static_cast<int>(picker.GetSelectedDate().wDay));
+		CUI_EXPECT_TRUE(!picker.GetText().empty());
+		CUI_EXPECT_EQ(1, selectedChanges);
+
+		picker.SetSelectedDateFormat(DatePickerFormat::Short);
+		const auto validText = picker.GetText();
+		CUI_EXPECT_TRUE(!validText.empty());
+		picker.SetText(L"not-a-date");
+		CUI_EXPECT_FALSE(picker.CommitText());
+		CUI_EXPECT_EQ(1, validationErrors);
+		CUI_EXPECT_EQ(validText, picker.GetText());
+		CUI_EXPECT_EQ(8,
+			static_cast<int>(picker.GetSelectedDate().wDay));
+
+		ObservableObject source;
+		source.SetValue(L"Date", picker.GetSelectedDate());
+		CUI_EXPECT_TRUE(picker.DataBindings.Add(
+			L"SelectedDate", source, L"Date", BindingMode::TwoWay) != nullptr);
+		picker.SetText(L"2026-08-18");
+		CUI_EXPECT_TRUE(picker.CommitText());
+		CUI_EXPECT_EQ(18, static_cast<int>(
+			source.GetValue<SYSTEMTIME>(L"Date").wDay));
+		CUI_EXPECT_TRUE(picker.GetAutomationPeer().SupportsPattern(
+			AutomationPattern::Value));
+		CUI_EXPECT_TRUE(picker.GetAutomationPeer().SupportsPattern(
+			AutomationPattern::ExpandCollapse));
+		CUI_EXPECT_TRUE(selected.Connected());
+		CUI_EXPECT_TRUE(validation.Connected());
+	});
+
+	runner.Add("DatePicker template parts own one popup Calendar interaction surface", []
+	{
+		Window host;
+		ConfigureTestControl(host, L"DatePicker popup template");
+		SetDeclaredWindowGeometry(host, 0.0f, 0.0f, 420.0f, 360.0f);
+		auto contentOwner = MakeTestControl<Canvas>();
+		auto* content = static_cast<Canvas*>(
+			host.SetVisualContent(std::move(contentOwner)));
+		auto pickerOwner = MakeTestControl<DatePicker>(
+			20.0f, 20.0f, 200.0f, 32.0f);
+		auto* picker = pickerOwner.get();
+
+		auto rootOwner = MakeTestControl<Grid>();
+		auto* root = rootOwner.get();
+		auto textOwner = MakeTestControl<TextBox>();
+		auto* text = textOwner.get();
+		auto buttonOwner = MakeTestControl<Button>();
+		auto* button = buttonOwner.get();
+		auto popupOwner = MakeTestControl<Popup>();
+		auto* popup = popupOwner.get();
+		for (auto* part : std::to_array<Control*>({ root, text, button, popup }))
+			cui::framework::XamlAccess::SetTemplatedParent(*part, picker);
+		root->AddOwned(std::move(textOwner));
+		root->AddOwned(std::move(buttonOwner));
+		root->AddOwned(std::move(popupOwner));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+			*picker, MakeTemplatePartToken(L"PART_TextBox"), text));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+			*picker, MakeTemplatePartToken(L"PART_Button"), button));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::RegisterTemplatePart(
+			*picker, MakeTemplatePartToken(L"PART_Popup"), popup));
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::SetTemplateRoot(
+			*picker, std::move(rootOwner)) == root);
+		content->AddOwned(std::move(pickerOwner));
+		host.UpdateLayout();
+
+		auto* calendar = picker->GetCalendar();
+		CUI_EXPECT_TRUE(calendar != nullptr);
+		CUI_EXPECT_TRUE(popup->GetChild() == calendar);
+		CUI_EXPECT_TRUE(calendar && calendar->GetVisualParent() == popup);
+		CUI_EXPECT_TRUE(popup->GetPlacementTarget() == picker);
+		CUI_EXPECT_EQ(PlacementMode::Bottom, popup->GetPlacement());
+		CUI_EXPECT_FALSE(popup->GetStaysOpen());
+
+		int opened = 0;
+		int closed = 0;
+		auto openedConnection = picker->CalendarOpened.Subscribe(
+			[&](DatePicker*) { ++opened; });
+		auto closedConnection = picker->CalendarClosed.Subscribe(
+			[&](DatePicker*) { ++closed; });
+		picker->SetText(L"2027-03-11");
+		CUI_EXPECT_TRUE(button->Invoke());
+		CUI_EXPECT_TRUE(picker->GetIsDropDownOpen());
+		CUI_EXPECT_TRUE(popup->GetIsOpen());
+		CUI_EXPECT_EQ(1, opened);
+		CUI_EXPECT_EQ(11,
+			static_cast<int>(picker->GetSelectedDate().wDay));
+		int calendarSelectionChanges = 0;
+		auto calendarSelectionConnection =
+			calendar->SelectedDatesChanged.Subscribe(
+				[&](Control*, SelectionChangedEventArgs&)
+				{ ++calendarSelectionChanges; });
+		CUI_EXPECT_EQ(11,
+			static_cast<int>(calendar->GetSelectedDate().wDay));
+
+		SYSTEMTIME selectedDate{};
+		selectedDate.wYear = 2027;
+		selectedDate.wMonth = 3;
+		selectedDate.wDay = 22;
+		calendar->SetSelectedDate(selectedDate);
+		CUI_EXPECT_EQ(22,
+			static_cast<int>(calendar->GetSelectedDate().wDay));
+		CUI_EXPECT_EQ(1, calendarSelectionChanges);
+		CUI_EXPECT_EQ(22,
+			static_cast<int>(picker->GetSelectedDate().wDay));
+		MouseEventArgs mouseUp(
+			MouseButton::Left, MouseButtonState::Released, 1, 20, 20, 0);
+		cui::framework::RoutedEventAccess::InvokeHandlers(
+			calendar->OnMouseUp, calendar, mouseUp);
+		CUI_EXPECT_FALSE(picker->GetIsDropDownOpen());
+		CUI_EXPECT_FALSE(popup->GetIsOpen());
+		CUI_EXPECT_EQ(1, closed);
+
+		CUI_EXPECT_TRUE(button->Invoke());
+		CUI_EXPECT_TRUE(picker->GetIsDropDownOpen());
+		SYSTEMTIME transient = selectedDate;
+		transient.wDay = 25;
+		calendar->SetSelectedDate(transient);
+		KeyEventArgs escape(Key::Escape);
+		cui::framework::RoutedEventAccess::InvokeHandlers(
+			calendar->OnKeyDown, calendar, escape);
+		CUI_EXPECT_FALSE(picker->GetIsDropDownOpen());
+		CUI_EXPECT_EQ(22,
+			static_cast<int>(picker->GetSelectedDate().wDay));
+
+		CUI_EXPECT_TRUE(cui::framework::TemplateAccess::SetTemplateRoot(
+			*picker, {}) == nullptr);
+		CUI_EXPECT_TRUE(picker->GetCalendar() == calendar);
+		CUI_EXPECT_TRUE(calendar->GetVisualParent() == nullptr);
+		CUI_EXPECT_TRUE(openedConnection.Connected());
+		CUI_EXPECT_TRUE(closedConnection.Connected());
+		CUI_EXPECT_TRUE(calendarSelectionConnection.Connected());
+	});
+
 	runner.Add("RelativePanel attached constraints round-trip and materialize dynamically", []
 	{
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="RelativeWindow" Width="640" Height="480">
-  <RelativePanel x:Name="layout" DesignId="1" Width="600" Height="400">
-    <Button x:Name="anchor" DesignId="2" Content="Anchor"
+  <RelativePanel x:Name="layout" Width="600" Height="400">
+    <Button x:Name="anchor" Content="Anchor"
             RelativePanel.AlignLeftWithPanel="true"
             RelativePanel.AlignTopWithPanel="true" />
-    <Button x:Name="center" DesignId="3" Content="Center"
+    <Button x:Name="center" Content="Center"
             RelativePanel.CenterHorizontal="true"
             RelativePanel.CenterVertical="true"
             RelativePanel.AlignRightWithPanel="false" />
-    <TextBlock x:Name="floating" DesignId="4" Text="Floating"
+    <TextBlock x:Name="floating" Text="Floating"
            RelativePanel.AlignRightWithPanel="true"
            RelativePanel.AlignBottomWithPanel="true"
            RelativePanel.Above="anchor"
@@ -37047,9 +37421,9 @@ int main()
 		CUI_EXPECT_TRUE(tree.ContentRoot != nullptr);
 		auto* panel = dynamic_cast<RelativePanel*>(
 			tree.ContentRoot.get());
-		auto* anchor = panel ? panel->FindControlByDesignId(2) : nullptr;
-		auto* center = panel ? panel->FindControlByDesignId(3) : nullptr;
-		auto* floating = panel ? panel->FindControlByDesignId(4) : nullptr;
+		auto* anchor = FindMaterializedControlByName(tree, L"anchor");
+		auto* center = FindMaterializedControlByName(tree, L"center");
+		auto* floating = FindMaterializedControlByName(tree, L"floating");
 		CUI_EXPECT_TRUE(panel != nullptr && anchor != nullptr
 			&& center != nullptr && floating != nullptr);
 		const auto* anchorConstraints = panel
@@ -37137,8 +37511,8 @@ int main()
 
 		const std::string wrongParent = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="WrongParent">
-  <Canvas x:Name="plain" DesignId="1">
-    <Button x:Name="child" DesignId="2"
+  <Canvas x:Name="plain">
+    <Button x:Name="child"
             RelativePanel.CenterHorizontal="true" />
   </Canvas>
 </Window>)XAML";
@@ -37516,7 +37890,7 @@ int main()
 		CUI_EXPECT_TRUE(contentRenderedConnection.Connected());
 		CUI_EXPECT_EQ(1, contentRenderedCount);
 		for (int value = static_cast<int>(UIClass::UI_Base);
-			value <= static_cast<int>(UIClass::UI_CUSTOM); ++value)
+			value <= static_cast<int>(UIClass::UI_Last); ++value)
 		{
 			const auto events = DesignerEventCatalog::GetControlEvents(
 				static_cast<UIClass>(value));
@@ -37619,7 +37993,7 @@ int main()
 		if (click)
 		{
 			DesignerModel::RuntimeControlEventRequest request{
-				button, 1, L"batchButton", UIClass::UI_Button, {},
+				button, L"batchButton", UIClass::UI_Button, {},
 				*click, L"HandleExisting" };
 			EventConnection connection;
 			CUI_EXPECT_TRUE(resolver(request, connection, error));
@@ -37686,7 +38060,7 @@ int main()
 		if (drop)
 		{
 			DesignerModel::RuntimeControlEventRequest request{
-				button, 1, L"batchButton", UIClass::UI_Button, {},
+				button, L"batchButton", UIClass::UI_Button, {},
 				*drop, L"HandleLeased" };
 			CUI_EXPECT_TRUE(resolver(request, leasedConnection, error));
 			DragEventArgs firstDrop;
@@ -37706,7 +38080,7 @@ int main()
 			if (click)
 			{
 				DesignerModel::RuntimeControlEventRequest preservedRequest{
-					button, 1, L"batchButton", UIClass::UI_Button, {},
+					button, L"batchButton", UIClass::UI_Button, {},
 					*click, L"HandleExisting" };
 				EventConnection preserved;
 				CUI_EXPECT_TRUE(resolver(
@@ -38016,7 +38390,6 @@ int main()
 			"XamlObjectMaterializer",
 			"RuntimeDocument",
 			"DeclarativeTypeDescriptor::Create",
-			"DesignIdentityAccess::Set",
 			"XamlInfrastructure.h",
 			"XamlAccess::" })
 			CUI_EXPECT_TRUE(
@@ -39104,7 +39477,7 @@ int main()
 		CUI_EXPECT_TRUE(generatedHeader.find("Button* saveButton = nullptr;")
 			< generatedHeader.find("std::vector<EventConnection> _generatedEventConnections;"));
 		CUI_EXPECT_TRUE(generatedHeader.find(
-			"static constexpr int saveButton = 42;") != std::string::npos);
+			"static constexpr int saveButton = 42;") == std::string::npos);
 		CUI_EXPECT_TRUE(generatedHeader.find(
 			"Button* GetSaveButton() noexcept { return saveButton; }")
 			!= std::string::npos);
@@ -39127,8 +39500,7 @@ int main()
 			"this->ContentRendered.Subscribe(std::bind_front(&PersistedEventWindowGenerated::HandleContentRendered, this))")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(generatedCpp.find(
-			"cui::framework::DesignIdentityAccess::Set(*saveButton, 42);")
-			!= std::string::npos);
+			"DesignIdentityAccess") == std::string::npos);
 		CUI_EXPECT_TRUE(generatedCpp.find(
 			"cui::framework::StyleAccess::SetEnvironment(*this, "
 			"std::move(__frameworkThemeStyles), std::move(__styleSheet), true)")
@@ -40037,7 +40409,7 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"class MainWindowGenerated : public Window") != std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
-			"static constexpr int namespaceButton = 77;") != std::string::npos);
+			"static constexpr int namespaceButton = 77;") == std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"Button* GetNamespaceButton() noexcept { return namespaceButton; }")
 			!= std::string::npos);
@@ -40053,7 +40425,7 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"TDocument* TryDocument() const noexcept") != std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
-			"_document.template FindControlByDesignId<Button>")
+			"_document.template FindControlByName<Button>(L\"namespaceButton\")")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"_document(&document)") == std::string::npos);
@@ -40081,11 +40453,10 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 			"Button* GetNamespaceButton() const noexcept")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
-			"ReferenceNamespaceButton() const noexcept")
+			"ReferenceNamespaceButton() const")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
-			"MainWindowGenerated::ControlIds::namespaceButton")
-			!= std::string::npos);
+			"ControlIds") == std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"void InitializeComponent();") != std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
@@ -45630,7 +46001,7 @@ class FreshWindow : public FreshWindowGenerated {};
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <local:PulseCard x:Name="card" DesignId="1" />
+  <local:PulseCard x:Name="card" />
 </Window>)XAML";
 
 		DesignerModel::DesignDocument document;
@@ -45994,7 +46365,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto attach = [](std::unique_ptr<Panel>& owner, DeleteMode mode)
 		{
 			DeclarativeComponentBehaviorContext context{
-				*owner, 1, L"lifetimeHost",
+				*owner, L"lifetimeHost",
 				RuntimeTypeId{ L"urn:cui:test", L"LifetimeHost" } };
 			std::wstring error;
 			return cui::framework::XamlAccess::SetComponentBehavior(
@@ -47494,7 +47865,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="ContextMenuWindow">
-  <ContextMenu x:Name="rowContextMenu" DesignId="71">
+  <ContextMenu x:Name="rowContextMenu">
     <ContextMenu.CommandBindings>
       <CommandBinding Command="Context.Open"
         PreviewCanExecute="PreviewCanContextCommand"
@@ -47801,11 +48172,11 @@ class FreshWindow : public FreshWindowGenerated {};
 			}
 			else
 			{
-				const auto at = legacy.find("DesignId=\"71\"");
+				const auto at = legacy.find("x:Name=\"rowContextMenu\"");
 				CUI_EXPECT_TRUE(at != std::string::npos);
 				if (at != std::string::npos)
 					legacy.insert(
-						at + std::string("DesignId=\"71\"").size(),
+						at + std::string("x:Name=\"rowContextMenu\"").size(),
 						" OnMenuCommand=\"LegacyHandler\"");
 			}
 			unchanged = document;
@@ -47820,13 +48191,13 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="CommandTargetWindow">
-  <Canvas x:Name="root" DesignId="1">
-    <Canvas x:Name="routeTarget" DesignId="2" />
-    <Button x:Name="directSource" DesignId="3"
+  <Canvas x:Name="root">
+    <Canvas x:Name="routeTarget" />
+    <Button x:Name="directSource"
       CommandTarget="routeTarget" />
-    <Button x:Name="referenceSource" DesignId="4"
+    <Button x:Name="referenceSource"
       CommandTarget="{x:Reference Name=routeTarget}" />
-    <ContextMenu x:Name="targetMenu" DesignId="5">
+    <ContextMenu x:Name="targetMenu">
       <ContextMenu.Items>
         <MenuItem Header="Open" CommandTarget="routeTarget">
           <MenuItem.Items>
@@ -48008,18 +48379,18 @@ class FreshWindow : public FreshWindowGenerated {};
       </ComponentDefinition.Template>
     </ComponentDefinition>
   </Window.Resources>
-  <Canvas x:Name="root" DesignId="1">
-    <Canvas x:Name="routeTarget" DesignId="2" />
-    <Button x:Name="directSource" DesignId="3"
+  <Canvas x:Name="root">
+    <Canvas x:Name="routeTarget" />
+    <Button x:Name="directSource"
       CommandTarget="{x:Reference routeTarget}">
       <Button.InputBindings>
         <KeyBinding Command="Runtime.WindowTarget" Gesture="F7"
           CommandTarget="{x:Reference RuntimeCommandWindow}" />
       </Button.InputBindings>
     </Button>
-    <Button x:Name="windowSource" DesignId="4"
+    <Button x:Name="windowSource"
       CommandTarget="{x:Reference RuntimeCommandWindow}" />
-    <Menu x:Name="mainMenu" DesignId="5">
+    <Menu x:Name="mainMenu">
       <Menu.Items>
         <MenuItem Header="Open" CommandTarget="{x:Reference routeTarget}">
           <MenuItem.Items>
@@ -48029,7 +48400,7 @@ class FreshWindow : public FreshWindowGenerated {};
         </MenuItem>
       </Menu.Items>
     </Menu>
-    <local:TargetSurface x:Name="surface" DesignId="6" />
+    <local:TargetSurface x:Name="surface" />
   </Canvas>
 </Window>)XAML";
 
@@ -48098,7 +48469,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			document, runtime, {}, &error))
 			throw std::runtime_error(Convert::UnicodeToUtf8(error));
 		auto* runtimeTarget = runtime.FindControlByName(L"routeTarget");
-		auto* runtimeDirect = runtime.FindControlByDesignId<Button>(3);
+		auto* runtimeDirect = runtime.FindControlByName<Button>(L"directSource");
 		auto* runtimeWindow = runtime.FindControlByName(L"windowSource");
 		auto* runtimeSurface = runtime.FindControlByName(L"surface");
 		auto* runtimeTemplateSource = runtimeSurface
@@ -48184,11 +48555,11 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="TransactionalCommandWindow" Width="480" Height="260">
-  <Canvas x:Name="root" DesignId="1">
-    <Canvas x:Name="routeTarget" DesignId="2" />
-    <Button x:Name="windowSource" DesignId="3"
+  <Canvas x:Name="root">
+    <Canvas x:Name="routeTarget" />
+    <Button x:Name="windowSource"
       CommandTarget="{x:Reference TransactionalCommandWindow}" />
-    <Button x:Name="stableSibling" DesignId="4">
+    <Button x:Name="stableSibling">
       <Button.InputBindings>
         <KeyBinding Command="Runtime.ReloadTarget" Gesture="F8"
           CommandTarget="{x:Reference TransactionalCommandWindow}" />
@@ -48214,9 +48585,9 @@ class FreshWindow : public FreshWindowGenerated {};
 				return binding.CommandTarget;
 			}, source->GetInputBindings().front());
 		};
-		auto* originalSource = runtime.FindControlByDesignId<Button>(3);
+		auto* originalSource = runtime.FindControlByName<Button>(L"windowSource");
 		auto* originalInputSource =
-			runtime.FindControlByDesignId<Button>(4);
+			runtime.FindControlByName<Button>(L"stableSibling");
 		CUI_EXPECT_TRUE(originalSource != nullptr);
 		CUI_EXPECT_TRUE(originalInputSource != nullptr);
 		CUI_EXPECT_TRUE(originalSource
@@ -48251,13 +48622,13 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto changed = document;
 		auto sourceNode = std::find_if(
 			changed.Nodes.begin(), changed.Nodes.end(),
-			[](const auto& node) { return node.Id == 3; });
+			[](const auto& node) { return node.Name == L"windowSource"; });
 		CUI_EXPECT_TRUE(sourceNode != changed.Nodes.end());
 		if (sourceNode == changed.Nodes.end()) return;
 		sourceNode->Structure.CommandTarget = L"routeTarget";
 		auto inputSourceNode = std::find_if(
 			changed.Nodes.begin(), changed.Nodes.end(),
-			[](const auto& node) { return node.Id == 4; });
+			[](const auto& node) { return node.Name == L"stableSibling"; });
 		CUI_EXPECT_TRUE(inputSourceNode != changed.Nodes.end());
 		if (inputSourceNode == changed.Nodes.end()
 			|| inputSourceNode->InputBindings.empty()) return;
@@ -48269,9 +48640,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
 			changed, runtime, {}, &mode, &error));
 		CUI_EXPECT_TRUE(host->Content.get() == runtime.ContentRoot());
-		CUI_EXPECT_TRUE(runtime.FindControlByDesignId<Button>(3)
+		CUI_EXPECT_TRUE(runtime.FindControlByName<Button>(L"windowSource")
 			== originalSource);
-		CUI_EXPECT_TRUE(runtime.FindControlByDesignId<Button>(4)
+		CUI_EXPECT_TRUE(runtime.FindControlByName<Button>(L"stableSibling")
 			== originalInputSource);
 		CUI_EXPECT_TRUE(originalSource
 			&& originalSource->CommandTarget == &window);
@@ -48281,9 +48652,9 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
 			changed, runtime, {}, &mode, &error));
 		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Recomposed, mode);
-		auto* reloadedSource = runtime.FindControlByDesignId<Button>(3);
+		auto* reloadedSource = runtime.FindControlByName<Button>(L"windowSource");
 		auto* reloadedInputSource =
-			runtime.FindControlByDesignId<Button>(4);
+			runtime.FindControlByName<Button>(L"stableSibling");
 		auto* reloadedTarget = runtime.FindControlByName(L"routeTarget");
 		CUI_EXPECT_TRUE(reloadedSource && reloadedInputSource && reloadedTarget);
 		CUI_EXPECT_TRUE(reloadedSource
@@ -48297,13 +48668,13 @@ class FreshWindow : public FreshWindowGenerated {};
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   x:Name="GeneratedCommandTargetWindow" Width="640" Height="360">
-  <Canvas x:Name="root" DesignId="1">
-    <Button x:Name="directSource" DesignId="2"
+  <Canvas x:Name="root">
+    <Button x:Name="directSource"
       CommandTarget="{x:Reference routeTarget}" />
-    <Button x:Name="windowSource" DesignId="3"
+    <Button x:Name="windowSource"
       CommandTarget="{x:Reference GeneratedCommandTargetWindow}" />
-    <Canvas x:Name="routeTarget" DesignId="4" />
-    <Menu x:Name="mainMenu" DesignId="5">
+    <Canvas x:Name="routeTarget" />
+    <Menu x:Name="mainMenu">
       <Menu.Items>
         <MenuItem Header="Open"
           CommandTarget="{x:Reference routeTarget}">
@@ -48598,7 +48969,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			xmlns:d="urn:cui:designer"
 			xmlns:local="urn:cui:tests"
 			x:Name="CustomWindow" Width="640" Height="480">
-			<local:FancyButton x:Name="fancy" DesignId="41"
+			<local:FancyButton x:Name="fancy"
 				d:CppType="Acme.Controls.FancyButton"
 				d:Header="Controls/FancyButton.h"
 				d:BaseType="Button" d:Constructor="Default"
@@ -49273,6 +49644,8 @@ class FreshWindow : public FreshWindowGenerated {};
 			std::pair{ L"Grid", UIClass::UI_Grid },
 			std::pair{ L"ScrollViewer", UIClass::UI_ScrollViewer },
 			std::pair{ L"Popup", UIClass::UI_Popup },
+			std::pair{ L"Calendar", UIClass::UI_Calendar },
+			std::pair{ L"DatePicker", UIClass::UI_DatePicker },
 			std::pair{ L"ToolBar", UIClass::UI_ToolBar },
 			std::pair{ L"TabItem", UIClass::UI_TabItem },
 			std::pair{ L"ListBoxItem", UIClass::UI_ListBoxItem },
@@ -49314,6 +49687,9 @@ class FreshWindow : public FreshWindowGenerated {};
 			std::pair{ UIClass::UI_ComboBox, L"Text" },
 			std::pair{ UIClass::UI_RichTextBox, L"Text" },
 			std::pair{ UIClass::UI_PasswordBox, L"Password" },
+			std::pair{ UIClass::UI_Calendar, L"SelectedDate" },
+			std::pair{ UIClass::UI_DatePicker, L"SelectedDate" },
+			std::pair{ UIClass::UI_DatePicker, L"Text" },
 			std::pair{ UIClass::UI_ContextMenu, L"IsOpen" } }))
 		{
 			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
@@ -49521,12 +49897,12 @@ class FreshWindow : public FreshWindowGenerated {};
     </Style>
   </Window.Resources>
 	<Canvas x:Name="contentRoot">
-	  <Canvas x:Name="canvasHost" DesignId="1" Width="300" Height="180">
-	    <Button x:Name="canvasChild" DesignId="2"
+	  <Canvas x:Name="canvasHost" Width="300" Height="180">
+	    <Button x:Name="canvasChild"
 	            Canvas.Left="12.5" Canvas.Top="8.25"
 	            Content="Canvas child" Width="120" Height="32" />
 	  </Canvas>
-	  <Canvas x:Name="panelHost" DesignId="3" Width="200" Height="100" />
+	  <Canvas x:Name="panelHost" Width="200" Height="100" />
 	</Canvas>
 </Window>)xaml";
 		DesignerModel::DesignDocument document;
@@ -49848,19 +50224,19 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
 			firstDocument, runtime, {}, &error));
 		auto movingDocumentReference = runtime.Reference();
-		auto movingReference = runtime.ReferenceByDesignId<Button>(17);
+		auto movingReference = runtime.ReferenceByName<Button>(L"referenceButton");
 		CUI_EXPECT_EQ(std::wstring(L"First"), movingReference->GetDisplayText());
 		CUI_EXPECT_TRUE(movingDocumentReference.Get() == &runtime);
-		CUI_EXPECT_TRUE(movingDocumentReference.FindControlByDesignId<Button>(17)
+		CUI_EXPECT_TRUE(movingDocumentReference.FindControlByName<Button>(L"referenceButton")
 			== movingReference.Get());
-		CUI_EXPECT_TRUE(movingDocumentReference.ReferenceByDesignId<Button>(17)
+		CUI_EXPECT_TRUE(movingDocumentReference.ReferenceByName<Button>(L"referenceButton")
 			.Get() == movingReference.Get());
 
 		DesignerModel::RuntimeDocument moved(std::move(runtime));
 		CUI_EXPECT_TRUE(movingDocumentReference.Get() == &moved);
 		CUI_EXPECT_TRUE(movingReference.Get()
-			== moved.FindControlByDesignId<Button>(17));
-		CUI_EXPECT_TRUE(runtime.ReferenceByDesignId<Button>(17).Get() == nullptr);
+			== moved.FindControlByName<Button>(L"referenceButton"));
+		CUI_EXPECT_TRUE(runtime.ReferenceByName<Button>(L"referenceButton").Get() == nullptr);
 
 		DesignerModel::RuntimeDocumentRef expiredDocumentReference;
 		DesignerModel::RuntimeControlRef<Button> expiredReference;
@@ -49869,15 +50245,15 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
 				firstDocument, scoped, {}, &error));
 			expiredDocumentReference = scoped.Reference();
-			expiredReference = scoped.ReferenceByDesignId<Button>(17);
+			expiredReference = scoped.ReferenceByName<Button>(L"referenceButton");
 			CUI_EXPECT_TRUE(expiredDocumentReference.Get() == &scoped);
 			CUI_EXPECT_TRUE(expiredReference.Get() != nullptr);
 		}
 		CUI_EXPECT_FALSE(static_cast<bool>(expiredDocumentReference));
 		CUI_EXPECT_TRUE(expiredDocumentReference
-			.FindControlByDesignId<Button>(17) == nullptr);
+			.FindControlByName<Button>(L"referenceButton") == nullptr);
 		CUI_EXPECT_TRUE(expiredDocumentReference
-			.ReferenceByDesignId<Button>(17).Get() == nullptr);
+			.ReferenceByName<Button>(L"referenceButton").Get() == nullptr);
 		CUI_EXPECT_TRUE(expiredReference.Get() == nullptr);
 
 		DesignerModel::RuntimeDocument destination;
@@ -49885,18 +50261,18 @@ class FreshWindow : public FreshWindowGenerated {};
 			firstDocument, destination, {}, &error));
 		auto destinationDocumentReference = destination.Reference();
 		auto destinationReference =
-			destination.ReferenceByDesignId<Button>(17);
+			destination.ReferenceByName<Button>(L"referenceButton");
 		auto secondDocument = makeDocument("Second");
 		DesignerModel::RuntimeDocument replacement;
 		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
 			secondDocument, replacement, {}, &error));
 		auto replacementDocumentReference = replacement.Reference();
 		auto replacementReference =
-			replacement.ReferenceByDesignId<Button>(17);
+			replacement.ReferenceByName<Button>(L"referenceButton");
 		destination = std::move(replacement);
 		CUI_EXPECT_TRUE(destinationDocumentReference.Get() == &destination);
 		CUI_EXPECT_TRUE(destinationReference.Get()
-			== destination.FindControlByDesignId<Button>(17));
+			== destination.FindControlByName<Button>(L"referenceButton"));
 		CUI_EXPECT_EQ(std::wstring(L"Second"), destinationReference->GetDisplayText());
 		CUI_EXPECT_FALSE(static_cast<bool>(replacementDocumentReference));
 		CUI_EXPECT_TRUE(replacementReference.Get() == nullptr);

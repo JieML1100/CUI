@@ -64,6 +64,27 @@
 
 namespace
 {
+	enum class DemoPage : int
+	{
+		Basic = 0,
+		DateControls,
+		Containers,
+		Data,
+		Analytics,
+		Layout,
+		System,
+		WebBrowser,
+		Media,
+		WpfSemantics,
+		TextComposition,
+		Presentation
+	};
+
+	constexpr int PageIndex(DemoPage page) noexcept
+	{
+		return static_cast<int>(page);
+	}
+
 	InputReport PointerInput(
 		InputReportKind kind,
 		MouseButton changedButton,
@@ -1354,7 +1375,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			if (!_tabs)
 				return fail(L"NativeSurface 可见输入验证缺少主 TabControl。");
 			NativeSurfaceTabScope restoreTab{ *_tabs, _tabs->SelectedIndex };
-			if (!_tabs->SelectItem(1))
+			if (!_tabs->SelectItem(PageIndex(DemoPage::Containers)))
 				return fail(L"无法切换到容器页验证 NativeSurface 输入。");
 
 			auto* scene = dynamic_cast<NativeSurface*>(
@@ -1377,7 +1398,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				|| sceneBehavior->LastTextInput() != surfaceText)
 				return fail(L"NativeSurface 未消费统一的 std::wstring TextInput。");
 
-			if (!_tabs->SelectItem(10))
+			if (!_tabs->SelectItem(PageIndex(DemoPage::Presentation)))
 				return fail(L"无法切换到 Presentation 页验证 NativeSurface 输入。");
 			auto* presentationSurface = dynamic_cast<NativeSurface*>(
 				FindGeneratedControlByName(
@@ -1437,7 +1458,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			if (!_tabs)
 				return fail(L"数据控件可见验证缺少主 TabControl。");
 			DataTabScope restoreTab{ *_tabs, _tabs->SelectedIndex };
-			if (!_tabs->SelectItem(2))
+			if (!_tabs->SelectItem(PageIndex(DemoPage::Data)))
 				return fail(L"无法切换到数据控件页执行层次容器验证。");
 
 		auto* synchronizedList = dynamic_cast<ListBox*>(
@@ -2176,7 +2197,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			|| _commandExecutedCount != 1)
 			return fail(L"Button.Command/CommandParameter 未进入 Window.CommandBinding。");
 		const auto previousPage = _tabs->SelectedIndex;
-		if (!toolData->Invoke() || _tabs->SelectedIndex != 2)
+		if (!toolData->Invoke()
+			|| _tabs->SelectedIndex != PageIndex(DemoPage::Data))
 			return fail(L"XAML ToolBar 按钮命名事件未驱动页面导航。");
 		(void)_tabs->SelectItem(previousPage);
 
@@ -2291,7 +2313,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				Tabs.SelectedIndex = SelectedIndex;
 			}
 		} restoreLayoutTab{ *_tabs, _tabs->SelectedIndex };
-		if (!_tabs->SelectItem(4))
+		if (!_tabs->SelectItem(PageIndex(DemoPage::Layout)))
 			return fail(L"无法切换到布局容器页执行可见布局验证。");
 		RequestLayout();
 		UpdateLayout();
@@ -2463,7 +2485,7 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				Tabs.SelectedIndex = SelectedIndex;
 			}
 		} restoreWpfTab{ *_tabs, _tabs->SelectedIndex };
-		if (!_tabs->SelectItem(8))
+		if (!_tabs->SelectItem(PageIndex(DemoPage::WpfSemantics)))
 			return fail(L"无法切换到 WPF 语义实验页执行可见输入验证。");
 		RequestLayout();
 		UpdateLayout();
@@ -4808,17 +4830,17 @@ void DemoWindow::HandleToolBarAction(Control* sender, RoutedEventArgs&)
 	struct NavigationTarget
 	{
 		const wchar_t* Name;
-		int Page;
+		DemoPage Page;
 		const wchar_t* Label;
 	};
 	for (const auto& target : {
-		NavigationTarget{ L"toolBasic", 0, L"基础" },
-		NavigationTarget{ L"toolData", 2, L"数据" },
-		NavigationTarget{ L"toolAnalytics", 3, L"可视化" },
-		NavigationTarget{ L"toolSystem", 5, L"系统" } })
+		NavigationTarget{ L"toolBasic", DemoPage::Basic, L"基础" },
+		NavigationTarget{ L"toolData", DemoPage::Data, L"数据" },
+		NavigationTarget{ L"toolAnalytics", DemoPage::Analytics, L"可视化" },
+		NavigationTarget{ L"toolSystem", DemoPage::System, L"系统" } })
 	{
 		if (sender != RequireControl<Control>(target.Name)) continue;
-		(void)_tabs->SelectItem(target.Page);
+		(void)_tabs->SelectItem(PageIndex(target.Page));
 		UpdateStatus(std::wstring(L"ToolBar: ") + target.Label);
 		return;
 	}
@@ -5765,6 +5787,11 @@ void DemoWindow::HandleInvokeWeb(Control*, RoutedEventArgs&)
 	const auto text = StringHelper::Format(
 		L"from C++ at %02d:%02d:%02d", time.wHour, time.wMinute, time.wSecond);
 	_web->ExecuteScriptAsync(L"window.setFromNative(" + ToJsStringLiteral(text) + L");");
+}
+
+void DemoWindow::HandleNavigationWeb(Control*, RoutedEventArgs&)
+{
+	_web->Navigate(L"https://www.bing.com");
 }
 
 void DemoWindow::HandleMediaCommand(Control* sender, RoutedEventArgs&)

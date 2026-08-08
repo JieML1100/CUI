@@ -1113,6 +1113,7 @@ bool DesignNode::operator==(const DesignNode& other) const
 		&& ParentId == other.ParentId
 		&& ParentRef == other.ParentRef
 		&& Name == other.Name
+		&& NameIsGenerated == other.NameIsGenerated
 		&& Type == other.Type
 		&& XamlType == other.XamlType
 		&& ComponentType == other.ComponentType

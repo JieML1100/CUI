@@ -641,7 +641,7 @@ namespace
 			const auto& group = program.Groups[groupIndex];
 			const auto typeValue = static_cast<int>(group.Type);
 			if (typeValue < static_cast<int>(UIClass::UI_Base)
-				|| typeValue > static_cast<int>(UIClass::UI_CUSTOM)
+				|| typeValue > static_cast<int>(UIClass::UI_Last)
 				|| (group.StyleResourceKey != CompiledStyleInvalidIndex
 					&& group.StyleResourceKey >= program.Strings.size())
 				|| !ValidCompiledStyleRange(

@@ -7047,13 +7047,10 @@ void DesignerCanvas::AdoptVisualChildToCanvasCore(
 
 		// Reserve identity only after the destination is known to be valid.
 		const int stableId = AllocateStableControlId();
-		cui::framework::DesignIdentityAccess::Set(*newControl, stableId);
 		int defaultTabItemStableId = 0;
 		if (defaultTabItem)
 		{
 			defaultTabItemStableId = AllocateStableControlId();
-			cui::framework::DesignIdentityAccess::Set(
-				*defaultTabItem, defaultTabItemStableId);
 			if (LayoutBridge::AttachChild(
 					newControl, std::move(defaultTabItemOwner))
 				!= defaultTabItem)
@@ -9335,8 +9332,7 @@ void DesignerCanvas::CreateDefaultContentRoot()
 	root->VerticalAlignment = VerticalAlignment::Stretch;
 	root->BorderThickness = 0.0f;
 	root->Background = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
-	cui::framework::DesignIdentityAccess::Set(
-		*root, AllocateStableControlId());
+	const int rootNodeId = AllocateStableControlId();
 	XamlSchemaContext schemaContext;
 	std::wstring schemaError;
 	if (!CuiRuntime::XamlRuntimeSchema::AttachBuiltInType(
@@ -9350,7 +9346,7 @@ void DesignerCanvas::CreateDefaultContentRoot()
 		{}, _clientSurface->GetActualSizeDip() });
 	auto record = std::make_shared<DesignerControl>(
 		root, L"contentRoot", UIClass::UI_Canvas, nullptr,
-		root->GetDesignId());
+		rootNodeId);
 	record->XamlType = canvasType->TypeId;
 	_designerControls.push_back(std::move(record));
 	_defaultContentRoot = root;
@@ -9532,6 +9528,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			DesignerModel::DesignNode node;
 			node.Id = dc->StableId;
 			node.Name = dc->Name;
+			node.NameIsGenerated = dc->NameIsGenerated;
 			node.Type = dc->Type;
 			node.XamlType = dc->XamlType;
 			node.ComponentType = dc->ComponentType;
@@ -10444,7 +10441,7 @@ DesignerDocumentTransactionResult DesignerCanvas::RenameEventHandler(
 		DesignerEventHandlerDelta delta;
 		delta.IsWindow = reference.OwnerKind
 			== DesignerModel::DesignEventOwnerKind::Window;
-		delta.StableId = delta.IsWindow ? 0 : reference.OwnerDesignId;
+		delta.StableId = delta.IsWindow ? 0 : reference.OwnerNodeId;
 		delta.ControlType = reference.SubjectType;
 		delta.SubjectName = reference.SubjectName;
 		delta.EventName = reference.EventName;
@@ -10460,7 +10457,7 @@ DesignerDocumentTransactionResult DesignerCanvas::RenameEventHandler(
 				[&](const std::shared_ptr<DesignerControl>& control)
 				{
 					return control
-						&& control->StableId == reference.OwnerDesignId;
+						&& control->StableId == reference.OwnerNodeId;
 				});
 			if (found == _designerControls.end() || !*found)
 				return fail(L"重命名事件时无法按稳定 ID 找到控件："

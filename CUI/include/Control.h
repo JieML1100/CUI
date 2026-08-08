@@ -126,6 +126,7 @@ enum class UIClass : int
 	UI_RelativePanel,
 	UI_ContextMenu,
 	UI_ChartView,
+	/** Compatibility surface retained for existing CalendarView XAML. */
 	UI_CalendarView,
 	UI_NumericUpDown,
 	UI_Expander,
@@ -151,7 +152,14 @@ enum class UIClass : int
 	UI_ItemsPresenter,
 	/** Top-level FrameworkElement projected through PlatformWindowHost. */
 	UI_Window,
-	UI_CUSTOM
+	/** Existing custom-control sentinel; its numeric identity is compatibility data. */
+	UI_CUSTOM,
+	/** WPF Calendar surface backed by the retained calendar behavior host. */
+	UI_Calendar,
+	/** WPF date-entry control composed from TextBox, Button, Popup and Calendar. */
+	UI_DatePicker,
+	/** Inclusive bound for internal UIClass enumeration and validation. */
+	UI_Last = UI_DatePicker
 };
 
 /** Returns the nearest framework base represented by UIClass. */
@@ -2262,9 +2270,6 @@ public:
 		return static_cast<int>(_visualChildren.size());
 	}
 	Control* GetVisualChild(int index) const noexcept;
-	/** @brief 在当前控件及其后代中按设计文档稳定 ID 查找。 */
-	Control* FindControlByDesignId(int designId) noexcept;
-	const Control* FindControlByDesignId(int designId) const noexcept;
 	virtual std::span<Control* const> GetLayoutChildrenView() noexcept
 	{
 		return std::span<Control* const>{

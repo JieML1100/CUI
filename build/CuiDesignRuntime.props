@@ -29,6 +29,38 @@
     </ClCompile>
   </ItemDefinitionGroup>
 
+  <!--
+    Visual Studio builds project references itself and asks MSBuild projects to
+    resolve only GetTargetPath. That model cannot schedule both the Production
+    and Design instances of CUI.vcxproj in the same solution configuration, so
+    a Design consumer could link a stale CUIDesignCore.lib after CUI gained a
+    new translation unit. Explicitly build the Design instance before reference
+    resolution; command-line builds retain their normal project-reference path.
+  -->
+  <Target Name="CuiEnsureDesignCoreProjectReference"
+          BeforeTargets="ResolveProjectReferences"
+          Condition="'$(MSBuildProjectName)'!='CUI'
+                  and '$(CuiRuntimeFlavor)'=='Design'
+                  and '$(ConfigurationType)'=='Application'
+                  and '$(DesignTimeBuild)'!='true'
+                  and '$(BuildingInsideVisualStudio)'=='true'">
+    <ItemGroup>
+      <_CuiDesignCoreProjectReference
+        Include="@(ProjectReference)"
+        Condition="'%(ProjectReference.Filename)'=='CUI'" />
+    </ItemGroup>
+    <Message Condition="'@(_CuiDesignCoreProjectReference)'!=''"
+             Importance="High"
+             Text="CUI design-core dependency build: @(_CuiDesignCoreProjectReference->'%(FullPath)') ($(Configuration)|$(Platform))" />
+    <MSBuild Condition="'@(_CuiDesignCoreProjectReference)'!=''"
+             Projects="@(_CuiDesignCoreProjectReference)"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);CuiRuntimeFlavor=Design"
+             RemoveProperties="BuildingInsideVisualStudio;BuildingSolutionFile;BuildProjectReferences"
+             BuildInParallel="false"
+             StopOnFirstFailure="true" />
+  </Target>
+
   <Target Name="ValidateCuiRuntimeFlavor" BeforeTargets="PrepareForBuild">
     <Error
       Condition="'$(CuiRuntimeFlavor)'!='Production' and '$(CuiRuntimeFlavor)'!='Design'"

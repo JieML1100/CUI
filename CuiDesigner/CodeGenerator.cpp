@@ -2873,6 +2873,8 @@ std::string CodeGenerator::GetControlTypeName(UIClass type) const
 	case UIClass::UI_WrapPanel: return "WrapPanel";
 	case UIClass::UI_RelativePanel: return "RelativePanel";
 	case UIClass::UI_ToggleButton: return "ToggleButton";
+	case UIClass::UI_Calendar: return "Calendar";
+	case UIClass::UI_DatePicker: return "DatePicker";
 	case UIClass::UI_CalendarView: return "CalendarView";
 	case UIClass::UI_Window: return "Window";
 	case UIClass::UI_CheckBox: return "CheckBox";
@@ -3106,6 +3108,37 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 		if (propertyName == L"IsSelectionBoxHighlighted")
 			return readOnlyIdentity(
 				"ComboBox::IsSelectionBoxHighlightedProperty()");
+	}
+	if (type == UIClass::UI_DatePicker)
+	{
+		if (propertyName == L"Text")
+			return "DatePicker::TextProperty()";
+		if (propertyName == L"IsDropDownOpen")
+			return "DatePicker::IsDropDownOpenProperty()";
+		if (propertyName == L"SelectedDate")
+			return "DatePicker::SelectedDateProperty()";
+		if (propertyName == L"DisplayDate")
+			return "DatePicker::DisplayDateProperty()";
+		if (propertyName == L"FirstDayOfWeek")
+			return "DatePicker::FirstDayOfWeekProperty()";
+		if (propertyName == L"IsTodayHighlighted")
+			return "DatePicker::IsTodayHighlightedProperty()";
+		if (propertyName == L"SelectedDateFormat")
+			return "DatePicker::SelectedDateFormatProperty()";
+	}
+	if (type == UIClass::UI_Calendar
+		|| type == UIClass::UI_CalendarView)
+	{
+		if (propertyName == L"SelectionMode")
+			return "CalendarView::SelectionModeProperty()";
+		if (propertyName == L"SelectedDate")
+			return "CalendarView::SelectedDateProperty()";
+		if (propertyName == L"DisplayDate")
+			return "CalendarView::DisplayDateProperty()";
+		if (propertyName == L"FirstDayOfWeek")
+			return "CalendarView::FirstDayOfWeekProperty()";
+		if (propertyName == L"IsTodayHighlighted")
+			return "CalendarView::IsTodayHighlightedProperty()";
 	}
 	if (type == UIClass::UI_Slider)
 	{
@@ -3490,11 +3523,6 @@ std::string CodeGenerator::GenerateControlInstantiation(
 			<< "(void)cui::framework::DependencyPropertyAccess::SetValue(*"
 			<< name << ", Control::FocusableProperty(), BindingValue(true), "
 			"DependencyPropertyValueSource::Theme);\n";
-	if (dynamicOutput && node.Id > 0 && !node.TemplateState.Generated)
-		code << indentStr
-			<< "cui::framework::DesignIdentityAccess::Set(*" << name << ", "
-			<< node.Id << ");\n";
-
 	return code.str();
 }
 
@@ -6903,6 +6931,7 @@ std::string CodeGenerator::GenerateHeader()
 			}
 			for (const auto& node : component.Template)
 			{
+				if (node.NameIsGenerated) continue;
 				const auto partName = SanitizeCppIdentifier(
 					WStringToString(node.Name));
 				header << "\t[[nodiscard]] "
@@ -6999,31 +7028,16 @@ std::string CodeGenerator::GenerateHeader()
 		}
 		header << "\t};\n\n";
 	}
-	const bool hasStableControlIds = std::any_of(
-		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
-		[](const auto& node)
-		{ return node.Id > 0 && !node.TemplateState.Generated; });
-	if (hasStableControlIds)
-	{
-		header << "\t// Stable identities shared by static and dynamic document paths.\n";
-		header << "\tstruct ControlIds final\n\t{\n";
-		for (const auto& node : _sourceDocument.Nodes)
-		{
-			if (node.Id <= 0 || node.TemplateState.Generated) continue;
-			header << "\t\tstatic constexpr int " << GetVarName(node)
-				<< " = " << node.Id << ";\n";
-		}
-		header << "\t};\n\n";
-	}
 	const bool hasAuthoredNamedControls = std::any_of(
 		_sourceDocument.Nodes.begin(), _sourceDocument.Nodes.end(),
-		[](const auto& node) { return !node.TemplateState.Generated; });
+		[](const auto& node)
+		{ return !node.TemplateState.Generated && !node.NameIsGenerated; });
 	if (hasAuthoredNamedControls)
 	{
 		header << "\t// Type-safe x:Name accessors; ownership remains with the generated Window.\n";
 		for (const auto& node : _sourceDocument.Nodes)
 		{
-			if (node.TemplateState.Generated) continue;
+			if (node.TemplateState.Generated || node.NameIsGenerated) continue;
 			auto accessorName = GetVarName(node);
 			if (!accessorName.empty() && accessorName.front() >= 'a'
 				&& accessorName.front() <= 'z')
@@ -7071,7 +7085,7 @@ std::string CodeGenerator::GenerateHeader()
 			" { return *_document.Get(); }\n";
 		for (const auto& node : _sourceDocument.Nodes)
 		{
-			if (node.Id <= 0 || node.TemplateState.Generated) continue;
+			if (node.TemplateState.Generated || node.NameIsGenerated) continue;
 			auto accessorName = GetVarName(node);
 			if (!accessorName.empty() && accessorName.front() >= 'a'
 				&& accessorName.front() <= 'z')
@@ -7079,17 +7093,15 @@ std::string CodeGenerator::GenerateHeader()
 					accessorName.front() - 'a' + 'A');
 			const auto typeName = GetGeneratedControlTypeName(node);
 			header << "\t[[nodiscard]] " << typeName << "* Get"
-				<< accessorName << "() const noexcept\n\t{\n";
-			header << "\t\treturn _document.template FindControlByDesignId<"
-				<< typeName << ">(\n";
-			header << "\t\t\t" << className << "::ControlIds::"
-				<< GetVarName(node) << ");\n\t}\n";
+				<< accessorName << "() const\n\t{\n";
+			header << "\t\treturn _document.template FindControlByName<"
+				<< typeName << ">(L\""
+				<< EscapeWStringLiteral(node.Name) << "\");\n\t}\n";
 			header << "\t[[nodiscard]] auto Reference" << accessorName
-				<< "() const noexcept\n\t{\n";
-			header << "\t\treturn _document.template ReferenceByDesignId<"
-				<< typeName << ">(\n";
-			header << "\t\t\t" << className << "::ControlIds::"
-				<< GetVarName(node) << ");\n\t}\n";
+				<< "() const\n\t{\n";
+			header << "\t\treturn _document.template ReferenceByName<"
+				<< typeName << ">(L\""
+				<< EscapeWStringLiteral(node.Name) << "\");\n\t}\n";
 		}
 		header << "\nprivate:\n";
 		header << "\tDocumentReference _document;\n";
@@ -13900,7 +13912,6 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			"DesignerModel::",
 			"cui::framework::XamlAccess::",
 			"DeclarativeTypeDescriptor::Create",
-			"DesignIdentityAccess::Set",
 			"XamlObjectMaterializer",
 			"RuntimeDocument",
 			"std::make_shared<ControlStyleSheet>",

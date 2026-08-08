@@ -116,7 +116,7 @@
   </Window.DataContextSchema>
   <StackPanel x:Name="staticRoot" Orientation="Vertical">
     <Button x:Name="namespaceButton"
-            DesignId="77"
+
 		    Command="Demo.Static.Refresh"
 		    CommandParameter="static-input"
 		    CommandTarget="{x:Reference NamespacedRuntimeWindow}"
@@ -126,13 +126,13 @@
 		    Drop="HandleNamespacedDrop"
             Click="HandleNamespacedClick" />
     <Button x:Name="authorTemplateButton"
-            DesignId="78"
+
             Template="{StaticResource StaticAuthorButtonTemplate}"
             Content="author template"
             Padding="6"
             Width="260" Height="72"/>
     <Button x:Name="styleTemplateButton"
-            DesignId="79"
+
             Style="{StaticResource StaticAuthorButtonStyle}"
             Content="Style.Template"
             Width="220" Height="48"/>

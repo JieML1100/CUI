@@ -19,15 +19,14 @@ class Control;
 class D2DGraphics;
 
 /**
- * Stable runtime identity supplied while an application behavior is attached
- * to one XAML-declared component instance. The context is valid only for the
+ * Authored XAML identity supplied while an application behavior is attached
+ * to one declared component instance. The context is valid only for the
  * duration of Attach; behaviors should retain values or Control pointers they
  * need after returning.
  */
 struct DeclarativeComponentBehaviorContext final
 {
 	Control& Host;
-	int StableId = 0;
 	std::wstring InstanceName;
 	RuntimeTypeId Type;
 };

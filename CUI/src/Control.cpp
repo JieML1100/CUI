@@ -618,6 +618,10 @@ UIClass GetUIClassBase(UIClass type) noexcept
 	case UIClass::UI_WebBrowser:
 	case UIClass::UI_NativeSurface:
 		return UIClass::UI_FrameworkElement;
+	case UIClass::UI_Calendar:
+		return UIClass::UI_CalendarView;
+	case UIClass::UI_DatePicker:
+		return UIClass::UI_Control;
 	case UIClass::UI_Base:
 		return UIClass::UI_Base;
 	case UIClass::UI_CUSTOM:
@@ -14152,25 +14156,6 @@ Control* Control::GetVisualChild(int index) const noexcept
 	if (index < 0 || static_cast<size_t>(index) >= _visualChildren.size())
 		return nullptr;
 	return _visualChildren[static_cast<size_t>(index)];
-}
-
-Control* Control::FindControlByDesignId(int designId) noexcept
-{
-	return const_cast<Control*>(
-		static_cast<const Control*>(this)->FindControlByDesignId(designId));
-}
-
-const Control* Control::FindControlByDesignId(int designId) const noexcept
-{
-	if (designId <= 0) return nullptr;
-	if (GetDesignId() == designId) return this;
-	for (const auto* child : _visualChildren)
-	{
-		if (!child) continue;
-		if (const auto* match = child->FindControlByDesignId(designId))
-			return match;
-	}
-	return nullptr;
 }
 
 std::vector<Control*> Control::GetVisualChildrenInZOrder() const

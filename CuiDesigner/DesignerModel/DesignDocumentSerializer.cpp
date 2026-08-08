@@ -83,7 +83,7 @@ namespace
 		// Snapshots created before the visual media type was aligned with WPF
 		// persisted the native type spelling. Keep this alias local to snapshot
 		// loading rather than publishing a second canonical Schema identity.
-		if (s == "MediaPlayer")
+		if (s == "MediaElement")
 		{
 			out = UIClass::UI_MediaElement;
 			return true;
@@ -116,7 +116,7 @@ namespace
 		if (nativeType != UIClass::UI_MediaElement
 			|| xamlType.NamespaceUri
 				!= CuiRuntime::XamlRuntimeSchema::CuiNamespace
-			|| xamlType.LocalName != L"MediaPlayer") return;
+			|| xamlType.LocalName != L"MediaElement") return;
 		if (const auto* canonical =
 			CuiRuntime::XamlRuntimeSchema::DefaultTypeFor(nativeType))
 			xamlType = canonical->TypeId;
@@ -124,7 +124,7 @@ namespace
 
 	/**
 	 * Decodes the persisted structure bag while consuming the one historical
-	 * MediaPlayer-only field that moved into the canonical property bag.
+	 * MediaElement-only field that moved into the canonical property bag.
 	 *
 	 * DecodeDesignNodeStructure deliberately remains strict: mediaFile is not a
 	 * current structural member and must not be accepted by ordinary callers.
@@ -516,6 +516,7 @@ namespace
 			{ "commandBindings", EncodeDesignCommandBindings(node.CommandBindings) },
 			{ "inputBindings", EncodeDesignInputBindings(node.InputBindings) }
 		};
+		if (node.NameIsGenerated) value["nameGenerated"] = true;
 		if (!node.ComponentType.Empty())
 		{
 			value["componentPrefix"] = ToUtf8(node.ComponentType.XamlPrefix);
@@ -567,7 +568,7 @@ namespace
 			return false;
 		}
 		const std::initializer_list<std::string_view> allowedMembers{
-			"id", "parentId", "parent", "name", "type", "order", "locked",
+			"id", "parentId", "parent", "name", "nameGenerated", "type", "order", "locked",
 			"properties", "structure", "events", "bindings",
 			"commandBindings", "inputBindings",
 			"componentPrefix", "componentName", "componentNamespace",
@@ -590,6 +591,7 @@ namespace
 		node.ParentId = value.value("parentId", 0);
 		node.ParentRef = FromUtf8(value.value("parent", std::string{}));
 		node.Name = FromUtf8(value["name"].get<std::string>());
+		node.NameIsGenerated = value.value("nameGenerated", false);
 		if (node.Id < 1 || node.Name.empty()
 			|| !TryParseConstructibleUIClass(
 				value["type"].get<std::string>(), node.Type))
@@ -2140,6 +2142,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 
 	auto window = AppendElement(xml, root, "window");
 	window->SetAttribute("name", ToUtf8(document.Window.Name));
+	if (document.Window.NameIsGenerated)
+		window->SetAttribute("nameGenerated", "true");
 	window->SetAttribute("type", UIClassToString(document.Window.Type));
 	window->SetAttribute("xamlNamespace",
 		ToUtf8(document.Window.XamlType.NamespaceUri));
@@ -2923,6 +2927,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 		auto control = AppendElement(xml, controls, "control");
 		control->SetAttribute("id", std::to_string(node.Id));
 		control->SetAttribute("name", ToUtf8(node.Name));
+		if (node.NameIsGenerated)
+			control->SetAttribute("nameGenerated", "true");
 		control->SetAttribute("type", UIClassToString(node.Type));
 		if (node.XamlType.Valid())
 		{
@@ -3080,7 +3086,7 @@ bool DesignDocumentSerializer::FromXml(
 	}
 	if (!ValidateElementShape(
 		window,
-		{ "name", "type", "xamlNamespace", "xamlName" },
+		{ "name", "nameGenerated", "type", "xamlNamespace", "xamlName" },
 		{ "properties", "events", "bindings", "commandBindings",
 			"inputBindings" },
 		L"Current Window snapshot", outError))
@@ -3088,6 +3094,13 @@ bool DesignDocumentSerializer::FromXml(
 		return false;
 	}
 	document.Window.Name = FromUtf8(window->GetAttribute("name"));
+	if (window->HasAttribute("nameGenerated")
+		&& !TryReadBoolAttribute(
+			window, "nameGenerated", document.Window.NameIsGenerated))
+	{
+		if (outError) *outError = L"Window node has an invalid generated-name marker.";
+		return false;
+	}
 	if (document.Window.Name.empty())
 	{
 		if (outError) *outError = L"Window node name cannot be empty.";
@@ -5403,7 +5416,7 @@ bool DesignDocumentSerializer::FromXml(
 	{
 		if (!ValidateElementShape(
 			control,
-			{ "id", "name", "type", "xamlNamespace", "xamlName",
+			{ "id", "name", "nameGenerated", "type", "xamlNamespace", "xamlName",
 				"componentPrefix", "componentName", "componentNamespace",
 				"componentContentProperty", "presentedComponentContent",
 				"order", "locked", "parentId", "parent" },
@@ -5415,6 +5428,13 @@ bool DesignDocumentSerializer::FromXml(
 		}
 		DesignNode node;
 		node.Name = FromUtf8(control->GetAttribute("name"));
+		if (control->HasAttribute("nameGenerated")
+			&& !TryReadBoolAttribute(
+				control, "nameGenerated", node.NameIsGenerated))
+		{
+			if (outError) *outError = L"Control entry has an invalid generated-name marker.";
+			return false;
+		}
 		std::string type = control->GetAttribute("type");
 		if (node.Name.empty()
 			|| !TryParseConstructibleUIClass(type, node.Type))

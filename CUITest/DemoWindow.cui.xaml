@@ -40,8 +40,8 @@
         <ScaleTransform ScaleX="1.01999998" ScaleY="1.01999998"/>
       </TransformGroup>
       <TransformGroup x:Key="WebBrowserCompositionTransform">
-        <ScaleTransform ScaleX="0.985" ScaleY="0.985"/>
-        <RotateTransform Angle="-0.6"/>
+        <ScaleTransform ScaleX="0.75" ScaleY="0.75"/>
+        <RotateTransform Angle="-2.5"/>
       </TransformGroup>
       <DataType x:Key="DemoChoice">
         <DataType.Properties>
@@ -478,7 +478,7 @@
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
-    <Menu x:Name="mainMenu" DesignId="1" Grid.Row="0" Height="28">
+    <Menu x:Name="mainMenu" Grid.Row="0" Height="28">
       <Menu.Items>
         <MenuItem Header="文件">
           <MenuItem.Items>
@@ -494,21 +494,21 @@
         </MenuItem>
       </Menu.Items>
     </Menu>
-    <ToolBar x:Name="mainToolBar" DesignId="2" Grid.Row="1" Height="40" ItemsPanel="{StaticResource MainToolBarItemsPanel}" Padding="6,7">
+    <ToolBar x:Name="mainToolBar" Grid.Row="1" Height="40" ItemsPanel="{StaticResource MainToolBarItemsPanel}" Padding="6,7">
       <ToolBar.Items>
-        <Button x:Name="toolBasic" DesignId="20" Height="26" Click="HandleToolBarAction" Content="基础" Width="88"/>
-        <Button x:Name="toolData" DesignId="21" Height="26" Click="HandleToolBarAction" Content="数据" Width="88"/>
-        <Button x:Name="toolAnalytics" DesignId="22" Height="26" Click="HandleToolBarAction" Content="可视化" Width="88"/>
-        <Button x:Name="toolSystem" DesignId="23" Height="26" Click="HandleToolBarAction" Content="系统" Width="88"/>
-        <Border x:Name="toolSeparator" DesignId="24" Margin="6,3" Background="{StaticResource Border}" Height="20" Width="1"/>
-        <Button x:Name="toolIcon1" DesignId="25" Command="Demo.File.Open" CommandParameter="toolbar-open" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
-          <Image x:Name="toolIconImage1" DesignId="28" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
+        <Button x:Name="toolBasic" Height="26" Click="HandleToolBarAction" Content="基础" Width="88"/>
+        <Button x:Name="toolData" Height="26" Click="HandleToolBarAction" Content="数据" Width="88"/>
+        <Button x:Name="toolAnalytics" Height="26" Click="HandleToolBarAction" Content="可视化" Width="88"/>
+        <Button x:Name="toolSystem" Height="26" Click="HandleToolBarAction" Content="系统" Width="88"/>
+        <Border x:Name="toolSeparator" Margin="6,3" Background="{StaticResource Border}" Height="20" Width="1"/>
+        <Button x:Name="toolIcon1" Command="Demo.File.Open" CommandParameter="toolbar-open" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
+          <Image x:Name="toolIconImage1" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
         </Button>
-        <Button x:Name="toolIcon2" DesignId="26" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
-          <Image x:Name="toolIconImage2" DesignId="29" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
+        <Button x:Name="toolIcon2" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
+          <Image x:Name="toolIconImage2" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
         </Button>
-        <Button x:Name="toolIcon3" DesignId="27" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
-          <Image x:Name="toolIconImage3" DesignId="30" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
+        <Button x:Name="toolIcon3" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
+          <Image x:Name="toolIconImage3" Height="18" Source="{StaticResource DemoImage}" Stretch="Uniform" Width="18"/>
         </Button>
       </ToolBar.Items>
     </ToolBar>
@@ -520,19 +520,19 @@
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <Slider x:Name="globalProgress" DesignId="3" Grid.Column="0" Height="28"
+        <Slider x:Name="globalProgress" Grid.Column="0" Height="28"
           Maximum="1000" Minimum="0" ValueChanged="HandleGlobalProgress" Value="250"/>
-        <TextBlock x:Name="statusText" DesignId="4" Grid.Column="1" Margin="18,0,12,0"
+        <TextBlock x:Name="statusText" Grid.Column="1" Margin="18,0,12,0"
           VerticalAlignment="Center" MouseWheel="HandleMouseWheel" Style="{StaticResource MutedLabel}"
           Text="Grid / StackPanel / DockPanel 驱动布局，C++ 仅保留数据与业务"/>
-        <TextBlock x:Name="runtimeBadge" DesignId="5" Grid.Column="2" MinWidth="260"
+        <TextBlock x:Name="runtimeBadge" Grid.Column="2" MinWidth="260"
           VerticalAlignment="Center" Style="{StaticResource ImageText}" Text="AOT XAML · Native C++"/>
       </Grid>
     </Border>
-    <TabControl x:Name="mainTabs" DesignId="10" Grid.Row="3" Margin="12,0,12,10" TabStripPlacement="Top" Background="#00000000">
+    <TabControl x:Name="mainTabs" Grid.Row="3" Margin="12,0,12,10" TabStripPlacement="Top" Background="#00000000">
       <TabItem Header="基础控件" IsSelected="true">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="basicSurface" DesignId="100" test:FeatureCard.Invoked="HandleFeatureBubble">
+          <Grid x:Name="basicSurface" test:FeatureCard.Invoked="HandleFeatureBubble">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
@@ -542,10 +542,10 @@
               <ColumnDefinition Width="7*"/>
               <ColumnDefinition Width="5*"/>
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="basicTitle" DesignId="101" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+            <TextBlock x:Name="basicTitle" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
               FontFamily="Arial" Style="{StaticResource PageHeader}"
               Text="基础输入与事件：声明在 XAML，处理函数注册在 C++"/>
-            <TextBlock x:Name="frameworkThemeHint" DesignId="124" Grid.Row="0" Grid.Column="2"
+            <TextBlock x:Name="frameworkThemeHint" Grid.Row="0" Grid.Column="2"
               HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource DescriptionText}"
               Text="Generic.xaml 默认模板 · VisualState · 资源继承"/>
             <Grid Grid.Row="1" Grid.Column="0" Margin="0,0,14,0">
@@ -556,45 +556,45 @@
               <StackPanel Grid.Column="0">
                 <TextBlock Style="{StaticResource SectionHeader}" Text="输入、选择与命令"/>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                  <Button x:Name="basicButton" DesignId="102" Height="34" IsDefault="true"
+                  <Button x:Name="basicButton" Height="34" IsDefault="true"
                     Click="HandleBasicClick" Style="{StaticResource PrimaryButton}" Content="Enter · IsDefault" Width="145"/>
-                  <CheckBox x:Name="enableInput" DesignId="103" Margin="14,4,0,0" IsChecked="true" Height="26"
+                  <CheckBox x:Name="enableInput" Margin="14,4,0,0" IsChecked="true" Height="26"
                     Checked="HandleEnableInput" Unchecked="HandleEnableInput" Content="启用输入框" Width="130"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                  <RadioButton x:Name="radioA" DesignId="104" GroupName="Plan" IsChecked="true" Height="26"
+                  <RadioButton x:Name="radioA" GroupName="Plan" IsChecked="true" Height="26"
                     Checked="HandleRadio" Unchecked="HandleRadio" Content="方案 A" Width="105"/>
-                  <RadioButton x:Name="radioB" DesignId="105" GroupName="Plan" Height="26"
+                  <RadioButton x:Name="radioB" GroupName="Plan" Height="26"
                     Checked="HandleRadio" Unchecked="HandleRadio" Content="方案 B" Width="105"/>
                 </StackPanel>
                 <TextBlock Style="{StaticResource DescriptionText}" Text="TextBox / PasswordBox"/>
-                <TextBox x:Name="nameInput" DesignId="106" Margin="0,4,0,6" Height="30" Text="可编辑文本"/>
-                <PasswordBox x:Name="passwordInput" DesignId="107" Margin="0,0,0,6" Height="30" Password="cui-xaml"/>
-                <ComboBox x:Name="basicCombo" DesignId="108" Margin="0,0,0,6" DisplayMemberPath="Text" Height="30"
+                <TextBox x:Name="nameInput" Margin="0,4,0,6" Height="30" Text="可编辑文本"/>
+                <PasswordBox x:Name="passwordInput" Margin="0,0,0,6" Height="30" Password="cui-xaml"/>
+                <ComboBox x:Name="basicCombo" Margin="0,0,0,6" DisplayMemberPath="Text" Height="30"
                   ItemsSource="{StaticResource BasicChoices}" SelectionChanged="HandleComboSelection" SelectedIndex="0" SelectedValuePath="Id"/>
-                <TextBox x:Name="dateInput" DesignId="109" Margin="0,0,0,6" Height="30" Text="2026-07-23"/>
+                <TextBox x:Name="dateInput" Margin="0,0,0,6" Height="30" Text="2026-07-23"/>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                  <NumericUpDown x:Name="numberInput" DesignId="110" Height="32" Maximum="100" Minimum="0"
+                  <NumericUpDown x:Name="numberInput" Height="32" Maximum="100" Minimum="0"
                     ValueChanged="HandleNumericValue" Value="42" Width="140"/>
-                  <Button x:Name="dialogCancelButton" DesignId="123" Margin="10,1,0,0" Height="30" IsCancel="true"
+                  <Button x:Name="dialogCancelButton" Margin="10,1,0,0" Height="30" IsCancel="true"
                     Click="HandleBasicClick" Content="Escape · IsCancel" Width="135"/>
                 </StackPanel>
-                <Button x:Name="docsLink" DesignId="111" Height="28" HorizontalAlignment="Stretch"
+                <Button x:Name="docsLink" Height="28" HorizontalAlignment="Stretch"
                   Click="HandleDocsLink" Content="CUI XAML 运行时文档"/>
               </StackPanel>
               <StackPanel Grid.Column="1" Margin="12,30,0,0" HorizontalAlignment="Center">
                 <TextBlock Foreground="{StaticResource TextMuted}" Text="Vertical" HorizontalAlignment="Center"/>
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <Slider x:Name="verticalThemeSlider" DesignId="127" Height="230" Maximum="100" Minimum="0"
+                  <Slider x:Name="verticalThemeSlider" Height="230" Maximum="100" Minimum="0"
                     Orientation="Vertical" Value="65" Width="32"/>
-                  <ProgressBar x:Name="verticalThemeProgress" DesignId="128" Margin="8,0,0,0" Height="230"
+                  <ProgressBar x:Name="verticalThemeProgress" Margin="8,0,0,0" Height="230"
                     Maximum="100" Minimum="0" Orientation="Vertical" Value="65" Width="18"/>
                 </StackPanel>
               </StackPanel>
             </Grid>
             <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,0,14,0">
               <TextBlock Style="{StaticResource SectionHeader}" Text="画刷、模板与 XAML 自定义组件"/>
-              <TextBox x:Name="gradientInput" DesignId="112" Height="42" Text="XAML 画刷输入框：GradientInput" VerticalContentAlignment="Center">
+              <TextBox x:Name="gradientInput" Height="42" Text="XAML 画刷输入框：GradientInput" VerticalContentAlignment="Center">
                 <Control.Foreground>
                   <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                     <GradientStop Color="#FFE30940" Offset="0"/>
@@ -604,7 +604,7 @@
                   </LinearGradientBrush>
                 </Control.Foreground>
               </TextBox>
-              <TextBlock x:Name="gradientLabel" DesignId="113" Margin="0,12,0,12" Height="34" Padding="12,0,12,0"
+              <TextBlock x:Name="gradientLabel" Margin="0,12,0,12" Height="34" Padding="12,0,12,0"
                 Style="{StaticResource ResourceGeometryVisual}" Text="画刷、裁剪与变换均由 XAML 表达" RenderTransformOrigin="0.5,0.5">
                 <Control.Foreground>
                   <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.200000003,0.200000003" RadiusX="0.699999988" RadiusY="0.899999976">
@@ -615,7 +615,7 @@
                   </RadialGradientBrush>
                 </Control.Foreground>
               </TextBlock>
-              <test:FeatureCard x:Name="featureCard" DesignId="122" Height="285"
+              <test:FeatureCard x:Name="featureCard" Height="285"
                 Caption="FeatureCard · 类型/属性/事件均来自 XAML" IsActive="true"
                 AccentColor="{StaticResource Accent}" ContentPadding="12" Invoked="HandleFeatureInvoked">
                 <TextBlock x:Name="featureCardContent" Text="{Binding WpfFirst, StringFormat='Logical DataContext via FeatureCard: {0}'}" Height="42"/>
@@ -631,22 +631,22 @@
             </StackPanel>
             <StackPanel Grid.Row="1" Grid.Column="2">
               <TextBlock Style="{StaticResource SectionHeader}" Text="内容模型与默认控件主题"/>
-              <GroupBox x:Name="basicGroup" DesignId="114" Header="GroupBox · 用户设置">
-                <StackPanel x:Name="basicGroupContent" DesignId="120" Margin="10,6">
-                  <TextBlock x:Name="groupHint" DesignId="115" Style="{StaticResource DescriptionText}"
+              <GroupBox x:Name="basicGroup" Header="GroupBox · 用户设置">
+                <StackPanel x:Name="basicGroupContent" Margin="10,6">
+                  <TextBlock x:Name="groupHint" Style="{StaticResource DescriptionText}"
                     Text="子控件所有权来自 XAML 逻辑树"/>
-                  <TextBox x:Name="groupName" DesignId="116" Margin="0,8,0,8" Height="28" Text="XAML User"/>
-                  <CheckBox x:Name="groupEnabled" DesignId="117" IsChecked="true" Height="26" Content="启用高级选项"/>
+                  <TextBox x:Name="groupName" Margin="0,8,0,8" Height="28" Text="XAML User"/>
+                  <CheckBox x:Name="groupEnabled" IsChecked="true" Height="26" Content="启用高级选项"/>
                   <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                    <Button x:Name="themeNormalButton" DesignId="125" Height="28" Content="Generic · states" Width="160"/>
-                    <Button x:Name="themeDisabledButton" DesignId="126" Margin="8,0,0,0" Height="28" IsEnabled="false" Content="Disabled" Width="130"/>
+                    <Button x:Name="themeNormalButton" Height="28" Content="Generic · states" Width="160"/>
+                    <Button x:Name="themeDisabledButton" Margin="8,0,0,0" Height="28" IsEnabled="false" Content="Disabled" Width="130"/>
                   </StackPanel>
                 </StackPanel>
               </GroupBox>
-              <Expander x:Name="basicExpander" DesignId="118" Margin="0,14,0,0" Header="展开：运行时能力说明"
+              <Expander x:Name="basicExpander" Margin="0,14,0,0" Header="展开：运行时能力说明"
                 IsExpanded="true" Expanded="HandleExpander" Collapsed="HandleExpander">
-                <StackPanel x:Name="basicExpanderContent" DesignId="121" Margin="12,8">
-                  <TextBlock x:Name="expanderText" DesignId="119" Style="{StaticResource DescriptionText}"
+                <StackPanel x:Name="basicExpanderContent" Margin="12,8">
+                  <TextBlock x:Name="expanderText" Style="{StaticResource DescriptionText}"
                     Text="XAML 负责结构、布局、属性、样式、模板和事件名；C++ 负责真实业务对象与函数实现。"/>
                 </StackPanel>
               </Expander>
@@ -663,9 +663,59 @@
           </Grid>
         </Border>
       </TabItem>
+      <TabItem Header="日期控件">
+        <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+              Style="{StaticResource PageHeader}"
+              Text="Calendar / DatePicker · WPF 模板部件与日期行为"/>
+            <Calendar x:Name="calendarDemo"
+              Grid.Row="1" Grid.Column="0" Margin="0,12,18,0"
+              DisplayDate="2026-08-08" SelectedDate="2026-08-08"
+              FirstDayOfWeek="Monday" SelectionMode="SingleDate"
+              IsTodayHighlighted="true"/>
+            <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,12,0,0">
+              <TextBlock Style="{StaticResource SectionHeader}"
+                Text="DatePicker · TextBox + Button + Popup + Calendar"/>
+              <TextBlock Margin="0,0,0,10"
+                Style="{StaticResource DescriptionText}"
+                Text="输入日期后按 Enter，或用 Alt+Down / F4 打开下拉日历；Escape 恢复打开前的选择。"/>
+              <DatePicker x:Name="longDatePickerDemo"
+                Width="240" Height="34" HorizontalAlignment="Left"
+                FirstDayOfWeek="Monday" SelectedDateFormat="Long"
+                SelectedDate="2026-08-08"/>
+              <TextBlock Margin="0,14,0,4"
+                Style="{StaticResource DescriptionText}"
+                Text="短日期格式与双向 SelectedDate / IsDropDownOpen 属性"/>
+              <DatePicker x:Name="shortDatePickerDemo"
+                Width="200" Height="32" HorizontalAlignment="Left"
+                SelectedDateFormat="Short" Text="2026-12-31"/>
+              <Border Margin="0,18,0,0" Padding="14"
+                Background="{StaticResource SurfaceSoft}"
+                BorderBrush="{StaticResource Border}"
+                BorderThickness="1">
+                <StackPanel>
+                  <TextBlock Style="{StaticResource SectionHeader}"
+                    Text="声明式能力覆盖"/>
+                  <TextBlock Style="{StaticResource DescriptionText}"
+                    Text="Theme Style / ControlTemplate / VisualState / TemplateBinding / Popup 放置 / 键盘导航 / UI Automation"/>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </Grid>
+        </Border>
+      </TabItem>
       <TabItem Header="容器与图像">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="containerSurface" DesignId="200" PreviewDragEnter="HandleDragRoute" DragEnter="HandleDragRoute"
+          <Grid x:Name="containerSurface" PreviewDragEnter="HandleDragRoute" DragEnter="HandleDragRoute"
             PreviewDragOver="HandleDragRoute" DragOver="HandleDragRoute" PreviewDragLeave="HandleDragRoute"
             DragLeave="HandleDragRoute" PreviewDrop="HandleDragRoute" Drop="HandleDragRoute">
             <Grid.RowDefinitions>
@@ -680,33 +730,33 @@
             <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Style="{StaticResource PageHeader}"
               Text="容器、图像与原生扩展：拖放路由、资源图像、进度反馈与 NativeSurface"/>
             <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,16,0">
-              <Button x:Name="openImageButton" DesignId="201" Height="32" HorizontalAlignment="Left"
+              <Button x:Name="openImageButton" Height="32" HorizontalAlignment="Left"
                 Click="HandleOpenImage" Style="{StaticResource PrimaryButton}" Content="打开或拖入图片" Width="170"/>
               <Border Margin="0,12,0,12" Padding="8" Background="{StaticResource SurfaceSoft}"
                 BorderBrush="{StaticResource Border}" BorderThickness="1">
-                <Image x:Name="demoImage" DesignId="202" AllowDrop="True" Height="270"
+                <Image x:Name="demoImage" AllowDrop="True" Height="270"
                   PreviewDragEnter="HandleDragRoute" DragEnter="HandleDragRoute" PreviewDragOver="HandleDragRoute"
                   DragOver="HandleDragRoute" PreviewDragLeave="HandleDragRoute" DragLeave="HandleDragRoute"
                   PreviewDrop="HandleDragRoute" Drop="HandleDropImage" Style="{StaticResource ResourceImage}"/>
               </Border>
               <TextBlock Style="{StaticResource DescriptionText}" Text="确定进度"/>
-              <ProgressBar x:Name="demoProgress" DesignId="203" Margin="0,4,0,10" Height="24" Maximum="1" Value="0.5"/>
+              <ProgressBar x:Name="demoProgress" Margin="0,4,0,10" Height="24" Maximum="1" Value="0.5"/>
               <TextBlock Style="{StaticResource DescriptionText}" Text="不确定进度"/>
-              <ProgressBar x:Name="indeterminateProgress" DesignId="215" Margin="0,4,0,0" Height="18" IsIndeterminate="true"/>
+              <ProgressBar x:Name="indeterminateProgress" Margin="0,4,0,0" Height="18" IsIndeterminate="true"/>
             </StackPanel>
             <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,0,16,0">
               <TextBlock Style="{StaticResource SectionHeader}" Text="状态与行为宿主"/>
               <WrapPanel HorizontalAlignment="Center" ItemWidth="104" ItemHeight="112">
-                <LoadingRing x:Name="loadingRing" DesignId="204" Height="64" Width="64"/>
-                <ProgressRing x:Name="progressRing" DesignId="205" FontFamily="Segoe UI" FontSize="16"
+                <LoadingRing x:Name="loadingRing" Height="64" Width="64"/>
+                <ProgressRing x:Name="progressRing" FontFamily="Segoe UI" FontSize="16"
                   Height="96" Maximum="100" Minimum="0" Value="50" Width="96"/>
               </WrapPanel>
               <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
-                <Switch x:Name="imageVisible" DesignId="206" IsChecked="true" Height="30"
+                <Switch x:Name="imageVisible" IsChecked="true" Height="30"
                   Checked="HandleImageVisibility" Unchecked="HandleImageVisibility" Width="64"/>
-                <TextBlock x:Name="imageVisibleLabel" DesignId="207" Margin="10,3,0,0" Text="Image 可见"/>
+                <TextBlock x:Name="imageVisibleLabel" Margin="10,3,0,0" Text="Image 可见"/>
               </StackPanel>
-              <NativeSurface x:Name="demoScene" DesignId="214" Height="205" BehaviorKey="DemoScene"
+              <NativeSurface x:Name="demoScene" Height="205" BehaviorKey="DemoScene"
                 PlaceholderText="DemoScene behavior 未注册" AutomationProperties.Name="NativeSurface C++ render behavior"/>
               <TextBlock Margin="0,8,0,0" Style="{StaticResource DescriptionText}"
                 Text="NativeSurface 只承载平台行为；位置与尺寸仍由父级布局协商。"/>
@@ -716,20 +766,20 @@
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
               </Grid.RowDefinitions>
-              <Grid x:Name="detailGrid" DesignId="208" Grid.Row="0">
+              <Grid x:Name="detailGrid" Grid.Row="0">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="180"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
-                <StackPanel x:Name="navigationComposition" DesignId="209" Grid.Column="0" Margin="8">
+                <StackPanel x:Name="navigationComposition" Grid.Column="0" Margin="8">
                   <TextBlock Style="{StaticResource SectionHeader}" Text="工作区"/>
                   <ListBox x:Name="sideNavigationList" DisplayMemberPath="Text" Height="230"
                     ItemsSource="{StaticResource BasicChoices}" SelectionChanged="HandleListBoxSelection"
                     SelectedIndex="1" SelectedValuePath="Id"/>
                 </StackPanel>
                 <Border Grid.Column="1" Margin="3,0" Background="{StaticResource Border}"/>
-                <StackPanel x:Name="detailComposition" DesignId="210" Grid.Column="2" Margin="14,8">
+                <StackPanel x:Name="detailComposition" Grid.Column="2" Margin="14,8">
                   <StackPanel Orientation="Horizontal">
                   <TextBlock Height="24" Text="应用" Width="46"/>
                   <TextBlock Height="24" Text="›" Foreground="{StaticResource TextMuted}" Width="16"/>
@@ -737,12 +787,12 @@
                   <TextBlock Height="24" Text="›" Foreground="{StaticResource TextMuted}" Width="16"/>
                   <TextBlock Height="24" Text="详情" Foreground="{StaticResource Accent}" Width="46"/>
                   </StackPanel>
-                  <RichTextBox x:Name="splitNotes" DesignId="211" Margin="0,14,0,0" Height="190"
+                  <RichTextBox x:Name="splitNotes" Margin="0,14,0,0" Height="190"
                     Text="导航与面包屑由 Grid、ListBox、StackPanel、TextBlock 和数据资源组合；不再由高层原生控件私有绘制。"/>
                 </StackPanel>
               </Grid>
-              <GroupBox x:Name="containerGroup" DesignId="212" Grid.Row="1" Margin="0,14,0,0" Header="组合容器">
-                <TextBlock x:Name="containerGroupText" DesignId="213" Margin="12,8" Style="{StaticResource DescriptionText}"
+              <GroupBox x:Name="containerGroup" Grid.Row="1" Margin="0,14,0,0" Header="组合容器">
+                <TextBlock x:Name="containerGroupText" Margin="12,8" Style="{StaticResource DescriptionText}"
                   Text="编辑 DemoWindow.cui.xaml 后重新启动，可直接观察声明式容器、模板和路由事件行为。"/>
               </GroupBox>
             </Grid>
@@ -751,7 +801,7 @@
       </TabItem>
       <TabItem Header="数据控件">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="dataSurface" DesignId="300">
+          <Grid x:Name="dataSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="220"/>
@@ -765,20 +815,20 @@
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="4" Style="{StaticResource PageHeader}"
               Text="数据控件：层次模板、分组视图、虚拟化面板、选择状态与组合编辑器"/>
-            <TreeView x:Name="demoTree" DesignId="301" Grid.Row="1" Grid.Column="0" Margin="0,0,8,10"
+            <TreeView x:Name="demoTree" Grid.Row="1" Grid.Column="0" Margin="0,0,8,10"
               ItemsSource="{Binding TreeRoots}" DisplayMemberPath="Name" SelectedValuePath="Name"
               SelectedItemChanged="HandleTreeSelection"/>
-            <ListBox x:Name="demoListBox" DesignId="302" Grid.Row="1" Grid.Column="1" Margin="8,0,12,10"
+            <ListBox x:Name="demoListBox" Grid.Row="1" Grid.Column="1" Margin="8,0,12,10"
               DisplayMemberPath="Text" GroupStyle="{StaticResource DemoTaskGroups}"
               IsSynchronizedWithCurrentItem="true" ItemContainerStyle="{StaticResource DemoTaskContainer}"
               ItemsPanel="{StaticResource DemoTaskItemsPanel}" ItemsSource="{StaticResource ActiveDemoTasks}"
               ItemTemplate="{StaticResource DemoTaskRow}" SelectionChanged="HandleListBoxSelection"
               SelectedIndex="0" SelectedValuePath="Text"/>
-            <ListView x:Name="demoList" DesignId="303" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,12,0"
+            <ListView x:Name="demoList" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,12,0"
               DisplayMemberPath="Name" ItemContainerStyle="{StaticResource DemoListViewContainer}"
               ItemsSource="{Binding DemoListEntries}" ItemTemplate="{StaticResource DemoListViewRow}"
               SelectionChanged="HandleListViewSelection" SelectedIndex="0" SelectedValuePath="Name"/>
-            <GroupBox x:Name="composedPropertyEditor" DesignId="309" Grid.Row="1" Grid.RowSpan="2" Grid.Column="2"
+            <GroupBox x:Name="composedPropertyEditor" Grid.Row="1" Grid.RowSpan="2" Grid.Column="2"
               Margin="0,0,14,0" Header="XAML 组合属性编辑器">
               <Grid Margin="12,8">
                 <Grid.RowDefinitions>
@@ -830,7 +880,7 @@
       </TabItem>
       <TabItem Header="数据可视化">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="analyticsSurface" DesignId="400">
+          <Grid x:Name="analyticsSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
@@ -842,7 +892,7 @@
               Text="数据可视化：筛选器、指标卡、ChartView 与模板化报表协同布局"/>
             <Border Grid.Row="1" Padding="10,8" Background="{StaticResource SurfaceSoft}"
               BorderBrush="{StaticResource Border}" BorderThickness="1">
-              <Grid x:Name="analyticsFilterSurface" DesignId="401">
+              <Grid x:Name="analyticsFilterSurface">
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="250"/>
                   <ColumnDefinition Width="100"/>
@@ -868,19 +918,19 @@
                 <ColumnDefinition Width="200"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
-              <GroupBox DesignId="402" Grid.Column="0" Header="成交额" Height="100">
+              <GroupBox Grid.Column="0" Header="成交额" Height="100">
                 <StackPanel Margin="10,2">
                   <TextBlock FontSize="22" Height="32" Text="1,870.5 万"/>
                   <TextBlock Foreground="{StaticResource Success}" Height="22" Text="+18.4% · 较上期"/>
                 </StackPanel>
               </GroupBox>
-              <GroupBox DesignId="403" Grid.Column="1" Margin="12,0,0,0" Header="成交客户" Height="100">
+              <GroupBox Grid.Column="1" Margin="12,0,0,0" Header="成交客户" Height="100">
                 <StackPanel Margin="10,2">
                   <TextBlock FontSize="22" Height="32" Text="128"/>
                   <ProgressBar Margin="0,6,0,0" Height="12" Maximum="160" Value="128"/>
                 </StackPanel>
               </GroupBox>
-              <GroupBox DesignId="404" Grid.Column="2" Margin="12,0,0,0" Header="平均毛利率" Height="100">
+              <GroupBox Grid.Column="2" Margin="12,0,0,0" Header="平均毛利率" Height="100">
                 <StackPanel Margin="10,2">
                   <TextBlock FontSize="22" Height="32" Text="29.8%"/>
                   <TextBlock Foreground="#FFE15B64" Height="22" Text="-1.2% · 需关注"/>
@@ -890,16 +940,16 @@
                 Text="指标卡使用 Auto/Pixel，主内容使用 Star；窗口尺寸变化时，图表与报表共享剩余空间。"/>
             </Grid>
             <WrapPanel Grid.Row="3" Height="32" ItemWidth="90" ItemHeight="28">
-              <Button x:Name="chartBar" DesignId="405" Height="28" Click="HandleChartKind" Content="柱状图" Width="80"/>
-              <Button x:Name="chartPie" DesignId="406" Height="28" Click="HandleChartKind" Content="饼形图" Width="80"/>
-              <Button x:Name="chartLine" DesignId="407" Height="28" Click="HandleChartKind" Content="曲线图" Width="80"/>
+              <Button x:Name="chartBar" Height="28" Click="HandleChartKind" Content="柱状图" Width="80"/>
+              <Button x:Name="chartPie" Height="28" Click="HandleChartKind" Content="饼形图" Width="80"/>
+              <Button x:Name="chartLine" Height="28" Click="HandleChartKind" Content="曲线图" Width="80"/>
             </WrapPanel>
             <Grid Grid.Row="4" Margin="0,8,0,0">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
-              <ChartView x:Name="salesChart" DesignId="408" Grid.Column="0" Margin="0,0,9,0"
+              <ChartView x:Name="salesChart" Grid.Column="0" Margin="0,0,9,0"
                 PointClick="HandleChartPoint" Subtitle="点击数据点查看明细" Title="成交趋势">
               <ChartView.Series>
                 <ChartSeries Color="#F22B7DF5" Name="零售">
@@ -940,7 +990,7 @@
                 </ChartSeries>
               </ChartView.Series>
               </ChartView>
-              <GroupBox x:Name="analyticsReport" DesignId="409" Grid.Column="1" Margin="9,0,0,0"
+              <GroupBox x:Name="analyticsReport" Grid.Column="1" Margin="9,0,0,0"
                 Header="成交报表 · ItemsSource + DataTemplate">
                 <Grid Margin="10,6">
                   <Grid.RowDefinitions>
@@ -968,7 +1018,7 @@
       </TabItem>
       <TabItem Header="布局容器">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="layoutSurface" DesignId="500">
+          <Grid x:Name="layoutSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="200"/>
@@ -980,26 +1030,26 @@
               <ColumnDefinition Width="5*"/>
               <ColumnDefinition Width="6*"/>
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="layoutTitle" DesignId="501" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3"
+            <TextBlock x:Name="layoutTitle" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3"
               Style="{StaticResource PageHeader}"
               Text="StackPanel / Grid / DockPanel / WrapPanel / RelativePanel / ScrollViewer"/>
-            <Canvas x:Name="canvasSemanticsProbe" DesignId="530" Grid.Row="0" Grid.Column="3"
+            <Canvas x:Name="canvasSemanticsProbe" Grid.Row="0" Grid.Column="3"
               HorizontalAlignment="Right" Margin="0,0,0,10" Background="{StaticResource ContainerSurface}"
               ClipToBounds="true" Cursor="Cross" Tag="cursor-inheritance-root" Height="31" Width="430">
               <Border Canvas.Left="0" Canvas.Top="0" Background="#00000000" BorderBrush="{StaticResource ContainerBorder}" BorderThickness="1" Height="31" Width="430"/>
-              <TextBlock x:Name="canvasLeftWins" DesignId="531" Canvas.Left="0.25" Canvas.Top="0.5" Canvas.Right="40" Canvas.Bottom="5" Height="24" Margin="1,2,3,4" Text="Canvas.Left/Top 优先" Width="190"/>
-              <TextBlock x:Name="canvasRightBottom" DesignId="532" Canvas.Right="0.75" Canvas.Bottom="0.5" Height="24" Margin="2,1,4,2" Text="Right/Bottom + fractional DIP" Width="210"/>
+              <TextBlock x:Name="canvasLeftWins" Canvas.Left="0.25" Canvas.Top="0.5" Canvas.Right="40" Canvas.Bottom="5" Height="24" Margin="1,2,3,4" Text="Canvas.Left/Top 优先" Width="190"/>
+              <TextBlock x:Name="canvasRightBottom" Canvas.Right="0.75" Canvas.Bottom="0.5" Height="24" Margin="2,1,4,2" Text="Right/Bottom + fractional DIP" Width="210"/>
             </Canvas>
             <Border Grid.Row="1" Grid.Column="0" Margin="0,0,8,0" Style="{StaticResource ContainerFrame}">
-              <StackPanel x:Name="demoStack" DesignId="502" ClipToBounds="true" Orientation="Vertical">
+              <StackPanel x:Name="demoStack" ClipToBounds="true" Orientation="Vertical">
                 <TextBlock Style="{StaticResource SectionHeader}" Text="StackPanel · DesiredSize 累积"/>
-                <Button x:Name="stackA" DesignId="503" Height="28" HorizontalAlignment="Left" Content="Stack A" Width="180"/>
-                <Button x:Name="stackB" DesignId="504" Margin="0,8,0,0" Height="28" HorizontalAlignment="Left" Content="Stack B" Width="200"/>
-                <Button x:Name="stackC" DesignId="505" Margin="0,8,0,0" Height="28" HorizontalAlignment="Left" Content="Stack C" Width="160"/>
+                <Button x:Name="stackA" Height="28" HorizontalAlignment="Left" Content="Stack A" Width="180"/>
+                <Button x:Name="stackB" Margin="0,8,0,0" Height="28" HorizontalAlignment="Left" Content="Stack B" Width="200"/>
+                <Button x:Name="stackC" Margin="0,8,0,0" Height="28" HorizontalAlignment="Left" Content="Stack C" Width="160"/>
               </StackPanel>
             </Border>
             <Border Grid.Row="1" Grid.Column="1" Margin="8,0" Style="{StaticResource ContainerFrame}">
-              <Grid x:Name="demoGrid" DesignId="506" ClipToBounds="true">
+              <Grid x:Name="demoGrid" ClipToBounds="true">
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto" MinHeight="0" MaxHeight="3.40282347e+38"/>
                   <RowDefinition Height="*" MinHeight="0" MaxHeight="3.40282347e+38"/>
@@ -1009,33 +1059,33 @@
                   <ColumnDefinition Width="*" MinWidth="0" MaxWidth="3.40282347e+38"/>
                   <ColumnDefinition Width="2*" MinWidth="0" MaxWidth="3.40282347e+38"/>
                 </Grid.ColumnDefinitions>
-                <Button x:Name="gridHeader" DesignId="507" Grid.ColumnSpan="2" Height="30" Content="Grid Header"/>
-                <TextBlock x:Name="gridLeft" DesignId="508" Grid.Row="1" Margin="0,12,8,0" Text="Auto / Star"/>
-                <TextBox x:Name="gridEditor" DesignId="509" Grid.Column="1" Grid.Row="1" Margin="0,10,0,0" Height="28" Text="Grid cell"/>
-                <Button x:Name="gridFooter" DesignId="510" Grid.ColumnSpan="2" Grid.Row="2" Height="30" Content="Grid Footer"/>
+                <Button x:Name="gridHeader" Grid.ColumnSpan="2" Height="30" Content="Grid Header"/>
+                <TextBlock x:Name="gridLeft" Grid.Row="1" Margin="0,12,8,0" Text="Auto / Star"/>
+                <TextBox x:Name="gridEditor" Grid.Column="1" Grid.Row="1" Margin="0,10,0,0" Height="28" Text="Grid cell"/>
+                <Button x:Name="gridFooter" Grid.ColumnSpan="2" Grid.Row="2" Height="30" Content="Grid Footer"/>
               </Grid>
             </Border>
             <Border Grid.Row="1" Grid.Column="2" Margin="8,0" Style="{StaticResource ContainerFrame}">
-              <DockPanel x:Name="demoDock" DesignId="511" ClipToBounds="true" LastChildFill="true">
+              <DockPanel x:Name="demoDock" ClipToBounds="true" LastChildFill="true">
                 <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionHeader}" Text="DockPanel · LastChildFill"/>
-                <Button x:Name="dockTop" DesignId="512" DockPanel.Dock="Top" Height="30" Content="Top"/>
-                <Button x:Name="dockLeft" DesignId="513" DockPanel.Dock="Left" Margin="0,8,8,0" Content="Left" Width="70"/>
-                <TextBlock x:Name="dockFill" DesignId="514" Margin="8" Text="Fill：占据剩余区域"/>
+                <Button x:Name="dockTop" DockPanel.Dock="Top" Height="30" Content="Top"/>
+                <Button x:Name="dockLeft" DockPanel.Dock="Left" Margin="0,8,8,0" Content="Left" Width="70"/>
+                <TextBlock x:Name="dockFill" Margin="8" Text="Fill：占据剩余区域"/>
               </DockPanel>
             </Border>
             <Border Grid.Row="1" Grid.Column="3" Margin="8,0,0,0" Style="{StaticResource ContainerFrame}">
-              <WrapPanel x:Name="demoWrap" DesignId="515" ClipToBounds="true" ItemHeight="32" ItemWidth="80" Orientation="Horizontal">
-                <Button x:Name="wrap1" DesignId="516" Height="32" Content="One" Width="80"/>
-                <Button x:Name="wrap2" DesignId="517" Height="32" Content="Two" Width="80"/>
-                <Button x:Name="wrap3" DesignId="518" Height="32" Content="Three" Width="80"/>
-                <Button x:Name="wrap4" DesignId="519" Height="32" Content="Four" Width="80"/>
-                <Button x:Name="wrap5" DesignId="520" Height="32" Content="Five" Width="80"/>
-                <Button x:Name="wrap6" DesignId="521" Height="32" Content="Six" Width="80"/>
+              <WrapPanel x:Name="demoWrap" ClipToBounds="true" ItemHeight="32" ItemWidth="80" Orientation="Horizontal">
+                <Button x:Name="wrap1" Height="32" Content="One" Width="80"/>
+                <Button x:Name="wrap2" Height="32" Content="Two" Width="80"/>
+                <Button x:Name="wrap3" Height="32" Content="Three" Width="80"/>
+                <Button x:Name="wrap4" Height="32" Content="Four" Width="80"/>
+                <Button x:Name="wrap5" Height="32" Content="Five" Width="80"/>
+                <Button x:Name="wrap6" Height="32" Content="Six" Width="80"/>
               </WrapPanel>
             </Border>
             <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,14,8,0" Style="{StaticResource ContainerFrame}">
-              <RelativePanel x:Name="demoRelative" DesignId="522" ClipToBounds="true">
-                <StackPanel x:Name="relativeCenter" DesignId="523"
+              <RelativePanel x:Name="demoRelative" ClipToBounds="true">
+                <StackPanel x:Name="relativeCenter"
                   RelativePanel.CenterHorizontal="true" RelativePanel.CenterVertical="true"
                   ClipToBounds="true" Orientation="Vertical">
                   <TextBlock x:Name="naturalTextProbe"
@@ -1056,7 +1106,7 @@
               </RelativePanel>
             </Border>
             <Border Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2" Margin="8,14,0,0" Style="{StaticResource ContainerFrame}">
-              <ScrollViewer x:Name="demoScroll" DesignId="524" ClipToBounds="true">
+              <ScrollViewer x:Name="demoScroll" ClipToBounds="true">
                 <Grid x:Name="demoScrollContent" ClipToBounds="true" Width="1100" Height="360">
                   <Grid.RowDefinitions>
                     <RowDefinition Height="120"/>
@@ -1069,20 +1119,20 @@
                     <ColumnDefinition Width="180"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Row="0" Grid.Column="0" Margin="16" Style="{StaticResource SurfacePanel}">
-                    <StackPanel x:Name="scrollCard1" DesignId="525" ClipToBounds="true">
-                      <TextBlock x:Name="scrollCard1Text" DesignId="526" Text="Card 1 · Grid child"/>
+                    <StackPanel x:Name="scrollCard1" ClipToBounds="true">
+                      <TextBlock x:Name="scrollCard1Text" Text="Card 1 · Grid child"/>
                       <TextBlock Margin="0,6,0,0" Style="{StaticResource DescriptionText}" Text="横向滚动范围来自固定网格列。"/>
                     </StackPanel>
                   </Border>
                   <Border Grid.Row="0" Grid.Column="1" Margin="16" Style="{StaticResource SurfacePanel}">
-                    <StackPanel x:Name="scrollCard2" DesignId="527" ClipToBounds="true">
-                      <TextBlock x:Name="scrollCard2Text" DesignId="528" Text="Card 2 · Grid child"/>
+                    <StackPanel x:Name="scrollCard2" ClipToBounds="true">
+                      <TextBlock x:Name="scrollCard2Text" Text="Card 2 · Grid child"/>
                       <TextBlock Margin="0,6,0,0" Style="{StaticResource DescriptionText}" Text="纵向滚动范围来自固定网格行。"/>
                     </StackPanel>
                   </Border>
                   <TextBlock Grid.Row="1" Grid.Column="2" Margin="24" Style="{StaticResource DescriptionText}"
                     Text="ScrollViewer 只负责 viewport、extent 与 offset；内容仍由 Grid 测量和排列。"/>
-                  <Button x:Name="farButton" DesignId="529" Grid.Row="1" Grid.Column="3" Margin="20"
+                  <Button x:Name="farButton" Grid.Row="1" Grid.Column="3" Margin="20"
                     Height="32" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                     Click="HandleFarButton" Content="Far Button" Width="140"/>
                 </Grid>
@@ -1093,7 +1143,7 @@
       </TabItem>
       <TabItem Header="系统集成">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="systemSurface" DesignId="600" MouseUp="HandleSystemSurfaceMouseUp">
+          <Grid x:Name="systemSurface" MouseUp="HandleSystemSurfaceMouseUp">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
@@ -1103,21 +1153,21 @@
               <ColumnDefinition Width="2*"/>
               <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <TextBlock x:Name="systemTitle" DesignId="601" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+            <TextBlock x:Name="systemTitle" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
               Style="{StaticResource PageHeader}"
               Text="NotifyIcon / Taskbar / ContextMenu / MessageDialog / XAML notification composition"/>
             <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,16,12">
               <WrapPanel Height="40" ItemHeight="32">
-                <Button x:Name="notifyToggle" DesignId="602" Margin="0,0,10,0" Height="32"
+                <Button x:Name="notifyToggle" Margin="0,0,10,0" Height="32"
                   Click="HandleSystemAction" Content="显示/隐藏托盘图标" Width="180"/>
-                <Button x:Name="notifyBalloon" DesignId="603" Margin="0,0,10,0" Height="32"
+                <Button x:Name="notifyBalloon" Margin="0,0,10,0" Height="32"
                   Click="HandleSystemAction" Content="气泡提示" Width="130"/>
-                <Button x:Name="showDialog" DesignId="604" Margin="0,0,10,0" Height="32"
+                <Button x:Name="showDialog" Margin="0,0,10,0" Height="32"
                   Click="HandleSystemAction" Content="CUI 对话框" Width="130"/>
-                <Button x:Name="showToast" DesignId="605" Height="32" Click="HandleSystemAction"
+                <Button x:Name="showToast" Height="32" Click="HandleSystemAction"
                   Style="{StaticResource PrimaryButton}" Content="显示 Toast" Width="130"/>
               </WrapPanel>
-              <TextBlock x:Name="systemHint" DesignId="606" Margin="0,8,0,0" Style="{StaticResource DescriptionText}"
+              <TextBlock x:Name="systemHint" Margin="0,8,0,0" Style="{StaticResource DescriptionText}"
                 Text="在页面空白区域单击右键显示 XAML 定义的 ContextMenu；C++ 仅保留 NotifyIcon / Taskbar 服务与命名事件处理。"/>
             </StackPanel>
             <Border Grid.Row="2" Grid.Column="0" Margin="0,0,16,0" Padding="14,10"
@@ -1155,7 +1205,7 @@
                   Text="XAML 定义类型、属性和目标；追踪按 CommandTransaction 配对，后台 requery 不覆盖完整执行。"/>
               </Grid>
             </Border>
-            <GroupBox x:Name="notificationPanel" DesignId="607" Grid.Row="1" Grid.RowSpan="2" Grid.Column="1"
+            <GroupBox x:Name="notificationPanel" Grid.Row="1" Grid.RowSpan="2" Grid.Column="1"
               Header="通知区域 · XAML 组合">
               <Grid Margin="14,10">
                 <Grid.RowDefinitions>
@@ -1180,7 +1230,7 @@
       </TabItem>
       <TabItem Header="WebBrowser">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="webSurface" DesignId="700">
+          <Grid x:Name="webSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
@@ -1190,15 +1240,14 @@
                 <ColumnDefinition Width="280"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
-              <Button x:Name="invokeWeb" DesignId="701" Grid.Column="0" Height="32"
+              <Button x:Name="invokeWeb" Grid.Column="0" Height="32"
                 Click="HandleInvokeWeb" Style="{StaticResource PrimaryButton}" Content="C++ 调用 JavaScript"/>
-              <TextBlock x:Name="webHint" DesignId="702" Grid.Column="1" Margin="18,5,0,0"
-                Style="{StaticResource DescriptionText}"
-                Text="WebBrowser 由 Grid 的 Star 行列协商，并以稳定栅格面加声明式 RenderTransform 验证 WebView2 合成越界与输入映射。"/>
+              <Button x:Name="navigationWeb" Grid.Column="1" Height="32"
+                Click="HandleNavigationWeb" Style="{StaticResource PrimaryButton}" Content="bing.com"/>
             </Grid>
             <!-- The WebView2 viewport remains rectangular; CornerRadius belongs to
                  CUI's private composition boundary and transforms with the surface. -->
-            <WebBrowser x:Name="webBrowser" DesignId="703" Grid.Row="1"
+            <WebBrowser x:Name="webBrowser" Grid.Row="1"
               DefaultBackgroundColor="#00000000" CornerRadius="6"
               RenderTransformOrigin="0.5,0.5"
               RenderTransform="{StaticResource WebBrowserCompositionTransform}"/>
@@ -1207,13 +1256,13 @@
       </TabItem>
       <TabItem Header="MediaElement">
         <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
-          <Grid x:Name="mediaSurface" DesignId="800">
+          <Grid x:Name="mediaSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="*"/>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-			<MediaElement x:Name="mediaElement" DesignId="801" Grid.Row="0"
+			<MediaElement x:Name="mediaElement" Grid.Row="0"
 			  LoadedBehavior="Manual" UnloadedBehavior="Close" Stretch="Uniform" Loop="false"
               MediaEnded="HandleMediaEnded" MediaFailed="HandleMediaFailed" MediaOpened="HandleMediaOpened"
               PositionChanged="HandleMediaPosition"/>
@@ -1231,17 +1280,17 @@
                 <ColumnDefinition Width="90"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
-              <Button x:Name="mediaOpen" DesignId="802" Grid.Column="0" Height="32"
+              <Button x:Name="mediaOpen" Grid.Column="0" Height="32"
                 Click="HandleMediaCommand" Style="{StaticResource PrimaryButton}" Content="打开"/>
-              <Button x:Name="mediaPlay" DesignId="803" Grid.Column="1" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="播放"/>
-              <Button x:Name="mediaPause" DesignId="804" Grid.Column="2" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="暂停"/>
-              <Button x:Name="mediaStop" DesignId="805" Grid.Column="3" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="停止"/>
-              <TextBlock x:Name="volumeLabel" DesignId="806" Grid.Column="4" Margin="12,6,0,0" Text="音量"/>
-              <Slider x:Name="mediaVolume" DesignId="807" Grid.Column="5" Height="30" Maximum="100" Minimum="0" ValueChanged="HandleMediaVolume" Value="80"/>
-              <TextBlock x:Name="speedTitle" DesignId="808" Grid.Column="6" Margin="12,6,0,0" Text="速度"/>
-              <Slider x:Name="mediaSpeed" DesignId="809" Grid.Column="7" Height="30" Maximum="400" Minimum="10" ValueChanged="HandleMediaSpeed" Value="100"/>
-              <TextBlock x:Name="mediaSpeedText" DesignId="810" Grid.Column="8" Margin="10,6,0,0" Text="1.00x"/>
-              <CheckBox x:Name="mediaLoop" DesignId="811" Grid.Column="9" Margin="8,4,0,0" Height="24"
+              <Button x:Name="mediaPlay" Grid.Column="1" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="播放"/>
+              <Button x:Name="mediaPause" Grid.Column="2" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="暂停"/>
+              <Button x:Name="mediaStop" Grid.Column="3" Margin="8,0,0,0" Height="32" Click="HandleMediaCommand" Content="停止"/>
+              <TextBlock x:Name="volumeLabel" Grid.Column="4" Margin="12,6,0,0" Text="音量"/>
+              <Slider x:Name="mediaVolume" Grid.Column="5" Height="30" Maximum="100" Minimum="0" ValueChanged="HandleMediaVolume" Value="80"/>
+              <TextBlock x:Name="speedTitle" Grid.Column="6" Margin="12,6,0,0" Text="速度"/>
+              <Slider x:Name="mediaSpeed" Grid.Column="7" Height="30" Maximum="400" Minimum="10" ValueChanged="HandleMediaSpeed" Value="100"/>
+              <TextBlock x:Name="mediaSpeedText" Grid.Column="8" Margin="10,6,0,0" Text="1.00x"/>
+              <CheckBox x:Name="mediaLoop" Grid.Column="9" Margin="8,4,0,0" Height="24"
                 Checked="HandleMediaLoop" Unchecked="HandleMediaLoop" Content="循环"/>
             </Grid>
             <Grid Grid.Row="2">
@@ -1249,9 +1298,9 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="210"/>
               </Grid.ColumnDefinitions>
-              <Slider x:Name="mediaProgress" DesignId="812" Grid.Column="0" Margin="0,0,16,0" Height="30"
+              <Slider x:Name="mediaProgress" Grid.Column="0" Margin="0,0,16,0" Height="30"
                 Maximum="1000" Minimum="0" ValueChanged="HandleMediaSeek" Value="619.5652"/>
-              <TextBlock x:Name="mediaTime" DesignId="813" Grid.Column="1" Margin="0,6,0,0" Text="00:00 / 00:00"/>
+              <TextBlock x:Name="mediaTime" Grid.Column="1" Margin="0,6,0,0" Text="00:00 / 00:00"/>
             </Grid>
           </Grid>
         </Border>
@@ -1579,7 +1628,7 @@
         </Border>
       </TabItem>
     </TabControl>
-    <ContextMenu x:Name="systemContextMenu" DesignId="608" Grid.Row="3">
+    <ContextMenu x:Name="systemContextMenu" Grid.Row="3">
       <ContextMenu.Items>
         <MenuItem Header="新建项目" Command="Demo.System.NewProject" CommandParameter="context-new"/>
         <MenuItem Header="刷新视图" Command="Demo.System.Refresh" CommandParameter="context-refresh" CommandTarget="{x:Reference mainMenu}" InputGestureText="F5"/>
@@ -1592,7 +1641,7 @@
         </MenuItem>
       </ContextMenu.Items>
     </ContextMenu>
-    <StatusBar x:Name="mainStatusBar" DesignId="900" Grid.Row="4"
+    <StatusBar x:Name="mainStatusBar" Grid.Row="4"
                ItemsSource="{StaticResource DemoStatusEntries}"
                DisplayMemberPath="Text"/>
   </Grid>

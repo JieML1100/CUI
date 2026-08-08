@@ -419,7 +419,8 @@ namespace
 
 		void WriteWindow(const Element& root)
 		{
-			Set(root, "x:Name", _document.Window.Name);
+			if (!_document.Window.NameIsGenerated)
+				Set(root, "x:Name", _document.Window.Name);
 			if (!_document.CodeBehind.ClassName.empty())
 				Set(root, "x:Class", _document.CodeBehind.ClassName);
 			if (!_document.CodeBehind.RelativeBasePath.empty())
@@ -2047,8 +2048,7 @@ namespace
 				throw std::invalid_argument("XAML control was written more than once");
 			const auto elementName = ControlXamlTypeName(node);
 			auto element = Append(_xml, parent, ToUtf8(elementName));
-			Set(element, "x:Name", node.Name);
-			element->SetAttribute("DesignId", std::to_string(node.Id));
+			if (!node.NameIsGenerated) Set(element, "x:Name", node.Name);
 			if (node.Locked) Set(element, "d:Locked", L"true");
 			if (!node.PresentedComponentContent.empty())
 				Set(element, "ComponentSlot.Presents",

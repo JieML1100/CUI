@@ -37,6 +37,7 @@ private:
 	CalendarSelectionMode _selectionMode = CalendarSelectionMode::SingleDate;
 	SYSTEMTIME _selectedDate{};
 	SYSTEMTIME _currentDate{};
+	SYSTEMTIME _displayDate{};
 	SYSTEMTIME RangeStart{};
 	SYSTEMTIME RangeEnd{};
 	bool HasRangeStart = false;
@@ -52,7 +53,8 @@ private:
 	bool ShowHeader = true;
 	bool ShowWeekNames = true;
 	bool ShowTrailingDays = true;
-	bool HighlightToday = true;
+	int _firstDayOfWeek = 0;
+	bool _isTodayHighlighted = true;
 
 	float CornerRadius = 4.0f;
 	float HeaderHeight = 38.0f;
@@ -74,6 +76,9 @@ public:
 	/** WPF dependency-property identities used by generated/native code. */
 	static const DependencyProperty& SelectionModeProperty();
 	static const DependencyProperty& SelectedDateProperty();
+	static const DependencyProperty& DisplayDateProperty();
+	static const DependencyProperty& FirstDayOfWeekProperty();
+	static const DependencyProperty& IsTodayHighlightedProperty();
 	static void RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override { RegisterDependencyProperties(); }
@@ -86,8 +91,19 @@ public:
 	}
 	void SetSelectionMode(CalendarSelectionMode value);
 	SYSTEMTIME GetSelectedDate() const noexcept { return _selectedDate; }
+	bool HasSelectedDate() const noexcept { return _selectedDate.wYear != 0; }
 
 	void SetSelectedDate(const SYSTEMTIME& date);
+	void ClearSelectedDate();
+	SYSTEMTIME GetDisplayDate() const noexcept { return _displayDate; }
+	void SetDisplayDate(const SYSTEMTIME& date);
+	int GetFirstDayOfWeek() const noexcept { return _firstDayOfWeek; }
+	void SetFirstDayOfWeek(int value);
+	bool GetIsTodayHighlighted() const noexcept
+	{
+		return _isTodayHighlighted;
+	}
+	void SetIsTodayHighlighted(bool value);
 	void SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool fireEvent = true);
 	void ClearRange(bool fireEvent = true);
 	CalendarDateRange GetRange() const;
@@ -123,6 +139,7 @@ public:
 	bool InvokeAccessibilityVirtualNode(uint32_t id);
 	bool SelectAccessibilityVirtualNode(
 		uint32_t id, AccessibilitySelectionAction action);
+	CalendarViewEvent DisplayDateChanged;
 protected:
 	void OnRender() override;
 	bool ProcessInput(const InputReport& input) override;

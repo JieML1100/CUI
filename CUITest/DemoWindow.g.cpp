@@ -1107,6 +1107,7 @@ void DemoWindowGenerated::InitializeComponent()
 	const auto __documentStaticResource_OnAccent_10 = BindingValue(D2D1_COLOR_F{1.f, 1.f, 1.f, 1.f});
 	const auto __documentStaticResource_Success_11 = BindingValue(D2D1_COLOR_F{0.082353f, 0.588235f, 0.415686f, 1.f});
 	const auto __documentStaticResource_DemoImage_12 = BindingValue(cui::resources::LoadBitmapResource(L"Assets/nav-overview.svg"));
+	const auto __documentStaticResource_WebBrowserCompositionTransform_16 = BindingValue([] { cui::drawing::Transform value; { cui::drawing::TransformOperation operation; operation.Kind = cui::drawing::TransformKind::Scale; operation.ScaleX = 0.75f; operation.ScaleY = 0.75f; operation.CenterX = 0.f; operation.CenterY = 0.f; value.Operations.push_back(operation); } { cui::drawing::TransformOperation operation; operation.Kind = cui::drawing::TransformKind::Rotate; operation.Angle = -2.5f; operation.CenterX = 0.f; operation.CenterY = 0.f; value.Operations.push_back(operation); } return value; }());
 
 	// ItemsPanelTemplate resources are immutable native layout descriptors; no XAML factory is retained.
 	auto __itemsPanel_MainToolBarItemsPanel_1 = std::make_shared<ItemsPanelTemplate>();
@@ -1293,7 +1294,7 @@ void DemoWindowGenerated::InitializeComponent()
 	// DataTemplate resources are repeatable native visual factories. They retain only typed CUI callbacks and values.
 	auto __dataTemplate_DemoTaskRow_1 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 14645570757897767179ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1365,7 +1366,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_AnalyticsRowTemplate_2 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 14210100046756945817ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1491,7 +1492,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_DemoListViewRow_3 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 1527176720216676224ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1561,7 +1562,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_DemoTaskGroupHeader_4 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 3525408356366179569ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1651,7 +1652,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_Implicit_DemoFolder_5 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 9713005176006114176ULL }, true,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1746,7 +1747,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_Implicit_DemoFile_6 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 16771066560557046080ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -1826,7 +1827,7 @@ void DemoWindowGenerated::InitializeComponent()
 		});
 	auto __dataTemplate_WpfLabPersonRow_7 = std::make_shared<CuiGeneratedItemTemplate>(
 		DataTypeToken{ 17405733524517076158ULL }, false,
-		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
+		[__documentStaticResource_Accent_2, __documentStaticResource_SurfaceSoft_4, __documentStaticResource_Border_5, __documentStaticResource_ContainerSurface_6, __documentStaticResource_ContainerBorder_7, __documentStaticResource_TextMuted_9, __documentStaticResource_OnAccent_10, __documentStaticResource_Success_11, __documentStaticResource_DemoImage_12, __documentStaticResource_WebBrowserCompositionTransform_16](const BindingSourceReference& item, size_t index, std::wstring* outError) -> std::unique_ptr<Control>
 		{
 			(void)index;
 			auto fail = [outError](std::wstring message) -> std::unique_ptr<Control>
@@ -2270,55 +2271,116 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_border3 = std::make_unique<Border>();
 	border3 = __owned_border3.get();
 	(void)border3->ClearPropertyValues();
-	// containerSurface
-	auto __owned_containerSurface = std::make_unique<Grid>();
-	containerSurface = __owned_containerSurface.get();
-	(void)containerSurface->ClearPropertyValues();
+	// grid3
+	auto __owned_grid3 = std::make_unique<Grid>();
+	grid3 = __owned_grid3.get();
+	(void)grid3->ClearPropertyValues();
 	// textBlock7
 	auto __owned_textBlock7 = std::make_unique<Label>();
 	textBlock7 = __owned_textBlock7.get();
 	(void)textBlock7->ClearPropertyValues();
+	// calendarDemo
+	auto __owned_calendarDemo = std::make_unique<Calendar>();
+	calendarDemo = __owned_calendarDemo.get();
+	(void)calendarDemo->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
 	// stackPanel10
 	auto __owned_stackPanel10 = std::make_unique<StackPanel>();
 	stackPanel10 = __owned_stackPanel10.get();
 	(void)stackPanel10->ClearPropertyValues();
+	// textBlock8
+	auto __owned_textBlock8 = std::make_unique<Label>();
+	textBlock8 = __owned_textBlock8.get();
+	(void)textBlock8->ClearPropertyValues();
+	// textBlock9
+	auto __owned_textBlock9 = std::make_unique<Label>();
+	textBlock9 = __owned_textBlock9.get();
+	(void)textBlock9->ClearPropertyValues();
+	// longDatePickerDemo
+	auto __owned_longDatePickerDemo = std::make_unique<DatePicker>();
+	longDatePickerDemo = __owned_longDatePickerDemo.get();
+	(void)longDatePickerDemo->ClearPropertyValues();
+	// textBlock10
+	auto __owned_textBlock10 = std::make_unique<Label>();
+	textBlock10 = __owned_textBlock10.get();
+	(void)textBlock10->ClearPropertyValues();
+	// shortDatePickerDemo
+	auto __owned_shortDatePickerDemo = std::make_unique<DatePicker>();
+	shortDatePickerDemo = __owned_shortDatePickerDemo.get();
+	(void)shortDatePickerDemo->ClearPropertyValues();
+	// border4
+	auto __owned_border4 = std::make_unique<Border>();
+	border4 = __owned_border4.get();
+	(void)border4->ClearPropertyValues();
+	// stackPanel11
+	auto __owned_stackPanel11 = std::make_unique<StackPanel>();
+	stackPanel11 = __owned_stackPanel11.get();
+	(void)stackPanel11->ClearPropertyValues();
+	// textBlock11
+	auto __owned_textBlock11 = std::make_unique<Label>();
+	textBlock11 = __owned_textBlock11.get();
+	(void)textBlock11->ClearPropertyValues();
+	// textBlock12
+	auto __owned_textBlock12 = std::make_unique<Label>();
+	textBlock12 = __owned_textBlock12.get();
+	(void)textBlock12->ClearPropertyValues();
+	// tabItem3
+	auto __owned_tabItem3 = std::make_unique<TabItem>();
+	tabItem3 = __owned_tabItem3.get();
+	(void)tabItem3->ClearPropertyValues();
+	// border5
+	auto __owned_border5 = std::make_unique<Border>();
+	border5 = __owned_border5.get();
+	(void)border5->ClearPropertyValues();
+	// containerSurface
+	auto __owned_containerSurface = std::make_unique<Grid>();
+	containerSurface = __owned_containerSurface.get();
+	(void)containerSurface->ClearPropertyValues();
+	// textBlock13
+	auto __owned_textBlock13 = std::make_unique<Label>();
+	textBlock13 = __owned_textBlock13.get();
+	(void)textBlock13->ClearPropertyValues();
+	// stackPanel12
+	auto __owned_stackPanel12 = std::make_unique<StackPanel>();
+	stackPanel12 = __owned_stackPanel12.get();
+	(void)stackPanel12->ClearPropertyValues();
 	// openImageButton
 	auto __owned_openImageButton = std::make_unique<Button>();
 	openImageButton = __owned_openImageButton.get();
 	(void)openImageButton->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*openImageButton, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border4
-	auto __owned_border4 = std::make_unique<Border>();
-	border4 = __owned_border4.get();
-	(void)border4->ClearPropertyValues();
+	// border6
+	auto __owned_border6 = std::make_unique<Border>();
+	border6 = __owned_border6.get();
+	(void)border6->ClearPropertyValues();
 	// demoImage
 	auto __owned_demoImage = std::make_unique<Image>();
 	demoImage = __owned_demoImage.get();
 	(void)demoImage->ClearPropertyValues();
-	// textBlock8
-	auto __owned_textBlock8 = std::make_unique<Label>();
-	textBlock8 = __owned_textBlock8.get();
-	(void)textBlock8->ClearPropertyValues();
+	// textBlock14
+	auto __owned_textBlock14 = std::make_unique<Label>();
+	textBlock14 = __owned_textBlock14.get();
+	(void)textBlock14->ClearPropertyValues();
 	// demoProgress
 	auto __owned_demoProgress = std::make_unique<ProgressBar>();
 	demoProgress = __owned_demoProgress.get();
 	(void)demoProgress->ClearPropertyValues();
-	// textBlock9
-	auto __owned_textBlock9 = std::make_unique<Label>();
-	textBlock9 = __owned_textBlock9.get();
-	(void)textBlock9->ClearPropertyValues();
+	// textBlock15
+	auto __owned_textBlock15 = std::make_unique<Label>();
+	textBlock15 = __owned_textBlock15.get();
+	(void)textBlock15->ClearPropertyValues();
 	// indeterminateProgress
 	auto __owned_indeterminateProgress = std::make_unique<ProgressBar>();
 	indeterminateProgress = __owned_indeterminateProgress.get();
 	(void)indeterminateProgress->ClearPropertyValues();
-	// stackPanel11
-	auto __owned_stackPanel11 = std::make_unique<StackPanel>();
-	stackPanel11 = __owned_stackPanel11.get();
-	(void)stackPanel11->ClearPropertyValues();
-	// textBlock10
-	auto __owned_textBlock10 = std::make_unique<Label>();
-	textBlock10 = __owned_textBlock10.get();
-	(void)textBlock10->ClearPropertyValues();
+	// stackPanel13
+	auto __owned_stackPanel13 = std::make_unique<StackPanel>();
+	stackPanel13 = __owned_stackPanel13.get();
+	(void)stackPanel13->ClearPropertyValues();
+	// textBlock16
+	auto __owned_textBlock16 = std::make_unique<Label>();
+	textBlock16 = __owned_textBlock16.get();
+	(void)textBlock16->ClearPropertyValues();
 	// wrapPanel1
 	auto __owned_wrapPanel1 = std::make_unique<WrapPanel>();
 	wrapPanel1 = __owned_wrapPanel1.get();
@@ -2331,10 +2393,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_progressRing = std::make_unique<ProgressRing>();
 	progressRing = __owned_progressRing.get();
 	(void)progressRing->ClearPropertyValues();
-	// stackPanel12
-	auto __owned_stackPanel12 = std::make_unique<StackPanel>();
-	stackPanel12 = __owned_stackPanel12.get();
-	(void)stackPanel12->ClearPropertyValues();
+	// stackPanel14
+	auto __owned_stackPanel14 = std::make_unique<StackPanel>();
+	stackPanel14 = __owned_stackPanel14.get();
+	(void)stackPanel14->ClearPropertyValues();
 	// imageVisible
 	auto __owned_imageVisible = std::make_unique<Switch>();
 	imageVisible = __owned_imageVisible.get();
@@ -2349,14 +2411,14 @@ void DemoWindowGenerated::InitializeComponent()
 	demoScene = __owned_demoScene.get();
 	(void)demoScene->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*demoScene, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock11
-	auto __owned_textBlock11 = std::make_unique<Label>();
-	textBlock11 = __owned_textBlock11.get();
-	(void)textBlock11->ClearPropertyValues();
-	// grid3
-	auto __owned_grid3 = std::make_unique<Grid>();
-	grid3 = __owned_grid3.get();
-	(void)grid3->ClearPropertyValues();
+	// textBlock17
+	auto __owned_textBlock17 = std::make_unique<Label>();
+	textBlock17 = __owned_textBlock17.get();
+	(void)textBlock17->ClearPropertyValues();
+	// grid4
+	auto __owned_grid4 = std::make_unique<Grid>();
+	grid4 = __owned_grid4.get();
+	(void)grid4->ClearPropertyValues();
 	// detailGrid
 	auto __owned_detailGrid = std::make_unique<Grid>();
 	detailGrid = __owned_detailGrid.get();
@@ -2365,47 +2427,47 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_navigationComposition = std::make_unique<StackPanel>();
 	navigationComposition = __owned_navigationComposition.get();
 	(void)navigationComposition->ClearPropertyValues();
-	// textBlock12
-	auto __owned_textBlock12 = std::make_unique<Label>();
-	textBlock12 = __owned_textBlock12.get();
-	(void)textBlock12->ClearPropertyValues();
+	// textBlock18
+	auto __owned_textBlock18 = std::make_unique<Label>();
+	textBlock18 = __owned_textBlock18.get();
+	(void)textBlock18->ClearPropertyValues();
 	// sideNavigationList
 	auto __owned_sideNavigationList = std::make_unique<ListBox>();
 	sideNavigationList = __owned_sideNavigationList.get();
 	(void)sideNavigationList->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*sideNavigationList, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border5
-	auto __owned_border5 = std::make_unique<Border>();
-	border5 = __owned_border5.get();
-	(void)border5->ClearPropertyValues();
+	// border7
+	auto __owned_border7 = std::make_unique<Border>();
+	border7 = __owned_border7.get();
+	(void)border7->ClearPropertyValues();
 	// detailComposition
 	auto __owned_detailComposition = std::make_unique<StackPanel>();
 	detailComposition = __owned_detailComposition.get();
 	(void)detailComposition->ClearPropertyValues();
-	// stackPanel13
-	auto __owned_stackPanel13 = std::make_unique<StackPanel>();
-	stackPanel13 = __owned_stackPanel13.get();
-	(void)stackPanel13->ClearPropertyValues();
-	// textBlock13
-	auto __owned_textBlock13 = std::make_unique<Label>();
-	textBlock13 = __owned_textBlock13.get();
-	(void)textBlock13->ClearPropertyValues();
-	// textBlock14
-	auto __owned_textBlock14 = std::make_unique<Label>();
-	textBlock14 = __owned_textBlock14.get();
-	(void)textBlock14->ClearPropertyValues();
-	// textBlock15
-	auto __owned_textBlock15 = std::make_unique<Label>();
-	textBlock15 = __owned_textBlock15.get();
-	(void)textBlock15->ClearPropertyValues();
-	// textBlock16
-	auto __owned_textBlock16 = std::make_unique<Label>();
-	textBlock16 = __owned_textBlock16.get();
-	(void)textBlock16->ClearPropertyValues();
-	// textBlock17
-	auto __owned_textBlock17 = std::make_unique<Label>();
-	textBlock17 = __owned_textBlock17.get();
-	(void)textBlock17->ClearPropertyValues();
+	// stackPanel15
+	auto __owned_stackPanel15 = std::make_unique<StackPanel>();
+	stackPanel15 = __owned_stackPanel15.get();
+	(void)stackPanel15->ClearPropertyValues();
+	// textBlock19
+	auto __owned_textBlock19 = std::make_unique<Label>();
+	textBlock19 = __owned_textBlock19.get();
+	(void)textBlock19->ClearPropertyValues();
+	// textBlock20
+	auto __owned_textBlock20 = std::make_unique<Label>();
+	textBlock20 = __owned_textBlock20.get();
+	(void)textBlock20->ClearPropertyValues();
+	// textBlock21
+	auto __owned_textBlock21 = std::make_unique<Label>();
+	textBlock21 = __owned_textBlock21.get();
+	(void)textBlock21->ClearPropertyValues();
+	// textBlock22
+	auto __owned_textBlock22 = std::make_unique<Label>();
+	textBlock22 = __owned_textBlock22.get();
+	(void)textBlock22->ClearPropertyValues();
+	// textBlock23
+	auto __owned_textBlock23 = std::make_unique<Label>();
+	textBlock23 = __owned_textBlock23.get();
+	(void)textBlock23->ClearPropertyValues();
 	// splitNotes
 	auto __owned_splitNotes = std::make_unique<RichTextBox>();
 	splitNotes = __owned_splitNotes.get();
@@ -2419,22 +2481,22 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_containerGroupText = std::make_unique<Label>();
 	containerGroupText = __owned_containerGroupText.get();
 	(void)containerGroupText->ClearPropertyValues();
-	// tabItem3
-	auto __owned_tabItem3 = std::make_unique<TabItem>();
-	tabItem3 = __owned_tabItem3.get();
-	(void)tabItem3->ClearPropertyValues();
-	// border6
-	auto __owned_border6 = std::make_unique<Border>();
-	border6 = __owned_border6.get();
-	(void)border6->ClearPropertyValues();
+	// tabItem4
+	auto __owned_tabItem4 = std::make_unique<TabItem>();
+	tabItem4 = __owned_tabItem4.get();
+	(void)tabItem4->ClearPropertyValues();
+	// border8
+	auto __owned_border8 = std::make_unique<Border>();
+	border8 = __owned_border8.get();
+	(void)border8->ClearPropertyValues();
 	// dataSurface
 	auto __owned_dataSurface = std::make_unique<Grid>();
 	dataSurface = __owned_dataSurface.get();
 	(void)dataSurface->ClearPropertyValues();
-	// textBlock18
-	auto __owned_textBlock18 = std::make_unique<Label>();
-	textBlock18 = __owned_textBlock18.get();
-	(void)textBlock18->ClearPropertyValues();
+	// textBlock24
+	auto __owned_textBlock24 = std::make_unique<Label>();
+	textBlock24 = __owned_textBlock24.get();
+	(void)textBlock24->ClearPropertyValues();
 	// demoTree
 	auto __owned_demoTree = std::make_unique<TreeView>();
 	demoTree = __owned_demoTree.get();
@@ -2454,32 +2516,32 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_composedPropertyEditor = std::make_unique<GroupBox>();
 	composedPropertyEditor = __owned_composedPropertyEditor.get();
 	(void)composedPropertyEditor->ClearPropertyValues();
-	// grid4
-	auto __owned_grid4 = std::make_unique<Grid>();
-	grid4 = __owned_grid4.get();
-	(void)grid4->ClearPropertyValues();
-	// textBlock19
-	auto __owned_textBlock19 = std::make_unique<Label>();
-	textBlock19 = __owned_textBlock19.get();
-	(void)textBlock19->ClearPropertyValues();
+	// grid5
+	auto __owned_grid5 = std::make_unique<Grid>();
+	grid5 = __owned_grid5.get();
+	(void)grid5->ClearPropertyValues();
+	// textBlock25
+	auto __owned_textBlock25 = std::make_unique<Label>();
+	textBlock25 = __owned_textBlock25.get();
+	(void)textBlock25->ClearPropertyValues();
 	// composedTitleEditor
 	auto __owned_composedTitleEditor = std::make_unique<TextBox>();
 	composedTitleEditor = __owned_composedTitleEditor.get();
 	(void)composedTitleEditor->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*composedTitleEditor, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock20
-	auto __owned_textBlock20 = std::make_unique<Label>();
-	textBlock20 = __owned_textBlock20.get();
-	(void)textBlock20->ClearPropertyValues();
+	// textBlock26
+	auto __owned_textBlock26 = std::make_unique<Label>();
+	textBlock26 = __owned_textBlock26.get();
+	(void)textBlock26->ClearPropertyValues();
 	// composedEnabledEditor
 	auto __owned_composedEnabledEditor = std::make_unique<CheckBox>();
 	composedEnabledEditor = __owned_composedEnabledEditor.get();
 	(void)composedEnabledEditor->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*composedEnabledEditor, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock21
-	auto __owned_textBlock21 = std::make_unique<Label>();
-	textBlock21 = __owned_textBlock21.get();
-	(void)textBlock21->ClearPropertyValues();
+	// textBlock27
+	auto __owned_textBlock27 = std::make_unique<Label>();
+	textBlock27 = __owned_textBlock27.get();
+	(void)textBlock27->ClearPropertyValues();
 	// composedDensityEditor
 	auto __owned_composedDensityEditor = std::make_unique<ComboBox>();
 	composedDensityEditor = __owned_composedDensityEditor.get();
@@ -2497,27 +2559,27 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_comboBoxItem3 = std::make_unique<ComboBoxItem>();
 	comboBoxItem3 = __owned_comboBoxItem3.get();
 	(void)comboBoxItem3->ClearPropertyValues();
-	// textBlock22
-	auto __owned_textBlock22 = std::make_unique<Label>();
-	textBlock22 = __owned_textBlock22.get();
-	(void)textBlock22->ClearPropertyValues();
+	// textBlock28
+	auto __owned_textBlock28 = std::make_unique<Label>();
+	textBlock28 = __owned_textBlock28.get();
+	(void)textBlock28->ClearPropertyValues();
 	// composedScaleEditor
 	auto __owned_composedScaleEditor = std::make_unique<Slider>();
 	composedScaleEditor = __owned_composedScaleEditor.get();
 	(void)composedScaleEditor->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*composedScaleEditor, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock23
-	auto __owned_textBlock23 = std::make_unique<Label>();
-	textBlock23 = __owned_textBlock23.get();
-	(void)textBlock23->ClearPropertyValues();
-	// stackPanel14
-	auto __owned_stackPanel14 = std::make_unique<StackPanel>();
-	stackPanel14 = __owned_stackPanel14.get();
-	(void)stackPanel14->ClearPropertyValues();
-	// textBlock24
-	auto __owned_textBlock24 = std::make_unique<Label>();
-	textBlock24 = __owned_textBlock24.get();
-	(void)textBlock24->ClearPropertyValues();
+	// textBlock29
+	auto __owned_textBlock29 = std::make_unique<Label>();
+	textBlock29 = __owned_textBlock29.get();
+	(void)textBlock29->ClearPropertyValues();
+	// stackPanel16
+	auto __owned_stackPanel16 = std::make_unique<StackPanel>();
+	stackPanel16 = __owned_stackPanel16.get();
+	(void)stackPanel16->ClearPropertyValues();
+	// textBlock30
+	auto __owned_textBlock30 = std::make_unique<Label>();
+	textBlock30 = __owned_textBlock30.get();
+	(void)textBlock30->ClearPropertyValues();
 	// authoredStateTree
 	auto __owned_authoredStateTree = std::make_unique<TreeView>();
 	authoredStateTree = __owned_authoredStateTree.get();
@@ -2539,30 +2601,30 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_treeViewItem4 = std::make_unique<TreeViewItem>();
 	treeViewItem4 = __owned_treeViewItem4.get();
 	(void)treeViewItem4->ClearPropertyValues();
-	// textBlock25
-	auto __owned_textBlock25 = std::make_unique<Label>();
-	textBlock25 = __owned_textBlock25.get();
-	(void)textBlock25->ClearPropertyValues();
-	// tabItem4
-	auto __owned_tabItem4 = std::make_unique<TabItem>();
-	tabItem4 = __owned_tabItem4.get();
-	(void)tabItem4->ClearPropertyValues();
-	// border7
-	auto __owned_border7 = std::make_unique<Border>();
-	border7 = __owned_border7.get();
-	(void)border7->ClearPropertyValues();
+	// textBlock31
+	auto __owned_textBlock31 = std::make_unique<Label>();
+	textBlock31 = __owned_textBlock31.get();
+	(void)textBlock31->ClearPropertyValues();
+	// tabItem5
+	auto __owned_tabItem5 = std::make_unique<TabItem>();
+	tabItem5 = __owned_tabItem5.get();
+	(void)tabItem5->ClearPropertyValues();
+	// border9
+	auto __owned_border9 = std::make_unique<Border>();
+	border9 = __owned_border9.get();
+	(void)border9->ClearPropertyValues();
 	// analyticsSurface
 	auto __owned_analyticsSurface = std::make_unique<Grid>();
 	analyticsSurface = __owned_analyticsSurface.get();
 	(void)analyticsSurface->ClearPropertyValues();
-	// textBlock26
-	auto __owned_textBlock26 = std::make_unique<Label>();
-	textBlock26 = __owned_textBlock26.get();
-	(void)textBlock26->ClearPropertyValues();
-	// border8
-	auto __owned_border8 = std::make_unique<Border>();
-	border8 = __owned_border8.get();
-	(void)border8->ClearPropertyValues();
+	// textBlock32
+	auto __owned_textBlock32 = std::make_unique<Label>();
+	textBlock32 = __owned_textBlock32.get();
+	(void)textBlock32->ClearPropertyValues();
+	// border10
+	auto __owned_border10 = std::make_unique<Border>();
+	border10 = __owned_border10.get();
+	(void)border10->ClearPropertyValues();
 	// analyticsFilterSurface
 	auto __owned_analyticsFilterSurface = std::make_unique<Grid>();
 	analyticsFilterSurface = __owned_analyticsFilterSurface.get();
@@ -2597,38 +2659,38 @@ void DemoWindowGenerated::InitializeComponent()
 	analyticsReset = __owned_analyticsReset.get();
 	(void)analyticsReset->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*analyticsReset, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// grid5
-	auto __owned_grid5 = std::make_unique<Grid>();
-	grid5 = __owned_grid5.get();
-	(void)grid5->ClearPropertyValues();
+	// grid6
+	auto __owned_grid6 = std::make_unique<Grid>();
+	grid6 = __owned_grid6.get();
+	(void)grid6->ClearPropertyValues();
 	// groupBox1
 	auto __owned_groupBox1 = std::make_unique<GroupBox>();
 	groupBox1 = __owned_groupBox1.get();
 	(void)groupBox1->ClearPropertyValues();
-	// stackPanel15
-	auto __owned_stackPanel15 = std::make_unique<StackPanel>();
-	stackPanel15 = __owned_stackPanel15.get();
-	(void)stackPanel15->ClearPropertyValues();
-	// textBlock27
-	auto __owned_textBlock27 = std::make_unique<Label>();
-	textBlock27 = __owned_textBlock27.get();
-	(void)textBlock27->ClearPropertyValues();
-	// textBlock28
-	auto __owned_textBlock28 = std::make_unique<Label>();
-	textBlock28 = __owned_textBlock28.get();
-	(void)textBlock28->ClearPropertyValues();
+	// stackPanel17
+	auto __owned_stackPanel17 = std::make_unique<StackPanel>();
+	stackPanel17 = __owned_stackPanel17.get();
+	(void)stackPanel17->ClearPropertyValues();
+	// textBlock33
+	auto __owned_textBlock33 = std::make_unique<Label>();
+	textBlock33 = __owned_textBlock33.get();
+	(void)textBlock33->ClearPropertyValues();
+	// textBlock34
+	auto __owned_textBlock34 = std::make_unique<Label>();
+	textBlock34 = __owned_textBlock34.get();
+	(void)textBlock34->ClearPropertyValues();
 	// groupBox2
 	auto __owned_groupBox2 = std::make_unique<GroupBox>();
 	groupBox2 = __owned_groupBox2.get();
 	(void)groupBox2->ClearPropertyValues();
-	// stackPanel16
-	auto __owned_stackPanel16 = std::make_unique<StackPanel>();
-	stackPanel16 = __owned_stackPanel16.get();
-	(void)stackPanel16->ClearPropertyValues();
-	// textBlock29
-	auto __owned_textBlock29 = std::make_unique<Label>();
-	textBlock29 = __owned_textBlock29.get();
-	(void)textBlock29->ClearPropertyValues();
+	// stackPanel18
+	auto __owned_stackPanel18 = std::make_unique<StackPanel>();
+	stackPanel18 = __owned_stackPanel18.get();
+	(void)stackPanel18->ClearPropertyValues();
+	// textBlock35
+	auto __owned_textBlock35 = std::make_unique<Label>();
+	textBlock35 = __owned_textBlock35.get();
+	(void)textBlock35->ClearPropertyValues();
 	// progressBar1
 	auto __owned_progressBar1 = std::make_unique<ProgressBar>();
 	progressBar1 = __owned_progressBar1.get();
@@ -2637,22 +2699,22 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_groupBox3 = std::make_unique<GroupBox>();
 	groupBox3 = __owned_groupBox3.get();
 	(void)groupBox3->ClearPropertyValues();
-	// stackPanel17
-	auto __owned_stackPanel17 = std::make_unique<StackPanel>();
-	stackPanel17 = __owned_stackPanel17.get();
-	(void)stackPanel17->ClearPropertyValues();
-	// textBlock30
-	auto __owned_textBlock30 = std::make_unique<Label>();
-	textBlock30 = __owned_textBlock30.get();
-	(void)textBlock30->ClearPropertyValues();
-	// textBlock31
-	auto __owned_textBlock31 = std::make_unique<Label>();
-	textBlock31 = __owned_textBlock31.get();
-	(void)textBlock31->ClearPropertyValues();
-	// textBlock32
-	auto __owned_textBlock32 = std::make_unique<Label>();
-	textBlock32 = __owned_textBlock32.get();
-	(void)textBlock32->ClearPropertyValues();
+	// stackPanel19
+	auto __owned_stackPanel19 = std::make_unique<StackPanel>();
+	stackPanel19 = __owned_stackPanel19.get();
+	(void)stackPanel19->ClearPropertyValues();
+	// textBlock36
+	auto __owned_textBlock36 = std::make_unique<Label>();
+	textBlock36 = __owned_textBlock36.get();
+	(void)textBlock36->ClearPropertyValues();
+	// textBlock37
+	auto __owned_textBlock37 = std::make_unique<Label>();
+	textBlock37 = __owned_textBlock37.get();
+	(void)textBlock37->ClearPropertyValues();
+	// textBlock38
+	auto __owned_textBlock38 = std::make_unique<Label>();
+	textBlock38 = __owned_textBlock38.get();
+	(void)textBlock38->ClearPropertyValues();
 	// wrapPanel2
 	auto __owned_wrapPanel2 = std::make_unique<WrapPanel>();
 	wrapPanel2 = __owned_wrapPanel2.get();
@@ -2672,10 +2734,10 @@ void DemoWindowGenerated::InitializeComponent()
 	chartLine = __owned_chartLine.get();
 	(void)chartLine->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*chartLine, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// grid6
-	auto __owned_grid6 = std::make_unique<Grid>();
-	grid6 = __owned_grid6.get();
-	(void)grid6->ClearPropertyValues();
+	// grid7
+	auto __owned_grid7 = std::make_unique<Grid>();
+	grid7 = __owned_grid7.get();
+	(void)grid7->ClearPropertyValues();
 	// salesChart
 	auto __owned_salesChart = std::make_unique<ChartView>();
 	salesChart = __owned_salesChart.get();
@@ -2685,51 +2747,51 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_analyticsReport = std::make_unique<GroupBox>();
 	analyticsReport = __owned_analyticsReport.get();
 	(void)analyticsReport->ClearPropertyValues();
-	// grid7
-	auto __owned_grid7 = std::make_unique<Grid>();
-	grid7 = __owned_grid7.get();
-	(void)grid7->ClearPropertyValues();
-	// stackPanel18
-	auto __owned_stackPanel18 = std::make_unique<StackPanel>();
-	stackPanel18 = __owned_stackPanel18.get();
-	(void)stackPanel18->ClearPropertyValues();
-	// textBlock33
-	auto __owned_textBlock33 = std::make_unique<Label>();
-	textBlock33 = __owned_textBlock33.get();
-	(void)textBlock33->ClearPropertyValues();
-	// textBlock34
-	auto __owned_textBlock34 = std::make_unique<Label>();
-	textBlock34 = __owned_textBlock34.get();
-	(void)textBlock34->ClearPropertyValues();
-	// textBlock35
-	auto __owned_textBlock35 = std::make_unique<Label>();
-	textBlock35 = __owned_textBlock35.get();
-	(void)textBlock35->ClearPropertyValues();
-	// textBlock36
-	auto __owned_textBlock36 = std::make_unique<Label>();
-	textBlock36 = __owned_textBlock36.get();
-	(void)textBlock36->ClearPropertyValues();
-	// textBlock37
-	auto __owned_textBlock37 = std::make_unique<Label>();
-	textBlock37 = __owned_textBlock37.get();
-	(void)textBlock37->ClearPropertyValues();
+	// grid8
+	auto __owned_grid8 = std::make_unique<Grid>();
+	grid8 = __owned_grid8.get();
+	(void)grid8->ClearPropertyValues();
+	// stackPanel20
+	auto __owned_stackPanel20 = std::make_unique<StackPanel>();
+	stackPanel20 = __owned_stackPanel20.get();
+	(void)stackPanel20->ClearPropertyValues();
+	// textBlock39
+	auto __owned_textBlock39 = std::make_unique<Label>();
+	textBlock39 = __owned_textBlock39.get();
+	(void)textBlock39->ClearPropertyValues();
+	// textBlock40
+	auto __owned_textBlock40 = std::make_unique<Label>();
+	textBlock40 = __owned_textBlock40.get();
+	(void)textBlock40->ClearPropertyValues();
+	// textBlock41
+	auto __owned_textBlock41 = std::make_unique<Label>();
+	textBlock41 = __owned_textBlock41.get();
+	(void)textBlock41->ClearPropertyValues();
+	// textBlock42
+	auto __owned_textBlock42 = std::make_unique<Label>();
+	textBlock42 = __owned_textBlock42.get();
+	(void)textBlock42->ClearPropertyValues();
+	// textBlock43
+	auto __owned_textBlock43 = std::make_unique<Label>();
+	textBlock43 = __owned_textBlock43.get();
+	(void)textBlock43->ClearPropertyValues();
 	// analyticsRows
 	auto __owned_analyticsRows = std::make_unique<ListView>();
 	analyticsRows = __owned_analyticsRows.get();
 	(void)analyticsRows->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*analyticsRows, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock38
-	auto __owned_textBlock38 = std::make_unique<Label>();
-	textBlock38 = __owned_textBlock38.get();
-	(void)textBlock38->ClearPropertyValues();
-	// tabItem5
-	auto __owned_tabItem5 = std::make_unique<TabItem>();
-	tabItem5 = __owned_tabItem5.get();
-	(void)tabItem5->ClearPropertyValues();
-	// border9
-	auto __owned_border9 = std::make_unique<Border>();
-	border9 = __owned_border9.get();
-	(void)border9->ClearPropertyValues();
+	// textBlock44
+	auto __owned_textBlock44 = std::make_unique<Label>();
+	textBlock44 = __owned_textBlock44.get();
+	(void)textBlock44->ClearPropertyValues();
+	// tabItem6
+	auto __owned_tabItem6 = std::make_unique<TabItem>();
+	tabItem6 = __owned_tabItem6.get();
+	(void)tabItem6->ClearPropertyValues();
+	// border11
+	auto __owned_border11 = std::make_unique<Border>();
+	border11 = __owned_border11.get();
+	(void)border11->ClearPropertyValues();
 	// layoutSurface
 	auto __owned_layoutSurface = std::make_unique<Grid>();
 	layoutSurface = __owned_layoutSurface.get();
@@ -2742,10 +2804,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_canvasSemanticsProbe = std::make_unique<Canvas>();
 	canvasSemanticsProbe = __owned_canvasSemanticsProbe.get();
 	(void)canvasSemanticsProbe->ClearPropertyValues();
-	// border10
-	auto __owned_border10 = std::make_unique<Border>();
-	border10 = __owned_border10.get();
-	(void)border10->ClearPropertyValues();
+	// border12
+	auto __owned_border12 = std::make_unique<Border>();
+	border12 = __owned_border12.get();
+	(void)border12->ClearPropertyValues();
 	// canvasLeftWins
 	auto __owned_canvasLeftWins = std::make_unique<Label>();
 	canvasLeftWins = __owned_canvasLeftWins.get();
@@ -2754,18 +2816,18 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_canvasRightBottom = std::make_unique<Label>();
 	canvasRightBottom = __owned_canvasRightBottom.get();
 	(void)canvasRightBottom->ClearPropertyValues();
-	// border11
-	auto __owned_border11 = std::make_unique<Border>();
-	border11 = __owned_border11.get();
-	(void)border11->ClearPropertyValues();
+	// border13
+	auto __owned_border13 = std::make_unique<Border>();
+	border13 = __owned_border13.get();
+	(void)border13->ClearPropertyValues();
 	// demoStack
 	auto __owned_demoStack = std::make_unique<StackPanel>();
 	demoStack = __owned_demoStack.get();
 	(void)demoStack->ClearPropertyValues();
-	// textBlock39
-	auto __owned_textBlock39 = std::make_unique<Label>();
-	textBlock39 = __owned_textBlock39.get();
-	(void)textBlock39->ClearPropertyValues();
+	// textBlock45
+	auto __owned_textBlock45 = std::make_unique<Label>();
+	textBlock45 = __owned_textBlock45.get();
+	(void)textBlock45->ClearPropertyValues();
 	// stackA
 	auto __owned_stackA = std::make_unique<Button>();
 	stackA = __owned_stackA.get();
@@ -2781,10 +2843,10 @@ void DemoWindowGenerated::InitializeComponent()
 	stackC = __owned_stackC.get();
 	(void)stackC->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*stackC, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border12
-	auto __owned_border12 = std::make_unique<Border>();
-	border12 = __owned_border12.get();
-	(void)border12->ClearPropertyValues();
+	// border14
+	auto __owned_border14 = std::make_unique<Border>();
+	border14 = __owned_border14.get();
+	(void)border14->ClearPropertyValues();
 	// demoGrid
 	auto __owned_demoGrid = std::make_unique<Grid>();
 	demoGrid = __owned_demoGrid.get();
@@ -2808,18 +2870,18 @@ void DemoWindowGenerated::InitializeComponent()
 	gridFooter = __owned_gridFooter.get();
 	(void)gridFooter->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*gridFooter, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border13
-	auto __owned_border13 = std::make_unique<Border>();
-	border13 = __owned_border13.get();
-	(void)border13->ClearPropertyValues();
+	// border15
+	auto __owned_border15 = std::make_unique<Border>();
+	border15 = __owned_border15.get();
+	(void)border15->ClearPropertyValues();
 	// demoDock
 	auto __owned_demoDock = std::make_unique<DockPanel>();
 	demoDock = __owned_demoDock.get();
 	(void)demoDock->ClearPropertyValues();
-	// textBlock40
-	auto __owned_textBlock40 = std::make_unique<Label>();
-	textBlock40 = __owned_textBlock40.get();
-	(void)textBlock40->ClearPropertyValues();
+	// textBlock46
+	auto __owned_textBlock46 = std::make_unique<Label>();
+	textBlock46 = __owned_textBlock46.get();
+	(void)textBlock46->ClearPropertyValues();
 	// dockTop
 	auto __owned_dockTop = std::make_unique<Button>();
 	dockTop = __owned_dockTop.get();
@@ -2834,10 +2896,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_dockFill = std::make_unique<Label>();
 	dockFill = __owned_dockFill.get();
 	(void)dockFill->ClearPropertyValues();
-	// border14
-	auto __owned_border14 = std::make_unique<Border>();
-	border14 = __owned_border14.get();
-	(void)border14->ClearPropertyValues();
+	// border16
+	auto __owned_border16 = std::make_unique<Border>();
+	border16 = __owned_border16.get();
+	(void)border16->ClearPropertyValues();
 	// demoWrap
 	auto __owned_demoWrap = std::make_unique<WrapPanel>();
 	demoWrap = __owned_demoWrap.get();
@@ -2872,10 +2934,10 @@ void DemoWindowGenerated::InitializeComponent()
 	wrap6 = __owned_wrap6.get();
 	(void)wrap6->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*wrap6, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border15
-	auto __owned_border15 = std::make_unique<Border>();
-	border15 = __owned_border15.get();
-	(void)border15->ClearPropertyValues();
+	// border17
+	auto __owned_border17 = std::make_unique<Border>();
+	border17 = __owned_border17.get();
+	(void)border17->ClearPropertyValues();
 	// demoRelative
 	auto __owned_demoRelative = std::make_unique<RelativePanel>();
 	demoRelative = __owned_demoRelative.get();
@@ -2901,10 +2963,10 @@ void DemoWindowGenerated::InitializeComponent()
 	relativeCenterButton = __owned_relativeCenterButton.get();
 	(void)relativeCenterButton->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*relativeCenterButton, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// border16
-	auto __owned_border16 = std::make_unique<Border>();
-	border16 = __owned_border16.get();
-	(void)border16->ClearPropertyValues();
+	// border18
+	auto __owned_border18 = std::make_unique<Border>();
+	border18 = __owned_border18.get();
+	(void)border18->ClearPropertyValues();
 	// demoScroll
 	auto __owned_demoScroll = std::make_unique<ScrollViewer>();
 	demoScroll = __owned_demoScroll.get();
@@ -2914,10 +2976,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_demoScrollContent = std::make_unique<Grid>();
 	demoScrollContent = __owned_demoScrollContent.get();
 	(void)demoScrollContent->ClearPropertyValues();
-	// border17
-	auto __owned_border17 = std::make_unique<Border>();
-	border17 = __owned_border17.get();
-	(void)border17->ClearPropertyValues();
+	// border19
+	auto __owned_border19 = std::make_unique<Border>();
+	border19 = __owned_border19.get();
+	(void)border19->ClearPropertyValues();
 	// scrollCard1
 	auto __owned_scrollCard1 = std::make_unique<StackPanel>();
 	scrollCard1 = __owned_scrollCard1.get();
@@ -2926,14 +2988,14 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_scrollCard1Text = std::make_unique<Label>();
 	scrollCard1Text = __owned_scrollCard1Text.get();
 	(void)scrollCard1Text->ClearPropertyValues();
-	// textBlock41
-	auto __owned_textBlock41 = std::make_unique<Label>();
-	textBlock41 = __owned_textBlock41.get();
-	(void)textBlock41->ClearPropertyValues();
-	// border18
-	auto __owned_border18 = std::make_unique<Border>();
-	border18 = __owned_border18.get();
-	(void)border18->ClearPropertyValues();
+	// textBlock47
+	auto __owned_textBlock47 = std::make_unique<Label>();
+	textBlock47 = __owned_textBlock47.get();
+	(void)textBlock47->ClearPropertyValues();
+	// border20
+	auto __owned_border20 = std::make_unique<Border>();
+	border20 = __owned_border20.get();
+	(void)border20->ClearPropertyValues();
 	// scrollCard2
 	auto __owned_scrollCard2 = std::make_unique<StackPanel>();
 	scrollCard2 = __owned_scrollCard2.get();
@@ -2942,27 +3004,27 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_scrollCard2Text = std::make_unique<Label>();
 	scrollCard2Text = __owned_scrollCard2Text.get();
 	(void)scrollCard2Text->ClearPropertyValues();
-	// textBlock42
-	auto __owned_textBlock42 = std::make_unique<Label>();
-	textBlock42 = __owned_textBlock42.get();
-	(void)textBlock42->ClearPropertyValues();
-	// textBlock43
-	auto __owned_textBlock43 = std::make_unique<Label>();
-	textBlock43 = __owned_textBlock43.get();
-	(void)textBlock43->ClearPropertyValues();
+	// textBlock48
+	auto __owned_textBlock48 = std::make_unique<Label>();
+	textBlock48 = __owned_textBlock48.get();
+	(void)textBlock48->ClearPropertyValues();
+	// textBlock49
+	auto __owned_textBlock49 = std::make_unique<Label>();
+	textBlock49 = __owned_textBlock49.get();
+	(void)textBlock49->ClearPropertyValues();
 	// farButton
 	auto __owned_farButton = std::make_unique<Button>();
 	farButton = __owned_farButton.get();
 	(void)farButton->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*farButton, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// tabItem6
-	auto __owned_tabItem6 = std::make_unique<TabItem>();
-	tabItem6 = __owned_tabItem6.get();
-	(void)tabItem6->ClearPropertyValues();
-	// border19
-	auto __owned_border19 = std::make_unique<Border>();
-	border19 = __owned_border19.get();
-	(void)border19->ClearPropertyValues();
+	// tabItem7
+	auto __owned_tabItem7 = std::make_unique<TabItem>();
+	tabItem7 = __owned_tabItem7.get();
+	(void)tabItem7->ClearPropertyValues();
+	// border21
+	auto __owned_border21 = std::make_unique<Border>();
+	border21 = __owned_border21.get();
+	(void)border21->ClearPropertyValues();
 	// systemSurface
 	auto __owned_systemSurface = std::make_unique<Grid>();
 	systemSurface = __owned_systemSurface.get();
@@ -2971,10 +3033,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_systemTitle = std::make_unique<Label>();
 	systemTitle = __owned_systemTitle.get();
 	(void)systemTitle->ClearPropertyValues();
-	// stackPanel19
-	auto __owned_stackPanel19 = std::make_unique<StackPanel>();
-	stackPanel19 = __owned_stackPanel19.get();
-	(void)stackPanel19->ClearPropertyValues();
+	// stackPanel21
+	auto __owned_stackPanel21 = std::make_unique<StackPanel>();
+	stackPanel21 = __owned_stackPanel21.get();
+	(void)stackPanel21->ClearPropertyValues();
 	// wrapPanel3
 	auto __owned_wrapPanel3 = std::make_unique<WrapPanel>();
 	wrapPanel3 = __owned_wrapPanel3.get();
@@ -3003,55 +3065,55 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_systemHint = std::make_unique<Label>();
 	systemHint = __owned_systemHint.get();
 	(void)systemHint->ClearPropertyValues();
-	// border20
-	auto __owned_border20 = std::make_unique<Border>();
-	border20 = __owned_border20.get();
-	(void)border20->ClearPropertyValues();
-	// grid8
-	auto __owned_grid8 = std::make_unique<Grid>();
-	grid8 = __owned_grid8.get();
-	(void)grid8->ClearPropertyValues();
-	// textBlock44
-	auto __owned_textBlock44 = std::make_unique<Label>();
-	textBlock44 = __owned_textBlock44.get();
-	(void)textBlock44->ClearPropertyValues();
+	// border22
+	auto __owned_border22 = std::make_unique<Border>();
+	border22 = __owned_border22.get();
+	(void)border22->ClearPropertyValues();
+	// grid9
+	auto __owned_grid9 = std::make_unique<Grid>();
+	grid9 = __owned_grid9.get();
+	(void)grid9->ClearPropertyValues();
+	// textBlock50
+	auto __owned_textBlock50 = std::make_unique<Label>();
+	textBlock50 = __owned_textBlock50.get();
+	(void)textBlock50->ClearPropertyValues();
 	// commandTargetButton
 	auto __owned_commandTargetButton = std::make_unique<Button>();
 	commandTargetButton = __owned_commandTargetButton.get();
 	(void)commandTargetButton->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*commandTargetButton, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock45
-	auto __owned_textBlock45 = std::make_unique<Label>();
-	textBlock45 = __owned_textBlock45.get();
-	(void)textBlock45->ClearPropertyValues();
+	// textBlock51
+	auto __owned_textBlock51 = std::make_unique<Label>();
+	textBlock51 = __owned_textBlock51.get();
+	(void)textBlock51->ClearPropertyValues();
 	// commandTargetTrace
 	auto __owned_commandTargetTrace = std::make_unique<Label>();
 	commandTargetTrace = __owned_commandTargetTrace.get();
 	(void)commandTargetTrace->ClearPropertyValues();
-	// textBlock46
-	auto __owned_textBlock46 = std::make_unique<Label>();
-	textBlock46 = __owned_textBlock46.get();
-	(void)textBlock46->ClearPropertyValues();
-	// textBlock47
-	auto __owned_textBlock47 = std::make_unique<Label>();
-	textBlock47 = __owned_textBlock47.get();
-	(void)textBlock47->ClearPropertyValues();
-	// textBlock48
-	auto __owned_textBlock48 = std::make_unique<Label>();
-	textBlock48 = __owned_textBlock48.get();
-	(void)textBlock48->ClearPropertyValues();
+	// textBlock52
+	auto __owned_textBlock52 = std::make_unique<Label>();
+	textBlock52 = __owned_textBlock52.get();
+	(void)textBlock52->ClearPropertyValues();
+	// textBlock53
+	auto __owned_textBlock53 = std::make_unique<Label>();
+	textBlock53 = __owned_textBlock53.get();
+	(void)textBlock53->ClearPropertyValues();
+	// textBlock54
+	auto __owned_textBlock54 = std::make_unique<Label>();
+	textBlock54 = __owned_textBlock54.get();
+	(void)textBlock54->ClearPropertyValues();
 	// notificationPanel
 	auto __owned_notificationPanel = std::make_unique<GroupBox>();
 	notificationPanel = __owned_notificationPanel.get();
 	(void)notificationPanel->ClearPropertyValues();
-	// grid9
-	auto __owned_grid9 = std::make_unique<Grid>();
-	grid9 = __owned_grid9.get();
-	(void)grid9->ClearPropertyValues();
-	// textBlock49
-	auto __owned_textBlock49 = std::make_unique<Label>();
-	textBlock49 = __owned_textBlock49.get();
-	(void)textBlock49->ClearPropertyValues();
+	// grid10
+	auto __owned_grid10 = std::make_unique<Grid>();
+	grid10 = __owned_grid10.get();
+	(void)grid10->ClearPropertyValues();
+	// textBlock55
+	auto __owned_textBlock55 = std::make_unique<Label>();
+	textBlock55 = __owned_textBlock55.get();
+	(void)textBlock55->ClearPropertyValues();
 	// toastMessage
 	auto __owned_toastMessage = std::make_unique<Label>();
 	toastMessage = __owned_toastMessage.get();
@@ -3065,44 +3127,10 @@ void DemoWindowGenerated::InitializeComponent()
 	dismissToast = __owned_dismissToast.get();
 	(void)dismissToast->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*dismissToast, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock50
-	auto __owned_textBlock50 = std::make_unique<Label>();
-	textBlock50 = __owned_textBlock50.get();
-	(void)textBlock50->ClearPropertyValues();
-	// tabItem7
-	auto __owned_tabItem7 = std::make_unique<TabItem>();
-	tabItem7 = __owned_tabItem7.get();
-	(void)tabItem7->ClearPropertyValues();
-	// border21
-	auto __owned_border21 = std::make_unique<Border>();
-	border21 = __owned_border21.get();
-	(void)border21->ClearPropertyValues();
-	// webSurface
-	auto __owned_webSurface = std::make_unique<Grid>();
-	webSurface = __owned_webSurface.get();
-	(void)webSurface->ClearPropertyValues();
-	// grid10
-	auto __owned_grid10 = std::make_unique<Grid>();
-	grid10 = __owned_grid10.get();
-	(void)grid10->ClearPropertyValues();
-	// invokeWeb
-	auto __owned_invokeWeb = std::make_unique<Button>();
-	invokeWeb = __owned_invokeWeb.get();
-	(void)invokeWeb->ClearPropertyValues();
-	(void)cui::framework::DependencyPropertyAccess::SetValue(*invokeWeb, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// webHint
-	auto __owned_webHint = std::make_unique<Label>();
-	webHint = __owned_webHint.get();
-	(void)webHint->ClearPropertyValues();
-	// border22
-	auto __owned_border22 = std::make_unique<Border>();
-	border22 = __owned_border22.get();
-	(void)border22->ClearPropertyValues();
-	// webBrowser
-	auto __owned_webBrowser = std::make_unique<WebBrowser>();
-	webBrowser = __owned_webBrowser.get();
-	(void)webBrowser->ClearPropertyValues();
-	(void)cui::framework::DependencyPropertyAccess::SetValue(*webBrowser, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// textBlock56
+	auto __owned_textBlock56 = std::make_unique<Label>();
+	textBlock56 = __owned_textBlock56.get();
+	(void)textBlock56->ClearPropertyValues();
 	// tabItem8
 	auto __owned_tabItem8 = std::make_unique<TabItem>();
 	tabItem8 = __owned_tabItem8.get();
@@ -3111,6 +3139,37 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_border23 = std::make_unique<Border>();
 	border23 = __owned_border23.get();
 	(void)border23->ClearPropertyValues();
+	// webSurface
+	auto __owned_webSurface = std::make_unique<Grid>();
+	webSurface = __owned_webSurface.get();
+	(void)webSurface->ClearPropertyValues();
+	// grid11
+	auto __owned_grid11 = std::make_unique<Grid>();
+	grid11 = __owned_grid11.get();
+	(void)grid11->ClearPropertyValues();
+	// invokeWeb
+	auto __owned_invokeWeb = std::make_unique<Button>();
+	invokeWeb = __owned_invokeWeb.get();
+	(void)invokeWeb->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*invokeWeb, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// navigationWeb
+	auto __owned_navigationWeb = std::make_unique<Button>();
+	navigationWeb = __owned_navigationWeb.get();
+	(void)navigationWeb->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*navigationWeb, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// webBrowser
+	auto __owned_webBrowser = std::make_unique<WebBrowser>();
+	webBrowser = __owned_webBrowser.get();
+	(void)webBrowser->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*webBrowser, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// tabItem9
+	auto __owned_tabItem9 = std::make_unique<TabItem>();
+	tabItem9 = __owned_tabItem9.get();
+	(void)tabItem9->ClearPropertyValues();
+	// border24
+	auto __owned_border24 = std::make_unique<Border>();
+	border24 = __owned_border24.get();
+	(void)border24->ClearPropertyValues();
 	// mediaSurface
 	auto __owned_mediaSurface = std::make_unique<Grid>();
 	mediaSurface = __owned_mediaSurface.get();
@@ -3119,10 +3178,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_mediaElement = std::make_unique<MediaElement>();
 	mediaElement = __owned_mediaElement.get();
 	(void)mediaElement->ClearPropertyValues();
-	// grid11
-	auto __owned_grid11 = std::make_unique<Grid>();
-	grid11 = __owned_grid11.get();
-	(void)grid11->ClearPropertyValues();
+	// grid12
+	auto __owned_grid12 = std::make_unique<Grid>();
+	grid12 = __owned_grid12.get();
+	(void)grid12->ClearPropertyValues();
 	// mediaOpen
 	auto __owned_mediaOpen = std::make_unique<Button>();
 	mediaOpen = __owned_mediaOpen.get();
@@ -3170,10 +3229,10 @@ void DemoWindowGenerated::InitializeComponent()
 	mediaLoop = __owned_mediaLoop.get();
 	(void)mediaLoop->ClearPropertyValues();
 	(void)cui::framework::DependencyPropertyAccess::SetValue(*mediaLoop, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// grid12
-	auto __owned_grid12 = std::make_unique<Grid>();
-	grid12 = __owned_grid12.get();
-	(void)grid12->ClearPropertyValues();
+	// grid13
+	auto __owned_grid13 = std::make_unique<Grid>();
+	grid13 = __owned_grid13.get();
+	(void)grid13->ClearPropertyValues();
 	// mediaProgress
 	auto __owned_mediaProgress = std::make_unique<Slider>();
 	mediaProgress = __owned_mediaProgress.get();
@@ -3183,14 +3242,14 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_mediaTime = std::make_unique<Label>();
 	mediaTime = __owned_mediaTime.get();
 	(void)mediaTime->ClearPropertyValues();
-	// tabItem9
-	auto __owned_tabItem9 = std::make_unique<TabItem>();
-	tabItem9 = __owned_tabItem9.get();
-	(void)tabItem9->ClearPropertyValues();
-	// border24
-	auto __owned_border24 = std::make_unique<Border>();
-	border24 = __owned_border24.get();
-	(void)border24->ClearPropertyValues();
+	// tabItem10
+	auto __owned_tabItem10 = std::make_unique<TabItem>();
+	tabItem10 = __owned_tabItem10.get();
+	(void)tabItem10->ClearPropertyValues();
+	// border25
+	auto __owned_border25 = std::make_unique<Border>();
+	border25 = __owned_border25.get();
+	(void)border25->ClearPropertyValues();
 	// wpfLabSurface
 	auto __owned_wpfLabSurface = std::make_unique<Grid>();
 	wpfLabSurface = __owned_wpfLabSurface.get();
@@ -3203,10 +3262,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_wpfBindingScope = std::make_unique<ContentControl>();
 	wpfBindingScope = __owned_wpfBindingScope.get();
 	(void)wpfBindingScope->ClearPropertyValues();
-	// stackPanel20
-	auto __owned_stackPanel20 = std::make_unique<StackPanel>();
-	stackPanel20 = __owned_stackPanel20.get();
-	(void)stackPanel20->ClearPropertyValues();
+	// stackPanel22
+	auto __owned_stackPanel22 = std::make_unique<StackPanel>();
+	stackPanel22 = __owned_stackPanel22.get();
+	(void)stackPanel22->ClearPropertyValues();
 	// wpfTypographyOverride
 	auto __owned_wpfTypographyOverride = std::make_unique<Label>();
 	wpfTypographyOverride = __owned_wpfTypographyOverride.get();
@@ -3256,10 +3315,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_wpfTemplateAndStyleScope = std::make_unique<StackPanel>();
 	wpfTemplateAndStyleScope = __owned_wpfTemplateAndStyleScope.get();
 	(void)wpfTemplateAndStyleScope->ClearPropertyValues();
-	// textBlock51
-	auto __owned_textBlock51 = std::make_unique<Label>();
-	textBlock51 = __owned_textBlock51.get();
-	(void)textBlock51->ClearPropertyValues();
+	// textBlock57
+	auto __owned_textBlock57 = std::make_unique<Label>();
+	textBlock57 = __owned_textBlock57.get();
+	(void)textBlock57->ClearPropertyValues();
 	// wpfTemplateButton
 	auto __owned_wpfTemplateButton = std::make_unique<Button>();
 	wpfTemplateButton = __owned_wpfTemplateButton.get();
@@ -3282,18 +3341,18 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_wpfInnerResourceValue = std::make_unique<Label>();
 	wpfInnerResourceValue = __owned_wpfInnerResourceValue.get();
 	(void)wpfInnerResourceValue->ClearPropertyValues();
-	// textBlock52
-	auto __owned_textBlock52 = std::make_unique<Label>();
-	textBlock52 = __owned_textBlock52.get();
-	(void)textBlock52->ClearPropertyValues();
+	// textBlock58
+	auto __owned_textBlock58 = std::make_unique<Label>();
+	textBlock58 = __owned_textBlock58.get();
+	(void)textBlock58->ClearPropertyValues();
 	// wpfItemsScope
 	auto __owned_wpfItemsScope = std::make_unique<Grid>();
 	wpfItemsScope = __owned_wpfItemsScope.get();
 	(void)wpfItemsScope->ClearPropertyValues();
-	// textBlock53
-	auto __owned_textBlock53 = std::make_unique<Label>();
-	textBlock53 = __owned_textBlock53.get();
-	(void)textBlock53->ClearPropertyValues();
+	// textBlock59
+	auto __owned_textBlock59 = std::make_unique<Label>();
+	textBlock59 = __owned_textBlock59.get();
+	(void)textBlock59->ClearPropertyValues();
 	// wpfTemplateList
 	auto __owned_wpfTemplateList = std::make_unique<ListBox>();
 	wpfTemplateList = __owned_wpfTemplateList.get();
@@ -3303,14 +3362,14 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_wpfRouteOuter = std::make_unique<Border>();
 	wpfRouteOuter = __owned_wpfRouteOuter.get();
 	(void)wpfRouteOuter->ClearPropertyValues();
-	// grid13
-	auto __owned_grid13 = std::make_unique<Grid>();
-	grid13 = __owned_grid13.get();
-	(void)grid13->ClearPropertyValues();
-	// textBlock54
-	auto __owned_textBlock54 = std::make_unique<Label>();
-	textBlock54 = __owned_textBlock54.get();
-	(void)textBlock54->ClearPropertyValues();
+	// grid14
+	auto __owned_grid14 = std::make_unique<Grid>();
+	grid14 = __owned_grid14.get();
+	(void)grid14->ClearPropertyValues();
+	// textBlock60
+	auto __owned_textBlock60 = std::make_unique<Label>();
+	textBlock60 = __owned_textBlock60.get();
+	(void)textBlock60->ClearPropertyValues();
 	// wpfRouteMiddle
 	auto __owned_wpfRouteMiddle = std::make_unique<Grid>();
 	wpfRouteMiddle = __owned_wpfRouteMiddle.get();
@@ -3365,65 +3424,22 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_wpfDispatcherResult = std::make_unique<Label>();
 	wpfDispatcherResult = __owned_wpfDispatcherResult.get();
 	(void)wpfDispatcherResult->ClearPropertyValues();
-	// tabItem10
-	auto __owned_tabItem10 = std::make_unique<TabItem>();
-	tabItem10 = __owned_tabItem10.get();
-	(void)tabItem10->ClearPropertyValues();
-	// border25
-	auto __owned_border25 = std::make_unique<Border>();
-	border25 = __owned_border25.get();
-	(void)border25->ClearPropertyValues();
-	// textCompositionLabSurface
-	auto __owned_textCompositionLabSurface = std::make_unique<Grid>();
-	textCompositionLabSurface = __owned_textCompositionLabSurface.get();
-	(void)textCompositionLabSurface->ClearPropertyValues();
-	// textBlock55
-	auto __owned_textBlock55 = std::make_unique<Label>();
-	textBlock55 = __owned_textBlock55.get();
-	(void)textBlock55->ClearPropertyValues();
+	// tabItem11
+	auto __owned_tabItem11 = std::make_unique<TabItem>();
+	tabItem11 = __owned_tabItem11.get();
+	(void)tabItem11->ClearPropertyValues();
 	// border26
 	auto __owned_border26 = std::make_unique<Border>();
 	border26 = __owned_border26.get();
 	(void)border26->ClearPropertyValues();
-	// grid14
-	auto __owned_grid14 = std::make_unique<Grid>();
-	grid14 = __owned_grid14.get();
-	(void)grid14->ClearPropertyValues();
-	// textBlock56
-	auto __owned_textBlock56 = std::make_unique<Label>();
-	textBlock56 = __owned_textBlock56.get();
-	(void)textBlock56->ClearPropertyValues();
-	// textBlock57
-	auto __owned_textBlock57 = std::make_unique<Label>();
-	textBlock57 = __owned_textBlock57.get();
-	(void)textBlock57->ClearPropertyValues();
-	// compositionTextBox
-	auto __owned_compositionTextBox = std::make_unique<TextBox>();
-	compositionTextBox = __owned_compositionTextBox.get();
-	(void)compositionTextBox->ClearPropertyValues();
-	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionTextBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock58
-	auto __owned_textBlock58 = std::make_unique<Label>();
-	textBlock58 = __owned_textBlock58.get();
-	(void)textBlock58->ClearPropertyValues();
-	// compositionRichTextBox
-	auto __owned_compositionRichTextBox = std::make_unique<RichTextBox>();
-	compositionRichTextBox = __owned_compositionRichTextBox.get();
-	(void)compositionRichTextBox->ClearPropertyValues();
-	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionRichTextBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock59
-	auto __owned_textBlock59 = std::make_unique<Label>();
-	textBlock59 = __owned_textBlock59.get();
-	(void)textBlock59->ClearPropertyValues();
-	// compositionPasswordBox
-	auto __owned_compositionPasswordBox = std::make_unique<PasswordBox>();
-	compositionPasswordBox = __owned_compositionPasswordBox.get();
-	(void)compositionPasswordBox->ClearPropertyValues();
-	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionPasswordBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
-	// textBlock60
-	auto __owned_textBlock60 = std::make_unique<Label>();
-	textBlock60 = __owned_textBlock60.get();
-	(void)textBlock60->ClearPropertyValues();
+	// textCompositionLabSurface
+	auto __owned_textCompositionLabSurface = std::make_unique<Grid>();
+	textCompositionLabSurface = __owned_textCompositionLabSurface.get();
+	(void)textCompositionLabSurface->ClearPropertyValues();
+	// textBlock61
+	auto __owned_textBlock61 = std::make_unique<Label>();
+	textBlock61 = __owned_textBlock61.get();
+	(void)textBlock61->ClearPropertyValues();
 	// border27
 	auto __owned_border27 = std::make_unique<Border>();
 	border27 = __owned_border27.get();
@@ -3432,10 +3448,53 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_grid15 = std::make_unique<Grid>();
 	grid15 = __owned_grid15.get();
 	(void)grid15->ClearPropertyValues();
-	// textBlock61
-	auto __owned_textBlock61 = std::make_unique<Label>();
-	textBlock61 = __owned_textBlock61.get();
-	(void)textBlock61->ClearPropertyValues();
+	// textBlock62
+	auto __owned_textBlock62 = std::make_unique<Label>();
+	textBlock62 = __owned_textBlock62.get();
+	(void)textBlock62->ClearPropertyValues();
+	// textBlock63
+	auto __owned_textBlock63 = std::make_unique<Label>();
+	textBlock63 = __owned_textBlock63.get();
+	(void)textBlock63->ClearPropertyValues();
+	// compositionTextBox
+	auto __owned_compositionTextBox = std::make_unique<TextBox>();
+	compositionTextBox = __owned_compositionTextBox.get();
+	(void)compositionTextBox->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionTextBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// textBlock64
+	auto __owned_textBlock64 = std::make_unique<Label>();
+	textBlock64 = __owned_textBlock64.get();
+	(void)textBlock64->ClearPropertyValues();
+	// compositionRichTextBox
+	auto __owned_compositionRichTextBox = std::make_unique<RichTextBox>();
+	compositionRichTextBox = __owned_compositionRichTextBox.get();
+	(void)compositionRichTextBox->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionRichTextBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// textBlock65
+	auto __owned_textBlock65 = std::make_unique<Label>();
+	textBlock65 = __owned_textBlock65.get();
+	(void)textBlock65->ClearPropertyValues();
+	// compositionPasswordBox
+	auto __owned_compositionPasswordBox = std::make_unique<PasswordBox>();
+	compositionPasswordBox = __owned_compositionPasswordBox.get();
+	(void)compositionPasswordBox->ClearPropertyValues();
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*compositionPasswordBox, Control::FocusableProperty(), BindingValue(true), DependencyPropertyValueSource::Theme);
+	// textBlock66
+	auto __owned_textBlock66 = std::make_unique<Label>();
+	textBlock66 = __owned_textBlock66.get();
+	(void)textBlock66->ClearPropertyValues();
+	// border28
+	auto __owned_border28 = std::make_unique<Border>();
+	border28 = __owned_border28.get();
+	(void)border28->ClearPropertyValues();
+	// grid16
+	auto __owned_grid16 = std::make_unique<Grid>();
+	grid16 = __owned_grid16.get();
+	(void)grid16->ClearPropertyValues();
+	// textBlock67
+	auto __owned_textBlock67 = std::make_unique<Label>();
+	textBlock67 = __owned_textBlock67.get();
+	(void)textBlock67->ClearPropertyValues();
 	// wrapPanel4
 	auto __owned_wrapPanel4 = std::make_unique<WrapPanel>();
 	wrapPanel4 = __owned_wrapPanel4.get();
@@ -3493,42 +3552,42 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_compositionStats = std::make_unique<Label>();
 	compositionStats = __owned_compositionStats.get();
 	(void)compositionStats->ClearPropertyValues();
-	// border28
-	auto __owned_border28 = std::make_unique<Border>();
-	border28 = __owned_border28.get();
-	(void)border28->ClearPropertyValues();
-	// grid16
-	auto __owned_grid16 = std::make_unique<Grid>();
-	grid16 = __owned_grid16.get();
-	(void)grid16->ClearPropertyValues();
-	// textBlock62
-	auto __owned_textBlock62 = std::make_unique<Label>();
-	textBlock62 = __owned_textBlock62.get();
-	(void)textBlock62->ClearPropertyValues();
-	// compositionTrace
-	auto __owned_compositionTrace = std::make_unique<Label>();
-	compositionTrace = __owned_compositionTrace.get();
-	(void)compositionTrace->ClearPropertyValues();
-	// tabItem11
-	auto __owned_tabItem11 = std::make_unique<TabItem>();
-	tabItem11 = __owned_tabItem11.get();
-	(void)tabItem11->ClearPropertyValues();
 	// border29
 	auto __owned_border29 = std::make_unique<Border>();
 	border29 = __owned_border29.get();
 	(void)border29->ClearPropertyValues();
-	// presentationLabSurface
-	auto __owned_presentationLabSurface = std::make_unique<Grid>();
-	presentationLabSurface = __owned_presentationLabSurface.get();
-	(void)presentationLabSurface->ClearPropertyValues();
-	// textBlock63
-	auto __owned_textBlock63 = std::make_unique<Label>();
-	textBlock63 = __owned_textBlock63.get();
-	(void)textBlock63->ClearPropertyValues();
 	// grid17
 	auto __owned_grid17 = std::make_unique<Grid>();
 	grid17 = __owned_grid17.get();
 	(void)grid17->ClearPropertyValues();
+	// textBlock68
+	auto __owned_textBlock68 = std::make_unique<Label>();
+	textBlock68 = __owned_textBlock68.get();
+	(void)textBlock68->ClearPropertyValues();
+	// compositionTrace
+	auto __owned_compositionTrace = std::make_unique<Label>();
+	compositionTrace = __owned_compositionTrace.get();
+	(void)compositionTrace->ClearPropertyValues();
+	// tabItem12
+	auto __owned_tabItem12 = std::make_unique<TabItem>();
+	tabItem12 = __owned_tabItem12.get();
+	(void)tabItem12->ClearPropertyValues();
+	// border30
+	auto __owned_border30 = std::make_unique<Border>();
+	border30 = __owned_border30.get();
+	(void)border30->ClearPropertyValues();
+	// presentationLabSurface
+	auto __owned_presentationLabSurface = std::make_unique<Grid>();
+	presentationLabSurface = __owned_presentationLabSurface.get();
+	(void)presentationLabSurface->ClearPropertyValues();
+	// textBlock69
+	auto __owned_textBlock69 = std::make_unique<Label>();
+	textBlock69 = __owned_textBlock69.get();
+	(void)textBlock69->ClearPropertyValues();
+	// grid18
+	auto __owned_grid18 = std::make_unique<Grid>();
+	grid18 = __owned_grid18.get();
+	(void)grid18->ClearPropertyValues();
 	// presentationProbeSurface
 	auto __owned_presentationProbeSurface = std::make_unique<NativeSurface>();
 	presentationProbeSurface = __owned_presentationProbeSurface.get();
@@ -3542,38 +3601,38 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_presentationTopologyTile = std::make_unique<Label>();
 	presentationTopologyTile = __owned_presentationTopologyTile.get();
 	(void)presentationTopologyTile->ClearPropertyValues();
-	// stackPanel21
-	auto __owned_stackPanel21 = std::make_unique<StackPanel>();
-	stackPanel21 = __owned_stackPanel21.get();
-	(void)stackPanel21->ClearPropertyValues();
-	// textBlock64
-	auto __owned_textBlock64 = std::make_unique<Label>();
-	textBlock64 = __owned_textBlock64.get();
-	(void)textBlock64->ClearPropertyValues();
-	// textBlock65
-	auto __owned_textBlock65 = std::make_unique<Label>();
-	textBlock65 = __owned_textBlock65.get();
-	(void)textBlock65->ClearPropertyValues();
-	// textBlock66
-	auto __owned_textBlock66 = std::make_unique<Label>();
-	textBlock66 = __owned_textBlock66.get();
-	(void)textBlock66->ClearPropertyValues();
-	// textBlock67
-	auto __owned_textBlock67 = std::make_unique<Label>();
-	textBlock67 = __owned_textBlock67.get();
-	(void)textBlock67->ClearPropertyValues();
-	// textBlock68
-	auto __owned_textBlock68 = std::make_unique<Label>();
-	textBlock68 = __owned_textBlock68.get();
-	(void)textBlock68->ClearPropertyValues();
-	// textBlock69
-	auto __owned_textBlock69 = std::make_unique<Label>();
-	textBlock69 = __owned_textBlock69.get();
-	(void)textBlock69->ClearPropertyValues();
-	// grid18
-	auto __owned_grid18 = std::make_unique<Grid>();
-	grid18 = __owned_grid18.get();
-	(void)grid18->ClearPropertyValues();
+	// stackPanel23
+	auto __owned_stackPanel23 = std::make_unique<StackPanel>();
+	stackPanel23 = __owned_stackPanel23.get();
+	(void)stackPanel23->ClearPropertyValues();
+	// textBlock70
+	auto __owned_textBlock70 = std::make_unique<Label>();
+	textBlock70 = __owned_textBlock70.get();
+	(void)textBlock70->ClearPropertyValues();
+	// textBlock71
+	auto __owned_textBlock71 = std::make_unique<Label>();
+	textBlock71 = __owned_textBlock71.get();
+	(void)textBlock71->ClearPropertyValues();
+	// textBlock72
+	auto __owned_textBlock72 = std::make_unique<Label>();
+	textBlock72 = __owned_textBlock72.get();
+	(void)textBlock72->ClearPropertyValues();
+	// textBlock73
+	auto __owned_textBlock73 = std::make_unique<Label>();
+	textBlock73 = __owned_textBlock73.get();
+	(void)textBlock73->ClearPropertyValues();
+	// textBlock74
+	auto __owned_textBlock74 = std::make_unique<Label>();
+	textBlock74 = __owned_textBlock74.get();
+	(void)textBlock74->ClearPropertyValues();
+	// textBlock75
+	auto __owned_textBlock75 = std::make_unique<Label>();
+	textBlock75 = __owned_textBlock75.get();
+	(void)textBlock75->ClearPropertyValues();
+	// grid19
+	auto __owned_grid19 = std::make_unique<Grid>();
+	grid19 = __owned_grid19.get();
+	(void)grid19->ClearPropertyValues();
 	// wrapPanel5
 	auto __owned_wrapPanel5 = std::make_unique<WrapPanel>();
 	wrapPanel5 = __owned_wrapPanel5.get();
@@ -3612,10 +3671,10 @@ void DemoWindowGenerated::InitializeComponent()
 	auto __owned_presentationStatus = std::make_unique<Label>();
 	presentationStatus = __owned_presentationStatus.get();
 	(void)presentationStatus->ClearPropertyValues();
-	// textBlock70
-	auto __owned_textBlock70 = std::make_unique<Label>();
-	textBlock70 = __owned_textBlock70.get();
-	(void)textBlock70->ClearPropertyValues();
+	// textBlock76
+	auto __owned_textBlock76 = std::make_unique<Label>();
+	textBlock76 = __owned_textBlock76.get();
+	(void)textBlock76->ClearPropertyValues();
 	// systemContextMenu
 	auto __owned_systemContextMenu = std::make_unique<ContextMenu>();
 	systemContextMenu = __owned_systemContextMenu.get();
@@ -4695,11 +4754,92 @@ void DemoWindowGenerated::InitializeComponent()
 	themeSeparatorProbe->SetVisibility(Visibility::Collapsed);
 
 	// XAML authored Local properties/resources
-	tabItem2->SetHeader(BindingValue(L"容器与图像"));
+	tabItem2->SetHeader(BindingValue(L"日期控件"));
 
 	cui::framework::StyleAccess::SetResourceKey(*border3, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
 	border3->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+
+	grid3->ClearRows();
+	grid3->ClearColumns();
+	grid3->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid3->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid3->AddColumn(GridLength::Auto(), 0.f, FLT_MAX);
+	grid3->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock7, L"PageHeader", false);
+	// XAML authored Local properties/resources
+	textBlock7->SetText(L"Calendar / DatePicker · WPF 模板部件与日期行为");
+	Grid::SetRow(*textBlock7, 0);
+	Grid::SetColumn(*textBlock7, 0);
+	Grid::SetColumnSpan(*textBlock7, 2);
+
+	// XAML authored Local properties/resources
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, CalendarView::SelectedDateProperty(), BindingValue(L"2026-08-08"), DependencyPropertyValueSource::Local);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, CalendarView::DisplayDateProperty(), BindingValue(L"2026-08-08"), DependencyPropertyValueSource::Local);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, CalendarView::IsTodayHighlightedProperty(), BindingValue(true), DependencyPropertyValueSource::Local);
+	calendarDemo->SetMargin(Thickness(0.f, 12.f, 18.f, 0.f));
+	Grid::SetRow(*calendarDemo, 1);
+	Grid::SetColumn(*calendarDemo, 0);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, CalendarView::SelectionModeProperty(), BindingValue(1), DependencyPropertyValueSource::Local);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*calendarDemo, CalendarView::FirstDayOfWeekProperty(), BindingValue(1), DependencyPropertyValueSource::Local);
+
+	// XAML authored Local properties/resources
+	stackPanel10->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
+	Grid::SetRow(*stackPanel10, 1);
+	Grid::SetColumn(*stackPanel10, 1);
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock8, L"SectionHeader", false);
+	// XAML authored Local properties/resources
+	textBlock8->SetText(L"DatePicker · TextBox + Button + Popup + Calendar");
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock9, L"DescriptionText", false);
+	// XAML authored Local properties/resources
+	textBlock9->SetText(L"输入日期后按 Enter，或用 Alt+Down / F4 打开下拉日历；Escape 恢复打开前的选择。");
+	textBlock9->SetMargin(Thickness(0.f, 0.f, 0.f, 10.f));
+
+	// XAML authored Local properties/resources
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*longDatePickerDemo, DatePicker::SelectedDateProperty(), BindingValue(L"2026-08-08"), DependencyPropertyValueSource::Local);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*longDatePickerDemo, DatePicker::SelectedDateFormatProperty(), BindingValue(0), DependencyPropertyValueSource::Local);
+	longDatePickerDemo->SetWidth(cui::layout::Length::Fixed(240.f));
+	longDatePickerDemo->SetHeight(cui::layout::Length::Fixed(34.f));
+	longDatePickerDemo->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(0));
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*longDatePickerDemo, DatePicker::FirstDayOfWeekProperty(), BindingValue(1), DependencyPropertyValueSource::Local);
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock10, L"DescriptionText", false);
+	// XAML authored Local properties/resources
+	textBlock10->SetText(L"短日期格式与双向 SelectedDate / IsDropDownOpen 属性");
+	textBlock10->SetMargin(Thickness(0.f, 14.f, 0.f, 4.f));
+
+	// XAML authored Local properties/resources
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*shortDatePickerDemo, DatePicker::TextProperty(), BindingValue(L"2026-12-31"), DependencyPropertyValueSource::Local);
+	(void)cui::framework::DependencyPropertyAccess::SetValue(*shortDatePickerDemo, DatePicker::SelectedDateFormatProperty(), BindingValue(1), DependencyPropertyValueSource::Local);
+	shortDatePickerDemo->SetWidth(cui::layout::Length::Fixed(200.f));
+	shortDatePickerDemo->SetHeight(cui::layout::Length::Fixed(32.f));
+	shortDatePickerDemo->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(0));
+
+	// XAML authored Local properties/resources
+	border4->SetMargin(Thickness(0.f, 18.f, 0.f, 0.f));
+	border4->SetPadding(Thickness(14.f, 14.f, 14.f, 14.f));
+	border4->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border4->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border4->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock11, L"SectionHeader", false);
+	// XAML authored Local properties/resources
+	textBlock11->SetText(L"声明式能力覆盖");
+
+	cui::framework::StyleAccess::SetResourceKey(*textBlock12, L"DescriptionText", false);
+	// XAML authored Local properties/resources
+	textBlock12->SetText(L"Theme Style / ControlTemplate / VisualState / TemplateBinding / Popup 放置 / 键盘导航 / UI Automation");
+
+	// XAML authored Local properties/resources
+	tabItem3->SetHeader(BindingValue(L"容器与图像"));
+
+	cui::framework::StyleAccess::SetResourceKey(*border5, L"SurfacePanel", false);
+	// XAML authored Local properties/resources
+	border5->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	containerSurface->ClearRows();
 	containerSurface->ClearColumns();
@@ -4709,17 +4849,17 @@ void DemoWindowGenerated::InitializeComponent()
 	containerSurface->AddColumn(GridLength::Star(3.f), 0.f, FLT_MAX);
 	containerSurface->AddColumn(GridLength::Star(7.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock7, L"PageHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock13, L"PageHeader", false);
 	// XAML authored Local properties/resources
-	textBlock7->SetText(L"容器、图像与原生扩展：拖放路由、资源图像、进度反馈与 NativeSurface");
-	Grid::SetRow(*textBlock7, 0);
-	Grid::SetColumn(*textBlock7, 0);
-	Grid::SetColumnSpan(*textBlock7, 3);
+	textBlock13->SetText(L"容器、图像与原生扩展：拖放路由、资源图像、进度反馈与 NativeSurface");
+	Grid::SetRow(*textBlock13, 0);
+	Grid::SetColumn(*textBlock13, 0);
+	Grid::SetColumnSpan(*textBlock13, 3);
 
 	// XAML authored Local properties/resources
-	stackPanel10->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
-	Grid::SetRow(*stackPanel10, 1);
-	Grid::SetColumn(*stackPanel10, 0);
+	stackPanel12->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
+	Grid::SetRow(*stackPanel12, 1);
+	Grid::SetColumn(*stackPanel12, 0);
 
 	cui::framework::StyleAccess::SetResourceKey(*openImageButton, L"PrimaryButton", false);
 	// XAML authored Local properties/resources
@@ -4729,20 +4869,20 @@ void DemoWindowGenerated::InitializeComponent()
 	openImageButton->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(0));
 
 	// XAML authored Local properties/resources
-	border4->SetMargin(Thickness(0.f, 12.f, 0.f, 12.f));
-	border4->SetPadding(Thickness(8.f, 8.f, 8.f, 8.f));
-	border4->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
-	border4->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
-	border4->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border6->SetMargin(Thickness(0.f, 12.f, 0.f, 12.f));
+	border6->SetPadding(Thickness(8.f, 8.f, 8.f, 8.f));
+	border6->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border6->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border6->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
 
 	cui::framework::StyleAccess::SetResourceKey(*demoImage, L"ResourceImage", false);
 	// XAML authored Local properties/resources
 	demoImage->SetHeight(cui::layout::Length::Fixed(270.f));
 	demoImage->SetAllowDrop(true);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock8, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock14, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock8->SetText(L"确定进度");
+	textBlock14->SetText(L"确定进度");
 
 	// XAML authored Local properties/resources
 	demoProgress->SetMaximum(1.0);
@@ -4750,9 +4890,9 @@ void DemoWindowGenerated::InitializeComponent()
 	demoProgress->SetHeight(cui::layout::Length::Fixed(24.f));
 	demoProgress->SetMargin(Thickness(0.f, 4.f, 0.f, 10.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock9, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock15, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock9->SetText(L"不确定进度");
+	textBlock15->SetText(L"不确定进度");
 
 	// XAML authored Local properties/resources
 	indeterminateProgress->SetHeight(cui::layout::Length::Fixed(18.f));
@@ -4760,13 +4900,13 @@ void DemoWindowGenerated::InitializeComponent()
 	indeterminateProgress->SetIsIndeterminate(true);
 
 	// XAML authored Local properties/resources
-	stackPanel11->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
-	Grid::SetRow(*stackPanel11, 1);
-	Grid::SetColumn(*stackPanel11, 1);
+	stackPanel13->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
+	Grid::SetRow(*stackPanel13, 1);
+	Grid::SetColumn(*stackPanel13, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock10, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock16, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock10->SetText(L"状态与行为宿主");
+	textBlock16->SetText(L"状态与行为宿主");
 
 	// XAML authored Local properties/resources
 	wrapPanel1->SetItemWidth(104.f);
@@ -4787,8 +4927,8 @@ void DemoWindowGenerated::InitializeComponent()
 	progressRing->SetFontSize(16.0);
 
 	// XAML authored Local properties/resources
-	stackPanel12->SetOrientation(static_cast<Orientation>(0));
-	stackPanel12->SetMargin(Thickness(0.f, 12.f, 0.f, 14.f));
+	stackPanel14->SetOrientation(static_cast<Orientation>(0));
+	stackPanel14->SetMargin(Thickness(0.f, 12.f, 0.f, 14.f));
 
 	// XAML authored Local properties/resources
 	imageVisible->SetWidth(cui::layout::Length::Fixed(64.f));
@@ -4805,18 +4945,18 @@ void DemoWindowGenerated::InitializeComponent()
 	demoScene->SetPlaceholderText(L"DemoScene behavior 未注册");
 	demoScene->SetAutomationName(L"NativeSurface C++ render behavior");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock11, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock17, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock11->SetText(L"NativeSurface 只承载平台行为；位置与尺寸仍由父级布局协商。");
-	textBlock11->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
+	textBlock17->SetText(L"NativeSurface 只承载平台行为；位置与尺寸仍由父级布局协商。");
+	textBlock17->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
 
 	// XAML authored Local properties/resources
-	Grid::SetRow(*grid3, 1);
-	Grid::SetColumn(*grid3, 2);
-	grid3->ClearRows();
-	grid3->ClearColumns();
-	grid3->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid3->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	Grid::SetRow(*grid4, 1);
+	Grid::SetColumn(*grid4, 2);
+	grid4->ClearRows();
+	grid4->ClearColumns();
+	grid4->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid4->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	Grid::SetRow(*detailGrid, 0);
@@ -4830,53 +4970,53 @@ void DemoWindowGenerated::InitializeComponent()
 	navigationComposition->SetMargin(Thickness(8.f, 8.f, 8.f, 8.f));
 	Grid::SetColumn(*navigationComposition, 0);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock12, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock18, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock12->SetText(L"工作区");
+	textBlock18->SetText(L"工作区");
 
 	// XAML authored Local properties/resources
 	sideNavigationList->SetSelectedIndex(1);
 	sideNavigationList->SetHeight(cui::layout::Length::Fixed(230.f));
 
 	// XAML authored Local properties/resources
-	border5->SetMargin(Thickness(3.f, 0.f, 3.f, 0.f));
-	Grid::SetColumn(*border5, 1);
-	border5->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border7->SetMargin(Thickness(3.f, 0.f, 3.f, 0.f));
+	Grid::SetColumn(*border7, 1);
+	border7->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
 
 	// XAML authored Local properties/resources
 	detailComposition->SetMargin(Thickness(14.f, 8.f, 14.f, 8.f));
 	Grid::SetColumn(*detailComposition, 2);
 
 	// XAML authored Local properties/resources
-	stackPanel13->SetOrientation(static_cast<Orientation>(0));
+	stackPanel15->SetOrientation(static_cast<Orientation>(0));
 
 	// XAML authored Local properties/resources
-	textBlock13->SetText(L"应用");
-	textBlock13->SetWidth(cui::layout::Length::Fixed(46.f));
-	textBlock13->SetHeight(cui::layout::Length::Fixed(24.f));
+	textBlock19->SetText(L"应用");
+	textBlock19->SetWidth(cui::layout::Length::Fixed(46.f));
+	textBlock19->SetHeight(cui::layout::Length::Fixed(24.f));
 
 	// XAML authored Local properties/resources
-	textBlock14->SetText(L"›");
-	textBlock14->SetWidth(cui::layout::Length::Fixed(16.f));
-	textBlock14->SetHeight(cui::layout::Length::Fixed(24.f));
-	textBlock14->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock20->SetText(L"›");
+	textBlock20->SetWidth(cui::layout::Length::Fixed(16.f));
+	textBlock20->SetHeight(cui::layout::Length::Fixed(24.f));
+	textBlock20->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock15->SetText(L"资源");
-	textBlock15->SetWidth(cui::layout::Length::Fixed(46.f));
-	textBlock15->SetHeight(cui::layout::Length::Fixed(24.f));
+	textBlock21->SetText(L"资源");
+	textBlock21->SetWidth(cui::layout::Length::Fixed(46.f));
+	textBlock21->SetHeight(cui::layout::Length::Fixed(24.f));
 
 	// XAML authored Local properties/resources
-	textBlock16->SetText(L"›");
-	textBlock16->SetWidth(cui::layout::Length::Fixed(16.f));
-	textBlock16->SetHeight(cui::layout::Length::Fixed(24.f));
-	textBlock16->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock22->SetText(L"›");
+	textBlock22->SetWidth(cui::layout::Length::Fixed(16.f));
+	textBlock22->SetHeight(cui::layout::Length::Fixed(24.f));
+	textBlock22->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock17->SetText(L"详情");
-	textBlock17->SetWidth(cui::layout::Length::Fixed(46.f));
-	textBlock17->SetHeight(cui::layout::Length::Fixed(24.f));
-	textBlock17->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Accent_2));
+	textBlock23->SetText(L"详情");
+	textBlock23->SetWidth(cui::layout::Length::Fixed(46.f));
+	textBlock23->SetHeight(cui::layout::Length::Fixed(24.f));
+	textBlock23->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Accent_2));
 
 	// XAML authored Local properties/resources
 	splitNotes->SetText(L"导航与面包屑由 Grid、ListBox、StackPanel、TextBlock 和数据资源组合；不再由高层原生控件私有绘制。");
@@ -4894,11 +5034,11 @@ void DemoWindowGenerated::InitializeComponent()
 	containerGroupText->SetMargin(Thickness(12.f, 8.f, 12.f, 8.f));
 
 	// XAML authored Local properties/resources
-	tabItem3->SetHeader(BindingValue(L"数据控件"));
+	tabItem4->SetHeader(BindingValue(L"数据控件"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border6, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border8, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border6->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border8->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	dataSurface->ClearRows();
 	dataSurface->ClearColumns();
@@ -4910,12 +5050,12 @@ void DemoWindowGenerated::InitializeComponent()
 	dataSurface->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 	dataSurface->AddColumn(GridLength::Pixels(250.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock18, L"PageHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock24, L"PageHeader", false);
 	// XAML authored Local properties/resources
-	textBlock18->SetText(L"数据控件：层次模板、分组视图、虚拟化面板、选择状态与组合编辑器");
-	Grid::SetRow(*textBlock18, 0);
-	Grid::SetColumn(*textBlock18, 0);
-	Grid::SetColumnSpan(*textBlock18, 4);
+	textBlock24->SetText(L"数据控件：层次模板、分组视图、虚拟化面板、选择状态与组合编辑器");
+	Grid::SetRow(*textBlock24, 0);
+	Grid::SetColumn(*textBlock24, 0);
+	Grid::SetColumnSpan(*textBlock24, 4);
 
 	// XAML authored Local properties/resources
 	demoTree->SetMargin(Thickness(0.f, 0.f, 8.f, 10.f));
@@ -4944,22 +5084,22 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRowSpan(*composedPropertyEditor, 2);
 
 	// XAML authored Local properties/resources
-	grid4->SetMargin(Thickness(12.f, 8.f, 12.f, 8.f));
-	grid4->ClearRows();
-	grid4->ClearColumns();
-	grid4->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid4->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid4->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid4->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid4->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid4->AddColumn(GridLength::Pixels(110.f), 0.f, FLT_MAX);
-	grid4->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid5->SetMargin(Thickness(12.f, 8.f, 12.f, 8.f));
+	grid5->ClearRows();
+	grid5->ClearColumns();
+	grid5->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid5->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid5->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid5->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid5->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid5->AddColumn(GridLength::Pixels(110.f), 0.f, FLT_MAX);
+	grid5->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
-	textBlock19->SetText(L"标题");
-	textBlock19->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
-	Grid::SetRow(*textBlock19, 0);
-	Grid::SetColumn(*textBlock19, 0);
+	textBlock25->SetText(L"标题");
+	textBlock25->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
+	Grid::SetRow(*textBlock25, 0);
+	Grid::SetColumn(*textBlock25, 0);
 
 	// XAML authored Local properties/resources
 	composedTitleEditor->SetText(L"由基础控件组合，不再使用原生 PropertyGrid");
@@ -4969,10 +5109,10 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*composedTitleEditor, 1);
 
 	// XAML authored Local properties/resources
-	textBlock20->SetText(L"启用");
-	textBlock20->SetMargin(Thickness(0.f, 4.f, 10.f, 12.f));
-	Grid::SetRow(*textBlock20, 1);
-	Grid::SetColumn(*textBlock20, 0);
+	textBlock26->SetText(L"启用");
+	textBlock26->SetMargin(Thickness(0.f, 4.f, 10.f, 12.f));
+	Grid::SetRow(*textBlock26, 1);
+	Grid::SetColumn(*textBlock26, 0);
 
 	// XAML authored Local properties/resources
 	composedEnabledEditor->SetContent(BindingValue(L"启用当前配置"));
@@ -4982,10 +5122,10 @@ void DemoWindowGenerated::InitializeComponent()
 	composedEnabledEditor->SetIsChecked(NullableBool(true));
 
 	// XAML authored Local properties/resources
-	textBlock21->SetText(L"密度");
-	textBlock21->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
-	Grid::SetRow(*textBlock21, 2);
-	Grid::SetColumn(*textBlock21, 0);
+	textBlock27->SetText(L"密度");
+	textBlock27->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
+	Grid::SetRow(*textBlock27, 2);
+	Grid::SetColumn(*textBlock27, 0);
 
 	// XAML authored Local properties/resources
 	composedDensityEditor->SetMaxDropDownHeight(180.f);
@@ -5005,10 +5145,10 @@ void DemoWindowGenerated::InitializeComponent()
 	comboBoxItem3->SetContent(BindingValue(L"宽松"));
 
 	// XAML authored Local properties/resources
-	textBlock22->SetText(L"缩放");
-	textBlock22->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
-	Grid::SetRow(*textBlock22, 3);
-	Grid::SetColumn(*textBlock22, 0);
+	textBlock28->SetText(L"缩放");
+	textBlock28->SetMargin(Thickness(0.f, 7.f, 10.f, 12.f));
+	Grid::SetRow(*textBlock28, 3);
+	Grid::SetColumn(*textBlock28, 0);
 
 	// XAML authored Local properties/resources
 	composedScaleEditor->SetMinimum(50.0);
@@ -5020,22 +5160,22 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRow(*composedScaleEditor, 3);
 	Grid::SetColumn(*composedScaleEditor, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock23, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock29, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock23->SetText(L"这里展示标准 WPF 路径：内容控件 + Grid 布局 + 标准编辑器。业务属性面板由 XAML 模板和绑定组合，而不是原生逐行绘制。");
-	textBlock23->SetVerticalAlignment(static_cast<::VerticalAlignment>(0));
-	Grid::SetRow(*textBlock23, 4);
-	Grid::SetColumn(*textBlock23, 0);
-	Grid::SetColumnSpan(*textBlock23, 2);
+	textBlock29->SetText(L"这里展示标准 WPF 路径：内容控件 + Grid 布局 + 标准编辑器。业务属性面板由 XAML 模板和绑定组合，而不是原生逐行绘制。");
+	textBlock29->SetVerticalAlignment(static_cast<::VerticalAlignment>(0));
+	Grid::SetRow(*textBlock29, 4);
+	Grid::SetColumn(*textBlock29, 0);
+	Grid::SetColumnSpan(*textBlock29, 2);
 
 	// XAML authored Local properties/resources
-	Grid::SetRow(*stackPanel14, 1);
-	Grid::SetColumn(*stackPanel14, 3);
-	Grid::SetRowSpan(*stackPanel14, 2);
+	Grid::SetRow(*stackPanel16, 1);
+	Grid::SetColumn(*stackPanel16, 3);
+	Grid::SetRowSpan(*stackPanel16, 2);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock24, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock30, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock24->SetText(L"作者态容器状态");
+	textBlock30->SetText(L"作者态容器状态");
 
 	// XAML authored Local properties/resources
 	authoredStateTree->SetHeight(cui::layout::Length::Fixed(300.f));
@@ -5054,17 +5194,17 @@ void DemoWindowGenerated::InitializeComponent()
 	// XAML authored Local properties/resources
 	treeViewItem4->SetHeader(BindingValue(L"Artifacts"));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock25, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock31, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock25->SetText(L"TreeViewItem.IsExpanded / IsSelected 与 Selector 容器状态来自 XAML；交互更新走 SetCurrentValue，保留 Binding、Style 与 Local 来源身份。");
-	textBlock25->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
+	textBlock31->SetText(L"TreeViewItem.IsExpanded / IsSelected 与 Selector 容器状态来自 XAML；交互更新走 SetCurrentValue，保留 Binding、Style 与 Local 来源身份。");
+	textBlock31->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
 
 	// XAML authored Local properties/resources
-	tabItem4->SetHeader(BindingValue(L"数据可视化"));
+	tabItem5->SetHeader(BindingValue(L"数据可视化"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border7, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border9, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border7->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border9->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	analyticsSurface->ClearRows();
 	analyticsSurface->ClearColumns();
@@ -5074,17 +5214,17 @@ void DemoWindowGenerated::InitializeComponent()
 	analyticsSurface->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 	analyticsSurface->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock26, L"PageHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock32, L"PageHeader", false);
 	// XAML authored Local properties/resources
-	textBlock26->SetText(L"数据可视化：筛选器、指标卡、ChartView 与模板化报表协同布局");
-	Grid::SetRow(*textBlock26, 0);
+	textBlock32->SetText(L"数据可视化：筛选器、指标卡、ChartView 与模板化报表协同布局");
+	Grid::SetRow(*textBlock32, 0);
 
 	// XAML authored Local properties/resources
-	border8->SetPadding(Thickness(10.f, 8.f, 10.f, 8.f));
-	Grid::SetRow(*border8, 1);
-	border8->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
-	border8->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
-	border8->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border10->SetPadding(Thickness(10.f, 8.f, 10.f, 8.f));
+	Grid::SetRow(*border10, 1);
+	border10->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border10->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border10->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
 
 	analyticsFilterSurface->ClearRows();
 	analyticsFilterSurface->ClearColumns();
@@ -5133,14 +5273,14 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*analyticsReset, 6);
 
 	// XAML authored Local properties/resources
-	grid5->SetMargin(Thickness(0.f, 10.f, 0.f, 8.f));
-	Grid::SetRow(*grid5, 2);
-	grid5->ClearRows();
-	grid5->ClearColumns();
-	grid5->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
-	grid5->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
-	grid5->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
-	grid5->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid6->SetMargin(Thickness(0.f, 10.f, 0.f, 8.f));
+	Grid::SetRow(*grid6, 2);
+	grid6->ClearRows();
+	grid6->ClearColumns();
+	grid6->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
+	grid6->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
+	grid6->AddColumn(GridLength::Pixels(200.f), 0.f, FLT_MAX);
+	grid6->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	groupBox1->SetHeader(BindingValue(L"成交额"));
@@ -5148,17 +5288,17 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*groupBox1, 0);
 
 	// XAML authored Local properties/resources
-	stackPanel15->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
+	stackPanel17->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
 
 	// XAML authored Local properties/resources
-	textBlock27->SetText(L"1,870.5 万");
-	textBlock27->SetHeight(cui::layout::Length::Fixed(32.f));
-	textBlock27->SetFontSize(22.0);
+	textBlock33->SetText(L"1,870.5 万");
+	textBlock33->SetHeight(cui::layout::Length::Fixed(32.f));
+	textBlock33->SetFontSize(22.0);
 
 	// XAML authored Local properties/resources
-	textBlock28->SetText(L"+18.4% · 较上期");
-	textBlock28->SetHeight(cui::layout::Length::Fixed(22.f));
-	textBlock28->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Success_11));
+	textBlock34->SetText(L"+18.4% · 较上期");
+	textBlock34->SetHeight(cui::layout::Length::Fixed(22.f));
+	textBlock34->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Success_11));
 
 	// XAML authored Local properties/resources
 	groupBox2->SetHeader(BindingValue(L"成交客户"));
@@ -5167,12 +5307,12 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*groupBox2, 1);
 
 	// XAML authored Local properties/resources
-	stackPanel16->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
+	stackPanel18->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
 
 	// XAML authored Local properties/resources
-	textBlock29->SetText(L"128");
-	textBlock29->SetHeight(cui::layout::Length::Fixed(32.f));
-	textBlock29->SetFontSize(22.0);
+	textBlock35->SetText(L"128");
+	textBlock35->SetHeight(cui::layout::Length::Fixed(32.f));
+	textBlock35->SetFontSize(22.0);
 
 	// XAML authored Local properties/resources
 	progressBar1->SetMaximum(160.0);
@@ -5187,24 +5327,24 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*groupBox3, 2);
 
 	// XAML authored Local properties/resources
-	stackPanel17->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
+	stackPanel19->SetMargin(Thickness(10.f, 2.f, 10.f, 2.f));
 
 	// XAML authored Local properties/resources
-	textBlock30->SetText(L"29.8%");
-	textBlock30->SetHeight(cui::layout::Length::Fixed(32.f));
-	textBlock30->SetFontSize(22.0);
+	textBlock36->SetText(L"29.8%");
+	textBlock36->SetHeight(cui::layout::Length::Fixed(32.f));
+	textBlock36->SetFontSize(22.0);
 
 	// XAML authored Local properties/resources
-	textBlock31->SetText(L"-1.2% · 需关注");
-	textBlock31->SetHeight(cui::layout::Length::Fixed(22.f));
-	textBlock31->SetForeground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.882353f, 0.356863f, 0.392157f, 1.f}; return value; }());
+	textBlock37->SetText(L"-1.2% · 需关注");
+	textBlock37->SetHeight(cui::layout::Length::Fixed(22.f));
+	textBlock37->SetForeground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.882353f, 0.356863f, 0.392157f, 1.f}; return value; }());
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock32, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock38, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock32->SetText(L"指标卡使用 Auto/Pixel，主内容使用 Star；窗口尺寸变化时，图表与报表共享剩余空间。");
-	textBlock32->SetMargin(Thickness(18.f, 22.f, 0.f, 0.f));
-	textBlock32->SetVerticalAlignment(static_cast<::VerticalAlignment>(0));
-	Grid::SetColumn(*textBlock32, 3);
+	textBlock38->SetText(L"指标卡使用 Auto/Pixel，主内容使用 Star；窗口尺寸变化时，图表与报表共享剩余空间。");
+	textBlock38->SetMargin(Thickness(18.f, 22.f, 0.f, 0.f));
+	textBlock38->SetVerticalAlignment(static_cast<::VerticalAlignment>(0));
+	Grid::SetColumn(*textBlock38, 3);
 
 	// XAML authored Local properties/resources
 	wrapPanel2->SetItemWidth(90.f);
@@ -5228,12 +5368,12 @@ void DemoWindowGenerated::InitializeComponent()
 	chartLine->SetHeight(cui::layout::Length::Fixed(28.f));
 
 	// XAML authored Local properties/resources
-	grid6->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
-	Grid::SetRow(*grid6, 4);
-	grid6->ClearRows();
-	grid6->ClearColumns();
-	grid6->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid6->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid7->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
+	Grid::SetRow(*grid7, 4);
+	grid7->ClearRows();
+	grid7->ClearColumns();
+	grid7->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid7->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	salesChart->SetMargin(Thickness(0.f, 0.f, 9.f, 0.f));
@@ -5284,59 +5424,59 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*analyticsReport, 1);
 
 	// XAML authored Local properties/resources
-	grid7->SetMargin(Thickness(10.f, 6.f, 10.f, 6.f));
-	grid7->ClearRows();
-	grid7->ClearColumns();
-	grid7->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid7->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid7->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid8->SetMargin(Thickness(10.f, 6.f, 10.f, 6.f));
+	grid8->ClearRows();
+	grid8->ClearColumns();
+	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid8->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
-	stackPanel18->SetOrientation(static_cast<Orientation>(0));
-	stackPanel18->SetHeight(cui::layout::Length::Fixed(28.f));
-	Grid::SetRow(*stackPanel18, 0);
+	stackPanel20->SetOrientation(static_cast<Orientation>(0));
+	stackPanel20->SetHeight(cui::layout::Length::Fixed(28.f));
+	Grid::SetRow(*stackPanel20, 0);
 
 	// XAML authored Local properties/resources
-	textBlock33->SetText(L"客户");
-	textBlock33->SetWidth(cui::layout::Length::Fixed(138.f));
-	textBlock33->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock39->SetText(L"客户");
+	textBlock39->SetWidth(cui::layout::Length::Fixed(138.f));
+	textBlock39->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock34->SetText(L"区域");
-	textBlock34->SetWidth(cui::layout::Length::Fixed(62.f));
-	textBlock34->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock40->SetText(L"区域");
+	textBlock40->SetWidth(cui::layout::Length::Fixed(62.f));
+	textBlock40->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock35->SetText(L"阶段");
-	textBlock35->SetWidth(cui::layout::Length::Fixed(76.f));
-	textBlock35->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock41->SetText(L"阶段");
+	textBlock41->SetWidth(cui::layout::Length::Fixed(76.f));
+	textBlock41->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock36->SetText(L"成交额");
-	textBlock36->SetWidth(cui::layout::Length::Fixed(86.f));
-	textBlock36->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock42->SetText(L"成交额");
+	textBlock42->SetWidth(cui::layout::Length::Fixed(86.f));
+	textBlock42->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
-	textBlock37->SetText(L"毛利率");
-	textBlock37->SetWidth(cui::layout::Length::Fixed(56.f));
-	textBlock37->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
+	textBlock43->SetText(L"毛利率");
+	textBlock43->SetWidth(cui::layout::Length::Fixed(56.f));
+	textBlock43->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
 	// XAML authored Local properties/resources
 	analyticsRows->SetSelectedIndex(0);
 	Grid::SetRow(*analyticsRows, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock38, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock44, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock38->SetText(L"高层报表语义下沉为通用列表、模板、绑定和资源。");
-	textBlock38->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
-	Grid::SetRow(*textBlock38, 2);
+	textBlock44->SetText(L"高层报表语义下沉为通用列表、模板、绑定和资源。");
+	textBlock44->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
+	Grid::SetRow(*textBlock44, 2);
 
 	// XAML authored Local properties/resources
-	tabItem5->SetHeader(BindingValue(L"布局容器"));
+	tabItem6->SetHeader(BindingValue(L"布局容器"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border9, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border11, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border9->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border11->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	layoutSurface->ClearRows();
 	layoutSurface->ClearColumns();
@@ -5368,13 +5508,13 @@ void DemoWindowGenerated::InitializeComponent()
 	canvasSemanticsProbe->SetCursor(static_cast<CursorKind>(1));
 
 	// XAML authored Local properties/resources
-	Canvas::SetLeft(*border10, 0.f);
-	Canvas::SetTop(*border10, 0.f);
-	border10->SetWidth(cui::layout::Length::Fixed(430.f));
-	border10->SetHeight(cui::layout::Length::Fixed(31.f));
-	border10->SetBackground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.f, 0.f, 0.f, 0.f}; return value; }());
-	border10->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_ContainerBorder_7));
-	border10->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	Canvas::SetLeft(*border12, 0.f);
+	Canvas::SetTop(*border12, 0.f);
+	border12->SetWidth(cui::layout::Length::Fixed(430.f));
+	border12->SetHeight(cui::layout::Length::Fixed(31.f));
+	border12->SetBackground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.f, 0.f, 0.f, 0.f}; return value; }());
+	border12->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_ContainerBorder_7));
+	border12->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
 
 	// XAML authored Local properties/resources
 	canvasLeftWins->SetText(L"Canvas.Left/Top 优先");
@@ -5394,19 +5534,19 @@ void DemoWindowGenerated::InitializeComponent()
 	canvasRightBottom->SetHeight(cui::layout::Length::Fixed(24.f));
 	canvasRightBottom->SetMargin(Thickness(2.f, 1.f, 4.f, 2.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*border11, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border13, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border11->SetMargin(Thickness(0.f, 0.f, 8.f, 0.f));
-	Grid::SetRow(*border11, 1);
-	Grid::SetColumn(*border11, 0);
+	border13->SetMargin(Thickness(0.f, 0.f, 8.f, 0.f));
+	Grid::SetRow(*border13, 1);
+	Grid::SetColumn(*border13, 0);
 
 	// XAML authored Local properties/resources
 	demoStack->SetOrientation(static_cast<Orientation>(1));
 	demoStack->SetClipToBounds(true);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock39, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock45, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock39->SetText(L"StackPanel · DesiredSize 累积");
+	textBlock45->SetText(L"StackPanel · DesiredSize 累积");
 
 	// XAML authored Local properties/resources
 	stackA->SetContent(BindingValue(L"Stack A"));
@@ -5428,11 +5568,11 @@ void DemoWindowGenerated::InitializeComponent()
 	stackC->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
 	stackC->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(0));
 
-	cui::framework::StyleAccess::SetResourceKey(*border12, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border14, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border12->SetMargin(Thickness(8.f, 0.f, 8.f, 0.f));
-	Grid::SetRow(*border12, 1);
-	Grid::SetColumn(*border12, 1);
+	border14->SetMargin(Thickness(8.f, 0.f, 8.f, 0.f));
+	Grid::SetRow(*border14, 1);
+	Grid::SetColumn(*border14, 1);
 
 	// XAML authored Local properties/resources
 	demoGrid->SetClipToBounds(true);
@@ -5467,20 +5607,20 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRow(*gridFooter, 2);
 	Grid::SetColumnSpan(*gridFooter, 2);
 
-	cui::framework::StyleAccess::SetResourceKey(*border13, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border15, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border13->SetMargin(Thickness(8.f, 0.f, 8.f, 0.f));
-	Grid::SetRow(*border13, 1);
-	Grid::SetColumn(*border13, 2);
+	border15->SetMargin(Thickness(8.f, 0.f, 8.f, 0.f));
+	Grid::SetRow(*border15, 1);
+	Grid::SetColumn(*border15, 2);
 
 	// XAML authored Local properties/resources
 	demoDock->SetLastChildFill(true);
 	demoDock->SetClipToBounds(true);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock40, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock46, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock40->SetText(L"DockPanel · LastChildFill");
-	DockPanel::SetDock(*textBlock40, static_cast<Dock>(1));
+	textBlock46->SetText(L"DockPanel · LastChildFill");
+	DockPanel::SetDock(*textBlock46, static_cast<Dock>(1));
 
 	// XAML authored Local properties/resources
 	dockTop->SetContent(BindingValue(L"Top"));
@@ -5497,11 +5637,11 @@ void DemoWindowGenerated::InitializeComponent()
 	dockFill->SetText(L"Fill：占据剩余区域");
 	dockFill->SetMargin(Thickness(8.f, 8.f, 8.f, 8.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*border14, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border16, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border14->SetMargin(Thickness(8.f, 0.f, 0.f, 0.f));
-	Grid::SetRow(*border14, 1);
-	Grid::SetColumn(*border14, 3);
+	border16->SetMargin(Thickness(8.f, 0.f, 0.f, 0.f));
+	Grid::SetRow(*border16, 1);
+	Grid::SetColumn(*border16, 3);
 
 	// XAML authored Local properties/resources
 	demoWrap->SetOrientation(static_cast<Orientation>(0));
@@ -5539,12 +5679,12 @@ void DemoWindowGenerated::InitializeComponent()
 	wrap6->SetWidth(cui::layout::Length::Fixed(80.f));
 	wrap6->SetHeight(cui::layout::Length::Fixed(32.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*border15, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border17, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border15->SetMargin(Thickness(0.f, 14.f, 8.f, 0.f));
-	Grid::SetRow(*border15, 2);
-	Grid::SetColumn(*border15, 0);
-	Grid::SetColumnSpan(*border15, 2);
+	border17->SetMargin(Thickness(0.f, 14.f, 8.f, 0.f));
+	Grid::SetRow(*border17, 2);
+	Grid::SetColumn(*border17, 0);
+	Grid::SetColumnSpan(*border17, 2);
 
 	// XAML authored Local properties/resources
 	demoRelative->SetClipToBounds(true);
@@ -5578,12 +5718,12 @@ void DemoWindowGenerated::InitializeComponent()
 	relativeCenterButton->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
 	relativeCenterButton->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(0));
 
-	cui::framework::StyleAccess::SetResourceKey(*border16, L"ContainerFrame", false);
+	cui::framework::StyleAccess::SetResourceKey(*border18, L"ContainerFrame", false);
 	// XAML authored Local properties/resources
-	border16->SetMargin(Thickness(8.f, 14.f, 0.f, 0.f));
-	Grid::SetRow(*border16, 2);
-	Grid::SetColumn(*border16, 2);
-	Grid::SetColumnSpan(*border16, 2);
+	border18->SetMargin(Thickness(8.f, 14.f, 0.f, 0.f));
+	Grid::SetRow(*border18, 2);
+	Grid::SetColumn(*border18, 2);
+	Grid::SetColumnSpan(*border18, 2);
 
 	// XAML authored Local properties/resources
 	demoScroll->SetClipToBounds(true);
@@ -5601,11 +5741,11 @@ void DemoWindowGenerated::InitializeComponent()
 	demoScrollContent->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 	demoScrollContent->AddColumn(GridLength::Pixels(180.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*border17, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border19, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border17->SetMargin(Thickness(16.f, 16.f, 16.f, 16.f));
-	Grid::SetRow(*border17, 0);
-	Grid::SetColumn(*border17, 0);
+	border19->SetMargin(Thickness(16.f, 16.f, 16.f, 16.f));
+	Grid::SetRow(*border19, 0);
+	Grid::SetColumn(*border19, 0);
 
 	// XAML authored Local properties/resources
 	scrollCard1->SetClipToBounds(true);
@@ -5613,16 +5753,16 @@ void DemoWindowGenerated::InitializeComponent()
 	// XAML authored Local properties/resources
 	scrollCard1Text->SetText(L"Card 1 · Grid child");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock41, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock47, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock41->SetText(L"横向滚动范围来自固定网格列。");
-	textBlock41->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
+	textBlock47->SetText(L"横向滚动范围来自固定网格列。");
+	textBlock47->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*border18, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border20, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border18->SetMargin(Thickness(16.f, 16.f, 16.f, 16.f));
-	Grid::SetRow(*border18, 0);
-	Grid::SetColumn(*border18, 1);
+	border20->SetMargin(Thickness(16.f, 16.f, 16.f, 16.f));
+	Grid::SetRow(*border20, 0);
+	Grid::SetColumn(*border20, 1);
 
 	// XAML authored Local properties/resources
 	scrollCard2->SetClipToBounds(true);
@@ -5630,17 +5770,17 @@ void DemoWindowGenerated::InitializeComponent()
 	// XAML authored Local properties/resources
 	scrollCard2Text->SetText(L"Card 2 · Grid child");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock42, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock48, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock42->SetText(L"纵向滚动范围来自固定网格行。");
-	textBlock42->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
+	textBlock48->SetText(L"纵向滚动范围来自固定网格行。");
+	textBlock48->SetMargin(Thickness(0.f, 6.f, 0.f, 0.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock43, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock49, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock43->SetText(L"ScrollViewer 只负责 viewport、extent 与 offset；内容仍由 Grid 测量和排列。");
-	textBlock43->SetMargin(Thickness(24.f, 24.f, 24.f, 24.f));
-	Grid::SetRow(*textBlock43, 1);
-	Grid::SetColumn(*textBlock43, 2);
+	textBlock49->SetText(L"ScrollViewer 只负责 viewport、extent 与 offset；内容仍由 Grid 测量和排列。");
+	textBlock49->SetMargin(Thickness(24.f, 24.f, 24.f, 24.f));
+	Grid::SetRow(*textBlock49, 1);
+	Grid::SetColumn(*textBlock49, 2);
 
 	// XAML authored Local properties/resources
 	farButton->SetContent(BindingValue(L"Far Button"));
@@ -5653,11 +5793,11 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*farButton, 3);
 
 	// XAML authored Local properties/resources
-	tabItem6->SetHeader(BindingValue(L"系统集成"));
+	tabItem7->SetHeader(BindingValue(L"系统集成"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border19, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border21, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border19->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border21->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	systemSurface->ClearRows();
 	systemSurface->ClearColumns();
@@ -5675,9 +5815,9 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumnSpan(*systemTitle, 2);
 
 	// XAML authored Local properties/resources
-	stackPanel19->SetMargin(Thickness(0.f, 0.f, 16.f, 12.f));
-	Grid::SetRow(*stackPanel19, 1);
-	Grid::SetColumn(*stackPanel19, 0);
+	stackPanel21->SetMargin(Thickness(0.f, 0.f, 16.f, 12.f));
+	Grid::SetRow(*stackPanel21, 1);
+	Grid::SetColumn(*stackPanel21, 0);
 
 	// XAML authored Local properties/resources
 	wrapPanel3->SetItemHeight(32.f);
@@ -5713,31 +5853,31 @@ void DemoWindowGenerated::InitializeComponent()
 	systemHint->SetMargin(Thickness(0.f, 8.f, 0.f, 0.f));
 
 	// XAML authored Local properties/resources
-	border20->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
-	border20->SetPadding(Thickness(14.f, 10.f, 14.f, 10.f));
-	Grid::SetRow(*border20, 2);
-	Grid::SetColumn(*border20, 0);
-	border20->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
-	border20->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
-	border20->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border22->SetMargin(Thickness(0.f, 0.f, 16.f, 0.f));
+	border22->SetPadding(Thickness(14.f, 10.f, 14.f, 10.f));
+	Grid::SetRow(*border22, 2);
+	Grid::SetColumn(*border22, 0);
+	border22->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border22->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border22->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
 
-	grid8->ClearRows();
-	grid8->ClearColumns();
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid8->AddColumn(GridLength::Pixels(300.f), 0.f, FLT_MAX);
-	grid8->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid9->ClearRows();
+	grid9->ClearColumns();
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid9->AddColumn(GridLength::Pixels(300.f), 0.f, FLT_MAX);
+	grid9->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock44, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock50, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock44->SetText(L"ICommandSource.CommandTarget · XAML namescope 对象引用");
-	Grid::SetRow(*textBlock44, 0);
-	Grid::SetColumn(*textBlock44, 0);
-	Grid::SetColumnSpan(*textBlock44, 2);
+	textBlock50->SetText(L"ICommandSource.CommandTarget · XAML namescope 对象引用");
+	Grid::SetRow(*textBlock50, 0);
+	Grid::SetColumn(*textBlock50, 0);
+	Grid::SetColumnSpan(*textBlock50, 2);
 
 	commandTargetButton->CommandTarget = systemSurface;
 	// XAML authored Local properties/resources
@@ -5749,10 +5889,10 @@ void DemoWindowGenerated::InitializeComponent()
 	commandTargetButton->SetCommandParameter(BindingValue(L"target-button-system-surface"));
 
 	// XAML authored Local properties/resources
-	textBlock45->SetText(L"焦点可停在任意控件；命令仍从显式目标开始路由。");
-	textBlock45->SetMargin(Thickness(18.f, 7.f, 0.f, 0.f));
-	Grid::SetRow(*textBlock45, 1);
-	Grid::SetColumn(*textBlock45, 1);
+	textBlock51->SetText(L"焦点可停在任意控件；命令仍从显式目标开始路由。");
+	textBlock51->SetMargin(Thickness(18.f, 7.f, 0.f, 0.f));
+	Grid::SetRow(*textBlock51, 1);
+	Grid::SetColumn(*textBlock51, 1);
 
 	// XAML authored Local properties/resources
 	commandTargetTrace->SetText(L"CanExecute target=∅ · Executed target=∅");
@@ -5768,26 +5908,26 @@ void DemoWindowGenerated::InitializeComponent()
 	commandTargetTrace->SetFontSize(12.0);
 
 	// XAML authored Local properties/resources
-	textBlock46->SetText(L"ContextMenu.Refresh → mainMenu：显式目标覆盖 PlacementTarget");
-	textBlock46->SetMargin(Thickness(0.f, 0.f, 0.f, 6.f));
-	Grid::SetRow(*textBlock46, 3);
-	Grid::SetColumn(*textBlock46, 0);
-	Grid::SetColumnSpan(*textBlock46, 2);
+	textBlock52->SetText(L"ContextMenu.Refresh → mainMenu：显式目标覆盖 PlacementTarget");
+	textBlock52->SetMargin(Thickness(0.f, 0.f, 0.f, 6.f));
+	Grid::SetRow(*textBlock52, 3);
+	Grid::SetColumn(*textBlock52, 0);
+	Grid::SetColumnSpan(*textBlock52, 2);
 
 	// XAML authored Local properties/resources
-	textBlock47->SetText(L"ContextMenu.More.CopyInfo → systemSurface：嵌套 MenuItem 保留独立目标");
-	textBlock47->SetMargin(Thickness(0.f, 0.f, 0.f, 6.f));
-	Grid::SetRow(*textBlock47, 4);
-	Grid::SetColumn(*textBlock47, 0);
-	Grid::SetColumnSpan(*textBlock47, 2);
+	textBlock53->SetText(L"ContextMenu.More.CopyInfo → systemSurface：嵌套 MenuItem 保留独立目标");
+	textBlock53->SetMargin(Thickness(0.f, 0.f, 0.f, 6.f));
+	Grid::SetRow(*textBlock53, 4);
+	Grid::SetColumn(*textBlock53, 0);
+	Grid::SetColumnSpan(*textBlock53, 2);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock48, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock54, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock48->SetText(L"XAML 定义类型、属性和目标；追踪按 CommandTransaction 配对，后台 requery 不覆盖完整执行。");
-	Grid::SetRow(*textBlock48, 5);
-	Grid::SetColumn(*textBlock48, 0);
-	Grid::SetColumnSpan(*textBlock48, 2);
-	textBlock48->SetFontSize(11.0);
+	textBlock54->SetText(L"XAML 定义类型、属性和目标；追踪按 CommandTransaction 配对，后台 requery 不覆盖完整执行。");
+	Grid::SetRow(*textBlock54, 5);
+	Grid::SetColumn(*textBlock54, 0);
+	Grid::SetColumnSpan(*textBlock54, 2);
+	textBlock54->SetFontSize(11.0);
 
 	// XAML authored Local properties/resources
 	notificationPanel->SetHeader(BindingValue(L"通知区域 · XAML 组合"));
@@ -5796,19 +5936,19 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRowSpan(*notificationPanel, 2);
 
 	// XAML authored Local properties/resources
-	grid9->SetMargin(Thickness(14.f, 10.f, 14.f, 10.f));
-	grid9->ClearRows();
-	grid9->ClearColumns();
-	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid9->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid9->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid10->SetMargin(Thickness(14.f, 10.f, 14.f, 10.f));
+	grid10->ClearRows();
+	grid10->ClearColumns();
+	grid10->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid10->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid10->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid10->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid10->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock49, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock55, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock49->SetText(L"CUI XAML");
-	Grid::SetRow(*textBlock49, 0);
+	textBlock55->SetText(L"CUI XAML");
+	Grid::SetRow(*textBlock55, 0);
 
 	// XAML authored Local properties/resources
 	toastMessage->SetText(L"通知视觉树由 GroupBox、Grid、TextBlock、ProgressBar 和 Button 构成。");
@@ -5829,18 +5969,18 @@ void DemoWindowGenerated::InitializeComponent()
 	dismissToast->SetHorizontalAlignment(static_cast<::HorizontalAlignment>(2));
 	Grid::SetRow(*dismissToast, 3);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock50, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock56, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock50->SetText(L"Popup、动画与模板可继续叠加，不改变宿主页面布局。");
-	textBlock50->SetMargin(Thickness(0.f, 16.f, 0.f, 0.f));
-	Grid::SetRow(*textBlock50, 4);
+	textBlock56->SetText(L"Popup、动画与模板可继续叠加，不改变宿主页面布局。");
+	textBlock56->SetMargin(Thickness(0.f, 16.f, 0.f, 0.f));
+	Grid::SetRow(*textBlock56, 4);
 
 	// XAML authored Local properties/resources
-	tabItem7->SetHeader(BindingValue(L"WebBrowser"));
+	tabItem8->SetHeader(BindingValue(L"WebBrowser"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border21, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border23, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border21->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border23->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	webSurface->ClearRows();
 	webSurface->ClearColumns();
@@ -5848,12 +5988,12 @@ void DemoWindowGenerated::InitializeComponent()
 	webSurface->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
-	grid10->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
-	Grid::SetRow(*grid10, 0);
-	grid10->ClearRows();
-	grid10->ClearColumns();
-	grid10->AddColumn(GridLength::Pixels(280.f), 0.f, FLT_MAX);
-	grid10->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid11->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
+	Grid::SetRow(*grid11, 0);
+	grid11->ClearRows();
+	grid11->ClearColumns();
+	grid11->AddColumn(GridLength::Pixels(280.f), 0.f, FLT_MAX);
+	grid11->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	cui::framework::StyleAccess::SetResourceKey(*invokeWeb, L"PrimaryButton", false);
 	// XAML authored Local properties/resources
@@ -5861,25 +6001,25 @@ void DemoWindowGenerated::InitializeComponent()
 	invokeWeb->SetHeight(cui::layout::Length::Fixed(32.f));
 	Grid::SetColumn(*invokeWeb, 0);
 
-	cui::framework::StyleAccess::SetResourceKey(*webHint, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*navigationWeb, L"PrimaryButton", false);
 	// XAML authored Local properties/resources
-	webHint->SetText(L"WebBrowser 的位置与大小由 Grid 的 Star 行列协商；HTML 与 JS bridge 属于运行时业务数据。");
-	webHint->SetMargin(Thickness(18.f, 5.f, 0.f, 0.f));
-	Grid::SetColumn(*webHint, 1);
+	navigationWeb->SetContent(BindingValue(L"bing.com"));
+	navigationWeb->SetHeight(cui::layout::Length::Fixed(32.f));
+	Grid::SetColumn(*navigationWeb, 1);
 
 	// XAML authored Local properties/resources
-	Grid::SetRow(*border22, 1);
-	border22->SetClipToBounds(true);
-	border22->SetBackground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.f, 0.f, 0.f, 1.f}; return value; }());
-	border22->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
-
+	Grid::SetRow(*webBrowser, 1);
+	webBrowser->SetDefaultBackgroundColor(D2D1_COLOR_F{0.f, 0.f, 0.f, 0.f});
+	webBrowser->SetRenderTransform(CuiGeneratedBindingValueAs<cui::drawing::Transform>(__documentStaticResource_WebBrowserCompositionTransform_16));
+	webBrowser->SetRenderTransformOriginDip(cui::core::Point{ 0.5f, 0.5f });
+	webBrowser->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
 
 	// XAML authored Local properties/resources
-	tabItem8->SetHeader(BindingValue(L"MediaElement"));
+	tabItem9->SetHeader(BindingValue(L"MediaElement"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border23, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border24, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border23->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border24->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	mediaSurface->ClearRows();
 	mediaSurface->ClearColumns();
@@ -5895,21 +6035,21 @@ void DemoWindowGenerated::InitializeComponent()
 	mediaElement->SetStretch(static_cast<::Stretch>(2));
 
 	// XAML authored Local properties/resources
-	grid11->SetMargin(Thickness(0.f, 14.f, 0.f, 10.f));
-	Grid::SetRow(*grid11, 1);
-	grid11->ClearRows();
-	grid11->ClearColumns();
-	grid11->AddColumn(GridLength::Pixels(86.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(50.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(170.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(50.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(170.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(80.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Pixels(90.f), 0.f, FLT_MAX);
-	grid11->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid12->SetMargin(Thickness(0.f, 14.f, 0.f, 10.f));
+	Grid::SetRow(*grid12, 1);
+	grid12->ClearRows();
+	grid12->ClearColumns();
+	grid12->AddColumn(GridLength::Pixels(86.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(76.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(50.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(170.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(50.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(170.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(80.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Pixels(90.f), 0.f, FLT_MAX);
+	grid12->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	cui::framework::StyleAccess::SetResourceKey(*mediaOpen, L"PrimaryButton", false);
 	// XAML authored Local properties/resources
@@ -5971,11 +6111,11 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*mediaLoop, 9);
 
 	// XAML authored Local properties/resources
-	Grid::SetRow(*grid12, 2);
-	grid12->ClearRows();
-	grid12->ClearColumns();
-	grid12->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid12->AddColumn(GridLength::Pixels(210.f), 0.f, FLT_MAX);
+	Grid::SetRow(*grid13, 2);
+	grid13->ClearRows();
+	grid13->ClearColumns();
+	grid13->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid13->AddColumn(GridLength::Pixels(210.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	mediaProgress->SetMinimum(0.0);
@@ -5991,11 +6131,11 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*mediaTime, 1);
 
 	// XAML authored Local properties/resources
-	tabItem9->SetHeader(BindingValue(L"WPF 语义实验"));
+	tabItem10->SetHeader(BindingValue(L"WPF 语义实验"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border24, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border25, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border24->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border25->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	// 控件级词法资源作用域
 	// AOT Style 程序：生成期完成分组、索引和连续池布局
@@ -6196,8 +6336,8 @@ void DemoWindowGenerated::InitializeComponent()
 	(void)cui::framework::DependencyPropertyAccess::SetDynamicResource(*wpfBindingScope, Control::FontSizeProperty(), L"WpfLabFontSize", DependencyPropertyValueSource::Local);
 
 	// XAML authored Local properties/resources
-	stackPanel20->SetOrientation(static_cast<Orientation>(1));
-	stackPanel20->SetTag(BindingValue(L"FindAncestor · StackPanel"));
+	stackPanel22->SetOrientation(static_cast<Orientation>(1));
+	stackPanel22->SetTag(BindingValue(L"FindAncestor · StackPanel"));
 
 	// XAML authored Local properties/resources
 	wpfTypographyOverride->SetText(L"Typography: inherited Consolas 15 · local size 14");
@@ -6246,9 +6386,9 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRow(*wpfTemplateAndStyleScope, 1);
 	Grid::SetColumn(*wpfTemplateAndStyleScope, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock51, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock57, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock51->SetText(L"ControlTemplate + resources + triggers");
+	textBlock57->SetText(L"ControlTemplate + resources + triggers");
 
 	// XAML authored Local properties/resources
 	wpfTemplateButton->SetContent(BindingValue(L"click · swap Control.Template on same Button"));
@@ -6327,9 +6467,9 @@ void DemoWindowGenerated::InitializeComponent()
 	(void)cui::framework::DependencyPropertyAccess::SetDynamicResource(*wpfInnerResourceValue, Control::ForegroundProperty(), L"WpfLabAccent", DependencyPropertyValueSource::Local);
 
 	// XAML authored Local properties/resources
-	textBlock52->SetText(L"DataTrigger + MultiDataTrigger + MultiTrigger\nEnter/ExitActions run Begin/StopStoryboard");
-	textBlock52->SetHeight(cui::layout::Length::Fixed(52.f));
-	textBlock52->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
+	textBlock58->SetText(L"DataTrigger + MultiDataTrigger + MultiTrigger\nEnter/ExitActions run Begin/StopStoryboard");
+	textBlock58->SetHeight(cui::layout::Length::Fixed(52.f));
+	textBlock58->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
 
 	// XAML authored Local properties/resources
 	Grid::SetRow(*wpfItemsScope, 1);
@@ -6340,10 +6480,10 @@ void DemoWindowGenerated::InitializeComponent()
 	wpfItemsScope->AddRow(GridLength::Pixels(176.f), 0.f, FLT_MAX);
 	wpfItemsScope->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock53, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock59, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock53->SetText(L"ItemsPresenter + ListBoxItem + DataTemplate");
-	Grid::SetRow(*textBlock53, 0);
+	textBlock59->SetText(L"ItemsPresenter + ListBoxItem + DataTemplate");
+	Grid::SetRow(*textBlock59, 0);
 
 	// XAML authored Local properties/resources
 	Grid::SetRow(*wpfTemplateList, 1);
@@ -6439,21 +6579,21 @@ void DemoWindowGenerated::InitializeComponent()
 	wpfRouteOuter->SetIsFocusScope(true);
 
 	// XAML authored Local properties/resources
-	grid13->SetMargin(Thickness(8.f, 6.f, 8.f, 6.f));
-	grid13->ClearRows();
-	grid13->ClearColumns();
-	grid13->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid13->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid13->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid13->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid13->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid14->SetMargin(Thickness(8.f, 6.f, 8.f, 6.f));
+	grid14->ClearRows();
+	grid14->ClearColumns();
+	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
-	textBlock54->SetText(L"Focusable / IsTabStop + logical / keyboard / within state");
-	textBlock54->SetHeight(cui::layout::Length::Fixed(22.f));
-	Grid::SetRow(*textBlock54, 0);
-	textBlock54->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Accent_2));
-	textBlock54->SetFontSize(13.0);
+	textBlock60->SetText(L"Focusable / IsTabStop + logical / keyboard / within state");
+	textBlock60->SetHeight(cui::layout::Length::Fixed(22.f));
+	Grid::SetRow(*textBlock60, 0);
+	textBlock60->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Accent_2));
+	textBlock60->SetFontSize(13.0);
 
 	// XAML authored Local properties/resources
 	wpfRouteMiddle->SetHeight(cui::layout::Length::Fixed(62.f));
@@ -6547,11 +6687,11 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*wpfDispatcherResult, 2);
 
 	// XAML authored Local properties/resources
-	tabItem10->SetHeader(BindingValue(L"TextComposition/IME"));
+	tabItem11->SetHeader(BindingValue(L"TextComposition/IME"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border25, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border26, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border25->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border26->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	textCompositionLabSurface->ClearRows();
 	textCompositionLabSurface->ClearColumns();
@@ -6561,45 +6701,45 @@ void DemoWindowGenerated::InitializeComponent()
 	textCompositionLabSurface->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 	textCompositionLabSurface->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock55, L"PageHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock61, L"PageHeader", false);
 	// XAML authored Local properties/resources
-	textBlock55->SetText(L"TextCompositionManager · WM_CHAR / WM_UNICHAR / IMM32 → Start / Update / TextInput");
-	Grid::SetRow(*textBlock55, 0);
-	Grid::SetColumn(*textBlock55, 0);
-	Grid::SetColumnSpan(*textBlock55, 2);
+	textBlock61->SetText(L"TextCompositionManager · WM_CHAR / WM_UNICHAR / IMM32 → Start / Update / TextInput");
+	Grid::SetRow(*textBlock61, 0);
+	Grid::SetColumn(*textBlock61, 0);
+	Grid::SetColumnSpan(*textBlock61, 2);
 
 	// XAML authored Local properties/resources
-	border26->SetMargin(Thickness(0.f, 0.f, 10.f, 0.f));
-	border26->SetPadding(Thickness(12.f, 10.f, 12.f, 10.f));
-	Grid::SetRow(*border26, 1);
-	Grid::SetColumn(*border26, 0);
-	border26->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
-	border26->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
-	border26->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
-	border26->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
+	border27->SetMargin(Thickness(0.f, 0.f, 10.f, 0.f));
+	border27->SetPadding(Thickness(12.f, 10.f, 12.f, 10.f));
+	Grid::SetRow(*border27, 1);
+	Grid::SetColumn(*border27, 0);
+	border27->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border27->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border27->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border27->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
 
-	grid14->ClearRows();
-	grid14->ClearColumns();
-	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid14->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid14->AddColumn(GridLength::Pixels(250.f), 0.f, FLT_MAX);
-	grid14->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid15->ClearRows();
+	grid15->ClearColumns();
+	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid15->AddColumn(GridLength::Pixels(250.f), 0.f, FLT_MAX);
+	grid15->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock56, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock62, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock56->SetText(L"真实系统键盘 / IME 输入客户端");
-	Grid::SetRow(*textBlock56, 0);
-	Grid::SetColumn(*textBlock56, 0);
-	Grid::SetColumnSpan(*textBlock56, 2);
+	textBlock62->SetText(L"真实系统键盘 / IME 输入客户端");
+	Grid::SetRow(*textBlock62, 0);
+	Grid::SetColumn(*textBlock62, 0);
+	Grid::SetColumnSpan(*textBlock62, 2);
 
 	// XAML authored Local properties/resources
-	textBlock57->SetText(L"TextBox · 单行 · 完整 UTF-16 一次提交");
-	textBlock57->SetMargin(Thickness(0.f, 6.f, 12.f, 12.f));
-	Grid::SetRow(*textBlock57, 1);
-	Grid::SetColumn(*textBlock57, 0);
+	textBlock63->SetText(L"TextBox · 单行 · 完整 UTF-16 一次提交");
+	textBlock63->SetMargin(Thickness(0.f, 6.f, 12.f, 12.f));
+	Grid::SetRow(*textBlock63, 1);
+	Grid::SetColumn(*textBlock63, 0);
 
 	// XAML authored Local properties/resources
 	compositionTextBox->SetText(L"TextBox: ");
@@ -6609,10 +6749,10 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*compositionTextBox, 1);
 
 	// XAML authored Local properties/resources
-	textBlock58->SetText(L"RichTextBox · 多行 / Undo / IsReadOnly 规则");
-	textBlock58->SetMargin(Thickness(0.f, 6.f, 12.f, 12.f));
-	Grid::SetRow(*textBlock58, 2);
-	Grid::SetColumn(*textBlock58, 0);
+	textBlock64->SetText(L"RichTextBox · 多行 / Undo / IsReadOnly 规则");
+	textBlock64->SetMargin(Thickness(0.f, 6.f, 12.f, 12.f));
+	Grid::SetRow(*textBlock64, 2);
+	Grid::SetColumn(*textBlock64, 0);
 
 	// XAML authored Local properties/resources
 	compositionRichTextBox->SetText(L"RichTextBox:\r\n");
@@ -6622,10 +6762,10 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*compositionRichTextBox, 1);
 
 	// XAML authored Local properties/resources
-	textBlock59->SetText(L"PasswordBox · 提交与日志均不回显正文");
-	textBlock59->SetMargin(Thickness(0.f, 6.f, 12.f, 10.f));
-	Grid::SetRow(*textBlock59, 3);
-	Grid::SetColumn(*textBlock59, 0);
+	textBlock65->SetText(L"PasswordBox · 提交与日志均不回显正文");
+	textBlock65->SetMargin(Thickness(0.f, 6.f, 12.f, 10.f));
+	Grid::SetRow(*textBlock65, 3);
+	Grid::SetColumn(*textBlock65, 0);
 
 	// XAML authored Local properties/resources
 	compositionPasswordBox->SetPassword(L"");
@@ -6634,34 +6774,34 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRow(*compositionPasswordBox, 3);
 	Grid::SetColumn(*compositionPasswordBox, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock60, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock66, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock60->SetText(L"其他客户端：NumericUpDown / ItemsControl / NativeSurface 共用同一输入链。");
-	Grid::SetRow(*textBlock60, 4);
-	Grid::SetColumn(*textBlock60, 0);
-	Grid::SetColumnSpan(*textBlock60, 2);
+	textBlock66->SetText(L"其他客户端：NumericUpDown / ItemsControl / NativeSurface 共用同一输入链。");
+	Grid::SetRow(*textBlock66, 4);
+	Grid::SetColumn(*textBlock66, 0);
+	Grid::SetColumnSpan(*textBlock66, 2);
 
 	// XAML authored Local properties/resources
-	border27->SetMargin(Thickness(10.f, 0.f, 0.f, 0.f));
-	border27->SetPadding(Thickness(12.f, 10.f, 12.f, 10.f));
-	Grid::SetRow(*border27, 1);
-	Grid::SetColumn(*border27, 1);
-	border27->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
-	border27->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
-	border27->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
-	border27->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
+	border28->SetMargin(Thickness(10.f, 0.f, 0.f, 0.f));
+	border28->SetPadding(Thickness(12.f, 10.f, 12.f, 10.f));
+	Grid::SetRow(*border28, 1);
+	Grid::SetColumn(*border28, 1);
+	border28->SetBackground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_SurfaceSoft_4));
+	border28->SetBorderBrush(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_Border_5));
+	border28->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border28->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
 
-	grid15->ClearRows();
-	grid15->ClearColumns();
-	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid15->AddRow(GridLength::Pixels(76.f), 0.f, FLT_MAX);
-	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid15->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid16->ClearRows();
+	grid16->ClearColumns();
+	grid16->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid16->AddRow(GridLength::Pixels(76.f), 0.f, FLT_MAX);
+	grid16->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid16->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock61, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock67, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock61->SetText(L"确定性事务注入（无需安装特定 IME）");
-	Grid::SetRow(*textBlock61, 0);
+	textBlock67->SetText(L"确定性事务注入（无需安装特定 IME）");
+	Grid::SetRow(*textBlock67, 0);
 
 	// XAML authored Local properties/resources
 	wrapPanel4->SetItemHeight(32.f);
@@ -6733,27 +6873,27 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetRow(*compositionStats, 3);
 
 	// XAML authored Local properties/resources
-	border28->SetMargin(Thickness(0.f, 14.f, 0.f, 0.f));
-	border28->SetPadding(Thickness(12.f, 8.f, 12.f, 8.f));
-	Grid::SetRow(*border28, 2);
-	Grid::SetColumn(*border28, 0);
-	Grid::SetColumnSpan(*border28, 2);
-	border28->SetBackground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.062745f, 0.094118f, 0.12549f, 1.f}; return value; }());
-	border28->SetBorderBrush([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.196078f, 0.262745f, 0.337255f, 1.f}; return value; }());
-	border28->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
-	border28->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
+	border29->SetMargin(Thickness(0.f, 14.f, 0.f, 0.f));
+	border29->SetPadding(Thickness(12.f, 8.f, 12.f, 8.f));
+	Grid::SetRow(*border29, 2);
+	Grid::SetColumn(*border29, 0);
+	Grid::SetColumnSpan(*border29, 2);
+	border29->SetBackground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.062745f, 0.094118f, 0.12549f, 1.f}; return value; }());
+	border29->SetBorderBrush([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.196078f, 0.262745f, 0.337255f, 1.f}; return value; }());
+	border29->SetBorderThickness(Thickness(1.f, 1.f, 1.f, 1.f));
+	border29->SetCornerRadius(::CornerRadius(6.f, 6.f, 6.f, 6.f));
 
-	grid16->ClearRows();
-	grid16->ClearColumns();
-	grid16->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
-	grid16->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid17->ClearRows();
+	grid17->ClearColumns();
+	grid17->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid17->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
-	textBlock62->SetText(L"同一 CompositionId 的 tunnel → source behavior → bubble 时间线");
-	textBlock62->SetHeight(cui::layout::Length::Fixed(24.f));
-	Grid::SetRow(*textBlock62, 0);
-	textBlock62->SetForeground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.552941f, 0.862745f, 0.784314f, 1.f}; return value; }());
-	textBlock62->SetFontSize(14.0);
+	textBlock68->SetText(L"同一 CompositionId 的 tunnel → source behavior → bubble 时间线");
+	textBlock68->SetHeight(cui::layout::Length::Fixed(24.f));
+	Grid::SetRow(*textBlock68, 0);
+	textBlock68->SetForeground([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::Solid; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.Color = D2D1_COLOR_F{0.552941f, 0.862745f, 0.784314f, 1.f}; return value; }());
+	textBlock68->SetFontSize(14.0);
 
 	// XAML authored Local properties/resources
 	compositionTrace->SetText(L"等待真实 IME 或确定性探针…");
@@ -6765,11 +6905,11 @@ void DemoWindowGenerated::InitializeComponent()
 	compositionTrace->SetFontSize(12.0);
 
 	// XAML authored Local properties/resources
-	tabItem11->SetHeader(BindingValue(L"Presentation/渲染"));
+	tabItem12->SetHeader(BindingValue(L"Presentation/渲染"));
 
-	cui::framework::StyleAccess::SetResourceKey(*border29, L"SurfacePanel", false);
+	cui::framework::StyleAccess::SetResourceKey(*border30, L"SurfacePanel", false);
 	// XAML authored Local properties/resources
-	border29->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
+	border30->SetMargin(Thickness(4.f, 8.f, 4.f, 4.f));
 
 	presentationLabSurface->ClearRows();
 	presentationLabSurface->ClearColumns();
@@ -6780,21 +6920,21 @@ void DemoWindowGenerated::InitializeComponent()
 	presentationLabSurface->AddColumn(GridLength::Star(8.f), 0.f, FLT_MAX);
 	presentationLabSurface->AddColumn(GridLength::Star(5.f), 0.f, FLT_MAX);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock63, L"PageHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock69, L"PageHeader", false);
 	// XAML authored Local properties/resources
-	textBlock63->SetText(L"XAML visual tree → retained PresentationScene → PresentationRenderHost → PlatformWindowHost (HWND)");
-	Grid::SetRow(*textBlock63, 0);
-	Grid::SetColumn(*textBlock63, 0);
-	Grid::SetColumnSpan(*textBlock63, 2);
+	textBlock69->SetText(L"XAML visual tree → retained PresentationScene → PresentationRenderHost → PlatformWindowHost (HWND)");
+	Grid::SetRow(*textBlock69, 0);
+	Grid::SetColumn(*textBlock69, 0);
+	Grid::SetColumnSpan(*textBlock69, 2);
 
 	// XAML authored Local properties/resources
-	grid17->SetMargin(Thickness(0.f, 0.f, 18.f, 0.f));
-	Grid::SetRow(*grid17, 1);
-	Grid::SetColumn(*grid17, 0);
-	grid17->ClearRows();
-	grid17->ClearColumns();
-	grid17->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid17->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
+	grid18->SetMargin(Thickness(0.f, 0.f, 18.f, 0.f));
+	Grid::SetRow(*grid18, 1);
+	Grid::SetColumn(*grid18, 0);
+	grid18->ClearRows();
+	grid18->ClearColumns();
+	grid18->AddRow(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid18->AddRow(GridLength::Auto(), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	Grid::SetRow(*presentationProbeSurface, 0);
@@ -6819,44 +6959,44 @@ void DemoWindowGenerated::InitializeComponent()
 	presentationTopologyTile->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_OnAccent_10));
 
 	// XAML authored Local properties/resources
-	Grid::SetRow(*stackPanel21, 1);
-	Grid::SetColumn(*stackPanel21, 1);
+	Grid::SetRow(*stackPanel23, 1);
+	Grid::SetColumn(*stackPanel23, 1);
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock64, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock70, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock64->SetText(L"Retained scene snapshot");
+	textBlock70->SetText(L"Retained scene snapshot");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock65, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock71, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock65->SetText(L"结构、内容、几何、仅合成拥有独立 revision。VisualChildren / Visibility / ZIndex 才重建结构；布局、Transform、Clip 只使节点几何快照失效。");
-	textBlock65->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
+	textBlock71->SetText(L"结构、内容、几何、仅合成拥有独立 revision。VisualChildren / Visibility / ZIndex 才重建结构；布局、Transform、Clip 只使节点几何快照失效。");
+	textBlock71->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock66, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock72, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock66->SetText(L"Damage replay 与内容重录");
+	textBlock72->SetText(L"Damage replay 与内容重录");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock67, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock73, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock67->SetText(L"同一 segment 清除局部区域后，区域内节点 replay 使用不可变 command list；只有内容或几何变化才重录，composition-only 和 damage 帧直接复用。");
-	textBlock67->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
+	textBlock73->SetText(L"同一 segment 清除局部区域后，区域内节点 replay 使用不可变 command list；只有内容或几何变化才重录，composition-only 和 damage 帧直接复用。");
+	textBlock73->SetMargin(Thickness(0.f, 0.f, 0.f, 12.f));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock68, L"SectionHeader", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock74, L"SectionHeader", false);
 	// XAML authored Local properties/resources
-	textBlock68->SetText(L"资源与设备边界");
+	textBlock74->SetText(L"资源与设备边界");
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock69, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock75, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock69->SetText(L"显式 frame transaction 原子管理 primary / scene / overlay。设备恢复提升 resource generation，并统一清空命令与 behavior 设备资源。");
+	textBlock75->SetText(L"显式 frame transaction 原子管理 primary / scene / overlay。设备恢复提升 resource generation，并统一清空命令与 behavior 设备资源。");
 
 	// XAML authored Local properties/resources
-	grid18->SetMargin(Thickness(0.f, 14.f, 0.f, 0.f));
-	Grid::SetRow(*grid18, 2);
-	Grid::SetColumn(*grid18, 0);
-	Grid::SetColumnSpan(*grid18, 2);
-	grid18->ClearRows();
-	grid18->ClearColumns();
-	grid18->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
-	grid18->AddColumn(GridLength::Pixels(350.f), 0.f, FLT_MAX);
+	grid19->SetMargin(Thickness(0.f, 14.f, 0.f, 0.f));
+	Grid::SetRow(*grid19, 2);
+	Grid::SetColumn(*grid19, 0);
+	Grid::SetColumnSpan(*grid19, 2);
+	grid19->ClearRows();
+	grid19->ClearColumns();
+	grid19->AddColumn(GridLength::Star(1.f), 0.f, FLT_MAX);
+	grid19->AddColumn(GridLength::Pixels(350.f), 0.f, FLT_MAX);
 
 	// XAML authored Local properties/resources
 	wrapPanel5->SetItemHeight(34.f);
@@ -6904,13 +7044,13 @@ void DemoWindowGenerated::InitializeComponent()
 	Grid::SetColumn(*presentationStatus, 1);
 	presentationStatus->SetForeground(CuiGeneratedBindingValueAs<cui::drawing::Brush>(__documentStaticResource_TextMuted_9));
 
-	cui::framework::StyleAccess::SetResourceKey(*textBlock70, L"DescriptionText", false);
+	cui::framework::StyleAccess::SetResourceKey(*textBlock76, L"DescriptionText", false);
 	// XAML authored Local properties/resources
-	textBlock70->SetText(L"依次触发内容重录、几何重录、仅合成复用、完整 replay、结构重建与设备恢复；左侧显示事务、generation 和命令命中统计。类型、属性、事件仍全部由 XAML 定义。");
-	textBlock70->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
-	Grid::SetRow(*textBlock70, 3);
-	Grid::SetColumn(*textBlock70, 0);
-	Grid::SetColumnSpan(*textBlock70, 2);
+	textBlock76->SetText(L"依次触发内容重录、几何重录、仅合成复用、完整 replay、结构重建与设备恢复；左侧显示事务、generation 和命令命中统计。类型、属性、事件仍全部由 XAML 定义。");
+	textBlock76->SetMargin(Thickness(0.f, 12.f, 0.f, 0.f));
+	Grid::SetRow(*textBlock76, 3);
+	Grid::SetColumn(*textBlock76, 0);
+	Grid::SetColumnSpan(*textBlock76, 2);
 
 	// XAML authored Local properties/resources
 	Grid::SetRow(*systemContextMenu, 3);
@@ -7094,6 +7234,8 @@ void DemoWindowGenerated::InitializeComponent()
 		dismissToast->Click.Subscribe(std::bind_front(&DemoWindowGenerated::HandleSystemAction, this)));
 	_generatedEventConnections.emplace_back(
 		invokeWeb->Click.Subscribe(std::bind_front(&DemoWindowGenerated::HandleInvokeWeb, this)));
+	_generatedEventConnections.emplace_back(
+		navigationWeb->Click.Subscribe(std::bind_front(&DemoWindowGenerated::HandleNavigationWeb, this)));
 	_generatedEventConnections.emplace_back(
 		mediaElement->OnMediaEnded.Subscribe(std::bind_front(&DemoWindowGenerated::HandleMediaEnded, this)));
 	_generatedEventConnections.emplace_back(
@@ -7435,74 +7577,28 @@ void DemoWindowGenerated::InitializeComponent()
 
 	mainTabs->AddItemControl(std::move(__owned_tabItem2));
 	tabItem2->SetVisualContent(std::move(__owned_border3));
-	border3->SetChild(std::move(__owned_containerSurface));
-	containerSurface->AddOwned(std::move(__owned_textBlock7));
+	border3->SetChild(std::move(__owned_grid3));
+	grid3->AddOwned(std::move(__owned_textBlock7));
 
-	containerSurface->AddOwned(std::move(__owned_stackPanel10));
-	stackPanel10->AddOwned(std::move(__owned_openImageButton));
+	grid3->AddOwned(std::move(__owned_calendarDemo));
 
-	stackPanel10->AddOwned(std::move(__owned_border4));
-	border4->SetChild(std::move(__owned_demoImage));
-
-
+	grid3->AddOwned(std::move(__owned_stackPanel10));
 	stackPanel10->AddOwned(std::move(__owned_textBlock8));
-
-	stackPanel10->AddOwned(std::move(__owned_demoProgress));
 
 	stackPanel10->AddOwned(std::move(__owned_textBlock9));
 
-	stackPanel10->AddOwned(std::move(__owned_indeterminateProgress));
+	stackPanel10->AddOwned(std::move(__owned_longDatePickerDemo));
 
+	stackPanel10->AddOwned(std::move(__owned_textBlock10));
 
-	containerSurface->AddOwned(std::move(__owned_stackPanel11));
-	stackPanel11->AddOwned(std::move(__owned_textBlock10));
+	stackPanel10->AddOwned(std::move(__owned_shortDatePickerDemo));
 
-	stackPanel11->AddOwned(std::move(__owned_wrapPanel1));
-	wrapPanel1->AddOwned(std::move(__owned_loadingRing));
-
-	wrapPanel1->AddOwned(std::move(__owned_progressRing));
-
-
-	stackPanel11->AddOwned(std::move(__owned_stackPanel12));
-	stackPanel12->AddOwned(std::move(__owned_imageVisible));
-
-	stackPanel12->AddOwned(std::move(__owned_imageVisibleLabel));
-
-
-	stackPanel11->AddOwned(std::move(__owned_demoScene));
-
+	stackPanel10->AddOwned(std::move(__owned_border4));
+	border4->SetChild(std::move(__owned_stackPanel11));
 	stackPanel11->AddOwned(std::move(__owned_textBlock11));
 
+	stackPanel11->AddOwned(std::move(__owned_textBlock12));
 
-	containerSurface->AddOwned(std::move(__owned_grid3));
-	grid3->AddOwned(std::move(__owned_detailGrid));
-	detailGrid->AddOwned(std::move(__owned_navigationComposition));
-	navigationComposition->AddOwned(std::move(__owned_textBlock12));
-
-	navigationComposition->AddOwned(std::move(__owned_sideNavigationList));
-
-
-	detailGrid->AddOwned(std::move(__owned_border5));
-
-	detailGrid->AddOwned(std::move(__owned_detailComposition));
-	detailComposition->AddOwned(std::move(__owned_stackPanel13));
-	stackPanel13->AddOwned(std::move(__owned_textBlock13));
-
-	stackPanel13->AddOwned(std::move(__owned_textBlock14));
-
-	stackPanel13->AddOwned(std::move(__owned_textBlock15));
-
-	stackPanel13->AddOwned(std::move(__owned_textBlock16));
-
-	stackPanel13->AddOwned(std::move(__owned_textBlock17));
-
-
-	detailComposition->AddOwned(std::move(__owned_splitNotes));
-
-
-
-	grid3->AddOwned(std::move(__owned_containerGroup));
-	containerGroup->SetVisualContent(std::move(__owned_containerGroupText));
 
 
 
@@ -7510,9 +7606,85 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 	mainTabs->AddItemControl(std::move(__owned_tabItem3));
-	tabItem3->SetVisualContent(std::move(__owned_border6));
-	border6->SetChild(std::move(__owned_dataSurface));
-	dataSurface->AddOwned(std::move(__owned_textBlock18));
+	tabItem3->SetVisualContent(std::move(__owned_border5));
+	border5->SetChild(std::move(__owned_containerSurface));
+	containerSurface->AddOwned(std::move(__owned_textBlock13));
+
+	containerSurface->AddOwned(std::move(__owned_stackPanel12));
+	stackPanel12->AddOwned(std::move(__owned_openImageButton));
+
+	stackPanel12->AddOwned(std::move(__owned_border6));
+	border6->SetChild(std::move(__owned_demoImage));
+
+
+	stackPanel12->AddOwned(std::move(__owned_textBlock14));
+
+	stackPanel12->AddOwned(std::move(__owned_demoProgress));
+
+	stackPanel12->AddOwned(std::move(__owned_textBlock15));
+
+	stackPanel12->AddOwned(std::move(__owned_indeterminateProgress));
+
+
+	containerSurface->AddOwned(std::move(__owned_stackPanel13));
+	stackPanel13->AddOwned(std::move(__owned_textBlock16));
+
+	stackPanel13->AddOwned(std::move(__owned_wrapPanel1));
+	wrapPanel1->AddOwned(std::move(__owned_loadingRing));
+
+	wrapPanel1->AddOwned(std::move(__owned_progressRing));
+
+
+	stackPanel13->AddOwned(std::move(__owned_stackPanel14));
+	stackPanel14->AddOwned(std::move(__owned_imageVisible));
+
+	stackPanel14->AddOwned(std::move(__owned_imageVisibleLabel));
+
+
+	stackPanel13->AddOwned(std::move(__owned_demoScene));
+
+	stackPanel13->AddOwned(std::move(__owned_textBlock17));
+
+
+	containerSurface->AddOwned(std::move(__owned_grid4));
+	grid4->AddOwned(std::move(__owned_detailGrid));
+	detailGrid->AddOwned(std::move(__owned_navigationComposition));
+	navigationComposition->AddOwned(std::move(__owned_textBlock18));
+
+	navigationComposition->AddOwned(std::move(__owned_sideNavigationList));
+
+
+	detailGrid->AddOwned(std::move(__owned_border7));
+
+	detailGrid->AddOwned(std::move(__owned_detailComposition));
+	detailComposition->AddOwned(std::move(__owned_stackPanel15));
+	stackPanel15->AddOwned(std::move(__owned_textBlock19));
+
+	stackPanel15->AddOwned(std::move(__owned_textBlock20));
+
+	stackPanel15->AddOwned(std::move(__owned_textBlock21));
+
+	stackPanel15->AddOwned(std::move(__owned_textBlock22));
+
+	stackPanel15->AddOwned(std::move(__owned_textBlock23));
+
+
+	detailComposition->AddOwned(std::move(__owned_splitNotes));
+
+
+
+	grid4->AddOwned(std::move(__owned_containerGroup));
+	containerGroup->SetVisualContent(std::move(__owned_containerGroupText));
+
+
+
+
+
+
+	mainTabs->AddItemControl(std::move(__owned_tabItem4));
+	tabItem4->SetVisualContent(std::move(__owned_border8));
+	border8->SetChild(std::move(__owned_dataSurface));
+	dataSurface->AddOwned(std::move(__owned_textBlock24));
 
 	dataSurface->AddOwned(std::move(__owned_demoTree));
 
@@ -7521,18 +7693,18 @@ void DemoWindowGenerated::InitializeComponent()
 	dataSurface->AddOwned(std::move(__owned_demoList));
 
 	dataSurface->AddOwned(std::move(__owned_composedPropertyEditor));
-	composedPropertyEditor->SetVisualContent(std::move(__owned_grid4));
-	grid4->AddOwned(std::move(__owned_textBlock19));
+	composedPropertyEditor->SetVisualContent(std::move(__owned_grid5));
+	grid5->AddOwned(std::move(__owned_textBlock25));
 
-	grid4->AddOwned(std::move(__owned_composedTitleEditor));
+	grid5->AddOwned(std::move(__owned_composedTitleEditor));
 
-	grid4->AddOwned(std::move(__owned_textBlock20));
+	grid5->AddOwned(std::move(__owned_textBlock26));
 
-	grid4->AddOwned(std::move(__owned_composedEnabledEditor));
+	grid5->AddOwned(std::move(__owned_composedEnabledEditor));
 
-	grid4->AddOwned(std::move(__owned_textBlock21));
+	grid5->AddOwned(std::move(__owned_textBlock27));
 
-	grid4->AddOwned(std::move(__owned_composedDensityEditor));
+	grid5->AddOwned(std::move(__owned_composedDensityEditor));
 	composedDensityEditor->AddItemControl(std::move(__owned_comboBoxItem1));
 
 	composedDensityEditor->AddItemControl(std::move(__owned_comboBoxItem2));
@@ -7540,18 +7712,18 @@ void DemoWindowGenerated::InitializeComponent()
 	composedDensityEditor->AddItemControl(std::move(__owned_comboBoxItem3));
 
 
-	grid4->AddOwned(std::move(__owned_textBlock22));
+	grid5->AddOwned(std::move(__owned_textBlock28));
 
-	grid4->AddOwned(std::move(__owned_composedScaleEditor));
+	grid5->AddOwned(std::move(__owned_composedScaleEditor));
 
-	grid4->AddOwned(std::move(__owned_textBlock23));
+	grid5->AddOwned(std::move(__owned_textBlock29));
 
 
 
-	dataSurface->AddOwned(std::move(__owned_stackPanel14));
-	stackPanel14->AddOwned(std::move(__owned_textBlock24));
+	dataSurface->AddOwned(std::move(__owned_stackPanel16));
+	stackPanel16->AddOwned(std::move(__owned_textBlock30));
 
-	stackPanel14->AddOwned(std::move(__owned_authoredStateTree));
+	stackPanel16->AddOwned(std::move(__owned_authoredStateTree));
 	authoredStateTree->AddItemControl(std::move(__owned_treeViewItem1));
 	treeViewItem1->AddItemControl(std::move(__owned_treeViewItem2));
 
@@ -7561,19 +7733,19 @@ void DemoWindowGenerated::InitializeComponent()
 	authoredStateTree->AddItemControl(std::move(__owned_treeViewItem4));
 
 
-	stackPanel14->AddOwned(std::move(__owned_textBlock25));
+	stackPanel16->AddOwned(std::move(__owned_textBlock31));
 
 
 
 
 
-	mainTabs->AddItemControl(std::move(__owned_tabItem4));
-	tabItem4->SetVisualContent(std::move(__owned_border7));
-	border7->SetChild(std::move(__owned_analyticsSurface));
-	analyticsSurface->AddOwned(std::move(__owned_textBlock26));
+	mainTabs->AddItemControl(std::move(__owned_tabItem5));
+	tabItem5->SetVisualContent(std::move(__owned_border9));
+	border9->SetChild(std::move(__owned_analyticsSurface));
+	analyticsSurface->AddOwned(std::move(__owned_textBlock32));
 
-	analyticsSurface->AddOwned(std::move(__owned_border8));
-	border8->SetChild(std::move(__owned_analyticsFilterSurface));
+	analyticsSurface->AddOwned(std::move(__owned_border10));
+	border10->SetChild(std::move(__owned_analyticsFilterSurface));
 	analyticsFilterSurface->AddOwned(std::move(__owned_analyticsQuery));
 
 	analyticsFilterSurface->AddOwned(std::move(__owned_analyticsClosed));
@@ -7588,32 +7760,32 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	analyticsSurface->AddOwned(std::move(__owned_grid5));
-	grid5->AddOwned(std::move(__owned_groupBox1));
-	groupBox1->SetVisualContent(std::move(__owned_stackPanel15));
-	stackPanel15->AddOwned(std::move(__owned_textBlock27));
+	analyticsSurface->AddOwned(std::move(__owned_grid6));
+	grid6->AddOwned(std::move(__owned_groupBox1));
+	groupBox1->SetVisualContent(std::move(__owned_stackPanel17));
+	stackPanel17->AddOwned(std::move(__owned_textBlock33));
 
-	stackPanel15->AddOwned(std::move(__owned_textBlock28));
-
-
-
-	grid5->AddOwned(std::move(__owned_groupBox2));
-	groupBox2->SetVisualContent(std::move(__owned_stackPanel16));
-	stackPanel16->AddOwned(std::move(__owned_textBlock29));
-
-	stackPanel16->AddOwned(std::move(__owned_progressBar1));
+	stackPanel17->AddOwned(std::move(__owned_textBlock34));
 
 
 
-	grid5->AddOwned(std::move(__owned_groupBox3));
-	groupBox3->SetVisualContent(std::move(__owned_stackPanel17));
-	stackPanel17->AddOwned(std::move(__owned_textBlock30));
+	grid6->AddOwned(std::move(__owned_groupBox2));
+	groupBox2->SetVisualContent(std::move(__owned_stackPanel18));
+	stackPanel18->AddOwned(std::move(__owned_textBlock35));
 
-	stackPanel17->AddOwned(std::move(__owned_textBlock31));
+	stackPanel18->AddOwned(std::move(__owned_progressBar1));
 
 
 
-	grid5->AddOwned(std::move(__owned_textBlock32));
+	grid6->AddOwned(std::move(__owned_groupBox3));
+	groupBox3->SetVisualContent(std::move(__owned_stackPanel19));
+	stackPanel19->AddOwned(std::move(__owned_textBlock36));
+
+	stackPanel19->AddOwned(std::move(__owned_textBlock37));
+
+
+
+	grid6->AddOwned(std::move(__owned_textBlock38));
 
 
 	analyticsSurface->AddOwned(std::move(__owned_wrapPanel2));
@@ -7624,49 +7796,49 @@ void DemoWindowGenerated::InitializeComponent()
 	wrapPanel2->AddOwned(std::move(__owned_chartLine));
 
 
-	analyticsSurface->AddOwned(std::move(__owned_grid6));
-	grid6->AddOwned(std::move(__owned_salesChart));
+	analyticsSurface->AddOwned(std::move(__owned_grid7));
+	grid7->AddOwned(std::move(__owned_salesChart));
 
-	grid6->AddOwned(std::move(__owned_analyticsReport));
-	analyticsReport->SetVisualContent(std::move(__owned_grid7));
-	grid7->AddOwned(std::move(__owned_stackPanel18));
-	stackPanel18->AddOwned(std::move(__owned_textBlock33));
+	grid7->AddOwned(std::move(__owned_analyticsReport));
+	analyticsReport->SetVisualContent(std::move(__owned_grid8));
+	grid8->AddOwned(std::move(__owned_stackPanel20));
+	stackPanel20->AddOwned(std::move(__owned_textBlock39));
 
-	stackPanel18->AddOwned(std::move(__owned_textBlock34));
+	stackPanel20->AddOwned(std::move(__owned_textBlock40));
 
-	stackPanel18->AddOwned(std::move(__owned_textBlock35));
+	stackPanel20->AddOwned(std::move(__owned_textBlock41));
 
-	stackPanel18->AddOwned(std::move(__owned_textBlock36));
+	stackPanel20->AddOwned(std::move(__owned_textBlock42));
 
-	stackPanel18->AddOwned(std::move(__owned_textBlock37));
-
-
-	grid7->AddOwned(std::move(__owned_analyticsRows));
-
-	grid7->AddOwned(std::move(__owned_textBlock38));
+	stackPanel20->AddOwned(std::move(__owned_textBlock43));
 
 
+	grid8->AddOwned(std::move(__owned_analyticsRows));
+
+	grid8->AddOwned(std::move(__owned_textBlock44));
 
 
 
 
 
-	mainTabs->AddItemControl(std::move(__owned_tabItem5));
-	tabItem5->SetVisualContent(std::move(__owned_border9));
-	border9->SetChild(std::move(__owned_layoutSurface));
+
+
+	mainTabs->AddItemControl(std::move(__owned_tabItem6));
+	tabItem6->SetVisualContent(std::move(__owned_border11));
+	border11->SetChild(std::move(__owned_layoutSurface));
 	layoutSurface->AddOwned(std::move(__owned_layoutTitle));
 
 	layoutSurface->AddOwned(std::move(__owned_canvasSemanticsProbe));
-	canvasSemanticsProbe->AddOwned(std::move(__owned_border10));
+	canvasSemanticsProbe->AddOwned(std::move(__owned_border12));
 
 	canvasSemanticsProbe->AddOwned(std::move(__owned_canvasLeftWins));
 
 	canvasSemanticsProbe->AddOwned(std::move(__owned_canvasRightBottom));
 
 
-	layoutSurface->AddOwned(std::move(__owned_border11));
-	border11->SetChild(std::move(__owned_demoStack));
-	demoStack->AddOwned(std::move(__owned_textBlock39));
+	layoutSurface->AddOwned(std::move(__owned_border13));
+	border13->SetChild(std::move(__owned_demoStack));
+	demoStack->AddOwned(std::move(__owned_textBlock45));
 
 	demoStack->AddOwned(std::move(__owned_stackA));
 
@@ -7676,8 +7848,8 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	layoutSurface->AddOwned(std::move(__owned_border12));
-	border12->SetChild(std::move(__owned_demoGrid));
+	layoutSurface->AddOwned(std::move(__owned_border14));
+	border14->SetChild(std::move(__owned_demoGrid));
 	demoGrid->AddOwned(std::move(__owned_gridHeader));
 
 	demoGrid->AddOwned(std::move(__owned_gridLeft));
@@ -7688,9 +7860,9 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	layoutSurface->AddOwned(std::move(__owned_border13));
-	border13->SetChild(std::move(__owned_demoDock));
-	demoDock->AddOwned(std::move(__owned_textBlock40));
+	layoutSurface->AddOwned(std::move(__owned_border15));
+	border15->SetChild(std::move(__owned_demoDock));
+	demoDock->AddOwned(std::move(__owned_textBlock46));
 
 	demoDock->AddOwned(std::move(__owned_dockTop));
 
@@ -7700,8 +7872,8 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	layoutSurface->AddOwned(std::move(__owned_border14));
-	border14->SetChild(std::move(__owned_demoWrap));
+	layoutSurface->AddOwned(std::move(__owned_border16));
+	border16->SetChild(std::move(__owned_demoWrap));
 	demoWrap->AddOwned(std::move(__owned_wrap1));
 
 	demoWrap->AddOwned(std::move(__owned_wrap2));
@@ -7716,8 +7888,8 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	layoutSurface->AddOwned(std::move(__owned_border15));
-	border15->SetChild(std::move(__owned_demoRelative));
+	layoutSurface->AddOwned(std::move(__owned_border17));
+	border17->SetChild(std::move(__owned_demoRelative));
 	demoRelative->AddOwned(std::move(__owned_relativeCenter));
 	relativeCenter->AddOwned(std::move(__owned_naturalTextProbe));
 
@@ -7730,26 +7902,26 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	layoutSurface->AddOwned(std::move(__owned_border16));
-	border16->SetChild(std::move(__owned_demoScroll));
+	layoutSurface->AddOwned(std::move(__owned_border18));
+	border18->SetChild(std::move(__owned_demoScroll));
 	demoScroll->SetVisualContent(std::move(__owned_demoScrollContent));
-	demoScrollContent->AddOwned(std::move(__owned_border17));
-	border17->SetChild(std::move(__owned_scrollCard1));
+	demoScrollContent->AddOwned(std::move(__owned_border19));
+	border19->SetChild(std::move(__owned_scrollCard1));
 	scrollCard1->AddOwned(std::move(__owned_scrollCard1Text));
 
-	scrollCard1->AddOwned(std::move(__owned_textBlock41));
+	scrollCard1->AddOwned(std::move(__owned_textBlock47));
 
 
 
-	demoScrollContent->AddOwned(std::move(__owned_border18));
-	border18->SetChild(std::move(__owned_scrollCard2));
+	demoScrollContent->AddOwned(std::move(__owned_border20));
+	border20->SetChild(std::move(__owned_scrollCard2));
 	scrollCard2->AddOwned(std::move(__owned_scrollCard2Text));
 
-	scrollCard2->AddOwned(std::move(__owned_textBlock42));
+	scrollCard2->AddOwned(std::move(__owned_textBlock48));
 
 
 
-	demoScrollContent->AddOwned(std::move(__owned_textBlock43));
+	demoScrollContent->AddOwned(std::move(__owned_textBlock49));
 
 	demoScrollContent->AddOwned(std::move(__owned_farButton));
 
@@ -7759,13 +7931,13 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	mainTabs->AddItemControl(std::move(__owned_tabItem6));
-	tabItem6->SetVisualContent(std::move(__owned_border19));
-	border19->SetChild(std::move(__owned_systemSurface));
+	mainTabs->AddItemControl(std::move(__owned_tabItem7));
+	tabItem7->SetVisualContent(std::move(__owned_border21));
+	border21->SetChild(std::move(__owned_systemSurface));
 	systemSurface->AddOwned(std::move(__owned_systemTitle));
 
-	systemSurface->AddOwned(std::move(__owned_stackPanel19));
-	stackPanel19->AddOwned(std::move(__owned_wrapPanel3));
+	systemSurface->AddOwned(std::move(__owned_stackPanel21));
+	stackPanel21->AddOwned(std::move(__owned_wrapPanel3));
 	wrapPanel3->AddOwned(std::move(__owned_notifyToggle));
 
 	wrapPanel3->AddOwned(std::move(__owned_notifyBalloon));
@@ -7775,55 +7947,39 @@ void DemoWindowGenerated::InitializeComponent()
 	wrapPanel3->AddOwned(std::move(__owned_showToast));
 
 
-	stackPanel19->AddOwned(std::move(__owned_systemHint));
+	stackPanel21->AddOwned(std::move(__owned_systemHint));
 
 
-	systemSurface->AddOwned(std::move(__owned_border20));
-	border20->SetChild(std::move(__owned_grid8));
-	grid8->AddOwned(std::move(__owned_textBlock44));
+	systemSurface->AddOwned(std::move(__owned_border22));
+	border22->SetChild(std::move(__owned_grid9));
+	grid9->AddOwned(std::move(__owned_textBlock50));
 
-	grid8->AddOwned(std::move(__owned_commandTargetButton));
+	grid9->AddOwned(std::move(__owned_commandTargetButton));
 
-	grid8->AddOwned(std::move(__owned_textBlock45));
+	grid9->AddOwned(std::move(__owned_textBlock51));
 
-	grid8->AddOwned(std::move(__owned_commandTargetTrace));
+	grid9->AddOwned(std::move(__owned_commandTargetTrace));
 
-	grid8->AddOwned(std::move(__owned_textBlock46));
+	grid9->AddOwned(std::move(__owned_textBlock52));
 
-	grid8->AddOwned(std::move(__owned_textBlock47));
+	grid9->AddOwned(std::move(__owned_textBlock53));
 
-	grid8->AddOwned(std::move(__owned_textBlock48));
+	grid9->AddOwned(std::move(__owned_textBlock54));
 
 
 
 	systemSurface->AddOwned(std::move(__owned_notificationPanel));
-	notificationPanel->SetVisualContent(std::move(__owned_grid9));
-	grid9->AddOwned(std::move(__owned_textBlock49));
+	notificationPanel->SetVisualContent(std::move(__owned_grid10));
+	grid10->AddOwned(std::move(__owned_textBlock55));
 
-	grid9->AddOwned(std::move(__owned_toastMessage));
+	grid10->AddOwned(std::move(__owned_toastMessage));
 
-	grid9->AddOwned(std::move(__owned_progressBar2));
+	grid10->AddOwned(std::move(__owned_progressBar2));
 
-	grid9->AddOwned(std::move(__owned_dismissToast));
+	grid10->AddOwned(std::move(__owned_dismissToast));
 
-	grid9->AddOwned(std::move(__owned_textBlock50));
+	grid10->AddOwned(std::move(__owned_textBlock56));
 
-
-
-
-
-
-	mainTabs->AddItemControl(std::move(__owned_tabItem7));
-	tabItem7->SetVisualContent(std::move(__owned_border21));
-	border21->SetChild(std::move(__owned_webSurface));
-	webSurface->AddOwned(std::move(__owned_grid10));
-	grid10->AddOwned(std::move(__owned_invokeWeb));
-
-	grid10->AddOwned(std::move(__owned_webHint));
-
-
-	webSurface->AddOwned(std::move(__owned_border22));
-	border22->SetChild(std::move(__owned_webBrowser));
 
 
 
@@ -7831,73 +7987,87 @@ void DemoWindowGenerated::InitializeComponent()
 
 	mainTabs->AddItemControl(std::move(__owned_tabItem8));
 	tabItem8->SetVisualContent(std::move(__owned_border23));
-	border23->SetChild(std::move(__owned_mediaSurface));
-	mediaSurface->AddOwned(std::move(__owned_mediaElement));
+	border23->SetChild(std::move(__owned_webSurface));
+	webSurface->AddOwned(std::move(__owned_grid11));
+	grid11->AddOwned(std::move(__owned_invokeWeb));
 
-	mediaSurface->AddOwned(std::move(__owned_grid11));
-	grid11->AddOwned(std::move(__owned_mediaOpen));
-
-	grid11->AddOwned(std::move(__owned_mediaPlay));
-
-	grid11->AddOwned(std::move(__owned_mediaPause));
-
-	grid11->AddOwned(std::move(__owned_mediaStop));
-
-	grid11->AddOwned(std::move(__owned_volumeLabel));
-
-	grid11->AddOwned(std::move(__owned_mediaVolume));
-
-	grid11->AddOwned(std::move(__owned_speedTitle));
-
-	grid11->AddOwned(std::move(__owned_mediaSpeed));
-
-	grid11->AddOwned(std::move(__owned_mediaSpeedText));
-
-	grid11->AddOwned(std::move(__owned_mediaLoop));
+	grid11->AddOwned(std::move(__owned_navigationWeb));
 
 
-	mediaSurface->AddOwned(std::move(__owned_grid12));
-	grid12->AddOwned(std::move(__owned_mediaProgress));
-
-	grid12->AddOwned(std::move(__owned_mediaTime));
-
+	webSurface->AddOwned(std::move(__owned_webBrowser));
 
 
 
 
 	mainTabs->AddItemControl(std::move(__owned_tabItem9));
 	tabItem9->SetVisualContent(std::move(__owned_border24));
-	border24->SetChild(std::move(__owned_wpfLabSurface));
+	border24->SetChild(std::move(__owned_mediaSurface));
+	mediaSurface->AddOwned(std::move(__owned_mediaElement));
+
+	mediaSurface->AddOwned(std::move(__owned_grid12));
+	grid12->AddOwned(std::move(__owned_mediaOpen));
+
+	grid12->AddOwned(std::move(__owned_mediaPlay));
+
+	grid12->AddOwned(std::move(__owned_mediaPause));
+
+	grid12->AddOwned(std::move(__owned_mediaStop));
+
+	grid12->AddOwned(std::move(__owned_volumeLabel));
+
+	grid12->AddOwned(std::move(__owned_mediaVolume));
+
+	grid12->AddOwned(std::move(__owned_speedTitle));
+
+	grid12->AddOwned(std::move(__owned_mediaSpeed));
+
+	grid12->AddOwned(std::move(__owned_mediaSpeedText));
+
+	grid12->AddOwned(std::move(__owned_mediaLoop));
+
+
+	mediaSurface->AddOwned(std::move(__owned_grid13));
+	grid13->AddOwned(std::move(__owned_mediaProgress));
+
+	grid13->AddOwned(std::move(__owned_mediaTime));
+
+
+
+
+
+	mainTabs->AddItemControl(std::move(__owned_tabItem10));
+	tabItem10->SetVisualContent(std::move(__owned_border25));
+	border25->SetChild(std::move(__owned_wpfLabSurface));
 	wpfLabSurface->AddOwned(std::move(__owned_wpfLabTitle));
 
 	wpfLabSurface->AddOwned(std::move(__owned_wpfBindingScope));
-	wpfBindingScope->SetVisualContent(std::move(__owned_stackPanel20));
-	stackPanel20->AddOwned(std::move(__owned_wpfTypographyOverride));
+	wpfBindingScope->SetVisualContent(std::move(__owned_stackPanel22));
+	stackPanel22->AddOwned(std::move(__owned_wpfTypographyOverride));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfTwoWayEditor));
+	stackPanel22->AddOwned(std::move(__owned_wpfTwoWayEditor));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfElementMirror));
+	stackPanel22->AddOwned(std::move(__owned_wpfElementMirror));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfSelfValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfSelfValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfAncestorValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfAncestorValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfFallbackValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfFallbackValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfNullValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfNullValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfIndexerValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfIndexerValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfKeyedIndexerValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfKeyedIndexerValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfConvertedValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfConvertedValue));
 
-	stackPanel20->AddOwned(std::move(__owned_wpfMultiValue));
+	stackPanel22->AddOwned(std::move(__owned_wpfMultiValue));
 
 
 
 	wpfLabSurface->AddOwned(std::move(__owned_wpfTemplateAndStyleScope));
-	wpfTemplateAndStyleScope->AddOwned(std::move(__owned_textBlock51));
+	wpfTemplateAndStyleScope->AddOwned(std::move(__owned_textBlock57));
 
 	wpfTemplateAndStyleScope->AddOwned(std::move(__owned_wpfTemplateButton));
 
@@ -7909,19 +8079,19 @@ void DemoWindowGenerated::InitializeComponent()
 	wpfInnerResourceScope->AddOwned(std::move(__owned_wpfInnerResourceValue));
 
 
-	wpfTemplateAndStyleScope->AddOwned(std::move(__owned_textBlock52));
+	wpfTemplateAndStyleScope->AddOwned(std::move(__owned_textBlock58));
 
 
 	wpfLabSurface->AddOwned(std::move(__owned_wpfItemsScope));
-	wpfItemsScope->AddOwned(std::move(__owned_textBlock53));
+	wpfItemsScope->AddOwned(std::move(__owned_textBlock59));
 
 	wpfItemsScope->AddOwned(std::move(__owned_wpfTemplateList));
 
 	wpfItemsScope->AddOwned(std::move(__owned_wpfRouteOuter));
-	wpfRouteOuter->SetChild(std::move(__owned_grid13));
-	grid13->AddOwned(std::move(__owned_textBlock54));
+	wpfRouteOuter->SetChild(std::move(__owned_grid14));
+	grid14->AddOwned(std::move(__owned_textBlock60));
 
-	grid13->AddOwned(std::move(__owned_wpfRouteMiddle));
+	grid14->AddOwned(std::move(__owned_wpfRouteMiddle));
 	wpfRouteMiddle->AddOwned(std::move(__owned_wpfRouteSource));
 
 	wpfRouteMiddle->AddOwned(std::move(__owned_wpfFocusPeerB));
@@ -7931,11 +8101,11 @@ void DemoWindowGenerated::InitializeComponent()
 	wpfRouteMiddle->AddOwned(std::move(__owned_wpfNoFocusPeer));
 
 
-	grid13->AddOwned(std::move(__owned_wpfTextInputSource));
+	grid14->AddOwned(std::move(__owned_wpfTextInputSource));
 
-	grid13->AddOwned(std::move(__owned_wpfRouteTrace));
+	grid14->AddOwned(std::move(__owned_wpfRouteTrace));
 
-	grid13->AddOwned(std::move(__owned_wpfInputStats));
+	grid14->AddOwned(std::move(__owned_wpfInputStats));
 
 
 
@@ -7951,36 +8121,36 @@ void DemoWindowGenerated::InitializeComponent()
 
 
 
-	mainTabs->AddItemControl(std::move(__owned_tabItem10));
-	tabItem10->SetVisualContent(std::move(__owned_border25));
-	border25->SetChild(std::move(__owned_textCompositionLabSurface));
-	textCompositionLabSurface->AddOwned(std::move(__owned_textBlock55));
-
-	textCompositionLabSurface->AddOwned(std::move(__owned_border26));
-	border26->SetChild(std::move(__owned_grid14));
-	grid14->AddOwned(std::move(__owned_textBlock56));
-
-	grid14->AddOwned(std::move(__owned_textBlock57));
-
-	grid14->AddOwned(std::move(__owned_compositionTextBox));
-
-	grid14->AddOwned(std::move(__owned_textBlock58));
-
-	grid14->AddOwned(std::move(__owned_compositionRichTextBox));
-
-	grid14->AddOwned(std::move(__owned_textBlock59));
-
-	grid14->AddOwned(std::move(__owned_compositionPasswordBox));
-
-	grid14->AddOwned(std::move(__owned_textBlock60));
-
-
+	mainTabs->AddItemControl(std::move(__owned_tabItem11));
+	tabItem11->SetVisualContent(std::move(__owned_border26));
+	border26->SetChild(std::move(__owned_textCompositionLabSurface));
+	textCompositionLabSurface->AddOwned(std::move(__owned_textBlock61));
 
 	textCompositionLabSurface->AddOwned(std::move(__owned_border27));
 	border27->SetChild(std::move(__owned_grid15));
-	grid15->AddOwned(std::move(__owned_textBlock61));
+	grid15->AddOwned(std::move(__owned_textBlock62));
 
-	grid15->AddOwned(std::move(__owned_wrapPanel4));
+	grid15->AddOwned(std::move(__owned_textBlock63));
+
+	grid15->AddOwned(std::move(__owned_compositionTextBox));
+
+	grid15->AddOwned(std::move(__owned_textBlock64));
+
+	grid15->AddOwned(std::move(__owned_compositionRichTextBox));
+
+	grid15->AddOwned(std::move(__owned_textBlock65));
+
+	grid15->AddOwned(std::move(__owned_compositionPasswordBox));
+
+	grid15->AddOwned(std::move(__owned_textBlock66));
+
+
+
+	textCompositionLabSurface->AddOwned(std::move(__owned_border28));
+	border28->SetChild(std::move(__owned_grid16));
+	grid16->AddOwned(std::move(__owned_textBlock67));
+
+	grid16->AddOwned(std::move(__owned_wrapPanel4));
 	wrapPanel4->AddOwned(std::move(__owned_compositionStartProbe));
 
 	wrapPanel4->AddOwned(std::move(__owned_compositionUpdateProbe));
@@ -8000,52 +8170,52 @@ void DemoWindowGenerated::InitializeComponent()
 	wrapPanel4->AddOwned(std::move(__owned_compositionResetProbe));
 
 
-	grid15->AddOwned(std::move(__owned_compositionState));
+	grid16->AddOwned(std::move(__owned_compositionState));
 
-	grid15->AddOwned(std::move(__owned_compositionStats));
-
-
-
-	textCompositionLabSurface->AddOwned(std::move(__owned_border28));
-	border28->SetChild(std::move(__owned_grid16));
-	grid16->AddOwned(std::move(__owned_textBlock62));
-
-	grid16->AddOwned(std::move(__owned_compositionTrace));
+	grid16->AddOwned(std::move(__owned_compositionStats));
 
 
+
+	textCompositionLabSurface->AddOwned(std::move(__owned_border29));
+	border29->SetChild(std::move(__owned_grid17));
+	grid17->AddOwned(std::move(__owned_textBlock68));
+
+	grid17->AddOwned(std::move(__owned_compositionTrace));
 
 
 
 
-	mainTabs->AddItemControl(std::move(__owned_tabItem11));
-	tabItem11->SetVisualContent(std::move(__owned_border29));
-	border29->SetChild(std::move(__owned_presentationLabSurface));
-	presentationLabSurface->AddOwned(std::move(__owned_textBlock63));
 
-	presentationLabSurface->AddOwned(std::move(__owned_grid17));
-	grid17->AddOwned(std::move(__owned_presentationProbeSurface));
 
-	grid17->AddOwned(std::move(__owned_canvas1));
+	mainTabs->AddItemControl(std::move(__owned_tabItem12));
+	tabItem12->SetVisualContent(std::move(__owned_border30));
+	border30->SetChild(std::move(__owned_presentationLabSurface));
+	presentationLabSurface->AddOwned(std::move(__owned_textBlock69));
+
+	presentationLabSurface->AddOwned(std::move(__owned_grid18));
+	grid18->AddOwned(std::move(__owned_presentationProbeSurface));
+
+	grid18->AddOwned(std::move(__owned_canvas1));
 	canvas1->AddOwned(std::move(__owned_presentationTopologyTile));
 
 
 
-	presentationLabSurface->AddOwned(std::move(__owned_stackPanel21));
-	stackPanel21->AddOwned(std::move(__owned_textBlock64));
+	presentationLabSurface->AddOwned(std::move(__owned_stackPanel23));
+	stackPanel23->AddOwned(std::move(__owned_textBlock70));
 
-	stackPanel21->AddOwned(std::move(__owned_textBlock65));
+	stackPanel23->AddOwned(std::move(__owned_textBlock71));
 
-	stackPanel21->AddOwned(std::move(__owned_textBlock66));
+	stackPanel23->AddOwned(std::move(__owned_textBlock72));
 
-	stackPanel21->AddOwned(std::move(__owned_textBlock67));
+	stackPanel23->AddOwned(std::move(__owned_textBlock73));
 
-	stackPanel21->AddOwned(std::move(__owned_textBlock68));
+	stackPanel23->AddOwned(std::move(__owned_textBlock74));
 
-	stackPanel21->AddOwned(std::move(__owned_textBlock69));
+	stackPanel23->AddOwned(std::move(__owned_textBlock75));
 
 
-	presentationLabSurface->AddOwned(std::move(__owned_grid18));
-	grid18->AddOwned(std::move(__owned_wrapPanel5));
+	presentationLabSurface->AddOwned(std::move(__owned_grid19));
+	grid19->AddOwned(std::move(__owned_wrapPanel5));
 	wrapPanel5->AddOwned(std::move(__owned_presentationRegionButton));
 
 	wrapPanel5->AddOwned(std::move(__owned_presentationGeometryButton));
@@ -8059,10 +8229,10 @@ void DemoWindowGenerated::InitializeComponent()
 	wrapPanel5->AddOwned(std::move(__owned_presentationDeviceLossButton));
 
 
-	grid18->AddOwned(std::move(__owned_presentationStatus));
+	grid19->AddOwned(std::move(__owned_presentationStatus));
 
 
-	presentationLabSurface->AddOwned(std::move(__owned_textBlock70));
+	presentationLabSurface->AddOwned(std::move(__owned_textBlock76));
 
 
 
@@ -8173,6 +8343,7 @@ void DemoWindowGenerated::InitializeComponent()
 		L"HeaderForeground",
 		L"GradientLabelClip",
 		L"GradientLabelTransform",
+		L"WebBrowserCompositionTransform",
 		L"WpfLabAccent",
 		L"DemoListViewItemTemplate",
 		L"WpfLabButtonTemplate",
@@ -8234,8 +8405,8 @@ void DemoWindowGenerated::InitializeComponent()
 		{ 12u, 10u },
 		{ 13u, 11u },
 		{ 14u, 12u },
-		{ 15u, MakeCompiledStyleStaticValueReference(0u, 2u) },
-		{ 16u, 13u },
+		{ 15u, 13u },
+		{ 16u, MakeCompiledStyleStaticValueReference(0u, 2u) },
 		{ 17u, 14u },
 		{ 18u, 15u },
 		{ 19u, 16u },
@@ -8253,30 +8424,31 @@ void DemoWindowGenerated::InitializeComponent()
 		{ 31u, 28u },
 		{ 32u, 29u },
 		{ 33u, 30u },
-		{ 34u, 31u }
+		{ 34u, 31u },
+		{ 35u, 32u }
 	};
 	static constexpr uint32_t __styleSheet_program_resource_lookup[] = {
 		1u,
+		26u,
+		31u,
 		25u,
-		30u,
-		24u,
-		21u,
+		22u,
 		4u,
 		6u,
 		5u,
 		11u,
-		16u,
-		31u,
-		22u,
+		17u,
 		32u,
-		34u,
-		27u,
-		29u,
 		23u,
+		33u,
+		35u,
+		28u,
+		30u,
+		24u,
 		13u,
 		14u,
 		12u,
-		26u,
+		27u,
 		9u,
 		0u,
 		10u,
@@ -8285,12 +8457,13 @@ void DemoWindowGenerated::InitializeComponent()
 		8u,
 		7u,
 		15u,
-		17u,
+		16u,
 		18u,
-		28u,
-		20u,
 		19u,
-		33u
+		29u,
+		21u,
+		20u,
+		34u
 	};
 	static const CompiledStylePropertyConditionOp __styleSheet_program_property_conditions[] = {
 		{ DependencyPropertyReference(Control::IsMouseOverProperty()), MakeCompiledStyleStaticValueReference(2u, 0u) },
@@ -8308,14 +8481,14 @@ void DemoWindowGenerated::InitializeComponent()
 	static const CompiledStyleSetterOp __styleSheet_program_setters[] = {
 		{ DependencyPropertyReference(Control::ForegroundProperty()), { CompiledStyleOperandKind::StaticResource, 0u } },
 		{ DependencyPropertyReference(Control::PaddingProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(1u, 0u) } },
-		{ DependencyPropertyReference(Control::TemplateProperty()), { CompiledStyleOperandKind::StaticResource, 16u } },
+		{ DependencyPropertyReference(Control::TemplateProperty()), { CompiledStyleOperandKind::StaticResource, 17u } },
 		{ DependencyPropertyReference(Control::BackgroundProperty()), { CompiledStyleOperandKind::StaticResource, 3u } },
 		{ DependencyPropertyReference(Control::BackgroundProperty()), { CompiledStyleOperandKind::StaticResource, 1u } },
 		{ DependencyPropertyReference(Control::PaddingProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(1u, 1u) } },
 		{ DependencyPropertyReference(Control::BackgroundProperty()), { CompiledStyleOperandKind::StaticResource, 3u } },
 		{ DependencyPropertyReference(Control::BackgroundProperty()), { CompiledStyleOperandKind::StaticResource, 1u } },
 		{ DependencyPropertyReference(Control::PaddingProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(1u, 2u) } },
-		{ DependencyPropertyReference(Control::TemplateProperty()), { CompiledStyleOperandKind::StaticResource, 20u } },
+		{ DependencyPropertyReference(Control::TemplateProperty()), { CompiledStyleOperandKind::StaticResource, 21u } },
 		{ DependencyPropertyReference(Control::FontSizeProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(3u, 0u) } },
 		{ DependencyPropertyReference(Button::IsDefaultProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(2u, 4u) } },
 		{ DependencyPropertyReference(Control::BorderThicknessProperty()), { CompiledStyleOperandKind::Literal, MakeCompiledStyleStaticValueReference(1u, 3u) } },
@@ -8354,7 +8527,7 @@ void DemoWindowGenerated::InitializeComponent()
 		{ 0u, DependencyPropertyReference(Control::FontSizeProperty()) }
 	};
 	static constexpr CompiledInteractionAnimationOp __styleSheet_program_animations[] = {
-		{ DeclarativeAnimationKind::Double, 0u, CompiledInteractionInvalidIndex, 32u, 33u, CompiledInteractionInvalidIndex, { 0u, 0u }, false, false, 0ULL, 400ULL, DeclarativeRepeatBehaviorKind::Count, 1.0, 0ULL, false, DeclarativeTimelineFillBehavior::HoldEnd, 1.0, 0.0, 0.0, DeclarativeEasingKind::Linear, DeclarativeEasingMode::EaseOut }
+		{ DeclarativeAnimationKind::Double, 0u, CompiledInteractionInvalidIndex, 33u, 34u, CompiledInteractionInvalidIndex, { 0u, 0u }, false, false, 0ULL, 400ULL, DeclarativeRepeatBehaviorKind::Count, 1.0, 0ULL, false, DeclarativeTimelineFillBehavior::HoldEnd, 1.0, 0.0, 0.0, DeclarativeEasingKind::Linear, DeclarativeEasingMode::EaseOut }
 	};
 	static constexpr CompiledInteractionStoryboardOp __styleSheet_program_storyboards[] = {
 		{ { 0u, 1u } }
@@ -8424,21 +8597,21 @@ void DemoWindowGenerated::InitializeComponent()
 		1u
 	};
 	static constexpr CompiledStyleGroupOp __styleSheet_program_groups[] = {
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 35u, { 0u, 1u }, { 0u, 0u }, { 0u, 0u } },
-		{ true, static_cast<UIClass>(56), ComponentTypeToken{ 0ULL }, 36u, { 1u, 3u }, { 0u, 2u }, { 0u, 0u } },
-		{ true, static_cast<UIClass>(55), ComponentTypeToken{ 0ULL }, 37u, { 4u, 3u }, { 2u, 2u }, { 0u, 0u } },
-		{ true, static_cast<UIClass>(55), ComponentTypeToken{ 0ULL }, 38u, { 7u, 1u }, { 4u, 0u }, { 0u, 0u } },
-		{ true, static_cast<UIClass>(7), ComponentTypeToken{ 0ULL }, 39u, { 8u, 4u }, { 4u, 2u }, { 0u, 2u } },
-		{ true, static_cast<UIClass>(24), ComponentTypeToken{ 0ULL }, 40u, { 12u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(24), ComponentTypeToken{ 0ULL }, 41u, { 13u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(7), ComponentTypeToken{ 0ULL }, 42u, { 14u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 43u, { 15u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 44u, { 16u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 45u, { 17u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 46u, { 18u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 47u, { 19u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(8), ComponentTypeToken{ 0ULL }, 48u, { 20u, 1u }, { 6u, 0u }, { 2u, 0u } },
-		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 49u, { 21u, 1u }, { 6u, 0u }, { 2u, 0u } }
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 36u, { 0u, 1u }, { 0u, 0u }, { 0u, 0u } },
+		{ true, static_cast<UIClass>(56), ComponentTypeToken{ 0ULL }, 37u, { 1u, 3u }, { 0u, 2u }, { 0u, 0u } },
+		{ true, static_cast<UIClass>(55), ComponentTypeToken{ 0ULL }, 38u, { 4u, 3u }, { 2u, 2u }, { 0u, 0u } },
+		{ true, static_cast<UIClass>(55), ComponentTypeToken{ 0ULL }, 39u, { 7u, 1u }, { 4u, 0u }, { 0u, 0u } },
+		{ true, static_cast<UIClass>(7), ComponentTypeToken{ 0ULL }, 40u, { 8u, 4u }, { 4u, 2u }, { 0u, 2u } },
+		{ true, static_cast<UIClass>(24), ComponentTypeToken{ 0ULL }, 41u, { 12u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(24), ComponentTypeToken{ 0ULL }, 42u, { 13u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(7), ComponentTypeToken{ 0ULL }, 43u, { 14u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 44u, { 15u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 45u, { 16u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 46u, { 17u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 47u, { 18u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 48u, { 19u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(8), ComponentTypeToken{ 0ULL }, 49u, { 20u, 1u }, { 6u, 0u }, { 2u, 0u } },
+		{ true, static_cast<UIClass>(3), ComponentTypeToken{ 0ULL }, 50u, { 21u, 1u }, { 6u, 0u }, { 2u, 0u } }
 	};
 	static const DependencyPropertyReference __styleSheet_program_global_property_watchers[] = {
 		DependencyPropertyReference(Control::IsMouseOverProperty()),
@@ -8491,6 +8664,7 @@ void DemoWindowGenerated::InitializeComponent()
 			BindingValue([] { cui::drawing::Brush value; value.Kind = cui::drawing::BrushKind::LinearGradient; value.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox; value.Opacity = 1.f; value.StartPoint = D2D1::Point2F(0.f, 0.f); value.EndPoint = D2D1::Point2F(1.f, 0.f); value.GradientStops.push_back({ 0.f, D2D1_COLOR_F{0.184314f, 0.435294f, 0.894118f, 1.f} }); value.GradientStops.push_back({ 1.f, D2D1_COLOR_F{0.078431f, 0.639216f, 0.498039f, 1.f} }); return value; }()),
 			BindingValue([] { cui::drawing::Geometry value; value.Kind = cui::drawing::GeometryKind::Path; value.FillRule = cui::drawing::GeometryFillRule::Nonzero; value.Figures.push_back([] { cui::drawing::PathFigure figure; figure.StartPoint = D2D1::Point2F(12.f, 0.f); figure.IsClosed = true; figure.IsFilled = true; { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Line; segment.Point = D2D1::Point2F(428.f, 0.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(0.f, 0.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Counterclockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Arc; segment.Point = D2D1::Point2F(440.f, 12.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(12.f, 12.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Clockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Line; segment.Point = D2D1::Point2F(440.f, 22.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(0.f, 0.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Counterclockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Arc; segment.Point = D2D1::Point2F(428.f, 34.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(12.f, 12.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Clockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Line; segment.Point = D2D1::Point2F(12.f, 34.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(0.f, 0.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Counterclockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Arc; segment.Point = D2D1::Point2F(0.f, 22.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(12.f, 12.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Clockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Line; segment.Point = D2D1::Point2F(0.f, 12.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(0.f, 0.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Counterclockwise; figure.Segments.push_back(segment); } { cui::drawing::PathSegment segment; segment.Kind = cui::drawing::PathSegmentKind::Arc; segment.Point = D2D1::Point2F(12.f, 0.f); segment.Point1 = D2D1::Point2F(0.f, 0.f); segment.Point2 = D2D1::Point2F(0.f, 0.f); segment.Point3 = D2D1::Point2F(0.f, 0.f); segment.Size = D2D1::SizeF(12.f, 12.f); segment.RotationAngle = 0.f; segment.IsLargeArc = false; segment.Sweep = cui::drawing::SweepDirection::Clockwise; figure.Segments.push_back(segment); } return figure; }()); value.LocalTransform = [] { cui::drawing::Transform value; { cui::drawing::TransformOperation operation; operation.Kind = cui::drawing::TransformKind::Scale; operation.ScaleX = 0.99f; operation.ScaleY = 0.94f; operation.CenterX = 220.f; operation.CenterY = 17.f; value.Operations.push_back(operation); } return value; }(); return value; }()),
 			BindingValue([] { cui::drawing::Transform value; { cui::drawing::TransformOperation operation; operation.Kind = cui::drawing::TransformKind::Rotate; operation.Angle = -2.f; operation.CenterX = 0.f; operation.CenterY = 0.f; value.Operations.push_back(operation); } { cui::drawing::TransformOperation operation; operation.Kind = cui::drawing::TransformKind::Scale; operation.ScaleX = 1.02f; operation.ScaleY = 1.02f; operation.CenterX = 0.f; operation.CenterY = 0.f; value.Operations.push_back(operation); } return value; }()),
+			__documentStaticResource_WebBrowserCompositionTransform_16,
 			BindingValue(ControlTemplateReference(__controlTemplate_DemoListViewItemTemplate_1)),
 			BindingValue(ControlTemplateReference(__controlTemplate_WpfLabButtonTemplate_2)),
 			BindingValue(ControlTemplateReference(__controlTemplate_WpfLabButtonTemplateAlternate_3)),

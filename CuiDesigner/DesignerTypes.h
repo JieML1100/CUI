@@ -489,6 +489,9 @@ public:
 	// 注意：不要与 ControlInstance->GetVisualParent() 混淆；后者在设计器运行时可能指向 DesignerCanvas。
 	Control* DesignerParent = nullptr;
 	std::wstring Name;
+	// True when Name exists only as a transient graph/namescope key. Such a
+	// control is deliberately absent from the public runtime lookup surface.
+	bool NameIsGenerated = false;
 	UIClass Type;
 	// Authoritative built-in XAML type identity (for example Canvas -> Panel).
 	RuntimeTypeId XamlType;

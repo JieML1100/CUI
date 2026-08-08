@@ -282,7 +282,9 @@
     <ClInclude Include="include\RangeBase.h" />
     <ClInclude Include="include\TextBoxBase.h" />
     <ClInclude Include="include\Button.h" />
+    <ClInclude Include="include\Calendar.h" />
     <ClInclude Include="include\CalendarView.h" />
+    <ClInclude Include="include\DatePicker.h" />
     <ClInclude Include="include\ChartView.h" />
     <ClInclude Include="include\CheckBox.h" />
     <ClInclude Include="include\ComboBox.h" />
@@ -366,6 +368,7 @@
     <ClCompile Include="src\TextBoxBase.cpp" />
     <ClCompile Include="src\Button.cpp" />
     <ClCompile Include="src\CalendarView.cpp" />
+    <ClCompile Include="src\DatePicker.cpp" />
     <ClCompile Include="src\ChartView.cpp" />
     <ClCompile Include="src\CheckBox.cpp" />
     <ClCompile Include="src\ComboBox.cpp" />

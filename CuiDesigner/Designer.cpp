@@ -217,15 +217,11 @@ namespace
 	static std::string MakeDesignFilter()
 	{
 		std::string s;
-		s.append("CUI Designer Files (*.cui.xml;*.cui.xaml)");
-		s.push_back('\0');
-		s.append("*.cui.xml;*.cui.xaml");
-		s.push_back('\0');
 		s.append("CUI XAML Files (*.cui.xaml;*.xaml)");
 		s.push_back('\0');
 		s.append("*.cui.xaml;*.xaml");
 		s.push_back('\0');
-		s.append("XML Files (*.cui.xml;*.xml)");
+		s.append("Legacy CUI Designer Files (*.cui.xml;*.xml)");
 		s.push_back('\0');
 		s.append("*.cui.xml;*.xml");
 		s.push_back('\0');
@@ -2281,7 +2277,7 @@ bool Designer::SaveDocumentInteractive()
 		path = Convert::StringToWString(sfd.SelectedPath);
 		if (path.empty()) return false;
 		if (!DesignerModel::HasDesignDocumentExtension(path))
-			path += L".cui.xml";
+			path += L".cui.xaml";
 	}
 
 	std::wstring err;

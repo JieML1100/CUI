@@ -24,7 +24,7 @@
  * Public umbrella header for CUI's dynamic design-document runtime.
  *
  * Applications normally need RuntimeDocument, RuntimeEventHandlerRegistry,
- * or RuntimeDocumentSession, plus the serializer when they load .cui.xml files. The lower-level
+ * or RuntimeDocumentSession when they load .cui.xaml files. The lower-level
  * materializer remains available for hosts that provide a custom factory.
  */
 #include "../../CuiDesigner/DesignerModel/RuntimeDocument.h"

@@ -35,12 +35,6 @@ bool DesignDocumentControlPool::Build(
 			? std::unique_ptr<Control>{} : factory(node);
 		if (!borrowed && !owner)
 			return Fail(L"无法创建控件实例: " + node.Name, outError);
-		// ControlTemplate expansion IDs are compiler-local graph identities,
-		// never authored DesignId values. Publishing them into the live tree
-		// makes a re-applied template shadow unrelated document controls during
-		// FindControlByDesignId traversal.
-		if (owner && !node.TemplateState.Generated)
-			cui::framework::DesignIdentityAccess::Set(*owner, node.Id);
 		Entry entry;
 		entry.Id = node.Id;
 		entry.Name = node.Name;
