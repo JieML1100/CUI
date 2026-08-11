@@ -1,14 +1,6 @@
 #pragma once
 #include "Control.h"
-
-/** WPF TextBlock paragraph alignment. */
-enum class TextAlignment : uint8_t
-{
-	Left,
-	Right,
-	Center,
-	Justify
-};
+#include "TextAlignment.h"
 
 /** WPF TextBlock line-breaking policy. */
 enum class TextWrapping : uint8_t

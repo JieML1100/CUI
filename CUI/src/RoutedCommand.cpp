@@ -119,6 +119,10 @@ namespace
 			{ L"PLUS", Key::OemPlus }, { L"OEMPLUS", Key::OemPlus },
 			{ L"MINUS", Key::OemMinus }, { L"OEMMINUS", Key::OemMinus },
 			{ L"COMMA", Key::OemComma }, { L"PERIOD", Key::OemPeriod },
+			{ L"OPENBRACKETS", Key::OemOpenBrackets },
+			{ L"OEMOPENBRACKETS", Key::OemOpenBrackets },
+			{ L"CLOSEBRACKETS", Key::OemCloseBrackets },
+			{ L"OEMCLOSEBRACKETS", Key::OemCloseBrackets },
 		};
 		if (const auto found = names.find(value); found != names.end())
 		{
@@ -161,6 +165,8 @@ namespace
 		case Key::OemMinus: return L"Minus";
 		case Key::OemComma: return L"Comma";
 		case Key::OemPeriod: return L"Period";
+		case Key::OemOpenBrackets: return L"OemOpenBrackets";
+		case Key::OemCloseBrackets: return L"OemCloseBrackets";
 		default: return {};
 		}
 	}
@@ -197,6 +203,76 @@ namespace
 	{
 		static ClassCommandBindingRegistry registry;
 		return registry;
+	}
+
+	struct ClassInputBindingEntry final
+	{
+		std::uint64_t Token = 0;
+		ClassCommandBindingOwnerKind OwnerKind =
+			ClassCommandBindingOwnerKind::Native;
+		ComponentTypeToken ComponentOwner;
+		UIClass NativeOwner = UIClass::UI_Base;
+		InputBinding Binding;
+	};
+
+	struct ClassInputBindingRegistry final
+	{
+		std::mutex Mutex;
+		std::uint64_t NextToken = 1;
+		std::vector<ClassInputBindingEntry> Entries;
+	};
+
+	ClassInputBindingRegistry& ClassInputBindings()
+	{
+		static ClassInputBindingRegistry registry;
+		return registry;
+	}
+
+	bool IsValidInputBinding(const InputBinding& binding)
+	{
+		return std::visit([](const auto& value)
+		{
+			return !value.Command.Empty() && value.Gesture.IsValid();
+		}, binding);
+	}
+
+	std::vector<InputBinding> SnapshotClassInputBindings(Control& target)
+	{
+		std::vector<ClassInputBindingEntry> exact;
+		std::vector<ClassInputBindingEntry> native;
+		{
+			auto& registry = ClassInputBindings();
+			std::scoped_lock lock(registry.Mutex);
+			const auto componentType = target.GetDeclarativeTypeToken();
+			for (const auto& entry : registry.Entries)
+			{
+				if (entry.OwnerKind ==
+					ClassCommandBindingOwnerKind::Declarative)
+				{
+					if (componentType
+						&& entry.ComponentOwner == componentType)
+						exact.push_back(entry);
+				}
+				else if (IsUIClassAssignableFrom(
+					entry.NativeOwner, target.Type()))
+				{
+					native.push_back(entry);
+				}
+			}
+		}
+		std::stable_sort(native.begin(), native.end(),
+			[&](const auto& left, const auto& right)
+			{
+				return GetUIClassInheritanceDistance(
+					left.NativeOwner, target.Type())
+					< GetUIClassInheritanceDistance(
+						right.NativeOwner, target.Type());
+			});
+		std::vector<InputBinding> result;
+		result.reserve(exact.size() + native.size());
+		for (const auto& entry : exact) result.push_back(entry.Binding);
+		for (const auto& entry : native) result.push_back(entry.Binding);
+		return result;
 	}
 
 	std::atomic<std::uint64_t> NextCommandTransactionId{ 1 };
@@ -635,20 +711,35 @@ bool RoutedCommandManager::ProcessInput(
 		auto* current = currentReference.Get();
 		if (!current) continue;
 		const auto bindings = current->GetInputBindings();
-		const std::vector<InputBinding> snapshot(bindings.begin(), bindings.end());
-		for (const auto& binding : snapshot)
+		const std::vector<InputBinding> localSnapshot(
+			bindings.begin(), bindings.end());
+		const auto classSnapshot = SnapshotClassInputBindings(*current);
+		bool consumed = false;
+		auto process = [&](const std::vector<InputBinding>& snapshot)
 		{
-			if (!sourceLifetime || !currentReference) break;
-			const auto* keyBinding = std::get_if<KeyBinding>(&binding);
-			const auto key = input.Key == Key::System
-				? input.SystemKey : input.Key;
-			if (!keyBinding
-				|| !keyBinding->Gesture.Matches(key, input.Modifiers)) continue;
-			const auto result = ExecuteCommandSource(source,
-				RoutedCommandSourceQuery{ keyBinding->Command,
-					keyBinding->CommandParameter, keyBinding->CommandTarget });
-			if (ConsumesInput(result)) return true;
-		}
+			for (const auto& binding : snapshot)
+			{
+				if (!sourceLifetime || !currentReference) return false;
+				const auto* keyBinding = std::get_if<KeyBinding>(&binding);
+				const auto key = input.Key == Key::System
+					? input.SystemKey : input.Key;
+				if (!keyBinding
+					|| !keyBinding->Gesture.Matches(
+						key, input.Modifiers)) continue;
+				const auto result = ExecuteCommandSource(source,
+					RoutedCommandSourceQuery{ keyBinding->Command,
+						keyBinding->CommandParameter,
+						keyBinding->CommandTarget });
+				if (ConsumesInput(result))
+				{
+					consumed = true;
+					return false;
+				}
+			}
+			return true;
+		};
+		if (!process(localSnapshot)) return consumed;
+		if (!process(classSnapshot)) return consumed;
 	}
 	return false;
 }
@@ -667,18 +758,34 @@ bool RoutedCommandManager::ProcessInput(
 		auto* current = currentReference.Get();
 		if (!current) continue;
 		const auto bindings = current->GetInputBindings();
-		const std::vector<InputBinding> snapshot(bindings.begin(), bindings.end());
-		for (const auto& binding : snapshot)
+		const std::vector<InputBinding> localSnapshot(
+			bindings.begin(), bindings.end());
+		const auto classSnapshot = SnapshotClassInputBindings(*current);
+		bool consumed = false;
+		auto process = [&](const std::vector<InputBinding>& snapshot)
 		{
-			if (!sourceLifetime || !currentReference) break;
-			const auto* mouseBinding = std::get_if<MouseBinding>(&binding);
-			if (!mouseBinding
-				|| !mouseBinding->Gesture.Matches(input, modifiers)) continue;
-			const auto result = ExecuteCommandSource(source,
-				RoutedCommandSourceQuery{ mouseBinding->Command,
-					mouseBinding->CommandParameter, mouseBinding->CommandTarget });
-			if (ConsumesInput(result)) return true;
-		}
+			for (const auto& binding : snapshot)
+			{
+				if (!sourceLifetime || !currentReference) return false;
+				const auto* mouseBinding =
+					std::get_if<MouseBinding>(&binding);
+				if (!mouseBinding
+					|| !mouseBinding->Gesture.Matches(
+						input, modifiers)) continue;
+				const auto result = ExecuteCommandSource(source,
+					RoutedCommandSourceQuery{ mouseBinding->Command,
+						mouseBinding->CommandParameter,
+						mouseBinding->CommandTarget });
+				if (ConsumesInput(result))
+				{
+					consumed = true;
+					return false;
+				}
+			}
+			return true;
+		};
+		if (!process(localSnapshot)) return consumed;
+		if (!process(classSnapshot)) return consumed;
 	}
 	return false;
 }
@@ -735,6 +842,66 @@ EventConnection RoutedCommandManager::RegisterClassCommandBinding(
 	return EventConnection([token]()
 	{
 		auto& current = ClassCommandBindings();
+		std::scoped_lock lock(current.Mutex);
+		current.Entries.erase(std::remove_if(
+			current.Entries.begin(), current.Entries.end(),
+			[token](const auto& entry) { return entry.Token == token; }),
+			current.Entries.end());
+	});
+}
+
+EventConnection RoutedCommandManager::RegisterClassInputBinding(
+	ComponentTypeToken ownerType,
+	InputBinding binding)
+{
+	if (!ownerType || !IsValidInputBinding(binding)) return {};
+	auto& registry = ClassInputBindings();
+	std::uint64_t token = 0;
+	{
+		std::scoped_lock lock(registry.Mutex);
+		token = registry.NextToken++;
+		registry.Entries.push_back(ClassInputBindingEntry{
+			token, ClassCommandBindingOwnerKind::Declarative,
+			ownerType, UIClass::UI_Base, std::move(binding) });
+	}
+	return EventConnection([token]()
+	{
+		auto& current = ClassInputBindings();
+		std::scoped_lock lock(current.Mutex);
+		current.Entries.erase(std::remove_if(
+			current.Entries.begin(), current.Entries.end(),
+			[token](const auto& entry) { return entry.Token == token; }),
+			current.Entries.end());
+	});
+}
+
+#if CUI_ENABLE_DYNAMIC_XAML
+EventConnection RoutedCommandManager::RegisterClassInputBinding(
+	const RuntimeTypeId& ownerType,
+	InputBinding binding)
+{
+	return RegisterClassInputBinding(MakeComponentTypeToken(
+		ownerType.NamespaceUri, ownerType.LocalName), std::move(binding));
+}
+#endif
+
+EventConnection RoutedCommandManager::RegisterClassInputBinding(
+	UIClass ownerClass,
+	InputBinding binding)
+{
+	if (!IsValidInputBinding(binding)) return {};
+	auto& registry = ClassInputBindings();
+	std::uint64_t token = 0;
+	{
+		std::scoped_lock lock(registry.Mutex);
+		token = registry.NextToken++;
+		registry.Entries.push_back(ClassInputBindingEntry{
+			token, ClassCommandBindingOwnerKind::Native,
+			{}, ownerClass, std::move(binding) });
+	}
+	return EventConnection([token]()
+	{
+		auto& current = ClassInputBindings();
 		std::scoped_lock lock(current.Mutex);
 		current.Entries.erase(std::remove_if(
 			current.Entries.begin(), current.Entries.end(),
@@ -822,12 +989,15 @@ RoutedHandlerInvocationCount RoutedCommandManager::InvokeCommandBindings(
 		commandArgs.Handled = true;
 		return static_cast<bool>(targetLifetime);
 	};
+	// WPF resolves local CommandBindings before walking class bindings. This
+	// lets one control instance override a built-in class command while keeping
+	// the declarative exact type ahead of its native behavior-host ancestry.
+	for (const auto& binding : instance)
+		if (!invoke(binding)) return count;
 	for (const auto& entry : exact)
 		if (!invoke(entry.Binding)) return count;
 	for (const auto& entry : native)
 		if (!invoke(entry.Binding)) return count;
-	for (const auto& binding : instance)
-		if (!invoke(binding)) return count;
 	return count;
 }
 

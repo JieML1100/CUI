@@ -27,9 +27,32 @@ namespace DesignerCommandMemory
 		return result;
 	}
 
+	inline size_t TextFormattingHeap(
+		const DesignerModel::DesignTextFormatting& value) noexcept
+	{
+		size_t result = 0;
+		if (value.FontFamily) result += StringHeap(*value.FontFamily);
+		if (value.Language) result += StringHeap(*value.Language);
+		if (value.FontWeight) result += StringHeap(*value.FontWeight);
+		if (value.FontStretch) result += StringHeap(*value.FontStretch);
+		if (value.FontStyle) result += StringHeap(*value.FontStyle);
+		return result;
+	}
+
 	inline size_t StructureHeap(
 		const DesignerModel::DesignNodeStructure& value) noexcept
 	{
+		auto inlineHeap = [&](auto&& self,
+			const DesignerModel::DesignInline& inlineValue) noexcept
+			-> size_t
+		{
+			size_t total = TextFormattingHeap(inlineValue)
+				+ StringHeap(inlineValue.Text)
+				+ VectorHeap(inlineValue.Inlines);
+			for (const auto& child : inlineValue.Inlines)
+				total += self(self, child);
+			return total;
+		};
 		size_t result = StringHeap(value.CommandTarget)
 			+ StringHeap(value.ItemsSourceResource)
 			+ StringHeap(value.ItemTemplate)
@@ -65,6 +88,18 @@ namespace DesignerCommandMemory
 				result += StringHeap(series.Name) + VectorHeap(series.Points);
 				for (const auto& point : series.Points)
 					result += StringHeap(point.Label);
+			}
+		}
+		if (value.Document)
+		{
+			result += TextFormattingHeap(*value.Document)
+				+ VectorHeap(value.Document->Paragraphs);
+			for (const auto& paragraph : value.Document->Paragraphs)
+			{
+				result += TextFormattingHeap(paragraph)
+					+ VectorHeap(paragraph.Inlines);
+				for (const auto& inlineValue : paragraph.Inlines)
+					result += inlineHeap(inlineHeap, inlineValue);
 			}
 		}
 		return result;

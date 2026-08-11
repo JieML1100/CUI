@@ -659,6 +659,7 @@ namespace
 	{
 		static constexpr std::wstring_view properties[] = {
 			L"DataContext",
+			L"Language",
 			L"Visibility",
 			L"IsVisible",
 			L"IsEnabled",
@@ -728,6 +729,7 @@ namespace
 	{
 		static constexpr BindingSourcePropertyToken properties[] = {
 			MakeBindingSourcePropertyToken(L"DataContext"),
+			MakeBindingSourcePropertyToken(L"Language"),
 			MakeBindingSourcePropertyToken(L"Visibility"),
 			MakeBindingSourcePropertyToken(L"IsVisible"),
 			MakeBindingSourcePropertyToken(L"IsEnabled"),
@@ -2744,6 +2746,17 @@ void Control::SetFontFamily(std::wstring value)
 	(void)SetDependencyPropertyValue(property, std::move(value));
 }
 
+GET_CPP(Control, const std::wstring&, Language)
+{
+	return _language;
+}
+
+void Control::SetLanguage(std::wstring value)
+{
+	static const auto& property = LanguageProperty();
+	(void)SetDependencyPropertyValue(property, std::move(value));
+}
+
 GET_CPP(Control, double, FontSize)
 {
 	return _fontSize;
@@ -2849,6 +2862,12 @@ Control::ResolveExactDependencyPropertyMetadata(
 		return &BackgroundPropertyMetadataRelation().Metadata();
 	if (&property == &TextElement::ForegroundProperty())
 		return &ForegroundPropertyMetadataRelation().Metadata();
+	if (&property == &TextElement::FontFamilyProperty())
+		return &FontFamilyPropertyMetadataRelation().Metadata();
+	if (&property == &TextElement::LanguageProperty())
+		return &LanguagePropertyMetadataRelation().Metadata();
+	if (&property == &TextElement::FontSizeProperty())
+		return &FontSizePropertyMetadataRelation().Metadata();
 	if (&property == &Border::BorderBrushProperty())
 		return &BorderBrushPropertyMetadataRelation().Metadata();
 	if (&property == &Border::BorderThicknessProperty())
@@ -2863,6 +2882,7 @@ void Control::VisitDeclaredInheritedProperties(
 	visitor(context, DataContextProperty());
 	visitor(context, AllowDropProperty());
 	visitor(context, FontFamilyProperty());
+	visitor(context, LanguageProperty());
 	visitor(context, FontSizeProperty());
 	visitor(context, ForegroundProperty());
 	visitor(context, CursorProperty());
@@ -13479,9 +13499,10 @@ CUI_DEFINE_CONTROL_FLOAT_PROPERTY(
 
 #undef CUI_DEFINE_CONTROL_FLOAT_PROPERTY
 
-const DependencyProperty& Control::FontFamilyProperty()
+const DependencyPropertyMetadataRegistration&
+Control::FontFamilyPropertyMetadataRelation()
 {
-	static const auto registration = []
+	static const DependencyPropertyMetadataRegistration relation = []
 	{
 		DependencyPropertyOptions<Control, std::wstring> fontNameOptions;
 		fontNameOptions.DefaultValue = GetSystemMessageFontDefaults().Family;
@@ -13504,8 +13525,8 @@ const DependencyProperty& Control::FontFamilyProperty()
 				DependencyPropertyPersistence::Metadata,
 				DependencyPropertyEditorKind::Text, L"Font name");
 			)
-		return DependencyPropertyRegistry::RegisterStatic<Control, std::wstring>(
-			DependencyPropertyRegistrationLiteral(L"FontFamily"),
+		return DependencyPropertyRegistry::AddOwnerStatic<Control, std::wstring>(
+			TextElement::FontFamilyProperty(),
 				[](Control& target) { return target._fontName; },
 				[](Control& target, const std::wstring& value)
 				{
@@ -13513,34 +13534,72 @@ const DependencyProperty& Control::FontFamilyProperty()
 					target.ApplyTypographyFont();
 				}, {}, std::move(fontNameOptions));
 	}();
-	return *registration;
+	return relation;
 }
 
-const DependencyProperty& Control::FontSizeProperty()
+const DependencyProperty& Control::FontFamilyProperty()
 {
-	static const auto registration = []
+	return FontFamilyPropertyMetadataRelation().Property();
+}
+
+const DependencyPropertyMetadataRegistration&
+Control::LanguagePropertyMetadataRelation()
+{
+	static const DependencyPropertyMetadataRegistration relation = []
+	{
+		DependencyPropertyOptions<Control, std::wstring> options;
+		options.DefaultValue = std::wstring(L"en-us");
+		options.Flags = DependencyPropertyFlags::Inherits
+			| DependencyPropertyFlags::AffectsMeasure
+			| DependencyPropertyFlags::AffectsRender;
+		options.Coerce = [](Control&, const std::wstring& proposed)
+			-> std::optional<std::wstring>
+		{
+			return NormalizeRichTextLanguageTag(proposed);
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design = PropertyDesign(
+			L"Appearance", 200, 35,
+			DependencyPropertyPersistence::Metadata,
+			DependencyPropertyEditorKind::Text, L"Language");
+		)
+		return DependencyPropertyRegistry::AddOwnerStatic<Control, std::wstring>(
+			TextElement::LanguageProperty(),
+				[](Control& target) { return target._language; },
+				[](Control& target, const std::wstring& value)
+				{
+					target._language = value;
+				}, {}, std::move(options));
+	}();
+	return relation;
+}
+
+const DependencyProperty& Control::LanguageProperty()
+{
+	return LanguagePropertyMetadataRelation().Property();
+}
+
+const DependencyPropertyMetadataRegistration&
+Control::FontSizePropertyMetadataRelation()
+{
+	static const DependencyPropertyMetadataRegistration relation = []
 	{
 		DependencyPropertyOptions<Control, double> fontSizeOptions;
 		fontSizeOptions.DefaultValue = GetSystemMessageFontDefaults().Size;
 		fontSizeOptions.Flags = DependencyPropertyFlags::Inherits
 				| DependencyPropertyFlags::AffectsMeasure
 				| DependencyPropertyFlags::AffectsRender;
-			fontSizeOptions.Validate = [](const double& proposed)
-				{
-					return std::isfinite(proposed)
-						&& proposed >= 1.0 && proposed <= 200.0;
-				};
 			CUI_DESIGN_METADATA_ONLY(
 			fontSizeOptions.Design = PropertyDesign(
 				L"Appearance", 200, 40,
 				DependencyPropertyPersistence::Metadata,
 				DependencyPropertyEditorKind::Number, L"Font size");
-			fontSizeOptions.Design.Minimum = 1.0;
-			fontSizeOptions.Design.Maximum = 200.0;
+			fontSizeOptions.Design.Minimum = 1.0 / 300.0;
+			fontSizeOptions.Design.Maximum = 160000.0;
 			fontSizeOptions.Design.Step = 0.5;
 			)
-		return DependencyPropertyRegistry::RegisterStatic<Control, double>(
-			DependencyPropertyRegistrationLiteral(L"FontSize"),
+		return DependencyPropertyRegistry::AddOwnerStatic<Control, double>(
+			TextElement::FontSizeProperty(),
 				[](Control& target) { return target._fontSize; },
 				[](Control& target, const double& value)
 				{
@@ -13548,7 +13607,12 @@ const DependencyProperty& Control::FontSizeProperty()
 					target.ApplyTypographyFont();
 				}, {}, std::move(fontSizeOptions));
 	}();
-	return *registration;
+	return relation;
+}
+
+const DependencyProperty& Control::FontSizeProperty()
+{
+	return FontSizePropertyMetadataRelation().Property();
 }
 
 const DependencyProperty& Control::ClipProperty()

@@ -2107,6 +2107,9 @@ static bool ReadLocalResourcesSnapshot(
 std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 {
 	auto canonical = input;
+	std::wstring richTextError;
+	if (!canonical.ValidateRichTextStructure(&richTextError))
+		throw std::invalid_argument(ToUtf8(richTextError));
 	std::wstring dataResourceError;
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(
 		canonical, &dataResourceError))
@@ -2990,6 +2993,12 @@ bool DesignDocumentSerializer::FromXml(
 	const std::wstring& resourceBasePath)
 {
 	XmlDocument xml;
+	// DesignValue strings may intentionally be whitespace-only (for example an
+	// implicit rich-text Run created by xml:space="preserve").  XmlLite drops
+	// such text nodes by default, which made an otherwise valid snapshot decode
+	// to an empty string.  Snapshot readers ignore formatting whitespace between
+	// elements, so preserving it here keeps string payloads lossless.
+	xml.SetPreserveWhitespace(true);
 	xml.LoadXml(xmlText);
 
 	auto root = xml.DocumentElement();
@@ -5690,6 +5699,8 @@ bool DesignDocumentSerializer::FromXml(
 			return false;
 		}
 	}
+	if (!document.ValidateRichTextStructure(outError))
+		return false;
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(document, outError))
 		return false;
 	DesignDocumentEventIndex eventIndex;

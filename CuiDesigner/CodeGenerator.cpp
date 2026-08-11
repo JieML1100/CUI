@@ -14,6 +14,7 @@
 #include "../CuiRuntime/include/XamlObjectMaterializer.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <GroupStyle.h>
+#include <RichTextDocument.h>
 #include <algorithm>
 #include <array>
 #include <set>
@@ -1667,6 +1668,7 @@ CodeGenerator::GetKnownProperties()
 		{ L"AutomationProperties.HelpText", { "SetAutomationHelpText" } },
 		{ L"AutomationProperties.AutomationId", { "SetAutomationId" } },
 		{ L"FontFamily", { "SetFontFamily" } },
+		{ L"Language", { "SetLanguage" } },
 		{ L"FontSize", { "SetFontSize" } },
 		{ L"Width", { "SetWidth" } },
 		{ L"Height", { "SetHeight" } },
@@ -2099,6 +2101,9 @@ bool CodeGenerator::ValidateDocument(
 		}
 		return false;
 	};
+	std::wstring richTextError;
+	if (!document.ValidateRichTextStructure(&richTextError))
+		return fail(std::move(richTextError));
 
 	bool hasLocalItemsPanelTemplates = false;
 	for (const auto& node : document.Nodes)
@@ -6305,6 +6310,257 @@ std::string CodeGenerator::GenerateContainerProperties(
 						<< FloatLiteral(static_cast<float>(column.Maximum))
 						<< ");\n";
 		}
+	}
+
+	if (node.Type == UIClass::UI_RichTextBox
+		&& node.Structure.Document)
+	{
+		auto colorExpression = [&](const DesignerModel::DesignColor& color)
+		{
+			return ColorToString(D2D1_COLOR_F{
+				static_cast<float>(color.R), static_cast<float>(color.G),
+				static_cast<float>(color.B), static_cast<float>(color.A) });
+		};
+		auto weightExpression = [](const std::wstring& value)
+			-> std::optional<std::string>
+		{
+			if (value == L"Thin") return "DWRITE_FONT_WEIGHT_THIN";
+			if (value == L"ExtraLight") return "DWRITE_FONT_WEIGHT_EXTRA_LIGHT";
+			if (value == L"UltraLight") return "DWRITE_FONT_WEIGHT_ULTRA_LIGHT";
+			if (value == L"Light") return "DWRITE_FONT_WEIGHT_LIGHT";
+			if (value == L"SemiLight") return "DWRITE_FONT_WEIGHT_SEMI_LIGHT";
+			if (value == L"Normal") return "DWRITE_FONT_WEIGHT_NORMAL";
+			if (value == L"Regular") return "DWRITE_FONT_WEIGHT_REGULAR";
+			if (value == L"Medium") return "DWRITE_FONT_WEIGHT_MEDIUM";
+			if (value == L"DemiBold") return "DWRITE_FONT_WEIGHT_DEMI_BOLD";
+			if (value == L"SemiBold") return "DWRITE_FONT_WEIGHT_SEMI_BOLD";
+			if (value == L"Bold") return "DWRITE_FONT_WEIGHT_BOLD";
+			if (value == L"ExtraBold") return "DWRITE_FONT_WEIGHT_EXTRA_BOLD";
+			if (value == L"UltraBold") return "DWRITE_FONT_WEIGHT_ULTRA_BOLD";
+			if (value == L"Black") return "DWRITE_FONT_WEIGHT_BLACK";
+			if (value == L"Heavy") return "DWRITE_FONT_WEIGHT_HEAVY";
+			if (value == L"ExtraBlack") return "DWRITE_FONT_WEIGHT_EXTRA_BLACK";
+			if (value == L"UltraBlack") return "DWRITE_FONT_WEIGHT_ULTRA_BLACK";
+			return std::nullopt;
+		};
+		auto styleExpression = [](const std::wstring& value)
+			-> std::optional<std::string>
+		{
+			if (value == L"Oblique") return "DWRITE_FONT_STYLE_OBLIQUE";
+			if (value == L"Italic") return "DWRITE_FONT_STYLE_ITALIC";
+			if (value == L"Normal") return "DWRITE_FONT_STYLE_NORMAL";
+			return std::nullopt;
+		};
+		auto stretchExpression = [](const std::wstring& value)
+			-> std::optional<std::string>
+		{
+			if (value == L"UltraCondensed")
+				return "DWRITE_FONT_STRETCH_ULTRA_CONDENSED";
+			if (value == L"ExtraCondensed")
+				return "DWRITE_FONT_STRETCH_EXTRA_CONDENSED";
+			if (value == L"Condensed") return "DWRITE_FONT_STRETCH_CONDENSED";
+			if (value == L"SemiCondensed")
+				return "DWRITE_FONT_STRETCH_SEMI_CONDENSED";
+			if (value == L"Normal" || value == L"Medium")
+				return "DWRITE_FONT_STRETCH_NORMAL";
+			if (value == L"SemiExpanded")
+				return "DWRITE_FONT_STRETCH_SEMI_EXPANDED";
+			if (value == L"Expanded") return "DWRITE_FONT_STRETCH_EXPANDED";
+			if (value == L"ExtraExpanded")
+				return "DWRITE_FONT_STRETCH_EXTRA_EXPANDED";
+			if (value == L"UltraExpanded")
+				return "DWRITE_FONT_STRETCH_ULTRA_EXPANDED";
+			return std::nullopt;
+		};
+		auto alignmentExpression = [](const std::wstring& value)
+			-> std::optional<std::string>
+		{
+			if (value == L"Left") return "::TextAlignment::Left";
+			if (value == L"Right") return "::TextAlignment::Right";
+			if (value == L"Center") return "::TextAlignment::Center";
+			if (value == L"Justify") return "::TextAlignment::Justify";
+			return std::nullopt;
+		};
+		auto flowDirectionExpression = [](const std::wstring& value)
+			-> std::optional<std::string>
+		{
+			if (value == L"LeftToRight")
+				return "::FlowDirection::LeftToRight";
+			if (value == L"RightToLeft")
+				return "::FlowDirection::RightToLeft";
+			return std::nullopt;
+		};
+		auto emitFormatting = [&](const std::string& variable,
+			const DesignerModel::DesignTextFormatting& formatting)
+		{
+			if (formatting.Foreground)
+				code << indentStr << variable
+					<< "->SetForeground(cui::drawing::MakeSolidColorBrush("
+					<< colorExpression(*formatting.Foreground) << "));\n";
+			if (formatting.Background)
+				code << indentStr << variable
+					<< "->SetBackground(cui::drawing::MakeSolidColorBrush("
+					<< colorExpression(*formatting.Background) << "));\n";
+			if (formatting.FontFamily)
+				code << indentStr << variable << "->SetFontFamily(L\""
+					<< EscapeWStringLiteral(*formatting.FontFamily) << "\");\n";
+			if (formatting.Language)
+			{
+				if (!IsCanonicalRichTextLanguageTag(*formatting.Language))
+					throw std::invalid_argument(
+						"RichText Language is not canonical");
+				code << indentStr << variable << "->SetLanguage(L\""
+					<< EscapeWStringLiteral(*formatting.Language) << "\");\n";
+			}
+			if (formatting.FontSize)
+				code << indentStr << variable << "->SetFontSize("
+					<< DoubleLiteral(*formatting.FontSize) << ");\n";
+			if (formatting.FontWeight)
+			{
+				const auto expression = weightExpression(*formatting.FontWeight);
+				if (!expression)
+					throw std::invalid_argument(
+						"RichText FontWeight is not canonical");
+				code << indentStr << variable << "->SetFontWeight("
+					<< *expression << ");\n";
+			}
+			if (formatting.FontStretch)
+			{
+				const auto expression = stretchExpression(*formatting.FontStretch);
+				if (!expression)
+					throw std::invalid_argument(
+						"RichText FontStretch is not canonical");
+				code << indentStr << variable << "->SetFontStretch("
+					<< *expression << ");\n";
+			}
+			if (formatting.FontStyle)
+			{
+				const auto expression = styleExpression(*formatting.FontStyle);
+				if (!expression)
+					throw std::invalid_argument(
+						"RichText FontStyle is not canonical");
+				code << indentStr << variable << "->SetFontStyle("
+					<< *expression << ");\n";
+			}
+			if (formatting.Underline)
+				code << indentStr << variable << "->SetUnderline("
+					<< (*formatting.Underline ? "true" : "false") << ");\n";
+			if (formatting.Strikethrough)
+				code << indentStr << variable << "->SetStrikethrough("
+					<< (*formatting.Strikethrough ? "true" : "false") << ");\n";
+		};
+		auto emitTextAlignment = [&](const std::string& variable,
+			const std::optional<std::wstring>& alignment)
+		{
+			if (!alignment) return;
+			const auto expression = alignmentExpression(*alignment);
+			if (!expression)
+				throw std::invalid_argument(
+					"RichText TextAlignment is not canonical");
+			code << indentStr << variable << "->SetTextAlignment("
+				<< *expression << ");\n";
+		};
+		auto emitFlowDirection = [&](const std::string& variable,
+			const std::optional<std::wstring>& direction)
+		{
+			if (!direction) return;
+			const auto expression = flowDirectionExpression(*direction);
+			if (!expression)
+				throw std::invalid_argument(
+					"RichText FlowDirection is not canonical");
+			code << indentStr << variable << "->SetFlowDirection("
+				<< *expression << ");\n";
+		};
+
+		const auto documentVariable = "__richDocument_" + name;
+		code << indentStr << "auto " << documentVariable
+			<< " = std::make_unique<FlowDocument>();\n";
+		emitFormatting(documentVariable, *node.Structure.Document);
+		emitTextAlignment(
+			documentVariable, node.Structure.Document->TextAlignment);
+		emitFlowDirection(
+			documentVariable, node.Structure.Document->FlowDirection);
+		for (std::size_t paragraphIndex = 0;
+			paragraphIndex < node.Structure.Document->Paragraphs.size();
+			++paragraphIndex)
+		{
+			const auto& paragraphDefinition =
+				node.Structure.Document->Paragraphs[paragraphIndex];
+			const auto paragraphVariable = "__richParagraph_" + name
+				+ "_" + std::to_string(paragraphIndex + 1);
+			code << indentStr << "auto " << paragraphVariable
+				<< " = std::make_unique<Paragraph>();\n";
+			emitFormatting(paragraphVariable, paragraphDefinition);
+			emitTextAlignment(
+				paragraphVariable, paragraphDefinition.TextAlignment);
+			emitFlowDirection(
+				paragraphVariable, paragraphDefinition.FlowDirection);
+			std::function<void(
+				const DesignerModel::DesignInline&,
+				const std::string&, const std::string&)> emitInline;
+			emitInline = [&](const DesignerModel::DesignInline& definition,
+				const std::string& ownerVariable,
+				const std::string& path)
+			{
+				const auto variable = "__richInline_" + name + "_"
+					+ std::to_string(paragraphIndex + 1) + "_" + path;
+				switch (definition.Kind)
+				{
+				case DesignerModel::DesignInlineKind::Run:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<Run>(L\""
+						<< EscapeWStringLiteral(definition.Text) << "\");\n";
+					break;
+				case DesignerModel::DesignInlineKind::Span:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<Span>();\n";
+					break;
+				case DesignerModel::DesignInlineKind::Bold:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<Bold>();\n";
+					break;
+				case DesignerModel::DesignInlineKind::Italic:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<Italic>();\n";
+					break;
+				case DesignerModel::DesignInlineKind::Underline:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<::Underline>();\n";
+					break;
+				case DesignerModel::DesignInlineKind::LineBreak:
+					code << indentStr << "auto " << variable
+						<< " = std::make_unique<LineBreak>();\n";
+					break;
+				default:
+					throw std::invalid_argument(
+						"RichText Inline kind is not canonical");
+				}
+				emitFormatting(variable, definition);
+				if (definition.Kind != DesignerModel::DesignInlineKind::Run
+					&& definition.Kind
+						!= DesignerModel::DesignInlineKind::LineBreak)
+				{
+					for (std::size_t childIndex = 0;
+						childIndex < definition.Inlines.size(); ++childIndex)
+					{
+						emitInline(definition.Inlines[childIndex], variable,
+							path + "_" + std::to_string(childIndex + 1));
+					}
+				}
+				code << indentStr << ownerVariable
+					<< "->GetInlines().Add(std::move(" << variable << "));\n";
+			};
+			for (std::size_t inlineIndex = 0;
+				inlineIndex < paragraphDefinition.Inlines.size(); ++inlineIndex)
+			{
+				emitInline(paragraphDefinition.Inlines[inlineIndex],
+					paragraphVariable, std::to_string(inlineIndex + 1));
+			}
+			code << indentStr << documentVariable
+				<< "->GetBlocks().Add(std::move(" << paragraphVariable << "));\n";
+		}
+		code << indentStr << name << "->SetDocument(std::move("
+			<< documentVariable << "));\n";
 	}
 
 	if (node.Type == UIClass::UI_ChartView

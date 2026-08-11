@@ -362,6 +362,7 @@ bool DependencyObject::TrySetEffectiveValueEntry(
 	bool allowReadOnly)
 {
 	VerifyAccess();
+	VerifyPropertyMutationAllowed(metadata.Property());
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0
 		|| (!metadata.CanWrite()
@@ -619,6 +620,7 @@ bool DependencyObject::ClearReadOnlyPropertyValue(
 bool DependencyObject::CoerceValueCore(
 	const DependencyPropertyMetadata& metadata)
 {
+	VerifyPropertyMutationAllowed(metadata.Property());
 	if (!metadata.CanWrite()
 		&& !(metadata.IsReadOnly()
 			&& metadata.CanWriteInternally())) return false;
@@ -688,6 +690,7 @@ bool DependencyObject::ClearPropertyValueOwned(
 	const Binding* owner,
 	bool allowReadOnly)
 {
+	VerifyPropertyMutationAllowed(metadata.Property());
 	const int index = StoredPropertySourceIndex(source);
 	if (index < 0
 		|| (!metadata.CanWrite()
@@ -865,6 +868,7 @@ bool DependencyObject::ResetPropertyValue(const DependencyProperty& property)
 {
 	const auto* metadata = GetPropertyMetadata(property);
 	if (!metadata || !metadata->CanWrite()) return false;
+	VerifyPropertyMutationAllowed(property);
 	if (ClearPropertyValue(property, DependencyPropertyValueSource::Local))
 		return true;
 	auto entry = _propertyValues.find(&metadata->Property());
@@ -910,6 +914,7 @@ bool DependencyObject::TrySetPropertyBaseValueCore(
 	const DependencyPropertyMetadata& metadata,
 	const BindingValue& convertedValue)
 {
+	VerifyPropertyMutationAllowed(metadata.Property());
 	if (!metadata.CanWrite() || !metadata.IsValidValue(convertedValue))
 		return false;
 	if (metadata.UsesEffectiveValueStorage())

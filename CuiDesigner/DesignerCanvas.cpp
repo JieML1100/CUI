@@ -9920,6 +9920,8 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					+ L" 的结构状态无法捕获：" + structureError;
 				return false;
 			}
+			if (dc->AuthoredRichTextDocument)
+				node.Structure.Document = *dc->AuthoredRichTextDocument;
 			node.Structure.CommandTarget = dc->AuthoredCommandTarget;
 
 			// Event values are explicit C++ member-function names.
@@ -9994,6 +9996,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			document.Nodes.push_back(std::move(node));
 		}
 
+		if (!document.ValidateRichTextStructure(outError)) return false;
 		if (!DesignerModel::DesignDataResourceUtils::ValidateAndCanonicalize(
 			document, outError)) return false;
 		if (!document.ValidateCommandTargetReferences(outError)) return false;

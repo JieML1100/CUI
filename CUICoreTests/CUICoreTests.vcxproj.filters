@@ -2,6 +2,8 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="MediaElementRegressionTests.cpp" />
+    <ClCompile Include="RichTextDocumentTests.cpp" />
+    <ClCompile Include="RichTextBoxDocumentTests.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
@@ -23,6 +25,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MediaElementRegressionTests.h" />
+    <ClInclude Include="RichTextDocumentTests.h" />
+    <ClInclude Include="RichTextBoxDocumentTests.h" />
     <ClInclude Include="TestRunner.h" />
   </ItemGroup>
 </Project>

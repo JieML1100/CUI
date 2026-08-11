@@ -549,6 +549,7 @@ Control* DemoWindow::FindGeneratedControlByName(
 	if (name == L"salesChart") return salesChart;
 	if (name == L"showDialog") return showDialog;
 	if (name == L"sideNavigationList") return sideNavigationList;
+	if (name == L"splitNotes") return splitNotes;
 	if (name == L"statusText") return statusText;
 	if (name == L"systemContextMenu") return systemContextMenu;
 	if (name == L"systemSurface") return systemSurface;
@@ -3465,14 +3466,73 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			L"presentationTopologyTile");
 		auto* loadingRing = dynamic_cast<LoadingRing*>(
 			FindGeneratedControlByName(L"loadingRing"));
+		auto* richTextControl = FindGeneratedControlByName(L"splitNotes");
+		auto* richText = dynamic_cast<RichTextBox*>(richTextControl);
 		auto* scroll = dynamic_cast<ScrollViewer*>(
 			FindGeneratedControlByName(L"demoScroll"));
 		auto* scrollProbe =
 			FindGeneratedControlByName(L"farButton");
 		if (!_tabs || !surface || !behavior || !behavior->Attached()
-			|| !topologyTile || !loadingRing || !scroll || !scrollProbe
+			|| !topologyTile || !loadingRing || !richText
+			|| !scroll || !scrollProbe
 			|| !Handle)
-			return fail(L"Presentation smoke 缺少真实 Window 或 XAML behavior。");
+		{
+			std::wstring missing;
+			auto appendMissing = [&](bool present, std::wstring_view name)
+			{
+				if (!present)
+				{
+					if (!missing.empty()) missing += L", ";
+					missing += name;
+				}
+			};
+			appendMissing(_tabs != nullptr, L"mainTabs");
+			appendMissing(surface != nullptr, L"presentationProbeSurface");
+			appendMissing(behavior != nullptr, L"PresentationProbeBehavior");
+			appendMissing(behavior && behavior->Attached(), L"behavior.Attach");
+			appendMissing(topologyTile != nullptr, L"presentationTopologyTile");
+			appendMissing(loadingRing != nullptr, L"loadingRing");
+			appendMissing(richTextControl != nullptr, L"splitNotes field");
+			appendMissing(richText != nullptr, L"splitNotes RichTextBox RTTI");
+			appendMissing(scroll != nullptr, L"demoScroll");
+			appendMissing(scrollProbe != nullptr, L"farButton");
+			appendMissing(Handle != nullptr, L"HWND");
+			return fail(L"Presentation smoke 缺少真实 Window 或 XAML behavior："
+				+ missing + L"。");
+		}
+		auto& richDocument = richText->GetDocument();
+		auto* centeredParagraph = richDocument.GetBlocks().Count() > 0
+			? dynamic_cast<Paragraph*>(richDocument.GetBlocks().At(0)) : nullptr;
+		auto* justifiedParagraph = richDocument.GetBlocks().Count() > 1
+			? dynamic_cast<Paragraph*>(richDocument.GetBlocks().At(1)) : nullptr;
+		auto* rightParagraph = richDocument.GetBlocks().Count() > 3
+			? dynamic_cast<Paragraph*>(richDocument.GetBlocks().At(3)) : nullptr;
+		auto* rtlParagraph = richDocument.GetBlocks().Count() > 4
+			? dynamic_cast<Paragraph*>(richDocument.GetBlocks().At(4)) : nullptr;
+		if (richDocument.GetBlocks().Count() != 5
+			|| !centeredParagraph || !justifiedParagraph || !rightParagraph
+			|| !rtlParagraph
+			|| centeredParagraph->GetTextAlignment() != TextAlignment::Center
+			|| justifiedParagraph->GetTextAlignment() != TextAlignment::Justify
+			|| rightParagraph->GetTextAlignment() != TextAlignment::Right
+			|| rtlParagraph->GetFlowDirection()
+				!= FlowDirection::RightToLeft)
+		{
+			return fail(L"RichTextBox XAML 段落 TextAlignment/FlowDirection 未完整物化。");
+		}
+		const auto richFlat = richDocument.Flatten();
+		const auto stretchedText = richFlat.Text.find(L"扩展字宽");
+		const auto japaneseText = richFlat.Text.find(L"日本語区域");
+		if (stretchedText == std::wstring::npos
+			|| RichTextDocument(richFlat).StyleAt(stretchedText).FontStretch
+				!= std::optional<DWRITE_FONT_STRETCH>(
+					DWRITE_FONT_STRETCH_EXPANDED)
+			|| japaneseText == std::wstring::npos
+			|| RichTextDocument(richFlat).StyleAt(japaneseText).Language
+				!= std::optional<std::wstring>(L"ja-jp"))
+		{
+			return fail(L"RichTextBox XAML FontStretch/Language 未进入实际文档格式。");
+		}
 		auto findOwningTabIndex = [this](Control* descendant)
 		{
 			for (auto* current = descendant; current;
@@ -4258,6 +4318,45 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| recoveryFrame.CommandRecordedNodes == 0
 			|| recoveryFrame.CommandReplayedNodes == 0)
 			return fail(L"注入设备丢失未统一推进 generation、资源通知、命令重录与事务提交。");
+
+		// Exercise the real RichTextBox visual-line virtualization path in a live
+		// Window. The first paragraph is intentionally longer than the complete
+		// virtualization threshold, so scrolling to the tail cannot rely on a
+		// full-paragraph resident DirectWrite layout.
+		_tabs->SelectedIndex = containerTabIndex;
+		std::wstring largeRichText;
+		largeRichText.reserve(26000);
+		for (int word = 0; word < 3600; ++word)
+			largeRichText.append(L"office ");
+		largeRichText.append(L"\r\ntail");
+		richText->Text = largeRichText;
+		richText->Select(0, 62);
+		if (!richText->GetSelection().ApplyPropertyValue(
+			TextElement::FontSizeProperty(), BindingValue(40.0)))
+		{
+			return fail(L"RichTextBox 大文档段落格式化失败。");
+		}
+		richText->Select(static_cast<int>(largeRichText.size()), 0);
+		SetKeyboardFocus(richText, false);
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"RichTextBox 大文档虚拟布局未完成稳定绘制。");
+		D2D1_RECT_F richCaret{};
+		if (richText->Text != largeRichText
+			|| richText->GetCaretIndex()
+				!= static_cast<int>(largeRichText.size())
+			|| !richText->TryGetTextInputCaretRect(richCaret)
+			|| !std::isfinite(richCaret.left)
+			|| !std::isfinite(richCaret.top)
+			|| !std::isfinite(richCaret.right)
+			|| !std::isfinite(richCaret.bottom)
+			|| richCaret.right <= richCaret.left
+			|| richCaret.bottom <= richCaret.top)
+		{
+			return fail(L"RichTextBox 大文档虚拟布局、滚动或 caret 投影不完整。");
+		}
 
 		if (outError) outError->clear();
 		return true;

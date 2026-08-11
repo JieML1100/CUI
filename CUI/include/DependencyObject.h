@@ -146,6 +146,13 @@ protected:
 		const DeclarativePropertyMetadata& metadata,
 		const BindingValue& oldValue,
 		const BindingValue& newValue);
+	/** Preflight for object-specific mutation exclusion. Called before the
+	 *  property engine changes any effective-value slot or backing storage. */
+	virtual void VerifyPropertyMutationAllowed(
+		const DependencyProperty& property) const
+	{
+		(void)property;
+	}
 	bool DeferPropertyMetadataChange(
 		const DeclarativePropertyMetadata& metadata,
 		const BindingValue& oldValue,

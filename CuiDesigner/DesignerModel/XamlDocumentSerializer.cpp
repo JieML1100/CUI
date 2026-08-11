@@ -2841,6 +2841,167 @@ namespace
 					+ FromUtf8(extra["itemsSourceResource"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("itemsSourceResource");
 			}
+			if (extra.contains("document"))
+			{
+				if (node.Type != UIClass::UI_RichTextBox)
+					throw std::invalid_argument(
+						"Document structured content is only valid on RichTextBox");
+				if (HasMetadata(node, L"Text") || HasBinding(node, L"Text"))
+					throw std::invalid_argument(
+						"RichTextBox Text and Document cannot both be serialized");
+				const auto& documentValue = extra["document"];
+				if (!documentValue.is_object())
+					throw std::invalid_argument("FlowDocument must be an object");
+				auto writeFormatting = [&](const Element& target,
+					const DesignValue& value)
+				{
+					for (const auto& [key, attribute] : {
+						std::pair{ "foreground", "Foreground" },
+						std::pair{ "background", "Background" } })
+					{
+						if (!value.contains(key)) continue;
+						const auto color = ColorText(value[key]);
+						if (!color)
+							throw std::invalid_argument(
+								"Rich text color must be an RGBA object");
+						Set(target, attribute, *color);
+					}
+					for (const auto& [key, attribute] : {
+						std::pair{ "fontFamily", "FontFamily" },
+						std::pair{ "language", "Language" },
+						std::pair{ "fontWeight", "FontWeight" },
+						std::pair{ "fontStretch", "FontStretch" },
+						std::pair{ "fontStyle", "FontStyle" } })
+					{
+						if (!value.contains(key)) continue;
+						if (!value[key].is_string())
+							throw std::invalid_argument(
+								"Rich text font field must be a string");
+						Set(target, attribute,
+							FromUtf8(value[key].get<std::string>()));
+					}
+					if (value.contains("fontSize"))
+					{
+						if (!value["fontSize"].is_number())
+							throw std::invalid_argument(
+								"Rich text FontSize must be numeric");
+						Set(target, "FontSize",
+							NumberText(value["fontSize"].get<double>()));
+					}
+					for (const auto& [key, attribute] : {
+						std::pair{ "underline", "Underline" },
+						std::pair{ "strikethrough", "Strikethrough" } })
+					{
+						if (!value.contains(key)) continue;
+						if (!value[key].is_boolean())
+							throw std::invalid_argument(
+								"Rich text decoration field must be boolean");
+						Set(target, attribute,
+							value[key].get<bool>() ? L"true" : L"false");
+					}
+				};
+				auto writeTextAlignment = [&](const Element& target,
+					const DesignValue& value)
+				{
+					if (!value.contains("textAlignment")) return;
+					if (!value["textAlignment"].is_string())
+						throw std::invalid_argument(
+							"Rich text TextAlignment must be a string");
+					const auto alignment =
+						value["textAlignment"].get<std::string>();
+					if (alignment != "Left" && alignment != "Right"
+						&& alignment != "Center" && alignment != "Justify")
+						throw std::invalid_argument(
+							"Rich text TextAlignment is not canonical");
+					Set(target, "TextAlignment", FromUtf8(alignment));
+				};
+				auto writeFlowDirection = [&](const Element& target,
+					const DesignValue& value)
+				{
+					if (!value.contains("flowDirection")) return;
+					if (!value["flowDirection"].is_string())
+						throw std::invalid_argument(
+							"Rich text FlowDirection must be a string");
+					const auto direction =
+						value["flowDirection"].get<std::string>();
+					if (direction != "LeftToRight"
+						&& direction != "RightToLeft")
+						throw std::invalid_argument(
+							"Rich text FlowDirection is not canonical");
+					Set(target, "FlowDirection", FromUtf8(direction));
+				};
+
+				auto document = Append(_xml, element, "FlowDocument");
+				writeFormatting(document, documentValue);
+				writeTextAlignment(document, documentValue);
+				writeFlowDirection(document, documentValue);
+				std::function<void(const Element&, const DesignValue&)>
+					writeInline;
+				writeInline = [&](const Element& parent,
+					const DesignValue& inlineValue)
+				{
+					if (!inlineValue.is_object()
+						|| !inlineValue.contains("kind")
+						|| !inlineValue["kind"].is_string())
+						throw std::invalid_argument(
+							"Inline must be an object with string Kind");
+					const auto kind = inlineValue["kind"].get<std::string>();
+					if (kind != "Run" && kind != "LineBreak"
+						&& kind != "Span" && kind != "Bold"
+						&& kind != "Italic" && kind != "Underline")
+						throw std::invalid_argument("Inline Kind is invalid");
+					auto target = Append(_xml, parent, kind.c_str());
+					writeFormatting(target, inlineValue);
+					if (kind == "Run")
+					{
+						if (!inlineValue.contains("text")
+							|| !inlineValue["text"].is_string()
+							|| inlineValue.contains("inlines"))
+							throw std::invalid_argument(
+								"Run must contain only string Text content");
+						Set(target, "Text",
+							FromUtf8(inlineValue["text"].get<std::string>()));
+						return;
+					}
+					if (kind == "LineBreak")
+					{
+						if (inlineValue.contains("text")
+							|| inlineValue.contains("inlines"))
+							throw std::invalid_argument(
+								"LineBreak cannot contain Text or Inlines");
+						return;
+					}
+					if (inlineValue.contains("text")
+						|| !inlineValue.contains("inlines")
+						|| !inlineValue["inlines"].is_array())
+						throw std::invalid_argument(
+							"Span-derived Inline must contain only Inlines content");
+					for (const auto& child : inlineValue["inlines"].ArrayItems())
+						writeInline(target, child);
+				};
+				if (!documentValue.contains("paragraphs")
+					|| !documentValue["paragraphs"].is_array())
+					throw std::invalid_argument(
+						"FlowDocument Paragraphs must be an array");
+				for (const auto& paragraphValue
+					: documentValue["paragraphs"].ArrayItems())
+				{
+					if (!paragraphValue.is_object())
+						throw std::invalid_argument("Paragraph must be an object");
+					auto paragraph = Append(_xml, document, "Paragraph");
+					writeFormatting(paragraph, paragraphValue);
+					writeTextAlignment(paragraph, paragraphValue);
+					writeFlowDirection(paragraph, paragraphValue);
+					if (!paragraphValue.contains("inlines")
+						|| !paragraphValue["inlines"].is_array())
+						throw std::invalid_argument(
+							"Paragraph Inlines must be an array");
+					for (const auto& inlineValue
+						: paragraphValue["inlines"].ArrayItems())
+						writeInline(paragraph, inlineValue);
+				}
+				extra.ObjectItems().erase("document");
+			}
 			if (node.Type == UIClass::UI_ChartView && extra.contains("series"))
 			{
 				auto seriesProperty = Append(_xml, element, "ChartView.Series");
@@ -2930,6 +3091,8 @@ std::string XamlDocumentSerializer::ToXaml(const DesignDocument& input)
 {
 	auto canonical = input;
 	std::wstring validationError;
+	if (!canonical.ValidateRichTextStructure(&validationError))
+		throw std::invalid_argument(ToUtf8(validationError));
 	if (!canonical.ValidateCommandTargetReferences(&validationError))
 		throw std::invalid_argument(ToUtf8(validationError));
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(

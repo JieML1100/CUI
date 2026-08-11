@@ -3,6 +3,7 @@
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
 #include "../../CuiRuntime/include/XamlRuntimeSchema.h"
+#include "../../CUI/include/RichTextDocument.h"
 #include "DesignDataResourceUtils.h"
 #include "StoryboardPropertyPath.h"
 #include "XamlSourceScanner.h"
@@ -127,15 +128,103 @@ namespace
 		return value.substr(begin, end - begin);
 	}
 
-	std::wstring DirectText(const Element& element)
+	bool PreservesXmlWhitespace(const Element& element)
+	{
+		for (const XmlNode* node = element.get(); node != nullptr;
+			node = node->ParentNode())
+		{
+			const auto* current = dynamic_cast<const XmlElement*>(node);
+			if (!current) continue;
+			if (!current->HasAttribute("xml:space")) continue;
+			return current->GetAttribute("xml:space") == "preserve";
+		}
+		return false;
+	}
+
+	bool IsVisibleInlineContentNode(const std::shared_ptr<XmlNode>& node)
+	{
+		if (!node) return false;
+		if (node->NodeType() == XmlNodeType::Element) return true;
+		return (node->NodeType() == XmlNodeType::Text
+			|| node->NodeType() == XmlNodeType::CDATA)
+			&& !node->Value().empty();
+	}
+
+	bool IsCuiLineBreakNode(const std::shared_ptr<XmlNode>& node)
+	{
+		if (!node || node->NodeType() != XmlNodeType::Element) return false;
+		const auto element = std::static_pointer_cast<XmlElement>(node);
+		return element->NamespaceURI() == "urn:cui"
+			&& element->LocalName() == "LineBreak";
+	}
+
+	bool IsNormalizedInlineSeparator(
+		const Element& container, std::size_t index)
+	{
+		if (!container || index >= container->ChildNodes().size()) return false;
+		const auto& node = container->ChildNodes()[index];
+		if (!node || (node->NodeType() != XmlNodeType::Whitespace
+			&& node->NodeType() != XmlNodeType::SignificantWhitespace))
+			return false;
+		const auto& value = node->Value();
+		if (value.empty()
+			|| value.find_first_of("\r\n") != std::string::npos)
+			return false;
+
+		bool before = false;
+		for (std::size_t candidate = index; candidate > 0; --candidate)
+		{
+			const auto& sibling = container->ChildNodes()[candidate - 1];
+			if (IsVisibleInlineContentNode(sibling))
+			{
+				if (IsCuiLineBreakNode(sibling)) return false;
+				before = true;
+				break;
+			}
+			if (sibling && (sibling->NodeType() == XmlNodeType::Whitespace
+				|| sibling->NodeType()
+					== XmlNodeType::SignificantWhitespace))
+				return false;
+			if (sibling && sibling->NodeType() != XmlNodeType::Comment
+				&& sibling->NodeType() != XmlNodeType::Whitespace
+				&& sibling->NodeType()
+					!= XmlNodeType::SignificantWhitespace)
+				break;
+		}
+		if (!before) return false;
+		for (std::size_t candidate = index + 1;
+			candidate < container->ChildNodes().size(); ++candidate)
+		{
+			const auto& sibling = container->ChildNodes()[candidate];
+			if (IsVisibleInlineContentNode(sibling))
+				return !IsCuiLineBreakNode(sibling);
+			if (sibling && sibling->NodeType() != XmlNodeType::Comment
+				&& sibling->NodeType() != XmlNodeType::Whitespace
+				&& sibling->NodeType()
+					!= XmlNodeType::SignificantWhitespace)
+				return false;
+		}
+		return false;
+	}
+
+	std::wstring RawDirectText(const Element& element)
 	{
 		std::wstring result;
 		if (!element) return result;
 		for (const auto& child : element->ChildNodes())
 			if (child && (child->NodeType() == XmlNodeType::Text
-				|| child->NodeType() == XmlNodeType::CDATA))
+				|| child->NodeType() == XmlNodeType::CDATA
+				|| (PreservesXmlWhitespace(element)
+					&& (child->NodeType() == XmlNodeType::Whitespace
+						|| child->NodeType()
+							== XmlNodeType::SignificantWhitespace))))
 				result += FromUtf8(child->Value());
-		return Trim(result);
+		return result;
+	}
+
+	std::wstring DirectText(const Element& element)
+	{
+		return Trim(RawDirectText(element));
 	}
 
 	std::wstring Lower(std::wstring value)
@@ -1427,6 +1516,8 @@ namespace
 				if (!ValidateBindingSources(
 					controlTemplate.Template, owner, true, error)) return false;
 			}
+			if (!_document.ValidateRichTextStructure(&error))
+				return Fail(error, error);
 			if (!_document.ValidateCommandTargetReferences(&error))
 				return Fail(error, error);
 			DesignerDataContextSchemaUtils::Canonicalize(_document.DataContextSchema);
@@ -1835,8 +1926,14 @@ namespace
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
 				DiagnosticContext attributeContext(*this, root, attribute.get());
 				const auto prefix = FromUtf8(attribute->Prefix());
-				const auto name = FromUtf8(attribute->LocalName());
+				auto name = FromUtf8(attribute->LocalName());
 				const auto value = FromUtf8(attribute->Value());
+				const auto attributeNamespace =
+					FromUtf8(attribute->NamespaceURI());
+				if (Equals(attributeNamespace,
+					L"http://www.w3.org/XML/1998/namespace")
+					&& Equals(name, L"lang"))
+					name = L"Language";
 				const auto sourceSpan = _sourceLocations.Span(
 					root.get(), attribute.get());
 				_document.Window.Source.RecordMember(name, sourceSpan);
@@ -1891,6 +1988,15 @@ namespace
 				}
 				if (!bindingError.empty())
 					return Fail(L"Window 属性 " + name + L"：" + bindingError, error);
+				if (Equals(propertyName, L"Language"))
+				{
+					const auto normalized = NormalizeRichTextLanguageTag(
+						Trim(propertyValue));
+					if (!normalized)
+						return Fail(L"Window 的 Language/xml:lang 不是有效的 RFC 3066 标签。",
+							error);
+					propertyValue = *normalized;
+				}
 				if (Equals(name, L"Visibility"))
 				{
 					bool recognized = false;
@@ -6400,6 +6506,27 @@ namespace
 				_document.Nodes[rootIndex].ComponentContentProperty = contract.Name;
 				return true;
 			};
+			bool usedRichTextDocument =
+				_document.Nodes[nodeIndex].Structure.Document.has_value();
+			auto storeRichTextDocument = [&](const Element& documentElement,
+				const Element& sourceElement) -> bool
+			{
+				if (usedRichTextDocument)
+					return Fail(L"RichTextBox.Document 不能重复。", error);
+				const auto& current = _document.Nodes[nodeIndex];
+				if (current.Properties.Find(L"Text")
+					|| current.Bindings.contains(L"Text")
+					|| current.TemplateBindings.contains(L"Text"))
+					return Fail(L"RichTextBox.Text 不能与 Document 同时使用。", error);
+				DesignValue document;
+				if (!ParseFlowDocument(documentElement, document, error)) return false;
+				if (!StoreStructureValue(
+					nodeIndex, "document", std::move(document), error)) return false;
+				usedRichTextDocument = true;
+				_document.Nodes[nodeIndex].Source.RecordMember(
+					L"Document", _sourceLocations.Span(sourceElement.get()));
+				return true;
+			};
 			for (const auto& child : elementChildren)
 			{
 				DiagnosticContext childContext(*this, child);
@@ -6462,6 +6589,49 @@ namespace
 						continue;
 					}
 				}
+				if (type == UIClass::UI_RichTextBox
+					&& IsCuiRichTextElement(
+						child, L"RichTextBox.Document"))
+				{
+					if (!ValidateAttributes(child, {}, error)
+						|| !DirectText(child).empty())
+						return Fail(L"RichTextBox.Document 只能包含一个 FlowDocument。",
+							error);
+					const auto roots = ChildElements(child);
+					if (roots.size() != 1)
+						return Fail(L"RichTextBox.Document 必须且只能包含一个 FlowDocument。",
+							error);
+					if (!storeRichTextDocument(roots.front(), child)) return false;
+					continue;
+				}
+				if (type == UIClass::UI_RichTextBox
+					&& Equals(childName, L"RichTextBox.Document"))
+				{
+					return Fail(
+						L"RichTextBox.Document 必须使用 CUI 命名空间。", error);
+				}
+				if (type == UIClass::UI_RichTextBox
+					&& IsCuiRichTextElement(child, L"FlowDocument"))
+				{
+					if (!storeRichTextDocument(child, child)) return false;
+					continue;
+				}
+				if (Equals(childName, L"FlowDocument")
+					|| Equals(childName, L"FlowDocument.Blocks")
+					|| Equals(childName, L"Paragraph")
+					|| Equals(childName, L"Paragraph.Inlines")
+					|| Equals(childName, L"Run")
+					|| Equals(childName, L"Run.Text")
+					|| Equals(childName, L"Span")
+					|| Equals(childName, L"Span.Inlines")
+					|| Equals(childName, L"Bold")
+					|| Equals(childName, L"Bold.Inlines")
+					|| Equals(childName, L"Italic")
+					|| Equals(childName, L"Italic.Inlines")
+					|| Equals(childName, L"Underline")
+					|| Equals(childName, L"Underline.Inlines")
+					|| Equals(childName, L"LineBreak"))
+					return Fail(L"富文本对象嵌套位置无效：" + childName, error);
 				if (type == UIClass::UI_Grid
 					&& Equals(childName, L"Grid.RowDefinitions"))
 				{
@@ -6750,7 +6920,7 @@ namespace
 				DiagnosticContext attributeContext(
 					*this, element, attribute.get());
 				const auto prefix = FromUtf8(attribute->Prefix());
-				const auto name = FromUtf8(attribute->LocalName());
+				auto name = FromUtf8(attribute->LocalName());
 				const auto rawName = FromUtf8(attribute->Name());
 				const auto value = FromUtf8(attribute->Value());
 				const auto sourceSpan = _sourceLocations.Span(
@@ -6788,6 +6958,10 @@ namespace
 				}
 
 				const auto attributeNamespace = FromUtf8(attribute->NamespaceURI());
+				if (Equals(attributeNamespace,
+					L"http://www.w3.org/XML/1998/namespace")
+					&& Equals(name, L"lang"))
+					name = L"Language";
 				const bool builtInAttachedNamespace = attributeNamespace.empty()
 					|| Equals(attributeNamespace, L"urn:cui");
 				const std::pair<const wchar_t*, const char*> relativeBooleans[] = {
@@ -7355,6 +7529,16 @@ namespace
 				if (!bindingError.empty())
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 的属性 " + name + L"：" + bindingError, error);
+				if (Equals(propertyName, L"Language"))
+				{
+					const auto normalized = NormalizeRichTextLanguageTag(
+						Trim(propertyValue));
+					if (!normalized)
+						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+							+ L" 的 Language/xml:lang 不是有效的 RFC 3066 标签。",
+							error);
+					propertyValue = *normalized;
+				}
 				if (Equals(name, L"Visibility"))
 				{
 					bool recognized = false;
@@ -7555,7 +7739,8 @@ namespace
 			const Element& element,
 			std::initializer_list<const wchar_t*> allowed,
 			std::wstring& error,
-			bool allowResourceKey = false)
+			bool allowResourceKey = false,
+			bool allowXmlLanguage = false)
 		{
 			for (const auto& attribute : element->Attributes())
 			{
@@ -7563,6 +7748,20 @@ namespace
 				DiagnosticContext attributeContext(*this, element, attribute.get());
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto prefix = FromUtf8(attribute->Prefix());
+				if (Equals(prefix, L"xml") && Equals(name, L"space"))
+				{
+					const auto value = FromUtf8(attribute->Value());
+					if (value != L"default" && value != L"preserve")
+						return Fail(L"xml:space 只允许 default 或 preserve。",
+							error);
+					continue;
+				}
+				if (Equals(prefix, L"xml") && Equals(name, L"lang"))
+				{
+					if (allowXmlLanguage) continue;
+					return Fail(FromUtf8(element->LocalName())
+						+ L" 不支持属性：xml:lang", error);
+				}
 				if (allowResourceKey && Equals(prefix, L"x") && Equals(name, L"Key"))
 					continue;
 				bool found = false;
@@ -8446,6 +8645,475 @@ namespace
 			return true;
 		}
 
+		bool ParseRichTextFormatting(
+			const Element& element,
+			bool allowText,
+			bool allowTextAlignment,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			if (allowText)
+			{
+				if (!ValidateAttributes(element,
+					{ L"Text", L"Foreground", L"Background", L"FontFamily",
+					  L"Language", L"FontSize", L"FontWeight", L"FontStretch",
+					  L"FontStyle", L"Underline", L"Strikethrough" },
+					error, false, true)) return false;
+			}
+			else if (allowTextAlignment)
+			{
+				if (!ValidateAttributes(element,
+					{ L"Foreground", L"Background", L"FontFamily", L"Language", L"FontSize",
+					  L"FontWeight", L"FontStretch", L"FontStyle", L"Underline", L"Strikethrough",
+					  L"TextAlignment", L"FlowDirection" }, error, false, true)) return false;
+			}
+			else if (!ValidateAttributes(element,
+				{ L"Foreground", L"Background", L"FontFamily", L"Language", L"FontSize",
+				  L"FontWeight", L"FontStretch", L"FontStyle", L"Underline", L"Strikethrough" },
+				error, false, true)) return false;
+
+			for (const auto& [attributeName, key] : {
+				std::pair{ L"Foreground", "foreground" },
+				std::pair{ L"Background", "background" } })
+			{
+				if (const auto text = Attribute(element, attributeName))
+					if (!ParseBrushColor(*text, output[key], error)) return false;
+			}
+			if (const auto family = Attribute(element, L"FontFamily"))
+			{
+				const auto normalized = Trim(*family);
+				if (normalized.empty())
+					return Fail(L"FontFamily 不能为空。", error);
+				output["fontFamily"] = ToUtf8(normalized);
+			}
+			const auto languageProperty = Attribute(element, L"Language");
+			const auto xmlLanguage = Attribute(element, L"lang", L"xml");
+			if (languageProperty && xmlLanguage)
+				return Fail(L"Language 与 xml:lang 不能同时设置。", error);
+			if (languageProperty || xmlLanguage)
+			{
+				const auto normalized = NormalizeRichTextLanguageTag(
+					Trim(languageProperty ? *languageProperty : *xmlLanguage));
+				if (!normalized)
+					return Fail(L"Language/xml:lang 不是有效的 RFC 3066 标签。",
+						error);
+				output["language"] = ToUtf8(*normalized);
+			}
+			if (const auto text = Attribute(element, L"FontSize"))
+			{
+				double value = 0.0;
+				if (!TryParseDouble(*text, value)
+					|| value < (1.0 / 300.0) || value > 160000.0)
+					return Fail(
+						L"FontSize 必须位于 1/300 到 160000 之间。", error);
+				output["fontSize"] = value;
+			}
+			auto canonicalName = [&](const std::wstring& value,
+				std::initializer_list<const wchar_t*> names)
+				-> std::optional<std::wstring>
+			{
+				const auto normalized = Lower(Trim(value));
+				for (const auto* name : names)
+					if (Lower(name) == normalized) return std::wstring(name);
+				return std::nullopt;
+			};
+			if (const auto text = Attribute(element, L"FontWeight"))
+			{
+				const auto value = canonicalName(*text,
+					{ L"Thin", L"ExtraLight", L"UltraLight", L"Light",
+					  L"SemiLight", L"Normal", L"Regular", L"Medium",
+					  L"DemiBold", L"SemiBold", L"Bold", L"ExtraBold",
+					  L"UltraBold", L"Black", L"Heavy", L"ExtraBlack",
+					  L"UltraBlack" });
+				if (!value) return Fail(L"FontWeight 值无效：" + *text, error);
+				output["fontWeight"] = ToUtf8(*value);
+			}
+			if (const auto text = Attribute(element, L"FontStretch"))
+			{
+				const auto value = canonicalName(*text,
+					{ L"UltraCondensed", L"ExtraCondensed", L"Condensed",
+					  L"SemiCondensed", L"Normal", L"Medium",
+					  L"SemiExpanded", L"Expanded", L"ExtraExpanded",
+					  L"UltraExpanded" });
+				if (!value) return Fail(L"FontStretch 值无效：" + *text, error);
+				output["fontStretch"] = ToUtf8(*value);
+			}
+			if (const auto text = Attribute(element, L"FontStyle"))
+			{
+				const auto value = canonicalName(
+					*text, { L"Normal", L"Oblique", L"Italic" });
+				if (!value) return Fail(L"FontStyle 值无效：" + *text, error);
+				output["fontStyle"] = ToUtf8(*value);
+			}
+			if (allowTextAlignment)
+			{
+				if (const auto text = Attribute(element, L"TextAlignment"))
+				{
+					const auto value = canonicalName(*text,
+						{ L"Left", L"Right", L"Center", L"Justify" });
+					if (!value)
+						return Fail(L"TextAlignment 值无效：" + *text, error);
+					output["textAlignment"] = ToUtf8(*value);
+				}
+				if (const auto text = Attribute(element, L"FlowDirection"))
+				{
+					const auto value = canonicalName(*text,
+						{ L"LeftToRight", L"RightToLeft" });
+					if (!value)
+						return Fail(L"FlowDirection 值无效：" + *text, error);
+					output["flowDirection"] = ToUtf8(*value);
+				}
+			}
+			for (const auto& [attributeName, key] : {
+				std::pair{ L"Underline", "underline" },
+				std::pair{ L"Strikethrough", "strikethrough" } })
+			{
+				if (const auto text = Attribute(element, attributeName))
+				{
+					bool value = false;
+					if (!TryParseBool(*text, value))
+						return Fail(std::wstring(attributeName)
+							+ L" 必须是布尔值。", error);
+					output[key] = value;
+				}
+			}
+			return true;
+		}
+
+		bool IsCuiRichTextElement(
+			const Element& element,
+			const std::wstring& name) const
+		{
+			if (!element || !Equals(FromUtf8(element->LocalName()), name))
+				return false;
+			const auto xamlNamespace = FromUtf8(element->NamespaceURI());
+			const auto separator = name.find(L'.');
+			if (separator == std::wstring::npos)
+				return CuiRuntime::XamlRuntimeSchema::FindNonVisualType(
+					xamlNamespace, name) != nullptr;
+			return CuiRuntime::XamlRuntimeSchema::FindObjectMember(
+				xamlNamespace, name.substr(0, separator),
+				name.substr(separator + 1)) != nullptr;
+		}
+
+		bool ParseRichTextRun(
+			const Element& element,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, element);
+			if (!IsCuiRichTextElement(element, L"Run"))
+				return Fail(L"Inline 内容必须使用 CUI Run。", error);
+			output = DesignValue::object();
+			output["kind"] = "Run";
+			if (!ParseRichTextFormatting(
+				element, true, false, output, error)) return false;
+			const auto textAttribute = Attribute(element, L"Text");
+			const auto children = ChildElements(element);
+			std::wstring text;
+			if (children.empty())
+			{
+				const auto directText = RawDirectText(element);
+				if (textAttribute && !directText.empty())
+					return Fail(L"Run.Text 属性不能与直接文本内容同时使用。", error);
+				text = textAttribute.value_or(directText);
+			}
+			else
+			{
+				if (children.size() != 1
+					|| !IsCuiRichTextElement(children.front(), L"Run.Text"))
+					return Fail(L"Run 仅允许 Text 属性元素，不能嵌套其他对象。", error);
+				if (textAttribute || !RawDirectText(element).empty())
+					return Fail(L"Run.Text 不能重复或与直接文本内容混用。", error);
+				const auto& property = children.front();
+				if (!ValidateAttributes(property, {}, error)
+					|| !ChildElements(property).empty())
+					return Fail(L"Run.Text 只能包含文本。", error);
+				text = RawDirectText(property);
+			}
+			output["text"] = ToUtf8(text);
+			return true;
+		}
+
+		bool ParseRichTextInline(
+			const Element& element,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			const auto localName = FromUtf8(element->LocalName());
+			if (Equals(localName, L"Run"))
+				return ParseRichTextRun(element, output, error);
+			if (Equals(localName, L"LineBreak"))
+			{
+				DiagnosticContext context(*this, element);
+				if (!IsCuiRichTextElement(element, L"LineBreak"))
+					return Fail(L"Inline 内容必须使用 CUI LineBreak。", error);
+				output = DesignValue::object();
+				output["kind"] = "LineBreak";
+				if (!ParseRichTextFormatting(
+					element, false, false, output, error)) return false;
+				if (!ChildElements(element).empty()
+					|| !RawDirectText(element).empty())
+				{
+					return Fail(
+						L"LineBreak 不能包含文本或子元素。", error);
+				}
+				return true;
+			}
+			const bool supported = Equals(localName, L"Span")
+				|| Equals(localName, L"Bold")
+				|| Equals(localName, L"Italic")
+				|| Equals(localName, L"Underline");
+			if (!supported || !IsCuiRichTextElement(element, localName))
+				return Fail(
+					L"Inline 内容仅允许 CUI Run/LineBreak/Span/Bold/Italic/Underline。",
+					error);
+
+			DiagnosticContext context(*this, element);
+			output = DesignValue::object();
+			output["kind"] = ToUtf8(localName);
+			if (!ParseRichTextFormatting(
+				element, false, false, output, error)) return false;
+
+			auto appendImplicitRun = [&](DesignValue& inlines,
+				const std::wstring& text)
+			{
+				if (text.empty()) return;
+				inlines.push_back(DesignValue{
+					{ "kind", "Run" }, { "text", ToUtf8(text) } });
+			};
+			auto parseContent = [&](const auto& self,
+				const Element& container,
+				DesignValue& inlines) -> bool
+			{
+				for (std::size_t childIndex = 0;
+					childIndex < container->ChildNodes().size(); ++childIndex)
+				{
+					const auto& child = container->ChildNodes()[childIndex];
+					if (!child) continue;
+					switch (child->NodeType())
+					{
+					case XmlNodeType::Comment:
+						continue;
+					case XmlNodeType::Whitespace:
+					case XmlNodeType::SignificantWhitespace:
+						if (PreservesXmlWhitespace(container))
+							appendImplicitRun(
+								inlines, FromUtf8(child->Value()));
+						else if (IsNormalizedInlineSeparator(
+							container, childIndex))
+							appendImplicitRun(inlines, L" ");
+						continue;
+					case XmlNodeType::Text:
+					case XmlNodeType::CDATA:
+						appendImplicitRun(inlines, FromUtf8(child->Value()));
+						continue;
+					case XmlNodeType::Element:
+					{
+						auto childElement =
+							std::static_pointer_cast<XmlElement>(child);
+						DesignValue inlineValue;
+						if (!ParseRichTextInline(
+							childElement, inlineValue, error)) return false;
+						inlines.push_back(std::move(inlineValue));
+						continue;
+					}
+					default:
+						return Fail(L"Inline 内容包含不支持的 XML 节点。", error);
+					}
+				}
+				return true;
+			};
+
+			Element propertyElement;
+			bool hasDirectContent = false;
+			const auto propertyName = localName + L".Inlines";
+			for (const auto& child : element->ChildNodes())
+			{
+				if (!child) continue;
+				if (child->NodeType() == XmlNodeType::Element)
+				{
+					auto childElement =
+						std::static_pointer_cast<XmlElement>(child);
+					if (IsCuiRichTextElement(childElement, propertyName))
+					{
+						if (propertyElement)
+							return Fail(propertyName + L" 不能重复。", error);
+						propertyElement = std::move(childElement);
+					}
+					else hasDirectContent = true;
+				}
+				else if (child->NodeType() == XmlNodeType::Text
+					|| child->NodeType() == XmlNodeType::CDATA
+					|| (PreservesXmlWhitespace(element)
+						&& (child->NodeType() == XmlNodeType::Whitespace
+							|| child->NodeType()
+								== XmlNodeType::SignificantWhitespace)))
+					hasDirectContent = hasDirectContent
+						|| !FromUtf8(child->Value()).empty();
+			}
+			if (propertyElement && hasDirectContent)
+				return Fail(propertyName
+					+ L" 不能与直接 Inline/文本内容混用。", error);
+
+			DesignValue inlines = DesignValue::array();
+			if (propertyElement)
+			{
+				if (!ValidateAttributes(propertyElement, {}, error)) return false;
+				if (!parseContent(parseContent, propertyElement, inlines))
+					return false;
+			}
+			else if (!parseContent(parseContent, element, inlines))
+				return false;
+			output["inlines"] = std::move(inlines);
+			return true;
+		}
+
+		bool ParseRichTextParagraph(
+			const Element& element,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, element);
+			if (!IsCuiRichTextElement(element, L"Paragraph"))
+				return Fail(L"FlowDocument.Blocks 仅允许 CUI Paragraph。", error);
+			output = DesignValue::object();
+			if (!ParseRichTextFormatting(
+				element, false, true, output, error)) return false;
+			DesignValue inlines = DesignValue::array();
+			auto appendImplicitRun = [&](DesignValue& target,
+				const std::wstring& text)
+			{
+				if (!text.empty()) target.push_back(DesignValue{
+					{ "kind", "Run" }, { "text", ToUtf8(text) } });
+			};
+			auto parseContent = [&](const Element& container) -> bool
+			{
+				for (std::size_t childIndex = 0;
+					childIndex < container->ChildNodes().size(); ++childIndex)
+				{
+					const auto& child = container->ChildNodes()[childIndex];
+					if (!child) continue;
+					if (child->NodeType() == XmlNodeType::Comment) continue;
+					if (child->NodeType() == XmlNodeType::Whitespace
+						|| child->NodeType()
+							== XmlNodeType::SignificantWhitespace)
+					{
+						if (PreservesXmlWhitespace(container))
+							appendImplicitRun(
+								inlines, FromUtf8(child->Value()));
+						else if (IsNormalizedInlineSeparator(
+							container, childIndex))
+							appendImplicitRun(inlines, L" ");
+						continue;
+					}
+					if (child->NodeType() == XmlNodeType::Text
+						|| child->NodeType() == XmlNodeType::CDATA)
+					{
+						appendImplicitRun(
+							inlines, FromUtf8(child->Value()));
+						continue;
+					}
+					if (child->NodeType() != XmlNodeType::Element)
+						return Fail(
+							L"Paragraph.Inlines 包含不支持的 XML 节点。", error);
+					DesignValue inlineValue;
+					if (!ParseRichTextInline(
+						std::static_pointer_cast<XmlElement>(child),
+						inlineValue, error)) return false;
+					inlines.push_back(std::move(inlineValue));
+				}
+				return true;
+			};
+			Element inlinesProperty;
+			bool directContent = false;
+			for (const auto& child : element->ChildNodes())
+			{
+				if (!child) continue;
+				if (child->NodeType() == XmlNodeType::Element)
+				{
+					auto childElement =
+						std::static_pointer_cast<XmlElement>(child);
+					if (IsCuiRichTextElement(
+						childElement, L"Paragraph.Inlines"))
+					{
+						if (inlinesProperty)
+							return Fail(L"Paragraph.Inlines 不能重复。", error);
+						inlinesProperty = std::move(childElement);
+					}
+					else directContent = true;
+				}
+				else if (child->NodeType() == XmlNodeType::Text
+					|| child->NodeType() == XmlNodeType::CDATA
+					|| (PreservesXmlWhitespace(element)
+						&& (child->NodeType() == XmlNodeType::Whitespace
+							|| child->NodeType()
+								== XmlNodeType::SignificantWhitespace)))
+					directContent = directContent
+						|| !FromUtf8(child->Value()).empty();
+			}
+			if (inlinesProperty && directContent)
+				return Fail(
+					L"Paragraph.Inlines 不能与直接内容混用。", error);
+			if (inlinesProperty
+				&& !ValidateAttributes(inlinesProperty, {}, error)) return false;
+			if (!parseContent(inlinesProperty ? inlinesProperty : element))
+				return false;
+			output["inlines"] = std::move(inlines);
+			return true;
+		}
+
+		bool ParseFlowDocument(
+			const Element& element,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, element);
+			if (!IsCuiRichTextElement(element, L"FlowDocument"))
+				return Fail(L"RichTextBox.Document 必须是 CUI FlowDocument。", error);
+			output = DesignValue::object();
+			if (!ParseRichTextFormatting(
+				element, false, true, output, error)) return false;
+			if (!DirectText(element).empty())
+				return Fail(L"FlowDocument 不接受直接文本；请使用 Paragraph/Run。",
+					error);
+
+			DesignValue paragraphs = DesignValue::array();
+			bool usedBlocksProperty = false;
+			bool usedDirectParagraphs = false;
+			for (const auto& child : ChildElements(element))
+			{
+				DiagnosticContext childContext(*this, child);
+				if (IsCuiRichTextElement(child, L"FlowDocument.Blocks"))
+				{
+					if (usedBlocksProperty || usedDirectParagraphs)
+						return Fail(L"FlowDocument.Blocks 不能重复或与直接 Paragraph 混用。",
+							error);
+					usedBlocksProperty = true;
+					if (!ValidateAttributes(child, {}, error)
+						|| !DirectText(child).empty())
+						return Fail(L"FlowDocument.Blocks 只能包含 Paragraph。", error);
+					for (const auto& paragraphElement : ChildElements(child))
+					{
+						DesignValue paragraph;
+						if (!ParseRichTextParagraph(
+							paragraphElement, paragraph, error)) return false;
+						paragraphs.push_back(std::move(paragraph));
+					}
+					continue;
+				}
+				if (usedBlocksProperty)
+					return Fail(L"FlowDocument.Blocks 不能与直接 Paragraph 混用。",
+						error);
+				usedDirectParagraphs = true;
+				DesignValue paragraph;
+				if (!ParseRichTextParagraph(child, paragraph, error)) return false;
+				paragraphs.push_back(std::move(paragraph));
+			}
+			output["paragraphs"] = std::move(paragraphs);
+			return true;
+		}
+
 		bool ParseCommandBindings(
 			const Element& property,
 			std::vector<DesignCommandBinding>& output,
@@ -8960,6 +9628,7 @@ static bool ParseXamlDocumentCore(
 	try
 	{
 		XmlDocument xml;
+		xml.SetPreserveWhitespace(true);
 		xml.LoadXml(xaml);
 		const auto root = xml.DocumentElement();
 		XamlSourceLocationIndex sourceLocations(FromUtf8(xaml), root);

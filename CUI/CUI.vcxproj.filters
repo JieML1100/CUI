@@ -352,10 +352,37 @@
     <ClInclude Include="include\DependencyObject.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\DependencyProperty.h">
+	<ClInclude Include="include\DependencyProperty.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\TextAlignment.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\FlowDirection.h">
+		<Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\TextBoundary.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\TextElement.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\TextElement.h">
+    <ClInclude Include="include\TextPointer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TextRange.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RichTextDocument.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RichTextClipboard.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RichTextRtf.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\FlowDocument.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\Visual.h">
@@ -385,6 +412,9 @@
     <ClInclude Include="include\RoutedCommand.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\EditingCommands.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\FrameworkElement.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -401,6 +431,30 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\TextElement.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TextPointer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+	<ClCompile Include="src\TextRange.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\TextBoundary.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+    <ClCompile Include="src\RichTextDocument.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RichTextClipboard.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RichTextRtf.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\FlowDocument.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\EditingCommands.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\AutomationPeer.cpp">

@@ -1,5 +1,7 @@
 #include "TestRunner.h"
 #include "MediaElementRegressionTests.h"
+#include "RichTextDocumentTests.h"
+#include "RichTextBoxDocumentTests.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include <EventInfrastructure.h>
 #include <Application.h>
@@ -2180,8 +2182,10 @@ namespace
 
 int main()
 {
-    cui::test::Runner runner;
+	cui::test::Runner runner;
 	RegisterMediaElementRegressionTests(runner);
+	RegisterRichTextDocumentTests(runner);
+	RegisterRichTextBoxDocumentTests(runner);
 
 	runner.Add("WPF element hierarchy owns dispatcher property visual input and framework boundaries", []
 	{
@@ -11765,7 +11769,9 @@ int main()
 		CUI_EXPECT_EQ(40, fontSize->Order);
 		CUI_EXPECT_EQ(DependencyPropertyEditorKind::Number, fontSize->Editor);
 		CUI_EXPECT_TRUE(fontSize->Minimum.has_value());
-		CUI_EXPECT_EQ(1.0, *fontSize->Minimum);
+		CUI_EXPECT_EQ(1.0 / 300.0, *fontSize->Minimum);
+		CUI_EXPECT_TRUE(fontSize->Maximum.has_value());
+		CUI_EXPECT_EQ(160000.0, *fontSize->Maximum);
 		CUI_EXPECT_TRUE(fontSize->Step.has_value());
 		CUI_EXPECT_EQ(0.5, *fontSize->Step);
 		CUI_EXPECT_EQ(DependencyPropertyPersistence::Metadata, fontSize->Persistence);
@@ -12303,8 +12309,10 @@ int main()
 		CUI_EXPECT_TRUE(fontSizeMetadata != nullptr);
 		CUI_EXPECT_TRUE(
 			fontSizeMetadata->IsValidValue(BindingValue(21.5)));
-		CUI_EXPECT_FALSE(
+		CUI_EXPECT_TRUE(
 			fontSizeMetadata->IsValidValue(BindingValue(500.0)));
+		CUI_EXPECT_FALSE(
+			fontSizeMetadata->IsValidValue(BindingValue(160001.0)));
 		CUI_EXPECT_TRUE(parent.TrySetPropertyValue(
 			L"FontFamily", BindingValue(std::wstring(L"Consolas"))));
 		CUI_EXPECT_TRUE(parent.TrySetPropertyValue(
@@ -12328,8 +12336,13 @@ int main()
 		CUI_EXPECT_EQ(21.5, child->FontSize);
 		CUI_EXPECT_FALSE(child->TrySetPropertyValue(
 			L"FontFamily", BindingValue(std::wstring{})));
-		CUI_EXPECT_FALSE(child->TrySetPropertyValue(
+		CUI_EXPECT_TRUE(child->TrySetPropertyValue(
 			L"FontSize", BindingValue(500.0)));
+		CUI_EXPECT_EQ(500.0, child->FontSize);
+		CUI_EXPECT_TRUE(child->ClearPropertyValue(L"FontSize"));
+		CUI_EXPECT_EQ(21.5, child->FontSize);
+		CUI_EXPECT_FALSE(child->TrySetPropertyValue(
+			L"FontSize", BindingValue(160001.0)));
 
 		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
@@ -38206,6 +38219,1225 @@ int main()
 			booleanEvent, index, &error));
 		CUI_EXPECT_TRUE(error.find(L"处理函数无效") != std::wstring::npos);
 		CUI_EXPECT_EQ(previousReferenceCount, index.References().size());
+	});
+
+	runner.Add("RichText XAML schema owns nonvisual document content slots", []
+	{
+		using CuiRuntime::XamlObjectMemberKind;
+		const auto expectType = [](const wchar_t* name,
+			const wchar_t* contentMember)
+		{
+			const auto* descriptor =
+				CuiRuntime::XamlRuntimeSchema::FindNonVisualType(
+					L"urn:cui", name);
+			CUI_EXPECT_TRUE(descriptor != nullptr);
+			if (!descriptor) return;
+			CUI_EXPECT_EQ(std::wstring(L"urn:cui"),
+				descriptor->TypeId.NamespaceUri);
+			CUI_EXPECT_EQ(std::wstring(name), descriptor->TypeId.LocalName);
+			CUI_EXPECT_EQ(std::wstring(contentMember), descriptor->ContentMember);
+			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				L"urn:cui", name) == nullptr);
+		};
+		expectType(L"FlowDocument", L"Blocks");
+		expectType(L"Paragraph", L"Inlines");
+		expectType(L"Run", L"Text");
+		expectType(L"Span", L"Inlines");
+		expectType(L"Bold", L"Inlines");
+		expectType(L"Italic", L"Inlines");
+		expectType(L"Underline", L"Inlines");
+		expectType(L"LineBreak", L"");
+		CUI_EXPECT_EQ(8ULL,
+			static_cast<unsigned long long>(
+				CuiRuntime::XamlRuntimeSchema::EnumerateNonVisualTypes().size()));
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNonVisualType(
+			L"urn:other", L"FlowDocument") == nullptr);
+
+		const auto expectMember = [](const wchar_t* owner,
+			const wchar_t* member,
+			XamlObjectMemberKind kind,
+			const wchar_t* valueType,
+			BindingValueKind valueKind)
+		{
+			const auto* descriptor =
+				CuiRuntime::XamlRuntimeSchema::FindObjectMember(
+					L"urn:cui", owner, member);
+			CUI_EXPECT_TRUE(descriptor != nullptr);
+			if (!descriptor) return;
+			CUI_EXPECT_EQ(kind, descriptor->Kind);
+			CUI_EXPECT_EQ(valueKind, descriptor->ValueKind);
+			if (valueType && *valueType)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"urn:cui"),
+					descriptor->ValueType.NamespaceUri);
+				CUI_EXPECT_EQ(std::wstring(valueType),
+					descriptor->ValueType.LocalName);
+			}
+			else CUI_EXPECT_FALSE(descriptor->ValueType.Valid());
+		};
+		expectMember(L"RichTextBox", L"Document",
+			XamlObjectMemberKind::Object, L"FlowDocument",
+			BindingValueKind::Empty);
+		expectMember(L"FlowDocument", L"Blocks",
+			XamlObjectMemberKind::Collection, L"Paragraph",
+			BindingValueKind::Empty);
+		expectMember(L"Paragraph", L"Inlines",
+			XamlObjectMemberKind::Collection, L"",
+			BindingValueKind::Empty);
+		expectMember(L"Run", L"Text",
+			XamlObjectMemberKind::Text, L"", BindingValueKind::String);
+		for (const auto* owner : { L"Span", L"Bold", L"Italic", L"Underline" })
+			expectMember(owner, L"Inlines",
+				XamlObjectMemberKind::Collection, L"",
+				BindingValueKind::Empty);
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+			UIClass::UI_RichTextBox, L"Document") == nullptr);
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+			UIClass::UI_RichTextBox, L"Language") != nullptr);
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindObjectMember(
+			L"urn:cui", L"Run", L"Blocks") == nullptr);
+		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindObjectMember(
+			L"urn:cui", L"LineBreak", L"Text") == nullptr);
+	});
+
+	runner.Add("RichText XAML canonicalizes materializes and lowers AOT document trees", []
+	{
+		const std::string directXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.RichTextWindow" x:Name="richTextWindow">
+	  <RichTextBox x:Name="editor" xml:lang="ZH-cn">
+    <FlowDocument Foreground="#FF112233" Background="#20102030"
+			  FontFamily="Segoe UI" Language="JA-jp" FontSize="18"
+				  FontWeight="Normal" FontStretch="SemiCondensed" FontStyle="Normal"
+				  Underline="false" Strikethrough="false"
+				  TextAlignment="Center" FlowDirection="RightToLeft">
+		<Paragraph Foreground="#FF445566" FontWeight="Bold"
+				 TextAlignment="Right" FlowDirection="LeftToRight">
+        <Run Text="Hello " Underline="true" />
+		<Run Background="#80402010" FontFamily="Consolas"
+			 FontSize="20" FontStretch="Expanded" FontStyle="Italic" Language="ko-KR"
+             Strikethrough="true">world</Run>
+      </Paragraph>
+      <Paragraph>
+        <Run Text="line two" />
+      </Paragraph>
+    </FlowDocument>
+  </RichTextBox>
+</Window>)XAML";
+		const std::string propertyXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.RichTextWindow" x:Name="richTextWindow">
+	  <RichTextBox x:Name="editor" Language="ZH-cn">
+    <RichTextBox.Document>
+      <FlowDocument Foreground="#FF112233" Background="#20102030"
+					FontFamily="Segoe UI" xml:lang="JA-jp" FontSize="18"
+					FontWeight="Normal" FontStretch="SemiCondensed" FontStyle="Normal"
+					Underline="false" Strikethrough="false"
+					TextAlignment="Center" FlowDirection="RightToLeft">
+        <FlowDocument.Blocks>
+			<Paragraph Foreground="#FF445566" FontWeight="Bold"
+					 TextAlignment="Right" FlowDirection="LeftToRight">
+            <Paragraph.Inlines>
+              <Run Text="Hello " Underline="true" />
+			  <Run Background="#80402010" FontFamily="Consolas"
+				   FontSize="20" FontStretch="Expanded" FontStyle="Italic" xml:lang="ko-KR"
+                   Strikethrough="true"><Run.Text>world</Run.Text></Run>
+            </Paragraph.Inlines>
+          </Paragraph>
+          <Paragraph><Run Text="line two" /></Paragraph>
+        </FlowDocument.Blocks>
+      </FlowDocument>
+    </RichTextBox.Document>
+  </RichTextBox>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument directDocument;
+		DesignerModel::DesignDocument propertyDocument;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			directXaml, directDocument, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			propertyXaml, propertyDocument, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(directDocument == propertyDocument);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(directDocument);
+		const auto propertyCanonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(propertyDocument);
+		CUI_EXPECT_EQ(canonical, propertyCanonical);
+		CUI_EXPECT_TRUE(canonical.find("<FlowDocument") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Paragraph") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Run") != std::string::npos);
+		for (const auto* nonCanonical : {
+			"RichTextBox.Document", "FlowDocument.Blocks",
+			"Paragraph.Inlines", "Run.Text" })
+			CUI_EXPECT_TRUE(canonical.find(nonCanonical) == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Text=\"world\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Underline=\"false\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Strikethrough=\"false\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("TextAlignment=\"Center\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("TextAlignment=\"Right\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("FlowDirection=\"RightToLeft\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("FlowDirection=\"LeftToRight\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("FontStretch=\"SemiCondensed\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("FontStretch=\"Expanded\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Language=\"ja-jp\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Language=\"ko-kr\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Language=\"zh-cn\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("xml:lang") == std::string::npos);
+
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_TRUE(reparsed == directDocument);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(directDocument);
+		DesignerModel::DesignDocument restored;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, restored, &error));
+		CUI_EXPECT_TRUE(restored == directDocument);
+
+		CuiRuntime::XamlMaterializationOptions options;
+		options.UseFrameworkTheme = false;
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			directDocument, tree, options, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* editor = FindMaterializedControlByName<RichTextBox>(
+			tree, L"editor");
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_EQ(std::wstring(L"zh-cn"), editor->GetLanguage());
+		auto& document = editor->GetDocument();
+		CUI_EXPECT_TRUE(document.GetOwner() == editor);
+		CUI_EXPECT_EQ(2ULL,
+			static_cast<unsigned long long>(document.GetBlocks().Count()));
+		CUI_EXPECT_EQ(std::wstring(L"Segoe UI"), document.GetFontFamily());
+		CUI_EXPECT_EQ(std::wstring(L"ja-jp"), document.GetLanguage());
+		CUI_EXPECT_NEAR(18.0, document.GetFontSize(), 0.0001);
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_NORMAL, document.GetFontWeight());
+		CUI_EXPECT_EQ(DWRITE_FONT_STRETCH_SEMI_CONDENSED,
+			document.GetFontStretch());
+		CUI_EXPECT_EQ(DWRITE_FONT_STYLE_NORMAL, document.GetFontStyle());
+		CUI_EXPECT_FALSE(document.GetUnderline());
+		CUI_EXPECT_FALSE(document.GetStrikethrough());
+		CUI_EXPECT_EQ(::TextAlignment::Center,
+			document.GetTextAlignment());
+		CUI_EXPECT_EQ(::FlowDirection::RightToLeft,
+			document.GetFlowDirection());
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			document.GetForeground().Kind);
+		CUI_EXPECT_NEAR(0x11 / 255.0,
+			document.GetForeground().Color.r, 0.001);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			document.GetBackground().Kind);
+		CUI_EXPECT_NEAR(0x20 / 255.0,
+			document.GetBackground().Color.a, 0.001);
+
+		auto* firstParagraph = dynamic_cast<Paragraph*>(
+			document.GetBlocks().At(0));
+		auto* secondParagraph = dynamic_cast<Paragraph*>(
+			document.GetBlocks().At(1));
+		CUI_EXPECT_TRUE(firstParagraph != nullptr);
+		CUI_EXPECT_TRUE(secondParagraph != nullptr);
+		if (!firstParagraph || !secondParagraph) return;
+		CUI_EXPECT_TRUE(firstParagraph->GetParent() == &document);
+		CUI_EXPECT_EQ(::TextAlignment::Right,
+			firstParagraph->GetTextAlignment());
+		CUI_EXPECT_EQ(::FlowDirection::LeftToRight,
+			firstParagraph->GetFlowDirection());
+		CUI_EXPECT_EQ(::TextAlignment::Center,
+			secondParagraph->GetTextAlignment());
+		CUI_EXPECT_EQ(::FlowDirection::RightToLeft,
+			secondParagraph->GetFlowDirection());
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(
+			firstParagraph->GetInlines().Count()));
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_BOLD,
+			firstParagraph->GetFontWeight());
+		CUI_EXPECT_NEAR(0x44 / 255.0,
+			firstParagraph->GetForeground().Color.r, 0.001);
+
+		auto* firstRun = dynamic_cast<Run*>(
+			firstParagraph->GetInlines().At(0));
+		auto* secondRun = dynamic_cast<Run*>(
+			firstParagraph->GetInlines().At(1));
+		CUI_EXPECT_TRUE(firstRun != nullptr);
+		CUI_EXPECT_TRUE(secondRun != nullptr);
+		if (!firstRun || !secondRun) return;
+		CUI_EXPECT_TRUE(firstRun->GetParent() == firstParagraph);
+		CUI_EXPECT_EQ(std::wstring(L"Hello "), firstRun->GetText());
+		CUI_EXPECT_TRUE(firstRun->GetUnderline());
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_BOLD,
+			firstRun->GetFontWeight());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			firstRun->GetPropertyValueSource(
+				TextElement::FontWeightProperty()));
+		CUI_EXPECT_EQ(DWRITE_FONT_STRETCH_SEMI_CONDENSED,
+			firstRun->GetFontStretch());
+		CUI_EXPECT_EQ(std::wstring(L"ja-jp"), firstRun->GetLanguage());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			firstRun->GetPropertyValueSource(
+				TextElement::LanguageProperty()));
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Inherited,
+			firstRun->GetPropertyValueSource(
+				TextElement::FontStretchProperty()));
+		CUI_EXPECT_NEAR(0x44 / 255.0,
+			firstRun->GetForeground().Color.r, 0.001);
+		CUI_EXPECT_EQ(std::wstring(L"world"), secondRun->GetText());
+		CUI_EXPECT_EQ(std::wstring(L"Consolas"),
+			secondRun->GetFontFamily());
+		CUI_EXPECT_NEAR(20.0, secondRun->GetFontSize(), 0.0001);
+		CUI_EXPECT_EQ(DWRITE_FONT_STRETCH_EXPANDED,
+			secondRun->GetFontStretch());
+		CUI_EXPECT_EQ(std::wstring(L"ko-kr"), secondRun->GetLanguage());
+		CUI_EXPECT_EQ(DWRITE_FONT_STYLE_ITALIC,
+			secondRun->GetFontStyle());
+		CUI_EXPECT_TRUE(secondRun->GetStrikethrough());
+		CUI_EXPECT_NEAR(0x80 / 255.0,
+			secondRun->GetBackground().Color.a, 0.001);
+		const auto flattened = document.Flatten();
+		CUI_EXPECT_EQ(std::wstring(L"Hello world\r\nline two"),
+			flattened.Text);
+		CUI_EXPECT_EQ(
+			std::optional<DWRITE_FONT_WEIGHT>(DWRITE_FONT_WEIGHT_BOLD),
+			RichTextDocument(flattened).StyleAt(0).FontWeight);
+		CUI_EXPECT_EQ(
+			std::optional<DWRITE_FONT_STRETCH>(
+				DWRITE_FONT_STRETCH_EXPANDED),
+			RichTextDocument(flattened).StyleAt(6).FontStretch);
+		CUI_EXPECT_EQ(std::optional<std::wstring>(L"ja-jp"),
+			RichTextDocument(flattened).StyleAt(0).Language);
+		CUI_EXPECT_EQ(std::optional<std::wstring>(L"ko-kr"),
+			RichTextDocument(flattened).StyleAt(6).Language);
+		CUI_EXPECT_EQ(std::wstring(L"Hello world\r\nline two"),
+			editor->GetText());
+
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(
+			directDocument, &error));
+		CodeGenerator generator(
+			L"RichTextGeneratedWindow", directDocument,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto header = generator.GenerateHeader();
+		const auto source = generator.GenerateCppForHeader(
+			"RichTextGeneratedWindow");
+		CUI_EXPECT_TRUE(header.find("RichTextBox* editor")
+			!= std::string::npos);
+		for (const auto* emitted : {
+			"std::make_unique<FlowDocument>()",
+			"std::make_unique<Paragraph>()",
+			"std::make_unique<Run>(L\"Hello \")",
+			"std::make_unique<Run>(L\"world\")",
+			"->SetFontFamily(L\"Segoe UI\")",
+			"->SetLanguage(L\"ja-jp\")",
+			"->SetLanguage(L\"ko-kr\")",
+			"->SetFontSize(18.0)",
+			"->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD)",
+			"->SetFontStretch(DWRITE_FONT_STRETCH_SEMI_CONDENSED)",
+			"->SetFontStretch(DWRITE_FONT_STRETCH_EXPANDED)",
+			"->SetFontStyle(DWRITE_FONT_STYLE_ITALIC)",
+			"->SetUnderline(false)",
+			"->SetUnderline(true)",
+			"->SetStrikethrough(true)",
+			"->SetTextAlignment(::TextAlignment::Center)",
+			"->SetTextAlignment(::TextAlignment::Right)",
+			"->SetFlowDirection(::FlowDirection::RightToLeft)",
+			"->SetFlowDirection(::FlowDirection::LeftToRight)",
+			"->GetInlines().Add(std::move(",
+			"->GetBlocks().Add(std::move(",
+			"editor->SetDocument(std::move(__richDocument_editor))" })
+			CUI_EXPECT_TRUE(source.find(emitted) != std::string::npos);
+		for (const auto* dynamicBridge : {
+			"XamlObjectMaterializer", "RuntimeDocument", "CuiRuntime::" })
+			CUI_EXPECT_TRUE(source.find(dynamicBridge) == std::string::npos);
+	});
+
+	runner.Add("RichText XAML recursively preserves Inline structure whitespace and hard breaks", []
+	{
+		const std::string directXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.StructuredInlineWindow" x:Name="structuredWindow">
+  <RichTextBox x:Name="editor">
+    <FlowDocument FontWeight="Normal">
+      <Paragraph Foreground="#FF203040">plain <Span FontWeight="Normal"
+          Background="#40112233" FontFamily="Consolas" FontSize="20">span <Bold>bold <Italic>both</Italic><Run Text="override" FontWeight="Normal" /></Bold></Span><Underline>under</Underline></Paragraph>
+		<Paragraph>A<Span xml:space="preserve">  <!--hidden--></Span><Run Text="B&#xD;&#xA;C" /></Paragraph>
+		<Paragraph><Run Text="left" /><LineBreak Background="#40123456" /><Run Text="right" /></Paragraph>
+    </FlowDocument>
+  </RichTextBox>
+</Window>)XAML";
+		const std::string propertyXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.StructuredInlineWindow" x:Name="structuredWindow">
+  <RichTextBox x:Name="editor">
+    <RichTextBox.Document>
+      <FlowDocument FontWeight="Normal">
+        <FlowDocument.Blocks>
+          <Paragraph Foreground="#FF203040">
+            <Paragraph.Inlines>
+              <Run Text="plain " />
+              <Span FontWeight="Normal" Background="#40112233"
+                    FontFamily="Consolas" FontSize="20">
+                <Span.Inlines>
+                  <Run Text="span " />
+                  <Bold><Bold.Inlines>
+                    <Run Text="bold " />
+                    <Italic><Italic.Inlines><Run Text="both" /></Italic.Inlines></Italic>
+                    <Run Text="override" FontWeight="Normal" />
+                  </Bold.Inlines></Bold>
+                </Span.Inlines>
+              </Span>
+              <Underline><Underline.Inlines><Run Text="under" /></Underline.Inlines></Underline>
+            </Paragraph.Inlines>
+          </Paragraph>
+		  <Paragraph><Paragraph.Inlines>
+			<Run Text="A" />
+			<Span><Span.Inlines><Run Text="  " /></Span.Inlines></Span>
+			<Run Text="B&#xD;&#xA;C" />
+		  </Paragraph.Inlines></Paragraph>
+		  <Paragraph><Paragraph.Inlines>
+			<Run Text="left" />
+			<LineBreak Background="#40123456" />
+			<Run Text="right" />
+		  </Paragraph.Inlines></Paragraph>
+        </FlowDocument.Blocks>
+      </FlowDocument>
+    </RichTextBox.Document>
+  </RichTextBox>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument direct;
+		DesignerModel::DesignDocument property;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			directXaml, direct, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			propertyXaml, property, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(direct == property);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(direct);
+		for (const auto* element : {
+			"<Span", "<Bold", "<Italic", "<Underline", "<LineBreak" })
+			CUI_EXPECT_TRUE(canonical.find(element) != std::string::npos);
+		for (const auto* propertyElement : {
+			"RichTextBox.Document", "FlowDocument.Blocks",
+			"Paragraph.Inlines", "Span.Inlines", "Bold.Inlines",
+			"Italic.Inlines", "Underline.Inlines", "xml:space" })
+			CUI_EXPECT_TRUE(canonical.find(propertyElement) == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Text=\"  \"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Text=\"B&#xD;&#xA;C\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("hidden") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Bold FontWeight=")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Italic FontStyle=")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Underline Underline=")
+			== std::string::npos);
+
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_TRUE(reparsed == direct);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(direct);
+		DesignerModel::DesignDocument restored;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, restored, &error));
+		CUI_EXPECT_TRUE(restored == direct);
+		CUI_EXPECT_EQ(static_cast<unsigned long long>(direct.Nodes.size()),
+			static_cast<unsigned long long>(restored.Nodes.size()));
+		if (restored.Nodes.size() == direct.Nodes.size())
+		{
+			for (std::size_t index = 0; index < direct.Nodes.size(); ++index)
+			{
+				CUI_EXPECT_TRUE(restored.Nodes[index].Structure
+					== direct.Nodes[index].Structure);
+			}
+		}
+
+		CuiRuntime::XamlMaterializationOptions options;
+		options.UseFrameworkTheme = false;
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			direct, tree, options, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* editor = FindMaterializedControlByName<RichTextBox>(
+			tree, L"editor");
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		auto& runtimeDocument = editor->GetDocument();
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			runtimeDocument.GetBlocks().Count()));
+		auto* firstParagraph = dynamic_cast<Paragraph*>(
+			runtimeDocument.GetBlocks().At(0));
+		auto* secondParagraph = dynamic_cast<Paragraph*>(
+			runtimeDocument.GetBlocks().At(1));
+		auto* thirdParagraph = dynamic_cast<Paragraph*>(
+			runtimeDocument.GetBlocks().At(2));
+		CUI_EXPECT_TRUE(firstParagraph != nullptr);
+		CUI_EXPECT_TRUE(secondParagraph != nullptr);
+		CUI_EXPECT_TRUE(thirdParagraph != nullptr);
+		if (!firstParagraph || !secondParagraph || !thirdParagraph) return;
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			firstParagraph->GetInlines().Count()));
+		auto* plain = dynamic_cast<Run*>(firstParagraph->GetInlines().At(0));
+		auto* span = dynamic_cast<Span*>(firstParagraph->GetInlines().At(1));
+		auto* underline = dynamic_cast<::Underline*>(
+			firstParagraph->GetInlines().At(2));
+		CUI_EXPECT_TRUE(plain != nullptr);
+		CUI_EXPECT_TRUE(span != nullptr);
+		CUI_EXPECT_TRUE(underline != nullptr);
+		if (!plain || !span || !underline) return;
+		CUI_EXPECT_EQ(std::wstring(L"plain "), plain->GetText());
+		CUI_EXPECT_TRUE(span->GetParent() == firstParagraph);
+		CUI_EXPECT_TRUE(span->GetFlowDocument() == &runtimeDocument);
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(
+			span->GetInlines().Count()));
+		auto* spanText = dynamic_cast<Run*>(span->GetInlines().At(0));
+		auto* bold = dynamic_cast<Bold*>(span->GetInlines().At(1));
+		CUI_EXPECT_TRUE(spanText != nullptr);
+		CUI_EXPECT_TRUE(bold != nullptr);
+		if (!spanText || !bold) return;
+		CUI_EXPECT_EQ(std::wstring(L"span "), spanText->GetText());
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_NORMAL, spanText->GetFontWeight());
+		CUI_EXPECT_EQ(std::wstring(L"Consolas"), spanText->GetFontFamily());
+		CUI_EXPECT_NEAR(20.0, spanText->GetFontSize(), 0.0001);
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			bold->GetInlines().Count()));
+		auto* boldText = dynamic_cast<Run*>(bold->GetInlines().At(0));
+		auto* italic = dynamic_cast<Italic*>(bold->GetInlines().At(1));
+		auto* overrideRun = dynamic_cast<Run*>(bold->GetInlines().At(2));
+		CUI_EXPECT_TRUE(boldText != nullptr);
+		CUI_EXPECT_TRUE(italic != nullptr);
+		CUI_EXPECT_TRUE(overrideRun != nullptr);
+		if (!boldText || !italic || !overrideRun) return;
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_BOLD, bold->GetFontWeight());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			bold->GetPropertyValueSource(TextElement::FontWeightProperty()));
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_BOLD, boldText->GetFontWeight());
+		CUI_EXPECT_EQ(DWRITE_FONT_STYLE_ITALIC, italic->GetFontStyle());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			italic->GetPropertyValueSource(TextElement::FontStyleProperty()));
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_NORMAL,
+			overrideRun->GetFontWeight());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			overrideRun->GetPropertyValueSource(
+				TextElement::FontWeightProperty()));
+		CUI_EXPECT_TRUE(underline->GetUnderline());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			underline->GetPropertyValueSource(
+				TextElement::UnderlineProperty()));
+
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			secondParagraph->GetInlines().Count()));
+		auto* whitespaceSpan = dynamic_cast<Span*>(
+			secondParagraph->GetInlines().At(1));
+		auto* hardBreakRun = dynamic_cast<Run*>(
+			secondParagraph->GetInlines().At(2));
+		CUI_EXPECT_TRUE(whitespaceSpan != nullptr);
+		CUI_EXPECT_TRUE(hardBreakRun != nullptr);
+		if (!whitespaceSpan || !hardBreakRun) return;
+		auto* whitespaceRun = dynamic_cast<Run*>(
+			whitespaceSpan->GetInlines().At(0));
+		CUI_EXPECT_TRUE(whitespaceRun != nullptr);
+		if (!whitespaceRun) return;
+		CUI_EXPECT_EQ(std::wstring(L"  "), whitespaceRun->GetText());
+		CUI_EXPECT_EQ(std::wstring(L"B\r\nC"), hardBreakRun->GetText());
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			thirdParagraph->GetInlines().Count()));
+		auto* explicitLineBreak = dynamic_cast<LineBreak*>(
+			thirdParagraph->GetInlines().At(1));
+		CUI_EXPECT_TRUE(explicitLineBreak != nullptr);
+		if (!explicitLineBreak) return;
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			explicitLineBreak->GetBackground().Kind);
+		CUI_EXPECT_NEAR(0x40 / 255.0,
+			explicitLineBreak->GetBackground().Color.a, 0.001);
+		const auto flattened = runtimeDocument.Flatten();
+		CUI_EXPECT_TRUE(flattened.ValidateCanonical());
+		CUI_EXPECT_FALSE(flattened.StructureSpans.empty());
+		CUI_EXPECT_EQ(
+			std::wstring(L"plain span bold bothoverrideunder\r\nA  B\r\nC"
+				L"\r\nleft\r\nright"),
+			flattened.Text);
+
+		bold->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL);
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_NORMAL, bold->GetFontWeight());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Local,
+			bold->GetPropertyValueSource(TextElement::FontWeightProperty()));
+		CUI_EXPECT_TRUE(bold->ClearPropertyValue(
+			TextElement::FontWeightProperty()));
+		CUI_EXPECT_EQ(DWRITE_FONT_WEIGHT_BOLD, bold->GetFontWeight());
+		CUI_EXPECT_EQ(DependencyPropertyValueSource::Style,
+			bold->GetPropertyValueSource(TextElement::FontWeightProperty()));
+
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(direct, &error));
+		CodeGenerator generator(L"StructuredInlineGeneratedWindow", direct,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto source = generator.GenerateCppForHeader(
+			"StructuredInlineGeneratedWindow");
+		for (const auto* emitted : {
+			"std::make_unique<Span>()", "std::make_unique<Bold>()",
+			"std::make_unique<Italic>()",
+			"std::make_unique<::Underline>()",
+			"std::make_unique<LineBreak>()",
+			"std::make_unique<Run>(L\"B\\r\\nC\")" })
+			CUI_EXPECT_TRUE(source.find(emitted) != std::string::npos);
+	});
+
+	runner.Add("RichText XAML empty Inline identities survive adjacent editing", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox x:Name="editor"><FlowDocument>
+    <Paragraph>
+      <Run Text="A" />
+      <Span><Italic /><Run Text="" /></Span>
+      <Run Text="B" />
+    </Paragraph>
+    <Paragraph><Bold /></Paragraph>
+  </FlowDocument></RichTextBox>
+</Window>)XAML";
+		DesignerModel::DesignDocument design;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, design, &error))
+		{
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		}
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(design);
+		CUI_EXPECT_TRUE(canonical.find("<Italic")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Run Text=\"\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Bold")
+			!= std::string::npos);
+
+		CuiRuntime::XamlMaterializationOptions options;
+		options.UseFrameworkTheme = false;
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			design, tree, options, &error))
+		{
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		}
+		auto* editor = FindMaterializedControlByName<RichTextBox>(
+			tree, L"editor");
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		auto& document = editor->GetDocument();
+		auto* first = dynamic_cast<Paragraph*>(
+			document.GetBlocks().At(0));
+		auto* second = dynamic_cast<Paragraph*>(
+			document.GetBlocks().At(1));
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_TRUE(second != nullptr);
+		if (!first || !second) return;
+		auto* emptySpan = dynamic_cast<Span*>(
+			first->GetInlines().At(1));
+		auto* rightRun = dynamic_cast<Run*>(
+			first->GetInlines().At(2));
+		auto* emptyBold = dynamic_cast<Bold*>(
+			second->GetInlines().At(0));
+		CUI_EXPECT_TRUE(emptySpan != nullptr);
+		CUI_EXPECT_TRUE(rightRun != nullptr);
+		CUI_EXPECT_TRUE(emptyBold != nullptr);
+		if (!emptySpan || !rightRun || !emptyBold) return;
+		auto* emptyItalic = dynamic_cast<Italic*>(
+			emptySpan->GetInlines().At(0));
+		auto* emptyRun = dynamic_cast<Run*>(
+			emptySpan->GetInlines().At(1));
+		CUI_EXPECT_TRUE(emptyItalic != nullptr);
+		CUI_EXPECT_TRUE(emptyRun != nullptr);
+		if (!emptyItalic || !emptyRun) return;
+
+		const auto initial = document.Flatten();
+		CUI_EXPECT_EQ(std::wstring(L"AB\r\n"), initial.Text);
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			initial.StructureMarkers.size()));
+		editor->Select(0, 0);
+		editor->InsertText(L"Z");
+		for (int pass = 0; pass < 3; ++pass)
+		{
+			CUI_EXPECT_TRUE(document.GetBlocks().At(0) == first);
+			CUI_EXPECT_TRUE(document.GetBlocks().At(1) == second);
+			CUI_EXPECT_TRUE(first->GetInlines().At(1) == emptySpan);
+			CUI_EXPECT_TRUE(first->GetInlines().At(2) == rightRun);
+			CUI_EXPECT_TRUE(emptySpan->GetInlines().At(0)
+				== emptyItalic);
+			CUI_EXPECT_TRUE(emptySpan->GetInlines().At(1)
+				== emptyRun);
+			CUI_EXPECT_TRUE(second->GetInlines().At(0) == emptyBold);
+			if (pass == 0) editor->Undo();
+			else if (pass == 1) editor->Redo();
+		}
+		CUI_EXPECT_EQ(std::wstring(L"ZAB\r\n"), editor->GetText());
+	});
+
+	runner.Add("RichText XAML normalizes intentional Inline whitespace separators", []
+	{
+		const std::string directXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox x:Name="editor"><FlowDocument>
+    <Paragraph><Bold>A</Bold> <Italic>B</Italic></Paragraph>
+	<Paragraph>
+	  <Bold>X</Bold>
+	  <Italic>Y</Italic>
+	</Paragraph>
+	<Paragraph><Run Text="C" /> <LineBreak /> <Run Text="D" /></Paragraph>
+  </FlowDocument></RichTextBox>
+</Window>)XAML";
+		const std::string propertyXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox x:Name="editor"><RichTextBox.Document><FlowDocument>
+    <FlowDocument.Blocks>
+      <Paragraph><Paragraph.Inlines><Bold><Bold.Inlines><Run Text="A" /></Bold.Inlines></Bold> <Italic><Italic.Inlines><Run Text="B" /></Italic.Inlines></Italic></Paragraph.Inlines></Paragraph>
+      <Paragraph><Paragraph.Inlines>
+        <Bold><Run Text="X" /></Bold>
+		<Italic><Run Text="Y" /></Italic>
+	  </Paragraph.Inlines></Paragraph>
+	  <Paragraph><Paragraph.Inlines>
+		<Run Text="C" /><LineBreak /><Run Text="D" />
+	  </Paragraph.Inlines></Paragraph>
+    </FlowDocument.Blocks>
+  </FlowDocument></RichTextBox.Document></RichTextBox>
+</Window>)XAML";
+
+		DesignerModel::DesignDocument direct;
+		DesignerModel::DesignDocument property;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			directXaml, direct, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			propertyXaml, property, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(direct == property);
+		CUI_EXPECT_TRUE(!direct.Nodes.empty());
+		if (direct.Nodes.empty() || !direct.Nodes[0].Structure.Document) return;
+		const auto& paragraphs =
+			direct.Nodes[0].Structure.Document->Paragraphs;
+		CUI_EXPECT_EQ(3ULL,
+			static_cast<unsigned long long>(paragraphs.size()));
+		if (paragraphs.size() != 3) return;
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(
+			paragraphs[0].Inlines.size()));
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(
+			paragraphs[1].Inlines.size()));
+		if (paragraphs[0].Inlines.size() == 3)
+		{
+			CUI_EXPECT_EQ(DesignerModel::DesignInlineKind::Run,
+				paragraphs[0].Inlines[1].Kind);
+			CUI_EXPECT_EQ(std::wstring(L" "),
+				paragraphs[0].Inlines[1].Text);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(direct);
+		CUI_EXPECT_TRUE(canonical.find("Text=\" \"")
+			!= std::string::npos);
+		for (const auto* propertyElement : {
+			"RichTextBox.Document", "FlowDocument.Blocks",
+			"Paragraph.Inlines", "Bold.Inlines", "Italic.Inlines" })
+			CUI_EXPECT_TRUE(canonical.find(propertyElement) == std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_TRUE(reparsed == direct);
+
+		CuiRuntime::XamlMaterializationOptions options;
+		options.UseFrameworkTheme = false;
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			direct, tree, options, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* editor = FindMaterializedControlByName<RichTextBox>(
+			tree, L"editor");
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (editor)
+			CUI_EXPECT_EQ(std::wstring(L"A B\r\nXY\r\nC\r\nD"),
+				editor->GetText());
+	});
+
+	runner.Add("RichText XAML rejects text conflicts duplicates and invalid nesting", []
+	{
+		auto expectRejected = [](const std::string& xaml,
+			const std::wstring& expected)
+		{
+			DesignerModel::DesignDocument document;
+			document.Window.Name = L"unchanged";
+			const auto before = document;
+			std::wstring error;
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				xaml, document, &error));
+			CUI_EXPECT_TRUE(document == before);
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox Text="legacy">
+    <FlowDocument><Paragraph><Run Text="document" /></Paragraph></FlowDocument>
+  </RichTextBox>
+</Window>)XAML", L"Text 不能与 Document");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox>
+    <FlowDocument />
+    <RichTextBox.Document><FlowDocument /></RichTextBox.Document>
+  </RichTextBox>
+</Window>)XAML", L"Document 不能重复");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox>
+    <FlowDocument><Run Text="wrong level" /></FlowDocument>
+  </RichTextBox>
+</Window>)XAML", L"仅允许 CUI Paragraph");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox>
+    <FlowDocument><Paragraph><Paragraph /></Paragraph></FlowDocument>
+  </RichTextBox>
+</Window>)XAML", L"仅允许 CUI Run");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox>
+    <FlowDocument><Paragraph><Run Text="one">two</Run></Paragraph></FlowDocument>
+  </RichTextBox>
+</Window>)XAML", L"不能与直接文本内容同时使用");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Span Text="not allowed"><Run Text="value" /></Span>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Span 不支持属性：Text");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run Text="not a block" TextAlignment="Center" />
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Run 不支持属性：TextAlignment");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run Text="not a block" FlowDirection="RightToLeft" />
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Run 不支持属性：FlowDirection");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument>
+    <Paragraph TextAlignment="Diagonal"><Run Text="value" /></Paragraph>
+  </FlowDocument></RichTextBox>
+</Window>)XAML", L"TextAlignment 值无效");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument>
+    <Paragraph FlowDirection="Diagonal"><Run Text="value" /></Paragraph>
+  </FlowDocument></RichTextBox>
+</Window>)XAML", L"FlowDirection 值无效");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run Text="value" FontStretch="Wide" />
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"FontStretch 值无效");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run Text="value" Language="9-invalid" />
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Language/xml:lang");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox Language="en-US" xml:lang="fr-FR" />
+</Window>)XAML", L"属性重复：Language");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run Text="value" Language="en-US" xml:lang="fr-FR" />
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"不能同时设置");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Run><Bold><Run Text="nested" /></Bold></Run>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Run 仅允许 Text");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <LineBreak><Run Text="not allowed" /></LineBreak>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"LineBreak 不能包含文本或子元素");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Span><Span.Inlines><Run Text="property" /></Span.Inlines><Run Text="direct" /></Span>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"不能与直接 Inline/文本内容混用");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:foreign="urn:cui:foreign">
+  <RichTextBox><FlowDocument><Paragraph>
+    <foreign:Span><Run Text="wrong namespace" /></foreign:Span>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Inline 内容仅允许 CUI");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:foreign="urn:cui:foreign">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Span><foreign:Span.Inlines><Run Text="wrong namespace" /></foreign:Span.Inlines></Span>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"Inline 内容仅允许 CUI");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <RichTextBox><FlowDocument><Paragraph>
+    <Span xml:space="invalid"><Run Text="value" /></Span>
+  </Paragraph></FlowDocument></RichTextBox>
+</Window>)XAML", L"xml:space 只允许");
+
+		expectRejected(R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:foreign="urn:cui:foreign">
+  <RichTextBox>
+    <foreign:RichTextBox.Document>
+      <FlowDocument><Paragraph><Run Text="wrong namespace" /></Paragraph></FlowDocument>
+    </foreign:RichTextBox.Document>
+  </RichTextBox>
+</Window>)XAML", L"必须使用 CUI 命名空间");
+	});
+
+	runner.Add("RichText design structure validation rejects conflicting and invalid state", []
+	{
+		const std::string xaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.RichTextValidation" x:Name="validationWindow">
+  <RichTextBox x:Name="editor">
+    <FlowDocument>
+      <Paragraph><Run Text="validated" FontWeight="Bold" FontStyle="Italic" /></Paragraph>
+    </FlowDocument>
+  </RichTextBox>
+</Window>)XAML";
+		DesignerModel::DesignDocument valid;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, valid, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(valid.ValidateRichTextStructure(&error));
+
+		auto editorNode = [](DesignerModel::DesignDocument& document)
+			-> DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[](const auto& node) { return node.Name == L"editor"; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		auto expectRejectedEverywhere = [&](const DesignerModel::DesignDocument& invalid,
+			const std::wstring& expected)
+		{
+			error.clear();
+			CUI_EXPECT_FALSE(invalid.ValidateRichTextStructure(&error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+
+			CuiRuntime::XamlObjectTree tree;
+			tree.ContentRoot = std::make_unique<Canvas>();
+			auto* sentinel = tree.ContentRoot.get();
+			CuiRuntime::XamlMaterializationOptions options;
+			options.UseFrameworkTheme = false;
+			error.clear();
+			CUI_EXPECT_FALSE(CuiRuntime::XamlObjectMaterializer::Materialize(
+				invalid, tree, options, &error));
+			CUI_EXPECT_TRUE(tree.ContentRoot.get() == sentinel);
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+
+			error.clear();
+			CUI_EXPECT_FALSE(CodeGenerator::ValidateDocument(invalid, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+
+			bool snapshotRejected = false;
+			try
+			{
+				(void)DesignerModel::DesignDocumentSerializer::ToXml(invalid);
+			}
+			catch (const std::invalid_argument& exception)
+			{
+				snapshotRejected = Convert::Utf8ToUnicode(exception.what()).find(
+					expected) != std::wstring::npos;
+			}
+			CUI_EXPECT_TRUE(snapshotRejected);
+
+			bool xamlRejected = false;
+			try
+			{
+				(void)DesignerModel::XamlDocumentSerializer::ToXaml(invalid);
+			}
+			catch (const std::invalid_argument& exception)
+			{
+				xamlRejected = Convert::Utf8ToUnicode(exception.what()).find(
+					expected) != std::wstring::npos;
+			}
+			CUI_EXPECT_TRUE(xamlRejected);
+		};
+
+		auto textConflict = valid;
+		auto* textEditor = editorNode(textConflict);
+		CUI_EXPECT_TRUE(textEditor != nullptr);
+		if (!textEditor) return;
+		DesignerModel::DesignPropertyAssignment text;
+		text.Value.Kind = DesignerStyleValueKind::String;
+		text.Value.Text = L"legacy";
+		textEditor->Properties.Set(L"Text", std::move(text));
+		expectRejectedEverywhere(textConflict, L"Text 不能与 Document");
+
+		auto bindingConflict = valid;
+		auto* bindingEditor = editorNode(bindingConflict);
+		CUI_EXPECT_TRUE(bindingEditor != nullptr);
+		if (!bindingEditor) return;
+		bindingEditor->Bindings[L"Text"] = DesignerDataBinding{
+			L"Caption", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged };
+		expectRejectedEverywhere(bindingConflict, L"Text 不能与 Document");
+
+		auto invalidWeight = valid;
+		auto* weightEditor = editorNode(invalidWeight);
+		CUI_EXPECT_TRUE(weightEditor != nullptr);
+		if (!weightEditor || !weightEditor->Structure.Document) return;
+		weightEditor->Structure.Document->Paragraphs[0].Inlines[0].FontWeight =
+			L"NotAWeight";
+		expectRejectedEverywhere(invalidWeight, L"FontWeight");
+		bool weightGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidWeightWindow", invalidWeight,
+				CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader("InvalidWeightWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			weightGenerationRejected = std::string(exception.what()).find(
+				"FontWeight") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(weightGenerationRejected);
+
+		auto invalidStretch = valid;
+		auto* stretchEditor = editorNode(invalidStretch);
+		CUI_EXPECT_TRUE(stretchEditor != nullptr);
+		if (!stretchEditor || !stretchEditor->Structure.Document) return;
+		stretchEditor->Structure.Document->Paragraphs[0]
+			.Inlines[0].FontStretch = L"Wide";
+		expectRejectedEverywhere(invalidStretch, L"FontStretch");
+		bool stretchGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidStretchWindow", invalidStretch,
+				CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader("InvalidStretchWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			stretchGenerationRejected = std::string(exception.what()).find(
+				"FontStretch") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(stretchGenerationRejected);
+
+		auto invalidLanguage = valid;
+		auto* languageEditor = editorNode(invalidLanguage);
+		CUI_EXPECT_TRUE(languageEditor != nullptr);
+		if (!languageEditor || !languageEditor->Structure.Document) return;
+		languageEditor->Structure.Document->Paragraphs[0]
+			.Inlines[0].Language = L"en-US";
+		expectRejectedEverywhere(invalidLanguage, L"Language");
+		bool languageGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidLanguageWindow", invalidLanguage,
+				CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader("InvalidLanguageWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			languageGenerationRejected = std::string(exception.what()).find(
+				"Language") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(languageGenerationRejected);
+
+		auto invalidStyle = valid;
+		auto* styleEditor = editorNode(invalidStyle);
+		CUI_EXPECT_TRUE(styleEditor != nullptr);
+		if (!styleEditor || !styleEditor->Structure.Document) return;
+		styleEditor->Structure.Document->Paragraphs[0].Inlines[0].FontStyle =
+			L"NotAStyle";
+		expectRejectedEverywhere(invalidStyle, L"FontStyle");
+		bool styleGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidStyleWindow", invalidStyle,
+				CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader("InvalidStyleWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			styleGenerationRejected = std::string(exception.what()).find(
+				"FontStyle") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(styleGenerationRejected);
+
+		auto invalidAlignment = valid;
+		auto* alignmentEditor = editorNode(invalidAlignment);
+		CUI_EXPECT_TRUE(alignmentEditor != nullptr);
+		if (!alignmentEditor || !alignmentEditor->Structure.Document) return;
+		alignmentEditor->Structure.Document->Paragraphs[0].TextAlignment =
+			L"Diagonal";
+		expectRejectedEverywhere(invalidAlignment, L"TextAlignment");
+		bool alignmentGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidAlignmentWindow",
+				invalidAlignment, CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader(
+				"InvalidAlignmentWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			alignmentGenerationRejected = std::string(exception.what()).find(
+				"TextAlignment") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(alignmentGenerationRejected);
+
+		auto invalidDirection = valid;
+		auto* directionEditor = editorNode(invalidDirection);
+		CUI_EXPECT_TRUE(directionEditor != nullptr);
+		if (!directionEditor || !directionEditor->Structure.Document) return;
+		directionEditor->Structure.Document->Paragraphs[0].FlowDirection =
+			L"Diagonal";
+		expectRejectedEverywhere(invalidDirection, L"FlowDirection");
+		bool directionGenerationRejected = false;
+		try
+		{
+			CodeGenerator generator(L"InvalidDirectionWindow",
+				invalidDirection, CodeGeneratorOutputKind::StaticWindow);
+			(void)generator.GenerateCppForHeader("InvalidDirectionWindow");
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			directionGenerationRejected = std::string(exception.what()).find(
+				"FlowDirection") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(directionGenerationRejected);
+
+		const std::string textOnlyXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Tests.RichTextValidation" x:Name="validationWindow">
+  <RichTextBox x:Name="editor" Text="legacy" />
+</Window>)XAML";
+		DesignerModel::DesignDocument textOnly;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			textOnlyXaml, textOnly, &error));
+		auto documentSnapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(valid);
+		const auto textSnapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(textOnly);
+		auto propertiesBounds = [](const std::string& snapshot)
+			-> std::optional<std::pair<std::size_t, std::size_t>>
+		{
+			const auto control = snapshot.find("name=\"editor\"");
+			if (control == std::string::npos) return std::nullopt;
+			const auto begin = snapshot.find("<properties", control);
+			if (begin == std::string::npos) return std::nullopt;
+			const auto openEnd = snapshot.find('>', begin);
+			if (openEnd == std::string::npos) return std::nullopt;
+			if (openEnd != begin && snapshot[openEnd - 1] == '/')
+				return std::pair{ begin, openEnd - begin + 1 };
+			const std::string close = "</properties>";
+			const auto end = snapshot.find(close, openEnd + 1);
+			if (end == std::string::npos) return std::nullopt;
+			return std::pair{ begin, end + close.size() - begin };
+		};
+		const auto documentProperties = propertiesBounds(documentSnapshot);
+		const auto textProperties = propertiesBounds(textSnapshot);
+		CUI_EXPECT_TRUE(documentProperties.has_value());
+		CUI_EXPECT_TRUE(textProperties.has_value());
+		if (!documentProperties || !textProperties) return;
+		documentSnapshot.replace(
+			documentProperties->first, documentProperties->second,
+			textSnapshot.substr(textProperties->first, textProperties->second));
+		auto snapshotOutput = valid;
+		const auto snapshotBefore = snapshotOutput;
+		error.clear();
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			documentSnapshot, snapshotOutput, &error));
+		CUI_EXPECT_EQ(snapshotBefore, snapshotOutput);
+		CUI_EXPECT_TRUE(error.find(L"Text 不能与 Document")
+			!= std::wstring::npos);
 	});
 
 	runner.Add("Static codegen lowers authored values without dynamic XAML bridges", []

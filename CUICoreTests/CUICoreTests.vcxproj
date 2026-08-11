@@ -172,6 +172,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="MediaElementRegressionTests.cpp" />
+    <ClCompile Include="RichTextDocumentTests.cpp" />
+    <ClCompile Include="RichTextBoxDocumentTests.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
@@ -195,6 +197,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MediaElementRegressionTests.h" />
+    <ClInclude Include="RichTextDocumentTests.h" />
+    <ClInclude Include="RichTextBoxDocumentTests.h" />
     <ClInclude Include="TestRunner.h" />
   </ItemGroup>
   <ItemGroup>

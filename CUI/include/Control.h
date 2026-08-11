@@ -1144,6 +1144,12 @@ protected:
 	static const DependencyPropertyMetadataRegistration&
 		ForegroundPropertyMetadataRelation();
 	static const DependencyPropertyMetadataRegistration&
+		FontFamilyPropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		LanguagePropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
+		FontSizePropertyMetadataRelation();
+	static const DependencyPropertyMetadataRegistration&
 		BorderBrushPropertyMetadataRelation();
 	static const DependencyPropertyMetadataRegistration&
 		BorderThicknessPropertyMetadataRelation();
@@ -1201,6 +1207,7 @@ protected:
 	// private render projection and never participates in the public value
 	// system or external ownership.
 	std::wstring _fontName = L"Segoe UI";
+	std::wstring _language = L"en-us";
 	double _fontSize = 12.0;
 	std::unique_ptr<Font> _renderFont;
 	std::unique_ptr<Font> _systemScaledFont;
@@ -1926,6 +1933,9 @@ public:
 	READONLY_PROPERTY(const std::wstring&, FontFamily);
 	GET(const std::wstring&, FontFamily);
 	void SetFontFamily(std::wstring value);
+	READONLY_PROPERTY(const std::wstring&, Language);
+	GET(const std::wstring&, Language);
+	void SetLanguage(std::wstring value);
 	READONLY_PROPERTY(double, FontSize);
 	GET(double, FontSize);
 	void SetFontSize(double value);
@@ -2233,6 +2243,7 @@ public:
 	static const DependencyProperty& AutomationHelpTextProperty();
 	static const DependencyProperty& AutomationIdProperty();
 	static const DependencyProperty& FontFamilyProperty();
+	static const DependencyProperty& LanguageProperty();
 	static const DependencyProperty& FontSizeProperty();
 	static const DependencyProperty& WidthProperty();
 	static const DependencyProperty& HeightProperty();

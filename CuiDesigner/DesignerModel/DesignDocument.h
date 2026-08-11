@@ -169,6 +169,58 @@ struct DesignChartSeries
 	bool operator==(const DesignChartSeries&) const = default;
 };
 
+/** Explicit rich-text formatting authored on a document text element. */
+struct DesignTextFormatting
+{
+	std::optional<DesignColor> Foreground;
+	std::optional<DesignColor> Background;
+	std::optional<std::wstring> FontFamily;
+	std::optional<std::wstring> Language;
+	std::optional<double> FontSize;
+	std::optional<std::wstring> FontWeight;
+	std::optional<std::wstring> FontStretch;
+	std::optional<std::wstring> FontStyle;
+	std::optional<bool> Underline;
+	std::optional<bool> Strikethrough;
+
+	bool Empty() const noexcept;
+	bool operator==(const DesignTextFormatting&) const = default;
+};
+
+enum class DesignInlineKind
+{
+	Run,
+	Span,
+	Bold,
+	Italic,
+	Underline,
+	LineBreak
+};
+
+struct DesignInline : DesignTextFormatting
+{
+	DesignInlineKind Kind = DesignInlineKind::Run;
+	std::wstring Text;
+	std::vector<DesignInline> Inlines;
+	bool operator==(const DesignInline&) const = default;
+};
+
+struct DesignParagraph : DesignTextFormatting
+{
+	std::optional<std::wstring> TextAlignment;
+	std::optional<std::wstring> FlowDirection;
+	std::vector<DesignInline> Inlines;
+	bool operator==(const DesignParagraph&) const = default;
+};
+
+struct DesignFlowDocument : DesignTextFormatting
+{
+	std::optional<std::wstring> TextAlignment;
+	std::optional<std::wstring> FlowDirection;
+	std::vector<DesignParagraph> Paragraphs;
+	bool operator==(const DesignFlowDocument&) const = default;
+};
+
 struct DesignRelativePanelConstraints
 {
 	std::optional<bool> CenterHorizontal;
@@ -214,6 +266,7 @@ struct DesignNodeStructure
 	std::optional<std::vector<DesignGridTrack>> GridRows;
 	std::optional<std::vector<DesignGridTrack>> GridColumns;
 	std::optional<std::vector<DesignChartSeries>> ChartSeries;
+	std::optional<DesignFlowDocument> Document;
 
 	bool Empty() const noexcept;
 	bool operator==(const DesignNodeStructure&) const = default;
@@ -687,6 +740,9 @@ struct DesignDocument
 	void RecalculateNextStableId();
 	/** Validates every authored CommandTarget in every independent namescope. */
 	bool ValidateCommandTargetReferences(
+		std::wstring* outError = nullptr) const;
+	/** Validates the typed RichTextBox document contract in every namescope. */
+	bool ValidateRichTextStructure(
 		std::wstring* outError = nullptr) const;
 	void Clear();
 	bool operator==(const DesignDocument& other) const;

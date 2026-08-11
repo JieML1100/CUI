@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TextBoundary.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cwctype>
@@ -75,14 +77,20 @@ namespace CuiTextEdit
 
 	inline bool IsHighSurrogate(wchar_t ch)
 	{
-		const unsigned int value = static_cast<unsigned int>(ch);
-		return value >= 0xD800 && value <= 0xDBFF;
+		return CuiTextBoundary::IsHighSurrogate(ch);
 	}
 
 	inline bool IsLowSurrogate(wchar_t ch)
 	{
-		const unsigned int value = static_cast<unsigned int>(ch);
-		return value >= 0xDC00 && value <= 0xDFFF;
+		return CuiTextBoundary::IsLowSurrogate(ch);
+	}
+
+	inline bool IsTextElementBoundary(
+		const std::wstring& text, int index, bool preserveCrLf = true)
+	{
+		return CuiTextBoundary::IsTextElementBoundary(
+			text, static_cast<size_t>(ClampIndex(index, text.size())),
+			preserveCrLf);
 	}
 
 	inline bool HasCrLfAt(const std::wstring& text, int index)
@@ -115,6 +123,72 @@ namespace CuiTextEdit
 			&& index < static_cast<int>(text.size())
 			&& IsHighSurrogate(text[static_cast<size_t>(index) - 1])
 			&& IsLowSurrogate(text[static_cast<size_t>(index)]);
+	}
+
+	/** Expands a rendering chunk so its end never bisects a text element. */
+	inline size_t ExpandChunkToTextElementBoundary(
+		const std::wstring& text, size_t start, size_t requestedLength)
+	{
+		start = (std::min)(start, text.size());
+		size_t end = start + (std::min)(
+			requestedLength, text.size() - start);
+		if (!CuiTextBoundary::IsTextElementBoundary(text, end, true))
+			end = CuiTextBoundary::GetNextTextElementBoundary(
+				text, end, true);
+		return end - start;
+	}
+
+	/**
+	 * A virtual text-layout block. Length covers its complete source range.
+	 * LayoutLength omits a terminating CRLF when another block follows; the
+	 * layout layer represents that separator with a styled zero-width sentinel
+	 * so independent layouts do not both account for the following visual line.
+	 */
+	struct TextLayoutChunk
+	{
+		size_t Length = 0;
+		size_t LayoutLength = 0;
+	};
+
+	/**
+	 * Chooses a chunk boundary only after a canonical CRLF. If the requested
+	 * size falls inside a long paragraph, the chunk expands through that whole
+	 * paragraph instead of cutting shaping or wrapping context mid-line.
+	 */
+	inline TextLayoutChunk FindSafeTextLayoutChunk(
+		const std::wstring& text, size_t start, size_t requestedLength)
+	{
+		start = (std::min)(start, text.size());
+		const size_t remaining = text.size() - start;
+		if (remaining == 0) return {};
+		requestedLength = (std::max)(requestedLength, size_t{ 1 });
+		const size_t requestedEnd = start + (std::min)(
+			requestedLength, remaining);
+		if (requestedEnd == text.size()) return { remaining, remaining };
+
+		auto isBreakEnd = [&](size_t end)
+		{
+			return end >= start + 2 && end <= text.size()
+				&& text[end - 2] == L'\r' && text[end - 1] == L'\n';
+		};
+
+		size_t boundary = requestedEnd;
+		while (boundary > start + 1 && !isBreakEnd(boundary))
+			--boundary;
+		if (!isBreakEnd(boundary))
+		{
+			boundary = (std::max)(requestedEnd, start + 2);
+			while (boundary <= text.size() && !isBreakEnd(boundary))
+				++boundary;
+		}
+		if (boundary > text.size()) return { remaining, remaining };
+
+		const size_t length = boundary - start;
+		// A final trailing CRLF intentionally retains DirectWrite's terminal
+		// empty line. Only seams with following text elide the delimiter.
+		return boundary < text.size()
+			? TextLayoutChunk{ length, length - 2 }
+			: TextLayoutChunk{ length, length };
 	}
 
 	inline bool IsTextInputChar(wchar_t ch)
@@ -173,14 +247,12 @@ namespace CuiTextEdit
 		if (start > end)
 			std::swap(start, end);
 
-		if (preserveCrLf)
-		{
-			if (IsBetweenCrLf(text, start)) start--;
-			if (IsBetweenCrLf(text, end)) end++;
-		}
-
-		if (IsBetweenSurrogatePair(text, start)) start--;
-		if (IsBetweenSurrogatePair(text, end)) end++;
+		start = static_cast<int>(
+			CuiTextBoundary::SnapToTextElementBoundary(
+				text, static_cast<size_t>(start), false, preserveCrLf));
+		end = static_cast<int>(
+			CuiTextBoundary::SnapToTextElementBoundary(
+				text, static_cast<size_t>(end), true, preserveCrLf));
 
 		start = ClampIndex(start, text.size());
 		end = ClampIndex(end, text.size());
@@ -189,29 +261,17 @@ namespace CuiTextEdit
 	inline int GetNextCaretIndex(const std::wstring& text, int index, bool preserveCrLf)
 	{
 		index = ClampIndex(index, text.size());
-		if (index >= static_cast<int>(text.size()))
-			return static_cast<int>(text.size());
-		if (preserveCrLf && HasCrLfAt(text, index))
-			return (std::min)(index + 2, static_cast<int>(text.size()));
-		if (HasSurrogatePairAt(text, index))
-			return (std::min)(index + 2, static_cast<int>(text.size()));
-		if ((preserveCrLf && IsBetweenCrLf(text, index)) || IsBetweenSurrogatePair(text, index))
-			return (std::min)(index + 1, static_cast<int>(text.size()));
-		return index + 1;
+		return static_cast<int>(
+			CuiTextBoundary::GetNextTextElementBoundary(
+				text, static_cast<size_t>(index), preserveCrLf));
 	}
 
 	inline int GetPreviousCaretIndex(const std::wstring& text, int index, bool preserveCrLf)
 	{
 		index = ClampIndex(index, text.size());
-		if (index <= 0)
-			return 0;
-		if (preserveCrLf && index >= 2 && text[static_cast<size_t>(index) - 2] == L'\r' && text[static_cast<size_t>(index) - 1] == L'\n')
-			return index - 2;
-		if (index >= 2 && IsHighSurrogate(text[static_cast<size_t>(index) - 2]) && IsLowSurrogate(text[static_cast<size_t>(index) - 1]))
-			return index - 2;
-		if ((preserveCrLf && IsBetweenCrLf(text, index)) || IsBetweenSurrogatePair(text, index))
-			return index - 1;
-		return index - 1;
+		return static_cast<int>(
+			CuiTextBoundary::GetPreviousTextElementBoundary(
+				text, static_cast<size_t>(index), preserveCrLf));
 	}
 
 	inline int GetLineStartIndex(const std::wstring& text, int index)
@@ -251,13 +311,14 @@ namespace CuiTextEdit
 		index = ClampIndex(index, text.size());
 		if (index >= static_cast<int>(text.size()))
 			return WordCharacterClass::WhiteSpace;
-		const wchar_t value = text[static_cast<size_t>(index)];
+		const auto value = CuiTextBoundary::GetCodePointAt(
+			text, static_cast<size_t>(index));
 		if (value == L'\r' || value == L'\n')
 			return WordCharacterClass::LineBreak;
-		if (std::iswspace(static_cast<wint_t>(value)))
+		if (CuiTextBoundary::IsWhiteSpaceCodePoint(value))
 			return WordCharacterClass::WhiteSpace;
-		if (value == L'_' || std::iswalnum(static_cast<wint_t>(value))
-			|| IsHighSurrogate(value) || IsLowSurrogate(value))
+		if (CuiTextBoundary::IsWordCodePoint(value)
+			|| value > 0xFFFFu)
 		{
 			return WordCharacterClass::Word;
 		}
@@ -265,7 +326,7 @@ namespace CuiTextEdit
 	}
 
 	/**
-	 * Returns the text-element-safe run selected by WPF-style double click.
+	 * Returns the Unicode text-element-safe run selected by WPF-style double click.
 	 * This intentionally distinguishes words, whitespace, punctuation and line
 	 * breaks instead of expanding every double click to the whole document.
 	 */
@@ -482,6 +543,8 @@ namespace CuiTextEdit
 	inline TextPosition GetTextPosition(const std::wstring& text, size_t index)
 	{
 		index = (std::min)(index, text.size());
+		index = CuiTextBoundary::SnapToTextElementBoundary(
+			text, index, false, true);
 		TextPosition result;
 		for (size_t i = 0; i < index;)
 		{
@@ -500,10 +563,8 @@ namespace CuiTextEdit
 				i++;
 				continue;
 			}
-			if (i + 1 < index && HasSurrogatePairAt(text, static_cast<int>(i)))
-				i += 2;
-			else
-				i++;
+			i = CuiTextBoundary::GetNextTextElementBoundary(
+				text, i, true);
 			result.column++;
 		}
 		return result;
@@ -526,18 +587,8 @@ namespace CuiTextEdit
 		if (replacement.size() <= allowedLength)
 			return replacement;
 
-		if (allowedLength > 0 && allowedLength < replacement.size())
-		{
-			if (replacement[allowedLength - 1] == L'\r' && replacement[allowedLength] == L'\n')
-				allowedLength--;
-			if (allowedLength > 0
-				&& allowedLength < replacement.size()
-				&& IsHighSurrogate(replacement[allowedLength - 1])
-				&& IsLowSurrogate(replacement[allowedLength]))
-			{
-				allowedLength--;
-			}
-		}
+		allowedLength = CuiTextBoundary::SnapToTextElementBoundary(
+			replacement, allowedLength, false, true);
 
 		return replacement.substr(0, allowedLength);
 	}
@@ -580,36 +631,18 @@ namespace CuiTextEdit
 		int& eraseLength)
 	{
 		caretIndex = ClampIndex(caretIndex, text.size());
-		if (caretIndex <= 0)
-			return false;
-		if (preserveCrLf && IsBetweenCrLf(text, caretIndex))
-		{
-			eraseStart = caretIndex - 1;
-			eraseLength = 2;
-			return true;
-		}
-		if (IsBetweenSurrogatePair(text, caretIndex))
-		{
-			eraseStart = caretIndex - 1;
-			eraseLength = 2;
-			return true;
-		}
-		if (preserveCrLf && caretIndex >= 2 && text[static_cast<size_t>(caretIndex) - 2] == L'\r' && text[static_cast<size_t>(caretIndex) - 1] == L'\n')
-		{
-			eraseStart = caretIndex - 2;
-			eraseLength = 2;
-			return true;
-		}
-		if (caretIndex >= 2 && IsHighSurrogate(text[static_cast<size_t>(caretIndex) - 2]) && IsLowSurrogate(text[static_cast<size_t>(caretIndex) - 1]))
-		{
-			eraseStart = caretIndex - 2;
-			eraseLength = 2;
-			return true;
-		}
-
-		eraseStart = caretIndex - 1;
-		eraseLength = 1;
-		return true;
+		if (caretIndex <= 0) return false;
+		const auto caret = static_cast<size_t>(caretIndex);
+		const auto start = CuiTextBoundary::GetPreviousTextElementBoundary(
+			text, caret, preserveCrLf);
+		const auto end = CuiTextBoundary::IsTextElementBoundary(
+			text, caret, preserveCrLf)
+			? caret
+			: CuiTextBoundary::GetNextTextElementBoundary(
+				text, caret, preserveCrLf);
+		eraseStart = static_cast<int>(start);
+		eraseLength = static_cast<int>(end - start);
+		return eraseLength > 0;
 	}
 
 	inline bool GetDeleteEraseRange(
@@ -620,36 +653,18 @@ namespace CuiTextEdit
 		int& eraseLength)
 	{
 		caretIndex = ClampIndex(caretIndex, text.size());
-		if (caretIndex >= static_cast<int>(text.size()))
-			return false;
-		if (preserveCrLf && IsBetweenCrLf(text, caretIndex))
-		{
-			eraseStart = caretIndex - 1;
-			eraseLength = 2;
-			return true;
-		}
-		if (IsBetweenSurrogatePair(text, caretIndex))
-		{
-			eraseStart = caretIndex - 1;
-			eraseLength = 2;
-			return true;
-		}
-		if (preserveCrLf && HasCrLfAt(text, caretIndex))
-		{
-			eraseStart = caretIndex;
-			eraseLength = 2;
-			return true;
-		}
-		if (HasSurrogatePairAt(text, caretIndex))
-		{
-			eraseStart = caretIndex;
-			eraseLength = 2;
-			return true;
-		}
-
-		eraseStart = caretIndex;
-		eraseLength = 1;
-		return true;
+		if (caretIndex >= static_cast<int>(text.size())) return false;
+		const auto caret = static_cast<size_t>(caretIndex);
+		const auto start = CuiTextBoundary::IsTextElementBoundary(
+			text, caret, preserveCrLf)
+			? caret
+			: CuiTextBoundary::GetPreviousTextElementBoundary(
+				text, caret, preserveCrLf);
+		const auto end = CuiTextBoundary::GetNextTextElementBoundary(
+			text, caret, preserveCrLf);
+		eraseStart = static_cast<int>(start);
+		eraseLength = static_cast<int>(end - start);
+		return eraseLength > 0;
 	}
 
 	inline EditResult EraseRange(std::wstring& text, int& selectionStart, int& selectionEnd, int start, int length)

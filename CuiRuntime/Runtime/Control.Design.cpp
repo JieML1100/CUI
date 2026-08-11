@@ -325,6 +325,7 @@ void Control::RegisterDependencyProperties()
 	(void)MaxWidthProperty();
 	(void)MaxHeightProperty();
 	(void)FontFamilyProperty();
+	(void)LanguageProperty();
 	(void)FontSizeProperty();
 	(void)ClipProperty();
 	(void)ClipToBoundsProperty();

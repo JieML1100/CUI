@@ -1826,13 +1826,20 @@ bool DependencyPropertyMetadata::IsValidValue(
 void DependencyPropertyMetadata::MergeBaseMetadata(
 	const DependencyPropertyMetadata& base)
 {
+	// A derived/AddOwner layer with its own CLR accessor remains
+	// accessor-backed even when the identity's default owner uses the generic
+	// effective-value store. Otherwise the merged metadata accepts writes into
+	// a hidden slot and never updates the derived owner's backing field.
+	const bool hasOwnAccessor = static_cast<bool>(_getter)
+		|| static_cast<bool>(_setter);
 	if (!_valueConverter) _valueConverter = base._valueConverter;
 	if (!_coercer) _coercer = base._coercer;
 	if (!_comparer) _comparer = base._comparer;
 	if (!_getter) _getter = base._getter;
 	if (!_setter) _setter = base._setter;
-	_usesEffectiveValueStorage =
-		_usesEffectiveValueStorage || base._usesEffectiveValueStorage;
+	_usesEffectiveValueStorage = hasOwnAccessor
+		? false
+		: (_usesEffectiveValueStorage || base._usesEffectiveValueStorage);
 	if (!_subscriber)
 	{
 		_subscriber = base._subscriber;

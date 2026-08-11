@@ -3,6 +3,7 @@
 #include "../DesignerEventCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
 #include "../../CUI/include/GroupStyle.h"
+#include "../../CUI/include/RichTextDocument.h"
 #include <Convert.h>
 #include <algorithm>
 #include <cmath>
@@ -236,6 +237,14 @@ bool DesignRelativePanelConstraints::Empty() const noexcept
 		&& !AlignTopWith && !AlignBottomWith;
 }
 
+bool DesignTextFormatting::Empty() const noexcept
+{
+	return !Foreground && !Background
+		&& !FontFamily && !Language && !FontSize
+		&& !FontWeight && !FontStretch && !FontStyle
+		&& !Underline && !Strikethrough;
+}
+
 bool DesignNodeStructure::Empty() const noexcept
 {
 	return CommandTarget.empty()
@@ -246,7 +255,7 @@ bool DesignNodeStructure::Empty() const noexcept
 		&& ChildRole == DesignNodeChildRole::Default
 		&& (!RelativePanel || RelativePanel->Empty())
 		&& !GridRows && !GridColumns
-		&& !ChartSeries;
+		&& !ChartSeries && !Document;
 }
 
 namespace
@@ -400,6 +409,415 @@ namespace
 		return true;
 	}
 
+	void EncodeTextFormatting(
+		DesignValue& output,
+		const DesignTextFormatting& formatting)
+	{
+		if (formatting.Foreground)
+			output["foreground"] = EncodeColor(*formatting.Foreground);
+		if (formatting.Background)
+			output["background"] = EncodeColor(*formatting.Background);
+	if (formatting.FontFamily)
+		output["fontFamily"] = StructuralUtf8(*formatting.FontFamily);
+	if (formatting.Language)
+		output["language"] = StructuralUtf8(*formatting.Language);
+		if (formatting.FontSize) output["fontSize"] = *formatting.FontSize;
+		if (formatting.FontWeight)
+			output["fontWeight"] = StructuralUtf8(*formatting.FontWeight);
+		if (formatting.FontStretch)
+			output["fontStretch"] = StructuralUtf8(*formatting.FontStretch);
+		if (formatting.FontStyle)
+			output["fontStyle"] = StructuralUtf8(*formatting.FontStyle);
+		if (formatting.Underline) output["underline"] = *formatting.Underline;
+		if (formatting.Strikethrough)
+			output["strikethrough"] = *formatting.Strikethrough;
+	}
+
+	bool IsCanonicalFontWeight(const std::wstring& value)
+	{
+		return value == L"Thin" || value == L"ExtraLight"
+			|| value == L"UltraLight" || value == L"Light"
+			|| value == L"SemiLight" || value == L"Normal"
+			|| value == L"Regular" || value == L"Medium"
+			|| value == L"DemiBold" || value == L"SemiBold"
+			|| value == L"Bold" || value == L"ExtraBold"
+			|| value == L"UltraBold" || value == L"Black"
+			|| value == L"Heavy" || value == L"ExtraBlack"
+			|| value == L"UltraBlack";
+	}
+
+	bool IsCanonicalFontStyle(const std::wstring& value)
+	{
+		return value == L"Normal" || value == L"Oblique"
+			|| value == L"Italic";
+	}
+
+	bool IsCanonicalFontStretch(const std::wstring& value)
+	{
+		return value == L"UltraCondensed" || value == L"ExtraCondensed"
+			|| value == L"Condensed" || value == L"SemiCondensed"
+			|| value == L"Normal" || value == L"Medium"
+			|| value == L"SemiExpanded" || value == L"Expanded"
+			|| value == L"ExtraExpanded" || value == L"UltraExpanded";
+	}
+
+	bool IsCanonicalTextAlignment(const std::wstring& value)
+	{
+		return value == L"Left" || value == L"Right"
+			|| value == L"Center" || value == L"Justify";
+	}
+
+	bool IsCanonicalFlowDirection(const std::wstring& value)
+	{
+		return value == L"LeftToRight" || value == L"RightToLeft";
+	}
+
+	bool DecodeTextFormattingField(
+		const std::string& key,
+		const DesignValue& value,
+		DesignTextFormatting& formatting,
+		bool& handled,
+		std::wstring* outError)
+	{
+		handled = true;
+		if (key == "foreground" || key == "background")
+		{
+			DesignColor color;
+			if (!DecodeColor(value, color, outError)) return false;
+			if (key == "foreground") formatting.Foreground = color;
+			else formatting.Background = color;
+			return true;
+		}
+		if (key == "fontFamily")
+		{
+			if (!value.is_string())
+				return StructuralError(outError, L"FontFamily 必须是字符串。");
+			auto family = StructuralWide(value);
+			if (family.empty() || std::all_of(family.begin(), family.end(),
+				[](wchar_t ch) { return std::iswspace(ch) != 0; }))
+				return StructuralError(outError, L"FontFamily 不能为空。");
+			formatting.FontFamily = std::move(family);
+			return true;
+		}
+		if (key == "language")
+		{
+			if (!value.is_string())
+				return StructuralError(outError, L"Language 必须是字符串。");
+			auto language = StructuralWide(value);
+			if (!IsCanonicalRichTextLanguageTag(language))
+				return StructuralError(outError, L"Language 值无效。");
+			formatting.Language = std::move(language);
+			return true;
+		}
+		if (key == "fontSize")
+		{
+			if (!value.is_number())
+				return StructuralError(outError, L"FontSize 必须是数值。");
+			const auto size = value.get<double>();
+			if (!std::isfinite(size)
+				|| size < (1.0 / 300.0) || size > 160000.0)
+				return StructuralError(outError,
+					L"FontSize 必须位于 1/300 到 160000 之间。");
+			formatting.FontSize = size;
+			return true;
+		}
+		if (key == "fontWeight" || key == "fontStretch"
+			|| key == "fontStyle")
+		{
+			if (!value.is_string())
+				return StructuralError(outError, L"字体枚举值必须是字符串。");
+			auto text = StructuralWide(value);
+			if (key == "fontWeight")
+			{
+				if (!IsCanonicalFontWeight(text))
+					return StructuralError(outError, L"FontWeight 值无效。");
+				formatting.FontWeight = std::move(text);
+			}
+			else if (key == "fontStretch")
+			{
+				if (!IsCanonicalFontStretch(text))
+					return StructuralError(outError, L"FontStretch 值无效。");
+				formatting.FontStretch = std::move(text);
+			}
+			else
+			{
+				if (!IsCanonicalFontStyle(text))
+					return StructuralError(outError, L"FontStyle 值无效。");
+				formatting.FontStyle = std::move(text);
+			}
+			return true;
+		}
+		if (key == "underline" || key == "strikethrough")
+		{
+			if (!value.is_boolean())
+				return StructuralError(outError,
+					key == "underline" ? L"Underline 必须是布尔值。"
+						: L"Strikethrough 必须是布尔值。");
+			if (key == "underline") formatting.Underline = value.get<bool>();
+			else formatting.Strikethrough = value.get<bool>();
+			return true;
+		}
+		handled = false;
+		return true;
+	}
+
+	const char* InlineKindText(DesignInlineKind kind) noexcept
+	{
+		switch (kind)
+		{
+		case DesignInlineKind::Run: return "Run";
+		case DesignInlineKind::Span: return "Span";
+		case DesignInlineKind::Bold: return "Bold";
+		case DesignInlineKind::Italic: return "Italic";
+		case DesignInlineKind::Underline: return "Underline";
+		case DesignInlineKind::LineBreak: return "LineBreak";
+		}
+		return "";
+	}
+
+	std::optional<DesignInlineKind> ParseInlineKind(
+		const std::string& value) noexcept
+	{
+		if (value == "Run") return DesignInlineKind::Run;
+		if (value == "Span") return DesignInlineKind::Span;
+		if (value == "Bold") return DesignInlineKind::Bold;
+		if (value == "Italic") return DesignInlineKind::Italic;
+		if (value == "Underline") return DesignInlineKind::Underline;
+		if (value == "LineBreak") return DesignInlineKind::LineBreak;
+		return std::nullopt;
+	}
+
+	DesignValue EncodeInline(const DesignInline& inlineValue)
+	{
+		DesignValue output{
+			{ "kind", InlineKindText(inlineValue.Kind) } };
+		EncodeTextFormatting(output, inlineValue);
+		if (inlineValue.Kind == DesignInlineKind::Run)
+			output["text"] = StructuralUtf8(inlineValue.Text);
+		else if (inlineValue.Kind == DesignInlineKind::LineBreak)
+		{
+			// LineBreak is a terminal structural Inline with no content member.
+		}
+		else
+			output["inlines"] = EncodeArray(
+				inlineValue.Inlines, EncodeInline);
+		return output;
+	}
+
+	DesignValue EncodeParagraph(const DesignParagraph& paragraph)
+	{
+		DesignValue output = DesignValue::object();
+		EncodeTextFormatting(output, paragraph);
+		if (paragraph.TextAlignment)
+			output["textAlignment"] = StructuralUtf8(
+				*paragraph.TextAlignment);
+		if (paragraph.FlowDirection)
+			output["flowDirection"] = StructuralUtf8(
+				*paragraph.FlowDirection);
+		output["inlines"] = EncodeArray(
+			paragraph.Inlines, EncodeInline);
+		return output;
+	}
+
+	DesignValue EncodeFlowDocument(const DesignFlowDocument& document)
+	{
+		DesignValue output = DesignValue::object();
+		EncodeTextFormatting(output, document);
+		if (document.TextAlignment)
+			output["textAlignment"] = StructuralUtf8(
+				*document.TextAlignment);
+		if (document.FlowDirection)
+			output["flowDirection"] = StructuralUtf8(
+				*document.FlowDirection);
+		output["paragraphs"] = EncodeArray(
+			document.Paragraphs, EncodeParagraph);
+		return output;
+	}
+
+	bool DecodeInline(
+		const DesignValue& value,
+		DesignInline& inlineValue,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return StructuralError(outError, L"Inline 结构必须是对象。");
+		bool foundKind = false;
+		bool foundText = false;
+		bool foundInlines = false;
+		for (const auto& [key, item] : value.ObjectItems())
+		{
+			if (key == "kind")
+			{
+				if (!item.is_string())
+					return StructuralError(outError,
+						L"Inline.Kind 必须是字符串。");
+				const auto kind = ParseInlineKind(item.get<std::string>());
+				if (!kind)
+					return StructuralError(outError,
+						L"Inline.Kind 值无效。");
+				inlineValue.Kind = *kind;
+				foundKind = true;
+				continue;
+			}
+			if (key == "text")
+			{
+				if (!item.is_string())
+					return StructuralError(outError, L"Run.Text 必须是字符串。");
+				inlineValue.Text = StructuralWide(item);
+				foundText = true;
+				continue;
+			}
+			if (key == "inlines")
+			{
+				if (!DecodeArray(item, inlineValue.Inlines,
+					DecodeInline, outError)) return false;
+				foundInlines = true;
+				continue;
+			}
+			bool handled = false;
+			if (!DecodeTextFormattingField(
+				key, item, inlineValue, handled, outError)) return false;
+			if (!handled) return StructuralError(outError,
+				L"Inline 包含未知结构字段："
+					+ Convert::Utf8ToUnicode(key));
+		}
+		// Version-43 Run snapshots did not carry an explicit kind.
+		if (!foundKind && foundText && !foundInlines)
+			inlineValue.Kind = DesignInlineKind::Run;
+		else if (!foundKind)
+			return StructuralError(outError, L"Inline 结构缺少 Kind。");
+		if (inlineValue.Kind == DesignInlineKind::Run)
+		{
+			if (!foundText || foundInlines)
+				return StructuralError(outError,
+					L"Run 必须且只能包含 Text。");
+		}
+		else if (inlineValue.Kind == DesignInlineKind::LineBreak)
+		{
+			if (foundText || foundInlines)
+				return StructuralError(outError,
+					L"LineBreak 不能包含 Text 或 Inlines。");
+		}
+		else if (!foundInlines || foundText)
+		{
+			return StructuralError(outError,
+				L"Span/Bold/Italic/Underline 必须且只能包含 Inlines。");
+		}
+		return true;
+	}
+
+	bool DecodeParagraph(
+		const DesignValue& value,
+		DesignParagraph& paragraph,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return StructuralError(outError, L"Paragraph 结构必须是对象。");
+		bool foundInlines = false;
+		for (const auto& [key, item] : value.ObjectItems())
+		{
+			if (key == "textAlignment")
+			{
+				if (!item.is_string())
+					return StructuralError(outError,
+						L"Paragraph.TextAlignment 必须是字符串。");
+				auto alignment = StructuralWide(item);
+				if (!IsCanonicalTextAlignment(alignment))
+					return StructuralError(outError,
+						L"Paragraph.TextAlignment 值无效。");
+				paragraph.TextAlignment = std::move(alignment);
+				continue;
+			}
+			if (key == "flowDirection")
+			{
+				if (!item.is_string())
+					return StructuralError(outError,
+						L"Paragraph.FlowDirection 必须是字符串。");
+				auto direction = StructuralWide(item);
+				if (!IsCanonicalFlowDirection(direction))
+					return StructuralError(outError,
+						L"Paragraph.FlowDirection 值无效。");
+				paragraph.FlowDirection = std::move(direction);
+				continue;
+			}
+			if (key == "inlines" || key == "runs")
+			{
+				if (foundInlines)
+					return StructuralError(outError,
+						L"Paragraph.Inlines 不能重复。");
+				if (!DecodeArray(item, paragraph.Inlines,
+					DecodeInline, outError))
+					return false;
+				foundInlines = true;
+				continue;
+			}
+			bool handled = false;
+			if (!DecodeTextFormattingField(
+				key, item, paragraph, handled, outError)) return false;
+			if (!handled) return StructuralError(outError,
+				L"Paragraph 包含未知结构字段："
+				+ Convert::Utf8ToUnicode(key));
+		}
+		if (!foundInlines)
+			return StructuralError(outError,
+				L"Paragraph 结构缺少 Inlines。");
+		return true;
+	}
+
+	bool DecodeFlowDocument(
+		const DesignValue& value,
+		DesignFlowDocument& document,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return StructuralError(outError, L"FlowDocument 结构必须是对象。");
+		bool foundParagraphs = false;
+		for (const auto& [key, item] : value.ObjectItems())
+		{
+			if (key == "textAlignment")
+			{
+				if (!item.is_string())
+					return StructuralError(outError,
+						L"FlowDocument.TextAlignment 必须是字符串。");
+				auto alignment = StructuralWide(item);
+				if (!IsCanonicalTextAlignment(alignment))
+					return StructuralError(outError,
+						L"FlowDocument.TextAlignment 值无效。");
+				document.TextAlignment = std::move(alignment);
+				continue;
+			}
+			if (key == "flowDirection")
+			{
+				if (!item.is_string())
+					return StructuralError(outError,
+						L"FlowDocument.FlowDirection 必须是字符串。");
+				auto direction = StructuralWide(item);
+				if (!IsCanonicalFlowDirection(direction))
+					return StructuralError(outError,
+						L"FlowDocument.FlowDirection 值无效。");
+				document.FlowDirection = std::move(direction);
+				continue;
+			}
+			if (key == "paragraphs")
+			{
+				if (!DecodeArray(
+					item, document.Paragraphs, DecodeParagraph, outError)) return false;
+				foundParagraphs = true;
+				continue;
+			}
+			bool handled = false;
+			if (!DecodeTextFormattingField(
+				key, item, document, handled, outError)) return false;
+			if (!handled) return StructuralError(outError,
+				L"FlowDocument 包含未知结构字段："
+				+ Convert::Utf8ToUnicode(key));
+		}
+		if (!foundParagraphs)
+			return StructuralError(outError,
+				L"FlowDocument 结构缺少 Paragraphs。");
+		return true;
+	}
+
 }
 
 DesignValue EncodeDesignNodeStructure(
@@ -476,6 +894,8 @@ DesignValue EncodeDesignNodeStructure(
 					});
 				return value;
 			});
+	if (structure.Document)
+		result["document"] = EncodeFlowDocument(*structure.Document);
 	(void)type;
 	return result;
 }
@@ -670,6 +1090,13 @@ bool DecodeDesignNodeStructure(
 						}, error);
 				}, outError)) return false;
 			decoded.ChartSeries = std::move(series);
+			continue;
+		}
+		if (key == "document" && type == UIClass::UI_RichTextBox)
+		{
+			DesignFlowDocument document;
+			if (!DecodeFlowDocument(item, document, outError)) return false;
+			decoded.Document = std::move(document);
 			continue;
 		}
 		return StructuralError(outError,
@@ -1952,6 +2379,100 @@ bool DesignDocument::ValidateCommandTargetReferences(
 		if (!validateScope(validateScope, controlTemplate.Template,
 			L"ControlTemplate " + controlTemplate.DisplayName(), nullptr, {}))
 			return false;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool DesignDocument::ValidateRichTextStructure(
+	std::wstring* outError) const
+{
+	auto fail = [&](const std::wstring& owner,
+		const DesignNode& node,
+		const std::wstring& message)
+	{
+		if (outError)
+			*outError = owner + L" / " + node.Name + L"：" + message;
+		return false;
+	};
+	auto validateNode = [&](const DesignNode& node,
+		const std::wstring& owner)
+	{
+		if (!node.Structure.Document) return true;
+		if (node.Type != UIClass::UI_RichTextBox)
+			return fail(owner, node,
+				L"Document 结构仅适用于 RichTextBox。");
+		if (node.Properties.Find(L"Text")
+			|| node.Bindings.contains(L"Text")
+			|| node.TemplateBindings.contains(L"Text"))
+		{
+			return fail(owner, node,
+				L"RichTextBox.Text 不能与 Document 同时使用。");
+		}
+
+		DesignNodeStructure richTextOnly;
+		richTextOnly.Document = node.Structure.Document;
+		DesignNodeStructure decoded;
+		std::wstring structuralError;
+		if (!DecodeDesignNodeStructure(
+			node.Type,
+			EncodeDesignNodeStructure(node.Type, richTextOnly),
+			decoded,
+			&structuralError))
+		{
+			return fail(owner, node,
+				L"Document 结构无效：" + structuralError);
+		}
+		if (decoded.Document != node.Structure.Document)
+			return fail(owner, node,
+				L"Document 结构无法无损规范化。");
+		return true;
+	};
+	auto validateScope = [&](auto&& self,
+		const std::vector<DesignNode>& nodes,
+		const std::wstring& owner) -> bool
+	{
+		for (const auto& node : nodes)
+			if (!validateNode(node, owner)) return false;
+		for (const auto& node : nodes)
+		{
+			const auto resourceOwner = owner + L" / " + node.Name
+				+ L".Resources";
+			for (const auto& component
+				: node.LocalObjectResources.Components)
+			{
+				if (!self(self, component.Template,
+					resourceOwner + L" / 组件 "
+						+ component.Type.XamlName)) return false;
+			}
+			for (const auto& dataTemplate
+				: node.LocalObjectResources.DataTemplates)
+			{
+				if (!self(self, dataTemplate.Template,
+					resourceOwner + L" / DataTemplate "
+						+ dataTemplate.DisplayName())) return false;
+			}
+			for (const auto& controlTemplate
+				: node.LocalObjectResources.ControlTemplates)
+			{
+				if (!self(self, controlTemplate.Template,
+					resourceOwner + L" / ControlTemplate "
+						+ controlTemplate.DisplayName())) return false;
+			}
+		}
+		return true;
+	};
+
+	if (!validateNode(Window, L"文档根")) return false;
+	if (!validateScope(validateScope, Nodes, L"文档")) return false;
+	for (const auto& component : Components)
+		if (!validateScope(validateScope, component.Template,
+			L"组件 " + component.Type.XamlName)) return false;
+	for (const auto& dataTemplate : DataTemplates)
+		if (!validateScope(validateScope, dataTemplate.Template,
+			L"DataTemplate " + dataTemplate.DisplayName())) return false;
+	for (const auto& controlTemplate : ControlTemplates)
+		if (!validateScope(validateScope, controlTemplate.Template,
+			L"ControlTemplate " + controlTemplate.DisplayName())) return false;
 	if (outError) outError->clear();
 	return true;
 }

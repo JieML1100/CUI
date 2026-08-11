@@ -788,7 +788,24 @@
                   <TextBlock Height="24" Text="详情" Foreground="{StaticResource Accent}" Width="46"/>
                   </StackPanel>
                   <RichTextBox x:Name="splitNotes" Margin="0,14,0,0" Height="190"
-                    Text="导航与面包屑由 Grid、ListBox、StackPanel、TextBlock 和数据资源组合；不再由高层原生控件私有绘制。"/>
+                    AutomationProperties.Name="FlowDocument rich text editor">
+                    <FlowDocument FontFamily="Segoe UI" FontSize="13" TextAlignment="Left">
+                      <Paragraph TextAlignment="Center">
+                        <Run Text="RichTextBox 已进入文档模型" FontSize="18" FontWeight="Bold" Foreground="#FF4F8CFF"/>
+                      </Paragraph>
+					  <Paragraph Foreground="#FF536171" TextAlignment="Justify">同一段落可以混合 <Bold>粗体与 <Italic>嵌套斜体</Italic></Bold>、<Underline Foreground="#FF087F5B">下划线</Underline>、<Span FontStretch="Expanded">扩展字宽</Span>、<Span Language="ja-JP">日本語区域</Span>以及 <Span Background="#FFFFE8A3">带背景的 Span</Span>。</Paragraph>
+                      <Paragraph Foreground="#FF536171">
+                        <Run Text="显式 LineBreak 保持在同一 Paragraph 内。"/><LineBreak/>
+						<Run Text="剪贴板优先保留 CUI v7（含段落方向、FontStretch 与 Language），并发布标准 RTF 与外部应用互通；失败时安全降级 Unicode。"/><LineBreak/>
+						<Run Text="编辑快捷键：Ctrl+B / I / U，Ctrl+Space 重置，Ctrl+[ / ] 调整字号；Ctrl+方向键与 Ctrl+Backspace / Delete 按词编辑。"/><LineBreak/>
+                        <Run Text="Unicode 文本元素：é、👍🏽、👩‍👩‍👧‍👦、🇨🇳 的光标移动、选择、删除与 MaxLength 都不会拆开组合序列。"/><LineBreak/>
+                        <Run Text="Selection.Start/End/Anchor/Moving 现在返回会随编辑移动的 TextPointer。"/><LineBreak/>
+                        <Run Text="TextRange 可独立跟踪范围，并以一次事务完成文本替换、格式化和 Undo。"/>
+                      </Paragraph>
+					  <Paragraph Foreground="#FF536171" TextAlignment="Right">TextAlignment：Center · Justify · Left · Right</Paragraph>
+					  <Paragraph Foreground="#FF536171" TextAlignment="Left" FlowDirection="RightToLeft">اتجاه RTL · עברית · 123</Paragraph>
+                    </FlowDocument>
+                  </RichTextBox>
                 </StackPanel>
               </Grid>
               <GroupBox x:Name="containerGroup" Grid.Row="1" Margin="0,14,0,0" Header="组合容器">

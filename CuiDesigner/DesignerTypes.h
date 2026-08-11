@@ -21,6 +21,7 @@ struct DesignerStyleSheet;
 namespace DesignerModel
 {
 	struct DesignObjectResourceDictionary;
+	struct DesignFlowDocument;
 
 	/** One XAML CommandBinding; handler names are resolved by native code. */
 	struct DesignCommandBinding
@@ -536,6 +537,11 @@ public:
 	// Kept as model data because they have no standalone native control object.
 	std::shared_ptr<DesignerModel::DesignObjectResourceDictionary>
 		LocalObjectResources;
+	// Authoritative authored rich-text structure. The runtime FlowDocument is
+	// only a preview projection and cannot preserve empty/nested wrappers when
+	// the Designer rebuilds its DesignDocument.
+	std::shared_ptr<const DesignerModel::DesignFlowDocument>
+		AuthoredRichTextDocument;
 
 	// 设计期附加数据（不一定映射到运行时属性）。
 	// 例如：MediaElement 的媒体源路径等。

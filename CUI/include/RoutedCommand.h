@@ -272,6 +272,21 @@ public:
 		UIClass ownerClass,
 		CommandBinding binding);
 
+	/** Registers one immutable WPF-style class input binding. */
+	static EventConnection RegisterClassInputBinding(
+		ComponentTypeToken ownerType,
+		InputBinding binding);
+#if CUI_ENABLE_DYNAMIC_XAML
+	/** Design compatibility overload that lowers the QName to a token. */
+	static EventConnection RegisterClassInputBinding(
+		const RuntimeTypeId& ownerType,
+		InputBinding binding);
+#endif
+	/** Registers a native class gesture (derived classes are matched first). */
+	static EventConnection RegisterClassInputBinding(
+		UIClass ownerClass,
+		InputBinding binding);
+
 	/**
 	 * Publishes the initial unified query result immediately and one fresh
 	 * result after each coalesced requery in the source's current Window.

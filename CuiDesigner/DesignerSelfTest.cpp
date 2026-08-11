@@ -9656,6 +9656,179 @@ bool RunDesignerSelfTest(std::wstring& report)
 	}
 
 	{
+		const std::string richTextDesignerXaml = R"XAML(
+<Window xmlns="urn:cui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Name="RichTextDesignerWindow" Width="640" Height="420">
+  <Grid x:Name="richTextRoot">
+    <RichTextBox x:Name="richEditor">
+			  <FlowDocument FontFamily="Segoe UI" Language="ja-JP" FontSize="17"
+					FontStretch="SemiCondensed"
+					TextAlignment="Center" FlowDirection="RightToLeft">
+		<Paragraph Foreground="#FF203040" TextAlignment="Right"
+			FlowDirection="LeftToRight">
+          <Span Background="#40112233">
+			<Bold><Run Text="nested" FontStretch="Expanded" Language="ko-KR" /></Bold>
+            <Italic />
+          </Span>
+          <Underline><Run Text="" /></Underline>
+          <LineBreak Background="#40224466" />
+          <Span />
+        </Paragraph>
+		<Paragraph TextAlignment="Justify" />
+      </FlowDocument>
+    </RichTextBox>
+  </Grid>
+</Window>)XAML";
+		DesignerModel::DesignDocument source;
+		DesignerModel::DesignDocument rebuilt;
+		DesignerModel::DesignDocument reparsed;
+		std::wstring error;
+		auto findRichNode = [](const DesignerModel::DesignDocument& document)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[](const auto& node) { return node.Name == L"richEditor"; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		const bool parsed = DesignerModel::XamlDocumentParser::FromXaml(
+			richTextDesignerXaml, source, &error);
+		DesignerCanvas canvas(0, 0, 800, 600);
+		const bool applied = parsed && canvas.ApplyDesignDocument(source, &error);
+		const bool captured = applied
+			&& canvas.BuildDesignDocument(rebuilt, &error);
+		const auto* sourceNode = parsed ? findRichNode(source) : nullptr;
+		const auto* rebuiltNode = captured ? findRichNode(rebuilt) : nullptr;
+		const bool authoredDocumentPreserved = sourceNode && rebuiltNode
+			&& sourceNode->Structure.Document
+			== rebuiltNode->Structure.Document;
+
+		std::shared_ptr<DesignerControl> richControl;
+		if (applied)
+		{
+			for (const auto& control : canvas.GetAllControls())
+			{
+				if (control && control->Name == L"richEditor")
+				{
+					richControl = control;
+					break;
+				}
+			}
+		}
+		PropertyGridBinder richBinder;
+		richBinder.SetCanvas(&canvas);
+		richBinder.BindControl(richControl);
+		const auto richRows = richBinder.GetPropertyRows();
+		const bool textRowHidden = richControl
+			&& std::none_of(richRows.begin(), richRows.end(),
+				[](const DesignerPropertyRow& row)
+				{ return row.Name == L"Text"; });
+		const auto rejectedTextEdit = richControl
+			? richBinder.ApplyControlPropertyValue(L"Text", L"flattened")
+			: DesignerPropertyEditResult::Failure(L"richEditor missing");
+		DesignerModel::DesignDocument afterRejectedTextEdit;
+		const bool rejectedTextEditPreserved = !rejectedTextEdit && sourceNode
+			&& canvas.BuildDesignDocument(afterRejectedTextEdit, &error)
+			&& findRichNode(afterRejectedTextEdit)
+			&& findRichNode(afterRejectedTextEdit)->Structure.Document
+				== sourceNode->Structure.Document;
+
+		std::string canonical;
+		bool serialized = false;
+		if (captured)
+		{
+			try
+			{
+				canonical = DesignerModel::XamlDocumentSerializer::ToXaml(rebuilt);
+				serialized = true;
+			}
+			catch (const std::exception& exception)
+			{
+				error = L"RichTextBox Designer serialize failed: "
+					+ Convert::Utf8ToUnicode(exception.what());
+			}
+		}
+		const bool canonicalReparsed = serialized
+			&& DesignerModel::XamlDocumentParser::FromXaml(
+				canonical, reparsed, &error);
+		const auto* reparsedNode = canonicalReparsed
+			? findRichNode(reparsed) : nullptr;
+		const bool canonicalDocumentPreserved = rebuiltNode && reparsedNode
+			&& rebuiltNode->Structure.Document
+			== reparsedNode->Structure.Document;
+		bool nestedAndEmptyShapePreserved = false;
+		if (reparsedNode && reparsedNode->Structure.Document)
+		{
+			const auto& flow = *reparsedNode->Structure.Document;
+			if (flow.Language == std::optional<std::wstring>(L"ja-jp")
+				&& flow.TextAlignment == std::optional<std::wstring>(L"Center")
+				&& flow.FlowDirection
+					== std::optional<std::wstring>(L"RightToLeft")
+				&& flow.Paragraphs.size() == 2
+				&& flow.Paragraphs[0].TextAlignment
+					== std::optional<std::wstring>(L"Right")
+				&& flow.Paragraphs[0].FlowDirection
+					== std::optional<std::wstring>(L"LeftToRight")
+				&& flow.Paragraphs[1].TextAlignment
+					== std::optional<std::wstring>(L"Justify")
+				&& flow.Paragraphs[0].Inlines.size() == 4
+				&& flow.Paragraphs[1].Inlines.empty())
+			{
+				const auto& outerSpan = flow.Paragraphs[0].Inlines[0];
+				const auto& underline = flow.Paragraphs[0].Inlines[1];
+				const auto& lineBreak = flow.Paragraphs[0].Inlines[2];
+				const auto& emptySpan = flow.Paragraphs[0].Inlines[3];
+				nestedAndEmptyShapePreserved =
+					outerSpan.Kind == DesignerModel::DesignInlineKind::Span
+					&& outerSpan.Inlines.size() == 2
+					&& outerSpan.Inlines[0].Kind
+						== DesignerModel::DesignInlineKind::Bold
+					&& outerSpan.Inlines[0].Inlines.size() == 1
+					&& outerSpan.Inlines[0].Inlines[0].Kind
+						== DesignerModel::DesignInlineKind::Run
+					&& outerSpan.Inlines[0].Inlines[0].Text == L"nested"
+					&& outerSpan.Inlines[0].Inlines[0].Language
+						== std::optional<std::wstring>(L"ko-kr")
+					&& outerSpan.Inlines[1].Kind
+						== DesignerModel::DesignInlineKind::Italic
+					&& outerSpan.Inlines[1].Inlines.empty()
+					&& underline.Kind
+						== DesignerModel::DesignInlineKind::Underline
+					&& underline.Inlines.size() == 1
+					&& underline.Inlines[0].Kind
+						== DesignerModel::DesignInlineKind::Run
+					&& underline.Inlines[0].Text.empty()
+					&& lineBreak.Kind
+						== DesignerModel::DesignInlineKind::LineBreak
+					&& lineBreak.Inlines.empty()
+					&& emptySpan.Kind == DesignerModel::DesignInlineKind::Span
+					&& emptySpan.Inlines.empty();
+			}
+		}
+		AppendFailure(failures,
+			parsed && applied && captured && authoredDocumentPreserved
+			&& canonicalReparsed && canonicalDocumentPreserved
+			&& nestedAndEmptyShapePreserved && textRowHidden
+			&& rejectedTextEditPreserved,
+			L"DesignerCanvas lost authored RichTextBox Document structure during "
+				L"load/build/serialize/reparse: " + error
+				+ L" [parsed=" + std::to_wstring(parsed)
+				+ L", applied=" + std::to_wstring(applied)
+				+ L", captured=" + std::to_wstring(captured)
+				+ L", authored="
+				+ std::to_wstring(authoredDocumentPreserved)
+				+ L", reparsed=" + std::to_wstring(canonicalReparsed)
+				+ L", canonical="
+				+ std::to_wstring(canonicalDocumentPreserved)
+				+ L", nestedEmpty="
+				+ std::to_wstring(nestedAndEmptyShapePreserved)
+				+ L", textHidden=" + std::to_wstring(textRowHidden)
+				+ L", textRejected="
+				+ std::to_wstring(rejectedTextEditPreserved) + L"]");
+	}
+
+	{
 		const std::string commandTargetXaml = R"XAML(
 <Window xmlns="urn:cui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"

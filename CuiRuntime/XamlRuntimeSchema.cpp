@@ -262,6 +262,46 @@ namespace
 				L"Validation.Errors", BindingValueKind::Object },
 		});
 
+	const auto NonVisualTypeTable =
+		std::to_array<CuiRuntime::NonVisualXamlTypeDescriptor>({
+			{ CuiType(L"FlowDocument"), L"Blocks" },
+			{ CuiType(L"Paragraph"), L"Inlines" },
+			{ CuiType(L"Run"), L"Text" },
+			{ CuiType(L"Span"), L"Inlines" },
+			{ CuiType(L"Bold"), L"Inlines" },
+			{ CuiType(L"Italic"), L"Inlines" },
+			{ CuiType(L"Underline"), L"Inlines" },
+			{ CuiType(L"LineBreak"), L"" },
+		});
+
+	const auto ObjectMembers =
+		std::to_array<CuiRuntime::XamlObjectMemberDescriptor>({
+			{ CuiType(L"RichTextBox"), L"Document",
+				CuiRuntime::XamlObjectMemberKind::Object,
+				CuiType(L"FlowDocument"), BindingValueKind::Empty },
+			{ CuiType(L"FlowDocument"), L"Blocks",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				CuiType(L"Paragraph"), BindingValueKind::Empty },
+			{ CuiType(L"Paragraph"), L"Inlines",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				{}, BindingValueKind::Empty },
+			{ CuiType(L"Run"), L"Text",
+				CuiRuntime::XamlObjectMemberKind::Text,
+				{}, BindingValueKind::String },
+			{ CuiType(L"Span"), L"Inlines",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				{}, BindingValueKind::Empty },
+			{ CuiType(L"Bold"), L"Inlines",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				{}, BindingValueKind::Empty },
+			{ CuiType(L"Italic"), L"Inlines",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				{}, BindingValueKind::Empty },
+			{ CuiType(L"Underline"), L"Inlines",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				{}, BindingValueKind::Empty },
+		});
+
 	template<typename TConcrete>
 	const std::vector<std::type_index>& NativeOwnerTypes()
 	{
@@ -518,6 +558,47 @@ CuiRuntime::XamlRuntimeSchema::FindAttachedProperty(
 				&& EqualName(candidate.Name, memberName);
 		});
 	return found == AttachedProperties.end() ? nullptr : &*found;
+}
+
+const CuiRuntime::NonVisualXamlTypeDescriptor*
+CuiRuntime::XamlRuntimeSchema::FindNonVisualType(
+	std::wstring_view namespaceUri,
+	std::wstring_view localName) noexcept
+{
+	if (namespaceUri.empty()) namespaceUri = CuiNamespace;
+	const auto found = std::find_if(
+		NonVisualTypeTable.begin(), NonVisualTypeTable.end(),
+		[&](const auto& candidate)
+		{
+			return EqualName(candidate.TypeId.NamespaceUri, namespaceUri)
+				&& EqualName(candidate.TypeId.LocalName, localName);
+		});
+	return found == NonVisualTypeTable.end() ? nullptr : &*found;
+}
+
+std::span<const CuiRuntime::NonVisualXamlTypeDescriptor>
+CuiRuntime::XamlRuntimeSchema::EnumerateNonVisualTypes() noexcept
+{
+	return NonVisualTypeTable;
+}
+
+const CuiRuntime::XamlObjectMemberDescriptor*
+CuiRuntime::XamlRuntimeSchema::FindObjectMember(
+	std::wstring_view ownerNamespaceUri,
+	std::wstring_view ownerLocalName,
+	std::wstring_view memberName) noexcept
+{
+	if (ownerNamespaceUri.empty()) ownerNamespaceUri = CuiNamespace;
+	const auto found = std::find_if(
+		ObjectMembers.begin(), ObjectMembers.end(),
+		[&](const auto& candidate)
+		{
+			return EqualName(
+				candidate.OwnerType.NamespaceUri, ownerNamespaceUri)
+				&& EqualName(candidate.OwnerType.LocalName, ownerLocalName)
+				&& EqualName(candidate.Name, memberName);
+		});
+	return found == ObjectMembers.end() ? nullptr : &*found;
 }
 
 std::vector<const DependencyPropertyMetadata*>

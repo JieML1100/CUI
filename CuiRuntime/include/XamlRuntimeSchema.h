@@ -55,6 +55,31 @@ struct XamlAttachedPropertyDescriptor final
 	BindingValueKind ValueKind = BindingValueKind::Empty;
 };
 
+/** Schema identity for a built-in object that is not a Control/visual node. */
+struct NonVisualXamlTypeDescriptor final
+{
+	RuntimeTypeId TypeId;
+	/** WPF-style implicit content member (Blocks, Inlines, or Text). */
+	std::wstring ContentMember;
+};
+
+enum class XamlObjectMemberKind
+{
+	Object,
+	Collection,
+	Text
+};
+
+/** Typed object-tree edge used by the non-visual document materializer. */
+struct XamlObjectMemberDescriptor final
+{
+	RuntimeTypeId OwnerType;
+	std::wstring Name;
+	XamlObjectMemberKind Kind = XamlObjectMemberKind::Object;
+	RuntimeTypeId ValueType;
+	BindingValueKind ValueKind = BindingValueKind::Empty;
+};
+
 /** Immutable property view for one built-in or XAML-defined component type. */
 struct XamlTypePropertySchema final
 {
@@ -87,6 +112,17 @@ public:
 	static const BuiltInXamlTypeDescriptor* DefaultTypeFor(
 		UIClass nativeType) noexcept;
 	static const XamlAttachedPropertyDescriptor* FindAttachedProperty(
+		std::wstring_view ownerNamespaceUri,
+		std::wstring_view ownerLocalName,
+		std::wstring_view memberName) noexcept;
+	/** Looks up a built-in non-visual XAML document type. */
+	static const NonVisualXamlTypeDescriptor* FindNonVisualType(
+		std::wstring_view namespaceUri,
+		std::wstring_view localName) noexcept;
+	static std::span<const NonVisualXamlTypeDescriptor>
+		EnumerateNonVisualTypes() noexcept;
+	/** Looks up a typed object/content edge, including RichTextBox.Document. */
+	static const XamlObjectMemberDescriptor* FindObjectMember(
 		std::wstring_view ownerNamespaceUri,
 		std::wstring_view ownerLocalName,
 		std::wstring_view memberName) noexcept;

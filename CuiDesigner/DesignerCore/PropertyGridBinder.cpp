@@ -234,7 +234,21 @@ std::vector<DesignerPropertyRow> PropertyGridBinder::GetPropertyRows() const
 			controlRows.push_back(DesignerPropertyRowCatalog::GetControlRows(
 				*control, context));
 		}
-		return DesignerPropertyRowCatalog::GetCommonControlRows(controlRows);
+		auto rows = DesignerPropertyRowCatalog::GetCommonControlRows(
+			controlRows);
+		const bool hasAuthoredRichDocument = std::any_of(
+			_controls.begin(), _controls.end(), [](const auto& control)
+			{
+				return control && control->AuthoredRichTextDocument != nullptr;
+			});
+		if (hasAuthoredRichDocument)
+		{
+			std::erase_if(rows, [](const DesignerPropertyRow& row)
+			{
+				return NamesEqual(row.Name, L"Text");
+			});
+		}
+		return rows;
 	}
 	return _canvas
 		? DesignerPropertyRowCatalog::GetWindowRows(CaptureWindowNode())

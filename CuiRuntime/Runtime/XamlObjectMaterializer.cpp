@@ -35,6 +35,7 @@
 #include "../../CUI/include/ProgressRing.h"
 #include "../../CUI/include/RadioButton.h"
 #include "../../CUI/include/RichTextBox.h"
+#include "../../CUI/include/FlowDocument.h"
 #include "../../CUI/include/ScrollViewer.h"
 #include "../../CUI/include/Slider.h"
 #include "../../CUI/include/Switch.h"
@@ -85,6 +86,195 @@ using namespace DesignerModel;
 
 namespace
 {
+	std::optional<DWRITE_FONT_WEIGHT> RichTextFontWeight(
+		std::wstring_view value) noexcept
+	{
+		if (value == L"Thin") return DWRITE_FONT_WEIGHT_THIN;
+		if (value == L"ExtraLight") return DWRITE_FONT_WEIGHT_EXTRA_LIGHT;
+		if (value == L"UltraLight") return DWRITE_FONT_WEIGHT_ULTRA_LIGHT;
+		if (value == L"Light") return DWRITE_FONT_WEIGHT_LIGHT;
+		if (value == L"SemiLight") return DWRITE_FONT_WEIGHT_SEMI_LIGHT;
+		if (value == L"Normal") return DWRITE_FONT_WEIGHT_NORMAL;
+		if (value == L"Regular") return DWRITE_FONT_WEIGHT_REGULAR;
+		if (value == L"Medium") return DWRITE_FONT_WEIGHT_MEDIUM;
+		if (value == L"DemiBold") return DWRITE_FONT_WEIGHT_DEMI_BOLD;
+		if (value == L"SemiBold") return DWRITE_FONT_WEIGHT_SEMI_BOLD;
+		if (value == L"Bold") return DWRITE_FONT_WEIGHT_BOLD;
+		if (value == L"ExtraBold") return DWRITE_FONT_WEIGHT_EXTRA_BOLD;
+		if (value == L"UltraBold") return DWRITE_FONT_WEIGHT_ULTRA_BOLD;
+		if (value == L"Black") return DWRITE_FONT_WEIGHT_BLACK;
+		if (value == L"Heavy") return DWRITE_FONT_WEIGHT_HEAVY;
+		if (value == L"ExtraBlack") return DWRITE_FONT_WEIGHT_EXTRA_BLACK;
+		if (value == L"UltraBlack") return DWRITE_FONT_WEIGHT_ULTRA_BLACK;
+		return std::nullopt;
+	}
+
+	std::optional<DWRITE_FONT_STYLE> RichTextFontStyle(
+		std::wstring_view value) noexcept
+	{
+		if (value == L"Normal") return DWRITE_FONT_STYLE_NORMAL;
+		if (value == L"Oblique") return DWRITE_FONT_STYLE_OBLIQUE;
+		if (value == L"Italic") return DWRITE_FONT_STYLE_ITALIC;
+		return std::nullopt;
+	}
+
+	std::optional<DWRITE_FONT_STRETCH> RichTextFontStretch(
+		std::wstring_view value) noexcept
+	{
+		if (value == L"UltraCondensed")
+			return DWRITE_FONT_STRETCH_ULTRA_CONDENSED;
+		if (value == L"ExtraCondensed")
+			return DWRITE_FONT_STRETCH_EXTRA_CONDENSED;
+		if (value == L"Condensed") return DWRITE_FONT_STRETCH_CONDENSED;
+		if (value == L"SemiCondensed")
+			return DWRITE_FONT_STRETCH_SEMI_CONDENSED;
+		if (value == L"Normal" || value == L"Medium")
+			return DWRITE_FONT_STRETCH_NORMAL;
+		if (value == L"SemiExpanded")
+			return DWRITE_FONT_STRETCH_SEMI_EXPANDED;
+		if (value == L"Expanded") return DWRITE_FONT_STRETCH_EXPANDED;
+		if (value == L"ExtraExpanded")
+			return DWRITE_FONT_STRETCH_EXTRA_EXPANDED;
+		if (value == L"UltraExpanded")
+			return DWRITE_FONT_STRETCH_ULTRA_EXPANDED;
+		return std::nullopt;
+	}
+
+	std::optional<::TextAlignment> RichTextAlignment(
+		std::wstring_view value) noexcept
+	{
+		if (value == L"Left") return ::TextAlignment::Left;
+		if (value == L"Right") return ::TextAlignment::Right;
+		if (value == L"Center") return ::TextAlignment::Center;
+		if (value == L"Justify") return ::TextAlignment::Justify;
+		return std::nullopt;
+	}
+
+	std::optional<::FlowDirection> RichTextFlowDirection(
+		std::wstring_view value) noexcept
+	{
+		if (value == L"LeftToRight") return ::FlowDirection::LeftToRight;
+		if (value == L"RightToLeft") return ::FlowDirection::RightToLeft;
+		return std::nullopt;
+	}
+
+	cui::drawing::Brush RichTextBrush(const DesignColor& color)
+	{
+		return cui::drawing::MakeSolidColorBrush(D2D1_COLOR_F{
+			static_cast<float>(color.R), static_cast<float>(color.G),
+			static_cast<float>(color.B), static_cast<float>(color.A) });
+	}
+
+	bool ApplyRichTextFormatting(
+		TextElement& target,
+		const DesignTextFormatting& formatting,
+		std::wstring* outError)
+	{
+		if (formatting.Foreground)
+			target.SetForeground(RichTextBrush(*formatting.Foreground));
+		if (formatting.Background)
+			target.SetBackground(RichTextBrush(*formatting.Background));
+		if (formatting.FontFamily)
+			target.SetFontFamily(*formatting.FontFamily);
+		if (formatting.Language)
+		{
+			if (!IsCanonicalRichTextLanguageTag(*formatting.Language))
+			{
+				if (outError) *outError = L"富文本 Language 无效。";
+				return false;
+			}
+			target.SetLanguage(*formatting.Language);
+		}
+		if (formatting.FontSize)
+			target.SetFontSize(*formatting.FontSize);
+		if (formatting.FontWeight)
+		{
+			const auto weight = RichTextFontWeight(*formatting.FontWeight);
+			if (!weight)
+			{
+				if (outError) *outError = L"富文本 FontWeight 无效。";
+				return false;
+			}
+			target.SetFontWeight(*weight);
+		}
+		if (formatting.FontStretch)
+		{
+			const auto stretch = RichTextFontStretch(*formatting.FontStretch);
+			if (!stretch)
+			{
+				if (outError) *outError = L"富文本 FontStretch 无效。";
+				return false;
+			}
+			target.SetFontStretch(*stretch);
+		}
+		if (formatting.FontStyle)
+		{
+			const auto style = RichTextFontStyle(*formatting.FontStyle);
+			if (!style)
+			{
+				if (outError) *outError = L"富文本 FontStyle 无效。";
+				return false;
+			}
+			target.SetFontStyle(*style);
+		}
+		if (formatting.Underline)
+			target.SetUnderline(*formatting.Underline);
+		if (formatting.Strikethrough)
+			target.SetStrikethrough(*formatting.Strikethrough);
+		return true;
+	}
+
+	std::unique_ptr<Inline> MaterializeRichTextInline(
+		const DesignInline& definition,
+		std::wstring* outError)
+	{
+		std::unique_ptr<Inline> result;
+		switch (definition.Kind)
+		{
+		case DesignInlineKind::Run:
+			result = std::make_unique<Run>(definition.Text);
+			break;
+		case DesignInlineKind::Span:
+			result = std::make_unique<Span>();
+			break;
+		case DesignInlineKind::Bold:
+			result = std::make_unique<Bold>();
+			break;
+		case DesignInlineKind::Italic:
+			result = std::make_unique<Italic>();
+			break;
+		case DesignInlineKind::Underline:
+			result = std::make_unique<::Underline>();
+			break;
+		case DesignInlineKind::LineBreak:
+			result = std::make_unique<LineBreak>();
+			break;
+		default:
+			if (outError) *outError = L"富文本 Inline 类型无效。";
+			return {};
+		}
+
+		if (!ApplyRichTextFormatting(*result, definition, outError))
+			return {};
+		if (definition.Kind == DesignInlineKind::Run
+			|| definition.Kind == DesignInlineKind::LineBreak)
+			return result;
+
+		auto* span = dynamic_cast<Span*>(result.get());
+		if (!span)
+		{
+			if (outError) *outError = L"富文本 Inline 容器类型无效。";
+			return {};
+		}
+		for (const auto& child : definition.Inlines)
+		{
+			auto childValue = MaterializeRichTextInline(child, outError);
+			if (!childValue) return {};
+			span->GetInlines().Add(std::move(childValue));
+		}
+		return result;
+	}
+
 	class ExitAction final
 	{
 	public:
@@ -3660,6 +3850,12 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 		}
 		outDiagnostic->Apply(activeSpan);
 	});
+	std::wstring richTextError;
+	if (!sourceDocument.ValidateRichTextStructure(&richTextError))
+	{
+		if (outError) *outError = std::move(richTextError);
+		return false;
+	}
 	try
 	{
 		XamlCompiledDocument compiledStorage;
@@ -4342,6 +4538,10 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			designString(L"headerTemplate", it.structure.HeaderTemplate);
 			if (it.structure.ChildRole == DesignNodeChildRole::Header)
 				dc->DesignStrings[L"headeredRegion"] = L"header";
+			if (it.structure.Document)
+				dc->AuthoredRichTextDocument =
+					std::make_shared<const DesignFlowDocument>(
+						*it.structure.Document);
 			dcOf[it.name] = dc;
 			instOf[it.name] = c;
 		}
@@ -4764,6 +4964,82 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 							gridPanel->AddColumn(w, minW, maxW);
 						}
 					}
+				}
+				else if (it.type == UIClass::UI_RichTextBox
+					&& it.structure.Document)
+				{
+					auto document = std::make_unique<FlowDocument>();
+					if (!ApplyRichTextFormatting(
+						*document, *it.structure.Document, outError))
+						return false;
+					if (it.structure.Document->TextAlignment)
+					{
+						const auto alignment = RichTextAlignment(
+							*it.structure.Document->TextAlignment);
+						if (!alignment)
+						{
+							if (outError)
+								*outError = L"富文本 TextAlignment 无效。";
+							return false;
+						}
+						document->SetTextAlignment(*alignment);
+					}
+					if (it.structure.Document->FlowDirection)
+					{
+						const auto direction = RichTextFlowDirection(
+							*it.structure.Document->FlowDirection);
+						if (!direction)
+						{
+							if (outError)
+								*outError = L"富文本 FlowDirection 无效。";
+							return false;
+						}
+						document->SetFlowDirection(*direction);
+					}
+					for (const auto& paragraphDefinition
+						: it.structure.Document->Paragraphs)
+					{
+						auto paragraph = std::make_unique<Paragraph>();
+						if (!ApplyRichTextFormatting(
+							*paragraph, paragraphDefinition, outError))
+							return false;
+						if (paragraphDefinition.TextAlignment)
+						{
+							const auto alignment = RichTextAlignment(
+								*paragraphDefinition.TextAlignment);
+							if (!alignment)
+							{
+								if (outError)
+									*outError = L"富文本 Paragraph.TextAlignment 无效。";
+								return false;
+							}
+							paragraph->SetTextAlignment(*alignment);
+						}
+						if (paragraphDefinition.FlowDirection)
+						{
+							const auto direction = RichTextFlowDirection(
+								*paragraphDefinition.FlowDirection);
+							if (!direction)
+							{
+								if (outError)
+									*outError = L"富文本 Paragraph.FlowDirection 无效。";
+								return false;
+							}
+							paragraph->SetFlowDirection(*direction);
+						}
+						for (const auto& inlineDefinition
+							: paragraphDefinition.Inlines)
+						{
+							auto inlineValue = MaterializeRichTextInline(
+								inlineDefinition, outError);
+							if (!inlineValue) return false;
+							paragraph->GetInlines().Add(
+								std::move(inlineValue));
+						}
+						document->GetBlocks().Add(std::move(paragraph));
+					}
+					static_cast<RichTextBox*>(c)->SetDocument(
+						std::move(document));
 				}
 				else if (it.type == UIClass::UI_ChartView)
 				{
