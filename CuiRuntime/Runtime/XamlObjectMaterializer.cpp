@@ -43,6 +43,7 @@
 #include "../../CUI/include/WebBrowser.h"
 #include "../../CUI/include/ListView.h"
 #include "../../CUI/include/ListBox.h"
+#include "../../CUI/include/DataGrid.h"
 #include "../../CUI/include/Selector.h"
 #include "../../CUI/include/ChartView.h"
 #include "../../CUI/include/TreeView.h"
@@ -2366,6 +2367,26 @@ namespace
 			gl.Unit = u;
 			return gl;
 		}
+
+	static DataGridLength DataGridLengthFromDesign(
+		const DesignDataGridLength& value) noexcept
+	{
+		switch (value.Unit)
+		{
+		case DesignDataGridLengthUnit::Auto:
+			return DataGridLength::Auto();
+		case DesignDataGridLengthUnit::SizeToHeader:
+			return DataGridLength::SizeToHeader();
+		case DesignDataGridLengthUnit::SizeToCells:
+			return DataGridLength::SizeToCells();
+		case DesignDataGridLengthUnit::Pixel:
+			return { value.Value, DataGridLengthUnitType::Pixel };
+		case DesignDataGridLengthUnit::Star:
+			return DataGridLength::Star(value.Value);
+		default:
+			return DataGridLength::SizeToHeader();
+		}
+	}
 
 	static bool ConnectTemplateEvent(
 		Control& source,
@@ -5074,6 +5095,185 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 							}
 							chart->AddSeries(series);
 						}
+					}
+				}
+			}
+
+			// DataGrid columns are non-visual object children. Install the
+			// complete column set while the control still has no ItemsSource so
+			// initial row realization observes the authored schema atomically.
+			if (it.type == UIClass::UI_DataGrid
+				&& it.structure.DataGridColumns)
+			{
+				auto* dataGrid = dynamic_cast<DataGrid*>(c);
+				if (!dataGrid)
+				{
+					if (outError) *outError = L"DataGrid 物化类型不匹配："
+						+ it.name;
+					return false;
+				}
+				dataGrid->ClearColumns();
+
+				auto materializeCellTemplate = [&](const std::wstring& key,
+					ItemTemplateReference& output) -> bool
+				{
+					output = {};
+					if (key.empty()) return true;
+					const auto* definition = it.source
+						? document.FindDataTemplate(
+							document.Nodes, *it.source, key)
+						: document.FindDataTemplate(key);
+					if (!definition)
+					{
+						if (outError) *outError = L"DataGrid 列引用了不存在的 DataTemplate："
+							+ key;
+						return false;
+					}
+					auto visibleObjects = it.source
+						? document.VisibleObjectResources(
+							document.Nodes, *it.source)
+						: DesignObjectResourceDictionary{};
+					if (!it.source)
+					{
+						visibleObjects.Components = document.Components;
+						visibleObjects.ControlTemplates = document.ControlTemplates;
+						visibleObjects.DataTemplates = document.DataTemplates;
+						visibleObjects.ItemsPanelTemplates =
+							document.ItemsPanelTemplates;
+						visibleObjects.GroupStyles = document.GroupStyles;
+					}
+					output = ItemTemplateReference(
+						std::make_shared<MaterializedDataTemplate>(
+							templateDocument, *definition,
+							std::move(visibleObjects), visibleStyleScope(it),
+							nestedOptions));
+					return true;
+				};
+
+				for (const auto& definition
+					: *it.structure.DataGridColumns)
+				{
+					std::unique_ptr<DataGridColumn> column;
+					switch (definition.Kind)
+					{
+					case DesignDataGridColumnKind::Text:
+						column = std::make_unique<DataGridTextColumn>();
+						break;
+					case DesignDataGridColumnKind::CheckBox:
+						column = std::make_unique<DataGridCheckBoxColumn>();
+						break;
+					case DesignDataGridColumnKind::Template:
+						column = std::make_unique<DataGridTemplateColumn>();
+						break;
+					default:
+						if (outError) *outError = L"DataGrid 列类型无效。";
+						return false;
+					}
+
+					column->SetHeader(BindingValue(definition.Header));
+					column->SetMinWidth(definition.MinWidth);
+					column->SetMaxWidth(definition.MaxWidth);
+					column->SetWidth(DataGridLengthFromDesign(definition.Width));
+					column->SetIsReadOnly(definition.IsReadOnly);
+					column->SetCanUserSort(definition.CanUserSort);
+					column->SetCanUserResize(definition.CanUserResize);
+					if (auto* checkBox =
+						dynamic_cast<DataGridCheckBoxColumn*>(column.get()))
+						checkBox->SetIsThreeState(definition.IsThreeState);
+					else if (definition.IsThreeState)
+					{
+						if (outError) *outError =
+							L"IsThreeState 仅适用于 DataGridCheckBoxColumn。";
+						return false;
+					}
+					if (!definition.SortMemberPath.empty())
+						column->SetSortMemberPath(definition.SortMemberPath);
+
+					if (auto* bound = dynamic_cast<DataGridBoundColumn*>(
+						column.get()))
+					{
+						if (!definition.Binding)
+						{
+							if (outError) *outError =
+								L"DataGridTextColumn/DataGridCheckBoxColumn 缺少 Binding。";
+							return false;
+						}
+						const auto& binding = *definition.Binding;
+						if (binding.IsMultiBinding()
+							|| !binding.ElementName.empty()
+							|| binding.RelativeSource
+								!= DesignerBindingRelativeSource::None)
+						{
+							if (outError) *outError =
+								L"DataGrid 列 Binding 仅支持当前行数据项作为源。";
+							return false;
+						}
+						std::shared_ptr<const IBindingValueConverter> converter;
+						if (!binding.Converter.empty())
+						{
+							converter = BindingValueConverterRegistry::Create(
+								binding.Converter);
+							if (!converter)
+							{
+								if (outError) *outError =
+									L"DataGrid 列 Converter 不存在："
+									+ binding.Converter;
+								return false;
+							}
+						}
+						std::optional<BindingValue> fallbackValue;
+						std::optional<BindingValue> targetNullValue;
+						std::optional<BindingValue> converterParameter;
+						std::wstring literalError;
+						if (!DesignerBindingUtils::TryConvertOptionalLiteral(
+							binding.FallbackValue, fallbackValue, &literalError)
+							|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+								binding.TargetNullValue, targetNullValue,
+								&literalError)
+							|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+								binding.ConverterParameter, converterParameter,
+								&literalError))
+						{
+							if (outError) *outError =
+								L"DataGrid 列 Binding：" + literalError;
+							return false;
+						}
+						bound->SetBindingPath(binding.SourceProperty);
+						bound->SetBindingMode(binding.Mode);
+						bound->SetDataSourceUpdateMode(binding.UpdateMode);
+						bound->SetBindingConverter(std::move(converter));
+						bound->SetFallbackValue(std::move(fallbackValue));
+						bound->SetTargetNullValue(std::move(targetNullValue));
+						bound->SetConverterParameter(
+							std::move(converterParameter));
+						bound->SetStringFormat(binding.StringFormat);
+					}
+					else if (definition.Binding)
+					{
+						if (outError) *outError =
+							L"DataGridTemplateColumn 不能声明 Binding。";
+						return false;
+					}
+
+					if (auto* templated = dynamic_cast<DataGridTemplateColumn*>(
+						column.get()))
+					{
+						ItemTemplateReference cellTemplate;
+						ItemTemplateReference editingTemplate;
+						if (!materializeCellTemplate(
+							definition.CellTemplate, cellTemplate)
+							|| !materializeCellTemplate(
+								definition.CellEditingTemplate,
+								editingTemplate)) return false;
+						templated->SetCellTemplate(std::move(cellTemplate));
+						templated->SetCellEditingTemplate(
+							std::move(editingTemplate));
+					}
+
+					if (!dataGrid->AddColumn(std::move(column)))
+					{
+						if (outError) *outError = L"DataGrid 拒绝了列定义。";
+						return false;
 					}
 				}
 			}

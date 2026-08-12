@@ -590,8 +590,8 @@ namespace
 		}
 		case BindingValueKind::String:
 		{
-			std::wstring av, bv;
-			return a.TryGetString(av) && b.TryGetString(bv) && av == bv;
+			std::wstring_view av, bv;
+			return a.TryGetStringView(av) && b.TryGetStringView(bv) && av == bv;
 		}
 		case BindingValueKind::Object:
 			// Arbitrary values deliberately do not assume operator==. Property
@@ -1344,6 +1344,14 @@ bool BindingValue::TryGetString(std::wstring& out) const
 		return false;
 	}
 	return false;
+}
+
+bool BindingValue::TryGetStringView(std::wstring_view& out) const noexcept
+{
+	out = {};
+	if (Kind() != BindingValueKind::String) return false;
+	out = std::get<std::wstring>(_value);
+	return true;
 }
 
 bool TryConvertBindingValue(const BindingValue& value, BindingValueKind targetKind, BindingValue& out)

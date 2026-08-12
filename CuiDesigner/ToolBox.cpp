@@ -190,6 +190,21 @@ namespace
 				d2d->DrawLine(frame.right - 5.0f, frame.top,
 					frame.right - 5.0f, frame.bottom, color, 1.0f);
 			break;
+		case UIClass::UI_DataGrid:
+			d2d->DrawRect(frame, color, 1.25f);
+			d2d->DrawLine(frame.left, frame.top + 5.0f,
+				frame.right, frame.top + 5.0f, color, 1.2f);
+			d2d->DrawLine(frame.left, frame.top + 10.0f,
+				frame.right, frame.top + 10.0f, color, 1.0f);
+			d2d->DrawLine(frame.left, frame.top + 15.0f,
+				frame.right, frame.top + 15.0f, color, 1.0f);
+			d2d->DrawLine(frame.left + (frame.right - frame.left) / 3.0f,
+				frame.top, frame.left + (frame.right - frame.left) / 3.0f,
+				frame.bottom, color, 1.0f);
+			d2d->DrawLine(frame.left + (frame.right - frame.left) * 2.0f / 3.0f,
+				frame.top, frame.left + (frame.right - frame.left) * 2.0f / 3.0f,
+				frame.bottom, color, 1.0f);
+			break;
 		case UIClass::UI_ChartView:
 			d2d->DrawLine(frame.left, frame.bottom, frame.right, frame.bottom, color, 1.1f);
 			d2d->DrawLine(frame.left, frame.bottom, frame.left, frame.top, color, 1.1f);

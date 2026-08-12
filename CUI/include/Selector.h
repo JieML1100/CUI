@@ -137,9 +137,11 @@ protected:
 		(void)oldValue;
 		(void)newValue;
 	}
+	virtual void OnSelectionChanged(SelectionChangedEventArgs& args);
 	int ClampIndex(int value) const noexcept;
 	void SetCurrentSelectedIndex(int value);
-	void SetCurrentSelectedIndexWithoutSelectionChanged(int value);
+	void SetCurrentSelectedIndexWithoutSelectionChanged(
+		int value, bool ensureSelectedItemVisible = true);
 	void RefreshSelectedItemState(
 		bool raiseSelectionChanged,
 		std::optional<int> previousIndex = std::nullopt);
@@ -155,8 +157,8 @@ protected:
 	void RaiseSelectionChanged(
 		int oldIndex,
 		int newIndex,
-		std::vector<BindingValue> removedItems,
-		std::vector<BindingValue> addedItems);
+		SelectionChangedItemCollection removedItems,
+		SelectionChangedItemCollection addedItems);
 
 private:
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -194,6 +196,7 @@ private:
 	bool _synchronizingCurrentItem = false;
 	bool _rollingBackCurrentItemSynchronizationProperty = false;
 	bool _suppressSelectionChanged = false;
+	bool _suppressEnsureSelectedItemVisible = false;
 	CurrentItemSynchronizationDirection _pendingCurrentItemSynchronization =
 		CurrentItemSynchronizationDirection::None;
 

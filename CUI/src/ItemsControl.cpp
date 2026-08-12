@@ -11,6 +11,8 @@
 #include "Layout/WrapPanel.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cwctype>
 #include <exception>
@@ -34,6 +36,23 @@ namespace cui::design
 
 namespace
 {
+	template<typename TCallback>
+	class ItemsScopeExit final
+	{
+	public:
+		explicit ItemsScopeExit(TCallback callback)
+			: _callback(std::move(callback)) {}
+		ItemsScopeExit(const ItemsScopeExit&) = delete;
+		ItemsScopeExit& operator=(const ItemsScopeExit&) = delete;
+		~ItemsScopeExit() { _callback(); }
+
+	private:
+		TCallback _callback;
+	};
+
+	template<typename TCallback>
+	ItemsScopeExit(TCallback) -> ItemsScopeExit<TCallback>;
+
 	bool SameCompiledBindingPath(
 		CompiledBindingPathView left,
 		CompiledBindingPathView right) noexcept
@@ -78,8 +97,26 @@ namespace
 
 	class MaterializedItemsSourceSnapshot final
 		: public IBindingList,
+		  public IBindingListOccurrenceIdentity,
+		  public IBindingListStableSnapshot,
 		  public IBindingListGroupView
 	{
+		struct Entry final
+		{
+			BindingSourceReference Item;
+			size_t OccurrenceIdentity = 0;
+		};
+		struct Node final
+		{
+			std::shared_ptr<const Node> Left;
+			std::shared_ptr<const std::vector<Entry>> Page;
+			std::shared_ptr<const Node> Right;
+			uint64_t Priority = 0;
+			size_t Count = 0;
+		};
+		using Root = std::shared_ptr<const Node>;
+		static constexpr size_t PageCapacity = 256;
+
 	public:
 		MaterializedItemsSourceSnapshot(
 			DataTypeToken itemTypeToken,
@@ -87,24 +124,52 @@ namespace
 			std::wstring itemTypeName,
 #endif
 			std::vector<BindingSourceReference> items,
+			std::vector<size_t> occurrenceIdentities,
+			bool hasOccurrenceIdentities,
 			std::vector<BindingListGroup> groups)
 			: _itemTypeToken(itemTypeToken),
 #if CUI_ENABLE_DYNAMIC_XAML
 			  _itemTypeName(std::move(itemTypeName)),
 #endif
-			  _items(std::move(items)),
-			  _groups(std::move(groups)) {}
+			  _hasOccurrenceIdentities(hasOccurrenceIdentities
+				  && occurrenceIdentities.size() == items.size()),
+			  _groups(std::move(groups))
+		{
+			std::vector<Entry> entries;
+			entries.reserve(items.size());
+			for (size_t index = 0; index < items.size(); ++index)
+				entries.push_back({ std::move(items[index]),
+					_hasOccurrenceIdentities
+						? occurrenceIdentities[index] : 0 });
+			_root = Build(std::move(entries));
+		}
 
-		size_t Count() const noexcept override { return _items.size(); }
+		size_t Count() const noexcept override { return NodeCount(_root); }
 		bool TryGetItem(
 			size_t index,
 			BindingSourceReference& out) const override
 		{
-			if (index >= _items.size() || !_items[index]) return false;
-			out = _items[index];
+			out = {};
+			const auto* entry = EntryAt(_root, index);
+			if (!entry || !entry->Item) return false;
+			out = entry->Item;
 			return true;
 		}
 		EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+		bool TryGetItemOccurrenceIdentity(
+			size_t index, size_t& result) const noexcept override
+		{
+			result = 0;
+			const auto* entry = _hasOccurrenceIdentities
+				? EntryAt(_root, index) : nullptr;
+			if (!entry || entry->OccurrenceIdentity == 0) return false;
+			result = entry->OccurrenceIdentity;
+			return true;
+		}
+		bool HasOccurrenceIdentities() const noexcept
+		{
+			return _hasOccurrenceIdentities;
+		}
 		DataTypeToken GetItemTypeToken() const noexcept override
 		{
 			return _itemTypeToken;
@@ -127,7 +192,7 @@ namespace
 			DataTypeToken itemTypeToken) const noexcept
 		{
 			if (change.Action == CollectionChangeAction::Reset
-				|| change.OldSize != _items.size()
+				|| change.OldSize != Count()
 				|| change.NewSize != actualNewCount
 				|| itemTypeToken != _itemTypeToken) return false;
 			switch (change.Action)
@@ -149,6 +214,12 @@ namespace
 					&& change.OldIndex + change.OldCount <= change.OldSize
 					&& change.OldSize == change.NewSize;
 			case CollectionChangeAction::Move:
+				return change.OldCount > 0
+					&& change.OldCount == change.NewCount
+					&& change.OldSize == change.NewSize
+					&& change.OldIndex <= change.OldSize
+					&& change.OldCount <= change.OldSize - change.OldIndex
+					&& change.NewIndex <= change.NewSize - change.NewCount;
 			case CollectionChangeAction::Swap:
 				return change.OldCount == 1 && change.NewCount == 1
 					&& change.OldSize == change.NewSize
@@ -158,58 +229,238 @@ namespace
 				return false;
 			}
 		}
-		void Reserve(size_t count) { _items.reserve(count); }
-		void Apply(
+		std::shared_ptr<MaterializedItemsSourceSnapshot> WithChange(
 			const CollectionChangedEventArgs& change,
 			std::vector<BindingSourceReference> changedItems,
-			std::vector<BindingListGroup> groups) noexcept
+			std::vector<size_t> changedIdentities,
+			std::vector<BindingListGroup> groups) const
 		{
+			std::vector<Entry> entries;
+			entries.reserve(changedItems.size());
+			for (size_t index = 0; index < changedItems.size(); ++index)
+				entries.push_back({ std::move(changedItems[index]),
+					_hasOccurrenceIdentities ? changedIdentities[index] : 0 });
+			Root root = _root;
 			switch (change.Action)
 			{
 			case CollectionChangeAction::Add:
-				_items.insert(
-					_items.begin() + change.NewIndex,
-					std::make_move_iterator(changedItems.begin()),
-					std::make_move_iterator(changedItems.end()));
+			{
+				auto [before, after] = Split(root, change.NewIndex);
+				root = Merge(Merge(before, Build(std::move(entries))), after);
 				break;
+			}
 			case CollectionChangeAction::Remove:
-				_items.erase(
-					_items.begin() + change.OldIndex,
-					_items.begin() + change.OldIndex + change.OldCount);
+			{
+				auto [before, tail] = Split(root, change.OldIndex);
+				auto [removed, after] = Split(tail, change.OldCount);
+				(void)removed;
+				root = Merge(before, after);
 				break;
+			}
 			case CollectionChangeAction::Replace:
-				for (size_t offset = 0; offset < changedItems.size(); ++offset)
-					_items[change.NewIndex + offset] =
-						std::move(changedItems[offset]);
+			{
+				auto [before, tail] = Split(root, change.OldIndex);
+				auto [removed, after] = Split(tail, change.OldCount);
+				(void)removed;
+				root = Merge(Merge(before, Build(std::move(entries))), after);
 				break;
+			}
 			case CollectionChangeAction::Move:
-				if (change.OldIndex < change.NewIndex)
-					std::rotate(
-						_items.begin() + change.OldIndex,
-						_items.begin() + change.OldIndex + 1,
-						_items.begin() + change.NewIndex + 1);
-				else
-					std::rotate(
-						_items.begin() + change.NewIndex,
-						_items.begin() + change.OldIndex,
-						_items.begin() + change.OldIndex + 1);
+			{
+				auto [before, tail] = Split(root, change.OldIndex);
+				auto [moved, after] = Split(tail, change.OldCount);
+				auto remaining = Merge(before, after);
+				auto [destinationBefore, destinationAfter] =
+					Split(remaining, change.NewIndex);
+				root = Merge(Merge(destinationBefore, moved), destinationAfter);
 				break;
+			}
 			case CollectionChangeAction::Swap:
-				std::swap(
-					_items[change.OldIndex], _items[change.NewIndex]);
+			{
+				if (change.OldIndex == change.NewIndex) break;
+				const size_t lower = (std::min)(
+					change.OldIndex, change.NewIndex);
+				const size_t upper = (std::max)(
+					change.OldIndex, change.NewIndex);
+				auto [prefix, lowerTail] = Split(root, lower);
+				auto [lowerItem, middleTail] = Split(lowerTail, 1);
+				auto [middle, upperTail] = Split(
+					middleTail, upper - lower - 1);
+				auto [upperItem, suffix] = Split(upperTail, 1);
+				root = Merge(Merge(Merge(Merge(
+					prefix, upperItem), middle), lowerItem), suffix);
 				break;
+			}
 			default:
 				break;
 			}
-			_groups.swap(groups);
+			if (NodeCount(root) != change.NewSize)
+				throw std::logic_error(
+					"ItemsControl persistent snapshot size mismatch");
+			return std::shared_ptr<MaterializedItemsSourceSnapshot>(
+				new MaterializedItemsSourceSnapshot(
+					_itemTypeToken,
+#if CUI_ENABLE_DYNAMIC_XAML
+					_itemTypeName,
+#endif
+					std::move(root), _hasOccurrenceIdentities,
+					std::move(groups)));
 		}
 
 	private:
+		MaterializedItemsSourceSnapshot(
+			DataTypeToken itemTypeToken,
+#if CUI_ENABLE_DYNAMIC_XAML
+			std::wstring itemTypeName,
+#endif
+			Root root,
+			bool hasOccurrenceIdentities,
+			std::vector<BindingListGroup> groups)
+			: _itemTypeToken(itemTypeToken),
+#if CUI_ENABLE_DYNAMIC_XAML
+			  _itemTypeName(std::move(itemTypeName)),
+#endif
+			  _root(std::move(root)),
+			  _hasOccurrenceIdentities(hasOccurrenceIdentities),
+			  _groups(std::move(groups)) {}
+
+		static size_t NodeCount(const Root& node) noexcept
+		{
+			return node ? node->Count : 0;
+		}
+
+		static uint64_t NextPriority() noexcept
+		{
+			static std::atomic_uint64_t state{ 0x243f6a8885a308d3ULL };
+			uint64_t value = state.fetch_add(
+				0x9e3779b97f4a7c15ULL, std::memory_order_relaxed);
+			value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+			value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+			return value ^ (value >> 31);
+		}
+
+		static Root MakeNode(
+			Root left,
+			std::shared_ptr<const std::vector<Entry>> page,
+			Root right,
+			uint64_t priority)
+		{
+			if (!page || page->empty())
+				throw std::logic_error(
+					"ItemsControl persistent snapshot page is empty");
+			auto result = std::make_shared<Node>();
+			result->Left = std::move(left);
+			result->Page = std::move(page);
+			result->Right = std::move(right);
+			result->Priority = priority;
+			result->Count = NodeCount(result->Left)
+				+ result->Page->size() + NodeCount(result->Right);
+			return result;
+		}
+
+		static Root Merge(const Root& left, const Root& right)
+		{
+			if (!left) return right;
+			if (!right) return left;
+			if (left->Priority <= right->Priority)
+				return MakeNode(left->Left, left->Page,
+					Merge(left->Right, right), left->Priority);
+			return MakeNode(Merge(left, right->Left), right->Page,
+				right->Right, right->Priority);
+		}
+
+		static Root Leaf(std::vector<Entry> entries)
+		{
+			if (entries.empty()) return {};
+			return MakeNode({},
+				std::make_shared<const std::vector<Entry>>(
+					std::move(entries)), {}, NextPriority());
+		}
+
+		static Root Build(std::vector<Entry> entries)
+		{
+			Root root;
+			for (size_t first = 0; first < entries.size();
+				first += PageCapacity)
+			{
+				const size_t last = (std::min)(
+					entries.size(), first + PageCapacity);
+				std::vector<Entry> page;
+				page.reserve(last - first);
+				for (size_t index = first; index < last; ++index)
+					page.push_back(std::move(entries[index]));
+				root = Merge(root, Leaf(std::move(page)));
+			}
+			return root;
+		}
+
+		static std::pair<Root, Root> Split(
+			const Root& root, size_t index)
+		{
+			if (!root)
+			{
+				if (index != 0)
+					throw std::logic_error(
+						"ItemsControl persistent snapshot split is outside range");
+				return {};
+			}
+			const size_t leftCount = NodeCount(root->Left);
+			const size_t pageCount = root->Page->size();
+			if (index < leftCount)
+			{
+				auto [before, after] = Split(root->Left, index);
+				return { before, MakeNode(after, root->Page,
+					root->Right, root->Priority) };
+			}
+			if (index > leftCount + pageCount)
+			{
+				auto [before, after] = Split(
+					root->Right, index - leftCount - pageCount);
+				return { MakeNode(root->Left, root->Page,
+					before, root->Priority), after };
+			}
+			if (index == leftCount)
+				return { root->Left, MakeNode({}, root->Page,
+					root->Right, root->Priority) };
+			if (index == leftCount + pageCount)
+				return { MakeNode(root->Left, root->Page,
+					{}, root->Priority), root->Right };
+
+			const size_t pageOffset = index - leftCount;
+			std::vector<Entry> beforeEntries(
+				root->Page->begin(), root->Page->begin() + pageOffset);
+			std::vector<Entry> afterEntries(
+				root->Page->begin() + pageOffset, root->Page->end());
+			return { Merge(root->Left, Leaf(std::move(beforeEntries))),
+				Merge(Leaf(std::move(afterEntries)), root->Right) };
+		}
+
+		static const Entry* EntryAt(const Root& root, size_t index) noexcept
+		{
+			const Node* current = root.get();
+			while (current)
+			{
+				const size_t leftCount = NodeCount(current->Left);
+				if (index < leftCount)
+				{
+					current = current->Left.get();
+					continue;
+				}
+				index -= leftCount;
+				if (index < current->Page->size())
+					return &(*current->Page)[index];
+				index -= current->Page->size();
+				current = current->Right.get();
+			}
+			return nullptr;
+		}
+
 		DataTypeToken _itemTypeToken;
 #if CUI_ENABLE_DYNAMIC_XAML
 		std::wstring _itemTypeName;
 #endif
-		std::vector<BindingSourceReference> _items;
+		Root _root;
+		bool _hasOccurrenceIdentities = false;
 		std::vector<BindingListGroup> _groups;
 	};
 
@@ -221,6 +472,36 @@ namespace
 		output = {};
 		error.clear();
 		if (!source) return true;
+		// Immutable random-access sources already are transaction snapshots. A
+		// CollectionView may also expose an immutable snapshot of its current
+		// pass-through projection. Retaining that version is O(1) and is the key
+		// difference between container virtualization and true million-row data
+		// virtualization: do not copy every record merely to preserve rollback.
+		if (dynamic_cast<const IBindingListStableSnapshot*>(source.Get()))
+		{
+			output = source;
+			return true;
+		}
+		if (const auto* provider =
+			dynamic_cast<const IBindingListSnapshotProvider*>(source.Get()))
+		{
+			BindingListReference stable;
+			if (provider->TryGetStableSnapshot(stable))
+			{
+				if (!stable
+					|| !dynamic_cast<const IBindingListStableSnapshot*>(
+						stable.Get())
+					|| stable.Get()->Count() != source.Get()->Count()
+					|| stable.Get()->GetItemTypeToken()
+						!= source.Get()->GetItemTypeToken())
+				{
+					error = L"ItemsSource 稳定快照合同无效。";
+					return false;
+				}
+				output = std::move(stable);
+				return true;
+			}
+		}
 		std::vector<BindingSourceReference> items;
 		items.reserve(source.Get()->Count());
 		for (size_t index = 0; index < source.Get()->Count(); ++index)
@@ -234,6 +515,22 @@ namespace
 			}
 			items.push_back(std::move(item));
 		}
+		std::vector<size_t> occurrenceIdentities;
+		const auto* identityView =
+			dynamic_cast<const IBindingListOccurrenceIdentity*>(source.Get());
+		bool hasOccurrenceIdentities = identityView != nullptr;
+		if (identityView)
+		{
+			occurrenceIdentities.resize(items.size());
+			for (size_t index = 0; index < items.size(); ++index)
+			{
+				if (identityView->TryGetItemOccurrenceIdentity(
+					index, occurrenceIdentities[index])) continue;
+				occurrenceIdentities.clear();
+				hasOccurrenceIdentities = false;
+				break;
+			}
+		}
 		std::vector<BindingListGroup> groups;
 		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
 			source.Get()))
@@ -244,7 +541,8 @@ namespace
 #if CUI_ENABLE_DYNAMIC_XAML
 				cui::design::AuthoredBindingListItemTypeName(*source.Get()),
 #endif
-				std::move(items), std::move(groups)));
+				std::move(items), std::move(occurrenceIdentities),
+				hasOccurrenceIdentities, std::move(groups)));
 		return true;
 	}
 
@@ -252,6 +550,7 @@ namespace
 	{
 		BindingListReference Replacement;
 		std::vector<BindingSourceReference> ChangedItems;
+		std::vector<size_t> ChangedIdentities;
 		std::vector<BindingListGroup> Groups;
 		bool Replace = false;
 	};
@@ -275,6 +574,14 @@ namespace
 			return TryCaptureItemsSourceSnapshot(
 				source, output.Replacement, error);
 		}
+		const auto* identityView =
+			dynamic_cast<const IBindingListOccurrenceIdentity*>(source.Get());
+		if ((identityView != nullptr) != snapshot->HasOccurrenceIdentities())
+		{
+			output.Replace = true;
+			return TryCaptureItemsSourceSnapshot(
+				source, output.Replacement, error);
+		}
 
 		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
 			source.Get()))
@@ -283,6 +590,8 @@ namespace
 			|| change.Action == CollectionChangeAction::Replace)
 		{
 			output.ChangedItems.reserve(change.NewCount);
+			if (identityView)
+				output.ChangedIdentities.reserve(change.NewCount);
 			for (size_t offset = 0; offset < change.NewCount; ++offset)
 			{
 				BindingSourceReference item;
@@ -294,12 +603,29 @@ namespace
 					return false;
 				}
 				output.ChangedItems.push_back(std::move(item));
+				if (identityView)
+				{
+					size_t identity = 0;
+					if (!identityView->TryGetItemOccurrenceIdentity(
+						index, identity))
+					{
+						error = L"ItemsSource 无法读取索引 "
+							+ std::to_wstring(index) + L" 的稳定身份。";
+						return false;
+					}
+					output.ChangedIdentities.push_back(identity);
+				}
 			}
 		}
-		// All allocations happen before the visual tree commits. Apply() then
-		// consists solely of noexcept moves/erases/rotations and a groups swap.
-		if (change.Action == CollectionChangeAction::Add)
-			snapshot->Reserve(change.NewSize);
+		// Build the immutable candidate root before any visual mutation. Commit is
+		// then one noexcept BindingListReference move; the retained old root remains
+		// the exact rollback version if container preparation or a derived hook fails.
+		output.Replacement = BindingListReference(snapshot->WithChange(
+			change,
+			std::move(output.ChangedItems),
+			std::move(output.ChangedIdentities),
+			std::move(output.Groups)));
+		output.Replace = true;
 		return true;
 	}
 
@@ -374,6 +700,36 @@ namespace
 	// an authored GroupStyle member; realized headers measure from their template.
 	constexpr float VirtualizedGroupHeaderEstimate = 24.0f;
 
+	double SaturatingItemCoordinate(
+		size_t count, float itemExtent) noexcept
+	{
+		if (count == 0 || !std::isfinite(itemExtent)
+			|| itemExtent <= 0.0f) return 0.0;
+		const double extent = static_cast<double>(itemExtent);
+		const double maximum = (std::numeric_limits<double>::max)();
+		const double logicalCount = static_cast<double>(count);
+		return logicalCount > maximum / extent
+			? maximum : logicalCount * extent;
+	}
+
+	double SaturatingDipAdd(double left, double right) noexcept
+	{
+		const double maximum = (std::numeric_limits<double>::max)();
+		if (std::isnan(left) || left <= 0.0) left = 0.0;
+		if (std::isnan(right) || right <= 0.0) right = 0.0;
+		if (!std::isfinite(left) || !std::isfinite(right)
+			|| right > maximum - left) return maximum;
+		return left + right;
+	}
+
+	float SaturateLayoutDip(double value) noexcept
+	{
+		if (std::isnan(value)) return 0.0f;
+		const double limit = static_cast<double>(
+			(std::numeric_limits<float>::max)());
+		return static_cast<float>((std::clamp)(value, -limit, limit));
+	}
+
 	bool IsValidItemsPanel(const ItemsPanelTemplate& value) noexcept
 	{
 		if (!IsFiniteNonNegative(value.ItemWidth)
@@ -383,6 +739,132 @@ namespace
 			return value.Orientation == Orientation::Vertical
 				&& value.ItemHeight > 0.0f;
 		return true;
+	}
+
+	struct VirtualGroupHeaderMetadata final
+	{
+		size_t ItemIndex = 0;
+		size_t HeaderCount = 0;
+		size_t HeadersBefore = 0;
+		size_t HeadersAfter = 0;
+		double ItemTop = 0.0;
+		double ItemEnd = 0.0;
+	};
+
+	/**
+	 * Read-only O(1) view over one contiguous group range.
+	 *
+	 * Group header contexts can outlive the caller that prepared them, so retain
+	 * the source strongly.  The old implementation copied every member into an
+	 * ObservableBindingList while realizing the header; a single header in a
+	 * million-row view could consequently fetch hundreds of thousands of items.
+	 */
+	class ReadOnlyBindingListSlice final
+		: public IBindingList,
+		  public IBindingListOccurrenceIdentity,
+		  public IBindingListOccurrenceLookup
+	{
+	public:
+		ReadOnlyBindingListSlice(
+			BindingListReference source, size_t start, size_t count)
+			: _source(std::move(source)), _start(start), _count(count) {}
+
+		size_t Count() const noexcept override { return _count; }
+		bool TryGetItem(
+			size_t index, BindingSourceReference& out) const override
+		{
+			out = {};
+			if (!_source || index >= _count
+				|| index > (std::numeric_limits<size_t>::max)() - _start)
+				return false;
+			return _source.Get()->TryGetItem(_start + index, out);
+		}
+		EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+		bool TryGetItemOccurrenceIdentity(
+			size_t index, size_t& result) const noexcept override
+		{
+			result = 0;
+			if (!_source || index >= _count
+				|| index > (std::numeric_limits<size_t>::max)() - _start)
+				return false;
+			const auto* identities = dynamic_cast<
+				const IBindingListOccurrenceIdentity*>(_source.Get());
+			return identities && identities->TryGetItemOccurrenceIdentity(
+				_start + index, result);
+		}
+		bool TryGetItemIndexByOccurrenceIdentity(
+			size_t identity, size_t& index) const noexcept override
+		{
+			index = 0;
+			if (!_source) return false;
+			const auto* lookup = dynamic_cast<
+				const IBindingListOccurrenceLookup*>(_source.Get());
+			size_t sourceIndex = 0;
+			if (!lookup || !lookup->TryGetItemIndexByOccurrenceIdentity(
+				identity, sourceIndex)
+				|| sourceIndex < _start
+				|| sourceIndex - _start >= _count) return false;
+			index = sourceIndex - _start;
+			return true;
+		}
+		bool IsItemIndexByOccurrenceIdentityLookupBounded()
+			const noexcept override
+		{
+			const auto* lookup = _source ? dynamic_cast<
+				const IBindingListOccurrenceLookup*>(_source.Get()) : nullptr;
+			return lookup
+				&& lookup->IsItemIndexByOccurrenceIdentityLookupBounded();
+		}
+#if CUI_ENABLE_DYNAMIC_XAML
+		const std::wstring& ItemTypeName() const noexcept override
+		{
+			static const std::wstring empty;
+			return _source ? _source.Get()->ItemTypeName() : empty;
+		}
+#endif
+		DataTypeToken GetItemTypeToken() const noexcept override
+		{
+			return _source ? _source.Get()->GetItemTypeToken() : DataTypeToken{};
+		}
+
+	private:
+		BindingListReference _source;
+		size_t _start = 0;
+		size_t _count = 0;
+	};
+
+	template<typename TKey>
+	void StableRadixSortGroupOrder(
+		std::vector<size_t>& order,
+		std::vector<size_t>& scratch,
+		const std::vector<BindingListGroup>& groups,
+		TKey key)
+	{
+		if (order.size() < 2) return;
+		// IBindingListGroupView is extensible, so do not assume an implementation
+		// publishes flattened groups in hierarchy order. Sort only lightweight
+		// indices, then move each group once after both fixed-width key passes.
+		constexpr size_t bucketCount = 256;
+		for (size_t byte = 0; byte < sizeof(size_t); ++byte)
+		{
+			std::array<size_t, bucketCount> offsets{};
+			const size_t shift = byte * 8;
+			for (const size_t index : order)
+				++offsets[(key(groups[index]) >> shift) & 0xffu];
+			size_t next = 0;
+			for (auto& offset : offsets)
+			{
+				const size_t count = offset;
+				offset = next;
+				next += count;
+			}
+			for (const size_t index : order)
+			{
+				const size_t bucket = (key(groups[index]) >> shift) & 0xffu;
+				scratch[offsets[bucket]++] = index;
+			}
+			order.swap(scratch);
+		}
 	}
 
 	class VirtualizingItemsHost;
@@ -401,7 +883,9 @@ namespace
 		VirtualizingItemsHost& _owner;
 	};
 
-	class VirtualizingItemsHost final : public Panel
+	class VirtualizingItemsHost final
+		: public Panel,
+		  public cui::framework::ILogicalScrollContent
 	{
 	public:
 		VirtualizingItemsHost()
@@ -416,36 +900,99 @@ namespace
 		void SetConfiguration(
 			size_t itemCount,
 			float itemHeight,
-			std::vector<size_t> headerCounts,
+			std::span<const size_t> groupHeaderStarts,
+			size_t groupHeaderMetadataRevision,
 			float headerHeight)
 		{
-			if (_itemCount == itemCount && _itemHeight == itemHeight
-				&& _headerCounts == headerCounts
-				&& _headerHeight == headerHeight) return;
+			const bool itemCountChanged = _itemCount != itemCount;
+			const bool extentChanged = _itemHeight != itemHeight
+				|| _headerHeight != headerHeight;
+			const bool metadataChanged = _groupHeaderMetadataRevision
+				!= groupHeaderMetadataRevision;
+			if (!itemCountChanged && !extentChanged && !metadataChanged) return;
+			if (metadataChanged)
+			{
+				std::vector<VirtualGroupHeaderMetadata> groupHeaders;
+				groupHeaders.reserve(groupHeaderStarts.size() / 2);
+				for (size_t offset = 0;
+					offset + 1 < groupHeaderStarts.size(); offset += 2)
+					groupHeaders.push_back({
+						groupHeaderStarts[offset],
+						groupHeaderStarts[offset + 1] });
+				_groupHeaders = std::move(groupHeaders);
+				_groupHeaderMetadataRevision = groupHeaderMetadataRevision;
+			}
 			_itemCount = itemCount;
 			_itemHeight = itemHeight;
-			_headerCounts = std::move(headerCounts);
 			_headerHeight = headerHeight;
-			_offsets.assign(_itemCount + 1, 0.0f);
-			for (size_t index = 0; index < _itemCount; ++index)
+			if (itemCountChanged) RefreshLayoutOriginIndex();
+			size_t totalHeaders = 0;
+			for (auto& entry : _groupHeaders)
 			{
-				const size_t headerCount = index < _headerCounts.size()
-					? _headerCounts[index] : 0;
-				const float extent = _itemHeight
-					+ static_cast<float>(headerCount) * _headerHeight;
-				_offsets[index + 1] = _offsets[index] + extent;
+				entry.HeadersBefore = totalHeaders;
+				if (entry.ItemIndex >= _itemCount)
+				{
+					entry.HeadersAfter = totalHeaders;
+					entry.ItemTop = (std::numeric_limits<double>::max)();
+					entry.ItemEnd = entry.ItemTop;
+					continue;
+				}
+				entry.ItemTop = SaturatingDipAdd(
+					SaturatingItemCoordinate(entry.ItemIndex, _itemHeight),
+					SaturatingItemCoordinate(totalHeaders, _headerHeight));
+				const size_t remaining =
+					(std::numeric_limits<size_t>::max)() - totalHeaders;
+				totalHeaders += (std::min)(remaining, entry.HeaderCount);
+				entry.HeadersAfter = totalHeaders;
+				entry.ItemEnd = SaturatingDipAdd(
+					entry.ItemTop,
+					SaturatingDipAdd(
+						static_cast<double>(_itemHeight),
+						SaturatingItemCoordinate(
+							entry.HeaderCount, _headerHeight)));
 			}
+			_totalHeaderCount = totalHeaders;
+			_contentHeight = SaturatingDipAdd(
+				SaturatingItemCoordinate(_itemCount, _itemHeight),
+				SaturatingItemCoordinate(_totalHeaderCount, _headerHeight));
+			if (++_configurationRevision == 0) ++_configurationRevision;
+			InvalidateLayout();
+		}
+		void SetLogicalExtentWidth(double value) noexcept
+		{
+			if (!std::isfinite(value) || value < 0.0) value = 0.0;
+			if (std::abs(_logicalExtentWidth - value) <= 0.0001) return;
+			_logicalExtentWidth = value;
 			InvalidateLayout();
 		}
 		void RegisterItem(Control* control, size_t index)
 		{
 			if (!control) return;
-			_indices[control] = index;
+			const auto found = _indices.find(control);
+			if (found != _indices.end())
+			{
+				if (found->second == index) return;
+				const bool movedOrigin = found->second == _layoutOriginIndex;
+				found->second = index;
+				if (movedOrigin) RefreshLayoutOriginIndex();
+				else if (index < _layoutOriginIndex)
+					_layoutOriginIndex = index;
+			}
+			else
+			{
+				_indices.emplace(control, index);
+				if (index < _layoutOriginIndex || _indices.size() == 1)
+					_layoutOriginIndex = index;
+			}
 			InvalidateLayout();
 		}
 		void UnregisterItem(Control* control)
 		{
-			_indices.erase(control);
+			const auto found = _indices.find(control);
+			if (found == _indices.end()) return;
+			const bool removedOrigin = found->second == _layoutOriginIndex;
+			_indices.erase(found);
+			if (removedOrigin) RefreshLayoutOriginIndex();
 			InvalidateLayout();
 		}
 		void SynchronizeAuthoredItems(
@@ -457,6 +1004,7 @@ namespace
 				if (items[index]) next.emplace(items[index], index);
 			if (_indices == next) return;
 			_indices = std::move(next);
+			RefreshLayoutOriginIndex();
 			InvalidateLayout();
 		}
 		size_t IndexOf(const Control* control) const noexcept
@@ -466,30 +1014,122 @@ namespace
 				? (std::numeric_limits<size_t>::max)() : found->second;
 		}
 		float ItemHeight() const noexcept { return _itemHeight; }
-		float ItemTop(size_t index) const noexcept
+		double ItemTop(size_t index) const noexcept
 		{
-			return index < _offsets.size() ? _offsets[index] : ContentHeight();
+			if (index >= _itemCount) return ContentHeight();
+			if (_groupHeaders.empty())
+				return index < _itemCount
+					? SaturatingItemCoordinate(index, _itemHeight)
+					: ContentHeight();
+			const auto next = std::lower_bound(
+				_groupHeaders.begin(), _groupHeaders.end(), index,
+				[](const VirtualGroupHeaderMetadata& entry, size_t itemIndex)
+				{ return entry.ItemIndex < itemIndex; });
+			const size_t headersBefore = next == _groupHeaders.begin()
+				? size_t{ 0 } : std::prev(next)->HeadersAfter;
+			return SaturatingDipAdd(
+				SaturatingItemCoordinate(index, _itemHeight),
+				SaturatingItemCoordinate(headersBefore, _headerHeight));
 		}
-		float ItemExtent(size_t index) const noexcept
+		double ItemExtent(size_t index) const noexcept
 		{
-			if (index >= _itemCount || index + 1 >= _offsets.size()) return 0.0f;
-			return _offsets[index + 1] - _offsets[index];
+			if (_groupHeaders.empty())
+				return index < _itemCount
+					? static_cast<double>(_itemHeight) : 0.0;
+			if (index >= _itemCount) return 0.0;
+			const auto entry = std::lower_bound(
+				_groupHeaders.begin(), _groupHeaders.end(), index,
+				[](const VirtualGroupHeaderMetadata& candidate, size_t itemIndex)
+				{ return candidate.ItemIndex < itemIndex; });
+			const size_t headerCount = entry != _groupHeaders.end()
+				&& entry->ItemIndex == index ? entry->HeaderCount : 0;
+			return SaturatingDipAdd(
+				static_cast<double>(_itemHeight),
+				SaturatingItemCoordinate(headerCount, _headerHeight));
 		}
-		size_t IndexAtOffset(float offset) const noexcept
+		size_t IndexAtOffset(double offset) const noexcept
 		{
 			if (_itemCount == 0) return 0;
-			offset = (std::clamp)(offset, 0.0f,
-				(std::max)(0.0f, ContentHeight() - 0.0001f));
-			const auto found = std::upper_bound(
-				_offsets.begin(), _offsets.end(), offset);
-			return (std::min)(_itemCount - 1,
-				found == _offsets.begin() ? size_t{ 0 }
-					: static_cast<size_t>(std::distance(
-						_offsets.begin(), found) - 1));
+			if (std::isnan(offset) || offset <= 0.0) return 0;
+			const double contentHeight = ContentHeight();
+			if (!std::isfinite(offset) || offset >= contentHeight)
+				return _itemCount - 1;
+			if (_groupHeaders.empty())
+			{
+				if (_itemHeight <= 0.0f) return 0;
+				const double quotient = std::floor(
+					offset / static_cast<double>(_itemHeight));
+				const double maximumIndex = static_cast<double>(
+					_itemCount - 1);
+				size_t index = quotient >= maximumIndex
+					? _itemCount - 1 : static_cast<size_t>(quotient);
+				// Multiplication and division can round on opposite sides of an
+				// exact row boundary. Compare with the same logical ItemTop source
+				// before returning so a boundary never selects its preceding row.
+				while (index > 0 && offset < ItemTop(index)) --index;
+				while (index + 1 < _itemCount
+					&& offset >= ItemTop(index + 1)) ++index;
+				return index;
+			}
+			const auto next = std::upper_bound(
+				_groupHeaders.begin(), _groupHeaders.end(), offset,
+				[](double value, const VirtualGroupHeaderMetadata& entry)
+				{ return value < entry.ItemTop; });
+			size_t segmentFirst = 0;
+			size_t segmentLast = next == _groupHeaders.end()
+				? _itemCount : next->ItemIndex;
+			double segmentTop = 0.0;
+			if (next != _groupHeaders.begin())
+			{
+				const auto& previous = *std::prev(next);
+				if (offset < previous.ItemEnd) return previous.ItemIndex;
+				segmentFirst = previous.ItemIndex + 1;
+				segmentTop = previous.ItemEnd;
+			}
+			if (segmentFirst >= segmentLast)
+				return next != _groupHeaders.end()
+					? next->ItemIndex : _itemCount - 1;
+			if (_itemHeight <= 0.0f) return segmentFirst;
+			const double delta = offset > segmentTop
+				? offset - segmentTop : 0.0;
+			const double quotient = std::floor(
+				delta / static_cast<double>(_itemHeight));
+			const size_t segmentCount = segmentLast - segmentFirst;
+			size_t index = quotient >= static_cast<double>(segmentCount - 1)
+				? segmentLast - 1
+				: segmentFirst + static_cast<size_t>(quotient);
+			// Keep exact row boundaries coherent with ItemTop even when division and
+			// multiplication round on opposite sides of the same large coordinate.
+			while (index > segmentFirst && offset < ItemTop(index)) --index;
+			while (index + 1 < segmentLast
+				&& offset >= ItemTop(index + 1)) ++index;
+			return index;
 		}
-		float ContentHeight() const noexcept
+		double ContentHeight() const noexcept
 		{
-			return _offsets.empty() ? 0.0f : _offsets.back();
+			return _contentHeight;
+		}
+		size_t GroupHeaderMetadataCount() const noexcept
+		{
+			return _groupHeaders.size();
+		}
+		size_t ConfigurationRevision() const noexcept
+		{
+			return _configurationRevision;
+		}
+		double LogicalExtentHeightDip() const noexcept override
+		{
+			return ContentHeight();
+		}
+		double LogicalExtentWidthDip() const noexcept override
+		{
+			return _logicalExtentWidth;
+		}
+		double VerticalLayoutOriginDip() const noexcept override
+		{
+			if (_indices.empty()) return 0.0;
+			return _layoutOriginIndex < _itemCount
+				? ItemTop(_layoutOriginIndex) : 0.0;
 		}
 		bool SetLocalLayoutInvalidation(bool value) noexcept
 		{
@@ -497,6 +1137,16 @@ namespace
 		}
 
 	private:
+		void RefreshLayoutOriginIndex() noexcept
+		{
+			_layoutOriginIndex = _itemCount;
+			for (const auto& [control, index] : _indices)
+			{
+				(void)control;
+				if (index < _layoutOriginIndex) _layoutOriginIndex = index;
+			}
+		}
+
 		bool ShouldPropagateLayoutInvalidation() const noexcept override
 		{
 			// Realization caused solely by a changed scroll offset does not
@@ -508,9 +1158,14 @@ namespace
 		size_t _itemCount = 0;
 		float _itemHeight = 0.0f;
 		float _headerHeight = 0.0f;
-		std::vector<size_t> _headerCounts;
-		std::vector<float> _offsets;
+		std::vector<VirtualGroupHeaderMetadata> _groupHeaders;
+		double _contentHeight = 0.0;
+		double _logicalExtentWidth = 0.0;
+		size_t _totalHeaderCount = 0;
+		size_t _groupHeaderMetadataRevision = 0;
+		size_t _configurationRevision = 0;
 		std::unordered_map<Control*, size_t> _indices;
+		size_t _layoutOriginIndex = 0;
 		bool _localLayoutInvalidation = false;
 	};
 
@@ -538,7 +1193,7 @@ namespace
 		GroupedItemHost(
 			std::unique_ptr<Control> item,
 			Control* itemLogicalParent)
-			: Panel()
+			: Panel(), _itemLogicalParent(itemLogicalParent)
 		{
 			SetLayoutEngine(new GroupedItemsLayoutEngine(*this));
 			_item = item.get();
@@ -727,7 +1382,12 @@ namespace
 				else
 				{
 					const auto itemLifetime = itemEntry->Lifetime;
-					auto* logicalParent = itemEntry->LogicalParent.Get();
+					// A recycled grouped host is detached with the generated item's
+					// logical parent cleared. Reapply the owning ItemsControl when the
+					// item is committed into the replacement header transaction; using
+					// the detached nullptr would make the subsequent host attachment
+					// fail its logical ownership contract.
+					auto* logicalParent = _itemLogicalParent.Get();
 					std::exception_ptr attachError;
 					try
 					{
@@ -878,6 +1538,7 @@ namespace
 		}
 
 	private:
+		ControlWeakReference _itemLogicalParent;
 		Control* _item = nullptr;
 		size_t _headerCount = 0;
 		float _fixedHeaderHeight = 0.0f;
@@ -1005,14 +1666,16 @@ namespace
 			const auto itemIndex = _owner.IndexOf(child);
 			if (itemIndex == (std::numeric_limits<size_t>::max)()) continue;
 			const float height = (std::max)(0.0f,
-				_owner.ItemExtent(itemIndex) - margin.Top - margin.Bottom);
+				SaturateLayoutDip(_owner.ItemExtent(itemIndex))
+				- margin.Top - margin.Bottom);
 			const auto desired = child->Measure(
 				cui::core::Constraints{ cui::core::Size{ width, height } });
 			desiredWidth = (std::max)(desiredWidth,
 				desired.width + margin.Left + margin.Right);
 		}
 		_needsLayout = false;
-		return cui::core::Size{ desiredWidth, _owner.ContentHeight() };
+		return cui::core::Size{
+			desiredWidth, SaturateLayoutDip(_owner.ContentHeight()) };
 	}
 
 	void VirtualizingStackLayoutEngine::Arrange(
@@ -1021,6 +1684,10 @@ namespace
 	{
 		finalRect = finalRect.Normalized();
 		const float width = finalRect.width;
+		// Core layout geometry remains float. Rebase every realized row against
+		// the first cached row so neither Arrange nor the render transform has to
+		// subtract two ~38-million-DIP floats near the millionth record.
+		const double layoutOrigin = _owner.VerticalLayoutOriginDip();
 		for (int childIndex = 0; childIndex < context.ChildCount(); ++childIndex)
 		{
 			auto* child = context.ChildAt(childIndex);
@@ -1028,13 +1695,15 @@ namespace
 			const auto itemIndex = _owner.IndexOf(child);
 			if (itemIndex == (std::numeric_limits<size_t>::max)()) continue;
 			const auto margin = child->Margin;
-			const float cellTop = _owner.ItemTop(itemIndex);
+			const float cellTop = SaturateLayoutDip(
+				_owner.ItemTop(itemIndex) - layoutOrigin);
 			child->Arrange(cui::core::Rect{
 				finalRect.x + margin.Left,
 				finalRect.y + cellTop + margin.Top,
 				(std::max)(0.0f, width - margin.Left - margin.Right),
 				(std::max)(0.0f,
-					_owner.ItemExtent(itemIndex) - margin.Top - margin.Bottom) });
+					SaturateLayoutDip(_owner.ItemExtent(itemIndex))
+					- margin.Top - margin.Bottom) });
 		}
 		_needsLayout = false;
 	}
@@ -1330,25 +1999,133 @@ bool ItemsControl::IsVirtualizing() const noexcept
 	return EffectiveItemsPanel().Kind == ItemsPanelKind::VirtualizingStack;
 }
 
+void ItemsControl::InvalidateVirtualGroupHeaderMetadata() noexcept
+{
+	_virtualGroupHeaderMetadataDirty = true;
+}
+
+void ItemsControl::RefreshVirtualGroupHeaderMetadata()
+{
+	if (!_virtualGroupHeaderMetadataDirty) return;
+	std::vector<BindingListGroup> groupDefinitions;
+	bool grouping = false;
+	if (_groupStyle && _itemsSource)
+	{
+		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
+			_itemsSource.Get()))
+		{
+			const auto& groups = grouped->Groups();
+			grouping = !groups.empty();
+			if (grouping) groupDefinitions = groups;
+		}
+	}
+
+	std::vector<uint8_t> bottomLevels;
+	std::vector<size_t> starts;
+	if (grouping)
+	{
+		// Canonicalize once per group revision. StartIndex is the lookup key and
+		// Level orders coincident hierarchical headers from outermost to innermost.
+		// Two stable radix passes keep this O(sizeof(size_t) * G).
+		std::vector<size_t> order(groupDefinitions.size());
+		for (size_t index = 0; index < order.size(); ++index)
+			order[index] = index;
+		std::vector<size_t> scratch(order.size());
+		StableRadixSortGroupOrder(
+			order, scratch, groupDefinitions,
+			[](const BindingListGroup& group) { return group.Level; });
+		StableRadixSortGroupOrder(
+			order, scratch, groupDefinitions,
+			[](const BindingListGroup& group) { return group.StartIndex; });
+		std::vector<BindingListGroup> normalized;
+		normalized.reserve(groupDefinitions.size());
+		for (const size_t index : order)
+			normalized.push_back(std::move(groupDefinitions[index]));
+		groupDefinitions = std::move(normalized);
+
+		// Match CollectionViewGroup.IsBottomLevel without an O(G) scan for each
+		// realized header. While walking backwards, this map holds the earliest
+		// later start for every level; integer hashing is constant-time here.
+		bottomLevels.assign(groupDefinitions.size(), uint8_t{ 1 });
+		std::unordered_map<size_t, size_t> nextStartByLevel;
+		// Group depth is normally tiny even when G is enormous; do not reserve a
+		// million hash buckets for a million sibling groups at the same level.
+		nextStartByLevel.reserve((std::min)(
+			groupDefinitions.size(), size_t{ 64 }));
+		for (size_t index = groupDefinitions.size(); index-- > 0;)
+		{
+			const auto& group = groupDefinitions[index];
+			if (group.Level != (std::numeric_limits<size_t>::max)())
+			{
+				const auto child = nextStartByLevel.find(group.Level + 1);
+				if (child != nextStartByLevel.end()
+					&& child->second >= group.StartIndex
+					&& child->second - group.StartIndex < group.ItemCount)
+					bottomLevels[index] = 0;
+			}
+			nextStartByLevel[group.Level] = group.StartIndex;
+		}
+
+		const size_t itemCount = ItemCount();
+		starts.reserve(groupDefinitions.size() * 2);
+		for (const auto& group : groupDefinitions)
+		{
+			if (group.StartIndex >= itemCount) break;
+			if (!starts.empty()
+				&& starts[starts.size() - 2] == group.StartIndex)
+			{
+				auto& count = starts.back();
+				if (count != (std::numeric_limits<size_t>::max)()) ++count;
+				continue;
+			}
+			starts.push_back(group.StartIndex);
+			starts.push_back(1);
+		}
+	}
+	const bool metadataChanged = grouping != _virtualGroupingActive
+		|| starts != _virtualGroupHeaderStarts;
+	_cachedGroupDefinitions = std::move(groupDefinitions);
+	_cachedGroupBottomLevels = std::move(bottomLevels);
+	_virtualGroupingActive = grouping;
+	if (metadataChanged)
+	{
+		_virtualGroupHeaderStarts = std::move(starts);
+		if (++_virtualGroupHeaderMetadataRevision == 0)
+			++_virtualGroupHeaderMetadataRevision;
+	}
+	_virtualGroupHeaderMetadataDirty = false;
+}
+
 void ItemsControl::ConfigureVirtualHost()
 {
 	auto* host = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
 	if (!host) return;
-	std::vector<size_t> headerCounts(ItemCount(), 0);
-	if (IsGroupingActive() && _groupStyle)
-	{
-		if (const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
-			_itemsSource.Get()))
-			for (const auto& group : grouped->Groups())
-				if (group.StartIndex < headerCounts.size())
-					++headerCounts[group.StartIndex];
-	}
-	const auto& panel = EffectiveItemsPanel();
-	host->SetConfiguration(ItemCount(), panel.ItemHeight,
-		std::move(headerCounts), IsGroupingActive()
+	RefreshVirtualGroupHeaderMetadata();
+	const size_t itemCount = ItemCount();
+	host->SetConfiguration(itemCount, GetVirtualizedItemHeight(),
+		std::span<const size_t>(_virtualGroupHeaderStarts),
+		_virtualGroupHeaderMetadataRevision, _virtualGroupingActive
 			? VirtualizedGroupHeaderEstimate : 0.0f);
+	// The virtual host normally derives horizontal extent from the handful of
+	// realized rows. DataGrid column virtualization intentionally omits offscreen
+	// cell visuals, so publish the logical full-column width through the host.
+	host->SetLogicalExtentWidth(GetVirtualizedHorizontalExtent());
+	if (auto* scroll = ItemsScrollOwner())
+		scroll->SetLogicalScrollContent(host);
 	if (!_itemsSource)
 		host->SynchronizeAuthoredItems(_authoredItems);
+}
+
+size_t ItemsControl::VirtualOffsetMetadataEntryCount() const noexcept
+{
+	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
+	return host ? host->GroupHeaderMetadataCount() : 0;
+}
+
+size_t ItemsControl::VirtualOffsetConfigurationRevision() const noexcept
+{
+	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
+	return host ? host->ConfigurationRevision() : 0;
 }
 
 std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const
@@ -1631,12 +2408,16 @@ void ItemsControl::RefreshItemsScrollOwner()
 		}
 	}
 	if (_itemsScrollOwner)
+	{
+		if (IsVirtualizing())
+			_itemsScrollOwner->SetLogicalScrollContent(_itemsHost);
 		_scrollChanged = _itemsScrollOwner->OnScrollChanged.Subscribe(
 			[this](Control*, ScrollChangedEventArgs&)
 			{
 				if (IsVirtualizing() && !_applyingCollectionChange)
 					(void)RealizeVirtualViewport(true);
 			});
+	}
 }
 
 void ItemsControl::ClearPendingTemplateItemsPresenter() noexcept
@@ -2456,6 +3237,7 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 
 void ItemsControl::SetItemsSource(BindingListReference value)
 {
+	const ControlWeakReference ownerLifetime(this);
 	if (_itemsSource == value) return;
 	if (value && !_authoredItems.empty())
 		throw std::logic_error(
@@ -2465,12 +3247,6 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 			"ItemsControl does not support reentrant ItemsSource changes");
 	BindingListReference candidateSnapshot;
 	std::wstring snapshotError;
-	if (!TryCaptureItemsSourceSnapshot(
-		value, candidateSnapshot, snapshotError))
-	{
-		_lastTemplateError = std::move(snapshotError);
-		return;
-	}
 	auto candidateHost = CreateItemsHost();
 	auto derivedState = CaptureItemsSourceTransactionState();
 	++_itemsSourceUpdateDepth;
@@ -2482,11 +3258,13 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	auto previousItemsSourceChanged = std::move(_itemsSourceChanged);
 	auto previousGroupsChanged = std::move(_groupsChanged);
 	_itemsSource = std::move(value);
+	InvalidateVirtualGroupHeaderMetadata();
 	auto restorePrevious = [&]() noexcept
 	{
 		_itemsSourceChanged.Disconnect();
 		_groupsChanged.Disconnect();
 		_itemsSource = previous;
+		InvalidateVirtualGroupHeaderMetadata();
 		_itemsSourceChanged = std::move(previousItemsSourceChanged);
 		_groupsChanged = std::move(previousGroupsChanged);
 	};
@@ -2515,7 +3293,10 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 					{
 						if (_itemsSource.Get() == sourceIdentity
 							&& !IsItemsSourceUpdateInProgress())
+						{
+							InvalidateVirtualGroupHeaderMetadata();
 							RefreshGroupHeaders();
+						}
 					});
 		}
 	}
@@ -2527,8 +3308,11 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		throw;
 	}
 	// A non-standard IBindingList may publish synchronously from SubscribeChanged.
-	// Those notifications are suppressed above; recapture once after all
-	// subscriptions exist so the candidate tree observes their final state.
+	// Those notifications are suppressed above, so capture only after all
+	// subscriptions exist and materialize the candidate's final state. Capturing
+	// before and after subscription would perform two complete source scans while
+	// providing no additional rollback state: the old host/source remain committed
+	// until this final snapshot succeeds.
 	try
 	{
 		if (!TryCaptureItemsSourceSnapshot(
@@ -2572,6 +3356,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		--_itemsSourceUpdateDepth;
 		throw;
 	}
+	if (!ownerLifetime.Get()) return;
 	if (!rebuilt)
 	{
 		const auto error = _lastTemplateError;
@@ -2651,6 +3436,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	_materializedItemsSourceSnapshot = std::move(candidateSnapshot);
 	ResetTextSearch();
 	--_itemsSourceUpdateDepth;
+	OnItemsSourceTransactionCommitted();
 }
 
 void ItemsControl::SetCustomProjectionItemsSource(BindingListReference value)
@@ -2659,16 +3445,19 @@ void ItemsControl::SetCustomProjectionItemsSource(BindingListReference value)
 		throw std::logic_error(
 			"ItemsControl Items and ItemsSource cannot both be populated");
 	_itemsSource = std::move(value);
+	InvalidateVirtualGroupHeaderMetadata();
 	ResetTextSearch();
 }
 
 void ItemsControl::HandleItemsSourceChange(
 	const CollectionChangedEventArgs& change)
 {
+	const ControlWeakReference ownerLifetime(this);
 	const auto failedSource = _itemsSource;
 	PreparedMaterializedSnapshotChange preparedSnapshot;
 	std::wstring snapshotError;
 	std::unique_ptr<ItemsSourceTransactionState> derivedState;
+	bool committed = false;
 	++_itemsSourceUpdateDepth;
 	auto restoreDerivedState = [&]() noexcept
 	{
@@ -2681,40 +3470,45 @@ void ItemsControl::HandleItemsSourceChange(
 		_itemsSourceChanged.Disconnect();
 		_groupsChanged.Disconnect();
 		_itemsSource = _materializedItemsSourceSnapshot;
+		InvalidateVirtualGroupHeaderMetadata();
 		try { OnItemsSourceChanged(failedSource, _itemsSource); }
 		catch (...) {}
 	};
 	try
 	{
 		// A live collection has already mutated before publishing this callback.
+		// CollectionView updates Groups before Changed and publishes GroupsChanged
+		// only after this callback returns. Refresh now so replacement containers
+		// are never prepared against the previous group-start cache.
+		InvalidateVirtualGroupHeaderMetadata();
+		RefreshVirtualGroupHeaderMetadata();
 		// Capture inside the guarded region so even token allocation failure pins
 		// the control back to its last materialized snapshot.
 		derivedState = CaptureItemsSourceTransactionState();
 		const bool prepared = TryPrepareMaterializedSnapshotChange(
 			_itemsSource, _materializedItemsSourceSnapshot,
 			change, preparedSnapshot, snapshotError);
-		const bool rebuilt = prepared
-			&& (ApplyCollectionChange(change) || RebuildGeneratedItems());
+		bool rebuilt = false;
+		if (prepared)
+		{
+			OnItemsSourceCollectionChangePreparing(
+				change, _materializedItemsSourceSnapshot);
+			if (!ownerLifetime.Get()) return;
+			rebuilt = ApplyCollectionChange(change);
+			if (!ownerLifetime.Get()) return;
+			if (!rebuilt) rebuilt = RebuildGeneratedItems();
+			if (!ownerLifetime.Get()) return;
+		}
 		if (rebuilt)
 		{
-			if (preparedSnapshot.Replace)
-				_materializedItemsSourceSnapshot =
-					std::move(preparedSnapshot.Replacement);
-			else
-			{
-				auto* snapshot =
-					dynamic_cast<MaterializedItemsSourceSnapshot*>(
-						_materializedItemsSourceSnapshot.Get());
-				if (!snapshot)
-					throw std::logic_error(
-						"ItemsControl materialized snapshot is unavailable");
-				snapshot->Apply(
-					change,
-					std::move(preparedSnapshot.ChangedItems),
-					std::move(preparedSnapshot.Groups));
-			}
+			if (!preparedSnapshot.Replace || !preparedSnapshot.Replacement)
+				throw std::logic_error(
+					"ItemsControl prepared snapshot replacement is unavailable");
+			_materializedItemsSourceSnapshot =
+				std::move(preparedSnapshot.Replacement);
 			ResetTextSearch();
 			derivedState.reset();
+			committed = true;
 		}
 		else
 		{
@@ -2742,6 +3536,12 @@ void ItemsControl::HandleItemsSourceChange(
 		--_itemsSourceUpdateDepth;
 		std::rethrow_exception(failure);
 	}
+	if (committed)
+	{
+		OnItemsSourceCollectionChangeCommitted(change);
+		if (!ownerLifetime.Get()) return;
+		OnItemsSourceTransactionCommitted();
+	}
 }
 
 void ItemsControl::SetItemTemplate(ItemTemplateReference value)
@@ -2764,9 +3564,11 @@ void ItemsControl::SetGroupStyle(GroupStyleReference value)
 	if (_groupStyle == value) return;
 	const auto previous = _groupStyle;
 	_groupStyle = std::move(value);
+	InvalidateVirtualGroupHeaderMetadata();
 	if (RebuildGeneratedItems()) return;
 	const auto error = _lastTemplateError;
 	_groupStyle = previous;
+	InvalidateVirtualGroupHeaderMetadata();
 	(void)RebuildGeneratedItems();
 	_lastTemplateError = error;
 }
@@ -2969,15 +3771,24 @@ bool ItemsControl::InitializeGeneratedContainer(Control& container)
 
 bool ItemsControl::ApplyItemContainerStyle()
 {
-	for (size_t index = 0; index < ItemCount(); ++index)
+	auto apply = [this](Control* container)
 	{
-		auto* container = GetGeneratedItem(index);
-		if (!container) continue;
+		if (!container) return true;
 		cui::framework::StyleAccess::SetResourceKey(
 			*container, _itemContainerStyle);
-		if (!cui::framework::StyleAccess::HasVisibleStyleRules(*container))
-			continue;
-		if (!cui::framework::StyleAccess::Refresh(*container, true)) return false;
+		return !cui::framework::StyleAccess::HasVisibleStyleRules(*container)
+			|| cui::framework::StyleAccess::Refresh(*container, true);
+	};
+	if (!_itemsSource)
+	{
+		for (auto* item : _authoredItems)
+			if (!apply(item)) return false;
+		return true;
+	}
+	for (const auto& [index, realized] : GetRealizedItems())
+	{
+		(void)realized;
+		if (!apply(GetGeneratedItem(index))) return false;
 	}
 	return true;
 }
@@ -3306,10 +4117,7 @@ Control* ItemsControl::GetAuthoredItem(size_t index) const noexcept
 
 bool ItemsControl::IsGroupingActive() const noexcept
 {
-	if (!_groupStyle || !_itemsSource) return false;
-	const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
-		_itemsSource.Get());
-	return grouped && !grouped->Groups().empty();
+	return _virtualGroupingActive;
 }
 
 ItemsControl::PreparedGroupHeaders ItemsControl::BuildGroupHeaders(
@@ -3318,34 +4126,22 @@ ItemsControl::PreparedGroupHeaders ItemsControl::BuildGroupHeaders(
 {
 	PreparedGroupHeaders result;
 	if (!IsGroupingActive()) return result;
-	const auto* grouped = dynamic_cast<const IBindingListGroupView*>(
-		_itemsSource.Get());
-	if (!grouped) return result;
-	for (const auto& group : grouped->Groups())
+	const auto first = std::lower_bound(
+		_cachedGroupDefinitions.begin(), _cachedGroupDefinitions.end(), index,
+		[](const BindingListGroup& group, size_t itemIndex)
+		{ return group.StartIndex < itemIndex; });
+	for (auto current = first;
+		current != _cachedGroupDefinitions.end()
+			&& current->StartIndex == index; ++current)
 	{
-		if (group.StartIndex != index) continue;
-#if CUI_ENABLE_DYNAMIC_XAML
-		auto groupItems = std::make_shared<ObservableBindingList>(
-			cui::design::AuthoredBindingListItemTypeName(*_itemsSource.Get()));
-		groupItems->SetItemTypeToken(_itemsSource.Get()->GetItemTypeToken());
-#else
-		auto groupItems = std::make_shared<ObservableBindingList>(
-			_itemsSource.Get()->GetItemTypeToken());
-#endif
-		for (size_t offset = 0; offset < group.ItemCount; ++offset)
-		{
-			BindingSourceReference member;
-			if (_itemsSource.Get()->TryGetItem(group.StartIndex + offset, member)
-				&& member) groupItems->Items.push_back(std::move(member));
-		}
-		const bool isBottomLevel = std::none_of(
-			grouped->Groups().begin(), grouped->Groups().end(),
-			[&](const BindingListGroup& candidate)
-			{
-				return candidate.Level == group.Level + 1
-					&& candidate.StartIndex >= group.StartIndex
-					&& candidate.StartIndex < group.StartIndex + group.ItemCount;
-			});
+		const auto& group = *current;
+		const size_t cachedIndex = static_cast<size_t>(
+			current - _cachedGroupDefinitions.begin());
+		const bool isBottomLevel = cachedIndex
+			< _cachedGroupBottomLevels.size()
+			? _cachedGroupBottomLevels[cachedIndex] != 0 : true;
+		auto groupItems = std::make_shared<ReadOnlyBindingListSlice>(
+			_itemsSource, group.StartIndex, group.ItemCount);
 		auto context = std::make_shared<ObservableObject>();
 		auto aggregates = std::make_shared<ObservableObject>();
 		for (const auto& [name, value] : group.Aggregates)
@@ -3393,6 +4189,7 @@ ItemsControl::PreparedGroupHeaders ItemsControl::BuildGroupHeaders(
 void ItemsControl::RefreshGroupHeaders()
 {
 	_lastTemplateError.clear();
+	RefreshVirtualGroupHeaderMetadata();
 	const bool active = IsGroupingActive();
 	if (active
 		&& ((!IsVirtualizing() && _generator.RealizedCount() != ItemCount())
@@ -3412,7 +4209,17 @@ void ItemsControl::RefreshGroupHeaders()
 			return;
 		}
 	}
-	if (!active) return;
+	if (!active)
+	{
+		ConfigureVirtualHost();
+		if (_itemsHost)
+		{
+			_itemsHost->InvalidateLayout();
+			RequestLayout();
+			InvalidateVisual();
+		}
+		return;
+	}
 	struct Pending final
 	{
 		GroupedItemHost* Host = nullptr;
@@ -3439,7 +4246,7 @@ void ItemsControl::RefreshGroupHeaders()
 		item.Host->SetHeaders(
 			std::move(item.Headers), std::move(item.Contexts),
 			IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
-			IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
+			IsVirtualizing() ? GetVirtualizedItemHeight() : 0.0f);
 	ConfigureVirtualHost();
 	_itemsHost->InvalidateLayout();
 	RequestLayout();
@@ -3451,6 +4258,8 @@ bool ItemsControl::PrepareGeneratedItem(
 	PreparedItem& output,
 	bool allowRecycle)
 {
+	const ControlWeakReference ownerLifetime(this);
+	RefreshVirtualGroupHeaderMetadata();
 	output = {};
 	output.Index = index;
 	ItemContainerGenerator::RecycledItem recycled;
@@ -3479,7 +4288,7 @@ bool ItemsControl::PrepareGeneratedItem(
 			grouped->SetHeaders(
 				std::move(headers.Visuals), std::move(headers.Contexts),
 				IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
-				IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
+				IsVirtualizing() ? GetVirtualizedItemHeight() : 0.0f);
 		else
 		{
 			auto host = std::make_unique<GroupedItemHost>(
@@ -3487,7 +4296,7 @@ bool ItemsControl::PrepareGeneratedItem(
 			host->SetHeaders(
 				std::move(headers.Visuals), std::move(headers.Contexts),
 				IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
-				IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
+				IsVirtualizing() ? GetVirtualizedItemHeight() : 0.0f);
 			output.Visual = std::move(host);
 		}
 		return true;
@@ -3501,6 +4310,7 @@ bool ItemsControl::PrepareGeneratedItem(
 		return false;
 	}
 	auto visual = BuildGeneratedItem(item, index, output.Observation);
+	if (!ownerLifetime.Get()) return false;
 	if (!visual)
 	{
 		if (_lastTemplateError.empty())
@@ -3526,7 +4336,7 @@ bool ItemsControl::PrepareGeneratedItem(
 		grouped->SetHeaders(
 			std::move(headers.Visuals), std::move(headers.Contexts),
 			IsVirtualizing() ? VirtualizedGroupHeaderEstimate : 0.0f,
-			IsVirtualizing() ? EffectiveItemsPanel().ItemHeight : 0.0f);
+			IsVirtualizing() ? GetVirtualizedItemHeight() : 0.0f);
 		visual = std::move(grouped);
 	}
 	output.Visual = std::move(visual);
@@ -3875,11 +4685,11 @@ std::pair<size_t, size_t> ItemsControl::VirtualRangeForViewport() const noexcept
 	if (!scroll) return ShouldRealizeVirtualItemsWithoutViewport()
 		? std::pair<size_t, size_t>{ 0, ItemCount() }
 		: std::pair<size_t, size_t>{ 0, 0 };
-	return VirtualRangeForOffset(static_cast<float>(scroll->VerticalOffset));
+	return VirtualRangeForOffset(scroll->VerticalOffset);
 }
 
 std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
-	float offset) const noexcept
+	double offset) const noexcept
 {
 	const size_t count = ItemCount();
 	if (count == 0) return { 0, 0 };
@@ -3887,19 +4697,31 @@ std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
 	auto* self = const_cast<ItemsControl*>(this);
 	self->ConfigureVirtualHost();
 	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
-	if (!host || host->ContentHeight() <= 0.0f) return { 0, count };
+	if (!host || host->ContentHeight() <= 0.0) return { 0, count };
 	auto* scroll = ItemsScrollOwner();
 	if (!scroll) return ShouldRealizeVirtualItemsWithoutViewport()
 		? std::pair<size_t, size_t>{ 0, count }
 		: std::pair<size_t, size_t>{ 0, 0 };
 	const auto size = const_cast<ScrollViewer*>(scroll)->GetActualSizeDip();
-	const float viewport = (std::max)(1.0f, size.height);
-	const float cache = panel.CacheLength * viewport;
-	const size_t first = host->IndexAtOffset(
-		(std::max)(0.0f, offset - cache));
-	const float endOffset = (std::min)(host->ContentHeight(),
-		(std::max)(0.0f, offset) + viewport + cache);
-	const size_t last = endOffset >= host->ContentHeight()
+	const double viewport = std::isfinite(size.height)
+		? (std::max)(1.0, static_cast<double>(size.height)) : 1.0;
+	double cache = static_cast<double>(panel.CacheLength) * viewport;
+	if (!std::isfinite(cache))
+		cache = (std::numeric_limits<double>::max)();
+	const double contentHeight = host->ContentHeight();
+	const double normalizedOffset = std::isnan(offset) || offset <= 0.0
+		? 0.0 : !std::isfinite(offset) || offset >= contentHeight
+			? contentHeight : offset;
+	const double firstOffset = normalizedOffset > cache
+		? normalizedOffset - cache : 0.0;
+	const size_t first = host->IndexAtOffset(firstOffset);
+	double forward = viewport + cache;
+	if (!std::isfinite(forward))
+		forward = (std::numeric_limits<double>::max)();
+	const double remaining = contentHeight - normalizedOffset;
+	const double endOffset = forward >= remaining
+		? contentHeight : normalizedOffset + forward;
+	const size_t last = endOffset >= contentHeight
 		? count : (std::min)(count, host->IndexAtOffset(endOffset) + 1);
 	return { first, last };
 }
@@ -3908,6 +4730,7 @@ bool ItemsControl::RealizeVirtualRange(
 	size_t first, size_t last, bool localLayoutForScroll)
 {
 	if (!IsVirtualizing() || !_itemsHost || _realizingViewport) return true;
+	const ControlWeakReference ownerLifetime(this);
 	const size_t count = ItemCount();
 	first = (std::min)(first, count);
 	last = (std::clamp)(last, first, count);
@@ -3915,21 +4738,19 @@ bool ItemsControl::RealizeVirtualRange(
 	const bool previousLocalLayout = virtualHost
 		? virtualHost->SetLocalLayoutInvalidation(localLayoutForScroll)
 		: false;
-	struct LocalLayoutGuard final
+	const ControlWeakReference hostLifetime(virtualHost);
+	ItemsScopeExit localLayoutGuard([hostLifetime, previousLocalLayout]
 	{
-		VirtualizingItemsHost* Host;
-		bool Previous;
-		~LocalLayoutGuard()
-		{
-			if (Host) (void)Host->SetLocalLayoutInvalidation(Previous);
-		}
-	} localLayoutGuard{ virtualHost, previousLocalLayout };
+		if (auto* host = dynamic_cast<VirtualizingItemsHost*>(
+			hostLifetime.Get()))
+			(void)host->SetLocalLayoutInvalidation(previousLocalLayout);
+	});
 	_realizingViewport = true;
-	struct RealizingViewportGuard final
+	ItemsScopeExit realizingGuard([ownerLifetime]
 	{
-		bool& Value;
-		~RealizingViewportGuard() { Value = false; }
-	} realizingGuard{ _realizingViewport };
+		if (auto* owner = dynamic_cast<ItemsControl*>(ownerLifetime.Get()))
+			owner->_realizingViewport = false;
+	});
 	std::vector<PreparedItem> additions;
 	for (size_t index = first; index < last; ++index)
 	{
@@ -3942,7 +4763,6 @@ bool ItemsControl::RealizeVirtualRange(
 					_generator.StoreRecycled(prepared.Index, {
 						std::move(prepared.Visual),
 						std::move(prepared.Observation) });
-			_realizingViewport = false;
 			return false;
 		}
 		additions.push_back(std::move(item));
@@ -4000,8 +4820,7 @@ bool ItemsControl::RealizeVirtualRange(
 	else
 		RequestLayout();
 	OnGeneratedItemsRealized();
-	_realizingViewport = false;
-	return true;
+	return ownerLifetime.Get() != nullptr;
 }
 
 bool ItemsControl::RealizeVirtualViewport(bool localLayoutForScroll)
@@ -4029,16 +4848,320 @@ void ItemsControl::TrimRecyclePool(size_t first, size_t last)
 	}
 }
 
+bool ItemsControl::TryBuildOccurrencePermutationReset(
+	const CollectionChangedEventArgs& change,
+	std::vector<size_t>& oldToNew)
+{
+	oldToNew.clear();
+	const ControlWeakReference ownerLifetime(this);
+	const size_t count = ItemCount();
+	if (!ownerLifetime.Get()) return false;
+	const BindingListReference previousSource =
+		_materializedItemsSourceSnapshot;
+	const BindingListReference currentSource = _itemsSource;
+	// Reset normally means that no index continuity may be assumed.  The
+	// DataGrid-owned CollectionView is the one narrow exception: sorting emits
+	// one WPF-style refresh while retaining a stable token for every physical
+	// occurrence (including duplicate object references).
+	if (Type() != UIClass::UI_DataGrid
+		|| change.Action != CollectionChangeAction::Reset
+		|| change.OldSize != change.NewSize
+		|| change.OldSize != count
+		|| change.OldCount != change.OldSize
+		|| change.NewCount != change.NewSize
+		|| !_itemsHost || _applyingCollectionChange
+		|| _generator.SourceCount() != count
+		|| !currentSource || !previousSource)
+		return false;
+	if (IsGroupingActive()) return false;
+	if (!ownerLifetime.Get()) return false;
+	const DataTypeToken currentType = currentSource.Get()->GetItemTypeToken();
+	if (!ownerLifetime.Get()) return false;
+	const DataTypeToken previousType = previousSource.Get()->GetItemTypeToken();
+	if (!ownerLifetime.Get() || currentType != previousType) return false;
+	const auto* previousIdentities =
+		dynamic_cast<const IBindingListOccurrenceIdentity*>(
+			previousSource.Get());
+	const auto* currentIdentities =
+		dynamic_cast<const IBindingListOccurrenceIdentity*>(
+			currentSource.Get());
+	if (!previousIdentities || !currentIdentities)
+		return false;
+	const size_t previousCount = previousSource.Get()->Count();
+	if (!ownerLifetime.Get() || previousCount != count) return false;
+
+	// A materialized CollectionView keeps an O(1) token-to-index table.  Prefer
+	// that contract when it is available: the complete old-to-new vector is the
+	// only N-sized structure a pure permutation intrinsically needs.  The legacy
+	// fallback below retains support for identity-only third-party lists, but its
+	// unordered_map otherwise adds a large, node-heavy peak allocation for a
+	// million-row sort.
+	if (const auto* currentLookup =
+		dynamic_cast<const IBindingListOccurrenceLookup*>(currentSource.Get());
+		currentLookup
+		&& currentLookup->IsItemIndexByOccurrenceIdentityLookupBounded())
+	{
+		std::vector<size_t> candidate(
+			count, CollectionChangedEventArgs::Npos);
+		std::vector<bool> occupied(count, false);
+		for (size_t oldIndex = 0; oldIndex < count; ++oldIndex)
+		{
+			size_t token = 0;
+			if (!previousIdentities->TryGetItemOccurrenceIdentity(
+					oldIndex, token))
+				return false;
+			if (!ownerLifetime.Get()) return false;
+			size_t newIndex = 0;
+			if (!currentLookup->TryGetItemIndexByOccurrenceIdentity(
+					token, newIndex))
+				return false;
+			if (!ownerLifetime.Get()) return false;
+			if (newIndex >= count || occupied[newIndex]) return false;
+
+			BindingSourceReference previousItem;
+			BindingSourceReference currentItem;
+			if (!previousSource.Get()->TryGetItem(oldIndex, previousItem)
+				|| !currentSource.Get()->TryGetItem(newIndex, currentItem))
+				return false;
+			if (!ownerLifetime.Get()) return false;
+			if (!previousItem || !currentItem
+				|| previousItem.Shared() != currentItem.Shared())
+				return false;
+			occupied[newIndex] = true;
+			candidate[oldIndex] = newIndex;
+		}
+		oldToNew = std::move(candidate);
+		return true;
+	}
+
+	std::unordered_map<size_t, size_t> previousByToken;
+	previousByToken.reserve(count);
+	for (size_t oldIndex = 0; oldIndex < count; ++oldIndex)
+	{
+		size_t token = 0;
+		if (!previousIdentities->TryGetItemOccurrenceIdentity(
+			oldIndex, token)
+			|| !previousByToken.emplace(token, oldIndex).second)
+			return false;
+		if (!ownerLifetime.Get()) return false;
+	}
+
+	std::vector<size_t> candidate(
+		count, CollectionChangedEventArgs::Npos);
+	for (size_t newIndex = 0; newIndex < count; ++newIndex)
+	{
+		size_t token = 0;
+		if (!currentIdentities->TryGetItemOccurrenceIdentity(
+			newIndex, token))
+			return false;
+		if (!ownerLifetime.Get()) return false;
+		const auto found = previousByToken.find(token);
+		if (found == previousByToken.end()
+			|| candidate[found->second]
+				!= CollectionChangedEventArgs::Npos)
+			return false;
+
+		// A token is a physical-occurrence identity, not permission to reuse a
+		// container for a different record.  Verify the record identity as well
+		// before committing any generator mutation.
+		BindingSourceReference previousItem;
+		BindingSourceReference currentItem;
+		if (!previousSource.Get()->TryGetItem(
+			found->second, previousItem)
+			|| !currentSource.Get()->TryGetItem(newIndex, currentItem)
+			|| !previousItem || !currentItem
+			|| previousItem.Shared() != currentItem.Shared())
+			return false;
+		if (!ownerLifetime.Get()) return false;
+		candidate[found->second] = newIndex;
+	}
+	if (std::any_of(candidate.begin(), candidate.end(), [](size_t index)
+		{ return index == CollectionChangedEventArgs::Npos; })) return false;
+	oldToNew = std::move(candidate);
+	return true;
+}
+
+bool ItemsControl::ApplyOccurrencePermutationReset(
+	const CollectionChangedEventArgs& change,
+	std::span<const size_t> oldToNew)
+{
+	const ControlWeakReference ownerLifetime(this);
+	const size_t newCount = ItemCount();
+	if (!_itemsHost || _applyingCollectionChange
+		|| change.Action != CollectionChangeAction::Reset
+		|| oldToNew.size() != newCount
+		|| _generator.SourceCount() != newCount)
+		return false;
+
+	auto* scrollOwner = ItemsScrollOwner();
+	double desiredScroll = scrollOwner
+		? scrollOwner->VerticalOffset : 0.0;
+	if (IsVirtualizing() && change.OldSize != 0)
+	{
+		auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
+		if (!virtualHost) return false;
+		const size_t oldAnchor = (std::min)(change.OldSize - 1,
+			virtualHost->IndexAtOffset(desiredScroll));
+		const double withinItem = desiredScroll
+			- virtualHost->ItemTop(oldAnchor);
+		ConfigureVirtualHost();
+		desiredScroll = virtualHost->ItemTop(oldToNew[oldAnchor])
+			+ withinItem;
+		const double contentHeight = virtualHost->ContentHeight();
+		const double viewport = scrollOwner
+			? (std::max)(1.0,
+				static_cast<double>(scrollOwner->GetActualSizeDip().height))
+			: contentHeight;
+		desiredScroll = (std::clamp)(desiredScroll, 0.0,
+			(std::max)(0.0, contentHeight - viewport));
+	}
+	else if (IsVirtualizing()) ConfigureVirtualHost();
+	size_t first = 0;
+	size_t last = newCount;
+	if (IsVirtualizing())
+		std::tie(first, last) = VirtualRangeForOffset(desiredScroll);
+	std::unordered_set<size_t> occupied;
+	occupied.reserve(_generator.RealizedCount());
+	std::vector<size_t> removals;
+	removals.reserve(_generator.RealizedCount());
+	for (const auto& [oldIndex, item] : _generator.RealizedItems())
+	{
+		(void)item;
+		if (oldIndex >= oldToNew.size()) return false;
+		const size_t newIndex = oldToNew[oldIndex];
+		occupied.insert(newIndex);
+		if (IsVirtualizing()
+			&& (newIndex < first || newIndex >= last))
+			removals.push_back(newIndex);
+	}
+	std::vector<PreparedItem> additions;
+	additions.reserve(last - first);
+	OnBeforeGeneratedItemsPrepared();
+	if (!ownerLifetime.Get()) return false;
+	for (size_t index = first; index < last; ++index)
+	{
+		if (occupied.contains(index)) continue;
+		PreparedItem item;
+		// Recycled entries still use pre-permutation indices at this point.
+		// Prepare only the viewport holes and do not consume the wrong entry.
+		if (!PrepareGeneratedItem(index, item, false)) return false;
+		if (!ownerLifetime.Get()) return false;
+		additions.push_back(std::move(item));
+	}
+	_applyingCollectionChange = true;
+	try
+	{
+		{
+			// A pure permutation has already committed the generator and index
+			// hooks before this notification returns.  Keep its invalidations in
+			// the window's pending layout pass so the header click does not block
+			// on a complete DataGrid measure/arrange traversal.
+			ScopedLayoutUpdate layout(*this, false);
+			OnBeforeGeneratedItemsRebuilt();
+			if (!ownerLifetime.Get()) return false;
+			for (const auto& indexChange
+				: _generator.ApplyPermutation(oldToNew))
+			{
+				if (!indexChange.Visual) continue;
+				// Only realized visuals belong to the virtual host. Recycled
+				// containers are still re-indexed through the derived hook so
+				// their ItemIndex is correct when they return to the viewport.
+				if (auto* virtualHost =
+					dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
+					virtualHost
+					&& _generator.GetRealized(indexChange.NewIndex)
+						== indexChange.Visual)
+					virtualHost->RegisterItem(
+						indexChange.Visual, indexChange.NewIndex);
+				OnGeneratedItemIndexChanged(
+					*indexChange.Visual,
+					indexChange.OldIndex,
+					indexChange.NewIndex);
+				if (!ownerLifetime.Get()) return false;
+			}
+
+			for (const size_t index : removals)
+			{
+				auto item = _generator.TakeRealized(index);
+				if (!item.Visual) continue;
+				if (auto* virtualHost =
+					dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
+					virtualHost->UnregisterItem(item.Visual);
+				auto detached = _itemsHost->DetachVisualChild(item.Visual);
+				if (detached)
+				{
+					(void)ClearGroupedItemLogicalParentPreservingOwnership(
+						detached);
+					std::exception_ptr parentError;
+					if (detached)
+						(void)cui::framework::TreeAccess::
+							SetLogicalParentPreservingOwnership(
+								detached, nullptr, &parentError);
+					if (parentError)
+						std::rethrow_exception(parentError);
+				}
+				if (detached)
+					_generator.StoreRecycled(index, {
+						std::move(detached),
+						std::move(item.Observation) });
+			}
+			for (auto& addition : additions)
+			{
+				_generator.DiscardRecycled(addition.Index);
+				AttachPreparedItem(std::move(addition));
+				if (!ownerLifetime.Get()) return false;
+			}
+			ReorderRealizedChildren();
+			ConfigureVirtualHost();
+			_itemsHost->InvalidateLayout();
+			RequestLayout();
+			InvalidateVisual();
+		}
+		if (!ownerLifetime.Get()) return false;
+		if (IsVirtualizing() && scrollOwner)
+			scrollOwner->ScrollToVerticalOffset(desiredScroll);
+		if (!ownerLifetime.Get()) return false;
+		OnGeneratedItemsRebuilt();
+		if (!ownerLifetime.Get()) return false;
+		if (IsVirtualizing()) TrimRecyclePool(first, last);
+		OnGeneratedItemsRealized();
+		if (!ownerLifetime.Get()) return false;
+		_applyingCollectionChange = false;
+		return true;
+	}
+	catch (...)
+	{
+		if (auto* live = dynamic_cast<ItemsControl*>(ownerLifetime.Get()))
+			live->_applyingCollectionChange = false;
+		throw;
+	}
+}
+
 bool ItemsControl::ApplyCollectionChange(
 	const CollectionChangedEventArgs& change)
 {
+	const ControlWeakReference ownerLifetime(this);
+	std::vector<size_t> occurrencePermutation;
+	if (TryBuildOccurrencePermutationReset(
+		change, occurrencePermutation))
+		return ApplyOccurrencePermutationReset(
+			change, occurrencePermutation);
+	if (!ownerLifetime.Get()) return false;
+
+	// Sorting preserves the item set and publishes a run of precise Move
+	// notifications. Keep every generator/selection/current-item transition,
+	// but let the final Move settle layout once for the complete reorder.
+	// Size-changing actions retain their existing immediate-layout contract.
+	const bool deferSynchronousLayout =
+		change.Action == CollectionChangeAction::Move
+		&& change.HasMoreChanges;
 	const size_t newCount = ItemCount();
 	if (!_itemsHost || _applyingCollectionChange
 		|| !_generator.CanApply(change, newCount)) return false;
 
 	auto* scrollOwner = ItemsScrollOwner();
-	float desiredScroll = scrollOwner
-		? static_cast<float>(scrollOwner->VerticalOffset) : 0.0f;
+	double desiredScroll = scrollOwner
+		? scrollOwner->VerticalOffset : 0.0;
 	if (IsVirtualizing() && change.OldSize != 0)
 	{
 		auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
@@ -4046,10 +5169,20 @@ bool ItemsControl::ApplyCollectionChange(
 		{
 			const size_t oldAnchor = (std::min)(change.OldSize - 1,
 				virtualHost->IndexAtOffset(desiredScroll));
-			const float withinItem = desiredScroll
+			const double withinItem = desiredScroll
 				- virtualHost->ItemTop(oldAnchor);
 			auto mappedAnchor = ItemContainerGenerator::MapIndex(
 				change, oldAnchor);
+			if (!mappedAnchor
+				&& change.Action == CollectionChangeAction::Replace
+				&& change.NewCount != 0
+				&& oldAnchor >= change.OldIndex
+				&& oldAnchor - change.OldIndex < change.OldCount)
+			{
+				const size_t replacementOffset = (std::min)(
+					oldAnchor - change.OldIndex, change.NewCount - 1);
+				mappedAnchor = change.NewIndex + replacementOffset;
+			}
 			if (!mappedAnchor && newCount != 0)
 			{
 				const size_t replacement = change.Action
@@ -4059,14 +5192,15 @@ bool ItemsControl::ApplyCollectionChange(
 			}
 			ConfigureVirtualHost();
 			desiredScroll = mappedAnchor
-				? virtualHost->ItemTop(*mappedAnchor) + withinItem : 0.0f;
-			const float contentHeight = virtualHost->ContentHeight();
-			const float viewport = scrollOwner
-				? (std::max)(1.0f, scrollOwner->GetActualSizeDip().height)
+				? virtualHost->ItemTop(*mappedAnchor) + withinItem : 0.0;
+			const double contentHeight = virtualHost->ContentHeight();
+			const double viewport = scrollOwner
+				? (std::max)(1.0,
+					static_cast<double>(scrollOwner->GetActualSizeDip().height))
 				: contentHeight;
 			desiredScroll = (std::clamp)(
-				desiredScroll, 0.0f,
-				(std::max)(0.0f, contentHeight - viewport));
+				desiredScroll, 0.0,
+				(std::max)(0.0, contentHeight - viewport));
 		}
 	}
 	else if (IsVirtualizing()) ConfigureVirtualHost();
@@ -4086,11 +5220,14 @@ bool ItemsControl::ApplyCollectionChange(
 
 	std::vector<PreparedItem> additions;
 	additions.reserve(last - first);
+	OnBeforeGeneratedItemsPrepared();
+	if (!ownerLifetime.Get()) return false;
 	for (size_t index = first; index < last; ++index)
 	{
 		if (occupied.contains(index)) continue;
 		PreparedItem item;
 		if (!PrepareGeneratedItem(index, item, false)) return false;
+		if (!ownerLifetime.Get()) return false;
 		additions.push_back(std::move(item));
 	}
 
@@ -4098,8 +5235,9 @@ bool ItemsControl::ApplyCollectionChange(
 	try
 	{
 		{
-			ScopedLayoutUpdate layout(*this);
+			ScopedLayoutUpdate layout(*this, !deferSynchronousLayout);
 			OnBeforeGeneratedItemsRebuilt();
+			if (!ownerLifetime.Get()) return false;
 			for (const auto index
 				: _generator.InvalidatedRealizedIndices(change))
 			{
@@ -4133,35 +5271,44 @@ bool ItemsControl::ApplyCollectionChange(
 					*indexChange.Visual,
 					indexChange.OldIndex,
 					indexChange.NewIndex);
+				if (!ownerLifetime.Get()) return false;
 			}
 			ConfigureVirtualHost();
 			for (auto& addition : additions)
 			{
 				_generator.DiscardRecycled(addition.Index);
 				AttachPreparedItem(std::move(addition));
+				if (!ownerLifetime.Get()) return false;
 			}
 			ReorderRealizedChildren();
 			_itemsHost->InvalidateLayout();
 			RequestLayout();
 			InvalidateVisual();
 		}
-		UpdateLayout();
+		if (!ownerLifetime.Get()) return false;
+		if (!deferSynchronousLayout) UpdateLayout();
+		if (!ownerLifetime.Get()) return false;
 		if (IsVirtualizing() && scrollOwner)
 			scrollOwner->ScrollToVerticalOffset(desiredScroll);
+		if (!ownerLifetime.Get()) return false;
 		OnGeneratedItemsRebuilt();
+		if (!ownerLifetime.Get()) return false;
 		if (IsVirtualizing())
 		{
 			(void)RealizeVirtualViewport();
+			if (!ownerLifetime.Get()) return false;
 			const auto range = VirtualRangeForViewport();
 			TrimRecyclePool(range.first, range.second);
 		}
 		OnGeneratedItemsRealized();
+		if (!ownerLifetime.Get()) return false;
 		_applyingCollectionChange = false;
 		return true;
 	}
 	catch (...)
 	{
-		_applyingCollectionChange = false;
+		if (auto* live = dynamic_cast<ItemsControl*>(ownerLifetime.Get()))
+			live->_applyingCollectionChange = false;
 		throw;
 	}
 }
@@ -4221,6 +5368,7 @@ bool ItemsControl::RebuildGeneratedItems()
 		_lastTemplateError = L"ItemsHost 不可用。";
 		return false;
 	}
+	RefreshVirtualGroupHeaderMetadata();
 
 	_generator.ClearRecycled();
 	std::vector<PreparedItem> prepared;
@@ -4229,6 +5377,7 @@ bool ItemsControl::RebuildGeneratedItems()
 	if (IsVirtualizing())
 		std::tie(first, last) = VirtualRangeForViewport();
 	prepared.reserve(last - first);
+	OnBeforeGeneratedItemsPrepared();
 	for (size_t index = first; index < last; ++index)
 	{
 		PreparedItem item;
@@ -4255,11 +5404,12 @@ bool ItemsControl::RebuildGeneratedItems()
 		if (auto* virtualHost =
 			dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 		{
-			const float viewport = (std::max)(
-				0.0f, scrollOwner->GetActualSizeDip().height);
+			const double viewport = (std::max)(
+				0.0, static_cast<double>(
+					scrollOwner->GetActualSizeDip().height));
 			verticalOffset = (std::min)(verticalOffset,
-				static_cast<double>(std::ceil((std::max)(
-					0.0f, virtualHost->ContentHeight() - viewport))));
+				std::ceil((std::max)(
+					0.0, virtualHost->ContentHeight() - viewport)));
 		}
 		scrollOwner->ScrollToVerticalOffset(verticalOffset);
 		if (IsVirtualizing()) (void)RealizeVirtualViewport();
@@ -4276,22 +5426,34 @@ bool ItemsControl::BringItemIntoView(size_t index)
 		ConfigureVirtualHost();
 		auto* host = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
 		if (!host) return false;
-		const float top = host->ItemTop(index);
-		const float bottom = top + host->ItemExtent(index);
+		const double top = host->ItemTop(index);
+		const double bottom = top + host->ItemExtent(index);
 		if (!scrollOwner)
 		{
-			(void)RealizeVirtualRange(0, ItemCount());
+			// DataGrid and popup-backed selectors deliberately defer virtual
+			// realization until their template supplies a finite viewport.  A
+			// programmatic CurrentItem/BringIntoView request can arrive while the
+			// control is still on a hidden tab; realizing the complete source here
+			// defeats that policy and turns one target lookup into N containers.
+			// Keep the historical all-items behavior for hosts that opt into it,
+			// but materialize only the requested occurrence for deferred hosts.
+			const bool realizeWithoutViewport =
+				ShouldRealizeVirtualItemsWithoutViewport();
+			(void)RealizeVirtualRange(
+				realizeWithoutViewport ? size_t{ 0 } : index,
+				realizeWithoutViewport ? ItemCount() : index + 1);
 			return GetGeneratedItem(index) != nullptr;
 		}
-		const float viewport = (std::max)(
-			1.0f, scrollOwner->GetActualSizeDip().height);
-		float target = static_cast<float>(scrollOwner->VerticalOffset);
+		const double viewport = (std::max)(
+			1.0, static_cast<double>(
+				scrollOwner->GetActualSizeDip().height));
+		double target = scrollOwner->VerticalOffset;
 		if (top < target) target = top;
 		else if (bottom > target + viewport)
 			target = bottom - viewport;
 		UpdateLayout();
 		scrollOwner->ScrollToVerticalOffset(
-			std::ceil((std::max)(0.0f, target)));
+			std::ceil((std::max)(0.0, target)));
 		(void)RealizeVirtualViewport(true);
 		if (auto* item = GetGeneratedItem(index))
 		{

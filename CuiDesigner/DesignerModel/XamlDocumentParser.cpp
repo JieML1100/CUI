@@ -1170,6 +1170,93 @@ namespace
 		return true;
 	}
 
+	bool TryParseDataGridColumnBinding(
+		const std::wstring& value,
+		DesignerDataBinding& binding,
+		std::wstring& error)
+	{
+		auto text = Trim(value);
+		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
+		{
+			error = L"DataGrid 列 Binding 必须使用 {Binding ...}。";
+			return false;
+		}
+		text = Trim(text.substr(1, text.size() - 2));
+		if (!text.starts_with(L"Binding")
+			|| (text.size() > 7 && std::iswspace(text[7]) == 0
+				&& text[7] != L','))
+		{
+			error = L"DataGrid 列 Binding 必须使用 {Binding ...}。";
+			return false;
+		}
+		text = Trim(text.substr(7));
+		bool positionalPath = false;
+		std::unordered_set<std::wstring> namedArguments;
+		for (const auto& rawPart : SplitMarkupArguments(text))
+		{
+			const auto part = Trim(rawPart);
+			if (part.empty())
+			{
+				error = L"DataGrid 列 Binding 包含空参数。";
+				return false;
+			}
+			const auto equals = part.find(L'=');
+			if (equals == std::wstring::npos)
+			{
+				if (positionalPath || namedArguments.contains(L"Path"))
+				{
+					error = L"DataGrid 列 Binding 不能重复声明 Path。";
+					return false;
+				}
+				positionalPath = true;
+				continue;
+			}
+			const auto key = Trim(part.substr(0, equals));
+			const auto argument = Trim(part.substr(equals + 1));
+			if (key != L"Path" && key != L"Mode"
+				&& key != L"UpdateSourceTrigger" && key != L"Converter"
+				&& key != L"ConverterParameter" && key != L"StringFormat"
+				&& key != L"FallbackValue" && key != L"TargetNullValue")
+			{
+				error = L"DataGrid 列 Binding 不支持参数：" + key;
+				return false;
+			}
+			if (argument.empty())
+			{
+				error = L"DataGrid 列 Binding 参数不能为空：" + key;
+				return false;
+			}
+			if (!namedArguments.insert(key).second
+				|| (key == L"Path" && positionalPath))
+			{
+				error = L"DataGrid 列 Binding 不能重复声明：" + key;
+				return false;
+			}
+		}
+		if (!TryParseBinding(value, binding, error))
+		{
+			if (error.empty()) error = L"DataGrid 列 Binding 语法无效。";
+			return false;
+		}
+		if (binding.SourceProperty.empty()
+			|| !DesignerBindingUtils::IsValidSourcePath(binding.SourceProperty))
+		{
+			error = L"DataGrid 列 Binding 必须声明有效的行 DataContext Path。";
+			return false;
+		}
+		if (!binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| !binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1 || binding.IsMultiBinding())
+		{
+			error = L"DataGrid 列 Binding 仅允许行 DataContext Path、Mode、"
+				L"UpdateSourceTrigger、Converter 及其标量选项。";
+			return false;
+		}
+		return true;
+	}
+
 	bool TryParseTemplateBinding(
 		const std::wstring& value,
 		std::wstring& sourceProperty,
@@ -1371,6 +1458,45 @@ namespace
 		catch (...)
 		{
 			valid = false;
+		}
+		return result;
+	}
+
+	DesignValue DataGridLengthValue(const std::wstring& raw, bool& valid)
+	{
+		const auto value = Trim(raw);
+		const auto lower = Lower(value);
+		DesignValue result = DesignValue::object();
+		for (const auto& [name, unit] : {
+			std::pair{ L"auto", "Auto" },
+			std::pair{ L"sizetoheader", "SizeToHeader" },
+			std::pair{ L"sizetocells", "SizeToCells" } })
+		{
+			if (lower != name) continue;
+			result["value"] = 1.0;
+			result["unit"] = unit;
+			valid = true;
+			return result;
+		}
+		if (!value.empty() && value.back() == L'*')
+		{
+			auto factor = Trim(value.substr(0, value.size() - 1));
+			if (factor.empty()) factor = L"1";
+			double parsed = 0.0;
+			valid = TryParseDouble(factor, parsed) && parsed >= 0.0;
+			if (valid)
+			{
+				result["value"] = parsed;
+				result["unit"] = "Star";
+			}
+			return result;
+		}
+		double parsed = 0.0;
+		valid = TryParseDouble(value, parsed) && parsed >= 0.0;
+		if (valid)
+		{
+			result["value"] = parsed;
+			result["unit"] = "Pixel";
 		}
 		return result;
 	}
@@ -8645,6 +8771,165 @@ namespace
 			return true;
 		}
 
+		bool ParseDataGridColumns(
+			const Element& property,
+			DesignValue& output,
+			std::wstring& error)
+		{
+			if (!ValidateAttributes(property, {}, error)) return false;
+			if (!DirectText(property).empty())
+				return Fail(L"DataGrid.Columns 不允许包含文本内容。", error);
+			output = DesignValue::array();
+			for (const auto& columnElement : ChildElements(property))
+			{
+				DiagnosticContext columnContext(*this, columnElement);
+				if (!Equals(FromUtf8(columnElement->NamespaceURI()), L"urn:cui"))
+					return Fail(L"DataGrid.Columns 仅允许 CUI DataGridColumn。",
+						error);
+				const auto name = FromUtf8(columnElement->LocalName());
+				const bool textColumn = Equals(name, L"DataGridTextColumn");
+				const bool checkBoxColumn = Equals(
+					name, L"DataGridCheckBoxColumn");
+				const bool templateColumn = Equals(
+					name, L"DataGridTemplateColumn");
+				if (!textColumn && !checkBoxColumn && !templateColumn)
+					return Fail(L"DataGrid.Columns 仅允许 DataGridTextColumn、"
+						L"DataGridCheckBoxColumn 或 DataGridTemplateColumn。", error);
+				for (const auto& attribute : columnElement->Attributes())
+				{
+					if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+					if (!FromUtf8(attribute->Prefix()).empty())
+						return Fail(name + L" 不支持带命名空间的属性："
+							+ FromUtf8(attribute->Name()), error);
+				}
+				if (templateColumn)
+				{
+					if (!ValidateAttributes(columnElement,
+						{ L"Header", L"Width", L"MinWidth", L"MaxWidth",
+						  L"IsReadOnly", L"CanUserSort", L"CanUserResize",
+						  L"SortMemberPath",
+						  L"CellTemplate", L"CellEditingTemplate" }, error))
+						return false;
+				}
+				else if (checkBoxColumn)
+				{
+					if (!ValidateAttributes(columnElement,
+						{ L"Header", L"Binding", L"Width", L"MinWidth",
+						  L"MaxWidth", L"IsReadOnly", L"IsThreeState",
+						  L"CanUserSort", L"CanUserResize", L"SortMemberPath" }, error))
+						return false;
+				}
+				else if (!ValidateAttributes(columnElement,
+					{ L"Header", L"Binding", L"Width", L"MinWidth", L"MaxWidth",
+					  L"IsReadOnly", L"CanUserSort", L"CanUserResize",
+					  L"SortMemberPath" }, error))
+					return false;
+				if (!ChildElements(columnElement).empty()
+					|| !DirectText(columnElement).empty())
+					return Fail(name + L" 不允许包含子元素或文本内容。", error);
+
+				DesignValue column = DesignValue::object();
+				column["kind"] = textColumn ? "Text"
+					: checkBoxColumn ? "CheckBox" : "Template";
+				if (const auto header = Attribute(columnElement, L"Header"))
+					column["header"] = ToUtf8(*header);
+
+				bool validWidth = false;
+				column["width"] = DataGridLengthValue(
+					Attribute(columnElement, L"Width").value_or(L"SizeToHeader"),
+					validWidth);
+				if (!validWidth)
+					return Fail(name + L".Width 必须是 Auto、SizeToHeader、"
+						L"SizeToCells、非负像素值或非负 Star 长度。", error);
+
+				double minimum = 20.0;
+				double maximum = (std::numeric_limits<double>::infinity)();
+				if (const auto text = Attribute(columnElement, L"MinWidth"))
+				{
+					if (!TryParseDouble(*text, minimum) || minimum < 0.0)
+						return Fail(name + L".MinWidth 必须是非负有限数值。",
+							error);
+					column["minWidth"] = minimum;
+				}
+				if (const auto text = Attribute(columnElement, L"MaxWidth"))
+				{
+					if (!TryParseDouble(*text, maximum) || maximum < minimum)
+						return Fail(name + L".MaxWidth 必须是不小于 MinWidth 的"
+							L"非负有限数值。", error);
+					column["maxWidth"] = maximum;
+				}
+				if (maximum < minimum)
+					return Fail(name + L".MaxWidth 不能小于 MinWidth。", error);
+
+				bool isReadOnly = false;
+				bool canUserSort = true;
+				bool canUserResize = true;
+				if (!ReadBoolAttribute(columnElement,
+					L"IsReadOnly", false, isReadOnly, error)
+					|| !ReadBoolAttribute(columnElement,
+						L"CanUserSort", true, canUserSort, error)
+					|| !ReadBoolAttribute(columnElement,
+						L"CanUserResize", true, canUserResize, error)) return false;
+				if (isReadOnly) column["isReadOnly"] = true;
+				if (checkBoxColumn)
+				{
+					bool isThreeState = false;
+					if (!ReadBoolAttribute(columnElement,
+						L"IsThreeState", false, isThreeState, error)) return false;
+					if (isThreeState) column["isThreeState"] = true;
+				}
+				if (!canUserSort) column["canUserSort"] = false;
+				if (!canUserResize) column["canUserResize"] = false;
+				if (const auto sortPath = Attribute(
+					columnElement, L"SortMemberPath"))
+				{
+					const auto normalized = DesignerBindingUtils::Trim(*sortPath);
+					if (!normalized.empty()
+						&& !DesignerBindingUtils::IsValidSourcePath(normalized))
+						return Fail(name + L".SortMemberPath 无效。", error);
+					if (!normalized.empty())
+						column["sortMemberPath"] = ToUtf8(normalized);
+				}
+
+				if (!templateColumn)
+				{
+					const auto bindingText = Attribute(columnElement, L"Binding");
+					if (!bindingText)
+						return Fail(name + L" 必须声明 Binding。", error);
+					DesignerDataBinding binding;
+					std::wstring bindingError;
+					if (!TryParseDataGridColumnBinding(
+						*bindingText, binding, bindingError))
+						return Fail(name + L".Binding：" + bindingError, error);
+					column["binding"] =
+						DesignerBindingUtils::WriteBindingDefinition(binding);
+				}
+				else
+				{
+					for (const auto& [attributeName, key] : {
+						std::pair{ L"CellTemplate", "cellTemplate" },
+						std::pair{ L"CellEditingTemplate", "cellEditingTemplate" } })
+					{
+						const auto templateText = Attribute(
+							columnElement, attributeName);
+						if (!templateText) continue;
+						std::wstring resourceKey;
+						if (!TryParseStaticResource(*templateText, resourceKey))
+							return Fail(name + L"." + attributeName
+								+ L" 必须引用已声明的 DataTemplate。", error);
+						const auto* definition = FindVisibleDataTemplate(resourceKey);
+						if (!definition)
+							return Fail(name + L"." + attributeName
+								+ L" 引用了未声明的 DataTemplate：" + resourceKey,
+								error);
+						column[key] = ToUtf8(definition->Key);
+					}
+				}
+				output.push_back(std::move(column));
+			}
+			return true;
+		}
+
 		bool ParseRichTextFormatting(
 			const Element& element,
 			bool allowText,
@@ -9344,6 +9629,16 @@ namespace
 				if (!ParseChartSeries(property, values, error)) return false;
 				return StoreStructureValue(nodeIndex,
 					"series", std::move(values), error);
+			}
+			if (type == UIClass::UI_DataGrid && Equals(name, L"DataGrid.Columns"))
+			{
+				if (!beginCollection("dataGridColumns")) return false;
+				if (!Equals(FromUtf8(property->NamespaceURI()), L"urn:cui"))
+					return Fail(L"DataGrid.Columns 必须使用 CUI 命名空间。", error);
+				DesignValue values;
+				if (!ParseDataGridColumns(property, values, error)) return false;
+				return StoreStructureValue(nodeIndex,
+					"dataGridColumns", std::move(values), error);
 			}
 			return true;
 		}

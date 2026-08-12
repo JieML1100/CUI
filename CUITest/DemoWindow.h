@@ -68,6 +68,7 @@ private:
 	void InitializeBasicPage();
 	void InitializeContainerPage();
 	void InitializeDataPage();
+	void InitializeDataGridPage();
 	void InitializeAnalyticsPage();
 	void InitializeSystemPage();
 	bool EnsureNotifyIconInitialized(bool show);
@@ -104,6 +105,14 @@ private:
 	void HandleBasicClick(Control* sender, RoutedEventArgs& e) override;
 	void HandleChartKind(Control* sender, RoutedEventArgs& e) override;
 	void HandleChartPoint(ChartView* sender, int seriesIndex, int pointIndex) override;
+	void HandleDataGridCellEditEnding(
+		DataGrid* sender, DataGridCellEditEndingEventArgs& e) override;
+	void HandleDataGridCurrentCellChanged(
+		DataGrid* sender, DataGridCurrentCellChangedEventArgs& e) override;
+	void HandleDataGridSelectedCellsChanged(
+		DataGrid* sender, DataGridSelectedCellsChangedEventArgs& e) override;
+	void HandleDataGridSorting(
+		DataGrid* sender, DataGridSortingEventArgs& e) override;
 	void HandleClosing(Window* sender, CancelEventArgs& e) override;
 	void HandleComboSelection(Control* sender, SelectionChangedEventArgs& e) override;
 	void HandleCommandAvailabilityToggle(Control* sender, RoutedEventArgs& e) override;
@@ -186,6 +195,9 @@ private:
 	int _featureInvocations = 0;
 	int _featureBubbleInvocations = 0;
 	int _featureInputCount = 0;
+	int _dataGridSortEvents = 0;
+	int _dataGridEditEndingEvents = 0;
+	int _dataGridCurrentCellEvents = 0;
 	int _treeSelectionChanges = 0;
 	std::vector<std::wstring> _routedInputTrace;
 	std::wstring _routedInputDetail;

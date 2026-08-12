@@ -19,6 +19,7 @@
 #include "../../CUI/include/ItemsPresenter.h"
 #include "../../CUI/include/Selector.h"
 #include "../../CUI/include/ListBox.h"
+#include "../../CUI/include/DataGrid.h"
 
 /**
  * Public umbrella header for CUI's dynamic design-document runtime.

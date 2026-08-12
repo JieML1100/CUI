@@ -186,6 +186,9 @@
     <ClInclude Include="include\DatePicker.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\DataGrid.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ChartView.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -524,6 +527,9 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\DatePicker.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DataGrid.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\ChartView.cpp">

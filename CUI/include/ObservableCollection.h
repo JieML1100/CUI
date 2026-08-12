@@ -13,6 +13,11 @@
 #include <utility>
 #include <vector>
 
+namespace cui::framework
+{
+	struct ObservableCollectionMoveAccess;
+}
+
 enum class CollectionChangeAction : uint8_t
 {
 	Add,
@@ -34,6 +39,11 @@ struct CollectionChangedEventArgs
 	size_t NewCount = 0;
 	size_t OldSize = 0;
 	size_t NewSize = 0;
+	// A collection view may publish one logical refresh as a precise sequence
+	// of Add/Remove/Move notifications. Consumers still observe every
+	// intermediate state, while this hint lets presentation consumers defer
+	// expensive synchronous layout until the final notification.
+	bool HasMoreChanges = false;
 };
 
 /** A structurally observable collection with a private contiguous store. */
@@ -141,7 +151,10 @@ public:
 	ObservableCollection(const ObservableCollection& other)
 		: Base(static_cast<const Base&>(other)) {}
 	ObservableCollection(ObservableCollection&& other) noexcept
-		: Base(std::move(static_cast<Base&>(other))) {}
+		: Base(std::move(static_cast<Base&>(other)))
+	{
+		other.AdvanceMutationRevision();
+	}
 
 	friend bool operator==(
 		const ObservableCollection& left,
@@ -176,6 +189,7 @@ public:
 		VerifyMutationAllowed();
 		const size_t oldSize = Base::size();
 		Base::operator=(std::move(static_cast<Base&>(other)));
+		other.AdvanceMutationRevision();
 		PublishReset(oldSize);
 		return *this;
 	}
@@ -255,7 +269,15 @@ public:
 		_keepOwnerSynchronized = false;
 		Changed.InvokeCore(this, change);
 	}
-	bool IsUpdating() const noexcept { return _updateDepth != 0; }
+	bool IsUpdating() const noexcept
+	{
+		return _updateDepth != 0 || _movedFromResetDeferralDepth != 0;
+	}
+	/** Changes immediately after the store mutates, before owner/event callbacks. */
+	std::uint64_t MutationRevision() const noexcept
+	{
+		return _mutationRevision;
+	}
 	[[nodiscard]] UpdateScope DeferNotifications() noexcept
 	{
 		return UpdateScope(*this);
@@ -517,6 +539,42 @@ protected:
 	}
 
 private:
+	friend struct cui::framework::ObservableCollectionMoveAccess;
+
+	/**
+	 * Completes the source-side observation contract after an owning wrapper has
+	 * moved the contiguous store and its associated metadata independently.
+	 */
+	void PublishMovedFromReset(size_t oldSize)
+	{
+		if (oldSize != 0) PublishReset(oldSize);
+	}
+	void BeginMovedFromResetDeferral(size_t oldSize) noexcept
+	{
+		if (_movedFromResetDeferralDepth++ == 0)
+		{
+			_movedFromResetOldSize = oldSize;
+			_movedFromResetChanged = oldSize != 0;
+		}
+	}
+	void CancelMovedFromResetDeferral() noexcept
+	{
+		if (_movedFromResetDeferralDepth == 0) return;
+		if (--_movedFromResetDeferralDepth == 0)
+		{
+			_movedFromResetOldSize = 0;
+			_movedFromResetChanged = false;
+		}
+	}
+	void EndMovedFromResetDeferral()
+	{
+		if (_movedFromResetDeferralDepth == 0) return;
+		if (--_movedFromResetDeferralDepth != 0) return;
+		const size_t oldSize = std::exchange(_movedFromResetOldSize, 0);
+		const bool changed = std::exchange(_movedFromResetChanged, false);
+		if (changed) PublishReset(oldSize);
+	}
+
 	void VerifyMutationAllowed()
 	{
 		if (_ownerChanging) _ownerChanging();
@@ -575,6 +633,12 @@ private:
 	}
 	void Publish(const CollectionChangedEventArgs& args)
 	{
+		AdvanceMutationRevision();
+		if (_movedFromResetDeferralDepth != 0)
+		{
+			_movedFromResetChanged = true;
+			return;
+		}
 		if (_updateDepth != 0)
 		{
 			if (_keepOwnerSynchronized && _ownerChanged)
@@ -583,6 +647,10 @@ private:
 			return;
 		}
 		PublishNow(args);
+	}
+	void AdvanceMutationRevision() noexcept
+	{
+		if (++_mutationRevision == 0) ++_mutationRevision;
 	}
 	void PublishNow(const CollectionChangedEventArgs& args)
 	{
@@ -593,11 +661,47 @@ private:
 	OwnerChangedHandler _ownerChanged;
 	OwnerChangingHandler _ownerChanging;
 	unsigned int _updateDepth = 0;
+	unsigned int _movedFromResetDeferralDepth = 0;
+	size_t _movedFromResetOldSize = 0;
+	bool _movedFromResetChanged = false;
 	bool _batchChanged = false;
 	bool _keepOwnerSynchronized = false;
 	bool _synchronizeOwnerDuringUpdates = false;
 	size_t _batchOldSize = 0;
+	std::uint64_t _mutationRevision = 0;
 };
+
+namespace cui::framework
+{
+	/** Internal bridge for wrappers whose metadata must move before Reset. */
+	struct ObservableCollectionMoveAccess final
+	{
+		template<typename T>
+		static void PublishMovedFromReset(
+			ObservableCollection<T>& source, size_t oldSize)
+		{
+			source.PublishMovedFromReset(oldSize);
+		}
+		template<typename T>
+		static void BeginMovedFromResetDeferral(
+			ObservableCollection<T>& source, size_t oldSize) noexcept
+		{
+			source.BeginMovedFromResetDeferral(oldSize);
+		}
+		template<typename T>
+		static void CancelMovedFromResetDeferral(
+			ObservableCollection<T>& source) noexcept
+		{
+			source.CancelMovedFromResetDeferral();
+		}
+		template<typename T>
+		static void EndMovedFromResetDeferral(
+			ObservableCollection<T>& source)
+		{
+			source.EndMovedFromResetDeferral();
+		}
+	};
+}
 
 /**
  * ObservableCollection with a private item-state channel for its owning type.

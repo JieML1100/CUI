@@ -89,6 +89,19 @@ namespace cui::framework
 			return Window::BuildTabOrder(roots);
 		}
 
+		static std::vector<Control*> AccessibleControlsForTesting(
+			const Window& target)
+		{
+			return target.GetAccessibleControls();
+		}
+
+		static bool TryGetAccessibilityVirtualFocusedNodeForTesting(
+			Window& target, Control*& owner, uint32_t& virtualId)
+		{
+			return target.TryGetAccessibilityVirtualFocusedNode(
+				owner, virtualId);
+		}
+
 		static bool ProcessAccessKey(Window& target, wchar_t key)
 		{
 			return target.ProcessAccessKey(key);

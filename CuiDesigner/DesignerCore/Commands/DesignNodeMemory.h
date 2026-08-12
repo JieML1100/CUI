@@ -39,6 +39,24 @@ namespace DesignerCommandMemory
 		return result;
 	}
 
+	inline size_t BindingHeap(const DesignerDataBinding& value) noexcept
+	{
+		size_t result = StringHeap(value.SourceProperty)
+			+ StringHeap(value.Converter)
+			+ StringHeap(value.ElementName)
+			+ StringHeap(value.AncestorType)
+			+ StringHeap(value.AncestorTypeNamespace)
+			+ VectorHeap(value.ChildBindings);
+		if (value.FallbackValue) result += StringHeap(value.FallbackValue->Text);
+		if (value.TargetNullValue) result += StringHeap(value.TargetNullValue->Text);
+		if (value.ConverterParameter)
+			result += StringHeap(value.ConverterParameter->Text);
+		if (value.StringFormat) result += StringHeap(*value.StringFormat);
+		for (const auto& child : value.ChildBindings)
+			result += BindingHeap(child);
+		return result;
+	}
+
 	inline size_t StructureHeap(
 		const DesignerModel::DesignNodeStructure& value) noexcept
 	{
@@ -80,6 +98,18 @@ namespace DesignerCommandMemory
 		}
 		if (value.GridRows) result += VectorHeap(*value.GridRows);
 		if (value.GridColumns) result += VectorHeap(*value.GridColumns);
+		if (value.DataGridColumns)
+		{
+			result += VectorHeap(*value.DataGridColumns);
+			for (const auto& column : *value.DataGridColumns)
+			{
+				result += StringHeap(column.Header)
+					+ StringHeap(column.SortMemberPath)
+					+ StringHeap(column.CellTemplate)
+					+ StringHeap(column.CellEditingTemplate);
+				if (column.Binding) result += BindingHeap(*column.Binding);
+			}
+		}
 		if (value.ChartSeries)
 		{
 			result += VectorHeap(*value.ChartSeries);

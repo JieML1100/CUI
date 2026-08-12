@@ -6,7 +6,7 @@
 
 namespace DesignerModel
 {
-inline constexpr unsigned int FrameworkThemeCodeGenerationContractVersion = 22;
+inline constexpr unsigned int FrameworkThemeCodeGenerationContractVersion = 23;
 
 struct FrameworkThemeCodeGenerationOptions
 {

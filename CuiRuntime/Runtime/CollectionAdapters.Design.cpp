@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <typeindex>
+#include <unordered_set>
 #include <utility>
 
 #if !CUI_ENABLE_DYNAMIC_XAML
@@ -193,25 +194,41 @@ void CollectionViewSource::AppendAuthoredItemObservations()
 {
 	if (!_source) return;
 	std::vector<std::wstring> paths;
-	paths.reserve(_filterDescriptions.size() + _sortDescriptions.size()
-		+ _groupDescriptions.size() + _aggregateDescriptions.size());
-	for (const auto& filter : _filterDescriptions)
-		if (!filter.PropertyName.empty()) paths.push_back(filter.PropertyName);
-	for (const auto& sort : _sortDescriptions)
-		if (!sort.PropertyName.empty()) paths.push_back(sort.PropertyName);
-	for (const auto& group : _groupDescriptions)
-		if (!group.PropertyName.empty()) paths.push_back(group.PropertyName);
-	for (const auto& aggregate : _aggregateDescriptions)
-		if (!aggregate.PropertyName.empty()) paths.push_back(aggregate.PropertyName);
+	paths.reserve(
+		(_isLiveFilteringRequested ? _filterDescriptions.size() : 0)
+		+ (_isLiveSortingRequested ? _sortDescriptions.size() : 0)
+		+ (_isLiveGroupingRequested
+			? _groupDescriptions.size() + _aggregateDescriptions.size() : 0));
+	if (_isLiveFilteringRequested)
+		for (const auto& filter : _filterDescriptions)
+			if (filter.CompiledPath.Empty() && !filter.PropertyName.empty())
+				paths.push_back(filter.PropertyName);
+	if (_isLiveSortingRequested)
+		for (const auto& sort : _sortDescriptions)
+			if (sort.CompiledPath.Empty() && !sort.PropertyName.empty())
+				paths.push_back(sort.PropertyName);
+	if (_isLiveGroupingRequested)
+	{
+		for (const auto& group : _groupDescriptions)
+			if (group.CompiledPath.Empty() && !group.PropertyName.empty())
+				paths.push_back(group.PropertyName);
+		for (const auto& aggregate : _aggregateDescriptions)
+			if (aggregate.CompiledPath.Empty() && !aggregate.PropertyName.empty())
+				paths.push_back(aggregate.PropertyName);
+	}
 	std::sort(paths.begin(), paths.end());
 	paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
 	if (paths.empty()) return;
-	_itemObservations.reserve(
-		_itemObservations.size() + _source.Get()->Count());
-	for (size_t index = 0; index < _source.Get()->Count(); ++index)
+	auto* const source = _source.Get();
+	const size_t sourceCount = source->Count();
+	std::unordered_set<const IBindingSource*> observedItems;
+	for (size_t index = 0; index < sourceCount; ++index)
 	{
 		BindingSourceReference item;
-		if (!_source.Get()->TryGetItem(index, item) || !item) continue;
+		if (!source->TryGetItem(index, item) || !item) continue;
+		// Authored paths have the same object-level invalidation semantics as
+		// compiled paths: one notification refreshes every repeated occurrence.
+		if (!observedItems.insert(item.Get()).second) continue;
 		_itemObservations.push_back(ObserveBindingPaths(
 			item, std::span<const std::wstring>{ paths },
 			[this] { Refresh(); }));

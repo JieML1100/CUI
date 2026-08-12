@@ -3,6 +3,7 @@
 #include "Control.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 ItemContainerGenerator::ItemContainerGenerator() = default;
@@ -91,10 +92,13 @@ bool ItemContainerGenerator::CanApply(
 			&& change.OldIndex + change.OldCount <= change.OldSize
 			&& change.OldSize == change.NewSize;
 	case CollectionChangeAction::Move:
-		return change.OldCount == 1 && change.NewCount == 1
+		return change.OldCount > 0
+			&& change.OldCount == change.NewCount
 			&& change.OldSize == change.NewSize
-			&& change.OldIndex < change.OldSize
-			&& change.NewIndex < change.NewSize;
+			&& change.OldIndex <= change.OldSize
+			&& change.OldCount <= change.OldSize - change.OldIndex
+			&& change.NewCount <= change.NewSize
+			&& change.NewIndex <= change.NewSize - change.NewCount;
 	case CollectionChangeAction::Swap:
 		return change.OldCount == 1 && change.NewCount == 1
 			&& change.OldSize == change.NewSize
@@ -124,13 +128,16 @@ std::optional<size_t> ItemContainerGenerator::MapIndex(
 			&& oldIndex < change.OldIndex + change.OldCount) return std::nullopt;
 		return oldIndex;
 	case CollectionChangeAction::Move:
-		if (oldIndex == change.OldIndex) return change.NewIndex;
+		if (oldIndex >= change.OldIndex
+			&& oldIndex - change.OldIndex < change.OldCount)
+			return change.NewIndex + (oldIndex - change.OldIndex);
 		if (change.OldIndex < change.NewIndex
-			&& oldIndex > change.OldIndex && oldIndex <= change.NewIndex)
-			return oldIndex - 1;
+			&& oldIndex >= change.OldIndex + change.OldCount
+			&& oldIndex < change.NewIndex + change.NewCount)
+			return oldIndex - change.OldCount;
 		if (change.OldIndex > change.NewIndex
 			&& oldIndex >= change.NewIndex && oldIndex < change.OldIndex)
-			return oldIndex + 1;
+			return oldIndex + change.NewCount;
 		return oldIndex;
 	case CollectionChangeAction::Swap:
 		if (oldIndex == change.OldIndex) return change.NewIndex;
@@ -157,27 +164,99 @@ std::vector<ItemContainerGenerator::IndexChange>
 ItemContainerGenerator::Apply(const CollectionChangedEventArgs& change)
 {
 	std::vector<IndexChange> changes;
+	// After this allocation succeeds, map-node extraction/re-keying and the
+	// trivial IndexChange writes below are allocation-free.  A preparation
+	// failure therefore leaves both committed maps untouched.
+	changes.reserve(_realized.size() + _recycled.size());
 	RealizedMap realized;
-	for (auto& [oldIndex, item] : _realized)
+	while (!_realized.empty())
 	{
+		auto node = _realized.extract(_realized.begin());
+		const size_t oldIndex = node.key();
 		const auto mapped = MapIndex(change, oldIndex);
 		if (!mapped) continue;
 		if (*mapped != oldIndex)
-			changes.push_back({ item.Visual, oldIndex, *mapped });
-		realized.emplace(*mapped, std::move(item));
+			changes.push_back({ node.mapped().Visual, oldIndex, *mapped });
+		node.key() = *mapped;
+		realized.insert(std::move(node));
 	}
-	_realized = std::move(realized);
+	_realized.swap(realized);
 
 	RecycledMap recycled;
-	for (auto& [oldIndex, item] : _recycled)
+	while (!_recycled.empty())
 	{
+		auto node = _recycled.extract(_recycled.begin());
+		const size_t oldIndex = node.key();
 		const auto mapped = MapIndex(change, oldIndex);
 		if (!mapped) continue;
 		if (*mapped != oldIndex)
-			changes.push_back({ item.Visual.get(), oldIndex, *mapped });
-		recycled.emplace(*mapped, std::move(item));
+			changes.push_back({
+				node.mapped().Visual.get(), oldIndex, *mapped });
+		node.key() = *mapped;
+		recycled.insert(std::move(node));
 	}
-	_recycled = std::move(recycled);
+	_recycled.swap(recycled);
 	_sourceCount = change.NewSize;
+	return changes;
+}
+
+std::vector<ItemContainerGenerator::IndexChange>
+ItemContainerGenerator::ApplyPermutation(
+	std::span<const size_t> oldToNew)
+{
+	if (oldToNew.size() != _sourceCount)
+		throw std::invalid_argument(
+			"ItemContainerGenerator permutation size is invalid");
+	std::vector<bool> occupied(oldToNew.size(), false);
+	for (const size_t newIndex : oldToNew)
+	{
+		if (newIndex >= occupied.size() || occupied[newIndex])
+			throw std::invalid_argument(
+				"ItemContainerGenerator mapping is not a permutation");
+		occupied[newIndex] = true;
+	}
+	for (const auto& [index, item] : _realized)
+	{
+		(void)item;
+		if (index >= oldToNew.size())
+			throw std::logic_error(
+				"ItemContainerGenerator realized index is out of range");
+	}
+	for (const auto& [index, item] : _recycled)
+	{
+		(void)item;
+		if (index >= oldToNew.size())
+			throw std::logic_error(
+				"ItemContainerGenerator recycled index is out of range");
+	}
+
+	std::vector<IndexChange> changes;
+	changes.reserve(_realized.size() + _recycled.size());
+	RealizedMap realized;
+	while (!_realized.empty())
+	{
+		auto node = _realized.extract(_realized.begin());
+		const size_t oldIndex = node.key();
+		const size_t newIndex = oldToNew[oldIndex];
+		if (newIndex != oldIndex)
+			changes.push_back({ node.mapped().Visual, oldIndex, newIndex });
+		node.key() = newIndex;
+		realized.insert(std::move(node));
+	}
+	_realized.swap(realized);
+
+	RecycledMap recycled;
+	while (!_recycled.empty())
+	{
+		auto node = _recycled.extract(_recycled.begin());
+		const size_t oldIndex = node.key();
+		const size_t newIndex = oldToNew[oldIndex];
+		if (newIndex != oldIndex)
+			changes.push_back({
+				node.mapped().Visual.get(), oldIndex, newIndex });
+		node.key() = newIndex;
+		recycled.insert(std::move(node));
+	}
+	_recycled.swap(recycled);
 	return changes;
 }

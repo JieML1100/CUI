@@ -11,6 +11,7 @@
 #include "../CUI/include/Window.h"
 #include "../CUI/include/ListView.h"
 #include "../CUI/include/ListBox.h"
+#include "../CUI/include/DataGrid.h"
 #include "../CUI/include/MediaElement.h"
 #include "../CUI/include/Menu.h"
 #include "../CUI/include/ContextMenu.h"
@@ -66,6 +67,19 @@ namespace
 	CUI_CPP_EVENT_TYPE(ComboBox, "ComboBox");
 	CUI_CPP_EVENT_TYPE(ListView, "ListView");
 	CUI_CPP_EVENT_TYPE(Selector, "Selector");
+	CUI_CPP_EVENT_TYPE(DataGrid, "DataGrid");
+	CUI_CPP_EVENT_TYPE(DataGridSortingEventArgs,
+		"DataGridSortingEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridBeginningEditEventArgs,
+		"DataGridBeginningEditEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridPreparingCellForEditEventArgs,
+		"DataGridPreparingCellForEditEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridCellEditEndingEventArgs,
+		"DataGridCellEditEndingEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridCurrentCellChangedEventArgs,
+		"DataGridCurrentCellChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridSelectedCellsChangedEventArgs,
+		"DataGridSelectedCellsChangedEventArgs");
 	CUI_CPP_EVENT_TYPE(ItemContainerControl, "ItemContainerControl");
 	CUI_CPP_EVENT_TYPE(Menu, "Menu");
 	CUI_CPP_EVENT_TYPE(ContextMenu, "ContextMenu");
@@ -253,6 +267,7 @@ namespace
 		case UIClass::UI_ComboBox:
 		case UIClass::UI_ListView:
 		case UIClass::UI_ListBox:
+		case UIClass::UI_DataGrid:
 			return L"SelectionChanged";
 		case UIClass::UI_TreeView:
 			return L"SelectedItemChanged";
@@ -272,6 +287,7 @@ namespace
 		case UIClass::UI_ContextMenu:
 			return L"Executed";
 		case UIClass::UI_Button:
+		case UIClass::UI_DataGridRowHeader:
 		case UIClass::UI_MenuItem:
 			return L"Click";
 		case UIClass::UI_WebBrowser:
@@ -468,6 +484,7 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 	switch (type)
 	{
 	case UIClass::UI_Button:
+	case UIClass::UI_DataGridRowHeader:
 		Append(out, { CUI_EXPOSED_EVENT(
 			ButtonBase, ButtonBase, Click, Click, "sender", "e") });
 		break;
@@ -560,6 +577,23 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 		Append(out, {
 			CUI_EVENT(Selector, SelectionChanged,
 				SelectionChanged, "sender", "e"),
+		});
+		break;
+	case UIClass::UI_DataGrid:
+		Append(out, {
+			CUI_EVENT(Selector, SelectionChanged,
+				SelectionChanged, "sender", "e"),
+			CUI_EVENT(DataGrid, Sorting, Sorting, "sender", "e"),
+			CUI_EVENT(DataGrid, BeginningEdit,
+				BeginningEdit, "sender", "e"),
+			CUI_EVENT(DataGrid, PreparingCellForEdit,
+				PreparingCellForEdit, "sender", "e"),
+			CUI_EVENT(DataGrid, CellEditEnding,
+				CellEditEnding, "sender", "e"),
+			CUI_EVENT(DataGrid, CurrentCellChanged,
+				CurrentCellChanged, "sender", "e"),
+			CUI_EVENT(DataGrid, SelectedCellsChanged,
+				SelectedCellsChanged, "sender", "e"),
 		});
 		break;
 	case UIClass::UI_ScrollViewer:

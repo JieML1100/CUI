@@ -112,6 +112,10 @@ private:
 	class Button* ResolveDialogButton(bool cancel) const;
 	void RefreshDefaultedButtons();
 	std::vector<Control*> GetAccessibleControls() const;
+	Control* ResolveAccessibleRepresentative(
+		Control* control, std::span<Control* const> accessible) const;
+	bool TryGetAccessibilityVirtualFocusedNode(
+		Control*& owner, uint32_t& virtualId);
 	void NotifyAccessibilityEvent(Control* control, AccessibilityChange change);
 	void NotifyAccessibilityVirtualEvent(
 		Control* owner, uint32_t virtualId, AccessibilityChange change);

@@ -142,6 +142,52 @@ struct DesignGridTrack
 	bool operator==(const DesignGridTrack&) const = default;
 };
 
+enum class DesignDataGridLengthUnit
+{
+	Auto,
+	SizeToHeader,
+	SizeToCells,
+	Pixel,
+	Star
+};
+
+/** WPF-style DataGridLength authored on a non-visual DataGridColumn. */
+struct DesignDataGridLength
+{
+	double Value = 1.0;
+	DesignDataGridLengthUnit Unit = DesignDataGridLengthUnit::SizeToHeader;
+	bool operator==(const DesignDataGridLength&) const = default;
+};
+
+enum class DesignDataGridColumnKind
+{
+	Text,
+	CheckBox,
+	Template
+};
+
+/**
+ * One declarative DataGrid column. Columns are document structure rather than
+ * DesignNode children because WPF DataGridColumn objects are non-visual.
+ */
+struct DesignDataGridColumn
+{
+	DesignDataGridColumnKind Kind = DesignDataGridColumnKind::Text;
+	std::wstring Header;
+	std::optional<DesignerDataBinding> Binding;
+	DesignDataGridLength Width;
+	double MinWidth = 20.0;
+	double MaxWidth = (std::numeric_limits<double>::infinity)();
+	bool IsReadOnly = false;
+	bool IsThreeState = false;
+	bool CanUserSort = true;
+	bool CanUserResize = true;
+	std::wstring SortMemberPath;
+	std::wstring CellTemplate;
+	std::wstring CellEditingTemplate;
+	bool operator==(const DesignDataGridColumn&) const = default;
+};
+
 struct DesignColor
 {
 	double R = 0.0;
@@ -265,6 +311,7 @@ struct DesignNodeStructure
 
 	std::optional<std::vector<DesignGridTrack>> GridRows;
 	std::optional<std::vector<DesignGridTrack>> GridColumns;
+	std::optional<std::vector<DesignDataGridColumn>> DataGridColumns;
 	std::optional<std::vector<DesignChartSeries>> ChartSeries;
 	std::optional<DesignFlowDocument> Document;
 

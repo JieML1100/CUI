@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,6 +17,7 @@
 
 class Control;
 class InputManager;
+class IBindingList;
 class UIElement;
 struct KeyboardFocusTransition;
 enum class UIClass : int;
@@ -392,6 +394,16 @@ private:
 		}
 	}
 
+	template <typename TContinue, typename... Args>
+	void InvokeCoreWhile(TContinue&& shouldContinue, Args&&... args) {
+		if (!_state || _state->Entries.empty()) return;
+		const auto snapshot = _state->Entries;
+		for (const auto& entry : snapshot) {
+			if (!shouldContinue()) break;
+			if (entry.Handler) entry.Handler(std::forward<Args>(args)...);
+		}
+	}
+
 	void ClearCore() noexcept {
 		if (_state) _state->Entries.clear();
 	}
@@ -736,21 +748,90 @@ public:
 		: OldValue(std::move(oldValue)), NewValue(std::move(newValue)) {}
 };
 
+/** Vector-compatible selection delta with an optional lazy snapshot range. */
+class SelectionChangedItemCollection final
+{
+public:
+	class const_iterator final
+	{
+	public:
+		using iterator_category = std::forward_iterator_tag;
+		using value_type = BindingValue;
+		using difference_type = std::ptrdiff_t;
+		using pointer = void;
+		using reference = BindingValue;
+		const_iterator() = default;
+		BindingValue operator*() const;
+		const_iterator& operator++() noexcept { ++_ordinal; return *this; }
+		bool operator==(const const_iterator& other) const noexcept
+		{ return _owner == other._owner && _ordinal == other._ordinal; }
+	private:
+		friend class SelectionChangedItemCollection;
+		const_iterator(const SelectionChangedItemCollection* owner,
+			size_t ordinal) noexcept : _owner(owner), _ordinal(ordinal) {}
+		const SelectionChangedItemCollection* _owner = nullptr;
+		size_t _ordinal = 0;
+	};
+	SelectionChangedItemCollection() = default;
+	SelectionChangedItemCollection(std::vector<BindingValue> values)
+		: _values(std::move(values)) {}
+	static SelectionChangedItemCollection FromSnapshotRange(
+		std::shared_ptr<IBindingList> snapshot,
+		size_t count, std::vector<int> exclusions = {});
+	/**
+	 * Creates a lazy payload for an explicit set of snapshot indices.
+	 *
+	 * Reset selection recovery uses this when only a sparse subset disappeared;
+	 * retaining indices is considerably cheaper than materializing the matching
+	 * BindingValue objects (and complements FromSnapshotRange for dense deltas).
+	 */
+	static SelectionChangedItemCollection FromSnapshotIndices(
+		std::shared_ptr<IBindingList> snapshot,
+		std::vector<int> indices);
+	static SelectionChangedItemCollection FromValuesAndSnapshotSlice(
+		std::vector<BindingValue> values,
+		std::shared_ptr<IBindingList> snapshot,
+		size_t start, size_t count,
+		std::vector<int> exclusions = {});
+	size_t size() const noexcept
+	{
+		return _values.size()
+			+ (_snapshot
+				? (_useIncludedIndices
+					? _includedIndices.size()
+					: _rangeCount - _exclusions.size())
+				: 0);
+	}
+	bool empty() const noexcept { return size() == 0; }
+	BindingValue operator[](size_t ordinal) const;
+	BindingValue front() const { return (*this)[0]; }
+	const_iterator begin() const noexcept { return { this, 0 }; }
+	const_iterator end() const noexcept { return { this, size() }; }
+private:
+	std::vector<BindingValue> _values;
+	std::shared_ptr<IBindingList> _snapshot;
+	std::vector<int> _exclusions;
+	std::vector<int> _includedIndices;
+	size_t _rangeStart = 0;
+	size_t _rangeCount = 0;
+	bool _useIncludedIndices = false;
+};
+
 /** Item deltas for Selector and Calendar selection routes. */
 class SelectionChangedEventArgs : public RoutedEventArgs
 {
 public:
 	int OldIndex = -1;
 	int NewIndex = -1;
-	std::vector<BindingValue> RemovedItems;
-	std::vector<BindingValue> AddedItems;
+	SelectionChangedItemCollection RemovedItems;
+	SelectionChangedItemCollection AddedItems;
 
 	SelectionChangedEventArgs() = default;
 	SelectionChangedEventArgs(
 		int oldIndex,
 		int newIndex,
-		std::vector<BindingValue> removedItems = {},
-		std::vector<BindingValue> addedItems = {})
+		SelectionChangedItemCollection removedItems = {},
+		SelectionChangedItemCollection addedItems = {})
 		: OldIndex(oldIndex),
 		NewIndex(newIndex),
 		RemovedItems(std::move(removedItems)),

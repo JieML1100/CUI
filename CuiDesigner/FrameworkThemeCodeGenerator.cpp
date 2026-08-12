@@ -548,6 +548,21 @@ namespace
 		{
 			if (type == UIClass::UI_Base || !_types.insert(type).second)
 				return;
+			// DataGrid materializes these chrome/container controls from native
+			// code rather than from the authored application tree. A closure theme
+			// rooted only at DataGrid must still retain their implicit styles.
+			if (type == UIClass::UI_DataGrid)
+			{
+				AddType(UIClass::UI_DataGridCell);
+				AddType(UIClass::UI_DataGridColumnHeader);
+				AddType(UIClass::UI_DataGridRowHeader);
+				// DataGrid creates these column elements in native code, so their
+				// automatic keyed styles are invisible to authored-XAML closure
+				// discovery and must be retained explicitly.
+				AddResource(L"CuiDataGridTextElementStyle");
+				AddResource(L"CuiDataGridTextEditingElementStyle");
+				AddResource(L"CuiDataGridCheckBoxElementStyle");
+			}
 			if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
 			{
 				const auto container = GetDefaultItemContainerType(type);

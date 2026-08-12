@@ -45,6 +45,7 @@
 #include <InputInfrastructure.h>
 #include <DependencyPropertyInfrastructure.h>
 #include <DatePicker.h>
+#include <DataGrid.h>
 #include <DCompLayeredHost.h>
 #include <TemplateInfrastructure.h>
 #include <LoadingRing.h>
@@ -117,6 +118,7 @@
 #include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
 #include <array>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cwctype>
@@ -124,6 +126,8 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <numeric>
 #include <oleacc.h>
 #include <set>
 #include <stdexcept>
@@ -202,6 +206,235 @@ struct TextCompositionManagerTestAccess final
 
 namespace
 {
+	struct AutomationEventRecord
+	{
+		EVENTID EventId = 0;
+		std::wstring AutomationId;
+	};
+
+	class RecordingAutomationEventHandler final :
+		public IUIAutomationEventHandler,
+		public IUIAutomationFocusChangedEventHandler,
+		public IAgileObject
+	{
+	public:
+		RecordingAutomationEventHandler()
+			: _signal(::CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+
+		HRESULT STDMETHODCALLTYPE QueryInterface(
+			REFIID iid, void** value) override
+		{
+			if (!value) return E_POINTER;
+			*value = nullptr;
+			if (iid == IID_IUnknown
+				|| iid == __uuidof(IUIAutomationEventHandler))
+				*value = static_cast<IUIAutomationEventHandler*>(this);
+			else if (iid == __uuidof(IUIAutomationFocusChangedEventHandler))
+				*value = static_cast<
+					IUIAutomationFocusChangedEventHandler*>(this);
+			else if (iid == __uuidof(IAgileObject))
+				*value = static_cast<IAgileObject*>(this);
+			else
+				return E_NOINTERFACE;
+			AddRef();
+			return S_OK;
+		}
+
+		ULONG STDMETHODCALLTYPE AddRef() override { return ++_references; }
+
+		ULONG STDMETHODCALLTYPE Release() override
+		{
+			const ULONG remaining = --_references;
+			if (remaining == 0) delete this;
+			return remaining;
+		}
+
+		HRESULT STDMETHODCALLTYPE HandleAutomationEvent(
+			IUIAutomationElement* sender, EVENTID eventId) override try
+		{
+			AutomationEventRecord record;
+			record.EventId = eventId;
+			BSTR automationId = nullptr;
+			if (sender && SUCCEEDED(sender->get_CurrentAutomationId(
+				&automationId)) && automationId)
+				record.AutomationId.assign(
+					automationId, ::SysStringLen(automationId));
+			::SysFreeString(automationId);
+			{
+				std::lock_guard lock(_mutex);
+				_events.push_back(std::move(record));
+			}
+			if (_signal) (void)::SetEvent(_signal);
+			return S_OK;
+		}
+		catch (const std::bad_alloc&)
+		{
+			return E_OUTOFMEMORY;
+		}
+		catch (...)
+		{
+			return E_FAIL;
+		}
+
+		HRESULT STDMETHODCALLTYPE HandleFocusChangedEvent(
+			IUIAutomationElement* sender) override
+		{
+			return HandleAutomationEvent(
+				sender, UIA_AutomationFocusChangedEventId);
+		}
+
+		bool Ready() const noexcept { return _signal != nullptr; }
+
+		std::vector<AutomationEventRecord> WaitForSettled(
+			size_t minimumCount,
+			DWORD timeoutMilliseconds = 2000,
+			DWORD quietMilliseconds = 100)
+		{
+			const ULONGLONG deadline = ::GetTickCount64()
+				+ timeoutMilliseconds;
+			for (;;)
+			{
+				bool hasMinimum = false;
+				{
+					std::lock_guard lock(_mutex);
+					hasMinimum = _events.size() >= minimumCount;
+					if (_signal) (void)::ResetEvent(_signal);
+				}
+				const ULONGLONG now = ::GetTickCount64();
+				if (now >= deadline || !_signal) break;
+				const DWORD remaining = static_cast<DWORD>((std::min)(
+					deadline - now,
+					static_cast<ULONGLONG>(MAXDWORD)));
+				const DWORD wait = hasMinimum
+					? (std::min)(quietMilliseconds, remaining)
+					: remaining;
+				DWORD result = WAIT_FAILED;
+				DWORD signaledIndex = 0;
+				const HRESULT waitResult = ::CoWaitForMultipleHandles(
+					static_cast<DWORD>(COWAIT_DISPATCH_CALLS
+						| COWAIT_DISPATCH_WINDOW_MESSAGES
+						| COWAIT_INPUTAVAILABLE),
+					wait, 1, &_signal, &signaledIndex);
+				if (SUCCEEDED(waitResult))
+					result = WAIT_OBJECT_0 + signaledIndex;
+				else if (waitResult == RPC_S_CALLPENDING)
+					result = WAIT_TIMEOUT;
+				else if (waitResult == CO_E_NOTINITIALIZED)
+					result = ::WaitForSingleObject(_signal, wait);
+				if (result == WAIT_FAILED) break;
+				if (result == WAIT_TIMEOUT && hasMinimum) break;
+				if (result == WAIT_TIMEOUT) break;
+			}
+
+			std::vector<AutomationEventRecord> result;
+			{
+				std::lock_guard lock(_mutex);
+				result.swap(_events);
+				if (_signal) (void)::ResetEvent(_signal);
+			}
+			return result;
+		}
+
+	private:
+		~RecordingAutomationEventHandler()
+		{
+			if (_signal) (void)::CloseHandle(_signal);
+		}
+
+		std::atomic<ULONG> _references{ 1 };
+		HANDLE _signal = nullptr;
+		std::mutex _mutex;
+		std::vector<AutomationEventRecord> _events;
+	};
+
+	class RecordingStructureChangedEventHandler final :
+		public IUIAutomationStructureChangedEventHandler,
+		public IAgileObject
+	{
+	public:
+		RecordingStructureChangedEventHandler()
+			: _signal(::CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+
+		HRESULT STDMETHODCALLTYPE QueryInterface(
+			REFIID iid, void** value) override
+		{
+			if (!value) return E_POINTER;
+			*value = nullptr;
+			if (iid == IID_IUnknown
+				|| iid == __uuidof(IUIAutomationStructureChangedEventHandler))
+				*value = static_cast<
+					IUIAutomationStructureChangedEventHandler*>(this);
+			else if (iid == __uuidof(IAgileObject))
+				*value = static_cast<IAgileObject*>(this);
+			else
+				return E_NOINTERFACE;
+			AddRef();
+			return S_OK;
+		}
+
+		ULONG STDMETHODCALLTYPE AddRef() override { return ++_references; }
+
+		ULONG STDMETHODCALLTYPE Release() override
+		{
+			const ULONG remaining = --_references;
+			if (remaining == 0) delete this;
+			return remaining;
+		}
+
+		HRESULT STDMETHODCALLTYPE HandleStructureChangedEvent(
+			IUIAutomationElement*, StructureChangeType, SAFEARRAY*) override
+		{
+			{
+				std::lock_guard lock(_mutex);
+				++_count;
+			}
+			if (_signal) (void)::SetEvent(_signal);
+			return S_OK;
+		}
+
+		bool Ready() const noexcept { return _signal != nullptr; }
+
+		size_t WaitForSettled(
+			DWORD timeoutMilliseconds = 1000,
+			DWORD quietMilliseconds = 100)
+		{
+			const ULONGLONG deadline = ::GetTickCount64()
+				+ timeoutMilliseconds;
+			for (;;)
+			{
+				size_t count = 0;
+				{
+					std::lock_guard lock(_mutex);
+					count = _count;
+					if (_signal) (void)::ResetEvent(_signal);
+				}
+				const ULONGLONG now = ::GetTickCount64();
+				if (now >= deadline || !_signal) break;
+				const DWORD remaining = static_cast<DWORD>((std::min)(
+					deadline - now,
+					static_cast<ULONGLONG>(MAXDWORD)));
+				const DWORD wait = count == 0 ? remaining
+					: (std::min)(quietMilliseconds, remaining);
+				const DWORD result = ::WaitForSingleObject(_signal, wait);
+				if (result == WAIT_FAILED) break;
+				if (result == WAIT_TIMEOUT) break;
+			}
+			std::lock_guard lock(_mutex);
+			return _count;
+		}
+
+	private:
+		~RecordingStructureChangedEventHandler()
+		{
+			if (_signal) (void)::CloseHandle(_signal);
+		}
+
+		std::atomic<ULONG> _references{ 1 };
+		HANDLE _signal = nullptr;
+		std::mutex _mutex;
+		size_t _count = 0;
+	};
+
 	void ConfigureTestControl(Control&)
 	{
 	}
@@ -538,6 +771,123 @@ namespace
 		return scroll;
 	}
 
+	ScrollViewer* InstallDataGridScrollTemplate(DataGrid& grid)
+	{
+		auto root = MakeTestControl<DockPanel>();
+		auto* rootPointer = root.get();
+		auto headers = MakeTestControl<DataGridColumnHeadersPresenter>();
+		auto* headersPointer = headers.get();
+		headersPointer->Height = 38.0f;
+		DockPanel::SetDock(*headersPointer, Dock::Top);
+		auto scroll = MakeTestControl<ScrollViewer>(0, 0, 0, 0);
+		auto* scrollPointer = scroll.get();
+		scrollPointer->Width = cui::layout::Length::Auto();
+		scrollPointer->Height = cui::layout::Length::Auto();
+		scrollPointer->HorizontalAlignment = HorizontalAlignment::Stretch;
+		scrollPointer->VerticalAlignment = VerticalAlignment::Stretch;
+		auto presenter = MakeTestControl<ItemsPresenter>();
+		auto* presenterPointer = presenter.get();
+		for (auto* part : std::array<Control*, 4>{
+			rootPointer, headersPointer, scrollPointer, presenterPointer })
+			cui::framework::TreeAccess::SetTemplatedParent(*part, &grid);
+		scrollPointer->AddOwned(std::move(presenter));
+		rootPointer->AddOwned(std::move(headers));
+		rootPointer->AddOwned(std::move(scroll));
+		if (!cui::framework::TemplateAccess::RegisterTemplatePart(
+			grid, MakeTemplatePartToken(L"PART_ColumnHeadersPresenter"),
+			headersPointer))
+			throw std::logic_error(
+				"failed to register DataGrid column headers presenter");
+		if (cui::framework::TemplateAccess::SetTemplateRoot(
+			grid, std::move(root)) != rootPointer)
+			throw std::logic_error("failed to install DataGrid template root");
+		if (!cui::framework::TemplateAccess::RegisterItemsPresenter(
+			grid, presenterPointer))
+			throw std::logic_error(
+				"failed to register DataGrid ItemsPresenter");
+		return scrollPointer;
+	}
+
+	ScrollViewer* InstallDataGridHeaderTemplate(DataGrid& grid)
+	{
+		auto root = MakeTestControl<Grid>();
+		auto* rootPointer = root.get();
+		root->Width = grid.Width;
+		root->Height = grid.Height;
+		root->HorizontalAlignment = HorizontalAlignment::Stretch;
+		root->VerticalAlignment = VerticalAlignment::Stretch;
+		root->AddRow(GridLength::Auto());
+		root->AddRow(GridLength::Star());
+
+		auto headerRow = MakeTestControl<Grid>();
+		auto* headerRowPointer = headerRow.get();
+		headerRow->AddColumn(GridLength::Auto());
+		headerRow->AddColumn(GridLength::Star());
+		Grid::SetRow(*headerRowPointer, 0);
+
+		auto corner = MakeTestControl<Button>(0, 0, 38, 38);
+		auto* cornerPointer = corner.get();
+		Grid::SetColumn(*cornerPointer, 0);
+
+		auto headerViewport = MakeTestControl<Grid>();
+		auto* headerViewportPointer = headerViewport.get();
+		headerViewportPointer->SetClipToBounds(true);
+		Grid::SetColumn(*headerViewportPointer, 1);
+		auto headers = MakeTestControl<DataGridColumnHeadersPresenter>();
+		auto* headersPointer = headers.get();
+		headersPointer->Height = 38.0f;
+		headerViewport->AddOwned(std::move(headers));
+
+		auto scroll = MakeTestControl<ScrollViewer>(0, 0, 0, 0);
+		auto* scrollPointer = scroll.get();
+		scrollPointer->Width = cui::layout::Length::Auto();
+		scrollPointer->Height = cui::layout::Length::Auto();
+		scrollPointer->HorizontalAlignment = HorizontalAlignment::Stretch;
+		scrollPointer->VerticalAlignment = VerticalAlignment::Stretch;
+		Grid::SetRow(*scrollPointer, 1);
+		auto presenter = MakeTestControl<ItemsPresenter>();
+		auto* presenterPointer = presenter.get();
+		for (auto* part : std::array<Control*, 8>{
+			rootPointer, headerRowPointer, cornerPointer,
+			headerViewportPointer, headersPointer, scrollPointer,
+			presenterPointer, static_cast<Control*>(&grid) })
+			if (part != &grid)
+				cui::framework::TreeAccess::SetTemplatedParent(*part, &grid);
+		scrollPointer->AddOwned(std::move(presenter));
+		headerRowPointer->AddOwned(std::move(corner));
+		headerRowPointer->AddOwned(std::move(headerViewport));
+		rootPointer->AddOwned(std::move(headerRow));
+		rootPointer->AddOwned(std::move(scroll));
+		if (!cui::framework::TemplateAccess::RegisterTemplatePart(
+			grid, MakeTemplatePartToken(L"PART_ColumnHeadersPresenter"),
+			headersPointer)
+			|| !cui::framework::TemplateAccess::RegisterTemplatePart(
+				grid, MakeTemplatePartToken(L"PART_SelectAllButton"),
+				cornerPointer)
+			|| !cui::framework::TemplateAccess::RegisterTemplatePart(
+				grid, MakeTemplatePartToken(L"PART_ScrollViewer"),
+				scrollPointer))
+			throw std::logic_error(
+				"failed to register DataGrid header template parts");
+		if (cui::framework::TemplateAccess::SetTemplateRoot(
+			grid, std::move(root)) != rootPointer)
+			throw std::logic_error(
+				"failed to install DataGrid header template root");
+		if (!cui::framework::TemplateAccess::RegisterItemsPresenter(
+			grid, presenterPointer))
+			throw std::logic_error(
+				"failed to register DataGrid header ItemsPresenter");
+		return scrollPointer;
+	}
+
+	void DisableItemsVirtualizationForBehaviorTest(ItemsControl& items)
+	{
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::Stack;
+		panel->Orientation = Orientation::Vertical;
+		items.SetItemsPanel(ItemsPanelTemplateReference(std::move(panel)));
+	}
+
 	Control* GetGeneratedPresentation(Control* container)
 	{
 		if (auto* presenter = dynamic_cast<ContentPresenter*>(container))
@@ -571,6 +921,52 @@ namespace
 		input.ClickCount = kind == InputReportKind::PointerDoubleClick ? 2
 			: kind == InputReportKind::PointerDown ? 1 : 0;
 		return input;
+	}
+
+	bool IsControlHitAtCenter(Window& window, Control& target)
+	{
+		window.UpdateLayout();
+		const auto bounds = target.GetRenderedAbsoluteRectDip();
+		if (!window.Handle || bounds.right <= bounds.left
+			|| bounds.bottom <= bounds.top)
+			return false;
+		auto* hit = cui::framework::WindowAccess::HitTestControlAt(
+			window,
+			static_cast<int>(std::lround((bounds.left + bounds.right) * 0.5f)),
+			static_cast<int>(std::lround((bounds.top + bounds.bottom) * 0.5f)));
+		for (auto* current = hit; current;
+			current = current->GetVisualParent())
+			if (current == &target) return true;
+		return false;
+	}
+
+	bool ClickControlThroughWindow(
+		Window& window,
+		Control& target,
+		ModifierKeys modifiers = ModifierKeys::None)
+	{
+		window.UpdateLayout();
+		const auto bounds = target.GetRenderedAbsoluteRectDip();
+		if (!window.Handle || bounds.right <= bounds.left
+			|| bounds.bottom <= bounds.top
+			|| !IsControlHitAtCenter(window, target)) return false;
+		const float contentX = (bounds.left + bounds.right) * 0.5f;
+		const float contentY = (bounds.top + bounds.bottom) * 0.5f;
+		const auto client = window.ContentDipRectToClientPixels(D2D1::RectF(
+			contentX, contentY, contentX + 1.0f, contentY + 1.0f));
+		const LPARAM point = MAKELPARAM(
+			(client.left + client.right) / 2,
+			(client.top + client.bottom) / 2);
+		WPARAM nativeModifiers = 0;
+		if ((modifiers & ModifierKeys::Control) == ModifierKeys::Control)
+			nativeModifiers |= MK_CONTROL;
+		if ((modifiers & ModifierKeys::Shift) == ModifierKeys::Shift)
+			nativeModifiers |= MK_SHIFT;
+		(void)::SendMessageW(window.Handle, WM_LBUTTONDOWN,
+			nativeModifiers | MK_LBUTTON, point);
+		(void)::SendMessageW(
+			window.Handle, WM_LBUTTONUP, nativeModifiers, point);
+		return true;
 	}
 
 	InputReport WheelInput(
@@ -1063,6 +1459,41 @@ namespace
 		std::wstring _dataType;
 	};
 
+	class CallbackItemTemplate final : public IItemTemplate
+	{
+	public:
+		using BuildCallback = std::function<std::unique_ptr<Control>()>;
+
+		CallbackItemTemplate(
+			std::wstring dataType,
+			BuildCallback buildCallback)
+			: _dataType(std::move(dataType)),
+			_buildCallback(std::move(buildCallback)) {}
+
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			return _dataType;
+		}
+
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference& item,
+			size_t,
+			std::wstring* outError) const override
+		{
+			if (!item)
+			{
+				if (outError) *outError = L"missing item";
+				return {};
+			}
+			if (outError) outError->clear();
+			return _buildCallback ? _buildCallback() : nullptr;
+		}
+
+	private:
+		std::wstring _dataType;
+		BuildCallback _buildCallback;
+	};
+
 	class TokenItemTemplate final : public IItemTemplate
 	{
 	public:
@@ -1351,6 +1782,7 @@ namespace
 			BindingSourcePropertyToken Property;
 			BindingValue Value;
 			bool CanWrite = true;
+			mutable size_t ReadCalls = 0;
 		};
 
 		void Define(
@@ -1377,8 +1809,25 @@ namespace
 			++TokenGetCalls;
 			const auto* entry = Find(property);
 			if (!entry) return false;
+			++entry->ReadCalls;
 			out = entry->Value;
+			if (ReadCallback)
+			{
+				auto callback = std::move(ReadCallback);
+				callback(property);
+			}
 			return true;
+		}
+
+		size_t ReadCallsFor(BindingSourcePropertyToken property) const noexcept
+		{
+			const auto* entry = Find(property);
+			return entry ? entry->ReadCalls : 0;
+		}
+
+		void ResetReadCalls() const noexcept
+		{
+			for (const auto& entry : Entries) entry.ReadCalls = 0;
 		}
 
 		bool TrySetValue(
@@ -1443,6 +1892,7 @@ namespace
 		int NameSetCalls = 0;
 		mutable int NameMetadataCalls = 0;
 		mutable int DiscoveryCalls = 0;
+		mutable std::function<void(BindingSourcePropertyToken)> ReadCallback;
 
 	private:
 		Entry* Find(BindingSourcePropertyToken property)
@@ -2178,6 +2628,82 @@ namespace
             return { 100.0f, wraps ? 40.0f : 10.0f };
         }
     };
+
+	class LegacyCollectionEventProbe final : public IBindingList
+	{
+	public:
+		explicit LegacyCollectionEventProbe(
+			std::vector<BindingSourceReference> items = {})
+			: _items(std::move(items)) {}
+
+		size_t Count() const noexcept override { return _items.size(); }
+		bool TryGetItem(
+			size_t index, BindingSourceReference& out) const override
+		{
+			out = {};
+			if (index >= _items.size() || !_items[index]) return false;
+			out = _items[index];
+			return true;
+		}
+		EventConnection SubscribeChanged(ChangedHandler handler) override
+		{
+			auto result = _changed.Subscribe(
+				[handler = std::move(handler)](
+					LegacyCollectionEventProbe*,
+					const CollectionChangedEventArgs& change)
+				{ handler(change); });
+			if (OnSubscribe)
+			{
+				auto callback = std::exchange(OnSubscribe, {});
+				callback();
+			}
+			return result;
+		}
+#if CUI_ENABLE_DYNAMIC_XAML
+		const std::wstring& ItemTypeName() const noexcept override
+		{
+			static const std::wstring typeName = L"LegacyEventProbeRow";
+			return typeName;
+		}
+#else
+		DataTypeToken GetItemTypeToken() const noexcept override
+		{
+			return {};
+		}
+#endif
+
+		void AddTail(BindingSourceReference item)
+		{
+			const size_t oldSize = _items.size();
+			_items.push_back(std::move(item));
+			Raise({ CollectionChangeAction::Add,
+				CollectionChangedEventArgs::Npos, oldSize,
+				0, 1, oldSize, _items.size() });
+		}
+
+		void ReplaceFirstWithMalformedMetadata(BindingSourceReference item)
+		{
+			if (_items.empty()) return;
+			_items.front() = std::move(item);
+			// The value mutation is committed, but the unequal range counts make
+			// generated-token maintenance reject this notification.
+			Raise({ CollectionChangeAction::Replace,
+				0, 0, 1, 2, _items.size(), _items.size() });
+		}
+
+		size_t SubscriberCount() const noexcept { return _changed.Count(); }
+		std::function<void()> OnSubscribe;
+
+	private:
+		void Raise(const CollectionChangedEventArgs& change)
+		{
+			cui::framework::EventAccess::Raise(_changed, this, change);
+		}
+
+		std::vector<BindingSourceReference> _items;
+		Event<void(LegacyCollectionEventProbe*,
+			const CollectionChangedEventArgs&)> _changed;
+	};
 }
 
 int main()
@@ -4345,6 +4871,803 @@ int main()
 			== synchronous);
 	});
 
+	runner.Add("ItemsControl persistent legacy snapshot preserves range moves", []
+	{
+		class ThrowAfterGeneratedItemsControl final : public ItemsControl
+		{
+		public:
+			bool ThrowAfterNextIncrementalCommit = false;
+
+		protected:
+			bool ShouldRealizeVirtualItemsWithoutViewport()
+				const noexcept override { return false; }
+			void OnGeneratedItemsRebuilt() override
+			{
+				if (!ThrowAfterNextIncrementalCommit) return;
+				ThrowAfterNextIncrementalCommit = false;
+				throw std::runtime_error(
+					"intentional persistent-snapshot rollback probe");
+			}
+		};
+		class LegacyRangeBindingList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						LegacyRangeBindingList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < Identities.size() ? Identities[index] : 0;
+				return result != 0;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"LegacyRangeSnapshotRow";
+				return typeName;
+			}
+			void MoveRange(size_t oldIndex, size_t newIndex, size_t count)
+			{
+				const size_t size = Items.size();
+				std::vector<BindingSourceReference> movedItems(
+					Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				std::vector<size_t> movedIdentities(
+					Identities.begin() + oldIndex,
+					Identities.begin() + oldIndex + count);
+				Items.erase(Items.begin() + oldIndex,
+					Items.begin() + oldIndex + count);
+				Identities.erase(Identities.begin() + oldIndex,
+					Identities.begin() + oldIndex + count);
+				Items.insert(Items.begin() + newIndex,
+					movedItems.begin(), movedItems.end());
+				Identities.insert(Identities.begin() + newIndex,
+					movedIdentities.begin(), movedIdentities.end());
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Move,
+						oldIndex, newIndex, count, count, size, size });
+			}
+			void Swap(size_t left, size_t right)
+			{
+				std::swap(Items[left], Items[right]);
+				std::swap(Identities[left], Identities[right]);
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Swap,
+						left, right, 1, 1, Items.size(), Items.size() });
+			}
+
+			std::vector<BindingSourceReference> Items;
+			std::vector<size_t> Identities;
+			mutable size_t TryGetQueries = 0;
+			Event<void(LegacyRangeBindingList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		constexpr size_t rowCount = 4'096;
+		auto source = std::make_shared<LegacyRangeBindingList>();
+		source->Items.reserve(rowCount);
+		source->Identities.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			source->Items.push_back(BindingSourceReference(row));
+			source->Identities.push_back(index + 1);
+		}
+		ThrowAfterGeneratedItemsControl items;
+		ConfigureTestControl(items, 0, 0, 240, 120);
+		items.SetDisplayMemberPath(L"Name");
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+		items.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		items.SetItemsSource(BindingListReference(source));
+		CUI_EXPECT_EQ(rowCount, items.ItemCount());
+		CUI_EXPECT_EQ(0ULL, items.GeneratedItemCount());
+
+		const auto movedFirst = source->Items[128].Shared();
+		const auto movedLast = source->Items[383].Shared();
+		source->TryGetQueries = 0;
+		source->MoveRange(128, 3'000, 256);
+		CUI_EXPECT_EQ(rowCount, items.ItemCount());
+		CUI_EXPECT_TRUE(items.GetItemsSource().Shared() == source);
+		CUI_EXPECT_EQ(0ULL, source->TryGetQueries);
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(3'000, item));
+		CUI_EXPECT_TRUE(item.Shared() == movedFirst);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(3'255, item));
+		CUI_EXPECT_TRUE(item.Shared() == movedLast);
+
+		const auto left = source->Items[17].Shared();
+		const auto right = source->Items[4'000].Shared();
+		source->TryGetQueries = 0;
+		source->Swap(17, 4'000);
+		CUI_EXPECT_EQ(0ULL, source->TryGetQueries);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(17, item));
+		CUI_EXPECT_TRUE(item.Shared() == right);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(4'000, item));
+		CUI_EXPECT_TRUE(item.Shared() == left);
+
+		// Fail a later visual commit after the live source has already mutated.
+		// ItemsControl must pin itself to the immutable post-Move/post-Swap root,
+		// proving that candidate construction did not modify the rollback version.
+		const auto committedLeft = source->Items[31].Shared();
+		const auto committedRight = source->Items[3'900].Shared();
+		items.ThrowAfterNextIncrementalCommit = true;
+		bool callbackThrew = false;
+		try { source->Swap(31, 3'900); }
+		catch (const std::runtime_error&) { callbackThrew = true; }
+		CUI_EXPECT_TRUE(callbackThrew);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Shared() != source);
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListStableSnapshot*>(
+			items.GetItemsSource().Get()) != nullptr);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(31, item));
+		CUI_EXPECT_TRUE(item.Shared() == committedLeft);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(3'900, item));
+		CUI_EXPECT_TRUE(item.Shared() == committedRight);
+		CUI_EXPECT_TRUE(items.GetItemsSource().Get()->TryGetItem(3'000, item));
+		CUI_EXPECT_TRUE(item.Shared() == movedFirst);
+		auto* identities = dynamic_cast<IBindingListOccurrenceIdentity*>(
+			items.GetItemsSource().Get());
+		size_t identity = 0;
+		CUI_EXPECT_TRUE(identities
+			&& identities->TryGetItemOccurrenceIdentity(3'000, identity));
+		CUI_EXPECT_EQ(129ULL, identity);
+	});
+
+	runner.Add("ObservableBindingList million-row snapshots use paged COW versions", []
+	{
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t lastIndex = rowCount - 1;
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(
+			L"Name", L"Repeated million-row record"));
+		auto rejected = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(rejected->DefineProperty(
+			L"Name", L"Rejected replacement"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"MillionMutableRow");
+		rows->Items.assign(
+			rowCount, BindingSourceReference(repeated));
+		const size_t expectedPageCount =
+			(rowCount + 255) / 256;
+		// Occurrence tokens are monotonic across Reset, but the reverse table is
+		// sparse by current token pages. Released historical versions must not
+		// force a dense allocation up to the token high-water mark.
+		for (int reset = 0; reset < 2; ++reset)
+		{
+			rows->Items.assign(
+				rowCount, BindingSourceReference(repeated));
+			const auto resetState =
+				cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+			CUI_EXPECT_EQ(expectedPageCount,
+				resetState.CurrentEntryPages);
+			CUI_EXPECT_TRUE(resetState.CurrentPositionPages
+				<= expectedPageCount + 1);
+		}
+		const auto built =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		CUI_EXPECT_EQ(0ULL, built.RootCopies);
+		CUI_EXPECT_EQ(0ULL, built.EntryPageCopies);
+		CUI_EXPECT_EQ(0ULL, built.PositionPageCopies);
+
+		// Snapshot acquisition shares one immutable page root. It must copy
+		// neither the 3,907 page directory entries nor one million item refs.
+		const auto repeatedOwnersBeforeCapture = repeated.use_count();
+		BindingListReference original;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(original));
+		CUI_EXPECT_TRUE(original
+			&& dynamic_cast<IBindingListStableSnapshot*>(original.Get()));
+		const auto captured =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		CUI_EXPECT_EQ(built.Captures + 1, captured.Captures);
+		CUI_EXPECT_EQ(built.RootCopies, captured.RootCopies);
+		CUI_EXPECT_EQ(built.EntryPageCopies, captured.EntryPageCopies);
+		CUI_EXPECT_EQ(built.PositionPageCopies,
+			captured.PositionPageCopies);
+		CUI_EXPECT_EQ(built.FullRebuilds, captured.FullRebuilds);
+		CUI_EXPECT_EQ(repeatedOwnersBeforeCapture, repeated.use_count());
+		CUI_EXPECT_EQ(rowCount, original.Get()->Count());
+		BindingSourceReference originalTail;
+		CUI_EXPECT_TRUE(original.Get()->TryGetItem(lastIndex, originalTail));
+		CUI_EXPECT_TRUE(originalTail.Shared() == repeated);
+		auto* originalIdentities = dynamic_cast<
+			IBindingListOccurrenceIdentity*>(original.Get());
+		auto* originalLookup = dynamic_cast<
+			IBindingListOccurrenceLookup*>(original.Get());
+		CUI_EXPECT_TRUE(originalIdentities != nullptr);
+		CUI_EXPECT_TRUE(originalLookup != nullptr);
+		size_t firstToken = 0;
+		size_t tailToken = 0;
+		size_t resolvedIndex = 0;
+		CUI_EXPECT_TRUE(originalIdentities
+			&& originalIdentities->TryGetItemOccurrenceIdentity(0, firstToken));
+		CUI_EXPECT_TRUE(originalIdentities
+			&& originalIdentities->TryGetItemOccurrenceIdentity(
+				lastIndex, tailToken));
+		CUI_EXPECT_TRUE(firstToken != 0 && tailToken != 0
+			&& firstToken != tailToken);
+		CUI_EXPECT_TRUE(originalLookup
+			&& originalLookup->TryGetItemIndexByOccurrenceIdentity(
+				tailToken, resolvedIndex));
+		CUI_EXPECT_EQ(lastIndex, resolvedIndex);
+		auto* liveLookup = dynamic_cast<IBindingListOccurrenceLookup*>(
+			rows.get());
+		resolvedIndex = 0;
+		CUI_EXPECT_TRUE(liveLookup
+			&& liveLookup->TryGetItemIndexByOccurrenceIdentity(
+				tailToken, resolvedIndex));
+		CUI_EXPECT_EQ(lastIndex, resolvedIndex);
+
+		// Type metadata belongs to the version as well, not to the later live
+		// source. Restore the live type before presenting the list.
+		rows->SetItemTypeName(L"ChangedMutableRow");
+		CUI_EXPECT_EQ(MakeDataTypeToken(L"MillionMutableRow"),
+			original.Get()->GetItemTypeToken());
+		CUI_EXPECT_EQ(std::wstring(L"MillionMutableRow"),
+			original.Get()->ItemTypeName());
+		rows->SetItemTypeName(L"MillionMutableRow");
+
+		// A pass-through CollectionView must delegate the mutable provider in
+		// O(1), while returning its own projection boundary rather than the source.
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(rows));
+		const auto beforeViewCapture =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		BindingListReference viewVersion;
+		CUI_EXPECT_TRUE(view->TryGetStableSnapshot(viewVersion));
+		const auto afterViewCapture =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		CUI_EXPECT_EQ(beforeViewCapture.Captures + 1,
+			afterViewCapture.Captures);
+		CUI_EXPECT_EQ(beforeViewCapture.RootCopies,
+			afterViewCapture.RootCopies);
+		CUI_EXPECT_EQ(beforeViewCapture.EntryPageCopies,
+			afterViewCapture.EntryPageCopies);
+		CUI_EXPECT_TRUE(viewVersion.Get() != rows.get());
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListStableSnapshot*>(
+			viewVersion.Get()) != nullptr);
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListGroupView*>(
+			viewVersion.Get()) == nullptr);
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListCurrentView*>(
+			viewVersion.Get()) == nullptr);
+		resolvedIndex = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemIndexByOccurrenceIdentity(
+			tailToken, resolvedIndex));
+		CUI_EXPECT_EQ(lastIndex, resolvedIndex);
+
+		// Keep only a viewport realized, select the last duplicate occurrence,
+		// then reject its replacement. ItemsControl must pin the old COW version;
+		// neither failure rollback nor the candidate capture may rescan/rebuild N.
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 220, 100);
+		box.SetDisplayMemberPath(L"Name");
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* scroll = InstallItemsScrollTemplate(box);
+		bool rejectCandidate = false;
+		box.SetGeneratedContainerInitializer(
+			[&](Control&, std::wstring* error)
+			{
+				if (!rejectCandidate) return true;
+				if (error) *error = L"reject million-row candidate";
+				return false;
+			});
+		box.SetItemsSource(BindingListReference(rows));
+		box.Arrange(cui::core::Rect{ 0.0f, 0.0f, 220.0f, 100.0f });
+		box.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr);
+		if (scroll)
+			scroll->ScrollToVerticalOffset(
+				static_cast<double>(lastIndex) * 20.0);
+		box.UpdateLayout();
+		box.SetSelectedIndex(static_cast<int>(lastIndex));
+		box.UpdateLayout();
+		CUI_EXPECT_EQ(static_cast<int>(lastIndex), box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(lastIndex) != nullptr);
+		const auto beforeRejectedReplace =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		rejectCandidate = true;
+		CUI_EXPECT_TRUE(rows->Items.Replace(
+			lastIndex, BindingSourceReference(rejected)));
+		const auto afterRejectedReplace =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		CUI_EXPECT_EQ(beforeRejectedReplace.RootCopies + 1,
+			afterRejectedReplace.RootCopies);
+		CUI_EXPECT_EQ(beforeRejectedReplace.EntryPageCopies + 1,
+			afterRejectedReplace.EntryPageCopies);
+		CUI_EXPECT_EQ(beforeRejectedReplace.PositionPageCopies,
+			afterRejectedReplace.PositionPageCopies);
+		CUI_EXPECT_EQ(beforeRejectedReplace.FullRebuilds,
+			afterRejectedReplace.FullRebuilds);
+		CUI_EXPECT_TRUE(afterRejectedReplace.Captures
+			<= beforeRejectedReplace.Captures + 2);
+		CUI_EXPECT_TRUE(box.GetItemsSource().Get() != rows.get());
+		CUI_EXPECT_EQ(rowCount, box.ItemCount());
+		CUI_EXPECT_EQ(static_cast<int>(lastIndex), box.SelectedIndex);
+		BindingSourceReference pinnedTail;
+		CUI_EXPECT_TRUE(box.GetItemsSource().Get()->TryGetItem(
+			lastIndex, pinnedTail));
+		CUI_EXPECT_TRUE(pinnedTail.Shared() == repeated);
+		BindingSourceReference liveTail;
+		CUI_EXPECT_TRUE(rows->TryGetItem(lastIndex, liveTail));
+		CUI_EXPECT_TRUE(liveTail.Shared() == rejected);
+		auto* pinnedIdentities = dynamic_cast<
+			IBindingListOccurrenceIdentity*>(box.GetItemsSource().Get());
+		auto* pinnedLookup = dynamic_cast<
+			IBindingListOccurrenceLookup*>(box.GetItemsSource().Get());
+		size_t pinnedToken = 0;
+		resolvedIndex = 0;
+		CUI_EXPECT_TRUE(pinnedIdentities
+			&& pinnedIdentities->TryGetItemOccurrenceIdentity(
+				lastIndex, pinnedToken));
+		CUI_EXPECT_EQ(tailToken, pinnedToken);
+		CUI_EXPECT_TRUE(pinnedLookup
+			&& pinnedLookup->TryGetItemIndexByOccurrenceIdentity(
+				pinnedToken, resolvedIndex));
+		CUI_EXPECT_EQ(lastIndex, resolvedIndex);
+
+		// The source can continue independently after the failed control detached;
+		// the pinned item/order/identity version must never drift with it.
+		rejectCandidate = false;
+		rows->Items.push_back(BindingSourceReference(rejected));
+		CUI_EXPECT_EQ(rowCount + 1, rows->Count());
+		CUI_EXPECT_EQ(rowCount, box.ItemCount());
+		CUI_EXPECT_TRUE(box.GetItemsSource().Get()->TryGetItem(
+			lastIndex, pinnedTail));
+		CUI_EXPECT_TRUE(pinnedTail.Shared() == repeated);
+	});
+
+	runner.Add("ObservableBindingList snapshot failure never suppresses Changed", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		auto rows = std::make_shared<ObservableBindingList>(L"SnapshotFailureRow");
+		rows->Items.push_back(makeRecord(L"One"));
+		rows->Items.push_back(makeRecord(L"Two"));
+		BindingListReference oldVersion;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(oldVersion));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(rows));
+
+		ItemsControl items;
+		ConfigureTestControl(items, 0, 0, 180, 120);
+		items.SetDisplayMemberPath(L"Name");
+		items.SetItemsSource(BindingListReference(rows));
+		int downstreamChanges = 0;
+		auto connection = rows->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				++downstreamChanges;
+				CUI_EXPECT_EQ(CollectionChangeAction::Add, change.Action);
+			});
+		const auto beforeFailure =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		cui::framework::BindingListTestAccess::FailNextSnapshotMaintenance(
+			*rows);
+		rows->Items.push_back(makeRecord(L"Three"));
+		const auto afterFailure =
+			cui::framework::BindingListTestAccess::SnapshotStatistics(*rows);
+		CUI_EXPECT_EQ(1, downstreamChanges);
+		CUI_EXPECT_EQ(3ULL, rows->Count());
+		CUI_EXPECT_EQ(3ULL, view->Count());
+		CUI_EXPECT_EQ(3ULL, items.ItemCount());
+		CUI_EXPECT_EQ(3ULL, items.GeneratedItemCount());
+		CUI_EXPECT_EQ(beforeFailure.MaintenanceFailures + 1,
+			afterFailure.MaintenanceFailures);
+		BindingListReference unavailable;
+		CUI_EXPECT_FALSE(rows->TryGetStableSnapshot(unavailable));
+		CUI_EXPECT_FALSE(static_cast<bool>(unavailable));
+		CUI_EXPECT_EQ(2ULL, oldVersion.Get()->Count());
+
+		// Occurrence maintenance has its own firewall. Even when it fails after
+		// Items committed, CollectionView and later handlers still receive Add.
+		// The ItemsControl cannot prove duplicate identity for this one change and
+		// correctly pins its last exact three-row materialization.
+		cui::framework::BindingListTestAccess::FailNextOccurrenceMaintenance(
+			*rows);
+		rows->Items.push_back(makeRecord(L"Four"));
+		CUI_EXPECT_EQ(2, downstreamChanges);
+		CUI_EXPECT_EQ(4ULL, view->Count());
+		CUI_EXPECT_EQ(3ULL, items.ItemCount());
+		BindingListReference occurrenceUnavailable;
+		CUI_EXPECT_FALSE(rows->TryGetStableSnapshot(occurrenceUnavailable));
+
+		// The next ordinary mutation lazily rebuilds both mirrors. The previously
+		// captured version stays immutable throughout all source changes.
+		rows->Items.push_back(makeRecord(L"Five"));
+		CUI_EXPECT_EQ(3, downstreamChanges);
+		CUI_EXPECT_EQ(5ULL, view->Count());
+		CUI_EXPECT_EQ(3ULL, items.ItemCount());
+		BindingListReference recovered;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(recovered));
+		CUI_EXPECT_EQ(5ULL, recovered.Get()->Count());
+		CUI_EXPECT_EQ(2ULL, oldVersion.Get()->Count());
+	});
+
+	runner.Add("ObservableBindingList rejects half-batch snapshots and recovers exact order", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		auto repeated = makeRecord(L"Repeated");
+		auto marker = makeRecord(L"Marker");
+		auto replacement = makeRecord(L"Replacement");
+		auto rows = std::make_shared<ObservableBindingList>(L"BatchSnapshotRow");
+		rows->Items.push_back(repeated);
+		rows->Items.push_back(marker);
+		rows->Items.push_back(repeated);
+		BindingListReference before;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(before));
+		size_t oldTailToken = 0;
+		auto* beforeIdentities = dynamic_cast<IBindingListOccurrenceIdentity*>(
+			before.Get());
+		CUI_EXPECT_TRUE(beforeIdentities
+			&& beforeIdentities->TryGetItemOccurrenceIdentity(2, oldTailToken));
+
+		int changes = 0;
+		auto connection = rows->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				++changes;
+				CUI_EXPECT_EQ(CollectionChangeAction::Reset, change.Action);
+			});
+		auto update = rows->Items.DeferNotifications();
+		CUI_EXPECT_TRUE(rows->Items.Replace(1, replacement));
+		CUI_EXPECT_TRUE(rows->Items.Move(2, 0));
+		BindingListReference halfBatch;
+		CUI_EXPECT_FALSE(rows->TryGetStableSnapshot(halfBatch));
+		CUI_EXPECT_FALSE(static_cast<bool>(halfBatch));
+		size_t unavailableToken = 0;
+		CUI_EXPECT_FALSE(rows->TryGetItemOccurrenceIdentity(
+			0, unavailableToken));
+		CUI_EXPECT_EQ(0, changes);
+		update.Commit();
+		CUI_EXPECT_EQ(1, changes);
+
+		BindingListReference committed;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(committed));
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(committed.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == repeated.Shared());
+		CUI_EXPECT_TRUE(committed.Get()->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == repeated.Shared());
+		CUI_EXPECT_TRUE(committed.Get()->TryGetItem(2, item));
+		CUI_EXPECT_TRUE(item.Shared() == replacement.Shared());
+		auto* committedIdentities = dynamic_cast<
+			IBindingListOccurrenceIdentity*>(committed.Get());
+		auto* committedLookup = dynamic_cast<
+			IBindingListOccurrenceLookup*>(committed.Get());
+		size_t firstToken = 0;
+		size_t secondToken = 0;
+		size_t resolved = 0;
+		CUI_EXPECT_TRUE(committedIdentities
+			&& committedIdentities->TryGetItemOccurrenceIdentity(
+				0, firstToken));
+		CUI_EXPECT_TRUE(committedIdentities
+			&& committedIdentities->TryGetItemOccurrenceIdentity(
+				1, secondToken));
+		CUI_EXPECT_TRUE(firstToken != 0 && secondToken != 0
+			&& firstToken != secondToken);
+		CUI_EXPECT_TRUE(committedLookup
+			&& committedLookup->TryGetItemIndexByOccurrenceIdentity(
+				secondToken, resolved));
+		CUI_EXPECT_EQ(1ULL, resolved);
+
+		// The pre-batch version remains immutable and retains its old duplicate
+		// occurrence token even though Reset intentionally allocates new tokens.
+		CUI_EXPECT_TRUE(before.Get()->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == marker.Shared());
+		CUI_EXPECT_TRUE(beforeIdentities
+			&& beforeIdentities->TryGetItemOccurrenceIdentity(2, unavailableToken));
+		CUI_EXPECT_EQ(oldTailToken, unavailableToken);
+	});
+
+	runner.Add("ObservableBindingList owner callback rejects stale same-size versions", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		auto rows = std::make_shared<ObservableBindingList>(L"OwnerRevisionRow");
+		auto oldItem = makeRecord(L"Old");
+		auto replacement = makeRecord(L"Replacement");
+		rows->Items.push_back(oldItem);
+		BindingListReference before;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(before));
+
+		bool ownerCalled = false;
+		bool ownerSnapshotRejected = false;
+		bool ownerIdentityRejected = false;
+		bool ownerLookupRejected = false;
+		rows->Items.SetOwnerChangedHandler(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				ownerCalled = true;
+				CUI_EXPECT_EQ(CollectionChangeAction::Replace, change.Action);
+				BindingListReference stale;
+				ownerSnapshotRejected =
+					!rows->TryGetStableSnapshot(stale) && !stale;
+				size_t value = 0;
+				ownerIdentityRejected =
+					!rows->TryGetItemOccurrenceIdentity(0, value);
+				auto* lookup = dynamic_cast<IBindingListOccurrenceLookup*>(
+					rows.get());
+				ownerLookupRejected = lookup
+					&& !lookup->TryGetItemIndexByOccurrenceIdentity(1, value);
+			});
+		CUI_EXPECT_TRUE(rows->Items.Replace(0, replacement));
+		CUI_EXPECT_TRUE(ownerCalled);
+		CUI_EXPECT_TRUE(ownerSnapshotRejected);
+		CUI_EXPECT_TRUE(ownerIdentityRejected);
+		CUI_EXPECT_TRUE(ownerLookupRejected);
+
+		BindingListReference after;
+		CUI_EXPECT_TRUE(rows->TryGetStableSnapshot(after));
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(after.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == replacement.Shared());
+		size_t token = 0;
+		size_t index = 0;
+		CUI_EXPECT_TRUE(rows->TryGetItemOccurrenceIdentity(0, token));
+		CUI_EXPECT_TRUE(rows->TryGetItemIndexByOccurrenceIdentity(token, index));
+		CUI_EXPECT_EQ(0ULL, index);
+		CUI_EXPECT_TRUE(before.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == oldItem.Shared());
+	});
+
+	runner.Add("ObservableBindingList move assignment preserves reentrant moved-from state", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		ObservableBindingList destination(L"MoveRow");
+		destination.Items.push_back(makeRecord(L"Destination"));
+		ObservableBindingList source(L"MoveRow");
+		auto first = makeRecord(L"First");
+		auto second = makeRecord(L"Second");
+		auto reentrant = makeRecord(L"Reentrant moved-from" );
+		source.Items.push_back(first);
+		source.Items.push_back(second);
+		std::vector<CollectionChangedEventArgs> sourceChanges;
+		auto sourceConnection = source.SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ sourceChanges.push_back(change); });
+		bool reentered = false;
+		auto connection = destination.SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				CUI_EXPECT_EQ(CollectionChangeAction::Reset, change.Action);
+				if (reentered) return;
+				reentered = true;
+				source.Items.push_back(reentrant);
+			});
+		destination = std::move(source);
+		CUI_EXPECT_TRUE(reentered);
+		CUI_EXPECT_EQ(2ULL, destination.Count());
+		CUI_EXPECT_EQ(1ULL, source.Count());
+		CUI_EXPECT_EQ(1ULL, sourceChanges.size());
+		CUI_EXPECT_EQ(CollectionChangeAction::Reset,
+			sourceChanges.front().Action);
+		CUI_EXPECT_EQ(2ULL, sourceChanges.front().OldCount);
+		CUI_EXPECT_EQ(1ULL, sourceChanges.front().NewCount);
+
+		BindingListReference movedVersion;
+		BindingListReference reentrantVersion;
+		CUI_EXPECT_TRUE(destination.TryGetStableSnapshot(movedVersion));
+		CUI_EXPECT_TRUE(source.TryGetStableSnapshot(reentrantVersion));
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(movedVersion.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == first.Shared());
+		CUI_EXPECT_TRUE(movedVersion.Get()->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == second.Shared());
+		CUI_EXPECT_TRUE(reentrantVersion.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == reentrant.Shared());
+		auto* identities = dynamic_cast<IBindingListOccurrenceIdentity*>(
+			reentrantVersion.Get());
+		auto* lookup = dynamic_cast<IBindingListOccurrenceLookup*>(
+			reentrantVersion.Get());
+		size_t token = 0;
+		size_t index = 0;
+		CUI_EXPECT_TRUE(identities
+			&& identities->TryGetItemOccurrenceIdentity(0, token));
+		CUI_EXPECT_TRUE(lookup
+			&& lookup->TryGetItemIndexByOccurrenceIdentity(token, index));
+		CUI_EXPECT_EQ(0ULL, index);
+	});
+
+	runner.Add("ObservableBindingList move construction resets observed source", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		ObservableBindingList source(L"MoveConstructRow");
+		auto first = makeRecord(L"First");
+		auto second = makeRecord(L"Second");
+		source.Items.push_back(first);
+		source.Items.push_back(second);
+		BindingListReference beforeMove;
+		CUI_EXPECT_TRUE(source.TryGetStableSnapshot(beforeMove));
+
+		std::vector<CollectionChangedEventArgs> sourceChanges;
+		bool resetExposedStableEmptySource = false;
+		auto connection = source.SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				sourceChanges.push_back(change);
+				BindingListReference duringReset;
+				resetExposedStableEmptySource =
+					change.Action == CollectionChangeAction::Reset
+					&& source.TryGetStableSnapshot(duringReset)
+					&& duringReset.Get()
+					&& duringReset.Get()->Count() == 0;
+			});
+		ObservableBindingList moved(std::move(source));
+
+		CUI_EXPECT_EQ(1ULL, sourceChanges.size());
+		CUI_EXPECT_EQ(CollectionChangeAction::Reset,
+			sourceChanges.front().Action);
+		CUI_EXPECT_EQ(2ULL, sourceChanges.front().OldCount);
+		CUI_EXPECT_EQ(0ULL, sourceChanges.front().NewCount);
+		CUI_EXPECT_EQ(2ULL, sourceChanges.front().OldSize);
+		CUI_EXPECT_EQ(0ULL, sourceChanges.front().NewSize);
+		CUI_EXPECT_TRUE(resetExposedStableEmptySource);
+		CUI_EXPECT_EQ(0ULL, source.Count());
+		CUI_EXPECT_EQ(2ULL, moved.Count());
+
+		BindingSourceReference item;
+		CUI_EXPECT_EQ(2ULL, beforeMove.Get()->Count());
+		CUI_EXPECT_TRUE(beforeMove.Get()->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == first.Shared());
+		BindingListReference movedVersion;
+		CUI_EXPECT_TRUE(moved.TryGetStableSnapshot(movedVersion));
+		CUI_EXPECT_TRUE(movedVersion.Get()->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == second.Shared());
+
+		moved.Items.push_back(makeRecord(L"Destination only"));
+		CUI_EXPECT_EQ(1ULL, sourceChanges.size());
+		source.Items.push_back(makeRecord(L"Source reused"));
+		CUI_EXPECT_EQ(2ULL, sourceChanges.size());
+		CUI_EXPECT_EQ(CollectionChangeAction::Add,
+			sourceChanges.back().Action);
+		BindingListReference reusedSourceVersion;
+		CUI_EXPECT_TRUE(source.TryGetStableSnapshot(reusedSourceVersion));
+		CUI_EXPECT_EQ(1ULL, reusedSourceVersion.Get()->Count());
+	});
+
+	runner.Add("CollectionView stable pass-through hides source groups and currency", []
+	{
+		class RichStableList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot,
+			  public IBindingListGroupView,
+			  public IBindingListCurrentView
+		{
+		public:
+			explicit RichStableList(BindingSourceReference item)
+				: _item(std::move(item))
+			{
+				_groups.push_back(BindingListGroup{
+					BindingValue(L"Source-only group"), L"Group", 0, 0, 2, {} });
+			}
+			size_t Count() const noexcept override { return 2; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				out = {};
+				if (index >= 2 || !_item) return false;
+				out = _item;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < 2 ? index + 101 : 0;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = 0;
+				if (identity < 101 || identity > 102) return false;
+				index = identity - 101;
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RichStableRow";
+				return typeName;
+			}
+			const std::vector<BindingListGroup>& Groups() const noexcept override
+			{
+				return _groups;
+			}
+			EventConnection SubscribeGroupsChanged(
+				GroupsChangedHandler) override { return {}; }
+			int CurrentPosition() const noexcept override { return 1; }
+			BindingSourceReference CurrentItem() const noexcept override
+			{
+				return _item;
+			}
+			bool MoveCurrentToPosition(int position) override
+			{
+				return position >= -1 && position < 2;
+			}
+			EventConnection SubscribeCurrentChanged(
+				CurrentChangedHandler) override { return {}; }
+
+		private:
+			BindingSourceReference _item;
+			std::vector<BindingListGroup> _groups;
+		};
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Repeated"));
+		auto source = std::make_shared<RichStableList>(
+			BindingSourceReference(item));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		CUI_EXPECT_TRUE(view->Groups().empty());
+		BindingListReference snapshot;
+		CUI_EXPECT_TRUE(view->TryGetStableSnapshot(snapshot));
+		CUI_EXPECT_EQ(2ULL, snapshot.Get()->Count());
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListGroupView*>(snapshot.Get())
+			== nullptr);
+		CUI_EXPECT_TRUE(dynamic_cast<IBindingListCurrentView*>(snapshot.Get())
+			== nullptr);
+		auto* identities = dynamic_cast<IBindingListOccurrenceIdentity*>(
+			snapshot.Get());
+		auto* lookup = dynamic_cast<IBindingListOccurrenceLookup*>(
+			snapshot.Get());
+		size_t token = 0;
+		size_t index = 0;
+		CUI_EXPECT_TRUE(identities
+			&& identities->TryGetItemOccurrenceIdentity(1, token));
+		CUI_EXPECT_EQ(102ULL, token);
+		CUI_EXPECT_TRUE(lookup
+			&& lookup->TryGetItemIndexByOccurrenceIdentity(token, index));
+		CUI_EXPECT_EQ(1ULL, index);
+	});
+
 	runner.Add("ItemsControl restores snapshot after post-commit callback failure", []
 	{
 		class ThrowAfterGeneratedItemsControl final : public ItemsControl
@@ -4453,6 +5776,287 @@ int main()
 		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
 	});
 
+	runner.Add("Virtual generator range Move keeps bounded reads and identity", []
+	{
+		const CollectionChangedEventArgs forward{
+			CollectionChangeAction::Move, 2, 6, 2, 2, 10, 10 };
+		ItemContainerGenerator generator;
+		generator.SetSourceCount(10);
+		CUI_EXPECT_TRUE(generator.CanApply(forward, 10));
+		const std::array<size_t, 10> forwardExpected{
+			0, 1, 6, 7, 2, 3, 4, 5, 8, 9 };
+		for (size_t oldIndex = 0; oldIndex < forwardExpected.size(); ++oldIndex)
+		{
+			const auto mapped = ItemContainerGenerator::MapIndex(
+				forward, oldIndex);
+			CUI_EXPECT_TRUE(mapped.has_value());
+			CUI_EXPECT_EQ(forwardExpected[oldIndex], *mapped);
+		}
+		Control movedRealized;
+		Control shiftedRealized;
+		auto movedRecycled = std::make_unique<Control>();
+		auto* movedRecycledRaw = movedRecycled.get();
+		generator.StoreRealized(2, &movedRealized);
+		generator.StoreRealized(4, &shiftedRealized);
+		generator.StoreRecycled(3, ItemContainerGenerator::RecycledItem{
+			std::move(movedRecycled), {} });
+		const auto forwardChanges = generator.Apply(forward);
+		CUI_EXPECT_EQ(3ULL, forwardChanges.size());
+		CUI_EXPECT_TRUE(generator.GetRealized(6) == &movedRealized);
+		CUI_EXPECT_TRUE(generator.GetRealized(2) == &shiftedRealized);
+		ItemContainerGenerator::RecycledItem recycled;
+		CUI_EXPECT_TRUE(generator.TakeRecycled(7, recycled));
+		CUI_EXPECT_TRUE(recycled.Visual.get() == movedRecycledRaw);
+		generator.StoreRecycled(7, std::move(recycled));
+		const CollectionChangedEventArgs backward{
+			CollectionChangeAction::Move, 6, 2, 2, 2, 10, 10 };
+		CUI_EXPECT_TRUE(generator.CanApply(backward, 10));
+		const std::array<size_t, 10> backwardExpected{
+			0, 1, 4, 5, 6, 7, 2, 3, 8, 9 };
+		for (size_t oldIndex = 0; oldIndex < backwardExpected.size(); ++oldIndex)
+		{
+			const auto mapped = ItemContainerGenerator::MapIndex(
+				backward, oldIndex);
+			CUI_EXPECT_TRUE(mapped.has_value());
+			CUI_EXPECT_EQ(backwardExpected[oldIndex], *mapped);
+		}
+		const auto backwardChanges = generator.Apply(backward);
+		CUI_EXPECT_EQ(3ULL, backwardChanges.size());
+		CUI_EXPECT_TRUE(generator.GetRealized(2) == &movedRealized);
+		CUI_EXPECT_TRUE(generator.GetRealized(4) == &shiftedRealized);
+		CUI_EXPECT_TRUE(generator.TakeRecycled(3, recycled));
+		CUI_EXPECT_TRUE(recycled.Visual.get() == movedRecycledRaw);
+
+		class CountingRangeMoveList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						CountingRangeMoveList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < Identities.size() ? Identities[index] : 0;
+				return result != 0;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RangeMoveVirtualRow";
+				return typeName;
+			}
+			void MoveRange(size_t oldIndex, size_t newIndex, size_t count)
+			{
+				CUI_EXPECT_TRUE(oldIndex <= Items.size());
+				CUI_EXPECT_TRUE(count <= Items.size() - oldIndex);
+				CUI_EXPECT_TRUE(newIndex <= Items.size() - count);
+				const size_t size = Items.size();
+				std::vector<BindingSourceReference> movedItems(
+					Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				std::vector<size_t> movedIdentities(
+					Identities.begin() + oldIndex,
+					Identities.begin() + oldIndex + count);
+				Items.erase(Items.begin() + oldIndex,
+					Items.begin() + oldIndex + count);
+				Identities.erase(Identities.begin() + oldIndex,
+					Identities.begin() + oldIndex + count);
+				Items.insert(Items.begin() + newIndex,
+					movedItems.begin(), movedItems.end());
+				Identities.insert(Identities.begin() + newIndex,
+					movedIdentities.begin(), movedIdentities.end());
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Move,
+						oldIndex, newIndex, count, count, size, size });
+			}
+			void Swap(size_t left, size_t right)
+			{
+				CUI_EXPECT_TRUE(left < Items.size());
+				CUI_EXPECT_TRUE(right < Items.size());
+				std::swap(Items[left], Items[right]);
+				std::swap(Identities[left], Identities[right]);
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Swap,
+						left, right, 1, 1, Items.size(), Items.size() });
+			}
+
+			std::vector<BindingSourceReference> Items;
+			std::vector<size_t> Identities;
+			mutable size_t TryGetQueries = 0;
+			Event<void(CountingRangeMoveList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		constexpr size_t rowCount = 4'096;
+		auto records = std::make_shared<CountingRangeMoveList>();
+		records->Items.reserve(rowCount);
+		records->Identities.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			records->Items.emplace_back(record);
+			records->Identities.push_back(index + 1);
+		}
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 100);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* scroll = InstallItemsScrollTemplate(box);
+		box.SetItemsSource(BindingListReference(records));
+		box.Arrange(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 100.0f });
+		box.UpdateLayout();
+		scroll->ScrollToVerticalOffset(2'600.0);
+		box.SetSelectedIndex(130);
+		auto* anchor = dynamic_cast<ListBoxItem*>(box.GetGeneratedItem(130));
+		CUI_EXPECT_TRUE(anchor != nullptr);
+		const auto anchorRecord = records->Items[130].Shared();
+		size_t selectionChanges = 0;
+		auto selectionChanged = box.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&)
+			{ ++selectionChanges; });
+
+		records->TryGetQueries = 0;
+		records->MoveRange(128, 3'000, 256);
+		CUI_EXPECT_TRUE(records->TryGetQueries < 64ULL);
+		CUI_EXPECT_EQ(60'040.0, scroll->VerticalOffset);
+		CUI_EXPECT_EQ(3'002, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(3'002) == anchor);
+		CUI_EXPECT_EQ(3'002ULL, anchor->ItemIndex());
+		CUI_EXPECT_TRUE(records->Items[3'002].Shared() == anchorRecord);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() <= 16ULL);
+
+		records->TryGetQueries = 0;
+		records->MoveRange(3'000, 128, 256);
+		CUI_EXPECT_TRUE(records->TryGetQueries < 64ULL);
+		CUI_EXPECT_EQ(2'600.0, scroll->VerticalOffset);
+		CUI_EXPECT_EQ(130, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(130) == anchor);
+		CUI_EXPECT_EQ(130ULL, anchor->ItemIndex());
+		CUI_EXPECT_TRUE(records->Items[130].Shared() == anchorRecord);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() <= 16ULL);
+
+		records->TryGetQueries = 0;
+		records->Swap(130, 4'000);
+		CUI_EXPECT_TRUE(records->TryGetQueries < 64ULL);
+		CUI_EXPECT_EQ(80'000.0, scroll->VerticalOffset);
+		CUI_EXPECT_EQ(4'000, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(4'000) == anchor);
+		CUI_EXPECT_EQ(4'000ULL, anchor->ItemIndex());
+		CUI_EXPECT_TRUE(records->Items[4'000].Shared() == anchorRecord);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() <= 16ULL);
+		CUI_EXPECT_EQ(0ULL, selectionChanges);
+	});
+
+	runner.Add("Virtual generator preserves the anchor within a range Replace", []
+	{
+		class RangeReplaceBindingList final : public IBindingList
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						RangeReplaceBindingList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RangeReplaceRow";
+				return typeName;
+			}
+			void ReplaceRange(
+				size_t index,
+				std::vector<BindingSourceReference> replacements)
+			{
+				CUI_EXPECT_TRUE(index <= Items.size());
+				CUI_EXPECT_TRUE(replacements.size() <= Items.size() - index);
+				const size_t count = replacements.size();
+				std::move(replacements.begin(), replacements.end(),
+					Items.begin() + index);
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Replace,
+						index, index, count, count,
+						Items.size(), Items.size() });
+			}
+
+			std::vector<BindingSourceReference> Items;
+			Event<void(RangeReplaceBindingList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+		auto makeRecord = [](int value)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(value)));
+			return BindingSourceReference(record);
+		};
+		auto records = std::make_shared<RangeReplaceBindingList>();
+		for (int index = 0; index < 1000; ++index)
+			records->Items.push_back(makeRecord(index));
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+
+		ListBox box; ConfigureTestControl(box, 0, 0, 180, 100);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* scroll = InstallItemsScrollTemplate(box);
+		box.SetItemsSource(BindingListReference(records));
+		box.Arrange(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 100.0f });
+		box.UpdateLayout();
+		scroll->ScrollToVerticalOffset(400.0);
+		auto* oldAnchorContainer = box.GetGeneratedItem(20);
+		CUI_EXPECT_TRUE(oldAnchorContainer != nullptr);
+
+		std::vector<BindingSourceReference> replacements;
+		replacements.reserve(300);
+		for (int index = 0; index < 300; ++index)
+			replacements.push_back(makeRecord(2000 + index));
+		records->ReplaceRange(10, std::move(replacements));
+
+		CUI_EXPECT_EQ(400.0, scroll->VerticalOffset);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(20) != oldAnchorContainer);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() <= 16ULL);
+	});
+
 	runner.Add("CollectionViewSource filters sorts and preserves item identity", []
 	{
 		auto makeRecord = [](const std::wstring& name, int score, bool active)
@@ -4472,6 +6076,8 @@ int main()
 			source->Items.push_back(BindingSourceReference(record));
 
 		auto view = std::make_shared<CollectionViewSource>();
+		view->SetIsLiveSortingRequested(true);
+		view->SetIsLiveFilteringRequested(true);
 		view->SetFilterDescriptions({ CollectionFilterDescription{
 			L"Active", CollectionFilterOperator::Equals, BindingValue(true), false } });
 		view->SetSortDescriptions({
@@ -4533,6 +6139,1037 @@ int main()
 		CUI_EXPECT_EQ(2, box.SelectedIndex);
 		CUI_EXPECT_TRUE(std::none_of(changes.begin(), changes.end(),
 			[](auto action) { return action == CollectionChangeAction::Reset; }));
+	});
+
+	runner.Add("CollectionViewSource string filters preserve semantics with one read per row", []
+	{
+		static constexpr auto valueProperty =
+			MakeBindingSourcePropertyToken(L"Value");
+		static constexpr CompiledBindingPathStep valueSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::String, valueProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView valuePath{ valueSteps };
+
+		auto source = std::make_shared<ObservableBindingList>(L"FilterProbe");
+		std::vector<std::shared_ptr<TokenOnlyBindingSource>> records;
+		auto addRecord = [&](BindingValue value)
+		{
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(valueProperty, std::move(value), false);
+			source->Items.push_back(BindingSourceReference(record));
+			records.push_back(std::move(record));
+		};
+		addRecord(BindingValue(L"AlphaBeta"));
+		addRecord(BindingValue(L"alphabet"));
+		addRecord(BindingValue(L"betaALPHA"));
+		addRecord(BindingValue(L""));
+		addRecord(BindingValue(12345));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		auto run = [&](CollectionFilterOperator filterOperator,
+			BindingValue pattern,
+			bool ignoreCase,
+			std::initializer_list<size_t> expected)
+		{
+			for (const auto& record : records) record->ResetReadCalls();
+			view->SetFilterDescriptions({
+				CollectionFilterDescription::FromCompiledPath(
+					valuePath, filterOperator, std::move(pattern), ignoreCase) });
+			CUI_EXPECT_EQ(expected.size(), view->Count());
+			size_t projectedIndex = 0;
+			for (const size_t expectedIndex : expected)
+			{
+				BindingSourceReference item;
+				CUI_EXPECT_TRUE(view->TryGetItem(projectedIndex++, item));
+				CUI_EXPECT_TRUE(item.Shared() == records[expectedIndex]);
+			}
+			const auto reads = std::accumulate(
+				records.begin(), records.end(), size_t{ 0 },
+				[](size_t count, const auto& record)
+				{
+					return count + record->ReadCallsFor(valueProperty);
+				});
+			CUI_EXPECT_EQ(records.size(), reads);
+		};
+
+		run(CollectionFilterOperator::Contains,
+			BindingValue(L"Alpha"), false, { 0 });
+		run(CollectionFilterOperator::Contains,
+			BindingValue(L"ALPHA"), true, { 0, 1, 2 });
+		run(CollectionFilterOperator::StartsWith,
+			BindingValue(L"Alpha"), false, { 0 });
+		run(CollectionFilterOperator::StartsWith,
+			BindingValue(L"ALPHA"), true, { 0, 1 });
+		run(CollectionFilterOperator::EndsWith,
+			BindingValue(L"Beta"), false, { 0 });
+		run(CollectionFilterOperator::EndsWith,
+			BindingValue(L"BETA"), true, { 0 });
+		run(CollectionFilterOperator::EndsWith,
+			BindingValue(L"ALPHA"), true, { 2 });
+
+		// Empty patterns retain std::wstring search/prefix/suffix semantics,
+		// including values that historically used TryGetString conversion.
+		for (const auto filterOperator : {
+			CollectionFilterOperator::Contains,
+			CollectionFilterOperator::StartsWith,
+			CollectionFilterOperator::EndsWith })
+		{
+			run(filterOperator, BindingValue(L""), true,
+				{ 0, 1, 2, 3, 4 });
+		}
+
+		// Non-String candidates and patterns keep their formatting fallback.
+		run(CollectionFilterOperator::Contains,
+			BindingValue(234), false, { 4 });
+		run(CollectionFilterOperator::StartsWith,
+			BindingValue(123), false, { 4 });
+		run(CollectionFilterOperator::EndsWith,
+			BindingValue(345), false, { 4 });
+	});
+
+	runner.Add("CollectionViewSource decorates each sort key once per refresh", []
+	{
+		static constexpr auto primaryProperty =
+			MakeBindingSourcePropertyToken(L"Primary");
+		static constexpr auto secondaryProperty =
+			MakeBindingSourcePropertyToken(L"Secondary");
+		static constexpr CompiledBindingPathStep primarySteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, primaryProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep secondarySteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, secondaryProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView primaryPath{ primarySteps };
+		static constexpr CompiledBindingPathView secondaryPath{ secondarySteps };
+
+		constexpr size_t rowCount = 1024;
+		auto source = std::make_shared<ObservableBindingList>(L"SortKeyProbe");
+		std::vector<std::shared_ptr<TokenOnlyBindingSource>> records;
+		std::vector<int> primaryValues;
+		records.reserve(rowCount - 1);
+		primaryValues.reserve(rowCount - 1);
+		for (size_t index = 0; index + 1 < rowCount; ++index)
+		{
+			const int primary = static_cast<int>((index * 37) % 31);
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(primaryProperty, BindingValue(primary), false);
+			record->Define(secondaryProperty,
+				BindingValue(static_cast<int>(index)), false);
+			source->Items.push_back(BindingSourceReference(record));
+			records.push_back(std::move(record));
+			primaryValues.push_back(primary);
+		}
+		// The same object in two physical slots must retain two independent,
+		// stable occurrence identities across both sort directions.
+		source->Items.push_back(BindingSourceReference(records.front()));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		view->SetSortDescriptions({
+			CollectionSortDescription::FromCompiledPath(
+				primaryPath, CollectionSortDirection::Ascending, false),
+			CollectionSortDescription::FromCompiledPath(
+				secondaryPath, CollectionSortDirection::Ascending, false) });
+
+		auto totalReads = [&](BindingSourcePropertyToken property)
+		{
+			return std::accumulate(records.begin(), records.end(), size_t{ 0 },
+				[property](size_t value, const auto& record)
+				{
+					return value + record->ReadCallsFor(property);
+				});
+		};
+		CUI_EXPECT_TRUE(totalReads(primaryProperty) <= rowCount);
+		CUI_EXPECT_TRUE(totalReads(secondaryProperty) <= rowCount);
+
+		std::vector<size_t> tokenBySecondary(rowCount - 1);
+		std::vector<size_t> repeatedTokens;
+		int previousPrimary = (std::numeric_limits<int>::min)();
+		int previousSecondary = (std::numeric_limits<int>::min)();
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			BindingSourceReference item;
+			size_t token = 0;
+			CUI_EXPECT_TRUE(view->TryGetItem(index, item));
+			CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(index, token));
+			const auto found = std::find(records.begin(), records.end(), item.Shared());
+			CUI_EXPECT_TRUE(found != records.end());
+			const size_t recordIndex = static_cast<size_t>(
+				std::distance(records.begin(), found));
+			const int primary = primaryValues[recordIndex];
+			const int secondary = static_cast<int>(recordIndex);
+			CUI_EXPECT_TRUE(primary > previousPrimary
+				|| (primary == previousPrimary
+					&& secondary >= previousSecondary));
+			previousPrimary = primary;
+			previousSecondary = secondary;
+			if (recordIndex == 0) repeatedTokens.push_back(token);
+			else tokenBySecondary[recordIndex] = token;
+		}
+		CUI_EXPECT_EQ(2ULL, repeatedTokens.size());
+		CUI_EXPECT_TRUE(repeatedTokens[0] != repeatedTokens[1]);
+
+		for (const auto& record : records) record->ResetReadCalls();
+		view->SetSortDescriptions({
+			CollectionSortDescription::FromCompiledPath(
+				primaryPath, CollectionSortDirection::Descending, false),
+			CollectionSortDescription::FromCompiledPath(
+				secondaryPath, CollectionSortDirection::Descending, false) });
+		CUI_EXPECT_TRUE(totalReads(primaryProperty) <= rowCount);
+		CUI_EXPECT_TRUE(totalReads(secondaryProperty) <= rowCount);
+
+		std::vector<size_t> reversedRepeatedTokens;
+		previousPrimary = (std::numeric_limits<int>::max)();
+		previousSecondary = (std::numeric_limits<int>::max)();
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			BindingSourceReference item;
+			size_t token = 0;
+			CUI_EXPECT_TRUE(view->TryGetItem(index, item));
+			CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(index, token));
+			const auto found = std::find(records.begin(), records.end(), item.Shared());
+			CUI_EXPECT_TRUE(found != records.end());
+			const size_t recordIndex = static_cast<size_t>(
+				std::distance(records.begin(), found));
+			const int primary = primaryValues[recordIndex];
+			const int secondary = static_cast<int>(recordIndex);
+			CUI_EXPECT_TRUE(primary < previousPrimary
+				|| (primary == previousPrimary
+					&& secondary <= previousSecondary));
+			previousPrimary = primary;
+			previousSecondary = secondary;
+			if (recordIndex == 0) reversedRepeatedTokens.push_back(token);
+			else CUI_EXPECT_EQ(tokenBySecondary[recordIndex], token);
+		}
+		CUI_EXPECT_TRUE(reversedRepeatedTokens == repeatedTokens);
+	});
+
+	runner.Add("CollectionViewSource reuses decorated hierarchical group keys", []
+	{
+		static constexpr auto parentProperty =
+			MakeBindingSourcePropertyToken(L"ParentGroup");
+		static constexpr auto childProperty =
+			MakeBindingSourcePropertyToken(L"ChildGroup");
+		static constexpr CompiledBindingPathStep parentSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, parentProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep childSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, childProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView parentPath{ parentSteps };
+		static constexpr CompiledBindingPathView childPath{ childSteps };
+		const auto parentDescription =
+			CollectionGroupDescription::FromCompiledPath(
+				parentPath, CollectionSortDirection::Ascending, false);
+		const auto childDescription =
+			CollectionGroupDescription::FromCompiledPath(
+				childPath, CollectionSortDirection::Ascending, false);
+
+		constexpr size_t rowCount = 4'096;
+		auto source = std::make_shared<ObservableBindingList>(L"GroupKeyProbe");
+		std::vector<std::shared_ptr<TokenOnlyBindingSource>> records;
+		records.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(parentProperty,
+				BindingValue(static_cast<int>(index % 16)), false);
+			record->Define(childProperty,
+				BindingValue(static_cast<int>(index % 64)), false);
+			source->Items.push_back(BindingSourceReference(record));
+			records.push_back(std::move(record));
+		}
+		auto reads = [&](BindingSourcePropertyToken property)
+		{
+			return std::accumulate(records.begin(), records.end(), size_t{ 0 },
+				[property](size_t count, const auto& record)
+				{ return count + record->ReadCallsFor(property); });
+		};
+		auto resetReads = [&]
+		{
+			for (const auto& record : records) record->ResetReadCalls();
+		};
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetUseResetNotificationForComplexRefresh(true);
+		view->SetSource(BindingListReference(source));
+		int groupsChanged = 0;
+		auto groupsConnection = view->SubscribeGroupsChanged(
+			[&] { ++groupsChanged; });
+		resetReads();
+		view->SetGroupDescriptions({ parentDescription, childDescription });
+		CUI_EXPECT_EQ(rowCount, reads(parentProperty));
+		CUI_EXPECT_EQ(rowCount, reads(childProperty));
+		CUI_EXPECT_EQ(80ULL, view->Groups().size());
+		CUI_EXPECT_EQ(1, groupsChanged);
+
+		// The first key getter replaces the requested generation. The abandoned
+		// parent-only pass may finish decorating, but it must never be mixed with
+		// the final child-only group table or become observable to subscribers.
+		resetReads();
+		groupsChanged = 0;
+		records.front()->ReadCallback =
+			[&](BindingSourcePropertyToken property)
+			{
+				CUI_EXPECT_TRUE(property == parentProperty);
+				view->SetGroupDescriptions({ childDescription });
+			};
+		view->SetGroupDescriptions({ parentDescription });
+		CUI_EXPECT_EQ(rowCount, reads(parentProperty));
+		CUI_EXPECT_EQ(rowCount, reads(childProperty));
+		CUI_EXPECT_EQ(1ULL, view->GroupDescriptions().size());
+		CUI_EXPECT_TRUE(SameCompiledCollectionPath(
+			childPath, view->GroupDescriptions().front().CompiledPath));
+		CUI_EXPECT_EQ(64ULL, view->Groups().size());
+		CUI_EXPECT_TRUE(std::all_of(
+			view->Groups().begin(), view->Groups().end(), [](const auto& group)
+			{ return group.Level == 0 && group.ItemCount == 64; }));
+		CUI_EXPECT_EQ(1, groupsChanged);
+	});
+
+	runner.Add("CollectionViewSource merges aggregate paths and aborts stale generations", []
+	{
+		static constexpr auto parentProperty =
+			MakeBindingSourcePropertyToken(L"AggregateParent");
+		static constexpr auto childProperty =
+			MakeBindingSourcePropertyToken(L"AggregateChild");
+		static constexpr auto scoreProperty =
+			MakeBindingSourcePropertyToken(L"AggregateScore");
+		static constexpr auto bonusProperty =
+			MakeBindingSourcePropertyToken(L"AggregateBonus");
+		static constexpr CompiledBindingPathStep parentSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, parentProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep childSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, childProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep scoreSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, scoreProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep bonusSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read,
+				BindingValueKind::Int, bonusProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView parentPath{ parentSteps };
+		static constexpr CompiledBindingPathView childPath{ childSteps };
+		static constexpr CompiledBindingPathView scorePath{ scoreSteps };
+		static constexpr CompiledBindingPathView bonusPath{ bonusSteps };
+
+		constexpr size_t rowCount = 4'096;
+		constexpr size_t groupLevelCount = 2;
+		auto source = std::make_shared<ObservableBindingList>(
+			L"AggregatePathPlanProbe");
+		std::vector<std::shared_ptr<TokenOnlyBindingSource>> records;
+		records.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto record = std::make_shared<TokenOnlyBindingSource>();
+			record->Define(parentProperty,
+				BindingValue(static_cast<int>(index % 16)), false);
+			record->Define(childProperty,
+				BindingValue(static_cast<int>(index % 64)), false);
+			record->Define(scoreProperty,
+				BindingValue(static_cast<int>(index)), false);
+			record->Define(bonusProperty,
+				BindingValue(static_cast<int>(rowCount - index)), false);
+			source->Items.push_back(BindingSourceReference(record));
+			records.push_back(std::move(record));
+		}
+		auto reads = [&](BindingSourcePropertyToken property)
+		{
+			return std::accumulate(records.begin(), records.end(), size_t{ 0 },
+				[property](size_t count, const auto& record)
+				{ return count + record->ReadCallsFor(property); });
+		};
+		auto resetReads = [&]
+		{
+			for (const auto& record : records) record->ResetReadCalls();
+		};
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetUseResetNotificationForComplexRefresh(true);
+		view->SetSource(BindingListReference(source));
+		view->SetGroupDescriptions({
+			CollectionGroupDescription::FromCompiledPath(parentPath),
+			CollectionGroupDescription::FromCompiledPath(childPath) });
+		int groupsChanged = 0;
+		auto groupsConnection = view->SubscribeGroupsChanged(
+			[&] { ++groupsChanged; });
+
+		// Count deliberately carries the same path. It must remain range-only;
+		// Sum/Average/Min/Max share one Score read at each hierarchy level.
+		resetReads();
+		view->SetAggregateDescriptions({
+			CollectionAggregateDescription::FromCompiledPath(
+				L"Count", scorePath, CollectionAggregateFunction::Count),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreSum", scorePath, CollectionAggregateFunction::Sum),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreAverage", scorePath,
+				CollectionAggregateFunction::Average),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreMin", scorePath, CollectionAggregateFunction::Min),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreMax", scorePath, CollectionAggregateFunction::Max) });
+		CUI_EXPECT_EQ(rowCount * groupLevelCount, reads(scoreProperty));
+		CUI_EXPECT_EQ(1, groupsChanged);
+		CUI_EXPECT_EQ(80ULL, view->Groups().size());
+		const auto& scoreTop = view->Groups().front().Aggregates;
+		CUI_EXPECT_EQ(std::wstring(L"256"), scoreTop.at(L"Count").ToString());
+		double aggregateValue = 0.0;
+		CUI_EXPECT_TRUE(scoreTop.at(L"ScoreSum").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(522240.0, aggregateValue);
+		CUI_EXPECT_TRUE(
+			scoreTop.at(L"ScoreAverage").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(2040.0, aggregateValue);
+		CUI_EXPECT_EQ(std::wstring(L"0"), scoreTop.at(L"ScoreMin").ToString());
+		CUI_EXPECT_EQ(
+			std::wstring(L"4080"), scoreTop.at(L"ScoreMax").ToString());
+
+		// Two distinct paths still read each row exactly once per level, even
+		// when multiple aggregate functions consume either path.
+		resetReads();
+		groupsChanged = 0;
+		view->SetAggregateDescriptions({
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreSum", scorePath, CollectionAggregateFunction::Sum),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"ScoreMax", scorePath, CollectionAggregateFunction::Max),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"BonusSum", bonusPath, CollectionAggregateFunction::Sum),
+			CollectionAggregateDescription::FromCompiledPath(
+				L"BonusAverage", bonusPath,
+				CollectionAggregateFunction::Average) });
+		CUI_EXPECT_EQ(rowCount * groupLevelCount, reads(scoreProperty));
+		CUI_EXPECT_EQ(rowCount * groupLevelCount, reads(bonusProperty));
+		CUI_EXPECT_EQ(
+			rowCount * groupLevelCount * 2,
+			reads(scoreProperty) + reads(bonusProperty));
+		CUI_EXPECT_EQ(1, groupsChanged);
+		const auto& twoPathTop = view->Groups().front().Aggregates;
+		CUI_EXPECT_TRUE(
+			twoPathTop.at(L"BonusSum").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(526336.0, aggregateValue);
+		CUI_EXPECT_TRUE(
+			twoPathTop.at(L"BonusAverage").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(2056.0, aggregateValue);
+
+		// The first Score getter replaces the requested aggregate generation.
+		// The old generation may perform that one read, but it must neither scan
+		// the remaining range nor publish a transient group table.
+		resetReads();
+		groupsChanged = 0;
+		std::function<void(BindingSourcePropertyToken)> replaceAggregateGeneration;
+		replaceAggregateGeneration =
+			[&](BindingSourcePropertyToken property)
+			{
+				// Group-key decoration reaches the same probe object before
+				// BuildGroups. Keep the one-shot callback armed until the first
+				// aggregate Score read, which is the extensibility boundary under
+				// test.
+				if (property != scoreProperty)
+				{
+					records.front()->ReadCallback = replaceAggregateGeneration;
+					return;
+				}
+				view->SetAggregateDescriptions({
+					CollectionAggregateDescription::FromCompiledPath(
+						L"FinalBonusSum", bonusPath,
+						CollectionAggregateFunction::Sum),
+					CollectionAggregateDescription::FromCompiledPath(
+						L"FinalBonusMin", bonusPath,
+						CollectionAggregateFunction::Min),
+					CollectionAggregateDescription::FromCompiledPath(
+						L"FinalBonusMax", bonusPath,
+						CollectionAggregateFunction::Max) });
+			};
+		records.front()->ReadCallback = replaceAggregateGeneration;
+		view->SetAggregateDescriptions({
+			CollectionAggregateDescription::FromCompiledPath(
+				L"AbandonedScore", scorePath,
+				CollectionAggregateFunction::Sum) });
+		CUI_EXPECT_TRUE(reads(scoreProperty) <= 1);
+		CUI_EXPECT_EQ(rowCount * groupLevelCount, reads(bonusProperty));
+		CUI_EXPECT_EQ(1, groupsChanged);
+		CUI_EXPECT_EQ(3ULL, view->AggregateDescriptions().size());
+		CUI_EXPECT_EQ(
+			std::wstring(L"FinalBonusSum"),
+			view->AggregateDescriptions().front().Name);
+		const auto& finalTop = view->Groups().front().Aggregates;
+		CUI_EXPECT_TRUE(
+			finalTop.at(L"FinalBonusSum").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(526336.0, aggregateValue);
+		CUI_EXPECT_EQ(
+			std::wstring(L"16"), finalTop.at(L"FinalBonusMin").ToString());
+		CUI_EXPECT_EQ(
+			std::wstring(L"4096"), finalTop.at(L"FinalBonusMax").ToString());
+	});
+
+	runner.Add("CollectionViewSource live shaping requests default false", []
+	{
+		static constexpr auto keyProperty =
+			MakeBindingSourcePropertyToken(L"Key");
+		static constexpr CompiledBindingPathStep keySteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, keyProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView keyPath{ keySteps };
+		auto first = std::make_shared<TokenOnlyBindingSource>();
+		first->Define(keyProperty, BindingValue(2));
+		auto second = std::make_shared<TokenOnlyBindingSource>();
+		second->Define(keyProperty, BindingValue(1));
+		auto source = std::make_shared<ObservableBindingList>(L"LiveRequestRow");
+		source->Items.push_back(BindingSourceReference(first));
+		source->Items.push_back(BindingSourceReference(second));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		CUI_EXPECT_TRUE(view->GetCanChangeLiveSorting());
+		CUI_EXPECT_TRUE(view->GetCanChangeLiveFiltering());
+		CUI_EXPECT_TRUE(view->GetCanChangeLiveGrouping());
+		CUI_EXPECT_FALSE(view->GetIsLiveSortingRequested());
+		CUI_EXPECT_FALSE(view->GetIsLiveFilteringRequested());
+		CUI_EXPECT_FALSE(view->GetIsLiveGroupingRequested());
+		view->SetSortDescriptions({
+			CollectionSortDescription::FromCompiledPath(
+				keyPath, CollectionSortDirection::Ascending, false) });
+		view->SetSource(BindingListReference(source));
+		CUI_EXPECT_EQ(0ULL, first->PropertyChanged().Count());
+		CUI_EXPECT_EQ(0ULL, second->PropertyChanged().Count());
+
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == second);
+		CUI_EXPECT_TRUE(first->Set(keyProperty, BindingValue(0)));
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == second);
+
+		view->SetIsLiveSortingRequested(true);
+		CUI_EXPECT_TRUE(view->GetIsLiveSorting());
+		CUI_EXPECT_EQ(1ULL, first->PropertyChanged().Count());
+		CUI_EXPECT_EQ(1ULL, second->PropertyChanged().Count());
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == first);
+		CUI_EXPECT_TRUE(first->Set(keyProperty, BindingValue(3)));
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == second);
+		CUI_EXPECT_TRUE(second->Set(keyProperty, BindingValue(4)));
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == first);
+
+		view->SetIsLiveSortingRequested(false);
+		CUI_EXPECT_EQ(0ULL, first->PropertyChanged().Count());
+		CUI_EXPECT_EQ(0ULL, second->PropertyChanged().Count());
+	});
+
+	runner.Add("CollectionViewSource deduplicates repeated live item observations", []
+	{
+		static constexpr auto keyProperty =
+			MakeBindingSourcePropertyToken(L"Key");
+		static constexpr auto activeProperty =
+			MakeBindingSourcePropertyToken(L"Active");
+		static constexpr auto groupProperty =
+			MakeBindingSourcePropertyToken(L"Group");
+		static constexpr CompiledBindingPathStep keySteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Int, keyProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep activeSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::Bool, activeProperty, 0 }
+		};
+		static constexpr CompiledBindingPathStep groupSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, groupProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView keyPath{ keySteps };
+		static constexpr CompiledBindingPathView activePath{ activeSteps };
+		static constexpr CompiledBindingPathView groupPath{ groupSteps };
+
+		class LazyRepeatedList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity
+		{
+		public:
+			LazyRepeatedList(
+				size_t count,
+				BindingSourceReference repeated,
+				BindingSourceReference sentinel) noexcept
+				: _count(count),
+				  _repeated(std::move(repeated)),
+				  _sentinel(std::move(sentinel)) {}
+
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				out = {};
+				if (index >= _count || !_repeated || !_sentinel) return false;
+				out = index + 1 == _count ? _sentinel : _repeated;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				result = index + 1;
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RepeatedLiveRow";
+				return typeName;
+			}
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _repeated;
+			const BindingSourceReference _sentinel;
+		};
+
+		constexpr size_t rowCount = 8'192;
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Key", 1));
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Active", true));
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Group", L"A"));
+		auto sentinel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(sentinel->DefineProperty(L"Key", 2));
+		CUI_EXPECT_TRUE(sentinel->DefineProperty(L"Active", true));
+		CUI_EXPECT_TRUE(sentinel->DefineProperty(L"Group", L"A"));
+		auto source = std::make_shared<LazyRepeatedList>(
+			rowCount, BindingSourceReference(repeated),
+			BindingSourceReference(sentinel));
+		CUI_EXPECT_EQ(0ULL, repeated->PropertyChanged().Count());
+		CUI_EXPECT_EQ(0ULL, sentinel->PropertyChanged().Count());
+
+		{
+			auto view = std::make_shared<CollectionViewSource>();
+			view->SetIsLiveSortingRequested(true);
+			view->SetIsLiveFilteringRequested(true);
+			view->SetIsLiveGroupingRequested(true);
+			view->SetFilterDescriptions({
+				CollectionFilterDescription::FromCompiledPath(
+					activePath, CollectionFilterOperator::Equals,
+					BindingValue(true), false) });
+			view->SetSortDescriptions({
+				CollectionSortDescription::FromCompiledPath(
+					keyPath, CollectionSortDirection::Ascending, false) });
+			view->SetGroupDescriptions({
+				CollectionGroupDescription::FromCompiledPath(
+					groupPath, CollectionSortDirection::Ascending, false) });
+			view->SetSource(BindingListReference(source));
+			CUI_EXPECT_EQ(rowCount, view->Count());
+			CUI_EXPECT_EQ(1ULL, view->Groups().size());
+			CUI_EXPECT_EQ(rowCount, view->Groups().front().ItemCount);
+			CUI_EXPECT_EQ(1ULL, repeated->PropertyChanged().Count());
+			CUI_EXPECT_EQ(1ULL, sentinel->PropertyChanged().Count());
+
+			// One shared sort-key notification refreshes all repeated occurrences.
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Key", 3));
+			BindingSourceReference first;
+			CUI_EXPECT_TRUE(view->TryGetItem(0, first));
+			CUI_EXPECT_TRUE(first.Shared() == sentinel);
+			CUI_EXPECT_EQ(1ULL, repeated->PropertyChanged().Count());
+
+			// Filter and group paths share that same root-object subscription.
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Active", false));
+			CUI_EXPECT_EQ(1ULL, view->Count());
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Active", true));
+			CUI_EXPECT_EQ(rowCount, view->Count());
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Group", L"B"));
+			CUI_EXPECT_EQ(2ULL, view->Groups().size());
+			CUI_EXPECT_EQ(1ULL, view->Groups().front().ItemCount);
+			CUI_EXPECT_EQ(rowCount - 1, view->Groups().back().ItemCount);
+		}
+		CUI_EXPECT_EQ(0ULL, repeated->PropertyChanged().Count());
+		CUI_EXPECT_EQ(0ULL, sentinel->PropertyChanged().Count());
+
+		// Design-authored paths must obey the identical object-level contract.
+		CUI_EXPECT_TRUE(repeated->SetValue(L"Key", 1));
+		CUI_EXPECT_TRUE(repeated->SetValue(L"Group", L"A"));
+		{
+			auto view = std::make_shared<CollectionViewSource>();
+			view->SetIsLiveSortingRequested(true);
+			view->SetIsLiveFilteringRequested(true);
+			view->SetIsLiveGroupingRequested(true);
+			view->SetFilterDescriptions({ CollectionFilterDescription{
+				L"Active", CollectionFilterOperator::Equals,
+				BindingValue(true), false } });
+			view->SetSortDescriptions({ CollectionSortDescription{
+				L"Key", CollectionSortDirection::Ascending, false } });
+			view->SetGroupDescriptions({ CollectionGroupDescription{
+				L"Group", CollectionSortDirection::Ascending, false } });
+			view->SetSource(BindingListReference(source));
+			CUI_EXPECT_EQ(rowCount, view->Count());
+			CUI_EXPECT_EQ(1ULL, repeated->PropertyChanged().Count());
+			CUI_EXPECT_EQ(1ULL, sentinel->PropertyChanged().Count());
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Active", false));
+			CUI_EXPECT_EQ(1ULL, view->Count());
+			CUI_EXPECT_TRUE(repeated->SetValue(L"Active", true));
+			CUI_EXPECT_EQ(rowCount, view->Count());
+		}
+		CUI_EXPECT_EQ(0ULL, repeated->PropertyChanged().Count());
+		CUI_EXPECT_EQ(0ULL, sentinel->PropertyChanged().Count());
+	});
+
+	runner.Add("CollectionViewSource batches sort layout without losing Move identity", []
+	{
+		class LayoutCountingListBox final : public ListBox
+		{
+		public:
+			size_t EffectiveLayoutPasses = 0;
+
+		protected:
+			void PerformPendingLayout() override
+			{
+				const bool wasPending = IsItemsLayoutPending();
+				ListBox::PerformPendingLayout();
+				if (wasPending && !IsItemsLayoutPending())
+					++EffectiveLayoutPasses;
+			}
+		};
+		auto makeRecord = [](int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(score)));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return BindingSourceReference(record);
+		};
+
+		auto source = std::make_shared<ObservableBindingList>(L"SortRow");
+		for (int score = 0; score < 24; ++score)
+			source->Items.push_back(makeRecord(score));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+
+		LayoutCountingListBox box;
+		ConfigureTestControl(box, 0, 0, 240, 480);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsSource(BindingListReference(view));
+		box.SetSelectedIndex(5);
+		auto* selectedContainer = box.GetGeneratedItem(5);
+		CUI_EXPECT_TRUE(selectedContainer != nullptr);
+		box.UpdateLayout();
+		box.EffectiveLayoutPasses = 0;
+
+		std::vector<CollectionChangedEventArgs> changes;
+		std::vector<std::vector<int>> observedOrders;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				changes.push_back(change);
+				std::vector<int> order;
+				order.reserve(view->Count());
+				for (size_t index = 0; index < view->Count(); ++index)
+				{
+					BindingSourceReference item;
+					BindingValue score;
+					int value = -1;
+					CUI_EXPECT_TRUE(view->TryGetItem(index, item));
+					CUI_EXPECT_TRUE(item && item.Get()->TryGetValue(
+						L"Score", score) && score.TryGet(value));
+					order.push_back(value);
+				}
+				observedOrders.push_back(std::move(order));
+			});
+		view->SetSortDescriptions({ CollectionSortDescription{
+			L"Score", CollectionSortDirection::Descending, false } });
+
+		CUI_EXPECT_TRUE(changes.size() > 1);
+		CUI_EXPECT_EQ(changes.size(), observedOrders.size());
+		std::vector<int> expectedOrder(24);
+		std::iota(expectedOrder.begin(), expectedOrder.end(), 0);
+		for (size_t index = 0; index < changes.size(); ++index)
+		{
+			const auto& change = changes[index];
+			CUI_EXPECT_TRUE(change.OldIndex < expectedOrder.size());
+			CUI_EXPECT_TRUE(change.NewIndex < expectedOrder.size());
+			const int moved = expectedOrder[change.OldIndex];
+			expectedOrder.erase(expectedOrder.begin() + change.OldIndex);
+			expectedOrder.insert(
+				expectedOrder.begin() + change.NewIndex, moved);
+			CUI_EXPECT_TRUE(expectedOrder == observedOrders[index]);
+		}
+		CUI_EXPECT_TRUE(std::all_of(
+			changes.begin(), std::prev(changes.end()),
+			[](const auto& change)
+			{
+				return change.Action == CollectionChangeAction::Move
+					&& change.HasMoreChanges;
+			}));
+		CUI_EXPECT_EQ(
+			CollectionChangeAction::Move, changes.back().Action);
+		CUI_EXPECT_FALSE(changes.back().HasMoreChanges);
+		CUI_EXPECT_EQ(1ULL, box.EffectiveLayoutPasses);
+		CUI_EXPECT_EQ(18, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(18) == selectedContainer);
+		CUI_EXPECT_TRUE(std::none_of(
+			changes.begin(), changes.end(),
+			[](const auto& change)
+			{ return change.Action == CollectionChangeAction::Reset; }));
+	});
+
+	runner.Add("CollectionViewSource complex refresh publishes one Reset", []
+	{
+		auto makeRecord = [](int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return BindingSourceReference(record);
+		};
+		auto source = std::make_shared<ObservableBindingList>(L"ResetSortRow");
+		for (int score = 127; score >= 0; --score)
+			source->Items.push_back(makeRecord(score));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetUseResetNotificationForComplexRefresh(true);
+		view->SetSource(BindingListReference(source));
+		std::vector<CollectionChangedEventArgs> changes;
+		auto connection = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ changes.push_back(change); });
+		view->SetSortDescriptions({ CollectionSortDescription{
+			L"Score", CollectionSortDirection::Ascending, false } });
+		CUI_EXPECT_EQ(1ULL, changes.size());
+		if (!changes.empty())
+		{
+			CUI_EXPECT_EQ(CollectionChangeAction::Reset, changes.front().Action);
+			CUI_EXPECT_EQ(128ULL, changes.front().OldSize);
+			CUI_EXPECT_EQ(128ULL, changes.front().NewSize);
+		}
+		BindingSourceReference item;
+		BindingValue score;
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item && item.Get()->TryGetValue(L"Score", score));
+		int value = -1;
+		CUI_EXPECT_TRUE(score.TryGet(value));
+		CUI_EXPECT_EQ(0, value);
+	});
+
+	runner.Add("CollectionViewSource alternating complex filters publish one terminal Reset", []
+	{
+		constexpr size_t rowCount = 4'096;
+		auto makeRecord = [](size_t index, bool included)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Index", static_cast<long long>(index)));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Included", included));
+			return BindingSourceReference(record);
+		};
+		auto source = std::make_shared<ObservableBindingList>(L"FilterScaleRow");
+		for (size_t index = 0; index < rowCount; ++index)
+			source->Items.push_back(makeRecord(index, index % 2 == 0));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetUseResetNotificationForComplexRefresh(true);
+		view->SetSource(BindingListReference(source));
+		std::vector<CollectionChangedEventArgs> changes;
+		std::vector<size_t> publishedCounts;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				changes.push_back(change);
+				publishedCounts.push_back(view->Count());
+			});
+		auto included = [](const BindingSourceReference& item, bool expected,
+			size_t& evaluations)
+		{
+			++evaluations;
+			BindingValue value;
+			bool current = false;
+			return item && item.Get()->TryGetValue(L"Included", value)
+				&& value.TryGet(current) && current == expected;
+		};
+		auto applyFilter = [&](bool expected)
+		{
+			changes.clear();
+			publishedCounts.clear();
+			size_t evaluations = 0;
+			view->SetFilterPredicate(
+				[&, expected](const BindingSourceReference& item)
+				{ return included(item, expected, evaluations); });
+			CUI_EXPECT_EQ(rowCount, evaluations);
+			CUI_EXPECT_EQ(1ULL, changes.size());
+			CUI_EXPECT_EQ(1ULL, publishedCounts.size());
+			if (!changes.empty())
+			{
+				CUI_EXPECT_EQ(
+					CollectionChangeAction::Reset, changes.front().Action);
+				CUI_EXPECT_EQ(rowCount / 2, changes.front().OldSize);
+				CUI_EXPECT_EQ(rowCount / 2, changes.front().NewSize);
+				CUI_EXPECT_EQ(rowCount / 2, publishedCounts.front());
+			}
+		};
+
+		// Removing every other old occurrence used to exercise repeated vector
+		// erase/insert publication. The DataGrid-owned policy now exposes only the
+		// completely rebuilt projection, with one predicate read per source row.
+		size_t initialEvaluations = 0;
+		view->SetFilterPredicate(
+			[&](const BindingSourceReference& item)
+			{ return included(item, true, initialEvaluations); });
+		CUI_EXPECT_EQ(rowCount, initialEvaluations);
+		CUI_EXPECT_EQ(1ULL, changes.size());
+		CUI_EXPECT_EQ(CollectionChangeAction::Reset, changes.front().Action);
+		CUI_EXPECT_EQ(rowCount, changes.front().OldSize);
+		CUI_EXPECT_EQ(rowCount / 2, changes.front().NewSize);
+		CUI_EXPECT_EQ(std::vector<size_t>{ rowCount / 2 }, publishedCounts);
+
+		// A disjoint replacement projection and the return trip remain one
+		// terminal publication each rather than O(N) intermediate mutations.
+		applyFilter(false);
+		applyFilter(true);
+
+		// Opting into atomic explicit refresh must not weaken ordinary source
+		// notifications. They still publish a precise, non-Reset view mutation.
+		auto expectPreciseSourceChange = [&](auto&& mutation,
+			CollectionChangeAction expectedAction)
+		{
+			changes.clear();
+			publishedCounts.clear();
+			mutation();
+			CUI_EXPECT_EQ(1ULL, changes.size());
+			if (!changes.empty())
+			{
+				CUI_EXPECT_EQ(expectedAction, changes.front().Action);
+				CUI_EXPECT_TRUE(changes.front().Action
+					!= CollectionChangeAction::Reset);
+			}
+		};
+		expectPreciseSourceChange(
+			[&] { source->Items.insert(
+				source->Items.begin(), makeRecord(rowCount, true)); },
+			CollectionChangeAction::Add);
+		CUI_EXPECT_EQ(rowCount / 2 + 1, view->Count());
+		expectPreciseSourceChange(
+			[&] { source->Items.erase(source->Items.begin()); },
+			CollectionChangeAction::Remove);
+		CUI_EXPECT_EQ(rowCount / 2, view->Count());
+		expectPreciseSourceChange(
+			[&] { CUI_EXPECT_TRUE(source->Items.Move(2, 0)); },
+			CollectionChangeAction::Move);
+		expectPreciseSourceChange(
+			[&] { CUI_EXPECT_TRUE(source->Items.SwapIndices(0, 1)); },
+			CollectionChangeAction::Move);
+		CUI_EXPECT_EQ(rowCount / 2, view->Count());
+	});
+
+	runner.Add("CollectionViewSource batched sort preserves virtual scroll anchor", []
+	{
+		auto makeRecord = [](int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(score)));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return BindingSourceReference(record);
+		};
+		auto source = std::make_shared<ObservableBindingList>(L"SortRow");
+		for (int score = 10; score < 40; ++score)
+			source->Items.push_back(makeRecord(score));
+		for (int score = 0; score < 10; ++score)
+			source->Items.push_back(makeRecord(score));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 100);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* scroll = InstallItemsScrollTemplate(box);
+		box.SetItemsSource(BindingListReference(view));
+		box.Arrange(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 100.0f });
+		box.UpdateLayout();
+		scroll->ScrollToVerticalOffset(207.0);
+		box.SetSelectedIndex(10);
+		auto* anchor = box.GetGeneratedItem(10);
+		CUI_EXPECT_TRUE(anchor != nullptr);
+
+		view->SetSortDescriptions({ CollectionSortDescription{
+			L"Score", CollectionSortDirection::Ascending, false } });
+
+		CUI_EXPECT_EQ(20, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(20) == anchor);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+
+		// Compare with the same precise Move sequence from an ordinary source,
+		// where every notification retains the legacy synchronous-layout path.
+		// This catches any batched-layout drift without assuming whether the
+		// ScrollViewer preserves or snaps a fractional row offset.
+		auto referenceSource =
+			std::make_shared<ObservableBindingList>(L"SortRow");
+		for (int score = 10; score < 40; ++score)
+			referenceSource->Items.push_back(makeRecord(score));
+		for (int score = 0; score < 10; ++score)
+			referenceSource->Items.push_back(makeRecord(score));
+		ListBox referenceBox;
+		ConfigureTestControl(referenceBox, 0, 0, 180, 100);
+		referenceBox.SetDisplayMemberPath(L"Name");
+		referenceBox.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* referenceScroll = InstallItemsScrollTemplate(referenceBox);
+		referenceBox.SetItemsSource(BindingListReference(referenceSource));
+		referenceBox.Arrange(
+			cui::core::Rect{ 0.0f, 0.0f, 180.0f, 100.0f });
+		referenceBox.UpdateLayout();
+		referenceScroll->ScrollToVerticalOffset(207.0);
+		referenceBox.SetSelectedIndex(10);
+		auto* referenceAnchor = referenceBox.GetGeneratedItem(10);
+		CUI_EXPECT_TRUE(referenceAnchor != nullptr);
+		for (size_t index = 0; index < 10; ++index)
+			CUI_EXPECT_TRUE(referenceSource->Items.Move(30 + index, index));
+
+		CUI_EXPECT_EQ(referenceScroll->VerticalOffset, scroll->VerticalOffset);
+		CUI_EXPECT_EQ(20, referenceBox.SelectedIndex);
+		CUI_EXPECT_TRUE(referenceBox.GetGeneratedItem(20) == referenceAnchor);
 	});
 
 	runner.Add("Compiled CollectionView paths remain token-only and live", []
@@ -4609,6 +7246,9 @@ int main()
 		root->Define(itemsProperty,
 			BindingValue(BindingListReference(source)), false);
 		auto view = std::make_shared<CollectionViewSource>();
+		view->SetIsLiveSortingRequested(true);
+		view->SetIsLiveFilteringRequested(true);
+		view->SetIsLiveGroupingRequested(true);
 		view->SetGroupDescriptions({
 			CollectionGroupDescription::FromCompiledPath(categoryPath) });
 		view->SetAggregateDescriptions({
@@ -4768,6 +7408,861 @@ int main()
 		CUI_EXPECT_EQ(4ULL, view->Count());
 	});
 
+	runner.Add("Selector suppressed current-index update is owner-lifetime safe", []
+	{
+		class LifetimeProbeSelector final : public Selector
+		{
+		public:
+			explicit LifetimeProbeSelector(
+				std::function<void()>* changed,
+				int* selectionChanges = nullptr)
+				: Changed(changed), SelectionChanges(selectionChanges)
+			{
+			}
+
+			void SetCurrentIndexWithoutSelectionChanged(int value)
+			{
+				SetCurrentSelectedIndexWithoutSelectionChanged(value);
+			}
+
+		protected:
+			void OnSelectedIndexChanged(int, int) override
+			{
+				if (Changed && *Changed) (*Changed)();
+			}
+
+			void OnSelectionChanged(SelectionChangedEventArgs& args) override
+			{
+				if (SelectionChanges) ++*SelectionChanges;
+				Selector::OnSelectionChanged(args);
+			}
+
+		private:
+			std::function<void()>* Changed = nullptr;
+			int* SelectionChanges = nullptr;
+		};
+
+		std::function<void()> changed;
+		auto owner = std::make_unique<LifetimeProbeSelector>(&changed);
+		auto* raw = owner.get();
+		const ControlWeakReference lifetime(raw);
+		bool deletedFromPropertyCallback = false;
+		changed = [&]
+		{
+			deletedFromPropertyCallback = true;
+			owner.reset();
+		};
+
+		raw->SetCurrentIndexWithoutSelectionChanged(1);
+		CUI_EXPECT_TRUE(deletedFromPropertyCallback);
+		CUI_EXPECT_TRUE(owner == nullptr);
+		CUI_EXPECT_TRUE(lifetime.Get() == nullptr);
+
+		// Reuse the exact address while a nested suppressed update unwinds. This
+		// makes any unguarded write through the retired this pointer observable:
+		// it would suppress the replacement object's first ordinary selection.
+		using ProbeStorage = std::aligned_storage_t<
+			sizeof(LifetimeProbeSelector), alignof(LifetimeProbeSelector)>;
+		ProbeStorage storage;
+		std::function<void()> nestedChanged;
+		int phase = 0;
+		int replacementSelectionChanges = 0;
+		bool replacementRemainedUnsuppressed = false;
+		auto* slot = reinterpret_cast<LifetimeProbeSelector*>(&storage);
+		auto* original = std::construct_at(slot, &nestedChanged);
+		LifetimeProbeSelector* replacement = nullptr;
+		const ControlWeakReference originalLifetime(original);
+		nestedChanged = [&]
+		{
+			if (phase == 0)
+			{
+				phase = 1;
+				original->SetCurrentIndexWithoutSelectionChanged(2);
+				if (replacement)
+				{
+					replacement->SetSelectedIndex(3);
+					replacementRemainedUnsuppressed =
+						replacementSelectionChanges == 1;
+				}
+				return;
+			}
+			if (phase != 1) return;
+			phase = 2;
+			std::destroy_at(original);
+			replacement = std::construct_at(
+				slot, nullptr, &replacementSelectionChanges);
+		};
+		original->SetCurrentIndexWithoutSelectionChanged(1);
+		CUI_EXPECT_EQ(2, phase);
+		CUI_EXPECT_TRUE(originalLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(replacement != nullptr);
+		CUI_EXPECT_TRUE(replacementRemainedUnsuppressed);
+		CUI_EXPECT_EQ(1, replacementSelectionChanges);
+		if (replacement) std::destroy_at(replacement);
+
+		changed = {};
+		LifetimeProbeSelector surviving(&changed);
+		int selectionChanges = 0;
+		auto selectionChanged = surviving.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&)
+			{ ++selectionChanges; });
+		surviving.SetCurrentIndexWithoutSelectionChanged(1);
+		CUI_EXPECT_EQ(0, selectionChanges);
+
+		bool throwNext = true;
+		changed = [&]
+		{
+			if (!throwNext) return;
+			throwNext = false;
+			throw std::runtime_error("intentional selected-index callback failure");
+		};
+		bool updateThrew = false;
+		try
+		{
+			surviving.SetCurrentIndexWithoutSelectionChanged(2);
+		}
+		catch (const std::runtime_error&)
+		{
+			updateThrew = true;
+		}
+		CUI_EXPECT_TRUE(updateThrew);
+
+		changed = {};
+		const int next = surviving.GetSelectedIndex() == 3 ? 4 : 3;
+		surviving.SetSelectedIndex(next);
+		CUI_EXPECT_EQ(1, selectionChanges);
+	});
+
+	runner.Add("ListBox range Reset restores WPF object multiplicity lazily", []
+	{
+		auto makeRecord = [](const wchar_t* name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", std::wstring(name)));
+			return record;
+		};
+		auto alpha = makeRecord(L"Alpha");
+		auto beta = makeRecord(L"Beta");
+		auto gamma = makeRecord(L"Gamma");
+		auto introduced = makeRecord(L"Introduced");
+		auto source = std::make_shared<ObservableBindingList>(L"ResetRow");
+		source->Items = std::vector<BindingSourceReference>{
+			BindingSourceReference(alpha), BindingSourceReference(beta),
+			BindingSourceReference(alpha), BindingSourceReference(gamma),
+			BindingSourceReference(beta) };
+
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectionMode(SelectionMode::Multiple);
+		box.SetItemsSource(BindingListReference(source));
+		box.SelectAll();
+		box.RequestItemSelection(1, false);
+		CUI_EXPECT_TRUE(box.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_EQ(4ULL, box.SelectedIndexCount());
+		CUI_EXPECT_FALSE(box.IsIndexSelected(1));
+
+		int changes = 0;
+		SelectionChangedItemCollection removed;
+		SelectionChangedItemCollection added;
+		auto selectionChanged = box.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs& args)
+			{
+				++changes;
+				removed = args.RemovedItems;
+				added = args.AddedItems;
+			});
+		source->Items = std::vector<BindingSourceReference>{
+			BindingSourceReference(beta), BindingSourceReference(alpha),
+			BindingSourceReference(introduced) };
+
+		CUI_EXPECT_EQ(1, changes);
+		CUI_EXPECT_TRUE(box.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_EQ(3ULL, box.GetSelectedIndices().RangeCount());
+		CUI_EXPECT_EQ(2ULL, box.SelectedIndexCount());
+		CUI_EXPECT_TRUE(box.IsIndexSelected(0));
+		CUI_EXPECT_TRUE(box.IsIndexSelected(1));
+		CUI_EXPECT_FALSE(box.IsIndexSelected(2));
+		CUI_EXPECT_EQ(1, box.GetSelectedIndex());
+		CUI_EXPECT_EQ(2ULL, removed.size());
+		CUI_EXPECT_TRUE(added.empty());
+		BindingSourceReference removedAlpha;
+		BindingSourceReference removedGamma;
+		CUI_EXPECT_TRUE(removed[0].TryGet(removedAlpha));
+		CUI_EXPECT_TRUE(removed[1].TryGet(removedGamma));
+		CUI_EXPECT_TRUE(removedAlpha.Shared() == alpha);
+		CUI_EXPECT_TRUE(removedGamma.Shared() == gamma);
+
+		// Reset allocates new occurrence tokens again, but the selected object
+		// multiset survives intact. WPF reports no selection delta and merely
+		// relocates the selected duplicate occurrences in new-list order.
+		changes = 0;
+		removed = {};
+		added = {};
+		source->Items = std::vector<BindingSourceReference>{
+			BindingSourceReference(alpha), BindingSourceReference(introduced),
+			BindingSourceReference(beta) };
+		CUI_EXPECT_EQ(0, changes);
+		CUI_EXPECT_TRUE(box.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_EQ(2ULL, box.SelectedIndexCount());
+		CUI_EXPECT_TRUE(box.IsIndexSelected(0));
+		CUI_EXPECT_FALSE(box.IsIndexSelected(1));
+		CUI_EXPECT_TRUE(box.IsIndexSelected(2));
+		CUI_EXPECT_EQ(0, box.GetSelectedIndex());
+
+		// One survivor among a much larger replacement is stored densely rather
+		// than allocating one hole for every unrelated replacement row.
+		std::vector<BindingSourceReference> sparseReplacement;
+		std::vector<std::shared_ptr<ObservableObject>> unrelated;
+		for (int index = 0; index < 8; ++index)
+		{
+			auto row = makeRecord(L"Unrelated");
+			unrelated.push_back(row);
+			sparseReplacement.emplace_back(row);
+		}
+		sparseReplacement.insert(
+			sparseReplacement.begin() + 5, BindingSourceReference(alpha));
+		changes = 0;
+		source->Items = std::move(sparseReplacement);
+		CUI_EXPECT_EQ(1, changes);
+		CUI_EXPECT_FALSE(box.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_EQ(1ULL, box.SelectedIndexCount());
+		CUI_EXPECT_TRUE(box.IsIndexSelected(5));
+		CUI_EXPECT_EQ(5, box.GetSelectedIndex());
+	});
+
+	runner.Add("ListBox GetSelectedItems retries selection and source reentrancy", []
+	{
+		class ReentrantStableList final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				auto callback = std::move(ReadCallback);
+				if (callback) callback();
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"ReentrantSelectedRow";
+				return typeName;
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable std::function<void()> ReadCallback;
+		};
+		auto makeRecord = [](const wchar_t* name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", std::wstring(name)));
+			return record;
+		};
+		auto first = makeRecord(L"First");
+		auto second = makeRecord(L"Second");
+		auto third = makeRecord(L"Third");
+		auto source = std::make_shared<ReentrantStableList>();
+		source->Items = {
+			BindingSourceReference(first), BindingSourceReference(second),
+			BindingSourceReference(third) };
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectionMode(SelectionMode::Multiple);
+		box.SetItemsSource(BindingListReference(source));
+		box.SelectAll();
+
+		source->ReadCallback = [&]
+		{
+			box.UnselectAll();
+			CUI_EXPECT_TRUE(box.SelectIndex(2));
+		};
+		auto selected = box.GetSelectedItems();
+		CUI_EXPECT_EQ(1ULL, selected.size());
+		BindingSourceReference selectedItem;
+		CUI_EXPECT_TRUE(selected[0].TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == third);
+
+		auto replacementFirst = makeRecord(L"Replacement First");
+		auto replacementSecond = makeRecord(L"Replacement Second");
+		auto replacement = std::make_shared<ReentrantStableList>();
+		replacement->Items = {
+			BindingSourceReference(replacementFirst),
+			BindingSourceReference(replacementSecond) };
+		source->ReadCallback = [&]
+		{
+			box.SetItemsSource(BindingListReference(replacement));
+			CUI_EXPECT_TRUE(box.SelectIndex(1));
+		};
+		selected = box.GetSelectedItems();
+		CUI_EXPECT_EQ(1ULL, selected.size());
+		selectedItem = {};
+		CUI_EXPECT_TRUE(selected[0].TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == replacementSecond);
+	});
+
+	runner.Add("ListBox ApplySelection keeps the reentrant delta-read winner", []
+	{
+		class ReentrantStableList final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				auto callback = std::move(ReadCallback);
+				if (callback) callback(index);
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName =
+					L"ReentrantApplySelectionRow";
+				return typeName;
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable std::function<void(size_t)> ReadCallback;
+		};
+		struct SelectionDelta final
+		{
+			int OldIndex = -1;
+			int NewIndex = -1;
+			size_t RemovedCount = 0;
+			size_t AddedCount = 0;
+		};
+		const auto makeRecord = [](const wchar_t* name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", std::wstring(name)));
+			return record;
+		};
+		auto first = makeRecord(L"First");
+		auto second = makeRecord(L"Second");
+		auto third = makeRecord(L"Third");
+		auto source = std::make_shared<ReentrantStableList>();
+		source->Items = {
+			BindingSourceReference(first), BindingSourceReference(second),
+			BindingSourceReference(third) };
+
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectionMode(SelectionMode::Multiple);
+		box.SetItemsSource(BindingListReference(source));
+		CUI_EXPECT_TRUE(box.SelectIndex(0));
+
+		std::vector<SelectionDelta> deltas;
+		auto selectionChanged = box.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs& args)
+			{
+				deltas.push_back(SelectionDelta{
+					args.OldIndex, args.NewIndex,
+					args.RemovedItems.size(), args.AddedItems.size() });
+			});
+		int reentrantReads = 0;
+		source->ReadCallback = [&](size_t index)
+		{
+			++reentrantReads;
+			CUI_EXPECT_EQ(1ULL, index);
+			box.UnselectAll();
+			CUI_EXPECT_TRUE(box.SelectIndex(2));
+		};
+
+		// The outer SelectIndex reads row 1 while constructing its AddedItems
+		// delta. That read replaces the selection with row 2. The inner state is
+		// the last committed generation, so the stale outer plan must be retired.
+		(void)box.SelectIndex(1);
+		CUI_EXPECT_EQ(1, reentrantReads);
+		CUI_EXPECT_EQ(2, box.GetSelectedIndex());
+		CUI_EXPECT_TRUE(
+			box.GetSelectedIndices() == std::vector<int>{ 2 });
+		CUI_EXPECT_FALSE(box.IsIndexSelected(0));
+		CUI_EXPECT_FALSE(box.IsIndexSelected(1));
+		CUI_EXPECT_TRUE(box.IsIndexSelected(2));
+		BindingSourceReference selectedItem;
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == third);
+
+		CUI_EXPECT_EQ(2ULL, deltas.size());
+		CUI_EXPECT_EQ(0, deltas[0].OldIndex);
+		CUI_EXPECT_EQ(-1, deltas[0].NewIndex);
+		CUI_EXPECT_EQ(1ULL, deltas[0].RemovedCount);
+		CUI_EXPECT_EQ(0ULL, deltas[0].AddedCount);
+		CUI_EXPECT_EQ(-1, deltas[1].OldIndex);
+		CUI_EXPECT_EQ(2, deltas[1].NewIndex);
+		CUI_EXPECT_EQ(0ULL, deltas[1].RemovedCount);
+		CUI_EXPECT_EQ(1ULL, deltas[1].AddedCount);
+	});
+
+	runner.Add("ListBox ApplySelection rolls back a throwing selected-item read", []
+	{
+		class ThrowingStableList final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				if (ThrowOnRead > 0)
+				{
+					++ArmedReadCount;
+					if (ArmedReadCount == ThrowOnRead)
+					{
+						ThrowOnRead = 0;
+						throw std::runtime_error(
+							"intentional selected-item source read failure");
+					}
+				}
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName =
+					L"ThrowingApplySelectionRow";
+				return typeName;
+			}
+			void ArmThrowOnRead(int ordinal) const noexcept
+			{
+				ArmedReadCount = 0;
+				ThrowOnRead = ordinal;
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable int ArmedReadCount = 0;
+			mutable int ThrowOnRead = 0;
+		};
+		const auto makeRecord = [](const wchar_t* name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", std::wstring(name)));
+			return record;
+		};
+		auto first = makeRecord(L"First");
+		auto second = makeRecord(L"Second");
+		auto third = makeRecord(L"Third");
+		auto source = std::make_shared<ThrowingStableList>();
+		source->Items = {
+			BindingSourceReference(first), BindingSourceReference(second),
+			BindingSourceReference(third) };
+
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectionMode(SelectionMode::Multiple);
+		box.SetItemsSource(BindingListReference(source));
+		CUI_EXPECT_TRUE(box.SelectIndex(0));
+		BindingSourceReference selectedItem;
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == first);
+
+		int selectionChanges = 0;
+		auto selectionChanged = box.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&)
+			{ ++selectionChanges; });
+		// Read 1 constructs AddedItems for row 1. Read 2 occurs after the
+		// tentative indices/primary have been installed, in
+		// RefreshSelectedItemState, and is the rollback boundary under test.
+		source->ArmThrowOnRead(2);
+		bool propagated = false;
+		try
+		{
+			(void)box.SelectIndex(1);
+		}
+		catch (const std::runtime_error& error)
+		{
+			propagated = std::string(error.what())
+				== "intentional selected-item source read failure";
+		}
+		catch (...)
+		{
+		}
+		CUI_EXPECT_TRUE(propagated);
+		CUI_EXPECT_EQ(2, source->ArmedReadCount);
+		CUI_EXPECT_EQ(0, selectionChanges);
+		CUI_EXPECT_EQ(0, box.GetSelectedIndex());
+		CUI_EXPECT_TRUE(
+			box.GetSelectedIndices() == std::vector<int>{ 0 });
+		CUI_EXPECT_TRUE(box.IsIndexSelected(0));
+		CUI_EXPECT_FALSE(box.IsIndexSelected(1));
+		selectedItem = {};
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == first);
+
+		// The failed row must not leak into the next ordinary selection, and all
+		// selection machinery must remain usable after the exception unwinds.
+		CUI_EXPECT_TRUE(box.SelectIndex(2));
+		CUI_EXPECT_EQ(1, selectionChanges);
+		CUI_EXPECT_EQ(2, box.GetSelectedIndex());
+		const std::vector<int> expectedSelected{ 0, 2 };
+		CUI_EXPECT_TRUE(box.GetSelectedIndices() == expectedSelected);
+		CUI_EXPECT_FALSE(box.IsIndexSelected(1));
+		selectedItem = {};
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedItem));
+		CUI_EXPECT_TRUE(selectedItem.Shared() == third);
+	});
+
+	runner.Add("ListBox sparse Reset and range Move keep compact exact selection", []
+	{
+		class RangeMoveList final
+			: public IBindingList,
+			  public IBindingListSnapshotProvider
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe([handler = std::move(handler)](
+					RangeMoveList*, const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring name = L"RangeMoveRow";
+				return name;
+			}
+			bool TryGetStableSnapshot(BindingListReference& out) const override
+			{
+				auto snapshot = std::make_shared<ObservableBindingList>(
+					L"RangeMoveRow");
+				snapshot->Items = Items;
+				return snapshot->TryGetStableSnapshot(out);
+			}
+			void MoveRange(size_t oldIndex, size_t count, size_t newIndex)
+			{
+				auto moved = std::vector<BindingSourceReference>(
+					Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				Items.erase(Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				Items.insert(Items.begin() + newIndex, moved.begin(), moved.end());
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Move,
+						oldIndex, newIndex, count, count, Items.size(), Items.size() });
+			}
+			void RemoveRange(size_t index, size_t count)
+			{
+				const size_t oldSize = Items.size();
+				Items.erase(Items.begin() + index, Items.begin() + index + count);
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Remove,
+						index, CollectionChangedEventArgs::Npos, count, 0,
+						oldSize, Items.size() });
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable size_t TryGetQueries = 0;
+			Event<void(RangeMoveList*, const CollectionChangedEventArgs&)> Changed;
+		};
+		// The detailed Reset multiplicity test above covers raw Reset. This probe
+		// keeps two holes on opposite sides of a two-item move: one follows the
+		// moved block and the other crosses the shifted interval.
+		std::vector<std::shared_ptr<ObservableObject>> records;
+		auto source = std::make_shared<RangeMoveList>();
+		for (int index = 0; index < 8; ++index)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", index));
+			records.push_back(row);
+			source->Items.emplace_back(row);
+		}
+		ListBox box;
+		ConfigureTestControl(box, 0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectionMode(SelectionMode::Multiple);
+		box.SetItemsSource(BindingListReference(source));
+		box.SelectAll();
+		box.RequestItemSelection(2, false);
+		box.RequestItemSelection(5, false);
+		source->MoveRange(1, 2, 5);
+		CUI_EXPECT_TRUE(box.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_FALSE(box.IsIndexSelected(6));
+		CUI_EXPECT_FALSE(box.IsIndexSelected(3));
+		CUI_EXPECT_EQ(6ULL, box.SelectedIndexCount());
+
+		// A large contiguous removal is represented as a lazy old-snapshot slice.
+		// SelectionChanged must not read and retain one BindingValue per removed
+		// row before a handler explicitly asks to enumerate the payload.
+		constexpr size_t bulkCount = 8192;
+		constexpr size_t removeStart = 1024;
+		constexpr size_t removeCount = 4096;
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Name", 99));
+		auto bulkSource = std::make_shared<RangeMoveList>();
+		bulkSource->Items.assign(
+			bulkCount, BindingSourceReference(repeated));
+		ListBox bulk;
+		bulk.SetSelectionMode(SelectionMode::Multiple);
+		bulk.SetItemsSource(BindingListReference(bulkSource));
+		bulk.SelectAll();
+		bulk.RequestItemSelection(removeStart + 7, false);
+		SelectionChangedItemCollection removed;
+		auto bulkChanged = bulk.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs& args)
+			{ removed = args.RemovedItems; });
+		bulkSource->TryGetQueries = 0;
+		bulkSource->RemoveRange(removeStart, removeCount);
+		CUI_EXPECT_EQ(removeCount - 1, removed.size());
+		CUI_EXPECT_TRUE(bulkSource->TryGetQueries < 128ULL);
+		CUI_EXPECT_EQ(bulkCount - removeCount,
+			bulk.SelectedIndexCount());
+		BindingSourceReference firstRemoved;
+		BindingSourceReference lastRemoved;
+		CUI_EXPECT_TRUE(removed.front().TryGet(firstRemoved));
+		CUI_EXPECT_TRUE(removed[removed.size() - 1].TryGet(lastRemoved));
+		CUI_EXPECT_TRUE(firstRemoved.Shared() == repeated);
+		CUI_EXPECT_TRUE(lastRemoved.Shared() == repeated);
+	});
+
+	runner.Add("ListBox million-slot Add and Replace keep exclusion intervals compact", []
+	{
+		class DeferredVirtualListBox final : public ListBox
+		{
+		protected:
+			bool ShouldRealizeVirtualItemsWithoutViewport() const noexcept override
+			{
+				return false;
+			}
+		};
+		struct QueryState final
+		{
+			size_t CountQueries = 0;
+			size_t TryGetQueries = 0;
+		};
+		class StableRepeatedSnapshot final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			StableRepeatedSnapshot(size_t count, BindingSourceReference item,
+				std::shared_ptr<QueryState> queries)
+				: _count(count), _item(std::move(item)),
+				  _queries(std::move(queries)) {}
+			size_t Count() const noexcept override
+			{
+				++_queries->CountQueries;
+				return _count;
+			}
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++_queries->TryGetQueries;
+				out = index < _count ? _item : BindingSourceReference{};
+				return static_cast<bool>(out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RepeatedIntervalRow";
+				return typeName;
+			}
+		private:
+			size_t _count = 0;
+			BindingSourceReference _item;
+			std::shared_ptr<QueryState> _queries;
+		};
+		class MutableRepeatedList final
+			: public IBindingList,
+			  public IBindingListSnapshotProvider
+		{
+		public:
+			MutableRepeatedList(size_t count, BindingSourceReference item)
+				: Item(std::move(item)), CountValue(count),
+				  Queries(std::make_shared<QueryState>()) {}
+			size_t Count() const noexcept override
+			{
+				++Queries->CountQueries;
+				return CountValue;
+			}
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++Queries->TryGetQueries;
+				out = index < CountValue ? Item : BindingSourceReference{};
+				return static_cast<bool>(out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe([handler = std::move(handler)](
+					MutableRepeatedList*, const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"RepeatedIntervalRow";
+				return typeName;
+			}
+			bool TryGetStableSnapshot(BindingListReference& out) const override
+			{
+				out = BindingListReference(std::make_shared<StableRepeatedSnapshot>(
+					CountValue, Item, Queries));
+				return true;
+			}
+			void AddRange(size_t index, size_t count)
+			{
+				const size_t oldSize = CountValue;
+				CountValue += count;
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Add,
+						CollectionChangedEventArgs::Npos, index, 0, count,
+						oldSize, CountValue });
+			}
+			void ReplaceRange(size_t index, size_t oldCount, size_t newCount)
+			{
+				const size_t oldSize = CountValue;
+				CountValue = CountValue - oldCount + newCount;
+				cui::framework::EventAccess::Raise(Changed, this,
+					CollectionChangedEventArgs{ CollectionChangeAction::Replace,
+						index, index, oldCount, newCount,
+						oldSize, CountValue });
+			}
+
+			BindingSourceReference Item;
+			size_t CountValue = 0;
+			std::shared_ptr<QueryState> Queries;
+			Event<void(MutableRepeatedList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		constexpr size_t million = 1'000'000;
+		constexpr size_t integrationRange = 4'096;
+		constexpr size_t retainedSide = 16;
+		const auto configureVirtualHost = [](ListBox& box)
+		{
+			ConfigureTestControl(box, 0, 0, 220, 120);
+			auto panel = std::make_shared<ItemsPanelTemplate>();
+			panel->Kind = ItemsPanelKind::VirtualizingStack;
+			panel->ItemHeight = 20.0f;
+			panel->CacheLength = 0.0f;
+			box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+			(void)InstallItemsScrollTemplate(box);
+		};
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Name", L"Repeated"));
+		SelectedIndexCollection structuralMillion;
+		structuralMillion.SetFullRange(million + retainedSide * 2);
+		structuralMillion.ExcludeRange(retainedSide, million);
+		CUI_EXPECT_EQ(retainedSide * 2, structuralMillion.size());
+		CUI_EXPECT_EQ(million,
+			structuralMillion.ExcludedIndices().size());
+		CUI_EXPECT_EQ(1ULL, structuralMillion.ExcludedIntervals().size());
+
+		// Add: all pre-existing occurrences stay selected and the integration
+		// range forms one excluded interval in the middle. The direct shape above
+		// proves the same representation stays constant-sized at one million.
+		auto addSource = std::make_shared<MutableRepeatedList>(
+			retainedSide * 2, BindingSourceReference(repeated));
+		DeferredVirtualListBox addBox;
+		configureVirtualHost(addBox);
+		addBox.SetSelectionMode(SelectionMode::Multiple);
+		addBox.SetItemsSource(BindingListReference(addSource));
+		addBox.Arrange(cui::core::Rect{ 0.0f, 0.0f, 220.0f, 120.0f });
+		addBox.UpdateLayout();
+		addBox.SelectAll();
+		addSource->Queries->CountQueries = 0;
+		addSource->Queries->TryGetQueries = 0;
+		addSource->AddRange(retainedSide, integrationRange);
+		const auto& addedSelection = addBox.GetSelectedIndices();
+		CUI_EXPECT_TRUE(addedSelection.IsRangeBacked());
+		CUI_EXPECT_EQ(retainedSide * 2, addedSelection.size());
+		CUI_EXPECT_EQ(integrationRange,
+			addedSelection.ExcludedIndices().size());
+		CUI_EXPECT_EQ(1ULL, addedSelection.ExcludedIntervals().size());
+		CUI_EXPECT_EQ(retainedSide,
+			addedSelection.ExcludedIntervals().front().Start);
+		CUI_EXPECT_EQ(integrationRange,
+			addedSelection.ExcludedIntervals().front().Count);
+		CUI_EXPECT_EQ(static_cast<int>(retainedSide - 1),
+			addedSelection[retainedSide - 1]);
+		CUI_EXPECT_EQ(static_cast<int>(retainedSide + integrationRange),
+			addedSelection[retainedSide]);
+		CUI_EXPECT_FALSE(addBox.IsIndexSelected(
+			static_cast<int>(retainedSide)));
+		CUI_EXPECT_FALSE(addBox.IsIndexSelected(
+			static_cast<int>(retainedSide + integrationRange - 1)));
+		CUI_EXPECT_TRUE(addBox.IsIndexSelected(
+			static_cast<int>(retainedSide + integrationRange)));
+		std::vector<int> enumeratedAdded(
+			addedSelection.begin(), addedSelection.end());
+		CUI_EXPECT_EQ(retainedSide * 2, enumeratedAdded.size());
+		CUI_EXPECT_TRUE(addSource->Queries->TryGetQueries < 128ULL);
+
+		// Replace: selected old rows produce a lazy RemovedItems slice, while the
+		// replacement occurrences become one compact exclusion run.
+		auto replaceSource = std::make_shared<MutableRepeatedList>(
+			integrationRange + retainedSide * 2,
+			BindingSourceReference(repeated));
+		DeferredVirtualListBox replaceBox;
+		configureVirtualHost(replaceBox);
+		replaceBox.SetSelectionMode(SelectionMode::Multiple);
+		replaceBox.SetItemsSource(BindingListReference(replaceSource));
+		replaceBox.Arrange(cui::core::Rect{ 0.0f, 0.0f, 220.0f, 120.0f });
+		replaceBox.UpdateLayout();
+		replaceBox.SelectAll();
+		size_t removedCount = 0;
+		auto changed = replaceBox.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs& args)
+			{ removedCount = args.RemovedItems.size(); });
+		replaceSource->Queries->CountQueries = 0;
+		replaceSource->Queries->TryGetQueries = 0;
+		replaceSource->ReplaceRange(
+			retainedSide, integrationRange, integrationRange);
+		const auto& replacedSelection = replaceBox.GetSelectedIndices();
+		CUI_EXPECT_EQ(integrationRange, removedCount);
+		CUI_EXPECT_EQ(retainedSide * 2, replacedSelection.size());
+		CUI_EXPECT_EQ(1ULL, replacedSelection.ExcludedIntervals().size());
+		CUI_EXPECT_EQ(integrationRange,
+			replacedSelection.ExcludedIntervals().front().Count);
+		CUI_EXPECT_EQ(static_cast<int>(retainedSide + integrationRange),
+			replacedSelection[retainedSide]);
+		CUI_EXPECT_TRUE(replaceSource->Queries->TryGetQueries < 128ULL);
+
+		// Replacing the already excluded run must neither enumerate all of its
+		// holes nor report removals; the interval shape remains constant-sized.
+		removedCount = 0;
+		replaceSource->Queries->TryGetQueries = 0;
+		replaceSource->ReplaceRange(
+			retainedSide, integrationRange, integrationRange);
+		CUI_EXPECT_EQ(0ULL, removedCount);
+		CUI_EXPECT_EQ(1ULL,
+			replaceBox.GetSelectedIndices().ExcludedIntervals().size());
+		CUI_EXPECT_TRUE(replaceSource->Queries->TryGetQueries < 128ULL);
+	});
+
 	runner.Add("Selector synchronizes selection with collection view currency", []
 	{
 		auto makeRecord = [](const std::wstring& name, int score, bool active)
@@ -4787,6 +8282,8 @@ int main()
 			source->Items.push_back(BindingSourceReference(record));
 
 		auto view = std::make_shared<CollectionViewSource>();
+		view->SetIsLiveSortingRequested(true);
+		view->SetIsLiveFilteringRequested(true);
 		view->SetFilterDescriptions({ CollectionFilterDescription{
 			L"Active", CollectionFilterOperator::Equals,
 			BindingValue(true), false } });
@@ -5361,6 +8858,8 @@ int main()
 			source->Items.push_back(BindingSourceReference(item));
 
 		auto view = std::make_shared<CollectionViewSource>();
+		view->SetIsLiveSortingRequested(true);
+		view->SetIsLiveGroupingRequested(true);
 		view->SetGroupDescriptions({
 			{ L"Department", CollectionSortDirection::Ascending, true },
 			{ L"Team", CollectionSortDirection::Descending, true } });
@@ -5442,6 +8941,8 @@ int main()
 		for (const auto& item : { alice, bob, carol })
 			source->Items.push_back(BindingSourceReference(item));
 		auto view = std::make_shared<CollectionViewSource>();
+		view->SetIsLiveSortingRequested(true);
+		view->SetIsLiveGroupingRequested(true);
 		view->SetGroupDescriptions({
 			{ L"Department", CollectionSortDirection::Ascending, true } });
 		view->SetSortDescriptions({
@@ -5548,6 +9049,197 @@ int main()
 		CUI_EXPECT_TRUE(dynamic_cast<ListBoxItem*>(
 			box.GetGeneratedItem(199)) != nullptr);
 		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 7ULL);
+	});
+
+	runner.Add("Grouped million-row virtual offsets keep sparse metadata", []
+	{
+		class MillionGroupedList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot,
+			  public IBindingListGroupView
+		{
+		public:
+			MillionGroupedList(
+				size_t count, BindingSourceReference sharedItem)
+				: _count(count), _sharedItem(std::move(sharedItem))
+			{
+				const size_t middle = count / 2;
+				const size_t tail = count * 3 / 4;
+				// Two hierarchy levels begin at zero, while the remaining headers
+				// exercise distant sparse starts. Every bottom-level group spans a
+				// real large range: realizing its header must retain a lazy slice, not
+				// copy hundreds of thousands of members. The host aggregates these
+				// four headers into exactly three offset metadata entries.
+				_groups = {
+					{ BindingValue(L"Root"), L"Group", 0, 0, count, {} },
+					{ BindingValue(L"First"), L"Subgroup", 1, 0, middle, {} },
+					{ BindingValue(L"Middle"), L"Subgroup", 1, middle,
+						tail - middle, {} },
+					{ BindingValue(L"Tail"), L"Subgroup", 1, tail,
+						count - tail, {} }
+				};
+			}
+
+			size_t Count() const noexcept override
+			{
+				++CountQueries;
+				return _count;
+			}
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_sharedItem) return false;
+				out = _sharedItem;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				++OccurrenceQueries;
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				result = index + 1;
+				return true;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				++OccurrenceLookupQueries;
+				index = 0;
+				if (identity == 0 || identity > _count) return false;
+				index = identity - 1;
+				return true;
+			}
+			const std::vector<BindingListGroup>& Groups() const noexcept override
+			{
+				++GroupQueries;
+				return _groups;
+			}
+			EventConnection SubscribeGroupsChanged(
+				GroupsChangedHandler) override
+			{
+				return {};
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"MillionGroupedRow";
+				return typeName;
+			}
+
+			mutable size_t CountQueries = 0;
+			mutable size_t TryGetQueries = 0;
+			mutable size_t OccurrenceQueries = 0;
+			mutable size_t OccurrenceLookupQueries = 0;
+			mutable size_t GroupQueries = 0;
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _sharedItem;
+			std::vector<BindingListGroup> _groups;
+		};
+
+		class MillionGroupedListBox final : public ListBox
+		{
+		public:
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+		};
+
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t middleIndex = rowCount / 2;
+		constexpr size_t tailGroupIndex = rowCount * 3 / 4;
+		constexpr size_t lastIndex = rowCount - 1;
+		auto sharedItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(sharedItem->DefineProperty(
+			L"Name", L"One lazy grouped record"));
+		auto rows = std::make_shared<MillionGroupedList>(
+			rowCount, BindingSourceReference(sharedItem));
+
+		MillionGroupedListBox box;
+		ConfigureTestControl(box, 0, 0, 220, 100);
+		box.SetDisplayMemberPath(L"Name");
+		auto style = std::make_shared<GroupStyle>();
+		box.SetGroupStyle(GroupStyleReference(style));
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		auto* scroll = InstallItemsScrollTemplate(box);
+		box.SetItemsSource(BindingListReference(rows));
+		box.Arrange(cui::core::Rect{ 0.0f, 0.0f, 220.0f, 100.0f });
+		box.UpdateLayout();
+
+		CUI_EXPECT_TRUE(box.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(box.IsVirtualizing());
+		CUI_EXPECT_EQ(3ULL,
+			cui::framework::ItemsControlAccess::
+				VirtualOffsetMetadataEntryCount(box));
+		CUI_EXPECT_NEAR(
+			static_cast<double>(rowCount) * 20.0 + 4.0 * 24.0,
+			scroll->ExtentHeight, 0.001);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		const size_t configurationRevision =
+			cui::framework::ItemsControlAccess::
+				VirtualOffsetConfigurationRevision(box);
+		CUI_EXPECT_TRUE(configurationRevision != 0);
+		const size_t groupQueriesAfterInitialization = rows->GroupQueries;
+
+		auto jump = [&](size_t index)
+		{
+			const size_t groupQueriesBefore = rows->GroupQueries;
+			const size_t itemQueriesBefore = rows->TryGetQueries;
+			CUI_EXPECT_TRUE(box.BringIntoViewForTest(index));
+			box.UpdateLayout();
+			auto* generated = box.GetGeneratedItem(index);
+			CUI_EXPECT_TRUE(generated != nullptr);
+			CUI_EXPECT_TRUE(generated
+				&& generated->GetLogicalParent() == &box);
+			CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+			CUI_EXPECT_EQ(3ULL,
+				cui::framework::ItemsControlAccess::
+					VirtualOffsetMetadataEntryCount(box));
+			CUI_EXPECT_EQ(configurationRevision,
+				cui::framework::ItemsControlAccess::
+					VirtualOffsetConfigurationRevision(box));
+			CUI_EXPECT_EQ(groupQueriesBefore, rows->GroupQueries);
+			CUI_EXPECT_TRUE(
+				rows->TryGetQueries - itemQueriesBefore < 64ULL);
+		};
+		for (int pass = 0; pass < 2; ++pass)
+		{
+			jump(lastIndex);
+			jump(tailGroupIndex);
+			jump(middleIndex);
+			jump(0);
+		}
+
+		auto* itemsHost = TemplateAccess::GetItemsHost(box);
+		CUI_EXPECT_TRUE(itemsHost != nullptr);
+		CUI_EXPECT_TRUE(itemsHost
+			&& !itemsHost->GetVisualChildrenView().empty());
+		auto* firstHost = itemsHost
+			&& !itemsHost->GetVisualChildrenView().empty()
+			? dynamic_cast<Panel*>(
+				itemsHost->GetVisualChildrenView().front()) : nullptr;
+		CUI_EXPECT_TRUE(firstHost != nullptr);
+		CUI_EXPECT_EQ(3, firstHost ? firstHost->VisualChildCount() : 0);
+		CUI_EXPECT_TRUE(rows->TryGetQueries < 512ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries < 512ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries < 512ULL);
+		CUI_EXPECT_EQ(groupQueriesAfterInitialization, rows->GroupQueries);
 	});
 
 	runner.Add("ItemsControl materializes typed item templates atomically", []
@@ -16210,7 +19902,7 @@ int main()
 			== std::string::npos);
 		for (const auto* obsoleteToken : {
 			"AutoPlay", "PlaybackRate", "RenderMode", "MediaFile",
-			"std::make_unique<MediaElement>", "\"MediaElement.h\"" })
+			"std::make_unique<MediaPlayer>", "\"MediaPlayer.h\"" })
 			CUI_EXPECT_TRUE(staticCpp.find(obsoleteToken) == std::string::npos);
 	});
 
@@ -16959,6 +20651,1038 @@ int main()
 		accessible->Release();
 	});
 
+	runner.Add("DataGrid automation peer matches WPF virtual table selection and identity", []
+	{
+		class AutomationProbeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		constexpr size_t rowCount = 40;
+		AutomationProbeDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.AutomationId = L"automationDataGrid";
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto nameColumnOwner = std::make_unique<DataGridTextColumn>();
+		auto* nameColumn = nameColumnOwner.get();
+		nameColumn->SetHeader(BindingValue(L"Name"));
+		nameColumn->SetBindingPath(L"Name");
+		nameColumn->SetSortMemberPath(L"Name");
+		nameColumn->SetWidth(DataGridLength(150.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(nameColumnOwner)) == nameColumn);
+		auto codeColumnOwner = std::make_unique<DataGridTextColumn>();
+		auto* codeColumn = codeColumnOwner.get();
+		codeColumn->SetHeader(BindingValue(L"Code"));
+		codeColumn->SetBindingPath(L"Code");
+		codeColumn->SetWidth(DataGridLength(120.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(codeColumnOwner)) == codeColumn);
+
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"AutomationDataGridRow");
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				std::wstring name = L"Item " + std::to_wstring(index);
+				if (index == 0) name = L"Charlie";
+				else if (index == 1) name = L"Alice";
+				else if (index == 2) name = L"Bob";
+				CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Code", L"C" + std::to_wstring(index)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() < rowCount);
+
+		auto& peer = grid.GetAutomationPeer();
+		CUI_EXPECT_EQ(AutomationControlType::DataGrid,
+			peer.GetAutomationControlType());
+		CUI_EXPECT_EQ(std::wstring(L"DataGrid"),
+			peer.GetAutomationClassName());
+		CUI_EXPECT_TRUE(peer.SupportsVirtualizedChildren());
+		CUI_EXPECT_TRUE(peer.SupportsPattern(AutomationPattern::Grid));
+		CUI_EXPECT_TRUE(peer.SupportsPattern(AutomationPattern::Table));
+		CUI_EXPECT_TRUE(peer.SupportsPattern(AutomationPattern::Selection));
+		CUI_EXPECT_TRUE(peer.SupportsPattern(AutomationPattern::Scroll));
+		const auto container = peer.GetAccessibilityVirtualContainerInfo();
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			container.Patterns, AutomationPattern::Grid));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			container.Patterns, AutomationPattern::Table));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			container.Patterns, AutomationPattern::Selection));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			container.Patterns, AutomationPattern::Scroll));
+		CUI_EXPECT_TRUE(container.CanSelectMultiple);
+		CUI_EXPECT_FALSE(container.IsSelectionRequired);
+		CUI_EXPECT_EQ(static_cast<int>(rowCount), container.RowCount);
+		CUI_EXPECT_EQ(2, container.ColumnCount);
+
+		std::vector<uint32_t> columnHeaders;
+		peer.GetAccessibilityVirtualColumnHeaders(columnHeaders);
+		CUI_EXPECT_EQ(2ULL, columnHeaders.size());
+		for (size_t index = 0; index < columnHeaders.size(); ++index)
+		{
+			AccessibilityVirtualNode header;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+				columnHeaders[index], header));
+			CUI_EXPECT_EQ(AutomationControlType::HeaderItem,
+				header.ControlType);
+			CUI_EXPECT_EQ(0U, header.ParentId);
+			CUI_EXPECT_EQ(index == 0 ? std::wstring(L"Name")
+				: std::wstring(L"Code"), header.Name);
+			CUI_EXPECT_TRUE(HasAutomationPattern(
+				header.Patterns, AutomationPattern::ScrollItem));
+			CUI_EXPECT_TRUE(HasAutomationPattern(
+				header.Patterns, AutomationPattern::VirtualizedItem));
+		}
+
+		auto getCell = [&](int row, int column)
+		{
+			uint32_t id = 0;
+			CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(row, column, id));
+			CUI_EXPECT_TRUE(id != 0);
+			return id;
+		};
+		auto readNode = [&](uint32_t id)
+		{
+			AccessibilityVirtualNode node;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(id, node));
+			return node;
+		};
+
+		const uint32_t cell00 = getCell(0, 0);
+		const uint32_t cell01 = getCell(0, 1);
+		const uint32_t cell11 = getCell(1, 1);
+		auto cell = readNode(cell00);
+		CUI_EXPECT_EQ(AutomationControlType::Custom, cell.ControlType);
+		CUI_EXPECT_EQ(0, cell.Row);
+		CUI_EXPECT_EQ(0, cell.Column);
+		CUI_EXPECT_EQ(1, cell.RowSpan);
+		CUI_EXPECT_EQ(1, cell.ColumnSpan);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::GridItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::TableItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::ScrollItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::SelectionItem));
+
+		const uint32_t row0 = cell.ParentId;
+		const uint32_t row1 = readNode(cell11).ParentId;
+		auto rowNode = readNode(row0);
+		CUI_EXPECT_EQ(AutomationControlType::DataItem, rowNode.ControlType);
+		CUI_EXPECT_EQ(0U, rowNode.ParentId);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			rowNode.Patterns, AutomationPattern::Selection));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			rowNode.Patterns, AutomationPattern::ScrollItem));
+		CUI_EXPECT_FALSE(HasAutomationPattern(
+			rowNode.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(container.CanSelectMultiple);
+		CUI_EXPECT_FALSE(container.IsSelectionRequired);
+		std::vector<uint32_t> rowChildren;
+		peer.GetAccessibilityVirtualChildren(row0, rowChildren);
+		CUI_EXPECT_EQ(3ULL, rowChildren.size());
+		std::vector<uint32_t> rowHeaders;
+		peer.GetAccessibilityVirtualRowHeaders(rowHeaders);
+		CUI_EXPECT_TRUE(!rowHeaders.empty());
+		CUI_EXPECT_TRUE(rowHeaders.size() <= grid.GeneratedItemCount());
+		CUI_EXPECT_TRUE(std::all_of(rowHeaders.begin(), rowHeaders.end(),
+			[](uint32_t id) { return id != 0; }));
+		bool sawRowHeader = false;
+		uint32_t firstRowHeaderId = 0;
+		for (const auto childId : rowChildren)
+		{
+			const auto child = readNode(childId);
+			CUI_EXPECT_EQ(row0, child.ParentId);
+			if (child.ControlType == AutomationControlType::HeaderItem)
+			{
+				sawRowHeader = true;
+				CUI_EXPECT_EQ(AutomationPattern::Invoke, child.Patterns);
+				if (child.Row == 0) firstRowHeaderId = child.Id;
+			}
+		}
+		CUI_EXPECT_TRUE(sawRowHeader);
+		CUI_EXPECT_TRUE(firstRowHeaderId != 0);
+		CUI_EXPECT_TRUE(std::find(rowHeaders.begin(), rowHeaders.end(),
+			firstRowHeaderId) != rowHeaders.end());
+		CUI_EXPECT_EQ(firstRowHeaderId, cell.RowHeaderId);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		peer.GetAccessibilityVirtualRowHeaders(rowHeaders);
+		CUI_EXPECT_TRUE(rowHeaders.empty());
+		CUI_EXPECT_EQ(0U, readNode(cell00).RowHeaderId);
+		peer.GetAccessibilityVirtualChildren(row0, rowChildren);
+		CUI_EXPECT_EQ(2ULL, rowChildren.size());
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Row);
+		peer.GetAccessibilityVirtualColumnHeaders(columnHeaders);
+		CUI_EXPECT_TRUE(columnHeaders.empty());
+		peer.GetAccessibilityVirtualChildren(row0, rowChildren);
+		CUI_EXPECT_EQ(3ULL, rowChildren.size());
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::All);
+		peer.GetAccessibilityVirtualColumnHeaders(columnHeaders);
+		peer.GetAccessibilityVirtualRowHeaders(rowHeaders);
+		CUI_EXPECT_EQ(2ULL, columnHeaders.size());
+		CUI_EXPECT_TRUE(!rowHeaders.empty()
+			&& rowHeaders.front() == firstRowHeaderId);
+		CUI_EXPECT_EQ(firstRowHeaderId, readNode(cell00).RowHeaderId);
+
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			cell00, AccessibilitySelectionAction::Select));
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			cell11, AccessibilitySelectionAction::Add));
+		std::vector<uint32_t> selection;
+		peer.GetAccessibilityVirtualSelection(selection);
+		CUI_EXPECT_EQ(2ULL, selection.size());
+		if (selection.size() >= 2)
+		{
+			CUI_EXPECT_EQ(cell00, selection[0]);
+			CUI_EXPECT_EQ(cell11, selection[1]);
+		}
+		auto selectedChildrenOf = [&](uint32_t parentId)
+		{
+			std::vector<uint32_t> result;
+			std::vector<uint32_t> children;
+			peer.GetAccessibilityVirtualChildren(parentId, children);
+			for (const uint32_t childId : children)
+			{
+				const auto child = readNode(childId);
+				if (child.Selected && HasAutomationPattern(
+					child.Patterns, AutomationPattern::GridItem))
+					result.push_back(childId);
+			}
+			return result;
+		};
+		CUI_EXPECT_TRUE(selectedChildrenOf(row0)
+			== std::vector<uint32_t>{ cell00 });
+		CUI_EXPECT_TRUE(selectedChildrenOf(row1)
+			== std::vector<uint32_t>{ cell11 });
+
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		cell = readNode(cell00);
+		rowNode = readNode(row0);
+		CUI_EXPECT_FALSE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			rowNode.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			row0, AccessibilitySelectionAction::Select));
+		const std::vector<uint32_t> expectedFullRowCells{ cell00, cell01 };
+		CUI_EXPECT_TRUE(selectedChildrenOf(row0) == expectedFullRowCells);
+		for (const uint32_t selectedCellId : selectedChildrenOf(row0))
+			CUI_EXPECT_FALSE(HasAutomationPattern(
+				readNode(selectedCellId).Patterns,
+				AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			row1, AccessibilitySelectionAction::Add));
+		peer.GetAccessibilityVirtualSelection(selection);
+		CUI_EXPECT_EQ(2ULL, selection.size());
+		if (selection.size() >= 2)
+		{
+			CUI_EXPECT_EQ(row0, selection[0]);
+			CUI_EXPECT_EQ(row1, selection[1]);
+		}
+
+		grid.SetSelectionUnit(DataGridSelectionUnit::CellOrRowHeader);
+		cell = readNode(cell00);
+		rowNode = readNode(row0);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			cell.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			rowNode.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			row0, AccessibilitySelectionAction::Select));
+		CUI_EXPECT_TRUE(peer.SelectAccessibilityVirtualNode(
+			cell11, AccessibilitySelectionAction::Add));
+		peer.GetAccessibilityVirtualSelection(selection);
+		CUI_EXPECT_EQ(4ULL, selection.size());
+		if (selection.size() >= 4)
+		{
+			CUI_EXPECT_EQ(row0, selection[0]);
+			CUI_EXPECT_EQ(cell00, selection[1]);
+			CUI_EXPECT_EQ(cell01, selection[2]);
+			CUI_EXPECT_EQ(cell11, selection[3]);
+		}
+
+		std::vector<uint32_t> rootChildren;
+		peer.GetAccessibilityVirtualChildren(0, rootChildren);
+		std::vector<uint32_t> dataRows;
+		for (const auto id : rootChildren)
+			if (readNode(id).ControlType == AutomationControlType::DataItem)
+				dataRows.push_back(id);
+		CUI_EXPECT_EQ(rowCount, dataRows.size());
+		if (dataRows.empty()) return;
+		const uint32_t lastRowId = dataRows.empty() ? 0 : dataRows.back();
+		const auto virtualRow = readNode(lastRowId);
+		CUI_EXPECT_FALSE(virtualRow.Visible);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			virtualRow.Patterns, AutomationPattern::Selection));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			virtualRow.Patterns, AutomationPattern::ScrollItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			virtualRow.Patterns, AutomationPattern::SelectionItem));
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			virtualRow.Patterns, AutomationPattern::VirtualizedItem));
+		std::vector<uint32_t> lastRowChildren;
+		peer.GetAccessibilityVirtualChildren(lastRowId, lastRowChildren);
+		uint32_t lastCellId = 0;
+		for (const auto id : lastRowChildren)
+		{
+			const auto node = readNode(id);
+			if (node.ControlType == AutomationControlType::Custom
+				&& node.Column == 0)
+			{
+				lastCellId = id;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(lastCellId != 0);
+		if (lastCellId == 0) return;
+		const auto virtualCell = readNode(lastCellId);
+		CUI_EXPECT_FALSE(virtualCell.Visible);
+		CUI_EXPECT_EQ(0U, virtualCell.RowHeaderId);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			virtualCell.Patterns, AutomationPattern::VirtualizedItem));
+		CUI_EXPECT_TRUE(peer.ScrollAccessibilityVirtualNodeIntoView(lastCellId));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(rowCount - 1) != nullptr);
+		const auto realizedCell = readNode(lastCellId);
+		CUI_EXPECT_TRUE(realizedCell.Visible);
+		CUI_EXPECT_TRUE(realizedCell.RowHeaderId != 0);
+		CUI_EXPECT_FALSE(HasAutomationPattern(
+			realizedCell.Patterns, AutomationPattern::VirtualizedItem));
+		CUI_EXPECT_TRUE(readNode(lastRowId).Visible);
+		CUI_EXPECT_FALSE(HasAutomationPattern(
+			readNode(lastRowId).Patterns, AutomationPattern::VirtualizedItem));
+		peer.GetAccessibilityVirtualRowHeaders(rowHeaders);
+		CUI_EXPECT_TRUE(std::find(rowHeaders.begin(), rowHeaders.end(),
+			realizedCell.RowHeaderId) != rowHeaders.end());
+		if (realizedCell.RowHeaderId != 0)
+			CUI_EXPECT_EQ(AutomationControlType::HeaderItem,
+				readNode(realizedCell.RowHeaderId).ControlType);
+
+		const uint32_t aliceBeforeSort = getCell(1, 0);
+		const uint32_t aliceRowBeforeSort = readNode(aliceBeforeSort).ParentId;
+		const auto headerIdsBeforeSort = columnHeaders;
+		CUI_EXPECT_TRUE(grid.PerformSort(*nameColumn, false));
+		const uint32_t aliceAfterSort = getCell(0, 0);
+		const uint32_t aliceRowAfterSort = readNode(aliceAfterSort).ParentId;
+		CUI_EXPECT_EQ(aliceBeforeSort, aliceAfterSort);
+		CUI_EXPECT_EQ(aliceRowBeforeSort, aliceRowAfterSort);
+		CUI_EXPECT_EQ(0, readNode(aliceAfterSort).Row);
+		peer.GetAccessibilityVirtualColumnHeaders(columnHeaders);
+		CUI_EXPECT_TRUE(columnHeaders == headerIdsBeforeSort);
+		uint32_t invalid = 1;
+		CUI_EXPECT_FALSE(peer.GetAccessibilityVirtualItemAt(-1, 0, invalid));
+		CUI_EXPECT_EQ(0U, invalid);
+		CUI_EXPECT_FALSE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(rowCount), 0, invalid));
+		CUI_EXPECT_EQ(0U, invalid);
+		CUI_EXPECT_FALSE(peer.GetAccessibilityVirtualItemAt(0, 2, invalid));
+		CUI_EXPECT_EQ(0U, invalid);
+	});
+
+	runner.Add("DataGrid automation actions match WPF value sorting and scroll semantics", []
+	{
+		{
+			DataGrid grid;
+			grid.SetAutoGenerateColumns(false);
+			auto& peer = grid.GetAutomationPeer();
+			CUI_EXPECT_FALSE(peer.SupportsPattern(AutomationPattern::Scroll));
+			const auto container = peer.GetAccessibilityVirtualContainerInfo();
+			CUI_EXPECT_FALSE(HasAutomationPattern(
+				container.Patterns, AutomationPattern::Scroll));
+		}
+
+		class AutomationActionDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		AutomationActionDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 300, 180);
+		grid.AutomationId = L"automationActionDataGrid";
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+
+		auto checkColumnOwner = std::make_unique<DataGridCheckBoxColumn>();
+		auto* checkColumn = checkColumnOwner.get();
+		checkColumn->SetHeader(BindingValue(L"Paid"));
+		checkColumn->SetBindingPath(L"Paid");
+		checkColumn->SetBindingMode(BindingMode::TwoWay);
+		checkColumn->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(checkColumnOwner))
+			== checkColumn);
+
+		auto textColumnOwner = std::make_unique<DataGridTextColumn>();
+		textColumnOwner->SetHeader(BindingValue(L"Name"));
+		textColumnOwner->SetBindingPath(L"Name");
+		textColumnOwner->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(textColumnOwner)) != nullptr);
+
+		auto templateColumnOwner = std::make_unique<DataGridTemplateColumn>();
+		auto* templateColumn = templateColumnOwner.get();
+		templateColumn->SetHeader(BindingValue(L"Preview"));
+		templateColumn->SetSortMemberPath(L"");
+		templateColumn->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(templateColumnOwner))
+			== templateColumn);
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Paid", false));
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Stable"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"AutomationActionDataGridRow");
+		rows->Items.push_back(BindingSourceReference(item));
+		grid.SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 300.0f, 180.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+
+		auto& peer = grid.GetAutomationPeer();
+		auto readNode = [&](uint32_t id)
+		{
+			AccessibilityVirtualNode node;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(id, node));
+			return node;
+		};
+		auto* generatedRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(generatedRow != nullptr);
+		CUI_EXPECT_TRUE(generatedRow && generatedRow->GetCell(2) != nullptr);
+		const std::wstring templateCellAccessibleName =
+			L"Template cell accessible name";
+		if (generatedRow && generatedRow->GetCell(2))
+			generatedRow->GetCell(2)->AutomationName =
+				templateCellAccessibleName;
+
+		std::vector<uint32_t> rootChildren;
+		peer.GetAccessibilityVirtualChildren(0, rootChildren);
+		uint32_t rowId = 0;
+		for (const auto id : rootChildren)
+		{
+			const auto node = readNode(id);
+			if (node.ControlType == AutomationControlType::DataItem
+				&& node.Row == 0)
+			{
+				rowId = id;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(rowId != 0);
+		std::vector<uint32_t> rowChildren;
+		peer.GetAccessibilityVirtualChildren(rowId, rowChildren);
+		uint32_t clippedCellId = 0;
+		for (const auto id : rowChildren)
+		{
+			const auto node = readNode(id);
+			if (node.ControlType == AutomationControlType::Custom
+				&& node.Column == 2)
+			{
+				clippedCellId = id;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(clippedCellId != 0);
+		if (clippedCellId != 0)
+		{
+			const auto clippedCell = readNode(clippedCellId);
+			CUI_EXPECT_FALSE(clippedCell.Visible);
+			CUI_EXPECT_FALSE(HasAutomationPattern(
+				clippedCell.Patterns, AutomationPattern::VirtualizedItem));
+		}
+
+		std::vector<uint32_t> headers;
+		peer.GetAccessibilityVirtualColumnHeaders(headers);
+		CUI_EXPECT_EQ(3ULL, headers.size());
+		int sortingCount = 0;
+		auto sortingConnection = grid.Sorting.Subscribe(
+			[&](DataGrid* sender, DataGridSortingEventArgs& args)
+			{
+				++sortingCount;
+				CUI_EXPECT_TRUE(sender == &grid);
+				CUI_EXPECT_TRUE(args.Column == templateColumn);
+				CUI_EXPECT_EQ(CollectionSortDirection::Ascending,
+					args.Direction);
+				args.Handled = true;
+			});
+		if (headers.size() == 3)
+		{
+			const auto sortHeader = readNode(headers[2]);
+			CUI_EXPECT_TRUE(HasAutomationPattern(
+				sortHeader.Patterns, AutomationPattern::Invoke));
+			CUI_EXPECT_TRUE(peer.InvokeAccessibilityVirtualNode(headers[2]));
+		}
+		CUI_EXPECT_EQ(1, sortingCount);
+
+		uint32_t checkCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 0, checkCellId));
+		const auto checkCell = readNode(checkCellId);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			checkCell.Patterns, AutomationPattern::Value));
+		CUI_EXPECT_FALSE(checkCell.ReadOnly);
+		CUI_EXPECT_TRUE(peer.SetAccessibilityVirtualNodeValue(
+			checkCellId, L"True"));
+		CUI_EXPECT_TRUE(item->GetValue<bool>(L"Paid"));
+		CUI_EXPECT_FALSE(generatedRow && generatedRow->GetCell(0)
+			&& generatedRow->GetCell(0)->GetIsEditing());
+
+		uint32_t templateCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 2, templateCellId));
+		const auto templateCell = readNode(templateCellId);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			templateCell.Patterns, AutomationPattern::Value));
+		CUI_EXPECT_FALSE(templateCell.ReadOnly);
+		CUI_EXPECT_TRUE(templateCell.Value.empty());
+		CUI_EXPECT_EQ(templateCellAccessibleName, templateCell.Name);
+		CUI_EXPECT_TRUE(templateCell.Name != std::wstring(L"Preview"));
+		CUI_EXPECT_TRUE(peer.SetAccessibilityVirtualNodeValue(
+			templateCellId, L"ignored"));
+		CUI_EXPECT_EQ(std::wstring(L"Stable"),
+			item->GetValue<std::wstring>(L"Name"));
+		CUI_EXPECT_TRUE(readNode(templateCellId).Value.empty());
+		// WPF begins the edit transaction before consulting the automation
+		// value holder.  A default TemplateColumn has no clipboard/content
+		// binding, so SetValue is a successful data no-op and leaves the cell
+		// in edit mode.
+		CUI_EXPECT_TRUE(generatedRow && generatedRow->GetCell(2)
+			&& generatedRow->GetCell(2)->GetIsEditing());
+		(void)grid.CancelEdit();
+	});
+
+	runner.Add("DataGrid ItemsSource auto-generation survives owner destruction callbacks", []
+	{
+		enum class ReentryPoint
+		{
+			None,
+			Count,
+			TryGetItem
+		};
+		class ReentrantBindingList final : public IBindingList
+		{
+		public:
+			size_t Count() const noexcept override
+			{
+				if (Point == ReentryPoint::Count) InvokeCallback(false);
+				return Items.size();
+			}
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				if (Point == ReentryPoint::TryGetItem) InvokeCallback(true);
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"ReentrantDataGridRow";
+				return typeName;
+			}
+
+			void InvokeCallback(bool mayThrow) const
+			{
+				Point = ReentryPoint::None;
+				++CallbackCount;
+				auto callback = std::move(Callback);
+				if (callback) callback();
+				if (mayThrow && ThrowAfterCallback)
+					throw std::runtime_error("TryGetItem owner destruction");
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable ReentryPoint Point = ReentryPoint::None;
+			mutable std::function<void()> Callback;
+			mutable int CallbackCount = 0;
+			bool ThrowAfterCallback = false;
+		};
+		class ReentrantPropertySource final : public ObservableObject
+		{
+		public:
+			std::vector<BindingSourcePropertyMetadata>
+				GetProperties() const override
+			{
+				++GetPropertiesCalls;
+				auto callback = std::move(Callback);
+				if (callback) callback();
+				if (ThrowAfterCallback)
+					throw std::runtime_error("GetProperties owner destruction");
+				return ObservableObject::GetProperties();
+			}
+
+			mutable std::function<void()> Callback;
+			mutable int GetPropertiesCalls = 0;
+			bool ThrowAfterCallback = false;
+		};
+		auto makeList = [](const std::shared_ptr<ReentrantPropertySource>& item)
+		{
+			auto result = std::make_shared<ReentrantBindingList>();
+			result->Items.push_back(BindingSourceReference(item));
+			return result;
+		};
+
+		{
+			auto owner = std::make_unique<DataGrid>();
+			const ControlWeakReference ownerLifetime(owner.get());
+			auto item = std::make_shared<ReentrantPropertySource>();
+			auto source = makeList(item);
+			source->Point = ReentryPoint::Count;
+			source->Callback = [&owner] { owner.reset(); };
+			bool threw = false;
+			try
+			{
+				owner->SetItemsSource(BindingListReference(source));
+			}
+			catch (...)
+			{
+				threw = true;
+			}
+			CUI_EXPECT_FALSE(threw);
+			CUI_EXPECT_EQ(1, source->CallbackCount);
+			CUI_EXPECT_TRUE(owner == nullptr);
+			CUI_EXPECT_TRUE(ownerLifetime.Get() == nullptr);
+		}
+
+		{
+			auto owner = std::make_unique<DataGrid>();
+			const ControlWeakReference ownerLifetime(owner.get());
+			auto item = std::make_shared<ReentrantPropertySource>();
+			auto source = makeList(item);
+			source->Point = ReentryPoint::TryGetItem;
+			source->ThrowAfterCallback = true;
+			source->Callback = [&owner] { owner.reset(); };
+			bool propagated = false;
+			try
+			{
+				owner->SetItemsSource(BindingListReference(source));
+			}
+			catch (const std::runtime_error& error)
+			{
+				propagated = std::string(error.what())
+					== "TryGetItem owner destruction";
+			}
+			catch (...)
+			{
+			}
+			CUI_EXPECT_TRUE(propagated);
+			CUI_EXPECT_EQ(1, source->CallbackCount);
+			CUI_EXPECT_TRUE(owner == nullptr);
+			CUI_EXPECT_TRUE(ownerLifetime.Get() == nullptr);
+		}
+
+		{
+			auto owner = std::make_unique<DataGrid>();
+			const ControlWeakReference ownerLifetime(owner.get());
+			auto item = std::make_shared<ReentrantPropertySource>();
+			auto source = makeList(item);
+			item->ThrowAfterCallback = true;
+			item->Callback = [&owner] { owner.reset(); };
+			bool propagated = false;
+			try
+			{
+				owner->SetItemsSource(BindingListReference(source));
+			}
+			catch (const std::runtime_error& error)
+			{
+				propagated = std::string(error.what())
+					== "GetProperties owner destruction";
+			}
+			catch (...)
+			{
+			}
+			CUI_EXPECT_TRUE(propagated);
+			CUI_EXPECT_EQ(1, item->GetPropertiesCalls);
+			CUI_EXPECT_TRUE(owner == nullptr);
+			CUI_EXPECT_TRUE(ownerLifetime.Get() == nullptr);
+		}
+	});
+
+	runner.Add("DataGrid automation identities retire columns and track shared occurrences", []
+	{
+		{
+			DataGrid grid;
+			grid.SetAutoGenerateColumns(false);
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Only row"));
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"AutomationColumnIdentityRow");
+			rows->Items.push_back(BindingSourceReference(item));
+			grid.SetItemsSource(BindingListReference(rows));
+			auto addColumn = [&]()
+			{
+				auto column = std::make_unique<DataGridTextColumn>();
+				column->SetHeader(BindingValue(L"Name"));
+				column->SetBindingPath(L"Name");
+				return grid.AddColumn(std::move(column));
+			};
+			CUI_EXPECT_TRUE(addColumn() != nullptr);
+
+			auto& peer = grid.GetAutomationPeer();
+			std::set<uint32_t> headerIds;
+			std::set<uint32_t> cellIds;
+			for (size_t generation = 0; generation < 4; ++generation)
+			{
+				std::vector<uint32_t> headers;
+				peer.GetAccessibilityVirtualColumnHeaders(headers);
+				CUI_EXPECT_EQ(1ULL, headers.size());
+				uint32_t cellId = 0;
+				CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 0, cellId));
+				if (headers.empty()) return;
+				const uint32_t headerId = headers.front();
+				CUI_EXPECT_TRUE(headerIds.insert(headerId).second);
+				CUI_EXPECT_TRUE(cellIds.insert(cellId).second);
+				if (generation + 1 == 4) break;
+
+				grid.ClearColumns();
+				AccessibilityVirtualNode retired;
+				CUI_EXPECT_FALSE(peer.TryGetAccessibilityVirtualNode(
+					headerId, retired));
+				CUI_EXPECT_FALSE(peer.TryGetAccessibilityVirtualNode(
+					cellId, retired));
+				CUI_EXPECT_TRUE(addColumn() != nullptr);
+			}
+		}
+
+		{
+			DataGrid grid;
+			grid.SetAutoGenerateColumns(false);
+			auto columnOwner = std::make_unique<DataGridTextColumn>();
+			auto* column = columnOwner.get();
+			column->SetHeader(BindingValue(L"Name"));
+			column->SetBindingPath(L"Name");
+			column->SetSortMemberPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+
+			auto shared = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(shared->DefineProperty(L"Name", L"Same"));
+			auto marker = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(marker->DefineProperty(L"Name", L"Zulu"));
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"AutomationSharedOccurrenceRow");
+			rows->Items.push_back(BindingSourceReference(shared));
+			rows->Items.push_back(BindingSourceReference(marker));
+			rows->Items.push_back(BindingSourceReference(shared));
+			grid.SetItemsSource(BindingListReference(rows));
+
+			auto& peer = grid.GetAutomationPeer();
+			auto identityAt = [&](int row)
+			{
+				uint32_t cellId = 0;
+				CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+					row, 0, cellId));
+				AccessibilityVirtualNode cell;
+				CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+					cellId, cell));
+				return std::pair<uint32_t, uint32_t>{ cellId, cell.ParentId };
+			};
+
+			const auto firstOccurrence = identityAt(0);
+			const auto secondOccurrence = identityAt(2);
+			CUI_EXPECT_TRUE(firstOccurrence.first != secondOccurrence.first);
+			CUI_EXPECT_TRUE(firstOccurrence.second != secondOccurrence.second);
+
+			CUI_EXPECT_TRUE(rows->Items.Move(0, 2));
+			CUI_EXPECT_TRUE(identityAt(1) == secondOccurrence);
+			CUI_EXPECT_TRUE(identityAt(2) == firstOccurrence);
+
+			CUI_EXPECT_TRUE(grid.PerformSort(*column, false));
+			CUI_EXPECT_TRUE(identityAt(0) == secondOccurrence);
+			CUI_EXPECT_TRUE(identityAt(1) == firstOccurrence);
+		}
+	});
+
+	runner.Add("DataGrid UIA selection query publishes only an atomic reentrant snapshot", []
+	{
+		class ReentrantStableList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				out = {};
+				if (index >= Items.size()) return false;
+				auto callback = std::move(Callback);
+				if (callback) callback();
+				out = Items[index];
+				return static_cast<bool>(out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"AtomicUiaSelectionRow";
+				return typeName;
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < Items.size() ? index + 1 : 0;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = identity == 0 ? 0 : identity - 1;
+				return identity != 0 && index < Items.size();
+			}
+
+			std::vector<BindingSourceReference> Items;
+			mutable std::function<void()> Callback;
+		};
+		const auto makeSource = [](const wchar_t* prefix)
+		{
+			auto source = std::make_shared<ReentrantStableList>();
+			for (int index = 0; index < 3; ++index)
+			{
+				auto item = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(item->DefineProperty(
+					L"Name", std::wstring(prefix) + std::to_wstring(index)));
+				source->Items.emplace_back(item);
+			}
+			return source;
+		};
+		const auto addColumn = [](DataGrid& grid)
+		{
+			auto owner = std::make_unique<DataGridTextColumn>();
+			auto* column = owner.get();
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(owner)) == column);
+		};
+
+		// A row-identity read changes the FullRow selection. The first query may
+		// retry, but its answer must be exactly the new complete row set.
+		{
+			DataGrid grid;
+			grid.SetAutoGenerateColumns(false);
+			grid.SetSelectionMode(SelectionMode::Extended);
+			grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+			addColumn(grid);
+			auto source = makeSource(L"row");
+			grid.SetItemsSource(BindingListReference(source));
+			auto& peer = grid.GetAutomationPeer();
+			uint32_t row2Cell = 0;
+			CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(2, 0, row2Cell));
+			AccessibilityVirtualNode row2CellNode;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+				row2Cell, row2CellNode));
+			const uint32_t expectedRow = row2CellNode.ParentId;
+			grid.SelectAll();
+			source->Callback = [&grid]
+			{
+				grid.UnselectAll();
+				(void)grid.SelectIndex(2);
+			};
+			std::vector<uint32_t> selection{ 0xFFFFFFFFU };
+			peer.GetAccessibilityVirtualSelection(selection);
+			CUI_EXPECT_TRUE(selection == std::vector<uint32_t>{ expectedRow });
+		}
+
+		// A cell-identity read changes the Cell selection. No id from the retired
+		// selection may leak beside the replacement id; retry returns the latter.
+		{
+			DataGrid grid;
+			grid.SetAutoGenerateColumns(false);
+			grid.SetSelectionMode(SelectionMode::Extended);
+			grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+			addColumn(grid);
+			auto first = makeSource(L"old");
+			grid.SetItemsSource(BindingListReference(first));
+			auto& peer = grid.GetAutomationPeer();
+			uint32_t expectedCell = 0;
+			CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+				2, 0, expectedCell));
+			grid.SelectAllCells();
+			first->Callback = [&grid]
+			{
+				grid.UnselectAllCells();
+				(void)grid.SelectCell(2, 0);
+			};
+			std::vector<uint32_t> selection{ 0xFFFFFFFFU };
+			peer.GetAccessibilityVirtualSelection(selection);
+			CUI_EXPECT_EQ(1ULL, selection.size());
+			CUI_EXPECT_TRUE(selection == std::vector<uint32_t>{ expectedCell });
+		}
+
+		// A source callback can synchronously destroy the owner while the peer
+		// method is still on the stack. The operation lease keeps the peer alive;
+		// the DataGrid lifetime guard must discard the incomplete result.
+		{
+			auto grid = std::make_unique<DataGrid>();
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionMode(SelectionMode::Extended);
+			grid->SetSelectionUnit(DataGridSelectionUnit::FullRow);
+			addColumn(*grid);
+			auto source = makeSource(L"destroy");
+			grid->SetItemsSource(BindingListReference(source));
+			grid->SelectAll();
+			auto* peer = &grid->GetAutomationPeer();
+			source->Callback = [&grid] { grid.reset(); };
+			std::vector<uint32_t> selection{ 0xFFFFFFFFU };
+			peer->GetAccessibilityVirtualSelection(selection);
+			CUI_EXPECT_TRUE(grid == nullptr);
+			CUI_EXPECT_TRUE(selection.empty());
+		}
+	});
+
+	runner.Add("UIA enumeration drops controls destroyed by a later lazy peer", []
+	{
+		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		struct ComScope
+		{
+			bool Active = false;
+			~ComScope() { if (Active) ::CoUninitialize(); }
+		} comScope{ SUCCEEDED(comResult) };
+
+		class LazyPeerProbe final : public Label
+		{
+		public:
+			int* CreationOrder = nullptr;
+			int* Sequence = nullptr;
+			std::function<void()> CreatingPeer;
+
+		protected:
+			std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override
+			{
+				if (CreationOrder && Sequence)
+					*CreationOrder = ++*Sequence;
+				auto callback = std::move(CreatingPeer);
+				if (callback) callback();
+				return std::make_unique<AutomationPeer>(
+					*this, AutomationControlType::Text, L"LazyPeerProbe");
+			}
+		};
+
+		Window form;
+		ConfigureTestControl(form, L"Lazy UIA peer destruction host");
+		SetDeclaredWindowGeometry(form, 210.0f, 210.0f, 420.0f, 220.0f);
+		CUI_EXPECT_TRUE(form.Handle != nullptr);
+		if (!form.Handle) return;
+		auto* panel = AddTestVisual<Panel>(form, 8, 8, 380, 160);
+		panel->AutomationId = L"lazyPeerPanel";
+		int sequence = 0;
+		int victimPeerOrder = 0;
+		int destroyerPeerOrder = 0;
+		auto victimOwner = std::make_unique<LazyPeerProbe>();
+		auto* victim = victimOwner.get();
+		victim->AutomationId = L"lazyPeerVictim";
+		victim->CreationOrder = &victimPeerOrder;
+		victim->Sequence = &sequence;
+		(void)panel->AddOwned(std::move(victimOwner));
+		const ControlWeakReference victimLifetime(victim);
+		auto destroyerOwner = std::make_unique<LazyPeerProbe>();
+		auto* destroyer = destroyerOwner.get();
+		destroyer->AutomationId = L"lazyPeerDestroyer";
+		destroyer->CreationOrder = &destroyerPeerOrder;
+		destroyer->Sequence = &sequence;
+		bool victimDetached = false;
+		destroyer->CreatingPeer = [&]
+		{
+			auto removed = panel->DetachVisualChild(victim);
+			victimDetached = removed.get() == victim;
+			removed.reset();
+		};
+		(void)panel->AddOwned(std::move(destroyerOwner));
+		form.UpdateLayout();
+
+		Microsoft::WRL::ComPtr<IUIAutomation> automation;
+		CUI_EXPECT_EQ(S_OK, ::CoCreateInstance(
+			CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&automation)));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> root;
+		if (automation)
+			CUI_EXPECT_EQ(S_OK,
+				automation->ElementFromHandle(form.Handle, &root));
+		CUI_EXPECT_TRUE(root != nullptr);
+		CUI_EXPECT_EQ(0, victimPeerOrder);
+		CUI_EXPECT_EQ(0, destroyerPeerOrder);
+
+		const auto accessibleControls =
+			cui::framework::WindowAccess::AccessibleControlsForTesting(form);
+		CUI_EXPECT_TRUE(victimPeerOrder > 0);
+		CUI_EXPECT_TRUE(destroyerPeerOrder > victimPeerOrder);
+		CUI_EXPECT_TRUE(victimDetached);
+		CUI_EXPECT_TRUE(victimLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(std::find(accessibleControls.begin(),
+			accessibleControls.end(), victim) == accessibleControls.end());
+		CUI_EXPECT_TRUE(std::find(accessibleControls.begin(),
+			accessibleControls.end(), destroyer) != accessibleControls.end());
+
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> trueCondition;
+		if (automation)
+			CUI_EXPECT_EQ(S_OK,
+				automation->CreateTrueCondition(&trueCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> descendants;
+		if (root && trueCondition)
+			CUI_EXPECT_EQ(S_OK, root->FindAll(
+				TreeScope_Descendants, trueCondition.Get(), &descendants));
+
+		bool returnedVictim = false;
+		bool returnedDestroyer = false;
+		int descendantCount = 0;
+		if (descendants)
+			CUI_EXPECT_EQ(S_OK, descendants->get_Length(&descendantCount));
+		for (int index = 0; index < descendantCount; ++index)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> element;
+			CUI_EXPECT_EQ(S_OK,
+				descendants->GetElement(index, &element));
+			BSTR automationId = nullptr;
+			if (element)
+				CUI_EXPECT_EQ(S_OK,
+					element->get_CurrentAutomationId(&automationId));
+			const std::wstring id = automationId
+				? std::wstring(automationId) : std::wstring{};
+			::SysFreeString(automationId);
+			returnedVictim = returnedVictim || id == L"lazyPeerVictim";
+			returnedDestroyer = returnedDestroyer
+				|| id == L"lazyPeerDestroyer";
+		}
+		CUI_EXPECT_FALSE(returnedVictim);
+		CUI_EXPECT_TRUE(returnedDestroyer);
+
+		VARIANT victimId{};
+		victimId.vt = VT_BSTR;
+		victimId.bstrVal = ::SysAllocString(L"lazyPeerVictim");
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> victimCondition;
+		if (automation && victimId.bstrVal)
+			CUI_EXPECT_EQ(S_OK, automation->CreatePropertyCondition(
+				UIA_AutomationIdPropertyId, victimId, &victimCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> staleVictim;
+		if (root && victimCondition)
+			CUI_EXPECT_EQ(S_OK, root->FindFirst(
+				TreeScope_Descendants, victimCondition.Get(), &staleVictim));
+		CUI_EXPECT_TRUE(staleVictim == nullptr);
+		::VariantClear(&victimId);
+
+		::DestroyWindow(form.Handle);
+	});
+
 	runner.Add("Window exposes native UIA fragments and control patterns", []
 	{
 		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -17074,6 +21798,41 @@ int main()
 			CUI_EXPECT_EQ(std::wstring(L"contentPanel"),
 				parentId ? std::wstring(parentId) : std::wstring{});
 			::SysFreeString(parentId);
+		}
+
+		// The native Invoke provider must keep its AutomationPeer alive while a
+		// routed Click handler synchronously deletes the owner. The provider is
+		// retained by UIA, so the operation reports retirement instead of running
+		// a member function on a destroyed peer.
+		{
+			auto deletingOwner = std::make_unique<Button>();
+			auto* deletingButton = deletingOwner.get();
+			deletingButton->SetContent(BindingValue(L"Delete through UIA"));
+			deletingButton->AutomationId = L"deletingInvokeButton";
+			ConfigureTestControl(*deletingButton, 10, 276, 150, 28);
+			CUI_EXPECT_TRUE(panel->AddOwned(std::move(deletingOwner))
+				== deletingButton);
+			const ControlWeakReference deletingLifetime(deletingButton);
+			auto deletingClick = deletingButton->Click.Subscribe(
+				[&](Control*, RoutedEventArgs&)
+				{
+					auto removed = panel->DetachVisualChild(deletingButton);
+					CUI_EXPECT_TRUE(removed.get() == deletingButton);
+					removed.reset();
+					deletingButton = nullptr;
+				});
+			form.UpdateLayout();
+			auto deletingElement = findByAutomationId(L"deletingInvokeButton");
+			CUI_EXPECT_TRUE(deletingElement != nullptr);
+			Microsoft::WRL::ComPtr<IUIAutomationInvokePattern> deletingInvoke;
+			if (deletingElement)
+				CUI_EXPECT_EQ(S_OK, deletingElement->GetCurrentPatternAs(
+					UIA_InvokePatternId, IID_PPV_ARGS(&deletingInvoke)));
+			CUI_EXPECT_TRUE(deletingInvoke != nullptr);
+			if (deletingInvoke)
+				CUI_EXPECT_TRUE(FAILED(deletingInvoke->Invoke()));
+			CUI_EXPECT_FALSE(deletingLifetime);
+			CUI_EXPECT_TRUE(deletingButton == nullptr);
 		}
 
 		auto checkElement = findByAutomationId(L"rememberCheck");
@@ -17332,6 +22091,2109 @@ int main()
 		if (childElement)
 			CUI_EXPECT_TRUE(FAILED(childElement->get_CurrentName(&detachedChild)));
 		::SysFreeString(detachedChild);
+	});
+
+	runner.Add("DataGrid native UIA exposes WPF grid table selection and virtualization", []
+	{
+		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		struct ComScope
+		{
+			bool Active = false;
+			~ComScope() { if (Active) ::CoUninitialize(); }
+		} comScope{ SUCCEEDED(comResult) };
+
+		class UiaProbeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		constexpr size_t rowCount = 32;
+		Window form; ConfigureTestControl(form, L"DataGrid UIA host");
+		SetDeclaredWindowGeometry(form, 180.0f, 180.0f, 700.0f, 430.0f);
+		CUI_EXPECT_TRUE(form.Handle != nullptr);
+		if (!form.Handle) return;
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			form.SetVisualContent(std::move(contentOwner)));
+		auto* grid = AddTestVisual<UiaProbeDataGrid>(
+			*content, 12, 12, 520, 250);
+		grid->AutomationId = L"nativeDataGrid";
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionMode(SelectionMode::Extended);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto nameColumnOwner = std::make_unique<DataGridTextColumn>();
+		auto* nameColumn = nameColumnOwner.get();
+		nameColumn->SetHeader(BindingValue(L"Name"));
+		nameColumn->SetBindingPath(L"Name");
+		nameColumn->SetSortMemberPath(L"Name");
+		nameColumn->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(nameColumnOwner)) == nameColumn);
+		auto codeColumnOwner = std::make_unique<DataGridTextColumn>();
+		codeColumnOwner->SetHeader(BindingValue(L"Code"));
+		codeColumnOwner->SetBindingPath(L"Code");
+		codeColumnOwner->SetWidth(DataGridLength(140.0));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(codeColumnOwner)) != nullptr);
+		auto templateColumnOwner = std::make_unique<DataGridTemplateColumn>();
+		templateColumnOwner->SetHeader(BindingValue(L"Preview"));
+		templateColumnOwner->SetWidth(DataGridLength(120.0));
+		CUI_EXPECT_TRUE(grid->AddColumn(
+			std::move(templateColumnOwner)) != nullptr);
+
+		auto rows = std::make_shared<ObservableBindingList>(L"NativeUiaDataGridRow");
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				std::wstring name = L"Item " + std::to_wstring(index);
+				if (index == 0) name = L"Charlie";
+				else if (index == 1) name = L"Alice";
+				else if (index == 2) name = L"Bob";
+				CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Code", L"C" + std::to_wstring(index)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(*grid);
+		grid->Arrange(cui::core::Rect{ 12.0f, 12.0f, 520.0f, 250.0f });
+		form.UpdateLayout();
+		grid->PrepareForTest();
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		CUI_EXPECT_TRUE(grid->GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid->GeneratedItemCount() < rowCount);
+
+		Microsoft::WRL::ComPtr<IUIAutomation> automation;
+		CUI_EXPECT_EQ(S_OK, ::CoCreateInstance(
+			CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&automation)));
+		if (!automation)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElement> root;
+		CUI_EXPECT_EQ(S_OK, automation->ElementFromHandle(form.Handle, &root));
+		auto findByAutomationId = [&](const wchar_t* automationId)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> element;
+			VARIANT expected{};
+			expected.vt = VT_BSTR;
+			expected.bstrVal = ::SysAllocString(automationId);
+			Microsoft::WRL::ComPtr<IUIAutomationCondition> condition;
+			if (expected.bstrVal && root
+				&& SUCCEEDED(automation->CreatePropertyCondition(
+					UIA_AutomationIdPropertyId, expected, &condition))
+				&& condition)
+				(void)root->FindFirst(
+					TreeScope_Descendants, condition.Get(), &element);
+			::VariantClear(&expected);
+			return element;
+		};
+		auto elementArrayLength = [](IUIAutomationElementArray* elements)
+		{
+			int result = 0;
+			if (elements) (void)elements->get_Length(&result);
+			return result;
+		};
+		auto runtimeId = [](IUIAutomationElement* element)
+		{
+			std::vector<int> result;
+			SAFEARRAY* values = nullptr;
+			if (!element || FAILED(element->GetRuntimeId(&values)) || !values)
+				return result;
+			LONG lower = 0, upper = -1;
+			if (SUCCEEDED(::SafeArrayGetLBound(values, 1, &lower))
+				&& SUCCEEDED(::SafeArrayGetUBound(values, 1, &upper)))
+			{
+				result.reserve(static_cast<size_t>(upper - lower + 1));
+				for (LONG index = lower; index <= upper; ++index)
+				{
+					int value = 0;
+					if (SUCCEEDED(::SafeArrayGetElement(
+						values, &index, &value))) result.push_back(value);
+				}
+			}
+			::SafeArrayDestroy(values);
+			return result;
+		};
+		auto automationId = [](IUIAutomationElement* element)
+		{
+			BSTR value = nullptr;
+			std::wstring result;
+			if (element && SUCCEEDED(element->get_CurrentAutomationId(&value))
+				&& value)
+				result.assign(value, ::SysStringLen(value));
+			::SysFreeString(value);
+			return result;
+		};
+
+		auto gridElement = findByAutomationId(L"nativeDataGrid");
+		CUI_EXPECT_TRUE(gridElement != nullptr);
+		if (!gridElement)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		CONTROLTYPEID gridType = 0;
+		CUI_EXPECT_EQ(S_OK, gridElement->get_CurrentControlType(&gridType));
+		CUI_EXPECT_EQ((CONTROLTYPEID)UIA_DataGridControlTypeId, gridType);
+		BSTR className = nullptr;
+		CUI_EXPECT_EQ(S_OK, gridElement->get_CurrentClassName(&className));
+		CUI_EXPECT_EQ(std::wstring(L"DataGrid"),
+			className ? std::wstring(className) : std::wstring{});
+		::SysFreeString(className);
+
+		Microsoft::WRL::ComPtr<IUIAutomationGridPattern> gridPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationTablePattern> tablePattern;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionPattern> selectionPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationScrollPattern> scrollPattern;
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_GridPatternId, IID_PPV_ARGS(&gridPattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_TablePatternId, IID_PPV_ARGS(&tablePattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_SelectionPatternId, IID_PPV_ARGS(&selectionPattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_ScrollPatternId, IID_PPV_ARGS(&scrollPattern)));
+		CUI_EXPECT_TRUE(gridPattern != nullptr);
+		CUI_EXPECT_TRUE(tablePattern != nullptr);
+		CUI_EXPECT_TRUE(selectionPattern != nullptr);
+		CUI_EXPECT_TRUE(scrollPattern != nullptr);
+		int nativeRows = 0, nativeColumns = 0;
+		if (gridPattern)
+		{
+			CUI_EXPECT_EQ(S_OK, gridPattern->get_CurrentRowCount(&nativeRows));
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->get_CurrentColumnCount(&nativeColumns));
+		}
+		CUI_EXPECT_EQ(static_cast<int>(rowCount), nativeRows);
+		CUI_EXPECT_EQ(3, nativeColumns);
+		BOOL canSelectMultiple = FALSE;
+		BOOL selectionRequired = TRUE;
+		if (selectionPattern)
+		{
+			CUI_EXPECT_EQ(S_OK, selectionPattern->get_CurrentCanSelectMultiple(
+				&canSelectMultiple));
+			CUI_EXPECT_EQ(S_OK, selectionPattern->get_CurrentIsSelectionRequired(
+				&selectionRequired));
+		}
+		CUI_EXPECT_TRUE(canSelectMultiple != FALSE);
+		CUI_EXPECT_FALSE(selectionRequired != FALSE);
+		BOOL verticallyScrollable = FALSE;
+		if (scrollPattern)
+			CUI_EXPECT_EQ(S_OK,
+				scrollPattern->get_CurrentVerticallyScrollable(
+					&verticallyScrollable));
+		CUI_EXPECT_TRUE(verticallyScrollable != FALSE);
+
+		RowOrColumnMajor major = RowOrColumnMajor_Indeterminate;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> columnHeaders;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> realizedRowHeaders;
+		if (tablePattern)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->get_CurrentRowOrColumnMajor(&major));
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&columnHeaders));
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentRowHeaders(&realizedRowHeaders));
+		}
+		CUI_EXPECT_EQ(RowOrColumnMajor_RowMajor, major);
+		CUI_EXPECT_EQ(3, elementArrayLength(columnHeaders.Get()));
+		CUI_EXPECT_EQ(static_cast<int>(grid->GeneratedItemCount()),
+			elementArrayLength(realizedRowHeaders.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> firstColumnHeader;
+		if (columnHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				columnHeaders->GetElement(0, &firstColumnHeader));
+		CONTROLTYPEID headerType = 0;
+		if (firstColumnHeader)
+			CUI_EXPECT_EQ(S_OK,
+				firstColumnHeader->get_CurrentControlType(&headerType));
+		CUI_EXPECT_EQ((CONTROLTYPEID)UIA_HeaderItemControlTypeId, headerType);
+		Microsoft::WRL::ComPtr<IUIAutomationScrollItemPattern> headerScroll;
+		Microsoft::WRL::ComPtr<IUIAutomationVirtualizedItemPattern>
+			headerVirtualized;
+		if (firstColumnHeader)
+		{
+			CUI_EXPECT_EQ(S_OK, firstColumnHeader->GetCurrentPatternAs(
+				UIA_ScrollItemPatternId, IID_PPV_ARGS(&headerScroll)));
+			CUI_EXPECT_EQ(S_OK, firstColumnHeader->GetCurrentPatternAs(
+				UIA_VirtualizedItemPatternId,
+				IID_PPV_ARGS(&headerVirtualized)));
+		}
+		CUI_EXPECT_TRUE(headerScroll != nullptr);
+		CUI_EXPECT_TRUE(headerVirtualized != nullptr);
+
+		auto getCell = [&](int row, int column)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> cell;
+			if (gridPattern)
+				CUI_EXPECT_EQ(S_OK,
+					gridPattern->GetItem(row, column, &cell));
+			return cell;
+		};
+		auto cell00 = getCell(0, 0);
+		auto cell01 = getCell(0, 1);
+		auto templateCell02 = getCell(0, 2);
+		auto cell11 = getCell(1, 1);
+		CUI_EXPECT_TRUE(cell00 != nullptr);
+		CUI_EXPECT_TRUE(cell01 != nullptr);
+		CUI_EXPECT_TRUE(templateCell02 != nullptr);
+		const std::wstring templateCellAccessibleName =
+			L"Native template cell accessible name";
+		auto* firstGeneratedRow = dynamic_cast<DataGridRow*>(
+			grid->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstGeneratedRow != nullptr
+			&& firstGeneratedRow->GetCell(2) != nullptr);
+		if (firstGeneratedRow && firstGeneratedRow->GetCell(2))
+			firstGeneratedRow->GetCell(2)->AutomationName =
+				templateCellAccessibleName;
+		Microsoft::WRL::ComPtr<IUIAutomationGridItemPattern> gridItem;
+		Microsoft::WRL::ComPtr<IUIAutomationTableItemPattern> tableItem;
+		Microsoft::WRL::ComPtr<IUIAutomationScrollItemPattern> cellScroll;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern> cellSelection;
+		if (cell00)
+		{
+			CUI_EXPECT_EQ(S_OK, cell00->GetCurrentPatternAs(
+				UIA_GridItemPatternId, IID_PPV_ARGS(&gridItem)));
+			CUI_EXPECT_EQ(S_OK, cell00->GetCurrentPatternAs(
+				UIA_TableItemPatternId, IID_PPV_ARGS(&tableItem)));
+			CUI_EXPECT_EQ(S_OK, cell00->GetCurrentPatternAs(
+				UIA_ScrollItemPatternId, IID_PPV_ARGS(&cellScroll)));
+			CUI_EXPECT_EQ(S_OK, cell00->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&cellSelection)));
+		}
+		CUI_EXPECT_TRUE(gridItem != nullptr);
+		CUI_EXPECT_TRUE(tableItem != nullptr);
+		CUI_EXPECT_TRUE(cellScroll != nullptr);
+		CUI_EXPECT_TRUE(cellSelection != nullptr);
+		Microsoft::WRL::ComPtr<IUIAutomationValuePattern> templateValue;
+		if (templateCell02)
+			CUI_EXPECT_EQ(S_OK, templateCell02->GetCurrentPatternAs(
+				UIA_ValuePatternId, IID_PPV_ARGS(&templateValue)));
+		CUI_EXPECT_TRUE(templateValue != nullptr);
+		BSTR templateCurrentName = nullptr;
+		if (templateCell02)
+			CUI_EXPECT_EQ(S_OK,
+				templateCell02->get_CurrentName(&templateCurrentName));
+		CUI_EXPECT_EQ(templateCellAccessibleName, templateCurrentName
+			? std::wstring(templateCurrentName) : std::wstring{});
+		CUI_EXPECT_TRUE(!templateCurrentName
+			|| std::wstring(templateCurrentName) != L"Preview");
+		::SysFreeString(templateCurrentName);
+		BSTR templateCurrentValue = nullptr;
+		BOOL templateReadOnly = TRUE;
+		if (templateValue)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				templateValue->get_CurrentValue(&templateCurrentValue));
+			CUI_EXPECT_EQ(S_OK,
+				templateValue->get_CurrentIsReadOnly(&templateReadOnly));
+		}
+		CUI_EXPECT_TRUE(!templateCurrentValue
+			|| ::SysStringLen(templateCurrentValue) == 0);
+		CUI_EXPECT_FALSE(templateReadOnly != FALSE);
+		::SysFreeString(templateCurrentValue);
+		BSTR ignoredTemplateValue = ::SysAllocString(L"ignored");
+		CUI_EXPECT_TRUE(ignoredTemplateValue != nullptr);
+		if (templateValue && ignoredTemplateValue)
+			CUI_EXPECT_EQ(S_OK,
+				templateValue->SetValue(ignoredTemplateValue));
+		::SysFreeString(ignoredTemplateValue);
+		CUI_EXPECT_TRUE(firstGeneratedRow != nullptr
+			&& firstGeneratedRow->GetCell(2) != nullptr
+			&& firstGeneratedRow->GetCell(2)->GetIsEditing());
+		templateCurrentValue = nullptr;
+		if (templateValue)
+			CUI_EXPECT_EQ(S_OK,
+				templateValue->get_CurrentValue(&templateCurrentValue));
+		CUI_EXPECT_TRUE(!templateCurrentValue
+			|| ::SysStringLen(templateCurrentValue) == 0);
+		::SysFreeString(templateCurrentValue);
+		(void)grid->CancelEdit();
+		int cellRow = -1, cellColumn = -1, rowSpan = 0, columnSpan = 0;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> containingGrid;
+		if (gridItem)
+		{
+			CUI_EXPECT_EQ(S_OK, gridItem->get_CurrentRow(&cellRow));
+			CUI_EXPECT_EQ(S_OK, gridItem->get_CurrentColumn(&cellColumn));
+			CUI_EXPECT_EQ(S_OK, gridItem->get_CurrentRowSpan(&rowSpan));
+			CUI_EXPECT_EQ(S_OK, gridItem->get_CurrentColumnSpan(&columnSpan));
+			CUI_EXPECT_EQ(S_OK,
+				gridItem->get_CurrentContainingGrid(&containingGrid));
+		}
+		CUI_EXPECT_EQ(0, cellRow);
+		CUI_EXPECT_EQ(0, cellColumn);
+		CUI_EXPECT_EQ(1, rowSpan);
+		CUI_EXPECT_EQ(1, columnSpan);
+		BSTR containingId = nullptr;
+		if (containingGrid)
+			CUI_EXPECT_EQ(S_OK,
+				containingGrid->get_CurrentAutomationId(&containingId));
+		CUI_EXPECT_EQ(std::wstring(L"nativeDataGrid"),
+			containingId ? std::wstring(containingId) : std::wstring{});
+		::SysFreeString(containingId);
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> cellColumnHeaders;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> cellRowHeaders;
+		if (tableItem)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				tableItem->GetCurrentColumnHeaderItems(&cellColumnHeaders));
+			CUI_EXPECT_EQ(S_OK,
+				tableItem->GetCurrentRowHeaderItems(&cellRowHeaders));
+		}
+		CUI_EXPECT_EQ(1, elementArrayLength(cellColumnHeaders.Get()));
+		CUI_EXPECT_EQ(1, elementArrayLength(cellRowHeaders.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> associatedColumnHeader;
+		if (cellColumnHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				cellColumnHeaders->GetElement(0, &associatedColumnHeader));
+		CUI_EXPECT_TRUE(runtimeId(associatedColumnHeader.Get())
+			== runtimeId(firstColumnHeader.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> firstRowHeader;
+		if (cellRowHeaders)
+			CUI_EXPECT_EQ(S_OK, cellRowHeaders->GetElement(0, &firstRowHeader));
+		if (firstRowHeader)
+		{
+			headerType = 0;
+			CUI_EXPECT_EQ(S_OK,
+				firstRowHeader->get_CurrentControlType(&headerType));
+			CUI_EXPECT_EQ((CONTROLTYPEID)UIA_HeaderItemControlTypeId, headerType);
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationInvokePattern> rowHeaderInvoke;
+		if (firstRowHeader)
+			CUI_EXPECT_EQ(S_OK, firstRowHeader->GetCurrentPatternAs(
+				UIA_InvokePatternId, IID_PPV_ARGS(&rowHeaderInvoke)));
+		CUI_EXPECT_TRUE(rowHeaderInvoke != nullptr);
+		Microsoft::WRL::ComPtr<IUIAutomationElement> rootFirstRowHeader;
+		if (realizedRowHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				realizedRowHeaders->GetElement(0, &rootFirstRowHeader));
+		CUI_EXPECT_TRUE(runtimeId(firstRowHeader.Get())
+			== runtimeId(rootFirstRowHeader.Get()));
+
+		Microsoft::WRL::ComPtr<IUIAutomationTreeWalker> walker;
+		CUI_EXPECT_EQ(S_OK, automation->get_ControlViewWalker(&walker));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> row0;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> row1;
+		if (walker && cell00)
+			CUI_EXPECT_EQ(S_OK,
+				walker->GetParentElement(cell00.Get(), &row0));
+		if (walker && cell11)
+			CUI_EXPECT_EQ(S_OK,
+				walker->GetParentElement(cell11.Get(), &row1));
+		CONTROLTYPEID rowType = 0;
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->get_CurrentControlType(&rowType));
+		CUI_EXPECT_EQ((CONTROLTYPEID)UIA_DataItemControlTypeId, rowType);
+		Microsoft::WRL::ComPtr<IUIAutomationInvokePattern> rowInvoke;
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->GetCurrentPatternAs(
+				UIA_InvokePatternId, IID_PPV_ARGS(&rowInvoke)));
+		CUI_EXPECT_TRUE(rowInvoke != nullptr);
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionPattern>
+			row0CellSelectionPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionPattern>
+			row1CellSelectionPattern;
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->GetCurrentPatternAs(
+				UIA_SelectionPatternId,
+				IID_PPV_ARGS(&row0CellSelectionPattern)));
+		if (row1)
+			CUI_EXPECT_EQ(S_OK, row1->GetCurrentPatternAs(
+				UIA_SelectionPatternId,
+				IID_PPV_ARGS(&row1CellSelectionPattern)));
+		CUI_EXPECT_TRUE(row0CellSelectionPattern != nullptr);
+		CUI_EXPECT_TRUE(row1CellSelectionPattern != nullptr);
+		BOOL rowCanSelectMultiple = FALSE;
+		BOOL rowSelectionRequired = TRUE;
+		if (row0CellSelectionPattern)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				row0CellSelectionPattern->get_CurrentCanSelectMultiple(
+					&rowCanSelectMultiple));
+			CUI_EXPECT_EQ(S_OK,
+				row0CellSelectionPattern->get_CurrentIsSelectionRequired(
+					&rowSelectionRequired));
+		}
+		CUI_EXPECT_TRUE(rowCanSelectMultiple != FALSE);
+		CUI_EXPECT_FALSE(rowSelectionRequired != FALSE);
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern>
+			rowSelectionInCellMode;
+		if (row0)
+			(void)row0->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId,
+				IID_PPV_ARGS(&rowSelectionInCellMode));
+		CUI_EXPECT_TRUE(rowSelectionInCellMode == nullptr);
+
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern> cell11Selection;
+		if (cell11)
+			CUI_EXPECT_EQ(S_OK, cell11->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&cell11Selection)));
+		const std::wstring cell00AutomationId = automationId(cell00.Get());
+		const std::wstring cell11AutomationId = automationId(cell11.Get());
+		CUI_EXPECT_TRUE(!cell00AutomationId.empty());
+		CUI_EXPECT_TRUE(!cell11AutomationId.empty());
+		auto* selectionEventRecorder = new RecordingAutomationEventHandler();
+		Microsoft::WRL::ComPtr<IUIAutomationEventHandler> selectionEventHandler;
+		selectionEventHandler.Attach(selectionEventRecorder);
+		CUI_EXPECT_TRUE(selectionEventRecorder->Ready());
+		const std::array<EVENTID, 3> selectionEventIds{
+			UIA_SelectionItem_ElementSelectedEventId,
+			UIA_SelectionItem_ElementAddedToSelectionEventId,
+			UIA_SelectionItem_ElementRemovedFromSelectionEventId };
+		std::vector<EVENTID> registeredSelectionEventIds;
+		for (const EVENTID eventId : selectionEventIds)
+		{
+			const HRESULT registered = automation->AddAutomationEventHandler(
+				eventId, gridElement.Get(), TreeScope_Descendants,
+				nullptr, selectionEventHandler.Get());
+			CUI_EXPECT_EQ(S_OK, registered);
+			if (SUCCEEDED(registered))
+				registeredSelectionEventIds.push_back(eventId);
+		}
+		auto expectSingleSelectionEvent = [&, selectionEventRecorder](
+			EVENTID expectedEventId, const std::wstring& expectedAutomationId)
+		{
+			if (!selectionEventRecorder->Ready()
+				|| registeredSelectionEventIds.size()
+					!= selectionEventIds.size()) return;
+			const auto events = selectionEventRecorder->WaitForSettled(1);
+			CUI_EXPECT_EQ(1ULL, events.size());
+			if (events.size() != 1) return;
+			CUI_EXPECT_EQ(expectedEventId, events.front().EventId);
+			CUI_EXPECT_EQ(expectedAutomationId,
+				events.front().AutomationId);
+		};
+		if (cellSelection)
+		{
+			CUI_EXPECT_EQ(S_OK, cellSelection->Select());
+			expectSingleSelectionEvent(
+				UIA_SelectionItem_ElementSelectedEventId,
+				cell00AutomationId);
+		}
+		if (cell11Selection)
+		{
+			CUI_EXPECT_EQ(S_OK, cell11Selection->AddToSelection());
+			expectSingleSelectionEvent(
+				UIA_SelectionItem_ElementAddedToSelectionEventId,
+				cell11AutomationId);
+		}
+		BOOL cellSelected = FALSE;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> selectionContainer;
+		if (cellSelection)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				cellSelection->get_CurrentIsSelected(&cellSelected));
+			CUI_EXPECT_EQ(S_OK,
+				cellSelection->get_CurrentSelectionContainer(&selectionContainer));
+		}
+		CUI_EXPECT_TRUE(cellSelected != FALSE);
+		BSTR selectionContainerId = nullptr;
+		if (selectionContainer)
+			CUI_EXPECT_EQ(S_OK, selectionContainer->get_CurrentAutomationId(
+				&selectionContainerId));
+		CUI_EXPECT_EQ(std::wstring(L"nativeDataGrid"), selectionContainerId
+			? std::wstring(selectionContainerId) : std::wstring{});
+		::SysFreeString(selectionContainerId);
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> nativeSelection;
+		if (selectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				selectionPattern->GetCurrentSelection(&nativeSelection));
+		CUI_EXPECT_EQ(2, elementArrayLength(nativeSelection.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> row0SelectedCells;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> row1SelectedCells;
+		if (row0CellSelectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				row0CellSelectionPattern->GetCurrentSelection(
+					&row0SelectedCells));
+		if (row1CellSelectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				row1CellSelectionPattern->GetCurrentSelection(
+					&row1SelectedCells));
+		CUI_EXPECT_EQ(1, elementArrayLength(row0SelectedCells.Get()));
+		CUI_EXPECT_EQ(1, elementArrayLength(row1SelectedCells.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> row0SelectedCell;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> row1SelectedCell;
+		if (row0SelectedCells)
+			CUI_EXPECT_EQ(S_OK,
+				row0SelectedCells->GetElement(0, &row0SelectedCell));
+		if (row1SelectedCells)
+			CUI_EXPECT_EQ(S_OK,
+				row1SelectedCells->GetElement(0, &row1SelectedCell));
+		CUI_EXPECT_TRUE(runtimeId(row0SelectedCell.Get())
+			== runtimeId(cell00.Get()));
+		CUI_EXPECT_TRUE(runtimeId(row1SelectedCell.Get())
+			== runtimeId(cell11.Get()));
+		if (cell11Selection)
+		{
+			CUI_EXPECT_EQ(S_OK, cell11Selection->RemoveFromSelection());
+			expectSingleSelectionEvent(
+				UIA_SelectionItem_ElementRemovedFromSelectionEventId,
+				cell11AutomationId);
+			// With cell00 as the sole old selection, Select on cell11 must emit
+			// only ElementSelected for the replacement. WPF deliberately omits
+			// a Removed event for cell00 in this single-result case.
+			CUI_EXPECT_EQ(S_OK, cell11Selection->Select());
+			expectSingleSelectionEvent(
+				UIA_SelectionItem_ElementSelectedEventId,
+				cell11AutomationId);
+		}
+		for (const EVENTID eventId : registeredSelectionEventIds)
+			CUI_EXPECT_EQ(S_OK, automation->RemoveAutomationEventHandler(
+				eventId, gridElement.Get(), selectionEventHandler.Get()));
+
+		grid->SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern> row0Selection;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern> row1Selection;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern>
+			cellSelectionInRowMode;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern>
+			cell01SelectionInRowMode;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionItemPattern>
+			templateSelectionInRowMode;
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&row0Selection)));
+		if (row1)
+			CUI_EXPECT_EQ(S_OK, row1->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&row1Selection)));
+		if (cell00)
+			(void)cell00->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId,
+				IID_PPV_ARGS(&cellSelectionInRowMode));
+		if (cell01)
+			(void)cell01->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId,
+				IID_PPV_ARGS(&cell01SelectionInRowMode));
+		if (templateCell02)
+			(void)templateCell02->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId,
+				IID_PPV_ARGS(&templateSelectionInRowMode));
+		CUI_EXPECT_TRUE(row0Selection != nullptr);
+		CUI_EXPECT_TRUE(row1Selection != nullptr);
+		CUI_EXPECT_TRUE(cellSelectionInRowMode == nullptr);
+		CUI_EXPECT_TRUE(cell01SelectionInRowMode == nullptr);
+		CUI_EXPECT_TRUE(templateSelectionInRowMode == nullptr);
+		if (row0Selection) CUI_EXPECT_EQ(S_OK, row0Selection->Select());
+		row0SelectedCells.Reset();
+		if (row0CellSelectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				row0CellSelectionPattern->GetCurrentSelection(
+					&row0SelectedCells));
+		CUI_EXPECT_EQ(3, elementArrayLength(row0SelectedCells.Get()));
+		const std::array<IUIAutomationElement*, 3> expectedRow0Cells{
+			cell00.Get(), cell01.Get(), templateCell02.Get() };
+		for (int index = 0; index < 3; ++index)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> selectedCellInRow;
+			if (row0SelectedCells)
+				CUI_EXPECT_EQ(S_OK, row0SelectedCells->GetElement(
+					index, &selectedCellInRow));
+			CUI_EXPECT_TRUE(runtimeId(selectedCellInRow.Get())
+				== runtimeId(expectedRow0Cells[static_cast<size_t>(index)]));
+		}
+		if (row1Selection)
+			CUI_EXPECT_EQ(S_OK, row1Selection->AddToSelection());
+		nativeSelection.Reset();
+		if (selectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				selectionPattern->GetCurrentSelection(&nativeSelection));
+		CUI_EXPECT_EQ(2, elementArrayLength(nativeSelection.Get()));
+
+		grid->SetSelectionUnit(DataGridSelectionUnit::CellOrRowHeader);
+		row0Selection.Reset();
+		cell11Selection.Reset();
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&row0Selection)));
+		if (cell11)
+			CUI_EXPECT_EQ(S_OK, cell11->GetCurrentPatternAs(
+				UIA_SelectionItemPatternId, IID_PPV_ARGS(&cell11Selection)));
+		if (row0Selection) CUI_EXPECT_EQ(S_OK, row0Selection->Select());
+		if (cell11Selection)
+			CUI_EXPECT_EQ(S_OK, cell11Selection->AddToSelection());
+		nativeSelection.Reset();
+		if (selectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				selectionPattern->GetCurrentSelection(&nativeSelection));
+		CUI_EXPECT_EQ(5, elementArrayLength(nativeSelection.Get()));
+		if (cell11Selection)
+			CUI_EXPECT_EQ(S_OK, cell11Selection->Select());
+		nativeSelection.Reset();
+		if (selectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				selectionPattern->GetCurrentSelection(&nativeSelection));
+		CUI_EXPECT_EQ(1, elementArrayLength(nativeSelection.Get()));
+		CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+		Microsoft::WRL::ComPtr<IUIAutomationElement> selectedCell;
+		if (nativeSelection)
+			CUI_EXPECT_EQ(S_OK,
+				nativeSelection->GetElement(0, &selectedCell));
+		CUI_EXPECT_TRUE(runtimeId(selectedCell.Get()) == runtimeId(cell11.Get()));
+
+		if (rowInvoke) CUI_EXPECT_EQ(S_OK, rowInvoke->Invoke());
+		nativeSelection.Reset();
+		if (selectionPattern)
+			CUI_EXPECT_EQ(S_OK,
+				selectionPattern->GetCurrentSelection(&nativeSelection));
+		CUI_EXPECT_EQ(0, elementArrayLength(nativeSelection.Get()));
+		CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+		CUI_EXPECT_TRUE(grid->GetSelectedCells().empty());
+		(void)grid->CancelEdit();
+
+		VARIANT dataItemType{};
+		dataItemType.vt = VT_I4;
+		dataItemType.lVal = UIA_DataItemControlTypeId;
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> dataItemCondition;
+		CUI_EXPECT_EQ(S_OK, automation->CreatePropertyCondition(
+			UIA_ControlTypePropertyId, dataItemType, &dataItemCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> dataItems;
+		if (dataItemCondition)
+			CUI_EXPECT_EQ(S_OK, gridElement->FindAll(
+				TreeScope_Children, dataItemCondition.Get(), &dataItems));
+		CUI_EXPECT_EQ(static_cast<int>(rowCount),
+			elementArrayLength(dataItems.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> lastRowElement;
+		if (dataItems)
+			CUI_EXPECT_EQ(S_OK, dataItems->GetElement(
+				static_cast<int>(rowCount - 1), &lastRowElement));
+		VARIANT customType{};
+		customType.vt = VT_I4;
+		customType.lVal = UIA_CustomControlTypeId;
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> customCondition;
+		CUI_EXPECT_EQ(S_OK, automation->CreatePropertyCondition(
+			UIA_ControlTypePropertyId, customType, &customCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> lastCells;
+		if (lastRowElement && customCondition)
+			CUI_EXPECT_EQ(S_OK, lastRowElement->FindAll(
+				TreeScope_Children, customCondition.Get(), &lastCells));
+		CUI_EXPECT_EQ(3, elementArrayLength(lastCells.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> lastCell;
+		if (lastCells)
+			CUI_EXPECT_EQ(S_OK, lastCells->GetElement(0, &lastCell));
+		BOOL lastCellOffscreen = FALSE;
+		if (lastCell)
+			CUI_EXPECT_EQ(S_OK,
+				lastCell->get_CurrentIsOffscreen(&lastCellOffscreen));
+		CUI_EXPECT_TRUE(lastCellOffscreen != FALSE);
+		Microsoft::WRL::ComPtr<IUIAutomationVirtualizedItemPattern>
+			virtualizedItem;
+		Microsoft::WRL::ComPtr<IUIAutomationScrollItemPattern>
+			lastCellScroll;
+		if (lastCell)
+		{
+			CUI_EXPECT_EQ(S_OK, lastCell->GetCurrentPatternAs(
+				UIA_VirtualizedItemPatternId,
+				IID_PPV_ARGS(&virtualizedItem)));
+			CUI_EXPECT_EQ(S_OK, lastCell->GetCurrentPatternAs(
+				UIA_ScrollItemPatternId, IID_PPV_ARGS(&lastCellScroll)));
+		}
+		CUI_EXPECT_TRUE(virtualizedItem != nullptr);
+		CUI_EXPECT_TRUE(lastCellScroll != nullptr);
+		if (virtualizedItem) CUI_EXPECT_EQ(S_OK, virtualizedItem->Realize());
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(rowCount - 1) != nullptr);
+		Microsoft::WRL::ComPtr<IUIAutomationVirtualizedItemPattern>
+			realizedPattern;
+		if (lastCell)
+			(void)lastCell->GetCurrentPatternAs(
+				UIA_VirtualizedItemPatternId,
+				IID_PPV_ARGS(&realizedPattern));
+		CUI_EXPECT_TRUE(realizedPattern == nullptr);
+		// RowHeaderItems is carried by the realized cell association. The last
+		// row index is deliberately larger than the compact root RowHeaders
+		// result, so an implementation that indexes that result by Row fails.
+		Microsoft::WRL::ComPtr<IUIAutomationTableItemPattern> lastTableItem;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> lastRowHeaders;
+		if (lastCell)
+			CUI_EXPECT_EQ(S_OK, lastCell->GetCurrentPatternAs(
+				UIA_TableItemPatternId, IID_PPV_ARGS(&lastTableItem)));
+		if (lastTableItem)
+			CUI_EXPECT_EQ(S_OK,
+				lastTableItem->GetCurrentRowHeaderItems(&lastRowHeaders));
+		CUI_EXPECT_EQ(1, elementArrayLength(lastRowHeaders.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> lastRowHeader;
+		if (lastRowHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				lastRowHeaders->GetElement(0, &lastRowHeader));
+		BSTR lastRowHeaderName = nullptr;
+		if (lastRowHeader)
+			CUI_EXPECT_EQ(S_OK,
+				lastRowHeader->get_CurrentName(&lastRowHeaderName));
+		CUI_EXPECT_EQ(std::to_wstring(rowCount), lastRowHeaderName
+			? std::wstring(lastRowHeaderName) : std::wstring{});
+		::SysFreeString(lastRowHeaderName);
+		if (cellScroll) CUI_EXPECT_EQ(S_OK, cellScroll->ScrollIntoView());
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(0) != nullptr);
+
+		auto aliceBeforeSort = getCell(1, 0);
+		const auto aliceRuntimeBefore = runtimeId(aliceBeforeSort.Get());
+		CUI_EXPECT_TRUE(!aliceRuntimeBefore.empty());
+		CUI_EXPECT_TRUE(grid->PerformSort(*nameColumn, false));
+		form.UpdateLayout();
+		auto aliceAfterSort = getCell(0, 0);
+		const auto aliceRuntimeAfter = runtimeId(aliceAfterSort.Get());
+		CUI_EXPECT_TRUE(aliceRuntimeAfter == aliceRuntimeBefore);
+
+		::DestroyWindow(form.Handle);
+		BSTR detachedName = nullptr;
+		CUI_EXPECT_TRUE(FAILED(gridElement->get_CurrentName(&detachedName)));
+		::SysFreeString(detachedName);
+	});
+
+	runner.Add("DataGrid virtual UIA focus follows realized cells and WPF empty selection", []
+	{
+		constexpr HRESULT elementNotAvailable =
+			static_cast<HRESULT>(0x80040201L);
+		constexpr HRESULT invalidOperation =
+			static_cast<HRESULT>(0x80131509L);
+		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		struct ComScope
+		{
+			bool Active = false;
+			~ComScope() { if (Active) ::CoUninitialize(); }
+		} comScope{ SUCCEEDED(comResult) };
+
+		class FocusProbeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+		};
+
+		constexpr size_t rowCount = 36;
+		Window form;
+		ConfigureTestControl(form, L"DataGrid virtual focus host");
+		SetDeclaredWindowGeometry(form, 220.0f, 220.0f, 640.0f, 360.0f);
+		CUI_EXPECT_TRUE(form.Handle != nullptr);
+		if (!form.Handle) return;
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			form.SetVisualContent(std::move(contentOwner)));
+		auto* grid = AddTestVisual<FocusProbeDataGrid>(
+			*content, 12, 12, 460, 210);
+		grid->AutomationId = L"focusDataGrid";
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionMode(SelectionMode::Extended);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(index == 0 ? L"Name" : L"Code"));
+			column->SetBindingPath(index == 0 ? L"Name" : L"Code");
+			column->SetWidth(DataGridLength(180.0));
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"VirtualFocusDataGridRow");
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(index)));
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Code", L"C" + std::to_wstring(index)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(*grid);
+		grid->Arrange(cui::core::Rect{ 12.0f, 12.0f, 460.0f, 210.0f });
+		form.UpdateLayout();
+		grid->PrepareForTest();
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->BringIntoViewForTest(0));
+		grid->UpdateLayout();
+		grid->PrepareForTest();
+		grid->UpdateLayout();
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		CUI_EXPECT_TRUE(grid->GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid->GeneratedItemCount() < rowCount);
+		auto* realizedFirstRow = dynamic_cast<DataGridRow*>(
+			grid->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(realizedFirstRow != nullptr);
+		CUI_EXPECT_TRUE(realizedFirstRow
+			&& realizedFirstRow->GetRowHeader() != nullptr);
+		CUI_EXPECT_TRUE(realizedFirstRow
+			&& realizedFirstRow->GetRowHeader()
+			&& realizedFirstRow->GetRowHeader()->GetIsVisible());
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(rowCount - 1) == nullptr);
+
+		auto& peer = grid->GetAutomationPeer();
+		auto readNode = [&](uint32_t id)
+		{
+			AccessibilityVirtualNode node;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(id, node));
+			return node;
+		};
+		uint32_t cell00Id = 0;
+		uint32_t cell01Id = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 0, cell00Id));
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 1, cell01Id));
+		const auto cell00Node = readNode(cell00Id);
+		const uint32_t row0Id = cell00Node.ParentId;
+		std::vector<uint32_t> rootChildren;
+		peer.GetAccessibilityVirtualChildren(0, rootChildren);
+		uint32_t lastRowId = 0;
+		for (const uint32_t id : rootChildren)
+		{
+			const auto node = readNode(id);
+			if (node.ControlType == AutomationControlType::DataItem
+				&& node.Row == static_cast<int>(rowCount - 1))
+			{
+				lastRowId = id;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(lastRowId != 0);
+		std::vector<uint32_t> lastRowChildren;
+		peer.GetAccessibilityVirtualChildren(lastRowId, lastRowChildren);
+		uint32_t lastCellId = 0;
+		for (const uint32_t id : lastRowChildren)
+		{
+			const auto node = readNode(id);
+			if (node.ControlType == AutomationControlType::Custom
+				&& node.Column == 0)
+			{
+				lastCellId = id;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(lastCellId != 0);
+		std::vector<uint32_t> columnHeaderIds;
+		std::vector<uint32_t> rowHeaderIds;
+		peer.GetAccessibilityVirtualColumnHeaders(columnHeaderIds);
+		peer.GetAccessibilityVirtualRowHeaders(rowHeaderIds);
+		CUI_EXPECT_EQ(2ULL, columnHeaderIds.size());
+		CUI_EXPECT_TRUE(rowHeaderIds.size() <= grid->GeneratedItemCount());
+		CUI_EXPECT_TRUE(!columnHeaderIds.empty());
+		CUI_EXPECT_TRUE(cell00Node.RowHeaderId != 0);
+		CUI_EXPECT_TRUE(std::find(rowHeaderIds.begin(), rowHeaderIds.end(),
+			cell00Node.RowHeaderId) != rowHeaderIds.end());
+		if (columnHeaderIds.empty() || rowHeaderIds.empty()
+			|| cell00Node.RowHeaderId == 0)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		const uint32_t columnHeaderId = columnHeaderIds.front();
+		const uint32_t rowHeaderId = cell00Node.RowHeaderId;
+
+		std::vector<uint32_t> directSelection;
+		peer.GetAccessibilityVirtualSelection(directSelection);
+		CUI_EXPECT_TRUE(directSelection.empty());
+		CUI_EXPECT_TRUE(readNode(row0Id).SelectionReturnsNullWhenEmpty);
+
+		Microsoft::WRL::ComPtr<IUIAutomation> automation;
+		CUI_EXPECT_EQ(S_OK, ::CoCreateInstance(
+			CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&automation)));
+		if (!automation)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElement> root;
+		CUI_EXPECT_EQ(S_OK,
+			automation->ElementFromHandle(form.Handle, &root));
+		auto findByAutomationId = [&](const wchar_t* automationId)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> element;
+			VARIANT expected{};
+			expected.vt = VT_BSTR;
+			expected.bstrVal = ::SysAllocString(automationId);
+			Microsoft::WRL::ComPtr<IUIAutomationCondition> condition;
+			if (expected.bstrVal && root
+				&& SUCCEEDED(automation->CreatePropertyCondition(
+					UIA_AutomationIdPropertyId, expected, &condition))
+				&& condition)
+				(void)root->FindFirst(
+					TreeScope_Descendants, condition.Get(), &element);
+			::VariantClear(&expected);
+			return element;
+		};
+		auto runtimeId = [](IUIAutomationElement* element)
+		{
+			std::vector<int> result;
+			SAFEARRAY* values = nullptr;
+			if (!element || FAILED(element->GetRuntimeId(&values)) || !values)
+				return result;
+			LONG lower = 0, upper = -1;
+			if (SUCCEEDED(::SafeArrayGetLBound(values, 1, &lower))
+				&& SUCCEEDED(::SafeArrayGetUBound(values, 1, &upper)))
+			{
+				result.reserve(static_cast<size_t>(upper - lower + 1));
+				for (LONG index = lower; index <= upper; ++index)
+				{
+					int value = 0;
+					if (SUCCEEDED(::SafeArrayGetElement(
+						values, &index, &value))) result.push_back(value);
+				}
+			}
+			::SafeArrayDestroy(values);
+			return result;
+		};
+		auto elementArrayLength = [](IUIAutomationElementArray* elements)
+		{
+			int result = 0;
+			if (elements) (void)elements->get_Length(&result);
+			return result;
+		};
+		auto isKeyboardFocusable = [](IUIAutomationElement* element)
+		{
+			BOOL result = FALSE;
+			if (element)
+				CUI_EXPECT_EQ(S_OK,
+					element->get_CurrentIsKeyboardFocusable(&result));
+			return element && result != FALSE;
+		};
+		auto hasKeyboardFocus = [](IUIAutomationElement* element)
+		{
+			BOOL result = FALSE;
+			if (element)
+				CUI_EXPECT_EQ(S_OK,
+					element->get_CurrentHasKeyboardFocus(&result));
+			return element && result != FALSE;
+		};
+		auto isContentElement = [](IUIAutomationElement* element)
+		{
+			BOOL result = FALSE;
+			if (element)
+				CUI_EXPECT_EQ(S_OK,
+					element->get_CurrentIsContentElement(&result));
+			return element && result != FALSE;
+		};
+
+		auto gridElement = findByAutomationId(L"focusDataGrid");
+		CUI_EXPECT_TRUE(gridElement != nullptr);
+		if (!gridElement)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationGridPattern> gridPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationTablePattern> tablePattern;
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionPattern> rootSelectionPattern;
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_GridPatternId, IID_PPV_ARGS(&gridPattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_TablePatternId, IID_PPV_ARGS(&tablePattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_SelectionPatternId, IID_PPV_ARGS(&rootSelectionPattern)));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> cell00;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> cell01;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> lastCell;
+		if (gridPattern)
+		{
+			CUI_EXPECT_EQ(S_OK, gridPattern->GetItem(0, 0, &cell00));
+			CUI_EXPECT_EQ(S_OK, gridPattern->GetItem(0, 1, &cell01));
+		}
+		VARIANT dataItemType{};
+		dataItemType.vt = VT_I4;
+		dataItemType.lVal = UIA_DataItemControlTypeId;
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> dataItemCondition;
+		CUI_EXPECT_EQ(S_OK, automation->CreatePropertyCondition(
+			UIA_ControlTypePropertyId, dataItemType, &dataItemCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> dataItems;
+		if (gridElement && dataItemCondition)
+			CUI_EXPECT_EQ(S_OK, gridElement->FindAll(
+				TreeScope_Children, dataItemCondition.Get(), &dataItems));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> lastRowElement;
+		if (dataItems)
+			CUI_EXPECT_EQ(S_OK, dataItems->GetElement(
+				static_cast<int>(rowCount - 1), &lastRowElement));
+		VARIANT customType{};
+		customType.vt = VT_I4;
+		customType.lVal = UIA_CustomControlTypeId;
+		Microsoft::WRL::ComPtr<IUIAutomationCondition> customCondition;
+		CUI_EXPECT_EQ(S_OK, automation->CreatePropertyCondition(
+			UIA_ControlTypePropertyId, customType, &customCondition));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> lastCells;
+		if (lastRowElement && customCondition)
+			CUI_EXPECT_EQ(S_OK, lastRowElement->FindAll(
+				TreeScope_Children, customCondition.Get(), &lastCells));
+		if (lastCells)
+			CUI_EXPECT_EQ(S_OK, lastCells->GetElement(0, &lastCell));
+		CUI_EXPECT_TRUE(cell00 != nullptr);
+		CUI_EXPECT_TRUE(cell01 != nullptr);
+		CUI_EXPECT_TRUE(lastCell != nullptr);
+		Microsoft::WRL::ComPtr<IUIAutomationTreeWalker> walker;
+		CUI_EXPECT_EQ(S_OK, automation->get_ControlViewWalker(&walker));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> row0;
+		if (walker && cell00)
+			CUI_EXPECT_EQ(S_OK,
+				walker->GetParentElement(cell00.Get(), &row0));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> columnHeaders;
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> rowHeaders;
+		if (tablePattern)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&columnHeaders));
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentRowHeaders(&rowHeaders));
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElement> columnHeader;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> rowHeader;
+		if (columnHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				columnHeaders->GetElement(0, &columnHeader));
+		if (rowHeaders)
+			CUI_EXPECT_EQ(S_OK, rowHeaders->GetElement(0, &rowHeader));
+		CUI_EXPECT_TRUE(row0 != nullptr);
+		CUI_EXPECT_TRUE(columnHeader != nullptr);
+		CUI_EXPECT_TRUE(rowHeader != nullptr);
+		auto expectVirtualRuntimeId = [&](IUIAutomationElement* element,
+			uint32_t expectedVirtualId)
+		{
+			const auto actual = runtimeId(element);
+			CUI_EXPECT_FALSE(actual.empty());
+			if (!actual.empty())
+				CUI_EXPECT_EQ(
+					static_cast<int>(expectedVirtualId), actual.back());
+		};
+		expectVirtualRuntimeId(cell00.Get(), cell00Id);
+		expectVirtualRuntimeId(columnHeader.Get(), columnHeaderId);
+		expectVirtualRuntimeId(rowHeader.Get(), rowHeaderId);
+
+		Microsoft::WRL::ComPtr<IUIAutomationSelectionPattern> rowSelectionPattern;
+		if (row0)
+			CUI_EXPECT_EQ(S_OK, row0->GetCurrentPatternAs(
+				UIA_SelectionPatternId,
+				IID_PPV_ARGS(&rowSelectionPattern)));
+		CUI_EXPECT_TRUE(rowSelectionPattern != nullptr);
+		auto expectEmptySelections = [&]
+		{
+			directSelection.clear();
+			peer.GetAccessibilityVirtualSelection(directSelection);
+			CUI_EXPECT_TRUE(directSelection.empty());
+			CUI_EXPECT_FALSE(readNode(row0Id).Selected);
+			CUI_EXPECT_TRUE(readNode(row0Id).SelectionReturnsNullWhenEmpty);
+
+			Microsoft::WRL::ComPtr<IUIAutomationElementArray> rootSelection;
+			if (rootSelectionPattern)
+				CUI_EXPECT_EQ(S_OK,
+					rootSelectionPattern->GetCurrentSelection(&rootSelection));
+			CUI_EXPECT_TRUE(rootSelection != nullptr);
+			CUI_EXPECT_EQ(0, elementArrayLength(rootSelection.Get()));
+			Microsoft::WRL::ComPtr<IUIAutomationElementArray> rowSelection;
+			if (rowSelectionPattern)
+				CUI_EXPECT_EQ(S_OK,
+					rowSelectionPattern->GetCurrentSelection(&rowSelection));
+			// UIAutomationCore may normalize a provider-side null SAFEARRAY to
+			// an empty client array. The direct node flag above verifies the WPF
+			// provider contract; the client-observable contract is no selection.
+			CUI_EXPECT_TRUE(rowSelection == nullptr
+				|| elementArrayLength(rowSelection.Get()) == 0);
+		};
+		expectEmptySelections();
+		auto* focusEventRecorder = new RecordingAutomationEventHandler();
+		Microsoft::WRL::ComPtr<IUIAutomationFocusChangedEventHandler>
+			focusEventHandler;
+		focusEventHandler.Attach(focusEventRecorder);
+		CUI_EXPECT_TRUE(focusEventRecorder->Ready());
+		HRESULT focusEventRegistered = S_FALSE;
+		if (::GetForegroundWindow() == form.Handle)
+			focusEventRegistered = automation->AddFocusChangedEventHandler(
+				nullptr, focusEventHandler.Get());
+		CUI_EXPECT_TRUE(focusEventRegistered == S_OK
+			|| focusEventRegistered == S_FALSE);
+		auto waitForVirtualFocus = [&](uint32_t expectedId)
+		{
+			if (focusEventRegistered != S_OK
+				|| !focusEventRecorder->Ready()) return;
+			// FocusChanged is a desktop-global UIA channel. Do not wait on the
+			// interactive shell when this test HWND does not own the foreground
+			// queue; doing so can itself allow an unrelated desktop focus event to
+			// replace this thread's native focus before the bridge assertions.
+			if (::GetForegroundWindow() != form.Handle) return;
+			const auto expectedAutomationId = readNode(expectedId).AutomationId;
+			const auto events = focusEventRecorder->WaitForSettled(1);
+			CUI_EXPECT_TRUE(std::any_of(events.begin(), events.end(),
+				[&](const AutomationEventRecord& event)
+				{
+					return event.EventId
+						== UIA_AutomationFocusChangedEventId
+						&& event.AutomationId == expectedAutomationId;
+				}));
+		};
+
+		const std::array<DataGridSelectionUnit, 3> focusUnits{
+			DataGridSelectionUnit::Cell,
+			DataGridSelectionUnit::FullRow,
+			DataGridSelectionUnit::CellOrRowHeader };
+		for (const auto unit : focusUnits)
+		{
+			grid->SetSelectionUnit(unit);
+			const auto cellNode = readNode(cell00Id);
+			const auto rowNode = readNode(row0Id);
+			const auto columnHeaderNode = readNode(columnHeaderId);
+			const auto rowHeaderNode = readNode(rowHeaderId);
+			CUI_EXPECT_TRUE(cellNode.KeyboardFocusable);
+			CUI_EXPECT_TRUE(cellNode.IsControlElement);
+			CUI_EXPECT_TRUE(cellNode.IsContentElement);
+			CUI_EXPECT_FALSE(rowNode.KeyboardFocusable);
+			CUI_EXPECT_FALSE(columnHeaderNode.KeyboardFocusable);
+			CUI_EXPECT_FALSE(rowHeaderNode.KeyboardFocusable);
+			CUI_EXPECT_TRUE(columnHeaderNode.IsControlElement);
+			CUI_EXPECT_TRUE(rowHeaderNode.IsControlElement);
+			CUI_EXPECT_FALSE(columnHeaderNode.IsContentElement);
+			CUI_EXPECT_FALSE(rowHeaderNode.IsContentElement);
+
+			CUI_EXPECT_TRUE(isKeyboardFocusable(cell00.Get()));
+			CUI_EXPECT_FALSE(isKeyboardFocusable(row0.Get()));
+			CUI_EXPECT_FALSE(isKeyboardFocusable(columnHeader.Get()));
+			CUI_EXPECT_FALSE(isKeyboardFocusable(rowHeader.Get()));
+			CUI_EXPECT_TRUE(isContentElement(cell00.Get()));
+			CUI_EXPECT_FALSE(isContentElement(columnHeader.Get()));
+			CUI_EXPECT_FALSE(isContentElement(rowHeader.Get()));
+		}
+
+		grid->SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+		auto* secondCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		CUI_EXPECT_TRUE(firstCell != nullptr);
+		CUI_EXPECT_TRUE(secondCell != nullptr);
+		// The direct peer call is otherwise presentation-source agnostic. Establish
+		// this thread's native HWND focus explicitly before asserting the Window
+		// fragment-root bridge and MSAA focus projection.
+		(void)::SetFocus(form.Handle);
+		CUI_EXPECT_TRUE(::GetFocus() == form.Handle);
+		CUI_EXPECT_EQ(AutomationOperationResult::Succeeded,
+			peer.FocusAccessibilityVirtualNode(cell00Id));
+		CUI_EXPECT_EQ(AutomationOperationResult::InvalidOperation,
+			peer.FocusAccessibilityVirtualNode(row0Id));
+		CUI_EXPECT_EQ(AutomationOperationResult::InvalidOperation,
+			peer.FocusAccessibilityVirtualNode(columnHeaderId));
+		CUI_EXPECT_EQ(AutomationOperationResult::InvalidOperation,
+			peer.FocusAccessibilityVirtualNode(rowHeaderId));
+		waitForVirtualFocus(cell00Id);
+		CUI_EXPECT_TRUE(grid->GetCurrentCell().IsValid());
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_TRUE(form.GetKeyboardFocusedElement() == firstCell);
+		uint32_t directFocusedId = 0;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualFocusedNode(
+			directFocusedId));
+		CUI_EXPECT_EQ(cell00Id, directFocusedId);
+		CUI_EXPECT_TRUE(readNode(cell00Id).HasKeyboardFocus);
+		CUI_EXPECT_FALSE(readNode(cell01Id).HasKeyboardFocus);
+
+		auto expectBridgeFocus = [&](uint32_t expectedId)
+		{
+			if (::GetFocus() != form.Handle)
+				(void)::SetFocus(form.Handle);
+			CUI_EXPECT_TRUE(::GetFocus() == form.Handle);
+			Control* bridgeOwner = nullptr;
+			uint32_t bridgeFocusedId = 0;
+			CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+				TryGetAccessibilityVirtualFocusedNodeForTesting(
+					form, bridgeOwner, bridgeFocusedId));
+			CUI_EXPECT_TRUE(bridgeOwner == grid);
+			CUI_EXPECT_EQ(expectedId, bridgeFocusedId);
+		};
+		expectBridgeFocus(cell00Id);
+		BOOL rootHasKeyboardFocus = TRUE;
+		CUI_EXPECT_EQ(S_OK, root->get_CurrentHasKeyboardFocus(
+			&rootHasKeyboardFocus));
+		CUI_EXPECT_FALSE(rootHasKeyboardFocus != FALSE);
+		IAccessible* legacyAccessible = nullptr;
+		CUI_EXPECT_EQ(S_OK, ::AccessibleObjectFromWindow(
+			form.Handle, static_cast<DWORD>(OBJID_CLIENT), IID_IAccessible,
+			reinterpret_cast<void**>(&legacyAccessible)));
+		if (legacyAccessible)
+		{
+			VARIANT legacyFocus{};
+			CUI_EXPECT_EQ(S_OK,
+				legacyAccessible->get_accFocus(&legacyFocus));
+			CUI_EXPECT_EQ(VT_I4, legacyFocus.vt);
+			CUI_EXPECT_TRUE(legacyFocus.lVal > CHILDID_SELF);
+			::VariantClear(&legacyFocus);
+		}
+		CUI_EXPECT_TRUE(hasKeyboardFocus(cell00.Get()));
+		CUI_EXPECT_FALSE(hasKeyboardFocus(cell01.Get()));
+
+		// Logical focus must not leak through UIA or MSAA after the native
+		// presentation source loses keyboard focus. A subsequent virtual
+		// SetFocus is responsible for reacquiring the HWND before focusing its
+		// realized cell.
+		(void)::SetFocus(nullptr);
+		CUI_EXPECT_TRUE(::GetFocus() != form.Handle);
+		CUI_EXPECT_FALSE(hasKeyboardFocus(cell00.Get()));
+		Control* unfocusedOwner = nullptr;
+		uint32_t unfocusedId = 0;
+		CUI_EXPECT_FALSE(cui::framework::WindowAccess::
+			TryGetAccessibilityVirtualFocusedNodeForTesting(
+				form, unfocusedOwner, unfocusedId));
+		if (legacyAccessible)
+		{
+			VARIANT legacyFocus{};
+			CUI_EXPECT_EQ(S_FALSE,
+				legacyAccessible->get_accFocus(&legacyFocus));
+			CUI_EXPECT_EQ(VT_EMPTY, legacyFocus.vt);
+			::VariantClear(&legacyFocus);
+			legacyAccessible->Release();
+		}
+
+		if (cell01) CUI_EXPECT_EQ(S_OK, cell01->SetFocus());
+		waitForVirtualFocus(cell01Id);
+		CUI_EXPECT_TRUE(grid->GetCurrentCell().IsValid());
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_TRUE(form.GetKeyboardFocusedElement() == secondCell);
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualFocusedNode(
+			directFocusedId));
+		CUI_EXPECT_EQ(cell01Id, directFocusedId);
+		expectBridgeFocus(cell01Id);
+		CUI_EXPECT_FALSE(hasKeyboardFocus(cell00.Get()));
+		CUI_EXPECT_TRUE(hasKeyboardFocus(cell01.Get()));
+		if (row0)
+			CUI_EXPECT_EQ(invalidOperation, row0->SetFocus());
+		if (columnHeader)
+			CUI_EXPECT_EQ(invalidOperation, columnHeader->SetFocus());
+		if (rowHeader)
+			CUI_EXPECT_EQ(invalidOperation, rowHeader->SetFocus());
+		expectBridgeFocus(cell01Id);
+		expectEmptySelections();
+
+		// A normal focus change through the realized cell control must replace
+		// the bridge's previous virtual-focus hint and map back to that cell.
+		if (firstCell) CUI_EXPECT_TRUE(firstCell->Focus());
+		waitForVirtualFocus(cell00Id);
+		CUI_EXPECT_TRUE(form.GetKeyboardFocusedElement() == firstCell);
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualFocusedNode(
+			directFocusedId));
+		CUI_EXPECT_EQ(cell00Id, directFocusedId);
+		expectBridgeFocus(cell00Id);
+		CUI_EXPECT_TRUE(hasKeyboardFocus(cell00.Get()));
+		CUI_EXPECT_FALSE(hasKeyboardFocus(cell01.Get()));
+
+		const auto offscreenCellNode = readNode(lastCellId);
+		CUI_EXPECT_FALSE(offscreenCellNode.Visible);
+		CUI_EXPECT_TRUE(HasAutomationPattern(
+			offscreenCellNode.Patterns, AutomationPattern::VirtualizedItem));
+		Microsoft::WRL::ComPtr<IUIAutomationVirtualizedItemPattern>
+			lastCellVirtualized;
+		if (lastCell)
+			CUI_EXPECT_EQ(S_OK, lastCell->GetCurrentPatternAs(
+				UIA_VirtualizedItemPatternId,
+				IID_PPV_ARGS(&lastCellVirtualized)));
+		CUI_EXPECT_TRUE(lastCellVirtualized != nullptr);
+		CUI_EXPECT_EQ(AutomationOperationResult::ElementNotAvailable,
+			peer.FocusAccessibilityVirtualNode(lastCellId));
+		if (lastCell)
+			CUI_EXPECT_EQ(elementNotAvailable, lastCell->SetFocus());
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(rowCount - 1) == nullptr);
+		expectBridgeFocus(cell00Id);
+
+		if (lastCellVirtualized)
+			CUI_EXPECT_EQ(S_OK, lastCellVirtualized->Realize());
+		form.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(rowCount - 1) != nullptr);
+		const auto realizedLastCellNode = readNode(lastCellId);
+		CUI_EXPECT_TRUE(realizedLastCellNode.Visible);
+		CUI_EXPECT_TRUE(realizedLastCellNode.KeyboardFocusable);
+		CUI_EXPECT_FALSE(HasAutomationPattern(
+			realizedLastCellNode.Patterns, AutomationPattern::VirtualizedItem));
+		CUI_EXPECT_EQ(AutomationOperationResult::Succeeded,
+			peer.FocusAccessibilityVirtualNode(lastCellId));
+		waitForVirtualFocus(lastCellId);
+		auto* lastRow = dynamic_cast<DataGridRow*>(
+			grid->GetGeneratedItem(rowCount - 1));
+		auto* realizedLastCell = lastRow ? lastRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(realizedLastCell != nullptr);
+		CUI_EXPECT_TRUE(form.GetKeyboardFocusedElement() == realizedLastCell);
+		CUI_EXPECT_TRUE(grid->GetCurrentCell().IsValid());
+		CUI_EXPECT_EQ(rowCount - 1, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+		if (lastCell) CUI_EXPECT_EQ(S_OK, lastCell->SetFocus());
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualFocusedNode(
+			directFocusedId));
+		CUI_EXPECT_EQ(lastCellId, directFocusedId);
+		expectBridgeFocus(lastCellId);
+		CUI_EXPECT_TRUE(hasKeyboardFocus(lastCell.Get()));
+		expectEmptySelections();
+		if (focusEventRegistered == S_OK)
+			CUI_EXPECT_EQ(S_OK,
+				automation->RemoveFocusChangedEventHandler(
+					focusEventHandler.Get()));
+
+		::DestroyWindow(form.Handle);
+	});
+
+	runner.Add("DataGrid failed ItemsSource restores UIA rollback identities", []
+	{
+		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		struct ComScope
+		{
+			bool Active = false;
+			~ComScope() { if (Active) ::CoUninitialize(); }
+		} comScope{ SUCCEEDED(comResult) };
+
+		class RollbackUiaDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			void ArmCandidateCallback(std::function<void()> callback)
+			{
+				CandidateCallback = std::move(callback);
+			}
+			bool CandidateCallbackFired = false;
+
+		protected:
+			void OnItemsSourceChanged(
+				const BindingListReference& oldValue,
+				const BindingListReference& newValue) override
+			{
+				DataGrid::OnItemsSourceChanged(oldValue, newValue);
+				auto callback = std::move(CandidateCallback);
+				if (!callback) return;
+				CandidateCallbackFired = true;
+				callback();
+				throw std::runtime_error(
+					"candidate source failed after UIA projection");
+			}
+
+		private:
+			std::function<void()> CandidateCallback;
+		};
+
+		Window form;
+		ConfigureTestControl(form, L"DataGrid UIA rollback host");
+		SetDeclaredWindowGeometry(form, 240.0f, 240.0f, 620.0f, 360.0f);
+		CUI_EXPECT_TRUE(form.Handle != nullptr);
+		if (!form.Handle) return;
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			form.SetVisualContent(std::move(contentOwner)));
+		auto* grid = AddTestVisual<RollbackUiaDataGrid>(
+			*content, 12, 12, 480, 220);
+		grid->AutomationId = L"rollbackIdentityGrid";
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		(void)InstallDataGridHeaderTemplate(*grid);
+
+		auto oldItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(oldItem->DefineProperty(L"Name", L"Old row"));
+		auto oldRows = std::make_shared<ObservableBindingList>(
+			L"RollbackIdentityOldRow");
+		oldRows->Items.push_back(BindingSourceReference(oldItem));
+		grid->SetItemsSource(BindingListReference(oldRows));
+		grid->Arrange(cui::core::Rect{ 12.0f, 12.0f, 480.0f, 220.0f });
+		form.UpdateLayout();
+		grid->PrepareForTest();
+		form.UpdateLayout();
+		CUI_EXPECT_EQ(1ULL, grid->ColumnCount());
+		auto* oldRuntimeColumn = grid->GetColumn(0);
+		CUI_EXPECT_TRUE(oldRuntimeColumn != nullptr);
+
+		auto& peer = grid->GetAutomationPeer();
+		std::vector<uint32_t> oldHeaderIds;
+		peer.GetAccessibilityVirtualColumnHeaders(oldHeaderIds);
+		CUI_EXPECT_EQ(1ULL, oldHeaderIds.size());
+		uint32_t oldCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(0, 0, oldCellId));
+		AccessibilityVirtualNode oldCellNode;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			oldCellId, oldCellNode));
+		const uint32_t oldRowId = oldCellNode.ParentId;
+		const uint32_t oldRootId = grid->GetAccessibilityRuntimeId();
+
+		Microsoft::WRL::ComPtr<IUIAutomation> automation;
+		CUI_EXPECT_EQ(S_OK, ::CoCreateInstance(
+			CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&automation)));
+		if (!automation)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElement> root;
+		CUI_EXPECT_EQ(S_OK,
+			automation->ElementFromHandle(form.Handle, &root));
+		auto findByAutomationId = [&](const wchar_t* automationId)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> element;
+			VARIANT expected{};
+			expected.vt = VT_BSTR;
+			expected.bstrVal = ::SysAllocString(automationId);
+			Microsoft::WRL::ComPtr<IUIAutomationCondition> condition;
+			if (expected.bstrVal && root
+				&& SUCCEEDED(automation->CreatePropertyCondition(
+					UIA_AutomationIdPropertyId, expected, &condition))
+				&& condition)
+				(void)root->FindFirst(
+					TreeScope_Descendants, condition.Get(), &element);
+			::VariantClear(&expected);
+			return element;
+		};
+		auto runtimeId = [](IUIAutomationElement* element)
+		{
+			std::vector<int> result;
+			SAFEARRAY* values = nullptr;
+			if (!element || FAILED(element->GetRuntimeId(&values)) || !values)
+				return result;
+			LONG lower = 0, upper = -1;
+			if (SUCCEEDED(::SafeArrayGetLBound(values, 1, &lower))
+				&& SUCCEEDED(::SafeArrayGetUBound(values, 1, &upper)))
+			{
+				result.reserve(static_cast<size_t>(upper - lower + 1));
+				for (LONG index = lower; index <= upper; ++index)
+				{
+					int value = 0;
+					if (SUCCEEDED(::SafeArrayGetElement(
+						values, &index, &value))) result.push_back(value);
+				}
+			}
+			::SafeArrayDestroy(values);
+			return result;
+		};
+		auto automationId = [](IUIAutomationElement* element)
+		{
+			BSTR value = nullptr;
+			std::wstring result;
+			if (element && SUCCEEDED(element->get_CurrentAutomationId(&value))
+				&& value)
+				result.assign(value, ::SysStringLen(value));
+			::SysFreeString(value);
+			return result;
+		};
+		auto elementArrayLength = [](IUIAutomationElementArray* elements)
+		{
+			int result = 0;
+			if (elements) (void)elements->get_Length(&result);
+			return result;
+		};
+
+		auto gridElement = findByAutomationId(L"rollbackIdentityGrid");
+		CUI_EXPECT_TRUE(gridElement != nullptr);
+		if (!gridElement)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationGridPattern> gridPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationTablePattern> tablePattern;
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_GridPatternId, IID_PPV_ARGS(&gridPattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_TablePatternId, IID_PPV_ARGS(&tablePattern)));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldCell;
+		if (gridPattern)
+			CUI_EXPECT_EQ(S_OK, gridPattern->GetItem(0, 0, &oldCell));
+		Microsoft::WRL::ComPtr<IUIAutomationTreeWalker> walker;
+		CUI_EXPECT_EQ(S_OK, automation->get_ControlViewWalker(&walker));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldRow;
+		if (walker && oldCell)
+			CUI_EXPECT_EQ(S_OK,
+				walker->GetParentElement(oldCell.Get(), &oldRow));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> oldHeaders;
+		if (tablePattern)
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&oldHeaders));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldHeader;
+		if (oldHeaders)
+			CUI_EXPECT_EQ(S_OK, oldHeaders->GetElement(0, &oldHeader));
+		CUI_EXPECT_TRUE(oldCell != nullptr);
+		CUI_EXPECT_TRUE(oldRow != nullptr);
+		CUI_EXPECT_TRUE(oldHeader != nullptr);
+		const auto oldRootAutomationId = automationId(gridElement.Get());
+		const auto oldRowAutomationId = automationId(oldRow.Get());
+		const auto oldCellAutomationId = automationId(oldCell.Get());
+		const auto oldHeaderAutomationId = automationId(oldHeader.Get());
+		const auto oldRootRuntimeId = runtimeId(gridElement.Get());
+		const auto oldRowRuntimeId = runtimeId(oldRow.Get());
+		const auto oldCellRuntimeId = runtimeId(oldCell.Get());
+		const auto oldHeaderRuntimeId = runtimeId(oldHeader.Get());
+		CUI_EXPECT_TRUE(!oldRootRuntimeId.empty());
+		CUI_EXPECT_TRUE(!oldRowRuntimeId.empty());
+		CUI_EXPECT_TRUE(!oldCellRuntimeId.empty());
+		CUI_EXPECT_TRUE(!oldHeaderRuntimeId.empty());
+
+		auto* structureRecorder = new RecordingStructureChangedEventHandler();
+		Microsoft::WRL::ComPtr<IUIAutomationStructureChangedEventHandler>
+			structureHandler;
+		structureHandler.Attach(structureRecorder);
+		CUI_EXPECT_TRUE(structureRecorder->Ready());
+		bool structureRegistered = false;
+		if (structureRecorder->Ready())
+		{
+			const HRESULT registered = automation->AddStructureChangedEventHandler(
+				gridElement.Get(), TreeScope_Subtree, nullptr,
+				structureHandler.Get());
+			CUI_EXPECT_EQ(S_OK, registered);
+			structureRegistered = SUCCEEDED(registered);
+		}
+
+		auto candidateItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(candidateItem->DefineProperty(
+			L"Name", L"Candidate row"));
+		CUI_EXPECT_TRUE(candidateItem->DefineProperty(L"Flag", true));
+		auto candidateRows = std::make_shared<ObservableBindingList>(
+			L"RollbackIdentityCandidateRow");
+		candidateRows->Items.push_back(BindingSourceReference(candidateItem));
+		bool queriedCandidateIdentity = false;
+		int candidateColumnCount = 0;
+		uint32_t candidateCellId = 0;
+		uint32_t candidateHeaderId = 0;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> candidateCell;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> candidateHeader;
+		grid->ArmCandidateCallback([&]
+		{
+			if (gridPattern)
+			{
+				CUI_EXPECT_EQ(S_OK, gridPattern->get_CurrentColumnCount(
+					&candidateColumnCount));
+				CUI_EXPECT_EQ(S_OK,
+					gridPattern->GetItem(0, 1, &candidateCell));
+			}
+			Microsoft::WRL::ComPtr<IUIAutomationElementArray> candidateHeaders;
+			if (tablePattern)
+				CUI_EXPECT_EQ(S_OK,
+					tablePattern->GetCurrentColumnHeaders(&candidateHeaders));
+			if (candidateHeaders)
+				CUI_EXPECT_EQ(S_OK,
+					candidateHeaders->GetElement(1, &candidateHeader));
+			std::vector<uint32_t> candidateHeaderIds;
+			peer.GetAccessibilityVirtualColumnHeaders(candidateHeaderIds);
+			if (candidateHeaderIds.size() >= 2)
+				candidateHeaderId = candidateHeaderIds[1];
+			(void)peer.GetAccessibilityVirtualItemAt(0, 1, candidateCellId);
+			queriedCandidateIdentity = candidateColumnCount == 2
+				&& elementArrayLength(candidateHeaders.Get()) == 2
+				&& candidateCell != nullptr && candidateHeader != nullptr
+				&& candidateCellId != 0 && candidateHeaderId != 0
+				&& !runtimeId(candidateCell.Get()).empty()
+				&& !runtimeId(candidateHeader.Get()).empty();
+		});
+
+		bool candidateFailed = false;
+		try
+		{
+			grid->SetItemsSource(BindingListReference(candidateRows));
+		}
+		catch (const std::runtime_error& error)
+		{
+			candidateFailed = std::string(error.what())
+				== "candidate source failed after UIA projection";
+		}
+		catch (...)
+		{
+		}
+		CUI_EXPECT_TRUE(candidateFailed);
+		CUI_EXPECT_TRUE(grid->CandidateCallbackFired);
+		CUI_EXPECT_TRUE(queriedCandidateIdentity);
+		CUI_EXPECT_EQ(2, candidateColumnCount);
+		CUI_EXPECT_TRUE(candidateCellId != oldCellId);
+		CUI_EXPECT_TRUE(oldHeaderIds.empty()
+			|| candidateHeaderId != oldHeaderIds.front());
+		CUI_EXPECT_TRUE(grid->GetItemsSource().Shared() == oldRows);
+		CUI_EXPECT_EQ(1ULL, grid->ColumnCount());
+		CUI_EXPECT_TRUE(grid->GetColumn(0) == oldRuntimeColumn);
+		CUI_EXPECT_EQ(oldRootId, grid->GetAccessibilityRuntimeId());
+
+		std::vector<uint32_t> restoredHeaderIds;
+		peer.GetAccessibilityVirtualColumnHeaders(restoredHeaderIds);
+		CUI_EXPECT_TRUE(restoredHeaderIds == oldHeaderIds);
+		uint32_t restoredCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			0, 0, restoredCellId));
+		AccessibilityVirtualNode restoredCellNode;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			restoredCellId, restoredCellNode));
+		CUI_EXPECT_EQ(oldCellId, restoredCellId);
+		CUI_EXPECT_EQ(oldRowId, restoredCellNode.ParentId);
+
+		int restoredRows = 0;
+		int restoredColumns = 0;
+		if (gridPattern)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->get_CurrentRowCount(&restoredRows));
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->get_CurrentColumnCount(&restoredColumns));
+		}
+		CUI_EXPECT_EQ(1, restoredRows);
+		CUI_EXPECT_EQ(1, restoredColumns);
+		Microsoft::WRL::ComPtr<IUIAutomationElement> restoredCell;
+		if (gridPattern)
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->GetItem(0, 0, &restoredCell));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> restoredRow;
+		if (walker && restoredCell)
+			CUI_EXPECT_EQ(S_OK,
+				walker->GetParentElement(restoredCell.Get(), &restoredRow));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> restoredHeaders;
+		if (tablePattern)
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&restoredHeaders));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> restoredHeader;
+		if (restoredHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				restoredHeaders->GetElement(0, &restoredHeader));
+		CUI_EXPECT_EQ(oldRootAutomationId, automationId(gridElement.Get()));
+		CUI_EXPECT_EQ(oldRowAutomationId, automationId(restoredRow.Get()));
+		CUI_EXPECT_EQ(oldCellAutomationId, automationId(restoredCell.Get()));
+		CUI_EXPECT_EQ(oldHeaderAutomationId, automationId(restoredHeader.Get()));
+		CUI_EXPECT_TRUE(oldRootRuntimeId == runtimeId(gridElement.Get()));
+		CUI_EXPECT_TRUE(oldRowRuntimeId == runtimeId(restoredRow.Get()));
+		CUI_EXPECT_TRUE(oldCellRuntimeId == runtimeId(restoredCell.Get()));
+		CUI_EXPECT_TRUE(oldHeaderRuntimeId == runtimeId(restoredHeader.Get()));
+
+		auto currentName = [](IUIAutomationElement* element)
+		{
+			BSTR value = nullptr;
+			std::wstring result;
+			const HRESULT read = element
+				? element->get_CurrentName(&value)
+				: E_FAIL;
+			CUI_EXPECT_EQ(S_OK, read);
+			if (value) result.assign(value, ::SysStringLen(value));
+			::SysFreeString(value);
+			return result;
+		};
+		CUI_EXPECT_EQ(std::wstring(L"Old row"), currentName(oldRow.Get()));
+		CUI_EXPECT_EQ(std::wstring(L"Old row"), currentName(oldCell.Get()));
+		CUI_EXPECT_EQ(std::wstring(L"Name"), currentName(oldHeader.Get()));
+		CUI_EXPECT_EQ(oldRootAutomationId, automationId(gridElement.Get()));
+		BSTR retiredCandidateName = nullptr;
+		HRESULT retiredCandidateResult = E_FAIL;
+		if (candidateHeader)
+			retiredCandidateResult = candidateHeader->get_CurrentName(
+				&retiredCandidateName);
+		CUI_EXPECT_TRUE(FAILED(retiredCandidateResult));
+		::SysFreeString(retiredCandidateName);
+		retiredCandidateName = nullptr;
+		retiredCandidateResult = E_FAIL;
+		if (candidateCell)
+			retiredCandidateResult = candidateCell->get_CurrentName(
+				&retiredCandidateName);
+		CUI_EXPECT_TRUE(FAILED(retiredCandidateResult));
+		::SysFreeString(retiredCandidateName);
+
+		if (structureRegistered)
+		{
+			CUI_EXPECT_EQ(0ULL, structureRecorder->WaitForSettled());
+			CUI_EXPECT_EQ(S_OK,
+				automation->RemoveStructureChangedEventHandler(
+					gridElement.Get(), structureHandler.Get()));
+		}
+
+		::DestroyWindow(form.Handle);
+	});
+
+	runner.Add("DataGrid failed ItemsSource prunes destroyed authored UIA identities", []
+	{
+		const HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		struct ComScope
+		{
+			bool Active = false;
+			~ComScope() { if (Active) ::CoUninitialize(); }
+		} comScope{ SUCCEEDED(comResult) };
+
+		class RollbackUiaDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			void ArmCandidateCallback(std::function<void()> callback)
+			{
+				CandidateCallback = std::move(callback);
+			}
+			bool CandidateCallbackFired = false;
+
+		protected:
+			void OnItemsSourceChanged(
+				const BindingListReference& oldValue,
+				const BindingListReference& newValue) override
+			{
+				DataGrid::OnItemsSourceChanged(oldValue, newValue);
+				auto callback = std::move(CandidateCallback);
+				if (!callback) return;
+				CandidateCallbackFired = true;
+				callback();
+				throw std::runtime_error(
+					"candidate source failed after authored column deletion");
+			}
+
+		private:
+			std::function<void()> CandidateCallback;
+		};
+
+		Window form;
+		ConfigureTestControl(form, L"DataGrid authored UIA rollback host");
+		SetDeclaredWindowGeometry(form, 260.0f, 260.0f, 620.0f, 360.0f);
+		CUI_EXPECT_TRUE(form.Handle != nullptr);
+		if (!form.Handle) return;
+		auto contentOwner = MakeTestControl<Panel>();
+		auto* content = static_cast<Panel*>(
+			form.SetVisualContent(std::move(contentOwner)));
+		auto* grid = AddTestVisual<RollbackUiaDataGrid>(
+			*content, 12, 12, 480, 220);
+		grid->AutomationId = L"rollbackAuthoredIdentityGrid";
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid->SetAutoGenerateColumns(true);
+		(void)InstallDataGridHeaderTemplate(*grid);
+		auto authoredColumn = std::make_unique<DataGridTemplateColumn>();
+		authoredColumn->SetHeader(BindingValue(L"Authored"));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(authoredColumn)) != nullptr);
+
+		auto oldItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(oldItem->DefineProperty(L"Retained", L"Old retained"));
+		auto oldRows = std::make_shared<ObservableBindingList>(
+			L"RollbackAuthoredOldRow");
+		oldRows->Items.push_back(BindingSourceReference(oldItem));
+		grid->SetItemsSource(BindingListReference(oldRows));
+		grid->Arrange(cui::core::Rect{ 12.0f, 12.0f, 480.0f, 220.0f });
+		form.UpdateLayout();
+		grid->PrepareForTest();
+		form.UpdateLayout();
+		CUI_EXPECT_EQ(2ULL, grid->ColumnCount());
+		if (grid->ColumnCount() != 2)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		auto* retainedRuntimeColumn = grid->GetColumn(1);
+		CUI_EXPECT_TRUE(retainedRuntimeColumn != nullptr);
+
+		auto& peer = grid->GetAutomationPeer();
+		std::vector<uint32_t> oldHeaderIds;
+		peer.GetAccessibilityVirtualColumnHeaders(oldHeaderIds);
+		CUI_EXPECT_EQ(2ULL, oldHeaderIds.size());
+		if (oldHeaderIds.size() != 2)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		const uint32_t oldAuthoredHeaderId = oldHeaderIds[0];
+		const uint32_t oldRetainedHeaderId = oldHeaderIds[1];
+		uint32_t oldAuthoredCellId = 0;
+		uint32_t oldRetainedCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			0, 0, oldAuthoredCellId));
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			0, 1, oldRetainedCellId));
+		AccessibilityVirtualNode oldRetainedCellNode;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			oldRetainedCellId, oldRetainedCellNode));
+		const uint32_t oldRowId = oldRetainedCellNode.ParentId;
+
+		Microsoft::WRL::ComPtr<IUIAutomation> automation;
+		CUI_EXPECT_EQ(S_OK, ::CoCreateInstance(
+			CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&automation)));
+		if (!automation)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElement> root;
+		CUI_EXPECT_EQ(S_OK,
+			automation->ElementFromHandle(form.Handle, &root));
+		auto findByAutomationId = [&](const wchar_t* automationId)
+		{
+			Microsoft::WRL::ComPtr<IUIAutomationElement> element;
+			VARIANT expected{};
+			expected.vt = VT_BSTR;
+			expected.bstrVal = ::SysAllocString(automationId);
+			Microsoft::WRL::ComPtr<IUIAutomationCondition> condition;
+			if (expected.bstrVal && root
+				&& SUCCEEDED(automation->CreatePropertyCondition(
+					UIA_AutomationIdPropertyId, expected, &condition))
+				&& condition)
+				(void)root->FindFirst(
+					TreeScope_Descendants, condition.Get(), &element);
+			::VariantClear(&expected);
+			return element;
+		};
+		auto runtimeId = [](IUIAutomationElement* element)
+		{
+			std::vector<int> result;
+			SAFEARRAY* values = nullptr;
+			if (!element || FAILED(element->GetRuntimeId(&values)) || !values)
+				return result;
+			LONG lower = 0, upper = -1;
+			if (SUCCEEDED(::SafeArrayGetLBound(values, 1, &lower))
+				&& SUCCEEDED(::SafeArrayGetUBound(values, 1, &upper)))
+			{
+				result.reserve(static_cast<size_t>(upper - lower + 1));
+				for (LONG index = lower; index <= upper; ++index)
+				{
+					int value = 0;
+					if (SUCCEEDED(::SafeArrayGetElement(
+						values, &index, &value))) result.push_back(value);
+				}
+			}
+			::SafeArrayDestroy(values);
+			return result;
+		};
+		auto automationId = [](IUIAutomationElement* element)
+		{
+			BSTR value = nullptr;
+			std::wstring result;
+			if (element && SUCCEEDED(element->get_CurrentAutomationId(&value))
+				&& value)
+				result.assign(value, ::SysStringLen(value));
+			::SysFreeString(value);
+			return result;
+		};
+		auto elementArrayLength = [](IUIAutomationElementArray* elements)
+		{
+			int result = 0;
+			if (elements) (void)elements->get_Length(&result);
+			return result;
+		};
+
+		auto gridElement = findByAutomationId(L"rollbackAuthoredIdentityGrid");
+		CUI_EXPECT_TRUE(gridElement != nullptr);
+		if (!gridElement)
+		{
+			::DestroyWindow(form.Handle);
+			return;
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationGridPattern> gridPattern;
+		Microsoft::WRL::ComPtr<IUIAutomationTablePattern> tablePattern;
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_GridPatternId, IID_PPV_ARGS(&gridPattern)));
+		CUI_EXPECT_EQ(S_OK, gridElement->GetCurrentPatternAs(
+			UIA_TablePatternId, IID_PPV_ARGS(&tablePattern)));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldAuthoredCell;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldRetainedCell;
+		if (gridPattern)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->GetItem(0, 0, &oldAuthoredCell));
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->GetItem(0, 1, &oldRetainedCell));
+		}
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> oldHeaders;
+		if (tablePattern)
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&oldHeaders));
+		CUI_EXPECT_EQ(2, elementArrayLength(oldHeaders.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldAuthoredHeader;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> oldRetainedHeader;
+		if (oldHeaders)
+		{
+			CUI_EXPECT_EQ(S_OK,
+				oldHeaders->GetElement(0, &oldAuthoredHeader));
+			CUI_EXPECT_EQ(S_OK,
+				oldHeaders->GetElement(1, &oldRetainedHeader));
+		}
+		CUI_EXPECT_TRUE(oldAuthoredCell != nullptr);
+		CUI_EXPECT_TRUE(oldRetainedCell != nullptr);
+		CUI_EXPECT_TRUE(oldAuthoredHeader != nullptr);
+		CUI_EXPECT_TRUE(oldRetainedHeader != nullptr);
+		const auto oldRetainedCellAutomationId =
+			automationId(oldRetainedCell.Get());
+		const auto oldRetainedHeaderAutomationId =
+			automationId(oldRetainedHeader.Get());
+		const auto oldRetainedCellRuntimeId = runtimeId(oldRetainedCell.Get());
+		const auto oldRetainedHeaderRuntimeId = runtimeId(oldRetainedHeader.Get());
+		CUI_EXPECT_TRUE(!oldRetainedCellRuntimeId.empty());
+		CUI_EXPECT_TRUE(!oldRetainedHeaderRuntimeId.empty());
+
+		auto candidateItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(candidateItem->DefineProperty(
+			L"Candidate", L"Candidate value"));
+		auto candidateRows = std::make_shared<ObservableBindingList>(
+			L"RollbackAuthoredCandidateRow");
+		candidateRows->Items.push_back(BindingSourceReference(candidateItem));
+		bool queriedCandidateIdentity = false;
+		bool clearedCandidateColumns = false;
+		bool candidateNodesRetiredAfterClear = false;
+		int candidateColumnCount = 0;
+		uint32_t candidateCellId = 0;
+		uint32_t candidateHeaderId = 0;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> candidateCell;
+		Microsoft::WRL::ComPtr<IUIAutomationElement> candidateHeader;
+		grid->ArmCandidateCallback([&]
+		{
+			if (gridPattern)
+			{
+				CUI_EXPECT_EQ(S_OK, gridPattern->get_CurrentColumnCount(
+					&candidateColumnCount));
+				CUI_EXPECT_EQ(S_OK,
+					gridPattern->GetItem(0, 1, &candidateCell));
+			}
+			Microsoft::WRL::ComPtr<IUIAutomationElementArray> candidateHeaders;
+			if (tablePattern)
+				CUI_EXPECT_EQ(S_OK,
+					tablePattern->GetCurrentColumnHeaders(&candidateHeaders));
+			if (candidateHeaders)
+				CUI_EXPECT_EQ(S_OK,
+					candidateHeaders->GetElement(1, &candidateHeader));
+			std::vector<uint32_t> candidateHeaderIds;
+			peer.GetAccessibilityVirtualColumnHeaders(candidateHeaderIds);
+			if (candidateHeaderIds.size() >= 2)
+				candidateHeaderId = candidateHeaderIds[1];
+			(void)peer.GetAccessibilityVirtualItemAt(0, 1, candidateCellId);
+			queriedCandidateIdentity = candidateColumnCount == 2
+				&& elementArrayLength(candidateHeaders.Get()) == 2
+				&& candidateCell != nullptr && candidateHeader != nullptr
+				&& candidateCellId != 0 && candidateHeaderId != 0
+				&& !runtimeId(candidateCell.Get()).empty()
+				&& !runtimeId(candidateHeader.Get()).empty();
+
+			grid->ClearColumns();
+			// ClearColumns retires both previous definitions; because runtime
+			// auto-generation is active, the candidate schema is then rebuilt as
+			// one fresh definition before the callback returns.
+			clearedCandidateColumns = grid->ColumnCount() == 1
+				&& grid->GetColumn(0)
+				&& grid->GetColumn(0)->GetHeader().ToString() == L"Candidate";
+			std::vector<uint32_t> rebuiltHeaders;
+			peer.GetAccessibilityVirtualColumnHeaders(rebuiltHeaders);
+			uint32_t rebuiltCellId = 0;
+			const bool rebuiltCellResolved =
+				peer.GetAccessibilityVirtualItemAt(0, 0, rebuiltCellId);
+			AccessibilityVirtualNode retiredCell;
+			AccessibilityVirtualNode retiredHeader;
+			candidateNodesRetiredAfterClear = rebuiltHeaders.size() == 1
+				&& rebuiltHeaders.front() != candidateHeaderId
+				&& rebuiltCellResolved
+				&& rebuiltCellId != 0
+				&& rebuiltCellId != candidateCellId
+				&& !peer.TryGetAccessibilityVirtualNode(
+					candidateCellId, retiredCell)
+				&& !peer.TryGetAccessibilityVirtualNode(
+					candidateHeaderId, retiredHeader);
+		});
+
+		bool candidateFailed = false;
+		try
+		{
+			grid->SetItemsSource(BindingListReference(candidateRows));
+		}
+		catch (const std::runtime_error& error)
+		{
+			candidateFailed = std::string(error.what())
+				== "candidate source failed after authored column deletion";
+		}
+		catch (...)
+		{
+		}
+		CUI_EXPECT_TRUE(candidateFailed);
+		CUI_EXPECT_TRUE(grid->CandidateCallbackFired);
+		CUI_EXPECT_TRUE(queriedCandidateIdentity);
+		CUI_EXPECT_TRUE(clearedCandidateColumns);
+		CUI_EXPECT_TRUE(candidateNodesRetiredAfterClear);
+		CUI_EXPECT_EQ(2, candidateColumnCount);
+		CUI_EXPECT_TRUE(grid->GetItemsSource().Shared() == oldRows);
+		CUI_EXPECT_EQ(1ULL, grid->ColumnCount());
+		CUI_EXPECT_TRUE(grid->GetColumn(0) == retainedRuntimeColumn);
+
+		grid->Arrange(cui::core::Rect{ 12.0f, 12.0f, 480.0f, 220.0f });
+		form.UpdateLayout();
+		grid->PrepareForTest();
+		form.UpdateLayout();
+		std::vector<uint32_t> restoredHeaderIds;
+		peer.GetAccessibilityVirtualColumnHeaders(restoredHeaderIds);
+		const std::vector<uint32_t> expectedRestoredHeaderIds{
+			oldRetainedHeaderId };
+		CUI_EXPECT_TRUE(restoredHeaderIds == expectedRestoredHeaderIds);
+		uint32_t restoredCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			0, 0, restoredCellId));
+		CUI_EXPECT_EQ(oldRetainedCellId, restoredCellId);
+		AccessibilityVirtualNode restoredCellNode;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			restoredCellId, restoredCellNode));
+		CUI_EXPECT_EQ(oldRowId, restoredCellNode.ParentId);
+		AccessibilityVirtualNode retiredAuthoredHeader;
+		AccessibilityVirtualNode retiredAuthoredCell;
+		CUI_EXPECT_TRUE(!peer.TryGetAccessibilityVirtualNode(
+			oldAuthoredHeaderId, retiredAuthoredHeader));
+		CUI_EXPECT_TRUE(!peer.TryGetAccessibilityVirtualNode(
+			oldAuthoredCellId, retiredAuthoredCell));
+
+		int restoredColumns = 0;
+		if (gridPattern)
+			CUI_EXPECT_EQ(S_OK, gridPattern->get_CurrentColumnCount(
+				&restoredColumns));
+		CUI_EXPECT_EQ(1, restoredColumns);
+		Microsoft::WRL::ComPtr<IUIAutomationElement> restoredCell;
+		if (gridPattern)
+			CUI_EXPECT_EQ(S_OK,
+				gridPattern->GetItem(0, 0, &restoredCell));
+		Microsoft::WRL::ComPtr<IUIAutomationElementArray> restoredHeaders;
+		if (tablePattern)
+			CUI_EXPECT_EQ(S_OK,
+				tablePattern->GetCurrentColumnHeaders(&restoredHeaders));
+		CUI_EXPECT_EQ(1, elementArrayLength(restoredHeaders.Get()));
+		Microsoft::WRL::ComPtr<IUIAutomationElement> restoredHeader;
+		if (restoredHeaders)
+			CUI_EXPECT_EQ(S_OK,
+				restoredHeaders->GetElement(0, &restoredHeader));
+		CUI_EXPECT_EQ(oldRetainedCellAutomationId,
+			automationId(restoredCell.Get()));
+		CUI_EXPECT_EQ(oldRetainedHeaderAutomationId,
+			automationId(restoredHeader.Get()));
+		CUI_EXPECT_TRUE(oldRetainedCellRuntimeId
+			== runtimeId(restoredCell.Get()));
+		CUI_EXPECT_TRUE(oldRetainedHeaderRuntimeId
+			== runtimeId(restoredHeader.Get()));
+		CUI_EXPECT_TRUE(oldRetainedCellRuntimeId
+			== runtimeId(oldRetainedCell.Get()));
+		CUI_EXPECT_TRUE(oldRetainedHeaderRuntimeId
+			== runtimeId(oldRetainedHeader.Get()));
+
+		Microsoft::WRL::ComPtr<IUIAutomationGridItemPattern> retainedGridItem;
+		if (oldRetainedCell)
+			CUI_EXPECT_EQ(S_OK, oldRetainedCell->GetCurrentPatternAs(
+				UIA_GridItemPatternId, IID_PPV_ARGS(&retainedGridItem)));
+		int retainedColumnIndex = -1;
+		if (retainedGridItem)
+			CUI_EXPECT_EQ(S_OK,
+				retainedGridItem->get_CurrentColumn(&retainedColumnIndex));
+		CUI_EXPECT_EQ(0, retainedColumnIndex);
+		auto currentName = [](IUIAutomationElement* element)
+		{
+			BSTR value = nullptr;
+			std::wstring result;
+			const HRESULT read = element
+				? element->get_CurrentName(&value)
+				: E_FAIL;
+			CUI_EXPECT_EQ(S_OK, read);
+			if (value) result.assign(value, ::SysStringLen(value));
+			::SysFreeString(value);
+			return result;
+		};
+		CUI_EXPECT_EQ(std::wstring(L"Old retained"),
+			currentName(oldRetainedCell.Get()));
+		CUI_EXPECT_EQ(std::wstring(L"Retained"),
+			currentName(oldRetainedHeader.Get()));
+
+		auto expectRetired = [](IUIAutomationElement* element)
+		{
+			BSTR name = nullptr;
+			const HRESULT result = element
+				? element->get_CurrentName(&name)
+				: E_FAIL;
+			CUI_EXPECT_TRUE(FAILED(result));
+			::SysFreeString(name);
+		};
+		expectRetired(oldAuthoredCell.Get());
+		expectRetired(oldAuthoredHeader.Get());
+		expectRetired(candidateCell.Get());
+		expectRetired(candidateHeader.Get());
+
+		::DestroyWindow(form.Handle);
 	});
 
 	runner.Add("System visual preferences drive contrast motion text and focus cues", []
@@ -35775,7 +42637,7 @@ int main()
 			if (canonical.find(expected) == std::string::npos)
 				throw std::runtime_error(std::string(
 					"missing collection XAML marker: ") + expected);
-		CUI_EXPECT_TRUE(canonical.find("<MediaElement") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<MediaPlayer") == std::string::npos);
 
 		DesignerModel::DesignDocument parsed;
 		std::wstring error;
@@ -36429,7 +43291,9 @@ int main()
 
 		auto* assignment = document.Nodes.front().Properties.Find(L"FontSize");
 		CUI_EXPECT_TRUE(assignment != nullptr);
-		if (assignment) assignment->Value.Text = L"999";
+		// Use a value below the WPF-compatible positive FontSize minimum. Large
+		// values such as 999 are valid and must not be used as a failure probe.
+		if (assignment) assignment->Value.Text = L"0";
 		CuiRuntime::XamlObjectTree tree;
 		diagnostic = {};
 		CUI_EXPECT_FALSE(CuiRuntime::XamlObjectMaterializer::Materialize(
@@ -38221,7 +45085,7 @@ int main()
 		CUI_EXPECT_EQ(previousReferenceCount, index.References().size());
 	});
 
-	runner.Add("RichText XAML schema owns nonvisual document content slots", []
+	runner.Add("XAML schema owns nonvisual RichText and DataGrid content slots", []
 	{
 		using CuiRuntime::XamlObjectMemberKind;
 		const auto expectType = [](const wchar_t* name,
@@ -38247,7 +45111,12 @@ int main()
 		expectType(L"Italic", L"Inlines");
 		expectType(L"Underline", L"Inlines");
 		expectType(L"LineBreak", L"");
-		CUI_EXPECT_EQ(8ULL,
+		expectType(L"DataGridColumn", L"");
+		expectType(L"DataGridBoundColumn", L"");
+		expectType(L"DataGridTextColumn", L"");
+		expectType(L"DataGridCheckBoxColumn", L"");
+		expectType(L"DataGridTemplateColumn", L"");
+		CUI_EXPECT_EQ(13ULL,
 			static_cast<unsigned long long>(
 				CuiRuntime::XamlRuntimeSchema::EnumerateNonVisualTypes().size()));
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNonVisualType(
@@ -38290,6 +45159,9 @@ int main()
 			expectMember(owner, L"Inlines",
 				XamlObjectMemberKind::Collection, L"",
 				BindingValueKind::Empty);
+		expectMember(L"DataGrid", L"Columns",
+			XamlObjectMemberKind::Collection, L"DataGridColumn",
+			BindingValueKind::Empty);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
 			UIClass::UI_RichTextBox, L"Document") == nullptr);
 		CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
@@ -41737,6 +48609,83 @@ void PersistedEventWindow::ConditionalRename(Control*, MouseEventArgs&) {}
 			legacyHeader.wstring(), (outputDir / L"Legacy.cpp").wstring()));
 		CUI_EXPECT_TRUE(readText(legacyHeader).find("existing hand-written file")
 			!= std::string::npos);
+
+		if (GetEnvironmentVariableW(
+			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
+			fs::remove_all(outputDir);
+	});
+
+	runner.Add("DataGrid closure theme retains native generated chrome styles", []
+	{
+		namespace fs = std::filesystem;
+		auto findRepositoryRoot = []
+		{
+			std::vector<fs::path> seeds{ fs::current_path() };
+			try
+			{
+				seeds.push_back(fs::absolute(fs::path(__FILE__)).parent_path());
+			}
+			catch (...) {}
+			for (auto seed : seeds)
+				for (int depth = 0; depth < 8 && !seed.empty(); ++depth)
+				{
+					if (fs::exists(seed / L"CUI.sln")) return seed;
+					const auto parent = seed.parent_path();
+					if (parent == seed) break;
+					seed = parent;
+				}
+			return fs::path{};
+		};
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+
+		const auto repositoryRoot = findRepositoryRoot();
+		CUI_EXPECT_TRUE(!repositoryRoot.empty());
+		if (repositoryRoot.empty()) return;
+		const auto outputDir = fs::temp_directory_path()
+			/ (L"cui-datagrid-theme-closure-"
+				+ std::to_wstring(::GetCurrentProcessId())
+				+ L"-" + std::to_wstring(::GetTickCount64()));
+		fs::create_directories(outputDir);
+		const auto rootDocument = outputDir / L"DataGridRoot.cui.xaml";
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			rootDocument.wstring(),
+			R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="DataGridClosureRoot" Width="320" Height="200">
+  <DataGrid x:Name="grid"/>
+</Window>)XAML",
+			&error));
+
+		DesignerModel::FrameworkThemeCodeGenerationOptions options;
+		options.OutputBasePath =
+			(outputDir / L"DataGridClosureTheme").wstring();
+		options.RootDocuments.push_back(rootDocument.wstring());
+		DesignerModel::FrameworkThemeCodeGenerationResult result;
+		if (!DesignerModel::FrameworkThemeCodeGenerator::GenerateFile(
+			repositoryRoot / L"Themes" / L"Generic.xaml",
+			options, &result, &error))
+			throw std::runtime_error(
+				"DataGrid closure theme generation failed: "
+				+ Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(result.IsApplicationClosure());
+		const auto program = readText(result.ProgramSourcePath);
+		for (const auto* retained : {
+			"CuiDataGridCellTemplate",
+			"CuiDataGridColumnHeaderTemplate",
+			"CuiDataGridRowHeaderTemplate",
+			"CuiDataGridTextElementStyle",
+			"CuiDataGridTextEditingElementStyle",
+			"CuiDataGridTextEditingElementTemplate",
+			"CuiDataGridCheckBoxElementStyle" })
+			CUI_EXPECT_TRUE(program.find(retained) != std::string::npos);
 
 		if (GetEnvironmentVariableW(
 			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
@@ -51100,7 +58049,7 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		for (const auto* legacyName : { L"Base", L"Label", L"LinkLabel",
 			L"PictureBox", L"RadioBox", L"GridPanel",
-			L"ScrollView", L"SelectorItem", L"MediaElement" })
+			L"ScrollView", L"SelectorItem", L"MediaPlayer" })
 		{
 			CUI_EXPECT_TRUE(CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
 				L"urn:cui", legacyName) == nullptr);
@@ -51108,7 +58057,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		DesignerModel::DesignDocument rejectedLegacyMedia;
 		std::wstring legacyMediaError;
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
-			R"xaml(<Window xmlns="urn:cui"><MediaElement /></Window>)xaml",
+			R"xaml(<Window xmlns="urn:cui"><MediaPlayer /></Window>)xaml",
 			rejectedLegacyMedia, &legacyMediaError));
 		CUI_EXPECT_TRUE(!legacyMediaError.empty());
 		const auto* left = CuiRuntime::XamlRuntimeSchema::FindAttachedProperty(
@@ -53027,6 +59976,7727 @@ class FreshWindow : public FreshWindowGenerated {};
 			layout.Get(), 0.0f, 0.0f, foreground);
 		target.EndRender();
 		CUI_EXPECT_FALSE(target.IsDeviceLost());
+	});
+
+	runner.Add("DataGrid SelectionUnit metadata exposes WPF choices and rejects invalid values", []
+	{
+		CUI_EXPECT_EQ(0, static_cast<int>(DataGridSelectionUnit::Cell));
+		CUI_EXPECT_EQ(1, static_cast<int>(DataGridSelectionUnit::FullRow));
+		CUI_EXPECT_EQ(
+			2, static_cast<int>(DataGridSelectionUnit::CellOrRowHeader));
+
+		DataGrid grid;
+		CUI_EXPECT_FALSE(grid.GetEnableColumnVirtualization());
+		CUI_EXPECT_EQ(
+			DataGridSelectionUnit::FullRow, grid.GetSelectionUnit());
+		CUI_EXPECT_EQ(
+			DataGridHeadersVisibility::All, grid.GetHeadersVisibility());
+		CUI_EXPECT_TRUE(std::isnan(grid.GetRowHeaderWidth()));
+		CUI_EXPECT_NEAR(0.0, grid.GetRowHeaderActualWidth(), 0.001);
+		const auto properties =
+			DesignerPropertyCatalog::GetBrowsableProperties(grid);
+		const auto* selectionUnit =
+			DesignerPropertyCatalog::Find(properties, L"SelectionUnit");
+		CUI_EXPECT_TRUE(selectionUnit != nullptr);
+		if (!selectionUnit) return;
+		CUI_EXPECT_EQ(
+			DependencyPropertyEditorKind::Choice, selectionUnit->Editor);
+		CUI_EXPECT_EQ(
+			DependencyPropertyPersistence::Metadata,
+			selectionUnit->Persistence);
+		CUI_EXPECT_EQ(std::wstring(L"1"), selectionUnit->SampleValue);
+		CUI_EXPECT_EQ(3ULL, selectionUnit->Choices.size());
+		if (selectionUnit->Choices.size() == 3)
+		{
+			CUI_EXPECT_EQ(
+				std::wstring(L"Cell"),
+				selectionUnit->Choices[0].DisplayName);
+			CUI_EXPECT_EQ(
+				std::wstring(L"0"), selectionUnit->Choices[0].ValueText);
+			CUI_EXPECT_EQ(
+				std::wstring(L"FullRow"),
+				selectionUnit->Choices[1].DisplayName);
+			CUI_EXPECT_EQ(
+				std::wstring(L"1"), selectionUnit->Choices[1].ValueText);
+			CUI_EXPECT_EQ(
+				std::wstring(L"CellOrRowHeader"),
+				selectionUnit->Choices[2].DisplayName);
+			CUI_EXPECT_EQ(
+				std::wstring(L"2"), selectionUnit->Choices[2].ValueText);
+		}
+		CUI_EXPECT_FALSE(grid.TrySetPropertyValue(
+			DataGrid::SelectionUnitProperty(), BindingValue(3)));
+		CUI_EXPECT_EQ(
+			DataGridSelectionUnit::FullRow, grid.GetSelectionUnit());
+		const auto* headersVisibility =
+			DesignerPropertyCatalog::Find(properties, L"HeadersVisibility");
+		CUI_EXPECT_TRUE(headersVisibility != nullptr);
+		if (headersVisibility)
+		{
+			CUI_EXPECT_EQ(4ULL, headersVisibility->Choices.size());
+			CUI_EXPECT_EQ(std::wstring(L"3"),
+				headersVisibility->SampleValue);
+		}
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+			properties, L"EnableColumnVirtualization") != nullptr);
+		grid.SetEnableColumnVirtualization(true);
+		CUI_EXPECT_TRUE(grid.GetEnableColumnVirtualization());
+		CUI_EXPECT_FALSE(grid.TrySetPropertyValue(
+			DataGrid::RowHeaderWidthProperty(), BindingValue(-1.0)));
+		CUI_EXPECT_FALSE(grid.TrySetPropertyValue(
+			DataGrid::RowHeaderActualWidthProperty(), BindingValue(18.0)));
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+			properties, L"RowHeaderActualWidth") == nullptr);
+		grid.SetRowHeaderWidth(46.0);
+		CUI_EXPECT_NEAR(46.0, grid.GetRowHeaderWidth(), 0.001);
+		CUI_EXPECT_NEAR(46.0, grid.GetRowHeaderActualWidth(), 0.001);
+		grid.SetRowHeaderWidth(
+			(std::numeric_limits<double>::quiet_NaN)());
+		CUI_EXPECT_TRUE(std::isnan(grid.GetRowHeaderWidth()));
+		CUI_EXPECT_NEAR(0.0, grid.GetRowHeaderActualWidth(), 0.001);
+		DataGridRowHeader rowHeader;
+		CUI_EXPECT_FALSE(rowHeader.GetFocusable());
+		CUI_EXPECT_EQ(::ClickMode::Press, rowHeader.GetClickMode());
+		CUI_EXPECT_FALSE(rowHeader.TrySetPropertyValue(
+			DataGridRowHeader::IsRowSelectedProperty(), BindingValue(true)));
+	});
+
+	runner.Add("DataGrid declarative columns preserve strict XAML and DesignValue round-trips", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="DataGridRoundTripWindow">
+  <Window.Resources>
+    <DataType x:Key="DataGridRowModel">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Paid" Kind="Bool" />
+      </DataType.Properties>
+    </DataType>
+    <DataTemplate x:Key="DataGridCellTemplate" DataType="DataGridRowModel">
+      <TextBlock Text="{Binding Name}" />
+    </DataTemplate>
+    <DataTemplate x:Key="DataGridEditingTemplate" DataType="DataGridRowModel">
+      <TextBox Text="{Binding Name, Mode=TwoWay}" />
+    </DataTemplate>
+  </Window.Resources>
+	  <DataGrid x:Name="orders" AutoGenerateColumns="false"
+	EnableColumnVirtualization="true"
+	HeadersVisibility="All" RowHeaderWidth="46"
+	SelectionUnit="CellOrRowHeader">
+    <DataGrid.Columns>
+      <DataGridTextColumn Header="Customer"
+        Binding="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus,
+                  Converter=StringTrim, ConverterParameter='parameter',
+                  StringFormat='{}{0}', FallbackValue='fallback',
+                  TargetNullValue='null'}"
+		Width="2*" MinWidth="24" MaxWidth="320" IsReadOnly="true"
+		CanUserSort="false" CanUserResize="false" SortMemberPath="Name" />
+		<DataGridCheckBoxColumn Header="Paid"
+			Binding="{Binding Paid, Mode=TwoWay}"
+			Width="SizeToCells" IsThreeState="true"
+			SortMemberPath="Paid" />
+      <DataGridTemplateColumn Header="Preview" Width="Auto"
+        CellTemplate="{StaticResource DataGridCellTemplate}"
+        CellEditingTemplate="{StaticResource DataGridEditingTemplate}" />
+    </DataGrid.Columns>
+  </DataGrid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(1ULL, document.Nodes.size());
+		const auto* selectionUnit =
+			document.Nodes.front().Properties.Find(L"SelectionUnit");
+		CUI_EXPECT_TRUE(selectionUnit != nullptr);
+		CUI_EXPECT_EQ(
+			DesignerStyleValueKind::Int,
+			selectionUnit ? selectionUnit->Value.Kind
+				: DesignerStyleValueKind::String);
+		CUI_EXPECT_EQ(
+			std::wstring(L"2"), selectionUnit
+				? selectionUnit->Value.Text : std::wstring{});
+		const auto& structure = document.Nodes.front().Structure;
+		CUI_EXPECT_TRUE(structure.DataGridColumns.has_value());
+		CUI_EXPECT_EQ(3ULL, structure.DataGridColumns
+			? structure.DataGridColumns->size() : 0ULL);
+		if (!structure.DataGridColumns
+			|| structure.DataGridColumns->size() != 3) return;
+		const auto& text = (*structure.DataGridColumns)[0];
+		const auto& check = (*structure.DataGridColumns)[1];
+		const auto& templated = (*structure.DataGridColumns)[2];
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridColumnKind::Text, text.Kind);
+		CUI_EXPECT_EQ(std::wstring(L"Customer"), text.Header);
+		CUI_EXPECT_TRUE(text.Binding.has_value());
+		if (text.Binding)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"Name"), text.Binding->SourceProperty);
+			CUI_EXPECT_EQ(BindingMode::TwoWay, text.Binding->Mode);
+			CUI_EXPECT_EQ(
+				DataSourceUpdateMode::OnValidation, text.Binding->UpdateMode);
+			CUI_EXPECT_EQ(std::wstring(L"StringTrim"), text.Binding->Converter);
+			CUI_EXPECT_TRUE(text.Binding->ConverterParameter.has_value());
+			CUI_EXPECT_TRUE(text.Binding->FallbackValue.has_value());
+			CUI_EXPECT_TRUE(text.Binding->TargetNullValue.has_value());
+			CUI_EXPECT_EQ(std::wstring(L"parameter"),
+				text.Binding->ConverterParameter
+					? text.Binding->ConverterParameter->Text : std::wstring{});
+			CUI_EXPECT_EQ(std::wstring(L"{}{0}"),
+				text.Binding->StringFormat.value_or(L""));
+		}
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridLengthUnit::Star, text.Width.Unit);
+		CUI_EXPECT_NEAR(2.0, text.Width.Value, 0.0001);
+		CUI_EXPECT_NEAR(24.0, text.MinWidth, 0.0001);
+		CUI_EXPECT_NEAR(320.0, text.MaxWidth, 0.0001);
+		CUI_EXPECT_TRUE(text.IsReadOnly);
+		CUI_EXPECT_FALSE(text.CanUserSort);
+		CUI_EXPECT_FALSE(text.CanUserResize);
+		CUI_EXPECT_EQ(std::wstring(L"Name"), text.SortMemberPath);
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridColumnKind::CheckBox, check.Kind);
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridLengthUnit::SizeToCells,
+			check.Width.Unit);
+		CUI_EXPECT_TRUE(check.Binding.has_value());
+		CUI_EXPECT_TRUE(check.IsThreeState);
+		CUI_EXPECT_TRUE(check.CanUserResize);
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridColumnKind::Template, templated.Kind);
+		CUI_EXPECT_FALSE(templated.Binding.has_value());
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignDataGridLengthUnit::Auto,
+			templated.Width.Unit);
+		CUI_EXPECT_EQ(std::wstring(L"DataGridCellTemplate"),
+			templated.CellTemplate);
+		CUI_EXPECT_EQ(std::wstring(L"DataGridEditingTemplate"),
+			templated.CellEditingTemplate);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		const auto textOffset = canonical.find("<DataGridTextColumn");
+		const auto checkOffset = canonical.find("<DataGridCheckBoxColumn");
+		const auto templateOffset = canonical.find("<DataGridTemplateColumn");
+		CUI_EXPECT_TRUE(canonical.find("<DataGrid.Columns>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(textOffset < checkOffset && checkOffset < templateOffset);
+		CUI_EXPECT_TRUE(canonical.find("Width=\"2*\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Width=\"SizeToCells\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Width=\"Auto\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("IsThreeState=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("CanUserResize=\"false\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"SelectionUnit=\"CellOrRowHeader\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"HeadersVisibility=\"All\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"RowHeaderWidth=\"46\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"EnableColumnVirtualization=\"true\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"CellEditingTemplate=\"{StaticResource DataGridEditingTemplate}\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Converter=StringTrim")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UpdateSourceTrigger=LostFocus")
+			!= std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto native =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		auto expectRejected = [&](const std::string& invalid,
+			const std::wstring& diagnostic)
+		{
+			DesignerModel::DesignDocument unchanged = document;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, unchanged, &error));
+			CUI_EXPECT_EQ(document, unchanged);
+			CUI_EXPECT_TRUE(error.find(diagnostic) != std::wstring::npos);
+		};
+		expectRejected(R"XAML(<Window xmlns="urn:cui"><DataGrid>
+  <DataGrid.Columns><DataGridTextColumn
+    Binding="{Binding Name, ElementName=source}" /></DataGrid.Columns>
+</DataGrid></Window>)XAML", L"ElementName");
+		expectRejected(R"XAML(<Window xmlns="urn:cui"><DataGrid>
+  <DataGrid.Columns><DataGridTemplateColumn Binding="{Binding Name}" />
+  </DataGrid.Columns></DataGrid></Window>)XAML", L"Binding");
+		expectRejected(R"XAML(<Window xmlns="urn:cui"><DataGrid>
+  <DataGrid.Columns><DataGridComboBoxColumn /></DataGrid.Columns>
+</DataGrid></Window>)XAML", L"DataGrid.Columns");
+		expectRejected(R"XAML(<Window xmlns="urn:cui"><DataGrid>
+  <DataGrid.Columns><DataGridTextColumn Binding="{Binding Name}"
+    IsThreeState="false" /></DataGrid.Columns>
+</DataGrid></Window>)XAML", L"IsThreeState");
+		expectRejected(R"XAML(<Window xmlns="urn:cui"><DataGrid>
+	  <DataGrid.Columns><DataGridTextColumn Binding="{Binding Name}" />
+	  </DataGrid.Columns>
+	  <DataGrid.Columns><DataGridTextColumn Binding="{Binding Name}" />
+	  </DataGrid.Columns>
+	</DataGrid></Window>)XAML", L"重复");
+		expectRejected(R"XAML(<Window xmlns="urn:cui">
+  <DataGrid SelectionUnit="Row" />
+</Window>)XAML", L"SelectionUnit");
+	});
+
+	runner.Add("DataGrid materializer installs declarative columns before ItemsSource rows", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="DataGridMaterializerWindow">
+  <Window.Resources>
+    <DataType x:Key="DataGridRowModel">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Paid" Kind="Bool" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="DataGridRows" ItemType="DataGridRowModel">
+      <DataRecord Name="  Beta  " Paid="false" />
+      <DataRecord Name="Alpha" Paid="true" />
+    </DataList>
+    <DataTemplate x:Key="DataGridCellTemplate" DataType="DataGridRowModel">
+      <TextBlock Text="{Binding Name}" />
+    </DataTemplate>
+    <DataTemplate x:Key="DataGridEditingTemplate" DataType="DataGridRowModel">
+      <TextBox Text="{Binding Name, Mode=TwoWay}" />
+    </DataTemplate>
+  </Window.Resources>
+	  <DataGrid x:Name="grid" AutoGenerateColumns="false" SelectionUnit="Cell"
+			EnableColumnVirtualization="true"
+			HeadersVisibility="Row" RowHeaderWidth="52"
+            ItemsSource="{StaticResource DataGridRows}" SelectedIndex="1">
+    <DataGrid.Columns>
+      <DataGridTextColumn Header="Name" Width="2*" MinWidth="30"
+		MaxWidth="300" CanUserResize="false" SortMemberPath="Name"
+        Binding="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus,
+                  Converter=StringTrim, ConverterParameter='ignored',
+                  StringFormat='{}{0}', FallbackValue='fallback',
+                  TargetNullValue='null'}" />
+		<DataGridCheckBoxColumn Header="Paid" Width="SizeToCells"
+			IsThreeState="true" SortMemberPath="Paid"
+			Binding="{Binding Paid, Mode=TwoWay}" />
+      <DataGridTemplateColumn Header="Preview" Width="*"
+        CellTemplate="{StaticResource DataGridCellTemplate}"
+        CellEditingTemplate="{StaticResource DataGridEditingTemplate}" />
+    </DataGrid.Columns>
+  </DataGrid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* grid = FindMaterializedControlByName<DataGrid>(tree, L"grid");
+		CUI_EXPECT_TRUE(grid != nullptr);
+		if (!grid) return;
+		// This test inspects every generated cell.  Keep it independent from the
+		// default row-virtualization contract covered by the scale test below.
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		CUI_EXPECT_FALSE(grid->GetAutoGenerateColumns());
+		CUI_EXPECT_TRUE(grid->GetEnableColumnVirtualization());
+		CUI_EXPECT_EQ(
+			DataGridSelectionUnit::Cell, grid->GetSelectionUnit());
+		CUI_EXPECT_EQ(
+			DataGridHeadersVisibility::Row, grid->GetHeadersVisibility());
+		CUI_EXPECT_NEAR(52.0, grid->GetRowHeaderWidth(), 0.001);
+		CUI_EXPECT_EQ(3ULL, grid->ColumnCount());
+		CUI_EXPECT_EQ(2ULL, grid->GeneratedItemCount());
+		CUI_EXPECT_EQ(1, grid->GetSelectedIndex());
+		auto* text = dynamic_cast<DataGridTextColumn*>(grid->GetColumn(0));
+		auto* check = dynamic_cast<DataGridCheckBoxColumn*>(grid->GetColumn(1));
+		auto* templated = dynamic_cast<DataGridTemplateColumn*>(
+			grid->GetColumn(2));
+		CUI_EXPECT_TRUE(text && check && templated);
+		if (text)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"Name"), text->GetBindingPath());
+			CUI_EXPECT_EQ(BindingMode::TwoWay, text->GetBindingMode());
+			CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+				text->GetDataSourceUpdateMode());
+			CUI_EXPECT_TRUE(text->GetBindingConverter() != nullptr);
+			CUI_EXPECT_TRUE(text->GetConverterParameter().has_value());
+			CUI_EXPECT_TRUE(text->GetFallbackValue().has_value());
+			CUI_EXPECT_TRUE(text->GetTargetNullValue().has_value());
+			CUI_EXPECT_EQ(std::wstring(L"{}{0}"),
+				text->GetStringFormat().value_or(L""));
+			CUI_EXPECT_EQ(DataGridLengthUnitType::Star,
+				text->GetWidth().UnitType);
+			CUI_EXPECT_NEAR(2.0, text->GetWidth().Value, 0.0001);
+			CUI_EXPECT_NEAR(30.0, text->GetMinWidth(), 0.0001);
+			CUI_EXPECT_NEAR(300.0, text->GetMaxWidth(), 0.0001);
+			CUI_EXPECT_FALSE(text->GetCanUserResize());
+		}
+		CUI_EXPECT_TRUE(check && check->GetIsThreeState());
+		CUI_EXPECT_TRUE(check && check->GetCanUserResize());
+		CUI_EXPECT_TRUE(templated && templated->GetCellTemplate());
+		CUI_EXPECT_TRUE(templated && templated->GetCellEditingTemplate());
+		auto* firstRow = dynamic_cast<DataGridRow*>(
+			grid->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstRow != nullptr);
+		CUI_EXPECT_EQ(3ULL, firstRow ? firstRow->GetCells().size() : 0ULL);
+		auto* display = firstRow && firstRow->GetCell(0)
+			? dynamic_cast<Label*>(firstRow->GetCell(0)->GetVisualContent())
+			: nullptr;
+		auto* paid = firstRow && firstRow->GetCell(1)
+			? dynamic_cast<CheckBox*>(firstRow->GetCell(1)->GetVisualContent())
+			: nullptr;
+		auto* preview = firstRow && firstRow->GetCell(2)
+			? dynamic_cast<Label*>(firstRow->GetCell(2)->GetVisualContent())
+			: nullptr;
+		CUI_EXPECT_TRUE(display != nullptr);
+		CUI_EXPECT_TRUE(paid != nullptr);
+		CUI_EXPECT_TRUE(preview != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Beta"),
+			display ? display->Text : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"  Beta  "),
+			preview ? preview->Text : std::wstring{});
+	});
+
+	runner.Add("DataGrid AOT lowers compiled column paths templates and pre-ItemsSource order", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="DataGridAotWindow">
+  <Window.Resources>
+    <DataType x:Key="DataGridRowModel">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Paid" Kind="Bool" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="DataGridRows" ItemType="DataGridRowModel">
+      <DataRecord Name="Beta" Paid="false" />
+    </DataList>
+    <DataTemplate x:Key="DataGridCellTemplate" DataType="DataGridRowModel">
+      <TextBlock Text="{Binding Name}" />
+    </DataTemplate>
+    <DataTemplate x:Key="DataGridEditingTemplate" DataType="DataGridRowModel">
+      <TextBox Text="{Binding Name, Mode=TwoWay}" />
+    </DataTemplate>
+  </Window.Resources>
+	  <DataGrid x:Name="grid" AutoGenerateColumns="false"
+			EnableColumnVirtualization="true"
+            SelectionUnit="CellOrRowHeader"
+			HeadersVisibility="All" RowHeaderWidth="54"
+            ItemsSource="{StaticResource DataGridRows}">
+    <DataGrid.Columns>
+	  <DataGridTextColumn Header="Name" Width="2*" CanUserResize="false"
+        SortMemberPath="Name" Binding="{Binding Name, Mode=TwoWay}" />
+		<DataGridCheckBoxColumn Header="Paid" Width="SizeToCells"
+			IsThreeState="true" SortMemberPath="Paid"
+			Binding="{Binding Paid, Mode=TwoWay}" />
+      <DataGridTemplateColumn Header="Preview" Width="*"
+        CellTemplate="{StaticResource DataGridCellTemplate}"
+        CellEditingTemplate="{StaticResource DataGridEditingTemplate}" />
+    </DataGrid.Columns>
+  </DataGrid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		const auto source = CodeGenerator(
+			L"DataGridAotWindow", document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("DataGridAotWindow");
+		const auto clearColumns = source.find("->ClearColumns()");
+		const auto textColumn = source.find(
+			"std::make_unique<DataGridTextColumn>()");
+		const auto checkColumn = source.find(
+			"std::make_unique<DataGridCheckBoxColumn>()");
+		const auto templateColumn = source.find(
+			"std::make_unique<DataGridTemplateColumn>()");
+		const auto itemsSource = source.find("->SetItemsSource(");
+		const auto lastAddColumn = itemsSource == std::string::npos
+			? std::string::npos : source.rfind("->AddColumn(", itemsSource);
+		CUI_EXPECT_TRUE(clearColumns != std::string::npos);
+		CUI_EXPECT_TRUE(textColumn < checkColumn && checkColumn < templateColumn);
+		CUI_EXPECT_TRUE(clearColumns < textColumn);
+		CUI_EXPECT_TRUE(lastAddColumn != std::string::npos
+			&& lastAddColumn < itemsSource);
+		CUI_EXPECT_TRUE(source.find("->SetCompiledBindingPath(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetCompiledSortMemberPath(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetIsThreeState(true)")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetCanUserResize(false)")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"->SetSelectionUnit(static_cast<DataGridSelectionUnit>(2))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"->SetHeadersVisibility(static_cast<DataGridHeadersVisibility>(3))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetEnableColumnVirtualization(true)")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetRowHeaderWidth(54")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"->SetCellTemplate(ItemTemplateReference(") != std::string::npos);
+		CUI_EXPECT_TRUE(source.find(
+			"->SetCellEditingTemplate(ItemTemplateReference(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("CompiledBindingPathStepKind::Property")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetBindingPath(L\"")
+			== std::string::npos);
+	});
+
+	runner.Add("DataGrid AOT auto-generates known DataType columns before ItemsSource", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="AutoDataGridWindow">
+  <Window.Resources>
+    <DataType x:Key="AutoRow">
+      <DataType.Properties>
+        <Property Path="Id" Kind="Int" CanWrite="false" />
+        <Property Path="Name" Kind="String" />
+        <Property Path="Paid" Kind="Bool" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="AutoRows" ItemType="AutoRow">
+      <DataRecord Id="7" Name="Alpha" Paid="true" />
+    </DataList>
+  </Window.Resources>
+  <Grid>
+    <DataGrid x:Name="autoGrid"
+      ItemsSource="{StaticResource AutoRows}" />
+    <DataGrid x:Name="emptyGrid" />
+  </Grid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+		const auto source = CodeGenerator(
+			L"AutoDataGridWindow", document,
+			CodeGeneratorOutputKind::StaticWindow)
+			.GenerateCppForHeader("AutoDataGridWindow");
+		const auto firstAuto = source.find("->AddAutoGeneratedColumn(");
+		const auto secondAuto = firstAuto == std::string::npos
+			? std::string::npos : source.find(
+				"->AddAutoGeneratedColumn(", firstAuto + 1);
+		const auto thirdAuto = secondAuto == std::string::npos
+			? std::string::npos : source.find(
+				"->AddAutoGeneratedColumn(", secondAuto + 1);
+		const auto itemsSource = source.find("->SetItemsSource(");
+		CUI_EXPECT_TRUE(firstAuto != std::string::npos);
+		CUI_EXPECT_TRUE(secondAuto != std::string::npos);
+		CUI_EXPECT_TRUE(thirdAuto != std::string::npos);
+		CUI_EXPECT_TRUE(thirdAuto < itemsSource);
+		CUI_EXPECT_TRUE(source.find("std::make_unique<DataGridTextColumn>()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("std::make_unique<DataGridCheckBoxColumn>()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetIsReadOnly(true)")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("->SetCompiledBindingPath(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(source.find("emptyGrid->ClearColumns()")
+			== std::string::npos);
+	});
+
+	runner.Add("DataGrid replaces runtime auto schemas atomically", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		bool rejectCandidateRows = false;
+		grid.SetGeneratedContainerInitializer(
+			[&](Control&, std::wstring* error)
+			{
+				if (!rejectCandidateRows) return true;
+				if (error) *error = L"candidate row rejected";
+				return false;
+			});
+
+		auto names = std::make_shared<ObservableBindingList>(L"NameRow");
+		auto name = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(name->DefineProperty(L"Name", L"Alpha"));
+		names->Items.push_back(BindingSourceReference(name));
+		grid.SetItemsSource(BindingListReference(names));
+		CUI_EXPECT_EQ(names.get(), grid.GetItemsSource().Get());
+		CUI_EXPECT_EQ(1ULL, grid.ColumnCount());
+		CUI_EXPECT_EQ(std::wstring(L"Name"),
+			grid.GetColumn(0)->GetHeader().ToString());
+		CUI_EXPECT_TRUE(dynamic_cast<DataGridTextColumn*>(
+			grid.GetColumn(0)) != nullptr);
+		auto manual = std::make_unique<DataGridTextColumn>();
+		manual->SetHeader(BindingValue(L"Manual"));
+		auto* manualColumn = manual.get();
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(manual)) == manualColumn);
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 1));
+		size_t currentCellChanges = 0;
+		auto currentCellConnection = grid.CurrentCellChanged.Subscribe(
+			[&](DataGrid*, DataGridCurrentCellChangedEventArgs&)
+			{ ++currentCellChanges; });
+
+		auto rejectedPayments =
+			std::make_shared<ObservableBindingList>(L"PaymentRow");
+		auto payment = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(payment->DefineProperty(L"Paid", true));
+		rejectedPayments->Items.push_back(BindingSourceReference(payment));
+
+		rejectCandidateRows = true;
+		grid.SetItemsSource(BindingListReference(rejectedPayments));
+		CUI_EXPECT_EQ(names.get(), grid.GetItemsSource().Get());
+		CUI_EXPECT_EQ(2ULL, grid.ColumnCount());
+		CUI_EXPECT_EQ(std::wstring(L"Name"),
+			grid.GetColumn(0)->GetHeader().ToString());
+		CUI_EXPECT_EQ(manualColumn, grid.GetColumn(1));
+		CUI_EXPECT_EQ(manualColumn, grid.GetCurrentCell().Column);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(0ULL, currentCellChanges);
+
+		CUI_EXPECT_TRUE(name->DefineProperty(L"Paid", true));
+		auto payments = std::make_shared<ObservableBindingList>(L"PaymentRow");
+		payments->Items.push_back(BindingSourceReference(name));
+		rejectCandidateRows = false;
+		grid.SetItemsSource(BindingListReference(payments));
+		CUI_EXPECT_EQ(payments.get(), grid.GetItemsSource().Get());
+		CUI_EXPECT_EQ(3ULL, grid.ColumnCount());
+		CUI_EXPECT_EQ(manualColumn, grid.GetColumn(0));
+		CUI_EXPECT_EQ(manualColumn, grid.GetCurrentCell().Column);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(std::wstring(L"Name"),
+			grid.GetColumn(1)->GetHeader().ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Paid"),
+			grid.GetColumn(2)->GetHeader().ToString());
+		CUI_EXPECT_TRUE(dynamic_cast<DataGridCheckBoxColumn*>(
+			grid.GetColumn(2)) != nullptr);
+		CUI_EXPECT_EQ(0ULL, currentCellChanges);
+
+		DataGrid incremental;
+		DisableItemsVirtualizationForBehaviorTest(incremental);
+		auto initiallyEmpty =
+			std::make_shared<ObservableBindingList>(L"IncrementalRow");
+		incremental.SetItemsSource(BindingListReference(initiallyEmpty));
+		CUI_EXPECT_EQ(0ULL, incremental.ColumnCount());
+		auto first = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(first->DefineProperty(L"Title", L"First"));
+		initiallyEmpty->Items.push_back(BindingSourceReference(first));
+		CUI_EXPECT_EQ(1ULL, incremental.ColumnCount());
+		CUI_EXPECT_EQ(std::wstring(L"Title"),
+			incremental.GetColumn(0)->GetHeader().ToString());
+	});
+
+	runner.Add("DataGrid defaults to deferred bounded row virtualization at scale", []
+	{
+		class PresentationProbeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+		};
+
+		constexpr size_t rowCount = 10000;
+		PresentationProbeDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 520, 228);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto rows = std::make_shared<ObservableBindingList>(L"VirtualRow");
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(index)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(rowCount, grid.ItemCount());
+		CUI_EXPECT_TRUE(grid.IsVirtualizing());
+		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
+
+		auto* scroll = InstallDataGridScrollTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 520.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= 16ULL);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) != nullptr);
+		CUI_EXPECT_NEAR(static_cast<double>(rowCount) * 38.0,
+			scroll->ExtentHeight, 1.0);
+
+		grid.SetRowHeight(54.0);
+		grid.UpdateLayout();
+		CUI_EXPECT_NEAR(static_cast<double>(rowCount) * 54.0,
+			scroll->ExtentHeight, 1.0);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= 16ULL);
+		grid.SetRowHeight(0.0);
+		CUI_EXPECT_NEAR(54.0, grid.GetRowHeight(), 0.001);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(rowCount - 1));
+		CUI_EXPECT_TRUE(scroll && scroll->VerticalOffset > 0.0);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(rowCount - 1) != nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= 16ULL);
+		CUI_EXPECT_TRUE(grid.RecycledItemCount() <= 32ULL);
+	});
+
+	runner.Add("DataGrid staged column virtualization keeps dense default and wide work bounded", []
+	{
+		// Keep this contract buildable while the WPF-shaped public property is
+		// introduced.  The dependent branch becomes the 1000-column/million-row
+		// gate as soon as DataGrid exposes Get/SetEnableColumnVirtualization; until
+		// then the small branch pins the existing (WPF default=false) dense shape.
+		[]<typename TGrid>()
+		{
+			constexpr bool hasColumnVirtualizationSurface = requires(TGrid& grid)
+			{
+				{ grid.GetEnableColumnVirtualization() } -> std::same_as<bool>;
+				grid.SetEnableColumnVirtualization(true);
+			};
+
+			class WideLazyList final
+				: public IBindingList,
+				  public IBindingListOccurrenceIdentity,
+				  public IBindingListOccurrenceLookup,
+				  public IBindingListStableSnapshot
+			{
+			public:
+				WideLazyList(
+					size_t count, BindingSourceReference sharedItem) noexcept
+					: _count(count), _sharedItem(std::move(sharedItem)) {}
+
+				size_t Count() const noexcept override
+				{
+					++CountQueries;
+					return _count;
+				}
+				bool TryGetItem(
+					size_t index, BindingSourceReference& out) const override
+				{
+					++TryGetQueries;
+					out = {};
+					if (index >= _count || !_sharedItem) return false;
+					out = _sharedItem;
+					return true;
+				}
+				EventConnection SubscribeChanged(ChangedHandler) override
+				{
+					return {};
+				}
+				bool TryGetItemOccurrenceIdentity(
+					size_t index, size_t& result) const noexcept override
+				{
+					++OccurrenceQueries;
+					result = 0;
+					if (index >= _count
+						|| index == (std::numeric_limits<size_t>::max)())
+						return false;
+					result = index + 1;
+					return result != 0;
+				}
+				bool TryGetItemIndexByOccurrenceIdentity(
+					size_t identity, size_t& index) const noexcept override
+				{
+					++OccurrenceLookupQueries;
+					index = 0;
+					if (identity == 0 || identity > _count) return false;
+					index = identity - 1;
+					return true;
+				}
+				const std::wstring& ItemTypeName() const noexcept override
+				{
+					static const std::wstring typeName = L"WideLazyRow";
+					return typeName;
+				}
+
+				mutable size_t CountQueries = 0;
+				mutable size_t TryGetQueries = 0;
+				mutable size_t OccurrenceQueries = 0;
+				mutable size_t OccurrenceLookupQueries = 0;
+
+			private:
+				const size_t _count;
+				const BindingSourceReference _sharedItem;
+			};
+
+			class WideDataGrid final : public TGrid
+			{
+			public:
+				void PrepareForTest() { this->PreparePresentation(); }
+				const auto& RealizedItemsForTest() const
+				{
+					return this->GetRealizedItems();
+				}
+			};
+
+			static constexpr auto valueProperty =
+				MakeBindingSourcePropertyToken(L"Value");
+			static constexpr CompiledBindingPathStep valueSteps[] =
+			{
+				{ CompiledBindingPathStepKind::Property,
+					CompiledBindingPathCapabilities::Read
+						| CompiledBindingPathCapabilities::Write
+						| CompiledBindingPathCapabilities::Observe,
+					BindingValueKind::String, valueProperty, 0 }
+			};
+			static constexpr CompiledBindingPathView valuePath{ valueSteps };
+
+			const auto addColumns = [&](TGrid& grid, size_t count)
+			{
+				for (size_t index = 0; index < count; ++index)
+				{
+					auto column = std::make_unique<DataGridTextColumn>();
+					column->SetHeader(BindingValue(
+						L"Column " + std::to_wstring(index)));
+					column->SetCompiledBindingPath(valuePath);
+					column->SetWidth(DataGridLength(80.0));
+					CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+				}
+			};
+			const auto addAutoColumns = [&](TGrid& grid, size_t count)
+			{
+				for (size_t index = 0; index < count; ++index)
+				{
+					auto column = std::make_unique<DataGridTextColumn>();
+					column->SetHeader(BindingValue(
+						L"Auto " + std::to_wstring(index)));
+					column->SetCompiledBindingPath(valuePath);
+					column->SetWidth(DataGridLength::Auto());
+					CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+				}
+			};
+
+			const auto verifyDenseDefault = [&]()
+			{
+				constexpr size_t columnCount = 32;
+				auto item = std::make_shared<TokenOnlyBindingSource>();
+				item->Define(valueProperty, BindingValue(L"Dense row"));
+				auto rows = std::make_shared<WideLazyList>(
+					1, BindingSourceReference(item));
+
+				WideDataGrid grid;
+				ConfigureTestControl(grid, 0, 0, 420, 160);
+				grid.SetAutoGenerateColumns(false);
+				grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+				if constexpr (hasColumnVirtualizationSurface)
+					CUI_EXPECT_FALSE(grid.GetEnableColumnVirtualization());
+				addColumns(grid, columnCount);
+				grid.SetItemsSource(BindingListReference(rows));
+				auto* scroll = InstallDataGridScrollTemplate(grid);
+				grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 160.0f });
+				grid.UpdateLayout();
+				grid.PrepareForTest();
+				grid.UpdateLayout();
+				CUI_EXPECT_TRUE(scroll != nullptr);
+				auto* row = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+				auto* headers = grid.GetColumnHeadersPresenter();
+				CUI_EXPECT_TRUE(row != nullptr);
+				CUI_EXPECT_TRUE(headers != nullptr);
+				if (!row || !headers) return;
+				for (size_t column = 0; column < columnCount; ++column)
+				{
+					CUI_EXPECT_TRUE(row->GetCell(column) != nullptr);
+					CUI_EXPECT_TRUE(headers->GetHeader(column) != nullptr);
+				}
+			};
+
+			verifyDenseDefault();
+			if constexpr (hasColumnVirtualizationSurface)
+			{
+			// Auto/SizeToCells measurement is tied to the realized column strip.
+			// A first layout and a far horizontal jump may each sample a viewport,
+			// but neither may scan 1000 rows for all 1000 logical columns.
+			{
+				constexpr size_t autoRowCount = 1'000'000;
+				constexpr size_t autoColumnCount = 1'000;
+				auto autoItem = std::make_shared<TokenOnlyBindingSource>();
+				autoItem->Define(valueProperty,
+					BindingValue(L"Deferred auto width value"));
+				auto autoRows = std::make_shared<WideLazyList>(
+					autoRowCount, BindingSourceReference(autoItem));
+				WideDataGrid autoGrid;
+				ConfigureTestControl(autoGrid, 0, 0, 420, 228);
+				autoGrid.SetAutoGenerateColumns(false);
+				autoGrid.SetHeadersVisibility(
+					DataGridHeadersVisibility::Column);
+				autoGrid.SetEnableColumnVirtualization(true);
+				addAutoColumns(autoGrid, autoColumnCount);
+				autoGrid.SetItemsSource(BindingListReference(autoRows));
+				auto* autoScroll = InstallDataGridHeaderTemplate(autoGrid);
+				autoGrid.Arrange(cui::core::Rect{
+					0.0f, 0.0f, 420.0f, 228.0f });
+				autoGrid.UpdateLayout();
+				autoGrid.PrepareForTest();
+				autoGrid.UpdateLayout();
+				CUI_EXPECT_TRUE(autoScroll != nullptr);
+				CUI_EXPECT_TRUE(autoRows->TryGetQueries < 30'000ULL);
+				CUI_EXPECT_TRUE(autoItem->TokenGetCalls < 30'000);
+				if (autoScroll && autoScroll->ExtentWidth
+					> autoScroll->ViewportWidth)
+				{
+					const size_t readsBefore = autoRows->TryGetQueries;
+					const int valuesBefore = autoItem->TokenGetCalls;
+					autoScroll->ScrollToHorizontalOffset(
+						autoScroll->ExtentWidth);
+					autoGrid.UpdateLayout();
+					CUI_EXPECT_TRUE(autoRows->TryGetQueries - readsBefore
+						< 30'000ULL);
+					CUI_EXPECT_TRUE(autoItem->TokenGetCalls - valuesBefore
+						< 30'000);
+					CUI_EXPECT_TRUE(autoScroll->HorizontalOffset > 0.0);
+				}
+			}
+
+			// With no realized rows the logical scroll host is the only source of
+			// horizontal extent. It must include the frozen row-header gutter and
+			// refresh when an explicit gutter width changes.
+			{
+				WideDataGrid emptyGrid;
+				ConfigureTestControl(emptyGrid, 0, 0, 420, 160);
+				emptyGrid.SetAutoGenerateColumns(false);
+				emptyGrid.SetHeadersVisibility(DataGridHeadersVisibility::All);
+				emptyGrid.SetRowHeaderWidth(42.0);
+				emptyGrid.SetEnableColumnVirtualization(true);
+				addColumns(emptyGrid, 3);
+				auto* emptyScroll = InstallDataGridHeaderTemplate(emptyGrid);
+				emptyGrid.Arrange(cui::core::Rect{
+					0.0f, 0.0f, 420.0f, 160.0f });
+				emptyGrid.UpdateLayout();
+				emptyGrid.PrepareForTest();
+				emptyGrid.UpdateLayout();
+				CUI_EXPECT_TRUE(emptyScroll != nullptr);
+				if (emptyScroll)
+					CUI_EXPECT_NEAR(282.0, emptyScroll->ExtentWidth, 0.1);
+				emptyGrid.SetRowHeaderWidth(64.0);
+				emptyGrid.UpdateLayout();
+				if (emptyScroll)
+					CUI_EXPECT_NEAR(304.0, emptyScroll->ExtentWidth, 0.1);
+			}
+
+			constexpr size_t rowCount = 1'000'000;
+			constexpr size_t columnCount = 1'000;
+			constexpr size_t lastRow = rowCount - 1;
+			constexpr size_t lastColumn = columnCount - 1;
+			auto item = std::make_shared<TokenOnlyBindingSource>();
+			item->Define(valueProperty, BindingValue(L"Wide lazy value"));
+			auto rows = std::make_shared<WideLazyList>(
+				rowCount, BindingSourceReference(item));
+
+			WideDataGrid grid;
+			ConfigureTestControl(grid, 0, 0, 420, 228);
+			grid.AutomationId = L"wideVirtualDataGrid";
+			grid.SetAutoGenerateColumns(false);
+			grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+			grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+			CUI_EXPECT_FALSE(grid.GetEnableColumnVirtualization());
+			grid.SetEnableColumnVirtualization(true);
+			CUI_EXPECT_TRUE(grid.GetEnableColumnVirtualization());
+			addColumns(grid, columnCount);
+			grid.SetItemsSource(BindingListReference(rows));
+			auto* scroll = InstallDataGridHeaderTemplate(grid);
+			grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+			grid.UpdateLayout();
+			grid.PrepareForTest();
+			grid.UpdateLayout();
+			CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportWidth > 0.0);
+			if (!scroll || scroll->ViewportWidth <= 0.0) return;
+
+			const size_t visibleColumnBudget =
+				static_cast<size_t>(std::ceil(scroll->ViewportWidth / 80.0));
+			// The strip keeps two columns of cache on the only reachable side at
+			// either horizontal edge.  Pointer slots and Grid tracks are storage too:
+			// counting only non-null children would let an O(column-count) skeleton
+			// survive behind an apparently virtualized visual tree.
+			const size_t maximumColumnsPerStrip = visibleColumnBudget + 2;
+			// The sparse Grid representation adds a leading and trailing extent
+			// spacer around the realized tracks.  Those are the only extra tracks
+			// permitted; a definition per logical column would violate this bound.
+			const size_t maximumTracksPerStrip = maximumColumnsPerStrip + 2;
+			const auto findCellsGrid = [](DataGridRow& row) -> Grid*
+			{
+				auto* rowLayout = dynamic_cast<Grid*>(row.GetVisualContent());
+				if (!rowLayout) return nullptr;
+				for (auto* child : rowLayout->GetLayoutChildrenView())
+				{
+					if (child && Grid::GetColumn(*child) == 1)
+						return dynamic_cast<Grid*>(child);
+				}
+				return nullptr;
+			};
+			const auto headerPointerSlotCount = []<typename TPresenter>(
+				const TPresenter& presenter) -> std::optional<size_t>
+			{
+				if constexpr (requires
+				{
+					{ presenter.GetRealizedHeaderSlotCount() }
+						-> std::convertible_to<size_t>;
+				})
+					return static_cast<size_t>(
+						presenter.GetRealizedHeaderSlotCount());
+				else if constexpr (requires { presenter.GetHeaders(); })
+					return presenter.GetHeaders().size();
+				else return std::nullopt;
+			};
+			const auto countRealizedHeaders = [&]()
+			{
+				size_t count = 0;
+				auto* headers = grid.GetColumnHeadersPresenter();
+				if (!headers) return count;
+				for (size_t column = 0; column < columnCount; ++column)
+					if (headers->GetHeader(column)) ++count;
+				return count;
+			};
+			const auto verifyRealizedStrips = [&]()
+			{
+				auto* headers = grid.GetColumnHeadersPresenter();
+				CUI_EXPECT_TRUE(headers != nullptr);
+				const size_t realizedHeaders = countRealizedHeaders();
+				CUI_EXPECT_TRUE(realizedHeaders > 0ULL);
+				if (realizedHeaders > maximumColumnsPerStrip)
+				{
+					const std::string detail = "realizedHeaders="
+						+ std::to_string(realizedHeaders) + ", budget="
+						+ std::to_string(maximumColumnsPerStrip)
+						+ ", viewport="
+						+ std::to_string(scroll->ViewportWidth)
+						+ ", offset="
+						+ std::to_string(scroll->HorizontalOffset);
+					::cui::test::Fail("wide header strip stays bounded",
+						__FILE__, __LINE__, detail.c_str());
+				}
+				if (headers)
+				{
+					CUI_EXPECT_TRUE(headers->GetColumns().size()
+						<= maximumTracksPerStrip);
+					CUI_EXPECT_TRUE(static_cast<size_t>(
+						headers->VisualChildCount()) <= maximumColumnsPerStrip);
+					if (const auto slots = headerPointerSlotCount(*headers))
+						CUI_EXPECT_TRUE(*slots <= maximumColumnsPerStrip);
+				}
+				for (const auto& [rowIndex, visual]
+					: grid.RealizedItemsForTest())
+				{
+					(void)visual;
+					auto* row = dynamic_cast<DataGridRow*>(
+						grid.GetGeneratedItem(rowIndex));
+					CUI_EXPECT_TRUE(row != nullptr);
+					if (!row) continue;
+					CUI_EXPECT_TRUE(row->GetCells().size()
+						<= maximumColumnsPerStrip);
+					auto* cellsGrid = findCellsGrid(*row);
+					CUI_EXPECT_TRUE(cellsGrid != nullptr);
+					if (cellsGrid)
+						CUI_EXPECT_TRUE(cellsGrid->GetColumns().size()
+							<= maximumTracksPerStrip);
+					size_t realizedCells = 0;
+					for (size_t column = 0; column < columnCount; ++column)
+						if (row->GetCell(column)) ++realizedCells;
+					CUI_EXPECT_TRUE(realizedCells > 0ULL);
+					CUI_EXPECT_TRUE(realizedCells
+						<= maximumColumnsPerStrip);
+				}
+			};
+
+			CUI_EXPECT_EQ(rowCount, grid.ItemCount());
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() < 64ULL);
+			verifyRealizedStrips();
+			auto* headers = grid.GetColumnHeadersPresenter();
+			auto* firstRow = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(0));
+			CUI_EXPECT_TRUE(headers && headers->GetHeader(0));
+			CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(0));
+
+			// A touchpad-sized delta that remains inside the cached strip must be a
+			// transform-only update: it must preserve the realized controls and must
+			// not reread the row value merely to move the strip.
+			constexpr double nudgeDelta = 8.0;
+			double nudgeStart = 1.0;
+			for (double candidate = 1.0; candidate <= 64.0; candidate += 1.0)
+			{
+				const double remainder = std::fmod(
+					scroll->ViewportWidth + candidate, 80.0);
+				const double distanceToNextBoundary = remainder <= 0.0001
+					? 80.0 : 80.0 - remainder;
+				if (candidate + nudgeDelta < 80.0
+					&& distanceToNextBoundary > nudgeDelta + 0.5)
+				{
+					nudgeStart = candidate;
+					break;
+				}
+			}
+			scroll->ScrollToHorizontalOffset(nudgeStart);
+			grid.UpdateLayout();
+			verifyRealizedStrips();
+			headers = grid.GetColumnHeadersPresenter();
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			auto* const initialFirstHeader = headers
+				? headers->GetHeader(0) : nullptr;
+			auto* const initialFirstCell = firstRow
+				? firstRow->GetCell(0) : nullptr;
+			const int readsBeforeNudge = item->TokenGetCalls;
+			scroll->ScrollToHorizontalOffset(nudgeStart + nudgeDelta);
+			grid.UpdateLayout();
+			CUI_EXPECT_TRUE(scroll->HorizontalOffset > 0.0);
+			verifyRealizedStrips();
+			headers = grid.GetColumnHeadersPresenter();
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			CUI_EXPECT_EQ(initialFirstHeader,
+				headers ? headers->GetHeader(0) : nullptr);
+			CUI_EXPECT_EQ(initialFirstCell,
+				firstRow ? firstRow->GetCell(0) : nullptr);
+			CUI_EXPECT_TRUE(item->TokenGetCalls - readsBeforeNudge <= 8);
+			scroll->ScrollToHorizontalOffset(0.0);
+			grid.UpdateLayout();
+			verifyRealizedStrips();
+
+			// Crossing one strip boundary keeps the overlapping containers (and
+			// therefore their templates/bindings) alive.  Only the entering edge is
+			// generated; the former full-row/header rebuild changed these identities.
+			headers = grid.GetColumnHeadersPresenter();
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			auto* const retainedHeader = headers
+				? headers->GetHeader(3) : nullptr;
+			auto* const retainedCell = firstRow
+				? firstRow->GetCell(3) : nullptr;
+			CUI_EXPECT_TRUE(retainedHeader != nullptr);
+			CUI_EXPECT_TRUE(retainedCell != nullptr);
+			scroll->ScrollToHorizontalOffset(81.0);
+			grid.UpdateLayout();
+			verifyRealizedStrips();
+			headers = grid.GetColumnHeadersPresenter();
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			CUI_EXPECT_EQ(retainedHeader,
+				headers ? headers->GetHeader(3) : nullptr);
+			CUI_EXPECT_EQ(retainedCell,
+				firstRow ? firstRow->GetCell(3) : nullptr);
+			scroll->ScrollToHorizontalOffset(0.0);
+			grid.UpdateLayout();
+			verifyRealizedStrips();
+
+			const int readsBeforeTail = item->TokenGetCalls;
+			if (!(scroll->ExtentWidth > scroll->ViewportWidth))
+				throw std::runtime_error(
+					"wide virtual DataGrid did not publish horizontal extent: extent="
+					+ std::to_string(scroll->ExtentWidth)
+					+ ", viewport=" + std::to_string(scroll->ViewportWidth));
+			scroll->ScrollToHorizontalOffset(scroll->ExtentWidth);
+			grid.UpdateLayout();
+			CUI_EXPECT_TRUE(scroll->HorizontalOffset > 0.0);
+			verifyRealizedStrips();
+			headers = grid.GetColumnHeadersPresenter();
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			CUI_EXPECT_TRUE(headers && headers->GetHeader(lastColumn));
+			CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(lastColumn));
+			CUI_EXPECT_TRUE(!headers || headers->GetHeader(0) == nullptr);
+			CUI_EXPECT_TRUE(!firstRow || firstRow->GetCell(0) == nullptr);
+			const size_t tailReadBudget = grid.GeneratedItemCount()
+				* maximumColumnsPerStrip * 4 + 128;
+			CUI_EXPECT_TRUE(item->TokenGetCalls - readsBeforeTail
+				<= static_cast<int>(tailReadBudget));
+
+			scroll->ScrollToHorizontalOffset(0.0);
+			grid.UpdateLayout();
+			CUI_EXPECT_TRUE(grid.SetCurrentCell(0, lastColumn));
+			CUI_EXPECT_TRUE(grid.SelectCell(lastRow, lastColumn));
+			// BeginEdit is responsible for horizontally realizing an off-screen
+			// CurrentCell before it asks the column for an editing element.
+			CUI_EXPECT_TRUE(grid.BeginEdit());
+			CUI_EXPECT_TRUE(scroll->HorizontalOffset > 0.0);
+			firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+			CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(lastColumn));
+			CUI_EXPECT_TRUE(grid.CancelEdit());
+			CUI_EXPECT_EQ(lastColumn, grid.GetCurrentCell().ColumnIndex);
+			CUI_EXPECT_TRUE(grid.IsCellSelected(lastRow, lastColumn));
+
+			auto& peer = grid.GetAutomationPeer();
+			uint32_t lastRowId = 0;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(
+				0, columnCount + lastRow, lastRowId));
+			CUI_EXPECT_TRUE(lastRowId != 0);
+			CUI_EXPECT_EQ(columnCount,
+				peer.GetAccessibilityVirtualChildCount(lastRowId));
+			const size_t tryGetBeforeUia = rows->TryGetQueries;
+			const int readsBeforeUia = item->TokenGetCalls;
+			uint32_t lastCellId = 0;
+			CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+				static_cast<int>(lastRow),
+				static_cast<int>(lastColumn), lastCellId));
+			CUI_EXPECT_TRUE(lastCellId != 0);
+			AccessibilityVirtualNode lastCellNode;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+				lastCellId, lastCellNode));
+			CUI_EXPECT_EQ(static_cast<int>(lastRow), lastCellNode.Row);
+			CUI_EXPECT_EQ(static_cast<int>(lastColumn), lastCellNode.Column);
+			CUI_EXPECT_EQ(std::wstring(L"Wide lazy value"),
+				lastCellNode.Value);
+			const size_t uiSourceBudget = grid.GeneratedItemCount()
+				* maximumColumnsPerStrip * 12 + 128;
+			if (rows->TryGetQueries - tryGetBeforeUia > uiSourceBudget)
+			{
+				const auto delta = rows->TryGetQueries - tryGetBeforeUia;
+				const std::string detail = "TryGet delta="
+					+ std::to_string(delta) + ", realized="
+					+ std::to_string(grid.GeneratedItemCount());
+				::cui::test::Fail("wide UIA source queries stay sparse",
+					__FILE__, __LINE__, detail.c_str());
+			}
+			const size_t uiReadBudget = grid.GeneratedItemCount()
+				* maximumColumnsPerStrip * 4 + 128;
+			CUI_EXPECT_TRUE(item->TokenGetCalls - readsBeforeUia
+				<= static_cast<int>(uiReadBudget));
+
+			// Requesting one far cell must not allocate identities for all 1000
+			// siblings.  IDs are monotonic in the test process, so the subsequently
+			// requested first sibling remains adjacent when per-row identities are
+			// sparse; the former dense vector leaves roughly 999 IDs between them.
+			uint32_t firstCellId = 0;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(
+				lastRowId, 0, firstCellId));
+			const uint32_t identityDistance = lastCellId > firstCellId
+				? lastCellId - firstCellId : firstCellId - lastCellId;
+			CUI_EXPECT_TRUE(identityDistance <= 8U);
+			}
+		}.template operator()<DataGrid>();
+	});
+
+	runner.Add("DataGrid million-row stable source keeps realization and UIA sparse", []
+	{
+		class MillionRowList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			MillionRowList(
+				size_t count, BindingSourceReference sharedItem) noexcept
+				: _count(count), _sharedItem(std::move(sharedItem)) {}
+
+			size_t Count() const noexcept override
+			{
+				++CountQueries;
+				return _count;
+			}
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_sharedItem) return false;
+				out = _sharedItem;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				++SubscribeQueries;
+				return {};
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				++OccurrenceQueries;
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				result = index + 1;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				++OccurrenceLookupQueries;
+				index = 0;
+				if (identity == 0 || identity > _count) return false;
+				index = identity - 1;
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"MillionRow";
+				return typeName;
+			}
+
+			mutable size_t CountQueries = 0;
+			mutable size_t TryGetQueries = 0;
+			mutable size_t OccurrenceQueries = 0;
+			mutable size_t OccurrenceLookupQueries = 0;
+			size_t SubscribeQueries = 0;
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _sharedItem;
+		};
+
+		class MillionRowDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+		};
+
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t lastIndex = rowCount - 1;
+		constexpr size_t middleIndex = rowCount / 2;
+		// Includes the deliberate 256-cell lazy enumeration below plus several
+		// viewport/UIA probes; the bound stays constant and tiny versus one million.
+		constexpr size_t maximumSourceQueries = 2048;
+		auto sharedItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(sharedItem->DefineProperty(
+			L"Name", L"One shared lazy record"));
+		auto rows = std::make_shared<MillionRowList>(
+			rowCount, BindingSourceReference(sharedItem));
+
+		MillionRowDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.AutomationId = L"millionRowDataGrid";
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(rowCount, grid.ItemCount());
+		CUI_EXPECT_TRUE(grid.IsVirtualizing());
+		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
+
+		// A CurrentItem/Bring request can precede template realization on a
+		// hidden tab.  A deferred DataGrid must materialize only that occurrence,
+		// never turn the absent viewport into an instruction to realize all rows.
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(lastIndex));
+		CUI_EXPECT_EQ(1ULL, grid.GeneratedItemCount());
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) == nullptr);
+
+		auto* scroll = InstallDataGridScrollTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		const auto rowsPanel = grid.GetItemsPanel();
+		const double virtualRowHeight = rowsPanel
+			? static_cast<double>(rowsPanel.Get()->ItemHeight) : 38.0;
+		const double cacheLength = rowsPanel
+			? static_cast<double>(rowsPanel.Get()->CacheLength) : 0.0;
+		// The middle viewport contains the visible rows plus one CacheLength
+		// before and after it. Both intersecting edge rows are eligible, so the
+		// bounded structural contract is ceil(total span / row height) + 1 rather
+		// than a magic number that only happens to hold at the collection ends.
+		const size_t maximumRealized = static_cast<size_t>(std::ceil(
+			scroll->ViewportHeight * (1.0 + 2.0 * cacheLength)
+			/ virtualRowHeight)) + 1;
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) == nullptr);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(lastIndex));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) == nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(middleIndex));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(middleIndex) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) == nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(0));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(middleIndex) == nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+
+		auto& peer = grid.GetAutomationPeer();
+		// Table.GetRowHeaders is a compact projection of realized row headers,
+		// never a row-index-aligned million-entry vector. Source work must stay
+		// proportional to the virtualized viewport.
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::All);
+		grid.UpdateLayout();
+		const size_t realizedForHeaders = grid.GeneratedItemCount();
+		const size_t beforeHeaderCount = rows->CountQueries;
+		const size_t beforeHeaderTryGet = rows->TryGetQueries;
+		const size_t beforeHeaderOccurrence = rows->OccurrenceQueries;
+		std::vector<uint32_t> realizedRowHeaders;
+		peer.GetAccessibilityVirtualRowHeaders(realizedRowHeaders);
+		const size_t headerQueryBudget = maximumRealized * 2 + 8;
+		CUI_EXPECT_TRUE(!realizedRowHeaders.empty());
+		CUI_EXPECT_TRUE(realizedRowHeaders.size() <= realizedForHeaders);
+		CUI_EXPECT_TRUE(std::all_of(
+			realizedRowHeaders.begin(), realizedRowHeaders.end(),
+			[](uint32_t id) { return id != 0; }));
+		CUI_EXPECT_TRUE(rows->CountQueries - beforeHeaderCount
+			<= headerQueryBudget);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeHeaderTryGet
+			<= headerQueryBudget);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries - beforeHeaderOccurrence
+			<= headerQueryBudget);
+		uint32_t realizedFirstCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			0, 0, realizedFirstCellId));
+		AccessibilityVirtualNode realizedFirstCell;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			realizedFirstCellId, realizedFirstCell));
+		CUI_EXPECT_TRUE(realizedFirstCell.RowHeaderId != 0);
+		CUI_EXPECT_TRUE(std::find(realizedRowHeaders.begin(),
+			realizedRowHeaders.end(), realizedFirstCell.RowHeaderId)
+			!= realizedRowHeaders.end());
+
+		// With row headers disabled the query returns immediately, without even
+		// rebuilding the sparse identity projection.
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid.UpdateLayout();
+		const size_t beforeHiddenHeaderCount = rows->CountQueries;
+		const size_t beforeHiddenHeaderTryGet = rows->TryGetQueries;
+		const size_t beforeHiddenHeaderOccurrence = rows->OccurrenceQueries;
+		peer.GetAccessibilityVirtualRowHeaders(realizedRowHeaders);
+		CUI_EXPECT_TRUE(realizedRowHeaders.empty());
+		CUI_EXPECT_EQ(beforeHiddenHeaderCount, rows->CountQueries);
+		CUI_EXPECT_EQ(beforeHiddenHeaderTryGet, rows->TryGetQueries);
+		CUI_EXPECT_EQ(beforeHiddenHeaderOccurrence,
+			rows->OccurrenceQueries);
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			realizedFirstCellId, realizedFirstCell));
+		CUI_EXPECT_EQ(0U, realizedFirstCell.RowHeaderId);
+
+		size_t beforeTryGet = rows->TryGetQueries;
+		CUI_EXPECT_EQ(rowCount + 1,
+			peer.GetAccessibilityVirtualChildCount(0));
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeTryGet < 4ULL);
+
+		uint32_t lastRowId = 0;
+		beforeTryGet = rows->TryGetQueries;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(
+			0, lastIndex + 1, lastRowId));
+		CUI_EXPECT_TRUE(lastRowId != 0);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeTryGet < 8ULL);
+		CUI_EXPECT_EQ(1ULL,
+			peer.GetAccessibilityVirtualChildCount(lastRowId));
+
+		uint32_t lastCellId = 0;
+		beforeTryGet = rows->TryGetQueries;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(lastIndex), 0, lastCellId));
+		CUI_EXPECT_TRUE(lastCellId != 0);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeTryGet < 64ULL);
+		uint32_t childCellId = 0;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(
+			lastRowId, 0, childCellId));
+		CUI_EXPECT_EQ(lastCellId, childCellId);
+		AccessibilityVirtualNode lastCellNode;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(
+			lastCellId, lastCellNode));
+		CUI_EXPECT_EQ(static_cast<int>(lastIndex), lastCellNode.Row);
+		CUI_EXPECT_EQ(0, lastCellNode.Column);
+		CUI_EXPECT_EQ(std::wstring(L"One shared lazy record"),
+			lastCellNode.Value);
+
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(middleIndex, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(lastIndex, 0));
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Item.Shared() == sharedItem);
+		CUI_EXPECT_EQ(middleIndex, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			CUI_EXPECT_TRUE(grid.GetSelectedCells().front().Item.Shared()
+				== sharedItem);
+			CUI_EXPECT_EQ(lastIndex,
+				grid.GetSelectedCells().front().RowIndex);
+		}
+		CUI_EXPECT_TRUE(grid.IsCellSelected(lastIndex, 0));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(middleIndex, 0));
+		std::vector<uint32_t> selection;
+		peer.GetAccessibilityVirtualSelection(selection);
+		CUI_EXPECT_EQ(1ULL, selection.size());
+		CUI_EXPECT_TRUE(!selection.empty()
+			&& selection.front() == lastCellId);
+
+		uint32_t middleCellId = 0;
+		beforeTryGet = rows->TryGetQueries;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(middleIndex), 0, middleCellId));
+		CUI_EXPECT_TRUE(middleCellId != 0 && middleCellId != lastCellId);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeTryGet < 64ULL);
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(0));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(middleIndex) == nullptr);
+		uint32_t middleCellIdAgain = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(middleIndex), 0, middleCellIdAgain));
+		CUI_EXPECT_EQ(middleCellId, middleCellIdAgain);
+		uint32_t lastCellIdAgain = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(lastIndex), 0, lastCellIdAgain));
+		CUI_EXPECT_EQ(lastCellId, lastCellIdAgain);
+		uint32_t lastRowIdAgain = 0;
+		CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualChildAt(
+			0, lastIndex + 1, lastRowIdAgain));
+		CUI_EXPECT_EQ(lastRowId, lastRowIdAgain);
+
+		// WPF's VirtualizedCellInfoCollection stores SelectAll as one region.
+		// The synchronous command, public Count and event delta must not read or
+		// retain one DataGridCellInfo per million-row occurrence.
+		size_t selectedEvents = 0;
+		size_t lastAddedCells = 0;
+		size_t lastRemovedCells = 0;
+		auto denseSelectionConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				++selectedEvents;
+				lastAddedCells = args.AddedCells.size();
+				lastRemovedCells = args.RemovedCells.size();
+			});
+		const size_t beforeSelectAllTryGet = rows->TryGetQueries;
+		const size_t beforeSelectAllOccurrence = rows->OccurrenceQueries;
+		grid.SelectAllCells();
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(1ULL, selectedEvents);
+		CUI_EXPECT_EQ(rowCount - 1, lastAddedCells);
+		CUI_EXPECT_EQ(0ULL, lastRemovedCells);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeSelectAllTryGet < 128ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeSelectAllOccurrence < 128ULL);
+		CUI_EXPECT_EQ(0ULL, grid.GetSelectedCells().front().RowIndex);
+		CUI_EXPECT_EQ(lastIndex,
+			grid.GetSelectedCells()[rowCount - 1].RowIndex);
+		CUI_EXPECT_TRUE(grid.IsCellSelected(middleIndex, 0));
+
+		CUI_EXPECT_TRUE(grid.UnselectCell(middleIndex, 0));
+		CUI_EXPECT_EQ(rowCount - 1, grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(2ULL, selectedEvents);
+		CUI_EXPECT_EQ(0ULL, lastAddedCells);
+		CUI_EXPECT_EQ(1ULL, lastRemovedCells);
+		CUI_EXPECT_FALSE(grid.IsCellSelected(middleIndex, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(lastIndex, 0));
+		const size_t beforeLazyEnumerationTryGet = rows->TryGetQueries;
+		const size_t beforeLazyEnumerationOccurrence = rows->OccurrenceQueries;
+		const size_t beforeLazyEnumerationLookup =
+			rows->OccurrenceLookupQueries;
+		size_t enumerated = 0;
+		for (const auto& cell : grid.GetSelectedCells())
+		{
+			CUI_EXPECT_TRUE(cell.IsValid());
+			if (++enumerated == 256) break;
+		}
+		CUI_EXPECT_EQ(256ULL, enumerated);
+		CUI_EXPECT_TRUE(rows->TryGetQueries
+			- beforeLazyEnumerationTryGet < 1024ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeLazyEnumerationOccurrence < 2048ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries
+			- beforeLazyEnumerationLookup < 8ULL);
+		CUI_EXPECT_TRUE(grid.SelectCell(middleIndex, 0));
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedCells().size());
+
+		// Row/hybrid selection is implemented by ListBox. Rebuilding the realized
+		// viewport must restore the one selected occurrence through the view's
+		// sparse token-position cache (or its delegated cold lookup), not scan the
+		// million-row source from index zero. A hot cache validates the forward
+		// token and legitimately performs zero underlying reverse lookups.
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		CUI_EXPECT_TRUE(grid.SelectIndex(static_cast<int>(middleIndex)));
+		const size_t beforeSelectionRebuildTryGet = rows->TryGetQueries;
+		const size_t beforeSelectionRebuildOccurrence =
+			rows->OccurrenceQueries;
+		const size_t beforeSelectionRebuildLookup =
+			rows->OccurrenceLookupQueries;
+		grid.SetGeneratedContainerInitializer(
+			[](Control&, std::wstring*) { return true; });
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_TRUE(!grid.GetSelectedIndices().empty()
+			&& grid.GetSelectedIndices().front()
+				== static_cast<int>(middleIndex));
+		const size_t selectionRebuildQueryBudget = maximumRealized * 12 + 64;
+		CUI_EXPECT_TRUE(rows->TryGetQueries
+			- beforeSelectionRebuildTryGet < selectionRebuildQueryBudget);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeSelectionRebuildOccurrence > 0ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeSelectionRebuildOccurrence < 128ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries
+			- beforeSelectionRebuildLookup < selectionRebuildQueryBudget);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(0));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) != nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Item.Shared() == sharedItem);
+		CUI_EXPECT_EQ(middleIndex, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_TRUE(grid.IsCellSelected(middleIndex, 0));
+		// Stable-snapshot pass-through plus sparse realization/UIA must keep every
+		// item and occurrence lookup proportional to the handful of viewports and
+		// explicitly requested remote rows, never to the million-row Count.
+		CUI_EXPECT_TRUE(rows->CountQueries < 4096ULL);
+		if (rows->TryGetQueries >= maximumSourceQueries
+			|| rows->OccurrenceQueries >= maximumSourceQueries
+			|| rows->OccurrenceLookupQueries >= maximumSourceQueries)
+		{
+			const std::string detail = "TryGet="
+				+ std::to_string(rows->TryGetQueries)
+				+ ", Occurrence=" + std::to_string(rows->OccurrenceQueries)
+				+ ", Lookup=" + std::to_string(rows->OccurrenceLookupQueries);
+			::cui::test::Fail("million-row source queries remain sparse",
+				__FILE__, __LINE__, detail.c_str());
+		}
+
+		// FullRow SelectAll keeps both the ListBox index domain and DataGrid cell
+		// projection range-backed. Count/membership and a sparse hole toggle must
+		// remain constant work; only explicit public enumeration is O(selected).
+		const size_t beforeFullRowSelectTryGet = rows->TryGetQueries;
+		const size_t beforeFullRowSelectOccurrence = rows->OccurrenceQueries;
+		const size_t beforeFullRowSelectLookup =
+			rows->OccurrenceLookupQueries;
+		grid.SelectAllCells();
+		CUI_EXPECT_TRUE(grid.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_TRUE(grid.AreAllItemsSelected());
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(0, grid.GetSelectedIndices().front());
+		CUI_EXPECT_EQ(static_cast<int>(lastIndex),
+			grid.GetSelectedIndices().back());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(lastIndex, 0));
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeFullRowSelectTryGet
+			< 256ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeFullRowSelectOccurrence < 256ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries
+			- beforeFullRowSelectLookup < 256ULL);
+
+		const size_t beforeFullRowHoleTryGet = rows->TryGetQueries;
+		const size_t beforeFullRowHoleOccurrence = rows->OccurrenceQueries;
+		const size_t beforeFullRowHoleLookup = rows->OccurrenceLookupQueries;
+		grid.RequestItemSelection(middleIndex, false);
+		CUI_EXPECT_TRUE(grid.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_FALSE(grid.AreAllItemsSelected());
+		CUI_EXPECT_EQ(rowCount - 1, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(rowCount - 1, grid.GetSelectedCells().size());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(middleIndex, 0));
+		grid.RequestItemSelection(middleIndex, true);
+		CUI_EXPECT_TRUE(grid.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_TRUE(grid.AreAllItemsSelected());
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(rowCount, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(middleIndex, 0));
+		CUI_EXPECT_TRUE(rows->TryGetQueries - beforeFullRowHoleTryGet
+			< 256ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries
+			- beforeFullRowHoleOccurrence < 256ULL);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries
+			- beforeFullRowHoleLookup < 256ULL);
+	});
+
+	runner.Add("DataGrid FullRow Reset keeps cross-snapshot cell delta row-lazy", []
+	{
+		struct QueryState final
+		{
+			size_t Reads = 0;
+		};
+		class Snapshot final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			Snapshot(std::vector<BindingSourceReference> items,
+				size_t firstToken, std::shared_ptr<QueryState> queries)
+				: _items(std::move(items)), _firstToken(firstToken),
+				  _queries(std::move(queries)) {}
+			size_t Count() const noexcept override { return _items.size(); }
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++_queries->Reads;
+				out = {};
+				if (index >= _items.size()) return false;
+				out = _items[index];
+				return static_cast<bool>(out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"ResetScaleRow";
+				return typeName;
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < _items.size() ? _firstToken + index : 0;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = identity >= _firstToken ? identity - _firstToken : 0;
+				return identity >= _firstToken && index < _items.size();
+			}
+			bool IsItemIndexByOccurrenceIdentityLookupBounded()
+				const noexcept override { return true; }
+
+		private:
+			std::vector<BindingSourceReference> _items;
+			size_t _firstToken = 1;
+			std::shared_ptr<QueryState> _queries;
+		};
+		class ResettableList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListSnapshotProvider
+		{
+		public:
+			explicit ResettableList(std::vector<BindingSourceReference> items)
+				: Items(std::move(items)), Queries(std::make_shared<QueryState>()) {}
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++Queries->Reads;
+				out = {};
+				if (index >= Items.size()) return false;
+				out = Items[index];
+				return static_cast<bool>(out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						ResettableList*, const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"ResetScaleRow";
+				return typeName;
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = index < Items.size() ? FirstToken + index : 0;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = identity >= FirstToken ? identity - FirstToken : 0;
+				return identity >= FirstToken && index < Items.size();
+			}
+			bool IsItemIndexByOccurrenceIdentityLookupBounded()
+				const noexcept override { return true; }
+			bool TryGetStableSnapshot(
+				BindingListReference& result) const override
+			{
+				result = BindingListReference(std::make_shared<Snapshot>(
+					Items, FirstToken, Queries));
+				return true;
+			}
+			void Reset(std::vector<BindingSourceReference> items)
+			{
+				const size_t oldSize = Items.size();
+				Items = std::move(items);
+				FirstToken = NextToken;
+				NextToken += Items.size() + 1;
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Reset,
+						CollectionChangedEventArgs::Npos,
+						CollectionChangedEventArgs::Npos,
+						oldSize, Items.size(), oldSize, Items.size() });
+			}
+
+			std::vector<BindingSourceReference> Items;
+			std::shared_ptr<QueryState> Queries;
+
+		private:
+			size_t FirstToken = 1;
+			size_t NextToken = 1'000'000;
+			Event<void(ResettableList*, const CollectionChangedEventArgs&)>
+				Changed;
+		};
+
+		constexpr size_t rowCount = 4096;
+		constexpr size_t retainedCount = rowCount * 3 / 4;
+		constexpr size_t columnCount = 16;
+		std::vector<std::shared_ptr<ObservableObject>> retainedOwners;
+		retainedOwners.reserve(rowCount);
+		std::vector<BindingSourceReference> initial;
+		initial.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			retainedOwners.push_back(row);
+			initial.emplace_back(row);
+		}
+		auto source = std::make_shared<ResettableList>(std::move(initial));
+
+		DataGrid grid;
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		grid.SetItemsSource(BindingListReference(source));
+		grid.SelectAllCells();
+		CUI_EXPECT_EQ(rowCount * columnCount,
+			grid.GetSelectedCells().size());
+
+		size_t eventCount = 0;
+		size_t removedCount = 0;
+		size_t addedCount = 0;
+		bool firstRemovedValid = false;
+		auto changed = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				++eventCount;
+				removedCount = args.RemovedCells.size();
+				addedCount = args.AddedCells.size();
+				firstRemovedValid = !args.RemovedCells.empty()
+					&& args.RemovedCells.front().IsValid();
+			});
+		std::vector<BindingSourceReference> replacement;
+		replacement.reserve(rowCount);
+		for (size_t index = 0; index < retainedCount; ++index)
+			replacement.emplace_back(retainedOwners[index]);
+		for (size_t index = retainedCount; index < rowCount; ++index)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Replacement " + std::to_wstring(index)));
+			retainedOwners.push_back(row);
+			replacement.emplace_back(row);
+		}
+		source->Queries->Reads = 0;
+		source->Reset(std::move(replacement));
+
+		CUI_EXPECT_EQ(1ULL, eventCount);
+		CUI_EXPECT_EQ((rowCount - retainedCount) * columnCount, removedCount);
+		CUI_EXPECT_EQ(0ULL, addedCount);
+		CUI_EXPECT_TRUE(firstRemovedValid);
+		CUI_EXPECT_TRUE(grid.IsSelectedIndexRangeBacked());
+		CUI_EXPECT_EQ(retainedCount, grid.SelectedIndexCount());
+		CUI_EXPECT_EQ(retainedCount * columnCount,
+			grid.GetSelectedCells().size());
+		// Reset itself is an O(rows) operation.  The cell delta must not multiply
+		// stable-snapshot reads by the number of DataGrid columns.
+		CUI_EXPECT_TRUE(source->Queries->Reads < rowCount * 12);
+	});
+
+	runner.Add("DataGrid bulk mutable cell retirement stays interval-backed", []
+	{
+		constexpr size_t rowCount = 20000;
+		constexpr size_t removeStart = 4000;
+		constexpr size_t removeCount = 12000;
+		constexpr size_t columnCount = 3;
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Name", L"Interval row"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"IntervalRetirementRow");
+		rows->Items.assign(rowCount, BindingSourceReference(repeated));
+
+		DataGrid grid;
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < columnCount; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.SelectAllCells();
+		CUI_EXPECT_TRUE(grid.UnselectCell(removeStart + 2, 1));
+
+		size_t removedCells = 0;
+		bool firstValid = false;
+		bool lastValid = false;
+		auto changed = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				removedCells = args.RemovedCells.size();
+				firstValid = !args.RemovedCells.empty()
+					&& args.RemovedCells.front().IsValid();
+				lastValid = !args.RemovedCells.empty()
+					&& args.RemovedCells[args.RemovedCells.size() - 1].IsValid();
+			});
+		rows->Items.erase(
+			rows->Items.begin() + static_cast<std::ptrdiff_t>(removeStart),
+			rows->Items.begin() + static_cast<std::ptrdiff_t>(
+				removeStart + removeCount));
+
+		CUI_EXPECT_EQ(removeCount * columnCount - 1, removedCells);
+		CUI_EXPECT_TRUE(firstValid);
+		CUI_EXPECT_TRUE(lastValid);
+		CUI_EXPECT_EQ((rowCount - removeCount) * columnCount,
+			grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(1ULL,
+			grid.GetSelectedCells().RetiredSnapshotRowIntervalCountForTesting());
+		CUI_EXPECT_EQ(0ULL,
+			grid.GetSelectedCells().RetiredSnapshotRowIdentityCountForTesting());
+		for (size_t column = 0; column < columnCount; ++column)
+		{
+			CUI_EXPECT_TRUE(grid.IsCellSelected(removeStart - 1, column));
+			CUI_EXPECT_TRUE(grid.IsCellSelected(removeStart, column));
+		}
+	});
+
+	runner.Add("DataGrid virtual selected region preserves duplicate sort columns rollback and lifetime", []
+	{
+		auto alpha = std::make_shared<ObservableObject>();
+		auto beta = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alpha->DefineProperty(L"Rank", 1));
+		CUI_EXPECT_TRUE(beta->DefineProperty(L"Rank", 2));
+		std::vector<BindingSourceReference> records{
+			BindingSourceReference(beta), BindingSourceReference(alpha),
+			BindingSourceReference(beta), BindingSourceReference(alpha) };
+		auto source = std::make_shared<CompiledBindingList>(
+			std::move(records), MakeDataTypeToken(L"RegionRow"));
+
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto firstOwner = std::make_unique<DataGridTextColumn>();
+		auto* first = firstOwner.get();
+		first->SetHeader(BindingValue(L"Rank 1"));
+		first->SetBindingPath(L"Rank");
+		first->SetSortMemberPath(L"Rank");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(firstOwner)) == first);
+		auto second = std::make_unique<DataGridTextColumn>();
+		second->SetHeader(BindingValue(L"Rank 2"));
+		second->SetBindingPath(L"Rank");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(second)) != nullptr);
+		bool rejectRows = false;
+		grid.SetGeneratedContainerInitializer(
+			[&](Control&, std::wstring* error)
+			{
+				if (!rejectRows) return true;
+				if (error) *error = L"reject region rollback candidate";
+				return false;
+			});
+		grid.SetItemsSource(BindingListReference(source));
+		grid.SelectAllCells();
+		CUI_EXPECT_EQ(8ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.UnselectCell(0, 0));
+		CUI_EXPECT_EQ(7ULL, grid.GetSelectedCells().size());
+
+		// Adding a column does not retroactively extend an existing selected-cell
+		// region. The region retains column object identity across the rebuild.
+		auto third = std::make_unique<DataGridTextColumn>();
+		third->SetHeader(BindingValue(L"New"));
+		third->SetBindingPath(L"Rank");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(third)) != nullptr);
+		CUI_EXPECT_NEAR(7.0,
+			static_cast<double>(grid.GetSelectedCells().size()), 0.0);
+		for (size_t row = 0; row < 4; ++row)
+			CUI_EXPECT_FALSE(grid.IsCellSelected(row, 2));
+
+		// Both beta rows reference the same object. The exclusion follows source
+		// occurrence token 1 through the stable sort, while token 3 stays selected.
+		CUI_EXPECT_TRUE(grid.PerformSort(*first, false));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(2, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(3, 0));
+		CUI_EXPECT_EQ(7ULL, grid.GetSelectedCells().size());
+
+		auto replacement = std::make_shared<CompiledBindingList>(
+			std::vector<BindingSourceReference>{ BindingSourceReference(alpha) },
+			MakeDataTypeToken(L"RegionRow"));
+		rejectRows = true;
+		grid.SetItemsSource(BindingListReference(replacement));
+		CUI_EXPECT_TRUE(grid.GetItemsSource().Shared() == source);
+		CUI_EXPECT_EQ(7ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(2, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(3, 0));
+
+		// Event collections retain the source strongly but only weakly reference
+		// their owner. Deleting the grid in the first handler leaves Count usable
+		// and lazy enumeration returns an invalid value instead of touching freed
+		// DataGrid/column memory.
+		auto* doomed = new DataGrid();
+		doomed->SetAutoGenerateColumns(false);
+		doomed->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto doomedColumn = std::make_unique<DataGridTextColumn>();
+		doomedColumn->SetBindingPath(L"Rank");
+		CUI_EXPECT_TRUE(doomed->AddColumn(std::move(doomedColumn)) != nullptr);
+		doomed->SetItemsSource(BindingListReference(source));
+		bool deletedOwner = false;
+		bool safeEnumeration = false;
+		size_t lazyAddedCount = 0;
+		auto deletingConnection = doomed->SelectedCellsChanged.Subscribe(
+			[&](DataGrid* sender, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				delete sender;
+				doomed = nullptr;
+				deletedOwner = true;
+				lazyAddedCount = args.AddedCells.size();
+				auto cell = args.AddedCells.empty()
+					? DataGridCellInfo{} : *args.AddedCells.begin();
+				safeEnumeration = !cell.IsValid();
+			});
+		doomed->SelectAllCells();
+		CUI_EXPECT_TRUE(deletedOwner);
+		CUI_EXPECT_TRUE(doomed == nullptr);
+		CUI_EXPECT_EQ(4ULL, lazyAddedCount);
+		CUI_EXPECT_TRUE(safeEnumeration);
+
+		// A handler can retire columns while it still owns a lazy event snapshot.
+		// Subsequent access must not expose the retired raw column pointer.
+		DataGrid retiringColumns;
+		retiringColumns.SetAutoGenerateColumns(false);
+		retiringColumns.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto retiringColumn = std::make_unique<DataGridTextColumn>();
+		retiringColumn->SetBindingPath(L"Rank");
+		CUI_EXPECT_TRUE(
+			retiringColumns.AddColumn(std::move(retiringColumn)) != nullptr);
+		retiringColumns.SetItemsSource(BindingListReference(source));
+		bool retiredColumnInvalid = false;
+		auto retiringConnection =
+			retiringColumns.SelectedCellsChanged.Subscribe(
+				[&](DataGrid* sender,
+					DataGridSelectedCellsChangedEventArgs& args)
+				{
+					if (args.AddedCells.empty()) return;
+					sender->ClearColumns();
+					retiredColumnInvalid =
+						!args.AddedCells.front().IsValid();
+				});
+		retiringColumns.SelectAllCells();
+		CUI_EXPECT_TRUE(retiredColumnInvalid);
+		CUI_EXPECT_EQ(0ULL, retiringColumns.ColumnCount());
+	});
+
+	runner.Add("DataGrid million-row mutable cell region rebases without materialization", []
+	{
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t columnCount = 2;
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(
+			L"Name", L"Repeated mutable row"));
+		auto replacement = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(replacement->DefineProperty(
+			L"Name", L"Replacement row"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"MillionMutableSelectionRow");
+		rows->Items.assign(
+			rowCount, BindingSourceReference(repeated));
+
+		DataGrid grid;
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < columnCount; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.SelectAllCells();
+		CUI_EXPECT_EQ(rowCount * columnCount,
+			grid.GetSelectedCells().size());
+
+		std::vector<std::pair<size_t, size_t>> deltas;
+		bool everyRemovedFrontValid = true;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				deltas.emplace_back(
+					args.AddedCells.size(), args.RemovedCells.size());
+				if (!args.RemovedCells.empty())
+					everyRemovedFrontValid = everyRemovedFrontValid
+						&& args.RemovedCells.front().IsValid();
+			});
+
+		// The appended occurrence was never in the immutable SelectAll domain.
+		// It stays unselected and causes no cell delta.
+		rows->Items.push_back(BindingSourceReference(repeated));
+		CUI_EXPECT_EQ(rowCount + 1, grid.ItemCount());
+		CUI_EXPECT_EQ(rowCount * columnCount,
+			grid.GetSelectedCells().size());
+		for (size_t column = 0; column < columnCount; ++column)
+			CUI_EXPECT_FALSE(grid.IsCellSelected(rowCount, column));
+		CUI_EXPECT_TRUE(deltas.empty());
+
+		// All records share the same object. Only the occurrence token can prove
+		// that the selected first slot moved past the unselected appended slot.
+		CUI_EXPECT_TRUE(rows->Items.Move(0, rowCount));
+		for (size_t column = 0; column < columnCount; ++column)
+		{
+			CUI_EXPECT_FALSE(grid.IsCellSelected(rowCount - 1, column));
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowCount, column));
+		}
+		CUI_EXPECT_EQ(rowCount * columnCount,
+			grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(deltas.empty());
+
+		// A hole in another row must not leak into the lazy RemovedCells row
+		// produced by the following Remove/Replace transactions.
+		CUI_EXPECT_TRUE(grid.UnselectCell(0, 0));
+		CUI_EXPECT_EQ(rowCount * columnCount - 1,
+			grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(1ULL, deltas.size());
+		deltas.clear();
+
+		// Remove/Replace append one row exclusion to the old snapshot. Their
+		// RemovedCells collections remain one lazy row projection of width C.
+		rows->Items.erase(rows->Items.begin()
+			+ static_cast<std::ptrdiff_t>(rowCount));
+		CUI_EXPECT_EQ((rowCount - 1) * columnCount - 1,
+			grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(1ULL, deltas.size());
+		if (!deltas.empty())
+		{
+			CUI_EXPECT_EQ(0ULL, deltas[0].first);
+			CUI_EXPECT_EQ(columnCount, deltas[0].second);
+		}
+
+		CUI_EXPECT_TRUE(rows->Items.Replace(
+			1, BindingSourceReference(replacement)));
+		CUI_EXPECT_EQ((rowCount - 2) * columnCount - 1,
+			grid.GetSelectedCells().size());
+		for (size_t column = 0; column < columnCount; ++column)
+			CUI_EXPECT_FALSE(grid.IsCellSelected(1, column));
+		CUI_EXPECT_EQ(2ULL, deltas.size());
+		if (deltas.size() >= 2)
+		{
+			CUI_EXPECT_EQ(0ULL, deltas[1].first);
+			CUI_EXPECT_EQ(columnCount, deltas[1].second);
+		}
+
+		// Removing the earlier unselected Add occurrence changes no selection.
+		rows->Items.erase(std::prev(rows->Items.end()));
+		CUI_EXPECT_EQ(rowCount - 1, grid.ItemCount());
+		CUI_EXPECT_EQ((rowCount - 2) * columnCount - 1,
+			grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(2ULL, deltas.size());
+
+		// In WPF Cell mode Reset has no selected-row ranges to restore. The old
+		// million-row region is surfaced as one lazy RemovedCells collection.
+		rows->Items.assign(
+			rowCount, BindingSourceReference(repeated));
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(3ULL, deltas.size());
+		if (deltas.size() >= 3)
+		{
+			CUI_EXPECT_EQ(0ULL, deltas[2].first);
+			CUI_EXPECT_EQ((rowCount - 2) * columnCount - 1,
+				deltas[2].second);
+		}
+		CUI_EXPECT_TRUE(everyRemovedFrontValid);
+	});
+
+	runner.Add("DataGrid mutable selected region rolls back and sparse snapshot expires safely", []
+	{
+		class PostRealizeThrowGrid final : public DataGrid
+		{
+		public:
+			bool ThrowAfterRealize = false;
+
+		protected:
+			void OnGeneratedItemsRealized() override
+			{
+				DataGrid::OnGeneratedItemsRealized();
+				if (ThrowAfterRealize)
+					throw std::runtime_error(
+						"reject mutable region after realization");
+			}
+		};
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto repeated = makeRow(L"Repeated");
+		auto replacement = makeRow(L"Replacement");
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"MutableRegionRollbackRow");
+		rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(repeated));
+
+		PostRealizeThrowGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.SelectAllCells();
+		CUI_EXPECT_TRUE(grid.UnselectCell(0, 0));
+		CUI_EXPECT_EQ(5ULL, grid.GetSelectedCells().size());
+		size_t selectionDeltas = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs&)
+			{ ++selectionDeltas; });
+
+		grid.ThrowAfterRealize = true;
+		bool lateFailureObserved = false;
+		try
+		{
+			(void)rows->Items.Replace(
+				1, BindingSourceReference(replacement));
+		}
+		catch (const std::runtime_error&)
+		{
+			lateFailureObserved = true;
+		}
+		CUI_EXPECT_TRUE(lateFailureObserved);
+		CUI_EXPECT_TRUE(grid.GetItemsSource().Shared() != rows);
+		CUI_EXPECT_EQ(3ULL, grid.ItemCount());
+		CUI_EXPECT_EQ(0ULL, selectionDeltas);
+		CUI_EXPECT_EQ(5ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 1));
+		for (size_t column = 0; column < 2; ++column)
+			CUI_EXPECT_TRUE(grid.IsCellSelected(1, column));
+
+		DataGridSelectedCellCollection sparse;
+		{
+			auto doomedRows = std::make_shared<ObservableBindingList>(
+				L"SparseLifetimeRow");
+			doomedRows->Items.push_back(
+				BindingSourceReference(makeRow(L"Sparse")));
+			auto doomed = std::make_unique<DataGrid>();
+			doomed->SetAutoGenerateColumns(false);
+			doomed->SetSelectionUnit(DataGridSelectionUnit::Cell);
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(doomed->AddColumn(std::move(column)) != nullptr);
+			doomed->SetItemsSource(BindingListReference(doomedRows));
+			CUI_EXPECT_TRUE(doomed->SelectCell(0, 0));
+			sparse = doomed->GetSelectedCells();
+			CUI_EXPECT_EQ(1ULL, sparse.size());
+		}
+		CUI_EXPECT_EQ(1ULL, sparse.size());
+		CUI_EXPECT_FALSE(sparse.at(0).IsValid());
+		CUI_EXPECT_FALSE(sparse.front().IsValid());
+	});
+
+	runner.Add("CollectionViewSource source subscriptions reject stale reentrant connections", []
+	{
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"row"));
+		const BindingSourceReference item(row);
+		auto stale = std::make_shared<LegacyCollectionEventProbe>(
+			std::vector<BindingSourceReference>{ item });
+		auto current = std::make_shared<LegacyCollectionEventProbe>(
+			std::vector<BindingSourceReference>{ item });
+		auto view = std::make_shared<CollectionViewSource>();
+		stale->OnSubscribe = [view, current]
+		{
+			view->SetSource(BindingListReference(current));
+		};
+
+		view->SetSource(BindingListReference(stale));
+		CUI_EXPECT_TRUE(view->GetSource().Get() == current.get());
+		CUI_EXPECT_EQ(0ULL, stale->SubscriberCount());
+		CUI_EXPECT_EQ(1ULL, current->SubscriberCount());
+
+		std::vector<CollectionChangedEventArgs> changes;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ changes.push_back(change); });
+		stale->AddTail(item);
+		CUI_EXPECT_TRUE(changes.empty());
+		current->AddTail(item);
+		CUI_EXPECT_EQ(1ULL, changes.size());
+		if (!changes.empty())
+		{
+			CUI_EXPECT_TRUE(
+				changes.front().Action == CollectionChangeAction::Add);
+			CUI_EXPECT_EQ(1ULL, changes.front().OldSize);
+			CUI_EXPECT_EQ(2ULL, changes.front().NewSize);
+		}
+	});
+
+	runner.Add("CollectionViewSource source callbacks remain weak after snapshot disconnect", []
+	{
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"row"));
+		const BindingSourceReference item(row);
+		auto source = std::make_shared<LegacyCollectionEventProbe>(
+			std::vector<BindingSourceReference>{ item });
+		std::shared_ptr<CollectionViewSource> view =
+			std::make_shared<CollectionViewSource>();
+		// Register first so this callback destroys the view before the source
+		// event reaches the view callback captured in Event's handler snapshot.
+		auto destroyView = source->SubscribeChanged(
+			[&](const CollectionChangedEventArgs&) { view.reset(); });
+		view->SetSource(BindingListReference(source));
+		CUI_EXPECT_EQ(2ULL, source->SubscriberCount());
+		source->AddTail(item);
+		CUI_EXPECT_FALSE(static_cast<bool>(view));
+		CUI_EXPECT_EQ(1ULL, source->SubscriberCount());
+	});
+
+	runner.Add("CollectionViewSource serializes nested legacy pass-through changes", []
+	{
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"row"));
+		const BindingSourceReference item(row);
+		auto source = std::make_shared<LegacyCollectionEventProbe>(
+			std::vector<BindingSourceReference>{ item });
+		// Stack ownership remains supported; the source callback uses a separate
+		// weak lifetime state when weak_from_this() has no shared owner.
+		CollectionViewSource view;
+		view.SetSource(BindingListReference(source));
+
+		bool nestedCommitted = false;
+		auto mutateAgain = view.SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				if (nestedCommitted
+					|| change.Action != CollectionChangeAction::Add) return;
+				nestedCommitted = true;
+				source->AddTail(item);
+			});
+		std::vector<std::pair<size_t, size_t>> observedSizes;
+		auto observe = view.SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ observedSizes.emplace_back(change.OldSize, change.NewSize); });
+
+		source->AddTail(item);
+		CUI_EXPECT_EQ(3ULL, source->Count());
+		CUI_EXPECT_EQ(3ULL, view.Count());
+		CUI_EXPECT_EQ(2ULL, observedSizes.size());
+		if (observedSizes.size() == 2)
+		{
+			CUI_EXPECT_EQ(1ULL, observedSizes[0].first);
+			CUI_EXPECT_EQ(2ULL, observedSizes[0].second);
+			CUI_EXPECT_EQ(2ULL, observedSizes[1].first);
+			CUI_EXPECT_EQ(3ULL, observedSizes[1].second);
+		}
+	});
+
+	runner.Add("CollectionViewSource refresh publishes rebuilt legacy token domain at equal count", []
+	{
+		auto row = std::make_shared<ObservableObject>();
+		auto replacement = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"row"));
+		CUI_EXPECT_TRUE(replacement->DefineProperty(L"Name", L"replacement"));
+		const BindingSourceReference item(row);
+		auto source = std::make_shared<LegacyCollectionEventProbe>(
+			std::vector<BindingSourceReference>{ item, item, item });
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		size_t oldToken = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(0, oldToken));
+
+		std::vector<CollectionChangedEventArgs> changes;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ changes.push_back(change); });
+		source->ReplaceFirstWithMalformedMetadata(
+			BindingSourceReference(replacement));
+		CUI_EXPECT_EQ(1ULL, changes.size());
+		CUI_EXPECT_FALSE(view->IsItemIndexByOccurrenceIdentityLookupBounded());
+		size_t identity = 0;
+		CUI_EXPECT_FALSE(view->TryGetItemOccurrenceIdentity(0, identity));
+
+		view->Refresh();
+		CUI_EXPECT_EQ(2ULL, changes.size());
+		if (changes.size() == 2)
+		{
+			CUI_EXPECT_TRUE(
+				changes[0].Action == CollectionChangeAction::Replace);
+			CUI_EXPECT_TRUE(
+				changes[1].Action == CollectionChangeAction::Reset);
+			CUI_EXPECT_EQ(3ULL, changes[1].OldSize);
+			CUI_EXPECT_EQ(3ULL, changes[1].NewSize);
+		}
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(0, identity));
+		CUI_EXPECT_TRUE(identity != 0 && identity != oldToken);
+		CUI_EXPECT_TRUE(view->IsItemIndexByOccurrenceIdentityLookupBounded());
+	});
+
+	runner.Add("CollectionViewSource legacy range pass-through keeps generated occurrences compact", []
+	{
+		class LegacyRangeList final : public IBindingList
+		{
+		public:
+			LegacyRangeList(size_t count, BindingSourceReference repeated)
+				: Items(count, std::move(repeated)) {}
+
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						LegacyRangeList*, const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"LegacyRangeRow";
+				return typeName;
+			}
+
+			void AddRange(
+				size_t index, size_t count, const BindingSourceReference& item)
+			{
+				const size_t oldSize = Items.size();
+				Items.insert(Items.begin() + index, count, item);
+				Raise({ CollectionChangeAction::Add,
+					CollectionChangedEventArgs::Npos, index,
+					0, count, oldSize, Items.size() });
+			}
+			void RemoveRange(size_t index, size_t count)
+			{
+				const size_t oldSize = Items.size();
+				Items.erase(Items.begin() + index, Items.begin() + index + count);
+				Raise({ CollectionChangeAction::Remove,
+					index, CollectionChangedEventArgs::Npos,
+					count, 0, oldSize, Items.size() });
+			}
+			void ReplaceRange(
+				size_t index, size_t count, const BindingSourceReference& item)
+			{
+				std::fill(Items.begin() + index, Items.begin() + index + count, item);
+				Raise({ CollectionChangeAction::Replace,
+					index, index, count, count, Items.size(), Items.size() });
+			}
+			void MoveRange(size_t oldIndex, size_t newIndex, size_t count)
+			{
+				std::vector<BindingSourceReference> moved(
+					Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				Items.erase(
+					Items.begin() + oldIndex, Items.begin() + oldIndex + count);
+				Items.insert(Items.begin() + newIndex,
+					std::make_move_iterator(moved.begin()),
+					std::make_move_iterator(moved.end()));
+				Raise({ CollectionChangeAction::Move,
+					oldIndex, newIndex, count, count, Items.size(), Items.size() });
+			}
+			void Swap(size_t left, size_t right)
+			{
+				std::swap(Items[left], Items[right]);
+				Raise({ CollectionChangeAction::Swap,
+					left, right, 1, 1, Items.size(), Items.size() });
+			}
+			void Reset(size_t count, const BindingSourceReference& item)
+			{
+				const size_t oldSize = Items.size();
+				Items.assign(count, item);
+				Raise({ CollectionChangeAction::Reset,
+					CollectionChangedEventArgs::Npos,
+					CollectionChangedEventArgs::Npos,
+					oldSize, count, oldSize, count });
+			}
+			void AddTailWithMalformedMetadata(
+				const BindingSourceReference& item)
+			{
+				const size_t oldSize = Items.size();
+				Items.push_back(item);
+				// Deliberately report the committed source's old size. This injects
+				// the same post-commit maintenance failure boundary as allocation
+				// pressure without requiring a production allocator test hook.
+				Raise({ CollectionChangeAction::Add,
+					CollectionChangedEventArgs::Npos, oldSize,
+					0, 1, oldSize, oldSize });
+			}
+
+			mutable size_t TryGetQueries = 0;
+
+		private:
+			void Raise(const CollectionChangedEventArgs& change)
+			{
+				cui::framework::EventAccess::Raise(Changed, this, change);
+			}
+
+			std::vector<BindingSourceReference> Items;
+			Event<void(LegacyRangeList*, const CollectionChangedEventArgs&)>
+				Changed;
+		};
+		class LegacyRangeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		constexpr size_t rowCount = 32'768;
+		constexpr size_t insertIndex = 4'000;
+		constexpr size_t insertedCount = 1'024;
+		auto repeated = std::make_shared<ObservableObject>();
+		auto replacement = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Name", L"Repeated legacy row"));
+		CUI_EXPECT_TRUE(replacement->DefineProperty(
+			L"Name", L"Replacement legacy row"));
+		auto rows = std::make_shared<LegacyRangeList>(
+			rowCount, BindingSourceReference(repeated));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(rowCount, view->Count());
+		// One source value may be read to establish CollectionView currency, but
+		// generated occurrence setup itself never scans or materializes the source.
+		CUI_EXPECT_TRUE(rows->TryGetQueries <= 1ULL);
+		rows->TryGetQueries = 0;
+		CUI_EXPECT_TRUE(view->IsItemIndexByOccurrenceIdentityLookupBounded());
+
+		size_t notificationCount = 0;
+		CollectionChangedEventArgs observed;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				++notificationCount;
+				observed = change;
+			});
+		auto verifyOneRange = [&](CollectionChangeAction action,
+			size_t oldCount, size_t newCount)
+		{
+			CUI_EXPECT_EQ(1ULL, notificationCount);
+			CUI_EXPECT_TRUE(observed.Action == action);
+			CUI_EXPECT_EQ(oldCount, observed.OldCount);
+			CUI_EXPECT_EQ(newCount, observed.NewCount);
+			notificationCount = 0;
+		};
+
+		size_t beforeToken = 0;
+		size_t shiftedToken = 0;
+		size_t duplicateToken = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex - 1, beforeToken));
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex, shiftedToken));
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex + 1, duplicateToken));
+		CUI_EXPECT_TRUE(shiftedToken != duplicateToken);
+
+		rows->AddRange(insertIndex, insertedCount,
+			BindingSourceReference(repeated));
+		verifyOneRange(CollectionChangeAction::Add, 0, insertedCount);
+		size_t identity = 0;
+		size_t index = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex - 1, identity));
+		CUI_EXPECT_EQ(beforeToken, identity);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex + insertedCount, identity));
+		CUI_EXPECT_EQ(shiftedToken, identity);
+		CUI_EXPECT_TRUE(view->TryGetItemIndexByOccurrenceIdentity(
+			shiftedToken, index));
+		CUI_EXPECT_EQ(insertIndex + insertedCount, index);
+		size_t insertedToken = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex, insertedToken));
+		CUI_EXPECT_TRUE(insertedToken != shiftedToken);
+
+		rows->ReplaceRange(insertIndex, insertedCount,
+			BindingSourceReference(replacement));
+		verifyOneRange(CollectionChangeAction::Replace,
+			insertedCount, insertedCount);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex, identity));
+		CUI_EXPECT_EQ(insertedToken, identity);
+
+		constexpr size_t movedCount = 257;
+		constexpr size_t moveTarget = 9'000;
+		rows->MoveRange(
+			insertIndex + insertedCount, moveTarget, movedCount);
+		verifyOneRange(CollectionChangeAction::Move, movedCount, movedCount);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(moveTarget, identity));
+		CUI_EXPECT_EQ(shiftedToken, identity);
+		CUI_EXPECT_TRUE(view->TryGetItemIndexByOccurrenceIdentity(
+			shiftedToken, index));
+		CUI_EXPECT_EQ(moveTarget, index);
+
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex - 1, beforeToken));
+		rows->Swap(insertIndex - 1, moveTarget);
+		verifyOneRange(CollectionChangeAction::Swap, 1, 1);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			insertIndex - 1, identity));
+		CUI_EXPECT_EQ(shiftedToken, identity);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(moveTarget, identity));
+		CUI_EXPECT_EQ(beforeToken, identity);
+
+		rows->RemoveRange(insertIndex, insertedCount);
+		verifyOneRange(CollectionChangeAction::Remove, insertedCount, 0);
+		CUI_EXPECT_FALSE(view->TryGetItemIndexByOccurrenceIdentity(
+			insertedToken, index));
+		CUI_EXPECT_EQ(rowCount, view->Count());
+
+		size_t preResetToken = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(0, preResetToken));
+		rows->Reset(rowCount, BindingSourceReference(repeated));
+		verifyOneRange(CollectionChangeAction::Reset, rowCount, rowCount);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(0, identity));
+		CUI_EXPECT_TRUE(identity != preResetToken);
+		CUI_EXPECT_FALSE(view->TryGetItemIndexByOccurrenceIdentity(
+			preResetToken, index));
+		// Each structural notification may reread only the current item; the range
+		// size must not affect source reads.
+		CUI_EXPECT_TRUE(rows->TryGetQueries < 16ULL);
+		rows->TryGetQueries = 0;
+
+		// The source mutation is already committed when token maintenance runs.
+		// A failed validation withdraws identity lookup but still forwards exactly
+		// the original notification and keeps Count/TryGetItem live. Refresh starts
+		// a new token domain, and the following valid Reset restores rowCount.
+		rows->AddTailWithMalformedMetadata(BindingSourceReference(repeated));
+		verifyOneRange(CollectionChangeAction::Add, 0, 1);
+		CUI_EXPECT_EQ(rowCount + 1, view->Count());
+		CUI_EXPECT_FALSE(view->TryGetItemOccurrenceIdentity(0, identity));
+		CUI_EXPECT_FALSE(view->IsItemIndexByOccurrenceIdentityLookupBounded());
+		view->Refresh();
+		verifyOneRange(CollectionChangeAction::Reset, rowCount, rowCount + 1);
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(0, identity));
+		CUI_EXPECT_TRUE(view->IsItemIndexByOccurrenceIdentityLookupBounded());
+		rows->Reset(rowCount, BindingSourceReference(repeated));
+		verifyOneRange(CollectionChangeAction::Reset, rowCount + 1, rowCount);
+		CUI_EXPECT_TRUE(rows->TryGetQueries < 8ULL);
+
+		LegacyRangeDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		grid.SetItemsSource(BindingListReference(view));
+		CUI_EXPECT_EQ(rowCount, grid.ItemCount());
+		CUI_EXPECT_TRUE(grid.IsVirtualizing());
+		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
+		auto* scroll = InstallDataGridScrollTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		const auto panel = grid.GetItemsPanel();
+		const double rowHeight = panel
+			? static_cast<double>(panel.Get()->ItemHeight) : 38.0;
+		const double cacheLength = panel
+			? static_cast<double>(panel.Get()->CacheLength) : 0.0;
+		const size_t maximumRealized = static_cast<size_t>(std::ceil(
+			scroll->ViewportHeight * (1.0 + 2.0 * cacheLength) / rowHeight)) + 1;
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+	});
+
+	runner.Add("CollectionViewSource generated occurrence rope matches random oracle at million scale", []
+	{
+		class CountOnlyLegacyList final : public IBindingList
+		{
+		public:
+			CountOnlyLegacyList(
+				size_t count, BindingSourceReference repeated) noexcept
+				: _count(count), _repeated(std::move(repeated)) {}
+
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_repeated) return false;
+				out = _repeated;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						CountOnlyLegacyList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"CountOnlyLegacyRow";
+				return typeName;
+			}
+
+			void Add(size_t index, size_t count)
+			{
+				const size_t oldSize = _count;
+				_count += count;
+				Raise({ CollectionChangeAction::Add,
+					CollectionChangedEventArgs::Npos, index,
+					0, count, oldSize, _count });
+			}
+			void Remove(size_t index, size_t count)
+			{
+				const size_t oldSize = _count;
+				_count -= count;
+				Raise({ CollectionChangeAction::Remove,
+					index, CollectionChangedEventArgs::Npos,
+					count, 0, oldSize, _count });
+			}
+			void Move(size_t oldIndex, size_t newIndex, size_t count)
+			{
+				Raise({ CollectionChangeAction::Move,
+					oldIndex, newIndex, count, count, _count, _count });
+			}
+			void Swap(size_t left, size_t right)
+			{
+				Raise({ CollectionChangeAction::Swap,
+					left, right, 1, 1, _count, _count });
+			}
+			void Replace(size_t index, size_t count)
+			{
+				Raise({ CollectionChangeAction::Replace,
+					index, index, count, count, _count, _count });
+			}
+			void Reset(size_t count)
+			{
+				const size_t oldSize = _count;
+				_count = count;
+				Raise({ CollectionChangeAction::Reset,
+					CollectionChangedEventArgs::Npos,
+					CollectionChangedEventArgs::Npos,
+					oldSize, count, oldSize, count });
+			}
+
+			mutable size_t TryGetQueries = 0;
+
+		private:
+			void Raise(const CollectionChangedEventArgs& change)
+			{
+				cui::framework::EventAccess::Raise(Changed, this, change);
+			}
+
+			size_t _count;
+			BindingSourceReference _repeated;
+			Event<void(CountOnlyLegacyList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		auto repeated = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(repeated->DefineProperty(L"Name", L"Repeated"));
+		const BindingSourceReference repeatedReference(repeated);
+		auto nextRandom = [](uint64_t& state) noexcept
+		{
+			state ^= state << 13;
+			state ^= state >> 7;
+			state ^= state << 17;
+			return state;
+		};
+
+		// A compact model checks every forward and reverse query after mixed
+		// range changes. It is deliberately independent of the rope's run layout.
+		auto oracleSource = std::make_shared<CountOnlyLegacyList>(
+			257, repeatedReference);
+		auto oracleView = std::make_shared<CollectionViewSource>();
+		oracleView->SetSource(BindingListReference(oracleSource));
+		std::vector<size_t> oracle(oracleSource->Count());
+		for (size_t index = 0; index < oracle.size(); ++index)
+			CUI_EXPECT_TRUE(oracleView->TryGetItemOccurrenceIdentity(
+				index, oracle[index]));
+		uint64_t oracleRandom = 0xa0761d6478bd642fULL;
+		for (size_t iteration = 0; iteration < 2'000; ++iteration)
+		{
+			const size_t action = static_cast<size_t>(
+				nextRandom(oracleRandom) % 6);
+			if (action == 0 || oracle.empty())
+			{
+				const size_t count = 1 + static_cast<size_t>(
+					nextRandom(oracleRandom) % 4);
+				const size_t index = static_cast<size_t>(
+					nextRandom(oracleRandom) % (oracle.size() + 1));
+				oracleSource->Add(index, count);
+				std::vector<size_t> inserted(count);
+				for (size_t offset = 0; offset < count; ++offset)
+					CUI_EXPECT_TRUE(
+						oracleView->TryGetItemOccurrenceIdentity(
+							index + offset, inserted[offset]));
+				oracle.insert(oracle.begin() + index,
+					inserted.begin(), inserted.end());
+			}
+			else if (action == 1)
+			{
+				const size_t count = (std::min)(oracle.size(),
+					1 + static_cast<size_t>(nextRandom(oracleRandom) % 4));
+				const size_t index = static_cast<size_t>(
+					nextRandom(oracleRandom) % (oracle.size() - count + 1));
+				std::vector<size_t> retired(
+					oracle.begin() + index, oracle.begin() + index + count);
+				oracleSource->Remove(index, count);
+				oracle.erase(
+					oracle.begin() + index, oracle.begin() + index + count);
+				for (const size_t token : retired)
+				{
+					size_t resolved = 0;
+					CUI_EXPECT_FALSE(
+						oracleView->TryGetItemIndexByOccurrenceIdentity(
+							token, resolved));
+				}
+			}
+			else if (action == 2)
+			{
+				const size_t count = (std::min)(oracle.size(),
+					1 + static_cast<size_t>(nextRandom(oracleRandom) % 4));
+				const size_t oldIndex = static_cast<size_t>(
+					nextRandom(oracleRandom) % (oracle.size() - count + 1));
+				const size_t newIndex = static_cast<size_t>(
+					nextRandom(oracleRandom) % (oracle.size() - count + 1));
+				std::vector<size_t> moved(oracle.begin() + oldIndex,
+					oracle.begin() + oldIndex + count);
+				oracle.erase(oracle.begin() + oldIndex,
+					oracle.begin() + oldIndex + count);
+				oracle.insert(oracle.begin() + newIndex,
+					moved.begin(), moved.end());
+				oracleSource->Move(oldIndex, newIndex, count);
+			}
+			else if (action == 3)
+			{
+				const size_t left = static_cast<size_t>(
+					nextRandom(oracleRandom) % oracle.size());
+				const size_t right = static_cast<size_t>(
+					nextRandom(oracleRandom) % oracle.size());
+				std::swap(oracle[left], oracle[right]);
+				oracleSource->Swap(left, right);
+			}
+			else if (action == 4)
+			{
+				const size_t count = (std::min)(oracle.size(),
+					1 + static_cast<size_t>(nextRandom(oracleRandom) % 4));
+				const size_t index = static_cast<size_t>(
+					nextRandom(oracleRandom) % (oracle.size() - count + 1));
+				oracleSource->Replace(index, count);
+			}
+			else
+			{
+				const size_t retired = oracle.empty() ? 0 : oracle.front();
+				const size_t count = 1 + static_cast<size_t>(
+					nextRandom(oracleRandom) % 320);
+				oracleSource->Reset(count);
+				oracle.assign(count, 0);
+				for (size_t index = 0; index < count; ++index)
+					CUI_EXPECT_TRUE(
+						oracleView->TryGetItemOccurrenceIdentity(
+							index, oracle[index]));
+				if (retired != 0)
+				{
+					size_t resolved = 0;
+					CUI_EXPECT_FALSE(
+						oracleView->TryGetItemIndexByOccurrenceIdentity(
+							retired, resolved));
+				}
+			}
+
+			CUI_EXPECT_EQ(oracle.size(), oracleView->Count());
+			CUI_EXPECT_TRUE(
+				oracleView->IsItemIndexByOccurrenceIdentityLookupBounded());
+			for (size_t index = 0; index < oracle.size(); ++index)
+			{
+				size_t token = 0;
+				size_t resolved = 0;
+				CUI_EXPECT_TRUE(
+					oracleView->TryGetItemOccurrenceIdentity(index, token));
+				CUI_EXPECT_EQ(oracle[index], token);
+				CUI_EXPECT_TRUE(
+					oracleView->TryGetItemIndexByOccurrenceIdentity(
+						token, resolved));
+				CUI_EXPECT_EQ(index, resolved);
+			}
+		}
+
+		// The previous vector representation copied and re-sorted every run on
+		// each mutation; this workload therefore also serves as a structural
+		// complexity regression, without relying on a machine-specific timer.
+		constexpr size_t million = 1'000'000;
+		constexpr size_t mutationCount = 100'000;
+		auto scaleSource = std::make_shared<CountOnlyLegacyList>(
+			million, repeatedReference);
+		auto scaleView = std::make_shared<CollectionViewSource>();
+		scaleView->SetSource(BindingListReference(scaleSource));
+		scaleSource->TryGetQueries = 0;
+		uint64_t scaleRandom = 0xe7037ed1a0b428dbULL;
+		for (size_t iteration = 0; iteration < mutationCount; ++iteration)
+		{
+			const size_t count = scaleSource->Count();
+			const size_t first = static_cast<size_t>(
+				nextRandom(scaleRandom) % count);
+			if ((iteration & 3) == 0)
+			{
+				const size_t destination = static_cast<size_t>(
+					nextRandom(scaleRandom) % count);
+				size_t token = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					first, token));
+				scaleSource->Move(first, destination, 1);
+				size_t moved = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					destination, moved));
+				CUI_EXPECT_EQ(token, moved);
+			}
+			else if ((iteration & 3) == 1)
+			{
+				const size_t second = static_cast<size_t>(
+					nextRandom(scaleRandom) % count);
+				size_t firstToken = 0;
+				size_t secondToken = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					first, firstToken));
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					second, secondToken));
+				scaleSource->Swap(first, second);
+				size_t token = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					first, token));
+				CUI_EXPECT_EQ(secondToken, token);
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					second, token));
+				CUI_EXPECT_EQ(firstToken, token);
+			}
+			else if ((iteration & 3) == 2)
+			{
+				const size_t insertAt = static_cast<size_t>(
+					nextRandom(scaleRandom) % (count + 1));
+				scaleSource->Add(insertAt, 1);
+				size_t token = 0;
+				size_t resolved = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					insertAt, token));
+				CUI_EXPECT_TRUE(
+					scaleView->TryGetItemIndexByOccurrenceIdentity(
+						token, resolved));
+				CUI_EXPECT_EQ(insertAt, resolved);
+			}
+			else
+			{
+				size_t retired = 0;
+				CUI_EXPECT_TRUE(scaleView->TryGetItemOccurrenceIdentity(
+					first, retired));
+				scaleSource->Remove(first, 1);
+				size_t resolved = 0;
+				CUI_EXPECT_FALSE(
+					scaleView->TryGetItemIndexByOccurrenceIdentity(
+						retired, resolved));
+			}
+			CUI_EXPECT_TRUE(
+				scaleView->IsItemIndexByOccurrenceIdentityLookupBounded());
+		}
+		CUI_EXPECT_EQ(million, scaleView->Count());
+		CUI_EXPECT_TRUE(scaleSource->TryGetQueries <= mutationCount + 8);
+		for (size_t sample = 0; sample < 1'024; ++sample)
+		{
+			const size_t index = static_cast<size_t>(
+				nextRandom(scaleRandom) % scaleView->Count());
+			size_t token = 0;
+			size_t resolved = 0;
+			CUI_EXPECT_TRUE(
+				scaleView->TryGetItemOccurrenceIdentity(index, token));
+			CUI_EXPECT_TRUE(
+				scaleView->TryGetItemIndexByOccurrenceIdentity(token, resolved));
+			CUI_EXPECT_EQ(index, resolved);
+		}
+	});
+
+	runner.Add("CollectionViewSource captures stable legacy items with generated token version", []
+	{
+		class StableVersion final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			explicit StableVersion(std::shared_ptr<const std::vector<
+				BindingSourceReference>> items) noexcept
+				: _items(std::move(items)) {}
+			size_t Count() const noexcept override
+			{
+				return _items ? _items->size() : 0;
+			}
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				out = {};
+				if (!_items || index >= _items->size()
+					|| !(*_items)[index]) return false;
+				out = (*_items)[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"StableLegacyVersionRow";
+				return typeName;
+			}
+
+		private:
+			const std::shared_ptr<const std::vector<BindingSourceReference>> _items;
+		};
+		class VersionedLegacyList final
+			: public IBindingList,
+			  public IBindingListSnapshotProvider
+		{
+		public:
+			explicit VersionedLegacyList(
+				std::vector<BindingSourceReference> items)
+				: _items(std::make_shared<std::vector<
+					BindingSourceReference>>(std::move(items))) {}
+			size_t Count() const noexcept override { return _items->size(); }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _items->size() || !(*_items)[index]) return false;
+				out = (*_items)[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						VersionedLegacyList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			bool TryGetStableSnapshot(
+				BindingListReference& result) const override
+			{
+				++SnapshotCaptures;
+				result = BindingListReference(
+					std::make_shared<StableVersion>(_items));
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"StableLegacyVersionRow";
+				return typeName;
+			}
+
+			void Add(size_t index, BindingSourceReference item)
+			{
+				auto candidate = Clone();
+				const size_t oldSize = candidate->size();
+				candidate->insert(candidate->begin() + index, std::move(item));
+				_items = std::move(candidate);
+				Raise({ CollectionChangeAction::Add,
+					CollectionChangedEventArgs::Npos, index,
+					0, 1, oldSize, oldSize + 1 });
+			}
+			void Remove(size_t index)
+			{
+				auto candidate = Clone();
+				const size_t oldSize = candidate->size();
+				candidate->erase(candidate->begin() + index);
+				_items = std::move(candidate);
+				Raise({ CollectionChangeAction::Remove,
+					index, CollectionChangedEventArgs::Npos,
+					1, 0, oldSize, oldSize - 1 });
+			}
+			void Move(size_t oldIndex, size_t newIndex)
+			{
+				auto candidate = Clone();
+				auto item = std::move((*candidate)[oldIndex]);
+				candidate->erase(candidate->begin() + oldIndex);
+				candidate->insert(
+					candidate->begin() + newIndex, std::move(item));
+				_items = std::move(candidate);
+				Raise({ CollectionChangeAction::Move,
+					oldIndex, newIndex, 1, 1,
+					_items->size(), _items->size() });
+			}
+			void Swap(size_t left, size_t right)
+			{
+				auto candidate = Clone();
+				std::swap((*candidate)[left], (*candidate)[right]);
+				_items = std::move(candidate);
+				Raise({ CollectionChangeAction::Swap,
+					left, right, 1, 1, _items->size(), _items->size() });
+			}
+			void Replace(size_t index, BindingSourceReference item)
+			{
+				auto candidate = Clone();
+				(*candidate)[index] = std::move(item);
+				_items = std::move(candidate);
+				Raise({ CollectionChangeAction::Replace,
+					index, index, 1, 1, _items->size(), _items->size() });
+			}
+
+			mutable size_t TryGetQueries = 0;
+			mutable size_t SnapshotCaptures = 0;
+
+		private:
+			std::shared_ptr<std::vector<BindingSourceReference>> Clone() const
+			{
+				return std::make_shared<std::vector<BindingSourceReference>>(*_items);
+			}
+			void Raise(const CollectionChangedEventArgs& change)
+			{
+				cui::framework::EventAccess::Raise(Changed, this, change);
+			}
+
+			std::shared_ptr<std::vector<BindingSourceReference>> _items;
+			Event<void(VersionedLegacyList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		std::vector<BindingSourceReference> initialItems;
+		for (size_t index = 0; index < 128; ++index)
+		{
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(
+				L"Name", L"Initial " + std::to_wstring(index)));
+			initialItems.emplace_back(item);
+		}
+		auto source = std::make_shared<VersionedLegacyList>(initialItems);
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(source));
+		std::vector<size_t> initialTokens(initialItems.size());
+		for (size_t index = 0; index < initialTokens.size(); ++index)
+			CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+				index, initialTokens[index]));
+
+		source->TryGetQueries = 0;
+		source->SnapshotCaptures = 0;
+		BindingListReference retained;
+		CUI_EXPECT_TRUE(view->TryGetStableSnapshot(retained));
+		const auto* retainedBoundedLookup = retained
+			? dynamic_cast<const IBindingListOccurrenceLookup*>(retained.Get())
+			: nullptr;
+		CUI_EXPECT_TRUE(retained
+			&& dynamic_cast<IBindingListStableSnapshot*>(retained.Get()));
+		CUI_EXPECT_TRUE(retainedBoundedLookup != nullptr);
+		if (!retained || !retainedBoundedLookup) return;
+		CUI_EXPECT_TRUE(
+			retainedBoundedLookup->
+				IsItemIndexByOccurrenceIdentityLookupBounded());
+		for (size_t capture = 0; capture < 1'000; ++capture)
+		{
+			BindingListReference transient;
+			CUI_EXPECT_TRUE(view->TryGetStableSnapshot(transient));
+		}
+		CUI_EXPECT_EQ(1'001ULL, source->SnapshotCaptures);
+		CUI_EXPECT_EQ(0ULL, source->TryGetQueries);
+
+		struct OracleEntry final
+		{
+			BindingSourceReference Item;
+			size_t Token = 0;
+		};
+		std::vector<OracleEntry> live;
+		for (size_t index = 0; index < initialItems.size(); ++index)
+			live.push_back({ initialItems[index], initialTokens[index] });
+		uint64_t random = 0x8ebc6af09c88c6e3ULL;
+		auto nextRandom = [&]() noexcept
+		{
+			random ^= random << 13;
+			random ^= random >> 7;
+			random ^= random << 17;
+			return random;
+		};
+		for (size_t iteration = 0; iteration < 500; ++iteration)
+		{
+			const size_t action = static_cast<size_t>(nextRandom() % 5);
+			if (action == 0 || live.empty())
+			{
+				const size_t index = static_cast<size_t>(
+					nextRandom() % (live.size() + 1));
+				auto item = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(item->DefineProperty(
+					L"Name", L"Added " + std::to_wstring(iteration)));
+				const BindingSourceReference reference(item);
+				source->Add(index, reference);
+				size_t token = 0;
+				CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(index, token));
+				live.insert(live.begin() + index, { reference, token });
+			}
+			else if (action == 1)
+			{
+				const size_t index = static_cast<size_t>(
+					nextRandom() % live.size());
+				const size_t retired = live[index].Token;
+				source->Remove(index);
+				live.erase(live.begin() + index);
+				size_t resolved = 0;
+				CUI_EXPECT_FALSE(view->TryGetItemIndexByOccurrenceIdentity(
+					retired, resolved));
+			}
+			else if (action == 2)
+			{
+				const size_t oldIndex = static_cast<size_t>(
+					nextRandom() % live.size());
+				const size_t newIndex = static_cast<size_t>(
+					nextRandom() % live.size());
+				const OracleEntry moved = live[oldIndex];
+				live.erase(live.begin() + oldIndex);
+				live.insert(live.begin() + newIndex, moved);
+				source->Move(oldIndex, newIndex);
+			}
+			else if (action == 3)
+			{
+				const size_t left = static_cast<size_t>(
+					nextRandom() % live.size());
+				const size_t right = static_cast<size_t>(
+					nextRandom() % live.size());
+				std::swap(live[left], live[right]);
+				source->Swap(left, right);
+			}
+			else
+			{
+				const size_t index = static_cast<size_t>(
+					nextRandom() % live.size());
+				auto item = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(item->DefineProperty(
+					L"Name", L"Replaced " + std::to_wstring(iteration)));
+				const BindingSourceReference reference(item);
+				source->Replace(index, reference);
+				live[index].Item = reference;
+			}
+		}
+
+		const auto* retainedIdentities = dynamic_cast<const
+			IBindingListOccurrenceIdentity*>(retained.Get());
+		const auto* retainedLookup = dynamic_cast<const
+			IBindingListOccurrenceLookup*>(retained.Get());
+		CUI_EXPECT_TRUE(retainedIdentities != nullptr);
+		CUI_EXPECT_TRUE(retainedLookup != nullptr);
+		CUI_EXPECT_EQ(initialItems.size(), retained.Get()->Count());
+		for (size_t index = 0; index < initialItems.size(); ++index)
+		{
+			BindingSourceReference item;
+			size_t token = 0;
+			size_t resolved = 0;
+			CUI_EXPECT_TRUE(retained.Get()->TryGetItem(index, item));
+			CUI_EXPECT_TRUE(item.Shared() == initialItems[index].Shared());
+			CUI_EXPECT_TRUE(retainedIdentities->TryGetItemOccurrenceIdentity(
+				index, token));
+			CUI_EXPECT_EQ(initialTokens[index], token);
+			CUI_EXPECT_TRUE(retainedLookup->TryGetItemIndexByOccurrenceIdentity(
+				token, resolved));
+			CUI_EXPECT_EQ(index, resolved);
+		}
+		CUI_EXPECT_EQ(live.size(), view->Count());
+		for (size_t index = 0; index < live.size(); ++index)
+		{
+			BindingSourceReference item;
+			size_t token = 0;
+			size_t resolved = 0;
+			CUI_EXPECT_TRUE(view->TryGetItem(index, item));
+			CUI_EXPECT_TRUE(item.Shared() == live[index].Item.Shared());
+			CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(index, token));
+			CUI_EXPECT_EQ(live[index].Token, token);
+			CUI_EXPECT_TRUE(view->TryGetItemIndexByOccurrenceIdentity(
+				token, resolved));
+			CUI_EXPECT_EQ(index, resolved);
+		}
+
+		class LazyStableVersion final
+			: public IBindingList,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			LazyStableVersion(size_t count, BindingSourceReference item,
+				std::shared_ptr<size_t> queries) noexcept
+				: _count(count), _item(std::move(item)),
+				  _queries(std::move(queries)) {}
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++*_queries;
+				out = {};
+				if (index >= _count || !_item) return false;
+				out = _item;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"LazyStableLegacyRow";
+				return typeName;
+			}
+		private:
+			const size_t _count;
+			const BindingSourceReference _item;
+			const std::shared_ptr<size_t> _queries;
+		};
+		class LazyStableLegacyList final
+			: public IBindingList,
+			  public IBindingListSnapshotProvider
+		{
+		public:
+			LazyStableLegacyList(size_t count,
+				BindingSourceReference item) noexcept
+				: _count(count), _item(std::move(item)),
+				  StableQueries(std::make_shared<size_t>()) {}
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_item) return false;
+				out = _item;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			bool TryGetStableSnapshot(
+				BindingListReference& result) const override
+			{
+				++SnapshotCaptures;
+				result = BindingListReference(
+					std::make_shared<LazyStableVersion>(
+						_count, _item, StableQueries));
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"LazyStableLegacyRow";
+				return typeName;
+			}
+
+			mutable size_t TryGetQueries = 0;
+			mutable size_t SnapshotCaptures = 0;
+			std::shared_ptr<size_t> StableQueries;
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _item;
+		};
+
+		constexpr size_t million = 1'000'000;
+		auto millionSource = std::make_shared<LazyStableLegacyList>(
+			million, initialItems.front());
+		auto millionView = std::make_shared<CollectionViewSource>();
+		millionView->SetSource(BindingListReference(millionSource));
+		millionSource->TryGetQueries = 0;
+		millionSource->SnapshotCaptures = 0;
+		*millionSource->StableQueries = 0;
+		for (size_t capture = 0; capture < 1'024; ++capture)
+		{
+			BindingListReference snapshot;
+			CUI_EXPECT_TRUE(millionView->TryGetStableSnapshot(snapshot));
+			CUI_EXPECT_EQ(million, snapshot.Get()->Count());
+		}
+		CUI_EXPECT_EQ(1'024ULL, millionSource->SnapshotCaptures);
+		CUI_EXPECT_EQ(0ULL, millionSource->TryGetQueries);
+		CUI_EXPECT_EQ(0ULL, *millionSource->StableQueries);
+
+		DataGrid grid;
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		grid.SetItemsSource(BindingListReference(millionView));
+		CUI_EXPECT_EQ(million, grid.ItemCount());
+		CUI_EXPECT_TRUE(grid.IsVirtualizing());
+		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
+		CUI_EXPECT_TRUE(millionSource->SnapshotCaptures <= 1'032ULL);
+		CUI_EXPECT_TRUE(millionSource->TryGetQueries < 64ULL);
+		CUI_EXPECT_TRUE(*millionSource->StableQueries < 64ULL);
+		const size_t beforeSelectLiveReads = millionSource->TryGetQueries;
+		const size_t beforeSelectStableReads = *millionSource->StableQueries;
+		grid.SelectAllCells();
+		CUI_EXPECT_EQ(million, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(million - 1, 0));
+		// A dense fallback would read and retain one million cell records. The
+		// generated-token snapshot instead contributes one lazy full-grid region.
+		CUI_EXPECT_TRUE(millionSource->TryGetQueries
+			- beforeSelectLiveReads < 64ULL);
+		CUI_EXPECT_TRUE(*millionSource->StableQueries
+			- beforeSelectStableReads < 64ULL);
+	});
+
+	runner.Add("CollectionViewSource keeps sparse mutable occurrence positions", []
+	{
+		class LazyMutableOccurrenceList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity
+		{
+		public:
+			LazyMutableOccurrenceList(
+				size_t count, BindingSourceReference sharedItem) noexcept
+				: _count(count), _sharedItem(std::move(sharedItem)) {}
+
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_sharedItem) return false;
+				out = _sharedItem;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler handler) override
+			{
+				return Changed.Subscribe(
+					[handler = std::move(handler)](
+						LazyMutableOccurrenceList*,
+						const CollectionChangedEventArgs& change)
+					{ handler(change); });
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				++OccurrenceQueries;
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				if (!_frontMovedToEnd) result = index + 1;
+				else result = index + 1 == _count ? 1 : index + 2;
+				return result != 0;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"LazyMutableRow";
+				return typeName;
+			}
+
+			void ReplaceTail()
+			{
+				if (_count == 0) return;
+				const size_t index = _count - 1;
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Replace,
+						index, index, 1, 1, _count, _count });
+			}
+
+			void AddTail()
+			{
+				if (_frontMovedToEnd) return;
+				const size_t oldSize = _count++;
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Add,
+						CollectionChangedEventArgs::Npos, oldSize,
+						0, 1, oldSize, _count });
+			}
+
+			void MoveFrontToEnd()
+			{
+				if (_frontMovedToEnd || _count < 2) return;
+				_frontMovedToEnd = true;
+				cui::framework::EventAccess::Raise(
+					Changed, this, CollectionChangedEventArgs{
+						CollectionChangeAction::Move,
+						0, _count - 1, 1, 1, _count, _count });
+			}
+
+			void ResetQueries() const noexcept
+			{
+				TryGetQueries = 0;
+				OccurrenceQueries = 0;
+			}
+
+			mutable size_t TryGetQueries = 0;
+			mutable size_t OccurrenceQueries = 0;
+
+		private:
+			size_t _count;
+			BindingSourceReference _sharedItem;
+			bool _frontMovedToEnd = false;
+			Event<void(LazyMutableOccurrenceList*,
+				const CollectionChangedEventArgs&)> Changed;
+		};
+
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t originalLastIndex = rowCount - 1;
+		constexpr size_t queryBudget = 512;
+		auto sharedItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(sharedItem->DefineProperty(
+			L"Name", L"One shared mutable record"));
+		auto rows = std::make_shared<LazyMutableOccurrenceList>(
+			rowCount, BindingSourceReference(sharedItem));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetSource(BindingListReference(rows));
+
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		grid.SetItemsSource(BindingListReference(view));
+		CUI_EXPECT_TRUE(view->MoveCurrentToPosition(
+			static_cast<int>(originalLastIndex)));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(originalLastIndex, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(originalLastIndex, 0));
+
+		auto& peer = grid.GetAutomationPeer();
+		uint32_t lastCellId = 0;
+		CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+			static_cast<int>(originalLastIndex), 0, lastCellId));
+		CUI_EXPECT_TRUE(lastCellId != 0);
+		size_t lastToken = 0;
+		CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+			originalLastIndex, lastToken));
+		CUI_EXPECT_EQ(rowCount, lastToken);
+
+		auto verifyState = [&](size_t expectedIndex)
+		{
+			size_t identity = 0;
+			size_t resolvedIndex = 0;
+			CUI_EXPECT_TRUE(view->TryGetItemOccurrenceIdentity(
+				expectedIndex, identity));
+			CUI_EXPECT_EQ(lastToken, identity);
+			CUI_EXPECT_TRUE(view->TryGetItemIndexByOccurrenceIdentity(
+				lastToken, resolvedIndex));
+			CUI_EXPECT_EQ(expectedIndex, resolvedIndex);
+			CUI_EXPECT_EQ(static_cast<int>(expectedIndex),
+				view->CurrentPosition());
+			CUI_EXPECT_TRUE(grid.GetCurrentCell().IsValid());
+			CUI_EXPECT_EQ(expectedIndex, grid.GetCurrentCell().RowIndex);
+			CUI_EXPECT_TRUE(grid.IsCellSelected(expectedIndex, 0));
+			CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+			if (!grid.GetSelectedCells().empty())
+				CUI_EXPECT_EQ(expectedIndex,
+					grid.GetSelectedCells().front().RowIndex);
+			uint32_t currentCellId = 0;
+			CUI_EXPECT_TRUE(peer.GetAccessibilityVirtualItemAt(
+				static_cast<int>(expectedIndex), 0, currentCellId));
+			CUI_EXPECT_EQ(lastCellId, currentCellId);
+			AccessibilityVirtualNode node;
+			CUI_EXPECT_TRUE(peer.TryGetAccessibilityVirtualNode(lastCellId, node));
+			CUI_EXPECT_EQ(static_cast<int>(expectedIndex), node.Row);
+		};
+		auto verifySparseQueries = [&](const char* stage)
+		{
+			if (rows->TryGetQueries < queryBudget
+				&& rows->OccurrenceQueries < queryBudget) return;
+			throw std::runtime_error(std::string(stage)
+				+ " sparse query budget exceeded: TryGet="
+				+ std::to_string(rows->TryGetQueries)
+				+ ", Occurrence="
+				+ std::to_string(rows->OccurrenceQueries));
+		};
+
+		// Replace preserves the physical tail slot and must not evict its cached
+		// occurrence position, even though consumers rebuild its value visuals.
+		rows->ResetQueries();
+		rows->ReplaceTail();
+		verifyState(originalLastIndex);
+		verifySparseQueries("ReplaceTail");
+
+		// A new tail does not move the selected/current occurrence.
+		rows->ResetQueries();
+		rows->AddTail();
+		verifyState(originalLastIndex);
+		verifySparseQueries("AddTail");
+
+		// Moving the front occurrence to the new end shifts the old last row left
+		// once. Sparse cached positions must map it without a million-token scan.
+		rows->ResetQueries();
+		rows->MoveFrontToEnd();
+		verifyState(rowCount - 2);
+		verifySparseQueries("MoveFrontToEnd");
+	});
+
+	runner.Add("DataGrid pins failed live changes to one canonical snapshot", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		bool rejectCandidateRows = false;
+		grid.SetGeneratedContainerInitializer(
+			[&](Control&, std::wstring* error)
+			{
+				if (!rejectCandidateRows) return true;
+				if (error) *error = L"live candidate rejected";
+				return false;
+			});
+		auto rows = std::make_shared<ObservableBindingList>(L"LiveRow");
+		auto first = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(first->DefineProperty(L"Name", L"First"));
+		rows->Items.push_back(BindingSourceReference(first));
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 0));
+
+		rejectCandidateRows = true;
+		auto second = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(second->DefineProperty(L"Name", L"Second"));
+		rows->Items.push_back(BindingSourceReference(second));
+		CUI_EXPECT_EQ(2ULL, rows->Count());
+		CUI_EXPECT_EQ(1ULL, grid.ItemCount());
+		CUI_EXPECT_EQ(1ULL, grid.GetItemsSource().Get()->Count());
+		CUI_EXPECT_TRUE(rows.get() != grid.GetItemsSource().Get());
+		CUI_EXPECT_FALSE(grid.SetCurrentCell(1, 0));
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+
+		rejectCandidateRows = false;
+		const auto pinned = grid.GetItemsSource();
+		grid.SetItemsSource(pinned);
+		CUI_EXPECT_EQ(pinned.Get(), grid.GetItemsSource().Get());
+		CUI_EXPECT_EQ(1ULL, grid.ItemCount());
+		CUI_EXPECT_FALSE(grid.SetCurrentCell(1, 0));
+	});
+
+	runner.Add("DataGrid caches Auto column measurement once per realization pass", []
+	{
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr CompiledBindingPathStep nameSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView namePath{ nameSteps };
+		constexpr size_t rowCount = 128;
+
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 520, 220);
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Measured name"));
+		column->SetCompiledBindingPath(namePath);
+		column->SetWidth(DataGridLength::Auto());
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto rows = std::make_shared<ObservableBindingList>(L"MeasuredRow");
+		std::vector<std::shared_ptr<TokenOnlyBindingSource>> records;
+		records.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto row = std::make_shared<TokenOnlyBindingSource>();
+			row->Define(nameProperty,
+				BindingValue(L"Measured row " + std::to_wstring(index)));
+			rows->Items.push_back(BindingSourceReference(row));
+			records.push_back(std::move(row));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(rowCount, grid.GeneratedItemCount());
+		const auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		size_t reads = 0;
+		for (const auto& row : records)
+			reads += static_cast<size_t>(row->TokenGetCalls);
+		// One pass supplies Auto width and one pass supplies each cell binding.
+		// Leave one extra pass of headroom for binding initialization details;
+		// the previous per-row scan is quadratic (128 * 128 reads).
+		CUI_EXPECT_TRUE(reads <= rowCount * 3);
+		CUI_EXPECT_EQ(0ULL, std::accumulate(records.begin(), records.end(),
+			size_t{ 0 }, [](size_t total, const auto& row)
+			{ return total + static_cast<size_t>(row->NameGetCalls); }));
+	});
+
+	runner.Add("DataGrid preserves Auto samples across million-row visual rebuilds", []
+	{
+		class LazyStableMeasuredList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			LazyStableMeasuredList(
+				size_t count, BindingSourceReference sharedItem) noexcept
+				: _count(count), _sharedItem(std::move(sharedItem)) {}
+
+			size_t Count() const noexcept override { return _count; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_sharedItem) return false;
+				out = _sharedItem;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				result = index + 1;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = 0;
+				if (identity == 0 || identity > _count) return false;
+				index = identity - 1;
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"MeasuredMillionRow";
+				return typeName;
+			}
+
+			mutable size_t TryGetQueries = 0;
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _sharedItem;
+		};
+
+		class MeasuredVirtualDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+		};
+
+		static constexpr auto nameProperty =
+			MakeBindingSourcePropertyToken(L"Name");
+		static constexpr CompiledBindingPathStep nameSteps[] =
+		{
+			{ CompiledBindingPathStepKind::Property,
+				CompiledBindingPathCapabilities::Read
+					| CompiledBindingPathCapabilities::Observe,
+				BindingValueKind::String, nameProperty, 0 }
+		};
+		static constexpr CompiledBindingPathView namePath{ nameSteps };
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t initialSampleBudget = 1100;
+		constexpr size_t viewportReadBudget = 128;
+
+		auto shortItem = std::make_shared<TokenOnlyBindingSource>();
+		shortItem->Define(nameProperty, BindingValue(L"Short"));
+		auto rows = std::make_shared<LazyStableMeasuredList>(
+			rowCount, BindingSourceReference(shortItem));
+
+		MeasuredVirtualDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 520, 228);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		auto autoColumnOwner = std::make_unique<DataGridTextColumn>();
+		auto* autoColumn = autoColumnOwner.get();
+		autoColumn->SetHeader(BindingValue(L"Measured name"));
+		autoColumn->SetCompiledBindingPath(namePath);
+		autoColumn->SetWidth(DataGridLength::Auto());
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(autoColumnOwner)) == autoColumn);
+		auto starColumnOwner = std::make_unique<DataGridTextColumn>();
+		starColumnOwner->SetHeader(BindingValue(L"Remaining"));
+		starColumnOwner->SetCompiledBindingPath(namePath);
+		starColumnOwner->SetWidth(DataGridLength::Star());
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(starColumnOwner)) != nullptr);
+
+		// Publish a real viewport before assigning the source. This keeps the
+		// initial Auto gate to one intentional sample plus realized-row work,
+		// rather than counting setup-only presentation passes.
+		auto* scroll = InstallDataGridScrollTemplate(grid);
+		grid.PrepareForTest();
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 520.0f, 228.0f });
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.UpdateLayout();
+		CUI_EXPECT_EQ(rowCount, grid.ItemCount());
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() < viewportReadBudget);
+		CUI_EXPECT_TRUE(rows->TryGetQueries >= 1000ULL);
+		CUI_EXPECT_TRUE(rows->TryGetQueries <= initialSampleBudget);
+		CUI_EXPECT_TRUE(shortItem->TokenGetCalls >= 1000);
+		CUI_EXPECT_TRUE(shortItem->TokenGetCalls
+			<= static_cast<int>(initialSampleBudget));
+
+		const auto readFirstHeaderWidth = [&]() -> std::optional<double>
+		{
+			// ItemsSource/layout transactions may legitimately recreate the
+			// presenter and its header children. Never retain either raw pointer
+			// across UpdateLayout; resolve the committed tree afterwards.
+			if (auto* presenter = grid.GetColumnHeadersPresenter())
+				presenter->UpdateColumnWidths();
+			grid.UpdateLayout();
+			auto* presenter = grid.GetColumnHeadersPresenter();
+			auto* header = presenter ? presenter->GetHeader(0) : nullptr;
+			if (!header) return std::nullopt;
+			return static_cast<double>(header->GetActualSizeDip().width);
+		};
+		const auto shortWidth = readFirstHeaderWidth();
+		CUI_EXPECT_TRUE(shortWidth.has_value());
+		if (!shortWidth) return;
+		CUI_EXPECT_TRUE(*shortWidth > 0.0);
+
+		const auto expectViewportOnly = [&](auto&& update)
+		{
+			const size_t beforeItems = rows->TryGetQueries;
+			const int beforeValues = shortItem->TokenGetCalls;
+			update();
+			grid.UpdateLayout();
+			CUI_EXPECT_TRUE(rows->TryGetQueries >= beforeItems);
+			CUI_EXPECT_TRUE(rows->TryGetQueries - beforeItems
+				< viewportReadBudget);
+			CUI_EXPECT_TRUE(shortItem->TokenGetCalls >= beforeValues);
+			CUI_EXPECT_TRUE(shortItem->TokenGetCalls - beforeValues
+				< static_cast<int>(viewportReadBudget));
+		};
+
+		expectViewportOnly([&]
+		{
+			grid.SetRowBackground(cui::drawing::MakeSolidColorBrush(
+				D2D1_COLOR_F{ 0.08f, 0.12f, 0.18f, 1.0f }));
+		});
+		expectViewportOnly([&]
+		{
+			grid.SetGridLinesVisibility(
+				DataGridGridLinesVisibility::Horizontal);
+		});
+		expectViewportOnly([&] { grid.SetRowHeight(44.0); });
+
+		// Star redistribution and a changed viewport may retire resolved widths,
+		// but must reuse the Auto column's content sample.
+		expectViewportOnly([&]
+		{
+			grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 680.0f, 228.0f });
+		});
+
+		// A new source is a genuine content boundary. It must take one fresh
+		// sample and publish the longer Auto width without materializing a million
+		// records or retaining the old source's sample.
+		auto longItem = std::make_shared<TokenOnlyBindingSource>();
+		longItem->Define(nameProperty,
+			BindingValue(std::wstring(72, L'W')));
+		auto longRows = std::make_shared<LazyStableMeasuredList>(
+			rowCount, BindingSourceReference(longItem));
+		grid.SetItemsSource(BindingListReference(longRows));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(longRows->TryGetQueries >= 1000ULL);
+		CUI_EXPECT_TRUE(longRows->TryGetQueries <= initialSampleBudget);
+		CUI_EXPECT_TRUE(longItem->TokenGetCalls >= 1000);
+		CUI_EXPECT_TRUE(longItem->TokenGetCalls
+			<= static_cast<int>(initialSampleBudget));
+		const auto longWidth = readFirstHeaderWidth();
+		CUI_EXPECT_TRUE(longWidth.has_value());
+		CUI_EXPECT_TRUE(longWidth && *longWidth > *shortWidth + 100.0);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() < viewportReadBudget);
+	});
+
+	runner.Add("DataGrid header grippers resize columns in place and honor WPF constraints", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 240, 160);
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetCanUserSortColumns(false);
+
+		auto firstOwner = std::make_unique<DataGridTextColumn>();
+		auto* first = firstOwner.get();
+		first->SetHeader(BindingValue(L"Resizable"));
+		first->SetBindingPath(L"Name");
+		first->SetWidth(DataGridLength::Star());
+		first->SetMinWidth(60.0);
+		first->SetMaxWidth(180.0);
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(firstOwner)) == first);
+		auto secondOwner = std::make_unique<DataGridTextColumn>();
+		secondOwner->SetHeader(BindingValue(L"Fixed"));
+		secondOwner->SetBindingPath(L"Name");
+		secondOwner->SetWidth(DataGridLength(100.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(secondOwner)) != nullptr);
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Alpha"));
+		auto rows = std::make_shared<ObservableBindingList>(L"ResizeRow");
+		rows->Items.push_back(BindingSourceReference(item));
+		grid.SetItemsSource(BindingListReference(rows));
+		auto* row = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(row != nullptr);
+
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		auto* header = headers->GetHeader(0);
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (!header) return;
+		CUI_EXPECT_TRUE(header->IsEffectivelyEnabled());
+		const ControlWeakReference headerLifetime(header);
+		const double startWidth = header->GetActualSizeDip().width;
+		CUI_EXPECT_TRUE(startWidth >= 60.0 && startWidth <= 180.0);
+		const int edge = static_cast<int>(std::floor(startWidth)) - 1;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, edge + 100, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, edge + 100, 18)));
+		CUI_EXPECT_EQ(header, headerLifetime.Get());
+		CUI_EXPECT_EQ(row,
+			dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0)));
+		CUI_EXPECT_EQ(DataGridLengthUnitType::Pixel,
+			first->GetWidth().UnitType);
+		CUI_EXPECT_NEAR(180.0, first->GetWidth().Value, 0.001);
+
+		first->SetWidth(DataGridLength(120.0));
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		const int cancelEdge = static_cast<int>(
+			std::floor(header->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, cancelEdge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, cancelEdge + 40, 18, MouseButton::Left));
+		InputReport cancel;
+		cancel.Kind = InputReportKind::Cancel;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(*header, cancel));
+		CUI_EXPECT_NEAR(120.0, first->GetWidth().Value, 0.001);
+
+		const int minimumEdge = static_cast<int>(
+			std::floor(header->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, minimumEdge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, minimumEdge - 100, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, minimumEdge - 100, 18));
+		CUI_EXPECT_NEAR(60.0, first->GetWidth().Value, 0.001);
+
+		first->SetWidth(DataGridLength(120.0));
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		first->SetCanUserResize(false);
+		const int disabledEdge = static_cast<int>(
+			std::floor(header->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, disabledEdge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, disabledEdge + 20, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, disabledEdge + 20, 18));
+		CUI_EXPECT_FALSE(grid.ResizeColumn(0, 150.0));
+		CUI_EXPECT_NEAR(120.0, first->GetWidth().Value, 0.001);
+		first->SetCanUserResize(true);
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		const int autoEdge = static_cast<int>(
+			std::floor(header->GetActualSizeDip().width)) - 1;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDoubleClick,
+				MouseButton::Left, autoEdge, 18)));
+		CUI_EXPECT_EQ(DataGridLengthUnitType::Auto,
+			first->GetWidth().UnitType);
+
+		grid.SetCanUserResizeColumns(false);
+		first->SetWidth(DataGridLength(120.0));
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		const int globallyDisabledEdge = static_cast<int>(
+			std::floor(header->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, globallyDisabledEdge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, globallyDisabledEdge + 20, 18,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, globallyDisabledEdge + 20, 18));
+		CUI_EXPECT_FALSE(grid.ResizeColumn(0, 150.0));
+		CUI_EXPECT_NEAR(120.0, first->GetWidth().Value, 0.001);
+	});
+
+	runner.Add("DataGrid RowHeaderActualWidth shares Auto maximum and mirrors explicit width", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid row header shared Auto width");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 220.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 220);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(240.0));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"RowHeaderWidthRow");
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		constexpr std::array<float, 3> naturalWidths{ 44.0f, 112.0f, 73.0f };
+		for (size_t rowIndex = 0; rowIndex < naturalWidths.size(); ++rowIndex)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid->GetGeneratedItem(rowIndex));
+			auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+			CUI_EXPECT_TRUE(row != nullptr);
+			CUI_EXPECT_TRUE(rowHeader != nullptr);
+			if (!rowHeader) return;
+			auto content = MakeTestControl<Control>(
+				0, 0, naturalWidths[rowIndex], 18.0f);
+			auto* contentPointer = content.get();
+			CUI_EXPECT_TRUE(
+				rowHeader->SetVisualContent(std::move(content)) == contentPointer);
+			CUI_EXPECT_EQ(Visibility::Collapsed, rowHeader->GetVisibility());
+		}
+		CUI_EXPECT_NEAR(0.0, grid->GetRowHeaderActualWidth(), 0.001);
+
+		// Column -> All must synchronously discover the widest realized header.
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+		double widestNatural = 0.0;
+		for (size_t rowIndex = 0; rowIndex < naturalWidths.size(); ++rowIndex)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid->GetGeneratedItem(rowIndex));
+			auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+			CUI_EXPECT_TRUE(rowHeader != nullptr);
+			if (!rowHeader) return;
+			const auto desired = rowHeader->Measure(
+				cui::core::Constraints::Unbounded());
+			widestNatural = (std::max)(
+				widestNatural, static_cast<double>(desired.width));
+		}
+		CUI_EXPECT_TRUE(widestNatural >= naturalWidths[1]);
+		CUI_EXPECT_NEAR(
+			widestNatural, grid->GetRowHeaderActualWidth(), 0.001);
+		CUI_EXPECT_TRUE(std::isnan(grid->GetRowHeaderWidth()));
+
+		auto expectSharedWidth = [&](double expected)
+		{
+			window.UpdateLayout();
+			auto* selectAll = grid->GetSelectAllButton();
+			CUI_EXPECT_TRUE(selectAll != nullptr);
+			if (!selectAll) return;
+			CUI_EXPECT_NEAR(expected,
+				selectAll->GetActualSizeDip().width, 0.001);
+			for (size_t rowIndex = 0;
+				rowIndex < grid->GeneratedItemCount(); ++rowIndex)
+			{
+				auto* row = dynamic_cast<DataGridRow*>(
+					grid->GetGeneratedItem(rowIndex));
+				auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+				CUI_EXPECT_TRUE(rowHeader != nullptr);
+				if (rowHeader) CUI_EXPECT_NEAR(expected,
+					rowHeader->GetActualSizeDip().width, 0.001);
+			}
+		};
+		expectSharedWidth(widestNatural);
+
+		// WPF grows RowHeaderActualWidth during an ordinary measure pass when an
+		// already-realized row header becomes wider.
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* firstHeader = firstRow ? firstRow->GetRowHeader() : nullptr;
+		CUI_EXPECT_TRUE(firstHeader != nullptr);
+		if (!firstHeader) return;
+		auto widerContent = MakeTestControl<Control>(
+			0, 0, static_cast<float>(widestNatural + 47.0), 18.0f);
+		CUI_EXPECT_TRUE(
+			firstHeader->SetVisualContent(std::move(widerContent)) != nullptr);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(
+			grid->GetRowHeaderActualWidth() > widestNatural + 1.0);
+		widestNatural = grid->GetRowHeaderActualWidth();
+		expectSharedWidth(widestNatural);
+
+		const double explicitWidth = widestNatural + 31.0;
+		grid->SetRowHeaderWidth(explicitWidth);
+		CUI_EXPECT_NEAR(explicitWidth, grid->GetRowHeaderWidth(), 0.001);
+		CUI_EXPECT_NEAR(
+			explicitWidth, grid->GetRowHeaderActualWidth(), 0.001);
+		expectSharedWidth(explicitWidth);
+
+		grid->SetRowHeaderWidth(
+			(std::numeric_limits<double>::quiet_NaN)());
+		CUI_EXPECT_TRUE(std::isnan(grid->GetRowHeaderWidth()));
+		CUI_EXPECT_NEAR(
+			widestNatural, grid->GetRowHeaderActualWidth(), 0.001);
+		expectSharedWidth(widestNatural);
+	});
+
+	runner.Add("DataGrid RowHeaderActualWidth shrinks after source replacement and Reset", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid row header width shrink");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 220.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 220);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+		grid->SetGeneratedContainerInitializer(
+			[](Control& container, std::wstring* error)
+			{
+				auto* row = dynamic_cast<DataGridRow*>(&container);
+				auto* header = row ? row->GetRowHeader() : nullptr;
+				if (!header)
+				{
+					if (error) *error = L"DataGrid row header was not prepared";
+					return false;
+				}
+				auto content = MakeTestControl<Control>(
+					0, 0, 36.0f, 18.0f);
+				return header->SetVisualContent(std::move(content)) != nullptr;
+			});
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(240.0));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+
+		auto makeRows = [](size_t count, const std::wstring& prefix)
+		{
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"RowHeaderWidthRow");
+			for (size_t rowIndex = 0; rowIndex < count; ++rowIndex)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", prefix + std::to_wstring(rowIndex)));
+				rows->Items.push_back(
+					BindingSourceReference(std::move(row)));
+			}
+			return rows;
+		};
+		auto source = makeRows(2, L"Initial ");
+		grid->SetItemsSource(BindingListReference(source));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		auto installWideHeaderAndRescan =
+			[&](size_t rowIndex, float naturalWidth)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid->GetGeneratedItem(rowIndex));
+			auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+			CUI_EXPECT_TRUE(rowHeader != nullptr);
+			if (!rowHeader) return 0.0;
+			auto content = MakeTestControl<Control>(
+				0, 0, naturalWidth, 18.0f);
+			auto* contentPointer = content.get();
+			CUI_EXPECT_TRUE(
+				rowHeader->SetVisualContent(std::move(content)) == contentPointer);
+			grid->SetRowHeaderWidth(24.0);
+			grid->SetRowHeaderWidth(
+				(std::numeric_limits<double>::quiet_NaN)());
+			return grid->GetRowHeaderActualWidth();
+		};
+		auto expectSharedWidth = [&](double expected)
+		{
+			window.UpdateLayout();
+			auto* selectAll = grid->GetSelectAllButton();
+			CUI_EXPECT_TRUE(selectAll != nullptr);
+			if (selectAll) CUI_EXPECT_NEAR(expected,
+				selectAll->GetActualSizeDip().width, 0.001);
+			for (size_t rowIndex = 0;
+				rowIndex < grid->GeneratedItemCount(); ++rowIndex)
+			{
+				auto* row = dynamic_cast<DataGridRow*>(
+					grid->GetGeneratedItem(rowIndex));
+				auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+				CUI_EXPECT_TRUE(rowHeader != nullptr);
+				if (rowHeader) CUI_EXPECT_NEAR(expected,
+					rowHeader->GetActualSizeDip().width, 0.001);
+			}
+		};
+
+		const double initialWide = installWideHeaderAndRescan(0, 164.0f);
+		CUI_EXPECT_TRUE(initialWide >= 164.0);
+		expectSharedWidth(initialWide);
+
+		auto replacement = makeRows(2, L"Replacement ");
+		grid->SetItemsSource(BindingListReference(replacement));
+		CUI_EXPECT_EQ(2ULL, grid->GeneratedItemCount());
+		const double replacementNarrow = grid->GetRowHeaderActualWidth();
+		CUI_EXPECT_TRUE(replacementNarrow + 0.001 < initialWide);
+		expectSharedWidth(replacementNarrow);
+
+		const double resetWide = installWideHeaderAndRescan(1, 138.0f);
+		CUI_EXPECT_TRUE(resetWide >= 138.0);
+		expectSharedWidth(resetWide);
+		std::vector<BindingSourceReference> resetItems;
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Reset " + std::to_wstring(rowIndex)));
+			resetItems.emplace_back(std::move(row));
+		}
+		replacement->Items.assign(resetItems.begin(), resetItems.end());
+		CUI_EXPECT_EQ(3ULL, grid->GeneratedItemCount());
+		const double resetNarrow = grid->GetRowHeaderActualWidth();
+		CUI_EXPECT_TRUE(resetNarrow + 0.001 < resetWide);
+		expectSharedWidth(resetNarrow);
+	});
+
+	runner.Add("DataGrid HeadersVisibility matches WPF row column corner matrix", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid header visibility matrix");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 220.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 220);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetRowHeaderWidth(38.0);
+		for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(DataGridLength(140.0));
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"HeaderVisibilityRow");
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		// WPF DataGrid defaults to showing row, column and select-all headers.
+		CUI_EXPECT_EQ(
+			DataGridHeadersVisibility::All, grid->GetHeadersVisibility());
+		struct HeaderVisibilityCase final
+		{
+			DataGridHeadersVisibility Value;
+			bool ColumnVisible = false;
+			bool RowVisible = false;
+			bool CornerVisible = false;
+		};
+		for (const auto& expectation : std::array{
+			HeaderVisibilityCase{ DataGridHeadersVisibility::None,
+				false, false, false },
+			HeaderVisibilityCase{ DataGridHeadersVisibility::Column,
+				true, false, false },
+			HeaderVisibilityCase{ DataGridHeadersVisibility::Row,
+				false, true, false },
+			HeaderVisibilityCase{ DataGridHeadersVisibility::All,
+				true, true, true } })
+		{
+			grid->SetHeadersVisibility(expectation.Value);
+			window.UpdateLayout();
+			auto* columnHeaders = grid->GetColumnHeadersPresenter();
+			auto* selectAll = grid->GetSelectAllButton();
+			CUI_EXPECT_TRUE(columnHeaders != nullptr);
+			CUI_EXPECT_TRUE(selectAll != nullptr);
+			if (!columnHeaders || !selectAll) return;
+			CUI_EXPECT_EQ(
+				expectation.ColumnVisible ? Visibility::Visible
+					: Visibility::Collapsed,
+				columnHeaders->GetVisibility());
+			CUI_EXPECT_EQ(
+				expectation.CornerVisible ? Visibility::Visible
+					: Visibility::Collapsed,
+				selectAll->GetVisibility());
+			CUI_EXPECT_EQ(expectation.ColumnVisible,
+				IsControlHitAtCenter(window, *columnHeaders));
+			CUI_EXPECT_EQ(expectation.CornerVisible,
+				IsControlHitAtCenter(window, *selectAll));
+
+			CUI_EXPECT_EQ(3ULL, grid->GeneratedItemCount());
+			for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+			{
+				auto* row = dynamic_cast<DataGridRow*>(
+					grid->GetGeneratedItem(rowIndex));
+				auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+				CUI_EXPECT_TRUE(row != nullptr);
+				CUI_EXPECT_TRUE(rowHeader != nullptr);
+				if (!rowHeader) continue;
+				CUI_EXPECT_EQ(
+					expectation.RowVisible ? Visibility::Visible
+						: Visibility::Collapsed,
+					rowHeader->GetVisibility());
+				CUI_EXPECT_EQ(expectation.RowVisible,
+					IsControlHitAtCenter(window, *rowHeader));
+			}
+		}
+	});
+
+	runner.Add("DataGrid horizontal scroll aligns headers and freezes row chrome", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid horizontal header alignment");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 220.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 320, 220);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+		grid->SetRowHeaderWidth(42.0);
+		constexpr size_t columnCount = 3;
+		for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(DataGridLength(180.0));
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"HorizontalHeaderAlignmentRow");
+		for (size_t rowIndex = 0; rowIndex < 2; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		auto* headers = grid->GetColumnHeadersPresenter();
+		auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+		auto* selectAll = grid->GetSelectAllButton();
+		CUI_EXPECT_TRUE(scroll != nullptr);
+		CUI_EXPECT_TRUE(headers != nullptr);
+		CUI_EXPECT_TRUE(row != nullptr);
+		CUI_EXPECT_TRUE(rowHeader != nullptr);
+		CUI_EXPECT_TRUE(selectAll != nullptr);
+		if (!scroll || !headers || !row || !rowHeader || !selectAll) return;
+		if (!(scroll->ExtentWidth > scroll->ViewportWidth))
+			throw std::runtime_error("DataGrid horizontal extent did not overflow: extent="
+				+ std::to_string(scroll->ExtentWidth) + ", viewport="
+				+ std::to_string(scroll->ViewportWidth));
+
+		std::array<DataGridColumnHeader*, columnCount> headerControls{};
+		std::array<DataGridCell*, columnCount> cellControls{};
+		std::array<float, columnCount> headerLeftBefore{};
+		std::array<float, columnCount> cellLeftBefore{};
+		for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+		{
+			headerControls[columnIndex] = headers->GetHeader(columnIndex);
+			cellControls[columnIndex] = row->GetCell(columnIndex);
+			CUI_EXPECT_TRUE(headerControls[columnIndex] != nullptr);
+			CUI_EXPECT_TRUE(cellControls[columnIndex] != nullptr);
+			if (!headerControls[columnIndex] || !cellControls[columnIndex]) return;
+			headerLeftBefore[columnIndex] =
+				headerControls[columnIndex]->GetRenderedAbsoluteRectDip().left;
+			cellLeftBefore[columnIndex] =
+				cellControls[columnIndex]->GetRenderedAbsoluteRectDip().left;
+			CUI_EXPECT_NEAR(headerLeftBefore[columnIndex],
+				cellLeftBefore[columnIndex], 0.001f);
+		}
+		const float rowHeaderLeftBefore =
+			rowHeader->GetRenderedAbsoluteRectDip().left;
+		const float selectAllLeftBefore =
+			selectAll->GetRenderedAbsoluteRectDip().left;
+
+		constexpr double requestedOffset = 96.0;
+		scroll->ScrollToHorizontalOffset(requestedOffset);
+		window.UpdateLayout();
+		CUI_EXPECT_NEAR(requestedOffset, scroll->HorizontalOffset, 0.001);
+		for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+		{
+			const float headerLeftAfter =
+				headerControls[columnIndex]->GetRenderedAbsoluteRectDip().left;
+			const float cellLeftAfter =
+				cellControls[columnIndex]->GetRenderedAbsoluteRectDip().left;
+			const float headerChange =
+				headerLeftAfter - headerLeftBefore[columnIndex];
+			const float cellChange =
+				cellLeftAfter - cellLeftBefore[columnIndex];
+			CUI_EXPECT_NEAR(headerChange, cellChange, 0.001f);
+			CUI_EXPECT_NEAR(
+				-static_cast<float>(scroll->HorizontalOffset),
+				headerChange, 0.001f);
+		}
+		CUI_EXPECT_NEAR(rowHeaderLeftBefore,
+			rowHeader->GetRenderedAbsoluteRectDip().left, 0.001f);
+		CUI_EXPECT_NEAR(selectAllLeftBefore,
+			selectAll->GetRenderedAbsoluteRectDip().left, 0.001f);
+
+		// This helper routes through WindowAccess::HitTestControlAt rather than
+		// dispatching directly to the row header.
+		CUI_EXPECT_TRUE(IsControlHitAtCenter(window, *rowHeader));
+	});
+
+	runner.Add("DataGrid shared Star widths align headers and cells on first layout", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid shared Star alignment");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 520.0f, 220.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 520, 220);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+		grid->SetRowHeaderWidth(40.0);
+		const std::array<DataGridLength, 5> widths{
+			DataGridLength(90.0), DataGridLength::Star(2.0),
+			DataGridLength::Star(), DataGridLength::Star(),
+			DataGridLength(70.0) };
+		for (size_t columnIndex = 0; columnIndex < widths.size(); ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			column->SetSortMemberPath(L"Name");
+			column->SetWidth(widths[columnIndex]);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"SharedStarAlignmentRow");
+		for (size_t rowIndex = 0; rowIndex < 10; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			const std::wstring name = rowIndex == 0
+				? L"A very long first row which must not size Star columns"
+				: L"R" + std::to_wstring(rowIndex);
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+
+		auto verifyAlignment = [&]
+		{
+			auto* headers = grid->GetColumnHeadersPresenter();
+			auto* first = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+			auto* second = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
+			CUI_EXPECT_TRUE(headers != nullptr);
+			CUI_EXPECT_TRUE(first != nullptr);
+			CUI_EXPECT_TRUE(second != nullptr);
+			if (!headers || !first || !second) return;
+			for (size_t columnIndex = 0; columnIndex < widths.size(); ++columnIndex)
+			{
+				auto* header = headers->GetHeader(columnIndex);
+				auto* firstCell = first->GetCell(columnIndex);
+				auto* secondCell = second->GetCell(columnIndex);
+				CUI_EXPECT_TRUE(header != nullptr);
+				CUI_EXPECT_TRUE(firstCell != nullptr);
+				CUI_EXPECT_TRUE(secondCell != nullptr);
+				if (!header || !firstCell || !secondCell) continue;
+				const auto headerRect = header->GetRenderedAbsoluteRectDip();
+				for (auto* cell : { firstCell, secondCell })
+				{
+					const auto cellRect = cell->GetRenderedAbsoluteRectDip();
+					CUI_EXPECT_NEAR(headerRect.left, cellRect.left, 0.01f);
+					CUI_EXPECT_NEAR(
+						headerRect.right - headerRect.left,
+						cellRect.right - cellRect.left, 0.01f);
+				}
+			}
+		};
+
+		// One public layout pass is the state used by Window::Show before the
+		// first paint.  Provisional widths may still be refined for a vertical
+		// scrollbar, but header and rows must already consume the same pixels.
+		window.UpdateLayout();
+		verifyAlignment();
+		window.UpdateLayout();
+		verifyAlignment();
+		CUI_EXPECT_TRUE(scroll != nullptr);
+		if (!scroll) return;
+		const double starSpace = scroll->ViewportWidth
+			- grid->GetRowHeaderActualWidth() - 160.0;
+		auto* headers = grid->GetColumnHeadersPresenter();
+		if (headers && starSpace > 0.0)
+		{
+			const auto widthOf = [](Control* control)
+			{
+				const auto rect = control->GetRenderedAbsoluteRectDip();
+				return rect.right - rect.left;
+			};
+			CUI_EXPECT_NEAR(
+				static_cast<float>(starSpace * 0.5),
+				widthOf(headers->GetHeader(1)), 0.05f);
+			CUI_EXPECT_NEAR(
+				static_cast<float>(starSpace * 0.25),
+				widthOf(headers->GetHeader(2)), 0.05f);
+			CUI_EXPECT_NEAR(
+				static_cast<float>(starSpace * 0.25),
+				widthOf(headers->GetHeader(3)), 0.05f);
+		}
+		CUI_EXPECT_TRUE(grid->PerformSort(*grid->GetColumn(0), false));
+		window.UpdateLayout();
+		verifyAlignment();
+	});
+
+	runner.Add("DataGrid Star widths honor opposing Min and Max constraints", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid constrained Star widths");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 100.0f, 120.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 100, 120);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+
+		auto firstOwner = std::make_unique<DataGridTextColumn>();
+		firstOwner->SetHeader(BindingValue(L"A"));
+		firstOwner->SetBindingPath(L"Name");
+		firstOwner->SetWidth(DataGridLength::Star());
+		firstOwner->SetMinWidth(80.0);
+		auto* first = grid->AddColumn(std::move(firstOwner));
+		auto secondOwner = std::make_unique<DataGridTextColumn>();
+		secondOwner->SetHeader(BindingValue(L"B"));
+		secondOwner->SetBindingPath(L"Name");
+		secondOwner->SetWidth(DataGridLength::Star(10.0));
+		secondOwner->SetMinWidth(0.0);
+		secondOwner->SetMaxWidth(40.0);
+		auto* second = grid->AddColumn(std::move(secondOwner));
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_TRUE(second != nullptr);
+
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"ConstrainedStarRow");
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::wstring(L"x")));
+		rows->Items.push_back(BindingSourceReference(std::move(row)));
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr);
+		auto* headers = grid->GetColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!scroll || !headers) return;
+		CUI_EXPECT_TRUE(scroll->ViewportWidth >= 80.0
+			&& scroll->ViewportWidth <= 120.0);
+		const auto widthOf = [](Control* control)
+		{
+			const auto rect = control->GetRenderedAbsoluteRectDip();
+			return rect.right - rect.left;
+		};
+		CUI_EXPECT_NEAR(80.0f, widthOf(headers->GetHeader(0)), 0.05f);
+		CUI_EXPECT_NEAR(
+			static_cast<float>(scroll->ViewportWidth - 80.0),
+			widthOf(headers->GetHeader(1)), 0.05f);
+	});
+
+	runner.Add("DataGrid row header real pointer honors WPF SelectionUnit", []
+	{
+		for (const auto unit : {
+			DataGridSelectionUnit::Cell,
+			DataGridSelectionUnit::CellOrRowHeader,
+			DataGridSelectionUnit::FullRow })
+		{
+			Window window;
+			ConfigureTestControl(window, L"DataGrid row header pointer");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 420.0f, 220.0f);
+			auto gridOwner = std::make_unique<DataGrid>();
+			auto* grid = gridOwner.get();
+			ConfigureTestControl(*grid, 0, 0, 420, 220);
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionMode(SelectionMode::Extended);
+			grid->SetSelectionUnit(unit);
+			grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+			grid->SetRowHeaderWidth(38.0);
+			for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+			{
+				auto column = std::make_unique<DataGridTextColumn>();
+				column->SetHeader(BindingValue(
+					L"Column " + std::to_wstring(columnIndex)));
+				column->SetBindingPath(L"Name");
+				column->SetWidth(DataGridLength(140.0));
+				CUI_EXPECT_TRUE(
+					grid->AddColumn(std::move(column)) != nullptr);
+			}
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"RowHeaderPointerSelectionRow");
+			for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(rowIndex)));
+				rows->Items.push_back(
+					BindingSourceReference(std::move(row)));
+			}
+			grid->SetItemsSource(BindingListReference(rows));
+			(void)InstallDataGridHeaderTemplate(*grid);
+			CUI_EXPECT_TRUE(
+				window.SetVisualContent(std::move(gridOwner)) == grid);
+			window.UpdateLayout();
+			if (unit == DataGridSelectionUnit::CellOrRowHeader)
+			{
+				CUI_EXPECT_TRUE(grid->SelectCell(0, 1));
+				CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+			}
+			auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
+			auto* rowHeader = row ? row->GetRowHeader() : nullptr;
+			CUI_EXPECT_TRUE(rowHeader != nullptr);
+			if (!rowHeader) continue;
+			CUI_EXPECT_TRUE(IsControlHitAtCenter(window, *rowHeader));
+			CUI_EXPECT_TRUE(
+				ClickControlThroughWindow(window, *rowHeader));
+
+			CUI_EXPECT_TRUE(grid->GetCurrentCell().IsValid());
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+			if (unit == DataGridSelectionUnit::Cell)
+			{
+				CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+				CUI_EXPECT_TRUE(grid->GetSelectedCells().empty());
+				CUI_EXPECT_FALSE(row && row->GetIsSelected());
+				for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+					CUI_EXPECT_FALSE(grid->IsCellSelected(1, columnIndex));
+			}
+			else
+			{
+				CUI_EXPECT_EQ(1ULL, grid->GetSelectedIndices().size());
+				CUI_EXPECT_EQ(1, grid->GetSelectedIndex());
+				CUI_EXPECT_TRUE(row && row->GetIsSelected());
+				CUI_EXPECT_EQ(2ULL, grid->GetSelectedCells().size());
+				for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+					CUI_EXPECT_TRUE(grid->IsCellSelected(1, columnIndex));
+			}
+		}
+	});
+
+	runner.Add("DataGrid select all corner follows WPF SelectionUnit", []
+	{
+		constexpr size_t rowCount = 3;
+		constexpr size_t columnCount = 2;
+		for (const auto unit : {
+			DataGridSelectionUnit::Cell,
+			DataGridSelectionUnit::CellOrRowHeader,
+			DataGridSelectionUnit::FullRow })
+		{
+			Window window;
+			ConfigureTestControl(window, L"DataGrid select all corner");
+			SetDeclaredWindowGeometry(
+				window, 0.0f, 0.0f, 420.0f, 220.0f);
+			auto gridOwner = std::make_unique<DataGrid>();
+			auto* grid = gridOwner.get();
+			ConfigureTestControl(*grid, 0, 0, 420, 220);
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionMode(SelectionMode::Extended);
+			grid->SetSelectionUnit(unit);
+			grid->SetHeadersVisibility(DataGridHeadersVisibility::All);
+			grid->SetRowHeaderWidth(38.0);
+			for (size_t columnIndex = 0;
+				columnIndex < columnCount; ++columnIndex)
+			{
+				auto column = std::make_unique<DataGridTextColumn>();
+				column->SetHeader(BindingValue(
+					L"Column " + std::to_wstring(columnIndex)));
+				column->SetBindingPath(L"Name");
+				column->SetWidth(DataGridLength(140.0));
+				CUI_EXPECT_TRUE(
+					grid->AddColumn(std::move(column)) != nullptr);
+			}
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"SelectAllCornerRow");
+			for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(rowIndex)));
+				rows->Items.push_back(
+					BindingSourceReference(std::move(row)));
+			}
+			grid->SetItemsSource(BindingListReference(rows));
+			(void)InstallDataGridHeaderTemplate(*grid);
+			CUI_EXPECT_TRUE(
+				window.SetVisualContent(std::move(gridOwner)) == grid);
+			window.UpdateLayout();
+			auto* selectAll = grid->GetSelectAllButton();
+			CUI_EXPECT_TRUE(selectAll != nullptr);
+			if (!selectAll) continue;
+			CUI_EXPECT_EQ(Visibility::Visible,
+				selectAll->GetVisibility());
+			CUI_EXPECT_TRUE(IsControlHitAtCenter(window, *selectAll));
+			CUI_EXPECT_TRUE(
+				ClickControlThroughWindow(window, *selectAll));
+
+			CUI_EXPECT_EQ(rowCount * columnCount,
+				grid->GetSelectedCells().size());
+			for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+				for (size_t columnIndex = 0;
+					columnIndex < columnCount; ++columnIndex)
+					CUI_EXPECT_TRUE(
+						grid->IsCellSelected(rowIndex, columnIndex));
+			if (unit == DataGridSelectionUnit::Cell)
+				CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+			else
+			{
+				CUI_EXPECT_EQ(rowCount,
+					grid->GetSelectedIndices().size());
+				for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+					CUI_EXPECT_TRUE(grid->IsIndexSelected(rowIndex));
+			}
+		}
+	});
+
+	runner.Add("DataGrid selection keeps CurrentCell independent and mirrors full rows", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		for (const auto* path : { L"Name", L"Paid" })
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(path));
+			column->SetBindingPath(path);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+
+		auto rows = std::make_shared<ObservableBindingList>(L"SelectionRow");
+		for (size_t index = 0; index < 3; ++index)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Paid", (index % 2) == 0));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+
+		size_t changedCount = 0;
+		size_t lastAdded = 0;
+		size_t lastRemoved = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid* sender, auto& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				++changedCount;
+				lastAdded = args.AddedCells.size();
+				lastRemoved = args.RemovedCells.size();
+				for (const auto& added : args.AddedCells)
+				{
+					CUI_EXPECT_TRUE(added.IsValid());
+					CUI_EXPECT_TRUE(grid.IsCellSelected(
+						added.RowIndex, added.ColumnIndex));
+				}
+			});
+
+		(void)grid.SelectCell(0, 0);
+		CUI_EXPECT_EQ(1ULL, changedCount);
+		CUI_EXPECT_EQ(1ULL, lastAdded);
+		CUI_EXPECT_EQ(0ULL, lastRemoved);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(0)
+			&& firstRow->GetCell(0)->GetIsSelected());
+
+		// WPF currency and selection are orthogonal. Moving CurrentCell must not
+		// select the destination row/cell or disturb the existing cell selection.
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(2, 1));
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(2, 1));
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_EQ(1ULL, changedCount);
+
+		// Changing SelectionUnit performs one full selection wipe but preserves
+		// CurrentCell so focus/edit currency does not jump unexpectedly.
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(2ULL, changedCount);
+		CUI_EXPECT_EQ(0ULL, lastAdded);
+		CUI_EXPECT_EQ(1ULL, lastRemoved);
+		CUI_EXPECT_FALSE(firstRow && firstRow->GetCell(0)
+			&& firstRow->GetCell(0)->GetIsSelected());
+
+		// FullRow keeps Selector row state and SelectedCells in one transaction.
+		CUI_EXPECT_TRUE(grid.SelectIndex(1));
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_TRUE(grid.IsIndexSelected(1));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 1));
+		CUI_EXPECT_EQ(3ULL, changedCount);
+		CUI_EXPECT_EQ(2ULL, lastAdded);
+		CUI_EXPECT_EQ(0ULL, lastRemoved);
+		auto* selectedRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		CUI_EXPECT_TRUE(selectedRow && selectedRow->GetCell(0)
+			&& selectedRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_TRUE(selectedRow && selectedRow->GetCell(1)
+			&& selectedRow->GetCell(1)->GetIsSelected());
+
+		grid.UnselectAll();
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(4ULL, changedCount);
+		CUI_EXPECT_EQ(0ULL, lastAdded);
+		CUI_EXPECT_EQ(2ULL, lastRemoved);
+		CUI_EXPECT_FALSE(selectedRow && selectedRow->GetCell(0)
+			&& selectedRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_FALSE(selectedRow && selectedRow->GetCell(1)
+			&& selectedRow->GetCell(1)->GetIsSelected());
+	});
+
+	runner.Add("DataGrid Cell input follows WPF Ctrl toggle Shift rectangle and net deltas", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t columnIndex = 0; columnIndex < 3; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"CellSelectionRow");
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+
+		std::vector<std::pair<size_t, size_t>> eventDeltas;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid* sender, auto& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				eventDeltas.emplace_back(
+					args.AddedCells.size(), args.RemovedCells.size());
+			});
+		auto clickCell = [&](size_t rowIndex, size_t columnIndex,
+			ModifierKeys modifiers = ModifierKeys::None)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(rowIndex));
+			auto* cell = row ? row->GetCell(columnIndex) : nullptr;
+			CUI_EXPECT_TRUE(cell != nullptr);
+			if (!cell) return;
+			(void)cui::framework::InputAccess::DispatchInput(
+				*cell, PointerInput(InputReportKind::PointerDown,
+					MouseButton::Left, 2, 2, MouseButton::Left, modifiers));
+			(void)cui::framework::InputAccess::DispatchInput(
+				*cell, PointerInput(InputReportKind::PointerUp,
+					MouseButton::Left, 2, 2, MouseButton::None, modifiers));
+		};
+
+		clickCell(0, 0);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, eventDeltas.size());
+		if (!eventDeltas.empty())
+		{
+			CUI_EXPECT_EQ(1ULL, eventDeltas.back().first);
+			CUI_EXPECT_EQ(0ULL, eventDeltas.back().second);
+		}
+
+		clickCell(2, 2, ModifierKeys::Control);
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(2, 2));
+		CUI_EXPECT_EQ(2ULL, eventDeltas.size());
+		if (eventDeltas.size() >= 2)
+		{
+			CUI_EXPECT_EQ(1ULL, eventDeltas.back().first);
+			CUI_EXPECT_EQ(0ULL, eventDeltas.back().second);
+		}
+
+		// Ctrl toggles selection only. The deselected cell remains CurrentCell.
+		clickCell(2, 2, ModifierKeys::Control);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(2, 2));
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(3ULL, eventDeltas.size());
+		if (eventDeltas.size() >= 3)
+		{
+			CUI_EXPECT_EQ(0ULL, eventDeltas.back().first);
+			CUI_EXPECT_EQ(1ULL, eventDeltas.back().second);
+		}
+
+		// Re-establish the anchor without changing the net selected-cell set.
+		clickCell(0, 0);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(3ULL, eventDeltas.size());
+		clickCell(2, 1, ModifierKeys::Shift);
+		CUI_EXPECT_EQ(6ULL, grid.GetSelectedCells().size());
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, 0));
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, 1));
+			CUI_EXPECT_FALSE(grid.IsCellSelected(rowIndex, 2));
+		}
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_EQ(4ULL, eventDeltas.size());
+		if (eventDeltas.size() >= 4)
+		{
+			CUI_EXPECT_EQ(5ULL, eventDeltas.back().first);
+			CUI_EXPECT_EQ(0ULL, eventDeltas.back().second);
+		}
+	});
+
+	runner.Add("DataGrid selected cells remap by item across sorting without false deltas", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetSortMemberPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+
+		auto makeRow = [](std::wstring name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::move(name)));
+			return row;
+		};
+		auto charlie = makeRow(L"Charlie");
+		auto alice = makeRow(L"Alice");
+		auto bob = makeRow(L"Bob");
+		auto rows = std::make_shared<ObservableBindingList>(L"SortedSelectionRow");
+		rows->Items.push_back(BindingSourceReference(charlie));
+		rows->Items.push_back(BindingSourceReference(alice));
+		rows->Items.push_back(BindingSourceReference(bob));
+		grid.SetItemsSource(BindingListReference(rows));
+
+		size_t selectionEvents = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, auto&) { ++selectionEvents; });
+		(void)grid.SelectCell(1, 0);
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 0));
+		CUI_EXPECT_EQ(1ULL, selectionEvents);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+
+		CUI_EXPECT_TRUE(grid.PerformSort(*column, false));
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			const auto& selected = grid.GetSelectedCells().front();
+			CUI_EXPECT_TRUE(selected.Item.Shared() == alice);
+			CUI_EXPECT_TRUE(selected.Column == column);
+			CUI_EXPECT_EQ(0ULL, selected.RowIndex);
+			CUI_EXPECT_EQ(0ULL, selected.ColumnIndex);
+		}
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(1, 0));
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Item.Shared() == alice);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		auto* ascendingAliceRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(ascendingAliceRow && ascendingAliceRow->GetCell(0)
+			&& ascendingAliceRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_EQ(1ULL, selectionEvents);
+
+		CUI_EXPECT_TRUE(grid.PerformSort(*column, false));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(2, 0));
+		CUI_EXPECT_FALSE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells().front().Item.Shared() == alice);
+			CUI_EXPECT_EQ(
+				2ULL, grid.GetSelectedCells().front().RowIndex);
+		}
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Item.Shared() == alice);
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, selectionEvents);
+	});
+
+	runner.Add("DataGrid virtualized cells restore IsSelected without retaining containers", []
+	{
+		class SelectionVirtualizationProbeDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+		};
+
+		constexpr size_t rowCount = 256;
+		SelectionVirtualizationProbeDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		auto rows = std::make_shared<ObservableBindingList>(L"VirtualSelectionRow");
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(index)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
+		(void)grid.SelectCell(rowCount - 1, 0);
+		CUI_EXPECT_TRUE(grid.IsCellSelected(rowCount - 1, 0));
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(rowCount - 1) == nullptr);
+
+		auto* scroll = InstallDataGridScrollTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= 16ULL);
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(0));
+		CUI_EXPECT_FALSE(firstRow && firstRow->GetCell(0)
+			&& firstRow->GetCell(0)->GetIsSelected());
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(rowCount - 1));
+		grid.UpdateLayout();
+		auto* lastRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(rowCount - 1));
+		CUI_EXPECT_TRUE(lastRow && lastRow->GetCell(0));
+		CUI_EXPECT_TRUE(lastRow && lastRow->GetCell(0)
+			&& lastRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= 16ULL);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(0));
+		grid.UpdateLayout();
+		firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(0));
+		CUI_EXPECT_FALSE(firstRow && firstRow->GetCell(0)
+			&& firstRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(rowCount - 1, 0));
+
+		(void)grid.UnselectCell(rowCount - 1, 0);
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(rowCount - 1, 0));
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(rowCount - 1));
+		grid.UpdateLayout();
+		lastRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(rowCount - 1));
+		CUI_EXPECT_TRUE(lastRow && lastRow->GetCell(0));
+		CUI_EXPECT_FALSE(lastRow && lastRow->GetCell(0)
+			&& lastRow->GetCell(0)->GetIsSelected());
+	});
+
+	runner.Add("DataGrid SelectionMode Single preserves WPF selection-unit shape", []
+	{
+		auto createGrid = [](DataGridSelectionUnit unit)
+		{
+			auto grid = std::make_unique<DataGrid>();
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionMode(SelectionMode::Extended);
+			grid->SetSelectionUnit(unit);
+			for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+			{
+				auto column = std::make_unique<DataGridTextColumn>();
+				column->SetHeader(BindingValue(
+					L"Column " + std::to_wstring(columnIndex)));
+				column->SetBindingPath(L"Name");
+				CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			}
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"SelectionModeSingleRow");
+			for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(
+					L"Name", L"Row " + std::to_wstring(rowIndex)));
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+			grid->SetItemsSource(BindingListReference(rows));
+			return grid;
+		};
+
+		// Cell keeps the first selected cell, not CurrentCell or the last input.
+		{
+			auto grid = createGrid(DataGridSelectionUnit::Cell);
+			CUI_EXPECT_TRUE(grid->SelectCell(0, 0));
+			CUI_EXPECT_TRUE(grid->SelectCell(2, 1));
+			CUI_EXPECT_TRUE(grid->SetCurrentCell(2, 1));
+			grid->SetSelectionMode(SelectionMode::Single);
+			CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+			CUI_EXPECT_TRUE(grid->IsCellSelected(0, 0));
+			CUI_EXPECT_FALSE(grid->IsCellSelected(2, 1));
+			CUI_EXPECT_EQ(2ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().ColumnIndex);
+		}
+
+		// Programmatic Selector row selection remains row-shaped in Cell mode;
+		// only cell input itself is prevented from selecting a row.
+		{
+			auto grid = createGrid(DataGridSelectionUnit::Cell);
+			CUI_EXPECT_TRUE(grid->SelectIndex(1));
+			CUI_EXPECT_EQ(2ULL, grid->GetSelectedCells().size());
+			grid->SetSelectionMode(SelectionMode::Single);
+			CUI_EXPECT_EQ(1ULL, grid->GetSelectedIndices().size());
+			CUI_EXPECT_EQ(2ULL, grid->GetSelectedCells().size());
+			CUI_EXPECT_TRUE(grid->IsCellSelected(1, 0));
+			CUI_EXPECT_TRUE(grid->IsCellSelected(1, 1));
+		}
+
+		// FullRow leaves one Selector row and mirrors every cell in that row.
+		{
+			auto grid = createGrid(DataGridSelectionUnit::FullRow);
+			CUI_EXPECT_TRUE(grid->SelectIndex(0));
+			CUI_EXPECT_TRUE(grid->SelectIndex(2));
+			CUI_EXPECT_TRUE(grid->SetCurrentCell(1, 1));
+			grid->SetSelectionMode(SelectionMode::Single);
+			CUI_EXPECT_EQ(1ULL, grid->GetSelectedIndices().size());
+			const size_t retainedRow = static_cast<size_t>(
+				grid->GetSelectedIndices().front());
+			CUI_EXPECT_EQ(2ULL, grid->GetSelectedCells().size());
+			CUI_EXPECT_TRUE(grid->IsCellSelected(retainedRow, 0));
+			CUI_EXPECT_TRUE(grid->IsCellSelected(retainedRow, 1));
+			for (const auto& cell : grid->GetSelectedCells())
+				CUI_EXPECT_EQ(retainedRow, cell.RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().ColumnIndex);
+		}
+
+		// CellOrRowHeader gives the retained Selector row precedence over
+		// independent cells and keeps that row's full cell projection.
+		{
+			auto grid = createGrid(DataGridSelectionUnit::CellOrRowHeader);
+			CUI_EXPECT_TRUE(grid->SelectIndex(0));
+			CUI_EXPECT_TRUE(grid->SelectIndex(2));
+			CUI_EXPECT_TRUE(grid->SelectCell(1, 1));
+			CUI_EXPECT_TRUE(grid->SetCurrentCell(1, 1));
+			grid->SetSelectionMode(SelectionMode::Single);
+			CUI_EXPECT_EQ(1ULL, grid->GetSelectedIndices().size());
+			const size_t retainedRow = static_cast<size_t>(
+				grid->GetSelectedIndices().front());
+			CUI_EXPECT_EQ(2ULL, grid->GetSelectedCells().size());
+			CUI_EXPECT_TRUE(grid->IsCellSelected(retainedRow, 0));
+			CUI_EXPECT_TRUE(grid->IsCellSelected(retainedRow, 1));
+			CUI_EXPECT_FALSE(grid->IsCellSelected(1, 1));
+			for (const auto& cell : grid->GetSelectedCells())
+				CUI_EXPECT_EQ(retainedRow, cell.RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().ColumnIndex);
+		}
+	});
+
+	runner.Add("DataGrid SelectionUnit transitions wipe row and cell selection but preserve currency", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"UnitTransitionRow");
+		for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(2, 1));
+		const auto currencyItem = grid.GetCurrentCell().Item.Shared();
+		DataGridColumn* const currencyColumn = grid.GetCurrentCell().Column;
+
+		size_t changedCount = 0;
+		size_t removedCount = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, auto& args)
+			{
+				++changedCount;
+				removedCount = args.RemovedCells.size();
+			});
+		auto expectCurrency = [&]
+		{
+			CUI_EXPECT_TRUE(grid.GetCurrentCell().IsValid());
+			CUI_EXPECT_TRUE(
+				grid.GetCurrentCell().Item.Shared() == currencyItem);
+			CUI_EXPECT_TRUE(grid.GetCurrentCell().Column == currencyColumn);
+			CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		};
+
+		// FullRow -> Cell clears both Selector rows and their mirrored cells.
+		CUI_EXPECT_TRUE(grid.SelectIndex(0));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		const size_t afterFullRowSelection = changedCount;
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(afterFullRowSelection + 1, changedCount);
+		CUI_EXPECT_EQ(2ULL, removedCount);
+		expectCurrency();
+
+		// Cell -> CellOrRowHeader clears independent cell selections.
+		(void)grid.SelectCell(0, 0);
+		(void)grid.SelectCell(1, 1);
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		const size_t afterCellSelection = changedCount;
+		grid.SetSelectionUnit(DataGridSelectionUnit::CellOrRowHeader);
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(afterCellSelection + 1, changedCount);
+		CUI_EXPECT_EQ(2ULL, removedCount);
+		expectCurrency();
+
+		// CellOrRowHeader -> FullRow also wipes row-header style selection.
+		CUI_EXPECT_TRUE(grid.SelectIndex(1));
+		CUI_EXPECT_TRUE(grid.IsIndexSelected(1));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		const size_t afterHybridRowSelection = changedCount;
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		CUI_EXPECT_TRUE(grid.GetSelectedIndices().empty());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(afterHybridRowSelection + 1, changedCount);
+		CUI_EXPECT_EQ(2ULL, removedCount);
+		expectCurrency();
+	});
+
+	runner.Add("DataGrid keyboard navigation selects WPF cells and Shift ranges", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t columnIndex = 0; columnIndex < 3; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"KeyboardSelectionRow");
+		for (size_t rowIndex = 0; rowIndex < 4; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+
+		auto key = [&](Key value,
+			ModifierKeys modifiers = ModifierKeys::None)
+		{
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				grid, KeyInput(InputReportKind::KeyDown, value, modifiers)));
+		};
+		auto expectCurrent = [&](size_t rowIndex, size_t columnIndex)
+		{
+			CUI_EXPECT_EQ(rowIndex, grid.GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(columnIndex, grid.GetCurrentCell().ColumnIndex);
+		};
+		auto expectOnlySelected = [&](size_t rowIndex, size_t columnIndex)
+		{
+			CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, columnIndex));
+		};
+
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 1));
+		(void)grid.SelectCell(1, 1);
+		key(Key::Right);
+		expectCurrent(1, 2);
+		expectOnlySelected(1, 2);
+		key(Key::Left);
+		expectCurrent(1, 1);
+		expectOnlySelected(1, 1);
+		key(Key::Up);
+		expectCurrent(0, 1);
+		expectOnlySelected(0, 1);
+		key(Key::Down);
+		expectCurrent(1, 1);
+		expectOnlySelected(1, 1);
+
+		key(Key::Home);
+		expectCurrent(1, 0);
+		expectOnlySelected(1, 0);
+		key(Key::End);
+		expectCurrent(1, 2);
+		expectOnlySelected(1, 2);
+		key(Key::Home, ModifierKeys::Control);
+		expectCurrent(0, 0);
+		expectOnlySelected(0, 0);
+		key(Key::End, ModifierKeys::Control);
+		expectCurrent(3, 2);
+		expectOnlySelected(3, 2);
+
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 1));
+		(void)grid.SelectCell(1, 1);
+		key(Key::Tab);
+		expectCurrent(1, 2);
+		expectOnlySelected(1, 2);
+		key(Key::Tab, ModifierKeys::Shift);
+		expectCurrent(1, 1);
+		expectOnlySelected(1, 1);
+
+		// Shift+navigation extends an inclusive rectangle from the anchor.
+		(void)grid.SelectCell(1, 1);
+		key(Key::Right, ModifierKeys::Shift);
+		expectCurrent(1, 2);
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 1));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 2));
+		key(Key::Down, ModifierKeys::Shift);
+		expectCurrent(2, 2);
+		CUI_EXPECT_EQ(4ULL, grid.GetSelectedCells().size());
+		for (size_t rowIndex = 1; rowIndex <= 2; ++rowIndex)
+			for (size_t columnIndex = 1; columnIndex <= 2; ++columnIndex)
+				CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, columnIndex));
+
+		key(Key::Home, ModifierKeys::Shift);
+		expectCurrent(2, 0);
+		CUI_EXPECT_EQ(4ULL, grid.GetSelectedCells().size());
+		for (size_t rowIndex = 1; rowIndex <= 2; ++rowIndex)
+		{
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, 0));
+			CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, 1));
+			CUI_EXPECT_FALSE(grid.IsCellSelected(rowIndex, 2));
+		}
+
+		// Releasing Ctrl during an active Ctrl+Shift range drops the additive
+		// base and leaves only the new Shift rectangle.
+		grid.UnselectAllCells();
+		CUI_EXPECT_TRUE(grid.SelectCell(3, 2));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 0));
+		key(Key::Right, ModifierKeys::Control | ModifierKeys::Shift);
+		CUI_EXPECT_TRUE(grid.IsCellSelected(3, 2));
+		key(Key::Down, ModifierKeys::Shift);
+		expectCurrent(1, 2);
+		CUI_EXPECT_EQ(6ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(3, 2));
+		for (size_t rowIndex = 0; rowIndex <= 1; ++rowIndex)
+			for (size_t columnIndex = 0; columnIndex <= 2; ++columnIndex)
+				CUI_EXPECT_TRUE(grid.IsCellSelected(rowIndex, columnIndex));
+
+		// Shift+Tab uses Shift only for reverse traversal, never range extension.
+		key(Key::Tab, ModifierKeys::Shift);
+		expectCurrent(1, 1);
+		expectOnlySelected(1, 1);
+
+		// WPF Ctrl+A selects cells only in Cell mode, but selects rows (and their
+		// cell projection) in CellOrRowHeader/FullRow.
+		grid.SetSelectionUnit(DataGridSelectionUnit::CellOrRowHeader);
+		key(Key::A, ModifierKeys::Control);
+		CUI_EXPECT_EQ(4ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(12ULL, grid.GetSelectedCells().size());
+	});
+
+	runner.Add("DataGridCell IsSelected synchronizes the owner selection in both directions", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		for (size_t columnIndex = 0; columnIndex < 2; ++columnIndex)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(columnIndex)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"CellPropertySelectionRow");
+		for (size_t rowIndex = 0; rowIndex < 2; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+		auto* secondCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		CUI_EXPECT_TRUE(firstCell != nullptr && secondCell != nullptr);
+		if (!firstCell || !secondCell) return;
+
+		size_t changedCount = 0;
+		size_t lastAdded = 0;
+		size_t lastRemoved = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, auto& args)
+			{
+				++changedCount;
+				lastAdded = args.AddedCells.size();
+				lastRemoved = args.RemovedCells.size();
+			});
+		size_t selectedHandlerCellCount = 0;
+		auto selectedConnection = firstCell->AddHandler(
+			RoutedEventId::Selected,
+			[&](Control*, RoutedEventArgs&)
+			{
+				selectedHandlerCellCount = grid.GetSelectedCells().size();
+			});
+
+		firstCell->SetIsSelected(true);
+		CUI_EXPECT_TRUE(firstCell->GetIsSelected());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_EQ(1ULL, changedCount);
+		CUI_EXPECT_EQ(1ULL, lastAdded);
+		CUI_EXPECT_EQ(0ULL, lastRemoved);
+		CUI_EXPECT_EQ(1ULL, selectedHandlerCellCount);
+		firstCell->SetIsSelected(true);
+		CUI_EXPECT_EQ(1ULL, changedCount);
+
+		firstCell->SetIsSelected(false);
+		CUI_EXPECT_FALSE(firstCell->GetIsSelected());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(2ULL, changedCount);
+		CUI_EXPECT_EQ(0ULL, lastAdded);
+		CUI_EXPECT_EQ(1ULL, lastRemoved);
+
+		// WPF rejects direct cell selection while FullRow owns the selection unit.
+		grid.SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		bool fullRowWriteRejected = false;
+		try { firstCell->SetIsSelected(true); }
+		catch (const std::logic_error&) { fullRowWriteRejected = true; }
+		CUI_EXPECT_TRUE(fullRowWriteRejected);
+		CUI_EXPECT_FALSE(firstCell->GetIsSelected());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_EQ(2ULL, changedCount);
+
+		// Hybrid row selection mirrors all cells; clearing one cell breaks the
+		// row selection but retains the other selected cell.
+		grid.SetSelectionUnit(DataGridSelectionUnit::CellOrRowHeader);
+		CUI_EXPECT_TRUE(grid.SelectIndex(0));
+		CUI_EXPECT_TRUE(firstCell->GetIsSelected());
+		CUI_EXPECT_TRUE(secondCell->GetIsSelected());
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		firstCell->SetIsSelected(false);
+		CUI_EXPECT_FALSE(grid.IsIndexSelected(0));
+		CUI_EXPECT_FALSE(firstCell->GetIsSelected());
+		CUI_EXPECT_TRUE(secondCell->GetIsSelected());
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 1));
+	});
+
+	runner.Add("DataGrid ClearColumns publishes live removed-column cell identities", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto firstOwner = std::make_unique<DataGridTextColumn>();
+		auto* firstColumn = firstOwner.get();
+		firstColumn->SetHeader(BindingValue(L"First"));
+		firstColumn->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(firstOwner)) == firstColumn);
+		auto secondOwner = std::make_unique<DataGridTextColumn>();
+		auto* secondColumn = secondOwner.get();
+		secondColumn->SetHeader(BindingValue(L"Second"));
+		secondColumn->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(secondOwner)) == secondColumn);
+
+		auto rows = std::make_shared<ObservableBindingList>(L"ClearColumnSelectionRow");
+		for (size_t rowIndex = 0; rowIndex < 2; ++rowIndex)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(rowIndex)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		(void)grid.SelectCell(0, 0);
+		(void)grid.SelectCell(1, 1);
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 1));
+
+		size_t callbackCount = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid* sender, auto& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				++callbackCount;
+				CUI_EXPECT_TRUE(args.AddedCells.empty());
+				CUI_EXPECT_EQ(2ULL, args.RemovedCells.size());
+				for (const auto& removed : args.RemovedCells)
+				{
+					CUI_EXPECT_TRUE(removed.IsValid());
+					CUI_EXPECT_TRUE(removed.Column == firstColumn
+						|| removed.Column == secondColumn);
+					if (removed.Column == firstColumn)
+						CUI_EXPECT_EQ(std::wstring(L"First"),
+							removed.Column->GetHeader().ToString());
+					else if (removed.Column == secondColumn)
+						CUI_EXPECT_EQ(std::wstring(L"Second"),
+							removed.Column->GetHeader().ToString());
+				}
+			});
+		grid.ClearColumns();
+		CUI_EXPECT_EQ(1ULL, callbackCount);
+		CUI_EXPECT_EQ(0ULL, grid.ColumnCount());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_FALSE(grid.GetCurrentCell().IsValid());
+	});
+
+	runner.Add("DataGrid core rows selection sorting and TwoWay edit commit cancel events", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 520, 220);
+		// Editing/sorting assertions intentionally address all three containers;
+		// virtualization has a separate viewport-scale regression below.
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		auto textOwner = std::make_unique<DataGridTextColumn>();
+		auto* textColumn = textOwner.get();
+		textColumn->SetHeader(BindingValue(L"Name"));
+		textColumn->SetBindingPath(L"Name");
+		textColumn->SetBindingMode(BindingMode::TwoWay);
+		textColumn->SetDataSourceUpdateMode(
+			DataSourceUpdateMode::OnValidation);
+		textColumn->SetSortMemberPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(textOwner)) == textColumn);
+		auto checkOwner = std::make_unique<DataGridCheckBoxColumn>();
+		auto* paidColumn = checkOwner.get();
+		paidColumn->SetHeader(BindingValue(L"Paid"));
+		paidColumn->SetBindingPath(L"Paid");
+		paidColumn->SetBindingMode(BindingMode::TwoWay);
+		paidColumn->SetDataSourceUpdateMode(
+			DataSourceUpdateMode::OnValidation);
+		paidColumn->SetIsThreeState(true);
+		paidColumn->SetSortMemberPath(L"Paid");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(checkOwner)) == paidColumn);
+
+		auto makeRow = [](std::wstring name, bool paid)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::move(name)));
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Paid", paid));
+			return row;
+		};
+		auto charlie = makeRow(L"Charlie", false);
+		auto alice = makeRow(L"Alice", true);
+		auto bob = makeRow(L"Bob", false);
+		auto rows = std::make_shared<ObservableBindingList>(L"DataGridRowModel");
+		rows->Items.push_back(BindingSourceReference(charlie));
+		rows->Items.push_back(BindingSourceReference(alice));
+		rows->Items.push_back(BindingSourceReference(bob));
+
+		int currentCellChanged = 0;
+		int beginningEdit = 0;
+		int preparingEdit = 0;
+		int commitEnding = 0;
+		int cancelEnding = 0;
+		bool rejectNextEdit = false;
+		std::vector<CollectionSortDirection> sortDirections;
+		std::vector<bool> multiSorts;
+		auto currentConnection = grid.CurrentCellChanged.Subscribe(
+			[&](DataGrid* sender, DataGridCurrentCellChangedEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				if (args.NewCell.IsValid())
+					CUI_EXPECT_TRUE(args.NewCell.Column == textColumn);
+				++currentCellChanged;
+			});
+		auto beginningConnection = grid.BeginningEdit.Subscribe(
+			[&](DataGrid* sender, DataGridBeginningEditEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				CUI_EXPECT_TRUE(args.Column == textColumn);
+				CUI_EXPECT_TRUE(args.Row != nullptr && args.Cell != nullptr);
+				++beginningEdit;
+				if (rejectNextEdit) args.Cancel = true;
+			});
+		auto preparingConnection = grid.PreparingCellForEdit.Subscribe(
+			[&](DataGrid* sender, DataGridPreparingCellForEditEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				CUI_EXPECT_TRUE(args.EditingElement != nullptr);
+				++preparingEdit;
+			});
+		auto endingConnection = grid.CellEditEnding.Subscribe(
+			[&](DataGrid* sender, DataGridCellEditEndingEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				CUI_EXPECT_TRUE(args.EditingElement != nullptr);
+				if (args.EditAction == DataGridEditAction::Commit)
+					++commitEnding;
+				else ++cancelEnding;
+			});
+		auto sortingConnection = grid.Sorting.Subscribe(
+			[&](DataGrid* sender, DataGridSortingEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == &grid);
+				sortDirections.push_back(args.Direction);
+				multiSorts.push_back(args.MultiColumn);
+			});
+
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_EQ(3ULL, grid.GeneratedItemCount());
+		for (size_t index = 0; index < grid.GeneratedItemCount(); ++index)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(index));
+			CUI_EXPECT_TRUE(row != nullptr);
+			CUI_EXPECT_EQ(2ULL, row ? row->GetCells().size() : 0ULL);
+		}
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(firstRow && dynamic_cast<Label*>(
+			firstRow->GetCell(0)->GetVisualContent()));
+		CUI_EXPECT_TRUE(firstRow && dynamic_cast<CheckBox*>(
+			firstRow->GetCell(1)->GetVisualContent()));
+		auto* firstCheckBox = firstRow ? dynamic_cast<CheckBox*>(
+			firstRow->GetCell(1)->GetVisualContent()) : nullptr;
+		CUI_EXPECT_TRUE(firstCheckBox && firstCheckBox->IsThreeState);
+
+		CUI_EXPECT_TRUE(grid.SelectIndex(0));
+		CUI_EXPECT_TRUE(grid.SelectIndex(2));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_TRUE(grid.IsIndexSelected(0));
+		CUI_EXPECT_TRUE(grid.IsIndexSelected(2));
+		const int currentCellChangedBeforeExplicitSet = currentCellChanged;
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 0));
+		CUI_EXPECT_EQ(currentCellChangedBeforeExplicitSet + 1,
+			currentCellChanged);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Column == textColumn);
+
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		auto* editingRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		auto* editingCell = editingRow ? editingRow->GetCell(0) : nullptr;
+		auto* editor = editingCell
+			? dynamic_cast<TextBox*>(editingCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			editor ? editor->Text : std::wstring{});
+		if (editor)
+		{
+			editor->SelectAll();
+			editor->InsertText(L"Delta");
+		}
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			alice->GetValue<std::wstring>(L"Name"));
+		const ControlWeakReference committedEditor(editor);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Return)));
+		CUI_EXPECT_TRUE(committedEditor.Get() == nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Delta"),
+			alice->GetValue<std::wstring>(L"Name"));
+		CUI_EXPECT_FALSE(editingCell && editingCell->GetIsEditing());
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+
+		// WPF Return commits and moves to the same column on the next row.
+		// The remaining edit probes intentionally continue against Alice.
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 0));
+		editingRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		editingCell = editingRow ? editingRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(editingCell != nullptr);
+
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		editor = editingCell
+			? dynamic_cast<TextBox*>(editingCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (editor)
+		{
+			editor->SelectAll();
+			editor->InsertText(L"Echo");
+		}
+		const ControlWeakReference canceledEditor(editor);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Escape)));
+		CUI_EXPECT_TRUE(canceledEditor.Get() == nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Delta"),
+			alice->GetValue<std::wstring>(L"Name"));
+		CUI_EXPECT_FALSE(editingCell && editingCell->GetIsEditing());
+		CUI_EXPECT_EQ(2, preparingEdit);
+		CUI_EXPECT_EQ(1, commitEnding);
+		CUI_EXPECT_EQ(1, cancelEnding);
+		rejectNextEdit = true;
+		CUI_EXPECT_FALSE(grid.BeginEdit());
+		CUI_EXPECT_EQ(3, beginningEdit);
+		CUI_EXPECT_EQ(2, preparingEdit);
+		rejectNextEdit = false;
+
+		// WPF commits the active cell before Sorting is raised.  A handled sort
+		// still closes the edit transaction without rebuilding the projection.
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		editor = editingCell
+			? dynamic_cast<TextBox*>(editingCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (editor)
+		{
+			editor->SelectAll();
+			editor->InsertText(L"Foxtrot");
+		}
+		bool handleProbeSort = true;
+		auto handledSortConnection = grid.Sorting.Subscribe(
+			[&](DataGrid*, DataGridSortingEventArgs& args)
+			{
+				if (handleProbeSort) args.Handled = true;
+			});
+		CUI_EXPECT_TRUE(grid.PerformSort(*textColumn, false));
+		handleProbeSort = false;
+		handledSortConnection.Disconnect();
+		CUI_EXPECT_EQ(std::wstring(L"Foxtrot"),
+			alice->GetValue<std::wstring>(L"Name"));
+		CUI_EXPECT_EQ(2, commitEnding);
+		CUI_EXPECT_FALSE(editingCell && editingCell->GetIsEditing());
+		// Keep the original three-sort assertions focused on default sorting.
+		sortDirections.clear();
+		multiSorts.clear();
+
+		auto rowName = [&](size_t index)
+		{
+			auto* row = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(index));
+			BindingValue name;
+			return row && row->GetItem().Get()
+				&& row->GetItem().Get()->TryGetValue(L"Name", name)
+				? name.ToString() : std::wstring{};
+		};
+		CUI_EXPECT_TRUE(grid.PerformSort(*textColumn, false));
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), rowName(0));
+		CUI_EXPECT_EQ(CollectionSortDirection::Ascending,
+			textColumn->GetSortDirection().value());
+		CUI_EXPECT_TRUE(grid.PerformSort(*textColumn, false));
+		CUI_EXPECT_EQ(std::wstring(L"Foxtrot"), rowName(0));
+		CUI_EXPECT_EQ(CollectionSortDirection::Descending,
+			textColumn->GetSortDirection().value());
+		CUI_EXPECT_TRUE(grid.PerformSort(*paidColumn, true));
+		CUI_EXPECT_EQ(CollectionSortDirection::Ascending,
+			paidColumn->GetSortDirection().value());
+		CUI_EXPECT_EQ(3ULL, sortDirections.size());
+		CUI_EXPECT_EQ(CollectionSortDirection::Ascending, sortDirections[0]);
+		CUI_EXPECT_EQ(CollectionSortDirection::Descending, sortDirections[1]);
+		CUI_EXPECT_EQ(CollectionSortDirection::Ascending, sortDirections[2]);
+		CUI_EXPECT_FALSE(multiSorts[0]);
+		CUI_EXPECT_FALSE(multiSorts[1]);
+		CUI_EXPECT_TRUE(multiSorts[2]);
+	});
+
+	runner.Add("DataGridCell display ReplaceContent may delete owner during row generation", []
+	{
+		const std::wstring itemType = L"DeletingDisplayTemplateRow";
+		auto grid = std::make_unique<DataGrid>();
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		int displayBuildCount = 0;
+		auto deletingTemplate = std::make_shared<CallbackItemTemplate>(
+			itemType,
+			[&]() -> std::unique_ptr<Control>
+			{
+				++displayBuildCount;
+				grid.reset();
+				return MakeTestControl<Label>(L"Detached display", 0, 0);
+			});
+		auto columnOwner = std::make_unique<DataGridTemplateColumn>();
+		columnOwner->SetHeader(BindingValue(L"Preview"));
+		columnOwner->SetCellTemplate(ItemTemplateReference(deletingTemplate));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) != nullptr);
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Row"));
+		auto rows = std::make_shared<ObservableBindingList>(itemType);
+		rows->Items.push_back(BindingSourceReference(std::move(item)));
+		auto* raw = grid.get();
+		const ControlWeakReference lifetime(raw);
+
+		bool setItemsSourceReturned = false;
+		raw->SetItemsSource(BindingListReference(rows));
+		setItemsSourceReturned = true;
+
+		CUI_EXPECT_TRUE(setItemsSourceReturned);
+		CUI_EXPECT_EQ(1, displayBuildCount);
+		CUI_EXPECT_FALSE(lifetime);
+		CUI_EXPECT_TRUE(grid == nullptr);
+	});
+
+	runner.Add("DataGridCell editing ReplaceContent may delete owner before PreparingCellForEdit", []
+	{
+		const std::wstring itemType = L"DeletingEditingTemplateRow";
+		auto grid = std::make_unique<DataGrid>();
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		auto displayTemplate = std::make_shared<CallbackItemTemplate>(
+			itemType,
+			[]() -> std::unique_ptr<Control>
+			{ return MakeTestControl<Label>(L"Display", 0, 0); });
+		int editingBuildCount = 0;
+		auto deletingEditingTemplate = std::make_shared<CallbackItemTemplate>(
+			itemType,
+			[&]() -> std::unique_ptr<Control>
+			{
+				++editingBuildCount;
+				grid.reset();
+				return MakeTestControl<Label>(L"Detached editor", 0, 0);
+			});
+		auto columnOwner = std::make_unique<DataGridTemplateColumn>();
+		columnOwner->SetHeader(BindingValue(L"Preview"));
+		columnOwner->SetCellTemplate(ItemTemplateReference(displayTemplate));
+		columnOwner->SetCellEditingTemplate(
+			ItemTemplateReference(deletingEditingTemplate));
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) != nullptr);
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Row"));
+		auto rows = std::make_shared<ObservableBindingList>(itemType);
+		rows->Items.push_back(BindingSourceReference(std::move(item)));
+		grid->SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+		auto* raw = grid.get();
+		const ControlWeakReference lifetime(raw);
+		int beginningEditCount = 0;
+		int preparingEditCount = 0;
+		auto beginningConnection = raw->BeginningEdit.Subscribe(
+			[&](DataGrid*, DataGridBeginningEditEventArgs&)
+			{ ++beginningEditCount; });
+		auto preparingConnection = raw->PreparingCellForEdit.Subscribe(
+			[&](DataGrid*, DataGridPreparingCellForEditEventArgs&)
+			{ ++preparingEditCount; });
+
+		const bool beganEdit = raw->BeginEdit();
+
+		CUI_EXPECT_FALSE(beganEdit);
+		CUI_EXPECT_EQ(1, beginningEditCount);
+		CUI_EXPECT_EQ(1, editingBuildCount);
+		CUI_EXPECT_EQ(0, preparingEditCount);
+		CUI_EXPECT_FALSE(lifetime);
+		CUI_EXPECT_TRUE(grid == nullptr);
+	});
+
+	runner.Add("DataGrid Sorting source and column mutation aborts stale sort safely", []
+	{
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+
+		{
+			DataGrid grid;
+			DisableItemsVirtualizationForBehaviorTest(grid);
+			grid.SetAutoGenerateColumns(false);
+			auto columnOwner = std::make_unique<DataGridTextColumn>();
+			auto* column = columnOwner.get();
+			column->SetHeader(BindingValue(L"Name"));
+			column->SetBindingPath(L"Name");
+			column->SetSortMemberPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+			auto rows = std::make_shared<ObservableBindingList>(L"SortMutationRow");
+			rows->Items.push_back(BindingSourceReference(makeRow(L"Beta")));
+			rows->Items.push_back(BindingSourceReference(makeRow(L"Alpha")));
+			grid.SetItemsSource(BindingListReference(rows));
+			int sortingCount = 0;
+			int lateSortingCount = 0;
+			auto sortingConnection = grid.Sorting.Subscribe(
+				[&](DataGrid* sender, DataGridSortingEventArgs& args)
+				{
+					++sortingCount;
+					CUI_EXPECT_TRUE(sender == &grid);
+					CUI_EXPECT_TRUE(args.Column == column);
+					sender->ClearColumns();
+				});
+			auto lateSortingConnection = grid.Sorting.Subscribe(
+				[&](DataGrid*, DataGridSortingEventArgs&)
+				{ ++lateSortingCount; });
+			CUI_EXPECT_FALSE(grid.PerformSort(*column, false));
+			CUI_EXPECT_EQ(1, sortingCount);
+			CUI_EXPECT_EQ(0, lateSortingCount);
+			CUI_EXPECT_EQ(0ULL, grid.ColumnCount());
+			CUI_EXPECT_EQ(2ULL, grid.ItemCount());
+		}
+
+		{
+			DataGrid grid;
+			DisableItemsVirtualizationForBehaviorTest(grid);
+			grid.SetAutoGenerateColumns(false);
+			auto columnOwner = std::make_unique<DataGridTextColumn>();
+			auto* column = columnOwner.get();
+			column->SetHeader(BindingValue(L"Name"));
+			column->SetBindingPath(L"Name");
+			column->SetSortMemberPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+			auto rows = std::make_shared<ObservableBindingList>(L"SortMutationRow");
+			rows->Items.push_back(BindingSourceReference(makeRow(L"Beta")));
+			rows->Items.push_back(BindingSourceReference(makeRow(L"Alpha")));
+			auto replacement = std::make_shared<ObservableBindingList>(
+				L"SortMutationRow");
+			replacement->Items.push_back(
+				BindingSourceReference(makeRow(L"Replacement")));
+			grid.SetItemsSource(BindingListReference(rows));
+			int sortingCount = 0;
+			auto sortingConnection = grid.Sorting.Subscribe(
+				[&](DataGrid* sender, DataGridSortingEventArgs& args)
+				{
+					++sortingCount;
+					CUI_EXPECT_TRUE(sender == &grid);
+					CUI_EXPECT_TRUE(args.Column == column);
+					sender->SetItemsSource(BindingListReference(replacement));
+				});
+			CUI_EXPECT_FALSE(grid.PerformSort(*column, false));
+			CUI_EXPECT_EQ(1, sortingCount);
+			CUI_EXPECT_TRUE(grid.GetItemsSource().Shared() == replacement);
+			CUI_EXPECT_EQ(1ULL, grid.ItemCount());
+			CUI_EXPECT_FALSE(column->GetSortDirection().has_value());
+		}
+	});
+
+	runner.Add("DataGrid Sorting may delete owner without stale continuation", []
+	{
+		auto grid = std::make_unique<DataGrid>();
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetSortMemberPath(L"Name");
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) == column);
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"Row"));
+		auto rows = std::make_shared<ObservableBindingList>(L"DeletingSortRow");
+		rows->Items.push_back(BindingSourceReference(std::move(row)));
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* raw = grid.get();
+		const ControlWeakReference lifetime(raw);
+		int sortingCount = 0;
+		int lateSortingCount = 0;
+		auto sortingConnection = raw->Sorting.Subscribe(
+			[&](DataGrid* sender, DataGridSortingEventArgs& args)
+			{
+				++sortingCount;
+				CUI_EXPECT_TRUE(sender == raw);
+				CUI_EXPECT_TRUE(args.Column == column);
+				grid.reset();
+			});
+		auto lateSortingConnection = raw->Sorting.Subscribe(
+			[&](DataGrid*, DataGridSortingEventArgs&)
+			{ ++lateSortingCount; });
+		CUI_EXPECT_FALSE(raw->PerformSort(*column, false));
+		CUI_EXPECT_EQ(1, sortingCount);
+		CUI_EXPECT_EQ(0, lateSortingCount);
+		CUI_EXPECT_FALSE(lifetime);
+	});
+
+	runner.Add("DataGrid live SelectionChanged may delete synchronized owner safely", []
+	{
+		auto grid = std::make_unique<DataGrid>();
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionMode(SelectionMode::Extended);
+		grid->SetSelectionUnit(DataGridSelectionUnit::FullRow);
+		grid->SetIsSynchronizedWithCurrentItem(true);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto first = makeRow(L"First");
+		auto second = makeRow(L"Second");
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"DeletingSelectionOwnerRow");
+		rows->Items.push_back(BindingSourceReference(first));
+		rows->Items.push_back(BindingSourceReference(second));
+		grid->SetItemsSource(BindingListReference(rows));
+		// Currency synchronization selects the first current item eagerly.
+		// Keep the setup valid whether the view already projected that selection
+		// or a future view implementation requires the explicit request.
+		if (grid->GetSelectedIndex() != 0)
+			CUI_EXPECT_TRUE(grid->SelectIndex(0));
+		CUI_EXPECT_EQ(0, grid->GetSelectedIndex());
+
+		auto* raw = grid.get();
+		const ControlWeakReference lifetime(raw);
+		int deletingHandlerCount = 0;
+		int lateHandlerCount = 0;
+		auto deletingConnection = raw->SelectionChanged.Subscribe(
+			[&](Control* sender, SelectionChangedEventArgs& args)
+			{
+				++deletingHandlerCount;
+				CUI_EXPECT_TRUE(sender == raw);
+				CUI_EXPECT_FALSE(args.RemovedItems.empty());
+				grid.reset();
+			});
+		auto lateConnection = raw->SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&)
+			{ ++lateHandlerCount; });
+
+		bool mutationReturned = false;
+		rows->Items.erase(rows->Items.begin());
+		mutationReturned = true;
+
+		CUI_EXPECT_TRUE(mutationReturned);
+		CUI_EXPECT_EQ(1, deletingHandlerCount);
+		CUI_EXPECT_EQ(0, lateHandlerCount);
+		CUI_EXPECT_FALSE(lifetime);
+		CUI_EXPECT_TRUE(grid == nullptr);
+		CUI_EXPECT_EQ(1ULL, rows->Count());
+	});
+
+	runner.Add("DataGrid deferred source events suppress stale selected columns", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto oldRow = makeRow(L"Old");
+		auto newRow = makeRow(L"New");
+		auto oldRows = std::make_shared<ObservableBindingList>(
+			L"DeferredEventRow");
+		oldRows->Items.push_back(BindingSourceReference(oldRow));
+		auto newRows = std::make_shared<ObservableBindingList>(
+			L"DeferredEventRow");
+		newRows->Items.push_back(BindingSourceReference(newRow));
+		grid.SetItemsSource(BindingListReference(oldRows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+
+		int currentCellChangedCount = 0;
+		int selectedCellsChangedCount = 0;
+		auto currentConnection = grid.CurrentCellChanged.Subscribe(
+			[&](DataGrid* sender, DataGridCurrentCellChangedEventArgs& args)
+			{
+				++currentCellChangedCount;
+				CUI_EXPECT_TRUE(sender == &grid);
+				CUI_EXPECT_TRUE(args.OldCell.Column == column);
+				CUI_EXPECT_EQ(std::wstring(L"Name"),
+					args.OldCell.Column->GetHeader().ToString());
+				CUI_EXPECT_FALSE(args.NewCell.IsValid());
+				sender->ClearColumns();
+			});
+		auto selectedConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				++selectedCellsChangedCount;
+				// If the outer ItemsSource transaction leaks its deferred event
+				// past ClearColumns, these definitions have already been freed.
+				for (const auto& cell : args.AddedCells)
+					if (cell.Column)
+						(void)cell.Column->GetHeader().ToString();
+				for (const auto& cell : args.RemovedCells)
+					if (cell.Column)
+						(void)cell.Column->GetHeader().ToString();
+			});
+
+		grid.SetItemsSource(BindingListReference(newRows));
+
+		CUI_EXPECT_EQ(1, currentCellChangedCount);
+		CUI_EXPECT_EQ(0, selectedCellsChangedCount);
+		CUI_EXPECT_EQ(0ULL, grid.ColumnCount());
+		CUI_EXPECT_FALSE(grid.GetCurrentCell().IsValid());
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_TRUE(grid.GetItemsSource().Shared() == newRows);
+	});
+
+	runner.Add("DataGrid sort publication exception restores view and column direction", []
+	{
+		class SortViewProbeDataGrid final : public DataGrid
+		{
+		public:
+			CollectionViewSource* ViewForTest() noexcept
+			{
+				return dynamic_cast<CollectionViewSource*>(GetItemsView().Get());
+			}
+		};
+
+		SortViewProbeDataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetSortMemberPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto rows = std::make_shared<ObservableBindingList>(L"ThrowingSortRow");
+		rows->Items.push_back(BindingSourceReference(makeRow(L"Charlie")));
+		rows->Items.push_back(BindingSourceReference(makeRow(L"Alice")));
+		rows->Items.push_back(BindingSourceReference(makeRow(L"Bob")));
+		grid.SetItemsSource(BindingListReference(rows));
+		auto* view = grid.ViewForTest();
+		CUI_EXPECT_TRUE(view != nullptr);
+		if (!view) return;
+
+		int injectedFailures = 0;
+		auto changedConnection = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{
+				(void)change;
+				if (injectedFailures != 0) return;
+				++injectedFailures;
+				throw std::runtime_error(
+					"intentional CollectionView sort publication failure");
+			});
+		bool sortThrew = false;
+		try
+		{
+			(void)grid.PerformSort(*column, false);
+		}
+		catch (const std::runtime_error&)
+		{
+			sortThrew = true;
+		}
+		CUI_EXPECT_TRUE(sortThrew);
+		CUI_EXPECT_EQ(1, injectedFailures);
+		CUI_EXPECT_TRUE(view->SortDescriptions().empty());
+		CUI_EXPECT_FALSE(column->GetSortDirection().has_value());
+
+		std::vector<std::wstring> order;
+		for (size_t index = 0; index < view->Count(); ++index)
+		{
+			BindingSourceReference item;
+			BindingValue name;
+			CUI_EXPECT_TRUE(view->TryGetItem(index, item));
+			CUI_EXPECT_TRUE(item
+				&& item.Get()->TryGetValue(L"Name", name));
+			order.push_back(name.ToString());
+		}
+		CUI_EXPECT_TRUE((order == std::vector<std::wstring>{
+			L"Charlie", L"Alice", L"Bob" }));
+	});
+
+	enum class DuplicateOccurrenceMutation
+	{
+		InsertBefore,
+		RemoveBefore,
+		MoveSelectedToFront
+	};
+	struct DuplicateOccurrenceMutationResult final
+	{
+		bool CurrentValid = false;
+		bool CurrentItemMatches = false;
+		size_t CurrentRow = DataGridCellInfo::InvalidIndex;
+		size_t CurrentColumn = DataGridCellInfo::InvalidIndex;
+		size_t SelectedCount = 0;
+		bool SelectedItemMatches = false;
+		size_t SelectedRow = DataGridCellInfo::InvalidIndex;
+		size_t SelectedColumn = DataGridCellInfo::InvalidIndex;
+		bool ExpectedCellSelected = false;
+		bool ExpectedVisualSelected = false;
+		size_t SelectionDeltaCount = 0;
+		size_t ItemCount = 0;
+	};
+	auto runDuplicateOccurrenceMutation = [](
+		DuplicateOccurrenceMutation mutation)
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto repeated = makeRow(L"Repeated");
+		auto marker = makeRow(L"Marker");
+		auto tail = makeRow(L"Tail");
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"DuplicateOccurrenceMutationRow");
+		rows->Items.push_back(BindingSourceReference(repeated));
+		if (mutation == DuplicateOccurrenceMutation::RemoveBefore)
+			rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(marker));
+		rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(tail));
+		grid.SetItemsSource(BindingListReference(rows));
+
+		const size_t selectedIndex = mutation
+			== DuplicateOccurrenceMutation::RemoveBefore ? 3 : 2;
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(selectedIndex, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(selectedIndex, 0));
+		size_t selectionDeltaCount = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs&)
+			{ ++selectionDeltaCount; });
+
+		size_t expectedIndex = 0;
+		switch (mutation)
+		{
+		case DuplicateOccurrenceMutation::InsertBefore:
+			rows->Items.insert(
+				rows->Items.begin(), BindingSourceReference(repeated));
+			expectedIndex = 3;
+			break;
+		case DuplicateOccurrenceMutation::RemoveBefore:
+			rows->Items.erase(rows->Items.begin());
+			expectedIndex = 2;
+			break;
+		case DuplicateOccurrenceMutation::MoveSelectedToFront:
+			CUI_EXPECT_TRUE(rows->Items.Move(selectedIndex, 0));
+			expectedIndex = 0;
+			break;
+		}
+
+		DuplicateOccurrenceMutationResult result;
+		result.ItemCount = grid.ItemCount();
+		result.SelectionDeltaCount = selectionDeltaCount;
+		const auto current = grid.GetCurrentCell();
+		result.CurrentValid = current.IsValid();
+		result.CurrentItemMatches = current.Item.Shared() == repeated;
+		result.CurrentRow = current.RowIndex;
+		result.CurrentColumn = current.ColumnIndex;
+		result.SelectedCount = grid.GetSelectedCells().size();
+		if (!grid.GetSelectedCells().empty())
+		{
+			const auto& selected = grid.GetSelectedCells().front();
+			result.SelectedItemMatches = selected.Item.Shared() == repeated;
+			result.SelectedRow = selected.RowIndex;
+			result.SelectedColumn = selected.ColumnIndex;
+		}
+		result.ExpectedCellSelected = grid.IsCellSelected(expectedIndex, 0);
+		auto* expectedRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(expectedIndex));
+		auto* expectedCell = expectedRow ? expectedRow->GetCell(0) : nullptr;
+		result.ExpectedVisualSelected = expectedCell
+			&& expectedCell->GetIsSelected();
+		return result;
+	};
+
+	runner.Add("DataGrid duplicate occurrence survives insert before exact identity", [runDuplicateOccurrenceMutation]
+	{
+		const auto result = runDuplicateOccurrenceMutation(
+			DuplicateOccurrenceMutation::InsertBefore);
+		CUI_EXPECT_EQ(5ULL, result.ItemCount);
+		CUI_EXPECT_TRUE(result.CurrentValid);
+		CUI_EXPECT_TRUE(result.CurrentItemMatches);
+		CUI_EXPECT_EQ(3ULL, result.CurrentRow);
+		CUI_EXPECT_EQ(0ULL, result.CurrentColumn);
+		CUI_EXPECT_EQ(1ULL, result.SelectedCount);
+		CUI_EXPECT_TRUE(result.SelectedItemMatches);
+		CUI_EXPECT_EQ(3ULL, result.SelectedRow);
+		CUI_EXPECT_EQ(0ULL, result.SelectedColumn);
+		CUI_EXPECT_TRUE(result.ExpectedCellSelected);
+		CUI_EXPECT_TRUE(result.ExpectedVisualSelected);
+		CUI_EXPECT_EQ(0ULL, result.SelectionDeltaCount);
+	});
+
+	runner.Add("DataGrid duplicate occurrence survives remove before exact identity", [runDuplicateOccurrenceMutation]
+	{
+		const auto result = runDuplicateOccurrenceMutation(
+			DuplicateOccurrenceMutation::RemoveBefore);
+		CUI_EXPECT_EQ(4ULL, result.ItemCount);
+		CUI_EXPECT_TRUE(result.CurrentValid);
+		CUI_EXPECT_TRUE(result.CurrentItemMatches);
+		CUI_EXPECT_EQ(2ULL, result.CurrentRow);
+		CUI_EXPECT_EQ(0ULL, result.CurrentColumn);
+		CUI_EXPECT_EQ(1ULL, result.SelectedCount);
+		CUI_EXPECT_TRUE(result.SelectedItemMatches);
+		CUI_EXPECT_EQ(2ULL, result.SelectedRow);
+		CUI_EXPECT_EQ(0ULL, result.SelectedColumn);
+		CUI_EXPECT_TRUE(result.ExpectedCellSelected);
+		CUI_EXPECT_TRUE(result.ExpectedVisualSelected);
+		CUI_EXPECT_EQ(0ULL, result.SelectionDeltaCount);
+	});
+
+	runner.Add("DataGrid duplicate occurrence survives move exact identity", [runDuplicateOccurrenceMutation]
+	{
+		const auto result = runDuplicateOccurrenceMutation(
+			DuplicateOccurrenceMutation::MoveSelectedToFront);
+		CUI_EXPECT_EQ(4ULL, result.ItemCount);
+		CUI_EXPECT_TRUE(result.CurrentValid);
+		CUI_EXPECT_TRUE(result.CurrentItemMatches);
+		CUI_EXPECT_EQ(0ULL, result.CurrentRow);
+		CUI_EXPECT_EQ(0ULL, result.CurrentColumn);
+		CUI_EXPECT_EQ(1ULL, result.SelectedCount);
+		CUI_EXPECT_TRUE(result.SelectedItemMatches);
+		CUI_EXPECT_EQ(0ULL, result.SelectedRow);
+		CUI_EXPECT_EQ(0ULL, result.SelectedColumn);
+		CUI_EXPECT_TRUE(result.ExpectedCellSelected);
+		CUI_EXPECT_TRUE(result.ExpectedVisualSelected);
+		CUI_EXPECT_EQ(0ULL, result.SelectionDeltaCount);
+	});
+
+	auto verifyDuplicateRowSelectionMutation = [](
+		DataGridSelectionUnit unit,
+		DuplicateOccurrenceMutation mutation)
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(unit);
+		for (const auto* path : { L"Name", L"Value" })
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(path));
+			column->SetBindingPath(path);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+
+		auto makeRow = [](const std::wstring& name, int value)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Value", value));
+			return row;
+		};
+		auto repeated = makeRow(L"Repeated", 1);
+		auto marker = makeRow(L"Marker", 2);
+		auto tail = makeRow(L"Tail", 3);
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"DuplicateRowSelectionMutation");
+		rows->Items.push_back(BindingSourceReference(repeated));
+		if (mutation == DuplicateOccurrenceMutation::RemoveBefore)
+			rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(marker));
+		rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(tail));
+		grid.SetItemsSource(BindingListReference(rows));
+
+		const size_t selectedIndex = mutation
+			== DuplicateOccurrenceMutation::RemoveBefore ? 3 : 2;
+		grid.NotifyItemClicked(
+			selectedIndex, MouseButton::Left, ModifierKeys::None);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(static_cast<int>(selectedIndex), grid.GetSelectedIndex());
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+
+		size_t rowSelectionChanges = 0;
+		size_t selectedCellsChanges = 0;
+		auto rowSelectionConnection = grid.SelectionChanged.Subscribe(
+			[&](Control*, SelectionChangedEventArgs&)
+			{ ++rowSelectionChanges; });
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs&)
+			{ ++selectedCellsChanges; });
+
+		size_t expectedIndex = 0;
+		switch (mutation)
+		{
+		case DuplicateOccurrenceMutation::InsertBefore:
+			rows->Items.insert(
+				rows->Items.begin(), BindingSourceReference(repeated));
+			expectedIndex = 3;
+			break;
+		case DuplicateOccurrenceMutation::RemoveBefore:
+			rows->Items.erase(rows->Items.begin());
+			expectedIndex = 2;
+			break;
+		case DuplicateOccurrenceMutation::MoveSelectedToFront:
+			CUI_EXPECT_TRUE(rows->Items.Move(selectedIndex, 0));
+			expectedIndex = 0;
+			break;
+		}
+
+		CUI_EXPECT_EQ(0ULL, rowSelectionChanges);
+		CUI_EXPECT_EQ(0ULL, selectedCellsChanges);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(static_cast<int>(expectedIndex), grid.GetSelectedIndex());
+		CUI_EXPECT_TRUE(grid.IsIndexSelected(expectedIndex));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		for (size_t column = 0; column < 2; ++column)
+			CUI_EXPECT_TRUE(grid.IsCellSelected(expectedIndex, column));
+		for (const auto& cell : grid.GetSelectedCells())
+		{
+			CUI_EXPECT_TRUE(cell.Item.Shared() == repeated);
+			CUI_EXPECT_EQ(expectedIndex, cell.RowIndex);
+		}
+		for (size_t index = 0; index < rows->Items.size(); ++index)
+		{
+			if (index == expectedIndex
+				|| rows->Items[index].Shared() != repeated) continue;
+			CUI_EXPECT_FALSE(grid.IsIndexSelected(index));
+			for (size_t column = 0; column < 2; ++column)
+				CUI_EXPECT_FALSE(grid.IsCellSelected(index, column));
+		}
+		auto* selectedRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(expectedIndex));
+		CUI_EXPECT_TRUE(selectedRow && selectedRow->GetIsSelected());
+
+		// Shift selection must continue from the remapped physical row, not its
+		// stale pre-mutation index.
+		const size_t rangeEnd = grid.ItemCount() - 1;
+		grid.NotifyItemClicked(
+			rangeEnd, MouseButton::Left, ModifierKeys::Shift);
+		CUI_EXPECT_EQ(rangeEnd - expectedIndex + 1,
+			grid.GetSelectedIndices().size());
+		for (size_t index = 0; index < grid.ItemCount(); ++index)
+			CUI_EXPECT_EQ(index >= expectedIndex,
+				grid.IsIndexSelected(index));
+	};
+
+	runner.Add("DataGrid FullRow duplicate row selection keeps occurrence identity", [verifyDuplicateRowSelectionMutation]
+	{
+		for (const auto mutation : {
+			DuplicateOccurrenceMutation::InsertBefore,
+			DuplicateOccurrenceMutation::RemoveBefore,
+			DuplicateOccurrenceMutation::MoveSelectedToFront })
+			verifyDuplicateRowSelectionMutation(
+				DataGridSelectionUnit::FullRow, mutation);
+	});
+
+	runner.Add("DataGrid CellOrRowHeader duplicate row selection keeps occurrence identity", [verifyDuplicateRowSelectionMutation]
+	{
+		for (const auto mutation : {
+			DuplicateOccurrenceMutation::InsertBefore,
+			DuplicateOccurrenceMutation::RemoveBefore,
+			DuplicateOccurrenceMutation::MoveSelectedToFront })
+			verifyDuplicateRowSelectionMutation(
+				DataGridSelectionUnit::CellOrRowHeader, mutation);
+	});
+
+	runner.Add("DataGrid duplicate item occurrences keep independent cell selection", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto shared = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(shared->DefineProperty(L"Name", L"Repeated"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"DuplicateSelectionRow");
+		rows->Items.push_back(BindingSourceReference(shared));
+		rows->Items.push_back(BindingSourceReference(shared));
+		grid.SetItemsSource(BindingListReference(rows));
+
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(1, 0));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 0));
+		if (grid.GetSelectedCells().size() == 2)
+		{
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells()[0].Item.Shared() == shared);
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells()[1].Item.Shared() == shared);
+			CUI_EXPECT_EQ(0ULL, grid.GetSelectedCells()[0].RowIndex);
+			CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells()[1].RowIndex);
+		}
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* secondRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		CUI_EXPECT_TRUE(firstRow && firstRow->GetCell(0)
+			&& firstRow->GetCell(0)->GetIsSelected());
+		CUI_EXPECT_TRUE(secondRow && secondRow->GetCell(0)
+			&& secondRow->GetCell(0)->GetIsSelected());
+	});
+
+	runner.Add("DataGrid virtual selection remaps without sorting deltas", []
+	{
+		constexpr size_t rowCount = 256;
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetSortMemberPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"VirtualSortSelectionRow");
+		std::shared_ptr<ObservableObject> selectedItem;
+		{
+			auto update = rows->Items.DeferNotifications();
+			rows->Items.reserve(rowCount);
+			for (size_t index = 0; index < rowCount; ++index)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				const std::wstring name = index + 1 == rowCount
+					? L"A first" : L"Z " + std::to_wstring(index);
+				CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+				if (index + 1 == rowCount) selectedItem = row;
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(rowCount - 1) == nullptr);
+
+		size_t selectionEvents = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs&)
+			{ ++selectionEvents; });
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(rowCount - 1, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(rowCount - 1, 0));
+		CUI_EXPECT_EQ(1ULL, selectionEvents);
+		CUI_EXPECT_TRUE(grid.PerformSort(*column, false));
+
+		CUI_EXPECT_EQ(1ULL, selectionEvents);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells().front().Item.Shared() == selectedItem);
+			CUI_EXPECT_EQ(0ULL, grid.GetSelectedCells().front().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid.GetSelectedCells().front().ColumnIndex);
+		}
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().Item.Shared() == selectedItem);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) == nullptr);
+	});
+
+	runner.Add("DataGrid sorting publishes one WPF refresh transaction", []
+	{
+		class SortRefreshProbeGrid final : public DataGrid
+		{
+		public:
+			size_t Prepared = 0;
+			size_t Rebuilt = 0;
+			size_t Realized = 0;
+			size_t Arranged = 0;
+			EventConnection Observe(
+				std::vector<CollectionChangedEventArgs>& changes)
+			{
+				const auto view = GetItemsView();
+				return view.Get()->SubscribeChanged(
+					[&changes](const CollectionChangedEventArgs& change)
+					{ changes.push_back(change); });
+			}
+			bool Bring(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+			IBindingListOccurrenceLookup* OccurrenceLookup()
+			{
+				return dynamic_cast<IBindingListOccurrenceLookup*>(
+					GetItemsView().Get());
+			}
+
+		protected:
+			void Arrange(cui::core::Rect finalRect) override
+			{
+				++Arranged;
+				DataGrid::Arrange(finalRect);
+			}
+			void OnBeforeGeneratedItemsPrepared() override
+			{
+				++Prepared;
+				DataGrid::OnBeforeGeneratedItemsPrepared();
+			}
+			void OnGeneratedItemsRebuilt() override
+			{
+				++Rebuilt;
+				DataGrid::OnGeneratedItemsRebuilt();
+			}
+			void OnGeneratedItemsRealized() override
+			{
+				++Realized;
+				DataGrid::OnGeneratedItemsRealized();
+			}
+		};
+
+		Window window;
+		ConfigureTestControl(window, L"DataGrid atomic sort refresh");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 228.0f);
+		auto gridOwner = std::make_unique<SortRefreshProbeGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 228);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Score"));
+		column->SetBindingPath(L"Score");
+		column->SetSortMemberPath(L"Score");
+		column->SetWidth(DataGridLength::Star());
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) == column);
+		auto rows = std::make_shared<ObservableBindingList>(L"AtomicSortRow");
+		std::shared_ptr<ObservableObject> selectedItem;
+		{
+			auto update = rows->Items.DeferNotifications();
+			for (int score = 255; score >= 0; --score)
+			{
+				auto row = std::make_shared<ObservableObject>();
+				CUI_EXPECT_TRUE(row->DefineProperty(L"Score", score));
+				if (score == 128) selectedItem = row;
+				rows->Items.push_back(BindingSourceReference(std::move(row)));
+			}
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		auto* occurrenceLookup = grid->OccurrenceLookup();
+		CUI_EXPECT_TRUE(occurrenceLookup
+			&& occurrenceLookup->
+				IsItemIndexByOccurrenceIdentityLookupBounded());
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(127, 0));
+		CUI_EXPECT_TRUE(grid->SelectCell(127, 0));
+		CUI_EXPECT_TRUE(grid->Bring(127));
+		window.UpdateLayout();
+		auto* retainedContainer = grid->GetGeneratedItem(127);
+		CUI_EXPECT_TRUE(retainedContainer != nullptr);
+
+		std::vector<CollectionChangedEventArgs> changes;
+		auto changedConnection = grid->Observe(changes);
+		grid->Prepared = 0;
+		grid->Rebuilt = 0;
+		grid->Realized = 0;
+		grid->Arranged = 0;
+		CUI_EXPECT_TRUE(grid->PerformSort(*column, false));
+		occurrenceLookup = grid->OccurrenceLookup();
+		CUI_EXPECT_TRUE(occurrenceLookup
+			&& occurrenceLookup->
+				IsItemIndexByOccurrenceIdentityLookupBounded());
+		CUI_EXPECT_EQ(0ULL, grid->Arranged);
+		CUI_EXPECT_EQ(1ULL, changes.size());
+		if (!changes.empty())
+			CUI_EXPECT_EQ(CollectionChangeAction::Reset, changes.front().Action);
+		CUI_EXPECT_EQ(1ULL, grid->Prepared);
+		CUI_EXPECT_EQ(1ULL, grid->Rebuilt);
+		CUI_EXPECT_EQ(1ULL, grid->Realized);
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(128) == retainedContainer);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->Arranged > 0);
+		CUI_EXPECT_TRUE(grid->GetGeneratedItem(128) == retainedContainer);
+		CUI_EXPECT_TRUE(grid->GetCurrentCell().Item.Shared() == selectedItem);
+		CUI_EXPECT_EQ(128ULL, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid->GetSelectedCells().front().Item.Shared()
+			== selectedItem);
+		CUI_EXPECT_EQ(128ULL, grid->GetSelectedCells().front().RowIndex);
+	});
+
+	runner.Add("DataGrid Text editing activation matches WPF caret and focus semantics", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid text edit activation");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 180.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 360, 180);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetBindingMode(BindingMode::TwoWay);
+		column->SetWidth(DataGridLength::Star());
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		auto rows = std::make_shared<ObservableBindingList>(L"TextActivationRow");
+		std::array<std::shared_ptr<ObservableObject>, 2> items;
+		for (size_t index = 0; index < items.size(); ++index)
+		{
+			items[index] = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(items[index]->DefineProperty(
+				L"Name", index == 0 ? L"Alpha Beta" : L"Second"));
+			rows->Items.push_back(BindingSourceReference(items[index]));
+		}
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid->SelectCell(0, 0));
+
+		const RoutedEventArgs* beginningInput = reinterpret_cast<RoutedEventArgs*>(1);
+		const RoutedEventArgs* preparingInput = reinterpret_cast<RoutedEventArgs*>(1);
+		auto beginningConnection = grid->BeginningEdit.Subscribe(
+			[&](DataGrid*, DataGridBeginningEditEventArgs& args)
+			{ beginningInput = args.EditingEventArgs; });
+		auto preparingConnection = grid->PreparingCellForEdit.Subscribe(
+			[&](DataGrid*, DataGridPreparingCellForEditEventArgs& args)
+			{ preparingInput = args.EditingEventArgs; });
+
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+		auto* editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(beginningInput == nullptr);
+		CUI_EXPECT_TRUE(preparingInput == nullptr);
+		CUI_EXPECT_EQ(0, editor->GetSelectionStart());
+		CUI_EXPECT_EQ(static_cast<int>(editor->Text.size()),
+			editor->GetSelectionLength());
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == editor);
+		CUI_EXPECT_TRUE(grid->CancelEdit());
+
+		KeyEventArgs f2(Key::F2);
+		CUI_EXPECT_TRUE(grid->BeginEdit(&f2));
+		editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(beginningInput == &f2);
+		CUI_EXPECT_TRUE(preparingInput == &f2);
+		CUI_EXPECT_EQ(static_cast<int>(editor->Text.size()),
+			editor->GetSelectionLength());
+		CUI_EXPECT_TRUE(grid->CancelEdit());
+
+		TextCompositionEventArgs textInput(L"Z");
+		CUI_EXPECT_TRUE(grid->BeginEdit(&textInput));
+		editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(beginningInput == &textInput);
+		CUI_EXPECT_TRUE(preparingInput == &textInput);
+		CUI_EXPECT_EQ(std::wstring(L"Z"), editor->Text);
+		CUI_EXPECT_EQ(1, editor->GetCaretIndex());
+		CUI_EXPECT_EQ(0, editor->GetSelectionLength());
+		CUI_EXPECT_TRUE(grid->CancelEdit());
+
+		const auto cellRect = firstCell->GetRenderedAbsoluteRectDip();
+		MouseEventArgs mouse(
+			MouseButton::Left, MouseButtonState::Pressed,
+			1, static_cast<int>((cellRect.right - cellRect.left) * 0.65f),
+			static_cast<int>((cellRect.bottom - cellRect.top) * 0.5f), 0);
+		mouse.HasRootPosition = true;
+		mouse.RootX = cellRect.left
+			+ (cellRect.right - cellRect.left) * 0.65f;
+		mouse.RootY = cellRect.top
+			+ (cellRect.bottom - cellRect.top) * 0.5f;
+		CUI_EXPECT_TRUE(grid->BeginEdit(&mouse));
+		editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(beginningInput == &mouse);
+		CUI_EXPECT_TRUE(preparingInput == &mouse);
+		CUI_EXPECT_EQ(0, editor->GetSelectionLength());
+		CUI_EXPECT_TRUE(editor->GetCaretIndex() > 0);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == editor);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 5, 10, MouseButton::Left)));
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == editor);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, 5, 10)));
+
+		editor->SelectAll();
+		editor->InsertText(L"Rejected");
+		bool cancelCommit = true;
+		auto endingConnection = grid->CellEditEnding.Subscribe(
+			[&](DataGrid*, DataGridCellEditEndingEventArgs& args)
+			{
+				if (cancelCommit
+					&& args.EditAction == DataGridEditAction::Commit)
+					args.Cancel = true;
+			});
+		auto* secondRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
+		auto* secondCell = secondRow ? secondRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(secondCell != nullptr);
+		if (!secondCell) return;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*secondCell, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 10, 10, MouseButton::Left)));
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_TRUE(firstCell->GetIsEditing());
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == editor);
+		CUI_EXPECT_EQ(std::wstring(L"Alpha Beta"),
+			items[0]->GetValue<std::wstring>(L"Name"));
+		cancelCommit = false;
+		CUI_EXPECT_TRUE(grid->CancelEdit());
+
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(1, 0));
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		secondRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
+		secondCell = secondRow ? secondRow->GetCell(0) : nullptr;
+		editor = secondCell
+			? dynamic_cast<TextBox*>(secondCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		size_t commitEvents = 0;
+		auto tabEndingConnection = grid->CellEditEnding.Subscribe(
+			[&](DataGrid*, DataGridCellEditEndingEventArgs& args)
+			{
+				if (args.EditAction == DataGridEditAction::Commit)
+					++commitEvents;
+			});
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Tab)));
+		CUI_EXPECT_EQ(1ULL, commitEvents);
+		CUI_EXPECT_FALSE(secondCell->GetIsEditing());
+	});
+
+	runner.Add("DataGrid Text editor is borderless and fills its cell under Generic theme", []
+	{
+		// Exercise the same framework-theme path as authored XAML.  A plain
+		// TextBox intentionally has Fluent chrome and a clear button, while
+		// WPF's DataGridTextColumn.DefaultEditingElementStyle removes the
+		// editor BorderThickness and Padding.  The column editor must not look
+		// or lay out like a standalone TextBox inside the cell.
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="DataGridEditingChromeWindow">
+  <Window.Resources>
+    <DataType x:Key="EditingChromeRow">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="EditingChromeRows" ItemType="EditingChromeRow">
+      <DataRecord Name="A deliberately long value that exposes the clear button" />
+    </DataList>
+  </Window.Resources>
+  <DataGrid x:Name="grid" AutoGenerateColumns="false"
+            HeadersVisibility="Column" SelectionUnit="Cell"
+            ItemsSource="{StaticResource EditingChromeRows}">
+    <DataGrid.Columns>
+      <DataGridTextColumn Header="Name" Width="*"
+        Binding="{Binding Name, Mode=TwoWay}" />
+    </DataGrid.Columns>
+  </DataGrid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CuiRuntime::XamlObjectTree tree;
+		// The default options deliberately keep UseFrameworkTheme=true.
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* grid = FindMaterializedControlByName<DataGrid>(tree, L"grid");
+		CUI_EXPECT_TRUE(grid != nullptr);
+		if (!grid || !tree.ContentRoot) return;
+		Window window;
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 180.0f);
+		auto* contentRoot = tree.ContentRoot.get();
+		CUI_EXPECT_TRUE(
+			window.SetVisualContent(std::move(tree.ContentRoot)) == contentRoot);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		window.UpdateLayout();
+		auto* headers = grid->GetColumnHeadersPresenter();
+		auto* header = headers ? headers->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (header)
+			CUI_EXPECT_EQ(VerticalAlignment::Center,
+				header->VerticalContentAlignment);
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid->SelectCell(0, 0));
+		uint64_t preparingEditorRevision = 0;
+		auto preparingConnection = grid->PreparingCellForEdit.Subscribe(
+			[&](DataGrid*, DataGridPreparingCellForEditEventArgs& args)
+			{
+				if (args.EditingElement)
+					preparingEditorRevision = args.EditingElement
+						->GetPresentationRevisions().Content;
+			});
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		window.UpdateLayout();
+
+		auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* cell = row ? row->GetCell(0) : nullptr;
+		auto* editor = cell
+			? dynamic_cast<TextBox*>(cell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(cell != nullptr);
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!cell || !editor) return;
+		CUI_EXPECT_TRUE(editor->GetPresentationRevisions().Content
+			> preparingEditorRevision);
+
+		CUI_EXPECT_EQ(Thickness{}, editor->BorderThickness);
+		CUI_EXPECT_EQ(Thickness{}, editor->Padding);
+		CUI_EXPECT_EQ(HorizontalAlignment::Stretch,
+			editor->HorizontalAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Stretch,
+			editor->VerticalAlignment);
+		CUI_EXPECT_EQ(HorizontalAlignment::Left,
+			editor->HorizontalContentAlignment);
+		CUI_EXPECT_EQ(VerticalAlignment::Center,
+			editor->VerticalContentAlignment);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			editor->Background.Kind);
+		CUI_EXPECT_NEAR(0.0f, editor->Background.Color.a, 0.001f);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			editor->Foreground.Kind);
+		CUI_EXPECT_TRUE(editor->Foreground.Color.a > 0.8f);
+		CUI_EXPECT_TRUE(editor->Foreground.Color.r < 0.2f);
+		CUI_EXPECT_NEAR(1.0, editor->SelectionOpacity, 0.001);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			editor->SelectionBrush.Kind);
+		CUI_EXPECT_TRUE(editor->SelectionBrush.Color.a > 0.8f);
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+			editor->SelectionTextBrush.Kind);
+		CUI_EXPECT_TRUE(editor->SelectionTextBrush.Color.r > 0.9f);
+
+		auto* clearButton = editor->FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"DeleteButton"));
+		CUI_EXPECT_TRUE(clearButton == nullptr
+			|| !clearButton->GetIsVisible());
+		auto* ordinaryChrome = dynamic_cast<Border*>(
+			editor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"ContentBorder")));
+		CUI_EXPECT_TRUE(ordinaryChrome == nullptr
+			|| ordinaryChrome->BorderThickness == Thickness{});
+
+		const auto cellRect = cell->GetRenderedAbsoluteRectDip();
+		const auto editorRect = editor->GetRenderedAbsoluteRectDip();
+		const float cellWidth = cellRect.right - cellRect.left;
+		const float cellHeight = cellRect.bottom - cellRect.top;
+		const float editorWidth = editorRect.right - editorRect.left;
+		const float editorHeight = editorRect.bottom - editorRect.top;
+		D2D1_RECT_F caretRect{};
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::ResolveTextInputCaretRect(
+			*editor, caretRect));
+		constexpr float boundsTolerance = 0.75f;
+		constexpr float cellChromeAllowance = 2.1f;
+		CUI_EXPECT_TRUE(cellWidth > 0.0f && cellHeight > 0.0f);
+		CUI_EXPECT_TRUE(editorWidth > 0.0f && editorHeight > 0.0f);
+		// Never overrun the cell even with long text, and consume all but the
+		// at-most-one-DIP cell focus/grid stroke on each axis.
+		CUI_EXPECT_TRUE(editorRect.left >= cellRect.left - boundsTolerance);
+		CUI_EXPECT_TRUE(editorRect.top >= cellRect.top - boundsTolerance);
+		CUI_EXPECT_TRUE(editorRect.right <= cellRect.right + boundsTolerance);
+		CUI_EXPECT_TRUE(editorRect.bottom <= cellRect.bottom + boundsTolerance);
+		CUI_EXPECT_TRUE(editorWidth >= cellWidth - cellChromeAllowance);
+		CUI_EXPECT_TRUE(editorHeight >= cellHeight - cellChromeAllowance);
+		// BeginEdit selects the deliberately long value before the new editor's
+		// first arrange.  Its end caret must be clamped to the laid-out viewport,
+		// not left at the leading edge by a stale zero-width scroll offset.
+		CUI_EXPECT_TRUE(caretRect.left
+			> editorRect.left + editorWidth * 0.75f);
+		CUI_EXPECT_TRUE(caretRect.right
+			<= editorRect.right + cellChromeAllowance);
+	});
+
+	runner.Add("DataGrid editing TextBox owns Ctrl A and direction keys", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"EditorKeyRow");
+		for (const auto* name : { L"Alpha", L"Beta" })
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::wstring(name)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(1, 1));
+		CUI_EXPECT_TRUE(grid.SelectCell(1, 1));
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		auto* editingRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		auto* editingCell = editingRow ? editingRow->GetCell(1) : nullptr;
+		auto* editor = editingCell
+			? dynamic_cast<TextBox*>(editingCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+
+		editor->Select(2, 0);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Left)));
+		CUI_EXPECT_EQ(1, editor->GetSelectionStart());
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 1));
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::A,
+				ModifierKeys::Control)));
+		CUI_EXPECT_EQ(static_cast<int>(editor->Text.size()),
+			editor->GetSelectionLength());
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 1));
+	});
+
+	runner.Add("DataGrid editing Ctrl Enter stays put and Tab continues editing", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"EditingNavigationRow");
+		for (const auto* name : { L"Alpha", L"Beta" })
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::wstring(name)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+		auto* editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+
+		const ControlWeakReference committedEditor(editor);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Return,
+				ModifierKeys::Control)));
+		CUI_EXPECT_TRUE(committedEditor.Get() == nullptr);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_FALSE(firstCell && firstCell->GetIsEditing());
+
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Tab)));
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		auto* nextCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		CUI_EXPECT_TRUE(nextCell && nextCell->GetIsEditing());
+		auto* nextEditor = nextCell
+			? dynamic_cast<TextBox*>(nextCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(nextEditor != nullptr);
+		if (!nextEditor) return;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*nextEditor, KeyInput(InputReportKind::KeyDown, Key::Tab,
+				ModifierKeys::Shift)));
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_TRUE(firstCell && firstCell->GetIsEditing());
+		CUI_EXPECT_TRUE(firstCell
+			&& dynamic_cast<TextBox*>(firstCell->GetEditingElement()));
+	});
+
+	runner.Add("DataGrid editing CheckBox direction keys navigate cells", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridCheckBoxColumn>();
+		column->SetHeader(BindingValue(L"Paid"));
+		column->SetBindingPath(L"Paid");
+		column->SetBindingMode(BindingMode::TwoWay);
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		auto rows = std::make_shared<ObservableBindingList>(L"CheckBoxEditorKeyRow");
+		for (const bool paid : { false, true })
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Paid", paid));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+		auto* editor = firstCell
+			? dynamic_cast<CheckBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		const ControlWeakReference editorLifetime(editor);
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Down)));
+		CUI_EXPECT_TRUE(editorLifetime.Get() == nullptr);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(1, 0));
+		CUI_EXPECT_FALSE(firstCell && firstCell->GetIsEditing());
+	});
+
+	runner.Add("DataGrid editing Tab across row boundary does not continue edit", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto rows = std::make_shared<ObservableBindingList>(L"TabBoundaryRow");
+		for (const auto* name : { L"Alpha", L"Beta" })
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", std::wstring(name)));
+			rows->Items.push_back(BindingSourceReference(std::move(row)));
+		}
+		grid.SetItemsSource(BindingListReference(rows));
+
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(0, 1));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 1));
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* lastCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		auto* editor = lastCell
+			? dynamic_cast<TextBox*>(lastCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Tab)));
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		auto* secondRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(1));
+		auto* firstCell = secondRow ? secondRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(firstCell != nullptr);
+		CUI_EXPECT_FALSE(firstCell && firstCell->GetIsEditing());
+		CUI_EXPECT_TRUE(firstCell && firstCell->GetEditingElement() == nullptr);
+
+		CUI_EXPECT_TRUE(grid.BeginEdit());
+		editor = firstCell
+			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Tab,
+				ModifierKeys::Shift)));
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_FALSE(lastCell && lastCell->GetIsEditing());
+		CUI_EXPECT_TRUE(lastCell && lastCell->GetEditingElement() == nullptr);
+	});
+
+	runner.Add("DataGrid boundary direction after edit keeps cell-only selection", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid cell navigation boundary");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 180.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 180);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->Focusable = true;
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionMode(SelectionMode::Extended);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Alpha"));
+		auto rows = std::make_shared<ObservableBindingList>(L"BoundaryKeyRow");
+		rows->Items.push_back(BindingSourceReference(std::move(item)));
+		grid->SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid->SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* cell = row ? row->GetCell(0) : nullptr;
+		auto* editor = cell
+			? dynamic_cast<TextBox*>(cell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*editor, KeyInput(InputReportKind::KeyDown, Key::Escape)));
+		CUI_EXPECT_FALSE(cell && cell->GetIsEditing());
+		window.SetKeyboardFocus(grid, false);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == grid);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			window, KeyInput(InputReportKind::KeyDown, Key::Up)));
+
+		CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+		CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid->IsCellSelected(0, 0));
+		CUI_EXPECT_FALSE(grid->IsCellSelected(0, 1));
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+	});
+
+	runner.Add("DataGrid CheckBox display is inert and WPF input begins edit", []
+	{
+		auto makePaidRow = [](bool value)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Paid", value));
+			return row;
+		};
+		auto clickCellThroughWindow = [](Window& window, DataGridCell& cell)
+		{
+			window.UpdateLayout();
+			const auto bounds = cell.GetAbsoluteRectDip();
+			CUI_EXPECT_TRUE(bounds.width > 0.0f);
+			CUI_EXPECT_TRUE(bounds.height > 0.0f);
+			if (!window.Handle || bounds.width <= 0.0f || bounds.height <= 0.0f)
+				return false;
+			const float contentX = bounds.x + bounds.width * 0.5f;
+			const float contentY = bounds.y + bounds.height * 0.5f;
+			auto* hit = cui::framework::WindowAccess::HitTestControlAt(
+				window,
+				static_cast<int>(std::lround(contentX)),
+				static_cast<int>(std::lround(contentY)));
+			bool hitCell = false;
+			for (auto* current = hit; current;
+				current = current->GetVisualParent())
+				if (current == &cell)
+				{
+					hitCell = true;
+					break;
+				}
+			CUI_EXPECT_TRUE(hitCell);
+			if (!hitCell) return false;
+			const auto client = window.ContentDipRectToClientPixels(D2D1::RectF(
+				contentX, contentY, contentX + 1.0f, contentY + 1.0f));
+			const LPARAM point = MAKELPARAM(
+				(client.left + client.right) / 2,
+				(client.top + client.bottom) / 2);
+			(void)::SendMessageW(
+				window.Handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+			(void)::SendMessageW(window.Handle, WM_LBUTTONUP, 0, point);
+			return true;
+		};
+
+		{
+			Window window;
+			ConfigureTestControl(window, L"Read-only DataGrid CheckBox");
+			SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 160.0f);
+			auto gridOwner = std::make_unique<DataGrid>();
+			auto* grid = gridOwner.get();
+			ConfigureTestControl(*grid, 0, 0, 320, 160);
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetIsReadOnly(true);
+			grid->SetRowHeight(38.0);
+			auto column = std::make_unique<DataGridCheckBoxColumn>();
+			column->SetHeader(BindingValue(L"Paid"));
+			column->SetBindingPath(L"Paid");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			auto item = makePaidRow(false);
+			auto rows = std::make_shared<ObservableBindingList>(L"ReadOnlyCheckRow");
+			rows->Items.push_back(BindingSourceReference(item));
+			grid->SetItemsSource(BindingListReference(rows));
+			CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+			window.UpdateLayout();
+			auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			auto* display = cell
+				? dynamic_cast<CheckBox*>(cell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(display != nullptr);
+			CUI_EXPECT_TRUE(cell != nullptr);
+			if (!cell || !display) return;
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *cell));
+			CUI_EXPECT_FALSE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_FALSE(cell->GetIsEditing());
+
+			CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == cell);
+			(void)cui::framework::InputAccess::DispatchInput(
+				window, KeyInput(InputReportKind::KeyDown, Key::Space));
+			(void)cui::framework::InputAccess::DispatchInput(
+				window, KeyInput(InputReportKind::KeyUp, Key::Space));
+			CUI_EXPECT_FALSE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_FALSE(cell->GetIsEditing());
+		}
+
+		{
+			Window window;
+			ConfigureTestControl(window, L"Editable DataGrid CheckBox");
+			SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 160.0f);
+			auto gridOwner = std::make_unique<DataGrid>();
+			auto* grid = gridOwner.get();
+			ConfigureTestControl(*grid, 0, 0, 320, 160);
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+			grid->SetRowHeight(38.0);
+			auto column = std::make_unique<DataGridCheckBoxColumn>();
+			column->SetHeader(BindingValue(L"Paid"));
+			column->SetBindingPath(L"Paid");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			auto item = makePaidRow(false);
+			auto rows = std::make_shared<ObservableBindingList>(L"EditableCheckRow");
+			rows->Items.push_back(BindingSourceReference(item));
+			grid->SetItemsSource(BindingListReference(rows));
+			CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+			window.UpdateLayout();
+			auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			auto* display = cell
+				? dynamic_cast<CheckBox*>(cell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(display != nullptr);
+			if (!cell || !display) return;
+			int beginningEdit = 0;
+			int preparingEdit = 0;
+			auto beginningConnection = grid->BeginningEdit.Subscribe(
+				[&](DataGrid*, DataGridBeginningEditEventArgs&)
+				{ ++beginningEdit; });
+			auto preparingConnection = grid->PreparingCellForEdit.Subscribe(
+				[&](DataGrid*, DataGridPreparingCellForEditEventArgs&)
+				{ ++preparingEdit; });
+
+			// WPF's display CheckBox is not hit-testable. A fresh cell's first
+			// click therefore focuses/selects the cell without beginning edit.
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *cell));
+			CUI_EXPECT_EQ(0, beginningEdit);
+			CUI_EXPECT_EQ(0, preparingEdit);
+			CUI_EXPECT_FALSE(cell->GetIsEditing());
+			CUI_EXPECT_FALSE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == cell);
+			CUI_EXPECT_TRUE(grid->IsCellSelected(0, 0));
+			CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+
+			// Once the cell is current, focused and selected, the next click
+			// begins the edit transaction and CheckBox preparation toggles once.
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *cell));
+			CUI_EXPECT_EQ(1, beginningEdit);
+			CUI_EXPECT_EQ(1, preparingEdit);
+			CUI_EXPECT_TRUE(cell->GetIsEditing());
+			auto* editor = dynamic_cast<CheckBox*>(cell->GetEditingElement());
+			CUI_EXPECT_TRUE(editor != nullptr);
+			CUI_EXPECT_TRUE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(editor && editor->IsChecked == true);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+		}
+
+		{
+			Window window;
+			ConfigureTestControl(window, L"Keyboard DataGrid CheckBox");
+			SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 320.0f, 160.0f);
+			auto gridOwner = std::make_unique<DataGrid>();
+			auto* grid = gridOwner.get();
+			ConfigureTestControl(*grid, 0, 0, 320, 160);
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+			grid->SetRowHeight(38.0);
+			auto column = std::make_unique<DataGridCheckBoxColumn>();
+			column->SetHeader(BindingValue(L"Paid"));
+			column->SetBindingPath(L"Paid");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			auto item = makePaidRow(false);
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"KeyboardCheckRow");
+			rows->Items.push_back(BindingSourceReference(item));
+			grid->SetItemsSource(BindingListReference(rows));
+			CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+			window.UpdateLayout();
+			auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			CUI_EXPECT_TRUE(cell != nullptr);
+			if (!cell) return;
+			CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+			window.SetKeyboardFocus(cell, true);
+			CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == cell);
+			CUI_EXPECT_FALSE(cell->GetIsEditing());
+			CUI_EXPECT_FALSE(item->GetValue<bool>(L"Paid"));
+
+			int beginningEdit = 0;
+			int preparingEdit = 0;
+			auto beginningConnection = grid->BeginningEdit.Subscribe(
+				[&](DataGrid*, DataGridBeginningEditEventArgs&)
+				{ ++beginningEdit; });
+			auto preparingConnection = grid->PreparingCellForEdit.Subscribe(
+				[&](DataGrid*, DataGridPreparingCellForEditEventArgs&)
+				{ ++preparingEdit; });
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				window, KeyInput(InputReportKind::KeyDown, Key::Space)));
+
+			CUI_EXPECT_EQ(1, beginningEdit);
+			CUI_EXPECT_EQ(1, preparingEdit);
+			CUI_EXPECT_TRUE(cell->GetIsEditing());
+			auto* editor = dynamic_cast<CheckBox*>(cell->GetEditingElement());
+			CUI_EXPECT_TRUE(editor != nullptr);
+			CUI_EXPECT_TRUE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(editor && editor->IsChecked == true);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+		}
+	});
+
+	runner.Add("DataGrid reentrant cell Selected publishes one net delta", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index)));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"Row"));
+		auto rows = std::make_shared<ObservableBindingList>(L"ReentrantSelectionRow");
+		rows->Items.push_back(BindingSourceReference(std::move(row)));
+		grid.SetItemsSource(BindingListReference(rows));
+		auto* generatedRow = dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0));
+		auto* firstCell = generatedRow ? generatedRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(firstCell != nullptr);
+		if (!firstCell) return;
+
+		std::vector<std::pair<size_t, size_t>> deltas;
+		auto changedConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs& args)
+			{
+				deltas.emplace_back(
+					args.AddedCells.size(), args.RemovedCells.size());
+			});
+		auto selectedConnection = firstCell->AddHandler(
+			RoutedEventId::Selected,
+			[&](Control*, RoutedEventArgs&)
+			{
+				(void)grid.SelectCell(0, 1);
+			});
+
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_EQ(2ULL, grid.GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 1));
+		CUI_EXPECT_EQ(1ULL, deltas.size());
+		if (!deltas.empty())
+		{
+			CUI_EXPECT_EQ(2ULL, deltas.front().first);
+			CUI_EXPECT_EQ(0ULL, deltas.front().second);
+		}
+	});
+
+	runner.Add("DataGrid transaction restore reapplies selected cell visual", []
+	{
+		class SelectionRollbackProbeDataGrid final : public DataGrid
+		{
+		public:
+			using State = ItemsSourceTransactionState;
+
+			std::unique_ptr<State> CaptureSelectionState()
+			{
+				return CaptureItemsSourceTransactionState();
+			}
+
+			void RestoreSelectionState(State& state) noexcept
+			{
+				RestoreItemsSourceTransactionState(state);
+			}
+		};
+
+		SelectionRollbackProbeDataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto first = makeRow(L"A");
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"RollbackSelectionRow");
+		rows->Items.push_back(BindingSourceReference(first));
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SelectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+
+		auto* initialRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(0));
+		auto* initialCell = initialRow ? initialRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(initialCell != nullptr);
+		CUI_EXPECT_TRUE(initialCell && initialCell->GetIsSelected());
+		if (!initialCell) return;
+
+		auto state = grid.CaptureSelectionState();
+		CUI_EXPECT_TRUE(state != nullptr);
+		if (!state) return;
+
+		CUI_EXPECT_TRUE(grid.UnselectCell(0, 0));
+		CUI_EXPECT_TRUE(grid.GetSelectedCells().empty());
+		CUI_EXPECT_FALSE(grid.IsCellSelected(0, 0));
+		CUI_EXPECT_FALSE(initialCell->GetIsSelected());
+
+		// ItemsControl restores derived state only after restoring the old
+		// materialized tree. The DataGrid token must therefore re-project its
+		// selected-cell store onto whichever cell container is now realized.
+		grid.RestoreSelectionState(*state);
+
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells().front().Item.Shared() == first);
+			CUI_EXPECT_EQ(0ULL,
+				grid.GetSelectedCells().front().RowIndex);
+			CUI_EXPECT_EQ(0ULL,
+				grid.GetSelectedCells().front().ColumnIndex);
+		}
+		CUI_EXPECT_TRUE(grid.IsCellSelected(0, 0));
+		auto* restoredRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(0));
+		auto* restoredCell = restoredRow ? restoredRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(restoredCell != nullptr);
+		CUI_EXPECT_TRUE(restoredCell && restoredCell->GetIsSelected());
+	});
+
+	runner.Add("DataGrid failed duplicate live mutation restores occurrence selection", []
+	{
+		DataGrid grid;
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetSelectionMode(SelectionMode::Extended);
+		grid.SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+
+		auto makeRow = [](const std::wstring& name)
+		{
+			auto row = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(row->DefineProperty(L"Name", name));
+			return row;
+		};
+		auto repeated = makeRow(L"Repeated");
+		auto marker = makeRow(L"Marker");
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"FailedDuplicateMutationRow");
+		rows->Items.push_back(BindingSourceReference(repeated));
+		rows->Items.push_back(BindingSourceReference(marker));
+		rows->Items.push_back(BindingSourceReference(repeated));
+
+		bool rejectCandidate = false;
+		grid.SetGeneratedContainerInitializer(
+			[&](Control&, std::wstring* error)
+			{
+				if (!rejectCandidate) return true;
+				if (error) *error = L"reject duplicate live candidate";
+				return false;
+			});
+		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(grid.SetCurrentCell(2, 0));
+		CUI_EXPECT_TRUE(grid.SelectCell(2, 0));
+		CUI_EXPECT_TRUE(grid.IsCellSelected(2, 0));
+		size_t selectionDeltaCount = 0;
+		auto selectedCellsConnection = grid.SelectedCellsChanged.Subscribe(
+			[&](DataGrid*, DataGridSelectedCellsChangedEventArgs&)
+			{ ++selectionDeltaCount; });
+
+		rejectCandidate = true;
+		rows->Items.insert(
+			rows->Items.begin(), BindingSourceReference(repeated));
+		CUI_EXPECT_EQ(4ULL, rows->Count());
+		CUI_EXPECT_TRUE(grid.GetItemsSource().Shared() != rows);
+		CUI_EXPECT_EQ(3ULL, grid.ItemCount());
+		CUI_EXPECT_EQ(0ULL, selectionDeltaCount);
+
+		CUI_EXPECT_TRUE(grid.GetCurrentCell().IsValid());
+		CUI_EXPECT_TRUE(
+			grid.GetCurrentCell().Item.Shared() == repeated);
+		CUI_EXPECT_EQ(2ULL, grid.GetCurrentCell().RowIndex);
+		CUI_EXPECT_EQ(0ULL, grid.GetCurrentCell().ColumnIndex);
+		CUI_EXPECT_EQ(1ULL, grid.GetSelectedCells().size());
+		if (!grid.GetSelectedCells().empty())
+		{
+			CUI_EXPECT_TRUE(
+				grid.GetSelectedCells().front().Item.Shared() == repeated);
+			CUI_EXPECT_EQ(2ULL,
+				grid.GetSelectedCells().front().RowIndex);
+			CUI_EXPECT_EQ(0ULL,
+				grid.GetSelectedCells().front().ColumnIndex);
+		}
+		CUI_EXPECT_TRUE(grid.IsCellSelected(2, 0));
+		auto* restoredRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(2));
+		auto* restoredCell = restoredRow ? restoredRow->GetCell(0) : nullptr;
+		CUI_EXPECT_TRUE(restoredCell != nullptr);
+		CUI_EXPECT_TRUE(restoredCell && restoredCell->GetIsSelected());
 	});
 
 	runner.Add("Current design snapshots reject undeclared structure", []

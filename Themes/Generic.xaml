@@ -172,6 +172,23 @@
   <Color x:Key="CuiListViewBorder">#00FFFFFF</Color>
   <Color x:Key="CuiListViewItemPointerOver">#09000000</Color>
   <Color x:Key="CuiListViewItemSelectionIndicator">#FF285EBF</Color>
+  <!-- WPF Fluent Light DataGrid resources. -->
+  <Color x:Key="CuiDataGridBackground">#FFFFFFFF</Color>
+  <Color x:Key="CuiDataGridBorder">#FFD3DCE8</Color>
+  <Color x:Key="CuiDataGridHeaderBackground">#FFF4F6F9</Color>
+  <Color x:Key="CuiDataGridHeaderPointerOver">#FFE9EEF6</Color>
+  <Color x:Key="CuiDataGridHeaderPressed">#FFDCE5F2</Color>
+  <Color x:Key="CuiDataGridHeaderForeground">#FF263247</Color>
+  <Color x:Key="CuiDataGridRowBackground">#FFFFFFFF</Color>
+  <Color x:Key="CuiDataGridAlternatingRowBackground">#FFF8FAFD</Color>
+  <Color x:Key="CuiDataGridRowPointerOver">#FFEAF2FF</Color>
+  <Color x:Key="CuiDataGridRowSelected">#FFD7E6FF</Color>
+  <Color x:Key="CuiDataGridRowSelectedPointerOver">#FFC9DCFA</Color>
+  <Color x:Key="CuiDataGridCellSelected">#FFD7E6FF</Color>
+  <Color x:Key="CuiDataGridCellSelectedPointerOver">#FFC9DCFA</Color>
+  <Color x:Key="CuiDataGridCellForeground">#FF172033</Color>
+  <Color x:Key="CuiDataGridGridLine">#FFE1E6EE</Color>
+  <Color x:Key="CuiDataGridCurrentCellBorder">#FF2F6FE4</Color>
   <Color x:Key="CuiToolBarBackground">#FFF0F4F9</Color>
   <Color x:Key="CuiToolBarBorder">#FFD3DCE8</Color>
   <!-- WPF Fluent Light text-control resources (.NET 11 Preview 6). -->
@@ -4636,6 +4653,389 @@
       <Trigger Property="IsSelected" Value="true">
         <Setter Property="Background"
           Value="{StaticResource CuiListViewItemPointerOver}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <!--
+    DataGrid remains an ItemsControl/Selector pipeline: the theme owns the
+    chrome and the two presenter slots, while DataGridRow composes real Grid
+    and DataGridCell controls for every realized record.
+  -->
+  <ItemsPanelTemplate x:Key="CuiDataGridRowsPanel">
+    <VirtualizingStackPanel ItemHeight="38" CacheLength="1"/>
+  </ItemsPanelTemplate>
+
+  <ControlTemplate
+    x:Key="CuiDataGridSelectAllButtonTemplate"
+    TargetType="Button">
+    <Border
+      x:Name="PART_SelectAllChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"
+        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style x:Key="CuiDataGridSelectAllButtonStyle" TargetType="Button">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridHeaderBackground}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridHeaderForeground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+    <Setter Property="Focusable" Value="false"/>
+    <Setter Property="MinHeight" Value="38"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridSelectAllButtonTemplate}"/>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPointerOver}"/>
+      </Trigger>
+      <Trigger Property="IsPressed" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPressed}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridTemplate"
+    TargetType="DataGrid">
+    <Border
+      x:Name="PART_DataGridChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}"
+      CornerRadius="{DynamicResource CuiControlCornerRadius}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+		<Grid
+		  Grid.Row="0"
+		  x:Name="PART_HeadersRow">
+		  <Grid.ColumnDefinitions>
+			<ColumnDefinition Width="Auto"/>
+			<ColumnDefinition Width="*"/>
+		  </Grid.ColumnDefinitions>
+		  <Button
+			x:Name="PART_SelectAllButton"
+			Grid.Column="0"
+			Content="◢"
+			AutomationProperties.Name="Select All"
+			Style="{StaticResource CuiDataGridSelectAllButtonStyle}"/>
+		  <Grid
+			x:Name="PART_ColumnHeadersViewport"
+			Grid.Column="1"
+			ClipToBounds="true">
+			<DataGridColumnHeadersPresenter
+			  x:Name="PART_ColumnHeadersPresenter"/>
+		  </Grid>
+		</Grid>
+        <ScrollViewer
+          x:Name="PART_ScrollViewer"
+          Grid.Row="1"
+          HorizontalScrollBarVisibility="Auto"
+          VerticalScrollBarVisibility="Auto">
+          <ItemsPresenter x:Name="PART_ItemsPresenter"/>
+        </ScrollViewer>
+      </Grid>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="DataGrid">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridBackground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataGridBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="RowHeight" Value="38"/>
+    <Setter Property="ColumnHeaderHeight" Value="38"/>
+    <Setter Property="RowBackground"
+      Value="{StaticResource CuiDataGridRowBackground}"/>
+    <Setter Property="AlternatingRowBackground"
+      Value="{StaticResource CuiDataGridAlternatingRowBackground}"/>
+    <Setter Property="HorizontalGridLinesBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="VerticalGridLinesBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="ItemsPanel"
+      Value="{StaticResource CuiDataGridRowsPanel}"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridTemplate}"/>
+  </Style>
+
+  <Style TargetType="DataGridColumnHeadersPresenter">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridHeaderBackground}"/>
+    <Setter Property="MinHeight" Value="38"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridColumnHeaderTemplate"
+    TargetType="DataGridColumnHeader">
+    <Border
+      x:Name="PART_ColumnHeaderChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"
+        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="DataGridColumnHeader">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridHeaderBackground}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridHeaderForeground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+    <Setter Property="Padding" Value="10,0,8,0"/>
+    <Setter Property="MinHeight" Value="38"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridColumnHeaderTemplate}"/>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPointerOver}"/>
+      </Trigger>
+      <Trigger Property="IsPressed" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPressed}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridRowHeaderTemplate"
+    TargetType="DataGridRowHeader">
+    <Border
+      x:Name="PART_RowHeaderChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"
+        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="DataGridRowHeader">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridHeaderBackground}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridHeaderForeground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="BorderThickness" Value="0,0,1,0"/>
+    <Setter Property="Padding" Value="4,0"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridRowHeaderTemplate}"/>
+    <Style.Triggers>
+      <Trigger Property="IsRowSelected" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridRowSelected}"/>
+      </Trigger>
+      <MultiTrigger>
+        <MultiTrigger.Conditions>
+          <Condition Property="IsRowSelected" Value="false"/>
+          <Condition Property="IsMouseOver" Value="true"/>
+        </MultiTrigger.Conditions>
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPointerOver}"/>
+      </MultiTrigger>
+      <Trigger Property="IsPressed" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridHeaderPressed}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridRowTemplate"
+    TargetType="DataGridRow">
+    <Border
+      x:Name="PART_RowChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"
+        HorizontalAlignment="Stretch"
+        VerticalAlignment="Stretch"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="DataGridRow">
+    <Setter Property="Background"
+      Value="{StaticResource CuiDataGridRowBackground}"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridCellForeground}"/>
+    <Setter Property="BorderBrush" Value="#00000000"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="Margin" Value="0"/>
+    <Setter Property="MinHeight" Value="38"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridRowTemplate}"/>
+    <Style.Triggers>
+      <Trigger Property="IsSelected" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridRowSelected}"/>
+      </Trigger>
+      <MultiTrigger>
+        <MultiTrigger.Conditions>
+          <Condition Property="IsSelected" Value="false"/>
+          <Condition Property="IsMouseOver" Value="true"/>
+        </MultiTrigger.Conditions>
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridRowPointerOver}"/>
+      </MultiTrigger>
+      <MultiTrigger>
+        <MultiTrigger.Conditions>
+          <Condition Property="IsSelected" Value="true"/>
+          <Condition Property="IsMouseOver" Value="true"/>
+        </MultiTrigger.Conditions>
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridRowSelectedPointerOver}"/>
+      </MultiTrigger>
+    </Style.Triggers>
+  </Style>
+
+  <!--
+    DataGrid columns create their display/editing elements in native code.
+    Keep their default presentation separate from the standalone Label,
+    TextBox and CheckBox styles: the cell owns spacing and focus chrome.
+  -->
+  <Style x:Key="CuiDataGridTextElementStyle" TargetType="TextBlock">
+    <Setter Property="Margin" Value="2,0,2,0"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridTextEditingElementTemplate"
+    TargetType="TextBox">
+    <Border Background="{TemplateBinding Background}">
+      <Grid x:Name="PART_ContentHost"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style x:Key="CuiDataGridTextEditingElementStyle"
+    BasedOn="{StaticResource {x:Type TextBox}}"
+    TargetType="TextBox">
+    <Setter Property="Background" Value="#00000000"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridCellForeground}"/>
+    <Setter Property="CaretBrush"
+      Value="{StaticResource CuiDataGridCellForeground}"/>
+    <Setter Property="SelectionBrush"
+      Value="{StaticResource CuiTextControlSelection}"/>
+    <Setter Property="SelectionOpacity" Value="1"/>
+    <Setter Property="SelectionTextBrush" Value="#FFFFFFFF"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalAlignment" Value="Stretch"/>
+    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridTextEditingElementTemplate}"/>
+  </Style>
+
+  <Style x:Key="CuiDataGridCheckBoxElementStyle"
+    BasedOn="{StaticResource {x:Type CheckBox}}"
+    TargetType="CheckBox">
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+
+  <ControlTemplate
+    x:Key="CuiDataGridCellTemplate"
+    TargetType="DataGridCell">
+    <Border
+      x:Name="PART_CellChrome"
+      Background="{TemplateBinding Background}"
+      BorderBrush="{TemplateBinding BorderBrush}"
+      BorderThickness="{TemplateBinding BorderThickness}"
+      Padding="{TemplateBinding Padding}">
+      <ContentPresenter
+        x:Name="PART_ContentPresenter"
+        ContentSource="Content"
+        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+    </Border>
+  </ControlTemplate>
+
+  <Style TargetType="DataGridCell">
+    <Setter Property="Background" Value="#00000000"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiDataGridCellForeground}"/>
+    <Setter Property="BorderBrush"
+      Value="{StaticResource CuiDataGridGridLine}"/>
+    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="MinHeight" Value="38"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridCellTemplate}"/>
+    <Style.Triggers>
+      <Trigger Property="IsSelected" Value="true">
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridCellSelected}"/>
+      </Trigger>
+      <MultiTrigger>
+        <MultiTrigger.Conditions>
+          <Condition Property="IsSelected" Value="true"/>
+          <Condition Property="IsMouseOver" Value="true"/>
+        </MultiTrigger.Conditions>
+        <Setter Property="Background"
+          Value="{StaticResource CuiDataGridCellSelectedPointerOver}"/>
+      </MultiTrigger>
+      <Trigger Property="IsKeyboardFocusWithin" Value="true">
+        <Setter Property="BorderBrush"
+          Value="{StaticResource CuiDataGridCurrentCellBorder}"/>
+        <Setter Property="BorderThickness" Value="1"/>
       </Trigger>
     </Style.Triggers>
   </Style>

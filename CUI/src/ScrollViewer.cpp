@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -116,10 +117,35 @@ namespace
 	}
 
 	bool ShouldShowScrollBar(
-		ScrollBarVisibility visibility, float extent, float viewport) noexcept
+		ScrollBarVisibility visibility, double extent, float viewport) noexcept
 	{
 		return visibility == ScrollBarVisibility::Visible
-			|| (visibility == ScrollBarVisibility::Auto && extent > viewport);
+			|| (visibility == ScrollBarVisibility::Auto
+				&& extent > static_cast<double>(viewport));
+	}
+
+	float SaturateRenderDip(double value) noexcept
+	{
+		if (std::isnan(value)) return 0.0f;
+		const double limit = static_cast<double>(
+			(std::numeric_limits<float>::max)());
+		return static_cast<float>((std::clamp)(value, -limit, limit));
+	}
+
+	double FiniteMeasuredExtent(float value) noexcept
+	{
+		if (std::isnan(value) || value <= 0.0f) return 0.0;
+		return std::isfinite(value)
+			? static_cast<double>(value)
+			: static_cast<double>((std::numeric_limits<float>::max)());
+	}
+
+	double ClampScrollOffset(double value, double maximum) noexcept
+	{
+		if (!std::isfinite(maximum) || maximum <= 0.0) return 0.0;
+		if (std::isnan(value) || value <= 0.0) return 0.0;
+		if (!std::isfinite(value) || value >= maximum) return maximum;
+		return value;
 	}
 
 }
@@ -378,11 +404,70 @@ GET_CPP(ScrollViewer, double, ViewportHeight) { return _viewportHeight; }
 GET_CPP(ScrollViewer, double, HorizontalOffset) { return _horizontalOffset; }
 GET_CPP(ScrollViewer, double, VerticalOffset) { return _verticalOffset; }
 
+void ScrollViewer::SetLogicalScrollContent(Control* content)
+{
+	if (_logicalScrollContent == content) return;
+	_logicalScrollContent = content;
+	// The provider changes the extent source and the coordinate origin used by
+	// every descendant transform. The ordinary layout request republishes the
+	// read-only scroll metrics; geometry invalidation prevents replaying commands
+	// recorded against the previous origin.
+	RequestLayout();
+	InvalidateDescendantRenderGeometry();
+	InvalidateVisual();
+}
+
+const cui::framework::ILogicalScrollContent*
+ScrollViewer::ResolveLogicalScrollContent() const noexcept
+{
+	auto* content = _logicalScrollContent.Get();
+	if (!content) return nullptr;
+	bool descendant = false;
+	for (auto* current = content; current; current = current->GetVisualParent())
+		if (current == this)
+		{
+			descendant = true;
+			break;
+		}
+	return descendant
+		? dynamic_cast<const cui::framework::ILogicalScrollContent*>(content)
+		: nullptr;
+}
+
+double ScrollViewer::ResolveLogicalContentHeight(
+	float measuredHeight) const noexcept
+{
+	const double fallback = FiniteMeasuredExtent(measuredHeight);
+	const auto* content = ResolveLogicalScrollContent();
+	if (!content) return fallback;
+	const double logical = content->LogicalExtentHeightDip();
+	return std::isfinite(logical) && logical >= 0.0 ? logical : fallback;
+}
+
+double ScrollViewer::ResolveLogicalContentWidth(
+	float measuredWidth) const noexcept
+{
+	const double fallback = FiniteMeasuredExtent(measuredWidth);
+	const auto* content = ResolveLogicalScrollContent();
+	if (!content) return fallback;
+	const double logical = content->LogicalExtentWidthDip();
+	return std::isfinite(logical) && logical >= 0.0
+		? (std::max)(fallback, logical) : fallback;
+}
+
+double ScrollViewer::VerticalContentRenderOffset() const noexcept
+{
+	const auto* content = ResolveLogicalScrollContent();
+	if (!content) return _verticalOffset;
+	const double origin = content->VerticalLayoutOriginDip();
+	return std::isfinite(origin) ? _verticalOffset - origin : _verticalOffset;
+}
+
 cui::core::Point ScrollViewer::GetVisualChildrenRenderOffset() const
 {
 	return {
-		-static_cast<float>(_horizontalOffset),
-		-static_cast<float>(_verticalOffset) };
+		-SaturateRenderDip(_horizontalOffset),
+		-SaturateRenderDip(VerticalContentRenderOffset()) };
 }
 
 D2D1_RECT_F ScrollViewer::GetVisualChildrenClipRect()
@@ -426,13 +511,18 @@ void ScrollViewer::PerformScrollContentLayout()
 
 		cui::core::Size content = MeasureContentSizeDip();
 		content = content.NonNegative();
+		const double logicalContentWidth =
+			ResolveLogicalContentWidth(content.width);
+		const double logicalContentHeight =
+			ResolveLogicalContentHeight(content.height);
 
 		float viewportWidth = std::max(0.0f, viewportSize.width - (needsVerticalScroll ? scrollBarThickness : 0.0f));
 		float viewportHeight = std::max(0.0f, viewportSize.height - (needsHorizontalScroll ? scrollBarThickness : 0.0f));
 		bool nextNeedsHorizontalScroll = ShouldShowScrollBar(
-			_horizontalScrollBarVisibility, content.width, viewportWidth);
+			_horizontalScrollBarVisibility, logicalContentWidth, viewportWidth);
 		bool nextNeedsVerticalScroll = ShouldShowScrollBar(
-			_verticalScrollBarVisibility, content.height, viewportHeight);
+			_verticalScrollBarVisibility,
+			logicalContentHeight, viewportHeight);
 		if (nextNeedsHorizontalScroll == needsHorizontalScroll && nextNeedsVerticalScroll == needsVerticalScroll)
 		{
 			break;
@@ -462,6 +552,9 @@ ScrollViewer::ScrollLayout ScrollViewer::CalcScrollLayout()
 
 	cui::core::Size content = MeasureContentSizeDip();
 	content = content.NonNegative();
+	const double logicalContentWidth = ResolveLogicalContentWidth(content.width);
+	const double logicalContentHeight =
+		ResolveLogicalContentHeight(content.height);
 	const auto viewportSize = this->GetActualSizeDip();
 
 	bool needsVerticalScroll =
@@ -476,21 +569,24 @@ ScrollViewer::ScrollLayout ScrollViewer::CalcScrollLayout()
 		if (viewportHeight < 0.0f) viewportHeight = 0.0f;
 
 		bool nextNeedsHorizontalScroll = ShouldShowScrollBar(
-			_horizontalScrollBarVisibility, content.width, viewportWidth);
+			_horizontalScrollBarVisibility, logicalContentWidth, viewportWidth);
 		bool nextNeedsVerticalScroll = ShouldShowScrollBar(
-			_verticalScrollBarVisibility, content.height, viewportHeight);
+			_verticalScrollBarVisibility,
+			logicalContentHeight, viewportHeight);
 		if (nextNeedsHorizontalScroll == needsHorizontalScroll && nextNeedsVerticalScroll == needsVerticalScroll)
 		{
 			layout.HasHorizontalScroll = needsHorizontalScroll;
 			layout.HasVerticalScroll = needsVerticalScroll;
 			layout.ViewportWidth = viewportWidth;
 			layout.ViewportHeight = viewportHeight;
-			layout.ContentWidth = content.width;
-			layout.ContentHeight = content.height;
+			layout.ContentWidth = logicalContentWidth;
+			layout.ContentHeight = logicalContentHeight;
 			layout.MaxScrollX = CanScroll(_horizontalScrollBarVisibility)
-				? std::max(0.0f, layout.ContentWidth - viewportWidth) : 0.0f;
+				? (std::max)(0.0,
+					layout.ContentWidth - static_cast<double>(viewportWidth)) : 0.0;
 			layout.MaxScrollY = CanScroll(_verticalScrollBarVisibility)
-				? std::max(0.0f, layout.ContentHeight - viewportHeight) : 0.0f;
+				? (std::max)(0.0,
+					layout.ContentHeight - static_cast<double>(viewportHeight)) : 0.0;
 			return layout;
 		}
 		needsHorizontalScroll = nextNeedsHorizontalScroll;
@@ -501,12 +597,14 @@ ScrollViewer::ScrollLayout ScrollViewer::CalcScrollLayout()
 	layout.HasVerticalScroll = needsVerticalScroll;
 	layout.ViewportWidth = std::max(0.0f, viewportSize.width - (needsVerticalScroll ? layout.ScrollBarThickness : 0.0f));
 	layout.ViewportHeight = std::max(0.0f, viewportSize.height - (needsHorizontalScroll ? layout.ScrollBarThickness : 0.0f));
-	layout.ContentWidth = content.width;
-	layout.ContentHeight = content.height;
+	layout.ContentWidth = logicalContentWidth;
+	layout.ContentHeight = logicalContentHeight;
 	layout.MaxScrollX = CanScroll(_horizontalScrollBarVisibility)
-		? std::max(0.0f, layout.ContentWidth - layout.ViewportWidth) : 0.0f;
+		? (std::max)(0.0,
+			layout.ContentWidth - static_cast<double>(layout.ViewportWidth)) : 0.0;
 	layout.MaxScrollY = CanScroll(_verticalScrollBarVisibility)
-		? std::max(0.0f, layout.ContentHeight - layout.ViewportHeight) : 0.0f;
+		? (std::max)(0.0,
+			layout.ContentHeight - static_cast<double>(layout.ViewportHeight)) : 0.0;
 	return layout;
 }
 
@@ -526,10 +624,10 @@ void ScrollViewer::PublishScrollState(
 	const double oldExtentHeight = _extentHeight;
 	const double oldViewportWidth = _viewportWidth;
 	const double oldViewportHeight = _viewportHeight;
-	const double nextHorizontalOffset = std::clamp(
-		horizontalOffset, 0.0, static_cast<double>(layout.MaxScrollX));
-	const double nextVerticalOffset = std::clamp(
-		verticalOffset, 0.0, static_cast<double>(layout.MaxScrollY));
+	const double nextHorizontalOffset = ClampScrollOffset(
+		horizontalOffset, layout.MaxScrollX);
+	const double nextVerticalOffset = ClampScrollOffset(
+		verticalOffset, layout.MaxScrollY);
 
 	auto update = [this](
 		const DependencyPropertyKey& key,
@@ -694,8 +792,9 @@ bool ScrollViewer::HitChild(Control* child, int localX, int localY, int& childX,
 	if (!child || !child->IsVisible || !child->IsEnabled) return false;
 	const auto childLocation = child->GetActualLocationDip();
 	const auto childSize = child->GetActualSizeDip();
-	const float drawX = childLocation.x - static_cast<float>(_horizontalOffset);
-	const float drawY = childLocation.y - static_cast<float>(_verticalOffset);
+	const float drawX = childLocation.x - SaturateRenderDip(_horizontalOffset);
+	const float drawY = childLocation.y
+		- SaturateRenderDip(VerticalContentRenderOffset());
 	const cui::core::Rect childRect{ drawX, drawY, childSize.width, childSize.height };
 	if (!childRect.Contains(cui::core::Point{ (float)localX, (float)localY }))
 		return false;
@@ -709,11 +808,16 @@ void ScrollViewer::DrawScrollBars(const ScrollLayout& layout)
 	auto d2d = this->GetDrawingContext();
 	if (layout.HasVerticalScroll && layout.ViewportHeight > 0.0f && layout.ContentHeight > layout.ViewportHeight)
 	{
-		float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
+		float thumbH = static_cast<float>(
+			(static_cast<double>(layout.ViewportHeight)
+				* static_cast<double>(layout.ViewportHeight))
+			/ layout.ContentHeight);
 		float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 		thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
 		float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
-		float per = (layout.MaxScrollY > 0.0f) ? std::clamp(static_cast<float>(_verticalOffset) / layout.MaxScrollY, 0.0f, 1.0f) : 0.0f;
+		float per = layout.MaxScrollY > 0.0
+			? static_cast<float>((std::clamp)(
+				_verticalOffset / layout.MaxScrollY, 0.0, 1.0)) : 0.0f;
 		float thumbTop = per * moveSpace;
 		d2d->FillRoundRect(layout.ViewportWidth, 0.0f, layout.ScrollBarThickness, layout.ViewportHeight, _scrollBackColor, 4.0f);
 		d2d->FillRoundRect(layout.ViewportWidth, thumbTop, layout.ScrollBarThickness, thumbH, _scrollForeColor, 4.0f);
@@ -721,11 +825,16 @@ void ScrollViewer::DrawScrollBars(const ScrollLayout& layout)
 
 	if (layout.HasHorizontalScroll && layout.ViewportWidth > 0.0f && layout.ContentWidth > layout.ViewportWidth)
 	{
-		float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
+		float thumbW = static_cast<float>(
+			(static_cast<double>(layout.ViewportWidth)
+				* static_cast<double>(layout.ViewportWidth))
+			/ layout.ContentWidth);
 		float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 		thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
 		float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
-		float per = (layout.MaxScrollX > 0.0f) ? std::clamp(static_cast<float>(_horizontalOffset) / layout.MaxScrollX, 0.0f, 1.0f) : 0.0f;
+		float per = layout.MaxScrollX > 0.0
+			? static_cast<float>((std::clamp)(
+				_horizontalOffset / layout.MaxScrollX, 0.0, 1.0)) : 0.0f;
 		float thumbLeft = per * moveSpace;
 		d2d->FillRoundRect(0.0f, layout.ViewportHeight, layout.ViewportWidth, layout.ScrollBarThickness, _scrollBackColor, 4.0f);
 		d2d->FillRoundRect(thumbLeft, layout.ViewportHeight, thumbW, layout.ScrollBarThickness, _scrollForeColor, 4.0f);
@@ -741,7 +850,10 @@ void ScrollViewer::UpdateVerticalScrollByThumb(float localY, const ScrollLayout&
 {
 	if (!layout.HasVerticalScroll || layout.ContentHeight <= layout.ViewportHeight || layout.ViewportHeight <= 0.0f)
 		return;
-	float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
+	float thumbH = static_cast<float>(
+		(static_cast<double>(layout.ViewportHeight)
+			* static_cast<double>(layout.ViewportHeight))
+		/ layout.ContentHeight);
 	float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 	thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
 	float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
@@ -757,7 +869,10 @@ void ScrollViewer::UpdateHorizontalScrollByThumb(float localX, const ScrollLayou
 {
 	if (!layout.HasHorizontalScroll || layout.ContentWidth <= layout.ViewportWidth || layout.ViewportWidth <= 0.0f)
 		return;
-	float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
+	float thumbW = static_cast<float>(
+		(static_cast<double>(layout.ViewportWidth)
+			* static_cast<double>(layout.ViewportWidth))
+		/ layout.ContentWidth);
 	float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 	thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
 	float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
@@ -868,11 +983,16 @@ bool ScrollViewer::ProcessInput(const InputReport& input)
 		if (HitVerticalScrollBar(input.X, input.Y, layout)
 			&& layout.ContentHeight > layout.ViewportHeight)
 		{
-			float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
+			float thumbH = static_cast<float>(
+				(static_cast<double>(layout.ViewportHeight)
+					* static_cast<double>(layout.ViewportHeight))
+				/ layout.ContentHeight);
 			float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 			thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
 			float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
-			float scrollRatio = (layout.MaxScrollY > 0.0f) ? std::clamp(static_cast<float>(_verticalOffset) / layout.MaxScrollY, 0.0f, 1.0f) : 0.0f;
+			float scrollRatio = layout.MaxScrollY > 0.0
+				? static_cast<float>((std::clamp)(
+					_verticalOffset / layout.MaxScrollY, 0.0, 1.0)) : 0.0f;
 			float thumbTop = scrollRatio * moveSpace;
 			float pointerY = (float)input.Y;
 			bool hitThumb = pointerY >= thumbTop && pointerY <= (thumbTop + thumbH);
@@ -885,11 +1005,16 @@ bool ScrollViewer::ProcessInput(const InputReport& input)
 		if (HitHorizontalScrollBar(input.X, input.Y, layout)
 			&& layout.ContentWidth > layout.ViewportWidth)
 		{
-			float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
+			float thumbW = static_cast<float>(
+				(static_cast<double>(layout.ViewportWidth)
+					* static_cast<double>(layout.ViewportWidth))
+				/ layout.ContentWidth);
 			float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 			thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
 			float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
-			float scrollRatio = (layout.MaxScrollX > 0.0f) ? std::clamp(static_cast<float>(_horizontalOffset) / layout.MaxScrollX, 0.0f, 1.0f) : 0.0f;
+			float scrollRatio = layout.MaxScrollX > 0.0
+				? static_cast<float>((std::clamp)(
+					_horizontalOffset / layout.MaxScrollX, 0.0, 1.0)) : 0.0f;
 			float thumbLeft = scrollRatio * moveSpace;
 			float pointerX = (float)input.X;
 			bool hitThumb = pointerX >= thumbLeft && pointerX <= (thumbLeft + thumbW);

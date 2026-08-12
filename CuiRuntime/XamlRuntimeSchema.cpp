@@ -30,6 +30,7 @@
 #include "../CUI/include/WebBrowser.h"
 #include "../CUI/include/ListView.h"
 #include "../CUI/include/ListBox.h"
+#include "../CUI/include/DataGrid.h"
 #include "../CUI/include/Selector.h"
 #include "../CUI/include/ChartView.h"
 #include "../CUI/include/TreeView.h"
@@ -140,6 +141,8 @@ namespace
 			L"列表视图", 320, 220, false, L"数据与列表"),
 		ToolboxType(L"ListBox", UIClass::UI_ListBox, true,
 			L"列表框", 220, 180, false, L"数据与列表"),
+		ToolboxType(L"DataGrid", UIClass::UI_DataGrid, true,
+			L"数据网格", 560, 320, false, L"数据与列表"),
 		ToolboxType(L"CheckBox", UIClass::UI_CheckBox, true,
 			L"复选框", 100, 20, false, L"基础控件"),
 		ToolboxType(L"RadioButton", UIClass::UI_RadioButton, true,
@@ -212,6 +215,14 @@ namespace
 			L"模板化列表", 260, 220, false, L"基础控件"),
 		BuiltInType(L"ListBoxItem", UIClass::UI_ListBoxItem),
 		BuiltInType(L"ListViewItem", UIClass::UI_ListViewItem),
+		BuiltInType(L"DataGridRow", UIClass::UI_DataGridRow),
+		BuiltInType(L"DataGridCell", UIClass::UI_DataGridCell),
+		BuiltInType(L"DataGridColumnHeader",
+			UIClass::UI_DataGridColumnHeader),
+		BuiltInType(L"DataGridColumnHeadersPresenter",
+			UIClass::UI_DataGridColumnHeadersPresenter),
+		BuiltInType(L"DataGridRowHeader",
+			UIClass::UI_DataGridRowHeader),
 		BuiltInType(L"ComboBoxItem", UIClass::UI_ComboBoxItem),
 		BuiltInType(L"TreeViewItem", UIClass::UI_TreeViewItem),
 		ToolboxType(L"ContentPresenter", UIClass::UI_ContentPresenter, false,
@@ -272,6 +283,11 @@ namespace
 			{ CuiType(L"Italic"), L"Inlines" },
 			{ CuiType(L"Underline"), L"Inlines" },
 			{ CuiType(L"LineBreak"), L"" },
+			{ CuiType(L"DataGridColumn"), L"" },
+			{ CuiType(L"DataGridBoundColumn"), L"" },
+			{ CuiType(L"DataGridTextColumn"), L"" },
+			{ CuiType(L"DataGridCheckBoxColumn"), L"" },
+			{ CuiType(L"DataGridTemplateColumn"), L"" },
 		});
 
 	const auto ObjectMembers =
@@ -300,6 +316,9 @@ namespace
 			{ CuiType(L"Underline"), L"Inlines",
 				CuiRuntime::XamlObjectMemberKind::Collection,
 				{}, BindingValueKind::Empty },
+			{ CuiType(L"DataGrid"), L"Columns",
+				CuiRuntime::XamlObjectMemberKind::Collection,
+				CuiType(L"DataGridColumn"), BindingValueKind::Empty },
 		});
 
 	template<typename TConcrete>
@@ -355,6 +374,12 @@ namespace
 			CUI_SCHEMA_OWNER(ListBox);
 			CUI_SCHEMA_OWNER(ListView);
 			CUI_SCHEMA_OWNER(ListViewItem);
+			CUI_SCHEMA_OWNER(DataGrid);
+			CUI_SCHEMA_OWNER(DataGridRow);
+			CUI_SCHEMA_OWNER(DataGridCell);
+			CUI_SCHEMA_OWNER(DataGridColumnHeader);
+			CUI_SCHEMA_OWNER(DataGridColumnHeadersPresenter);
+			CUI_SCHEMA_OWNER(DataGridRowHeader);
 			CUI_SCHEMA_OWNER(LoadingRing);
 			CUI_SCHEMA_OWNER(MediaElement);
 			CUI_SCHEMA_OWNER(Menu);
@@ -459,6 +484,17 @@ namespace
 		case UIClass::UI_ComboBox: return NativePropertiesPointer<ComboBox>(type);
 		case UIClass::UI_ListView: return NativePropertiesPointer<ListView>(type);
 		case UIClass::UI_ListBox: return NativePropertiesPointer<ListBox>(type);
+		case UIClass::UI_DataGrid: return NativePropertiesPointer<DataGrid>(type);
+		case UIClass::UI_DataGridRow:
+			return NativePropertiesPointer<DataGridRow>(type);
+		case UIClass::UI_DataGridCell:
+			return NativePropertiesPointer<DataGridCell>(type);
+		case UIClass::UI_DataGridColumnHeader:
+			return NativePropertiesPointer<DataGridColumnHeader>(type);
+		case UIClass::UI_DataGridColumnHeadersPresenter:
+			return NativePropertiesPointer<DataGridColumnHeadersPresenter>(type);
+		case UIClass::UI_DataGridRowHeader:
+			return NativePropertiesPointer<DataGridRowHeader>(type);
 		case UIClass::UI_ChartView: return NativePropertiesPointer<ChartView>(type);
 		case UIClass::UI_Calendar: return NativePropertiesPointer<Calendar>(type);
 		case UIClass::UI_DatePicker: return NativePropertiesPointer<DatePicker>(type);
@@ -726,6 +762,15 @@ CuiRuntime::XamlRuntimeSchema::CreateNativeControl(UIClass type)
 	case UIClass::UI_ComboBox: return std::make_unique<ComboBox>();
 	case UIClass::UI_ListView: return std::make_unique<ListView>();
 	case UIClass::UI_ListBox: return std::make_unique<ListBox>();
+	case UIClass::UI_DataGrid: return std::make_unique<DataGrid>();
+	case UIClass::UI_DataGridRow: return std::make_unique<DataGridRow>();
+	case UIClass::UI_DataGridCell: return std::make_unique<DataGridCell>();
+	case UIClass::UI_DataGridColumnHeader:
+		return std::make_unique<DataGridColumnHeader>();
+	case UIClass::UI_DataGridColumnHeadersPresenter:
+		return std::make_unique<DataGridColumnHeadersPresenter>();
+	case UIClass::UI_DataGridRowHeader:
+		return std::make_unique<DataGridRowHeader>();
 	case UIClass::UI_ChartView: return std::make_unique<ChartView>();
 	case UIClass::UI_TreeView: return std::make_unique<TreeView>();
 	case UIClass::UI_ProgressBar: return std::make_unique<ProgressBar>();

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <vector>
 
 namespace cui::framework
@@ -252,6 +253,8 @@ protected:
 		const BindingSourceReference& item,
 		size_t index,
 		BindingPathObservation& observation);
+	/** Called before a rebuild prepares any replacement item containers. */
+	virtual void OnBeforeGeneratedItemsPrepared() {}
 	virtual void OnBeforeGeneratedItemsRebuilt() {}
 	virtual void OnGeneratedItemsRebuilt() {}
 	virtual void OnGeneratedItemsRealized() {}
@@ -274,6 +277,20 @@ protected:
 	virtual void OnItemsSourceChanged(
 		const BindingListReference&,
 		const BindingListReference&) {}
+	/**
+	 * A live source has mutated and a replacement materialized snapshot can be
+	 * committed, but no container change has committed yet. previousSnapshot is
+	 * the last committed occurrence domain. Derived selection models can prepare
+	 * deltas here; any later failure restores the state captured beforehand.
+	 */
+	virtual void OnItemsSourceCollectionChangePreparing(
+		const CollectionChangedEventArgs&,
+		const BindingListReference&) {}
+	/** Called only after a source replacement or live change has committed. */
+	virtual void OnItemsSourceTransactionCommitted() {}
+	/** Called after one live collection notification commits successfully. */
+	virtual void OnItemsSourceCollectionChangeCommitted(
+		const CollectionChangedEventArgs&) {}
 	virtual std::unique_ptr<Panel> CreateItemsHost() const;
 	/**
 	 * A virtualizing host normally realizes all items when it has no viewport.
@@ -284,6 +301,18 @@ protected:
 	{
 		return true;
 	}
+	/** Fixed extent consumed by the virtual host for one ungrouped item. */
+	virtual float GetVirtualizedItemHeight() const noexcept
+	{
+		return EffectiveItemsPanel().ItemHeight;
+	}
+	/** Logical horizontal extent when realized children intentionally omit
+	 *  offscreen content, such as DataGrid column virtualization. */
+	virtual double GetVirtualizedHorizontalExtent() const
+	{
+		return 0.0;
+	}
+	void RefreshVirtualScrollMetrics() { ConfigureVirtualHost(); }
 	/** Called after the active ControlTemplate root changes. */
 	void OnControlTemplatePresentationChanged() override {}
 	/** Replaces the framework ItemsHost before any items are attached. */
@@ -379,6 +408,17 @@ private:
 	EventConnection _itemsSourceChanged;
 	EventConnection _groupsChanged;
 	EventConnection _scrollChanged;
+	// Stable-radix normalized by StartIndex then Level. The parallel bottom-level
+	// flags are computed once with the group revision so realizing one row never
+	// scans the complete group collection.
+	std::vector<BindingListGroup> _cachedGroupDefinitions;
+	std::vector<uint8_t> _cachedGroupBottomLevels;
+	// Canonical [StartIndex, header-count] pairs. This remains stable across
+	// ordinary viewport queries and changes only after an explicit group signal.
+	std::vector<size_t> _virtualGroupHeaderStarts;
+	size_t _virtualGroupHeaderMetadataRevision = 1;
+	bool _virtualGroupHeaderMetadataDirty = true;
+	bool _virtualGroupingActive = false;
 	ItemContainerGenerator _generator;
 	std::vector<Control*> _authoredItems;
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -430,10 +470,20 @@ private:
 		size_t first, size_t last, bool localLayoutForScroll = false);
 	std::pair<size_t, size_t> VirtualRangeForViewport() const noexcept;
 	std::pair<size_t, size_t> VirtualRangeForOffset(
-		float offset) const noexcept;
+		double offset) const noexcept;
 	void TrimRecyclePool(size_t first, size_t last);
+	void InvalidateVirtualGroupHeaderMetadata() noexcept;
+	void RefreshVirtualGroupHeaderMetadata();
 	void ConfigureVirtualHost();
+	size_t VirtualOffsetMetadataEntryCount() const noexcept;
+	size_t VirtualOffsetConfigurationRevision() const noexcept;
 	bool ApplyCollectionChange(const CollectionChangedEventArgs& change);
+	bool TryBuildOccurrencePermutationReset(
+		const CollectionChangedEventArgs& change,
+		std::vector<size_t>& oldToNew);
+	bool ApplyOccurrencePermutationReset(
+		const CollectionChangedEventArgs& change,
+		std::span<const size_t> oldToNew);
 	void HandleItemsSourceChange(const CollectionChangedEventArgs& change);
 	bool IsGroupingActive() const noexcept;
 	PreparedGroupHeaders BuildGroupHeaders(
@@ -472,6 +522,16 @@ namespace cui::framework
 			DeferAuthoredItemsChanges(ItemsControl& target) noexcept
 		{
 			return target.DeferAuthoredItemsChanges();
+		}
+		static size_t VirtualOffsetMetadataEntryCount(
+			const ItemsControl& target) noexcept
+		{
+			return target.VirtualOffsetMetadataEntryCount();
+		}
+		static size_t VirtualOffsetConfigurationRevision(
+			const ItemsControl& target) noexcept
+		{
+			return target.VirtualOffsetConfigurationRevision();
 		}
 	};
 }

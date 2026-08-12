@@ -158,8 +158,20 @@ enum class UIClass : int
 	UI_Calendar,
 	/** WPF date-entry control composed from TextBox, Button, Popup and Calendar. */
 	UI_DatePicker,
+	/** WPF tabular selector backed by ListBox item virtualization. */
+	UI_DataGrid,
+	/** Generated DataGrid row container. */
+	UI_DataGridRow,
+	/** Generated DataGrid cell content container. */
+	UI_DataGridCell,
+	/** Clickable DataGrid column header. */
+	UI_DataGridColumnHeader,
+	/** Structural presenter for DataGrid column headers. */
+	UI_DataGridColumnHeadersPresenter,
+	/** Clickable DataGrid row header. */
+	UI_DataGridRowHeader,
 	/** Inclusive bound for internal UIClass enumeration and validation. */
-	UI_Last = UI_DatePicker
+	UI_Last = UI_DataGridRowHeader
 };
 
 /** Returns the nearest framework base represented by UIClass. */
@@ -220,6 +232,9 @@ enum class AccessibilityChange : uint8_t
 	Toggle,
 	ExpandCollapse,
 	Selection,
+	SelectionAdded,
+	SelectionRemoved,
+	SelectionSelected,
 	Scroll
 };
 
@@ -267,6 +282,10 @@ struct AccessibilityVirtualNode
 	std::wstring Description;
 	std::wstring Value;
 	std::wstring AutomationId;
+	// TableItem.RowHeaderItems is an association, not an index into the
+	// root Table.RowHeaders result. Zero means no realized row header exists.
+	uint32_t RowHeaderId = 0;
+	std::wstring ClassName;
 	D2D1_RECT_F BoundsDip{ 0, 0, 0, 0 };
 	// Most virtual nodes use owner-local DIPs. Transient presentation roots,
 	// such as ComboBox popup items, can instead publish window render-space
@@ -274,6 +293,11 @@ struct AccessibilityVirtualNode
 	bool BoundsAreRenderSpace = false;
 	bool Enabled = true;
 	bool Visible = true;
+	bool KeyboardFocusable = false;
+	bool HasKeyboardFocus = false;
+	bool IsControlElement = true;
+	bool IsContentElement = true;
+	bool SelectionReturnsNullWhenEmpty = false;
 	bool Selected = false;
 	bool Checked = false;
 	bool ReadOnly = true;
@@ -1222,7 +1246,10 @@ protected:
 	bool _validationHasError = false;
 	std::vector<BindingValidationResult> _validationErrors;
 	uint32_t _accessibilityRuntimeId = 0;
-	mutable std::unique_ptr<AutomationPeer> _automationPeer;
+	// Native automation calls may re-enter user code and synchronously remove
+	// the owner. A shared peer lease keeps the executing semantic object alive
+	// until the COM operation unwinds; the peer itself never owns the Control.
+	mutable std::shared_ptr<AutomationPeer> _automationPeer;
 #if CUI_ENABLE_DYNAMIC_XAML
 	struct DynamicXamlPropertyState;
 	std::unique_ptr<DynamicXamlPropertyState> _dynamicXamlPropertyState;
@@ -1552,25 +1579,26 @@ protected:
 			: _owner(&owner), _performLayout(performLayout),
 			_uncaughtOnEntry(std::uncaught_exceptions())
 		{
-			_owner->BeginLayoutUpdateDeferral();
+			owner.BeginLayoutUpdateDeferral();
 		}
 		ScopedLayoutUpdate(const ScopedLayoutUpdate&) = delete;
 		ScopedLayoutUpdate& operator=(const ScopedLayoutUpdate&) = delete;
 		~ScopedLayoutUpdate() noexcept
 		{
-			if (!_owner) return;
+			auto* owner = _owner.Get();
+			if (!owner) return;
 			const bool unwinding =
 				std::uncaught_exceptions() > _uncaughtOnEntry;
 			try
 			{
-				_owner->EndLayoutUpdateDeferral(
+				owner->EndLayoutUpdateDeferral(
 					unwinding ? false : _performLayout);
 			}
 			catch (...) {}
 		}
 
 	private:
-		Control* _owner = nullptr;
+		ControlWeakReference _owner;
 		bool _performLayout = true;
 		int _uncaughtOnEntry = 0;
 	};
@@ -2019,6 +2047,12 @@ public:
 	}
 	/** Returns the lazily-created WPF-style semantic peer for this instance. */
 	AutomationPeer& GetAutomationPeer() const;
+	/**
+	 * Pins the semantic peer across one external automation operation. The
+	 * returned peer may outlive its Control only for destruction-safe unwinding;
+	 * callers must still use ControlWeakReference before every owner access.
+	 */
+	std::shared_ptr<AutomationPeer> AcquireAutomationPeer() const;
 	/** Stable per-process id used by native accessibility fragment providers. */
 	uint32_t GetAccessibilityRuntimeId() const noexcept
 	{
@@ -2636,6 +2670,9 @@ public:
 	{
 		return _participatesInPresentationScene;
 	}
+	/** Internal input hit-test policy. False keeps the visual rendered while
+	 *  allowing its nearest hit-testable ancestor to receive pointer input. */
+	virtual bool ParticipatesInInputHitTesting() const noexcept { return true; }
 	virtual bool HitTestChildren() const { return true; }
 	virtual bool ShouldHitTestChildrenAt(int localX, int localY) const { (void)localX; (void)localY; return this->HitTestChildren(); }
 	/**
@@ -2663,6 +2700,17 @@ protected:
 		const cui::core::Constraints& available)
 	{
 		(void)available;
+	}
+	/**
+	 * Finalizes the intrinsic size after either a ControlTemplate root or the
+	 * derived MeasureCore has been measured. The default preserves that size.
+	 */
+	virtual cui::core::Size FinalizeMeasureCore(
+		cui::core::Size intrinsic,
+		const cui::core::Constraints& available)
+	{
+		(void)available;
+		return intrinsic;
 	}
 	/** WPF AccessKeyManager callback. */
 	virtual bool OnAccessKey(bool isMultiple)

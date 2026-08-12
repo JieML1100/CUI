@@ -199,6 +199,31 @@ void AutomationPeer::GetAccessibilityVirtualColumnHeaders(
 	result.clear();
 }
 
+void AutomationPeer::GetAccessibilityVirtualRowHeaders(
+	std::vector<uint32_t>& result)
+{
+	result.clear();
+}
+
+AutomationOperationResult AutomationPeer::FocusAccessibilityVirtualNode(
+	uint32_t id)
+{
+	AccessibilityVirtualNode node;
+	if (!TryGetAccessibilityVirtualNode(id, node) || node.Id != id)
+		return AutomationOperationResult::ElementNotAvailable;
+	if (!node.Enabled) return AutomationOperationResult::ElementNotEnabled;
+	if (!node.KeyboardFocusable)
+		return AutomationOperationResult::InvalidOperation;
+	return Owner().Focus() ? AutomationOperationResult::Succeeded
+		: AutomationOperationResult::InvalidOperation;
+}
+
+bool AutomationPeer::TryGetAccessibilityVirtualFocusedNode(uint32_t& result)
+{
+	result = 0;
+	return false;
+}
+
 bool AutomationPeer::InvokeAccessibilityVirtualNode(uint32_t)
 {
 	return false;
@@ -639,8 +664,15 @@ Control* ComboBoxAutomationPeer::GetSelectedItem() const
 bool ComboBoxAutomationPeer::TryGetAccessibilityVirtualNode(
 	uint32_t id, AccessibilityVirtualNode& result)
 {
-	return static_cast<ComboBox&>(Owner()).TryGetAccessibilityVirtualNode(
-		id, result);
+	if (!static_cast<ComboBox&>(Owner()).TryGetAccessibilityVirtualNode(
+		id, result)) return false;
+	if (result.ClassName.empty()) result.ClassName = L"CUI.VirtualItem";
+	result.KeyboardFocusable = result.Enabled && result.Visible
+		&& HasAutomationPattern(
+			result.Patterns, AutomationPattern::SelectionItem);
+	result.IsContentElement =
+		result.ControlType != AutomationControlType::HeaderItem;
+	return true;
 }
 
 size_t ComboBoxAutomationPeer::GetAccessibilityVirtualChildCount(

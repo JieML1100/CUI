@@ -255,6 +255,7 @@ bool DesignNodeStructure::Empty() const noexcept
 		&& ChildRole == DesignNodeChildRole::Default
 		&& (!RelativePanel || RelativePanel->Empty())
 		&& !GridRows && !GridColumns
+		&& !DataGridColumns
 		&& !ChartSeries && !Document;
 }
 
@@ -406,6 +407,272 @@ namespace
 			if (!decode(item, decoded, outError)) return false;
 			output.push_back(std::move(decoded));
 		}
+		return true;
+	}
+
+	DesignValue EncodeDataGridLength(const DesignDataGridLength& length)
+	{
+		const char* unit = "Auto";
+		switch (length.Unit)
+		{
+		case DesignDataGridLengthUnit::SizeToHeader:
+			unit = "SizeToHeader";
+			break;
+		case DesignDataGridLengthUnit::SizeToCells:
+			unit = "SizeToCells";
+			break;
+		case DesignDataGridLengthUnit::Pixel: unit = "Pixel"; break;
+		case DesignDataGridLengthUnit::Star: unit = "Star"; break;
+		default: break;
+		}
+		return DesignValue{ { "value", length.Value }, { "unit", unit } };
+	}
+
+	bool DecodeDataGridLength(
+		const DesignValue& value,
+		DesignDataGridLength& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object() || value.size() != 2
+			|| !value.contains("value") || !value["value"].is_number()
+			|| !value.contains("unit") || !value["unit"].is_string())
+			return StructuralError(outError, L"DataGridLength 结构无效。");
+		output.Value = value["value"].get<double>();
+		const auto unit = value["unit"].get<std::string>();
+		if (unit == "Auto") output.Unit = DesignDataGridLengthUnit::Auto;
+		else if (unit == "SizeToHeader")
+			output.Unit = DesignDataGridLengthUnit::SizeToHeader;
+		else if (unit == "SizeToCells")
+			output.Unit = DesignDataGridLengthUnit::SizeToCells;
+		else if (unit == "Pixel")
+			output.Unit = DesignDataGridLengthUnit::Pixel;
+		else if (unit == "Star")
+			output.Unit = DesignDataGridLengthUnit::Star;
+		else return StructuralError(outError, L"DataGridLength Unit 无效。");
+		if (!std::isfinite(output.Value) || output.Value < 0.0)
+			return StructuralError(outError, L"DataGridLength Value 无效。");
+		if (output.Unit != DesignDataGridLengthUnit::Pixel
+			&& output.Unit != DesignDataGridLengthUnit::Star)
+		{
+			if (output.Value != 1.0)
+				return StructuralError(outError,
+					L"描述性 DataGridLength 的 Value 必须为 1。");
+			output.Value = 1.0;
+		}
+		return true;
+	}
+
+	bool ValidateDataGridColumnBinding(
+		const DesignerDataBinding& binding,
+		std::wstring* outError)
+	{
+		if (binding.IsMultiBinding()
+			|| binding.SourceProperty.empty()
+			|| !DesignerBindingUtils::IsValidSourcePath(binding.SourceProperty))
+			return StructuralError(outError,
+				L"DataGrid 列 Binding 必须包含有效的行 DataContext 路径。");
+		if (!binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| !binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1)
+			return StructuralError(outError,
+				L"DataGrid 列 Binding 仅允许使用行 DataContext。" );
+		return true;
+	}
+
+	DesignValue EncodeDataGridColumn(const DesignDataGridColumn& column)
+	{
+		const char* kind = "Text";
+		if (column.Kind == DesignDataGridColumnKind::CheckBox)
+			kind = "CheckBox";
+		else if (column.Kind == DesignDataGridColumnKind::Template)
+			kind = "Template";
+		DesignValue result{
+			{ "kind", kind },
+			{ "width", EncodeDataGridLength(column.Width) }
+		};
+		if (!column.Header.empty())
+			result["header"] = StructuralUtf8(column.Header);
+		if (column.Binding)
+			result["binding"] = DesignerBindingUtils::WriteBindingDefinition(
+				*column.Binding);
+		if (column.MinWidth != 20.0) result["minWidth"] = column.MinWidth;
+		if (!std::isinf(column.MaxWidth))
+			result["maxWidth"] = column.MaxWidth;
+		if (column.IsReadOnly) result["isReadOnly"] = true;
+		if (column.Kind == DesignDataGridColumnKind::CheckBox)
+		{
+			if (column.IsThreeState) result["isThreeState"] = true;
+		}
+		else if (column.IsThreeState)
+			throw std::invalid_argument(
+				"IsThreeState is only valid for DataGridCheckBoxColumn");
+		if (!column.CanUserSort) result["canUserSort"] = false;
+		if (!column.CanUserResize) result["canUserResize"] = false;
+		if (!column.SortMemberPath.empty())
+			result["sortMemberPath"] = StructuralUtf8(column.SortMemberPath);
+		if (!column.CellTemplate.empty())
+			result["cellTemplate"] = StructuralUtf8(column.CellTemplate);
+		if (!column.CellEditingTemplate.empty())
+			result["cellEditingTemplate"] = StructuralUtf8(
+				column.CellEditingTemplate);
+		return result;
+	}
+
+	bool DecodeDataGridColumn(
+		const DesignValue& value,
+		DesignDataGridColumn& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+			return StructuralError(outError, L"DataGrid 列必须是对象。");
+		for (const auto& [key, ignored] : value.ObjectItems())
+		{
+			(void)ignored;
+			if (key != "kind" && key != "header" && key != "binding"
+				&& key != "width" && key != "minWidth" && key != "maxWidth"
+				&& key != "isReadOnly" && key != "isThreeState"
+				&& key != "canUserSort" && key != "canUserResize"
+				&& key != "sortMemberPath" && key != "cellTemplate"
+				&& key != "cellEditingTemplate")
+				return StructuralError(outError,
+					L"DataGrid 列包含未知字段："
+					+ Convert::Utf8ToUnicode(key));
+		}
+		if (!value.contains("kind") || !value["kind"].is_string()
+			|| !value.contains("width"))
+			return StructuralError(outError,
+				L"DataGrid 列缺少 Kind 或 Width。");
+		const auto kind = value["kind"].get<std::string>();
+		if (kind == "Text") output.Kind = DesignDataGridColumnKind::Text;
+		else if (kind == "CheckBox")
+			output.Kind = DesignDataGridColumnKind::CheckBox;
+		else if (kind == "Template")
+			output.Kind = DesignDataGridColumnKind::Template;
+		else return StructuralError(outError, L"DataGrid 列 Kind 无效。");
+		if (!DecodeDataGridLength(value["width"], output.Width, outError))
+			return false;
+
+		auto readString = [&](const char* key, std::wstring& result) -> bool
+		{
+			if (!value.contains(key)) return true;
+			if (!value[key].is_string())
+				return StructuralError(outError,
+					L"DataGrid 列字符串字段类型无效："
+					+ Convert::Utf8ToUnicode(key));
+			result = StructuralWide(value[key]);
+			return true;
+		};
+		if (!readString("header", output.Header)
+			|| !readString("sortMemberPath", output.SortMemberPath)
+			|| !readString("cellTemplate", output.CellTemplate)
+			|| !readString("cellEditingTemplate", output.CellEditingTemplate))
+			return false;
+
+		if ((value.contains("minWidth") && !value["minWidth"].is_number())
+			|| (value.contains("maxWidth") && !value["maxWidth"].is_number())
+			|| (value.contains("isReadOnly")
+				&& !value["isReadOnly"].is_boolean())
+			|| (value.contains("isThreeState")
+				&& !value["isThreeState"].is_boolean())
+			|| (value.contains("canUserSort")
+				&& !value["canUserSort"].is_boolean())
+			|| (value.contains("canUserResize")
+				&& !value["canUserResize"].is_boolean()))
+			return StructuralError(outError,
+				L"DataGrid 列数值或布尔字段类型无效。");
+		output.MinWidth = value.value("minWidth", 20.0);
+		output.MaxWidth = value.value("maxWidth",
+			(std::numeric_limits<double>::infinity)());
+		output.IsReadOnly = value.value("isReadOnly", false);
+		output.IsThreeState = value.value("isThreeState", false);
+		output.CanUserSort = value.value("canUserSort", true);
+		output.CanUserResize = value.value("canUserResize", true);
+		if (!std::isfinite(output.MinWidth) || std::isnan(output.MaxWidth)
+			|| output.MinWidth < 0.0 || output.MaxWidth < output.MinWidth)
+			return StructuralError(outError,
+				L"DataGrid 列 MinWidth/MaxWidth 范围无效。");
+		if (value.contains("maxWidth") && !std::isfinite(output.MaxWidth))
+			return StructuralError(outError,
+				L"显式 DataGrid 列 MaxWidth 必须是有限数值。");
+		if (!output.SortMemberPath.empty()
+			&& !DesignerBindingUtils::IsValidSourcePath(output.SortMemberPath))
+			return StructuralError(outError,
+				L"DataGrid 列 SortMemberPath 无效。");
+
+		if (value.contains("binding"))
+		{
+			const auto& bindingValue = value["binding"];
+			if (!bindingValue.is_object())
+				return StructuralError(outError,
+					L"DataGrid 列 Binding 必须是对象。");
+			for (const auto& [key, ignored] : bindingValue.ObjectItems())
+			{
+				(void)ignored;
+				if (key != "source" && key != "mode" && key != "updateMode"
+					&& key != "converter" && key != "stringFormat"
+					&& key != "fallbackValue" && key != "fallbackValueKind"
+					&& key != "targetNullValue" && key != "targetNullValueKind"
+					&& key != "converterParameter"
+					&& key != "converterParameterKind")
+					return StructuralError(outError,
+						L"DataGrid 列 Binding 包含未知字段："
+						+ Convert::Utf8ToUnicode(key));
+			}
+			if (!bindingValue.contains("source")
+				|| !bindingValue["source"].is_string()
+				|| (bindingValue.contains("mode")
+					&& !bindingValue["mode"].is_number_integer())
+				|| (bindingValue.contains("updateMode")
+					&& !bindingValue["updateMode"].is_number_integer())
+				|| (bindingValue.contains("converter")
+					&& !bindingValue["converter"].is_string())
+				|| (bindingValue.contains("stringFormat")
+					&& !bindingValue["stringFormat"].is_string()))
+				return StructuralError(outError,
+					L"DataGrid 列 Binding 字段类型无效。");
+			for (const auto& [literal, literalKind] : {
+				std::pair{ "fallbackValue", "fallbackValueKind" },
+				std::pair{ "targetNullValue", "targetNullValueKind" },
+				std::pair{ "converterParameter", "converterParameterKind" } })
+				if (bindingValue.contains(literalKind)
+					&& !bindingValue.contains(literal))
+					return StructuralError(outError,
+						L"DataGrid 列 Binding 字面量类型缺少对应值。");
+			DesignerDataBinding binding;
+			std::wstring bindingError;
+			if (!DesignerBindingUtils::TryReadBindingDefinition(
+				bindingValue, binding, &bindingError))
+				return StructuralError(outError,
+					L"DataGrid 列 Binding 无效：" + bindingError);
+			if (!ValidateDataGridColumnBinding(binding, outError)) return false;
+			output.Binding = std::move(binding);
+		}
+
+		const bool bound = output.Kind == DesignDataGridColumnKind::Text
+			|| output.Kind == DesignDataGridColumnKind::CheckBox;
+		if (output.Kind != DesignDataGridColumnKind::CheckBox
+			&& value.contains("isThreeState"))
+			return StructuralError(outError,
+				L"IsThreeState 仅适用于 DataGridCheckBoxColumn。");
+		if (bound && !output.Binding)
+			return StructuralError(outError,
+				L"DataGridTextColumn/DataGridCheckBoxColumn 必须声明 Binding。");
+		if (!bound && output.Binding)
+			return StructuralError(outError,
+				L"DataGridTemplateColumn 不支持 Binding。");
+		if (bound && (value.contains("cellTemplate")
+			|| value.contains("cellEditingTemplate")))
+			return StructuralError(outError,
+				L"绑定列不支持 CellTemplate/CellEditingTemplate。");
+		if (!bound && ((value.contains("cellTemplate")
+				&& DesignerBindingUtils::Trim(output.CellTemplate).empty())
+			|| (value.contains("cellEditingTemplate")
+				&& DesignerBindingUtils::Trim(
+					output.CellEditingTemplate).empty())))
+			return StructuralError(outError,
+				L"DataGridTemplateColumn 模板资源键不能为空。");
 		return true;
 	}
 
@@ -873,6 +1140,9 @@ DesignValue EncodeDesignNodeStructure(
 		result["rows"] = EncodeGridTracks(*structure.GridRows, "height");
 	if (structure.GridColumns)
 		result["columns"] = EncodeGridTracks(*structure.GridColumns, "width");
+	if (structure.DataGridColumns)
+		result["dataGridColumns"] = EncodeArray(*structure.DataGridColumns,
+			EncodeDataGridColumn);
 	if (structure.ChartSeries)
 		result["series"] = EncodeArray(*structure.ChartSeries,
 			[](const DesignChartSeries& series)
@@ -1047,6 +1317,14 @@ bool DecodeDesignNodeStructure(
 			std::vector<DesignGridTrack> tracks;
 			if (!DecodeGridTracks(item, "width", tracks, outError)) return false;
 			decoded.GridColumns = std::move(tracks);
+			continue;
+		}
+		if (key == "dataGridColumns" && type == UIClass::UI_DataGrid)
+		{
+			std::vector<DesignDataGridColumn> columns;
+			if (!DecodeArray(item, columns,
+				DecodeDataGridColumn, outError)) return false;
+			decoded.DataGridColumns = std::move(columns);
 			continue;
 		}
 		if (key == "series" && type == UIClass::UI_ChartView)

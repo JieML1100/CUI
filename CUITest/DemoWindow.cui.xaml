@@ -78,6 +78,44 @@
         <DataRecord Id="3" Text="进行中" Category="待处理" State="6" Active="true"/>
         <DataRecord Id="4" Text="已完成" Category="归档" State="2" Active="true"/>
       </DataList>
+      <DataType x:Key="DemoOrder">
+        <DataType.Properties>
+          <Property Path="OrderNo" Kind="String" CanWrite="false"/>
+          <Property Path="Customer" Kind="String"/>
+          <Property Path="Region" Kind="String"/>
+          <Property Path="Stage" Kind="String"/>
+          <Property Path="Quantity" Kind="Int"/>
+          <Property Path="Amount" Kind="Int64"/>
+          <Property Path="Paid" Kind="Bool"/>
+        </DataType.Properties>
+      </DataType>
+      <DataList x:Key="DemoOrders" ItemType="DemoOrder">
+        <DataRecord OrderNo="SO-260801" Customer="上海云舟" Region="华东" Stage="已发货" Quantity="12" Amount="86400" Paid="true"/>
+        <DataRecord OrderNo="SO-260802" Customer="杭州数擎" Region="华东" Stage="待确认" Quantity="5" Amount="42800" Paid="false"/>
+        <DataRecord OrderNo="SO-260803" Customer="深圳星河" Region="华南" Stage="生产中" Quantity="18" Amount="132600" Paid="true"/>
+        <DataRecord OrderNo="SO-260804" Customer="广州远航" Region="华南" Stage="已完成" Quantity="9" Amount="71200" Paid="true"/>
+        <DataRecord OrderNo="SO-260805" Customer="北京凌云" Region="华北" Stage="待付款" Quantity="7" Amount="56900" Paid="false"/>
+        <DataRecord OrderNo="SO-260806" Customer="天津智造" Region="华北" Stage="备货中" Quantity="16" Amount="118000" Paid="true"/>
+        <DataRecord OrderNo="SO-260807" Customer="成都启明" Region="西南" Stage="已发货" Quantity="11" Amount="79600" Paid="true"/>
+        <DataRecord OrderNo="SO-260808" Customer="重庆山海" Region="西南" Stage="待确认" Quantity="3" Amount="24900" Paid="false"/>
+        <DataRecord OrderNo="SO-260809" Customer="武汉光谷" Region="华中" Stage="生产中" Quantity="21" Amount="158700" Paid="true"/>
+        <DataRecord OrderNo="SO-260810" Customer="长沙岳麓" Region="华中" Stage="已完成" Quantity="8" Amount="63500" Paid="true"/>
+        <DataRecord OrderNo="SO-260811" Customer="南京创芯" Region="华东" Stage="待付款" Quantity="6" Amount="48300" Paid="false"/>
+        <DataRecord OrderNo="SO-260812" Customer="苏州微澜" Region="华东" Stage="备货中" Quantity="14" Amount="102400" Paid="true"/>
+        <DataRecord OrderNo="SO-260813" Customer="厦门鹭岛" Region="华南" Stage="已发货" Quantity="10" Amount="76800" Paid="true"/>
+        <DataRecord OrderNo="SO-260814" Customer="青岛海纳" Region="华北" Stage="待确认" Quantity="4" Amount="31600" Paid="false"/>
+        <DataRecord OrderNo="SO-260815" Customer="西安长安" Region="西北" Stage="生产中" Quantity="19" Amount="141900" Paid="true"/>
+        <DataRecord OrderNo="SO-260816" Customer="合肥科创" Region="华东" Stage="已完成" Quantity="13" Amount="94700" Paid="true"/>
+        <DataRecord OrderNo="SO-260817" Customer="郑州中原" Region="华中" Stage="待付款" Quantity="5" Amount="39800" Paid="false"/>
+        <DataRecord OrderNo="SO-260818" Customer="大连海风" Region="东北" Stage="备货中" Quantity="15" Amount="109500" Paid="true"/>
+      </DataList>
+      <CollectionViewSource x:Key="DemoOrdersView" Source="{StaticResource DemoOrders}"/>
+      <DataTemplate x:Key="OrderStageCellTemplate" DataType="DemoOrder">
+        <Border Padding="8,2" Background="{StaticResource SurfaceSoft}"
+          BorderBrush="{StaticResource Border}" BorderThickness="1">
+          <TextBlock Text="{Binding Stage}" Foreground="{StaticResource Accent}"/>
+        </Border>
+      </DataTemplate>
       <CollectionViewSource x:Key="ActiveDemoTasks" Source="{StaticResource DemoTasks}">
         <CollectionViewSource.GroupDescriptions>
           <GroupDescription PropertyName="Category"/>
@@ -892,6 +930,58 @@
               <TextBlock Margin="0,12,0,0" Style="{StaticResource DescriptionText}"
                 Text="TreeViewItem.IsExpanded / IsSelected 与 Selector 容器状态来自 XAML；交互更新走 SetCurrentValue，保留 Binding、Style 与 Local 来源身份。"/>
             </StackPanel>
+          </Grid>
+        </Border>
+      </TabItem>
+      <TabItem Header="DataGrid">
+        <Border Margin="4,8,4,4" Style="{StaticResource SurfacePanel}">
+          <Grid x:Name="dataGridSurface">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Style="{StaticResource PageHeader}"
+			  Text="标准 DataGrid：声明式列、冻结行表头、全选角、表头缩放排序、单元格/整行选择与原位编辑"/>
+            <DataGrid x:Name="demoDataGrid" Grid.Row="1" Margin="0,6,0,10"
+              AutoGenerateColumns="false" CanUserResizeColumns="true"
+              CanUserSortColumns="true" IsReadOnly="false"
+			  HeadersVisibility="All" RowHeaderWidth="38"
+              CellEditEnding="HandleDataGridCellEditEnding"
+              CurrentCellChanged="HandleDataGridCurrentCellChanged"
+			  ItemsSource="{StaticResource DemoOrdersView}"
+			  SelectedCellsChanged="HandleDataGridSelectedCellsChanged"
+			  SelectionMode="Extended" SelectionUnit="CellOrRowHeader"
+              Sorting="HandleDataGridSorting">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="订单号" Binding="{Binding OrderNo}"
+                  IsReadOnly="true" SortMemberPath="OrderNo" Width="118"/>
+                <DataGridTextColumn Header="客户" Binding="{Binding Customer, Mode=TwoWay}"
+                  SortMemberPath="Customer" Width="2*"/>
+                <DataGridTextColumn Header="区域" Binding="{Binding Region, Mode=TwoWay}"
+                  SortMemberPath="Region" Width="*"/>
+                <DataGridTemplateColumn Header="状态" CellTemplate="{StaticResource OrderStageCellTemplate}"
+                  SortMemberPath="Stage" Width="*"/>
+                <DataGridTextColumn Header="数量" Binding="{Binding Quantity, Mode=TwoWay}"
+                  SortMemberPath="Quantity" Width="92"/>
+                <DataGridTextColumn Header="金额" Binding="{Binding Amount, Mode=TwoWay, StringFormat='¥ {0:N0}'}"
+                  SortMemberPath="Amount" Width="132"/>
+				<DataGridCheckBoxColumn Header="已付款" Binding="{Binding Paid, Mode=TwoWay}"
+				  SortMemberPath="Paid" Width="88" CanUserResize="false"/>
+              </DataGrid.Columns>
+            </DataGrid>
+            <Grid Grid.Row="2">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Style="{StaticResource DescriptionText}"
+				Text="单击单元格进行矩形多选；单击冻结行表头选择整行，Ctrl/Shift 切换或扩展；左上角全选。列头与单元格随横向滚动同步；F2 编辑，Enter/Tab 提交。"/>
+              <TextBlock x:Name="dataGridStatus" Grid.Column="1"
+                HorizontalAlignment="Right"
+                Foreground="{StaticResource TextMuted}"
+				Text="Extended + CellOrRowHeader · 单元格/行表头双选择域"/>
+            </Grid>
           </Grid>
         </Border>
       </TabItem>

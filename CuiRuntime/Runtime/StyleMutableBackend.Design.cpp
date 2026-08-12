@@ -1,6 +1,7 @@
 #include "Style.h"
 #include "EventInfrastructure.h"
 #include "StyleInfrastructure.h"
+#include "../include/XamlRuntimeSchema.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -341,12 +342,26 @@ bool ControlStyleSelector::MatchesTargetType(Control& target) const
 		&& *Type != UIClass::UI_Base
 		&& target.Type() != *Type)
 		return false;
-	if ((!DeclarativeTypeNamespace.empty() || !DeclarativeTypeName.empty())
-		&& (!StyleNameEquals(
+	if (!DeclarativeTypeNamespace.empty() || !DeclarativeTypeName.empty())
+	{
+		const bool exact = StyleNameEquals(
 			DeclarativeTypeNamespace, target.GetDeclarativeTypeNamespace())
-			|| !StyleNameEquals(
-				DeclarativeTypeName, target.GetDeclarativeTypeName())))
-		return false;
+			&& StyleNameEquals(
+				DeclarativeTypeName, target.GetDeclarativeTypeName());
+		if (!exact)
+		{
+			// Native-generated built-in children (for example DataGrid cells and
+			// column editors) have no authored Dynamic-XAML sidecar. Production
+			// already matches their compiled theme rules by native UIClass; keep
+			// the mutable Design backend equivalent without letting a custom
+			// ComponentDefinition style leak onto its native behavior host.
+			if (!target.GetDeclarativeTypeName().empty()) return false;
+			const auto* builtIn = CuiRuntime::XamlRuntimeSchema::FindBuiltInType(
+				DeclarativeTypeNamespace, DeclarativeTypeName);
+			if (!builtIn || !builtIn->IsDefaultForNativeType
+				|| builtIn->NativeType != target.Type()) return false;
+		}
+	}
 	return true;
 }
 

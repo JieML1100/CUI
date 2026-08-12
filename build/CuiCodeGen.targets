@@ -31,7 +31,7 @@
     <!-- Bump whenever generator output semantics change. The versioned default
          stamp invalidates old outputs without depending on unstable linker times. -->
     <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">70</CuiCodeGenContractVersion>
-    <CuiThemeCodeGenContractVersion Condition="'$(CuiThemeCodeGenContractVersion)' == ''">22</CuiThemeCodeGenContractVersion>
+    <CuiThemeCodeGenContractVersion Condition="'$(CuiThemeCodeGenContractVersion)' == ''">23</CuiThemeCodeGenContractVersion>
   </PropertyGroup>
 
   <ItemDefinitionGroup>

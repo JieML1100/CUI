@@ -849,6 +849,18 @@ IDWriteTextLayout* TextBox::EnsureTextLayout()
 	_textLayout->SetWordWrapping(
 		ToDirectWriteWrapping(_textWrapping));
 	_textSize = font->GetTextSize(_textLayout.Get());
+	// Selection/caret preparation can run before a newly generated editor has
+	// received its first arrange, when the viewport is still zero.  Once the
+	// real viewport arrives, keep the previously requested scroll position but
+	// clamp it against the new extent.  Otherwise SelectAll/F2 can leave the
+	// entire initial value shifted outside the first visible edit frame until
+	// the next pointer or key report calls UpdateScroll again.
+	_horizontalScrollOffset = (std::clamp)(
+		_horizontalScrollOffset, 0.0f,
+		(std::max)(0.0f, _textSize.width - viewportWidth));
+	_verticalScrollOffset = (std::clamp)(
+		_verticalScrollOffset, 0.0f,
+		(std::max)(0.0f, _textSize.height - TextViewportHeight()));
 	return _textLayout.Get();
 }
 
@@ -1084,6 +1096,11 @@ void TextBox::Select(int start, int length)
 	this->_selectionEnd = start + length;
 	UpdateScroll();
 	this->InvalidateVisual();
+}
+
+int TextBox::GetCharacterIndexFromPoint(float localX, float localY)
+{
+	return HitTestTextPosition(localX, localY);
 }
 
 void TextBox::SelectAll()
@@ -1679,14 +1696,21 @@ bool TextBox::ProcessInput(const InputReport& input)
 			handled = true;
 		}
 		auto eventArgs = input.CreateKeyEventArgs();
+		const ControlWeakReference lifetime(this);
 		this->OnKeyDown(this, eventArgs);
+		handled = handled || eventArgs.Handled;
+		// A routed command may commit/cancel an in-place editor and remove this
+		// TextBox from its cell while KeyDown is still unwinding.
+		if (lifetime.Get() != this) return handled;
 		this->InvalidateVisual();
 		return handled;
 	}
 	case InputReportKind::KeyUp:
 	{
 		auto eventArgs = input.CreateKeyEventArgs();
+		const ControlWeakReference lifetime(this);
 		this->OnKeyUp(this, eventArgs);
+		if (lifetime.Get() != this) return true;
 		this->InvalidateVisual();
 	}
 	break;

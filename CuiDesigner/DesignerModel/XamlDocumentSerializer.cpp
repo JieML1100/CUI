@@ -305,6 +305,25 @@ namespace
 		throw std::invalid_argument("Grid length contains an unknown unit");
 	}
 
+	std::wstring DataGridLengthText(const DesignValue& value)
+	{
+		if (!value.is_object() || value.size() != 2
+			|| !value.contains("value") || !value["value"].is_number()
+			|| !value.contains("unit") || !value["unit"].is_string())
+			throw std::invalid_argument("DataGrid length must be a value/unit object");
+		const auto amount = value["value"].get<double>();
+		const auto unit = value["unit"].get<std::string>();
+		if (!std::isfinite(amount) || amount < 0.0)
+			throw std::invalid_argument("DataGrid length value is invalid");
+		if (unit == "Auto") return L"Auto";
+		if (unit == "SizeToHeader") return L"SizeToHeader";
+		if (unit == "SizeToCells") return L"SizeToCells";
+		if (unit == "Star")
+			return amount == 1.0 ? L"*" : NumberText(amount) + L"*";
+		if (unit == "Pixel") return NumberText(amount);
+		throw std::invalid_argument("DataGrid length contains an unknown unit");
+	}
+
 	class Writer final
 	{
 	public:
@@ -3045,6 +3064,135 @@ namespace
 					}
 				}
 				extra.ObjectItems().erase("series");
+			}
+			if (node.Type == UIClass::UI_DataGrid
+				&& extra.contains("dataGridColumns"))
+			{
+				auto columnsProperty = Append(
+					_xml, element, "DataGrid.Columns");
+				for (const auto& value : requireArray(
+					"dataGridColumns", "DataGrid.Columns must be an array")
+					.ArrayItems())
+				{
+					if (!value.is_object()
+						|| !value.contains("kind") || !value["kind"].is_string()
+						|| !value.contains("width"))
+						throw std::invalid_argument(
+							"DataGrid column must contain Kind and Width");
+					const auto kind = value["kind"].get<std::string>();
+					const char* elementName = nullptr;
+					if (kind == "Text") elementName = "DataGridTextColumn";
+					else if (kind == "CheckBox")
+						elementName = "DataGridCheckBoxColumn";
+					else if (kind == "Template")
+						elementName = "DataGridTemplateColumn";
+					else throw std::invalid_argument(
+						"DataGrid column Kind is invalid");
+					auto column = Append(_xml, columnsProperty, elementName);
+					if (value.contains("header"))
+					{
+						if (!value["header"].is_string())
+							throw std::invalid_argument(
+								"DataGrid column Header must be a string");
+						const auto header = FromUtf8(
+							value["header"].get<std::string>());
+						if (!header.empty()) Set(column, "Header", header);
+					}
+					if (kind == "Text" || kind == "CheckBox")
+					{
+						if (!value.contains("binding"))
+							throw std::invalid_argument(
+								"Bound DataGrid column is missing Binding");
+						DesignerDataBinding binding;
+						std::wstring bindingError;
+						if (!DesignerBindingUtils::TryReadBindingDefinition(
+							value["binding"], binding, &bindingError)
+							|| binding.IsMultiBinding()
+							|| !binding.ElementName.empty()
+							|| binding.RelativeSource
+								!= DesignerBindingRelativeSource::None)
+							throw std::invalid_argument(
+								"DataGrid column Binding is invalid: "
+								+ ToUtf8(bindingError));
+						Set(column, "Binding", BindingMarkup(binding));
+					}
+					else if (value.contains("binding"))
+						throw std::invalid_argument(
+							"DataGridTemplateColumn cannot contain Binding");
+
+					const auto width = DataGridLengthText(value["width"]);
+					if (width != L"SizeToHeader") Set(column, "Width", width);
+					for (const auto& [key, attribute] : {
+						std::pair{ "minWidth", "MinWidth" },
+						std::pair{ "maxWidth", "MaxWidth" } })
+					{
+						if (!value.contains(key)) continue;
+						if (!value[key].is_number())
+							throw std::invalid_argument(
+								"DataGrid column width constraint must be numeric");
+						Set(column, attribute,
+							NumberText(value[key].get<double>()));
+					}
+					if (value.contains("isReadOnly"))
+					{
+						if (!value["isReadOnly"].is_boolean())
+							throw std::invalid_argument(
+								"DataGrid column IsReadOnly must be boolean");
+						if (value["isReadOnly"].get<bool>())
+							Set(column, "IsReadOnly", L"true");
+					}
+					if (value.contains("isThreeState"))
+					{
+						if (kind != "CheckBox"
+							|| !value["isThreeState"].is_boolean())
+							throw std::invalid_argument(
+								"DataGrid column IsThreeState is only valid for CheckBox columns");
+						if (value["isThreeState"].get<bool>())
+							Set(column, "IsThreeState", L"true");
+					}
+					if (value.contains("canUserSort"))
+					{
+						if (!value["canUserSort"].is_boolean())
+							throw std::invalid_argument(
+								"DataGrid column CanUserSort must be boolean");
+						if (!value["canUserSort"].get<bool>())
+							Set(column, "CanUserSort", L"false");
+					}
+					if (value.contains("canUserResize"))
+					{
+						if (!value["canUserResize"].is_boolean())
+							throw std::invalid_argument(
+								"DataGrid column CanUserResize must be boolean");
+						if (!value["canUserResize"].get<bool>())
+							Set(column, "CanUserResize", L"false");
+					}
+					if (value.contains("sortMemberPath"))
+					{
+						if (!value["sortMemberPath"].is_string())
+							throw std::invalid_argument(
+								"DataGrid column SortMemberPath must be a string");
+						const auto path = FromUtf8(
+							value["sortMemberPath"].get<std::string>());
+						if (!path.empty()) Set(column, "SortMemberPath", path);
+					}
+					for (const auto& [key, attribute] : {
+						std::pair{ "cellTemplate", "CellTemplate" },
+						std::pair{ "cellEditingTemplate", "CellEditingTemplate" } })
+					{
+						if (!value.contains(key)) continue;
+						if (kind != "Template" || !value[key].is_string())
+							throw std::invalid_argument(
+								"DataGrid template column resource is invalid");
+						const auto resource = FromUtf8(
+							value[key].get<std::string>());
+						if (resource.empty())
+							throw std::invalid_argument(
+								"DataGrid template resource key cannot be empty");
+						Set(column, attribute,
+							L"{StaticResource " + resource + L"}");
+					}
+				}
+				extra.ObjectItems().erase("dataGridColumns");
 			}
 		}
 

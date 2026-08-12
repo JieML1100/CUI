@@ -19,6 +19,15 @@ namespace cui::framework
 			event.InvokeCore(std::forward<Args>(args)...);
 		}
 
+		template<typename Func, typename TContinue, typename... Args>
+		static void RaiseWhile(
+			Event<Func>& event, TContinue&& shouldContinue, Args&&... args)
+		{
+			event.InvokeCoreWhile(
+				std::forward<TContinue>(shouldContinue),
+				std::forward<Args>(args)...);
+		}
+
 		template<typename Func>
 		static void Clear(Event<Func>& event) noexcept
 		{

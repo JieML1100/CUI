@@ -102,7 +102,8 @@ enum class AutomationOperationResult : uint8_t
 	NotSupported,
 	InvalidOperation,
 	ElementNotEnabled,
-	InvalidArgument
+	InvalidArgument,
+	ElementNotAvailable
 };
 
 /** Platform-neutral WPF/UIA TogglePattern state. */
@@ -190,6 +191,10 @@ public:
 		int row, int column, uint32_t& result);
 	virtual void GetAccessibilityVirtualColumnHeaders(
 		std::vector<uint32_t>& result);
+	virtual void GetAccessibilityVirtualRowHeaders(
+		std::vector<uint32_t>& result);
+	virtual AutomationOperationResult FocusAccessibilityVirtualNode(uint32_t id);
+	virtual bool TryGetAccessibilityVirtualFocusedNode(uint32_t& result);
 	virtual bool InvokeAccessibilityVirtualNode(uint32_t id);
 	virtual bool ToggleAccessibilityVirtualNode(uint32_t id);
 	virtual bool SetAccessibilityVirtualNodeValue(
@@ -264,6 +269,57 @@ public:
 	bool InvokeAccessibilityVirtualNode(uint32_t id) override;
 	bool SelectAccessibilityVirtualNode(
 		uint32_t id, AccessibilitySelectionAction action) override;
+};
+
+/**
+ * WPF DataGridAutomationPeer projection for DataGrid's logical row/cell tree.
+ *
+ * Rows and cells remain available to UI Automation when their visual
+ * containers are virtualized.  DataGrid owns their stable identities and all
+ * mutations; this peer only publishes that semantic surface to native bridges.
+ */
+class DataGridAutomationPeer final : public AutomationPeer
+{
+public:
+	explicit DataGridAutomationPeer(Control& owner);
+	std::wstring GetAutomationClassName() const override;
+	AutomationPattern GetPatternSet() const noexcept override;
+	bool CanSelectMultiple() const noexcept override;
+	bool SupportsVirtualizedChildren() const noexcept override { return true; }
+	bool TryGetAccessibilityVirtualNode(
+		uint32_t id, AccessibilityVirtualNode& result) override;
+	size_t GetAccessibilityVirtualChildCount(uint32_t parentId) override;
+	bool TryGetAccessibilityVirtualChildAt(
+		uint32_t parentId, size_t index, uint32_t& result) override;
+	bool TryGetAccessibilityVirtualSibling(
+		uint32_t parentId, uint32_t id, bool next, uint32_t& result) override;
+	bool TryHitTestAccessibilityVirtualNode(
+		float localX, float localY, uint32_t& result) override;
+	AccessibilityVirtualContainerInfo
+		GetAccessibilityVirtualContainerInfo() const noexcept override;
+	void GetAccessibilityVirtualSelection(
+		std::vector<uint32_t>& result) override;
+	bool GetAccessibilityVirtualItemAt(
+		int row, int column, uint32_t& result) override;
+	void GetAccessibilityVirtualColumnHeaders(
+		std::vector<uint32_t>& result) override;
+	void GetAccessibilityVirtualRowHeaders(
+		std::vector<uint32_t>& result) override;
+	AutomationOperationResult FocusAccessibilityVirtualNode(uint32_t id) override;
+	bool TryGetAccessibilityVirtualFocusedNode(uint32_t& result) override;
+	bool InvokeAccessibilityVirtualNode(uint32_t id) override;
+	bool SetAccessibilityVirtualNodeValue(
+		uint32_t id, const std::wstring& value) override;
+	bool SelectAccessibilityVirtualNode(
+		uint32_t id, AccessibilitySelectionAction action) override;
+	bool ScrollAccessibilityVirtualNodeIntoView(uint32_t id) override;
+	bool GetAccessibilityScrollInfo(
+		AccessibilityScrollInfo& result) const noexcept override;
+	bool ScrollAccessibility(
+		AccessibilityScrollAmount horizontal,
+		AccessibilityScrollAmount vertical) override;
+	bool SetAccessibilityScrollPercent(
+		double horizontalPercent, double verticalPercent) override;
 };
 
 /** Accessible projection for ChartView's retained data-point renderer. */

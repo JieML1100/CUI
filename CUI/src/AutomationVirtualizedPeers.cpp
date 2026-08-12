@@ -3,6 +3,7 @@
 #include "CalendarView.h"
 #include "ChartView.h"
 #include "Control.h"
+#include "DataGrid.h"
 #include "ScrollViewer.h"
 
 #include <algorithm>
@@ -143,8 +144,15 @@ CalendarViewAutomationPeer::GetPatternSet() const noexcept
 bool CalendarViewAutomationPeer::TryGetAccessibilityVirtualNode(
 	uint32_t id, AccessibilityVirtualNode& result)
 {
-	return static_cast<CalendarView&>(Owner())
-		.TryGetAccessibilityVirtualNode(id, result);
+	if (!static_cast<CalendarView&>(Owner())
+		.TryGetAccessibilityVirtualNode(id, result)) return false;
+	if (result.ClassName.empty()) result.ClassName = L"CUI.VirtualItem";
+	result.KeyboardFocusable = result.Enabled && result.Visible
+		&& HasAutomationPattern(
+			result.Patterns, AutomationPattern::SelectionItem);
+	result.IsContentElement =
+		result.ControlType != AutomationControlType::HeaderItem;
+	return true;
 }
 
 size_t CalendarViewAutomationPeer::GetAccessibilityVirtualChildCount(
@@ -217,6 +225,178 @@ bool CalendarViewAutomationPeer::SelectAccessibilityVirtualNode(
 		.SelectAccessibilityVirtualNode(id, action);
 }
 
+DataGridAutomationPeer::DataGridAutomationPeer(Control& owner) :
+	AutomationPeer(owner, AutomationControlType::DataGrid, L"DataGrid")
+{
+}
+
+std::wstring DataGridAutomationPeer::GetAutomationClassName() const
+{
+	// WPF's DataGridAutomationPeer returns Owner.GetType().Name rather than a
+	// framework-qualified automation class name.
+	return L"DataGrid";
+}
+
+AutomationPattern DataGridAutomationPeer::GetPatternSet() const noexcept
+{
+	auto result = AutomationPattern::Selection
+		| AutomationPattern::Grid
+		| AutomationPattern::Table;
+	AccessibilityScrollInfo scrollInfo;
+	if (static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityScrollInfo(scrollInfo))
+		result |= AutomationPattern::Scroll;
+	return result;
+}
+
+bool DataGridAutomationPeer::CanSelectMultiple() const noexcept
+{
+	return static_cast<const DataGrid&>(Owner()).GetSelectionMode()
+		!= SelectionMode::Single;
+}
+
+bool DataGridAutomationPeer::TryGetAccessibilityVirtualNode(
+	uint32_t id, AccessibilityVirtualNode& result)
+{
+	return static_cast<DataGrid&>(Owner())
+		.TryGetAccessibilityVirtualNode(id, result);
+}
+
+size_t DataGridAutomationPeer::GetAccessibilityVirtualChildCount(
+	uint32_t parentId)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityVirtualChildCount(parentId);
+}
+
+bool DataGridAutomationPeer::TryGetAccessibilityVirtualChildAt(
+	uint32_t parentId, size_t index, uint32_t& result)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.TryGetAccessibilityVirtualChildAt(parentId, index, result);
+}
+
+bool DataGridAutomationPeer::TryGetAccessibilityVirtualSibling(
+	uint32_t parentId, uint32_t id, bool next, uint32_t& result)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.TryGetAccessibilityVirtualSibling(parentId, id, next, result);
+}
+
+bool DataGridAutomationPeer::TryHitTestAccessibilityVirtualNode(
+	float localX, float localY, uint32_t& result)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.TryHitTestAccessibilityVirtualNode(localX, localY, result);
+}
+
+AccessibilityVirtualContainerInfo
+DataGridAutomationPeer::GetAccessibilityVirtualContainerInfo() const noexcept
+{
+	return static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityVirtualContainerInfo();
+}
+
+void DataGridAutomationPeer::GetAccessibilityVirtualSelection(
+	std::vector<uint32_t>& result)
+{
+	auto& owner = static_cast<const DataGrid&>(Owner());
+	// Direct peer consumers do not have a COM provider to hold the semantic
+	// object. Pin this peer before source callbacks can synchronously delete the
+	// DataGrid; the DataGrid operation itself guards owner lifetime/revisions.
+	auto operationLease = owner.AcquireAutomationPeer();
+	if (!operationLease || operationLease.get() != this)
+	{
+		result.clear();
+		return;
+	}
+	owner.GetAccessibilityVirtualSelection(result);
+}
+
+bool DataGridAutomationPeer::GetAccessibilityVirtualItemAt(
+	int row, int column, uint32_t& result)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityVirtualItemAt(row, column, result);
+}
+
+void DataGridAutomationPeer::GetAccessibilityVirtualColumnHeaders(
+	std::vector<uint32_t>& result)
+{
+	static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityVirtualColumnHeaders(result);
+}
+
+void DataGridAutomationPeer::GetAccessibilityVirtualRowHeaders(
+	std::vector<uint32_t>& result)
+{
+	static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityVirtualRowHeaders(result);
+}
+
+AutomationOperationResult
+DataGridAutomationPeer::FocusAccessibilityVirtualNode(uint32_t id)
+{
+	return static_cast<DataGrid&>(Owner())
+		.FocusAccessibilityVirtualNode(id);
+}
+
+bool DataGridAutomationPeer::TryGetAccessibilityVirtualFocusedNode(
+	uint32_t& result)
+{
+	return static_cast<const DataGrid&>(Owner())
+		.TryGetAccessibilityVirtualFocusedNode(result);
+}
+
+bool DataGridAutomationPeer::InvokeAccessibilityVirtualNode(uint32_t id)
+{
+	return static_cast<DataGrid&>(Owner())
+		.InvokeAccessibilityVirtualNode(id);
+}
+
+bool DataGridAutomationPeer::SetAccessibilityVirtualNodeValue(
+	uint32_t id, const std::wstring& value)
+{
+	return static_cast<DataGrid&>(Owner())
+		.SetAccessibilityVirtualNodeValue(id, value);
+}
+
+bool DataGridAutomationPeer::SelectAccessibilityVirtualNode(
+	uint32_t id, AccessibilitySelectionAction action)
+{
+	return static_cast<DataGrid&>(Owner())
+		.SelectAccessibilityVirtualNode(id, action);
+}
+
+bool DataGridAutomationPeer::ScrollAccessibilityVirtualNodeIntoView(
+	uint32_t id)
+{
+	return static_cast<DataGrid&>(Owner())
+		.ScrollAccessibilityVirtualNodeIntoView(id);
+}
+
+bool DataGridAutomationPeer::GetAccessibilityScrollInfo(
+	AccessibilityScrollInfo& result) const noexcept
+{
+	return static_cast<const DataGrid&>(Owner())
+		.GetAccessibilityScrollInfo(result);
+}
+
+bool DataGridAutomationPeer::ScrollAccessibility(
+	AccessibilityScrollAmount horizontal,
+	AccessibilityScrollAmount vertical)
+{
+	return static_cast<DataGrid&>(Owner())
+		.ScrollAccessibility(horizontal, vertical);
+}
+
+bool DataGridAutomationPeer::SetAccessibilityScrollPercent(
+	double horizontalPercent, double verticalPercent)
+{
+	return static_cast<DataGrid&>(Owner())
+		.SetAccessibilityScrollPercent(horizontalPercent, verticalPercent);
+}
+
 ChartViewAutomationPeer::ChartViewAutomationPeer(Control& owner) :
 	AutomationPeer(owner, AutomationControlType::Image, L"ChartView")
 {
@@ -230,8 +410,15 @@ AutomationPattern ChartViewAutomationPeer::GetPatternSet() const noexcept
 bool ChartViewAutomationPeer::TryGetAccessibilityVirtualNode(
 	uint32_t id, AccessibilityVirtualNode& result)
 {
-	return static_cast<ChartView&>(Owner())
-		.TryGetAccessibilityVirtualNode(id, result);
+	if (!static_cast<ChartView&>(Owner())
+		.TryGetAccessibilityVirtualNode(id, result)) return false;
+	if (result.ClassName.empty()) result.ClassName = L"CUI.VirtualItem";
+	result.KeyboardFocusable = result.Enabled && result.Visible
+		&& HasAutomationPattern(
+			result.Patterns, AutomationPattern::SelectionItem);
+	result.IsContentElement =
+		result.ControlType != AutomationControlType::HeaderItem;
+	return true;
 }
 
 size_t ChartViewAutomationPeer::GetAccessibilityVirtualChildCount(

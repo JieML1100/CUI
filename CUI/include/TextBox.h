@@ -119,6 +119,8 @@ public:
 	bool HasSelection();
 	/** @brief 选中 [start, start+length)。 */
 	void Select(int start, int length);
+	/** WPF-style text hit testing used by editing hosts to place the caret. */
+	int GetCharacterIndexFromPoint(float localX, float localY);
 	/** @brief 全选。 */
 	void SelectAll();
 	/** @brief 清除选区（光标折叠到选择起点）。 */
@@ -169,10 +171,11 @@ private:
 	int _lastNotifiedSelectionEnd = 0;
 	struct SelectionNotificationScope
 	{
-		TextBox* owner = nullptr;
+		ControlWeakReference owner;
 		~SelectionNotificationScope()
 		{
-			if (owner) owner->NotifySelectionChanged();
+			if (auto* live = dynamic_cast<TextBox*>(owner.Get()))
+				live->NotifySelectionChanged();
 		}
 	};
 	void NotifySelectionChanged();

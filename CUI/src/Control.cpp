@@ -463,18 +463,34 @@ std::unique_ptr<AutomationPeer> Control::OnCreateAutomationPeer()
 		*this, AutomationControlType::Custom, L"Control");
 }
 
+std::shared_ptr<AutomationPeer> Control::AcquireAutomationPeer() const
+{
+	const ControlWeakReference ownerLifetime(
+		const_cast<Control*>(this));
+	if (const auto established = _automationPeer) return established;
+	auto peer = const_cast<Control*>(this)->OnCreateAutomationPeer();
+	auto* live = ownerLifetime.Get();
+	if (!live) return {};
+	if (!peer)
+		peer = std::make_unique<AutomationPeer>(
+			*live, AutomationControlType::Custom, L"Control");
+	live = ownerLifetime.Get();
+	if (!live) return {};
+	if (!live->_automationPeer)
+		live->_automationPeer = std::shared_ptr<AutomationPeer>(
+			std::move(peer));
+	return live->_automationPeer;
+}
+
 AutomationPeer& Control::GetAutomationPeer() const
 {
-	if (!_automationPeer)
+	auto peer = AcquireAutomationPeer();
+	if (!peer)
 	{
-		auto peer = const_cast<Control*>(this)->OnCreateAutomationPeer();
-		if (!peer)
-			peer = std::make_unique<AutomationPeer>(
-				*const_cast<Control*>(this),
-				AutomationControlType::Custom, L"Control");
-		_automationPeer = std::move(peer);
+		throw std::runtime_error(
+			"AutomationPeer owner was destroyed during peer creation");
 	}
-	return *_automationPeer;
+	return *peer;
 }
 
 Control::~Control()
@@ -612,6 +628,18 @@ UIClass GetUIClassBase(UIClass type) noexcept
 		return UIClass::UI_Selector;
 	case UIClass::UI_ListView:
 		return UIClass::UI_ListBox;
+	case UIClass::UI_DataGrid:
+		return UIClass::UI_ListBox;
+	case UIClass::UI_DataGridRow:
+		return UIClass::UI_ListBoxItem;
+	case UIClass::UI_DataGridCell:
+		return UIClass::UI_ContentControl;
+	case UIClass::UI_DataGridColumnHeader:
+		return UIClass::UI_Button;
+	case UIClass::UI_DataGridColumnHeadersPresenter:
+		return UIClass::UI_Grid;
+	case UIClass::UI_DataGridRowHeader:
+		return UIClass::UI_Button;
 	case UIClass::UI_Label:
 	case UIClass::UI_Image:
 	case UIClass::UI_MediaElement:
@@ -856,6 +884,8 @@ UIClass GetDefaultItemContainerType(UIClass itemsControlType) noexcept
 		return UIClass::UI_TabItem;
 	case UIClass::UI_StatusBar:
 		return UIClass::UI_StatusBarItem;
+	case UIClass::UI_DataGrid:
+		return UIClass::UI_DataGridRow;
 	case UIClass::UI_ListBox:
 	case UIClass::UI_Selector:
 		return UIClass::UI_ListBoxItem;
@@ -12523,44 +12553,182 @@ UINT Control::EffectiveAnimationDuration(UINT configuredDurationMs) const
 AccessibilitySnapshot Control::GetAccessibilitySnapshot() const
 {
 	AccessibilitySnapshot snapshot;
-	auto& peer = GetAutomationPeer();
-	snapshot.ControlType = peer.GetAutomationControlType();
-	snapshot.Name = GetEffectiveAutomationName();
-	snapshot.Description = GetEffectiveAutomationFullDescription();
+	const auto unavailableSnapshot = []
+	{
+		AccessibilitySnapshot unavailable;
+		unavailable.Enabled = false;
+		unavailable.Visible = false;
+		unavailable.ReadOnly = true;
+		return unavailable;
+	};
+	const auto* const identity = this;
+	const ControlWeakReference ownerLifetime(
+		const_cast<Control*>(this));
+	const auto liveOwner = [&]() -> Control*
+	{
+		auto* owner = ownerLifetime.Get();
+		return owner == identity ? owner : nullptr;
+	};
+	const auto performOwnerQuery = [&](auto&& query) -> bool
+	{
+		auto* owner = liveOwner();
+		if (!owner) return false;
+		query(*owner);
+		return liveOwner() != nullptr;
+	};
+	const auto performPeerQuery = [&](auto&& query) -> bool
+	{
+		auto* owner = liveOwner();
+		if (!owner) return false;
+		auto peer = owner->AcquireAutomationPeer();
+		owner = liveOwner();
+		if (!peer || !owner) return false;
+		auto* const peerIdentity = peer.get();
+		// Every call here is exactly one extensible peer invocation. A peer can
+		// synchronously remove its owner, so never batch two virtual calls under
+		// one lease or touch the Control again before revalidating its identity.
+		query(*peer);
+		owner = liveOwner();
+		if (!owner) return false;
+		auto currentPeer = owner->AcquireAutomationPeer();
+		owner = liveOwner();
+		return owner && currentPeer
+			&& currentPeer.get() == peerIdentity;
+	};
+
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{ snapshot.ControlType = peer.GetAutomationControlType(); }))
+		return unavailableSnapshot();
+
+	static const auto& nameProperty = AutomationNameProperty();
+	std::wstring authoredName;
+	if (!performOwnerQuery([&](Control& owner)
+		{
+			authoredName = owner.GetDependencyPropertyValue<std::wstring>(
+				nameProperty);
+		})) return unavailableSnapshot();
+
+	const bool usesAccessText = [&]
+	{
+		switch (snapshot.ControlType)
+		{
+		case AutomationControlType::Button:
+		case AutomationControlType::Hyperlink:
+		case AutomationControlType::CheckBox:
+		case AutomationControlType::RadioButton:
+		case AutomationControlType::Group:
+		case AutomationControlType::MenuItem:
+		case AutomationControlType::TabItem:
+			return true;
+		default:
+			return false;
+		}
+	}();
+	const bool editableValue =
+		snapshot.ControlType == AutomationControlType::Edit
+		|| snapshot.ControlType == AutomationControlType::ComboBox;
+	std::wstring semanticText;
+	if ((authoredName.empty() && !editableValue) || usesAccessText)
+	{
+		if (!performOwnerQuery([&](Control& owner)
+			{ semanticText = owner.GetSemanticText(); }))
+			return unavailableSnapshot();
+	}
+	if (!authoredName.empty()) snapshot.Name = std::move(authoredName);
+	else if (!editableValue)
+		snapshot.Name = usesAccessText
+			? StripAccessKeyMarkers(semanticText) : semanticText;
+
+	if (!performOwnerQuery([&](Control& owner)
+		{ snapshot.Description = owner.GetEffectiveAutomationFullDescription(); }))
+		return unavailableSnapshot();
 	static const auto& helpTextProperty =
 		AutomationHelpTextProperty();
 	static const auto& automationIdProperty =
 		AutomationIdProperty();
-	snapshot.HelpText =
-		GetDependencyPropertyValue<std::wstring>(helpTextProperty);
-	snapshot.AutomationId =
-		GetDependencyPropertyValue<std::wstring>(automationIdProperty);
-	snapshot.KeyboardShortcut = GetEffectiveKeyboardShortcut();
-	snapshot.Enabled = IsEffectivelyEnabled();
-	snapshot.Visible = GetIsVisible();
-	snapshot.Focusable = CanReceiveKeyboardFocus();
-	snapshot.Focused = _isKeyboardFocused;
-	if (!peer.TryGetSelectionItemSelected(snapshot.Selected))
+	if (!performOwnerQuery([&](Control& owner)
+		{
+			snapshot.HelpText = owner.GetDependencyPropertyValue<std::wstring>(
+				helpTextProperty);
+		})) return unavailableSnapshot();
+	if (!performOwnerQuery([&](Control& owner)
+		{
+			snapshot.AutomationId = owner.GetDependencyPropertyValue<std::wstring>(
+				automationIdProperty);
+		})) return unavailableSnapshot();
+	if (usesAccessText)
+	{
+		const wchar_t key = FindAccessKeyMarker(semanticText);
+		if (key != L'\0') snapshot.KeyboardShortcut = std::wstring(L"Alt+") + key;
+	}
+	if (!performOwnerQuery([&](Control& owner)
+		{ snapshot.Enabled = owner.IsEffectivelyEnabled(); }))
+		return unavailableSnapshot();
+	if (!performOwnerQuery([&](Control& owner)
+		{ snapshot.Visible = owner.GetIsVisible(); }))
+		return unavailableSnapshot();
+	bool locallyFocusable = false;
+	if (!performOwnerQuery([&](Control& owner)
+		{
+			locallyFocusable = owner.GetDependencyPropertyValue<bool>(
+				FocusableProperty());
+		})) return unavailableSnapshot();
+	snapshot.Focusable = locallyFocusable
+		&& snapshot.Enabled && snapshot.Visible;
+	if (!performOwnerQuery([&](Control& owner)
+		{ snapshot.Focused = owner._isKeyboardFocused; }))
+		return unavailableSnapshot();
+
+	bool peerSelected = false;
+	bool hasPeerSelection = false;
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{
+			hasPeerSelection = peer.TryGetSelectionItemSelected(peerSelected);
+		})) return unavailableSnapshot();
+	if (hasPeerSelection) snapshot.Selected = peerSelected;
+	else
 	{
 #if CUI_ENABLE_DYNAMIC_XAML
 		BindingValue selectedValue;
-		if (const_cast<Control*>(this)->TryGetValue(
-			L"IsSelected", selectedValue))
+		bool hasSelectedValue = false;
+		if (!performOwnerQuery([&](Control& owner)
+			{
+				hasSelectedValue = owner.TryGetValue(
+					L"IsSelected", selectedValue);
+			})) return unavailableSnapshot();
+		if (hasSelectedValue)
 			(void)selectedValue.TryGet(snapshot.Selected);
 #endif
 	}
-	AutomationToggleState toggleState = GetToggleStateForAccessibility();
-	if (!peer.TryGetToggleState(toggleState))
-		toggleState = GetToggleStateForAccessibility();
+	AutomationToggleState toggleState = AutomationToggleState::Off;
+	bool hasPeerToggleState = false;
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{
+			hasPeerToggleState = peer.TryGetToggleState(toggleState);
+		})) return unavailableSnapshot();
+	if (!hasPeerToggleState
+		&& !performOwnerQuery([&](Control& owner)
+			{ toggleState = owner.GetToggleStateForAccessibility(); }))
+		return unavailableSnapshot();
 	snapshot.Checked = toggleState == AutomationToggleState::On;
-	snapshot.Password = peer.IsPassword();
-	snapshot.ReadOnly = peer.IsReadOnly();
-	snapshot.Value = peer.GetValue();
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{ snapshot.Password = peer.IsPassword(); }))
+		return unavailableSnapshot();
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{ snapshot.ReadOnly = peer.IsReadOnly(); }))
+		return unavailableSnapshot();
+	if (!performPeerQuery([&](AutomationPeer& peer)
+		{ snapshot.Value = peer.GetValue(); }))
+		return unavailableSnapshot();
 #if CUI_ENABLE_DYNAMIC_XAML
 	if (snapshot.Value.empty() && !snapshot.Password)
 	{
 		BindingValue value;
-		if (const_cast<Control*>(this)->TryGetValue(L"Value", value))
+		bool hasValue = false;
+		if (!performOwnerQuery([&](Control& owner)
+			{ hasValue = owner.TryGetValue(L"Value", value); }))
+			return unavailableSnapshot();
+		if (hasValue)
 			snapshot.Value = value.ToString();
 	}
 #endif
@@ -15252,12 +15420,15 @@ cui::core::Size Control::Measure(const cui::core::Constraints& available)
 			_layoutState.CommitMeasure({}, constraints);
 		return {};
 	}
+	const ControlWeakReference lifetime(this);
 	(void)ApplyTemplate();
-	if (_layoutState.NeedsMeasure() ||
-		_layoutState.lastMeasureConstraints != constraints)
+	auto* live = lifetime.Get();
+	if (!live) return {};
+	if (live->_layoutState.NeedsMeasure() ||
+		live->_layoutState.lastMeasureConstraints != constraints)
 	{
 		const auto elementConstraints =
-			ElementSizeConstraints(GetSpecifiedLayout());
+			ElementSizeConstraints(live->GetSpecifiedLayout());
 
 		// WPF applies Width/Height/Min/Max to the available size before
 		// MeasureOverride. This is essential for controls whose height depends
@@ -15275,13 +15446,24 @@ cui::core::Size Control::Measure(const cui::core::Constraints& available)
 					elementConstraints.maximum.height)) };
 		const cui::core::Constraints measureConstraints{
 			cui::core::Size{}, measureMaximum };
-		PrepareMeasureCore(measureConstraints);
-		const auto intrinsic = GetControlTemplateRoot()
-			? GetControlTemplateRoot()->Measure(measureConstraints)
-			: MeasureCore(measureConstraints);
-		_layoutState.CommitMeasure(ResolveDesiredSize(intrinsic, constraints), constraints);
+		live->PrepareMeasureCore(measureConstraints);
+		live = lifetime.Get();
+		if (!live) return {};
+		auto* templateRoot = live->GetControlTemplateRoot();
+		const auto intrinsic = templateRoot
+			? templateRoot->Measure(measureConstraints)
+			: live->MeasureCore(measureConstraints);
+		live = lifetime.Get();
+		if (!live) return {};
+		const auto finalized = live->FinalizeMeasureCore(
+			intrinsic, measureConstraints);
+		live = lifetime.Get();
+		if (!live) return {};
+		live->_layoutState.CommitMeasure(
+			live->ResolveDesiredSize(finalized, constraints), constraints);
 	}
-	return _layoutState.desiredSize;
+	live = lifetime.Get();
+	return live ? live->_layoutState.desiredSize : cui::core::Size{};
 }
 
 

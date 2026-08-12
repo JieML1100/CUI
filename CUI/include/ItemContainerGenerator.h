@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 class Control;
@@ -74,6 +75,15 @@ public:
 		const CollectionChangedEventArgs& change) const;
 	std::vector<IndexChange> Apply(
 		const CollectionChangedEventArgs& change);
+	/**
+	 * Re-keys every generated occurrence without replacing its container.
+	 *
+	 * oldToNew must be a complete permutation of [0, SourceCount()).  The
+	 * method validates the permutation before extracting any map nodes, then
+	 * preserves both realized/recycled visuals and their observations.
+	 */
+	std::vector<IndexChange> ApplyPermutation(
+		std::span<const size_t> oldToNew);
 	static std::optional<size_t> MapIndex(
 		const CollectionChangedEventArgs& change,
 		size_t oldIndex) noexcept;

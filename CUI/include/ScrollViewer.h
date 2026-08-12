@@ -1,5 +1,28 @@
 #pragma once
 #include "ContentControl.h"
+#include "ControlWeakReference.h"
+
+class ItemsControl;
+
+namespace cui::framework
+{
+	/**
+	 * Logical vertical metrics for a virtualized content subtree.
+	 *
+	 * Layout geometry remains float-based, but a scroll owner must not derive a
+	 * million-row extent or index anchor from those lossy coordinates. The
+	 * provider also exposes the origin subtracted from realized child positions
+	 * so ScrollViewer can apply only the small residual render offset.
+	 */
+	class ILogicalScrollContent
+	{
+	public:
+		virtual ~ILogicalScrollContent() = default;
+		virtual double LogicalExtentHeightDip() const noexcept = 0;
+		virtual double LogicalExtentWidthDip() const noexcept { return 0.0; }
+		virtual double VerticalLayoutOriginDip() const noexcept = 0;
+	};
+}
 
 enum class ScrollBarVisibility : int
 {
@@ -44,10 +67,10 @@ public:
 		float ScrollBarThickness = 8.0f;
 		float ViewportWidth = 0.0f;
 		float ViewportHeight = 0.0f;
-		float ContentWidth = 0.0f;
-		float ContentHeight = 0.0f;
-		float MaxScrollX = 0.0f;
-		float MaxScrollY = 0.0f;
+		double ContentWidth = 0.0;
+		double ContentHeight = 0.0;
+		double MaxScrollX = 0.0;
+		double MaxScrollY = 0.0;
 	};
 
 	ScrollViewer();
@@ -115,6 +138,8 @@ public:
 	bool BringDescendantIntoView(Control* descendant);
 
 private:
+	friend class ItemsControl;
+	ControlWeakReference _logicalScrollContent;
 	static const DependencyPropertyKey& ExtentWidthPropertyKey();
 	static const DependencyPropertyKey& ExtentHeightPropertyKey();
 	static const DependencyPropertyKey& ViewportWidthPropertyKey();
@@ -142,4 +167,10 @@ private:
 	bool HitChild(Control* child, int localX, int localY, int& childX, int& childY) const;
 	bool HitVerticalScrollBar(int localX, int localY, const ScrollLayout& layout) const;
 	bool HitHorizontalScrollBar(int localX, int localY, const ScrollLayout& layout) const;
+	void SetLogicalScrollContent(Control* content);
+	const cui::framework::ILogicalScrollContent*
+		ResolveLogicalScrollContent() const noexcept;
+	double ResolveLogicalContentHeight(float measuredHeight) const noexcept;
+	double ResolveLogicalContentWidth(float measuredWidth) const noexcept;
+	double VerticalContentRenderOffset() const noexcept;
 };

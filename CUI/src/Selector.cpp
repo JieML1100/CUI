@@ -12,8 +12,123 @@
 #include <stdexcept>
 #include <utility>
 
+SelectionChangedItemCollection
+SelectionChangedItemCollection::FromSnapshotRange(
+	std::shared_ptr<IBindingList> snapshot,
+	size_t count, std::vector<int> exclusions)
+{
+	return FromValuesAndSnapshotSlice(
+		{}, std::move(snapshot), 0, count, std::move(exclusions));
+}
+
+SelectionChangedItemCollection
+SelectionChangedItemCollection::FromSnapshotIndices(
+	std::shared_ptr<IBindingList> snapshot,
+	std::vector<int> indices)
+{
+	SelectionChangedItemCollection result;
+	if (!snapshot) return result;
+	indices.erase(std::remove_if(indices.begin(), indices.end(),
+		[&snapshot](int value)
+		{ return value < 0 || static_cast<size_t>(value) >= snapshot->Count(); }),
+		indices.end());
+	std::sort(indices.begin(), indices.end());
+	indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+	if (indices.empty()) return result;
+	result._snapshot = std::move(snapshot);
+	result._includedIndices = std::move(indices);
+	result._useIncludedIndices = true;
+	return result;
+}
+
+SelectionChangedItemCollection
+SelectionChangedItemCollection::FromValuesAndSnapshotSlice(
+	std::vector<BindingValue> values,
+	std::shared_ptr<IBindingList> snapshot,
+	size_t start, size_t count, std::vector<int> exclusions)
+{
+	SelectionChangedItemCollection result;
+	result._values = std::move(values);
+	if (!snapshot || start >= snapshot->Count()) return result;
+	result._snapshot = std::move(snapshot);
+	result._rangeStart = start;
+	result._rangeCount = (std::min)(count,
+		result._snapshot->Count() - result._rangeStart);
+	exclusions.erase(std::remove_if(exclusions.begin(), exclusions.end(),
+		[&result](int value)
+		{ return value < 0 || static_cast<size_t>(value) >= result._rangeCount; }),
+		exclusions.end());
+	std::sort(exclusions.begin(), exclusions.end());
+	exclusions.erase(std::unique(exclusions.begin(), exclusions.end()),
+		exclusions.end());
+	result._exclusions = std::move(exclusions);
+	return result;
+}
+
+BindingValue SelectionChangedItemCollection::operator[](size_t ordinal) const
+{
+	if (ordinal < _values.size()) return _values[ordinal];
+	ordinal -= _values.size();
+	if (!_snapshot) return {};
+	if (_useIncludedIndices)
+	{
+		if (ordinal >= _includedIndices.size()) return {};
+		BindingSourceReference item;
+		const int index = _includedIndices[ordinal];
+		return index >= 0
+			&& _snapshot->TryGetItem(static_cast<size_t>(index), item) && item
+			? BindingValue(std::move(item)) : BindingValue{};
+	}
+	if (ordinal >= _rangeCount - _exclusions.size()) return {};
+	size_t low = ordinal;
+	const size_t maximumShift = (std::min)(
+		_exclusions.size(), _rangeCount - 1 - ordinal);
+	size_t high = ordinal + maximumShift;
+	while (low < high)
+	{
+		const size_t middle = low + (high - low) / 2;
+		const size_t excludedThrough = static_cast<size_t>(
+			std::upper_bound(_exclusions.begin(), _exclusions.end(),
+				static_cast<int>(middle)) - _exclusions.begin());
+		const size_t selectedThrough = middle + 1 - excludedThrough;
+		if (selectedThrough > ordinal) high = middle;
+		else low = middle + 1;
+	}
+	BindingSourceReference item;
+	return low < _rangeCount
+		&& _snapshot->TryGetItem(_rangeStart + low, item) && item
+		? BindingValue(std::move(item)) : BindingValue{};
+}
+
+BindingValue
+SelectionChangedItemCollection::const_iterator::operator*() const
+{
+	return _owner ? (*_owner)[_ordinal] : BindingValue{};
+}
+
 namespace
 {
+	template<typename TCallback>
+	class SelectorScopeExit final
+	{
+	public:
+		explicit SelectorScopeExit(TCallback callback)
+			: _callback(std::move(callback))
+		{
+		}
+
+		SelectorScopeExit(const SelectorScopeExit&) = delete;
+		SelectorScopeExit& operator=(const SelectorScopeExit&) = delete;
+
+		~SelectorScopeExit() noexcept { _callback(); }
+
+	private:
+		TCallback _callback;
+	};
+
+	template<typename TCallback>
+	SelectorScopeExit(TCallback) -> SelectorScopeExit<TCallback>;
+
 	bool SameCompiledBindingPath(
 		CompiledBindingPathView left,
 		CompiledBindingPathView right) noexcept
@@ -588,16 +703,24 @@ void Selector::SetIsSynchronizedWithCurrentItem(bool value)
 
 bool Selector::ApplyItemContainerStyle()
 {
-	for (size_t index = 0; index < ItemCount(); ++index)
+	auto apply = [this](Control* container)
 	{
-		if (auto* container = GetGeneratedItem(index))
-		{
-			cui::framework::StyleAccess::SetResourceKey(
-				*container, GetItemContainerStyle());
-			if (!cui::framework::StyleAccess::HasVisibleStyleRules(*container))
-				continue;
-			if (!cui::framework::StyleAccess::Refresh(*container, true)) return false;
-		}
+		if (!container) return true;
+		cui::framework::StyleAccess::SetResourceKey(
+			*container, GetItemContainerStyle());
+		return !cui::framework::StyleAccess::HasVisibleStyleRules(*container)
+			|| cui::framework::StyleAccess::Refresh(*container, true);
+	};
+	if (!GetItemsView())
+	{
+		for (size_t index = 0; index < AuthoredItemCount(); ++index)
+			if (!apply(GetGeneratedItem(index))) return false;
+		return true;
+	}
+	for (const auto& [index, realized] : GetRealizedItems())
+	{
+		(void)realized;
+		if (!apply(GetGeneratedItem(index))) return false;
 	}
 	return true;
 }
@@ -687,17 +810,20 @@ void Selector::RestoreItemsSourceTransactionState(
 	auto* selection =
 		dynamic_cast<SelectionItemsSourceTransactionState*>(&state);
 	if (!selection) return;
+	const ControlWeakReference ownerLifetime(this);
+	auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
 
 	const bool selectionChanged =
-		_selectedIndex != selection->SelectedIndex
-		|| _selectedItemIdentity.Shared()
+		live->_selectedIndex != selection->SelectedIndex
+		|| live->_selectedItemIdentity.Shared()
 			!= selection->SelectedItemIdentity.Shared();
 	if (selectionChanged)
 	{
 		int restoredIndex = -1;
 		try
 		{
-			const auto source = GetItemsView();
+			const auto source = live->GetItemsView();
 			BindingSourceReference indexedItem;
 			if (selection->SelectedItemIdentity
 				&& source && selection->SelectedIndex >= 0
@@ -714,19 +840,27 @@ void Selector::RestoreItemsSourceTransactionState(
 				restoredIndex = FindBindingListItemByValue(
 					source, CompiledBindingPathView{},
 					BindingValue(selection->SelectedItemIdentity));
+			live = dynamic_cast<Selector*>(ownerLifetime.Get());
+			if (!live) return;
 			if (restoredIndex < 0)
-				restoredIndex = ClampIndex(selection->SelectedIndex);
+				restoredIndex = live->ClampIndex(selection->SelectedIndex);
+			live = dynamic_cast<Selector*>(ownerLifetime.Get());
+			if (!live) return;
 			// Restore the effective SelectedIndex layer as well as the backing
 			// field. ItemsControl keeps its update-depth guard active here, so
 			// this cannot feed the old current view back into itself.
-			SetCurrentSelectedIndex(restoredIndex);
+			live->SetCurrentSelectedIndexWithoutSelectionChanged(restoredIndex);
+			live = dynamic_cast<Selector*>(ownerLifetime.Get());
+			if (!live) return;
 		}
 		catch (...)
 		{
+			live = dynamic_cast<Selector*>(ownerLifetime.Get());
+			if (!live) return;
 			// Preserve the original source-switch failure. The exact identity
 			// and observation are restored below without invoking user code.
 			restoredIndex = selection->SelectedIndex;
-			_selectedIndex = restoredIndex;
+			live->_selectedIndex = restoredIndex;
 		}
 		selection->SelectedIndex = restoredIndex;
 	}
@@ -734,11 +868,13 @@ void Selector::RestoreItemsSourceTransactionState(
 	// Reuse the original observation instead of rebuilding it during failure
 	// handling. This both disconnects the candidate item and makes rollback
 	// allocation-free after the transaction snapshot has been captured.
-	_selectedItemObservation =
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	live->_selectedItemObservation =
 		std::move(selection->SelectedItemObservation);
-	_selectedItemIdentity = selection->SelectedItemIdentity;
-	_selectedIndex = selection->SelectedIndex;
-	try { UpdateContainerSelection(); }
+	live->_selectedItemIdentity = selection->SelectedItemIdentity;
+	live->_selectedIndex = selection->SelectedIndex;
+	try { live->UpdateContainerSelection(); }
 	catch (...) {}
 }
 
@@ -836,30 +972,42 @@ void Selector::SetCurrentSelectedIndex(int value)
 }
 
 void Selector::SetCurrentSelectedIndexWithoutSelectionChanged(
-	int value)
+	int value,
+	bool ensureSelectedItemVisible)
 {
+	const ControlWeakReference ownerLifetime(this);
 	const bool previous = _suppressSelectionChanged;
+	const bool previousVisibility = _suppressEnsureSelectedItemVisible;
 	_suppressSelectionChanged = true;
-	try
+	_suppressEnsureSelectedItemVisible = previousVisibility
+		|| !ensureSelectedItemVisible;
+	SelectorScopeExit restoreSuppression(
+		[ownerLifetime, previous, previousVisibility]() noexcept
 	{
-		SetCurrentSelectedIndex(value);
-		_suppressSelectionChanged = previous;
-	}
-	catch (...)
-	{
-		_suppressSelectionChanged = previous;
-		throw;
-	}
+		if (auto* live = dynamic_cast<Selector*>(ownerLifetime.Get()))
+		{
+			live->_suppressSelectionChanged = previous;
+			live->_suppressEnsureSelectedItemVisible = previousVisibility;
+		}
+	});
+	SetCurrentSelectedIndex(value);
 }
 
 void Selector::ApplySelectedIndexChange(int oldValue, int newValue)
 {
 	if (oldValue == newValue) return;
+	const ControlWeakReference ownerLifetime(this);
 	OnSelectedIndexChanged(oldValue, newValue);
-	RefreshSelectedItemState(
-		!_suppressSelectionChanged, oldValue);
-	EnsureSelectedItemVisible();
-	SynchronizeCurrentViewFromSelection();
+	auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	live->RefreshSelectedItemState(
+		!live->_suppressSelectionChanged, oldValue);
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	if (!live->_suppressEnsureSelectedItemVisible)
+		live->EnsureSelectedItemVisible();
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (live) live->SynchronizeCurrentViewFromSelection();
 }
 
 BindingValue Selector::GetSelectionItemAt(size_t index) const
@@ -881,14 +1029,19 @@ BindingValue Selector::GetSelectionItemAt(size_t index) const
 void Selector::RaiseSelectionChanged(
 	int oldIndex,
 	int newIndex,
-	std::vector<BindingValue> removedItems,
-	std::vector<BindingValue> addedItems)
+	SelectionChangedItemCollection removedItems,
+	SelectionChangedItemCollection addedItems)
 {
 	if (_suppressSelectionChanged) return;
 	SelectionChangedEventArgs args(
 		oldIndex, newIndex,
 		std::move(removedItems),
 		std::move(addedItems));
+	OnSelectionChanged(args);
+}
+
+void Selector::OnSelectionChanged(SelectionChangedEventArgs& args)
+{
 	SelectionChanged(this, args);
 }
 
@@ -949,43 +1102,72 @@ void Selector::RefreshSelectedItemState(
 	bool raiseSelectionChanged,
 	std::optional<int> previousIndex)
 {
+	const ControlWeakReference ownerLifetime(this);
 	const BindingValue previousItem = GetSelectedItem();
 	BindingSourceReference next;
 	const auto source = GetItemsView();
-	if (source && _selectedIndex >= 0)
+	const int selectedIndex = _selectedIndex;
+	if (source && selectedIndex >= 0)
 		(void)source.Get()->TryGetItem(
-			static_cast<size_t>(_selectedIndex), next);
+			static_cast<size_t>(selectedIndex), next);
+	auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != source.Shared()
+		|| live->_selectedIndex != selectedIndex) return;
 	Control* nextAuthored = nullptr;
-	if (!source && _selectedIndex >= 0)
-		nextAuthored = GetAuthoredItem(static_cast<size_t>(_selectedIndex));
-	const bool itemChanged = next.Shared() != _selectedItemIdentity.Shared()
-		|| nextAuthored != _selectedAuthoredItemIdentity;
-	_selectedItemIdentity = std::move(next);
-	_selectedAuthoredItemIdentity = nextAuthored;
-	if (!_compiledSelectedValuePath.Empty())
-		_selectedItemObservation = ObserveBindingPaths(
-			_selectedItemIdentity, { _compiledSelectedValuePath },
-			[this] { NotifySelectionProjectionsChanged(); });
+	if (!source && selectedIndex >= 0)
+		nextAuthored = live->GetAuthoredItem(
+			static_cast<size_t>(selectedIndex));
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != source.Shared()
+		|| live->_selectedIndex != selectedIndex) return;
+	const bool itemChanged = next.Shared()
+			!= live->_selectedItemIdentity.Shared()
+		|| nextAuthored != live->_selectedAuthoredItemIdentity;
+	live->_selectedItemIdentity = std::move(next);
+	live->_selectedAuthoredItemIdentity = nextAuthored;
+	BindingPathObservation observation;
+	if (!live->_compiledSelectedValuePath.Empty())
+		observation = ObserveBindingPaths(
+			live->_selectedItemIdentity, { live->_compiledSelectedValuePath },
+			[ownerLifetime]
+			{
+				if (auto* owner = dynamic_cast<Selector*>(ownerLifetime.Get()))
+					owner->NotifySelectionProjectionsChanged();
+			});
 #if CUI_ENABLE_DYNAMIC_XAML
-	else _selectedItemObservation = ObserveAuthoredSelectedValuePath(
-		_selectedItemIdentity,
-		[this] { NotifySelectionProjectionsChanged(); });
+	else observation = live->ObserveAuthoredSelectedValuePath(
+		live->_selectedItemIdentity,
+		[ownerLifetime]
+		{
+			if (auto* owner = dynamic_cast<Selector*>(ownerLifetime.Get()))
+				owner->NotifySelectionProjectionsChanged();
+		});
 #else
-	else _selectedItemObservation = {};
+	else observation = {};
 #endif
-	UpdateContainerSelection();
-	NotifySelectionProjectionsChanged();
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != source.Shared()
+		|| live->_selectedIndex != selectedIndex) return;
+	live->_selectedItemObservation = std::move(observation);
+	live->UpdateContainerSelection();
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != source.Shared()
+		|| live->_selectedIndex != selectedIndex) return;
+	live->NotifySelectionProjectionsChanged();
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != source.Shared()
+		|| live->_selectedIndex != selectedIndex) return;
 	if ((raiseSelectionChanged || itemChanged)
-		&& !_suppressSelectionChanged)
+		&& !live->_suppressSelectionChanged)
 	{
-		const BindingValue currentItem = GetSelectedItem();
+		const BindingValue currentItem = live->GetSelectedItem();
 		std::vector<BindingValue> removed;
 		std::vector<BindingValue> added;
 		if (!previousItem.Empty()) removed.push_back(previousItem);
 		if (!currentItem.Empty()) added.push_back(currentItem);
-		RaiseSelectionChanged(
-			previousIndex.value_or(_selectedIndex),
-			_selectedIndex,
+		live->RaiseSelectionChanged(
+			previousIndex.value_or(live->_selectedIndex),
+			live->_selectedIndex,
 			std::move(removed),
 			std::move(added));
 	}
@@ -993,22 +1175,39 @@ void Selector::RefreshSelectedItemState(
 
 void Selector::UpdateContainerSelection()
 {
-	for (size_t index = 0; index < AuthoredItemCount(); ++index)
+	const ControlWeakReference ownerLifetime(this);
+	for (size_t index = 0;; ++index)
 	{
+		auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live || index >= live->AuthoredItemCount()) break;
 		if (auto* container =
 			dynamic_cast<ItemContainerControl*>(
-				GetAuthoredItem(index)))
+				live->GetAuthoredItem(index)))
 			container->SetCurrentIsSelected(
-				IsIndexSelected(index));
+				live->IsIndexSelected(index));
+		if (!ownerLifetime.Get()) return;
 	}
-	for (size_t index = 0; index < ItemCount(); ++index)
+	std::vector<size_t> realizedIndices;
+	if (auto* live = dynamic_cast<Selector*>(ownerLifetime.Get()))
 	{
+		realizedIndices.reserve(live->GetRealizedItems().size());
+		for (const auto& [index, item] : live->GetRealizedItems())
+		{
+			(void)item;
+			realizedIndices.push_back(index);
+		}
+	}
+	for (const size_t index : realizedIndices)
+	{
+		auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live) return;
 		if (auto* container = dynamic_cast<ItemContainerControl*>(
-			GetGeneratedItem(index)))
+			live->GetGeneratedItem(index)))
 		{
 			container->SetCurrentIsSelected(
-				IsIndexSelected(index));
+				live->IsIndexSelected(index));
 		}
+		if (!ownerLifetime.Get()) return;
 	}
 }
 
@@ -1065,25 +1264,38 @@ bool Selector::ProcessInput(const InputReport& input)
 
 void Selector::NotifySelectionProjectionsChanged()
 {
-	auto synchronize = [this](
+	const ControlWeakReference ownerLifetime(this);
+	auto synchronize = [](
+		Selector& owner,
 		const DependencyProperty& property,
 		const BindingValue& current)
 	{
-		const auto source = GetPropertyValueSource(property);
+		const auto source = owner.GetPropertyValueSource(property);
 		if (source == DependencyPropertyValueSource::Default) return;
 		BindingValue stored;
-		if (!TryGetPropertyValue(property, source, stored)
+		if (!owner.TryGetPropertyValue(property, source, stored)
 			|| !BindingItemValuesEqual(stored, current))
-			(void)TrySetCurrentPropertyValue(property, current);
+			(void)owner.TrySetCurrentPropertyValue(property, current);
 	};
-	synchronize(SelectedItemProperty(), GetSelectedItem());
-	synchronize(SelectedValueProperty(), GetSelectedValue());
-	cui::framework::EventAccess::Raise(_selectedItemChanged, this);
-	cui::framework::EventAccess::Raise(_selectedValueChanged, this);
+	synchronize(*this, SelectedItemProperty(), GetSelectedItem());
+	auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	synchronize(*live, SelectedValueProperty(), live->GetSelectedValue());
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	cui::framework::EventAccess::RaiseWhile(
+		live->_selectedItemChanged,
+		[&ownerLifetime] { return ownerLifetime.Get() != nullptr; }, live);
+	live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	cui::framework::EventAccess::RaiseWhile(
+		live->_selectedValueChanged,
+		[&ownerLifetime] { return ownerLifetime.Get() != nullptr; }, live);
 }
 
 void Selector::ReconnectCurrentView()
 {
+	const ControlWeakReference ownerLifetime(this);
 	if (!_isSynchronizedWithCurrentItem)
 	{
 		_currentViewChanged.Disconnect();
@@ -1107,35 +1319,51 @@ void Selector::ReconnectCurrentView()
 		_synchronizingCurrentItem = true;
 		try
 		{
+			const ControlWeakReference subscriberLifetime(this);
 			replacement = view->SubscribeCurrentChanged(
-				[this] { SynchronizeSelectionFromCurrentView(); });
+				[subscriberLifetime]
+				{
+					if (auto* owner = dynamic_cast<Selector*>(
+						subscriberLifetime.Get()))
+						owner->SynchronizeSelectionFromCurrentView();
+				});
 		}
 		catch (...)
 		{
-			_synchronizingCurrentItem = wasSynchronizing;
-			_pendingCurrentItemSynchronization = previousPending;
+			if (auto* live = dynamic_cast<Selector*>(ownerLifetime.Get()))
+			{
+				live->_synchronizingCurrentItem = wasSynchronizing;
+				live->_pendingCurrentItemSynchronization = previousPending;
+			}
 			throw;
 		}
-		_synchronizingCurrentItem = wasSynchronizing;
-		_pendingCurrentItemSynchronization = previousPending;
+		auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live) return;
+		live->_synchronizingCurrentItem = wasSynchronizing;
+		live->_pendingCurrentItemSynchronization = previousPending;
 	}
 
 	// Subscribe before touching the established connection. This is the
 	// Selector half of ItemsControl's source transaction: a throwing candidate
 	// subscription leaves the old source's currency connection intact, so the
 	// reverse OnItemsSourceChanged(new, old) hook can restore coherently.
-	auto previous = std::move(_currentViewChanged);
-	_currentViewChanged = std::move(replacement);
+	auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+	if (!live) return;
+	auto previous = std::move(live->_currentViewChanged);
+	live->_currentViewChanged = std::move(replacement);
 	if (!view) return;
 	try
 	{
-		SynchronizeSelectionFromCurrentView();
+		live->SynchronizeSelectionFromCurrentView();
 	}
 	catch (...)
 	{
-		_currentViewChanged = std::move(previous);
-		_pendingCurrentItemSynchronization =
-			CurrentItemSynchronizationDirection::None;
+		if (auto* owner = dynamic_cast<Selector*>(ownerLifetime.Get()))
+		{
+			owner->_currentViewChanged = std::move(previous);
+			owner->_pendingCurrentItemSynchronization =
+				CurrentItemSynchronizationDirection::None;
+		}
 		throw;
 	}
 }
@@ -1158,6 +1386,7 @@ void Selector::SynchronizeCurrentViewFromSelection()
 void Selector::RequestCurrentItemSynchronization(
 	CurrentItemSynchronizationDirection direction)
 {
+	const ControlWeakReference ownerLifetime(this);
 	constexpr size_t maximumConvergenceIterations = 64;
 	if (_synchronizingCurrentItem)
 	{
@@ -1172,38 +1401,47 @@ void Selector::RequestCurrentItemSynchronization(
 	size_t iterations = 0;
 	while (next != CurrentItemSynchronizationDirection::None)
 	{
+		auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live) return;
 		if (iterations++ >= maximumConvergenceIterations)
 		{
 			// Host event handlers can intentionally redirect selection and
 			// currency forever. Bound one synchronous convergence pass so such
 			// an adversarial cycle cannot hang the UI thread. A later independent
 			// selection/currency change may start a fresh bounded pass.
-			_pendingCurrentItemSynchronization =
+			live->_pendingCurrentItemSynchronization =
 				CurrentItemSynchronizationDirection::None;
 			break;
 		}
-		_pendingCurrentItemSynchronization =
+		live->_pendingCurrentItemSynchronization =
 			CurrentItemSynchronizationDirection::None;
-		_synchronizingCurrentItem = true;
+		live->_synchronizingCurrentItem = true;
 		try
 		{
 			if (next == CurrentItemSynchronizationDirection::SelectionFromView)
-				ApplySelectionFromCurrentView();
+				live->ApplySelectionFromCurrentView();
 			else
-				ApplyCurrentViewFromSelection();
-			_synchronizingCurrentItem = false;
+				live->ApplyCurrentViewFromSelection();
+			live = dynamic_cast<Selector*>(ownerLifetime.Get());
+			if (!live) return;
+			live->_synchronizingCurrentItem = false;
 		}
 		catch (...)
 		{
-			_synchronizingCurrentItem = false;
-			_pendingCurrentItemSynchronization =
-				CurrentItemSynchronizationDirection::None;
+			if (auto* owner = dynamic_cast<Selector*>(ownerLifetime.Get()))
+			{
+				owner->_synchronizingCurrentItem = false;
+				owner->_pendingCurrentItemSynchronization =
+					CurrentItemSynchronizationDirection::None;
+			}
 			throw;
 		}
+		live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live) return;
 		next = std::exchange(
-			_pendingCurrentItemSynchronization,
+			live->_pendingCurrentItemSynchronization,
 			CurrentItemSynchronizationDirection::None);
-		if (!_isSynchronizedWithCurrentItem)
+		if (!live->_isSynchronizedWithCurrentItem)
 			next = CurrentItemSynchronizationDirection::None;
 	}
 }
@@ -1242,15 +1480,19 @@ void Selector::ApplySelectionFromCurrentView()
 
 void Selector::ApplyCurrentViewFromSelection()
 {
+	const ControlWeakReference ownerLifetime(this);
 	const auto source = GetItemsView();
 	auto* view = source
 		? dynamic_cast<IBindingListCurrentView*>(source.Get())
 		: nullptr;
 	if (!view || view->CurrentPosition() == _selectedIndex) return;
 
-	if (!view->MoveCurrentToPosition(_selectedIndex))
+	const int selectedIndex = _selectedIndex;
+	if (!view->MoveCurrentToPosition(selectedIndex))
 	{
+		auto* live = dynamic_cast<Selector*>(ownerLifetime.Get());
+		if (!live) return;
 		const int currentPosition = view->CurrentPosition();
-		SetCurrentSelectedIndex(currentPosition);
+		live->SetCurrentSelectedIndex(currentPosition);
 	}
 }

@@ -1730,6 +1730,8 @@ CodeGenerator::FindKnownProperty(
 		UIClass::UI_CheckBox,
 		UIClass::UI_RadioButton,
 		UIClass::UI_Switch,
+		UIClass::UI_DataGridColumnHeader,
+		UIClass::UI_DataGridRowHeader,
 	});
 	const bool toggleButton = isOneOf({
 		UIClass::UI_ToggleButton,
@@ -1749,6 +1751,9 @@ CodeGenerator::FindKnownProperty(
 		UIClass::UI_ListViewItem,
 		UIClass::UI_ComboBoxItem,
 		UIClass::UI_StatusBarItem,
+		UIClass::UI_DataGridRow,
+		UIClass::UI_DataGridCell,
+		UIClass::UI_DataGridColumnHeader,
 		UIClass::UI_Window,
 	});
 	const bool headeredControl = isOneOf({
@@ -1774,6 +1779,7 @@ CodeGenerator::FindKnownProperty(
 		UIClass::UI_ListView,
 		UIClass::UI_ComboBox,
 		UIClass::UI_TabControl,
+		UIClass::UI_DataGrid,
 	});
 	const bool itemsControl =
 		IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type);
@@ -1832,6 +1838,11 @@ CodeGenerator::FindKnownProperty(
 				: propertyName == L"Maximum" ? "SetMaximum" : "SetValue" };
 	if (propertyName == L"SelectedIndex" && selector)
 		return TypedPropertyInfo{ "SetSelectedIndex" };
+	if (propertyName == L"SelectionMode"
+		&& isOneOf({ UIClass::UI_ListBox, UIClass::UI_ListView,
+			UIClass::UI_DataGrid }))
+		return TypedPropertyInfo{
+			"SetSelectionMode", false, {}, "::SelectionMode" };
 	if (propertyName == L"IsSynchronizedWithCurrentItem" && selector)
 		return TypedPropertyInfo{ "SetIsSynchronizedWithCurrentItem" };
 	if (propertyName == L"DisplayMemberPath"
@@ -1868,8 +1879,36 @@ CodeGenerator::FindKnownProperty(
 		UIClass::UI_ListBoxItem,
 		UIClass::UI_ListViewItem,
 		UIClass::UI_ComboBoxItem,
+		UIClass::UI_DataGridRow,
 	}))
 		return TypedPropertyInfo{ "SetIsSelected" };
+	if (type == UIClass::UI_DataGrid)
+	{
+		if (propertyName == L"AutoGenerateColumns"
+			|| propertyName == L"EnableColumnVirtualization"
+			|| propertyName == L"IsReadOnly"
+			|| propertyName == L"CanUserSortColumns"
+			|| propertyName == L"CanUserResizeColumns"
+			|| propertyName == L"ColumnHeaderHeight"
+			|| propertyName == L"RowHeaderWidth"
+			|| propertyName == L"RowHeight"
+			|| propertyName == L"RowBackground"
+			|| propertyName == L"AlternatingRowBackground"
+			|| propertyName == L"HorizontalGridLinesBrush"
+			|| propertyName == L"VerticalGridLinesBrush")
+			return TypedPropertyInfo{ setterName(propertyName) };
+		if (propertyName == L"SelectionUnit")
+			return TypedPropertyInfo{
+				"SetSelectionUnit", false, {}, "DataGridSelectionUnit" };
+		if (propertyName == L"HeadersVisibility")
+			return TypedPropertyInfo{
+				"SetHeadersVisibility", false, {},
+				"DataGridHeadersVisibility" };
+		if (propertyName == L"GridLinesVisibility")
+			return TypedPropertyInfo{
+				"SetGridLinesVisibility", false, {},
+				"DataGridGridLinesVisibility" };
+	}
 	if (propertyName == L"GroupName"
 		&& type == UIClass::UI_RadioButton)
 		return TypedPropertyInfo{ "SetGroupName" };
@@ -2915,6 +2954,13 @@ std::string CodeGenerator::GetControlTypeName(UIClass type) const
 	case UIClass::UI_ContentPresenter: return "ContentPresenter";
 	case UIClass::UI_ItemsPresenter: return "ItemsPresenter";
 	case UIClass::UI_ContentControl: return "ContentControl";
+	case UIClass::UI_DataGrid: return "DataGrid";
+	case UIClass::UI_DataGridRow: return "DataGridRow";
+	case UIClass::UI_DataGridCell: return "DataGridCell";
+	case UIClass::UI_DataGridColumnHeader: return "DataGridColumnHeader";
+	case UIClass::UI_DataGridColumnHeadersPresenter:
+		return "DataGridColumnHeadersPresenter";
+	case UIClass::UI_DataGridRowHeader: return "DataGridRowHeader";
 	default: return "Control";
 	}
 }
@@ -2935,6 +2981,13 @@ std::string CodeGenerator::GetIncludeForType(UIClass type) const
 	case UIClass::UI_ListView:
 	case UIClass::UI_ListViewItem:
 		return "ListView.h";
+	case UIClass::UI_DataGrid:
+	case UIClass::UI_DataGridRow:
+	case UIClass::UI_DataGridCell:
+	case UIClass::UI_DataGridColumnHeader:
+	case UIClass::UI_DataGridColumnHeadersPresenter:
+	case UIClass::UI_DataGridRowHeader:
+		return "DataGrid.h";
 	case UIClass::UI_TreeView:
 	case UIClass::UI_TreeViewItem:
 		return "TreeView.h";
@@ -3083,6 +3136,52 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 	if (propertyName == L"ItemsSource"
 		&& IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
 		return "ItemsControl::ItemsSourceProperty()";
+	if (propertyName == L"SelectionMode"
+		&& (type == UIClass::UI_ListBox
+			|| type == UIClass::UI_ListView
+			|| type == UIClass::UI_DataGrid))
+		return "ListBox::SelectionModeProperty()";
+	if (type == UIClass::UI_DataGridCell && propertyName == L"IsSelected")
+		return "DataGridCell::IsSelectedProperty()";
+	if (type == UIClass::UI_DataGridRowHeader
+		&& propertyName == L"IsRowSelected")
+		return readOnlyIdentity("DataGridRowHeader::IsRowSelectedProperty()");
+	if (type == UIClass::UI_DataGrid)
+	{
+		if (propertyName == L"AutoGenerateColumns")
+			return "DataGrid::AutoGenerateColumnsProperty()";
+		if (propertyName == L"EnableColumnVirtualization")
+			return "DataGrid::EnableColumnVirtualizationProperty()";
+		if (propertyName == L"IsReadOnly")
+			return "DataGrid::IsReadOnlyProperty()";
+		if (propertyName == L"CanUserSortColumns")
+			return "DataGrid::CanUserSortColumnsProperty()";
+		if (propertyName == L"CanUserResizeColumns")
+			return "DataGrid::CanUserResizeColumnsProperty()";
+		if (propertyName == L"SelectionUnit")
+			return "DataGrid::SelectionUnitProperty()";
+		if (propertyName == L"ColumnHeaderHeight")
+			return "DataGrid::ColumnHeaderHeightProperty()";
+		if (propertyName == L"RowHeaderWidth")
+			return "DataGrid::RowHeaderWidthProperty()";
+		if (propertyName == L"RowHeaderActualWidth")
+			return readOnlyIdentity(
+				"DataGrid::RowHeaderActualWidthProperty()");
+		if (propertyName == L"RowHeight")
+			return "DataGrid::RowHeightProperty()";
+		if (propertyName == L"HeadersVisibility")
+			return "DataGrid::HeadersVisibilityProperty()";
+		if (propertyName == L"GridLinesVisibility")
+			return "DataGrid::GridLinesVisibilityProperty()";
+		if (propertyName == L"RowBackground")
+			return "DataGrid::RowBackgroundProperty()";
+		if (propertyName == L"AlternatingRowBackground")
+			return "DataGrid::AlternatingRowBackgroundProperty()";
+		if (propertyName == L"HorizontalGridLinesBrush")
+			return "DataGrid::HorizontalGridLinesBrushProperty()";
+		if (propertyName == L"VerticalGridLinesBrush")
+			return "DataGrid::VerticalGridLinesBrushProperty()";
+	}
 	if (type == UIClass::UI_TreeViewItem
 		&& propertyName == L"HasItems")
 		return readOnlyIdentity("TreeViewItem::HasItemsProperty()");
@@ -11838,6 +11937,278 @@ std::string CodeGenerator::GenerateCppForBaseName(
 					node, L"Header", node.Structure.HeaderTemplate));
 	}
 	if (emittedCompiledMemberPaths) cpp << "\n";
+
+	bool emittedDataGridColumns = false;
+	for (const auto& node : _sourceDocument.Nodes)
+	{
+		if (node.TemplateState.Generated
+			|| node.Type != UIClass::UI_DataGrid) continue;
+
+		const auto control = GetVarName(node);
+		bool autoGenerateColumns = true;
+		if (node.Bindings.contains(L"AutoGenerateColumns"))
+			throw std::invalid_argument(
+				"DataGrid.AutoGenerateColumns Binding cannot be installed before "
+				"ItemsSource realization; use a scalar value");
+		if (const auto* assignment =
+			node.Properties.Find(L"AutoGenerateColumns"))
+		{
+			if (!assignment->ResourceKey.empty()
+				|| !assignment->DynamicResourceKey.empty())
+				throw std::invalid_argument(
+					"DataGrid.AutoGenerateColumns must be a scalar value so it "
+					"can be installed before ItemsSource realization");
+			const auto typed = FindGeneratedProperty(
+				node, L"AutoGenerateColumns");
+			const auto valueExpression =
+				GenerateStyleValueExpression(assignment->Value);
+			const auto scalarValue = UnwrapBindingValue(valueExpression);
+			if (scalarValue == "true") autoGenerateColumns = true;
+			else if (scalarValue == "false") autoGenerateColumns = false;
+			else throw std::invalid_argument(
+				"DataGrid.AutoGenerateColumns must be a Boolean scalar");
+			const auto call = typed
+				? GenerateTypedPropertyCall(
+					control, *typed, valueExpression)
+				: std::string{};
+			if (call.empty())
+				throw std::invalid_argument(
+					"DataGrid.AutoGenerateColumns has no typed early setter");
+			cpp << "\t" << call << ";\n";
+			compiledMemberPathProperties[&node].insert(
+				L"AutoGenerateColumns");
+		}
+
+		const auto itemTypeName = staticImplicitItemTypeForNode(node);
+		const auto* itemType = itemTypeName.empty()
+			? nullptr : canonicalDataDocument.FindDataType(itemTypeName);
+		std::vector<DesignerModel::DesignDataGridColumn> columns =
+			node.Structure.DataGridColumns.value_or(
+				std::vector<DesignerModel::DesignDataGridColumn>{});
+		const size_t explicitColumnCount = columns.size();
+		if (!dynamicWindow && autoGenerateColumns)
+		{
+			const bool hasAuthoredItemsSource =
+				!node.Structure.ItemsSourceResource.empty()
+				|| node.Bindings.contains(L"ItemsSource")
+				|| node.Properties.Find(L"ItemsSource") != nullptr;
+			if (!itemType && hasAuthoredItemsSource)
+				throw std::invalid_argument(
+					"Static DataGrid AutoGenerateColumns requires a statically "
+					"known ItemsSource ItemType");
+			if (itemType) for (const auto& property : itemType->Properties)
+			{
+				if (!property.CanRead
+					|| property.ValueKind == BindingValueKind::Object) continue;
+				DesignerModel::DesignDataGridColumn column;
+				column.Kind = property.ValueKind == BindingValueKind::Bool
+					|| property.ValueKind == BindingValueKind::NullableBool
+					? DesignerModel::DesignDataGridColumnKind::CheckBox
+					: DesignerModel::DesignDataGridColumnKind::Text;
+				column.Header = property.Path;
+				column.IsReadOnly = !property.CanWrite;
+				column.IsThreeState = property.ValueKind
+					== BindingValueKind::NullableBool;
+				column.SortMemberPath = property.Path;
+				DesignerDataBinding binding;
+				binding.SourceProperty = property.Path;
+				binding.Mode = property.CanWrite
+					? BindingMode::Default : BindingMode::OneWay;
+				column.Binding = std::move(binding);
+				columns.push_back(std::move(column));
+			}
+		}
+		if (!node.Structure.DataGridColumns && columns.empty()) continue;
+
+		if (!emittedDataGridColumns)
+		{
+			cpp << "\t// DataGrid columns are non-visual declarations. Install "
+				"their immutable binding paths before ItemsSource realizes "
+				"rows.\n";
+			emittedDataGridColumns = true;
+		}
+		cpp << "\t" << control << "->ClearColumns();\n";
+
+		for (size_t columnIndex = 0;
+			columnIndex < columns.size();
+			++columnIndex)
+		{
+			const auto& column = columns[columnIndex];
+			const auto variable = "__dataGridColumn_"
+				+ std::to_string(node.Id) + "_"
+				+ std::to_string(columnIndex + 1);
+			const char* typeName = nullptr;
+			switch (column.Kind)
+			{
+			case DesignerModel::DesignDataGridColumnKind::Text:
+				typeName = "DataGridTextColumn";
+				break;
+			case DesignerModel::DesignDataGridColumnKind::CheckBox:
+				typeName = "DataGridCheckBoxColumn";
+				break;
+			case DesignerModel::DesignDataGridColumnKind::Template:
+				typeName = "DataGridTemplateColumn";
+				break;
+			}
+			if (!typeName)
+				throw std::invalid_argument(
+					"DataGrid column kind has no native lowering");
+			cpp << "\tauto " << variable << " = std::make_unique<"
+				<< typeName << ">();\n";
+			cpp << "\t" << variable << "->SetHeader(BindingValue(L\""
+				<< EscapeWStringLiteral(column.Header) << "\"));\n";
+
+			std::string widthExpression;
+			switch (column.Width.Unit)
+			{
+			case DesignerModel::DesignDataGridLengthUnit::Auto:
+				widthExpression = "DataGridLength::Auto()";
+				break;
+			case DesignerModel::DesignDataGridLengthUnit::SizeToHeader:
+				widthExpression = "DataGridLength::SizeToHeader()";
+				break;
+			case DesignerModel::DesignDataGridLengthUnit::SizeToCells:
+				widthExpression = "DataGridLength::SizeToCells()";
+				break;
+			case DesignerModel::DesignDataGridLengthUnit::Pixel:
+				widthExpression = "DataGridLength("
+					+ DoubleLiteral(column.Width.Value) + ")";
+				break;
+			case DesignerModel::DesignDataGridLengthUnit::Star:
+				widthExpression = "DataGridLength::Star("
+					+ DoubleLiteral(column.Width.Value) + ")";
+				break;
+			}
+			cpp << "\t" << variable << "->SetWidth("
+				<< widthExpression << ");\n";
+			cpp << "\t" << variable << "->SetMinWidth("
+				<< DoubleLiteral(column.MinWidth) << ");\n";
+			if (std::isfinite(column.MaxWidth))
+				cpp << "\t" << variable << "->SetMaxWidth("
+					<< DoubleLiteral(column.MaxWidth) << ");\n";
+			cpp << "\t" << variable << "->SetIsReadOnly("
+				<< (column.IsReadOnly ? "true" : "false") << ");\n";
+			if (column.Kind
+				== DesignerModel::DesignDataGridColumnKind::CheckBox)
+			{
+				if (column.IsThreeState)
+					cpp << "\t" << variable
+						<< "->SetIsThreeState(true);\n";
+			}
+			else if (column.IsThreeState)
+				throw std::invalid_argument(
+					"IsThreeState is only valid for DataGridCheckBoxColumn");
+			cpp << "\t" << variable << "->SetCanUserSort("
+				<< (column.CanUserSort ? "true" : "false") << ");\n";
+			cpp << "\t" << variable << "->SetCanUserResize("
+				<< (column.CanUserResize ? "true" : "false") << ");\n";
+
+			if (column.Binding)
+			{
+				if (column.Kind
+					== DesignerModel::DesignDataGridColumnKind::Template)
+					throw std::invalid_argument(
+						"DataGridTemplateColumn cannot own a BoundColumn Binding");
+				const auto& binding = *column.Binding;
+				if (binding.IsMultiBinding()
+					|| !binding.ElementName.empty()
+					|| binding.RelativeSource
+						!= DesignerBindingRelativeSource::None)
+					throw std::invalid_argument(
+						"DataGridBoundColumn currently requires a row DataContext "
+						"Binding source");
+				const auto path = DesignerDataContextSchemaUtils::NormalizePath(
+					binding.SourceProperty);
+				if (path.empty())
+					throw std::invalid_argument(
+						"DataGridBoundColumn Binding.Path cannot be empty");
+				if (dynamicWindow)
+					cpp << "\t" << variable << "->SetBindingPath(L\""
+						<< EscapeWStringLiteral(path) << "\");\n";
+				else
+				{
+					if (!itemType)
+						throw std::invalid_argument(
+							"Static DataGrid column Binding requires a statically "
+							"known ItemsSource ItemType");
+					const auto operand = emitCompiledBindingPath(
+						path, &itemType->Properties, "\t",
+						"Static DataGrid column Binding", nullptr, {}, {});
+					cpp << "\t" << variable
+						<< "->SetCompiledBindingPath(" << operand << ");\n";
+				}
+				cpp << "\t" << variable << "->SetBindingMode("
+					<< BindingModeToExpr(binding.Mode) << ");\n";
+				cpp << "\t" << variable << "->SetDataSourceUpdateMode("
+					<< DataSourceUpdateModeToExpr(binding.UpdateMode) << ");\n";
+				const auto options = lowerBindingOptions(binding);
+				if (!options.ConverterName.empty())
+					cpp << "\t" << variable << "->SetBindingConverter("
+						<< bindingConverterExpression(
+							options.ConverterName, binding) << ");\n";
+				if (binding.FallbackValue)
+					cpp << "\t" << variable << "->SetFallbackValue("
+						<< options.Fallback << ");\n";
+				if (binding.TargetNullValue)
+					cpp << "\t" << variable << "->SetTargetNullValue("
+						<< options.TargetNull << ");\n";
+				if (binding.ConverterParameter)
+					cpp << "\t" << variable << "->SetConverterParameter("
+						<< options.ConverterParameter << ");\n";
+				if (binding.StringFormat)
+					cpp << "\t" << variable << "->SetStringFormat("
+						<< options.StringFormat << ");\n";
+			}
+
+			if (!column.SortMemberPath.empty())
+			{
+				const auto path = DesignerDataContextSchemaUtils::NormalizePath(
+					column.SortMemberPath);
+				if (dynamicWindow)
+					cpp << "\t" << variable << "->SetSortMemberPath(L\""
+						<< EscapeWStringLiteral(path) << "\");\n";
+				else
+				{
+					if (!itemType)
+						throw std::invalid_argument(
+							"Static DataGrid SortMemberPath requires a statically "
+							"known ItemsSource ItemType");
+					const auto operand = emitCompiledBindingPath(
+						path, &itemType->Properties, "\t",
+						"Static DataGrid SortMemberPath", nullptr, {}, {});
+					cpp << "\t" << variable
+						<< "->SetCompiledSortMemberPath(" << operand << ");\n";
+				}
+			}
+
+			if (column.Kind
+				== DesignerModel::DesignDataGridColumnKind::Template)
+			{
+				auto emitTemplate = [&](const std::wstring& key,
+					const char* setter)
+				{
+					if (key.empty()) return;
+					const auto found = staticDataTemplateVariables.find(key);
+					if (found == staticDataTemplateVariables.end())
+						throw std::invalid_argument(
+							"DataGridTemplateColumn template resource has no "
+							"native lowering");
+					cpp << "\t" << variable << "->" << setter
+						<< "(ItemTemplateReference(" << found->second << "));\n";
+				};
+				emitTemplate(column.CellTemplate, "SetCellTemplate");
+				emitTemplate(
+					column.CellEditingTemplate, "SetCellEditingTemplate");
+			}
+
+			cpp << "\t" << control << "->"
+				<< (columnIndex < explicitColumnCount
+					? "AddColumn" : "AddAutoGeneratedColumn")
+				<< "(std::move("
+				<< variable << "));\n";
+		}
+	}
+	if (emittedDataGridColumns) cpp << "\n";
 	for (const auto& node : _sourceDocument.Nodes)
 	{
 		if (node.TemplateState.Generated) continue;

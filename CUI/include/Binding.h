@@ -294,6 +294,12 @@ public:
 	bool TryGetFloat(float& out) const;
 	bool TryGetDouble(double& out) const;
 	bool TryGetString(std::wstring& out) const;
+	/**
+	 * Returns a non-owning view only when the stored value is already a String.
+	 * Unlike TryGetString this never formats or copies a value; the view remains
+	 * valid until this BindingValue is assigned or destroyed.
+	 */
+	bool TryGetStringView(std::wstring_view& out) const noexcept;
 
 	template<typename T>
 	bool TryGet(T& out) const

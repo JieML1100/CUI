@@ -68,6 +68,16 @@
 
 namespace accessibility_detail
 {
+	struct SafeArrayDestroyer
+	{
+		void operator()(SAFEARRAY* value) const noexcept
+		{
+			if (value) (void)::SafeArrayDestroy(value);
+		}
+	};
+
+	using UniqueSafeArray = std::unique_ptr<SAFEARRAY, SafeArrayDestroyer>;
+
 	LONG ToMsaaRole(AutomationControlType controlType)
 	{
 		switch (controlType)
@@ -152,6 +162,38 @@ namespace accessibility_detail
 		value->lVal = number;
 	}
 
+	// Pattern property getters return ownership of their provider references or
+	// SAFEARRAYs to the caller.  Transfer that ownership into the VARIANT so a
+	// later VariantClear performs the matching Release/SafeArrayDestroy.
+	HRESULT TakeVariantProvider(
+		VARIANT* value, IRawElementProviderSimple* provider)
+	{
+		if (!value)
+		{
+			if (provider) provider->Release();
+			return E_POINTER;
+		}
+		::VariantInit(value);
+		if (!provider) return S_OK;
+		value->vt = VT_UNKNOWN;
+		value->punkVal = static_cast<IUnknown*>(provider);
+		return S_OK;
+	}
+
+	HRESULT TakeVariantProviderArray(VARIANT* value, SAFEARRAY* providers)
+	{
+		if (!value)
+		{
+			if (providers) (void)::SafeArrayDestroy(providers);
+			return E_POINTER;
+		}
+		::VariantInit(value);
+		if (!providers) return S_OK;
+		value->vt = static_cast<VARTYPE>(VT_ARRAY | VT_UNKNOWN);
+		value->parray = providers;
+		return S_OK;
+	}
+
 	HRESULT ToHresult(AutomationOperationResult result)
 	{
 		switch (result)
@@ -163,6 +205,8 @@ namespace accessibility_detail
 		case AutomationOperationResult::ElementNotEnabled:
 			return UIA_E_ELEMENTNOTENABLED;
 		case AutomationOperationResult::InvalidArgument: return E_INVALIDARG;
+		case AutomationOperationResult::ElementNotAvailable:
+			return UIA_E_ELEMENTNOTAVAILABLE;
 		default: return UIA_E_INVALIDOPERATION;
 		}
 	}
@@ -217,12 +261,31 @@ public:
 
 	long ChildIdFor(Control* control) const
 	{
-		if (!_form || !control) return CHILDID_SELF;
-		auto controls = _form->GetAccessibleControls();
-		auto position = std::find(controls.begin(), controls.end(), control);
-		return position == controls.end()
-			? CHILDID_SELF
-			: static_cast<long>(position - controls.begin()) + 1;
+		try
+		{
+			auto* form = _form;
+			if (!form || !control) return CHILDID_SELF;
+			const ControlWeakReference formLifetime(form);
+			const ControlWeakReference controlLifetime(control);
+			auto controls = form->GetAccessibleControls();
+			form = dynamic_cast<Window*>(formLifetime.Get());
+			control = controlLifetime.Get();
+			if (!form || _form != form || !control) return CHILDID_SELF;
+			auto* representative = form->ResolveAccessibleRepresentative(
+				control, controls);
+			form = dynamic_cast<Window*>(formLifetime.Get());
+			if (!form || _form != form) return CHILDID_SELF;
+			auto position = std::find(
+				controls.begin(), controls.end(), representative);
+			return position == controls.end()
+				? CHILDID_SELF
+				: static_cast<long>(position - controls.begin()) + 1;
+		}
+		catch (...)
+		{
+			// IAccessible methods must never allow a C++ exception to cross COM.
+			return CHILDID_SELF;
+		}
 	}
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
@@ -402,12 +465,23 @@ public:
 	{
 		if (!child) return E_POINTER;
 		::VariantInit(child);
-		if (!Connected()) return CO_E_OBJNOTCONNECTED;
-		const long id = ChildIdFor(_form->GetKeyboardFocusedElement());
-		if (id == CHILDID_SELF && ::GetFocus() != _form->Handle) return S_FALSE;
-		child->vt = VT_I4;
-		child->lVal = id;
-		return S_OK;
+		try
+		{
+			auto* form = _form;
+			if (!form || !Connected()) return CO_E_OBJNOTCONNECTED;
+			const ControlWeakReference formLifetime(form);
+			if (::GetFocus() != form->Handle) return S_FALSE;
+			const long id = ChildIdFor(form->GetKeyboardFocusedElement());
+			form = dynamic_cast<Window*>(formLifetime.Get());
+			if (!form || _form != form || !Connected())
+				return CO_E_OBJNOTCONNECTED;
+			if (::GetFocus() != form->Handle) return S_FALSE;
+			child->vt = VT_I4;
+			child->lVal = id;
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return E_FAIL; }
 	}
 
 	HRESULT STDMETHODCALLTYPE get_accSelection(VARIANT* children) override
@@ -628,13 +702,23 @@ public:
 		auto* form = _form.load(std::memory_order_acquire);
 		return form && form->Handle && ::IsWindow(form->Handle);
 	}
+	bool HasNativeKeyboardFocus() const noexcept
+	{
+		auto* form = _form.load(std::memory_order_acquire);
+		return form && form->Handle && ::IsWindow(form->Handle)
+			&& ::GetFocus() == form->Handle;
+	}
 	Window* GetWindow() const noexcept
 	{
 		return _form.load(std::memory_order_acquire);
 	}
-	Control* ResolveControl(Control* candidate, uint32_t runtimeId) const;
+	Control* ResolveControl(Control* candidate) const noexcept;
+	Control* ResolveControl(
+		Control* candidate, uint32_t runtimeId) const noexcept;
 	ControlUiaProvider* ProviderFor(Control* control);
 	VirtualUiaProvider* VirtualProviderFor(Control* owner, uint32_t virtualId);
+	VirtualUiaProvider* VirtualProviderForValidated(
+		Control* owner, uint32_t ownerRuntimeId, uint32_t virtualId);
 	void UnregisterProvider(uint32_t runtimeId, ControlUiaProvider* provider);
 	void UnregisterVirtualProvider(
 		uint64_t key, VirtualUiaProvider* provider);
@@ -645,20 +729,26 @@ public:
 		uint32_t id, bool next, uint32_t& result) const;
 	bool ResolveVirtualNode(Control* owner, uint32_t ownerRuntimeId,
 		uint32_t virtualId, AccessibilityVirtualNode& node,
-		AutomationPeer** source = nullptr) const;
+		AutomationPeer** source = nullptr,
+		std::shared_ptr<AutomationPeer>* sourceLease = nullptr) const;
 	Control* ParentOf(Control* control) const;
 	Control* SiblingOf(Control* control, bool next) const;
 	void RaiseEvent(Control* control, AccessibilityChange change);
 	void RaiseVirtualEvent(
 		Control* owner, uint32_t virtualId, AccessibilityChange change);
 	void SetVirtualFocus(Control* owner, uint32_t virtualId);
+	void ClearVirtualFocus() noexcept;
 	bool IsVirtualFocused(Control* owner, uint32_t virtualId);
 	uint32_t VirtualFocusFor(Control* owner);
+	bool TryGetVirtualFocusedNode(
+		Control* focused, Control*& owner, uint32_t& virtualId);
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
 	{
 		if (!object) return E_POINTER;
 		*object = nullptr;
+		try
+		{
 		if (iid == IID_IUnknown || iid == IID_IRawElementProviderSimple)
 			*object = static_cast<IRawElementProviderSimple*>(this);
 		else if (iid == IID_IRawElementProviderFragment)
@@ -669,6 +759,9 @@ public:
 			return E_NOINTERFACE;
 		AddRef();
 		return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	ULONG STDMETHODCALLTYPE AddRef() override { return ++_references; }
 	ULONG STDMETHODCALLTYPE Release() override
@@ -690,7 +783,8 @@ public:
 		*value = nullptr;
 		return Connected() ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
 	}
-	HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID propertyId, VARIANT* value) override
+	HRESULT STDMETHODCALLTYPE GetPropertyValue(
+		PROPERTYID propertyId, VARIANT* value) override try
 	{
 		if (!value) return E_POINTER;
 		::VariantInit(value);
@@ -726,7 +820,9 @@ public:
 			accessibility_detail::SetVariantBool(value, true);
 			return S_OK;
 		case UIA_HasKeyboardFocusPropertyId:
-			accessibility_detail::SetVariantBool(value, ::GetFocus() == form->Handle);
+			accessibility_detail::SetVariantBool(value,
+				HasNativeKeyboardFocus()
+				&& form->GetKeyboardFocusedElement() == nullptr);
 			return S_OK;
 		case UIA_IsOffscreenPropertyId:
 			accessibility_detail::SetVariantBool(
@@ -739,6 +835,16 @@ public:
 		default:
 			return S_OK;
 		}
+	}
+	catch (const std::bad_alloc&)
+	{
+		if (value) { (void)::VariantClear(value); ::VariantInit(value); }
+		return E_OUTOFMEMORY;
+	}
+	catch (...)
+	{
+		if (value) { (void)::VariantClear(value); ::VariantInit(value); }
+		return UIA_E_INVALIDOPERATION;
 	}
 	HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(
 		IRawElementProviderSimple** value) override
@@ -758,7 +864,7 @@ public:
 		*value = nullptr;
 		return Connected() ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
 	}
-	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override
+	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override try
 	{
 		if (!value) return E_POINTER;
 		*value = UiaRect{};
@@ -776,6 +882,8 @@ public:
 		value->height = points[1].y - points[0].y;
 		return S_OK;
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE GetEmbeddedFragmentRoots(SAFEARRAY** value) override
 	{
 		if (!value) return E_POINTER;
@@ -786,8 +894,13 @@ public:
 	{
 		auto* form = GetWindow();
 		if (!form || !Connected()) return UIA_E_ELEMENTNOTAVAILABLE;
-		(void)::SetFocus(form->Handle);
-		return ::GetFocus() == form->Handle
+		const ControlWeakReference formLifetime(form);
+		const HWND handle = form->Handle;
+		(void)::SetFocus(handle);
+		form = dynamic_cast<Window*>(formLifetime.Get());
+		if (!form || GetWindow() != form || !Connected())
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return ::GetFocus() == handle
 			? S_OK : UIA_E_INVALIDOPERATION;
 	}
 	HRESULT STDMETHODCALLTYPE get_FragmentRoot(
@@ -840,12 +953,18 @@ public:
 	uint32_t RuntimeId() const noexcept { return _runtimeId; }
 	int GetAccessibilityTypeForEvent() const noexcept
 	{
-		return SupportsRange() ? 1 : 0;
+		try { return SupportsRange() ? 1 : 0; }
+		catch (...) { return 0; }
 	}
-	bool SupportsToggleForEvent() const noexcept { return SupportsToggle(); }
+	bool SupportsToggleForEvent() const noexcept
+	{
+		try { return SupportsToggle(); }
+		catch (...) { return false; }
+	}
 	bool SupportsSelectionItemForEvent() const noexcept
 	{
-		return SupportsSelectionItem();
+		try { return SupportsSelectionItem(); }
+		catch (...) { return false; }
 	}
 	bool Matches(Control* control) const noexcept
 	{
@@ -857,6 +976,8 @@ public:
 	{
 		if (!object) return E_POINTER;
 		*object = nullptr;
+		try
+		{
 		if (iid == IID_IUnknown || iid == IID_IRawElementProviderSimple)
 			*object = static_cast<IRawElementProviderSimple*>(this);
 		else if (iid == IID_IRawElementProviderFragment)
@@ -885,6 +1006,9 @@ public:
 			return E_NOINTERFACE;
 		AddRef();
 		return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	ULONG STDMETHODCALLTYPE AddRef() override { return ++_references; }
 	ULONG STDMETHODCALLTYPE Release() override
@@ -905,6 +1029,8 @@ public:
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
+		try
+		{
 		if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
 		auto queryPattern = [this, value](REFIID iid)
 		{
@@ -933,15 +1059,22 @@ public:
 		if (patternId == UIA_ScrollPatternId)
 			return queryPattern(IID_IScrollProvider);
 		return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID propertyId,
-		VARIANT* value) override
+		VARIANT* value) override try
 	{
 		if (!value) return E_POINTER;
 		::VariantInit(value);
 		auto* control = CurrentControl();
 		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
 		const auto snapshot = control->GetAccessibilitySnapshot();
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
 		switch (propertyId)
 		{
 		case UIA_NamePropertyId:
@@ -953,8 +1086,18 @@ public:
 				accessibility_detail::ToUiaControlType(snapshot.ControlType));
 			return S_OK;
 		case UIA_ClassNamePropertyId:
-			return accessibility_detail::SetVariantString(
-				value, control->GetAutomationPeer().GetAutomationClassName());
+			{
+				std::wstring className;
+				const HRESULT result = PerformPeerQuery(
+					[&className](AutomationPeer& peer) -> HRESULT
+					{
+						className = peer.GetAutomationClassName();
+						return S_OK;
+					});
+				if (FAILED(result)) return result;
+				return accessibility_detail::SetVariantString(
+					value, className);
+			}
 		case UIA_FrameworkIdPropertyId:
 			return accessibility_detail::SetVariantString(value, L"CUI");
 		case UIA_ProviderDescriptionPropertyId:
@@ -1077,7 +1220,8 @@ public:
 			if (!SupportsRange()) return S_OK;
 			{
 				BOOL readOnly = FALSE;
-				(void)RangeIsReadOnly(&readOnly);
+				const HRESULT result = RangeIsReadOnly(&readOnly);
+				if (FAILED(result)) return result;
 				accessibility_detail::SetVariantBool(value, readOnly != FALSE);
 			}
 			return S_OK;
@@ -1085,7 +1229,13 @@ public:
 			if (!SupportsToggle()) return S_OK;
 			{
 				AutomationToggleState state = AutomationToggleState::Off;
-				(void)control->GetAutomationPeer().TryGetToggleState(state);
+				const HRESULT result = PerformPeerQuery(
+					[&state](AutomationPeer& peer) -> HRESULT
+					{
+						return peer.TryGetToggleState(state)
+							? S_OK : UIA_E_NOTSUPPORTED;
+					});
+				if (FAILED(result)) return result;
 				const auto nativeState =
 					state == AutomationToggleState::Indeterminate
 						? ToggleState_Indeterminate
@@ -1099,7 +1249,8 @@ public:
 			if (!SupportsExpandCollapse()) return S_OK;
 			{
 				ExpandCollapseState state = ExpandCollapseState_LeafNode;
-				(void)get_ExpandCollapseState(&state);
+				const HRESULT result = get_ExpandCollapseState(&state);
+				if (FAILED(result)) return result;
 				accessibility_detail::SetVariantInt(value, state);
 			}
 			return S_OK;
@@ -1107,13 +1258,121 @@ public:
 			if (!SupportsSelectionItem()) return S_OK;
 			{
 				BOOL selected = FALSE;
-				(void)get_IsSelected(&selected);
+				const HRESULT result = get_IsSelected(&selected);
+				if (FAILED(result)) return result;
 				accessibility_detail::SetVariantBool(value, selected != FALSE);
 			}
 			return S_OK;
+		case UIA_SelectionItemSelectionContainerPropertyId:
+			if (!SupportsSelectionItem()) return S_OK;
+			{
+				IRawElementProviderSimple* provider = nullptr;
+				const HRESULT result = get_SelectionContainer(&provider);
+				if (FAILED(result))
+				{
+					if (provider) provider->Release();
+					return result;
+				}
+				return accessibility_detail::TakeVariantProvider(value, provider);
+			}
+		case UIA_SelectionSelectionPropertyId:
+			if (!SupportsSelection()) return S_OK;
+			{
+				SAFEARRAY* providers = nullptr;
+				const HRESULT result = GetSelection(&providers);
+				if (FAILED(result))
+				{
+					if (providers) (void)::SafeArrayDestroy(providers);
+					return result;
+				}
+				return accessibility_detail::TakeVariantProviderArray(
+					value, providers);
+			}
+		case UIA_SelectionCanSelectMultiplePropertyId:
+			if (!SupportsSelection()) return S_OK;
+			{
+				BOOL canSelectMultiple = FALSE;
+				const HRESULT result = get_CanSelectMultiple(&canSelectMultiple);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantBool(
+					value, canSelectMultiple != FALSE);
+				return S_OK;
+			}
+		case UIA_SelectionIsSelectionRequiredPropertyId:
+			if (!SupportsSelection()) return S_OK;
+			{
+				BOOL selectionRequired = FALSE;
+				const HRESULT result = get_IsSelectionRequired(&selectionRequired);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantBool(
+					value, selectionRequired != FALSE);
+				return S_OK;
+			}
+		case UIA_GridRowCountPropertyId:
+			if (!SupportsGrid()) return S_OK;
+			{
+				int rowCount = 0;
+				const HRESULT result = get_RowCount(&rowCount);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantInt(value, rowCount);
+				return S_OK;
+			}
+		case UIA_GridColumnCountPropertyId:
+			if (!SupportsGrid()) return S_OK;
+			{
+				int columnCount = 0;
+				const HRESULT result = get_ColumnCount(&columnCount);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantInt(value, columnCount);
+				return S_OK;
+			}
+		case UIA_TableRowHeadersPropertyId:
+		case UIA_TableColumnHeadersPropertyId:
+			if (!SupportsTable()) return S_OK;
+			{
+				SAFEARRAY* providers = nullptr;
+				const HRESULT result = propertyId == UIA_TableRowHeadersPropertyId
+					? GetRowHeaders(&providers)
+					: GetColumnHeaders(&providers);
+				if (FAILED(result))
+				{
+					if (providers) (void)::SafeArrayDestroy(providers);
+					return result;
+				}
+				return accessibility_detail::TakeVariantProviderArray(
+					value, providers);
+			}
+		case UIA_TableRowOrColumnMajorPropertyId:
+			if (!SupportsTable()) return S_OK;
+			{
+				RowOrColumnMajor major = RowOrColumnMajor_Indeterminate;
+				const HRESULT result = get_RowOrColumnMajor(&major);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantInt(
+					value, static_cast<int>(major));
+				return S_OK;
+			}
 		default:
 			return S_OK;
 		}
+	}
+	catch (const std::bad_alloc&)
+	{
+		if (value)
+		{
+			(void)::VariantClear(value);
+			::VariantInit(value);
+		}
+		return E_OUTOFMEMORY;
+	}
+	catch (...)
+	{
+		if (value)
+		{
+			(void)::VariantClear(value);
+			::VariantInit(value);
+		}
+		return UIA_E_INVALIDOPERATION;
 	}
 	HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(
 		IRawElementProviderSimple** value) override
@@ -1146,15 +1405,19 @@ public:
 		*value = result;
 		return S_OK;
 	}
-	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override
+	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override try
 	{
 		if (!value) return E_POINTER;
 		*value = UiaRect{};
 		auto* control = CurrentControl();
 		auto* form = _root ? _root->GetWindow() : nullptr;
 		if (!control || !form) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
 		RECT rectangle = form->ContentDipRectToClientPixels(
 			control->GetRenderedAbsoluteRectDip());
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
 		POINT points[2]{ { rectangle.left, rectangle.top },
 			{ rectangle.right, rectangle.bottom } };
 		::MapWindowPoints(form->Handle, nullptr, points, 2);
@@ -1164,20 +1427,33 @@ public:
 		value->height = points[1].y - points[0].y;
 		return S_OK;
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE GetEmbeddedFragmentRoots(SAFEARRAY** value) override
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
 		return CurrentControl() ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
 	}
-	HRESULT STDMETHODCALLTYPE SetFocus() override
+	HRESULT STDMETHODCALLTYPE SetFocus() override try
 	{
 		auto* control = CurrentControl();
 		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!control->GetAccessibilitySnapshot().Enabled)
+		const ControlWeakReference controlLifetime(control);
+		const bool enabled = control->GetAccessibilitySnapshot().Enabled;
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!enabled)
 			return UIA_E_ELEMENTNOTENABLED;
-		return control->Focus() ? S_OK : UIA_E_INVALIDOPERATION;
+		const bool focused = control->Focus();
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return focused ? S_OK : UIA_E_INVALIDOPERATION;
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_FragmentRoot(
 		IRawElementProviderFragmentRoot** value) override
 	{
@@ -1190,49 +1466,81 @@ public:
 	}
 
 	HRESULT STDMETHODCALLTYPE Invoke() override
+	try
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(peer->Invoke())
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		return PerformPeerOperation(
+			[](AutomationPeer& peer) { return peer.Invoke(); });
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE Toggle() override
+	try
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(peer->Toggle())
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		return PerformPeerOperation(
+			[](AutomationPeer& peer) { return peer.Toggle(); });
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_ToggleState(ToggleState* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationToggleState state = AutomationToggleState::Off;
-		if (!peer->TryGetToggleState(state)) return UIA_E_NOTSUPPORTED;
-		*value = state == AutomationToggleState::Indeterminate
-			? ToggleState_Indeterminate
-			: state == AutomationToggleState::On
-				? ToggleState_On
-				: ToggleState_Off;
-		return S_OK;
+		return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+		{
+			AutomationToggleState state = AutomationToggleState::Off;
+			if (!peer.TryGetToggleState(state)) return UIA_E_NOTSUPPORTED;
+			*value = state == AutomationToggleState::Indeterminate
+				? ToggleState_Indeterminate
+				: state == AutomationToggleState::On
+					? ToggleState_On
+					: ToggleState_Off;
+			return S_OK;
+		});
 	}
 
 	HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR value) override
+	try
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(
-			peer->SetValue(value ? value : L""))
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		const std::wstring requested(value ? value : L"");
+		return PerformPeerOperation(
+			[&requested](AutomationPeer& peer)
+			{
+				return peer.SetValue(requested);
+			});
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_Value(BSTR* value) override
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!peer->SupportsPattern(AutomationPattern::Value))
-			return UIA_E_NOTSUPPORTED;
-		const std::wstring exposed = peer->IsPassword()
-			? std::wstring{} : peer->GetValue();
+		bool supportsValue = false;
+		HRESULT result = PerformPeerQuery(
+			[&supportsValue](AutomationPeer& peer) -> HRESULT
+		{
+			supportsValue = peer.SupportsPattern(AutomationPattern::Value);
+			return S_OK;
+		});
+		if (FAILED(result)) return result;
+		if (!supportsValue) return UIA_E_NOTSUPPORTED;
+		bool password = false;
+		result = PerformPeerQuery(
+			[&password](AutomationPeer& peer) -> HRESULT
+		{
+			password = peer.IsPassword();
+			return S_OK;
+		});
+		if (FAILED(result)) return result;
+		std::wstring exposed;
+		if (!password)
+		{
+			result = PerformPeerQuery(
+				[&exposed](AutomationPeer& peer) -> HRESULT
+			{
+				exposed = peer.GetValue();
+				return S_OK;
+			});
+			if (FAILED(result)) return result;
+		}
 		*value = ::SysAllocStringLen(
 			exposed.data(), static_cast<UINT>(exposed.size()));
 		return *value ? S_OK : E_OUTOFMEMORY;
@@ -1240,72 +1548,101 @@ public:
 	HRESULT STDMETHODCALLTYPE get_IsReadOnly(BOOL* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (peer->SupportsPattern(AutomationPattern::Value))
+		bool supportsValue = false;
+		HRESULT result = PerformPeerQuery(
+			[&supportsValue](AutomationPeer& peer) -> HRESULT
 		{
-			*value = peer->IsReadOnly() ? TRUE : FALSE;
+			supportsValue = peer.SupportsPattern(AutomationPattern::Value);
 			return S_OK;
+		});
+		if (FAILED(result)) return result;
+		if (supportsValue)
+		{
+			return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+			{
+				*value = peer.IsReadOnly() ? TRUE : FALSE;
+				return S_OK;
+			});
 		}
-		return RangeIsReadOnly(value);
+		return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+		{
+			AutomationRangeValue range;
+			if (!peer.TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
+			*value = range.IsReadOnly ? TRUE : FALSE;
+			return S_OK;
+		});
 	}
 
 	HRESULT STDMETHODCALLTYPE SetValue(double value) override
+	try
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(peer->SetRangeValue(value))
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		return PerformPeerOperation(
+			[value](AutomationPeer& peer)
+			{
+				return peer.SetRangeValue(value);
+			});
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_Value(double* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.Value;
-		return S_OK;
+		return PerformRangeQuery(value,
+			[](const AutomationRangeValue& range) { return range.Value; });
 	}
 	HRESULT STDMETHODCALLTYPE get_Maximum(double* value) override { return RangeMaximum(value); }
 	HRESULT STDMETHODCALLTYPE get_Minimum(double* value) override { return RangeMinimum(value); }
 	HRESULT STDMETHODCALLTYPE get_LargeChange(double* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.LargeChange;
-		return S_OK;
+		return PerformRangeQuery(value,
+			[](const AutomationRangeValue& range) { return range.LargeChange; });
 	}
 	HRESULT STDMETHODCALLTYPE get_SmallChange(double* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.SmallChange;
-		return S_OK;
+		return PerformRangeQuery(value,
+			[](const AutomationRangeValue& range) { return range.SmallChange; });
 	}
 
-	HRESULT STDMETHODCALLTYPE Expand() override { return SetExpandedState(true); }
-	HRESULT STDMETHODCALLTYPE Collapse() override { return SetExpandedState(false); }
+	HRESULT STDMETHODCALLTYPE Expand() override try
+	{
+		return SetExpandedState(true);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+	HRESULT STDMETHODCALLTYPE Collapse() override try
+	{
+		return SetExpandedState(false);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(
 		ExpandCollapseState* value) override
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		bool expanded = false;
-		if (!peer->TryGetExpanded(expanded)) return UIA_E_NOTSUPPORTED;
-		*value = expanded ? ExpandCollapseState_Expanded
-			: ExpandCollapseState_Collapsed;
-		return S_OK;
+		return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+		{
+			bool expanded = false;
+			if (!peer.TryGetExpanded(expanded)) return UIA_E_NOTSUPPORTED;
+			*value = expanded ? ExpandCollapseState_Expanded
+				: ExpandCollapseState_Collapsed;
+			return S_OK;
+		});
 	}
 
-	HRESULT STDMETHODCALLTYPE Select() override { return SelectItem(); }
-	HRESULT STDMETHODCALLTYPE AddToSelection() override { return SelectItem(); }
+	HRESULT STDMETHODCALLTYPE Select() override try
+	{
+		return SelectItem();
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+	HRESULT STDMETHODCALLTYPE AddToSelection() override try
+	{
+		return SelectItem();
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE RemoveFromSelection() override
 	{
 		return CurrentControl() ? UIA_E_INVALIDOPERATION
@@ -1315,63 +1652,147 @@ public:
 	{
 		if (!value) return E_POINTER;
 		*value = FALSE;
-		auto* control = CurrentControl();
-		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
-		bool selected = false;
-		if (!control->GetAutomationPeer().TryGetSelectionItemSelected(selected))
-			return UIA_E_NOTSUPPORTED;
-		*value = selected ? TRUE : FALSE;
-		return S_OK;
+		return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+		{
+			bool selected = false;
+			if (!peer.TryGetSelectionItemSelected(selected))
+				return UIA_E_NOTSUPPORTED;
+			*value = selected ? TRUE : FALSE;
+			return S_OK;
+		});
 	}
 	HRESULT STDMETHODCALLTYPE get_SelectionContainer(
 		IRawElementProviderSimple** value) override
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
-		auto* control = CurrentControl();
-		if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (auto* container = control->GetAutomationPeer().GetSelectionContainer())
+		try
 		{
-			auto* provider = _root->ProviderFor(container);
-			if (!provider) return UIA_E_ELEMENTNOTAVAILABLE;
-			*value = static_cast<IRawElementProviderSimple*>(provider);
+			auto* control = CurrentControl();
+			if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference controlLifetime(control);
+			auto peer = control->AcquireAutomationPeer();
+			if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* container = peer->GetSelectionContainer();
+
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (container)
+			{
+				container = _root->ResolveControl(container);
+				if (!container) return UIA_E_ELEMENTNOTAVAILABLE;
+				const uint32_t containerRuntimeId =
+					container->GetAccessibilityRuntimeId();
+				if (_root->ResolveControl(container, containerRuntimeId)
+					!= container) return UIA_E_ELEMENTNOTAVAILABLE;
+				auto* provider = _root->ProviderFor(container);
+				if (!provider) return UIA_E_ELEMENTNOTAVAILABLE;
+				*value = static_cast<IRawElementProviderSimple*>(provider);
+			}
+			else if (auto* parent = control->GetVisualParent())
+			{
+				const uint32_t parentRuntimeId =
+					parent->GetAccessibilityRuntimeId();
+				if (_root->ResolveControl(parent, parentRuntimeId) != parent)
+					return UIA_E_ELEMENTNOTAVAILABLE;
+				auto* provider = _root->ProviderFor(parent);
+				if (!provider) return UIA_E_ELEMENTNOTAVAILABLE;
+				*value = static_cast<IRawElementProviderSimple*>(provider);
+			}
+			else
+			{
+				*value = static_cast<IRawElementProviderSimple*>(_root);
+				_root->AddRef();
+			}
+			return S_OK;
 		}
-		else if (control->GetVisualParent())
-		{
-			auto* provider = _root->ProviderFor(control->GetVisualParent());
-			if (!provider) return UIA_E_ELEMENTNOTAVAILABLE;
-			*value = static_cast<IRawElementProviderSimple*>(provider);
-		}
-		else
-		{
-			*value = static_cast<IRawElementProviderSimple*>(_root);
-			_root->AddRef();
-		}
-		return S_OK;
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 
 	HRESULT STDMETHODCALLTYPE GetSelection(SAFEARRAY** value) override;
 	HRESULT STDMETHODCALLTYPE get_CanSelectMultiple(BOOL* value) override
 	{
 		if (!value) return E_POINTER;
-		if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!SupportsSelection()) return UIA_E_NOTSUPPORTED;
-		auto* peer = CurrentPeer();
-		*value = peer && peer->SupportsPattern(AutomationPattern::Selection)
-			? (peer->CanSelectMultiple() ? TRUE : FALSE)
-			: (VirtualContainerInfo().CanSelectMultiple ? TRUE : FALSE);
-		return S_OK;
+		*value = FALSE;
+		try
+		{
+			auto* control = CurrentControl();
+			if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference controlLifetime(control);
+			if (auto source = VirtualSourceLease())
+			{
+				const auto info = source->GetAccessibilityVirtualContainerInfo();
+				control = controlLifetime.Get();
+				if (!control || CurrentControl() != control)
+					return UIA_E_ELEMENTNOTAVAILABLE;
+				if (HasAutomationPattern(
+					info.Patterns, AutomationPattern::Selection))
+				{
+					*value = info.CanSelectMultiple ? TRUE : FALSE;
+					return S_OK;
+				}
+			}
+			auto peer = CurrentPeerLease();
+			if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
+			const bool supportsSelection =
+				peer->SupportsPattern(AutomationPattern::Selection);
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!supportsSelection)
+				return UIA_E_NOTSUPPORTED;
+			const bool canSelectMultiple = peer->CanSelectMultiple();
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			*value = canSelectMultiple ? TRUE : FALSE;
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT STDMETHODCALLTYPE get_IsSelectionRequired(BOOL* value) override
 	{
 		if (!value) return E_POINTER;
-		if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!SupportsSelection()) return UIA_E_NOTSUPPORTED;
-		auto* peer = CurrentPeer();
-		*value = peer && peer->SupportsPattern(AutomationPattern::Selection)
-			? (peer->IsSelectionRequired() ? TRUE : FALSE)
-			: (VirtualContainerInfo().IsSelectionRequired ? TRUE : FALSE);
-		return S_OK;
+		*value = FALSE;
+		try
+		{
+			auto* control = CurrentControl();
+			if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference controlLifetime(control);
+			if (auto source = VirtualSourceLease())
+			{
+				const auto info = source->GetAccessibilityVirtualContainerInfo();
+				control = controlLifetime.Get();
+				if (!control || CurrentControl() != control)
+					return UIA_E_ELEMENTNOTAVAILABLE;
+				if (HasAutomationPattern(
+					info.Patterns, AutomationPattern::Selection))
+				{
+					*value = info.IsSelectionRequired ? TRUE : FALSE;
+					return S_OK;
+				}
+			}
+			auto peer = CurrentPeerLease();
+			if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
+			const bool supportsSelection =
+				peer->SupportsPattern(AutomationPattern::Selection);
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!supportsSelection)
+				return UIA_E_NOTSUPPORTED;
+			const bool selectionRequired = peer->IsSelectionRequired();
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			*value = selectionRequired ? TRUE : FALSE;
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT STDMETHODCALLTYPE GetItem(
 		int row, int column, IRawElementProviderSimple** value) override;
@@ -1405,56 +1826,145 @@ private:
 	{
 		return _root ? _root->ResolveControl(_control, _runtimeId) : nullptr;
 	}
-	AutomationPeer* CurrentPeer() const
+	std::shared_ptr<AutomationPeer> CurrentPeerLease() const
 	{
 		auto* control = CurrentControl();
-		return control ? &control->GetAutomationPeer() : nullptr;
+		if (!control) return {};
+		const ControlWeakReference controlLifetime(control);
+		auto peer = control->AcquireAutomationPeer();
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control ? peer : nullptr;
+	}
+	template<class Operation>
+	HRESULT PerformPeerOperation(Operation&& operation)
+	{
+		auto* control = CurrentControl();
+		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto peer = CurrentPeerLease();
+		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
+		const auto result = operation(*peer);
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return accessibility_detail::ToHresult(result);
+	}
+	template<class Query>
+	HRESULT PerformPeerQuery(Query&& query) noexcept
+	{
+		try
+		{
+			auto* control = CurrentControl();
+			if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference controlLifetime(control);
+			auto peer = control->AcquireAutomationPeer();
+			if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
+			const HRESULT result = query(*peer);
+			control = controlLifetime.Get();
+			if (!control || CurrentControl() != control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			return result;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
+	}
+	template<class Selector>
+	HRESULT PerformRangeQuery(double* value, Selector&& selector) noexcept
+	{
+		return PerformPeerQuery(
+			[value, &selector](AutomationPeer& peer) -> HRESULT
+		{
+			AutomationRangeValue range;
+			if (!peer.TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
+			*value = selector(range);
+			return S_OK;
+		});
+	}
+	bool SupportsPeerPattern(AutomationPattern pattern) const
+	{
+		auto* control = CurrentControl();
+		if (!control) return false;
+		const ControlWeakReference controlLifetime(control);
+		auto peer = control->AcquireAutomationPeer();
+		if (!peer) return false;
+		const bool supported = peer->SupportsPattern(pattern);
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control && supported;
 	}
 	bool SupportsInvoke() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::Invoke);
+		return SupportsPeerPattern(AutomationPattern::Invoke);
 	}
 	bool SupportsToggle() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::Toggle);
+		return SupportsPeerPattern(AutomationPattern::Toggle);
 	}
 	bool SupportsValue() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::Value);
+		return SupportsPeerPattern(AutomationPattern::Value);
 	}
 	bool SupportsRange() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::RangeValue);
+		return SupportsPeerPattern(AutomationPattern::RangeValue);
 	}
 	bool SupportsExpandCollapse() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::ExpandCollapse);
+		return SupportsPeerPattern(AutomationPattern::ExpandCollapse);
 	}
 	bool SupportsSelectionItem() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsPattern(AutomationPattern::SelectionItem);
+		return SupportsPeerPattern(AutomationPattern::SelectionItem);
 	}
 	AccessibilityVirtualContainerInfo VirtualContainerInfo() const
 	{
-		auto* source = VirtualSource();
-		return source ? source->GetAccessibilityVirtualContainerInfo()
-			: AccessibilityVirtualContainerInfo{};
+		AccessibilityVirtualContainerInfo result;
+		(void)TryGetVirtualContainerInfo(result);
+		return result;
 	}
-	AutomationPeer* VirtualSource() const
+	std::shared_ptr<AutomationPeer> VirtualSourceLease() const
 	{
-		auto* peer = CurrentPeer();
-		return peer && peer->SupportsVirtualizedChildren() ? peer : nullptr;
+		auto* control = CurrentControl();
+		if (!control) return {};
+		const ControlWeakReference controlLifetime(control);
+		auto peer = control->AcquireAutomationPeer();
+		if (!peer || !peer->SupportsVirtualizedChildren()) return {};
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control ? peer : nullptr;
+	}
+	HRESULT TryGetVirtualContainerInfo(
+		AccessibilityVirtualContainerInfo& result) const
+	{
+		auto* control = CurrentControl();
+		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+		result = source->GetAccessibilityVirtualContainerInfo();
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control
+			? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
+	}
+	HRESULT TryGetScrollInfo(AccessibilityScrollInfo& result) const
+	{
+		auto* control = CurrentControl();
+		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+		const auto container = source->GetAccessibilityVirtualContainerInfo();
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(container.Patterns, AutomationPattern::Scroll)
+			|| !source->GetAccessibilityScrollInfo(result))
+			return UIA_E_NOTSUPPORTED;
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control
+			? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
 	}
 	bool SupportsSelection() const
 	{
-		auto* peer = CurrentPeer();
-		return (peer && peer->SupportsPattern(AutomationPattern::Selection))
+		return SupportsPeerPattern(AutomationPattern::Selection)
 			|| HasAutomationPattern(
 				VirtualContainerInfo().Patterns,
 				AutomationPattern::Selection);
@@ -1491,45 +2001,41 @@ private:
 	HRESULT RangeIsReadOnly(BOOL* value)
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.IsReadOnly ? TRUE : FALSE;
-		return S_OK;
+		return PerformPeerQuery([value](AutomationPeer& peer) -> HRESULT
+		{
+			AutomationRangeValue range;
+			if (!peer.TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
+			*value = range.IsReadOnly ? TRUE : FALSE;
+			return S_OK;
+		});
 	}
 	HRESULT RangeMaximum(double* value)
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.Maximum;
-		return S_OK;
+		return PerformRangeQuery(value,
+			[](const AutomationRangeValue& range) { return range.Maximum; });
 	}
 	HRESULT RangeMinimum(double* value)
 	{
 		if (!value) return E_POINTER;
-		auto* peer = CurrentPeer();
-		if (!peer) return UIA_E_ELEMENTNOTAVAILABLE;
-		AutomationRangeValue range;
-		if (!peer->TryGetRangeValue(range)) return UIA_E_NOTSUPPORTED;
-		*value = range.Minimum;
-		return S_OK;
+		return PerformRangeQuery(value,
+			[](const AutomationRangeValue& range) { return range.Minimum; });
 	}
 	HRESULT SetExpandedState(bool expanded)
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(peer->SetExpanded(expanded))
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		return PerformPeerOperation(
+			[expanded](AutomationPeer& peer)
+			{
+				return peer.SetExpanded(expanded);
+			});
 	}
 	HRESULT SelectItem()
 	{
-		auto* peer = CurrentPeer();
-		return peer ? accessibility_detail::ToHresult(peer->Select())
-			: UIA_E_ELEMENTNOTAVAILABLE;
+		return PerformPeerOperation(
+			[](AutomationPeer& peer) { return peer.Select(); });
 	}
+	HRESULT CreateVirtualProviderArray(
+		const std::vector<uint32_t>& ids, SAFEARRAY** value);
 
 	std::atomic<ULONG> _references{ 1 };
 	WindowUiaProvider* _root = nullptr;
@@ -1545,6 +2051,7 @@ class VirtualUiaProvider final :
 	public IValueProvider,
 	public IExpandCollapseProvider,
 	public ISelectionItemProvider,
+	public ISelectionProvider,
 	public IScrollItemProvider,
 	public IVirtualizedItemProvider,
 	public IGridItemProvider,
@@ -1589,6 +2096,9 @@ public:
 		else if (iid == IID_ISelectionItemProvider && Supports(
 			AutomationPattern::SelectionItem))
 			*object = static_cast<ISelectionItemProvider*>(this);
+		else if (iid == IID_ISelectionProvider && Supports(
+			AutomationPattern::Selection))
+			*object = static_cast<ISelectionProvider*>(this);
 		else if (iid == IID_IScrollItemProvider && Supports(
 			AutomationPattern::ScrollItem))
 			*object = static_cast<IScrollItemProvider*>(this);
@@ -1632,6 +2142,7 @@ public:
 		else if (patternId == UIA_ValuePatternId) iid = &IID_IValueProvider;
 		else if (patternId == UIA_ExpandCollapsePatternId) iid = &IID_IExpandCollapseProvider;
 		else if (patternId == UIA_SelectionItemPatternId) iid = &IID_ISelectionItemProvider;
+		else if (patternId == UIA_SelectionPatternId) iid = &IID_ISelectionProvider;
 		else if (patternId == UIA_ScrollItemPatternId) iid = &IID_IScrollItemProvider;
 		else if (patternId == UIA_VirtualizedItemPatternId) iid = &IID_IVirtualizedItemProvider;
 		else if (patternId == UIA_GridItemPatternId) iid = &IID_IGridItemProvider;
@@ -1645,6 +2156,8 @@ public:
 	{
 		if (!value) return E_POINTER;
 		::VariantInit(value);
+		try
+		{
 		AccessibilityVirtualNode node;
 		if (!CurrentNode(&node)) return UIA_E_ELEMENTNOTAVAILABLE;
 		switch (propertyId)
@@ -1657,7 +2170,8 @@ public:
 			accessibility_detail::SetVariantInt(value,
 				accessibility_detail::ToUiaControlType(node.ControlType)); return S_OK;
 		case UIA_ClassNamePropertyId:
-			return accessibility_detail::SetVariantString(value, L"CUI.VirtualItem");
+			return accessibility_detail::SetVariantString(value,
+				node.ClassName.empty() ? L"CUI.VirtualItem" : node.ClassName);
 		case UIA_FrameworkIdPropertyId:
 			return accessibility_detail::SetVariantString(value, L"CUI");
 		case UIA_ProviderDescriptionPropertyId:
@@ -1669,20 +2183,43 @@ public:
 		case UIA_IsEnabledPropertyId:
 			accessibility_detail::SetVariantBool(value, node.Enabled); return S_OK;
 		case UIA_IsKeyboardFocusablePropertyId:
-			accessibility_detail::SetVariantBool(value,
-				HasAutomationPattern(node.Patterns,
-					AutomationPattern::SelectionItem));
+			accessibility_detail::SetVariantBool(
+				value, node.KeyboardFocusable);
 			return S_OK;
 		case UIA_HasKeyboardFocusPropertyId:
-			accessibility_detail::SetVariantBool(value,
-				_owner && _root && _owner->GetAccessibilitySnapshot().Focused
-				&& _root->IsVirtualFocused(_owner, _virtualId));
-			return S_OK;
+			{
+				if (!_root || !_root->HasNativeKeyboardFocus())
+				{
+					accessibility_detail::SetVariantBool(value, false);
+					return S_OK;
+				}
+				if (node.HasKeyboardFocus)
+				{
+					accessibility_detail::SetVariantBool(value, true);
+					return S_OK;
+				}
+				auto* owner = _root
+					? _root->ResolveControl(_owner, _ownerRuntimeId) : nullptr;
+				if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+				const ControlWeakReference ownerLifetime(owner);
+				const auto snapshot = owner->GetAccessibilitySnapshot();
+				owner = ownerLifetime.Get();
+				if (!owner || !_root
+					|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+					return UIA_E_ELEMENTNOTAVAILABLE;
+				accessibility_detail::SetVariantBool(value,
+					snapshot.Focused
+					&& _root->IsVirtualFocused(owner, _virtualId));
+				return S_OK;
+			}
 		case UIA_IsOffscreenPropertyId:
 			accessibility_detail::SetVariantBool(value, !node.Visible); return S_OK;
 		case UIA_IsControlElementPropertyId:
+			accessibility_detail::SetVariantBool(
+				value, node.IsControlElement); return S_OK;
 		case UIA_IsContentElementPropertyId:
-			accessibility_detail::SetVariantBool(value, true); return S_OK;
+			accessibility_detail::SetVariantBool(
+				value, node.IsContentElement); return S_OK;
 		case UIA_IsInvokePatternAvailablePropertyId:
 			return SetPatternAvailability(value, node, AutomationPattern::Invoke);
 		case UIA_IsTogglePatternAvailablePropertyId:
@@ -1693,6 +2230,8 @@ public:
 			return SetPatternAvailability(value, node, AutomationPattern::ExpandCollapse);
 		case UIA_IsSelectionItemPatternAvailablePropertyId:
 			return SetPatternAvailability(value, node, AutomationPattern::SelectionItem);
+		case UIA_IsSelectionPatternAvailablePropertyId:
+			return SetPatternAvailability(value, node, AutomationPattern::Selection);
 		case UIA_IsScrollItemPatternAvailablePropertyId:
 			return SetPatternAvailability(value, node, AutomationPattern::ScrollItem);
 		case UIA_IsVirtualizedItemPatternAvailablePropertyId:
@@ -1716,19 +2255,123 @@ public:
 			accessibility_detail::SetVariantInt(value, node.Expanded
 				? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed); return S_OK;
 		case UIA_SelectionItemIsSelectedPropertyId:
-			if (!Supports(AutomationPattern::SelectionItem)) return S_OK;
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::SelectionItem)) return S_OK;
 			accessibility_detail::SetVariantBool(value, node.Selected); return S_OK;
+		case UIA_SelectionItemSelectionContainerPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::SelectionItem)) return S_OK;
+			{
+				IRawElementProviderSimple* provider = nullptr;
+				const HRESULT result = get_SelectionContainer(&provider);
+				if (FAILED(result))
+				{
+					if (provider) provider->Release();
+					return result;
+				}
+				return accessibility_detail::TakeVariantProvider(value, provider);
+			}
+		case UIA_SelectionSelectionPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::Selection)) return S_OK;
+			{
+				SAFEARRAY* providers = nullptr;
+				const HRESULT result = GetSelection(&providers);
+				if (FAILED(result))
+				{
+					if (providers) (void)::SafeArrayDestroy(providers);
+					return result;
+				}
+				return accessibility_detail::TakeVariantProviderArray(
+					value, providers);
+			}
+		case UIA_SelectionCanSelectMultiplePropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::Selection)) return S_OK;
+			{
+				BOOL canSelectMultiple = FALSE;
+				const HRESULT result = get_CanSelectMultiple(
+					&canSelectMultiple);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantBool(
+					value, canSelectMultiple != FALSE);
+				return S_OK;
+			}
+		case UIA_SelectionIsSelectionRequiredPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::Selection)) return S_OK;
+			{
+				BOOL selectionRequired = FALSE;
+				const HRESULT result = get_IsSelectionRequired(
+					&selectionRequired);
+				if (FAILED(result)) return result;
+				accessibility_detail::SetVariantBool(
+					value, selectionRequired != FALSE);
+				return S_OK;
+			}
 		case UIA_GridItemRowPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::GridItem)) return S_OK;
 			accessibility_detail::SetVariantInt(value, node.Row); return S_OK;
 		case UIA_GridItemColumnPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::GridItem)) return S_OK;
 			accessibility_detail::SetVariantInt(value, node.Column); return S_OK;
 		case UIA_GridItemRowSpanPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::GridItem)) return S_OK;
 			accessibility_detail::SetVariantInt(value, node.RowSpan); return S_OK;
 		case UIA_GridItemColumnSpanPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::GridItem)) return S_OK;
 			accessibility_detail::SetVariantInt(value, node.ColumnSpan); return S_OK;
+		case UIA_GridItemContainingGridPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::GridItem)) return S_OK;
+			{
+				IRawElementProviderSimple* provider = nullptr;
+				const HRESULT result = get_ContainingGrid(&provider);
+				if (FAILED(result))
+				{
+					if (provider) provider->Release();
+					return result;
+				}
+				return accessibility_detail::TakeVariantProvider(value, provider);
+			}
+		case UIA_TableItemRowHeaderItemsPropertyId:
+		case UIA_TableItemColumnHeaderItemsPropertyId:
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::TableItem)) return S_OK;
+			{
+				SAFEARRAY* providers = nullptr;
+				const HRESULT result =
+					propertyId == UIA_TableItemRowHeaderItemsPropertyId
+						? GetRowHeaderItems(&providers)
+						: GetColumnHeaderItems(&providers);
+				if (FAILED(result))
+				{
+					if (providers) (void)::SafeArrayDestroy(providers);
+					return result;
+				}
+				return accessibility_detail::TakeVariantProviderArray(
+					value, providers);
+			}
 		case UIA_LevelPropertyId:
 			accessibility_detail::SetVariantInt(value, node.Level); return S_OK;
 		default: return S_OK;
+		}
+		}
+		catch (const std::bad_alloc&)
+		{
+			::VariantClear(value);
+			::VariantInit(value);
+			return E_OUTOFMEMORY;
+		}
+		catch (...)
+		{
+			::VariantClear(value);
+			::VariantInit(value);
+			return UIA_E_INVALIDOPERATION;
 		}
 	}
 	HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(
@@ -1757,22 +2400,33 @@ public:
 		*value = result;
 		return S_OK;
 	}
-	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override
+	HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* value) override try
 	{
 		if (!value) return E_POINTER;
 		*value = UiaRect{};
 		AccessibilityVirtualNode node;
 		auto* form = _root ? _root->GetWindow() : nullptr;
-		if (!CurrentNode(&node) || !form || !_owner)
+		if (!CurrentNode(&node) || !form || !_root)
 			return UIA_E_ELEMENTNOTAVAILABLE;
+		auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+		if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference ownerLifetime(owner);
 		D2D1_RECT_F rendered = node.BoundsDip;
 		if (!node.BoundsAreRenderSpace)
 		{
-			const auto owner = _owner->GetAbsoluteLocationDip();
+			const auto location = owner->GetAbsoluteLocationDip();
+			owner = ownerLifetime.Get();
+			if (!owner || _root->ResolveControl(
+				_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
 			const D2D1_RECT_F absolute = D2D1::RectF(
-				owner.x + node.BoundsDip.left, owner.y + node.BoundsDip.top,
-				owner.x + node.BoundsDip.right, owner.y + node.BoundsDip.bottom);
-			rendered = _owner->TransformAbsoluteRectToRenderSpace(absolute);
+				location.x + node.BoundsDip.left, location.y + node.BoundsDip.top,
+				location.x + node.BoundsDip.right, location.y + node.BoundsDip.bottom);
+			rendered = owner->TransformAbsoluteRectToRenderSpace(absolute);
+			owner = ownerLifetime.Get();
+			if (!owner || _root->ResolveControl(
+				_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
 		}
 		RECT rectangle = form->ContentDipRectToClientPixels(rendered);
 		POINT points[2]{ { rectangle.left, rectangle.top },
@@ -1784,6 +2438,8 @@ public:
 		value->height = points[1].y - points[0].y;
 		return S_OK;
 	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE GetEmbeddedFragmentRoots(SAFEARRAY** value) override
 	{
 		if (!value) return E_POINTER;
@@ -1792,18 +2448,62 @@ public:
 	}
 	HRESULT STDMETHODCALLTYPE SetFocus() override
 	{
-		AccessibilityVirtualNode node;
-		if (!CurrentNode(&node)) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
-		if (!HasAutomationPattern(
-			node.Patterns, AutomationPattern::SelectionItem))
-			return UIA_E_INVALIDOPERATION;
-		if (!_owner || !_root || !_owner->Focus())
-			return UIA_E_INVALIDOPERATION;
-		_root->SetVirtualFocus(_owner, _virtualId);
-		_root->RaiseVirtualEvent(
-			_owner, _virtualId, AccessibilityChange::Focus);
-		return S_OK;
+		try
+		{
+			AccessibilityVirtualNode node;
+			AutomationPeer* source = nullptr;
+			std::shared_ptr<AutomationPeer> sourceLease;
+			if (!CurrentNode(&node, &source, &sourceLease) || !_root)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference ownerLifetime(owner);
+			auto* form = _root->GetWindow();
+			if (!form || !form->Handle || !::IsWindow(form->Handle))
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!_root->HasNativeKeyboardFocus())
+			{
+				(void)::SetFocus(form->Handle);
+				owner = ownerLifetime.Get();
+				if (!owner
+					|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner
+					|| !CurrentNode(&node, &source, &sourceLease))
+					return UIA_E_ELEMENTNOTAVAILABLE;
+				if (!_root->HasNativeKeyboardFocus())
+					return UIA_E_INVALIDOPERATION;
+			}
+			const auto focused = source->FocusAccessibilityVirtualNode(_virtualId);
+			if (focused != AutomationOperationResult::Succeeded)
+				return accessibility_detail::ToHresult(focused);
+
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner
+				|| !CurrentNode(&node, &source))
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+			if (!node.KeyboardFocusable)
+				return UIA_E_INVALIDOPERATION;
+			if (!_root->HasNativeKeyboardFocus())
+				return UIA_E_INVALIDOPERATION;
+
+			_root->SetVirtualFocus(owner, _virtualId);
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			// A real DataGridCell focus transition is routed to this virtual
+			// provider by RaiseEvent. Owner-backed virtual items still need an
+			// explicit event after their virtual-focus identity is committed.
+			if (!node.HasKeyboardFocus)
+				_root->RaiseVirtualEvent(
+					owner, _virtualId, AccessibilityChange::Focus);
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT STDMETHODCALLTYPE get_FragmentRoot(
 		IRawElementProviderFragmentRoot** value) override
@@ -1841,15 +2541,23 @@ public:
 	HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR value) override
 	{
 		if (!value) return E_INVALIDARG;
-		AccessibilityVirtualNode node;
-		AutomationPeer* source = nullptr;
-		if (!CurrentNode(&node, &source)) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!HasAutomationPattern(
-			node.Patterns, AutomationPattern::Value)) return UIA_E_NOTSUPPORTED;
-		if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
-		if (node.ReadOnly) return UIA_E_NOTSUPPORTED;
-		return source->SetAccessibilityVirtualNodeValue(_virtualId, value)
-			? S_OK : UIA_E_INVALIDOPERATION;
+		try
+		{
+			AccessibilityVirtualNode node;
+			AutomationPeer* source = nullptr;
+			std::shared_ptr<AutomationPeer> sourceLease;
+			if (!CurrentNode(&node, &source, &sourceLease))
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::Value))
+				return UIA_E_NOTSUPPORTED;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+			if (node.ReadOnly) return UIA_E_NOTSUPPORTED;
+			return source->SetAccessibilityVirtualNodeValue(_virtualId, value)
+				? S_OK : UIA_E_INVALIDOPERATION;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT STDMETHODCALLTYPE get_Value(BSTR* value) override
 	{
@@ -1871,8 +2579,12 @@ public:
 		*value = node.ReadOnly ? TRUE : FALSE;
 		return S_OK;
 	}
-	HRESULT STDMETHODCALLTYPE Expand() override { return SetExpanded(true); }
-	HRESULT STDMETHODCALLTYPE Collapse() override { return SetExpanded(false); }
+	HRESULT STDMETHODCALLTYPE Expand() override try { return SetExpanded(true); }
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+	HRESULT STDMETHODCALLTYPE Collapse() override try { return SetExpanded(false); }
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 	HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(
 		ExpandCollapseState* value) override
 	{
@@ -1914,13 +2626,35 @@ public:
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
-		if (!CurrentNode(nullptr) || !_root || !_owner)
-			return UIA_E_ELEMENTNOTAVAILABLE;
-		auto* provider = _root->ProviderFor(_owner);
-		if (!provider) return E_OUTOFMEMORY;
-		*value = static_cast<IRawElementProviderSimple*>(provider);
-		return S_OK;
+		try
+		{
+			if (!CurrentNode(nullptr) || !_root)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference ownerLifetime(owner);
+			auto* provider = _root->ProviderFor(owner);
+			if (!provider) return E_OUTOFMEMORY;
+			auto releaseProvider = [](ControlUiaProvider* value)
+			{
+				if (value) value->Release();
+			};
+			std::unique_ptr<ControlUiaProvider, decltype(releaseProvider)>
+				providerLifetime(provider, releaseProvider);
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			*value = static_cast<IRawElementProviderSimple*>(provider);
+			(void)providerLifetime.release();
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
+	HRESULT STDMETHODCALLTYPE GetSelection(SAFEARRAY** value) override;
+	HRESULT STDMETHODCALLTYPE get_CanSelectMultiple(BOOL* value) override;
+	HRESULT STDMETHODCALLTYPE get_IsSelectionRequired(BOOL* value) override;
 	HRESULT STDMETHODCALLTYPE ScrollIntoView() override
 	{
 		return PerformNodeAction(AutomationPattern::ScrollItem,
@@ -1954,17 +2688,33 @@ public:
 	{
 		if (!value) return E_POINTER;
 		*value = nullptr;
-		if (!CurrentNode(nullptr) || !_root || !_owner)
-			return UIA_E_ELEMENTNOTAVAILABLE;
-		auto* provider = _root->ProviderFor(_owner);
-		if (!provider) return E_OUTOFMEMORY;
-		*value = static_cast<IRawElementProviderSimple*>(provider);
-		return S_OK;
+		try
+		{
+			if (!CurrentNode(nullptr) || !_root)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference ownerLifetime(owner);
+			auto* provider = _root->ProviderFor(owner);
+			if (!provider) return E_OUTOFMEMORY;
+			auto releaseProvider = [](ControlUiaProvider* value)
+			{
+				if (value) value->Release();
+			};
+			std::unique_ptr<ControlUiaProvider, decltype(releaseProvider)>
+				providerLifetime(provider, releaseProvider);
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			*value = static_cast<IRawElementProviderSimple*>(provider);
+			(void)providerLifetime.release();
+			return S_OK;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
-	HRESULT STDMETHODCALLTYPE GetRowHeaderItems(SAFEARRAY** value) override
-	{
-		return CreateProviderArray({}, value);
-	}
+	HRESULT STDMETHODCALLTYPE GetRowHeaderItems(SAFEARRAY** value) override;
 	HRESULT STDMETHODCALLTYPE GetColumnHeaderItems(SAFEARRAY** value) override;
 
 private:
@@ -1977,12 +2727,14 @@ private:
 		}
 	}
 	bool CurrentNode(AccessibilityVirtualNode* result,
-		AutomationPeer** source = nullptr) const
+		AutomationPeer** source = nullptr,
+		std::shared_ptr<AutomationPeer>* sourceLease = nullptr) const
 	{
 		AccessibilityVirtualNode node;
 		AutomationPeer* resolved = nullptr;
 		if (!_root || !_root->ResolveVirtualNode(
-			_owner, _ownerRuntimeId, _virtualId, node, &resolved)) return false;
+			_owner, _ownerRuntimeId, _virtualId, node, &resolved,
+			sourceLease)) return false;
 		if (result) *result = std::move(node);
 		if (source) *source = resolved;
 		return true;
@@ -2005,48 +2757,110 @@ private:
 	HRESULT PerformNodeAction(
 		AutomationPattern pattern, Action&& action)
 	{
-		AccessibilityVirtualNode node;
-		AutomationPeer* source = nullptr;
-		if (!CurrentNode(&node, &source)) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!HasAutomationPattern(node.Patterns, pattern))
-			return UIA_E_NOTSUPPORTED;
-		if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
-		return action(*source, _virtualId) ? S_OK : UIA_E_INVALIDOPERATION;
+		try
+		{
+			AccessibilityVirtualNode node;
+			AutomationPeer* source = nullptr;
+			std::shared_ptr<AutomationPeer> sourceLease;
+			if (!CurrentNode(&node, &source, &sourceLease) || !_root)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!HasAutomationPattern(node.Patterns, pattern))
+				return UIA_E_NOTSUPPORTED;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference ownerLifetime(owner);
+			const bool completed = action(*source, _virtualId);
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			return completed ? S_OK : UIA_E_INVALIDOPERATION;
+		}
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT SelectNode(AccessibilitySelectionAction action)
 	{
-		AccessibilityVirtualNode node;
-		AutomationPeer* source = nullptr;
-		if (!CurrentNode(&node, &source)) return UIA_E_ELEMENTNOTAVAILABLE;
-		if (!HasAutomationPattern(
-			node.Patterns, AutomationPattern::SelectionItem))
-			return UIA_E_NOTSUPPORTED;
-		if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
-		const auto container = source->GetAccessibilityVirtualContainerInfo();
-		if (action == AccessibilitySelectionAction::Remove
-			&& node.Selected && container.IsSelectionRequired)
-			return UIA_E_INVALIDOPERATION;
-		if (action == AccessibilitySelectionAction::Add
-			&& !node.Selected && !container.CanSelectMultiple)
+		try
 		{
-			std::vector<uint32_t> selection;
-			source->GetAccessibilityVirtualSelection(selection);
-			if (!selection.empty()) return UIA_E_INVALIDOPERATION;
+			AccessibilityVirtualNode node;
+			AutomationPeer* source = nullptr;
+			std::shared_ptr<AutomationPeer> sourceLease;
+			if (!CurrentNode(&node, &source, &sourceLease) || !_root)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::SelectionItem))
+				return UIA_E_NOTSUPPORTED;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			const ControlWeakReference ownerLifetime(owner);
+			const auto container =
+				source->GetAccessibilityVirtualContainerInfo();
+
+			auto refresh = [&]()
+			{
+				owner = ownerLifetime.Get();
+				return owner
+					&& _root->ResolveControl(_owner, _ownerRuntimeId) == owner
+					&& CurrentNode(&node, &source, &sourceLease);
+			};
+			if (!refresh()) return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!HasAutomationPattern(
+				node.Patterns, AutomationPattern::SelectionItem))
+				return UIA_E_NOTSUPPORTED;
+			if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+			if (action == AccessibilitySelectionAction::Remove
+				&& node.Selected && container.IsSelectionRequired)
+				return UIA_E_INVALIDOPERATION;
+			if (action == AccessibilitySelectionAction::Add
+				&& !node.Selected && !container.CanSelectMultiple)
+			{
+				std::vector<uint32_t> selection;
+				source->GetAccessibilityVirtualSelection(selection);
+				if (!refresh()) return UIA_E_ELEMENTNOTAVAILABLE;
+				if (!HasAutomationPattern(
+					node.Patterns, AutomationPattern::SelectionItem))
+					return UIA_E_NOTSUPPORTED;
+				if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
+				if (!selection.empty()) return UIA_E_INVALIDOPERATION;
+			}
+
+			const bool completed = source->SelectAccessibilityVirtualNode(
+				_virtualId, action);
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			return completed ? S_OK : UIA_E_INVALIDOPERATION;
 		}
-		return source->SelectAccessibilityVirtualNode(_virtualId, action)
-			? S_OK : UIA_E_INVALIDOPERATION;
+		catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+		catch (...) { return UIA_E_INVALIDOPERATION; }
 	}
 	HRESULT SetExpanded(bool expanded)
 	{
 		AccessibilityVirtualNode node;
 		AutomationPeer* source = nullptr;
-		if (!CurrentNode(&node, &source)) return UIA_E_ELEMENTNOTAVAILABLE;
+		std::shared_ptr<AutomationPeer> sourceLease;
+		if (!CurrentNode(&node, &source, &sourceLease))
+			return UIA_E_ELEMENTNOTAVAILABLE;
 		if (!HasAutomationPattern(
 			node.Patterns, AutomationPattern::ExpandCollapse))
 			return UIA_E_NOTSUPPORTED;
 		if (!node.Enabled) return UIA_E_ELEMENTNOTENABLED;
-		return source->SetAccessibilityVirtualNodeExpanded(_virtualId, expanded)
-			? S_OK : UIA_E_INVALIDOPERATION;
+		auto* owner = _root
+			? _root->ResolveControl(_owner, _ownerRuntimeId) : nullptr;
+		if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference ownerLifetime(owner);
+		const bool changed = source->SetAccessibilityVirtualNodeExpanded(
+			_virtualId, expanded);
+		owner = ownerLifetime.Get();
+		if (!owner || _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return changed ? S_OK : UIA_E_INVALIDOPERATION;
 	}
 	template<typename Getter>
 	HRESULT GetGridInt(int* value, Getter&& getter)
@@ -2070,23 +2884,38 @@ private:
 	uint64_t _key = 0;
 };
 
-Control* WindowUiaProvider::ResolveControl(
-	Control* candidate, uint32_t runtimeId) const
+Control* WindowUiaProvider::ResolveControl(Control* candidate) const noexcept
 {
-	auto* form = GetWindow();
-	if (!form || !Connected() || !candidate || runtimeId == 0) return nullptr;
-	const auto controls = form->GetAccessibleControls();
-	const auto position = std::find(controls.begin(), controls.end(), candidate);
-	if (position == controls.end()) return nullptr;
-	return (*position)->GetAccessibilityRuntimeId() == runtimeId
-		? *position : nullptr;
+	try
+	{
+		auto* form = GetWindow();
+		if (!form || !Connected() || !candidate) return nullptr;
+		const auto controls = form->GetAccessibleControls();
+		const auto position = std::find(
+			controls.begin(), controls.end(), candidate);
+		return position != controls.end() ? *position : nullptr;
+	}
+	catch (...) { return nullptr; }
+}
+
+Control* WindowUiaProvider::ResolveControl(
+	Control* candidate, uint32_t runtimeId) const noexcept
+{
+	auto* resolved = ResolveControl(candidate);
+	return resolved && runtimeId != 0
+		&& resolved->GetAccessibilityRuntimeId() == runtimeId
+		? resolved : nullptr;
 }
 
 ControlUiaProvider* WindowUiaProvider::ProviderFor(Control* control)
 {
-	if (!control || !ResolveControl(
-		control, control->GetAccessibilityRuntimeId())) return nullptr;
+	control = ResolveControl(control);
+	if (!control) return nullptr;
+	const ControlWeakReference controlLifetime(control);
 	const uint32_t runtimeId = control->GetAccessibilityRuntimeId();
+	control = controlLifetime.Get();
+	if (!control || ResolveControl(control, runtimeId) != control)
+		return nullptr;
 	std::lock_guard lock(_providerMutex);
 	if (const auto position = _providers.find(runtimeId);
 		position != _providers.end())
@@ -2098,26 +2927,71 @@ ControlUiaProvider* WindowUiaProvider::ProviderFor(Control* control)
 		}
 		_providers.erase(position);
 	}
+	auto slot = _providers.end();
+	try
+	{
+		auto [position, inserted] = _providers.emplace(runtimeId, nullptr);
+		if (!inserted) return nullptr;
+		slot = position;
+	}
+	catch (...)
+	{
+		return nullptr;
+	}
 	auto* provider = new (std::nothrow) ControlUiaProvider(this, control);
-	if (!provider) return nullptr;
-	_providers.emplace(runtimeId, provider);
+	if (!provider)
+	{
+		_providers.erase(slot);
+		return nullptr;
+	}
+	slot->second = provider;
 	return provider;
 }
 
 bool WindowUiaProvider::ResolveVirtualNode(
 	Control* owner, uint32_t ownerRuntimeId, uint32_t virtualId,
 	AccessibilityVirtualNode& node,
-	AutomationPeer** source) const
+	AutomationPeer** source,
+	std::shared_ptr<AutomationPeer>* sourceLease) const
 {
 	if (source) *source = nullptr;
-	auto* resolvedOwner = ResolveControl(owner, ownerRuntimeId);
-	if (!resolvedOwner || virtualId == 0) return false;
-	auto* virtualized = &resolvedOwner->GetAutomationPeer();
-	if (!virtualized->SupportsVirtualizedChildren()
-		|| !virtualized->TryGetAccessibilityVirtualNode(virtualId, node)
-		|| node.Id != virtualId) return false;
-	if (source) *source = virtualized;
-	return true;
+	if (sourceLease) sourceLease->reset();
+	try
+	{
+		auto* resolvedOwner = ResolveControl(owner, ownerRuntimeId);
+		if (!resolvedOwner || virtualId == 0) return false;
+		const ControlWeakReference ownerLifetime(resolvedOwner);
+		auto lease = resolvedOwner->AcquireAutomationPeer();
+		if (!lease) return false;
+		auto* virtualized = lease.get();
+		if (!virtualized->SupportsVirtualizedChildren()) return false;
+		resolvedOwner = ownerLifetime.Get();
+		if (!resolvedOwner
+			|| ResolveControl(owner, ownerRuntimeId) != resolvedOwner)
+			return false;
+		if (!virtualized->TryGetAccessibilityVirtualNode(virtualId, node))
+			return false;
+		if (node.Id != virtualId) return false;
+
+		// A virtual-node callback is framework-extensible. Re-resolve both the
+		// Control lifetime and its Window membership before publishing a peer
+		// pointer or allowing a provider to retain the raw owner identity.
+		resolvedOwner = ownerLifetime.Get();
+		if (!resolvedOwner
+			|| ResolveControl(owner, ownerRuntimeId) != resolvedOwner)
+			return false;
+		lease = resolvedOwner->AcquireAutomationPeer();
+		if (!lease) return false;
+		virtualized = lease.get();
+		if (!virtualized->SupportsVirtualizedChildren()) return false;
+		if (source) *source = virtualized;
+		if (sourceLease) *sourceLease = std::move(lease);
+		return true;
+	}
+	catch (...)
+	{
+		return false;
+	}
 }
 
 VirtualUiaProvider* WindowUiaProvider::VirtualProviderFor(
@@ -2127,6 +3001,15 @@ VirtualUiaProvider* WindowUiaProvider::VirtualProviderFor(
 	AccessibilityVirtualNode node;
 	const uint32_t ownerRuntimeId = owner->GetAccessibilityRuntimeId();
 	if (!ResolveVirtualNode(owner, ownerRuntimeId, virtualId, node)) return nullptr;
+	return VirtualProviderForValidated(owner, ownerRuntimeId, virtualId);
+}
+
+VirtualUiaProvider* WindowUiaProvider::VirtualProviderForValidated(
+	Control* owner, uint32_t ownerRuntimeId, uint32_t virtualId)
+{
+	if (!owner || ownerRuntimeId == 0 || virtualId == 0
+		|| owner->GetAccessibilityRuntimeId() != ownerRuntimeId)
+		return nullptr;
 	const uint64_t key = (static_cast<uint64_t>(ownerRuntimeId) << 32)
 		| virtualId;
 	std::lock_guard lock(_providerMutex);
@@ -2140,10 +3023,25 @@ VirtualUiaProvider* WindowUiaProvider::VirtualProviderFor(
 		}
 		_virtualProviders.erase(position);
 	}
+	auto slot = _virtualProviders.end();
+	try
+	{
+		auto [position, inserted] = _virtualProviders.emplace(key, nullptr);
+		if (!inserted) return nullptr;
+		slot = position;
+	}
+	catch (...)
+	{
+		return nullptr;
+	}
 	auto* provider = new (std::nothrow) VirtualUiaProvider(
 		this, owner, virtualId);
-	if (!provider) return nullptr;
-	_virtualProviders.emplace(key, provider);
+	if (!provider)
+	{
+		_virtualProviders.erase(slot);
+		return nullptr;
+	}
+	slot->second = provider;
 	return provider;
 }
 
@@ -2167,15 +3065,45 @@ void WindowUiaProvider::UnregisterVirtualProvider(
 
 void WindowUiaProvider::SetVirtualFocus(Control* owner, uint32_t virtualId)
 {
-	if (!owner || virtualId == 0) return;
+	ClearVirtualFocus();
+	if (!owner || virtualId == 0 || !HasNativeKeyboardFocus()) return;
+	auto* form = GetWindow();
+	if (!form) return;
+	auto* focused = form->GetKeyboardFocusedElement();
+	Control* authoritativeOwner = nullptr;
+	uint32_t authoritativeId = 0;
+	if (TryGetVirtualFocusedNode(
+		focused, authoritativeOwner, authoritativeId))
+	{
+		// A realized peer (notably DataGridCell) is the authoritative focus
+		// source. Do not leave an owner-level hint that can later resurrect it.
+		return;
+	}
+	owner = ResolveControl(owner);
+	if (!owner || form != GetWindow()
+		|| form->GetKeyboardFocusedElement() != owner) return;
 	std::lock_guard lock(_providerMutex);
 	_focusedVirtualByOwner[owner->GetAccessibilityRuntimeId()] = virtualId;
+}
+
+void WindowUiaProvider::ClearVirtualFocus() noexcept
+{
+	try
+	{
+		std::lock_guard lock(_providerMutex);
+		_focusedVirtualByOwner.clear();
+	}
+	catch (...) {}
 }
 
 bool WindowUiaProvider::IsVirtualFocused(
 	Control* owner, uint32_t virtualId)
 {
-	if (!owner || virtualId == 0) return false;
+	if (!owner || virtualId == 0 || !HasNativeKeyboardFocus()) return false;
+	auto* form = GetWindow();
+	owner = ResolveControl(owner);
+	if (!form || !owner || form != GetWindow()
+		|| form->GetKeyboardFocusedElement() != owner) return false;
 	std::lock_guard lock(_providerMutex);
 	const auto position = _focusedVirtualByOwner.find(
 		owner->GetAccessibilityRuntimeId());
@@ -2185,11 +3113,83 @@ bool WindowUiaProvider::IsVirtualFocused(
 
 uint32_t WindowUiaProvider::VirtualFocusFor(Control* owner)
 {
-	if (!owner) return 0;
+	if (!owner || !HasNativeKeyboardFocus()) return 0;
+	auto* form = GetWindow();
+	owner = ResolveControl(owner);
+	if (!form || !owner || form != GetWindow()
+		|| form->GetKeyboardFocusedElement() != owner) return 0;
 	std::lock_guard lock(_providerMutex);
 	const auto position = _focusedVirtualByOwner.find(
 		owner->GetAccessibilityRuntimeId());
 	return position == _focusedVirtualByOwner.end() ? 0 : position->second;
+}
+
+bool WindowUiaProvider::TryGetVirtualFocusedNode(
+	Control* focused, Control*& owner, uint32_t& virtualId)
+{
+	owner = nullptr;
+	virtualId = 0;
+	if (!focused) return false;
+	try
+	{
+		std::vector<ControlWeakReference> pending;
+		pending.emplace_back(focused);
+		std::unordered_set<Control*> visited;
+		while (!pending.empty())
+		{
+			const ControlWeakReference candidateLifetime = pending.back();
+			pending.pop_back();
+			auto* candidate = candidateLifetime.Get();
+			if (!candidate || !visited.insert(candidate).second) continue;
+			const uint32_t runtimeId = candidate->GetAccessibilityRuntimeId();
+			auto currentCandidate = [&]() -> Control*
+			{
+				candidate = candidateLifetime.Get();
+				return candidate
+					&& candidate->GetAccessibilityRuntimeId() == runtimeId
+					&& candidate->GetPresentationWindow() == GetWindow()
+					? candidate : nullptr;
+			};
+			auto source = candidate->AcquireAutomationPeer();
+			candidate = currentCandidate();
+			if (!source || !candidate) continue;
+			uint32_t candidateId = 0;
+			const bool supportsVirtualChildren =
+				source->SupportsVirtualizedChildren();
+			candidate = currentCandidate();
+			if (!candidate) continue;
+			const bool hasFocusedVirtualNode = supportsVirtualChildren
+				&& source->TryGetAccessibilityVirtualFocusedNode(candidateId);
+			candidate = currentCandidate();
+			if (!candidate) continue;
+			if (hasFocusedVirtualNode && candidateId != 0)
+			{
+				candidate = candidateLifetime.Get();
+				AccessibilityVirtualNode node;
+				if (candidate && ResolveVirtualNode(
+						candidate, runtimeId, candidateId, node))
+				{
+					owner = candidate;
+					virtualId = candidateId;
+					return true;
+				}
+			}
+
+			candidate = currentCandidate();
+			if (!candidate) continue;
+			auto* visualParent = candidate->GetVisualParent();
+			auto* logicalParent = candidate->GetLogicalParent();
+			auto* templatedParent = candidate->GetTemplatedParent();
+			if (visualParent) pending.emplace_back(visualParent);
+			if (logicalParent && logicalParent != visualParent)
+				pending.emplace_back(logicalParent);
+			if (templatedParent && templatedParent != visualParent
+				&& templatedParent != logicalParent)
+				pending.emplace_back(templatedParent);
+		}
+	}
+	catch (...) {}
+	return false;
 }
 
 std::vector<Control*> WindowUiaProvider::DirectChildren(Control* parent) const
@@ -2197,17 +3197,42 @@ std::vector<Control*> WindowUiaProvider::DirectChildren(Control* parent) const
 	std::vector<Control*> result;
 	auto* form = GetWindow();
 	if (!form || !Connected()) return result;
-	if (parent && parent->GetAutomationPeer().SupportsVirtualizedChildren())
-		return result;
+	if (parent)
+	{
+		const uint32_t parentRuntimeId = parent->GetAccessibilityRuntimeId();
+		const ControlWeakReference parentLifetime(parent);
+		auto peer = parent->AcquireAutomationPeer();
+		parent = parentLifetime.Get();
+		if (!peer || !parent
+			|| ResolveControl(parent, parentRuntimeId) != parent) return result;
+		const bool virtualized = peer->SupportsVirtualizedChildren();
+		parent = parentLifetime.Get();
+		if (!parent || ResolveControl(parent, parentRuntimeId) != parent)
+			return result;
+		if (virtualized) return result;
+	}
 	const auto source = parent
 		? parent->GetLogicalChildrenView()
 		: form->GetLogicalChildrenView();
-	result.reserve(source.size());
+	std::vector<ControlWeakReference> snapshot;
+	snapshot.reserve(source.size());
 	for (auto* child : source)
+		if (child) snapshot.emplace_back(child);
+	std::vector<ControlWeakReference> resolvedChildren;
+	resolvedChildren.reserve(snapshot.size());
+	for (const auto& childLifetime : snapshot)
 	{
-		if (child && ResolveControl(child, child->GetAccessibilityRuntimeId()))
-			result.push_back(child);
+		auto* child = childLifetime.Get();
+		if (!child) continue;
+		const uint32_t childRuntimeId = child->GetAccessibilityRuntimeId();
+		auto* resolved = ResolveControl(child, childRuntimeId);
+		child = childLifetime.Get();
+		if (child && resolved == child)
+			resolvedChildren.emplace_back(child);
 	}
+	result.reserve(resolvedChildren.size());
+	for (const auto& childLifetime : resolvedChildren)
+		if (auto* child = childLifetime.Get()) result.push_back(child);
 	return result;
 }
 
@@ -2215,19 +3240,32 @@ bool WindowUiaProvider::TryGetVirtualBoundaryChild(
 	Control* owner, uint32_t parentId, bool last, uint32_t& result) const
 {
 	result = 0;
-	if (!owner || !ResolveControl(
-		owner, owner->GetAccessibilityRuntimeId())) return false;
-	auto* source = &owner->GetAutomationPeer();
+	if (!owner) return false;
+	const uint32_t ownerRuntimeId = owner->GetAccessibilityRuntimeId();
+	if (ResolveControl(owner, ownerRuntimeId) != owner) return false;
+	const ControlWeakReference ownerLifetime(owner);
+	auto source = owner->AcquireAutomationPeer();
+	owner = ownerLifetime.Get();
+	if (!source || !owner || ResolveControl(owner, ownerRuntimeId) != owner)
+		return false;
 	if (!source->SupportsVirtualizedChildren()) return false;
+	owner = ownerLifetime.Get();
+	if (!owner || ResolveControl(owner, ownerRuntimeId) != owner) return false;
 	const size_t count = source->GetAccessibilityVirtualChildCount(parentId);
+	owner = ownerLifetime.Get();
+	if (!owner || ResolveControl(owner, ownerRuntimeId) != owner) return false;
 	for (size_t offset = 0; offset < count; ++offset)
 	{
 		const size_t index = last ? count - offset - 1 : offset;
 		uint32_t candidate = 0;
-		if (!source->TryGetAccessibilityVirtualChildAt(
-			parentId, index, candidate) || candidate == 0) continue;
+		const bool found = source->TryGetAccessibilityVirtualChildAt(
+			parentId, index, candidate);
+		owner = ownerLifetime.Get();
+		if (!owner || ResolveControl(owner, ownerRuntimeId) != owner)
+			return false;
+		if (!found || candidate == 0) continue;
 		AccessibilityVirtualNode node;
-		if (!ResolveVirtualNode(owner, owner->GetAccessibilityRuntimeId(),
+		if (!ResolveVirtualNode(owner, ownerRuntimeId,
 			candidate, node)) continue;
 		result = candidate;
 		return true;
@@ -2240,14 +3278,24 @@ bool WindowUiaProvider::TryGetVirtualSibling(
 	bool next, uint32_t& result) const
 {
 	result = 0;
-	if (!owner || !ResolveControl(
-		owner, owner->GetAccessibilityRuntimeId())) return false;
-	auto* source = &owner->GetAutomationPeer();
-	if (!source->SupportsVirtualizedChildren()
-		|| !source->TryGetAccessibilityVirtualSibling(
-		parentId, id, next, result) || result == 0) return false;
+	if (!owner) return false;
+	const uint32_t ownerRuntimeId = owner->GetAccessibilityRuntimeId();
+	if (ResolveControl(owner, ownerRuntimeId) != owner) return false;
+	const ControlWeakReference ownerLifetime(owner);
+	auto source = owner->AcquireAutomationPeer();
+	owner = ownerLifetime.Get();
+	if (!source || !owner || ResolveControl(owner, ownerRuntimeId) != owner)
+		return false;
+	if (!source->SupportsVirtualizedChildren()) return false;
+	owner = ownerLifetime.Get();
+	if (!owner || ResolveControl(owner, ownerRuntimeId) != owner) return false;
+	const bool found = source->TryGetAccessibilityVirtualSibling(
+		parentId, id, next, result);
+	owner = ownerLifetime.Get();
+	if (!owner || ResolveControl(owner, ownerRuntimeId) != owner) return false;
+	if (!found || result == 0) return false;
 	AccessibilityVirtualNode node;
-	if (!ResolveVirtualNode(owner, owner->GetAccessibilityRuntimeId(), result, node))
+	if (!ResolveVirtualNode(owner, ownerRuntimeId, result, node))
 	{
 		result = 0;
 		return false;
@@ -2257,15 +3305,23 @@ bool WindowUiaProvider::TryGetVirtualSibling(
 
 Control* WindowUiaProvider::ParentOf(Control* control) const
 {
-	if (!control || !ResolveControl(
-		control, control->GetAccessibilityRuntimeId())) return nullptr;
+	if (!control) return nullptr;
+	const ControlWeakReference controlLifetime(control);
+	const uint32_t runtimeId = control->GetAccessibilityRuntimeId();
+	auto* resolved = ResolveControl(control, runtimeId);
+	control = controlLifetime.Get();
+	if (!control || resolved != control) return nullptr;
 	return control->GetLogicalParent();
 }
 
 Control* WindowUiaProvider::SiblingOf(Control* control, bool next) const
 {
 	if (!control) return nullptr;
-	const auto siblings = DirectChildren(control->GetLogicalParent());
+	const ControlWeakReference controlLifetime(control);
+	auto* parent = control->GetLogicalParent();
+	const auto siblings = DirectChildren(parent);
+	control = controlLifetime.Get();
+	if (!control) return nullptr;
 	const auto position = std::find(siblings.begin(), siblings.end(), control);
 	if (position == siblings.end()) return nullptr;
 	if (next)
@@ -2274,7 +3330,7 @@ Control* WindowUiaProvider::SiblingOf(Control* control, bool next) const
 }
 
 HRESULT WindowUiaProvider::Navigate(NavigateDirection direction,
-	IRawElementProviderFragment** value)
+	IRawElementProviderFragment** value) try
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
@@ -2289,9 +3345,11 @@ HRESULT WindowUiaProvider::Navigate(NavigateDirection direction,
 	*value = static_cast<IRawElementProviderFragment*>(provider);
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT WindowUiaProvider::ElementProviderFromPoint(double x, double y,
-	IRawElementProviderFragment** value)
+	IRawElementProviderFragment** value) try
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
@@ -2311,13 +3369,30 @@ HRESULT WindowUiaProvider::ElementProviderFromPoint(double x, double y,
 	const float contentY = static_cast<float>(clientPoint.y
 		- form->GetTitleBarHeightPixels()) / dpiScale;
 	auto controls = form->GetAccessibleControls();
-	for (auto position = controls.rbegin(); position != controls.rend(); ++position)
+	std::vector<ControlWeakReference> controlSnapshot;
+	controlSnapshot.reserve(controls.size());
+	for (auto* control : controls)
+		if (control) controlSnapshot.emplace_back(control);
+	for (auto position = controlSnapshot.rbegin();
+		position != controlSnapshot.rend(); ++position)
 	{
-		auto* control = *position;
-		if (!control || !control->GetAccessibilitySnapshot().Visible) continue;
-		auto* source = &control->GetAutomationPeer();
+		auto* control = position->Get();
+		if (!control) continue;
+		const uint32_t controlRuntimeId = control->GetAccessibilityRuntimeId();
+		const ControlWeakReference controlLifetime(control);
+		const bool visible = control->GetAccessibilitySnapshot().Visible;
+		control = controlLifetime.Get();
+		if (!visible || !control
+			|| ResolveControl(control, controlRuntimeId) != control) continue;
+		auto source = control->AcquireAutomationPeer();
+		control = controlLifetime.Get();
+		if (!source || !control
+			|| ResolveControl(control, controlRuntimeId) != control) continue;
 		if (source->SupportsVirtualizedChildren())
 		{
+			control = controlLifetime.Get();
+			if (!control || ResolveControl(control, controlRuntimeId) != control)
+				continue;
 			D2D1_POINT_2F local{};
 			uint32_t virtualId = 0;
 			if (control->TryTransformRenderPointToLocal(
@@ -2329,8 +3404,10 @@ HRESULT WindowUiaProvider::ElementProviderFromPoint(double x, double y,
 				&& virtualId != 0)
 			{
 				AccessibilityVirtualNode node;
-				if (ResolveVirtualNode(control,
-					control->GetAccessibilityRuntimeId(), virtualId, node))
+				control = controlLifetime.Get();
+				if (control && ResolveControl(control, controlRuntimeId) == control
+					&& ResolveVirtualNode(control,
+						controlRuntimeId, virtualId, node))
 				{
 					auto* provider = VirtualProviderFor(control, virtualId);
 					if (!provider) return E_OUTOFMEMORY;
@@ -2339,6 +3416,9 @@ HRESULT WindowUiaProvider::ElementProviderFromPoint(double x, double y,
 				}
 			}
 		}
+		control = controlLifetime.Get();
+		if (!control || ResolveControl(control, controlRuntimeId) != control)
+			continue;
 		D2D1_POINT_2F local{};
 		if (!control->TryTransformRenderPointToLocal(
 			D2D1::Point2F(contentX, contentY), local)
@@ -2356,42 +3436,60 @@ HRESULT WindowUiaProvider::ElementProviderFromPoint(double x, double y,
 	AddRef();
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT WindowUiaProvider::GetFocus(IRawElementProviderFragment** value)
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
-	auto* form = GetWindow();
-	if (!form || !Connected()) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!form->GetKeyboardFocusedElement()) return S_OK;
-	if (const uint32_t focused = VirtualFocusFor(form->GetKeyboardFocusedElement());
-		focused != 0)
+	try
 	{
-		if (auto* provider = VirtualProviderFor(form->GetKeyboardFocusedElement(), focused))
+		auto* form = GetWindow();
+		if (!form || !Connected()) return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasNativeKeyboardFocus()) return S_OK;
+		const ControlWeakReference formLifetime(form);
+		auto* focusedControl = form->GetKeyboardFocusedElement();
+		if (!focusedControl)
 		{
-			*value = static_cast<IRawElementProviderFragment*>(provider);
+			*value = static_cast<IRawElementProviderFragment*>(this);
+			AddRef();
 			return S_OK;
 		}
-	}
-	auto* focused = form->GetKeyboardFocusedElement();
-	auto* source = &focused->GetAutomationPeer();
-	if (source->SupportsVirtualizedChildren())
-	{
-		std::vector<uint32_t> selection;
-		source->GetAccessibilityVirtualSelection(selection);
-		if (!selection.empty())
+		const ControlWeakReference focusedLifetime(focusedControl);
+		Control* virtualOwner = nullptr;
+		uint32_t virtualId = 0;
+		if (TryGetVirtualFocusedNode(
+			focusedControl, virtualOwner, virtualId))
 		{
-			auto* provider = VirtualProviderFor(
-				form->GetKeyboardFocusedElement(), selection.front());
+			auto* provider = VirtualProviderFor(virtualOwner, virtualId);
 			if (!provider) return E_OUTOFMEMORY;
+			form = dynamic_cast<Window*>(formLifetime.Get());
+			if (!form || !Connected() || !HasNativeKeyboardFocus()
+				|| form->GetKeyboardFocusedElement() != focusedLifetime.Get())
+			{
+				provider->Release();
+				return form ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
+			}
 			*value = static_cast<IRawElementProviderFragment*>(provider);
 			return S_OK;
 		}
+		if (const uint32_t focused = VirtualFocusFor(focusedControl);
+			focused != 0)
+		{
+			if (auto* provider = VirtualProviderFor(focusedControl, focused))
+			{
+				*value = static_cast<IRawElementProviderFragment*>(provider);
+				return S_OK;
+			}
+		}
+		auto* provider = ProviderFor(focusedControl);
+		if (!provider) return E_OUTOFMEMORY;
+		*value = static_cast<IRawElementProviderFragment*>(provider);
+		return S_OK;
 	}
-	auto* provider = ProviderFor(form->GetKeyboardFocusedElement());
-	if (!provider) return E_OUTOFMEMORY;
-	*value = static_cast<IRawElementProviderFragment*>(provider);
-	return S_OK;
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 HRESULT ControlUiaProvider::Navigate(NavigateDirection direction,
@@ -2399,8 +3497,16 @@ HRESULT ControlUiaProvider::Navigate(NavigateDirection direction,
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
+	try
+	{
 	auto* control = CurrentControl();
 	if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+	const ControlWeakReference controlLifetime(control);
+	auto currentControl = [&]() -> Control*
+	{
+		control = controlLifetime.Get();
+		return control && CurrentControl() == control ? control : nullptr;
+	};
 	Control* destination = nullptr;
 	uint32_t virtualDestination = 0;
 	Control* virtualOwner = nullptr;
@@ -2416,42 +3522,67 @@ HRESULT ControlUiaProvider::Navigate(NavigateDirection direction,
 		}
 		break;
 	case NavigateDirection_FirstChild:
-	case NavigateDirection_LastChild:
 		{
 			const auto children = _root->DirectChildren(control);
-			if (direction == NavigateDirection_FirstChild)
+			if (!children.empty())
 			{
-				if (!children.empty()) destination = children.front();
-				else if (_root->TryGetVirtualBoundaryChild(
+				destination = children.front();
+				const ControlWeakReference destinationLifetime(destination);
+				control = currentControl();
+				destination = destinationLifetime.Get();
+				if (!control || !destination)
+					return UIA_E_ELEMENTNOTAVAILABLE;
+			}
+			else
+			{
+				control = controlLifetime.Get();
+				if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+				if (_root->TryGetVirtualBoundaryChild(
 					control, 0, false, virtualDestination))
 				{
 					virtualOwner = control;
 				}
 			}
-			else
-			{
-				if (_root->TryGetVirtualBoundaryChild(
-					control, 0, true, virtualDestination))
-				{
-					virtualOwner = control;
-				}
-				else if (!children.empty()) destination = children.back();
-			}
+		}
+		break;
+	case NavigateDirection_LastChild:
+		if (_root->TryGetVirtualBoundaryChild(
+			control, 0, true, virtualDestination))
+		{
+			virtualOwner = control;
+		}
+		else
+		{
+			control = controlLifetime.Get();
+			if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+			const auto children = _root->DirectChildren(control);
+			if (!children.empty()) destination = children.back();
 		}
 		break;
 	case NavigateDirection_NextSibling:
-		destination = _root->SiblingOf(control, true);
-		if (!destination && control->GetLogicalParent())
 		{
-			if (_root->TryGetVirtualBoundaryChild(
-				control->GetLogicalParent(), 0, false, virtualDestination))
+			destination = _root->SiblingOf(control, true);
+			const ControlWeakReference destinationLifetime(destination);
+			control = currentControl();
+			destination = destinationLifetime.Get();
+			if (!control)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* parent = control->GetLogicalParent();
+			if (!destination && parent && _root->TryGetVirtualBoundaryChild(
+				parent, 0, false, virtualDestination))
 			{
-				virtualOwner = control->GetLogicalParent();
+				virtualOwner = parent;
 			}
 		}
 		break;
 	case NavigateDirection_PreviousSibling:
 		destination = _root->SiblingOf(control, false);
+		{
+			const ControlWeakReference destinationLifetime(destination);
+			control = currentControl();
+			destination = destinationLifetime.Get();
+		}
+		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
 		break;
 	default:
 		return E_INVALIDARG;
@@ -2469,6 +3600,9 @@ HRESULT ControlUiaProvider::Navigate(NavigateDirection direction,
 	if (!provider) return E_OUTOFMEMORY;
 	*value = static_cast<IRawElementProviderFragment*>(provider);
 	return S_OK;
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 HRESULT VirtualUiaProvider::Navigate(NavigateDirection direction,
@@ -2476,13 +3610,26 @@ HRESULT VirtualUiaProvider::Navigate(NavigateDirection direction,
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
+	try
+	{
 	AccessibilityVirtualNode node;
 	if (!CurrentNode(&node) || !_root || !_owner)
 		return UIA_E_ELEMENTNOTAVAILABLE;
+	auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+	if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+	const ControlWeakReference ownerLifetime(owner);
+	auto currentOwner = [&]() -> Control*
+	{
+		owner = ownerLifetime.Get();
+		return owner && _root->ResolveControl(_owner, _ownerRuntimeId) == owner
+			? owner : nullptr;
+	};
 	auto returnVirtual = [&](uint32_t id) -> HRESULT
 	{
 		if (id == 0) return S_OK;
-		auto* provider = _root->VirtualProviderFor(_owner, id);
+		auto* liveOwner = currentOwner();
+		if (!liveOwner) return UIA_E_ELEMENTNOTAVAILABLE;
+		auto* provider = _root->VirtualProviderFor(liveOwner, id);
 		if (!provider) return E_OUTOFMEMORY;
 		*value = static_cast<IRawElementProviderFragment*>(provider);
 		return S_OK;
@@ -2492,7 +3639,9 @@ HRESULT VirtualUiaProvider::Navigate(NavigateDirection direction,
 	case NavigateDirection_Parent:
 		if (node.ParentId != 0) return returnVirtual(node.ParentId);
 		{
-			auto* provider = _root->ProviderFor(_owner);
+			auto* liveOwner = currentOwner();
+			if (!liveOwner) return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* provider = _root->ProviderFor(liveOwner);
 			if (!provider) return E_OUTOFMEMORY;
 			*value = static_cast<IRawElementProviderFragment*>(provider);
 			return S_OK;
@@ -2501,21 +3650,29 @@ HRESULT VirtualUiaProvider::Navigate(NavigateDirection direction,
 	case NavigateDirection_LastChild:
 		{
 			uint32_t child = 0;
-			if (!_root->TryGetVirtualBoundaryChild(_owner, _virtualId,
-				direction == NavigateDirection_LastChild, child)) return S_OK;
+			auto* liveOwner = currentOwner();
+			if (!liveOwner) return UIA_E_ELEMENTNOTAVAILABLE;
+			if (!_root->TryGetVirtualBoundaryChild(liveOwner, _virtualId,
+				direction == NavigateDirection_LastChild, child))
+				return currentOwner() ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
 			return returnVirtual(child);
 		}
 	case NavigateDirection_NextSibling:
 	case NavigateDirection_PreviousSibling:
 		{
 			uint32_t sibling = 0;
-			if (_root->TryGetVirtualSibling(_owner, node.ParentId, _virtualId,
+			auto* liveOwner = currentOwner();
+			if (!liveOwner) return UIA_E_ELEMENTNOTAVAILABLE;
+			if (_root->TryGetVirtualSibling(liveOwner, node.ParentId, _virtualId,
 				direction == NavigateDirection_NextSibling, sibling))
 				return returnVirtual(sibling);
+			liveOwner = currentOwner();
+			if (!liveOwner) return UIA_E_ELEMENTNOTAVAILABLE;
 			if (direction == NavigateDirection_NextSibling) return S_OK;
 			if (node.ParentId == 0)
 			{
-				const auto controls = _root->DirectChildren(_owner);
+				const auto controls = _root->DirectChildren(liveOwner);
+				if (!currentOwner()) return UIA_E_ELEMENTNOTAVAILABLE;
 				if (!controls.empty())
 				{
 					auto* provider = _root->ProviderFor(controls.back());
@@ -2528,68 +3685,303 @@ HRESULT VirtualUiaProvider::Navigate(NavigateDirection direction,
 	default:
 		return E_INVALIDARG;
 	}
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+}
+
+HRESULT VirtualUiaProvider::GetSelection(SAFEARRAY** value)
+{
+	if (!value) return E_POINTER;
+	*value = nullptr;
+	try
+	{
+		AccessibilityVirtualNode node;
+		AutomationPeer* source = nullptr;
+		std::shared_ptr<AutomationPeer> sourceLease;
+		if (!CurrentNode(&node, &source, &sourceLease) || !_root)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::Selection))
+			return UIA_E_NOTSUPPORTED;
+
+		auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+		if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference ownerLifetime(owner);
+
+		auto refresh = [&]() -> HRESULT
+		{
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner
+				|| !CurrentNode(&node, &source, &sourceLease))
+				return UIA_E_ELEMENTNOTAVAILABLE;
+			return HasAutomationPattern(
+				node.Patterns, AutomationPattern::Selection)
+				? S_OK : UIA_E_NOTSUPPORTED;
+		};
+		HRESULT refreshed = refresh();
+		if (FAILED(refreshed)) return refreshed;
+		const size_t childCount =
+			source->GetAccessibilityVirtualChildCount(_virtualId);
+		refreshed = refresh();
+		if (FAILED(refreshed)) return refreshed;
+		std::vector<uint32_t> children;
+		children.reserve(childCount);
+		for (size_t index = 0; index < childCount; ++index)
+		{
+			uint32_t childId = 0;
+			const bool found = source->TryGetAccessibilityVirtualChildAt(
+				_virtualId, index, childId);
+			refreshed = refresh();
+			if (FAILED(refreshed)) return refreshed;
+			if (found && childId != 0) children.push_back(childId);
+		}
+
+		std::vector<uint32_t> selection;
+		selection.reserve(children.size());
+		for (const uint32_t childId : children)
+		{
+			if (childId == 0) continue;
+			owner = ownerLifetime.Get();
+			if (!owner
+				|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+
+			AccessibilityVirtualNode child;
+			if (!_root->ResolveVirtualNode(
+				owner, _ownerRuntimeId, childId, child))
+			{
+				refreshed = refresh();
+				if (FAILED(refreshed)) return refreshed;
+				continue;
+			}
+			refreshed = refresh();
+			if (FAILED(refreshed)) return refreshed;
+			if (child.ParentId == _virtualId
+				&& HasAutomationPattern(
+					child.Patterns, AutomationPattern::GridItem)
+				&& child.Selected)
+				selection.push_back(childId);
+		}
+		refreshed = refresh();
+		if (FAILED(refreshed)) return refreshed;
+		if (selection.empty() && node.SelectionReturnsNullWhenEmpty)
+			return S_OK;
+		return CreateProviderArray(selection, value);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+}
+
+HRESULT VirtualUiaProvider::get_CanSelectMultiple(BOOL* value)
+{
+	if (!value) return E_POINTER;
+	*value = FALSE;
+	try
+	{
+		AccessibilityVirtualNode node;
+		AutomationPeer* source = nullptr;
+		std::shared_ptr<AutomationPeer> sourceLease;
+		if (!CurrentNode(&node, &source, &sourceLease) || !_root)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::Selection))
+			return UIA_E_NOTSUPPORTED;
+
+		auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+		if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference ownerLifetime(owner);
+		const auto container =
+			source->GetAccessibilityVirtualContainerInfo();
+		owner = ownerLifetime.Get();
+		if (!owner
+			|| _root->ResolveControl(_owner, _ownerRuntimeId) != owner
+			|| !CurrentNode(&node, &source, &sourceLease))
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::Selection)
+			|| !HasAutomationPattern(
+				container.Patterns, AutomationPattern::Selection))
+			return UIA_E_NOTSUPPORTED;
+		*value = container.CanSelectMultiple ? TRUE : FALSE;
+		return S_OK;
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
+}
+
+HRESULT VirtualUiaProvider::get_IsSelectionRequired(BOOL* value)
+{
+	if (!value) return E_POINTER;
+	*value = FALSE;
+	try
+	{
+		AccessibilityVirtualNode node;
+		if (!CurrentNode(&node)) return UIA_E_ELEMENTNOTAVAILABLE;
+		return HasAutomationPattern(
+			node.Patterns, AutomationPattern::Selection)
+			? S_OK : UIA_E_NOTSUPPORTED;
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 HRESULT ControlUiaProvider::GetSelection(SAFEARRAY** value)
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
-	auto* control = CurrentControl();
-	if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto& peer = control->GetAutomationPeer();
-	if (peer.SupportsPattern(AutomationPattern::Selection))
+	try
 	{
-		Control* selected = peer.GetSelectedItem();
-		SAFEARRAY* result = ::SafeArrayCreateVector(
-			VT_UNKNOWN, 0, selected ? 1 : 0);
+		auto* control = CurrentControl();
+		if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+		// A peer can advertise Selection both at its root and through its
+		// virtual container (Calendar, ComboBox and DataGrid all do). The
+		// virtual projection is authoritative because it can return every
+		// selected logical item rather than only one realized Control.
+		bool supportsVirtualizedChildren = false;
+		HRESULT queryResult = PerformPeerQuery(
+			[&supportsVirtualizedChildren](AutomationPeer& peer) -> HRESULT
+		{
+			supportsVirtualizedChildren = peer.SupportsVirtualizedChildren();
+			return S_OK;
+		});
+		if (FAILED(queryResult)) return queryResult;
+		if (supportsVirtualizedChildren)
+		{
+			AccessibilityVirtualContainerInfo info;
+			queryResult = PerformPeerQuery(
+				[&info](AutomationPeer& peer) -> HRESULT
+			{
+				info = peer.GetAccessibilityVirtualContainerInfo();
+				return S_OK;
+			});
+			if (FAILED(queryResult)) return queryResult;
+			if (HasAutomationPattern(
+				info.Patterns, AutomationPattern::Selection))
+			{
+				std::vector<uint32_t> selection;
+				queryResult = PerformPeerQuery(
+					[&selection](AutomationPeer& peer) -> HRESULT
+				{
+					peer.GetAccessibilityVirtualSelection(selection);
+					return S_OK;
+				});
+				if (FAILED(queryResult)) return queryResult;
+				return CreateVirtualProviderArray(selection, value);
+			}
+		}
+
+		bool supportsSelection = false;
+		queryResult = PerformPeerQuery(
+			[&supportsSelection](AutomationPeer& peer) -> HRESULT
+		{
+			supportsSelection = peer.SupportsPattern(
+				AutomationPattern::Selection);
+			return S_OK;
+		});
+		if (FAILED(queryResult)) return queryResult;
+		if (!supportsSelection)
+			return UIA_E_NOTSUPPORTED;
+		Control* selected = nullptr;
+		queryResult = PerformPeerQuery(
+			[&selected](AutomationPeer& peer) -> HRESULT
+		{
+			selected = peer.GetSelectedItem();
+			return S_OK;
+		});
+		if (FAILED(queryResult)) return queryResult;
+		if (selected)
+		{
+			selected = _root->ResolveControl(selected);
+			if (!selected) return UIA_E_ELEMENTNOTAVAILABLE;
+			const uint32_t selectedRuntimeId =
+				selected->GetAccessibilityRuntimeId();
+			if (_root->ResolveControl(selected, selectedRuntimeId) != selected)
+				return UIA_E_ELEMENTNOTAVAILABLE;
+		}
+		accessibility_detail::UniqueSafeArray result(
+			::SafeArrayCreateVector(VT_UNKNOWN, 0, selected ? 1 : 0));
 		if (!result) return E_OUTOFMEMORY;
 		if (selected)
 		{
 			auto* provider = _root->ProviderFor(selected);
-			if (!provider)
-			{
-				::SafeArrayDestroy(result);
-				return E_OUTOFMEMORY;
-			}
+			if (!provider) return E_OUTOFMEMORY;
 			LONG index = 0;
 			IUnknown* unknown = static_cast<IRawElementProviderSimple*>(provider);
-			const HRESULT hr = ::SafeArrayPutElement(result, &index, unknown);
+			const HRESULT hr = ::SafeArrayPutElement(
+				result.get(), &index, unknown);
 			provider->Release();
-			if (FAILED(hr))
-			{
-				::SafeArrayDestroy(result);
-				return hr;
-			}
+			if (FAILED(hr)) return hr;
 		}
-		*value = result;
+		*value = result.release();
 		return S_OK;
 	}
-	auto* source = VirtualSource();
-	if (!source || !SupportsSelection()) return UIA_E_NOTSUPPORTED;
-	std::vector<uint32_t> selection;
-	source->GetAccessibilityVirtualSelection(selection);
-	SAFEARRAY* result = ::SafeArrayCreateVector(
-		VT_UNKNOWN, 0, static_cast<ULONG>(selection.size()));
-	if (!result) return E_OUTOFMEMORY;
-	for (LONG index = 0; index < static_cast<LONG>(selection.size()); ++index)
+	catch (const std::bad_alloc&)
 	{
-		auto* provider = _root->VirtualProviderFor(
-			control, selection[static_cast<size_t>(index)]);
-		if (!provider)
-		{
-			::SafeArrayDestroy(result);
-			return E_OUTOFMEMORY;
-		}
-		IUnknown* unknown = static_cast<IRawElementProviderSimple*>(provider);
-		const HRESULT hr = ::SafeArrayPutElement(result, &index, unknown);
-		provider->Release();
-		if (FAILED(hr))
-		{
-			::SafeArrayDestroy(result);
-			return hr;
-		}
+		return E_OUTOFMEMORY;
 	}
-	*value = result;
+	catch (...)
+	{
+		return UIA_E_INVALIDOPERATION;
+	}
+}
+
+HRESULT ControlUiaProvider::CreateVirtualProviderArray(
+	const std::vector<uint32_t>& ids, SAFEARRAY** value)
+{
+	if (!value) return E_POINTER;
+	*value = nullptr;
+	if (!_root) return UIA_E_ELEMENTNOTAVAILABLE;
+	if (ids.size() > static_cast<size_t>(LONG_MAX))
+		return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+
+	accessibility_detail::UniqueSafeArray result(
+		::SafeArrayCreateVector(
+			VT_UNKNOWN, 0, static_cast<ULONG>(ids.size())));
+	if (!result) return E_OUTOFMEMORY;
+	try
+	{
+		auto* control = CurrentControl();
+		if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		const uint32_t ownerRuntimeId = control->GetAccessibilityRuntimeId();
+		if (ownerRuntimeId == 0) return UIA_E_ELEMENTNOTAVAILABLE;
+
+		for (size_t position = 0; position < ids.size(); ++position)
+		{
+			if (ids[position] == 0) return UIA_E_ELEMENTNOTAVAILABLE;
+			// The peer produced and atomically validated this ID set immediately
+			// before this call.  Register providers without resolving the whole
+			// accessible tree and re-reading every virtual node; the owner is
+			// validated once before and once after the allocation-only loop.
+			auto* provider = _root->VirtualProviderForValidated(
+				control, ownerRuntimeId, ids[position]);
+			if (!provider)
+				return controlLifetime.Get() == control
+					? E_OUTOFMEMORY : UIA_E_ELEMENTNOTAVAILABLE;
+			LONG index = static_cast<LONG>(position);
+			IUnknown* unknown =
+				static_cast<IRawElementProviderSimple*>(provider);
+			const HRESULT hr = ::SafeArrayPutElement(
+				result.get(), &index, unknown);
+			provider->Release();
+			if (FAILED(hr)) return hr;
+		}
+		control = controlLifetime.Get();
+		if (!control || control->GetAccessibilityRuntimeId() != ownerRuntimeId
+			|| CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+	}
+	catch (const std::bad_alloc&)
+	{
+		return E_OUTOFMEMORY;
+	}
+	catch (...)
+	{
+		return UIA_E_INVALIDOPERATION;
+	}
+	*value = result.release();
 	return S_OK;
 }
 
@@ -2598,83 +3990,145 @@ HRESULT ControlUiaProvider::GetItem(
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
-	auto* control = CurrentControl();
-	if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
-	if (!source || !SupportsGrid()) return UIA_E_NOTSUPPORTED;
-	uint32_t id = 0;
-	if (!source->GetAccessibilityVirtualItemAt(row, column, id))
-		return E_INVALIDARG;
-	auto* provider = _root->VirtualProviderFor(control, id);
-	if (!provider) return E_OUTOFMEMORY;
-	*value = static_cast<IRawElementProviderSimple*>(provider);
-	return S_OK;
+	try
+	{
+		auto* control = CurrentControl();
+		if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+		const auto container = source->GetAccessibilityVirtualContainerInfo();
+
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			container.Patterns, AutomationPattern::Grid))
+			return UIA_E_NOTSUPPORTED;
+		source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+
+		uint32_t id = 0;
+		if (!source->GetAccessibilityVirtualItemAt(row, column, id)
+			|| id == 0)
+		{
+			control = controlLifetime.Get();
+			return control && CurrentControl() == control
+				? E_INVALIDARG : UIA_E_ELEMENTNOTAVAILABLE;
+		}
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		AccessibilityVirtualNode node;
+		if (!_root->ResolveVirtualNode(
+			control, _runtimeId, id, node))
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		auto* provider = _root->VirtualProviderFor(control, id);
+		if (!provider)
+			return CurrentControl() == control
+				? E_OUTOFMEMORY : UIA_E_ELEMENTNOTAVAILABLE;
+		*value = static_cast<IRawElementProviderSimple*>(provider);
+		return S_OK;
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
-HRESULT ControlUiaProvider::get_RowCount(int* value)
+HRESULT ControlUiaProvider::get_RowCount(int* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!SupportsGrid()) return UIA_E_NOTSUPPORTED;
-	*value = VirtualContainerInfo().RowCount;
+	AccessibilityVirtualContainerInfo info;
+	const HRESULT result = TryGetVirtualContainerInfo(info);
+	if (FAILED(result)) return result;
+	if (!HasAutomationPattern(info.Patterns, AutomationPattern::Grid))
+		return UIA_E_NOTSUPPORTED;
+	*value = info.RowCount;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_ColumnCount(int* value)
+HRESULT ControlUiaProvider::get_ColumnCount(int* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!SupportsGrid()) return UIA_E_NOTSUPPORTED;
-	*value = VirtualContainerInfo().ColumnCount;
+	AccessibilityVirtualContainerInfo info;
+	const HRESULT result = TryGetVirtualContainerInfo(info);
+	if (FAILED(result)) return result;
+	if (!HasAutomationPattern(info.Patterns, AutomationPattern::Grid))
+		return UIA_E_NOTSUPPORTED;
+	*value = info.ColumnCount;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT ControlUiaProvider::GetRowHeaders(SAFEARRAY** value)
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!SupportsTable()) return UIA_E_NOTSUPPORTED;
-	*value = ::SafeArrayCreateVector(VT_UNKNOWN, 0, 0);
-	return *value ? S_OK : E_OUTOFMEMORY;
+	try
+	{
+		auto* control = CurrentControl();
+		if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+		const auto info = source->GetAccessibilityVirtualContainerInfo();
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(info.Patterns, AutomationPattern::Table))
+			return UIA_E_NOTSUPPORTED;
+		std::vector<uint32_t> headers;
+		source->GetAccessibilityVirtualRowHeaders(headers);
+		// WPF's root table projection enumerates only row-header peers that
+		// currently exist; the source already returns this compact set.
+		headers.erase(std::remove(headers.begin(), headers.end(), 0),
+			headers.end());
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return CreateVirtualProviderArray(headers, value);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 HRESULT ControlUiaProvider::GetColumnHeaders(SAFEARRAY** value)
 {
 	if (!value) return E_POINTER;
 	*value = nullptr;
-	auto* control = CurrentControl();
-	if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
-	if (!source || !SupportsTable()) return UIA_E_NOTSUPPORTED;
-	std::vector<uint32_t> headers;
-	source->GetAccessibilityVirtualColumnHeaders(headers);
-	SAFEARRAY* result = ::SafeArrayCreateVector(
-		VT_UNKNOWN, 0, static_cast<ULONG>(headers.size()));
-	if (!result) return E_OUTOFMEMORY;
-	for (LONG index = 0; index < static_cast<LONG>(headers.size()); ++index)
+	try
 	{
-		auto* provider = _root->VirtualProviderFor(
-			control, headers[static_cast<size_t>(index)]);
-		if (!provider)
-		{
-			::SafeArrayDestroy(result);
-			return E_OUTOFMEMORY;
-		}
-		IUnknown* unknown = static_cast<IRawElementProviderSimple*>(provider);
-		const HRESULT hr = ::SafeArrayPutElement(result, &index, unknown);
-		provider->Release();
-		if (FAILED(hr))
-		{
-			::SafeArrayDestroy(result);
-			return hr;
-		}
+		auto* control = CurrentControl();
+		if (!control || !_root) return UIA_E_ELEMENTNOTAVAILABLE;
+		const ControlWeakReference controlLifetime(control);
+		auto source = VirtualSourceLease();
+		if (!source) return UIA_E_NOTSUPPORTED;
+		const auto info = source->GetAccessibilityVirtualContainerInfo();
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(info.Patterns, AutomationPattern::Table))
+			return UIA_E_NOTSUPPORTED;
+		std::vector<uint32_t> headers;
+		source->GetAccessibilityVirtualColumnHeaders(headers);
+		headers.erase(std::remove(headers.begin(), headers.end(), 0),
+			headers.end());
+		control = controlLifetime.Get();
+		if (!control || CurrentControl() != control)
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		return CreateVirtualProviderArray(headers, value);
 	}
-	*value = result;
-	return S_OK;
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
-HRESULT ControlUiaProvider::get_RowOrColumnMajor(RowOrColumnMajor* value)
+HRESULT ControlUiaProvider::get_RowOrColumnMajor(
+	RowOrColumnMajor* value) try
 {
 	if (!value) return E_POINTER;
 	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
@@ -2682,15 +4136,28 @@ HRESULT ControlUiaProvider::get_RowOrColumnMajor(RowOrColumnMajor* value)
 	*value = RowOrColumnMajor_RowMajor;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT ControlUiaProvider::Scroll(
-	ScrollAmount horizontalAmount, ScrollAmount verticalAmount)
+	ScrollAmount horizontalAmount, ScrollAmount verticalAmount) try
 {
 	auto* control = CurrentControl();
-	auto* source = VirtualSource();
 	if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!source || !SupportsScroll()) return UIA_E_NOTSUPPORTED;
-	if (!control->GetAccessibilitySnapshot().Enabled)
+	const ControlWeakReference controlLifetime(control);
+	auto source = VirtualSourceLease();
+	if (!source) return UIA_E_NOTSUPPORTED;
+	const auto container = source->GetAccessibilityVirtualContainerInfo();
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	if (!HasAutomationPattern(container.Patterns, AutomationPattern::Scroll))
+		return UIA_E_NOTSUPPORTED;
+	const bool enabled = control->GetAccessibilitySnapshot().Enabled;
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	if (!enabled)
 		return UIA_E_ELEMENTNOTENABLED;
 	auto convert = [](ScrollAmount amount,
 		AccessibilityScrollAmount& result) -> bool
@@ -2717,23 +4184,42 @@ HRESULT ControlUiaProvider::Scroll(
 	AccessibilityScrollInfo info;
 	if (!source->GetAccessibilityScrollInfo(info))
 		return UIA_E_INVALIDOPERATION;
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
 	if ((!info.HorizontallyScrollable
 			&& horizontal != AccessibilityScrollAmount::NoAmount)
 		|| (!info.VerticallyScrollable
 			&& vertical != AccessibilityScrollAmount::NoAmount))
 		return UIA_E_INVALIDOPERATION;
-	return source->ScrollAccessibility(horizontal, vertical)
-		? S_OK : UIA_E_INVALIDOPERATION;
+	const bool scrolled = source->ScrollAccessibility(horizontal, vertical);
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	return scrolled ? S_OK : UIA_E_INVALIDOPERATION;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT ControlUiaProvider::SetScrollPercent(
-	double horizontalPercent, double verticalPercent)
+	double horizontalPercent, double verticalPercent) try
 {
 	auto* control = CurrentControl();
-	auto* source = VirtualSource();
 	if (!control) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!source || !SupportsScroll()) return UIA_E_NOTSUPPORTED;
-	if (!control->GetAccessibilitySnapshot().Enabled)
+	const ControlWeakReference controlLifetime(control);
+	auto source = VirtualSourceLease();
+	if (!source) return UIA_E_NOTSUPPORTED;
+	const auto container = source->GetAccessibilityVirtualContainerInfo();
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	if (!HasAutomationPattern(container.Patterns, AutomationPattern::Scroll))
+		return UIA_E_NOTSUPPORTED;
+	const bool enabled = control->GetAccessibilitySnapshot().Enabled;
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	if (!enabled)
 		return UIA_E_ELEMENTNOTENABLED;
 	auto valid = [](double value)
 	{
@@ -2745,87 +4231,95 @@ HRESULT ControlUiaProvider::SetScrollPercent(
 	AccessibilityScrollInfo info;
 	if (!source->GetAccessibilityScrollInfo(info))
 		return UIA_E_INVALIDOPERATION;
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
 	if ((!info.HorizontallyScrollable
 			&& horizontalPercent != UIA_ScrollPatternNoScroll)
 		|| (!info.VerticallyScrollable
 			&& verticalPercent != UIA_ScrollPatternNoScroll))
 		return UIA_E_INVALIDOPERATION;
-	return source->SetAccessibilityScrollPercent(
-		horizontalPercent, verticalPercent)
-		? S_OK : UIA_E_INVALIDOPERATION;
+	const bool scrolled = source->SetAccessibilityScrollPercent(
+		horizontalPercent, verticalPercent);
+	control = controlLifetime.Get();
+	if (!control || CurrentControl() != control)
+		return UIA_E_ELEMENTNOTAVAILABLE;
+	return scrolled ? S_OK : UIA_E_INVALIDOPERATION;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_HorizontalScrollPercent(double* value)
+HRESULT ControlUiaProvider::get_HorizontalScrollPercent(double* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.HorizontalScrollPercent;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_HorizontalViewSize(double* value)
+HRESULT ControlUiaProvider::get_HorizontalViewSize(double* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.HorizontalViewSize;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_VerticalScrollPercent(double* value)
+HRESULT ControlUiaProvider::get_VerticalScrollPercent(double* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.VerticalScrollPercent;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_VerticalViewSize(double* value)
+HRESULT ControlUiaProvider::get_VerticalViewSize(double* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.VerticalViewSize;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_HorizontallyScrollable(BOOL* value)
+HRESULT ControlUiaProvider::get_HorizontallyScrollable(BOOL* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.HorizontallyScrollable ? TRUE : FALSE;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
-HRESULT ControlUiaProvider::get_VerticallyScrollable(BOOL* value)
+HRESULT ControlUiaProvider::get_VerticallyScrollable(BOOL* value) try
 {
 	if (!value) return E_POINTER;
-	if (!CurrentControl()) return UIA_E_ELEMENTNOTAVAILABLE;
-	auto* source = VirtualSource();
 	AccessibilityScrollInfo info;
-	if (!source || !SupportsScroll()
-		|| !source->GetAccessibilityScrollInfo(info)) return UIA_E_NOTSUPPORTED;
+	const HRESULT result = TryGetScrollInfo(info);
+	if (FAILED(result)) return result;
 	*value = info.VerticallyScrollable ? TRUE : FALSE;
 	return S_OK;
 }
+catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+catch (...) { return UIA_E_INVALIDOPERATION; }
 
 HRESULT VirtualUiaProvider::CreateProviderArray(
 	const std::vector<uint32_t>& ids, SAFEARRAY** value)
@@ -2834,51 +4328,101 @@ HRESULT VirtualUiaProvider::CreateProviderArray(
 	*value = nullptr;
 	if (!CurrentNode(nullptr) || !_root || !_owner)
 		return UIA_E_ELEMENTNOTAVAILABLE;
-	SAFEARRAY* result = ::SafeArrayCreateVector(
-		VT_UNKNOWN, 0, static_cast<ULONG>(ids.size()));
+	if (ids.size() > static_cast<size_t>(LONG_MAX))
+		return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+	accessibility_detail::UniqueSafeArray result(
+		::SafeArrayCreateVector(
+			VT_UNKNOWN, 0, static_cast<ULONG>(ids.size())));
 	if (!result) return E_OUTOFMEMORY;
-	for (LONG index = 0; index < static_cast<LONG>(ids.size()); ++index)
+	try
 	{
-		auto* provider = _root->VirtualProviderFor(
-			_owner, ids[static_cast<size_t>(index)]);
-		if (!provider)
+		for (size_t position = 0; position < ids.size(); ++position)
 		{
-			::SafeArrayDestroy(result);
-			return E_OUTOFMEMORY;
-		}
-		IUnknown* unknown = static_cast<IRawElementProviderSimple*>(provider);
-		const HRESULT hr = ::SafeArrayPutElement(result, &index, unknown);
-		provider->Release();
-		if (FAILED(hr))
-		{
-			::SafeArrayDestroy(result);
-			return hr;
+			auto* owner = _root->ResolveControl(_owner, _ownerRuntimeId);
+			if (!owner) return UIA_E_ELEMENTNOTAVAILABLE;
+			auto* provider = _root->VirtualProviderFor(owner, ids[position]);
+			if (!provider)
+				return _root->ResolveControl(_owner, _ownerRuntimeId)
+					? E_OUTOFMEMORY : UIA_E_ELEMENTNOTAVAILABLE;
+			LONG index = static_cast<LONG>(position);
+			IUnknown* unknown =
+				static_cast<IRawElementProviderSimple*>(provider);
+			const HRESULT hr = ::SafeArrayPutElement(
+				result.get(), &index, unknown);
+			provider->Release();
+			if (FAILED(hr)) return hr;
 		}
 	}
-	*value = result;
+	catch (const std::bad_alloc&)
+	{
+		return E_OUTOFMEMORY;
+	}
+	catch (...)
+	{
+		return UIA_E_INVALIDOPERATION;
+	}
+	*value = result.release();
 	return S_OK;
+}
+
+HRESULT VirtualUiaProvider::GetRowHeaderItems(SAFEARRAY** value)
+{
+	if (!value) return E_POINTER;
+	*value = nullptr;
+	try
+	{
+		AccessibilityVirtualNode node;
+		if (!CurrentNode(&node)) return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::TableItem))
+			return UIA_E_NOTSUPPORTED;
+		return node.RowHeaderId != 0
+			? CreateProviderArray({ node.RowHeaderId }, value)
+			: CreateProviderArray({}, value);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 HRESULT VirtualUiaProvider::GetColumnHeaderItems(SAFEARRAY** value)
 {
-	AccessibilityVirtualNode node;
-	AutomationPeer* source = nullptr;
-	if (!CurrentNode(&node, &source)) return UIA_E_ELEMENTNOTAVAILABLE;
-	if (!HasAutomationPattern(
-		node.Patterns, AutomationPattern::TableItem))
-		return UIA_E_NOTSUPPORTED;
-	std::vector<uint32_t> headers;
-	source->GetAccessibilityVirtualColumnHeaders(headers);
-	if (node.Column < 0 || static_cast<size_t>(node.Column) >= headers.size())
-		return CreateProviderArray({}, value);
-	return CreateProviderArray(
-		{ headers[static_cast<size_t>(node.Column)] }, value);
+	if (!value) return E_POINTER;
+	*value = nullptr;
+	try
+	{
+		AccessibilityVirtualNode node;
+		AutomationPeer* source = nullptr;
+		std::shared_ptr<AutomationPeer> sourceLease;
+		if (!CurrentNode(&node, &source, &sourceLease))
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::TableItem))
+			return UIA_E_NOTSUPPORTED;
+		std::vector<uint32_t> headers;
+		source->GetAccessibilityVirtualColumnHeaders(headers);
+		if (!CurrentNode(&node))
+			return UIA_E_ELEMENTNOTAVAILABLE;
+		if (!HasAutomationPattern(
+			node.Patterns, AutomationPattern::TableItem))
+			return UIA_E_NOTSUPPORTED;
+		if (node.Column < 0
+			|| static_cast<size_t>(node.Column) >= headers.size())
+			return CreateProviderArray({}, value);
+		const uint32_t header = headers[static_cast<size_t>(node.Column)];
+		return header != 0
+			? CreateProviderArray({ header }, value)
+			: CreateProviderArray({}, value);
+	}
+	catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+	catch (...) { return UIA_E_INVALIDOPERATION; }
 }
 
 void WindowUiaProvider::RaiseEvent(
 	Control* control, AccessibilityChange change)
 {
 	if (!Connected() || !::UiaClientsAreListening()) return;
+	if (change == AccessibilityChange::Focus
+		&& !HasNativeKeyboardFocus()) return;
 	if (change == AccessibilityChange::Structure)
 	{
 		(void)::UiaRaiseStructureChangedEvent(
@@ -2887,6 +4431,18 @@ void WindowUiaProvider::RaiseEvent(
 		return;
 	}
 	if (!control) return;
+	if (change == AccessibilityChange::Focus)
+	{
+		Control* virtualOwner = nullptr;
+		uint32_t virtualId = 0;
+		if (TryGetVirtualFocusedNode(
+			control, virtualOwner, virtualId))
+		{
+			RaiseVirtualEvent(
+				virtualOwner, virtualId, AccessibilityChange::Focus);
+			return;
+		}
+	}
 	auto* provider = ProviderFor(control);
 	if (!provider) return;
 	auto* simple = static_cast<IRawElementProviderSimple*>(provider);
@@ -2940,6 +4496,9 @@ void WindowUiaProvider::RaiseEvent(
 	case AccessibilityChange::ExpandCollapse:
 		propertyId = UIA_ExpandCollapseExpandCollapseStatePropertyId; break;
 	case AccessibilityChange::Selection:
+	case AccessibilityChange::SelectionAdded:
+	case AccessibilityChange::SelectionRemoved:
+	case AccessibilityChange::SelectionSelected:
 		propertyId = UIA_SelectionItemIsSelectedPropertyId; break;
 	case AccessibilityChange::State:
 		if (provider->SupportsToggleForEvent())
@@ -2971,6 +4530,8 @@ void WindowUiaProvider::RaiseVirtualEvent(
 {
 	if (!Connected() || !::UiaClientsAreListening()
 		|| !owner || virtualId == 0) return;
+	if (change == AccessibilityChange::Focus
+		&& !HasNativeKeyboardFocus()) return;
 	auto* provider = VirtualProviderFor(owner, virtualId);
 	if (!provider) return;
 	auto* simple = static_cast<IRawElementProviderSimple*>(provider);
@@ -3014,6 +4575,21 @@ void WindowUiaProvider::RaiseVirtualEvent(
 			(void)::UiaRaiseAutomationEvent(simple, node.Selected
 				? UIA_SelectionItem_ElementSelectedEventId
 				: UIA_SelectionItem_ElementRemovedFromSelectionEventId);
+			break;
+		case AccessibilityChange::SelectionAdded:
+			propertyId = UIA_SelectionItemIsSelectedPropertyId;
+			(void)::UiaRaiseAutomationEvent(
+				simple, UIA_SelectionItem_ElementAddedToSelectionEventId);
+			break;
+		case AccessibilityChange::SelectionRemoved:
+			propertyId = UIA_SelectionItemIsSelectedPropertyId;
+			(void)::UiaRaiseAutomationEvent(
+				simple, UIA_SelectionItem_ElementRemovedFromSelectionEventId);
+			break;
+		case AccessibilityChange::SelectionSelected:
+			propertyId = UIA_SelectionItemIsSelectedPropertyId;
+			(void)::UiaRaiseAutomationEvent(
+				simple, UIA_SelectionItem_ElementSelectedEventId);
 			break;
 		case AccessibilityChange::State:
 			if (HasAutomationPattern(
@@ -3198,15 +4774,16 @@ static bool TryGetControlLocalPoint(
 	Control* control,
 	POINT contentMouse,
 	int& localX,
-	int& localY)
+	int& localY,
+	bool requireInsideClip = true)
 {
 	if (!control) return false;
 	D2D1_POINT_2F local{};
 	if (!control->TryTransformRenderPointToLocal(
 		D2D1::Point2F(
 			static_cast<float>(contentMouse.x),
-			static_cast<float>(contentMouse.y)), local)
-		|| !control->IsRenderPointInsideClip(D2D1::Point2F(
+			static_cast<float>(contentMouse.y)), local)) return false;
+	if (requireInsideClip && !control->IsRenderPointInsideClip(D2D1::Point2F(
 			static_cast<float>(contentMouse.x),
 			static_cast<float>(contentMouse.y)))) return false;
 	localX = ToMessageLocalCoordinate(local.x);
@@ -3217,7 +4794,8 @@ static bool TryGetControlLocalPoint(
 static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 {
 	if (!root) return nullptr;
-	if (!root->IsVisible || !root->IsEffectivelyEnabled()) return nullptr;
+	if (!root->IsVisible || !root->IsEffectivelyEnabled()
+		|| !root->ParticipatesInInputHitTesting()) return nullptr;
 	int localX = 0;
 	int localY = 0;
 	if (!TryGetControlLocalPoint(root, contentMouse, localX, localY))
@@ -3227,7 +4805,8 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 
 	for (auto child : root->GetVisualChildrenInReverseZOrder())
 	{
-		if (!child || !child->IsVisible || !child->IsEffectivelyEnabled()) continue;
+		if (!child || !child->IsVisible || !child->IsEffectivelyEnabled()
+			|| !child->ParticipatesInInputHitTesting()) continue;
 		int childX = 0;
 		int childY = 0;
 		if (TryGetControlLocalPoint(child, contentMouse, childX, childY)
@@ -3369,10 +4948,17 @@ static bool IsAncestorNavigationFallbackKey(Key key)
 {
 	switch (key)
 	{
+	case Key::Tab:
+	case Key::Left:
+	case Key::Right:
+	case Key::Up:
+	case Key::Down:
 	case Key::Home:
 	case Key::End:
 	case Key::PageUp:
 	case Key::PageDown:
+	case Key::Return:
+	case Key::Escape:
 		return true;
 	default:
 		return false;
@@ -3987,7 +5573,8 @@ CursorKind Window::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 	{
 		int localX = 0;
 		int localY = 0;
-		if (TryGetControlLocalPoint(captured, contentMouse, localX, localY))
+		if (TryGetControlLocalPoint(
+			captured, contentMouse, localX, localY, false))
 			return captured->ResolvePointerCursor(localX, localY);
 	}
 
@@ -4045,6 +5632,7 @@ void Window::PublishKeyboardFocusTransition(
 	Control* value,
 	bool invalidateVisual)
 {
+	if (_uiaProvider) _uiaProvider->ClearVirtualFocus();
 	if (previousSelection)
 	{
 		if (invalidateVisual) previousSelection->InvalidateVisual();
@@ -4159,19 +5747,110 @@ std::vector<Control*> Window::GetTabOrder() const
 
 std::vector<Control*> Window::GetAccessibleControls() const
 {
-	std::vector<Control*> result;
-	auto visit = [&](Control* control, const auto& self) -> void
+	const ControlWeakReference windowLifetime(
+		const_cast<Window*>(this));
+	// Build the logical-tree snapshot before asking any control to lazily
+	// create its AutomationPeer. Peer creation is an extensibility boundary
+	// and may synchronously remove controls that were visited earlier; keeping
+	// only raw pointers across that callback would make the returned list
+	// contain dangling entries.
+	struct Candidate
+	{
+		ControlWeakReference Lifetime;
+		size_t Depth = 0;
+	};
+	std::vector<Candidate> candidates;
+	auto collect = [&](Control* control, size_t depth,
+		const auto& self) -> void
 	{
 		if (!control) return;
-		result.push_back(control);
-		if (control->GetAutomationPeer().SupportsVirtualizedChildren())
-			return;
+		candidates.push_back({ ControlWeakReference(control), depth });
 		for (auto* child : control->GetLogicalChildrenView())
-			self(child, self);
+			self(child, depth + 1, self);
 	};
 	for (auto* root : GetLogicalChildrenView())
-		visit(root, visit);
+		collect(root, 0, collect);
+
+	std::vector<ControlWeakReference> accessible;
+	accessible.reserve(candidates.size());
+	constexpr size_t noSuppressedSubtree = (std::numeric_limits<size_t>::max)();
+	size_t suppressedParentDepth = noSuppressedSubtree;
+	for (const auto& candidate : candidates)
+	{
+		if (suppressedParentDepth != noSuppressedSubtree)
+		{
+			if (candidate.Depth > suppressedParentDepth) continue;
+			suppressedParentDepth = noSuppressedSubtree;
+		}
+		auto* control = candidate.Lifetime.Get();
+		if (!control) continue;
+		accessible.emplace_back(control);
+		const ControlWeakReference controlLifetime(control);
+		const bool virtualized = control->GetAutomationPeer()
+			.SupportsVirtualizedChildren();
+		if (!windowLifetime.Get()) return {};
+		if (!controlLifetime.Get())
+		{
+			accessible.pop_back();
+			continue;
+		}
+		if (virtualized) suppressedParentDepth = candidate.Depth;
+	}
+
+	std::vector<Control*> result;
+	if (!windowLifetime.Get()) return result;
+	result.reserve(accessible.size());
+	for (const auto& reference : accessible)
+	{
+		auto* control = reference.Get();
+		if (!control) continue;
+		// A peer callback may also have detached or reparented a still-live
+		// control. Only publish controls that remain in this Window's logical
+		// tree after all callbacks have completed.
+		auto* ancestor = control;
+		while (ancestor && ancestor != this)
+			ancestor = ancestor->GetLogicalParent();
+		if (ancestor == this) result.push_back(control);
+	}
 	return result;
+}
+
+Control* Window::ResolveAccessibleRepresentative(
+	Control* control, std::span<Control* const> accessible) const
+{
+	if (!control) return nullptr;
+	std::vector<ControlWeakReference> pending;
+	pending.emplace_back(control);
+	std::unordered_set<Control*> visited;
+	while (!pending.empty())
+	{
+		const ControlWeakReference candidateLifetime = pending.back();
+		pending.pop_back();
+		auto* candidate = candidateLifetime.Get();
+		if (!candidate || !visited.insert(candidate).second) continue;
+		if (std::find(accessible.begin(), accessible.end(), candidate)
+			!= accessible.end()) return candidate;
+		auto* visualParent = candidate->GetVisualParent();
+		auto* logicalParent = candidate->GetLogicalParent();
+		auto* templatedParent = candidate->GetTemplatedParent();
+		if (visualParent) pending.emplace_back(visualParent);
+		if (logicalParent && logicalParent != visualParent)
+			pending.emplace_back(logicalParent);
+		if (templatedParent && templatedParent != visualParent
+			&& templatedParent != logicalParent)
+			pending.emplace_back(templatedParent);
+	}
+	return nullptr;
+}
+
+bool Window::TryGetAccessibilityVirtualFocusedNode(
+	Control*& owner, uint32_t& virtualId)
+{
+	owner = nullptr;
+	virtualId = 0;
+	return Handle && ::IsWindow(Handle) && ::GetFocus() == Handle
+		&& _uiaProvider && _uiaProvider->TryGetVirtualFocusedNode(
+		GetKeyboardFocusedElement(), owner, virtualId);
 }
 
 void Window::RefreshDefaultedButtons()
@@ -4203,9 +5882,37 @@ void Window::RefreshDefaultedButtons()
 
 void Window::NotifyAccessibilityEvent(Control* control, AccessibilityChange change)
 {
-	if (!Handle || !::IsWindow(Handle)) return;
-	if (_uiaProvider)
-		_uiaProvider->RaiseEvent(control, change);
+	const HWND windowHandle = Handle;
+	if (!windowHandle || !::IsWindow(windowHandle)) return;
+	if (change == AccessibilityChange::Focus
+		&& ::GetFocus() != windowHandle) return;
+	const ControlWeakReference windowLifetime(this);
+	const ControlWeakReference controlLifetime(control);
+	auto* provider = _uiaProvider;
+	if (provider) provider->AddRef();
+	auto releaseProvider = [](WindowUiaProvider* value)
+	{
+		if (value) value->Release();
+	};
+	std::unique_ptr<WindowUiaProvider, decltype(releaseProvider)>
+		providerLifetime(provider, releaseProvider);
+	auto resolveWindow = [&]() -> Window*
+	{
+		auto* live = dynamic_cast<Window*>(windowLifetime.Get());
+		return live && live->Handle == windowHandle
+			&& ::IsWindow(windowHandle) ? live : nullptr;
+	};
+	auto resolveControl = [&]() -> Control*
+	{
+		return control ? controlLifetime.Get() : nullptr;
+	};
+	const bool publishUiaFocusAfterLegacy =
+		provider && change == AccessibilityChange::Focus;
+	if (provider && !publishUiaFocusAfterLegacy)
+	{
+		provider->RaiseEvent(control, change);
+		if (!resolveWindow() || (control && !resolveControl())) return;
+	}
 	DWORD eventId = EVENT_OBJECT_STATECHANGE;
 	switch (change)
 	{
@@ -4219,33 +5926,87 @@ void Window::NotifyAccessibilityEvent(Control* control, AccessibilityChange chan
 	case AccessibilityChange::Toggle:
 	case AccessibilityChange::ExpandCollapse:
 	case AccessibilityChange::Selection:
+	case AccessibilityChange::SelectionAdded:
+	case AccessibilityChange::SelectionRemoved:
+	case AccessibilityChange::SelectionSelected:
 	case AccessibilityChange::State:
 	default: eventId = EVENT_OBJECT_STATECHANGE; break;
 	}
 	long childId = CHILDID_SELF;
-	if (control)
+	auto* liveWindow = resolveWindow();
+	auto* liveControl = resolveControl();
+	if (!liveWindow || (control && !liveControl)) return;
+	if (liveControl)
 	{
-		if (_accessibleObject)
-			childId = _accessibleObject->ChildIdFor(control);
+		if (liveWindow->_accessibleObject)
+		{
+			auto* accessible = liveWindow->_accessibleObject;
+			accessible->AddRef();
+			auto releaseAccessible = [](WindowAccessibleObject* value)
+			{
+				if (value) value->Release();
+			};
+			std::unique_ptr<WindowAccessibleObject,
+				decltype(releaseAccessible)> accessibleLifetime(
+					accessible, releaseAccessible);
+			childId = accessible->ChildIdFor(liveControl);
+		}
 		else
 		{
-			auto controls = GetAccessibleControls();
-			auto position = std::find(controls.begin(), controls.end(), control);
+			auto controls = liveWindow->GetAccessibleControls();
+			liveWindow = resolveWindow();
+			liveControl = resolveControl();
+			if (!liveWindow || !liveControl) return;
+			auto* representative = liveWindow->ResolveAccessibleRepresentative(
+				liveControl, controls);
+			auto position = std::find(
+				controls.begin(), controls.end(), representative);
 			if (position != controls.end())
 				childId = static_cast<long>(position - controls.begin()) + 1;
 		}
 	}
-	::NotifyWinEvent(eventId, Handle, OBJID_CLIENT, childId);
+	liveWindow = resolveWindow();
+	liveControl = resolveControl();
+	if (!liveWindow || (control && !liveControl)) return;
+	if (change == AccessibilityChange::Focus
+		&& ::GetFocus() != windowHandle) return;
+	::NotifyWinEvent(eventId, windowHandle, OBJID_CLIENT, childId);
+	// Keep the MSAA compatibility notification, then let the native fragment
+	// event establish the authoritative virtual focus identity for UIA clients.
+	if (publishUiaFocusAfterLegacy)
+	{
+		liveWindow = resolveWindow();
+		liveControl = resolveControl();
+		if (!liveWindow || (control && !liveControl)
+			|| liveWindow->_uiaProvider != provider
+			|| !provider->Connected()
+			|| ::GetFocus() != windowHandle) return;
+		provider->RaiseEvent(liveControl, change);
+	}
 }
 
 void Window::NotifyAccessibilityVirtualEvent(
 	Control* owner, uint32_t virtualId, AccessibilityChange change)
 {
 	if (!Handle || !::IsWindow(Handle) || !owner || virtualId == 0) return;
-	if (_uiaProvider)
-		_uiaProvider->RaiseVirtualEvent(owner, virtualId, change);
+	if (change == AccessibilityChange::Focus
+		&& ::GetFocus() != Handle) return;
+	const ControlWeakReference windowLifetime(this);
+	const ControlWeakReference ownerLifetime(owner);
+	auto* provider = _uiaProvider;
+	if (provider) provider->AddRef();
+	auto releaseProvider = [](WindowUiaProvider* value)
+	{
+		if (value) value->Release();
+	};
+	std::unique_ptr<WindowUiaProvider, decltype(releaseProvider)>
+		providerLifetime(provider, releaseProvider);
+	if (provider) provider->RaiseVirtualEvent(owner, virtualId, change);
+	auto* liveWindow = dynamic_cast<Window*>(windowLifetime.Get());
+	owner = ownerLifetime.Get();
+	if (!liveWindow || !owner) return;
 	// MSAA retains its compatibility simple-child model; notify the owning child.
-	NotifyAccessibilityEvent(owner, change);
+	liveWindow->NotifyAccessibilityEvent(owner, change);
 }
 
 LRESULT Window::HandleAccessibleObjectRequest(WPARAM wParam, LPARAM lParam)
@@ -6801,7 +8562,14 @@ bool Window::ProcessInput(const InputReport& input)
 		}
 	}
 
-	const bool selectedHandles = focused && focused->HandlesNavigationKey(key);
+	auto* ancestorNavigationTarget =
+		GetAncestorNavigationFallbackTarget(focused, key);
+	const ControlWeakReference ancestorNavigationLifetime(
+		ancestorNavigationTarget);
+	const ControlWeakReference focusedLifetime(focused);
+	const bool selectedHandles = focused
+		&& (focused->HandlesNavigationKey(key)
+			|| ancestorNavigationTarget != nullptr);
 	if (!handled && key == Key::Tab && !selectedHandles)
 	{
 		handled = MoveFocus(!input.HasModifier(ModifierKeys::Shift));
@@ -6883,8 +8651,12 @@ bool Window::ProcessInput(const InputReport& input)
 		}
 		else
 		{
-			auto* fallbackTarget = GetAncestorNavigationFallbackTarget(
-				focused, key);
+			auto* fallbackTarget = dynamic_cast<Control*>(
+				ancestorNavigationLifetime.Get());
+			auto* liveFocused = dynamic_cast<Control*>(focusedLifetime.Get());
+			if (!fallbackTarget && liveFocused)
+				fallbackTarget = GetAncestorNavigationFallbackTarget(
+					liveFocused, key);
 			if (fallbackTarget)
 			{
 				handled = cui::framework::InputAccess::DispatchInput(
@@ -7041,7 +8813,7 @@ void Window::ProcessPlatformMessage(
 			int localX = 0;
 			int localY = 0;
 			if (!TryGetControlLocalPoint(
-				captured, contentMouse, localX, localY))
+				captured, contentMouse, localX, localY, false))
 				return false;
 			hitControl = captured;
 			(void)cui::framework::InputAccess::DispatchInput(
