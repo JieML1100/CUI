@@ -1604,6 +1604,40 @@ protected:
 		bool _performLayout = true;
 		int _uncaughtOnEntry = 0;
 	};
+	void BeginVisualInvalidationDeferral() noexcept;
+	void EndVisualInvalidationDeferral(bool dispatchVisual);
+	class ScopedVisualInvalidation final
+	{
+	public:
+		explicit ScopedVisualInvalidation(
+			Control& owner, bool dispatchVisual = true)
+			: _owner(&owner), _dispatchVisual(dispatchVisual),
+			_uncaughtOnEntry(std::uncaught_exceptions())
+		{
+			owner.BeginVisualInvalidationDeferral();
+		}
+		ScopedVisualInvalidation(const ScopedVisualInvalidation&) = delete;
+		ScopedVisualInvalidation& operator=(
+			const ScopedVisualInvalidation&) = delete;
+		~ScopedVisualInvalidation() noexcept
+		{
+			auto* owner = _owner.Get();
+			if (!owner) return;
+			const bool unwinding =
+				std::uncaught_exceptions() > _uncaughtOnEntry;
+			try
+			{
+				owner->EndVisualInvalidationDeferral(
+					unwinding ? true : _dispatchVisual);
+			}
+			catch (...) {}
+		}
+
+	private:
+		ControlWeakReference _owner;
+		bool _dispatchVisual = true;
+		int _uncaughtOnEntry = 0;
+	};
 	void InvalidateMeasureSubtree();
 	/** Marks one owned visual path dirty without propagating a new root request. */
 	void InvalidateMeasurePathFromDescendant(Control* descendant);

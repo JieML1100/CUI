@@ -2290,6 +2290,19 @@ void Control::EndLayoutUpdateDeferral(bool performLayout)
 		DispatchInvalidatedClientRect(ToD2DRect(work.visualBounds));
 }
 
+void Control::BeginVisualInvalidationDeferral() noexcept
+{
+	_visualInvalidationDeferral.Suspend();
+}
+
+void Control::EndVisualInvalidationDeferral(bool dispatchVisual)
+{
+	const auto work = _visualInvalidationDeferral.Resume();
+	if (!work.ready || !dispatchVisual || !work.visualRequested
+		|| work.visualBounds.IsEmpty()) return;
+	DispatchInvalidatedClientRect(ToD2DRect(work.visualBounds));
+}
+
 void Control::InvalidateMeasureSubtree()
 {
 	_layoutState.InvalidateMeasure();
@@ -2688,6 +2701,12 @@ void Control::DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect)
 		current && visited.insert(current).second;
 		current = current->_visualParent)
 	{
+		if (current->_visualInvalidationDeferral.IsSuspended())
+		{
+			current->_visualInvalidationDeferral.QueueVisual(
+				ToCoreRect(clientRect));
+			return;
+		}
 		if (current->_layoutDeferral.IsSuspended())
 		{
 			current->_layoutDeferral.QueueVisual(ToCoreRect(clientRect));

@@ -95,6 +95,7 @@ protected:
 	std::vector<Control*> _inheritanceChildren;
 
 	cui::layout::LayoutDeferral _layoutDeferral;
+	cui::layout::LayoutDeferral _visualInvalidationDeferral;
 
 	BindingSourceReference _effectiveDataContext;
 	std::unique_ptr<BindingSourceProxy> _dataContextSource;

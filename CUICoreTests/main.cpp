@@ -64863,6 +64863,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 				*header, PointerInput(InputReportKind::PointerMove,
 					MouseButton::None, targetX, 18, MouseButton::Left)));
+			cui::framework::PresentationAccess::Prepare(*grid);
 			window.UpdateLayout();
 			return header;
 		};
@@ -64929,6 +64930,123 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_NEAR(
 			wideDuringDrag, row->GetActualSizeDip().height, 1.0f);
 		CUI_EXPECT_NEAR(wideHeight, row->GetActualSizeDip().height, 1.0f);
+	});
+
+	runner.Add("DataGrid resize remeasures only columns whose slots changed", []
+	{
+		class ResizeMeasureProbe final : public Control
+		{
+		public:
+			explicit ResizeMeasureProbe(size_t& measureCalls) noexcept
+				: _measureCalls(measureCalls) {}
+
+		protected:
+			cui::core::Size MeasureCore(
+				const cui::core::Constraints&) override
+			{
+				++_measureCalls;
+				return { 72.0f, 18.0f };
+			}
+
+		private:
+			size_t& _measureCalls;
+		};
+
+		constexpr size_t rowCount = 24;
+		constexpr size_t columnCount = 3;
+		const std::wstring itemType = L"ResizeMeasureRow";
+		std::array<size_t, columnCount> measureCalls{};
+
+		Window window;
+		ConfigureTestControl(window, L"DataGrid resize measure cache");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 228.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 420, 228);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		for (size_t index = 0; index < columnCount; ++index)
+		{
+			auto cellTemplate = std::make_shared<CallbackItemTemplate>(
+				itemType,
+				[&, index]() -> std::unique_ptr<Control>
+				{
+					return std::make_unique<ResizeMeasureProbe>(
+						measureCalls[index]);
+				});
+			auto column = std::make_unique<DataGridTemplateColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index + 1)));
+			column->SetWidth(DataGridLength(120.0));
+			column->SetCellTemplate(ItemTemplateReference(cellTemplate));
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Measured row"));
+		auto rows = std::make_shared<ObservableBindingList>(itemType);
+		for (size_t index = 0; index < rowCount; ++index)
+			rows->Items.push_back(BindingSourceReference(item));
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		CUI_EXPECT_EQ(rowCount, grid->GeneratedItemCount());
+
+		auto* headers = grid->GetColumnHeadersPresenter();
+		auto* header = headers ? headers->GetHeader(0) : nullptr;
+		auto* firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(header != nullptr);
+		CUI_EXPECT_TRUE(firstRow != nullptr);
+		if (!header || !firstRow) return;
+		const double initialWidth = header->GetActualSizeDip().width;
+		const int edge = static_cast<int>(std::floor(initialWidth)) - 1;
+		measureCalls.fill(0);
+		window.UpdateLayout();
+		CUI_EXPECT_EQ(0ULL, measureCalls[0]);
+		CUI_EXPECT_EQ(0ULL, measureCalls[1]);
+		CUI_EXPECT_EQ(0ULL, measureCalls[2]);
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, edge + 24, 18, MouseButton::Left)));
+		cui::framework::PresentationAccess::Prepare(*grid);
+		window.UpdateLayout();
+
+		headers = grid->GetColumnHeadersPresenter();
+		header = headers ? headers->GetHeader(0) : nullptr;
+		firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(header != nullptr);
+		CUI_EXPECT_TRUE(firstRow != nullptr);
+		CUI_EXPECT_TRUE(measureCalls[0] > 0);
+		CUI_EXPECT_TRUE(measureCalls[0] <= rowCount * 4);
+		if (measureCalls[1] != 0 || measureCalls[2] != 0)
+		{
+			const std::string detail = "measure calls="
+				+ std::to_string(measureCalls[0]) + "/"
+				+ std::to_string(measureCalls[1]) + "/"
+				+ std::to_string(measureCalls[2]);
+			::cui::test::Fail("unaffected columns keep measure cache",
+				__FILE__, __LINE__, detail.c_str());
+		}
+		CUI_EXPECT_NEAR(initialWidth + 24.0,
+			header ? header->GetActualSizeDip().width : -1.0f, 1.0);
+		for (size_t index = 0; firstRow && index < columnCount; ++index)
+		{
+			auto* cell = firstRow->GetCell(index);
+			CUI_EXPECT_TRUE(cell != nullptr);
+			CUI_EXPECT_NEAR(index == 0 ? initialWidth + 24.0 : 120.0,
+				cell ? cell->GetActualSizeDip().width : -1.0f, 1.0);
+		}
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, edge + 24, 18)));
+		window.UpdateLayout();
 	});
 
 	runner.Add("DataGrid fixed row constrains centered bottom cell to final column slot", []
@@ -65001,6 +65119,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			*header, PointerInput(InputReportKind::PointerMove,
 				MouseButton::None, targetX, 18, MouseButton::Left)));
+		cui::framework::PresentationAccess::Prepare(*grid);
 		window.UpdateLayout();
 
 		auto expectInsideFinalSlot = [&]
@@ -65126,9 +65245,13 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(header, headerLifetime.Get());
 		CUI_EXPECT_EQ(row,
 			dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0)));
-		CUI_EXPECT_EQ(DataGridLengthUnitType::Pixel,
+		CUI_EXPECT_EQ(DataGridLengthUnitType::Star,
 			first->GetWidth().UnitType);
-		CUI_EXPECT_NEAR(180.0, first->GetWidth().Value, 0.001);
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 38.0f });
+		headers->UpdateLayout();
+		CUI_EXPECT_NEAR(180.0, header->GetActualSizeDip().width, 0.001);
 
 		first->SetWidth(DataGridLength(120.0));
 		(void)headers->Measure(cui::core::Constraints{
@@ -65213,6 +65336,494 @@ class FreshWindow : public FreshWindowGenerated {};
 				MouseButton::Left, globallyDisabledEdge + 20, 18));
 		CUI_EXPECT_FALSE(grid.ResizeColumn(0, 150.0));
 		CUI_EXPECT_NEAR(120.0, first->GetWidth().Value, 0.001);
+	});
+
+	runner.Add("DataGrid right-side resize never borrows width from left columns", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 400, 160);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetCanUserSortColumns(false);
+
+		const auto addColumn = [&](DataGridLength width, bool canResize = true)
+		{
+			auto owner = std::make_unique<DataGridTextColumn>();
+			auto* column = owner.get();
+			column->SetHeader(BindingValue(L"Column"));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(width);
+			column->SetCanUserResize(canResize);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(owner)) == column);
+			return column;
+		};
+		auto* first = addColumn(DataGridLength::Star());
+		auto* second = addColumn(DataGridLength::Star());
+		auto* third = addColumn(DataGridLength(100.0));
+		auto* fourth = addColumn(DataGridLength(80.0), false);
+
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&]
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ 400.0f, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 400.0f, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders();
+		std::array<DataGridColumnHeader*, 4> header{
+			headers->GetHeader(0), headers->GetHeader(1),
+			headers->GetHeader(2), headers->GetHeader(3) };
+		for (auto* value : header) CUI_EXPECT_TRUE(value != nullptr);
+		if (std::any_of(header.begin(), header.end(),
+			[](auto* value) { return value == nullptr; })) return;
+
+		std::array<double, 4> originalWidths{};
+		for (size_t index = 0; index < header.size(); ++index)
+			originalWidths[index] = header[index]->GetActualSizeDip().width;
+		const int thirdEdge = static_cast<int>(
+			std::floor(originalWidths[2])) - 1;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, thirdEdge, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, thirdEdge + 24, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, thirdEdge + 24, 18)));
+		layoutHeaders();
+		for (size_t index = 0; index < header.size(); ++index)
+			CUI_EXPECT_NEAR(originalWidths[index],
+				header[index]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(100.0, third->GetWidth().Value, 0.001);
+		CUI_EXPECT_NEAR(80.0, fourth->GetWidth().Value, 0.001);
+
+		// The left gripper of header 1 targets column 0. Only columns to that
+		// target's right may compensate, so column 1 gives exactly the delta.
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[1], PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 1, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[1], PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, 25, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header[1], PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, 25, 18)));
+		layoutHeaders();
+		CUI_EXPECT_NEAR(originalWidths[0] + 24.0,
+			header[0]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(originalWidths[1] - 24.0,
+			header[1]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(originalWidths[2],
+			header[2]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(originalWidths[3],
+			header[3]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_EQ(DataGridLengthUnitType::Star, first->GetWidth().UnitType);
+		CUI_EXPECT_EQ(DataGridLengthUnitType::Star, second->GetWidth().UnitType);
+
+		// Reassigning the same declaration is a semantic no-op and a later
+		// viewport change must preserve the non-Star column that donated space.
+		const auto secondStarWidth = second->GetWidth();
+		second->SetWidth(secondStarWidth);
+		third->SetWidth(DataGridLength(100.0));
+		layoutHeaders();
+		CUI_EXPECT_NEAR(originalWidths[0] + 24.0,
+			header[0]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(originalWidths[1] - 24.0,
+			header[1]->GetActualSizeDip().width, 0.001);
+
+		// Grow the fixed third column by borrowing only from the right Star.
+		fourth->SetCanUserResize(true);
+		fourth->SetWidth(DataGridLength::Star());
+		layoutHeaders();
+		const std::array<double, 4> beforeThirdResize{
+			header[0]->GetActualSizeDip().width,
+			header[1]->GetActualSizeDip().width,
+			header[2]->GetActualSizeDip().width,
+			header[3]->GetActualSizeDip().width };
+		const int movableThirdEdge = static_cast<int>(
+			std::floor(beforeThirdResize[2])) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, movableThirdEdge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, movableThirdEdge + 20, 18,
+				MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*header[2], PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, movableThirdEdge + 20, 18));
+		layoutHeaders();
+		CUI_EXPECT_NEAR(beforeThirdResize[0],
+			header[0]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(beforeThirdResize[1],
+			header[1]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(beforeThirdResize[2] + 20.0,
+			header[2]->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(beforeThirdResize[3] - 20.0,
+			header[3]->GetActualSizeDip().width, 0.001);
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 420.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 38.0f });
+		headers->UpdateLayout();
+		CUI_EXPECT_NEAR(420.0,
+			header[0]->GetActualSizeDip().width
+			+ header[1]->GetActualSizeDip().width
+			+ header[2]->GetActualSizeDip().width
+			+ header[3]->GetActualSizeDip().width, 0.01);
+	});
+
+	runner.Add("DataGrid resize keeps left Stars stable when right column cannot participate", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 800, 160);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetCanUserSortColumns(false);
+		const std::array<DataGridLength, 7> widths{
+			DataGridLength(118.0), DataGridLength::Star(2.0),
+			DataGridLength::Star(), DataGridLength::Star(),
+			DataGridLength(92.0), DataGridLength(132.0),
+			DataGridLength(88.0) };
+		for (size_t index = 0; index < widths.size(); ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(L"Column"));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(widths[index]);
+			if (index + 1 == widths.size()) column->SetCanUserResize(false);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&]
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ 800.0f, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 800.0f, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders();
+		std::array<double, 7> before{};
+		for (size_t index = 0; index < before.size(); ++index)
+		{
+			auto* header = headers->GetHeader(index);
+			CUI_EXPECT_TRUE(header != nullptr);
+			if (!header) return;
+			before[index] = header->GetActualSizeDip().width;
+		}
+
+		// The left gripper of the last header resizes the penultimate column.
+		// The last column is fixed, so it cannot receive the returned width; the
+		// earlier Star columns must not absorb it through a global recomputation.
+		auto* lastHeader = headers->GetHeader(before.size() - 1);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 1, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, -19, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, -19, 18)));
+		layoutHeaders();
+		for (size_t index = 0; index + 2 < before.size(); ++index)
+			CUI_EXPECT_NEAR(before[index],
+				headers->GetHeader(index)->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(before[before.size() - 2] - 20.0,
+			headers->GetHeader(before.size() - 2)->GetActualSizeDip().width,
+			0.001);
+		CUI_EXPECT_NEAR(before.back(),
+			headers->GetHeader(before.size() - 1)->GetActualSizeDip().width,
+			0.001);
+
+		// Once the last column may participate, the same gesture is a local
+		// two-column transfer: target shrinks and its immediate right neighbor grows.
+		grid.GetColumn(before.size() - 1)->SetCanUserResize(true);
+		std::array<double, 7> beforeParticipating{};
+		for (size_t index = 0; index < beforeParticipating.size(); ++index)
+			beforeParticipating[index] =
+				headers->GetHeader(index)->GetActualSizeDip().width;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, 1, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, -19, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*lastHeader, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, -19, 18)));
+		layoutHeaders();
+		for (size_t index = 0; index + 2 < beforeParticipating.size(); ++index)
+			CUI_EXPECT_NEAR(beforeParticipating[index],
+				headers->GetHeader(index)->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(beforeParticipating[beforeParticipating.size() - 2]
+			- 20.0,
+			headers->GetHeader(beforeParticipating.size() - 2)
+				->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(beforeParticipating.back() + 20.0,
+			headers->GetHeader(beforeParticipating.size() - 1)
+				->GetActualSizeDip().width, 0.001);
+	});
+
+	runner.Add("DataGrid resize keeps non-Star donor display across viewport changes", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 300, 120);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetCanUserSortColumns(false);
+		const auto addColumn = [&](DataGridLength width)
+		{
+			auto owner = std::make_unique<DataGridTextColumn>();
+			auto* column = owner.get();
+			column->SetHeader(BindingValue(L"Column"));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(width);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(owner)) == column);
+			return column;
+		};
+		(void)addColumn(DataGridLength::Star());
+		auto* target = addColumn(DataGridLength(100.0));
+		auto* donor = addColumn(DataGridLength(100.0));
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&](float width)
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ width, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, width, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders(300.0f);
+		auto* targetHeader = headers->GetHeader(1);
+		auto* donorHeader = headers->GetHeader(2);
+		CUI_EXPECT_TRUE(targetHeader != nullptr);
+		CUI_EXPECT_TRUE(donorHeader != nullptr);
+		if (!targetHeader || !donorHeader) return;
+		const int edge = static_cast<int>(
+			std::floor(targetHeader->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*targetHeader, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*targetHeader, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, edge + 20, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*targetHeader, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, edge + 20, 18));
+		layoutHeaders(300.0f);
+		CUI_EXPECT_NEAR(120.0, targetHeader->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(80.0, donorHeader->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(100.0, donor->GetWidth().Value, 0.001);
+		layoutHeaders(320.0f);
+		CUI_EXPECT_NEAR(120.0, targetHeader->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(100.0, donorHeader->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(100.0, donor->GetWidth().Value, 0.001);
+		CUI_EXPECT_NEAR(120.0, target->GetWidth().Value, 0.001);
+	});
+
+	runner.Add("DataGrid constrained Star resize updates factors after saturation", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 550, 120);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetCanUserSortColumns(false);
+		const auto addColumn = [&](DataGridLength width,
+			double minimum, double maximum)
+		{
+			auto owner = std::make_unique<DataGridTextColumn>();
+			auto* column = owner.get();
+			column->SetHeader(BindingValue(L"Column"));
+			column->SetBindingPath(L"Name");
+			column->SetMinWidth(minimum);
+			column->SetMaxWidth(maximum);
+			column->SetWidth(width);
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(owner)) == column);
+			return column;
+		};
+		(void)addColumn(DataGridLength(100.0), 20.0,
+			(std::numeric_limits<double>::infinity)());
+		(void)addColumn(DataGridLength::Star(), 0.0, 50.0);
+		(void)addColumn(DataGridLength::Star(), 190.0,
+			(std::numeric_limits<double>::infinity)());
+		(void)addColumn(DataGridLength::Star(), 0.0,
+			(std::numeric_limits<double>::infinity)());
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&]
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ 550.0f, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 550.0f, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders();
+		auto* target = headers->GetHeader(0);
+		CUI_EXPECT_TRUE(target != nullptr);
+		if (!target) return;
+		const int edge = static_cast<int>(
+			std::floor(target->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, edge + 100, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, edge + 100, 18));
+		layoutHeaders();
+		CUI_EXPECT_NEAR(200.0, target->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(27.826, headers->GetHeader(1)->GetActualSizeDip().width,
+			0.05);
+		CUI_EXPECT_NEAR(190.0, headers->GetHeader(2)->GetActualSizeDip().width,
+			0.01);
+		CUI_EXPECT_NEAR(132.174, headers->GetHeader(3)->GetActualSizeDip().width,
+			0.05);
+	});
+
+	runner.Add("DataGrid accepts scale-small Star factors", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 100, 100);
+		grid.SetAutoGenerateColumns(false);
+		auto owner = std::make_unique<DataGridTextColumn>();
+		owner->SetHeader(BindingValue(L"Tiny Star"));
+		owner->SetBindingPath(L"Name");
+		owner->SetWidth(DataGridLength::Star(0.0000001));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(owner)) != nullptr);
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		(void)headers->Measure(cui::core::Constraints{
+			cui::core::Size{ 100.0f, 38.0f } });
+		headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, 100.0f, 38.0f });
+		headers->UpdateLayout();
+		CUI_EXPECT_NEAR(100.0,
+			headers->GetHeader(0)->GetActualSizeDip().width, 0.001);
+	});
+
+	runner.Add("DataGrid viewport shrink continues through Star minimum", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 200, 100);
+		grid.SetAutoGenerateColumns(false);
+		auto starOwner = std::make_unique<DataGridTextColumn>();
+		starOwner->SetHeader(BindingValue(L"Star"));
+		starOwner->SetBindingPath(L"Name");
+		starOwner->SetWidth(DataGridLength::Star());
+		starOwner->SetMinWidth(100.0);
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(starOwner)) != nullptr);
+		auto pixelOwner = std::make_unique<DataGridTextColumn>();
+		pixelOwner->SetHeader(BindingValue(L"Pixel"));
+		pixelOwner->SetBindingPath(L"Name");
+		pixelOwner->SetWidth(DataGridLength(100.0));
+		pixelOwner->SetMinWidth(20.0);
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(pixelOwner)) != nullptr);
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&](float width)
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ width, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, width, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders(200.0f);
+		layoutHeaders(150.0f);
+		CUI_EXPECT_NEAR(100.0,
+			headers->GetHeader(0)->GetActualSizeDip().width, 0.001);
+		CUI_EXPECT_NEAR(50.0,
+			headers->GetHeader(1)->GetActualSizeDip().width, 0.001);
+	});
+
+	runner.Add("DataGrid active resize rebases when viewport changes", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 300, 100);
+		grid.SetAutoGenerateColumns(false);
+		for (size_t index = 0; index < 2; ++index)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(L"Star"));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(DataGridLength::Star());
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		auto headers = grid.CreateColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const auto layoutHeaders = [&](float width)
+		{
+			(void)headers->Measure(cui::core::Constraints{
+				cui::core::Size{ width, 38.0f } });
+			headers->Arrange(cui::core::Rect{ 0.0f, 0.0f, width, 38.0f });
+			headers->UpdateLayout();
+		};
+		layoutHeaders(300.0f);
+		auto* target = headers->GetHeader(0);
+		auto* donor = headers->GetHeader(1);
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_TRUE(donor != nullptr);
+		if (!target || !donor) return;
+		const ControlWeakReference targetLifetime(target);
+		const int edge = static_cast<int>(
+			std::floor(target->GetActualSizeDip().width)) - 1;
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, edge + 20, 18, MouseButton::Left));
+		layoutHeaders(300.0f);
+		CUI_EXPECT_NEAR(150.0, target->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(150.0, donor->GetActualSizeDip().width, 0.01);
+		const auto beforeViewportTransform = target->GetLocalToRenderTransform();
+		const auto sameRenderPoint = D2D1::Matrix3x2F(
+			beforeViewportTransform._11, beforeViewportTransform._12,
+			beforeViewportTransform._21, beforeViewportTransform._22,
+			beforeViewportTransform._31, beforeViewportTransform._32)
+			.TransformPoint(D2D1::Point2F(
+				static_cast<float>(edge + 20), 18.0f));
+
+		layoutHeaders(360.0f);
+		CUI_EXPECT_EQ(target, targetLifetime.Get());
+		CUI_EXPECT_NEAR(204.0, target->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(156.0, donor->GetActualSizeDip().width, 0.01);
+		D2D1_POINT_2F rebasedLocal{};
+		CUI_EXPECT_TRUE(target->TryTransformRenderPointToLocal(
+			sameRenderPoint, rebasedLocal));
+		const int rebasedLocalX = static_cast<int>(
+			std::lround(rebasedLocal.x));
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, rebasedLocalX, 18, MouseButton::Left));
+		layoutHeaders(360.0f);
+		CUI_EXPECT_NEAR(204.0, target->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(156.0, donor->GetActualSizeDip().width, 0.01);
+		(void)cui::framework::InputAccess::DispatchInput(
+			*target, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, rebasedLocalX + 10, 18,
+				MouseButton::Left));
+		layoutHeaders(360.0f);
+		CUI_EXPECT_TRUE(target->GetActualSizeDip().width >= 204.0);
+		CUI_EXPECT_NEAR(360.0,
+			target->GetActualSizeDip().width
+			+ donor->GetActualSizeDip().width, 0.01);
+
+		InputReport cancel;
+		cancel.Kind = InputReportKind::Cancel;
+		CUI_EXPECT_TRUE(
+			cui::framework::InputAccess::DispatchInput(*target, cancel));
+		layoutHeaders(360.0f);
+		CUI_EXPECT_NEAR(180.0, target->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(180.0, donor->GetActualSizeDip().width, 0.01);
 	});
 
 	runner.Add("DataGrid RowHeaderActualWidth shares Auto maximum and mirrors explicit width", []

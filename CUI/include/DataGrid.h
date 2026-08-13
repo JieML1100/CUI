@@ -428,8 +428,18 @@ private:
 	friend class DataGridCell;
 	friend class DataGridColumnHeader;
 	friend class DataGridRow;
+	struct RuntimeWidthState final
+	{
+		double Desired = (std::numeric_limits<double>::quiet_NaN)();
+		double Display = (std::numeric_limits<double>::quiet_NaN)();
+		bool HasDisplayOverride = false;
+	};
 	BindingValue _header;
 	DataGridLength _width = DataGridLength::SizeToHeader();
+	// DataGridLength remains the declaration-facing value. Interactive resize
+	// keeps WPF's desired/display values privately so Star columns retain their
+	// unit and compensating columns do not have their declarations rewritten.
+	RuntimeWidthState _runtimeWidth;
 	double _minWidth = 20.0;
 	double _maxWidth = (std::numeric_limits<double>::infinity)();
 	bool _isReadOnly = false;
@@ -1023,6 +1033,7 @@ protected:
 	void OnSelectedIndexChanged(int oldValue, int newValue) override;
 	void OnSelectionChanged(SelectionChangedEventArgs& args) override;
 	void OnControlTemplatePresentationChanged() override;
+	void PreparePresentation() override;
 	bool ShouldRealizeVirtualItemsWithoutViewport() const noexcept override
 	{
 		// A DataGrid commonly lives on a non-selected TabItem.  Until its
@@ -1043,6 +1054,14 @@ protected:
 private:
 	friend class DataGridSelectedCellCollection;
 	struct DataGridItemsSourceTransactionState;
+	struct ColumnResizeSnapshot final
+	{
+		DataGridColumn* Column = nullptr;
+		DataGridLength Width;
+		DataGridColumn::RuntimeWidthState RuntimeWidth;
+		double Desired = (std::numeric_limits<double>::quiet_NaN)();
+		double Display = (std::numeric_limits<double>::quiet_NaN)();
+	};
 	enum class AccessibilityNodeKind : uint8_t
 	{
 		ColumnHeader,
@@ -1100,10 +1119,19 @@ private:
 	std::shared_ptr<CollectionViewSource> _itemsView;
 	std::vector<std::unique_ptr<DataGridColumn>> _columns;
 	mutable std::vector<std::optional<GridLength>> _resolvedColumnWidths;
+	std::vector<ColumnResizeSnapshot> _columnResizeSnapshot;
+	std::vector<ColumnResizeSnapshot> _columnResizeWorkingSnapshot;
+	size_t _columnResizeTransactionIndex = DataGridCellInfo::InvalidIndex;
+	double _columnResizeLastRawWidth =
+		(std::numeric_limits<double>::quiet_NaN)();
+	double _columnResizeInputBias = 0.0;
 	// Realized header/row grids cache the revision they projected. This keeps a
 	// vertical viewport change from rebuilding identical column definitions.
 	size_t _columnWidthProjectionRevision = 1;
 	bool _columnWidthRefreshPending = false;
+	size_t _columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
+	size_t _columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+	std::vector<uint8_t> _columnWidthMeasureDirty;
 	// Prefix[i] is the logical left edge of column i; Prefix.back() is the
 	// complete data-column width. It turns viewport, bring-into-view and UIA
 	// column positioning into O(log C)/O(1) operations for very wide grids.
@@ -1280,12 +1308,18 @@ private:
 	void FlushCommittedItemsSourceState();
 	void InvalidateColumnWidthCache() noexcept;
 	void InvalidateColumnContentWidthCache() noexcept;
+	void RedistributeRuntimeWidthsForViewportChange(
+		double oldViewportWidth, double newViewportWidth) noexcept;
+	bool RebaseColumnResizeTransaction();
+	bool BeginColumnResizeTransaction(size_t columnIndex);
+	bool ResizeColumnInTransaction(size_t columnIndex, double pixelWidth);
+	void EndColumnResizeTransaction(bool cancel);
 	bool ResizeColumnCore(
 		size_t columnIndex, double pixelWidth,
 		bool preserveRealizedColumnRange);
-	void ApplyPendingColumnWidths();
+	void ApplyPendingColumnWidths(bool refreshVirtualMetrics = true);
 	void CommitColumnWidthLayoutToAncestors();
-	void InvalidatePendingColumnWidthLayoutPaths();
+	void InvalidatePendingColumnResizeVisual();
 	void RefreshColumnWidths(bool preserveRealizedColumnRange = false);
 	std::pair<size_t, size_t> ResolveRealizedColumnRange() const;
 	void InvalidateRealizedColumnRange() noexcept;

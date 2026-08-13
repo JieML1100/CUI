@@ -535,6 +535,30 @@ private:
 						== projectionRevision
 					? livePresenter : nullptr;
 			};
+			const auto maximum = available.Normalized().maximum;
+			// A fixed DataGrid.RowHeight is the authoritative vertical measure.
+			// Measuring every retained cell here is both unnecessary and expensive:
+			// the outer row Grid probes its Auto column once unbounded and once with
+			// the row slot, which otherwise alternates every cell template between
+			// infinite and finite height on each column-resize frame. Arrange below
+			// still measures cells against their final slots, so the resized column
+			// updates content while unchanged columns retain their measure caches.
+			const double fixedRowHeight = owner->GetRowHeight();
+			if (std::isfinite(fixedRowHeight))
+			{
+				auto* livePresenter = currentPresenter();
+				if (!livePresenter) return {};
+				const float totalWidth = livePresenter->TotalColumnWidth();
+				if (!currentPresenter()) return {};
+				const double maximumFloat = static_cast<double>(
+					(std::numeric_limits<float>::max)());
+				float desiredHeight = static_cast<float>((std::clamp)(
+					fixedRowHeight, 0.0, maximumFloat));
+				if (std::isfinite(maximum.height))
+					desiredHeight = (std::min)(desiredHeight, maximum.height);
+				_needsLayout = false;
+				return { totalWidth, desiredHeight };
+			}
 			struct CellSnapshot final
 			{
 				ControlWeakReference Lifetime;
@@ -564,16 +588,11 @@ private:
 					|| !livePresenter->IsCurrentCell(liveCell)) return {};
 				if (resolved) cells.push_back(std::move(snapshot));
 			}
-			const auto maximum = available.Normalized().maximum;
 			// An Auto DataGrid row must discover the wrapped cell's natural height.
 			// The outer row Grid may offer the previous arranged height while a
 			// column is being resized; feeding that finite value back here makes the
 			// old height self-lock and prevents a narrower column from growing it.
-			const bool autoRowHeight = !std::isfinite(owner->GetRowHeight());
-			const float availableHeight = !autoRowHeight
-				&& std::isfinite(maximum.height)
-				? (std::max)(0.0f, maximum.height)
-				: cui::core::Infinity;
+			const float availableHeight = cui::core::Infinity;
 			float desiredHeight = 0.0f;
 			for (const auto& snapshot : cells)
 			{
@@ -590,8 +609,17 @@ private:
 					? (std::max)(0.0f,
 						availableHeight - margin.Top - margin.Bottom)
 					: cui::core::Infinity;
-				const auto desired = cell->Measure(cui::core::Constraints{
-					cui::core::Size{ childWidth, childHeight } });
+				const bool widthChanged =
+					owner->_columnWidthMeasureDirty.size()
+						!= owner->ColumnCount()
+					|| cell->_columnIndex
+						>= owner->_columnWidthMeasureDirty.size()
+					|| owner->_columnWidthMeasureDirty[cell->_columnIndex] != 0;
+				const auto desired = widthChanged
+					|| cell->GetComputedLayout().NeedsMeasure()
+					? cell->Measure(cui::core::Constraints{
+						cui::core::Size{ childWidth, childHeight } })
+					: cell->GetDesiredSizeDip();
 				livePresenter = currentPresenter();
 				cell = dynamic_cast<DataGridCell*>(snapshot.Lifetime.Get());
 				if (!livePresenter || cell != snapshot.Identity
@@ -640,6 +668,19 @@ private:
 						== projectionRevision
 					? livePresenter : nullptr;
 			};
+			finalRect = finalRect.Normalized();
+			const bool partialResizeArrange =
+				owner->_columnWidthDirtyBegin
+					!= DataGridCellInfo::InvalidIndex
+				&& owner->_columnWidthDirtyEnd
+					!= DataGridCellInfo::InvalidIndex
+				&& owner->_columnWidthDirtyBegin
+					< owner->_columnWidthDirtyEnd
+				&& std::isfinite(presenter->_lastArrangedHeight)
+				&& std::abs(presenter->_lastArrangedHeight - finalRect.height)
+					<= 0.0001f;
+			const size_t dirtyBegin = owner->_columnWidthDirtyBegin;
+			const size_t dirtyEnd = owner->_columnWidthDirtyEnd;
 			struct CellSnapshot final
 			{
 				ControlWeakReference Lifetime;
@@ -657,6 +698,9 @@ private:
 				auto* cell = dynamic_cast<DataGridCell*>(
 					context.ChildAt(childIndex));
 				if (!cell || cell->IsCollapsed()) continue;
+				if (partialResizeArrange
+					&& (cell->_columnIndex < dirtyBegin
+						|| cell->_columnIndex >= dirtyEnd)) continue;
 				CellSnapshot snapshot;
 				snapshot.Lifetime = cell;
 				snapshot.Identity = cell;
@@ -669,7 +713,6 @@ private:
 					|| !livePresenter->IsCurrentCell(liveCell)) return;
 				if (resolved) cells.push_back(std::move(snapshot));
 			}
-			finalRect = finalRect.Normalized();
 			for (const auto& snapshot : cells)
 			{
 				auto* livePresenter = currentPresenter();
@@ -686,8 +729,21 @@ private:
 					finalRect.height - margin.Top - margin.Bottom);
 				float x = finalRect.x + snapshot.Left + margin.Left;
 				float y = finalRect.y + margin.Top;
-				const auto desired = cell->Measure(cui::core::Constraints{
-					cui::core::Size{ contentWidth, contentHeight } });
+				// Auto rows already measured width-dirty cells with unbounded height
+				// above. Measuring them again here with the arranged row height would
+				// alternate the constraint on every ancestor probe and defeat the cache.
+				// Arrange can consume that natural DesiredSize directly. Fixed rows skip
+				// cell work in Measure, so they still take the bounded path here.
+				const bool fixedRowHeight =
+					std::isfinite(owner->GetRowHeight());
+				const auto desired = fixedRowHeight
+					? cell->Measure(cui::core::Constraints{
+						cui::core::Size{ contentWidth, contentHeight } })
+					: (cell->GetComputedLayout().NeedsMeasure()
+						? cell->Measure(cui::core::Constraints{
+							cui::core::Size{
+								contentWidth, cui::core::Infinity } })
+						: cell->GetDesiredSizeDip());
 				livePresenter = currentPresenter();
 				cell = dynamic_cast<DataGridCell*>(snapshot.Lifetime.Get());
 				if (!livePresenter || cell != snapshot.Identity
@@ -716,6 +772,8 @@ private:
 				if (!livePresenter || cell != snapshot.Identity
 					|| !livePresenter->IsCurrentCell(cell)) return;
 			}
+			if (auto* livePresenter = currentPresenter())
+				livePresenter->_lastArrangedHeight = finalRect.height;
 			_needsLayout = false;
 		}
 
@@ -740,11 +798,12 @@ public:
 		_needsMeasure = true;
 		_needsArrange = true;
 		if (_layoutEngine) _layoutEngine->Invalidate();
-		// The presenter and its retained cell/template descendants must not reuse
-		// measure results produced for the previous column slots.  Keep this local;
-		// DataGrid invalidates its complete template subtree once after all rows
-		// have consumed the coalesced width revision.
-		InvalidateMeasureSubtree();
+		// A column-width frame changes this presenter's layout policy, not every
+		// retained cell.  The layout engine offers each cell its resolved slot;
+		// Control::Measure naturally remeasures only cells whose constraint changed
+		// while later cells can keep their desired-size/template caches and merely
+		// move during Arrange.  The DataGrid owns the ancestor transaction.
+		_layoutState.InvalidateMeasure();
 	}
 
 private:
@@ -843,6 +902,8 @@ private:
 	}
 
 	DataGridRow* _row = nullptr;
+	float _lastArrangedHeight =
+		(std::numeric_limits<float>::quiet_NaN)();
 };
 
 DataGridCellInfo DataGridSelectedCellCollection::const_iterator::operator*()
@@ -1897,7 +1958,32 @@ void DataGridColumn::SetWidth(DataGridLength value)
 	if (!value.IsValid())
 		throw std::invalid_argument("DataGridColumn.Width is invalid");
 	if (_width == value) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
+	const bool removedLastStar = _owner
+		&& _width.UnitType == DataGridLengthUnitType::Star
+		&& value.UnitType != DataGridLengthUnitType::Star
+		&& std::none_of(_owner->_columns.begin(), _owner->_columns.end(),
+			[this](const auto& column)
+			{
+				return column.get() != this
+					&& column->_width.UnitType
+						== DataGridLengthUnitType::Star;
+			});
 	_width = value;
+	_runtimeWidth = {};
+	if (removedLastStar)
+	{
+		// WPF releases compensation Display values once no Star column remains;
+		// otherwise the former donor stays artificially narrow and leaves a gap.
+		for (const auto& column : _owner->_columns)
+		{
+			if (column.get() == this
+				|| !column->_runtimeWidth.HasDisplayOverride
+				|| !std::isfinite(column->_runtimeWidth.Desired)) continue;
+			column->_runtimeWidth = {};
+		}
+	}
 	if (_owner) _owner->RefreshColumnWidths();
 }
 
@@ -1906,6 +1992,8 @@ void DataGridColumn::SetMinWidth(double value)
 	if (!std::isfinite(value) || value < 0.0 || value > _maxWidth)
 		throw std::invalid_argument("DataGridColumn.MinWidth is invalid");
 	if (_minWidth == value) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
 	_minWidth = value;
 	NotifyOwnerChanged();
 }
@@ -1915,6 +2003,8 @@ void DataGridColumn::SetMaxWidth(double value)
 	if (std::isnan(value) || value < _minWidth)
 		throw std::invalid_argument("DataGridColumn.MaxWidth is invalid");
 	if (_maxWidth == value) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
 	_maxWidth = value;
 	NotifyOwnerChanged();
 }
@@ -1936,6 +2026,8 @@ void DataGridColumn::SetCanUserSort(bool value)
 void DataGridColumn::SetCanUserResize(bool value)
 {
 	if (_canUserResize == value) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
 	_canUserResize = value;
 }
 
@@ -3226,14 +3318,28 @@ bool DataGridColumnHeader::BeginColumnResize(int localX)
 	size_t columnIndex = DataGridCellInfo::InvalidIndex;
 	if (!TryResolveResizeColumn(localX, columnIndex) || !_owner) return false;
 	const double width = _owner->GetColumnDisplayWidth(columnIndex);
-	if (!std::isfinite(width)) return false;
+	if (!std::isfinite(width)
+		|| !_owner->BeginColumnResizeTransaction(columnIndex)) return false;
+	const ControlWeakReference ownerLifetime(_owner);
+	bool transactionCommitted = false;
+	auto rollbackTransaction = MakeScopeExit(
+		[ownerLifetime, &transactionCommitted]
+		{
+			if (transactionCommitted) return;
+			if (auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+				owner->EndColumnResizeTransaction(true);
+		});
 	_isResizing = true;
 	_resizingColumnIndex = columnIndex;
 	_resizeStartRenderX = RenderSpaceX(*this, localX);
 	_resizeStartWidth = width;
 	// Normalized-input unit tests may exercise a detached header.  A presented
 	// header, however, must own native mouse capture for the drag to be valid.
-	if (!GetPresentationWindow()) return true;
+	if (!GetPresentationWindow())
+	{
+		transactionCommitted = true;
+		return true;
+	}
 	const ControlWeakReference lifetime(this);
 	const bool captured = CaptureMouse();
 	auto* source = dynamic_cast<DataGridColumnHeader*>(lifetime.Get());
@@ -3243,6 +3349,7 @@ bool DataGridColumnHeader::BeginColumnResize(int localX)
 		if (source->_isResizing) source->EndColumnResize(true);
 		return false;
 	}
+	transactionCommitted = true;
 	return true;
 }
 
@@ -3251,22 +3358,24 @@ bool DataGridColumnHeader::ContinueColumnResize(int localX)
 	if (!_isResizing || !_owner
 		|| _resizingColumnIndex == DataGridCellInfo::InvalidIndex) return false;
 	const double delta = RenderSpaceX(*this, localX) - _resizeStartRenderX;
-	return _owner->ResizeColumnCore(
-		_resizingColumnIndex, _resizeStartWidth + delta, true);
+	if (_owner->ResizeColumnInTransaction(
+		_resizingColumnIndex, _resizeStartWidth + delta)) return true;
+	// An external schema/eligibility mutation can abort the owner transaction
+	// while this header still owns capture. End the local gesture immediately so
+	// later Move/Up input is not swallowed or accidentally committed.
+	EndColumnResize(true);
+	return false;
 }
 
 void DataGridColumnHeader::EndColumnResize(bool cancel)
 {
 	if (!_isResizing) return;
-	const size_t columnIndex = _resizingColumnIndex;
-	const double originalWidth = _resizeStartWidth;
 	_isResizing = false;
 	_resizingColumnIndex = DataGridCellInfo::InvalidIndex;
 	_resizeStartRenderX = 0.0;
 	_resizeStartWidth = 0.0;
 	const ControlWeakReference ownerLifetime(_owner);
-	if (cancel && _owner && columnIndex != DataGridCellInfo::InvalidIndex)
-		(void)_owner->ResizeColumnCore(columnIndex, originalWidth, true);
+	if (_owner) _owner->EndColumnResizeTransaction(cancel);
 	if (auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
 		owner->ApplyPendingColumnWidths();
 	if (auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
@@ -3622,7 +3731,12 @@ const DependencyProperty& DataGrid::CanUserResizeColumnsProperty()
 			DependencyPropertyRegistrationLiteral(L"CanUserResizeColumns"),
 			[](DataGrid& target) { return target._canUserResizeColumns; },
 			[](DataGrid& target, const bool& value)
-			{ target._canUserResizeColumns = value; }, {}, DataGridOptions(true));
+			{
+				if (target._canUserResizeColumns == value) return;
+				if (!target._columnResizeSnapshot.empty())
+					target.EndColumnResizeTransaction(true);
+				target._canUserResizeColumns = value;
+			}, {}, DataGridOptions(true));
 	}();
 	return *registration;
 }
@@ -4115,6 +4229,40 @@ void DataGrid::PrepareMeasureCore(
 	ApplyPendingColumnWidths();
 }
 
+void DataGrid::PreparePresentation()
+{
+	const ControlWeakReference ownerLifetime(this);
+	// Native column dragging schedules a DataGrid-local damage frame instead of
+	// invalidating the Window measure root. Project the newest coalesced widths
+	// immediately before the retained scene prepares this node, then let the
+	// ordinary ItemsControl presentation hook commit only the invalid local paths.
+	if (_columnWidthRefreshPending && !_columnResizeSnapshot.empty())
+	{
+		// Arrange invalidates every changed cell's old and new bounds. The damage
+		// that brought us into this frame already covers that complete suffix, so
+		// retain the geometry revisions but discard the duplicate future damage.
+		// This prevents a drag from perpetually carrying one redundant paint turn.
+		ScopedVisualInvalidation localFrame(*this, false);
+		ApplyPendingColumnWidths(false);
+		ListBox::PreparePresentation();
+		if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+		{
+			live->_columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
+			live->_columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+			live->_columnWidthMeasureDirty.clear();
+		}
+		return;
+	}
+	if (_columnWidthRefreshPending) ApplyPendingColumnWidths();
+	ListBox::PreparePresentation();
+	if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+	{
+		live->_columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
+		live->_columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+		live->_columnWidthMeasureDirty.clear();
+	}
+}
+
 void DataGrid::Arrange(cui::core::Rect finalRect)
 {
 	// Column headers and rows live in separate Grids so the header can remain
@@ -4192,6 +4340,38 @@ void DataGrid::SetItemsSource(BindingListReference value)
 
 	const auto previousSource = live->_source;
 	const auto previousView = live->_itemsView;
+	const auto previousCurrentCell = live->_currentCell;
+	size_t previousCurrentItemOrdinal = 0;
+	bool hasPreviousCurrentItemOrdinal = false;
+	if (previousView && previousCurrentCell.IsValid())
+	{
+		size_t ordinal = 0;
+		for (size_t index = 0;; ++index)
+		{
+			const size_t previousCount = previousView->Count();
+			live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			if (!live) return;
+			if (index >= previousCount) break;
+			BindingSourceReference item;
+			if (!previousView->TryGetItem(index, item))
+			{
+				live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+				if (!live) return;
+				continue;
+			}
+			live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			if (!live) return;
+			if (!item || item.Shared() != previousCurrentCell.Item.Shared())
+				continue;
+			if (index == previousCurrentCell.RowIndex)
+			{
+				previousCurrentItemOrdinal = ordinal;
+				hasPreviousCurrentItemOrdinal = true;
+				break;
+			}
+			++ordinal;
+		}
+	}
 	struct RuntimeAutoColumnSnapshot final
 	{
 		size_t Index = 0;
@@ -4226,26 +4406,6 @@ void DataGrid::SetItemsSource(BindingListReference value)
 		std::move(live->_sampledColumnContentWidths);
 	const size_t previousColumnContentWidthCacheEpoch =
 		live->_columnContentWidthCacheEpoch;
-	const auto previousCurrentCell = live->_currentCell;
-	size_t previousCurrentItemOrdinal = 0;
-	bool hasPreviousCurrentItemOrdinal = false;
-	if (previousView && previousCurrentCell.IsValid())
-	{
-		size_t ordinal = 0;
-		for (size_t index = 0; index < previousView->Count(); ++index)
-		{
-			BindingSourceReference item;
-			if (!previousView->TryGetItem(index, item) || !item
-				|| item.Shared() != previousCurrentCell.Item.Shared()) continue;
-			if (index == previousCurrentCell.RowIndex)
-			{
-				previousCurrentItemOrdinal = ordinal;
-				hasPreviousCurrentItemOrdinal = true;
-				break;
-			}
-			++ordinal;
-		}
-	}
 	auto rollbackDerivedState = [&](DataGrid& target)
 	{
 		// A UIA query may have materialized identities for the candidate view
@@ -4586,6 +4746,7 @@ DataGridColumn* DataGrid::AddColumnCore(
 	std::unique_ptr<DataGridColumn> column, bool autoGenerated)
 {
 	if (!column) return nullptr;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	if (column->_owner)
 		throw std::logic_error("DataGridColumn already has an owner");
 	if (column->_accessibilityIdentity == 0)
@@ -4602,6 +4763,7 @@ DataGridColumn* DataGrid::AddColumnCore(
 void DataGrid::ClearColumns()
 {
 	if (_columns.empty()) return;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	const ControlWeakReference ownerLifetime(this);
 	(void)CancelEdit();
 	if (!ownerLifetime.Get()) return;
@@ -4633,6 +4795,7 @@ void DataGrid::RemoveAutoGeneratedColumns()
 		_columns.begin(), _columns.end(),
 		[](const auto& column) { return column->_isAutoGenerated; }));
 	if (autoCount == 0) return;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	std::vector<std::unique_ptr<DataGridColumn>> retained;
 	std::vector<std::unique_ptr<DataGridColumn>> removed;
 	retained.reserve(_columns.size() - autoCount);
@@ -4663,6 +4826,7 @@ void DataGrid::EnsureAutoGeneratedColumns()
 	if (std::any_of(_columns.begin(), _columns.end(),
 		[](const auto& column) { return column->_isAutoGenerated; }))
 		return;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	std::vector<std::pair<DataGridColumn*, uint32_t>> columnSnapshot;
 	columnSnapshot.reserve(_columns.size());
 	for (const auto& column : _columns)
@@ -5404,6 +5568,9 @@ struct DataGrid::DataGridItemsSourceTransactionState final
 	size_t ColumnCount = 0;
 	std::vector<std::optional<GridLength>> ResolvedColumnWidths;
 	std::vector<double> ColumnWidthPrefix;
+	std::vector<double> RuntimeColumnDesiredWidths;
+	std::vector<double> RuntimeColumnDisplayWidths;
+	std::vector<bool> RuntimeColumnDisplayOverrides;
 	std::vector<std::optional<double>> SampledColumnContentWidths;
 	size_t ColumnContentWidthCacheEpoch = 1;
 	DataGridCellInfo CurrentCell;
@@ -5430,6 +5597,18 @@ DataGrid::CaptureItemsSourceTransactionState()
 	state->ColumnCount = _columns.size();
 	state->ResolvedColumnWidths = _resolvedColumnWidths;
 	state->ColumnWidthPrefix = _columnWidthPrefix;
+	state->RuntimeColumnDesiredWidths.reserve(_columns.size());
+	state->RuntimeColumnDisplayWidths.reserve(_columns.size());
+	state->RuntimeColumnDisplayOverrides.reserve(_columns.size());
+	for (const auto& column : _columns)
+	{
+		state->RuntimeColumnDesiredWidths.push_back(
+			column->_runtimeWidth.Desired);
+		state->RuntimeColumnDisplayWidths.push_back(
+			column->_runtimeWidth.Display);
+		state->RuntimeColumnDisplayOverrides.push_back(
+			column->_runtimeWidth.HasDisplayOverride);
+	}
 	state->SampledColumnContentWidths = _sampledColumnContentWidths;
 	state->ColumnContentWidthCacheEpoch = _columnContentWidthCacheEpoch;
 	state->CurrentCell = _currentCell;
@@ -5474,6 +5653,19 @@ void DataGrid::RestoreItemsSourceTransactionState(
 	PruneAccessibilityColumnIdentities();
 	_resolvedColumnWidths = std::move(dataGrid->ResolvedColumnWidths);
 	_columnWidthPrefix = std::move(dataGrid->ColumnWidthPrefix);
+	const size_t runtimeWidthCount = (std::min)({
+		_columns.size(), dataGrid->RuntimeColumnDesiredWidths.size(),
+		dataGrid->RuntimeColumnDisplayWidths.size(),
+		dataGrid->RuntimeColumnDisplayOverrides.size() });
+	for (size_t index = 0; index < runtimeWidthCount; ++index)
+	{
+		_columns[index]->_runtimeWidth.Desired =
+			dataGrid->RuntimeColumnDesiredWidths[index];
+		_columns[index]->_runtimeWidth.Display =
+			dataGrid->RuntimeColumnDisplayWidths[index];
+		_columns[index]->_runtimeWidth.HasDisplayOverride =
+			dataGrid->RuntimeColumnDisplayOverrides[index];
+	}
 	_sampledColumnContentWidths =
 		std::move(dataGrid->SampledColumnContentWidths);
 	_columnContentWidthCacheEpoch =
@@ -9458,11 +9650,13 @@ bool DataGrid::ResizeColumnCore(
 		|| !std::isfinite(pixelWidth)) return false;
 	auto& column = *_columns[columnIndex];
 	if (!column.GetCanUserResize()) return false;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	const double width = (std::clamp)(
 		pixelWidth, column.GetMinWidth(), column.GetMaxWidth());
 	const DataGridLength resized(width);
 	if (column._width == resized) return true;
 	column._width = resized;
+	column._runtimeWidth = {};
 	// Native header dragging preserves the existing overscanned horizontal
 	// container strip. Recomputing it on every WM_MOUSEMOVE can recreate
 	// template content and makes the gripper lag behind the pointer; release
@@ -9472,40 +9666,14 @@ bool DataGrid::ResizeColumnCore(
 	return true;
 }
 
-void DataGrid::InvalidatePendingColumnWidthLayoutPaths()
-{
-	const ControlWeakReference ownerLifetime(this);
-	if (auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
-		_headersPresenter.Get()))
-	{
-		InvalidateMeasurePathFromDescendant(presenter);
-	}
-	std::vector<ControlWeakReference> rows;
-	rows.reserve(GetRealizedItems().size());
-	for (const auto& [index, realized] : GetRealizedItems())
-	{
-		(void)realized;
-		if (auto* row = dynamic_cast<DataGridRow*>(GetGeneratedItem(index)))
-			rows.emplace_back(row);
-	}
-	for (const auto& rowLifetime : rows)
-	{
-		auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-		auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
-		if (!live) return;
-		if (row && row->GetDataGridOwner() == live)
-		{
-			live->InvalidateMeasurePathFromDescendant(row);
-		}
-	}
-}
-
 bool DataGrid::AutoSizeColumn(size_t columnIndex)
 {
 	if (!_canUserResizeColumns || columnIndex >= _columns.size()) return false;
 	auto& column = *_columns[columnIndex];
 	if (!column.GetCanUserResize()) return false;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	column._width = DataGridLength::Auto();
+	column._runtimeWidth = {};
 	RefreshColumnWidths();
 	return true;
 }
@@ -9530,6 +9698,505 @@ void DataGrid::InvalidateColumnWidthCache() noexcept
 		_columnWidthProjectionRevision = 1;
 }
 
+bool DataGrid::BeginColumnResizeTransaction(size_t columnIndex)
+{
+	if (!_canUserResizeColumns || columnIndex >= _columns.size()
+		|| !_columns[columnIndex]->GetCanUserResize()
+		|| !_columnResizeSnapshot.empty()) return false;
+
+	std::vector<ColumnResizeSnapshot> snapshot;
+	snapshot.reserve(_columns.size());
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		auto& column = *_columns[index];
+		const auto resolved = ResolveColumnGridLength(index);
+		const double display = resolved.IsPixel()
+			? static_cast<double>(resolved.Value)
+			: EstimateColumnWidth(index, true, true);
+		if (!std::isfinite(display)) return false;
+		double desired = display;
+		if (std::isfinite(column._runtimeWidth.Desired))
+			desired = column._runtimeWidth.Desired;
+		else if (column._width.UnitType == DataGridLengthUnitType::Pixel)
+			desired = column._width.Value;
+		else if (column._width.UnitType == DataGridLengthUnitType::Star
+			&& column._width.Value > 0.000001)
+		{
+			// The global water-fill solver does not expose WPF's DesiredValue.
+			// Recover its common unconstrained water level from any Star which is
+			// not currently clamped, then apply it to every Star below.
+			desired = (std::numeric_limits<double>::quiet_NaN)();
+		}
+		snapshot.push_back(ColumnResizeSnapshot{
+			&column, column._width, column._runtimeWidth,
+			desired, display });
+	}
+	double starWaterLevel = (std::numeric_limits<double>::quiet_NaN)();
+	for (const auto& state : snapshot)
+	{
+		if (state.Width.UnitType != DataGridLengthUnitType::Star
+			|| state.Width.Value <= 0.000001) continue;
+		const auto* column = state.Column;
+		if (!column || state.Display <= column->GetMinWidth() + 0.000001
+			|| state.Display >= column->GetMaxWidth() - 0.000001) continue;
+		starWaterLevel = state.Display / state.Width.Value;
+		break;
+	}
+	if (!std::isfinite(starWaterLevel) || starWaterLevel < 0.0)
+	{
+		double starDisplay = 0.0;
+		double starWeight = 0.0;
+		for (const auto& state : snapshot)
+		{
+			if (state.Width.UnitType != DataGridLengthUnitType::Star
+				|| state.Width.Value <= 0.000001) continue;
+			starDisplay += state.Display;
+			starWeight += state.Width.Value;
+		}
+		starWaterLevel = starWeight > 0.000001
+			? starDisplay / starWeight : 0.0;
+	}
+	for (auto& state : snapshot)
+	{
+		if (state.Width.UnitType == DataGridLengthUnitType::Star
+			&& state.Width.Value > 0.000001
+			&& !std::isfinite(state.Desired))
+			state.Desired = starWaterLevel * state.Width.Value;
+	}
+	auto workingSnapshot = snapshot;
+	_columnResizeSnapshot = std::move(snapshot);
+	_columnResizeWorkingSnapshot = std::move(workingSnapshot);
+	_columnResizeTransactionIndex = columnIndex;
+	_columnResizeLastRawWidth = _columnResizeWorkingSnapshot[columnIndex].Display;
+	_columnResizeInputBias = 0.0;
+	_columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
+	_columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+	_columnWidthMeasureDirty.clear();
+	return true;
+}
+
+bool DataGrid::RebaseColumnResizeTransaction()
+{
+	if (_columnResizeSnapshot.empty()
+		|| _columnResizeTransactionIndex >= _columns.size()) return false;
+	std::vector<ColumnResizeSnapshot> snapshot;
+	snapshot.reserve(_columns.size());
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		auto& column = *_columns[index];
+		const auto resolved = ResolveColumnGridLength(index);
+		const double display = resolved.IsPixel()
+			? static_cast<double>(resolved.Value)
+			: EstimateColumnWidth(index, true, true);
+		if (!std::isfinite(display)) return false;
+		const double desired = std::isfinite(column._runtimeWidth.Desired)
+			? column._runtimeWidth.Desired
+			: (column._width.UnitType == DataGridLengthUnitType::Pixel
+				? column._width.Value : display);
+		snapshot.push_back(ColumnResizeSnapshot{
+			&column, column._width, column._runtimeWidth,
+			desired, display });
+	}
+	_columnResizeWorkingSnapshot = std::move(snapshot);
+	return true;
+}
+
+bool DataGrid::ResizeColumnInTransaction(
+	size_t columnIndex, double pixelWidth)
+{
+	if (!std::isfinite(pixelWidth)
+		|| columnIndex != _columnResizeTransactionIndex
+		|| _columnResizeSnapshot.size() != _columns.size()
+		|| _columnResizeWorkingSnapshot.size() != _columns.size()) return false;
+	if (!_canUserResizeColumns || !_columns[columnIndex]->GetCanUserResize())
+	{
+		EndColumnResizeTransaction(true);
+		return false;
+	}
+	_columnResizeLastRawWidth = pixelWidth;
+	pixelWidth += _columnResizeInputBias;
+	bool previousProjectionDiffers = false;
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		if (_columns[index].get() != _columnResizeSnapshot[index].Column
+			|| _columns[index].get()
+				!= _columnResizeWorkingSnapshot[index].Column)
+		{
+			_columnResizeSnapshot.clear();
+			_columnResizeWorkingSnapshot.clear();
+			_columnResizeTransactionIndex = DataGridCellInfo::InvalidIndex;
+			return false;
+		}
+		const auto& runtime = _columns[index]->_runtimeWidth;
+		const auto& startRuntime =
+			_columnResizeWorkingSnapshot[index].RuntimeWidth;
+		previousProjectionDiffers = previousProjectionDiffers
+			|| _columns[index]->_width
+				!= _columnResizeWorkingSnapshot[index].Width
+			|| runtime.HasDisplayOverride
+				!= startRuntime.HasDisplayOverride
+			|| (runtime.HasDisplayOverride
+				&& (std::abs(runtime.Display - startRuntime.Display) > 0.000001
+					|| std::abs(runtime.Desired - startRuntime.Desired)
+						> 0.000001));
+	}
+
+	// Pointer moves carry an absolute displacement from drag start. Restore the
+	// complete semantic snapshot first so min/max saturation is reversible and
+	// repeated input never accumulates rounding error.
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		_columns[index]->_width = _columnResizeWorkingSnapshot[index].Width;
+		_columns[index]->_runtimeWidth =
+			_columnResizeWorkingSnapshot[index].RuntimeWidth;
+	}
+
+	std::vector<double> display;
+	std::vector<double> desired;
+	display.reserve(_columnResizeWorkingSnapshot.size());
+	desired.reserve(_columnResizeWorkingSnapshot.size());
+	for (const auto& state : _columnResizeWorkingSnapshot)
+	{
+		display.push_back(state.Display);
+		desired.push_back(state.Desired);
+	}
+	const double startTargetWidth = display[columnIndex];
+	const auto& target = *_columns[columnIndex];
+	const double requestedTargetWidth = (std::clamp)(
+		pixelWidth, target.GetMinWidth(), target.GetMaxWidth());
+	double delta = requestedTargetWidth - startTargetWidth;
+	if (std::abs(delta) <= 0.000001)
+	{
+		if (previousProjectionDiffers) RefreshColumnWidths(true);
+		return true;
+	}
+
+	const bool hasStarColumns = std::any_of(
+		_columnResizeWorkingSnapshot.begin(),
+		_columnResizeWorkingSnapshot.end(),
+		[](const ColumnResizeSnapshot& state)
+		{
+			return state.Width.UnitType == DataGridLengthUnitType::Star;
+		});
+	if (!hasStarColumns)
+	{
+		display[columnIndex] = requestedTargetWidth;
+	}
+	else
+	{
+		const auto resizeRightStars = [&](double amount, bool shrink)
+		{
+			constexpr double epsilon = 0.000001;
+			double perStarWidth = (std::numeric_limits<double>::quiet_NaN)();
+			for (size_t index = 0; index < _columns.size(); ++index)
+			{
+				const auto& state = _columnResizeWorkingSnapshot[index];
+				if (state.Width.UnitType != DataGridLengthUnitType::Star
+					|| state.Width.Value <= 0.0
+					|| !std::isfinite(desired[index])) continue;
+				const double candidate = desired[index] / state.Width.Value;
+				if (std::isfinite(candidate) && candidate > epsilon)
+				{
+					perStarWidth = candidate;
+					break;
+				}
+			}
+			if (!std::isfinite(perStarWidth) || perStarWidth <= epsilon)
+				perStarWidth = 1.0;
+			std::vector<double> workingFactor(_columns.size(), 0.0);
+			for (size_t index = columnIndex + 1;
+				index < _columns.size(); ++index)
+			{
+				if (_columnResizeWorkingSnapshot[index].Width.UnitType
+					== DataGridLengthUnitType::Star)
+					workingFactor[index] = (std::max)(
+						0.0,
+						_columnResizeWorkingSnapshot[index].Width.Value);
+			}
+			while (amount > epsilon)
+			{
+				double totalWeight = 0.0;
+				double ratio = (std::numeric_limits<double>::infinity)();
+				for (size_t index = columnIndex + 1;
+					index < _columns.size(); ++index)
+				{
+					const auto& state =
+						_columnResizeWorkingSnapshot[index];
+					const auto& column = *_columns[index];
+					if (state.Width.UnitType
+							!= DataGridLengthUnitType::Star
+						|| !column.GetCanUserResize()
+						|| workingFactor[index] <= 0.0) continue;
+					const double weight = workingFactor[index];
+					const double capacity = shrink
+						? display[index] - column.GetMinWidth()
+						: column.GetMaxWidth() - display[index];
+					if (capacity <= epsilon) continue;
+					totalWeight += weight;
+					ratio = (std::min)(
+						ratio, capacity / weight);
+				}
+				if (totalWeight <= epsilon) break;
+				ratio = (std::min)(ratio, amount / totalWeight);
+				if (!std::isfinite(ratio)) break;
+				if (ratio <= epsilon) break;
+				double consumed = 0.0;
+				for (size_t index = columnIndex + 1;
+					index < _columns.size(); ++index)
+				{
+					const auto& state =
+						_columnResizeWorkingSnapshot[index];
+					const auto& column = *_columns[index];
+					if (state.Width.UnitType
+							!= DataGridLengthUnitType::Star
+						|| !column.GetCanUserResize()
+						|| workingFactor[index] <= 0.0) continue;
+					const double weight = workingFactor[index];
+					const double capacity = shrink
+						? display[index] - column.GetMinWidth()
+						: column.GetMaxWidth() - display[index];
+					if (capacity <= epsilon) continue;
+					const double change = (std::min)(
+						capacity, ratio * weight);
+					display[index] += shrink ? -change : change;
+					desired[index] = display[index];
+					workingFactor[index] = display[index] / perStarWidth;
+					consumed += change;
+				}
+				if (consumed <= epsilon) break;
+				amount -= consumed;
+			}
+			return (std::max)(0.0, amount);
+		};
+
+		if (delta > 0.0)
+		{
+			double remaining = delta;
+			double totalDisplay = 0.0;
+			for (const double width : display) totalDisplay += width;
+			const double unused = std::isfinite(_columnViewportWidth)
+				? (std::max)(0.0, _columnViewportWidth - totalDisplay)
+				: 0.0;
+			const double fromUnused = (std::min)(remaining, unused);
+			display[columnIndex] += fromUnused;
+			remaining -= fromUnused;
+
+			for (size_t index = _columns.size();
+				index-- > columnIndex + 1 && remaining > 0.000001;)
+			{
+				const auto& state = _columnResizeWorkingSnapshot[index];
+				auto& column = *_columns[index];
+				if (state.Width.UnitType == DataGridLengthUnitType::Star
+					|| !column.GetCanUserResize()) continue;
+				const double threshold = (std::clamp)(desired[index],
+					column.GetMinWidth(), column.GetMaxWidth());
+				const double change = (std::min)(
+					remaining, (std::max)(0.0, display[index] - threshold));
+				display[index] -= change;
+				display[columnIndex] += change;
+				remaining -= change;
+			}
+
+			const double beforeStars = remaining;
+			remaining = resizeRightStars(remaining, true);
+			display[columnIndex] += beforeStars - remaining;
+
+			for (size_t index = _columns.size();
+				index-- > columnIndex + 1 && remaining > 0.000001;)
+			{
+				const auto& state = _columnResizeWorkingSnapshot[index];
+				auto& column = *_columns[index];
+				if (state.Width.UnitType == DataGridLengthUnitType::Star
+					|| !column.GetCanUserResize()) continue;
+				const double change = (std::min)(remaining,
+					(std::max)(0.0,
+						display[index] - column.GetMinWidth()));
+				display[index] -= change;
+				display[columnIndex] += change;
+				remaining -= change;
+			}
+		}
+		else
+		{
+			double remaining = -delta;
+			for (size_t index = columnIndex + 1;
+				index < _columns.size() && remaining > 0.000001; ++index)
+			{
+				const auto& state = _columnResizeWorkingSnapshot[index];
+				auto& column = *_columns[index];
+				if (state.Width.UnitType == DataGridLengthUnitType::Star
+					|| !column.GetCanUserResize()) continue;
+				const double threshold = (std::clamp)(desired[index],
+					column.GetMinWidth(), column.GetMaxWidth());
+				const double change = (std::min)(
+					remaining, (std::max)(0.0, threshold - display[index]));
+				display[index] += change;
+				display[columnIndex] -= change;
+				remaining -= change;
+			}
+
+			const double beforeStars = remaining;
+			remaining = resizeRightStars(remaining, false);
+			display[columnIndex] -= beforeStars - remaining;
+
+			for (size_t index = columnIndex + 1;
+				index < _columns.size() && remaining > 0.000001; ++index)
+			{
+				const auto& state = _columnResizeWorkingSnapshot[index];
+				auto& column = *_columns[index];
+				if (state.Width.UnitType == DataGridLengthUnitType::Star
+					|| !column.GetCanUserResize()) continue;
+				const double change = (std::min)(remaining,
+					(std::max)(0.0,
+						column.GetMaxWidth() - display[index]));
+				display[index] += change;
+				display[columnIndex] -= change;
+				remaining -= change;
+			}
+			if (_columnResizeWorkingSnapshot[columnIndex].Width.UnitType
+				!= DataGridLengthUnitType::Star)
+				display[columnIndex] -= remaining;
+		}
+	}
+
+	bool changed = false;
+	for (size_t index = 0; index < display.size(); ++index)
+	{
+		if (std::abs(display[index]
+			- _columnResizeWorkingSnapshot[index].Display) > 0.000001)
+		{
+			changed = true;
+			break;
+		}
+	}
+	if (!changed)
+	{
+		if (previousProjectionDiffers) RefreshColumnWidths(true);
+		return true;
+	}
+
+	// Record exactly which cell slots change geometry. When a target and donor
+	// exchange the same amount, columns after the donor keep both their width and
+	// left edge and do not need to participate in the drag-frame Arrange pass.
+	double oldLeft = 0.0;
+	double newLeft = 0.0;
+	size_t dirtyBegin = DataGridCellInfo::InvalidIndex;
+	size_t dirtyEnd = DataGridCellInfo::InvalidIndex;
+	for (size_t index = 0; index < display.size(); ++index)
+	{
+		const double oldWidth = _columnResizeWorkingSnapshot[index].Display;
+		const double newWidth = display[index];
+		if (std::abs(oldLeft - newLeft) > 0.000001
+			|| std::abs(oldWidth - newWidth) > 0.000001)
+		{
+			if (dirtyBegin == DataGridCellInfo::InvalidIndex)
+				dirtyBegin = index;
+			dirtyEnd = index + 1;
+		}
+		oldLeft += oldWidth;
+		newLeft += newWidth;
+	}
+	_columnWidthDirtyBegin = dirtyBegin;
+	_columnWidthDirtyEnd = dirtyEnd;
+	_columnWidthMeasureDirty.assign(display.size(), 0);
+	for (size_t index = 0; index < display.size(); ++index)
+	{
+		if (std::abs(display[index]
+			- _columnResizeWorkingSnapshot[index].Display) > 0.000001)
+			_columnWidthMeasureDirty[index] = 1;
+	}
+
+	double perStarWidth = (std::numeric_limits<double>::quiet_NaN)();
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		const auto& state = _columnResizeWorkingSnapshot[index];
+		if (state.Width.UnitType != DataGridLengthUnitType::Star
+			|| state.Width.Value <= 0.000001) continue;
+		const double candidate = state.Desired / state.Width.Value;
+		if (std::isfinite(candidate) && candidate > 0.000001)
+		{
+			perStarWidth = candidate;
+			break;
+		}
+	}
+	if (!std::isfinite(perStarWidth) || perStarWidth <= 0.000001)
+		perStarWidth = 1.0;
+
+	for (size_t index = 0; index < _columns.size(); ++index)
+	{
+		auto& column = *_columns[index];
+		const auto& start = _columnResizeWorkingSnapshot[index];
+		const bool displayChanged = std::abs(
+			display[index] - start.Display) > 0.000001;
+		if (start.Width.UnitType == DataGridLengthUnitType::Star)
+		{
+			if (index == columnIndex && displayChanged)
+			{
+				desired[index] = display[index];
+				const double targetPerStarWidth = start.Width.Value > 0.0
+					? start.Desired / start.Width.Value : perStarWidth;
+				if (std::isfinite(targetPerStarWidth)
+					&& targetPerStarWidth > 0.000001)
+					column._width = DataGridLength::Star(
+						(std::max)(0.0,
+							desired[index] / targetPerStarWidth));
+			}
+			else if (displayChanged)
+				column._width = DataGridLength::Star(
+					(std::max)(0.0, desired[index] / perStarWidth));
+		}
+		else if (index == columnIndex && displayChanged)
+		{
+			column._width = DataGridLength(display[index]);
+			desired[index] = display[index];
+		}
+		column._runtimeWidth.Desired = desired[index];
+		column._runtimeWidth.Display = display[index];
+		// A user resize is local to its target and eligible columns on the right.
+		// Preserve every current Star display so an unaccepted delta cannot be
+		// routed back into unrelated Stars on the left by the viewport solver.
+		column._runtimeWidth.HasDisplayOverride =
+			start.Width.UnitType == DataGridLengthUnitType::Star
+			|| displayChanged || start.RuntimeWidth.HasDisplayOverride;
+	}
+	RefreshColumnWidths(true);
+	return true;
+}
+
+void DataGrid::EndColumnResizeTransaction(bool cancel)
+{
+	if (_columnResizeSnapshot.empty())
+	{
+		_columnResizeWorkingSnapshot.clear();
+		_columnResizeTransactionIndex = DataGridCellInfo::InvalidIndex;
+		_columnResizeLastRawWidth =
+			(std::numeric_limits<double>::quiet_NaN)();
+		_columnResizeInputBias = 0.0;
+		return;
+	}
+	const bool canRestore = cancel;
+	if (canRestore)
+	{
+		for (const auto& state : _columnResizeSnapshot)
+		{
+			auto found = std::find_if(
+				_columns.begin(), _columns.end(),
+				[identity = state.Column](const auto& column)
+				{ return column.get() == identity; });
+			if (found == _columns.end()) continue;
+			(*found)->_width = state.Width;
+			(*found)->_runtimeWidth = state.RuntimeWidth;
+		}
+	}
+	_columnResizeSnapshot.clear();
+	_columnResizeWorkingSnapshot.clear();
+	_columnResizeTransactionIndex = DataGridCellInfo::InvalidIndex;
+	_columnResizeLastRawWidth =
+		(std::numeric_limits<double>::quiet_NaN)();
+	_columnResizeInputBias = 0.0;
+	if (canRestore) RefreshColumnWidths(true);
+}
+
 void DataGrid::InvalidateColumnContentWidthCache() noexcept
 {
 	_sampledColumnContentWidths.clear();
@@ -9539,7 +10206,7 @@ void DataGrid::InvalidateColumnContentWidthCache() noexcept
 	InvalidateColumnWidthCache();
 }
 
-void DataGrid::ApplyPendingColumnWidths()
+void DataGrid::ApplyPendingColumnWidths(bool refreshVirtualMetrics)
 {
 	if (!_columnWidthRefreshPending) return;
 	_columnWidthRefreshPending = false;
@@ -9584,13 +10251,11 @@ void DataGrid::ApplyPendingColumnWidths()
 	}
 	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!live) return;
-	// PrepareMeasureCore is already inside the one root layout transaction. The
-	// leaf presenters dirtied their own subtrees; the local visual paths above
-	// make the immediately following template Measure reach them without R root
+	// PrepareMeasureCore or PreparePresentation owns the surrounding layout turn.
+	// The leaf presenters dirty only their own measure state; these local paths
+	// make the immediately following template layout reach them without root
 	// requests or a second frame.
-	live->RefreshVirtualScrollMetrics();
-	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-	if (live) live->InvalidateVisual();
+	if (refreshVirtualMetrics) live->RefreshVirtualScrollMetrics();
 }
 
 void DataGrid::CommitColumnWidthLayoutToAncestors()
@@ -9636,10 +10301,44 @@ void DataGrid::CommitColumnWidthLayoutToAncestors()
 	}
 	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!live) return;
+	live->RefreshVirtualScrollMetrics();
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live) return;
 	// Mouse release needs one public ancestor layout request, not one request per
 	// realized row. The local paths preserve final Auto-height and hit-test
 	// geometry even when the width revision was already applied locally.
 	live->RequestLayout();
+}
+
+void DataGrid::InvalidatePendingColumnResizeVisual()
+{
+	// A resize can affect only its target and columns to the right. Use the
+	// target header's current left edge as the stable damage boundary; extending
+	// to the DataGrid's right edge safely covers donors, shifted columns and both
+	// the old and new trailing extent without repainting the frozen left suffix.
+	if (_columnResizeTransactionIndex < _columns.size())
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			_headersPresenter.Get());
+		auto* header = presenter
+			? presenter->GetHeader(_columnResizeTransactionIndex) : nullptr;
+		if (header && header->GetPresentationWindow() == GetPresentationWindow())
+		{
+			const auto gridRect = GetAbsoluteRectDip();
+			const auto headerRect = header->GetAbsoluteRectDip();
+			const float left = (std::clamp)(
+				headerRect.Left() - 2.0f,
+				gridRect.Left(), gridRect.Right());
+			if (left < gridRect.Right())
+			{
+				InvalidateVisualRect(D2D1::RectF(
+					left, gridRect.Top(),
+					gridRect.Right(), gridRect.Bottom()));
+				return;
+			}
+		}
+	}
+	InvalidateVisual();
 }
 
 void DataGrid::RefreshColumnWidths(bool preserveRealizedColumnRange)
@@ -9649,13 +10348,10 @@ void DataGrid::RefreshColumnWidths(bool preserveRealizedColumnRange)
 	{
 		if (_columnWidthRefreshPending) return;
 		_columnWidthRefreshPending = true;
-		// The first drag delta owns one root layout request. Mark the retained
-		// template tree locally now so an unchanged template-root constraint cannot
-		// return its cached Measure before DataGrid::PrepareMeasureCore consumes the
-		// pending width projection. Later deltas coalesce behind the pending flag.
-		InvalidatePendingColumnWidthLayoutPaths();
-		RequestLayout();
-		InvalidateVisual();
+		// The presentation hook consumes only the newest drag delta and commits the
+		// header/realized-row paths locally. Scheduling damage for this DataGrid keeps
+		// the Window measure root and unrelated retained content out of every frame.
+		InvalidatePendingColumnResizeVisual();
 		return;
 	}
 	_columnWidthRefreshPending = false;
@@ -9780,7 +10476,8 @@ void DataGrid::InvalidateRealizedColumnRange() noexcept
 
 void DataGrid::RefreshRealizedColumns()
 {
-	if (!_enableColumnVirtualization || _refreshingRealizedColumns) return;
+	if (!_enableColumnVirtualization || _refreshingRealizedColumns
+		|| !_columnResizeSnapshot.empty()) return;
 	const ControlWeakReference ownerLifetime(this);
 	_refreshingRealizedColumns = true;
 	auto reset = MakeScopeExit([ownerLifetime]
@@ -9944,6 +10641,178 @@ double DataGrid::GetVirtualizedHorizontalExtent() const
 	return result;
 }
 
+void DataGrid::RedistributeRuntimeWidthsForViewportChange(
+	double oldViewportWidth, double newViewportWidth) noexcept
+{
+	if (!std::isfinite(oldViewportWidth)
+		|| !std::isfinite(newViewportWidth)) return;
+	double change = newViewportWidth - oldViewportWidth;
+	if (std::abs(change) <= 0.0001) return;
+	const auto hasOverride = [](const auto& column)
+	{
+		return column->_runtimeWidth.HasDisplayOverride
+			&& std::isfinite(column->_runtimeWidth.Display)
+			&& std::isfinite(column->_runtimeWidth.Desired);
+	};
+	const bool hasStarDisplayOverrides = std::any_of(
+		_columns.begin(), _columns.end(), [&](const auto& column)
+		{
+			return column->_width.UnitType == DataGridLengthUnitType::Star
+				&& hasOverride(column);
+		});
+	const auto redistributeStarDisplays =
+		[&](double amount, bool grow) noexcept
+	{
+		constexpr double epsilon = 0.000001;
+		while (amount > epsilon)
+		{
+			double totalWeight = 0.0;
+			double limitingRatio =
+				(std::numeric_limits<double>::infinity)();
+			for (const auto& column : _columns)
+			{
+				if (column->_width.UnitType != DataGridLengthUnitType::Star
+					|| !hasOverride(column)
+					|| column->_width.Value <= epsilon) continue;
+				const double capacity = grow
+					? column->GetMaxWidth() - column->_runtimeWidth.Display
+					: column->_runtimeWidth.Display - column->GetMinWidth();
+				if (capacity <= epsilon) continue;
+				totalWeight += column->_width.Value;
+				limitingRatio = (std::min)(
+					limitingRatio, capacity / column->_width.Value);
+			}
+			if (totalWeight <= epsilon
+				|| std::isnan(limitingRatio)) break;
+			const double ratio = (std::min)(
+				limitingRatio, amount / totalWeight);
+			if (ratio <= epsilon) break;
+			double consumed = 0.0;
+			for (const auto& column : _columns)
+			{
+				if (column->_width.UnitType != DataGridLengthUnitType::Star
+					|| !hasOverride(column)
+					|| column->_width.Value <= epsilon) continue;
+				const double capacity = grow
+					? column->GetMaxWidth() - column->_runtimeWidth.Display
+					: column->_runtimeWidth.Display - column->GetMinWidth();
+				if (capacity <= epsilon) continue;
+				const double delta = (std::min)(
+					capacity, ratio * column->_width.Value);
+				column->_runtimeWidth.Display += grow ? delta : -delta;
+				column->_runtimeWidth.Desired += grow ? delta : -delta;
+				consumed += delta;
+			}
+			if (consumed <= epsilon) break;
+			amount -= consumed;
+		}
+		return (std::max)(0.0, amount);
+	};
+	if (change > 0.0)
+	{
+		while (change > 0.000001)
+		{
+			size_t participantCount = 0;
+			double minimumLag = (std::numeric_limits<double>::infinity)();
+			for (const auto& column : _columns)
+			{
+				if (!hasOverride(column)
+					|| column->_width.UnitType == DataGridLengthUnitType::Star)
+					continue;
+				const double limit = (std::clamp)(
+					column->_runtimeWidth.Desired,
+					column->GetMinWidth(), column->GetMaxWidth());
+				const double lag = limit - column->_runtimeWidth.Display;
+				if (lag <= 0.000001) continue;
+				++participantCount;
+				minimumLag = (std::min)(minimumLag, lag);
+			}
+			if (participantCount == 0) break;
+			const double perColumn = (std::min)(
+				minimumLag, change / static_cast<double>(participantCount));
+			if (!(perColumn > 0.0) || !std::isfinite(perColumn)) break;
+			for (const auto& column : _columns)
+			{
+				if (!hasOverride(column)
+					|| column->_width.UnitType == DataGridLengthUnitType::Star)
+					continue;
+				const double limit = (std::clamp)(
+					column->_runtimeWidth.Desired,
+					column->GetMinWidth(), column->GetMaxWidth());
+				if (column->_runtimeWidth.Display + 0.000001 >= limit) continue;
+				const double amount = (std::min)(
+					perColumn, limit - column->_runtimeWidth.Display);
+				column->_runtimeWidth.Display += amount;
+				change -= amount;
+			}
+		}
+		if (hasStarDisplayOverrides)
+			(void)redistributeStarDisplays(change, true);
+		return;
+	}
+
+	double deficit = -change;
+	// Star columns consume the available-space reduction first. Only the part
+	// beyond their aggregate room down to MinWidth reaches non-Star displays.
+	if (hasStarDisplayOverrides)
+		deficit = redistributeStarDisplays(deficit, false);
+	else
+	{
+		double starCapacity = 0.0;
+		for (const auto& column : _columns)
+		{
+			if (column->_width.UnitType != DataGridLengthUnitType::Star) continue;
+			const double display = std::isfinite(column->_runtimeWidth.Display)
+				? column->_runtimeWidth.Display : column->GetMinWidth();
+			starCapacity += (std::max)(0.0, display - column->GetMinWidth());
+		}
+		deficit = (std::max)(0.0, deficit - starCapacity);
+	}
+	while (deficit > 0.000001)
+	{
+		size_t participantCount = 0;
+		double minimumExcess = (std::numeric_limits<double>::infinity)();
+		for (const auto& column : _columns)
+		{
+			if (column->_width.UnitType == DataGridLengthUnitType::Star) continue;
+			const double display = std::isfinite(column->_runtimeWidth.Display)
+				? column->_runtimeWidth.Display
+				: (std::clamp)(column->_width.Value,
+					column->GetMinWidth(), column->GetMaxWidth());
+			const double excess = display - column->GetMinWidth();
+			if (excess <= 0.000001) continue;
+			++participantCount;
+			minimumExcess = (std::min)(minimumExcess, excess);
+		}
+		if (participantCount == 0) break;
+		const double perColumn = (std::min)(
+			minimumExcess, deficit / static_cast<double>(participantCount));
+		if (!(perColumn > 0.0) || !std::isfinite(perColumn)) break;
+		for (const auto& column : _columns)
+		{
+			if (column->_width.UnitType == DataGridLengthUnitType::Star) continue;
+			if (!hasOverride(column))
+			{
+				const double display = std::isfinite(column->_runtimeWidth.Display)
+					? column->_runtimeWidth.Display
+					: (std::clamp)(column->_width.Value,
+						column->GetMinWidth(), column->GetMaxWidth());
+				column->_runtimeWidth.Desired =
+					column->_width.UnitType == DataGridLengthUnitType::Pixel
+					? column->_width.Value : display;
+				column->_runtimeWidth.Display = display;
+				column->_runtimeWidth.HasDisplayOverride = true;
+			}
+			if (column->_runtimeWidth.Display
+				<= column->GetMinWidth() + 0.000001) continue;
+			const double amount = (std::min)(perColumn,
+				column->_runtimeWidth.Display - column->GetMinWidth());
+			column->_runtimeWidth.Display -= amount;
+			deficit -= amount;
+		}
+	}
+}
+
 void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 {
 	if (!std::isfinite(availableWidth) || availableWidth < 0.0)
@@ -9951,6 +10820,7 @@ void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 	if (std::isfinite(_columnViewportWidth)
 		&& std::abs(_columnViewportWidth - availableWidth) <= 0.0001)
 		return;
+	const double oldViewportWidth = _columnViewportWidth;
 	_columnViewportWidth = availableWidth;
 	const bool hasStarColumns = std::any_of(
 		_columns.begin(), _columns.end(), [](const auto& column)
@@ -9958,8 +10828,25 @@ void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 			return column->GetWidth().UnitType
 				== DataGridLengthUnitType::Star;
 		});
-	if (hasStarColumns) RefreshColumnWidths();
-	RefreshRealizedColumns();
+	if (hasStarColumns)
+	{
+		RedistributeRuntimeWidthsForViewportChange(
+			oldViewportWidth, availableWidth);
+		RefreshColumnWidths();
+		// A viewport change can occur while the gripper owns capture (for example
+		// when a scrollbar appears). Preserve the drag-start snapshot for Cancel,
+		// but replay later absolute pointer deltas from the new projection.
+		if (!_columnResizeSnapshot.empty())
+		{
+			if (RebaseColumnResizeTransaction()
+				&& std::isfinite(_columnResizeLastRawWidth))
+				_columnResizeInputBias =
+					_columnResizeWorkingSnapshot[
+						_columnResizeTransactionIndex].Display
+					- _columnResizeLastRawWidth;
+		}
+	}
+	if (_columnResizeSnapshot.empty()) RefreshRealizedColumns();
 }
 
 std::pair<size_t, size_t>
@@ -9988,7 +10875,11 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 		const auto& column = *_columns[index];
 		const auto& length = column.GetWidth();
 		double width = column.GetMinWidth();
-		if (length.UnitType == DataGridLengthUnitType::Pixel)
+		if (column._runtimeWidth.HasDisplayOverride
+			&& std::isfinite(column._runtimeWidth.Display))
+			width = (std::clamp)(column._runtimeWidth.Display,
+				column.GetMinWidth(), column.GetMaxWidth());
+		else if (length.UnitType == DataGridLengthUnitType::Pixel)
 			width = (std::clamp)(length.Value,
 				column.GetMinWidth(), column.GetMaxWidth());
 		else
@@ -10054,8 +10945,35 @@ void DataGrid::RebuildResolvedColumnWidths() const
 	double nonStarTotal = 0.0;
 	for (size_t index = 0; index < _columns.size(); ++index)
 	{
-		const auto& column = *_columns[index];
+		auto& column = *_columns[index];
 		const auto& width = column.GetWidth();
+		if (column._runtimeWidth.HasDisplayOverride
+			&& std::isfinite(column._runtimeWidth.Display))
+		{
+			if (width.UnitType != DataGridLengthUnitType::Pixel)
+			{
+				if (width.UnitType != DataGridLengthUnitType::Star)
+				{
+					const bool header = width.UnitType
+						!= DataGridLengthUnitType::SizeToCells;
+					const bool cells = width.UnitType
+						!= DataGridLengthUnitType::SizeToHeader
+						&& (!_enableColumnVirtualization
+							|| (index >= sampleRange.first
+								&& index < sampleRange.second));
+					column._runtimeWidth.Desired =
+						EstimateColumnWidth(index, header, cells);
+				}
+			}
+			const double pixels = (std::clamp)(
+				column._runtimeWidth.Display,
+				column.GetMinWidth(), column.GetMaxWidth());
+			_resolvedColumnWidths[index] = GridLength::Pixels(
+				static_cast<float>(pixels));
+			nonStarTotal += pixels;
+			column._runtimeWidth.Display = pixels;
+			continue;
+		}
 		if (width.UnitType == DataGridLengthUnitType::Star)
 		{
 			stars.push_back(StarColumn{
@@ -10083,107 +11001,123 @@ void DataGrid::RebuildResolvedColumnWidths() const
 		_resolvedColumnWidths[index] = GridLength::Pixels(
 			static_cast<float>(pixels));
 		nonStarTotal += pixels;
+		column._runtimeWidth.Desired = width.UnitType
+			== DataGridLengthUnitType::Pixel ? width.Value : pixels;
+		column._runtimeWidth.Display = pixels;
 	}
 
 	if (stars.empty()) return;
+	// Interactive resize persists private Display values. A later viewport
+	// change gives/takes only the delta to/from Star columns; it must not restore
+	// a compensating Pixel/Auto column to its declaration and recreate the
+	// original "right edge stays fixed while left Stars move" defect.
 	double remaining = std::isfinite(_columnViewportWidth)
 		? (std::max)(0.0, _columnViewportWidth - nonStarTotal)
 		: 0.0;
-	std::vector<size_t> active;
-	active.reserve(stars.size());
+	std::vector<size_t> unresolved;
+	unresolved.reserve(stars.size());
 	for (size_t starIndex = 0; starIndex < stars.size(); ++starIndex)
 	{
 		const auto& star = stars[starIndex];
 		if (star.Weight > 0.0)
 		{
-			active.push_back(starIndex);
+			unresolved.push_back(starIndex);
 			continue;
 		}
 		_resolvedColumnWidths[star.Index] = GridLength::Pixels(
 			static_cast<float>(star.Minimum));
+		_columns[star.Index]->_runtimeWidth.Desired = 0.0;
+		_columns[star.Index]->_runtimeWidth.Display = star.Minimum;
 		remaining = (std::max)(0.0, remaining - star.Minimum);
 	}
-	if (active.empty()) return;
+	if (unresolved.empty()) return;
 	double minimumTotal = 0.0;
 	double maximumTotal = 0.0;
-	bool finiteMaximum = true;
-	for (const size_t starIndex : active)
+	double totalFactors = 0.0;
+	for (const size_t starIndex : unresolved)
 	{
 		minimumTotal += stars[starIndex].Minimum;
-		if (std::isfinite(stars[starIndex].Maximum))
-			maximumTotal += stars[starIndex].Maximum;
-		else finiteMaximum = false;
+		maximumTotal += stars[starIndex].Maximum;
+		totalFactors += stars[starIndex].Weight;
 	}
-	if (remaining <= minimumTotal)
+	remaining = (std::max)(remaining, minimumTotal);
+	if (std::isfinite(maximumTotal))
+		remaining = (std::min)(remaining, maximumTotal);
+	std::vector<size_t> partial;
+	partial.reserve(unresolved.size());
+	while (!unresolved.empty())
 	{
-		for (const size_t starIndex : active)
+		if (!(totalFactors > 0.0) || !std::isfinite(totalFactors)) break;
+		const double starValue = remaining / totalFactors;
+		for (size_t index = 0; index < unresolved.size();)
+		{
+			const auto& star = stars[unresolved[index]];
+			const double share = remaining * star.Weight / totalFactors;
+			if (star.Minimum <= share + 0.000001)
+			{
+				++index;
+				continue;
+			}
+			remaining = (std::max)(0.0, remaining - star.Minimum);
+			totalFactors -= star.Weight;
+			partial.push_back(unresolved[index]);
+			unresolved.erase(unresolved.begin() + index);
+		}
+
+		bool iterate = false;
+		if (totalFactors > 0.0)
+		{
+			for (size_t index = 0; index < unresolved.size(); ++index)
+			{
+				const auto& star = stars[unresolved[index]];
+				const double share = remaining * star.Weight / totalFactors;
+				if (star.Maximum + 0.000001 >= share) continue;
+				_resolvedColumnWidths[star.Index] = GridLength::Pixels(
+					static_cast<float>(star.Maximum));
+				_columns[star.Index]->_runtimeWidth.Desired =
+					starValue * star.Weight;
+				_columns[star.Index]->_runtimeWidth.Display = star.Maximum;
+				remaining -= star.Maximum;
+				totalFactors -= star.Weight;
+				unresolved.erase(unresolved.begin() + index);
+				iterate = true;
+				break;
+			}
+		}
+		if (iterate)
+		{
+			for (const size_t starIndex : partial)
+			{
+				unresolved.push_back(starIndex);
+				remaining += stars[starIndex].Minimum;
+				totalFactors += stars[starIndex].Weight;
+			}
+			partial.clear();
+			continue;
+		}
+
+		for (const size_t starIndex : partial)
 		{
 			const auto& star = stars[starIndex];
 			_resolvedColumnWidths[star.Index] = GridLength::Pixels(
 				static_cast<float>(star.Minimum));
+			_columns[star.Index]->_runtimeWidth.Desired =
+				starValue * star.Weight;
+			_columns[star.Index]->_runtimeWidth.Display = star.Minimum;
 		}
-		return;
-	}
-	if (finiteMaximum && remaining >= maximumTotal)
-	{
-		for (const size_t starIndex : active)
+		partial.clear();
+		for (const size_t starIndex : unresolved)
 		{
 			const auto& star = stars[starIndex];
+			const double display = totalFactors > 0.0
+				? remaining * star.Weight / totalFactors : star.Minimum;
 			_resolvedColumnWidths[star.Index] = GridLength::Pixels(
-				static_cast<float>(star.Maximum));
+				static_cast<float>(display));
+			_columns[star.Index]->_runtimeWidth.Desired =
+				starValue * star.Weight;
+			_columns[star.Index]->_runtimeWidth.Display = display;
 		}
-		return;
-	}
-
-	// Solve sum(clamp(lambda * weight, min, max)) == remaining.  A
-	// monotonic water level avoids the over-allocation produced by freezing a
-	// min-bound and max-bound column from the same stale proportional pass.
-	const auto allocatedAt = [&](double level)
-	{
-		double result = 0.0;
-		for (const size_t starIndex : active)
-		{
-			const auto& star = stars[starIndex];
-			result += (std::clamp)(
-				level * star.Weight, star.Minimum, star.Maximum);
-		}
-		return result;
-	};
-	double low = 0.0;
-	double high = 1.0;
-	while (allocatedAt(high) < remaining
-		&& high < (std::numeric_limits<double>::max)() * 0.25)
-		high *= 2.0;
-	for (int iteration = 0; iteration < 64; ++iteration)
-	{
-		const double middle = low + (high - low) * 0.5;
-		if (allocatedAt(middle) < remaining) low = middle;
-		else high = middle;
-	}
-	double allocated = 0.0;
-	std::vector<double> starWidths(active.size(), 0.0);
-	for (size_t index = 0; index < active.size(); ++index)
-	{
-		const auto& star = stars[active[index]];
-		starWidths[index] = (std::clamp)(
-			high * star.Weight, star.Minimum, star.Maximum);
-		allocated += starWidths[index];
-	}
-	double residual = remaining - allocated;
-	for (size_t index = 0;
-		index < active.size() && std::abs(residual) > 0.000001; ++index)
-	{
-		const auto& star = stars[active[index]];
-		const double adjusted = (std::clamp)(
-			starWidths[index] + residual, star.Minimum, star.Maximum);
-		residual -= adjusted - starWidths[index];
-		starWidths[index] = adjusted;
-	}
-	for (size_t index = 0; index < active.size(); ++index)
-	{
-		const auto& star = stars[active[index]];
-		_resolvedColumnWidths[star.Index] = GridLength::Pixels(
-			static_cast<float>(starWidths[index]));
+		unresolved.clear();
 	}
 }
 
@@ -10191,6 +11125,12 @@ double DataGrid::GetColumnDisplayWidth(size_t columnIndex) const
 {
 	if (columnIndex >= _columns.size())
 		return (std::numeric_limits<double>::quiet_NaN)();
+	const auto& runtimeWidth = _columns[columnIndex]->_runtimeWidth;
+	if (runtimeWidth.HasDisplayOverride
+		&& std::isfinite(runtimeWidth.Display))
+		return runtimeWidth.Display;
+	const auto resolved = ResolveColumnGridLength(columnIndex);
+	if (resolved.IsPixel()) return resolved.Value;
 	if (auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
 		_headersPresenter.Get()))
 	{
@@ -10200,8 +11140,6 @@ double DataGrid::GetColumnDisplayWidth(size_t columnIndex) const
 			if (std::isfinite(width) && width > 0.0) return width;
 		}
 	}
-	const auto resolved = ResolveColumnGridLength(columnIndex);
-	if (resolved.IsPixel()) return resolved.Value;
 	return EstimateColumnWidth(columnIndex, true, true);
 }
 

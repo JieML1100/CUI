@@ -4184,26 +4184,70 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				PresentationCommittedFrameCount(*this);
 		bool resizeContainersStable = true;
 		bool resizeCaptureCursor = true;
-		for (int step = 1; step <= 24; ++step)
+		bool resizePresentationTurnsDispatched = true;
+		bool resizeFramesFollowedPointer = true;
+		bool resizeGeometryFollowedPointer = true;
+		bool resizeFramesStayedLocal = true;
+		bool resizeFramesDrainedDamage = true;
+		RECT resizeFrameDirty{};
+		bool resizeFrameWasFull = true;
+		auto committedDuringResizeBurst = committedBeforeResizeBurst;
+		const double resizeDipPerPixel = 1.0
+			/ static_cast<double>((std::max)(0.001f, GetDpiScale()));
+		for (int burstEnd = 6; burstEnd <= 24; burstEnd += 6)
 		{
-			const LPARAM resizeStep = MAKELPARAM(
-				resizeStartX + step, resizeY);
-			(void)::SendMessageW(
-				Handle, WM_MOUSEMOVE, MK_LBUTTON, resizeStep);
-			resizeContainersStable = resizeContainersStable
-				&& headerPresenter->GetVisualChild(0) == headerBeforeResize
-				&& dataGrid->GetGeneratedItem(0) == rowBeforeResize;
-			resizeCaptureCursor = resizeCaptureCursor
-				&& ::GetCursor() == sizeCursor;
+			for (int step = burstEnd - 5; step <= burstEnd; ++step)
+			{
+				const LPARAM resizeStep = MAKELPARAM(
+					resizeStartX + step, resizeY);
+				(void)::SendMessageW(
+					Handle, WM_MOUSEMOVE, MK_LBUTTON, resizeStep);
+				resizeContainersStable = resizeContainersStable
+					&& headerPresenter->GetVisualChild(0)
+						== headerBeforeResize
+					&& dataGrid->GetGeneratedItem(0) == rowBeforeResize;
+				resizeCaptureCursor = resizeCaptureCursor
+					&& ::GetCursor() == sizeCursor;
+			}
+			const auto committedBeforeBurst =
+				cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this);
+			resizePresentationTurnsDispatched =
+				dispatchPresentationTurn()
+				&& resizePresentationTurnsDispatched;
+			const bool hasResizeFrame =
+				cui::framework::WindowAccess::TryGetLastRenderDirtyRect(
+					*this, resizeFrameDirty, resizeFrameWasFull);
+			resizeFramesStayedLocal = resizeFramesStayedLocal
+				&& hasResizeFrame && !resizeFrameWasFull;
+			resizeFramesDrainedDamage = resizeFramesDrainedDamage
+				&& !cui::framework::WindowAccess::
+					HasPendingPresentationDamage(*this);
+			committedDuringResizeBurst =
+				cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this);
+			resizeFramesFollowedPointer = resizeFramesFollowedPointer
+				&& committedDuringResizeBurst > committedBeforeBurst;
+			firstHeader = headerPresenter
+				? dynamic_cast<DataGridColumnHeader*>(
+					headerPresenter->GetVisualChild(0)) : nullptr;
+			firstRow = dynamic_cast<DataGridRow*>(
+				dataGrid->GetGeneratedItem(0));
+			auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
+			const double expectedFrameWidth = widthBeforeDrag
+				+ static_cast<double>(burstEnd) * resizeDipPerPixel;
+			resizeGeometryFollowedPointer = resizeGeometryFollowedPointer
+				&& firstHeader == headerBeforeResize
+				&& firstRow == rowBeforeResize
+				&& firstCell
+				&& std::abs(firstHeader->GetActualSizeDip().width
+					- expectedFrameWidth) <= 3.0
+				&& std::abs(firstCell->GetActualSizeDip().width
+					- expectedFrameWidth) <= 3.0;
 		}
-		// SendMessage keeps this same-thread burst inside the test. Pump exactly the
-		// framework's posted presentation turn while the header still owns capture;
-		// PointerUp must not be what finally makes the resized columns visible.
-		const bool resizePresentationTurnDispatched =
-			dispatchPresentationTurn();
-		const auto committedDuringResizeBurst =
-			cui::framework::WindowAccess::
-				PresentationCommittedFrameCount(*this);
+		// SendMessage keeps every burst inside the test. Each posted presentation
+		// turn must commit the latest header and cell geometry while capture is still
+		// active; PointerUp must not be what finally makes a resize visible.
 		const bool resizeCaptureSurvivedPresentation =
 			GetMouseCaptured() == headerBeforeResize;
 		(void)::SendMessageW(Handle, WM_LBUTTONUP, 0, resizeMove);
@@ -4222,7 +4266,11 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| !resizeCaptured || !resizeCaptureCursor
 			|| !resizePressSuppressed
 			|| !resizeContainersStable
-			|| !resizePresentationTurnDispatched
+			|| !resizePresentationTurnsDispatched
+			|| !resizeFramesFollowedPointer
+			|| !resizeGeometryFollowedPointer
+			|| !resizeFramesStayedLocal
+			|| !resizeFramesDrainedDamage
 			|| !resizeCaptureSurvivedPressPresentation
 			|| !resizeCaptureSurvivedPresentation
 			|| committedDuringResizeBurst <= committedBeforeResizeBurst
@@ -4245,7 +4293,16 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				+ L"/" + std::to_wstring(resizeCaptureSurvivedPresentation)
 				+ L"，pressed=" + std::to_wstring(!resizePressSuppressed)
 				+ L"，dispatch="
-				+ std::to_wstring(resizePresentationTurnDispatched)
+				+ std::to_wstring(resizePresentationTurnsDispatched)
+				+ L"，follow=" + std::to_wstring(resizeFramesFollowedPointer)
+				+ L"/" + std::to_wstring(resizeGeometryFollowedPointer)
+				+ L"，local=" + std::to_wstring(resizeFramesStayedLocal)
+				+ L"，drained=" + std::to_wstring(resizeFramesDrainedDamage)
+				+ L"/" + std::to_wstring(resizeFrameWasFull)
+				+ L"/dirty(" + std::to_wstring(resizeFrameDirty.left)
+				+ L"," + std::to_wstring(resizeFrameDirty.top)
+				+ L"," + std::to_wstring(resizeFrameDirty.right)
+				+ L"," + std::to_wstring(resizeFrameDirty.bottom) + L")"
 				+ L"，committed="
 				+ std::to_wstring(committedBeforeResizeBurst) + L"→"
 				+ std::to_wstring(committedDuringResizeBurst)
