@@ -739,7 +739,9 @@ protected:
 private:
 	friend class DataGridColumnHeadersPresenter;
 	void Initialize(DataGrid& owner, DataGridColumn& column, size_t index);
-	bool TryResolveResizeColumn(int localX, size_t& columnIndex) const noexcept;
+	bool TryResolveResizeColumn(
+		int localX, size_t& columnIndex,
+		bool& resizeFromLeftEdge) const noexcept;
 	bool BeginColumnResize(int localX);
 	bool ContinueColumnResize(int localX);
 	void EndColumnResize(bool cancel);
@@ -748,6 +750,7 @@ private:
 	size_t _columnIndex = DataGridCellInfo::InvalidIndex;
 	bool _multiColumnSortRequested = false;
 	bool _isResizing = false;
+	bool _resizeFromLeftEdge = false;
 	size_t _resizingColumnIndex = DataGridCellInfo::InvalidIndex;
 	double _resizeStartRenderX = 0.0;
 	double _resizeStartWidth = 0.0;
@@ -786,6 +789,7 @@ private:
 	friend class DataGrid;
 	bool RefreshRealizedColumns(
 		size_t begin, size_t end, std::wstring* outError);
+	bool TryCommitResizeLayoutLocally(bool heightIsFixed);
 	DataGrid* _owner = nullptr;
 	std::vector<DataGridColumnHeader*> _headers;
 	size_t _appliedColumnWidthProjectionRevision = 0;
@@ -1121,7 +1125,14 @@ private:
 	mutable std::vector<std::optional<GridLength>> _resolvedColumnWidths;
 	std::vector<ColumnResizeSnapshot> _columnResizeSnapshot;
 	std::vector<ColumnResizeSnapshot> _columnResizeWorkingSnapshot;
+	// Native pointer moves reuse these transaction buffers. Keeping them on the
+	// DataGrid removes three heap allocations from every resize input report.
+	std::vector<double> _columnResizeDisplayScratch;
+	std::vector<double> _columnResizeDesiredScratch;
+	std::vector<double> _columnResizeFactorScratch;
+	std::vector<double> _columnResizePreviousDisplayScratch;
 	size_t _columnResizeTransactionIndex = DataGridCellInfo::InvalidIndex;
+	bool _columnResizeCompensatesLeft = false;
 	double _columnResizeLastRawWidth =
 		(std::numeric_limits<double>::quiet_NaN)();
 	double _columnResizeInputBias = 0.0;
@@ -1131,6 +1142,8 @@ private:
 	bool _columnWidthRefreshPending = false;
 	size_t _columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
 	size_t _columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+	double _columnWidthDirtyVisualSpan =
+		(std::numeric_limits<double>::quiet_NaN)();
 	std::vector<uint8_t> _columnWidthMeasureDirty;
 	// Prefix[i] is the logical left edge of column i; Prefix.back() is the
 	// complete data-column width. It turns viewport, bring-into-view and UIA
@@ -1311,7 +1324,8 @@ private:
 	void RedistributeRuntimeWidthsForViewportChange(
 		double oldViewportWidth, double newViewportWidth) noexcept;
 	bool RebaseColumnResizeTransaction();
-	bool BeginColumnResizeTransaction(size_t columnIndex);
+	bool BeginColumnResizeTransaction(
+		size_t columnIndex, bool compensateLeft);
 	bool ResizeColumnInTransaction(size_t columnIndex, double pixelWidth);
 	void EndColumnResizeTransaction(bool cancel);
 	bool ResizeColumnCore(

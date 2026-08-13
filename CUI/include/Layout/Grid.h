@@ -162,9 +162,12 @@ public:
         else
         {
             // A parent currently inside Measure already owns the root layout
-            // transaction.  Mark this Grid locally without asking Window for a
-            // redundant second full-frame layout after that transaction ends.
-            InvalidateMeasureSubtree();
+            // transaction. Mark only this Grid locally. Children whose tracks
+            // changed are remeasured naturally because Grid offers them a new
+            // constraint; unchanged children retain their template measure cache.
+            // Invalidating the complete subtree here made a DataGrid header drag
+            // remeasure every retained header template on every frame.
+            _layoutState.InvalidateMeasure();
             _needsMeasure = true;
             _needsArrange = true;
         }
