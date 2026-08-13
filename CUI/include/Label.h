@@ -2,6 +2,8 @@
 #include "Control.h"
 #include "TextAlignment.h"
 
+struct LabelRegressionTestAccess;
+
 /** WPF TextBlock line-breaking policy. */
 enum class TextWrapping : uint8_t
 {
@@ -22,12 +24,25 @@ enum class TextTrimming : uint8_t
  * @file Label.h
  * @brief Label：TextBlock 的原生实现（只读文本）。
  *
- * 测量与绘制共享同一套受约束的 DirectWrite 布局。无显式 Width/Height
+ * 测量与绘制各自缓存同语义的受约束 DirectWrite 布局。无显式 Width/Height
  * 时由文本贡献 DesiredSize；父级约束、换行与裁剪决定最终 RenderSize。
  */
 class Label : public Control
 {
 private:
+	friend struct LabelRegressionTestAccess;
+	struct FormattedTextCache final
+	{
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> Layout;
+		std::wstring Value;
+		IDWriteTextFormat* Format = nullptr;
+		std::wstring FontFamily;
+		float FontSize = 0.0f;
+		cui::core::Size Bounds{ -1.0f, -1.0f };
+		::TextAlignment Alignment = TextAlignment::Left;
+		::TextWrapping Wrapping = TextWrapping::NoWrap;
+		::TextTrimming Trimming = TextTrimming::None;
+	};
 	static const DependencyPropertyMetadataRegistration&
 		ForegroundPropertyMetadataRelation();
 	static const DependencyPropertyMetadataRegistration&
@@ -36,17 +51,13 @@ private:
 	::TextWrapping _textWrapping = TextWrapping::NoWrap;
 	::TextTrimming _textTrimming = TextTrimming::None;
 
-	Microsoft::WRL::ComPtr<IDWriteTextLayout> _formattedText;
-	std::wstring _formattedTextValue;
-	IDWriteTextFormat* _formattedTextFormat = nullptr;
-	std::wstring _formattedTextFontFamily;
-	float _formattedTextFontSize = 0.0f;
-	cui::core::Size _formattedTextBounds{
-		-1.0f, -1.0f };
-	::TextAlignment _formattedTextAlignment = TextAlignment::Left;
-	::TextWrapping _formattedTextWrapping = TextWrapping::NoWrap;
-	::TextTrimming _formattedTextTrimming = TextTrimming::None;
-	bool _formattedTextForMeasure = false;
+	// Measure deliberately ignores TextAlignment while discovering natural line
+	// widths; render applies the authored alignment.  Keep both DirectWrite
+	// layouts alive so the normal Measure -> Render cadence does not make the two
+	// valid variants evict and recreate one another every frame.
+	FormattedTextCache _measureFormattedText;
+	FormattedTextCache _renderFormattedText;
+	size_t _formattedTextLayoutCreationCount = 0;
 
 	void InvalidateFormattedText() noexcept;
 	IDWriteTextLayout* EnsureFormattedText(

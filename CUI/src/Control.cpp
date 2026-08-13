@@ -2300,6 +2300,29 @@ void Control::InvalidateMeasureSubtree()
 	}
 }
 
+void Control::InvalidateMeasurePathFromDescendant(Control* descendant)
+{
+	if (!descendant) return;
+	std::vector<Control*> path;
+	for (auto* current = descendant; current; current = current->_visualParent)
+	{
+		path.push_back(current);
+		if (current == this) break;
+	}
+	if (path.empty() || path.back() != this) return;
+	for (auto* current : path)
+	{
+		current->_layoutState.InvalidateMeasure();
+		current->OnLocalMeasurePathInvalidated();
+		if (auto* panel = dynamic_cast<Panel*>(current))
+		{
+			panel->_needsMeasure = true;
+			panel->_needsArrange = true;
+			if (panel->_layoutEngine) panel->_layoutEngine->Invalidate();
+		}
+	}
+}
+
 void Control::InvalidateVisualSubtree()
 {
 	InvalidateVisual();

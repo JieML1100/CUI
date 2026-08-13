@@ -400,12 +400,8 @@ Label::Label()
 
 void Label::InvalidateFormattedText() noexcept
 {
-	_formattedText.Reset();
-	_formattedTextValue.clear();
-	_formattedTextFormat = nullptr;
-	_formattedTextFontFamily.clear();
-	_formattedTextFontSize = 0.0f;
-	_formattedTextBounds = { -1.0f, -1.0f };
+	_measureFormattedText = {};
+	_renderFormattedText = {};
 }
 
 IDWriteTextLayout* Label::EnsureFormattedText(
@@ -414,21 +410,22 @@ IDWriteTextLayout* Label::EnsureFormattedText(
 {
 	auto* font = GetRenderFont();
 	if (!font || !font->FontObject) return nullptr;
+	auto& cache = forMeasure
+		? _measureFormattedText : _renderFormattedText;
 	bounds = {
 		DirectWriteExtent(bounds.width),
 		DirectWriteExtent(bounds.height)
 	};
-	if (_formattedText
-		&& _formattedTextValue == Text
-		&& _formattedTextFormat == font->FontObject
-		&& _formattedTextFontFamily == font->FontFamily
-		&& _formattedTextFontSize == font->FontSize
-		&& _formattedTextBounds == bounds
-		&& _formattedTextAlignment == TextAlignment
-		&& _formattedTextWrapping == TextWrapping
-		&& _formattedTextTrimming == TextTrimming
-		&& _formattedTextForMeasure == forMeasure)
-		return _formattedText.Get();
+	if (cache.Layout
+		&& cache.Value == Text
+		&& cache.Format == font->FontObject
+		&& cache.FontFamily == font->FontFamily
+		&& cache.FontSize == font->FontSize
+		&& cache.Bounds == bounds
+		&& cache.Alignment == TextAlignment
+		&& cache.Wrapping == TextWrapping
+		&& cache.Trimming == TextTrimming)
+		return cache.Layout.Get();
 
 	Microsoft::WRL::ComPtr<IDWriteTextLayout> replacement;
 	replacement.Attach(Factory::CreateStringLayout(
@@ -459,17 +456,17 @@ IDWriteTextLayout* Label::EnsureFormattedText(
 			replacement->SetTrimming(&trimming, ellipsis.Get());
 	}
 
-	_formattedText = std::move(replacement);
-	_formattedTextValue = Text;
-	_formattedTextFormat = font->FontObject;
-	_formattedTextFontFamily = font->FontFamily;
-	_formattedTextFontSize = font->FontSize;
-	_formattedTextBounds = bounds;
-	_formattedTextAlignment = TextAlignment;
-	_formattedTextWrapping = TextWrapping;
-	_formattedTextTrimming = TextTrimming;
-	_formattedTextForMeasure = forMeasure;
-	return _formattedText.Get();
+	cache.Layout = std::move(replacement);
+	cache.Value = Text;
+	cache.Format = font->FontObject;
+	cache.FontFamily = font->FontFamily;
+	cache.FontSize = font->FontSize;
+	cache.Bounds = bounds;
+	cache.Alignment = TextAlignment;
+	cache.Wrapping = TextWrapping;
+	cache.Trimming = TextTrimming;
+	++_formattedTextLayoutCreationCount;
+	return cache.Layout.Get();
 }
 
 cui::core::Size Label::MeasureCore(const cui::core::Constraints& available)

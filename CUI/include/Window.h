@@ -247,7 +247,7 @@ private:
 	void SynchronizeNativeClientLayoutSlot();
 	void SynchronizeNativePosition();
 	void RequestArrangeLayout();
-	/** Posts one coalesced UI-thread layout pass without promoting it to full damage. */
+	/** Posts one coalesced presentation turn ahead of lower-priority native input. */
 	void ScheduleLayoutDispatch();
 	int GetTitleBarHeightPixels() const noexcept;
 	RECT GetTitleBarClientPixelRect() const noexcept;
@@ -467,6 +467,8 @@ private:
 
 	/** True while the retained renderer or the HWND paint queue has work. */
 	bool HasPendingRenderWork() const noexcept;
+	/** Registered private message ID exposed only through WindowAccess tests. */
+	static UINT GetPresentationDispatchMessageForTesting() noexcept;
 	/** True when the retained host itself owns unconsumed physical damage. */
 	bool HasPendingPresentationDamage() const noexcept;
 	/** Returns the last submitted logical dirty rectangle for diagnostics/tests. */

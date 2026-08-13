@@ -618,6 +618,7 @@ void ScrollViewer::PublishScrollState(
 	double horizontalOffset,
 	double verticalOffset)
 {
+	const ControlWeakReference lifetime(this);
 	const double oldHorizontalOffset = _horizontalOffset;
 	const double oldVerticalOffset = _verticalOffset;
 	const double oldExtentWidth = _extentWidth;
@@ -629,56 +630,74 @@ void ScrollViewer::PublishScrollState(
 	const double nextVerticalOffset = ClampScrollOffset(
 		verticalOffset, layout.MaxScrollY);
 
-	auto update = [this](
+	auto update = [&lifetime](
 		const DependencyPropertyKey& key,
 		double oldValue,
 		double value)
 	{
 		if (std::fabs(oldValue - value) <= 0.000001) return false;
-		return TrySetReadOnlyPropertyValue(key, BindingValue(value));
+		auto* live = dynamic_cast<ScrollViewer*>(lifetime.Get());
+		return live
+			? live->TrySetReadOnlyPropertyValue(key, BindingValue(value))
+			: false;
 	};
-	const bool changed =
-		update(ExtentWidthPropertyKey(), oldExtentWidth, layout.ContentWidth)
-		| update(ExtentHeightPropertyKey(), oldExtentHeight, layout.ContentHeight)
-		| update(ViewportWidthPropertyKey(), oldViewportWidth, layout.ViewportWidth)
-		| update(ViewportHeightPropertyKey(), oldViewportHeight, layout.ViewportHeight)
-		| update(HorizontalOffsetPropertyKey(),
-			oldHorizontalOffset, nextHorizontalOffset)
-		| update(VerticalOffsetPropertyKey(),
-			oldVerticalOffset, nextVerticalOffset);
-	if (!changed) return;
+	bool changed = false;
+	if (update(ExtentWidthPropertyKey(), oldExtentWidth, layout.ContentWidth))
+		changed = true;
+	if (!lifetime.Get()) return;
+	if (update(ExtentHeightPropertyKey(), oldExtentHeight, layout.ContentHeight))
+		changed = true;
+	if (!lifetime.Get()) return;
+	if (update(ViewportWidthPropertyKey(), oldViewportWidth, layout.ViewportWidth))
+		changed = true;
+	if (!lifetime.Get()) return;
+	if (update(ViewportHeightPropertyKey(), oldViewportHeight, layout.ViewportHeight))
+		changed = true;
+	if (!lifetime.Get()) return;
+	if (update(HorizontalOffsetPropertyKey(),
+		oldHorizontalOffset, nextHorizontalOffset)) changed = true;
+	if (!lifetime.Get()) return;
+	if (update(VerticalOffsetPropertyKey(),
+		oldVerticalOffset, nextVerticalOffset)) changed = true;
+	auto* live = dynamic_cast<ScrollViewer*>(lifetime.Get());
+	if (!live || !changed) return;
 
 	ScrollChangedEventArgs args;
-	args.HorizontalOffset = _horizontalOffset;
-	args.HorizontalChange = _horizontalOffset - oldHorizontalOffset;
-	args.VerticalOffset = _verticalOffset;
-	args.VerticalChange = _verticalOffset - oldVerticalOffset;
-	args.ExtentWidth = _extentWidth;
-	args.ExtentWidthChange = _extentWidth - oldExtentWidth;
-	args.ExtentHeight = _extentHeight;
-	args.ExtentHeightChange = _extentHeight - oldExtentHeight;
-	args.ViewportWidth = _viewportWidth;
-	args.ViewportWidthChange = _viewportWidth - oldViewportWidth;
-	args.ViewportHeight = _viewportHeight;
-	args.ViewportHeightChange = _viewportHeight - oldViewportHeight;
-	OnScrollChanged(this, args);
+	args.HorizontalOffset = live->_horizontalOffset;
+	args.HorizontalChange = live->_horizontalOffset - oldHorizontalOffset;
+	args.VerticalOffset = live->_verticalOffset;
+	args.VerticalChange = live->_verticalOffset - oldVerticalOffset;
+	args.ExtentWidth = live->_extentWidth;
+	args.ExtentWidthChange = live->_extentWidth - oldExtentWidth;
+	args.ExtentHeight = live->_extentHeight;
+	args.ExtentHeightChange = live->_extentHeight - oldExtentHeight;
+	args.ViewportWidth = live->_viewportWidth;
+	args.ViewportWidthChange = live->_viewportWidth - oldViewportWidth;
+	args.ViewportHeight = live->_viewportHeight;
+	args.ViewportHeightChange = live->_viewportHeight - oldViewportHeight;
+	live->OnScrollChanged(live, args);
 }
 
 void ScrollViewer::SetScrollOffsetCore(
 	double horizontalOffset, double verticalOffset)
 {
-	auto layout = this->CalcScrollLayout();
-	const double oldX = _horizontalOffset;
-	const double oldY = _verticalOffset;
-	PublishScrollState(layout, horizontalOffset, verticalOffset);
-	if (std::fabs(oldX - _horizontalOffset) > 0.000001
-		|| std::fabs(oldY - _verticalOffset) > 0.000001)
+	const ControlWeakReference lifetime(this);
+	auto layout = CalcScrollLayout();
+	auto* live = dynamic_cast<ScrollViewer*>(lifetime.Get());
+	if (!live) return;
+	const double oldX = live->_horizontalOffset;
+	const double oldY = live->_verticalOffset;
+	live->PublishScrollState(layout, horizontalOffset, verticalOffset);
+	live = dynamic_cast<ScrollViewer*>(lifetime.Get());
+	if (!live) return;
+	if (std::fabs(oldX - live->_horizontalOffset) > 0.000001
+		|| std::fabs(oldY - live->_verticalOffset) > 0.000001)
 	{
 		// Scroll offset is an ancestor render transform. The viewport damage is
 		// local, but every descendant's cached bounds and command transform must
 		// be recomputed before replay.
-		InvalidateDescendantRenderGeometry();
-		InvalidateVisual();
+		live->InvalidateDescendantRenderGeometry();
+		live->InvalidateVisual();
 	}
 }
 
@@ -916,25 +935,47 @@ void ScrollViewer::OnRender()
 
 bool ScrollViewer::ProcessInput(const InputReport& input)
 {
-	if (!this->IsEnabled || !this->IsVisible) return true;
-	PerformPendingLayout();
-
-	auto layout = this->CalcScrollLayout();
-	ClampScrollOffsets(layout);
 	if (input.Kind == InputReportKind::Cancel
 		|| input.Kind == InputReportKind::CaptureLost)
 	{
+		const ControlWeakReference scrollLifetime(this);
+		const bool restoreVerticalCache = _draggingVerticalScrollBar;
 		_draggingVerticalScrollBar = false;
 		_draggingHorizontalScrollBar = false;
 		if (input.Kind == InputReportKind::Cancel && IsMouseCaptured())
 			(void)ReleaseMouseCapture();
+		auto* live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+		if (!live) return true;
+		if (restoreVerticalCache)
+			if (auto* logical = const_cast<cui::framework::ILogicalScrollContent*>(
+				live->ResolveLogicalScrollContent()))
+				logical->OnVerticalThumbDragCompleted();
+		if (!scrollLifetime.Get()) return true;
 		return Control::ProcessInput(input);
 	}
+	if (!this->IsEnabled || !this->IsVisible) return true;
+	const ControlWeakReference processLifetime(this);
+	PerformPendingLayout();
+	auto* processLive = dynamic_cast<ScrollViewer*>(processLifetime.Get());
+	if (!processLive) return true;
+	auto layout = processLive->CalcScrollLayout();
+	processLive = dynamic_cast<ScrollViewer*>(processLifetime.Get());
+	if (!processLive) return true;
+	processLive->ClampScrollOffsets(layout);
+	if (!processLifetime.Get()) return true;
 
 	if (input.Kind == InputReportKind::PointerDown
 		&& input.ChangedButton == MouseButton::Left && this->GetPresentationWindow())
 	{
+		const ControlWeakReference scrollLifetime(this);
 		this->GetPresentationWindow()->SetKeyboardFocus(this, false);
+		auto* live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+		if (!live) return true;
+		layout = live->CalcScrollLayout();
+		live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+		if (!live) return true;
+		live->ClampScrollOffsets(layout);
+		if (!scrollLifetime.Get()) return true;
 	}
 
 	if (_draggingVerticalScrollBar
@@ -952,9 +993,18 @@ bool ScrollViewer::ProcessInput(const InputReport& input)
 	if ((_draggingVerticalScrollBar || _draggingHorizontalScrollBar)
 		&& input.Kind == InputReportKind::PointerUp)
 	{
+		const ControlWeakReference scrollLifetime(this);
+		const bool restoreVerticalCache = _draggingVerticalScrollBar;
 		_draggingVerticalScrollBar = false;
 		_draggingHorizontalScrollBar = false;
 		if (IsMouseCaptured()) (void)ReleaseMouseCapture();
+		auto* live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+		if (!live) return true;
+		if (restoreVerticalCache)
+			if (auto* logical = const_cast<cui::framework::ILogicalScrollContent*>(
+				live->ResolveLogicalScrollContent()))
+				logical->OnVerticalThumbDragCompleted();
+		if (!scrollLifetime.Get()) return true;
 	}
 
 	switch (input.Kind)
@@ -996,10 +1046,24 @@ bool ScrollViewer::ProcessInput(const InputReport& input)
 			float thumbTop = scrollRatio * moveSpace;
 			float pointerY = (float)input.Y;
 			bool hitThumb = pointerY >= thumbTop && pointerY <= (thumbTop + thumbH);
-			this->_verticalScrollThumbGrabOffset = hitThumb ? (pointerY - thumbTop) : (thumbH * 0.5f);
-			this->_draggingVerticalScrollBar = true;
-			(void)CaptureMouse();
-			UpdateVerticalScrollByThumb(pointerY, layout);
+			const float grabOffset = hitThumb
+				? (pointerY - thumbTop) : (thumbH * 0.5f);
+			const ControlWeakReference scrollLifetime(this);
+			const bool requiresCapture = GetPresentationWindow() != nullptr;
+			if (requiresCapture && !CaptureMouse()) return true;
+			auto* live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->_verticalScrollThumbGrabOffset = grabOffset;
+			live->_draggingVerticalScrollBar = true;
+			auto currentLayout = live->CalcScrollLayout();
+			live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || !live->_draggingVerticalScrollBar
+				|| (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->ClampScrollOffsets(currentLayout);
+			live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || !live->_draggingVerticalScrollBar
+				|| (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->UpdateVerticalScrollByThumb(pointerY, currentLayout);
 			return true;
 		}
 		if (HitHorizontalScrollBar(input.X, input.Y, layout)
@@ -1018,10 +1082,24 @@ bool ScrollViewer::ProcessInput(const InputReport& input)
 			float thumbLeft = scrollRatio * moveSpace;
 			float pointerX = (float)input.X;
 			bool hitThumb = pointerX >= thumbLeft && pointerX <= (thumbLeft + thumbW);
-			this->_horizontalScrollThumbGrabOffset = hitThumb ? (pointerX - thumbLeft) : (thumbW * 0.5f);
-			this->_draggingHorizontalScrollBar = true;
-			(void)CaptureMouse();
-			UpdateHorizontalScrollByThumb(pointerX, layout);
+			const float grabOffset = hitThumb
+				? (pointerX - thumbLeft) : (thumbW * 0.5f);
+			const ControlWeakReference scrollLifetime(this);
+			const bool requiresCapture = GetPresentationWindow() != nullptr;
+			if (requiresCapture && !CaptureMouse()) return true;
+			auto* live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->_horizontalScrollThumbGrabOffset = grabOffset;
+			live->_draggingHorizontalScrollBar = true;
+			auto currentLayout = live->CalcScrollLayout();
+			live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || !live->_draggingHorizontalScrollBar
+				|| (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->ClampScrollOffsets(currentLayout);
+			live = dynamic_cast<ScrollViewer*>(scrollLifetime.Get());
+			if (!live || !live->_draggingHorizontalScrollBar
+				|| (requiresCapture && !live->IsMouseCaptured())) return true;
+			live->UpdateHorizontalScrollByThumb(pointerX, currentLayout);
 			return true;
 		}
 	}

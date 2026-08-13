@@ -26,6 +26,7 @@ class NotifyIcon;
 class ObservableBindingList;
 class ObservableObject;
 class Image;
+class IBindingList;
 class ProgressBar;
 class ProgressRing;
 class RadioButton;
@@ -113,6 +114,7 @@ private:
 		DataGrid* sender, DataGridSelectedCellsChangedEventArgs& e) override;
 	void HandleDataGridSorting(
 		DataGrid* sender, DataGridSortingEventArgs& e) override;
+	void HandleDataGridScale(Control* sender, RoutedEventArgs& e) override;
 	void HandleClosing(Window* sender, CancelEventArgs& e) override;
 	void HandleComboSelection(Control* sender, SelectionChangedEventArgs& e) override;
 	void HandleCommandAvailabilityToggle(Control* sender, RoutedEventArgs& e) override;
@@ -191,6 +193,8 @@ private:
 	std::shared_ptr<ObservableBindingList> _treeRoots;
 	std::shared_ptr<ObservableBindingList> _listViewEntries;
 	std::shared_ptr<ObservableBindingList> _wpfLabPeople;
+	std::shared_ptr<IBindingList> _dataGridDefaultItems;
+	bool _dataGridMillionMode = false;
 	std::shared_ptr<ObservableObject> _wpfLabSettings;
 	int _featureInvocations = 0;
 	int _featureBubbleInvocations = 0;

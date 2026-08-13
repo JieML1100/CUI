@@ -122,6 +122,10 @@ protected:
 	void RequestLayout() override;
 	void OnComputedLayoutSizeChanged() override;
 	void PerformPendingLayout() override;
+	void OnLocalMeasurePathInvalidated() override
+	{
+		_contentLayoutPending = true;
+	}
 	bool ValidateVisualChildCollection(
 		std::span<Control* const> children,
 		std::string& error) const override;

@@ -112,9 +112,23 @@
       <CollectionViewSource x:Key="DemoOrdersView" Source="{StaticResource DemoOrders}"/>
       <DataTemplate x:Key="OrderStageCellTemplate" DataType="DemoOrder">
         <Border Padding="8,2" Background="{StaticResource SurfaceSoft}"
-          BorderBrush="{StaticResource Border}" BorderThickness="1">
+          BorderBrush="{StaticResource Border}" BorderThickness="1"
+          VerticalAlignment="Center">
           <TextBlock Text="{Binding Stage}" Foreground="{StaticResource Accent}"/>
         </Border>
+      </DataTemplate>
+      <DataTemplate x:Key="OrderAmountCellTemplate" DataType="DemoOrder">
+        <TextBlock Margin="2,0" VerticalAlignment="Center"
+          Text="{Binding Amount, StringFormat='¥ {0:N0}'}"/>
+      </DataTemplate>
+      <DataTemplate x:Key="OrderAmountEditingTemplate" DataType="DemoOrder">
+        <TextBox Style="{StaticResource CuiDataGridTextEditingElementStyle}"
+          Text="{Binding Amount, Mode=TwoWay}"/>
+      </DataTemplate>
+      <DataTemplate x:Key="OrderPaidCellTemplate" DataType="DemoOrder">
+        <CheckBox ClickMode="Press"
+          HorizontalAlignment="Center" VerticalAlignment="Top"
+          IsChecked="{Binding Paid, Mode=TwoWay}"/>
       </DataTemplate>
       <CollectionViewSource x:Key="ActiveDemoTasks" Source="{StaticResource DemoTasks}">
         <CollectionViewSource.GroupDescriptions>
@@ -938,12 +952,25 @@
           <Grid x:Name="dataGridSurface">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Style="{StaticResource PageHeader}"
 			  Text="标准 DataGrid：声明式列、冻结行表头、全选角、表头缩放排序、单元格/整行选择与原位编辑"/>
-            <DataGrid x:Name="demoDataGrid" Grid.Row="1" Margin="0,6,0,10"
+            <Grid Grid.Row="1" Margin="0,8,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <Button x:Name="dataGridMillionButton" Grid.Column="0"
+                Padding="14,5" Click="HandleDataGridScale"
+                Content="填充 100 万行"/>
+              <TextBlock Grid.Column="1" Margin="12,0,0,0"
+                VerticalAlignment="Center" Foreground="{StaticResource TextMuted}"
+                Text="按需物化的稳定随机访问数据源；滚动验证虚拟化，表头排序执行全量压力测试。"/>
+            </Grid>
+            <DataGrid x:Name="demoDataGrid" Grid.Row="2" Margin="0,6,0,10"
               AutoGenerateColumns="false" CanUserResizeColumns="true"
               CanUserSortColumns="true" IsReadOnly="false"
 			  HeadersVisibility="All" RowHeaderWidth="38"
@@ -964,19 +991,22 @@
                   SortMemberPath="Stage" Width="*"/>
                 <DataGridTextColumn Header="数量" Binding="{Binding Quantity, Mode=TwoWay}"
                   SortMemberPath="Quantity" Width="92"/>
-                <DataGridTextColumn Header="金额" Binding="{Binding Amount, Mode=TwoWay, StringFormat='¥ {0:N0}'}"
+                <DataGridTemplateColumn Header="金额"
+                  CellTemplate="{StaticResource OrderAmountCellTemplate}"
+                  CellEditingTemplate="{StaticResource OrderAmountEditingTemplate}"
                   SortMemberPath="Amount" Width="132"/>
-				<DataGridCheckBoxColumn Header="已付款" Binding="{Binding Paid, Mode=TwoWay}"
+				<DataGridTemplateColumn Header="已付款" IsReadOnly="true"
+				  CellTemplate="{StaticResource OrderPaidCellTemplate}"
 				  SortMemberPath="Paid" Width="88" CanUserResize="false"/>
               </DataGrid.Columns>
             </DataGrid>
-            <Grid Grid.Row="2">
+            <Grid Grid.Row="3">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2*"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
               <TextBlock Grid.Column="0" Style="{StaticResource DescriptionText}"
-				Text="单击单元格进行矩形多选；单击冻结行表头选择整行，Ctrl/Shift 切换或扩展；左上角全选。列头与单元格随横向滚动同步；F2 编辑，Enter/Tab 提交。"/>
+				Text="首次单击选择单元格，再次单击或双击进入编辑；已付款方框使用交互模板，首次单击即切换。单击冻结行表头选择整行，Ctrl/Shift 切换或扩展；F2 编辑，Enter/Tab 提交。"/>
               <TextBlock x:Name="dataGridStatus" Grid.Column="1"
                 HorizontalAlignment="Right"
                 Foreground="{StaticResource TextMuted}"

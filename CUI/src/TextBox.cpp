@@ -158,8 +158,12 @@ namespace
 	{
 		DependencyPropertyOptions<TextBox, std::wstring> options;
 		options.DefaultValue = std::wstring{};
-		options.Flags = DependencyPropertyFlags::AffectsMeasure
-			| DependencyPropertyFlags::AffectsRender
+		// Match WPF TextBox.Text metadata: editing changes the text view, but it
+		// does not invalidate measure.  In-place hosts such as DataGrid already
+		// constrain the editor to the cell; propagating a measure request for
+		// every character otherwise turns a text-only update into a complete
+		// table/window layout pass and makes burst input visibly lag behind.
+		options.Flags = DependencyPropertyFlags::AffectsRender
 			| DependencyPropertyFlags::BindsTwoWayByDefault;
 		CUI_DESIGN_METADATA_ONLY(
 		options.Design.Category = L"Common";

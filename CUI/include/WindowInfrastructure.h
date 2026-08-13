@@ -173,6 +173,11 @@ namespace cui::framework
 			return target.HasPendingRenderWork();
 		}
 
+		static UINT PresentationDispatchMessageForTesting() noexcept
+		{
+			return Window::GetPresentationDispatchMessageForTesting();
+		}
+
 		static bool HasPendingPresentationDamage(
 			const Window& target) noexcept
 		{

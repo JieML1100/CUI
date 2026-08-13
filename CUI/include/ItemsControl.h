@@ -225,6 +225,10 @@ protected:
 	void RequestLayout() override;
 	void OnComputedLayoutSizeChanged() override;
 	void PerformPendingLayout() override;
+	void OnLocalMeasurePathInvalidated() override
+	{
+		_itemsLayoutPending = true;
+	}
 	bool IsItemsLayoutPending() const noexcept
 	{
 		return _itemsLayoutPending;
@@ -253,6 +257,35 @@ protected:
 		const BindingSourceReference& item,
 		size_t index,
 		BindingPathObservation& observation);
+	/**
+	 * Opt-in recycling contract for containers detached by an earlier virtual
+	 * viewport commit. Generic ItemsControl keeps exact-index semantics; a
+	 * derived control must explicitly prove that a donor is safe and fully
+	 * rebind its item state before it can be attached at another index.
+	 */
+	virtual bool CanRecycleGeneratedItemAcrossIndices(
+		const Control& visual, size_t oldIndex) const noexcept
+	{
+		(void)visual;
+		(void)oldIndex;
+		return false;
+	}
+	virtual bool TryRebindGeneratedItemAcrossIndices(
+		Control& visual,
+		size_t oldIndex,
+		size_t newIndex,
+		const BindingSourceReference& item,
+		BindingPathObservation& observation,
+		std::wstring* outError)
+	{
+		(void)visual;
+		(void)oldIndex;
+		(void)newIndex;
+		(void)item;
+		(void)observation;
+		if (outError) outError->clear();
+		return false;
+	}
 	/** Called before a rebuild prepares any replacement item containers. */
 	virtual void OnBeforeGeneratedItemsPrepared() {}
 	virtual void OnBeforeGeneratedItemsRebuilt() {}
@@ -300,6 +333,12 @@ protected:
 	virtual bool ShouldRealizeVirtualItemsWithoutViewport() const noexcept
 	{
 		return true;
+	}
+	/** A large direct Thumb jump benefits from realizing only the visible page.
+	 *  The configured cache is restored when the drag completes. */
+	virtual bool UseVisibleOnlyRangeDuringVerticalThumbDrag() const noexcept
+	{
+		return false;
 	}
 	/** Fixed extent consumed by the virtual host for one ungrouped item. */
 	virtual float GetVirtualizedItemHeight() const noexcept
@@ -394,6 +433,11 @@ private:
 		std::vector<std::unique_ptr<Control>> Visuals;
 		std::vector<BindingSourceReference> Contexts;
 	};
+	struct CrossIndexRecycleCandidate final
+	{
+		size_t Index = 0;
+		Control* Visual = nullptr;
+	};
 	struct DirectVisualMutationFrame;
 
 	BindingListReference _itemsSource;
@@ -437,6 +481,7 @@ private:
 	bool _itemsLayoutPending = true;
 	bool _realizingViewport = false;
 	bool _applyingCollectionChange = false;
+	bool _virtualCacheRestorePending = false;
 	bool _migratingAuthoredItems = false;
 	size_t _itemsSourceUpdateDepth = 0;
 	size_t _authoredItemsUpdateDepth = 0;
@@ -448,6 +493,7 @@ private:
 	std::uint64_t _textSearchLastInputTick = 0;
 	bool _textSearchActive = false;
 	DirectVisualMutationFrame* _activeDirectVisualMutationFrame = nullptr;
+	size_t _generatedItemsRevision = 1;
 
 	const ItemsPanelTemplate& EffectiveItemsPanel() const noexcept;
 	bool ReplaceItemsHost(ItemsPanelTemplateReference value);
@@ -456,16 +502,26 @@ private:
 	bool CommitPendingTemplateItemsPresenter();
 	void ClearPendingTemplateItemsPresenter() noexcept;
 	void RefreshItemsScrollOwner();
+	void AdvanceGeneratedItemsRevision() noexcept
+	{
+		if (++_generatedItemsRevision == 0) _generatedItemsRevision = 1;
+	}
 	ScrollViewer* ItemsScrollOwner() const noexcept
 	{
 		return _itemsScrollOwner;
 	}
 	bool PrepareGeneratedItem(
-		size_t index, PreparedItem& output, bool allowRecycle = true);
+		size_t index,
+		PreparedItem& output,
+		bool allowRecycle = true,
+		std::span<const size_t> crossIndexRecycleReservations = {},
+		std::span<const CrossIndexRecycleCandidate>
+			crossIndexRecycleCandidates = {});
 	void AttachPreparedItem(PreparedItem&& item);
 	void ReorderRealizedChildren();
 	void ClearRealizedItems(bool keepForRecycle);
 	bool RealizeVirtualViewport(bool localLayoutForScroll = false);
+	void RestoreVirtualCacheAfterVerticalThumbDrag();
 	bool RealizeVirtualRange(
 		size_t first, size_t last, bool localLayoutForScroll = false);
 	std::pair<size_t, size_t> VirtualRangeForViewport() const noexcept;
@@ -532,6 +588,11 @@ namespace cui::framework
 			const ItemsControl& target) noexcept
 		{
 			return target.VirtualOffsetConfigurationRevision();
+		}
+		static void RestoreVirtualCacheAfterVerticalThumbDrag(
+			ItemsControl& target)
+		{
+			target.RestoreVirtualCacheAfterVerticalThumbDrag();
 		}
 	};
 }

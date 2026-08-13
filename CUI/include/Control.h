@@ -1458,6 +1458,8 @@ protected:
 	virtual void AfterDefaultClick(MouseButton button, MouseEventArgs& e) { (void)button; (void)e; }
 	virtual void OnComputedLayoutSizeChanged() {}
 	virtual void PerformPendingLayout() {}
+	/** Marks a retained composite's local child-layout transaction pending. */
+	virtual void OnLocalMeasurePathInvalidated() {}
 	/** Framework-owned visual root generated from this Control's template. */
 	virtual Control* GetControlTemplateRoot() const noexcept
 	{
@@ -1603,6 +1605,8 @@ protected:
 		int _uncaughtOnEntry = 0;
 	};
 	void InvalidateMeasureSubtree();
+	/** Marks one owned visual path dirty without propagating a new root request. */
+	void InvalidateMeasurePathFromDescendant(Control* descendant);
 	void InvalidateVisualSubtree();
 	void InvalidateVisualBoundsSubtree();
 	void InvalidateVisualRectCore(

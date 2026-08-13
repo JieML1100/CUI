@@ -4984,7 +4984,9 @@
     <Setter Property="MinWidth" Value="0"/>
     <Setter Property="MinHeight" Value="0"/>
     <Setter Property="HorizontalAlignment" Value="Center"/>
-    <Setter Property="VerticalAlignment" Value="Center"/>
+    <!-- WPF DataGridCheckBoxColumn.DefaultElementStyle and
+         DefaultEditingElementStyle both align the CheckBox to Top. -->
+    <Setter Property="VerticalAlignment" Value="Top"/>
     <Setter Property="HorizontalContentAlignment" Value="Center"/>
     <Setter Property="VerticalContentAlignment" Value="Center"/>
   </Style>

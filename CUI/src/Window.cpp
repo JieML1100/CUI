@@ -66,6 +66,21 @@
 #pragma comment(lib, "Oleacc.lib")
 #pragma comment(lib, "Uiautomationcore.lib")
 
+namespace
+{
+	// WM_PAINT is deliberately the lowest-priority item in a Win32 message
+	// queue.  A continuous hardware-input stream can therefore keep a valid
+	// DataGrid frame waiting until the gesture stops.  The posted dispatch is
+	// coalesced per Window and runs before queued hardware input; it does not
+	// render itself, but asks the ordinary WM_PAINT transaction to commit once.
+	UINT CuiPresentationDispatchMessage() noexcept
+	{
+		static const UINT message = ::RegisterWindowMessageW(
+			L"CUI.Window.CoalescedPresentation.v1");
+		return message;
+	}
+}
+
 namespace accessibility_detail
 {
 	struct SafeArrayDestroyer
@@ -5567,8 +5582,6 @@ CursorKind Window::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 		return CursorKind::Arrow;
 	}
 
-	auto hitControl = HitTestControlAt(contentMouse);
-
 	if (auto* captured = GetMouseCaptured(); captured && captured->IsVisible)
 	{
 		int localX = 0;
@@ -5578,12 +5591,27 @@ CursorKind Window::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 			return captured->ResolvePointerCursor(localX, localY);
 	}
 
+	auto hitControl = HitTestControlAt(contentMouse);
+
 	if (!hitControl) return CursorKind::Arrow;
-	int localX = 0;
-	int localY = 0;
-	return TryGetControlLocalPoint(hitControl, contentMouse, localX, localY)
-		? hitControl->ResolvePointerCursor(localX, localY)
-		: CursorKind::Arrow;
+	// Cursor is inherited, but an Auto descendant's native behavior hook is not.
+	// Walk the routed ancestry just like pointer input so decorative template
+	// children do not hide a region-sensitive host cursor (for example a
+	// DataGridColumnHeader gripper). A concrete authored/inherited Cursor stays
+	// authoritative, while Arrow from an Auto behavior allows the parent to
+	// contribute a more specific shape.
+	for (auto* target = hitControl; target; target = target->GetRoutedParent())
+	{
+		int localX = 0;
+		int localY = 0;
+		if (!TryGetControlLocalPoint(
+			target, contentMouse, localX, localY, false)) continue;
+		if (target->Cursor != CursorKind::Auto)
+			return target->Cursor;
+		const auto behavior = target->ResolvePointerCursor(localX, localY);
+		if (behavior != CursorKind::Arrow) return behavior;
+	}
+	return CursorKind::Arrow;
 }
 
 void Window::UpdateCursor(POINT mouseClient, POINT contentMouse)
@@ -5591,15 +5619,20 @@ void Window::UpdateCursor(POINT mouseClient, POINT contentMouse)
 	const int titleBarHeight = GetTitleBarHeightPixels();
 	if (!(this->HasWindowChrome() && mouseClient.y < titleBarHeight))
 	{
-		auto hitControl = HitTestControlAt(contentMouse);
-
 		if (auto* captured = GetMouseCaptured(); captured && captured->IsVisible)
 		{
 			UINT32 cursorId = 0;
 			if (captured->TryGetSystemCursorId(cursorId)
 				&& ApplySystemCursorId(cursorId)) return;
+			// While native capture is active the pointer routes directly to this
+			// control even outside its clip.  Resolve its behavioral cursor without
+			// walking the visual tree; large virtualized surfaces otherwise pay two
+			// full hit tests for every drag move.
+			ApplyCursor(QueryCursorAt(mouseClient, contentMouse));
+			return;
 		}
 
+		auto hitControl = HitTestControlAt(contentMouse);
 		for (Control* target = hitControl; target;
 			target = target->GetRoutedParent())
 		{
@@ -6371,6 +6404,7 @@ void Window::Invalidate(bool immediate)
 	this->_presentationInvalidated = true;
 	if (_renderHost) _renderHost->QueueFullDamage();
 	else ::InvalidateRect(this->Handle, nullptr, FALSE);
+	ScheduleLayoutDispatch();
 	// When the window is disabled/hidden (e.g. during a modal dialog), forcing
 	// UpdateWindow can create excessive WM_PAINT churn. Let the system schedule paint.
 	if (immediate && ::IsWindowVisible(this->Handle) && ::IsWindowEnabled(this->Handle))
@@ -6391,6 +6425,7 @@ void Window::Invalidate(const RECT& rect, bool immediate)
 	this->_presentationInvalidated = true;
 	if (_renderHost) _renderHost->QueueDamage(rect);
 	else ::InvalidateRect(this->Handle, &rect, FALSE);
+	ScheduleLayoutDispatch();
 	if (immediate && ::IsWindowVisible(this->Handle) && ::IsWindowEnabled(this->Handle))
 		::UpdateWindow(this->Handle);
 }
@@ -7515,6 +7550,7 @@ void Window::CleanupResources()
 	if (_resourcesCleaned)
 		return;
 	_resourcesCleaned = true;
+	_layoutDispatchPosted = false;
 	try { (void)ReleaseMouseCapture(); }
 	catch (...) {}
 	if (_textCompositionManager) _textCompositionManager->Reset();
@@ -7943,6 +7979,16 @@ void Window::RequestArrangeLayout()
 		return;
 	}
 	Invalidate(false);
+}
+
+void Window::ScheduleLayoutDispatch()
+{
+	const HWND handle = this->Handle;
+	if (_layoutDispatchPosted || !handle || !::IsWindow(handle)) return;
+	const UINT message = CuiPresentationDispatchMessage();
+	if (message == 0) return;
+	_layoutDispatchPosted = ::PostMessageW(
+		handle, message, 0, 0) != FALSE;
 }
 
 void Window::BeginWindowLayoutDeferral() noexcept
@@ -8435,6 +8481,11 @@ void Window::RefreshReverseInheritedInputProperties()
 		_inputManager->RefreshReverseInheritedProperties();
 }
 
+UINT Window::GetPresentationDispatchMessageForTesting() noexcept
+{
+	return CuiPresentationDispatchMessage();
+}
+
 void Window::ClearDetachedControlReferences(Control* root)
 {
 	if (!root)
@@ -8785,9 +8836,14 @@ void Window::ProcessPlatformMessage(
 		&& GetRoutedEventMetadata(stagedEvent).Device
 		== RoutedInputDeviceKind::Mouse)
 	{
-		if (!(this->HasWindowChrome() && mouse.y < titleBarHeight))
-			stagedHitControl = HitTestControlAt(contentMouse);
 		auto* captured = GetMouseCaptured();
+		// Capture fixes OriginalSource for the duration of the native drag.  Do
+		// not compute an unused hit target underneath it; DataGrid headers and
+		// ScrollViewer thumbs both generate dense WM_MOUSEMOVE streams.
+		if ((!captured || !captured->IsVisible
+			|| nativeInput->Kind != InputReportKind::PointerMove)
+			&& !(this->HasWindowChrome() && mouse.y < titleBarHeight))
+			stagedHitControl = HitTestControlAt(contentMouse);
 		auto* originalSource = captured && captured->IsVisible
 			? captured
 			: (stagedHitControl ? stagedHitControl : this);
@@ -9212,6 +9268,32 @@ LRESULT Window::HandlePlatformWindowMessage(
 {
 	Window* form = this;
 	{
+		const UINT presentationDispatch = CuiPresentationDispatchMessage();
+		if (presentationDispatch != 0 && message == presentationDispatch)
+		{
+			// A nested modal loop or a layout transaction may dispatch this turn.
+			// Leave retained damage intact; EndWindowLayoutDeferral/WM_ENABLE will
+			// schedule the next eligible presentation.
+			if (form->_layoutDeferral.IsSuspended()
+				|| ::IsWindowVisible(hWnd) == FALSE
+				|| ::IsWindowEnabled(hWnd) == FALSE)
+			{
+				form->_layoutDispatchPosted = false;
+				return 0;
+			}
+			if (form->HasPendingRenderWork())
+			{
+				// UpdateWindow synchronously enters the existing WM_PAINT path.  This
+				// message is outside pointer routing, so layout/render callbacks cannot
+				// corrupt an in-flight input transaction. Keep the token marked posted
+				// during the nested paint so damage raised by layout/render cannot queue
+				// an unbounded chain of presentation messages; ordinary WM_PAINT retains
+				// that residual damage.
+				::UpdateWindow(hWnd);
+			}
+			form->_layoutDispatchPosted = false;
+			return 0;
+		}
 		if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED
 			|| message == WM_SYSCOLORCHANGE)
 		{

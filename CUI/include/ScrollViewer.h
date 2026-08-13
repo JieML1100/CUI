@@ -21,6 +21,8 @@ namespace cui::framework
 		virtual double LogicalExtentHeightDip() const noexcept = 0;
 		virtual double LogicalExtentWidthDip() const noexcept { return 0.0; }
 		virtual double VerticalLayoutOriginDip() const noexcept = 0;
+		/** Restores any cache range compacted while the vertical Thumb was active. */
+		virtual void OnVerticalThumbDragCompleted() {}
 	};
 }
 

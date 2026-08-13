@@ -204,6 +204,26 @@ struct TextCompositionManagerTestAccess final
 	}
 };
 
+struct LabelRegressionTestAccess final
+{
+	static IDWriteTextLayout* EnsureFormattedText(
+		Label& target, cui::core::Size bounds, bool forMeasure)
+	{
+		return target.EnsureFormattedText(bounds, forMeasure);
+	}
+
+	static size_t CachedLayoutCount(const Label& target) noexcept
+	{
+		return (target._measureFormattedText.Layout ? size_t{ 1 } : size_t{ 0 })
+			+ (target._renderFormattedText.Layout ? size_t{ 1 } : size_t{ 0 });
+	}
+
+	static size_t LayoutCreationCount(const Label& target) noexcept
+	{
+		return target._formattedTextLayoutCreationCount;
+	}
+};
+
 namespace
 {
 	struct AutomationEventRecord
@@ -51698,6 +51718,184 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
 	});
 
+	runner.Add("Captured native pointer routing skips only move hit testing", []
+	{
+		struct NativeCaptureProbe final : Control
+		{
+			std::vector<InputReportKind> Inputs;
+			int ContainsQueries = 0;
+			mutable int SystemCursorQueries = 0;
+			UINT32 SystemCursorId = 0;
+
+			int Count(InputReportKind kind) const
+			{
+				return static_cast<int>(std::count(
+					Inputs.begin(), Inputs.end(), kind));
+			}
+
+			void ResetObservations()
+			{
+				Inputs.clear();
+				ContainsQueries = 0;
+				SystemCursorQueries = 0;
+			}
+
+			bool ContainsPoint(int localX, int localY) override
+			{
+				++ContainsQueries;
+				return Control::ContainsPoint(localX, localY);
+			}
+
+			bool TryGetSystemCursorId(UINT32& outId) const override
+			{
+				++SystemCursorQueries;
+				if (SystemCursorId == 0) return false;
+				outId = SystemCursorId;
+				return true;
+			}
+
+		protected:
+			bool ProcessInput(const InputReport& input) override
+			{
+				Inputs.push_back(input.Kind);
+				// Keep explicit capture stable across the synthetic down/up pair so
+				// this probe records Window's target selection, not Control defaults.
+				return true;
+			}
+		};
+
+		Window window;
+		ConfigureTestControl(window, L"Native capture routing fast path");
+		SetDeclaredWindowGeometry(
+			window, 100.0f, 100.0f, 320.0f, 140.0f);
+		auto rootOwner = MakeTestControl<Canvas>();
+		auto* root = rootOwner.get();
+		auto* captured = AddTestVisual<NativeCaptureProbe>(
+			*root, 10, 10, 80, 40);
+		auto* target = AddTestVisual<NativeCaptureProbe>(
+			*root, 170, 10, 80, 40);
+		captured->Cursor = CursorKind::SizeWE;
+		// IDC_IBEAM is 32513. Use an actual system-cursor hook so the test
+		// proves capture is authoritative over the control under the pointer.
+		target->SystemCursorId = 32513;
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(rootOwner)) == root);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(window.Handle != nullptr);
+		if (!window.Handle) return;
+
+		auto clientPoint = [&](Control& control)
+		{
+			const auto bounds = control.GetRenderedAbsoluteRectDip();
+			const auto pixels = window.ContentDipRectToClientPixels(D2D1::RectF(
+				bounds.left, bounds.top, bounds.right, bounds.bottom));
+			return POINT{
+				(pixels.left + pixels.right) / 2,
+				(pixels.top + pixels.bottom) / 2 };
+		};
+		auto sendClient = [&](UINT message, WPARAM wParam, POINT point)
+		{
+			(void)::SendMessageW(window.Handle, message, wParam,
+				MAKELPARAM(point.x, point.y));
+		};
+		auto sendWheel = [&](UINT message, short delta, POINT client)
+		{
+			POINT screen = client;
+			CUI_EXPECT_TRUE(::ClientToScreen(window.Handle, &screen) != FALSE);
+			(void)::SendMessageW(window.Handle, message,
+				MAKEWPARAM(0, static_cast<WORD>(delta)),
+				MAKELPARAM(screen.x, screen.y));
+		};
+		const POINT capturedPoint = clientPoint(*captured);
+		const POINT targetPoint = clientPoint(*target);
+		const auto targetBounds = target->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::HitTestControlAt(
+			window,
+			static_cast<int>((targetBounds.left + targetBounds.right) * 0.5f),
+			static_cast<int>((targetBounds.top + targetBounds.bottom) * 0.5f))
+			== target);
+
+		// Establish that the uncaptured path observes the target's native cursor,
+		// then move away so its mouse-over state cannot mask the capture fast path.
+		target->ResetObservations();
+		sendClient(WM_MOUSEMOVE, 0, targetPoint);
+		CUI_EXPECT_EQ(1, target->Count(InputReportKind::PointerMove));
+		CUI_EXPECT_TRUE(target->SystemCursorQueries > 0);
+		CUI_EXPECT_TRUE(::GetCursor() == ::LoadCursorW(nullptr, IDC_IBEAM));
+		sendClient(WM_MOUSEMOVE, 0, capturedPoint);
+		CUI_EXPECT_TRUE(captured->IsMouseOver);
+		CUI_EXPECT_FALSE(target->IsMouseOver);
+
+		// Avoid making WM_LBUTTONDOWN's SetFocus path the event that activates the
+		// native HWND; a focus transition is allowed to cancel an existing capture.
+		(void)::SetFocus(window.Handle);
+		CUI_EXPECT_TRUE(::GetFocus() == window.Handle);
+		CUI_EXPECT_TRUE(captured->CaptureMouse());
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == captured);
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendClient(WM_MOUSEMOVE, MK_LBUTTON, targetPoint);
+		CUI_EXPECT_EQ(1, captured->Count(InputReportKind::PointerMove));
+		CUI_EXPECT_EQ(0, target->Count(InputReportKind::PointerMove));
+		CUI_EXPECT_EQ(0, target->ContainsQueries);
+		CUI_EXPECT_EQ(0, target->SystemCursorQueries);
+		CUI_EXPECT_TRUE(captured->IsMouseOver);
+		CUI_EXPECT_FALSE(target->IsMouseOver);
+		CUI_EXPECT_TRUE(::GetCursor() == ::LoadCursorW(nullptr, IDC_SIZEWE));
+
+		// Down and double-click still use the control under the pointer; changing
+		// these to the zero-hit-test path would alter WPF-style pointer-down source.
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendClient(WM_LBUTTONDOWN, MK_LBUTTON, targetPoint);
+		CUI_EXPECT_TRUE(target->ContainsQueries > 0);
+		CUI_EXPECT_EQ(1, target->Count(InputReportKind::PointerDown));
+		CUI_EXPECT_EQ(0, captured->Count(InputReportKind::PointerDown));
+		// MouseOver follows the physical hit target for non-move messages; input
+		// routing and capture ownership are asserted independently below.
+		CUI_EXPECT_FALSE(captured->IsMouseOver);
+		CUI_EXPECT_TRUE(target->IsMouseOver);
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == captured);
+
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendClient(WM_LBUTTONDBLCLK, MK_LBUTTON, targetPoint);
+		CUI_EXPECT_TRUE(target->ContainsQueries > 0);
+		CUI_EXPECT_EQ(1, target->Count(InputReportKind::PointerDoubleClick));
+		CUI_EXPECT_EQ(0, captured->Count(InputReportKind::PointerDoubleClick));
+
+		// Up and both wheel variants hit-test for hover projection, while their
+		// actual input report remains routed to the capture owner.
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendClient(WM_LBUTTONUP, 0, targetPoint);
+		CUI_EXPECT_TRUE(target->ContainsQueries > 0);
+		CUI_EXPECT_EQ(1, captured->Count(InputReportKind::PointerUp));
+		CUI_EXPECT_EQ(0, target->Count(InputReportKind::PointerUp));
+
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendWheel(WM_MOUSEWHEEL, WHEEL_DELTA, targetPoint);
+		CUI_EXPECT_TRUE(target->ContainsQueries > 0);
+		CUI_EXPECT_EQ(1, captured->Count(InputReportKind::MouseWheel));
+		CUI_EXPECT_EQ(0, target->Count(InputReportKind::MouseWheel));
+
+		captured->ResetObservations();
+		target->ResetObservations();
+		sendWheel(WM_MOUSEHWHEEL, WHEEL_DELTA, targetPoint);
+		CUI_EXPECT_TRUE(target->ContainsQueries > 0);
+		CUI_EXPECT_EQ(
+			1, captured->Count(InputReportKind::HorizontalMouseWheel));
+		CUI_EXPECT_EQ(
+			0, target->Count(InputReportKind::HorizontalMouseWheel));
+
+		CUI_EXPECT_TRUE(captured->ReleaseMouseCapture());
+		CUI_EXPECT_TRUE(window.GetMouseCaptured() == nullptr);
+		target->ResetObservations();
+		sendClient(WM_MOUSEMOVE, 0, targetPoint);
+		CUI_EXPECT_TRUE(target->SystemCursorQueries > 0);
+		CUI_EXPECT_TRUE(::GetCursor() == ::LoadCursorW(nullptr, IDC_IBEAM));
+	});
+
 	runner.Add("Logical parent teardown ignores an expired presentation source", []
 	{
 		auto parent = std::make_unique<Control>();
@@ -52458,6 +52656,13 @@ class FreshWindow : public FreshWindowGenerated {};
         source.SetValue(L"Name", std::wstring(L"before"));
 
         TextBox target; ConfigureTestControl(target, L"", 0, 0);
+		const auto* textMetadata = target.GetPropertyMetadata(
+			TextBox::TextProperty());
+		CUI_EXPECT_TRUE(textMetadata != nullptr);
+		CUI_EXPECT_FALSE(textMetadata && HasDependencyPropertyFlag(
+			textMetadata->Flags(), DependencyPropertyFlags::AffectsMeasure));
+		CUI_EXPECT_TRUE(textMetadata && HasDependencyPropertyFlag(
+			textMetadata->Flags(), DependencyPropertyFlags::AffectsRender));
 		auto* binding = target.DataBindings.Add(L"Text", source, L"Name");
 		CUI_EXPECT_TRUE(binding != nullptr);
 		CUI_EXPECT_EQ(BindingMode::TwoWay, binding->Mode());
@@ -59978,6 +60183,49 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_FALSE(target.IsDeviceLost());
 	});
 
+	runner.Add("Label keeps independent measure and render text layouts", []
+	{
+		Label label;
+		label.Text = L"DataGrid cached text";
+		label.TextWrapping = TextWrapping::Wrap;
+		label.TextTrimming = TextTrimming::CharacterEllipsis;
+		label.TextAlignment = TextAlignment::Center;
+		const cui::core::Size bounds{ 128.0f, 38.0f };
+
+		auto* measure = LabelRegressionTestAccess::EnsureFormattedText(
+			label, bounds, true);
+		auto* render = LabelRegressionTestAccess::EnsureFormattedText(
+			label, bounds, false);
+		CUI_EXPECT_TRUE(measure != nullptr);
+		CUI_EXPECT_TRUE(render != nullptr);
+		CUI_EXPECT_TRUE(measure != render);
+		CUI_EXPECT_EQ(
+			2ULL, LabelRegressionTestAccess::CachedLayoutCount(label));
+		CUI_EXPECT_EQ(
+			2ULL, LabelRegressionTestAccess::LayoutCreationCount(label));
+
+		CUI_EXPECT_EQ(measure,
+			LabelRegressionTestAccess::EnsureFormattedText(
+				label, bounds, true));
+		CUI_EXPECT_EQ(render,
+			LabelRegressionTestAccess::EnsureFormattedText(
+				label, bounds, false));
+		CUI_EXPECT_EQ(
+			2ULL, LabelRegressionTestAccess::CachedLayoutCount(label));
+		CUI_EXPECT_EQ(
+			2ULL, LabelRegressionTestAccess::LayoutCreationCount(label));
+
+		label.Text = L"Invalidates both variants";
+		CUI_EXPECT_EQ(
+			0ULL, LabelRegressionTestAccess::CachedLayoutCount(label));
+		CUI_EXPECT_TRUE(LabelRegressionTestAccess::EnsureFormattedText(
+			label, bounds, true) != nullptr);
+		CUI_EXPECT_EQ(
+			1ULL, LabelRegressionTestAccess::CachedLayoutCount(label));
+		CUI_EXPECT_EQ(
+			3ULL, LabelRegressionTestAccess::LayoutCreationCount(label));
+	});
+
 	runner.Add("DataGrid SelectionUnit metadata exposes WPF choices and rejects invalid values", []
 	{
 		CUI_EXPECT_EQ(0, static_cast<int>(DataGridSelectionUnit::Cell));
@@ -60939,18 +61187,18 @@ class FreshWindow : public FreshWindowGenerated {};
 			// counting only non-null children would let an O(column-count) skeleton
 			// survive behind an apparently virtualized visual tree.
 			const size_t maximumColumnsPerStrip = visibleColumnBudget + 2;
-			// The sparse Grid representation adds a leading and trailing extent
-			// spacer around the realized tracks.  Those are the only extra tracks
-			// permitted; a definition per logical column would violate this bound.
+			// Headers retain a sparse Grid with two extent tracks. Rows use the
+			// specialized cells presenter, which owns only realized cell visuals and
+			// projects logical prefix/suffix extents without track definitions.
 			const size_t maximumTracksPerStrip = maximumColumnsPerStrip + 2;
-			const auto findCellsGrid = [](DataGridRow& row) -> Grid*
+			const auto findCellsPresenter = [](DataGridRow& row) -> Control*
 			{
 				auto* rowLayout = dynamic_cast<Grid*>(row.GetVisualContent());
 				if (!rowLayout) return nullptr;
 				for (auto* child : rowLayout->GetLayoutChildrenView())
 				{
 					if (child && Grid::GetColumn(*child) == 1)
-						return dynamic_cast<Grid*>(child);
+						return child;
 				}
 				return nullptr;
 			};
@@ -61014,11 +61262,15 @@ class FreshWindow : public FreshWindowGenerated {};
 					if (!row) continue;
 					CUI_EXPECT_TRUE(row->GetCells().size()
 						<= maximumColumnsPerStrip);
-					auto* cellsGrid = findCellsGrid(*row);
-					CUI_EXPECT_TRUE(cellsGrid != nullptr);
-					if (cellsGrid)
-						CUI_EXPECT_TRUE(cellsGrid->GetColumns().size()
-							<= maximumTracksPerStrip);
+					auto* cellsPresenter = findCellsPresenter(*row);
+					CUI_EXPECT_TRUE(cellsPresenter != nullptr);
+					CUI_EXPECT_TRUE(
+						dynamic_cast<Grid*>(cellsPresenter) == nullptr);
+					CUI_EXPECT_TRUE(
+						dynamic_cast<Panel*>(cellsPresenter) != nullptr);
+					if (cellsPresenter)
+						CUI_EXPECT_EQ(row->GetCells().size(),
+							static_cast<size_t>(cellsPresenter->VisualChildCount()));
 					size_t realizedCells = 0;
 					for (size_t column = 0; column < columnCount; ++column)
 						if (row->GetCell(column)) ++realizedCells;
@@ -61294,7 +61546,22 @@ class FreshWindow : public FreshWindowGenerated {};
 		column->SetBindingPath(L"Name");
 		column->SetWidth(DataGridLength(180.0));
 		CUI_EXPECT_TRUE(grid.AddColumn(std::move(columnOwner)) == column);
+		auto smallRows = std::make_shared<ObservableBindingList>(L"MillionRow");
+		for (const auto* name : { L"Zulu", L"Alpha" })
+		{
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(L"Name", std::wstring(name)));
+			smallRows->Items.push_back(BindingSourceReference(std::move(item)));
+		}
+		grid.SetItemsSource(BindingListReference(smallRows));
+		CUI_EXPECT_TRUE(grid.PerformSort(*column, false));
+		CUI_EXPECT_TRUE(column->GetSortDirection().has_value());
+		// WPF clears SortDescriptions and column indicators at an ItemsSource
+		// identity boundary. Carrying this two-row sort into the lazy source would
+		// force one million TryGetItem calls before virtualization can begin.
 		grid.SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_FALSE(column->GetSortDirection().has_value());
+		CUI_EXPECT_TRUE(rows->TryGetQueries < 64ULL);
 		CUI_EXPECT_EQ(rowCount, grid.ItemCount());
 		CUI_EXPECT_TRUE(grid.IsVirtualizing());
 		CUI_EXPECT_EQ(0ULL, grid.GeneratedItemCount());
@@ -61624,6 +61891,694 @@ class FreshWindow : public FreshWindowGenerated {};
 			- beforeFullRowHoleOccurrence < 256ULL);
 		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries
 			- beforeFullRowHoleLookup < 256ULL);
+	});
+
+	runner.Add("DataGrid million-row vertical thumb drag keeps viewport work bounded", []
+	{
+		class MillionThumbDragList final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			MillionThumbDragList(
+				size_t count, BindingSourceReference sharedItem) noexcept
+				: _count(count), _sharedItem(std::move(sharedItem)) {}
+
+			size_t Count() const noexcept override
+			{
+				++CountQueries;
+				return _count;
+			}
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				++TryGetQueries;
+				out = {};
+				if (index >= _count || !_sharedItem) return false;
+				RequestedIndices.insert(index);
+				if (index == 0) FirstRequested = true;
+				if (index + 1 == _count) LastRequested = true;
+				out = _sharedItem;
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				++OccurrenceQueries;
+				result = 0;
+				if (index >= _count
+					|| index == (std::numeric_limits<size_t>::max)())
+					return false;
+				result = index + 1;
+				return result != 0;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				++OccurrenceLookupQueries;
+				index = 0;
+				if (identity == 0 || identity > _count) return false;
+				index = identity - 1;
+				return true;
+			}
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring typeName = L"MillionThumbDragRow";
+				return typeName;
+			}
+
+			mutable size_t CountQueries = 0;
+			mutable size_t TryGetQueries = 0;
+			mutable size_t OccurrenceQueries = 0;
+			mutable size_t OccurrenceLookupQueries = 0;
+			mutable std::set<size_t> RequestedIndices;
+			mutable bool FirstRequested = false;
+			mutable bool LastRequested = false;
+
+		private:
+			const size_t _count;
+			const BindingSourceReference _sharedItem;
+		};
+
+		class ThumbDragDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			const auto& RealizedItemsForTest() const noexcept
+			{
+				return GetRealizedItems();
+			}
+			size_t GeneratedBuilds = 0;
+			size_t SuccessfulCrossIndexRebinds = 0;
+
+		protected:
+			std::unique_ptr<Control> BuildGeneratedItem(
+				const BindingSourceReference& item,
+				size_t index,
+				BindingPathObservation& observation) override
+			{
+				++GeneratedBuilds;
+				return DataGrid::BuildGeneratedItem(item, index, observation);
+			}
+			bool TryRebindGeneratedItemAcrossIndices(
+				Control& visual,
+				size_t oldIndex,
+				size_t newIndex,
+				const BindingSourceReference& item,
+				BindingPathObservation& observation,
+				std::wstring* outError) override
+			{
+				const bool rebound = DataGrid::TryRebindGeneratedItemAcrossIndices(
+					visual, oldIndex, newIndex, item, observation, outError);
+				if (rebound) ++SuccessfulCrossIndexRebinds;
+				return rebound;
+			}
+		};
+
+		constexpr size_t rowCount = 1'000'000;
+		constexpr size_t lastIndex = rowCount - 1;
+		constexpr int moveCount = 80;
+		auto sharedItem = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(sharedItem->DefineProperty(
+			L"Name", L"One shared thumb-drag record"));
+		auto rows = std::make_shared<MillionThumbDragList>(
+			rowCount, BindingSourceReference(sharedItem));
+
+		ThumbDragDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 228);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid.SetRowHeight(38.0);
+		auto column = std::make_unique<DataGridTextColumn>();
+		auto* resizedColumn = column.get();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		grid.SetItemsSource(BindingListReference(rows));
+
+		// Use the production-shaped template so both ItemsControl's logical-scroll
+		// realization and DataGrid's PART_ScrollViewer subscription participate.
+		auto* scroll = InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 228.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		if (!scroll || scroll->ViewportHeight <= 0.0) return;
+		CUI_EXPECT_TRUE(scroll->ExtentHeight > scroll->ViewportHeight);
+		CUI_EXPECT_EQ(0.0, scroll->VerticalOffset);
+
+		const auto rowsPanel = grid.GetItemsPanel();
+		const double virtualRowHeight = rowsPanel
+			? static_cast<double>(rowsPanel.Get()->ItemHeight) : 38.0;
+		const double cacheLength = rowsPanel
+			? static_cast<double>(rowsPanel.Get()->CacheLength) : 0.0;
+		const size_t maximumRealized = static_cast<size_t>(std::ceil(
+			scroll->ViewportHeight * (1.0 + 2.0 * cacheLength)
+			/ virtualRowHeight)) + 1;
+		const size_t maximumVisible = static_cast<size_t>(std::ceil(
+			scroll->ViewportHeight / virtualRowHeight)) + 1;
+		const size_t maximumRecycled = (std::max)(
+			size_t{ 4 }, maximumRealized * 2);
+		CUI_EXPECT_TRUE(rows->FirstRequested);
+		CUI_EXPECT_FALSE(rows->LastRequested);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) == nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+
+		const auto realizedRows = [&]()
+		{
+			std::set<DataGridRow*> result;
+			for (const auto& [index, realized] : grid.RealizedItemsForTest())
+			{
+				(void)realized;
+				if (auto* row = dynamic_cast<DataGridRow*>(
+					grid.GetGeneratedItem(index)))
+					result.insert(row);
+			}
+			return result;
+		};
+		auto seenRows = realizedRows();
+		CUI_EXPECT_EQ(grid.GeneratedItemCount(), seenRows.size());
+		CUI_EXPECT_TRUE(!grid.RealizedItemsForTest().empty());
+		if (grid.RealizedItemsForTest().empty()) return;
+		size_t previousLogicalLast =
+			grid.RealizedItemsForTest().rbegin()->first;
+		int recycledBatches = 0;
+
+		// A dense column-resize burst over the same million-row lazy source must
+		// project only the realized viewport. Force a layout after every move to
+		// model the most demanding one-input-per-frame case.
+		auto* headers = grid.GetColumnHeadersPresenter();
+		auto* header = headers ? headers->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (!header) return;
+		const ControlWeakReference headerLifetime(header);
+		const auto resizeRows = realizedRows();
+		auto* const resizeFirstRow = dynamic_cast<DataGridRow*>(
+			grid.GetGeneratedItem(0));
+		auto* const resizeFirstCell = resizeFirstRow
+			? resizeFirstRow->GetCell(0) : nullptr;
+		auto* const resizeFirstDisplay = resizeFirstCell
+			? dynamic_cast<Label*>(resizeFirstCell->GetVisualContent()) : nullptr;
+		CUI_EXPECT_TRUE(resizeFirstRow != nullptr);
+		CUI_EXPECT_TRUE(resizeFirstCell != nullptr);
+		CUI_EXPECT_TRUE(resizeFirstDisplay != nullptr);
+		if (!resizeFirstRow || !resizeFirstCell || !resizeFirstDisplay) return;
+		const ControlWeakReference resizeFirstCellLifetime(resizeFirstCell);
+		const ControlWeakReference resizeFirstDisplayLifetime(resizeFirstDisplay);
+		const size_t resizeCountBefore = rows->CountQueries;
+		const size_t resizeTryGetBefore = rows->TryGetQueries;
+		const size_t resizeBuildsBefore = grid.GeneratedBuilds;
+		const double resizeStartWidth = header->GetActualSizeDip().width;
+		const int resizeEdge = static_cast<int>(
+			std::floor(resizeStartWidth)) - 1;
+		constexpr int resizeMoveCount = 100;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, resizeEdge, 18, MouseButton::Left)));
+		for (int step = 1; step <= resizeMoveCount; ++step)
+		{
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				*header, PointerInput(InputReportKind::PointerMove,
+					MouseButton::None, resizeEdge + step, 18,
+					MouseButton::Left)));
+			grid.UpdateLayout();
+			CUI_EXPECT_EQ(header, headerLifetime.Get());
+			CUI_EXPECT_TRUE(resizeRows == realizedRows());
+			CUI_EXPECT_EQ(resizeBuildsBefore, grid.GeneratedBuilds);
+			CUI_EXPECT_EQ(resizeFirstCell, resizeFirstCellLifetime.Get());
+			CUI_EXPECT_EQ(resizeFirstDisplay,
+				resizeFirstDisplayLifetime.Get());
+			auto* const liveFirstRow = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(0));
+			CUI_EXPECT_EQ(resizeFirstRow, liveFirstRow);
+			CUI_EXPECT_EQ(resizeFirstCell,
+				liveFirstRow ? liveFirstRow->GetCell(0) : nullptr);
+			CUI_EXPECT_EQ(resizeFirstDisplay,
+				resizeFirstCell
+					? dynamic_cast<Label*>(
+						resizeFirstCell->GetVisualContent()) : nullptr);
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+		}
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, resizeEdge + resizeMoveCount, 18)));
+		grid.UpdateLayout();
+		CUI_EXPECT_EQ(header, headerLifetime.Get());
+		CUI_EXPECT_TRUE(resizeRows == realizedRows());
+		CUI_EXPECT_EQ(resizeBuildsBefore, grid.GeneratedBuilds);
+		CUI_EXPECT_EQ(resizeFirstCell, resizeFirstCellLifetime.Get());
+		CUI_EXPECT_EQ(resizeFirstDisplay, resizeFirstDisplayLifetime.Get());
+		CUI_EXPECT_NEAR(resizeStartWidth
+			+ static_cast<double>(resizeMoveCount),
+			resizedColumn->GetWidth().Value, 1.0);
+		// Width projection may ask for Count while committing each layout pass,
+		// but it must never reread row values. Keep a small constant allowance
+		// per input rather than a viewport-sized source budget.
+		CUI_EXPECT_TRUE(rows->CountQueries - resizeCountBefore
+			<= static_cast<size_t>(resizeMoveCount) * 8 + 32);
+		CUI_EXPECT_EQ(0ULL, rows->TryGetQueries - resizeTryGetBefore);
+
+		const auto scrollSize = scroll->GetActualSizeDip();
+		const float viewportHeight = static_cast<float>(scroll->ViewportHeight);
+		float thumbHeight = static_cast<float>(
+			(scroll->ViewportHeight * scroll->ViewportHeight)
+			/ scroll->ExtentHeight);
+		thumbHeight = std::clamp(thumbHeight,
+			(std::max)(16.0f, viewportHeight * 0.1f), viewportHeight);
+		const int verticalBarX = static_cast<int>(std::floor(
+			(scroll->ViewportWidth + scrollSize.width) * 0.5));
+		const int verticalStartY = (std::max)(
+			1, static_cast<int>(std::floor(thumbHeight * 0.5f)));
+		const int verticalEndY = (std::min)(
+			static_cast<int>(std::floor(viewportHeight)) - 1,
+			static_cast<int>(std::ceil(
+				viewportHeight - thumbHeight + verticalStartY)));
+		CUI_EXPECT_TRUE(verticalEndY > verticalStartY);
+
+		const size_t tryGetBeforeDrag = rows->TryGetQueries;
+		const size_t countBeforeDrag = rows->CountQueries;
+		const size_t occurrenceBeforeDrag = rows->OccurrenceQueries;
+		const size_t lookupBeforeDrag = rows->OccurrenceLookupQueries;
+		const size_t buildsBeforeDrag = grid.GeneratedBuilds;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, verticalBarX, verticalStartY,
+				MouseButton::Left)));
+		double previousOffset = scroll->VerticalOffset;
+		int forwardMoves = 0;
+		size_t maximumDuringDrag = 0;
+		for (int step = 1; step <= moveCount; ++step)
+		{
+			const double progress = static_cast<double>(step)
+				/ static_cast<double>(moveCount);
+			const int localY = static_cast<int>(std::lround(
+				static_cast<double>(verticalStartY)
+				+ static_cast<double>(verticalEndY - verticalStartY)
+					* progress));
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				*scroll, PointerInput(InputReportKind::PointerMove,
+					MouseButton::None, verticalBarX, localY,
+					MouseButton::Left)));
+			const double currentOffset = scroll->VerticalOffset;
+			CUI_EXPECT_TRUE(currentOffset + 0.001 >= previousOffset);
+			if (currentOffset > previousOffset + 0.001) ++forwardMoves;
+			previousOffset = currentOffset;
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() > 0ULL);
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumVisible);
+			maximumDuringDrag = (std::max)(
+				maximumDuringDrag, grid.GeneratedItemCount());
+			CUI_EXPECT_TRUE(grid.RecycledItemCount() <= maximumRecycled);
+
+			const auto& realized = grid.RealizedItemsForTest();
+			CUI_EXPECT_TRUE(!realized.empty());
+			if (realized.empty()) return;
+			// Every sample lands thousands of logical rows past the previous
+			// viewport.  Matching pointers therefore prove cross-index reuse,
+			// rather than survival of an overlapping row.
+			CUI_EXPECT_TRUE(realized.begin()->first > previousLogicalLast);
+			previousLogicalLast = realized.rbegin()->first;
+			auto currentRows = realizedRows();
+			CUI_EXPECT_EQ(grid.GeneratedItemCount(), currentRows.size());
+			const bool reusedIdentity = std::any_of(
+				currentRows.begin(), currentRows.end(),
+				[&](DataGridRow* row) { return seenRows.contains(row); });
+			if (reusedIdentity) ++recycledBatches;
+			seenRows.insert(currentRows.begin(), currentRows.end());
+		}
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, verticalBarX, verticalEndY)));
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(maximumDuringDrag > 0ULL);
+		if (cacheLength > 0.0)
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() > maximumDuringDrag);
+
+		const double maximumOffset =
+			scroll->ExtentHeight - scroll->ViewportHeight;
+		CUI_EXPECT_TRUE(forwardMoves >= moveCount * 3 / 4);
+		CUI_EXPECT_TRUE(recycledBatches >= moveCount - 2);
+		CUI_EXPECT_TRUE(grid.SuccessfulCrossIndexRebinds > 0ULL);
+		CUI_EXPECT_TRUE(grid.GeneratedBuilds - buildsBeforeDrag
+			<= maximumRealized * 2);
+		CUI_EXPECT_TRUE(seenRows.size() <= maximumRealized * 4);
+		CUI_EXPECT_NEAR(maximumOffset, scroll->VerticalOffset, 1.0);
+		CUI_EXPECT_TRUE(rows->LastRequested);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(lastIndex) != nullptr);
+		CUI_EXPECT_TRUE(grid.GetGeneratedItem(0) == nullptr);
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumRealized);
+		CUI_EXPECT_TRUE(grid.RecycledItemCount() <= maximumRecycled);
+
+		// Work grows with the number of input samples and the virtual viewport,
+		// never with the one-million-row logical Count.
+		const size_t perMoveQueryBudget = maximumRealized * 16 + 64;
+		CUI_EXPECT_TRUE(rows->CountQueries - countBeforeDrag
+			<= static_cast<size_t>(moveCount) * 64 + 128);
+		CUI_EXPECT_TRUE(rows->TryGetQueries - tryGetBeforeDrag
+			<= static_cast<size_t>(moveCount) * perMoveQueryBudget);
+		CUI_EXPECT_TRUE(rows->OccurrenceQueries - occurrenceBeforeDrag
+			<= static_cast<size_t>(moveCount) * perMoveQueryBudget);
+		CUI_EXPECT_TRUE(rows->OccurrenceLookupQueries - lookupBeforeDrag
+			<= static_cast<size_t>(moveCount) * perMoveQueryBudget);
+		CUI_EXPECT_TRUE(rows->RequestedIndices.size()
+			<= static_cast<size_t>(moveCount + 2) * maximumRealized * 2);
+		CUI_EXPECT_TRUE(rows->RequestedIndices.contains(0));
+		CUI_EXPECT_TRUE(rows->RequestedIndices.contains(lastIndex));
+
+		// Cancel/CaptureLost cleanup is authoritative even if the control becomes
+		// disabled during a drag; otherwise the visible-only range could stick.
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, verticalBarX, verticalEndY,
+				MouseButton::Left)));
+		const int cancelY = verticalStartY
+			+ (verticalEndY - verticalStartY) / 2;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*scroll, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, verticalBarX, cancelY,
+				MouseButton::Left)));
+		CUI_EXPECT_TRUE(grid.GeneratedItemCount() <= maximumVisible);
+		const size_t compactCount = grid.GeneratedItemCount();
+		scroll->IsEnabled = false;
+		InputReport cancel;
+		cancel.Kind = InputReportKind::Cancel;
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*scroll, cancel));
+		grid.UpdateLayout();
+		if (cacheLength > 0.0)
+			CUI_EXPECT_TRUE(grid.GeneratedItemCount() > compactCount);
+		scroll->IsEnabled = true;
+	});
+
+	runner.Add("DataGrid recycled bound cells detach old item and bind new DataContext", []
+	{
+		class RecycleBindingDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+			const auto& RealizedItemsForTest() const noexcept
+			{
+				return GetRealizedItems();
+			}
+		};
+
+		struct InitialVisual final
+		{
+			size_t Index = DataGridCellInfo::InvalidIndex;
+			ControlWeakReference Row;
+			ControlWeakReference Cell;
+			ControlWeakReference Display;
+		};
+
+		constexpr size_t rowCount = 256;
+		constexpr size_t middleIndex = rowCount / 2;
+		constexpr size_t lastIndex = rowCount - 1;
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"RecycleBindingRow");
+		std::vector<std::shared_ptr<ObservableObject>> records;
+		records.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			rows->Items.push_back(BindingSourceReference(item));
+			records.push_back(std::move(item));
+		}
+
+		RecycleBindingDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 152);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid.SetRowHeight(38.0);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		CUI_EXPECT_TRUE(dynamic_cast<DataGridBoundColumn*>(
+			grid.GetColumn(0)) != nullptr);
+		grid.SetItemsSource(BindingListReference(rows));
+
+		auto* scroll = InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 152.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		if (!scroll || scroll->ViewportHeight <= 0.0) return;
+
+		std::vector<InitialVisual> initialVisuals;
+		for (const auto& [index, realized] : grid.RealizedItemsForTest())
+		{
+			(void)realized;
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(index));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			auto* display = cell
+				? dynamic_cast<Label*>(cell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(row != nullptr);
+			CUI_EXPECT_TRUE(cell != nullptr);
+			CUI_EXPECT_TRUE(display != nullptr);
+			if (row && cell && display)
+			{
+				CUI_EXPECT_EQ(L"Row " + std::to_wstring(index),
+					display->Text);
+				initialVisuals.push_back(InitialVisual{
+					index, ControlWeakReference(row),
+					ControlWeakReference(cell),
+					ControlWeakReference(display) });
+			}
+		}
+		CUI_EXPECT_EQ(grid.GeneratedItemCount(), initialVisuals.size());
+		CUI_EXPECT_TRUE(!initialVisuals.empty());
+		if (initialVisuals.empty()) return;
+
+		// The first non-overlapping jump retires the initial viewport into the
+		// recycle pool.  The next far jump must consume those same row objects.
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(middleIndex));
+		grid.UpdateLayout();
+		for (const auto& initial : initialVisuals)
+			CUI_EXPECT_TRUE(grid.GetGeneratedItem(initial.Index) == nullptr);
+		CUI_EXPECT_TRUE(grid.RecycledItemCount() > 0ULL);
+
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(lastIndex));
+		grid.UpdateLayout();
+		const InitialVisual* reusedInitial = nullptr;
+		size_t reboundIndex = DataGridCellInfo::InvalidIndex;
+		DataGridRow* reboundRow = nullptr;
+		for (const auto& [index, realized] : grid.RealizedItemsForTest())
+		{
+			(void)realized;
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(index));
+			const auto found = std::find_if(
+				initialVisuals.begin(), initialVisuals.end(),
+				[row](const InitialVisual& initial)
+				{
+					return initial.Row.Get() == row;
+				});
+			if (found == initialVisuals.end()) continue;
+			reusedInitial = &*found;
+			reboundIndex = index;
+			reboundRow = row;
+			break;
+		}
+		CUI_EXPECT_TRUE(reusedInitial != nullptr);
+		CUI_EXPECT_TRUE(reboundIndex != DataGridCellInfo::InvalidIndex);
+		if (!reusedInitial
+			|| reboundIndex == DataGridCellInfo::InvalidIndex
+			|| !reboundRow) return;
+		CUI_EXPECT_TRUE(reboundIndex != reusedInitial->Index);
+
+		auto* reboundCell = reboundRow->GetCell(0);
+		auto* reboundDisplay = reboundCell
+			? dynamic_cast<Label*>(reboundCell->GetVisualContent()) : nullptr;
+		CUI_EXPECT_EQ(reusedInitial->Cell.Get(), reboundCell);
+		CUI_EXPECT_EQ(reusedInitial->Display.Get(), reboundDisplay);
+		CUI_EXPECT_TRUE(reboundCell != nullptr);
+		CUI_EXPECT_TRUE(reboundDisplay != nullptr);
+		if (!reboundCell || !reboundDisplay) return;
+
+		const auto& oldItem = records[reusedInitial->Index];
+		const auto& newItem = records[reboundIndex];
+		const std::wstring newValue =
+			L"Row " + std::to_wstring(reboundIndex);
+		CUI_EXPECT_TRUE(reboundRow->GetItem().Shared() == newItem);
+		CUI_EXPECT_TRUE(reboundRow->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_TRUE(reboundCell->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_TRUE(reboundDisplay->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_EQ(newValue, reboundDisplay->Text);
+
+		CUI_EXPECT_TRUE(oldItem->SetValue(
+			L"Name", std::wstring(L"stale old item mutation")));
+		CUI_EXPECT_EQ(newValue, reboundDisplay->Text);
+		CUI_EXPECT_TRUE(newItem->SetValue(
+			L"Name", std::wstring(L"current rebound item mutation")));
+		CUI_EXPECT_EQ(std::wstring(L"current rebound item mutation"),
+			reboundDisplay->Text);
+	});
+
+	runner.Add("DataGrid recycled OneTime text cells replace content for new item", []
+	{
+		class OneTimeRecycleDataGrid final : public DataGrid
+		{
+		public:
+			void PrepareForTest() { PreparePresentation(); }
+			bool BringIntoViewForTest(size_t index)
+			{
+				return BringItemIntoView(index);
+			}
+			const auto& RealizedItemsForTest() const noexcept
+			{
+				return GetRealizedItems();
+			}
+		};
+
+		struct InitialVisual final
+		{
+			size_t Index = DataGridCellInfo::InvalidIndex;
+			ControlWeakReference Row;
+			ControlWeakReference Cell;
+			ControlWeakReference Display;
+		};
+
+		constexpr size_t rowCount = 256;
+		constexpr size_t middleIndex = rowCount / 2;
+		constexpr size_t lastIndex = rowCount - 1;
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"OneTimeRecycleRow");
+		std::vector<std::shared_ptr<ObservableObject>> records;
+		records.reserve(rowCount);
+		for (size_t index = 0; index < rowCount; ++index)
+		{
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(
+				L"Name", L"OneTime " + std::to_wstring(index)));
+			rows->Items.push_back(BindingSourceReference(item));
+			records.push_back(std::move(item));
+		}
+
+		OneTimeRecycleDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 152);
+		grid.SetAutoGenerateColumns(false);
+		grid.SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid.SetRowHeight(38.0);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetBindingMode(BindingMode::OneTime);
+		column->SetWidth(DataGridLength(180.0));
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		auto* const boundColumn = dynamic_cast<DataGridTextColumn*>(
+			grid.GetColumn(0));
+		CUI_EXPECT_TRUE(boundColumn != nullptr);
+		CUI_EXPECT_TRUE(boundColumn
+			&& boundColumn->GetBindingMode() == BindingMode::OneTime);
+		grid.SetItemsSource(BindingListReference(rows));
+
+		auto* scroll = InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 152.0f });
+		grid.UpdateLayout();
+		grid.PrepareForTest();
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr && scroll->ViewportHeight > 0.0);
+		if (!scroll || scroll->ViewportHeight <= 0.0) return;
+
+		std::vector<InitialVisual> initialVisuals;
+		for (const auto& [index, realized] : grid.RealizedItemsForTest())
+		{
+			(void)realized;
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(index));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			auto* display = cell
+				? dynamic_cast<Label*>(cell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(row != nullptr);
+			CUI_EXPECT_TRUE(cell != nullptr);
+			CUI_EXPECT_TRUE(display != nullptr);
+			if (!row || !cell || !display) continue;
+			CUI_EXPECT_EQ(L"OneTime " + std::to_wstring(index),
+				display->Text);
+			initialVisuals.push_back(InitialVisual{
+				index, ControlWeakReference(row),
+				ControlWeakReference(cell),
+				ControlWeakReference(display) });
+		}
+		CUI_EXPECT_EQ(grid.GeneratedItemCount(), initialVisuals.size());
+		CUI_EXPECT_TRUE(!initialVisuals.empty());
+		if (initialVisuals.empty()) return;
+
+		// Retire the initial viewport, then consume it from the recycle pool at
+		// another non-overlapping range. OneTime cannot observe a DataContext proxy
+		// retarget, so only the content is rebuilt; Row and Cell remain stable.
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(middleIndex));
+		grid.UpdateLayout();
+		for (const auto& initial : initialVisuals)
+			CUI_EXPECT_TRUE(grid.GetGeneratedItem(initial.Index) == nullptr);
+		CUI_EXPECT_TRUE(grid.RecycledItemCount() > 0ULL);
+		CUI_EXPECT_TRUE(grid.BringIntoViewForTest(lastIndex));
+		grid.UpdateLayout();
+
+		const InitialVisual* reusedInitial = nullptr;
+		size_t reboundIndex = DataGridCellInfo::InvalidIndex;
+		DataGridRow* reboundRow = nullptr;
+		for (const auto& [index, realized] : grid.RealizedItemsForTest())
+		{
+			(void)realized;
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid.GetGeneratedItem(index));
+			const auto found = std::find_if(
+				initialVisuals.begin(), initialVisuals.end(),
+				[row](const InitialVisual& initial)
+				{
+					return initial.Row.Get() == row;
+				});
+			if (found == initialVisuals.end()) continue;
+			reusedInitial = &*found;
+			reboundIndex = index;
+			reboundRow = row;
+			break;
+		}
+		CUI_EXPECT_TRUE(reusedInitial != nullptr);
+		CUI_EXPECT_TRUE(reboundIndex != DataGridCellInfo::InvalidIndex);
+		if (!reusedInitial
+			|| reboundIndex == DataGridCellInfo::InvalidIndex
+			|| !reboundRow) return;
+		CUI_EXPECT_TRUE(reboundIndex != reusedInitial->Index);
+		CUI_EXPECT_EQ(reusedInitial->Row.Get(), reboundRow);
+
+		auto* reboundCell = reboundRow->GetCell(0);
+		auto* reboundDisplay = reboundCell
+			? dynamic_cast<Label*>(reboundCell->GetVisualContent()) : nullptr;
+		CUI_EXPECT_EQ(reusedInitial->Cell.Get(), reboundCell);
+		CUI_EXPECT_FALSE(reusedInitial->Display);
+		CUI_EXPECT_TRUE(reboundDisplay != nullptr);
+		if (!reboundCell || !reboundDisplay) return;
+
+		const auto& newItem = records[reboundIndex];
+		const std::wstring newValue =
+			L"OneTime " + std::to_wstring(reboundIndex);
+		CUI_EXPECT_TRUE(reboundRow->GetItem().Shared() == newItem);
+		CUI_EXPECT_TRUE(reboundRow->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_TRUE(reboundCell->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_TRUE(reboundDisplay->GetDataContext().Get() == newItem.get());
+		CUI_EXPECT_EQ(newValue, reboundDisplay->Text);
+		CUI_EXPECT_TRUE(newItem->SetValue(
+			L"Name", std::wstring(L"OneTime mutation after initialization")));
+		CUI_EXPECT_EQ(newValue, reboundDisplay->Text);
 	});
 
 	runner.Add("DataGrid FullRow Reset keeps cross-snapshot cell delta row-lazy", []
@@ -63833,6 +64788,276 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(grid.GeneratedItemCount() < viewportReadBudget);
 	});
 
+	runner.Add("DataGrid Auto row height follows wrapped cell width during and after resize", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid Auto row resize");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 250.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 360, 250);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid->SetRowHeight(
+			(std::numeric_limits<double>::quiet_NaN)());
+
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Wrapped value"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(240.0));
+		column->SetMinWidth(56.0);
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) == column);
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(
+			L"Name",
+			L"A wrapped DataGrid cell must grow its Auto row while the native "
+			L"column gripper is still moving and shrink again when widened."));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"AutoHeightResizeRow");
+		rows->Items.push_back(BindingSourceReference(item));
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		auto resolveRowAndLabel = [&]()
+			-> std::pair<DataGridRow*, Label*>
+		{
+			auto* row = dynamic_cast<DataGridRow*>(
+				grid->GetGeneratedItem(0));
+			auto* cell = row ? row->GetCell(0) : nullptr;
+			auto* label = cell
+				? dynamic_cast<Label*>(cell->GetVisualContent()) : nullptr;
+			return { row, label };
+		};
+		auto [row, label] = resolveRowAndLabel();
+		CUI_EXPECT_TRUE(row != nullptr);
+		CUI_EXPECT_TRUE(label != nullptr);
+		if (!row || !label) return;
+		label->TextWrapping = TextWrapping::Wrap;
+		label->VerticalAlignment = VerticalAlignment::Top;
+		window.UpdateLayout();
+		const ControlWeakReference rowLifetime(row);
+		const ControlWeakReference labelLifetime(label);
+		const float wideHeight = row->GetActualSizeDip().height;
+		CUI_EXPECT_TRUE(wideHeight > 0.0f);
+
+		auto beginResizeTo = [&](double targetWidth)
+			-> DataGridColumnHeader*
+		{
+			auto* headers = grid->GetColumnHeadersPresenter();
+			auto* header = headers ? headers->GetHeader(0) : nullptr;
+			CUI_EXPECT_TRUE(header != nullptr);
+			if (!header) return nullptr;
+			const double startWidth = header->GetActualSizeDip().width;
+			const int edge = static_cast<int>(
+				std::floor(startWidth)) - 1;
+			const int targetX = edge + static_cast<int>(std::lround(
+				targetWidth - startWidth));
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				*header, PointerInput(InputReportKind::PointerDown,
+					MouseButton::Left, edge, 18, MouseButton::Left)));
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				*header, PointerInput(InputReportKind::PointerMove,
+					MouseButton::None, targetX, 18, MouseButton::Left)));
+			window.UpdateLayout();
+			return header;
+		};
+		auto endResizeAt = [&](DataGridColumnHeader& header, double targetWidth)
+		{
+			const int localX = static_cast<int>(std::lround(targetWidth)) - 1;
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				header, PointerInput(InputReportKind::PointerUp,
+					MouseButton::Left, localX, 18)));
+			window.UpdateLayout();
+		};
+
+		constexpr double narrowWidth = 64.0;
+		auto* narrowHeader = beginResizeTo(narrowWidth);
+		if (!narrowHeader) return;
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		label = dynamic_cast<Label*>(labelLifetime.Get());
+		CUI_EXPECT_TRUE(row != nullptr && label != nullptr);
+		if (!row || !label) return;
+		const float narrowDuringDrag = row->GetActualSizeDip().height;
+		CUI_EXPECT_NEAR(narrowWidth, column->GetWidth().Value, 1.0);
+		if (!(narrowDuringDrag > wideHeight + 8.0f))
+		{
+			auto* liveCell = row->GetCell(0);
+			auto* presenter = liveCell ? liveCell->GetVisualParent() : nullptr;
+			const auto measured = label->Measure(cui::core::Constraints{
+				cui::core::Size{ static_cast<float>(narrowWidth),
+					cui::core::Infinity } });
+			const std::string detail = "wide=" + std::to_string(wideHeight)
+				+ ", narrow=" + std::to_string(narrowDuringDrag)
+				+ ", width=" + std::to_string(column->GetWidth().Value)
+				+ ", cell=" + std::to_string(liveCell
+					? liveCell->GetActualSizeDip().width : -1.0f)
+				+ ", cellDesiredH=" + std::to_string(liveCell
+					? liveCell->GetDesiredSizeDip().height : -1.0f)
+				+ ", presenter=" + std::to_string(presenter
+					? presenter->GetActualSizeDip().width : -1.0f)
+				+ ", presenterDesiredH=" + std::to_string(presenter
+					? presenter->GetDesiredSizeDip().height : -1.0f)
+				+ ", rowDesiredH=" + std::to_string(row->GetDesiredSizeDip().height)
+				+ ", labelDesired=" + std::to_string(measured.height);
+			::cui::test::Fail("Auto row grows during narrow resize",
+				__FILE__, __LINE__, detail.c_str());
+		}
+		endResizeAt(*narrowHeader, narrowWidth);
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		CUI_EXPECT_TRUE(row != nullptr);
+		if (!row) return;
+		const float narrowAfterRelease = row->GetActualSizeDip().height;
+		CUI_EXPECT_NEAR(narrowDuringDrag, narrowAfterRelease, 1.0f);
+
+		constexpr double restoredWidth = 240.0;
+		auto* wideHeader = beginResizeTo(restoredWidth);
+		if (!wideHeader) return;
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		CUI_EXPECT_TRUE(row != nullptr);
+		if (!row) return;
+		const float wideDuringDrag = row->GetActualSizeDip().height;
+		CUI_EXPECT_TRUE(wideDuringDrag + 8.0f < narrowAfterRelease);
+		endResizeAt(*wideHeader, restoredWidth);
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		CUI_EXPECT_TRUE(row != nullptr);
+		if (!row) return;
+		CUI_EXPECT_NEAR(
+			wideDuringDrag, row->GetActualSizeDip().height, 1.0f);
+		CUI_EXPECT_NEAR(wideHeight, row->GetActualSizeDip().height, 1.0f);
+	});
+
+	runner.Add("DataGrid fixed row constrains centered bottom cell to final column slot", []
+	{
+		Window window;
+		ConfigureTestControl(window, L"DataGrid final cell slot");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 360.0f, 210.0f);
+		auto gridOwner = std::make_unique<DataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 360, 210);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		grid->SetRowHeight(54.0);
+
+		auto columnOwner = std::make_unique<DataGridTextColumn>();
+		auto* column = columnOwner.get();
+		column->SetHeader(BindingValue(L"Aligned value"));
+		column->SetBindingPath(L"Name");
+		column->SetWidth(DataGridLength(260.0));
+		column->SetMinWidth(44.0);
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(columnOwner)) == column);
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(
+			L"Name", L"Centered bottom cell with a naturally wide label"));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"FinalArrangeSlotRow");
+		rows->Items.push_back(BindingSourceReference(item));
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+
+		auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* cell = row ? row->GetCell(0) : nullptr;
+		auto* label = cell
+			? dynamic_cast<Label*>(cell->GetVisualContent()) : nullptr;
+		CUI_EXPECT_TRUE(row != nullptr);
+		CUI_EXPECT_TRUE(cell != nullptr);
+		CUI_EXPECT_TRUE(label != nullptr);
+		if (!row || !cell || !label) return;
+		cell->HorizontalAlignment = HorizontalAlignment::Center;
+		cell->VerticalAlignment = VerticalAlignment::Bottom;
+		cell->MinWidth = 0.0f;
+		cell->MinHeight = 0.0f;
+		cell->MaxHeight = 22.0f;
+		label->TextWrapping = TextWrapping::NoWrap;
+		window.UpdateLayout();
+		const ControlWeakReference rowLifetime(row);
+		const ControlWeakReference cellLifetime(cell);
+		const ControlWeakReference labelLifetime(label);
+		const float initialCellWidth = cell->GetActualSizeDip().width;
+		CUI_EXPECT_TRUE(initialCellWidth > 80.0f);
+		CUI_EXPECT_TRUE(cell->GetActualLocationDip().y > 1.0f);
+
+		const double narrowWidth = (std::clamp)(
+			static_cast<double>(initialCellWidth) * 0.45, 48.0, 78.0);
+		auto* headers = grid->GetColumnHeadersPresenter();
+		auto* header = headers ? headers->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (!header) return;
+		const double startWidth = header->GetActualSizeDip().width;
+		const int edge = static_cast<int>(std::floor(startWidth)) - 1;
+		const int targetX = edge + static_cast<int>(std::lround(
+			narrowWidth - startWidth));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerDown,
+				MouseButton::Left, edge, 18, MouseButton::Left)));
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerMove,
+				MouseButton::None, targetX, 18, MouseButton::Left)));
+		window.UpdateLayout();
+
+		auto expectInsideFinalSlot = [&]
+		{
+			auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+			auto* liveCell = dynamic_cast<DataGridCell*>(cellLifetime.Get());
+			auto* liveLabel = dynamic_cast<Label*>(labelLifetime.Get());
+			CUI_EXPECT_TRUE(liveRow != nullptr);
+			CUI_EXPECT_TRUE(liveCell != nullptr);
+			CUI_EXPECT_TRUE(liveLabel != nullptr);
+			if (!liveRow || !liveCell || !liveLabel) return;
+			CUI_EXPECT_EQ(HorizontalAlignment::Center,
+				liveCell->HorizontalAlignment);
+			CUI_EXPECT_EQ(VerticalAlignment::Bottom,
+				liveCell->VerticalAlignment);
+			auto* presenter = liveCell->GetVisualParent();
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			if (!presenter) return;
+			const auto location = liveCell->GetActualLocationDip();
+			const auto size = liveCell->GetActualSizeDip();
+			const auto presenterSize = presenter->GetActualSizeDip();
+			constexpr float epsilon = 0.01f;
+			CUI_EXPECT_TRUE(location.x >= -epsilon);
+			CUI_EXPECT_TRUE(location.y >= -epsilon);
+			if (!(location.x + size.width
+				<= static_cast<float>(column->GetWidth().Value) + epsilon))
+			{
+				auto* liveHeaders = grid->GetColumnHeadersPresenter();
+				auto* liveHeader = liveHeaders ? liveHeaders->GetHeader(0) : nullptr;
+				const auto headerDefinition = liveHeaders
+					&& !liveHeaders->GetColumns().empty()
+					? liveHeaders->GetColumns().front().Width.Value : -1.0f;
+				const std::string detail = "x=" + std::to_string(location.x)
+					+ ", width=" + std::to_string(size.width)
+					+ ", column=" + std::to_string(column->GetWidth().Value)
+					+ ", presenter=" + std::to_string(presenterSize.width)
+					+ ", header=" + std::to_string(liveHeader
+						? liveHeader->GetActualSizeDip().width : -1.0f)
+					+ ", headerDef=" + std::to_string(headerDefinition);
+				::cui::test::Fail("centered cell stays inside column slot",
+					__FILE__, __LINE__, detail.c_str());
+			}
+			CUI_EXPECT_TRUE(location.y + size.height
+				<= presenterSize.height + epsilon);
+			CUI_EXPECT_TRUE(location.y > 1.0f);
+		};
+		expectInsideFinalSlot();
+		CUI_EXPECT_TRUE(cell->GetActualSizeDip().width
+			+ 1.0f < initialCellWidth);
+
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*header, PointerInput(InputReportKind::PointerUp,
+				MouseButton::Left, targetX, 18)));
+		window.UpdateLayout();
+		expectInsideFinalSlot();
+	});
+
 	runner.Add("DataGrid header grippers resize columns in place and honor WPF constraints", []
 	{
 		DataGrid grid;
@@ -63878,12 +65103,23 @@ class FreshWindow : public FreshWindowGenerated {};
 		const double startWidth = header->GetActualSizeDip().width;
 		CUI_EXPECT_TRUE(startWidth >= 60.0 && startWidth <= 180.0);
 		const int edge = static_cast<int>(std::floor(startWidth)) - 1;
+		CUI_EXPECT_EQ(CursorKind::SizeWE,
+			header->ResolvePointerCursor(edge, 18));
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			*header, PointerInput(InputReportKind::PointerDown,
 				MouseButton::Left, edge, 18, MouseButton::Left)));
-		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
-			*header, PointerInput(InputReportKind::PointerMove,
-				MouseButton::None, edge + 100, 18, MouseButton::Left)));
+		for (int step = 1; step <= 100; ++step)
+		{
+			CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+				*header, PointerInput(InputReportKind::PointerMove,
+					MouseButton::None, edge + step, 18,
+					MouseButton::Left)));
+			CUI_EXPECT_EQ(header, headerLifetime.Get());
+			CUI_EXPECT_EQ(row,
+				dynamic_cast<DataGridRow*>(grid.GetGeneratedItem(0)));
+			CUI_EXPECT_EQ(CursorKind::SizeWE,
+				header->ResolvePointerCursor(edge + step, 18));
+		}
 		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
 			*header, PointerInput(InputReportKind::PointerUp,
 				MouseButton::Left, edge + 100, 18)));
@@ -66748,17 +67984,46 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		const RoutedEventArgs* beginningInput = reinterpret_cast<RoutedEventArgs*>(1);
 		const RoutedEventArgs* preparingInput = reinterpret_cast<RoutedEventArgs*>(1);
+		int beginningMouseClickCount = 0;
+		int preparingMouseClickCount = 0;
 		auto beginningConnection = grid->BeginningEdit.Subscribe(
 			[&](DataGrid*, DataGridBeginningEditEventArgs& args)
-			{ beginningInput = args.EditingEventArgs; });
+			{
+				beginningInput = args.EditingEventArgs;
+				const auto* mouse = dynamic_cast<const MouseEventArgs*>(
+					args.EditingEventArgs);
+				beginningMouseClickCount = mouse ? mouse->ClickCount : 0;
+			});
 		auto preparingConnection = grid->PreparingCellForEdit.Subscribe(
 			[&](DataGrid*, DataGridPreparingCellForEditEventArgs& args)
-			{ preparingInput = args.EditingEventArgs; });
+			{
+				preparingInput = args.EditingEventArgs;
+				const auto* mouse = dynamic_cast<const MouseEventArgs*>(
+					args.EditingEventArgs);
+				preparingMouseClickCount = mouse ? mouse->ClickCount : 0;
+			});
 
-		CUI_EXPECT_TRUE(grid->BeginEdit());
 		auto* firstRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
 		auto* firstCell = firstRow ? firstRow->GetCell(0) : nullptr;
-		auto* editor = firstCell
+		CUI_EXPECT_TRUE(firstCell != nullptr);
+		if (!firstCell) return;
+		window.SetKeyboardFocus(firstCell, false);
+		CUI_EXPECT_TRUE(window.GetKeyboardFocusedElement() == firstCell);
+		CUI_EXPECT_TRUE(cui::framework::InputAccess::DispatchInput(
+			*firstCell, PointerInput(
+				InputReportKind::PointerDoubleClick,
+				MouseButton::Left, 120, 18, MouseButton::Left)));
+		auto* editor = dynamic_cast<TextBox*>(firstCell->GetEditingElement());
+		CUI_EXPECT_TRUE(firstCell->GetIsEditing());
+		CUI_EXPECT_TRUE(editor != nullptr);
+		CUI_EXPECT_EQ(2, beginningMouseClickCount);
+		CUI_EXPECT_EQ(2, preparingMouseClickCount);
+		CUI_EXPECT_TRUE(grid->GetSelectedIndices().empty());
+		CUI_EXPECT_EQ(1ULL, grid->GetSelectedCells().size());
+		CUI_EXPECT_TRUE(grid->CancelEdit());
+
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		editor = firstCell
 			? dynamic_cast<TextBox*>(firstCell->GetEditingElement()) : nullptr;
 		CUI_EXPECT_TRUE(editor != nullptr);
 		if (!editor) return;
@@ -67010,6 +68275,82 @@ class FreshWindow : public FreshWindowGenerated {};
 			> editorRect.left + editorWidth * 0.75f);
 		CUI_EXPECT_TRUE(caretRect.right
 			<= editorRect.right + cellChromeAllowance);
+	});
+
+	runner.Add("DataGrid rapid Text editing stays render-only until commit", []
+	{
+		class ArrangeProbeDataGrid final : public DataGrid
+		{
+		public:
+			size_t ArrangeCalls = 0;
+
+			void Arrange(cui::core::Rect finalRect) override
+			{
+				++ArrangeCalls;
+				DataGrid::Arrange(finalRect);
+			}
+		};
+
+		Window window;
+		ConfigureTestControl(window, L"DataGrid rapid text editing");
+		SetDeclaredWindowGeometry(
+			window, 0.0f, 0.0f, 480.0f, 240.0f);
+		auto gridOwner = std::make_unique<ArrangeProbeDataGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0, 0, 480, 240);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetSelectionUnit(DataGridSelectionUnit::Cell);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Name"));
+		column->SetBindingPath(L"Name");
+		column->SetBindingMode(BindingMode::TwoWay);
+		column->SetDataSourceUpdateMode(
+			DataSourceUpdateMode::OnValidation);
+		column->SetWidth(DataGridLength::Star());
+		CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(
+			L"Name", std::wstring(L"original")));
+		auto rows = std::make_shared<ObservableBindingList>(
+			L"RapidEditingRow");
+		rows->Items.push_back(BindingSourceReference(item));
+		grid->SetItemsSource(BindingListReference(rows));
+		CUI_EXPECT_TRUE(
+			window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+		CUI_EXPECT_TRUE(grid->BeginEdit());
+		window.UpdateLayout();
+
+		auto* row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(0));
+		auto* cell = row ? row->GetCell(0) : nullptr;
+		auto* editor = cell
+			? dynamic_cast<TextBox*>(cell->GetEditingElement()) : nullptr;
+		CUI_EXPECT_TRUE(editor != nullptr);
+		if (!editor) return;
+
+		grid->ArrangeCalls = 0;
+		const std::wstring burst = L"Rapid-0123456789-Input";
+		for (const wchar_t character : burst)
+		{
+			TextCompositionEventArgs input(
+				std::wstring(1, character));
+			CUI_EXPECT_TRUE(
+				cui::framework::InputAccess::DispatchTextInput(
+					*editor, input));
+			// Model the native message loop servicing pending layout after every
+			// character. Text editing must remain a retained render update.
+			window.UpdateLayout();
+		}
+
+		CUI_EXPECT_EQ(burst, editor->Text);
+		CUI_EXPECT_EQ(0ULL, grid->ArrangeCalls);
+		CUI_EXPECT_EQ(std::wstring(L"original"),
+			item->GetValue<std::wstring>(L"Name"));
+		CUI_EXPECT_TRUE(grid->CommitEdit());
+		CUI_EXPECT_EQ(burst,
+			item->GetValue<std::wstring>(L"Name"));
 	});
 
 	runner.Add("DataGrid editing TextBox owns Ctrl A and direction keys", []
@@ -67330,6 +68671,26 @@ class FreshWindow : public FreshWindowGenerated {};
 			(void)::SendMessageW(window.Handle, WM_LBUTTONUP, 0, point);
 			return true;
 		};
+		auto sendCellDoubleClickThroughWindow = [](
+			Window& window, DataGridCell& cell, float contentX, float contentY)
+		{
+			window.UpdateLayout();
+			const auto cellBounds = cell.GetRenderedAbsoluteRectDip();
+			CUI_EXPECT_TRUE(contentX >= cellBounds.left
+				&& contentX < cellBounds.right);
+			CUI_EXPECT_TRUE(contentY >= cellBounds.top
+				&& contentY < cellBounds.bottom);
+			if (!window.Handle) return false;
+			const auto client = window.ContentDipRectToClientPixels(D2D1::RectF(
+				contentX, contentY, contentX + 1.0f, contentY + 1.0f));
+			const LPARAM point = MAKELPARAM(
+				(client.left + client.right) / 2,
+				(client.top + client.bottom) / 2);
+			(void)::SendMessageW(
+				window.Handle, WM_LBUTTONDBLCLK, MK_LBUTTON, point);
+			(void)::SendMessageW(window.Handle, WM_LBUTTONUP, 0, point);
+			return true;
+		};
 
 		{
 			Window window;
@@ -67390,8 +68751,12 @@ class FreshWindow : public FreshWindowGenerated {};
 			column->SetBindingMode(BindingMode::TwoWay);
 			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
 			auto item = makePaidRow(false);
+			auto glyphItem = makePaidRow(false);
+			auto repeatedClickItem = makePaidRow(false);
 			auto rows = std::make_shared<ObservableBindingList>(L"EditableCheckRow");
 			rows->Items.push_back(BindingSourceReference(item));
+			rows->Items.push_back(BindingSourceReference(glyphItem));
+			rows->Items.push_back(BindingSourceReference(repeatedClickItem));
 			grid->SetItemsSource(BindingListReference(rows));
 			CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
 			window.UpdateLayout();
@@ -67401,6 +68766,14 @@ class FreshWindow : public FreshWindowGenerated {};
 				? dynamic_cast<CheckBox*>(cell->GetVisualContent()) : nullptr;
 			CUI_EXPECT_TRUE(display != nullptr);
 			if (!cell || !display) return;
+			// This behavior test is intentionally headless and does not install the
+			// framework theme. Recreate WPF's bounded default display-element slot
+			// so glyph-vs-blank hit semantics are measured, not theme availability.
+			display->Width = 20.0f;
+			display->Height = 20.0f;
+			display->HorizontalAlignment = HorizontalAlignment::Center;
+			display->VerticalAlignment = VerticalAlignment::Top;
+			window.UpdateLayout();
 			int beginningEdit = 0;
 			int preparingEdit = 0;
 			auto beginningConnection = grid->BeginningEdit.Subscribe(
@@ -67411,8 +68784,18 @@ class FreshWindow : public FreshWindowGenerated {};
 				{ ++preparingEdit; });
 
 			// WPF's display CheckBox is not hit-testable. A fresh cell's first
-			// click therefore focuses/selects the cell without beginning edit.
-			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *cell));
+			// blank-area click focuses/selects the cell without beginning edit.
+			const auto cellBounds = cell->GetRenderedAbsoluteRectDip();
+			const float blankX = cellBounds.right - 6.0f;
+			const float blankY = (cellBounds.top + cellBounds.bottom) * 0.5f;
+			const auto blankClient = window.ContentDipRectToClientPixels(
+				D2D1::RectF(blankX, blankY, blankX + 1.0f, blankY + 1.0f));
+			const LPARAM blankPoint = MAKELPARAM(
+				(blankClient.left + blankClient.right) / 2,
+				(blankClient.top + blankClient.bottom) / 2);
+			(void)::SendMessageW(
+				window.Handle, WM_LBUTTONDOWN, MK_LBUTTON, blankPoint);
+			(void)::SendMessageW(window.Handle, WM_LBUTTONUP, 0, blankPoint);
 			CUI_EXPECT_EQ(0, beginningEdit);
 			CUI_EXPECT_EQ(0, preparingEdit);
 			CUI_EXPECT_FALSE(cell->GetIsEditing());
@@ -67423,17 +68806,79 @@ class FreshWindow : public FreshWindowGenerated {};
 			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
 			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
 
-			// Once the cell is current, focused and selected, the next click
-			// begins the edit transaction and CheckBox preparation toggles once.
-			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *cell));
+			// The second native press enters edit, but WPF does not toggle when
+			// that press is in the cell's blank area.
+			CUI_EXPECT_TRUE(sendCellDoubleClickThroughWindow(
+				window, *cell, blankX, blankY));
 			CUI_EXPECT_EQ(1, beginningEdit);
 			CUI_EXPECT_EQ(1, preparingEdit);
 			CUI_EXPECT_TRUE(cell->GetIsEditing());
 			auto* editor = dynamic_cast<CheckBox*>(cell->GetEditingElement());
 			CUI_EXPECT_TRUE(editor != nullptr);
-			CUI_EXPECT_TRUE(item->GetValue<bool>(L"Paid"));
-			CUI_EXPECT_TRUE(editor && editor->IsChecked == true);
+			CUI_EXPECT_FALSE(item->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(editor && editor->IsChecked == false);
 			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+			CUI_EXPECT_TRUE(grid->CancelEdit());
+
+			// Repeat on a fresh row at the display glyph. The double-click's
+			// second press begins edit and toggles exactly once.
+			auto* glyphRow = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
+			auto* glyphCell = glyphRow ? glyphRow->GetCell(0) : nullptr;
+			auto* glyphDisplay = glyphCell
+				? dynamic_cast<CheckBox*>(glyphCell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(glyphCell != nullptr && glyphDisplay != nullptr);
+			if (!glyphCell || !glyphDisplay) return;
+			glyphDisplay->Width = 20.0f;
+			glyphDisplay->Height = 20.0f;
+			glyphDisplay->HorizontalAlignment = HorizontalAlignment::Center;
+			glyphDisplay->VerticalAlignment = VerticalAlignment::Top;
+			window.UpdateLayout();
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *glyphCell));
+			CUI_EXPECT_FALSE(glyphCell->GetIsEditing());
+			CUI_EXPECT_FALSE(glyphItem->GetValue<bool>(L"Paid"));
+			const auto glyphBounds = glyphDisplay->GetRenderedAbsoluteRectDip();
+			const float glyphX = (glyphBounds.left + glyphBounds.right) * 0.5f;
+			const float glyphY = (glyphBounds.top + glyphBounds.bottom) * 0.5f;
+			CUI_EXPECT_TRUE(sendCellDoubleClickThroughWindow(
+				window, *glyphCell, glyphX, glyphY));
+			CUI_EXPECT_EQ(2, beginningEdit);
+			CUI_EXPECT_EQ(2, preparingEdit);
+			CUI_EXPECT_TRUE(glyphCell->GetIsEditing());
+			editor = dynamic_cast<CheckBox*>(glyphCell->GetEditingElement());
+			CUI_EXPECT_TRUE(editor != nullptr);
+			CUI_EXPECT_TRUE(glyphItem->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(editor && editor->IsChecked == true);
+			CUI_EXPECT_EQ(1ULL, grid->GetCurrentCell().RowIndex);
+			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
+
+			// Two ordinary single-click reports follow the same WPF path: the
+			// first selects a fresh cell and the repeated click begins edit and
+			// toggles once when it lands over the bounded CheckBox.
+			auto* repeatedRow = dynamic_cast<DataGridRow*>(
+				grid->GetGeneratedItem(2));
+			auto* repeatedCell = repeatedRow ? repeatedRow->GetCell(0) : nullptr;
+			auto* repeatedDisplay = repeatedCell
+				? dynamic_cast<CheckBox*>(repeatedCell->GetVisualContent()) : nullptr;
+			CUI_EXPECT_TRUE(repeatedCell != nullptr && repeatedDisplay != nullptr);
+			if (!repeatedCell || !repeatedDisplay) return;
+			repeatedDisplay->Width = 20.0f;
+			repeatedDisplay->Height = 20.0f;
+			repeatedDisplay->HorizontalAlignment = HorizontalAlignment::Center;
+			repeatedDisplay->VerticalAlignment = VerticalAlignment::Top;
+			window.UpdateLayout();
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *repeatedCell));
+			CUI_EXPECT_FALSE(repeatedCell->GetIsEditing());
+			CUI_EXPECT_FALSE(repeatedClickItem->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(clickCellThroughWindow(window, *repeatedCell));
+			CUI_EXPECT_EQ(3, beginningEdit);
+			CUI_EXPECT_EQ(3, preparingEdit);
+			CUI_EXPECT_TRUE(repeatedCell->GetIsEditing());
+			editor = dynamic_cast<CheckBox*>(repeatedCell->GetEditingElement());
+			CUI_EXPECT_TRUE(editor != nullptr);
+			CUI_EXPECT_TRUE(repeatedClickItem->GetValue<bool>(L"Paid"));
+			CUI_EXPECT_TRUE(editor && editor->IsChecked == true);
+			CUI_EXPECT_EQ(2ULL, grid->GetCurrentCell().RowIndex);
 			CUI_EXPECT_EQ(0ULL, grid->GetCurrentCell().ColumnIndex);
 		}
 

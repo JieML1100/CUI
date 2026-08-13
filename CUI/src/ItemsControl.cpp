@@ -1131,6 +1131,14 @@ namespace
 			return _layoutOriginIndex < _itemCount
 				? ItemTop(_layoutOriginIndex) : 0.0;
 		}
+		void OnVerticalThumbDragCompleted() override
+		{
+			// Direct Thumb movement temporarily projects only the visible page for
+			// DataGrid. Restore the authored cache once, after capture has ended.
+			if (auto* owner = dynamic_cast<ItemsControl*>(GetTemplatedParent()))
+				cui::framework::ItemsControlAccess::
+					RestoreVirtualCacheAfterVerticalThumbDrag(*owner);
+		}
 		bool SetLocalLayoutInvalidation(bool value) noexcept
 		{
 			return std::exchange(_localLayoutInvalidation, value);
@@ -3198,6 +3206,7 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 				catch (...) {}
 			}
 			_generator = std::move(oldGenerator);
+			AdvanceGeneratedItemsRevision();
 			restoredItems.clear();
 			auto* restoredHost = _itemsHost;
 			for (const auto& itemReference : authoredItems)
@@ -3221,16 +3230,19 @@ bool ItemsControl::ReplaceItemsHost(ItemsPanelTemplateReference value)
 	{
 		_itemsPanel = previousPanel;
 		_generator = std::move(oldGenerator);
+		AdvanceGeneratedItemsRevision();
 		_lastTemplateError = L"ItemsHost 所有权无效。";
 		return false;
 	}
 	PlaceItemsHost(std::move(replacement));
+	AdvanceGeneratedItemsRevision();
 	if (RebuildGeneratedItems()) return true;
 	const auto error = _lastTemplateError;
 	auto failedHost = TakeItemsHost();
 	_itemsPanel = previousPanel;
 	PlaceItemsHost(std::move(oldHost));
 	_generator = std::move(oldGenerator);
+	AdvanceGeneratedItemsRevision();
 	_lastTemplateError = error;
 	return false;
 }
@@ -3340,6 +3352,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	auto* previousHostRaw = _itemsHost;
 	auto previousGenerator = std::move(_generator);
 	_generator = ItemContainerGenerator{};
+	AdvanceGeneratedItemsRevision();
 	_itemsHost = candidateHost.get();
 	bool rebuilt = false;
 	try
@@ -3350,6 +3363,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	{
 		_itemsHost = previousHostRaw;
 		_generator = std::move(previousGenerator);
+		AdvanceGeneratedItemsRevision();
 		_materializedItemsSourceSnapshot = previousSnapshot;
 		restorePrevious();
 		restoreDerivedState();
@@ -3362,6 +3376,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		const auto error = _lastTemplateError;
 		_itemsHost = previousHostRaw;
 		_generator = std::move(previousGenerator);
+		AdvanceGeneratedItemsRevision();
 		_materializedItemsSourceSnapshot = previousSnapshot;
 		restorePrevious();
 		restoreDerivedState();
@@ -3398,6 +3413,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		}
 		else _itemsHost = previousHostRaw;
 		_generator = std::move(previousGenerator);
+		AdvanceGeneratedItemsRevision();
 		_materializedItemsSourceSnapshot = previousSnapshot;
 		restorePrevious();
 		restoreDerivedState();
@@ -3421,6 +3437,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 		}
 		catch (...) {}
 		_generator = std::move(previousGenerator);
+		AdvanceGeneratedItemsRevision();
 		_materializedItemsSourceSnapshot = previousSnapshot;
 		restorePrevious();
 		// Derived controls may have committed secondary state (for example a
@@ -4256,7 +4273,9 @@ void ItemsControl::RefreshGroupHeaders()
 bool ItemsControl::PrepareGeneratedItem(
 	size_t index,
 	PreparedItem& output,
-	bool allowRecycle)
+	bool allowRecycle,
+	std::span<const size_t> crossIndexRecycleReservations,
+	std::span<const CrossIndexRecycleCandidate> crossIndexRecycleCandidates)
 {
 	const ControlWeakReference ownerLifetime(this);
 	RefreshVirtualGroupHeaderMetadata();
@@ -4300,6 +4319,94 @@ bool ItemsControl::PrepareGeneratedItem(
 			output.Visual = std::move(host);
 		}
 		return true;
+	}
+	if (allowRecycle && !crossIndexRecycleCandidates.empty()
+		&& !IsGroupingActive())
+	{
+		const auto source = _itemsSource.Shared();
+		const size_t sourceCount = _generator.SourceCount();
+		const size_t generatedRevision = _generatedItemsRevision;
+		size_t oldIndex = 0;
+		bool donorFound = false;
+		for (const auto& candidate : crossIndexRecycleCandidates)
+		{
+			if (std::binary_search(
+				crossIndexRecycleReservations.begin(),
+				crossIndexRecycleReservations.end(), candidate.Index))
+				continue;
+			auto* live = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+			if (!live || live->_itemsSource.Shared() != source
+				|| live->_generator.SourceCount() != sourceCount
+				|| live->_generatedItemsRevision != generatedRevision)
+				return false;
+			auto& pool = live->_generator.RecycledItems();
+			auto donor = pool.find(candidate.Index);
+			if (donor == pool.end() || !donor->second.Visual
+				|| donor->second.Visual.get() != candidate.Visual)
+				continue;
+			const ControlWeakReference donorLifetime(candidate.Visual);
+			const bool compatible =
+				live->CanRecycleGeneratedItemAcrossIndices(
+					*candidate.Visual, candidate.Index);
+			live = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+			if (!live || live->_itemsSource.Shared() != source
+				|| live->_generator.SourceCount() != sourceCount
+				|| live->_generatedItemsRevision != generatedRevision)
+				return false;
+			if (!compatible || donorLifetime.Get() != candidate.Visual)
+				continue;
+			auto& validatedPool = live->_generator.RecycledItems();
+			donor = validatedPool.find(candidate.Index);
+			if (donor == validatedPool.end() || !donor->second.Visual
+				|| donor->second.Visual.get() != candidate.Visual)
+				continue;
+			oldIndex = donor->first;
+			recycled = std::move(donor->second);
+			validatedPool.erase(donor);
+			donorFound = true;
+			break;
+		}
+		if (donorFound)
+		{
+			BindingSourceReference item;
+			const bool itemRead = _itemsSource
+				&& _itemsSource.Get()->TryGetItem(index, item) && item;
+			auto* live = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+			if (!live || live->_itemsSource.Shared() != source
+				|| live->_generator.SourceCount() != sourceCount
+				|| live->_generatedItemsRevision != generatedRevision)
+				return false;
+			if (!itemRead)
+			{
+				live->_generator.StoreRecycled(oldIndex, std::move(recycled));
+				live->_lastTemplateError = L"ItemsSource 无法读取跨索引回收项 "
+					+ std::to_wstring(index) + L"。";
+				return false;
+			}
+			std::wstring error;
+			const bool rebound = live->TryRebindGeneratedItemAcrossIndices(
+				*recycled.Visual, oldIndex, index, item,
+				recycled.Observation, &error);
+			live = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+			if (!live || live->_itemsSource.Shared() != source
+				|| live->_generator.SourceCount() != sourceCount
+				|| live->_generatedItemsRevision != generatedRevision)
+				return false;
+			if (!rebound)
+			{
+				if (!error.empty()) live->_lastTemplateError = std::move(error);
+				else if (live->_lastTemplateError.empty())
+					live->_lastTemplateError = L"项容器跨索引回收失败。";
+				// The donor was detached before this realization transaction began.
+				// Discarding a partially rebound cache entry cannot mutate the
+				// currently committed visual tree.
+				return false;
+			}
+			output.Visual = std::move(recycled.Visual);
+			output.Observation = std::move(recycled.Observation);
+			output.WasRecycled = true;
+			return output.Visual != nullptr;
+		}
 	}
 
 	BindingSourceReference item;
@@ -4645,6 +4752,7 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 	if (!_itemsHost)
 	{
 		_generator.ClearRealized();
+		AdvanceGeneratedItemsRevision();
 		return;
 	}
 	std::vector<size_t> indices;
@@ -4677,6 +4785,7 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 			_generator.StoreRecycled(index, {
 				std::move(detached), std::move(item.Observation) });
 	}
+	AdvanceGeneratedItemsRevision();
 }
 
 std::pair<size_t, size_t> ItemsControl::VirtualRangeForViewport() const noexcept
@@ -4705,7 +4814,11 @@ std::pair<size_t, size_t> ItemsControl::VirtualRangeForOffset(
 	const auto size = const_cast<ScrollViewer*>(scroll)->GetActualSizeDip();
 	const double viewport = std::isfinite(size.height)
 		? (std::max)(1.0, static_cast<double>(size.height)) : 1.0;
-	double cache = static_cast<double>(panel.CacheLength) * viewport;
+	const bool visibleOnlyThumbRange =
+		scroll->_draggingVerticalScrollBar
+		&& UseVisibleOnlyRangeDuringVerticalThumbDrag();
+	double cache = visibleOnlyThumbRange ? 0.0
+		: static_cast<double>(panel.CacheLength) * viewport;
 	if (!std::isfinite(cache))
 		cache = (std::numeric_limits<double>::max)();
 	const double contentHeight = host->ContentHeight();
@@ -4751,20 +4864,58 @@ bool ItemsControl::RealizeVirtualRange(
 		if (auto* owner = dynamic_cast<ItemsControl*>(ownerLifetime.Get()))
 			owner->_realizingViewport = false;
 	});
-	std::vector<PreparedItem> additions;
+	std::vector<CrossIndexRecycleCandidate> recycleCandidates;
+	recycleCandidates.reserve(_generator.RecycledItems().size());
+	for (const auto& [index, item] : _generator.RecycledItems())
+		recycleCandidates.push_back({ index, item.Visual.get() });
+	std::vector<size_t> additionIndices;
+	additionIndices.reserve(last - first);
 	for (size_t index = first; index < last; ++index)
+		if (!_generator.ContainsRealized(index))
+			additionIndices.push_back(index);
+	std::vector<PreparedItem> additions;
+	additions.reserve(additionIndices.size());
+	const auto preparedSource = _itemsSource.Shared();
+	const size_t preparedSourceCount = _generator.SourceCount();
+	const size_t preparedGeneratedRevision = _generatedItemsRevision;
+	bool additionsCommitted = false;
+	ItemsScopeExit additionsGuard([
+		ownerLifetime, &additions, &additionsCommitted,
+		preparedSource, preparedSourceCount, preparedGeneratedRevision]
 	{
-		if (_generator.ContainsRealized(index)) continue;
-		PreparedItem item;
-		if (!PrepareGeneratedItem(index, item))
+		if (additionsCommitted) return;
+		auto* owner = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+		if (!owner || owner->_itemsSource.Shared() != preparedSource
+			|| owner->_generator.SourceCount() != preparedSourceCount
+			|| owner->_generatedItemsRevision != preparedGeneratedRevision) return;
+		for (auto& prepared : additions)
 		{
-			for (auto& prepared : additions)
-				if (prepared.WasRecycled)
-					_generator.StoreRecycled(prepared.Index, {
-						std::move(prepared.Visual),
-						std::move(prepared.Observation) });
+			if (!prepared.WasRecycled || !prepared.Visual
+				|| owner->_generator.RecycledItems().contains(
+					prepared.Index)) continue;
+			try
+			{
+				owner->_generator.StoreRecycled(prepared.Index, {
+					std::move(prepared.Visual),
+					std::move(prepared.Observation) });
+			}
+			catch (...) {}
+		}
+	});
+	for (const size_t index : additionIndices)
+	{
+		PreparedItem item;
+		if (!PrepareGeneratedItem(
+			index, item, true, additionIndices, recycleCandidates))
+		{
 			return false;
 		}
+		if (!ownerLifetime.Get()) return false;
+		auto* owner = dynamic_cast<ItemsControl*>(ownerLifetime.Get());
+		if (!owner || owner->_itemsSource.Shared() != preparedSource
+			|| owner->_generator.SourceCount() != preparedSourceCount
+			|| owner->_generatedItemsRevision != preparedGeneratedRevision)
+			return false;
 		additions.push_back(std::move(item));
 	}
 
@@ -4808,6 +4959,8 @@ bool ItemsControl::RealizeVirtualRange(
 	}
 	for (auto& addition : additions)
 		AttachPreparedItem(std::move(addition));
+	additionsCommitted = true;
+	AdvanceGeneratedItemsRevision();
 	TrimRecyclePool(first, last);
 	_itemsHost->InvalidateLayout();
 	if (localLayoutForScroll)
@@ -4828,6 +4981,24 @@ bool ItemsControl::RealizeVirtualViewport(bool localLayoutForScroll)
 	if (!IsVirtualizing()) return true;
 	const auto [first, last] = VirtualRangeForViewport();
 	return RealizeVirtualRange(first, last, localLayoutForScroll);
+}
+
+void ItemsControl::RestoreVirtualCacheAfterVerticalThumbDrag()
+{
+	if (!UseVisibleOnlyRangeDuringVerticalThumbDrag()) return;
+	if (_realizingViewport || _applyingCollectionChange
+		|| IsItemsSourceUpdateInProgress())
+	{
+		_virtualCacheRestorePending = true;
+		RequestLayout();
+		return;
+	}
+	_virtualCacheRestorePending = false;
+	if (!RealizeVirtualViewport(true))
+	{
+		_virtualCacheRestorePending = true;
+		RequestLayout();
+	}
 }
 
 void ItemsControl::TrimRecyclePool(size_t first, size_t last)
@@ -5111,6 +5282,7 @@ bool ItemsControl::ApplyOccurrencePermutationReset(
 				AttachPreparedItem(std::move(addition));
 				if (!ownerLifetime.Get()) return false;
 			}
+			AdvanceGeneratedItemsRevision();
 			ReorderRealizedChildren();
 			ConfigureVirtualHost();
 			_itemsHost->InvalidateLayout();
@@ -5280,6 +5452,7 @@ bool ItemsControl::ApplyCollectionChange(
 				AttachPreparedItem(std::move(addition));
 				if (!ownerLifetime.Get()) return false;
 			}
+			AdvanceGeneratedItemsRevision();
 			ReorderRealizedChildren();
 			_itemsHost->InvalidateLayout();
 			RequestLayout();
@@ -5392,6 +5565,7 @@ bool ItemsControl::RebuildGeneratedItems()
 		_generator.SetSourceCount(ItemCount());
 		ConfigureVirtualHost();
 		for (auto& item : prepared) AttachPreparedItem(std::move(item));
+		AdvanceGeneratedItemsRevision();
 		OnGeneratedItemsRebuilt();
 		_itemsHost->InvalidateLayout();
 		RequestLayout();
@@ -5487,7 +5661,19 @@ void ItemsControl::PreparePresentation()
 	if (_pendingTemplateItemsPresenter.HasValue())
 		(void)CommitPendingTemplateItemsPresenter();
 	Control::PreparePresentation();
-	if (IsVirtualizing()) (void)RealizeVirtualViewport();
+	if (IsVirtualizing())
+	{
+		const bool restoring = _virtualCacheRestorePending
+			&& !_realizingViewport && !_applyingCollectionChange
+			&& !IsItemsSourceUpdateInProgress();
+		const bool realized = RealizeVirtualViewport();
+		if (restoring)
+		{
+			if (realized) _virtualCacheRestorePending = false;
+			else RequestLayout();
+		}
+		else if (_virtualCacheRestorePending) RequestLayout();
+	}
 }
 
 bool ItemsControl::ProcessInput(const InputReport& input)

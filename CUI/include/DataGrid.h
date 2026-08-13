@@ -26,6 +26,7 @@ class DataGridCell;
 class DataGridColumn;
 class DataGridRow;
 class DataGridRowHeader;
+class DataGridCellsPresenter;
 class ScrollViewer;
 
 /** WPF DataGrid selection unit values. */
@@ -603,6 +604,7 @@ protected:
 
 private:
 	friend class DataGrid;
+	friend class DataGridCellsPresenter;
 	friend class DataGridRow;
 	bool Initialize(
 		DataGridRow& row,
@@ -643,6 +645,7 @@ public:
 
 private:
 	friend class DataGrid;
+	friend class DataGridCellsPresenter;
 	bool Initialize(
 		DataGrid& owner,
 		const BindingSourceReference& item,
@@ -650,16 +653,24 @@ private:
 		std::wstring* outError);
 	bool RefreshRealizedColumns(
 		size_t begin, size_t end, std::wstring* outError);
-	void UpdateColumnWidths();
+	void UpdateColumnWidths(bool propagateLayoutInvalidation = true);
 	void UpdateRowHeader();
 	void UpdateHorizontalScrollOffset(double offset);
 	ControlWeakReference _ownerLifetime;
 	BindingSourceReference _item;
 	Grid* _rowLayoutGrid = nullptr;
 	Grid* _rowHeaderHost = nullptr;
-	Grid* _cellsGrid = nullptr;
+	DataGridCellsPresenter* _cellsGrid = nullptr;
 	DataGridRowHeader* _rowHeader = nullptr;
 	std::vector<DataGridCell*> _cells;
+	size_t _appliedColumnWidthProjectionRevision = 0;
+	size_t _appliedCellSelectionRevision = 0;
+	bool _rowHeaderProjectionInitialized = false;
+	bool _appliedRowHeaderVisible = false;
+	bool _appliedRowHeaderAutoWidth = false;
+	double _appliedRowHeaderWidth = 0.0;
+	double _appliedHorizontalScrollOffset =
+		(std::numeric_limits<double>::quiet_NaN)();
 	bool _columnStorageIsSparse = false;
 	size_t _realizedColumnBegin = 0;
 	size_t _realizedColumnEnd = 0;
@@ -755,7 +766,7 @@ public:
 	{
 		return _headers.size();
 	}
-	void UpdateColumnWidths();
+	void UpdateColumnWidths(bool propagateLayoutInvalidation = true);
 
 protected:
 	cui::core::Size MeasureCore(
@@ -767,6 +778,7 @@ private:
 		size_t begin, size_t end, std::wstring* outError);
 	DataGrid* _owner = nullptr;
 	std::vector<DataGridColumnHeader*> _headers;
+	size_t _appliedColumnWidthProjectionRevision = 0;
 	bool _columnStorageIsSparse = false;
 	size_t _realizedColumnBegin = 0;
 	size_t _realizedColumnEnd = 0;
@@ -974,6 +986,8 @@ public:
 	void Arrange(cui::core::Rect finalRect) override;
 
 protected:
+	void PrepareMeasureCore(
+		const cui::core::Constraints& available) override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override;
 	std::unique_ptr<ItemsSourceTransactionState>
 		CaptureItemsSourceTransactionState() override;
@@ -983,6 +997,15 @@ protected:
 		const BindingSourceReference& item,
 		size_t index,
 		BindingPathObservation& observation) override;
+	bool CanRecycleGeneratedItemAcrossIndices(
+		const Control& visual, size_t oldIndex) const noexcept override;
+	bool TryRebindGeneratedItemAcrossIndices(
+		Control& visual,
+		size_t oldIndex,
+		size_t newIndex,
+		const BindingSourceReference& item,
+		BindingPathObservation& observation,
+		std::wstring* outError) override;
 	void OnBeforeGeneratedItemsPrepared() override;
 	void OnGeneratedItemsRebuilt() override;
 	void OnGeneratedItemsRealized() override;
@@ -1006,6 +1029,10 @@ protected:
 		// ScrollViewer supplies a finite viewport, realizing rows only creates a
 		// complete off-screen cell tree that will be discarded during templating.
 		return false;
+	}
+	bool UseVisibleOnlyRangeDuringVerticalThumbDrag() const noexcept override
+	{
+		return true;
 	}
 	float GetVirtualizedItemHeight() const noexcept override;
 	double GetVirtualizedHorizontalExtent() const override;
@@ -1065,6 +1092,7 @@ private:
 	friend class DataGridTextColumn;
 	friend class DataGridColumnHeader;
 	friend class DataGridColumnHeadersPresenter;
+	friend class DataGridCellsPresenter;
 	friend class DataGridRow;
 	friend class DataGridRowHeader;
 
@@ -1072,6 +1100,10 @@ private:
 	std::shared_ptr<CollectionViewSource> _itemsView;
 	std::vector<std::unique_ptr<DataGridColumn>> _columns;
 	mutable std::vector<std::optional<GridLength>> _resolvedColumnWidths;
+	// Realized header/row grids cache the revision they projected. This keeps a
+	// vertical viewport change from rebuilding identical column definitions.
+	size_t _columnWidthProjectionRevision = 1;
+	bool _columnWidthRefreshPending = false;
 	// Prefix[i] is the logical left edge of column i; Prefix.back() is the
 	// complete data-column width. It turns viewport, bring-into-view and UIA
 	// column positioning into O(log C)/O(1) operations for very wide grids.
@@ -1228,7 +1260,9 @@ private:
 		const DataGridSelectedCellCollection& previous,
 		const DataGridSelectedCellCollection& current,
 		bool ignoreLocators);
-	bool RefreshSelectedCellContainers(bool suppressRoutedEvents = false);
+	bool RefreshSelectedCellContainers(
+		bool suppressRoutedEvents = false,
+		bool onlyStaleRows = false);
 	void RefreshSelectedCellContainersAfterRollback() noexcept;
 	bool ReconcileSelectedCells();
 	bool SynchronizeSelectedCellsFromRows();
@@ -1246,7 +1280,13 @@ private:
 	void FlushCommittedItemsSourceState();
 	void InvalidateColumnWidthCache() noexcept;
 	void InvalidateColumnContentWidthCache() noexcept;
-	void RefreshColumnWidths();
+	bool ResizeColumnCore(
+		size_t columnIndex, double pixelWidth,
+		bool preserveRealizedColumnRange);
+	void ApplyPendingColumnWidths();
+	void CommitColumnWidthLayoutToAncestors();
+	void InvalidatePendingColumnWidthLayoutPaths();
+	void RefreshColumnWidths(bool preserveRealizedColumnRange = false);
 	std::pair<size_t, size_t> ResolveRealizedColumnRange() const;
 	void InvalidateRealizedColumnRange() noexcept;
 	void RefreshRealizedColumns();

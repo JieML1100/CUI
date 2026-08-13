@@ -4,6 +4,7 @@
 #include "LayoutTypes.h"
 #include <vector>
 #include <algorithm>
+#include <utility>
 
 /**
  * @file Grid.h
@@ -51,6 +52,11 @@ public:
     
     void ClearColumns() {
         _columnDefinitions.clear();
+        Invalidate();
+    }
+
+    void ReplaceColumns(std::vector<ColumnDefinition> columns) {
+        _columnDefinitions = std::move(columns);
         Invalidate();
     }
 
@@ -144,6 +150,24 @@ public:
     void ClearColumns() {
         _gridEngine->ClearColumns();
         InvalidateLayout();
+    }
+
+    /** Replace every column definition as one layout transaction. */
+    void ReplaceColumns(
+        std::vector<ColumnDefinition> columns,
+        bool propagateLayoutInvalidation = true) {
+        _gridEngine->ReplaceColumns(std::move(columns));
+        if (propagateLayoutInvalidation)
+            InvalidateLayout();
+        else
+        {
+            // A parent currently inside Measure already owns the root layout
+            // transaction.  Mark this Grid locally without asking Window for a
+            // redundant second full-frame layout after that transaction ends.
+            InvalidateMeasureSubtree();
+            _needsMeasure = true;
+            _needsArrange = true;
+        }
     }
 
     const std::vector<RowDefinition>& GetRows() const { return _gridEngine->GetRows(); }
