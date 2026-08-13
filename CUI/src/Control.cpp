@@ -13,6 +13,7 @@
 #include "ReverseInheritedProperty.h"
 #include "TreeInfrastructure.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -44,6 +45,40 @@ namespace cui::framework::design
 
 namespace
 {
+	/**
+	 * Visual/inheritance chains are normally fewer than a dozen controls deep.
+	 * Using unordered_set for cycle protection on every coordinate transform or
+	 * damage dispatch therefore paid a heap allocation for the overwhelmingly
+	 * common acyclic case. Keep the exact cycle contract while storing ordinary
+	 * chains inline; only a genuinely deep tree falls back to hashing.
+	 */
+	template<typename TObject, size_t InlineCapacity = 32>
+	class InlinePointerSet final
+	{
+	public:
+		bool Insert(TObject* value)
+		{
+			if (_overflow) return _overflow->insert(value).second;
+			for (size_t index = 0; index < _count; ++index)
+				if (_items[index] == value) return false;
+			if (_count < InlineCapacity)
+			{
+				_items[_count++] = value;
+				return true;
+			}
+			_overflow = std::make_unique<std::unordered_set<TObject*>>();
+			_overflow->reserve(InlineCapacity * 2);
+			for (size_t index = 0; index < _count; ++index)
+				_overflow->insert(_items[index]);
+			return _overflow->insert(value).second;
+		}
+
+	private:
+		std::array<TObject*, InlineCapacity> _items;
+		size_t _count = 0;
+		std::unique_ptr<std::unordered_set<TObject*>> _overflow;
+	};
+
 	struct SystemMessageFontDefaults final
 	{
 		std::wstring Family = L"Segoe UI";
@@ -2407,9 +2442,9 @@ void Control::BeginRender(float clipW, float clipH)
 	this->GetDrawingContext()->PushLocalTransform(transform, clipW, clipH);
 
 	std::vector<const Control*> clipOwners;
-	std::unordered_set<const Control*> visited;
+	InlinePointerSet<const Control> visited;
 	for (auto* current = this;
-		current && visited.insert(current).second;
+		current && visited.Insert(current);
 		current = current->_visualParent)
 		if (current->_clip) clipOwners.push_back(current);
 	if (clipOwners.empty()) return;
@@ -2696,9 +2731,9 @@ void Control::InvalidateVisualRectCore(
 
 void Control::DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect)
 {
-	std::unordered_set<Control*> visited;
+	InlinePointerSet<Control> visited;
 	for (Control* current = this;
-		current && visited.insert(current).second;
+		current && visited.Insert(current);
 		current = current->_visualParent)
 	{
 		if (current->_visualInvalidationDeferral.IsSuspended())
@@ -15532,14 +15567,14 @@ cui::core::Point Control::GetAbsoluteLocationDip() const
 {
 	const Control* ancestor = this;
 	cui::core::Point absoluteLocation = ancestor->GetActualLocationDip();
-	std::unordered_set<const Control*> visited;
+	InlinePointerSet<const Control> visited;
 	// A Popup owns a window-viewport coordinate space even though its logical
 	// template ownership remains in the main visual tree. Descendants accumulate
 	// through that transient root, but never inherit coordinates above it.
 	while (ancestor->_visualParent
 		&& !ancestor->BreaksVisualPresentationInheritance())
 	{
-		if (!visited.insert(ancestor).second) break;
+		if (!visited.Insert(ancestor)) break;
 		ancestor = ancestor->_visualParent;
 		const auto ancestorLocation = ancestor->GetActualLocationDip();
 		absoluteLocation += cui::core::Vector{
@@ -15568,10 +15603,10 @@ D2D1_MATRIX_3X2_F Control::GetInheritedRenderTransform() const
 {
 	auto result = D2D1::Matrix3x2F::Identity();
 	if (BreaksVisualPresentationInheritance()) return result;
-	std::unordered_set<const Control*> visited;
-	visited.insert(this);
+	InlinePointerSet<const Control> visited;
+	(void)visited.Insert(this);
 	for (auto* ancestor = this->_visualParent;
-		ancestor && visited.insert(ancestor).second;
+		ancestor && visited.Insert(ancestor);
 		ancestor = ancestor->BreaksVisualPresentationInheritance()
 			? nullptr : ancestor->_visualParent)
 		result = result * AsMatrix(

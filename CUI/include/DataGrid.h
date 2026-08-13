@@ -1335,11 +1335,14 @@ private:
 	void CommitColumnWidthLayoutToAncestors();
 	void InvalidatePendingColumnResizeVisual();
 	void RefreshColumnWidths(bool preserveRealizedColumnRange = false);
+	void ProjectColumnWidthsForViewportLayout();
+	bool TryCommitViewportColumnLayoutLocally();
 	std::pair<size_t, size_t> ResolveRealizedColumnRange() const;
 	void InvalidateRealizedColumnRange() noexcept;
 	void RefreshRealizedColumns();
 	bool BringColumnIntoView(size_t columnIndex);
-	void UpdateColumnViewportWidth(double availableWidth);
+	void UpdateColumnViewportWidth(
+		double availableWidth, bool refreshRealizedColumns = true);
 	double ResolveColumnViewportWidth(double fallbackWidth) const noexcept;
 	void RebuildResolvedColumnWidths() const;
 	std::pair<size_t, size_t>

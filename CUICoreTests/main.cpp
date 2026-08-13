@@ -65135,6 +65135,110 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(grid->RootLayoutCommits > 0);
 	});
 
+	runner.Add("DataGrid window resize consumes Star viewport in current layout", []
+	{
+		class ViewportLayoutProbeGrid final : public DataGrid
+		{
+		public:
+			size_t OwnerLayoutRequests = 0;
+
+		protected:
+			void RequestLayout() override
+			{
+				++OwnerLayoutRequests;
+				DataGrid::RequestLayout();
+			}
+		};
+		class ViewportMeasureProbe final : public Control
+		{
+		public:
+			explicit ViewportMeasureProbe(size_t& calls) noexcept
+				: _calls(calls) {}
+
+		protected:
+			cui::core::Size MeasureCore(
+				const cui::core::Constraints&) override
+			{
+				++_calls;
+				return { 48.0f, 18.0f };
+			}
+
+		private:
+			size_t& _calls;
+		};
+
+		constexpr size_t rowCount = 18;
+		constexpr size_t columnCount = 3;
+		const std::wstring itemType = L"DataGridViewportResizeRow";
+		std::array<size_t, columnCount> measureCalls{};
+		Window window;
+		ConfigureTestControl(window, L"DataGrid viewport resize layout");
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 420.0f, 300.0f);
+		auto gridOwner = std::make_unique<ViewportLayoutProbeGrid>();
+		auto* grid = gridOwner.get();
+		ConfigureTestControl(*grid, 0.0f, 0.0f);
+		DisableItemsVirtualizationForBehaviorTest(*grid);
+		grid->SetAutoGenerateColumns(false);
+		grid->SetHeadersVisibility(DataGridHeadersVisibility::Column);
+		// Keep the WPF-compatible Auto defaults used by the gallery.  A viewport
+		// resize must remeasure only width-changing Star cells; fixed columns keep
+		// their natural-size cache, and unchanged row/header heights commit without
+		// scheduling a corrective owner layout pass.
+		for (size_t index = 0; index < columnCount; ++index)
+		{
+			auto cellTemplate = std::make_shared<CallbackItemTemplate>(
+				itemType,
+				[&, index]() -> std::unique_ptr<Control>
+				{
+					return std::make_unique<ViewportMeasureProbe>(
+						measureCalls[index]);
+				});
+			auto column = std::make_unique<DataGridTemplateColumn>();
+			column->SetHeader(BindingValue(
+				L"Column " + std::to_wstring(index + 1)));
+			column->SetWidth(index == 0
+				? DataGridLength(100.0) : DataGridLength::Star());
+			column->SetCellTemplate(ItemTemplateReference(cellTemplate));
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+		}
+		auto item = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Viewport row"));
+		auto rows = std::make_shared<ObservableBindingList>(itemType);
+		for (size_t index = 0; index < rowCount; ++index)
+			rows->Items.push_back(BindingSourceReference(item));
+		grid->SetItemsSource(BindingListReference(rows));
+		(void)InstallDataGridHeaderTemplate(*grid);
+		CUI_EXPECT_TRUE(window.SetVisualContent(std::move(gridOwner)) == grid);
+		window.UpdateLayout();
+		window.UpdateLayout();
+
+		auto* headers = grid->GetColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		const double initialStar =
+			headers->GetHeader(1)->GetActualSizeDip().width;
+		measureCalls.fill(0);
+		grid->OwnerLayoutRequests = 0;
+		SetDeclaredWindowGeometry(window, 0.0f, 0.0f, 500.0f, 300.0f);
+		window.UpdateLayout();
+
+		headers = grid->GetColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(headers != nullptr);
+		if (!headers) return;
+		CUI_EXPECT_EQ(0ULL, grid->OwnerLayoutRequests);
+		CUI_EXPECT_EQ(0ULL, measureCalls[0]);
+		CUI_EXPECT_TRUE(measureCalls[1] > 0);
+		CUI_EXPECT_TRUE(measureCalls[2] > 0);
+		CUI_EXPECT_TRUE(measureCalls[1] <= rowCount * 4);
+		CUI_EXPECT_TRUE(measureCalls[2] <= rowCount * 4);
+		CUI_EXPECT_NEAR(100.0,
+			headers->GetHeader(0)->GetActualSizeDip().width, 0.01);
+		CUI_EXPECT_NEAR(initialStar + 40.0,
+			headers->GetHeader(1)->GetActualSizeDip().width, 1.0);
+		CUI_EXPECT_NEAR(initialStar + 40.0,
+			headers->GetHeader(2)->GetActualSizeDip().width, 1.0);
+	});
+
 	runner.Add("DataGrid fixed row constrains centered bottom cell to final column slot", []
 	{
 		Window window;

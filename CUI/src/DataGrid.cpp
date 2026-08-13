@@ -2913,24 +2913,13 @@ void DataGridRow::UpdateColumnWidths(bool propagateLayoutInvalidation)
 	const ControlWeakReference gridLifetime(grid);
 	const size_t projectionRevision =
 		owner->_columnWidthProjectionRevision;
-	if (_appliedColumnWidthProjectionRevision == projectionRevision)
-	{
-		if (propagateLayoutInvalidation)
-		{
-			auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
-			auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-			auto* liveGrid = dynamic_cast<DataGridCellsPresenter*>(
-				gridLifetime.Get());
-			if (liveRow == this && liveOwner == owner && liveGrid == grid
-				&& liveRow->_cellsGrid == liveGrid
-				&& liveRow->GetDataGridOwner() == liveOwner)
-			{
-				liveGrid->InvalidateColumnLayout(true);
-				liveRow->_contentLayoutPending = true;
-			}
-		}
-		return;
-	}
+	// A realized row receives this projection during Initialize.  The subsequent
+	// realization callback also visits every retained row; treating an identical
+	// revision as a fresh invalidation turns one entering/leaving row during a
+	// vertical window resize into a complete DataGrid relayout.  New rows already
+	// carry their normal construction/template dirtiness, so an applied revision
+	// is a true no-op here just as it is for the header presenter.
+	if (_appliedColumnWidthProjectionRevision == projectionRevision) return;
 	const size_t columnCount = owner->ColumnCount();
 	const bool sparseColumns = _columnStorageIsSparse;
 	const size_t begin = sparseColumns
@@ -4359,7 +4348,25 @@ void DataGrid::Arrange(cui::core::Rect finalRect)
 	// one shared data viewport before either Grid is arranged; otherwise an
 	// unbounded ScrollViewer row measures Star as content while the bounded
 	// header distributes the same Stars across its viewport.
-	UpdateColumnViewportWidth(ResolveColumnViewportWidth(finalRect.width));
+	double columnViewport = ResolveColumnViewportWidth(finalRect.width);
+	// ScrollViewer publishes its exact viewport after arranging the body. During
+	// continuous window resizing that value therefore describes the previous
+	// DataGrid slot. Carry the owner's width delta forward so Star columns are
+	// projected before the header/body walk, avoiding an old-width arrange plus a
+	// corrective second pass on every WM_SIZE. A scrollbar state transition is
+	// corrected locally by the subsequent ScrollChanged notification.
+	if (auto* scroll = dynamic_cast<ScrollViewer*>(_scrollViewer.Get()))
+	{
+		const double published = scroll->GetViewportWidth();
+		const auto previousSize = GetActualSizeDip();
+		if (std::isfinite(published) && published > 0.0
+			&& previousSize.width > 0.0f
+			&& std::isfinite(finalRect.width))
+			columnViewport = (std::max)(0.0,
+				columnViewport + static_cast<double>(finalRect.width)
+				- static_cast<double>(previousSize.width));
+	}
+	UpdateColumnViewportWidth(columnViewport, false);
 	RefreshRealizedColumns();
 	ListBox::Arrange(finalRect);
 }
@@ -5385,6 +5392,11 @@ void DataGrid::OnControlTemplatePresentationChanged()
 						owner->_horizontalScrollOffset = args.HorizontalOffset;
 					if (viewportWidthChanged)
 						owner->UpdateColumnViewportWidth(resolvedViewportWidth);
+					owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+					if (!owner) return;
+					if (viewportWidthChanged
+						&& !owner->TryCommitViewportColumnLayoutLocally())
+						owner->RequestLayout();
 					owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 					if (!owner) return;
 					if (horizontalChanged)
@@ -10525,16 +10537,86 @@ void DataGrid::RefreshColumnWidths(bool preserveRealizedColumnRange)
 	_columnWidthRefreshPending = false;
 	if (!preserveRealizedColumnRange) InvalidateRealizedColumnRange();
 	if (auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
-		_headersPresenter.Get())) presenter->UpdateColumnWidths();
+		_headersPresenter.Get())) presenter->UpdateColumnWidths(false);
 	for (const auto& [index, realized] : GetRealizedItems())
 	{
 		(void)realized;
 		if (auto* row = dynamic_cast<DataGridRow*>(GetGeneratedItem(index)))
-			row->UpdateColumnWidths();
+			row->UpdateColumnWidths(false);
 	}
 	RefreshVirtualScrollMetrics();
+	// Every realized leaf above is already dirty. One owner request is enough to
+	// reach all of them; propagating once per row turns a viewport update into
+	// O(realized rows * visual depth) ancestor work before layout even begins.
 	RequestLayout();
 	InvalidateVisual();
+}
+
+void DataGrid::ProjectColumnWidthsForViewportLayout()
+{
+	// Viewport width is discovered from Header.Measure, DataGrid.Arrange, or the
+	// ScrollViewer layout notification. In all three cases an ancestor layout
+	// transaction is already walking this template. Project the new shared column
+	// revision locally and let that transaction consume it synchronously instead
+	// of scheduling a redundant root measure for every realized row.
+	InvalidateColumnWidthCache();
+	_columnWidthRefreshPending = false;
+	InvalidateRealizedColumnRange();
+	if (auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+		_headersPresenter.Get())) presenter->UpdateColumnWidths(false);
+	for (const auto& [index, realized] : GetRealizedItems())
+	{
+		(void)realized;
+		if (auto* row = dynamic_cast<DataGridRow*>(GetGeneratedItem(index)))
+			row->UpdateColumnWidths(false);
+	}
+	// Dense rows publish their new measured extent during the current arrange.
+	// Sparse rows have no visuals for offscreen columns, so their logical extent
+	// still has to be refreshed explicitly.
+	if (_enableColumnVirtualization) RefreshVirtualScrollMetrics();
+	InvalidateVisual();
+}
+
+bool DataGrid::TryCommitViewportColumnLayoutLocally()
+{
+	// A late ScrollViewer viewport correction arrives after it has arranged its
+	// content. Fixed heights commit directly; Auto presenters first remeasure the
+	// width-dirty cells and commit locally while their desired height is unchanged.
+	// If wrapping changes any height, the caller promotes the correction to one
+	// ordinary owner request so the following vertical items are repositioned.
+	const bool fixedRowHeight = std::isfinite(_rowHeight);
+	const bool fixedHeaderHeight = std::isfinite(_columnHeaderHeight)
+		|| !HasColumnHeaders(_headersVisibility);
+	const ControlWeakReference ownerLifetime(this);
+	const ControlWeakReference headersLifetime(
+		dynamic_cast<DataGridColumnHeadersPresenter*>(
+			_headersPresenter.Get()));
+	std::vector<ControlWeakReference> rows;
+	rows.reserve(GetRealizedItems().size());
+	for (const auto& [index, realized] : GetRealizedItems())
+	{
+		(void)realized;
+		if (auto* row = dynamic_cast<DataGridRow*>(GetGeneratedItem(index)))
+			rows.emplace_back(row);
+	}
+	if (auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+		headersLifetime.Get()))
+	{
+		if (!presenter->TryCommitResizeLayoutLocally(fixedHeaderHeight))
+			return false;
+		if (!ownerLifetime.Get()) return false;
+	}
+	for (const auto& rowLifetime : rows)
+	{
+		auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!owner) return false;
+		if (!row || row->GetDataGridOwner() != owner) continue;
+		auto* cells = row->_cellsGrid;
+		if (!cells
+			|| !cells->TryCommitResizeLayoutLocally(fixedRowHeight)) return false;
+	}
+	return ownerLifetime.Get() != nullptr;
 }
 
 bool DataGrid::EnsureColumnWidthPrefix() const
@@ -10981,7 +11063,8 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 	}
 }
 
-void DataGrid::UpdateColumnViewportWidth(double availableWidth)
+void DataGrid::UpdateColumnViewportWidth(
+	double availableWidth, bool refreshRealizedColumns)
 {
 	if (!std::isfinite(availableWidth) || availableWidth < 0.0)
 		availableWidth = 0.0;
@@ -10989,7 +11072,6 @@ void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 		&& std::abs(_columnViewportWidth - availableWidth) <= 0.0001)
 		return;
 	const double oldViewportWidth = _columnViewportWidth;
-	_columnViewportWidth = availableWidth;
 	const bool hasStarColumns = std::any_of(
 		_columns.begin(), _columns.end(), [](const auto& column)
 		{
@@ -10998,9 +11080,76 @@ void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 		});
 	if (hasStarColumns)
 	{
+		// Preserve the displayed geometry before changing the Star water-fill.
+		// Viewport projection used to leave the resize dirty mask empty, whose
+		// conservative meaning is "measure every cell".  In the common mixed
+		// Pixel/Star DataGrid that needlessly remeasured all fixed-width templates
+		// on every WM_SIZE even though only Star constraints changed.
+		std::vector<double> previousWidths;
+		if (std::isfinite(oldViewportWidth))
+		{
+			previousWidths.reserve(_columns.size());
+			for (size_t index = 0; index < _columns.size(); ++index)
+			{
+				const auto resolved = ResolveColumnGridLength(index);
+				previousWidths.push_back(resolved.IsPixel()
+					? static_cast<double>(resolved.Value) : 0.0);
+			}
+		}
+		_columnViewportWidth = availableWidth;
 		RedistributeRuntimeWidthsForViewportChange(
 			oldViewportWidth, availableWidth);
-		RefreshColumnWidths();
+		ProjectColumnWidthsForViewportLayout();
+
+		std::vector<double> currentWidths;
+		currentWidths.reserve(_columns.size());
+		for (size_t index = 0; index < _columns.size(); ++index)
+		{
+			const auto resolved = ResolveColumnGridLength(index);
+			currentWidths.push_back(resolved.IsPixel()
+				? static_cast<double>(resolved.Value) : 0.0);
+		}
+		_columnWidthDirtyBegin = DataGridCellInfo::InvalidIndex;
+		_columnWidthDirtyEnd = DataGridCellInfo::InvalidIndex;
+		_columnWidthDirtyVisualSpan =
+			(std::numeric_limits<double>::quiet_NaN)();
+		_columnWidthMeasureDirty.clear();
+		if (previousWidths.size() == currentWidths.size())
+		{
+			_columnWidthMeasureDirty.assign(currentWidths.size(), 0);
+			double oldLeft = 0.0;
+			double newLeft = 0.0;
+			for (size_t index = 0; index < currentWidths.size(); ++index)
+			{
+				const double oldWidth = previousWidths[index];
+				const double newWidth = currentWidths[index];
+				if (std::abs(oldWidth - newWidth) > 0.000001)
+					_columnWidthMeasureDirty[index] = 1;
+				if (std::abs(oldLeft - newLeft) > 0.000001
+					|| std::abs(oldWidth - newWidth) > 0.000001)
+				{
+					if (_columnWidthDirtyBegin
+						== DataGridCellInfo::InvalidIndex)
+						_columnWidthDirtyBegin = index;
+					_columnWidthDirtyEnd = index + 1;
+				}
+				oldLeft += oldWidth;
+				newLeft += newWidth;
+			}
+			if (_columnWidthDirtyBegin != DataGridCellInfo::InvalidIndex)
+			{
+				double oldSpan = 0.0;
+				double newSpan = 0.0;
+				for (size_t index = _columnWidthDirtyBegin;
+					index < _columnWidthDirtyEnd; ++index)
+				{
+					oldSpan += previousWidths[index];
+					newSpan += currentWidths[index];
+				}
+				_columnWidthDirtyVisualSpan =
+					(std::max)(oldSpan, newSpan);
+			}
+		}
 		// A viewport change can occur while the gripper owns capture (for example
 		// when a scrollbar appears). Preserve the drag-start snapshot for Cancel,
 		// but replay later absolute pointer deltas from the new projection.
@@ -11014,7 +11163,9 @@ void DataGrid::UpdateColumnViewportWidth(double availableWidth)
 					- _columnResizeLastRawWidth;
 		}
 	}
-	if (_columnResizeSnapshot.empty()) RefreshRealizedColumns();
+	else _columnViewportWidth = availableWidth;
+	if (refreshRealizedColumns && _columnResizeSnapshot.empty())
+		RefreshRealizedColumns();
 }
 
 std::pair<size_t, size_t>
