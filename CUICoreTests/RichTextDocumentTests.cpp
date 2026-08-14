@@ -1,4 +1,4 @@
-#include "RichTextDocumentTests.h"
+﻿#include "RichTextDocumentTests.h"
 
 #include "TestRunner.h"
 #include <RichTextDocument.h>

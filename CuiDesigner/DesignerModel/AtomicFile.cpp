@@ -1,4 +1,4 @@
-#include "AtomicFile.h"
+﻿#include "AtomicFile.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif

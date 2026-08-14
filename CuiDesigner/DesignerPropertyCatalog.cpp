@@ -1,4 +1,4 @@
-#include "DesignerPropertyCatalog.h"
+﻿#include "DesignerPropertyCatalog.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerStyleSheetUtils.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"

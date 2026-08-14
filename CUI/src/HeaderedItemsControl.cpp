@@ -1,4 +1,4 @@
-#include "HeaderedItemsControl.h"
+﻿#include "HeaderedItemsControl.h"
 #include "HeaderedContentControl.h"
 #include "Layout/OverlayLayout.h"
 #include "TreeInfrastructure.h"

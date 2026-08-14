@@ -1,4 +1,4 @@
-#include "DesignerCommandCoordinator.h"
+﻿#include "DesignerCommandCoordinator.h"
 #include "../DesignerCanvas.h"
 #include "Commands/DocumentSnapshotCommand.h"
 

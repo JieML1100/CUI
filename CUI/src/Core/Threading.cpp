@@ -1,4 +1,4 @@
-#include "Core/Threading.h"
+﻿#include "Core/Threading.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX

@@ -1,4 +1,4 @@
-#include "Designer.h"
+﻿#include "Designer.h"
 #include "DesignerControlCatalog.h"
 #include "ProgrammaticControlFactory.h"
 #include "CodeBehindExportDialog.h"

@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "RichTextBox.h"
 #include "RichTextClipboard.h"
 #include "RichTextRtf.h"

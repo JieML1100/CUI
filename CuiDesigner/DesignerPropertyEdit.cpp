@@ -1,4 +1,4 @@
-#include "DesignerPropertyEdit.h"
+﻿#include "DesignerPropertyEdit.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
 #include "../CUI/include/DependencyPropertyInfrastructure.h"

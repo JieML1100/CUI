@@ -1,4 +1,4 @@
-#include "DataResourcesEditorDialog.h"
+﻿#include "DataResourcesEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerModel/DesignDataResourceEditorModel.h"

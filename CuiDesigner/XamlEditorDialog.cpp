@@ -1,4 +1,4 @@
-#include "XamlEditorDialog.h"
+﻿#include "XamlEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include "DesignerCanvas.h"
 #include "../CUI/include/WindowInfrastructure.h"

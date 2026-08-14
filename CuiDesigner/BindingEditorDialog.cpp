@@ -1,4 +1,4 @@
-#include "BindingEditorDialog.h"
+﻿#include "BindingEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include "../CUI/include/BindingList.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"

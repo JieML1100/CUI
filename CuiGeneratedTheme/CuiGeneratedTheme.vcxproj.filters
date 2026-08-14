@@ -12,15 +12,9 @@
     <ClCompile Include="ThemeCompileProbe.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Tests\CornerRadiusThemeProbe.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CuiThemeCompile Include="..\Themes\Generic.xaml">
-      <Filter>Theme</Filter>
-    </CuiThemeCompile>
-    <CuiThemeCompile Include="Tests\CornerRadiusVisualState.xaml">
       <Filter>Theme</Filter>
     </CuiThemeCompile>
   </ItemGroup>

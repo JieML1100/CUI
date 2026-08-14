@@ -44,13 +44,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -121,7 +121,7 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-	<ClCompile Include="..\CuiDesigner\BindingConverterCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\BindingConverterCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp">
       <!-- The generator TU exceeds MSVC 14.44's reliable LTCG object size. -->
       <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">false</WholeProgramOptimization>
@@ -132,7 +132,7 @@
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.cpp" />
   </ItemGroup>
   <ItemGroup>
-	<ClInclude Include="..\CuiDesigner\BindingConverterCatalog.h" />
+    <ClInclude Include="..\CuiDesigner\BindingConverterCatalog.h" />
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h" />
@@ -157,6 +157,7 @@
       <Project>{B184B7EA-EA4D-4E1E-ABDD-A9A6A91CBBCF}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="..\build\CuiEncoding.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

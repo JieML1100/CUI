@@ -1,4 +1,4 @@
-#include "DesignerStructureEdit.h"
+﻿#include "DesignerStructureEdit.h"
 
 #include "../CUI/include/Layout/Grid.h"
 

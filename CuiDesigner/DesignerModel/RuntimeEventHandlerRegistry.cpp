@@ -1,4 +1,4 @@
-#include "RuntimeEventHandlerRegistry.h"
+﻿#include "RuntimeEventHandlerRegistry.h"
 
 #include <algorithm>
 #include <limits>

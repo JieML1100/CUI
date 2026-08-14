@@ -1,4 +1,4 @@
-#include "ContentControl.h"
+﻿#include "ContentControl.h"
 #include "Layout/OverlayLayout.h"
 #include "Window.h"
 #include "TreeInfrastructure.h"

@@ -1,4 +1,4 @@
-#include "Dialog.h"
+﻿#include "Dialog.h"
 
 HWND GetTopMostWindowInCurrentProcess()  {
 	struct EnumParams {

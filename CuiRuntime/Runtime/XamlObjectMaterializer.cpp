@@ -1,4 +1,4 @@
-#include "../include/XamlObjectMaterializer.h"
+﻿#include "../include/XamlObjectMaterializer.h"
 #include "../include/BindingConverterRegistry.h"
 #include "../include/XamlDocumentCompiler.h"
 #include "../include/XamlFrameworkTheme.h"

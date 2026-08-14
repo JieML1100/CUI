@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "RuntimeDocument.h"
 #include "../../CUI/include/Window.h"

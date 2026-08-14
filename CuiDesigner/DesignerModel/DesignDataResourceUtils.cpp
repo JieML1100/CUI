@@ -1,4 +1,4 @@
-#include "DesignDataResourceUtils.h"
+﻿#include "DesignDataResourceUtils.h"
 #include "DesignDocumentGraph.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"

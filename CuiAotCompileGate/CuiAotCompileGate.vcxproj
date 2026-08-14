@@ -22,13 +22,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -36,9 +36,7 @@
   <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets">
-    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
-            Condition="Exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
-            Label="LocalAppDataPlatform" />
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="Exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
@@ -48,8 +46,7 @@
     <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
     <CuiGeneratedCodeDir>$(IntDir)CuiGenerated\</CuiGeneratedCodeDir>
     <CuiAotRequireRuntimeFree Condition="'$(CuiAotRequireRuntimeFree)'==''">true</CuiAotRequireRuntimeFree>
-    <CuiVerifyAotGeneratedCode
-      Condition="'$(CuiAotRequireRuntimeFree)'!='true'">false</CuiVerifyAotGeneratedCode>
+    <CuiVerifyAotGeneratedCode Condition="'$(CuiAotRequireRuntimeFree)'!='true'">false</CuiVerifyAotGeneratedCode>
     <!--
       This include exists only for /p:CuiAotRequireRuntimeFree=false. It lets
       maintainers compile an intermediate generator output far enough to expose
@@ -130,32 +127,19 @@
       <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="..\build\CuiEncoding.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="..\build\CuiCodeGen.targets" />
-  <Target Name="CuiVerifyAotGeneratedRuntimeBoundary"
-          AfterTargets="CuiCompileGeneratedCode"
-          BeforeTargets="ClCompile"
-          Condition="'$(CuiCodeGenEnabled)'=='true'
-                  and '@(CuiCompile)'!=''
-                  and '$(CuiAotRequireRuntimeFree)'!='true'">
+  <Target Name="CuiVerifyAotGeneratedRuntimeBoundary" AfterTargets="CuiCompileGeneratedCode" BeforeTargets="ClCompile" Condition="'$(CuiCodeGenEnabled)'=='true'&#xA;                  and '@(CuiCompile)'!=''&#xA;                  and '$(CuiAotRequireRuntimeFree)'!='true'">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\build\VerifyCuiAotGenerated.ps1&quot; -GeneratedBase &quot;%(CuiCompile.OutputBase)&quot; -AllowKnownBlockers" />
   </Target>
-  <Target Name="CuiVerifyTypedConverterBoundary"
-          AfterTargets="CuiCompileGeneratedCode"
-          BeforeTargets="ClCompile"
-          Condition="'$(CuiCodeGenEnabled)'=='true'">
+  <Target Name="CuiVerifyTypedConverterBoundary" AfterTargets="CuiCompileGeneratedCode" BeforeTargets="ClCompile" Condition="'$(CuiCodeGenEnabled)'=='true'">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyTypedConverterBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)TypedConverterContract&quot;" />
   </Target>
-  <Target Name="CuiVerifyBindingScopeBoundary"
-          AfterTargets="CuiCompileGeneratedCode"
-          BeforeTargets="ClCompile"
-          Condition="'$(CuiCodeGenEnabled)'=='true'">
+  <Target Name="CuiVerifyBindingScopeBoundary" AfterTargets="CuiCompileGeneratedCode" BeforeTargets="ClCompile" Condition="'$(CuiCodeGenEnabled)'=='true'">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyBindingScopeBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)BindingScopeContract&quot;" />
   </Target>
-  <Target Name="CuiVerifyDependencyPropertyStorageBoundary"
-          AfterTargets="CuiCompileGeneratedCode"
-          BeforeTargets="ClCompile"
-          Condition="'$(CuiCodeGenEnabled)'=='true'">
+  <Target Name="CuiVerifyDependencyPropertyStorageBoundary" AfterTargets="CuiCompileGeneratedCode" BeforeTargets="ClCompile" Condition="'$(CuiCodeGenEnabled)'=='true'">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)VerifyDependencyPropertyStorageBoundary.ps1&quot; -GeneratedBase &quot;$(CuiGeneratedCodeDir)DependencyPropertyStorageContract&quot;" />
   </Target>
   <ImportGroup Label="ExtensionTargets" />

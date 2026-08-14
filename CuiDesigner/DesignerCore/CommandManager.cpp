@@ -1,4 +1,4 @@
-#include "CommandManager.h"
+﻿#include "CommandManager.h"
 
 DesignerDocumentTransactionResult CommandManager::Execute(
 	std::unique_ptr<IDesignerCommand> command)

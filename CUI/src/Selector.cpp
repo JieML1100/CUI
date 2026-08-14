@@ -1,4 +1,4 @@
-#include "Selector.h"
+﻿#include "Selector.h"
 #include "DependencyPropertyInfrastructure.h"
 #include "EventInfrastructure.h"
 #include "ListBox.h"

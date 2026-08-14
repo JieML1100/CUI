@@ -1,4 +1,4 @@
-#include "DesignCodeGenerationService.h"
+﻿#include "DesignCodeGenerationService.h"
 
 #include "AtomicFile.h"
 #include "DesignDocumentFileFormat.h"

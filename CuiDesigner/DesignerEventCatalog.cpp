@@ -1,4 +1,4 @@
-#include "DesignerEventCatalog.h"
+﻿#include "DesignerEventCatalog.h"
 
 #include "../CUI/include/ChartView.h"
 #include "../CUI/include/Calendar.h"

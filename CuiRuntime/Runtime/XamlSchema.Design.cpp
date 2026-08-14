@@ -1,4 +1,4 @@
-#include "XamlSchema.h"
+﻿#include "XamlSchema.h"
 #include "Control.h"
 
 #include <algorithm>

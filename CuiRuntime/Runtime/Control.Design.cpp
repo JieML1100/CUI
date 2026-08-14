@@ -1,4 +1,4 @@
-#include "Control.h"
+﻿#include "Control.h"
 #include "Window.h"
 
 #include <algorithm>

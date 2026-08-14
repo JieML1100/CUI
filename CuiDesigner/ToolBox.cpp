@@ -1,4 +1,4 @@
-#include "ToolBox.h"
+﻿#include "ToolBox.h"
 #include "../CUI/include/EventInfrastructure.h"
 #include "DesignerControlCatalog.h"
 #include "ProgrammaticControlFactory.h"

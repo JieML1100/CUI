@@ -1,4 +1,4 @@
-#include "MediaElement.h"
+﻿#include "MediaElement.h"
 #include "EventInfrastructure.h"
 #include "Window.h"
 #include "Core/Threading.h"

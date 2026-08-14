@@ -1,4 +1,4 @@
-#include "RuntimeDocumentTopologyReloader.h"
+﻿#include "RuntimeDocumentTopologyReloader.h"
 
 #include "DesignDocumentGraph.h"
 #include "../../CuiRuntime/include/XamlObjectMaterializer.h"

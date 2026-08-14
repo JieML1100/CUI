@@ -16,9 +16,6 @@
     <ClCompile Include="NamespacedWindow.cpp">
       <Filter>User</Filter>
     </ClCompile>
-    <ClCompile Include="NamespacedWindow.g.cpp">
-      <Filter>Generated</Filter>
-    </ClCompile>
     <ClCompile Include="RuntimeMeasurement.cpp">
       <Filter>Measurement</Filter>
     </ClCompile>
@@ -26,12 +23,6 @@
   <ItemGroup>
     <ClInclude Include="NamespacedWindow.h">
       <Filter>User</Filter>
-    </ClInclude>
-    <ClInclude Include="NamespacedWindow.g.h">
-      <Filter>Generated</Filter>
-    </ClInclude>
-    <ClInclude Include="NamespacedWindow.handlers.g.inc">
-      <Filter>Generated</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

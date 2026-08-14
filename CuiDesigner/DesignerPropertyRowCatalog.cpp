@@ -1,4 +1,4 @@
-#include "DesignerPropertyRowCatalog.h"
+﻿#include "DesignerPropertyRowCatalog.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "../CUI/include/Style.h"

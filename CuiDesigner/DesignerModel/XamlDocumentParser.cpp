@@ -1,4 +1,4 @@
-#include "XamlDocumentParser.h"
+﻿#include "XamlDocumentParser.h"
 
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"

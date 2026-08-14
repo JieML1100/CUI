@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -42,13 +42,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <!-- MSVC 14.44 crashes nondeterministically while importing this large
          library's /GL objects into CUITest. Keep normal Release optimization
          and disable only cross-module code generation for reliable builds. -->
@@ -254,11 +254,11 @@
     <ClInclude Include="include\DispatcherObject.h" />
     <ClInclude Include="include\ControlWeakReference.h" />
     <ClInclude Include="include\DependencyObject.h" />
-	<ClInclude Include="include\DependencyProperty.h" />
-	<ClInclude Include="include\TextAlignment.h" />
-	<ClInclude Include="include\FlowDirection.h" />
-	<ClInclude Include="include\TextBoundary.h" />
-	<ClInclude Include="include\TextElement.h" />
+    <ClInclude Include="include\DependencyProperty.h" />
+    <ClInclude Include="include\TextAlignment.h" />
+    <ClInclude Include="include\FlowDirection.h" />
+    <ClInclude Include="include\TextBoundary.h" />
+    <ClInclude Include="include\TextElement.h" />
     <ClInclude Include="include\TextPointer.h" />
     <ClInclude Include="include\TextRange.h" />
     <ClInclude Include="include\RichTextDocument.h" />
@@ -366,9 +366,9 @@
     <ClCompile Include="src\DependencyObject.cpp" />
     <ClCompile Include="src\TextElement.cpp" />
     <ClCompile Include="src\TextPointer.cpp" />
-	<ClCompile Include="src\TextRange.cpp" />
-	<ClCompile Include="src\TextBoundary.cpp" />
-	<ClCompile Include="src\RichTextDocument.cpp" />
+    <ClCompile Include="src\TextRange.cpp" />
+    <ClCompile Include="src\TextBoundary.cpp" />
+    <ClCompile Include="src\RichTextDocument.cpp" />
     <ClCompile Include="src\RichTextClipboard.cpp" />
     <ClCompile Include="src\RichTextRtf.cpp" />
     <ClCompile Include="src\FlowDocument.cpp" />
@@ -471,6 +471,7 @@
       <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="..\build\CuiEncoding.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" />

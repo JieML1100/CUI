@@ -1,4 +1,4 @@
-#include "EventHandlerCommand.h"
+﻿#include "EventHandlerCommand.h"
 
 #include "../../DesignerCanvas.h"
 #include "../../DesignerEventCatalog.h"

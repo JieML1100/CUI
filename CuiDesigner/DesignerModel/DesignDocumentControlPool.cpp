@@ -1,4 +1,4 @@
-#include "DesignDocumentControlPool.h"
+﻿#include "DesignDocumentControlPool.h"
 
 namespace DesignerModel
 {

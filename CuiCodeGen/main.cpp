@@ -1,4 +1,4 @@
-#include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
+﻿#include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
 #include "../CuiDesigner/FrameworkThemeCodeGenerator.h"
 
 #include <Windows.h>

@@ -1,4 +1,4 @@
-#include "DesignDocumentEventIndex.h"
+﻿#include "DesignDocumentEventIndex.h"
 
 #include "../DesignerEventCatalog.h"
 

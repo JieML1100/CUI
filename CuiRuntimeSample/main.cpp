@@ -1,4 +1,4 @@
-#include <CuiRuntime.h>
+﻿#include <CuiRuntime.h>
 #include <EventInfrastructure.h>
 #include <StyleInfrastructure.h>
 #include <Convert.h>

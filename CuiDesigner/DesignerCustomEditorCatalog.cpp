@@ -1,4 +1,4 @@
-#include "DesignerCustomEditorCatalog.h"
+﻿#include "DesignerCustomEditorCatalog.h"
 #include <algorithm>
 #include <cwctype>
 #include <mutex>

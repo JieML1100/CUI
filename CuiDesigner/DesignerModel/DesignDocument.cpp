@@ -1,4 +1,4 @@
-#include "DesignDocument.h"
+﻿#include "DesignDocument.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerEventCatalog.h"
 #include "../DesignerStyleSheetUtils.h"

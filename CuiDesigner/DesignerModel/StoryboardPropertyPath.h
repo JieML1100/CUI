@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "DesignDocument.h"
 #include "../../CUI/include/PropertyPath.h"

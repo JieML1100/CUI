@@ -1,4 +1,4 @@
-#include "DesignerDataContextSchemaUtils.h"
+﻿#include "DesignerDataContextSchemaUtils.h"
 #include "../CUI/include/BindingList.h"
 #include <algorithm>
 #include <cwctype>

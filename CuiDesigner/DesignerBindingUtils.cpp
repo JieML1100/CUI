@@ -1,4 +1,4 @@
-#include "DesignerBindingUtils.h"
+﻿#include "DesignerBindingUtils.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPropertyCatalog.h"

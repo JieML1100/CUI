@@ -1,4 +1,4 @@
-#include "Window.h"
+﻿#include "Window.h"
 #include "EventInfrastructure.h"
 #include "InputInfrastructure.h"
 #include "PresentationInfrastructure.h"

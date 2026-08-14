@@ -1,4 +1,4 @@
-#include "GridDefinitionsEditorDialog.h"
+﻿#include "GridDefinitionsEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include <cmath>
 #include <sstream>

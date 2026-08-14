@@ -1,4 +1,4 @@
-#include "RuntimeDocument.h"
+﻿#include "RuntimeDocument.h"
 #include "DesignDocumentEventIndex.h"
 
 #include "../../CuiRuntime/include/BindingConverterRegistry.h"

@@ -1,4 +1,4 @@
-#include "DataContextSchemaEditorDialog.h"
+﻿#include "DataContextSchemaEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 #include "DesignerDataContextSchemaUtils.h"
 #include <algorithm>

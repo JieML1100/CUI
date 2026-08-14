@@ -1,4 +1,4 @@
-#include "StyleSheetEditorDialog.h"
+﻿#include "StyleSheetEditorDialog.h"
 #include "DesignerControlCatalog.h"
 #include "ProgrammaticControlFactory.h"
 #include "DesignerPropertyCatalog.h"

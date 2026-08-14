@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "FlowDocument.h"
 #include "TextRange.h"
 #include "TextBoxBase.h"

@@ -1,4 +1,4 @@
-#include "DesignerControlPropertyCatalog.h"
+﻿#include "DesignerControlPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
 #include "../CUI/include/StyleInfrastructure.h"
 #include <algorithm>

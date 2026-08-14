@@ -1,4 +1,4 @@
-#include "DesignerCanvas.h"
+﻿#include "DesignerCanvas.h"
 #include "../CUI/include/Canvas.h"
 #include "../CUI/include/EventInfrastructure.h"
 #include "../CuiRuntime/include/BindingConverterRegistry.h"

@@ -43,13 +43,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -116,15 +116,15 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-	<ClCompile Include="Runtime\BindingConverterRegistry.Design.cpp" />
-	<ClCompile Include="Runtime\CollectionAdapters.Design.cpp" />
-	<ClCompile Include="Runtime\ContentProjection.Design.cpp" />
-	<ClCompile Include="Runtime\StyleMutableBackend.Design.cpp" />
-	<ClCompile Include="Runtime\VisualState.Design.cpp" />
-	<ClCompile Include="Runtime\Control.Design.cpp" />
-	<ClCompile Include="Runtime\DependencyObject.Design.cpp" />
-	<ClCompile Include="Runtime\DependencyPropertyRegistry.Design.cpp" />
-	<ClCompile Include="Runtime\XamlSchema.Design.cpp" />
+    <ClCompile Include="Runtime\BindingConverterRegistry.Design.cpp" />
+    <ClCompile Include="Runtime\CollectionAdapters.Design.cpp" />
+    <ClCompile Include="Runtime\ContentProjection.Design.cpp" />
+    <ClCompile Include="Runtime\StyleMutableBackend.Design.cpp" />
+    <ClCompile Include="Runtime\VisualState.Design.cpp" />
+    <ClCompile Include="Runtime\Control.Design.cpp" />
+    <ClCompile Include="Runtime\DependencyObject.Design.cpp" />
+    <ClCompile Include="Runtime\DependencyPropertyRegistry.Design.cpp" />
+    <ClCompile Include="Runtime\XamlSchema.Design.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
@@ -132,8 +132,8 @@
     <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
@@ -153,15 +153,15 @@
     <ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp" />
   </ItemGroup>
   <ItemGroup>
-	<ClInclude Include="include\BindingConverterRegistry.h" />
+    <ClInclude Include="include\BindingConverterRegistry.h" />
     <ClInclude Include="include\CuiRuntime.h" />
     <ClInclude Include="include\XamlDocumentCompiler.h" />
     <ClInclude Include="include\XamlFrameworkTheme.h" />
     <ClInclude Include="include\XamlObjectMaterializer.h" />
     <ClInclude Include="include\XamlRuntimeSchema.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h" />
-	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h" />
-	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.h" />
+    <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h" />
+    <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.h" />
@@ -194,6 +194,7 @@
       <Project>{b184b7ea-ea4d-4e1e-abdd-a9a6a91cbbcf}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="..\build\CuiEncoding.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

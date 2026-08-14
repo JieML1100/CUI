@@ -1,4 +1,4 @@
-#include "DocumentSnapshotCommand.h"
+﻿#include "DocumentSnapshotCommand.h"
 #include "DesignNodeMemory.h"
 #include "../../DesignerCanvas.h"
 

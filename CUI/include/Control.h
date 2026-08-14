@@ -1,4 +1,4 @@
-#ifndef CUI_CONTROL_H_INCLUDED
+﻿#ifndef CUI_CONTROL_H_INCLUDED
 #define CUI_CONTROL_H_INCLUDED
 #pragma once
 #define NOMINMAX

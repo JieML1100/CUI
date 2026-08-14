@@ -1,4 +1,4 @@
-#include "DCompLayeredHost.h"
+﻿#include "DCompLayeredHost.h"
 #include "Graphics.h"
 
 #ifdef CUI_ENABLE_WEBVIEW2

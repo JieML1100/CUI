@@ -1,4 +1,4 @@
-#include "ControlStructureCommand.h"
+﻿#include "ControlStructureCommand.h"
 
 #include "../../DesignerCanvas.h"
 #include "../PropertyGridBinder.h"

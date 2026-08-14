@@ -1,4 +1,4 @@
-#include "SourceCodeNavigator.h"
+﻿#include "SourceCodeNavigator.h"
 #include "DesignerModel/CppUserCodeIndex.h"
 
 #include <shellapi.h>

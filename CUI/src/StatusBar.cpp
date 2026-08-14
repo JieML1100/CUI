@@ -1,4 +1,4 @@
-#include "StatusBar.h"
+﻿#include "StatusBar.h"
 #include "Layout/StackPanel.h"
 #include "StyleInfrastructure.h"
 

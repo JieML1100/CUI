@@ -44,13 +44,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -99,8 +99,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ThemeCompileProbe.cpp" />
-    <ClCompile Include="Tests\CornerRadiusThemeProbe.cpp"
-               Condition="'$(CuiGeneratedThemeDirectedTests)'=='true'" />
+    <ClCompile Include="Tests\CornerRadiusThemeProbe.cpp" Condition="'$(CuiGeneratedThemeDirectedTests)'=='true'" />
   </ItemGroup>
   <ItemGroup>
     <CuiThemeCompile Include="..\Themes\Generic.xaml">
@@ -108,8 +107,7 @@
       <ClassName>CuiGeneratedFrameworkTheme</ClassName>
       <Mode>Full</Mode>
     </CuiThemeCompile>
-    <CuiThemeCompile Include="Tests\CornerRadiusVisualState.xaml"
-                     Condition="'$(CuiGeneratedThemeDirectedTests)'=='true'">
+    <CuiThemeCompile Include="Tests\CornerRadiusVisualState.xaml" Condition="'$(CuiGeneratedThemeDirectedTests)'=='true'">
       <OutputBase>$(CuiGeneratedCodeDir)CornerRadiusVisualStateTheme</OutputBase>
       <ClassName>CuiGeneratedCornerRadiusTheme</ClassName>
       <Mode>Full</Mode>
@@ -120,6 +118,7 @@
       <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="..\build\CuiEncoding.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="..\build\CuiCodeGen.targets" />
   <ImportGroup Label="ExtensionTargets" />

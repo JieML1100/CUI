@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Window xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:d="urn:cui:designer" xmlns:test="urn:cui:test" x:Name="CuiXamlDemo" Title="CUI XAML Component Gallery" Width="1400" Height="800" Background="#FFE8EEF6" Foreground="#FF172033" Closing="HandleClosing" ContentRendered="HandleContentRendered" PreviewExecuted="HandleCommandPreviewExecuted">
   <Window.Resources>
     <ResourceDictionary>

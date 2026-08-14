@@ -1,4 +1,4 @@
-#include "Resource.h"
+﻿#include "Resource.h"
 #include "Application.h"
 #include <BitmapSource.h>
 

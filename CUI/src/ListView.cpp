@@ -1,4 +1,4 @@
-#include "ListView.h"
+﻿#include "ListView.h"
 #include "StyleInfrastructure.h"
 
 void ListViewItem::RegisterDependencyProperties()

@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "DatePicker.h"
 
 #include "ButtonBase.h"

@@ -1,4 +1,4 @@
-#include "../include/XamlFrameworkTheme.h"
+﻿#include "../include/XamlFrameworkTheme.h"
 
 #include "../include/XamlObjectMaterializer.h"
 #include "../include/XamlRuntimeSchema.h"

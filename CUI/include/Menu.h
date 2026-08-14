@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "HeaderedItemsControl.h"
 #include "Separator.h"
 #include <cstdint>

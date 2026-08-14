@@ -1,4 +1,4 @@
-#ifndef CUI_WINDOW_H_INCLUDED
+﻿#ifndef CUI_WINDOW_H_INCLUDED
 #define CUI_WINDOW_H_INCLUDED
 #pragma once
 #include <vector>

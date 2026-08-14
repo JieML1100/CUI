@@ -1,4 +1,4 @@
-#include "RuntimeDocumentFileWatcher.h"
+﻿#include "RuntimeDocumentFileWatcher.h"
 
 #include <Windows.h>
 

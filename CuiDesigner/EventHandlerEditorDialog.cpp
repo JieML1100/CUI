@@ -1,4 +1,4 @@
-#include "EventHandlerEditorDialog.h"
+﻿#include "EventHandlerEditorDialog.h"
 #include "ProgrammaticControlFactory.h"
 
 #include "DesignerEventCatalog.h"

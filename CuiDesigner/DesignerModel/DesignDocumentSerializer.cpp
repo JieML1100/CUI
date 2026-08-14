@@ -1,4 +1,4 @@
-#include "DesignDocumentSerializer.h"
+﻿#include "DesignDocumentSerializer.h"
 #include "AtomicFile.h"
 #include "XamlDocumentParser.h"
 #include "XamlDocumentSerializer.h"

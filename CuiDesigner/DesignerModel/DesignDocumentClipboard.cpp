@@ -1,4 +1,4 @@
-#include "DesignDocumentClipboard.h"
+﻿#include "DesignDocumentClipboard.h"
 #include "DesignDataResourceUtils.h"
 #include "DesignDocumentGraph.h"
 #include "../DesignerDataContextSchemaUtils.h"

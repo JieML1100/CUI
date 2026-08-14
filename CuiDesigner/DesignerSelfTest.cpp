@@ -1,4 +1,4 @@
-#include "DesignerSelfTest.h"
+﻿#include "DesignerSelfTest.h"
 #include "../CUI/include/Canvas.h"
 #include "../CUI/include/EventInfrastructure.h"
 #include "../CUI/include/StyleInfrastructure.h"

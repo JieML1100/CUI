@@ -1,4 +1,4 @@
-#include "CodeGenerator.h"
+﻿#include "CodeGenerator.h"
 #include "BindingConverterCatalog.h"
 #include "DesignerEventCatalog.h"
 #include "DesignerModel/AtomicFile.h"

@@ -1,4 +1,4 @@
-#include "FrameworkThemeCodeGenerator.h"
+﻿#include "FrameworkThemeCodeGenerator.h"
 
 #include "CodeGenerator.h"
 #include "DesignerStyleSheetUtils.h"

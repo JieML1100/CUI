@@ -1,4 +1,4 @@
-#include "Designer.h"
+﻿#include "Designer.h"
 #include "DesignerSelfTest.h"
 
 #include <Shellapi.h>

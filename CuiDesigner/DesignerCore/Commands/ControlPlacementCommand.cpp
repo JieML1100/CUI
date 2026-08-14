@@ -1,4 +1,4 @@
-#include "ControlPlacementCommand.h"
+﻿#include "ControlPlacementCommand.h"
 #include "../../DesignerCanvas.h"
 #include "../../../CUI/include/Canvas.h"
 #include "../../../CUI/include/Layout/DockPanel.h"

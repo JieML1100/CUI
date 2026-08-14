@@ -1,4 +1,4 @@
-#include "Control.h"
+﻿#include "Control.h"
 #include "PropertyPath.h"
 
 #include <algorithm>

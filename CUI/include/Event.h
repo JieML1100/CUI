@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Binding.h"
 #include "ControlWeakReference.h"
 #include "Core/EventConnection.h"

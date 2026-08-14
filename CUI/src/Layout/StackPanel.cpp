@@ -1,4 +1,4 @@
-#include "Layout/StackPanel.h"
+﻿#include "Layout/StackPanel.h"
 #include "Window.h"
 #include <algorithm>
 #include <cmath>

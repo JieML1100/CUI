@@ -1,4 +1,4 @@
-#include "Layout/WrapPanel.h"
+﻿#include "Layout/WrapPanel.h"
 #include "Layout/StackPanel.h"
 #include "Window.h"
 #include <algorithm>

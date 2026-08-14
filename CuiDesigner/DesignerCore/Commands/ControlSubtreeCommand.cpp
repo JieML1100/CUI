@@ -1,4 +1,4 @@
-#include "ControlSubtreeCommand.h"
+﻿#include "ControlSubtreeCommand.h"
 #include "DesignNodeMemory.h"
 #include "../../DesignerCanvas.h"
 #include "../../../CUI/include/ItemsControl.h"
