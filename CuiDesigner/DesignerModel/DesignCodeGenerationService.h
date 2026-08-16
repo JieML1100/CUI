@@ -11,7 +11,7 @@
 namespace DesignerModel
 {
 /** Bump together with CuiCodeGen.targets when generated output semantics change. */
-inline constexpr unsigned int DesignCodeGenerationContractVersion = 70;
+inline constexpr unsigned int DesignCodeGenerationContractVersion = 77;
 
 struct DesignCodeGenerationOptions
 {
@@ -21,6 +21,8 @@ struct DesignCodeGenerationOptions
 	std::wstring ClassName;
 	/** Optional build-time XML catalog for typed application converters. */
 	std::wstring ConverterManifestPath;
+	/** Optional build-time DataGrid auto-column transformation catalog. */
+	std::wstring DataGridAutoColumnManifestPath;
 };
 
 struct DesignCodeGenerationResult

@@ -3,6 +3,7 @@
 #include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../CuiRuntime/include/XamlRuntimeSchema.h"
 #include <TreeInfrastructure.h>
 #include <Convert.h>
 #include <cwctype>
@@ -203,6 +204,153 @@ bool IsValidSourcePath(const std::wstring& path)
 {
 	std::vector<BindingPathStep> steps;
 	return TryParseBindingPropertyPath(path, steps);
+}
+
+bool ValidateDataGridColumnBindingSource(
+	const DesignerDataBinding& binding,
+	UIClass* outSourceType,
+	std::wstring* outError,
+	UIClass elementNameSourceType)
+{
+	const auto fail = [&](std::wstring message)
+	{
+		if (outError) *outError = std::move(message);
+		if (outSourceType) *outSourceType = UIClass::UI_Base;
+		return false;
+	};
+	if (outSourceType) *outSourceType = UIClass::UI_Base;
+	if (binding.IsMultiBinding())
+	{
+		if (!binding.SourceProperty.empty() || !binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| !binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1)
+			return fail(L"DataGrid 列 MultiBinding 的源只能由 Binding 子项声明。");
+		if (binding.ChildBindings.size() < 2)
+			return fail(L"DataGrid 列 MultiBinding 至少需要两个 Binding 子项。");
+		const auto converterName = Trim(binding.Converter);
+		if (!binding.Converter.empty() && converterName.empty())
+			return fail(L"DataGrid 列 MultiBinding Converter 名称不能为空白。");
+		if (converterName.empty())
+		{
+			if (!binding.StringFormat
+				|| !IsValidMultiBindingStringFormat(
+					*binding.StringFormat, binding.ChildBindings.size()))
+				return fail(L"DataGrid 列 MultiBinding 需要 Converter 或有效的 StringFormat。");
+			if (binding.Mode != BindingMode::OneWay
+				&& binding.Mode != BindingMode::OneTime)
+				return fail(L"无 Converter 的 DataGrid 列 MultiBinding 必须显式使用 OneWay 或 OneTime。");
+		}
+		else
+		{
+			if (binding.StringFormat
+				&& !IsValidBindingStringFormat(*binding.StringFormat))
+				return fail(L"DataGrid 列 MultiBinding StringFormat 语法无效。");
+		}
+		for (size_t index = 0; index < binding.ChildBindings.size(); ++index)
+		{
+			const auto& child = binding.ChildBindings[index];
+			if (child.IsMultiBinding())
+				return fail(L"DataGrid 列 MultiBinding 不支持嵌套 MultiBinding。");
+			std::wstring childError;
+			if (!ValidateDataGridColumnBindingSource(
+				child, nullptr, &childError, UIClass::UI_Base))
+				return fail(L"DataGrid 列 MultiBinding 第 "
+					+ std::to_wstring(index + 1) + L" 个源无效：" + childError);
+		}
+		if (outError) outError->clear();
+		return true;
+	}
+	if (binding.SourceProperty.empty()
+		|| !IsValidSourcePath(binding.SourceProperty))
+		return fail(L"DataGrid 列 Binding 必须包含有效的源路径。");
+	if (!binding.ElementName.empty()
+		&& binding.RelativeSource != DesignerBindingRelativeSource::None)
+		return fail(L"DataGrid 列 Binding 不能同时声明 ElementName 与 RelativeSource。");
+
+	auto validateExactNativeProperty = [&](UIClass sourceType,
+		const std::wstring& sourceDescription) -> bool
+	{
+		std::vector<BindingPathStep> steps;
+		if (!TryParseBindingPropertyPath(binding.SourceProperty, steps)
+			|| steps.size() != 1
+			|| steps.front().Kind != BindingPathStepKind::Property)
+			return fail(L"DataGrid 列 " + sourceDescription
+				+ L" 当前仅支持单个依赖属性路径。");
+		if (sourceType == UIClass::UI_Base) return true;
+		if (sourceType == UIClass::UI_CUSTOM)
+			return fail(L"DataGrid 列 ElementName 当前仅支持内置控件。");
+		const auto* metadata = CuiRuntime::XamlRuntimeSchema::FindNativeProperty(
+			sourceType, steps.front().Value);
+		if (!metadata)
+			return fail(L"DataGrid 列 " + sourceDescription
+				+ L"源类型不存在依赖属性：" + steps.front().Value);
+		const bool reads = binding.Mode == BindingMode::Default
+			|| binding.Mode == BindingMode::OneWay
+			|| binding.Mode == BindingMode::TwoWay
+			|| binding.Mode == BindingMode::OneTime;
+		const bool writes = binding.Mode == BindingMode::Default
+			|| binding.Mode == BindingMode::TwoWay
+			|| binding.Mode == BindingMode::OneWayToSource;
+		if (reads && !metadata->CanRead())
+			return fail(L"DataGrid 列 " + sourceDescription
+				+ L"源属性不可读：" + steps.front().Value);
+		if (writes && !metadata->CanWrite())
+			return fail(L"DataGrid 列 " + sourceDescription
+				+ L"源属性不可写：" + steps.front().Value);
+		if (reads && binding.Mode != BindingMode::OneTime
+			&& !metadata->CanObserve())
+			return fail(L"DataGrid 列 " + sourceDescription
+				+ L"源属性不可观察：" + steps.front().Value);
+		if (outSourceType) *outSourceType = sourceType;
+		return true;
+	};
+
+	if (!binding.ElementName.empty())
+	{
+		if (binding.ElementName.find_first_of(L".,={} \t\r\n")
+			!= std::wstring::npos)
+			return fail(L"DataGrid 列 Binding ElementName 必须是直接 x:Name。");
+		if (!binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1)
+			return fail(L"AncestorType/AncestorLevel 只能用于 FindAncestor。");
+		if (!validateExactNativeProperty(
+			elementNameSourceType, L"ElementName")) return false;
+		if (outError) outError->clear();
+		return true;
+	}
+
+	if (binding.RelativeSource == DesignerBindingRelativeSource::None)
+	{
+		if (!binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1)
+			return fail(L"AncestorType/AncestorLevel 只能用于 FindAncestor。");
+		if (outError) outError->clear();
+		return true;
+	}
+	if (binding.RelativeSource != DesignerBindingRelativeSource::FindAncestor)
+		return fail(L"DataGrid 列 Binding 仅支持 RelativeSource FindAncestor。");
+	if (!binding.AncestorTypeNamespace.empty())
+		return fail(L"DataGrid 列 FindAncestor 仅支持内置 DataGrid 类型。");
+	if (binding.AncestorLevel != 1)
+		return fail(L"DataGrid 列 FindAncestor 仅支持 AncestorLevel=1。");
+
+	UIClass ancestorType = UIClass::UI_Base;
+	if (!DesignerStyleSheetUtils::TryParseUIClass(
+			binding.AncestorType, ancestorType)
+		|| (ancestorType != UIClass::UI_DataGridCell
+			&& ancestorType != UIClass::UI_DataGridRow
+			&& ancestorType != UIClass::UI_DataGrid))
+		return fail(L"DataGrid 列 FindAncestor 的 AncestorType 仅支持 "
+			L"DataGridCell、DataGridRow 或 DataGrid。");
+
+	if (!validateExactNativeProperty(ancestorType, L"FindAncestor "))
+		return false;
+	if (outError) outError->clear();
+	return true;
 }
 
 DesignerDataContextSchema BuildSourceSchema(const IBindingSource& source)

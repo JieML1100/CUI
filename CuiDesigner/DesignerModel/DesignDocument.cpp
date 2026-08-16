@@ -250,7 +250,14 @@ bool DesignNodeStructure::Empty() const noexcept
 	return CommandTarget.empty()
 		&& ItemsSourceResource.empty() && ItemTemplate.empty()
 		&& ContentTemplate.empty() && HeaderTemplate.empty()
-		&& ControlTemplate.empty() && GroupStyle.empty()
+		&& ControlTemplate.empty() && RowValidationErrorTemplate.empty()
+		&& DataGridCellStyle.empty()
+		&& DataGridColumnHeaderStyle.empty()
+		&& DataGridRowStyle.empty()
+		&& DataGridRowHeaderStyle.empty()
+		&& DataGridRowHeaderTemplate.empty()
+		&& DataGridRowDetailsTemplate.empty()
+		&& GroupStyle.empty()
 		&& ItemsPanel.empty() && ItemContainerStyle.empty()
 		&& ChildRole == DesignNodeChildRole::Default
 		&& (!RelativePanel || RelativePanel->Empty())
@@ -466,19 +473,11 @@ namespace
 		const DesignerDataBinding& binding,
 		std::wstring* outError)
 	{
-		if (binding.IsMultiBinding()
-			|| binding.SourceProperty.empty()
-			|| !DesignerBindingUtils::IsValidSourcePath(binding.SourceProperty))
-			return StructuralError(outError,
-				L"DataGrid 列 Binding 必须包含有效的行 DataContext 路径。");
-		if (!binding.ElementName.empty()
-			|| binding.RelativeSource != DesignerBindingRelativeSource::None
-			|| !binding.AncestorType.empty()
-			|| !binding.AncestorTypeNamespace.empty()
-			|| binding.AncestorLevel != 1)
-			return StructuralError(outError,
-				L"DataGrid 列 Binding 仅允许使用行 DataContext。" );
-		return true;
+		std::wstring bindingError;
+		if (DesignerBindingUtils::ValidateDataGridColumnBindingSource(
+			binding, nullptr, &bindingError)) return true;
+		return StructuralError(outError,
+			L"DataGrid 列 Binding 无效：" + bindingError);
 	}
 
 	DesignValue EncodeDataGridColumn(const DesignDataGridColumn& column)
@@ -486,6 +485,10 @@ namespace
 		const char* kind = "Text";
 		if (column.Kind == DesignDataGridColumnKind::CheckBox)
 			kind = "CheckBox";
+		else if (column.Kind == DesignDataGridColumnKind::ComboBox)
+			kind = "ComboBox";
+		else if (column.Kind == DesignDataGridColumnKind::Hyperlink)
+			kind = "Hyperlink";
 		else if (column.Kind == DesignDataGridColumnKind::Template)
 			kind = "Template";
 		DesignValue result{
@@ -494,9 +497,31 @@ namespace
 		};
 		if (!column.Header.empty())
 			result["header"] = StructuralUtf8(column.Header);
+		if (!column.HeaderStyle.empty())
+			result["headerStyle"] = StructuralUtf8(column.HeaderStyle);
+		if (!column.HeaderTemplate.empty())
+			result["headerTemplate"] = StructuralUtf8(column.HeaderTemplate);
+		if (!column.CellStyle.empty())
+			result["cellStyle"] = StructuralUtf8(column.CellStyle);
 		if (column.Binding)
 			result["binding"] = DesignerBindingUtils::WriteBindingDefinition(
 				*column.Binding);
+		const bool bound = column.Kind == DesignDataGridColumnKind::Text
+			|| column.Kind == DesignDataGridColumnKind::CheckBox
+			|| column.Kind == DesignDataGridColumnKind::ComboBox
+			|| column.Kind == DesignDataGridColumnKind::Hyperlink;
+		if (bound)
+		{
+			if (!column.ElementStyle.empty())
+				result["elementStyle"] = StructuralUtf8(column.ElementStyle);
+			if (!column.EditingElementStyle.empty())
+				result["editingElementStyle"] = StructuralUtf8(
+					column.EditingElementStyle);
+		}
+		else if (!column.ElementStyle.empty()
+			|| !column.EditingElementStyle.empty())
+			throw std::invalid_argument(
+				"ElementStyle fields require a bound DataGrid column");
 		if (column.MinWidth != 20.0) result["minWidth"] = column.MinWidth;
 		if (!std::isinf(column.MaxWidth))
 			result["maxWidth"] = column.MaxWidth;
@@ -508,8 +533,49 @@ namespace
 		else if (column.IsThreeState)
 			throw std::invalid_argument(
 				"IsThreeState is only valid for DataGridCheckBoxColumn");
+		if (column.Kind == DesignDataGridColumnKind::ComboBox)
+		{
+			if (DesignerBindingUtils::Trim(column.ItemsSourceResource).empty())
+				throw std::invalid_argument(
+					"DataGridComboBoxColumn requires ItemsSourceResource");
+			result["itemsSourceResource"] = StructuralUtf8(
+				column.ItemsSourceResource);
+			if (!column.DisplayMemberPath.empty())
+				result["displayMemberPath"] = StructuralUtf8(
+					column.DisplayMemberPath);
+			if (!column.SelectedValuePath.empty())
+				result["selectedValuePath"] = StructuralUtf8(
+					column.SelectedValuePath);
+			if (column.SelectionBinding
+				== DesignDataGridComboBoxSelectionBinding::SelectedValue)
+				result["selectionBinding"] = "SelectedValue";
+		}
+		else if (!column.ItemsSourceResource.empty()
+			|| !column.DisplayMemberPath.empty()
+			|| !column.SelectedValuePath.empty()
+			|| column.SelectionBinding
+				!= DesignDataGridComboBoxSelectionBinding::SelectedItem)
+			throw std::invalid_argument(
+				"ComboBox fields are only valid for DataGridComboBoxColumn");
+		if (column.Kind == DesignDataGridColumnKind::Hyperlink)
+		{
+			if (column.ContentBinding)
+				result["contentBinding"] =
+					DesignerBindingUtils::WriteBindingDefinition(
+						*column.ContentBinding);
+			if (!column.TargetName.empty())
+				result["targetName"] = StructuralUtf8(column.TargetName);
+		}
+		else if (column.ContentBinding || !column.TargetName.empty())
+			throw std::invalid_argument(
+				"Hyperlink fields are only valid for DataGridHyperlinkColumn");
 		if (!column.CanUserSort) result["canUserSort"] = false;
 		if (!column.CanUserResize) result["canUserResize"] = false;
+		if (!column.CanUserReorder) result["canUserReorder"] = false;
+		if (column.Visibility != DesignDataGridColumnVisibility::Visible)
+			result["visibility"] = column.Visibility
+				== DesignDataGridColumnVisibility::Hidden
+				? "Hidden" : "Collapsed";
 		if (!column.SortMemberPath.empty())
 			result["sortMemberPath"] = StructuralUtf8(column.SortMemberPath);
 		if (!column.CellTemplate.empty())
@@ -530,10 +596,20 @@ namespace
 		for (const auto& [key, ignored] : value.ObjectItems())
 		{
 			(void)ignored;
-			if (key != "kind" && key != "header" && key != "binding"
+			if (key != "kind" && key != "header"
+				&& key != "headerStyle" && key != "headerTemplate"
+				&& key != "cellStyle" && key != "binding"
+				&& key != "elementStyle" && key != "editingElementStyle"
+				&& key != "contentBinding" && key != "targetName"
 				&& key != "width" && key != "minWidth" && key != "maxWidth"
 				&& key != "isReadOnly" && key != "isThreeState"
+				&& key != "itemsSourceResource"
+				&& key != "displayMemberPath"
+				&& key != "selectedValuePath"
+				&& key != "selectionBinding"
 				&& key != "canUserSort" && key != "canUserResize"
+				&& key != "canUserReorder"
+				&& key != "visibility"
 				&& key != "sortMemberPath" && key != "cellTemplate"
 				&& key != "cellEditingTemplate")
 				return StructuralError(outError,
@@ -548,6 +624,10 @@ namespace
 		if (kind == "Text") output.Kind = DesignDataGridColumnKind::Text;
 		else if (kind == "CheckBox")
 			output.Kind = DesignDataGridColumnKind::CheckBox;
+		else if (kind == "ComboBox")
+			output.Kind = DesignDataGridColumnKind::ComboBox;
+		else if (kind == "Hyperlink")
+			output.Kind = DesignDataGridColumnKind::Hyperlink;
 		else if (kind == "Template")
 			output.Kind = DesignDataGridColumnKind::Template;
 		else return StructuralError(outError, L"DataGrid 列 Kind 无效。");
@@ -565,7 +645,16 @@ namespace
 			return true;
 		};
 		if (!readString("header", output.Header)
+			|| !readString("headerStyle", output.HeaderStyle)
+			|| !readString("headerTemplate", output.HeaderTemplate)
+			|| !readString("cellStyle", output.CellStyle)
+			|| !readString("elementStyle", output.ElementStyle)
+			|| !readString("editingElementStyle", output.EditingElementStyle)
 			|| !readString("sortMemberPath", output.SortMemberPath)
+			|| !readString("targetName", output.TargetName)
+			|| !readString("itemsSourceResource", output.ItemsSourceResource)
+			|| !readString("displayMemberPath", output.DisplayMemberPath)
+			|| !readString("selectedValuePath", output.SelectedValuePath)
 			|| !readString("cellTemplate", output.CellTemplate)
 			|| !readString("cellEditingTemplate", output.CellEditingTemplate))
 			return false;
@@ -579,7 +668,9 @@ namespace
 			|| (value.contains("canUserSort")
 				&& !value["canUserSort"].is_boolean())
 			|| (value.contains("canUserResize")
-				&& !value["canUserResize"].is_boolean()))
+				&& !value["canUserResize"].is_boolean())
+			|| (value.contains("canUserReorder")
+				&& !value["canUserReorder"].is_boolean()))
 			return StructuralError(outError,
 				L"DataGrid 列数值或布尔字段类型无效。");
 		output.MinWidth = value.value("minWidth", 20.0);
@@ -587,8 +678,42 @@ namespace
 			(std::numeric_limits<double>::infinity)());
 		output.IsReadOnly = value.value("isReadOnly", false);
 		output.IsThreeState = value.value("isThreeState", false);
+		output.SelectionBinding =
+			DesignDataGridComboBoxSelectionBinding::SelectedItem;
+		if (value.contains("selectionBinding"))
+		{
+			if (!value["selectionBinding"].is_string())
+				return StructuralError(outError,
+					L"DataGridComboBoxColumn SelectionBinding 类型无效。");
+			const auto selection = value["selectionBinding"].get<std::string>();
+			if (selection == "SelectedItem")
+				output.SelectionBinding =
+					DesignDataGridComboBoxSelectionBinding::SelectedItem;
+			else if (selection == "SelectedValue")
+				output.SelectionBinding =
+					DesignDataGridComboBoxSelectionBinding::SelectedValue;
+			else return StructuralError(outError,
+				L"DataGridComboBoxColumn SelectionBinding 无效。");
+		}
 		output.CanUserSort = value.value("canUserSort", true);
 		output.CanUserResize = value.value("canUserResize", true);
+		output.CanUserReorder = value.value("canUserReorder", true);
+		output.Visibility = DesignDataGridColumnVisibility::Visible;
+		if (value.contains("visibility"))
+		{
+			if (!value["visibility"].is_string())
+				return StructuralError(outError,
+					L"DataGrid 列 Visibility 类型无效。");
+			const auto visibility = value["visibility"].get<std::string>();
+			if (visibility == "Visible")
+				output.Visibility = DesignDataGridColumnVisibility::Visible;
+			else if (visibility == "Hidden")
+				output.Visibility = DesignDataGridColumnVisibility::Hidden;
+			else if (visibility == "Collapsed")
+				output.Visibility = DesignDataGridColumnVisibility::Collapsed;
+			else return StructuralError(outError,
+				L"DataGrid 列 Visibility 无效。");
+		}
 		if (!std::isfinite(output.MinWidth) || std::isnan(output.MaxWidth)
 			|| output.MinWidth < 0.0 || output.MaxWidth < output.MinWidth)
 			return StructuralError(outError,
@@ -601,37 +726,67 @@ namespace
 			return StructuralError(outError,
 				L"DataGrid 列 SortMemberPath 无效。");
 
-		if (value.contains("binding"))
+		auto readBinding = [&](const char* key,
+			std::optional<DesignerDataBinding>& result) -> bool
 		{
-			const auto& bindingValue = value["binding"];
+			if (!value.contains(key)) return true;
+			const auto& bindingValue = value[key];
+			const std::wstring fieldName = Convert::Utf8ToUnicode(key);
 			if (!bindingValue.is_object())
 				return StructuralError(outError,
-					L"DataGrid 列 Binding 必须是对象。");
-			for (const auto& [key, ignored] : bindingValue.ObjectItems())
+					L"DataGrid 列 " + fieldName + L" 必须是对象。");
+			for (const auto& [propertyKey, ignored] : bindingValue.ObjectItems())
 			{
 				(void)ignored;
-				if (key != "source" && key != "mode" && key != "updateMode"
-					&& key != "converter" && key != "stringFormat"
-					&& key != "fallbackValue" && key != "fallbackValueKind"
-					&& key != "targetNullValue" && key != "targetNullValueKind"
-					&& key != "converterParameter"
-					&& key != "converterParameterKind")
+				if (propertyKey != "source" && propertyKey != "kind"
+					&& propertyKey != "bindings" && propertyKey != "mode"
+					&& propertyKey != "updateMode"
+					&& propertyKey != "converter"
+					&& propertyKey != "elementName"
+					&& propertyKey != "relativeSource"
+					&& propertyKey != "ancestorType"
+					&& propertyKey != "ancestorTypeNamespace"
+					&& propertyKey != "ancestorLevel"
+					&& propertyKey != "stringFormat"
+					&& propertyKey != "fallbackValue"
+					&& propertyKey != "fallbackValueKind"
+					&& propertyKey != "targetNullValue"
+					&& propertyKey != "targetNullValueKind"
+					&& propertyKey != "converterParameter"
+					&& propertyKey != "converterParameterKind")
 					return StructuralError(outError,
-						L"DataGrid 列 Binding 包含未知字段："
-						+ Convert::Utf8ToUnicode(key));
+						L"DataGrid 列 " + fieldName + L" 包含未知字段："
+						+ Convert::Utf8ToUnicode(propertyKey));
 			}
-			if (!bindingValue.contains("source")
-				|| !bindingValue["source"].is_string()
+			const bool multiDefinition = bindingValue.value(
+				"kind", std::string{}) == "MultiBinding"
+				|| bindingValue.contains("bindings");
+			if ((!multiDefinition && (!bindingValue.contains("source")
+					|| !bindingValue["source"].is_string()))
+				|| (bindingValue.contains("kind")
+					&& !bindingValue["kind"].is_string())
+				|| (bindingValue.contains("bindings")
+					&& !bindingValue["bindings"].is_array())
 				|| (bindingValue.contains("mode")
 					&& !bindingValue["mode"].is_number_integer())
 				|| (bindingValue.contains("updateMode")
 					&& !bindingValue["updateMode"].is_number_integer())
 				|| (bindingValue.contains("converter")
 					&& !bindingValue["converter"].is_string())
+				|| (bindingValue.contains("elementName")
+					&& !bindingValue["elementName"].is_string())
+				|| (bindingValue.contains("relativeSource")
+					&& !bindingValue["relativeSource"].is_string())
+				|| (bindingValue.contains("ancestorType")
+					&& !bindingValue["ancestorType"].is_string())
+				|| (bindingValue.contains("ancestorTypeNamespace")
+					&& !bindingValue["ancestorTypeNamespace"].is_string())
+				|| (bindingValue.contains("ancestorLevel")
+					&& !bindingValue["ancestorLevel"].is_number_integer())
 				|| (bindingValue.contains("stringFormat")
 					&& !bindingValue["stringFormat"].is_string()))
 				return StructuralError(outError,
-					L"DataGrid 列 Binding 字段类型无效。");
+					L"DataGrid 列 " + fieldName + L" 字段类型无效。");
 			for (const auto& [literal, literalKind] : {
 				std::pair{ "fallbackValue", "fallbackValueKind" },
 				std::pair{ "targetNullValue", "targetNullValueKind" },
@@ -639,33 +794,93 @@ namespace
 				if (bindingValue.contains(literalKind)
 					&& !bindingValue.contains(literal))
 					return StructuralError(outError,
-						L"DataGrid 列 Binding 字面量类型缺少对应值。");
+						L"DataGrid 列 " + fieldName
+						+ L" 字面量类型缺少对应值。");
 			DesignerDataBinding binding;
 			std::wstring bindingError;
 			if (!DesignerBindingUtils::TryReadBindingDefinition(
 				bindingValue, binding, &bindingError))
 				return StructuralError(outError,
-					L"DataGrid 列 Binding 无效：" + bindingError);
+					L"DataGrid 列 " + fieldName + L" 无效：" + bindingError);
 			if (!ValidateDataGridColumnBinding(binding, outError)) return false;
-			output.Binding = std::move(binding);
-		}
+			result = std::move(binding);
+			return true;
+		};
+		if (!readBinding("binding", output.Binding)
+			|| !readBinding("contentBinding", output.ContentBinding)) return false;
 
 		const bool bound = output.Kind == DesignDataGridColumnKind::Text
-			|| output.Kind == DesignDataGridColumnKind::CheckBox;
+			|| output.Kind == DesignDataGridColumnKind::CheckBox
+			|| output.Kind == DesignDataGridColumnKind::ComboBox
+			|| output.Kind == DesignDataGridColumnKind::Hyperlink;
 		if (output.Kind != DesignDataGridColumnKind::CheckBox
 			&& value.contains("isThreeState"))
 			return StructuralError(outError,
 				L"IsThreeState 仅适用于 DataGridCheckBoxColumn。");
 		if (bound && !output.Binding)
 			return StructuralError(outError,
-				L"DataGridTextColumn/DataGridCheckBoxColumn 必须声明 Binding。");
+				L"DataGrid 绑定列必须声明 Binding。");
 		if (!bound && output.Binding)
 			return StructuralError(outError,
 				L"DataGridTemplateColumn 不支持 Binding。");
+		if (!bound && (value.contains("elementStyle")
+			|| value.contains("editingElementStyle")))
+			return StructuralError(outError,
+				L"ElementStyle/EditingElementStyle 仅适用于绑定列。");
+		output.ElementStyle = DesignerBindingUtils::Trim(output.ElementStyle);
+		output.EditingElementStyle = DesignerBindingUtils::Trim(
+			output.EditingElementStyle);
+		output.HeaderStyle = DesignerBindingUtils::Trim(output.HeaderStyle);
+		output.HeaderTemplate = DesignerBindingUtils::Trim(output.HeaderTemplate);
+		output.CellStyle = DesignerBindingUtils::Trim(output.CellStyle);
+		if ((value.contains("elementStyle") && output.ElementStyle.empty())
+			|| (value.contains("editingElementStyle")
+				&& output.EditingElementStyle.empty())
+			|| (value.contains("headerStyle") && output.HeaderStyle.empty())
+			|| (value.contains("headerTemplate")
+				&& output.HeaderTemplate.empty())
+			|| (value.contains("cellStyle") && output.CellStyle.empty()))
+			return StructuralError(outError,
+				L"DataGrid 列 Style/DataTemplate 资源键不能为空。");
 		if (bound && (value.contains("cellTemplate")
 			|| value.contains("cellEditingTemplate")))
 			return StructuralError(outError,
 				L"绑定列不支持 CellTemplate/CellEditingTemplate。");
+		const bool hyperlink = output.Kind
+			== DesignDataGridColumnKind::Hyperlink;
+		if (!hyperlink && (value.contains("contentBinding")
+			|| value.contains("targetName")))
+			return StructuralError(outError,
+				L"ContentBinding/TargetName 仅适用于 DataGridHyperlinkColumn。");
+		output.TargetName = DesignerBindingUtils::Trim(output.TargetName);
+		const bool comboBox = output.Kind
+			== DesignDataGridColumnKind::ComboBox;
+		if (comboBox)
+		{
+			output.ItemsSourceResource = DesignerBindingUtils::Trim(
+				output.ItemsSourceResource);
+			output.DisplayMemberPath = DesignerBindingUtils::Trim(
+				output.DisplayMemberPath);
+			output.SelectedValuePath = DesignerBindingUtils::Trim(
+				output.SelectedValuePath);
+			if (output.ItemsSourceResource.empty())
+				return StructuralError(outError,
+					L"DataGridComboBoxColumn 必须声明 ItemsSource。");
+			if ((!output.DisplayMemberPath.empty()
+					&& !DesignerBindingUtils::IsValidSourcePath(
+						output.DisplayMemberPath))
+				|| (!output.SelectedValuePath.empty()
+					&& !DesignerBindingUtils::IsValidSourcePath(
+						output.SelectedValuePath)))
+				return StructuralError(outError,
+					L"DataGridComboBoxColumn 成员路径无效。");
+		}
+		else if (value.contains("itemsSourceResource")
+			|| value.contains("displayMemberPath")
+			|| value.contains("selectedValuePath")
+			|| value.contains("selectionBinding"))
+			return StructuralError(outError,
+				L"ComboBox 字段仅适用于 DataGridComboBoxColumn。");
 		if (!bound && ((value.contains("cellTemplate")
 				&& DesignerBindingUtils::Trim(output.CellTemplate).empty())
 			|| (value.contains("cellEditingTemplate")
@@ -1102,6 +1317,17 @@ DesignValue EncodeDesignNodeStructure(
 	stringField("contentTemplate", structure.ContentTemplate);
 	stringField("headerTemplate", structure.HeaderTemplate);
 	stringField("controlTemplate", structure.ControlTemplate);
+	stringField("rowValidationErrorTemplate",
+		structure.RowValidationErrorTemplate);
+	stringField("dataGridCellStyle", structure.DataGridCellStyle);
+	stringField("dataGridColumnHeaderStyle",
+		structure.DataGridColumnHeaderStyle);
+	stringField("dataGridRowStyle", structure.DataGridRowStyle);
+	stringField("dataGridRowHeaderStyle", structure.DataGridRowHeaderStyle);
+	stringField("dataGridRowHeaderTemplate",
+		structure.DataGridRowHeaderTemplate);
+	stringField("dataGridRowDetailsTemplate",
+		structure.DataGridRowDetailsTemplate);
 	stringField("groupStyle", structure.GroupStyle);
 	stringField("itemsPanel", structure.ItemsPanel);
 	stringField("itemContainerStyle", structure.ItemContainerStyle);
@@ -1227,6 +1453,40 @@ bool DecodeDesignNodeStructure(
 		if (key == "controlTemplate")
 		{
 			if (!readString(key, decoded.ControlTemplate)) return false;
+			continue;
+		}
+		if (key == "rowValidationErrorTemplate")
+		{
+			if (type != UIClass::UI_DataGrid)
+				return StructuralError(outError,
+					L"RowValidationErrorTemplate 仅适用于 DataGrid。");
+			if (!readString(key, decoded.RowValidationErrorTemplate))
+				return false;
+			continue;
+		}
+		if (key == "dataGridCellStyle"
+			|| key == "dataGridColumnHeaderStyle"
+			|| key == "dataGridRowStyle"
+			|| key == "dataGridRowHeaderStyle"
+			|| key == "dataGridRowHeaderTemplate"
+			|| key == "dataGridRowDetailsTemplate")
+		{
+			if (type != UIClass::UI_DataGrid)
+				return StructuralError(outError,
+					L"DataGrid 样式/模板字段仅适用于 DataGrid。");
+			std::wstring* destination = nullptr;
+			if (key == "dataGridCellStyle")
+				destination = &decoded.DataGridCellStyle;
+			else if (key == "dataGridColumnHeaderStyle")
+				destination = &decoded.DataGridColumnHeaderStyle;
+			else if (key == "dataGridRowStyle")
+				destination = &decoded.DataGridRowStyle;
+			else if (key == "dataGridRowHeaderStyle")
+				destination = &decoded.DataGridRowHeaderStyle;
+			else if (key == "dataGridRowHeaderTemplate")
+				destination = &decoded.DataGridRowHeaderTemplate;
+			else destination = &decoded.DataGridRowDetailsTemplate;
+			if (!readString(key, *destination)) return false;
 			continue;
 		}
 		if (key == "groupStyle")
@@ -2657,6 +2917,115 @@ bool DesignDocument::ValidateCommandTargetReferences(
 		if (!validateScope(validateScope, controlTemplate.Template,
 			L"ControlTemplate " + controlTemplate.DisplayName(), nullptr, {}))
 			return false;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool DesignDocument::ValidateDataGridColumnBindingSources(
+	std::wstring* outError) const
+{
+	auto validateScope = [&](auto&& self,
+		const std::vector<DesignNode>& nodes,
+		const std::wstring& owner) -> bool
+	{
+		std::unordered_map<std::wstring, const DesignNode*> named;
+		for (const auto& node : nodes)
+			if (!node.Name.empty() && !node.NameIsGenerated)
+				named.emplace(node.Name, &node);
+		auto validateBinding = [&](const DesignNode& grid,
+			const DesignerDataBinding& binding,
+			const std::wstring& propertyName,
+			auto&& validateBindingSelf) -> bool
+		{
+			if (binding.IsMultiBinding())
+			{
+				std::wstring bindingError;
+				if (!DesignerBindingUtils::ValidateDataGridColumnBindingSource(
+					binding, nullptr, &bindingError))
+				{
+					if (outError) *outError = owner + L" / " + grid.Name
+						+ L" " + propertyName + L" 无效：" + bindingError;
+					return false;
+				}
+				for (size_t index = 0;
+					index < binding.ChildBindings.size(); ++index)
+					if (!validateBindingSelf(grid, binding.ChildBindings[index],
+						propertyName + L".Bindings["
+							+ std::to_wstring(index) + L"]",
+						validateBindingSelf)) return false;
+				return true;
+			}
+			UIClass sourceType = UIClass::UI_Base;
+			if (!binding.ElementName.empty())
+			{
+				const auto source = named.find(binding.ElementName);
+				if (source == named.end())
+				{
+					if (outError) *outError = owner + L" / " + grid.Name
+						+ L" " + propertyName
+						+ L" 引用了当前 namescope 中不存在的具名内建控件："
+						+ binding.ElementName;
+					return false;
+				}
+				sourceType = source->second->Type;
+			}
+			std::wstring bindingError;
+			if (DesignerBindingUtils::ValidateDataGridColumnBindingSource(
+				binding, nullptr, &bindingError, sourceType)) return true;
+			if (outError) *outError = owner + L" / " + grid.Name
+				+ L" " + propertyName + L" 无效：" + bindingError;
+			return false;
+		};
+		for (const auto& node : nodes)
+		{
+			if (!node.Structure.DataGridColumns) continue;
+			for (size_t index = 0;
+				index < node.Structure.DataGridColumns->size(); ++index)
+			{
+				const auto& column = (*node.Structure.DataGridColumns)[index];
+				const auto prefix = L"DataGrid.Columns["
+					+ std::to_wstring(index) + L"]";
+				if (column.Binding && !validateBinding(
+					node, *column.Binding, prefix + L".Binding",
+					validateBinding)) return false;
+				if (column.ContentBinding && !validateBinding(
+					node, *column.ContentBinding,
+					prefix + L".ContentBinding", validateBinding)) return false;
+			}
+		}
+		for (const auto& node : nodes)
+		{
+			const auto resourceOwner = owner + L" / " + node.Name
+				+ L".Resources";
+			for (const auto& component
+				: node.LocalObjectResources.Components)
+				if (!self(self, component.Template,
+					resourceOwner + L" / 组件 " + component.Type.XamlName))
+					return false;
+			for (const auto& dataTemplate
+				: node.LocalObjectResources.DataTemplates)
+				if (!self(self, dataTemplate.Template,
+					resourceOwner + L" / DataTemplate "
+						+ dataTemplate.DisplayName())) return false;
+			for (const auto& controlTemplate
+				: node.LocalObjectResources.ControlTemplates)
+				if (!self(self, controlTemplate.Template,
+					resourceOwner + L" / ControlTemplate "
+						+ controlTemplate.DisplayName())) return false;
+		}
+		return true;
+	};
+
+	if (!validateScope(validateScope, Nodes, L"文档")) return false;
+	for (const auto& component : Components)
+		if (!validateScope(validateScope, component.Template,
+			L"组件 " + component.Type.XamlName)) return false;
+	for (const auto& dataTemplate : DataTemplates)
+		if (!validateScope(validateScope, dataTemplate.Template,
+			L"DataTemplate " + dataTemplate.DisplayName())) return false;
+	for (const auto& controlTemplate : ControlTemplates)
+		if (!validateScope(validateScope, controlTemplate.Template,
+			L"ControlTemplate " + controlTemplate.DisplayName())) return false;
 	if (outError) outError->clear();
 	return true;
 }

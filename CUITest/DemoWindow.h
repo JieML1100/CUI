@@ -106,8 +106,24 @@ private:
 	void HandleBasicClick(Control* sender, RoutedEventArgs& e) override;
 	void HandleChartKind(Control* sender, RoutedEventArgs& e) override;
 	void HandleChartPoint(ChartView* sender, int seriesIndex, int pointIndex) override;
+	void HandleDataGridAddingNewItem(
+		DataGrid* sender, DataGridAddingNewItemEventArgs& e) override;
 	void HandleDataGridCellEditEnding(
 		DataGrid* sender, DataGridCellEditEndingEventArgs& e) override;
+	void HandleDataGridInitializingNewItem(
+		DataGrid* sender, DataGridInitializingNewItemEventArgs& e) override;
+	void HandleDataGridLoadingRow(
+		DataGrid* sender, DataGridRowEventArgs& e) override;
+	void HandleDataGridLoadingRowDetails(
+		DataGrid* sender, DataGridRowDetailsEventArgs& e) override;
+	void HandleDataGridRowDetailsVisibilityChanged(
+		DataGrid* sender, DataGridRowDetailsEventArgs& e) override;
+	void HandleDataGridUnloadingRow(
+		DataGrid* sender, DataGridRowEventArgs& e) override;
+	void HandleDataGridUnloadingRowDetails(
+		DataGrid* sender, DataGridRowDetailsEventArgs& e) override;
+	void HandleDataGridRowEditEnding(
+		DataGrid* sender, DataGridRowEditEndingEventArgs& e) override;
 	void HandleDataGridCurrentCellChanged(
 		DataGrid* sender, DataGridCurrentCellChangedEventArgs& e) override;
 	void HandleDataGridSelectedCellsChanged(
@@ -200,8 +216,16 @@ private:
 	int _featureBubbleInvocations = 0;
 	int _featureInputCount = 0;
 	int _dataGridSortEvents = 0;
+	int _dataGridAddingNewItemEvents = 0;
+	int _dataGridInitializingNewItemEvents = 0;
 	int _dataGridEditEndingEvents = 0;
+	int _dataGridRowEditEndingEvents = 0;
 	int _dataGridCurrentCellEvents = 0;
+	int _dataGridLoadingRowEvents = 0;
+	int _dataGridUnloadingRowEvents = 0;
+	int _dataGridLoadingRowDetailsEvents = 0;
+	int _dataGridUnloadingRowDetailsEvents = 0;
+	int _dataGridRowDetailsVisibilityEvents = 0;
 	int _treeSelectionChanges = 0;
 	std::vector<std::wstring> _routedInputTrace;
 	std::wstring _routedInputDetail;

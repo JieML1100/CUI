@@ -911,10 +911,16 @@ bool ComboBox::EnsureDropDownInfrastructure()
 		UpdateItemsHostPresentation();
 		return true;
 	}
-	if (GetControlTemplateRoot())
+	// An effective authored/theme template may not have been materialized yet.
+	// Never replace it with the popup-only native fallback: normal layout will
+	// apply that template, then its TemplateBinding and presentation preparation
+	// synchronize the pending IsDropDownOpen value. The fallback is reserved for
+	// truly untemplated use.
+	if (GetControlTemplateRoot() || GetTemplate())
 	{
-		SetLastTemplateError(
-			L"ComboBox ControlTemplate 必须包含承载 ItemsPresenter 的 Popup。");
+		if (GetControlTemplateRoot())
+			SetLastTemplateError(
+				L"ComboBox ControlTemplate 必须包含承载 ItemsPresenter 的 Popup。");
 		UpdateItemsHostPresentation();
 		return false;
 	}

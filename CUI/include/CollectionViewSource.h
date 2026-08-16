@@ -215,6 +215,7 @@ class CollectionViewSource final
 	  public IBindingListSnapshotProvider,
 	  public IBindingListGroupView,
 	  public IBindingListCurrentView,
+	  public IEditableBindingList,
 	  public std::enable_shared_from_this<CollectionViewSource>
 {
 public:
@@ -346,6 +347,19 @@ public:
 	bool MoveCurrentToPosition(int position) override;
 	EventConnection SubscribeCurrentChanged(
 		CurrentChangedHandler handler) override;
+	bool CanAddNew() const noexcept override;
+	bool CanAddNewItem() const noexcept override;
+	bool CanRemove() const noexcept override;
+	bool AddNewItem(
+		BindingSourceReference candidate,
+		BindingSourceReference& result) override;
+	bool CommitNew() override;
+	bool CancelNew() override;
+	bool IsAddingNew() const noexcept override;
+	BindingSourceReference CurrentAddItem() const noexcept override;
+	bool TryGetCurrentAddIndex(size_t& index) const noexcept override;
+	bool RemoveAt(size_t index) override;
+	bool RemoveRange(size_t index, size_t count) override;
 	bool MoveCurrentToFirst() { return MoveCurrentToPosition(0); }
 	bool MoveCurrentToLast()
 	{
@@ -446,6 +460,11 @@ private:
 		const FilterPredicate& predicate,
 		std::span<const CollectionFilterDescription> descriptions) const;
 	bool CanUseSourcePassThrough() const noexcept;
+	IEditableBindingList* EditableSource() const noexcept;
+	bool TryMapViewIndexToSource(
+		size_t viewIndex, size_t& sourceIndex) const noexcept;
+	bool TryMapSourceIndexToView(
+		size_t sourceIndex, size_t& viewIndex) const noexcept;
 	void ClearItemObservations() noexcept;
 	void SetResolvedSource(BindingListReference value);
 	void QueueSourceChanged(

@@ -43,6 +43,15 @@ private:
 	std::wstring _name;
 };
 
+/** Canonical WPF application-command identities shared across controls. */
+class ApplicationCommands final
+{
+public:
+	static const RoutedCommand& Copy();
+	static const RoutedCommand& Delete();
+	static const RoutedCommand& SelectAll();
+};
+
 /** Shared args for PreviewCanExecute/CanExecute. */
 class CanExecuteRoutedEventArgs final : public RoutedEventArgs
 {

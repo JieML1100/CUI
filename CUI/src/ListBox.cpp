@@ -1793,6 +1793,24 @@ void ListBox::OnSelectedIndexChanged(int, int newValue)
 void ListBox::OnGeneratedItemsRebuilt()
 {
 	const ControlWeakReference ownerLifetime(this);
+	if (IsItemsSourceReplacementInProgress())
+	{
+		// A different ItemsSource is a different occurrence domain. Selector
+		// clears its primary item/index; do not subsequently restore dense or
+		// range identities captured from the retired source into unrelated rows.
+		Selector::OnGeneratedItemsRebuilt();
+		auto* live = dynamic_cast<ListBox*>(ownerLifetime.Get());
+		if (!live) return;
+		live->_selectedIndices.Clear();
+		live->AdvanceSelectionRevision();
+		live->_selectedFullRangeSnapshot = {};
+		live->_selectedSourceIdentities.clear();
+		live->_primarySourceIdentity = {};
+		live->_anchorSourceIdentity = {};
+		live->_anchorIndex = -1;
+		live->_focusedIndex = -1;
+		return;
+	}
 	if (_skipSelectionIdentityRestoreOnce)
 	{
 		_skipSelectionIdentityRestoreOnce = false;

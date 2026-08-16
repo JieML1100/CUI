@@ -72,3 +72,46 @@ public:
 private:
 	std::shared_ptr<const IItemTemplate> _value;
 };
+
+/**
+ * WPF-shaped programmable template policy.
+ *
+ * The selector is shared by all realized containers. Implementations must not
+ * retain the supplied container; virtualization can recycle or destroy it as
+ * soon as SelectTemplate returns.
+ */
+class IItemTemplateSelector
+{
+public:
+	virtual ~IItemTemplateSelector() = default;
+	virtual ItemTemplateReference SelectTemplate(
+		const BindingSourceReference& item,
+		Control& container) const = 0;
+};
+
+/** Shared immutable selector identity used by template-bearing controls. */
+class ItemTemplateSelectorReference final
+{
+public:
+	ItemTemplateSelectorReference() = default;
+	explicit ItemTemplateSelectorReference(
+		std::shared_ptr<const IItemTemplateSelector> value)
+		: _value(std::move(value)) {}
+
+	const IItemTemplateSelector* Get() const noexcept { return _value.get(); }
+	const std::shared_ptr<const IItemTemplateSelector>& Shared() const noexcept
+	{
+		return _value;
+	}
+	explicit operator bool() const noexcept
+	{
+		return static_cast<bool>(_value);
+	}
+	bool operator==(const ItemTemplateSelectorReference& other) const noexcept
+	{
+		return _value == other._value;
+	}
+
+private:
+	std::shared_ptr<const IItemTemplateSelector> _value;
+};

@@ -2255,6 +2255,29 @@ namespace
 						: L"{RelativeSource TemplatedParent}");
 		}
 
+		void WriteDataGridColumnBinding(
+			const Element& column,
+			std::wstring_view columnType,
+			std::wstring_view member,
+			const DesignerDataBinding& binding)
+		{
+			if (!binding.IsMultiBinding())
+			{
+				const auto memberName = ToUtf8(std::wstring(member));
+				Set(column, memberName.c_str(), BindingMarkup(binding));
+				return;
+			}
+			auto property = Append(_xml, column,
+				ToUtf8(std::wstring(columnType) + L"." + std::wstring(member)));
+			auto multi = Append(_xml, property, "MultiBinding");
+			WriteBindingElementAttributes(multi, binding, true);
+			for (const auto& child : binding.ChildBindings)
+			{
+				auto childElement = Append(_xml, multi, "Binding");
+				WriteBindingElementAttributes(childElement, child, true);
+			}
+		}
+
 		void WriteMultiBindingProperties(
 			const DesignNode& node,
 			const Element& element,
@@ -2794,6 +2817,36 @@ namespace
 					+ FromUtf8(extra["controlTemplate"].get<std::string>()) + L"}");
 				extra.ObjectItems().erase("controlTemplate");
 			}
+			if (node.Type == UIClass::UI_DataGrid
+				&& extra.contains("rowValidationErrorTemplate"))
+			{
+				if (!extra["rowValidationErrorTemplate"].is_string())
+					throw std::invalid_argument(
+						"DataGrid RowValidationErrorTemplate must be a resource key");
+				Set(element, "RowValidationErrorTemplate", L"{StaticResource "
+					+ FromUtf8(extra["rowValidationErrorTemplate"].
+						get<std::string>()) + L"}");
+				extra.ObjectItems().erase("rowValidationErrorTemplate");
+			}
+			if (node.Type == UIClass::UI_DataGrid)
+			{
+				for (const auto& [key, attribute] : {
+					std::pair{ "dataGridCellStyle", "CellStyle" },
+					std::pair{ "dataGridColumnHeaderStyle", "ColumnHeaderStyle" },
+					std::pair{ "dataGridRowStyle", "RowStyle" },
+					std::pair{ "dataGridRowHeaderStyle", "RowHeaderStyle" },
+					std::pair{ "dataGridRowHeaderTemplate", "RowHeaderTemplate" },
+					std::pair{ "dataGridRowDetailsTemplate", "RowDetailsTemplate" } })
+				{
+					if (!extra.contains(key)) continue;
+					if (!extra[key].is_string())
+						throw std::invalid_argument(
+							"DataGrid style/template must be a resource key");
+					Set(element, attribute, L"{StaticResource "
+						+ FromUtf8(extra[key].get<std::string>()) + L"}");
+					extra.ObjectItems().erase(key);
+				}
+			}
 			if ((node.Type == UIClass::UI_ContentPresenter
 				|| IsUIClassAssignableFrom(
 					UIClass::UI_ContentControl, node.Type))
@@ -3084,6 +3137,10 @@ namespace
 					if (kind == "Text") elementName = "DataGridTextColumn";
 					else if (kind == "CheckBox")
 						elementName = "DataGridCheckBoxColumn";
+					else if (kind == "ComboBox")
+						elementName = "DataGridComboBoxColumn";
+					else if (kind == "Hyperlink")
+						elementName = "DataGridHyperlinkColumn";
 					else if (kind == "Template")
 						elementName = "DataGridTemplateColumn";
 					else throw std::invalid_argument(
@@ -3098,7 +3155,25 @@ namespace
 							value["header"].get<std::string>());
 						if (!header.empty()) Set(column, "Header", header);
 					}
-					if (kind == "Text" || kind == "CheckBox")
+					for (const auto& [key, attribute] : {
+						std::pair{ "headerStyle", "HeaderStyle" },
+						std::pair{ "headerTemplate", "HeaderTemplate" },
+						std::pair{ "cellStyle", "CellStyle" } })
+					{
+						if (!value.contains(key)) continue;
+						if (!value[key].is_string())
+							throw std::invalid_argument(
+								"DataGrid column style/template is invalid");
+						const auto resource = FromUtf8(
+							value[key].get<std::string>());
+						if (resource.empty())
+							throw std::invalid_argument(
+								"DataGrid column style/template cannot be empty");
+						Set(column, attribute,
+							L"{StaticResource " + resource + L"}");
+					}
+					if (kind == "Text" || kind == "CheckBox"
+						|| kind == "ComboBox" || kind == "Hyperlink")
 					{
 						if (!value.contains("binding"))
 							throw std::invalid_argument(
@@ -3107,18 +3182,110 @@ namespace
 						std::wstring bindingError;
 						if (!DesignerBindingUtils::TryReadBindingDefinition(
 							value["binding"], binding, &bindingError)
-							|| binding.IsMultiBinding()
-							|| !binding.ElementName.empty()
-							|| binding.RelativeSource
-								!= DesignerBindingRelativeSource::None)
+							|| !DesignerBindingUtils::
+								ValidateDataGridColumnBindingSource(
+									binding, nullptr, &bindingError))
 							throw std::invalid_argument(
 								"DataGrid column Binding is invalid: "
 								+ ToUtf8(bindingError));
-						Set(column, "Binding", BindingMarkup(binding));
+						const char* bindingAttribute = "Binding";
+						if (kind == "ComboBox")
+						{
+							const auto selection = value.value(
+								"selectionBinding", std::string("SelectedItem"));
+							if (selection == "SelectedItem")
+								bindingAttribute = "SelectedItemBinding";
+							else if (selection == "SelectedValue")
+								bindingAttribute = "SelectedValueBinding";
+							else throw std::invalid_argument(
+								"DataGridComboBoxColumn SelectionBinding is invalid");
+						}
+						WriteDataGridColumnBinding(
+							column, FromUtf8(elementName),
+							FromUtf8(bindingAttribute), binding);
+						for (const auto& [key, attribute] : {
+							std::pair{ "elementStyle", "ElementStyle" },
+							std::pair{ "editingElementStyle",
+								"EditingElementStyle" } })
+						{
+							if (!value.contains(key)) continue;
+							if (!value[key].is_string())
+								throw std::invalid_argument(
+									"DataGrid column Style resource is invalid");
+							const auto resource = FromUtf8(
+								value[key].get<std::string>());
+							if (resource.empty())
+								throw std::invalid_argument(
+									"DataGrid column Style resource cannot be empty");
+							Set(column, attribute,
+								L"{StaticResource " + resource + L"}");
+						}
 					}
-					else if (value.contains("binding"))
+					else if (value.contains("binding")
+						|| value.contains("elementStyle")
+						|| value.contains("editingElementStyle"))
 						throw std::invalid_argument(
-							"DataGridTemplateColumn cannot contain Binding");
+							"DataGridTemplateColumn cannot contain Binding or ElementStyle");
+					if (kind == "ComboBox")
+					{
+						if (!value.contains("itemsSourceResource")
+							|| !value["itemsSourceResource"].is_string())
+							throw std::invalid_argument(
+								"DataGridComboBoxColumn is missing ItemsSource");
+						const auto resource = FromUtf8(
+							value["itemsSourceResource"].get<std::string>());
+						if (resource.empty())
+							throw std::invalid_argument(
+								"DataGridComboBoxColumn ItemsSource cannot be empty");
+						Set(column, "ItemsSource",
+							L"{StaticResource " + resource + L"}");
+						for (const auto& [key, attribute] : {
+							std::pair{ "displayMemberPath", "DisplayMemberPath" },
+							std::pair{ "selectedValuePath", "SelectedValuePath" } })
+						{
+							if (!value.contains(key)) continue;
+							if (!value[key].is_string())
+								throw std::invalid_argument(
+									"DataGridComboBoxColumn member path is invalid");
+							const auto path = FromUtf8(
+								value[key].get<std::string>());
+							if (!path.empty()) Set(column, attribute, path);
+						}
+					}
+					if (kind == "Hyperlink")
+					{
+						if (value.contains("contentBinding"))
+						{
+							DesignerDataBinding contentBinding;
+							std::wstring bindingError;
+							if (!DesignerBindingUtils::TryReadBindingDefinition(
+								value["contentBinding"], contentBinding,
+								&bindingError)
+								|| !DesignerBindingUtils::
+									ValidateDataGridColumnBindingSource(
+										contentBinding, nullptr, &bindingError))
+								throw std::invalid_argument(
+									"DataGridHyperlinkColumn ContentBinding is invalid: "
+									+ ToUtf8(bindingError));
+							WriteDataGridColumnBinding(column,
+								FromUtf8(elementName), L"ContentBinding",
+								contentBinding);
+						}
+						if (value.contains("targetName"))
+						{
+							if (!value["targetName"].is_string())
+								throw std::invalid_argument(
+									"DataGridHyperlinkColumn TargetName must be a string");
+							const auto targetName = FromUtf8(
+								value["targetName"].get<std::string>());
+							if (!targetName.empty())
+								Set(column, "TargetName", targetName);
+						}
+					}
+					else if (value.contains("contentBinding")
+						|| value.contains("targetName"))
+						throw std::invalid_argument(
+							"Hyperlink fields require DataGridHyperlinkColumn");
 
 					const auto width = DataGridLengthText(value["width"]);
 					if (width != L"SizeToHeader") Set(column, "Width", width);
@@ -3165,6 +3332,28 @@ namespace
 								"DataGrid column CanUserResize must be boolean");
 						if (!value["canUserResize"].get<bool>())
 							Set(column, "CanUserResize", L"false");
+					}
+					if (value.contains("canUserReorder"))
+					{
+						if (!value["canUserReorder"].is_boolean())
+							throw std::invalid_argument(
+								"DataGrid column CanUserReorder must be boolean");
+						if (!value["canUserReorder"].get<bool>())
+							Set(column, "CanUserReorder", L"false");
+					}
+					if (value.contains("visibility"))
+					{
+						if (!value["visibility"].is_string())
+							throw std::invalid_argument(
+								"DataGrid column Visibility must be a string");
+						const auto visibility = FromUtf8(
+							value["visibility"].get<std::string>());
+						if (visibility != L"Visible" && visibility != L"Hidden"
+							&& visibility != L"Collapsed")
+							throw std::invalid_argument(
+								"DataGrid column Visibility is invalid");
+						if (visibility != L"Visible")
+							Set(column, "Visibility", visibility);
 					}
 					if (value.contains("sortMemberPath"))
 					{
@@ -3242,6 +3431,8 @@ std::string XamlDocumentSerializer::ToXaml(const DesignDocument& input)
 	if (!canonical.ValidateRichTextStructure(&validationError))
 		throw std::invalid_argument(ToUtf8(validationError));
 	if (!canonical.ValidateCommandTargetReferences(&validationError))
+		throw std::invalid_argument(ToUtf8(validationError));
+	if (!canonical.ValidateDataGridColumnBindingSources(&validationError))
 		throw std::invalid_argument(ToUtf8(validationError));
 	if (!DesignDataResourceUtils::ValidateAndCanonicalize(
 		canonical, &validationError))

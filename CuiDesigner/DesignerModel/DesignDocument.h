@@ -163,7 +163,22 @@ enum class DesignDataGridColumnKind
 {
 	Text,
 	CheckBox,
+	ComboBox,
+	Hyperlink,
 	Template
+};
+
+enum class DesignDataGridComboBoxSelectionBinding
+{
+	SelectedItem,
+	SelectedValue
+};
+
+enum class DesignDataGridColumnVisibility
+{
+	Visible,
+	Hidden,
+	Collapsed
 };
 
 /**
@@ -174,14 +189,29 @@ struct DesignDataGridColumn
 {
 	DesignDataGridColumnKind Kind = DesignDataGridColumnKind::Text;
 	std::wstring Header;
+	std::wstring HeaderStyle;
+	std::wstring HeaderTemplate;
+	std::wstring CellStyle;
 	std::optional<DesignerDataBinding> Binding;
+	std::wstring ElementStyle;
+	std::wstring EditingElementStyle;
 	DesignDataGridLength Width;
 	double MinWidth = 20.0;
 	double MaxWidth = (std::numeric_limits<double>::infinity)();
 	bool IsReadOnly = false;
 	bool IsThreeState = false;
+	std::wstring ItemsSourceResource;
+	std::wstring DisplayMemberPath;
+	std::wstring SelectedValuePath;
+	DesignDataGridComboBoxSelectionBinding SelectionBinding =
+		DesignDataGridComboBoxSelectionBinding::SelectedItem;
+	std::optional<DesignerDataBinding> ContentBinding;
+	std::wstring TargetName;
 	bool CanUserSort = true;
 	bool CanUserResize = true;
+	bool CanUserReorder = true;
+	DesignDataGridColumnVisibility Visibility =
+		DesignDataGridColumnVisibility::Visible;
 	std::wstring SortMemberPath;
 	std::wstring CellTemplate;
 	std::wstring CellEditingTemplate;
@@ -303,6 +333,14 @@ struct DesignNodeStructure
 	std::wstring ContentTemplate;
 	std::wstring HeaderTemplate;
 	std::wstring ControlTemplate;
+	/** DataGrid.RowValidationErrorTemplate explicit ControlTemplate resource. */
+	std::wstring RowValidationErrorTemplate;
+	std::wstring DataGridCellStyle;
+	std::wstring DataGridColumnHeaderStyle;
+	std::wstring DataGridRowStyle;
+	std::wstring DataGridRowHeaderStyle;
+	std::wstring DataGridRowHeaderTemplate;
+	std::wstring DataGridRowDetailsTemplate;
 	std::wstring GroupStyle;
 	std::wstring ItemsPanel;
 	std::wstring ItemContainerStyle;
@@ -787,6 +825,9 @@ struct DesignDocument
 	void RecalculateNextStableId();
 	/** Validates every authored CommandTarget in every independent namescope. */
 	bool ValidateCommandTargetReferences(
+		std::wstring* outError = nullptr) const;
+	/** Validates DataGrid column ElementName sources in every namescope. */
+	bool ValidateDataGridColumnBindingSources(
 		std::wstring* outError = nullptr) const;
 	/** Validates the typed RichTextBox document contract in every namescope. */
 	bool ValidateRichTextStructure(

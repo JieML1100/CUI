@@ -30,7 +30,7 @@
     <CuiVerifyAotGeneratedCode Condition="'$(CuiVerifyAotGeneratedCode)' == ''">true</CuiVerifyAotGeneratedCode>
     <!-- Bump whenever generator output semantics change. The versioned default
          stamp invalidates old outputs without depending on unstable linker times. -->
-    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">70</CuiCodeGenContractVersion>
+    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">77</CuiCodeGenContractVersion>
     <CuiThemeCodeGenContractVersion Condition="'$(CuiThemeCodeGenContractVersion)' == ''">23</CuiThemeCodeGenContractVersion>
   </PropertyGroup>
 
@@ -40,6 +40,7 @@
     </CuiDesign>
     <CuiCompile>
       <ConverterManifest></ConverterManifest>
+      <AutoColumnManifest></AutoColumnManifest>
       <StampFile>$(IntDir)CuiCodeGen\compile-%(Filename).v$(CuiCodeGenContractVersion).stamp</StampFile>
     </CuiCompile>
     <CuiThemeCompile>
@@ -70,6 +71,7 @@
         <CuiCompile Include="MainWindow.cui.xaml">
           <ClassName>Optional.Namespace.Override</ClassName>
           <ConverterManifest>$(ProjectDir)BindingConverters.cui.xml</ConverterManifest>
+          <AutoColumnManifest>$(ProjectDir)DataGridAutoColumns.cui.xml</AutoColumnManifest>
         </CuiCompile>
         <CuiAotBoundarySource Include="MainWindow.cpp;MainWindow.h" />
       </ItemGroup>
@@ -78,8 +80,9 @@
     stem (MainWindow for MainWindow.cui.xaml), adds its .g.cpp to ClCompile,
     and never creates or edits user .h/.cpp files. CuiAotBoundarySource lets
     the production gate inspect handwritten code without making it a generator
-    input. ConverterManifest is an optional strict typed converter catalog; it
-    is automatically passed to CuiCodeGen and tracked as an input. AdditionalInputs
+    input. ConverterManifest is an optional strict typed converter catalog;
+    AutoColumnManifest is an optional generation-time DataGrid column-rule
+    catalog. Both are passed to CuiCodeGen and tracked as inputs. AdditionalInputs
     may list merged dictionaries or other build-time resources that invalidate output.
 
     Framework-theme contract:
@@ -239,7 +242,7 @@
           BeforeTargets="ClCompile"
           DependsOnTargets="CuiEnsureCodeGenHostTool;CuiPrepareGeneratedCompilation"
           Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiCompile)' != ''"
-          Inputs="%(CuiCompile.FullPath);%(CuiCompile.ConverterManifest);%(CuiCompile.AdditionalInputs);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiCompile.OutputBase).g.h;%(CuiCompile.OutputBase).g.cpp;%(CuiCompile.OutputBase).handlers.g.inc"
+          Inputs="%(CuiCompile.FullPath);%(CuiCompile.ConverterManifest);%(CuiCompile.AutoColumnManifest);%(CuiCompile.AdditionalInputs);$(MSBuildThisFileFullPath);$(CuiCodeGenExe);%(CuiCompile.OutputBase).g.h;%(CuiCompile.OutputBase).g.cpp;%(CuiCompile.OutputBase).handlers.g.inc"
           Outputs="%(CuiCompile.StampFile)">
     <Error Condition="'%(CuiCompile.OutputBase)' == ''"
            Text="CuiCompile '%(CuiCompile.Identity)' requires extensionless OutputBase metadata." />
@@ -249,16 +252,20 @@
            Text="CuiCodeGen executable was not found: $(CuiCodeGenExe)" />
     <Error Condition="'%(CuiCompile.ConverterManifest)' != '' and !Exists('%(CuiCompile.ConverterManifest)')"
            Text="CuiCompile '%(CuiCompile.Identity)' converter manifest was not found: %(CuiCompile.ConverterManifest)" />
+    <Error Condition="'%(CuiCompile.AutoColumnManifest)' != '' and !Exists('%(CuiCompile.AutoColumnManifest)')"
+           Text="CuiCompile '%(CuiCompile.Identity)' DataGrid auto-column manifest was not found: %(CuiCompile.AutoColumnManifest)" />
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiCompile.StampFile)'))));$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiCompile.OutputBase)'))))" />
     <Message Importance="High"
              Text="CUI generated-only compilation: %(CuiCompile.Identity) -> %(CuiCompile.OutputBase)" />
     <PropertyGroup>
       <_CuiCompileClassArgument></_CuiCompileClassArgument>
       <_CuiCompileConverterManifestArgument></_CuiCompileConverterManifestArgument>
+      <_CuiCompileAutoColumnManifestArgument></_CuiCompileAutoColumnManifestArgument>
       <_CuiCompileClassArgument Condition="'%(CuiCompile.ClassName)' != ''">--class &quot;%(CuiCompile.ClassName)&quot;</_CuiCompileClassArgument>
       <_CuiCompileConverterManifestArgument Condition="'%(CuiCompile.ConverterManifest)' != ''">--converter-manifest &quot;%(CuiCompile.ConverterManifest)&quot;</_CuiCompileConverterManifestArgument>
+      <_CuiCompileAutoColumnManifestArgument Condition="'%(CuiCompile.AutoColumnManifest)' != ''">--auto-column-manifest &quot;%(CuiCompile.AutoColumnManifest)&quot;</_CuiCompileAutoColumnManifestArgument>
     </PropertyGroup>
-    <Exec Command="&quot;$(CuiCodeGenExe)&quot; compile &quot;%(CuiCompile.FullPath)&quot; --output &quot;%(CuiCompile.OutputBase)&quot; $(_CuiCompileClassArgument) $(_CuiCompileConverterManifestArgument) --quiet" />
+    <Exec Command="&quot;$(CuiCodeGenExe)&quot; compile &quot;%(CuiCompile.FullPath)&quot; --output &quot;%(CuiCompile.OutputBase)&quot; $(_CuiCompileClassArgument) $(_CuiCompileConverterManifestArgument) $(_CuiCompileAutoColumnManifestArgument) --quiet" />
     <Touch Files="%(CuiCompile.StampFile)" AlwaysCreate="true" />
   </Target>
 

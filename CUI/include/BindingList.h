@@ -155,6 +155,44 @@ private:
 };
 
 /**
+ * Optional WPF IEditableCollectionView-shaped mutation capability.
+ *
+ * IBindingList remains the read-only random-access/notification contract.
+ * Controls discover this interface only for user add/delete operations, so
+ * immutable lists and million-row lazy sources keep their existing fast path.
+ * AddNewItem begins exactly one pending add transaction and must publish its
+ * structural Add synchronously before returning. CommitNew retains that item;
+ * CancelNew removes the same physical occurrence. RemoveAt/RemoveRange use the
+ * implementer's current view indices rather than an underlying storage index.
+ */
+class IEditableBindingList
+{
+public:
+	virtual ~IEditableBindingList() = default;
+	/** True when AddNewItem({}) can obtain an item from the source factory. */
+	virtual bool CanAddNew() const noexcept = 0;
+	/** True when AddNewItem(candidate) accepts a caller-created record. */
+	virtual bool CanAddNewItem() const noexcept = 0;
+	virtual bool CanRemove() const noexcept = 0;
+	virtual bool AddNewItem(
+		BindingSourceReference candidate,
+		BindingSourceReference& result) = 0;
+	virtual bool CommitNew() = 0;
+	virtual bool CancelNew() = 0;
+	virtual bool IsAddingNew() const noexcept = 0;
+	virtual BindingSourceReference CurrentAddItem() const noexcept = 0;
+	virtual bool TryGetCurrentAddIndex(size_t& index) const noexcept = 0;
+	virtual bool RemoveAt(size_t index) = 0;
+	virtual bool RemoveRange(size_t index, size_t count)
+	{
+		if (count == 0) return true;
+		for (size_t offset = count; offset > 0; --offset)
+			if (!RemoveAt(index + offset - 1)) return false;
+		return true;
+	}
+};
+
+/**
  * Optional O(1) bridge from a mutable view to its current stable snapshot.
  *
  * A successful result must implement IBindingListStableSnapshot and describe
@@ -201,10 +239,12 @@ class ObservableBindingList final
 	: public IBindingList,
 	  public IBindingListOccurrenceIdentity,
 	  public IBindingListOccurrenceLookup,
-	  public IBindingListSnapshotProvider
+	  public IBindingListSnapshotProvider,
+	  public IEditableBindingList
 {
 public:
 	using ItemCollection = ObservableCollection<BindingSourceReference>;
+	using NewItemFactory = std::function<BindingSourceReference()>;
 
 #if CUI_ENABLE_DYNAMIC_XAML
 	explicit ObservableBindingList(std::wstring itemTypeName = {})
@@ -226,6 +266,9 @@ public:
 #if CUI_ENABLE_DYNAMIC_XAML
 		, _itemTypeName(other._itemTypeName)
 #endif
+		, _newItemFactory(other._newItemFactory),
+		  _canAddNewItem(other._canAddNewItem),
+		  _canRemove(other._canRemove)
 	{
 		InitializeOccurrenceIdentities();
 	}
@@ -236,9 +279,17 @@ public:
 		, _itemTypeName(std::move(other._itemTypeName))
 #endif
 		, _occurrenceIdentities(std::move(other._occurrenceIdentities)),
-		  _nextOccurrenceIdentity(other._nextOccurrenceIdentity)
+		  _nextOccurrenceIdentity(other._nextOccurrenceIdentity),
+		  _newItemFactory(std::move(other._newItemFactory)),
+		  _canAddNewItem(other._canAddNewItem),
+		  _canRemove(other._canRemove),
+		  _currentAddItem(std::move(other._currentAddItem)),
+		  _currentAddOccurrence(other._currentAddOccurrence),
+		  _currentAddIndex(other._currentAddIndex),
+		  _addingNew(other._addingNew)
 	{
 		AttachOccurrenceTracking();
+		AttachEditableTracking();
 		_occurrenceMirrorSynchronized =
 			_occurrenceIdentities.size() == Items.size();
 		_occurrenceSynchronizedRevision = Items.MutationRevision();
@@ -247,6 +298,7 @@ public:
 		other._occurrenceMirrorSynchronized = true;
 		other._occurrenceSynchronizedRevision =
 			other.Items.MutationRevision();
+		other.ClearNewItemTransaction();
 		other.RebuildStableSnapshotState();
 		// ObservableCollection keeps subscriptions on the moved-from instance.
 		// Publish only after occurrence/version metadata has moved so the source's
@@ -257,10 +309,14 @@ public:
 	ObservableBindingList& operator=(const ObservableBindingList& other)
 	{
 		if (this == &other) return *this;
+		ClearNewItemTransaction();
 		_itemTypeToken = other._itemTypeToken;
 #if CUI_ENABLE_DYNAMIC_XAML
 		_itemTypeName = other._itemTypeName;
 #endif
+		_newItemFactory = other._newItemFactory;
+		_canAddNewItem = other._canAddNewItem;
+		_canRemove = other._canRemove;
 		Items = other.Items;
 		return *this;
 	}
@@ -274,6 +330,14 @@ public:
 #if CUI_ENABLE_DYNAMIC_XAML
 		_itemTypeName = std::move(other._itemTypeName);
 #endif
+		ClearNewItemTransaction();
+		_newItemFactory = std::move(other._newItemFactory);
+		_canAddNewItem = other._canAddNewItem;
+		_canRemove = other._canRemove;
+		_currentAddItem = std::move(other._currentAddItem);
+		_currentAddOccurrence = other._currentAddOccurrence;
+		_currentAddIndex = other._currentAddIndex;
+		_addingNew = other._addingNew;
 		try
 		{
 			Items = std::move(other.Items);
@@ -302,6 +366,7 @@ public:
 			other._occurrenceMirrorSynchronized = false;
 			other._stableSnapshotState.reset();
 			other._snapshotMirrorSynchronized = false;
+			other.ClearNewItemTransaction();
 			try
 			{
 				cui::framework::ObservableCollectionMoveAccess::
@@ -310,6 +375,7 @@ public:
 			catch (...) {}
 			throw;
 		}
+		other.ClearNewItemTransaction();
 		cui::framework::ObservableCollectionMoveAccess::
 			EndMovedFromResetDeferral(other.Items);
 		return *this;
@@ -369,6 +435,34 @@ public:
 	{
 		_itemTypeToken = value;
 	}
+	void SetNewItemFactory(NewItemFactory value)
+	{
+		_newItemFactory = std::move(value);
+	}
+	void SetCanAddNewItem(bool value) noexcept
+	{
+		_canAddNewItem = value;
+	}
+	void SetCanRemove(bool value) noexcept { _canRemove = value; }
+	bool CanAddNew() const noexcept override
+	{
+		return static_cast<bool>(_newItemFactory);
+	}
+	bool CanAddNewItem() const noexcept override { return _canAddNewItem; }
+	bool CanRemove() const noexcept override { return _canRemove; }
+	bool AddNewItem(
+		BindingSourceReference candidate,
+		BindingSourceReference& result) override;
+	bool CommitNew() override;
+	bool CancelNew() override;
+	bool IsAddingNew() const noexcept override { return _addingNew; }
+	BindingSourceReference CurrentAddItem() const noexcept override
+	{
+		return _addingNew ? _currentAddItem : BindingSourceReference{};
+	}
+	bool TryGetCurrentAddIndex(size_t& index) const noexcept override;
+	bool RemoveAt(size_t index) override;
+	bool RemoveRange(size_t index, size_t count) override;
 
 	ItemCollection Items;
 
@@ -649,10 +743,57 @@ private:
 				}
 			});
 	}
+	void ClearNewItemTransaction() noexcept
+	{
+		_currentAddItem = {};
+		_currentAddOccurrence = 0;
+		_currentAddIndex = CollectionChangedEventArgs::Npos;
+		_addingNew = false;
+		_startingNewItem = false;
+	}
+	bool ResolveCurrentAddIndex(size_t& index) const noexcept
+	{
+		index = 0;
+		if (!_addingNew || !_currentAddItem) return false;
+		if (_currentAddOccurrence != 0
+			&& TryGetItemIndexByOccurrenceIdentity(
+				_currentAddOccurrence, index))
+		{
+			return index < Items.size()
+				&& Items[index].Shared() == _currentAddItem.Shared();
+		}
+		if (_currentAddIndex >= Items.size()
+			|| Items[_currentAddIndex].Shared()
+				!= _currentAddItem.Shared()) return false;
+		index = _currentAddIndex;
+		return true;
+	}
+	void AttachEditableTracking()
+	{
+		_editableConnection = Items.Changed.Subscribe(
+			[this](ItemCollection*, const CollectionChangedEventArgs&)
+			{
+				if (!_addingNew || _mutatingNewItem) return;
+				size_t index = 0;
+				if (!ResolveCurrentAddIndex(index))
+				{
+					ClearNewItemTransaction();
+					return;
+				}
+				_currentAddIndex = index;
+				if (_currentAddOccurrence == 0)
+				{
+					size_t occurrence = 0;
+					if (TryGetItemOccurrenceIdentity(index, occurrence))
+						_currentAddOccurrence = occurrence;
+				}
+			});
+	}
 
 	void InitializeOccurrenceIdentities()
 	{
 		AttachOccurrenceTracking();
+		AttachEditableTracking();
 		RebuildOccurrenceIdentities();
 		_occurrenceMirrorSynchronized =
 			_occurrenceIdentities.size() == Items.size();
@@ -954,7 +1095,17 @@ private:
 	std::uint64_t _occurrenceSynchronizedRevision = 0;
 	std::uint64_t _snapshotSynchronizedRevision = 0;
 	size_t _nextOccurrenceIdentity = 1;
+	NewItemFactory _newItemFactory;
+	bool _canAddNewItem = true;
+	bool _canRemove = true;
+	BindingSourceReference _currentAddItem;
+	size_t _currentAddOccurrence = 0;
+	size_t _currentAddIndex = CollectionChangedEventArgs::Npos;
+	bool _addingNew = false;
+	bool _startingNewItem = false;
+	bool _mutatingNewItem = false;
 	EventConnection _occurrenceConnection;
+	EventConnection _editableConnection;
 	std::shared_ptr<StableSnapshotState> _stableSnapshotState;
 	bool _occurrenceMirrorSynchronized = false;
 	bool _snapshotMirrorSynchronized = false;
@@ -1036,6 +1187,133 @@ inline bool ObservableBindingList::TryGetItemIndexByOccurrenceIdentity(
 		|| candidate >= _occurrenceIdentities.size()
 		|| _occurrenceIdentities[candidate] != identity) return false;
 	index = candidate;
+	return true;
+}
+
+inline bool ObservableBindingList::AddNewItem(
+	BindingSourceReference candidate,
+	BindingSourceReference& result)
+{
+	result = {};
+	if (_addingNew || _startingNewItem) return false;
+	const bool suppliedItem = static_cast<bool>(candidate);
+	if (suppliedItem && !_canAddNewItem) return false;
+	_startingNewItem = true;
+	try
+	{
+		if (!candidate)
+		{
+			if (!_newItemFactory)
+			{
+				_startingNewItem = false;
+				return false;
+			}
+			candidate = _newItemFactory();
+		}
+	}
+	catch (...)
+	{
+		_startingNewItem = false;
+		throw;
+	}
+	_startingNewItem = false;
+	if (!candidate) return false;
+
+	_currentAddItem = candidate;
+	_currentAddIndex = Items.size();
+	_currentAddOccurrence = 0;
+	_addingNew = true;
+	try
+	{
+		Items.push_back(candidate);
+	}
+	catch (...)
+	{
+		size_t committedIndex = 0;
+		if (!ResolveCurrentAddIndex(committedIndex))
+			ClearNewItemTransaction();
+		throw;
+	}
+	if (!_addingNew) return false;
+	size_t index = 0;
+	if (!ResolveCurrentAddIndex(index))
+	{
+		ClearNewItemTransaction();
+		return false;
+	}
+	_currentAddIndex = index;
+	if (_currentAddOccurrence == 0)
+	{
+		size_t occurrence = 0;
+		if (TryGetItemOccurrenceIdentity(index, occurrence))
+			_currentAddOccurrence = occurrence;
+	}
+	result = _currentAddItem;
+	return static_cast<bool>(result);
+}
+
+inline bool ObservableBindingList::CommitNew()
+{
+	if (!_addingNew) return true;
+	if (_mutatingNewItem) return false;
+	ClearNewItemTransaction();
+	return true;
+}
+
+inline bool ObservableBindingList::CancelNew()
+{
+	if (!_addingNew) return true;
+	if (_mutatingNewItem) return false;
+	size_t index = 0;
+	if (!ResolveCurrentAddIndex(index))
+	{
+		ClearNewItemTransaction();
+		return true;
+	}
+	_mutatingNewItem = true;
+	try
+	{
+		Items.erase(Items.cbegin() + index);
+	}
+	catch (...)
+	{
+		_mutatingNewItem = false;
+		size_t retainedIndex = 0;
+		if (!ResolveCurrentAddIndex(retainedIndex))
+			ClearNewItemTransaction();
+		throw;
+	}
+	_mutatingNewItem = false;
+	ClearNewItemTransaction();
+	return true;
+}
+
+inline bool ObservableBindingList::TryGetCurrentAddIndex(
+	size_t& index) const noexcept
+{
+	return ResolveCurrentAddIndex(index);
+}
+
+inline bool ObservableBindingList::RemoveAt(size_t index)
+{
+	if (!_canRemove || index >= Items.size() || _mutatingNewItem)
+		return false;
+	size_t addIndex = 0;
+	if (_addingNew && ResolveCurrentAddIndex(addIndex) && addIndex == index)
+		return CancelNew();
+	Items.erase(Items.cbegin() + index);
+	return true;
+}
+
+inline bool ObservableBindingList::RemoveRange(size_t index, size_t count)
+{
+	if (!_canRemove || _mutatingNewItem || index > Items.size()
+		|| count > Items.size() - index) return false;
+	if (count == 0) return true;
+	size_t addIndex = 0;
+	if (_addingNew && ResolveCurrentAddIndex(addIndex)
+		&& addIndex >= index && addIndex - index < count) return false;
+	Items.erase(Items.cbegin() + index, Items.cbegin() + index + count);
 	return true;
 }
 

@@ -8553,12 +8553,17 @@ bool Window::ProcessInput(const InputReport& input)
 	}
 
 	auto* focused = GetKeyboardFocusedElement();
+	const ControlWeakReference focusedLifetime(focused);
 	auto* originalSource = focused ? focused : this;
 	auto eventArgs = input.CreateKeyEventArgs();
 	InputManager::StagingScope staging(
 		*_inputManager, originalSource,
 		isKeyDown ? RoutedEventId::KeyDown : RoutedEventId::KeyUp);
 	staging.Preview(eventArgs);
+	// Preview handlers may commit/cancel a DataGrid edit and synchronously
+	// destroy the focused editor.  Keep the original input target weak from the
+	// moment it is sampled, then retire the raw pointer before any later routing.
+	focused = focusedLifetime.Get();
 	bool handled = staging.Handled();
 
 	if (isKeyUp)
@@ -8611,13 +8616,15 @@ bool Window::ProcessInput(const InputReport& input)
 			eventArgs.Handled = true;
 			handled = true;
 		}
+		// A command binding (for example DataGrid's Escape cancellation) may
+		// replace and destroy the editor that was focused when this report began.
+		focused = focusedLifetime.Get();
 	}
 
 	auto* ancestorNavigationTarget =
 		GetAncestorNavigationFallbackTarget(focused, key);
 	const ControlWeakReference ancestorNavigationLifetime(
 		ancestorNavigationTarget);
-	const ControlWeakReference focusedLifetime(focused);
 	const bool selectedHandles = focused
 		&& (focused->HandlesNavigationKey(key)
 			|| ancestorNavigationTarget != nullptr);

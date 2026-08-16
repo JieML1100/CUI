@@ -6,6 +6,7 @@
   </ItemGroup>
   <ItemGroup>
 	<ClCompile Include="..\CuiDesigner\BindingConverterCatalog.cpp"><Filter>Source Files</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DataGridAutoColumnCatalog.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\FrameworkThemeCodeGenerator.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -14,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
 	<ClInclude Include="..\CuiDesigner\BindingConverterCatalog.h"><Filter>Header Files</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DataGridAutoColumnCatalog.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h"><Filter>Header Files</Filter></ClInclude>

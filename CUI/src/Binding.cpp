@@ -2266,6 +2266,58 @@ bool ObservableObject::TrySetValue(
 	return SetCurrentValue(property, value, true);
 }
 
+bool ObservableObject::BeginEdit()
+{
+	if (_editValues) return true;
+	_editValues.emplace(_values);
+	return true;
+}
+
+bool ObservableObject::EndEdit()
+{
+	_editValues.reset();
+	return true;
+}
+
+bool ObservableObject::CancelEdit()
+{
+	if (!_editValues) return true;
+	std::vector<std::uint64_t> changed;
+	changed.reserve(_values.size() + _editValues->size());
+	for (const auto& [property, value] : _values)
+	{
+		const auto original = _editValues->find(property);
+		if (original == _editValues->end()
+			|| !BindingValuesEqual(value, original->second))
+			changed.push_back(property);
+	}
+	for (const auto& [property, value] : *_editValues)
+	{
+		(void)value;
+		if (_values.find(property) == _values.end())
+			changed.push_back(property);
+	}
+	_values.swap(*_editValues);
+	_editValues.reset();
+	std::sort(changed.begin(), changed.end());
+	changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+	// Restore the complete record before publishing the first notification so
+	// every reentrant binding read observes one coherent pre-edit state.
+	for (const auto property : changed)
+	{
+		const auto metadata = _metadata.find(property);
+		if (metadata != _metadata.end() && !metadata->second.CanObserve)
+			continue;
+#if CUI_ENABLE_DYNAMIC_XAML
+		if (metadata != _metadata.end() && !metadata->second.Name.empty())
+			OnPropertyChanged(metadata->second.Name);
+		else
+#endif
+			OnPropertyChanged(BindingSourcePropertyToken{ property });
+	}
+	return true;
+}
+
 bool ObservableObject::TryGetPropertyMetadata(
 	const std::wstring& propertyName,
 	BindingSourcePropertyMetadata& out) const

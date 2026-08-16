@@ -54,6 +54,14 @@
         <DataRecord Id="2" Text="声明式数据资源"/>
         <DataRecord Id="3" Text="NativeSurface 扩展"/>
       </DataList>
+	  <DataList x:Key="OrderStages" ItemType="DemoChoice">
+		<DataRecord Id="1" Text="待确认"/>
+		<DataRecord Id="2" Text="生产中"/>
+		<DataRecord Id="3" Text="备货中"/>
+		<DataRecord Id="4" Text="已发货"/>
+		<DataRecord Id="5" Text="待付款"/>
+		<DataRecord Id="6" Text="已完成"/>
+	  </DataList>
       <DataType x:Key="DemoStatusEntry">
         <DataType.Properties>
           <Property Path="Text" Kind="String"/>
@@ -81,6 +89,7 @@
       <DataType x:Key="DemoOrder">
         <DataType.Properties>
           <Property Path="OrderNo" Kind="String" CanWrite="false"/>
+		  <Property Path="DetailsUri" Kind="String" CanWrite="false"/>
           <Property Path="Customer" Kind="String"/>
           <Property Path="Region" Kind="String"/>
           <Property Path="Stage" Kind="String"/>
@@ -90,26 +99,37 @@
         </DataType.Properties>
       </DataType>
       <DataList x:Key="DemoOrders" ItemType="DemoOrder">
-        <DataRecord OrderNo="SO-260801" Customer="上海云舟" Region="华东" Stage="已发货" Quantity="12" Amount="86400" Paid="true"/>
-        <DataRecord OrderNo="SO-260802" Customer="杭州数擎" Region="华东" Stage="待确认" Quantity="5" Amount="42800" Paid="false"/>
-        <DataRecord OrderNo="SO-260803" Customer="深圳星河" Region="华南" Stage="生产中" Quantity="18" Amount="132600" Paid="true"/>
-        <DataRecord OrderNo="SO-260804" Customer="广州远航" Region="华南" Stage="已完成" Quantity="9" Amount="71200" Paid="true"/>
-        <DataRecord OrderNo="SO-260805" Customer="北京凌云" Region="华北" Stage="待付款" Quantity="7" Amount="56900" Paid="false"/>
-        <DataRecord OrderNo="SO-260806" Customer="天津智造" Region="华北" Stage="备货中" Quantity="16" Amount="118000" Paid="true"/>
-        <DataRecord OrderNo="SO-260807" Customer="成都启明" Region="西南" Stage="已发货" Quantity="11" Amount="79600" Paid="true"/>
-        <DataRecord OrderNo="SO-260808" Customer="重庆山海" Region="西南" Stage="待确认" Quantity="3" Amount="24900" Paid="false"/>
-        <DataRecord OrderNo="SO-260809" Customer="武汉光谷" Region="华中" Stage="生产中" Quantity="21" Amount="158700" Paid="true"/>
-        <DataRecord OrderNo="SO-260810" Customer="长沙岳麓" Region="华中" Stage="已完成" Quantity="8" Amount="63500" Paid="true"/>
-        <DataRecord OrderNo="SO-260811" Customer="南京创芯" Region="华东" Stage="待付款" Quantity="6" Amount="48300" Paid="false"/>
-        <DataRecord OrderNo="SO-260812" Customer="苏州微澜" Region="华东" Stage="备货中" Quantity="14" Amount="102400" Paid="true"/>
-        <DataRecord OrderNo="SO-260813" Customer="厦门鹭岛" Region="华南" Stage="已发货" Quantity="10" Amount="76800" Paid="true"/>
-        <DataRecord OrderNo="SO-260814" Customer="青岛海纳" Region="华北" Stage="待确认" Quantity="4" Amount="31600" Paid="false"/>
-        <DataRecord OrderNo="SO-260815" Customer="西安长安" Region="西北" Stage="生产中" Quantity="19" Amount="141900" Paid="true"/>
-        <DataRecord OrderNo="SO-260816" Customer="合肥科创" Region="华东" Stage="已完成" Quantity="13" Amount="94700" Paid="true"/>
-        <DataRecord OrderNo="SO-260817" Customer="郑州中原" Region="华中" Stage="待付款" Quantity="5" Amount="39800" Paid="false"/>
-        <DataRecord OrderNo="SO-260818" Customer="大连海风" Region="东北" Stage="备货中" Quantity="15" Amount="109500" Paid="true"/>
+        <DataRecord OrderNo="SO-260801" DetailsUri="https://example.test/orders/SO-260801" Customer="上海云舟" Region="华东" Stage="已发货" Quantity="12" Amount="86400" Paid="true"/>
+        <DataRecord OrderNo="SO-260802" DetailsUri="https://example.test/orders/SO-260802" Customer="杭州数擎" Region="华东" Stage="待确认" Quantity="5" Amount="42800" Paid="false"/>
+        <DataRecord OrderNo="SO-260803" DetailsUri="https://example.test/orders/SO-260803" Customer="深圳星河" Region="华南" Stage="生产中" Quantity="18" Amount="132600" Paid="true"/>
+        <DataRecord OrderNo="SO-260804" DetailsUri="https://example.test/orders/SO-260804" Customer="广州远航" Region="华南" Stage="已完成" Quantity="9" Amount="71200" Paid="true"/>
+        <DataRecord OrderNo="SO-260805" DetailsUri="https://example.test/orders/SO-260805" Customer="北京凌云" Region="华北" Stage="待付款" Quantity="7" Amount="56900" Paid="false"/>
+        <DataRecord OrderNo="SO-260806" DetailsUri="https://example.test/orders/SO-260806" Customer="天津智造" Region="华北" Stage="备货中" Quantity="16" Amount="118000" Paid="true"/>
+        <DataRecord OrderNo="SO-260807" DetailsUri="https://example.test/orders/SO-260807" Customer="成都启明" Region="西南" Stage="已发货" Quantity="11" Amount="79600" Paid="true"/>
+        <DataRecord OrderNo="SO-260808" DetailsUri="https://example.test/orders/SO-260808" Customer="重庆山海" Region="西南" Stage="待确认" Quantity="3" Amount="24900" Paid="false"/>
+        <DataRecord OrderNo="SO-260809" DetailsUri="https://example.test/orders/SO-260809" Customer="武汉光谷" Region="华中" Stage="生产中" Quantity="21" Amount="158700" Paid="true"/>
+        <DataRecord OrderNo="SO-260810" DetailsUri="https://example.test/orders/SO-260810" Customer="长沙岳麓" Region="华中" Stage="已完成" Quantity="8" Amount="63500" Paid="true"/>
+        <DataRecord OrderNo="SO-260811" DetailsUri="https://example.test/orders/SO-260811" Customer="南京创芯" Region="华东" Stage="待付款" Quantity="6" Amount="48300" Paid="false"/>
+        <DataRecord OrderNo="SO-260812" DetailsUri="https://example.test/orders/SO-260812" Customer="苏州微澜" Region="华东" Stage="备货中" Quantity="14" Amount="102400" Paid="true"/>
+        <DataRecord OrderNo="SO-260813" DetailsUri="https://example.test/orders/SO-260813" Customer="厦门鹭岛" Region="华南" Stage="已发货" Quantity="10" Amount="76800" Paid="true"/>
+        <DataRecord OrderNo="SO-260814" DetailsUri="https://example.test/orders/SO-260814" Customer="青岛海纳" Region="华北" Stage="待确认" Quantity="4" Amount="31600" Paid="false"/>
+        <DataRecord OrderNo="SO-260815" DetailsUri="https://example.test/orders/SO-260815" Customer="西安长安" Region="西北" Stage="生产中" Quantity="19" Amount="141900" Paid="true"/>
+        <DataRecord OrderNo="SO-260816" DetailsUri="https://example.test/orders/SO-260816" Customer="合肥科创" Region="华东" Stage="已完成" Quantity="13" Amount="94700" Paid="true"/>
+        <DataRecord OrderNo="SO-260817" DetailsUri="https://example.test/orders/SO-260817" Customer="郑州中原" Region="华中" Stage="待付款" Quantity="5" Amount="39800" Paid="false"/>
+        <DataRecord OrderNo="SO-260818" DetailsUri="https://example.test/orders/SO-260818" Customer="大连海风" Region="东北" Stage="备货中" Quantity="15" Amount="109500" Paid="true"/>
       </DataList>
-      <CollectionViewSource x:Key="DemoOrdersView" Source="{StaticResource DemoOrders}"/>
+      <CollectionViewSource x:Key="DemoOrdersView" Source="{StaticResource DemoOrders}">
+        <CollectionViewSource.GroupDescriptions>
+          <GroupDescription PropertyName="Region"/>
+        </CollectionViewSource.GroupDescriptions>
+      </CollectionViewSource>
+      <ControlTemplate x:Key="OrderRowValidationErrorTemplate" TargetType="Control">
+        <Border Width="18" Height="18" Margin="2" CornerRadius="9"
+          Background="#FFC42B1C">
+          <TextBlock Text="!" Foreground="#FFFFFFFF"
+            HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+      </ControlTemplate>
       <DataTemplate x:Key="OrderStageCellTemplate" DataType="DemoOrder">
         <Border Padding="8,2" Background="{StaticResource SurfaceSoft}"
           BorderBrush="{StaticResource Border}" BorderThickness="1"
@@ -130,6 +150,164 @@
           HorizontalAlignment="Center" VerticalAlignment="Top"
           IsChecked="{Binding Paid, Mode=TwoWay}"/>
       </DataTemplate>
+	  <DataTemplate x:Key="OrderRowHeaderTemplate" DataType="DemoOrder">
+		<TextBlock Text="{Binding OrderNo, FallbackValue='＋新增'}" FontSize="10"
+		  Foreground="{StaticResource TextMuted}"
+		  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+	  </DataTemplate>
+	  <DataTemplate x:Key="OrderRowDetailsTemplate" DataType="DemoOrder">
+		<Border Margin="8,3,8,7" Padding="10,6"
+		  Background="{StaticResource SurfaceSoft}"
+		  BorderBrush="{StaticResource Border}" BorderThickness="1">
+		  <StackPanel Orientation="Horizontal">
+			<TextBlock Text="订单详情" Foreground="{StaticResource Accent}"
+			  Width="76"/>
+			<TextBlock Text="{Binding Customer}" Width="120"/>
+			<TextBlock Text="{Binding Region}" Width="64"/>
+			<TextBlock Text="{Binding Stage}" Width="82"/>
+			<TextBlock Text="{Binding Amount, StringFormat='¥ {0:N0}'}"/>
+		  </StackPanel>
+		</Border>
+	  </DataTemplate>
+	  <DataTemplate x:Key="OrderGroupHeaderTemplate" DataType="CollectionViewGroup">
+		<Border Padding="8,3" Background="{StaticResource SurfaceSoft}"
+		  BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1">
+		  <StackPanel Orientation="Horizontal">
+			<TextBlock Text="区域" Width="42" Foreground="{StaticResource TextMuted}"/>
+			<TextBlock Text="{Binding Key}" Width="72" Foreground="{StaticResource Accent}"/>
+			<TextBlock Text="订单数" Width="54" Foreground="{StaticResource TextMuted}"/>
+			<TextBlock Text="{Binding ItemCount}" Foreground="{StaticResource TextPrimary}"/>
+		  </StackPanel>
+		</Border>
+	  </DataTemplate>
+	  <GroupStyle x:Key="OrderGroups"
+		HeaderTemplate="{StaticResource OrderGroupHeaderTemplate}"/>
+	  <DataTemplate x:Key="OrderCustomerHeaderTemplate" DataType="DemoOrder">
+		<TextBlock Text="客户 / Customer" FontSize="12"/>
+	  </DataTemplate>
+	  <ControlTemplate x:Key="OrderPlaceholderCellTemplate"
+		TargetType="DataGridCell">
+		<Border Background="{TemplateBinding Background}"
+		  BorderBrush="{TemplateBinding BorderBrush}"
+		  BorderThickness="{TemplateBinding BorderThickness}"
+		  Padding="{TemplateBinding Padding}">
+		  <VisualStateManager.VisualStateGroups>
+			<VisualStateGroup x:Name="NewItemPlaceholderStates">
+			  <VisualState x:Name="NewItemPlaceholder">
+				<VisualState.StateTriggers>
+				  <StateTrigger Property="IsNewItemPlaceholder" Value="true"/>
+				</VisualState.StateTriggers>
+				<VisualState.Setters>
+				  <Setter TargetName="PART_ContentPresenter"
+					Property="Visibility" Value="Collapsed"/>
+				</VisualState.Setters>
+			  </VisualState>
+			  <VisualState x:Name="RegularItem"/>
+			</VisualStateGroup>
+		  </VisualStateManager.VisualStateGroups>
+		  <Grid>
+			<ContentPresenter x:Name="PART_ContentPresenter"
+			  ContentSource="Content"
+			  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+			  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+		  </Grid>
+		</Border>
+	  </ControlTemplate>
+	  <ControlTemplate x:Key="OrderNewItemPromptCellTemplate"
+		TargetType="DataGridCell">
+		<Border Background="{TemplateBinding Background}"
+		  BorderBrush="{TemplateBinding BorderBrush}"
+		  BorderThickness="{TemplateBinding BorderThickness}"
+		  Padding="{TemplateBinding Padding}">
+		  <VisualStateManager.VisualStateGroups>
+			<VisualStateGroup x:Name="NewItemPlaceholderStates">
+			  <VisualState x:Name="NewItemPlaceholder">
+				<VisualState.StateTriggers>
+				  <StateTrigger Property="IsNewItemPlaceholder" Value="true"/>
+				</VisualState.StateTriggers>
+				<VisualState.Setters>
+				  <Setter TargetName="PART_ContentPresenter"
+					Property="Visibility" Value="Collapsed"/>
+				  <Setter TargetName="PART_NewItemPrompt"
+					Property="Visibility" Value="Visible"/>
+				</VisualState.Setters>
+			  </VisualState>
+			  <VisualState x:Name="RegularItem"/>
+			</VisualStateGroup>
+		  </VisualStateManager.VisualStateGroups>
+		  <Grid>
+			<ContentPresenter x:Name="PART_ContentPresenter"
+			  ContentSource="Content"
+			  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+			  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+			<TextBlock x:Name="PART_NewItemPrompt"
+			  Text="＋ 双击新增" FontSize="12" Visibility="Collapsed"
+			  Foreground="{StaticResource Accent}"
+			  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+		  </Grid>
+		</Border>
+	  </ControlTemplate>
+	  <Style x:Key="OrderGridCellStyle" TargetType="DataGridCell">
+		<Setter Property="Padding" Value="3,0"/>
+		<Setter Property="Template"
+		  Value="{StaticResource OrderPlaceholderCellTemplate}"/>
+	  </Style>
+	  <Style x:Key="OrderGridColumnHeaderStyle" TargetType="DataGridColumnHeader">
+		<Setter Property="Background" Value="{StaticResource SurfaceSoft}"/>
+		<Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+	  </Style>
+	  <Style x:Key="OrderGridRowStyle" TargetType="DataGridRow">
+		<Setter Property="MinHeight" Value="30"/>
+	  </Style>
+	  <Style x:Key="OrderGridRowHeaderStyle" TargetType="DataGridRowHeader">
+		<Setter Property="Background" Value="{StaticResource SurfaceSoft}"/>
+		<Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+	  </Style>
+	  <Style x:Key="OrderCustomerCellStyle"
+		BasedOn="{StaticResource OrderGridCellStyle}"
+		TargetType="DataGridCell">
+		<Setter Property="Padding" Value="7,0"/>
+		<Setter Property="Template"
+		  Value="{StaticResource OrderNewItemPromptCellTemplate}"/>
+	  </Style>
+	  <Style x:Key="OrderCustomerHeaderStyle" TargetType="DataGridColumnHeader">
+		<Setter Property="Foreground" Value="{StaticResource Accent}"/>
+	  </Style>
+	  <Style x:Key="OrderNumberElementStyle" TargetType="Button">
+		<Setter Property="Foreground" Value="{StaticResource Accent}"/>
+		<Setter Property="FontSize" Value="13"/>
+		<Setter Property="Padding" Value="3,0"/>
+	  </Style>
+	  <Style x:Key="OrderCustomerElementStyle" TargetType="TextBlock">
+		<Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+		<Setter Property="Padding" Value="4,0"/>
+	  </Style>
+	  <ControlTemplate x:Key="OrderCustomerEditingTemplate" TargetType="TextBox">
+		<!-- The native TextBox glyph layer is owned by the TextBox; keep its
+		     later-rendered template content host transparent. -->
+		<Border Background="#00000000">
+		  <Grid x:Name="PART_ContentHost"/>
+		</Border>
+	  </ControlTemplate>
+	  <Style x:Key="OrderCustomerEditingStyle" TargetType="TextBox">
+		<Setter Property="Background" Value="#00000000"/>
+		<Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+		<Setter Property="CaretBrush" Value="{StaticResource TextPrimary}"/>
+		<Setter Property="SelectionBrush" Value="{StaticResource Accent}"/>
+		<Setter Property="SelectionOpacity" Value="1"/>
+		<Setter Property="SelectionTextBrush" Value="#FFFFFFFF"/>
+		<Setter Property="BorderThickness" Value="0"/>
+		<Setter Property="Padding" Value="0"/>
+		<Setter Property="MinWidth" Value="0"/>
+		<Setter Property="MinHeight" Value="0"/>
+		<Setter Property="HorizontalAlignment" Value="Stretch"/>
+		<Setter Property="VerticalAlignment" Value="Stretch"/>
+		<Setter Property="HorizontalContentAlignment" Value="Left"/>
+		<Setter Property="VerticalContentAlignment" Value="Center"/>
+		<Setter Property="FontSize" Value="14"/>
+		<Setter Property="Template"
+		  Value="{StaticResource OrderCustomerEditingTemplate}"/>
+	  </Style>
       <CollectionViewSource x:Key="ActiveDemoTasks" Source="{StaticResource DemoTasks}">
         <CollectionViewSource.GroupDescriptions>
           <GroupDescription PropertyName="Category"/>
@@ -957,7 +1135,7 @@
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Style="{StaticResource PageHeader}"
-			  Text="标准 DataGrid：声明式列、冻结行表头、全选角、表头缩放排序、单元格/整行选择与原位编辑"/>
+			  Text="标准 DataGrid：区域分组、ComboBox 列、行详情、冻结行表头、表头排序与原位编辑"/>
             <Grid Grid.Row="1" Margin="0,8,0,4">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
@@ -968,27 +1146,63 @@
                 Content="填充 100 万行"/>
               <TextBlock Grid.Column="1" Margin="12,0,0,0"
                 VerticalAlignment="Center" Foreground="{StaticResource TextMuted}"
-                Text="按需物化的稳定随机访问数据源；滚动验证虚拟化，表头排序执行全量压力测试。"/>
+                Text="按需物化的稳定随机访问数据源；滚动验证虚拟化，表头排序使用源端索引投影。"/>
             </Grid>
             <DataGrid x:Name="demoDataGrid" Grid.Row="2" Margin="0,6,0,10"
-              AutoGenerateColumns="false" CanUserResizeColumns="true"
+              AutoGenerateColumns="true" CanUserResizeColumns="true"
+			  CanUserAddRows="true" CanUserDeleteRows="true"
+			  CanUserReorderColumns="true"
               CanUserSortColumns="true" IsReadOnly="false"
-			  HeadersVisibility="All" RowHeaderWidth="38"
+			  ClipboardCopyMode="IncludeHeader"
+			  CellStyle="{StaticResource OrderGridCellStyle}"
+			  ColumnHeaderStyle="{StaticResource OrderGridColumnHeaderStyle}"
+			  CurrentItem="{Binding Tag, Mode=OneWayToSource, ElementName=dataGridCurrentItemState}"
+			  CurrentColumn="{Binding Tag, Mode=OneWayToSource, ElementName=dataGridCurrentColumnState}"
+			  CurrentCell="{Binding Tag, Mode=OneWayToSource, ElementName=dataGridStatus}"
+			  GroupStyle="{StaticResource OrderGroups}"
+			  HeadersVisibility="All" RowHeaderWidth="58"
+			  RowStyle="{StaticResource OrderGridRowStyle}"
+			  RowHeaderStyle="{StaticResource OrderGridRowHeaderStyle}"
+			  RowHeaderTemplate="{StaticResource OrderRowHeaderTemplate}"
+			  AreRowDetailsFrozen="true"
+			  RowDetailsVisibilityMode="VisibleWhenSelected"
+			  RowDetailsTemplate="{StaticResource OrderRowDetailsTemplate}"
+			  AddingNewItem="HandleDataGridAddingNewItem"
               CellEditEnding="HandleDataGridCellEditEnding"
+			  InitializingNewItem="HandleDataGridInitializingNewItem"
+			  LoadingRow="HandleDataGridLoadingRow"
+			  LoadingRowDetails="HandleDataGridLoadingRowDetails"
+			  RowEditEnding="HandleDataGridRowEditEnding"
+			  RowDetailsVisibilityChanged="HandleDataGridRowDetailsVisibilityChanged"
               CurrentCellChanged="HandleDataGridCurrentCellChanged"
 			  ItemsSource="{StaticResource DemoOrdersView}"
+			  RowValidationErrorTemplate="{StaticResource OrderRowValidationErrorTemplate}"
 			  SelectedCellsChanged="HandleDataGridSelectedCellsChanged"
 			  SelectionMode="Extended" SelectionUnit="CellOrRowHeader"
-              Sorting="HandleDataGridSorting">
+			  Sorting="HandleDataGridSorting"
+			  UnloadingRow="HandleDataGridUnloadingRow"
+			  UnloadingRowDetails="HandleDataGridUnloadingRowDetails">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="订单号" Binding="{Binding OrderNo}"
-                  IsReadOnly="true" SortMemberPath="OrderNo" Width="118"/>
-                <DataGridTextColumn Header="客户" Binding="{Binding Customer, Mode=TwoWay}"
+				<DataGridHyperlinkColumn Header="订单号"
+				  Binding="{Binding DetailsUri}" ContentBinding="{Binding OrderNo}"
+				  ElementStyle="{StaticResource OrderNumberElementStyle}"
+				  TargetName="OrderDetails" IsReadOnly="true"
+				  SortMemberPath="OrderNo" Width="118"/>
+				<DataGridTextColumn Header="客户"
+				  HeaderStyle="{StaticResource OrderCustomerHeaderStyle}"
+				  HeaderTemplate="{StaticResource OrderCustomerHeaderTemplate}"
+				  CellStyle="{StaticResource OrderCustomerCellStyle}"
+				  Binding="{Binding Customer, Mode=TwoWay}"
+				  ElementStyle="{StaticResource OrderCustomerElementStyle}"
+				  EditingElementStyle="{StaticResource OrderCustomerEditingStyle}"
                   SortMemberPath="Customer" Width="2*"/>
                 <DataGridTextColumn Header="区域" Binding="{Binding Region, Mode=TwoWay}"
                   SortMemberPath="Region" Width="*"/>
-                <DataGridTemplateColumn Header="状态" CellTemplate="{StaticResource OrderStageCellTemplate}"
-                  SortMemberPath="Stage" Width="*"/>
+				<DataGridComboBoxColumn Header="状态"
+				  ItemsSource="{StaticResource OrderStages}"
+				  DisplayMemberPath="Text" SelectedValuePath="Text"
+				  SelectedValueBinding="{Binding Stage, Mode=TwoWay}"
+				  SortMemberPath="Stage" Width="*"/>
                 <DataGridTextColumn Header="数量" Binding="{Binding Quantity, Mode=TwoWay}"
                   SortMemberPath="Quantity" Width="92"/>
                 <DataGridTemplateColumn Header="金额"
@@ -998,15 +1212,33 @@
 				<DataGridTemplateColumn Header="已付款" IsReadOnly="true"
 				  CellTemplate="{StaticResource OrderPaidCellTemplate}"
 				  SortMemberPath="Paid" Width="88" CanUserResize="false"/>
+				<DataGridTextColumn Header="状态镜像" IsReadOnly="true"
+				  CanUserSort="false" Width="190" CanUserResize="false"
+				  Binding="{Binding Text, Mode=OneWay, ElementName=dataGridStatus}"/>
+				<DataGridTextColumn Header="组合计划" IsReadOnly="true"
+				  CanUserSort="false" Width="310" CanUserResize="false">
+				  <DataGridTextColumn.Binding>
+					<MultiBinding Mode="OneWay" StringFormat="{}{0} · {1}">
+					  <Binding Path="OrderNo"/>
+					  <Binding Path="Text" ElementName="dataGridStatus"/>
+					</MultiBinding>
+				  </DataGridTextColumn.Binding>
+				</DataGridTextColumn>
+				<DataGridCheckBoxColumn Header="当前格" IsReadOnly="true"
+				  CanUserSort="false" Width="72" CanUserResize="false"
+				  Binding="{Binding IsSelected, Mode=OneWay,
+				    RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type DataGridCell}}}"/>
               </DataGrid.Columns>
             </DataGrid>
+			<TextBlock x:Name="dataGridCurrentItemState" Grid.Row="3" Visibility="Collapsed"/>
+			<TextBlock x:Name="dataGridCurrentColumnState" Grid.Row="3" Visibility="Collapsed"/>
             <Grid Grid.Row="3">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2*"/>
                 <ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
               <TextBlock Grid.Column="0" Style="{StaticResource DescriptionText}"
-				Text="首次单击选择单元格，再次单击或双击进入编辑；已付款方框使用交互模板，首次单击即切换。单击冻结行表头选择整行，Ctrl/Shift 切换或扩展；F2 编辑，Enter/Tab 提交。"/>
+				Text="编辑底部占位行可新增订单；整行选择后按 Delete 删除，Ctrl+C 复制含表头 TSV。CurrentItem、CurrentColumn、CurrentCell 通过 OneWayToSource 保持 MVVM 投影；百万行验证 ScrollIntoView 的行列组合定位。末尾“AOT 区域”由生成期清单改写；F2 编辑，Enter/Tab 提交，Esc 取消新增。"/>
               <TextBlock x:Name="dataGridStatus" Grid.Column="1"
                 HorizontalAlignment="Right"
                 Foreground="{StaticResource TextMuted}"

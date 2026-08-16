@@ -6,6 +6,7 @@
 #include "CppUserCodeIndex.h"
 #include "XamlDocumentParser.h"
 #include "../BindingConverterCatalog.h"
+#include "../DataGridAutoColumnCatalog.h"
 #include "../CodeGenerator.h"
 #include "../DesignerEventCatalog.h"
 #include "../../CuiRuntime/include/XamlDocumentCompiler.h"
@@ -161,6 +162,41 @@ namespace
 		return true;
 	}
 
+	bool LoadDataGridAutoColumnCatalog(
+		const DesignCodeGenerationOptions& options,
+		std::shared_ptr<const DataGridAutoColumnCatalog>& output,
+		std::wstring* outError)
+	{
+		output.reset();
+		if (options.DataGridAutoColumnManifestPath.empty()) return true;
+
+		std::error_code pathError;
+		auto manifestPath = std::filesystem::absolute(
+			std::filesystem::path(options.DataGridAutoColumnManifestPath),
+			pathError);
+		if (pathError)
+		{
+			SetError(outError,
+				L"无法解析 DataGrid auto-column manifest 路径："
+				+ Widen(pathError.message()));
+			return false;
+		}
+		manifestPath = manifestPath.lexically_normal();
+		auto catalog = std::make_shared<DataGridAutoColumnCatalog>();
+		std::wstring catalogError;
+		if (!DataGridAutoColumnCatalog::LoadFile(
+			manifestPath.wstring(), *catalog, &catalogError))
+		{
+			SetError(outError, catalogError.empty()
+				? L"无法加载 DataGrid auto-column manifest："
+					+ manifestPath.wstring()
+				: std::move(catalogError));
+			return false;
+		}
+		output = std::move(catalog);
+		return true;
+	}
+
 	void PopulateResult(
 		const std::wstring& designFilePath,
 		const std::filesystem::path& outputBase,
@@ -231,6 +267,9 @@ namespace
 		std::shared_ptr<const BindingConverterCatalog> converterCatalog;
 		if (!LoadBindingConverterCatalog(options, converterCatalog, outError))
 			return false;
+		std::shared_ptr<const DataGridAutoColumnCatalog> autoColumnCatalog;
+		if (!LoadDataGridAutoColumnCatalog(
+			options, autoColumnCatalog, outError)) return false;
 
 		std::wstring error;
 		CuiRuntime::XamlCompiledDocument compiled;
@@ -251,6 +290,7 @@ namespace
 		PopulateResult(designFilePath, outputBase, className, result);
 		CodeGenerator generator(className, compiled.Document);
 		generator.SetBindingConverterCatalog(std::move(converterCatalog));
+		generator.SetDataGridAutoColumnCatalog(std::move(autoColumnCatalog));
 		if (!generator.BuildFilePlan(
 			result.UserHeaderPath, result.UserSourcePath, files))
 		{
@@ -989,6 +1029,9 @@ bool DesignCodeGenerationService::GenerateGeneratedOnly(
 		std::shared_ptr<const BindingConverterCatalog> converterCatalog;
 		if (!LoadBindingConverterCatalog(options, converterCatalog, outError))
 			return false;
+		std::shared_ptr<const DataGridAutoColumnCatalog> autoColumnCatalog;
+		if (!LoadDataGridAutoColumnCatalog(
+			options, autoColumnCatalog, outError)) return false;
 
 		std::wstring error;
 		// Production lowering starts from the parsed authored document. The
@@ -1023,6 +1066,7 @@ bool DesignCodeGenerationService::GenerateGeneratedOnly(
 			className, document,
 			CodeGeneratorOutputKind::StaticWindow);
 		generator.SetBindingConverterCatalog(std::move(converterCatalog));
+		generator.SetDataGridAutoColumnCatalog(std::move(autoColumnCatalog));
 		const auto generatedHeader = generator.GenerateHeader();
 		const auto generatedSource = generator.GenerateCppForHeader(
 			NarrowAscii(outputBase.filename().wstring()));

@@ -600,10 +600,22 @@ namespace
 				(void)targetProperty;
 				if (!includeBinding(binding, node.Name)) return false;
 			}
-			const auto& resourceKey = node.Structure.ItemsSourceResource;
-			if (const auto* view = document.FindCollectionView(resourceKey);
-				view && viewKeys.insert(IdentityKey(view->Key)).second)
-				pendingViews.push(view->Key);
+			auto includeView = [&](const std::wstring& resourceKey)
+			{
+				if (const auto* view = document.FindCollectionView(resourceKey);
+					view && viewKeys.insert(IdentityKey(view->Key)).second)
+					pendingViews.push(view->Key);
+			};
+			includeView(node.Structure.ItemsSourceResource);
+			if (node.Structure.DataGridColumns)
+				for (const auto& column : *node.Structure.DataGridColumns)
+				{
+					if (column.Binding
+						&& !includeBinding(*column.Binding, node.Name)) return false;
+					if (column.ContentBinding
+						&& !includeBinding(*column.ContentBinding, node.Name)) return false;
+					includeView(column.ItemsSourceResource);
+				}
 		}
 		while (!pendingViews.empty())
 		{
@@ -907,6 +919,12 @@ namespace
 		DesignNode& node,
 		const std::unordered_map<std::wstring, std::wstring>& keyMap)
 	{
+		auto rewrite = [&](std::wstring& key)
+		{
+			if (key.empty()) return;
+			const auto found = keyMap.find(IdentityKey(key));
+			if (found != keyMap.end()) key = found->second;
+		};
 		const auto key = NodeItemTemplateKey(node);
 		if (!key.empty())
 		{
@@ -928,17 +946,31 @@ namespace
 			if (headerFound != keyMap.end())
 				node.Structure.HeaderTemplate = headerFound->second;
 		}
+		rewrite(node.Structure.DataGridRowHeaderTemplate);
+		rewrite(node.Structure.DataGridRowDetailsTemplate);
+		if (node.Structure.DataGridColumns)
+			for (auto& column : *node.Structure.DataGridColumns)
+			{
+				rewrite(column.HeaderTemplate);
+				rewrite(column.CellTemplate);
+				rewrite(column.CellEditingTemplate);
+			}
 	}
 
 	void RewriteNodeDataList(
 		DesignNode& node,
 		const std::unordered_map<std::wstring, std::wstring>& keyMap)
 	{
-		const auto key = NodeDataListKey(node);
-		if (key.empty()) return;
-		const auto found = keyMap.find(IdentityKey(key));
-		if (found != keyMap.end())
-			node.Structure.ItemsSourceResource = found->second;
+		auto rewrite = [&](std::wstring& key)
+		{
+			if (key.empty()) return;
+			const auto found = keyMap.find(IdentityKey(key));
+			if (found != keyMap.end()) key = found->second;
+		};
+		rewrite(node.Structure.ItemsSourceResource);
+		if (node.Structure.DataGridColumns)
+			for (auto& column : *node.Structure.DataGridColumns)
+				rewrite(column.ItemsSourceResource);
 	}
 
 	void RewriteNodeItemsPanel(
@@ -1054,6 +1086,14 @@ namespace
 			(void)targetProperty;
 			RewriteBindingElementNames(binding, nameMap);
 		}
+		if (node.Structure.DataGridColumns)
+			for (auto& column : *node.Structure.DataGridColumns)
+			{
+				if (column.Binding)
+					RewriteBindingElementNames(*column.Binding, nameMap);
+				if (column.ContentBinding)
+					RewriteBindingElementNames(*column.ContentBinding, nameMap);
+			}
 		for (auto& binding : node.InputBindings)
 			RewriteCommandTarget(binding.CommandTarget, nameMap);
 		RewriteCommandTarget(node.Structure.CommandTarget, nameMap);
@@ -1103,6 +1143,15 @@ namespace
 			enqueueExplicit(itemKey);
 			enqueueExplicit(contentKey);
 			enqueueExplicit(headerKey);
+			enqueueExplicit(node.Structure.DataGridRowHeaderTemplate);
+			enqueueExplicit(node.Structure.DataGridRowDetailsTemplate);
+			if (node.Structure.DataGridColumns)
+				for (const auto& column : *node.Structure.DataGridColumns)
+				{
+					enqueueExplicit(column.HeaderTemplate);
+					enqueueExplicit(column.CellTemplate);
+					enqueueExplicit(column.CellEditingTemplate);
+				}
 			const bool itemsPresenter = IsUIClassAssignableFrom(
 				UIClass::UI_ItemsControl, node.Type);
 			const bool contentPresenter =
@@ -1276,13 +1325,21 @@ namespace
 			return definition->SourceResource.empty()
 				|| includeListResource(definition->SourceResource);
 		};
+		auto includeNodeListResources = [&](const DesignNode& node)
+		{
+			if (!includeListResource(NodeDataListKey(node))) return false;
+			if (node.Structure.DataGridColumns)
+				for (const auto& column : *node.Structure.DataGridColumns)
+					if (!includeListResource(column.ItemsSourceResource)) return false;
+			return true;
+		};
 		for (const auto& node : source.Nodes)
 			if (includedNodeIds.contains(node.Id)
-				&& !includeListResource(NodeDataListKey(node)))
+				&& !includeNodeListResources(node))
 				return Fail(L"控件片段引用了缺失的列表资源。", outError);
 		for (const auto& definition : outputTemplates)
 			for (const auto& node : definition.Template)
-				if (!includeListResource(NodeDataListKey(node)))
+				if (!includeNodeListResources(node))
 					return Fail(L"DataTemplate 引用了缺失的列表资源。", outError);
 
 		std::unordered_set<std::wstring> typeNames;
@@ -1616,6 +1673,114 @@ namespace
 		return node.Structure.ItemContainerStyle;
 	}
 
+	void ForEachDataGridStyleReference(
+		const DesignNode& node,
+		const std::function<void(const std::wstring&, UIClass)>& callback)
+	{
+		if (node.Type != UIClass::UI_DataGrid) return;
+		for (const auto& [key, targetType] : {
+			std::pair{ &node.Structure.DataGridCellStyle,
+				UIClass::UI_DataGridCell },
+			std::pair{ &node.Structure.DataGridColumnHeaderStyle,
+				UIClass::UI_DataGridColumnHeader },
+			std::pair{ &node.Structure.DataGridRowStyle,
+				UIClass::UI_DataGridRow },
+			std::pair{ &node.Structure.DataGridRowHeaderStyle,
+				UIClass::UI_DataGridRowHeader } })
+			if (!key->empty()) callback(*key, targetType);
+		if (!node.Structure.DataGridColumns) return;
+		for (const auto& column : *node.Structure.DataGridColumns)
+		{
+			if (!column.HeaderStyle.empty())
+				callback(column.HeaderStyle, UIClass::UI_DataGridColumnHeader);
+			if (!column.CellStyle.empty())
+				callback(column.CellStyle, UIClass::UI_DataGridCell);
+			const auto elementType = column.Kind == DesignDataGridColumnKind::Text
+				? UIClass::UI_Label
+				: column.Kind == DesignDataGridColumnKind::CheckBox
+					? UIClass::UI_CheckBox
+					: column.Kind == DesignDataGridColumnKind::ComboBox
+						? UIClass::UI_ComboBox : UIClass::UI_Button;
+			const auto editingType = column.Kind == DesignDataGridColumnKind::Text
+				|| column.Kind == DesignDataGridColumnKind::Hyperlink
+				? UIClass::UI_TextBox : elementType;
+			if (!column.ElementStyle.empty())
+				callback(column.ElementStyle, elementType);
+			if (!column.EditingElementStyle.empty())
+				callback(column.EditingElementStyle, editingType);
+		}
+	}
+
+	std::wstring DataGridStyleIdentity(
+		const std::wstring& key,
+		UIClass targetType)
+	{
+		return std::to_wstring(static_cast<int>(targetType))
+			+ L":" + IdentityKey(key);
+	}
+
+	void RewriteDataGridStyleReferences(
+		DesignNode& node,
+		const std::unordered_map<std::wstring, std::wstring>& keyMap)
+	{
+		if (node.Type != UIClass::UI_DataGrid) return;
+		auto rewrite = [&](std::wstring& key, UIClass targetType)
+		{
+			if (key.empty()) return;
+			const auto found = keyMap.find(DataGridStyleIdentity(key, targetType));
+			if (found != keyMap.end()) key = found->second;
+		};
+		rewrite(node.Structure.DataGridCellStyle, UIClass::UI_DataGridCell);
+		rewrite(node.Structure.DataGridColumnHeaderStyle,
+			UIClass::UI_DataGridColumnHeader);
+		rewrite(node.Structure.DataGridRowStyle, UIClass::UI_DataGridRow);
+		rewrite(node.Structure.DataGridRowHeaderStyle,
+			UIClass::UI_DataGridRowHeader);
+		if (!node.Structure.DataGridColumns) return;
+		for (auto& column : *node.Structure.DataGridColumns)
+		{
+			rewrite(column.HeaderStyle, UIClass::UI_DataGridColumnHeader);
+			rewrite(column.CellStyle, UIClass::UI_DataGridCell);
+			const auto elementType = column.Kind == DesignDataGridColumnKind::Text
+				? UIClass::UI_Label
+				: column.Kind == DesignDataGridColumnKind::CheckBox
+					? UIClass::UI_CheckBox
+					: column.Kind == DesignDataGridColumnKind::ComboBox
+						? UIClass::UI_ComboBox : UIClass::UI_Button;
+			const auto editingType = column.Kind == DesignDataGridColumnKind::Text
+				|| column.Kind == DesignDataGridColumnKind::Hyperlink
+				? UIClass::UI_TextBox : elementType;
+			rewrite(column.ElementStyle, elementType);
+			rewrite(column.EditingElementStyle, editingType);
+		}
+	}
+
+	bool StyleRuleMatchesExplicitDataGridStyle(
+		const DesignerStyleRule& rule,
+		const std::wstring& key,
+		UIClass targetType)
+	{
+		if (key.empty() || rule.Id.empty() || !rule.ComponentType.Empty())
+			return false;
+		if (rule.HasType && rule.Type != UIClass::UI_Base
+			&& rule.Type != targetType) return false;
+		return EqualsStyleName(rule.Id, key);
+	}
+
+	bool StyleRuleMatchesDataGridContainer(
+		const DesignerStyleRule& rule,
+		const DesignNode& node)
+	{
+		bool matches = false;
+		ForEachDataGridStyleReference(node,
+			[&](const std::wstring& key, UIClass targetType)
+			{
+				matches = matches || StyleRuleMatchesExplicitDataGridStyle(
+					rule, key, targetType);
+			});
+		return matches;
+	}
+
 	bool StyleRuleMatchesNode(
 		const DesignerStyleRule& rule,
 		const DesignNode& node)
@@ -1656,7 +1821,8 @@ namespace
 		const DesignNode& node)
 	{
 		return StyleRuleMatchesNode(rule, node)
-			|| StyleRuleMatchesGeneratedContainer(rule, node);
+			|| StyleRuleMatchesGeneratedContainer(rule, node)
+			|| StyleRuleMatchesDataGridContainer(rule, node);
 	}
 
 	DesignerStyleSheet VisibleStylesForNode(
@@ -2081,6 +2247,8 @@ namespace
 	{
 		std::wstring Id;
 	};
+	using IsolatedDataGridStyles =
+		std::unordered_map<std::wstring, std::wstring>;
 
 	void ApplyIsolatedNodeStyle(
 		DesignNode& node,
@@ -2096,6 +2264,7 @@ namespace
 		DesignDocument& candidate,
 		std::unordered_map<int, IsolatedNodeStyle>& isolatedStyles,
 		std::unordered_map<int, std::wstring>& isolatedContainerStyles,
+		std::unordered_map<int, IsolatedDataGridStyles>& isolatedDataGridStyles,
 		std::unordered_map<std::wstring, std::wstring>& resourceMap,
 		std::wstring* outError)
 	{
@@ -2123,6 +2292,9 @@ namespace
 			if (!id.empty()) usedSelectorNames.insert(IdentityKey(id));
 			const auto containerId = NodeItemContainerStyleId(node);
 			if (!containerId.empty()) usedSelectorNames.insert(IdentityKey(containerId));
+			ForEachDataGridStyleReference(node,
+				[&](const std::wstring& key, UIClass)
+				{ usedSelectorNames.insert(IdentityKey(key)); });
 		}
 		for (const auto& rule : target.StyleSheet.Rules)
 		{
@@ -2240,6 +2412,46 @@ namespace
 				candidate.StyleSheet.Rules.push_back(std::move(imported));
 			}
 			isolatedContainerStyles.emplace(node.Id, isolatedId);
+		}
+
+		for (const auto& node : fragment.Nodes)
+		{
+			std::unordered_set<std::wstring> visited;
+			bool valid = true;
+			ForEachDataGridStyleReference(node,
+				[&](const std::wstring& key, UIClass targetType)
+				{
+					if (!valid) return;
+					const auto identity = DataGridStyleIdentity(key, targetType);
+					if (!visited.insert(identity).second) return;
+					std::vector<const DesignerStyleRule*> matchingRules;
+					for (const auto& rule : dependencies.Rules)
+						if (StyleRuleMatchesExplicitDataGridStyle(
+							rule, key, targetType))
+							matchingRules.push_back(&rule);
+					// A lexical Style travels with the copied node's LocalResources and
+					// therefore does not require a promoted global selector.
+					if (matchingRules.empty()) return;
+					const auto isolatedId = MakeUniqueName(
+						L"CuiPasteDataGridStyle_"
+							+ StyleToken(nameMap.at(node.Name)) + L"_"
+							+ std::to_wstring(static_cast<int>(targetType)),
+						usedSelectorNames);
+					for (const auto* sourceRule : matchingRules)
+					{
+						auto imported = *sourceRule;
+						imported.Id = isolatedId;
+						if (!remapImportedRuleResources(
+							imported, L"粘贴 DataGrid 容器"))
+						{
+							valid = false;
+							return;
+						}
+						candidate.StyleSheet.Rules.push_back(std::move(imported));
+					}
+					isolatedDataGridStyles[node.Id].emplace(identity, isolatedId);
+				});
+			if (!valid) return false;
 		}
 
 		std::wstring styleError;
@@ -2450,6 +2662,29 @@ bool DesignDocumentClipboard::Capture(
 								+ targetProperty
 								+ L" 引用了复制范围外的 ElementName："
 								+ elementName, outError);
+				}
+			if (sourceNode.Structure.DataGridColumns)
+				for (size_t columnIndex = 0;
+					columnIndex < sourceNode.Structure.DataGridColumns->size();
+					++columnIndex)
+				{
+					const auto& column =
+						(*sourceNode.Structure.DataGridColumns)[columnIndex];
+					for (const auto* binding : {
+						column.Binding ? &*column.Binding : nullptr,
+						column.ContentBinding ? &*column.ContentBinding : nullptr })
+					{
+						if (!binding) continue;
+						std::vector<std::wstring> elementNames;
+						CollectNodeElementBindingNames(*binding, elementNames);
+						for (const auto& elementName : elementNames)
+							if (!includedNames.contains(elementName))
+								return Fail(L"控件 " + sourceNode.Name
+									+ L" 的 DataGrid 列["
+									+ std::to_wstring(columnIndex)
+									+ L"] 引用了复制范围外的 ElementName："
+									+ elementName, outError);
+					}
 				}
 			for (const auto& binding : sourceNode.InputBindings)
 				if (!binding.CommandTarget.empty()
@@ -3039,11 +3274,14 @@ bool DesignDocumentClipboard::Paste(
 		isolatedStyles.reserve(fragment.Nodes.size());
 		std::unordered_map<int, std::wstring> isolatedContainerStyles;
 		isolatedContainerStyles.reserve(fragment.Nodes.size());
+		std::unordered_map<int, IsolatedDataGridStyles> isolatedDataGridStyles;
+		isolatedDataGridStyles.reserve(fragment.Nodes.size());
 		std::unordered_map<std::wstring, std::wstring> styleResourceMap;
 		const auto ownership = BuildOwnership(fragment);
 		if (!MergeStyleDependencies(
 			target, fragment, nameMap, candidate,
 			isolatedStyles, isolatedContainerStyles,
+			isolatedDataGridStyles,
 			styleResourceMap, outError)) return false;
 		for (const auto& definition : fragment.DataTemplates)
 		{
@@ -3244,6 +3482,11 @@ bool DesignDocumentClipboard::Paste(
 			if (isolatedContainerStyle != isolatedContainerStyles.end())
 				node.Structure.ItemContainerStyle =
 					isolatedContainerStyle->second;
+			const auto isolatedDataGridStyle =
+				isolatedDataGridStyles.find(original.Id);
+			if (isolatedDataGridStyle != isolatedDataGridStyles.end())
+				RewriteDataGridStyleReferences(
+					node, isolatedDataGridStyle->second);
 			for (auto& [eventName, handlerValue] : node.Events)
 				{
 					(void)eventName;

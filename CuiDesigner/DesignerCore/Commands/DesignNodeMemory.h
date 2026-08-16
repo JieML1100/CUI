@@ -77,6 +77,13 @@ namespace DesignerCommandMemory
 			+ StringHeap(value.ContentTemplate)
 			+ StringHeap(value.HeaderTemplate)
 			+ StringHeap(value.ControlTemplate)
+			+ StringHeap(value.RowValidationErrorTemplate)
+			+ StringHeap(value.DataGridCellStyle)
+			+ StringHeap(value.DataGridColumnHeaderStyle)
+			+ StringHeap(value.DataGridRowStyle)
+			+ StringHeap(value.DataGridRowHeaderStyle)
+			+ StringHeap(value.DataGridRowHeaderTemplate)
+			+ StringHeap(value.DataGridRowDetailsTemplate)
 			+ StringHeap(value.GroupStyle)
 			+ StringHeap(value.ItemsPanel)
 			+ StringHeap(value.ItemContainerStyle);
@@ -104,6 +111,11 @@ namespace DesignerCommandMemory
 			for (const auto& column : *value.DataGridColumns)
 			{
 				result += StringHeap(column.Header)
+					+ StringHeap(column.HeaderStyle)
+					+ StringHeap(column.HeaderTemplate)
+					+ StringHeap(column.CellStyle)
+					+ StringHeap(column.ElementStyle)
+					+ StringHeap(column.EditingElementStyle)
 					+ StringHeap(column.SortMemberPath)
 					+ StringHeap(column.CellTemplate)
 					+ StringHeap(column.CellEditingTemplate);

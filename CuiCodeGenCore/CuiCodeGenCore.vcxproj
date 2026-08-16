@@ -122,6 +122,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\CuiDesigner\BindingConverterCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DataGridAutoColumnCatalog.cpp" />
     <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp">
       <!-- The generator TU exceeds MSVC 14.44's reliable LTCG object size. -->
       <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">false</WholeProgramOptimization>
@@ -133,6 +134,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\CuiDesigner\BindingConverterCatalog.h" />
+    <ClInclude Include="..\CuiDesigner\DataGridAutoColumnCatalog.h" />
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\FrameworkThemeCodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h" />

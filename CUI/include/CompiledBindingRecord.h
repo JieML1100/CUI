@@ -46,7 +46,9 @@ struct CompiledBindingRecordProperty final
  * keep their fields inline and publish only one sorted static property/thunk
  * span through this base.
  */
-class CompiledBindingRecord : public IBindingSource
+class CompiledBindingRecord
+	: public IBindingSource,
+	  public IEditableBindingSource
 {
 public:
 	~CompiledBindingRecord() override = default;
@@ -81,6 +83,9 @@ public:
 	bool TryGetPropertyMetadata(
 		BindingSourcePropertyToken property,
 		BindingSourcePropertyMetadata& out) const override;
+	bool BeginEdit() override;
+	bool EndEdit() override;
+	bool CancelEdit() override;
 
 #if CUI_ENABLE_DYNAMIC_XAML
 	// A generated Production record has no reversible source names. These
@@ -121,6 +126,12 @@ private:
 
 	std::span<const CompiledBindingRecordProperty> _properties;
 	PropertyChangedEvent _propertyChanged;
+	struct EditValue final
+	{
+		const CompiledBindingRecordProperty* Property = nullptr;
+		BindingValue Value;
+	};
+	std::optional<std::vector<EditValue>> _editValues;
 };
 
 namespace cui::binding

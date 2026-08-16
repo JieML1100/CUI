@@ -143,6 +143,7 @@
   <Color x:Key="CuiMenuCheckBorder">#00FFFFFF</Color>
   <Color x:Key="CuiComboBoxBackground">#FFFFFFFF</Color>
   <Color x:Key="CuiComboBoxBorder">#FF98A7BA</Color>
+  <Color x:Key="CuiComboBoxDropDownBorder">#FF8C9BB0</Color>
   <Color x:Key="CuiComboBoxPointerOver">#FFEAF2FF</Color>
   <Color x:Key="CuiComboBoxItemSelected">#FFD7E6FF</Color>
   <!-- WPF Fluent Light TabControl resources (.NET 11 Preview 6). -->
@@ -1726,9 +1727,9 @@
               <StateTrigger Property="IsEnabled" Value="false"/>
             </VisualState.StateTriggers>
             <VisualState.Setters>
-              <Setter TargetName="PART_ComboBoxChrome"
-                Property="BorderBrush"
-                Value="{StaticResource CuiToggleBorderDisabled}"/>
+              <Setter TargetName="PART_DropDownToggle"
+                Property="Foreground"
+                Value="{StaticResource CuiControlForegroundDisabled}"/>
             </VisualState.Setters>
           </VisualState>
           <VisualState x:Name="PointerOver">
@@ -1765,7 +1766,8 @@
             </VisualState.StateTriggers>
             <VisualState.Setters>
               <Setter TargetName="PART_ComboBoxChrome"
-                Property="BorderThickness" Value="2"/>
+                Property="BorderBrush"
+                Value="{StaticResource CuiTextControlBorderFocused}"/>
             </VisualState.Setters>
           </VisualState>
           <VisualState x:Name="Unfocused"/>
@@ -1796,6 +1798,7 @@
               x:Name="PART_SelectionBox"
               VerticalAlignment="Center"
               Foreground="{TemplateBinding Foreground}"
+              TextTrimming="CharacterEllipsis"
               Text="{TemplateBinding Text}"/>
             <TextBox
               x:Name="PART_EditableTextBox"
@@ -1818,8 +1821,9 @@
           x:Name="PART_DropDownBorder"
           MinWidth="80"
           Background="{StaticResource CuiComboBoxBackground}"
-          BorderBrush="{StaticResource CuiComboBoxBorder}"
-          BorderThickness="1">
+          BorderBrush="{StaticResource CuiComboBoxDropDownBorder}"
+          BorderThickness="1.5"
+          CornerRadius="8">
           <ScrollViewer
             x:Name="PART_DropDownScrollViewer"
             HorizontalScrollBarVisibility="Disabled"
@@ -1840,6 +1844,7 @@
       Value="{StaticResource CuiControlForeground}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="Padding" Value="8,3"/>
+    <Setter Property="Focusable" Value="true"/>
     <Setter Property="ItemsPanel"
       Value="{StaticResource CuiComboBoxItemsPanel}"/>
     <Setter Property="Template"
@@ -4948,7 +4953,10 @@
   <ControlTemplate
     x:Key="CuiDataGridTextEditingElementTemplate"
     TargetType="TextBox">
-    <Border Background="{TemplateBinding Background}">
+    <!-- TextBox paints its native glyph/selection layer on the owner node.
+         Template children are presented afterwards, so the cell owns the
+         editing background and this content-host chrome must stay transparent. -->
+    <Border Background="#00000000">
       <Grid x:Name="PART_ContentHost"/>
     </Border>
   </ControlTemplate>
@@ -4988,6 +4996,82 @@
          DefaultEditingElementStyle both align the CheckBox to Top. -->
     <Setter Property="VerticalAlignment" Value="Top"/>
     <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+
+  <!-- The non-editing DataGridComboBoxColumn face keeps a lightweight,
+       non-interactive value projection plus a dropdown affordance.  It avoids
+       hosting a live Button/Popup while still making the column type clear. -->
+  <ControlTemplate
+    x:Key="CuiDataGridComboBoxElementTemplate"
+    TargetType="ComboBox">
+    <Border
+      Background="{TemplateBinding Background}"
+      Padding="{TemplateBinding Padding}">
+      <DockPanel>
+        <TextBlock
+          x:Name="PART_DropDownGlyph"
+          Width="18"
+          DockPanel.Dock="Right"
+          HorizontalAlignment="Center"
+          VerticalAlignment="Center"
+          FontFamily="Segoe Fluent Icons"
+          FontSize="10"
+          Foreground="{TemplateBinding Foreground}"
+          Text="&#xE70D;"/>
+        <TextBlock
+          x:Name="PART_SelectionBox"
+          VerticalAlignment="Center"
+          Foreground="{TemplateBinding Foreground}"
+          TextTrimming="CharacterEllipsis"
+          Text="{TemplateBinding Text}"/>
+      </DockPanel>
+    </Border>
+  </ControlTemplate>
+
+  <Style x:Key="CuiDataGridComboBoxElementStyle"
+    BasedOn="{StaticResource {x:Type ComboBox}}"
+    TargetType="ComboBox">
+    <Setter Property="Background" Value="#00000000"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="2,0"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template"
+      Value="{StaticResource CuiDataGridComboBoxElementTemplate}"/>
+  </Style>
+
+  <!-- Editing mode remains a real ComboBox: it keeps the normal opaque
+       surface, one-DIP border, focus stroke and dropdown affordance. -->
+  <Style x:Key="CuiDataGridComboBoxEditingElementStyle"
+    BasedOn="{StaticResource {x:Type ComboBox}}"
+    TargetType="ComboBox">
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="2,0"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="CuiDataGridHyperlinkElementStyle"
+    BasedOn="{StaticResource {x:Type Button}}"
+    TargetType="Button">
+    <Setter Property="Background" Value="#00000000"/>
+    <Setter Property="BorderBrush" Value="#00000000"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Foreground"
+      Value="{StaticResource CuiTextControlBorderFocused}"/>
+    <Setter Property="Padding" Value="2,0"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="VerticalAlignment" Value="Stretch"/>
+    <Setter Property="HorizontalContentAlignment" Value="Left"/>
     <Setter Property="VerticalContentAlignment" Value="Center"/>
   </Style>
 

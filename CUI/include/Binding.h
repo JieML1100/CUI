@@ -1023,6 +1023,24 @@ private:
 	mutable std::shared_ptr<const void> _bindingLifetime;
 };
 
+/**
+ * Optional WPF IEditableObject-shaped transaction capability for one binding
+ * record. Controls discover it with dynamic_cast; ordinary IBindingSource
+ * implementations remain read/write compatible without implementing it.
+ *
+ * BeginEdit must retain at most this record's pending state. Repeated calls
+ * while a transaction is active are idempotent. EndEdit accepts the pending
+ * values and CancelEdit restores the values captured by BeginEdit.
+ */
+class IEditableBindingSource
+{
+public:
+	virtual ~IEditableBindingSource() = default;
+	virtual bool BeginEdit() = 0;
+	virtual bool EndEdit() = 0;
+	virtual bool CancelEdit() = 0;
+};
+
 #if CUI_ENABLE_DYNAMIC_XAML
 /** Reads a dynamic member/indexer path from any Design binding source. */
 bool TryGetBindingPathValue(
@@ -1128,7 +1146,7 @@ std::vector<BindingValidationIssue> GetBindingValidationIssuesForPath(
 	const IBindingSource& source,
 	CompiledBindingPathView sourcePropertyPath);
 
-class ObservableObject : public IBindingSource
+class ObservableObject : public IBindingSource, public IEditableBindingSource
 {
 public:
 	PropertyChangedEvent& PropertyChanged() override { return _propertyChanged; }
@@ -1161,6 +1179,9 @@ public:
 	bool HasValidationErrors() const noexcept;
 	bool HasValidationErrors(const std::wstring& propertyName) const;
 	bool HasValidationErrors(BindingSourcePropertyToken property) const;
+	bool BeginEdit() override;
+	bool EndEdit() override;
+	bool CancelEdit() override;
 
 	/** Defines metadata and an optional initial value without requiring CanWrite. */
 	#if CUI_ENABLE_DYNAMIC_XAML
@@ -1294,6 +1315,9 @@ private:
 	std::unordered_map<std::uint64_t, BindingSourcePropertyMetadata> _metadata;
 	std::unordered_map<std::uint64_t, std::vector<BindingValidationIssue>>
 		_validationIssues;
+	// Allocated only for the one record which opted into an edit transaction.
+	std::optional<std::unordered_map<std::uint64_t, BindingValue>>
+		_editValues;
 };
 
 /** Ordered sources contributing to a DependencyObject property's effective value. */

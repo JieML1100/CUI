@@ -388,7 +388,9 @@
     <ClCompile Include="src\Button.cpp" />
     <ClCompile Include="src\CalendarView.cpp" />
     <ClCompile Include="src\DatePicker.cpp" />
-    <ClCompile Include="src\DataGrid.cpp" />
+    <ClCompile Include="src\DataGrid.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\ChartView.cpp" />
     <ClCompile Include="src\CheckBox.cpp" />
     <ClCompile Include="src\ComboBox.cpp" />

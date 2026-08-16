@@ -1,4 +1,4 @@
-﻿#include "NamespacedWindow.g.h"
+#include "NamespacedWindow.g.h"
 #include "Canvas.h"
 #include "Layout/Grid.h"
 #include "Layout/DockPanel.h"

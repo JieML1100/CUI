@@ -562,6 +562,9 @@ namespace
 				AddResource(L"CuiDataGridTextElementStyle");
 				AddResource(L"CuiDataGridTextEditingElementStyle");
 				AddResource(L"CuiDataGridCheckBoxElementStyle");
+				AddResource(L"CuiDataGridComboBoxElementStyle");
+				AddResource(L"CuiDataGridComboBoxEditingElementStyle");
+				AddResource(L"CuiDataGridHyperlinkElementStyle");
 			}
 			if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
 			{

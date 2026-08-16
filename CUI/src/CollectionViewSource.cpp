@@ -1468,6 +1468,182 @@ bool CollectionViewSource::CanUseSourcePassThrough() const noexcept
 		&& _aggregateDescriptions.empty();
 }
 
+IEditableBindingList* CollectionViewSource::EditableSource() const noexcept
+{
+	return _source
+		? dynamic_cast<IEditableBindingList*>(_source.Get()) : nullptr;
+}
+
+bool CollectionViewSource::CanAddNew() const noexcept
+{
+	const auto* editable = EditableSource();
+	return editable && editable->CanAddNew();
+}
+
+bool CollectionViewSource::CanAddNewItem() const noexcept
+{
+	const auto* editable = EditableSource();
+	return editable && editable->CanAddNewItem();
+}
+
+bool CollectionViewSource::CanRemove() const noexcept
+{
+	const auto* editable = EditableSource();
+	return editable && editable->CanRemove();
+}
+
+bool CollectionViewSource::AddNewItem(
+	BindingSourceReference candidate,
+	BindingSourceReference& result)
+{
+	result = {};
+	const auto source = _source;
+	auto* editable = EditableSource();
+	if (!editable || (!candidate && !editable->CanAddNew())
+		|| (candidate && !editable->CanAddNewItem())) return false;
+	BindingSourceReference added;
+	const bool accepted = editable->AddNewItem(
+		std::move(candidate), added);
+	if (_source != source)
+	{
+		if (accepted && editable->IsAddingNew())
+		{
+			try { (void)editable->CancelNew(); }
+			catch (...) {}
+		}
+		return false;
+	}
+	if (!accepted || !added) return false;
+	// Well-formed sources publish Add synchronously. Refresh is still required
+	// for a source whose transaction state changed without an additional shape
+	// notification, and is a no-op when the callback already converged the view.
+	Refresh();
+	if (_source != source) return false;
+	result = std::move(added);
+	return true;
+}
+
+bool CollectionViewSource::CommitNew()
+{
+	const auto source = _source;
+	auto* editable = EditableSource();
+	if (!editable) return false;
+	if (!editable->CommitNew()) return false;
+	if (_source != source) return false;
+	// Commit releases the pending item from its end-of-view pin so ordinary
+	// sort/filter/group shaping applies only after the transaction succeeds.
+	Refresh();
+	return _source == source;
+}
+
+bool CollectionViewSource::CancelNew()
+{
+	const auto source = _source;
+	auto* editable = EditableSource();
+	if (!editable) return false;
+	if (!editable->CancelNew()) return false;
+	if (_source != source) return false;
+	Refresh();
+	return _source == source;
+}
+
+bool CollectionViewSource::IsAddingNew() const noexcept
+{
+	const auto* editable = EditableSource();
+	return editable && editable->IsAddingNew();
+}
+
+BindingSourceReference CollectionViewSource::CurrentAddItem() const noexcept
+{
+	const auto* editable = EditableSource();
+	return editable ? editable->CurrentAddItem() : BindingSourceReference{};
+}
+
+bool CollectionViewSource::TryMapViewIndexToSource(
+	size_t viewIndex, size_t& sourceIndex) const noexcept
+{
+	sourceIndex = 0;
+	if (!_source || viewIndex >= Count()) return false;
+	if (_sourcePassThrough)
+	{
+		sourceIndex = viewIndex;
+		return sourceIndex < _source.Get()->Count();
+	}
+	if (viewIndex >= _items.size() || _items[viewIndex].Token == 0)
+		return false;
+	const size_t token = _items[viewIndex].Token;
+	if (const auto* lookup = dynamic_cast<
+		const IBindingListOccurrenceLookup*>(_source.Get()); lookup
+		&& lookup->TryGetItemIndexByOccurrenceIdentity(token, sourceIndex))
+		return sourceIndex < _source.Get()->Count();
+	for (size_t index = 0; index < _sourceSlots.size(); ++index)
+		if (_sourceSlots[index].Token == token)
+		{
+			sourceIndex = index;
+			return sourceIndex < _source.Get()->Count();
+		}
+	return false;
+}
+
+bool CollectionViewSource::TryMapSourceIndexToView(
+	size_t sourceIndex, size_t& viewIndex) const noexcept
+{
+	viewIndex = 0;
+	if (!_source || sourceIndex >= _source.Get()->Count()) return false;
+	if (_sourcePassThrough)
+	{
+		viewIndex = sourceIndex;
+		return viewIndex < Count();
+	}
+	size_t token = 0;
+	if (const auto* identities = dynamic_cast<
+		const IBindingListOccurrenceIdentity*>(_source.Get()); identities)
+		(void)identities->TryGetItemOccurrenceIdentity(sourceIndex, token);
+	if (token == 0 && sourceIndex < _sourceSlots.size())
+		token = _sourceSlots[sourceIndex].Token;
+	if (token == 0) return false;
+	const auto found = _occurrenceIndex.find(token);
+	if (found == _occurrenceIndex.end() || found->second >= _items.size())
+		return false;
+	viewIndex = found->second;
+	return true;
+}
+
+bool CollectionViewSource::TryGetCurrentAddIndex(size_t& index) const noexcept
+{
+	index = 0;
+	const auto* editable = EditableSource();
+	size_t sourceIndex = 0;
+	return editable && editable->TryGetCurrentAddIndex(sourceIndex)
+		&& TryMapSourceIndexToView(sourceIndex, index);
+}
+
+bool CollectionViewSource::RemoveAt(size_t index)
+{
+	const auto source = _source;
+	auto* editable = EditableSource();
+	size_t sourceIndex = 0;
+	if (!editable || !editable->CanRemove()
+		|| !TryMapViewIndexToSource(index, sourceIndex)) return false;
+	const bool removed = editable->RemoveAt(sourceIndex);
+	return removed && _source == source;
+}
+
+bool CollectionViewSource::RemoveRange(size_t index, size_t count)
+{
+	if (count == 0) return true;
+	if (index > Count() || count > Count() - index) return false;
+	auto* editable = EditableSource();
+	if (!editable || !editable->CanRemove()) return false;
+	if (_sourcePassThrough) return editable->RemoveRange(index, count);
+	// Remove high view indices first. Every successful removal shifts only the
+	// suffix, so the remaining lower projected indices keep their identity even
+	// when the underlying source order differs because of sorting.
+	for (size_t offset = count; offset > 0; --offset)
+		if (!RemoveAt(index + offset - 1)) return false;
+	return true;
+}
+
 void CollectionViewSource::ClearItemObservations() noexcept
 {
 	_itemObservations.clear();
@@ -2174,6 +2350,15 @@ void CollectionViewSource::RebuildProjection()
 	const auto groupDescriptions = _groupDescriptions;
 	const auto sortDescriptions = _sortDescriptions;
 	const auto aggregateDescriptions = _aggregateDescriptions;
+	size_t pendingNewSourceIndex = CollectionChangedEventArgs::Npos;
+	if (const auto* editable = EditableSource(); editable
+		&& editable->IsAddingNew())
+	{
+		size_t sourceIndex = 0;
+		if (editable->TryGetCurrentAddIndex(sourceIndex))
+			pendingNewSourceIndex = sourceIndex;
+	}
+	size_t pendingNewToken = 0;
 	if (_refreshPending) return;
 	bool hasSourceOrderBaseline = false;
 	if (_sourcePassThrough)
@@ -2226,13 +2411,18 @@ void CollectionViewSource::RebuildProjection()
 		// malformed or missed notification cannot publish identity-less items.
 		if (_sourceSlots.size() != sourceCount)
 			RebuildSourceSlots(sourceCount);
+		// Resolve the token only after repairing the source-slot table. This also
+		// covers a view that leaves pass-through mode while AddNew is active.
+		if (pendingNewSourceIndex < _sourceSlots.size())
+			pendingNewToken = _sourceSlots[pendingNewSourceIndex].Token;
 		target.reserve(sourceCount);
 		if (hasSourceOrderBaseline)
 		{
 			for (const auto& item : _items)
 			{
-				const bool included = PassesFilters(
-					item.Item, filterPredicate, filterDescriptions);
+				const bool included = item.Token == pendingNewToken
+					|| PassesFilters(
+						item.Item, filterPredicate, filterDescriptions);
 				if (_refreshPending) return;
 				if (included) target.push_back(item);
 			}
@@ -2244,13 +2434,30 @@ void CollectionViewSource::RebuildProjection()
 				const auto identity = _sourceSlots[index];
 				BindingSourceReference item;
 				const bool read = source->TryGetItem(index, item);
-				const bool included = read && PassesFilters(
-					item, filterPredicate, filterDescriptions);
+				const bool included = read
+					&& (identity.Token == pendingNewToken
+						|| PassesFilters(
+							item, filterPredicate, filterDescriptions));
 				if (_refreshPending) return;
 				if (included)
 					target.push_back(ProjectionItem{
 						std::move(item), identity.Token, identity.Revision });
 			}
+		}
+	}
+	ProjectionItem pendingNewItem;
+	bool hasPendingNewItem = false;
+	if (pendingNewToken != 0)
+	{
+		const auto pending = std::find_if(
+			target.begin(), target.end(),
+			[pendingNewToken](const ProjectionItem& item)
+			{ return item.Token == pendingNewToken; });
+		if (pending != target.end())
+		{
+			pendingNewItem = std::move(*pending);
+			target.erase(pending);
+			hasPendingNewItem = true;
 		}
 	}
 	std::vector<BindingValue> groupKeys;
@@ -2413,6 +2620,11 @@ void CollectionViewSource::RebuildProjection()
 	auto groups = BuildGroups(
 		target, groupDescriptions, aggregateDescriptions, groupKeys);
 	if (_refreshPending) return;
+	// AddNew is a root-level special item adjacent to DataGrid's new-row edge.
+	// It must not contribute a group key or aggregate until CommitNew, but its
+	// exact occurrence identity remains in the public projection at the tail.
+	if (hasPendingNewItem)
+		target.push_back(std::move(pendingNewItem));
 	const bool groupsChanged = !SameGroups(_groups, groups);
 	_groups = std::move(groups);
 	if (_refreshPending) return;

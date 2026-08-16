@@ -12,6 +12,7 @@
 #include <ContextMenu.h>
 #include <DataGrid.h>
 #include <Expander.h>
+#include <EventInfrastructure.h>
 #include <Label.h>
 #include <ListView.h>
 #include <ListBox.h>
@@ -90,6 +91,8 @@ namespace
 	{
 		return static_cast<int>(page);
 	}
+
+	constexpr size_t DemoDataGridExpectedColumnCount = 11;
 
 	InputReport PointerInput(
 		InputReportKind kind,
@@ -207,12 +210,67 @@ namespace
 		throw std::runtime_error(Convert::WStringToString(message));
 	}
 
+	class DemoUnpaidOrderTemplate final : public IItemTemplate
+	{
+	public:
+		DataTypeToken GetDataTypeToken() const noexcept override
+		{
+			return MakeDataTypeToken(L"DemoOrder");
+		}
+#if CUI_ENABLE_DYNAMIC_XAML
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			static const std::wstring name = L"DemoOrder";
+			return name;
+		}
+#endif
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference&,
+			size_t,
+			std::wstring* outError) const override
+		{
+			if (outError) outError->clear();
+			auto label = std::make_unique<Label>();
+			label->Text = L"待付款";
+			return label;
+		}
+	};
+
+	class DemoPaidTemplateSelector final : public IItemTemplateSelector
+	{
+	public:
+		DemoPaidTemplateSelector(
+			ItemTemplateReference paid,
+			ItemTemplateReference unpaid)
+			: _paid(std::move(paid)), _unpaid(std::move(unpaid)) {}
+
+		ItemTemplateReference SelectTemplate(
+			const BindingSourceReference& item,
+			Control&) const override
+		{
+			BindingValue value;
+			bool paid = false;
+			if (item && item.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"Paid"), value))
+				(void)value.TryGet(paid);
+			return paid ? _paid : _unpaid;
+		}
+
+	private:
+		ItemTemplateReference _paid;
+		ItemTemplateReference _unpaid;
+	};
+
 	class MillionOrderList final
 		: public IBindingList,
 		  public IBindingListOccurrenceIdentity,
 		  public IBindingListOccurrenceLookup,
-		  public IBindingListStableSnapshot
+		  public IBindingListSnapshotProvider
 	{
+		struct MaterializedCache;
+		struct SortPlan;
+		class StableSnapshot;
+
 	public:
 		static constexpr size_t RowCount = 1'000'000;
 
@@ -223,30 +281,17 @@ namespace
 		{
 			out = {};
 			if (index >= RowCount) return false;
-			auto found = _materialized.find(index);
-			auto item = found == _materialized.end()
-				? std::shared_ptr<ObservableObject>{}
-				: found->second.lock();
-			if (!item)
-			{
-				item = CreateItem(index);
-				if (!item) return false;
-				_materialized[index] = item;
-				// Row containers and bindings retain every item that can still be
-				// observed. Retire dead weak entries so a long manual scroll does not
-				// turn this demo source into an accidental million-key cache.
-				if (_materialized.size() > 4096)
-					for (auto candidate = _materialized.begin();
-						candidate != _materialized.end();)
-						candidate = candidate->second.expired()
-							? _materialized.erase(candidate)
-							: std::next(candidate);
-			}
-			out = BindingSourceReference(std::move(item));
-			return true;
+			return TryGetSourceItem(_sort.ViewToSource(index), out);
 		}
 
-		EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+		EventConnection SubscribeChanged(ChangedHandler handler) override
+		{
+			if (!handler) return {};
+			return _changed.Subscribe(
+				[handler = std::move(handler)](
+					MillionOrderList*, const CollectionChangedEventArgs& change)
+				{ handler(change); });
+		}
 
 		DataTypeToken GetItemTypeToken() const noexcept override
 		{
@@ -265,9 +310,11 @@ namespace
 			size_t index, size_t& result) const noexcept override
 		{
 			result = 0;
-			if (index >= RowCount
-				|| index == (std::numeric_limits<size_t>::max)()) return false;
-			result = index + 1;
+			if (index >= RowCount) return false;
+			const size_t sourceIndex = _sort.ViewToSource(index);
+			if (sourceIndex == (std::numeric_limits<size_t>::max)())
+				return false;
+			result = sourceIndex + 1;
 			return result != 0;
 		}
 
@@ -276,21 +323,287 @@ namespace
 		{
 			index = 0;
 			if (identity == 0 || identity > RowCount) return false;
-			index = identity - 1;
-			return true;
+			index = _sort.SourceToView(identity - 1);
+			return index < RowCount;
 		}
 
 		bool IsItemIndexByOccurrenceIdentityLookupBounded()
 			const noexcept override { return true; }
 
+		bool TryGetStableSnapshot(
+			BindingListReference& result) const override
+		{
+			result = BindingListReference(std::make_shared<StableSnapshot>(
+				_cache, _sort));
+			return true;
+		}
+
+		bool ApplySort(
+			size_t columnIndex, CollectionSortDirection direction)
+		{
+			SortPlan next;
+			switch (columnIndex)
+			{
+			case 0:
+			case 1:
+				next.Reverse =
+					direction == CollectionSortDirection::Descending;
+				break;
+			case 2:
+				next = SortPlan::PeriodicStrings({
+					L"华东", L"华南", L"华北", L"华中",
+					L"西南", L"西北", L"东北" }, direction);
+				break;
+			case 3:
+				next = SortPlan::PeriodicStrings({
+					L"待确认", L"生产中", L"备货中",
+					L"已发货", L"待付款", L"已完成" }, direction);
+				break;
+			case 4:
+				next = SortPlan::PeriodicNumbers(48, direction);
+				break;
+			case 5:
+				next = SortPlan::PeriodicNumbers(9'500, direction);
+				break;
+			case 6:
+				next = SortPlan::PeriodicPaid(direction);
+				break;
+			default:
+				return false;
+			}
+			_sort = std::move(next);
+			const CollectionChangedEventArgs change{
+				CollectionChangeAction::Reset,
+				CollectionChangedEventArgs::Npos,
+				CollectionChangedEventArgs::Npos,
+				RowCount, RowCount, RowCount, RowCount };
+			cui::framework::EventAccess::Raise(_changed, this, change);
+			return true;
+		}
+
 		size_t MaterializedCount() const noexcept
 		{
 			return static_cast<size_t>(std::count_if(
-				_materialized.begin(), _materialized.end(),
+				_cache->Items.begin(), _cache->Items.end(),
 				[](const auto& item) { return !item.second.expired(); }));
 		}
 
 	private:
+		struct MaterializedCache final
+		{
+			mutable std::unordered_map<
+				size_t, std::weak_ptr<ObservableObject>> Items;
+		};
+
+		struct SortPlan final
+		{
+			bool Reverse = false;
+			size_t Period = 0;
+			std::vector<std::vector<size_t>> Buckets;
+			std::vector<size_t> Starts;
+			std::vector<size_t> ResidueBucket;
+			std::vector<size_t> ResiduePosition;
+
+			size_t ViewToSource(size_t index) const noexcept
+			{
+				if (Period == 0) return Reverse ? RowCount - 1 - index : index;
+				const auto upper = std::upper_bound(
+					Starts.begin(), Starts.end(), index);
+				if (upper == Starts.begin() || upper == Starts.end())
+					return (std::numeric_limits<size_t>::max)();
+				const size_t bucket = static_cast<size_t>(
+					std::distance(Starts.begin(), upper) - 1);
+				const size_t local = index - Starts[bucket];
+				const auto& residues = Buckets[bucket];
+				return (local / residues.size()) * Period
+					+ residues[local % residues.size()];
+			}
+
+			size_t SourceToView(size_t index) const noexcept
+			{
+				if (Period == 0) return Reverse ? RowCount - 1 - index : index;
+				const size_t residue = index % Period;
+				const size_t bucket = ResidueBucket[residue];
+				return Starts[bucket] + (index / Period)
+					* Buckets[bucket].size() + ResiduePosition[residue];
+			}
+
+			static SortPlan PeriodicStrings(
+				std::initializer_list<std::wstring_view> values,
+				CollectionSortDirection direction)
+			{
+				std::vector<std::wstring_view> keys(values);
+				return Build(keys.size(), direction,
+					[&](size_t left, size_t right)
+					{
+						return keys[left] < keys[right] ? -1
+							: keys[left] > keys[right] ? 1 : 0;
+					});
+			}
+
+			static SortPlan PeriodicNumbers(
+				size_t period, CollectionSortDirection direction)
+			{
+				return Build(period, direction,
+					[](size_t left, size_t right)
+					{
+						return left < right ? -1 : left > right ? 1 : 0;
+					});
+			}
+
+			static SortPlan PeriodicPaid(
+				CollectionSortDirection direction)
+			{
+				return Build(3, direction,
+					[](size_t left, size_t right)
+					{
+						const bool l = left != 0;
+						const bool r = right != 0;
+						return l < r ? -1 : l > r ? 1 : 0;
+					});
+			}
+
+			template<typename Compare>
+			static SortPlan Build(
+				size_t period,
+				CollectionSortDirection direction,
+				Compare compare)
+			{
+				SortPlan result;
+				result.Period = period;
+				std::vector<size_t> residues(period);
+				for (size_t index = 0; index < period; ++index)
+					residues[index] = index;
+				std::stable_sort(residues.begin(), residues.end(),
+					[&](size_t left, size_t right)
+					{
+						const int value = compare(left, right);
+						return direction == CollectionSortDirection::Ascending
+							? value < 0 : value > 0;
+					});
+				for (const size_t residue : residues)
+				{
+					if (result.Buckets.empty()
+						|| compare(result.Buckets.back().front(), residue) != 0)
+						result.Buckets.push_back({});
+					result.Buckets.back().push_back(residue);
+				}
+				for (auto& bucket : result.Buckets)
+					std::sort(bucket.begin(), bucket.end());
+				result.Starts.reserve(result.Buckets.size() + 1);
+				result.Starts.push_back(0);
+				result.ResidueBucket.resize(period);
+				result.ResiduePosition.resize(period);
+				for (size_t bucketIndex = 0;
+					bucketIndex < result.Buckets.size(); ++bucketIndex)
+				{
+					size_t count = 0;
+					for (size_t position = 0;
+						position < result.Buckets[bucketIndex].size(); ++position)
+					{
+						const size_t residue =
+							result.Buckets[bucketIndex][position];
+						result.ResidueBucket[residue] = bucketIndex;
+						result.ResiduePosition[residue] = position;
+						if (residue < RowCount)
+							count += (RowCount - 1 - residue) / period + 1;
+					}
+					result.Starts.push_back(result.Starts.back() + count);
+				}
+				return result;
+			}
+		};
+
+		class StableSnapshot final
+			: public IBindingList,
+			  public IBindingListOccurrenceIdentity,
+			  public IBindingListOccurrenceLookup,
+			  public IBindingListStableSnapshot
+		{
+		public:
+			StableSnapshot(
+				std::shared_ptr<MaterializedCache> cache, SortPlan sort)
+				: _cache(std::move(cache)), _sort(std::move(sort)) {}
+			size_t Count() const noexcept override { return RowCount; }
+			bool TryGetItem(
+				size_t index, BindingSourceReference& out) const override
+			{
+				return index < RowCount
+					&& TryGetSourceItem(_cache, _sort.ViewToSource(index), out);
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override { return {}; }
+			DataTypeToken GetItemTypeToken() const noexcept override
+			{
+				return MakeDataTypeToken(L"DemoOrder");
+			}
+#if CUI_ENABLE_DYNAMIC_XAML
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring name = L"DemoOrder";
+				return name;
+			}
+#endif
+			bool TryGetItemOccurrenceIdentity(
+				size_t index, size_t& result) const noexcept override
+			{
+				result = 0;
+				if (index >= RowCount) return false;
+				const size_t sourceIndex = _sort.ViewToSource(index);
+				if (sourceIndex >= RowCount) return false;
+				result = sourceIndex + 1;
+				return true;
+			}
+			bool TryGetItemIndexByOccurrenceIdentity(
+				size_t identity, size_t& index) const noexcept override
+			{
+				index = 0;
+				if (identity == 0 || identity > RowCount) return false;
+				index = _sort.SourceToView(identity - 1);
+				return index < RowCount;
+			}
+			bool IsItemIndexByOccurrenceIdentityLookupBounded()
+				const noexcept override { return true; }
+
+		private:
+			std::shared_ptr<MaterializedCache> _cache;
+			SortPlan _sort;
+		};
+
+		bool TryGetSourceItem(
+			size_t sourceIndex, BindingSourceReference& out) const
+		{
+			return TryGetSourceItem(_cache, sourceIndex, out);
+		}
+
+		static bool TryGetSourceItem(
+			const std::shared_ptr<MaterializedCache>& cache,
+			size_t sourceIndex,
+			BindingSourceReference& out)
+		{
+			out = {};
+			if (!cache || sourceIndex >= RowCount) return false;
+			auto found = cache->Items.find(sourceIndex);
+			auto item = found == cache->Items.end()
+				? std::shared_ptr<ObservableObject>{}
+				: found->second.lock();
+			if (!item)
+			{
+				item = CreateItem(sourceIndex);
+				if (!item) return false;
+				cache->Items[sourceIndex] = item;
+				// Row containers and bindings retain every item that can still be
+				// observed. Retire dead weak entries so a long manual scroll does not
+				// turn this demo source into an accidental million-key cache.
+				if (cache->Items.size() > 4096)
+					for (auto candidate = cache->Items.begin();
+						candidate != cache->Items.end();)
+						candidate = candidate->second.expired()
+							? cache->Items.erase(candidate)
+							: std::next(candidate);
+			}
+			out = BindingSourceReference(std::move(item));
+			return true;
+		}
 		static std::shared_ptr<ObservableObject> CreateItem(size_t index)
 		{
 			static constexpr const wchar_t* regions[] =
@@ -306,6 +619,10 @@ namespace
 			if (!item->DefineProperty(
 				L"OrderNo", StringHelper::Format(L"LOAD-%07llu", number),
 				true, false, true)
+				|| !item->DefineProperty(
+					L"DetailsUri", StringHelper::Format(
+						L"https://example.test/orders/LOAD-%07llu", number),
+					true, false, true)
 				|| !item->DefineProperty(
 					L"Customer", StringHelper::Format(
 						L"压力客户 %07llu", number))
@@ -323,8 +640,10 @@ namespace
 			return item;
 		}
 
-		mutable std::unordered_map<
-			size_t, std::weak_ptr<ObservableObject>> _materialized;
+		std::shared_ptr<MaterializedCache> _cache =
+			std::make_shared<MaterializedCache>();
+		SortPlan _sort;
+		Event<void(MillionOrderList*, const CollectionChangedEventArgs&)> _changed;
 	};
 
 	class DemoSceneBehavior final : public INativeSurfaceBehavior
@@ -629,6 +948,8 @@ Control* DemoWindow::FindGeneratedControlByName(
 	if (name == L"compositionTrace") return compositionTrace;
 	if (name == L"compositionUnicharProbe") return compositionUnicharProbe;
 	if (name == L"compositionUpdateProbe") return compositionUpdateProbe;
+	if (name == L"dataGridCurrentColumnState") return dataGridCurrentColumnState;
+	if (name == L"dataGridCurrentItemState") return dataGridCurrentItemState;
 	if (name == L"dataGridStatus") return dataGridStatus;
 	if (name == L"dataGridMillionButton") return dataGridMillionButton;
 	if (name == L"dataGridSurface") return dataGridSurface;
@@ -1755,60 +2076,85 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			auto* millionButton = dynamic_cast<Button*>(
 				FindGeneratedControlByName(L"dataGridMillionButton"));
 			auto* orderColumn = grid
-				? dynamic_cast<DataGridTextColumn*>(grid->GetColumn(0)) : nullptr;
+				? dynamic_cast<DataGridHyperlinkColumn*>(grid->GetColumn(0)) : nullptr;
 			auto* customerColumn = grid
 				? dynamic_cast<DataGridTextColumn*>(grid->GetColumn(1)) : nullptr;
 			auto* stageColumn = grid
-				? dynamic_cast<DataGridTemplateColumn*>(grid->GetColumn(3)) : nullptr;
+				? dynamic_cast<DataGridComboBoxColumn*>(grid->GetColumn(3)) : nullptr;
 			auto* amountColumn = grid
 				? dynamic_cast<DataGridTemplateColumn*>(grid->GetColumn(5)) : nullptr;
 			auto* paidColumn = grid
 				? dynamic_cast<DataGridTemplateColumn*>(grid->GetColumn(6)) : nullptr;
+			auto* generatedRegionColumn = grid
+				? dynamic_cast<DataGridTextColumn*>(grid->GetColumn(10)) : nullptr;
 			if (!grid || !millionButton
 				|| millionButton->GetContent().ToString() != L"填充 100 万行"
-				|| grid->GetAutoGenerateColumns()
+				|| !grid->GetAutoGenerateColumns()
 				|| grid->GetIsReadOnly()
+				|| grid->GetCanUserAddRows() != _runtimeDataInitialized
+				|| grid->GetCanUserDeleteRows() != _runtimeDataInitialized
 				|| !grid->GetCanUserSortColumns()
 				|| !grid->GetCanUserResizeColumns()
+				|| !grid->GetCanUserReorderColumns()
 				|| grid->GetSelectionMode() != SelectionMode::Extended
 				|| grid->GetSelectionUnit()
 					!= DataGridSelectionUnit::CellOrRowHeader
+				|| grid->GetClipboardCopyMode()
+					!= DataGridClipboardCopyMode::IncludeHeader
 				|| grid->GetHeadersVisibility()
 					!= DataGridHeadersVisibility::All
-				|| std::abs(grid->GetRowHeaderWidth() - 38.0) > 0.001
-				|| std::abs(grid->GetRowHeaderActualWidth() - 38.0) > 0.001
+				|| !grid->GetRowValidationErrorTemplate()
+				|| std::abs(grid->GetRowHeaderWidth() - 58.0) > 0.001
+				|| std::abs(grid->GetRowHeaderActualWidth() - 58.0) > 0.001
 				|| grid->GetSelectedIndex() != -1
 				|| !grid->GetSelectedCells().empty()
-				|| grid->ColumnCount() != 7
+				|| grid->ColumnCount() != DemoDataGridExpectedColumnCount
 				|| !grid->GetItemsSource()
 				|| grid->GetItemsSource().Get()->Count() != 18
 				|| !orderColumn || !orderColumn->GetIsReadOnly()
 				|| orderColumn->GetHeader().ToString() != L"订单号"
 				|| orderColumn->GetCompiledBindingPath().Empty()
+				|| orderColumn->GetCompiledContentBindingPath().Empty()
+				|| orderColumn->GetTargetName() != L"OrderDetails"
 				|| !customerColumn
 				|| customerColumn->GetBindingMode() != BindingMode::TwoWay
 				|| customerColumn->GetWidth().UnitType
 					!= DataGridLengthUnitType::Star
-				|| !stageColumn || !stageColumn->GetCellTemplate()
+				|| !stageColumn || !stageColumn->GetItemsSource()
+				|| stageColumn->GetItemsSource().Get()->Count() != 6
+				|| stageColumn->GetSelectionBinding()
+					!= DataGridComboBoxSelectionBinding::SelectedValue
+				|| stageColumn->GetCompiledBindingPath().Empty()
+				|| stageColumn->GetCompiledDisplayMemberPath().Empty()
+				|| stageColumn->GetCompiledSelectedValuePath().Empty()
 				|| !amountColumn || !amountColumn->GetCellTemplate()
 				|| !amountColumn->GetCellEditingTemplate()
 				|| amountColumn->GetIsReadOnly()
-				|| !paidColumn || !paidColumn->GetCellTemplate()
+				|| !paidColumn
+				|| (!_runtimeDataInitialized && !paidColumn->GetCellTemplate())
+				|| (_runtimeDataInitialized
+					&& (paidColumn->GetCellTemplate()
+						|| !paidColumn->GetCellTemplateSelector()))
 				|| !paidColumn->GetIsReadOnly()
 				|| paidColumn->GetCanUserResize()
-				|| paidColumn->GetCompiledSortMemberPath().Empty())
+				|| paidColumn->GetCompiledSortMemberPath().Empty()
+				|| !generatedRegionColumn
+				|| !generatedRegionColumn->GetIsAutoGenerated()
+				|| generatedRegionColumn->GetHeader().ToString() != L"AOT 区域"
+				|| !generatedRegionColumn->GetIsReadOnly()
+				|| generatedRegionColumn->GetCanUserSort()
+				|| generatedRegionColumn->GetCanUserResize()
+				|| generatedRegionColumn->GetCanUserReorder())
 				return fail(
-					L"DataGrid 声明式列、静态 Binding、宽度、选择或 ItemsSource 未完整生成。");
-			BindingSourceReference firstGridItem;
-			std::unique_ptr<Control> stageProbe;
-			if (grid->GetItemsSource().Get()->TryGetItem(0, firstGridItem)
-				&& firstGridItem)
-				stageProbe = stageColumn->GetCellTemplate().Get()->Build(
-					firstGridItem, 0);
-			auto* stageBadge = dynamic_cast<Border*>(stageProbe.get());
-			if (!stageBadge
-				|| stageBadge->VerticalAlignment != VerticalAlignment::Center)
-				return fail(L"DataGrid 状态模板未采用声明的 Center 垂直对齐。");
+					L"DataGrid 声明式列、静态 Binding、行验证模板、宽度、选择或 ItemsSource 未完整生成。");
+			BindingSourceReference firstStage;
+			BindingValue firstStageText;
+			if (!stageColumn->GetItemsSource().Get()->TryGetItem(0, firstStage)
+				|| !firstStage
+				|| !firstStage.Get()->TryGetValue(
+					MakeBindingSourcePropertyToken(L"Text"), firstStageText)
+				|| firstStageText.ToString() != L"待确认")
+				return fail(L"DataGrid 状态 ComboBox 列未安装声明式选项数据。");
 		}
 		auto* fileMenu = _menu ? _menu->GetItem(0) : nullptr;
 		auto* helpMenu = _menu ? _menu->GetItem(1) : nullptr;
@@ -3847,6 +4193,80 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		if (!drainPresentationWork())
 			return fail(L"DataGrid 示例页未完成稳定 retained 绘制。");
 		(void)dataGrid->ApplyTemplate();
+		// The synthetic new-item placeholder is not row data.  Exercise its
+		// authored AOT cell templates directly so row-independent templates cannot
+		// leak misleading values into the otherwise empty sentinel.  Keep the Cell
+		// containers alive: their routed input is what starts AddNew on the second
+		// click.
+		const size_t placeholderCount = dataGrid->ItemCount();
+		if (placeholderCount == 0)
+			return fail(L"DataGrid 新增占位行验证缺少项。");
+		const size_t placeholderIndex = placeholderCount - 1;
+		if (!dataGrid->SetCurrentCell(placeholderIndex, 1)
+			|| !dataGrid->ScrollIntoView(dataGrid->GetCurrentItem()))
+			return fail(L"DataGrid 新增占位行无法定位到首个可编辑单元格。");
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid 新增占位行未完成 retained 绘制。");
+		auto* placeholderRow = dynamic_cast<DataGridRow*>(
+			dataGrid->GetGeneratedItem(placeholderIndex));
+		auto* placeholderCustomerCell = placeholderRow
+			? placeholderRow->GetCell(1) : nullptr;
+		auto* placeholderPaidCell = placeholderRow
+			? placeholderRow->GetCell(6) : nullptr;
+		if (placeholderCustomerCell)
+			(void)placeholderCustomerCell->ApplyTemplate();
+		if (placeholderPaidCell) (void)placeholderPaidCell->ApplyTemplate();
+		auto* placeholderPrompt = placeholderCustomerCell
+			? dynamic_cast<Label*>(
+				placeholderCustomerCell->FindDeclarativeTemplatePart(
+					MakeTemplatePartToken(L"PART_NewItemPrompt"))) : nullptr;
+		auto* placeholderCustomerPresenter = placeholderCustomerCell
+			? placeholderCustomerCell->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ContentPresenter")) : nullptr;
+		auto* placeholderPaidPresenter = placeholderPaidCell
+			? placeholderPaidCell->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ContentPresenter")) : nullptr;
+		if (!placeholderRow || !placeholderRow->GetIsNewItem()
+			|| !placeholderCustomerCell || !placeholderPaidCell
+			|| !placeholderCustomerCell->GetIsNewItemPlaceholder()
+			|| !placeholderPaidCell->GetIsNewItemPlaceholder()
+			|| !placeholderPrompt
+			|| placeholderPrompt->Text != L"＋ 双击新增"
+			|| placeholderPrompt->Visibility != Visibility::Visible
+			|| !placeholderCustomerPresenter
+			|| placeholderCustomerPresenter->Visibility != Visibility::Collapsed
+			|| !placeholderPaidPresenter
+			|| placeholderPaidPresenter->Visibility != Visibility::Collapsed)
+			return fail(L"DataGrid 新增占位行未隐藏普通列内容或未显示新增提示：row="
+				+ std::to_wstring(placeholderRow != nullptr) + L"/"
+				+ std::to_wstring(
+					placeholderRow && placeholderRow->GetIsNewItem())
+				+ L"，cell=" + std::to_wstring(
+					placeholderCustomerCell != nullptr) + L"/"
+				+ std::to_wstring(placeholderCustomerCell
+					&& placeholderCustomerCell->GetIsNewItemPlaceholder())
+				+ L"，prompt=" + std::to_wstring(
+					placeholderPrompt != nullptr) + L"/"
+				+ std::to_wstring(placeholderPrompt
+					&& placeholderPrompt->Visibility == Visibility::Visible)
+				+ L"，presenter=" + std::to_wstring(
+					placeholderCustomerPresenter != nullptr) + L"/"
+				+ std::to_wstring(placeholderCustomerPresenter
+					&& placeholderCustomerPresenter->Visibility
+						== Visibility::Collapsed) + L"。");
+		// Restore the first row before taking identities used by the remaining
+		// input and presentation probes; virtualization may recycle both rows.
+		if (!dataGrid->SetCurrentCell(0, 3)
+			|| !dataGrid->ScrollIntoView(dataGrid->GetCurrentItem()))
+			return fail(L"DataGrid 新增占位行验证后无法恢复首行。");
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid 新增占位行验证后首行未稳定。");
 		auto* headerPresenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
 			dataGrid->FindDeclarativeTemplatePart(
 				MakeTemplatePartToken(L"PART_ColumnHeadersPresenter")));
@@ -3856,10 +4276,89 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		auto* firstRow = dynamic_cast<DataGridRow*>(
 			dataGrid->GetGeneratedItem(0));
 		auto* customerCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		auto* stageCell = firstRow ? firstRow->GetCell(3) : nullptr;
+		auto* stageDisplay = stageCell ? dynamic_cast<ComboBox*>(
+			stageCell->GetVisualContent()) : nullptr;
+		if (stageDisplay) (void)stageDisplay->ApplyTemplate();
+		auto* stageSelectionFace = stageDisplay ? dynamic_cast<Label*>(
+			stageDisplay->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_SelectionBox"))) : nullptr;
+		auto* stageDisplayGlyph = stageDisplay ? dynamic_cast<Label*>(
+			stageDisplay->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_DropDownGlyph"))) : nullptr;
 		if (!headerPresenter || !firstHeader || !firstRow || !customerCell
 			|| firstRow->GetCells().size() != dataGrid->ColumnCount())
 			return fail(
 				L"DataGrid 模板未生成表头 presenter、真实 Row 或 Cell 视觉树。");
+		if (!stageCell || !stageDisplay || !stageSelectionFace
+			|| !stageDisplayGlyph || stageDisplayGlyph->Text != L"\xE70D")
+			return fail(L"DataGrid ComboBox retained 验证缺少显示视觉：cell="
+				+ std::to_wstring(stageCell != nullptr)
+				+ L"，combo=" + std::to_wstring(stageDisplay != nullptr)
+				+ L"，face=" + std::to_wstring(stageSelectionFace != nullptr)
+				+ L"，style=" + (stageDisplay
+					? cui::framework::StyleAccess::ResourceKey(*stageDisplay)
+					: std::wstring{})
+				+ L"，automatic=" + std::to_wstring(stageDisplay
+					&& cui::framework::StyleAccess::
+						ResourceKeyIsAutomatic(*stageDisplay))
+				+ L"，visibleRules=" + std::to_wstring(stageDisplay
+					&& cui::framework::StyleAccess::
+						HasVisibleStyleRules(*stageDisplay))
+				+ L"，theme=" + std::to_wstring(stageDisplay
+					&& static_cast<bool>(cui::framework::StyleAccess::
+						Theme(*stageDisplay)))
+				+ L"，document=" + std::to_wstring(stageDisplay
+					&& static_cast<bool>(cui::framework::StyleAccess::
+						DocumentStyles(*stageDisplay)))
+				+ L"，template=" + std::to_wstring(
+					stageDisplay && stageDisplay->GetTemplate() ? 1 : 0)
+				+ L"，templateError=" + (stageDisplay
+					? stageDisplay->LastTemplateError() : std::wstring{}));
+		(void)cui::framework::WindowAccess::PresentationOrder(
+			*this, stageSelectionFace);
+		PresentationNodeSnapshot stageSelectionSnapshot{};
+		const bool hasStageSelectionSnapshot =
+			cui::framework::WindowAccess::TryGetPresentationNodeSnapshot(
+				*this, stageSelectionFace, stageSelectionSnapshot);
+		PresentationNodeSnapshot stageGlyphSnapshot{};
+		const bool hasStageGlyphSnapshot =
+			cui::framework::WindowAccess::TryGetPresentationNodeSnapshot(
+				*this, stageDisplayGlyph, stageGlyphSnapshot);
+		const auto stageForeground =
+			stageSelectionFace->GetComputedForegroundBrush();
+		const auto stageGlyphForeground =
+			stageDisplayGlyph->GetComputedForegroundBrush();
+		const auto stageFaceSize = stageSelectionFace->GetActualSizeDip();
+		const auto stageGlyphSize = stageDisplayGlyph->GetActualSizeDip();
+		if (stageDisplay->Text.empty()
+			|| stageSelectionFace->Text != stageDisplay->Text
+			|| !stageSelectionFace->GetIsVisible()
+			|| stageFaceSize.width <= 0.0f || stageFaceSize.height <= 0.0f
+			|| stageForeground.Kind != cui::drawing::BrushKind::Solid
+			|| stageForeground.Color.a * stageForeground.Opacity <= 0.8f
+			|| !hasStageSelectionSnapshot
+			|| !stageSelectionSnapshot.HasPresented
+			|| stageGlyphSize.width <= 0.0f || stageGlyphSize.height <= 0.0f
+			|| stageGlyphForeground.Kind != cui::drawing::BrushKind::Solid
+			|| stageGlyphForeground.Color.a
+				* stageGlyphForeground.Opacity <= 0.8f
+			|| !hasStageGlyphSnapshot || !stageGlyphSnapshot.HasPresented)
+			return fail(L"DataGrid ComboBox 显示面未录入可见 retained 文本：text="
+				+ stageDisplay->Text + L"，face=" + stageSelectionFace->Text
+				+ L"，visible=" + std::to_wstring(
+					stageSelectionFace->GetIsVisible())
+				+ L"，size=" + std::to_wstring(stageFaceSize.width)
+				+ L"x" + std::to_wstring(stageFaceSize.height)
+				+ L"，foreground=" + std::to_wstring(
+					stageForeground.Color.a * stageForeground.Opacity)
+				+ L"，snapshot=" + std::to_wstring(
+					hasStageSelectionSnapshot)
+				+ L"/" + std::to_wstring(stageSelectionSnapshot.HasPresented)
+				+ L"/" + std::to_wstring(
+					stageSelectionSnapshot.HasDrawingCommands)
+				+ L"，native=" + std::to_wstring(
+					stageSelectionSnapshot.NativeComposition));
 		// Star columns must be resolved once by DataGrid and projected as the
 		// same pixel widths into both header and row grids.  Comparing the real
 		// themed first frame prevents a fixed-width-only unit test from hiding a
@@ -3883,6 +4382,318 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 					+ L"，cell=" + std::to_wstring(currentCellBounds.left)
 					+ L"/" + std::to_wstring(currentCellBounds.right) + L"。");
 		}
+
+		// Exercise the real AOT/native-column path before the general DataGrid
+		// input probes.  The display element is generated after the framework
+		// theme transaction, while the editor and Popup are generated later still;
+		// all three must receive the same compiled theme environment.
+		const std::wstring originalStageText = stageDisplay->Text;
+		const auto stageCellBounds = stageCell->GetRenderedAbsoluteRectDip();
+		MouseEventArgs stageOpenInput(
+			MouseButton::Left, MouseButtonState::Pressed, 1,
+			static_cast<int>((stageCellBounds.right - stageCellBounds.left) * 0.5f),
+			static_cast<int>((stageCellBounds.bottom - stageCellBounds.top) * 0.5f),
+			0);
+		stageOpenInput.HasRootPosition = true;
+		stageOpenInput.RootX =
+			(stageCellBounds.left + stageCellBounds.right) * 0.5f;
+		stageOpenInput.RootY =
+			(stageCellBounds.top + stageCellBounds.bottom) * 0.5f;
+		if (!dataGrid->SetCurrentCell(0, 3)
+			|| !dataGrid->BeginEdit(&stageOpenInput))
+			return fail(L"DataGrid ComboBox 无法进入编辑态。");
+		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
+		stageCell = firstRow ? firstRow->GetCell(3) : nullptr;
+		auto* stageEditor = stageCell ? dynamic_cast<ComboBox*>(
+			stageCell->GetEditingElement()) : nullptr;
+		if (!stageEditor || !stageEditor->GetIsDropDownOpen())
+			return fail(L"DataGrid ComboBox 鼠标编辑未同步展开主题模板。");
+		SetKeyboardFocus(stageEditor, false);
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid ComboBox 编辑模板未完成 Production 布局。");
+		auto* editingSelectionFace = dynamic_cast<Label*>(
+			stageEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_SelectionBox")));
+		auto* editingChrome = dynamic_cast<Border*>(
+			stageEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ComboBoxChrome")));
+		auto* editingDropDownToggle = stageEditor->FindDeclarativeTemplatePart(
+			MakeTemplatePartToken(L"PART_DropDownToggle"));
+		if (!editingSelectionFace || !editingChrome
+			|| !editingDropDownToggle
+			|| editingDropDownToggle->GetActualSizeDip().width <= 0.0f
+			|| stageEditor->Background.Kind
+				!= cui::drawing::BrushKind::Solid
+			|| stageEditor->Background.Color.a
+				* stageEditor->Background.Opacity <= 0.99f
+			|| stageEditor->BorderThickness != Thickness(1.0f)
+			|| editingSelectionFace->Text != originalStageText
+			|| editingSelectionFace->GetActualSizeDip().width <= 0.0f)
+			return fail(
+				L"DataGrid ComboBox 编辑态未保留可见边界或选择文本。");
+
+		// Establish native activation before opening the transient surface.  A
+		// synthetic first pointer-down must not spend its turn activating the HWND
+		// and thereby dismiss the Popup before the item receives routed input.
+		(void)::SetActiveWindow(Handle);
+		(void)::SetFocus(Handle);
+		if (::GetActiveWindow() != Handle || ::GetFocus() != Handle)
+			return fail(L"DataGrid ComboBox 真实选择输入未建立 HWND 焦点。");
+		SetKeyboardFocus(stageEditor, false);
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid ComboBox Popup 未完成 retained 绘制。");
+		auto* dropDownBorder = dynamic_cast<Border*>(
+			stageEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_DropDownBorder")));
+		auto* secondRow = dynamic_cast<DataGridRow*>(
+			dataGrid->GetGeneratedItem(1));
+		auto* coveredStageCell = secondRow ? secondRow->GetCell(3) : nullptr;
+		auto* coveredStageDisplay = coveredStageCell
+			? dynamic_cast<ComboBox*>(coveredStageCell->GetVisualContent()) : nullptr;
+		if (coveredStageDisplay) (void)coveredStageDisplay->ApplyTemplate();
+		if (!dropDownBorder || !coveredStageDisplay
+			|| coveredStageDisplay->Text.empty())
+			return fail(
+				L"DataGrid ComboBox Popup 缺少边框或被覆盖的文本单元格。");
+		const auto popupBounds = dropDownBorder->GetRenderedAbsoluteRectDip();
+		const auto coveredBounds =
+			coveredStageCell->GetRenderedAbsoluteRectDip();
+		const bool popupOverlapsTextCell =
+			popupBounds.left < coveredBounds.right
+			&& popupBounds.right > coveredBounds.left
+			&& popupBounds.top < coveredBounds.bottom
+			&& popupBounds.bottom > coveredBounds.top;
+		const int coveredPresentationOrder =
+			cui::framework::WindowAccess::PresentationOrder(
+				*this, coveredStageDisplay);
+		const int popupPresentationOrder =
+			cui::framework::WindowAccess::PresentationOrder(
+				*this, dropDownBorder);
+		PresentationNodeSnapshot popupSnapshot{};
+		const bool hasPopupSnapshot =
+			cui::framework::WindowAccess::TryGetPresentationNodeSnapshot(
+				*this, dropDownBorder, popupSnapshot);
+		bool popupContainsGeneratedItems = true;
+		for (size_t index = 0; index < stageEditor->ItemCount(); ++index)
+		{
+			auto* item = dynamic_cast<ComboBoxItem*>(
+				stageEditor->GetGeneratedItem(index));
+			if (!item) continue;
+			const auto itemBounds = item->GetRenderedAbsoluteRectDip();
+			popupContainsGeneratedItems = popupContainsGeneratedItems
+				&& itemBounds.left >= popupBounds.left - 1.0f
+				&& itemBounds.right <= popupBounds.right + 1.0f
+				&& itemBounds.top >= popupBounds.top - 1.0f
+				&& itemBounds.bottom <= popupBounds.bottom + 1.0f;
+		}
+		if (dropDownBorder->Background.Kind
+				!= cui::drawing::BrushKind::Solid
+			|| dropDownBorder->Background.Color.a
+				* dropDownBorder->Background.Opacity <= 0.99f
+			|| dropDownBorder->BorderBrush.Kind
+				!= cui::drawing::BrushKind::Solid
+			|| dropDownBorder->BorderBrush.Color.a
+				* dropDownBorder->BorderBrush.Opacity <= 0.8f
+			|| dropDownBorder->BorderThickness.Left < 1.25f
+			|| !popupOverlapsTextCell || !popupContainsGeneratedItems
+			|| !hasPopupSnapshot
+			|| !popupSnapshot.Overlay
+			|| popupPresentationOrder <= coveredPresentationOrder)
+			return fail(L"DataGrid ComboBox Popup 未以不透明、有边界的最高层"
+				L"覆盖后方文本：overlap="
+				+ std::to_wstring(popupOverlapsTextCell)
+				+ L"，contains=" + std::to_wstring(
+					popupContainsGeneratedItems)
+				+ L"，overlay=" + std::to_wstring(popupSnapshot.Overlay)
+				+ L"，order=" + std::to_wstring(coveredPresentationOrder)
+				+ L"/" + std::to_wstring(popupPresentationOrder) + L"。");
+
+		const int previousStageIndex = stageEditor->GetSelectedIndex();
+		int targetStageIndex = -1;
+		ComboBoxItem* targetStageItem = nullptr;
+		POINT targetStageClientPoint{};
+		RECT clientBounds{};
+		(void)::GetClientRect(Handle, &clientBounds);
+		const auto contentOriginPixels = ContentDipRectToClientPixels(
+			D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f));
+		const float inputDpiScale = GetDpiScale();
+		auto nativePointHitsItem = [&](ComboBoxItem& candidate,
+			int clientX, int clientY)
+			{
+				const int contentX = static_cast<LONG>(clientX / inputDpiScale);
+				const int contentY = static_cast<LONG>(
+					(clientY - contentOriginPixels.top) / inputDpiScale);
+				auto* hit = cui::framework::WindowAccess::HitTestControlAt(
+					*this, contentX, contentY);
+				for (auto* current = hit; current;
+					current = current->GetVisualParent())
+					if (current == &candidate) return true;
+				return false;
+			};
+		for (size_t index = 0; index < stageEditor->ItemCount(); ++index)
+		{
+			if (static_cast<int>(index) == previousStageIndex) continue;
+			auto* candidate = dynamic_cast<ComboBoxItem*>(
+				stageEditor->GetGeneratedItem(index));
+			if (!candidate) continue;
+			const auto candidateBounds = candidate->GetRenderedAbsoluteRectDip();
+			if (candidateBounds.right <= candidateBounds.left
+				|| candidateBounds.bottom <= candidateBounds.top) continue;
+			const auto candidatePixels =
+				ContentDipRectToClientPixels(candidateBounds);
+			const int left = (std::max)(clientBounds.left, candidatePixels.left);
+			const int top = (std::max)(clientBounds.top, candidatePixels.top);
+			const int right = (std::min)(clientBounds.right, candidatePixels.right);
+			const int bottom = (std::min)(clientBounds.bottom, candidatePixels.bottom);
+			if (right <= left || bottom <= top) continue;
+			POINT candidatePoint{
+				left + (right - left) / 2, top + (bottom - top) / 2 };
+			bool foundPoint = nativePointHitsItem(
+				*candidate, candidatePoint.x, candidatePoint.y);
+			for (int y = top; !foundPoint && y < bottom; ++y)
+				for (int x = left; x < right; ++x)
+					if (nativePointHitsItem(*candidate, x, y))
+					{
+						candidatePoint = POINT{ x, y };
+						foundPoint = true;
+						break;
+					}
+			if (!foundPoint) continue;
+			targetStageIndex = static_cast<int>(index);
+			targetStageItem = candidate;
+			targetStageClientPoint = candidatePoint;
+			break;
+		}
+		if (!targetStageItem)
+			return fail(
+				L"DataGrid ComboBox Popup 没有可由真实 Window 命中的非当前选项。");
+		const ControlWeakReference editorLifetime(stageEditor);
+		const ControlWeakReference selectionFaceLifetime(editingSelectionFace);
+		const ControlWeakReference stageCellLifetime(stageCell);
+		const ControlWeakReference targetStageItemLifetime(targetStageItem);
+		const uint64_t selectionRevisionBeforeClick =
+			editingSelectionFace->GetPresentationRevisions().Content;
+		const LPARAM targetStagePoint = MAKELPARAM(
+			targetStageClientPoint.x, targetStageClientPoint.y);
+		(void)::SendMessageW(
+			Handle, WM_LBUTTONDOWN, MK_LBUTTON, targetStagePoint);
+		auto* editorAfterTargetDown = dynamic_cast<ComboBox*>(
+			editorLifetime.Get());
+		const bool popupOpenAfterTargetDown = editorAfterTargetDown
+			&& editorAfterTargetDown->GetIsDropDownOpen();
+		auto* capturedAfterTargetDown = GetMouseCaptured();
+		const bool targetCapturedAfterDown =
+			capturedAfterTargetDown == targetStageItemLifetime.Get();
+		(void)::SendMessageW(Handle, WM_LBUTTONUP, 0, targetStagePoint);
+		// Popup focus restoration must naturally return to the editor; explicitly
+		// refocusing here would hide the reported focused-but-empty failure mode.
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid ComboBox 选择后的 retained 帧未稳定。");
+		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
+		auto* currentStageCell = firstRow ? firstRow->GetCell(3) : nullptr;
+		auto* currentStageEditor = dynamic_cast<ComboBox*>(
+			currentStageCell ? currentStageCell->GetEditingElement() : nullptr);
+		auto* currentSelectionFace = currentStageEditor
+			? dynamic_cast<Label*>(currentStageEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_SelectionBox"))) : nullptr;
+		auto* currentEditingChrome = currentStageEditor
+			? dynamic_cast<Border*>(currentStageEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ComboBoxChrome"))) : nullptr;
+		PresentationNodeSnapshot editedSelectionSnapshot{};
+		const bool hasEditedSelectionSnapshot =
+			currentSelectionFace
+			&& cui::framework::WindowAccess::TryGetPresentationNodeSnapshot(
+				*this, currentSelectionFace, editedSelectionSnapshot);
+		const std::wstring selectedStageText = currentStageEditor
+			? currentStageEditor->Text : std::wstring{};
+		const auto selectedStageForeground = currentSelectionFace
+			? currentSelectionFace->Foreground : cui::drawing::Brush{};
+		const bool editedSelectionHasVisibleGeometry =
+			hasEditedSelectionSnapshot
+			&& editedSelectionSnapshot.HasGeometry
+			&& editedSelectionSnapshot.RenderedBounds.right
+				> editedSelectionSnapshot.RenderedBounds.left
+			&& editedSelectionSnapshot.RenderedBounds.bottom
+				> editedSelectionSnapshot.RenderedBounds.top;
+		if (!currentStageCell || !currentStageEditor || !currentSelectionFace
+			|| !currentEditingChrome
+			|| currentStageCell != stageCellLifetime.Get()
+			|| currentStageEditor != editorLifetime.Get()
+			|| currentSelectionFace != selectionFaceLifetime.Get()
+			|| currentStageEditor->GetIsDropDownOpen()
+			|| !currentStageCell->GetIsEditing()
+			|| GetKeyboardFocusedElement() != currentStageEditor
+			|| currentStageEditor->GetSelectedIndex() != targetStageIndex
+			|| selectedStageText.empty()
+			|| selectedStageText == originalStageText
+			|| currentSelectionFace->Text != selectedStageText
+			|| !currentSelectionFace->GetIsVisible()
+			|| selectedStageForeground.Color.a
+				* selectedStageForeground.Opacity <= 0.8f
+			|| currentSelectionFace->GetActualSizeDip().width <= 0.0f
+			|| currentSelectionFace->GetActualSizeDip().height <= 0.0f
+			|| currentSelectionFace->GetPresentationRevisions().Content
+				<= selectionRevisionBeforeClick
+			|| currentEditingChrome->BorderThickness != Thickness(1.0f)
+			|| !hasEditedSelectionSnapshot
+			|| !editedSelectionSnapshot.HasPresented
+			|| !editedSelectionHasVisibleGeometry
+			|| editedSelectionSnapshot.ContentDirty)
+			return fail(L"DataGrid ComboBox 选择后在焦点内未立即显示文本：text="
+				+ selectedStageText + L"，face=" + (currentSelectionFace
+					? currentSelectionFace->Text : std::wstring{})
+				+ L"，focus=" + std::to_wstring(
+					GetKeyboardFocusedElement() == currentStageEditor)
+				+ L"，open=" + std::to_wstring(
+					currentStageEditor && currentStageEditor->GetIsDropDownOpen())
+				+ L"，index=" + std::to_wstring(previousStageIndex)
+				+ L"/" + std::to_wstring(targetStageIndex) + L"/"
+				+ std::to_wstring(currentStageEditor
+					? currentStageEditor->GetSelectedIndex() : -1)
+				+ L"，down=" + std::to_wstring(popupOpenAfterTargetDown)
+				+ L"/" + std::to_wstring(
+					targetCapturedAfterDown)
+				+ L"，editing=" + std::to_wstring(
+					currentStageCell && currentStageCell->GetIsEditing())
+				+ L"，size=" + std::to_wstring(
+					currentSelectionFace
+						? currentSelectionFace->GetActualSizeDip().width : 0.0f)
+				+ L"，revision=" + std::to_wstring(selectionRevisionBeforeClick)
+				+ L"→" + std::to_wstring(
+					currentSelectionFace
+						? currentSelectionFace->GetPresentationRevisions().Content : 0)
+				+ L"，border=" + std::to_wstring(
+					currentEditingChrome
+						? currentEditingChrome->BorderThickness.Left : 0.0f)
+				+ L"，snapshot=" + std::to_wstring(hasEditedSelectionSnapshot)
+				+ L"/" + std::to_wstring(
+					editedSelectionSnapshot.HasPresented)
+				+ L"/" + std::to_wstring(
+					editedSelectionSnapshot.ContentDirty)
+				+ L"，editorIdentity=" + std::to_wstring(
+					currentStageEditor == editorLifetime.Get())
+				+ L"，faceIdentity=" + std::to_wstring(
+					currentSelectionFace == selectionFaceLifetime.Get()) + L"。");
+		if (!dataGrid->CancelEdit())
+			return fail(L"DataGrid ComboBox 编辑验证无法结束选择。");
+		dataGrid->UnselectAllCells();
+		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
+		customerCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		stageCell = firstRow ? firstRow->GetCell(3) : nullptr;
+		stageDisplay = stageCell ? dynamic_cast<ComboBox*>(
+			stageCell->GetVisualContent()) : nullptr;
+		if (!stageDisplay || stageDisplay->Text != selectedStageText)
+			return fail(L"DataGrid ComboBox 结束编辑后未保留已选显示投影。");
+
 		const auto cellBounds = customerCell->GetAbsoluteBoundsDip();
 		const auto cellPixels = ContentDipRectToClientPixels(cellBounds);
 		const LPARAM cellPoint = MAKELPARAM(
@@ -3939,6 +4750,109 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| firstRow->GetIsSelected() || dataGrid->GetSelectedIndex() != -1)
 			return fail(
 				L"DataGrid 可编辑单元格双击未进入编辑或错误提升为整行选择。");
+		BindingValue doubleClickCustomer;
+		if (!currentCell.Item
+			|| !currentCell.Item.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"Customer"),
+				doubleClickCustomer)
+			|| doubleClickCustomer.ToString().empty()
+			|| doubleClickEditor->Text != doubleClickCustomer.ToString())
+			return fail(
+				L"DataGrid 双击创建的 TextBox 未在同一输入回合投影 Customer：source="
+				+ doubleClickCustomer.ToString() + L"，editor="
+				+ (doubleClickEditor
+					? doubleClickEditor->Text : std::wstring(L"<null>")) + L"。");
+		(void)doubleClickEditor->ApplyTemplate();
+		RequestLayout();
+		UpdateLayout();
+		Invalidate(false);
+		if (!drainPresentationWork())
+			return fail(L"DataGrid 双击 TextBox 首帧未完成 retained 绘制。");
+		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
+		customerCell = firstRow ? firstRow->GetCell(1) : nullptr;
+		doubleClickEditor = customerCell ? dynamic_cast<TextBox*>(
+			customerCell->GetEditingElement()) : nullptr;
+		auto* doubleClickContentHost = doubleClickEditor
+			? doubleClickEditor->FindDeclarativeTemplatePart(
+				MakeTemplatePartToken(L"PART_ContentHost")) : nullptr;
+		auto* doubleClickTemplateRoot = doubleClickEditor
+			? dynamic_cast<Border*>(cui::framework::TemplateAccess::
+				GetTemplateRoot(*doubleClickEditor)) : nullptr;
+		const auto doubleClickForeground = doubleClickEditor
+			? doubleClickEditor->GetComputedForegroundBrush()
+			: cui::drawing::NoBrush();
+		const auto doubleClickRootBackground = doubleClickTemplateRoot
+			? doubleClickTemplateRoot->GetComputedBackgroundBrush()
+			: cui::drawing::NoBrush();
+		const auto doubleClickEditorSize = doubleClickEditor
+			? doubleClickEditor->GetActualSizeDip() : cui::core::Size{};
+		const auto doubleClickHostSize = doubleClickContentHost
+			? doubleClickContentHost->GetActualSizeDip() : cui::core::Size{};
+		const auto doubleClickCellRect = customerCell
+			? customerCell->GetRenderedAbsoluteRectDip() : D2D1_RECT_F{};
+		const auto doubleClickEditorRect = doubleClickEditor
+			? doubleClickEditor->GetRenderedAbsoluteRectDip() : D2D1_RECT_F{};
+		PresentationNodeSnapshot doubleClickEditorSnapshot{};
+		const bool hasDoubleClickEditorSnapshot = doubleClickEditor
+			&& cui::framework::WindowAccess::TryGetPresentationNodeSnapshot(
+				*this, doubleClickEditor, doubleClickEditorSnapshot);
+		constexpr float doubleClickBoundsTolerance = 0.75f;
+		if (!customerCell || !doubleClickEditor || !doubleClickContentHost
+			|| !doubleClickTemplateRoot
+			|| doubleClickEditor->Text != doubleClickCustomer.ToString()
+			|| !doubleClickEditor->GetIsVisible()
+			|| doubleClickEditorSize.width <= 0.0f
+			|| doubleClickEditorSize.height <= 0.0f
+			|| doubleClickHostSize.width <= 0.0f
+			|| doubleClickHostSize.height <= 0.0f
+			|| doubleClickForeground.Kind != cui::drawing::BrushKind::Solid
+			|| doubleClickForeground.Color.a * doubleClickForeground.Opacity <= 0.8f
+			|| doubleClickRootBackground.Kind
+				!= cui::drawing::BrushKind::Solid
+			|| doubleClickRootBackground.Color.a
+				* doubleClickRootBackground.Opacity > 0.001f
+			|| doubleClickEditorRect.left
+				< doubleClickCellRect.left - doubleClickBoundsTolerance
+			|| doubleClickEditorRect.top
+				< doubleClickCellRect.top - doubleClickBoundsTolerance
+			|| doubleClickEditorRect.right
+				> doubleClickCellRect.right + doubleClickBoundsTolerance
+			|| doubleClickEditorRect.bottom
+				> doubleClickCellRect.bottom + doubleClickBoundsTolerance
+			|| !hasDoubleClickEditorSnapshot
+			|| !doubleClickEditorSnapshot.HasPresented
+			|| !doubleClickEditorSnapshot.HasGeometry
+			|| doubleClickEditorSnapshot.ContentDirty
+			|| doubleClickEditorSnapshot.GeometryDirty
+			|| doubleClickEditorSnapshot.CompositionDirty)
+			return fail(
+				L"DataGrid 双击 TextBox 首帧文本被模板遮盖或未进入 retained 场景：text="
+				+ (doubleClickEditor
+					? doubleClickEditor->Text : std::wstring(L"<null>"))
+				+ L"，host=" + std::to_wstring(doubleClickContentHost != nullptr)
+				+ L"，root=" + std::to_wstring(doubleClickTemplateRoot != nullptr)
+				+ L"，background=" + std::to_wstring(
+					doubleClickRootBackground.Color.a
+						* doubleClickRootBackground.Opacity)
+				+ L"，foreground=" + std::to_wstring(
+					doubleClickForeground.Color.a
+						* doubleClickForeground.Opacity)
+				+ L"，editorSize=" + std::to_wstring(doubleClickEditorSize.width)
+				+ L"x" + std::to_wstring(doubleClickEditorSize.height)
+				+ L"，hostSize=" + std::to_wstring(doubleClickHostSize.width)
+				+ L"x" + std::to_wstring(doubleClickHostSize.height)
+				+ L"，snapshot=" + std::to_wstring(
+					hasDoubleClickEditorSnapshot)
+				+ L"/" + std::to_wstring(doubleClickEditorSnapshot.HasPresented)
+				+ L"/" + std::to_wstring(doubleClickEditorSnapshot.HasGeometry)
+				+ L"/" + std::to_wstring(
+					doubleClickEditorSnapshot.HasDrawingCommands)
+				+ L"，dirty=" + std::to_wstring(
+					doubleClickEditorSnapshot.ContentDirty)
+				+ L"/" + std::to_wstring(
+					doubleClickEditorSnapshot.GeometryDirty)
+				+ L"/" + std::to_wstring(
+					doubleClickEditorSnapshot.CompositionDirty) + L"。");
 		(void)::SendMessageW(Handle, WM_KEYDOWN, VK_ESCAPE, 0);
 		(void)::SendMessageW(Handle, WM_KEYUP, VK_ESCAPE, 0);
 		if (customerCell->GetIsEditing())
@@ -3977,7 +4891,15 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			return fail(
 				L"DataGrid TextBox 仍在使用普通输入框圆角/清除按钮样式：host="
 				+ std::to_wstring(contentHost != nullptr)
-				+ L"，delete=" + std::to_wstring(deleteButton != nullptr) + L"。");
+				+ L"，delete=" + std::to_wstring(deleteButton != nullptr)
+				+ L"，style="
+				+ cui::framework::StyleAccess::ResourceKey(*editor)
+				+ L"，automatic=" + std::to_wstring(
+					cui::framework::StyleAccess::ResourceKeyIsAutomatic(*editor))
+				+ L"，visibleRules=" + std::to_wstring(
+					cui::framework::StyleAccess::HasVisibleStyleRules(*editor))
+				+ L"，theme=" + std::to_wstring(static_cast<bool>(
+					cui::framework::StyleAccess::Theme(*editor))) + L"。");
 		const auto editingCellRect = customerCell->GetRenderedAbsoluteRectDip();
 		const auto editorRect = editor->GetRenderedAbsoluteRectDip();
 		D2D1_RECT_F editorCaretRect{};
@@ -3988,14 +4910,19 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				L"DataGrid F2 首帧保留了零宽布局产生的陈旧文本滚动偏移。");
 		constexpr float editorBoundsTolerance = 0.75f;
 		constexpr float cellChromeAllowance = 1.1f;
+		const auto editingCellPadding = customerCell->Padding;
 		if (editorRect.left < editingCellRect.left - editorBoundsTolerance
 			|| editorRect.top < editingCellRect.top - editorBoundsTolerance
 			|| editorRect.right > editingCellRect.right + editorBoundsTolerance
 			|| editorRect.bottom > editingCellRect.bottom + editorBoundsTolerance
 			|| editorRect.left > editingCellRect.left + cellChromeAllowance
+				+ editingCellPadding.Left
 			|| editorRect.top > editingCellRect.top + cellChromeAllowance
+				+ editingCellPadding.Top
 			|| editorRect.right < editingCellRect.right - cellChromeAllowance
-			|| editorRect.bottom < editingCellRect.bottom - cellChromeAllowance)
+				- editingCellPadding.Right
+			|| editorRect.bottom < editingCellRect.bottom - cellChromeAllowance
+				- editingCellPadding.Bottom)
 			return fail(
 				L"DataGrid TextBox 编辑器未填满单元格：cell="
 				+ std::to_wstring(editingCellRect.left) + L"/"
@@ -4037,15 +4964,24 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		auto* amountCell = firstRow ? firstRow->GetCell(5) : nullptr;
 		const auto amountItem = firstRow
 			? firstRow->GetItem() : BindingSourceReference{};
+		BindingValue originalAmount;
+		long long originalAmountValue = 0;
+		if (!amountItem || !amountItem.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"Amount"), originalAmount)
+			|| !originalAmount.TryGetInt64(originalAmountValue))
+			return fail(L"DataGrid 金额模板无法读取原始 Int64 值。");
 		if (!amountCell || !dataGrid->SetCurrentCell(0, 5)
 			|| !dataGrid->BeginEdit())
 			return fail(L"DataGrid 金额模板无法进入编辑态。");
 		auto* amountEditor = dynamic_cast<TextBox*>(
 			amountCell->GetEditingElement());
-		if (!amountEditor || amountEditor->Text != L"86400")
-			return fail(L"DataGrid 金额编辑态仍包含货币格式文本。");
+		if (!amountEditor
+			|| amountEditor->Text != std::to_wstring(originalAmountValue))
+			return fail(L"DataGrid 金额编辑态仍包含货币格式文本："
+				+ (amountEditor ? amountEditor->Text : L"<null>") + L"。");
+		const long long enterAmountValue = originalAmountValue + 1000;
 		amountEditor->SelectAll();
-		amountEditor->InsertText(L"87400");
+		amountEditor->InsertText(std::to_wstring(enterAmountValue));
 		(void)::SendMessageW(Handle, WM_KEYDOWN, VK_RETURN, 0);
 		(void)::SendMessageW(Handle, WM_KEYUP, VK_RETURN, 0);
 		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
@@ -4056,7 +4992,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| !amountItem || !amountItem.Get()->TryGetValue(
 				MakeBindingSourcePropertyToken(L"Amount"), committedAmount)
 			|| !committedAmount.TryGetInt64(committedAmountValue)
-			|| committedAmountValue != 87400)
+			|| committedAmountValue != enterAmountValue)
 			return fail(L"DataGrid 金额编辑按 Enter 未提交退出并写回 Int64。");
 		if (!dataGrid->SetCurrentCell(0, 5) || !dataGrid->BeginEdit())
 			return fail(L"DataGrid 金额模板无法再次进入鼠标提交验证。");
@@ -4064,10 +5000,12 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		amountCell = firstRow ? firstRow->GetCell(5) : nullptr;
 		amountEditor = amountCell
 			? dynamic_cast<TextBox*>(amountCell->GetEditingElement()) : nullptr;
-		if (!amountEditor || amountEditor->Text != L"87400")
+		if (!amountEditor
+			|| amountEditor->Text != std::to_wstring(enterAmountValue))
 			return fail(L"DataGrid 金额再次编辑未读取已提交的原始 Int64。");
+		const long long pointerAmountValue = originalAmountValue + 2000;
 		amountEditor->SelectAll();
-		amountEditor->InsertText(L"88400");
+		amountEditor->InsertText(std::to_wstring(pointerAmountValue));
 
 		// The demo deliberately uses WPF's interactive-template pattern for a
 		// one-click boolean cell. The column remains read-only so the embedded
@@ -4108,7 +5046,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| !amountItem.Get()->TryGetValue(
 				MakeBindingSourcePropertyToken(L"Amount"), pointerCommittedAmount)
 			|| !pointerCommittedAmount.TryGetInt64(pointerCommittedAmountValue)
-			|| pointerCommittedAmountValue != 88400
+			|| pointerCommittedAmountValue != pointerAmountValue
 			|| !paidCell || !paidCheck || !paidItem.Get()->TryGetValue(
 				MakeBindingSourcePropertyToken(L"Paid"), paidAfter)
 			|| !paidAfter.TryGetBool(paidAfterValue)
@@ -4136,6 +5074,13 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		// Start with neither retained damage nor an older coalesced token, so the
 		// turn consumed below can only have been scheduled by this resize gesture.
 		VisibleWindowScope dataGridResizeVisibility(Handle);
+		// SW_SHOWNOACTIVATE deliberately leaves this hidden-HWND smoke inactive.
+		// Establish native focus before synthesizing a captured drag; otherwise
+		// USER32 may issue WM_CANCELMODE and correctly roll the resize back.
+		(void)::SetActiveWindow(Handle);
+		(void)::SetFocus(Handle);
+		if (::GetActiveWindow() != Handle || ::GetFocus() != Handle)
+			return fail(L"DataGrid 列宽连续输入验证无法激活原生窗口。");
 		if (!drainPresentationWork())
 			return fail(L"DataGrid 列宽连续输入验证无法排空旧绘制。");
 		clearPresentationTurns();
@@ -4196,6 +5141,9 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			/ static_cast<double>((std::max)(0.001f, GetDpiScale()));
 		for (int burstEnd = 6; burstEnd <= 24; burstEnd += 6)
 		{
+			const auto committedBeforeBurst =
+				cui::framework::WindowAccess::
+					PresentationCommittedFrameCount(*this);
 			for (int step = burstEnd - 5; step <= burstEnd; ++step)
 			{
 				const LPARAM resizeStep = MAKELPARAM(
@@ -4209,11 +5157,25 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				resizeCaptureCursor = resizeCaptureCursor
 					&& ::GetCursor() == sizeCursor;
 			}
-			const auto committedBeforeBurst =
+			(void)dispatchPresentationTurn();
+			auto committedAfterDispatch =
 				cui::framework::WindowAccess::
 					PresentationCommittedFrameCount(*this);
+			// A nested USER32/DWM call is allowed to consume the posted private
+			// token while SendMessage is routing the burst.  If neither that path
+			// nor the explicit dequeue committed the frame, service the ordinary
+			// WM_PAINT transaction synchronously; frame/geometry/damage assertions
+			// below remain the actual production contract.
+			if (committedAfterDispatch <= committedBeforeBurst
+				&& cui::framework::WindowAccess::HasPendingRenderWork(*this))
+			{
+				(void)::SendMessageW(Handle, WM_PAINT, 0, 0);
+				committedAfterDispatch =
+					cui::framework::WindowAccess::
+						PresentationCommittedFrameCount(*this);
+			}
 			resizePresentationTurnsDispatched =
-				dispatchPresentationTurn()
+				(committedAfterDispatch > committedBeforeBurst)
 				&& resizePresentationTurnsDispatched;
 			const bool hasResizeFrame =
 				cui::framework::WindowAccess::TryGetLastRenderDirtyRect(
@@ -4245,9 +5207,9 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				&& std::abs(firstCell->GetActualSizeDip().width
 					- expectedFrameWidth) <= 3.0;
 		}
-		// SendMessage keeps every burst inside the test. Each posted presentation
-		// turn must commit the latest header and cell geometry while capture is still
-		// active; PointerUp must not be what finally makes a resize visible.
+		// SendMessage keeps every burst inside the test. Each serviced presentation
+		// must commit the latest header and cell geometry while capture is still active;
+		// PointerUp must not be what finally makes a resize visible.
 		const bool resizeCaptureSurvivedPresentation =
 			GetMouseCaptured() == headerBeforeResize;
 		(void)::SendMessageW(Handle, WM_LBUTTONUP, 0, resizeMove);
@@ -4349,16 +5311,58 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			return fail(L"DataGrid 排序后未完成稳定 retained 绘制。");
 
 		firstRow = dynamic_cast<DataGridRow*>(dataGrid->GetGeneratedItem(0));
+		BindingSourceReference sortedFirstItem;
 		BindingValue sortedAmount;
 		long long sortedAmountValue = 0;
 		if (!firstRow || !firstRow->GetItem()
+			|| !dataGrid->GetItemsSource()
+			|| !dataGrid->GetItemsSource().Get()->TryGetItem(0, sortedFirstItem)
+			|| firstRow->GetItem().Shared() != sortedFirstItem.Shared()
 			|| !firstRow->GetItem().Get()->TryGetValue(
 				MakeBindingSourcePropertyToken(L"Amount"), sortedAmount)
-			|| !sortedAmount.TryGetInt64(sortedAmountValue)
-			|| sortedAmountValue != 24900)
+			|| !sortedAmount.TryGetInt64(sortedAmountValue))
 			return fail(
-				L"DataGrid 金额列未按 Int64 数值升序：value="
+				L"DataGrid 金额排序后首行未原位映射到视图：value="
 				+ std::to_wstring(sortedAmountValue) + L"。");
+		// GroupDescription remains the primary projection: SortDescription orders
+		// items numerically inside each region instead of flattening all groups into
+		// one global amount sequence.  Validate every adjacent in-group pair so an
+		// Int64/string comparison regression cannot hide behind the singleton first
+		// group (东北).
+		std::wstring previousRegion;
+		long long previousAmount = 0;
+		bool sawInGroupPair = false;
+		for (size_t index = 0;
+			index < dataGrid->GetItemsSource().Get()->Count(); ++index)
+		{
+			BindingSourceReference item;
+			BindingValue regionValue;
+			BindingValue amountValue;
+			long long amount = 0;
+			if (!dataGrid->GetItemsSource().Get()->TryGetItem(index, item)
+				|| !item
+				|| !item.Get()->TryGetValue(
+					MakeBindingSourcePropertyToken(L"Region"), regionValue)
+				|| !item.Get()->TryGetValue(
+					MakeBindingSourcePropertyToken(L"Amount"), amountValue)
+				|| !amountValue.TryGetInt64(amount))
+				return fail(L"DataGrid 金额排序后的分组项不可读取。");
+			const std::wstring region = regionValue.ToString();
+			if (index > 0 && region == previousRegion)
+			{
+				sawInGroupPair = true;
+				if (amount < previousAmount)
+					return fail(
+						L"DataGrid 金额列未在区域组内按 Int64 数值升序："
+						+ previousRegion + L"="
+						+ std::to_wstring(previousAmount) + L"→"
+						+ std::to_wstring(amount) + L"。");
+			}
+			previousRegion = region;
+			previousAmount = amount;
+		}
+		if (!sawInGroupPair)
+			return fail(L"DataGrid 金额排序验证没有覆盖任何区域组内相邻项。");
 		auto* firstRowHeader = firstRow ? firstRow->GetRowHeader() : nullptr;
 		auto* selectAllButton = dataGrid->GetSelectAllButton();
 		if (!firstRowHeader || !selectAllButton
@@ -4482,6 +5486,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			(void)::SendMessageW(Handle, WM_MOUSEMOVE, MK_LBUTTON,
 				MAKELPARAM(millionResizeX + step, millionResizeY));
 		const bool millionResizeTurn = dispatchPresentationTurn();
+		const bool millionResizeFrameDrained = drainPresentationWork();
 		const auto committedDuringMillionResize =
 			cui::framework::WindowAccess::
 				PresentationCommittedFrameCount(*this);
@@ -4493,7 +5498,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		millionColumn = firstHeader ? firstHeader->GetColumn() : nullptr;
 		const double millionExpectedResizeDelta = 16.0
 			/ static_cast<double>((std::max)(0.001f, GetDpiScale()));
-		if (!millionResizeTurn || !millionResizeCaptured
+		if (!millionResizeFrameDrained || !millionResizeCaptured
 			|| committedDuringMillionResize <= committedBeforeMillionResize
 			|| firstHeader != millionHeaderIdentity
 			|| dataGrid->GetGeneratedItem(0) != millionRowIdentity
@@ -4502,6 +5507,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				- (millionWidthBefore + millionExpectedResizeDelta)) > 3.0)
 			return fail(L"DataGrid 百万行列宽拖动未在 PointerUp 前提交可见帧："
 				L"dispatch=" + std::to_wstring(millionResizeTurn)
+				+ L"，drained=" + std::to_wstring(millionResizeFrameDrained)
 				+ L"，capture=" + std::to_wstring(millionResizeCaptured)
 				+ L"，frame="
 				+ std::to_wstring(committedBeforeMillionResize) + L"→"
@@ -4528,6 +5534,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			(void)::SendMessageW(Handle, WM_MOUSEWHEEL,
 				MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), wheelPoint);
 		const bool wheelTurn = dispatchPresentationTurn();
+		const bool wheelFrameDrained = drainPresentationWork();
 		const auto committedDuringWheel =
 			cui::framework::WindowAccess::
 				PresentationCommittedFrameCount(*this);
@@ -4535,13 +5542,15 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		for (int step = 0; step < 8; ++step)
 			(void)::SendMessageW(Handle, WM_MOUSEWHEEL,
 				MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), wheelPoint);
-		if (!wheelTurn || committedDuringWheel <= committedBeforeWheel
+		if (!wheelFrameDrained
+			|| committedDuringWheel <= committedBeforeWheel
 			|| wheelOffsetDuringBurst <= 0.0
 			|| dataGrid->GetGeneratedItem(0) != nullptr
 			|| dataGrid->GeneratedItemCount() == 0
 			|| dataGrid->GeneratedItemCount() >= 128)
 			return fail(L"DataGrid 百万行快速滚轮未在输入流中间提交可见帧："
 				L"dispatch=" + std::to_wstring(wheelTurn)
+				+ L"，drained=" + std::to_wstring(wheelFrameDrained)
 				+ L"，offset=" + std::to_wstring(wheelOffsetDuringBurst)
 				+ L"，frame=" + std::to_wstring(committedBeforeWheel)
 				+ L"→" + std::to_wstring(committedDuringWheel) + L"。");
@@ -4588,6 +5597,11 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				dataScrollClientPoint(millionBarX, localY));
 		}
 		const bool millionThumbTurn = dispatchPresentationTurn();
+		// Offset invalidation is synchronous, but the private dispatch token may
+		// only enqueue the ordinary paint transaction (or may already have been
+		// consumed by a nested native dispatch). Drain retained paint work without
+		// pumping arbitrary input while Thumb capture is still active.
+		const bool millionThumbFrameDrained = drainPresentationWork();
 		const auto committedDuringMillionThumb =
 			cui::framework::WindowAccess::
 				PresentationCommittedFrameCount(*this);
@@ -4595,7 +5609,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 		const double millionThumbOffset = dataScroll->VerticalOffset;
 		(void)::SendMessageW(Handle, WM_LBUTTONUP, 0,
 			dataScrollClientPoint(millionBarX, millionThumbEndY));
-		if (!millionThumbTurn || !millionThumbCaptured
+		if (!millionThumbFrameDrained || !millionThumbCaptured
 			|| GetMouseCaptured() != nullptr
 			|| committedDuringMillionThumb <= committedBeforeMillionThumb
 			|| millionThumbOffset <= (dataScroll->ExtentHeight
@@ -4605,6 +5619,7 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| dataGrid->GeneratedItemCount() >= 128)
 			return fail(L"DataGrid 百万行 Thumb 拖动未在 PointerUp 前提交尾部帧："
 				L"dispatch=" + std::to_wstring(millionThumbTurn)
+				+ L"，drained=" + std::to_wstring(millionThumbFrameDrained)
 				+ L"，capture=" + std::to_wstring(millionThumbCaptured)
 				+ L"，offset=" + std::to_wstring(millionThumbOffset)
 				+ L"，frame="
@@ -4612,7 +5627,13 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 				+ std::to_wstring(committedDuringMillionThumb) + L"。");
 		millionDataGridVisibility.Restore();
 
-		if (!millionButton->Invoke() || dataGrid->ItemCount() != 18)
+		if (!millionButton->Invoke())
+			return fail(L"DataGrid 百万行真实输入 gate 无法恢复示例数据。");
+		const size_t restoredProjectionCount =
+			18 + (dataGrid->GetCanUserAddRows() ? 1 : 0);
+		if (!dataGrid->GetItemsSource()
+			|| dataGrid->GetItemsSource().Get()->Count() != 18
+			|| dataGrid->ItemCount() != restoredProjectionCount)
 			return fail(L"DataGrid 百万行真实输入 gate 无法恢复示例数据。");
 		RequestLayout();
 		UpdateLayout();
@@ -5478,6 +6499,23 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 		const int namedSortEvents = _dataGridSortEvents;
 		if (!row || !cell || !grid->SetCurrentCell(1, 1))
 			return fail(L"DataGrid 未生成可编辑的真实 Row/Cell 容器。");
+		auto* currentItemState = RequireControl<Label>(
+			L"dataGridCurrentItemState");
+		auto* currentColumnState = RequireControl<Label>(
+			L"dataGridCurrentColumnState");
+		BindingSourceReference projectedCurrentItem;
+		DataGridColumn* projectedCurrentColumn = nullptr;
+		DataGridCellInfo projectedCurrentCell;
+		if (!currentItemState->Tag.TryGet(projectedCurrentItem)
+			|| projectedCurrentItem.Shared() != row->GetItem().Shared()
+			|| !currentColumnState->Tag.TryGet(projectedCurrentColumn)
+			|| projectedCurrentColumn != grid->GetColumn(1)
+			|| !dataGridStatus->Tag.TryGet(projectedCurrentCell)
+			|| projectedCurrentCell.Item.Shared() != row->GetItem().Shared()
+			|| projectedCurrentCell.Column != grid->GetColumn(1)
+			|| projectedCurrentCell.RowIndex != 1
+			|| projectedCurrentCell.ColumnIndex != 1)
+			return fail(L"DataGrid CurrentItem/CurrentColumn/CurrentCell MVVM 投影未同步。");
 		int beginningEditCount = 0;
 		int endingEditCount = 0;
 		auto beginningConnection = grid->BeginningEdit.Subscribe(
@@ -5523,14 +6561,22 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 			|| _dataGridEditEndingEvents != namedEditEvents + 2)
 			return fail(L"DataGrid Esc/CancelEdit 未保留提交前的源值。");
 
+		BindingValue originalAmount;
+		long long originalAmountValue = 0;
+		if (!editedItem.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"Amount"), originalAmount)
+			|| !originalAmount.TryGetInt64(originalAmountValue))
+			return fail(L"DataGrid 金额编辑验证无法读取原始 Int64 值。");
 		if (!amountCell || !grid->SetCurrentCell(1, 5) || !grid->BeginEdit())
 			return fail(L"DataGrid 金额编辑模板无法进入编辑态。");
 		auto* amountEditor = dynamic_cast<TextBox*>(
 			amountCell->GetEditingElement());
-		if (!amountEditor || amountEditor->Text != L"42800")
+		if (!amountEditor
+			|| amountEditor->Text != std::to_wstring(originalAmountValue))
 			return fail(L"DataGrid 金额编辑模板未使用可回写的原始 Int64 文本。");
+		const long long updatedAmountValue = originalAmountValue + 1000;
 		amountEditor->SelectAll();
-		amountEditor->InsertText(L"43800");
+		amountEditor->InsertText(std::to_wstring(updatedAmountValue));
 		if (!grid->CommitEdit())
 			return fail(L"DataGrid 金额编辑模板无法提交并退出编辑态。");
 		row = dynamic_cast<DataGridRow*>(grid->GetGeneratedItem(1));
@@ -5543,7 +6589,7 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 		if (!editedItem.Get()->TryGetValue(
 				MakeBindingSourcePropertyToken(L"Amount"), editedAmount)
 			|| !editedAmount.TryGetInt64(editedAmountValue)
-			|| editedAmountValue != 43800)
+			|| editedAmountValue != updatedAmountValue)
 			return fail(L"DataGrid 金额编辑模板未把 Int64 写回源数据。");
 		if (!paidCell || !grid->GetColumn(6)->GetIsReadOnly())
 			return fail(L"DataGrid 一击切换 CheckBox 模板必须保持列只读编辑事务。");
@@ -5567,13 +6613,18 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 			return fail(L"DataGrid 降序排序未更新实际 CollectionView 投影。");
 
 		auto* millionButton = RequireControl<Button>(L"dataGridMillionButton");
-		if (!millionButton->Invoke()
+		const auto fillStarted = std::chrono::steady_clock::now();
+		const bool millionInstalled = millionButton->Invoke();
+		const auto fillElapsed = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - fillStarted).count();
+		if (!millionInstalled
 			|| grid->ItemCount() != MillionOrderList::RowCount
 			|| grid->GeneratedItemCount() == 0
 			|| grid->GeneratedItemCount() >= 512
 			|| millionButton->GetContent().ToString() != L"恢复 18 行示例"
 			|| !dataGridStatus
-			|| dataGridStatus->Text.find(L"1,000,000") == std::wstring::npos)
+			|| dataGridStatus->Text.find(L"1,000,000") == std::wstring::npos
+			|| fillElapsed >= 1'500.0)
 			return fail(L"DataGrid 百万行按钮未安装按需虚拟化数据源或未发布耗时状态。");
 		BindingSourceReference millionTail;
 		BindingValue millionTailOrder;
@@ -5584,8 +6635,43 @@ bool DemoWindow::VerifyRuntimeDataFeatures(std::wstring* outError)
 				MakeBindingSourcePropertyToken(L"OrderNo"), millionTailOrder)
 			|| millionTailOrder.ToString() != L"LOAD-1000000")
 			return fail(L"DataGrid 百万行数据源不支持尾行随机访问。");
+		if (!grid->ScrollIntoView(
+				BindingValue(millionTail), grid->GetColumn(0)))
+			return fail(L"DataGrid ScrollIntoView 无法组合定位百万行尾项与目标列。");
+		grid->UpdateLayout();
+		if (!grid->GetGeneratedItem(MillionOrderList::RowCount - 1))
+			return fail(L"DataGrid ScrollIntoView 未按需实现百万行尾项。");
+		auto* millionView = dynamic_cast<CollectionViewSource*>(
+			grid->GetItemsSource().Get());
+		auto* millionSource = millionView ? dynamic_cast<MillionOrderList*>(
+			millionView->GetSource().Get()) : nullptr;
+		const auto sortStarted = std::chrono::steady_clock::now();
+		if (!millionSource
+			|| !grid->PerformSort(*orderColumn, false)
+			|| !grid->PerformSort(*orderColumn, false)
+			|| orderColumn->GetSortDirection()
+				!= CollectionSortDirection::Descending)
+			return fail(L"DataGrid 百万行源端排序未闭环。");
+		BindingSourceReference descendingFirst;
+		BindingValue descendingFirstOrder;
+		if (!grid->GetItemsSource().Get()->TryGetItem(0, descendingFirst)
+			|| !descendingFirst
+			|| !descendingFirst.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"OrderNo"),
+				descendingFirstOrder)
+			|| descendingFirstOrder.ToString() != L"LOAD-1000000"
+			|| millionSource->MaterializedCount() >= 512)
+			return fail(L"DataGrid 百万行排序退化为全量记录物化。");
+		const auto sortElapsed = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - sortStarted).count();
+		if (sortElapsed >= 1'500.0)
+			return fail(L"DataGrid 百万行源端排序超出稀疏预算："
+				+ std::to_wstring(sortElapsed) + L" ms。");
 		if (!millionButton->Invoke()
-			|| grid->ItemCount() != 18
+			|| !grid->GetItemsSource()
+			|| grid->GetItemsSource().Get()->Count() != 18
+			|| grid->ItemCount() != 19
+			|| !grid->GetCanUserAddRows()
 			|| millionButton->GetContent().ToString() != L"填充 100 万行")
 			return fail(L"DataGrid 百万行按钮无法恢复声明式 18 行示例。");
 		if (previousPage >= 0) (void)_tabs->SelectItem(previousPage);
@@ -5777,10 +6863,94 @@ void DemoWindow::InitializeDataPage()
 void DemoWindow::InitializeDataGridPage()
 {
 	auto* grid = RequireControl<DataGrid>(L"demoDataGrid");
-	if (!grid->GetItemsSource() || grid->ColumnCount() != 7)
+	if (!grid->GetItemsSource()
+		|| grid->ColumnCount() != DemoDataGridExpectedColumnCount)
 		ThrowRuntimeError(
 			L"demoDataGrid 未安装声明式 Columns 或静态 ItemsSource。");
-	_dataGridDefaultItems = grid->GetItemsSource().Shared();
+	auto* generatedRegionColumn = dynamic_cast<DataGridTextColumn*>(
+		grid->GetColumn(DemoDataGridExpectedColumnCount - 1));
+	if (!generatedRegionColumn
+		|| !generatedRegionColumn->GetIsAutoGenerated()
+		|| generatedRegionColumn->GetHeader().ToString() != L"AOT 区域")
+		ThrowRuntimeError(L"demoDataGrid 未安装生成期 AOT 区域列。");
+	auto* authoredView = dynamic_cast<CollectionViewSource*>(
+		grid->GetItemsSource().Get());
+	if (!authoredView || authoredView->Groups().empty()
+		|| !grid->GetGroupStyle())
+		ThrowRuntimeError(
+			L"demoDataGrid 未安装区域分组 CollectionViewSource/GroupStyle。");
+	if (grid->GetCellStyle() != L"OrderGridCellStyle"
+		|| grid->GetColumnHeaderStyle() != L"OrderGridColumnHeaderStyle"
+		|| grid->GetRowStyle() != L"OrderGridRowStyle"
+		|| grid->GetRowHeaderStyle() != L"OrderGridRowHeaderStyle"
+		|| !grid->GetRowHeaderTemplate()
+		|| !grid->GetAreRowDetailsFrozen()
+		|| grid->GetRowDetailsVisibilityMode()
+			!= DataGridRowDetailsVisibilityMode::VisibleWhenSelected
+		|| !grid->GetRowDetailsTemplate())
+		ThrowRuntimeError(
+			L"demoDataGrid 未安装 Grid 级容器样式/行头或行详情模板。");
+	auto* customerColumn = dynamic_cast<DataGridTextColumn*>(
+		grid->GetColumn(1));
+	if (!customerColumn
+		|| customerColumn->GetHeaderStyle() != L"OrderCustomerHeaderStyle"
+		|| customerColumn->GetCellStyle() != L"OrderCustomerCellStyle"
+		|| !customerColumn->GetHeaderTemplate())
+		ThrowRuntimeError(L"demoDataGrid 客户列未覆盖 Grid 级样式/表头模板。");
+	auto* paidColumn = dynamic_cast<DataGridTemplateColumn*>(
+		grid->GetColumn(6));
+	if (!paidColumn || !paidColumn->GetCellTemplate())
+		ThrowRuntimeError(L"demoDataGrid 已付款模板列无效。");
+	const auto paidTemplate = paidColumn->GetCellTemplate();
+	const ItemTemplateReference unpaidTemplate(
+		std::make_shared<DemoUnpaidOrderTemplate>());
+	paidColumn->SetCellTemplateSelector(ItemTemplateSelectorReference(
+		std::make_shared<DemoPaidTemplateSelector>(
+			paidTemplate, unpaidTemplate)));
+	paidColumn->SetCellTemplate({});
+	const auto authoredItems = grid->GetItemsSource();
+	auto editableItems = std::make_shared<ObservableBindingList>(
+		MakeDataTypeToken(L"DemoOrder"));
+	for (size_t index = 0; index < authoredItems.Get()->Count(); ++index)
+	{
+		BindingSourceReference item;
+		if (!authoredItems.Get()->TryGetItem(index, item) || !item)
+			ThrowRuntimeError(L"demoDataGrid 静态订单数据包含无效记录。");
+		editableItems->Items.push_back(std::move(item));
+	}
+	auto nextOrder = std::make_shared<size_t>(editableItems->Count() + 1);
+	editableItems->SetNewItemFactory([nextOrder]
+	{
+		auto row = std::make_shared<ObservableObject>();
+		const std::wstring orderNumber = StringHelper::Format(
+			L"SO-NEW-%03llu",
+			static_cast<unsigned long long>((*nextOrder)++));
+		if (!row->DefineProperty(
+				L"OrderNo", orderNumber, true, false, true)
+			|| !row->DefineProperty(
+				L"DetailsUri", L"https://example.test/orders/" + orderNumber,
+				true, false, true)
+			|| !row->DefineProperty(L"Customer", std::wstring(L"新客户"))
+			|| !row->DefineProperty(L"Region", std::wstring(L"未分配"))
+			|| !row->DefineProperty(L"Stage", std::wstring(L"待确认"))
+			|| !row->DefineProperty(L"Quantity", 1)
+			|| !row->DefineProperty(L"Amount", int64_t{ 0 })
+			|| !row->DefineProperty(L"Paid", false))
+			return BindingSourceReference{};
+		return BindingSourceReference(std::move(row));
+	});
+	authoredView->SetIsLiveGroupingRequested(true);
+	authoredView->SetSource(BindingListReference(editableItems));
+	if (!authoredView->CanAddNew() || !authoredView->CanRemove())
+		ThrowRuntimeError(L"demoDataGrid 可编辑运行时视图未暴露新增/删除能力。");
+	// The authored static source is immutable, so construction initially coerces
+	// these capabilities off. Re-evaluate them after the view adopts its editable
+	// runtime source without replacing the generated view/grouping identity.
+	(void)grid->CoerceValue(DataGrid::CanUserAddRowsProperty());
+	(void)grid->CoerceValue(DataGrid::CanUserDeleteRowsProperty());
+	if (!grid->GetCanUserAddRows() || !grid->GetCanUserDeleteRows())
+		ThrowRuntimeError(L"demoDataGrid 未在可编辑运行时视图上启用新增/删除。");
+	_dataGridDefaultItems = authoredItems.Shared();
 	_dataGridMillionMode = false;
 }
 
@@ -7027,13 +8197,100 @@ void DemoWindow::HandleAnalyticsAction(Control* sender, RoutedEventArgs&)
 }
 
 void DemoWindow::HandleDataGridSorting(
-	DataGrid*, DataGridSortingEventArgs& e)
+	DataGrid* grid, DataGridSortingEventArgs& e)
 {
 	++_dataGridSortEvents;
+	if (_dataGridMillionMode && grid && e.Column)
+	{
+		auto* view = dynamic_cast<CollectionViewSource*>(
+			grid->GetItemsSource().Get());
+		auto* source = view ? dynamic_cast<MillionOrderList*>(
+			view->GetSource().Get()) : nullptr;
+		size_t columnIndex = grid->ColumnCount();
+		for (size_t index = 0; index < grid->ColumnCount(); ++index)
+			if (grid->GetColumn(index) == e.Column)
+			{
+				columnIndex = index;
+				break;
+			}
+		const auto started = std::chrono::steady_clock::now();
+		if (source && source->ApplySort(columnIndex, e.Direction))
+		{
+			for (size_t index = 0; index < grid->ColumnCount(); ++index)
+				if (auto* column = grid->GetColumn(index))
+					column->SetSortDirection(
+						column == e.Column
+							? std::optional(e.Direction) : std::nullopt);
+			e.Handled = true;
+			const auto elapsed = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - started).count();
+			if (dataGridStatus)
+				dataGridStatus->Text = StringHelper::Format(
+					L"百万行源端索引排序：%.2f ms", elapsed);
+			UpdateStatus(StringHelper::Format(
+				L"DataGrid: million-row source sort in %.2f ms", elapsed));
+			return;
+		}
+	}
 	if (!dataGridStatus) return;
 	dataGridStatus->Text = e.Direction == CollectionSortDirection::Ascending
 		? L"表头事件：Ascending"
 		: L"表头事件：Descending";
+}
+
+void DemoWindow::HandleDataGridAddingNewItem(
+	DataGrid*, DataGridAddingNewItemEventArgs&)
+{
+	++_dataGridAddingNewItemEvents;
+	if (dataGridStatus)
+		dataGridStatus->Text = L"新增行：AddingNewItem";
+}
+
+void DemoWindow::HandleDataGridInitializingNewItem(
+	DataGrid*, DataGridInitializingNewItemEventArgs& e)
+{
+	++_dataGridInitializingNewItemEvents;
+	if (!dataGridStatus) return;
+	dataGridStatus->Text = e.NewItem
+		? L"新增行：InitializingNewItem"
+		: L"新增行初始化缺少记录";
+}
+
+void DemoWindow::HandleDataGridLoadingRow(
+	DataGrid*, DataGridRowEventArgs&)
+{
+	++_dataGridLoadingRowEvents;
+}
+
+void DemoWindow::HandleDataGridLoadingRowDetails(
+	DataGrid*, DataGridRowDetailsEventArgs& e)
+{
+	++_dataGridLoadingRowDetailsEvents;
+	if (dataGridStatus && e.Row && e.DetailsElement)
+		dataGridStatus->Text = L"行详情已加载：R"
+			+ std::to_wstring(e.Row->ItemIndex() + 1);
+}
+
+void DemoWindow::HandleDataGridRowDetailsVisibilityChanged(
+	DataGrid*, DataGridRowDetailsEventArgs& e)
+{
+	++_dataGridRowDetailsVisibilityEvents;
+	if (!dataGridStatus || !e.Row) return;
+	dataGridStatus->Text = e.Row->GetDetailsVisibility() == Visibility::Visible
+		? L"行详情已展开（水平冻结）"
+		: L"行详情已折叠";
+}
+
+void DemoWindow::HandleDataGridUnloadingRow(
+	DataGrid*, DataGridRowEventArgs&)
+{
+	++_dataGridUnloadingRowEvents;
+}
+
+void DemoWindow::HandleDataGridUnloadingRowDetails(
+	DataGrid*, DataGridRowDetailsEventArgs&)
+{
+	++_dataGridUnloadingRowDetailsEvents;
 }
 
 void DemoWindow::HandleDataGridScale(Control* sender, RoutedEventArgs&)
@@ -7083,6 +8340,16 @@ void DemoWindow::HandleDataGridCellEditEnding(
 	dataGridStatus->Text = e.EditAction == DataGridEditAction::Commit
 		? L"编辑事件：Commit"
 		: L"编辑事件：Cancel";
+}
+
+void DemoWindow::HandleDataGridRowEditEnding(
+	DataGrid*, DataGridRowEditEndingEventArgs& e)
+{
+	++_dataGridRowEditEndingEvents;
+	if (!dataGridStatus) return;
+	dataGridStatus->Text = e.EditAction == DataGridEditAction::Commit
+		? L"行事务：Commit"
+		: L"行事务：Cancel";
 }
 
 void DemoWindow::HandleDataGridCurrentCellChanged(

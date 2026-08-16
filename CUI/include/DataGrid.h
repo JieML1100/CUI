@@ -3,6 +3,7 @@
 #include "Button.h"
 #include "CheckBox.h"
 #include "CollectionViewSource.h"
+#include "ComboBox.h"
 #include "ContentControl.h"
 #include "Label.h"
 #include "Layout/Grid.h"
@@ -28,7 +29,53 @@ class DataGridColumn;
 class DataGridRow;
 class DataGridRowHeader;
 class DataGridCellsPresenter;
+class ContentPresenter;
 class ScrollViewer;
+
+/** Navigation request raised by a generated DataGrid hyperlink face. */
+struct DataGridHyperlinkNavigateEventArgs final : EventArgs
+{
+	std::wstring NavigateUri;
+	std::wstring TargetName;
+	bool Handled = false;
+};
+
+/**
+ * Native hyperlink face used by DataGridHyperlinkColumn.
+ *
+ * It intentionally keeps Button's input contract while publishing Hyperlink
+ * UIA semantics. Navigation is a request for the application/navigation host;
+ * the control never launches an external process by itself.
+ */
+class DataGridHyperlink final : public Button
+{
+public:
+	DataGridHyperlink();
+	static const DependencyProperty& NavigateUriProperty();
+	static const DependencyProperty& TargetNameProperty();
+	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+#endif
+	const std::wstring& GetNavigateUri() const noexcept { return _navigateUri; }
+	void SetNavigateUri(std::wstring value);
+	const std::wstring& GetTargetName() const noexcept { return _targetName; }
+	void SetTargetName(std::wstring value);
+
+	Event<void(DataGridHyperlink*, DataGridHyperlinkNavigateEventArgs&)>
+		NavigateRequested;
+
+protected:
+	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override;
+	bool OnClick() override;
+
+private:
+	std::wstring _navigateUri;
+	std::wstring _targetName;
+};
 
 /** WPF DataGrid selection unit values. */
 enum class DataGridSelectionUnit : int
@@ -53,6 +100,22 @@ enum class DataGridGridLinesVisibility : int
 	Horizontal = 1,
 	None = 2,
 	Vertical = 3,
+};
+
+/** WPF DataGrid clipboard header policy. */
+enum class DataGridClipboardCopyMode : int
+{
+	None = 0,
+	ExcludeHeader = 1,
+	IncludeHeader = 2,
+};
+
+/** WPF DataGrid row-details visibility policy. */
+enum class DataGridRowDetailsVisibilityMode : int
+{
+	Collapsed = 0,
+	Visible = 1,
+	VisibleWhenSelected = 2,
 };
 
 enum class DataGridLengthUnitType : int
@@ -105,6 +168,91 @@ enum class DataGridEditAction : int
 {
 	Cancel = 0,
 	Commit = 1,
+};
+
+/** Selects which WPF ComboBox selection projection receives the row Binding. */
+enum class DataGridComboBoxSelectionBinding : int
+{
+	SelectedItem = 0,
+	SelectedValue = 1,
+};
+
+/**
+ * Supported Binding source forms for generated bound-column elements.
+ * RowDataContext preserves the ordinary per-item source; the container values
+ * are the useful level-one FindAncestor subset and ElementName is a weak
+ * reference to one native Control in the owning XAML namescope.
+ */
+enum class DataGridBindingSourceKind : int
+{
+	RowDataContext = 0,
+	DataGridCell = 1,
+	DataGridRow = 2,
+	DataGrid = 3,
+	ElementName = 4,
+};
+
+/**
+ * One immutable child description in a DataGrid column MultiBinding plan.
+ *
+ * The description is shared once per column. Realized cells allocate only the
+ * Binding endpoints and observation state required by MultiBinding itself.
+ */
+struct DataGridMultiBindingSourcePlan final
+{
+	DataGridBindingSourceKind SourceKind =
+		DataGridBindingSourceKind::RowDataContext;
+	ControlWeakReference ElementSource;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring SourcePath;
+#endif
+	CompiledBindingPathView CompiledPath;
+	BindingMode Mode = BindingMode::Default;
+	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::Default;
+	std::shared_ptr<const IBindingValueConverter> Converter;
+	std::optional<BindingValue> FallbackValue;
+	std::optional<BindingValue> TargetNullValue;
+	std::optional<BindingValue> ConverterParameter;
+	std::optional<std::wstring> StringFormat;
+};
+
+/** WPF BindingBase plan for a non-nested DataGrid column MultiBinding. */
+struct DataGridMultiBindingPlan final
+{
+	std::vector<DataGridMultiBindingSourcePlan> Sources;
+	BindingMode Mode = BindingMode::Default;
+	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::Default;
+	std::shared_ptr<const IMultiBindingValueConverter> Converter;
+	std::optional<BindingValue> FallbackValue;
+	std::optional<BindingValue> TargetNullValue;
+	std::optional<BindingValue> ConverterParameter;
+	std::optional<std::wstring> StringFormat;
+};
+
+/** Selects the WPF-shaped cell or row edit transaction boundary. */
+enum class DataGridEditingUnit : int
+{
+	Cell = 0,
+	Row = 1,
+};
+
+/** One mutable cell payload in CopyingRowClipboardContent. */
+struct DataGridClipboardCellContent final
+{
+	BindingSourceReference Item;
+	DataGridColumn* Column = nullptr;
+	BindingValue Content;
+};
+
+/** WPF-shaped per-row clipboard customization payload. */
+struct DataGridRowClipboardEventArgs final : EventArgs
+{
+	BindingSourceReference Item;
+	size_t StartColumnDisplayIndex = 0;
+	size_t EndColumnDisplayIndex = 0;
+	bool IsColumnHeadersRow = false;
+	size_t RowIndexHint = (std::numeric_limits<size_t>::max)();
+	std::vector<DataGridClipboardCellContent> ClipboardRowContent;
 };
 
 /** Stable cell identity; it deliberately is not a realized-container handle. */
@@ -337,6 +485,46 @@ struct DataGridColumnDisplayIndexChangedEventArgs final : EventArgs
 	size_t NewDisplayIndex = DataGridCellInfo::InvalidIndex;
 };
 
+/** WPF-shaped cold-path payload raised before a column-header drag begins. */
+struct DataGridColumnReorderingEventArgs final : EventArgs
+{
+	DataGridColumn* Column = nullptr;
+	/**
+	 * Unparented visuals whose ownership transfers to the header presenter when
+	 * the operation proceeds. A handler may replace or clear either visual.
+	 */
+	std::unique_ptr<Control> DragIndicator;
+	std::unique_ptr<Control> DropLocationIndicator;
+	bool Cancel = false;
+};
+
+struct DataGridColumnHeaderDragStartedEventArgs final : EventArgs
+{
+	DataGridColumn* Column = nullptr;
+	double HorizontalOffset = 0.0;
+	double VerticalOffset = 0.0;
+};
+
+struct DataGridColumnHeaderDragDeltaEventArgs final : EventArgs
+{
+	DataGridColumn* Column = nullptr;
+	double HorizontalChange = 0.0;
+	double VerticalChange = 0.0;
+};
+
+struct DataGridColumnHeaderDragCompletedEventArgs final : EventArgs
+{
+	DataGridColumn* Column = nullptr;
+	double HorizontalChange = 0.0;
+	double VerticalChange = 0.0;
+	bool Canceled = false;
+};
+
+struct DataGridColumnEventArgs final : EventArgs
+{
+	DataGridColumn* Column = nullptr;
+};
+
 struct DataGridBeginningEditEventArgs final : EventArgs
 {
 	DataGridColumn* Column = nullptr;
@@ -367,6 +555,38 @@ struct DataGridCellEditEndingEventArgs final : EventArgs
 	bool Cancel = false;
 };
 
+struct DataGridRowEditEndingEventArgs final : EventArgs
+{
+	DataGridRow* Row = nullptr;
+	DataGridEditAction EditAction = DataGridEditAction::Commit;
+	bool Cancel = false;
+};
+
+/** WPF-shaped row-container lifecycle payload. */
+struct DataGridRowEventArgs final : EventArgs
+{
+	DataGridRow* Row = nullptr;
+};
+
+/** WPF-shaped row-details lifecycle payload. */
+struct DataGridRowDetailsEventArgs final : EventArgs
+{
+	DataGridRow* Row = nullptr;
+	Control* DetailsElement = nullptr;
+};
+
+/** WPF AddingNewItem payload; handlers may provide a source-owned record. */
+struct DataGridAddingNewItemEventArgs final : EventArgs
+{
+	BindingSourceReference NewItem;
+};
+
+/** WPF InitializingNewItem payload raised after the record enters the source. */
+struct DataGridInitializingNewItemEventArgs final : EventArgs
+{
+	BindingSourceReference NewItem;
+};
+
 struct DataGridCurrentCellChangedEventArgs final : EventArgs
 {
 	DataGridCellInfo OldCell;
@@ -394,6 +614,16 @@ public:
 
 	const BindingValue& GetHeader() const noexcept { return _header; }
 	void SetHeader(BindingValue value);
+	/** WPF column-local overrides; an empty key inherits the DataGrid value. */
+	const std::wstring& GetHeaderStyle() const noexcept { return _headerStyle; }
+	void SetHeaderStyle(std::wstring value);
+	ItemTemplateReference GetHeaderTemplate() const noexcept
+	{
+		return _headerTemplate;
+	}
+	void SetHeaderTemplate(ItemTemplateReference value);
+	const std::wstring& GetCellStyle() const noexcept { return _cellStyle; }
+	void SetCellStyle(std::wstring value);
 	const DataGridLength& GetWidth() const noexcept { return _width; }
 	void SetWidth(DataGridLength value);
 	double GetMinWidth() const noexcept { return _minWidth; }
@@ -406,6 +636,17 @@ public:
 	void SetCanUserSort(bool value);
 	bool GetCanUserResize() const noexcept { return _canUserResize; }
 	void SetCanUserResize(bool value);
+	bool GetCanUserReorder() const noexcept { return _canUserReorder; }
+	void SetCanUserReorder(bool value);
+	Visibility GetVisibility() const noexcept { return _visibility; }
+	/**
+	 * Matches WPF DataGridColumn visibility semantics: only Visible columns
+	 * participate in the realized layout projection. Hidden and Collapsed are
+	 * both retained in the logical/display collections without a visual cell.
+	 */
+	void SetVisibility(Visibility value);
+	/** True when this column's display position is inside the frozen prefix. */
+	bool GetIsFrozen() const noexcept;
 	size_t GetDisplayIndex() const noexcept { return _displayIndex; }
 	/**
 	 * Sets the visual position. An unattached column retains the request until
@@ -429,6 +670,13 @@ public:
 	{
 		return _sortDirection;
 	}
+	/**
+	 * Sets the header sort indicator for a custom/server-side Sorting handler.
+	 * This mirrors WPF DataGridColumn.SortDirection: setting it does not reorder
+	 * ItemsSource; the handler remains responsible for applying the sort.
+	 */
+	void SetSortDirection(
+		std::optional<CollectionSortDirection> value);
 	bool GetIsAutoGenerated() const noexcept { return _isAutoGenerated; }
 	DataGrid* GetDataGridOwner() const noexcept { return _owner; }
 
@@ -453,6 +701,9 @@ private:
 		bool HasDisplayOverride = false;
 	};
 	BindingValue _header;
+	std::wstring _headerStyle;
+	ItemTemplateReference _headerTemplate;
+	std::wstring _cellStyle;
 	DataGridLength _width = DataGridLength::SizeToHeader();
 	// DataGridLength remains the declaration-facing value. Interactive resize
 	// keeps WPF's desired/display values privately so Star columns retain their
@@ -463,6 +714,8 @@ private:
 	bool _isReadOnly = false;
 	bool _canUserSort = true;
 	bool _canUserResize = true;
+	bool _canUserReorder = true;
+	Visibility _visibility = Visibility::Visible;
 #if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _sortMemberPath;
 #endif
@@ -470,6 +723,7 @@ private:
 	std::optional<CollectionSortDirection> _sortDirection;
 	DataGrid* _owner = nullptr;
 	size_t _displayIndex = UnsetDisplayIndex;
+	size_t _visibleIndex = UnsetDisplayIndex;
 	uint32_t _accessibilityIdentity = 0;
 	bool _isAutoGenerated = false;
 	bool _isRuntimeAutoGenerated = false;
@@ -478,6 +732,21 @@ private:
 class DataGridBoundColumn : public DataGridColumn
 {
 public:
+	/**
+	 * WPF ElementStyle/EditingElementStyle projection. CUI stores the keyed
+	 * Style reference because a column is non-visual and the generated element
+	 * resolves the key in its inherited resource scope.
+	 */
+	const std::wstring& GetElementStyle() const noexcept
+	{
+		return _elementStyle;
+	}
+	void SetElementStyle(std::wstring value);
+	const std::wstring& GetEditingElementStyle() const noexcept
+	{
+		return _editingElementStyle;
+	}
+	void SetEditingElementStyle(std::wstring value);
 #if CUI_ENABLE_DYNAMIC_XAML
 	const std::wstring& GetBindingPath() const noexcept
 	{
@@ -490,6 +759,20 @@ public:
 		return _compiledBindingPath;
 	}
 	void SetCompiledBindingPath(CompiledBindingPathView value);
+	DataGridBindingSourceKind GetBindingSourceKind() const noexcept
+	{
+		return _bindingSourceKind;
+	}
+	void SetBindingSourceKind(DataGridBindingSourceKind value);
+	Control* GetBindingElementSource() const noexcept
+	{
+		return _bindingElementSource.Get();
+	}
+	void SetBindingElementSource(Control* value);
+	const std::shared_ptr<const DataGridMultiBindingPlan>&
+		GetMultiBindingPlan() const noexcept { return _multiBindingPlan; }
+	void SetMultiBindingPlan(
+		std::shared_ptr<const DataGridMultiBindingPlan> value);
 	BindingMode GetBindingMode() const noexcept { return _bindingMode; }
 	void SetBindingMode(BindingMode value);
 	DataSourceUpdateMode GetDataSourceUpdateMode() const noexcept
@@ -523,18 +806,55 @@ public:
 	void SetStringFormat(std::optional<std::wstring> value);
 
 protected:
+	static Binding* ApplyBindingPlan(
+		DataGridCell& cell,
+		Control& target,
+		const DependencyProperty& targetProperty,
+		const BindingSourceReference& item,
+		DataGridBindingSourceKind sourceKind,
+		Control* elementSource,
+		std::wstring_view dynamicPath,
+		CompiledBindingPathView compiledPath,
+		BindingMode configuredMode,
+		DataSourceUpdateMode updateMode,
+		const std::shared_ptr<const IBindingValueConverter>& converter,
+		const std::optional<BindingValue>& fallbackValue,
+		const std::optional<BindingValue>& targetNullValue,
+		const std::optional<BindingValue>& converterParameter,
+		const std::optional<std::wstring>& stringFormat,
+		BindingMode defaultMode,
+		bool forceMode = false);
+	static MultiBinding* ApplyMultiBindingPlan(
+		DataGridCell& cell,
+		Control& target,
+		const DependencyProperty& targetProperty,
+		const BindingSourceReference& item,
+		const DataGridMultiBindingPlan& plan,
+		BindingMode defaultMode,
+		bool forceMode = false);
 	Binding* ApplyBinding(
+		DataGridCell& cell,
 		Control& target,
 		const DependencyProperty& targetProperty,
 		const BindingSourceReference& item,
 		BindingMode defaultMode,
 		bool forceMode = false) const;
+	void ApplyElementStyle(
+		Control& target,
+		bool editing,
+		std::wstring_view defaultResourceKey) const;
 
 private:
+	std::wstring _elementStyle;
+	std::wstring _editingElementStyle;
 #if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _bindingPath;
 #endif
 	CompiledBindingPathView _compiledBindingPath;
+	DataGridBindingSourceKind _bindingSourceKind =
+		DataGridBindingSourceKind::RowDataContext;
+	ControlWeakReference _bindingElementSource;
+	std::shared_ptr<const DataGridMultiBindingPlan> _multiBindingPlan;
 	BindingMode _bindingMode = BindingMode::Default;
 	DataSourceUpdateMode _dataSourceUpdateMode = DataSourceUpdateMode::Default;
 	std::shared_ptr<const IBindingValueConverter> _converter;
@@ -573,6 +893,180 @@ private:
 	bool _isThreeState = false;
 };
 
+/**
+ * WPF-style choice column with one shared ItemsSource.
+ *
+ * Every realized cell shares the list/view identity. The closed display face
+ * is inert; an editing element owns dropdown interaction.
+ */
+class DataGridComboBoxColumn final : public DataGridBoundColumn
+{
+public:
+	BindingListReference GetItemsSource() const noexcept
+	{
+		return _itemsSource;
+	}
+	void SetItemsSource(BindingListReference value);
+	DataGridComboBoxSelectionBinding GetSelectionBinding() const noexcept
+	{
+		return _selectionBinding;
+	}
+	void SetSelectionBinding(DataGridComboBoxSelectionBinding value);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const std::wstring& GetDisplayMemberPath() const noexcept
+	{
+		return _displayMemberPath;
+	}
+	void SetDisplayMemberPath(std::wstring value);
+	const std::wstring& GetSelectedValuePath() const noexcept
+	{
+		return _selectedValuePath;
+	}
+	void SetSelectedValuePath(std::wstring value);
+#endif
+	CompiledBindingPathView GetCompiledDisplayMemberPath() const noexcept
+	{
+		return _compiledDisplayMemberPath;
+	}
+	void SetCompiledDisplayMemberPath(CompiledBindingPathView value);
+	CompiledBindingPathView GetCompiledSelectedValuePath() const noexcept
+	{
+		return _compiledSelectedValuePath;
+	}
+	void SetCompiledSelectedValuePath(CompiledBindingPathView value);
+
+protected:
+	std::unique_ptr<Control> GenerateElement(
+		DataGridCell& cell,
+		const BindingSourceReference& item) const override;
+	std::unique_ptr<Control> GenerateEditingElement(
+		DataGridCell& cell,
+		const BindingSourceReference& item) const override;
+
+private:
+	std::unique_ptr<ComboBox> GenerateComboBox(
+		DataGridCell& cell,
+		const BindingSourceReference& item,
+		bool editing) const;
+	BindingListReference _itemsSource;
+	DataGridComboBoxSelectionBinding _selectionBinding =
+		DataGridComboBoxSelectionBinding::SelectedItem;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring _displayMemberPath;
+	std::wstring _selectedValuePath;
+#endif
+	CompiledBindingPathView _compiledDisplayMemberPath;
+	CompiledBindingPathView _compiledSelectedValuePath;
+};
+
+/** WPF-style URI column with a clickable display face and TextBox editor. */
+class DataGridHyperlinkColumn final : public DataGridBoundColumn
+{
+public:
+	const std::wstring& GetTargetName() const noexcept { return _targetName; }
+	void SetTargetName(std::wstring value);
+#if CUI_ENABLE_DYNAMIC_XAML
+	const std::wstring& GetContentBindingPath() const noexcept
+	{
+		return _contentBindingPath;
+	}
+	void SetContentBindingPath(std::wstring value);
+#endif
+	CompiledBindingPathView GetCompiledContentBindingPath() const noexcept
+	{
+		return _compiledContentBindingPath;
+	}
+	void SetCompiledContentBindingPath(CompiledBindingPathView value);
+	DataGridBindingSourceKind GetContentBindingSourceKind() const noexcept
+	{
+		return _contentBindingSourceKind;
+	}
+	void SetContentBindingSourceKind(DataGridBindingSourceKind value);
+	Control* GetContentBindingElementSource() const noexcept
+	{
+		return _contentBindingElementSource.Get();
+	}
+	void SetContentBindingElementSource(Control* value);
+	const std::shared_ptr<const DataGridMultiBindingPlan>&
+		GetContentMultiBindingPlan() const noexcept
+	{
+		return _contentMultiBindingPlan;
+	}
+	void SetContentMultiBindingPlan(
+		std::shared_ptr<const DataGridMultiBindingPlan> value);
+	bool HasContentBinding() const noexcept;
+	void ClearContentBinding();
+	BindingMode GetContentBindingMode() const noexcept
+	{
+		return _contentBindingMode;
+	}
+	void SetContentBindingMode(BindingMode value);
+	DataSourceUpdateMode GetContentDataSourceUpdateMode() const noexcept
+	{
+		return _contentDataSourceUpdateMode;
+	}
+	void SetContentDataSourceUpdateMode(DataSourceUpdateMode value);
+	const std::shared_ptr<const IBindingValueConverter>&
+		GetContentBindingConverter() const noexcept
+	{
+		return _contentConverter;
+	}
+	void SetContentBindingConverter(
+		std::shared_ptr<const IBindingValueConverter> value);
+	const std::optional<BindingValue>& GetContentFallbackValue() const noexcept
+	{
+		return _contentFallbackValue;
+	}
+	void SetContentFallbackValue(std::optional<BindingValue> value);
+	const std::optional<BindingValue>& GetContentTargetNullValue() const noexcept
+	{
+		return _contentTargetNullValue;
+	}
+	void SetContentTargetNullValue(std::optional<BindingValue> value);
+	const std::optional<BindingValue>& GetContentConverterParameter() const noexcept
+	{
+		return _contentConverterParameter;
+	}
+	void SetContentConverterParameter(std::optional<BindingValue> value);
+	const std::optional<std::wstring>& GetContentStringFormat() const noexcept
+	{
+		return _contentStringFormat;
+	}
+	void SetContentStringFormat(std::optional<std::wstring> value);
+
+protected:
+	std::unique_ptr<Control> GenerateElement(
+		DataGridCell& cell,
+		const BindingSourceReference& item) const override;
+	std::unique_ptr<Control> GenerateEditingElement(
+		DataGridCell& cell,
+		const BindingSourceReference& item) const override;
+
+private:
+	Binding* ApplyContentBinding(
+		DataGridCell& cell,
+		Control& target,
+		const DependencyProperty& targetProperty,
+		const BindingSourceReference& item) const;
+	std::wstring _targetName;
+#if CUI_ENABLE_DYNAMIC_XAML
+	std::wstring _contentBindingPath;
+#endif
+	CompiledBindingPathView _compiledContentBindingPath;
+	DataGridBindingSourceKind _contentBindingSourceKind =
+		DataGridBindingSourceKind::RowDataContext;
+	ControlWeakReference _contentBindingElementSource;
+	std::shared_ptr<const DataGridMultiBindingPlan> _contentMultiBindingPlan;
+	BindingMode _contentBindingMode = BindingMode::Default;
+	DataSourceUpdateMode _contentDataSourceUpdateMode =
+		DataSourceUpdateMode::Default;
+	std::shared_ptr<const IBindingValueConverter> _contentConverter;
+	std::optional<BindingValue> _contentFallbackValue;
+	std::optional<BindingValue> _contentTargetNullValue;
+	std::optional<BindingValue> _contentConverterParameter;
+	std::optional<std::wstring> _contentStringFormat;
+};
+
 class DataGridTemplateColumn final : public DataGridColumn
 {
 public:
@@ -586,6 +1080,16 @@ public:
 		return _cellEditingTemplate;
 	}
 	void SetCellEditingTemplate(ItemTemplateReference value);
+	ItemTemplateSelectorReference GetCellTemplateSelector() const noexcept
+	{
+		return _cellTemplateSelector;
+	}
+	void SetCellTemplateSelector(ItemTemplateSelectorReference value);
+	ItemTemplateSelectorReference GetCellEditingTemplateSelector() const noexcept
+	{
+		return _cellEditingTemplateSelector;
+	}
+	void SetCellEditingTemplateSelector(ItemTemplateSelectorReference value);
 
 protected:
 	std::unique_ptr<Control> GenerateElement(
@@ -596,8 +1100,14 @@ protected:
 		const BindingSourceReference& item) const override;
 
 private:
+	std::unique_ptr<Control> BuildTemplateContent(
+		DataGridCell& cell,
+		const BindingSourceReference& item,
+		bool editing) const;
 	ItemTemplateReference _cellTemplate;
 	ItemTemplateReference _cellEditingTemplate;
+	ItemTemplateSelectorReference _cellTemplateSelector;
+	ItemTemplateSelectorReference _cellEditingTemplateSelector;
 };
 
 /**
@@ -623,6 +1133,8 @@ public:
 	DataGridCell();
 	UIClass Type() override { return UIClass::UI_DataGridCell; }
 	static const DependencyProperty& IsSelectedProperty();
+	/** CUI projection of the synthetic, non-data new-row placeholder. */
+	static const DependencyProperty& IsNewItemPlaceholderProperty();
 	static void RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
@@ -631,6 +1143,10 @@ public:
 	}
 #endif
 	bool GetIsSelected() const noexcept { return _isSelected; }
+	bool GetIsNewItemPlaceholder() const noexcept
+	{
+		return _isNewItemPlaceholder;
+	}
 	void SetIsSelected(bool value);
 	bool GetIsEditing() const noexcept { return _isEditing; }
 	bool GetIsReadOnly() const noexcept;
@@ -652,6 +1168,7 @@ private:
 	friend class DataGrid;
 	friend class DataGridCellsPresenter;
 	friend class DataGridRow;
+	static const DependencyPropertyKey& IsNewItemPlaceholderPropertyKey();
 	bool Initialize(
 		DataGridRow& row,
 		DataGridColumn& column,
@@ -662,6 +1179,7 @@ private:
 	void ApplyIsSelectedValue(bool value);
 	void SetCurrentIsSelected(
 		bool value, bool suppressRoutedEvents = false);
+	void SetCurrentIsNewItemPlaceholder(bool value);
 	DataGridRow* _row = nullptr;
 	DataGridColumn* _column = nullptr;
 	BindingSourceReference _item;
@@ -671,6 +1189,7 @@ private:
 	bool _synchronizingIsSelected = false;
 	bool _suppressIsSelectedRoutedEvents = false;
 	bool _isEditing = false;
+	bool _isNewItemPlaceholder = false;
 };
 
 class DataGridRow : public ListBoxItem
@@ -678,37 +1197,98 @@ class DataGridRow : public ListBoxItem
 public:
 	DataGridRow();
 	UIClass Type() override { return UIClass::UI_DataGridRow; }
+	static const DependencyProperty& IsEditingProperty();
+	static const DependencyProperty& IsNewItemProperty();
+	static const DependencyProperty& HasValidationErrorProperty();
+	static const DependencyProperty& ValidationErrorsProperty();
+	static const DependencyProperty& ValidationErrorTemplateProperty();
+	static void RegisterDependencyProperties();
+#if CUI_ENABLE_DYNAMIC_XAML
+	void EnsureBindingPropertiesRegistered() override
+	{
+		RegisterDependencyProperties();
+	}
+#endif
 	DataGrid* GetDataGridOwner() const noexcept;
 	const BindingSourceReference& GetItem() const noexcept { return _item; }
+	bool GetIsEditing() const noexcept { return _isEditing; }
+	bool GetIsNewItem() const noexcept { return _isNewItem; }
+	bool GetHasValidationError() const noexcept { return _hasValidationError; }
+	const std::vector<BindingValidationResult>&
+		GetValidationErrors() const noexcept { return _validationErrors; }
+	ControlTemplateReference GetValidationErrorTemplate() const
+	{
+		return _validationErrorTemplate;
+	}
+	void SetValidationErrorTemplate(ControlTemplateReference value);
+	std::wstring GetValidationSummary(size_t maxIssues = 0) const;
 	DataGridCell* GetCell(size_t columnIndex) const noexcept;
 	DataGridRowHeader* GetRowHeader() const noexcept { return _rowHeader; }
-	// Enumerates realized containers.  With column virtualization enabled this
-	// is the contiguous viewport strip, not a logical ColumnCount-sized array.
+	::Visibility GetDetailsVisibility() const noexcept
+	{
+		return _detailsVisible
+			? ::Visibility::Visible : ::Visibility::Collapsed;
+	}
+	ContentPresenter* GetDetailsPresenter() const noexcept
+	{
+		return _detailsPresenter;
+	}
+	Control* GetDetailsElement() const noexcept;
+	// Enumerates realized containers. With column virtualization enabled this is
+	// the frozen prefix followed by the disjoint scrolling viewport strip.
 	std::span<DataGridCell* const> GetCells() const noexcept
 	{
-		return { _cells.data(), _cells.size() };
+		const auto& cells = _columnStorageIsSparse ? _realizedCells : _cells;
+		return { cells.data(), cells.size() };
 	}
 
 private:
 	friend class DataGrid;
 	friend class DataGridCellsPresenter;
+	static const DependencyPropertyKey& IsEditingPropertyKey();
+	static const DependencyPropertyKey& IsNewItemPropertyKey();
+	static const DependencyPropertyKey& HasValidationErrorPropertyKey();
+	static const DependencyPropertyKey& ValidationErrorsPropertyKey();
+	void SetCurrentIsEditing(bool value);
+	void SetCurrentIsNewItem(bool value);
+	bool RefreshValidationState();
+	bool AttachValidationTracking();
+	void UpdateValidationVisual();
 	bool Initialize(
 		DataGrid& owner,
 		const BindingSourceReference& item,
 		size_t index,
 		std::wstring* outError);
 	bool RefreshRealizedColumns(
-		size_t begin, size_t end, std::wstring* outError);
+		size_t frozenEnd, size_t begin, size_t end,
+		std::wstring* outError);
 	void UpdateColumnWidths(bool propagateLayoutInvalidation = true);
 	void UpdateRowHeader();
+	bool UpdateDetailsPresentation(std::wstring* outError = nullptr);
 	void UpdateHorizontalScrollOffset(double offset);
+	void UpdateDetailsHorizontalScrollOffset(double offset);
 	ControlWeakReference _ownerLifetime;
 	BindingSourceReference _item;
+	bool _isEditing = false;
+	bool _isNewItem = false;
+	bool _hasValidationError = false;
+	bool _refreshingValidation = false;
+	std::vector<BindingValidationResult> _validationErrors;
+	ControlTemplateReference _validationErrorTemplate;
+	std::vector<EventConnection> _validationConnections;
 	Grid* _rowLayoutGrid = nullptr;
 	Grid* _rowHeaderHost = nullptr;
 	DataGridCellsPresenter* _cellsGrid = nullptr;
 	DataGridRowHeader* _rowHeader = nullptr;
+	ContentPresenter* _detailsPresenter = nullptr;
+	Control* _validationErrorIndicator = nullptr;
+	ItemTemplateReference _appliedDetailsTemplate;
+	bool _detailsVisible = false;
+	bool _detailsLoaded = false;
+	size_t _detailsPresentationRevision = 0;
+	std::vector<DataGridCell*> _frozenCells;
 	std::vector<DataGridCell*> _cells;
+	std::vector<DataGridCell*> _realizedCells;
 	size_t _appliedColumnWidthProjectionRevision = 0;
 	size_t _appliedCellSelectionRevision = 0;
 	bool _rowHeaderProjectionInitialized = false;
@@ -718,6 +1298,7 @@ private:
 	double _appliedHorizontalScrollOffset =
 		(std::numeric_limits<double>::quiet_NaN)();
 	bool _columnStorageIsSparse = false;
+	size_t _realizedFrozenColumnEnd = 0;
 	size_t _realizedColumnBegin = 0;
 	size_t _realizedColumnEnd = 0;
 };
@@ -781,6 +1362,10 @@ private:
 	bool BeginColumnResize(int localX);
 	bool ContinueColumnResize(int localX);
 	void EndColumnResize(bool cancel);
+	bool PrepareColumnReorder(int localX, int localY);
+	bool BeginColumnReorder(int localX, int localY);
+	bool ContinueColumnReorder(int localX, int localY);
+	void EndColumnReorder(bool cancel);
 	DataGrid* _owner = nullptr;
 	DataGridColumn* _column = nullptr;
 	size_t _columnIndex = DataGridCellInfo::InvalidIndex;
@@ -790,6 +1375,11 @@ private:
 	size_t _resizingColumnIndex = DataGridCellInfo::InvalidIndex;
 	double _resizeStartRenderX = 0.0;
 	double _resizeStartWidth = 0.0;
+	bool _isReorderPending = false;
+	bool _isReordering = false;
+	double _reorderStartLocalX = 0.0;
+	double _reorderStartRenderX = 0.0;
+	double _reorderStartRenderY = 0.0;
 };
 
 class DataGridColumnHeadersPresenter : public Grid
@@ -806,6 +1396,9 @@ public:
 	{
 		if (!_columnStorageIsSparse)
 			return columnIndex < _headers.size() ? _headers[columnIndex] : nullptr;
+		if (columnIndex < _realizedFrozenColumnEnd)
+			return columnIndex < _frozenHeaders.size()
+				? _frozenHeaders[columnIndex] : nullptr;
 		return columnIndex >= _realizedColumnBegin
 			&& columnIndex < _realizedColumnEnd
 			&& columnIndex - _realizedColumnBegin < _headers.size()
@@ -813,9 +1406,27 @@ public:
 	}
 	size_t GetRealizedHeaderSlotCount() const noexcept
 	{
-		return _headers.size();
+		return _frozenHeaders.size() + _headers.size();
+	}
+	bool GetIsColumnHeaderDragging() const noexcept
+	{
+		return _isColumnHeaderDragging;
+	}
+	size_t GetColumnHeaderDropDisplayIndex() const noexcept
+	{
+		return _dropDisplayIndex;
+	}
+	Control* GetColumnHeaderDragIndicator() const noexcept
+	{
+		return _dragIndicator.Get();
+	}
+	Control* GetColumnHeaderDropLocationIndicator() const noexcept
+	{
+		return _dropIndicator.Get();
 	}
 	void UpdateColumnWidths(bool propagateLayoutInvalidation = true);
+	void UpdateHorizontalScrollOffset(double offset);
+	void Arrange(cui::core::Rect finalRect) override;
 
 protected:
 	cui::core::Size MeasureCore(
@@ -823,15 +1434,53 @@ protected:
 
 private:
 	friend class DataGrid;
+	friend class DataGridColumnHeader;
+	enum class ColumnReorderStartResult : uint8_t
+	{
+		Aborted,
+		Canceled,
+		Started,
+	};
 	bool RefreshRealizedColumns(
-		size_t begin, size_t end, std::wstring* outError);
+		size_t frozenEnd, size_t begin, size_t end,
+		std::wstring* outError);
 	bool TryCommitResizeLayoutLocally(bool heightIsFixed);
+	ColumnReorderStartResult BeginColumnHeaderDrag(
+		DataGridColumnHeader& header,
+		double renderX, double renderY);
+	bool UpdateColumnHeaderDrag(double renderX, double renderY);
+	void FinishColumnHeaderDrag(bool cancel);
+	void AbandonColumnHeaderDragAfterOwnerDestruction();
+	bool ResolveColumnHeaderDrop(
+		double renderX, double renderY,
+		size_t& displayIndex, double& boundary,
+		bool& valid) const;
+	void ArrangeColumnHeaderDragIndicators();
 	DataGrid* _owner = nullptr;
+	std::vector<DataGridColumnHeader*> _frozenHeaders;
 	std::vector<DataGridColumnHeader*> _headers;
 	size_t _appliedColumnWidthProjectionRevision = 0;
 	bool _columnStorageIsSparse = false;
+	size_t _realizedFrozenColumnEnd = 0;
 	size_t _realizedColumnBegin = 0;
 	size_t _realizedColumnEnd = 0;
+	bool _isColumnHeaderDragging = false;
+	DataGridColumn* _reorderingColumn = nullptr;
+	double _reorderStartRenderX = 0.0;
+	double _reorderStartRenderY = 0.0;
+	double _reorderLastRenderX = 0.0;
+	double _reorderLastRenderY = 0.0;
+	double _reorderCurrentRenderX = 0.0;
+	double _reorderCurrentRenderY = 0.0;
+	double _dragPointerOffsetX = 0.0;
+	double _dragPointerOffsetY = 0.0;
+	double _dragIndicatorWidth = 0.0;
+	double _dragIndicatorHeight = 0.0;
+	double _dropIndicatorBoundary = 0.0;
+	bool _dropIndicatorVisible = false;
+	size_t _dropDisplayIndex = DataGridCellInfo::InvalidIndex;
+	ControlWeakReference _dragIndicator;
+	ControlWeakReference _dropIndicator;
 };
 
 /**
@@ -842,14 +1491,25 @@ private:
 class DataGrid : public ListBox
 {
 public:
+	static constexpr size_t ClipboardCopyCellLimit = 1'000'000;
+	static constexpr size_t ClipboardCopyCharacterLimit = 16 * 1024 * 1024;
+
 	DataGrid();
+	~DataGrid() override;
 	UIClass Type() override { return UIClass::UI_DataGrid; }
 
 	static const DependencyProperty& AutoGenerateColumnsProperty();
+	static const DependencyProperty& CurrentItemProperty();
+	static const DependencyProperty& CurrentColumnProperty();
+	static const DependencyProperty& CurrentCellProperty();
 	static const DependencyProperty& IsReadOnlyProperty();
+	static const DependencyProperty& CanUserAddRowsProperty();
+	static const DependencyProperty& CanUserDeleteRowsProperty();
 	static const DependencyProperty& CanUserSortColumnsProperty();
 	static const DependencyProperty& CanUserResizeColumnsProperty();
+	static const DependencyProperty& CanUserReorderColumnsProperty();
 	static const DependencyProperty& EnableColumnVirtualizationProperty();
+	static const DependencyProperty& FrozenColumnCountProperty();
 	static const DependencyProperty& SelectionUnitProperty();
 	static const DependencyProperty& ColumnHeaderHeightProperty();
 	static const DependencyProperty& RowHeaderWidthProperty();
@@ -861,6 +1521,23 @@ public:
 	static const DependencyProperty& AlternatingRowBackgroundProperty();
 	static const DependencyProperty& HorizontalGridLinesBrushProperty();
 	static const DependencyProperty& VerticalGridLinesBrushProperty();
+	static const DependencyProperty& RowValidationErrorTemplateProperty();
+	static const DependencyProperty& ClipboardCopyModeProperty();
+	static const DependencyProperty& CellStyleProperty();
+	static const DependencyProperty& ColumnHeaderStyleProperty();
+	static const DependencyProperty& RowStyleProperty();
+	static const DependencyProperty& RowHeaderStyleProperty();
+	static const DependencyProperty& RowHeaderTemplateProperty();
+	static const DependencyProperty& AreRowDetailsFrozenProperty();
+	static const DependencyProperty& RowDetailsVisibilityModeProperty();
+	static const DependencyProperty& RowDetailsTemplateProperty();
+	static const RoutedCommand& BeginEditCommand();
+	static const RoutedCommand& CommitEditCommand();
+	static const RoutedCommand& CancelEditCommand();
+	/** WPF identity alias for ApplicationCommands.Delete. */
+	static const RoutedCommand& DeleteCommand();
+	/** WPF identity alias for ApplicationCommands.Copy. */
+	static const RoutedCommand& CopyCommand();
 	static void RegisterDependencyProperties();
 #if CUI_ENABLE_DYNAMIC_XAML
 	void EnsureBindingPropertiesRegistered() override
@@ -879,15 +1556,26 @@ public:
 	void SetAutoGenerateColumns(bool value);
 	bool GetIsReadOnly() const noexcept { return _isReadOnly; }
 	void SetIsReadOnly(bool value);
+	bool GetCanUserAddRows() const noexcept { return _canUserAddRows; }
+	void SetCanUserAddRows(bool value);
+	bool GetCanUserDeleteRows() const noexcept { return _canUserDeleteRows; }
+	void SetCanUserDeleteRows(bool value);
 	bool GetCanUserSortColumns() const noexcept { return _canUserSortColumns; }
 	void SetCanUserSortColumns(bool value);
 	bool GetCanUserResizeColumns() const noexcept { return _canUserResizeColumns; }
 	void SetCanUserResizeColumns(bool value);
+	bool GetCanUserReorderColumns() const noexcept
+	{
+		return _canUserReorderColumns;
+	}
+	void SetCanUserReorderColumns(bool value);
 	bool GetEnableColumnVirtualization() const noexcept
 	{
 		return _enableColumnVirtualization;
 	}
 	void SetEnableColumnVirtualization(bool value);
+	int GetFrozenColumnCount() const noexcept { return _frozenColumnCount; }
+	void SetFrozenColumnCount(int value);
 	DataGridSelectionUnit GetSelectionUnit() const noexcept
 	{
 		return _selectionUnit;
@@ -933,15 +1621,70 @@ public:
 		return _verticalGridLinesBrush;
 	}
 	void SetVerticalGridLinesBrush(cui::drawing::Brush value);
+	ControlTemplateReference GetRowValidationErrorTemplate() const
+	{
+		return _rowValidationErrorTemplate;
+	}
+	void SetRowValidationErrorTemplate(ControlTemplateReference value);
+	DataGridClipboardCopyMode GetClipboardCopyMode() const noexcept
+	{
+		return _clipboardCopyMode;
+	}
+	void SetClipboardCopyMode(DataGridClipboardCopyMode value);
+	const std::wstring& GetCellStyle() const noexcept { return _cellStyle; }
+	void SetCellStyle(std::wstring value);
+	const std::wstring& GetColumnHeaderStyle() const noexcept
+	{
+		return _columnHeaderStyle;
+	}
+	void SetColumnHeaderStyle(std::wstring value);
+	const std::wstring& GetRowStyle() const noexcept { return _rowStyle; }
+	void SetRowStyle(std::wstring value);
+	const std::wstring& GetRowHeaderStyle() const noexcept
+	{
+		return _rowHeaderStyle;
+	}
+	void SetRowHeaderStyle(std::wstring value);
+	ItemTemplateReference GetRowHeaderTemplate() const noexcept
+	{
+		return _rowHeaderTemplate;
+	}
+	void SetRowHeaderTemplate(ItemTemplateReference value);
+	bool GetAreRowDetailsFrozen() const noexcept
+	{
+		return _areRowDetailsFrozen;
+	}
+	void SetAreRowDetailsFrozen(bool value);
+	DataGridRowDetailsVisibilityMode GetRowDetailsVisibilityMode() const noexcept
+	{
+		return _rowDetailsVisibilityMode;
+	}
+	void SetRowDetailsVisibilityMode(DataGridRowDetailsVisibilityMode value);
+	ItemTemplateReference GetRowDetailsTemplate() const noexcept
+	{
+		return _rowDetailsTemplate;
+	}
+	void SetRowDetailsTemplate(ItemTemplateReference value);
 
 	DataGridColumn* AddColumn(std::unique_ptr<DataGridColumn> column);
+	/** Inserts a column at a stable logical collection index. */
+	DataGridColumn* InsertColumn(
+		size_t logicalIndex, std::unique_ptr<DataGridColumn> column);
 	/** AOT schema expansion entry; marks the supplied column as generated. */
 	DataGridColumn* AddAutoGeneratedColumn(
 		std::unique_ptr<DataGridColumn> column);
 	/** Takes ownership of an unattached column produced by a materializer. */
 	DataGridColumn* AdoptColumn(DataGridColumn* column);
+	/** Detaches and transfers ownership of a logical collection entry. */
+	std::unique_ptr<DataGridColumn> RemoveColumn(size_t logicalIndex);
+	/** Detaches and transfers ownership when the supplied column is owned here. */
+	std::unique_ptr<DataGridColumn> RemoveColumn(DataGridColumn& column);
 	void ClearColumns();
 	size_t ColumnCount() const noexcept { return _logicalColumns.size(); }
+	size_t VisibleColumnCount() const noexcept
+	{
+		return _visibleColumns.size();
+	}
 	/** Returns a column in stable logical collection/insertion order. */
 	DataGridColumn* GetColumn(size_t index) const noexcept;
 	/** Returns a column in the current visual order. */
@@ -961,11 +1704,42 @@ public:
 		return raw;
 	}
 
+	template<typename TColumn, typename... TArgs>
+	TColumn* InsertColumn(size_t logicalIndex, TArgs&&... args)
+	{
+		static_assert(std::is_base_of_v<DataGridColumn, TColumn>);
+		auto column = std::make_unique<TColumn>(
+			std::forward<TArgs>(args)...);
+		auto* raw = column.get();
+		(void)InsertColumn(logicalIndex, std::move(column));
+		return raw;
+	}
+
 	const DataGridCellInfo& GetCurrentCell() const noexcept
 	{
 		return _currentCell;
 	}
+	BindingValue GetCurrentItem() const
+	{
+		return _currentCell.Item
+			? BindingValue(_currentCell.Item) : BindingValue{};
+	}
+	void SetCurrentItem(const BindingValue& value);
+	DataGridColumn* GetCurrentColumn() const noexcept
+	{
+		return _currentCell.Column;
+	}
+	void SetCurrentColumn(DataGridColumn* value);
+	bool SetCurrentCell(const DataGridCellInfo& value);
 	bool SetCurrentCell(size_t rowIndex, size_t columnIndex);
+	/** WPF-shaped vertical row positioning; an empty item is rejected. */
+	bool ScrollIntoView(const BindingValue& item);
+	/**
+	 * WPF-shaped cell positioning. An empty item performs only horizontal
+	 * positioning; a null column performs only vertical positioning.
+	 */
+	bool ScrollIntoView(
+		const BindingValue& item, DataGridColumn* column);
 	const DataGridSelectedCellCollection& GetSelectedCells() const noexcept
 	{
 		return _selectedCells;
@@ -978,7 +1752,15 @@ public:
 	bool BeginEdit();
 	bool BeginEdit(const RoutedEventArgs* editingEventArgs);
 	bool CommitEdit();
+	bool CommitEdit(
+		DataGridEditingUnit editingUnit,
+		bool exitEditingMode);
 	bool CancelEdit();
+	bool CancelEdit(DataGridEditingUnit editingUnit);
+	/** Executes the WPF user-delete policy against selected data rows. */
+	bool DeleteSelectedRows();
+	/** Builds and publishes the selected cells as bounded Unicode TSV text. */
+	bool Copy();
 	bool PerformSort(DataGridColumn& column, bool multiColumn);
 	bool ResizeColumn(size_t columnIndex, double pixelWidth);
 	std::unique_ptr<DataGridColumnHeadersPresenter>
@@ -1035,12 +1817,33 @@ public:
 	Event<void(DataGrid*, DataGridPreparingCellForEditEventArgs&)>
 		PreparingCellForEdit;
 	Event<void(DataGrid*, DataGridCellEditEndingEventArgs&)> CellEditEnding;
+	Event<void(DataGrid*, DataGridRowEditEndingEventArgs&)> RowEditEnding;
+	Event<void(DataGrid*, DataGridAddingNewItemEventArgs&)> AddingNewItem;
+	Event<void(DataGrid*, DataGridInitializingNewItemEventArgs&)>
+		InitializingNewItem;
 	Event<void(DataGrid*, DataGridCurrentCellChangedEventArgs&)>
 		CurrentCellChanged;
 	Event<void(DataGrid*, DataGridSelectedCellsChangedEventArgs&)>
 		SelectedCellsChanged;
+	Event<void(DataGrid*, DataGridRowClipboardEventArgs&)>
+		CopyingRowClipboardContent;
+	Event<void(DataGrid*, DataGridRowEventArgs&)> LoadingRow;
+	Event<void(DataGrid*, DataGridRowEventArgs&)> UnloadingRow;
+	Event<void(DataGrid*, DataGridRowDetailsEventArgs&)> LoadingRowDetails;
+	Event<void(DataGrid*, DataGridRowDetailsEventArgs&)> UnloadingRowDetails;
+	Event<void(DataGrid*, DataGridRowDetailsEventArgs&)>
+		RowDetailsVisibilityChanged;
 	Event<void(DataGrid*, DataGridColumnDisplayIndexChangedEventArgs&)>
 		ColumnDisplayIndexChanged;
+	Event<void(DataGrid*, DataGridColumnHeaderDragStartedEventArgs&)>
+		ColumnHeaderDragStarted;
+	Event<void(DataGrid*, DataGridColumnHeaderDragDeltaEventArgs&)>
+		ColumnHeaderDragDelta;
+	Event<void(DataGrid*, DataGridColumnHeaderDragCompletedEventArgs&)>
+		ColumnHeaderDragCompleted;
+	Event<void(DataGrid*, DataGridColumnReorderingEventArgs&)>
+		ColumnReordering;
+	Event<void(DataGrid*, DataGridColumnEventArgs&)> ColumnReordered;
 	Event<void(DataGrid*, DataGridAutoGeneratingColumnEventArgs&)>
 		AutoGeneratingColumn;
 	/** No empty EventArgs object is constructed for this payload-free event. */
@@ -1048,6 +1851,11 @@ public:
 	void Arrange(cui::core::Rect finalRect) override;
 
 protected:
+	/** Actual sortable/filterable data projection; excludes the new-row sentinel. */
+	CollectionViewSource* GetCollectionView() const noexcept
+	{
+		return _itemsView.get();
+	}
 	void PrepareMeasureCore(
 		const cui::core::Constraints& available) override;
 	std::unique_ptr<AutomationPeer> OnCreateAutomationPeer() override;
@@ -1069,9 +1877,13 @@ protected:
 		BindingPathObservation& observation,
 		std::wstring* outError) override;
 	void OnBeforeGeneratedItemsPrepared() override;
+	void OnGeneratedItemClearing(Control& visual) override;
 	void OnGeneratedItemsRebuilt() override;
 	void OnGeneratedItemsRealized() override;
 	void OnItemsSourceTransactionCommitted() override;
+	void OnItemsSourceReplacementPreparing(
+		const BindingListReference& oldValue,
+		const BindingListReference& newValue) override;
 	void OnItemsSourceCollectionChangePreparing(
 		const CollectionChangedEventArgs& change,
 		const BindingListReference& previousSnapshot) override;
@@ -1098,14 +1910,29 @@ protected:
 		return true;
 	}
 	float GetVirtualizedItemHeight() const noexcept override;
+	bool UseMeasuredVirtualizedItemHeight(
+		const Control& item) const noexcept override;
 	double GetVirtualizedHorizontalExtent() const override;
 	bool HandlesNavigationKey(Key key) const override;
 	bool ApplyTextInput(const TextCompositionEventArgs& input) override;
 	bool ProcessInput(const InputReport& input) override;
+	virtual void OnCanExecuteBeginEdit(CanExecuteRoutedEventArgs& args);
+	virtual void OnExecutedBeginEdit(ExecutedRoutedEventArgs& args);
+	virtual void OnCanExecuteCommitEdit(CanExecuteRoutedEventArgs& args);
+	virtual void OnExecutedCommitEdit(ExecutedRoutedEventArgs& args);
+	virtual void OnCanExecuteCancelEdit(CanExecuteRoutedEventArgs& args);
+	virtual void OnExecutedCancelEdit(ExecutedRoutedEventArgs& args);
+	virtual void OnCanExecuteDelete(CanExecuteRoutedEventArgs& args);
+	virtual void OnExecutedDelete(ExecutedRoutedEventArgs& args);
+	virtual void OnCanExecuteCopy(CanExecuteRoutedEventArgs& args);
+	virtual void OnExecutedCopy(ExecutedRoutedEventArgs& args);
+	virtual void OnCopyingRowClipboardContent(
+		DataGridRowClipboardEventArgs& args);
 
 private:
 	friend class DataGridSelectedCellCollection;
 	struct DataGridItemsSourceTransactionState;
+	struct DataGridItemsView;
 	struct ColumnResizeSnapshot final
 	{
 		DataGridColumn* Column = nullptr;
@@ -1159,6 +1986,8 @@ private:
 	friend class DataGridColumn;
 	friend class DataGridBoundColumn;
 	friend class DataGridCheckBoxColumn;
+	friend class DataGridComboBoxColumn;
+	friend class DataGridHyperlinkColumn;
 	friend class DataGridTemplateColumn;
 	friend class DataGridTextColumn;
 	friend class DataGridColumnHeader;
@@ -1169,10 +1998,14 @@ private:
 
 	BindingListReference _source;
 	std::shared_ptr<CollectionViewSource> _itemsView;
+	std::shared_ptr<DataGridItemsView> _displayItemsView;
 	// _columns is the hot visual projection. The companion pointer vector keeps
 	// public collection order stable without relocating DataGridColumn objects.
 	std::vector<std::unique_ptr<DataGridColumn>> _columns;
 	std::vector<DataGridColumn*> _logicalColumns;
+	// Compact display-ordered projection used by navigation and automation.
+	// Hidden/Collapsed columns remain owned by _columns but never appear here.
+	std::vector<DataGridColumn*> _visibleColumns;
 	mutable std::vector<std::optional<GridLength>> _resolvedColumnWidths;
 	std::vector<ColumnResizeSnapshot> _columnResizeSnapshot;
 	std::vector<ColumnResizeSnapshot> _columnResizeWorkingSnapshot;
@@ -1235,7 +2068,12 @@ private:
 	EventConnection _selectAllClick;
 	EventConnection _dataGridScrollChanged;
 	EventConnection _rowHeaderSourceChanged;
+	Event<void(DataGrid*)> _currentItemChanged;
+	Event<void(DataGrid*)> _currentColumnChanged;
+	Event<void(DataGrid*)> _currentCellProjectionChanged;
 	double _horizontalScrollOffset = 0.0;
+	int _frozenColumnCount = 0;
+	bool _coercingFrozenColumnCountForSchema = false;
 	bool _autoColumnsChangedDuringPreparation = false;
 	bool _runtimeAutoGenerationComplete = false;
 	bool _autoGenerationInProgress = false;
@@ -1261,11 +2099,29 @@ private:
 	bool _updatingCellSelectionVisuals = false;
 	bool _autoGenerateColumns = true;
 	bool _isReadOnly = false;
+	bool _canUserAddRows = true;
+	bool _canUserDeleteRows = true;
+	DataGridClipboardCopyMode _clipboardCopyMode =
+		DataGridClipboardCopyMode::ExcludeHeader;
 	bool _raisingBeginningEdit = false;
 	bool _endingCellEdit = false;
+	BindingSourceReference _editingRowItem;
+	size_t _editingRowOccurrence = DataGridCellInfo::InvalidIndex;
+	size_t _editingRowIndex = DataGridCellInfo::InvalidIndex;
+	size_t _rowEditRevision = 1;
+	bool _editingRowHasSourceTransaction = false;
+	bool _startingRowEdit = false;
+	bool _endingRowEdit = false;
+	bool _callingRowEditSource = false;
+	bool _startingNewItem = false;
+	bool _callingEditableList = false;
+	bool _deletingRows = false;
+	bool _destroyingDataGrid = false;
 	bool _canUserSortColumns = true;
 	bool _canUserResizeColumns = true;
+	bool _canUserReorderColumns = true;
 	bool _enableColumnVirtualization = false;
+	size_t _realizedFrozenColumnEnd = DataGridCellInfo::InvalidIndex;
 	size_t _realizedColumnBegin = DataGridCellInfo::InvalidIndex;
 	size_t _realizedColumnEnd = DataGridCellInfo::InvalidIndex;
 	bool _refreshingRealizedColumns = false;
@@ -1285,21 +2141,72 @@ private:
 	cui::drawing::Brush _alternatingRowBackground;
 	cui::drawing::Brush _horizontalGridLinesBrush;
 	cui::drawing::Brush _verticalGridLinesBrush;
+	ControlTemplateReference _rowValidationErrorTemplate;
+	std::wstring _cellStyle;
+	std::wstring _columnHeaderStyle;
+	std::wstring _rowStyle;
+	std::wstring _rowHeaderStyle;
+	ItemTemplateReference _rowHeaderTemplate;
+	bool _areRowDetailsFrozen = false;
+	DataGridRowDetailsVisibilityMode _rowDetailsVisibilityMode =
+		DataGridRowDetailsVisibilityMode::VisibleWhenSelected;
+	ItemTemplateReference _rowDetailsTemplate;
+	std::vector<ControlWeakReference> _validationTrackedRows;
+	std::vector<ControlWeakReference> _lifecycleLoadedRows;
 	bool _preserveColumnContentWidthsDuringRowRebuild = false;
 	bool _changingColumnDisplayIndex = false;
+	bool _changingColumnVisibility = false;
+
+	static void EnsureCommandBindingsRegistered();
+	DataGridEditingUnit ResolveCommandEditingUnit(
+		const std::any& parameter) const noexcept;
+	bool HasCurrentCellValidationError() const noexcept;
+	bool HasSelectedDataRows() const noexcept;
+	bool TryBuildClipboardText(std::wstring& result);
+	void InvalidateCommandState();
 
 	void RefreshColumns();
+	const std::wstring& EffectiveCellStyle(
+		const DataGridColumn& column) const noexcept;
+	const std::wstring& EffectiveColumnHeaderStyle(
+		const DataGridColumn& column) const noexcept;
+	const std::wstring& EffectiveRowStyle() const noexcept;
+	void RefreshRealizedCellStyles(const DataGridColumn* column = nullptr);
+	void RefreshRealizedColumnHeaderPresentation(
+		const DataGridColumn* column = nullptr);
+	void RefreshRealizedRowHeaderPresentation();
+	void RefreshRealizedRowDetails();
+	void RefreshRealizedRowDetailsHorizontalAlignment();
+	bool SynchronizeRealizedRowLifecycle();
+	bool RaiseRowLifecycleEvent(
+		Event<void(DataGrid*, DataGridRowEventArgs&)>& event,
+		DataGridRow& row);
+	bool RaiseRowDetailsEvent(
+		Event<void(DataGrid*, DataGridRowDetailsEventArgs&)>& event,
+		DataGridRow& row, Control& detailsElement);
+	bool ApplyItemContainerStyle() override;
 	void RefreshColumnDisplayOrder();
+	bool IsColumnReorderEligible(const DataGridColumn& column) const noexcept;
+	void CancelColumnReorderForEligibilityChange(
+		const DataGridColumn* column = nullptr);
 	void ReindexDisplayColumns(size_t begin = 0) noexcept;
+	void RebuildVisibleColumnProjection() noexcept;
+	bool SetColumnVisibility(DataGridColumn& column, ::Visibility value);
+	DataGridColumn* GetColumnFromVisibleIndex(size_t index) const noexcept;
+	size_t VisibleIndexFromDisplayIndex(size_t displayIndex) const noexcept;
+	size_t FirstVisibleDisplayIndex() const noexcept;
+	size_t LastVisibleDisplayIndex() const noexcept;
 	void RemoveAutoGeneratedColumns();
 	void EnsureAutoGeneratedColumns();
 	void FlushAutoGeneratedColumnsEvent();
 	DataGridColumn* AddColumnCore(
 		std::unique_ptr<DataGridColumn> column,
-		bool autoGenerated);
+		bool autoGenerated,
+		size_t logicalIndex = DataGridCellInfo::InvalidIndex);
 	DataGridCell* ResolveCurrentCellContainer() const noexcept;
 	DataGridRow* ResolveRow(size_t rowIndex) const noexcept;
 	void InvalidateRows();
+	void RefreshRealizedRowValidationStates(bool coerceTemplate);
 	void RefreshHeaderPresenter();
 	void RefreshHeadersVisibility();
 	void RefreshHorizontalScrollAlignment();
@@ -1315,7 +2222,12 @@ private:
 		DataGridRow& row, ModifierKeys modifiers);
 	void HandleSelectAll();
 	bool RaiseCurrentCellChanged(DataGridCellInfo previous);
+	bool NotifyCurrentCellProjectionsChanged(
+		const DataGridCellInfo& previous);
 	bool ReconcileCurrentCellColumn();
+	bool TryNormalizeCurrentCellInfo(
+		const DataGridCellInfo& value,
+		DataGridCellInfo& result) const;
 	bool TryCreateCellInfo(
 		size_t rowIndex, size_t columnIndex, DataGridCellInfo& result) const;
 	bool TryResolveItemOccurrence(
@@ -1352,6 +2264,35 @@ private:
 	bool BeginEditCore(
 		const RoutedEventArgs* editingEventArgs,
 		bool toggleCheckBox);
+	IEditableBindingList* EditableItems() const noexcept;
+	bool IsNewItemPlaceholder(
+		const BindingSourceReference& item) const noexcept;
+	bool IsAddingNewItem() const noexcept;
+	bool TryGetPendingNewItemOccurrence(
+		const BindingSourceReference& item,
+		size_t& occurrence) const noexcept;
+	bool IsPendingNewItem(
+		const BindingSourceReference& item,
+		size_t rowIndex) const noexcept;
+	void RefreshNewItemPlaceholder();
+	void RefreshNewItemContainerStates();
+	bool BeginNewItemFromPlaceholder(
+		DataGridColumn& column, DataGridCellInfo& identity);
+	bool CancelPendingNewItem(DataGridColumn* restoreColumn = nullptr);
+	bool BeginRowEditTransaction(const DataGridCellInfo& identity);
+	bool CommitCellEdit(bool exitEditingMode);
+	bool CancelCellEdit();
+	bool EndRowEdit(
+		DataGridEditAction action,
+		bool exitEditingMode);
+	bool IsRowEditIdentity(
+		const BindingSourceReference& item,
+		size_t rowIndex) const;
+	bool TryResolveEditingRowIndex(size_t& rowIndex) const;
+	void RefreshEditingRowContainers();
+	void ClearRowEditTransaction();
+	void AbandonRowEditTransaction(bool cancelSource) noexcept;
+	void ReconcileRowEditTransaction();
 	bool RaiseSelectedCellsChanged(
 		const DataGridSelectedCellCollection& previous,
 		bool ignoreLocators = false);
@@ -1393,6 +2334,7 @@ private:
 	void CommitColumnWidthLayoutToAncestors();
 	void InvalidatePendingColumnResizeVisual();
 	void RefreshColumnWidths(bool preserveRealizedColumnRange = false);
+	void ReevaluateFrozenColumnCountForSchemaChange();
 	void ProjectColumnWidthsForViewportLayout();
 	bool TryCommitViewportColumnLayoutLocally();
 	std::pair<size_t, size_t> ResolveRealizedColumnRange() const;

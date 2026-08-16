@@ -260,3 +260,66 @@ ItemContainerGenerator::ApplyPermutation(
 	_recycled.swap(recycled);
 	return changes;
 }
+
+std::vector<ItemContainerGenerator::IndexChange>
+ItemContainerGenerator::ApplySparsePermutation(
+	std::span<const std::pair<size_t, size_t>> oldToNew)
+{
+	if (oldToNew.size() != _realized.size() + _recycled.size())
+		throw std::invalid_argument(
+			"ItemContainerGenerator sparse permutation size is invalid");
+	std::map<size_t, size_t> mapping;
+	std::map<size_t, bool> destinations;
+	for (const auto& [oldIndex, newIndex] : oldToNew)
+	{
+		if (oldIndex >= _sourceCount || newIndex >= _sourceCount
+			|| !mapping.emplace(oldIndex, newIndex).second
+			|| !destinations.emplace(newIndex, true).second)
+			throw std::invalid_argument(
+				"ItemContainerGenerator sparse mapping is invalid");
+	}
+	for (const auto& [index, item] : _realized)
+	{
+		(void)item;
+		if (!mapping.contains(index))
+			throw std::invalid_argument(
+				"ItemContainerGenerator realized mapping is missing");
+	}
+	for (const auto& [index, item] : _recycled)
+	{
+		(void)item;
+		if (!mapping.contains(index))
+			throw std::invalid_argument(
+				"ItemContainerGenerator recycled mapping is missing");
+	}
+
+	std::vector<IndexChange> changes;
+	changes.reserve(oldToNew.size());
+	RealizedMap realized;
+	while (!_realized.empty())
+	{
+		auto node = _realized.extract(_realized.begin());
+		const size_t oldIndex = node.key();
+		const size_t newIndex = mapping.at(oldIndex);
+		if (newIndex != oldIndex)
+			changes.push_back({ node.mapped().Visual, oldIndex, newIndex });
+		node.key() = newIndex;
+		realized.insert(std::move(node));
+	}
+	_realized.swap(realized);
+
+	RecycledMap recycled;
+	while (!_recycled.empty())
+	{
+		auto node = _recycled.extract(_recycled.begin());
+		const size_t oldIndex = node.key();
+		const size_t newIndex = mapping.at(oldIndex);
+		if (newIndex != oldIndex)
+			changes.push_back({
+				node.mapped().Visual.get(), oldIndex, newIndex });
+		node.key() = newIndex;
+		recycled.insert(std::move(node));
+	}
+	_recycled.swap(recycled);
+	return changes;
+}

@@ -76,10 +76,30 @@ namespace
 		"DataGridPreparingCellForEditEventArgs");
 	CUI_CPP_EVENT_TYPE(DataGridCellEditEndingEventArgs,
 		"DataGridCellEditEndingEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridRowEditEndingEventArgs,
+		"DataGridRowEditEndingEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridRowEventArgs,
+		"DataGridRowEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridRowDetailsEventArgs,
+		"DataGridRowDetailsEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridAddingNewItemEventArgs,
+		"DataGridAddingNewItemEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridInitializingNewItemEventArgs,
+		"DataGridInitializingNewItemEventArgs");
 	CUI_CPP_EVENT_TYPE(DataGridCurrentCellChangedEventArgs,
 		"DataGridCurrentCellChangedEventArgs");
 	CUI_CPP_EVENT_TYPE(DataGridSelectedCellsChangedEventArgs,
 		"DataGridSelectedCellsChangedEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridColumnHeaderDragStartedEventArgs,
+		"DataGridColumnHeaderDragStartedEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridColumnHeaderDragDeltaEventArgs,
+		"DataGridColumnHeaderDragDeltaEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridColumnHeaderDragCompletedEventArgs,
+		"DataGridColumnHeaderDragCompletedEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridColumnReorderingEventArgs,
+		"DataGridColumnReorderingEventArgs");
+	CUI_CPP_EVENT_TYPE(DataGridColumnEventArgs,
+		"DataGridColumnEventArgs");
 	CUI_CPP_EVENT_TYPE(ItemContainerControl, "ItemContainerControl");
 	CUI_CPP_EVENT_TYPE(Menu, "Menu");
 	CUI_CPP_EVENT_TYPE(ContextMenu, "ContextMenu");
@@ -590,10 +610,36 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 				PreparingCellForEdit, "sender", "e"),
 			CUI_EVENT(DataGrid, CellEditEnding,
 				CellEditEnding, "sender", "e"),
+			CUI_EVENT(DataGrid, RowEditEnding,
+				RowEditEnding, "sender", "e"),
+			CUI_EVENT(DataGrid, LoadingRow,
+				LoadingRow, "sender", "e"),
+			CUI_EVENT(DataGrid, UnloadingRow,
+				UnloadingRow, "sender", "e"),
+			CUI_EVENT(DataGrid, LoadingRowDetails,
+				LoadingRowDetails, "sender", "e"),
+			CUI_EVENT(DataGrid, UnloadingRowDetails,
+				UnloadingRowDetails, "sender", "e"),
+			CUI_EVENT(DataGrid, RowDetailsVisibilityChanged,
+				RowDetailsVisibilityChanged, "sender", "e"),
+			CUI_EVENT(DataGrid, AddingNewItem,
+				AddingNewItem, "sender", "e"),
+			CUI_EVENT(DataGrid, InitializingNewItem,
+				InitializingNewItem, "sender", "e"),
 			CUI_EVENT(DataGrid, CurrentCellChanged,
 				CurrentCellChanged, "sender", "e"),
 			CUI_EVENT(DataGrid, SelectedCellsChanged,
 				SelectedCellsChanged, "sender", "e"),
+			CUI_EVENT(DataGrid, ColumnHeaderDragStarted,
+				ColumnHeaderDragStarted, "sender", "e"),
+			CUI_EVENT(DataGrid, ColumnHeaderDragDelta,
+				ColumnHeaderDragDelta, "sender", "e"),
+			CUI_EVENT(DataGrid, ColumnHeaderDragCompleted,
+				ColumnHeaderDragCompleted, "sender", "e"),
+			CUI_EVENT(DataGrid, ColumnReordering,
+				ColumnReordering, "sender", "e"),
+			CUI_EVENT(DataGrid, ColumnReordered,
+				ColumnReordered, "sender", "e"),
 		});
 		break;
 	case UIClass::UI_ScrollViewer:

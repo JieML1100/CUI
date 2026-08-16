@@ -30,6 +30,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1216,7 +1217,8 @@ namespace
 			if (key != L"Path" && key != L"Mode"
 				&& key != L"UpdateSourceTrigger" && key != L"Converter"
 				&& key != L"ConverterParameter" && key != L"StringFormat"
-				&& key != L"FallbackValue" && key != L"TargetNullValue")
+				&& key != L"FallbackValue" && key != L"TargetNullValue"
+				&& key != L"ElementName" && key != L"RelativeSource")
 			{
 				error = L"DataGrid 列 Binding 不支持参数：" + key;
 				return false;
@@ -1238,23 +1240,8 @@ namespace
 			if (error.empty()) error = L"DataGrid 列 Binding 语法无效。";
 			return false;
 		}
-		if (binding.SourceProperty.empty()
-			|| !DesignerBindingUtils::IsValidSourcePath(binding.SourceProperty))
-		{
-			error = L"DataGrid 列 Binding 必须声明有效的行 DataContext Path。";
-			return false;
-		}
-		if (!binding.ElementName.empty()
-			|| binding.RelativeSource != DesignerBindingRelativeSource::None
-			|| !binding.AncestorType.empty()
-			|| !binding.AncestorTypeNamespace.empty()
-			|| binding.AncestorLevel != 1 || binding.IsMultiBinding())
-		{
-			error = L"DataGrid 列 Binding 仅允许行 DataContext Path、Mode、"
-				L"UpdateSourceTrigger、Converter 及其标量选项。";
-			return false;
-		}
-		return true;
+		return DesignerBindingUtils::ValidateDataGridColumnBindingSource(
+			binding, nullptr, &error);
 	}
 
 	bool TryParseTemplateBinding(
@@ -1646,6 +1633,8 @@ namespace
 				return Fail(error, error);
 			if (!_document.ValidateCommandTargetReferences(&error))
 				return Fail(error, error);
+			if (!_document.ValidateDataGridColumnBindingSources(&error))
+				return Fail(error, error);
 			DesignerDataContextSchemaUtils::Canonicalize(_document.DataContextSchema);
 			DesignerStyleSheetUtils::Canonicalize(_document.StyleSheet);
 			if (!DesignDataResourceUtils::ValidateAndCanonicalize(
@@ -1923,6 +1912,32 @@ namespace
 				scope != _resourceScopes.rend(); ++scope)
 				if (const auto* value = find(*scope)) return value;
 			return find(_document.StyleSheet);
+		}
+
+		bool ValidateVisibleDataGridColumnStyle(
+			const std::wstring& key,
+			UIClass generatedType,
+			const std::wstring& member,
+			std::wstring& error)
+		{
+			auto visible = VisibleStyleSheet();
+			DesignerStyleSheet resolved;
+			std::wstring inheritanceError;
+			if (!DesignerStyleSheetUtils::ResolveInheritance(
+				visible, resolved, &inheritanceError))
+				return Fail(member + L" 无法解析 Style："
+					+ inheritanceError, error);
+			const auto found = std::find_if(
+				resolved.Rules.rbegin(), resolved.Rules.rend(),
+				[&](const auto& candidate)
+				{ return Equals(candidate.Id, key); });
+			if (found == resolved.Rules.rend())
+				return Fail(member + L" 引用了未声明的 Style：" + key, error);
+			if (!found->ComponentType.Empty()
+				|| (found->HasType && found->Type != generatedType))
+				return Fail(member + L" 的 Style TargetType 与生成元素不兼容："
+					+ key, error);
+			return true;
 		}
 
 		DesignerStyleSheet VisibleStyleSheet(
@@ -7248,6 +7263,100 @@ namespace
 					_document.Nodes[nodeIndex].Structure.ControlTemplate = definition->Key;
 					continue;
 				}
+				if (_document.Nodes[nodeIndex].Type == UIClass::UI_DataGrid
+					&& Equals(name, L"RowValidationErrorTemplate"))
+				{
+					std::wstring resourceKey;
+					if (!TryParseStaticResource(value, resourceKey))
+						return Fail(L"DataGrid.RowValidationErrorTemplate 必须引用已声明的 ControlTemplate："
+							+ value, error);
+					const auto* definition =
+						FindVisibleControlTemplate(resourceKey);
+					if (!definition)
+						return Fail(L"DataGrid.RowValidationErrorTemplate 引用了未声明的 ControlTemplate："
+							+ resourceKey, error);
+					if (!definition->TargetComponentType.Empty()
+						|| !IsControlTemplateTargetCompatible(
+							UIClass::UI_Control, definition->TargetType))
+						return Fail(L"DataGrid.RowValidationErrorTemplate TargetType 必须兼容 Control："
+							+ definition->DisplayName(), error);
+					if (!assignedProperties.insert(
+						L"rowvalidationerrortemplate").second)
+						return Fail(L"属性重复：RowValidationErrorTemplate", error);
+					_document.Nodes[nodeIndex].Structure.
+						RowValidationErrorTemplate = definition->Key;
+					continue;
+				}
+				if (_document.Nodes[nodeIndex].Type == UIClass::UI_DataGrid)
+				{
+					struct DataGridStyleSlot final
+					{
+						const wchar_t* Name;
+						const wchar_t* AssignmentKey;
+						UIClass TargetType;
+						std::wstring DesignNodeStructure::* Field;
+					};
+					static constexpr DataGridStyleSlot styleSlots[] = {
+						{ L"CellStyle", L"cellstyle", UIClass::UI_DataGridCell,
+							&DesignNodeStructure::DataGridCellStyle },
+						{ L"ColumnHeaderStyle", L"columnheaderstyle",
+							UIClass::UI_DataGridColumnHeader,
+							&DesignNodeStructure::DataGridColumnHeaderStyle },
+						{ L"RowStyle", L"rowstyle", UIClass::UI_DataGridRow,
+							&DesignNodeStructure::DataGridRowStyle },
+						{ L"RowHeaderStyle", L"rowheaderstyle",
+							UIClass::UI_DataGridRowHeader,
+							&DesignNodeStructure::DataGridRowHeaderStyle }
+					};
+					bool handledStyle = false;
+					for (const auto& slot : styleSlots)
+					{
+						if (!Equals(name, slot.Name)) continue;
+						std::wstring resourceKey;
+						if (!TryParseStaticResource(value, resourceKey))
+							return Fail(L"DataGrid." + std::wstring(slot.Name)
+								+ L" 必须引用已声明的 Style。", error);
+						if (!ValidateVisibleDataGridColumnStyle(
+							resourceKey, slot.TargetType,
+							L"DataGrid." + std::wstring(slot.Name), error))
+							return false;
+						if (!assignedProperties.insert(slot.AssignmentKey).second)
+							return Fail(L"属性重复：" + std::wstring(slot.Name), error);
+						_document.Nodes[nodeIndex].Structure.*(slot.Field) = resourceKey;
+						handledStyle = true;
+						break;
+					}
+					if (handledStyle) continue;
+					if (Equals(name, L"RowHeaderTemplate")
+						|| Equals(name, L"RowDetailsTemplate"))
+					{
+						const bool rowDetails =
+							Equals(name, L"RowDetailsTemplate");
+						const std::wstring propertyName = rowDetails
+							? L"RowDetailsTemplate" : L"RowHeaderTemplate";
+						std::wstring resourceKey;
+						if (!TryParseStaticResource(value, resourceKey))
+							return Fail(L"DataGrid." + propertyName
+								+ L" 必须引用已声明的 "
+								L"DataTemplate。", error);
+						const auto* definition =
+							FindVisibleDataTemplate(resourceKey);
+						if (!definition)
+							return Fail(L"DataGrid." + propertyName
+								+ L" 引用了未声明的 "
+								L"DataTemplate：" + resourceKey, error);
+						if (!assignedProperties.insert(
+							rowDetails ? L"rowdetailstemplate"
+								: L"rowheadertemplate").second)
+							return Fail(L"属性重复：" + propertyName, error);
+						if (rowDetails)
+							_document.Nodes[nodeIndex].Structure.
+								DataGridRowDetailsTemplate = definition->Key;
+						else _document.Nodes[nodeIndex].Structure.
+							DataGridRowHeaderTemplate = definition->Key;
+						continue;
+					}
+				}
 				if (IsContentHostType(_document.Nodes[nodeIndex].Type)
 					&& Equals(name, L"ContentTemplate"))
 				{
@@ -7729,6 +7838,14 @@ namespace
 					_options.ResourceBasePath, _document.Resources))
 					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 						+ L" 的属性 " + name + L"：" + applyError, error);
+				if (_document.Nodes[nodeIndex].Type == UIClass::UI_DataGrid
+					&& Equals(descriptor.Name, L"FrozenColumnCount"))
+				{
+					int count = 0;
+					if (!TryParseInteger(effective.Text, count) || count < 0)
+						return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+							+ L" 的 FrozenColumnCount 不能为负数。", error);
+				}
 				StoreMetadata(
 					_document.Nodes[nodeIndex], descriptor.Name, effective,
 					resourceKey, dynamicResourceKey);
@@ -7812,6 +7929,14 @@ namespace
 				_currentResourceBasePath, _document.Resources))
 				return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
 					+ L" 的属性 " + propertyName + L"：" + conversionError, error);
+			if (_document.Nodes[nodeIndex].Type == UIClass::UI_DataGrid
+				&& Equals(descriptor.Name, L"FrozenColumnCount"))
+			{
+				int count = 0;
+				if (!TryParseInteger(canonical.Text, count) || count < 0)
+					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+						+ L" 的 FrozenColumnCount 不能为负数。", error);
+			}
 			StoreMetadata(
 				_document.Nodes[nodeIndex], descriptor.Name, canonical);
 			return true;
@@ -8771,6 +8896,74 @@ namespace
 			return true;
 		}
 
+		bool TryParseDataGridColumnMultiBinding(
+			const Element& propertyElement,
+			DesignerDataBinding& binding,
+			std::wstring& error)
+		{
+			if (!ValidateAttributes(propertyElement, {}, error)) return false;
+			if (!DirectText(propertyElement).empty())
+				return Fail(L"DataGrid 列 MultiBinding 属性不允许文本内容。", error);
+			const auto children = ChildElements(propertyElement);
+			if (children.size() != 1
+				|| !Equals(FromUtf8(children.front()->LocalName()), L"MultiBinding"))
+				return Fail(L"DataGrid 列 Binding 属性必须包含一个 MultiBinding。",
+					error);
+			const auto& multiElement = children.front();
+			DiagnosticContext multiContext(*this, multiElement);
+			if (!ValidateAttributes(multiElement,
+				{ L"Mode", L"UpdateSourceTrigger", L"Converter",
+				  L"ConverterParameter", L"StringFormat", L"FallbackValue",
+				  L"TargetNullValue" }, error)) return false;
+			binding = {};
+			if (const auto mode = Attribute(multiElement, L"Mode"); mode
+				&& !DesignerBindingUtils::TryParseBindingMode(*mode, binding.Mode))
+				return Fail(L"DataGrid 列 MultiBinding Mode 无效：" + *mode, error);
+			if (const auto update = Attribute(
+				multiElement, L"UpdateSourceTrigger"))
+			{
+				auto normalized = *update;
+				if (Equals(normalized, L"PropertyChanged"))
+					normalized = L"OnPropertyChanged";
+				else if (Equals(normalized, L"LostFocus")
+					|| Equals(normalized, L"Validation"))
+					normalized = L"OnValidation";
+				else if (Equals(normalized, L"Explicit")) normalized = L"Never";
+				if (!DesignerBindingUtils::TryParseUpdateMode(
+					normalized, binding.UpdateMode))
+					return Fail(L"DataGrid 列 MultiBinding UpdateSourceTrigger 无效："
+						+ *update, error);
+			}
+			binding.Converter = Attribute(multiElement, L"Converter").value_or(L"");
+			if (const auto value = Attribute(multiElement, L"ConverterParameter"))
+				binding.ConverterParameter = DesignerStyleValue{
+					DesignerStyleValueKind::String, *value };
+			if (const auto value = Attribute(multiElement, L"StringFormat"))
+				binding.StringFormat = *value;
+			if (const auto value = Attribute(multiElement, L"FallbackValue"))
+				binding.FallbackValue = DesignerStyleValue{
+					DesignerStyleValueKind::String, *value };
+			if (const auto value = Attribute(multiElement, L"TargetNullValue"))
+				binding.TargetNullValue = DesignerStyleValue{
+					DesignerStyleValueKind::String, *value };
+			for (const auto& child : ChildElements(multiElement))
+			{
+				if (!Equals(FromUtf8(child->LocalName()), L"Binding"))
+					return Fail(L"DataGrid 列 MultiBinding 只能包含 Binding 子项。",
+						error);
+				DesignerDataBinding childBinding;
+				if (!ParseBindingObjectElement(child, childBinding, error)
+					|| !ResolveBindingAncestorType(child, childBinding, error))
+					return false;
+				binding.ChildBindings.push_back(std::move(childBinding));
+			}
+			std::wstring bindingError;
+			if (!DesignerBindingUtils::ValidateDataGridColumnBindingSource(
+				binding, nullptr, &bindingError))
+				return Fail(bindingError, error);
+			return true;
+		}
+
 		bool ParseDataGridColumns(
 			const Element& property,
 			DesignValue& output,
@@ -8790,11 +8983,19 @@ namespace
 				const bool textColumn = Equals(name, L"DataGridTextColumn");
 				const bool checkBoxColumn = Equals(
 					name, L"DataGridCheckBoxColumn");
+				const bool comboBoxColumn = Equals(
+					name, L"DataGridComboBoxColumn");
+				const bool hyperlinkColumn = Equals(
+					name, L"DataGridHyperlinkColumn");
 				const bool templateColumn = Equals(
 					name, L"DataGridTemplateColumn");
-				if (!textColumn && !checkBoxColumn && !templateColumn)
+				if (!textColumn && !checkBoxColumn && !comboBoxColumn
+					&& !hyperlinkColumn
+					&& !templateColumn)
 					return Fail(L"DataGrid.Columns 仅允许 DataGridTextColumn、"
-						L"DataGridCheckBoxColumn 或 DataGridTemplateColumn。", error);
+						L"DataGridCheckBoxColumn、DataGridComboBoxColumn、"
+						L"DataGridHyperlinkColumn 或 "
+						L"DataGridTemplateColumn。", error);
 				for (const auto& attribute : columnElement->Attributes())
 				{
 					if (!attribute || IsNamespaceAttribute(*attribute)) continue;
@@ -8805,8 +9006,11 @@ namespace
 				if (templateColumn)
 				{
 					if (!ValidateAttributes(columnElement,
-						{ L"Header", L"Width", L"MinWidth", L"MaxWidth",
+						{ L"Header", L"HeaderStyle", L"HeaderTemplate",
+						  L"CellStyle", L"Width", L"MinWidth", L"MaxWidth",
 						  L"IsReadOnly", L"CanUserSort", L"CanUserResize",
+						  L"CanUserReorder",
+						  L"Visibility",
 						  L"SortMemberPath",
 						  L"CellTemplate", L"CellEditingTemplate" }, error))
 						return false;
@@ -8814,25 +9018,117 @@ namespace
 				else if (checkBoxColumn)
 				{
 					if (!ValidateAttributes(columnElement,
-						{ L"Header", L"Binding", L"Width", L"MinWidth",
+						{ L"Header", L"HeaderStyle", L"HeaderTemplate",
+						  L"CellStyle", L"Binding", L"Width", L"MinWidth",
 						  L"MaxWidth", L"IsReadOnly", L"IsThreeState",
-						  L"CanUserSort", L"CanUserResize", L"SortMemberPath" }, error))
+						  L"ElementStyle", L"EditingElementStyle",
+						  L"CanUserSort", L"CanUserResize", L"CanUserReorder",
+						  L"Visibility",
+						  L"SortMemberPath" }, error))
+						return false;
+				}
+				else if (comboBoxColumn)
+				{
+					if (!ValidateAttributes(columnElement,
+						{ L"Header", L"HeaderStyle", L"HeaderTemplate",
+						  L"CellStyle", L"ItemsSource", L"DisplayMemberPath",
+						  L"SelectedValuePath", L"SelectedItemBinding",
+						  L"SelectedValueBinding", L"Width", L"MinWidth",
+						  L"ElementStyle", L"EditingElementStyle",
+						  L"MaxWidth", L"IsReadOnly", L"CanUserSort",
+						  L"CanUserResize", L"CanUserReorder", L"Visibility",
+						  L"SortMemberPath" }, error))
+						return false;
+				}
+				else if (hyperlinkColumn)
+				{
+					if (!ValidateAttributes(columnElement,
+						{ L"Header", L"HeaderStyle", L"HeaderTemplate",
+						  L"CellStyle", L"Binding", L"ContentBinding",
+						  L"TargetName", L"Width", L"MinWidth", L"MaxWidth",
+						  L"ElementStyle", L"EditingElementStyle",
+						  L"IsReadOnly", L"CanUserSort", L"CanUserResize",
+						  L"CanUserReorder", L"Visibility",
+						  L"SortMemberPath" }, error))
 						return false;
 				}
 				else if (!ValidateAttributes(columnElement,
-					{ L"Header", L"Binding", L"Width", L"MinWidth", L"MaxWidth",
+					{ L"Header", L"HeaderStyle", L"HeaderTemplate",
+					  L"CellStyle", L"Binding", L"Width", L"MinWidth", L"MaxWidth",
+					  L"ElementStyle", L"EditingElementStyle",
 					  L"IsReadOnly", L"CanUserSort", L"CanUserResize",
+					  L"CanUserReorder",
+					  L"Visibility",
 					  L"SortMemberPath" }, error))
 					return false;
-				if (!ChildElements(columnElement).empty()
-					|| !DirectText(columnElement).empty())
-					return Fail(name + L" 不允许包含子元素或文本内容。", error);
+				if (!DirectText(columnElement).empty())
+					return Fail(name + L" 不允许包含文本内容。", error);
+				std::unordered_map<std::wstring, DesignerDataBinding>
+					propertyBindings;
+				for (const auto& child : ChildElements(columnElement))
+				{
+					const auto propertyName = FromUtf8(child->LocalName());
+					const auto prefix = name + L".";
+					if (!propertyName.starts_with(prefix))
+						return Fail(name + L" 不支持子元素：" + propertyName,
+							error);
+					const auto member = propertyName.substr(prefix.size());
+					const bool supported = templateColumn ? false
+						: comboBoxColumn
+							? member == L"SelectedItemBinding"
+								|| member == L"SelectedValueBinding"
+							: hyperlinkColumn
+								? member == L"Binding" || member == L"ContentBinding"
+								: member == L"Binding";
+					if (!supported)
+						return Fail(name + L" 不支持 Binding 属性元素："
+							+ member, error);
+					if (propertyBindings.contains(member))
+						return Fail(name + L" 重复声明 Binding 属性：" + member,
+							error);
+					DesignerDataBinding propertyBinding;
+					if (!TryParseDataGridColumnMultiBinding(
+						child, propertyBinding, error)) return false;
+					propertyBindings.emplace(member, std::move(propertyBinding));
+				}
 
 				DesignValue column = DesignValue::object();
 				column["kind"] = textColumn ? "Text"
-					: checkBoxColumn ? "CheckBox" : "Template";
+					: checkBoxColumn ? "CheckBox"
+						: comboBoxColumn ? "ComboBox"
+							: hyperlinkColumn ? "Hyperlink" : "Template";
 				if (const auto header = Attribute(columnElement, L"Header"))
 					column["header"] = ToUtf8(*header);
+				for (const auto& [attributeName, key, targetType] : {
+					std::tuple{ L"HeaderStyle", "headerStyle",
+						UIClass::UI_DataGridColumnHeader },
+					std::tuple{ L"CellStyle", "cellStyle",
+						UIClass::UI_DataGridCell } })
+				{
+					const auto styleText = Attribute(columnElement, attributeName);
+					if (!styleText) continue;
+					std::wstring resourceKey;
+					if (!TryParseStaticResource(*styleText, resourceKey))
+						return Fail(name + L"." + attributeName
+							+ L" 必须引用已声明的 Style。", error);
+					if (!ValidateVisibleDataGridColumnStyle(
+						resourceKey, targetType,
+						name + L"." + attributeName, error)) return false;
+					column[key] = ToUtf8(resourceKey);
+				}
+				if (const auto templateText = Attribute(
+					columnElement, L"HeaderTemplate"))
+				{
+					std::wstring resourceKey;
+					if (!TryParseStaticResource(*templateText, resourceKey))
+						return Fail(name + L".HeaderTemplate 必须引用已声明的 "
+							L"DataTemplate。", error);
+					const auto* definition = FindVisibleDataTemplate(resourceKey);
+					if (!definition)
+						return Fail(name + L".HeaderTemplate 引用了未声明的 "
+							L"DataTemplate：" + resourceKey, error);
+					column["headerTemplate"] = ToUtf8(definition->Key);
+				}
 
 				bool validWidth = false;
 				column["width"] = DataGridLengthValue(
@@ -8864,12 +9160,15 @@ namespace
 				bool isReadOnly = false;
 				bool canUserSort = true;
 				bool canUserResize = true;
+				bool canUserReorder = true;
 				if (!ReadBoolAttribute(columnElement,
 					L"IsReadOnly", false, isReadOnly, error)
 					|| !ReadBoolAttribute(columnElement,
 						L"CanUserSort", true, canUserSort, error)
 					|| !ReadBoolAttribute(columnElement,
-						L"CanUserResize", true, canUserResize, error)) return false;
+						L"CanUserResize", true, canUserResize, error)
+					|| !ReadBoolAttribute(columnElement,
+						L"CanUserReorder", true, canUserReorder, error)) return false;
 				if (isReadOnly) column["isReadOnly"] = true;
 				if (checkBoxColumn)
 				{
@@ -8880,6 +9179,18 @@ namespace
 				}
 				if (!canUserSort) column["canUserSort"] = false;
 				if (!canUserResize) column["canUserResize"] = false;
+				if (!canUserReorder) column["canUserReorder"] = false;
+				if (const auto visibility = Attribute(
+					columnElement, L"Visibility"))
+				{
+					if (!Equals(*visibility, L"Visible")
+						&& !Equals(*visibility, L"Hidden")
+						&& !Equals(*visibility, L"Collapsed"))
+						return Fail(name + L".Visibility 必须是 Visible、"
+							L"Hidden 或 Collapsed。", error);
+					if (!Equals(*visibility, L"Visible"))
+						column["visibility"] = ToUtf8(*visibility);
+				}
 				if (const auto sortPath = Attribute(
 					columnElement, L"SortMemberPath"))
 				{
@@ -8890,19 +9201,150 @@ namespace
 					if (!normalized.empty())
 						column["sortMemberPath"] = ToUtf8(normalized);
 				}
-
 				if (!templateColumn)
 				{
-					const auto bindingText = Attribute(columnElement, L"Binding");
-					if (!bindingText)
-						return Fail(name + L" 必须声明 Binding。", error);
+					const UIClass elementType = textColumn
+						? UIClass::UI_Label
+						: checkBoxColumn ? UIClass::UI_CheckBox
+							: comboBoxColumn ? UIClass::UI_ComboBox
+								: UIClass::UI_Button;
+					const UIClass editingType = textColumn || hyperlinkColumn
+						? UIClass::UI_TextBox : elementType;
+					for (const auto& [attributeName, key, generatedType] : {
+						std::tuple{ L"ElementStyle", "elementStyle", elementType },
+						std::tuple{ L"EditingElementStyle", "editingElementStyle",
+							editingType } })
+					{
+						const auto styleText = Attribute(
+							columnElement, attributeName);
+						if (!styleText) continue;
+						std::wstring resourceKey;
+						if (!TryParseStaticResource(*styleText, resourceKey))
+							return Fail(name + L"." + attributeName
+								+ L" 必须引用已声明的 Style。", error);
+						if (!ValidateVisibleDataGridColumnStyle(
+							resourceKey, generatedType,
+							name + L"." + attributeName, error)) return false;
+						column[key] = ToUtf8(resourceKey);
+					}
+				}
+
+				if (comboBoxColumn)
+				{
+					const auto itemsSourceText = Attribute(
+						columnElement, L"ItemsSource");
+					std::wstring resourceKey;
+					if (!itemsSourceText
+						|| !TryParseStaticResource(*itemsSourceText, resourceKey)
+						|| (!_document.FindDataList(resourceKey)
+							&& !_document.FindCollectionView(resourceKey)))
+						return Fail(name + L".ItemsSource 必须引用已声明的 "
+							L"DataList 或 CollectionViewSource。", error);
+					column["itemsSourceResource"] = ToUtf8(resourceKey);
+
+					const auto selectedItemBinding = Attribute(
+						columnElement, L"SelectedItemBinding");
+					const auto selectedValueBinding = Attribute(
+						columnElement, L"SelectedValueBinding");
+					const bool hasSelectedItem = selectedItemBinding.has_value()
+						|| propertyBindings.contains(L"SelectedItemBinding");
+					const bool hasSelectedValue = selectedValueBinding.has_value()
+						|| propertyBindings.contains(L"SelectedValueBinding");
+					if (hasSelectedItem == hasSelectedValue
+						|| (selectedItemBinding
+							&& propertyBindings.contains(L"SelectedItemBinding"))
+						|| (selectedValueBinding
+							&& propertyBindings.contains(L"SelectedValueBinding")))
+						return Fail(name + L" 必须且只能声明 SelectedItemBinding "
+							L"或 SelectedValueBinding 之一。", error);
 					DesignerDataBinding binding;
 					std::wstring bindingError;
-					if (!TryParseDataGridColumnBinding(
+					if (hasSelectedValue
+						&& propertyBindings.contains(L"SelectedValueBinding"))
+						binding = propertyBindings.at(L"SelectedValueBinding");
+					else if (hasSelectedItem
+						&& propertyBindings.contains(L"SelectedItemBinding"))
+						binding = propertyBindings.at(L"SelectedItemBinding");
+					else
+					{
+						const auto& bindingText = selectedValueBinding
+							? *selectedValueBinding : *selectedItemBinding;
+						if (!TryParseDataGridColumnBinding(
+							bindingText, binding, bindingError))
+						return Fail(name + L"."
+							+ (hasSelectedValue
+								? L"SelectedValueBinding："
+								: L"SelectedItemBinding：")
+							+ bindingError, error);
+					}
+					column["binding"] =
+						DesignerBindingUtils::WriteBindingDefinition(binding);
+					if (hasSelectedValue)
+						column["selectionBinding"] = "SelectedValue";
+
+					for (const auto& [attributeName, key] : {
+						std::pair{ L"DisplayMemberPath", "displayMemberPath" },
+						std::pair{ L"SelectedValuePath", "selectedValuePath" } })
+					{
+						const auto authored = Attribute(columnElement, attributeName);
+						if (!authored) continue;
+						const auto path = DesignerBindingUtils::Trim(*authored);
+						if (!path.empty()
+							&& !DesignerBindingUtils::IsValidSourcePath(path))
+							return Fail(name + L"." + attributeName + L" 无效。", error);
+						if (!path.empty()) column[key] = ToUtf8(path);
+					}
+				}
+				else if (!templateColumn)
+				{
+					const auto bindingText = Attribute(columnElement, L"Binding");
+					const auto propertyBinding = propertyBindings.find(L"Binding");
+					if (!bindingText && propertyBinding == propertyBindings.end())
+						return Fail(name + L" 必须声明 Binding。", error);
+					if (bindingText && propertyBinding != propertyBindings.end())
+						return Fail(name + L".Binding 不能同时使用属性和属性元素。",
+							error);
+					DesignerDataBinding binding;
+					std::wstring bindingError;
+					if (propertyBinding != propertyBindings.end())
+						binding = propertyBinding->second;
+					else if (!TryParseDataGridColumnBinding(
 						*bindingText, binding, bindingError))
 						return Fail(name + L".Binding：" + bindingError, error);
 					column["binding"] =
 						DesignerBindingUtils::WriteBindingDefinition(binding);
+					if (hyperlinkColumn)
+					{
+						const auto contentBindingText = Attribute(
+							columnElement, L"ContentBinding");
+						const auto contentProperty =
+							propertyBindings.find(L"ContentBinding");
+						if (contentBindingText
+							&& contentProperty != propertyBindings.end())
+							return Fail(name + L".ContentBinding 不能同时使用属性和"
+								L"属性元素。", error);
+						if (contentBindingText
+							|| contentProperty != propertyBindings.end())
+						{
+							DesignerDataBinding contentBinding;
+							if (contentProperty != propertyBindings.end())
+								contentBinding = contentProperty->second;
+							else if (!TryParseDataGridColumnBinding(
+								*contentBindingText, contentBinding, bindingError))
+								return Fail(name + L".ContentBinding："
+									+ bindingError, error);
+							column["contentBinding"] =
+								DesignerBindingUtils::WriteBindingDefinition(
+									contentBinding);
+						}
+						if (const auto targetName = Attribute(
+							columnElement, L"TargetName"))
+						{
+							const auto normalized = Trim(*targetName);
+							if (!normalized.empty())
+								column["targetName"] = ToUtf8(normalized);
+						}
+					}
 				}
 				else
 				{

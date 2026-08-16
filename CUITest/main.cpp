@@ -159,7 +159,7 @@ int main(int argc, char** argv)
 		{
 			Application::EnsureDpiAwareness();
 			{
-				DemoWindow window(DemoWindow::InitializationMode::DeclarativeOnly);
+				DemoWindow window(DemoWindow::InitializationMode::RuntimeData);
 				std::wstring error;
 				if (!window.VerifyPresentationFeatures(&error))
 				{

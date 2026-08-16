@@ -27,6 +27,18 @@ namespace DesignerBindingUtils
 
 	std::wstring Trim(const std::wstring& value);
 	bool IsValidSourcePath(const std::wstring& path);
+	/**
+	 * Validates the shared DataGridBoundColumn Binding source contract.
+	 * Besides the row DataContext, columns accept the level-one native
+	 * FindAncestor subset DataGridCell/DataGridRow/DataGrid and ElementName to a
+	 * native Control in the same namescope, both with one exact DP. Callers that
+	 * have resolved ElementName pass its native type for capability validation.
+	 */
+	bool ValidateDataGridColumnBindingSource(
+		const DesignerDataBinding& binding,
+		UIClass* outSourceType = nullptr,
+		std::wstring* outError = nullptr,
+		UIClass elementNameSourceType = UIClass::UI_Base);
 	DesignerDataContextSchema BuildSourceSchema(const IBindingSource& source);
 	void WriteOptionalLiteral(
 		DesignerModel::DesignValue& object,

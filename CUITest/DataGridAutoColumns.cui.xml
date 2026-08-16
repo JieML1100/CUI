@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CuiDataGridAutoColumns Version="1">
+  <Rule DataType="DemoOrder" Property="OrderNo" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="DetailsUri" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="Customer" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="Region" GridName="demoDataGrid"
+    Header="AOT 区域" Width="110" IsReadOnly="true"
+    CanUserSort="false" CanUserResize="false" CanUserReorder="false" />
+  <Rule DataType="DemoOrder" Property="Stage" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="Quantity" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="Amount" GridName="demoDataGrid"
+    Action="Suppress" />
+  <Rule DataType="DemoOrder" Property="Paid" GridName="demoDataGrid"
+    Action="Suppress" />
+</CuiDataGridAutoColumns>

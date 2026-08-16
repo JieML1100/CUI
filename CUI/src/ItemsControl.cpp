@@ -18,6 +18,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <span>
 #include <stdexcept>
 #include <tuple>
@@ -955,6 +956,7 @@ namespace
 			_contentHeight = SaturatingDipAdd(
 				SaturatingItemCoordinate(_itemCount, _itemHeight),
 				SaturatingItemCoordinate(_totalHeaderCount, _headerHeight));
+			RebuildMeasuredItemExtents();
 			if (++_configurationRevision == 0) ++_configurationRevision;
 			InvalidateLayout();
 		}
@@ -984,6 +986,7 @@ namespace
 				if (index < _layoutOriginIndex || _indices.size() == 1)
 					_layoutOriginIndex = index;
 			}
+			RebuildMeasuredItemExtents();
 			InvalidateLayout();
 		}
 		void UnregisterItem(Control* control)
@@ -991,8 +994,10 @@ namespace
 			const auto found = _indices.find(control);
 			if (found == _indices.end()) return;
 			const bool removedOrigin = found->second == _layoutOriginIndex;
+			_measuredItemExtents.erase(control);
 			_indices.erase(found);
 			if (removedOrigin) RefreshLayoutOriginIndex();
+			RebuildMeasuredItemExtents();
 			InvalidateLayout();
 		}
 		void SynchronizeAuthoredItems(
@@ -1004,7 +1009,14 @@ namespace
 				if (items[index]) next.emplace(items[index], index);
 			if (_indices == next) return;
 			_indices = std::move(next);
+			for (auto iterator = _measuredItemExtents.begin();
+				iterator != _measuredItemExtents.end();)
+			{
+				if (_indices.contains(iterator->first)) ++iterator;
+				else iterator = _measuredItemExtents.erase(iterator);
+			}
 			RefreshLayoutOriginIndex();
+			RebuildMeasuredItemExtents();
 			InvalidateLayout();
 		}
 		size_t IndexOf(const Control* control) const noexcept
@@ -1017,35 +1029,43 @@ namespace
 		double ItemTop(size_t index) const noexcept
 		{
 			if (index >= _itemCount) return ContentHeight();
-			if (_groupHeaders.empty())
-				return index < _itemCount
-					? SaturatingItemCoordinate(index, _itemHeight)
-					: ContentHeight();
-			const auto next = std::lower_bound(
-				_groupHeaders.begin(), _groupHeaders.end(), index,
-				[](const VirtualGroupHeaderMetadata& entry, size_t itemIndex)
-				{ return entry.ItemIndex < itemIndex; });
-			const size_t headersBefore = next == _groupHeaders.begin()
-				? size_t{ 0 } : std::prev(next)->HeadersAfter;
 			return SaturatingDipAdd(
-				SaturatingItemCoordinate(index, _itemHeight),
-				SaturatingItemCoordinate(headersBefore, _headerHeight));
+				BaseItemTop(index), MeasuredExtentBefore(index));
 		}
 		double ItemExtent(size_t index) const noexcept
 		{
-			if (_groupHeaders.empty())
-				return index < _itemCount
-					? static_cast<double>(_itemHeight) : 0.0;
 			if (index >= _itemCount) return 0.0;
-			const auto entry = std::lower_bound(
-				_groupHeaders.begin(), _groupHeaders.end(), index,
-				[](const VirtualGroupHeaderMetadata& candidate, size_t itemIndex)
-				{ return candidate.ItemIndex < itemIndex; });
-			const size_t headerCount = entry != _groupHeaders.end()
-				&& entry->ItemIndex == index ? entry->HeaderCount : 0;
-			return SaturatingDipAdd(
-				static_cast<double>(_itemHeight),
-				SaturatingItemCoordinate(headerCount, _headerHeight));
+			double extent = BaseItemExtent(index);
+			if (const auto measured = _itemExtentDeltas.find(index);
+				measured != _itemExtentDeltas.end())
+				extent = SaturatingDipAdd(extent, measured->second);
+			return extent;
+		}
+		bool SetMeasuredItemExtent(
+			Control* control, size_t index, double extent) noexcept
+		{
+			const auto registered = control ? _indices.find(control) : _indices.end();
+			if (registered == _indices.end() || registered->second != index)
+				return false;
+			if (!std::isfinite(extent) || extent < 0.0) extent = 0.0;
+			const double baseExtent = BaseItemExtent(index);
+			const bool needsOverride = extent > baseExtent + 0.0001;
+			const auto previous = _measuredItemExtents.find(control);
+			if (!needsOverride)
+			{
+				if (previous == _measuredItemExtents.end()) return false;
+				_measuredItemExtents.erase(previous);
+			}
+			else
+			{
+				if (previous != _measuredItemExtents.end()
+					&& std::abs(previous->second - extent) <= 0.0001)
+					return false;
+				_measuredItemExtents[control] = extent;
+			}
+			RebuildMeasuredItemExtents();
+			if (++_configurationRevision == 0) ++_configurationRevision;
+			return true;
 		}
 		size_t IndexAtOffset(double offset) const noexcept
 		{
@@ -1054,6 +1074,18 @@ namespace
 			const double contentHeight = ContentHeight();
 			if (!std::isfinite(offset) || offset >= contentHeight)
 				return _itemCount - 1;
+			if (!_itemExtentDeltas.empty())
+			{
+				size_t first = 0;
+				size_t last = _itemCount;
+				while (first + 1 < last)
+				{
+					const size_t middle = first + (last - first) / 2;
+					if (offset < ItemTop(middle)) last = middle;
+					else first = middle;
+				}
+				return first;
+			}
 			if (_groupHeaders.empty())
 			{
 				if (_itemHeight <= 0.0f) return 0;
@@ -1107,7 +1139,8 @@ namespace
 		}
 		double ContentHeight() const noexcept
 		{
-			return _contentHeight;
+			return SaturatingDipAdd(
+				_contentHeight, _measuredItemExtentTotal);
 		}
 		size_t GroupHeaderMetadataCount() const noexcept
 		{
@@ -1145,6 +1178,69 @@ namespace
 		}
 
 	private:
+		double BaseItemTop(size_t index) const noexcept
+		{
+			if (index >= _itemCount) return _contentHeight;
+			if (_groupHeaders.empty())
+				return SaturatingItemCoordinate(index, _itemHeight);
+			const auto next = std::lower_bound(
+				_groupHeaders.begin(), _groupHeaders.end(), index,
+				[](const VirtualGroupHeaderMetadata& entry, size_t itemIndex)
+				{ return entry.ItemIndex < itemIndex; });
+			const size_t headersBefore = next == _groupHeaders.begin()
+				? size_t{ 0 } : std::prev(next)->HeadersAfter;
+			return SaturatingDipAdd(
+				SaturatingItemCoordinate(index, _itemHeight),
+				SaturatingItemCoordinate(headersBefore, _headerHeight));
+		}
+		double BaseItemExtent(size_t index) const noexcept
+		{
+			if (index >= _itemCount) return 0.0;
+			if (_groupHeaders.empty())
+				return static_cast<double>(_itemHeight);
+			const auto entry = std::lower_bound(
+				_groupHeaders.begin(), _groupHeaders.end(), index,
+				[](const VirtualGroupHeaderMetadata& candidate, size_t itemIndex)
+				{ return candidate.ItemIndex < itemIndex; });
+			const size_t headerCount = entry != _groupHeaders.end()
+				&& entry->ItemIndex == index ? entry->HeaderCount : 0;
+			return SaturatingDipAdd(
+				static_cast<double>(_itemHeight),
+				SaturatingItemCoordinate(headerCount, _headerHeight));
+		}
+		double MeasuredExtentBefore(size_t index) const noexcept
+		{
+			double result = 0.0;
+			for (auto iterator = _itemExtentDeltas.begin();
+				iterator != _itemExtentDeltas.lower_bound(index); ++iterator)
+				result = SaturatingDipAdd(result, iterator->second);
+			return result;
+		}
+		void RebuildMeasuredItemExtents() noexcept
+		{
+			_itemExtentDeltas.clear();
+			_measuredItemExtentTotal = 0.0;
+			for (auto iterator = _measuredItemExtents.begin();
+				iterator != _measuredItemExtents.end();)
+			{
+				const auto registered = _indices.find(iterator->first);
+				if (registered == _indices.end()
+					|| registered->second >= _itemCount)
+				{
+					iterator = _measuredItemExtents.erase(iterator);
+					continue;
+				}
+				const double delta = (std::max)(0.0,
+					iterator->second - BaseItemExtent(registered->second));
+				if (delta > 0.0001)
+				{
+					_itemExtentDeltas[registered->second] = delta;
+					_measuredItemExtentTotal = SaturatingDipAdd(
+						_measuredItemExtentTotal, delta);
+				}
+				++iterator;
+			}
+		}
 		void RefreshLayoutOriginIndex() noexcept
 		{
 			_layoutOriginIndex = _itemCount;
@@ -1168,11 +1264,14 @@ namespace
 		float _headerHeight = 0.0f;
 		std::vector<VirtualGroupHeaderMetadata> _groupHeaders;
 		double _contentHeight = 0.0;
+		double _measuredItemExtentTotal = 0.0;
 		double _logicalExtentWidth = 0.0;
 		size_t _totalHeaderCount = 0;
 		size_t _groupHeaderMetadataRevision = 0;
 		size_t _configurationRevision = 0;
 		std::unordered_map<Control*, size_t> _indices;
+		std::unordered_map<Control*, double> _measuredItemExtents;
+		std::map<size_t, double> _itemExtentDeltas;
 		size_t _layoutOriginIndex = 0;
 		bool _localLayoutInvalidation = false;
 	};
@@ -1213,6 +1312,14 @@ namespace
 		size_t HeaderCount() const noexcept { return _headerCount; }
 		float FixedHeaderHeight() const noexcept { return _fixedHeaderHeight; }
 		float FixedItemHeight() const noexcept { return _fixedItemHeight; }
+		bool ItemUsesDynamicHeight() const noexcept
+		{
+			auto* owner = dynamic_cast<ItemsControl*>(
+				_itemLogicalParent.Get());
+			return owner && _item
+				&& cui::framework::ItemsControlAccess::
+					UseMeasuredVirtualizedItemHeight(*owner, *_item);
+		}
 		std::unique_ptr<Control> TakeItem()
 		{
 			auto result = DetachVisualChild(_item);
@@ -1584,8 +1691,11 @@ namespace
 			const bool isHeader = static_cast<size_t>(childIndex)
 				< owner.HeaderCount();
 			const auto margin = child->Margin;
+			const bool dynamicItem = !isHeader
+				&& owner.ItemUsesDynamicHeight();
 			const float fixedOuterHeight = isHeader
-				? owner.FixedHeaderHeight() : owner.FixedItemHeight();
+				? owner.FixedHeaderHeight()
+				: dynamicItem ? 0.0f : owner.FixedItemHeight();
 			const float childWidth = DeflateGroupedExtent(
 				availableWidth, margin.Left, margin.Right);
 			const float childHeight = fixedOuterHeight > 0.0f
@@ -1673,11 +1783,27 @@ namespace
 				: cui::core::Infinity;
 			const auto itemIndex = _owner.IndexOf(child);
 			if (itemIndex == (std::numeric_limits<size_t>::max)()) continue;
-			const float height = (std::max)(0.0f,
-				SaturateLayoutDip(_owner.ItemExtent(itemIndex))
-				- margin.Top - margin.Bottom);
+			const auto* grouped = dynamic_cast<GroupedItemHost*>(child);
+			auto* itemsOwner = dynamic_cast<ItemsControl*>(
+				_owner.GetTemplatedParent());
+			const auto* logicalItem = grouped ? grouped->Item() : child;
+			const bool dynamicHeight = itemsOwner && logicalItem
+				&& cui::framework::ItemsControlAccess::
+					UseMeasuredVirtualizedItemHeight(
+						*itemsOwner, *logicalItem);
+			if (!dynamicHeight)
+				(void)_owner.SetMeasuredItemExtent(child, itemIndex, 0.0);
+			const float height = dynamicHeight
+				? cui::core::Infinity
+				: (std::max)(0.0f,
+					SaturateLayoutDip(_owner.ItemExtent(itemIndex))
+					- margin.Top - margin.Bottom);
 			const auto desired = child->Measure(
 				cui::core::Constraints{ cui::core::Size{ width, height } });
+			if (dynamicHeight)
+				(void)_owner.SetMeasuredItemExtent(child, itemIndex,
+					static_cast<double>(desired.height)
+						+ margin.Top + margin.Bottom);
 			desiredWidth = (std::max)(desiredWidth,
 				desired.width + margin.Left + margin.Right);
 		}
@@ -3261,6 +3387,12 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	std::wstring snapshotError;
 	auto candidateHost = CreateItemsHost();
 	auto derivedState = CaptureItemsSourceTransactionState();
+	_itemsSourceReplacementInProgress = true;
+	ItemsScopeExit replacementGuard([ownerLifetime]() noexcept
+	{
+		if (auto* live = dynamic_cast<ItemsControl*>(ownerLifetime.Get()))
+			live->_itemsSourceReplacementInProgress = false;
+	});
 	++_itemsSourceUpdateDepth;
 	const auto previous = _itemsSource;
 	const auto previousSnapshot = _materializedItemsSourceSnapshot;
@@ -3357,6 +3489,8 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	bool rebuilt = false;
 	try
 	{
+		OnItemsSourceReplacementPreparing(previous, _itemsSource);
+		if (!ownerLifetime.Get()) return;
 		rebuilt = RebuildGeneratedItems();
 	}
 	catch (...)
@@ -3453,6 +3587,7 @@ void ItemsControl::SetItemsSource(BindingListReference value)
 	_materializedItemsSourceSnapshot = std::move(candidateSnapshot);
 	ResetTextSearch();
 	--_itemsSourceUpdateDepth;
+	_itemsSourceReplacementInProgress = false;
 	OnItemsSourceTransactionCommitted();
 }
 
@@ -4553,6 +4688,39 @@ void ItemsControl::AttachPreparedItem(PreparedItem&& item)
 				(void)cui::framework::StyleAccess::SetDocumentStyles(
 					*liveVisual, std::move(styles), true);
 		std::tie(liveHost, liveVisual) = validateAttachment();
+		if (groupedVisual)
+		{
+			// GroupedItemHost is only a visual wrapper.  Its Item deliberately
+			// keeps ItemsControl as its logical/inheritance parent, so a recursive
+			// environment install on the wrapper cannot reach the real generated
+			// container.  Publish the same late-realization environment to that
+			// logical subtree as well (DataGridRow -> cells -> column elements).
+			auto* liveLogicalItem = logicalItemLifetime.Get();
+			if (!liveLogicalItem || liveLogicalItem == liveVisual)
+				throw std::logic_error(
+					"ItemsControl grouped logical item was lost");
+			const auto inheritedTheme =
+				cui::framework::StyleAccess::Theme(*this);
+			const auto inheritedStyles =
+				cui::framework::StyleAccess::DocumentStyles(*this);
+			const auto theme = inheritedTheme ? inheritedTheme
+				: cui::framework::StyleAccess::Theme(*liveLogicalItem);
+			const auto styles = inheritedStyles ? inheritedStyles
+				: cui::framework::StyleAccess::DocumentStyles(*liveLogicalItem);
+			// A recycled grouped container can still carry the environment inherited
+			// from its previous owner. Compare and install both sides atomically so a
+			// theme switch cannot leave stale Theme/Document halves in that subtree.
+			// When the owner has no counterpart, preserve an explicitly staged item
+			// side just like ordinary visual-child attachment does.
+			if ((cui::framework::StyleAccess::Theme(*liveLogicalItem) != theme
+				|| cui::framework::StyleAccess::DocumentStyles(*liveLogicalItem)
+					!= styles)
+				&& !cui::framework::StyleAccess::SetEnvironment(
+					*liveLogicalItem, theme, styles, true))
+				throw std::runtime_error(
+					"ItemsControl grouped style environment failed");
+			std::tie(liveHost, liveVisual) = validateAttachment();
+		}
 		if (auto* virtualHost =
 			dynamic_cast<VirtualizingItemsHost*>(liveHost))
 		{
@@ -4749,6 +4917,7 @@ void ItemsControl::ReorderRealizedChildren()
 
 void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 {
+	const ControlWeakReference ownerLifetime(this);
 	if (!_itemsHost)
 	{
 		_generator.ClearRealized();
@@ -4764,8 +4933,16 @@ void ItemsControl::ClearRealizedItems(bool keepForRecycle)
 	}
 	for (const auto index : indices)
 	{
+		auto* visual = _generator.GetRealized(index);
+		if (visual)
+		{
+			if (auto* container = UnwrapGeneratedItem(visual))
+				OnGeneratedItemClearing(*container);
+			if (!ownerLifetime.Get()) return;
+			if (_generator.GetRealized(index) != visual) continue;
+		}
 		auto item = _generator.TakeRealized(index);
-		auto* visual = item.Visual;
+		visual = item.Visual;
 		if (auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 			virtualHost->UnregisterItem(visual);
 		auto detached = _itemsHost->DetachVisualChild(visual);
@@ -4936,8 +5113,16 @@ bool ItemsControl::RealizeVirtualRange(
 	}
 	for (const auto index : removals)
 	{
+		auto* visual = _generator.GetRealized(index);
+		if (visual)
+		{
+			if (auto* container = UnwrapGeneratedItem(visual))
+				OnGeneratedItemClearing(*container);
+			if (!ownerLifetime.Get()) return false;
+			if (_generator.GetRealized(index) != visual) continue;
+		}
 		auto item = _generator.TakeRealized(index);
-		auto* visual = item.Visual;
+		visual = item.Visual;
 		if (virtualHost)
 			virtualHost->UnregisterItem(visual);
 		auto detached = _itemsHost->DetachVisualChild(visual);
@@ -5021,19 +5206,21 @@ void ItemsControl::TrimRecyclePool(size_t first, size_t last)
 
 bool ItemsControl::TryBuildOccurrencePermutationReset(
 	const CollectionChangedEventArgs& change,
-	std::vector<size_t>& oldToNew)
+	OccurrenceResetMapping& mapping)
 {
-	oldToNew.clear();
+	mapping = {};
 	const ControlWeakReference ownerLifetime(this);
 	const size_t count = ItemCount();
 	if (!ownerLifetime.Get()) return false;
 	const BindingListReference previousSource =
 		_materializedItemsSourceSnapshot;
 	const BindingListReference currentSource = _itemsSource;
-	// Reset normally means that no index continuity may be assumed.  The
-	// DataGrid-owned CollectionView is the one narrow exception: sorting emits
-	// one WPF-style refresh while retaining a stable token for every physical
-	// occurrence (including duplicate object references).
+	// Reset normally means that no index continuity may be assumed. DataGrid
+	// sorting is the narrow exception: its active CollectionView emits one
+	// WPF-style refresh while retaining a stable token for every physical
+	// occurrence (including duplicate object references). Grouped rows carry
+	// their headers in the same movable wrapper; GroupsChanged refreshes those
+	// headers after the occurrence permutation commits.
 	if (Type() != UIClass::UI_DataGrid
 		|| change.Action != CollectionChangeAction::Reset
 		|| change.OldSize != change.NewSize
@@ -5044,7 +5231,6 @@ bool ItemsControl::TryBuildOccurrencePermutationReset(
 		|| _generator.SourceCount() != count
 		|| !currentSource || !previousSource)
 		return false;
-	if (IsGroupingActive()) return false;
 	if (!ownerLifetime.Get()) return false;
 	const DataTypeToken currentType = currentSource.Get()->GetItemTypeToken();
 	if (!ownerLifetime.Get()) return false;
@@ -5062,32 +5248,31 @@ bool ItemsControl::TryBuildOccurrencePermutationReset(
 	if (!ownerLifetime.Get() || previousCount != count) return false;
 
 	// A materialized CollectionView keeps an O(1) token-to-index table.  Prefer
-	// that contract when it is available: the complete old-to-new vector is the
-	// only N-sized structure a pure permutation intrinsically needs.  The legacy
-	// fallback below retains support for identity-only third-party lists, but its
-	// unordered_map otherwise adds a large, node-heavy peak allocation for a
-	// million-row sort.
+	// that contract when it is available and remap only generated containers plus
+	// the viewport anchor.  The legacy complete permutation below retains support
+	// for identity-only third-party lists, but necessarily performs O(N) work.
 	if (const auto* currentLookup =
 		dynamic_cast<const IBindingListOccurrenceLookup*>(currentSource.Get());
 		currentLookup
 		&& currentLookup->IsItemIndexByOccurrenceIdentityLookupBounded())
 	{
-		std::vector<size_t> candidate(
-			count, CollectionChangedEventArgs::Npos);
-		std::vector<bool> occupied(count, false);
-		for (size_t oldIndex = 0; oldIndex < count; ++oldIndex)
+		std::unordered_set<size_t> occupied;
+		occupied.reserve(
+			_generator.RealizedCount() + _generator.RecycledCount());
+		mapping.Generated.reserve(
+			_generator.RealizedCount() + _generator.RecycledCount());
+		const auto resolve = [&](size_t oldIndex, size_t& newIndex)
 		{
 			size_t token = 0;
 			if (!previousIdentities->TryGetItemOccurrenceIdentity(
 					oldIndex, token))
 				return false;
 			if (!ownerLifetime.Get()) return false;
-			size_t newIndex = 0;
 			if (!currentLookup->TryGetItemIndexByOccurrenceIdentity(
 					token, newIndex))
 				return false;
 			if (!ownerLifetime.Get()) return false;
-			if (newIndex >= count || occupied[newIndex]) return false;
+			if (newIndex >= count) return false;
 
 			BindingSourceReference previousItem;
 			BindingSourceReference currentItem;
@@ -5098,10 +5283,38 @@ bool ItemsControl::TryBuildOccurrencePermutationReset(
 			if (!previousItem || !currentItem
 				|| previousItem.Shared() != currentItem.Shared())
 				return false;
-			occupied[newIndex] = true;
-			candidate[oldIndex] = newIndex;
+			return true;
+		};
+		for (const auto& [oldIndex, item] : _generator.RealizedItems())
+		{
+			(void)item;
+			size_t newIndex = 0;
+			if (!resolve(oldIndex, newIndex)
+				|| !occupied.insert(newIndex).second) return false;
+			mapping.Generated.emplace_back(oldIndex, newIndex);
 		}
-		oldToNew = std::move(candidate);
+		for (const auto& [oldIndex, item] : _generator.RecycledItems())
+		{
+			(void)item;
+			size_t newIndex = 0;
+			if (!resolve(oldIndex, newIndex)
+				|| !occupied.insert(newIndex).second) return false;
+			mapping.Generated.emplace_back(oldIndex, newIndex);
+		}
+		if (IsVirtualizing() && count != 0)
+		{
+			auto* virtualHost = dynamic_cast<VirtualizingItemsHost*>(_itemsHost);
+			auto* scrollOwner = ItemsScrollOwner();
+			if (!virtualHost) return false;
+			const double offset = scrollOwner
+				? scrollOwner->VerticalOffset : 0.0;
+			const size_t oldAnchor = (std::min)(
+				count - 1, virtualHost->IndexAtOffset(offset));
+			size_t newAnchor = 0;
+			if (!resolve(oldAnchor, newAnchor)) return false;
+			mapping.ViewportAnchor = { oldAnchor, newAnchor };
+		}
+		mapping.Sparse = true;
 		return true;
 	}
 
@@ -5148,21 +5361,37 @@ bool ItemsControl::TryBuildOccurrencePermutationReset(
 	}
 	if (std::any_of(candidate.begin(), candidate.end(), [](size_t index)
 		{ return index == CollectionChangedEventArgs::Npos; })) return false;
-	oldToNew = std::move(candidate);
+	mapping.Complete = std::move(candidate);
 	return true;
 }
 
 bool ItemsControl::ApplyOccurrencePermutationReset(
 	const CollectionChangedEventArgs& change,
-	std::span<const size_t> oldToNew)
+	const OccurrenceResetMapping& mapping)
 {
 	const ControlWeakReference ownerLifetime(this);
 	const size_t newCount = ItemCount();
 	if (!_itemsHost || _applyingCollectionChange
 		|| change.Action != CollectionChangeAction::Reset
-		|| oldToNew.size() != newCount
+		|| (!mapping.Sparse && mapping.Complete.size() != newCount)
 		|| _generator.SourceCount() != newCount)
 		return false;
+	const auto mappedIndex = [&](size_t oldIndex) -> std::optional<size_t>
+	{
+		if (!mapping.Sparse)
+			return oldIndex < mapping.Complete.size()
+				? std::optional<size_t>(mapping.Complete[oldIndex])
+				: std::nullopt;
+		const auto found = std::find_if(
+			mapping.Generated.begin(), mapping.Generated.end(),
+			[oldIndex](const auto& candidate)
+			{ return candidate.first == oldIndex; });
+		if (found != mapping.Generated.end()) return found->second;
+		if (mapping.ViewportAnchor
+			&& mapping.ViewportAnchor->first == oldIndex)
+			return mapping.ViewportAnchor->second;
+		return std::nullopt;
+	};
 
 	auto* scrollOwner = ItemsScrollOwner();
 	double desiredScroll = scrollOwner
@@ -5176,7 +5405,9 @@ bool ItemsControl::ApplyOccurrencePermutationReset(
 		const double withinItem = desiredScroll
 			- virtualHost->ItemTop(oldAnchor);
 		ConfigureVirtualHost();
-		desiredScroll = virtualHost->ItemTop(oldToNew[oldAnchor])
+		const auto newAnchor = mappedIndex(oldAnchor);
+		if (!newAnchor) return false;
+		desiredScroll = virtualHost->ItemTop(*newAnchor)
 			+ withinItem;
 		const double contentHeight = virtualHost->ContentHeight();
 		const double viewport = scrollOwner
@@ -5198,8 +5429,9 @@ bool ItemsControl::ApplyOccurrencePermutationReset(
 	for (const auto& [oldIndex, item] : _generator.RealizedItems())
 	{
 		(void)item;
-		if (oldIndex >= oldToNew.size()) return false;
-		const size_t newIndex = oldToNew[oldIndex];
+		const auto mapped = mappedIndex(oldIndex);
+		if (!mapped) return false;
+		const size_t newIndex = *mapped;
 		occupied.insert(newIndex);
 		if (IsVirtualizing()
 			&& (newIndex < first || newIndex >= last))
@@ -5230,8 +5462,10 @@ bool ItemsControl::ApplyOccurrencePermutationReset(
 			ScopedLayoutUpdate layout(*this, false);
 			OnBeforeGeneratedItemsRebuilt();
 			if (!ownerLifetime.Get()) return false;
-			for (const auto& indexChange
-				: _generator.ApplyPermutation(oldToNew))
+			const auto indexChanges = mapping.Sparse
+				? _generator.ApplySparsePermutation(mapping.Generated)
+				: _generator.ApplyPermutation(mapping.Complete);
+			for (const auto& indexChange : indexChanges)
 			{
 				if (!indexChange.Visual) continue;
 				// Only realized visuals belong to the virtual host. Recycled
@@ -5244,15 +5478,29 @@ bool ItemsControl::ApplyOccurrencePermutationReset(
 						== indexChange.Visual)
 					virtualHost->RegisterItem(
 						indexChange.Visual, indexChange.NewIndex);
-				OnGeneratedItemIndexChanged(
-					*indexChange.Visual,
-					indexChange.OldIndex,
-					indexChange.NewIndex);
+				// The generator and virtual host track the outer grouped wrapper,
+				// while derived controls own the logical item container inside it.
+				// Publish index changes to that logical container just like the
+				// prepare/clear hooks do; otherwise a grouped DataGridRow keeps its
+				// old ItemIndex after a sort or an AddNew commit permutation.
+				if (auto* container = UnwrapGeneratedItem(indexChange.Visual))
+					OnGeneratedItemIndexChanged(
+						*container,
+						indexChange.OldIndex,
+						indexChange.NewIndex);
 				if (!ownerLifetime.Get()) return false;
 			}
 
 			for (const size_t index : removals)
 			{
+				auto* visual = _generator.GetRealized(index);
+				if (visual)
+				{
+					if (auto* container = UnwrapGeneratedItem(visual))
+						OnGeneratedItemClearing(*container);
+					if (!ownerLifetime.Get()) return false;
+					if (_generator.GetRealized(index) != visual) continue;
+				}
 				auto item = _generator.TakeRealized(index);
 				if (!item.Visual) continue;
 				if (auto* virtualHost =
@@ -5313,7 +5561,7 @@ bool ItemsControl::ApplyCollectionChange(
 	const CollectionChangedEventArgs& change)
 {
 	const ControlWeakReference ownerLifetime(this);
-	std::vector<size_t> occurrencePermutation;
+	OccurrenceResetMapping occurrencePermutation;
 	if (TryBuildOccurrencePermutationReset(
 		change, occurrencePermutation))
 		return ApplyOccurrencePermutationReset(
@@ -5413,6 +5661,14 @@ bool ItemsControl::ApplyCollectionChange(
 			for (const auto index
 				: _generator.InvalidatedRealizedIndices(change))
 			{
+				auto* visual = _generator.GetRealized(index);
+				if (visual)
+				{
+					if (auto* container = UnwrapGeneratedItem(visual))
+						OnGeneratedItemClearing(*container);
+					if (!ownerLifetime.Get()) return false;
+					if (_generator.GetRealized(index) != visual) continue;
+				}
 				auto item = _generator.TakeRealized(index);
 				if (!item.Visual) continue;
 				if (auto* virtualHost =
@@ -5439,10 +5695,11 @@ bool ItemsControl::ApplyCollectionChange(
 					dynamic_cast<VirtualizingItemsHost*>(_itemsHost))
 					virtualHost->RegisterItem(
 						indexChange.Visual, indexChange.NewIndex);
-				OnGeneratedItemIndexChanged(
-					*indexChange.Visual,
-					indexChange.OldIndex,
-					indexChange.NewIndex);
+				if (auto* container = UnwrapGeneratedItem(indexChange.Visual))
+					OnGeneratedItemIndexChanged(
+						*container,
+						indexChange.OldIndex,
+						indexChange.NewIndex);
 				if (!ownerLifetime.Get()) return false;
 			}
 			ConfigureVirtualHost();

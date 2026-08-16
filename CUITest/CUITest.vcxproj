@@ -176,10 +176,12 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="DataGridAutoColumns.cui.xml" />
     <CuiTestAsset Include="Assets\*.svg" />
     <CuiCompile Include="DemoWindow.cui.xaml">
       <ClassName>DemoWindow</ClassName>
       <AdditionalInputs>$(ProjectDir)Assets\DemoTheme.xaml</AdditionalInputs>
+      <AutoColumnManifest>$(ProjectDir)DataGridAutoColumns.cui.xml</AutoColumnManifest>
     </CuiCompile>
   </ItemGroup>
   <ItemGroup>

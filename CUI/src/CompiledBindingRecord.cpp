@@ -204,6 +204,52 @@ bool CompiledBindingRecord::TryGetPropertyMetadata(
 	return true;
 }
 
+bool CompiledBindingRecord::BeginEdit()
+{
+	if (_editValues) return true;
+	std::vector<EditValue> values;
+	values.reserve(_properties.size());
+	for (const auto& property : _properties)
+	{
+		if (!property.CanRead || !property.CanWrite
+			|| !property.Read || !property.Write) continue;
+		BindingValue value;
+		if (!property.Read(*this, value)) return false;
+		values.push_back(EditValue{ &property, std::move(value) });
+	}
+	_editValues.emplace(std::move(values));
+	return true;
+}
+
+bool CompiledBindingRecord::EndEdit()
+{
+	_editValues.reset();
+	return true;
+}
+
+bool CompiledBindingRecord::CancelEdit()
+{
+	if (!_editValues) return true;
+	auto values = std::move(*_editValues);
+	_editValues.reset();
+	std::vector<const CompiledBindingRecordProperty*> changed;
+	changed.reserve(values.size());
+	// Generated write thunks do not publish. Restore every field first, then
+	// notify, so reentrant bindings never observe a half-restored record.
+	for (const auto& value : values)
+	{
+		if (!value.Property || !value.Property->Write) return false;
+		const auto result = value.Property->Write(*this, value.Value);
+		if (result == CompiledBindingRecordWriteResult::Failed) return false;
+		if (result == CompiledBindingRecordWriteResult::Changed
+			&& value.Property->CanObserve)
+			changed.push_back(value.Property);
+	}
+	for (const auto* property : changed)
+		_propertyChanged.Notify(property->Token);
+	return true;
+}
+
 #if CUI_ENABLE_DYNAMIC_XAML
 bool CompiledBindingRecord::TryGetValue(
 	const std::wstring& propertyName,

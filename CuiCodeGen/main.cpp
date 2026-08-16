@@ -50,8 +50,8 @@ namespace
 			L"CuiCodeGen - CUI headless design-file code generator\r\n"
 			L"\r\n"
 			L"Usage:\r\n"
-			L"  CuiCodeGen generate <design-file> [--output <base>] [--class <name>] [--converter-manifest <xml>] [--quiet]\r\n"
-			L"  CuiCodeGen compile <xaml-file> --output <base> [--class <name>] [--converter-manifest <xml>] [--quiet]\r\n"
+			L"  CuiCodeGen generate <design-file> [--output <base>] [--class <name>] [--converter-manifest <xml>] [--auto-column-manifest <xml>] [--quiet]\r\n"
+			L"  CuiCodeGen compile <xaml-file> --output <base> [--class <name>] [--converter-manifest <xml>] [--auto-column-manifest <xml>] [--quiet]\r\n"
 			L"  CuiCodeGen compile-theme <resource-dictionary> --output <base> [--class <name>] [--root <xaml>]... [--preserve-type <type>]... [--preserve-resource <key>]... [--quiet]\r\n"
 			L"  CuiCodeGen --help\r\n"
 			L"  CuiCodeGen --version\r\n"
@@ -192,6 +192,24 @@ int wmain(int argc, wchar_t** argv)
 			}
 			if (!ReadOptionValue(index, argc, argv, L"--converter-manifest",
 				options.ConverterManifestPath, parseError)) break;
+			continue;
+		}
+		if (argument == L"--auto-column-manifest"
+			|| argument.starts_with(L"--auto-column-manifest="))
+		{
+			if (compileTheme)
+			{
+				parseError = L"--auto-column-manifest 不适用于 compile-theme。";
+				break;
+			}
+			if (!options.DataGridAutoColumnManifestPath.empty())
+			{
+				parseError = L"--auto-column-manifest 只能指定一次。";
+				break;
+			}
+			if (!ReadOptionValue(index, argc, argv,
+				L"--auto-column-manifest",
+				options.DataGridAutoColumnManifestPath, parseError)) break;
 			continue;
 		}
 		if (argument == L"--root" || argument.starts_with(L"--root="))

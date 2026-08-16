@@ -84,6 +84,15 @@ public:
 	 */
 	std::vector<IndexChange> ApplyPermutation(
 		std::span<const size_t> oldToNew);
+	/**
+	 * Re-keys only the generated occurrences described by oldToNew.
+	 *
+	 * This is the virtualized counterpart to ApplyPermutation: a large source
+	 * with bounded occurrence lookup need not allocate a Count()-sized mapping
+	 * merely to preserve the handful of realized/recycled containers.
+	 */
+	std::vector<IndexChange> ApplySparsePermutation(
+		std::span<const std::pair<size_t, size_t>> oldToNew);
 	static std::optional<size_t> MapIndex(
 		const CollectionChangedEventArgs& change,
 		size_t oldIndex) noexcept;

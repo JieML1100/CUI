@@ -25,6 +25,7 @@
 namespace DesignerModel
 {
 class BindingConverterCatalog;
+class DataGridAutoColumnCatalog;
 }
 
 struct CodeGeneratorFileContent
@@ -89,6 +90,9 @@ private:
 	/** Optional build-owned typed converter catalog; null preserves legacy Design. */
 	std::shared_ptr<const DesignerModel::BindingConverterCatalog>
 		_bindingConverterCatalog;
+	/** Optional build-owned DataType/property-to-column transformation rules. */
+	std::shared_ptr<const DesignerModel::DataGridAutoColumnCatalog>
+		_dataGridAutoColumnCatalog;
 	std::unordered_map<const DesignerModel::DesignNode*, std::string> _varNameOf;
 	std::wstring _lastError;
 	
@@ -273,6 +277,18 @@ public:
 		GetBindingConverterCatalog() const noexcept
 	{
 		return _bindingConverterCatalog.get();
+	}
+	/** Supplies generation-time auto-column rules before static lowering. */
+	void SetDataGridAutoColumnCatalog(
+		std::shared_ptr<const DesignerModel::DataGridAutoColumnCatalog>
+			catalog) noexcept
+	{
+		_dataGridAutoColumnCatalog = std::move(catalog);
+	}
+	const DesignerModel::DataGridAutoColumnCatalog*
+		GetDataGridAutoColumnCatalog() const noexcept
+	{
+		return _dataGridAutoColumnCatalog.get();
 	}
 	/** Schema-only static-lowering validation; never materializes preview controls. */
 	static bool ValidateDocument(

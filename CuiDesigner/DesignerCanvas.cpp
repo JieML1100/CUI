@@ -10000,6 +10000,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 		if (!DesignerModel::DesignDataResourceUtils::ValidateAndCanonicalize(
 			document, outError)) return false;
 		if (!document.ValidateCommandTargetReferences(outError)) return false;
+		if (!document.ValidateDataGridColumnBindingSources(outError)) return false;
 		return true;
 	}
 	catch (const std::exception& expander)

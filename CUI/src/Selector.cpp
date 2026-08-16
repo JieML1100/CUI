@@ -890,12 +890,15 @@ void Selector::OnTextSearchMatch(size_t index)
 }
 
 void Selector::OnGeneratedItemIndexChanged(
-	Control&,
+	Control& visual,
 	size_t,
 	size_t newIndex)
 {
-	if (auto* item = dynamic_cast<ItemContainerControl*>(
-		GetGeneratedItem(newIndex)))
+	// The hook receives the logical container even when the generator tracks a
+	// grouped wrapper. Use that identity directly: a virtualized container may
+	// currently live in the recycle pool and therefore is not discoverable via
+	// GetGeneratedItem(newIndex) until it re-enters the viewport.
+	if (auto* item = dynamic_cast<ItemContainerControl*>(&visual))
 		item->SetItemIndex(newIndex);
 }
 
@@ -1047,6 +1050,7 @@ void Selector::OnSelectionChanged(SelectionChangedEventArgs& args)
 
 void Selector::RestoreSelectionAfterRebuild()
 {
+	const bool replacingSource = IsItemsSourceReplacementInProgress();
 	int restored = -1;
 	BindingValue configured;
 	const auto itemSource = GetPropertyValueSource(SelectedItemProperty());
@@ -1072,7 +1076,7 @@ void Selector::RestoreSelectionAfterRebuild()
 					GetItemsView(), _compiledSelectedValuePath, configured);
 		}
 	}
-	if (restored < 0 && _selectedItemIdentity)
+	if (restored < 0 && _selectedItemIdentity && !replacingSource)
 		restored = FindBindingListItemByValue(
 			GetItemsView(), CompiledBindingPathView{},
 			BindingValue(_selectedItemIdentity));
@@ -1090,7 +1094,8 @@ void Selector::RestoreSelectionAfterRebuild()
 			restored = configuredIndex;
 		}
 	}
-	if (restored < 0) restored = ClampIndex(_selectedIndex);
+	if (restored < 0)
+		restored = replacingSource ? -1 : ClampIndex(_selectedIndex);
 
 	if (_selectedIndex != restored)
 		SetCurrentSelectedIndex(restored);

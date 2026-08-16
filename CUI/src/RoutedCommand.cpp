@@ -15,6 +15,24 @@
 #include <mutex>
 #include <unordered_map>
 
+const RoutedCommand& ApplicationCommands::Copy()
+{
+	static const RoutedCommand command(L"Copy");
+	return command;
+}
+
+const RoutedCommand& ApplicationCommands::Delete()
+{
+	static const RoutedCommand command(L"Delete");
+	return command;
+}
+
+const RoutedCommand& ApplicationCommands::SelectAll()
+{
+	static const RoutedCommand command(L"SelectAll");
+	return command;
+}
+
 struct CommandBindingCollectionState final
 {
 	struct Entry final

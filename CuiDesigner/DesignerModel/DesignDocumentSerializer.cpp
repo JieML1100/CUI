@@ -2133,6 +2133,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 		throw std::invalid_argument(ToUtf8(graphError));
 	if (!document.ValidateCommandTargetReferences(&graphError))
 		throw std::invalid_argument(ToUtf8(graphError));
+	if (!document.ValidateDataGridColumnBindingSources(&graphError))
+		throw std::invalid_argument(ToUtf8(graphError));
 	for (const auto& resolved : graph.Nodes())
 	{
 		const auto& node = document.Nodes[resolved.SourceIndex];
@@ -5707,6 +5709,8 @@ bool DesignDocumentSerializer::FromXml(
 	if (!DesignDocumentEventIndex::Build(document, eventIndex, outError))
 		return false;
 	if (!document.ValidateCommandTargetReferences(outError))
+		return false;
+	if (!document.ValidateDataGridColumnBindingSources(outError))
 		return false;
 	output = std::move(document);
 	return true;

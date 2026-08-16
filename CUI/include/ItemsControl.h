@@ -289,8 +289,11 @@ protected:
 	/** Called before a rebuild prepares any replacement item containers. */
 	virtual void OnBeforeGeneratedItemsPrepared() {}
 	virtual void OnBeforeGeneratedItemsRebuilt() {}
+	/** Called while a realized container is still attached, immediately before it is cleared. */
+	virtual void OnGeneratedItemClearing(Control&) {}
 	virtual void OnGeneratedItemsRebuilt() {}
 	virtual void OnGeneratedItemsRealized() {}
+	/** Called with the logical generated container, never its grouped visual wrapper. */
 	virtual void OnGeneratedItemIndexChanged(
 		Control&, size_t, size_t) {}
 	virtual std::wstring GetTextSearchItemText(
@@ -319,6 +322,11 @@ protected:
 	virtual void OnItemsSourceCollectionChangePreparing(
 		const CollectionChangedEventArgs&,
 		const BindingListReference&) {}
+	/** A different source has been staged and derived rollback state captured,
+	 *  but its generated tree has not been prepared yet. */
+	virtual void OnItemsSourceReplacementPreparing(
+		const BindingListReference&,
+		const BindingListReference&) {}
 	/** Called only after a source replacement or live change has committed. */
 	virtual void OnItemsSourceTransactionCommitted() {}
 	/** Called after one live collection notification commits successfully. */
@@ -345,6 +353,14 @@ protected:
 	{
 		return EffectiveItemsPanel().ItemHeight;
 	}
+	/** A derived container may temporarily exceed the fixed virtual slot.  The
+	 *  host measures only explicitly opted-in logical containers and keeps the
+	 *  resulting sparse extent in its offset model. */
+	virtual bool UseMeasuredVirtualizedItemHeight(
+		const Control&) const noexcept
+	{
+		return false;
+	}
 	/** Logical horizontal extent when realized children intentionally omit
 	 *  offscreen content, such as DataGrid column virtualization. */
 	virtual double GetVirtualizedHorizontalExtent() const
@@ -359,6 +375,12 @@ protected:
 	bool IsItemsSourceUpdateInProgress() const noexcept
 	{
 		return _itemsSourceUpdateDepth != 0;
+	}
+	/** True only while SetItemsSource is constructing a different occurrence
+	 *  domain. Live changes within the current source leave this false. */
+	bool IsItemsSourceReplacementInProgress() const noexcept
+	{
+		return _itemsSourceReplacementInProgress;
 	}
 	bool IsChangingItemsInfrastructure() const noexcept
 	{
@@ -484,6 +506,7 @@ private:
 	bool _virtualCacheRestorePending = false;
 	bool _migratingAuthoredItems = false;
 	size_t _itemsSourceUpdateDepth = 0;
+	bool _itemsSourceReplacementInProgress = false;
 	size_t _authoredItemsUpdateDepth = 0;
 	bool _authoredItemsChangedPending = false;
 	EventConnection _itemsPresenterParentChanged;
@@ -534,12 +557,19 @@ private:
 	size_t VirtualOffsetMetadataEntryCount() const noexcept;
 	size_t VirtualOffsetConfigurationRevision() const noexcept;
 	bool ApplyCollectionChange(const CollectionChangedEventArgs& change);
+	struct OccurrenceResetMapping final
+	{
+		std::vector<size_t> Complete;
+		std::vector<std::pair<size_t, size_t>> Generated;
+		std::optional<std::pair<size_t, size_t>> ViewportAnchor;
+		bool Sparse = false;
+	};
 	bool TryBuildOccurrencePermutationReset(
 		const CollectionChangedEventArgs& change,
-		std::vector<size_t>& oldToNew);
+		OccurrenceResetMapping& mapping);
 	bool ApplyOccurrencePermutationReset(
 		const CollectionChangedEventArgs& change,
-		std::span<const size_t> oldToNew);
+		const OccurrenceResetMapping& mapping);
 	void HandleItemsSourceChange(const CollectionChangedEventArgs& change);
 	bool IsGroupingActive() const noexcept;
 	PreparedGroupHeaders BuildGroupHeaders(
@@ -588,6 +618,11 @@ namespace cui::framework
 			const ItemsControl& target) noexcept
 		{
 			return target.VirtualOffsetConfigurationRevision();
+		}
+		static bool UseMeasuredVirtualizedItemHeight(
+			const ItemsControl& target, const Control& item) noexcept
+		{
+			return target.UseMeasuredVirtualizedItemHeight(item);
 		}
 		static void RestoreVirtualCacheAfterVerticalThumbDrag(
 			ItemsControl& target)
