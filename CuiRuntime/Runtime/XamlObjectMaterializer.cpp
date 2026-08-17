@@ -5450,9 +5450,13 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 					if (!materializeCellTemplate(
 						definition.HeaderTemplate, headerTemplate)) return false;
 					column->SetHeaderTemplate(std::move(headerTemplate));
-					column->SetMinWidth(definition.MinWidth);
-					column->SetMaxWidth(definition.MaxWidth);
-					column->SetWidth(DataGridLengthFromDesign(definition.Width));
+					if (definition.HasMinWidth)
+						column->SetMinWidth(definition.MinWidth);
+					if (definition.HasMaxWidth)
+						column->SetMaxWidth(definition.MaxWidth);
+					if (definition.HasWidth)
+						column->SetWidth(
+							DataGridLengthFromDesign(definition.Width));
 					column->SetIsReadOnly(definition.IsReadOnly);
 					column->SetCanUserSort(definition.CanUserSort);
 					column->SetCanUserResize(definition.CanUserResize);

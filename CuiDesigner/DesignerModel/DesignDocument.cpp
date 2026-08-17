@@ -493,7 +493,10 @@ namespace
 			kind = "Template";
 		DesignValue result{
 			{ "kind", kind },
-			{ "width", EncodeDataGridLength(column.Width) }
+			{ "width", EncodeDataGridLength(column.Width) },
+			{ "hasWidth", column.HasWidth },
+			{ "hasMinWidth", column.HasMinWidth },
+			{ "hasMaxWidth", column.HasMaxWidth }
 		};
 		if (!column.Header.empty())
 			result["header"] = StructuralUtf8(column.Header);
@@ -522,8 +525,8 @@ namespace
 			|| !column.EditingElementStyle.empty())
 			throw std::invalid_argument(
 				"ElementStyle fields require a bound DataGrid column");
-		if (column.MinWidth != 20.0) result["minWidth"] = column.MinWidth;
-		if (!std::isinf(column.MaxWidth))
+		if (column.HasMinWidth) result["minWidth"] = column.MinWidth;
+		if (column.HasMaxWidth && std::isfinite(column.MaxWidth))
 			result["maxWidth"] = column.MaxWidth;
 		if (column.IsReadOnly) result["isReadOnly"] = true;
 		if (column.Kind == DesignDataGridColumnKind::CheckBox)
@@ -602,6 +605,8 @@ namespace
 				&& key != "elementStyle" && key != "editingElementStyle"
 				&& key != "contentBinding" && key != "targetName"
 				&& key != "width" && key != "minWidth" && key != "maxWidth"
+				&& key != "hasWidth" && key != "hasMinWidth"
+				&& key != "hasMaxWidth"
 				&& key != "isReadOnly" && key != "isThreeState"
 				&& key != "itemsSourceResource"
 				&& key != "displayMemberPath"
@@ -661,6 +666,12 @@ namespace
 
 		if ((value.contains("minWidth") && !value["minWidth"].is_number())
 			|| (value.contains("maxWidth") && !value["maxWidth"].is_number())
+			|| (value.contains("hasWidth")
+				&& !value["hasWidth"].is_boolean())
+			|| (value.contains("hasMinWidth")
+				&& !value["hasMinWidth"].is_boolean())
+			|| (value.contains("hasMaxWidth")
+				&& !value["hasMaxWidth"].is_boolean())
 			|| (value.contains("isReadOnly")
 				&& !value["isReadOnly"].is_boolean())
 			|| (value.contains("isThreeState")
@@ -676,6 +687,15 @@ namespace
 		output.MinWidth = value.value("minWidth", 20.0);
 		output.MaxWidth = value.value("maxWidth",
 			(std::numeric_limits<double>::infinity)());
+		// Documents predating M7 always emitted all three setters, including
+		// implicit defaults. Missing flags therefore preserve that old meaning.
+		output.HasWidth = value.value("hasWidth", true);
+		output.HasMinWidth = value.value("hasMinWidth", true);
+		output.HasMaxWidth = value.value("hasMaxWidth", true);
+		if (output.HasMinWidth && !value.contains("minWidth"))
+			output.MinWidth = 20.0;
+		if (output.HasMaxWidth && !value.contains("maxWidth"))
+			output.MaxWidth = (std::numeric_limits<double>::infinity)();
 		output.IsReadOnly = value.value("isReadOnly", false);
 		output.IsThreeState = value.value("isThreeState", false);
 		output.SelectionBinding =

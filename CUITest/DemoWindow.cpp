@@ -261,6 +261,22 @@ namespace
 		ItemTemplateReference _unpaid;
 	};
 
+	class DemoOrderRowStyleSelector final : public IItemStyleSelector
+	{
+	public:
+		std::wstring SelectStyle(
+			const BindingSourceReference& item,
+			Control&) const override
+		{
+			BindingValue value;
+			bool paid = false;
+			if (item && item.Get()->TryGetValue(
+				MakeBindingSourcePropertyToken(L"Paid"), value))
+				(void)value.TryGet(paid);
+			return paid ? L"OrderPaidRowStyle" : L"OrderGridRowStyle";
+		}
+	};
+
 	class MillionOrderList final
 		: public IBindingList,
 		  public IBindingListOccurrenceIdentity,
@@ -2104,6 +2120,20 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 				|| grid->GetHeadersVisibility()
 					!= DataGridHeadersVisibility::All
 				|| !grid->GetRowValidationErrorTemplate()
+				|| (!_runtimeDataInitialized
+					&& (grid->GetRowStyle() != L"OrderGridRowStyle"
+						|| grid->GetRowStyleSelector()
+						|| !grid->GetRowHeaderTemplate()
+						|| grid->GetRowHeaderTemplateSelector()
+						|| !grid->GetRowDetailsTemplate()
+						|| grid->GetRowDetailsTemplateSelector()))
+				|| (_runtimeDataInitialized
+					&& (!grid->GetRowStyle().empty()
+						|| !grid->GetRowStyleSelector()
+						|| grid->GetRowHeaderTemplate()
+						|| !grid->GetRowHeaderTemplateSelector()
+						|| grid->GetRowDetailsTemplate()
+						|| !grid->GetRowDetailsTemplateSelector()))
 				|| std::abs(grid->GetRowHeaderWidth() - 58.0) > 0.001
 				|| std::abs(grid->GetRowHeaderActualWidth() - 58.0) > 0.001
 				|| grid->GetSelectedIndex() != -1
@@ -6884,12 +6914,17 @@ void DemoWindow::InitializeDataGridPage()
 		|| grid->GetRowStyle() != L"OrderGridRowStyle"
 		|| grid->GetRowHeaderStyle() != L"OrderGridRowHeaderStyle"
 		|| !grid->GetRowHeaderTemplate()
+		|| !grid->GetCanUserResizeRows()
+		|| std::abs(grid->GetMinRowHeight() - 30.0) > 0.001
 		|| !grid->GetAreRowDetailsFrozen()
 		|| grid->GetRowDetailsVisibilityMode()
 			!= DataGridRowDetailsVisibilityMode::VisibleWhenSelected
 		|| !grid->GetRowDetailsTemplate())
 		ThrowRuntimeError(
 			L"demoDataGrid 未安装 Grid 级容器样式/行头或行详情模板。");
+	const auto authoredRowStyle = grid->GetRowStyle();
+	const auto authoredRowHeaderTemplate = grid->GetRowHeaderTemplate();
+	const auto authoredRowDetailsTemplate = grid->GetRowDetailsTemplate();
 	auto* customerColumn = dynamic_cast<DataGridTextColumn*>(
 		grid->GetColumn(1));
 	if (!customerColumn
@@ -6908,6 +6943,22 @@ void DemoWindow::InitializeDataGridPage()
 		std::make_shared<DemoPaidTemplateSelector>(
 			paidTemplate, unpaidTemplate)));
 	paidColumn->SetCellTemplate({});
+	grid->SetRowStyle({});
+	grid->SetRowStyleSelector(ItemStyleSelectorReference(
+		std::make_shared<DemoOrderRowStyleSelector>()));
+	grid->SetRowHeaderTemplateSelector(ItemTemplateSelectorReference(
+		std::make_shared<DemoPaidTemplateSelector>(
+			authoredRowHeaderTemplate, unpaidTemplate)));
+	grid->SetRowHeaderTemplate({});
+	grid->SetRowDetailsTemplateSelector(ItemTemplateSelectorReference(
+		std::make_shared<DemoPaidTemplateSelector>(
+			authoredRowDetailsTemplate, unpaidTemplate)));
+	grid->SetRowDetailsTemplate({});
+	if (authoredRowStyle != L"OrderGridRowStyle"
+		|| !grid->GetRowStyleSelector()
+		|| !grid->GetRowHeaderTemplateSelector()
+		|| !grid->GetRowDetailsTemplateSelector())
+		ThrowRuntimeError(L"demoDataGrid 未安装运行时行/详情选择器。");
 	const auto authoredItems = grid->GetItemsSource();
 	auto editableItems = std::make_shared<ObservableBindingList>(
 		MakeDataTypeToken(L"DemoOrder"));

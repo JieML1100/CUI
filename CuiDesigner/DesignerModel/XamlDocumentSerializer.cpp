@@ -3288,12 +3288,21 @@ namespace
 							"Hyperlink fields require DataGridHyperlinkColumn");
 
 					const auto width = DataGridLengthText(value["width"]);
-					if (width != L"SizeToHeader") Set(column, "Width", width);
+					if (value.value("hasWidth", true))
+						Set(column, "Width", width);
 					for (const auto& [key, attribute] : {
 						std::pair{ "minWidth", "MinWidth" },
 						std::pair{ "maxWidth", "MaxWidth" } })
 					{
-						if (!value.contains(key)) continue;
+						const auto hasKey = key == std::string("minWidth")
+							? "hasMinWidth" : "hasMaxWidth";
+						if (!value.value(hasKey, true)) continue;
+						if (!value.contains(key))
+						{
+							if (key == std::string("maxWidth")) continue;
+							throw std::invalid_argument(
+								"DataGrid column explicit MinWidth is missing");
+						}
 						if (!value[key].is_number())
 							throw std::invalid_argument(
 								"DataGrid column width constraint must be numeric");

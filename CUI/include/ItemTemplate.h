@@ -115,3 +115,47 @@ public:
 private:
 	std::shared_ptr<const IItemTemplateSelector> _value;
 };
+
+/**
+ * WPF-shaped programmable item-container style policy.
+ *
+ * CUI styles are addressed by resource key, so the applicable native subset
+ * returns that key instead of copying a mutable Style graph into every
+ * container.  The selector is shared and must not retain the recyclable
+ * container supplied to SelectStyle.
+ */
+class IItemStyleSelector
+{
+public:
+	virtual ~IItemStyleSelector() = default;
+	virtual std::wstring SelectStyle(
+		const BindingSourceReference& item,
+		Control& container) const = 0;
+};
+
+/** Shared immutable style-selector identity used by item controls. */
+class ItemStyleSelectorReference final
+{
+public:
+	ItemStyleSelectorReference() = default;
+	explicit ItemStyleSelectorReference(
+		std::shared_ptr<const IItemStyleSelector> value)
+		: _value(std::move(value)) {}
+
+	const IItemStyleSelector* Get() const noexcept { return _value.get(); }
+	const std::shared_ptr<const IItemStyleSelector>& Shared() const noexcept
+	{
+		return _value;
+	}
+	explicit operator bool() const noexcept
+	{
+		return static_cast<bool>(_value);
+	}
+	bool operator==(const ItemStyleSelectorReference& other) const noexcept
+	{
+		return _value == other._value;
+	}
+
+private:
+	std::shared_ptr<const IItemStyleSelector> _value;
+};

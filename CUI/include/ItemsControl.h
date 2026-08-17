@@ -21,6 +21,17 @@ namespace cui::framework
 class ContentPresenter;
 
 /**
+ * Sparse fixed-height contribution used by a virtualizing ItemsControl.
+ * Entries are sorted by item index and replace the host's uniform item height;
+ * they do not include any group-header contribution.
+ */
+struct VirtualizedItemExtentOverride final
+{
+	size_t ItemIndex = 0;
+	double Extent = 0.0;
+};
+
+/**
  * Generic templated collection presenter.
  *
  * Items are either authored UIElement instances or records supplied by
@@ -361,6 +372,17 @@ protected:
 	{
 		return false;
 	}
+	/** Sparse persistent replacements for the uniform virtual item height. */
+	virtual std::span<const VirtualizedItemExtentOverride>
+		GetVirtualizedItemExtentOverrides() const noexcept
+	{
+		return {};
+	}
+	/** Monotonic revision for GetVirtualizedItemExtentOverrides(). */
+	virtual size_t GetVirtualizedItemExtentOverridesRevision() const noexcept
+	{
+		return 0;
+	}
 	/** Logical horizontal extent when realized children intentionally omit
 	 *  offscreen content, such as DataGrid column virtualization. */
 	virtual double GetVirtualizedHorizontalExtent() const
@@ -556,6 +578,7 @@ private:
 	void ConfigureVirtualHost();
 	size_t VirtualOffsetMetadataEntryCount() const noexcept;
 	size_t VirtualOffsetConfigurationRevision() const noexcept;
+	size_t VirtualItemExtentOverrideCount() const noexcept;
 	bool ApplyCollectionChange(const CollectionChangedEventArgs& change);
 	struct OccurrenceResetMapping final
 	{
@@ -618,6 +641,11 @@ namespace cui::framework
 			const ItemsControl& target) noexcept
 		{
 			return target.VirtualOffsetConfigurationRevision();
+		}
+		static size_t VirtualItemExtentOverrideCount(
+			const ItemsControl& target) noexcept
+		{
+			return target.VirtualItemExtentOverrideCount();
 		}
 		static bool UseMeasuredVirtualizedItemHeight(
 			const ItemsControl& target, const Control& item) noexcept

@@ -19,8 +19,10 @@
 #include <cwchar>
 #include <cwctype>
 #include <exception>
+#include <iomanip>
 #include <iterator>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <type_traits>
 #include <typeindex>
@@ -138,6 +140,7 @@ namespace
 	}
 
 	constexpr double DataGridColumnHeaderGripperWidth = 8.0;
+	constexpr double DataGridRowHeaderGripperHeight = 8.0;
 	constexpr double DataGridColumnHeaderDragThreshold = 4.0;
 	constexpr double DataGridColumnDropIndicatorWidth = 2.0;
 
@@ -155,6 +158,14 @@ namespace
 		return D2D1::Matrix3x2F(
 			raw._11, raw._12, raw._21, raw._22, raw._31, raw._32)
 			.TransformPoint(D2D1::Point2F(static_cast<float>(localX), 0.0f)).x;
+	}
+
+	double RenderSpaceY(const Control& control, int localY) noexcept
+	{
+		const auto raw = control.GetLocalToRenderTransform();
+		return D2D1::Matrix3x2F(
+			raw._11, raw._12, raw._21, raw._22, raw._31, raw._32)
+			.TransformPoint(D2D1::Point2F(0.0f, static_cast<float>(localY))).y;
 	}
 
 	D2D1_POINT_2F ToRenderSpace(
@@ -1044,16 +1055,18 @@ private:
 					? livePresenter : nullptr;
 			};
 			const auto maximum = available.Normalized().maximum;
-			// A fixed DataGrid.RowHeight is the authoritative vertical measure.
+			// A fixed cells-presenter height is the authoritative vertical measure.
+			// It may come from DataGrid.RowHeight or one sparse user row override.
 			// Measuring every retained cell here is both unnecessary and expensive:
 			// the outer row Grid probes its Auto column once unbounded and once with
 			// the row slot, which otherwise alternates every cell template between
 			// infinite and finite height on each column-resize frame. Arrange below
 			// still measures cells against their final slots, so the resized column
 			// updates content while unchanged columns retain their measure caches.
-			const double fixedRowHeight = owner->GetRowHeight();
-			if (std::isfinite(fixedRowHeight))
+			const auto specifiedHeight = presenter->GetHeight();
+			if (!specifiedHeight.IsAuto())
 			{
+				const double fixedRowHeight = specifiedHeight.value;
 				auto* livePresenter = currentPresenter();
 				if (!livePresenter) return {};
 				const float totalWidth = livePresenter->TotalColumnWidth();
@@ -1229,8 +1242,7 @@ private:
 				if (!livePresenter || cell != snapshot.Identity
 					|| !livePresenter->IsCurrentCell(cell)) return;
 				if (cell->IsCollapsed()) continue;
-				const bool fixedRowHeight =
-					std::isfinite(owner->GetRowHeight());
+				const bool fixedRowHeight = !livePresenter->IsHeightAuto();
 				if (fixedRowHeight)
 				{
 					// Fixed-height rows intentionally skip cell Measure above.  A
@@ -2591,6 +2603,29 @@ bool DataGridLength::TryParse(
 	}
 }
 
+std::wstring DataGridLength::ToString() const
+{
+	switch (UnitType)
+	{
+	case DataGridLengthUnitType::Auto:
+		return L"Auto";
+	case DataGridLengthUnitType::SizeToCells:
+		return L"SizeToCells";
+	case DataGridLengthUnitType::SizeToHeader:
+		return L"SizeToHeader";
+	case DataGridLengthUnitType::Pixel:
+	case DataGridLengthUnitType::Star:
+	{
+		std::wostringstream stream;
+		stream << std::setprecision(15) << Value;
+		if (UnitType == DataGridLengthUnitType::Star) stream << L'*';
+		return stream.str();
+	}
+	default:
+		return {};
+	}
+}
+
 void DataGridColumn::SetHeader(BindingValue value)
 {
 	if (BindingValuesEqual(_header, value)) return;
@@ -2619,24 +2654,55 @@ void DataGridColumn::SetCellStyle(std::wstring value)
 	if (_owner) _owner->RefreshRealizedCellStyles(this);
 }
 
+const DataGridLength& DataGridColumn::GetWidth() const noexcept
+{
+	return _hasWidth || !_owner ? _width : _owner->GetColumnWidth();
+}
+
+double DataGridColumn::GetMinWidth() const noexcept
+{
+	return _hasMinWidth || !_owner
+		? _minWidth : _owner->GetMinColumnWidth();
+}
+
+double DataGridColumn::GetMaxWidth() const noexcept
+{
+	return _hasMaxWidth || !_owner
+		? _maxWidth : _owner->GetMaxColumnWidth();
+}
+
+double DataGridColumn::GetLayoutMinWidth() const noexcept
+{
+	// WPF gives maximum constraints precedence when a caller deliberately
+	// supplies contradictory Min/Max values. Keep every layout clamp ordered.
+	return (std::min)(GetMinWidth(), GetMaxWidth());
+}
+
+double DataGridColumn::GetLayoutMaxWidth() const noexcept
+{
+	return GetMaxWidth();
+}
+
 void DataGridColumn::SetWidth(DataGridLength value)
 {
 	if (!value.IsValid())
 		throw std::invalid_argument("DataGridColumn.Width is invalid");
-	if (_width == value) return;
+	if (_hasWidth && _width == value) return;
 	if (_owner && !_owner->_columnResizeSnapshot.empty())
 		_owner->EndColumnResizeTransaction(true);
+	const auto previousWidth = GetWidth();
 	const bool removedLastStar = _owner
-		&& _width.UnitType == DataGridLengthUnitType::Star
+		&& previousWidth.UnitType == DataGridLengthUnitType::Star
 		&& value.UnitType != DataGridLengthUnitType::Star
 		&& std::none_of(_owner->_columns.begin(), _owner->_columns.end(),
 			[this](const auto& column)
 			{
 				return column.get() != this
-					&& column->_width.UnitType
+					&& column->GetWidth().UnitType
 						== DataGridLengthUnitType::Star;
 			});
 	_width = value;
+	_hasWidth = true;
 	_runtimeWidth = {};
 	if (removedLastStar)
 	{
@@ -2653,26 +2719,59 @@ void DataGridColumn::SetWidth(DataGridLength value)
 	if (_owner) _owner->RefreshColumnWidths();
 }
 
+void DataGridColumn::ClearWidth()
+{
+	if (!_hasWidth) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
+	_hasWidth = false;
+	_width = DataGridLength::Auto();
+	_runtimeWidth = {};
+	if (_owner) _owner->RefreshColumnWidths();
+}
+
 void DataGridColumn::SetMinWidth(double value)
 {
-	if (!std::isfinite(value) || value < 0.0 || value > _maxWidth)
+	if (!std::isfinite(value) || value < 0.0)
 		throw std::invalid_argument("DataGridColumn.MinWidth is invalid");
-	if (_minWidth == value) return;
+	if (_hasMinWidth && _minWidth == value) return;
 	if (_owner && !_owner->_columnResizeSnapshot.empty())
 		_owner->EndColumnResizeTransaction(true);
 	_minWidth = value;
-	NotifyOwnerChanged();
+	_hasMinWidth = true;
+	if (_owner) _owner->RefreshColumnWidths();
+}
+
+void DataGridColumn::ClearMinWidth()
+{
+	if (!_hasMinWidth) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
+	_hasMinWidth = false;
+	_minWidth = 20.0;
+	if (_owner) _owner->RefreshColumnWidths();
 }
 
 void DataGridColumn::SetMaxWidth(double value)
 {
-	if (std::isnan(value) || value < _minWidth)
+	if (std::isnan(value) || value < 0.0)
 		throw std::invalid_argument("DataGridColumn.MaxWidth is invalid");
-	if (_maxWidth == value) return;
+	if (_hasMaxWidth && _maxWidth == value) return;
 	if (_owner && !_owner->_columnResizeSnapshot.empty())
 		_owner->EndColumnResizeTransaction(true);
 	_maxWidth = value;
-	NotifyOwnerChanged();
+	_hasMaxWidth = true;
+	if (_owner) _owner->RefreshColumnWidths();
+}
+
+void DataGridColumn::ClearMaxWidth()
+{
+	if (!_hasMaxWidth) return;
+	if (_owner && !_owner->_columnResizeSnapshot.empty())
+		_owner->EndColumnResizeTransaction(true);
+	_hasMaxWidth = false;
+	_maxWidth = (std::numeric_limits<double>::infinity)();
+	if (_owner) _owner->RefreshColumnWidths();
 }
 
 void DataGridColumn::SetIsReadOnly(bool value)
@@ -4177,6 +4276,179 @@ const DependencyProperty& DataGridRow::ValidationErrorTemplateProperty()
 	return *registration;
 }
 
+const DependencyProperty& DataGridRow::DetailsTemplateProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<DataGridRow, ItemTemplateReference> options;
+		options.DefaultValue = ItemTemplateReference{};
+		options.Flags = DependencyPropertyFlags::AffectsMeasure;
+		options.Equals = [](const ItemTemplateReference& left,
+			const ItemTemplateReference& right) { return left == right; };
+		options.Coerce = [](DataGridRow& target,
+			const ItemTemplateReference& value)
+			-> std::optional<ItemTemplateReference>
+		{
+			if (target.HasPropertyValue(DetailsTemplateProperty(),
+				DependencyPropertyValueSource::Local)) return value;
+			auto* owner = target.GetDataGridOwner();
+			return owner ? owner->GetRowDetailsTemplate()
+				: ItemTemplateReference{};
+		};
+		options.Changed = [](DataGridRow& target,
+			const ItemTemplateReference&, const ItemTemplateReference&)
+		{
+			if (target._restoringDetailsOverrides) return;
+			const ControlWeakReference lifetime(&target);
+			auto* owner = target.GetDataGridOwner();
+			if (owner && !owner->PersistRowPresentationOverride(target)) return;
+			auto* row = dynamic_cast<DataGridRow*>(lifetime.Get());
+			if (!row) return;
+			const size_t revision = row->_detailsPresentationRevision;
+			(void)row->CoerceValue(DetailsVisibilityProperty());
+			row = dynamic_cast<DataGridRow*>(lifetime.Get());
+			if (row && row->_detailsPresentationRevision == revision)
+				(void)row->UpdateDetailsPresentation();
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 58;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGridRow,
+			ItemTemplateReference>(
+				DependencyPropertyRegistrationLiteral(L"DetailsTemplate"),
+				[](DataGridRow& target) { return target._detailsTemplate; },
+				[](DataGridRow& target, const ItemTemplateReference& value)
+					{ target._detailsTemplate = value; },
+				{}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGridRow::DetailsTemplateSelectorProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<DataGridRow,
+			ItemTemplateSelectorReference> options;
+		options.DefaultValue = ItemTemplateSelectorReference{};
+		options.Flags = DependencyPropertyFlags::AffectsMeasure;
+		options.Equals = [](const ItemTemplateSelectorReference& left,
+			const ItemTemplateSelectorReference& right) { return left == right; };
+		options.Coerce = [](DataGridRow& target,
+			const ItemTemplateSelectorReference& value)
+			-> std::optional<ItemTemplateSelectorReference>
+		{
+			if (target.HasPropertyValue(DetailsTemplateSelectorProperty(),
+				DependencyPropertyValueSource::Local)) return value;
+			auto* owner = target.GetDataGridOwner();
+			return owner ? owner->GetRowDetailsTemplateSelector()
+				: ItemTemplateSelectorReference{};
+		};
+		options.Changed = [](DataGridRow& target,
+			const ItemTemplateSelectorReference&,
+			const ItemTemplateSelectorReference&)
+		{
+			if (target._restoringDetailsOverrides) return;
+			const ControlWeakReference lifetime(&target);
+			auto* owner = target.GetDataGridOwner();
+			if (owner && !owner->PersistRowPresentationOverride(target)) return;
+			auto* row = dynamic_cast<DataGridRow*>(lifetime.Get());
+			if (!row) return;
+			const size_t revision = row->_detailsPresentationRevision;
+			(void)row->CoerceValue(DetailsVisibilityProperty());
+			row = dynamic_cast<DataGridRow*>(lifetime.Get());
+			if (row && row->_detailsPresentationRevision == revision)
+				(void)row->UpdateDetailsPresentation();
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 59;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGridRow,
+			ItemTemplateSelectorReference>(
+				DependencyPropertyRegistrationLiteral(
+					L"DetailsTemplateSelector"),
+				[](DataGridRow& target)
+					{ return target._detailsTemplateSelector; },
+				[](DataGridRow& target,
+					const ItemTemplateSelectorReference& value)
+					{ target._detailsTemplateSelector = value; },
+				{}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGridRow::DetailsVisibilityProperty()
+{
+	static const auto registration = []
+	{
+		DependencyPropertyOptions<DataGridRow, int> options;
+		options.DefaultValue = static_cast<int>(::Visibility::Collapsed);
+		options.Flags = DependencyPropertyFlags::AffectsMeasure;
+		options.Validate = [](const int& value)
+		{
+			return value == static_cast<int>(::Visibility::Visible)
+				|| value == static_cast<int>(::Visibility::Hidden)
+				|| value == static_cast<int>(::Visibility::Collapsed);
+		};
+		options.Coerce = [](DataGridRow& target,
+			const int& value) -> std::optional<int>
+		{
+			if (target.HasPropertyValue(DetailsVisibilityProperty(),
+				DependencyPropertyValueSource::Local)) return value;
+			auto* owner = target.GetDataGridOwner();
+			if (!owner || owner->IsNewItemPlaceholder(target._item))
+				return static_cast<int>(::Visibility::Collapsed);
+			const bool hasDetails = target.GetDetailsTemplate()
+				|| target.GetDetailsTemplateSelector();
+			if (!hasDetails)
+				return static_cast<int>(::Visibility::Collapsed);
+			const auto mode = owner->GetRowDetailsVisibilityMode();
+			const bool visible = mode == DataGridRowDetailsVisibilityMode::Visible
+				|| (mode
+					== DataGridRowDetailsVisibilityMode::VisibleWhenSelected
+					&& target.GetIsSelected());
+			return static_cast<int>(visible
+				? ::Visibility::Visible : ::Visibility::Collapsed);
+		};
+		options.Changed = [](DataGridRow& target, const int&, const int&)
+		{
+			if (target._restoringDetailsOverrides) return;
+			auto* owner = target.GetDataGridOwner();
+			if (owner && !owner->PersistRowPresentationOverride(target)) return;
+			(void)target.UpdateDetailsPresentation();
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 60;
+		options.Design.Editor = DependencyPropertyEditorKind::Choice;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		options.Design.Browsable = false;
+		options.Design.Choices = {
+			{ L"Visible", BindingValue(static_cast<int>(::Visibility::Visible)) },
+			{ L"Hidden", BindingValue(static_cast<int>(::Visibility::Hidden)) },
+			{ L"Collapsed", BindingValue(static_cast<int>(::Visibility::Collapsed)) }
+		};
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGridRow, int>(
+			DependencyPropertyRegistrationLiteral(L"DetailsVisibility"),
+			[](DataGridRow& target)
+				{ return static_cast<int>(target._detailsVisibility); },
+			[](DataGridRow& target, const int& value)
+				{ target._detailsVisibility = static_cast<::Visibility>(value); },
+			{}, std::move(options));
+	}();
+	return *registration;
+}
+
 void DataGridRow::RegisterDependencyProperties()
 {
 	ListBoxItem::RegisterDependencyProperties();
@@ -4186,6 +4458,9 @@ void DataGridRow::RegisterDependencyProperties()
 	(void)HasValidationErrorProperty();
 	(void)ValidationErrorsProperty();
 	(void)ValidationErrorTemplateProperty();
+	(void)DetailsTemplateProperty();
+	(void)DetailsTemplateSelectorProperty();
+	(void)DetailsVisibilityProperty();
 #endif
 }
 
@@ -4206,6 +4481,40 @@ void DataGridRow::SetValidationErrorTemplate(
 {
 	(void)SetDependencyPropertyValue(
 		ValidationErrorTemplateProperty(), std::move(value));
+}
+
+void DataGridRow::SetDetailsTemplate(ItemTemplateReference value)
+{
+	(void)SetDependencyPropertyValue(
+		DetailsTemplateProperty(), std::move(value));
+}
+
+bool DataGridRow::ClearDetailsTemplate()
+{
+	return ClearPropertyValue(DetailsTemplateProperty());
+}
+
+void DataGridRow::SetDetailsTemplateSelector(
+	ItemTemplateSelectorReference value)
+{
+	(void)SetDependencyPropertyValue(
+		DetailsTemplateSelectorProperty(), std::move(value));
+}
+
+bool DataGridRow::ClearDetailsTemplateSelector()
+{
+	return ClearPropertyValue(DetailsTemplateSelectorProperty());
+}
+
+void DataGridRow::SetDetailsVisibility(::Visibility value)
+{
+	(void)TrySetPropertyValue(DetailsVisibilityProperty(),
+		BindingValue(static_cast<int>(value)));
+}
+
+bool DataGridRow::ClearDetailsVisibility()
+{
+	return ClearPropertyValue(DetailsVisibilityProperty());
 }
 
 std::wstring DataGridRow::GetValidationSummary(size_t maxIssues) const
@@ -4246,7 +4555,10 @@ DataGridRow::DataGridRow()
 			if (args.Property == &ItemContainerControl::IsSelectedProperty())
 			{
 				UpdateRowHeader();
-				(void)UpdateDetailsPresentation();
+				const size_t revision = _detailsPresentationRevision;
+				(void)CoerceValue(DetailsVisibilityProperty());
+				if (_detailsPresentationRevision == revision)
+					(void)UpdateDetailsPresentation();
 			}
 			auto* owner = GetDataGridOwner();
 			if (!owner) return;
@@ -4275,6 +4587,35 @@ Control* DataGridRow::GetDetailsElement() const noexcept
 		? _detailsPresenter->GetGeneratedContent() : nullptr;
 }
 
+void DataGridRow::UpdateHeightPresentation()
+{
+	auto* owner = GetDataGridOwner();
+	if (!owner || !_cellsGrid) return;
+	double rowHeight = 0.0;
+	const bool hasUserHeight = owner->TryGetProjectedRowHeight(
+		ItemIndex(), rowHeight);
+	if (!hasUserHeight) rowHeight = owner->EffectiveDefaultRowHeight();
+	const bool fixed = std::isfinite(rowHeight) && rowHeight > 0.0;
+	const float minimum = static_cast<float>((std::min)(
+		owner->GetMinRowHeight(),
+		static_cast<double>((std::numeric_limits<float>::max)())));
+	_cellsGrid->SetMinHeight(minimum);
+	if (fixed)
+	{
+		const auto height = static_cast<float>((std::min)(rowHeight,
+			static_cast<double>((std::numeric_limits<float>::max)())));
+		_cellsGrid->SetHeight(cui::layout::Length::Fixed(height));
+		SetHeight(_detailsVisible
+			? cui::layout::Length::Auto()
+			: cui::layout::Length::Fixed(height));
+	}
+	else
+	{
+		_cellsGrid->SetHeight(cui::layout::Length::Auto());
+		SetHeight(cui::layout::Length::Auto());
+	}
+}
+
 bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 {
 	if (outError) outError->clear();
@@ -4284,13 +4625,11 @@ bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 	const ControlWeakReference ownerLifetime(owner);
 	if (++_detailsPresentationRevision == 0) ++_detailsPresentationRevision;
 	const size_t revision = _detailsPresentationRevision;
-	const auto detailsTemplate = owner->GetRowDetailsTemplate();
-	const auto mode = owner->GetRowDetailsVisibilityMode();
-	const bool shouldShow = detailsTemplate
+	auto detailsTemplate = GetDetailsTemplate();
+	const auto detailsSelector = GetDetailsTemplateSelector();
+	bool shouldShow = _detailsVisibility == ::Visibility::Visible
 		&& !owner->IsNewItemPlaceholder(_item)
-		&& (mode == DataGridRowDetailsVisibilityMode::Visible
-			|| (mode == DataGridRowDetailsVisibilityMode::VisibleWhenSelected
-				&& GetIsSelected()));
+		&& (detailsTemplate || detailsSelector);
 	const auto requestIsCurrent = [rowLifetime, ownerLifetime, revision]()
 	{
 		auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
@@ -4298,37 +4637,30 @@ bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 		return row && liveOwner && row->GetDataGridOwner() == liveOwner
 			&& row->_detailsPresentationRevision == revision;
 	};
+	std::unique_ptr<ContentPresenter> stagedPresenter;
+	if (shouldShow && !detailsTemplate && detailsSelector)
+	{
+		ContentPresenter* selectorContainer = _detailsPresenter;
+		if (!selectorContainer)
+		{
+			stagedPresenter = std::make_unique<ContentPresenter>();
+			selectorContainer = stagedPresenter.get();
+		}
+		(void)selectorContainer->SetDataContext(_item);
+		if (!requestIsCurrent()) return false;
+		detailsTemplate = detailsSelector.Get()->SelectTemplate(
+			_item, *selectorContainer);
+		if (!requestIsCurrent()) return false;
+		shouldShow = static_cast<bool>(detailsTemplate);
+	}
 
 	const auto applyHeightProjection = [rowLifetime, ownerLifetime](bool visible)
 	{
 		auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
 		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 		if (!row || !liveOwner || !row->_cellsGrid) return;
-		if (std::isfinite(liveOwner->GetRowHeight()))
-		{
-			if (visible)
-			{
-				row->SetHeight(cui::layout::Length::Auto());
-				row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
-				if (row && row->_cellsGrid)
-					row->_cellsGrid->SetHeight(cui::layout::Length::Fixed(
-						static_cast<float>(liveOwner->GetRowHeight())));
-			}
-			else
-			{
-				row->_cellsGrid->SetHeight(cui::layout::Length::Auto());
-				row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
-				if (row)
-					row->SetHeight(cui::layout::Length::Fixed(
-						static_cast<float>(liveOwner->GetRowHeight())));
-			}
-		}
-		else
-		{
-			row->_cellsGrid->SetHeight(cui::layout::Length::Auto());
-			row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
-			if (row) row->SetHeight(cui::layout::Length::Auto());
-		}
+		row->_detailsVisible = visible;
+		row->UpdateHeightPresentation();
 	};
 	const auto raiseDetailsEvent = [rowLifetime, ownerLifetime, &requestIsCurrent](
 		Event<void(DataGrid*, DataGridRowDetailsEventArgs&)>& event,
@@ -4387,6 +4719,42 @@ bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 
 	if (_detailsPresenter && _appliedDetailsTemplate == detailsTemplate)
 	{
+		const ControlWeakReference presenterLifetime(_detailsPresenter);
+		BindingSourceReference presentedItem;
+		const bool contentIsCurrent = _detailsPresenter->GetContent().TryGet(
+			presentedItem) && presentedItem.Shared() == _item.Shared();
+		try
+		{
+			if (!contentIsCurrent)
+			{
+				(void)_detailsPresenter->SetDataContext(_item);
+				if (!requestIsCurrent()) return false;
+				auto* presenter = dynamic_cast<ContentPresenter*>(
+					presenterLifetime.Get());
+				if (!presenter || presenter != _detailsPresenter) return false;
+				presenter->SetContent(BindingValue(_item));
+			}
+		}
+		catch (...)
+		{
+			if (outError)
+			{
+				auto* presenter = dynamic_cast<ContentPresenter*>(
+					presenterLifetime.Get());
+				*outError = presenter
+					? presenter->LastTemplateError() : std::wstring{};
+			}
+			throw;
+		}
+		if (!requestIsCurrent()) return false;
+		auto* currentPresenter = dynamic_cast<ContentPresenter*>(
+			presenterLifetime.Get());
+		if (!currentPresenter) return false;
+		if (!currentPresenter->LastTemplateError().empty())
+		{
+			if (outError) *outError = currentPresenter->LastTemplateError();
+			return false;
+		}
 		const bool wasVisible = _detailsVisible;
 		_detailsVisible = true;
 		applyHeightProjection(true);
@@ -4431,7 +4799,8 @@ bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 	}
 	if (!requestIsCurrent()) return false;
 
-	auto presenter = std::make_unique<ContentPresenter>();
+	auto presenter = std::move(stagedPresenter);
+	if (!presenter) presenter = std::make_unique<ContentPresenter>();
 	presenter->VerticalAlignment = VerticalAlignment::Top;
 	Grid::SetRow(*presenter, 1);
 	Grid::SetColumn(*presenter, 1);
@@ -4730,10 +5099,18 @@ bool DataGridRow::Initialize(
 	(void)SetDataContext(item);
 	auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!liveOwner) return false;
-	if (std::isfinite(liveOwner->GetRowHeight()))
-		SetHeight(cui::layout::Length::Fixed(
-			static_cast<float>(liveOwner->GetRowHeight())));
-	else SetHeight(cui::layout::Length::Auto());
+	if (!liveOwner->RestoreRowPresentationOverride(*this))
+	{
+		if (outError) *outError =
+			L"DataGridRow 无法恢复行级详情属性。";
+		return false;
+	}
+	liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!liveOwner) return false;
+	// The cells presenter is created below and owns the resizable baseline.
+	// UpdateDetailsPresentation applies the effective grid/user height once both
+	// the cells and optional details presenters are available.
+	SetHeight(cui::layout::Length::Auto());
 	liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!liveOwner) return false;
 	SetBackground((index % 2) != 0
@@ -4857,6 +5234,8 @@ bool DataGridRow::Initialize(
 	_rowHeader = rowHeaderRaw;
 	_cellsGrid = cellsGridRaw;
 	UpdateRowHeader();
+	if (!rowLifetime.Get() || !ownerLifetime.Get()) return false;
+	if (!UpdateRowHeaderPresentation()) return false;
 	if (!rowLifetime.Get() || !ownerLifetime.Get()) return false;
 	UpdateValidationVisual();
 	if (!rowLifetime.Get() || !ownerLifetime.Get()) return false;
@@ -5182,6 +5561,80 @@ void DataGridRow::UpdateRowHeader()
 	}
 }
 
+bool DataGridRow::UpdateRowHeaderPresentation()
+{
+	auto* owner = GetDataGridOwner();
+	if (!owner || !_rowHeader) return false;
+	const ControlWeakReference rowLifetime(this);
+	const ControlWeakReference ownerLifetime(owner);
+	const ControlWeakReference headerLifetime(_rowHeader);
+	if (++_rowHeaderPresentationRevision == 0)
+		++_rowHeaderPresentationRevision;
+	const size_t revision = _rowHeaderPresentationRevision;
+	(void)_rowHeader->SetDataContext(_item);
+	auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* header = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+	if (!row || !owner || !header || row->GetDataGridOwner() != owner
+		|| row->_rowHeaderPresentationRevision != revision) return false;
+
+	ItemTemplateReference selected;
+	if (!owner->TryResolveRowHeaderTemplate(*row, *header, selected))
+		return false;
+	row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	header = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+	if (!row || !owner || !header || row->GetDataGridOwner() != owner
+		|| row->_rowHeaderPresentationRevision != revision) return false;
+	try
+	{
+		// On a recycled row, never let a newly selected template build once with
+		// the previous row's Content. Clear the old projection before changing
+		// template identity, then publish the current item exactly once.
+		if (header->GetContentTemplate() != selected)
+		{
+			header->SetContent(BindingValue{});
+			row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+			owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			header = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+			if (!row || !owner || !header
+				|| row->GetDataGridOwner() != owner
+				|| row->_rowHeaderPresentationRevision != revision)
+				return false;
+			header->SetContentTemplate(selected);
+		}
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		header = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+		if (!row || !owner || !header || row->GetDataGridOwner() != owner
+			|| row->_rowHeaderPresentationRevision != revision) return false;
+		// Preserve the existing raw row-header surface when no template was
+		// chosen: callers may install their own visual resize/hit target.
+		header->SetContent(selected
+			? BindingValue(row->_item) : BindingValue{});
+	}
+	catch (...)
+	{
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		auto* liveHeader = dynamic_cast<DataGridRowHeader*>(
+			headerLifetime.Get());
+		if (liveOwner && liveHeader)
+			liveOwner->SetLastTemplateError(liveHeader->LastTemplateError());
+		throw;
+	}
+	row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	header = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+	if (!row || !owner || !header || row->GetDataGridOwner() != owner
+		|| row->_rowHeaderPresentationRevision != revision) return false;
+	if (!header->LastTemplateError().empty())
+	{
+		owner->SetLastTemplateError(header->LastTemplateError());
+		return false;
+	}
+	return true;
+}
+
 void DataGridRow::UpdateHorizontalScrollOffset(double offset)
 {
 	auto* owner = GetDataGridOwner();
@@ -5277,19 +5730,51 @@ DataGridRowHeader::DataGridRowHeader()
 	RetainEventConnection(OnPreviewMouseDown.Subscribe(
 		[this](Control*, MouseEventArgs& args)
 		{
-			if (args.ChangedButton == MouseButton::Left)
-				_activationModifiers = args.Modifiers;
+			if (args.ChangedButton != MouseButton::Left) return;
+			// A ContentTemplate makes its decorative child the native hit source.
+			// Acquire the gripper during the tunnel, before ButtonBase's descendant
+			// MouseDown class handler can execute ClickMode=Press and select the row.
+			if (!_isResizing && BeginRowResize(args.Y))
+			{
+				_activationModifiers = ModifierKeys::None;
+				args.Handled = true;
+				return;
+			}
+			_activationModifiers = args.Modifiers;
 		}));
 	RetainEventConnection(OnPreviewMouseDoubleClick.Subscribe(
 		[this](Control*, MouseEventArgs& args)
 		{
-			if (args.ChangedButton == MouseButton::Left)
-				_activationModifiers = args.Modifiers;
+			if (args.ChangedButton != MouseButton::Left) return;
+			size_t rowIndex = DataGridCellInfo::InvalidIndex;
+			bool fromTopEdge = false;
+			auto* row = GetRowOwner();
+			auto* owner = row ? row->GetDataGridOwner() : nullptr;
+			if (owner && TryResolveResizeRow(
+				args.Y, rowIndex, fromTopEdge)
+				&& owner->AutoSizeRow(rowIndex))
+			{
+				_activationModifiers = ModifierKeys::None;
+				args.Handled = true;
+				return;
+			}
+			_activationModifiers = args.Modifiers;
 		}));
 	RetainEventConnection(OnMouseDown.Subscribe(
 		[this](Control*, MouseEventArgs& args)
 		{
 			if (args.ChangedButton != MouseButton::Left) return;
+			if (!_isResizing && BeginRowResize(args.Y))
+			{
+				const ControlWeakReference lifetime(this);
+				InputReport cancelButtonPress;
+				cancelButtonPress.Kind = InputReportKind::Cancel;
+				(void)ButtonBase::ProcessInput(cancelButtonPress);
+				if (auto* source = dynamic_cast<DataGridRowHeader*>(lifetime.Get()))
+					source->_activationModifiers = ModifierKeys::None;
+				args.Handled = true;
+				return;
+			}
 			_activationModifiers = args.Modifiers;
 			// ButtonBase already owns the press. Stop the ancestor DataGridRow
 			// from treating the same press as an ordinary row-container click.
@@ -5299,6 +5784,21 @@ DataGridRowHeader::DataGridRowHeader()
 		[this](Control*, MouseEventArgs& args)
 		{
 			if (args.ChangedButton != MouseButton::Left) return;
+			size_t rowIndex = DataGridCellInfo::InvalidIndex;
+			bool fromTopEdge = false;
+			auto* row = GetRowOwner();
+			auto* owner = row ? row->GetDataGridOwner() : nullptr;
+			if (owner && TryResolveResizeRow(
+				args.Y, rowIndex, fromTopEdge)
+				&& owner->AutoSizeRow(rowIndex))
+			{
+				InputReport cancelButtonPress;
+				cancelButtonPress.Kind = InputReportKind::Cancel;
+				(void)ButtonBase::ProcessInput(cancelButtonPress);
+				_activationModifiers = ModifierKeys::None;
+				args.Handled = true;
+				return;
+			}
 			_activationModifiers = args.Modifiers;
 			args.Handled = true;
 		}));
@@ -5346,7 +5846,6 @@ void DataGridRowHeader::Initialize(DataGridRow& row)
 	{
 		cui::framework::StyleAccess::SetResourceKey(
 			*this, owner->GetRowHeaderStyle());
-		SetContentTemplate(owner->GetRowHeaderTemplate());
 	}
 	SetCurrentIsRowSelected(row.GetIsSelected());
 }
@@ -5359,6 +5858,51 @@ void DataGridRowHeader::SetCurrentIsRowSelected(bool value)
 
 bool DataGridRowHeader::ProcessInput(const InputReport& input)
 {
+	if (input.Kind == InputReportKind::PointerDown
+		&& input.ChangedButton == MouseButton::Left
+		&& BeginRowResize(input.Y))
+	{
+		auto args = input.CreateMouseEventArgs();
+		OnMouseDown(this, args);
+		return true;
+	}
+	if (input.Kind == InputReportKind::PointerMove && _isResizing)
+	{
+		(void)ContinueRowResize(input.Y);
+		auto args = input.CreateMouseEventArgs();
+		OnMouseMove(this, args);
+		return true;
+	}
+	if (input.Kind == InputReportKind::PointerUp && _isResizing
+		&& input.ChangedButton == MouseButton::Left)
+	{
+		EndRowResize(false);
+		auto args = input.CreateMouseEventArgs();
+		OnMouseUp(this, args);
+		return true;
+	}
+	if ((input.Kind == InputReportKind::Cancel
+		|| input.Kind == InputReportKind::CaptureLost) && _isResizing)
+	{
+		EndRowResize(true);
+		return true;
+	}
+	if (input.Kind == InputReportKind::PointerDoubleClick
+		&& input.ChangedButton == MouseButton::Left)
+	{
+		size_t rowIndex = DataGridCellInfo::InvalidIndex;
+		bool fromTopEdge = false;
+		auto* row = GetRowOwner();
+		auto* owner = row ? row->GetDataGridOwner() : nullptr;
+		if (owner && TryResolveResizeRow(
+			input.Y, rowIndex, fromTopEdge)
+			&& owner->AutoSizeRow(rowIndex))
+		{
+			auto args = input.CreateMouseEventArgs();
+			OnMouseDoubleClick(this, args);
+			return true;
+		}
+	}
 	if ((input.Kind == InputReportKind::PointerDown
 		|| input.Kind == InputReportKind::PointerDoubleClick)
 		&& input.ChangedButton == MouseButton::Left)
@@ -6500,9 +7044,9 @@ void DataGridColumnHeadersPresenter::UpdateColumnWidths(
 		}
 		definitions.emplace_back(
 			_owner->ResolveColumnGridLength(index),
-			static_cast<float>(column->GetMinWidth()),
+			static_cast<float>(column->GetLayoutMinWidth()),
 			static_cast<float>((std::min)(
-				column->GetMaxWidth(),
+				column->GetLayoutMaxWidth(),
 				static_cast<double>((std::numeric_limits<float>::max)()))));
 		return true;
 	};
@@ -6866,6 +7410,145 @@ const DependencyProperty& DataGrid::CanUserResizeColumnsProperty()
 	return *registration;
 }
 
+CursorKind DataGridRowHeader::QueryCursor(int localX, int localY)
+{
+	if (_isResizing) return CursorKind::SizeNS;
+	const auto size = GetActualSizeDip();
+	if (localX < 0 || static_cast<double>(localX) > size.width)
+		return Button::QueryCursor(localX, localY);
+	size_t rowIndex = DataGridCellInfo::InvalidIndex;
+	bool fromTopEdge = false;
+	return TryResolveResizeRow(localY, rowIndex, fromTopEdge)
+		? CursorKind::SizeNS : Button::QueryCursor(localX, localY);
+}
+
+bool DataGridRowHeader::TryResolveResizeRow(
+	int localY, size_t& rowIndex, bool& fromTopEdge) const noexcept
+{
+	rowIndex = DataGridCellInfo::InvalidIndex;
+	fromTopEdge = false;
+	auto* row = GetRowOwner();
+	auto* owner = row ? row->GetDataGridOwner() : nullptr;
+	if (!row || !owner || !owner->GetCanUserResizeRows()) return false;
+	const auto size = GetActualSizeDip();
+	const double height = size.height;
+	if (!std::isfinite(height) || height <= 0.0
+		|| localY < 0 || static_cast<double>(localY) > height) return false;
+	// Keep the middle half available to ButtonBase even when a compact/custom
+	// row-header template is shorter than the default WPF header chrome.
+	const double gripperHeight = (std::min)(
+		DataGridRowHeaderGripperHeight, height * 0.25);
+	const size_t currentIndex = row->ItemIndex();
+	if (static_cast<double>(localY) >= height - gripperHeight)
+		rowIndex = currentIndex;
+	else if (localY <= gripperHeight && currentIndex > 0
+		&& owner->ResolveRow(currentIndex - 1))
+	{
+		rowIndex = currentIndex - 1;
+		fromTopEdge = true;
+	}
+	else return false;
+	BindingSourceReference item;
+	const auto items = owner->GetItemsView();
+	return items && items.Get()->TryGetItem(rowIndex, item) && item
+		&& !owner->IsNewItemPlaceholder(item);
+}
+
+bool DataGridRowHeader::BeginRowResize(int localY)
+{
+	if (_isResizing) return true;
+	size_t rowIndex = DataGridCellInfo::InvalidIndex;
+	bool fromTopEdge = false;
+	if (!TryResolveResizeRow(localY, rowIndex, fromTopEdge)) return false;
+	auto* row = GetRowOwner();
+	auto* owner = row ? row->GetDataGridOwner() : nullptr;
+	double startHeight = 0.0;
+	if (!owner || !owner->BeginRowResizeTransaction(rowIndex, startHeight))
+		return false;
+	const ControlWeakReference ownerLifetime(owner);
+	bool transactionCommitted = false;
+	auto rollback = MakeScopeExit([ownerLifetime, &transactionCommitted]
+	{
+		if (transactionCommitted) return;
+		if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+			live->EndRowResizeTransaction(true);
+	});
+	_isResizing = true;
+	_resizeFromTopEdge = fromTopEdge;
+	_resizeStartRenderY = RenderSpaceY(*this, localY);
+	_resizeStartHeight = startHeight;
+	if (!GetPresentationWindow())
+	{
+		transactionCommitted = true;
+		return true;
+	}
+	const ControlWeakReference lifetime(this);
+	const bool captured = CaptureMouse();
+	auto* source = dynamic_cast<DataGridRowHeader*>(lifetime.Get());
+	if (!source) return false;
+	if (!captured || !source->_isResizing || !source->IsMouseCaptured())
+	{
+		if (source->_isResizing) source->EndRowResize(true);
+		return false;
+	}
+	transactionCommitted = true;
+	return true;
+}
+
+bool DataGridRowHeader::ContinueRowResize(int localY)
+{
+	if (!_isResizing) return false;
+	auto* row = GetRowOwner();
+	auto* owner = row ? row->GetDataGridOwner() : nullptr;
+	if (!owner || !owner->ResizeRowInTransaction(
+		_resizeStartHeight + RenderSpaceY(*this, localY) - _resizeStartRenderY))
+	{
+		EndRowResize(true);
+		return false;
+	}
+	return true;
+}
+
+void DataGridRowHeader::EndRowResize(bool cancel)
+{
+	if (!_isResizing) return;
+	_isResizing = false;
+	_resizeFromTopEdge = false;
+	_resizeStartRenderY = 0.0;
+	_resizeStartHeight = 0.0;
+	auto* row = GetRowOwner();
+	const ControlWeakReference ownerLifetime(
+		row ? row->GetDataGridOwner() : nullptr);
+	if (auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+		owner->EndRowResizeTransaction(cancel);
+	if (IsMouseCaptured()) (void)ReleaseMouseCapture();
+}
+
+const DependencyProperty& DataGrid::CanUserResizeRowsProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(true);
+		options.Changed = [](DataGrid& target, const bool&, const bool& value)
+		{
+			if (!value) target.EndRowResizeTransaction(true);
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 110;
+		options.Design.Order = 13;
+		options.Design.Editor = DependencyPropertyEditorKind::Boolean;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid, bool>(
+			DependencyPropertyRegistrationLiteral(L"CanUserResizeRows"),
+			[](DataGrid& target) { return target._canUserResizeRows; },
+			[](DataGrid& target, const bool& value)
+			{ target._canUserResizeRows = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
 const DependencyProperty& DataGrid::EnableColumnVirtualizationProperty()
 {
 	static const auto registration = []
@@ -7002,6 +7685,100 @@ const DependencyProperty& DataGrid::SelectionUnitProperty()
 	return *registration;
 }
 
+const DependencyProperty& DataGrid::ColumnWidthProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(
+			DataGridLength::SizeToHeader(),
+			DependencyPropertyFlags::AffectsMeasure);
+		options.Convert = [](const BindingValue& value)
+			-> std::optional<DataGridLength>
+		{
+			DataGridLength typed;
+			if (value.TryGet(typed)) return typed;
+			std::wstring text;
+			if (!value.TryGetString(text)
+				|| !DataGridLength::TryParse(text, typed)) return std::nullopt;
+			return typed;
+		};
+		options.Validate = [](const DataGridLength& value)
+		{ return value.IsValid(); };
+		options.Changed = [](DataGrid& target,
+			const DataGridLength&, const DataGridLength&)
+		{ target.RefreshInheritedColumnWidthDefaults(true, false, false); };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 10;
+		options.Design.Editor = DependencyPropertyEditorKind::Text;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<
+			DataGrid, DataGridLength>(
+				DependencyPropertyRegistrationLiteral(L"ColumnWidth"),
+				[](DataGrid& target) { return target._columnWidth; },
+				[](DataGrid& target, const DataGridLength& value)
+				{ target._columnWidth = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGrid::MinColumnWidthProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(
+			20.0, DependencyPropertyFlags::AffectsMeasure);
+		options.Validate = [](const double& value)
+		{ return std::isfinite(value) && value >= 0.0; };
+		options.Changed = [](DataGrid& target, const double&, const double&)
+		{ target.RefreshInheritedColumnWidthDefaults(false, true, false); };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 11;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Minimum = 0.0;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid, double>(
+			DependencyPropertyRegistrationLiteral(L"MinColumnWidth"),
+			[](DataGrid& target) { return target._minColumnWidth; },
+			[](DataGrid& target, const double& value)
+			{ target._minColumnWidth = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGrid::MaxColumnWidthProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(
+			(std::numeric_limits<double>::infinity)(),
+			DependencyPropertyFlags::AffectsMeasure);
+		options.Validate = [](const double& value)
+		{ return !std::isnan(value) && value >= 0.0; };
+		options.Changed = [](DataGrid& target, const double&, const double&)
+		{ target.RefreshInheritedColumnWidthDefaults(false, false, true); };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 12;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Minimum = 0.0;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid, double>(
+			DependencyPropertyRegistrationLiteral(L"MaxColumnWidth"),
+			[](DataGrid& target) { return target._maxColumnWidth; },
+			[](DataGrid& target, const double& value)
+			{ target._maxColumnWidth = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
 const DependencyProperty& DataGrid::ColumnHeaderHeightProperty()
 {
 	static const auto registration = []
@@ -7107,12 +7884,57 @@ const DependencyProperty& DataGrid::RowHeightProperty()
 		options.Validate = [](const double& value)
 		{ return std::isnan(value) || (std::isfinite(value) && value > 0.0); };
 		options.Changed = [](DataGrid& target, const double&, const double&)
-		{ target.InvalidateRows(); };
+		{
+			target.EndRowResizeTransaction(true);
+			const ControlWeakReference lifetime(&target);
+			(void)target.RefreshRowHeightOverrideProjection();
+			auto* live = dynamic_cast<DataGrid*>(lifetime.Get());
+			if (!live) return;
+			live->RefreshRealizedRowHeights();
+			live = dynamic_cast<DataGrid*>(lifetime.Get());
+			if (live) live->RefreshVirtualScrollMetrics();
+		};
 		return DependencyPropertyRegistry::RegisterStatic<DataGrid, double>(
 			DependencyPropertyRegistrationLiteral(L"RowHeight"),
 			[](DataGrid& target) { return target._rowHeight; },
 			[](DataGrid& target, const double& value)
 			{ target._rowHeight = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGrid::MinRowHeightProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(
+			0.0, DependencyPropertyFlags::AffectsMeasure);
+		options.Validate = [](const double& value)
+		{ return std::isfinite(value) && value >= 0.0; };
+		options.Changed = [](DataGrid& target, const double&, const double&)
+		{
+			target.EndRowResizeTransaction(true);
+			const ControlWeakReference lifetime(&target);
+			(void)target.RefreshRowHeightOverrideProjection();
+			auto* live = dynamic_cast<DataGrid*>(lifetime.Get());
+			if (!live) return;
+			live->RefreshRealizedRowHeights();
+			live = dynamic_cast<DataGrid*>(lifetime.Get());
+			if (live) live->RefreshVirtualScrollMetrics();
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 29;
+		options.Design.Editor = DependencyPropertyEditorKind::Number;
+		options.Design.Minimum = 0.0;
+		options.Design.Persistence = DependencyPropertyPersistence::Metadata;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid, double>(
+			DependencyPropertyRegistrationLiteral(L"MinRowHeight"),
+			[](DataGrid& target) { return target._minRowHeight; },
+			[](DataGrid& target, const double& value)
+			{ target._minRowHeight = value; }, {}, std::move(options));
 	}();
 	return *registration;
 }
@@ -7428,6 +8250,13 @@ const DependencyProperty& DataGrid::RowStyleProperty()
 	static const auto registration = []
 	{
 		auto options = DataGridOptions(std::wstring{});
+		options.Coerce = [](DataGrid& target,
+			const std::wstring& value) -> std::optional<std::wstring>
+		{
+			if (!value.empty() && target._rowStyleSelector)
+				return std::nullopt;
+			return value;
+		};
 		options.Changed = [](DataGrid& target,
 			const std::wstring&, const std::wstring&)
 		{
@@ -7446,6 +8275,47 @@ const DependencyProperty& DataGrid::RowStyleProperty()
 			[](DataGrid& target) { return target._rowStyle; },
 			[](DataGrid& target, const std::wstring& value)
 			{ target._rowStyle = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGrid::RowStyleSelectorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(ItemStyleSelectorReference{});
+		options.Equals = [](const ItemStyleSelectorReference& left,
+			const ItemStyleSelectorReference& right) { return left == right; };
+		options.Coerce = [](DataGrid& target,
+			const ItemStyleSelectorReference& value)
+			-> std::optional<ItemStyleSelectorReference>
+		{
+			if (value && !target._rowStyle.empty()) return std::nullopt;
+			return value;
+		};
+		options.Changed = [](DataGrid& target,
+			const ItemStyleSelectorReference&,
+			const ItemStyleSelectorReference&)
+		{
+			if (!target.ApplyItemContainerStyle())
+				throw std::runtime_error(
+					"DataGrid.RowStyleSelector could not be applied");
+		};
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 53;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid,
+			ItemStyleSelectorReference>(
+				DependencyPropertyRegistrationLiteral(L"RowStyleSelector"),
+				[](DataGrid& target) { return target._rowStyleSelector; },
+				[](DataGrid& target,
+					const ItemStyleSelectorReference& value)
+					{ target._rowStyleSelector = value; },
+				{}, std::move(options));
 	}();
 	return *registration;
 }
@@ -7498,6 +8368,39 @@ const DependencyProperty& DataGrid::RowHeaderTemplateProperty()
 				[](DataGrid& target) { return target._rowHeaderTemplate; },
 				[](DataGrid& target, const ItemTemplateReference& value)
 				{ target._rowHeaderTemplate = value; }, {}, std::move(options));
+	}();
+	return *registration;
+}
+
+const DependencyProperty& DataGrid::RowHeaderTemplateSelectorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(ItemTemplateSelectorReference{},
+			DependencyPropertyFlags::AffectsMeasure);
+		options.Equals = [](const ItemTemplateSelectorReference& left,
+			const ItemTemplateSelectorReference& right) { return left == right; };
+		options.Changed = [](DataGrid& target,
+			const ItemTemplateSelectorReference&,
+			const ItemTemplateSelectorReference&)
+			{ target.RefreshRealizedRowHeaderPresentation(); };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 55;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid,
+			ItemTemplateSelectorReference>(
+				DependencyPropertyRegistrationLiteral(
+					L"RowHeaderTemplateSelector"),
+				[](DataGrid& target)
+					{ return target._rowHeaderTemplateSelector; },
+				[](DataGrid& target,
+					const ItemTemplateSelectorReference& value)
+					{ target._rowHeaderTemplateSelector = value; },
+				{}, std::move(options));
 	}();
 	return *registration;
 }
@@ -7602,6 +8505,39 @@ const DependencyProperty& DataGrid::RowDetailsTemplateProperty()
 	return *registration;
 }
 
+const DependencyProperty& DataGrid::RowDetailsTemplateSelectorProperty()
+{
+	static const auto registration = []
+	{
+		auto options = DataGridOptions(ItemTemplateSelectorReference{},
+			DependencyPropertyFlags::AffectsMeasure);
+		options.Equals = [](const ItemTemplateSelectorReference& left,
+			const ItemTemplateSelectorReference& right) { return left == right; };
+		options.Changed = [](DataGrid& target,
+			const ItemTemplateSelectorReference&,
+			const ItemTemplateSelectorReference&)
+			{ target.RefreshRealizedRowDetails(); };
+		CUI_DESIGN_METADATA_ONLY(
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 20;
+		options.Design.Order = 59;
+		options.Design.Persistence = DependencyPropertyPersistence::Native;
+		options.Design.Browsable = false;
+		)
+		return DependencyPropertyRegistry::RegisterStatic<DataGrid,
+			ItemTemplateSelectorReference>(
+				DependencyPropertyRegistrationLiteral(
+					L"RowDetailsTemplateSelector"),
+				[](DataGrid& target)
+					{ return target._rowDetailsTemplateSelector; },
+				[](DataGrid& target,
+					const ItemTemplateSelectorReference& value)
+					{ target._rowDetailsTemplateSelector = value; },
+				{}, std::move(options));
+	}();
+	return *registration;
+}
+
 void DataGrid::RegisterDependencyProperties()
 {
 	ListBox::RegisterDependencyProperties();
@@ -7615,14 +8551,19 @@ void DataGrid::RegisterDependencyProperties()
 	(void)CanUserDeleteRowsProperty();
 	(void)CanUserSortColumnsProperty();
 	(void)CanUserResizeColumnsProperty();
+	(void)CanUserResizeRowsProperty();
 	(void)CanUserReorderColumnsProperty();
 	(void)EnableColumnVirtualizationProperty();
 	(void)FrozenColumnCountProperty();
 	(void)SelectionUnitProperty();
+	(void)ColumnWidthProperty();
+	(void)MinColumnWidthProperty();
+	(void)MaxColumnWidthProperty();
 	(void)ColumnHeaderHeightProperty();
 	(void)RowHeaderWidthProperty();
 	(void)RowHeaderActualWidthProperty();
 	(void)RowHeightProperty();
+	(void)MinRowHeightProperty();
 	(void)HeadersVisibilityProperty();
 	(void)GridLinesVisibilityProperty();
 	(void)RowBackgroundProperty();
@@ -7634,11 +8575,14 @@ void DataGrid::RegisterDependencyProperties()
 	(void)CellStyleProperty();
 	(void)ColumnHeaderStyleProperty();
 	(void)RowStyleProperty();
+	(void)RowStyleSelectorProperty();
 	(void)RowHeaderStyleProperty();
 	(void)RowHeaderTemplateProperty();
+	(void)RowHeaderTemplateSelectorProperty();
 	(void)AreRowDetailsFrozenProperty();
 	(void)RowDetailsVisibilityModeProperty();
 	(void)RowDetailsTemplateProperty();
+	(void)RowDetailsTemplateSelectorProperty();
 #endif
 }
 
@@ -8248,11 +9192,62 @@ void DataGrid::SetItemsSource(BindingListReference value)
 	if (clearSortState)
 		for (auto& column : live->_columns)
 			column->_sortDirection.reset();
+	// A replacement source may deliberately reuse the same item at the same
+	// viewport locator (for example while replacing a reflected auto schema).
+	// Preserve the WPF item + authored-column CurrentCell identity with one
+	// bounded probe; never scan a lazy replacement merely to find an old item.
+	if (!live->_currentCell.IsValid() && previousCurrentCell.IsValid())
+	{
+		const auto column = std::find_if(live->_columns.begin(), live->_columns.end(),
+			[&](const auto& candidate)
+			{ return candidate.get() == previousCurrentCell.Column; });
+		const auto items = live->GetItemsView();
+		if (column != live->_columns.end() && items)
+		{
+			const size_t columnIndex = static_cast<size_t>(
+				std::distance(live->_columns.begin(), column));
+			const size_t count = items.Get()->Count();
+			live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			if (!live) return;
+			if (live->GetItemsView().Shared() == items.Shared()
+				&& columnIndex < live->_columns.size()
+				&& live->_columns[columnIndex].get() == previousCurrentCell.Column
+				&& previousCurrentCell.RowIndex < count)
+			{
+				BindingSourceReference itemAtLocator;
+				const bool read = items.Get()->TryGetItem(
+					previousCurrentCell.RowIndex, itemAtLocator);
+				live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+				if (!live) return;
+				if (read && itemAtLocator
+					&& live->GetItemsView().Shared() == items.Shared()
+					&& columnIndex < live->_columns.size()
+					&& live->_columns[columnIndex].get()
+						== previousCurrentCell.Column
+					&& itemAtLocator.Shared()
+						== previousCurrentCell.Item.Shared())
+				{
+					DataGridCellInfo restored;
+					const bool created = live->TryCreateCellInfo(
+						previousCurrentCell.RowIndex, columnIndex, restored);
+					live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+					if (!live) return;
+					if (created && !live->_currentCell.IsValid()
+						&& live->GetItemsView().Shared() == items.Shared()
+						&& columnIndex < live->_columns.size()
+						&& live->_columns[columnIndex].get()
+							== previousCurrentCell.Column)
+						live->_currentCell = std::move(restored);
+				}
+			}
+		}
+		live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!live) return;
+	}
 	// ItemsSource replacement is an identity boundary.  CurrentCell belongs to
-	// the old view and is intentionally left invalid instead of scanning the
-	// replacement for the same object reference.  Besides matching WPF reset
-	// semantics, this keeps a selected row from materializing a lazy million-row
-	// source merely because VisibleWhenSelected happened to show RowDetails.
+	// the old view and otherwise stays invalid instead of scanning the replacement
+	// for the same object reference. This keeps a selected row from materializing
+	// a lazy million-row source merely because VisibleWhenSelected showed details.
 	if (!live->ReconcileCurrentCellColumn()) return;
 	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!live || !live->ReconcileSelectedCells()) return;
@@ -8346,6 +9341,12 @@ void DataGrid::SetCanUserResizeColumns(bool value)
 		CanUserResizeColumnsProperty(), BindingValue(value));
 }
 
+void DataGrid::SetCanUserResizeRows(bool value)
+{
+	(void)TrySetPropertyValue(
+		CanUserResizeRowsProperty(), BindingValue(value));
+}
+
 void DataGrid::SetEnableColumnVirtualization(bool value)
 {
 	(void)TrySetPropertyValue(
@@ -8373,6 +9374,27 @@ void DataGrid::SetSelectionUnit(DataGridSelectionUnit value)
 		SelectionUnitProperty(), BindingValue(static_cast<int>(value)));
 }
 
+void DataGrid::SetColumnWidth(DataGridLength value)
+{
+	if (!value.IsValid())
+		throw std::invalid_argument("DataGrid.ColumnWidth is invalid");
+	(void)SetDependencyPropertyValue(ColumnWidthProperty(), value);
+}
+
+void DataGrid::SetMinColumnWidth(double value)
+{
+	if (!std::isfinite(value) || value < 0.0)
+		throw std::invalid_argument("DataGrid.MinColumnWidth is invalid");
+	(void)SetDependencyPropertyValue(MinColumnWidthProperty(), value);
+}
+
+void DataGrid::SetMaxColumnWidth(double value)
+{
+	if (std::isnan(value) || value < 0.0)
+		throw std::invalid_argument("DataGrid.MaxColumnWidth is invalid");
+	(void)SetDependencyPropertyValue(MaxColumnWidthProperty(), value);
+}
+
 void DataGrid::SetClipboardCopyMode(DataGridClipboardCopyMode value)
 {
 	(void)TrySetPropertyValue(
@@ -8392,7 +9414,19 @@ void DataGrid::SetColumnHeaderStyle(std::wstring value)
 
 void DataGrid::SetRowStyle(std::wstring value)
 {
+	if (!value.empty() && _rowStyleSelector)
+		throw std::invalid_argument(
+			"DataGrid.RowStyle and RowStyleSelector are mutually exclusive");
 	(void)SetDependencyPropertyValue(RowStyleProperty(), std::move(value));
+}
+
+void DataGrid::SetRowStyleSelector(ItemStyleSelectorReference value)
+{
+	if (value && !_rowStyle.empty())
+		throw std::invalid_argument(
+			"DataGrid.RowStyleSelector and RowStyle are mutually exclusive");
+	(void)SetDependencyPropertyValue(
+		RowStyleSelectorProperty(), std::move(value));
 }
 
 void DataGrid::SetRowHeaderStyle(std::wstring value)
@@ -8405,6 +9439,13 @@ void DataGrid::SetRowHeaderTemplate(ItemTemplateReference value)
 {
 	(void)SetDependencyPropertyValue(
 		RowHeaderTemplateProperty(), std::move(value));
+}
+
+void DataGrid::SetRowHeaderTemplateSelector(
+	ItemTemplateSelectorReference value)
+{
+	(void)SetDependencyPropertyValue(
+		RowHeaderTemplateSelectorProperty(), std::move(value));
 }
 
 void DataGrid::SetAreRowDetailsFrozen(bool value)
@@ -8424,6 +9465,13 @@ void DataGrid::SetRowDetailsTemplate(ItemTemplateReference value)
 {
 	(void)SetDependencyPropertyValue(
 		RowDetailsTemplateProperty(), std::move(value));
+}
+
+void DataGrid::SetRowDetailsTemplateSelector(
+	ItemTemplateSelectorReference value)
+{
+	(void)SetDependencyPropertyValue(
+		RowDetailsTemplateSelectorProperty(), std::move(value));
 }
 
 void DataGrid::SetColumnHeaderHeight(double value)
@@ -8493,6 +9541,11 @@ bool DataGrid::TryShareRowHeaderDesiredWidth(
 void DataGrid::SetRowHeight(double value)
 {
 	(void)TrySetPropertyValue(RowHeightProperty(), BindingValue(value));
+}
+
+void DataGrid::SetMinRowHeight(double value)
+{
+	(void)TrySetPropertyValue(MinRowHeightProperty(), BindingValue(value));
 }
 
 void DataGrid::SetHeadersVisibility(DataGridHeadersVisibility value)
@@ -9098,6 +10151,57 @@ const std::wstring& DataGrid::EffectiveRowStyle() const noexcept
 	return _rowStyle.empty() ? GetItemContainerStyle() : _rowStyle;
 }
 
+bool DataGrid::TryResolveRowStyle(
+	DataGridRow& row, std::wstring& result) const
+{
+	result.clear();
+	if (row.GetDataGridOwner() != this) return false;
+	if (!_rowStyle.empty())
+	{
+		result = _rowStyle;
+		return true;
+	}
+	const auto selector = _rowStyleSelector;
+	if (!selector)
+	{
+		result = GetItemContainerStyle();
+		return true;
+	}
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
+	const ControlWeakReference rowLifetime(&row);
+	result = selector.Get()->SelectStyle(row.GetItem(), row);
+	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	if (!owner || !liveRow || liveRow->GetDataGridOwner() != owner
+		|| owner->_rowStyleSelector != selector
+		|| !owner->_rowStyle.empty()) return false;
+	if (result.empty()) result = owner->GetItemContainerStyle();
+	return true;
+}
+
+bool DataGrid::TryResolveRowHeaderTemplate(
+	DataGridRow& row, DataGridRowHeader& header,
+	ItemTemplateReference& result) const
+{
+	result = _rowHeaderTemplate;
+	if (result || !_rowHeaderTemplateSelector) return true;
+	const auto selector = _rowHeaderTemplateSelector;
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
+	const ControlWeakReference rowLifetime(&row);
+	const ControlWeakReference headerLifetime(&header);
+	result = selector.Get()->SelectTemplate(row.GetItem(), header);
+	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	auto* liveHeader = dynamic_cast<DataGridRowHeader*>(headerLifetime.Get());
+	return owner && liveRow && liveHeader
+		&& liveRow->GetDataGridOwner() == owner
+		&& liveRow->GetRowHeader() == liveHeader
+		&& owner->_rowHeaderTemplateSelector == selector
+		&& !owner->_rowHeaderTemplate;
+}
+
 void DataGrid::RefreshRealizedCellStyles(const DataGridColumn* column)
 {
 	const ControlWeakReference ownerLifetime(this);
@@ -9185,7 +10289,7 @@ void DataGrid::RefreshRealizedRowHeaderPresentation()
 		if (!owner || !header) return;
 		row = header->GetRowOwner();
 		if (!row || row->GetDataGridOwner() != owner) continue;
-		header->SetContentTemplate(owner->_rowHeaderTemplate);
+		if (!row->UpdateRowHeaderPresentation()) return;
 	}
 }
 
@@ -9206,6 +10310,22 @@ void DataGrid::RefreshRealizedRowDetails()
 		auto* row = dynamic_cast<DataGridRow*>(lifetime.Get());
 		if (!owner || !row) return;
 		if (row->GetDataGridOwner() != owner) continue;
+		{
+			row->_restoringDetailsOverrides = true;
+			auto restore = MakeScopeExit([lifetime]
+			{
+				if (auto* current = dynamic_cast<DataGridRow*>(lifetime.Get()))
+					current->_restoringDetailsOverrides = false;
+			});
+			if (!row->CoerceValue(DataGridRow::DetailsTemplateProperty())
+				|| !row->CoerceValue(
+					DataGridRow::DetailsTemplateSelectorProperty())
+				|| !row->CoerceValue(
+					DataGridRow::DetailsVisibilityProperty())) return;
+		}
+		row = dynamic_cast<DataGridRow*>(lifetime.Get());
+		owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!row || !owner || row->GetDataGridOwner() != owner) return;
 		std::wstring error;
 		if (!row->UpdateDetailsPresentation(&error))
 		{
@@ -9346,8 +10466,13 @@ bool DataGrid::ApplyItemContainerStyle()
 		auto* row = dynamic_cast<DataGridRow*>(lifetime.Get());
 		if (!owner || !row) return false;
 		if (row->GetDataGridOwner() != owner) continue;
+		std::wstring style;
+		if (!owner->TryResolveRowStyle(*row, style)) return false;
+		owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		row = dynamic_cast<DataGridRow*>(lifetime.Get());
+		if (!owner || !row || row->GetDataGridOwner() != owner) return false;
 		cui::framework::StyleAccess::SetResourceKey(
-			*row, owner->EffectiveRowStyle());
+			*row, style);
 		if (!ownerLifetime.Get()) return false;
 	}
 	return ownerLifetime.Get() != nullptr;
@@ -9415,6 +10540,450 @@ void DataGrid::InvalidateRows()
 			live->_preserveColumnContentWidthsDuringRowRebuild = previous;
 	});
 	(void)RebuildGeneratedItems();
+}
+
+double DataGrid::EffectiveDefaultRowHeight() const noexcept
+{
+	return std::isfinite(_rowHeight)
+		? (std::max)(_rowHeight, _minRowHeight)
+		: (std::numeric_limits<double>::quiet_NaN)();
+}
+
+bool DataGrid::TryGetProjectedRowHeight(
+	size_t rowIndex, double& height) const noexcept
+{
+	height = 0.0;
+	const auto found = std::lower_bound(
+		_virtualRowHeightOverrides.begin(),
+		_virtualRowHeightOverrides.end(), rowIndex,
+		[](const VirtualizedItemExtentOverride& item, size_t index)
+		{ return item.ItemIndex < index; });
+	if (found == _virtualRowHeightOverrides.end()
+		|| found->ItemIndex != rowIndex) return false;
+	height = found->Extent;
+	return std::isfinite(height) && height > 0.0;
+}
+
+bool DataGrid::RefreshRowHeightOverrideProjection()
+{
+	const ControlWeakReference ownerLifetime(this);
+	const auto items = GetItemsView();
+	std::vector<VirtualizedItemExtentOverride> projection;
+	projection.reserve(_rowHeightOverrides.size() + (_rowResizeActive ? 1 : 0));
+	for (const auto& item : _rowHeightOverrides)
+	{
+		if (_rowResizeActive
+			&& item.Item.Shared() == _rowResizeItem.Shared()
+			&& item.Occurrence == _rowResizeOccurrence) continue;
+		size_t rowIndex = DataGridCellInfo::InvalidIndex;
+		if (!TryResolveItemOccurrence(item.Item, item.Occurrence, rowIndex))
+			continue;
+		auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!live || live->GetItemsView().Shared() != items.Shared()) return false;
+		projection.push_back({ rowIndex,
+			(std::max)(item.Height, live->_minRowHeight) });
+	}
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != items.Shared()) return false;
+	if (live->_rowResizeActive
+		&& live->_rowResizeIndex != DataGridCellInfo::InvalidIndex)
+		projection.push_back({ live->_rowResizeIndex,
+			(std::max)(live->_rowResizeHeight, live->_minRowHeight) });
+	std::sort(projection.begin(), projection.end(),
+		[](const auto& left, const auto& right)
+		{ return left.ItemIndex < right.ItemIndex; });
+	projection.erase(std::unique(projection.begin(), projection.end(),
+		[](const auto& left, const auto& right)
+		{ return left.ItemIndex == right.ItemIndex; }), projection.end());
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live || live->GetItemsView().Shared() != items.Shared()) return false;
+	live->_virtualRowHeightOverrides = std::move(projection);
+	if (++live->_virtualRowHeightOverrideRevision == 0)
+		++live->_virtualRowHeightOverrideRevision;
+	live->RefreshVirtualScrollMetrics();
+	return ownerLifetime.Get() != nullptr;
+}
+
+void DataGrid::PruneRowHeightOverrides()
+{
+	const ControlWeakReference ownerLifetime(this);
+	std::vector<RowHeightOverride> retained;
+	retained.reserve(_rowHeightOverrides.size());
+	for (const auto& item : _rowHeightOverrides)
+	{
+		size_t rowIndex = DataGridCellInfo::InvalidIndex;
+		if (TryResolveItemOccurrence(item.Item, item.Occurrence, rowIndex))
+			retained.push_back(item);
+		if (!ownerLifetime.Get()) return;
+	}
+	_rowHeightOverrides = std::move(retained);
+	(void)RefreshRowHeightOverrideProjection();
+}
+
+bool DataGrid::PersistRowPresentationOverride(DataGridRow& row)
+{
+	if (row.GetDataGridOwner() != this) return false;
+	// The synthetic new-item row has no source occurrence to persist against.
+	// Its local values remain valid for that live container, but must never
+	// create an entry which could later leak into a recycled data row.
+	if (!row.GetItem()
+		|| row.ItemIndex() == DataGridCellInfo::InvalidIndex
+		|| IsNewItemPlaceholder(row.GetItem())) return true;
+	const ControlWeakReference ownerLifetime(this);
+	const ControlWeakReference rowLifetime(&row);
+	const auto item = row.GetItem();
+	const size_t rowIndex = row.ItemIndex();
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	if (!TryGetItemOccurrenceAt(rowIndex, occurrence)) return false;
+	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	if (!owner || !liveRow || liveRow->GetDataGridOwner() != owner
+		|| liveRow->GetItem().Shared() != item.Shared()
+		|| liveRow->ItemIndex() != rowIndex) return false;
+
+	RowPresentationOverride next;
+	next.Item = item;
+	next.Occurrence = occurrence;
+	BindingValue raw;
+	next.HasDetailsTemplate = liveRow->HasPropertyValue(
+		DataGridRow::DetailsTemplateProperty(),
+		DependencyPropertyValueSource::Local);
+	if (next.HasDetailsTemplate
+		&& (!liveRow->TryGetPropertyValue(
+			DataGridRow::DetailsTemplateProperty(),
+			DependencyPropertyValueSource::Local, raw)
+			|| !raw.TryGet(next.DetailsTemplate))) return false;
+	raw = {};
+	next.HasDetailsTemplateSelector = liveRow->HasPropertyValue(
+		DataGridRow::DetailsTemplateSelectorProperty(),
+		DependencyPropertyValueSource::Local);
+	if (next.HasDetailsTemplateSelector
+		&& (!liveRow->TryGetPropertyValue(
+			DataGridRow::DetailsTemplateSelectorProperty(),
+			DependencyPropertyValueSource::Local, raw)
+			|| !raw.TryGet(next.DetailsTemplateSelector))) return false;
+	raw = {};
+	next.HasDetailsVisibility = liveRow->HasPropertyValue(
+		DataGridRow::DetailsVisibilityProperty(),
+		DependencyPropertyValueSource::Local);
+	if (next.HasDetailsVisibility)
+	{
+		int value = static_cast<int>(::Visibility::Collapsed);
+		if (!liveRow->TryGetPropertyValue(
+			DataGridRow::DetailsVisibilityProperty(),
+			DependencyPropertyValueSource::Local, raw)
+			|| !raw.TryGet(value)) return false;
+		next.DetailsVisibility = static_cast<::Visibility>(value);
+	}
+	owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	if (!owner || !liveRow || liveRow->GetDataGridOwner() != owner
+		|| liveRow->GetItem().Shared() != item.Shared()
+		|| liveRow->ItemIndex() != rowIndex) return false;
+	auto found = std::find_if(owner->_rowPresentationOverrides.begin(),
+		owner->_rowPresentationOverrides.end(),
+		[&](const RowPresentationOverride& candidate)
+		{
+			return candidate.Item.Shared() == item.Shared()
+				&& candidate.Occurrence == occurrence;
+		});
+	const bool hasAny = next.HasDetailsTemplate
+		|| next.HasDetailsTemplateSelector || next.HasDetailsVisibility;
+	if (!hasAny)
+	{
+		if (found != owner->_rowPresentationOverrides.end())
+			owner->_rowPresentationOverrides.erase(found);
+		return true;
+	}
+	if (found == owner->_rowPresentationOverrides.end())
+		owner->_rowPresentationOverrides.push_back(std::move(next));
+	else *found = std::move(next);
+	return ownerLifetime.Get() != nullptr;
+}
+
+bool DataGrid::RestoreRowPresentationOverride(DataGridRow& row)
+{
+	if (row.GetDataGridOwner() != this || !row.GetItem()
+		|| row.ItemIndex() == DataGridCellInfo::InvalidIndex) return false;
+	const ControlWeakReference ownerLifetime(this);
+	const ControlWeakReference rowLifetime(&row);
+	const auto item = row.GetItem();
+	const size_t rowIndex = row.ItemIndex();
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	const bool canPersist = !IsNewItemPlaceholder(item);
+	if (canPersist && !TryGetItemOccurrenceAt(rowIndex, occurrence)) return false;
+	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* liveRow = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+	if (!owner || !liveRow || liveRow->GetDataGridOwner() != owner
+		|| liveRow->GetItem().Shared() != item.Shared()
+		|| liveRow->ItemIndex() != rowIndex) return false;
+	RowPresentationOverride selected;
+	const auto found = canPersist
+		? std::find_if(owner->_rowPresentationOverrides.begin(),
+			owner->_rowPresentationOverrides.end(),
+			[&](const RowPresentationOverride& candidate)
+			{
+				return candidate.Item.Shared() == item.Shared()
+					&& candidate.Occurrence == occurrence;
+			})
+		: owner->_rowPresentationOverrides.end();
+	if (found != owner->_rowPresentationOverrides.end()) selected = *found;
+
+	liveRow->_restoringDetailsOverrides = true;
+	auto restore = MakeScopeExit([rowLifetime]
+	{
+		if (auto* current = dynamic_cast<DataGridRow*>(rowLifetime.Get()))
+			current->_restoringDetailsOverrides = false;
+	});
+	if (liveRow->HasPropertyValue(DataGridRow::DetailsTemplateProperty(),
+		DependencyPropertyValueSource::Local))
+		(void)liveRow->ClearPropertyValue(
+			DataGridRow::DetailsTemplateProperty());
+	if (liveRow->HasPropertyValue(
+		DataGridRow::DetailsTemplateSelectorProperty(),
+		DependencyPropertyValueSource::Local))
+		(void)liveRow->ClearPropertyValue(
+			DataGridRow::DetailsTemplateSelectorProperty());
+	if (liveRow->HasPropertyValue(DataGridRow::DetailsVisibilityProperty(),
+		DependencyPropertyValueSource::Local))
+		(void)liveRow->ClearPropertyValue(
+			DataGridRow::DetailsVisibilityProperty());
+	if (selected.HasDetailsTemplate)
+		liveRow->SetDetailsTemplate(selected.DetailsTemplate);
+	if (selected.HasDetailsTemplateSelector)
+		liveRow->SetDetailsTemplateSelector(
+			selected.DetailsTemplateSelector);
+	if (selected.HasDetailsVisibility)
+		liveRow->SetDetailsVisibility(selected.DetailsVisibility);
+	if (!liveRow->CoerceValue(DataGridRow::DetailsTemplateProperty())
+		|| !liveRow->CoerceValue(
+			DataGridRow::DetailsTemplateSelectorProperty())
+		|| !liveRow->CoerceValue(DataGridRow::DetailsVisibilityProperty()))
+		return false;
+	return ownerLifetime.Get() != nullptr && rowLifetime.Get() != nullptr;
+}
+
+void DataGrid::PruneRowPresentationOverrides()
+{
+	const ControlWeakReference ownerLifetime(this);
+	std::vector<RowPresentationOverride> retained;
+	retained.reserve(_rowPresentationOverrides.size());
+	for (const auto& item : _rowPresentationOverrides)
+	{
+		size_t rowIndex = DataGridCellInfo::InvalidIndex;
+		if (TryResolveItemOccurrence(item.Item, item.Occurrence, rowIndex))
+			retained.push_back(item);
+		if (!ownerLifetime.Get()) return;
+	}
+	_rowPresentationOverrides = std::move(retained);
+}
+
+void DataGrid::RefreshRealizedRowHeights()
+{
+	const ControlWeakReference ownerLifetime(this);
+	std::vector<ControlWeakReference> rows;
+	rows.reserve(GetRealizedItems().size());
+	for (const auto& [index, realized] : GetRealizedItems())
+	{
+		(void)realized;
+		if (auto* row = dynamic_cast<DataGridRow*>(GetGeneratedItem(index)))
+			rows.emplace_back(row);
+	}
+	for (const auto& rowLifetime : rows)
+	{
+		auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		auto* row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!owner) return;
+		if (!row || row->GetDataGridOwner() != owner) continue;
+		row->UpdateHeightPresentation();
+	}
+}
+
+void DataGrid::ApplyRowHeightToRealizedItem(size_t rowIndex)
+{
+	if (auto* row = ResolveRow(rowIndex))
+	{
+		row->UpdateHeightPresentation();
+		row->RequestLayout();
+	}
+	RequestLayout();
+	InvalidateVisual();
+}
+
+bool DataGrid::SetRowHeightOverride(size_t rowIndex, double height)
+{
+	if (!_canUserResizeRows || _rowResizeActive
+		|| !std::isfinite(height) || height <= 0.0) return false;
+	const auto items = GetItemsView();
+	BindingSourceReference item;
+	if (!items || rowIndex >= items.Get()->Count()
+		|| !items.Get()->TryGetItem(rowIndex, item) || !item
+		|| IsNewItemPlaceholder(item)) return false;
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	if (!TryGetItemOccurrenceAt(rowIndex, occurrence)) return false;
+	if (auto* row = ResolveRow(rowIndex))
+	{
+		height = (std::max)(height, static_cast<double>(_minRowHeight));
+		if (auto* header = row->GetRowHeader())
+			height = (std::max)(height,
+				static_cast<double>(header->GetDesiredSizeDip().height));
+		if (std::isfinite(row->GetMaxHeight()))
+			height = (std::min)(height,
+				static_cast<double>(row->GetMaxHeight()));
+	}
+	else height = (std::max)(height, _minRowHeight);
+	auto found = std::find_if(_rowHeightOverrides.begin(),
+		_rowHeightOverrides.end(), [&](const RowHeightOverride& candidate)
+		{
+			return candidate.Item.Shared() == item.Shared()
+				&& candidate.Occurrence == occurrence;
+		});
+	if (found == _rowHeightOverrides.end())
+		_rowHeightOverrides.push_back({ item, occurrence, height });
+	else found->Height = height;
+	const ControlWeakReference ownerLifetime(this);
+	if (!RefreshRowHeightOverrideProjection()) return false;
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live) return false;
+	live->ApplyRowHeightToRealizedItem(rowIndex);
+	return ownerLifetime.Get() != nullptr;
+}
+
+bool DataGrid::ClearRowHeightOverride(size_t rowIndex)
+{
+	if (!_canUserResizeRows || _rowResizeActive) return false;
+	const auto items = GetItemsView();
+	BindingSourceReference item;
+	if (!items || rowIndex >= items.Get()->Count()
+		|| !items.Get()->TryGetItem(rowIndex, item) || !item
+		|| IsNewItemPlaceholder(item)) return false;
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	if (!TryGetItemOccurrenceAt(rowIndex, occurrence)) return false;
+	_rowHeightOverrides.erase(std::remove_if(
+		_rowHeightOverrides.begin(), _rowHeightOverrides.end(),
+		[&](const RowHeightOverride& candidate)
+		{
+			return candidate.Item.Shared() == item.Shared()
+				&& candidate.Occurrence == occurrence;
+		}), _rowHeightOverrides.end());
+	const ControlWeakReference ownerLifetime(this);
+	if (!RefreshRowHeightOverrideProjection()) return false;
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live) return false;
+	live->ApplyRowHeightToRealizedItem(rowIndex);
+	return ownerLifetime.Get() != nullptr;
+}
+
+bool DataGrid::BeginRowResizeTransaction(
+	size_t rowIndex, double& startHeight)
+{
+	startHeight = 0.0;
+	if (!_canUserResizeRows || _rowResizeActive) return false;
+	auto* row = ResolveRow(rowIndex);
+	const auto items = GetItemsView();
+	BindingSourceReference item;
+	if (!row || row->GetDataGridOwner() != this || !row->_cellsGrid
+		|| !items || rowIndex >= items.Get()->Count()
+		|| !items.Get()->TryGetItem(rowIndex, item) || !item
+		|| IsNewItemPlaceholder(item)) return false;
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	if (!TryGetItemOccurrenceAt(rowIndex, occurrence)) return false;
+	startHeight = row->_cellsGrid->GetActualSizeDip().height;
+	if (!std::isfinite(startHeight) || startHeight <= 0.0)
+	{
+		if (!TryGetProjectedRowHeight(rowIndex, startHeight))
+		{
+			startHeight = EffectiveDefaultRowHeight();
+			if (!std::isfinite(startHeight) || startHeight <= 0.0)
+				startHeight = (std::max)(
+					static_cast<double>(GetVirtualizedItemHeight()), _minRowHeight);
+		}
+	}
+	startHeight = (std::max)(startHeight, _minRowHeight);
+	if (auto* header = row->GetRowHeader())
+		startHeight = (std::max)(startHeight,
+			static_cast<double>(header->GetDesiredSizeDip().height));
+	_rowHeightOverrides.reserve(_rowHeightOverrides.size() + 1);
+	_virtualRowHeightOverrides.reserve(_rowHeightOverrides.size() + 1);
+	_rowResizeItem = item;
+	_rowResizeOccurrence = occurrence;
+	_rowResizeIndex = rowIndex;
+	_rowResizeHeight = startHeight;
+	_rowResizeActive = true;
+	if (RefreshRowHeightOverrideProjection()) return true;
+	_rowResizeActive = false;
+	_rowResizeItem = {};
+	_rowResizeOccurrence = DataGridCellInfo::InvalidIndex;
+	_rowResizeIndex = DataGridCellInfo::InvalidIndex;
+	_rowResizeHeight = 0.0;
+	return false;
+}
+
+bool DataGrid::ResizeRowInTransaction(double pixelHeight)
+{
+	if (!_rowResizeActive || !_canUserResizeRows
+		|| !std::isfinite(pixelHeight)) return false;
+	const auto items = GetItemsView();
+	BindingSourceReference item;
+	size_t occurrence = DataGridCellInfo::InvalidIndex;
+	if (!items || _rowResizeIndex >= items.Get()->Count()
+		|| !items.Get()->TryGetItem(_rowResizeIndex, item) || !item
+		|| item.Shared() != _rowResizeItem.Shared()
+		|| !TryGetItemOccurrenceAt(_rowResizeIndex, occurrence)
+		|| occurrence != _rowResizeOccurrence) return false;
+	auto* row = ResolveRow(_rowResizeIndex);
+	if (!row || row->GetDataGridOwner() != this) return false;
+	pixelHeight = (std::max)(pixelHeight, _minRowHeight);
+	if (auto* header = row->GetRowHeader())
+		pixelHeight = (std::max)(pixelHeight,
+			static_cast<double>(header->GetDesiredSizeDip().height));
+	if (std::isfinite(row->GetMaxHeight()))
+		pixelHeight = (std::min)(pixelHeight,
+			static_cast<double>(row->GetMaxHeight()));
+	_rowResizeHeight = pixelHeight;
+	const auto projected = std::lower_bound(
+		_virtualRowHeightOverrides.begin(),
+		_virtualRowHeightOverrides.end(), _rowResizeIndex,
+		[](const VirtualizedItemExtentOverride& candidate, size_t index)
+		{ return candidate.ItemIndex < index; });
+	if (projected == _virtualRowHeightOverrides.end()
+		|| projected->ItemIndex != _rowResizeIndex) return false;
+	projected->Extent = pixelHeight;
+	if (++_virtualRowHeightOverrideRevision == 0)
+		++_virtualRowHeightOverrideRevision;
+	RefreshVirtualScrollMetrics();
+	ApplyRowHeightToRealizedItem(_rowResizeIndex);
+	return true;
+}
+
+void DataGrid::EndRowResizeTransaction(bool cancel)
+{
+	if (!_rowResizeActive) return;
+	const auto item = _rowResizeItem;
+	const size_t occurrence = _rowResizeOccurrence;
+	const size_t rowIndex = _rowResizeIndex;
+	const double height = _rowResizeHeight;
+	if (!cancel)
+	{
+		auto found = std::find_if(_rowHeightOverrides.begin(),
+			_rowHeightOverrides.end(), [&](const RowHeightOverride& candidate)
+			{
+				return candidate.Item.Shared() == item.Shared()
+					&& candidate.Occurrence == occurrence;
+			});
+		if (found == _rowHeightOverrides.end())
+			_rowHeightOverrides.push_back({ item, occurrence, height });
+		else found->Height = height;
+	}
+	_rowResizeActive = false;
+	_rowResizeItem = {};
+	_rowResizeOccurrence = DataGridCellInfo::InvalidIndex;
+	_rowResizeIndex = DataGridCellInfo::InvalidIndex;
+	_rowResizeHeight = 0.0;
+	const ControlWeakReference ownerLifetime(this);
+	(void)RefreshRowHeightOverrideProjection();
+	if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+		live->ApplyRowHeightToRealizedItem(rowIndex);
 }
 
 void DataGrid::RefreshRealizedRowValidationStates(bool coerceTemplate)
@@ -9866,8 +11435,15 @@ std::unique_ptr<Control> DataGrid::BuildGeneratedItem(
 	observation = {};
 	const ControlWeakReference ownerLifetime(this);
 	auto row = std::make_unique<DataGridRow>();
-	cui::framework::StyleAccess::SetResourceKey(
-		*row, EffectiveRowStyle());
+	// WPF style selectors receive a prepared container identity before the row
+	// visual tree is built. Expose only the stable owner/item/index tuple here;
+	// Initialize below remains the atomic visual commit.
+	row->_ownerLifetime = this;
+	row->_item = item;
+	row->SetItemIndex(index);
+	std::wstring rowStyle;
+	if (!TryResolveRowStyle(*row, rowStyle)) return {};
+	cui::framework::StyleAccess::SetResourceKey(*row, rowStyle);
 	std::wstring error;
 	if (!row->Initialize(*this, item, index, &error))
 	{
@@ -9983,15 +11559,36 @@ bool DataGrid::TryRebindGeneratedItemAcrossIndices(
 		if (outError) *outError = L"DataGrid 回收行新项状态更新失败。";
 		return false;
 	}
+	if (!owner->RestoreRowPresentationOverride(*liveRow))
+	{
+		if (outError) *outError = L"DataGrid 回收行详情覆盖恢复失败。";
+		return false;
+	}
+	std::tie(owner, liveRow) = resolveCurrent();
+	if (!owner || !liveRow)
+	{
+		if (outError) *outError = L"DataGrid 回收行详情覆盖已失效。";
+		return false;
+	}
+	std::wstring rowStyle;
+	if (!owner->TryResolveRowStyle(*liveRow, rowStyle))
+	{
+		if (outError) *outError = L"DataGrid 回收行样式选择失败。";
+		return false;
+	}
+	std::tie(owner, liveRow) = resolveCurrent();
+	if (!owner || !liveRow)
+	{
+		if (outError) *outError = L"DataGrid 回收行样式已失效。";
+		return false;
+	}
+	cui::framework::StyleAccess::SetResourceKey(*liveRow, rowStyle);
 	if (!liveRow->GetIsSelected() && !liveRow->IsMouseOver)
 		liveRow->SetBackground((newIndex % 2) != 0
 			? owner->GetAlternatingRowBackground()
 			: owner->GetRowBackground());
 	else (void)liveRow->ClearPropertyValue(Control::BackgroundProperty());
-	if (std::isfinite(owner->GetRowHeight()))
-		liveRow->SetHeight(cui::layout::Length::Fixed(
-			static_cast<float>(owner->GetRowHeight())));
-	else liveRow->SetHeight(cui::layout::Length::Auto());
+	liveRow->UpdateHeightPresentation();
 	const bool horizontalLines = HasHorizontalGridLines(
 		owner->GetGridLinesVisibility());
 	liveRow->SetBorderThickness(Thickness(
@@ -10113,6 +11710,9 @@ bool DataGrid::TryRebindGeneratedItemAcrossIndices(
 	}
 	liveRow->UpdateColumnWidths();
 	liveRow->UpdateRowHeader();
+	if (!liveRow->UpdateRowHeaderPresentation()) return false;
+	std::tie(owner, liveRow) = resolveCurrent();
+	if (!owner || !liveRow) return false;
 	liveRow->UpdateHorizontalScrollOffset(owner->_horizontalScrollOffset);
 	if (!liveRow->UpdateDetailsPresentation(outError)) return false;
 	if (owner->_cellSelectionRevision == cellSelectionRevision)
@@ -10142,10 +11742,12 @@ void DataGrid::OnBeforeGeneratedItemsPrepared()
 
 float DataGrid::GetVirtualizedItemHeight() const noexcept
 {
-	if (std::isfinite(_rowHeight) && _rowHeight > 0.0)
-		return static_cast<float>((std::min)(
-			_rowHeight, static_cast<double>((std::numeric_limits<float>::max)())));
-	return ItemsControl::GetVirtualizedItemHeight();
+	const double baseline = std::isfinite(_rowHeight) && _rowHeight > 0.0
+		? _rowHeight
+		: static_cast<double>(ItemsControl::GetVirtualizedItemHeight());
+	return static_cast<float>((std::min)(
+		(std::max)(baseline, _minRowHeight),
+		static_cast<double>((std::numeric_limits<float>::max)())));
 }
 
 bool DataGrid::UseMeasuredVirtualizedItemHeight(
@@ -10186,6 +11788,10 @@ struct DataGrid::DataGridItemsSourceTransactionState final
 	bool DeferredSelectedCellsIgnoreLocators = false;
 	bool SelectionRangeActive = false;
 	AccessibilityIdentityState AccessibilityIdentities;
+	std::vector<RowHeightOverride> RowHeightOverrides;
+	std::vector<VirtualizedItemExtentOverride> VirtualRowHeightOverrides;
+	std::vector<RowPresentationOverride> RowPresentationOverrides;
+	size_t VirtualRowHeightOverrideRevision = 1;
 };
 
 std::unique_ptr<ItemsControl::ItemsSourceTransactionState>
@@ -10230,6 +11836,10 @@ DataGrid::CaptureItemsSourceTransactionState()
 		_deferredSelectedCellsIgnoreLocators;
 	state->SelectionRangeActive = _selectionRangeActive;
 	state->AccessibilityIdentities = CaptureAccessibilityIdentityState();
+	state->RowHeightOverrides = _rowHeightOverrides;
+	state->VirtualRowHeightOverrides = _virtualRowHeightOverrides;
+	state->RowPresentationOverrides = _rowPresentationOverrides;
+	state->VirtualRowHeightOverrideRevision = _virtualRowHeightOverrideRevision;
 	state->SelectorState = ListBox::CaptureItemsSourceTransactionState();
 	return state;
 }
@@ -10330,6 +11940,18 @@ void DataGrid::RestoreItemsSourceTransactionState(
 	_deferredSelectedCellsIgnoreLocators =
 		dataGrid->DeferredSelectedCellsIgnoreLocators;
 	_selectionRangeActive = dataGrid->SelectionRangeActive;
+	_rowHeightOverrides = std::move(dataGrid->RowHeightOverrides);
+	_virtualRowHeightOverrides = std::move(
+		dataGrid->VirtualRowHeightOverrides);
+	_rowPresentationOverrides = std::move(
+		dataGrid->RowPresentationOverrides);
+	_virtualRowHeightOverrideRevision =
+		dataGrid->VirtualRowHeightOverrideRevision;
+	_rowResizeActive = false;
+	_rowResizeItem = {};
+	_rowResizeOccurrence = DataGridCellInfo::InvalidIndex;
+	_rowResizeIndex = DataGridCellInfo::InvalidIndex;
+	_rowResizeHeight = 0.0;
 	RestoreAccessibilityIdentityState(
 		std::move(dataGrid->AccessibilityIdentities));
 	if (!_settingItemsSource)
@@ -10352,6 +11974,12 @@ void DataGrid::OnItemsSourceReplacementPreparing(
 	const BindingListReference&,
 	const BindingListReference&)
 {
+	EndRowResizeTransaction(true);
+	_rowHeightOverrides.clear();
+	_virtualRowHeightOverrides.clear();
+	_rowPresentationOverrides.clear();
+	if (++_virtualRowHeightOverrideRevision == 0)
+		++_virtualRowHeightOverrideRevision;
 	// A different ItemsSource is a new occurrence domain. Clear cell locators
 	// before the candidate generator rebuilds so old CurrentCell/SelectedCells
 	// are never resolved by scanning the replacement. The surrounding
@@ -10376,6 +12004,7 @@ void DataGrid::OnItemsSourceCollectionChangePreparing(
 	const CollectionChangedEventArgs& change,
 	const BindingListReference& previousSnapshot)
 {
+	EndRowResizeTransaction(true);
 	const auto previousRowShape = GetSelectedIndices();
 	ListBox::OnItemsSourceCollectionChangePreparing(change, previousSnapshot);
 	if (!(previousRowShape == GetSelectedIndices()))
@@ -10635,6 +12264,13 @@ void DataGrid::OnItemsSourceCollectionChangeCommitted(
 	if (!_callingEditableList)
 		ReconcileRowEditTransaction();
 	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live) return;
+	live->PruneRowHeightOverrides();
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (live) live->PruneRowPresentationOverrides();
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (live) live->RefreshRealizedRowHeights();
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!live || !std::isnan(live->_rowHeaderWidth)) return;
 	if (change.Action == CollectionChangeAction::Reset)
 	{
@@ -15730,6 +17366,16 @@ bool DataGrid::ResizeColumn(size_t columnIndex, double pixelWidth)
 	return ResizeColumnCore(columnIndex, pixelWidth, false);
 }
 
+bool DataGrid::ResizeRow(size_t rowIndex, double pixelHeight)
+{
+	return SetRowHeightOverride(rowIndex, pixelHeight);
+}
+
+bool DataGrid::AutoSizeRow(size_t rowIndex)
+{
+	return ClearRowHeightOverride(rowIndex);
+}
+
 bool DataGrid::ResizeColumnCore(
 	size_t columnIndex, double pixelWidth,
 	bool preserveRealizedColumnRange)
@@ -15741,10 +17387,11 @@ bool DataGrid::ResizeColumnCore(
 		|| !column.GetCanUserResize()) return false;
 	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	const double width = (std::clamp)(
-		pixelWidth, column.GetMinWidth(), column.GetMaxWidth());
+		pixelWidth, column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 	const DataGridLength resized(width);
-	if (column._width == resized) return true;
+	if (column._hasWidth && column._width == resized) return true;
 	column._width = resized;
+	column._hasWidth = true;
 	column._runtimeWidth = {};
 	// Native header dragging preserves the existing overscanned horizontal
 	// container strip. Recomputing it on every WM_MOUSEMOVE can recreate
@@ -15763,6 +17410,7 @@ bool DataGrid::AutoSizeColumn(size_t columnIndex)
 		|| !column.GetCanUserResize()) return false;
 	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
 	column._width = DataGridLength::Auto();
+	column._hasWidth = true;
 	column._runtimeWidth = {};
 	RefreshColumnWidths();
 	return true;
@@ -15806,13 +17454,14 @@ bool DataGrid::BeginColumnResizeTransaction(
 			? static_cast<double>(resolved.Value)
 			: EstimateColumnWidth(index, true, true);
 		if (!std::isfinite(display)) return false;
+		const auto effectiveWidth = column.GetWidth();
 		double desired = display;
 		if (std::isfinite(column._runtimeWidth.Desired))
 			desired = column._runtimeWidth.Desired;
-		else if (column._width.UnitType == DataGridLengthUnitType::Pixel)
-			desired = column._width.Value;
-		else if (column._width.UnitType == DataGridLengthUnitType::Star
-			&& column._width.Value > 0.000001)
+		else if (effectiveWidth.UnitType == DataGridLengthUnitType::Pixel)
+			desired = effectiveWidth.Value;
+		else if (effectiveWidth.UnitType == DataGridLengthUnitType::Star
+			&& effectiveWidth.Value > 0.000001)
 		{
 			// The global water-fill solver does not expose WPF's DesiredValue.
 			// Recover its common unconstrained water level from any Star which is
@@ -15820,7 +17469,8 @@ bool DataGrid::BeginColumnResizeTransaction(
 			desired = (std::numeric_limits<double>::quiet_NaN)();
 		}
 		snapshot.push_back(ColumnResizeSnapshot{
-			&column, column._width, column._runtimeWidth,
+			&column, effectiveWidth, column._width, column._hasWidth,
+			column._runtimeWidth,
 			desired, display });
 	}
 	double starWaterLevel = (std::numeric_limits<double>::quiet_NaN)();
@@ -15830,8 +17480,9 @@ bool DataGrid::BeginColumnResizeTransaction(
 			|| state.Width.Value <= 0.000001 || !state.Column
 			|| state.Column->GetVisibility() != Visibility::Visible) continue;
 		const auto* column = state.Column;
-		if (!column || state.Display <= column->GetMinWidth() + 0.000001
-			|| state.Display >= column->GetMaxWidth() - 0.000001) continue;
+		if (!column
+			|| state.Display <= column->GetLayoutMinWidth() + 0.000001
+			|| state.Display >= column->GetLayoutMaxWidth() - 0.000001) continue;
 		starWaterLevel = state.Display / state.Width.Value;
 		break;
 	}
@@ -15890,12 +17541,14 @@ bool DataGrid::RebaseColumnResizeTransaction()
 			? static_cast<double>(resolved.Value)
 			: EstimateColumnWidth(index, true, true);
 		if (!std::isfinite(display)) return false;
+		const auto effectiveWidth = column.GetWidth();
 		const double desired = std::isfinite(column._runtimeWidth.Desired)
 			? column._runtimeWidth.Desired
-			: (column._width.UnitType == DataGridLengthUnitType::Pixel
-				? column._width.Value : display);
+			: (effectiveWidth.UnitType == DataGridLengthUnitType::Pixel
+				? effectiveWidth.Value : display);
 		snapshot.push_back(ColumnResizeSnapshot{
-			&column, column._width, column._runtimeWidth,
+			&column, effectiveWidth, column._width, column._hasWidth,
+			column._runtimeWidth,
 			desired, display });
 	}
 	_columnResizeWorkingSnapshot = std::move(snapshot);
@@ -15933,8 +17586,10 @@ bool DataGrid::ResizeColumnInTransaction(
 		const auto& startRuntime =
 			_columnResizeWorkingSnapshot[index].RuntimeWidth;
 		previousProjectionDiffers = previousProjectionDiffers
-			|| _columns[index]->_width
+			|| _columns[index]->GetWidth()
 				!= _columnResizeWorkingSnapshot[index].Width
+			|| _columns[index]->_hasWidth
+				!= _columnResizeWorkingSnapshot[index].HasLocalWidth
 			|| runtime.HasDisplayOverride
 				!= startRuntime.HasDisplayOverride
 			|| (runtime.HasDisplayOverride
@@ -15956,7 +17611,10 @@ bool DataGrid::ResizeColumnInTransaction(
 	// repeated input never accumulates rounding error.
 	for (size_t index = 0; index < _columns.size(); ++index)
 	{
-		_columns[index]->_width = _columnResizeWorkingSnapshot[index].Width;
+		_columns[index]->_width =
+			_columnResizeWorkingSnapshot[index].LocalWidth;
+		_columns[index]->_hasWidth =
+			_columnResizeWorkingSnapshot[index].HasLocalWidth;
 		_columns[index]->_runtimeWidth =
 			_columnResizeWorkingSnapshot[index].RuntimeWidth;
 	}
@@ -15974,7 +17632,7 @@ bool DataGrid::ResizeColumnInTransaction(
 	const double startTargetWidth = display[columnIndex];
 	const auto& target = *_columns[columnIndex];
 	const double requestedTargetWidth = (std::clamp)(
-		pixelWidth, target.GetMinWidth(), target.GetMaxWidth());
+		pixelWidth, target.GetLayoutMinWidth(), target.GetLayoutMaxWidth());
 	double delta = requestedTargetWidth - startTargetWidth;
 	if (std::abs(delta) <= 0.000001 && !previousProjectionDiffers)
 		return true;
@@ -16028,8 +17686,8 @@ bool DataGrid::ResizeColumnInTransaction(
 						|| workingFactor[index] <= 0.0) continue;
 					const double weight = workingFactor[index];
 					const double capacity = shrink
-						? display[index] - column.GetMinWidth()
-						: column.GetMaxWidth() - display[index];
+						? display[index] - column.GetLayoutMinWidth()
+						: column.GetLayoutMaxWidth() - display[index];
 					if (capacity <= epsilon) continue;
 					totalWeight += weight;
 					ratio = (std::min)(
@@ -16051,8 +17709,8 @@ bool DataGrid::ResizeColumnInTransaction(
 						|| workingFactor[index] <= 0.0) continue;
 					const double weight = workingFactor[index];
 					const double capacity = shrink
-						? display[index] - column.GetMinWidth()
-						: column.GetMaxWidth() - display[index];
+						? display[index] - column.GetLayoutMinWidth()
+						: column.GetLayoutMaxWidth() - display[index];
 					if (capacity <= epsilon) continue;
 					const double change = (std::min)(
 						capacity, ratio * weight);
@@ -16079,8 +17737,10 @@ bool DataGrid::ResizeColumnInTransaction(
 					|| !column.GetCanUserResize()) return;
 				const double threshold = towardDesired
 					? (std::clamp)(desired[index],
-						column.GetMinWidth(), column.GetMaxWidth())
-					: (shrink ? column.GetMinWidth() : column.GetMaxWidth());
+						column.GetLayoutMinWidth(), column.GetLayoutMaxWidth())
+					: (shrink
+						? column.GetLayoutMinWidth()
+						: column.GetLayoutMaxWidth());
 				const double capacity = shrink
 					? display[index] - threshold
 					: threshold - display[index];
@@ -16265,6 +17925,7 @@ bool DataGrid::ResizeColumnInTransaction(
 			display[index] - start.Display) > 0.000001;
 		if (start.Width.UnitType == DataGridLengthUnitType::Star)
 		{
+			if (displayChanged) column._width = start.Width;
 			if (index == columnIndex && displayChanged)
 			{
 				desired[index] = display[index];
@@ -16285,6 +17946,10 @@ bool DataGrid::ResizeColumnInTransaction(
 			column._width = DataGridLength(display[index]);
 			desired[index] = display[index];
 		}
+		if (displayChanged
+			&& (start.Width.UnitType == DataGridLengthUnitType::Star
+				|| index == columnIndex))
+			column._hasWidth = true;
 		column._runtimeWidth.Desired = desired[index];
 		column._runtimeWidth.Display = display[index];
 		// A user resize is local to its target and the donors selected by the
@@ -16320,7 +17985,8 @@ void DataGrid::EndColumnResizeTransaction(bool cancel)
 				[identity = state.Column](const auto& column)
 				{ return column.get() == identity; });
 			if (found == _columns.end()) continue;
-			(*found)->_width = state.Width;
+			(*found)->_width = state.LocalWidth;
+			(*found)->_hasWidth = state.HasLocalWidth;
 			(*found)->_runtimeWidth = state.RuntimeWidth;
 		}
 	}
@@ -16552,6 +18218,27 @@ void DataGrid::RefreshColumnWidths(bool preserveRealizedColumnRange)
 	// O(realized rows * visual depth) ancestor work before layout even begins.
 	RequestLayout();
 	InvalidateVisual();
+}
+
+void DataGrid::RefreshInheritedColumnWidthDefaults(
+	bool widthChanged, bool minimumChanged, bool maximumChanged)
+{
+	bool affectsProjection = false;
+	for (const auto& column : _columns)
+	{
+		if (!column) continue;
+		const bool inheritsWidth = widthChanged && !column->_hasWidth;
+		const bool inheritsMinimum = minimumChanged && !column->_hasMinWidth;
+		const bool inheritsMaximum = maximumChanged && !column->_hasMaxWidth;
+		if (!inheritsWidth && !inheritsMinimum && !inheritsMaximum) continue;
+		affectsProjection = true;
+		if (inheritsWidth) column->_runtimeWidth = {};
+	}
+	if (!affectsProjection) return;
+	if (!_columnResizeSnapshot.empty()) EndColumnResizeTransaction(true);
+	// This intentionally retires only the resolved definition/prefix and the
+	// realized projection. Auto/SizeToCells samples remain valid and reusable.
+	RefreshColumnWidths();
 }
 
 void DataGrid::ProjectColumnWidthsForViewportLayout()
@@ -17131,7 +18818,7 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 	const bool hasStarDisplayOverrides = std::any_of(
 		_columns.begin(), _columns.end(), [&](const auto& column)
 		{
-			return column->_width.UnitType == DataGridLengthUnitType::Star
+			return column->GetWidth().UnitType == DataGridLengthUnitType::Star
 				&& column->GetVisibility() == Visibility::Visible
 				&& hasOverride(column);
 		});
@@ -17146,17 +18833,18 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 				(std::numeric_limits<double>::infinity)();
 			for (const auto& column : _columns)
 			{
-				if (column->_width.UnitType != DataGridLengthUnitType::Star
+				const auto& width = column->GetWidth();
+				if (width.UnitType != DataGridLengthUnitType::Star
 					|| column->GetVisibility() != Visibility::Visible
 					|| !hasOverride(column)
-					|| column->_width.Value <= epsilon) continue;
+					|| width.Value <= epsilon) continue;
 				const double capacity = grow
-					? column->GetMaxWidth() - column->_runtimeWidth.Display
-					: column->_runtimeWidth.Display - column->GetMinWidth();
+					? column->GetLayoutMaxWidth() - column->_runtimeWidth.Display
+					: column->_runtimeWidth.Display - column->GetLayoutMinWidth();
 				if (capacity <= epsilon) continue;
-				totalWeight += column->_width.Value;
+				totalWeight += width.Value;
 				limitingRatio = (std::min)(
-					limitingRatio, capacity / column->_width.Value);
+					limitingRatio, capacity / width.Value);
 			}
 			if (totalWeight <= epsilon
 				|| std::isnan(limitingRatio)) break;
@@ -17166,16 +18854,17 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 			double consumed = 0.0;
 			for (const auto& column : _columns)
 			{
-				if (column->_width.UnitType != DataGridLengthUnitType::Star
+				const auto& width = column->GetWidth();
+				if (width.UnitType != DataGridLengthUnitType::Star
 					|| column->GetVisibility() != Visibility::Visible
 					|| !hasOverride(column)
-					|| column->_width.Value <= epsilon) continue;
+					|| width.Value <= epsilon) continue;
 				const double capacity = grow
-					? column->GetMaxWidth() - column->_runtimeWidth.Display
-					: column->_runtimeWidth.Display - column->GetMinWidth();
+					? column->GetLayoutMaxWidth() - column->_runtimeWidth.Display
+					: column->_runtimeWidth.Display - column->GetLayoutMinWidth();
 				if (capacity <= epsilon) continue;
 				const double delta = (std::min)(
-					capacity, ratio * column->_width.Value);
+					capacity, ratio * width.Value);
 				column->_runtimeWidth.Display += grow ? delta : -delta;
 				column->_runtimeWidth.Desired += grow ? delta : -delta;
 				consumed += delta;
@@ -17195,11 +18884,11 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 			{
 				if (column->GetVisibility() != Visibility::Visible
 					|| !hasOverride(column)
-					|| column->_width.UnitType == DataGridLengthUnitType::Star)
+					|| column->GetWidth().UnitType == DataGridLengthUnitType::Star)
 					continue;
 				const double limit = (std::clamp)(
 					column->_runtimeWidth.Desired,
-					column->GetMinWidth(), column->GetMaxWidth());
+					column->GetLayoutMinWidth(), column->GetLayoutMaxWidth());
 				const double lag = limit - column->_runtimeWidth.Display;
 				if (lag <= 0.000001) continue;
 				++participantCount;
@@ -17213,11 +18902,11 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 			{
 				if (column->GetVisibility() != Visibility::Visible
 					|| !hasOverride(column)
-					|| column->_width.UnitType == DataGridLengthUnitType::Star)
+					|| column->GetWidth().UnitType == DataGridLengthUnitType::Star)
 					continue;
 				const double limit = (std::clamp)(
 					column->_runtimeWidth.Desired,
-					column->GetMinWidth(), column->GetMaxWidth());
+					column->GetLayoutMinWidth(), column->GetLayoutMaxWidth());
 				if (column->_runtimeWidth.Display + 0.000001 >= limit) continue;
 				const double amount = (std::min)(
 					perColumn, limit - column->_runtimeWidth.Display);
@@ -17241,11 +18930,12 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 		for (const auto& column : _columns)
 		{
 			if (column->GetVisibility() != Visibility::Visible
-				|| column->_width.UnitType != DataGridLengthUnitType::Star)
+				|| column->GetWidth().UnitType != DataGridLengthUnitType::Star)
 				continue;
 			const double display = std::isfinite(column->_runtimeWidth.Display)
-				? column->_runtimeWidth.Display : column->GetMinWidth();
-			starCapacity += (std::max)(0.0, display - column->GetMinWidth());
+				? column->_runtimeWidth.Display : column->GetLayoutMinWidth();
+			starCapacity += (std::max)(
+				0.0, display - column->GetLayoutMinWidth());
 		}
 		deficit = (std::max)(0.0, deficit - starCapacity);
 	}
@@ -17255,14 +18945,15 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 		double minimumExcess = (std::numeric_limits<double>::infinity)();
 		for (const auto& column : _columns)
 		{
+			const auto& width = column->GetWidth();
 			if (column->GetVisibility() != Visibility::Visible
-				|| column->_width.UnitType == DataGridLengthUnitType::Star)
+				|| width.UnitType == DataGridLengthUnitType::Star)
 				continue;
 			const double display = std::isfinite(column->_runtimeWidth.Display)
 				? column->_runtimeWidth.Display
-				: (std::clamp)(column->_width.Value,
-					column->GetMinWidth(), column->GetMaxWidth());
-			const double excess = display - column->GetMinWidth();
+				: (std::clamp)(width.Value,
+					column->GetLayoutMinWidth(), column->GetLayoutMaxWidth());
+			const double excess = display - column->GetLayoutMinWidth();
 			if (excess <= 0.000001) continue;
 			++participantCount;
 			minimumExcess = (std::min)(minimumExcess, excess);
@@ -17273,25 +18964,26 @@ void DataGrid::RedistributeRuntimeWidthsForViewportChange(
 		if (!(perColumn > 0.0) || !std::isfinite(perColumn)) break;
 		for (const auto& column : _columns)
 		{
+			const auto& width = column->GetWidth();
 			if (column->GetVisibility() != Visibility::Visible
-				|| column->_width.UnitType == DataGridLengthUnitType::Star)
+				|| width.UnitType == DataGridLengthUnitType::Star)
 				continue;
 			if (!hasOverride(column))
 			{
 				const double display = std::isfinite(column->_runtimeWidth.Display)
 					? column->_runtimeWidth.Display
-					: (std::clamp)(column->_width.Value,
-						column->GetMinWidth(), column->GetMaxWidth());
+					: (std::clamp)(width.Value,
+						column->GetLayoutMinWidth(), column->GetLayoutMaxWidth());
 				column->_runtimeWidth.Desired =
-					column->_width.UnitType == DataGridLengthUnitType::Pixel
-					? column->_width.Value : display;
+					width.UnitType == DataGridLengthUnitType::Pixel
+					? width.Value : display;
 				column->_runtimeWidth.Display = display;
 				column->_runtimeWidth.HasDisplayOverride = true;
 			}
 			if (column->_runtimeWidth.Display
-				<= column->GetMinWidth() + 0.000001) continue;
+				<= column->GetLayoutMinWidth() + 0.000001) continue;
 			const double amount = (std::min)(perColumn,
-				column->_runtimeWidth.Display - column->GetMinWidth());
+				column->_runtimeWidth.Display - column->GetLayoutMinWidth());
 			column->_runtimeWidth.Display -= amount;
 			deficit -= amount;
 		}
@@ -17430,14 +19122,14 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 		const auto& column = *_columns[index];
 		if (column.GetVisibility() != Visibility::Visible) continue;
 		const auto& length = column.GetWidth();
-		double width = column.GetMinWidth();
+		double width = column.GetLayoutMinWidth();
 		if (column._runtimeWidth.HasDisplayOverride
 			&& std::isfinite(column._runtimeWidth.Display))
 			width = (std::clamp)(column._runtimeWidth.Display,
-				column.GetMinWidth(), column.GetMaxWidth());
+				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 		else if (length.UnitType == DataGridLengthUnitType::Pixel)
 			width = (std::clamp)(length.Value,
-				column.GetMinWidth(), column.GetMaxWidth());
+				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 		else
 		{
 			if (length.UnitType != DataGridLengthUnitType::SizeToCells)
@@ -17453,7 +19145,7 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 				width = (std::max)(
 					width, *_sampledColumnContentWidths[index]);
 			width = (std::clamp)(
-				width, column.GetMinWidth(), column.GetMaxWidth());
+				width, column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 		}
 		if (!std::isfinite(width) || width < 0.0) width = 0.0;
 		const double right = left >
@@ -17531,7 +19223,7 @@ void DataGrid::RebuildResolvedColumnWidths() const
 			}
 			const double pixels = (std::clamp)(
 				column._runtimeWidth.Display,
-				column.GetMinWidth(), column.GetMaxWidth());
+				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 			_resolvedColumnWidths[index] = GridLength::Pixels(
 				static_cast<float>(pixels));
 			nonStarTotal += pixels;
@@ -17543,14 +19235,15 @@ void DataGrid::RebuildResolvedColumnWidths() const
 			stars.push_back(StarColumn{
 				index,
 				(std::max)(0.0, width.Value),
-				column.GetMinWidth(),
-				column.GetMaxWidth() });
+				column.GetLayoutMinWidth(),
+				column.GetLayoutMaxWidth() });
 			continue;
 		}
 		double pixels = 0.0;
 		if (width.UnitType == DataGridLengthUnitType::Pixel)
 			pixels = (std::clamp)(
-				width.Value, column.GetMinWidth(), column.GetMaxWidth());
+				width.Value,
+				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
 		else
 		{
 			const bool header = width.UnitType
@@ -17716,8 +19409,8 @@ double DataGrid::EstimateColumnWidth(
 	if (columnIndex >= _columns.size()) return 20.0;
 	auto* const columnIdentity = _columns[columnIndex].get();
 	if (columnIdentity->GetVisibility() != Visibility::Visible) return 0.0;
-	const double minimum = columnIdentity->GetMinWidth();
-	const double maximum = columnIdentity->GetMaxWidth();
+	const double minimum = columnIdentity->GetLayoutMinWidth();
+	const double maximum = columnIdentity->GetLayoutMaxWidth();
 	double width = minimum;
 	if (includeHeader)
 		width = (std::max)(width,
@@ -17934,6 +19627,31 @@ void DataGrid::OnGeneratedItemIndexChanged(
 				: live->IsRowEditIdentity(row->GetItem(), newIndex)))
 			live->_editingRowIndex = newIndex;
 		row->UpdateRowHeader();
+		live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!live || !row || row->GetDataGridOwner() != live
+			|| row->GetItem().Shared() != item.Shared()
+			|| row->ItemIndex() != newIndex) return;
+		std::wstring rowStyle;
+		if (!live->TryResolveRowStyle(*row, rowStyle)) return;
+		live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!live || !row || row->GetDataGridOwner() != live
+			|| row->GetItem().Shared() != item.Shared()
+			|| row->ItemIndex() != newIndex) return;
+		cui::framework::StyleAccess::SetResourceKey(*row, rowStyle);
+		if (!row->UpdateRowHeaderPresentation()) return;
+		live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!live || !row || row->GetDataGridOwner() != live
+			|| row->GetItem().Shared() != item.Shared()
+			|| row->ItemIndex() != newIndex) return;
+		const size_t detailsRevision = row->_detailsPresentationRevision;
+		(void)row->CoerceValue(DataGridRow::DetailsVisibilityProperty());
+		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
+		if (!row) return;
+		if (row->_detailsPresentationRevision == detailsRevision)
+			(void)row->UpdateDetailsPresentation();
 		live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 		row = dynamic_cast<DataGridRow*>(rowLifetime.Get());
 		if (!live || !row || row->GetDataGridOwner() != live

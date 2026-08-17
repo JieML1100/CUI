@@ -78,9 +78,9 @@
 | M5 | RowDetails 与生命周期 | RowDetails 模板/可见性及 Loading/UnloadingRow 事件 | Details 仅在可见/展开行实例化；折叠立即释放重视觉 | 已完成 |
 | M5 | 分组专项闭环 | 验证 GroupStyle 下的列对齐、排序、选择、UIA 和虚拟滚动 | 分组元数据稀疏保存，不按总行数生成 Header 容器 | 已完成 |
 | M6 | RowDetails 冻结与可观察生命周期 | `AreRowDetailsFrozen`、Loading/UnloadingRowDetails 与 RowDetailsVisibilityChanged | 冻结只补偿已实现 Details 视觉；事件无订阅走快速路径，回调重入以新事务为准 | 已完成 |
-| M6 | 行高与用户调整 | `CanUserResizeRows`、`MinRowHeight` 与已调整行高的稀疏持久化 | 只为用户实际调整的 item occurrence 保存覆盖，不建立逐行高度表 | 待推进 |
-| M7 | Grid 级列宽默认 | `ColumnWidth`、`MinColumnWidth`、`MaxColumnWidth` 与列级覆盖优先级 | 默认值变化只重算列定义与已实现投影，Auto 内容采样继续复用 | 待推进 |
-| M7 | 行/详情选择器扩展 | `RowDetailsTemplateSelector`、行级 DetailsVisibility/Template 及 RowHeader/RowStyle selector 的适用子集 | 共享 selector，不复制到每行；行级显式覆盖仅稀疏保存 | 待推进 |
+| M6 | 行高与用户调整 | `CanUserResizeRows`、`MinRowHeight` 与已调整行高的稀疏持久化 | 只为用户实际调整的 item occurrence 保存覆盖，不建立逐行高度表 | 已完成 |
+| M7 | Grid 级列宽默认 | `ColumnWidth`、`MinColumnWidth`、`MaxColumnWidth` 与列级覆盖优先级 | 默认值变化只重算列定义与已实现投影，Auto 内容采样继续复用 | 已完成 |
+| M7 | 行/详情选择器扩展 | `RowDetailsTemplateSelector`、行级 DetailsVisibility/Template 及 RowHeader/RowStyle selector 的适用子集 | 共享 selector，不复制到每行；行级显式覆盖仅稀疏保存 | 已完成 |
 
 ## 5. 关键设计决定
 
@@ -315,10 +315,36 @@ M3 使用严格的 `CuiDataGridAutoColumns` 生成期 catalog 实现这条边界
 
 - 当前 M0–M5 表格只证明已列里程碑闭环，不代表 WPF DataGrid 常用公开能力已经穷尽。继续以真实业务价值、CUI 所有权/AOT 模型和百万行约束筛选后续项。
 - 优先级最高的是 WPF 主交互表面中的 `CanUserResizeRows` 与 `MinRowHeight`：行头拖拽应只改变 Cell 基线高度，Details 高度继续由内容决定；虚拟回收后按 item occurrence 恢复实际调整值。
-- 其次补 Grid 级 `ColumnWidth`、`MinColumnWidth`、`MaxColumnWidth`，明确 Grid 默认与列显式值的 WPF 优先级、coercion、Auto/Star 缓存复用和宽表虚拟化边界。
+- Grid 级 `ColumnWidth`、`MinColumnWidth`、`MaxColumnWidth` 已完成，Grid 默认与列显式值使用独立值源，coercion、Auto/Star 缓存复用和宽表虚拟化边界已有专项门禁。
 - RowDetailsTemplateSelector、行级 DetailsVisibility/DetailsTemplate、RowHeaderTemplateSelector 与 RowStyleSelector 进入选择器专项；优先复用现有共享 `IItemTemplateSelector`，不恢复运行时名称反射或逐行复制模板描述。
 
-## 29. 推进记录
+## 29. M6 行高与用户调整验收标准
+
+- `CanUserResizeRows` 是默认 `true` 的强类型依赖属性，控制行头鼠标调整与双击自动恢复；`MinRowHeight` 默认 `0`，只接受有限非负值，并优先约束 Grid 的 `RowHeight` 与用户覆盖高度。属性变化原位更新已实现行与虚拟滚动度量，不重建 Row/Cell/Header。
+- 行头底部分隔线调整当前行，顶部分隔线调整上一已实现行；拖动使用 render-space 位移、捕获丢失/Cancel 回滚，双击清除该 occurrence 的用户高度。热区在紧凑自定义行头上保留中间选择区域，`CanUserResizeRows=false` 时不显示 SizeNS 光标也不进入事务。
+- 用户高度只写入 Cell 基线 presenter；RowDetails 继续按内容测量并与基线相加，拖动、自动恢复和 `MinRowHeight` 变化都保持 Row 与 DetailsElement 身份。固定/用户高度继续走 DataGridCellsPresenter 的固定高度快速布局。
+- 只为实际调整的 item occurrence 保存覆盖；虚拟宿主接收排序后的稀疏 extent 投影，用前缀差值和二分查询修正行顶点、单行高度、分组区间与总 extent。回收、BringIntoView 和源 Move 后覆盖跟随 occurrence，删除后立即裁剪；PointerMove 复用预留存储，不扫描 ItemsSource、不创建逐行高度表。
+- 动态 XAML、Designer 属性目录、严格往返、运行时物化、Production AOT 与 Demo 使用 `CanUserResizeRowsProperty()`/`MinRowHeightProperty()` 精确身份；代码生成契约升级至 78。行头事务、详情合成、稀疏虚拟化、源移动/删除及自动列源替换身份回归闭环，`CUICoreTests` 771/771 通过。M6 完成。
+
+## 30. M7 Grid 级列宽默认验收标准
+
+- `ColumnWidth` 默认 `SizeToHeader`，`MinColumnWidth` 默认 `20`，`MaxColumnWidth` 默认正无穷；三者均为强类型依赖属性。`ColumnWidth` 接受 Auto、SizeToHeader、SizeToCells、非负 Pixel 与 Star，Min/Max 遵循 WPF 的非负、NaN/Infinity 验证边界。
+- `DataGridColumn.Width` 未设置时以 `Auto` 作为独立声明默认并继承 Grid `ColumnWidth`；列级 Width/MinWidth/MaxWidth 一旦显式设置即覆盖对应 Grid 默认，Clear 后恢复继承。用户拖动只把实际受影响列提升为本地宽度，不污染其余列。
+- 显示宽度按 `DataGridColumn.MaxWidth`、`DataGrid.MaxColumnWidth`、`DataGridColumn.MinWidth`、`DataGrid.MinColumnWidth` 的 WPF 优先级约束；矛盾 Min/Max 仍保持有序布局边界，最高优先级 Max 获胜，不进入 `std::clamp` 未定义区间。
+- Grid 默认变化只清除继承列的 resolved width、宽度前缀和已实现 Header/Cell 投影；不重建 Row/Cell，不清空 Auto/SizeToCells 内容样本，不读取全量 ItemsSource。百万行门禁验证属性切换保持视口级读取预算。
+- 严格 XAML/DesignValue 独立保存列 Width/MinWidth/MaxWidth 是否真正出现，省略属性的列在动态物化和 Production AOT 都继续继承 Grid；旧设计文档按原有总是发出 Setter 的语义兼容解码。
+- Designer 属性目录、严格往返、运行时物化、Production AOT 与 Demo 使用三个精确 DP；Demo 以 Grid `*` 默认和列级 Pixel/Star 覆盖展示优先级。代码生成契约升级至 79，`CUICoreTests` 773/773 通过。M7 下一步进入共享行/详情选择器扩展。
+
+## 31. M7 行/详情选择器扩展验收标准
+
+- 增加共享 `IItemStyleSelector`/`ItemStyleSelectorReference`，并在 `DataGrid` 提供 `RowStyleSelector`、`RowHeaderTemplateSelector`、`RowDetailsTemplateSelector` 强类型依赖属性；RowStyle 与 RowStyleSelector 按 WPF 规则互斥，行头/详情的显式 Template 优先于 Selector，Selector 返回空时不越级制造视觉。
+- `DataGridRow` 增加可本地设置/清除的 `DetailsTemplate`、`DetailsTemplateSelector`、`DetailsVisibility`。未设置本地值时从 Grid 默认 coercion；本地空模板同样是有效覆盖，清除后立即恢复 Grid Template/Selector 与 `RowDetailsVisibilityMode`。
+- 行级显式详情值只按 item occurrence 保存稀疏记录；重复对象的不同 occurrence 相互隔离，虚拟回收、源 Move 后跟随原 occurrence，删除后裁剪。选择器只在创建、刷新或重定向已实现容器时调用，不扫描 ItemsSource，也不建立百万行结果缓存。
+- 行头、详情 Presenter 和行样式在容器索引移动及跨索引回收时重新选择；相同模板身份仍重定向到新 item，同一 item 的普通可见性刷新不重复 Build。选择器回调以强引用固定策略，并在返回后复核弱生命周期、owner、item/index 与修订号，销毁 owner 或重入替换策略时不应用过期结果。
+- WPF Selector 通常是应用代码类型；CUI 的适用子集继续在 Production AOT 生成树完成后由 C++ 挂接，不引入运行时名称反射。静态 RowStyle/RowHeaderTemplate/RowDetailsTemplate 仍由严格 XAML、Designer、动态物化与 AOT 验证，三个 Selector 使用精确 DP 身份但不作为可浏览的声明式值；代码生成契约升级至 80。
+- Demo 在保留声明式静态资源门禁的同时，按订单 `Paid` token 安装共享行样式、行头与详情选择器；优先级、互斥、容器参数、Move/回收、重复 occurrence、回调销毁和百万行调用上界均有专项回归，`CUICoreTests` 776/776 通过。M7 完成。
+
+## 32. 推进记录
 
 - 2026-08-14：完成能力盘点；确定先保护热路径，再补公开能力。
 - 2026-08-14：完成 M0 运行时自动生成列扩展点。候选列支持取消、替换和修改；完成事件延迟到 ItemsSource 原子提交后；失败事务恢复旧模式。
@@ -367,3 +393,9 @@ M3 使用严格的 `CuiDataGridAutoColumns` 生成期 catalog 实现这条边界
 - 2026-08-15：完成 M5 后续 WPF 业务表面审计，确认现有里程碑完成不等于公开能力穷尽；新增 M6/M7 路线，依次推进 RowDetails 冻结/生命周期、行高调整、Grid 级列宽默认和共享选择器扩展。
 - 2026-08-15：完成 M6 RowDetails 冻结与可观察生命周期。新增默认 false 的 `AreRowDetailsFrozen` 与三类 WPF-shaped 详情事件；冻结仅补偿已实现 Details presenter，事件参数在视觉有效期内公开 Row/DetailsElement，修订号与弱生命周期保证模板/可见性重入和所有者销毁安全。
 - 2026-08-15：补齐严格 XAML、Designer 属性/事件目录、运行时物化、Production AOT、Demo、实时删除/虚拟回收和横向身份位置回归；代码生成契约升级至 77，`CUICoreTests` 759/759 通过。下一步进入 M6 行高与用户调整。
+- 2026-08-16：完成 M6 行高与用户调整。新增默认 `true` 的 `CanUserResizeRows`、默认 `0` 的 `MinRowHeight`、行头上下分隔线拖动/取消/双击恢复，以及只作用于 Cell 基线的用户行高事务；RowDetails 身份与内容高度保持独立。
+- 2026-08-16：虚拟宿主增加 item occurrence 稀疏 extent 前缀投影，覆盖在回收与源 Move 后保持、删除后裁剪，PointerMove 不扫描总行数。补齐 Designer、动态物化、Production AOT、Demo 与代码生成契约 78；同时以单定位探测修复自动架构替换时手工 CurrentCell 列身份丢失，`CUICoreTests` 771/771 通过。下一步进入 M7 Grid 级 `ColumnWidth`/`MinColumnWidth`/`MaxColumnWidth`。
+- 2026-08-17：完成 M7 Grid 级列宽默认。新增 `ColumnWidth`、`MinColumnWidth`、`MaxColumnWidth`，列定义保存显式值源并按 WPF 优先级覆盖；Grid 默认变化只更新宽度投影并复用 Auto/SizeToCells 样本，用户调整保持列级本地身份。
+- 2026-08-17：补齐严格 XAML/DesignValue 的省略值语义、旧文档兼容、动态物化、Designer、Production AOT 和 Demo；代码生成契约升级至 79，百万行样本复用和本地覆盖回归将 `CUICoreTests` 提升至 773/773。下一步进入 M7 行/详情选择器扩展。
+- 2026-08-17：完成 M7 行/详情选择器扩展。新增共享 RowStyle、RowHeaderTemplate、RowDetailsTemplate selector 与 DataGridRow 详情局部值，按 WPF 优先级接入容器创建、Move 和跨索引回收；局部值按 occurrence 稀疏保存并在删除后裁剪。
+- 2026-08-17：Demo 以 AOT 生成后 C++ 挂接展示三类选择器，严格 XAML 静态回退、Designer、Production 无运行时 XAML 边界与四个 Demo 自检入口通过；代码生成契约升级至 80，重复 occurrence、生命周期重入和百万行上界回归将 `CUICoreTests` 提升至 776/776。M7 完成。

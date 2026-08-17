@@ -196,8 +196,11 @@ struct DesignDataGridColumn
 	std::wstring ElementStyle;
 	std::wstring EditingElementStyle;
 	DesignDataGridLength Width;
+	bool HasWidth = false;
 	double MinWidth = 20.0;
+	bool HasMinWidth = false;
 	double MaxWidth = (std::numeric_limits<double>::infinity)();
+	bool HasMaxWidth = false;
 	bool IsReadOnly = false;
 	bool IsThreeState = false;
 	std::wstring ItemsSourceResource;

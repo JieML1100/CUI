@@ -2,6 +2,7 @@
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerStyleSheetUtils.h"
 #include "../CuiRuntime/include/XamlRuntimeSchema.h"
+#include "../CUI/include/DataGrid.h"
 #include "../CUI/include/DependencyPropertyInfrastructure.h"
 #include "../D2DGraphics/include/BitmapSource.h"
 #include <Convert.h>
@@ -95,6 +96,9 @@ namespace
 		{
 			std::wstring typed;
 			if (value.TryGet(typed)) return typed;
+			DataGridLength dataGridLength;
+			if (value.TryGet(dataGridLength))
+				return dataGridLength.ToString();
 			SYSTEMTIME date{};
 			if (!value.TryGet(date) || date.wYear == 0) return L"";
 			return std::format(
@@ -565,6 +569,10 @@ bool TryGetStyleValueKind(
 	else if (type == std::type_index(typeid(SYSTEMTIME)))
 		// Date values remain canonical XML-friendly scalar literals. Metadata
 		// owns parsing and validation for the target Calendar/DatePicker DP.
+		out = DesignerStyleValueKind::String;
+	else if (type == std::type_index(typeid(DataGridLength)))
+		// DataGridLength has one canonical scalar XAML representation. Its DP
+		// metadata owns strict parsing so the ordinary text editor can author it.
 		out = DesignerStyleValueKind::String;
 	else if (type == std::type_index(typeid(BindingValue)))
 		// ContentControl.Content is object-typed at runtime, but an authored

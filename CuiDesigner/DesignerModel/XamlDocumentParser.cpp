@@ -9130,24 +9130,32 @@ namespace
 					column["headerTemplate"] = ToUtf8(definition->Key);
 				}
 
+				const auto widthAttribute = Attribute(columnElement, L"Width");
 				bool validWidth = false;
 				column["width"] = DataGridLengthValue(
-					Attribute(columnElement, L"Width").value_or(L"SizeToHeader"),
+					widthAttribute.value_or(L"SizeToHeader"),
 					validWidth);
+				column["hasWidth"] = widthAttribute.has_value();
 				if (!validWidth)
 					return Fail(name + L".Width 必须是 Auto、SizeToHeader、"
 						L"SizeToCells、非负像素值或非负 Star 长度。", error);
 
 				double minimum = 20.0;
 				double maximum = (std::numeric_limits<double>::infinity)();
-				if (const auto text = Attribute(columnElement, L"MinWidth"))
+				const auto minimumAttribute = Attribute(
+					columnElement, L"MinWidth");
+				const auto maximumAttribute = Attribute(
+					columnElement, L"MaxWidth");
+				column["hasMinWidth"] = minimumAttribute.has_value();
+				column["hasMaxWidth"] = maximumAttribute.has_value();
+				if (const auto& text = minimumAttribute)
 				{
 					if (!TryParseDouble(*text, minimum) || minimum < 0.0)
 						return Fail(name + L".MinWidth 必须是非负有限数值。",
 							error);
 					column["minWidth"] = minimum;
 				}
-				if (const auto text = Attribute(columnElement, L"MaxWidth"))
+				if (const auto& text = maximumAttribute)
 				{
 					if (!TryParseDouble(*text, maximum) || maximum < minimum)
 						return Fail(name + L".MaxWidth 必须是不小于 MinWidth 的"

@@ -723,6 +723,27 @@ namespace
 		return left + right;
 	}
 
+	double SaturatingSignedAdd(double left, double right) noexcept
+	{
+		const double maximum = (std::numeric_limits<double>::max)();
+		if (std::isnan(left)) left = 0.0;
+		if (std::isnan(right)) right = 0.0;
+		if (right > 0.0 && left > maximum - right) return maximum;
+		if (right < 0.0 && left < -maximum - right) return -maximum;
+		return left + right;
+	}
+
+	double SaturatingDipAdjust(double value, double adjustment) noexcept
+	{
+		const double maximum = (std::numeric_limits<double>::max)();
+		if (std::isnan(value) || value <= 0.0) value = 0.0;
+		if (std::isnan(adjustment)) adjustment = 0.0;
+		if (adjustment > 0.0 && value > maximum - adjustment)
+			return maximum;
+		if (adjustment < 0.0 && adjustment < -value) return 0.0;
+		return value + adjustment;
+	}
+
 	float SaturateLayoutDip(double value) noexcept
 	{
 		if (std::isnan(value)) return 0.0f;
@@ -903,14 +924,19 @@ namespace
 			float itemHeight,
 			std::span<const size_t> groupHeaderStarts,
 			size_t groupHeaderMetadataRevision,
-			float headerHeight)
+			float headerHeight,
+			std::span<const VirtualizedItemExtentOverride> itemExtentOverrides,
+			size_t itemExtentOverrideRevision)
 		{
 			const bool itemCountChanged = _itemCount != itemCount;
 			const bool extentChanged = _itemHeight != itemHeight
 				|| _headerHeight != headerHeight;
 			const bool metadataChanged = _groupHeaderMetadataRevision
 				!= groupHeaderMetadataRevision;
-			if (!itemCountChanged && !extentChanged && !metadataChanged) return;
+			const bool itemOverridesChanged = itemCountChanged || extentChanged
+				|| _itemExtentOverrideRevision != itemExtentOverrideRevision;
+			if (!itemCountChanged && !extentChanged && !metadataChanged
+				&& !itemOverridesChanged) return;
 			if (metadataChanged)
 			{
 				std::vector<VirtualGroupHeaderMetadata> groupHeaders;
@@ -926,6 +952,53 @@ namespace
 			_itemCount = itemCount;
 			_itemHeight = itemHeight;
 			_headerHeight = headerHeight;
+			if (itemOverridesChanged)
+			{
+				_persistentItemExtentDeltas.clear();
+				_persistentItemExtentDeltas.reserve(itemExtentOverrides.size());
+				for (const auto& item : itemExtentOverrides)
+				{
+					if (item.ItemIndex >= _itemCount
+						|| !std::isfinite(item.Extent) || item.Extent < 0.0)
+						continue;
+					const double delta = item.Extent
+						- static_cast<double>(_itemHeight);
+					if (std::abs(delta) <= 0.0001) continue;
+					_persistentItemExtentDeltas.push_back({
+						item.ItemIndex, delta, 0.0 });
+				}
+				std::sort(_persistentItemExtentDeltas.begin(),
+					_persistentItemExtentDeltas.end(),
+					[](const auto& left, const auto& right)
+					{ return left.ItemIndex < right.ItemIndex; });
+				// A derived provider should already publish a unique projection, but
+				// normalize defensively so one index can never contribute twice.
+				size_t write = 0;
+				for (size_t read = 0;
+					read < _persistentItemExtentDeltas.size(); ++read)
+				{
+					if (write > 0 && _persistentItemExtentDeltas[write - 1].ItemIndex
+						== _persistentItemExtentDeltas[read].ItemIndex)
+					{
+						_persistentItemExtentDeltas[write - 1].Delta =
+							_persistentItemExtentDeltas[read].Delta;
+						continue;
+					}
+					if (write != read)
+						_persistentItemExtentDeltas[write] =
+							_persistentItemExtentDeltas[read];
+					++write;
+				}
+				_persistentItemExtentDeltas.resize(write);
+				_persistentItemExtentTotal = 0.0;
+				for (auto& item : _persistentItemExtentDeltas)
+				{
+					item.DeltaBefore = _persistentItemExtentTotal;
+					_persistentItemExtentTotal = SaturatingSignedAdd(
+						_persistentItemExtentTotal, item.Delta);
+				}
+				_itemExtentOverrideRevision = itemExtentOverrideRevision;
+			}
 			if (itemCountChanged) RefreshLayoutOriginIndex();
 			size_t totalHeaders = 0;
 			for (auto& entry : _groupHeaders)
@@ -939,7 +1012,7 @@ namespace
 					continue;
 				}
 				entry.ItemTop = SaturatingDipAdd(
-					SaturatingItemCoordinate(entry.ItemIndex, _itemHeight),
+					ItemCoordinateWithoutHeaders(entry.ItemIndex),
 					SaturatingItemCoordinate(totalHeaders, _headerHeight));
 				const size_t remaining =
 					(std::numeric_limits<size_t>::max)() - totalHeaders;
@@ -948,13 +1021,15 @@ namespace
 				entry.ItemEnd = SaturatingDipAdd(
 					entry.ItemTop,
 					SaturatingDipAdd(
-						static_cast<double>(_itemHeight),
+						SaturatingDipAdjust(
+							static_cast<double>(_itemHeight),
+							PersistentExtentAt(entry.ItemIndex)),
 						SaturatingItemCoordinate(
 							entry.HeaderCount, _headerHeight)));
 			}
 			_totalHeaderCount = totalHeaders;
 			_contentHeight = SaturatingDipAdd(
-				SaturatingItemCoordinate(_itemCount, _itemHeight),
+				ItemCoordinateWithoutHeaders(_itemCount),
 				SaturatingItemCoordinate(_totalHeaderCount, _headerHeight));
 			RebuildMeasuredItemExtents();
 			if (++_configurationRevision == 0) ++_configurationRevision;
@@ -1150,6 +1225,10 @@ namespace
 		{
 			return _configurationRevision;
 		}
+		size_t PersistentItemExtentOverrideCount() const noexcept
+		{
+			return _persistentItemExtentDeltas.size();
+		}
 		double LogicalExtentHeightDip() const noexcept override
 		{
 			return ContentHeight();
@@ -1178,11 +1257,43 @@ namespace
 		}
 
 	private:
+		struct PersistentItemExtentDelta final
+		{
+			size_t ItemIndex = 0;
+			double Delta = 0.0;
+			double DeltaBefore = 0.0;
+		};
+		double PersistentExtentBefore(size_t index) const noexcept
+		{
+			const auto found = std::lower_bound(
+				_persistentItemExtentDeltas.begin(),
+				_persistentItemExtentDeltas.end(), index,
+				[](const PersistentItemExtentDelta& item, size_t itemIndex)
+				{ return item.ItemIndex < itemIndex; });
+			return found == _persistentItemExtentDeltas.end()
+				? _persistentItemExtentTotal : found->DeltaBefore;
+		}
+		double PersistentExtentAt(size_t index) const noexcept
+		{
+			const auto found = std::lower_bound(
+				_persistentItemExtentDeltas.begin(),
+				_persistentItemExtentDeltas.end(), index,
+				[](const PersistentItemExtentDelta& item, size_t itemIndex)
+				{ return item.ItemIndex < itemIndex; });
+			return found != _persistentItemExtentDeltas.end()
+				&& found->ItemIndex == index ? found->Delta : 0.0;
+		}
+		double ItemCoordinateWithoutHeaders(size_t index) const noexcept
+		{
+			return SaturatingDipAdjust(
+				SaturatingItemCoordinate(index, _itemHeight),
+				PersistentExtentBefore(index));
+		}
 		double BaseItemTop(size_t index) const noexcept
 		{
 			if (index >= _itemCount) return _contentHeight;
 			if (_groupHeaders.empty())
-				return SaturatingItemCoordinate(index, _itemHeight);
+				return ItemCoordinateWithoutHeaders(index);
 			const auto next = std::lower_bound(
 				_groupHeaders.begin(), _groupHeaders.end(), index,
 				[](const VirtualGroupHeaderMetadata& entry, size_t itemIndex)
@@ -1190,14 +1301,16 @@ namespace
 			const size_t headersBefore = next == _groupHeaders.begin()
 				? size_t{ 0 } : std::prev(next)->HeadersAfter;
 			return SaturatingDipAdd(
-				SaturatingItemCoordinate(index, _itemHeight),
+				ItemCoordinateWithoutHeaders(index),
 				SaturatingItemCoordinate(headersBefore, _headerHeight));
 		}
 		double BaseItemExtent(size_t index) const noexcept
 		{
 			if (index >= _itemCount) return 0.0;
 			if (_groupHeaders.empty())
-				return static_cast<double>(_itemHeight);
+				return SaturatingDipAdjust(
+					static_cast<double>(_itemHeight),
+					PersistentExtentAt(index));
 			const auto entry = std::lower_bound(
 				_groupHeaders.begin(), _groupHeaders.end(), index,
 				[](const VirtualGroupHeaderMetadata& candidate, size_t itemIndex)
@@ -1205,7 +1318,8 @@ namespace
 			const size_t headerCount = entry != _groupHeaders.end()
 				&& entry->ItemIndex == index ? entry->HeaderCount : 0;
 			return SaturatingDipAdd(
-				static_cast<double>(_itemHeight),
+				SaturatingDipAdjust(static_cast<double>(_itemHeight),
+					PersistentExtentAt(index)),
 				SaturatingItemCoordinate(headerCount, _headerHeight));
 		}
 		double MeasuredExtentBefore(size_t index) const noexcept
@@ -1264,11 +1378,14 @@ namespace
 		float _headerHeight = 0.0f;
 		std::vector<VirtualGroupHeaderMetadata> _groupHeaders;
 		double _contentHeight = 0.0;
+		double _persistentItemExtentTotal = 0.0;
 		double _measuredItemExtentTotal = 0.0;
 		double _logicalExtentWidth = 0.0;
 		size_t _totalHeaderCount = 0;
 		size_t _groupHeaderMetadataRevision = 0;
+		size_t _itemExtentOverrideRevision = 0;
 		size_t _configurationRevision = 0;
+		std::vector<PersistentItemExtentDelta> _persistentItemExtentDeltas;
 		std::unordered_map<Control*, size_t> _indices;
 		std::unordered_map<Control*, double> _measuredItemExtents;
 		std::map<size_t, double> _itemExtentDeltas;
@@ -1735,8 +1852,28 @@ namespace
 		cui::core::Rect finalRect)
 	{
 		finalRect = finalRect.Normalized();
-		const auto items = MeasureGroupedItems(
+		auto items = MeasureGroupedItems(
 			_owner, context, finalRect.width);
+		if (_owner.FixedItemHeight() > 0.0f
+			&& !_owner.ItemUsesDynamicHeight())
+		{
+			// The virtualizing stack owns the authoritative per-index extent. A
+			// grouped host stores only the common baseline, so a sparse item extent
+			// override arrives as extra (or reduced) space in finalRect. Give that
+			// space to the real item instead of leaving it blank below the baseline;
+			// otherwise a resized DataGridRow moves following groups while its row,
+			// cells and grid line remain at the old height.
+			float nonItemHeight = 0.0f;
+			GroupedLayoutItem* itemLayout = nullptr;
+			for (auto& item : items)
+			{
+				if (item.Child == _owner.Item()) itemLayout = &item;
+				else nonItemHeight += item.OuterHeight;
+			}
+			if (itemLayout)
+				itemLayout->OuterHeight = (std::max)(
+					0.0f, finalRect.height - nonItemHeight);
+		}
 		float currentY = finalRect.y;
 		for (size_t index = 0; index < items.size(); ++index)
 		{
@@ -2239,7 +2376,9 @@ void ItemsControl::ConfigureVirtualHost()
 	host->SetConfiguration(itemCount, GetVirtualizedItemHeight(),
 		std::span<const size_t>(_virtualGroupHeaderStarts),
 		_virtualGroupHeaderMetadataRevision, _virtualGroupingActive
-			? VirtualizedGroupHeaderEstimate : 0.0f);
+			? VirtualizedGroupHeaderEstimate : 0.0f,
+		GetVirtualizedItemExtentOverrides(),
+		GetVirtualizedItemExtentOverridesRevision());
 	// The virtual host normally derives horizontal extent from the handful of
 	// realized rows. DataGrid column virtualization intentionally omits offscreen
 	// cell visuals, so publish the logical full-column width through the host.
@@ -2260,6 +2399,12 @@ size_t ItemsControl::VirtualOffsetConfigurationRevision() const noexcept
 {
 	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
 	return host ? host->ConfigurationRevision() : 0;
+}
+
+size_t ItemsControl::VirtualItemExtentOverrideCount() const noexcept
+{
+	const auto* host = dynamic_cast<const VirtualizingItemsHost*>(_itemsHost);
+	return host ? host->PersistentItemExtentOverrideCount() : 0;
 }
 
 std::unique_ptr<Panel> ItemsControl::CreateItemsHost() const

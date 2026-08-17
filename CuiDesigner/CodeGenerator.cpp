@@ -1906,6 +1906,9 @@ CodeGenerator::FindKnownProperty(
 			"ControlTemplateReference" };
 	if (type == UIClass::UI_DataGrid)
 	{
+		if (propertyName == L"ColumnWidth")
+			return TypedPropertyInfo{
+				"SetColumnWidth", false, {}, "DataGridLength" };
 		if (propertyName == L"AutoGenerateColumns"
 			|| propertyName == L"EnableColumnVirtualization"
 			|| propertyName == L"FrozenColumnCount"
@@ -1914,11 +1917,15 @@ CodeGenerator::FindKnownProperty(
 			|| propertyName == L"CanUserDeleteRows"
 			|| propertyName == L"CanUserSortColumns"
 			|| propertyName == L"CanUserResizeColumns"
+			|| propertyName == L"CanUserResizeRows"
 			|| propertyName == L"CanUserReorderColumns"
 			|| propertyName == L"AreRowDetailsFrozen"
 			|| propertyName == L"ColumnHeaderHeight"
+			|| propertyName == L"MinColumnWidth"
+			|| propertyName == L"MaxColumnWidth"
 			|| propertyName == L"RowHeaderWidth"
 			|| propertyName == L"RowHeight"
+			|| propertyName == L"MinRowHeight"
 			|| propertyName == L"RowBackground"
 			|| propertyName == L"AlternatingRowBackground"
 			|| propertyName == L"HorizontalGridLinesBrush"
@@ -2121,6 +2128,14 @@ std::string CodeGenerator::GenerateTypedPropertyCall(
 			argument = "Visibility::Collapsed";
 		else
 			return {};
+	}
+	else if (property.ValueType == "DataGridLength")
+	{
+		if (!argument.starts_with("L\"") || !argument.ends_with("\""))
+			return {};
+		argument = "[] { DataGridLength value; "
+			"(void)DataGridLength::TryParse(" + argument
+			+ ", value); return value; }()";
 	}
 	else if (!property.ValueType.empty())
 		argument = "static_cast<" + property.ValueType + ">("
@@ -3263,6 +3278,8 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 			return "DataGrid::CanUserSortColumnsProperty()";
 		if (propertyName == L"CanUserResizeColumns")
 			return "DataGrid::CanUserResizeColumnsProperty()";
+		if (propertyName == L"CanUserResizeRows")
+			return "DataGrid::CanUserResizeRowsProperty()";
 		if (propertyName == L"CanUserReorderColumns")
 			return "DataGrid::CanUserReorderColumnsProperty()";
 		if (propertyName == L"SelectionUnit")
@@ -3271,6 +3288,12 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 			return "DataGrid::ClipboardCopyModeProperty()";
 		if (propertyName == L"ColumnHeaderHeight")
 			return "DataGrid::ColumnHeaderHeightProperty()";
+		if (propertyName == L"ColumnWidth")
+			return "DataGrid::ColumnWidthProperty()";
+		if (propertyName == L"MinColumnWidth")
+			return "DataGrid::MinColumnWidthProperty()";
+		if (propertyName == L"MaxColumnWidth")
+			return "DataGrid::MaxColumnWidthProperty()";
 		if (propertyName == L"RowHeaderWidth")
 			return "DataGrid::RowHeaderWidthProperty()";
 		if (propertyName == L"RowHeaderActualWidth")
@@ -3278,6 +3301,8 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 				"DataGrid::RowHeaderActualWidthProperty()");
 		if (propertyName == L"RowHeight")
 			return "DataGrid::RowHeightProperty()";
+		if (propertyName == L"MinRowHeight")
+			return "DataGrid::MinRowHeightProperty()";
 		if (propertyName == L"HeadersVisibility")
 			return "DataGrid::HeadersVisibilityProperty()";
 		if (propertyName == L"GridLinesVisibility")
@@ -3298,16 +3323,22 @@ std::string CodeGenerator::FindKnownDependencyPropertyExpression(
 			return "DataGrid::ColumnHeaderStyleProperty()";
 		if (propertyName == L"RowStyle")
 			return "DataGrid::RowStyleProperty()";
+		if (propertyName == L"RowStyleSelector")
+			return "DataGrid::RowStyleSelectorProperty()";
 		if (propertyName == L"RowHeaderStyle")
 			return "DataGrid::RowHeaderStyleProperty()";
 		if (propertyName == L"RowHeaderTemplate")
 			return "DataGrid::RowHeaderTemplateProperty()";
+		if (propertyName == L"RowHeaderTemplateSelector")
+			return "DataGrid::RowHeaderTemplateSelectorProperty()";
 		if (propertyName == L"AreRowDetailsFrozen")
 			return "DataGrid::AreRowDetailsFrozenProperty()";
 		if (propertyName == L"RowDetailsVisibilityMode")
 			return "DataGrid::RowDetailsVisibilityModeProperty()";
 		if (propertyName == L"RowDetailsTemplate")
 			return "DataGrid::RowDetailsTemplateProperty()";
+		if (propertyName == L"RowDetailsTemplateSelector")
+			return "DataGrid::RowDetailsTemplateSelectorProperty()";
 	}
 	if (type == UIClass::UI_TreeViewItem
 		&& propertyName == L"HasItems")
@@ -12354,7 +12385,11 @@ std::string CodeGenerator::GenerateCppForBaseName(
 								== BindingValueKind::NullableBool;
 					}
 					if (rule->Header) column.Header = *rule->Header;
-					if (rule->Width) column.Width = *rule->Width;
+					if (rule->Width)
+					{
+						column.Width = *rule->Width;
+						column.HasWidth = true;
+					}
 					if (rule->IsReadOnly)
 						column.IsReadOnly = *rule->IsReadOnly;
 					if (rule->IsThreeState)
@@ -12457,32 +12492,36 @@ std::string CodeGenerator::GenerateCppForBaseName(
 					<< found->second << "));\n";
 			}
 
-			std::string widthExpression;
-			switch (column.Width.Unit)
+			if (column.HasWidth)
 			{
-			case DesignerModel::DesignDataGridLengthUnit::Auto:
-				widthExpression = "DataGridLength::Auto()";
-				break;
-			case DesignerModel::DesignDataGridLengthUnit::SizeToHeader:
-				widthExpression = "DataGridLength::SizeToHeader()";
-				break;
-			case DesignerModel::DesignDataGridLengthUnit::SizeToCells:
-				widthExpression = "DataGridLength::SizeToCells()";
-				break;
-			case DesignerModel::DesignDataGridLengthUnit::Pixel:
-				widthExpression = "DataGridLength("
-					+ DoubleLiteral(column.Width.Value) + ")";
-				break;
-			case DesignerModel::DesignDataGridLengthUnit::Star:
-				widthExpression = "DataGridLength::Star("
-					+ DoubleLiteral(column.Width.Value) + ")";
-				break;
+				std::string widthExpression;
+				switch (column.Width.Unit)
+				{
+				case DesignerModel::DesignDataGridLengthUnit::Auto:
+					widthExpression = "DataGridLength::Auto()";
+					break;
+				case DesignerModel::DesignDataGridLengthUnit::SizeToHeader:
+					widthExpression = "DataGridLength::SizeToHeader()";
+					break;
+				case DesignerModel::DesignDataGridLengthUnit::SizeToCells:
+					widthExpression = "DataGridLength::SizeToCells()";
+					break;
+				case DesignerModel::DesignDataGridLengthUnit::Pixel:
+					widthExpression = "DataGridLength("
+						+ DoubleLiteral(column.Width.Value) + ")";
+					break;
+				case DesignerModel::DesignDataGridLengthUnit::Star:
+					widthExpression = "DataGridLength::Star("
+						+ DoubleLiteral(column.Width.Value) + ")";
+					break;
+				}
+				cpp << "\t" << variable << "->SetWidth("
+					<< widthExpression << ");\n";
 			}
-			cpp << "\t" << variable << "->SetWidth("
-				<< widthExpression << ");\n";
-			cpp << "\t" << variable << "->SetMinWidth("
-				<< DoubleLiteral(column.MinWidth) << ");\n";
-			if (std::isfinite(column.MaxWidth))
+			if (column.HasMinWidth)
+				cpp << "\t" << variable << "->SetMinWidth("
+					<< DoubleLiteral(column.MinWidth) << ");\n";
+			if (column.HasMaxWidth && std::isfinite(column.MaxWidth))
 				cpp << "\t" << variable << "->SetMaxWidth("
 					<< DoubleLiteral(column.MaxWidth) << ");\n";
 			cpp << "\t" << variable << "->SetIsReadOnly("
