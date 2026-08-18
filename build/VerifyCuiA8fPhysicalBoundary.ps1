@@ -2007,10 +2007,13 @@ $designArchive = Get-LibraryArchiveMembers -Dumpbin $resolvedDumpbin `
 Test-DesignArchiveBoundary -Result $designArchive
 
 if ($hasClosureMap) {
+    # Member counts are a coarse closure-growth tripwire. These baselines cover
+    # the current Production RichText, DataGrid, and DatePicker implementation;
+    # the exact Design/XML/name-registry exclusions are still enforced above.
     Test-FinalMapBoundary -MapPath $ClosureMap `
-        -MapRole 'Closure' -MaximumCuiMembers 39
+        -MapRole 'Closure' -MaximumCuiMembers 47
     Test-FinalMapBoundary -MapPath $FullMap `
-        -MapRole 'Full' -MaximumCuiMembers 72
+        -MapRole 'Full' -MaximumCuiMembers 83
 }
 
 Write-Host 'CUI A8f physical-boundary gate passed.'

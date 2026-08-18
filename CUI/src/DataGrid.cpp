@@ -15794,9 +15794,14 @@ bool DataGrid::BeginEdit()
 
 bool DataGrid::BeginEdit(const RoutedEventArgs* editingEventArgs)
 {
+	const ControlWeakReference ownerLifetime(this);
 	const bool result = BeginEditCore(editingEventArgs, false);
-	InvalidateCommandState();
-	return result;
+	if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+	{
+		live->InvalidateCommandState();
+		return result;
+	}
+	return false;
 }
 
 DataGridEditingUnit DataGrid::ResolveCommandEditingUnit(
@@ -16874,6 +16879,7 @@ bool DataGrid::CommitEdit(
 	DataGridEditingUnit editingUnit,
 	bool exitEditingMode)
 {
+	const ControlWeakReference ownerLifetime(this);
 	bool result = false;
 	if (editingUnit == DataGridEditingUnit::Row)
 		result = EndRowEdit(DataGridEditAction::Commit, exitEditingMode);
@@ -16884,8 +16890,12 @@ bool DataGrid::CommitEdit(
 			result = CommitCellEdit(exitEditingMode);
 		else result = exitEditingMode ? true : BeginEdit();
 	}
-	InvalidateCommandState();
-	return result;
+	if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+	{
+		live->InvalidateCommandState();
+		return result;
+	}
+	return false;
 }
 
 bool DataGrid::CommitCellEdit(bool exitEditingMode)
@@ -17002,17 +17012,22 @@ bool DataGrid::CancelEdit()
 
 bool DataGrid::CancelEdit(DataGridEditingUnit editingUnit)
 {
+	const ControlWeakReference ownerLifetime(this);
 	bool result = false;
 	if (editingUnit == DataGridEditingUnit::Row)
 		result = EndRowEdit(DataGridEditAction::Cancel, true);
 	else if (editingUnit == DataGridEditingUnit::Cell)
 	{
 		if (auto* cell = ResolveCurrentCellContainer();
-			cell && cell->GetIsEditing()) result = CancelCellEdit();
+		cell && cell->GetIsEditing()) result = CancelCellEdit();
 		else result = true;
 	}
-	InvalidateCommandState();
-	return result;
+	if (auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
+	{
+		live->InvalidateCommandState();
+		return result;
+	}
+	return false;
 }
 
 bool DataGrid::DeleteSelectedRows()

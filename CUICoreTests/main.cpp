@@ -7165,11 +7165,12 @@ int main()
 			return item && item.Get()->TryGetValue(L"Included", value)
 				&& value.TryGet(current) && current == expected;
 		};
+		size_t evaluations = 0;
 		auto applyFilter = [&](bool expected)
 		{
 			changes.clear();
 			publishedCounts.clear();
-			size_t evaluations = 0;
+			evaluations = 0;
 			view->SetFilterPredicate(
 				[&, expected](const BindingSourceReference& item)
 				{ return included(item, expected, evaluations); });
@@ -30660,7 +30661,6 @@ int main()
 		CUI_EXPECT_TRUE(materialized);
 		CUI_EXPECT_TRUE(tree.ContentRoot != nullptr);
 		CUI_EXPECT_EQ(4ULL, tree.Controls.size());
-		auto* contentRoot = tree.ContentRoot.get();
 		auto* button = FindMaterializedControlByName<Button>(
 			tree, L"templatedButton");
 		CUI_EXPECT_TRUE(button != nullptr);
@@ -76132,6 +76132,72 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(0, preparingEditCount);
 		CUI_EXPECT_FALSE(lifetime);
 		CUI_EXPECT_TRUE(grid == nullptr);
+	});
+
+	runner.Add("DataGrid edit entry events may delete owner safely", []
+	{
+		auto makeGrid = []
+		{
+			auto grid = std::make_unique<DataGrid>();
+			DisableItemsVirtualizationForBehaviorTest(*grid);
+			grid->SetAutoGenerateColumns(false);
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetBindingPath(L"Name");
+			column->SetBindingMode(BindingMode::TwoWay);
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			auto item = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(item->DefineProperty(L"Name", L"Row"));
+			auto rows = std::make_shared<ObservableBindingList>(
+				L"DeletingEditEventRow");
+			rows->Items.push_back(BindingSourceReference(std::move(item)));
+			grid->SetItemsSource(BindingListReference(std::move(rows)));
+			CUI_EXPECT_TRUE(grid->SetCurrentCell(0, 0));
+			return grid;
+		};
+
+		{
+			auto grid = makeGrid();
+			auto* raw = grid.get();
+			const ControlWeakReference lifetime(raw);
+			int firstHandler = 0;
+			int staleHandler = 0;
+			auto first = raw->BeginningEdit.Subscribe(
+				[&](DataGrid*, DataGridBeginningEditEventArgs&)
+				{
+					++firstHandler;
+					grid.reset();
+				});
+			auto stale = raw->BeginningEdit.Subscribe(
+				[&](DataGrid*, DataGridBeginningEditEventArgs&)
+				{ ++staleHandler; });
+
+			CUI_EXPECT_FALSE(raw->BeginEdit());
+			CUI_EXPECT_FALSE(lifetime);
+			CUI_EXPECT_EQ(1, firstHandler);
+			CUI_EXPECT_EQ(0, staleHandler);
+		}
+
+		{
+			auto grid = makeGrid();
+			auto* raw = grid.get();
+			const ControlWeakReference lifetime(raw);
+			int firstHandler = 0;
+			int staleHandler = 0;
+			auto first = raw->PreparingCellForEdit.Subscribe(
+				[&](DataGrid*, DataGridPreparingCellForEditEventArgs&)
+				{
+					++firstHandler;
+					grid.reset();
+				});
+			auto stale = raw->PreparingCellForEdit.Subscribe(
+				[&](DataGrid*, DataGridPreparingCellForEditEventArgs&)
+				{ ++staleHandler; });
+
+			CUI_EXPECT_FALSE(raw->BeginEdit());
+			CUI_EXPECT_FALSE(lifetime);
+			CUI_EXPECT_EQ(1, firstHandler);
+			CUI_EXPECT_EQ(0, staleHandler);
+		}
 	});
 
 	runner.Add("DataGrid Sorting source and column mutation aborts stale sort safely", []

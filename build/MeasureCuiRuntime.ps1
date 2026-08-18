@@ -417,10 +417,9 @@ function Get-BaselineRegressions {
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $projectPath = Join-Path $repoRoot `
     'CuiStaticGeneratedSample\CuiStaticGeneratedSample.vcxproj'
-$projectDirectory = Split-Path -Parent $projectPath
 if (-not $OutputPath) {
     $OutputPath = Join-Path $repoRoot `
-        'artifacts\codex-validation\cui-runtime-measurement.json'
+        'artifacts\validation\cui-runtime-measurement.json'
 }
 $OutputPath = [IO.Path]::GetFullPath($OutputPath)
 
@@ -457,7 +456,7 @@ foreach ($themeMode in $uniqueThemeModes) {
     }
 
     $executableName = "CuiStaticGeneratedSample.Measure.$themeMode.exe"
-    $executable = Join-Path $projectDirectory `
+    $executable = Join-Path $repoRoot `
         "$Platform\$Configuration\$executableName"
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Runtime measurement executable was not found: $executable"

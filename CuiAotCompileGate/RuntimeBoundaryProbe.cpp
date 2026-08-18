@@ -598,8 +598,13 @@ static_assert(sizeof(BindingValidationChangedEventArgs)
 	== sizeof(BindingSourcePropertyToken));
 static_assert(!HasOwnedName<BindingSourcePropertyMetadata>);
 static_assert(std::is_trivially_copyable_v<BindingSourcePropertyMetadata>);
+#if _ITERATOR_DEBUG_LEVEL == 0
+// MSVC's iterator-debug storage changes the layout of the STL containers in
+// DependencyObject. Keep the byte-for-byte ABI gate on production STL builds;
+// the surface checks above still apply to every configuration.
 static_assert(sizeof(void*) != 8 || sizeof(DependencyObject) == 200,
 	"Production DependencyObject must not retain Design subscriber storage");
+#endif
 static_assert(sizeof(void*) != 8 || sizeof(DependencyProperty) == 128,
 	"Production DependencyProperty must not retain authored-name, global-index "
 	"or Design metadata-cache sidecars");

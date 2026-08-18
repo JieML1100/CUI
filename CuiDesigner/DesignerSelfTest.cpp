@@ -867,6 +867,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 			autoApplied && autoUndone && autoPersisted,
 			L"tab order: focusable filtering, visual auto-sort, batch Undo/Redo, or persistence failed");
 	}
+	// Release the accumulated test documents before loading the public gallery.
+	// The Win32 Debug runner otherwise retains every preceding canvas until exit.
+	{
 	DesignerCanvas structureCanvas(0, 0, 900, 640);
 	std::wstring structureError;
 	structureCanvas.AdoptVisualChildToCanvasCore(
@@ -7702,6 +7705,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 	if (::GetEnvironmentVariableW(
 			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
 			fs::remove_all(freshnessRoot, removeError);
+	}
 	}
 
 	// The runtime gallery is the public XAML conformance fixture. The Designer
