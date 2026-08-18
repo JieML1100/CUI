@@ -1,120 +1,108 @@
-# ---> C
-# Prerequisites
-*.d
+# Visual Studio and local editor state
+/.vs/
+/.vscode/
+*.suo
+*.user
+*.vcxproj.user
+*.aps
+*.APS
+*.VC.db
+*.VC.opendb
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# ---> C++
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-/.vs
-
-/.vscode
-
-# NuGet / tooling (native WebView2 package)
+# Restored dependencies and local reference sources
 /packages/
 /.tools/
-/Release/
+/DotNetSource/
+
+# Build output trees
+/artifacts/
 /Debug/
+/Release/
+/Win32/
 /x64/
-**/x64/
-**/Win32/
-**/obj/
-*.tlog
-*.log
-*.recipe
-*.txt
-*.cui.v*.stamp
+
+# Project-local output and intermediate directories
+/CUI/Debug/
+/CUI/Release/
+/CUI/x64/
+/CUI/obj/
+/CUI/CUI/
+/CuiCodeGen/Debug/
+/CuiCodeGen/Release/
+/CuiCodeGen/x64/
+/CuiCodeGen/CuiCodeGen/
+/CuiCodeGenCore/Debug/
+/CuiCodeGenCore/Release/
+/CuiCodeGenCore/x64/
+/CuiCodeGenCore/CuiCodeGenCore/
+/CUICoreTests/Debug/
+/CUICoreTests/Release/
+/CUICoreTests/x64/
+/CUICoreTests/obj/
+/CUICoreTests/CUICoreTests/
+/CuiDesigner/Debug/
+/CuiDesigner/Release/
+/CuiDesigner/x64/
+/CuiDesigner/obj/
+/CuiDesigner/Designer/
+/CuiDesignerPreviewSample/
+/CuiGeneratedTheme/x64/
+/CuiGeneratedTheme/obj/
+/CuiGeneratedTheme/CuiGener.*/
+/CuiRuntime/Debug/
+/CuiRuntime/Release/
+/CuiRuntime/x64/
+/CuiRuntime/obj/
+/CuiRuntime/CuiRuntime/
+/CuiRuntimeSample/Debug/
+/CuiRuntimeSample/Release/
+/CuiRuntimeSample/x64/
+/CuiRuntimeSample/CuiRuntimeSample/
+/CuiStaticGeneratedSample/Debug/
+/CuiStaticGeneratedSample/Release/
+/CuiStaticGeneratedSample/x64/
+/CuiStaticGeneratedSample/obj/
+/CUITest/obj/
+/D2DGraphics/Debug/
+/D2DGraphics/Release/
+/D2DGraphics/x64/
+/D2DGraphics/D2DGraphics/
+/Utils/Debug/
+/Utils/Release/
+/Utils/x64/
+/Utils/Utils/
+/XmlLite/Debug/
+/XmlLite/Release/
+/XmlLite/x64/
+/XmlLite/XmlLite/
+/CuiStaticGeneratedSample/CuiStati.*/
+
+# Compiler and linker output
+*.obj
+*.pch
+*.idb
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.dll
+*.exe
+*.map
 *.iobj
 *.ipdb
-/DotNetSource
-/.plan
-/CUI_AOT_FINAL_CLOSEOUT_PLAN.md
-/CUI_AOT_RUNTIME_CUTOVER_PLAN.md
-/CUI_AOT_SIMPLIFICATION_PLAN.md
-/CUI_AOT_SIMPLIFICATION_SUMMARY.md
-/CUI_DESIGN_METADATA_CONDITIONAL_COMPILATION.md
-/CUI_DESIGN_METADATA_IMPLEMENTATION_REPORT.md
-/CUI_WPF_FOUNDATION_ALIGNMENT.md
-/CUI_XAML_AOT_ARCHITECTURE.md
-/.temp/codegen-example
-/artifacts
+*.recipe
+*.tlog
+*.log
+*.vcxproj.FileListAbsolute.txt
+
+# CUI code-generation intermediates
+*.cui.stamp
+*.cui.v*.stamp
+theme-*.v*.spec
+
+# Editor and patch leftovers
+*.tmp
+*.bak
+*.orig
+*.rej
+*~

@@ -2,55 +2,45 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-CUI 是以 Direct2D、DirectComposition 和 C++20 实现的 Windows 原生 WPF 语义 UI 框架。目标不是复刻
-WinForms 控件集合，而是建立 C++ 阵营的声明式属性、资源、模板、路由事件、输入、布局、渲染与自动化体系。
+CUI 是一个使用 C++20、Direct2D 和 DirectComposition 实现的 Windows 原生 UI 框架。它借鉴
+WPF 的属性、资源、模板、布局、输入和路由事件语义，但不以逐项复制 WPF API 或内部实现为目标。
 
-## 核心约定
+项目仍在持续开发，公开接口和 XAML Schema 可能随架构调整而变化。
 
-- 控件类型、属性、事件、命令、模板部件和名称作用域全部由 XAML Schema 定义。
-- C++ 不向 XAML 注册控件类型；C++ 只实现 native behavior host、事件/命令处理、平台消息、输入和渲染。
-- Production 使用 collision-checked type/property token 与静态 C++ endpoint；QName / `RuntimeTypeId`
-  只用于 Designer、CodeGen 和 Design compatibility 诊断，`UIClass` 只是内部 behavior host 判别器。
-- Designer 预览、诊断和静态 CodeGen 消费同一 XAML 文档及 Schema；Production 只消费生成的 C++，
-  不加载 authored XAML，也不按名称查找属性或 converter。
-- 不兼容与新方向无关的 Legacy API；旧名称或旧语义应删除，不能用别名、双写或 fallback 继续传播。
+## 运行模型
 
-## 当前架构
+CUI 有两条明确分开的运行路径：
 
-```text
-Authored XAML / Schema
-    ├─ 类型、依赖属性、attached property、事件、命令
-    ├─ ResourceDictionary、Style、Template、VisualState
-    └─ Binding、DataTemplate、ItemsPanelTemplate、名称作用域
-             │
-             ▼
-Designer / Parser / Canonical Serializer / AOT CodeGen
-       │                                  │
-       │ Design compatibility             │ generated .g.h / .g.cpp
-       ▼                                  ▼
-Runtime Materializer                 Production CUI (pure C++)
-       │                                  │
-       └──────────────┬───────────────────┘
-                      ▼
-DispatcherObject → DependencyObject → Visual → UIElement
-                 → FrameworkElement → Control
-                      │
-                      ├─ Measure / Arrange
-                      ├─ InputManager / FocusManager / TextCompositionManager
-                      ├─ RoutedEvent / RoutedCommand
-                      ├─ AutomationProperties / AutomationPeer
-                      └─ PresentationScene / Direct2D / DirectComposition
-```
+- **Design**：`CuiRuntime`、Designer 和动态样例在进程内解析 XAML，用于编辑、预览、诊断与热重载。
+- **Production AOT**：构建时由 `CuiCodeGen` 把 XAML 编译成 `.g.h/.g.cpp`。应用只链接生成的 C++、
+  CUI 核心库和需要的主题闭包；运行时不读取 authored XAML，也不依赖按名称查找类型、属性或 converter。
 
-属性有效值优先级为：
+Production 使用经过冲突检查的类型/属性 token 和静态 C++ endpoint。QName 与 `RuntimeTypeId` 保留在
+Design 工具链中；`UIClass` 只是 native behavior host 的内部分类，不是 XAML 类型身份。
+
+属性有效值的优先级为：
 
 ```text
 Animation > Local > VisualState > Template > Style > Theme > Inherited > Default
 ```
 
-Binding、DynamicResource、TemplateBinding 和 Animation 是值槽中的表达式身份，不是旁路属性系统的第二份字段。
+Binding、DynamicResource、TemplateBinding 和 Animation 都保存在属性值槽中，不维护一套绕过属性系统的
+平行状态。
 
-## 最小 XAML
+## 已实现的主要能力
+
+- 依赖属性、继承、coercion、资源、Style、ControlTemplate 和 VisualState
+- Measure/Arrange 布局、变换、裁剪、Direct2D 绘制与 DirectComposition 呈现
+- 鼠标、键盘、焦点、文本输入、拖放、路由事件和路由命令
+- Binding、MultiBinding、DataTemplate、ItemsPanelTemplate 和集合视图
+- UI Automation peer 与常用自动化 pattern
+- 原生窗口、弹出层、菜单、任务栏、托盘、媒体和 WebView2 集成
+- 带行列虚拟化、编辑事务、验证、分组和 UIA 的 DataGrid
+- Designer、动态 XAML 运行时和 Production AOT 代码生成
+
+## XAML 示例
+
+下面是一个可编译的文档片段。Production 构建会先把它转成 C++，不会在程序启动时再解析这段文本。
 
 ```xml
 <Window xmlns="urn:cui"
@@ -58,120 +48,118 @@ Binding、DynamicResource、TemplateBinding 和 Animation 是值槽中的表达�
         x:Class="Sample.MainWindow"
         Title="CUI" Width="640" Height="360">
   <Window.Resources>
-    <SolidColorBrush x:Key="Accent">#FF2F6FE4</SolidColorBrush>
+    <Color x:Key="Accent">#FF2F6FE4</Color>
     <Style TargetType="Button">
       <Setter Property="Background" Value="{StaticResource Accent}" />
     </Style>
   </Window.Resources>
 
   <StackPanel Margin="20">
-    <TextBlock Text="C++ WPF" FontSize="24" />
+    <TextBlock Text="C++ WPF semantics" FontSize="24" />
     <TextBox x:Name="nameEditor" Text="{Binding Name, Mode=TwoWay}" />
-    <Button x:Name="saveButton"
-            Content="_Save"
-            Click="OnSave"
+    <Button x:Name="saveButton" Content="_Save" Click="OnSave"
             AutomationProperties.Name="Save" />
   </StackPanel>
 </Window>
 ```
 
-`_S` 是 WPF AccessText 助记键标记，`__` 表示字面下划线。外观使用 Brush 属性；不存在
-`BackColor`、`ForeColor`、`BorderColor` 或通用可写 `AccessKey` 属性。
+完整的静态宿主见 [`CuiStaticGeneratedSample`](CuiStaticGeneratedSample)，动态解析示例见
+[`CuiRuntimeSample`](CuiRuntimeSample)，综合控件与 XAML 示例见 [`CUITest`](CUITest)。
 
-Production 构建先把 XAML 编译为 `.g.h/.g.cpp`。C++ 宿主负责创建 `Application`、连接生成的
-`OnSave` handler、提供 typed DataContext，然后进入 `application.Run(window)`；进程不读取 authored
-XAML，也不再用 `AddControl(new ...)` 建立另一棵作者树。Production 静态链路见
-[`CuiStaticGeneratedSample`](CuiStaticGeneratedSample) 和
-[`CuiAotCompileGate`](CuiAotCompileGate)；动态挂载样例
-[`CuiRuntimeSample/main.cpp`](CuiRuntimeSample/main.cpp) 属于 Design compatibility，综合特性展厅见
-[`CUITest`](CUITest)。
+## 目录
 
-## 项目结构
-
-- `CUI/`：元素基类、布局、输入、命令、自动化、渲染和 native behavior hosts。
-- `CuiRuntime/`：Design compatibility 的 XAML Schema、Materializer、RuntimeDocument、热重载和事件注册；
-  不属于 Production AOT 项目图。
-- `CuiDesigner/`：规范 XAML 编辑、预览、属性/事件设计与静态 CodeGen。
-- `CUITest/`：声明式综合特性演示和验证门禁。
+- `CUI/`：属性系统、元素树、布局、输入、命令、自动化与渲染核心。
+- `D2DGraphics/`、`Utils/`、`XmlLite/`：图形和基础设施库。
+- `CuiRuntime/`：Design 路径使用的 Schema、XAML materializer、文档会话与热重载。
+- `CuiDesigner/`：可视化设计器、规范化序列化和代码生成前端。
+- `CuiCodeGenCore/`、`CuiCodeGen/`：XAML/AOT 代码生成库与命令行工具。
+- `CuiGeneratedTheme/`：`Themes/Generic.xaml` 的静态主题产物。
+- `CuiAotCompileGate/`：Production 生成代码和链接边界的编译门禁。
 - `CUICoreTests/`：核心语义与回归测试。
-- `D2DGraphics/`：Direct2D/DirectComposition 底层图形封装。
+- `CUITest/`、`CuiRuntimeSample/`、`CuiStaticGeneratedSample/`：演示与可执行 smoke test。
 
-## 构建
+## 构建环境
 
-使用 Visual Studio 2022、MSVC v143 和 Windows SDK。日常可构建 `CUI.sln` 的 `Debug|x64`：
+完整矩阵需要 Visual Studio 2026（MSBuild 18）、Windows SDK、MSVC v145，以及 Win32 项目使用的
+v143 工具集。首次构建前请通过 Visual Studio 恢复 `CUI/packages.config` 和
+`CUITest/packages.config` 中声明的 WebView2 NuGet 包。
+
+以下 PowerShell 片段不依赖 Visual Studio 的 edition 或安装目录：
 
 ```powershell
-& 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe' `
-  CUI.sln /m:1 /nr:false /p:Configuration=Debug /p:Platform=x64 `
-  /p:LinkIncremental=false /verbosity:minimal
+$vswhere = Join-Path ${env:ProgramFiles(x86)} `
+  'Microsoft Visual Studio\Installer\vswhere.exe'
+$install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+  -property installationPath | Select-Object -First 1
+$msbuild = Join-Path $install 'MSBuild\Current\Bin\MSBuild.exe'
 ```
 
-当前 checkout 的 solution 级 Debug 构建会在未迁移的 Design compatibility 样例
-`CuiRuntimeSample` 中遇到已知的 `Event<void(Window*)>::args_type` 编译错误；Production AOT 主链使用
-下面的 Release gate，不能把该 sample 失败误记为 AOT 回归：
+日常开发通常构建 `Debug|x64`：
 
 ```powershell
-$msbuild = 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe'
-& $msbuild .\CUI\CUI.vcxproj /t:Build /m:1 `
-  /p:Configuration=Release /p:Platform=x64 /p:CuiRuntimeFlavor=Production
-& $msbuild .\CuiAotCompileGate\CuiAotCompileGate.vcxproj /t:Build /m:1 `
-  /p:Configuration=Release /p:Platform=x64
-.\CuiStaticGeneratedSample\x64\Release\CuiStaticGeneratedSample.exe
+& $msbuild .\CUI.sln /t:Build /m:1 /nr:false `
+  /p:Configuration=Debug /p:Platform=x64 /verbosity:minimal
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 ```
 
-主要验证入口：
+提交前应重建四个 solution 配置。串行构建可以避免多个项目同时更新示例生成文件：
 
 ```powershell
+foreach ($configuration in 'Debug', 'Release') {
+  foreach ($platform in 'x86', 'x64') {
+    & $msbuild .\CUI.sln /t:Rebuild /m:1 /nr:false `
+      "/p:Configuration=$configuration" "/p:Platform=$platform" `
+      /verbosity:minimal
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+}
+```
+
+## 验证
+
+Solution 构建会编译 AOT gate，并自动执行生成代码、typed converter、Binding scope 和依赖属性存储边界检查。
+下面这些命令是无交互的可执行验证入口；示例使用 `Debug|x64` 的 solution 输出目录：
+
+```powershell
+.\x64\Debug\CUICoreTests.exe
 .\x64\Debug\Designer.exe --self-test
+.\x64\Debug\CUITest.exe --construct-xaml
 .\x64\Debug\CUITest.exe --validate-xaml
 .\x64\Debug\CUITest.exe --smoke-xaml
 .\x64\Debug\CUITest.exe --render-smoke
+.\x64\Debug\CuiRuntimeSample.exe
+.\x64\Debug\CuiStaticGeneratedSample.exe
 .\x64\Debug\CuiCodeGen.exe --version
-.\CUICoreTests\x64\Debug\CUICoreTests.exe
 ```
 
-### AOT 自定义 Binding converter
+测试可以用 `CUI_TEST_FILTER` 选择名称中包含指定文本的 Core case：
 
-Production 不注册或按名称查找 converter。自定义 single/multi converter 通过构建期 catalog 声明，
-生成的 C++ TU 直接包含实现头并调用 qualified factory：
-
-```xml
-<CuiBindingConverters Version="1">
-  <Single Id="FormatValue" Include="BindingConverters.h"
-          Factory="sample::CreateFormatValue"
-          SourceKind="String" TargetKind="String" CanConvertBack="false" />
-  <Multi Id="JoinValues" Include="BindingConverters.h"
-         Factory="sample::CreateJoinValues"
-         MinimumInputCount="2" TargetKind="String" CanConvertBack="false" />
-</CuiBindingConverters>
+```powershell
+$env:CUI_TEST_FILTER = 'DataGrid'
+.\x64\Debug\CUICoreTests.exe
+Remove-Item Env:CUI_TEST_FILTER
 ```
 
-命令行生成使用 `--converter-manifest <xml>`；MSBuild 项目在对应 `CuiCompile` 上设置：
+静态源所有权检查可单独运行：
 
-```xml
-<ConverterManifest>$(ProjectDir)BindingConverters.cui.xml</ConverterManifest>
+```powershell
+.\build\VerifyCuiA8fPhysicalBoundary.ps1 -SourceOnly
 ```
 
-catalog 会严格检查 ID、include、factory、value kind、ConvertBack 能力和输入数；失败直接终止 AOT
-生成，不回退到运行时 registry。可运行契约见
-[`CuiAotCompileGate/TypedConverterContract.cui.xaml`](CuiAotCompileGate/TypedConverterContract.cui.xaml)；
-Window、ComponentDefinition、DataTemplate、ControlTemplate 四域的普通/MultiBinding、direct DP、
-direct record 与 FindAncestor adapter 覆盖见
-[`CuiAotCompileGate/BindingScopeContract.cui.xaml`](CuiAotCompileGate/BindingScopeContract.cui.xaml) 和
-[`CuiAotCompileGate/VerifyBindingScopeBoundary.ps1`](CuiAotCompileGate/VerifyBindingScopeBoundary.ps1)。
+## AOT 扩展
 
-生成组件的 dependency property 采用 accessor-owned static storage：Production 生成 numeric token，
-不发布到名称 registry；Design 仍保留 XAML Schema 名称视图。可写/只读及 direct Binding 契约见
-[`CuiAotCompileGate/DependencyPropertyStorageContract.cui.xaml`](CuiAotCompileGate/DependencyPropertyStorageContract.cui.xaml)。
+自定义 Binding converter 通过构建期 catalog 声明，生成代码直接调用具名 C++ factory；Production 不注册或
+按字符串查找 converter。可运行示例在
+[`TypedBindingConverters.cui.xml`](CuiAotCompileGate/TypedBindingConverters.cui.xml) 和
+[`TypedConverterContract.cui.xaml`](CuiAotCompileGate/TypedConverterContract.cui.xaml)。DataGrid 自动列的
+生成期规则示例在 [`DataGridAutoColumns.cui.xml`](CUITest/DataGridAutoColumns.cui.xml)。
 
-Design-only converter registry、XamlSchema、动态 DP registry/storage、DependencyObject/Control 名称兼容
-实现、content/collection authored strategy、Style mutable backend 以及 VisualState builder/name adapter
-现已物理归入 `CuiRuntime`。源码、
-三层 archive 与最终 MAP 边界可用
-[`build/VerifyCuiA8fPhysicalBoundary.ps1`](build/VerifyCuiA8fPhysicalBoundary.ps1) 检查：Production
-`CUI.lib` 和中间 `CUIDesignCore.lib` 不得拥有 Design symbol/object，`CuiRuntime.lib` 必须正向拥有九个
-Design object 及各组精确成员定义；Closure/Full Production MAP 不得链接 Design/CuiRuntime/XmlLite 或动态
-名称符号。A8f 封板时的完整 Core 是 429/441，12 个失败与前基线精确一致；随后独立的
-runtime correctness 收尾已清零这组历史失败，当前完整 Core 为 **442/442**。Production AOT、
-静态样例、Designer、MAP 和性能门均已按当前代码复验；性能聚合为 0 regressions，Closure/Full
-只拉入 39/72 个 CUI object modules，Design/XML/name-registry trace 为 0。
+内部设计说明只记录仍需维护的约束：
+
+- [DataGrid 设计约束](CUI/DataGrid.md)
+- [Designer Undo 契约](CuiDesigner/DesignerCore/Undo.md)
+- [静态框架主题](CuiGeneratedTheme/README.md)
+
+## 许可证
+
+CUI 使用 [MIT License](LICENSE)。

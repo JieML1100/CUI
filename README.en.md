@@ -2,55 +2,51 @@
 
 [English](README.en.md) | [简体中文](README.md)
 
-CUI is a native Windows UI framework that implements WPF semantics in C++20 on top of Direct2D and
-DirectComposition. Its goal is a declarative property, resource, template, routed-event, input, layout,
-rendering, and automation system—not a WinForms-style control collection.
+CUI is a native Windows UI framework built with C++20, Direct2D, and DirectComposition. It borrows the
+property, resource, template, layout, input, and routed-event semantics of WPF without trying to reproduce
+every WPF API or implementation detail.
 
-## Non-negotiable contract
+The project is under active development, so public APIs and the XAML schema may change as the architecture
+evolves.
 
-- XAML schema defines control types, properties, events, commands, template parts, and namescopes.
-- C++ does not register control types into XAML. It implements native behavior hosts, handlers, platform
-  messages, input, and rendering.
-- `RuntimeTypeId(namespace URI + local name)` is the sole declarative type identity. `UIClass` is an internal
-  behavior-host discriminator only.
-- Dynamic Runtime, Designer preview, and static CodeGen consume the same XAML document and schema.
-- Unrelated legacy APIs are removed rather than retained through aliases, dual writes, or compatibility fallbacks.
+## Runtime model
 
-## Architecture
+CUI keeps two runtime paths separate:
 
-```text
-XAML / Schema
-    ├─ QNames, dependency and attached properties, events, commands
-    ├─ ResourceDictionary, Style, Template, VisualState
-    └─ Binding, DataTemplate, ItemsPanelTemplate, namescopes
-             │
-             ▼
-Designer / Parser / Canonical Serializer / CodeGen
-             │
-             ▼
-Runtime Materializer
-             │
-             ▼
-DispatcherObject → DependencyObject → Visual → UIElement
-                 → FrameworkElement → Control
-             │
-             ├─ Measure / Arrange
-             ├─ InputManager / FocusManager / TextCompositionManager
-             ├─ RoutedEvent / RoutedCommand
-             ├─ AutomationProperties / AutomationPeer
-             └─ PresentationScene / Direct2D / DirectComposition
-```
+- **Design**: `CuiRuntime`, the Designer, and the dynamic sample parse XAML in-process for editing, preview,
+  diagnostics, and hot reload.
+- **Production AOT**: `CuiCodeGen` compiles XAML into `.g.h/.g.cpp` during the build. Applications link the
+  generated C++, the CUI core, and the required theme closure. They do not read authored XAML or resolve
+  types, properties, or converters by name at run time.
 
-Effective property precedence is:
+Production uses collision-checked type/property tokens and static C++ endpoints. QNames and `RuntimeTypeId`
+remain in the Design toolchain; `UIClass` is an internal native behavior-host category, not a XAML type
+identity.
+
+Effective property values use this precedence:
 
 ```text
 Animation > Local > VisualState > Template > Style > Theme > Inherited > Default
 ```
 
-Binding, DynamicResource, TemplateBinding, and Animation are expression identities inside value slots; they
-do not bypass the property system through duplicate fields.
+Binding, DynamicResource, TemplateBinding, and Animation live in property value slots rather than in a
+second state system that bypasses dependency properties.
 
-## Minimal XAML
+## Main features
+
+- Dependency properties, inheritance, coercion, resources, styles, control templates, and visual states
+- Measure/arrange layout, transforms, clipping, Direct2D drawing, and DirectComposition presentation
+- Mouse, keyboard, focus, text input, drag and drop, routed events, and routed commands
+- Binding, MultiBinding, data templates, items-panel templates, and collection views
+- UI Automation peers and common automation patterns
+- Native windows, popups, menus, taskbar and tray integration, media, and WebView2
+- A DataGrid with row/column virtualization, edit transactions, validation, grouping, and UIA
+- A Designer, a dynamic XAML runtime, and Production AOT code generation
+
+## XAML example
+
+This is a compilable document fragment. A Production build converts it to C++ instead of parsing the text
+when the application starts.
 
 ```xml
 <Window xmlns="urn:cui"
@@ -58,59 +54,122 @@ do not bypass the property system through duplicate fields.
         x:Class="Sample.MainWindow"
         Title="CUI" Width="640" Height="360">
   <Window.Resources>
-    <SolidColorBrush x:Key="Accent">#FF2F6FE4</SolidColorBrush>
+    <Color x:Key="Accent">#FF2F6FE4</Color>
     <Style TargetType="Button">
       <Setter Property="Background" Value="{StaticResource Accent}" />
     </Style>
   </Window.Resources>
 
   <StackPanel Margin="20">
-    <TextBlock Text="C++ WPF" FontSize="24" />
+    <TextBlock Text="C++ WPF semantics" FontSize="24" />
     <TextBox x:Name="nameEditor" Text="{Binding Name, Mode=TwoWay}" />
-    <Button x:Name="saveButton"
-            Content="_Save"
-            Click="OnSave"
+    <Button x:Name="saveButton" Content="_Save" Click="OnSave"
             AutomationProperties.Name="Save" />
   </StackPanel>
 </Window>
 ```
 
-`_S` is the WPF AccessText marker and `__` renders a literal underscore. Appearance uses Brush properties;
-there are no `BackColor`, `ForeColor`, `BorderColor`, or general writable `AccessKey` properties.
-
-The C++ host creates an `Application`, loads XAML, registers the `OnSave` behavior, supplies DataContext,
-and enters `application.Run(window)`. Application code does not build a second authored tree with
-`AddControl(new ...)`.
-See [`CuiRuntimeSample/main.cpp`](CuiRuntimeSample/main.cpp) for dynamic mounting and event registration,
-[`CuiStaticGeneratedSample`](CuiStaticGeneratedSample) for static lowering, and [`CUITest`](CUITest) for the
-feature gallery.
+See [`CuiStaticGeneratedSample`](CuiStaticGeneratedSample) for a complete static host,
+[`CuiRuntimeSample`](CuiRuntimeSample) for dynamic parsing, and [`CUITest`](CUITest) for the control and XAML
+gallery.
 
 ## Repository layout
 
-- `CUI/`: element layers, layout, input, commands, automation, rendering, and native behavior hosts.
-- `CuiRuntime/`: XAML schema, materialization, RuntimeDocument, hot reload, and event registration.
-- `CuiDesigner/`: canonical XAML editing, preview, property/event design, and static CodeGen.
-- `CUITest/`: declarative feature demonstrations and validation gates.
+- `CUI/`: property system, element tree, layout, input, commands, automation, and rendering core.
+- `D2DGraphics/`, `Utils/`, `XmlLite/`: graphics and infrastructure libraries.
+- `CuiRuntime/`: schema, XAML materializer, document sessions, and hot reload for the Design path.
+- `CuiDesigner/`: visual designer, canonical serialization, and the code-generation front end.
+- `CuiCodeGenCore/`, `CuiCodeGen/`: XAML/AOT generation library and command-line tool.
+- `CuiGeneratedTheme/`: static output for `Themes/Generic.xaml`.
+- `CuiAotCompileGate/`: compile-time gates for generated Production code and link boundaries.
 - `CUICoreTests/`: semantic and regression tests.
-- `D2DGraphics/`: Direct2D/DirectComposition graphics layer.
+- `CUITest/`, `CuiRuntimeSample/`, `CuiStaticGeneratedSample/`: samples and executable smoke tests.
 
-## Build and verify
+## Build requirements
 
-Build `Debug|x64` with Visual Studio 2022, MSVC v143, and a Windows SDK:
+The full matrix requires Visual Studio 2026 (MSBuild 18), a Windows SDK, MSVC v145, and the v143 toolset
+used by the Win32 projects. Before the first build, use Visual Studio to restore the WebView2 NuGet package
+declared in `CUI/packages.config` and `CUITest/packages.config`.
+
+This PowerShell snippet finds MSBuild without assuming a Visual Studio edition or install directory:
 
 ```powershell
-& 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe' `
-  CUI.sln /m:1 /nr:false /p:Configuration=Debug /p:Platform=x64 `
-  /p:LinkIncremental=false /verbosity:minimal
+$vswhere = Join-Path ${env:ProgramFiles(x86)} `
+  'Microsoft Visual Studio\Installer\vswhere.exe'
+$install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+  -property installationPath | Select-Object -First 1
+$msbuild = Join-Path $install 'MSBuild\Current\Bin\MSBuild.exe'
 ```
 
+For day-to-day development, build `Debug|x64`:
+
 ```powershell
+& $msbuild .\CUI.sln /t:Build /m:1 /nr:false `
+  /p:Configuration=Debug /p:Platform=x64 /verbosity:minimal
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+```
+
+Rebuild all four solution configurations before submitting a change. Serial builds prevent projects from
+updating sample-generated files at the same time:
+
+```powershell
+foreach ($configuration in 'Debug', 'Release') {
+  foreach ($platform in 'x86', 'x64') {
+    & $msbuild .\CUI.sln /t:Rebuild /m:1 /nr:false `
+      "/p:Configuration=$configuration" "/p:Platform=$platform" `
+      /verbosity:minimal
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+}
+```
+
+## Verification
+
+The solution build compiles the AOT gate and automatically runs the generated-code, typed-converter,
+binding-scope, and dependency-property-storage checks. The following non-interactive entry points use the
+`Debug|x64` solution output directory:
+
+```powershell
+.\x64\Debug\CUICoreTests.exe
 .\x64\Debug\Designer.exe --self-test
+.\x64\Debug\CUITest.exe --construct-xaml
 .\x64\Debug\CUITest.exe --validate-xaml
 .\x64\Debug\CUITest.exe --smoke-xaml
 .\x64\Debug\CUITest.exe --render-smoke
 .\x64\Debug\CuiRuntimeSample.exe
 .\x64\Debug\CuiStaticGeneratedSample.exe
 .\x64\Debug\CuiCodeGen.exe --version
-.\x64\Debug\CUICoreTests.exe
 ```
+
+Set `CUI_TEST_FILTER` to run Core cases whose names contain a given string:
+
+```powershell
+$env:CUI_TEST_FILTER = 'DataGrid'
+.\x64\Debug\CUICoreTests.exe
+Remove-Item Env:CUI_TEST_FILTER
+```
+
+Run the static source-ownership gate separately when changing the Production/Design boundary:
+
+```powershell
+.\build\VerifyCuiA8fPhysicalBoundary.ps1 -SourceOnly
+```
+
+## AOT extensions
+
+Custom Binding converters are declared in a build-time catalog, and generated code calls named C++
+factories directly. Production does not register or look up converters by string. Runnable examples live in
+[`TypedBindingConverters.cui.xml`](CuiAotCompileGate/TypedBindingConverters.cui.xml) and
+[`TypedConverterContract.cui.xaml`](CuiAotCompileGate/TypedConverterContract.cui.xaml). The build-time
+DataGrid auto-column rules are demonstrated in
+[`DataGridAutoColumns.cui.xml`](CUITest/DataGridAutoColumns.cui.xml).
+
+The maintained internal notes are intentionally short:
+
+- [DataGrid design constraints](CUI/DataGrid.md)
+- [Designer undo contract](CuiDesigner/DesignerCore/Undo.md)
+- [Static framework theme](CuiGeneratedTheme/README.md)
+
+## License
+
+CUI is available under the [MIT License](LICENSE).

@@ -2730,6 +2730,37 @@ namespace
 		return true;
 	}
 
+	DesignerModel::DesignDocument BuildTemplateScopeDocument(
+		const DesignerModel::DesignDocument& source,
+		const DesignerModel::DesignObjectResourceDictionary& visibleObjects,
+		const DesignerStyleSheet& visibleStyles)
+	{
+		DesignerModel::DesignDocument result;
+		result.Schema = source.Schema;
+		result.SchemaVersion = source.SchemaVersion;
+		result.NextStableId = source.NextStableId;
+		result.Window = source.Window;
+		result.CodeBehind = source.CodeBehind;
+		result.DataContextSchema = source.DataContextSchema;
+		result.StyleSheet = visibleStyles;
+		result.Components = visibleObjects.Components;
+		result.ControlTemplates = visibleObjects.ControlTemplates;
+		result.DataTypes = source.DataTypes;
+		result.DataTemplates = visibleObjects.DataTemplates;
+		result.ItemsPanelTemplates = visibleObjects.ItemsPanelTemplates;
+		result.GroupStyles = visibleObjects.GroupStyles;
+		result.DataLists = source.DataLists;
+		result.CollectionViews = source.CollectionViews;
+		result.Sources = source.Sources;
+		result.ResourceBasePath = source.ResourceBasePath;
+		result.Resources = source.Resources;
+		result.Window.Events.clear();
+		result.Window.Bindings.clear();
+		result.Window.CommandBindings.clear();
+		result.Window.InputBindings.clear();
+		return result;
+	}
+
 	class MaterializedDataTemplate final : public IItemTemplate
 	{
 	public:
@@ -2874,20 +2905,13 @@ namespace
 			{
 				try
 				{
-					DesignerModel::DesignDocument templateDocument = *_document;
-					templateDocument.Nodes = _definition.Template;
-					templateDocument.Components = _visibleObjects.Components;
-					templateDocument.ControlTemplates = _visibleObjects.ControlTemplates;
-					templateDocument.DataTemplates = _visibleObjects.DataTemplates;
-					templateDocument.ItemsPanelTemplates =
-						_visibleObjects.ItemsPanelTemplates;
-					templateDocument.GroupStyles = _visibleObjects.GroupStyles;
-					templateDocument.StyleSheet = _visibleStyles;
+					// _document is already template-expanded. Assemble the item
+					// scope directly instead of copying its full visual tree only
+					// to discard it for the item template.
+					auto templateDocument = BuildTemplateScopeDocument(
+						*_document, _visibleObjects, _visibleStyles);
 					templateDocument.DataContextSchema = _schema;
-					templateDocument.Window.Events.clear();
-					templateDocument.Window.Bindings.clear();
-					templateDocument.Window.CommandBindings.clear();
-					templateDocument.Window.InputBindings.clear();
+					templateDocument.Nodes = _definition.Template;
 					// A template has an item-scoped DataContext. Do not materialize
 					// unrelated page-scoped lists just because they share a document.
 					std::unordered_set<std::wstring> referencedLists;
@@ -3336,21 +3360,8 @@ namespace
 				}
 			}
 
-			DesignerModel::DesignDocument runtimeDocument = *_document;
-			runtimeDocument.Nodes.clear();
-			runtimeDocument.Components = _visibleObjects.Components;
-			runtimeDocument.ControlTemplates =
-				_visibleObjects.ControlTemplates;
-			runtimeDocument.DataTemplates =
-				_visibleObjects.DataTemplates;
-			runtimeDocument.ItemsPanelTemplates =
-				_visibleObjects.ItemsPanelTemplates;
-			runtimeDocument.GroupStyles = _visibleObjects.GroupStyles;
-			runtimeDocument.StyleSheet = _visibleStyles;
-			runtimeDocument.Window.Events.clear();
-			runtimeDocument.Window.Bindings.clear();
-			runtimeDocument.Window.CommandBindings.clear();
-			runtimeDocument.Window.InputBindings.clear();
+			auto runtimeDocument = BuildTemplateScopeDocument(
+				*_document, _visibleObjects, _visibleStyles);
 			runtimeDocument.NextStableId = 2;
 
 			DesignerModel::DesignNode root;
@@ -3428,20 +3439,8 @@ namespace
 			{
 				try
 				{
-					DesignerModel::DesignDocument runtimeDocument = *_document;
-					runtimeDocument.Nodes.clear();
-					runtimeDocument.Components = _visibleObjects.Components;
-					runtimeDocument.ControlTemplates =
-						_visibleObjects.ControlTemplates;
-					runtimeDocument.DataTemplates = _visibleObjects.DataTemplates;
-					runtimeDocument.ItemsPanelTemplates =
-						_visibleObjects.ItemsPanelTemplates;
-					runtimeDocument.GroupStyles = _visibleObjects.GroupStyles;
-					runtimeDocument.StyleSheet = _visibleStyles;
-					runtimeDocument.Window.Events.clear();
-					runtimeDocument.Window.Bindings.clear();
-					runtimeDocument.Window.CommandBindings.clear();
-					runtimeDocument.Window.InputBindings.clear();
+					auto runtimeDocument = BuildTemplateScopeDocument(
+						*_document, _visibleObjects, _visibleStyles);
 					runtimeDocument.NextStableId = 2;
 
 					DesignerModel::DesignNode root;
@@ -3937,25 +3936,29 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 	}
 	try
 	{
-		XamlCompiledDocument compiledStorage;
+		// Template factories can outlive this call. Keep an internally compiled
+		// plan in shared storage so they can alias its document without cloning it.
+		std::shared_ptr<XamlCompiledDocument> compiledStorage;
 		const XamlCompiledDocument* compiledPlan =
 			options.CompiledDocument.get();
 		if (!compiledPlan)
 		{
+			compiledStorage = std::make_shared<XamlCompiledDocument>();
 			XamlDocumentCompilationOptions compilationOptions;
 			compilationOptions.Theme = options.Theme;
 			compilationOptions.UseFrameworkTheme = options.UseFrameworkTheme;
 			if (!XamlDocumentCompiler::Compile(
-				sourceDocument, compiledStorage, compilationOptions, outError))
+				sourceDocument, *compiledStorage, compilationOptions, outError))
 				return false;
-			compiledPlan = &compiledStorage;
+			compiledPlan = compiledStorage.get();
 		}
 		const auto& compiled = *compiledPlan;
 		const DesignDocument& document = compiled.Document;
 		const auto templateDocument = options.CompiledDocument
 			? std::shared_ptr<const DesignDocument>(
 				options.CompiledDocument, &options.CompiledDocument->Document)
-			: std::make_shared<const DesignDocument>(document);
+			: std::shared_ptr<const DesignDocument>(
+				compiledStorage, &compiledStorage->Document);
 		const auto createBaseControl = options.ControlFactory
 			? options.ControlFactory
 			: std::function<std::unique_ptr<Control>(UIClass)>(
@@ -6380,7 +6383,10 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			if (!installed)
 			{
 				if (outError) *outError = L"项控件无法安装 DataTemplate："
-					+ dataTemplate->DisplayName();
+					+ dataTemplate->DisplayName()
+					+ (itemsControl->LastTemplateError().empty()
+						? std::wstring{}
+						: L"；" + itemsControl->LastTemplateError());
 				return false;
 			}
 		}
