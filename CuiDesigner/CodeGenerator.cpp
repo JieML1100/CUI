@@ -128,6 +128,7 @@ namespace
 	static std::string GeneratedDataTypeTokenExpression(
 		std::wstring_view name)
 	{
+		if (name.empty()) return "DataTypeToken{}";
 		return "DataTypeToken{ "
 			+ std::to_string(GeneratedDataTypeTokenValue(name))
 			+ "ULL }";
@@ -2609,6 +2610,9 @@ bool CodeGenerator::ValidateDocument(
 	}
 	for (const auto& definition : document.DataTemplates)
 	{
+		std::unordered_set<std::wstring> dataTemplateNames;
+		for (const auto& node : definition.Template)
+			dataTemplateNames.insert(node.Name);
 		for (const auto& node : definition.Template)
 		{
 			if (!node.LocalResources.Empty()
@@ -2652,6 +2656,14 @@ bool CodeGenerator::ValidateDocument(
 				if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
 					binding, [&](const DesignerDataBinding& child)
 					{
+						if (!child.ElementName.empty()
+							&& !dataTemplateNames.contains(child.ElementName))
+						{
+							bindingError = L"静态 DataTemplate Binding 引用了"
+								L"当前模板 namescope 中不存在的 "
+								L"ElementName：" + child.ElementName;
+							return false;
+						}
 						if (child.RelativeSource
 							== DesignerBindingRelativeSource::TemplatedParent)
 						{
@@ -8257,7 +8269,8 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			validateSchemaDataTypes(dataType.Properties);
 		}
 		for (const auto& dataTemplate : canonicalDataDocument.DataTemplates)
-			validateDataTypeToken(dataTemplate.DataType);
+			if (!dataTemplate.DataType.empty())
+				validateDataTypeToken(dataTemplate.DataType);
 	}
 
 	if (!dynamicWindow && !staticDataLists.empty())
@@ -8860,6 +8873,11 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		if (dynamicWindow)
 			throw std::logic_error(
 				"Dynamic Window must retain its authored binding path");
+		if (DesignerBindingUtils::Trim(authoredPath).empty())
+		{
+			if (outStorageVariable) outStorageVariable->clear();
+			return "BindingRootValuePath()";
+		}
 		std::vector<BindingPathStep> steps;
 		if (!TryParseBindingPropertyPath(authoredPath, steps)
 			|| steps.empty())
@@ -9072,6 +9090,10 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			{
 				const auto token =
 					GeneratedBindingSourcePropertyTokenValue(step.Property);
+				if (token == BindingRootValuePropertyToken().Value)
+					throw std::invalid_argument(
+						"Static generated Binding path collides with the "
+						"reserved root-value token");
 				const auto [found, inserted] =
 					emittedBindingSourceNamesByToken.emplace(
 						token, step.Property);

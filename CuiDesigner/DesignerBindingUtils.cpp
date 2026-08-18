@@ -1092,6 +1092,7 @@ bool ValidateTarget(
 		if (outError) outError->clear();
 		return true;
 	}
+	const bool rootValue = binding.SourceProperty.empty();
 	if (!binding.ElementName.empty()
 		&& binding.RelativeSource != DesignerBindingRelativeSource::None)
 	{
@@ -1122,7 +1123,13 @@ bool ValidateTarget(
 		if (outError) *outError = L"AncestorType/AncestorLevel 只能用于 FindAncestor。";
 		return false;
 	}
-	if (!IsValidSourcePath(binding.SourceProperty))
+	if (rootValue && (!binding.ElementName.empty()
+		|| binding.RelativeSource != DesignerBindingRelativeSource::None))
+	{
+		if (outError) *outError = L"空 Path 仅支持当前 DataContext 根值。";
+		return false;
+	}
+	if (!rootValue && !IsValidSourcePath(binding.SourceProperty))
 	{
 		if (outError) *outError = L"源路径无效：路径及每个点分段都不能为空。";
 		return false;
@@ -1145,6 +1152,12 @@ bool ValidateTarget(
 	}
 	const bool targetToSource = effectiveMode == BindingMode::TwoWay
 		|| effectiveMode == BindingMode::OneWayToSource;
+	if (rootValue && targetToSource)
+	{
+		if (outError) *outError = L"DataContext 根值 Binding 是只读的；"
+			L"请使用 OneWay 或 OneTime。";
+		return false;
+	}
 	if (targetToSource
 		&& effectiveUpdateMode != DataSourceUpdateMode::Never
 		&& !target.CanObserve)
@@ -1154,7 +1167,7 @@ bool ValidateTarget(
 	}
 
 	const DesignerDataContextProperty* sourceProperty = nullptr;
-	if (sourceSchema && !sourceSchema->empty())
+	if (!rootValue && sourceSchema && !sourceSchema->empty())
 	{
 		std::vector<BindingPathStep> pathSteps;
 		(void)TryParseBindingPropertyPath(binding.SourceProperty, pathSteps);

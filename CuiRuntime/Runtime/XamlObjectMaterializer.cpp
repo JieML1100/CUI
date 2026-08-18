@@ -2894,7 +2894,8 @@ namespace
 				if (outError) *outError = L"DataTemplate 缺少文档或数据项。";
 				return {};
 			}
-			if (_schema.empty() || _definition.Template.empty())
+			if (_definition.Template.empty()
+				|| (!_definition.DataType.empty() && _schema.empty()))
 			{
 				if (outError) *outError = L"DataTemplate 定义不完整："
 					+ _definition.DisplayName();
@@ -6367,6 +6368,7 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 				return false;
 			}
 			if (hasExplicitTemplate && itemType
+				&& !dataTemplate->DataType.empty()
 				&& itemType->Name != dataTemplate->DataType)
 			{
 				if (outError) *outError = L"ItemsControl " + it.name
@@ -6481,13 +6483,6 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			{
 				if (outError) *outError =
 					L"内容控件引用了不存在的 DataTemplate：" + key;
-				return false;
-			}
-			if (hasExplicitTemplate && contentType
-				&& contentType->Name != dataTemplate->DataType)
-			{
-				if (outError) *outError = L"内容控件 " + it.name
-					+ L" 的 Content DataType 与 ContentTemplate.DataType 不一致。";
 				return false;
 			}
 			auto visibleObjects = it.source
@@ -6614,13 +6609,6 @@ bool CuiRuntime::XamlObjectMaterializer::Materialize(
 			{
 				if (outError) *outError =
 					L"Header 引用了不存在的 DataTemplate：" + key;
-				return false;
-			}
-			if (hasExplicitTemplate && headerType
-				&& headerType->Name != dataTemplate->DataType)
-			{
-				if (outError) *outError = L"HeaderedContentControl " + it.name
-					+ L" 的 Header DataType 与 HeaderTemplate.DataType 不一致。";
 				return false;
 			}
 			auto visibleObjects = it.source

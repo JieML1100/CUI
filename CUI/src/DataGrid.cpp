@@ -24,6 +24,7 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <typeindex>
 #include <unordered_map>
@@ -4806,10 +4807,10 @@ bool DataGridRow::UpdateDetailsPresentation(std::wstring* outError)
 	Grid::SetColumn(*presenter, 1);
 	presenter->SetContentTypeToken(
 		detailsTemplate.Get()->GetDataTypeToken());
-	presenter->SetContentTemplate(detailsTemplate);
 	try
 	{
 		presenter->SetContent(BindingValue(_item));
+		presenter->SetContentTemplate(detailsTemplate);
 	}
 	catch (...)
 	{
@@ -5979,25 +5980,94 @@ DataGridColumnHeader::DataGridColumnHeader()
 		}));
 }
 
-void DataGridColumnHeader::Initialize(
-	DataGrid& owner, DataGridColumn& column, size_t index)
+std::wstring DataGridColumnHeader::ContentPresentationError() const
 {
+	return LastContentError();
+}
+
+bool DataGridColumnHeader::Initialize(
+	DataGrid& owner, DataGridColumn& column, size_t index,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	const ControlWeakReference ownerLifetime(&owner);
+	auto* const expectedColumn = &column;
 	_owner = &owner;
-	_column = &column;
+	_ownerLifetime = ownerLifetime;
+	_column = expectedColumn;
 	_columnIndex = index;
 	_isReorderPending = false;
 	_isReordering = false;
 	_reorderStartLocalX = 0.0;
 	_reorderStartRenderX = 0.0;
 	_reorderStartRenderY = 0.0;
-	cui::framework::StyleAccess::SetResourceKey(
-		*this, owner.EffectiveColumnHeaderStyle(column));
-	SetContentTemplate(column.GetHeaderTemplate());
-	SetContent(column.GetHeader());
-	if (std::isfinite(owner.GetColumnHeaderHeight()))
+	const auto resolveOwner = [&]() -> DataGrid*
+	{
+		auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (live && index < live->ColumnCount()
+			&& live->GetColumnFromDisplayIndex(index) == expectedColumn)
+			return live;
+		_owner = nullptr;
+		_ownerLifetime = nullptr;
+		_column = nullptr;
+		if (outError && outError->empty())
+			*outError = L"DataGrid 列标题生成期间列集合或宿主已失效。";
+		return nullptr;
+	};
+	const auto style = owner.EffectiveColumnHeaderStyle(column);
+	cui::framework::StyleAccess::SetResourceKey(*this, style);
+	auto* liveOwner = resolveOwner();
+	if (!liveOwner) return false;
+	auto* liveColumn = liveOwner->GetColumnFromDisplayIndex(index);
+	const auto content = liveColumn->GetHeader();
+	SetContent(content);
+	liveOwner = resolveOwner();
+	if (!liveOwner) return false;
+	if (const auto error = ContentPresentationError(); !error.empty())
+	{
+		if (outError) *outError = L"DataGrid 第 "
+			+ std::to_wstring(index + 1)
+			+ L" 列标题内容生成失败：" + error;
+		return false;
+	}
+	liveColumn = liveOwner->GetColumnFromDisplayIndex(index);
+	const auto contentTemplate = liveColumn->GetHeaderTemplate();
+	SetContentTemplate(contentTemplate);
+	liveOwner = resolveOwner();
+	if (!liveOwner) return false;
+	if (const auto error = ContentPresentationError(); !error.empty())
+	{
+		if (outError) *outError = L"DataGrid 第 "
+			+ std::to_wstring(index + 1)
+			+ L" 列标题模板安装失败：" + error;
+		return false;
+	}
+	const auto height = liveOwner->GetColumnHeaderHeight();
+	if (std::isfinite(height))
 		SetHeight(cui::layout::Length::Fixed(
-			static_cast<float>(owner.GetColumnHeaderHeight())));
+			static_cast<float>(height)));
 	else SetHeight(cui::layout::Length::Auto());
+	return resolveOwner() != nullptr;
+}
+
+void DataGridColumnHeader::OnApplyTemplate()
+{
+	const ControlWeakReference headerLifetime(this);
+	const auto ownerLifetime = _ownerLifetime;
+	Button::OnApplyTemplate();
+	auto* header = dynamic_cast<DataGridColumnHeader*>(headerLifetime.Get());
+	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!header || !owner) return;
+	auto* presenter = owner->GetColumnHeadersPresenter();
+	if (!presenter
+		|| presenter->GetHeader(header->_columnIndex) != header) return;
+	auto* column = owner->GetColumnFromDisplayIndex(header->_columnIndex);
+	if (!column || column != header->_column) return;
+	const auto error = header->ContentPresentationError();
+	if (!error.empty())
+		owner->PublishColumnHeaderPresentationError(*header,
+			L"DataGrid 列标题模板应用失败：" + error);
+	else owner->ClearColumnHeaderPresentationError(*header);
 }
 
 bool DataGridColumnHeader::ProcessInput(const InputReport& input)
@@ -6750,6 +6820,7 @@ AbandonColumnHeaderDragAfterOwnerDestruction()
 		if (header)
 		{
 			header->_owner = nullptr;
+			header->_ownerLifetime = nullptr;
 			header->_column = nullptr;
 			header->_isReorderPending = false;
 			header->_isReordering = false;
@@ -6758,6 +6829,7 @@ AbandonColumnHeaderDragAfterOwnerDestruction()
 		if (header)
 		{
 			header->_owner = nullptr;
+			header->_ownerLifetime = nullptr;
 			header->_column = nullptr;
 			header->_isReorderPending = false;
 			header->_isReordering = false;
@@ -6776,81 +6848,683 @@ AbandonColumnHeaderDragAfterOwnerDestruction()
 bool DataGridColumnHeadersPresenter::Initialize(
 	DataGrid& owner, std::wstring* outError)
 {
-	if (_isColumnHeaderDragging)
-	{
-		const ControlWeakReference lifetime(this);
-		FinishColumnHeaderDrag(true);
-		if (lifetime.Get() != this) return false;
-	}
 	if (outError) outError->clear();
-	_owner = &owner;
-	ClearVisualChildren();
-	ClearColumns();
-	const size_t columnCount = owner.ColumnCount();
-	const auto realizedColumns = owner.ResolveRealizedColumnRange();
-	_columnStorageIsSparse = owner.GetEnableColumnVirtualization()
-		&& columnCount > 0;
-	_realizedFrozenColumnEnd = _columnStorageIsSparse
-		? (std::min)(columnCount, static_cast<size_t>(
-			(std::max)(0, owner.GetFrozenColumnCount()))) : 0;
-	_realizedColumnBegin = _columnStorageIsSparse
-		? realizedColumns.first : 0;
-	_realizedColumnEnd = _columnStorageIsSparse
-		? realizedColumns.second : columnCount;
-	if (_columnStorageIsSparse
-		&& _realizedColumnBegin < _realizedFrozenColumnEnd) return false;
-	_frozenHeaders.assign(_realizedFrozenColumnEnd, nullptr);
-	_headers.assign(_columnStorageIsSparse
-		? _realizedColumnEnd - _realizedColumnBegin : columnCount, nullptr);
-	SetVisibility(HasColumnHeaders(owner.GetHeadersVisibility())
-		? Visibility::Visible : Visibility::Collapsed);
-	if (std::isfinite(owner.GetColumnHeaderHeight()))
-		SetHeight(cui::layout::Length::Fixed(
-			static_cast<float>(owner.GetColumnHeaderHeight())));
-	else SetHeight(cui::layout::Length::Auto());
+	const ControlWeakReference presenterLifetime(this);
+	const ControlWeakReference ownerLifetime(&owner);
+	auto generation = ++_initializeGeneration;
+	if (generation == 0) generation = ++_initializeGeneration;
+	const auto committedAtEntry = _committedInitializeGeneration;
+	bool supersededByNestedInitialize = false;
+	const auto wasSuperseded = [&]() noexcept
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		return presenter && ownerLifetime.Get()
+			&& presenter->_committedInitializeGeneration != committedAtEntry
+			&& presenter->_committedInitializeGeneration != generation;
+	};
+	const auto fail = [&](std::wstring message)
+	{
+		if (outError && outError->empty()) *outError = std::move(message);
+		return false;
+	};
 	try
 	{
-		const auto addHeader = [&](size_t index,
-			std::vector<DataGridColumnHeader*>& storage,
+		auto& tracked = owner._trackedColumnHeaderPresenters;
+		if (std::find_if(tracked.begin(), tracked.end(),
+			[this](const ControlWeakReference& lifetime)
+				{ return lifetime.Get() == this; }) == tracked.end())
+			tracked.emplace_back(this);
+	}
+	catch (...)
+	{
+		return fail(L"DataGrid 列标题呈现器生命期登记失败。");
+	}
+	if (_isColumnHeaderDragging)
+	{
+		FinishColumnHeaderDrag(true);
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		if (!presenter || !ownerLifetime.Get())
+			return fail(L"DataGrid 列标题拖拽终止期间宿主已失效。");
+		if (wasSuperseded()) return true;
+	}
+	const size_t columnCount = owner.ColumnCount();
+	const size_t columnRevision = owner._columnWidthProjectionRevision;
+	const auto realizedColumns = owner.ResolveRealizedColumnRange();
+	auto* resolvedOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (wasSuperseded()) return true;
+	if (!resolvedOwner || resolvedOwner->ColumnCount() != columnCount
+		|| resolvedOwner->_columnWidthProjectionRevision != columnRevision)
+		return fail(L"DataGrid 列标题范围解析期间宿主或列集合已变化。");
+	const bool nextStorageIsSparse = resolvedOwner->GetEnableColumnVirtualization()
+		&& columnCount > 0;
+	const size_t nextFrozenEnd = nextStorageIsSparse
+		? (std::min)(columnCount, static_cast<size_t>(
+			(std::max)(0, resolvedOwner->GetFrozenColumnCount()))) : 0;
+	const size_t nextBegin = nextStorageIsSparse
+		? realizedColumns.first : 0;
+	const size_t nextEnd = nextStorageIsSparse
+		? realizedColumns.second : columnCount;
+	if (nextStorageIsSparse && nextBegin < nextFrozenEnd)
+		return fail(L"DataGrid 列标题虚拟化范围无效。");
+
+	const auto committedTreeMatchesCurrentRange = [&]() noexcept
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!presenter || !liveOwner) return false;
+		if (!presenter->_owner && presenter->_frozenHeaders.empty()
+			&& presenter->_headers.empty()
+			&& presenter->VisualChildCount() == 0) return true;
+		if (presenter->_owner != liveOwner
+			|| presenter->_columnStorageIsSparse != nextStorageIsSparse
+			|| presenter->_realizedFrozenColumnEnd != nextFrozenEnd
+			|| presenter->_realizedColumnBegin != nextBegin
+			|| presenter->_realizedColumnEnd != nextEnd
+			|| presenter->_frozenHeaders.size() != nextFrozenEnd
+			|| presenter->_headers.size() != (nextStorageIsSparse
+				? nextEnd - nextBegin : columnCount)) return false;
+
+		std::vector<DataGridColumnHeader*> expectedHeaders;
+		expectedHeaders.reserve(presenter->_frozenHeaders.size()
+			+ presenter->_headers.size());
+		const auto validateSlot = [&](size_t index,
+			DataGridColumnHeader* header) noexcept
+		{
+			auto* column = liveOwner->GetColumnFromDisplayIndex(index);
+			if (!column || column->GetVisibility() != Visibility::Visible)
+				return header == nullptr;
+			if (!header || header->_owner != liveOwner
+				|| header->_ownerLifetime.Get() != liveOwner
+				|| header->_column != column
+				|| header->_columnIndex != index
+				|| !presenter->ContainsControl(header)
+				|| std::find(expectedHeaders.begin(), expectedHeaders.end(), header)
+					!= expectedHeaders.end()) return false;
+			expectedHeaders.push_back(header);
+			return true;
+		};
+		for (size_t index = 0; index < presenter->_frozenHeaders.size(); ++index)
+			if (!validateSlot(index, presenter->_frozenHeaders[index]))
+				return false;
+		for (size_t slot = 0; slot < presenter->_headers.size(); ++slot)
+		{
+			const size_t index = nextStorageIsSparse
+				? nextBegin + slot : slot;
+			if (!validateSlot(index, presenter->_headers[slot])) return false;
+		}
+		if (presenter->VisualChildCount()
+			!= static_cast<int>(expectedHeaders.size())) return false;
+		for (int index = 0; index < presenter->VisualChildCount(); ++index)
+		{
+			auto* header = dynamic_cast<DataGridColumnHeader*>(
+				presenter->GetVisualChild(index));
+			if (!header || std::find(expectedHeaders.begin(),
+				expectedHeaders.end(), header) == expectedHeaders.end())
+				return false;
+		}
+		return true;
+	};
+	if (!committedTreeMatchesCurrentRange())
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		if (!presenter || (presenter->_owner && presenter->_owner != resolvedOwner))
+			return fail(L"DataGrid 列标题呈现器仍属于其他宿主。");
+		resolvedOwner->RetireColumnHeadersPresenterNoCallbacks(
+			presenter, generation);
+		try
+		{
+			presenter->ClearVisualChildren();
+			presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+				presenterLifetime.Get());
+			resolvedOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			if (wasSuperseded()) return true;
+			if (!presenter || !resolvedOwner)
+				return fail(L"DataGrid 无效旧列标题树清理期间宿主已失效。");
+			presenter->ClearColumns();
+		}
+		catch (...)
+		{
+			if (wasSuperseded()) return true;
+			return fail(L"DataGrid 无效旧列标题树清理失败。");
+		}
+		resolvedOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!resolvedOwner || resolvedOwner->ColumnCount() != columnCount
+			|| resolvedOwner->_columnWidthProjectionRevision != columnRevision)
+			return fail(L"DataGrid 无效旧列标题树清理期间列集合已变化。");
+	}
+
+	struct HeaderInputSnapshot final
+	{
+		size_t Index = DataGridCellInfo::InvalidIndex;
+		DataGridColumn* Column = nullptr;
+		::Visibility ColumnVisibility = ::Visibility::Visible;
+		BindingValue Content;
+		ItemTemplateReference ContentTemplate;
+		std::wstring Style;
+	};
+	std::vector<HeaderInputSnapshot> inputSnapshots;
+	inputSnapshots.reserve(nextFrozenEnd + (nextStorageIsSparse
+		? nextEnd - nextBegin : columnCount));
+
+	std::vector<DataGridColumnHeader*> nextFrozen(nextFrozenEnd, nullptr);
+	std::vector<DataGridColumnHeader*> nextHeaders(nextStorageIsSparse
+		? nextEnd - nextBegin : columnCount, nullptr);
+	std::vector<std::unique_ptr<DataGridColumnHeader>> stagedFrozen(nextFrozenEnd);
+	std::vector<std::unique_ptr<DataGridColumnHeader>> stagedHeaders(
+		nextStorageIsSparse ? nextEnd - nextBegin : columnCount);
+	std::vector<ControlWeakReference> stagedHeaderLifetimes;
+	stagedHeaderLifetimes.reserve(nextFrozenEnd + stagedHeaders.size());
+	try
+	{
+		const auto stageHeader = [&](size_t index,
+			std::vector<DataGridColumnHeader*>& destination,
+			std::vector<std::unique_ptr<DataGridColumnHeader>>& staged,
 			size_t slot, int layoutColumn) -> bool
 		{
-			if (owner.ColumnCount() != columnCount) return false;
-			auto* column = owner.GetColumnFromDisplayIndex(index);
+			auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+				presenterLifetime.Get());
+			if (wasSuperseded())
+			{
+				supersededByNestedInitialize = true;
+				return false;
+			}
+			if (!liveOwner || !presenter
+				|| liveOwner->ColumnCount() != columnCount
+				|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+				return false;
+			auto* column = liveOwner->GetColumnFromDisplayIndex(index);
 			if (!column) return false;
+			inputSnapshots.push_back({ index, column,
+				column->GetVisibility(), column->GetHeader(),
+				column->GetHeaderTemplate(),
+				liveOwner->EffectiveColumnHeaderStyle(*column) });
 			if (column->GetVisibility() != Visibility::Visible) return true;
 			auto header = std::make_unique<DataGridColumnHeader>();
-			header->Initialize(owner, *column, index);
-			Grid::SetColumn(*header, layoutColumn);
-			storage[slot] = AddOwned(std::move(header));
-			return storage[slot] != nullptr;
-		};
-		if (_columnStorageIsSparse)
-		{
-			for (size_t index = 0;
-				index < _realizedFrozenColumnEnd; ++index)
-				if (!addHeader(index, _frozenHeaders, index,
-					static_cast<int>(index))) return false;
-			for (size_t index = _realizedColumnBegin;
-				index < _realizedColumnEnd; ++index)
+			stagedHeaderLifetimes.emplace_back(header.get());
+			if (!header->Initialize(*liveOwner, *column, index, outError))
+				return false;
+			liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+				presenterLifetime.Get());
+			if (wasSuperseded())
 			{
-				const size_t slot = index - _realizedColumnBegin;
-				if (!addHeader(index, _headers, slot, static_cast<int>(
-					_realizedFrozenColumnEnd + 1 + slot))) return false;
+				supersededByNestedInitialize = true;
+				return false;
+			}
+			if (!liveOwner || !presenter
+				|| liveOwner->ColumnCount() != columnCount
+				|| liveOwner->_columnWidthProjectionRevision != columnRevision
+				|| liveOwner->GetColumnFromDisplayIndex(index) != column)
+				return false;
+			Grid::SetColumn(*header, layoutColumn);
+			destination[slot] = header.get();
+			staged[slot] = std::move(header);
+			return true;
+		};
+		if (nextStorageIsSparse)
+		{
+			for (size_t index = 0; index < nextFrozenEnd; ++index)
+				if (!stageHeader(index, nextFrozen, stagedFrozen, index,
+					static_cast<int>(index)))
+					return supersededByNestedInitialize
+						? true
+						: fail(L"DataGrid 冻结列标题生成失败。");
+			for (size_t index = nextBegin; index < nextEnd; ++index)
+			{
+				const size_t slot = index - nextBegin;
+				if (!stageHeader(index, nextHeaders, stagedHeaders, slot,
+					static_cast<int>(nextFrozenEnd + 1 + slot)))
+					return supersededByNestedInitialize
+						? true
+						: fail(L"DataGrid 可滚动列标题生成失败。");
 			}
 		}
 		else
 			for (size_t index = 0; index < columnCount; ++index)
-				if (!addHeader(index, _headers, index,
+				if (!stageHeader(index, nextHeaders, stagedHeaders, index,
+					static_cast<int>(index)))
+					return supersededByNestedInitialize
+						? true
+						: fail(L"DataGrid 列标题生成失败。");
+	}
+	catch (...)
+	{
+		if (wasSuperseded()) return true;
+		return fail(L"DataGrid 列标题生成失败。");
+	}
+
+	auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+		presenterLifetime.Get());
+	if (wasSuperseded()) return true;
+	if (!liveOwner || !presenter || liveOwner->ColumnCount() != columnCount
+		|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		return fail(L"DataGrid 列标题提交前列集合已变化。");
+	const auto headerValuesEquivalent = [](const BindingValue& left,
+		const BindingValue& right)
+	{
+		if (BindingValuesEqual(left, right)) return true;
+		BindingSourceReference leftSource;
+		BindingSourceReference rightSource;
+		if (left.TryGet(leftSource) && right.TryGet(rightSource))
+			return leftSource == rightSource;
+		// BindingValue has no general equality contract for opaque Object values.
+		// Their column identity/template/style are still validated transactionally.
+		return left.Kind() == BindingValueKind::Object
+			&& right.Kind() == BindingValueKind::Object
+			&& left.Type() == right.Type();
+	};
+	const auto inputsStillCurrent = [&](DataGrid& live)
+	{
+		if (live.ColumnCount() != columnCount
+			|| live._columnWidthProjectionRevision != columnRevision)
+			return false;
+		for (const auto& input : inputSnapshots)
+		{
+			auto* column = live.GetColumnFromDisplayIndex(input.Index);
+			if (!column || column != input.Column
+				|| column->GetVisibility() != input.ColumnVisibility
+				|| column->GetHeaderTemplate() != input.ContentTemplate
+				|| live.EffectiveColumnHeaderStyle(*column) != input.Style
+				|| !headerValuesEquivalent(column->GetHeader(), input.Content))
+				return false;
+		}
+		return true;
+	};
+	if (!inputsStillCurrent(*liveOwner))
+		return fail(L"DataGrid 列标题提交前呈现输入已变化。");
+	const auto retireHeader = [](DataGridColumnHeader* header) noexcept
+	{
+		if (!header) return;
+		header->_owner = nullptr;
+		header->_ownerLifetime = nullptr;
+		header->_column = nullptr;
+		header->_columnIndex = DataGridCellInfo::InvalidIndex;
+		header->_isResizing = false;
+		header->_isReorderPending = false;
+		header->_isReordering = false;
+	};
+	const auto retireVisualHeaders = [&](DataGridColumnHeadersPresenter& target)
+	{
+		for (int childIndex = 0;
+			childIndex < target.VisualChildCount(); ++childIndex)
+			retireHeader(dynamic_cast<DataGridColumnHeader*>(
+				target.GetVisualChild(childIndex)));
+	};
+	const auto leaveCommittedTreeEmpty = [&]() noexcept
+	{
+		auto* live = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		if (!live || wasSuperseded()) return;
+		retireVisualHeaders(*live);
+		for (const auto& lifetime : stagedHeaderLifetimes)
+			retireHeader(dynamic_cast<DataGridColumnHeader*>(lifetime.Get()));
+		live->_frozenHeaders.clear();
+		live->_headers.clear();
+		live->_owner = nullptr;
+		live->_columnStorageIsSparse = false;
+		live->_realizedFrozenColumnEnd = 0;
+		live->_realizedColumnBegin = 0;
+		live->_realizedColumnEnd = 0;
+		live->_appliedColumnWidthProjectionRevision = 0;
+		live->_isColumnHeaderDragging = false;
+		live->_reorderingColumn = nullptr;
+		live->_dropDisplayIndex = DataGridCellInfo::InvalidIndex;
+		live->_dropIndicatorVisible = false;
+		live->_dragIndicator = nullptr;
+		live->_dropIndicator = nullptr;
+		try { live->ClearVisualChildren(); }
+		catch (...) {}
+		live = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		if (!live || wasSuperseded()) return;
+		try { live->ClearColumns(); }
+		catch (...) {}
+	};
+	bool initializeCommitted = false;
+	const auto retireStagedUnlessNestedTreeAdopted = [&]() noexcept
+	{
+		auto* currentOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		auto* transactionPresenter = dynamic_cast<
+			DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
+		for (const auto& lifetime : stagedHeaderLifetimes)
+		{
+			auto* header = dynamic_cast<DataGridColumnHeader*>(lifetime.Get());
+			if (!header) continue;
+			DataGridColumnHeadersPresenter* adoptingPresenter = nullptr;
+			if (currentOwner)
+				adoptingPresenter = currentOwner->GetColumnHeadersPresenter();
+			if (!adoptingPresenter && transactionPresenter
+				&& transactionPresenter->_owner == currentOwner)
+				adoptingPresenter = transactionPresenter;
+			const bool nestedGenerationOwnsTree = adoptingPresenter
+				&& (adoptingPresenter != transactionPresenter
+					|| (adoptingPresenter->_committedInitializeGeneration
+						!= committedAtEntry
+						&& adoptingPresenter->_committedInitializeGeneration
+						!= generation));
+			const size_t index = header->_columnIndex;
+			const bool adopted = nestedGenerationOwnsTree && currentOwner
+				&& index < currentOwner->ColumnCount()
+				&& header->_owner == currentOwner
+				&& header->_ownerLifetime.Get() == currentOwner
+				&& header->_column
+					== currentOwner->GetColumnFromDisplayIndex(index)
+				&& adoptingPresenter->GetHeader(index) == header
+				&& adoptingPresenter->ContainsControl(header);
+			if (!adopted) retireHeader(header);
+		}
+	};
+	auto retireStagedOnExit = MakeScopeExit([&]() noexcept
+	{
+		if (!initializeCommitted)
+			retireStagedUnlessNestedTreeAdopted();
+	});
+	try
+	{
+		// All user template factories have succeeded. Only now retire the old
+		// realized tree; a staging failure above leaves it completely untouched.
+		retireVisualHeaders(*presenter);
+		presenter->_frozenHeaders.clear();
+		presenter->_headers.clear();
+		presenter->ClearVisualChildren();
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题旧视觉树清理期间状态已变化。");
+		}
+		presenter->ClearColumns();
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题布局列清理期间状态已变化。");
+		}
+		presenter->_owner = liveOwner;
+		presenter->_columnStorageIsSparse = nextStorageIsSparse;
+		presenter->_realizedFrozenColumnEnd = nextFrozenEnd;
+		presenter->_realizedColumnBegin = nextBegin;
+		presenter->_realizedColumnEnd = nextEnd;
+		presenter->SetVisibility(HasColumnHeaders(liveOwner->GetHeadersVisibility())
+			? Visibility::Visible : Visibility::Collapsed);
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题可见性提交期间状态已变化。");
+		}
+		if (std::isfinite(liveOwner->GetColumnHeaderHeight()))
+			presenter->SetHeight(cui::layout::Length::Fixed(
+				static_cast<float>(liveOwner->GetColumnHeaderHeight())));
+		else presenter->SetHeight(cui::layout::Length::Auto());
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题高度提交期间状态已变化。");
+		}
+
+		const auto attach = [&](auto& staged,
+			std::vector<DataGridColumnHeader*>& destination) -> bool
+		{
+			for (size_t slot = 0; slot < staged.size(); ++slot)
+			{
+				if (!staged[slot]) continue;
+				const ControlWeakReference headerLifetime(staged[slot].get());
+				auto* livePresenter = dynamic_cast<
+					DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
+				auto* attachOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+				if (wasSuperseded())
+				{
+					supersededByNestedInitialize = true;
+					return false;
+				}
+				if (!livePresenter || !attachOwner
+					|| attachOwner->_columnWidthProjectionRevision
+						!= columnRevision) return false;
+				auto* attached = livePresenter->AddOwned(
+					std::move(staged[slot]));
+				livePresenter = dynamic_cast<
+					DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
+				auto* liveHeader = dynamic_cast<DataGridColumnHeader*>(
+					headerLifetime.Get());
+				attachOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+				if (wasSuperseded())
+				{
+					supersededByNestedInitialize = true;
+					return false;
+				}
+				if (!livePresenter || !attachOwner || !liveHeader
+					|| attachOwner->_columnWidthProjectionRevision
+						!= columnRevision
+					|| attached != liveHeader
+					|| !livePresenter->ContainsControl(liveHeader)) return false;
+				destination[slot] = liveHeader;
+			}
+			return true;
+		};
+		if (!attach(stagedFrozen, nextFrozen)
+			|| !attach(stagedHeaders, nextHeaders))
+		{
+			if (supersededByNestedInitialize || wasSuperseded()) return true;
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题视觉树挂载失败。");
+		}
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题视觉树发布前状态已变化。");
+		}
+		struct PublishedHeaderSnapshot final
+		{
+			size_t Index = DataGridCellInfo::InvalidIndex;
+			DataGridColumnHeader* Raw = nullptr;
+			ControlWeakReference Lifetime;
+			int LayoutColumn = 0;
+		};
+		std::vector<PublishedHeaderSnapshot> publishedHeaders;
+		publishedHeaders.reserve(stagedHeaderLifetimes.size());
+		const auto capturePublishedRange = [&](size_t rangeBegin,
+			const std::vector<DataGridColumnHeader*>& values,
+			int layoutBase)
+		{
+			for (size_t slot = 0; slot < values.size(); ++slot)
+			{
+				const size_t index = rangeBegin + slot;
+				const auto input = std::find_if(inputSnapshots.begin(),
+					inputSnapshots.end(), [index](const HeaderInputSnapshot& value)
+						{ return value.Index == index; });
+				if (input == inputSnapshots.end()) return false;
+				auto* header = values[slot];
+				if (input->ColumnVisibility != Visibility::Visible)
+				{
+					if (header) return false;
+					continue;
+				}
+				const int layoutColumn =
+					layoutBase + static_cast<int>(slot);
+				if (!header || !presenter->ContainsControl(header)
+					|| header->_owner != liveOwner
+					|| header->_ownerLifetime.Get() != liveOwner
+					|| header->_column != input->Column
+					|| header->_columnIndex != index
+					|| Grid::GetColumn(*header) != layoutColumn
+					|| std::find_if(publishedHeaders.begin(),
+						publishedHeaders.end(), [header](
+							const PublishedHeaderSnapshot& value)
+							{ return value.Raw == header; })
+						!= publishedHeaders.end()) return false;
+				publishedHeaders.push_back({ index, header,
+					ControlWeakReference(header), layoutColumn });
+			}
+			return true;
+		};
+		if (nextStorageIsSparse)
+		{
+			if (!capturePublishedRange(0, nextFrozen, 0)
+				|| !capturePublishedRange(nextBegin, nextHeaders,
+					static_cast<int>(nextFrozenEnd + 1)))
+			{
+				leaveCommittedTreeEmpty();
+				return fail(L"DataGrid 列标题发布快照无效。");
+			}
+		}
+		else if (!capturePublishedRange(0, nextHeaders, 0))
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题发布快照无效。");
+		}
+		presenter->_frozenHeaders = std::move(nextFrozen);
+		presenter->_headers = std::move(nextHeaders);
+		presenter->_appliedColumnWidthProjectionRevision = 0;
+		const bool widthsUpdated = presenter->UpdateColumnWidths(false);
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!widthsUpdated || !presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题宽度提交期间状态已变化。");
+		}
+		const bool offsetUpdated = presenter->UpdateHorizontalScrollOffset(
+			liveOwner->_horizontalScrollOffset);
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (wasSuperseded()) return true;
+		if (!offsetUpdated || !presenter || !liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题滚动位置提交期间状态已变化。");
+		}
+		if (!inputsStillCurrent(*liveOwner))
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题提交期间呈现输入已变化。");
+		}
+		const auto publishedTreeIsCurrent = [&]() noexcept
+		{
+			if (presenter->_owner != liveOwner
+				|| presenter->_columnStorageIsSparse != nextStorageIsSparse
+				|| presenter->_realizedFrozenColumnEnd != nextFrozenEnd
+				|| presenter->_realizedColumnBegin != nextBegin
+				|| presenter->_realizedColumnEnd != nextEnd
+				|| presenter->_frozenHeaders.size() != nextFrozenEnd
+				|| presenter->_headers.size() != (nextStorageIsSparse
+					? nextEnd - nextBegin : columnCount)) return false;
+			std::vector<DataGridColumnHeader*> expectedVisuals;
+			expectedVisuals.reserve(publishedHeaders.size());
+			const auto validateSlot = [&](size_t index,
+				DataGridColumnHeader* raw, int layoutColumn) noexcept
+			{
+				const auto input = std::find_if(inputSnapshots.begin(),
+					inputSnapshots.end(), [index](const HeaderInputSnapshot& value)
+						{ return value.Index == index; });
+				if (input == inputSnapshots.end()) return false;
+				const auto published = std::find_if(publishedHeaders.begin(),
+					publishedHeaders.end(), [=](
+						const PublishedHeaderSnapshot& value)
+						{ return value.Index == index && value.Raw == raw; });
+				if (input->ColumnVisibility != Visibility::Visible)
+					return !raw && published == publishedHeaders.end();
+				if (!raw || published == publishedHeaders.end()
+					|| published->LayoutColumn != layoutColumn) return false;
+				auto* header = dynamic_cast<DataGridColumnHeader*>(
+					published->Lifetime.Get());
+				if (header != raw || !presenter->ContainsControl(header)
+					|| presenter->GetHeader(index) != header
+					|| header->_owner != liveOwner
+					|| header->_ownerLifetime.Get() != liveOwner
+					|| header->_column != input->Column
+					|| header->_columnIndex != index
+					|| Grid::GetColumn(*header) != layoutColumn
+					|| header->GetContentTemplate() != input->ContentTemplate
+					|| cui::framework::StyleAccess::ResourceKey(*header)
+						!= input->Style
+					|| !headerValuesEquivalent(
+						header->GetContent(), input->Content)
+					|| !header->ContentPresentationError().empty()) return false;
+				expectedVisuals.push_back(header);
+				return true;
+			};
+			for (size_t index = 0; index < presenter->_frozenHeaders.size();
+				++index)
+				if (!validateSlot(index, presenter->_frozenHeaders[index],
 					static_cast<int>(index))) return false;
-		_appliedColumnWidthProjectionRevision = 0;
-		UpdateColumnWidths(false);
-		UpdateHorizontalScrollOffset(owner._horizontalScrollOffset);
+			for (size_t slot = 0; slot < presenter->_headers.size(); ++slot)
+			{
+				const size_t index = nextStorageIsSparse
+					? nextBegin + slot : slot;
+				const int layoutColumn = nextStorageIsSparse
+					? static_cast<int>(nextFrozenEnd + 1 + slot)
+					: static_cast<int>(slot);
+				if (!validateSlot(index, presenter->_headers[slot],
+					layoutColumn)) return false;
+			}
+			if (expectedVisuals.size() != publishedHeaders.size()
+				|| presenter->VisualChildCount()
+					!= static_cast<int>(expectedVisuals.size())) return false;
+			for (int child = 0; child < presenter->VisualChildCount(); ++child)
+			{
+				auto* header = dynamic_cast<DataGridColumnHeader*>(
+					presenter->GetVisualChild(child));
+				if (!header || std::find(expectedVisuals.begin(),
+					expectedVisuals.end(), header) == expectedVisuals.end())
+					return false;
+			}
+			return true;
+		};
+		if (!publishedTreeIsCurrent())
+		{
+			leaveCommittedTreeEmpty();
+			return fail(L"DataGrid 列标题最终树校验失败。");
+		}
+		presenter->_committedInitializeGeneration = generation;
+		initializeCommitted = true;
 		return true;
 	}
 	catch (...)
 	{
-		if (outError) *outError = L"DataGrid 列标题生成失败。";
-		return false;
+		if (wasSuperseded()) return true;
+		leaveCommittedTreeEmpty();
+		return fail(L"DataGrid 列标题提交失败。");
 	}
 }
 
@@ -6859,28 +7533,183 @@ bool DataGridColumnHeadersPresenter::RefreshRealizedColumns(
 	std::wstring* outError)
 {
 	if (outError) outError->clear();
-	if (!_owner || !_columnStorageIsSparse || frozenEnd > begin
-		|| begin > end
-		|| end > _owner->ColumnCount()) return false;
+	auto* owner = _owner;
+	if (!owner || !_columnStorageIsSparse || frozenEnd > begin
+		|| begin > end || end > owner->ColumnCount())
+	{
+		if (outError) *outError =
+			L"DataGrid 横向虚拟列标题范围无效。";
+		return false;
+	}
 	if (frozenEnd == _realizedFrozenColumnEnd
 		&& begin == _realizedColumnBegin && end == _realizedColumnEnd)
 	{
-		UpdateColumnWidths();
-		return true;
+		if (UpdateColumnWidths()) return true;
+		if (outError) *outError =
+			L"DataGrid 横向虚拟列标题宽度更新失败。";
+		return false;
 	}
 
 	const ControlWeakReference presenterLifetime(this);
-	const ControlWeakReference ownerLifetime(_owner);
-	const size_t columnCount = _owner->ColumnCount();
+	const ControlWeakReference ownerLifetime(owner);
+	auto generation = ++_initializeGeneration;
+	if (generation == 0) generation = ++_initializeGeneration;
+	const auto committedAtEntry = _committedInitializeGeneration;
+	const auto wasSuperseded = [&]() noexcept
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		return presenter && ownerLifetime.Get()
+			&& presenter->_committedInitializeGeneration != committedAtEntry
+			&& presenter->_committedInitializeGeneration != generation;
+	};
+	const auto fail = [&](std::wstring message)
+	{
+		if (outError && outError->empty()) *outError = std::move(message);
+		return false;
+	};
+	const size_t columnCount = owner->ColumnCount();
+	const size_t columnRevision = owner->_columnWidthProjectionRevision;
 	const size_t oldFrozenEnd = _realizedFrozenColumnEnd;
 	const size_t oldBegin = _realizedColumnBegin;
 	const size_t oldEnd = _realizedColumnEnd;
 	const auto oldFrozenHeaders = _frozenHeaders;
 	const auto oldHeaders = _headers;
+
+	struct OldHeader final
+	{
+		size_t Index = DataGridCellInfo::InvalidIndex;
+		ControlWeakReference Lifetime;
+	};
+	std::vector<OldHeader> oldHeaderLifetimes;
+	oldHeaderLifetimes.reserve(oldFrozenHeaders.size() + oldHeaders.size());
+	std::vector<DataGridColumnHeader*> uniqueOldHeaders;
+	uniqueOldHeaders.reserve(oldHeaderLifetimes.capacity());
+	const auto captureOld = [&](size_t index, DataGridColumnHeader* header)
+	{
+		if (!header) return true;
+		if (std::find(uniqueOldHeaders.begin(), uniqueOldHeaders.end(), header)
+			!= uniqueOldHeaders.end() || !ContainsControl(header)
+			|| header->_owner != owner || header->_ownerLifetime.Get() != owner
+			|| header->_columnIndex != index
+			|| header->_column != owner->GetColumnFromDisplayIndex(index))
+			return false;
+		uniqueOldHeaders.push_back(header);
+		oldHeaderLifetimes.push_back({ index, ControlWeakReference(header) });
+		return true;
+	};
+	for (size_t index = 0; index < oldFrozenHeaders.size(); ++index)
+		if (!captureOld(index, oldFrozenHeaders[index]))
+			return fail(L"DataGrid 旧冻结列标题树无效。");
+	for (size_t slot = 0; slot < oldHeaders.size(); ++slot)
+		if (!captureOld(oldBegin + slot, oldHeaders[slot]))
+			return fail(L"DataGrid 旧滚动列标题树无效。");
+	if (VisualChildCount() != static_cast<int>(uniqueOldHeaders.size()))
+		return fail(L"DataGrid 旧列标题视觉树与索引不一致。");
+	for (int index = 0; index < VisualChildCount(); ++index)
+		if (auto* header = dynamic_cast<DataGridColumnHeader*>(
+			GetVisualChild(index)); !header
+			|| std::find(uniqueOldHeaders.begin(), uniqueOldHeaders.end(), header)
+				== uniqueOldHeaders.end())
+			return fail(L"DataGrid 旧列标题视觉树包含未索引项。");
+
+	const auto resolve = [&]() noexcept -> std::pair<
+		DataGridColumnHeadersPresenter*, DataGrid*>
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!presenter || !liveOwner || presenter->_owner != liveOwner
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != columnRevision)
+			return {};
+		return { presenter, liveOwner };
+	};
+	const auto retireHeader = [](DataGridColumnHeader* header) noexcept
+	{
+		if (!header) return;
+		header->_owner = nullptr;
+		header->_ownerLifetime = nullptr;
+		header->_column = nullptr;
+		header->_columnIndex = DataGridCellInfo::InvalidIndex;
+		header->_multiColumnSortRequested = false;
+		header->_isResizing = false;
+		header->_resizeFromLeftEdge = false;
+		header->_resizingColumnIndex = DataGridCellInfo::InvalidIndex;
+		header->_isReorderPending = false;
+		header->_isReordering = false;
+	};
+	std::vector<ControlWeakReference> createdLifetimes;
+	createdLifetimes.reserve(frozenEnd + end - begin);
+	const auto retireToEmpty = [&]() noexcept
+	{
+		if (wasSuperseded()) return;
+		// A candidate may have been moved to another visual parent by an
+		// AddOwned/Grid attached-property observer before it was published in a
+		// sidecar. Retire those weakly tracked candidates before clearing the
+		// presenter's own visual tree so callbacks cannot observe an active ghost.
+		for (const auto& lifetime : createdLifetimes)
+			retireHeader(dynamic_cast<DataGridColumnHeader*>(lifetime.Get()));
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!presenter || !liveOwner
+			|| (presenter->_owner && presenter->_owner != liveOwner)) return;
+		liveOwner->RetireColumnHeadersPresenterNoCallbacks(
+			presenter, generation);
+		try { presenter->ClearVisualChildren(); }
+		catch (...) {}
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		if (!presenter || wasSuperseded()) return;
+		try { presenter->ClearColumns(); }
+		catch (...) {}
+	};
+
 	std::vector<DataGridColumnHeader*> nextFrozen(frozenEnd, nullptr);
-	std::vector<DataGridColumnHeader*> next(end - begin, nullptr);
+	std::vector<DataGridColumnHeader*> nextHeaders(end - begin, nullptr);
 	std::vector<std::unique_ptr<DataGridColumnHeader>> createdFrozen(frozenEnd);
-	std::vector<std::unique_ptr<DataGridColumnHeader>> created(end - begin);
+	std::vector<std::unique_ptr<DataGridColumnHeader>> createdHeaders(
+		end - begin);
+	bool transactionCommitted = false;
+	const auto retireCreatedUnlessNestedTreeAdopted = [&]() noexcept
+	{
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		auto* transactionPresenter = dynamic_cast<
+			DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
+		for (const auto& lifetime : createdLifetimes)
+		{
+			auto* header = dynamic_cast<DataGridColumnHeader*>(lifetime.Get());
+			if (!header) continue;
+			DataGridColumnHeadersPresenter* adoptingPresenter = nullptr;
+			if (liveOwner)
+				adoptingPresenter = liveOwner->GetColumnHeadersPresenter();
+			if (!adoptingPresenter && transactionPresenter
+				&& transactionPresenter->_owner == liveOwner)
+				adoptingPresenter = transactionPresenter;
+			const bool nestedGenerationOwnsTree = adoptingPresenter
+				&& (adoptingPresenter != transactionPresenter
+					|| (adoptingPresenter->_committedInitializeGeneration
+						!= committedAtEntry
+						&& adoptingPresenter->_committedInitializeGeneration
+						!= generation));
+			const size_t index = header->_columnIndex;
+			const bool adopted = nestedGenerationOwnsTree && liveOwner
+				&& index < liveOwner->ColumnCount()
+				&& header->_owner == liveOwner
+				&& header->_ownerLifetime.Get() == liveOwner
+				&& header->_column
+					== liveOwner->GetColumnFromDisplayIndex(index)
+				&& adoptingPresenter->GetHeader(index) == header
+				&& adoptingPresenter->ContainsControl(header);
+			if (!adopted) retireHeader(header);
+		}
+	};
+	auto retireCreatedOnExit = MakeScopeExit([&]() noexcept
+	{
+		if (!transactionCommitted)
+			retireCreatedUnlessNestedTreeAdopted();
+	});
 	const auto oldAt = [&](size_t index) -> DataGridColumnHeader*
 	{
 		if (index < oldFrozenEnd)
@@ -6895,132 +7724,350 @@ bool DataGridColumnHeadersPresenter::RefreshRealizedColumns(
 		if (index < frozenEnd)
 			return index < nextFrozen.size() ? nextFrozen[index] : nullptr;
 		return index >= begin && index < end
-			&& index - begin < next.size()
-			? next[index - begin] : nullptr;
+			&& index - begin < nextHeaders.size()
+			? nextHeaders[index - begin] : nullptr;
 	};
-	try
+	bool nestedCommit = false;
+	const auto stageRange = [&](size_t rangeBegin, size_t rangeEnd,
+		std::vector<DataGridColumnHeader*>& destination,
+		std::vector<std::unique_ptr<DataGridColumnHeader>>& creations)
 	{
-		const auto stageRange = [&](size_t rangeBegin, size_t rangeEnd,
-			std::vector<DataGridColumnHeader*>& destination,
-			std::vector<std::unique_ptr<DataGridColumnHeader>>& creations)
-			-> bool
+		for (size_t index = rangeBegin; index < rangeEnd; ++index)
 		{
-			for (size_t index = rangeBegin; index < rangeEnd; ++index)
+			if (wasSuperseded())
 			{
-				const size_t slot = index - rangeBegin;
-				auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-				auto* presenter = dynamic_cast<
-					DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
-				if (!owner || !presenter
-					|| owner->ColumnCount() != columnCount) return false;
-				auto* column = owner->GetColumnFromDisplayIndex(index);
-				if (!column) return false;
-				if (column->GetVisibility() != Visibility::Visible) continue;
-				auto* retained = oldAt(index);
-				if (retained)
-				{
-					if (!presenter->ContainsControl(retained)
-						|| retained->_columnIndex != index
-						|| retained->_column != column) return false;
-					destination[slot] = retained;
-					continue;
-				}
-				auto header = std::make_unique<DataGridColumnHeader>();
-				header->Initialize(*owner, *column, index);
-				destination[slot] = header.get();
-				creations[slot] = std::move(header);
+				nestedCommit = true;
+				return false;
 			}
-			return true;
-		};
-		if (!stageRange(0, frozenEnd, nextFrozen, createdFrozen)
-			|| !stageRange(begin, end, next, created)) return false;
-		const auto addCreated = [&](
-			std::vector<DataGridColumnHeader*>& destination,
-			std::vector<std::unique_ptr<DataGridColumnHeader>>& creations)
-			-> bool
-		{
-			for (size_t slot = 0; slot < creations.size(); ++slot)
-			{
-				auto* presenter = dynamic_cast<
-					DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
-				if (!presenter || !ownerLifetime.Get()) return false;
-				if (creations[slot]) destination[slot] =
-					presenter->AddOwned(std::move(creations[slot]));
-			}
-			return true;
-		};
-		if (!addCreated(nextFrozen, createdFrozen)
-			|| !addCreated(next, created)) return false;
-	}
-	catch (...)
-	{
-		if (outError && outError->empty())
-			*outError = L"DataGrid 横向虚拟列标题更新失败。";
-		return false;
-	}
-	const auto removeOld = [&](size_t index,
-		DataGridColumnHeader* header) -> bool
-	{
-		if (nextAt(index) == header) return true;
-		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
-			presenterLifetime.Get());
-		if (!presenter || (header && presenter->ContainsControl(header)
-			&& !presenter->DeleteVisualChild(header))) return false;
-		if (!ownerLifetime.Get()) return false;
-		return true;
-	};
-	for (size_t slot = 0; slot < oldFrozenHeaders.size(); ++slot)
-		if (!removeOld(slot, oldFrozenHeaders[slot])) return false;
-	for (size_t slot = 0; slot < oldHeaders.size(); ++slot)
-		if (!removeOld(oldBegin + slot, oldHeaders[slot])) return false;
-
-	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-	auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
-		presenterLifetime.Get());
-	if (!owner || !presenter || owner->ColumnCount() != columnCount)
-		return false;
-	const auto validateRange = [&](size_t rangeBegin,
-		const std::vector<DataGridColumnHeader*>& values,
-		int layoutBase) -> bool
-	{
-		for (size_t slot = 0; slot < values.size(); ++slot)
-		{
-			auto* header = values[slot];
-			const size_t index = rangeBegin + slot;
-			auto* column = owner->GetColumnFromDisplayIndex(index);
+			auto [presenter, liveOwner] = resolve();
+			if (!presenter || !liveOwner) return false;
+			auto* column = liveOwner->GetColumnFromDisplayIndex(index);
 			if (!column) return false;
-			if (column->GetVisibility() != Visibility::Visible)
+			const size_t slot = index - rangeBegin;
+			if (column->GetVisibility() != Visibility::Visible) continue;
+			if (auto* retained = oldAt(index))
 			{
-				if (header) return false;
+				auto found = std::find_if(oldHeaderLifetimes.begin(),
+					oldHeaderLifetimes.end(), [index](const OldHeader& entry)
+						{ return entry.Index == index; });
+				auto* liveRetained = found == oldHeaderLifetimes.end()
+					? nullptr : dynamic_cast<DataGridColumnHeader*>(
+						found->Lifetime.Get());
+				if (liveRetained != retained
+					|| !presenter->ContainsControl(liveRetained)
+					|| liveRetained->_owner != liveOwner
+					|| liveRetained->_column != column
+					|| liveRetained->_columnIndex != index) return false;
+				destination[slot] = liveRetained;
 				continue;
 			}
-			if (!header || !presenter->ContainsControl(header)) return false;
-			Grid::SetColumn(*header,
-				layoutBase + static_cast<int>(slot));
+			auto header = std::make_unique<DataGridColumnHeader>();
+			createdLifetimes.emplace_back(header.get());
+			if (!header->Initialize(
+				*liveOwner, *column, index, outError)) return false;
+			if (wasSuperseded())
+			{
+				nestedCommit = true;
+				return false;
+			}
+			std::tie(presenter, liveOwner) = resolve();
+			if (!presenter || !liveOwner
+				|| liveOwner->GetColumnFromDisplayIndex(index) != column)
+				return false;
+			destination[slot] = header.get();
+			creations[slot] = std::move(header);
 		}
 		return true;
 	};
-	if (!validateRange(0, nextFrozen, 0)
-		|| !validateRange(begin, next,
-			static_cast<int>(frozenEnd + 1))) return false;
-	presenter->_frozenHeaders = std::move(nextFrozen);
-	presenter->_headers = std::move(next);
-	presenter->_realizedFrozenColumnEnd = frozenEnd;
-	presenter->_realizedColumnBegin = begin;
-	presenter->_realizedColumnEnd = end;
-	presenter->_appliedColumnWidthProjectionRevision = 0;
-	presenter->UpdateColumnWidths();
-	presenter->UpdateHorizontalScrollOffset(owner->_horizontalScrollOffset);
-	return presenterLifetime.Get() != nullptr && ownerLifetime.Get() != nullptr;
+	try
+	{
+		if (!stageRange(0, frozenEnd, nextFrozen, createdFrozen)
+			|| !stageRange(begin, end, nextHeaders, createdHeaders))
+		{
+			auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			if (!nestedCommit && liveOwner
+				&& (liveOwner->ColumnCount() != columnCount
+					|| liveOwner->_columnWidthProjectionRevision != columnRevision))
+				retireToEmpty();
+			return nestedCommit ? true
+				: fail(L"DataGrid 横向虚拟列标题生成失败。");
+		}
+
+		const auto attachCreated = [&](auto& creations,
+			std::vector<DataGridColumnHeader*>& destination)
+		{
+			for (size_t slot = 0; slot < creations.size(); ++slot)
+			{
+				if (!creations[slot]) continue;
+				if (wasSuperseded())
+				{
+					nestedCommit = true;
+					return false;
+				}
+				auto [presenter, liveOwner] = resolve();
+				if (!presenter || !liveOwner) return false;
+				const ControlWeakReference headerLifetime(
+					creations[slot].get());
+				auto* attached = presenter->AddOwned(
+					std::move(creations[slot]));
+				if (wasSuperseded())
+				{
+					nestedCommit = true;
+					return false;
+				}
+				std::tie(presenter, liveOwner) = resolve();
+				auto* liveHeader = dynamic_cast<DataGridColumnHeader*>(
+					headerLifetime.Get());
+				if (!presenter || !liveOwner || !liveHeader
+					|| attached != liveHeader
+					|| !presenter->ContainsControl(liveHeader)
+					|| liveHeader->_owner != liveOwner
+					|| liveHeader->_columnIndex >= columnCount
+					|| liveOwner->GetColumnFromDisplayIndex(
+						liveHeader->_columnIndex) != liveHeader->_column)
+					return false;
+				destination[slot] = liveHeader;
+			}
+			return true;
+		};
+		if (!attachCreated(createdFrozen, nextFrozen)
+			|| !attachCreated(createdHeaders, nextHeaders))
+		{
+			if (nestedCommit || wasSuperseded()) return true;
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题挂载失败。");
+		}
+
+		for (const auto& entry : oldHeaderLifetimes)
+		{
+			auto* header = dynamic_cast<DataGridColumnHeader*>(
+				entry.Lifetime.Get());
+			if (nextAt(entry.Index) == header) continue;
+			if (wasSuperseded()) return true;
+			auto [presenter, liveOwner] = resolve();
+			if (!presenter || !liveOwner || !header
+				|| !presenter->ContainsControl(header))
+			{
+				retireToEmpty();
+				return fail(L"DataGrid 旧虚拟列标题移除前已失效。");
+			}
+			retireHeader(header);
+			if (!presenter->DeleteVisualChild(header))
+			{
+				if (wasSuperseded()) return true;
+				retireToEmpty();
+				return fail(L"DataGrid 旧虚拟列标题移除失败。");
+			}
+			if (wasSuperseded()) return true;
+			if (!resolve().first)
+			{
+				retireToEmpty();
+				return fail(L"DataGrid 旧虚拟列标题移除期间状态变化。");
+			}
+		}
+
+		const auto headerValuesEquivalent = [](const BindingValue& left,
+			const BindingValue& right)
+		{
+			if (BindingValuesEqual(left, right)) return true;
+			BindingSourceReference leftSource;
+			BindingSourceReference rightSource;
+			if (left.TryGet(leftSource) && right.TryGet(rightSource))
+				return leftSource == rightSource;
+			return left.Kind() == BindingValueKind::Object
+				&& right.Kind() == BindingValueKind::Object
+				&& left.Type() == right.Type();
+		};
+		struct PublishedHeader final
+		{
+			size_t Index = DataGridCellInfo::InvalidIndex;
+			DataGridColumnHeader* Raw = nullptr;
+			ControlWeakReference Lifetime;
+			DataGridColumn* Column = nullptr;
+			std::uint32_t ColumnIdentity = 0;
+			int LayoutColumn = 0;
+		};
+		std::vector<PublishedHeader> publishedHeaders;
+		publishedHeaders.reserve(frozenEnd + end - begin);
+		auto publishRange = [&](size_t rangeBegin,
+			const std::vector<DataGridColumnHeader*>& values,
+			int layoutBase)
+		{
+			for (size_t slot = 0; slot < values.size(); ++slot)
+			{
+				const size_t index = rangeBegin + slot;
+				auto [presenter, liveOwner] = resolve();
+				if (!presenter || !liveOwner) return false;
+				auto* column = liveOwner->GetColumnFromDisplayIndex(index);
+				auto* header = values[slot];
+				if (!column) return false;
+				if (column->GetVisibility() != Visibility::Visible)
+				{
+					if (header) return false;
+					continue;
+				}
+				if (!header || !presenter->ContainsControl(header)
+					|| header->_owner != liveOwner
+					|| header->_column != column
+					|| header->_columnIndex != index
+					|| header->GetContentTemplate()
+						!= column->GetHeaderTemplate()
+					|| cui::framework::StyleAccess::ResourceKey(*header)
+						!= liveOwner->EffectiveColumnHeaderStyle(*column)
+					|| !headerValuesEquivalent(
+						header->GetContent(), column->GetHeader())) return false;
+				if (std::find_if(publishedHeaders.begin(),
+					publishedHeaders.end(), [header](const PublishedHeader& value)
+						{ return value.Raw == header; }) != publishedHeaders.end())
+					return false;
+				const ControlWeakReference headerLifetime(header);
+				const int layoutColumn =
+					layoutBase + static_cast<int>(slot);
+				publishedHeaders.push_back({ index, header, headerLifetime,
+					column, column->_accessibilityIdentity, layoutColumn });
+				Grid::SetColumn(*header,
+					layoutColumn);
+				if (wasSuperseded())
+				{
+					nestedCommit = true;
+					return false;
+				}
+				std::tie(presenter, liveOwner) = resolve();
+				if (!presenter || !liveOwner
+					|| headerLifetime.Get() != header
+					|| !presenter->ContainsControl(header)) return false;
+			}
+			return true;
+		};
+		if (!publishRange(0, nextFrozen, 0)
+			|| !publishRange(begin, nextHeaders,
+				static_cast<int>(frozenEnd + 1)))
+		{
+			if (nestedCommit || wasSuperseded()) return true;
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题布局发布失败。");
+		}
+
+		auto [presenter, liveOwner] = resolve();
+		if (!presenter || !liveOwner)
+		{
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题发布前状态变化。");
+		}
+		presenter->_frozenHeaders = std::move(nextFrozen);
+		presenter->_headers = std::move(nextHeaders);
+		presenter->_realizedFrozenColumnEnd = frozenEnd;
+		presenter->_realizedColumnBegin = begin;
+		presenter->_realizedColumnEnd = end;
+		presenter->_appliedColumnWidthProjectionRevision = 0;
+		const bool widthsUpdated = presenter->UpdateColumnWidths();
+		if (wasSuperseded()) return true;
+		std::tie(presenter, liveOwner) = resolve();
+		if (!widthsUpdated || !presenter || !liveOwner)
+		{
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题宽度提交失败。");
+		}
+		const bool offsetUpdated = presenter->UpdateHorizontalScrollOffset(
+			liveOwner->_horizontalScrollOffset);
+		if (wasSuperseded()) return true;
+		std::tie(presenter, liveOwner) = resolve();
+		if (!offsetUpdated || !presenter || !liveOwner)
+		{
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题滚动提交失败。");
+		}
+		const auto publishedTreeIsCurrent = [&]() noexcept
+		{
+			if (presenter->_owner != liveOwner
+				|| !presenter->_columnStorageIsSparse
+				|| presenter->_realizedFrozenColumnEnd != frozenEnd
+				|| presenter->_realizedColumnBegin != begin
+				|| presenter->_realizedColumnEnd != end
+				|| presenter->_frozenHeaders.size() != frozenEnd
+				|| presenter->_headers.size() != end - begin)
+				return false;
+			std::vector<DataGridColumnHeader*> expectedVisuals;
+			expectedVisuals.reserve(publishedHeaders.size());
+			const auto validateSlot = [&](size_t index,
+				DataGridColumnHeader* raw, int layoutColumn) noexcept
+			{
+				auto* column = liveOwner->GetColumnFromDisplayIndex(index);
+				if (!column) return false;
+				const auto found = std::find_if(publishedHeaders.begin(),
+					publishedHeaders.end(), [=](const PublishedHeader& value)
+						{ return value.Index == index && value.Raw == raw; });
+				if (column->GetVisibility() != Visibility::Visible)
+					return !raw && found == publishedHeaders.end();
+				if (!raw || found == publishedHeaders.end()
+					|| found->Column != column
+					|| column->_accessibilityIdentity != found->ColumnIdentity
+					|| found->LayoutColumn != layoutColumn) return false;
+				auto* header = dynamic_cast<DataGridColumnHeader*>(
+					found->Lifetime.Get());
+				if (header != raw || !presenter->ContainsControl(header)
+					|| presenter->GetHeader(index) != header
+					|| header->_owner != liveOwner
+					|| header->_ownerLifetime.Get() != liveOwner
+					|| header->_column != column
+					|| header->_columnIndex != index
+					|| Grid::GetColumn(*header) != layoutColumn
+					|| header->GetContentTemplate()
+						!= column->GetHeaderTemplate()
+					|| cui::framework::StyleAccess::ResourceKey(*header)
+						!= liveOwner->EffectiveColumnHeaderStyle(*column)
+					|| !headerValuesEquivalent(
+						header->GetContent(), column->GetHeader())
+					|| !header->ContentPresentationError().empty()) return false;
+				expectedVisuals.push_back(header);
+				return true;
+			};
+			for (size_t index = 0; index < frozenEnd; ++index)
+				if (!validateSlot(index, presenter->_frozenHeaders[index],
+					static_cast<int>(index))) return false;
+			for (size_t slot = 0; slot < presenter->_headers.size(); ++slot)
+				if (!validateSlot(begin + slot, presenter->_headers[slot],
+					static_cast<int>(frozenEnd + 1 + slot))) return false;
+			if (expectedVisuals.size() != publishedHeaders.size()
+				|| presenter->VisualChildCount()
+					!= static_cast<int>(expectedVisuals.size())) return false;
+			for (int child = 0; child < presenter->VisualChildCount(); ++child)
+			{
+				auto* header = dynamic_cast<DataGridColumnHeader*>(
+					presenter->GetVisualChild(child));
+				if (!header || std::find(expectedVisuals.begin(),
+					expectedVisuals.end(), header) == expectedVisuals.end())
+					return false;
+			}
+			return true;
+		};
+		if (!publishedTreeIsCurrent())
+		{
+			retireToEmpty();
+			return fail(L"DataGrid 横向虚拟列标题最终树校验失败。");
+		}
+		presenter->_committedInitializeGeneration = generation;
+		transactionCommitted = true;
+		return true;
+	}
+	catch (...)
+	{
+		if (wasSuperseded()) return true;
+		retireToEmpty();
+		return fail(L"DataGrid 横向虚拟列标题更新失败。");
+	}
 }
 
-void DataGridColumnHeadersPresenter::UpdateColumnWidths(
+bool DataGridColumnHeadersPresenter::UpdateColumnWidths(
 	bool propagateLayoutInvalidation)
 {
-	if (!_owner) return;
+	if (!_owner) return false;
+	const ControlWeakReference presenterLifetime(this);
+	const ControlWeakReference ownerLifetime(_owner);
 	const size_t projectionRevision =
 		_owner->_columnWidthProjectionRevision;
-	if (_appliedColumnWidthProjectionRevision == projectionRevision) return;
+	if (_appliedColumnWidthProjectionRevision == projectionRevision)
+		return true;
 	const size_t columnCount = _owner->ColumnCount();
 	const size_t frozenEnd = _columnStorageIsSparse
 		? _realizedFrozenColumnEnd : 0;
@@ -7028,92 +8075,303 @@ void DataGridColumnHeadersPresenter::UpdateColumnWidths(
 		? _realizedColumnBegin : 0;
 	const size_t end = _columnStorageIsSparse
 		? _realizedColumnEnd : columnCount;
-	if (frozenEnd > begin || begin > end || end > columnCount) return;
+	if (frozenEnd > begin || begin > end || end > columnCount) return false;
+	const auto initializeGeneration = _initializeGeneration;
+	const auto committedInitializeGeneration =
+		_committedInitializeGeneration;
+	const auto presentationRefreshGeneration =
+		_presentationRefreshGeneration;
+	const bool storageIsSparse = _columnStorageIsSparse;
+	const size_t frozenSlotCount = _frozenHeaders.size();
+	const size_t scrollingSlotCount = _headers.size();
+	std::vector<std::pair<DataGridColumn*, std::uint32_t>> columns;
+	columns.reserve(columnCount);
+	for (size_t index = 0; index < columnCount; ++index)
+	{
+		auto* column = _owner->GetColumnFromDisplayIndex(index);
+		if (!column) return false;
+		columns.emplace_back(column, column->_accessibilityIdentity);
+	}
+	const auto resolveOwner = [&]() noexcept -> DataGrid*
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!presenter || !owner || presenter->_owner != owner
+			|| owner->ColumnCount() != columnCount
+			|| owner->_columnWidthProjectionRevision != projectionRevision
+			|| presenter->_initializeGeneration != initializeGeneration
+			|| presenter->_committedInitializeGeneration
+				!= committedInitializeGeneration
+			|| presenter->_presentationRefreshGeneration
+				!= presentationRefreshGeneration
+			|| presenter->_columnStorageIsSparse != storageIsSparse
+			|| presenter->_realizedFrozenColumnEnd
+				!= (storageIsSparse ? frozenEnd : 0)
+			|| presenter->_realizedColumnBegin != begin
+			|| presenter->_realizedColumnEnd != end
+			|| presenter->_frozenHeaders.size() != frozenSlotCount
+			|| presenter->_headers.size() != scrollingSlotCount)
+			return nullptr;
+		for (size_t index = 0; index < columnCount; ++index)
+		{
+			auto* column = owner->GetColumnFromDisplayIndex(index);
+			if (!column || column != columns[index].first
+				|| column->_accessibilityIdentity != columns[index].second)
+				return nullptr;
+		}
+		return owner;
+	};
 	std::vector<ColumnDefinition> definitions;
 	definitions.reserve((end - begin) + frozenEnd
 		+ (_columnStorageIsSparse ? 2 : 0));
 	const auto appendColumn = [&](size_t index) -> bool
 	{
-		if (!_owner || _owner->ColumnCount() != columnCount) return false;
-		auto* column = _owner->GetColumnFromDisplayIndex(index);
-		if (!column) return false;
+		auto* owner = resolveOwner();
+		if (!owner || index >= columns.size()) return false;
+		auto* column = owner->GetColumnFromDisplayIndex(index);
+		if (!column || column != columns[index].first) return false;
 		if (column->GetVisibility() != Visibility::Visible)
 		{
 			definitions.emplace_back(GridLength::Pixels(0.0f));
 			return true;
 		}
-		definitions.emplace_back(
-			_owner->ResolveColumnGridLength(index),
-			static_cast<float>(column->GetLayoutMinWidth()),
-			static_cast<float>((std::min)(
-				column->GetLayoutMaxWidth(),
+		const double minimum = column->GetLayoutMinWidth();
+		const double maximum = column->GetLayoutMaxWidth();
+		const auto length = owner->ResolveColumnGridLength(index);
+		owner = resolveOwner();
+		if (!owner || owner->GetColumnFromDisplayIndex(index)
+			!= columns[index].first) return false;
+		definitions.emplace_back(length, static_cast<float>(minimum),
+			static_cast<float>((std::min)(maximum,
 				static_cast<double>((std::numeric_limits<float>::max)()))));
 		return true;
 	};
 	if (_columnStorageIsSparse)
 	{
-		if (!_owner->EnsureColumnWidthPrefix()
-			|| _owner->_columnWidthPrefix.size() != columnCount + 1) return;
+		auto* owner = resolveOwner();
+		if (!owner || !owner->EnsureColumnWidthPrefix()) return false;
+		owner = resolveOwner();
+		if (!owner || owner->_columnWidthPrefix.size() != columnCount + 1)
+			return false;
 		for (size_t index = 0; index < frozenEnd; ++index)
-			if (!appendColumn(index)) return;
+			if (!appendColumn(index)) return false;
+		owner = resolveOwner();
+		if (!owner) return false;
 		definitions.emplace_back(SparseTrackLength((std::max)(0.0,
-			_owner->_columnWidthPrefix[begin]
-				- _owner->_columnWidthPrefix[frozenEnd])));
+			owner->_columnWidthPrefix[begin]
+				- owner->_columnWidthPrefix[frozenEnd])));
 		for (size_t index = begin; index < end; ++index)
-			if (!appendColumn(index)) return;
+			if (!appendColumn(index)) return false;
+		owner = resolveOwner();
+		if (!owner) return false;
 		definitions.emplace_back(SparseTrackLength((std::max)(0.0,
-			_owner->_columnWidthPrefix[columnCount]
-				- _owner->_columnWidthPrefix[end])));
+			owner->_columnWidthPrefix[columnCount]
+				- owner->_columnWidthPrefix[end])));
 	}
 	else
 		for (size_t index = 0; index < columnCount; ++index)
-			if (!appendColumn(index)) return;
-	if (!_owner || _owner->ColumnCount() != columnCount
-		|| _owner->_columnWidthProjectionRevision != projectionRevision) return;
-	const ControlWeakReference presenterLifetime(this);
-	const ControlWeakReference ownerLifetime(_owner);
+			if (!appendColumn(index)) return false;
+	if (!resolveOwner()) return false;
 	ReplaceColumns(std::move(definitions), propagateLayoutInvalidation);
 	auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
 		presenterLifetime.Get());
-	auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	auto* owner = resolveOwner();
 	if (presenter && owner && presenter->_owner == owner
 		&& owner->_columnWidthProjectionRevision == projectionRevision)
 	{
+		if (!presenter->UpdateHorizontalScrollOffset(
+			owner->_horizontalScrollOffset)) return false;
+		presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		owner = resolveOwner();
+		if (!presenter || !owner) return false;
 		presenter->_appliedColumnWidthProjectionRevision = projectionRevision;
-		presenter->UpdateHorizontalScrollOffset(
-			owner->_horizontalScrollOffset);
+		return true;
 	}
+	return false;
 }
 
-void DataGridColumnHeadersPresenter::UpdateHorizontalScrollOffset(double offset)
+bool DataGridColumnHeadersPresenter::UpdateHorizontalScrollOffset(double offset)
 {
-	if (!_owner) return;
+	auto* owner = _owner;
+	if (!owner) return false;
 	if (!std::isfinite(offset)) offset = 0.0;
-	const size_t frozenEnd = (std::min)(_owner->ColumnCount(),
-		static_cast<size_t>((std::max)(0, _owner->GetFrozenColumnCount())));
+	const ControlWeakReference presenterLifetime(this);
+	const ControlWeakReference ownerLifetime(owner);
+	auto* const registeredPresenter = owner->GetColumnHeadersPresenter();
+	// Programmatic presenters may be initialized before becoming the active
+	// template part, but an owner must never have a different active presenter
+	// while this one is applying visual state.
+	if (registeredPresenter && registeredPresenter != this) return false;
+	const size_t columnCount = owner->ColumnCount();
+	const size_t projectionRevision = owner->_columnWidthProjectionRevision;
+	const int frozenColumnCount = owner->GetFrozenColumnCount();
+	const double ownerOffset = owner->_horizontalScrollOffset;
+	const auto initializeGeneration = _initializeGeneration;
+	const auto committedInitializeGeneration =
+		_committedInitializeGeneration;
+	const auto presentationRefreshGeneration =
+		_presentationRefreshGeneration;
+	const bool storageIsSparse = _columnStorageIsSparse;
+	const size_t realizedFrozenEnd = _realizedFrozenColumnEnd;
+	const size_t realizedBegin = _realizedColumnBegin;
+	const size_t realizedEnd = _realizedColumnEnd;
+	const size_t frozenSlotCount = _frozenHeaders.size();
+	const size_t scrollingSlotCount = _headers.size();
+	const auto resolveOwner = [&]() noexcept -> DataGrid*
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!presenter || !liveOwner || presenter->_owner != liveOwner
+			|| liveOwner->GetColumnHeadersPresenter() != registeredPresenter
+			|| liveOwner->ColumnCount() != columnCount
+			|| liveOwner->_columnWidthProjectionRevision != projectionRevision
+			|| liveOwner->GetFrozenColumnCount() != frozenColumnCount
+			|| liveOwner->_horizontalScrollOffset != ownerOffset
+			|| presenter->_initializeGeneration != initializeGeneration
+			|| presenter->_committedInitializeGeneration
+				!= committedInitializeGeneration
+			|| presenter->_presentationRefreshGeneration
+				!= presentationRefreshGeneration
+			|| presenter->_columnStorageIsSparse != storageIsSparse
+			|| presenter->_realizedFrozenColumnEnd != realizedFrozenEnd
+			|| presenter->_realizedColumnBegin != realizedBegin
+			|| presenter->_realizedColumnEnd != realizedEnd
+			|| presenter->_frozenHeaders.size() != frozenSlotCount
+			|| presenter->_headers.size() != scrollingSlotCount)
+			return nullptr;
+		return liveOwner;
+	};
+	if (!resolveOwner()) return false;
+
+	struct HeaderSnapshot final
+	{
+		ControlWeakReference Lifetime;
+		size_t Index = DataGridCellInfo::InvalidIndex;
+		DataGridColumn* Column = nullptr;
+		std::uint32_t ColumnIdentity = 0;
+	};
+	std::vector<HeaderSnapshot> headers;
+	headers.reserve(frozenSlotCount + scrollingSlotCount);
+	const auto snapshotHeader = [&](size_t index,
+		DataGridColumnHeader* header) -> bool
+	{
+		if (!header) return true;
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = resolveOwner();
+		if (!presenter || !liveOwner || index >= columnCount
+			|| presenter->GetHeader(index) != header
+			|| !presenter->ContainsControl(header)
+			|| header->_owner != liveOwner
+			|| header->_ownerLifetime.Get() != liveOwner
+			|| header->_columnIndex != index) return false;
+		auto* column = liveOwner->GetColumnFromDisplayIndex(index);
+		if (!column || header->_column != column) return false;
+		for (const auto& existing : headers)
+			if (existing.Lifetime.Get() == header) return false;
+		headers.push_back({ ControlWeakReference(header), index, column,
+			column->_accessibilityIdentity });
+		return true;
+	};
+	for (size_t slot = 0; slot < frozenSlotCount; ++slot)
+		if (!snapshotHeader(slot, _frozenHeaders[slot])) return false;
+	for (size_t slot = 0; slot < scrollingSlotCount; ++slot)
+	{
+		const size_t index = storageIsSparse ? realizedBegin + slot : slot;
+		if (!snapshotHeader(index, _headers[slot])) return false;
+	}
+	const auto resolveHeader = [&](const HeaderSnapshot& snapshot) noexcept
+		-> DataGridColumnHeader*
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			presenterLifetime.Get());
+		auto* liveOwner = resolveOwner();
+		auto* header = dynamic_cast<DataGridColumnHeader*>(
+			snapshot.Lifetime.Get());
+		if (!presenter || !liveOwner || !header
+			|| snapshot.Index >= columnCount
+			|| presenter->GetHeader(snapshot.Index) != header
+			|| !presenter->ContainsControl(header)
+			|| header->_owner != liveOwner
+			|| header->_ownerLifetime.Get() != liveOwner
+			|| header->_columnIndex != snapshot.Index
+			|| header->_column != snapshot.Column) return nullptr;
+		auto* column = liveOwner->GetColumnFromDisplayIndex(snapshot.Index);
+		if (!column || column != snapshot.Column
+			|| column->_accessibilityIdentity != snapshot.ColumnIdentity)
+			return nullptr;
+		return header;
+	};
+
+	const size_t frozenEnd = (std::min)(columnCount,
+		static_cast<size_t>((std::max)(0, frozenColumnCount)));
 	double frozenWidth = 0.0;
 	if (frozenEnd > 0)
 	{
 		double ignored = 0.0;
-		if (!_owner->TryResolveColumnBounds(
-			frozenEnd - 1, ignored, frozenWidth)) return;
+		auto* liveOwner = resolveOwner();
+		if (!liveOwner || !liveOwner->TryResolveColumnBounds(
+			frozenEnd - 1, ignored, frozenWidth)
+			|| !resolveOwner()) return false;
 	}
-	const auto apply = [&](DataGridColumnHeader* header)
+	const auto apply = [&](const HeaderSnapshot& snapshot)
 	{
-		if (!header) return true;
+		if (!resolveHeader(snapshot)) return false;
 		double left = 0.0;
 		double right = 0.0;
-		if (!_owner->TryResolveColumnBounds(
-			header->_columnIndex, left, right)) return false;
-		ApplyFrozenColumnVisual(*header,
-			header->_columnIndex < frozenEnd, offset,
-			frozenWidth, left, right);
+		auto* liveOwner = resolveOwner();
+		if (!liveOwner || !liveOwner->TryResolveColumnBounds(
+			snapshot.Index, left, right)
+			|| !resolveHeader(snapshot)) return false;
+		const auto mutate = [&](auto&& callback)
+		{
+			auto* header = resolveHeader(snapshot);
+			if (!header) return false;
+			callback(*header);
+			return resolveHeader(snapshot) != nullptr;
+		};
+		if (snapshot.Index < frozenEnd)
+		{
+			if (!mutate([](DataGridColumnHeader& header)
+				{ header.SetZIndex(1); })
+				|| !mutate([](DataGridColumnHeader& header)
+					{ header.ClearClip(); })
+				|| !mutate([&](DataGridColumnHeader& header)
+					{ header.SetRenderTransform(
+						HorizontalTranslation(offset)); })) return false;
+			return true;
+		}
+		if (!mutate([](DataGridColumnHeader& header)
+			{ header.SetZIndex(0); })
+			|| !mutate([](DataGridColumnHeader& header)
+				{ header.ClearRenderTransform(); })) return false;
+		const double width = (std::max)(0.0, right - left);
+		const double hiddenWidth = frozenWidth + offset - left;
+		if (frozenWidth <= 0.0001 || hiddenWidth <= 0.0001)
+			return mutate([](DataGridColumnHeader& header)
+				{ header.ClearClip(); });
+		cui::drawing::Geometry clip;
+		clip.Kind = cui::drawing::GeometryKind::Rectangle;
+		if (hiddenWidth >= width - 0.0001)
+			clip.Rect = D2D1::RectF();
+		else
+		{
+			constexpr float verticalLimit = 1000000.0f;
+			clip.Rect = D2D1::RectF(
+				static_cast<float>((std::clamp)(hiddenWidth, 0.0, width)),
+				-verticalLimit,
+				static_cast<float>(width), verticalLimit);
+		}
+		if (!mutate([&](DataGridColumnHeader& header)
+			{ header.SetClip(clip); })) return false;
 		return true;
 	};
-	for (auto* header : _frozenHeaders)
-		if (!apply(header)) return;
-	for (auto* header : _headers)
-		if (!apply(header)) return;
+	for (const auto& header : headers)
+		if (!apply(header)) return false;
+	return resolveOwner() != nullptr;
 }
 
 bool DataGridColumnHeadersPresenter::TryCommitResizeLayoutLocally(
@@ -8785,9 +10043,86 @@ DataGrid::DataGrid()
 		}));
 }
 
+void DataGrid::RetireColumnHeadersPresenterNoCallbacks(
+	DataGridColumnHeadersPresenter* presenter,
+	std::uint64_t committedGeneration) noexcept
+{
+	if (!presenter) return;
+	const auto retireHeader = [this](DataGridColumnHeader* header) noexcept
+	{
+		if (!header || (header->_owner != this
+			&& header->_ownerLifetime.Get() != this)) return;
+		ClearColumnHeaderPresentationError(*header);
+		header->_owner = nullptr;
+		header->_ownerLifetime = nullptr;
+		header->_column = nullptr;
+		header->_columnIndex = DataGridCellInfo::InvalidIndex;
+		header->_multiColumnSortRequested = false;
+		header->_isResizing = false;
+		header->_resizeFromLeftEdge = false;
+		header->_resizingColumnIndex = DataGridCellInfo::InvalidIndex;
+		header->_resizeStartRenderX = 0.0;
+		header->_resizeStartWidth = 0.0;
+		header->_isReorderPending = false;
+		header->_isReordering = false;
+		header->_reorderStartLocalX = 0.0;
+		header->_reorderStartRenderX = 0.0;
+		header->_reorderStartRenderY = 0.0;
+	};
+	for (auto* header : presenter->_frozenHeaders) retireHeader(header);
+	for (auto* header : presenter->_headers) retireHeader(header);
+	for (int index = 0; index < presenter->VisualChildCount(); ++index)
+		retireHeader(dynamic_cast<DataGridColumnHeader*>(
+			presenter->GetVisualChild(index)));
+	// A failed/staged transaction can clear the presenter owner before its
+	// sidecars are reset.  That null-owner state still belongs to this retiring
+	// transaction; only a presenter positively owned by another grid is foreign.
+	if (presenter->_owner && presenter->_owner != this) return;
+
+	if (committedGeneration == 0)
+	{
+		committedGeneration = ++presenter->_initializeGeneration;
+		if (committedGeneration == 0)
+			committedGeneration = ++presenter->_initializeGeneration;
+	}
+	presenter->_committedInitializeGeneration = committedGeneration;
+	if (++presenter->_presentationRefreshGeneration == 0)
+		++presenter->_presentationRefreshGeneration;
+	presenter->_frozenHeaders.clear();
+	presenter->_headers.clear();
+	presenter->_owner = nullptr;
+	presenter->_columnStorageIsSparse = false;
+	presenter->_realizedFrozenColumnEnd = 0;
+	presenter->_realizedColumnBegin = 0;
+	presenter->_realizedColumnEnd = 0;
+	presenter->_appliedColumnWidthProjectionRevision = 0;
+	presenter->_isColumnHeaderDragging = false;
+	presenter->_reorderingColumn = nullptr;
+	presenter->_dropDisplayIndex = DataGridCellInfo::InvalidIndex;
+	presenter->_dropIndicatorVisible = false;
+	presenter->_dragIndicator = nullptr;
+	presenter->_dropIndicator = nullptr;
+}
+
 DataGrid::~DataGrid()
 {
 	_destroyingDataGrid = true;
+	auto* currentHeaders = dynamic_cast<DataGridColumnHeadersPresenter*>(
+		_headersPresenter.Get());
+	bool retiredCurrentHeaders = false;
+	for (const auto& lifetime : _trackedColumnHeaderPresenters)
+	{
+		auto* presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+			lifetime.Get());
+		if (!presenter) continue;
+		retiredCurrentHeaders = retiredCurrentHeaders
+			|| presenter == currentHeaders;
+		RetireColumnHeadersPresenterNoCallbacks(presenter);
+	}
+	if (!retiredCurrentHeaders)
+		RetireColumnHeadersPresenterNoCallbacks(currentHeaders);
+	_trackedColumnHeaderPresenters.clear();
+	_headersPresenter = nullptr;
 	if (_displayItemsView) _displayItemsView->Detach();
 	// Do not publish row-container state while the visual tree is being torn
 	// down. The strong item reference keeps a custom source alive through the
@@ -10230,37 +11565,130 @@ void DataGrid::RefreshRealizedCellStyles(const DataGridColumn* column)
 	}
 }
 
+void DataGrid::PublishColumnHeaderPresentationError(
+	DataGridColumnHeader& source, std::wstring error)
+{
+	if (source._owner != this || source._ownerLifetime.Get() != this) return;
+	_columnHeaderPresentationErrorSource = &source;
+	_columnHeaderPresentationErrorText = std::move(error);
+	SetLastTemplateError(_columnHeaderPresentationErrorText);
+}
+
+void DataGrid::ClearColumnHeaderPresentationError(
+	DataGridColumnHeader& source) noexcept
+{
+	if (_columnHeaderPresentationErrorSource.Get() != &source) return;
+	if (!_columnHeaderPresentationErrorText.empty()
+		&& LastTemplateError() == _columnHeaderPresentationErrorText)
+		SetLastTemplateError({});
+	_columnHeaderPresentationErrorSource = nullptr;
+	_columnHeaderPresentationErrorText.clear();
+}
+
 void DataGrid::RefreshRealizedColumnHeaderPresentation(
 	const DataGridColumn* column)
 {
+	struct RealizedHeader final
+	{
+		size_t Index = DataGridCellInfo::InvalidIndex;
+		ControlWeakReference Lifetime;
+	};
 	const ControlWeakReference ownerLifetime(this);
-	std::vector<ControlWeakReference> headers;
+	std::vector<RealizedHeader> headers;
 	auto* presenter = GetColumnHeadersPresenter();
 	if (!presenter) return;
+	if (presenter->GetDataGridOwner() != this)
+	{
+		// The template PART remains registered even when its first transactional
+		// Initialize failed. A later column template/style change gets one full
+		// retry before attempting an in-place realized-header refresh.
+		RefreshHeaderPresenter();
+		auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!owner) return;
+		presenter = owner->GetColumnHeadersPresenter();
+		if (!presenter || presenter->GetDataGridOwner() != owner) return;
+	}
+	const ControlWeakReference presenterLifetime(presenter);
+	auto refreshGeneration = ++presenter->_presentationRefreshGeneration;
+	if (refreshGeneration == 0)
+		refreshGeneration = ++presenter->_presentationRefreshGeneration;
 	for (size_t index = 0; index < ColumnCount(); ++index)
 	{
 		auto* liveColumn = GetColumnFromDisplayIndex(index);
 		if (!liveColumn || (column && liveColumn != column)) continue;
 		if (auto* header = presenter->GetHeader(index))
-			headers.emplace_back(header);
+			headers.push_back({ index, ControlWeakReference(header) });
 	}
-	for (const auto& lifetime : headers)
+	for (const auto& realized : headers)
 	{
-		auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-		auto* header = dynamic_cast<DataGridColumnHeader*>(lifetime.Get());
-		if (!owner || !header) return;
-		auto* liveColumn = header->GetColumn();
-		if (!liveColumn || liveColumn->GetDataGridOwner() != owner
-			|| (column && liveColumn != column)) continue;
+		auto resolveCurrent = [&]() -> std::tuple<
+			DataGrid*, DataGridColumnHeadersPresenter*,
+			DataGridColumnHeader*, DataGridColumn*>
+		{
+			auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			auto* header = dynamic_cast<DataGridColumnHeader*>(
+				realized.Lifetime.Get());
+			if (!owner || !header) return {};
+			auto* currentPresenter = owner->GetColumnHeadersPresenter();
+			auto* transactionPresenter = dynamic_cast<
+				DataGridColumnHeadersPresenter*>(presenterLifetime.Get());
+			if (!currentPresenter
+				|| currentPresenter != transactionPresenter
+				|| currentPresenter->_presentationRefreshGeneration
+					!= refreshGeneration
+				|| currentPresenter->GetHeader(realized.Index) != header)
+				return {};
+			auto* ownedColumn = owner->GetColumnFromDisplayIndex(realized.Index);
+			if (!ownedColumn || header->_column != ownedColumn
+				|| header->_columnIndex != realized.Index
+				|| (column && ownedColumn != column)) return {};
+			return { owner, currentPresenter, header, ownedColumn };
+		};
+		auto [owner, currentPresenter, header, liveColumn] = resolveCurrent();
+		(void)currentPresenter;
+		if (!owner || !header || !liveColumn) return;
 		cui::framework::StyleAccess::SetResourceKey(
 			*header, owner->EffectiveColumnHeaderStyle(*liveColumn));
-		header = dynamic_cast<DataGridColumnHeader*>(lifetime.Get());
-		owner = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-		if (!owner || !header) return;
-		liveColumn = header->GetColumn();
-		if (!liveColumn || liveColumn->GetDataGridOwner() != owner
-			|| (column && liveColumn != column)) continue;
-		header->SetContentTemplate(liveColumn->GetHeaderTemplate());
+		std::tie(owner, currentPresenter, header, liveColumn) = resolveCurrent();
+		if (!owner || !header || !liveColumn) return;
+		const auto previousHeaderError = header->ContentPresentationError();
+		const auto contentTemplate = liveColumn->GetHeaderTemplate();
+		if (header->GetContentTemplate() == contentTemplate)
+		{
+			// A failed build can still leave the DP at the requested template while
+			// the previous visual remains active. Calling the same-value setter would
+			// clear its diagnostic and then no-op, falsely reporting recovery.
+			if (!previousHeaderError.empty())
+			{
+				if (owner->_columnHeaderPresentationErrorSource.Get() == header)
+				{
+					if (owner->LastTemplateError().empty()
+						&& !owner->_columnHeaderPresentationErrorText.empty())
+						owner->SetLastTemplateError(
+							owner->_columnHeaderPresentationErrorText);
+				}
+				else if (owner->LastTemplateError().empty())
+					owner->PublishColumnHeaderPresentationError(*header,
+						L"DataGrid 列标题模板更新失败："
+							+ previousHeaderError);
+				return;
+			}
+			continue;
+		}
+		header->SetContentTemplate(contentTemplate);
+		std::tie(owner, currentPresenter, header, liveColumn) = resolveCurrent();
+		if (!owner || !header || !liveColumn) return;
+		// A nested property change superseded this refresh. Its own refresh owns
+		// the result and any error publication.
+		if (liveColumn->GetHeaderTemplate() != contentTemplate) return;
+		const auto error = header->ContentPresentationError();
+		if (!error.empty())
+		{
+			owner->PublishColumnHeaderPresentationError(*header,
+				L"DataGrid 列标题模板更新失败：" + error);
+			return;
+		}
+		owner->ClearColumnHeaderPresentationError(*header);
 	}
 }
 
@@ -11022,9 +12450,24 @@ void DataGrid::RefreshHeaderPresenter()
 	auto* presenter = GetColumnHeadersPresenter();
 	if (!presenter) return;
 	std::wstring error;
-	if (!presenter->Initialize(*this, &error)) SetLastTemplateError(error);
+	const bool initialized = presenter->Initialize(*this, &error);
 	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 	if (!live) return;
+	if (!initialized)
+	{
+		live->_columnHeaderPresenterInitializationError = error.empty()
+			? L"DataGrid 列标题刷新失败。" : error;
+		live->SetLastTemplateError(
+			live->_columnHeaderPresenterInitializationError);
+	}
+	else
+	{
+		if (!live->_columnHeaderPresenterInitializationError.empty()
+			&& live->LastTemplateError()
+				== live->_columnHeaderPresenterInitializationError)
+			live->SetLastTemplateError({});
+		live->_columnHeaderPresenterInitializationError.clear();
+	}
 	live->RefreshHeadersVisibility();
 }
 
@@ -11322,6 +12765,9 @@ void DataGrid::OnControlTemplatePresentationChanged()
 {
 	_selectAllClick.Disconnect();
 	_dataGridScrollChanged.Disconnect();
+	RetireColumnHeadersPresenterNoCallbacks(
+		dynamic_cast<DataGridColumnHeadersPresenter*>(
+			_headersPresenter.Get()));
 	_headersPresenter.Reset();
 	_selectAllButton.Reset();
 	_scrollViewer.Reset();
@@ -11343,16 +12789,29 @@ void DataGrid::OnControlTemplatePresentationChanged()
 			L"DataGrid ControlTemplate 必须包含 PART_ColumnHeadersPresenter。");
 		return;
 	}
-	std::wstring error;
-	if (!presenter->Initialize(*live, &error))
-	{
-		if (auto* owner = dynamic_cast<DataGrid*>(ownerLifetime.Get()))
-			owner->SetLastTemplateError(std::move(error));
-		return;
-	}
-	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
-	if (!live) return;
+	const ControlWeakReference presenterLifetime(presenter);
 	live->_headersPresenter = presenter;
+	std::wstring error;
+	const bool headersInitialized = presenter->Initialize(*live, &error);
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	presenter = dynamic_cast<DataGridColumnHeadersPresenter*>(
+		presenterLifetime.Get());
+	if (!live || !presenter) return;
+	if (!headersInitialized)
+	{
+		live->_columnHeaderPresenterInitializationError = error.empty()
+			? L"DataGrid 列标题初始化失败。" : std::move(error);
+		live->SetLastTemplateError(
+			live->_columnHeaderPresenterInitializationError);
+	}
+	else
+	{
+		if (!live->_columnHeaderPresenterInitializationError.empty()
+			&& live->LastTemplateError()
+				== live->_columnHeaderPresenterInitializationError)
+			live->SetLastTemplateError({});
+		live->_columnHeaderPresenterInitializationError.clear();
+	}
 	if (auto* selectAll = dynamic_cast<Button*>(
 		live->FindDeclarativeTemplatePart(
 			MakeTemplatePartToken(L"PART_SelectAllButton"))))
@@ -11415,15 +12874,22 @@ void DataGrid::OnControlTemplatePresentationChanged()
 std::unique_ptr<DataGridColumnHeadersPresenter>
 DataGrid::CreateColumnHeadersPresenter()
 {
+	const ControlWeakReference ownerLifetime(this);
 	auto presenter = std::make_unique<DataGridColumnHeadersPresenter>();
 	std::wstring error;
-	if (!presenter->Initialize(*this, &error))
+	const bool initialized = presenter->Initialize(*this, &error);
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live) return {};
+	if (!initialized)
 	{
-		SetLastTemplateError(error);
+		live->SetLastTemplateError(error.empty()
+			? L"DataGrid 列标题创建失败。" : error);
 		return {};
 	}
-	_headersPresenter = ControlWeakReference(presenter.get());
-	RefreshHeadersVisibility();
+	live->_headersPresenter = ControlWeakReference(presenter.get());
+	live->RefreshHeadersVisibility();
+	live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live || live->_headersPresenter.Get() != presenter.get()) return {};
 	return presenter;
 }
 
@@ -17434,12 +18900,15 @@ bool DataGrid::AutoSizeColumn(size_t columnIndex)
 GridLength DataGrid::ResolveColumnGridLength(size_t columnIndex) const
 {
 	if (columnIndex >= _columns.size()) return GridLength::Auto();
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
 	if (_resolvedColumnWidths.size() != _columns.size()
 		|| !_resolvedColumnWidths[columnIndex])
 		RebuildResolvedColumnWidths();
-	return columnIndex < _resolvedColumnWidths.size()
-		&& _resolvedColumnWidths[columnIndex]
-		? *_resolvedColumnWidths[columnIndex]
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	return live && columnIndex < live->_resolvedColumnWidths.size()
+		&& live->_resolvedColumnWidths[columnIndex]
+		? *live->_resolvedColumnWidths[columnIndex]
 		: GridLength::Pixels(0.0f);
 }
 
@@ -19116,6 +20585,13 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 {
 	const size_t count = _columns.size();
 	if (!_enableColumnVirtualization || count == 0) return { 0, count };
+	const size_t projectionRevision = _columnWidthProjectionRevision;
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
+	std::vector<std::pair<DataGridColumn*, std::uint32_t>> columns;
+	columns.reserve(count);
+	for (const auto& column : _columns)
+		columns.emplace_back(column.get(), column->_accessibilityIdentity);
 	if (_realizedColumnBegin != DataGridCellInfo::InvalidIndex
 		&& _realizedColumnEnd != DataGridCellInfo::InvalidIndex
 		&& _realizedColumnBegin <= _realizedColumnEnd
@@ -19134,33 +20610,48 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 	double left = 0.0;
 	for (size_t index = 0; index < count; ++index)
 	{
-		const auto& column = *_columns[index];
+		auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!live || live->_columns.size() != count
+			|| live->_columnWidthProjectionRevision != projectionRevision
+			|| live->_columns[index].get() != columns[index].first
+			|| live->_columns[index]->_accessibilityIdentity
+				!= columns[index].second) return { 0, count };
+		const auto& column = *live->_columns[index];
 		if (column.GetVisibility() != Visibility::Visible) continue;
-		const auto& length = column.GetWidth();
+		const auto length = column.GetWidth();
+		const double minimum = column.GetLayoutMinWidth();
+		const double maximum = column.GetLayoutMaxWidth();
+		const auto runtimeWidth = column._runtimeWidth;
 		double width = column.GetLayoutMinWidth();
-		if (column._runtimeWidth.HasDisplayOverride
-			&& std::isfinite(column._runtimeWidth.Display))
-			width = (std::clamp)(column._runtimeWidth.Display,
-				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
+		if (runtimeWidth.HasDisplayOverride
+			&& std::isfinite(runtimeWidth.Display))
+			width = (std::clamp)(runtimeWidth.Display, minimum, maximum);
 		else if (length.UnitType == DataGridLengthUnitType::Pixel)
-			width = (std::clamp)(length.Value,
-				column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
+			width = (std::clamp)(length.Value, minimum, maximum);
 		else
 		{
 			if (length.UnitType != DataGridLengthUnitType::SizeToCells)
-				width = (std::max)(width,
-					16.0 + 7.0 * static_cast<double>(
-						column.GetHeader().ToString().size()));
+			{
+				const auto header = column.GetHeader();
+				const auto headerLength = header.ToString().size();
+				live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+				if (!live || live->_columns.size() != count
+					|| live->_columnWidthProjectionRevision != projectionRevision
+					|| live->_columns[index].get() != columns[index].first
+					|| live->_columns[index]->_accessibilityIdentity
+						!= columns[index].second) return { 0, count };
+				width = (std::max)(width, 16.0 + 7.0
+					* static_cast<double>(headerLength));
+			}
 			const bool widthUsesCellContent =
 				length.UnitType == DataGridLengthUnitType::Auto
 				|| length.UnitType == DataGridLengthUnitType::SizeToCells;
 			if (widthUsesCellContent
-				&& _sampledColumnContentWidths.size() == count
-				&& _sampledColumnContentWidths[index])
+				&& live->_sampledColumnContentWidths.size() == count
+				&& live->_sampledColumnContentWidths[index])
 				width = (std::max)(
-					width, *_sampledColumnContentWidths[index]);
-			width = (std::clamp)(
-				width, column.GetLayoutMinWidth(), column.GetLayoutMaxWidth());
+					width, *live->_sampledColumnContentWidths[index]);
+			width = (std::clamp)(width, minimum, maximum);
 		}
 		if (!std::isfinite(width) || width < 0.0) width = 0.0;
 		const double right = left >
@@ -19192,10 +20683,31 @@ DataGrid::ResolveDeferredColumnSampleRange() const
 
 void DataGrid::RebuildResolvedColumnWidths() const
 {
-	_resolvedColumnWidths.assign(_columns.size(), std::nullopt);
-	if (_columns.empty()) return;
+	const size_t count = _columns.size();
+	_resolvedColumnWidths.assign(count, std::nullopt);
+	if (count == 0) return;
+	const size_t projectionRevision = _columnWidthProjectionRevision;
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
+	std::vector<std::pair<DataGridColumn*, std::uint32_t>> columns;
+	columns.reserve(count);
+	for (const auto& column : _columns)
+		columns.emplace_back(column.get(), column->_accessibilityIdentity);
+	const auto inputsAreCurrent = [&]() noexcept
+	{
+		auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+		if (!live || live->_columns.size() != count
+			|| live->_columnWidthProjectionRevision != projectionRevision)
+			return false;
+		for (size_t index = 0; index < count; ++index)
+			if (live->_columns[index].get() != columns[index].first
+				|| live->_columns[index]->_accessibilityIdentity
+					!= columns[index].second) return false;
+		return true;
+	};
 	const auto sampleRange = ResolveDeferredColumnSampleRange();
-	const size_t frozenSampleEnd = (std::min)(_columns.size(),
+	if (!inputsAreCurrent()) return;
+	const size_t frozenSampleEnd = (std::min)(count,
 		static_cast<size_t>((std::max)(0, _frozenColumnCount)));
 
 	struct StarColumn final
@@ -19206,9 +20718,9 @@ void DataGrid::RebuildResolvedColumnWidths() const
 		double Maximum = 0.0;
 	};
 	std::vector<StarColumn> stars;
-	stars.reserve(_columns.size());
+	stars.reserve(count);
 	double nonStarTotal = 0.0;
-	for (size_t index = 0; index < _columns.size(); ++index)
+	for (size_t index = 0; index < count; ++index)
 	{
 		auto& column = *_columns[index];
 		if (column.GetVisibility() != Visibility::Visible)
@@ -19232,8 +20744,10 @@ void DataGrid::RebuildResolvedColumnWidths() const
 							|| index < frozenSampleEnd
 							|| (index >= sampleRange.first
 								&& index < sampleRange.second));
-					column._runtimeWidth.Desired =
+					const double desired =
 						EstimateColumnWidth(index, header, cells);
+					if (!inputsAreCurrent()) return;
+					column._runtimeWidth.Desired = desired;
 				}
 			}
 			const double pixels = (std::clamp)(
@@ -19270,6 +20784,7 @@ void DataGrid::RebuildResolvedColumnWidths() const
 				|| (index >= sampleRange.first
 						&& index < sampleRange.second));
 			pixels = EstimateColumnWidth(index, header, cells);
+			if (!inputsAreCurrent()) return;
 		}
 		_resolvedColumnWidths[index] = GridLength::Pixels(
 			static_cast<float>(pixels));
@@ -19423,53 +20938,65 @@ double DataGrid::EstimateColumnWidth(
 {
 	if (columnIndex >= _columns.size()) return 20.0;
 	auto* const columnIdentity = _columns[columnIndex].get();
+	const auto columnAccessibilityIdentity =
+		columnIdentity->_accessibilityIdentity;
+	const size_t projectionRevision = _columnWidthProjectionRevision;
+	const ControlWeakReference ownerLifetime(
+		const_cast<DataGrid*>(this));
 	if (columnIdentity->GetVisibility() != Visibility::Visible) return 0.0;
 	const double minimum = columnIdentity->GetLayoutMinWidth();
 	const double maximum = columnIdentity->GetLayoutMaxWidth();
+	const auto widthUnit = columnIdentity->GetWidth().UnitType;
+	const auto* boundColumn = dynamic_cast<const DataGridBoundColumn*>(
+		columnIdentity);
+	const bool boundToRow = boundColumn && boundColumn->GetBindingSourceKind()
+		== DataGridBindingSourceKind::RowDataContext;
+#if CUI_ENABLE_DYNAMIC_XAML
+	const std::wstring bindingPath = boundToRow
+		? boundColumn->GetBindingPath() : std::wstring{};
+#endif
+	const CompiledBindingPathView compiledBindingPath = boundToRow
+		? boundColumn->GetCompiledBindingPath() : CompiledBindingPathView{};
 	double width = minimum;
 	if (includeHeader)
-		width = (std::max)(width,
-			16.0 + 7.0 * static_cast<double>(
-				columnIdentity->GetHeader().ToString().size()));
-	const auto widthUnit = columnIdentity->GetWidth().UnitType;
+	{
+		const auto header = columnIdentity->GetHeader();
+		width = (std::max)(width, 16.0 + 7.0
+			* static_cast<double>(header.ToString().size()));
+	}
+	auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+	if (!live || live->_columnWidthProjectionRevision != projectionRevision
+		|| columnIndex >= live->_columns.size()
+		|| live->_columns[columnIndex].get() != columnIdentity
+		|| live->_columns[columnIndex]->_accessibilityIdentity
+			!= columnAccessibilityIdentity)
+		return (std::clamp)(width, minimum, maximum);
 	const bool widthUsesCellContent =
 		widthUnit == DataGridLengthUnitType::Auto
 		|| widthUnit == DataGridLengthUnitType::SizeToCells;
 	if (widthUsesCellContent
-		&& _sampledColumnContentWidths.size() == _columns.size()
-		&& _sampledColumnContentWidths[columnIndex])
+		&& live->_sampledColumnContentWidths.size() == live->_columns.size()
+		&& live->_sampledColumnContentWidths[columnIndex])
 		width = (std::max)(
-			width, *_sampledColumnContentWidths[columnIndex]);
-	const auto items = GetItemsView();
+			width, *live->_sampledColumnContentWidths[columnIndex]);
+	const auto items = live->GetItemsView();
 	if (includeCells && items)
 	{
-		if (_sampledColumnContentWidths.size() != _columns.size())
+		if (live->_sampledColumnContentWidths.size() != live->_columns.size())
 		{
-			_sampledColumnContentWidths.assign(
-				_columns.size(), std::nullopt);
-			++_columnContentWidthCacheEpoch;
-			if (_columnContentWidthCacheEpoch == 0)
-				_columnContentWidthCacheEpoch = 1;
+			live->_sampledColumnContentWidths.assign(
+				live->_columns.size(), std::nullopt);
+			++live->_columnContentWidthCacheEpoch;
+			if (live->_columnContentWidthCacheEpoch == 0)
+				live->_columnContentWidthCacheEpoch = 1;
 		}
-		auto& cached = _sampledColumnContentWidths[columnIndex];
+		auto& cached = live->_sampledColumnContentWidths[columnIndex];
 		if (cached) width = (std::max)(width, *cached);
 		else
 		{
-			const auto* bound = dynamic_cast<const DataGridBoundColumn*>(
-				columnIdentity);
-			if (bound && bound->GetBindingSourceKind()
-				!= DataGridBindingSourceKind::RowDataContext) bound = nullptr;
-#if CUI_ENABLE_DYNAMIC_XAML
-			const std::wstring bindingPath = bound
-				? bound->GetBindingPath() : std::wstring{};
-#endif
-			const CompiledBindingPathView compiledBindingPath = bound
-				? bound->GetCompiledBindingPath() : CompiledBindingPathView{};
-			const size_t cacheEpoch = _columnContentWidthCacheEpoch;
-			const ControlWeakReference ownerLifetime(
-				const_cast<DataGrid*>(this));
+			const size_t cacheEpoch = live->_columnContentWidthCacheEpoch;
 			double sampledWidth = 0.0;
-			const size_t count = bound ? (std::min)(
+			const size_t count = boundToRow ? (std::min)(
 				items.Get()->Count(), size_t{ 1000 }) : 0;
 			for (size_t index = 0; index < count; ++index)
 			{
@@ -19490,11 +21017,14 @@ double DataGrid::EstimateColumnWidth(
 						value.ToString().size()));
 			}
 			width = (std::max)(width, sampledWidth);
-			auto* live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
+			live = dynamic_cast<DataGrid*>(ownerLifetime.Get());
 			if (live == this
 				&& live->_columnContentWidthCacheEpoch == cacheEpoch
+				&& live->_columnWidthProjectionRevision == projectionRevision
 				&& columnIndex < live->_columns.size()
 				&& live->_columns[columnIndex].get() == columnIdentity
+				&& live->_columns[columnIndex]->_accessibilityIdentity
+					== columnAccessibilityIdentity
 				&& live->GetItemsView().Shared() == items.Shared()
 				&& live->_sampledColumnContentWidths.size()
 					== live->_columns.size())

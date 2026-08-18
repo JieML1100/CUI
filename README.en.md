@@ -170,6 +170,12 @@ The maintained internal notes are intentionally short:
 - [Designer undo contract](CuiDesigner/DesignerCore/Undo.md)
 - [Static framework theme](CuiGeneratedTheme/README.md)
 
+## Community
+
+Join our QQ technical discussion group: 522222570
+
+To ensure a smooth and constructive communication experience, all conversations in the group are conducted in Simplified Chinese. Please refrain from using other languages or dialects. Your cooperation is greatly appreciated.
+
 ## License
 
 CUI is available under the [MIT License](LICENSE).

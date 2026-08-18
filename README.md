@@ -160,6 +160,12 @@ Remove-Item Env:CUI_TEST_FILTER
 - [Designer Undo 契约](CuiDesigner/DesignerCore/Undo.md)
 - [静态框架主题](CuiGeneratedTheme/README.md)
 
+## 社区
+
+欢迎加入我们的 QQ 技术交流群：522222570
+
+为营造良好的沟通环境，群内统一使用简体中文进行交流，请勿使用其他语言或方言。感谢您的理解与配合。
+
 ## 许可证
 
 CUI 使用 [MIT License](LICENSE)。

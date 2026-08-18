@@ -13,6 +13,127 @@
 
 namespace
 {
+	/**
+	 * Projects WPF-style scalar (including null/Empty) Content through the
+	 * existing strongly typed IItemTemplate ABI. The value is an immutable
+	 * snapshot: changing Content rebuilds the presenter and therefore creates a
+	 * new template data item.
+	 */
+	class TemplateBindingValueSource final
+		: public IBindingSource,
+		  public IBindingRootValueProvider
+	{
+	public:
+		explicit TemplateBindingValueSource(BindingValue value)
+			: _value(std::move(value))
+		{
+		}
+
+#if CUI_ENABLE_DYNAMIC_XAML
+		bool TryGetValue(
+			const std::wstring& propertyName,
+			BindingValue& out) const override
+		{
+			(void)propertyName;
+			(void)out;
+			return false;
+		}
+
+		bool TrySetValue(
+			const std::wstring& propertyName,
+			const BindingValue& value) override
+		{
+			(void)propertyName;
+			(void)value;
+			return false;
+		}
+
+		bool TryGetPropertyMetadata(
+			const std::wstring& propertyName,
+			BindingSourcePropertyMetadata& out) const override
+		{
+			(void)propertyName;
+			(void)out;
+			return false;
+		}
+
+		std::vector<BindingSourcePropertyMetadata>
+			GetProperties() const override
+		{
+			return {};
+		}
+#endif
+
+		bool TryGetValue(
+			BindingSourcePropertyToken property,
+			BindingValue& out) const override
+		{
+			if (property != BindingRootValuePropertyToken()) return false;
+			out = _value;
+			return true;
+		}
+
+		bool TrySetValue(
+			BindingSourcePropertyToken property,
+			const BindingValue& value) override
+		{
+			(void)property;
+			(void)value;
+			return false;
+		}
+
+		bool TryGetPropertyMetadata(
+			BindingSourcePropertyToken property,
+			BindingSourcePropertyMetadata& out) const override
+		{
+			if (property != BindingRootValuePropertyToken()) return false;
+			out = Metadata();
+			return true;
+		}
+
+		PropertyChangedEvent& PropertyChanged() override
+		{
+			return _propertyChanged;
+		}
+
+		bool TryGetBindingRootValue(BindingValue& out) const override
+		{
+			out = _value;
+			return true;
+		}
+
+		bool TryGetBindingRootValueMetadata(
+			BindingSourcePropertyMetadata& out) const override
+		{
+			out = Metadata();
+			return true;
+		}
+
+	private:
+		BindingSourcePropertyMetadata Metadata() const
+		{
+#if CUI_ENABLE_DYNAMIC_XAML
+			return { std::wstring{}, _value.Kind(),
+				std::type_index(_value.Type()), true, false, true };
+#else
+			return { _value.Kind(), std::type_index(_value.Type()),
+				true, false, true };
+#endif
+		}
+
+		BindingValue _value;
+		PropertyChangedEvent _propertyChanged;
+	};
+
+	BindingSourceReference ProjectTemplateContent(
+		const BindingValue& content)
+	{
+		BindingSourceReference source;
+		if (content.TryGet(source) && source) return source;
+		return BindingSourceReference(
+			std::make_shared<TemplateBindingValueSource>(content));
+	}
+
 	template<typename TValue>
 	DependencyPropertyOptions<ContentPresenter, TValue> DataOptions(
 		TValue defaultValue
@@ -286,6 +407,7 @@ ContentPresenter::ResolveExactDependencyPropertyMetadata(
 
 void ContentPresenter::SetContent(BindingValue value)
 {
+	if (BindingValuesEqual(_content, value)) return;
 	_lastTemplateError.clear();
 	(void)SetPropertyField(
 		ContentProperty(), _content, std::move(value));
@@ -293,6 +415,7 @@ void ContentPresenter::SetContent(BindingValue value)
 
 void ContentPresenter::SetContentTemplate(ItemTemplateReference value)
 {
+	if (_contentTemplate == value) return;
 	_lastTemplateError.clear();
 	(void)SetPropertyField(
 		ContentTemplateProperty(), _contentTemplate, std::move(value));
@@ -373,19 +496,7 @@ bool ContentPresenter::ValidateContentCandidate(
 		}
 		return true;
 	}
-	if (contentTemplate && !AreDataTypesCompatible(
-		_contentTypeToken, contentTemplate.Get()->GetDataTypeToken()))
-	{
-		error = L"ContentTemplate DataType 与 Content DataType 不一致。";
-		return false;
-	}
 	if (content.Empty() || !contentTemplate) return true;
-	BindingSourceReference source;
-	if (!content.TryGet(source) || !source)
-	{
-		error = L"当前 DataTemplate 只支持 BindingSource 内容。";
-		return false;
-	}
 	// Coercion validates the Content/ContentTemplate contract only. Instantiating
 	// the template here would create and immediately destroy a complete visual
 	// tree, then Changed/RebuildContent would create it a second time. WPF's
@@ -443,51 +554,44 @@ bool ContentPresenter::RebuildContent()
 		}
 		return true;
 	}
-	if (_contentTemplate && !AreDataTypesCompatible(
-		_contentTypeToken, _contentTemplate.Get()->GetDataTypeToken()))
-	{
-		_lastTemplateError =
-			L"ContentTemplate DataType 与 Content DataType 不一致。";
-		return false;
-	}
-
 	std::unique_ptr<Control> replacement;
+	BindingSourceReference replacementDataContext;
 	BindingPathObservation observation;
-	if (!_content.Empty())
+	if (_contentTemplate)
 	{
 		BindingSourceReference source;
 		const bool hasSource = _content.TryGet(source) && source;
-		if (_contentTemplate)
+		replacementDataContext = hasSource
+			? source : ProjectTemplateContent(_content);
+		if (!replacementDataContext)
 		{
-			if (!hasSource)
-			{
-				_lastTemplateError =
-					L"当前 DataTemplate 只支持 BindingSource 内容。";
-				return false;
-			}
-			replacement = _contentTemplate.Get()->Build(
-				source, 0, &_lastTemplateError);
-			if (!replacement)
-			{
-				if (_lastTemplateError.empty())
-					_lastTemplateError = L"ContentTemplate 未生成视觉根。";
-				return false;
-			}
+			_lastTemplateError = L"Content 无法投影为模板数据项。";
+			return false;
 		}
-		else
+		replacement = _contentTemplate.Get()->Build(
+			replacementDataContext, 0, &_lastTemplateError);
+		if (!replacement)
 		{
-			auto label = std::make_unique<Label>();
-			if (hasSource)
-				label->Text = ReadProjectedDisplayText(source);
-			else label->Text = _content.ToString();
-			replacement = std::move(label);
-			if (hasSource)
-			{
-				auto changed = [this]
-					{ if (!_contentTemplate) (void)RebuildContent(); };
-				observation = ObserveProjectedDisplayPath(
-					source, std::move(changed));
-			}
+			if (_lastTemplateError.empty())
+				_lastTemplateError = L"ContentTemplate 未生成视觉根。";
+			return false;
+		}
+	}
+	else if (!_content.Empty())
+	{
+		BindingSourceReference source;
+		const bool hasSource = _content.TryGet(source) && source;
+		auto label = std::make_unique<Label>();
+		if (hasSource)
+			label->Text = ReadProjectedDisplayText(source);
+		else label->Text = _content.ToString();
+		replacement = std::move(label);
+		if (hasSource)
+		{
+			auto changed = [this]
+				{ if (!_contentTemplate) (void)RebuildContent(); };
+			observation = ObserveProjectedDisplayPath(
+				source, std::move(changed));
 		}
 	}
 
@@ -566,6 +670,8 @@ bool ContentPresenter::RebuildContent()
 				|| IndexOfVisualChild(liveReplacement) >= 0);
 		_generatedContent = replacementOwnedByPresenter
 			? liveReplacement : nullptr;
+		if (replacementOwnedByPresenter)
+			_generatedContentDataContext = replacementDataContext;
 
 		// A retained replacement owner means insertion failed before commit.
 		// In that case restore the previous visual when possible so a rejected
@@ -606,6 +712,7 @@ bool ContentPresenter::RebuildContent()
 		std::rethrow_exception(originalError);
 	}
 	_generatedContentCommittedTransaction = transaction;
+	_generatedContentDataContext = std::move(replacementDataContext);
 	_contentObservation = std::move(observation);
 	RequestLayout();
 	InvalidateVisual();

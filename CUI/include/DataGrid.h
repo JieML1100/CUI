@@ -704,6 +704,7 @@ private:
 	friend class DataGrid;
 	friend class DataGridCell;
 	friend class DataGridColumnHeader;
+	friend class DataGridColumnHeadersPresenter;
 	friend class DataGridRow;
 	struct RuntimeWidthState final
 	{
@@ -1397,13 +1398,17 @@ public:
 	DataGridColumn* GetColumn() const noexcept { return _column; }
 
 protected:
+	void OnApplyTemplate() override;
 	bool ProcessInput(const InputReport& input) override;
 	bool OnClick() override;
 	CursorKind QueryCursor(int localX, int localY) override;
 
 private:
+	friend class DataGrid;
 	friend class DataGridColumnHeadersPresenter;
-	void Initialize(DataGrid& owner, DataGridColumn& column, size_t index);
+	bool Initialize(DataGrid& owner, DataGridColumn& column, size_t index,
+		std::wstring* outError = nullptr);
+	std::wstring ContentPresentationError() const;
 	bool TryResolveResizeColumn(
 		int localX, size_t& columnIndex,
 		bool& resizeFromLeftEdge) const noexcept;
@@ -1415,6 +1420,7 @@ private:
 	bool ContinueColumnReorder(int localX, int localY);
 	void EndColumnReorder(bool cancel);
 	DataGrid* _owner = nullptr;
+	ControlWeakReference _ownerLifetime;
 	DataGridColumn* _column = nullptr;
 	size_t _columnIndex = DataGridCellInfo::InvalidIndex;
 	bool _multiColumnSortRequested = false;
@@ -1472,8 +1478,8 @@ public:
 	{
 		return _dropIndicator.Get();
 	}
-	void UpdateColumnWidths(bool propagateLayoutInvalidation = true);
-	void UpdateHorizontalScrollOffset(double offset);
+	bool UpdateColumnWidths(bool propagateLayoutInvalidation = true);
+	bool UpdateHorizontalScrollOffset(double offset);
 	void Arrange(cui::core::Rect finalRect) override;
 
 protected:
@@ -1505,6 +1511,9 @@ private:
 		bool& valid) const;
 	void ArrangeColumnHeaderDragIndicators();
 	DataGrid* _owner = nullptr;
+	std::uint64_t _initializeGeneration = 0;
+	std::uint64_t _committedInitializeGeneration = 0;
+	std::uint64_t _presentationRefreshGeneration = 0;
 	std::vector<DataGridColumnHeader*> _frozenHeaders;
 	std::vector<DataGridColumnHeader*> _headers;
 	size_t _appliedColumnWidthProjectionRevision = 0;
@@ -2192,6 +2201,13 @@ private:
 	// pair per selected row in _selectedRowSnapshot.
 	SelectedIndexCollection _selectedRowIndexSnapshot;
 	ControlWeakReference _headersPresenter;
+	std::wstring _columnHeaderPresenterInitializationError;
+	ControlWeakReference _columnHeaderPresentationErrorSource;
+	std::wstring _columnHeaderPresentationErrorText;
+	// Every presenter that has entered Initialize registers here, including
+	// programmatic presenters that are not the active template PART. Weak
+	// tracking lets the owner retire all raw back-links before its lifetime ends.
+	std::vector<ControlWeakReference> _trackedColumnHeaderPresenters;
 	ControlWeakReference _selectAllButton;
 	ControlWeakReference _scrollViewer;
 	EventConnection _selectAllClick;
@@ -2318,6 +2334,13 @@ private:
 	void RefreshRealizedCellStyles(const DataGridColumn* column = nullptr);
 	void RefreshRealizedColumnHeaderPresentation(
 		const DataGridColumn* column = nullptr);
+	void PublishColumnHeaderPresentationError(
+		DataGridColumnHeader& source, std::wstring error);
+	void ClearColumnHeaderPresentationError(
+		DataGridColumnHeader& source) noexcept;
+	void RetireColumnHeadersPresenterNoCallbacks(
+		DataGridColumnHeadersPresenter* presenter,
+		std::uint64_t committedGeneration = 0) noexcept;
 	void RefreshRealizedRowHeaderPresentation();
 	void RefreshRealizedRowDetails();
 	void RefreshRealizedRowDetailsHorizontalAlignment();

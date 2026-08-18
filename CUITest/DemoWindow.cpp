@@ -4320,6 +4320,24 @@ bool DemoWindow::VerifyPresentationFeatures(std::wstring* outError)
 			|| firstRow->GetCells().size() != dataGrid->ColumnCount())
 			return fail(
 				L"DataGrid 模板未生成表头 presenter、真实 Row 或 Cell 视觉树。");
+		auto* customerHeader = headerPresenter->GetHeader(1);
+		auto* customerHeaderText = customerHeader
+			? dynamic_cast<Label*>(
+				cui::framework::TemplateAccess::GetGeneratedContent(
+					*customerHeader)) : nullptr;
+		const auto customerHeaderTextSize = customerHeaderText
+			? customerHeaderText->GetActualSizeDip() : cui::core::Size{};
+		if (!customerHeader || !customerHeader->LastContentError().empty()
+			|| !customerHeaderText
+			|| customerHeaderText->Text != L"客户 / Customer"
+			|| customerHeaderTextSize.width <= 0.0f
+			|| customerHeaderTextSize.height <= 0.0f)
+			return fail(L"DataGrid 客户列 HeaderTemplate 未生成可见文本：text="
+				+ (customerHeaderText ? customerHeaderText->Text : std::wstring{})
+				+ L"，size=" + std::to_wstring(customerHeaderTextSize.width)
+				+ L"x" + std::to_wstring(customerHeaderTextSize.height)
+				+ L"，error=" + (customerHeader
+					? customerHeader->LastContentError() : std::wstring{}));
 		if (!stageCell || !stageDisplay || !stageSelectionFace
 			|| !stageDisplayGlyph || stageDisplayGlyph->Text != L"\xE70D")
 			return fail(L"DataGrid ComboBox retained 验证缺少显示视觉：cell="
