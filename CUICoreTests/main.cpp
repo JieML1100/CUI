@@ -1516,6 +1516,112 @@ namespace
 		BuildCallback _buildCallback;
 	};
 
+	struct ScalarTemplateProbeState final
+	{
+		size_t BuildCount = 0;
+		BindingSourceReference LastSource;
+		BindingValue LastValue;
+	};
+
+	class ScalarTemplateProbe final : public IItemTemplate
+	{
+	public:
+		explicit ScalarTemplateProbe(
+			std::shared_ptr<ScalarTemplateProbeState> state)
+			: _state(std::move(state))
+		{
+		}
+
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			static const std::wstring empty;
+			return empty;
+		}
+
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference& item,
+			size_t,
+			std::wstring* outError) const override
+		{
+			BindingValue value;
+			if (!item || !item.Get()->TryGetValue(
+				BindingRootValuePropertyToken(), value))
+			{
+				if (outError) *outError = L"missing scalar template root";
+				return {};
+			}
+			if (_state)
+			{
+				++_state->BuildCount;
+				_state->LastSource = item;
+				_state->LastValue = value;
+			}
+			auto label = std::make_unique<Label>();
+			label->Text = L"templated:" + value.ToString();
+			if (!label->SetDataContext(item))
+			{
+				if (outError) *outError = L"scalar template context failed";
+				return {};
+			}
+			if (outError) outError->clear();
+			return label;
+		}
+
+	private:
+		std::shared_ptr<ScalarTemplateProbeState> _state;
+	};
+
+	class RejectingScalarTemplate final : public IItemTemplate
+	{
+	public:
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			static const std::wstring empty;
+			return empty;
+		}
+
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference&,
+			size_t,
+			std::wstring* outError) const override
+		{
+			++BuildCount;
+			if (outError) *outError = L"rejected scalar template";
+			return {};
+		}
+
+		mutable size_t BuildCount = 0;
+	};
+
+	class DisplayTextObservableObject final
+		: public ObservableObject,
+		  public IBindingSourceDisplayText
+	{
+	public:
+		explicit DisplayTextObservableObject(std::wstring text)
+			: _text(std::move(text)) {}
+
+		bool TryGetBindingDisplayText(std::wstring& out) const override
+		{
+			out = _text;
+			return true;
+		}
+
+		bool SetRootShadowValidation()
+		{
+			return SetValidationError(
+				L"$CUI.Binding.RootValue", L"shadow validation");
+		}
+
+		bool ClearRootShadowValidation()
+		{
+			return ClearValidationIssues(L"$CUI.Binding.RootValue");
+		}
+
+	private:
+		std::wstring _text;
+	};
+
 	class TokenItemTemplate final : public IItemTemplate
 	{
 	public:
@@ -9105,6 +9211,26 @@ int main()
 		auto* engineeringHeader = dynamic_cast<Label*>(firstEntry->GetVisualChild(0));
 		CUI_EXPECT_TRUE(engineeringHeader != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"Engineering"), engineeringHeader->Text);
+		auto untypedHeaderTemplate = std::make_shared<CallbackItemTemplate>(
+			std::wstring{}, []() -> std::unique_ptr<Control>
+			{
+				auto label = std::make_unique<Label>();
+				label->Text = L"Untyped group";
+				return label;
+			});
+		auto untypedGroupStyle = std::make_shared<GroupStyle>();
+		untypedGroupStyle->HeaderTemplate =
+			ItemTemplateReference(untypedHeaderTemplate);
+		box.SetGroupStyle(GroupStyleReference(untypedGroupStyle));
+		CUI_EXPECT_TRUE(box.LastTemplateError().empty());
+		CUI_EXPECT_FALSE(static_cast<bool>(
+			untypedHeaderTemplate->GetDataTypeToken()));
+		firstEntry = dynamic_cast<Panel*>(host->GetVisualChildrenView()[0]);
+		engineeringHeader = firstEntry
+			? dynamic_cast<Label*>(firstEntry->GetVisualChild(0)) : nullptr;
+		CUI_EXPECT_TRUE(engineeringHeader != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Untyped group"),
+			engineeringHeader ? engineeringHeader->Text : std::wstring{});
 		auto* firstContainer = dynamic_cast<ListBoxItem*>(
 			box.GetGeneratedItem(0));
 		auto* bobContainer = dynamic_cast<ListBoxItem*>(box.GetGeneratedItem(2));
@@ -9745,9 +9871,12 @@ int main()
 		auto wrongTemplate = std::make_shared<TestItemTemplate>(L"Order");
 		presenter.SetContentTemplate(ItemTemplateReference(wrongTemplate));
 		CUI_EXPECT_TRUE(presenter.GetContentTemplate().Get()
-			== personTemplate.get());
-		CUI_EXPECT_TRUE(presenter.LastTemplateError().find(L"DataType")
-			!= std::wstring::npos);
+			== wrongTemplate.get());
+		CUI_EXPECT_TRUE(presenter.LastTemplateError().empty());
+		templated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice 2"),
+			templated ? templated->Text : std::wstring{});
 
 		auto bob = std::make_shared<ObservableObject>();
 		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
@@ -9755,9 +9884,109 @@ int main()
 		templated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
 		CUI_EXPECT_TRUE(templated != nullptr);
 		CUI_EXPECT_EQ(std::wstring(L"Bob"), templated->Text);
+		presenter.SetContentTemplate({});
 		presenter.SetContent({});
 		CUI_EXPECT_TRUE(presenter.GetGeneratedContent() == nullptr);
 		CUI_EXPECT_EQ(0, presenter.VisualChildCount());
+	});
+
+	runner.Add("ContentPresenter and ContentControl materialize scalar templates", []
+	{
+		// WPF applies an explicit template even when Content is null.  The
+		// template receives a null/empty root value and can still render static UI.
+		auto nullState = std::make_shared<ScalarTemplateProbeState>();
+		ContentPresenter nullPresenter;
+		nullPresenter.SetContentTemplate(ItemTemplateReference(
+			std::make_shared<ScalarTemplateProbe>(nullState)));
+		CUI_EXPECT_TRUE(nullPresenter.LastTemplateError().empty());
+		CUI_EXPECT_EQ(1ULL, nullState->BuildCount);
+		CUI_EXPECT_TRUE(nullState->LastValue.Empty());
+		auto* nullVisual = dynamic_cast<Label*>(
+			nullPresenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(nullVisual != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"templated:"),
+			nullVisual ? nullVisual->Text : std::wstring{});
+
+		auto presenterState =
+			std::make_shared<ScalarTemplateProbeState>();
+		auto presenterTemplate =
+			std::make_shared<ScalarTemplateProbe>(presenterState);
+		ContentPresenter presenter;
+		ConfigureTestControl(presenter, 0, 0, 240, 80);
+		// WPF permits either setter order. Exercise Content first here.
+		presenter.SetContent(BindingValue(L"客户"));
+		presenter.SetContentTemplate(
+			ItemTemplateReference(presenterTemplate));
+		CUI_EXPECT_TRUE(presenter.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(presenter.GetContentTemplate().Get()
+			== presenterTemplate.get());
+		std::wstring content;
+		CUI_EXPECT_TRUE(presenter.GetContent().TryGet(content));
+		CUI_EXPECT_EQ(std::wstring(L"客户"), content);
+		auto* generated = dynamic_cast<Label*>(
+			presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(generated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"templated:客户"),
+			generated ? generated->Text : std::wstring{});
+		CUI_EXPECT_EQ(1ULL, presenterState->BuildCount);
+		CUI_EXPECT_TRUE(presenterState->LastSource);
+		CUI_EXPECT_TRUE(generated && generated->GetDataContext().Get()
+			== presenterState->LastSource.Get());
+		std::wstring projected;
+		CUI_EXPECT_TRUE(presenterState->LastValue.TryGet(projected));
+		CUI_EXPECT_EQ(std::wstring(L"客户"), projected);
+
+		const ControlWeakReference oldVisual(generated);
+		const auto oldSourceLifetime =
+			presenterState->LastSource.Get()->BindingLifetime();
+		presenter.SetContent(BindingValue(L"客户 2"));
+		generated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(presenter.LastTemplateError().empty());
+		CUI_EXPECT_EQ(2ULL, presenterState->BuildCount);
+		CUI_EXPECT_EQ(std::wstring(L"templated:客户 2"),
+			generated ? generated->Text : std::wstring{});
+		CUI_EXPECT_TRUE(oldVisual.Get() == nullptr);
+		CUI_EXPECT_TRUE(oldSourceLifetime.expired());
+		presenter.SetContent(BindingValue{});
+		generated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(presenter.LastTemplateError().empty());
+		CUI_EXPECT_EQ(3ULL, presenterState->BuildCount);
+		CUI_EXPECT_TRUE(presenterState->LastValue.Empty());
+		CUI_EXPECT_EQ(std::wstring(L"templated:"),
+			generated ? generated->Text : std::wstring{});
+
+		auto controlState = std::make_shared<ScalarTemplateProbeState>();
+		auto controlTemplate =
+			std::make_shared<ScalarTemplateProbe>(controlState);
+		ContentControl control;
+		ConfigureTestControl(control, 0, 0, 240, 80);
+		// DataGridColumnHeader uses the reverse order: template, then Content.
+		control.SetContentTemplate(ItemTemplateReference(controlTemplate));
+		control.SetContent(BindingValue(17));
+		CUI_EXPECT_TRUE(control.LastContentError().empty());
+		CUI_EXPECT_TRUE(control.GetContentTemplate().Get()
+			== controlTemplate.get());
+		auto* controlContent = dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(control));
+		CUI_EXPECT_TRUE(controlContent != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"templated:17"),
+			controlContent ? controlContent->Text : std::wstring{});
+		// The explicit template is applied once to null Content and once to 17;
+		// dependency-property coercion must not execute the template factory.
+		CUI_EXPECT_EQ(2ULL, controlState->BuildCount);
+		int numeric = 0;
+		CUI_EXPECT_TRUE(controlState->LastValue.TryGet(numeric));
+		CUI_EXPECT_EQ(17, numeric);
+
+		const ControlWeakReference acceptedVisual(controlContent);
+		auto rejecting = std::make_shared<RejectingScalarTemplate>();
+		control.SetContentTemplate(ItemTemplateReference(rejecting));
+		CUI_EXPECT_TRUE(control.GetContentTemplate().Get() == rejecting.get());
+		CUI_EXPECT_TRUE(TemplateAccess::GetGeneratedContent(control)
+			== acceptedVisual.Get());
+		CUI_EXPECT_TRUE(control.LastContentError().find(L"rejected")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(1ULL, rejecting->BuildCount);
 	});
 
 	runner.Add("ContentPresenter keeps nested rebuild transaction authoritative", []
@@ -9841,12 +10070,18 @@ int main()
 		CUI_EXPECT_TRUE(alice->SetValue(
 			L"Name", std::wstring(L"Alicia")));
 		CUI_EXPECT_EQ(std::wstring(L"Alicia"), templated->Text);
-		const auto acceptedTemplate = data.GetContentTemplate();
+		auto explicitOrderTemplate =
+			std::make_shared<TestItemTemplate>(L"Order");
 		data.SetContentTemplate(ItemTemplateReference(
-			std::make_shared<TestItemTemplate>(L"Order")));
-		CUI_EXPECT_TRUE(data.GetContentTemplate() == acceptedTemplate);
-		CUI_EXPECT_TRUE(data.LastContentError().find(L"DataType")
-			!= std::wstring::npos);
+			explicitOrderTemplate));
+		CUI_EXPECT_TRUE(data.GetContentTemplate().Get()
+			== explicitOrderTemplate.get());
+		CUI_EXPECT_TRUE(data.LastContentError().empty());
+		templated = dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(data));
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"),
+			templated ? templated->Text : std::wstring{});
 	});
 
 	runner.Add("ContentControl projects visual Content across template presenters", []
@@ -27393,11 +27628,19 @@ int main()
 		const auto* contentTemplateRow = DesignerPropertyRowCatalog::Find(
 			rows, L"ContentTemplate");
 		CUI_EXPECT_TRUE(contentTemplateRow != nullptr);
-		CUI_EXPECT_EQ(2ULL,
+		CUI_EXPECT_EQ(3ULL,
 			contentTemplateRow ? contentTemplateRow->Choices.size() : 0ULL);
-		CUI_EXPECT_EQ(std::wstring(L"ExplicitPerson"),
-			contentTemplateRow ? contentTemplateRow->Choices.back().ValueText
-				: std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L""), contentTemplateRow
+			? contentTemplateRow->Choices.front().ValueText : std::wstring{});
+		const auto hasTemplateChoice = [](const DesignerPropertyRow* row,
+			const std::wstring& key)
+		{
+			return row && std::any_of(row->Choices.begin(), row->Choices.end(),
+				[&](const auto& choice) { return choice.ValueText == key; });
+		};
+		CUI_EXPECT_TRUE(hasTemplateChoice(
+			contentTemplateRow, L"ExplicitPerson"));
+		CUI_EXPECT_TRUE(hasTemplateChoice(contentTemplateRow, L"OrderCard"));
 		auto scalarSchema = document.DataContextSchema;
 		scalarSchema.push_back({
 			L"Title", BindingValueKind::String, true, true, true });
@@ -27408,8 +27651,11 @@ int main()
 		const auto* scalarTemplateRow = DesignerPropertyRowCatalog::Find(
 			scalarRows, L"ContentTemplate");
 		CUI_EXPECT_TRUE(scalarTemplateRow != nullptr);
-		CUI_EXPECT_EQ(1ULL, scalarTemplateRow
+		CUI_EXPECT_EQ(3ULL, scalarTemplateRow
 			? scalarTemplateRow->Choices.size() : 0ULL);
+		CUI_EXPECT_TRUE(hasTemplateChoice(
+			scalarTemplateRow, L"ExplicitPerson"));
+		CUI_EXPECT_TRUE(hasTemplateChoice(scalarTemplateRow, L"OrderCard"));
 
 		auto updatedXaml = xaml;
 		const auto marker = updatedXaml.find("Global implicit");
@@ -27465,9 +27711,22 @@ int main()
                     Content="{Binding CurrentPerson}"
                     ContentTemplate="{StaticResource OrderCard}" />
 </Window>)XAML";
-		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
-			mismatched, rejected, &error));
-		CUI_EXPECT_TRUE(error.find(L"类型不一致") != std::wstring::npos);
+		DesignerModel::DesignDocument mismatchedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			mismatched, mismatchedDocument, &error));
+		DesignerModel::RuntimeDocument mismatchedRuntime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			mismatchedDocument, mismatchedRuntime, options, &error));
+		auto* mismatchedPresenter = dynamic_cast<ContentPresenter*>(
+			mismatchedRuntime.FindControlByName(L"badTypePresenter"));
+		CUI_EXPECT_TRUE(mismatchedPresenter != nullptr);
+		CUI_EXPECT_TRUE(mismatchedPresenter
+			&& static_cast<bool>(mismatchedPresenter->GetContentTemplate()));
+		// An explicit keyed template matches by assignment.  A member binding
+		// that is unavailable on the actual item is a binding-level concern and
+		// must not reject the ContentTemplate itself.
+		CUI_EXPECT_TRUE(mismatchedPresenter
+			&& mismatchedPresenter->GetGeneratedContent() != nullptr);
 	});
 
 	runner.Add("ContentControl XAML supports default visual text and typed data content", []
@@ -60703,7 +60962,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		columnOwner->SetBindingPath(L"Name");
 		columnOwner->SetCellStyle(L"ColumnCellStyle");
 		columnOwner->SetHeaderStyle(L"ColumnHeaderStyle");
-		auto columnHeaderTemplate = std::make_shared<TestItemTemplate>(L"StyleRow");
+		auto columnHeaderState =
+			std::make_shared<ScalarTemplateProbeState>();
+		auto columnHeaderTemplate =
+			std::make_shared<ScalarTemplateProbe>(columnHeaderState);
 		columnOwner->SetHeaderTemplate(
 			ItemTemplateReference(columnHeaderTemplate));
 		auto* column = grid.AddColumn(std::move(columnOwner));
@@ -60735,6 +60997,11 @@ class FreshWindow : public FreshWindowGenerated {};
 			cui::framework::StyleAccess::ResourceKey(*rowHeader));
 		CUI_EXPECT_TRUE(columnHeader->GetContentTemplate().Get()
 			== columnHeaderTemplate.get());
+		auto* columnHeaderContent = dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(*columnHeader));
+		CUI_EXPECT_TRUE(columnHeaderContent != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"templated:Name"),
+			columnHeaderContent ? columnHeaderContent->Text : std::wstring{});
 		CUI_EXPECT_TRUE(rowHeader->GetContentTemplate().Get()
 			== rowHeaderTemplate.get());
 
@@ -60762,6 +61029,671 @@ class FreshWindow : public FreshWindowGenerated {};
 			cui::framework::StyleAccess::ResourceKey(*rowHeader));
 		CUI_EXPECT_EQ(std::wstring(L"ItemContainerRowStyle"),
 			cui::framework::StyleAccess::ResourceKey(*row));
+	});
+
+	runner.Add("Untyped DataTemplate contract requires an explicit key and verifiable sources", []
+	{
+		auto parse = [](const std::string& xaml,
+			DesignerModel::DesignDocument& document, std::wstring& error)
+		{
+			error.clear();
+			return DesignerModel::XamlDocumentParser::FromXaml(
+				xaml, document, &error);
+		};
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_FALSE(parse(R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BadImplicit">
+  <Window.Resources>
+    <DataTemplate><TextBlock Text="value" /></DataTemplate>
+  </Window.Resources>
+  <Grid />
+</Window>)XAML", document, error));
+		CUI_EXPECT_TRUE(error.find(L"隐式 DataTemplate") != std::wstring::npos);
+
+		document = {};
+		CUI_EXPECT_FALSE(parse(R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BadPath">
+  <Window.Resources>
+    <DataTemplate x:Key="Untyped">
+      <TextBlock Text="{Binding Name}" />
+    </DataTemplate>
+  </Window.Resources>
+  <Grid />
+</Window>)XAML", document, error));
+		CUI_EXPECT_TRUE(error.find(L"未声明 DataType") != std::wstring::npos);
+
+		document = {};
+		if (!parse(R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ExplicitSource">
+  <Window.Resources>
+    <DataTemplate x:Key="Untyped">
+      <StackPanel>
+        <TextBlock x:Name="source" Text="caption" />
+        <TextBlock Text="{Binding Text, ElementName=source}" />
+      </StackPanel>
+    </DataTemplate>
+  </Window.Resources>
+  <Grid />
+</Window>)XAML", document, error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(CodeGenerator::ValidateDocument(document, &error));
+
+		document = {};
+		const std::string typedHosts = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="TypedHosts">
+  <Window.Resources>
+    <DataType x:Key="Person"><DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties></DataType>
+    <DataTemplate x:Key="UntypedRoot">
+      <TextBlock Text="{Binding}" />
+    </DataTemplate>
+  </Window.Resources>
+  <Window.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+      ObjectType="BindingSource" DataType="Person" />
+  </Window.DataContextSchema>
+  <StackPanel>
+    <ContentControl x:Name="typedContent"
+      Content="{Binding CurrentPerson}"
+      ContentTemplate="{StaticResource UntypedRoot}" />
+    <GroupBox x:Name="typedHeader"
+      Header="{Binding CurrentPerson}"
+      HeaderTemplate="{StaticResource UntypedRoot}" />
+  </StackPanel>
+</Window>)XAML";
+		if (!parse(typedHosts, document, error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CuiRuntime::XamlObjectTree typedTree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, typedTree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* typedContent = FindMaterializedControlByName<ContentControl>(
+			typedTree, L"typedContent");
+		auto* typedHeader = FindMaterializedControlByName<GroupBox>(
+			typedTree, L"typedHeader");
+		CUI_EXPECT_TRUE(typedContent != nullptr);
+		CUI_EXPECT_TRUE(typedHeader != nullptr);
+		CUI_EXPECT_TRUE(typedContent && typedContent->GetContentTemplate());
+		CUI_EXPECT_TRUE(typedHeader && typedHeader->GetHeaderTemplate());
+		CUI_EXPECT_FALSE(typedContent && typedContent->GetContentTemplate()
+			? static_cast<bool>(typedContent->GetContentTemplate().Get()
+				->GetDataTypeToken()) : true);
+		CUI_EXPECT_FALSE(typedHeader && typedHeader->GetHeaderTemplate()
+			? static_cast<bool>(typedHeader->GetHeaderTemplate().Get()
+				->GetDataTypeToken()) : true);
+	});
+
+	runner.Add("DataGrid keyed untyped HeaderTemplate renders WPF root Binding", []
+	{
+		const std::string xaml = R"XAML(<Window xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="ScalarHeaderWindow">
+  <Window.Resources>
+    <DataType x:Key="HeaderRow"><DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties></DataType>
+    <DataList x:Key="HeaderRows" ItemType="HeaderRow">
+      <DataRecord Name="Alice" />
+    </DataList>
+    <DataTemplate x:Key="ScalarHeader">
+      <TextBlock Text="{Binding, StringFormat='模板：{0}'}" />
+    </DataTemplate>
+  </Window.Resources>
+  <DataGrid x:Name="grid" AutoGenerateColumns="false"
+            Width="420" Height="180"
+            ItemsSource="{StaticResource HeaderRows}">
+    <DataGrid.Columns>
+      <DataGridTextColumn Header="客户"
+        HeaderTemplate="{StaticResource ScalarHeader}"
+        Binding="{Binding Name}" />
+    </DataGrid.Columns>
+  </DataGrid>
+</Window>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto* scalarTemplate =
+			document.FindDataTemplate(L"ScalarHeader");
+		CUI_EXPECT_TRUE(scalarTemplate != nullptr);
+		CUI_EXPECT_TRUE(scalarTemplate
+			&& scalarTemplate->DataType.empty());
+		const auto* scalarRoot = scalarTemplate
+			&& !scalarTemplate->Template.empty()
+			? &scalarTemplate->Template.front() : nullptr;
+		const DesignerDataBinding* rootTextBinding = nullptr;
+		if (scalarRoot)
+		{
+			const auto found = scalarRoot->Bindings.find(L"Text");
+			if (found != scalarRoot->Bindings.end())
+				rootTextBinding = &found->second;
+		}
+		CUI_EXPECT_TRUE(rootTextBinding != nullptr);
+		CUI_EXPECT_TRUE(rootTextBinding
+			&& rootTextBinding->SourceProperty.empty());
+		CUI_EXPECT_EQ(std::wstring(L"模板：{0}"),
+			rootTextBinding
+				? rootTextBinding->StringFormat.value_or(L"")
+				: std::wstring{});
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<DataTemplate x:Key=\"ScalarHeader\">") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"x:Key=\"ScalarHeader\" DataType=") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("{Binding") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+
+		CodeGenerator generator(L"ScalarHeaderWindow", document,
+			CodeGeneratorOutputKind::StaticWindow);
+		const auto generated =
+			generator.GenerateCppForHeader("ScalarHeaderWindow");
+		CUI_EXPECT_TRUE(generated.find("BindingRootValuePath()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generated.find(
+			"std::make_shared<CuiGeneratedItemTemplate>(\n\t\tDataTypeToken{}, false")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generated.find(
+			"SetHeader(BindingValue(L\"客户\"))") != std::string::npos);
+
+		CuiRuntime::XamlObjectTree tree;
+		if (!CuiRuntime::XamlObjectMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* materializedGrid =
+			FindMaterializedControlByName<DataGrid>(tree, L"grid");
+		auto* materializedColumn = materializedGrid
+			? dynamic_cast<DataGridTextColumn*>(
+				materializedGrid->GetColumn(0)) : nullptr;
+		CUI_EXPECT_TRUE(materializedGrid != nullptr);
+		CUI_EXPECT_TRUE(materializedColumn != nullptr);
+		CUI_EXPECT_TRUE(materializedColumn
+			&& materializedColumn->GetHeaderTemplate());
+		if (!materializedColumn || !materializedColumn->GetHeaderTemplate())
+			return;
+		CUI_EXPECT_FALSE(static_cast<bool>(materializedColumn
+			->GetHeaderTemplate().Get()->GetDataTypeToken()));
+
+		// Reuse the materialized template in the lightweight deterministic grid
+		// host used by the DataGrid layout tests. The materialized Window already
+		// owns declarative template-part registrations of its own.
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		DisableItemsVirtualizationForBehaviorTest(grid);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"客户"));
+		column->SetHeaderTemplate(
+			materializedColumn->GetHeaderTemplate());
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		auto rows = std::make_shared<ObservableBindingList>(L"HeaderRow");
+		auto row = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(row->DefineProperty(L"Name", L"Alice"));
+		rows->Items.push_back(BindingSourceReference(row));
+		grid.SetItemsSource(BindingListReference(rows));
+		auto* scroll = InstallDataGridHeaderTemplate(grid);
+		grid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 180.0f });
+		grid.UpdateLayout();
+		CUI_EXPECT_TRUE(scroll != nullptr);
+		auto* headers = grid.GetColumnHeadersPresenter();
+		auto* header = headers ? headers->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (!header) return;
+		std::wstring headerValue;
+		CUI_EXPECT_TRUE(header->GetContent().TryGet(headerValue));
+		CUI_EXPECT_EQ(std::wstring(L"客户"), headerValue);
+		CUI_EXPECT_TRUE(header->LastContentError().empty());
+		CUI_EXPECT_TRUE(grid.LastTemplateError().empty());
+		auto* visual = dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(*header));
+		CUI_EXPECT_TRUE(visual != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"模板：客户"),
+			visual ? visual->Text : std::wstring{});
+		CUI_EXPECT_TRUE(header->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(header->GetActualSizeDip().height > 0.0f);
+		CUI_EXPECT_TRUE(visual && visual->GetActualSizeDip().width > 0.0f);
+		CUI_EXPECT_TRUE(visual && visual->GetActualSizeDip().height > 0.0f);
+
+		// Object headers keep their source identity for object targets while Text
+		// and StringFormat use the source's WPF ToString-shaped display contract.
+		DataGrid objectGrid;
+		ConfigureTestControl(objectGrid, 0, 0, 420, 180);
+		objectGrid.SetAutoGenerateColumns(false);
+		auto displaySource = std::make_shared<DisplayTextObservableObject>(
+			L"Alice");
+		// The root endpoint is framework-reserved: even a dynamic record member
+		// with the same hashed name must not replace `{Binding}` object identity.
+		CUI_EXPECT_TRUE(displaySource->DefineProperty(
+			L"$CUI.Binding.RootValue", L"shadow"));
+		CUI_EXPECT_TRUE(displaySource->SetRootShadowValidation());
+		BindingSourceProxy rootProxy{ BindingSourceReference(displaySource) };
+		CUI_EXPECT_TRUE(rootProxy.GetValidationIssues(
+			BindingRootValuePropertyToken()).empty());
+		size_t shadowPropertyNotifications = 0;
+		size_t shadowValidationNotifications = 0;
+		auto shadowPropertyChanged = rootProxy.PropertyChanged().Subscribe(
+			[&](const PropertyChangedEventArgs&)
+			{ ++shadowPropertyNotifications; });
+		auto* rootValidationChanged = rootProxy.ValidationChanged();
+		auto shadowValidationChanged = rootValidationChanged
+			? rootValidationChanged->Subscribe(
+				[&](const BindingValidationChangedEventArgs&)
+				{ ++shadowValidationNotifications; })
+			: EventConnection{};
+		CUI_EXPECT_TRUE(displaySource->SetValue(
+			L"$CUI.Binding.RootValue", std::wstring(L"changed shadow")));
+		CUI_EXPECT_TRUE(displaySource->ClearRootShadowValidation());
+		CUI_EXPECT_EQ(0ULL, shadowPropertyNotifications);
+		CUI_EXPECT_EQ(0ULL, shadowValidationNotifications);
+		auto objectColumn = std::make_unique<DataGridTextColumn>();
+		objectColumn->SetHeader(BindingValue(
+			BindingSourceReference(displaySource)));
+		objectColumn->SetHeaderTemplate(
+			materializedColumn->GetHeaderTemplate());
+		objectColumn->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(objectGrid.AddColumn(std::move(objectColumn)) != nullptr);
+		auto* objectScroll = InstallDataGridHeaderTemplate(objectGrid);
+		objectGrid.Arrange(cui::core::Rect{ 0.0f, 0.0f, 420.0f, 180.0f });
+		objectGrid.UpdateLayout();
+		CUI_EXPECT_TRUE(objectScroll != nullptr);
+		auto* objectHeaders = objectGrid.GetColumnHeadersPresenter();
+		auto* objectHeader = objectHeaders ? objectHeaders->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(objectHeader != nullptr);
+		if (!objectHeader) return;
+		BindingSourceReference retainedHeaderSource;
+		CUI_EXPECT_TRUE(objectHeader->GetContent().TryGet(
+			retainedHeaderSource));
+		CUI_EXPECT_TRUE(retainedHeaderSource.Shared() == displaySource);
+		auto* objectVisual = dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(*objectHeader));
+		CUI_EXPECT_TRUE(objectVisual != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"模板：Alice"),
+			objectVisual ? objectVisual->Text : std::wstring{});
+
+		// An explicit HeaderTemplate also applies when Header is null/empty.
+		DataGrid nullHeaderGrid;
+		ConfigureTestControl(nullHeaderGrid, 0, 0, 420, 180);
+		nullHeaderGrid.SetAutoGenerateColumns(false);
+		auto nullHeaderState = std::make_shared<ScalarTemplateProbeState>();
+		auto nullHeaderColumn = std::make_unique<DataGridTextColumn>();
+		nullHeaderColumn->SetHeaderTemplate(ItemTemplateReference(
+			std::make_shared<ScalarTemplateProbe>(nullHeaderState)));
+		nullHeaderColumn->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(nullHeaderGrid.AddColumn(
+			std::move(nullHeaderColumn)) != nullptr);
+		auto* nullHeaderScroll = InstallDataGridHeaderTemplate(nullHeaderGrid);
+		nullHeaderGrid.Arrange(cui::core::Rect{
+			0.0f, 0.0f, 420.0f, 180.0f });
+		nullHeaderGrid.UpdateLayout();
+		CUI_EXPECT_TRUE(nullHeaderScroll != nullptr);
+		auto* nullHeaders = nullHeaderGrid.GetColumnHeadersPresenter();
+		auto* nullHeader = nullHeaders ? nullHeaders->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(nullHeader != nullptr);
+		auto* nullHeaderVisual = nullHeader ? dynamic_cast<Label*>(
+			TemplateAccess::GetGeneratedContent(*nullHeader)) : nullptr;
+		CUI_EXPECT_TRUE(nullHeaderVisual != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"templated:"), nullHeaderVisual
+			? nullHeaderVisual->Text : std::wstring{});
+		CUI_EXPECT_TRUE(nullHeaderState->BuildCount > 0);
+	});
+
+	runner.Add("DataGrid column header initialization stages before commit", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		grid.SetAutoGenerateColumns(false);
+
+		auto first = std::make_unique<DataGridTextColumn>();
+		first->SetHeader(BindingValue(L"First"));
+		first->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(first)) != nullptr);
+		auto second = std::make_unique<DataGridTextColumn>();
+		second->SetHeader(BindingValue(L"Second"));
+		second->SetBindingPath(L"Name");
+		auto* secondColumn = grid.AddColumn(std::move(second));
+		CUI_EXPECT_TRUE(secondColumn != nullptr);
+
+		DataGridColumnHeadersPresenter presenter;
+		ConfigureTestControl(presenter, 0, 0, 420, 32);
+		std::wstring error;
+		CUI_EXPECT_TRUE(presenter.Initialize(grid, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		auto* firstHeader = presenter.GetHeader(0);
+		auto* secondHeader = presenter.GetHeader(1);
+		CUI_EXPECT_TRUE(firstHeader != nullptr);
+		CUI_EXPECT_TRUE(secondHeader != nullptr);
+		CUI_EXPECT_EQ(2, presenter.VisualChildCount());
+
+		auto rejecting = std::make_shared<RejectingScalarTemplate>();
+		secondColumn->SetHeaderTemplate(ItemTemplateReference(rejecting));
+		CUI_EXPECT_FALSE(presenter.Initialize(grid, &error));
+		CUI_EXPECT_TRUE(error.find(L"rejected scalar template")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(1ULL, rejecting->BuildCount);
+		CUI_EXPECT_TRUE(presenter.GetHeader(0) == firstHeader);
+		CUI_EXPECT_TRUE(presenter.GetHeader(1) == secondHeader);
+		CUI_EXPECT_EQ(2, presenter.VisualChildCount());
+	});
+
+	runner.Add("DataGrid header template recovery clears only its stale error", []
+	{
+		class ErrorPublishingDataGrid final : public DataGrid
+		{
+		public:
+			void PublishUnrelatedError(std::wstring value)
+			{
+				SetLastTemplateError(std::move(value));
+			}
+		};
+
+		ErrorPublishingDataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Customer"));
+		column->SetBindingPath(L"Name");
+		auto* liveColumn = grid.AddColumn(std::move(column));
+		CUI_EXPECT_TRUE(liveColumn != nullptr);
+		CUI_EXPECT_TRUE(InstallDataGridHeaderTemplate(grid) != nullptr);
+		auto* presenter = grid.GetColumnHeadersPresenter();
+		auto* header = presenter ? presenter->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(header != nullptr);
+		if (!liveColumn || !header) return;
+
+		auto rejecting = std::make_shared<RejectingScalarTemplate>();
+		liveColumn->SetHeaderTemplate(ItemTemplateReference(rejecting));
+		CUI_EXPECT_TRUE(grid.LastTemplateError().find(
+			L"rejected scalar template") != std::wstring::npos);
+		CUI_EXPECT_FALSE(header->LastContentError().empty());
+		const auto rejectedHeaderError = grid.LastTemplateError();
+		liveColumn->SetHeaderStyle(L"ErrorRetentionStyle");
+		CUI_EXPECT_EQ(rejectedHeaderError, grid.LastTemplateError());
+		CUI_EXPECT_FALSE(header->LastContentError().empty());
+
+		auto firstGoodState = std::make_shared<ScalarTemplateProbeState>();
+		liveColumn->SetHeaderTemplate(ItemTemplateReference(
+			std::make_shared<ScalarTemplateProbe>(firstGoodState)));
+		CUI_EXPECT_TRUE(header->LastContentError().empty());
+		CUI_EXPECT_TRUE(grid.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(firstGoodState->BuildCount > 0);
+
+		liveColumn->SetHeaderTemplate(ItemTemplateReference(rejecting));
+		CUI_EXPECT_FALSE(header->LastContentError().empty());
+		grid.PublishUnrelatedError(L"unrelated newer template error");
+		auto secondGoodState = std::make_shared<ScalarTemplateProbeState>();
+		liveColumn->SetHeaderTemplate(ItemTemplateReference(
+			std::make_shared<ScalarTemplateProbe>(secondGoodState)));
+		CUI_EXPECT_TRUE(header->LastContentError().empty());
+		CUI_EXPECT_EQ(std::wstring(L"unrelated newer template error"),
+			grid.LastTemplateError());
+		CUI_EXPECT_TRUE(secondGoodState->BuildCount > 0);
+	});
+
+	runner.Add("DataGrid initial rejected header template recovers in place", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		grid.SetAutoGenerateColumns(false);
+		auto rejecting = std::make_shared<RejectingScalarTemplate>();
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Customer"));
+		column->SetHeaderTemplate(ItemTemplateReference(rejecting));
+		column->SetBindingPath(L"Name");
+		auto* liveColumn = grid.AddColumn(std::move(column));
+		CUI_EXPECT_TRUE(liveColumn != nullptr);
+		CUI_EXPECT_TRUE(InstallDataGridHeaderTemplate(grid) != nullptr);
+		auto* failedPresenter = grid.GetColumnHeadersPresenter();
+		CUI_EXPECT_TRUE(failedPresenter != nullptr);
+		CUI_EXPECT_TRUE(failedPresenter
+			&& failedPresenter->GetDataGridOwner() == nullptr);
+		CUI_EXPECT_TRUE(failedPresenter
+			&& failedPresenter->GetHeader(0) == nullptr);
+		CUI_EXPECT_TRUE(grid.LastTemplateError().find(
+			L"rejected scalar template") != std::wstring::npos);
+
+		auto goodState = std::make_shared<ScalarTemplateProbeState>();
+		liveColumn->SetHeaderTemplate(ItemTemplateReference(
+			std::make_shared<ScalarTemplateProbe>(goodState)));
+		auto* recoveredPresenter = grid.GetColumnHeadersPresenter();
+		auto* recoveredHeader = recoveredPresenter
+			? recoveredPresenter->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(recoveredPresenter == failedPresenter);
+		CUI_EXPECT_TRUE(recoveredPresenter
+			&& recoveredPresenter->GetDataGridOwner() == &grid);
+		CUI_EXPECT_TRUE(recoveredHeader != nullptr);
+		CUI_EXPECT_TRUE(recoveredHeader
+			&& recoveredHeader->GetColumn() == liveColumn);
+		CUI_EXPECT_TRUE(recoveredHeader
+			&& recoveredHeader->LastContentError().empty());
+		CUI_EXPECT_TRUE(grid.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(goodState->BuildCount > 0);
+	});
+
+	runner.Add("DataGrid retires a transferred header presenter on template detach", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		grid.SetAutoGenerateColumns(false);
+		auto column = std::make_unique<DataGridTextColumn>();
+		column->SetHeader(BindingValue(L"Customer"));
+		column->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		CUI_EXPECT_TRUE(InstallDataGridHeaderTemplate(grid) != nullptr);
+		auto* oldPresenter = grid.GetColumnHeadersPresenter();
+		auto* oldHeader = oldPresenter ? oldPresenter->GetHeader(0) : nullptr;
+		CUI_EXPECT_TRUE(oldPresenter != nullptr);
+		CUI_EXPECT_TRUE(oldHeader != nullptr);
+		if (!oldPresenter || !oldHeader) return;
+
+		Grid survivor;
+		ConfigureTestControl(survivor, 0, 0, 420, 40);
+		bool transferred = false;
+		auto parentChanged =
+			cui::framework::TreeAccess::SubscribeTemplatedParentChanged(
+			*oldPresenter,
+			[&](Control*, Control* previous, Control* current)
+			{
+				if (transferred || previous != &grid || current) return;
+				auto* parent = oldPresenter->GetVisualParent();
+				auto owned = parent
+					? parent->DetachVisualChild(oldPresenter)
+					: std::unique_ptr<Control>{};
+				if (!owned) return;
+				transferred = survivor.AddOwned(std::move(owned)) == oldPresenter;
+			});
+		auto detachedRoot = TemplateAccess::DetachTemplateRoot(grid);
+		CUI_EXPECT_TRUE(detachedRoot != nullptr);
+		CUI_EXPECT_TRUE(transferred);
+		CUI_EXPECT_TRUE(grid.GetColumnHeadersPresenter() == nullptr);
+		CUI_EXPECT_TRUE(oldPresenter->GetDataGridOwner() == nullptr);
+		CUI_EXPECT_TRUE(oldPresenter->GetHeader(0) == nullptr);
+		CUI_EXPECT_TRUE(oldHeader->GetColumn() == nullptr);
+	});
+
+	runner.Add("DataGrid invalid schema cannot preserve rejected staged headers", []
+	{
+		DataGrid grid;
+		ConfigureTestControl(grid, 0, 0, 420, 180);
+		grid.SetAutoGenerateColumns(false);
+		for (const wchar_t* text : { L"First", L"Old second" })
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(text));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid.AddColumn(std::move(column)) != nullptr);
+		}
+		DataGridColumnHeadersPresenter presenter;
+		ConfigureTestControl(presenter, 0, 0, 420, 32);
+		std::wstring error;
+		CUI_EXPECT_TRUE(presenter.Initialize(grid, &error));
+		auto* oldFirstHeader = presenter.GetHeader(0);
+		auto* oldSecondHeader = presenter.GetHeader(1);
+		CUI_EXPECT_TRUE(oldFirstHeader != nullptr);
+		CUI_EXPECT_TRUE(oldSecondHeader != nullptr);
+		const ControlWeakReference oldFirstHeaderLifetime(oldFirstHeader);
+		const ControlWeakReference oldSecondHeaderLifetime(oldSecondHeader);
+
+		auto removed = grid.RemoveColumn(1);
+		CUI_EXPECT_TRUE(removed != nullptr);
+		auto rejecting = std::make_shared<RejectingScalarTemplate>();
+		auto replacement = std::make_unique<DataGridTextColumn>();
+		replacement->SetHeader(BindingValue(L"Rejected replacement"));
+		replacement->SetHeaderTemplate(ItemTemplateReference(rejecting));
+		replacement->SetBindingPath(L"Name");
+		CUI_EXPECT_TRUE(grid.AddColumn(std::move(replacement)) != nullptr);
+
+		CUI_EXPECT_FALSE(presenter.Initialize(grid, &error));
+		CUI_EXPECT_TRUE(error.find(L"rejected scalar template")
+			!= std::wstring::npos);
+		CUI_EXPECT_TRUE(presenter.GetDataGridOwner() == nullptr);
+		CUI_EXPECT_TRUE(presenter.GetHeader(0) == nullptr);
+		CUI_EXPECT_TRUE(presenter.GetHeader(1) == nullptr);
+		CUI_EXPECT_EQ(0, presenter.VisualChildCount());
+		// The presenter owns these headers. Clearing the invalid committed tree
+		// destroys them; weak lifetime checks avoid dereferencing retired raw
+		// pointers while still proving no stale container survived.
+		CUI_EXPECT_TRUE(oldFirstHeaderLifetime.Get() == nullptr);
+		CUI_EXPECT_TRUE(oldSecondHeaderLifetime.Get() == nullptr);
+		removed.reset();
+	});
+
+	runner.Add("DataGrid owner retires standalone initialized header presenters", []
+	{
+		DataGridColumnHeadersPresenter presenter;
+		ConfigureTestControl(presenter, 0, 0, 420, 32);
+		ControlWeakReference headerLifetime;
+		{
+			auto grid = std::make_unique<DataGrid>();
+			ConfigureTestControl(*grid, 0, 0, 420, 180);
+			grid->SetAutoGenerateColumns(false);
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(L"Customer"));
+			column->SetBindingPath(L"Name");
+			CUI_EXPECT_TRUE(grid->AddColumn(std::move(column)) != nullptr);
+			std::wstring error;
+			CUI_EXPECT_TRUE(presenter.Initialize(*grid, &error));
+			CUI_EXPECT_TRUE(error.empty());
+			auto* header = presenter.GetHeader(0);
+			CUI_EXPECT_TRUE(header != nullptr);
+			headerLifetime = header;
+			grid.reset();
+		}
+		CUI_EXPECT_TRUE(presenter.GetDataGridOwner() == nullptr);
+		CUI_EXPECT_TRUE(presenter.GetHeader(0) == nullptr);
+		auto* retiredHeader = dynamic_cast<DataGridColumnHeader*>(
+			headerLifetime.Get());
+		CUI_EXPECT_TRUE(retiredHeader != nullptr);
+		CUI_EXPECT_TRUE(retiredHeader
+			&& retiredHeader->GetColumn() == nullptr);
+		CUI_EXPECT_FALSE(presenter.UpdateColumnWidths());
+		CUI_EXPECT_FALSE(presenter.UpdateHorizontalScrollOffset(0.0));
+	});
+
+	runner.Add("DataGrid width sampling guards owner lifetime and column identity", []
+	{
+		class CallbackWidthList final : public IBindingList
+		{
+		public:
+			size_t Count() const noexcept override { return Items.size(); }
+			bool TryGetItem(size_t index,
+				BindingSourceReference& out) const override
+			{
+				++TryGetCount;
+				auto callback = std::exchange(Callback, {});
+				if (callback) callback();
+				if (index >= Items.size() || !Items[index]) return false;
+				out = Items[index];
+				return true;
+			}
+			EventConnection SubscribeChanged(ChangedHandler) override
+			{
+				return {};
+			}
+#if CUI_ENABLE_DYNAMIC_XAML
+			const std::wstring& ItemTypeName() const noexcept override
+			{
+				static const std::wstring value = L"WidthSampleRow";
+				return value;
+			}
+#else
+			DataTypeToken GetItemTypeToken() const noexcept override
+			{
+				return {};
+			}
+#endif
+			std::vector<BindingSourceReference> Items;
+			mutable std::function<void()> Callback;
+			mutable int TryGetCount = 0;
+		};
+		const auto makeSource = []
+		{
+			auto source = std::make_shared<CallbackWidthList>();
+			auto item = std::make_shared<ObservableObject>();
+			(void)item->DefineProperty(L"Name", L"Alice");
+			source->Items.emplace_back(item);
+			return source;
+		};
+		const auto addAutoColumn = [](DataGrid& grid)
+		{
+			auto column = std::make_unique<DataGridTextColumn>();
+			column->SetHeader(BindingValue(L"Customer"));
+			column->SetBindingPath(L"Name");
+			column->SetWidth(DataGridLength::Auto());
+			return grid.AddColumn(std::move(column));
+		};
+
+		{
+			auto grid = std::make_unique<DataGrid>();
+			ConfigureTestControl(*grid, 0, 0, 420, 180);
+			grid->SetAutoGenerateColumns(false);
+			CUI_EXPECT_TRUE(addAutoColumn(*grid) != nullptr);
+			auto source = makeSource();
+			grid->SetItemsSource(BindingListReference(source));
+			DataGridColumnHeadersPresenter presenter;
+			ConfigureTestControl(presenter, 0, 0, 420, 32);
+			const ControlWeakReference ownerLifetime(grid.get());
+			source->TryGetCount = 0;
+			source->Callback = [&grid] { grid.reset(); };
+			std::wstring error;
+			CUI_EXPECT_FALSE(presenter.Initialize(*grid, &error));
+			CUI_EXPECT_TRUE(ownerLifetime.Get() == nullptr);
+			CUI_EXPECT_EQ(1, source->TryGetCount);
+			CUI_EXPECT_TRUE(presenter.GetDataGridOwner() == nullptr);
+			CUI_EXPECT_EQ(0, presenter.VisualChildCount());
+		}
+
+		{
+			DataGrid grid;
+			ConfigureTestControl(grid, 0, 0, 420, 180);
+			grid.SetAutoGenerateColumns(false);
+			auto* originalColumn = addAutoColumn(grid);
+			CUI_EXPECT_TRUE(originalColumn != nullptr);
+			auto source = makeSource();
+			grid.SetItemsSource(BindingListReference(source));
+			std::unique_ptr<DataGridColumn> removed;
+			source->TryGetCount = 0;
+			source->Callback = [&]
+			{
+				removed = grid.RemoveColumn(0);
+				CUI_EXPECT_TRUE(addAutoColumn(grid) != nullptr);
+			};
+			DataGridColumnHeadersPresenter presenter;
+			ConfigureTestControl(presenter, 0, 0, 420, 32);
+			std::wstring error;
+			CUI_EXPECT_FALSE(presenter.Initialize(grid, &error));
+			CUI_EXPECT_EQ(1, source->TryGetCount);
+			CUI_EXPECT_TRUE(removed.get() == originalColumn);
+			CUI_EXPECT_TRUE(grid.GetColumn(0) != originalColumn);
+			CUI_EXPECT_TRUE(presenter.GetDataGridOwner() == nullptr);
+			CUI_EXPECT_EQ(0, presenter.VisualChildCount());
+		}
 	});
 
 	runner.Add("DataGrid row selectors follow WPF precedence and survive container moves", []

@@ -241,8 +241,7 @@ namespace
 	{
 		if (binding.IsMultiBinding())
 			throw std::invalid_argument("MultiBinding cannot use markup syntax");
-		if (binding.SourceProperty.empty()
-			|| (binding.RelativeSource != DesignerBindingRelativeSource::None
+		if ((binding.RelativeSource != DesignerBindingRelativeSource::None
 				&& !binding.ElementName.empty())
 			|| (binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor
 				&& (binding.AncestorType.empty() || binding.AncestorLevel < 1))
@@ -254,7 +253,8 @@ namespace
 		if (binding.StringFormat
 			&& !IsValidBindingStringFormat(*binding.StringFormat))
 			throw std::invalid_argument("XAML binding StringFormat is invalid");
-		std::wstring result = L"{Binding " + binding.SourceProperty;
+		std::wstring result = binding.SourceProperty.empty()
+			? L"{Binding" : L"{Binding " + binding.SourceProperty;
 		if (binding.Mode != BindingMode::Default)
 			result += L", Mode="
 				+ std::wstring(DesignerBindingUtils::BindingModeName(binding.Mode));
@@ -1706,7 +1706,8 @@ namespace
 					item.Hierarchical
 						? "HierarchicalDataTemplate" : "DataTemplate");
 				if (!item.IsImplicit()) Set(definition, "x:Key", item.Key);
-				Set(definition, "DataType", item.DataType);
+				if (!item.DataType.empty())
+					Set(definition, "DataType", item.DataType);
 				if (item.ItemsSourceBinding)
 					Set(definition, "ItemsSource",
 						BindingMarkup(*item.ItemsSourceBinding));
@@ -1714,6 +1715,8 @@ namespace
 				templateDocument.Nodes = item.Template;
 				if (const auto* dataType = _document.FindDataType(item.DataType))
 					templateDocument.DataContextSchema = dataType->Properties;
+				else if (item.DataType.empty())
+					templateDocument.DataContextSchema.clear();
 				templateDocument.Window.Events.clear();
 				templateDocument.RecalculateNextStableId();
 				Writer templateWriter(templateDocument, _xml);

@@ -1240,6 +1240,7 @@ void ContentControl::OnControlTemplatePresentationChanged()
 
 void ContentControl::SetContent(BindingValue value)
 {
+	if (BindingValuesEqual(_content, value)) return;
 	_lastContentError.clear();
 	(void)SetPropertyField(
 		ContentProperty(), _content, std::move(value));
@@ -1253,6 +1254,7 @@ std::wstring ContentControl::GetSemanticText() const
 
 void ContentControl::SetContentTemplate(ItemTemplateReference value)
 {
+	if (_contentTemplate == value) return;
 	_lastContentError.clear();
 	(void)SetPropertyField(
 		ContentTemplateProperty(), _contentTemplate, std::move(value));
@@ -1326,30 +1328,17 @@ bool ContentControl::ValidateContentCandidate(
 		}
 		return true;
 	}
-	ContentPresenter probe;
-	ApplyContentProjection(probe);
-	probe.SetContentTemplate(contentTemplate);
-	if (!probe.LastTemplateError().empty())
-	{
-		error = probe.LastTemplateError();
-		return false;
-	}
-	probe.SetContent(content);
-	if (probe.LastTemplateError().empty()) return true;
-	error = probe.LastTemplateError();
-	return false;
+	// A FrameworkTemplate factory is user code.  Dependency-property coercion
+	// can evaluate both the old and candidate effective values, so loading the
+	// template here would execute that factory more than once.  The presenter
+	// performs the single committed load and reports a construction failure
+	// while retaining its previous visual.
+	return true;
 }
 
 bool ContentControl::RebuildPresenter()
 {
 	_lastContentError.clear();
-	if (_contentTemplate && !AreDataTypesCompatible(
-		_contentTypeToken, _contentTemplate.Get()->GetDataTypeToken()))
-	{
-		_lastContentError =
-			L"ContentTemplate DataType 与 Content DataType 不一致。";
-		return false;
-	}
 	if (GetTemplateContentPresenter() || _controlTemplateRoot)
 	{
 		if (_presenter)
@@ -1386,12 +1375,12 @@ bool ContentControl::RebuildPresenter()
 	}
 
 	std::unique_ptr<ContentPresenter> replacement;
-	if (!_content.Empty())
+	if (!_content.Empty() || _contentTemplate)
 	{
 		replacement = std::make_unique<ContentPresenter>();
 		ApplyContentProjection(*replacement);
-		replacement->SetContentTemplate(_contentTemplate);
 		replacement->SetContent(_content);
+		replacement->SetContentTemplate(_contentTemplate);
 		if (!replacement->LastTemplateError().empty())
 		{
 			_lastContentError = replacement->LastTemplateError();

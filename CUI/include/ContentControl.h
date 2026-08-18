@@ -80,6 +80,9 @@ public:
 	virtual std::unique_ptr<Control> DetachVisualContent();
 	const std::wstring& LastContentError() const noexcept
 	{
+		if (auto* presenter = GetTemplateContentPresenter();
+			presenter && !presenter->LastTemplateError().empty())
+			return presenter->LastTemplateError();
 		return _lastContentError;
 	}
 

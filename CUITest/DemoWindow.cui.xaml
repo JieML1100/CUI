@@ -182,8 +182,8 @@
 	  </DataTemplate>
 	  <GroupStyle x:Key="OrderGroups"
 		HeaderTemplate="{StaticResource OrderGroupHeaderTemplate}"/>
-	  <DataTemplate x:Key="OrderCustomerHeaderTemplate" DataType="DemoOrder">
-		<TextBlock Text="客户 / Customer" FontSize="12"/>
+	  <DataTemplate x:Key="OrderCustomerHeaderTemplate">
+		<TextBlock Text="{Binding, StringFormat='{0} / Customer'}" FontSize="12"/>
 	  </DataTemplate>
 	  <ControlTemplate x:Key="OrderPlaceholderCellTemplate"
 		TargetType="DataGridCell">

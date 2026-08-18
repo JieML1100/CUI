@@ -454,6 +454,7 @@ void HeaderedItemsControl::PerformPendingLayout()
 
 void HeaderedItemsControl::SetHeader(BindingValue value)
 {
+	if (BindingValuesEqual(_header, value)) return;
 	_lastHeaderError.clear();
 	(void)SetPropertyField(
 		HeaderProperty(), _header, std::move(value));
@@ -461,6 +462,7 @@ void HeaderedItemsControl::SetHeader(BindingValue value)
 
 void HeaderedItemsControl::SetHeaderTemplate(ItemTemplateReference value)
 {
+	if (_headerTemplate == value) return;
 	_lastHeaderError.clear();
 	(void)SetPropertyField(
 		HeaderTemplateProperty(), _headerTemplate, std::move(value));
@@ -524,18 +526,9 @@ bool HeaderedItemsControl::ValidateHeaderCandidate(
 		}
 		return true;
 	}
-	ContentPresenter probe;
-	ApplyHeaderProjection(probe);
-	probe.SetContentTemplate(headerTemplate);
-	if (!probe.LastTemplateError().empty())
-	{
-		error = probe.LastTemplateError();
-		return false;
-	}
-	probe.SetContent(header);
-	if (probe.LastTemplateError().empty()) return true;
-	error = probe.LastTemplateError();
-	return false;
+	// Template construction is intentionally deferred to the committed header
+	// presenter so a coercion reevaluation cannot invoke a factory repeatedly.
+	return true;
 }
 
 void HeaderedItemsControl::ApplyHeaderProjection(
@@ -761,13 +754,6 @@ void HeaderedItemsControl::OnControlTemplatePresentationChanged()
 bool HeaderedItemsControl::RebuildHeaderPresenter()
 {
 	_lastHeaderError.clear();
-	if (_headerTemplate && !AreDataTypesCompatible(
-		_headerTypeToken, _headerTemplate.Get()->GetDataTypeToken()))
-	{
-		_lastHeaderError =
-			L"HeaderTemplate DataType 与 Header DataType 不一致。";
-		return false;
-	}
 	if (_templateHeaderPresenter || GetControlTemplateRoot())
 	{
 		if (_templateHeaderPresenter)
@@ -793,12 +779,12 @@ bool HeaderedItemsControl::RebuildHeaderPresenter()
 	}
 
 	std::unique_ptr<ContentPresenter> replacement;
-	if (!_header.Empty())
+	if (!_header.Empty() || _headerTemplate)
 	{
 		replacement = std::make_unique<ContentPresenter>();
 		ApplyHeaderProjection(*replacement);
-		replacement->SetContentTemplate(_headerTemplate);
 		replacement->SetContent(_header);
+		replacement->SetContentTemplate(_headerTemplate);
 		ConfigureHeaderVisual(*replacement);
 		if (!replacement->LastTemplateError().empty())
 		{

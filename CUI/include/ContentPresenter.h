@@ -102,6 +102,10 @@ private:
 		ContentTemplatePropertyMetadataRelation();
 	BindingValue _content;
 	ItemTemplateReference _contentTemplate;
+	// Keeps the exact data item supplied to the committed template alive. For
+	// scalar Content this owns the internal BindingValue-to-IBindingSource
+	// projection; for record Content it preserves the original source identity.
+	BindingSourceReference _generatedContentDataContext;
 	BindingPathObservation _contentObservation;
 #if CUI_ENABLE_DYNAMIC_XAML
 	std::wstring _displayMemberPath;

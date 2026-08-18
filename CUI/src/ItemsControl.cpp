@@ -5931,8 +5931,8 @@ bool ItemsControl::RebuildGeneratedItems()
 	{
 		const auto* style = _groupStyle.Get();
 		if (style->HeaderTemplate
-			&& style->HeaderTemplate.Get()->GetDataTypeToken()
-				!= CollectionViewGroupDataTypeToken)
+			&& !AreDataTypesCompatible(CollectionViewGroupDataTypeToken,
+				style->HeaderTemplate.Get()->GetDataTypeToken()))
 		{
 			_lastTemplateError = L"GroupStyle HeaderTemplate DataType 必须为 CollectionViewGroup。";
 			return false;

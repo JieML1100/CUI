@@ -2336,7 +2336,8 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& input)
 			auto item = AppendElement(xml, dataTemplates, "dataTemplate");
 			if (!definition.IsImplicit())
 				item->SetAttribute("key", ToUtf8(definition.Key));
-			item->SetAttribute("dataType", ToUtf8(definition.DataType));
+			if (!definition.DataType.empty())
+				item->SetAttribute("dataType", ToUtf8(definition.DataType));
 			if (definition.Hierarchical)
 				item->SetAttribute("hierarchical", "true");
 			if (!definition.SourceDictionary.empty())
@@ -3501,12 +3502,16 @@ bool DesignDocumentSerializer::FromXml(
 				const auto* dataType = document.FindDataType(definition.DataType);
 				const bool groupType = DesignDataResourceUtils::
 					IsCollectionViewGroupDataType(definition.DataType);
+				const bool untyped = !definition.IsImplicit()
+					&& definition.DataType.empty();
 				const auto bindingSchema = dataType ? dataType->Properties
-					: DesignDataResourceUtils::BuildCollectionViewGroupSchema();
+					: groupType
+						? DesignDataResourceUtils::BuildCollectionViewGroupSchema()
+						: DesignerDataContextSchema{};
 				const bool duplicate = definition.IsImplicit()
 					? document.FindImplicitDataTemplate(definition.DataType) != nullptr
 					: document.FindDataTemplate(definition.Key) != nullptr;
-				if ((!dataType && !groupType) || duplicate)
+				if ((!untyped && !dataType && !groupType) || duplicate)
 				{
 					if (outError) *outError = L"DataTemplate identity, DataType, or key is invalid.";
 					return false;
@@ -3532,6 +3537,10 @@ bool DesignDocumentSerializer::FromXml(
 						if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
 							binding, [&](const DesignerDataBinding& leaf)
 							{
+								if (!leaf.ElementName.empty()
+									|| leaf.RelativeSource
+										!= DesignerBindingRelativeSource::None)
+									return true;
 								const auto path = DesignerBindingUtils::Trim(
 									leaf.SourceProperty);
 								if (path.empty()
@@ -3542,7 +3551,9 @@ bool DesignDocumentSerializer::FromXml(
 									&& (path.starts_with(L"FirstItem.")
 										|| path.starts_with(L"Aggregates."))))
 									return true;
-								if (outError) *outError = L"DataTemplate binding path is not declared by its DataType: " + path;
+								if (outError) *outError = untyped
+									? L"Untyped DataTemplate binding must use the data-item root, ElementName, or RelativeSource: " + path
+									: L"DataTemplate binding path is not declared by its DataType: " + path;
 								return false;
 							})) return false;
 					}
