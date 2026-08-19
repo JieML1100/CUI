@@ -232,8 +232,10 @@ void DataResourcesEditorDialog::RefreshItemTypeChoices()
 	for (const auto& type : ResultDocument.DataTypes) choices.push_back(type.Name);
 	cui::designer::SetComboBoxItems(*_propertyItemType, choices);
 	cui::designer::SetComboBoxItems(*_listItemType, choices);
+	std::vector<std::wstring> templateChoices{ L"" };
+	templateChoices.insert(templateChoices.end(), choices.begin(), choices.end());
 	cui::designer::SetComboBoxItems(
-		*_templateDataType, std::move(choices));
+		*_templateDataType, std::move(templateChoices));
 }
 
 void DataResourcesEditorDialog::RefreshTypeList(const std::wstring& preferred)

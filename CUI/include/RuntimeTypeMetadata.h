@@ -31,6 +31,7 @@ struct DataTypeToken final
 [[nodiscard]] constexpr DataTypeToken MakeDataTypeToken(
 	std::wstring_view canonicalName) noexcept
 {
+	if (canonicalName.empty()) return {};
 	return { MakeBindingSourcePropertyToken(canonicalName).Value };
 }
 

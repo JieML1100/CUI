@@ -977,8 +977,10 @@ int wmain()
 	cui::framework::EventAccess::Raise(host.ContentRendered, &host);
 	if (windowContentRenderedCount != shownBeforeRejectedDirectLoad + 1)
 		return Fail(L"direct-Load rejection lost Window event connection");
-	(void)host.TrySetPropertyValue(L"FontSize", BindingValue(17.0));
-	if (host.FontFamily != L"Arial" || host.FontSize != 17.0)
+	if (!host.TrySetPropertyValue(
+		L"FontFamily", BindingValue(std::wstring(L"Arial")))
+		|| !host.TrySetPropertyValue(L"FontSize", BindingValue(17.0))
+		|| host.FontFamily != L"Arial" || host.FontSize != 17.0)
 		return Fail(L"Window typography dependency-property setup");
 
 	if (!runtime.HasContentHostAdapter()

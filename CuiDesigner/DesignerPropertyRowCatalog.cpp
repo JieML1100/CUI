@@ -535,6 +535,7 @@ std::vector<DesignerPropertyRow> GetControlRows(
 				}
 				for (const auto& item : *dataTemplates)
 					if (!item.IsImplicit() && (requiredType.empty()
+						|| item.DataType.empty()
 						|| NamesEqual(item.DataType, requiredType)))
 						row.Choices.push_back({ item.Key, item.Key });
 			}
@@ -542,31 +543,12 @@ std::vector<DesignerPropertyRow> GetControlRows(
 				|| NamesEqual(property.Name, L"HeaderTemplate"))
 				&& dataTemplates)
 			{
-				std::wstring requiredType;
-				bool supportsDataTemplate = true;
-				const auto binding = target.DataBindings.find(
-					NamesEqual(property.Name, L"HeaderTemplate")
-						? L"Header" : L"Content");
-				if (binding != target.DataBindings.end()
-					&& binding->second.ElementName.empty()
-					&& binding->second.RelativeSource
-						== DesignerBindingRelativeSource::None
-					&& !binding->second.IsMultiBinding()
-					&& context.DataContextSchema)
-					if (const auto* source = DesignerDataContextSchemaUtils::Find(
-						*context.DataContextSchema,
-						binding->second.SourceProperty))
-					{
-						supportsDataTemplate = source->ObjectKind
-							== DesignerDataObjectKind::BindingSource
-							&& !source->DataType.empty();
-						if (supportsDataTemplate) requiredType = source->DataType;
-					}
-				if (supportsDataTemplate)
-					for (const auto& item : *dataTemplates)
-						if (!item.IsImplicit() && (requiredType.empty()
-							|| NamesEqual(item.DataType, requiredType)))
-							row.Choices.push_back({ item.Key, item.Key });
+				// WPF treats an explicitly selected keyed template as matching by
+				// fiat. DataType participates in implicit lookup only; it must not
+				// hide a template for scalar or differently typed Content/Header.
+				for (const auto& item : *dataTemplates)
+					if (!item.IsImplicit())
+						row.Choices.push_back({ item.Key, item.Key });
 			}
 			else if (NamesEqual(property.Name, L"ItemContainerStyle")
 				&& context.StyleSheet)

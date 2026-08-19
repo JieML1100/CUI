@@ -100,6 +100,62 @@ namespace
 		const auto separator = path.rfind(L'.');
 		return separator == std::wstring::npos ? path : path.substr(separator + 1);
 	}
+
+	bool ValidateUntypedDataTemplateBindings(
+		const DesignDataTemplate& item,
+		const std::wstring& owner,
+		std::wstring* outError)
+	{
+		if (!item.DataType.empty()) return true;
+		if (item.IsImplicit())
+			return Fail(owner + L" 是隐式模板，必须声明 DataType。",
+				outError);
+		if (item.ItemsSourceBinding)
+			return Fail(owner
+				+ L" 未声明 DataType，无法验证 HierarchicalDataTemplate.ItemsSource。",
+				outError);
+
+		std::unordered_set<std::wstring> names;
+		for (const auto& node : item.Template)
+			if (!node.Name.empty()) names.insert(node.Name);
+		for (const auto& node : item.Template)
+			for (const auto& [target, binding] : node.Bindings)
+			{
+				std::wstring bindingError;
+				if (!DesignerBindingUtils::VisitLeafBindingDefinitions(
+					binding, [&](const DesignerDataBinding& child)
+					{
+						const auto path = DesignerBindingUtils::Trim(
+							child.SourceProperty);
+						if (!child.ElementName.empty())
+						{
+							if (names.contains(child.ElementName)) return true;
+							bindingError = owner + L" 的 " + target
+								+ L" Binding 引用了当前模板 namescope 中不存在的 ElementName："
+								+ child.ElementName;
+							return false;
+						}
+						if (child.RelativeSource
+							!= DesignerBindingRelativeSource::None)
+						{
+							if (child.RelativeSource
+								!= DesignerBindingRelativeSource::TemplatedParent)
+								return true;
+							bindingError = owner
+								+ L" 没有 ControlTemplate 的 TemplatedParent。";
+							return false;
+						}
+						if (path.empty()) return true;
+						bindingError = owner
+							+ L" 未声明 DataType，Binding 只能读取当前数据项根值"
+							L"（{Binding}），或使用可验证的 ElementName/RelativeSource 源："
+							+ path;
+						return false;
+					}))
+					return Fail(std::move(bindingError), outError);
+			}
+		return true;
+	}
 }
 
 bool IsCollectionViewGroupDataType(const std::wstring& name)
@@ -277,6 +333,10 @@ bool ValidateAndCanonicalize(
 			return true;
 		}
 		if (!item.ItemsSourceBinding) return true;
+		if (item.DataType.empty())
+			return Fail(owner
+				+ L" 未声明 DataType，无法验证 HierarchicalDataTemplate.ItemsSource。",
+				outError);
 		const auto& binding = *item.ItemsSourceBinding;
 		if (binding.IsMultiBinding() || !binding.ElementName.empty()
 			|| binding.RelativeSource != DesignerBindingRelativeSource::None)
@@ -322,6 +382,9 @@ bool ValidateAndCanonicalize(
 		item.DataType = DesignerBindingUtils::Trim(item.DataType);
 		if (item.IsImplicit())
 		{
+			if (item.DataType.empty())
+				return Fail(L"隐式 DataTemplate 必须声明 DataType。",
+					outError);
 			if (!implicitTemplateTypes.insert(item.DataType).second)
 				return Fail(L"隐式 DataTemplate DataType 重复："
 					+ item.DataType, outError);
@@ -336,13 +399,16 @@ bool ValidateAndCanonicalize(
 		}
 		const auto* dataType = document.FindDataType(item.DataType);
 		const bool groupType = IsCollectionViewGroupDataType(item.DataType);
-		if (!dataType && !groupType)
+		const bool untyped = item.DataType.empty();
+		if (!untyped && !dataType && !groupType)
 			return Fail(L"DataTemplate " + item.DisplayName()
 				+ L" 引用了未声明的 DataType：" + item.DataType, outError);
-		item.DataType = dataType ? dataType->Name
-			: std::wstring(CollectionViewGroupDataTypeName);
+		if (dataType) item.DataType = dataType->Name;
+		else if (groupType)
+			item.DataType = std::wstring(CollectionViewGroupDataTypeName);
 		const auto bindingSchema = dataType ? dataType->Properties
-			: BuildCollectionViewGroupSchema();
+			: groupType ? BuildCollectionViewGroupSchema()
+				: DesignerDataContextSchema{};
 		if (!validateHierarchicalTemplate(item, bindingSchema,
 			L"DataTemplate " + item.DisplayName())) return false;
 		if (item.Template.empty())
@@ -357,6 +423,8 @@ bool ValidateAndCanonicalize(
 			|| graph.Roots().size() != 1)
 			return Fail(L"DataTemplate " + item.DisplayName()
 				+ L" 必须包含一个有效视觉根：" + graphError, outError);
+		if (!ValidateUntypedDataTemplateBindings(
+			item, L"DataTemplate " + item.DisplayName(), outError)) return false;
 		auto projectTemplateSchema = [&](const std::wstring& prefix)
 		{
 			if (prefix.empty()) return bindingSchema;
@@ -565,7 +633,8 @@ bool ValidateAndCanonicalize(
 				+ L" 引用了未声明的 DataTemplate：" + item.HeaderTemplate,
 				outError);
 			item.HeaderTemplate = header->Key;
-			if (!IsCollectionViewGroupDataType(header->DataType))
+			if (!header->DataType.empty()
+				&& !IsCollectionViewGroupDataType(header->DataType))
 				return Fail(L"GroupStyle " + item.Key
 					+ L" 的 HeaderTemplate.DataType 必须为 CollectionViewGroup。",
 					outError);
@@ -986,10 +1055,6 @@ bool ValidateAndCanonicalize(
 					return Fail(owner
 						+ L" 不能同时声明 Content 值和 Binding。",
 						outError);
-				if (hasContentTemplate)
-					return Fail(owner
-						+ L" 的标量 Content 当前不能使用 DataTemplate。",
-						outError);
 			}
 			if (visualHeaderCount > 1 || (visualHeaderCount != 0
 				&& (hasHeaderBinding || hasHeaderTemplate || hasHeaderValue)))
@@ -1003,10 +1068,6 @@ bool ValidateAndCanonicalize(
 				if (hasHeaderBinding)
 					return Fail(owner
 						+ L" 不能同时声明 Header 值和 Binding。",
-						outError);
-				if (hasHeaderTemplate)
-					return Fail(owner
-						+ L" 的标量 Header 当前不能使用 DataTemplate。",
 						outError);
 			}
 			const DesignDataList* dataList = nullptr;
@@ -1149,6 +1210,7 @@ bool ValidateAndCanonicalize(
 			const std::wstring resourceItemType = dataList ? dataList->ItemType
 				: collectionView ? viewItemTypes[collectionView->Key] : L"";
 			if (!resourceItemType.empty() && dataTemplate
+				&& !dataTemplate->DataType.empty()
 				&& resourceItemType != dataTemplate->DataType)
 				return Fail(owner
 					+ L" 的列表资源 ItemType 与 DataTemplate.DataType 不一致。",
@@ -1162,48 +1224,14 @@ bool ValidateAndCanonicalize(
 				const auto* property = explicitSource ? nullptr
 					: DesignerDataContextSchemaUtils::Find(
 						schema, binding.SourceProperty);
-				if (property && (property->ObjectKind
+				if (!dataTemplate->DataType.empty() && property
+					&& (property->ObjectKind
 						!= DesignerDataObjectKind::BindingList
 					|| property->ItemType != dataTemplate->DataType))
 					return Fail(owner
 						+ L" 的 ItemsSource 与 DataTemplate 类型不一致。",
 						outError);
 			}
-			if (contentTemplate && node.Bindings.contains(L"Content"))
-			{
-				const auto& binding = node.Bindings.at(L"Content");
-				const bool explicitSource = !binding.ElementName.empty()
-					|| binding.RelativeSource != DesignerBindingRelativeSource::None
-					|| binding.IsMultiBinding();
-				const auto* property = explicitSource ? nullptr
-					: DesignerDataContextSchemaUtils::Find(
-						schema, binding.SourceProperty);
-				if (property && (property->ObjectKind
-						!= DesignerDataObjectKind::BindingSource
-					|| property->DataType.empty()
-					|| property->DataType != contentTemplate->DataType))
-					return Fail(owner
-						+ L" 的 Content 与 ContentTemplate 类型不一致。",
-						outError);
-			}
-			if (headerTemplate && node.Bindings.contains(L"Header"))
-			{
-				const auto& binding = node.Bindings.at(L"Header");
-				const bool explicitSource = !binding.ElementName.empty()
-					|| binding.RelativeSource != DesignerBindingRelativeSource::None
-					|| binding.IsMultiBinding();
-				const auto* property = explicitSource ? nullptr
-					: DesignerDataContextSchemaUtils::Find(
-						schema, binding.SourceProperty);
-				if (property && (property->ObjectKind
-						!= DesignerDataObjectKind::BindingSource
-					|| property->DataType.empty()
-					|| property->DataType != headerTemplate->DataType))
-					return Fail(owner
-						+ L" 的 Header 与 HeaderTemplate 类型不一致。",
-						outError);
-			}
-
 			const DesignDataTypeDefinition* itemType = nullptr;
 			if (dataList) itemType = document.FindDataType(dataList->ItemType);
 			if (collectionView) itemType = document.FindDataType(
@@ -1349,6 +1377,10 @@ bool ValidateAndCanonicalize(
 					localTemplate.DataType);
 				if (localTemplate.IsImplicit())
 				{
+					if (localTemplate.DataType.empty())
+						return Fail(owner
+							+ L" 的局部隐式 DataTemplate 必须声明 DataType。",
+							outError);
 					if (!localImplicitTemplateTypes.insert(
 						localTemplate.DataType).second)
 						return Fail(owner
@@ -1362,18 +1394,25 @@ bool ValidateAndCanonicalize(
 				const auto* localType = document.FindDataType(localTemplate.DataType);
 				const bool groupType = IsCollectionViewGroupDataType(
 					localTemplate.DataType);
-				if (!localType && !groupType)
+				const bool untyped = localTemplate.DataType.empty();
+				if (!untyped && !localType && !groupType)
 					return Fail(owner + L" 的局部 DataTemplate "
 						+ localTemplate.DisplayName()
 						+ L" 引用了未声明的 DataType："
 						+ localTemplate.DataType, outError);
-				localTemplate.DataType = localType ? localType->Name
-					: std::wstring(CollectionViewGroupDataTypeName);
+				if (localType) localTemplate.DataType = localType->Name;
+				else if (groupType)
+					localTemplate.DataType =
+						std::wstring(CollectionViewGroupDataTypeName);
 				const auto localSchema = localType ? localType->Properties
-					: BuildCollectionViewGroupSchema();
+					: groupType ? BuildCollectionViewGroupSchema()
+						: DesignerDataContextSchema{};
 				if (!validateHierarchicalTemplate(localTemplate, localSchema,
 					owner + L"/DataTemplate "
 						+ localTemplate.DisplayName())) return false;
+				if (!ValidateUntypedDataTemplateBindings(
+					localTemplate, owner + L"/DataTemplate "
+						+ localTemplate.DisplayName(), outError)) return false;
 				if (!validateNodeResources(localTemplate.Template,
 					localSchema, owner + L"/DataTemplate "
 						+ localTemplate.DisplayName(), std::nullopt)) return false;
@@ -1435,7 +1474,8 @@ bool ValidateAndCanonicalize(
 							+ L" 引用了未声明的 DataTemplate："
 							+ localGroup.HeaderTemplate, outError);
 					localGroup.HeaderTemplate = header->Key;
-					if (!IsCollectionViewGroupDataType(header->DataType))
+					if (!header->DataType.empty()
+						&& !IsCollectionViewGroupDataType(header->DataType))
 						return Fail(owner + L" 的局部 GroupStyle "
 							+ localGroup.Key
 							+ L" 的 HeaderTemplate.DataType 必须为 CollectionViewGroup。",
@@ -1519,6 +1559,10 @@ bool ValidateAndCanonicalize(
 		const auto* type = document.FindDataType(item.DataType);
 		if (type && !validateNodeResources(item.Template, type->Properties,
 			L"DataTemplate " + item.DisplayName(), std::nullopt))
+			return false;
+		if (!type && item.DataType.empty()
+			&& !validateNodeResources(item.Template, {},
+				L"DataTemplate " + item.DisplayName(), std::nullopt))
 			return false;
 	}
 	for (auto& item : document.ControlTemplates)

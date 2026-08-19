@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -61,7 +62,32 @@ namespace cui::test
         const char* file,
         int line)
     {
-        if (!(expected == actual))
+        bool equal = false;
+        if constexpr (std::is_integral_v<TExpected>
+            && std::is_integral_v<TActual>
+            && !std::is_same_v<std::remove_cv_t<TExpected>, bool>
+            && !std::is_same_v<std::remove_cv_t<TActual>, bool>
+            && (std::is_signed_v<TExpected> != std::is_signed_v<TActual>))
+        {
+            if constexpr (std::is_signed_v<TExpected>)
+            {
+                equal = expected >= 0
+                    && static_cast<std::make_unsigned_t<TExpected>>(expected)
+                        == actual;
+            }
+            else
+            {
+                equal = actual >= 0
+                    && expected
+                        == static_cast<std::make_unsigned_t<TActual>>(actual);
+            }
+        }
+        else
+        {
+            equal = expected == actual;
+        }
+
+        if (!equal)
         {
             std::string expression = expectedExpression;
             expression += " == ";

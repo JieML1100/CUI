@@ -84,6 +84,17 @@ MakeBindingSourcePropertyToken(std::wstring_view name) noexcept
 }
 
 /**
+ * Reserved non-zero endpoint used to represent WPF's empty Binding path.
+ * Unlike token zero (all properties/object validation), this identifies one
+ * readable value: the current DataContext object or projected scalar itself.
+ */
+[[nodiscard]] constexpr BindingSourcePropertyToken
+BindingRootValuePropertyToken() noexcept
+{
+	return MakeBindingSourcePropertyToken(L"$CUI.Binding.RootValue");
+}
+
+/**
  * One dependency-property member literal expressed in the active runtime
  * flavor. Design retains the authored name for schema discovery; Production
  * lowers the same source literal directly to its stable token.
@@ -596,6 +607,23 @@ struct CompiledBindingPathView final
 	[[nodiscard]] constexpr bool Empty() const noexcept { return Steps.empty(); }
 };
 
+/** Process-lifetime single-step path for `{Binding}` / an omitted Path. */
+[[nodiscard]] inline CompiledBindingPathView BindingRootValuePath() noexcept
+{
+	static constexpr CompiledBindingPathStep path[]{
+		{
+			CompiledBindingPathStepKind::Property,
+			CompiledBindingPathCapabilities::Read
+				| CompiledBindingPathCapabilities::Observe,
+			BindingValueKind::Empty,
+			BindingRootValuePropertyToken(),
+			0u,
+			nullptr
+		}
+	};
+	return CompiledBindingPathView{ path };
+}
+
 #if CUI_ENABLE_DYNAMIC_XAML
 /**
  * Parses paths such as Profile.Name, People[0].Name,
@@ -1021,6 +1049,33 @@ public:
 
 private:
 	mutable std::shared_ptr<const void> _bindingLifetime;
+};
+
+/**
+ * Optional WPF Object.ToString-shaped display contract for a binding record.
+ * Root `{Binding}` preserves the BindingSourceReference identity for object
+ * targets; string targets and StringFormat consult this interface explicitly.
+ */
+class IBindingSourceDisplayText
+{
+public:
+	virtual ~IBindingSourceDisplayText() = default;
+	virtual bool TryGetBindingDisplayText(std::wstring& out) const = 0;
+};
+
+/**
+ * Framework-owned projection hook for a DataContext whose root value is not
+ * the IBindingSource object itself (for example scalar Content adapted for a
+ * DataTemplate). Ordinary records must not implement this interface: their
+ * root value remains their BindingSourceReference identity.
+ */
+class IBindingRootValueProvider
+{
+public:
+	virtual ~IBindingRootValueProvider() = default;
+	virtual bool TryGetBindingRootValue(BindingValue& out) const = 0;
+	virtual bool TryGetBindingRootValueMetadata(
+		BindingSourcePropertyMetadata& out) const = 0;
 };
 
 /**

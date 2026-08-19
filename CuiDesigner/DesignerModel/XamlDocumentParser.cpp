@@ -1154,7 +1154,9 @@ namespace
 			error = L"Binding 不能同时声明 ElementName 与 RelativeSource。";
 			return false;
 		}
-		if (!DesignerBindingUtils::IsValidSourcePath(binding.SourceProperty))
+		if (!binding.SourceProperty.empty()
+			&& !DesignerBindingUtils::IsValidSourcePath(
+				binding.SourceProperty))
 		{
 			error = L"Binding 源路径无效。";
 			return false;
@@ -3123,7 +3125,13 @@ namespace
 				&& !ValidateIdentifier(definition.Key, L"DataTemplate x:Key", error))
 				return false;
 			definition.DataType = Trim(Attribute(element, L"DataType").value_or(L""));
-			if (!ValidateIdentifier(definition.DataType, L"DataTemplate DataType", error))
+			if (definition.DataType.empty())
+			{
+				if (definition.IsImplicit())
+					return Fail(L"隐式 DataTemplate 必须声明 DataType。", error);
+			}
+			else if (!ValidateIdentifier(
+				definition.DataType, L"DataTemplate DataType", error))
 				return false;
 			if (const auto source = Attribute(element, L"ItemsSource"))
 			{
@@ -6990,10 +6998,6 @@ namespace
 							L"内容控件的直接视觉内容不能与 Content 或 "
 							L"ContentTemplate 同时使用。",
 							error);
-					if (hasContentValue && hasTemplate)
-						return Fail(
-							L"标量 Content 当前不能使用 DataTemplate。",
-							error);
 				}
 			}
 			if (IsHeaderedContentControlType(type))
@@ -7015,8 +7019,6 @@ namespace
 					&& (hasHeaderBinding || hasHeaderValue || hasHeaderTemplate)))
 					return Fail(L"HeaderedContentControl 最多接受一个视觉 Header，"
 						L"且不能与 Header 或 HeaderTemplate 同时使用。", error);
-				if (hasHeaderValue && hasHeaderTemplate)
-					return Fail(L"标量 Header 当前不能使用 DataTemplate。", error);
 			}
 			if (IsUIClassAssignableFrom(UIClass::UI_ItemsControl, type))
 			{

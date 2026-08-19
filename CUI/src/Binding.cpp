@@ -318,8 +318,7 @@ namespace
 	{
 		if (spec.empty())
 		{
-			out = value.ToString();
-			return true;
+			return value.TryGetString(out);
 		}
 		if (!IsBindingFormatSpecSyntaxValid(spec)
 			|| !IsNumericBindingKind(value.Kind())) return false;
@@ -1341,7 +1340,13 @@ bool BindingValue::TryGetString(std::wstring& out) const
 		out = std::get<std::wstring>(_value);
 		return true;
 	case BindingValueKind::Object:
-		return false;
+	{
+		BindingSourceReference source;
+		if (!TryGet(source) || !source) return false;
+		const auto* display = dynamic_cast<const IBindingSourceDisplayText*>(
+			source.Get());
+		return display && display->TryGetBindingDisplayText(out);
+	}
 	}
 	return false;
 }
@@ -2408,7 +2413,19 @@ bool BindingSourceProxy::TryGetValue(
 	BindingSourcePropertyToken property,
 	BindingValue& out) const
 {
-	return _source && _source.Get()->TryGetValue(property, out);
+	if (!_source) return false;
+	// RootValue is a framework-reserved endpoint.  Resolve it before asking the
+	// record so an authored/hash-colliding property can never replace the WPF
+	// `{Binding}` object identity.
+	if (property == BindingRootValuePropertyToken())
+	{
+		if (const auto* provider = dynamic_cast<
+			const IBindingRootValueProvider*>(_source.Get()); provider
+			&& provider->TryGetBindingRootValue(out)) return true;
+		out = BindingValue(_source);
+		return true;
+	}
+	return _source.Get()->TryGetValue(property, out);
 }
 
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -2424,6 +2441,7 @@ bool BindingSourceProxy::TrySetValue(
 	BindingSourcePropertyToken property,
 	const BindingValue& value)
 {
+	if (property == BindingRootValuePropertyToken()) return false;
 	return _source && _source.Get()->TrySetValue(property, value);
 }
 
@@ -2441,8 +2459,20 @@ bool BindingSourceProxy::TryGetPropertyMetadata(
 	BindingSourcePropertyToken property,
 	BindingSourcePropertyMetadata& out) const
 {
-	return _source
-		&& _source.Get()->TryGetPropertyMetadata(property, out);
+	if (!_source) return false;
+	if (property != BindingRootValuePropertyToken())
+		return _source.Get()->TryGetPropertyMetadata(property, out);
+	if (const auto* provider = dynamic_cast<
+		const IBindingRootValueProvider*>(_source.Get()); provider
+		&& provider->TryGetBindingRootValueMetadata(out)) return true;
+#if CUI_ENABLE_DYNAMIC_XAML
+	out = { std::wstring{}, BindingValueKind::Object,
+		std::type_index(typeid(BindingSourceReference)), true, false, true };
+#else
+	out = { BindingValueKind::Object,
+		std::type_index(typeid(BindingSourceReference)), true, false, true };
+#endif
+	return true;
 }
 
 #if CUI_ENABLE_DYNAMIC_XAML
@@ -2463,6 +2493,10 @@ std::vector<BindingValidationIssue> BindingSourceProxy::GetValidationIssues(
 std::vector<BindingValidationIssue> BindingSourceProxy::GetValidationIssues(
 	BindingSourcePropertyToken property) const
 {
+	// The reserved root endpoint describes the projected object/value itself;
+	// an authored property whose token collides with it must not leak its
+	// validation state into `{Binding}`.
+	if (property == BindingRootValuePropertyToken()) return {};
 	return _source ? _source.Get()->GetValidationIssues(property)
 		: std::vector<BindingValidationIssue>{};
 }
@@ -2473,12 +2507,14 @@ void BindingSourceProxy::Attach()
 	_propertyConnection = _source.Get()->PropertyChanged().Subscribe(
 		[this](const PropertyChangedEventArgs& args)
 		{
+			if (args.PropertyToken == BindingRootValuePropertyToken()) return;
 			_propertyChanged.Notify(args);
 		});
 	if (auto* validation = _source.Get()->ValidationChanged())
 		_validationConnection = validation->Subscribe(
 			[this](const BindingValidationChangedEventArgs& args)
 			{
+				if (args.PropertyToken == BindingRootValuePropertyToken()) return;
 				_validationChanged.Notify(args);
 			});
 }
@@ -3019,7 +3055,8 @@ Binding::Binding(DependencyObject* target,
 	DependencyPropertyValueSource targetValueSource,
 	DependencyPropertyExpressionKind expressionKind)
 	: _target(target),
-	  _sourceStorage(source, {}),
+	  _sourceStorage(source, sourceProperty.Empty()
+		  ? BindingRootValuePath() : CompiledBindingPathView{}),
 	  _targetProperty(std::move(targetProperty)),
 	  _sourceProperty(std::move(sourceProperty)),
 	  _mode(mode),
@@ -3123,7 +3160,8 @@ Binding::Binding(DependencyObject* target,
 	DependencyPropertyValueSource targetValueSource,
 	DependencyPropertyExpressionKind expressionKind)
 	: _target(target),
-	  _sourceStorage(std::move(source), {}),
+	  _sourceStorage(std::move(source), sourceProperty.Empty()
+		  ? BindingRootValuePath() : CompiledBindingPathView{}),
 	  _targetProperty(std::move(targetProperty)),
 	  _sourceProperty(std::move(sourceProperty)),
 	  _mode(mode),
@@ -4343,7 +4381,8 @@ MultiBindingSource::MultiBindingSource(
 	std::optional<BindingValue> targetNullValue,
 	std::optional<BindingValue> converterParameter,
 	std::optional<std::wstring> stringFormat)
-	: _sourceStorage(source, {}),
+	: _sourceStorage(source, sourceProperty.empty()
+		? BindingRootValuePath() : CompiledBindingPathView{}),
 	  SourceProperty(std::move(sourceProperty)),
 	  Converter(std::move(converter)),
 	  FallbackValue(std::move(fallbackValue)),
@@ -4361,7 +4400,8 @@ MultiBindingSource::MultiBindingSource(
 	std::optional<BindingValue> targetNullValue,
 	std::optional<BindingValue> converterParameter,
 	std::optional<std::wstring> stringFormat)
-	: _sourceStorage(std::move(source), {}),
+	: _sourceStorage(std::move(source), sourceProperty.empty()
+		? BindingRootValuePath() : CompiledBindingPathView{}),
 	  SourceProperty(std::move(sourceProperty)),
 	  Converter(std::move(converter)),
 	  FallbackValue(std::move(fallbackValue)),
