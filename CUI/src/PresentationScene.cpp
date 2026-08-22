@@ -257,6 +257,11 @@ namespace
 			return addBounds(clip);
 		};
 		if (!includeControl && control == exclusiveBoundary) return true;
+	// A Popup or ContextMenu owns a window-viewport presentation space. Its
+	// logical visual parent remains connected for templating and input routing,
+	// but cannot contribute clips to this independent composition surface.
+	if (!includeControl && cui::framework::PresentationAccess::
+		BreaksVisualPresentationInheritance(*control)) return true;
 		for (auto* ancestor = includeControl
 			? control : control->GetVisualParent(); ancestor;)
 		{
@@ -530,11 +535,18 @@ void PresentationScene::Rebuild(std::span<Control* const> roots)
 			_transientRoots.begin(), _transientRoots.end(), control)
 			!= _transientRoots.end();
 	};
-	std::function<void(Control*, bool)> visit =
-		[&](Control* control, bool overlay)
+	std::function<void(Control*, bool, Control*)> visit =
+		[&](Control* control, bool overlay, Control* transientRoot)
 	{
 		if (!control || !control->IsVisible) return;
-		if (!overlay && isTransientRoot(control)) return;
+		// Popup can be authored inside another transient root (for example a
+		// ContextMenu MenuItem submenu).  It is nevertheless an independent WPF
+		// presentation boundary.  Visiting it through the parent root as well as
+		// through _transientRoots nests its surface under the parent's small clip:
+		// hit testing still sees the absolute Popup bounds, but its pixels disappear.
+		// Prune every foreign transient root from the current traversal and visit it
+		// exactly once from its own top-level transient slot below.
+		if (isTransientRoot(control) && control != transientRoot) return;
 		if (_nodeIndex.contains(control)) return;
 		const bool native = control->GetPresentationSurfaceKind()
 			== PresentationSurfaceKind::NativeComposition;
@@ -549,11 +561,11 @@ void PresentationScene::Rebuild(std::span<Control* const> roots)
 		_nodes.push_back(std::move(node));
 		_nodeIndex.emplace(control, nodeIndex);
 		for (auto* child : SortedVisibleChildren(control))
-			visit(child, overlay);
+			visit(child, overlay, transientRoot);
 		_nodes[nodeIndex].SubtreeEnd = _nodes.size();
 	};
-	for (auto* root : _rasterRoots) visit(root, false);
-	for (auto* root : _transientRoots) visit(root, true);
+	for (auto* root : _rasterRoots) visit(root, false, nullptr);
+	for (auto* root : _transientRoots) visit(root, true, root);
 
 	std::unordered_set<Control*> requestedTargets;
 	std::unordered_set<Control*> opacityTargets;
@@ -2911,6 +2923,7 @@ bool PresentationScene::TryGetNodeSnapshot(
 			segment.SurfaceProperties.PhysicalWidth;
 		out.CompositionSurfacePhysicalHeight =
 			segment.SurfaceProperties.PhysicalHeight;
+		out.CompositionHasAncestorClip = segment.HasAncestorClip;
 		out.CompositionOpacity = segment.StagedOpacity;
 	}
 	out.RenderedBounds = node.RenderedBounds;

@@ -19879,6 +19879,22 @@ int main()
 		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
 			TryGetPresentationNodeSnapshot(root, headerText, snapshot));
 		CUI_EXPECT_TRUE(snapshot.Overlay);
+		PresentationNodeSnapshot contextSnapshot;
+		PresentationNodeSnapshot popupSnapshot;
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			TryGetPresentationNodeSnapshot(root, context, contextSnapshot));
+		CUI_EXPECT_TRUE(cui::framework::WindowAccess::
+			TryGetPresentationNodeSnapshot(root, popup, popupSnapshot));
+		CUI_EXPECT_TRUE(contextSnapshot.Overlay
+			&& popupSnapshot.Overlay);
+		CUI_EXPECT_TRUE(contextSnapshot.CompositionIsolated
+			&& popupSnapshot.CompositionIsolated);
+		CUI_EXPECT_EQ(1ULL, contextSnapshot.CompositionIsolationDepth);
+		CUI_EXPECT_EQ(1ULL, popupSnapshot.CompositionIsolationDepth);
+		CUI_EXPECT_TRUE(contextSnapshot.SegmentIndex
+			!= popupSnapshot.SegmentIndex);
+		CUI_EXPECT_FALSE(contextSnapshot.CompositionHasAncestorClip);
+		CUI_EXPECT_FALSE(popupSnapshot.CompositionHasAncestorClip);
 	});
 
 	runner.Add("ComboBox metadata preserves selector and WPF popup bindings", []

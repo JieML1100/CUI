@@ -45,6 +45,7 @@ struct PresentationNodeSnapshot final
 	D2D1_POINT_2F CompositionSurfaceOriginDip{};
 	UINT CompositionSurfacePhysicalWidth = 0;
 	UINT CompositionSurfacePhysicalHeight = 0;
+	bool CompositionHasAncestorClip = false;
 	float CompositionOpacity = 1.0f;
 	D2D1_RECT_F RenderedBounds{};
 };
