@@ -78,6 +78,7 @@ namespace
 		Data,
 		DataGrid,
 		Analytics,
+		Animation,
 		Layout,
 		System,
 		WebBrowser,
@@ -937,6 +938,7 @@ Control* DemoWindow::FindGeneratedControlByName(
 	if (name == L"analyticsQuery") return analyticsQuery;
 	if (name == L"analyticsReset") return analyticsReset;
 	if (name == L"analyticsRows") return analyticsRows;
+	if (name == L"animationGallery") return animationGallery;
 	if (name == L"authoredStateTree") return authoredStateTree;
 	if (name == L"basicButton") return basicButton;
 	if (name == L"basicCombo") return basicCombo;
@@ -1025,6 +1027,7 @@ Control* DemoWindow::FindGeneratedControlByName(
 	if (name == L"themeNormalButton") return themeNormalButton;
 	if (name == L"toastMessage") return toastMessage;
 	if (name == L"toolAnalytics") return toolAnalytics;
+	if (name == L"toolAnimation") return toolAnimation;
 	if (name == L"toolBasic") return toolBasic;
 	if (name == L"toolData") return toolData;
 	if (name == L"toolIcon1") return toolIcon1;
@@ -2693,6 +2696,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 			FindGeneratedControlByName(L"toolData"));
 		auto* toolAnalytics = dynamic_cast<Button*>(
 			FindGeneratedControlByName(L"toolAnalytics"));
+		auto* toolAnimation = dynamic_cast<Button*>(
+			FindGeneratedControlByName(L"toolAnimation"));
 		auto* toolSystem = dynamic_cast<Button*>(
 			FindGeneratedControlByName(L"toolSystem"));
 		auto* toolSeparator =
@@ -2724,8 +2729,8 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		auto* toolItemsHost = _toolBar
 			? dynamic_cast<StackPanel*>(
 				cui::framework::TemplateAccess::GetItemsHost(*_toolBar)) : nullptr;
-		const std::array<Control*, 8> authoredToolItems{
-			toolBasic, toolData, toolAnalytics, toolSystem, toolSeparator,
+		const std::array<Control*, 9> authoredToolItems{
+			toolBasic, toolData, toolAnalytics, toolAnimation, toolSystem, toolSeparator,
 			toolIcon1, toolIcon2, toolIcon3 };
 		bool authoredToolOwnershipValid = _toolBar && toolItemsHost;
 		if (authoredToolOwnershipValid)
@@ -2779,6 +2784,30 @@ bool DemoWindow::VerifyDeclarativeFeatures(std::wstring* outError)
 		if (!toolData->Invoke()
 			|| _tabs->SelectedIndex != PageIndex(DemoPage::Data))
 			return fail(L"XAML ToolBar 按钮命名事件未驱动页面导航。");
+		auto* animationGalleryControl = dynamic_cast<
+			DemoWindowGeneratedAnimationGallery*>(
+				FindGeneratedControlByName(L"animationGallery"));
+		if (!toolAnimation || !animationGalleryControl
+			|| !toolAnimation->Invoke()
+			|| _tabs->SelectedIndex != PageIndex(DemoPage::Animation))
+			return fail(L"动画画廊或 ToolBar 动画导航未生成。");
+		const auto animationTick = ::GetTickCount64();
+		if (!animationGalleryControl->RaisePlayAnimations()
+			|| !animationGalleryControl->HasActiveVisualStateAnimations()
+			|| !cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*animationGalleryControl, animationTick + 2180)
+			|| animationGalleryControl->GetCounter() < 40
+			|| animationGalleryControl->GetCounter() > 80
+			|| animationGalleryControl->GetLongCounter() <= 9007199254740993LL
+			|| animationGalleryControl->GetModeText() != L"Half way")
+			return fail(L"动画画廊主 Storyboard 未驱动类型化 Timeline/关键帧。");
+		if (!animationGalleryControl->RaiseRemoveAnimations()
+			|| !cui::framework::PresentationAccess::AdvanceVisualStateAnimations(
+				*animationGalleryControl, animationTick + 2181)
+			|| animationGalleryControl->HasActiveVisualStateAnimations()
+			|| animationGalleryControl->GetCounter() != 0
+			|| animationGalleryControl->GetModeText() != L"Idle")
+			return fail(L"动画画廊 RemoveStoryboard 未恢复基础值。");
 		(void)_tabs->SelectItem(previousPage);
 
 		auto* windowContent = dynamic_cast<Grid*>(
@@ -7414,6 +7443,7 @@ void DemoWindow::HandleToolBarAction(Control* sender, RoutedEventArgs&)
 		NavigationTarget{ L"toolBasic", DemoPage::Basic, L"基础" },
 		NavigationTarget{ L"toolData", DemoPage::Data, L"数据" },
 		NavigationTarget{ L"toolAnalytics", DemoPage::Analytics, L"可视化" },
+		NavigationTarget{ L"toolAnimation", DemoPage::Animation, L"动画" },
 		NavigationTarget{ L"toolSystem", DemoPage::System, L"系统" } })
 	{
 		if (sender != RequireControl<Control>(target.Name)) continue;

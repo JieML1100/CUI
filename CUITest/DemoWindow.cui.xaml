@@ -513,6 +513,527 @@
           </Border>
         </ComponentDefinition.Template>
       </ComponentDefinition>
+      <Style x:Key="AnimationHoverButton" TargetType="Button">
+        <Setter Property="Background" Value="#FFEAF2FF"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Style.Triggers>
+          <Trigger Property="IsMouseOver" Value="true">
+            <Setter Property="Background" Value="#FFDCE8FF"/>
+            <Trigger.EnterActions>
+              <BeginStoryboard x:Name="AnimationHoverClock">
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetProperty="(Control.RenderTransform).(ScaleTransform.ScaleX)"
+                    To="1.08" Duration="0:0:0.180">
+                    <DoubleAnimation.EasingFunction>
+                      <BackEase EasingMode="EaseOut" Amplitude="0.35"/>
+                    </DoubleAnimation.EasingFunction>
+                  </DoubleAnimation>
+                  <DoubleAnimation Storyboard.TargetProperty="(Control.RenderTransform).(ScaleTransform.ScaleY)"
+                    To="1.08" Duration="0:0:0.180">
+                    <DoubleAnimation.EasingFunction>
+                      <BackEase EasingMode="EaseOut" Amplitude="0.35"/>
+                    </DoubleAnimation.EasingFunction>
+                  </DoubleAnimation>
+                </Storyboard>
+              </BeginStoryboard>
+            </Trigger.EnterActions>
+            <Trigger.ExitActions>
+              <RemoveStoryboard BeginStoryboardName="AnimationHoverClock"/>
+            </Trigger.ExitActions>
+          </Trigger>
+        </Style.Triggers>
+      </Style>
+      <ComponentDefinition x:Key="test:AnimationGallery" BaseType="Canvas"
+        DisplayName="WPF animation gallery" Category="Animation">
+        <ComponentDefinition.Properties>
+          <ComponentProperty Name="Counter" Type="Int" Default="0"/>
+          <ComponentProperty Name="LongCounter" Type="Int64" Default="9007199254740993"/>
+          <ComponentProperty Name="Scalar" Type="Float" Default="0"/>
+          <ComponentProperty Name="Motion" Type="Vector" Default="0,0"/>
+          <ComponentProperty Name="Extent" Type="Size" Default="48,18"/>
+          <ComponentProperty Name="Bounds" Type="Rect" Default="0,0,48,18"/>
+          <ComponentProperty Name="Origin" Type="Point" Default="0,0"/>
+          <ComponentProperty Name="AccentValue" Type="Color" Default="#FF2F6FE4"/>
+          <ComponentProperty Name="Flag" Type="Bool" Default="false"/>
+          <ComponentProperty Name="ModeText" Type="String" Default="Idle"/>
+        </ComponentDefinition.Properties>
+        <ComponentDefinition.Events>
+          <ComponentEvent Name="PlayAnimations" DisplayName="Play all" Category="Action"/>
+          <ComponentEvent Name="PauseAnimations" DisplayName="Pause" Category="Action"/>
+          <ComponentEvent Name="ResumeAnimations" DisplayName="Resume" Category="Action"/>
+          <ComponentEvent Name="SeekAnimations" DisplayName="Seek to midpoint" Category="Action"/>
+          <ComponentEvent Name="SpeedAnimations" DisplayName="Set 2x speed" Category="Action"/>
+          <ComponentEvent Name="FinishAnimations" DisplayName="Skip to fill" Category="Action"/>
+          <ComponentEvent Name="StopAnimations" DisplayName="Stop" Category="Action"/>
+          <ComponentEvent Name="RemoveAnimations" DisplayName="Remove" Category="Action"/>
+          <ComponentEvent Name="ComposePrimary" DisplayName="Compose primary" Category="Action"/>
+          <ComponentEvent Name="ComposeSecondary" DisplayName="Compose secondary" Category="Action"/>
+          <ComponentEvent Name="ClearComposition" DisplayName="Clear composition" Category="Action"/>
+          <ComponentEvent Name="ActivateState" DisplayName="Activate visual state" Category="Action"/>
+          <ComponentEvent Name="DeactivateState" DisplayName="Deactivate visual state" Category="Action"/>
+        </ComponentDefinition.Events>
+        <ComponentDefinition.Template>
+          <ScrollViewer x:Name="AnimationGalleryRoot" VerticalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled">
+            <ScrollViewer.Triggers>
+              <EventTrigger RoutedEvent="PlayAnimations">
+                <BeginStoryboard x:Name="AnimationGalleryClock" HandoffBehavior="SnapshotAndReplace">
+                  <Storyboard BeginTime="0:0:0.080" Duration="0:0:4" FillBehavior="HoldEnd"
+                    AccelerationRatio="0.05" DecelerationRatio="0.05">
+                    <ParallelTimeline BeginTime="0:0:0" Duration="0:0:4">
+                      <DoubleAnimation Storyboard.TargetName="animationTransformCard"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(TranslateTransform.X)"
+                        From="0" To="86" Duration="0:0:3.2" AutoReverse="true"/>
+                      <DoubleAnimation Storyboard.TargetName="animationTransformCard"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)"
+                        From="1" To="1.28" Duration="0:0:1.6" RepeatBehavior="2x" AutoReverse="true"/>
+                      <DoubleAnimation Storyboard.TargetName="animationTransformCard"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleY)"
+                        From="1" To="0.78" Duration="0:0:1.6" RepeatBehavior="2x" AutoReverse="true"/>
+                      <DoubleAnimation Storyboard.TargetName="animationTransformCard"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.Angle)"
+                        From="0" To="360" Duration="0:0:3.2"/>
+                      <DoubleAnimation Storyboard.TargetName="animationTransformCard"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[3].(SkewTransform.AngleX)"
+                        From="-8" To="12" Duration="0:0:1.6" RepeatBehavior="2x" AutoReverse="true"/>
+                    </ParallelTimeline>
+
+                    <DoubleAnimationUsingKeyFrames Storyboard.TargetName="animationKeyFrameDot"
+                      Storyboard.TargetProperty="(Canvas.Left)" Duration="0:0:3.2">
+                      <DiscreteDoubleKeyFrame KeyTime="0:0:0.45" Value="38"/>
+                      <LinearDoubleKeyFrame KeyTime="25%" Value="112"/>
+                      <EasingDoubleKeyFrame KeyTime="0:0:2.25" Value="222">
+                        <EasingDoubleKeyFrame.EasingFunction>
+                          <BounceEase EasingMode="EaseOut" Bounces="3" Bounciness="2"/>
+                        </EasingDoubleKeyFrame.EasingFunction>
+                      </EasingDoubleKeyFrame>
+                      <SplineDoubleKeyFrame KeyTime="0:0:3.2" Value="314"
+                        KeySpline="0.25,0.1 0.25,1"/>
+                    </DoubleAnimationUsingKeyFrames>
+
+                    <DoubleAnimation Storyboard.TargetName="easeLinear" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2"/>
+                    <DoubleAnimation Storyboard.TargetName="easeBack" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><BackEase EasingMode="EaseInOut" Amplitude="0.7"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeBounce" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><BounceEase EasingMode="EaseOut" Bounces="4" Bounciness="2.4"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeCircle" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><CircleEase EasingMode="EaseInOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeCubic" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseInOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeElastic" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><ElasticEase EasingMode="EaseOut" Oscillations="3" Springiness="3"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeExponential" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseIn" Exponent="4"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easePower" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><PowerEase EasingMode="EaseInOut" Power="3.5"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeQuadratic" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeQuartic" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><QuarticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeQuintic" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><QuinticEase EasingMode="EaseIn"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="easeSine" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="4" To="304" Duration="0:0:3.2">
+                      <DoubleAnimation.EasingFunction><SineEase EasingMode="EaseInOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+
+                    <ColorAnimation Storyboard.TargetName="animationColorChip"
+                      Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                      From="#FF2F6FE4" To="#FFE34B8B" Duration="0:0:3.2"/>
+                    <DoubleAnimation Storyboard.TargetName="animationColorChip"
+                      Storyboard.TargetProperty="(Border.Background).(Brush.Opacity)"
+                      From="1" To="0.55" Duration="0:0:1.6" AutoReverse="true" RepeatBehavior="2x"/>
+                    <PointAnimation Storyboard.TargetName="animationGradientChip"
+                      Storyboard.TargetProperty="(Border.Background).(LinearGradientBrush.StartPoint)"
+                      From="0,0" To="0.35,0.75" Duration="0:0:3.2"/>
+                    <PointAnimation Storyboard.TargetName="animationGradientChip"
+                      Storyboard.TargetProperty="(Border.Background).(LinearGradientBrush.EndPoint)"
+                      From="1,1" To="0.7,0.15" Duration="0:0:3.2"/>
+                    <ColorAnimation Storyboard.TargetName="animationGradientChip"
+                      Storyboard.TargetProperty="(Border.Background).(GradientBrush.GradientStops)[0].(GradientStop.Color)"
+                      From="#FF14A37F" To="#FFFFB020" Duration="0:0:3.2"/>
+                    <DoubleAnimation Storyboard.TargetName="animationGradientChip"
+                      Storyboard.TargetProperty="(Border.Background).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                      From="1" To="0.58" Duration="0:0:3.2"/>
+                    <ThicknessAnimation Storyboard.TargetName="animationThicknessChip"
+                      Storyboard.TargetProperty="BorderThickness" From="1,1,1,1" To="9,3,9,3"
+                      Duration="0:0:3.2">
+                      <ThicknessAnimation.EasingFunction><ElasticEase EasingMode="EaseOut" Oscillations="2" Springiness="4"/></ThicknessAnimation.EasingFunction>
+                    </ThicknessAnimation>
+                    <RectAnimation Storyboard.TargetName="animationClipChip"
+                      Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+                      From="0,0,150,54" To="35,8,80,38" Duration="0:0:3.2" AutoReverse="true"/>
+
+                    <MatrixAnimationUsingPath Storyboard.TargetName="animationPathVehicle"
+                      Storyboard.TargetProperty="(Control.RenderTransform).(MatrixTransform.Matrix)"
+                      DoesRotateWithTangent="true" Duration="0:0:4">
+                      <MatrixAnimationUsingPath.PathGeometry>
+                        <PathGeometry Figures="M0,72 C70,-35 150,130 220,35 A75,42 18 0 1 340,62"/>
+                      </MatrixAnimationUsingPath.PathGeometry>
+                    </MatrixAnimationUsingPath>
+
+                    <Int32Animation Storyboard.TargetProperty="Counter" From="0" To="120" Duration="0:0:4"/>
+                    <Int64Animation Storyboard.TargetProperty="LongCounter"
+                      From="9007199254740993" To="9007199254741093" Duration="0:0:4"/>
+                    <SingleAnimation Storyboard.TargetProperty="Scalar" From="0" To="1" Duration="0:0:4"/>
+                    <VectorAnimation Storyboard.TargetProperty="Motion" From="0,0" To="96,-24" Duration="0:0:4"/>
+                    <SizeAnimation Storyboard.TargetProperty="Extent" From="48,18" To="128,42" Duration="0:0:4"/>
+                    <RectAnimation Storyboard.TargetProperty="Bounds" From="0,0,48,18" To="12,8,128,42" Duration="0:0:4"/>
+                    <PointAnimation Storyboard.TargetProperty="Origin" From="0,0" To="0.8,0.25" Duration="0:0:4"/>
+                    <ColorAnimation Storyboard.TargetProperty="AccentValue" From="#FF2F6FE4" To="#FFE34B8B" Duration="0:0:4"/>
+                    <BooleanAnimationUsingKeyFrames Storyboard.TargetProperty="Flag" Duration="0:0:4">
+                      <DiscreteBooleanKeyFrame KeyTime="0:0:1.6" Value="true"/>
+                      <DiscreteBooleanKeyFrame KeyTime="0:0:3.2" Value="false"/>
+                    </BooleanAnimationUsingKeyFrames>
+                    <StringAnimationUsingKeyFrames Storyboard.TargetProperty="ModeText" Duration="0:0:4">
+                      <DiscreteStringKeyFrame KeyTime="0:0:0" Value="Running"/>
+                      <DiscreteStringKeyFrame KeyTime="0:0:2" Value="Half way"/>
+                      <DiscreteStringKeyFrame KeyTime="0:0:4" Value="Completed"/>
+                    </StringAnimationUsingKeyFrames>
+                  </Storyboard>
+                </BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="PauseAnimations">
+                <PauseStoryboard BeginStoryboardName="AnimationGalleryClock"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="ResumeAnimations">
+                <ResumeStoryboard BeginStoryboardName="AnimationGalleryClock"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="SeekAnimations">
+                <SeekStoryboard BeginStoryboardName="AnimationGalleryClock" Offset="0:0:2" Origin="BeginTime"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="SpeedAnimations">
+                <SetStoryboardSpeedRatio BeginStoryboardName="AnimationGalleryClock" SpeedRatio="2"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="FinishAnimations">
+                <SkipStoryboardToFill BeginStoryboardName="AnimationGalleryClock"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="StopAnimations">
+                <StopStoryboard BeginStoryboardName="AnimationGalleryClock"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="RemoveAnimations">
+                <RemoveStoryboard BeginStoryboardName="AnimationGalleryClock"/>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="ComposePrimary">
+                <BeginStoryboard x:Name="AnimationComposePrimaryClock" HandoffBehavior="Compose">
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="animationComposeDot" Storyboard.TargetProperty="(Canvas.Left)"
+                      From="12" To="178" Duration="0:0:2.4" FillBehavior="HoldEnd">
+                      <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseInOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                  </Storyboard>
+                </BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="ComposeSecondary">
+                <BeginStoryboard x:Name="AnimationComposeSecondaryClock" HandoffBehavior="Compose">
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="animationComposeDot" Storyboard.TargetProperty="(Canvas.Left)"
+                      By="72" Duration="0:0:1.2" AutoReverse="true" RepeatBehavior="2x" IsAdditive="true"/>
+                  </Storyboard>
+                </BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="ClearComposition">
+                <RemoveStoryboard BeginStoryboardName="AnimationComposeSecondaryClock"/>
+                <RemoveStoryboard BeginStoryboardName="AnimationComposePrimaryClock"/>
+              </EventTrigger>
+            </ScrollViewer.Triggers>
+            <VisualStateManager.VisualStateGroups>
+              <VisualStateGroup x:Name="AnimationGalleryStates">
+                <VisualStateGroup.Transitions>
+                  <VisualTransition From="GalleryIdle" To="GalleryActive" GeneratedDuration="0:0:0.45">
+                    <VisualTransition.GeneratedEasingFunction>
+                      <BackEase EasingMode="EaseOut" Amplitude="0.45"/>
+                    </VisualTransition.GeneratedEasingFunction>
+                  </VisualTransition>
+                  <VisualTransition From="GalleryActive" To="GalleryInactive" GeneratedDuration="0:0:0.28">
+                    <VisualTransition.GeneratedEasingFunction>
+                      <QuadraticEase EasingMode="EaseInOut"/>
+                    </VisualTransition.GeneratedEasingFunction>
+                  </VisualTransition>
+                </VisualStateGroup.Transitions>
+                <VisualState x:Name="GalleryIdle">
+                  <VisualState.Setters>
+                    <Setter TargetName="animationStateCard" Property="Background" Value="#FFF2F6FB"/>
+                    <Setter TargetName="animationStateOrb" Property="Canvas.Left" Value="16"/>
+                    <Setter TargetName="animationStateOrb" Property="Opacity" Value="0.65"/>
+                  </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="GalleryActive">
+                  <VisualState.StateTriggers><EventTrigger Event="ActivateState"/></VisualState.StateTriggers>
+                  <VisualState.Setters>
+                    <Setter TargetName="animationStateCard" Property="Background" Value="#FFDDE9FF"/>
+                    <Setter TargetName="animationStateOrb" Property="Canvas.Left" Value="272"/>
+                    <Setter TargetName="animationStateOrb" Property="Opacity" Value="1"/>
+                  </VisualState.Setters>
+                  <VisualState.Storyboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="animationStateOrb"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(ScaleTransform.ScaleX)"
+                        From="1" To="1.35" Duration="0:0:0.6" AutoReverse="true" RepeatBehavior="2x"/>
+                      <DoubleAnimation Storyboard.TargetName="animationStateOrb"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(ScaleTransform.ScaleY)"
+                        From="1" To="1.35" Duration="0:0:0.6" AutoReverse="true" RepeatBehavior="2x"/>
+                    </Storyboard>
+                  </VisualState.Storyboard>
+                </VisualState>
+                <VisualState x:Name="GalleryInactive">
+                  <VisualState.StateTriggers><EventTrigger Event="DeactivateState"/></VisualState.StateTriggers>
+                  <VisualState.Setters>
+                    <Setter TargetName="animationStateCard" Property="Background" Value="#FFF2F6FB"/>
+                    <Setter TargetName="animationStateOrb" Property="Canvas.Left" Value="16"/>
+                    <Setter TargetName="animationStateOrb" Property="Opacity" Value="0.65"/>
+                  </VisualState.Setters>
+                </VisualState>
+              </VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <StackPanel Margin="4,2,10,12">
+              <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Style="{StaticResource PageHeader}" Text="WPF 动画系统 · Animation Gallery"/>
+                  <TextBlock Style="{StaticResource DescriptionText}"
+                    Text="同一套声明覆盖 Timeline、Clock 控制、关键帧、全缓动族、路径、复合类型、属性路径、VisualState 与 HandoffBehavior。"/>
+                </StackPanel>
+                <Border Grid.Column="1" Padding="10,5" CornerRadius="12" Background="#FFE8F5EE"
+                  BorderBrush="{StaticResource Success}" BorderThickness="1" VerticalAlignment="Top">
+                  <TextBlock Foreground="{StaticResource Success}" Text="AOT XAML · WPF compatible"/>
+                </Border>
+              </Grid>
+
+              <Border Margin="0,0,0,12" Padding="10" CornerRadius="8" Background="#FFF2F6FB"
+                BorderBrush="#FF9FB2CA" BorderThickness="1">
+                <StackPanel>
+                  <TextBlock Foreground="{StaticResource Accent}" FontSize="14" Text="Controllable Storyboard"/>
+                  <TextBlock Margin="0,2,0,8" Style="{StaticResource DescriptionText}"
+                    Text="Begin / Pause / Resume / Seek / SetSpeedRatio / SkipToFill / Stop / Remove；重新播放使用 SnapshotAndReplace。"/>
+                  <WrapPanel>
+                    <Button Margin="0,0,7,6" Width="92" Height="30" Style="{StaticResource PrimaryButton}" Content="▶ 播放全部" Click="{RaiseEvent PlayAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="72" Height="30" Content="Ⅱ 暂停" Click="{RaiseEvent PauseAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="72" Height="30" Content="继续" Click="{RaiseEvent ResumeAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="92" Height="30" Content="Seek 2.0s" Click="{RaiseEvent SeekAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="76" Height="30" Content="速度 2×" Click="{RaiseEvent SpeedAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="96" Height="30" Content="SkipToFill" Click="{RaiseEvent FinishAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="72" Height="30" Content="Stop" Click="{RaiseEvent StopAnimations}"/>
+                    <Button Margin="0,0,7,6" Width="78" Height="30" Content="Remove" Click="{RaiseEvent RemoveAnimations}"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="6*"/>
+                  <ColumnDefinition Width="14"/>
+                  <ColumnDefinition Width="5*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="完整 EasingFunction 家族"/>
+                      <TextBlock Margin="0,0,0,8" Style="{StaticResource DescriptionText}"
+                        Text="相同 3.2 秒位移，直观看出 EaseIn / EaseOut / EaseInOut 与参数化曲线差异。"/>
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="104"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/>
+                          <RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/>
+                          <RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/><RowDefinition Height="22"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Linear"/><TextBlock Grid.Row="1" Text="Back"/><TextBlock Grid.Row="2" Text="Bounce"/>
+                        <TextBlock Grid.Row="3" Text="Circle"/><TextBlock Grid.Row="4" Text="Cubic"/><TextBlock Grid.Row="5" Text="Elastic"/>
+                        <TextBlock Grid.Row="6" Text="Exponential"/><TextBlock Grid.Row="7" Text="Power"/><TextBlock Grid.Row="8" Text="Quadratic"/>
+                        <TextBlock Grid.Row="9" Text="Quartic"/><TextBlock Grid.Row="10" Text="Quintic"/><TextBlock Grid.Row="11" Text="Sine"/>
+                        <Canvas Grid.Column="1" Grid.Row="0" Height="18" Background="#FFF2F6FB"><Border x:Name="easeLinear" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF2F6FE4"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="1" Height="18" Background="#FFF2F6FB"><Border x:Name="easeBack" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF7758D9"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="2" Height="18" Background="#FFF2F6FB"><Border x:Name="easeBounce" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FFE34B8B"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="3" Height="18" Background="#FFF2F6FB"><Border x:Name="easeCircle" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF14A37F"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="4" Height="18" Background="#FFF2F6FB"><Border x:Name="easeCubic" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF3A8DDE"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="5" Height="18" Background="#FFF2F6FB"><Border x:Name="easeElastic" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FFFF8A3D"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="6" Height="18" Background="#FFF2F6FB"><Border x:Name="easeExponential" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FFBC5CBA"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="7" Height="18" Background="#FFF2F6FB"><Border x:Name="easePower" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF247BA0"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="8" Height="18" Background="#FFF2F6FB"><Border x:Name="easeQuadratic" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF70C1B3"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="9" Height="18" Background="#FFF2F6FB"><Border x:Name="easeQuartic" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FFF3A712"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="10" Height="18" Background="#FFF2F6FB"><Border x:Name="easeQuintic" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FFEA526F"/></Canvas>
+                        <Canvas Grid.Column="1" Grid.Row="11" Height="18" Background="#FFF2F6FB"><Border x:Name="easeSine" Canvas.Left="4" Width="12" Height="12" CornerRadius="6" Background="#FF15966A"/></Canvas>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="关键帧与 TransformGroup 属性路径"/>
+                      <Canvas Height="72" Background="#FFF2F6FB">
+                        <TextBlock Canvas.Left="8" Canvas.Top="5" Foreground="{StaticResource TextMuted}" Text="Discrete → Linear → Easing(Bounce) → Spline"/>
+                        <Border x:Name="animationKeyFrameDot" Canvas.Left="4" Canvas.Top="36" Width="20" Height="20" CornerRadius="10" Background="#FFE34B8B"/>
+                      </Canvas>
+                      <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Border x:Name="animationTransformCard" Width="100" Height="70" CornerRadius="12" Background="#FFDDE9FF"
+                          BorderBrush="{StaticResource Accent}" BorderThickness="2" RenderTransformOrigin="0.5,0.5">
+                          <Control.RenderTransform>
+                            <TransformGroup>
+                              <TranslateTransform X="0" Y="0"/>
+                              <ScaleTransform ScaleX="1" ScaleY="1"/>
+                              <RotateTransform Angle="0"/>
+                              <SkewTransform AngleX="-8" AngleY="0"/>
+                            </TransformGroup>
+                          </Control.RenderTransform>
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Text="T · S · R · K" Foreground="{StaticResource Accent}"/>
+                        </Border>
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource DescriptionText}"
+                          Text="Translate / Scale / Rotate / Skew 同时作用于 TransformGroup.Children[n]，演示多段 Storyboard.TargetProperty。"/>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="颜色、GradientStop、Thickness 与 Clip"/>
+                      <WrapPanel>
+                        <Border x:Name="animationColorChip" Margin="0,0,10,8" Width="150" Height="54" CornerRadius="8" Background="#FF2F6FE4">
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#FFFFFFFF" Text="Color + Opacity"/>
+                        </Border>
+                        <Border x:Name="animationGradientChip" Margin="0,0,10,8" Width="170" Height="54" CornerRadius="8">
+                          <Control.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                              <GradientStop Color="#FF14A37F" Offset="0"/>
+                              <GradientStop Color="#FF2F6FE4" Offset="1"/>
+                            </LinearGradientBrush>
+                          </Control.Background>
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#FFFFFFFF" Text="Gradient paths"/>
+                        </Border>
+                        <Border x:Name="animationThicknessChip" Margin="0,0,10,8" Width="150" Height="54" CornerRadius="8"
+                          Background="#FFF7F9FC" BorderBrush="#FFE34B8B" BorderThickness="1">
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Text="Thickness"/>
+                        </Border>
+                        <Border x:Name="animationClipChip" Width="150" Height="54" Background="#FFFFB020">
+                          <Control.Clip><RectangleGeometry Rect="0,0,150,54" RadiusX="8" RadiusY="8"/></Control.Clip>
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Text="Rect Clip"/>
+                        </Border>
+                      </WrapPanel>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2">
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="类型化 Timeline 实时值"/>
+                      <TextBlock Margin="0,0,0,8" Style="{StaticResource DescriptionText}"
+                        Text="元数据属性由对应 Timeline 直接驱动；Int64 保持 2^53 以上精度。"/>
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="118"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="24"/><RowDefinition Height="24"/><RowDefinition Height="24"/><RowDefinition Height="24"/>
+                          <RowDefinition Height="24"/><RowDefinition Height="24"/><RowDefinition Height="24"/><RowDefinition Height="24"/>
+                          <RowDefinition Height="24"/><RowDefinition Height="24"/><RowDefinition Height="24"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Int32"/><TextBlock Grid.Row="0" Grid.Column="1" Foreground="{StaticResource Accent}" Text="{Binding Counter, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        <TextBlock Grid.Row="1" Text="Int64"/><TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource Accent}" Text="{Binding LongCounter, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        <TextBlock Grid.Row="2" Text="Single"/><TextBlock Grid.Row="2" Grid.Column="1" Foreground="{StaticResource Accent}" Text="{Binding Scalar, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        <TextBlock Grid.Row="3" Text="Vector"/><TextBlock Grid.Row="3" Grid.Column="1" Foreground="{StaticResource Accent}" Text="0,0 → 96,-24"/>
+                        <TextBlock Grid.Row="4" Text="Size"/><TextBlock Grid.Row="4" Grid.Column="1" Foreground="{StaticResource Accent}" Text="48,18 → 128,42"/>
+                        <TextBlock Grid.Row="5" Text="Rect"/><TextBlock Grid.Row="5" Grid.Column="1" Foreground="{StaticResource Accent}" Text="Clip card ← RectAnimation"/>
+                        <TextBlock Grid.Row="6" Text="Point"/><TextBlock Grid.Row="6" Grid.Column="1" Foreground="{StaticResource Accent}" Text="Gradient ← PointAnimation"/>
+                        <TextBlock Grid.Row="7" Text="Matrix"/><TextBlock Grid.Row="7" Grid.Column="1" Foreground="{StaticResource Accent}" Text="UsingPath + tangent rotation ↓"/>
+                        <TextBlock Grid.Row="8" Text="Color"/><TextBlock Grid.Row="8" Grid.Column="1" Foreground="{StaticResource Accent}" Text="Color chip ← scRGB interpolation"/>
+                        <TextBlock Grid.Row="9" Text="Boolean"/><TextBlock Grid.Row="9" Grid.Column="1" Foreground="{StaticResource Accent}" Text="{Binding Flag, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        <TextBlock Grid.Row="10" Text="String"/><TextBlock Grid.Row="10" Grid.Column="1" Foreground="{StaticResource Accent}" Text="{Binding ModeText, RelativeSource={RelativeSource TemplatedParent}}"/>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="PathGeometry · MatrixAnimationUsingPath"/>
+                      <TextBlock Margin="0,0,0,7" Style="{StaticResource DescriptionText}"
+                        Text="Bezier + Arc 路径采样，同时按切线旋转 MatrixTransform。"/>
+                      <Canvas Height="132" Background="#FFF2F6FB" ClipToBounds="true">
+                        <Border Canvas.Left="18" Canvas.Top="79" Width="8" Height="8" CornerRadius="4" Background="#FFB8C6D9"/>
+                        <Border Canvas.Left="122" Canvas.Top="20" Width="8" Height="8" CornerRadius="4" Background="#FFB8C6D9"/>
+                        <Border Canvas.Left="236" Canvas.Top="55" Width="8" Height="8" CornerRadius="4" Background="#FFB8C6D9"/>
+                        <Border Canvas.Left="350" Canvas.Top="69" Width="8" Height="8" CornerRadius="4" Background="#FFB8C6D9"/>
+                        <Border x:Name="animationPathVehicle" Canvas.Left="16" Canvas.Top="18" Width="52" Height="28" CornerRadius="8"
+                          Background="#FFE34B8B" RenderTransformOrigin="0.5,0.5">
+                          <Control.RenderTransform><MatrixTransform Matrix="1,0,0,1,0,0"/></Control.RenderTransform>
+                          <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#FFFFFFFF" Text="PATH"/>
+                        </Border>
+                      </Canvas>
+                    </StackPanel>
+                  </Border>
+
+                  <Border x:Name="animationStateCard" Margin="0,0,0,12" Padding="10" CornerRadius="8"
+                    Background="#FFF2F6FB" BorderBrush="{StaticResource Border}" BorderThickness="1">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="VisualState + GeneratedTransition"/>
+                      <Canvas Height="58" Background="#FFFFFFFF">
+                        <Border x:Name="animationStateOrb" Canvas.Left="16" Canvas.Top="14" Width="28" Height="28" CornerRadius="14"
+                          Background="#FF14A37F" Opacity="0.65" RenderTransformOrigin="0.5,0.5">
+                          <Control.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Control.RenderTransform>
+                        </Border>
+                      </Canvas>
+                      <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                        <Button Margin="0,0,8,0" Width="108" Height="30" Content="进入 Active" Click="{RaiseEvent ActivateState}"/>
+                        <Button Width="108" Height="30" Content="返回 Idle" Click="{RaiseEvent DeactivateState}"/>
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Margin="0,0,0,12" Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="HandoffBehavior.Compose"/>
+                      <Canvas Height="58" Background="#FFF2F6FB" ClipToBounds="true">
+                        <Border x:Name="animationComposeDot" Canvas.Left="12" Canvas.Top="15" Width="28" Height="28" CornerRadius="14" Background="#FF7758D9"/>
+                      </Canvas>
+                      <WrapPanel Margin="0,8,0,0">
+                        <Button Margin="0,0,7,6" Width="96" Height="30" Content="基础 Clock" Click="{RaiseEvent ComposePrimary}"/>
+                        <Button Margin="0,0,7,6" Width="104" Height="30" Content="叠加 +72" Click="{RaiseEvent ComposeSecondary}"/>
+                        <Button Width="92" Height="30" Content="移除两层" Click="{RaiseEvent ClearComposition}"/>
+                      </WrapPanel>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Padding="10" Style="{StaticResource SurfacePanel}">
+                    <StackPanel>
+                      <TextBlock Style="{StaticResource SectionHeader}" Text="Style Trigger · Hover"/>
+                      <TextBlock Margin="0,0,0,8" Style="{StaticResource DescriptionText}"
+                        Text="移入按钮执行 EnterActions，移出执行 RemoveStoryboard。"/>
+                      <Button Width="230" Height="42" Style="{StaticResource AnimationHoverButton}"
+                        Content="将鼠标移到这里" RenderTransformOrigin="0.5,0.5">
+                        <Control.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Control.RenderTransform>
+                      </Button>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </Grid>
+            </StackPanel>
+          </ScrollViewer>
+        </ComponentDefinition.Template>
+      </ComponentDefinition>
       <GroupStyle x:Key="DemoTaskGroups"
         HeaderTemplate="{StaticResource DemoTaskGroupHeader}"/>
       <ItemsPanelTemplate x:Key="DemoTaskItemsPanel">
@@ -733,6 +1254,7 @@
         <Button x:Name="toolBasic" Height="26" Click="HandleToolBarAction" Content="基础" Width="88"/>
         <Button x:Name="toolData" Height="26" Click="HandleToolBarAction" Content="数据" Width="88"/>
         <Button x:Name="toolAnalytics" Height="26" Click="HandleToolBarAction" Content="可视化" Width="88"/>
+        <Button x:Name="toolAnimation" Height="26" Click="HandleToolBarAction" Content="动画" Width="88"/>
         <Button x:Name="toolSystem" Height="26" Click="HandleToolBarAction" Content="系统" Width="88"/>
         <Border x:Name="toolSeparator" Margin="6,3" Background="{StaticResource Border}" Height="20" Width="1"/>
         <Button x:Name="toolIcon1" Command="Demo.File.Open" CommandParameter="toolbar-open" Height="26" Click="HandleToolBarAction" Padding="5,3" Width="30">
@@ -1389,6 +1911,11 @@
               </GroupBox>
             </Grid>
           </Grid>
+        </Border>
+      </TabItem>
+      <TabItem Header="动画系统">
+        <Border Margin="4,8,4,4" Padding="8" Style="{StaticResource SurfacePanel}">
+          <test:AnimationGallery x:Name="animationGallery"/>
         </Border>
       </TabItem>
       <TabItem Header="布局容器">
